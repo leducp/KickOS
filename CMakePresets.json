@@ -1,0 +1,29 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "sim",
+      "displayName": "Host x86-64 sim",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/sim",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-host.cmake",
+      "cacheVariables": {
+        "KICKOS_BOARD": "sim",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "KICKOS_ENABLE_SELFTEST": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "sim", "configurePreset": "sim" }
+  ],
+  "testPresets": [
+    {
+      "name": "sim",
+      "configurePreset": "sim",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

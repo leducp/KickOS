@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# KickOS house style, based on the sibling projects ../KickCAT and ../kickmsg
+# (Allman, 4-space indent, indented namespaces + case labels, left-aligned
+# pointers, leading-comma constructor initializers). KickOS is STRICTER on one
+# point: Allman everywhere -- every opening brace on its own line, no one-liner
+# functions/if/for/while (braces inserted where missing). ColumnLimit 0 keeps
+# hand-wrapped lines (uncrustify does not hard-wrap either).
+---
+Language: Cpp
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 0
+
+BreakBeforeBraces: Allman
+NamespaceIndentation: All
+IndentCaseLabels: true
+AccessModifierOffset: -4
+IndentExternBlock: NoIndent
+
+PointerAlignment: Left
+DerivePointerAlignment: false
+SpaceAfterTemplateKeyword: false
+
+BreakConstructorInitializers: BeforeComma
+
+# Qualifier convention: east-const ("char const*", like KickCAT/kickmsg) but
+# WEST volatile ("volatile T x" -- reads as "the whole object is volatile").
+# NOT auto-enforced: clang-format's QualifierAlignment is experimental and can
+# misplace qualifiers in macros/templates. Left at the default (Leave) so it
+# preserves existing qualifier order without rewriting it. Write them by hand.
+
+# Allman everywhere: no one-liners of any kind; brace every control statement
+# (inserting braces where missing).
+AllowShortFunctionsOnASingleLine: None
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+InsertBraces: true
+
+SortIncludes: false
+FixNamespaceComments: false
