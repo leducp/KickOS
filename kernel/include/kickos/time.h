@@ -13,7 +13,6 @@
 
 namespace kickos
 {
-
     void ktime_init();
     uint64_t ktime_now(); // monotonic nanoseconds
 
@@ -28,7 +27,6 @@ namespace kickos
 
     // The timer-expiry ISR body (invoked by arch via kickos_isr_timer()).
     void ktime_on_timer();
-
 }
 
 #endif

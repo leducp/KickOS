@@ -14,7 +14,6 @@
 
 namespace kickos
 {
-
     // Pluggable scheduling policy: the core owns mechanism (run state, context
     // switch, ready structure); the policy decides which thread runs next and how
     // slices behave. EDF / rate-monotonic can drop in later without touching
@@ -30,7 +29,6 @@ namespace kickos
 
     namespace sched
     {
-
         void init();
         void set_policy(SchedPolicy const* policy);
 
@@ -74,7 +72,6 @@ namespace kickos
         // Called from the timer ISR: if the running RR slice has elapsed at `now`,
         // rotate within priority and reschedule.
         void tick_rr(uint64_t now);
-
     }
 }
 

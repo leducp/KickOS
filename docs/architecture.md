@@ -14,8 +14,11 @@ It draws design ideas (studied, never copied — see *Licensing*) from
 **RIOT-OS** (tickless scheduler + native/host port), **ChibiOS** (tickless time-delta timers,
 HAL, MPU sandbox), **µC/OS-III** (RR-within-priority + per-task quantum, task-local signaling,
 introspection), **RT-Thread** (scalable footprint, device framework, POSIX/CMSIS-RTOS2 compat),
-**Eclipse ThreadX** (preemption-threshold, MPU-isolated loadable Modules), and **RTEMS**
-(pluggable schedulers incl. EDF/rate-monotonic, SMP, newlib).
+**Eclipse ThreadX** (preemption-threshold, MPU-isolated loadable Modules), **RTEMS**
+(pluggable schedulers incl. EDF/rate-monotonic, SMP, newlib), and — for the microkernel
+paradigm itself — **seL4** (capabilities, a minimal privileged kernel, IPC-centric design,
+badged endpoints, static capability distribution) and **Zircon** (typed handles, channels,
+`wait_many`).
 
 ## Design pillars
 
@@ -31,6 +34,41 @@ introspection), **RT-Thread** (scalable footprint, device framework, POSIX/CMSIS
   CI-friendly testing: the real kernel runs under CTest on the host.
 - **C++ first-class** — kernel in **freestanding C++** (`-fno-exceptions -fno-rtti`); userspace
   gets **full C++ as a per-app opt-in** (exceptions/RTTI allowed there).
+- **Low barrier — seL4's paradigm, not its ceremony.** The UX benchmark is the sibling
+  **KickCAT**: easy to use, easy to tweak, no big machinery — *you write a `main`, and that's it*;
+  the provided userspace libc/runtime already does most of the job for a basic app (this is what
+  M0.3's OS-agnostic `main` entry delivers). Two axes: **app authors** — a plain app never writes
+  a capability manifest to print "hello"; the runtime/root task wires a **sane default capability
+  set**, and cap customization is opt-in for advanced users (easy things easy, hard things
+  possible). **Porters** — adding a CPU means implementing the small **arch/chip seam** (`arch.h`
+  + mpu/irq/timer/context backends), not restructuring the kernel; tractable for anyone who's done
+  a NuttX port. This is a hard constraint on the capability model (12b): capabilities must hide
+  behind defaults, never resurrect the "CapDL manifest just to boot hello world" friction that
+  makes seL4 painful to start with — and hard to bring up on a new core.
+
+## North star (long-term direction)
+
+KickOS aims to be a **minimal microkernel RTOS in the seL4 tradition**: the smallest useful
+privileged kernel — threads, protection domains, IPC, capabilities, IRQ routing — with
+*everything else* (filesystems, networking, console, device drivers) as **unprivileged userspace
+servers reached by IPC**. The design choices already made are downstream of this goal, not
+incidental: **capabilities, not fds or global ids** for object access (a per-task typed handle
+table — ambient authority contradicts the isolation pillar; see M2 12b); a **deliberately minimal
+syscall surface** (`read`/`open`/`socket` are userspace stubs over IPC to servers, never kernel
+calls — the debug console `write` is the sole sanctioned exception, cf. `seL4_DebugPutChar`);
+and **services published by static capability distribution** (seL4/CapDL-style — the root task
+grants each client exactly the endpoint caps its manifest allows), with **badged endpoints** to
+authenticate callers. This fits the static-allocation, deterministic-RTOS ethos far better than a
+runtime name server.
+
+**MPU-first, but not MPU-only.** Isolation ships on the MPU (PMSA, no address translation), but
+the **Domain / address-space seam is kept backend-agnostic** so a **VMSA (page-table / MMU)**
+backend can slot in one day for application-class cores — e.g. **Cortex-A72 / Raspberry Pi 4B**
+(GICv2, EL0/EL1, generic timer). This is *aspirational, not roadmapped*; its only claim on
+present design is a discipline we already hold — keep MPU/PMSA specifics in the **arch/chip
+layer**, never leaked into the core or the syscall ABI (the same arch-neutrality the non-ARM
+**RX72M** target exists to prove). "MPU-first per-task isolation" is the M0–M2 reality; "one
+address-space abstraction, MPU *or* MMU behind it" is the horizon.
 
 ## Targets
 
@@ -78,10 +116,14 @@ details to be confirmed against the K64 Reference Manual.)
 5. **Static allocation first, heap optional.** Kernel objects support link-time-static
    placement (e.g. `ThreadWithStack<2048>`) so a system can run with the heap disabled.
 6. **Dual API in userspace.** A plain C syscall layer with ergonomic C++ RAII wrappers on top.
-7. **Instance-scoped state, no hard singletons.** Kernel + sim state hang off an instance
+7. **Instance-scoped state, no hard singletons.** Kernel + sim state should hang off an instance
    handle, so multiple `kernel+userspace` instances can run in one host process (the KickCAT
-   sim end-goal). Honored from the first sim code. (Target builds may collapse to a single
-   static instance for size.)
+   sim end-goal). *Status:* kernel **objects** (TCBs, semaphores) are already caller-owned, but
+   the **runtime core** (scheduler/time/syscall pools/sim arch) is still file-static in M0 — a
+   single-instance shortcut. **M0.1** aggregates that state into a `Kernel` struct reached via a
+   compile-time-selectable `kernel()` accessor (static singleton on MCU / for size; thread-local
+   per instance for the multi-slave sim), landing before M1 so MCU code is born instance-ready.
+   Actual multi-instance in the sim additionally needs per-instance event delivery (see below).
 8. **Dependency inversion — the app consumes the kernel.** The application owns the top-level
    build; KickOS is a prebuilt package (libraries + headers + startup + board linker script +
    flags) consumed as a plain `add_executable` linked against the exported `kickos` target (with
@@ -339,8 +381,13 @@ API. Two flavors:
   never runs in handler mode.
 
 **API sketch (arch-neutral):** `irq_attach/detach` (in-kernel); `irq_register/wait/ack/unmask`
-(userspace); backed by an interrupt-controller abstraction in the arch/chip layer (NVIC on ARM;
-sim = signal-driven injection).
+(userspace, handle-based — the C++ `kos::Irq` wraps the handle so a driver writes
+`auto irq = kos::Irq::request(line); irq.wait();`, backed by the existing Semaphore as the
+notification); backed by an interrupt-controller abstraction in the arch/chip layer (NVIC on ARM;
+sim = signal-driven injection). Userspace never *injects* — reacting is `register`/`wait`, and
+raw in-handler-mode callbacks are the privileged `irq_attach` (TCB, not defended). `irq_inject`
+is only the sim's fake-a-device-firing mechanism (test scaffolding, gated/privileged; see 11a),
+never a userspace primitive.
 
 **Consistency payoff:** identical driver code in the **sim** (IRQ = injected event) and on
 **hardware** (real NVIC line). This is exactly the KickCAT path: the ESC SYNC0/PDI IRQ (real) or
@@ -432,15 +479,259 @@ unprivileged user app across the SVC boundary — no hardware, runnable in CI.
    thread and by an IRQ handler (event-driven switch, no tick); RR round-robin; a wild write
    faulting via `mprotect`. Wired into CTest — the CI gate.
 
+### Milestone 0.1 — instance-scope the runtime (before M0.2–0.4 / M1)
+
+Structural prep for invariant #7, landed before MCU work so M1/M2 code is born instance-ready
+(zero runtime cost; behavior unchanged).
+
+8a. Aggregate the file-static runtime core (scheduler `g_ready`/`g_bitmap`/`g_current`/`g_idle`/
+    `g_live`/`g_boot`/`g_policy`, the time delta list, the syscall object pools, and the sim
+    arch's arena/timer/signal state) into a `Kernel`/`Instance` struct, reached through a
+    `kernel()` accessor. The accessor is compile-time selectable: a single `static Kernel` on
+    MCU / for size; a thread-local pointer per instance for the multi-slave sim. Objects (TCBs,
+    sems) stay caller-owned. No functional change; the CI gate is unchanged output.
+    *(Actual multi-instance sim — per-instance event delivery — is Later, see the sim end-goal:
+    timer→`timerfd`, IRQ→`eventfd`, one `epoll` loop per instance thread; `SIGSEGV` stays but
+    demuxes by faulting address. That removes the shared-signal problem and the
+    signal-handler/deferred-switch gymnastics.)*
+
+8b. Extract a reusable **intrusive-list node** (embed a `Node`/`ListLink` in the TCB + a small
+    typed list helper with `container_of`) to replace the ad-hoc `qnext`/`qprev`/`tnext` fields
+    threaded by hand through `rq_*` (`sched.cc`), the wait-queue `wq_*` (`sync.cc`
+    `wq_push_back`/`wq_unlink`), and the timer delta list. `rq_*` and `wq_*` are literally the same
+    doubly-linked-list ops on the same `qnext/qprev` node written twice; only the *policy on top*
+    differs (`rq_rotate` vs `wq_pop_highest`'s priority scan), so unify the list mechanics and
+    leave rotate/pop-highest as thin callers. Done here, with the scheduler already open, so the
+    critical section is touched **once**. Preserve the share-vs-separate split deliberately — do
+    **not** over-generalize into one node per list: `qnext/qprev` stays **shared** by ready *and*
+    wait (a thread is on exactly one — ready XOR blocked; this exclusivity is what makes
+    `detach_current()` the forcing function and is exactly the aliasing that caused the M0
+    `block_on` corruption), while `tnext` stays a **separate** link-set so a timed wait can sit on
+    the timer delta list *and* a wait queue at once (`sem_timedwait` later). A typed node makes
+    "on two mutually-exclusive lists at once" a structural bug rather than a silent link-clobber.
+    The **timer delta list** (`g_sleepq`, `sleepq_insert`/`sleepq_remove` in `time.cc`) is the
+    third consumer, but shares only the *node*, not the ops: its **sorted insert is policy** (walk
+    by `deadline_ns`), not the generic FIFO `push_back`. Keep it **singly-linked** (`tnext` only) —
+    today there is no arbitrary removal (`sleepq_remove` is only ever called on the head from the
+    expiry loop, so effectively O(1); `sleep()` always runs to expiry). Promote `tnext` to
+    doubly-linked (add `tprev`) **only when `sem_timedwait`/timed condvars land** (Later): that is
+    the case where a thread sits on the sleepq *and* a wait queue and is woken early by the
+    wait-queue side, making **mid-list cancellation** the hot path (O(n) walk → O(1) with a
+    backlink). Backlinks do nothing for the sorted *insert*, which stays O(n) regardless.
+    Also drop the redundant `inline` on `highest_prio` (anon-namespace helpers don't need it), and
+    replace the TCB's `void* wait_queue` with a **forward-declared `WaitQueue*`** (`struct
+    WaitQueue;` in `thread.h`, pointer to incomplete type — no `sync.h` include, so no
+    `thread.h`→`sync.h`→`thread.h` cycle, which is the reason it was `void*`). Today the field is
+    only assigned; it becomes dereferenced at `sem_timedwait` (a timeout-woken thread must unlink
+    from the queue it's parked on — read the pointer back *as* a `WaitQueue*`), so type it now. No
+    functional change.
+
+8c. Finish the **policy/mechanism split** (RTEMS ideal): move the ready structure (`rq_push_back`/
+    `rq_remove`/`rq_rotate` + the priority bitmap) *into* the FIFO/RR policy, so the core keeps
+    only run-state + `g_current` + the context switch and calls **only** `pick_next`/`on_ready`/
+    `on_remove`/`on_yield`/`on_slice_expire` — no direct `g_ready` access. Removes the current
+    hybrid coupling (core hard-wires the bitmap *and* calls policy hooks). FIFO/RR share the whole
+    structure; RR == FIFO + `on_slice_expire` rotation (never invoked for FIFO: quantum 0 ⇒
+    `slice_deadline = UINT64_MAX` ⇒ `tick_rr` early-returns). Guardrail: do **not** speculatively
+    widen the hook interface for a hypothetical EDF — a plugin API needs a second plugin to be
+    validated; keep the 5 hooks minimal now and revisit when EDF/rate-monotonic actually lands
+    (Later). CI gate is the safety net. No functional change. **File layout:** move the FIFO/RR
+    policy into its own TU (e.g. `kernel/sched/policy_fifo_rr.cc`) so `sched.cc` holds only
+    mechanism (run-state, switch, `reschedule`) — the physical split mirrors the logical one and
+    keeps the seam honest. If more policies land, promote to a `kernel/sched/policy/` subdir.
+    Side benefit: the RR **slice/quantum** (currently core state with a `UINT64_MAX` "no
+    deadline" sentinel that FIFO also carries) becomes RR-policy-owned; the time subsystem then
+    asks the policy for its next timed event (FIFO contributes none), removing the sentinel and
+    the notion of a "FIFO slice" from the core.
+
+8d. Add a **`KICKOS_UNREACHABLE(msg)`** idiom (`kpanic`-based, `[[noreturn]]`, fail-LOUD with a
+    message) and use it for the genuinely-dead control-flow traps — the `while (true) {}` after
+    `reschedule()` in `exit_current`, and the one after `exit_current()` in `kickos_thread_return`.
+    An impossible state (an EXITED thread rescheduled) must **halt loudly with a diagnostic**, not
+    spin silently forever (a dead hang with zero information is the worst failure mode). Distinct
+    from a *defensive guard* like the `g_live > 0` clamp, which prevents a would-be functional
+    consequence (unsigned underflow ⇒ a kernel that never reaches its shutdown condition) and may
+    stay a guard; `KICKOS_UNREACHABLE` is for "this can never happen — prove me wrong loudly."
+
+8e. Split `config.h` by *audience* — three buckets, don't re-conflate them:
+    - **structural / fixed** (design invariants, not knobs): `KICKOS_NUM_PRIO` (coupled to the
+      `uint32_t` ready bitmap — bumping it needs a hierarchical bitmap, not a bigger number) and
+      the derived `KICKOS_PRIO_IDLE/MIN/MAX`; also `KICKOS_MPU_MAX_REGIONS` (hardware-fixed). These
+      are internal, not user-facing.
+    - **user / app** (provisioning knobs, tunable per system, CMake-`-D` overridable):
+      `KICKOS_MAX_SEMAPHORES`, thread-pool size, … — the "static-allocation-first, sized by the
+      app" surface. Also hoist the periodic-tick period here as **`KICKOS_TICK_PERIOD_NS`** — it is
+      currently a file-local `constexpr kTickPeriodNs = 1000000ull` (`time.cc:23`, the 1 ms tick),
+      a buried tuning literal that belongs in config as a named, overridable knob (only meaningful
+      in the `KICKOS_SCHED_PERIODIC_TICK` build variant).
+    - **board / chip** (hardware-derived): `KICKOS_MAX_IRQ` and `KICKOS_TIMER_MIN_DELTA_NS` — these
+      leave `config.h` entirely for the board layer at M1 / M2 (see 10, 12a).
+
+8f. **`sleep(0)` should yield, not block.** In `ktime_sleep_ns` (`time.cc`) a zero duration
+    currently flows through `ktime_sleep_until` and the min-delta guard turns it into a real ~20µs
+    block — wrong for the common `sleep(0) == yield` idiom (FreeRTOS `vTaskDelay(0)`, RTEMS
+    `wake_after(0)`): the caller means "relinquish to my peers and return," not "park me." Fix:
+    `if (ns == 0) { sched::yield(); return; }`. Do **not** extend this to `0 < ns < min-delta` —
+    those must keep rounding *up* to min-delta, because a delay API promises the caller is off-CPU
+    for the requested time, whereas `yield()` returns immediately when no peer is ready (a spin, not
+    a delay). The **overflow** saturation (`now + ns` wrap ⇒ `UINT64_MAX`) is correct and stays: it
+    avoids the worst case (wrap → past deadline → min-delta turns a huge request into a ~20µs
+    sleep); `UINT64_MAX` = "never wakes" is effectively a caller bug, optionally a `KICKOS_ASSERT`,
+    but saturating is the safe default (2⁶³ ns ≈ 292 yr is already "never").
+
+### Milestone 0.2 — IRQ-as-event, proven on sim (mechanism before silicon)
+
+The IRQ mechanism is arch-neutral kernel plumbing, not a hardware detail — so it belongs on the
+sim *before* M1, and M1's IRQ step then collapses to "swap the sim controller for the NVIC." Two
+tiers, per the driver model (see "IRQ / driver model" above): tier 2 (in-kernel privileged
+`irq_attach` callback) already exists on sim via `g_table`/`kickos_isr_irq`; tier 1 (unprivileged
+userspace driver, IRQ-as-event) is the net-new work here. Scope this milestone to tier 1 + a
+demonstrator for tier 2.
+
+8g. **Thin interrupt-controller abstraction** — `mask(line)` / `unmask(line)` / `raise(line)` and
+    *nothing more*. Deliberately minimal: do **not** model NVIC priority grouping, pending-vs-active,
+    edge-vs-level, or tail-chaining yet — those are earned per-chip at M1 when real silicon
+    validates them (the policy-hook lesson: don't shape an abstraction against one implementation).
+    Sim backend: `mask` suppresses `SIGUSR1` delivery / drops the pending line; `unmask` re-enables.
+
+8h. **IRQ-as-event kernel plumbing** — `irq_register(line) -> handle`, `irq_wait(h)`, `irq_ack(h)`.
+    A handle binds a line to a notification; reuse the **existing Semaphore** (no new blocking
+    primitive) — `irq_wait` is `sem_wait`, the first-level stub does `sem_post`. The generic
+    first-level ISR stub: **mask the line → post the bound sem → flag reschedule**; the driver then
+    runs in *thread* context (never handler mode), services the device, and calls `irq_ack` to
+    unmask. C++ sugar: `auto irq = kos::Irq::request(line); irq.wait();`.
+    **Latency invariant (protect it forever):** the object is bound to the line at register time, so
+    the ISR wakes a **pre-bound target directly** — *never* a handle/table lookup in ISR context
+    (this survives the M2 capability model, 12b: capabilities are cold arm-path only). The `Semaphore`
+    is the M0.2 notification for simplicity; a single-waiter line (the common case) can later use a
+    lighter **direct-to-thread notification** (per-thread pending bit + wake, coalescing — cf.
+    FreeRTOS task notifications) instead of a full counting sem. Multi-object `wait_any` (Later) is
+    a cold-path layer only threads that use it pay for; plain single-object `irq_wait` never does.
+
+8i. **Fake sim device + userspace-driver selftest** — fabricate a sim "device": a word of
+    "MMIO" (granted to the driver task via the existing `mem_base` region grant, RW) plus a line
+    that `raise`s on a timer. The selftest then proves the whole tier-1 contract on the host,
+    end to end: ISR → sem post → reschedule → **unprivileged** driver wakes in thread mode → reads
+    its MMIO register → `ack` → line unmasks. This is the M1 de-risk: the contract is exercised
+    before any NVIC exists.
+
+### Milestone 0.3 — OS-agnostic app entry (NuttX-style; completes the dependency-inversion pillar)
+
+Today the app defines `extern "C" void kickos_app_main(void)` — it names a KickOS symbol, so it
+still *knows* it runs under KickOS. NuttX's model: the OS owns the true entry, the app writes a
+plain `int main(int argc, char** argv)`, and the build renames it so the app source is
+OS-agnostic (same source builds on KickOS, Linux, NuttX). This is the natural completion of item 8
+(dependency inversion) — the kernel becomes invisible to the app.
+
+8j. **Kernel owns the true entry, app owns `main`.** Sim: the libc-called `main()` does
+    `arch_init → kmain → sched::start`. MCU (M1): the reset vector `__start` (linker
+    `ENTRY(__start)`) does the same. The app writes a standard `int main(int, char**)`; the
+    exported `kickos` usage target / `kickos_add_application()` injects **`-Dmain=kickos_app_main`**
+    for the app TUs (NuttX's actual trick), so the app's `main` compiles to the symbol `root_entry`
+    calls — no collision with the kernel's real `main` on the hosted sim. Kernel code is unchanged
+    (still calls `kickos_app_main`); only the app-build flag and the entry signature move.
+
+8k. **Sharp edges to settle here** (don't hand-wave):
+    - **Linkage of the renamed symbol.** `main` is special-cased to an *unmangled* symbol; once
+      `-Dmain=kickos_app_main` makes it an ordinary name, a **C++** app entry would mangle while a
+      C app's would not. Pin it: kernel declares `extern "C" int kickos_app_main(int, char**)` and
+      the contract requires the app entry reach that symbol. This changes the ABI seam from today's
+      `extern "C" void(void)` → `extern "C" int(int, char**)`.
+    - **argc/argv**: forward the sim's real host `argv` (bonus: sim apps take CLI args); pass
+      `argc=0` / `argv=nullptr` on MCU.
+    - **return value**: `main`'s `int` becomes the app exit status → `arch_shutdown(status)` on the
+      sim (CI-friendly for single-shot apps), ignored for daemon-style apps that never return.
+      Convert `hello`/`selftest` to plain `int main`; the CI checkers key off the exit status.
+
+8l. **App console API — kill the imagined `stdout`.** Today apps write `kos_write(1, s, strlen(s))`,
+    inventing a POSIX fd (`1 == stdout`) that has no backing — KickOS has no fd namespace, no
+    stdout; there is only the debug console. There are **two distinct surfaces**, and they must not
+    be conflated (as an earlier draft did):
+    - **Ordinary output = libc stdio** (`printf`/`putc`/`fwrite`) → **stdout** → a **userspace
+      console driver** (IPC). This is the "write a `main`, `printf`, done" low-barrier path. The
+      bootstrap→migrate story lives *here*: today stdio's `_write` backend has no driver so it falls
+      back to the debug console; when the driver lands the backend targets the **stdout stream
+      handle** instead — app code *and* libc unchanged. At 12b `stdout`/`stderr` are
+      **default-granted stream capability handles** (every app gets them → `printf` just works), and
+      a Later POSIX shim can map `write(1,…)` onto them — real handles, not imagined integers.
+    - **Dedicated debug output = `kos_print(s)` (C ABI) + `kos::print(...)` (C++ wrapper)**
+      (mirrors `kos_sem_create`/`kos::Semaphore`), pointed **directly and permanently at the kernel
+      debug console** — the developer escape hatch: *fast to reach* (immediate, zero setup, works in
+      boot/panic, driver-independent), *slow as I/O* (unbuffered, polling). It does **not** migrate
+      to the driver — being always-available is the whole point.
+    Mechanics: `kos_print` does `strlen` in the *userspace stub* and calls a syscall with explicit
+    `(buf, len)` — the kernel must **never `strlen` a user pointer** (unbounded, possibly
+    cross-domain read); so the syscall is `kos_console_write(buf, len)` (no `fd`; `buf` bound-checked
+    per M2 12). **Long-term the debug console is capability-gated** (12b): a general app cannot spam
+    it freely; the cap is granted only to dev builds, system tasks, and the **console driver itself**
+    (which needs it for its own diagnostics and as a pre-hardware fallback). **M0 demos:** `hello`/
+    `selftest` are bring-up/debug programs with no console server, so they legitimately use
+    `kos::print` *today* (openly debug output, not fake stdout); when 12b lands they get the cap
+    granted or move to stdio.
+
+### Milestone 0.4 — object lifecycle: settle the pooled-object pattern (before M1, on sim)
+
+Not a feature — completes the **static-allocation pattern** that every pooled kernel object copies
+(mutexes, thread pool, M0.2 IRQ handles, M2 memory domains). Today `sem_create` (syscall.cc:37) is
+a monotonic **bump allocator** (`g_sem_count++`): no free, so the 16-slot pool is a one-way leak,
+and `kos::Semaphore` (kos.h:59) is a *lying RAII type* — its ctor allocates a slot, its dtor frees
+nothing. Settle the pattern once, on sim, before M1 replicates object pools across targets.
+
+8m. **Freelist allocator + `sem_destroy`.** Replace the bump counter with a free-bitmap/freelist
+    over `g_sems[]`. `sem_destroy(id)`: validate the id, then **reject with -1 if the semaphore has
+    waiters** — *quiescent-only destroy*. This is deliberate: waking waiters with an error would
+    need a failure-return channel on `sem_wait` (currently `void`), which is exactly the
+    `wait_result` channel that timed wait introduces — keep that coupling in *one* place (timed
+    wait, Later), and let M0.4 stay bounded. **New hazard the freelist introduces:** slot ids get
+    reused, so a stale handle (id of a destroyed sem) can alias a fresh one — an ABA/use-after-free
+    the bump allocator never had (ids were never recycled). Fail-loud fix: pack a small
+    **generation counter** into the handle (id + gen); a stale handle fails validation loudly rather
+    than silently poking a reused slot. **Migration-safe for the M2 capability model (12b):** keep
+    the returned id **opaque** (userspace must not assume it's a global array index), and route every
+    object lookup through **one validate-and-resolve chokepoint**, so swapping "global id → object"
+    for "per-task handle → object" later touches a single place. The gen-counter here is a stopgap
+    the handle table subsumes.
+
+8n. **Settle `kos::Semaphore`'s ownership contract.** With destroy available, make it a *real*
+    owning RAII type — ctor creates, dtor destroys, **non-copyable, movable** (so a moved-from
+    handle doesn't double-free) — or, if we keep it a non-owning handle, say so explicitly and drop
+    the RAII pretense. Recommend owning: it's the idiomatic C++ and kills the current
+    scope-exit-leaks-a-slot trap. Whatever the pool's home is after 8a (Kernel struct), 8m/8n build
+    on it.
+
 ### Milestone 1 — first MCU + remaining targets (privilege + SVC; no HW MPU yet)
 
 9. **Toolchain**: install `arm-none-eabi-*` (+ `pyOCD`/`openocd`, later `picotool`);
    `toolchain-arm-none-eabi.cmake`, MCU presets.
 10. **FRDM-K64F bring-up**: startup, MCG clocks, UART console, linker script, PendSV/SVC/SysTick
     + fault handlers; privilege + SVC only; flash via OpenSDA or pyOCD/openocd; run the same M0
-    demo (UART output matches the sim, minus the enforced-MPU-fault case).
+    demo (UART output matches the sim, minus the enforced-MPU-fault case). The real NVIC is wired
+    up here by implementing the **thin controller abstraction** (`mask`/`unmask`/`raise`, 8g)
+    against it — the IRQ-as-event contract (8h/8i) is already proven on sim, so this step is
+    "swap the sim controller for the NVIC," not a new mechanism. This is also where any NVIC
+    reality the sim didn't model (priority grouping, pending-vs-active, edge-vs-level) is earned.
+    And move **`KICKOS_MAX_IRQ`** (the in-kernel IRQ-table size) out of the global config into the
+    **board/chip layer**, sized to that chip's NVIC line count (RP2040 ≤32 vs. K64F/F411 ~86) —
+    the M0 global 32 is a sim placeholder, right-sized per chip here.
 11. **RP2040/Pico** (boot2/XIP, ARMv6-M sw-clz), then **F411**, then **F103** — all
     privilege+SVC only — + docs.
+
+11a. **IRQ-path error policy** (the real interrupt controller lands here). Today `kickos_isr_irq`
+     silently drops both an out-of-range `irq` and an in-range one with no handler. Fix:
+     (a) validate the user-supplied `irq` at the `KOS_SYS_irq_inject` *syscall boundary* (reject
+     with -1) — the number is unprivileged-user-reachable, so it must be validated, **not**
+     `KICKOS_UNREACHABLE`d (don't let a user halt the kernel); the in-kernel range check then
+     stays a trusted-path guard. (b) Gate/privilege `KOS_SYS_irq_inject` itself — injecting a
+     hardware IRQ from userspace is test scaffolding (real IRQs come from devices), so treat it
+     like `guard_addr` (`KICKOS_ENABLE_SELFTEST` / privileged-only). (c) Define the
+     **spurious / unhandled-IRQ** policy: an enabled line with no handler must be **reported and
+     masked** at the controller (else it re-asserts → storm), not silently ignored. Implement via
+     a **default handler (null-object)**: every table slot is initialized to a cheap default;
+     `irq_attach`/`irq_detach` swap the slot to/from the real handler. This drops the null check
+     (always a valid callback — not a perf win: the common path is one indirect call either way,
+     the branch is predictable) and makes the default the single home for the spurious policy. The
+     default runs in ISR context, so it must be **cheap/async-safe: bump a spurious counter + mask
+     the line**, never console I/O (surface the counter later via introspection).
 
 ### Milestone 2 — hardware MPU enforcement (per chip)
 
@@ -460,6 +751,52 @@ unprivileged user app across the SVC boundary — no hardware, runnable in CI.
       **PMSA power-of-two size/alignment** for region placement (M0's byte-granular `arch_ram_alloc`
       suits SYSMPU/RX; v7-M needs pow2 regions — via linker sections or aligned allocation).
 
+12a. Move **`KICKOS_TIMER_MIN_DELTA_NS`** out of the global config into the **board/arch layer**,
+     tuned per chip (sub-µs on a hardware compare vs. the sim's ~20 µs signal-delivery floor),
+     ideally derived from measured arm+dispatch latency rather than a hand-picked default. Note
+     it also floors the finest RR quantum.
+
+12b. **Capability handles — the object-side twin of the memory-grant hardening above.** Decision:
+     KickOS moves off the current *global object id* (`sem_create` returns an id every task can name
+     — ambient authority, the opposite of MPU-first isolation) to a **per-task typed handle table**
+     à la Zircon `zx_handle_t` / seL4 capabilities: refcounted objects, rights bits, "destroy on
+     last close." Memory grant : address range :: capability handle : kernel object — the same
+     authenticated-per-domain-ownership problem (12's third bullet) applied to objects instead of
+     RAM, so design them as twins here. **Why M2, not M0.4:** capabilities are an *enforcement*
+     feature and enforcement is only real once the HW MPU constrains unprivileged userspace (M2);
+     and by here the handle/rights ABI is designed against **all** object types that exist (sem +
+     mutex from M0.1, irq-handle from M0.2, plus any M1/M2 additions), not over-fit to semaphores
+     on the sim (the 8g abstraction-shaping lesson). Refcounting also dissolves the 8m/8n lifecycle
+     hazards: "destroy on last close" replaces "reject destroy if waiters," and the handle table
+     subsumes 8m's generation-tagged-id ABA workaround. **Cost, stated honestly:** per-task table
+     RAM + a resolve indirection per syscall + refcount inc/dec — a deliberate isolation-vs-static-
+     determinism trade, not a free win. Gates the Later **multi-object wait** (`wait_any` needs
+     handles). Invariant to preserve from 8h: capability resolution is a *cold-path* (arm-time)
+     concern — **never resolve a handle in an ISR**; the ISR wakes a pre-bound target directly.
+     **Hard UX constraint (low-barrier pillar):** the runtime/root task must wire a **sane default
+     capability set** for a plain app so a "hello world" *never* needs a hand-written manifest —
+     cap customization is opt-in. Do not resurrect the CapDL-manifest-to-boot friction; that is the
+     exact seL4 pain KickOS exists to avoid. **Concrete grounding example (the debug console, 8l):**
+     the default set grants **stdout** (→ console driver) to *every* app so `printf` just works, but
+     the **debug-console cap** (`kos::print` / `kos_console_write`) only to dev builds, system tasks,
+     and the console driver — a general app can't spam the shared debug console. This is the least-
+     abstract case for capabilities: it removes an ambient-authority output channel without adding
+     any ceremony to the common `printf` path.
+
+### Milestone 2.1 — docs housekeeping (after M2)
+
+13. Split this document once the roadmap section has churned enough to read half-changelog: a
+    timeless **`ARCHITECTURE.md`** (pillars, invariants, porting seam, scheduler/MPU/domain
+    design, C++/build decisions) and a separate **`ROADMAP.md`** (milestones + status). Useful
+    once external contributors/consumers appear — they want the design, not milestone
+    bookkeeping. Not before: a premature split just adds cross-referencing overhead.
+
+14. Final **comment cleanup pass**: purge time-bound / roadmap-flavored comments from the code
+    ("M0 exercises…", "lands later", "M2 will…", "the userspace irq API lands later") — status
+    belongs in `ROADMAP.md`, not scattered in source where it silently goes stale the moment a
+    milestone ships. Rewrite each to state *timeless behavior/constraint* (per the comment rule:
+    hidden constraints and invariants only, no circumstance narration).
+
 ### Later
 
 Multi-domain isolation (the *Memory domains* model) + cross-domain shared-memory IPC;
@@ -471,6 +808,42 @@ pluggable EDF / rate-monotonic policies; loadable MPU-isolated user modules (Thr
 optional POSIX / CMSIS-RTOS2 compat APIs; TLSF heap; validate a real `<vector>`/exception
 userspace app against the toolchain `libstdc++`; RP2040 SMP (core1); Renode CI targets; and a
 **Renesas RX72M** port (non-ARM `arch/rx`) as the arch-neutrality proof.
+
+**Service publication (expose a userspace driver's interface across domains).** Transport (IPC) and
+the bulk data path (cross-domain shared-memory grant) are listed above; the missing piece is how a
+client in one domain *finds and is allowed to invoke* a server in another. Four parts: (1) **naming
+/ discovery** — static-first (the root task distributes endpoint caps per a boot manifest, no
+runtime name server; a dynamic name server à la QNX `name_attach` stays an optional later layer if
+hotplug is ever needed); (2) **capability delegation** — IPC that *carries a capability* (12b cap
+transfer), the mechanism that hands the client its endpoint cap; (3) **badged endpoints** — the
+server gets a distinctly badged cap per client so it can authenticate/distinguish callers without a
+separate identity path (the object-side twin of 12's authenticated grant ownership); (4) an
+**interface convention** — hand-rolled message structs or a tiny IDL (cf. MIG/FIDL). A published
+driver = **endpoint cap (control) + shared-memory grant (data)**.
+
+**A-profile / MMU (VMSA) support alongside MPU (PMSA).** The north-star horizon: a page-table
+address-space backend so KickOS runs on application-class cores (Cortex-A72 / RPi 4B — GICv2,
+EL0/EL1, generic timer, BCM2711 board support). Aspirational; the near-term discipline is only
+"keep PMSA specifics in the arch/chip layer so the Domain seam admits a VMSA backend without core
+churn." A whole new arch family (`arch/aarch64`), well beyond the M0–M2 MCU roadmap.
+
+**Timed wait (`sem_timedwait` / timed `mutex_lock` / condvar timeout).** Deferred deliberately: pure
+kernel mechanism with *no* hardware payoff (runs identically on sim and MCU), so unlike M0.2 it
+earns no "prove-on-sim-before-silicon" slot, and bring-up never needs it. It keeps surfacing only
+because the TCB was *designed* with hooks for it — that recurrence is a sign the design is coherent,
+not that it's urgent. When built, it lands as **one unit**, not piecemeal:
+- promote `tnext` to **doubly-linked** (add `tprev`) — the sem-post-wins path removes the thread
+  from the *middle* of the sleepq (cancel the pending timeout); O(n) walk → O(1) (see 8b);
+- **dereference `wait_queue`** (now a typed `WaitQueue*`, 8b) on the timeout-wins path to unlink the
+  thread from the queue it's parked on;
+- deliver **timeout-vs-success via `wait_result`** — the same `sem_wait` failure-return channel that
+  quiescent-only `sem_destroy` (8m) deliberately avoids needing early;
+- get the **cancel-the-loser race** right under `IrqLock`: whichever of {post, timeout} fires first
+  wakes the thread and must cancel the other source before it also fires.
+- **Structural move:** don't bolt a timeout onto the semaphore. `sem_timedwait` is really "block on a
+  queue *and* a timer, wake on the first, cancel the other" — a generalization of today's separate
+  `block_current` (queue-only) and `ktime_sleep_until` (timer-only). Build it by **unifying the wait
+  primitive**, and sleep/block/timed-wait all fall out of one mechanism.
 
 ---
 

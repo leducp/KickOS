@@ -23,7 +23,6 @@ namespace kickos
 {
     namespace
     {
-
         // --- Semaphore registry ----------------------------------------------------
         Semaphore g_sems[KICKOS_MAX_SEMAPHORES];
         int g_sem_count = 0;
