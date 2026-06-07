@@ -36,33 +36,52 @@ namespace
         return reinterpret_cast<SimContext*>(c->opaque);
     }
 
-    // --- Running-context tracking + deferred-switch state ----------------------
-    SimContext* g_current = nullptr; // arch's view of the running ctx
-    volatile sig_atomic_t g_isr_depth = 0;
+    // Instance-scoped sim backend state (invariant #7, the arch half): several sim
+    // backends (one per emulated MCU / KickCAT slave) co-reside in one host
+    // process, mirroring the kernel() seam but staying arch-side (invariant #1).
+    struct SimInstance
+    {
+        // --- running-context tracking + deferred-switch state ---
+        SimContext* current = nullptr; // arch's view of the running ctx
+        volatile sig_atomic_t isr_depth = 0;
 
-    // --- Signal set covering all "interrupt" sources (crit-section mask) -------
-    sigset_t g_irq_signals;
+        // --- signal set covering all "interrupt" sources (crit-section mask) ---
+        sigset_t irq_signals;
 
-    // --- Tickless one-shot timer -----------------------------------------------
-    timer_t g_timer;
-    bool g_timer_created = false;
+        // --- tickless one-shot timer ---
+        timer_t timer;
+        bool timer_created = false;
 
-    // --- MPU: page-granular user-RAM arena governed by the emulation -----------
-    long g_pagesize = 0;
-    unsigned char* g_arena = nullptr; // the mmap'd user-RAM pool
-    size_t g_arena_size = 0;
-    size_t g_arena_used = 0;          // bump allocator (arch_ram_alloc)
-    unsigned char* g_guard = nullptr; // a reserved arena page no domain owns
+        // --- MPU: page-granular user-RAM arena governed by the emulation ---
+        long pagesize = 0;
+        unsigned char* arena = nullptr; // the mmap'd user-RAM pool
+        size_t arena_size = 0;
+        size_t arena_used = 0;          // bump allocator (arch_ram_alloc)
+        unsigned char* guard = nullptr; // a reserved arena page no domain owns
 
-    // The running thread's resting region set, remembered so the syscall raise
-    // can be lowered back to exactly it. We keep the caller's pointer (its TCB
-    // regions[], stable while it runs) rather than a fixed-size copy -- no cap,
-    // no truncation regardless of KICKOS_MPU_MAX_REGIONS.
-    struct arch_mpu_region const* g_applied = nullptr;
-    size_t g_applied_n = 0;
+        // The running thread's resting region set, remembered so the syscall raise
+        // can be lowered back to exactly it. We keep the caller's pointer (its TCB
+        // regions[], stable while it runs) rather than a fixed-size copy -- no cap,
+        // no truncation regardless of KICKOS_MPU_MAX_REGIONS.
+        struct arch_mpu_region const* applied = nullptr;
+        size_t applied_n = 0;
 
-    // --- Emulated device IRQ hand-off (async-signal to ISR) --------------------
-    volatile sig_atomic_t g_pending_irq = -1;
+        // --- emulated device IRQ hand-off (async-signal to ISR) ---
+        volatile sig_atomic_t pending_irq = -1;
+    };
+
+    // All-constant init keeps this in BSS; signal handlers read it, so the accessor
+    // stays a bare global reference (async-signal-safe, zero-cost). The multi-slave
+    // sim swaps in a per-host-thread instance where noted (Later).
+    SimInstance g_sim;
+    SimInstance& sim()
+    {
+#if defined(KICKOS_MULTI_INSTANCE)
+        return *g_sim_tls;
+#else
+        return g_sim;
+#endif
+    }
 
     // --- Trampoline pointer packing (makecontext takes ints) -------------------
     void trampoline(unsigned hi, unsigned lo)
@@ -93,17 +112,17 @@ namespace
 
     void arena_protect_none()
     {
-        if (g_arena != nullptr)
+        if (sim().arena != nullptr)
         {
-            mprotect(g_arena, g_arena_size, PROT_NONE);
+            mprotect(sim().arena, sim().arena_size, PROT_NONE);
         }
     }
     // Privileged posture: whole arena accessible (the background-region analog).
     void arena_raise_all()
     {
-        if (g_arena != nullptr)
+        if (sim().arena != nullptr)
         {
-            mprotect(g_arena, g_arena_size, PROT_READ | PROT_WRITE);
+            mprotect(sim().arena, sim().arena_size, PROT_READ | PROT_WRITE);
         }
     }
     // Grant a validated region set: each region must be a page-aligned sub-range
@@ -111,17 +130,17 @@ namespace
     // never mprotect host memory or de-execute code.
     void grant_region_set(struct arch_mpu_region const* regions, size_t n)
     {
-        uintptr_t astart = reinterpret_cast<uintptr_t>(g_arena);
-        size_t pg = static_cast<size_t>(g_pagesize);
+        uintptr_t astart = reinterpret_cast<uintptr_t>(sim().arena);
+        size_t pg = static_cast<size_t>(sim().pagesize);
         for (size_t i = 0; i < n; i++)
         {
             uintptr_t base = regions[i].base;
             size_t size = regions[i].size;
-            if (size == 0 or size > g_arena_size)
+            if (size == 0 or size > sim().arena_size)
             {
                 continue;
             }
-            if (base < astart or base - astart > g_arena_size - size)
+            if (base < astart or base - astart > sim().arena_size - size)
             {
                 continue;
             }
@@ -136,7 +155,7 @@ namespace
     void arena_lower_to_applied()
     {
         arena_protect_none();
-        grant_region_set(g_applied, g_applied_n);
+        grant_region_set(sim().applied, sim().applied_n);
     }
 
     // Restore MPU state for the now-running context after a switch-in. A context
@@ -145,7 +164,7 @@ namespace
     // the last arch_mpu_apply() programmed for it already stands.
     void guard_apply_current()
     {
-        if (g_arena != nullptr and g_current != nullptr and g_current->raised > 0)
+        if (sim().arena != nullptr and sim().current != nullptr and sim().current->raised > 0)
         {
             arena_raise_all();
         }
@@ -155,20 +174,20 @@ namespace
     // out at depth 0, perform any deferred context switch requested during it.
     void isr_frame_enter()
     {
-        g_isr_depth++;
+        sim().isr_depth++;
     }
     void isr_frame_leave(SimContext* interrupted)
     {
-        g_isr_depth--;
-        if (g_isr_depth == 0 and g_current != interrupted)
+        sim().isr_depth--;
+        if (sim().isr_depth == 0 and sim().current != interrupted)
         {
-            swapcontext(&interrupted->uc, &g_current->uc);
+            swapcontext(&interrupted->uc, &sim().current->uc);
         }
     }
 
     void on_sigalrm(int, siginfo_t*, void*)
     {
-        SimContext* interrupted = g_current;
+        SimContext* interrupted = sim().current;
         isr_frame_enter();
         kickos_isr_timer();
         isr_frame_leave(interrupted);
@@ -176,10 +195,10 @@ namespace
 
     void on_sigusr1(int, siginfo_t*, void*)
     {
-        SimContext* interrupted = g_current;
+        SimContext* interrupted = sim().current;
         isr_frame_enter();
-        int irq = g_pending_irq;
-        g_pending_irq = -1;
+        int irq = sim().pending_irq;
+        sim().pending_irq = -1;
         if (irq >= 0)
         {
             kickos_isr_irq(irq);
@@ -216,26 +235,26 @@ extern "C"
 
 void arch_init(void)
 {
-    g_pagesize = sysconf(_SC_PAGESIZE);
+    sim().pagesize = sysconf(_SC_PAGESIZE);
 
     // The user-RAM arena the MPU emulation governs (domain data + probe page).
-    g_arena_size = 256 * 1024;
-    g_arena = static_cast<unsigned char*>(
-        mmap(nullptr, g_arena_size, PROT_READ | PROT_WRITE,
+    sim().arena_size = 256 * 1024;
+    sim().arena = static_cast<unsigned char*>(
+        mmap(nullptr, sim().arena_size, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-    if (g_arena == MAP_FAILED)
+    if (sim().arena == MAP_FAILED)
     {
-        g_arena = nullptr; // MAP_FAILED is (void*)-1
-        g_arena_size = 0;
+        sim().arena = nullptr; // MAP_FAILED is (void*)-1
+        sim().arena_size = 0;
     }
-    g_arena_used = 0;
-    g_applied_n = 0;
+    sim().arena_used = 0;
+    sim().applied_n = 0;
     // Reserve one page no domain is ever granted: the isolation-probe address.
-    g_guard = static_cast<unsigned char*>(arch_ram_alloc(g_pagesize));
+    sim().guard = static_cast<unsigned char*>(arch_ram_alloc(sim().pagesize));
 
-    sigemptyset(&g_irq_signals);
-    sigaddset(&g_irq_signals, SIGALRM);
-    sigaddset(&g_irq_signals, SIGUSR1);
+    sigemptyset(&sim().irq_signals);
+    sigaddset(&sim().irq_signals, SIGALRM);
+    sigaddset(&sim().irq_signals, SIGUSR1);
 
     // Fault handler runs on its own stack (the faulting thread's stack may be
     // exactly what tripped the guard). Fixed size: SIGSTKSZ is not a compile
@@ -248,7 +267,7 @@ void arch_init(void)
 
     struct sigaction sa{};
     sa.sa_flags = SA_SIGINFO;
-    sa.sa_mask = g_irq_signals; // IRQs don't nest each other
+    sa.sa_mask = sim().irq_signals; // IRQs don't nest each other
 
     sa.sa_sigaction = on_sigalrm;
     sigaction(SIGALRM, &sa, nullptr);
@@ -259,7 +278,7 @@ void arch_init(void)
     fa.sa_flags = SA_SIGINFO | SA_ONSTACK;
     // Block timer/device IRQs while reporting a fault: a deferred switch out of
     // the fault handler would abandon its alt-stack frame mid-report.
-    fa.sa_mask = g_irq_signals;
+    fa.sa_mask = sim().irq_signals;
     fa.sa_sigaction = on_sigsegv;
     sigaction(SIGSEGV, &fa, nullptr);
 
@@ -273,9 +292,9 @@ void arch_init(void)
     struct sigevent sev{};
     sev.sigev_notify = SIGEV_SIGNAL;
     sev.sigev_signo = SIGALRM;
-    if (timer_create(CLOCK_MONOTONIC, &sev, &g_timer) == 0)
+    if (timer_create(CLOCK_MONOTONIC, &sev, &sim().timer) == 0)
     {
-        g_timer_created = true;
+        sim().timer_created = true;
     }
 }
 
@@ -329,15 +348,15 @@ void arch_context_init(struct arch_context* ctx,
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
     SimContext* t = sc(to);
-    if (g_isr_depth > 0)
+    if (sim().isr_depth > 0)
     {
         // Defer the physical swap to interrupt exit (PendSV analogue).
-        g_current = t;
+        sim().current = t;
         guard_apply_current();
         return;
     }
     SimContext* f = sc(from);
-    g_current = t;
+    sim().current = t;
     guard_apply_current();
     swapcontext(&f->uc, &t->uc);
 }
@@ -348,7 +367,7 @@ void arch_start(struct arch_context* boot, struct arch_context* first)
     SimContext* f = sc(first);
     memset(b, 0, sizeof(*b));
     getcontext(&b->uc);
-    g_current = f;
+    sim().current = f;
     swapcontext(&b->uc, &f->uc);
 }
 
@@ -356,7 +375,7 @@ void arch_start(struct arch_context* boot, struct arch_context* first)
 arch_irq_state_t arch_irq_save(void)
 {
     sigset_t prev;
-    sigprocmask(SIG_BLOCK, &g_irq_signals, &prev);
+    sigprocmask(SIG_BLOCK, &sim().irq_signals, &prev);
     // Encode whether SIGALRM was previously unblocked so restore is exact.
     arch_irq_state_t s = 0;
     if (not sigismember(&prev, SIGALRM))
@@ -390,7 +409,7 @@ void arch_irq_restore(arch_irq_state_t state)
 
 int arch_in_isr(void)
 {
-    return g_isr_depth > 0;
+    return sim().isr_depth > 0;
 }
 
 // --- Tickless clock + timer -------------------------------------------------
@@ -404,7 +423,7 @@ uint64_t arch_clock_now(void)
 
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    if (not g_timer_created)
+    if (not sim().timer_created)
     {
         return;
     }
@@ -412,23 +431,23 @@ void arch_timer_arm(uint64_t deadline_ns)
     its.it_value.tv_sec = static_cast<time_t>(deadline_ns / 1000000000ull);
     its.it_value.tv_nsec = static_cast<long>(deadline_ns % 1000000000ull);
     // it_interval left zero -> one-shot.
-    timer_settime(g_timer, TIMER_ABSTIME, &its, nullptr);
+    timer_settime(sim().timer, TIMER_ABSTIME, &its, nullptr);
 }
 
 void arch_timer_disarm(void)
 {
-    if (not g_timer_created)
+    if (not sim().timer_created)
     {
         return;
     }
     struct itimerspec its{}; // all-zero disarms
-    timer_settime(g_timer, 0, &its, nullptr);
+    timer_settime(sim().timer, 0, &its, nullptr);
 }
 
 // --- MPU: mprotect over the user-RAM arena ---------------------------------
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
-    if (g_arena == nullptr)
+    if (sim().arena == nullptr)
     {
         return;
     }
@@ -438,41 +457,41 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     // the caller's TCB regions[] -- stable while the thread runs.
     arena_protect_none();
     grant_region_set(regions, n);
-    g_applied = regions;
-    g_applied_n = n;
+    sim().applied = regions;
+    sim().applied_n = n;
 }
 
 uintptr_t arch_ram_base(void)
 {
-    return reinterpret_cast<uintptr_t>(g_arena);
+    return reinterpret_cast<uintptr_t>(sim().arena);
 }
 
 size_t arch_ram_size(void)
 {
-    return g_arena_size;
+    return sim().arena_size;
 }
 
 void* arch_ram_alloc(size_t size)
 {
-    if (g_arena == nullptr)
+    if (sim().arena == nullptr)
     {
         return nullptr;
     }
-    size_t pg = static_cast<size_t>(g_pagesize);
+    size_t pg = static_cast<size_t>(sim().pagesize);
     size_t need = (size + pg - 1) & ~(pg - 1);
     // Subtract-form bound is immune to the size_t wrap that (used + need) has.
-    if (need == 0 or need > g_arena_size - g_arena_used)
+    if (need == 0 or need > sim().arena_size - sim().arena_used)
     {
         return nullptr;
     }
-    void* p = g_arena + g_arena_used;
-    g_arena_used += need;
+    void* p = sim().arena + sim().arena_used;
+    sim().arena_used += need;
     return p;
 }
 
 uintptr_t arch_mpu_probe_addr(void)
 {
-    return reinterpret_cast<uintptr_t>(g_guard);
+    return reinterpret_cast<uintptr_t>(sim().guard);
 }
 
 // --- Syscall trap -----------------------------------------------------------
@@ -485,14 +504,14 @@ uintptr_t arch_syscall(uintptr_t nr,
     // later resume this thread mid-syscall, guard_apply_current() re-raises (the
     // switch-in's arch_mpu_apply would otherwise reinstate the caller's resting
     // posture while it is still running kernel code). On the final unwind we drop
-    // back to exactly the caller's resting region set (g_applied).
+    // back to exactly the caller's resting region set (sim().applied).
     // Cache the calling context: a thread only ever runs as its own context, so
     // the same SimContext is current at entry and (after any blocking round-trip)
     // at exit -- pairing the raise and unwind on `self` makes that explicit.
     SimContext* self = nullptr;
-    if (g_arena != nullptr and g_current != nullptr)
+    if (sim().arena != nullptr and sim().current != nullptr)
     {
-        self = g_current;
+        self = sim().current;
         self->raised++;
         arena_raise_all();
     }
@@ -511,7 +530,7 @@ uintptr_t arch_syscall(uintptr_t nr,
 // --- Emulated device interrupt ---------------------------------------------
 void arch_irq_inject(int irq)
 {
-    g_pending_irq = irq;
+    sim().pending_irq = irq;
     raise(SIGUSR1); // delivered synchronously on this thread -> ISR context
 }
 

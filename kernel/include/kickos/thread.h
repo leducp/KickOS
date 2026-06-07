@@ -9,9 +9,11 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config.h>
+#include <kickos/list.h>
 
 namespace kickos
 {
+
     enum class ThreadState : uint8_t
     {
         INACTIVE, // not yet added
@@ -33,12 +35,12 @@ namespace kickos
     {
         arch_context ctx; // saved machine context (opaque)
 
-        // ready-list / wait-queue membership (doubly linked, null-terminated)
-        Thread* qnext;
-        Thread* qprev;
-        void* wait_queue; // WaitQueue* we are parked on, or nullptr
+        // ready-list XOR wait-queue membership (shared intrusive node; see list.h)
+        ListNode link;
+        List* wait_queue; // wait queue we're parked on, or nullptr; read at sem_timedwait (Later)
 
-        // timer delta-list membership (singly linked, sorted by deadline)
+        // timer delta-list membership (singly linked, sorted by deadline); SEPARATE
+        // from `link` so a timed wait can be on the timer list AND a wait queue at once.
         Thread* tnext;
         uint64_t deadline_ns;
         bool on_timer;
@@ -64,6 +66,16 @@ namespace kickos
 
         uint64_t switch_count; // introspection
     };
+
+    // Recover the TCB owning a ready/wait list node (nullptr-safe).
+    inline Thread* thread_of(ListNode* n)
+    {
+        if (n == nullptr)
+        {
+            return nullptr;
+        }
+        return KICKOS_CONTAINER_OF(n, Thread, link);
+    }
 
     // Attributes for thread creation.
     struct ThreadAttr

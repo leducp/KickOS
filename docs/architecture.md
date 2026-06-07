@@ -519,12 +519,14 @@ Structural prep for invariant #7, landed before MCU work so M1/M2 code is born i
     wait-queue side, making **mid-list cancellation** the hot path (O(n) walk → O(1) with a
     backlink). Backlinks do nothing for the sorted *insert*, which stays O(n) regardless.
     Also drop the redundant `inline` on `highest_prio` (anon-namespace helpers don't need it), and
-    replace the TCB's `void* wait_queue` with a **forward-declared `WaitQueue*`** (`struct
-    WaitQueue;` in `thread.h`, pointer to incomplete type — no `sync.h` include, so no
-    `thread.h`→`sync.h`→`thread.h` cycle, which is the reason it was `void*`). Today the field is
-    only assigned; it becomes dereferenced at `sem_timedwait` (a timeout-woken thread must unlink
-    from the queue it's parked on — read the pointer back *as* a `WaitQueue*`), so type it now. No
-    functional change.
+    replace the TCB's `void* wait_queue` with a typed **`List*`** — a wait queue is just a `List`
+    (the shared TCB link node) with a highest-priority-scan removal policy, so there is no separate
+    `WaitQueue` type: the field *name* carries the concept, the type stays the shared mechanism (as
+    `deadline_ns` and `slice_deadline_ns` distinguish by name, not type). `thread.h` already includes
+    `list.h`, so `List*` is complete there — no `sync.h` include, no `thread.h`→`sync.h`→`thread.h`
+    cycle (the reason it was `void*`). Today the field is only assigned; it becomes dereferenced at
+    `sem_timedwait` (a timeout-woken thread must unlink from the queue it's parked on — read the
+    pointer back as a `List*`), so type it now. No functional change.
 
 8c. Finish the **policy/mechanism split** (RTEMS ideal): move the ready structure (`rq_push_back`/
     `rq_remove`/`rq_rotate` + the priority bitmap) *into* the FIFO/RR policy, so the core keeps
@@ -566,6 +568,17 @@ Structural prep for invariant #7, landed before MCU work so M1/M2 code is born i
       in the `KICKOS_SCHED_PERIODIC_TICK` build variant).
     - **board / chip** (hardware-derived): `KICKOS_MAX_IRQ` and `KICKOS_TIMER_MIN_DELTA_NS` — these
       leave `config.h` entirely for the board layer at M1 / M2 (see 10, 12a).
+
+    **Unit literals (`kickos/units.h`, shared kernel + userspace)** — introduce `constexpr`
+    user-defined literals so the ns/byte magic numbers stop being zero-counting bugs: time
+    `_ns`/`_us`/`_ms`/`_s` → canonical `uint64_t` ns, size `_B`/`_KiB`/`_MiB` → `size_t` bytes
+    (leading underscore is mandatory — bare suffixes are reserved for the stdlib; binary
+    `_KiB`/`_MiB` = ×1024, IEC casing, no ambiguous `_kb`). Deliberately **canonical-integer returns,
+    not a chrono-style strong `Duration` type** (that is heavier and unwanted here; revisit only if
+    unit-mixing bugs actually appear). This is *why* the config values above want to be `constexpr`
+    (`MIN_DELTA = 20_us`, `TICK_PERIOD = 1_ms`) rather than raw-`ull` `#define`s — a macro
+    `#define X 20_us` needs the UDL in scope at every expansion (fragile). Also applies at call
+    sites: stack sizes (`64_KiB` vs `64 * 1024`), `arch_ram_alloc`, app `sleep(100_ms)`.
 
 8f. **`sleep(0)` should yield, not block.** In `ktime_sleep_ns` (`time.cc`) a zero duration
     currently flows through `ktime_sleep_until` and the min-delta guard turns it into a real ~20µs
@@ -834,7 +847,7 @@ because the TCB was *designed* with hooks for it — that recurrence is a sign t
 not that it's urgent. When built, it lands as **one unit**, not piecemeal:
 - promote `tnext` to **doubly-linked** (add `tprev`) — the sem-post-wins path removes the thread
   from the *middle* of the sleepq (cancel the pending timeout); O(n) walk → O(1) (see 8b);
-- **dereference `wait_queue`** (now a typed `WaitQueue*`, 8b) on the timeout-wins path to unlink the
+- **dereference `wait_queue`** (a typed `List*`, 8b) on the timeout-wins path to unlink the
   thread from the queue it's parked on;
 - deliver **timeout-vs-success via `wait_result`** — the same `sem_wait` failure-return channel that
   quiescent-only `sem_destroy` (8m) deliberately avoids needing early;

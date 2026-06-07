@@ -103,7 +103,7 @@ namespace
 
     // --- Two equal-priority threads blocking on one semaphore ------------------
     // Regression: the blocker must detach from the ready list before parking on
-    // the wait queue (shared qnext/qprev links), and a wait queue must hold >1
+    // the wait queue (shared ready/wait link node), and a wait queue must hold >1
     // waiter. Without the fix the second equal-priority thread is orphaned and
     // this stage hangs.
     int g_multi = -1;

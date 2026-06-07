@@ -14,25 +14,20 @@
 
 namespace kickos
 {
-    // Intrusive FIFO-insert / highest-priority-remove wait queue. Reuses the TCB
-    // qnext/qprev links (a thread is on the ready queue XOR one wait queue).
-    struct WaitQueue
-    {
-        Thread* head = nullptr;
-        Thread* tail = nullptr;
-    };
-
+    // A wait queue is just a List of blocked threads (the shared TCB link node);
+    // the only wait-queue-specific policy is the highest-priority scan on removal
+    // (wq_pop_highest in sync.cc). A thread is on the ready list XOR one of these.
     struct Semaphore
     {
         int count = 0;
-        WaitQueue waiters;
+        List waiters;
     };
 
     struct Mutex
     {
         bool locked = false;
         Thread* owner = nullptr;
-        WaitQueue waiters;
+        List waiters;
     };
 
     void sem_init(Semaphore* s, int initial);

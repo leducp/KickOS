@@ -41,4 +41,9 @@ extern "C" void kickos_app_main(void);
         }                                       \
     } while (0)
 
+// A control-flow point that must never be reached: halt LOUDLY with a diagnostic
+// (kpanic is [[noreturn]]), never spin silently. Distinct from a defensive guard
+// (e.g. the kernel().live clamp), which prevents a real consequence and stays.
+#define KICKOS_UNREACHABLE(msg) ::kickos::kpanic("unreachable: " msg)
+
 #endif

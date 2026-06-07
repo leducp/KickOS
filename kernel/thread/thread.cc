@@ -22,7 +22,8 @@ namespace kickos
         t->stack_base = stack_base;
         t->stack_size = stack_size;
         t->region_count = 0;
-        t->slice_deadline_ns = UINT64_MAX;
+        // slice_deadline_ns is policy-owned: the RR policy arms it on switch-in,
+        // before the thread runs; the core carries no slice sentinel.
 
         // MPU posture (reloaded on every switch-in). A privileged thread is the
         // kernel domain: it gets the whole user-RAM arena (the background-region
@@ -58,7 +59,5 @@ namespace kickos
 extern "C" void kickos_thread_return(void)
 {
     ::kickos::sched::exit_current();
-    while (true)
-    {
-    } // unreachable
+    KICKOS_UNREACHABLE("thread continued past exit_current");
 }

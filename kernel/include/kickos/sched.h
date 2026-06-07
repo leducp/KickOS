@@ -14,23 +14,34 @@
 
 namespace kickos
 {
-    // Pluggable scheduling policy: the core owns mechanism (run state, context
-    // switch, ready structure); the policy decides which thread runs next and how
-    // slices behave. EDF / rate-monotonic can drop in later without touching
-    // reschedule(), sync, or the arch layer.
+    // Pluggable scheduling policy (RTEMS-style). The core is pure mechanism (run
+    // state, current, the context switch); the policy owns WHICH thread runs next
+    // -- it holds the ready structure and enqueues/dequeues through these hooks,
+    // the core never touches ready state. EDF / rate-monotonic drop in here.
     struct SchedPolicy
     {
-        Thread* (*pick_next)();
-        void (*on_ready)(Thread*);        // a thread became runnable
-        void (*on_remove)(Thread*);       // a thread left the run set
+        // Scheduling decision.
+        Thread* (*pick_next)();           // highest-priority runnable thread
+        void (*on_ready)(Thread*);        // enqueue a now-runnable thread
+        void (*on_remove)(Thread*);       // dequeue a thread leaving the run set
         void (*on_yield)(Thread*);        // current voluntarily yielded
-        void (*on_slice_expire)(Thread*); // RR quantum elapsed
+        void (*on_slice_expire)(Thread*); // the running thread's timed slice elapsed
+
+        // Timed-event seam (RR today): the core owns the clock, the policy the
+        // deadline. on_switch_in arms the incoming thread; next_timed_event is the
+        // earliest policy deadline for the tickless timer (UINT64_MAX = none).
+        void (*on_switch_in)(Thread*);
+        uint64_t (*next_timed_event)();
     };
 
     namespace sched
     {
         void init();
         void set_policy(SchedPolicy const* policy);
+
+        // The built-in FIFO + round-robin policy (kernel/sched/policy_fifo_rr.cc);
+        // installed by init(). Other policies swap in via set_policy().
+        SchedPolicy const* default_policy();
 
         // Register a fully-initialized thread as READY.
         void add(Thread* t);
@@ -50,7 +61,7 @@ namespace kickos
 
         // Remove `current` from the ready list WITHOUT rescheduling. A blocking
         // primitive must call this BEFORE parking the thread on a wait queue,
-        // since the ready list and wait queues share the qnext/qprev links.
+        // since the ready list and wait queues share the TCB link node.
         void detach_current();
 
         // Make a previously-removed thread runnable again; preempts if warranted.
@@ -65,12 +76,12 @@ namespace kickos
         // Live non-idle thread count (0 => nothing left to run).
         unsigned live_count();
 
-        // RR support consumed by the time subsystem.
-        // Absolute deadline (ns) at which the running thread's RR slice expires, or
-        // UINT64_MAX when the running thread is not slice-limited.
-        uint64_t next_slice_deadline();
-        // Called from the timer ISR: if the running RR slice has elapsed at `now`,
-        // rotate within priority and reschedule.
+        // The active policy's earliest timed event (ns), or UINT64_MAX for none.
+        // Consumed by the time subsystem when arming the tickless timer (RR slice
+        // expiry today; the core carries no notion of a "slice").
+        uint64_t next_timed_event();
+        // Called from the timer ISR on every expiry: if the active policy has a
+        // timed event due at `now` (an RR slice), let it act, then reschedule.
         void tick_rr(uint64_t now);
     }
 }

@@ -9,6 +9,7 @@
 
 #include <kickos/time.h>
 #include <kickos/sched.h>
+#include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
 
@@ -16,16 +17,12 @@ namespace kickos
 {
     namespace
     {
-        // Sorted (ascending deadline) singly-linked list of sleeping threads.
-        Thread* g_sleepq = nullptr;
-
-#if defined(KICKOS_SCHED_PERIODIC_TICK)
-        constexpr uint64_t kTickPeriodNs = 1000000ull; // 1 ms periodic tick
-#endif
+        // Sorted (ascending deadline) singly-linked list of sleeping threads,
+        // rooted at kernel().sleepq.
 
         void sleepq_insert(Thread* t)
         {
-            Thread** pp = &g_sleepq;
+            Thread** pp = &kernel().sleepq;
             while (*pp != nullptr and (*pp)->deadline_ns <= t->deadline_ns)
             {
                 pp = &(*pp)->tnext;
@@ -37,7 +34,7 @@ namespace kickos
 
         void sleepq_remove(Thread* t)
         {
-            Thread** pp = &g_sleepq;
+            Thread** pp = &kernel().sleepq;
             while (*pp != nullptr and *pp != t)
             {
                 pp = &(*pp)->tnext;
@@ -53,7 +50,7 @@ namespace kickos
 
     void ktime_init()
     {
-        g_sleepq = nullptr;
+        kernel().sleepq = nullptr;
     }
 
     uint64_t ktime_now()
@@ -65,19 +62,19 @@ namespace kickos
     {
         IrqLock lock;
         uint64_t next = UINT64_MAX;
-        if (g_sleepq != nullptr)
+        if (kernel().sleepq != nullptr)
         {
-            next = g_sleepq->deadline_ns;
+            next = kernel().sleepq->deadline_ns;
         }
 
-        uint64_t slice = sched::next_slice_deadline();
-        if (slice < next)
+        uint64_t event = sched::next_timed_event();
+        if (event < next)
         {
-            next = slice;
+            next = event;
         }
 
 #if defined(KICKOS_SCHED_PERIODIC_TICK)
-        uint64_t periodic = ktime_now() + kTickPeriodNs;
+        uint64_t periodic = ktime_now() + KICKOS_TICK_PERIOD_NS;
         if (periodic < next)
         {
             next = periodic;
@@ -113,6 +110,14 @@ namespace kickos
 
     void ktime_sleep_ns(uint64_t ns)
     {
+        // sleep(0) == yield: relinquish and return, do NOT park. Deliberately NOT
+        // extended to 0 < ns < min-delta -- those still round UP to the min slice:
+        // a delay promises time off-CPU, whereas yield() returns at once with no peer.
+        if (ns == 0)
+        {
+            sched::yield();
+            return;
+        }
         // Saturate on overflow: a caller-supplied huge ns must not wrap to a past
         // deadline (which the min-delta guard would turn into a ~20us sleep).
         uint64_t now = ktime_now();
@@ -130,9 +135,9 @@ namespace kickos
         uint64_t now = ktime_now();
 
         // Wake every sleeper whose deadline has passed.
-        while (g_sleepq != nullptr and g_sleepq->deadline_ns <= now)
+        while (kernel().sleepq != nullptr and kernel().sleepq->deadline_ns <= now)
         {
-            Thread* t = g_sleepq;
+            Thread* t = kernel().sleepq;
             sleepq_remove(t);
             sched::wake(t); // readies + reschedules (deferred in ISR ctx)
         }

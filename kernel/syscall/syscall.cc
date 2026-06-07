@@ -10,6 +10,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config.h>
+#include <kickos/instance.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/time.h>
@@ -23,25 +24,23 @@ namespace kickos
 {
     namespace
     {
-        // --- Semaphore registry ----------------------------------------------------
-        Semaphore g_sems[KICKOS_MAX_SEMAPHORES];
-        int g_sem_count = 0;
-
+        // --- Semaphore registry (instance-scoped pool) -----------------------------
         int sem_create(int initial)
         {
             IrqLock lock;
-            if (g_sem_count >= KICKOS_MAX_SEMAPHORES)
+            Kernel& k = kernel();
+            if (k.sem_count >= KICKOS_MAX_SEMAPHORES)
             {
                 return -1;
             }
-            int id = g_sem_count++;
-            sem_init(&g_sems[id], initial);
+            int id = k.sem_count++;
+            sem_init(&k.sems[id], initial);
             return id;
         }
 
         bool sem_valid(int id)
         {
-            return id >= 0 and id < g_sem_count;
+            return id >= 0 and id < kernel().sem_count;
         }
 
         // Privileged in-kernel IRQ handler bound by KOS_SYS_irq_attach: posts a
@@ -51,18 +50,11 @@ namespace kickos
             int id = static_cast<int>(reinterpret_cast<intptr_t>(arg));
             if (sem_valid(id))
             {
-                sem_post(&g_sems[id]);
+                sem_post(&kernel().sems[id]);
             }
         }
 
-        // --- Thread pool (static allocation; kernel-provided stacks) ---------------
-        constexpr int kPoolSize = 16;
-        constexpr size_t kUserStack = 64 * 1024;
-
-        Thread g_pool[kPoolSize];
-        alignas(16) unsigned char g_pool_stacks[kPoolSize][kUserStack];
-        int g_pool_next = 0;
-
+        // --- Thread pool (instance-scoped; static allocation, kernel stacks) -------
         int thread_spawn(kos_thread_params const* p)
         {
             IrqLock lock;
@@ -70,8 +62,8 @@ namespace kickos
             {
                 return -1;
             }
-            // Validate the user-supplied priority: it indexes g_ready[] and drives
-            // a 1u<<prio shift, so an out-of-range value is an OOB write / UB.
+            // Validate the user-supplied priority: it indexes the ready lists and
+            // drives a 1u<<prio bitmap shift, so an out-of-range value is an OOB write / UB.
             // Priority 0 is reserved for the idle thread.
             if (p->prio < KICKOS_PRIO_MIN or p->prio > KICKOS_PRIO_MAX)
             {
@@ -84,11 +76,12 @@ namespace kickos
             {
                 return -1;
             }
-            if (g_pool_next >= kPoolSize)
+            Kernel& k = kernel();
+            if (k.thread_next >= KICKOS_MAX_THREADS)
             {
                 return -1;
             }
-            int i = g_pool_next++;
+            int i = k.thread_next++;
 
             ThreadAttr attr;
             attr.name = "user";
@@ -107,8 +100,8 @@ namespace kickos
             attr.mem_base = p->mem_base;
             attr.mem_size = p->mem_size;
 
-            thread_create(&g_pool[i], p->entry, p->arg,
-                          g_pool_stacks[i], kUserStack, attr);
+            thread_create(&k.thread_pool[i], p->entry, p->arg,
+                          k.thread_stacks[i], KICKOS_USER_STACK_SIZE, attr);
             return i;
         }
 
@@ -158,7 +151,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-1);
             }
-            sem_wait(&g_sems[id]);
+            sem_wait(&kernel().sems[id]);
             return 0;
         }
         case KOS_SYS_sem_post:
@@ -168,7 +161,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-1);
             }
-            sem_post(&g_sems[id]);
+            sem_post(&kernel().sems[id]);
             return 0;
         }
         case KOS_SYS_thread_spawn:

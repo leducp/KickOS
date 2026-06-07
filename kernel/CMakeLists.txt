@@ -3,8 +3,10 @@
 
 set(KICKOS_KERNEL_SOURCES
   sched/sched.cc
+  sched/policy_fifo_rr.cc
   thread/thread.cc
   init/console.cc
+  init/instance.cc
   init/kmain.cc)
 
 # Optional components are appended as they land (kept bisectable).
