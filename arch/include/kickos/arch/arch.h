@@ -118,9 +118,22 @@ uintptr_t arch_mpu_probe_addr(void);
 uintptr_t arch_syscall(uintptr_t nr,
                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 
-// --- Emulated device interrupts (sim) --------------------------------------
-// Raise device line `irq`. sim: delivers an async signal so the ISR runs in
-// interrupt context; ARM: pends the NVIC line. Drives scheduler trigger #4.
+// --- Interrupt controller (thin abstraction: mask / unmask / raise) --------
+// Deliberately minimal -- no priority grouping, pending-vs-active, edge-vs-level,
+// or tail-chaining; those are earned per-chip at M1 against real silicon. On ARM
+// this backs onto the NVIC; on the sim, signal-driven injection.
+//
+// mask/unmask gate delivery of a line. The generic first-level ISR masks the
+// line before waking its driver (thread context), which unmasks via irq_ack once
+// serviced -- so the line cannot re-fire while it is being handled. A raise of a
+// masked line is suppressed (sim: dropped).
+void arch_irq_mask(int line);
+void arch_irq_unmask(int line);
+
+// Raise device line `irq` (the controller's "raise"). sim: delivers an async
+// signal so the ISR runs in interrupt context; ARM: pends the NVIC line. Drives
+// scheduler trigger #4. A real driver never raises -- it register/wait/acks;
+// raising is fake-a-device-firing test scaffolding, privilege-gated at M1 (11a).
 void arch_irq_inject(int irq);
 
 // --- Minimal debug console (bottom edge of the in-kernel console driver) ---

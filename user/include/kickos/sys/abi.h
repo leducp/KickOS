@@ -23,8 +23,11 @@ enum kos_syscall_nr
     KOS_SYS_irq_inject = 9,   // (irq)                 -> 0
     KOS_SYS_guard_addr = 10,  // ()  -> protected probe addr (self-test only)
     KOS_SYS_irq_attach = 11,  // (irq, sem_id)         -> 0, or -1 on bad irq
-    KOS_SYS_clock_now = 12,   // (uint64_t* out)       -> 0
-    KOS_SYS_ram_alloc = 13    // (size)                -> user-RAM ptr, or 0
+    KOS_SYS_clock_now = 12,    // (uint64_t* out)       -> 0
+    KOS_SYS_ram_alloc = 13,    // (size)                -> user-RAM ptr, or 0
+    KOS_SYS_irq_register = 14, // (line)                -> irq handle, or -1
+    KOS_SYS_irq_wait = 15,     // (handle)              -> 0, or -1 on bad handle
+    KOS_SYS_irq_ack = 16       // (handle)              -> 0, or -1 on bad handle
 };
 
 // 64-bit values are passed/returned as two uintptr_t halves so the ABI is

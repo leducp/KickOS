@@ -68,6 +68,7 @@ namespace
 
         // --- emulated device IRQ hand-off (async-signal to ISR) ---
         volatile sig_atomic_t pending_irq = -1;
+        volatile sig_atomic_t irq_masked = 0; // bit L set => line L suppressed
     };
 
     // All-constant init keeps this in BSS; signal handlers read it, so the accessor
@@ -527,9 +528,40 @@ uintptr_t arch_syscall(uintptr_t nr,
     return r;
 }
 
-// --- Emulated device interrupt ---------------------------------------------
+// --- Interrupt controller (mask / unmask / raise) --------------------------
+// Width of the irq_masked bitset: lines >= this are never maskable (a raise
+// always delivers). A board needing more than 32 lines must widen irq_masked.
+enum
+{
+    kSimIrqLines = 32
+};
+
+void arch_irq_mask(int line)
+{
+    if (line < 0 or line >= kSimIrqLines)
+    {
+        return;
+    }
+    sim().irq_masked |= static_cast<int>(1u << line);
+}
+
+void arch_irq_unmask(int line)
+{
+    if (line < 0 or line >= kSimIrqLines)
+    {
+        return;
+    }
+    sim().irq_masked &= static_cast<int>(~(1u << line));
+}
+
 void arch_irq_inject(int irq)
 {
+    // A masked line's raise is dropped (level-coalesced): the driver re-arms by
+    // unmasking at irq_ack, and the next raise delivers.
+    if (irq >= 0 and irq < kSimIrqLines and (static_cast<unsigned>(sim().irq_masked) & (1u << irq)))
+    {
+        return;
+    }
     sim().pending_irq = irq;
     raise(SIGUSR1); // delivered synchronously on this thread -> ISR context
 }

@@ -15,6 +15,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config.h>
+#include <kickos/irq.h>
 #include <kickos/list.h>
 #include <kickos/thread.h>
 #include <kickos/sync.h>
@@ -43,6 +44,11 @@ namespace kickos
         Thread thread_pool[KICKOS_MAX_THREADS];
         alignas(16) unsigned char thread_stacks[KICKOS_MAX_THREADS][KICKOS_USER_STACK_SIZE];
         int thread_next = 0;
+
+        // --- interrupt dispatch + IRQ-as-event bindings (irq.cc) ---
+        IrqEntry irq_table[KICKOS_MAX_IRQ]; // line -> handler; ISR reads by index
+        IrqBinding irq_bindings[KICKOS_MAX_IRQ_HANDLES];
+        int irq_binding_count = 0;
     };
 
     namespace detail

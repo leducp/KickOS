@@ -74,6 +74,37 @@ namespace kos
     private:
         int id_;
     };
+
+    // IRQ-as-event handle (tier-1 userspace driver):
+    //   auto irq = kos::Irq::request(line); irq.wait(); ...; irq.ack();
+    // Non-owning handle wrapper (handles are not released until the M0.4 freelist).
+    class Irq
+    {
+    public:
+        static Irq request(int line)
+        {
+            return Irq(kos_irq_register(line));
+        }
+        int wait()
+        {
+            return kos_irq_wait(h_);
+        }
+        int ack()
+        {
+            return kos_irq_ack(h_);
+        }
+        int handle() const
+        {
+            return h_;
+        }
+
+    private:
+        explicit Irq(int h)
+            : h_(h)
+        {
+        }
+        int h_;
+    };
 }
 
 namespace kos::thread

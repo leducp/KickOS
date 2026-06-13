@@ -24,6 +24,11 @@
 #define KICKOS_USER_STACK_SIZE (64 * 1024)
 #endif
 
+// Concurrently-registered tier-1 IRQ-as-event handles.
+#ifndef KICKOS_MAX_IRQ_HANDLES
+#define KICKOS_MAX_IRQ_HANDLES 8
+#endif
+
 namespace kickos
 {
     // Classic periodic-tick period -- only meaningful in the opt-in

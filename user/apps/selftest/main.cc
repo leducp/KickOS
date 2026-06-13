@@ -11,6 +11,8 @@
 //   - RR round-robins equal-priority threads
 //   - sleep ordering via the tickless timer queue
 //   - two equal-priority threads block on one semaphore (wait-queue regression)
+//   - tier-1 IRQ-as-event: an unprivileged driver register/wait/acks a line,
+//     woken from an ISR (mask -> post -> reschedule), reads its granted MMIO
 //   - a privileged guard access survives a syscall (per-context MPU posture)
 //   - memory-domain isolation: a domain-A thread writes its own region, then
 //     faults writing domain B's region (caught and reported via mprotect)
@@ -116,6 +118,33 @@ namespace
         kos_sem_post(g_done);
     }
 
+    // --- Tier-1 IRQ-as-event: unprivileged userspace driver -------------------
+    // Proves the whole contract on the host: ISR masks the line + posts the bound
+    // notification -> reschedule -> the UNPRIVILEGED driver wakes in thread mode,
+    // reads its granted "MMIO" register, acks (unmask). Repeats, so a broken
+    // unmask leaves the line masked and hangs the 2nd round.
+    int g_irqdrv_done = -1;
+    int g_irqdrv_ready = -1;
+    void* g_mmio = nullptr; // the fake device's MMIO word, granted to the driver
+    constexpr int kIrqLine = 7;
+    constexpr int kIrqRounds = 3;
+
+    void irq_driver(void*)
+    {
+        auto irq = kos::Irq::request(kIrqLine);
+        kos_sem_post(g_irqdrv_ready); // registered + about to park: safe to fire
+        for (int i = 0; i < kIrqRounds; i++)
+        {
+            irq.wait();                                  // parks in thread context
+            int v = *static_cast<volatile int*>(g_mmio); // read the granted MMIO
+            char b[64];
+            ksnprintf(b, sizeof(b), "[irqdrv] serviced line %d mmio=0x%x\n", kIrqLine, v);
+            line(b);
+            irq.ack(); // unmask -> the line can fire again
+            kos_sem_post(g_irqdrv_done);
+        }
+    }
+
     // --- Memory-domain isolation ----------------------------------------------
     // domainA_worker belongs to domain A (granted region g_rA). It may write its
     // own region, but writing domain B's region (g_rB) must fault -- real
@@ -194,6 +223,22 @@ extern "C" void kickos_app_main(void)
     kos_sem_post(g_multi);
     kos_sem_post(g_multi);
     wait_done(2);
+
+    line("[irqdrv] start\n");
+    g_irqdrv_done = kos_sem_create(0);
+    g_irqdrv_ready = kos_sem_create(0);
+    g_mmio = kos_ram_alloc(4096);
+    *static_cast<volatile int*>(g_mmio) = 0;
+    // High-prio unprivileged driver; granted the MMIO page as its domain region.
+    kos::thread::spawn(irq_driver, nullptr, "irqdrv", 15, KOS_POLICY_FIFO, 0,
+                       /*privileged=*/false, g_mmio, 4096);
+    kos_sem_wait(g_irqdrv_ready); // driver has registered the line and parked
+    for (int i = 1; i <= kIrqRounds; i++)
+    {
+        *static_cast<volatile int*>(g_mmio) = 0x100 + i; // "device" produces data
+        kos_irq_inject(kIrqLine);                        // fire the line
+        kos_sem_wait(g_irqdrv_done);                     // serviced + acked
+    }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Privileged access to protected memory must survive a syscall: the trap

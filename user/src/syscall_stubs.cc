@@ -75,6 +75,24 @@ void kos_irq_attach(int irq, int sem_id)
                  static_cast<uintptr_t>(sem_id), 0, 0);
 }
 
+int kos_irq_register(int line)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_irq_register, static_cast<uintptr_t>(line), 0, 0, 0));
+}
+
+int kos_irq_wait(int handle)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_irq_wait, static_cast<uintptr_t>(handle), 0, 0, 0));
+}
+
+int kos_irq_ack(int handle)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_irq_ack, static_cast<uintptr_t>(handle), 0, 0, 0));
+}
+
 uint64_t kos_clock_now(void)
 {
     uint64_t out = 0;

@@ -623,10 +623,12 @@ demonstrator for tier 2.
 
 8i. **Fake sim device + userspace-driver selftest** — fabricate a sim "device": a word of
     "MMIO" (granted to the driver task via the existing `mem_base` region grant, RW) plus a line
-    that `raise`s on a timer. The selftest then proves the whole tier-1 contract on the host,
-    end to end: ISR → sem post → reschedule → **unprivileged** driver wakes in thread mode → reads
-    its MMIO register → `ack` → line unmasks. This is the M1 de-risk: the contract is exercised
-    before any NVIC exists.
+    root fires. The selftest then proves the whole tier-1 contract on the host, end to end:
+    ISR → sem post → reschedule → **unprivileged** driver wakes in thread mode → reads its MMIO
+    register → `ack` → line unmasks. A ready/done handshake makes it deterministic (the driver
+    registers and parks before the first fire; root re-fires only after each service), rather
+    than racing a free-running timer. This is the M1 de-risk: the contract is exercised before
+    any NVIC exists.
 
 ### Milestone 0.3 — OS-agnostic app entry (NuttX-style; completes the dependency-inversion pillar)
 

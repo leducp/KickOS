@@ -59,6 +59,13 @@ def main():
         # ready-list/wait-queue link ordering; hangs without the detach fix).
         "[multi] A woke",
         "[multi] B woke",
+        # Tier-1 IRQ-as-event: the unprivileged driver services the line three
+        # times, reading the correct granted MMIO each round. A broken unmask
+        # (irq_ack) leaves the line masked, dropping the 2nd inject -> the stage
+        # hangs (caught by the timeout). Mask correctness itself is not asserted.
+        "[irqdrv] serviced line 7 mmio=0x101",
+        "[irqdrv] serviced line 7 mmio=0x102",
+        "[irqdrv] serviced line 7 mmio=0x103",
         # Privileged guard access survives a syscall (regression: trap epilogue
         # must restore the caller's MPU posture, not force PROT_NONE).
         "[mpu] privileged guard write ok",

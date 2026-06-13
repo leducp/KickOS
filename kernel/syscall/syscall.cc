@@ -187,6 +187,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
 #endif
         case KOS_SYS_irq_attach:
         {
+            // Tier-2 installs a privileged in-kernel handler: privileged-only, so
+            // an unprivileged thread cannot bind (or steal) a line's dispatch.
+            if (not sched::current()->privileged)
+            {
+                return static_cast<uintptr_t>(-1);
+            }
             int irq = static_cast<int>(a0);
             int sem_id = static_cast<int>(a1);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ or not sem_valid(sem_id))
@@ -219,6 +225,18 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             }
             return reinterpret_cast<uintptr_t>(
                 arch_ram_alloc(static_cast<size_t>(a0)));
+        }
+        case KOS_SYS_irq_register:
+        {
+            return static_cast<uintptr_t>(irq_register(static_cast<int>(a0)));
+        }
+        case KOS_SYS_irq_wait:
+        {
+            return static_cast<uintptr_t>(irq_wait(static_cast<int>(a0)));
+        }
+        case KOS_SYS_irq_ack:
+        {
+            return static_cast<uintptr_t>(irq_ack(static_cast<int>(a0)));
         }
         default:
         {

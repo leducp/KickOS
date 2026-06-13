@@ -36,8 +36,15 @@ void* kos_guard_addr(void);
 #endif
 
 // Bind device line `irq` so that firing it posts semaphore `sem_id` from ISR
-// context (userspace irq-as-event precursor).
+// context (tier-2, privileged in-kernel handler).
 void kos_irq_attach(int irq, int sem_id);
+
+// Tier-1 IRQ-as-event: an unprivileged driver binds a line (irq_register), waits
+// for it to fire (irq_wait, thread context), then unmasks it once serviced
+// (irq_ack). The first-level ISR masks the line and posts the bound notification.
+int kos_irq_register(int line); // -> handle, or -1
+int kos_irq_wait(int handle);   // block until the line fires; 0, or -1 on bad handle
+int kos_irq_ack(int handle);    // unmask the line; 0, or -1 on bad handle
 uint64_t kos_clock_now(void); // monotonic nanoseconds
 
 // Allocate a page-aligned block from the MPU-governed user-RAM pool, to hand to
