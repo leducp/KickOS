@@ -3,3 +3,4 @@
 
 add_subdirectory(hello)
 add_subdirectory(selftest)
+add_subdirectory(mpu_fault)
