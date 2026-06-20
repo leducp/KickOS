@@ -6,8 +6,9 @@
 
 #include <kickos/kos.h>
 
-extern "C" void kickos_app_main(void)
+// A plain, OS-agnostic entry: the KickOS package renames it to the kernel entry.
+int main(int, char**)
 {
-    kos::puts("[oot] hello from an out-of-tree KickOS app\n");
-    // Returning drops the last non-idle thread; the kernel then halts cleanly.
+    kos::print("[oot] hello from an out-of-tree KickOS app\n");
+    return 0; // single-shot: returning exits the sim with this status
 }

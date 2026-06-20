@@ -657,6 +657,10 @@ OS-agnostic (same source builds on KickOS, Linux, NuttX). This is the natural co
     - **return value**: `main`'s `int` becomes the app exit status → `arch_shutdown(status)` on the
       sim (CI-friendly for single-shot apps), ignored for daemon-style apps that never return.
       Convert `hello`/`selftest` to plain `int main`; the CI checkers key off the exit status.
+    - **implicit `return 0`**: the standard "falling off the end of `main` returns 0" rule applies
+      only to the literal `main`; once `-Dmain` renames it, a fall-through returns an indeterminate
+      status. Not silent — `-Wreturn-type` (in `-Wall`) flags it — but app authors must write an
+      explicit `return` (single-shot) or never return (daemon).
 
 8l. **App console API — kill the imagined `stdout`.** Today apps write `kos_write(1, s, strlen(s))`,
     inventing a POSIX fd (`1 == stdout`) that has no backing — KickOS has no fd namespace, no
@@ -676,7 +680,7 @@ OS-agnostic (same source builds on KickOS, Linux, NuttX). This is the natural co
       to the driver — being always-available is the whole point.
     Mechanics: `kos_print` does `strlen` in the *userspace stub* and calls a syscall with explicit
     `(buf, len)` — the kernel must **never `strlen` a user pointer** (unbounded, possibly
-    cross-domain read); so the syscall is `kos_console_write(buf, len)` (no `fd`; `buf` bound-checked
+    cross-domain read); so the syscall is `kos_kconsole_write(buf, len)` (no `fd`; `buf` bound-checked
     per M2 12). **Long-term the debug console is capability-gated** (12b): a general app cannot spam
     it freely; the cap is granted only to dev builds, system tasks, and the **console driver itself**
     (which needs it for its own diagnostics and as a pre-hardware fallback). **M0 demos:** `hello`/
@@ -793,7 +797,7 @@ nothing. Settle the pattern once, on sim, before M1 replicates object pools acro
      cap customization is opt-in. Do not resurrect the CapDL-manifest-to-boot friction; that is the
      exact seL4 pain KickOS exists to avoid. **Concrete grounding example (the debug console, 8l):**
      the default set grants **stdout** (→ console driver) to *every* app so `printf` just works, but
-     the **debug-console cap** (`kos::print` / `kos_console_write`) only to dev builds, system tasks,
+     the **debug-console cap** (`kos::print` / `kos_kconsole_write`) only to dev builds, system tasks,
      and the console driver — a general app can't spam the shared debug console. This is the least-
      abstract case for capabilities: it removes an ambient-authority output channel without adding
      any ceremony to the common `printf` path.

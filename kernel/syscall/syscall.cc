@@ -114,20 +114,18 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                                       uintptr_t a0, uintptr_t a1,
                                       uintptr_t a2, uintptr_t a3)
 {
+    (void)a2; // unused by the current syscalls (all take <= 2 args or an out-ptr)
     (void)a3;
     switch (nr)
     {
-        case KOS_SYS_write:
+        case KOS_SYS_kconsole_write:
         {
-            int fd = static_cast<int>(a0);
-            char const* buf = reinterpret_cast<char const*>(a1);
-            size_t len = static_cast<size_t>(a2);
-            if (fd == 1 or fd == 2)
-            {
-                arch_console_write(buf, len);
-                return len;
-            }
-            return static_cast<uintptr_t>(-1);
+            // Explicit (buf, len): the kernel must never strlen a user pointer.
+            // Bound-checking buf against the caller's regions is M2 (item 12).
+            char const* buf = reinterpret_cast<char const*>(a0);
+            size_t len = static_cast<size_t>(a1);
+            arch_console_write(buf, len);
+            return len;
         }
         case KOS_SYS_yield:
         {

@@ -12,9 +12,10 @@
 namespace kickos
 {
     // Kernel entry: called by the arch boot path (sim: host main) after arch_init.
-    // Creates the idle + root threads and starts the scheduler. Returns a process
+    // Creates the idle + root threads and starts the scheduler; the host argv is
+    // forwarded to the app entry (argc=0/argv=nullptr on MCU). Returns a process
     // exit status if the scheduler ever unwinds to boot.
-    int kmain();
+    int kmain(int argc, char** argv);
 
     // Debug console (in-kernel, write-only, unbuffered). Routes to arch console.
     void kputs(char const* s);
@@ -28,9 +29,6 @@ namespace kickos
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr);
 }
-
-// The application entry the kernel calls after init (dependency inversion).
-extern "C" void kickos_app_main(void);
 
 #define KICKOS_ASSERT(cond)                     \
     do                                          \

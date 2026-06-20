@@ -10,7 +10,6 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/libc/string.h>
 
 namespace
 {
@@ -22,7 +21,7 @@ namespace
 
     void line(char const* s)
     {
-        kos_write(1, s, strlen(s));
+        kos_print(s);
     }
 
     void say(char const* who, int n)
@@ -58,7 +57,7 @@ namespace
 
 }
 
-extern "C" void kickos_app_main(void)
+int main(int, char**)
 {
     line("hello from KickOS userspace!\n");
     line("two threads play ping-pong -- press Ctrl+C to stop.\n\n");
@@ -68,5 +67,12 @@ extern "C" void kickos_app_main(void)
 
     kos::thread::spawn(ping, nullptr, "ping", 10);
     kos::thread::spawn(pong, nullptr, "pong", 10);
-    // root returns; the two players run until the sim is interrupted.
+
+    // A daemon: main never returns (returning would exit the process), so the
+    // two players run until the sim is interrupted. Park at low priority.
+    int idle = kos_sem_create(0);
+    while (true)
+    {
+        kos_sem_wait(idle);
+    }
 }

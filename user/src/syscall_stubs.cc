@@ -12,11 +12,16 @@
 extern "C"
 {
 
-long kos_write(int fd, void const* buf, size_t len)
+long kos_kconsole_write(void const* buf, size_t len)
 {
-    return static_cast<long>(arch_syscall(KOS_SYS_write,
-                                          static_cast<uintptr_t>(fd), reinterpret_cast<uintptr_t>(buf),
-                                          static_cast<uintptr_t>(len), 0));
+    return static_cast<long>(arch_syscall(KOS_SYS_kconsole_write,
+                                          reinterpret_cast<uintptr_t>(buf),
+                                          static_cast<uintptr_t>(len), 0, 0));
+}
+
+void kos_print(char const* s)
+{
+    kos_kconsole_write(s, strlen(s));
 }
 
 void kos_yield(void)
@@ -104,10 +109,5 @@ void* kos_ram_alloc(size_t size)
 {
     return reinterpret_cast<void*>(
         arch_syscall(KOS_SYS_ram_alloc, static_cast<uintptr_t>(size), 0, 0, 0));
-}
-
-long kos_puts(char const* s)
-{
-    return kos_write(1, s, strlen(s));
 }
 }

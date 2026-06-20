@@ -93,5 +93,7 @@ function(kickos_add_application name)
   # sim). (MCU image emission -- objcopy .bin/.uf2 -- will hang off here at M1.)
   add_executable(${name} ${APP_SOURCES})
   target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
+  # The OS-agnostic entry glue (-Dmain / -include app.h) rides the `kickos`
+  # usage target below, so the plain add_executable path gets it too.
   target_link_libraries(${name} PRIVATE kickos)
 endfunction()

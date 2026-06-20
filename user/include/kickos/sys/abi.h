@@ -12,17 +12,17 @@
 
 enum kos_syscall_nr
 {
-    KOS_SYS_write = 1,        // (fd, buf, len)        -> bytes written, or -1
-    KOS_SYS_yield = 2,        // ()                    -> 0
-    KOS_SYS_sleep_ns = 3,     // (ns_lo, ns_hi)        -> 0
-    KOS_SYS_sem_create = 4,   // (initial)             -> sem id, or -1
-    KOS_SYS_sem_wait = 5,     // (id)                  -> 0, or -1 on bad id
-    KOS_SYS_sem_post = 6,     // (id)                  -> 0, or -1 on bad id
-    KOS_SYS_thread_spawn = 7, // (kos_thread_params*)  -> thread id, or -1
-    KOS_SYS_exit = 8,         // (code)                -> does not return
-    KOS_SYS_irq_inject = 9,   // (irq)                 -> 0
-    KOS_SYS_guard_addr = 10,  // ()  -> protected probe addr (self-test only)
-    KOS_SYS_irq_attach = 11,  // (irq, sem_id)         -> 0, or -1 on bad irq
+    KOS_SYS_kconsole_write = 1, // (buf, len)            -> bytes written (debug console)
+    KOS_SYS_yield = 2,         // ()                    -> 0
+    KOS_SYS_sleep_ns = 3,      // (ns_lo, ns_hi)        -> 0
+    KOS_SYS_sem_create = 4,    // (initial)             -> sem id, or -1
+    KOS_SYS_sem_wait = 5,      // (id)                  -> 0, or -1 on bad id
+    KOS_SYS_sem_post = 6,      // (id)                  -> 0, or -1 on bad id
+    KOS_SYS_thread_spawn = 7,  // (kos_thread_params*)  -> thread id, or -1
+    KOS_SYS_exit = 8,          // (code)                -> does not return
+    KOS_SYS_irq_inject = 9,    // (irq)                 -> 0
+    KOS_SYS_guard_addr = 10,   // ()  -> protected probe addr (self-test only)
+    KOS_SYS_irq_attach = 11,   // (irq, sem_id)         -> 0, or -1 on bad irq
     KOS_SYS_clock_now = 12,    // (uint64_t* out)       -> 0
     KOS_SYS_ram_alloc = 13,    // (size)                -> user-RAM ptr, or 0
     KOS_SYS_irq_register = 14, // (line)                -> irq handle, or -1

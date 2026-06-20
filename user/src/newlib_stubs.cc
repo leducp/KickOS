@@ -16,7 +16,11 @@ extern "C"
 
 int _write(int fd, char const* buf, int len)
 {
-    return static_cast<int>(kos_write(fd, buf, static_cast<size_t>(len)));
+    // Pre-driver bootstrap: all libc stdio falls back to the debug console
+    // regardless of fd (8l); once a userspace console driver exists, stdout/
+    // stderr route to it instead. KickOS has no fd namespace to honor.
+    (void)fd;
+    return static_cast<int>(kos_kconsole_write(buf, static_cast<size_t>(len)));
 }
 
 int _read(int, char*, int)

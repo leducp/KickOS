@@ -17,7 +17,14 @@ extern "C"
 {
 #endif
 
-long kos_write(int fd, void const* buf, size_t len);
+// Debug console: unbuffered, polling, pointed straight at the kernel console --
+// the developer escape hatch (works in boot/panic, driver-independent). This is
+// NOT stdout: KickOS has no fd namespace; ordinary output = libc stdio over a
+// userspace console driver (Later). kos_print strlen's in the stub; the syscall
+// takes an explicit (buf, len) so the kernel never reads an unbounded user ptr.
+long kos_kconsole_write(void const* buf, size_t len);
+void kos_print(char const* s);
+
 void kos_yield(void);
 void kos_sleep_ns(uint64_t ns);
 
@@ -45,15 +52,12 @@ void kos_irq_attach(int irq, int sem_id);
 int kos_irq_register(int line); // -> handle, or -1
 int kos_irq_wait(int handle);   // block until the line fires; 0, or -1 on bad handle
 int kos_irq_ack(int handle);    // unmask the line; 0, or -1 on bad handle
-uint64_t kos_clock_now(void); // monotonic nanoseconds
+uint64_t kos_clock_now(void);   // monotonic nanoseconds
 
 // Allocate a page-aligned block from the MPU-governed user-RAM pool, to hand to
 // a thread as its domain data region (see kos_thread_params.mem_base). NULL if
 // exhausted. On MCU this pool is a linker-defined region.
 void* kos_ram_alloc(size_t size);
-
-// Convenience: write a NUL-terminated string to fd 1.
-long kos_puts(char const* s);
 
 #ifdef __cplusplus
 }

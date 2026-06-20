@@ -11,13 +11,11 @@
 
 namespace kos
 {
-    inline long write(int fd, void const* buf, size_t len)
+    // Debug console output (see kos_print): the developer escape hatch, not
+    // stdout. Ordinary output = libc stdio over a userspace console driver, Later.
+    inline void print(char const* s)
     {
-        return kos_write(fd, buf, len);
-    }
-    inline long puts(char const* s)
-    {
-        return kos_puts(s);
+        kos_print(s);
     }
     inline void yield()
     {

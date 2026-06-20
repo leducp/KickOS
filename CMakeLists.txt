@@ -49,6 +49,13 @@ if(TARGET kickos_kernel)
   add_library(kickos INTERFACE)
   target_link_libraries(kickos INTERFACE
     "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,kickos_arch_${KICKOS_ARCH},kickos_lib>")
+  # OS-agnostic app entry (architecture.md 8j), carried as usage requirements so
+  # both the plain add_executable path and kickos_add_application inherit them
+  # (in-tree and out-of-tree): the app writes a plain `int main`, renamed to the
+  # kernel-called symbol; app.h is force-included so the renamed C++ main gets C
+  # linkage (unmangled).
+  target_compile_definitions(kickos INTERFACE main=kickos_app_main)
+  target_compile_options(kickos INTERFACE -include kickos/app.h)
   if(KICKOS_ARCH STREQUAL "sim")
     find_package(Threads REQUIRED)
     target_link_libraries(kickos INTERFACE Threads::Threads rt)

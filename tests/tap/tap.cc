@@ -7,7 +7,6 @@
 
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
-#include <kickos/libc/string.h>
 
 namespace tap
 {
@@ -29,7 +28,7 @@ namespace tap
 
         void emit(char const* s)
         {
-            kos_write(1, s, strlen(s));
+            kos_print(s);
         }
 
         void emitf(char const* fmt, ...)

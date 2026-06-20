@@ -17,20 +17,26 @@ namespace
 
     void domainA_worker(void*)
     {
-        kos_puts("[domain] A: writing my own region\n");
+        kos_print("[domain] A: writing my own region\n");
         *static_cast<volatile int*>(g_rA) = 0x1111; // granted -> ok
-        kos_puts("[domain] A: my region ok; writing domain B (expect fault)\n");
+        kos_print("[domain] A: my region ok; writing domain B (expect fault)\n");
         *static_cast<volatile int*>(g_rB) = 0x2222; // not granted -> fault
-        kos_puts("[domain] ERROR: cross-domain write did not fault\n");
+        kos_print("[domain] ERROR: cross-domain write did not fault\n");
     }
 }
 
-extern "C" void kickos_app_main(void)
+int main(int, char**)
 {
     g_rA = kos_ram_alloc(4096);
     g_rB = kos_ram_alloc(4096);
     // Domain-A thread is unprivileged and granted only region A.
     kos::thread::spawn(domainA_worker, nullptr, "domainA", 10, KOS_POLICY_FIFO,
                        0, /*privileged=*/false, g_rA, 4096);
-    // root returns -> domainA runs, writes A (ok), faults writing B (reported).
+    // Park (don't return -- that would exit before the worker runs): domainA
+    // runs, writes A (ok), faults writing B, and the fault handler shuts down.
+    int idle = kos_sem_create(0);
+    while (true)
+    {
+        kos_sem_wait(idle);
+    }
 }

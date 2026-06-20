@@ -100,8 +100,8 @@ namespace
     // --- SVC roundtrip ---------------------------------------------------------
     void t_svc()
     {
-        char const* s = "# [svc] write roundtrip\n";
-        long r = kos_write(1, s, strlen(s));
+        char const* s = "# [svc] console_write roundtrip\n";
+        long r = kos_kconsole_write(s, strlen(s));
         TAP_CHECK(r == static_cast<long>(strlen(s)));
     }
 
@@ -298,7 +298,7 @@ namespace
 #endif
 }
 
-extern "C" void kickos_app_main(void)
+int main(int, char**)
 {
     g_lock = kos_sem_create(1);
     g_done = kos_sem_create(0);
@@ -315,6 +315,7 @@ extern "C" void kickos_app_main(void)
     tap::add("mpu_privileged_guard", t_mpu_guard);
 #endif
 
-    tap::run_all();
-    // root returns -> every test thread has exited -> clean shutdown.
+    // Every test joins its workers, so main returns as the last live thread:
+    // the failure count becomes the process exit status (0 == all passed).
+    return tap::run_all();
 }

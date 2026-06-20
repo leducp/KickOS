@@ -8,11 +8,11 @@
 
 namespace kickos
 {
-    int kmain();
+    int kmain(int argc, char** argv);
 }
 
-int main(int, char**)
+int main(int argc, char** argv)
 {
     arch_init();
-    return kickos::kmain();
+    return kickos::kmain(argc, argv);
 }

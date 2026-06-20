@@ -8,6 +8,7 @@
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/time.h>
+#include <kickos/app.h>
 #include <kickos/arch/arch.h>
 
 // Identity, injected by the build (see kernel/CMakeLists.txt); fall back so the
@@ -30,6 +31,13 @@ namespace kickos
         alignas(16) unsigned char g_root_stack[64 * 1024];
         Thread g_idle_tcb;
         Thread g_root_tcb;
+
+        // Host argv forwarded to the app entry (argc=0/argv=nullptr on MCU).
+        struct AppArgs
+        {
+            int argc;
+            char** argv;
+        };
 
         void kbanner()
         {
@@ -57,15 +65,23 @@ namespace kickos
             }
         }
 
-        void root_entry(void*)
+        void root_entry(void* arg)
         {
-            kickos_app_main();
-            // Returns -> the trampoline exits this thread; other threads keep running.
+            AppArgs const* a = static_cast<AppArgs const*>(arg);
+            int status = kickos_app_main(a->argc, a->argv);
+            // A returning main is a single-shot app: exit with its status. A
+            // daemon-style app never returns here (it parks or loops).
+            arch_shutdown(status);
         }
     }
 
-    int kmain()
+    int kmain(int argc, char** argv)
     {
+        // Local, not static: sched::start() below never unwinds back here (the
+        // scheduler exits via arch_shutdown), and root_entry reads these once at
+        // entry, so this frame outlives every read.
+        AppArgs app_args{argc, argv};
+
         kbanner();
         sched::init();
         ktime_init();
@@ -87,7 +103,7 @@ namespace kickos
         root_attr.prio = KICKOS_PRIO_MIN + 1;
         root_attr.policy = Policy::FIFO;
         root_attr.privileged = true;
-        thread_create(&g_root_tcb, root_entry, nullptr,
+        thread_create(&g_root_tcb, root_entry, &app_args,
                       g_root_stack, sizeof(g_root_stack), root_attr);
 
         sched::start(); // returns only if the scheduler ever unwinds to boot

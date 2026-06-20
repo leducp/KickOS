@@ -11,6 +11,7 @@
 
 #include <ucontext.h>
 #include <signal.h>
+#include <errno.h>
 #include <time.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -306,15 +307,26 @@ void arch_shutdown(int status)
 
 void arch_console_write(char const* buf, size_t n)
 {
-    ssize_t off = 0;
-    while (static_cast<size_t>(off) < n)
+    size_t off = 0;
+    while (off < n)
     {
-        ssize_t w = write(1, buf + off, n - static_cast<size_t>(off));
-        if (w <= 0)
+        ssize_t w = write(1, buf + off, n - off);
+        if (w < 0)
+        {
+            // A scheduling signal (SIGALRM/SIGUSR1, no SA_RESTART) can interrupt
+            // the write; retry rather than truncate. Any other error is a dead
+            // console -- nowhere left to report it, so stop.
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            break;
+        }
+        if (w == 0)
         {
             break;
         }
-        off += w;
+        off += static_cast<size_t>(w);
     }
 }
 
