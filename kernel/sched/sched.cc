@@ -138,7 +138,7 @@ namespace kickos
             reschedule();                 // switches now (thread ctx) or defers (ISR ctx) if warranted
         }
 
-        void exit_current()
+        void exit_current(int code)
         {
             IrqLock lock;
             Kernel& k = kernel();
@@ -150,7 +150,8 @@ namespace kickos
             }
             if (k.live == 0)
             {
-                arch_shutdown(0);
+                // Last non-idle thread out: end the process with its exit code.
+                arch_shutdown(code);
             }
             reschedule(); // switch away permanently
             KICKOS_UNREACHABLE("an EXITED thread was picked to run");

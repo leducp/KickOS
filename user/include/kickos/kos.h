@@ -145,7 +145,8 @@ namespace kos::thread
     // Start a thread (not a process: KickOS has one address space, isolation is
     // by MPU + privilege). Unprivileged by default. `mem`/`mem_size` grant the
     // thread a domain data region (threads sharing one region share a domain).
-    // Returns a thread id, or -1.
+    // Spawning does NOT preempt the caller, even for a higher-priority thread:
+    // the new thread runs once the caller next blocks or yields. Returns id, or -1.
     inline int spawn(void (*entry)(void*), void* arg, char const* name,
                      uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
                      uint32_t quantum_ns = 0, bool privileged = false,

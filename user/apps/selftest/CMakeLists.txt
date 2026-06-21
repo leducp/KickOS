@@ -12,11 +12,14 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # Full M0 verification: every scheduler/sync/time/MPU bullet as a TAP test.
   # The guard-probe test needs KICKOS_ENABLE_SELFTEST (the sim preset enables it);
   # the case is registered only then, so the plan count still matches.
-  # The app's `int main` returns the failed-test count -> process exit status,
-  # so CTest gates on the exit code (0 == all passed). FAIL regex is a backstop.
+  # Gate on the TAP stream: run_all() prints the completion marker only after a
+  # full clean run, so a mid-run fault (which exits 0 via the reported-fault
+  # path) is caught as a truncated run, not a false pass. CTest checks FAIL
+  # before PASS, so a "not ok" still fails.
   add_test(NAME selftest COMMAND "$<TARGET_FILE:selftest>")
   set_tests_properties(selftest PROPERTIES
     TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "# all tests passed"
     FAIL_REGULAR_EXPRESSION "not ok")
 
   # Dependency-inversion acceptance: an out-of-tree app builds against the

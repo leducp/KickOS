@@ -35,7 +35,7 @@ void arch_shutdown(int status) __attribute__((noreturn));
 // Build an initial frame in `ctx` so the first switch-in "returns" into
 // entry(arg) on [stack_base, stack_base+stack_size). `privileged` selects the
 // kernel (privileged) vs user (unprivileged) posture. When `entry` returns the
-// arch calls back into kernel thread-exit (arch_thread_trampoline_exit()).
+// arch calls back into kernel thread-exit (kickos_thread_return()).
 void arch_context_init(struct arch_context* ctx,
                        void (*entry)(void* arg), void* arg,
                        void* stack_base, size_t stack_size,

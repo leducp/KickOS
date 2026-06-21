@@ -27,6 +27,9 @@ namespace kickos
 {
     namespace
     {
+        // The bootstrap idle/root TCBs + stacks. Still file-static: the remaining
+        // instance-scoping residue (invariant #7) -- they move into Kernel with the
+        // Later multi-instance work (alongside the sim altstack and the TLS pointer).
         alignas(16) unsigned char g_idle_stack[64 * 1024];
         alignas(16) unsigned char g_root_stack[64 * 1024];
         Thread g_idle_tcb;

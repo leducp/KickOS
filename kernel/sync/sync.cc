@@ -3,6 +3,7 @@
 
 #include <kickos/sync.h>
 #include <kickos/sched.h>
+#include <kickos/kernel.h>
 #include <kickos/irqlock.h>
 
 namespace kickos
@@ -90,6 +91,8 @@ namespace kickos
     }
 
     // --- Mutex (binary; priority inheritance deferred, base_prio reserved) -----
+    // In-kernel scaffolding: no syscall wires it to userspace yet, and it is not
+    // exercised by any test. Recursive lock self-deadlocks (not re-entrant).
     void mutex_init(Mutex* m)
     {
         m->locked = false;
@@ -115,6 +118,7 @@ namespace kickos
     void mutex_unlock(Mutex* m)
     {
         IrqLock lock;
+        KICKOS_ASSERT(m->owner == sched::current()); // only the owner may unlock
         Thread* w = wq_pop_highest(m->waiters);
         if (w != nullptr)
         {

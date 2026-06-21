@@ -36,7 +36,7 @@ namespace
         }
     }
 
-    // Unsigned integer in the given base (10 or 16). `upper` unused (lowercase hex).
+    // Unsigned integer in the given base (10 or 16; hex is lowercase).
     void emit_uint(Sink& s, uint64_t v, unsigned base)
     {
         char tmp[24];

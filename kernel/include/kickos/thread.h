@@ -62,7 +62,7 @@ namespace kickos
         arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS];
         size_t region_count;
 
-        intptr_t wait_result; // result handed to us by a waker
+        intptr_t wait_result; // reserved for timed wait (unused today)
 
         uint64_t switch_count; // introspection
     };

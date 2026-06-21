@@ -76,6 +76,8 @@ namespace kickos
         {
             return -1;
         }
+        // Bump-allocated: no unregister/free path yet (freelist deferred, like the
+        // thread pool -- see 8m for the pattern the sem pool already adopted).
         int handle = k.irq_binding_count++;
         IrqBinding& b = k.irq_bindings[handle];
         sem_init(&b.sem, 0);

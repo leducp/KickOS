@@ -12,5 +12,5 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(mpu_fault PROPERTIES
     TIMEOUT 15
     PASS_REGULAR_EXPRESSION "MPU FAULT: task 'domainA'"
-    FAIL_REGULAR_EXPRESSION "did not fault")
+    FAIL_REGULAR_EXPRESSION "ERROR|did not fault")
 endif()

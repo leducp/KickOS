@@ -58,6 +58,6 @@ namespace kickos
 // The arch trampoline routes here when a thread's entry function returns.
 extern "C" void kickos_thread_return(void)
 {
-    ::kickos::sched::exit_current();
+    ::kickos::sched::exit_current(0); // a worker returning normally exits 0
     KICKOS_UNREACHABLE("thread continued past exit_current");
 }

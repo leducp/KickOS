@@ -287,6 +287,42 @@ namespace
         TAP_CHECK(g_seen[0] == 0x101 and g_seen[1] == 0x102 and g_seen[2] == 0x103);
     }
 
+    // --- IRQ mask actually drops a masked raise --------------------------------
+    // The driver runs BELOW root's priority, so posting its notification does not
+    // preempt root: root can fire twice back-to-back. The first fire masks the
+    // line; the second must be dropped (masked), so exactly one service results.
+    // After ack (unmask) a further fire delivers again.
+    int g_mask_ready = -1;
+    int g_mask_serviced = 0;
+    constexpr int kMaskLine = 6;
+
+    void mask_driver(void*)
+    {
+        auto irq = kos::Irq::request(kMaskLine);
+        kos_sem_post(g_mask_ready);
+        for (int i = 0; i < 2; i++)
+        {
+            irq.wait();
+            g_mask_serviced++;
+            irq.ack();
+            kos_sem_post(g_done);
+        }
+    }
+    void t_irq_mask()
+    {
+        g_mask_ready = kos_sem_create(0);
+        g_mask_serviced = 0;
+        kos::thread::spawn(mask_driver, nullptr, "maskdrv", 1); // below root (prio 2)
+        kos_sem_wait(g_mask_ready);                             // line registered
+        kos_irq_inject(kMaskLine);                              // fire 1: ISR masks + posts
+        kos_irq_inject(kMaskLine);                              // fire 2: line masked -> dropped
+        wait_n(1);
+        TAP_CHECK(g_mask_serviced == 1); // the masked second raise was dropped
+        kos_irq_inject(kMaskLine);       // unmasked after ack -> delivers
+        wait_n(1);
+        TAP_CHECK(g_mask_serviced == 2);
+    }
+
     // --- Semaphore destroy: freelist reuse + generation-tagged handles ---------
     void t_sem_destroy()
     {
@@ -370,6 +406,7 @@ int main(int, char**)
     tap::add("sleep_order", t_sleep);
     tap::add("multi_wait", t_multi);
     tap::add("irq_as_event", t_irqdrv);
+    tap::add("irq_mask_drop", t_irq_mask);
     tap::add("sem_destroy", t_sem_destroy);
     tap::add("sem_destroy_quiescent", t_sem_destroy_busy);
     tap::add("sem_raii", t_sem_raii);

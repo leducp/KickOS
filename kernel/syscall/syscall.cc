@@ -105,6 +105,10 @@ namespace kickos
         }
 
         // --- Thread pool (instance-scoped; static allocation, kernel stacks) -------
+        // Bump-allocated: EXITED slots are not reclaimed (a system spawns at most
+        // KICKOS_MAX_THREADS ever). Freelisting this (like the sem pool, 8m) waits
+        // for thread teardown -- and must revisit the "dead ctx keeps raised>0 is
+        // harmless because slots never recycle" assumption before reuse.
         int thread_spawn(kos_thread_params const* p)
         {
             IrqLock lock;
@@ -228,7 +232,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_exit:
         {
-            sched::exit_current(); // noreturn
+            sched::exit_current(static_cast<int>(a0)); // noreturn
             return 0;
         }
         case KOS_SYS_irq_inject:

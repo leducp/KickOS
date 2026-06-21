@@ -46,7 +46,8 @@ namespace kickos
         // Register a fully-initialized thread as READY.
         void add(Thread* t);
 
-        // Enter the first thread from the boot context. Returns only on shutdown.
+        // Enter the first thread from the boot context. Does not return: the
+        // scheduler ends the process via arch_shutdown (never unwinds to boot).
         void start();
 
         // The single decision point. Safe to call from thread or ISR context.
@@ -67,8 +68,10 @@ namespace kickos
         // Make a previously-removed thread runnable again; preempts if warranted.
         void wake(Thread* t);
 
-        // Terminate the current thread; never returns.
-        void exit_current() __attribute__((noreturn));
+        // Terminate the current thread with exit code `code`; never returns. The
+        // code is used only if this is the last non-idle thread (it ends the
+        // process); otherwise the thread just leaves the run set.
+        void exit_current(int code) __attribute__((noreturn));
 
         Thread* current();
         Thread* idle();
