@@ -24,33 +24,83 @@ namespace kickos
 {
     namespace
     {
-        // --- Semaphore registry (instance-scoped pool) -----------------------------
+        // --- Semaphore registry (instance-scoped freelist) -------------------------
+        // A handle packs the slot index (low bits) + a generation (high bits). On
+        // destroy the slot's generation is bumped, so a handle to a since-recycled
+        // slot fails to resolve -- the fail-loud fix for id reuse (ABA). The handle
+        // is opaque to userspace; sem_resolve() is the single validate-and-resolve
+        // chokepoint the M2 capability model (12b) later swaps for a handle table.
+        constexpr int kSemIndexBits = 8;
+        static_assert(KICKOS_MAX_SEMAPHORES <= (1 << kSemIndexBits),
+                      "sem handle index field too small for KICKOS_MAX_SEMAPHORES");
+
+        int sem_make_handle(int index, uint16_t gen)
+        {
+            return static_cast<int>((static_cast<uint32_t>(gen) << kSemIndexBits) |
+                                    static_cast<uint32_t>(index));
+        }
+
+        Semaphore* sem_resolve(int handle)
+        {
+            if (handle < 0)
+            {
+                return nullptr;
+            }
+            int index = handle & ((1 << kSemIndexBits) - 1);
+            uint16_t gen = static_cast<uint16_t>(static_cast<uint32_t>(handle) >> kSemIndexBits);
+            Kernel& k = kernel();
+            if (index >= KICKOS_MAX_SEMAPHORES or not k.sem_used[index] or k.sem_gen[index] != gen)
+            {
+                return nullptr;
+            }
+            return &k.sems[index];
+        }
+
         int sem_create(int initial)
         {
             IrqLock lock;
             Kernel& k = kernel();
-            if (k.sem_count >= KICKOS_MAX_SEMAPHORES)
+            for (int i = 0; i < KICKOS_MAX_SEMAPHORES; i++)
+            {
+                if (not k.sem_used[i])
+                {
+                    k.sem_used[i] = true;
+                    sem_init(&k.sems[i], initial);
+                    return sem_make_handle(i, k.sem_gen[i]);
+                }
+            }
+            return -1;
+        }
+
+        int sem_destroy(int handle)
+        {
+            IrqLock lock;
+            Semaphore* s = sem_resolve(handle);
+            if (s == nullptr)
             {
                 return -1;
             }
-            int id = k.sem_count++;
-            sem_init(&k.sems[id], initial);
-            return id;
-        }
-
-        bool sem_valid(int id)
-        {
-            return id >= 0 and id < kernel().sem_count;
+            // Quiescent-only: refuse while waiters are parked (waking them with an
+            // error needs the wait_result channel timed wait adds -- Later).
+            if (not s->waiters.empty())
+            {
+                return -1;
+            }
+            int index = handle & ((1 << kSemIndexBits) - 1);
+            kernel().sem_gen[index]++; // invalidate outstanding handles to this slot
+            kernel().sem_used[index] = false;
+            return 0;
         }
 
         // Privileged in-kernel IRQ handler bound by KOS_SYS_irq_attach: posts a
         // semaphore from ISR context, driving the interrupt-exit switch (trigger #4).
         void irq_sem_post(void* arg)
         {
-            int id = static_cast<int>(reinterpret_cast<intptr_t>(arg));
-            if (sem_valid(id))
+            int handle = static_cast<int>(reinterpret_cast<intptr_t>(arg));
+            Semaphore* s = sem_resolve(handle);
+            if (s != nullptr)
             {
-                sem_post(&kernel().sems[id]);
+                sem_post(s);
             }
         }
 
@@ -142,24 +192,33 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             return static_cast<uintptr_t>(sem_create(static_cast<int>(a0)));
         }
+        case KOS_SYS_sem_destroy:
+        {
+            return static_cast<uintptr_t>(sem_destroy(static_cast<int>(a0)));
+        }
         case KOS_SYS_sem_wait:
         {
-            int id = static_cast<int>(a0);
-            if (not sem_valid(id))
+            // Resolve and use under one lock (sem_wait/sem_post nest their own):
+            // otherwise a concurrent sem_destroy could free the slot between
+            // resolve and use, defeating the quiescent-only guarantee.
+            IrqLock lock;
+            Semaphore* s = sem_resolve(static_cast<int>(a0));
+            if (s == nullptr)
             {
                 return static_cast<uintptr_t>(-1);
             }
-            sem_wait(&kernel().sems[id]);
+            sem_wait(s);
             return 0;
         }
         case KOS_SYS_sem_post:
         {
-            int id = static_cast<int>(a0);
-            if (not sem_valid(id))
+            IrqLock lock;
+            Semaphore* s = sem_resolve(static_cast<int>(a0));
+            if (s == nullptr)
             {
                 return static_cast<uintptr_t>(-1);
             }
-            sem_post(&kernel().sems[id]);
+            sem_post(s);
             return 0;
         }
         case KOS_SYS_thread_spawn:
@@ -192,13 +251,15 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 return static_cast<uintptr_t>(-1);
             }
             int irq = static_cast<int>(a0);
-            int sem_id = static_cast<int>(a1);
-            if (irq < 0 or irq >= KICKOS_MAX_IRQ or not sem_valid(sem_id))
+            int sem_handle = static_cast<int>(a1);
+            if (irq < 0 or irq >= KICKOS_MAX_IRQ or sem_resolve(sem_handle) == nullptr)
             {
                 return static_cast<uintptr_t>(-1);
             }
+            // Store the handle (not a pointer): irq_sem_post re-resolves each fire,
+            // so a since-destroyed sem fails safe instead of poking a stale slot.
             irq_attach(irq, irq_sem_post,
-                       reinterpret_cast<void*>(static_cast<intptr_t>(sem_id)));
+                       reinterpret_cast<void*>(static_cast<intptr_t>(sem_handle)));
             return 0;
         }
         case KOS_SYS_clock_now:

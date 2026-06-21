@@ -12,7 +12,8 @@
 // thread-ctx sem post; a sem posted from an IRQ handler (IRQ ctx); RR interleave
 // of equal-prio threads; tickless sleep ordering; two threads blocking on one
 // sem (wait-queue regression); tier-1 IRQ-as-event (unprivileged driver reads
-// its granted MMIO); a privileged guard access surviving a syscall.
+// its granted MMIO); semaphore destroy (freelist reuse, stale-handle rejection,
+// quiescent-only); a privileged guard access surviving a syscall.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -286,6 +287,64 @@ namespace
         TAP_CHECK(g_seen[0] == 0x101 and g_seen[1] == 0x102 and g_seen[2] == 0x103);
     }
 
+    // --- Semaphore destroy: freelist reuse + generation-tagged handles ---------
+    void t_sem_destroy()
+    {
+        int h = kos_sem_create(0);
+        TAP_CHECK(h >= 0);
+        TAP_CHECK(kos_sem_destroy(h) == 0);  // live handle destroys
+        TAP_CHECK(kos_sem_destroy(h) == -1); // stale handle rejected (gen bumped)
+        int h2 = kos_sem_create(0);
+        TAP_CHECK(h2 >= 0 and h2 != h); // reused slot carries a fresh generation
+        TAP_CHECK(kos_sem_destroy(h2) == 0);
+    }
+
+    // --- Semaphore destroy is quiescent-only (refused while a waiter is parked) -
+    int g_dsem = -1;
+    void destroy_waiter(void*)
+    {
+        kos_sem_wait(g_dsem); // parks (initial 0)
+        kos_sem_post(g_done);
+    }
+    void t_sem_destroy_busy()
+    {
+        g_dsem = kos_sem_create(0);
+        kos::thread::spawn(destroy_waiter, nullptr, "dwaiter", 15);
+        kos_sleep_ns(2000000ull);                 // let it block on g_dsem
+        TAP_CHECK(kos_sem_destroy(g_dsem) == -1); // has a waiter -> refused
+        kos_sem_post(g_dsem);                     // release the waiter
+        wait_n(1);
+        TAP_CHECK(kos_sem_destroy(g_dsem) == 0); // quiescent -> destroyed
+    }
+
+    // --- Owning kos::Semaphore RAII --------------------------------------------
+    void t_sem_raii()
+    {
+        // Scoped create/destroy far exceeding the pool size must not exhaust it:
+        // the old non-owning dtor leaked, so this would fail after ~16.
+        for (int i = 0; i < 100; i++)
+        {
+            kos::Semaphore s;
+            TAP_CHECK(s.id() >= 0);
+        }
+        // Move-construct empties the source, so scope exit destroys once.
+        kos::Semaphore a;
+        int aid = a.id();
+        kos::Semaphore b(static_cast<kos::Semaphore&&>(a));
+        TAP_CHECK(b.id() == aid and a.id() < 0);
+
+        // Move-assign onto a live handle: the old target is destroyed, source emptied.
+        kos::Semaphore c;
+        c = static_cast<kos::Semaphore&&>(b);
+        TAP_CHECK(c.id() == aid and b.id() < 0);
+
+        // Self-move-assign is a no-op (must not destroy its own handle). Aliased
+        // through a reference so the compiler's -Wself-move doesn't fire.
+        kos::Semaphore& cref = c;
+        c = static_cast<kos::Semaphore&&>(cref);
+        TAP_CHECK(c.id() == aid);
+    }
+
 #if defined(KICKOS_ENABLE_SELFTEST)
     // --- Privileged guard access survives a syscall ----------------------------
     void t_mpu_guard()
@@ -311,6 +370,9 @@ int main(int, char**)
     tap::add("sleep_order", t_sleep);
     tap::add("multi_wait", t_multi);
     tap::add("irq_as_event", t_irqdrv);
+    tap::add("sem_destroy", t_sem_destroy);
+    tap::add("sem_destroy_quiescent", t_sem_destroy_busy);
+    tap::add("sem_raii", t_sem_raii);
 #if defined(KICKOS_ENABLE_SELFTEST)
     tap::add("mpu_privileged_guard", t_mpu_guard);
 #endif

@@ -28,9 +28,13 @@ void kos_print(char const* s);
 void kos_yield(void);
 void kos_sleep_ns(uint64_t ns);
 
-int kos_sem_create(int initial);
-void kos_sem_wait(int id);
-void kos_sem_post(int id);
+// Counting semaphore. The returned handle is OPAQUE (index + generation); do not
+// assume it's an array index. sem_destroy is quiescent-only (fails with waiters)
+// and bumps the slot generation, so a stale handle fails to resolve.
+int kos_sem_create(int initial); // -> opaque handle, or -1
+void kos_sem_wait(int sem);
+void kos_sem_post(int sem);
+int kos_sem_destroy(int sem); // 0, or -1 (bad handle / has waiters)
 
 int kos_thread_spawn(struct kos_thread_params const* params);
 void kos_exit(int code) __attribute__((noreturn));

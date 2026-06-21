@@ -48,7 +48,8 @@ namespace kos
         kos_exit(code);
     }
 
-    // Counting semaphore handle.
+    // Owning counting semaphore: ctor creates, dtor destroys. Non-copyable,
+    // movable (a moved-from handle is emptied so the dtor won't double-free).
     class Semaphore
     {
     public:
@@ -56,6 +57,39 @@ namespace kos
             : id_(kos_sem_create(initial))
         {
         }
+        ~Semaphore()
+        {
+            if (id_ >= 0)
+            {
+                kos_sem_destroy(id_);
+            }
+        }
+
+        Semaphore(Semaphore const&) = delete;
+        Semaphore& operator=(Semaphore const&) = delete;
+
+        Semaphore(Semaphore&& other) noexcept
+            : id_(other.id_)
+        {
+            other.id_ = -1;
+        }
+        Semaphore& operator=(Semaphore&& other) noexcept
+        {
+            if (this != &other)
+            {
+                if (id_ >= 0)
+                {
+                    kos_sem_destroy(id_);
+                }
+                id_ = other.id_;
+                other.id_ = -1;
+            }
+            return *this;
+        }
+
+        // On a moved-from / failed handle (id_ < 0) these no-op in the kernel
+        // (sem_resolve fails); an error-returning wait is the wait_result channel
+        // timed wait adds (Later).
         void wait()
         {
             kos_sem_wait(id_);
@@ -75,7 +109,8 @@ namespace kos
 
     // IRQ-as-event handle (tier-1 userspace driver):
     //   auto irq = kos::Irq::request(line); irq.wait(); ...; irq.ack();
-    // Non-owning handle wrapper (handles are not released until the M0.4 freelist).
+    // Non-owning handle wrapper; IRQ handles have no release path yet (out of
+    // M0.4 scope, which freelisted only semaphores).
     class Irq
     {
     public:

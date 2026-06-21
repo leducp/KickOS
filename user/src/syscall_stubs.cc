@@ -40,14 +40,20 @@ int kos_sem_create(int initial)
                                          static_cast<uintptr_t>(initial), 0, 0, 0));
 }
 
-void kos_sem_wait(int id)
+void kos_sem_wait(int sem)
 {
-    arch_syscall(KOS_SYS_sem_wait, static_cast<uintptr_t>(id), 0, 0, 0);
+    arch_syscall(KOS_SYS_sem_wait, static_cast<uintptr_t>(sem), 0, 0, 0);
 }
 
-void kos_sem_post(int id)
+void kos_sem_post(int sem)
 {
-    arch_syscall(KOS_SYS_sem_post, static_cast<uintptr_t>(id), 0, 0, 0);
+    arch_syscall(KOS_SYS_sem_post, static_cast<uintptr_t>(sem), 0, 0, 0);
+}
+
+int kos_sem_destroy(int sem)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_sem_destroy,
+                                         static_cast<uintptr_t>(sem), 0, 0, 0));
 }
 
 int kos_thread_spawn(struct kos_thread_params const* params)

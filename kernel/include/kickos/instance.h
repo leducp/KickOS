@@ -39,8 +39,14 @@ namespace kickos
         Thread* sleepq = nullptr; // sorted ascending by deadline_ns
 
         // --- syscall object pools (syscall.cc) ---
+        // Semaphore freelist: sem_used marks live slots; sem_gen is bumped on
+        // destroy so a stale handle (index+gen) fails to resolve rather than
+        // aliasing a recycled slot. All access goes through sem_resolve(). (gen
+        // wraps every 2^16 destroys of one slot -- acceptable until the M2 handle
+        // table subsumes it.)
         Semaphore sems[KICKOS_MAX_SEMAPHORES];
-        int sem_count = 0;
+        bool sem_used[KICKOS_MAX_SEMAPHORES];
+        uint16_t sem_gen[KICKOS_MAX_SEMAPHORES];
         Thread thread_pool[KICKOS_MAX_THREADS];
         alignas(16) unsigned char thread_stacks[KICKOS_MAX_THREADS][KICKOS_USER_STACK_SIZE];
         int thread_next = 0;
