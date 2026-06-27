@@ -47,8 +47,11 @@ void arch_context_init(struct arch_context* ctx,
 // must not assume the switch has completed when this returns.
 void arch_switch(struct arch_context* from, struct arch_context* to);
 
-// Enter the first thread from the boot/host context. `boot` receives the boot
-// context so a later switch back to it unwinds to the caller (system shutdown).
+// Enter the first thread from the boot context. `boot` is an optional save slot
+// for the boot context: a backend MAY populate it (the sim does, so a later
+// switch back unwinds to the host caller) or MAY ignore it and abandon the boot
+// stack (the ARM backend does -- the system always terminates via arch_shutdown,
+// never by unwinding to boot). Callers MUST NOT switch back to `boot`.
 void arch_start(struct arch_context* boot, struct arch_context* first);
 
 // --- Critical section (RAII-wrapped by kernel IrqLock) ---------------------

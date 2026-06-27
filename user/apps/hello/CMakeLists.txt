@@ -16,3 +16,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
             "$<TARGET_FILE:hello>")
   set_tests_properties(hello_demo PROPERTIES TIMEOUT 15)
 endif()
+
+# QEMU armv7m gate: boot the image on a QEMU Cortex-M4 and assert the userspace
+# ping-pong runs -- end-to-end proof of the reset/scheduler/SVC/timer path.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
+  add_test(
+    NAME    qemu_hello
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh" "$<TARGET_FILE:hello>")
+  set_tests_properties(qemu_hello PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+endif()

@@ -14,15 +14,62 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "KICKOS_ENABLE_SELFTEST": "ON"
       }
+    },
+    {
+      "name": "arm-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-arm-none-eabi.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "qemu",
+      "displayName": "QEMU mps2-an386 (Cortex-M4F, armv7m) - runnable",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/qemu",
+      "cacheVariables": { "KICKOS_BOARD": "qemu" }
+    },
+    {
+      "name": "frdmk64f",
+      "displayName": "NXP FRDM-K64F (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/frdmk64f",
+      "cacheVariables": { "KICKOS_BOARD": "frdmk64f" }
+    },
+    {
+      "name": "f411disco",
+      "displayName": "STM32F411 Discovery (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/f411disco",
+      "cacheVariables": { "KICKOS_BOARD": "f411disco" }
+    },
+    {
+      "name": "bluepill",
+      "displayName": "STM32F103 Blue Pill (Cortex-M3, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/bluepill",
+      "cacheVariables": { "KICKOS_BOARD": "bluepill" }
     }
   ],
   "buildPresets": [
-    { "name": "sim", "configurePreset": "sim" }
+    { "name": "sim",       "configurePreset": "sim" },
+    { "name": "qemu",      "configurePreset": "qemu" },
+    { "name": "frdmk64f",  "configurePreset": "frdmk64f" },
+    { "name": "f411disco", "configurePreset": "f411disco" },
+    { "name": "bluepill",  "configurePreset": "bluepill" }
   ],
   "testPresets": [
     {
       "name": "sim",
       "configurePreset": "sim",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "qemu",
+      "configurePreset": "qemu",
       "output": { "outputOnFailure": true }
     }
   ]

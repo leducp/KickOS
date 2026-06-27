@@ -18,12 +18,24 @@ if(NOT DEFINED KICKOS_BOARD)
   set(KICKOS_BOARD "@KICKOS_BOARD@")
 endif()
 set(KICKOS_ARCH "@KICKOS_ARCH@")
+set(KICKOS_CHIP "@KICKOS_CHIP@")
 
 # The `kickos` target pulls POSIX threads only on the host sim; a bare-metal
 # package must not require Threads (there is no pthreads on an MCU).
 if(KICKOS_ARCH STREQUAL "sim")
   include(CMakeFindDependencyMacro)
   find_dependency(Threads)
+else()
+  # The arch<->kernel<->chip archive cycle links via $<LINK_GROUP:RESCAN>. The
+  # bare-metal "Generic" platform does not predefine that feature, so a consumer
+  # using its own toolchain (not ours) would fail to generate. Declare it here so
+  # the packaged `kickos` target links regardless of the consumer's toolchain.
+  foreach(_lang C CXX ASM)
+    if(NOT CMAKE_${_lang}_LINK_GROUP_USING_RESCAN_SUPPORTED)
+      set(CMAKE_${_lang}_LINK_GROUP_USING_RESCAN_SUPPORTED TRUE)
+      set(CMAKE_${_lang}_LINK_GROUP_USING_RESCAN "LINKER:--start-group" "LINKER:--end-group")
+    endif()
+  endforeach()
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/kickos.cmake")
