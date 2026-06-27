@@ -54,8 +54,11 @@ find_program(CMAKE_SIZE         arm-none-eabi-size)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 # -mthumb: Cortex-M is Thumb-only. -ffunction/-fdata-sections + --gc-sections
-# (at link) drop unreferenced code so the image is minimal.
-string(JOIN " " _kos_common ${_kos_cpu} -mthumb -ffunction-sections -fdata-sections)
+# (at link) drop unreferenced code so the image is minimal. -mno-unaligned-access:
+# some parts (K64F) forbid unaligned/burst accesses across a RAM bank boundary
+# (0x2000_0000, SRAM_L|SRAM_U) -- force the compiler to never emit one.
+string(JOIN " " _kos_common ${_kos_cpu} -mthumb -mno-unaligned-access
+       -ffunction-sections -fdata-sections)
 set(CMAKE_C_FLAGS_INIT   "${_kos_common}")
 set(CMAKE_CXX_FLAGS_INIT "${_kos_common}")
 set(CMAKE_ASM_FLAGS_INIT "${_kos_common}")

@@ -13,6 +13,74 @@ kickos_resolve_board("${KICKOS_BOARD}" KICKOS_ARCH)
 kickos_resolve_chip("${KICKOS_BOARD}" KICKOS_CHIP)
 message(STATUS "KickOS: board=${KICKOS_BOARD} arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}")
 
+# --- Board provisioning knobs (architecture.md item 10: hardware/RAM facts that
+#     leave the global config for the board layer) ---------------------------
+# Board-derived defaults; each is `if(NOT DEFINED)`-guarded so a -D on the
+# command line genuinely overrides it. The SAME values are applied BOTH to our
+# own libraries (add_compile_definitions, below) AND to the exported `kickos`
+# interface target (target_compile_definitions, further down) -- otherwise an
+# installed MCU package would compile a consumer's TUs (which include the shipped
+# instance.h / config headers) with the #ifndef defaults (16 / 64 KiB / 32),
+# disagreeing with the prebuilt .a's layout -> silent ODR/size mismatch.
+#
+# KICKOS_MAX_IRQ: in-kernel IRQ-table size, per the chip's NVIC line count. MUST
+# stay >= the startup vector table's IRQ count (startup.S .rept) -- they are the
+# same fact expressed in two files; keep them in step when adding a chip.
+if(KICKOS_BOARD STREQUAL "frdmk64f")
+  set(_ki_max_irq 86)          # K64: IRQ0..85
+elseif(KICKOS_BOARD STREQUAL "f411disco")
+  set(_ki_max_irq 86)          # STM32F411
+elseif(KICKOS_BOARD STREQUAL "bluepill")
+  set(_ki_max_irq 43)          # STM32F103 medium-density: 43 maskable lines
+elseif(KICKOS_BOARD STREQUAL "qemu")
+  set(_ki_max_irq 48)          # mps2-an386 (matches its startup .rept 48)
+else()
+  set(_ki_max_irq 32)          # sim
+endif()
+
+# Thread pool + bootstrap stacks. The sim keeps the generous config-header
+# defaults (16 x 64 KiB pool, 64 KiB idle/root); a bare-metal board (K64F: 256
+# KiB SRAM) right-sizes them. A syscall runs on the caller's stack, so 8 KiB is
+# generous for the deepest kernel dispatch, not minimal; 16 threads keeps the
+# selftest (the M0 demo, item 10) runnable within 256 KiB (16 x 8 KiB = 128 KiB).
+if(KICKOS_ARCH STREQUAL "sim")
+  set(_ki_max_threads 16)
+  set(_ki_user_stack 65536)
+  set(_ki_idle_stack 65536)
+  set(_ki_root_stack 65536)
+else()
+  set(_ki_max_threads 16)
+  set(_ki_user_stack 8192)
+  set(_ki_idle_stack 2048)
+  set(_ki_root_stack 8192)
+endif()
+
+if(NOT DEFINED KICKOS_MAX_IRQ)
+  set(KICKOS_MAX_IRQ ${_ki_max_irq})
+endif()
+if(NOT DEFINED KICKOS_MAX_THREADS)
+  set(KICKOS_MAX_THREADS ${_ki_max_threads})
+endif()
+if(NOT DEFINED KICKOS_USER_STACK_SIZE)
+  set(KICKOS_USER_STACK_SIZE ${_ki_user_stack})
+endif()
+if(NOT DEFINED KICKOS_IDLE_STACK_SIZE)
+  set(KICKOS_IDLE_STACK_SIZE ${_ki_idle_stack})
+endif()
+if(NOT DEFINED KICKOS_ROOT_STACK_SIZE)
+  set(KICKOS_ROOT_STACK_SIZE ${_ki_root_stack})
+endif()
+
+# The single source of truth applied to our libs now and the `kickos` interface
+# later (so in-tree apps and out-of-tree consumers see identical values).
+set(KICKOS_PROVISION_DEFS
+  KICKOS_MAX_IRQ=${KICKOS_MAX_IRQ}
+  KICKOS_MAX_THREADS=${KICKOS_MAX_THREADS}
+  KICKOS_USER_STACK_SIZE=${KICKOS_USER_STACK_SIZE}
+  KICKOS_IDLE_STACK_SIZE=${KICKOS_IDLE_STACK_SIZE}
+  KICKOS_ROOT_STACK_SIZE=${KICKOS_ROOT_STACK_SIZE})
+add_compile_definitions(${KICKOS_PROVISION_DEFS})
+
 # --- Config knobs (architecture.md) ----------------------------------------
 option(CONFIG_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
 option(KICKOS_BUILD_APPS          "Build in-tree demo applications"          ON)
@@ -63,6 +131,10 @@ if(TARGET kickos_kernel)
   # kernel-called symbol; app.h is force-included so the renamed C++ main gets C
   # linkage (unmangled).
   target_compile_definitions(kickos INTERFACE main=kickos_app_main)
+  # Provisioning knobs travel to app TUs (in-tree) and to out-of-tree consumers
+  # (via KickOSTargets.cmake), so the shipped instance.h/config headers compile
+  # to the same layout as the prebuilt libraries.
+  target_compile_definitions(kickos INTERFACE ${KICKOS_PROVISION_DEFS})
   target_compile_options(kickos INTERFACE -include kickos/app.h)
   if(KICKOS_ARCH STREQUAL "sim")
     find_package(Threads REQUIRED)

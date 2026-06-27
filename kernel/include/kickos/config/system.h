@@ -24,6 +24,16 @@
 #define KICKOS_USER_STACK_SIZE (64 * 1024)
 #endif
 
+// The bootstrap idle/root thread stacks. Provisioning knobs (a syscall runs on
+// the calling thread's stack, so root must fit the deepest dispatch). Defaults
+// suit the generous-RAM sim; a small-SRAM board overrides them (CMake -D).
+#ifndef KICKOS_IDLE_STACK_SIZE
+#define KICKOS_IDLE_STACK_SIZE (64 * 1024)
+#endif
+#ifndef KICKOS_ROOT_STACK_SIZE
+#define KICKOS_ROOT_STACK_SIZE (64 * 1024)
+#endif
+
 // Concurrently-registered tier-1 IRQ-as-event handles.
 #ifndef KICKOS_MAX_IRQ_HANDLES
 #define KICKOS_MAX_IRQ_HANDLES 8
