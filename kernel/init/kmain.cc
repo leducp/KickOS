@@ -10,6 +10,7 @@
 #include <kickos/time.h>
 #include <kickos/app.h>
 #include <kickos/arch/arch.h>
+#include <kickos/config/system.h>
 
 // Identity, injected by the build (see kernel/CMakeLists.txt); fall back so the
 // TU still compiles standalone.
@@ -30,8 +31,8 @@ namespace kickos
         // The bootstrap idle/root TCBs + stacks. Still file-static: the remaining
         // instance-scoping residue (invariant #7) -- they move into Kernel with the
         // Later multi-instance work (alongside the sim altstack and the TLS pointer).
-        alignas(16) unsigned char g_idle_stack[64 * 1024];
-        alignas(16) unsigned char g_root_stack[64 * 1024];
+        alignas(16) unsigned char g_idle_stack[KICKOS_IDLE_STACK_SIZE];
+        alignas(16) unsigned char g_root_stack[KICKOS_ROOT_STACK_SIZE];
         Thread g_idle_tcb;
         Thread g_root_tcb;
 
