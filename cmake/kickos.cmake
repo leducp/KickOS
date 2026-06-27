@@ -15,6 +15,8 @@
 function(kickos_resolve_board board out_arch)
   if(board STREQUAL "sim")
     set(${out_arch} "sim" PARENT_SCOPE)
+  elseif(board STREQUAL "qemu")
+    set(${out_arch} "armv7m" PARENT_SCOPE)
   elseif(board STREQUAL "frdmk64f")
     set(${out_arch} "armv7m" PARENT_SCOPE)
   elseif(board STREQUAL "picopi")
@@ -28,6 +30,18 @@ function(kickos_resolve_board board out_arch)
   endif()
 endfunction()
 
+# Board -> chip (the arch/arm/chip/<chip> backend: startup, linker script,
+# clocks, console). The sim has no chip. Chips land per M1 step.
+function(kickos_resolve_chip board out_chip)
+  if(board STREQUAL "qemu")
+    set(${out_chip} "mps2" PARENT_SCOPE)
+  elseif(board STREQUAL "frdmk64f")
+    set(${out_chip} "mk64f" PARENT_SCOPE)
+  else()
+    set(${out_chip} "" PARENT_SCOPE) # sim, or a chip not yet brought up
+  endif()
+endfunction()
+
 # ---------------------------------------------------------------------------
 # Flag posture.
 #   Kernel / lib / userspace  -> freestanding C++ (no exceptions/rtti).
@@ -38,17 +52,21 @@ endfunction()
 set(KICKOS_WARN_FLAGS
   -Wall -Wextra -Wshadow -Wundef)
 
+# Flags valid for every language (C, C++, ASM); the C++-only ones are guarded
+# below so a target mixing .cc and .S (the ARM arch backends) stays warning-free.
 set(KICKOS_FREESTANDING_FLAGS
   -ffreestanding
-  -fno-exceptions -fno-rtti
-  -fno-threadsafe-statics -fno-use-cxa-atexit
   -fno-common)
+set(KICKOS_FREESTANDING_CXX_FLAGS
+  -fno-exceptions -fno-rtti
+  -fno-threadsafe-statics -fno-use-cxa-atexit)
 
-# freestanding C++ TUs: kernel, lib, user
+# freestanding TUs: kernel, lib, user, and the ARM arch backends (C++ + ASM).
 function(kickos_apply_freestanding target)
   target_compile_features(${target} PUBLIC cxx_std_17)
   target_compile_options(${target} PRIVATE
-    ${KICKOS_WARN_FLAGS} ${KICKOS_FREESTANDING_FLAGS})
+    ${KICKOS_WARN_FLAGS} ${KICKOS_FREESTANDING_FLAGS}
+    "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
 endfunction()
 
 # hosted C++ TUs: the sim arch backend only
@@ -57,6 +75,35 @@ function(kickos_apply_hosted target)
   target_compile_options(${target} PRIVATE
     ${KICKOS_WARN_FLAGS} -fno-exceptions -fno-rtti)
   target_compile_definitions(${target} PRIVATE _GNU_SOURCE)
+endfunction()
+
+# The per-chip -mcpu/-mfpu/-mfloat-abi baseline is set globally by the ARM
+# toolchain file (CMAKE_<LANG>_FLAGS_INIT) so it applies uniformly to every
+# compile and link (correct multilib). Freestanding TUs on ARM therefore need
+# no extra CPU flags here -- kickos_apply_freestanding() is arch-agnostic.
+
+# ---------------------------------------------------------------------------
+# kickos_emit_image(<target>)
+#   MCU only: turn a linked ELF into flashable .bin and .hex, and print size.
+#   No-op on the sim (a runnable host ELF is the deliverable there).
+# ---------------------------------------------------------------------------
+function(kickos_emit_image target)
+  # Key on KICKOS_ARCH (which the installed package records) rather than
+  # KICKOS_IS_SIM (a toolchain-only var an out-of-tree consumer never sees, which
+  # would wrongly objcopy a host sim ELF).
+  if(KICKOS_ARCH STREQUAL "sim")
+    return()
+  endif()
+  add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${target}.bin
+    COMMAND ${CMAKE_OBJCOPY} -O ihex   $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${target}.hex
+    BYPRODUCTS ${target}.bin ${target}.hex
+    VERBATIM)
+  if(CMAKE_SIZE)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${target}>
+      VERBATIM)
+  endif()
 endfunction()
 
 # ---------------------------------------------------------------------------
@@ -96,4 +143,6 @@ function(kickos_add_application name)
   # The OS-agnostic entry glue (-Dmain / -include app.h) rides the `kickos`
   # usage target below, so the plain add_executable path gets it too.
   target_link_libraries(${name} PRIVATE kickos)
+  # MCU: emit flashable .bin/.hex (no-op on the sim).
+  kickos_emit_image(${name})
 endfunction()

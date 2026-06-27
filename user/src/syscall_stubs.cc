@@ -68,6 +68,17 @@ void kos_exit(int code)
     __builtin_unreachable();
 }
 
+// Thread epilogue for UNPRIVILEGED threads: the arch plants this as the return
+// address of a user thread's entry, so a worker that returns exits via the
+// syscall trap (running the kernel exit path privileged) rather than calling
+// kickos_thread_return directly from unprivileged mode. Privileged threads use
+// kickos_thread_return; on the sim (no real privilege) this is unused.
+void kickos_user_thread_return(void)
+{
+    kos_exit(0);
+    __builtin_unreachable();
+}
+
 void kos_irq_inject(int irq)
 {
     arch_syscall(KOS_SYS_irq_inject, static_cast<uintptr_t>(irq), 0, 0, 0);
