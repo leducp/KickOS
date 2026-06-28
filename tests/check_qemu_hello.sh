@@ -11,6 +11,11 @@
 set -u
 elf="${1:?usage: check_qemu_hello.sh <hello.elf>}"
 qemu="${QEMU:-qemu-system-arm}"
+machine="${QEMU_MACHINE:-mps2-an386}"   # armv7m default; microbit for armv6m
+cpu_arg=""
+if [ -n "${QEMU_CPU:-}" ]; then
+    cpu_arg="-cpu ${QEMU_CPU}"
+fi
 
 if ! command -v "$qemu" >/dev/null 2>&1; then
     # Exit 77 (not 0): CTest treats this as SKIP, not PASS, so a CI box without
@@ -19,7 +24,7 @@ if ! command -v "$qemu" >/dev/null 2>&1; then
     exit 77
 fi
 
-out="$(timeout 8 "$qemu" -M mps2-an386 -cpu cortex-m4 -nographic -semihosting \
+out="$(timeout 8 "$qemu" -M "$machine" $cpu_arg -nographic -semihosting \
         -kernel "$elf" 2>&1)"
 
 echo "$out"

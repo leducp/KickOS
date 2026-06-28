@@ -34,6 +34,10 @@ elseif(KICKOS_BOARD STREQUAL "bluepill")
   set(_ki_max_irq 43)          # STM32F103 medium-density: 43 maskable lines
 elseif(KICKOS_BOARD STREQUAL "qemu")
   set(_ki_max_irq 48)          # mps2-an386 (matches its startup .rept 48)
+elseif(KICKOS_BOARD STREQUAL "picopi")
+  set(_ki_max_irq 32)          # RP2040: 26 lines
+elseif(KICKOS_BOARD STREQUAL "microbit")
+  set(_ki_max_irq 32)          # nRF51 (matches its startup .rept 32)
 else()
   set(_ki_max_irq 32)          # sim
 endif()
@@ -48,6 +52,12 @@ if(KICKOS_ARCH STREQUAL "sim")
   set(_ki_user_stack 65536)
   set(_ki_idle_stack 65536)
   set(_ki_root_stack 65536)
+elseif(KICKOS_BOARD STREQUAL "microbit")
+  # nRF51822 has only 16 KiB SRAM: a minimal pool for the ping-pong demo.
+  set(_ki_max_threads 2)
+  set(_ki_user_stack 2048)
+  set(_ki_idle_stack 512)
+  set(_ki_root_stack 2048)
 else()
   set(_ki_max_threads 16)
   set(_ki_user_stack 8192)

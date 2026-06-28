@@ -25,3 +25,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh" "$<TARGET_FILE:hello>")
   set_tests_properties(qemu_hello PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
 endif()
+
+# QEMU armv6m gate: same demo on a QEMU Cortex-M0 (BBC micro:bit / nRF51).
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
+  add_test(
+    NAME    microbit_hello
+    COMMAND "${CMAKE_COMMAND}" -E env QEMU_MACHINE=microbit
+            "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh" "$<TARGET_FILE:hello>")
+  set_tests_properties(microbit_hello PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+endif()
