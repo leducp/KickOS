@@ -76,6 +76,8 @@ PendSV_Handler:
 SVC_Handler:
     mrs     r0, psp                 /* r0 -> user hardware frame */
     ldr     r1, =svc_trampoline
+    bic     r1, r1, #1              /* stacked PC must be halfword-aligned (bit0=0;
+                                       the T-bit comes from the stacked xPSR) */
     str     r1, [r0, #24]           /* frame.PC := svc_trampoline (offset 6*4) */
     mrs     r1, control
     bic     r1, r1, #1              /* CONTROL.nPRIV = 0 -> trampoline privileged */

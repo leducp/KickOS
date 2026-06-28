@@ -52,6 +52,13 @@
       "inherits": "arm-base",
       "binaryDir": "${sourceDir}/build/bluepill",
       "cacheVariables": { "KICKOS_BOARD": "bluepill" }
+    },
+    {
+      "name": "microbit",
+      "displayName": "BBC micro:bit v1 (nRF51, Cortex-M0, armv6m) - runnable",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/microbit",
+      "cacheVariables": { "KICKOS_BOARD": "microbit" }
     }
   ],
   "buildPresets": [
@@ -59,7 +66,8 @@
     { "name": "qemu",      "configurePreset": "qemu" },
     { "name": "frdmk64f",  "configurePreset": "frdmk64f" },
     { "name": "f411disco", "configurePreset": "f411disco" },
-    { "name": "bluepill",  "configurePreset": "bluepill" }
+    { "name": "bluepill",  "configurePreset": "bluepill" },
+    { "name": "microbit",  "configurePreset": "microbit" }
   ],
   "testPresets": [
     {
@@ -70,6 +78,11 @@
     {
       "name": "qemu",
       "configurePreset": "qemu",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "microbit",
+      "configurePreset": "microbit",
       "output": { "outputOnFailure": true }
     }
   ]

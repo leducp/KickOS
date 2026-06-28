@@ -28,9 +28,22 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
   install(TARGETS kickos_arch_armv7m EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv7m/include" PARENT_SCOPE)
+elseif(KICKOS_ARCH STREQUAL "armv6m")
+  # M1 item 11: Cortex-M0/M0+ (RP2040). PRIMASK crit + v6-M-subset switch.S; the
+  # chip supplies arch_clock_now (no DWT) + arch_init/console + linker script.
+  add_library(kickos_arch_armv6m STATIC
+    arm/armv6m/arch_armv6m.cc
+    arm/armv6m/switch.S)
+  kickos_apply_freestanding(kickos_arch_armv6m)
+  target_include_directories(kickos_arch_armv6m PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/include>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+  install(TARGETS kickos_arch_armv6m EXPORT KickOSTargets
+          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/include" PARENT_SCOPE)
 else()
-  message(FATAL_ERROR "KickOS: arch backend '${KICKOS_ARCH}' not available yet "
-    "(armv6m/RP2040 lands after K64F in M1 item 11)")
+  message(FATAL_ERROR "KickOS: arch backend '${KICKOS_ARCH}' not available")
 endif()
 
 # --- Chip backend (startup + linker script + clocks + console) --------------

@@ -83,7 +83,10 @@ uint64_t arch_clock_now(void)
 {
     // Must be monotonic: a semihosting error/glitch (cs < 0) must not regress the
     // clock to 0 (which would stall every armed sleeper). Clamp to the last value.
+    // Guard the RMW: `last` is 64-bit on a 32-bit core and shared thread<->ISR,
+    // so a torn store latched by the clamp would jump the clock forward forever.
     static uint64_t last = 0;
+    arch_irq_state_t st = arch_irq_save();
     long cs = semihost(SYS_CLOCK, nullptr);
     uint64_t ns = 0;
     if (cs > 0)
@@ -95,6 +98,7 @@ uint64_t arch_clock_now(void)
         ns = last;
     }
     last = ns;
+    arch_irq_restore(st);
     return ns;
 }
 
