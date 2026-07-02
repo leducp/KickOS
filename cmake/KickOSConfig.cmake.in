@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# find_package(KickOS) entry point: exposes the KickOS component libraries and
+# the kickos_add_application() dependency-inversion helper to a consumer.
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/kickos.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/KickOSTargets.cmake")
+
+check_required_components(KickOS)

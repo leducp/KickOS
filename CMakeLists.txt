@@ -39,3 +39,40 @@ endforeach()
 if(KICKOS_BUILD_APPS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/user/apps/CMakeLists.txt")
   add_subdirectory(user/apps)
 endif()
+
+# --- Install / export: the dependency-inversion package --------------------
+# Consumers do find_package(KickOS) + kickos_add_application() out of tree.
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+set(KICKOS_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/KickOS")
+
+# Public headers (each component ships its kickos/ subtree; they merge).
+install(DIRECTORY
+          "${CMAKE_CURRENT_SOURCE_DIR}/arch/include/"
+          "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH}/include/"
+          "${CMAKE_CURRENT_SOURCE_DIR}/kernel/include/"
+          "${CMAKE_CURRENT_SOURCE_DIR}/lib/include/"
+          "${CMAKE_CURRENT_SOURCE_DIR}/user/include/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+
+install(EXPORT KickOSTargets
+        FILE KickOSTargets.cmake
+        DESTINATION "${KICKOS_CMAKE_DIR}")
+
+configure_package_config_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/KickOSConfig.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
+  INSTALL_DESTINATION "${KICKOS_CMAKE_DIR}")
+
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
+  VERSION "${PROJECT_VERSION}"
+  COMPATIBILITY SameMajorVersion)
+
+# The build helper is shipped verbatim so kickos_add_application() is available.
+install(FILES
+          "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
+          "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kickos.cmake"
+        DESTINATION "${KICKOS_CMAKE_DIR}")

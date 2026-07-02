@@ -17,11 +17,14 @@ endforeach()
 add_library(kickos_kernel STATIC ${KICKOS_KERNEL_SOURCES})
 kickos_apply_freestanding(kickos_kernel)
 target_include_directories(kickos_kernel PUBLIC
-  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include>")
 # The kernel implements the userspace syscall ABI, so it reads that contract.
 target_include_directories(kickos_kernel PRIVATE
   "${CMAKE_SOURCE_DIR}/user/include")
 target_link_libraries(kickos_kernel PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
+install(TARGETS kickos_kernel EXPORT KickOSTargets
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 
 if(CONFIG_SCHED_PERIODIC_TICK)
   target_compile_definitions(kickos_kernel PUBLIC KICKOS_SCHED_PERIODIC_TICK=1)
