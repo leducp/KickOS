@@ -117,15 +117,15 @@ namespace
         {
             uintptr_t base = regions[i].base;
             size_t size = regions[i].size;
-            if (size == 0 || size > g_arena_size)
+            if (size == 0 or size > g_arena_size)
             {
                 continue;
             }
-            if (base < astart || base - astart > g_arena_size - size)
+            if (base < astart or base - astart > g_arena_size - size)
             {
                 continue;
             }
-            if ((base - astart) % pg != 0 || size % pg != 0)
+            if ((base - astart) % pg != 0 or size % pg != 0)
             {
                 continue;
             }
@@ -145,7 +145,7 @@ namespace
     // the last arch_mpu_apply() programmed for it already stands.
     void guard_apply_current()
     {
-        if (g_arena != nullptr && g_current != nullptr && g_current->raised > 0)
+        if (g_arena != nullptr and g_current != nullptr and g_current->raised > 0)
         {
             arena_raise_all();
         }
@@ -160,7 +160,7 @@ namespace
     void isr_frame_leave(SimContext* interrupted)
     {
         g_isr_depth--;
-        if (g_isr_depth == 0 && g_current != interrupted)
+        if (g_isr_depth == 0 and g_current != interrupted)
         {
             swapcontext(&interrupted->uc, &g_current->uc);
         }
@@ -359,11 +359,11 @@ arch_irq_state_t arch_irq_save(void)
     sigprocmask(SIG_BLOCK, &g_irq_signals, &prev);
     // Encode whether SIGALRM was previously unblocked so restore is exact.
     arch_irq_state_t s = 0;
-    if (!sigismember(&prev, SIGALRM))
+    if (not sigismember(&prev, SIGALRM))
     {
         s |= 1;
     }
-    if (!sigismember(&prev, SIGUSR1))
+    if (not sigismember(&prev, SIGUSR1))
     {
         s |= 2;
     }
@@ -404,7 +404,7 @@ uint64_t arch_clock_now(void)
 
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    if (!g_timer_created)
+    if (not g_timer_created)
     {
         return;
     }
@@ -417,7 +417,7 @@ void arch_timer_arm(uint64_t deadline_ns)
 
 void arch_timer_disarm(void)
 {
-    if (!g_timer_created)
+    if (not g_timer_created)
     {
         return;
     }
@@ -461,7 +461,7 @@ void* arch_ram_alloc(size_t size)
     size_t pg = static_cast<size_t>(g_pagesize);
     size_t need = (size + pg - 1) & ~(pg - 1);
     // Subtract-form bound is immune to the size_t wrap that (used + need) has.
-    if (need == 0 || need > g_arena_size - g_arena_used)
+    if (need == 0 or need > g_arena_size - g_arena_used)
     {
         return nullptr;
     }
@@ -490,7 +490,7 @@ uintptr_t arch_syscall(uintptr_t nr,
     // the same SimContext is current at entry and (after any blocking round-trip)
     // at exit -- pairing the raise and unwind on `self` makes that explicit.
     SimContext* self = nullptr;
-    if (g_arena != nullptr && g_current != nullptr)
+    if (g_arena != nullptr and g_current != nullptr)
     {
         self = g_current;
         self->raised++;

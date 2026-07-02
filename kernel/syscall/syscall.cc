@@ -42,7 +42,7 @@ namespace kickos
 
         bool sem_valid(int id)
         {
-            return id >= 0 && id < g_sem_count;
+            return id >= 0 and id < g_sem_count;
         }
 
         // Privileged in-kernel IRQ handler bound by KOS_SYS_irq_attach: posts a
@@ -74,14 +74,14 @@ namespace kickos
             // Validate the user-supplied priority: it indexes g_ready[] and drives
             // a 1u<<prio shift, so an out-of-range value is an OOB write / UB.
             // Priority 0 is reserved for the idle thread.
-            if (p->prio < KICKOS_PRIO_MIN || p->prio > KICKOS_PRIO_MAX)
+            if (p->prio < KICKOS_PRIO_MIN or p->prio > KICKOS_PRIO_MAX)
             {
                 return -1;
             }
             // No privilege escalation: only a privileged thread may spawn one (a
             // privileged thread is granted the whole arena). The granted domain
             // region's geometry is validated arch-side in arch_mpu_apply.
-            if (p->privileged != 0 && !sched::current()->privileged)
+            if (p->privileged != 0 and not sched::current()->privileged)
             {
                 return -1;
             }
@@ -130,7 +130,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             int fd = static_cast<int>(a0);
             char const* buf = reinterpret_cast<char const*>(a1);
             size_t len = static_cast<size_t>(a2);
-            if (fd == 1 || fd == 2)
+            if (fd == 1 or fd == 2)
             {
                 arch_console_write(buf, len);
                 return len;
@@ -155,7 +155,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_sem_wait:
         {
             int id = static_cast<int>(a0);
-            if (!sem_valid(id))
+            if (not sem_valid(id))
             {
                 return static_cast<uintptr_t>(-1);
             }
@@ -165,7 +165,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_sem_post:
         {
             int id = static_cast<int>(a0);
-            if (!sem_valid(id))
+            if (not sem_valid(id))
             {
                 return static_cast<uintptr_t>(-1);
             }
@@ -197,7 +197,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             int irq = static_cast<int>(a0);
             int sem_id = static_cast<int>(a1);
-            if (irq < 0 || irq >= KICKOS_MAX_IRQ || !sem_valid(sem_id))
+            if (irq < 0 or irq >= KICKOS_MAX_IRQ or not sem_valid(sem_id))
             {
                 return static_cast<uintptr_t>(-1);
             }
@@ -221,7 +221,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // matches static-allocation-first). IrqLock: arch_ram_alloc does an
             // unguarded read-modify-write of the bump pointer.
             IrqLock lock;
-            if (!sched::current()->privileged)
+            if (not sched::current()->privileged)
             {
                 return static_cast<uintptr_t>(-1);
             }

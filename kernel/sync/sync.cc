@@ -136,7 +136,7 @@ namespace kickos
     void mutex_lock(Mutex* m)
     {
         IrqLock lock;
-        if (!m->locked)
+        if (not m->locked)
         {
             m->locked = true;
             m->owner = sched::current();

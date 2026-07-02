@@ -27,7 +27,7 @@ namespace kickos
         void sleepq_insert(Thread* t)
         {
             Thread** pp = &g_sleepq;
-            while (*pp != nullptr && (*pp)->deadline_ns <= t->deadline_ns)
+            while (*pp != nullptr and (*pp)->deadline_ns <= t->deadline_ns)
             {
                 pp = &(*pp)->tnext;
             }
@@ -39,7 +39,7 @@ namespace kickos
         void sleepq_remove(Thread* t)
         {
             Thread** pp = &g_sleepq;
-            while (*pp != nullptr && *pp != t)
+            while (*pp != nullptr and *pp != t)
             {
                 pp = &(*pp)->tnext;
             }
@@ -132,7 +132,7 @@ namespace kickos
         uint64_t now = ktime_now();
 
         // Wake every sleeper whose deadline has passed.
-        while (g_sleepq != nullptr && g_sleepq->deadline_ns <= now)
+        while (g_sleepq != nullptr and g_sleepq->deadline_ns <= now)
         {
             Thread* t = g_sleepq;
             sleepq_remove(t);

@@ -16,7 +16,7 @@ namespace
 
         void put(char c)
         {
-            if (size > 0 && total < size - 1)
+            if (size > 0 and total < size - 1)
             {
                 buf[total] = c;
             }

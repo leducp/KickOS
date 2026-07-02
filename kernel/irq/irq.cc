@@ -22,7 +22,7 @@ namespace kickos
 
     void irq_attach(int irq, IrqHandler handler, void* arg)
     {
-        if (irq < 0 || irq >= KICKOS_MAX_IRQ)
+        if (irq < 0 or irq >= KICKOS_MAX_IRQ)
         {
             return;
         }
@@ -33,7 +33,7 @@ namespace kickos
 
     void irq_detach(int irq)
     {
-        if (irq < 0 || irq >= KICKOS_MAX_IRQ)
+        if (irq < 0 or irq >= KICKOS_MAX_IRQ)
         {
             return;
         }
@@ -49,7 +49,7 @@ namespace kickos
 // so drives a switch to the readied thread on interrupt exit.
 extern "C" void kickos_isr_irq(int irq)
 {
-    if (irq < 0 || irq >= KICKOS_MAX_IRQ)
+    if (irq < 0 or irq >= KICKOS_MAX_IRQ)
     {
         return;
     }

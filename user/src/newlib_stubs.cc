@@ -65,7 +65,7 @@ void* _sbrk(intptr_t incr)
 {
     char* prev = s_brk;
     char* next = s_brk + incr;
-    if (next < s_heap || next > s_heap + sizeof(s_heap))
+    if (next < s_heap or next > s_heap + sizeof(s_heap))
     {
         return reinterpret_cast<void*>(-1);
     }

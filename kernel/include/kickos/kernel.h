@@ -37,8 +37,10 @@ extern "C" void kickos_app_main(void);
 #define KICKOS_ASSERT(cond)                     \
     do                                          \
     {                                           \
-        if (!(cond))                            \
+        if (not(cond))                          \
+        {                                       \
             ::kickos::kpanic("assert: " #cond); \
+        }                                       \
     } while (0)
 
 #endif

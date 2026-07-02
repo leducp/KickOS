@@ -40,7 +40,7 @@ namespace kickos
                 t->region_count = 1;
             }
         }
-        else if (attr.mem_base != nullptr && attr.mem_size != 0)
+        else if (attr.mem_base != nullptr and attr.mem_size != 0)
         {
             t->regions[0].base = reinterpret_cast<uintptr_t>(attr.mem_base);
             t->regions[0].size = attr.mem_size;

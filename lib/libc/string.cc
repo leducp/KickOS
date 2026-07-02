@@ -33,7 +33,7 @@ void* memmove(void* dst, void const* src, size_t n)
 {
     unsigned char* d = static_cast<unsigned char*>(dst);
     unsigned char const* s = static_cast<unsigned char const*>(src);
-    if (d == s || n == 0)
+    if (d == s or n == 0)
     {
         return dst;
     }
@@ -81,7 +81,7 @@ size_t strlen(char const* s)
 size_t strnlen(char const* s, size_t maxlen)
 {
     size_t n = 0;
-    while (n < maxlen && s[n] != '\0')
+    while (n < maxlen and s[n] != '\0')
     {
         n++;
     }

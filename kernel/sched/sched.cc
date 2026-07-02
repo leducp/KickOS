@@ -137,7 +137,7 @@ namespace kickos
         // Arm the RR slice deadline for a thread being switched in.
         void arm_slice(Thread* t)
         {
-            if (t->policy == Policy::RR && t->quantum_ns > 0)
+            if (t->policy == Policy::RR and t->quantum_ns > 0)
             {
                 // Cannot slice finer than the one-shot timer resolution: clamp so
                 // the deadline is never immediately in the past (which would floor
@@ -274,7 +274,7 @@ namespace kickos
         void wake(Thread* t)
         {
             IrqLock lock;
-            if (t->state == ThreadState::READY || t->state == ThreadState::RUNNING)
+            if (t->state == ThreadState::READY or t->state == ThreadState::RUNNING)
             {
                 return;
             }
@@ -290,7 +290,7 @@ namespace kickos
             g_current->state = ThreadState::EXITED;
             rq_remove(g_current);
             g_policy->on_remove(g_current);
-            if (g_current != g_idle && g_live > 0)
+            if (g_current != g_idle and g_live > 0)
             {
                 g_live--;
             }
@@ -334,7 +334,7 @@ namespace kickos
             {
                 return;
             }
-            if (c->policy != Policy::RR || c->quantum_ns == 0)
+            if (c->policy != Policy::RR or c->quantum_ns == 0)
             {
                 return;
             }
