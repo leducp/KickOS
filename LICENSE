@@ -1,0 +1,32 @@
+KickOS is licensed under the CeCILL-C Free Software License Agreement,
+Version 1.0 ("CeCILL-C V1.0").
+
+SPDX-License-Identifier: CECILL-C
+
+CeCILL-C is a French free-software license, LGPL-compatible, with
+file-level copyleft: modifications to a covered source file must be
+released under the same license, while the license does not extend to
+software that merely links against the covered files.
+
+The authoritative English text of CeCILL-C V1.0 is published by CEA,
+CNRS and Inria at:
+
+    https://cecill.info/licences/Licence_CeCILL-C_V1-en.txt
+
+The authoritative French text is published at:
+
+    https://cecill.info/licences/Licence_CeCILL-C_V1-fr.txt
+
+The full text of the license governs all use, reproduction and
+distribution of this software. By using, copying, modifying or
+distributing this software you accept the terms of CeCILL-C V1.0.
+
+-------------------------------------------------------------------------
+NOTE (to be resolved before public distribution): the complete verbatim
+CeCILL-C V1.0 text should be copied into this file from the canonical URL
+above. It was not embedded here because network egress was unavailable in
+the environment that scaffolded this repository. Until then, the canonical
+URL is the governing text.
+-------------------------------------------------------------------------
+
+Copyright (c) 2026 Philippe Leduc

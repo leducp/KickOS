@@ -1,0 +1,20 @@
+Per-language SPDX + copyright header templates for KickOS source files.
+Every source file MUST carry an SPDX-License-Identifier and copyright line.
+
+--- C / C++ / linker scripts (.c .cc .h .ld) -----------------------------
+// SPDX-License-Identifier: CECILL-C
+// Copyright (c) 2026 Philippe Leduc
+
+--- Assembly (.S) --------------------------------------------------------
+// SPDX-License-Identifier: CECILL-C
+// Copyright (c) 2026 Philippe Leduc
+
+--- CMake / shell / python (.cmake CMakeLists.txt .sh .py) ---------------
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
+--- Markdown / HTML (.md) ------------------------------------------------
+<!--
+SPDX-License-Identifier: CECILL-C
+Copyright (c) 2026 Philippe Leduc
+-->

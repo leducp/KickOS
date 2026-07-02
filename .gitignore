@@ -1,0 +1,29 @@
+# Build trees
+/build/
+/build-*/
+/out/
+/install/
+cmake-build-*/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+*.cmake.stamp
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Compiler / image output
+*.o
+*.a
+*.elf
+*.bin
+*.hex
+*.uf2
+*.map
+compile_commands.json
