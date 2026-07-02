@@ -78,10 +78,14 @@ details to be confirmed against the K64 Reference Manual.)
 5. **Static allocation first, heap optional.** Kernel objects support link-time-static
    placement (e.g. `ThreadWithStack<2048>`) so a system can run with the heap disabled.
 6. **Dual API in userspace.** A plain C syscall layer with ergonomic C++ RAII wrappers on top.
-7. **Instance-scoped state, no hard singletons.** Kernel + sim state hang off an instance
+7. **Instance-scoped state, no hard singletons.** Kernel + sim state should hang off an instance
    handle, so multiple `kernel+userspace` instances can run in one host process (the KickCAT
-   sim end-goal). Honored from the first sim code. (Target builds may collapse to a single
-   static instance for size.)
+   sim end-goal). *Status:* kernel **objects** (TCBs, semaphores) are already caller-owned, but
+   the **runtime core** (scheduler/time/syscall pools/sim arch) is still file-static in M0 — a
+   single-instance shortcut. **M0.1** aggregates that state into a `Kernel` struct reached via a
+   compile-time-selectable `kernel()` accessor (static singleton on MCU / for size; thread-local
+   per instance for the multi-slave sim), landing before M1 so MCU code is born instance-ready.
+   Actual multi-instance in the sim additionally needs per-instance event delivery (see below).
 8. **Dependency inversion — the app consumes the kernel.** The application owns the top-level
    build; KickOS is a prebuilt package (libraries + headers + startup + board linker script +
    flags) consumed as a plain `add_executable` linked against the exported `kickos` target (with
@@ -431,6 +435,22 @@ unprivileged user app across the SVC boundary — no hardware, runnable in CI.
 8. **Userspace demo `apps/hello`** (C++, unprivileged): `write` syscall; semaphore posted by a
    thread and by an IRQ handler (event-driven switch, no tick); RR round-robin; a wild write
    faulting via `mprotect`. Wired into CTest — the CI gate.
+
+### Milestone 0.1 — instance-scope the runtime (before M1)
+
+Structural prep for invariant #7, landed before MCU work so M1/M2 code is born instance-ready
+(zero runtime cost; behavior unchanged).
+
+8a. Aggregate the file-static runtime core (scheduler `g_ready`/`g_bitmap`/`g_current`/`g_idle`/
+    `g_live`/`g_boot`/`g_policy`, the time delta list, the syscall object pools, and the sim
+    arch's arena/timer/signal state) into a `Kernel`/`Instance` struct, reached through a
+    `kernel()` accessor. The accessor is compile-time selectable: a single `static Kernel` on
+    MCU / for size; a thread-local pointer per instance for the multi-slave sim. Objects (TCBs,
+    sems) stay caller-owned. No functional change; the CI gate is unchanged output.
+    *(Actual multi-instance sim — per-instance event delivery — is Later, see the sim end-goal:
+    timer→`timerfd`, IRQ→`eventfd`, one `epoll` loop per instance thread; `SIGSEGV` stays but
+    demuxes by faulting address. That removes the shared-signal problem and the
+    signal-handler/deferred-switch gymnastics.)*
 
 ### Milestone 1 — first MCU + remaining targets (privilege + SVC; no HW MPU yet)
 
