@@ -160,32 +160,40 @@ KickOS/
 
 ## The porting layer — `arch/include/kickos/arch/arch.h`
 
-Small `extern "C"` interface every target implements:
+Small `extern "C"` interface every target implements (authoritative source:
+`arch/include/kickos/arch/arch.h` — this is a summary). `struct arch_context` is opaque, sized
+per-arch in `arch/<arch>/include/kickos/arch/context.h`.
 
-- `arch_context_init(tcb, entry, arg, stack_top)` — build an initial exception/return frame so
-  the first switch-in "returns" into `entry`. ARM: fabricated register frame on the task PSP,
-  `CONTROL.nPRIV=1` for user threads. Sim: a `ucontext_t` via `makecontext`.
-- `arch_switch_request()` — request a **deferred** context switch. ARM: set PendSV pending
-  (switch runs in the PendSV handler at lowest priority, after all IRQs). Sim: flag + act on
-  signal return / at a safe point.
-- `arch_irq_save()/restore()` — critical section. **v7-m: BASEPRI + `ldrex/strex`** (near
-  lock-free, IRQs stay on); **v6-m: PRIMASK** (no exclusive monitors on ARMv6-M). Sim:
-  `sigprocmask`. Wrapped by RAII `IrqLock`.
+- `arch_context_init(ctx, entry, arg, stack_base, stack_size, privileged)` — build an initial
+  frame so the first switch-in "returns" into `entry(arg)`. ARM: fabricated register frame on
+  the task PSP, `CONTROL.nPRIV=1` for unprivileged threads. Sim: a `ucontext_t` via
+  `makecontext`. When `entry` returns the arch routes into `kickos_thread_return()`.
+- `arch_switch(from, to)` — switch the running context. **May be deferred**: ARM pends PendSV
+  and the register swap happens on exception return; sim swaps now, or at signal-exit when
+  called from ISR context. Callers must not assume the switch completed on return.
+- `arch_start(boot, first)` — enter the first thread from the boot context.
+- `arch_irq_save()/restore()` + `arch_in_isr()` — critical section (RAII `IrqLock`). **v7-m:
+  BASEPRI**; **v6-m: PRIMASK**. Sim: `sigprocmask`.
 - `arch_timer_arm(deadline)` / `arch_timer_disarm()` + `arch_clock_now()` — monotonic clock +
-  one-shot next-event timer. ARM: free-running TIM/DWT + compare (or SysTick reload). Sim:
+  one-shot next-event timer. ARM: free-running TIM/DWT + compare (or SysTick). Sim:
   `clock_gettime(MONOTONIC)` + `timer_create`/`SIGALRM`.
-- `arch_mpu_apply(regions, n)` — load per-task MPU regions on switch-in; per **chip**: K64F
-  **SYSMPU**, RP2040 ARMv6-M PMSA, F411 ARMv7-M PMSA. Sim: `mprotect` over the mmap'd RAM arena.
-  F103: no-op.
-- `arch_syscall_return(...)` — deliver the syscall result to the caller frame.
+- `arch_mpu_apply(regions, n)` + `arch_mpu_probe_addr()` — load per-task MPU regions on
+  switch-in; per **chip**: K64F **SYSMPU**, RP2040 ARMv6-M PMSA, F411 ARMv7-M PMSA. Sim:
+  `mprotect` over an mmap'd guard page. F103: no-op.
+- `arch_syscall(nr, a0..a3)` — the user→kernel trap; runs `syscall_dispatch()` in privileged
+  **thread** context so a blocking syscall is an ordinary synchronous switch (see the contract
+  in `arch.h`). 64-bit args/results are split into `uintptr_t` halves (`sys/abi.h`), so no
+  separate result-delivery seam is needed. ARM: SVC. Sim: privilege-flipping trampoline.
+- `arch_irq_inject(irq)` — raise an emulated device line (sim: signal; ARM: pend NVIC).
+- `arch_console_write`, `arch_idle_wait`, `arch_init`, `arch_shutdown` — console bottom edge,
+  idle (WFI / `sigsuspend`), bring-up, halt.
+- Kernel-provided callbacks the arch invokes: `kickos_isr_timer()`, `kickos_isr_irq(irq)`,
+  `kickos_isr_fault(addr, is_write)`, `kickos_thread_return()`, `syscall_dispatch(...)`.
 
-The SVC/trap **entry** is arch code that reads the syscall number + args and calls the
-arch-agnostic `syscall_dispatch()`.
-
-**ISA-neutral by design.** The interface names *concepts* (switch-request, syscall-entry,
-crit-section, timer, mpu), never *mechanisms* — PendSV/SVC/BASEPRI live inside `arch/arm`, not
-in `arch.h`. Litmus test: a non-ARM port (Renesas RX72M — software-interrupt context switch,
-`INT` syscall, RX MPU) must fit the same seam with no signature changes.
+**ISA-neutral by design.** The interface names *concepts* (switch, syscall-trap, crit-section,
+timer, mpu), never *mechanisms* — PendSV/SVC/BASEPRI live inside `arch/arm`, not in `arch.h`.
+Litmus test: a non-ARM port (Renesas RX72M — software-interrupt context switch, `INT` syscall,
+RX MPU) must fit the same seam with no signature changes.
 
 ---
 
@@ -208,7 +216,7 @@ in later without touching `reschedule()`, IPC, or the arch layer. Optional per-t
 (per-core) for RP2040 core1 later.
 
 **`sched::reschedule()`** — the single decision point: ask the active policy for `pick_next()`;
-if ≠ current, call `arch_switch_request()`. No caller is privileged over another — **the tick
+if ≠ current, call `arch_switch(from, to)` (which may defer). No caller is privileged over another — **the tick
 is not special.**
 
 **Triggers (all equal):**
@@ -304,7 +312,9 @@ feeds the slave app.
   `CMakePresets.json` per board.
 - Board select `-DKICKOS_BOARD=sim|frdmk64f|picopi|f411disco|bluepill`; the board file pins chip,
   arch, memory map, console driver, clock config, linker script.
-- Object libs: `kickos_kernel`, `kickos_arch_<arch>`, `kickos_lib`, `kickos_user`.
+- Static libs: `kickos_kernel`, `kickos_arch_<arch>`, `kickos_lib`, `kickos_user`
+  (linked as one `--start-group`/`--end-group` set, since arch↔kernel reference
+  each other).
 - **Dependency-inversion packaging (the DX goal).** KickOS installs/exports a CMake package
   (config + libs + startup object + board linker script + flags) plus a
   `kickos_add_application(<name> SOURCES… BOARD…)` helper that performs the final link and emits

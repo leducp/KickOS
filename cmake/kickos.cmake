@@ -5,7 +5,7 @@
 # application helper kickos_add_application().
 #
 # Design (architecture.md, invariant #8): the application owns the final link.
-# KickOS ships object libraries + headers + startup; kickos_add_application()
+# KickOS ships static libraries + headers + startup; kickos_add_application()
 # performs the link and emits the image (host ELF for sim; .bin/.hex/.uf2 for
 # MCUs later). Switching sim<->MCU is a one-word BOARD change.
 
@@ -73,7 +73,19 @@ function(kickos_add_application name)
   if(NOT APP_BOARD)
     set(APP_BOARD "${KICKOS_BOARD}")
   endif()
+  if(NOT APP_BOARD)
+    message(FATAL_ERROR "kickos_add_application(${name}): no BOARD given and the "
+      "KickOS package records no default board")
+  endif()
   kickos_resolve_board("${APP_BOARD}" _arch)
+
+  # The installed package was built for one board/arch. Fail clearly rather than
+  # letting a missing target degrade to a bare -lkickos_arch_<arch> link error.
+  if(NOT TARGET kickos_arch_${_arch})
+    message(FATAL_ERROR "kickos_add_application(${name}): BOARD '${APP_BOARD}' "
+      "needs arch '${_arch}', but this KickOS package provides no "
+      "kickos_arch_${_arch} (it was built for a different board)")
+  endif()
 
   add_executable(${name} ${APP_SOURCES})
   target_compile_features(${name} PRIVATE cxx_std_17)

@@ -169,9 +169,17 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_guard_addr:
             return arch_mpu_probe_addr();
         case KOS_SYS_irq_attach:
-            irq_attach(static_cast<int>(a0), irq_sem_post,
-                       reinterpret_cast<void*>(static_cast<intptr_t>(a1)));
+        {
+            int irq = static_cast<int>(a0);
+            int sem_id = static_cast<int>(a1);
+            if (irq < 0 || irq >= KICKOS_MAX_IRQ || !sem_valid(sem_id))
+            {
+                return static_cast<uintptr_t>(-1);
+            }
+            irq_attach(irq, irq_sem_post,
+                       reinterpret_cast<void*>(static_cast<intptr_t>(sem_id)));
             return 0;
+        }
         case KOS_SYS_clock_now:
         {
             if (a0 == 0)

@@ -26,7 +26,7 @@ namespace
         ucontext_t uc;
         void (*entry)(void*);
         void* arg;
-        int privileged;
+        volatile int raised; // >0 while mid-syscall (read from signal-driven switch)
     };
     static_assert(sizeof(SimContext) <= ARCH_CONTEXT_SIZE,
                   "SimContext exceeds ARCH_CONTEXT_SIZE; grow arch/sim context.h");
@@ -80,6 +80,18 @@ namespace
             prot |= PROT_EXEC;
         }
         return prot;
+    }
+
+    // Apply the guard-page protection for the now-running context. A context
+    // that is mid-syscall (raised) keeps privileged (RW) access even across a
+    // blocking switch back into it; otherwise the resting posture that the last
+    // arch_mpu_apply() programmed for it stands.
+    void guard_apply_current()
+    {
+        if (g_guard != nullptr && g_current != nullptr && g_current->raised > 0)
+        {
+            mprotect(g_guard, g_pagesize, PROT_READ | PROT_WRITE);
+        }
     }
 
     // Run an ISR body with correct interrupt-depth bookkeeping and, on the way
@@ -223,7 +235,10 @@ void arch_context_init(struct arch_context* ctx,
     c->uc.uc_link = nullptr;
     c->entry = entry;
     c->arg = arg;
-    c->privileged = privileged;
+    // Privilege is modeled by the guard-page posture (per-task MPU regions +
+    // the mid-syscall `raised` state), not stored here; the ARM port will map
+    // `privileged` to CONTROL.nPRIV in the fabricated frame.
+    (void)privileged;
 
     uintptr_t p = reinterpret_cast<uintptr_t>(c);
     unsigned hi = static_cast<unsigned>(p >> 32);
@@ -238,10 +253,12 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     {
         // Defer the physical swap to interrupt exit (PendSV analogue).
         g_current = t;
+        guard_apply_current();
         return;
     }
     SimContext* f = sc(from);
     g_current = t;
+    guard_apply_current();
     swapcontext(&f->uc, &t->uc);
 }
 
@@ -359,20 +376,30 @@ uintptr_t arch_mpu_probe_addr(void)
 uintptr_t arch_syscall(uintptr_t nr,
                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
 {
-    // Emulated privilege raise: kernel/guard memory becomes accessible for the
-    // duration of the dispatch, then drops back to the CALLER'S resting posture
-    // (g_guard_prot, kept in sync by arch_mpu_apply on every switch-in) -- not an
-    // unconditional PROT_NONE, which would corrupt a privileged caller's regions.
-    int had_guard = 0;
-    if (g_guard)
+    // Emulated privilege raise, tracked PER-CONTEXT via SimContext::raised so it
+    // survives a blocking switch: if the dispatch blocks and we later resume this
+    // thread mid-syscall, guard_apply_current() re-grants RW (the switch-in's
+    // arch_mpu_apply would otherwise reinstate the caller's unprivileged resting
+    // posture while it is still running kernel code). On the final unwind we drop
+    // back to the caller's resting posture (g_guard_prot).
+    // Cache the calling context: a thread only ever runs as its own context, so
+    // the same SimContext is current at entry and (after any blocking round-trip)
+    // at exit -- pairing the raise and unwind on `self` makes that explicit.
+    SimContext* self = nullptr;
+    if (g_guard != nullptr && g_current != nullptr)
     {
-        had_guard = 1;
+        self = g_current;
+        self->raised++;
         mprotect(g_guard, g_pagesize, PROT_READ | PROT_WRITE);
     }
     uintptr_t r = syscall_dispatch(nr, a0, a1, a2, a3);
-    if (had_guard)
+    if (self != nullptr)
     {
-        mprotect(g_guard, g_pagesize, g_guard_prot);
+        self->raised--;
+        if (self->raised == 0)
+        {
+            mprotect(g_guard, g_pagesize, g_guard_prot);
+        }
     }
     return r;
 }

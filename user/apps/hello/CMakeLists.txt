@@ -11,7 +11,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(
     NAME    sim_demo
     COMMAND "${CMAKE_COMMAND}" -E env
-            "${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/check_sim_demo.py"
+            "${PROJECT_SOURCE_DIR}/tests/check_sim_demo.py"
             "$<TARGET_FILE:hello>")
   set_tests_properties(sim_demo PROPERTIES TIMEOUT 30)
 
@@ -19,8 +19,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # exported KickOS package (find_package + kickos_add_application) and runs.
   add_test(
     NAME    oot_export
-    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/check_oot_export.sh"
-            "${CMAKE_BINARY_DIR}" "${CMAKE_SOURCE_DIR}"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_oot_export.sh"
+            "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
             "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
   set_tests_properties(oot_export PROPERTIES TIMEOUT 120)
 endif()

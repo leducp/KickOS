@@ -139,7 +139,16 @@ namespace kickos
         {
             if (t->policy == Policy::RR && t->quantum_ns > 0)
             {
-                t->slice_deadline_ns = ktime_now() + t->quantum_ns;
+                // Cannot slice finer than the one-shot timer resolution: clamp so
+                // the deadline is never immediately in the past (which would floor
+                // to now+min-delta every tick -> interrupt storm). A sub-min-delta
+                // quantum (incl. a hostile user value) collapses to the min slice.
+                uint64_t q = t->quantum_ns;
+                if (q < KICKOS_TIMER_MIN_DELTA_NS)
+                {
+                    q = KICKOS_TIMER_MIN_DELTA_NS;
+                }
+                t->slice_deadline_ns = ktime_now() + q;
             }
             else
             {

@@ -17,13 +17,9 @@ option(CONFIG_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
 option(KICKOS_BUILD_APPS          "Build in-tree demo applications"          ON)
 option(KICKOS_BUILD_TESTS         "Register CTest cases"                     ON)
 
-# Public include roots shared by the component libraries.
-set(KICKOS_INCLUDE_DIRS
-  "${CMAKE_CURRENT_SOURCE_DIR}/arch/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH}/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/kernel/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/lib/include"
-  "${CMAKE_CURRENT_SOURCE_DIR}/user/include")
+# Standard install dirs; included before the components so their
+# $<INSTALL_INTERFACE:...> can use CMAKE_INSTALL_INCLUDEDIR.
+include(GNUInstallDirs)
 
 if(KICKOS_BUILD_TESTS)
   enable_testing()
@@ -42,10 +38,13 @@ endif()
 
 # --- Install / export: the dependency-inversion package --------------------
 # Consumers do find_package(KickOS) + kickos_add_application() out of tree.
-include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 set(KICKOS_CMAKE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/KickOS")
+
+# CeCILL-C is file-level copyleft: ship the license with the package.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/licenses/${PROJECT_NAME}")
 
 # Public headers (each component ships its kickos/ subtree; they merge).
 install(DIRECTORY
@@ -56,6 +55,8 @@ install(DIRECTORY
           "${CMAKE_CURRENT_SOURCE_DIR}/user/include/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
+# No NAMESPACE: kickos_add_application() links and asserts the bare target names
+# (kickos_arch_<arch>, ...), identically in-tree and installed. Do not add one.
 install(EXPORT KickOSTargets
         FILE KickOSTargets.cmake
         DESTINATION "${KICKOS_CMAKE_DIR}")

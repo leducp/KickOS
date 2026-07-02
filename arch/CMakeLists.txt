@@ -7,7 +7,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   target_include_directories(kickos_arch_sim PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/sim/include>"
-    "$<INSTALL_INTERFACE:include>")
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
   install(TARGETS kickos_arch_sim EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   # Kernel headers for the reverse-direction callbacks are pulled via arch.h.

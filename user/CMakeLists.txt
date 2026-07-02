@@ -13,7 +13,7 @@ add_library(kickos_user STATIC ${KICKOS_USER_SOURCES})
 kickos_apply_freestanding(kickos_user)
 target_include_directories(kickos_user PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-  "$<INSTALL_INTERFACE:include>")
+  "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 target_link_libraries(kickos_user PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
 install(TARGETS kickos_user EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
