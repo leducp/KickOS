@@ -34,7 +34,7 @@ namespace kickos
 
         void kbanner()
         {
-            const char* sched = "tickless";
+            char const* sched = "tickless";
 #if defined(KICKOS_SCHED_PERIODIC_TICK)
             sched = "periodic tick";
 #endif

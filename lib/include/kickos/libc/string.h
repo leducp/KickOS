@@ -14,7 +14,7 @@ extern "C"
 {
 #endif
 
-void* memcpy(void* dst, const void* src, size_t n);
+void* memcpy(void* dst, void const* src, size_t n);
 void* memset(void* dst, int c, size_t n);
 void* memmove(void* dst, void const* src, size_t n);
 int memcmp(void const* a, void const* b, size_t n);

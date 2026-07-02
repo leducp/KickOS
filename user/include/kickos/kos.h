@@ -82,10 +82,13 @@ namespace kos::thread
 {
 
     // Start a thread (not a process: KickOS has one address space, isolation is
-    // by MPU + privilege). Unprivileged by default. Returns a thread id, or -1.
+    // by MPU + privilege). Unprivileged by default. `mem`/`mem_size` grant the
+    // thread a domain data region (threads sharing one region share a domain).
+    // Returns a thread id, or -1.
     inline int spawn(void (*entry)(void*), void* arg, char const* name,
                      uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
-                     uint32_t quantum_ns = 0, bool privileged = false)
+                     uint32_t quantum_ns = 0, bool privileged = false,
+                     void* mem = nullptr, uint32_t mem_size = 0)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -95,9 +98,20 @@ namespace kos::thread
         p.policy = policy;
         p.quantum_ns = quantum_ns;
         p.privileged = static_cast<uint8_t>(privileged);
+        p.mem_base = mem;
+        p.mem_size = mem_size;
         return kos_thread_spawn(&p);
     }
 
+}
+
+namespace kos
+{
+    // Allocate a domain data region from the user-RAM pool (see kos_ram_alloc).
+    inline void* ram_alloc(size_t size)
+    {
+        return kos_ram_alloc(size);
+    }
 }
 
 #endif // KICKOS_KOS_H

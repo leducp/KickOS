@@ -78,6 +78,13 @@ namespace kickos
             {
                 return -1;
             }
+            // No privilege escalation: only a privileged thread may spawn one (a
+            // privileged thread is granted the whole arena). The granted domain
+            // region's geometry is validated arch-side in arch_mpu_apply.
+            if (p->privileged != 0 && !sched::current()->privileged)
+            {
+                return -1;
+            }
             if (g_pool_next >= kPoolSize)
             {
                 return -1;
@@ -98,6 +105,8 @@ namespace kickos
             }
             attr.quantum_ns = p->quantum_ns;
             attr.privileged = (p->privileged != 0);
+            attr.mem_base = p->mem_base;
+            attr.mem_size = p->mem_size;
 
             thread_create(&g_pool[i], p->entry, p->arg,
                           g_pool_stacks[i], kUserStack, attr);
@@ -204,6 +213,20 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             }
             *reinterpret_cast<uint64_t*>(a0) = arch_clock_now();
             return 0;
+        }
+        case KOS_SYS_ram_alloc:
+        {
+            // Privileged-only: domains are carved by the privileged setup path,
+            // not by arbitrary user threads (avoids a DoS on the shared pool and
+            // matches static-allocation-first). IrqLock: arch_ram_alloc does an
+            // unguarded read-modify-write of the bump pointer.
+            IrqLock lock;
+            if (!sched::current()->privileged)
+            {
+                return static_cast<uintptr_t>(-1);
+            }
+            return reinterpret_cast<uintptr_t>(
+                arch_ram_alloc(static_cast<size_t>(a0)));
         }
         default:
         {

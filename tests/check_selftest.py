@@ -62,8 +62,10 @@ def main():
         # Privileged guard access survives a syscall (regression: trap epilogue
         # must restore the caller's MPU posture, not force PROT_NONE).
         "[mpu] privileged guard write ok",
-        # Completion, then the reported MPU fault (unprivileged wild write).
+        # Completion, then memory-domain isolation: a domain-A thread writes its
+        # own region OK, then faults writing domain B's region (reported).
         "DEMO COMPLETE",
+        "[domain] A: my region ok",
         "MPU FAULT",
     ]
     pos = -1

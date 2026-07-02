@@ -24,19 +24,28 @@ namespace kickos
         t->region_count = 0;
         t->slice_deadline_ns = UINT64_MAX;
 
-        // MPU posture. Privileged threads are granted the protected guard region
-        // (sim: the mprotect guard page); unprivileged threads get no region and so
-        // fault on any access to it. Per-task regions are reloaded on every switch.
+        // MPU posture (reloaded on every switch-in). A privileged thread is the
+        // kernel domain: it gets the whole user-RAM arena (the background-region
+        // analog). An unprivileged thread gets only its domain data region (if
+        // any); everything else in the arena faults -> per-domain isolation.
         if (attr.privileged)
         {
-            uintptr_t g = arch_mpu_probe_addr();
-            if (g != 0)
+            uintptr_t base = arch_ram_base();
+            size_t size = arch_ram_size();
+            if (size != 0)
             {
-                t->regions[0].base = g;
-                t->regions[0].size = 4096; // sim guard is a single page
+                t->regions[0].base = base;
+                t->regions[0].size = size;
                 t->regions[0].attr = ARCH_MPU_R | ARCH_MPU_W;
                 t->region_count = 1;
             }
+        }
+        else if (attr.mem_base != nullptr && attr.mem_size != 0)
+        {
+            t->regions[0].base = reinterpret_cast<uintptr_t>(attr.mem_base);
+            t->regions[0].size = attr.mem_size;
+            t->regions[0].attr = ARCH_MPU_R | ARCH_MPU_W;
+            t->region_count = 1;
         }
 
         arch_context_init(&t->ctx, entry, arg, stack_base, stack_size, attr.privileged);

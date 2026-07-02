@@ -22,15 +22,32 @@ def main():
         fail("usage: check_hello.py <hello-elf>")
     elf = sys.argv[1]
 
+    import os
+    import fcntl
+
     proc = subprocess.Popen([elf], stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
-    time.sleep(2.0)                 # ~0.4 s/hit -> a few exchanges
+    # Poll for a couple of exchanges rather than sleeping a fixed time (robust on
+    # a loaded CI box), then Ctrl+C. Cap the wait.
+    fd = proc.stdout.fileno()
+    fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
+    seen = ""
+    deadline = time.monotonic() + 10.0
+    while "pong 2" not in seen and time.monotonic() < deadline:
+        time.sleep(0.05)
+        try:
+            chunk = proc.stdout.read()
+            if chunk:
+                seen += chunk
+        except (BlockingIOError, TypeError):
+            pass
     proc.send_signal(signal.SIGINT)
     try:
-        out, _ = proc.communicate(timeout=5)
+        rest, _ = proc.communicate(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
         fail("hello did not exit after Ctrl+C")
+    out = seen + (rest or "")  # `seen` holds what we polled before the signal
 
     print(out, end="")
     for bad in ("PANIC", "FAULT", "ERROR"):

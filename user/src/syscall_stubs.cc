@@ -45,7 +45,7 @@ void kos_sem_post(int id)
     arch_syscall(KOS_SYS_sem_post, static_cast<uintptr_t>(id), 0, 0, 0);
 }
 
-int kos_thread_spawn(const struct kos_thread_params* params)
+int kos_thread_spawn(struct kos_thread_params const* params)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_thread_spawn,
                                          reinterpret_cast<uintptr_t>(params), 0, 0, 0));
@@ -80,6 +80,12 @@ uint64_t kos_clock_now(void)
     uint64_t out = 0;
     arch_syscall(KOS_SYS_clock_now, reinterpret_cast<uintptr_t>(&out), 0, 0, 0);
     return out;
+}
+
+void* kos_ram_alloc(size_t size)
+{
+    return reinterpret_cast<void*>(
+        arch_syscall(KOS_SYS_ram_alloc, static_cast<uintptr_t>(size), 0, 0, 0));
 }
 
 long kos_puts(char const* s)

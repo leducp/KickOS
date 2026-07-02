@@ -81,11 +81,20 @@ struct arch_mpu_region
     uint32_t attr; // OR of the ARCH_MPU_* bits
 };
 
-// Load the per-task regions on switch-in. sim: mprotect over the mmap arena.
-void arch_mpu_apply(const struct arch_mpu_region* regions, size_t n);
+// Load the running thread's regions on switch-in (replaces the whole active
+// set). sim: mprotect over the user-RAM arena — grant the listed regions,
+// everything else no-access. Regions must be page-aligned and non-overlapping.
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 
-// An address that faults on unprivileged access (sim: a guard page in the
-// arena). Used by the isolation self-test / wild-write demo.
+// The MPU-governed user-RAM pool. Domain data + (later) task stacks are placed
+// here so per-domain isolation is enforceable. sim: an mmap arena; MCU: a
+// linker-defined region. arch_ram_alloc bump-allocates page-aligned blocks.
+uintptr_t arch_ram_base(void);
+size_t arch_ram_size(void);
+void* arch_ram_alloc(size_t size);
+
+// An address that faults on unprivileged access (sim: a reserved arena page no
+// domain owns). Used by the isolation self-test.
 uintptr_t arch_mpu_probe_addr(void);
 
 // --- Syscall trap (user -> kernel) -----------------------------------------

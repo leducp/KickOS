@@ -17,7 +17,7 @@ extern "C"
 {
 #endif
 
-int kvsnprintf(char* buf, size_t size, const char* fmt, va_list ap);
+int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap);
 int ksnprintf(char* buf, size_t size, char const* fmt, ...)
     __attribute__((format(printf, 3, 4)));
 

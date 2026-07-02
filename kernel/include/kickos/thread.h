@@ -74,6 +74,10 @@ namespace kickos
         Policy policy = Policy::FIFO;
         uint32_t quantum_ns = 0;
         bool privileged = true;
+        // Optional domain data region granted to an unprivileged thread (RW).
+        // Threads sharing one region share a memory domain; base==0 => none.
+        void* mem_base = nullptr;
+        size_t mem_size = 0;
     };
 
 }

@@ -23,7 +23,8 @@ enum kos_syscall_nr
     KOS_SYS_irq_inject = 9,   // (irq)                 -> 0
     KOS_SYS_guard_addr = 10,  // ()  -> protected probe addr (self-test only)
     KOS_SYS_irq_attach = 11,  // (irq, sem_id)         -> 0, or -1 on bad irq
-    KOS_SYS_clock_now = 12    // (uint64_t* out)       -> 0
+    KOS_SYS_clock_now = 12,   // (uint64_t* out)       -> 0
+    KOS_SYS_ram_alloc = 13    // (size)                -> user-RAM ptr, or 0
 };
 
 // 64-bit values are passed/returned as two uintptr_t halves so the ABI is
@@ -59,6 +60,8 @@ struct kos_thread_params
     uint8_t policy;      // enum kos_policy
     uint8_t privileged;  // 0 => unprivileged user thread
     uint32_t quantum_ns; // RR slice; 0 => none
+    void* mem_base;      // domain data region granted to the thread (0 => none)
+    uint32_t mem_size;   // size of that region (bytes)
 };
 
 #endif

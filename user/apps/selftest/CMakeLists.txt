@@ -8,12 +8,16 @@ kickos_add_application(selftest
 
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # Full M0 verification: every scheduler/sync/time/MPU bullet, in order.
-  add_test(
-    NAME    selftest
-    COMMAND "${CMAKE_COMMAND}" -E env
-            "${PROJECT_SOURCE_DIR}/tests/check_selftest.py"
-            "$<TARGET_FILE:selftest>")
-  set_tests_properties(selftest PROPERTIES TIMEOUT 30)
+  # Needs KICKOS_ENABLE_SELFTEST (the checker asserts the guard-probe marker);
+  # the sim preset enables it. Skipped otherwise so the case can actually pass.
+  if(KICKOS_ENABLE_SELFTEST)
+    add_test(
+      NAME    selftest
+      COMMAND "${CMAKE_COMMAND}" -E env
+              "${PROJECT_SOURCE_DIR}/tests/check_selftest.py"
+              "$<TARGET_FILE:selftest>")
+    set_tests_properties(selftest PROPERTIES TIMEOUT 30)
+  endif()
 
   # Dependency-inversion acceptance: an out-of-tree app builds against the
   # exported KickOS package (find_package + kickos_add_application) and runs.

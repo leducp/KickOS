@@ -17,7 +17,7 @@ extern "C"
 {
 #endif
 
-long kos_write(int fd, const void* buf, size_t len);
+long kos_write(int fd, void const* buf, size_t len);
 void kos_yield(void);
 void kos_sleep_ns(uint64_t ns);
 
@@ -25,7 +25,7 @@ int kos_sem_create(int initial);
 void kos_sem_wait(int id);
 void kos_sem_post(int id);
 
-int kos_thread_spawn(const struct kos_thread_params* params);
+int kos_thread_spawn(struct kos_thread_params const* params);
 void kos_exit(int code) __attribute__((noreturn));
 void kos_irq_inject(int irq);
 
@@ -39,6 +39,11 @@ void* kos_guard_addr(void);
 // context (userspace irq-as-event precursor).
 void kos_irq_attach(int irq, int sem_id);
 uint64_t kos_clock_now(void); // monotonic nanoseconds
+
+// Allocate a page-aligned block from the MPU-governed user-RAM pool, to hand to
+// a thread as its domain data region (see kos_thread_params.mem_base). NULL if
+// exhausted. On MCU this pool is a linker-defined region.
+void* kos_ram_alloc(size_t size);
 
 // Convenience: write a NUL-terminated string to fd 1.
 long kos_puts(char const* s);

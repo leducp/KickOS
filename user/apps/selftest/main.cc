@@ -11,8 +11,9 @@
 //   - RR round-robins equal-priority threads
 //   - sleep ordering via the tickless timer queue
 //   - two equal-priority threads block on one semaphore (wait-queue regression)
-//   - a privileged guard access survives a syscall; an unprivileged wild write
-//     is caught and reported via mprotect
+//   - a privileged guard access survives a syscall (per-context MPU posture)
+//   - memory-domain isolation: a domain-A thread writes its own region, then
+//     faults writing domain B's region (caught and reported via mprotect)
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -115,15 +116,19 @@ namespace
         kos_sem_post(g_done);
     }
 
-    // --- MPU wild write: an unprivileged thread must not reach address 0 -------
-    void wild_writer(void*)
+    // --- Memory-domain isolation ----------------------------------------------
+    // domainA_worker belongs to domain A (granted region g_rA). It may write its
+    // own region, but writing domain B's region (g_rB) must fault -- real
+    // per-domain isolation, mprotect-enforced in the sim.
+    void* g_rA = nullptr;
+    void* g_rB = nullptr;
+    void domainA_worker(void*)
     {
-        line("[mpu] unprivileged write to NULL (expect fault)\n");
-        volatile int* p = nullptr;
-        // Launder the pointer so the compiler cannot fold the null store into UB.
-        asm volatile("" : "+r"(p));
-        *p = 0xdead; // faults: address 0 is unmapped / unowned
-        line("[mpu] ERROR: null write did not fault\n");
+        line("[domain] A: writing my own region\n");
+        *static_cast<volatile int*>(g_rA) = 0x1111; // granted -> ok
+        line("[domain] A: my region ok; writing domain B (expect fault)\n");
+        *static_cast<volatile int*>(g_rB) = 0x2222; // not granted -> fault
+        line("[domain] ERROR: cross-domain write did not fault\n");
         kos_sem_post(g_done);
     }
 
@@ -206,7 +211,11 @@ extern "C" void kickos_app_main(void)
     line("[done] all scheduler demos passed\n");
     line("DEMO COMPLETE\n");
 
-    // Final: an unprivileged wild write traps via mprotect and is reported.
-    kos::thread::spawn(wild_writer, nullptr, "wild", 10);
-    // root returns here -> exits; 'wild' runs, faults, kernel reports + halts.
+    // Final: memory-domain isolation. Carve two domain regions from user RAM;
+    // a thread in domain A may write A but faults writing B.
+    g_rA = kos_ram_alloc(4096);
+    g_rB = kos_ram_alloc(4096);
+    kos::thread::spawn(domainA_worker, nullptr, "domainA", 10, KOS_POLICY_FIFO,
+                       0, /*privileged=*/false, g_rA, 4096);
+    // root returns -> exits; domainA runs, writes A (ok), faults on B, reported.
 }

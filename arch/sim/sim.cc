@@ -47,10 +47,19 @@ namespace
     timer_t g_timer;
     bool g_timer_created = false;
 
-    // --- MPU guard page ---------------------------------------------------------
+    // --- MPU: page-granular user-RAM arena governed by the emulation -----------
     long g_pagesize = 0;
-    unsigned char* g_guard = nullptr;
-    int g_guard_prot = PROT_READ | PROT_WRITE; // last resting protection
+    unsigned char* g_arena = nullptr; // the mmap'd user-RAM pool
+    size_t g_arena_size = 0;
+    size_t g_arena_used = 0;          // bump allocator (arch_ram_alloc)
+    unsigned char* g_guard = nullptr; // a reserved arena page no domain owns
+
+    // The running thread's resting region set, remembered so the syscall raise
+    // can be lowered back to exactly it. We keep the caller's pointer (its TCB
+    // regions[], stable while it runs) rather than a fixed-size copy -- no cap,
+    // no truncation regardless of KICKOS_MPU_MAX_REGIONS.
+    struct arch_mpu_region const* g_applied = nullptr;
+    size_t g_applied_n = 0;
 
     // --- Emulated device IRQ hand-off (async-signal to ISR) --------------------
     volatile sig_atomic_t g_pending_irq = -1;
@@ -82,15 +91,63 @@ namespace
         return prot;
     }
 
-    // Apply the guard-page protection for the now-running context. A context
-    // that is mid-syscall (raised) keeps privileged (RW) access even across a
-    // blocking switch back into it; otherwise the resting posture that the last
-    // arch_mpu_apply() programmed for it stands.
+    void arena_protect_none()
+    {
+        if (g_arena != nullptr)
+        {
+            mprotect(g_arena, g_arena_size, PROT_NONE);
+        }
+    }
+    // Privileged posture: whole arena accessible (the background-region analog).
+    void arena_raise_all()
+    {
+        if (g_arena != nullptr)
+        {
+            mprotect(g_arena, g_arena_size, PROT_READ | PROT_WRITE);
+        }
+    }
+    // Grant a validated region set: each region must be a page-aligned sub-range
+    // of the arena, else it is skipped (fail-closed) so a bad/hostile grant can
+    // never mprotect host memory or de-execute code.
+    void grant_region_set(struct arch_mpu_region const* regions, size_t n)
+    {
+        uintptr_t astart = reinterpret_cast<uintptr_t>(g_arena);
+        size_t pg = static_cast<size_t>(g_pagesize);
+        for (size_t i = 0; i < n; i++)
+        {
+            uintptr_t base = regions[i].base;
+            size_t size = regions[i].size;
+            if (size == 0 || size > g_arena_size)
+            {
+                continue;
+            }
+            if (base < astart || base - astart > g_arena_size - size)
+            {
+                continue;
+            }
+            if ((base - astart) % pg != 0 || size % pg != 0)
+            {
+                continue;
+            }
+            mprotect(reinterpret_cast<void*>(base), size, prot_from_attr(regions[i].attr));
+        }
+    }
+    // Re-grant the remembered resting set (arena no-access, then each region).
+    void arena_lower_to_applied()
+    {
+        arena_protect_none();
+        grant_region_set(g_applied, g_applied_n);
+    }
+
+    // Restore MPU state for the now-running context after a switch-in. A context
+    // that is mid-syscall (raised) keeps privileged (whole-arena) access even
+    // across a blocking switch back into it; otherwise the resting posture that
+    // the last arch_mpu_apply() programmed for it already stands.
     void guard_apply_current()
     {
-        if (g_guard != nullptr && g_current != nullptr && g_current->raised > 0)
+        if (g_arena != nullptr && g_current != nullptr && g_current->raised > 0)
         {
-            mprotect(g_guard, g_pagesize, PROT_READ | PROT_WRITE);
+            arena_raise_all();
         }
     }
 
@@ -161,14 +218,20 @@ void arch_init(void)
 {
     g_pagesize = sysconf(_SC_PAGESIZE);
 
-    g_guard = static_cast<unsigned char*>(
-        mmap(nullptr, g_pagesize, PROT_READ | PROT_WRITE,
+    // The user-RAM arena the MPU emulation governs (domain data + probe page).
+    g_arena_size = 256 * 1024;
+    g_arena = static_cast<unsigned char*>(
+        mmap(nullptr, g_arena_size, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-    if (g_guard == MAP_FAILED)
+    if (g_arena == MAP_FAILED)
     {
-        g_guard = nullptr; // MAP_FAILED is (void*)-1
+        g_arena = nullptr; // MAP_FAILED is (void*)-1
+        g_arena_size = 0;
     }
-    g_guard_prot = PROT_READ | PROT_WRITE;
+    g_arena_used = 0;
+    g_applied_n = 0;
+    // Reserve one page no domain is ever granted: the isolation-probe address.
+    g_guard = static_cast<unsigned char*>(arch_ram_alloc(g_pagesize));
 
     sigemptyset(&g_irq_signals);
     sigaddset(&g_irq_signals, SIGALRM);
@@ -362,26 +425,49 @@ void arch_timer_disarm(void)
     timer_settime(g_timer, 0, &its, nullptr);
 }
 
-// --- MPU (guard-page emulation) --------------------------------------------
-void arch_mpu_apply(const struct arch_mpu_region* regions, size_t n)
+// --- MPU: mprotect over the user-RAM arena ---------------------------------
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
-    if (!g_guard)
+    if (g_arena == nullptr)
     {
         return;
     }
-    uintptr_t guard = reinterpret_cast<uintptr_t>(g_guard);
-    int prot = PROT_NONE;
-    for (size_t i = 0; i < n; i++)
+    // Replace the whole active set: arena no-access, then grant this thread's
+    // (validated) regions, and remember the set as its resting posture so a
+    // syscall raise can be lowered back to exactly it. The regions pointer is
+    // the caller's TCB regions[] -- stable while the thread runs.
+    arena_protect_none();
+    grant_region_set(regions, n);
+    g_applied = regions;
+    g_applied_n = n;
+}
+
+uintptr_t arch_ram_base(void)
+{
+    return reinterpret_cast<uintptr_t>(g_arena);
+}
+
+size_t arch_ram_size(void)
+{
+    return g_arena_size;
+}
+
+void* arch_ram_alloc(size_t size)
+{
+    if (g_arena == nullptr)
     {
-        uintptr_t base = regions[i].base;
-        uintptr_t end = base + regions[i].size;
-        if (guard >= base && guard < end)
-        {
-            prot |= prot_from_attr(regions[i].attr);
-        }
+        return nullptr;
     }
-    g_guard_prot = prot; // the running thread's resting protection
-    mprotect(g_guard, g_pagesize, prot);
+    size_t pg = static_cast<size_t>(g_pagesize);
+    size_t need = (size + pg - 1) & ~(pg - 1);
+    // Subtract-form bound is immune to the size_t wrap that (used + need) has.
+    if (need == 0 || need > g_arena_size - g_arena_used)
+    {
+        return nullptr;
+    }
+    void* p = g_arena + g_arena_used;
+    g_arena_used += need;
+    return p;
 }
 
 uintptr_t arch_mpu_probe_addr(void)
@@ -394,20 +480,21 @@ uintptr_t arch_syscall(uintptr_t nr,
                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
 {
     // Emulated privilege raise, tracked PER-CONTEXT via SimContext::raised so it
-    // survives a blocking switch: if the dispatch blocks and we later resume this
-    // thread mid-syscall, guard_apply_current() re-grants RW (the switch-in's
-    // arch_mpu_apply would otherwise reinstate the caller's unprivileged resting
+    // survives a blocking switch: kernel dispatch may touch any user memory, so
+    // the whole arena is granted for the duration. If the dispatch blocks and we
+    // later resume this thread mid-syscall, guard_apply_current() re-raises (the
+    // switch-in's arch_mpu_apply would otherwise reinstate the caller's resting
     // posture while it is still running kernel code). On the final unwind we drop
-    // back to the caller's resting posture (g_guard_prot).
+    // back to exactly the caller's resting region set (g_applied).
     // Cache the calling context: a thread only ever runs as its own context, so
     // the same SimContext is current at entry and (after any blocking round-trip)
     // at exit -- pairing the raise and unwind on `self` makes that explicit.
     SimContext* self = nullptr;
-    if (g_guard != nullptr && g_current != nullptr)
+    if (g_arena != nullptr && g_current != nullptr)
     {
         self = g_current;
         self->raised++;
-        mprotect(g_guard, g_pagesize, PROT_READ | PROT_WRITE);
+        arena_raise_all();
     }
     uintptr_t r = syscall_dispatch(nr, a0, a1, a2, a3);
     if (self != nullptr)
@@ -415,7 +502,7 @@ uintptr_t arch_syscall(uintptr_t nr,
         self->raised--;
         if (self->raised == 0)
         {
-            mprotect(g_guard, g_pagesize, g_guard_prot);
+            arena_lower_to_applied();
         }
     }
     return r;

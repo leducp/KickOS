@@ -21,8 +21,9 @@ introspection), **RT-Thread** (scalable footprint, device framework, POSIX/CMSIS
 
 - **Clear userspace/kernel separation** — privileged kernel, unprivileged threads, syscalls
   across an SVC boundary. Microkernel, not monolithic.
-- **MPU as a first-class citizen** — per-task memory regions live in the TCB and are
-  reprogrammed on every context switch.
+- **MPU as a first-class citizen** — isolation is per **memory domain** (see below): threads
+  share memory within a domain, domains are MPU-isolated from each other, and the MPU is
+  reprogrammed on every context switch-in.
 - **Proper scheduling** — event-driven FIFO scheduling that can switch on *any* event (yield,
   block, semaphore post, device IRQ), **not** only a periodic tick. Round-robin is available;
   the tick is optional/forced, never the sole trigger → a **tickless** core.
@@ -90,7 +91,8 @@ details to be confirmed against the K64 Reference Manual.)
    operators; comments only for hidden constraints/invariants. **Allman brace style**, enforced by
    the checked-in `.clang-format`, matched to the sibling projects `../KickCAT` / `../kickmsg`
    (4-space indent, indented namespaces + case labels, left-aligned pointers, leading-comma ctor
-   init, preserved one-liners, `ColumnLimit: 0`); run `clang-format -i` on changed sources.
+   init, east-const/west-volatile, `ColumnLimit: 0`) — Allman *everywhere*, no one-liners; run
+   `clang-format -i` on changed sources.
 
 ### How KickOS differs from its inspirations
 
@@ -250,12 +252,70 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
 - **Syscalls via `SVC`**: handler reads number + args (r0–r3), dispatches through an
   arch-independent **syscall table**, returns in r0. Sim: a trampoline flips an emulated-
   privilege flag (+ `mprotect` toggles kernel-mem accessibility) and calls `syscall_dispatch()`.
-- **MPU per task, first-class**: kernel keeps a few fixed regions (kernel code RX, kernel data
-  RW-priv); background region off for unprivileged. Each TCB carries its own regions (task code
-  RX, task stack/data RW-NX); `arch_mpu_apply()` reloads them on switch-in. A user thread
-  touching kernel or another task's region faults → kernel reports.
-- **Sim isolation**: back "physical RAM" with one `mmap` arena; user regions are `mprotect`-ed
-  so a wild user pointer raises `SIGSEGV`, translated into the same fault path.
+- **MPU per domain, first-class** (see *Memory domains* below): the running thread's domain
+  region set is loaded by `arch_mpu_apply()` on every switch-in. A thread touching a domain
+  region not granted to it faults → kernel reports. (M0 isolates granted **data** regions;
+  per-thread private *stacks* — a sibling can't scribble another's stack — arrive with the M2
+  `Domain` object, since M0 stacks still live in the kernel pool, not the arena.)
+- **Sim isolation**: back "physical RAM" with one `mmap` arena; on every switch-in the running
+  thread's regions are `mprotect`-ed (grant its domain data region, everything else no-access) so
+  a cross-domain pointer raises `SIGSEGV`, translated into the same fault path. **Per-domain data
+  isolation is enforced in the sim from M0**; grant *geometry* is validated (page-aligned arena
+  sub-range) but grant *ownership* is spawner-asserted until M2 (a domain trusting a bad grant is
+  the M2 credential model). The user↔kernel boundary can't be fully trapped in a Linux process
+  (no CPU privilege), so a reserved arena page stands in for it; real user↔kernel enforcement is
+  hardware (M2).
+
+---
+
+## Memory domains (the isolation unit)
+
+The unit of memory isolation is a **memory domain** — a lightweight "process" in the
+memory-boundary sense only (no MMU, no virtual memory, no `fork`/`exec`). Model borrowed from
+**Zephyr `k_mem_domain`** / **ARINC 653** spatial partitions (temporal partitioning is *not*
+implied); ThreadX Modules and ChibiOS/SB are the loadable-code cousins.
+
+- **A domain owns a region set** — code (RX), data/heap (RW-NX), and any granted MMIO — plus a
+  **privilege posture** (privilege is a property of the *domain*, not of an individual thread).
+- **Threads belong to a domain and share its memory** (cooperative within a domain), **but each
+  thread keeps its own private stack region** — a sibling cannot scribble another thread's stack.
+  So a domain switch reloads the domain regions and every switch-in also loads the incoming
+  thread's stack region; the MPU is therefore reprogrammed on **every** context switch (there is
+  no "same-domain skip": the stack region differs per thread, and the privilege posture can
+  differ moment-to-moment across the syscall boundary).
+- **The kernel is a degenerate, static, privileged domain.** Its real protection is the ARM
+  **background region** (`PRIVDEFENA`) / SYSMPU supervisor default, so it spends almost no
+  explicit regions; MPU regions are spent describing what *unprivileged* code may reach.
+- **Cross-domain sharing = a region deliberately mapped into two domains.** This is the basis for
+  shared-memory IPC (roadmap). Absent an explicit shared region, domains cannot see each other.
+
+**Region-set contract (portability keystone).** Region grants must be **non-overlapping**, and
+`arch_mpu_apply(regions, n)` **replaces the whole active set** for the running thread. This is
+the one contract that spans the hardware split: **K64F SYSMPU** grants are a *union* (any region
+descriptor granting access wins), while **ARM PMSA** resolves overlaps by *region priority*
+(higher-numbered region wins) — so KickOS forbids overlap and treats `arch_mpu_region.attr` as
+the **unprivileged** access rights (supervisor access comes from the background region / SYSMPU
+RGD0, not from these descriptors). With this, the same region set programs identically on SYSMPU
+and PMSA. The seam signature does not change (RX72M litmus preserved).
+
+**Region budget** (only **8** regions on ARMv6-M/v7-M; ~12 on K64F SYSMPU): kernel needs ~0
+explicit regions (background map); a domain is ~3 (code, data/heap, optional MMIO) + 1 per-thread
+stack + the fault guard — comfortably within 8. Data/heap placement uses linker sections so a
+domain's RAM is one power-of-two-aligned PMSA region.
+
+**Domains vs kernel instances (complementary, not competing).** The KickCAT whole-bus sim runs
+many slaves, and **each slave is its own MCU → its own KickOS kernel instance**; several
+instances co-reside in one host process (invariant #7, instance-scoped state — the KickCAT
+`EmulatedNetwork`/`LoopbackSocket` path). **Memory domains isolate threads/apps *within* one
+kernel (one MCU).** The two compose: N simulated MCUs (kernel instances), each internally
+partitioned into domains. A slave is an *instance*, not a domain.
+
+Status: **per-domain isolation is enforced in the sim as of M0** — `arch_mpu_apply` `mprotect`s
+the user-RAM arena to the running thread's granted region set on every switch-in, and a
+cross-domain write faults (CI-covered by the `selftest` domain stage). The current shape is a
+per-thread granted region (`ThreadAttr.mem_base` / `kos_thread_params.mem_base`, backed by
+`arch_ram_alloc`); the full `Domain` object (a shared region set several threads reference, +
+per-thread private stacks) and per-**chip** hardware backends land in **M2**.
 
 ---
 
@@ -385,12 +445,25 @@ unprivileged user app across the SVC boundary — no hardware, runnable in CI.
 ### Milestone 2 — hardware MPU enforcement (per chip)
 
 12. `arch_mpu_apply()` chip backends wired into the task-switch hook: **K64F SYSMPU** first,
-    then **RP2040 ARMv6-M PMSA**, then **F411 ARMv7-M PMSA**. Fault handler reports offending
-    task/address; the wild-write demo now traps on hardware, matching the sim.
+    then **RP2040 ARMv6-M PMSA**, then **F411 ARMv7-M PMSA**. Fault handler reports the offending
+    thread/address; the wild-write demo traps on hardware, matching the sim. Complete the
+    **memory domain** model (sim already enforces per-domain *data* isolation — M0 step 9):
+    - TCB `regions[]` → `Thread → Domain*` (a shared region set) **+ per-thread private stacks
+      carved from user RAM** (so a sibling can't scribble another thread's stack — not enforced in
+      M0, where stacks live in the kernel pool);
+    - **authenticated grant ownership** — a domain may only grant/share a region it owns (M0
+      trusts the spawner's `mem_base`); a credential/handle model instead of raw pointers;
+    - **syscall-argument (user-pointer) validation** — the kernel must bounds-check user pointers
+      (`write` buf, `clock_now` out-ptr, spawn params) against the caller's regions, closing the
+      confused-deputy path that M0's whole-arena syscall raise leaves open;
+    - non-overlapping grants, `attr` = unprivileged rights, supervisor via background/RGD0, and
+      **PMSA power-of-two size/alignment** for region placement (M0's byte-granular `arch_ram_alloc`
+      suits SYSMPU/RX; v7-M needs pow2 regions — via linker sections or aligned allocation).
 
 ### Later
 
-Full MPU region policy & shared-memory IPC; message-passing IPC + userspace drivers (à la
+Multi-domain isolation (the *Memory domains* model) + cross-domain shared-memory IPC;
+message-passing IPC + userspace drivers (à la
 ChibiOS/SB para-virtualized HAL + virtual IRQ); runloops + channels / multi-object waiting;
 `thread_flags` / task-local signaling; built-in introspection (config-gated) + ISR deferred-post
 handler task; a ChibiOS-style HAL/driver model; priority inheritance + preemption-threshold;
