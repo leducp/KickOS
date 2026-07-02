@@ -11,23 +11,24 @@
 
 #include <stdint.h>
 
-namespace kickos {
+namespace kickos
+{
 
-void     ktime_init();
-uint64_t ktime_now();                       // monotonic nanoseconds
+    void ktime_init();
+    uint64_t ktime_now(); // monotonic nanoseconds
 
-// Sleep the current thread until absolute `deadline_ns` (monotonic). Blocks.
-void ktime_sleep_until(uint64_t deadline_ns);
-// Convenience: sleep for a relative duration.
-void ktime_sleep_ns(uint64_t ns);
+    // Sleep the current thread until absolute `deadline_ns` (monotonic). Blocks.
+    void ktime_sleep_until(uint64_t deadline_ns);
+    // Convenience: sleep for a relative duration.
+    void ktime_sleep_ns(uint64_t ns);
 
-// Recompute and (re)arm the one-shot timer. Called after any change that can
-// affect the earliest deadline (new sleeper, context switch/RR slice, wake).
-void ktime_rearm();
+    // Recompute and (re)arm the one-shot timer. Called after any change that can
+    // affect the earliest deadline (new sleeper, context switch/RR slice, wake).
+    void ktime_rearm();
 
-// The timer-expiry ISR body (invoked by arch via kickos_isr_timer()).
-void ktime_on_timer();
+    // The timer-expiry ISR body (invoked by arch via kickos_isr_timer()).
+    void ktime_on_timer();
 
-} // namespace kickos
+}
 
-#endif // KICKOS_TIME_H
+#endif

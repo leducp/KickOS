@@ -6,7 +6,8 @@
 
 #include <kickos/kos.hpp>
 
-extern "C" void kickos_app_main(void) {
-  kos::puts("[oot] hello from an out-of-tree KickOS app\n");
-  // Returning drops the last non-idle thread; the kernel then halts cleanly.
+extern "C" void kickos_app_main(void)
+{
+    kos::puts("[oot] hello from an out-of-tree KickOS app\n");
+    // Returning drops the last non-idle thread; the kernel then halts cleanly.
 }

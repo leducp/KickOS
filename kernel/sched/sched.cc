@@ -12,201 +12,231 @@
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
 
-namespace kickos {
-namespace {
+namespace kickos
+{
+    namespace
+    {
 
-// --- Per-priority ready lists + bitmap -------------------------------------
-struct ReadyList {
-  Thread* head = nullptr;
-  Thread* tail = nullptr;
-};
+        // --- Per-priority ready lists + bitmap -------------------------------------
+        struct ReadyList
+        {
+            Thread* head = nullptr;
+            Thread* tail = nullptr;
+        };
 
-ReadyList g_ready[KICKOS_NUM_PRIO];
-uint32_t  g_bitmap = 0;   // bit p set iff g_ready[p] non-empty
+        ReadyList g_ready[KICKOS_NUM_PRIO];
+        uint32_t g_bitmap = 0; // bit p set iff g_ready[p] non-empty
 
-Thread*      g_current = nullptr;
-Thread*      g_idle    = nullptr;
-unsigned     g_live    = 0;    // non-idle threads not yet EXITED
-arch_context g_boot;
+        Thread* g_current = nullptr;
+        Thread* g_idle = nullptr;
+        unsigned g_live = 0; // non-idle threads not yet EXITED
+        arch_context g_boot;
 
-const SchedPolicy* g_policy = nullptr;
+        SchedPolicy const* g_policy = nullptr;
 
-// Highest set priority (find-first-set from the top). Bit 0 (idle) always set
-// once idle exists, so the queue is never empty.
-inline int highest_prio() {
-  if (g_bitmap == 0) return -1;
-  return 31 - __builtin_clz(g_bitmap);
+        // Highest set priority (find-first-set from the top). Bit 0 (idle) always set
+        // once idle exists, so the queue is never empty.
+        inline int highest_prio()
+        {
+            if (g_bitmap == 0) return -1;
+            return 31 - __builtin_clz(g_bitmap);
+        }
+
+        void rq_push_back(Thread* t)
+        {
+            ReadyList& l = g_ready[t->prio];
+            t->qnext = nullptr;
+            t->qprev = l.tail;
+            if (l.tail != nullptr) l.tail->qnext = t;
+            else l.head = t;
+            l.tail = t;
+            g_bitmap |= (1u << t->prio);
+        }
+
+        void rq_remove(Thread* t)
+        {
+            ReadyList& l = g_ready[t->prio];
+            if (t->qprev != nullptr) t->qprev->qnext = t->qnext;
+            else l.head = t->qnext;
+            if (t->qnext != nullptr) t->qnext->qprev = t->qprev;
+            else l.tail = t->qprev;
+            t->qnext = nullptr;
+            t->qprev = nullptr;
+            if (l.head == nullptr) g_bitmap &= ~(1u << t->prio);
+        }
+
+        void rq_rotate(Thread* t)
+        {
+            // Move t to the back of its priority list (no-op if it's the only one).
+            ReadyList& l = g_ready[t->prio];
+            if (l.head == l.tail) return;
+            rq_remove(t);
+            rq_push_back(t);
+        }
+
+        // --- Default FIFO/RR policy ------------------------------------------------
+        Thread* policy_pick_next()
+        {
+            int p = highest_prio();
+            if (p < 0) return g_idle;
+            return g_ready[p].head;
+        }
+        void policy_on_ready(Thread*) {}
+        void policy_on_remove(Thread*) {}
+        void policy_on_yield(Thread* t) { rq_rotate(t); }
+        void policy_on_slice_expire(Thread* t) { rq_rotate(t); }
+
+        SchedPolicy const g_fifo_rr = {
+            policy_pick_next,
+            policy_on_ready,
+            policy_on_remove,
+            policy_on_yield,
+            policy_on_slice_expire,
+        };
+
+        // Arm the RR slice deadline for a thread being switched in.
+        void arm_slice(Thread* t)
+        {
+            if (t->policy == Policy::RR && t->quantum_ns > 0)
+            {
+                t->slice_deadline_ns = ktime_now() + t->quantum_ns;
+            }
+            else
+            {
+                t->slice_deadline_ns = UINT64_MAX;
+            }
+        }
+
+        // The one place a switch happens. Caller holds the critical section.
+        void switch_to(Thread* next)
+        {
+            Thread* prev = g_current;
+            if (prev->state == ThreadState::RUNNING) prev->state = ThreadState::READY;
+            g_current = next;
+            next->state = ThreadState::RUNNING;
+            next->switch_count++;
+            arm_slice(next);
+            // Task-switch hook: reprogram per-task MPU regions in one place.
+            arch_mpu_apply(next->regions, next->region_count);
+            // Arm the next-event timer for the incoming thread BEFORE we jump: the
+            // switching-out thread will not return here until it is resumed, so its
+            // deadlines (RR slice) must be programmed now.
+            ktime_rearm();
+            arch_switch(&prev->ctx, &next->ctx);
+        }
+
+    }
+
+    namespace sched
+    {
+
+        void init()
+        {
+            for (int i = 0; i < KICKOS_NUM_PRIO; i++) g_ready[i] = ReadyList{};
+            g_bitmap = 0;
+            g_current = nullptr;
+            g_idle = nullptr;
+            g_live = 0;
+            g_policy = &g_fifo_rr;
+        }
+
+        void set_policy(SchedPolicy const* policy) { g_policy = policy; }
+
+        void add(Thread* t)
+        {
+            IrqLock lock;
+            t->state = ThreadState::READY;
+            rq_push_back(t);
+            g_policy->on_ready(t);
+            if (t->prio == KICKOS_PRIO_IDLE)
+            {
+                g_idle = t;
+            }
+            else
+            {
+                g_live++;
+            }
+        }
+
+        void start()
+        {
+            IrqLock lock;
+            Thread* first = g_policy->pick_next();
+            g_current = first;
+            first->state = ThreadState::RUNNING;
+            arm_slice(first);
+            arch_mpu_apply(first->regions, first->region_count);
+            ktime_rearm();
+            arch_start(&g_boot, &first->ctx);
+        }
+
+        void reschedule()
+        {
+            IrqLock lock;
+            Thread* next = g_policy->pick_next();
+            if (next == g_current) return;
+            switch_to(next); // arms the next-event timer for the incoming thread
+        }
+
+        void yield()
+        {
+            IrqLock lock;
+            g_policy->on_yield(g_current);
+            reschedule();
+        }
+
+        void block_current()
+        {
+            IrqLock lock;
+            // Caller has set g_current->state (BLOCKED/SLEEPING) and linked it onto its
+            // wait/timer queue; drop it from the run set and switch away.
+            rq_remove(g_current);
+            g_policy->on_remove(g_current);
+            reschedule();
+        }
+
+        void wake(Thread* t)
+        {
+            IrqLock lock;
+            if (t->state == ThreadState::READY || t->state == ThreadState::RUNNING) return;
+            t->state = ThreadState::READY;
+            rq_push_back(t);
+            g_policy->on_ready(t);
+            reschedule(); // switches now (thread ctx) or defers (ISR ctx) if warranted
+        }
+
+        void exit_current()
+        {
+            IrqLock lock;
+            g_current->state = ThreadState::EXITED;
+            rq_remove(g_current);
+            g_policy->on_remove(g_current);
+            if (g_current != g_idle && g_live > 0) g_live--;
+            if (g_live == 0) arch_shutdown(0);
+            reschedule(); // switch away permanently
+            while (true) {}   // unreachable: an EXITED thread is never picked again
+        }
+
+        Thread* current() { return g_current; }
+        Thread* idle() { return g_idle; }
+        unsigned live_count() { return g_live; }
+
+        uint64_t next_slice_deadline()
+        {
+            if (g_current == nullptr) return UINT64_MAX;
+            return g_current->slice_deadline_ns;
+        }
+
+        void tick_rr(uint64_t now)
+        {
+            IrqLock lock;
+            Thread* c = g_current;
+            if (c == nullptr) return;
+            if (c->policy != Policy::RR || c->quantum_ns == 0) return;
+            if (now < c->slice_deadline_ns) return;
+            g_policy->on_slice_expire(c);
+            reschedule();
+        }
+
+    }
 }
-
-void rq_push_back(Thread* t) {
-  ReadyList& l = g_ready[t->prio];
-  t->qnext = nullptr;
-  t->qprev = l.tail;
-  if (l.tail != nullptr) l.tail->qnext = t; else l.head = t;
-  l.tail = t;
-  g_bitmap |= (1u << t->prio);
-}
-
-void rq_remove(Thread* t) {
-  ReadyList& l = g_ready[t->prio];
-  if (t->qprev != nullptr) t->qprev->qnext = t->qnext; else l.head = t->qnext;
-  if (t->qnext != nullptr) t->qnext->qprev = t->qprev; else l.tail = t->qprev;
-  t->qnext = nullptr;
-  t->qprev = nullptr;
-  if (l.head == nullptr) g_bitmap &= ~(1u << t->prio);
-}
-
-void rq_rotate(Thread* t) {
-  // Move t to the back of its priority list (no-op if it's the only one).
-  ReadyList& l = g_ready[t->prio];
-  if (l.head == l.tail) return;
-  rq_remove(t);
-  rq_push_back(t);
-}
-
-// --- Default FIFO/RR policy ------------------------------------------------
-Thread* policy_pick_next() {
-  int p = highest_prio();
-  if (p < 0) return g_idle;
-  return g_ready[p].head;
-}
-void policy_on_ready(Thread*)  {}
-void policy_on_remove(Thread*) {}
-void policy_on_yield(Thread* t)        { rq_rotate(t); }
-void policy_on_slice_expire(Thread* t) { rq_rotate(t); }
-
-const SchedPolicy g_fifo_rr = {
-  policy_pick_next,
-  policy_on_ready,
-  policy_on_remove,
-  policy_on_yield,
-  policy_on_slice_expire,
-};
-
-// Arm the RR slice deadline for a thread being switched in.
-void arm_slice(Thread* t) {
-  if (t->policy == Policy::RR && t->quantum_ns > 0) {
-    t->slice_deadline_ns = ktime_now() + t->quantum_ns;
-  } else {
-    t->slice_deadline_ns = UINT64_MAX;
-  }
-}
-
-// The one place a switch happens. Caller holds the critical section.
-void switch_to(Thread* next) {
-  Thread* prev = g_current;
-  if (prev->state == ThreadState::RUNNING) prev->state = ThreadState::READY;
-  g_current = next;
-  next->state = ThreadState::RUNNING;
-  next->switch_count++;
-  arm_slice(next);
-  // Task-switch hook: reprogram per-task MPU regions in one place.
-  arch_mpu_apply(next->regions, next->region_count);
-  // Arm the next-event timer for the incoming thread BEFORE we jump: the
-  // switching-out thread will not return here until it is resumed, so its
-  // deadlines (RR slice) must be programmed now.
-  ktime_rearm();
-  arch_switch(&prev->ctx, &next->ctx);
-}
-
-} // namespace
-
-namespace sched {
-
-void init() {
-  for (int i = 0; i < KICKOS_NUM_PRIO; i++) g_ready[i] = ReadyList{};
-  g_bitmap = 0;
-  g_current = nullptr;
-  g_idle = nullptr;
-  g_live = 0;
-  g_policy = &g_fifo_rr;
-}
-
-void set_policy(const SchedPolicy* policy) { g_policy = policy; }
-
-void add(Thread* t) {
-  IrqLock lock;
-  t->state = ThreadState::READY;
-  rq_push_back(t);
-  g_policy->on_ready(t);
-  if (t->prio == KICKOS_PRIO_IDLE) {
-    g_idle = t;
-  } else {
-    g_live++;
-  }
-}
-
-void start() {
-  IrqLock lock;
-  Thread* first = g_policy->pick_next();
-  g_current = first;
-  first->state = ThreadState::RUNNING;
-  arm_slice(first);
-  arch_mpu_apply(first->regions, first->region_count);
-  ktime_rearm();
-  arch_start(&g_boot, &first->ctx);
-}
-
-void reschedule() {
-  IrqLock lock;
-  Thread* next = g_policy->pick_next();
-  if (next == g_current) return;
-  switch_to(next);   // arms the next-event timer for the incoming thread
-}
-
-void yield() {
-  IrqLock lock;
-  g_policy->on_yield(g_current);
-  reschedule();
-}
-
-void block_current() {
-  IrqLock lock;
-  // Caller has set g_current->state (BLOCKED/SLEEPING) and linked it onto its
-  // wait/timer queue; drop it from the run set and switch away.
-  rq_remove(g_current);
-  g_policy->on_remove(g_current);
-  reschedule();
-}
-
-void wake(Thread* t) {
-  IrqLock lock;
-  if (t->state == ThreadState::READY || t->state == ThreadState::RUNNING) return;
-  t->state = ThreadState::READY;
-  rq_push_back(t);
-  g_policy->on_ready(t);
-  reschedule();      // switches now (thread ctx) or defers (ISR ctx) if warranted
-}
-
-void exit_current() {
-  IrqLock lock;
-  g_current->state = ThreadState::EXITED;
-  rq_remove(g_current);
-  g_policy->on_remove(g_current);
-  if (g_current != g_idle && g_live > 0) g_live--;
-  if (g_live == 0) arch_shutdown(0);
-  reschedule();      // switch away permanently
-  for (;;) {}        // unreachable: an EXITED thread is never picked again
-}
-
-Thread* current() { return g_current; }
-Thread* idle()    { return g_idle; }
-unsigned live_count() { return g_live; }
-
-uint64_t next_slice_deadline() {
-  if (g_current == nullptr) return UINT64_MAX;
-  return g_current->slice_deadline_ns;
-}
-
-void tick_rr(uint64_t now) {
-  IrqLock lock;
-  Thread* c = g_current;
-  if (c == nullptr) return;
-  if (c->policy != Policy::RR || c->quantum_ns == 0) return;
-  if (now < c->slice_deadline_ns) return;
-  g_policy->on_slice_expire(c);
-  reschedule();
-}
-
-} // namespace sched
-} // namespace kickos

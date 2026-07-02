@@ -10,13 +10,14 @@
 #ifndef KICKOS_IRQ_H
 #define KICKOS_IRQ_H
 
-namespace kickos {
+namespace kickos
+{
 
-using IrqHandler = void (*)(void* arg);
+    using IrqHandler = void (*)(void* arg);
 
-void irq_attach(int irq, IrqHandler handler, void* arg);
-void irq_detach(int irq);
+    void irq_attach(int irq, IrqHandler handler, void* arg);
+    void irq_detach(int irq);
 
-} // namespace kickos
+}
 
-#endif // KICKOS_IRQ_H
+#endif

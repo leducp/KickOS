@@ -19,7 +19,8 @@
 #include <kickos/arch/context.h>
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
 // --- One-time backend bring-up ---------------------------------------------
@@ -53,29 +54,31 @@ void arch_start(struct arch_context* boot, struct arch_context* first);
 // --- Critical section (RAII-wrapped by kernel IrqLock) ---------------------
 typedef uintptr_t arch_irq_state_t;
 arch_irq_state_t arch_irq_save(void);
-void             arch_irq_restore(arch_irq_state_t state);
+void arch_irq_restore(arch_irq_state_t state);
 
 // Nonzero while executing in interrupt/ISR context.
 int arch_in_isr(void);
 
 // --- Tickless clock + one-shot next-event timer ----------------------------
-uint64_t arch_clock_now(void);          // monotonic nanoseconds
-void     arch_timer_arm(uint64_t deadline_ns);
-void     arch_timer_disarm(void);
+uint64_t arch_clock_now(void); // monotonic nanoseconds
+void arch_timer_arm(uint64_t deadline_ns);
+void arch_timer_disarm(void);
 
 // --- MPU: per-task memory protection ---------------------------------------
-enum {
-  ARCH_MPU_NONE = 0,
-  ARCH_MPU_R    = 1u << 0,
-  ARCH_MPU_W    = 1u << 1,
-  ARCH_MPU_X    = 1u << 2,
-  ARCH_MPU_DEV  = 1u << 3   // device / MMIO
+enum
+{
+    ARCH_MPU_NONE = 0,
+    ARCH_MPU_R = 1u << 0,
+    ARCH_MPU_W = 1u << 1,
+    ARCH_MPU_X = 1u << 2,
+    ARCH_MPU_DEV = 1u << 3 // device / MMIO
 };
 
-struct arch_mpu_region {
-  uintptr_t base;
-  size_t    size;
-  uint32_t  attr;           // OR of the ARCH_MPU_* bits
+struct arch_mpu_region
+{
+    uintptr_t base;
+    size_t size;
+    uint32_t attr; // OR of the ARCH_MPU_* bits
 };
 
 // Load the per-task regions on switch-in. sim: mprotect over the mmap arena.
@@ -102,7 +105,7 @@ void arch_irq_inject(int irq);
 
 // --- Minimal debug console (bottom edge of the in-kernel console driver) ---
 // Write-only, unbuffered. sim: host stdout; MCU: polled UART.
-void arch_console_write(const char* buf, size_t n);
+void arch_console_write(char const* buf, size_t n);
 
 // --- Idle -------------------------------------------------------------------
 // Block until the next interrupt (ARM WFI; sim sigsuspend).
@@ -125,4 +128,4 @@ void kickos_isr_fault(uintptr_t addr, int is_write);
 }
 #endif
 
-#endif // KICKOS_ARCH_ARCH_H
+#endif

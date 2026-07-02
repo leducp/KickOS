@@ -9,20 +9,25 @@
 
 #include <kickos/arch/arch.h>
 
-namespace kickos {
+namespace kickos
+{
 
-class IrqLock {
- public:
-  IrqLock() : state_(arch_irq_save()) {}
-  ~IrqLock() { arch_irq_restore(state_); }
+    class IrqLock
+    {
+    public:
+        IrqLock()
+            : state_(arch_irq_save())
+        {
+        }
+        ~IrqLock() { arch_irq_restore(state_); }
 
-  IrqLock(const IrqLock&) = delete;
-  IrqLock& operator=(const IrqLock&) = delete;
+        IrqLock(IrqLock const&) = delete;
+        IrqLock& operator=(IrqLock const&) = delete;
 
- private:
-  arch_irq_state_t state_;
-};
+    private:
+        arch_irq_state_t state_;
+    };
 
-} // namespace kickos
+}
 
-#endif // KICKOS_IRQLOCK_H
+#endif

@@ -6,9 +6,13 @@
 
 #include <kickos/arch/arch.h>
 
-namespace kickos { int kmain(); }
+namespace kickos
+{
+    int kmain();
+}
 
-int main(int, char**) {
-  arch_init();
-  return kickos::kmain();
+int main(int, char**)
+{
+    arch_init();
+    return kickos::kmain();
 }

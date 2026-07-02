@@ -86,7 +86,10 @@ details to be confirmed against the K64 Reference Manual.)
    flags) via a `kickos_add_application()` CMake helper. The app defines a known entry
    (`kickos_app_main()`) that the kernel's boot path calls after init.
 9. **Conventions.** Traditional include guards `KICKOS_<PATH>_H` (no `#pragma once`); no ternary
-   operators; comments only for hidden constraints/invariants.
+   operators; comments only for hidden constraints/invariants. **Allman brace style**, enforced by
+   the checked-in `.clang-format`, matched to the sibling projects `../KickCAT` / `../kickmsg`
+   (4-space indent, indented namespaces + case labels, left-aligned pointers, leading-comma ctor
+   init, preserved one-liners, `ColumnLimit: 0`); run `clang-format -i` on changed sources.
 
 ### How KickOS differs from its inspirations
 

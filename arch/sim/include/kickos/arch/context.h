@@ -13,8 +13,9 @@
 
 #define ARCH_CONTEXT_SIZE 2048
 
-struct arch_context {
-  alignas(16) unsigned char opaque[ARCH_CONTEXT_SIZE];
+struct arch_context
+{
+    alignas(16) unsigned char opaque[ARCH_CONTEXT_SIZE];
 };
 
-#endif // KICKOS_ARCH_CONTEXT_H
+#endif
