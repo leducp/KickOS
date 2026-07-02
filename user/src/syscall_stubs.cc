@@ -26,7 +26,7 @@ void kos_yield(void)
 
 void kos_sleep_ns(uint64_t ns)
 {
-    arch_syscall(KOS_SYS_sleep_ns, static_cast<uintptr_t>(ns), 0, 0, 0);
+    arch_syscall(KOS_SYS_sleep_ns, kos_u64_lo(ns), kos_u64_hi(ns), 0, 0);
 }
 
 int kos_sem_create(int initial)
@@ -75,7 +75,9 @@ void kos_irq_attach(int irq, int sem_id)
 
 uint64_t kos_clock_now(void)
 {
-    return static_cast<uint64_t>(arch_syscall(KOS_SYS_clock_now, 0, 0, 0, 0));
+    uint64_t out = 0;
+    arch_syscall(KOS_SYS_clock_now, reinterpret_cast<uintptr_t>(&out), 0, 0, 0);
+    return out;
 }
 
 long kos_puts(char const* s)

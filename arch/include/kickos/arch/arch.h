@@ -89,14 +89,25 @@ void arch_mpu_apply(const struct arch_mpu_region* regions, size_t n);
 uintptr_t arch_mpu_probe_addr(void);
 
 // --- Syscall trap (user -> kernel) -----------------------------------------
-// Issued by the userspace syscall stubs. sim: flips the emulated-privilege
-// flag (arena becomes kernel-accessible), calls syscall_dispatch(), restores.
-// ARM (later): this is the SVC instruction; the SVC handler is the arch entry.
+// Issued by the userspace syscall stubs; returns the syscall result.
+//
+// CONTRACT (portability-critical): the arch MUST run syscall_dispatch() in
+// privileged THREAD context on the calling thread's own continuation -- NOT in
+// ISR/handler context. A blocking syscall (sem_wait, sleep, ...) blocks by an
+// ordinary synchronous context switch (arch_switch completes, resuming the
+// dispatch inline when the thread is next scheduled), exactly as if the kernel
+// routine were called directly. The kernel's blocking primitives depend on
+// this; arch_in_isr() must read false during dispatch.
+//   sim: arch_syscall is a plain call, so dispatch already runs in thread
+//        context and arch_switch swaps synchronously.
+//   ARM (later): SVC raises privilege and continues dispatch in privileged
+//        thread mode (so a blocking switch/PendSV saves the mid-dispatch
+//        continuation and resumes it), rather than running dispatch in the SVC
+//        handler where a switch could only be deferred.
+// 64-bit arguments/results are split into uintptr_t halves (see sys/abi.h),
+// so no arch-specific result-delivery seam is needed.
 uintptr_t arch_syscall(uintptr_t nr,
                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
-
-// Deliver `result` to the frame that issued the syscall captured in `ctx`.
-void arch_syscall_return(struct arch_context* ctx, uintptr_t result);
 
 // --- Emulated device interrupts (sim) --------------------------------------
 // Raise device line `irq`. sim: delivers an async signal so the ISR runs in

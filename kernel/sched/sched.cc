@@ -185,13 +185,25 @@ namespace kickos
             reschedule();
         }
 
+        void detach_current()
+        {
+            IrqLock lock;
+            // Blocking is only legal from thread context: a voluntary block relies
+            // on arch_switch completing synchronously. From ISR context arch_switch
+            // would defer and the "blocked" thread would keep running.
+            if (arch_in_isr()) kpanic("kickos: blocking operation from ISR context");
+            rq_remove(g_current);
+            g_policy->on_remove(g_current);
+        }
+
         void block_current()
         {
             IrqLock lock;
             // Caller has set g_current->state (BLOCKED/SLEEPING) and linked it onto its
-            // wait/timer queue; drop it from the run set and switch away.
-            rq_remove(g_current);
-            g_policy->on_remove(g_current);
+            // wait/timer queue; drop it from the run set and switch away. Safe for the
+            // timer path (sleepq uses the separate tnext link); wait-queue callers must
+            // detach_current() before parking (shared qnext/qprev links).
+            detach_current();
             reschedule();
         }
 
@@ -213,8 +225,8 @@ namespace kickos
             g_policy->on_remove(g_current);
             if (g_current != g_idle && g_live > 0) g_live--;
             if (g_live == 0) arch_shutdown(0);
-            reschedule(); // switch away permanently
-            while (true) {}   // unreachable: an EXITED thread is never picked again
+            reschedule();   // switch away permanently
+            while (true) {} // unreachable: an EXITED thread is never picked again
         }
 
         Thread* current() { return g_current; }
@@ -235,6 +247,11 @@ namespace kickos
             if (c->policy != Policy::RR || c->quantum_ns == 0) return;
             if (now < c->slice_deadline_ns) return;
             g_policy->on_slice_expire(c);
+            // Grant a fresh quantum even when there is no equal-priority peer to
+            // switch to; otherwise the expired deadline stays in the past and the
+            // one-shot timer re-arms every minimum-delta (a ~50 kHz storm). If we
+            // do switch, switch_to() re-arms for the incoming thread.
+            arm_slice(c);
             reschedule();
         }
 

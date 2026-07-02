@@ -50,6 +50,11 @@ namespace kickos
         // e.g. BLOCKED/SLEEPING), then reschedule. Returns when the thread is resumed.
         void block_current();
 
+        // Remove `current` from the ready list WITHOUT rescheduling. A blocking
+        // primitive must call this BEFORE parking the thread on a wait queue,
+        // since the ready list and wait queues share the qnext/qprev links.
+        void detach_current();
+
         // Make a previously-removed thread runnable again; preempts if warranted.
         void wake(Thread* t);
 

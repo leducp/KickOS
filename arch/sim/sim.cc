@@ -154,7 +154,9 @@ void arch_init(void)
 
     struct sigaction fa{};
     fa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    sigemptyset(&fa.sa_mask);
+    // Block timer/device IRQs while reporting a fault: a deferred switch out of
+    // the fault handler would abandon its alt-stack frame mid-report.
+    fa.sa_mask = g_irq_signals;
     fa.sa_sigaction = on_sigsegv;
     sigaction(SIGSEGV, &fa, nullptr);
 
@@ -319,12 +321,6 @@ uintptr_t arch_syscall(uintptr_t nr,
     uintptr_t r = syscall_dispatch(nr, a0, a1, a2, a3);
     if (had_guard) mprotect(g_guard, g_pagesize, g_guard_prot);
     return r;
-}
-
-void arch_syscall_return(struct arch_context*, uintptr_t)
-{
-    // sim delivers the result as the C return value of arch_syscall(); nothing
-    // to write back into a saved frame.
 }
 
 // --- Emulated device interrupt ---------------------------------------------

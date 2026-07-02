@@ -59,6 +59,10 @@ namespace kickos
         {
             IrqLock lock;
             if (p == nullptr) return -1;
+            // Validate the user-supplied priority: it indexes g_ready[] and drives
+            // a 1u<<prio shift, so an out-of-range value is an OOB write / UB.
+            // Priority 0 is reserved for the idle thread.
+            if (p->prio < KICKOS_PRIO_MIN || p->prio > KICKOS_PRIO_MAX) return -1;
             if (g_pool_next >= kPoolSize) return -1;
             int i = g_pool_next++;
 
@@ -104,7 +108,8 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             sched::yield();
             return 0;
         case KOS_SYS_sleep_ns:
-            ktime_sleep_ns(static_cast<uint64_t>(a0));
+            ktime_sleep_ns(kos_u64_join(static_cast<uint32_t>(a0),
+                                        static_cast<uint32_t>(a1)));
             return 0;
         case KOS_SYS_sem_create:
             return static_cast<uintptr_t>(sem_create(static_cast<int>(a0)));
@@ -138,8 +143,14 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                        reinterpret_cast<void*>(static_cast<intptr_t>(a1)));
             return 0;
         case KOS_SYS_clock_now:
-            return static_cast<uintptr_t>(arch_clock_now());
+        {
+            if (a0 == 0) return static_cast<uintptr_t>(-1);
+            *reinterpret_cast<uint64_t*>(a0) = arch_clock_now();
+            return 0;
+        }
         default:
-            kpanic("syscall_dispatch: bad syscall number");
+            // Unknown syscall from userspace is a caller error, not a kernel
+            // invariant violation: fault the caller (-1), never panic the kernel.
+            return static_cast<uintptr_t>(-1);
     }
 }

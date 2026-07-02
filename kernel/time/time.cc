@@ -100,7 +100,12 @@ namespace kickos
 
     void ktime_sleep_ns(uint64_t ns)
     {
-        ktime_sleep_until(ktime_now() + ns);
+        // Saturate on overflow: a caller-supplied huge ns must not wrap to a past
+        // deadline (which the min-delta guard would turn into a ~20us sleep).
+        uint64_t now = ktime_now();
+        uint64_t deadline = now + ns;
+        if (deadline < now) deadline = UINT64_MAX;
+        ktime_sleep_until(deadline);
     }
 
     void ktime_on_timer()

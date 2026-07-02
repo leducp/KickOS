@@ -47,10 +47,14 @@ namespace kickos
         void block_on(WaitQueue& q)
         {
             Thread* c = sched::current();
+            // Detach from the ready list FIRST: the ready list and wait queues
+            // share qnext/qprev, so wq_push_back would clobber the links that the
+            // ready-list removal needs to read.
+            sched::detach_current();
             c->state = ThreadState::BLOCKED;
             c->wait_queue = &q;
             wq_push_back(q, c);
-            sched::block_current(); // drops from run set + reschedules; returns on wake
+            sched::reschedule(); // switch away; returns when woken
         }
 
     }

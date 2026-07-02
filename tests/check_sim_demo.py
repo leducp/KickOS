@@ -24,7 +24,7 @@ def main():
     except subprocess.TimeoutExpired:
         fail("demo timed out (likely a scheduler hang / missing switch)")
 
-    out = proc.stdout
+    out = proc.stdout + proc.stderr
     print(out, end="")
 
     if proc.returncode != 0:
@@ -55,6 +55,10 @@ def main():
         # 6. Sleep ordering via the tickless timer queue (short before long).
         "[sleep] 10ms woke",
         "[sleep] 40ms woke",
+        # Two equal-priority threads block on one semaphore (regression for the
+        # ready-list/wait-queue link ordering; hangs without the detach fix).
+        "[multi] A woke",
+        "[multi] B woke",
         # Privileged guard access survives a syscall (regression: trap epilogue
         # must restore the caller's MPU posture, not force PROT_NONE).
         "[mpu] privileged guard write ok",
@@ -75,8 +79,11 @@ def main():
     for m in ("[rr] A 1", "[rr] B 1", "[rr] A 2", "[rr] B 2", "[rr] A 3", "[rr] B 3"):
         if m not in out:
             fail(f"missing RR marker: {m!r}")
-    if not out.index("[rr] B 1") < out.index("[rr] A 2"):
-        fail("RR did not round-robin (B's slice never interleaved A's)")
+    # Require SUSTAINED interleave (B_i before A_{i+1} for each i): a scheduler
+    # that slices exactly once and then stops would still pass a single check.
+    for i in (1, 2):
+        if not out.index(f"[rr] B {i}") < out.index(f"[rr] A {i + 1}"):
+            fail(f"RR stopped interleaving after slice {i}")
 
     print("PASS: all M0 verification bullets observed")
     sys.exit(0)

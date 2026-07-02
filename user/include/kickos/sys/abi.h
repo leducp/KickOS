@@ -12,19 +12,30 @@
 
 enum kos_syscall_nr
 {
-    KOS_SYS_write = 1,        // (fd, buf, len)        -> bytes written
+    KOS_SYS_write = 1,        // (fd, buf, len)        -> bytes written, or -1
     KOS_SYS_yield = 2,        // ()                    -> 0
-    KOS_SYS_sleep_ns = 3,     // (ns)                  -> 0
+    KOS_SYS_sleep_ns = 3,     // (ns_lo, ns_hi)        -> 0
     KOS_SYS_sem_create = 4,   // (initial)             -> sem id, or -1
-    KOS_SYS_sem_wait = 5,     // (id)                  -> 0
-    KOS_SYS_sem_post = 6,     // (id)                  -> 0
+    KOS_SYS_sem_wait = 5,     // (id)                  -> 0, or -1 on bad id
+    KOS_SYS_sem_post = 6,     // (id)                  -> 0, or -1 on bad id
     KOS_SYS_thread_spawn = 7, // (kos_thread_params*)  -> thread id, or -1
     KOS_SYS_exit = 8,         // (code)                -> does not return
     KOS_SYS_irq_inject = 9,   // (irq)                 -> 0
     KOS_SYS_guard_addr = 10,  // ()                    -> protected probe addr
-    KOS_SYS_irq_attach = 11,  // (irq, sem_id)         -> 0  (post sem on IRQ)
-    KOS_SYS_clock_now = 12    // ()                    -> monotonic ns
+    KOS_SYS_irq_attach = 11,  // (irq, sem_id)         -> 0, or -1 on bad irq
+    KOS_SYS_clock_now = 12    // (uint64_t* out)       -> 0
 };
+
+// 64-bit values are passed/returned as two uintptr_t halves so the ABI is
+// identical on 32-bit (ARM M-class) and 64-bit (sim) targets: never rely on
+// uintptr_t being 64 bits. sleep_ns takes (lo, hi); clock_now writes its u64
+// result through a caller-supplied out-pointer. Helpers:
+static inline uint32_t kos_u64_lo(uint64_t v) { return (uint32_t)(v & 0xffffffffu); }
+static inline uint32_t kos_u64_hi(uint64_t v) { return (uint32_t)(v >> 32); }
+static inline uint64_t kos_u64_join(uint32_t lo, uint32_t hi)
+{
+    return ((uint64_t)hi << 32) | (uint64_t)lo;
+}
 
 enum kos_policy
 {

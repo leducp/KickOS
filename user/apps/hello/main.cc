@@ -92,6 +92,21 @@ namespace
         kos_sem_post(g_done);
     }
 
+    // --- Two equal-priority threads blocking on one semaphore ------------------
+    // Regression: the blocker must detach from the ready list before parking on
+    // the wait queue (shared qnext/qprev links), and a wait queue must hold >1
+    // waiter. Without the fix the second equal-priority thread is orphaned and
+    // this stage hangs.
+    int g_multi = -1;
+    void multi_worker(void* arg)
+    {
+        kos_sem_wait(g_multi);
+        char b[48];
+        ksnprintf(b, sizeof(b), "[multi] %s woke\n", static_cast<char const*>(arg));
+        line(b);
+        kos_sem_post(g_done);
+    }
+
     // --- MPU wild write --------------------------------------------------------
     void wild_writer(void*)
     {
@@ -154,6 +169,15 @@ extern "C" void kickos_app_main(void)
     line("[sleep] start\n");
     kos::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{40}), "sleepLong", 10);
     kos::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{10}), "sleepShort", 10);
+    wait_done(2);
+
+    line("[multi] start\n");
+    g_multi = kos_sem_create(0);
+    kos::spawn(multi_worker, const_cast<char*>("A"), "multiA", 10);
+    kos::spawn(multi_worker, const_cast<char*>("B"), "multiB", 10);
+    kos_sleep_ns(5000000ull); // let both block on g_multi (two waiters, equal prio)
+    kos_sem_post(g_multi);
+    kos_sem_post(g_multi);
     wait_done(2);
 
     // Privileged access to protected memory must survive a syscall: the trap
