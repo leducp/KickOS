@@ -22,7 +22,10 @@ namespace kickos
 
     void irq_attach(int irq, IrqHandler handler, void* arg)
     {
-        if (irq < 0 || irq >= KICKOS_MAX_IRQ) return;
+        if (irq < 0 || irq >= KICKOS_MAX_IRQ)
+        {
+            return;
+        }
         IrqLock lock;
         g_table[irq].handler = handler;
         g_table[irq].arg = arg;
@@ -30,7 +33,10 @@ namespace kickos
 
     void irq_detach(int irq)
     {
-        if (irq < 0 || irq >= KICKOS_MAX_IRQ) return;
+        if (irq < 0 || irq >= KICKOS_MAX_IRQ)
+        {
+            return;
+        }
         IrqLock lock;
         g_table[irq].handler = nullptr;
         g_table[irq].arg = nullptr;
@@ -43,8 +49,14 @@ namespace kickos
 // so drives a switch to the readied thread on interrupt exit.
 extern "C" void kickos_isr_irq(int irq)
 {
-    if (irq < 0 || irq >= KICKOS_MAX_IRQ) return;
+    if (irq < 0 || irq >= KICKOS_MAX_IRQ)
+    {
+        return;
+    }
     ::kickos::IrqHandler h = ::kickos::g_table[irq].handler;
     void* arg = ::kickos::g_table[irq].arg;
-    if (h != nullptr) h(arg);
+    if (h != nullptr)
+    {
+        h(arg);
+    }
 }

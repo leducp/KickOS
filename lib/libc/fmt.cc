@@ -16,15 +16,24 @@ namespace
 
         void put(char c)
         {
-            if (size > 0 && total < size - 1) buf[total] = c;
+            if (size > 0 && total < size - 1)
+            {
+                buf[total] = c;
+            }
             total++;
         }
     };
 
     void emit_str(Sink& s, char const* str)
     {
-        if (str == nullptr) str = "(null)";
-        while (*str != '\0') s.put(*str++);
+        if (str == nullptr)
+        {
+            str = "(null)";
+        }
+        while (*str != '\0')
+        {
+            s.put(*str++);
+        }
     }
 
     // Unsigned integer in the given base (10 or 16). `upper` unused (lowercase hex).
@@ -54,7 +63,10 @@ namespace
                 v /= base;
             }
         }
-        while (n > 0) s.put(tmp[--n]);
+        while (n > 0)
+        {
+            s.put(tmp[--n]);
+        }
     }
 
     void emit_int(Sink& s, int64_t v)
@@ -112,29 +124,62 @@ extern "C" int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
             case 'i':
             {
                 int64_t v;
-                if (longness >= 2) v = va_arg(ap, long long);
-                else if (longness == 1) v = va_arg(ap, long);
-                else v = va_arg(ap, int);
+                if (longness >= 2)
+                {
+                    v = va_arg(ap, long long);
+                }
+                else if (longness == 1)
+                {
+                    v = va_arg(ap, long);
+                }
+                else
+                {
+                    v = va_arg(ap, int);
+                }
                 emit_int(s, v);
                 break;
             }
             case 'u':
             {
                 uint64_t v;
-                if (longness == 3) v = va_arg(ap, size_t);
-                else if (longness >= 2) v = va_arg(ap, unsigned long long);
-                else if (longness == 1) v = va_arg(ap, unsigned long);
-                else v = va_arg(ap, unsigned);
+                if (longness == 3)
+                {
+                    v = va_arg(ap, size_t);
+                }
+                else if (longness >= 2)
+                {
+                    v = va_arg(ap, unsigned long long);
+                }
+                else if (longness == 1)
+                {
+                    v = va_arg(ap, unsigned long);
+                }
+                else
+                {
+                    v = va_arg(ap, unsigned);
+                }
                 emit_uint(s, v, 10);
                 break;
             }
             case 'x':
             {
                 uint64_t v;
-                if (longness == 3) v = va_arg(ap, size_t);
-                else if (longness >= 2) v = va_arg(ap, unsigned long long);
-                else if (longness == 1) v = va_arg(ap, unsigned long);
-                else v = va_arg(ap, unsigned);
+                if (longness == 3)
+                {
+                    v = va_arg(ap, size_t);
+                }
+                else if (longness >= 2)
+                {
+                    v = va_arg(ap, unsigned long long);
+                }
+                else if (longness == 1)
+                {
+                    v = va_arg(ap, unsigned long);
+                }
+                else
+                {
+                    v = va_arg(ap, unsigned);
+                }
                 emit_uint(s, v, 16);
                 break;
             }
@@ -159,7 +204,10 @@ extern "C" int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
     if (s.size > 0)
     {
         size_t term = s.total;
-        if (term > s.size - 1) term = s.size - 1;
+        if (term > s.size - 1)
+        {
+            term = s.size - 1;
+        }
         s.buf[term] = '\0';
     }
     return static_cast<int>(s.total);

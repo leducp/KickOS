@@ -38,7 +38,10 @@ namespace kickos
         // once idle exists, so the queue is never empty.
         inline int highest_prio()
         {
-            if (g_bitmap == 0) return -1;
+            if (g_bitmap == 0)
+            {
+                return -1;
+            }
             return 31 - __builtin_clz(g_bitmap);
         }
 
@@ -47,8 +50,14 @@ namespace kickos
             ReadyList& l = g_ready[t->prio];
             t->qnext = nullptr;
             t->qprev = l.tail;
-            if (l.tail != nullptr) l.tail->qnext = t;
-            else l.head = t;
+            if (l.tail != nullptr)
+            {
+                l.tail->qnext = t;
+            }
+            else
+            {
+                l.head = t;
+            }
             l.tail = t;
             g_bitmap |= (1u << t->prio);
         }
@@ -56,20 +65,38 @@ namespace kickos
         void rq_remove(Thread* t)
         {
             ReadyList& l = g_ready[t->prio];
-            if (t->qprev != nullptr) t->qprev->qnext = t->qnext;
-            else l.head = t->qnext;
-            if (t->qnext != nullptr) t->qnext->qprev = t->qprev;
-            else l.tail = t->qprev;
+            if (t->qprev != nullptr)
+            {
+                t->qprev->qnext = t->qnext;
+            }
+            else
+            {
+                l.head = t->qnext;
+            }
+            if (t->qnext != nullptr)
+            {
+                t->qnext->qprev = t->qprev;
+            }
+            else
+            {
+                l.tail = t->qprev;
+            }
             t->qnext = nullptr;
             t->qprev = nullptr;
-            if (l.head == nullptr) g_bitmap &= ~(1u << t->prio);
+            if (l.head == nullptr)
+            {
+                g_bitmap &= ~(1u << t->prio);
+            }
         }
 
         void rq_rotate(Thread* t)
         {
             // Move t to the back of its priority list (no-op if it's the only one).
             ReadyList& l = g_ready[t->prio];
-            if (l.head == l.tail) return;
+            if (l.head == l.tail)
+            {
+                return;
+            }
             rq_remove(t);
             rq_push_back(t);
         }
@@ -78,13 +105,26 @@ namespace kickos
         Thread* policy_pick_next()
         {
             int p = highest_prio();
-            if (p < 0) return g_idle;
+            if (p < 0)
+            {
+                return g_idle;
+            }
             return g_ready[p].head;
         }
-        void policy_on_ready(Thread*) {}
-        void policy_on_remove(Thread*) {}
-        void policy_on_yield(Thread* t) { rq_rotate(t); }
-        void policy_on_slice_expire(Thread* t) { rq_rotate(t); }
+        void policy_on_ready(Thread*)
+        {
+        }
+        void policy_on_remove(Thread*)
+        {
+        }
+        void policy_on_yield(Thread* t)
+        {
+            rq_rotate(t);
+        }
+        void policy_on_slice_expire(Thread* t)
+        {
+            rq_rotate(t);
+        }
 
         SchedPolicy const g_fifo_rr = {
             policy_pick_next,
@@ -111,7 +151,10 @@ namespace kickos
         void switch_to(Thread* next)
         {
             Thread* prev = g_current;
-            if (prev->state == ThreadState::RUNNING) prev->state = ThreadState::READY;
+            if (prev->state == ThreadState::RUNNING)
+            {
+                prev->state = ThreadState::READY;
+            }
             g_current = next;
             next->state = ThreadState::RUNNING;
             next->switch_count++;
@@ -132,7 +175,10 @@ namespace kickos
 
         void init()
         {
-            for (int i = 0; i < KICKOS_NUM_PRIO; i++) g_ready[i] = ReadyList{};
+            for (int i = 0; i < KICKOS_NUM_PRIO; i++)
+            {
+                g_ready[i] = ReadyList{};
+            }
             g_bitmap = 0;
             g_current = nullptr;
             g_idle = nullptr;
@@ -140,7 +186,10 @@ namespace kickos
             g_policy = &g_fifo_rr;
         }
 
-        void set_policy(SchedPolicy const* policy) { g_policy = policy; }
+        void set_policy(SchedPolicy const* policy)
+        {
+            g_policy = policy;
+        }
 
         void add(Thread* t)
         {
@@ -174,7 +223,10 @@ namespace kickos
         {
             IrqLock lock;
             Thread* next = g_policy->pick_next();
-            if (next == g_current) return;
+            if (next == g_current)
+            {
+                return;
+            }
             switch_to(next); // arms the next-event timer for the incoming thread
         }
 
@@ -191,7 +243,10 @@ namespace kickos
             // Blocking is only legal from thread context: a voluntary block relies
             // on arch_switch completing synchronously. From ISR context arch_switch
             // would defer and the "blocked" thread would keep running.
-            if (arch_in_isr()) kpanic("kickos: blocking operation from ISR context");
+            if (arch_in_isr())
+            {
+                kpanic("kickos: blocking operation from ISR context");
+            }
             rq_remove(g_current);
             g_policy->on_remove(g_current);
         }
@@ -210,7 +265,10 @@ namespace kickos
         void wake(Thread* t)
         {
             IrqLock lock;
-            if (t->state == ThreadState::READY || t->state == ThreadState::RUNNING) return;
+            if (t->state == ThreadState::READY || t->state == ThreadState::RUNNING)
+            {
+                return;
+            }
             t->state = ThreadState::READY;
             rq_push_back(t);
             g_policy->on_ready(t);
@@ -223,19 +281,39 @@ namespace kickos
             g_current->state = ThreadState::EXITED;
             rq_remove(g_current);
             g_policy->on_remove(g_current);
-            if (g_current != g_idle && g_live > 0) g_live--;
-            if (g_live == 0) arch_shutdown(0);
-            reschedule();   // switch away permanently
-            while (true) {} // unreachable: an EXITED thread is never picked again
+            if (g_current != g_idle && g_live > 0)
+            {
+                g_live--;
+            }
+            if (g_live == 0)
+            {
+                arch_shutdown(0);
+            }
+            reschedule(); // switch away permanently
+            while (true)
+            {
+            } // unreachable: an EXITED thread is never picked again
         }
 
-        Thread* current() { return g_current; }
-        Thread* idle() { return g_idle; }
-        unsigned live_count() { return g_live; }
+        Thread* current()
+        {
+            return g_current;
+        }
+        Thread* idle()
+        {
+            return g_idle;
+        }
+        unsigned live_count()
+        {
+            return g_live;
+        }
 
         uint64_t next_slice_deadline()
         {
-            if (g_current == nullptr) return UINT64_MAX;
+            if (g_current == nullptr)
+            {
+                return UINT64_MAX;
+            }
             return g_current->slice_deadline_ns;
         }
 
@@ -243,9 +321,18 @@ namespace kickos
         {
             IrqLock lock;
             Thread* c = g_current;
-            if (c == nullptr) return;
-            if (c->policy != Policy::RR || c->quantum_ns == 0) return;
-            if (now < c->slice_deadline_ns) return;
+            if (c == nullptr)
+            {
+                return;
+            }
+            if (c->policy != Policy::RR || c->quantum_ns == 0)
+            {
+                return;
+            }
+            if (now < c->slice_deadline_ns)
+            {
+                return;
+            }
             g_policy->on_slice_expire(c);
             // Grant a fresh quantum even when there is no equal-priority peer to
             // switch to; otherwise the expired deadline stays in the past and the

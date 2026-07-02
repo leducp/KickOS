@@ -14,17 +14,35 @@ namespace kickos
         {
             t->qnext = nullptr;
             t->qprev = q.tail;
-            if (q.tail != nullptr) q.tail->qnext = t;
-            else q.head = t;
+            if (q.tail != nullptr)
+            {
+                q.tail->qnext = t;
+            }
+            else
+            {
+                q.head = t;
+            }
             q.tail = t;
         }
 
         void wq_unlink(WaitQueue& q, Thread* t)
         {
-            if (t->qprev != nullptr) t->qprev->qnext = t->qnext;
-            else q.head = t->qnext;
-            if (t->qnext != nullptr) t->qnext->qprev = t->qprev;
-            else q.tail = t->qprev;
+            if (t->qprev != nullptr)
+            {
+                t->qprev->qnext = t->qnext;
+            }
+            else
+            {
+                q.head = t->qnext;
+            }
+            if (t->qnext != nullptr)
+            {
+                t->qnext->qprev = t->qprev;
+            }
+            else
+            {
+                q.tail = t->qprev;
+            }
             t->qnext = nullptr;
             t->qprev = nullptr;
         }
@@ -33,10 +51,16 @@ namespace kickos
         Thread* wq_pop_highest(WaitQueue& q)
         {
             Thread* best = q.head;
-            if (best == nullptr) return nullptr;
+            if (best == nullptr)
+            {
+                return nullptr;
+            }
             for (Thread* t = best->qnext; t != nullptr; t = t->qnext)
             {
-                if (t->prio > best->prio) best = t;
+                if (t->prio > best->prio)
+                {
+                    best = t;
+                }
             }
             wq_unlink(q, best);
             best->wait_queue = nullptr;

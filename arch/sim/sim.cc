@@ -67,15 +67,27 @@ namespace
     int prot_from_attr(uint32_t attr)
     {
         int prot = PROT_NONE;
-        if (attr & ARCH_MPU_R) prot |= PROT_READ;
-        if (attr & ARCH_MPU_W) prot |= PROT_WRITE;
-        if (attr & ARCH_MPU_X) prot |= PROT_EXEC;
+        if (attr & ARCH_MPU_R)
+        {
+            prot |= PROT_READ;
+        }
+        if (attr & ARCH_MPU_W)
+        {
+            prot |= PROT_WRITE;
+        }
+        if (attr & ARCH_MPU_X)
+        {
+            prot |= PROT_EXEC;
+        }
         return prot;
     }
 
     // Run an ISR body with correct interrupt-depth bookkeeping and, on the way
     // out at depth 0, perform any deferred context switch requested during it.
-    void isr_frame_enter() { g_isr_depth++; }
+    void isr_frame_enter()
+    {
+        g_isr_depth++;
+    }
     void isr_frame_leave(SimContext* interrupted)
     {
         g_isr_depth--;
@@ -99,7 +111,10 @@ namespace
         isr_frame_enter();
         int irq = g_pending_irq;
         g_pending_irq = -1;
-        if (irq >= 0) kickos_isr_irq(irq);
+        if (irq >= 0)
+        {
+            kickos_isr_irq(irq);
+        }
         isr_frame_leave(interrupted);
     }
 
@@ -127,7 +142,10 @@ void arch_init(void)
     g_guard = static_cast<unsigned char*>(
         mmap(nullptr, g_pagesize, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-    if (g_guard == MAP_FAILED) g_guard = nullptr; // MAP_FAILED is (void*)-1
+    if (g_guard == MAP_FAILED)
+    {
+        g_guard = nullptr; // MAP_FAILED is (void*)-1
+    }
     g_guard_prot = PROT_READ | PROT_WRITE;
 
     sigemptyset(&g_irq_signals);
@@ -180,7 +198,10 @@ void arch_console_write(char const* buf, size_t n)
     while (static_cast<size_t>(off) < n)
     {
         ssize_t w = write(1, buf + off, n - static_cast<size_t>(off));
-        if (w <= 0) break;
+        if (w <= 0)
+        {
+            break;
+        }
         off += w;
     }
 }
@@ -241,8 +262,14 @@ arch_irq_state_t arch_irq_save(void)
     sigprocmask(SIG_BLOCK, &g_irq_signals, &prev);
     // Encode whether SIGALRM was previously unblocked so restore is exact.
     arch_irq_state_t s = 0;
-    if (!sigismember(&prev, SIGALRM)) s |= 1;
-    if (!sigismember(&prev, SIGUSR1)) s |= 2;
+    if (!sigismember(&prev, SIGALRM))
+    {
+        s |= 1;
+    }
+    if (!sigismember(&prev, SIGUSR1))
+    {
+        s |= 2;
+    }
     return s;
 }
 
@@ -250,12 +277,24 @@ void arch_irq_restore(arch_irq_state_t state)
 {
     sigset_t unblock;
     sigemptyset(&unblock);
-    if (state & 1) sigaddset(&unblock, SIGALRM);
-    if (state & 2) sigaddset(&unblock, SIGUSR1);
-    if (state) sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
+    if (state & 1)
+    {
+        sigaddset(&unblock, SIGALRM);
+    }
+    if (state & 2)
+    {
+        sigaddset(&unblock, SIGUSR1);
+    }
+    if (state)
+    {
+        sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
+    }
 }
 
-int arch_in_isr(void) { return g_isr_depth > 0; }
+int arch_in_isr(void)
+{
+    return g_isr_depth > 0;
+}
 
 // --- Tickless clock + timer -------------------------------------------------
 uint64_t arch_clock_now(void)
@@ -268,7 +307,10 @@ uint64_t arch_clock_now(void)
 
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    if (!g_timer_created) return;
+    if (!g_timer_created)
+    {
+        return;
+    }
     struct itimerspec its{};
     its.it_value.tv_sec = static_cast<time_t>(deadline_ns / 1000000000ull);
     its.it_value.tv_nsec = static_cast<long>(deadline_ns % 1000000000ull);
@@ -278,7 +320,10 @@ void arch_timer_arm(uint64_t deadline_ns)
 
 void arch_timer_disarm(void)
 {
-    if (!g_timer_created) return;
+    if (!g_timer_created)
+    {
+        return;
+    }
     struct itimerspec its{}; // all-zero disarms
     timer_settime(g_timer, 0, &its, nullptr);
 }
@@ -286,14 +331,20 @@ void arch_timer_disarm(void)
 // --- MPU (guard-page emulation) --------------------------------------------
 void arch_mpu_apply(const struct arch_mpu_region* regions, size_t n)
 {
-    if (!g_guard) return;
+    if (!g_guard)
+    {
+        return;
+    }
     uintptr_t guard = reinterpret_cast<uintptr_t>(g_guard);
     int prot = PROT_NONE;
     for (size_t i = 0; i < n; i++)
     {
         uintptr_t base = regions[i].base;
         uintptr_t end = base + regions[i].size;
-        if (guard >= base && guard < end) prot |= prot_from_attr(regions[i].attr);
+        if (guard >= base && guard < end)
+        {
+            prot |= prot_from_attr(regions[i].attr);
+        }
     }
     g_guard_prot = prot; // the running thread's resting protection
     mprotect(g_guard, g_pagesize, prot);
@@ -319,7 +370,10 @@ uintptr_t arch_syscall(uintptr_t nr,
         mprotect(g_guard, g_pagesize, PROT_READ | PROT_WRITE);
     }
     uintptr_t r = syscall_dispatch(nr, a0, a1, a2, a3);
-    if (had_guard) mprotect(g_guard, g_pagesize, g_guard_prot);
+    if (had_guard)
+    {
+        mprotect(g_guard, g_pagesize, g_guard_prot);
+    }
     return r;
 }
 

@@ -34,10 +34,11 @@ namespace kickos
 // The application entry the kernel calls after init (dependency inversion).
 extern "C" void kickos_app_main(void);
 
-#define KICKOS_ASSERT(cond)                              \
-    do                                                   \
-    {                                                    \
-        if (!(cond)) ::kickos::kpanic("assert: " #cond); \
+#define KICKOS_ASSERT(cond)                     \
+    do                                          \
+    {                                           \
+        if (!(cond))                            \
+            ::kickos::kpanic("assert: " #cond); \
     } while (0)
 
 #endif

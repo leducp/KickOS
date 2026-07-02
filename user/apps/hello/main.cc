@@ -23,7 +23,10 @@ namespace
     int g_go = -1;   // preempt hand-off
     int g_irq = -1;  // IRQ-posted semaphore
 
-    void line(char const* s) { kos_write(1, s, strlen(s)); }
+    void line(char const* s)
+    {
+        kos_write(1, s, strlen(s));
+    }
 
     // --- FIFO ordering ---------------------------------------------------------
     void fifo_worker(void* arg)
@@ -76,7 +79,9 @@ namespace
             // Burn ~2 ms of wall-clock, longer than the 1 ms slice, so the timer
             // preempts mid-iteration and rotates to the equal-priority peer.
             uint64_t start = kos_clock_now();
-            while (kos_clock_now() - start < 2000000ull) {}
+            while (kos_clock_now() - start < 2000000ull)
+            {
+            }
         }
         kos_sem_post(g_done);
     }
@@ -122,7 +127,10 @@ namespace
 
     void wait_done(int count)
     {
-        for (int i = 0; i < count; i++) kos_sem_wait(g_done);
+        for (int i = 0; i < count; i++)
+        {
+            kos_sem_wait(g_done);
+        }
     }
 
 }

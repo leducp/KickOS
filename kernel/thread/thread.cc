@@ -49,5 +49,7 @@ namespace kickos
 extern "C" void kickos_thread_return(void)
 {
     ::kickos::sched::exit_current();
-    while (true) {} // unreachable
+    while (true)
+    {
+    } // unreachable
 }

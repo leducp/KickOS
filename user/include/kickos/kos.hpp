@@ -12,15 +12,42 @@
 namespace kos
 {
 
-    inline long write(int fd, void const* buf, size_t len) { return kos_write(fd, buf, len); }
-    inline long puts(char const* s) { return kos_puts(s); }
-    inline void yield() { kos_yield(); }
-    inline void sleep_ns(uint64_t ns) { kos_sleep_ns(ns); }
-    inline void irq_inject(int irq) { kos_irq_inject(irq); }
-    inline void irq_attach(int irq, int sem_id) { kos_irq_attach(irq, sem_id); }
-    inline uint64_t clock_now() { return kos_clock_now(); }
-    inline void* guard_addr() { return kos_guard_addr(); }
-    [[noreturn]] inline void exit(int code) { kos_exit(code); }
+    inline long write(int fd, void const* buf, size_t len)
+    {
+        return kos_write(fd, buf, len);
+    }
+    inline long puts(char const* s)
+    {
+        return kos_puts(s);
+    }
+    inline void yield()
+    {
+        kos_yield();
+    }
+    inline void sleep_ns(uint64_t ns)
+    {
+        kos_sleep_ns(ns);
+    }
+    inline void irq_inject(int irq)
+    {
+        kos_irq_inject(irq);
+    }
+    inline void irq_attach(int irq, int sem_id)
+    {
+        kos_irq_attach(irq, sem_id);
+    }
+    inline uint64_t clock_now()
+    {
+        return kos_clock_now();
+    }
+    inline void* guard_addr()
+    {
+        return kos_guard_addr();
+    }
+    [[noreturn]] inline void exit(int code)
+    {
+        kos_exit(code);
+    }
 
     // Counting semaphore handle.
     class Semaphore
@@ -30,9 +57,18 @@ namespace kos
             : id_(kos_sem_create(initial))
         {
         }
-        void wait() { kos_sem_wait(id_); }
-        void post() { kos_sem_post(id_); }
-        int id() const { return id_; }
+        void wait()
+        {
+            kos_sem_wait(id_);
+        }
+        void post()
+        {
+            kos_sem_post(id_);
+        }
+        int id() const
+        {
+            return id_;
+        }
 
     private:
         int id_;

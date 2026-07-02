@@ -22,7 +22,10 @@ namespace kickos
 
         void idle_entry(void*)
         {
-            while (true) arch_idle_wait();
+            while (true)
+            {
+                arch_idle_wait();
+            }
         }
 
         void root_entry(void*)

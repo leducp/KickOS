@@ -31,20 +31,29 @@ namespace kickos
         int sem_create(int initial)
         {
             IrqLock lock;
-            if (g_sem_count >= KICKOS_MAX_SEMAPHORES) return -1;
+            if (g_sem_count >= KICKOS_MAX_SEMAPHORES)
+            {
+                return -1;
+            }
             int id = g_sem_count++;
             sem_init(&g_sems[id], initial);
             return id;
         }
 
-        bool sem_valid(int id) { return id >= 0 && id < g_sem_count; }
+        bool sem_valid(int id)
+        {
+            return id >= 0 && id < g_sem_count;
+        }
 
         // Privileged in-kernel IRQ handler bound by KOS_SYS_irq_attach: posts a
         // semaphore from ISR context, driving the interrupt-exit switch (trigger #4).
         void irq_sem_post(void* arg)
         {
             int id = static_cast<int>(reinterpret_cast<intptr_t>(arg));
-            if (sem_valid(id)) sem_post(&g_sems[id]);
+            if (sem_valid(id))
+            {
+                sem_post(&g_sems[id]);
+            }
         }
 
         // --- Thread pool (static allocation; kernel-provided stacks) ---------------
@@ -58,20 +67,35 @@ namespace kickos
         int thread_spawn(kos_thread_params const* p)
         {
             IrqLock lock;
-            if (p == nullptr) return -1;
+            if (p == nullptr)
+            {
+                return -1;
+            }
             // Validate the user-supplied priority: it indexes g_ready[] and drives
             // a 1u<<prio shift, so an out-of-range value is an OOB write / UB.
             // Priority 0 is reserved for the idle thread.
-            if (p->prio < KICKOS_PRIO_MIN || p->prio > KICKOS_PRIO_MAX) return -1;
-            if (g_pool_next >= kPoolSize) return -1;
+            if (p->prio < KICKOS_PRIO_MIN || p->prio > KICKOS_PRIO_MAX)
+            {
+                return -1;
+            }
+            if (g_pool_next >= kPoolSize)
+            {
+                return -1;
+            }
             int i = g_pool_next++;
 
             ThreadAttr attr;
             attr.name = "user";
-            if (p->name != nullptr) attr.name = p->name;
+            if (p->name != nullptr)
+            {
+                attr.name = p->name;
+            }
             attr.prio = p->prio;
             attr.policy = Policy::FIFO;
-            if (p->policy == KOS_POLICY_RR) attr.policy = Policy::RR;
+            if (p->policy == KOS_POLICY_RR)
+            {
+                attr.policy = Policy::RR;
+            }
             attr.quantum_ns = p->quantum_ns;
             attr.privileged = (p->privileged != 0);
 
@@ -116,14 +140,20 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_sem_wait:
         {
             int id = static_cast<int>(a0);
-            if (!sem_valid(id)) return static_cast<uintptr_t>(-1);
+            if (!sem_valid(id))
+            {
+                return static_cast<uintptr_t>(-1);
+            }
             sem_wait(&g_sems[id]);
             return 0;
         }
         case KOS_SYS_sem_post:
         {
             int id = static_cast<int>(a0);
-            if (!sem_valid(id)) return static_cast<uintptr_t>(-1);
+            if (!sem_valid(id))
+            {
+                return static_cast<uintptr_t>(-1);
+            }
             sem_post(&g_sems[id]);
             return 0;
         }
@@ -144,7 +174,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return 0;
         case KOS_SYS_clock_now:
         {
-            if (a0 == 0) return static_cast<uintptr_t>(-1);
+            if (a0 == 0)
+            {
+                return static_cast<uintptr_t>(-1);
+            }
             *reinterpret_cast<uint64_t*>(a0) = arch_clock_now();
             return 0;
         }

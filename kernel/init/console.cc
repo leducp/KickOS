@@ -49,9 +49,15 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
 {
     ::kickos::Thread* c = ::kickos::sched::current();
     char const* who = "?";
-    if (c != nullptr) who = c->name;
+    if (c != nullptr)
+    {
+        who = c->name;
+    }
     char const* dir = "read";
-    if (is_write) dir = "write";
+    if (is_write)
+    {
+        dir = "write";
+    }
     ::kickos::kprintf("\nMPU FAULT: task '%s' attempted %s at %p -- reported\n",
                       who, dir, reinterpret_cast<void*>(addr));
     arch_shutdown(0);

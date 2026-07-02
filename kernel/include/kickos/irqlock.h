@@ -19,7 +19,10 @@ namespace kickos
             : state_(arch_irq_save())
         {
         }
-        ~IrqLock() { arch_irq_restore(state_); }
+        ~IrqLock()
+        {
+            arch_irq_restore(state_);
+        }
 
         IrqLock(IrqLock const&) = delete;
         IrqLock& operator=(IrqLock const&) = delete;

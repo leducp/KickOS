@@ -20,18 +20,41 @@ int _write(int fd, char const* buf, int len)
     return static_cast<int>(kos_write(fd, buf, static_cast<size_t>(len)));
 }
 
-int _read(int, char*, int) { return 0; }
-int _close(int) { return -1; }
-int _isatty(int) { return 1; }
-int _lseek(int, int, int) { return 0; }
-int _fstat(int, void*) { return 0; }
-int _getpid(void) { return 1; }
-int _kill(int, int) { return -1; }
+int _read(int, char*, int)
+{
+    return 0;
+}
+int _close(int)
+{
+    return -1;
+}
+int _isatty(int)
+{
+    return 1;
+}
+int _lseek(int, int, int)
+{
+    return 0;
+}
+int _fstat(int, void*)
+{
+    return 0;
+}
+int _getpid(void)
+{
+    return 1;
+}
+int _kill(int, int)
+{
+    return -1;
+}
 
 void _exit(int code)
 {
     kos_exit(code);
-    while (true) {}
+    while (true)
+    {
+    }
 }
 
 // Bump allocator over a fixed userspace heap arena.

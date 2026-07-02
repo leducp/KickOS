@@ -30,8 +30,14 @@ enum kos_syscall_nr
 // identical on 32-bit (ARM M-class) and 64-bit (sim) targets: never rely on
 // uintptr_t being 64 bits. sleep_ns takes (lo, hi); clock_now writes its u64
 // result through a caller-supplied out-pointer. Helpers:
-static inline uint32_t kos_u64_lo(uint64_t v) { return (uint32_t)(v & 0xffffffffu); }
-static inline uint32_t kos_u64_hi(uint64_t v) { return (uint32_t)(v >> 32); }
+static inline uint32_t kos_u64_lo(uint64_t v)
+{
+    return (uint32_t)(v & 0xffffffffu);
+}
+static inline uint32_t kos_u64_hi(uint64_t v)
+{
+    return (uint32_t)(v >> 32);
+}
 static inline uint64_t kos_u64_join(uint32_t lo, uint32_t hi)
 {
     return ((uint64_t)hi << 32) | (uint64_t)lo;

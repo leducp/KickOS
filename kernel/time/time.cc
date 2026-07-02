@@ -39,7 +39,10 @@ namespace kickos
         void sleepq_remove(Thread* t)
         {
             Thread** pp = &g_sleepq;
-            while (*pp != nullptr && *pp != t) pp = &(*pp)->tnext;
+            while (*pp != nullptr && *pp != t)
+            {
+                pp = &(*pp)->tnext;
+            }
             if (*pp == t)
             {
                 *pp = t->tnext;
@@ -64,14 +67,23 @@ namespace kickos
     {
         IrqLock lock;
         uint64_t next = UINT64_MAX;
-        if (g_sleepq != nullptr) next = g_sleepq->deadline_ns;
+        if (g_sleepq != nullptr)
+        {
+            next = g_sleepq->deadline_ns;
+        }
 
         uint64_t slice = sched::next_slice_deadline();
-        if (slice < next) next = slice;
+        if (slice < next)
+        {
+            next = slice;
+        }
 
 #if defined(KICKOS_SCHED_PERIODIC_TICK)
         uint64_t periodic = ktime_now() + kTickPeriodNs;
-        if (periodic < next) next = periodic;
+        if (periodic < next)
+        {
+            next = periodic;
+        }
 #endif
 
         if (next == UINT64_MAX)
@@ -83,7 +95,10 @@ namespace kickos
         // Minimum-delta guard: never arm a compare that may already be in the past.
         uint64_t now = ktime_now();
         uint64_t floor = now + KICKOS_TIMER_MIN_DELTA_NS;
-        if (next < floor) next = floor;
+        if (next < floor)
+        {
+            next = floor;
+        }
         arch_timer_arm(next);
     }
 
@@ -104,7 +119,10 @@ namespace kickos
         // deadline (which the min-delta guard would turn into a ~20us sleep).
         uint64_t now = ktime_now();
         uint64_t deadline = now + ns;
-        if (deadline < now) deadline = UINT64_MAX;
+        if (deadline < now)
+        {
+            deadline = UINT64_MAX;
+        }
         ktime_sleep_until(deadline);
     }
 
