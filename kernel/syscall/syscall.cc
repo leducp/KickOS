@@ -166,8 +166,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_irq_inject:
             arch_irq_inject(static_cast<int>(a0));
             return 0;
+#if defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_guard_addr:
             return arch_mpu_probe_addr();
+#endif
         case KOS_SYS_irq_attach:
         {
             int irq = static_cast<int>(a0);

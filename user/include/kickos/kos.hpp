@@ -40,10 +40,12 @@ namespace kos
     {
         return kos_clock_now();
     }
+#if defined(KICKOS_ENABLE_SELFTEST)
     inline void* guard_addr()
     {
         return kos_guard_addr();
     }
+#endif
     [[noreturn]] inline void exit(int code)
     {
         kos_exit(code);

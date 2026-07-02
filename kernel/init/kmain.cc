@@ -10,6 +10,18 @@
 #include <kickos/time.h>
 #include <kickos/arch/arch.h>
 
+// Identity, injected by the build (see kernel/CMakeLists.txt); fall back so the
+// TU still compiles standalone.
+#ifndef KICKOS_VERSION
+#define KICKOS_VERSION "0.0.0"
+#endif
+#ifndef KICKOS_BOARD_NAME
+#define KICKOS_BOARD_NAME "unknown"
+#endif
+#ifndef KICKOS_ARCH_NAME
+#define KICKOS_ARCH_NAME "unknown"
+#endif
+
 namespace kickos
 {
     namespace
@@ -19,6 +31,24 @@ namespace kickos
         alignas(16) unsigned char g_root_stack[64 * 1024];
         Thread g_idle_tcb;
         Thread g_root_tcb;
+
+        void kbanner()
+        {
+            const char* sched = "tickless";
+#if defined(KICKOS_SCHED_PERIODIC_TICK)
+            sched = "periodic tick";
+#endif
+            char const* rule = "  ==============================================\n";
+            kputs("\n");
+            kputs(rule);
+            kprintf("   KickOS %s  -  microkernel RTOS\n", KICKOS_VERSION);
+            kputs(rule);
+            kprintf("   board   %s\n", KICKOS_BOARD_NAME);
+            kprintf("   arch    %s\n", KICKOS_ARCH_NAME);
+            kprintf("   sched   %s\n", sched);
+            kprintf("   build   %s %s\n", __DATE__, __TIME__);
+            kputs("\n");
+        }
 
         void idle_entry(void*)
         {
@@ -38,6 +68,7 @@ namespace kickos
 
     int kmain()
     {
+        kbanner();
         sched::init();
         ktime_init();
 

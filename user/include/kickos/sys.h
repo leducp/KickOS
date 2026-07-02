@@ -28,7 +28,12 @@ void kos_sem_post(int id);
 int kos_thread_spawn(const struct kos_thread_params* params);
 void kos_exit(int code) __attribute__((noreturn));
 void kos_irq_inject(int irq);
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Test-only: address of a page that faults on unprivileged access, for the MPU
+// privilege self-test. Not part of the production syscall ABI.
 void* kos_guard_addr(void);
+#endif
 
 // Bind device line `irq` so that firing it posts semaphore `sem_id` from ISR
 // context (userspace irq-as-event precursor).

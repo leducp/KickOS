@@ -23,6 +23,13 @@ target_include_directories(kickos_kernel PUBLIC
 target_include_directories(kickos_kernel PRIVATE
   "${PROJECT_SOURCE_DIR}/user/include")
 target_link_libraries(kickos_kernel PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
+
+# Identity baked into the boot banner (kmain kbanner()).
+target_compile_definitions(kickos_kernel PRIVATE
+  KICKOS_VERSION="${PROJECT_VERSION}"
+  KICKOS_BOARD_NAME="${KICKOS_BOARD}"
+  KICKOS_ARCH_NAME="${KICKOS_ARCH}")
+
 install(TARGETS kickos_kernel EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 

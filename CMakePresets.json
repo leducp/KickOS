@@ -11,7 +11,8 @@
       "cacheVariables": {
         "KICKOS_BOARD": "sim",
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "KICKOS_ENABLE_SELFTEST": "ON"
       }
     }
   ],

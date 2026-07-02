@@ -62,10 +62,12 @@ void kos_irq_inject(int irq)
     arch_syscall(KOS_SYS_irq_inject, static_cast<uintptr_t>(irq), 0, 0, 0);
 }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
 void* kos_guard_addr(void)
 {
     return reinterpret_cast<void*>(arch_syscall(KOS_SYS_guard_addr, 0, 0, 0, 0));
 }
+#endif
 
 void kos_irq_attach(int irq, int sem_id)
 {

@@ -21,7 +21,7 @@ enum kos_syscall_nr
     KOS_SYS_thread_spawn = 7, // (kos_thread_params*)  -> thread id, or -1
     KOS_SYS_exit = 8,         // (code)                -> does not return
     KOS_SYS_irq_inject = 9,   // (irq)                 -> 0
-    KOS_SYS_guard_addr = 10,  // ()                    -> protected probe addr
+    KOS_SYS_guard_addr = 10,  // ()  -> protected probe addr (self-test only)
     KOS_SYS_irq_attach = 11,  // (irq, sem_id)         -> 0, or -1 on bad irq
     KOS_SYS_clock_now = 12    // (uint64_t* out)       -> 0
 };

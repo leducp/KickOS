@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate for the KickOS M0 sim demo. Runs the hello ELF and asserts that every
+# CI gate for the KickOS M0 sim. Runs the selftest ELF and asserts that every
 # M0 verification bullet is observable in the output, in the required order.
 
 import subprocess
@@ -16,13 +16,13 @@ def fail(msg):
 
 def main():
     if len(sys.argv) < 2:
-        fail("usage: check_sim_demo.py <hello-elf>")
+        fail("usage: check_selftest.py <selftest-elf>")
     elf = sys.argv[1]
 
     try:
         proc = subprocess.run([elf], capture_output=True, text=True, timeout=25)
     except subprocess.TimeoutExpired:
-        fail("demo timed out (likely a scheduler hang / missing switch)")
+        fail("selftest timed out (likely a scheduler hang / missing switch)")
 
     out = proc.stdout + proc.stderr
     print(out, end="")

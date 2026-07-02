@@ -141,6 +141,16 @@ namespace
         arch_shutdown(2);
     }
 
+    // Ctrl+C / kill: halt the sim cleanly instead of dying by default action.
+    // Only async-signal-safe calls here (write + _exit).
+    void on_sigterm(int, siginfo_t*, void*)
+    {
+        static char const msg[] = "\n[KickOS] halted.\n";
+        ssize_t n = write(1, msg, sizeof(msg) - 1);
+        (void)n;
+        _exit(0);
+    }
+
 }
 
 // ===========================================================================
@@ -189,6 +199,13 @@ void arch_init(void)
     fa.sa_mask = g_irq_signals;
     fa.sa_sigaction = on_sigsegv;
     sigaction(SIGSEGV, &fa, nullptr);
+
+    // Graceful halt on Ctrl+C / kill.
+    struct sigaction ta{};
+    ta.sa_flags = SA_SIGINFO;
+    ta.sa_sigaction = on_sigterm;
+    sigaction(SIGINT, &ta, nullptr);
+    sigaction(SIGTERM, &ta, nullptr);
 
     struct sigevent sev{};
     sev.sigev_notify = SIGEV_SIGNAL;

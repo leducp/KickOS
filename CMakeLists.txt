@@ -16,6 +16,14 @@ message(STATUS "KickOS: board=${KICKOS_BOARD} arch=${KICKOS_ARCH}")
 option(CONFIG_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
 option(KICKOS_BUILD_APPS          "Build in-tree demo applications"          ON)
 option(KICKOS_BUILD_TESTS         "Register CTest cases"                     ON)
+# Test-only: exposes the guard-probe syscall (kos_guard_addr) used by the MPU
+# privilege self-test. Kept out of the production syscall ABI by default.
+option(KICKOS_ENABLE_SELFTEST     "Expose test-only self-test syscalls"      OFF)
+
+if(KICKOS_ENABLE_SELFTEST)
+  # Directory-wide so kernel dispatch, the user stub, and the app agree.
+  add_compile_definitions(KICKOS_ENABLE_SELFTEST=1)
+endif()
 
 # Standard install dirs; included before the components so their
 # $<INSTALL_INTERFACE:...> can use CMAKE_INSTALL_INCLUDEDIR.
