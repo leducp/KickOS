@@ -40,6 +40,22 @@ foreach(_dir lib arch kernel user)
   endif()
 endforeach()
 
+# Aggregate usage-requirement target: "link this and you get the whole OS".
+# Lets a consumer write a plain add_executable(app ...) + target_link_libraries
+# (the modern-CMake equivalent of NuttX baking the link recipe into its export);
+# kickos_add_application() is then optional sugar (and, on MCU, the image step).
+# The arch<->kernel callback cycle is resolved as one rescanned archive group.
+if(TARGET kickos_kernel)
+  add_library(kickos INTERFACE)
+  target_link_libraries(kickos INTERFACE
+    "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,kickos_arch_${KICKOS_ARCH},kickos_lib>")
+  if(KICKOS_ARCH STREQUAL "sim")
+    find_package(Threads REQUIRED)
+    target_link_libraries(kickos INTERFACE Threads::Threads rt)
+  endif()
+  install(TARGETS kickos EXPORT KickOSTargets)
+endif()
+
 if(KICKOS_BUILD_APPS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/user/apps/CMakeLists.txt")
   add_subdirectory(user/apps)
 endif()

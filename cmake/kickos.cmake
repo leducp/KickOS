@@ -87,18 +87,11 @@ function(kickos_add_application name)
       "kickos_arch_${_arch} (it was built for a different board)")
   endif()
 
+  # Optional sugar over the plain path:
+  #   add_executable(${name} ...) ; target_link_libraries(${name} PRIVATE kickos)
+  # The `kickos` interface target carries the component link group (+ threads on
+  # sim). (MCU image emission -- objcopy .bin/.uf2 -- will hang off here at M1.)
   add_executable(${name} ${APP_SOURCES})
-  target_compile_features(${name} PRIVATE cxx_std_17)
   target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
-  # The component libraries reference each other cyclically (arch <-> kernel:
-  # the arch backend calls kernel ISR/dispatch callbacks and vice versa), so
-  # resolve them as one rescanned archive group.
-  target_link_libraries(${name} PRIVATE
-    "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,kickos_arch_${_arch},kickos_lib>")
-
-  if(_arch STREQUAL "sim")
-    # Host ELF; nothing further to emit. Threads use POSIX in the arch backend.
-    find_package(Threads REQUIRED)
-    target_link_libraries(${name} PRIVATE Threads::Threads rt)
-  endif()
+  target_link_libraries(${name} PRIVATE kickos)
 endfunction()

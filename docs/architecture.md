@@ -83,7 +83,8 @@ details to be confirmed against the K64 Reference Manual.)
    static instance for size.)
 8. **Dependency inversion — the app consumes the kernel.** The application owns the top-level
    build; KickOS is a prebuilt package (libraries + headers + startup + board linker script +
-   flags) via a `kickos_add_application()` CMake helper. The app defines a known entry
+   flags) consumed as a plain `add_executable` linked against the exported `kickos` target (with
+   `kickos_add_application()` as optional sugar). The app defines a known entry
    (`kickos_app_main()`) that the kernel's boot path calls after init.
 9. **Conventions.** Traditional include guards `KICKOS_<PATH>_H` (no `#pragma once`); no ternary
    operators; comments only for hidden constraints/invariants. **Allman brace style**, enforced by
@@ -316,20 +317,23 @@ feeds the slave app.
   (linked as one `--start-group`/`--end-group` set, since arch↔kernel reference
   each other).
 - **Dependency-inversion packaging (the DX goal).** KickOS installs/exports a CMake package
-  (config + libs + startup object + board linker script + flags) plus a
-  `kickos_add_application(<name> SOURCES… BOARD…)` helper that performs the final link and emits
-  the image (host ELF for `sim`; `.bin`/`.hex` for STM32/K64F; `.uf2` for Pico). Consumption
-  modes: **in-tree** (`add_subdirectory`) and **out-of-tree** (`find_package(KickOS)` /
-  FetchContent / export tarball, à la NuttX `make export`).
-- **Ergonomic bar: match NuttX's CMake export.** The consumer project should be ~3 lines:
+  (config + libs + startup object + board linker script + flags). Consumption modes: **in-tree**
+  (`add_subdirectory`) and **out-of-tree** (`find_package(KickOS)` / FetchContent / export
+  tarball, à la NuttX `make export`).
+- **Ergonomic bar: match NuttX's CMake export.** NuttX bakes the whole link recipe (flags,
+  linker script, `_start` entry, `--start-group` of its libs) into the exported *toolchain*, so
+  the app is a plain `add_executable`. KickOS offers the same feel two ways:
   ```cmake
-  find_package(KickOS REQUIRED)                       # or FetchContent
-  kickos_add_application(my_slave SOURCES main.cc BOARD frdmk64f)
-  # → flashable image; swap BOARD sim → host ELF, same sources
+  find_package(KickOS REQUIRED)              # or FetchContent
+  add_executable(my_slave main.cc)
+  target_link_libraries(my_slave PRIVATE kickos)   # `kickos` = the whole OS as usage reqs
   ```
-  Everything (arch, MPU/privilege posture, libc, linker script, image format) is carried by the
-  package + `BOARD` — switching sim↔MCU is a one-word change. This is a first-class acceptance
-  criterion.
+  The exported `kickos` INTERFACE target carries the component link group + flags (sim: host libc
+  threads). `kickos_add_application(<name> SOURCES… BOARD…)` remains as **optional sugar** and is
+  where per-board image emission (`.bin`/`.hex`/`.uf2`) hangs on MCU targets. On the MCU side the
+  linker script / `crt0` / entry live in the exported ARM toolchain (mirroring NuttX), so the
+  same two lines yield a flashable image; switching sim↔MCU is a one-word `BOARD`/toolchain
+  change. First-class acceptance criterion.
 - **CTest** runs the sim ELF natively in CI.
 
 ---
@@ -407,7 +411,7 @@ userspace app against the toolchain `libstdc++`; RP2040 SMP (core1); Renode CI t
 - User-thread SVC roundtrip returns correct results.
 - MPU violation caught and reported (via `mprotect`/`SIGSEGV`).
 - **Dependency inversion**: an out-of-tree app builds against the exported KickOS sim package
-  (`find_package` + `kickos_add_application()`) and runs.
+  (`find_package` + plain `add_executable` linked to the `kickos` target) and runs.
 
 **K64F / Pico / F411 (hardware):**
 - **M1**: flash; UART output matches the sim (minus enforced-MPU-fault). GDB confirms MSP/PSP
