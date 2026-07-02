@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Userspace C syscall API. Plain-C ergonomic wrappers over the arch syscall
-// trap. A C++ RAII layer sits on top in <kickos/kos.hpp>.
+// trap. A C++ RAII layer sits on top in <kickos/kos.h>.
 
 #ifndef KICKOS_SYS_H
 #define KICKOS_SYS_H

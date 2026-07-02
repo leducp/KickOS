@@ -4,8 +4,8 @@
 // Ergonomic C++ layer over the C syscall API (dual API, invariant #6). Header
 // only; every call still funnels through the same syscall trap.
 
-#ifndef KICKOS_KOS_HPP
-#define KICKOS_KOS_HPP
+#ifndef KICKOS_KOS_H
+#define KICKOS_KOS_H
 
 #include <kickos/sys.h>
 
@@ -76,7 +76,13 @@ namespace kos
         int id_;
     };
 
-    // Spawn an unprivileged user thread by default.
+}
+
+namespace kos::thread
+{
+
+    // Start a thread (not a process: KickOS has one address space, isolation is
+    // by MPU + privilege). Unprivileged by default. Returns a thread id, or -1.
     inline int spawn(void (*entry)(void*), void* arg, char const* name,
                      uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
                      uint32_t quantum_ns = 0, bool privileged = false)
@@ -94,4 +100,4 @@ namespace kos
 
 }
 
-#endif
+#endif // KICKOS_KOS_H

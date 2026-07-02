@@ -7,7 +7,7 @@
 //
 // (The exhaustive M0 verification lives in apps/selftest, not here.)
 
-#include <kickos/kos.hpp>
+#include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/libc/string.h>
@@ -66,7 +66,7 @@ extern "C" void kickos_app_main(void)
     g_ping = kos_sem_create(1); // ping serves first
     g_pong = kos_sem_create(0);
 
-    kos::spawn(ping, nullptr, "ping", 10);
-    kos::spawn(pong, nullptr, "pong", 10);
+    kos::thread::spawn(ping, nullptr, "ping", 10);
+    kos::thread::spawn(pong, nullptr, "pong", 10);
     // root returns; the two players run until the sim is interrupted.
 }

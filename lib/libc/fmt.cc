@@ -112,14 +112,20 @@ extern "C" int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
         switch (*p)
         {
             case 's':
+            {
                 emit_str(s, va_arg(ap, char const*));
                 break;
+            }
             case 'c':
+            {
                 s.put(static_cast<char>(va_arg(ap, int)));
                 break;
+            }
             case '%':
+            {
                 s.put('%');
                 break;
+            }
             case 'd':
             case 'i':
             {
@@ -192,12 +198,16 @@ extern "C" int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
                 break;
             }
             case '\0':
-                p--;
-                break; // trailing '%' : stop cleanly
+            {
+                p--; // trailing '%' : stop cleanly
+                break;
+            }
             default:
+            {
                 s.put('%');
                 s.put(*p);
                 break;
+            }
         }
     }
 

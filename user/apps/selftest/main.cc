@@ -14,7 +14,7 @@
 //   - a privileged guard access survives a syscall; an unprivileged wild write
 //     is caught and reported via mprotect
 
-#include <kickos/kos.hpp>
+#include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 #include <kickos/libc/string.h>
@@ -154,37 +154,37 @@ extern "C" void kickos_app_main(void)
     }
 
     line("[fifo] start\n");
-    kos::spawn(fifo_worker, const_cast<char*>("A"), "fifoA", 10);
-    kos::spawn(fifo_worker, const_cast<char*>("B"), "fifoB", 10);
+    kos::thread::spawn(fifo_worker, const_cast<char*>("A"), "fifoA", 10);
+    kos::thread::spawn(fifo_worker, const_cast<char*>("B"), "fifoB", 10);
     wait_done(2);
 
     line("[preempt] start\n");
-    kos::spawn(preempt_high, nullptr, "high", 20);
-    kos::spawn(preempt_low, nullptr, "low", 8);
+    kos::thread::spawn(preempt_high, nullptr, "high", 20);
+    kos::thread::spawn(preempt_low, nullptr, "low", 8);
     wait_done(2);
 
     line("[irq] start\n");
     kos_irq_attach(5, g_irq);
-    kos::spawn(irq_waiter, nullptr, "irqwaiter", 15);
-    kos::spawn(irq_injector, nullptr, "injector", 8);
+    kos::thread::spawn(irq_waiter, nullptr, "irqwaiter", 15);
+    kos::thread::spawn(irq_injector, nullptr, "injector", 8);
     wait_done(2);
 
     line("[rr] start\n");
-    kos::spawn(rr_worker, const_cast<char*>("A"), "rrA", 10,
-               KOS_POLICY_RR, 1000000u, /*privileged=*/true);
-    kos::spawn(rr_worker, const_cast<char*>("B"), "rrB", 10,
-               KOS_POLICY_RR, 1000000u, /*privileged=*/true);
+    kos::thread::spawn(rr_worker, const_cast<char*>("A"), "rrA", 10,
+                       KOS_POLICY_RR, 1000000u, /*privileged=*/true);
+    kos::thread::spawn(rr_worker, const_cast<char*>("B"), "rrB", 10,
+                       KOS_POLICY_RR, 1000000u, /*privileged=*/true);
     wait_done(2);
 
     line("[sleep] start\n");
-    kos::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{40}), "sleepLong", 10);
-    kos::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{10}), "sleepShort", 10);
+    kos::thread::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{40}), "sleepLong", 10);
+    kos::thread::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{10}), "sleepShort", 10);
     wait_done(2);
 
     line("[multi] start\n");
     g_multi = kos_sem_create(0);
-    kos::spawn(multi_worker, const_cast<char*>("A"), "multiA", 10);
-    kos::spawn(multi_worker, const_cast<char*>("B"), "multiB", 10);
+    kos::thread::spawn(multi_worker, const_cast<char*>("A"), "multiA", 10);
+    kos::thread::spawn(multi_worker, const_cast<char*>("B"), "multiB", 10);
     kos_sleep_ns(5000000ull); // let both block on g_multi (two waiters, equal prio)
     kos_sem_post(g_multi);
     kos_sem_post(g_multi);
@@ -207,6 +207,6 @@ extern "C" void kickos_app_main(void)
     line("DEMO COMPLETE\n");
 
     // Final: an unprivileged wild write traps via mprotect and is reported.
-    kos::spawn(wild_writer, nullptr, "wild", 10);
+    kos::thread::spawn(wild_writer, nullptr, "wild", 10);
     // root returns here -> exits; 'wild' runs, faults, kernel reports + halts.
 }

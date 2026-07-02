@@ -129,14 +129,20 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return static_cast<uintptr_t>(-1);
         }
         case KOS_SYS_yield:
+        {
             sched::yield();
             return 0;
+        }
         case KOS_SYS_sleep_ns:
+        {
             ktime_sleep_ns(kos_u64_join(static_cast<uint32_t>(a0),
                                         static_cast<uint32_t>(a1)));
             return 0;
+        }
         case KOS_SYS_sem_create:
+        {
             return static_cast<uintptr_t>(sem_create(static_cast<int>(a0)));
+        }
         case KOS_SYS_sem_wait:
         {
             int id = static_cast<int>(a0);
@@ -158,17 +164,25 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return 0;
         }
         case KOS_SYS_thread_spawn:
+        {
             return static_cast<uintptr_t>(
                 thread_spawn(reinterpret_cast<kos_thread_params const*>(a0)));
+        }
         case KOS_SYS_exit:
+        {
             sched::exit_current(); // noreturn
             return 0;
+        }
         case KOS_SYS_irq_inject:
+        {
             arch_irq_inject(static_cast<int>(a0));
             return 0;
+        }
 #if defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_guard_addr:
+        {
             return arch_mpu_probe_addr();
+        }
 #endif
         case KOS_SYS_irq_attach:
         {
@@ -192,8 +206,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return 0;
         }
         default:
+        {
             // Unknown syscall from userspace is a caller error, not a kernel
             // invariant violation: fault the caller (-1), never panic the kernel.
             return static_cast<uintptr_t>(-1);
+        }
     }
 }

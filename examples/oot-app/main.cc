@@ -4,7 +4,7 @@
 // Minimal out-of-tree KickOS application. Proves the dependency-inversion
 // package: built entirely against the installed KickOS sim package.
 
-#include <kickos/kos.hpp>
+#include <kickos/kos.h>
 
 extern "C" void kickos_app_main(void)
 {
