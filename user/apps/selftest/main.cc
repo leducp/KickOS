@@ -390,6 +390,29 @@ namespace
         kos_yield(); // a syscall must restore the caller's MPU posture, not PROT_NONE
         TAP_CHECK(*g == 0x1234);
     }
+
+    // --- One driver per line: a second claim on a bound line is refused --------
+    void t_irq_ownership()
+    {
+        constexpr int kLine = 11; // unused by the other IRQ tests
+        int sem = kos_sem_create(0);
+        TAP_CHECK(kos_irq_attach(kLine, sem) == 0);  // first claim wins
+        TAP_CHECK(kos_irq_attach(kLine, sem) == -1); // second is refused (no steal)
+        TAP_CHECK(kos_irq_register(kLine) == -1);    // tier-1 cannot steal it either
+    }
+
+    // --- Spurious IRQ: an unbound line is masked + counted, never dropped -------
+    void t_irq_spurious()
+    {
+        constexpr int kFreeLine = 9; // no driver bound to this line
+        uint32_t before = kos_irq_spurious_count();
+        kos_irq_inject(kFreeLine);   // default handler runs: mask + bump counter
+        TAP_CHECK(kos_irq_spurious_count() == before + 1);
+        // The default handler masked the line, so a second raise is dropped: the
+        // counter must NOT advance again (proves it was masked, not re-delivered).
+        kos_irq_inject(kFreeLine);
+        TAP_CHECK(kos_irq_spurious_count() == before + 1);
+    }
 #endif
 }
 
@@ -412,6 +435,8 @@ int main(int, char**)
     tap::add("sem_raii", t_sem_raii);
 #if defined(KICKOS_ENABLE_SELFTEST)
     tap::add("mpu_privileged_guard", t_mpu_guard);
+    tap::add("irq_ownership", t_irq_ownership);
+    tap::add("irq_spurious", t_irq_spurious);
 #endif
 
     // Every test joins its workers, so main returns as the last live thread:

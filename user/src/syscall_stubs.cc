@@ -89,12 +89,18 @@ void* kos_guard_addr(void)
 {
     return reinterpret_cast<void*>(arch_syscall(KOS_SYS_guard_addr, 0, 0, 0, 0));
 }
+
+uint32_t kos_irq_spurious_count(void)
+{
+    return static_cast<uint32_t>(arch_syscall(KOS_SYS_irq_spurious, 0, 0, 0, 0));
+}
 #endif
 
-void kos_irq_attach(int irq, int sem_id)
+int kos_irq_attach(int irq, int sem_id)
 {
-    arch_syscall(KOS_SYS_irq_attach, static_cast<uintptr_t>(irq),
-                 static_cast<uintptr_t>(sem_id), 0, 0);
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_irq_attach, static_cast<uintptr_t>(irq),
+                     static_cast<uintptr_t>(sem_id), 0, 0));
 }
 
 int kos_irq_register(int line)

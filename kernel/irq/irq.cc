@@ -37,17 +37,63 @@ namespace kickos
             arch_irq_mask(b->line);
             sem_post(&b->sem);
         }
+
+        // Null-object default bound to every line with no driver. An enabled line
+        // that fires with no handler must be masked (else it re-asserts forever ->
+        // interrupt storm) and counted, never silently dropped. Being the default
+        // for every slot removes the hot-path null check in kickos_isr_irq. Runs
+        // in ISR context, so async-safe only: mask + bump a counter, no I/O (the
+        // count is surfaced out of ISR context via irq_spurious_count()). `arg`
+        // encodes the line (seeded by irq_init/irq_detach).
+        void irq_default_handler(void* arg)
+        {
+            int line = static_cast<int>(reinterpret_cast<intptr_t>(arg));
+            arch_irq_mask(line);
+            kernel().irq_spurious_count++;
+        }
+
+        void set_default(int irq)
+        {
+            kernel().irq_table[irq].handler = irq_default_handler;
+            kernel().irq_table[irq].arg =
+                reinterpret_cast<void*>(static_cast<intptr_t>(irq));
+        }
     }
 
-    void irq_attach(int irq, IrqHandler handler, void* arg)
+    // Seed every line with the null-object default so the dispatch table has no
+    // null slots. Must run before any irq_attach/irq_register (kmain, pre-start).
+    void irq_init()
+    {
+        IrqLock lock;
+        kernel().irq_spurious_count = 0;
+        for (int i = 0; i < KICKOS_MAX_IRQ; i++)
+        {
+            set_default(i);
+        }
+    }
+
+    uint32_t irq_spurious_count()
+    {
+        return kernel().irq_spurious_count;
+    }
+
+    bool irq_attach(int irq, IrqHandler handler, void* arg)
     {
         if (irq < 0 or irq >= KICKOS_MAX_IRQ)
         {
-            return;
+            return false;
         }
         IrqLock lock;
+        // One driver per line: only a line still holding the null-object default
+        // is free to claim. Without this a tier-2 attach would silently overwrite
+        // a line a tier-1 driver already owns, orphaning its irq_wait() forever.
+        if (kernel().irq_table[irq].handler != irq_default_handler)
+        {
+            return false;
+        }
         kernel().irq_table[irq].handler = handler;
         kernel().irq_table[irq].arg = arg;
+        return true;
     }
 
     void irq_detach(int irq)
@@ -57,7 +103,7 @@ namespace kickos
             return;
         }
         IrqLock lock;
-        kernel().irq_table[irq] = IrqEntry{};
+        set_default(irq); // restore the null-object, not a null slot
     }
 
     int irq_register(int line)
@@ -68,7 +114,10 @@ namespace kickos
             return -1;
         }
         Kernel& k = kernel();
-        if (k.irq_table[line].handler != nullptr) // one driver per line
+        // One driver per line: a line is free iff it still holds the null-object
+        // default (every slot is non-null since irq_init, so the old != nullptr
+        // check would reject every line).
+        if (k.irq_table[line].handler != irq_default_handler)
         {
             return -1;
         }
@@ -127,10 +176,7 @@ extern "C" void kickos_isr_irq(int irq)
         return;
     }
     ::kickos::Kernel& k = ::kickos::kernel();
-    ::kickos::IrqHandler h = k.irq_table[irq].handler;
-    void* arg = k.irq_table[irq].arg;
-    if (h != nullptr)
-    {
-        h(arg);
-    }
+    // Every slot is a valid callback (the null-object default), so no null check:
+    // an unbound line dispatches to irq_default_handler (mask + spurious count).
+    k.irq_table[irq].handler(k.irq_table[irq].arg);
 }

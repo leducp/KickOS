@@ -8,6 +8,7 @@
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/time.h>
+#include <kickos/irq.h>
 #include <kickos/app.h>
 #include <kickos/arch/arch.h>
 #include <kickos/config/system.h>
@@ -89,6 +90,7 @@ namespace kickos
         kbanner();
         sched::init();
         ktime_init();
+        irq_init(); // seed the dispatch table before any driver attaches
 
         ThreadAttr idle_attr;
         idle_attr.name = "idle";

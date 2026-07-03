@@ -31,6 +31,18 @@ elseif(KICKOS_BOARD STREQUAL "f411disco")
 elseif(KICKOS_BOARD STREQUAL "bluepill")
   set(KICKOS_ARCH "armv7m")
   set(_kos_cpu -mcpu=cortex-m3 -mfloat-abi=soft)
+elseif(KICKOS_BOARD STREQUAL "f302nucleo")
+  # STM32F302R8 (Cortex-M4F).
+  set(KICKOS_ARCH "armv7m")
+  set(_kos_cpu -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=softfp)
+elseif(KICKOS_BOARD STREQUAL "due")
+  # Arduino Due, AT91SAM3X8E (Cortex-M3, no FPU).
+  set(KICKOS_ARCH "armv7m")
+  set(_kos_cpu -mcpu=cortex-m3 -mfloat-abi=soft)
+elseif(KICKOS_BOARD STREQUAL "xmc4800")
+  # XMC4800 Relax Kit (Cortex-M4F).
+  set(KICKOS_ARCH "armv7m")
+  set(_kos_cpu -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=softfp)
 elseif(KICKOS_BOARD STREQUAL "picopi")
   set(KICKOS_ARCH "armv6m")
   set(_kos_cpu -mcpu=cortex-m0plus -mfloat-abi=soft)
@@ -44,6 +56,11 @@ endif()
 
 set(KICKOS_ARCH   "${KICKOS_ARCH}" CACHE STRING "KickOS arch backend selected by this toolchain")
 set(KICKOS_IS_SIM OFF              CACHE BOOL   "Target is the host sim")
+
+# The per-chip CPU baseline, exported so sub-links that bypass the normal compile
+# path (e.g. the RP2040 boot2 second-stage link in arch/CMakeLists.txt) reuse the
+# exact same -mcpu/-mfpu instead of hardcoding a value that could drift from here.
+set(KICKOS_MCPU_FLAGS "${_kos_cpu}" CACHE INTERNAL "Per-chip -mcpu/-mfpu baseline")
 
 find_program(CMAKE_C_COMPILER   arm-none-eabi-gcc REQUIRED)
 find_program(CMAKE_CXX_COMPILER arm-none-eabi-g++ REQUIRED)

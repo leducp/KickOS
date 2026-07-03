@@ -38,6 +38,12 @@ elseif(KICKOS_BOARD STREQUAL "picopi")
   set(_ki_max_irq 32)          # RP2040: 26 lines
 elseif(KICKOS_BOARD STREQUAL "microbit")
   set(_ki_max_irq 32)          # nRF51 (matches its startup .rept 32)
+elseif(KICKOS_BOARD STREQUAL "f302nucleo")
+  set(_ki_max_irq 82)          # STM32F302x8 (vector table tops at position 81)
+elseif(KICKOS_BOARD STREQUAL "due")
+  set(_ki_max_irq 45)          # SAM3X8E: peripheral IDs 0..44
+elseif(KICKOS_BOARD STREQUAL "xmc4800")
+  set(_ki_max_irq 112)         # XMC4800: IRQ0..IRQ111
 else()
   set(_ki_max_irq 32)          # sim
 endif()
@@ -52,13 +58,24 @@ if(KICKOS_ARCH STREQUAL "sim")
   set(_ki_user_stack 65536)
   set(_ki_idle_stack 65536)
   set(_ki_root_stack 65536)
-elseif(KICKOS_BOARD STREQUAL "microbit")
-  # nRF51822 has only 16 KiB SRAM: a minimal pool for the ping-pong demo.
+elseif(KICKOS_BOARD STREQUAL "microbit" OR KICKOS_BOARD STREQUAL "bluepill"
+       OR KICKOS_BOARD STREQUAL "f302nucleo")
+  # Tiny SRAM (nRF51 16K / F103C8 20K / F302R8 16K): a minimal pool sized for the
+  # ping-pong / blink demos (16x8K would not remotely fit).
   set(_ki_max_threads 2)
   set(_ki_user_stack 2048)
   set(_ki_idle_stack 512)
   set(_ki_root_stack 2048)
+elseif(KICKOS_BOARD STREQUAL "f411disco" OR KICKOS_BOARD STREQUAL "due"
+       OR KICKOS_BOARD STREQUAL "xmc4800")
+  # Mid SRAM (F411VE 128K / SAM3X8E 64K / XMC4800 DSRAM1 128K): the 16x8K=128K
+  # default leaves no headroom, so right-size to a smaller pool (8x4K=32K).
+  set(_ki_max_threads 8)
+  set(_ki_user_stack 4096)
+  set(_ki_idle_stack 2048)
+  set(_ki_root_stack 4096)
 else()
+  # K64F (256 KiB), RP2040 (264 KiB), QEMU mps2: room for the full 16x8K pool.
   set(_ki_max_threads 16)
   set(_ki_user_stack 8192)
   set(_ki_idle_stack 2048)
@@ -173,6 +190,9 @@ if(TARGET kickos_kernel)
       -Wl,--no-warn-rwx-segments
       -Wl,-u,g_isr_vector      # force the vector table object in (else gc'd)
       -Wl,-u,_exit             # force our libc syscall stubs in (libc's raise->_exit)
+      # A chip with a checksummed flash second stage (RP2040 boot2) must force its
+      # .boot2 blob object in too -- nothing references it.
+      $<$<BOOL:${KICKOS_BOOT2_FORCE_SYMBOL}>:-Wl,-u,${KICKOS_BOOT2_FORCE_SYMBOL}>
       # In-tree: the source linker script. Installed/exported: the shipped copy
       # under <prefix>/<libdir>/kickos so an out-of-tree consumer links without
       # the KickOS source tree present.
