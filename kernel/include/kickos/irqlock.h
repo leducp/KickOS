@@ -11,7 +11,6 @@
 
 namespace kickos
 {
-
     class IrqLock
     {
     public:
@@ -30,7 +29,6 @@ namespace kickos
     private:
         arch_irq_state_t state_;
     };
-
 }
 
 #endif

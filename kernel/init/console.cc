@@ -15,7 +15,6 @@
 
 namespace kickos
 {
-
     void kputs(char const* s)
     {
         arch_console_write(s, strlen(s));
@@ -38,7 +37,6 @@ namespace kickos
         kputs("\n");
         arch_shutdown(1);
     }
-
 }
 
 // Memory-protection violation caught by the arch backend (sim: SIGSEGV over

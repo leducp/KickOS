@@ -14,7 +14,6 @@
 
 namespace kickos
 {
-
     // Intrusive FIFO-insert / highest-priority-remove wait queue. Reuses the TCB
     // qnext/qprev links (a thread is on the ready queue XOR one wait queue).
     struct WaitQueue
@@ -44,7 +43,6 @@ namespace kickos
     void mutex_init(Mutex* m);
     void mutex_lock(Mutex* m);
     void mutex_unlock(Mutex* m);
-
 }
 
 #endif

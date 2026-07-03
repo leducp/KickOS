@@ -26,7 +26,6 @@ namespace kickos
 {
     namespace
     {
-
         alignas(16) unsigned char g_idle_stack[64 * 1024];
         alignas(16) unsigned char g_root_stack[64 * 1024];
         Thread g_idle_tcb;
@@ -63,7 +62,6 @@ namespace kickos
             kickos_app_main();
             // Returns -> the trampoline exits this thread; other threads keep running.
         }
-
     }
 
     int kmain()
@@ -95,5 +93,4 @@ namespace kickos
         sched::start(); // returns only if the scheduler ever unwinds to boot
         return 0;
     }
-
 }

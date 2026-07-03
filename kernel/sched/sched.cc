@@ -36,7 +36,7 @@ namespace kickos
 
         // Highest set priority (find-first-set from the top). Bit 0 (idle) always set
         // once idle exists, so the queue is never empty.
-        inline int highest_prio()
+        int highest_prio()
         {
             if (g_bitmap == 0)
             {

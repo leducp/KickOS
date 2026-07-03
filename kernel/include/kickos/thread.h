@@ -12,7 +12,6 @@
 
 namespace kickos
 {
-
     enum class ThreadState : uint8_t
     {
         INACTIVE, // not yet added
@@ -79,7 +78,6 @@ namespace kickos
         void* mem_base = nullptr;
         size_t mem_size = 0;
     };
-
 }
 
 #endif

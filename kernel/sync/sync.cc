@@ -9,7 +9,6 @@ namespace kickos
 {
     namespace
     {
-
         void wq_push_back(WaitQueue& q, Thread* t)
         {
             t->qnext = nullptr;
@@ -80,7 +79,6 @@ namespace kickos
             wq_push_back(q, c);
             sched::reschedule(); // switch away; returns when woken
         }
-
     }
 
     // --- Semaphore -------------------------------------------------------------
@@ -142,6 +140,8 @@ namespace kickos
             m->owner = sched::current();
             return;
         }
+        // wq_pop_highest wakes the most urgent waiter, but m->owner is NOT boosted here:
+        // priority inversion is unbounded until inheritance lands (base_prio = restore-to slot).
         block_on(m->waiters);
         // On wake we are the new owner (ownership transferred by mutex_unlock).
     }
@@ -159,5 +159,4 @@ namespace kickos
         m->locked = false;
         m->owner = nullptr;
     }
-
 }

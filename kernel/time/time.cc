@@ -16,7 +16,6 @@ namespace kickos
 {
     namespace
     {
-
         // Sorted (ascending deadline) singly-linked list of sleeping threads.
         Thread* g_sleepq = nullptr;
 
@@ -50,7 +49,6 @@ namespace kickos
                 t->on_timer = false;
             }
         }
-
     }
 
     void ktime_init()

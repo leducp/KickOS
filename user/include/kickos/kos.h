@@ -11,7 +11,6 @@
 
 namespace kos
 {
-
     inline long write(int fd, void const* buf, size_t len)
     {
         return kos_write(fd, buf, len);
@@ -75,12 +74,10 @@ namespace kos
     private:
         int id_;
     };
-
 }
 
 namespace kos::thread
 {
-
     // Start a thread (not a process: KickOS has one address space, isolation is
     // by MPU + privilege). Unprivileged by default. `mem`/`mem_size` grant the
     // thread a domain data region (threads sharing one region share a domain).
@@ -102,7 +99,6 @@ namespace kos::thread
         p.mem_size = mem_size;
         return kos_thread_spawn(&p);
     }
-
 }
 
 namespace kos

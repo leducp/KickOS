@@ -11,7 +11,6 @@
 
 namespace kickos
 {
-
     // Kernel entry: called by the arch boot path (sim: host main) after arch_init.
     // Creates the idle + root threads and starts the scheduler. Returns a process
     // exit status if the scheduler ever unwinds to boot.
@@ -28,7 +27,6 @@ namespace kickos
     // by the caller (static allocation first). Adds it as READY.
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr);
-
 }
 
 // The application entry the kernel calls after init (dependency inversion).

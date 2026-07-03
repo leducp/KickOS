@@ -9,7 +9,6 @@ namespace kickos
 {
     namespace
     {
-
         struct Entry
         {
             IrqHandler handler = nullptr;
@@ -17,7 +16,6 @@ namespace kickos
         };
 
         Entry g_table[KICKOS_MAX_IRQ];
-
     }
 
     void irq_attach(int irq, IrqHandler handler, void* arg)

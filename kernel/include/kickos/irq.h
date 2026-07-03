@@ -12,12 +12,10 @@
 
 namespace kickos
 {
-
     using IrqHandler = void (*)(void* arg);
 
     void irq_attach(int irq, IrqHandler handler, void* arg);
     void irq_detach(int irq);
-
 }
 
 #endif
