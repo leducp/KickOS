@@ -567,6 +567,17 @@ Structural prep for invariant #7, landed before MCU work so M1/M2 code is born i
     - **board / chip** (hardware-derived): `KICKOS_MAX_IRQ` and `KICKOS_TIMER_MIN_DELTA_NS` — these
       leave `config.h` entirely for the board layer at M1 / M2 (see 10, 12a).
 
+    **Unit literals (`kickos/units.h`, shared kernel + userspace)** — introduce `constexpr`
+    user-defined literals so the ns/byte magic numbers stop being zero-counting bugs: time
+    `_ns`/`_us`/`_ms`/`_s` → canonical `uint64_t` ns, size `_B`/`_kib`/`_mib` → `size_t` bytes
+    (leading underscore is mandatory — bare suffixes are reserved for the stdlib; binary
+    `_kib`/`_mib` = ×1024, no ambiguous `_kb`). Deliberately **canonical-integer returns, not a
+    chrono-style strong `Duration` type** (that is heavier and unwanted here; revisit only if
+    unit-mixing bugs actually appear). This is *why* the config values above want to be `constexpr`
+    (`MIN_DELTA = 20_us`, `TICK_PERIOD = 1_ms`) rather than raw-`ull` `#define`s — a macro
+    `#define X 20_us` needs the UDL in scope at every expansion (fragile). Also applies at call
+    sites: stack sizes (`64_kib` vs `64 * 1024`), `arch_ram_alloc`, app `sleep(100_ms)`.
+
 8f. **`sleep(0)` should yield, not block.** In `ktime_sleep_ns` (`time.cc`) a zero duration
     currently flows through `ktime_sleep_until` and the min-delta guard turns it into a real ~20µs
     block — wrong for the common `sleep(0) == yield` idiom (FreeRTOS `vTaskDelay(0)`, RTEMS
