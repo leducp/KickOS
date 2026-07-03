@@ -11,6 +11,8 @@
 #ifndef KICKOS_IRQ_H
 #define KICKOS_IRQ_H
 
+#include <stdint.h>
+
 #include <kickos/sync.h>
 
 namespace kickos
@@ -34,8 +36,16 @@ namespace kickos
         bool used = false;
     };
 
-    // Tier 2: privileged in-kernel direct handler.
-    void irq_attach(int irq, IrqHandler handler, void* arg);
+    // Seed the dispatch table with the null-object default (call once at boot,
+    // before any attach/register).
+    void irq_init();
+    // Count of IRQs that fired on a line with no driver (masked by the default
+    // handler). Best-effort diagnostic, readable outside ISR context.
+    uint32_t irq_spurious_count();
+
+    // Tier 2: privileged in-kernel direct handler. Returns false if the line is
+    // out of range or already bound (one driver per line); true on success.
+    bool irq_attach(int irq, IrqHandler handler, void* arg);
     void irq_detach(int irq);
 
     // Tier 1: IRQ-as-event (usable from unprivileged userspace via syscalls).

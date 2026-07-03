@@ -175,9 +175,17 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_kconsole_write:
         {
             // Explicit (buf, len): the kernel must never strlen a user pointer.
-            // Bound-checking buf against the caller's regions is M2 (item 12).
+            // Bound-checking buf against the caller's regions is M2 (item 12), but
+            // len is a plain scalar: clamp it now so a garbage/huge value can't
+            // walk off RAM (HardFault -> whole board, no MPU to contain it) or
+            // monopolize the UART for an unbounded stretch.
+            constexpr size_t kMaxConsoleWrite = 4096;
             char const* buf = reinterpret_cast<char const*>(a0);
             size_t len = static_cast<size_t>(a1);
+            if (len > kMaxConsoleWrite)
+            {
+                len = kMaxConsoleWrite;
+            }
             arch_console_write(buf, len);
             return len;
         }
@@ -235,15 +243,30 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             sched::exit_current(static_cast<int>(a0)); // noreturn
             return 0;
         }
+#if defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_irq_inject:
         {
-            arch_irq_inject(static_cast<int>(a0));
+            // Test scaffolding only (real IRQs come from devices), so compiled out
+            // of the production ABI -- like guard_addr below. The line is
+            // unprivileged-user-reachable: validate it at the boundary and reject a
+            // bad value with -1 rather than passing it to the controller. (Never
+            // KICKOS_UNREACHABLE a user-supplied number -- that would let a user
+            // halt the kernel.)
+            int irq = static_cast<int>(a0);
+            if (irq < 0 or irq >= KICKOS_MAX_IRQ)
+            {
+                return static_cast<uintptr_t>(-1);
+            }
+            arch_irq_inject(irq);
             return 0;
         }
-#if defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_guard_addr:
         {
             return arch_mpu_probe_addr();
+        }
+        case KOS_SYS_irq_spurious:
+        {
+            return static_cast<uintptr_t>(irq_spurious_count());
         }
 #endif
         case KOS_SYS_irq_attach:
@@ -262,8 +285,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             }
             // Store the handle (not a pointer): irq_sem_post re-resolves each fire,
             // so a since-destroyed sem fails safe instead of poking a stale slot.
-            irq_attach(irq, irq_sem_post,
-                       reinterpret_cast<void*>(static_cast<intptr_t>(sem_handle)));
+            // irq_attach fails (-1) if the line is already owned -- no stealing.
+            if (not irq_attach(irq, irq_sem_post,
+                               reinterpret_cast<void*>(static_cast<intptr_t>(sem_handle))))
+            {
+                return static_cast<uintptr_t>(-1);
+            }
             return 0;
         }
         case KOS_SYS_clock_now:

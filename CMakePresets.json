@@ -59,6 +59,34 @@
       "inherits": "arm-base",
       "binaryDir": "${sourceDir}/build/microbit",
       "cacheVariables": { "KICKOS_BOARD": "microbit" }
+    },
+    {
+      "name": "picopi",
+      "displayName": "Raspberry Pi Pico (RP2040, Cortex-M0+, armv6m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/picopi",
+      "cacheVariables": { "KICKOS_BOARD": "picopi" }
+    },
+    {
+      "name": "f302nucleo",
+      "displayName": "ST Nucleo-F302R8 (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/f302nucleo",
+      "cacheVariables": { "KICKOS_BOARD": "f302nucleo" }
+    },
+    {
+      "name": "due",
+      "displayName": "Arduino Due (AT91SAM3X8E, Cortex-M3, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/due",
+      "cacheVariables": { "KICKOS_BOARD": "due" }
+    },
+    {
+      "name": "xmc4800",
+      "displayName": "Infineon XMC4800 Relax Kit (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/xmc4800",
+      "cacheVariables": { "KICKOS_BOARD": "xmc4800" }
     }
   ],
   "buildPresets": [
@@ -67,7 +95,11 @@
     { "name": "frdmk64f",  "configurePreset": "frdmk64f" },
     { "name": "f411disco", "configurePreset": "f411disco" },
     { "name": "bluepill",  "configurePreset": "bluepill" },
-    { "name": "microbit",  "configurePreset": "microbit" }
+    { "name": "microbit",  "configurePreset": "microbit" },
+    { "name": "picopi",    "configurePreset": "picopi" },
+    { "name": "f302nucleo","configurePreset": "f302nucleo" },
+    { "name": "due",       "configurePreset": "due" },
+    { "name": "xmc4800",   "configurePreset": "xmc4800" }
   ],
   "testPresets": [
     {

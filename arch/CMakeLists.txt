@@ -55,6 +55,58 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/arm/chip/${KICKOS_CHIP}")
   file(GLOB _chip_src CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/arm/chip/${KICKOS_CHIP}/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/arm/chip/${KICKOS_CHIP}/*.S")
+
+  # A chip whose flash boot needs a checksummed second-stage loader ships a
+  # boot2.S. It is NOT compiled into the library directly: it must be assembled +
+  # linked to a raw binary, wrapped with a ROM-verified CRC, and re-emitted as a
+  # data blob in the .boot2 linker section. (RP2040: the bootrom loads the first
+  # 256 bytes of flash, checks a CRC-32/MPEG-2 over bytes 0..251, then runs it.)
+  # Everything is keyed on ${KICKOS_CHIP}: the CPU baseline comes from the
+  # toolchain (KICKOS_MCPU_FLAGS), the checksum tool is cmake/<chip>_checksum.py,
+  # and the forced blob symbol is g_<chip>_boot2 -- so a future boot2 chip that
+  # doesn't supply those fails loudly instead of building a silently-wrong image.
+  set(_boot2_src "${CMAKE_CURRENT_SOURCE_DIR}/arm/chip/${KICKOS_CHIP}/boot2.S")
+  if(EXISTS "${_boot2_src}")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(_boot2_tool "${CMAKE_SOURCE_DIR}/cmake/${KICKOS_CHIP}_checksum.py")
+    set(_boot2_sym "g_${KICKOS_CHIP}_boot2")       # data blob label (checksum tool)
+    set(_boot2_entry "_${KICKOS_CHIP}_boot2_entry") # code entry in boot2.S
+    if(NOT EXISTS "${_boot2_tool}")
+      message(FATAL_ERROR "KickOS: ${KICKOS_CHIP} ships boot2.S but no checksum "
+        "tool at ${_boot2_tool}")
+    endif()
+    list(REMOVE_ITEM _chip_src "${_boot2_src}")
+    set(_boot2_ld "${CMAKE_CURRENT_SOURCE_DIR}/arm/chip/${KICKOS_CHIP}/boot2.ld")
+    set(_boot2_elf "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}_boot2.elf")
+    set(_boot2_bin "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}_boot2.bin")
+    set(_boot2_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}_boot2_checksummed.S")
+    # Stage 1: assemble + link the position-independent loader to a raw image.
+    # It is self-contained (no libc/startfiles); its own linker script caps it at
+    # 252 bytes. The -T is passed at the DRIVER level (not -Wl,-T) so the picolibc
+    # toolchain suppresses its default linker script (see boot2.ld).
+    add_custom_command(
+      OUTPUT "${_boot2_bin}"
+      COMMAND ${CMAKE_C_COMPILER} ${KICKOS_MCPU_FLAGS} -mthumb
+              -nostdlib -nostartfiles -Wl,--entry=${_boot2_entry}
+              -T "${_boot2_ld}" "${_boot2_src}" -o "${_boot2_elf}"
+      COMMAND ${CMAKE_OBJCOPY} -O binary "${_boot2_elf}" "${_boot2_bin}"
+      DEPENDS "${_boot2_src}" "${_boot2_ld}"
+      COMMENT "boot2: assembling ${KICKOS_CHIP} second stage -> raw binary"
+      VERBATIM)
+    # Stage 2: append the CRC and re-emit as a .boot2 data section.
+    add_custom_command(
+      OUTPUT "${_boot2_gen}"
+      COMMAND ${Python3_EXECUTABLE} "${_boot2_tool}" "${_boot2_bin}" "${_boot2_gen}"
+      DEPENDS "${_boot2_bin}" "${_boot2_tool}"
+      COMMENT "boot2: CRC-checksumming ${KICKOS_CHIP} second stage"
+      VERBATIM)
+    list(APPEND _chip_src "${_boot2_gen}")
+    # The .boot2 blob is referenced by nothing, so (like g_isr_vector) the app
+    # link must force it in from the chip archive; KEEP in the linker script only
+    # protects an already-included object from --gc-sections.
+    set(KICKOS_BOOT2_FORCE_SYMBOL "${_boot2_sym}" PARENT_SCOPE)
+  endif()
+
   add_library(kickos_chip_${KICKOS_CHIP} STATIC ${_chip_src})
   kickos_apply_freestanding(kickos_chip_${KICKOS_CHIP})
   target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE

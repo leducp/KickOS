@@ -44,11 +44,15 @@ void kos_irq_inject(int irq);
 // Test-only: address of a page that faults on unprivileged access, for the MPU
 // privilege self-test. Not part of the production syscall ABI.
 void* kos_guard_addr(void);
+// Test-only: count of IRQs that fired on a line with no driver (masked by the
+// default handler). For the spurious-IRQ self-test.
+uint32_t kos_irq_spurious_count(void);
 #endif
 
 // Bind device line `irq` so that firing it posts semaphore `sem_id` from ISR
-// context (tier-2, privileged in-kernel handler).
-void kos_irq_attach(int irq, int sem_id);
+// context (tier-2, privileged in-kernel handler). Returns 0, or -1 if the caller
+// is unprivileged, the irq/handle is bad, or the line is already bound.
+int kos_irq_attach(int irq, int sem_id);
 
 // Tier-1 IRQ-as-event: an unprivileged driver binds a line (irq_register), waits
 // for it to fire (irq_wait, thread context), then unmasks it once serviced

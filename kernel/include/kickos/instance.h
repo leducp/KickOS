@@ -55,6 +55,7 @@ namespace kickos
         IrqEntry irq_table[KICKOS_MAX_IRQ]; // line -> handler; ISR reads by index
         IrqBinding irq_bindings[KICKOS_MAX_IRQ_HANDLES];
         int irq_binding_count = 0;
+        uint32_t irq_spurious_count = 0; // IRQs on a line with no driver (masked)
     };
 
     namespace detail

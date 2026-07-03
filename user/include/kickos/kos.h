@@ -29,9 +29,9 @@ namespace kos
     {
         kos_irq_inject(irq);
     }
-    inline void irq_attach(int irq, int sem_id)
+    inline int irq_attach(int irq, int sem_id)
     {
-        kos_irq_attach(irq, sem_id);
+        return kos_irq_attach(irq, sem_id);
     }
     inline uint64_t clock_now()
     {
