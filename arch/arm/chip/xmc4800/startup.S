@@ -7,6 +7,8 @@
  * Linked at the cached flash alias 0x0800_0000; chip_xmc4800 sets VTOR to it.
  */
 
+#include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
+
     .syntax unified
     .thumb
 
@@ -32,7 +34,7 @@ g_isr_vector:
     .word SysTick_Handler            /* 15: SysTick */
 
     /* Interrupt nodes IRQ0..IRQ111 -> the generic IRQ-as-event entry. */
-    .rept 112
+    .rept KICKOS_MAX_IRQ
     .word kickos_armv7m_default_irq
     .endr
 

@@ -11,6 +11,10 @@
 
 #include <stdint.h>
 
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+#include <kickos/rtt.h>
+#endif
+
 namespace kickos
 {
     int kmain(int argc, char** argv);
@@ -42,6 +46,9 @@ namespace
         return r0;
     }
 
+    constexpr long SYS_OPEN = 0x01;
+    constexpr long SYS_CLOSE = 0x02;
+    constexpr long SYS_WRITE = 0x05;
     constexpr long SYS_WRITEC = 0x03;
     constexpr long SYS_CLOCK = 0x10;
     constexpr long SYS_EXIT_EXTENDED = 0x20;
@@ -102,6 +109,16 @@ uint64_t arch_clock_now(void)
     return ns;
 }
 
+// Override the arch layer's weak DWT trace clock: QEMU's DWT CYCCNT reads frozen
+// (same reason as arch_clock_now above), so derive the telemetry timestamp from
+// the same monotonic semihosting clock. Coarse (10 ms), but the QEMU telemetry
+// gate is STRUCTURAL (chain/pairs/no-gaps), not latency-accurate; real silicon
+// uses the cycle-accurate DWT default.
+uint32_t arch_trace_now(void)
+{
+    return static_cast<uint32_t>(arch_clock_now() / 1000ull); // us
+}
+
 void arch_console_write(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
@@ -113,6 +130,42 @@ void arch_console_write(char const* buf, size_t n)
 
 void arch_shutdown(int status)
 {
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // Mask IRQs across the ENTIRE flush (root_entry -> arch_shutdown holds no
+    // lock): a SysTick landing here would emit records after the closing SESSION's
+    // records_attempted snapshot, breaking the decoder cross-check. Held to exit.
+    (void)arch_irq_save();
+    // Capture the ch1 telemetry ring to a host file via semihosting (QEMU writes
+    // it relative to its CWD) so the offline decoder gets the trace -- the mirror
+    // of the sim's file flush, giving the QEMU gate byte-level structural coverage
+    // of the PendSV-tail asm hook. Best-effort on this dying path.
+    kickos_trace_final_session();
+    kickos_trace_report_counters();
+    {
+        char const name[] = "kicktrace.bin";
+        uint32_t oparm[3] = {reinterpret_cast<uint32_t>(name), 5 /* "wb" */,
+                             sizeof(name) - 1};
+        long fh = semihost(SYS_OPEN, oparm);
+        if (fh > 0)
+        {
+            char buf[256];
+            for (;;)
+            {
+                size_t got = kickos_rtt_ch1_drain(buf, sizeof(buf));
+                if (got == 0)
+                {
+                    break;
+                }
+                uint32_t wparm[3] = {static_cast<uint32_t>(fh),
+                                     reinterpret_cast<uint32_t>(buf),
+                                     static_cast<uint32_t>(got)};
+                semihost(SYS_WRITE, wparm);
+            }
+            uint32_t cparm[1] = {static_cast<uint32_t>(fh)};
+            semihost(SYS_CLOSE, cparm);
+        }
+    }
+#endif
     uint32_t block[2];
     block[0] = ADP_Stopped_ApplicationExit;
     block[1] = static_cast<uint32_t>(status);

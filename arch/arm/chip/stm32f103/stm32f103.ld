@@ -1,17 +1,26 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Linker script for the STM32F103C8 ("Blue Pill"), Cortex-M3.
- *   Flash : 64 KiB @ 0x0800_0000  (aliased to 0x0 at boot; vectors live here)
- *   SRAM  : 20 KiB @ 0x2000_0000  (tiny -- provisioning is sized down to match)
+ * Linker script for the STM32F103, Cortex-M3. This is the CHIP DEFAULT, sized to
+ * the LOW-DENSITY floor (10 KiB SRAM) because "Blue Pill" boards are very often
+ * low-density parts/clones (32 KiB flash / 10 KiB SRAM, DEV_ID 0x412). At 20 KiB
+ * the initial SP (_estack = top of RAM) lands past a 10 KiB die -> the first push
+ * hardfaults before main. 10 KiB runs on both variants (a real C8 just wastes the
+ * upper half). A board that KNOWS it has the full 20 KiB C8 overrides this with
+ * its own linker script (see boards/bluepill-c8/stm32f103.ld).
+ *   Flash : 32 KiB @ 0x0800_0000  (aliased to 0x0 at boot; vectors live here)
+ *   SRAM  : 10 KiB @ 0x2000_0000
+ * (both are the low-density floor: a genuine C8 has 64 KiB/20 KiB and overrides
+ *  via boards/bluepill-c8/stm32f103.ld -- so this catches a >32 KiB image at
+ *  link time rather than letting it fail to fit an LD clone at flash time.)
  */
 
 ENTRY(Reset_Handler)
 
 MEMORY
 {
-    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 64K
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 20K
+    FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 32K
+    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 10K
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);

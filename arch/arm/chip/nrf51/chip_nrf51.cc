@@ -95,6 +95,13 @@ uint64_t arch_clock_now(void)
     return ns;
 }
 
+// Telemetry trace clock (v6-M has no DWT): derive us from the same monotonic
+// semihosting clock as arch_clock_now. Coarse (10 ms) but structurally sufficient.
+uint32_t arch_trace_now(void)
+{
+    return static_cast<uint32_t>(arch_clock_now() / 1000ull); // us
+}
+
 void arch_shutdown(int status)
 {
     uint32_t block[2];

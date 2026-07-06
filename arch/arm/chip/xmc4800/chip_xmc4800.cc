@@ -4,20 +4,21 @@
 // Infineon XMC4800 (XMC4800 Relax Kit, Cortex-M4F) chip backend. Registers
 // clean-room from the XMC4700/XMC4800 Reference Manual; hand-rolled, no XMCLib.
 //
-// M1 scope: privilege + SVC, no MPU. NO PLL: the core boots on the internal
-// backup clock fOFI (~24 MHz) with no SCU config, and the watchdog is OFF at
-// reset (WDT_CTR.ENB = 0), so the reset path is just FPU + C-runtime + VTOR.
-// Code/vectors are linked at the cached flash alias 0x0800_0000.
+// M1 scope: privilege + SVC, no MPU. The watchdog is OFF at reset (WDT_CTR.ENB
+// = 0), so the reset path is just FPU + C-runtime + VTOR. arch_init then runs
+// clock_init() to bring the SCU up from the 12 MHz crystal PLL to fCPU=120 MHz
+// (fPERIPH=60 MHz) -- the uncalibrated fOFI (~24 MHz) is too inaccurate for a
+// stable UART baud. Code/vectors are linked at the cached flash alias
+// 0x0800_0000.
 //
-// Console: the XMC serial peripheral is the USIC, which is involved to bring up;
-// for this first "does the tree fit" target the console is a no-op stub (a USIC
-// UART is a follow-up). apps/blink toggles LED1 (P5.9) -- the actual smoke test.
-// The XMC4800 also carries an on-chip EtherCAT node, a natural future KickCAT
-// target once the console/timers are fleshed out.
+// Console: USIC0 in ASC (UART) mode on P1.5/P1.4 -> the on-board J-Link VCOM
+// (ttyACM0) at 115200; see usic_uart.cc. apps/blink toggles LED1 (P5.9). The
+// XMC4800 also carries an on-chip EtherCAT node, a natural future KickCAT target.
 //
 // Build-only here; flash via the on-board debugger.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <stdint.h>
 
@@ -29,12 +30,14 @@ namespace kickos
 extern "C"
 {
     void kickos_armv7m_init(void);
+    void kickos_xmc_usic_init(void);                        // usic_uart.cc
+    void kickos_xmc_usic_write(char const* buf, size_t n);  // usic_uart.cc
 
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    uint32_t SystemCoreClock = 24000000u; // fOFI backup clock at reset, no PLL
+    uint32_t SystemCoreClock = 120000000u; // fCPU after clock_init (drives SysTick)
 }
 
 namespace
@@ -50,6 +53,196 @@ namespace
         __asm volatile("dsb" ::: "memory");
         __asm volatile("isb" ::: "memory");
     }
+
+    // ---- Clock tree: 12 MHz XTAL -> system PLL -> fSYS=fCPU=120 MHz -----------
+    // Sequence and register values are clean-room from the XMC4700/4800 RM V1.3
+    // (SCU clock/PLL chapter + flash chapter). The 120 MHz profile -- NDIV/PDIV/
+    // K2DIV and the staged K2DIV ramp -- is the RM's crystal-PLL bring-up for
+    // this part; register addresses/fields are the RM's SCU/FLASH/memory-map values.
+
+    // SCU sub-unit registers (RM SCU chapter, bases: TRAP 0x50004160, CLK 0x50004600,
+    // OSC 0x50004700, PLL 0x50004710).
+    constexpr uintptr_t SCU_TRAPDIS = 0x50004168;   // TRAP + 0x08
+    constexpr uintptr_t SCU_TRAPCLR = 0x5000416C;   // TRAP + 0x0C
+    constexpr uintptr_t SCU_SYSCLKCR = 0x5000460C;  // CLK  + 0x0C
+    constexpr uintptr_t SCU_CPUCLKCR = 0x50004610;  // CLK  + 0x10
+    constexpr uintptr_t SCU_PBCLKCR = 0x50004614;   // CLK  + 0x14
+    constexpr uintptr_t SCU_SLEEPCR = 0x50004630;   // CLK  + 0x30
+    constexpr uintptr_t SCU_OSCHPCTRL = 0x50004704; // OSC  + 0x04
+    constexpr uintptr_t SCU_PLLSTAT = 0x50004710;   // PLL  + 0x00
+    constexpr uintptr_t SCU_PLLCON0 = 0x50004714;   // PLL  + 0x04
+    constexpr uintptr_t SCU_PLLCON1 = 0x50004718;   // PLL  + 0x08
+    constexpr uintptr_t SCU_PLLCON2 = 0x5000471C;   // PLL  + 0x0C
+    // FLASH FCON (PMU/FLASH0 0x58001000 + 0x1014 = 0x58002014; RM flash chapter).
+    constexpr uintptr_t FLASH_FCON = 0x58002014;
+
+    // TRAP bits (RM): OSC watchdog, system/USB VCO-lock traps.
+    constexpr uint32_t TRAP_SOSCWDGT = 1u << 0;
+    constexpr uint32_t TRAP_SVCOLCKT = 1u << 2;
+    constexpr uint32_t TRAP_UVCOLCKT = 1u << 3;
+
+    // OSCHPCTRL (RM): MODE[5:4]=0 -> external crystal; OSCVAL[19:16].
+    constexpr uint32_t OSCHPCTRL_MODE_MASK = 3u << 4;
+    constexpr uint32_t OSCHPCTRL_OSCVAL_MASK = 15u << 16;
+    // OSCVAL = XTAL/FOSCREF - 1 = 12e6/2.5e6 - 1 = 3.
+    constexpr uint32_t OSCHPCTRL_OSCVAL = 3u << 16;
+
+    // PLLSTAT (RM): crystal usable = PLLHV|PLLLV|PLLSP.
+    constexpr uint32_t PLLSTAT_VCOBYST = 1u << 0;
+    constexpr uint32_t PLLSTAT_VCOLOCK = 1u << 2;
+    constexpr uint32_t PLLSTAT_OSC_USABLE = (1u << 7) | (1u << 8) | (1u << 9);
+
+    // PLLCON0 (RM).
+    constexpr uint32_t PLLCON0_VCOBYP = 1u << 0;
+    constexpr uint32_t PLLCON0_VCOPWD = 1u << 1;
+    constexpr uint32_t PLLCON0_FINDIS = 1u << 4;
+    constexpr uint32_t PLLCON0_OSCDISCDIS = 1u << 6;
+    constexpr uint32_t PLLCON0_PLLPWD = 1u << 16;
+    constexpr uint32_t PLLCON0_OSCRES = 1u << 17;
+    constexpr uint32_t PLLCON0_RESLD = 1u << 18;
+
+    // PLLCON2.PINSEL=0 selects OSC_HP (crystal) as the PLL input (RM).
+    constexpr uint32_t PLLCON2_PINSEL = 1u << 0;
+
+    // SYSCLKCR.SYSSEL(16)=1 -> fSYS from fPLL; SYSDIV[7:0]=0 -> /1 (RM).
+    constexpr uint32_t SYSCLKCR_SYSSEL_PLL = 1u << 16;
+    // PBCLKCR.PBDIV(0)=1 -> fPERIPH = fCPU/2 (RM).
+    constexpr uint32_t PBCLKCR_PBDIV_DIV2 = 1u << 0;
+    // SLEEPCR.SYSSEL(0): 0 = fOFI as system clock in SLEEP, 1 = fPLL (RM p.11-169).
+    // The reset value is 0, so a WFI would drop fSYS to fOFI and rescale the USIC
+    // baud mid-shift -- selecting fPLL here keeps peripherals at speed while asleep.
+    constexpr uint32_t SLEEPCR_SYSSEL_PLL = 1u << 0;
+
+    // FCON.WSPFLASH[3:0] is the flash access time in fCPU cycles (RM formula 8.1:
+    // the encoded value IS the cycle count; 0 and 1 both mean one cycle). 120 MHz
+    // needs 4 access cycles to satisfy ta -> field 4.
+    constexpr uint32_t FCON_WSPFLASH_MASK = 15u << 0;
+    constexpr uint32_t FCON_WSPFLASH_4CYC = 4u << 0;
+
+    // 120 MHz profile: fVCO = 12 MHz * NDIV/PDIV = 12*40/1 = 480 MHz;
+    // fPLL = fVCO/K2DIV = 480/4 = 120 MHz. PLLCON1 fields NDIV[14:8], K2DIV[22:16],
+    // PDIV[27:24], each written as (value-1) (RM PLLCON1 fields).
+    constexpr uint32_t PLL_NDIV = 40;
+    constexpr uint32_t PLL_PDIV = 1;
+
+    uint32_t pllcon1_value(uint32_t k2div)
+    {
+        return ((PLL_NDIV - 1u) << 8) | ((k2div - 1u) << 16) | ((PLL_PDIV - 1u) << 24);
+    }
+
+    // Bounded like the rp2040 wait_mask / the USIC TX poll: a missing crystal
+    // degrades (returns) instead of hanging the boot. Cap dwarfs any real wait.
+    constexpr uint32_t CLOCK_POLL_TIMEOUT = 1000000u;
+
+    bool clock_wait_set(uintptr_t addr, uint32_t mask)
+    {
+        for (uint32_t i = 0; i < CLOCK_POLL_TIMEOUT; i++)
+        {
+            if ((r32(addr) & mask) == mask)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void clock_wait_clear(uintptr_t addr, uint32_t mask)
+    {
+        for (uint32_t i = 0; i < CLOCK_POLL_TIMEOUT; i++)
+        {
+            if ((r32(addr) & mask) == 0)
+            {
+                return;
+            }
+        }
+    }
+
+    // Let a K2DIV step settle before the next one. A generous fixed nop count
+    // (a per-frequency settle delay; ~50 us is ample).
+    void clock_delay()
+    {
+        for (volatile uint32_t i = 0; i < 8000u; i++)
+        {
+            __asm volatile("nop");
+        }
+    }
+
+    void clock_init()
+    {
+        // Flash read wait-states MUST be raised to the 120 MHz value BEFORE the
+        // CPU clock is scaled up, else instruction fetches from flash fault (RM
+        // flash chapter: widen the access window before increasing fCPU).
+        uint32_t fcon = r32(FLASH_FCON);
+        fcon &= ~FCON_WSPFLASH_MASK;
+        fcon |= FCON_WSPFLASH_4CYC;
+        r32(FLASH_FCON) = fcon;
+
+        // Disable + clear the OSC/VCO-lock traps so bring-up transients don't trap.
+        uint32_t traps = TRAP_SOSCWDGT | TRAP_SVCOLCKT | TRAP_UVCOLCKT;
+        r32(SCU_TRAPDIS) |= traps;
+        r32(SCU_TRAPCLR) = traps;
+
+        // Power up the PLL (clear VCO + PLL power-down).
+        r32(SCU_PLLCON0) &= ~(PLLCON0_VCOPWD | PLLCON0_PLLPWD);
+
+        // Enable OSC_HP on the 12 MHz crystal unless it is already in XTAL mode.
+        if ((r32(SCU_OSCHPCTRL) & OSCHPCTRL_MODE_MASK) != 0)
+        {
+            uint32_t osc = r32(SCU_OSCHPCTRL);
+            osc &= ~(OSCHPCTRL_MODE_MASK | OSCHPCTRL_OSCVAL_MASK);
+            osc |= OSCHPCTRL_OSCVAL; // MODE=0 external crystal + OSCVAL=3
+            r32(SCU_OSCHPCTRL) = osc;
+
+            r32(SCU_PLLCON2) &= ~PLLCON2_PINSEL; // PLL input <- OSC_HP
+            r32(SCU_PLLCON0) &= ~PLLCON0_OSCRES; // restart OSC watchdog
+
+            if (not clock_wait_set(SCU_PLLSTAT, PLLSTAT_OSC_USABLE))
+            {
+                SystemCoreClock = 24000000u; // no usable crystal -> CPU stays on fOFI
+                return;                       // SysTick tracks it; USIC baud will be off
+            }
+            r32(SCU_TRAPDIS) &= ~TRAP_SOSCWDGT;
+        }
+
+        // Bypass + disconnect the VCO, program the dividers, reconnect, relock.
+        // Lock first at a low K2DIV (~24 MHz), then ramp down to 120 MHz below.
+        r32(SCU_PLLCON0) |= PLLCON0_VCOBYP;
+        r32(SCU_PLLCON0) |= PLLCON0_FINDIS;
+        r32(SCU_PLLCON1) = pllcon1_value(20); // 480/20 = 24 MHz
+        r32(SCU_PLLCON0) |= PLLCON0_OSCDISCDIS;
+        r32(SCU_PLLCON0) &= ~PLLCON0_FINDIS;
+        r32(SCU_PLLCON0) |= PLLCON0_RESLD;
+
+        if (not clock_wait_set(SCU_PLLSTAT, PLLSTAT_VCOLOCK))
+        {
+            SystemCoreClock = 24000000u; // PLL never locked -> CPU stays on fOFI
+            return;                      // SysTick tracks it; USIC baud will be off
+        }
+
+        // Leave bypass: fPLL drives the tree; wait for normal (non-bypass) mode.
+        r32(SCU_PLLCON0) &= ~PLLCON0_VCOBYP;
+        clock_wait_clear(SCU_PLLSTAT, PLLSTAT_VCOBYST);
+        // Re-arm the trap for the PLL we just locked (system VCO), not the USB VCO
+        // (never powered here); SOSCWDGT was already re-armed above.
+        r32(SCU_TRAPDIS) &= ~TRAP_SVCOLCKT;
+
+        // Clock dividers: fSYS = fPLL/1, fCPU = fSYS/1, fPERIPH = fCPU/2 = 60 MHz.
+        r32(SCU_SYSCLKCR) = SYSCLKCR_SYSSEL_PLL; // fPLL selected, SYSDIV /1
+        r32(SCU_CPUCLKCR) = 0;                   // CPUDIV disabled -> fCPU = fSYS
+        r32(SCU_PBCLKCR) = PBCLKCR_PBDIV_DIV2;   // fPERIPH = fCPU/2
+
+        // Ramp K2DIV down to the final 120 MHz in steps to avoid a VDDC droop on
+        // a large jump (K2DIV = fVCO/target).
+        r32(SCU_PLLCON0) &= ~PLLCON0_OSCDISCDIS;
+        r32(SCU_PLLCON1) = pllcon1_value(10); clock_delay(); // 480/10 = 48 MHz
+        r32(SCU_PLLCON1) = pllcon1_value(6);  clock_delay(); // 480/6  = 80 MHz
+        r32(SCU_PLLCON1) = pllcon1_value(5);  clock_delay(); // 480/5  = 96 MHz
+        r32(SCU_PLLCON1) = pllcon1_value(4);  clock_delay(); // 480/4  = 120 MHz
+
+        // Keep the system clock on fPLL through SLEEP so a post-print WFI does not
+        // rescale the USIC baud mid-shift (see SLEEPCR_SYSSEL_PLL).
+        r32(SCU_SLEEPCR) |= SLEEPCR_SYSSEL_PLL;
+    }
 }
 
 extern "C"
@@ -57,16 +250,50 @@ extern "C"
 
 void arch_init(void)
 {
-    // fOFI is already the system clock and the WDT is off at reset -- only the
-    // NVIC/SHPR priorities need installing.
+    // Scale the SCU from the reset fOFI to the 12 MHz crystal PLL (fCPU=120 MHz,
+    // fPERIPH=60 MHz) FIRST: the USIC baud constants are computed for fPERIPH=60
+    // MHz, and SysTick derives from fCPU. Then bring up the console; finally
+    // kickos_armv7m_init installs the NVIC/SHPR priorities.
+    clock_init();
+    kickos_xmc_usic_init();
     kickos_armv7m_init();
 }
 
-// USIC UART not yet brought up on this target; console output is dropped.
+// Native transport = USIC0 ASC on P1.5/P1.4 (the Relax Kit VCOM -> ttyACM0). RTT
+// (if KICKOS_CONSOLE=both) is teed by the kernel console core, not here.
+//   arch_console_write      -- buffered (console ring drains via the TB interrupt).
+//   arch_console_write_sync -- the bounded polled writer; panic/fault/pre-arm use
+//                              it (overrides the weak default in console.cc).
 void arch_console_write(char const* buf, size_t n)
 {
-    (void)buf;
-    (void)n;
+    console_tx_write(buf, n);
+}
+
+void arch_console_write_sync(char const* buf, size_t n)
+{
+    kickos_xmc_usic_write(buf, n);
+}
+
+// Kernel diagnostic LED: LED1 = P5.9, active-high. XMC ports are always clocked
+// (no per-port gate). OMR is set/reset in one write: PS9 (bit 9) drives high,
+// PR9 (bit 9+16) drives low.
+void arch_diag_led_init(void)
+{
+    constexpr uintptr_t P5_IOCR8 = 0x48028500 + 0x18;
+    r32(P5_IOCR8) = 0x10u << 11; // PC9 = 0b10000 (output push-pull), bits [15:11]
+}
+
+void arch_diag_led_set(int on)
+{
+    constexpr uintptr_t P5_OMR = 0x48028500 + 0x04;
+    if (on)
+    {
+        r32(P5_OMR) = 1u << 9;
+    }
+    else
+    {
+        r32(P5_OMR) = 1u << (9 + 16);
+    }
 }
 
 void arch_shutdown(int status)

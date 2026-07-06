@@ -8,6 +8,8 @@
  * boot); chip_sam3x8e's Reset_Handler points VTOR at it.
  */
 
+#include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
+
     .syntax unified
     .thumb
 
@@ -33,7 +35,7 @@ g_isr_vector:
     .word SysTick_Handler            /* 15: SysTick */
 
     /* Peripheral interrupts 0..44 -> the generic IRQ-as-event entry. */
-    .rept 45
+    .rept KICKOS_MAX_IRQ
     .word kickos_armv7m_default_irq
     .endr
 
