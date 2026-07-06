@@ -29,7 +29,9 @@ enum kos_syscall_nr
     KOS_SYS_irq_register = 14,  // (line)                -> irq handle, or -1
     KOS_SYS_irq_wait = 15,      // (handle)              -> 0, or -1 on bad handle
     KOS_SYS_irq_ack = 16,       // (handle)              -> 0, or -1 on bad handle
-    KOS_SYS_irq_spurious = 18   // ()  -> count of IRQs on unbound lines (self-test only)
+    KOS_SYS_irq_spurious = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
+    KOS_SYS_diag_led_set = 19,  // (on)                  -> 0 (kernel diagnostic LED)
+    KOS_SYS_diag_led_toggle = 20 // ()                   -> 0 (kernel diagnostic LED)
 };
 
 // 64-bit values are passed/returned as two uintptr_t halves so the ABI is

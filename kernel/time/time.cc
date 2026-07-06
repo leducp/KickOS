@@ -12,6 +12,10 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
+#include <kickos/ktrace.h>
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+#include <kickos/trace/record.h>
+#endif
 
 namespace kickos
 {
@@ -153,5 +157,11 @@ namespace kickos
 // Arch timer-expiry callback (tickless deadline or, if enabled, periodic tick).
 extern "C" void kickos_isr_timer(void)
 {
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    ::kickos::ktrace_irq_enter(static_cast<uint16_t>(::kickos::trace::TRACE_TIMER_LINE));
+#endif
     ::kickos::ktime_on_timer();
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    ::kickos::ktrace_irq_exit(static_cast<uint16_t>(::kickos::trace::TRACE_TIMER_LINE));
+#endif
 }

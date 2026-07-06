@@ -6,7 +6,9 @@
 //
 //     int main(int argc, char** argv)
 //
-// and kickos_add_application() compiles it with -Dmain=kickos_app_main (a portable-main convention) so the app source stays portable -- the same file builds on KickOS or a plain host. The kernel's boot path calls kickos_app_main after init;
+// and kickos_add_application() compiles it with -Dmain=kickos_app_main so the
+// app source stays portable -- the same file builds unchanged as a plain hosted
+// program or on KickOS. The kernel's boot path calls kickos_app_main after init;
 // its int return becomes the process exit status on the sim (a daemon-style app
 // simply never returns).
 //

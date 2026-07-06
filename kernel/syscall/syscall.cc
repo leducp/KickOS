@@ -17,6 +17,7 @@
 #include <kickos/kernel.h>
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
+#include <kickos/ktrace.h>
 
 #include <kickos/sys/abi.h>
 
@@ -164,12 +165,49 @@ namespace kickos
 
 using namespace kickos;
 
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+namespace
+{
+    uint16_t syscall_tid()
+    {
+        Thread* c = sched::current();
+        if (c == nullptr)
+        {
+            return static_cast<uint16_t>(trace::TRACE_NO_THREAD);
+        }
+        return c->id;
+    }
+
+    // RAII SYSCALL_ENTER/EXIT bracket. The EXIT fires in the destructor on EVERY
+    // ordinary return path -- but KOS_SYS_exit switches away permanently inside the
+    // dispatch (never returns to this frame), so its destructor never runs and it
+    // is recorded as ENTER-only (the decoder handles the missing EXIT).
+    struct SyscallTrace
+    {
+        uint16_t tid;
+        uint16_t nr;
+        SyscallTrace(uint16_t t, uint16_t n) : tid(t), nr(n)
+        {
+            ktrace_syscall_enter(tid, nr);
+        }
+        ~SyscallTrace()
+        {
+            ktrace_syscall_exit(tid, nr);
+        }
+    };
+}
+#define KTRACE_SYSCALL_SCOPE(nr) SyscallTrace _kt_syscall(syscall_tid(), static_cast<uint16_t>(nr))
+#else
+#define KTRACE_SYSCALL_SCOPE(nr) do { } while (0)
+#endif
+
 extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                                       uintptr_t a0, uintptr_t a1,
                                       uintptr_t a2, uintptr_t a3)
 {
     (void)a2; // unused by the current syscalls (all take <= 2 args or an out-ptr)
     (void)a3;
+    KTRACE_SYSCALL_SCOPE(nr);
     switch (nr)
     {
         case KOS_SYS_kconsole_write:
@@ -186,7 +224,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 len = kMaxConsoleWrite;
             }
-            arch_console_write(buf, len);
+            kconsole_write(buf, len); // fan-out (chip + RTT), not the raw transport
             return len;
         }
         case KOS_SYS_yield:
@@ -327,6 +365,18 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_irq_ack:
         {
             return static_cast<uintptr_t>(irq_ack(static_cast<int>(a0)));
+        }
+        case KOS_SYS_diag_led_set:
+        {
+            // Benign single LED (the kernel's diagnostic pin, borrowed): left
+            // unprivileged like the console. A no-op on boards with no LED.
+            kdiag_led_set(a0 != 0);
+            return 0;
+        }
+        case KOS_SYS_diag_led_toggle:
+        {
+            kdiag_led_toggle();
+            return 0;
         }
         default:
         {

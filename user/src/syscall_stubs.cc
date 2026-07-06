@@ -133,4 +133,14 @@ void* kos_ram_alloc(size_t size)
     return reinterpret_cast<void*>(
         arch_syscall(KOS_SYS_ram_alloc, static_cast<uintptr_t>(size), 0, 0, 0));
 }
+
+void kos_kernel_diag_led_set(int on)
+{
+    arch_syscall(KOS_SYS_diag_led_set, static_cast<uintptr_t>(on), 0, 0, 0);
+}
+
+void kos_kernel_diag_led_toggle(void)
+{
+    arch_syscall(KOS_SYS_diag_led_toggle, 0, 0, 0, 0);
+}
 }

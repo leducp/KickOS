@@ -45,6 +45,11 @@ namespace kickos
         uint64_t deadline_ns;
         bool on_timer;
 
+        // Per-Kernel monotonic thread identity (telemetry). Assigned in
+        // thread_create; idle is created first so idle == 0. 0xFFFF is the
+        // "no thread" sentinel (never assigned); 0 is idle-only after wrap.
+        uint16_t id;
+
         char const* name;
         uint8_t prio;
         uint8_t base_prio; // for future priority inheritance
