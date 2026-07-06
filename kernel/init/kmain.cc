@@ -12,6 +12,14 @@
 #include <kickos/app.h>
 #include <kickos/arch/arch.h>
 #include <kickos/config/system.h>
+#include <kickos/ktrace.h>
+
+// Buffered-console bring-up (console_tx.cc): binds the TX drain ISR + arms the
+// ring once the chip offers a backend. No-op on sim / polled-only chips.
+extern "C" void console_buffer_init(void);
+// Drain the buffered console before a clean shutdown so a single-shot app's
+// trailing output is not stranded in the ring (kpanic/fault already flush).
+extern "C" void console_tx_flush_sync(void);
 
 // Identity, injected by the build (see kernel/CMakeLists.txt); fall back so the
 // TU still compiles standalone.
@@ -75,7 +83,9 @@ namespace kickos
             AppArgs const* a = static_cast<AppArgs const*>(arg);
             int status = kickos_app_main(a->argc, a->argv);
             // A returning main is a single-shot app: exit with its status. A
-            // daemon-style app never returns here (it parks or loops).
+            // daemon-style app never returns here (it parks or loops). Flush the
+            // buffered console first, else trailing output stays stranded in the ring.
+            console_tx_flush_sync();
             arch_shutdown(status);
         }
     }
@@ -87,10 +97,13 @@ namespace kickos
         // entry, so this frame outlives every read.
         AppArgs app_args{argc, argv};
 
+        kdiag_led_init(); // early: usable as a fault indicator from here on
         kbanner();
         sched::init();
         ktime_init();
-        irq_init(); // seed the dispatch table before any driver attaches
+        irq_init();          // seed the dispatch table before any driver attaches
+        console_buffer_init(); // arm the buffered console TX drain (after irq_init)
+        ktrace_init();       // measure probe overhead + emit the opening SESSION (no-op when off)
 
         ThreadAttr idle_attr;
         idle_attr.name = "idle";
@@ -99,6 +112,9 @@ namespace kickos
         idle_attr.privileged = true;
         thread_create(&g_idle_tcb, idle_entry, nullptr,
                       g_idle_stack, sizeof(g_idle_stack), idle_attr);
+        // Idle is created first, so it MUST be trace id 0 (the telemetry decoder
+        // keys CPU% off tid 0 == idle). Assert the invariant, not just assume it.
+        KICKOS_ASSERT(g_idle_tcb.id == 0);
 
         // Root runs at a low priority: adding a thread does not itself reschedule,
         // so root still runs first (nothing higher is READY until it spawns them)
