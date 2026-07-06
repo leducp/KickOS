@@ -31,7 +31,7 @@ badged endpoints, static capability distribution) and **Zircon** (typed handles,
   block, semaphore post, device IRQ), **not** only a periodic tick. Round-robin is available;
   the tick is optional/forced, never the sole trigger → a **tickless** core.
 - **First-class host/x86 "sim"** — kernel + userspace as one Linux process for hardware-free,
-  CI-friendly testing: the real kernel runs under CTest on the host.
+  CI-friendly testing: the real kernel runs under CTest on the host, no board or emulator needed.
 - **C++ first-class** — kernel in **freestanding C++** (`-fno-exceptions -fno-rtti`); userspace
   gets **full C++ as a per-app opt-in** (exceptions/RTTI allowed there).
 - **Low barrier — seL4's paradigm, not its ceremony.** The UX benchmark is the sibling
@@ -183,23 +183,27 @@ KickOS/
     include/kickos/arch/arch.h      # THE porting interface (extern "C" seam)
     sim/                            # host x86-64 backend
     arm/
-      common/                       # NVIC/SCB, SVC dispatch, PendSV glue, SysTick
-      armv6m/                       # M0+: PRIMASK crit, sw-clz, ARMv6 PMSA MPU, ctx-switch asm
-      armv7m/                       # M3/M4: BASEPRI crit, CLZ, ARMv7 PMSA MPU, ctx-switch asm
-      chip/{mk64f,rp2040,stm32f411,stm32f103}/  # startup, clocks, UART, linker, MPU, boot2(rp2040)
+      armv6m/                       # M0+: PRIMASK crit, sw-clz, ctx-switch asm (MPU = M2)
+      armv7m/                       # M3/M4: BASEPRI crit, CLZ, ctx-switch asm (MPU = M2)
+      chip/{mps2,nrf51,mk64f,rp2040,stm32f411,stm32f103,stm32f302,sam3x8e,xmc4800}/
+                                    # per chip: startup, clocks, UART, linker; boot2 (rp2040)
   kernel/
     include/kickos/                 # public kernel + syscall-number headers
-    sched/  thread/  sync/  time/  mm/  syscall/  init/
+    sched/  thread/  sync/  time/  irq/  syscall/  init/
   lib/
     libc/                           # freestanding: mem/str, small vsnprintf, heap, assert
     libcxx/                         # __cxa_* stubs, guards, operator new/delete
   user/
     include/                        # userspace API + syscall stubs
-    apps/hello/                     # the sim/M1 demo (C++)
-  boards/{sim,frdmk64f,picopi,f411disco,bluepill}/  # chip + arch + memmap + console + clocks
+    apps/{hello,selftest,mpu_fault,blink}/  # demos + the TAP self-test gate
+  boards/<board>/                   # per-board descriptor: board.cmake (arch/chip/-mcpu)
+                                    #   + optional board_config.h / <chip>.ld overrides
+  cmake/kickos.cmake                # board -> arch/chip resolution (reads boards/<board>/board.cmake)
   docs/{architecture.md,porting.md}
   README.md
 ```
+(`arm/common/` is not split out yet — armv6m/armv7m still duplicate the shared
+Cortex-M glue; factoring it is a cleanup owed before a third Cortex-M variant.)
 
 ---
 
@@ -752,6 +756,120 @@ nothing. Settle the pattern once, on sim, before M1 replicates object pools acro
      default runs in ISR context, so it must be **cheap/async-safe: bump a spurious counter + mask
      the line**, never console I/O (surface the counter later via introspection).
 
+### Milestone 1.x — hardening + expansion before M2 (still privilege+SVC, no HW MPU)
+
+The M1 fleet is up: sim / qemu / microbit + K64F, RP2040, F411, F103, F302, Due,
+XMC4800 — several HW-validated (LED + console + ping-pong on F411, F302, XMC;
+LED on RP2040/bluepill). These are the deferred follow-ups gathered during that
+bring-up. Most are self-contained, but two have a real reason to land BEFORE M2:
+
+- **Telemetry (11d) first** — M2 reprograms the MPU on every context switch-in,
+  so capture a switch/IRQ-latency + CPU baseline *now*; measuring the MPU's cost
+  afterward is measuring blind.
+- **ESP32 (11c) before M2** — the ESP32 has **neither an ARM-style per-task MPU
+  nor a privilege split** (call0, no rings). Bringing it up while still in the
+  privilege+SVC era forces M2 to treat MPU *and* privilege as an OPTIONAL
+  per-arch capability (graceful no-op where absent), instead of hardwiring
+  ARM-PMSA/privilege assumptions that then have to be unwound. The security model
+  must admit a no-MPU/no-privilege target eventually ("isolation is MPU-enforced
+  where available, best-effort otherwise") — cheaper to establish up front than to
+  retrofit after M2 bakes in the opposite.
+
+Recommended spine: **M1.1 (11b) → telemetry (11d) → ESP32 (11c) → M2**; the rest
+(USIC, Due, debug-in-sleep) are independent side quests. The steps:
+
+11b. **board/chip/board split, generalized.** `boards/<board>/` overrides a chip
+     default (board_config.h header + optional linker) so one SoC backend serves
+     several boards — proven on `stm32f411` (f411disco 8 MHz/PD12 + WeAct Black
+     Pill 25 MHz/PC13, via `KICKOS_HSE_HZ`/`KICKOS_LED_*`) and `stm32f103`
+     (bluepill 10 KiB clone + bluepill-c8 20 KiB genuine, via a linker override).
+     **DONE:** the board→{arch,chip,mcpu} resolver triplet (kickos.cmake +
+     toolchain) is folded into one per-board `boards/<board>/board.cmake`
+     descriptor (see docs/porting.md, "Adding a board"). Still open under this
+     item: parameterize each remaining chip's clock/console/LED on board_config.h
+     as a 2nd board appears.
+
+11c. **ESP32 / Xtensa LX6 port** — the first *non-ARM* ISA (validates the arch
+     seam). **LANDED (build-only, HW validation pending).** WINDOWED ABI (the
+     prebuilt multilib is windowed-only): the switch is SPILL_ALL_WINDOWS + SP-swap
+     + `retw`, with a deferred switch completed at level-1 interrupt exit
+     (`resume_kind` COOP/IRQ discriminator). No privilege split → syscall is a plain
+     call. FP (CP0) enabled + banked on preemption. Code: `arch/xtensa/{lx6,chip/esp32}/`.
+
+11d. **Telemetry / benchmarking framework** (frontend/backend, like the console):
+     multi-stream RTT (text + binary) to measure context-switch / IRQ latency,
+     CPU %, and syscall cost on real silicon with a non-perturbing probe
+     (`arch_trace_now()` = DWT / SysTick-CVR per arch). Proves the tickless/switch
+     paths have no hidden trap before M2 leans on them.
+
+11e. **USIC-as-shared-IP layer** (XMC) — **DONE.** The reusable USIC layer
+     (`arch/arm/chip/xmc4800/usic.{h,cc}`, namespace `kickos::xmc::usic`) models a
+     channel by base address and exposes the protocol-independent mechanism
+     (module/kernel clock, baud-gen via a precomputed `Baud` struct, DXn input mux,
+     FIFO partition helper, raw TX/RX/status); `usic_uart.cc` is now the thin ASC
+     layer on top. Added the UART RX path + error-flag (framing/overrun) accessor.
+     Ready for a future SSC(SPI)/IIC(I2C) driver -- those protocols reuse the layer.
+
+11f. **Due clock (EXPERIMENTAL → resolve).** The SAM3X bring-up is marginal on HW
+     (blink intermittent, console dead — MCK isn't the 84 MHz the baud assumes).
+     Fix with a scope on PA9 / SWD read of `PMC_MCKR`/`PMC_SR`, not blind edits.
+     Flagged experimental meanwhile (`docs/boards.md`, the `due` preset).
+
+11g. **Debug-in-sleep** (small): set `DBGMCU` `DBG_SLEEP`/`DBG_STOP` under a
+     `KICKOS_DEBUG` gate so SWD survives the idle `WFI` — no connect-under-reset
+     dance to re-flash a running board. A per-chip one-liner in `arch_init`.
+
+11h. **Renesas RX72M port** — **LANDED (build-only + HW bring-up, flash validation
+     pending).** The maintainer owns two RX72M boards (HW-validatable; also a
+     board/chip split case like the F411 pair). Code: `arch/rx/{rxv3,chip/rx72m}/`.
+     Syscall = edit the INT-stacked PSW/PC + RTE to supervisor-on-USP (no SVC-
+     trampoline); the context switch became a **uniform SWINT deferred switch** (the
+     PendSV analog). FP: DPFPU enabled (64-bit doubles), banked on switch. HW bring-
+     up done (120 MHz PLL, SCI6 console, P80 LED). M2: the MPU backend (8 regions /
+     16-byte pages / arbitrary base+size, cleaner than ARMv7-M — a real non-ARM M2
+     backend; no arch.h change). It is a THIRD ISA (RXv3) and
+     the *complement* to the ESP32: the RX72M has **both** a privilege split
+     (`PSW.PM` supervisor/user) **and** an MPU, so where ESP32 proves the kernel
+     runs without them, RX72M proves the privilege+MPU abstraction ports to a
+     non-ARM arch — a second, independent MPU backend validating that M2's design
+     isn't secretly ARM-shaped. Bonus: an on-chip EtherCAT slave (like XMC4800) →
+     a natural KickCAT target. Needs a GNU RX toolchain (`rx-elf-gcc`) + a new arch
+     backend (RX context switch, PSW privilege, ICUb interrupts, startup). Together
+     ESP32 (no isolation) + RX72M (full isolation), both non-ARM, bracket the design
+     space and keep the arch seam honest far better than another ARM chip would.
+
+11i. **Buffered IRQ-drained console** (spike → code). Telemetry (11d) exposed the
+     debug console as the single largest on-CPU cost: `arch_console_write` **polls**
+     the UART TDRE flag (`chip_mk64f.cc` busy-wait), ~879 µs on-CPU per burst at the
+     K64F FEI clock. Replace the polled UART backends with a **TX ring + TX-empty
+     ISR drain**: `arch_console_write` memcpys into a ring and enables the TX
+     interrupt, then returns (caller cost → a memcpy); the ISR pushes bytes until the
+     ring drains, then disables its own TX IRQ. Design constraints the spike must
+     settle:
+     - **Synchronous fallback is mandatory.** Panic / `HardFault` / assert / any
+       pre-`arch_init` output cannot wait on an ISR (scheduler + IRQs may be down or
+       the part is dying) — keep the polled writer as `arch_console_write_sync` and
+       route those paths to it (drain the ring synchronously on the way into panic).
+     - **Generic ring, per-chip hooks.** The ring + drain state-machine is
+       chip-agnostic (a `lib/` unit like the RTT backend); each chip supplies only
+       "TX slot free?", "push byte", "enable/disable TX IRQ" — same shared-IP shape
+       as the 11e USIC layer. Backends: K64F UART0, XMC USIC.
+     - **UART-only scope.** RTT is already this pattern (memcpy to the SEGGER block,
+       host drains — no bus wait), so leave it untouched; this brings the VCOM path
+       down to RTT-like cost.
+
+11j. **K64F PLL → 120 MHz.** First bring-up runs the MCG FEI reset clock
+     (`SystemCoreClock = 20971520`, `chip_mk64f.cc`); no PLL. Bring the core to
+     120 MHz — a ~5.7× across-the-board speedup and the first real exercise of the
+     M4F FP-switch path on silicon (run an FP app after). MCG `FEI → FBE → PBE → PEE`
+     off the FRDM's 50 MHz external clock (PRDIV /20 → 2.5 MHz, VDIV ×48 → 120 MHz);
+     set `SIM_CLKDIV1` (core /1, bus /2, **flash /5 → 24 MHz** to hold FLASHCLK ≤ 25),
+     update `SystemCoreClock`, re-derive the UART0 baud (SBR) + SysTick reload. No
+     wait-state register on Kinetis (the FMC flash speculation/cache is on at reset);
+     the flash divider IS the K64 equivalent of XMC's `FCON.WSPFLASH` (11h/XMC done).
+     Note: Cortex-M4 has no core I/D cache (that is M7) — nothing to enable on either
+     board; flash-clock is the only high-clock correctness item.
+
 ### Milestone 2 — hardware MPU enforcement (per chip)
 
 12. `arch_mpu_apply()` chip backends wired into the task-switch hook: **K64F SYSMPU** first,
@@ -801,6 +919,68 @@ nothing. Settle the pattern once, on sim, before M1 replicates object pools acro
      and the console driver — a general app can't spam the shared debug console. This is the least-
      abstract case for capabilities: it removes an ambient-authority output channel without adding
      any ceremony to the common `printf` path.
+     - **Console *device* handover (the 11i seam → cap).** 8l is about the *stdout stream* cap; this
+       is the *device* underneath it — who owns the physical UART (its MMIO + TX IRQ). 11i gives the
+       kernel debug console a buffered UART backend (`arch_console_tx_backend` + `console_tx_init`)
+       that the kernel owns at boot. When a userspace UART driver later takes the device as a
+       capability, **two drivers cannot share one peripheral instance**, so the kernel must
+       *relinquish* it: add **`console_tx_deinit`** (disable TIE → `irq_detach` → flush → disarm)
+       **here, against that real handover caller — not in 11i** (untested teardown is worse than
+       none: ISR-detach ordering + flushing an in-flight drain are exactly where it goes wrong). The
+       11i seam is already shaped to add it without restructuring.
+     - **Panic transport must be probe-independent (a hard constraint the handover exposes).** After
+       handover the kernel debug console lives on a *retained* transport, but **RTT alone is
+       insufficient — it needs a J-Link**, so it is a dev/bring-up transport, not a field one. The
+       field panic path must **reclaim the UART**: at panic the kernel force-retakes the peripheral
+       (the box is dying; the capability abstraction yields), **re-inits it to a known baud/state**
+       (userspace's config is untrusted), then polled-prints — today's `arch_console_write_sync`
+       *plus a reclaim+reinit step* that only becomes necessary once handover exists. The diag LED
+       stays the always-present 1-bit last resort. Routing userspace output through a kernel syscall
+       to "share" the device is rejected — an ambient-authority console service contradicts the
+       microkernel split.
+     - **Syscall-argument validation (the M1.x close-out review's boundary punch-list).** M1.x is a
+       privilege-only boundary (`arch_mpu_apply` is a no-op on every MCU), so a user pointer handed
+       to a syscall is dereferenced by the kernel with no check — latent today, a real isolation
+       break once the MPU lands. Two concrete sites the review confirmed (`kernel/syscall/syscall.cc`):
+       (1) **`clock_now`** writes 8 bytes through an unvalidated user out-pointer — the one syscall
+       that turns a user address into a *privileged store* (a full MPU-bypassing write primitive at
+       M2). (2) **`thread_spawn`** dereferences an unvalidated user params struct and stores
+       `p->name` as a raw pointer the fault reporter later `%s`-prints (an info-leak oracle at M2).
+       M2 fix for both: copy-in the struct via a checked user-read, bound-check writable out-pointers
+       against the caller's granted region, and copy `name` into a fixed TCB buffer rather than
+       aliasing the user pointer. This punch-list must be closed as part of making `arch_mpu_apply`
+       real (invariants `user-args-validated-at-boundary`, `handle-not-pointer-across-boundary`,
+       `mpu-apply-on-every-switch-in` in `docs/invariants.md`).
+
+12c. **Synchronization surface under capabilities — one blocking primitive, not an
+     object zoo.** The strategic decision 12b's ABI forces, made here explicitly rather
+     than drifting into it one object at a time: KickOS does **not** grow a typed kernel
+     object per sync flavour (sem / mutex / condvar / rwlock / barrier). The kernel
+     exposes the *minimum* that genuinely needs scheduler involvement — a cap-named
+     **blocking wait/wake** object (the counting semaphore, i.e. the seL4-notification
+     shape, is exactly this) — and everything richer is built in **userspace** on top:
+     plain mutual exclusion = a binary wait/wake; condvar / rwlock / barrier = userspace
+     state + the primitive. Admission test for any *new kernel* sync primitive: does it
+     require kernel state or a scheduler action userspace cannot safely perform? If not,
+     it stays in userland. This is the seL4-minimal direction and it keeps the syscall +
+     capability-type surface from ballooning.
+     - **The one typed object justified beyond the primitive is a priority-inheritance
+       mutex.** PI *is* a scheduler action — boost the holder to the highest waiter's
+       priority on contention, restore on release — so it cannot live in userspace. Its
+       cap carries `owner` + a base-priority restore slot; unlock restores priority and
+       hands ownership to the highest waiter. **Gated on the real-time scheduler story
+       being settled and testable — not before.** A mutex *without* PI earns nothing
+       over a binary semaphore and must never be a distinct kernel object.
+     - **ISR asymmetry (preserve, from `sync.h`):** the wait/wake `post` is ISR-safe (an
+       ISR readies a thread — the ISR→thread workhorse, trigger #4); the PI-mutex's
+       lock/unlock are **thread-context only** (an ISR owns no thread identity to hold or
+       release). So the mutex cap has no ISR-side operation, unlike the notification.
+     - **Fate of the current M0.1 `Mutex`** (implemented: ownership + ownership-transfer
+       on unlock, **no PI, zero callers today**): at 12b it either becomes this PI-mutex
+       cap object or is deleted in favour of a userspace binary semaphore — do not ship a
+       PI-less kernel mutex as a cap type. Until 12b, **resist adding sync objects**
+       (M1.x/M2 bring-up must not over-fit the handle/rights ABI to a pre-cap sync zoo —
+       the 8g abstraction-shaping lesson 12b already invokes).
 
 ### Milestone 2.1 — docs housekeeping (after M2)
 
@@ -825,8 +1005,34 @@ ChibiOS/SB para-virtualized HAL + virtual IRQ); runloops + channels / multi-obje
 handler task; a ChibiOS-style HAL/driver model; priority inheritance + preemption-threshold;
 pluggable EDF / rate-monotonic policies; loadable MPU-isolated user modules (ThreadX-style);
 optional POSIX / CMSIS-RTOS2 compat APIs; TLSF heap; validate a real `<vector>`/exception
-userspace app against the toolchain `libstdc++`; RP2040 SMP (core1); Renode CI targets; and a
-**Renesas RX72M** port (non-ARM `arch/rx`) as the arch-neutrality proof.
+userspace app against the toolchain `libstdc++`; RP2040 SMP (core1); Renode CI targets.
+
+**The KickOS Book** — a durable, code-synced reference (in the spirit of the µC/OS-II book):
+not just *what* the kernel is, but *how and why* it works, chapter by chapter. Three tiers:
+1. **Core mechanism (arch-independent) — the bulk of the Book.** How each subsystem actually
+   works: the **scheduler** (run-state machine, the single `reschedule()` decision point, the
+   policy seam + FIFO/RR, the tickless one-shot timer + the four switch triggers); the
+   **syscall** path (the `arch.h` seam, `syscall_dispatch`, the privileged-thread-mode contract
+   and why blocking resumes inline); **synchronization** (wait queues, highest-priority wake,
+   the ISR-safe post); the **IRQ** path (register/wait/ack, the null-object default handler);
+   **memory / domains** (the MPU-governed pool, per-domain grants, the M2 enforcement model);
+   **boot/init** (instance-scoping, idle/root threads); the **console** (→ `docs/console.md`:
+   frontend fan-out, the buffered SPSC ring + drain ISR, the panic-safe sync seam, per-chip
+   backends); **telemetry** (→ `docs/telemetry.md`); and the **invariant catalog**
+   (→ `docs/invariants.md`: the 44 cross-cutting properties a change must not break, extracted by
+   the M1.x close-out review — the per-milestone re-audit checklist). Console, telemetry, and
+   invariants are the first three Book-grade chapters. Each explains the design rationale + the
+   invariants a change must not break — the "why", not a code paraphrase.
+2. **Per-ISA chapters** — armv7m/armv6m, Xtensa LX6, RXv3: the concrete realization of the seam
+   (context switch, syscall trap, critical section, trace clock) on each ISA.
+3. **Per-chip chapters** — the parts that genuinely differ per silicon: above all the **MPU**
+   (Kinetis SYSMPU vs ARMv7-M/v6-M PMSA vs RX RSPAGE/REPAGE), plus clock trees + the console
+   peripheral.
+
+Unlike the design *spikes* (throwaway scaffolding — one pass explores a path, the next
+implements it, then the spike is deleted and squashed out of history), the Book stays in sync
+with the code. Much of tier 1 can be lifted from the deep design commentary already in this
+document + the kernel source comments; the Book reorganizes it into a teachable narrative.
 
 **Service publication (expose a userspace driver's interface across domains).** Transport (IPC) and
 the bulk data path (cross-domain shared-memory grant) are listed above; the missing piece is how a
