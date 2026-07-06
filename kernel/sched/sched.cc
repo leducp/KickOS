@@ -11,6 +11,7 @@
 #include <kickos/instance.h>
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
+#include <kickos/console_tx.h>
 
 namespace kickos
 {
@@ -140,21 +141,37 @@ namespace kickos
 
         void exit_current(int code)
         {
-            IrqLock lock;
-            Kernel& k = kernel();
-            k.current->state = ThreadState::EXITED;
-            k.policy->on_remove(k.current);
-            if (k.current != k.idle and k.live > 0)
             {
-                k.live--;
+                IrqLock lock;
+                Kernel& k = kernel();
+                k.current->state = ThreadState::EXITED;
+                k.policy->on_remove(k.current);
+                if (k.current != k.idle and k.live > 0)
+                {
+                    k.live--;
+                }
+                if (k.live == 0)
+                {
+                    // Last non-idle thread out: end the process with its exit code.
+                    // Flush the buffered console first so trailing output is not
+                    // stranded in the ring (kpanic/fault already flush).
+                    console_tx_flush_sync();
+                    arch_shutdown(code);
+                }
+                reschedule(); // pick the successor + pend the switch away
             }
-            if (k.live == 0)
+            // The switch away is now committed. On the sim arch_switch already
+            // swapped synchronously and never returned here. On an arch that defers
+            // the switch (ARM PendSV), it can only fire once the crit section above
+            // releases -- so it fires as `lock` is destroyed, NOT inside it. An
+            // EXITED thread is off the ready set, so it is never scheduled again;
+            // park until the pended switch takes effect. (Running past here with the
+            // switch merely pending is the bug this replaced: the old
+            // KICKOS_UNREACHABLE executed, unmasked, before the deferred PendSV landed.)
+            for (;;)
             {
-                // Last non-idle thread out: end the process with its exit code.
-                arch_shutdown(code);
+                arch_idle_wait();
             }
-            reschedule(); // switch away permanently
-            KICKOS_UNREACHABLE("an EXITED thread was picked to run");
         }
 
         Thread* current()

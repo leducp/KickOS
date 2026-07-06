@@ -3,15 +3,37 @@
 
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/libc/string.h>
 
 namespace kickos
 {
+    namespace
+    {
+        // Per-Kernel monotonic trace id. First call returns 0 (idle, created first
+        // in kmain); thereafter 1,2,...,0xFFFE then wraps to 1 -- 0 is idle-only
+        // and 0xFFFF is the "no thread" sentinel, so both are skipped on wrap.
+        uint16_t assign_thread_id()
+        {
+            IrqLock lock;
+            Kernel& k = kernel();
+            uint16_t id = k.next_tid;
+            uint32_t n = static_cast<uint32_t>(k.next_tid) + 1u;
+            if (n >= 0xFFFFu)
+            {
+                n = 1u;
+            }
+            k.next_tid = static_cast<uint16_t>(n);
+            return id;
+        }
+    }
 
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr)
     {
         memset(t, 0, sizeof(*t));
+        t->id = assign_thread_id();
         t->name = attr.name;
         t->prio = attr.prio;
         t->base_prio = attr.prio;
@@ -50,6 +72,11 @@ namespace kickos
         }
 
         arch_context_init(&t->ctx, entry, arg, stack_base, stack_size, attr.privileged);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+        // Stamp the trace id into the saved context so the arch switch path can
+        // emit it from the physically-swapped contexts (never re-reading sched state).
+        arch_trace_stamp_id(&t->ctx, t->id);
+#endif
         sched::add(t);
     }
 

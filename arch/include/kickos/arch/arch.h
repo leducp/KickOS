@@ -67,6 +67,26 @@ uint64_t arch_clock_now(void); // monotonic nanoseconds
 void arch_timer_arm(uint64_t deadline_ns);
 void arch_timer_disarm(void);
 
+// --- Trace clock (telemetry timestamp seam) --------------------------------
+// A dedicated high-resolution monotonic counter for telemetry timestamps: the
+// ns arch_clock_now is too coarse to time a context switch (~1-5 us). u32 by
+// design (wraps; the decoder reconstructs absolute time from the SESSION
+// anchors). Per-arch source: armv7m = DWT CYCCNT (cycles); armv6m/chip-provided
+// (rp2040 = the 1 MHz TIMER low half; nrf51 = semihosting us); sim = clock_now
+// scaled to us. A target that has no such source does NOT define
+// KICKOS_HAVE_TRACE_CLOCK and cannot enable telemetry (build-time FATAL).
+uint32_t arch_trace_now(void);
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+// Stamp the owning thread's trace id into a saved context, so the arch context-
+// switch path can emit {from,to} tids read from the PHYSICALLY-swapped contexts
+// -- never by re-reading shared scheduler state (which an ISR can rewrite between
+// the switch decision and the physical swap). Telemetry-only: this seam does not
+// exist when telemetry is compiled out (the id field is elided too). Called once
+// per thread in thread_create.
+void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id);
+#endif
+
 // --- MPU: per-task memory protection ---------------------------------------
 enum
 {
@@ -140,8 +160,30 @@ void arch_irq_unmask(int line);
 void arch_irq_inject(int irq);
 
 // --- Minimal debug console (bottom edge of the in-kernel console driver) ---
-// Write-only, unbuffered. sim: host stdout; MCU: polled UART.
+// Write-only. Two edges:
+//   arch_console_write      -- normal path. A chip with a buffered console makes
+//                              this enqueue + prime the TX IRQ (see console_tx.h);
+//                              otherwise it is the polled writer.
+//   arch_console_write_sync -- polled, bounded; safe with the scheduler/IRQs down.
+//                              Panic / fault / assert / pre-arm output uses this.
+//                              Weakly defaults to arch_console_write; a chip with a
+//                              buffered console overrides it with its polled writer.
 void arch_console_write(char const* buf, size_t n);
+void arch_console_write_sync(char const* buf, size_t n);
+
+// --- Single on-board kernel diagnostic LED (optional) ----------------------
+// The board's one diagnostic LED -- the raw bottom edge of the kernel diag LED
+// (kdiag_led_*), a sibling of the console: a last-resort self-debug facility
+// that works UART-less, in a fault, before drivers exist. NOT a general device
+// driver (the userspace path is provisional; the capability model re-homes it as
+// a userspace GPIO driver later). arch_diag_led_init() configures the pin once
+// at boot; arch_diag_led_set() drives it (on != 0). Both have a WEAK no-op
+// default (kernel/init/led.cc): a board with no known LED -- or the sim -- does
+// nothing; a chip backend with one provides strong overrides. Raw set (no
+// toggle): the kernel side tracks state, so a toggle is one XOR there, not a
+// per-chip register quirk.
+void arch_diag_led_init(void);
+void arch_diag_led_set(int on);
 
 // --- Idle -------------------------------------------------------------------
 // Block until the next interrupt (ARM WFI; sim sigsuspend).
@@ -159,6 +201,23 @@ uintptr_t syscall_dispatch(uintptr_t nr,
                            uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 // A memory-protection violation was caught (sim: SIGSEGV over the arena).
 void kickos_isr_fault(uintptr_t addr, int is_write);
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+// A context switch physically completed: emit a SWITCH record {from_tid, to_tid}.
+// The arch switch path calls this at the REAL register swap (ARM: the PendSV
+// tail; sim: each ucontext swap site), from tids read out of the two contexts it
+// actually swapped. from_tid == 0xFFFF on the very first switch. RESCAN group.
+void kickos_trace_switch_done(uint16_t from_tid, uint16_t to_tid);
+
+// Emit the closing SESSION record (final records_attempted + a second clock
+// anchor). The sim backend calls this from arch_shutdown just before it drains
+// the ch1 ring to a file, so the decoder gets its two-anchor resync span.
+void kickos_trace_final_session(void);
+
+// Print a one-line telemetry health report (attempted vs dropped) to the console
+// at shutdown; a CI gate reads it to verify the drop accounting.
+void kickos_trace_report_counters(void);
+#endif
 
 #ifdef __cplusplus
 }

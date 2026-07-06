@@ -19,29 +19,15 @@ static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @
 static_assert(offsetof(struct arch_context, npriv) == 4, "switch.S expects ctx.npriv @4");
 static_assert(offsetof(struct arch_context, resting_npriv) == 8,
               "switch.S expects ctx.resting_npriv @8");
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+static_assert(offsetof(struct arch_context, trace_tid) == 12,
+              "switch.S telemetry hook expects ctx.trace_tid @12");
+#endif
 
 namespace
 {
-    using namespace kickos::armv6m;
-
-    volatile uint32_t g_ram_used = 0;
-}
-
-extern "C"
-{
-    extern unsigned char __kickos_ram_start[];
-    extern unsigned char __kickos_ram_end[];
-
-    // CMSIS convention; defined by the chip.
-    extern uint32_t SystemCoreClock;
-
-    // Chip-provided monotonic clock (v6-M has no DWT). Declared here because
-    // arch_timer_arm needs "now" to compute the SysTick delta.
-    uint64_t arch_clock_now(void);
-
-    // Shared with switch.S.
-    struct arch_context* volatile g_arch_current = nullptr;
-    struct arch_context* volatile g_arch_next = nullptr;
+    using namespace kickos::arm;    // reg32, NVIC_ISER0 (shared core regs)
+    using namespace kickos::armv6m; // SHPR2/3, PRIO_* (arch-specific)
 }
 
 // ===========================================================================
@@ -90,15 +76,6 @@ void arch_context_init(struct arch_context* ctx,
     ctx->resting_npriv = npriv;
 }
 
-void arch_switch(struct arch_context* from, struct arch_context* to)
-{
-    (void)from;
-    g_arch_next = to;
-    reg32(SCB_ICSR) = ICSR_PENDSVSET;
-    __asm volatile("dsb" ::: "memory");
-    __asm volatile("isb" ::: "memory");
-}
-
 // --- Critical section: PRIMASK (mask all configurable interrupts) -----------
 arch_irq_state_t arch_irq_save(void)
 {
@@ -114,103 +91,10 @@ void arch_irq_restore(arch_irq_state_t state)
     __asm volatile("msr primask, %0" ::"r"(state) : "memory");
 }
 
-int arch_in_isr(void)
-{
-    uint32_t ipsr;
-    __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
-    return (ipsr & 0x3F) != 0;
-}
-
-// --- One-shot timer (SysTick). Clock (arch_clock_now) is chip-provided. -----
-void arch_timer_arm(uint64_t deadline_ns)
-{
-    uint64_t now = arch_clock_now();
-    uint64_t delta_ns = 0;
-    if (deadline_ns > now)
-    {
-        delta_ns = deadline_ns - now;
-    }
-    uint64_t f = SystemCoreClock;
-    uint64_t max_delta_ns = ~0ull;
-    if (f != 0)
-    {
-        max_delta_ns = (static_cast<uint64_t>(SYST_RVR_MAX) * 1000000000ull) / f;
-    }
-    uint64_t cyc;
-    if (delta_ns >= max_delta_ns)
-    {
-        cyc = SYST_RVR_MAX;
-    }
-    else
-    {
-        cyc = (delta_ns * f) / 1000000000ull;
-    }
-    if (cyc == 0)
-    {
-        cyc = 1;
-    }
-    reg32(SYST_CSR) = 0;
-    reg32(SCB_ICSR) = ICSR_PENDSTCLR;
-    reg32(SYST_RVR) = static_cast<uint32_t>(cyc);
-    reg32(SYST_CVR) = 0;
-    reg32(SYST_CSR) = SYST_CSR_CLKSOURCE | SYST_CSR_TICKINT | SYST_CSR_ENABLE;
-}
-
-void arch_timer_disarm(void)
-{
-    reg32(SYST_CSR) = 0;
-    reg32(SCB_ICSR) = ICSR_PENDSTCLR;
-}
-
-// --- MPU: M2 (no-op on M1) --------------------------------------------------
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
-{
-    (void)regions;
-    (void)n;
-}
-
-uintptr_t arch_ram_base(void)
-{
-    return reinterpret_cast<uintptr_t>(__kickos_ram_start);
-}
-
-size_t arch_ram_size(void)
-{
-    return static_cast<size_t>(__kickos_ram_end - __kickos_ram_start);
-}
-
-void* arch_ram_alloc(size_t size)
-{
-    size_t total = arch_ram_size();
-    size_t need = (size + 31u) & ~static_cast<size_t>(31u);
-    arch_irq_state_t s = arch_irq_save();
-    void* p = nullptr;
-    if (need != 0 and need <= total - g_ram_used)
-    {
-        p = __kickos_ram_start + g_ram_used;
-        g_ram_used += need;
-    }
-    arch_irq_restore(s);
-    return p;
-}
-
-uintptr_t arch_mpu_probe_addr(void)
-{
-    return 0; // no MPU on M1
-}
-
 // --- Interrupt controller (NVIC). No priority band: the crit section is
-// PRIMASK (masks all), so device-IRQ priorities don't gate it as on v7-M. -----
-void arch_irq_mask(int line)
-{
-    if (line < 0)
-    {
-        return;
-    }
-    unsigned l = static_cast<unsigned>(line);
-    reg32(NVIC_ICER0 + (l >> 5) * 4) = 1u << (l & 31);
-}
-
+// PRIMASK (masks all), so device-IRQ priorities don't gate it as on v7-M. The
+// mask/inject halves are core-generic and live in arch_arm_common.cc; only the
+// v6-M "enable, no priority-band program" unmask is here. ---------------------
 void arch_irq_unmask(int line)
 {
     if (line < 0)
@@ -221,32 +105,7 @@ void arch_irq_unmask(int line)
     reg32(NVIC_ISER0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 
-void arch_irq_inject(int irq)
-{
-    if (irq < 0)
-    {
-        return;
-    }
-    unsigned l = static_cast<unsigned>(irq);
-    if ((reg32(NVIC_ISER0 + (l >> 5) * 4) & (1u << (l & 31))) == 0)
-    {
-        return; // masked -> drop (matches sim semantics)
-    }
-    reg32(NVIC_ISPR0 + (l >> 5) * 4) = 1u << (l & 31);
-}
-
-void arch_idle_wait(void)
-{
-    __asm volatile("wfi");
-}
-
 // --- Kernel-facing ISR entries ----------------------------------------------
-void SysTick_Handler(void)
-{
-    reg32(SYST_CSR) = 0;
-    kickos_isr_timer();
-}
-
 void kickos_armv6m_default_irq(void)
 {
     uint32_t ipsr;

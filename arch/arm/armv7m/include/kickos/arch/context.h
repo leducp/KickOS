@@ -35,6 +35,14 @@ struct arch_context
     // thread issuing a syscall is NOT demoted to unprivileged -- it drops back to
     // exactly its entry posture, matching the sim's resting-posture restore.
     uint32_t resting_npriv;
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // Owning thread's trace id (stamped once in thread_create). switch.S reads it
+    // at offset 12 from the PHYSICALLY-swapped contexts to emit the SWITCH record
+    // without re-reading g_arch_next. Elided (with the whole telemetry path) when
+    // telemetry is off, so the OFF layout is byte-unchanged.
+    uint32_t trace_tid;
+#endif
 };
 
 #endif

@@ -15,41 +15,18 @@
 
 #include <stdint.h>
 
+#include "../common/regs.h" // reg32, SCB_ICSR/ICSR_*, SysTick, NVIC ISER/ICER/ISPR (shared)
+
 namespace kickos
 {
     namespace armv7m
     {
-        inline volatile uint32_t& reg32(uintptr_t addr)
-        {
-            return *reinterpret_cast<volatile uint32_t*>(addr);
-        }
-
-        // --- System Control Block (0xE000ED00) ---
-        constexpr uintptr_t SCB_ICSR = 0xE000ED04; // Interrupt Control and State
+        // --- System Control Block (arch-specific: SHPR bytes for the BASEPRI band) ---
         constexpr uintptr_t SCB_SHPR2 = 0xE000ED1C; // System Handler Priority 2 (SVCall)
         constexpr uintptr_t SCB_SHPR3 = 0xE000ED20; // System Handler Priority 3 (PendSV/SysTick)
 
-        constexpr uint32_t ICSR_PENDSVSET = 1u << 28;
-        constexpr uint32_t ICSR_PENDSVCLR = 1u << 27;
-        constexpr uint32_t ICSR_PENDSTCLR = 1u << 25; // clear a pending SysTick
-
-        // --- SysTick (0xE000E010) ---
-        constexpr uintptr_t SYST_CSR = 0xE000E010; // control/status
-        constexpr uintptr_t SYST_RVR = 0xE000E014; // reload value
-        constexpr uintptr_t SYST_CVR = 0xE000E018; // current value
-
-        constexpr uint32_t SYST_CSR_ENABLE = 1u << 0;
-        constexpr uint32_t SYST_CSR_TICKINT = 1u << 1;
-        constexpr uint32_t SYST_CSR_CLKSOURCE = 1u << 2; // processor clock
-        constexpr uint32_t SYST_CSR_COUNTFLAG = 1u << 16;
-        constexpr uint32_t SYST_RVR_MAX = 0x00FFFFFF; // 24-bit down-counter
-
-        // --- NVIC (0xE000E100 ISER, 0xE000E180 ICER, 0xE000E200 ISPR, 0xE000E280 ICPR) ---
-        constexpr uintptr_t NVIC_ISER0 = 0xE000E100;
-        constexpr uintptr_t NVIC_ICER0 = 0xE000E180;
-        constexpr uintptr_t NVIC_ISPR0 = 0xE000E200;
-        constexpr uintptr_t NVIC_ICPR0 = 0xE000E280;
-        constexpr uintptr_t NVIC_IPR0 = 0xE000E400; // byte-addressable per-line priority
+        // --- NVIC (arch-specific: byte-addressable per-line priority) ---
+        constexpr uintptr_t NVIC_IPR0 = 0xE000E400;
 
         // --- DWT / DCB (cycle counter for the monotonic clock) ---
         constexpr uintptr_t DWT_CTRL = 0xE0001000;
