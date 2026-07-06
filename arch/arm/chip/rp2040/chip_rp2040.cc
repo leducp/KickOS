@@ -232,6 +232,31 @@ void arch_console_write(char const* buf, size_t n)
     }
 }
 
+// Kernel diagnostic LED: GP25 via SIO, active-high (NOT the Pico W CYW43 LED).
+void arch_diag_led_init(void)
+{
+    constexpr uintptr_t IO_GPIO25_CTRL = 0x40014000 + 0x0cc;
+    constexpr uintptr_t PADS_GPIO25_CLR = 0x4001c000 + 0x3000 + 0x68;
+    constexpr uintptr_t SIO_GPIO_OE_SET = 0xd0000000 + 0x024;
+    r32(IO_GPIO25_CTRL) = 5;         // funcsel = SIO
+    r32(PADS_GPIO25_CLR) = 1u << 7;  // clear output-disable
+    r32(SIO_GPIO_OE_SET) = 1u << 25; // output enable
+}
+
+void arch_diag_led_set(int on)
+{
+    constexpr uintptr_t SIO_GPIO_OUT_SET = 0xd0000000 + 0x014;
+    constexpr uintptr_t SIO_GPIO_OUT_CLR = 0xd0000000 + 0x018;
+    if (on)
+    {
+        r32(SIO_GPIO_OUT_SET) = 1u << 25;
+    }
+    else
+    {
+        r32(SIO_GPIO_OUT_CLR) = 1u << 25;
+    }
+}
+
 // Monotonic clock from the 64-bit system TIMER (microseconds -> ns). Uses the
 // non-latching RAW halves with a hi/lo/hi re-read to tolerate a 32-bit rollover
 // between the reads. This needs no interrupt guard and stays correct if a future
@@ -251,6 +276,14 @@ uint64_t arch_clock_now(void)
         hi = hi2;
     }
     return ((static_cast<uint64_t>(hi) << 32) | lo) * 1000ull;
+}
+
+// Telemetry trace clock: the low 32 bits of the free-running 1 MHz system TIMER
+// (us, wraps ~71 min). Same source as arch_clock_now (a single RAW-low read, no
+// hi/lo guard needed for a u32), so the SESSION-anchor rate is exactly 1000 ns/tick.
+uint32_t arch_trace_now(void)
+{
+    return r32(TIMER_TIMERAWL);
 }
 
 void arch_shutdown(int status)

@@ -5,13 +5,18 @@
 // Sub-Family Reference Manual (K64P144M120SF5RM); hand-rolled (no vendor CMSIS
 // pack), consistent with the arch layer's clean-room regs.h.
 //
-// M1 scope: privilege + SVC only, no hardware MPU. First bring-up runs at the
-// MCG FEI reset clock (~20.97 MHz core) -- no PLL/120 MHz setup yet (a follow-up)
-// -- and drives the OpenSDA virtual UART (UART0 on PTB16/PTB17). Console is
-// polled TX. NOT run in this environment (no board/QEMU model); verified by
-// build + image inspection. Flash to the board to confirm UART output.
+// M1 scope: privilege + SVC only, no hardware MPU. clock_init() brings the core
+// from the MCG FEI reset clock (~20.97 MHz) up to 120 MHz via the PLL off the
+// FRDM's 50 MHz external clock (FEI->FBE->PBE->PEE), falling back to FEI if that
+// clock is absent. Drives the OpenSDA virtual UART (UART0 on PTB16/PTB17); the
+// baud tracks whichever clock won. Console is polled TX. NOT run in this
+// environment (no board/QEMU model); verified by build + image inspection.
+// Flash to the board to confirm. Silicon-risk points to check against the K64
+// RM if bring-up misbehaves: the 50 MHz source is an external CLOCK (EREFS0=0,
+// RANGE0=2), not a crystal; PRDIV/VDIV encodings; and the FRDIV /1536 mapping.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <stdint.h>
 
@@ -28,8 +33,9 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    // FEI reset clock: MCGOUTCLK = 32.768 kHz internal ref x 640 FLL factor,
-    // SIM_CLKDIV1 OUTDIV1 = /1. UART0 is clocked by this system clock.
+    // FEI reset clock (MCGOUTCLK = 32.768 kHz internal ref x 640 FLL). This is the
+    // initial + fallback value; clock_init() raises it to 120 MHz on success.
+    // UART0 and SysTick are clocked by this system clock.
     uint32_t SystemCoreClock = 20971520u;
 }
 
@@ -47,8 +53,42 @@ namespace
 
     constexpr uintptr_t SIM_SCGC4 = 0x40048034; // UART0 = bit 10
     constexpr uintptr_t SIM_SCGC5 = 0x40048038; // PORTB = bit 10
+    constexpr uintptr_t SIM_CLKDIV1 = 0x40048044;
     constexpr uint32_t SCGC4_UART0 = 1u << 10;
     constexpr uint32_t SCGC5_PORTB = 1u << 10;
+
+    // --- Clock (MCG + OSC0 + SIM_CLKDIV1), K64 RM chapters 24/25/26 ---
+    constexpr uintptr_t OSC0_CR = 0x40065000; // 8-bit
+    constexpr uintptr_t MCG_C1 = 0x40064000;  // 8-bit each
+    constexpr uintptr_t MCG_C2 = 0x40064001;
+    constexpr uintptr_t MCG_C5 = 0x40064004;
+    constexpr uintptr_t MCG_C6 = 0x40064005;
+    constexpr uintptr_t MCG_S = 0x40064006;
+
+    // SIM_CLKDIV1: core /1 (120), bus /2 (60), FlexBus /2 (60), flash /5 (24 MHz
+    // -- FLASHCLK must stay <= 25 MHz). Field = divide-1, in nibbles [31:16].
+    constexpr uint32_t CLKDIV1_120MHZ = (0u << 28) | (1u << 24) | (1u << 20) | (4u << 16);
+
+    constexpr uint8_t OSC0_CR_ERCLKEN = 1u << 7;
+    constexpr uint8_t C2_RANGE_VHF = 2u << 4; // RANGE0=2; EREFS0=0 => external clock (not xtal)
+    constexpr uint8_t C1_CLKS_EXT = 2u << 6;  // CLKS=2 external reference
+    constexpr uint8_t C1_CLKS_PLL = 0u << 6;  // CLKS=0 FLL/PLL output (PLL, since PLLS=1)
+    constexpr uint8_t C1_IREFS_INT = 1u << 2; // IREFS=1 internal ref (FEI posture, CLKS=0)
+    constexpr uint8_t C1_FRDIV_1536 = 7u << 3; // RANGE!=0: /1536 -> 50 MHz FLL ref = 32.6 kHz
+    constexpr uint8_t C5_PRDIV_20 = 19u;       // (PRDIV0+1)=20 -> PLL ref 50/20 = 2.5 MHz
+    constexpr uint8_t C6_PLLS = 1u << 6;
+    constexpr uint8_t C6_VDIV_48 = 24u; // (VDIV0+24)=48 -> VCO 2.5*48 = 120 MHz
+
+    constexpr uint8_t S_IREFST = 1u << 4;    // 0 = external ref selected
+    constexpr uint8_t S_CLKST_MASK = 3u << 2;
+    constexpr uint8_t S_CLKST_EXT = 2u << 2; // MCGOUTCLK = external ref
+    constexpr uint8_t S_CLKST_PLL = 3u << 2; // MCGOUTCLK = PLL
+    constexpr uint8_t S_PLLST = 1u << 5;     // PLL (not FLL) is the PLLS source
+    constexpr uint8_t S_LOCK0 = 1u << 6;
+
+    // Bounded like the xmc clock_wait / rp2040 wait_mask: a missing external clock
+    // degrades (returns false -> FEI fallback) instead of hanging the boot.
+    constexpr uint32_t MCG_POLL_TIMEOUT = 1000000u;
 
     // OpenSDA VCOM is PTB16/PTB17. Per the K64 signal-mux table these pins are
     // UART0_RX/UART0_TX at ALT3 (PTB16 has no UART1 option) -- the FRDM-K64F user
@@ -66,7 +106,12 @@ namespace
     constexpr uintptr_t UART0_C4 = UART0_BASE + 0x0A;
     constexpr uint8_t C2_TE = 1u << 3;
     constexpr uint8_t C2_RE = 1u << 2;
+    constexpr uint8_t C2_TIE = 1u << 7; // transmit-interrupt enable: IRQ while S1.TDRE
     constexpr uint8_t S1_TDRE = 1u << 7;
+
+    // NVIC: UART0 status sources (RX/TX combined) = IRQ 31 (UART0 error = 32).
+    // Confirm against the K64 RM interrupt-vector-assignments table.
+    constexpr int UART0_RXTX_IRQ = 31;
 
     void wdog_disable()
     {
@@ -96,6 +141,82 @@ namespace
         __asm volatile("isb" ::: "memory");
     }
 
+    bool mcg_wait(uint8_t mask, uint8_t want)
+    {
+        for (uint32_t i = 0; i < MCG_POLL_TIMEOUT; i++)
+        {
+            if ((r8(MCG_S) & mask) == want)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Undo any external/PLL commit and return the MCG to the FEI reset posture that
+    // SystemCoreClock still reflects, then return false. Without this a partial
+    // bring-up (e.g. the EXT mux switched but PLL LOCK timed out) would leave the
+    // core running at 50/120 MHz while all software believes 20.97 MHz -- and would
+    // leave CLKS=EXT armed so a late-arriving reference completes the switch mid-run.
+    bool fail_to_fei()
+    {
+        r8(MCG_C6) = 0;             // clear PLLS + VDIV
+        r8(MCG_C5) = 0;             // clear PRDIV
+        r8(MCG_C1) = C1_IREFS_INT;  // CLKS=0 (FLL output) + internal ref -> FEI
+        mcg_wait(S_IREFST, S_IREFST); // best-effort: internal ref reselected
+        mcg_wait(S_CLKST_MASK, 0);    // CLKST=0 (FEI/FLL output)
+        return false;
+    }
+
+    // FEI -> FBE -> PBE -> PEE off the FRDM's 50 MHz external clock. On any failure
+    // after the external switch is requested, restores the FEI posture (fail_to_fei)
+    // so SystemCoreClock stays the truth.
+    bool clock_init()
+    {
+        // Set the bus dividers BEFORE the core scales up (RM 26: widen dividers
+        // first, else bus/flash overrun when MCGOUTCLK jumps to 120 MHz). Safe now
+        // because we are still on the ~20.97 MHz FEI clock.
+        r32(SIM_CLKDIV1) = CLKDIV1_120MHZ;
+
+        // 50 MHz external clock into EXTAL0 (EREFS0=0 = bypass the crystal osc).
+        r8(OSC0_CR) = OSC0_CR_ERCLKEN;
+        r8(MCG_C2) = C2_RANGE_VHF;
+
+        // FEI -> FBE: take the external reference; /1536 keeps the (PEE-unused) FLL
+        // input inside its 31.25-39.0625 kHz window.
+        r8(MCG_C1) = C1_CLKS_EXT | C1_FRDIV_1536;
+        if (not mcg_wait(S_IREFST, 0))
+        {
+            return fail_to_fei();
+        }
+        if (not mcg_wait(S_CLKST_MASK, S_CLKST_EXT))
+        {
+            return fail_to_fei();
+        }
+
+        // FBE -> PBE: PLL ref 2.5 MHz, VCO 120 MHz. Wait for PLL-selected + lock.
+        r8(MCG_C5) = C5_PRDIV_20;
+        r8(MCG_C6) = C6_PLLS | C6_VDIV_48;
+        if (not mcg_wait(S_PLLST, S_PLLST))
+        {
+            return fail_to_fei();
+        }
+        if (not mcg_wait(S_LOCK0, S_LOCK0))
+        {
+            return fail_to_fei();
+        }
+
+        // PBE -> PEE: select the PLL output as MCGOUTCLK.
+        r8(MCG_C1) = C1_CLKS_PLL | C1_FRDIV_1536;
+        if (not mcg_wait(S_CLKST_MASK, S_CLKST_PLL))
+        {
+            return fail_to_fei();
+        }
+
+        SystemCoreClock = 120000000u;
+        return true;
+    }
+
     void uart0_init()
     {
         r32(SIM_SCGC5) |= SCGC5_PORTB; // clock PORTB
@@ -104,13 +225,29 @@ namespace
         r32(PORTB_PCR17) = PCR_MUX_ALT3;
 
         r8(UART0_C2) = 0; // disable TX/RX while configuring
-        // baud = clk / (16 x (SBR + BRFA/32)); 20.97 MHz, 115200 -> SBR 11, BRFA 12.
-        uint32_t sbr = 11;
+        // baud = clk / (16 x (SBR + BRFA/32)); UART0 is system-clocked, so derive
+        // SBR + the 1/32 fine-adjust from the live clock (tracks 120 MHz or the
+        // 20.97 MHz FEI fallback). 20.97 MHz -> SBR 11/BRFA 12; 120 MHz -> 65/3.
+        uint32_t const baud = 115200u;
+        uint32_t sbr = SystemCoreClock / (16u * baud);
+        uint32_t brfa = (SystemCoreClock * 2u) / baud - sbr * 32u;
         r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
         r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
-        r8(UART0_C4) = 12; // BRFA fine-adjust (low 5 bits)
-        r8(UART0_C2) = C2_TE | C2_RE;
+        r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F); // BRFA fine-adjust (low 5 bits)
+        r8(UART0_C2) = C2_TE | C2_RE; // TIE stays clear; the console ring primes it
     }
+
+    // --- Buffered console TX backend (console_tx.h). The ring drains via the
+    // UART0 TX-empty interrupt; slot_free/push touch one data register. ---
+    int k64_tx_slot_free(void) { return (r8(UART0_S1) & S1_TDRE) != 0; }
+    void k64_tx_push(uint8_t b) { r8(UART0_D) = b; }
+    void k64_tx_irq_enable(void) { r8(UART0_C2) = static_cast<uint8_t>(r8(UART0_C2) | C2_TIE); }
+    void k64_tx_irq_disable(void) { r8(UART0_C2) = static_cast<uint8_t>(r8(UART0_C2) & ~C2_TIE); }
+
+    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
+    char console_tx_buf[CONSOLE_TX_SIZE];
+    console_tx_backend const k64_console_backend = {
+        k64_tx_slot_free, k64_tx_push, k64_tx_irq_enable, k64_tx_irq_disable};
 }
 
 extern "C"
@@ -118,12 +255,20 @@ extern "C"
 
 void arch_init(void)
 {
-    // FPU is enabled earlier (Reset_Handler, before C++ ctors).
+    // FPU is enabled earlier (Reset_Handler, before C++ ctors). Raise the core to
+    // 120 MHz BEFORE UART (baud) + SysTick are programmed; on failure both fall
+    // back cleanly to the 20.97 MHz FEI clock (SystemCoreClock unchanged).
+    clock_init();
     uart0_init();
     kickos_armv7m_init();
 }
 
 void arch_console_write(char const* buf, size_t n)
+{
+    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+}
+
+void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
@@ -132,6 +277,14 @@ void arch_console_write(char const* buf, size_t n)
         }
         r8(UART0_D) = static_cast<uint8_t>(buf[i]);
     }
+}
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = CONSOLE_TX_SIZE;
+    *irq_line = UART0_RXTX_IRQ;
+    return &k64_console_backend;
 }
 
 void arch_shutdown(int status)

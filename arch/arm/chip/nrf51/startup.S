@@ -7,6 +7,8 @@
  * external line routes to the generic kickos_armv6m_default_irq (line=IPSR-16).
  */
 
+#include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
+
     .syntax unified
     .thumb
     .cpu cortex-m0
@@ -33,7 +35,7 @@ g_isr_vector:
     .word SysTick_Handler            /* 15: SysTick */
 
     /* External interrupts 0..31 -> the generic IRQ-as-event entry. */
-    .rept 32
+    .rept KICKOS_MAX_IRQ
     .word kickos_armv6m_default_irq
     .endr
 

@@ -7,6 +7,8 @@
  * kickos_armv7m_default_irq (line = IPSR-16). Runs from flash at 0x0800_0000.
  */
 
+#include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
+
     .syntax unified
     .thumb
 
@@ -32,7 +34,7 @@ g_isr_vector:
     .word SysTick_Handler            /* 15: SysTick */
 
     /* External interrupts 0..81 -> the generic IRQ-as-event entry. */
-    .rept 82
+    .rept KICKOS_MAX_IRQ
     .word kickos_armv7m_default_irq
     .endr
 
