@@ -13,17 +13,31 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design.
 
 ## Status
 
-Milestone **M0** — the x86 sim: a single native Linux ELF that boots the real
-kernel, schedules threads, and runs an unprivileged user app across the syscall
-boundary. No hardware; runnable in CI.
+Milestone **M1** — privilege + SVC on real MCUs (no hardware MPU yet; that is
+M2). On top of the M0 x86 sim, the same kernel + userspace now cross-compiles for
+**two ARM arch backends** (armv7m Cortex-M3/M4/M4F, armv6m Cortex-M0/M0+) across
+**nine chip backends**: `mps2` (QEMU) and `nrf51` (QEMU micro:bit) are
+QEMU-validated; `rp2040` (Raspberry Pi Pico) is **hardware-validated**; `mk64f`,
+`stm32f411`, `stm32f103`, `stm32f302`, `sam3x8e` (Arduino Due) and `xmc4800` are
+build-verified (flash to run). Two non-ARM ports -- **ESP32/Xtensa LX6** and
+**Renesas RX72M/RXv3** -- are implemented and build-verified (HW validation pending).
 
-## Building the sim
+See [`docs/porting.md`](docs/porting.md) for the per-target status and how to add
+a board.
+
+## Building
 
 ```sh
-cmake --preset sim
-cmake --build --preset sim
-ctest --preset sim --output-on-failure
+# Host sim (runs the full test suite in CI):
+cmake --preset sim && cmake --build --preset sim && ctest --preset sim --output-on-failure
+
+# An MCU target (e.g. the Raspberry Pi Pico); flash the resulting image:
+cmake --preset picopi && cmake --build --preset picopi
 ```
+
+Runnable QEMU gates: `ctest --preset qemu` (Cortex-M4) and `ctest --preset
+microbit` (Cortex-M0). Other MCU presets: `frdmk64f`, `f411disco`, `bluepill`,
+`f302nucleo`, `due`, `xmc4800`.
 
 ## License
 

@@ -47,11 +47,25 @@
       "cacheVariables": { "KICKOS_BOARD": "f411disco" }
     },
     {
+      "name": "blackpill",
+      "displayName": "WeAct STM32F411CEU6 Black Pill (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/blackpill",
+      "cacheVariables": { "KICKOS_BOARD": "blackpill" }
+    },
+    {
       "name": "bluepill",
-      "displayName": "STM32F103 Blue Pill (Cortex-M3, armv7m)",
+      "displayName": "STM32F103 Blue Pill, low-density clone / 10 KiB (Cortex-M3)",
       "inherits": "arm-base",
       "binaryDir": "${sourceDir}/build/bluepill",
       "cacheVariables": { "KICKOS_BOARD": "bluepill" }
+    },
+    {
+      "name": "bluepill-c8",
+      "displayName": "STM32F103C8 Blue Pill, genuine 20 KiB (Cortex-M3)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/bluepill-c8",
+      "cacheVariables": { "KICKOS_BOARD": "bluepill-c8" }
     },
     {
       "name": "microbit",
@@ -76,30 +90,81 @@
     },
     {
       "name": "due",
-      "displayName": "Arduino Due (AT91SAM3X8E, Cortex-M3, armv7m)",
+      "displayName": "Arduino Due (AT91SAM3X8E, Cortex-M3) [EXPERIMENTAL: clock/console]",
       "inherits": "arm-base",
       "binaryDir": "${sourceDir}/build/due",
       "cacheVariables": { "KICKOS_BOARD": "due" }
     },
     {
-      "name": "xmc4800",
+      "name": "xmc4800-relax",
       "displayName": "Infineon XMC4800 Relax Kit (Cortex-M4F, armv7m)",
       "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/xmc4800",
-      "cacheVariables": { "KICKOS_BOARD": "xmc4800" }
+      "binaryDir": "${sourceDir}/build/xmc4800-relax",
+      "cacheVariables": { "KICKOS_BOARD": "xmc4800-relax" }
+    },
+    {
+      "name": "sim-telem",
+      "displayName": "Host sim + telemetry (RTT ch1) - runs the telemetry CI gates",
+      "inherits": "sim",
+      "binaryDir": "${sourceDir}/build/sim-telem",
+      "cacheVariables": {
+        "KICKOS_TELEMETRY": "rtt",
+        "KICKOS_CONSOLE": "both",
+        "KICKOS_RTT_CH1_SIZE": "16384"
+      }
+    },
+    {
+      "name": "qemu-telem",
+      "displayName": "QEMU mps2-an386 + telemetry - QEMU structural gate (PendSV asm)",
+      "inherits": "qemu",
+      "binaryDir": "${sourceDir}/build/qemu-telem",
+      "cacheVariables": {
+        "KICKOS_TELEMETRY": "rtt",
+        "KICKOS_CONSOLE": "both"
+      }
+    },
+    {
+      "name": "rx72m",
+      "displayName": "Renesas RX72M (RXv3) - build-only, HW validation deferred",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/rx72m",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-rx-elf.cmake",
+      "cacheVariables": {
+        "KICKOS_BOARD": "rx72m",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "esp32wroom",
+      "displayName": "ESP32-WROOM-32 (Xtensa LX6, windowed ABI) - build-only [first non-ARM ISA]",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32wroom",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-xtensa-esp32-elf.cmake",
+      "cacheVariables": {
+        "KICKOS_BOARD": "esp32wroom",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
     }
   ],
   "buildPresets": [
     { "name": "sim",       "configurePreset": "sim" },
+    { "name": "sim-telem", "configurePreset": "sim-telem" },
     { "name": "qemu",      "configurePreset": "qemu" },
+    { "name": "qemu-telem", "configurePreset": "qemu-telem" },
     { "name": "frdmk64f",  "configurePreset": "frdmk64f" },
     { "name": "f411disco", "configurePreset": "f411disco" },
+    { "name": "blackpill",  "configurePreset": "blackpill" },
     { "name": "bluepill",  "configurePreset": "bluepill" },
+    { "name": "bluepill-c8", "configurePreset": "bluepill-c8" },
     { "name": "microbit",  "configurePreset": "microbit" },
     { "name": "picopi",    "configurePreset": "picopi" },
     { "name": "f302nucleo","configurePreset": "f302nucleo" },
     { "name": "due",       "configurePreset": "due" },
-    { "name": "xmc4800",   "configurePreset": "xmc4800" }
+    { "name": "xmc4800-relax", "configurePreset": "xmc4800-relax" },
+    { "name": "rx72m",     "configurePreset": "rx72m" },
+    { "name": "esp32wroom",    "configurePreset": "esp32wroom" }
   ],
   "testPresets": [
     {
@@ -108,8 +173,18 @@
       "output": { "outputOnFailure": true }
     },
     {
+      "name": "sim-telem",
+      "configurePreset": "sim-telem",
+      "output": { "outputOnFailure": true }
+    },
+    {
       "name": "qemu",
       "configurePreset": "qemu",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "qemu-telem",
+      "configurePreset": "qemu-telem",
       "output": { "outputOnFailure": true }
     },
     {

@@ -10,57 +10,59 @@
 # MCUs later). Switching sim<->MCU is a one-word BOARD change.
 
 # ---------------------------------------------------------------------------
-# Board -> arch resolution.
+# Board -> {arch, chip} resolution.
+#
+# The single source of truth for a board's arch/chip/-mcpu is one descriptor,
+# boards/<board>/board.cmake (also included pre-project by the ARM toolchain file
+# for the CPU baseline). Here we include it to read arch + chip. The chip is the
+# arch/arm/chip/<chip> backend (startup, linker script, clocks, console); the sim
+# has none (KICKOS_CHIP == "").
+#
+# Captured at include time (a called function sees the caller's list dir, not this
+# file's): the in-tree boards/ dir. It is <repo>/boards in a source tree; an
+# installed package has no boards/ tree, so the fallback below applies there.
 # ---------------------------------------------------------------------------
-function(kickos_resolve_board board out_arch)
-  if(board STREQUAL "sim")
-    set(${out_arch} "sim" PARENT_SCOPE)
-  elseif(board STREQUAL "qemu")
-    set(${out_arch} "armv7m" PARENT_SCOPE)
-  elseif(board STREQUAL "frdmk64f")
-    set(${out_arch} "armv7m" PARENT_SCOPE)
-  elseif(board STREQUAL "picopi")
-    set(${out_arch} "armv6m" PARENT_SCOPE)
-  elseif(board STREQUAL "microbit")
-    set(${out_arch} "armv6m" PARENT_SCOPE)
-  elseif(board STREQUAL "f411disco")
-    set(${out_arch} "armv7m" PARENT_SCOPE)
-  elseif(board STREQUAL "bluepill")
-    set(${out_arch} "armv7m" PARENT_SCOPE)
-  elseif(board STREQUAL "f302nucleo")
-    set(${out_arch} "armv7m" PARENT_SCOPE)
-  elseif(board STREQUAL "due")
-    set(${out_arch} "armv7m" PARENT_SCOPE)
-  elseif(board STREQUAL "xmc4800")
-    set(${out_arch} "armv7m" PARENT_SCOPE)
+get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
+
+# The descriptor also carries KICKOS_ARCH_FAMILY (arm|rx|sim|...): the source-tree
+# family that routes arch/<family>/... and the family-specific cross toolchain. A
+# board that omits it falls back to a derivation from the arch (armv6m/armv7m -> arm,
+# sim -> sim) so the ARM descriptors need no churn; a non-ARM family (rx) sets it.
+function(kickos_derive_arch_family arch out_family)
+  if(arch MATCHES "^armv")
+    set(${out_family} "arm" PARENT_SCOPE)
+  elseif(arch STREQUAL "sim")
+    set(${out_family} "sim" PARENT_SCOPE)
   else()
-    message(FATAL_ERROR "KickOS: unknown board '${board}'")
+    set(${out_family} "${arch}" PARENT_SCOPE)
   endif()
 endfunction()
 
-# Board -> chip (the arch/arm/chip/<chip> backend: startup, linker script,
-# clocks, console). The sim has no chip. Chips land per M1 step.
-function(kickos_resolve_chip board out_chip)
-  if(board STREQUAL "qemu")
-    set(${out_chip} "mps2" PARENT_SCOPE)
-  elseif(board STREQUAL "microbit")
-    set(${out_chip} "nrf51" PARENT_SCOPE)
-  elseif(board STREQUAL "frdmk64f")
-    set(${out_chip} "mk64f" PARENT_SCOPE)
-  elseif(board STREQUAL "picopi")
-    set(${out_chip} "rp2040" PARENT_SCOPE)
-  elseif(board STREQUAL "f411disco")
-    set(${out_chip} "stm32f411" PARENT_SCOPE)
-  elseif(board STREQUAL "bluepill")
-    set(${out_chip} "stm32f103" PARENT_SCOPE)
-  elseif(board STREQUAL "f302nucleo")
-    set(${out_chip} "stm32f302" PARENT_SCOPE)
-  elseif(board STREQUAL "due")
-    set(${out_chip} "sam3x8e" PARENT_SCOPE)
-  elseif(board STREQUAL "xmc4800")
-    set(${out_chip} "xmc4800" PARENT_SCOPE)
+function(kickos_load_board_descriptor board out_arch out_chip out_family)
+  set(_desc "${KICKOS_BOARDS_DIR}/${board}/board.cmake")
+  if(EXISTS "${_desc}")
+    include("${_desc}")
+    set(${out_arch} "${KICKOS_ARCH}" PARENT_SCOPE)
+    set(${out_chip} "${KICKOS_CHIP}" PARENT_SCOPE)
+  elseif(NOT EXISTS "${KICKOS_BOARDS_DIR}"
+         AND DEFINED KICKOS_ARCH AND board STREQUAL "${KICKOS_BOARD}")
+    # Installed package: no boards/ tree at all, so fall back to the arch/chip this
+    # package recorded (KickOSConfig) for the single board it was built for. Gated
+    # on the boards/ tree being ABSENT so an in-tree unknown board still errors
+    # (in-tree the host toolchain also defines KICKOS_ARCH, which alone would let a
+    # typo'd board slip through as the recorded arch).
+    set(${out_arch} "${KICKOS_ARCH}" PARENT_SCOPE)
+    set(${out_chip} "${KICKOS_CHIP}" PARENT_SCOPE)
   else()
-    set(${out_chip} "" PARENT_SCOPE) # sim, or a chip not yet brought up
+    message(FATAL_ERROR "KickOS: unknown board '${board}' "
+      "(no ${_desc}, and it is not the board this package was built for)")
+  endif()
+  # Family: honour an explicit descriptor value, else derive from the arch.
+  if(KICKOS_ARCH_FAMILY)
+    set(${out_family} "${KICKOS_ARCH_FAMILY}" PARENT_SCOPE)
+  else()
+    kickos_derive_arch_family("${KICKOS_ARCH}" _fam)
+    set(${out_family} "${_fam}" PARENT_SCOPE)
   endif()
 endfunction()
 
@@ -110,9 +112,9 @@ endfunction()
 #   No-op on the sim (a runnable host ELF is the deliverable there).
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
-  # Key on KICKOS_ARCH (which the installed package records) rather than
-  # KICKOS_IS_SIM (a toolchain-only var an out-of-tree consumer never sees, which
-  # would wrongly objcopy a host sim ELF).
+  # KICKOS_ARCH is the single source of truth for "is this the sim" (set by the
+  # toolchain + board descriptor, and recorded in the installed package -- so this
+  # also holds for an out-of-tree consumer).
   if(KICKOS_ARCH STREQUAL "sim")
     return()
   endif()
@@ -125,6 +127,29 @@ function(kickos_emit_image target)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${target}>
       VERBATIM)
+  endif()
+
+  # ESP32 (Xtensa) only: the raw objcopy .bin is NOT bootable -- the ESP32 ROM
+  # loader needs the Espressif image format (magic 0xE9, segment table, checksum),
+  # and a raw .bin also spans the IRAM/DRAM VMA gap. esptool.py elf2image builds
+  # the bootable image from the ELF. Graceful: if esptool is not on PATH / in the
+  # esp-idf env, skip the step and tell the user how to produce the image, rather
+  # than failing the build (the ELF + raw .bin/.hex are still emitted).
+  if(KICKOS_CHIP STREQUAL "esp32")
+    find_program(KICKOS_ESPTOOL NAMES esptool.py esptool)
+    if(KICKOS_ESPTOOL)
+      add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${KICKOS_ESPTOOL} --chip esp32 elf2image
+                --output $<TARGET_FILE_DIR:${target}>/${target}.app.bin
+                $<TARGET_FILE:${target}>
+        BYPRODUCTS ${target}.app.bin
+        COMMENT "esptool elf2image -> ${target}.app.bin (bootable ESP32 image)"
+        VERBATIM)
+    else()
+      message(STATUS "KickOS: esptool not found -- ${target}.app.bin (bootable "
+        "ESP32 image) not produced. Run: esptool.py --chip esp32 elf2image "
+        "--output ${target}.app.bin <elf>  (the raw ${target}.bin is NOT bootable).")
+    endif()
   endif()
 endfunction()
 
@@ -146,7 +171,7 @@ function(kickos_add_application name)
     message(FATAL_ERROR "kickos_add_application(${name}): no BOARD given and the "
       "KickOS package records no default board")
   endif()
-  kickos_resolve_board("${APP_BOARD}" _arch)
+  kickos_load_board_descriptor("${APP_BOARD}" _arch _chip _family)
 
   # The installed package was built for one board/arch. Fail clearly rather than
   # letting a missing target degrade to a bare -lkickos_arch_<arch> link error.
