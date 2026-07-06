@@ -17,6 +17,12 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
+#include <fcntl.h>
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+#include <kickos/rtt.h>
+#include <kickos/trace/record.h>
+#endif
 
 namespace
 {
@@ -28,6 +34,9 @@ namespace
         void (*entry)(void*);
         void* arg;
         volatile int raised; // >0 while mid-syscall (read from signal-driven switch)
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+        uint16_t tid; // owning thread's trace id (arch_trace_stamp_id)
+#endif
     };
     static_assert(sizeof(SimContext) <= ARCH_CONTEXT_SIZE,
                   "SimContext exceeds ARCH_CONTEXT_SIZE; grow arch/sim context.h");
@@ -70,6 +79,15 @@ namespace
         // --- emulated device IRQ hand-off (async-signal to ISR) ---
         volatile sig_atomic_t pending_irq = -1;
         volatile sig_atomic_t irq_masked = 0; // bit L set => line L suppressed
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+        // Consume-once switch-emit hand-off. The physically-outgoing tid is armed
+        // just before each ucontext swap; whichever context RESUMES (an existing
+        // one right after its swapcontext, or a new one at the trampoline) consumes
+        // it and emits the SWITCH record for {from -> current}.
+        volatile sig_atomic_t switch_pending = 0;
+        uint16_t switch_from = 0xFFFF;
+#endif
     };
 
     // All-constant init keeps this in BSS; signal handlers read it, so the accessor
@@ -85,11 +103,47 @@ namespace
 #endif
     }
 
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // Arm the switch hand-off just before a ucontext swap: `from_tid` is the tid
+    // of the context we are swapping AWAY from (the physically-outgoing side).
+    void trace_switch_arm(uint16_t from_tid)
+    {
+        sim().switch_from = from_tid;
+        sim().switch_pending = 1;
+    }
+    // Consume the hand-off on the RESUMING side and emit {from -> current}. Called
+    // right after every swapcontext and at the trampoline (a new thread's first
+    // run). No-op if nothing armed (defensive; every swap arms exactly one).
+    void trace_emit_switch_in()
+    {
+        if (sim().switch_pending == 0)
+        {
+            return;
+        }
+        sim().switch_pending = 0;
+        uint16_t from = sim().switch_from;
+        uint16_t to = static_cast<uint16_t>(kickos::trace::TRACE_NO_THREAD);
+        if (sim().current != nullptr)
+        {
+            to = sim().current->tid;
+        }
+        kickos_trace_switch_done(from, to);
+    }
+#endif
+
     // --- Trampoline pointer packing (makecontext takes ints) -------------------
     void trampoline(unsigned hi, unsigned lo)
     {
         uintptr_t p = (static_cast<uintptr_t>(hi) << 32) | static_cast<uintptr_t>(lo);
         SimContext* c = reinterpret_cast<SimContext*>(p);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+        // A new thread's first run resumes HERE (not after a swapcontext), so emit
+        // its switch-in record before running its body. The ucontext was created
+        // with IRQ signals blocked (arch_context_init) precisely so no ISR can
+        // preempt between the physical swap and this emit; unblock them only now.
+        trace_emit_switch_in();
+        sigprocmask(SIG_UNBLOCK, &sim().irq_signals, nullptr);
+#endif
         c->entry(c->arg);
         kickos_thread_return(); // noreturn
     }
@@ -183,7 +237,16 @@ namespace
         sim().isr_depth--;
         if (sim().isr_depth == 0 and sim().current != interrupted)
         {
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+            // Deferred (PendSV-analogue) swap site: physically-outgoing is the
+            // interrupted context. Multiple wakes in one ISR collapse to this ONE
+            // physical swap, so exactly one SWITCH record is emitted per ISR.
+            trace_switch_arm(interrupted->tid);
+#endif
             swapcontext(&interrupted->uc, &sim().current->uc);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+            trace_emit_switch_in(); // `interrupted` resumed here on a later swap-in
+#endif
         }
     }
 
@@ -300,8 +363,58 @@ void arch_init(void)
     }
 }
 
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
+{
+    sc(ctx)->tid = id;
+}
+#endif
+
 void arch_shutdown(int status)
 {
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // Mask IRQs/signals across the ENTIRE flush: root_entry -> arch_shutdown holds
+    // no lock, so a timer ISR landing here would emit records AFTER the closing
+    // SESSION's records_attempted snapshot (and could deferred-swap away from root
+    // mid-drain), breaking the decoder's decoded+lost==attempted cross-check. Held
+    // to _exit (never restored -- the process is dying).
+    (void)arch_irq_save();
+    // Emit the closing SESSION (far anchor + final count), then drain the ch1
+    // telemetry ring to a file for the offline decoder. Best-effort: on a dying
+    // path we still want whatever was captured. File is $KICKOS_TRACE_FILE or a
+    // default in the CWD.
+    kickos_trace_final_session();
+    kickos_trace_report_counters();
+    char const* path = getenv("KICKOS_TRACE_FILE");
+    if (path == nullptr)
+    {
+        path = "kicktrace.bin";
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0)
+    {
+        char buf[512];
+        for (;;)
+        {
+            size_t got = kickos_rtt_ch1_drain(buf, sizeof(buf));
+            if (got == 0)
+            {
+                break;
+            }
+            size_t off = 0;
+            while (off < got)
+            {
+                ssize_t w = write(fd, buf + off, got - off);
+                if (w <= 0)
+                {
+                    break;
+                }
+                off += static_cast<size_t>(w);
+            }
+        }
+        close(fd);
+    }
+#endif
     _exit(status);
 }
 
@@ -342,6 +455,13 @@ void arch_context_init(struct arch_context* ctx,
     // New threads always start with all interrupts enabled, independent of the
     // creating thread's current mask (which may be inside a critical section).
     sigemptyset(&c->uc.uc_sigmask);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // ...except: start IRQ signals BLOCKED so no ISR can preempt between the
+    // physical swap into this new thread and the trampoline's switch-in emit. The
+    // trampoline unblocks them right after emitting (see trampoline()).
+    sigaddset(&c->uc.uc_sigmask, SIGALRM);
+    sigaddset(&c->uc.uc_sigmask, SIGUSR1);
+#endif
     c->uc.uc_stack.ss_sp = stack_base;
     c->uc.uc_stack.ss_size = stack_size;
     c->uc.uc_link = nullptr;
@@ -371,7 +491,14 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
     SimContext* f = sc(from);
     sim().current = t;
     guard_apply_current();
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // Synchronous swap site: physically-outgoing is `f`. Consumed on `t`'s resume.
+    trace_switch_arm(f->tid);
+#endif
     swapcontext(&f->uc, &t->uc);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    trace_emit_switch_in(); // `f` resumed here on a later swap-in
+#endif
 }
 
 void arch_start(struct arch_context* boot, struct arch_context* first)
@@ -381,7 +508,18 @@ void arch_start(struct arch_context* boot, struct arch_context* first)
     memset(b, 0, sizeof(*b));
     getcontext(&b->uc);
     sim().current = f;
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // First switch: from = no-thread. `first` is new, so its trampoline emits it.
+    trace_switch_arm(static_cast<uint16_t>(kickos::trace::TRACE_NO_THREAD));
+#endif
     swapcontext(&b->uc, &f->uc);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // Symmetry with the other swap sites: consume on the resume side. `boot` does
+    // not resume in practice (the system ends via arch_shutdown), and any pending
+    // hand-off was already consumed by `first`'s trampoline, so this is a no-op --
+    // but it keeps the invariant "every resume point consumes" uniform.
+    trace_emit_switch_in();
+#endif
 }
 
 // --- Critical section -------------------------------------------------------
@@ -432,6 +570,14 @@ uint64_t arch_clock_now(void)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull +
            static_cast<uint64_t>(ts.tv_nsec);
+}
+
+// Telemetry trace clock: microseconds as a u32 (wraps ~71 min). The sim has no
+// cycle counter, so scale the monotonic ns clock down; us resolution is enough
+// to time a host-emulated switch and keeps the SESSION-anchor math linear.
+uint32_t arch_trace_now(void)
+{
+    return static_cast<uint32_t>(arch_clock_now() / 1000ull);
 }
 
 void arch_timer_arm(uint64_t deadline_ns)

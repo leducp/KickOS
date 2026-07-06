@@ -13,6 +13,7 @@
 // are validated by construction + disassembly (see docs/porting.md).
 
 #include <kickos/arch/arch.h>
+#include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 
 #include "regs.h"
 
@@ -24,10 +25,15 @@ static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @
 static_assert(offsetof(struct arch_context, npriv) == 4, "switch.S expects ctx.npriv @4");
 static_assert(offsetof(struct arch_context, resting_npriv) == 8,
               "switch.S expects ctx.resting_npriv @8");
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+static_assert(offsetof(struct arch_context, trace_tid) == 12,
+              "switch.S telemetry hook expects ctx.trace_tid @12");
+#endif
 
 namespace
 {
-    using namespace kickos::armv7m;
+    using namespace kickos::arm;    // reg32 (shared core regs)
+    using namespace kickos::armv7m; // BASEPRI band, DWT_*, SHPR (arch-specific)
 
     // The DWT cycle counter is 32-bit; extend it to a monotonic 64-bit cycle
     // count in software by catching wraps on each read. LIMITATION (M1): a wrap
@@ -35,10 +41,6 @@ namespace
     // missed. A DWT/timer overflow interrupt is the refinement (item 10/12a).
     volatile uint32_t g_cyc_high = 0;
     volatile uint32_t g_cyc_last = 0;
-
-    // User-RAM region for arch_ram_alloc, defined by the chip linker script.
-    // Bump-allocated; freed only wholesale (matches the sim arena's M0 model).
-    volatile uint32_t g_ram_used = 0;
 }
 
 extern "C"
@@ -49,22 +51,14 @@ extern "C"
     // SCS write in arch_switch BusFaults). It must trap out via the exit syscall.
     void kickos_user_thread_return(void);
 
-    // Linker-provided user-RAM bounds (chip linker script, M1 item 10).
-    extern unsigned char __kickos_ram_start[];
-    extern unsigned char __kickos_ram_end[];
-
     // CMSIS convention: the core clock in Hz, defined + maintained by the chip.
     extern uint32_t SystemCoreClock;
-
-    // Shared with switch.S (the PendSV/arch_start switch targets). volatile:
-    // written by C (arch_switch) and by asm (PendSV); the compiler must not
-    // cache or elide the accesses it can't see across the asm seam.
-    struct arch_context* volatile g_arch_current = nullptr;
-    struct arch_context* volatile g_arch_next = nullptr;
 }
 
 namespace
 {
+    using namespace kickos::units; // _s == 1e9 ns
+
     inline uint64_t now_cycles()
     {
         // Called from thread and ISR context; the wrap-extend read must be
@@ -88,16 +82,28 @@ namespace
         {
             return 0;
         }
-        // Split to avoid overflow: sec*1e9 + (rem*1e9)/f, rem < f.
-        uint64_t sec = cyc / f;
-        uint64_t rem = cyc % f;
-        return sec * 1000000000ull + (rem * 1000000000ull) / f;
+        // ns = cyc * 1e9 / f via a cached reciprocal multiply: mult = (1e9<<32)/f,
+        // then ns = (cyc * mult) >> 32 (64x64->high, split to avoid overflow). The
+        // one 64-bit divide runs only when the clock changes (once at boot); a raw
+        // ns divide here cost three 64-bit variable divides on EVERY clock read
+        // (arch_clock_now runs twice per sleep_ns + on every ktime_now). Verified
+        // <0.01 ppm vs the exact split across the MCU clock range.
+        static uint64_t cached_f = 0;
+        static uint64_t mult = 0;
+        if (f != cached_f)
+        {
+            mult = ((static_cast<uint64_t>(1_s) << 32) + (f >> 1)) / f;
+            cached_f = f;
+        }
+        uint64_t a = cyc >> 32, b = cyc & 0xFFFFFFFFu;
+        uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFu;
+        return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
     }
 
     inline uint64_t ns_to_cycles(uint64_t ns)
     {
         uint64_t f = SystemCoreClock;
-        return (ns * f) / 1000000000ull;
+        return (ns * f) / 1_s;
     }
 }
 
@@ -154,16 +160,6 @@ void arch_context_init(struct arch_context* ctx,
     ctx->resting_npriv = npriv;
 }
 
-// --- Switch: always deferred to PendSV (the outgoing ctx is g_arch_current) --
-void arch_switch(struct arch_context* from, struct arch_context* to)
-{
-    (void)from; // PendSV saves g_arch_current; `from` is always that thread
-    g_arch_next = to;
-    reg32(SCB_ICSR) = ICSR_PENDSVSET;
-    __asm volatile("dsb" ::: "memory");
-    __asm volatile("isb" ::: "memory");
-}
-
 // --- Critical section: raise BASEPRI to the kernel lock threshold -----------
 arch_irq_state_t arch_irq_save(void)
 {
@@ -173,7 +169,7 @@ arch_irq_state_t arch_irq_save(void)
     __asm volatile("msr basepri, %0" ::"r"(lock) : "memory");
     // Raising BASEPRI is not self-synchronizing: without these barriers an
     // interrupt could be taken on the following instruction under the OLD mask
-    // (ARMv7-M ARM: a BASEPRI write needs DSB+ISB to take effect).
+    // (ARMv7-M ARM, "Barriers" -- a BASEPRI write needs DSB+ISB to take effect).
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     return prev;
@@ -184,14 +180,7 @@ void arch_irq_restore(arch_irq_state_t state)
     __asm volatile("msr basepri, %0" ::"r"(state) : "memory");
 }
 
-int arch_in_isr(void)
-{
-    uint32_t ipsr;
-    __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
-    return (ipsr & 0x1FF) != 0;
-}
-
-// --- Tickless clock (DWT) + one-shot timer (SysTick) ------------------------
+// --- Tickless clock (DWT); the one-shot SysTick timer is core-generic --------
 // weak: the monotonic clock SOURCE is chip-specific (the arch.h note: "free-
 // running TIM/DWT + compare (or SysTick)"). DWT is the default for real silicon;
 // a chip whose DWT is absent/unimplemented (e.g. QEMU) overrides this.
@@ -200,106 +189,17 @@ uint64_t __attribute__((weak)) arch_clock_now(void)
     return cycles_to_ns(now_cycles());
 }
 
-void arch_timer_arm(uint64_t deadline_ns)
+// weak: telemetry trace clock = the raw DWT cycle counter (32-bit, wraps). Cycle-
+// accurate on real silicon and already running (kickos_armv7m_init enabled it).
+// A part whose DWT is frozen/absent (QEMU mps2) overrides this, like arch_clock_now.
+uint32_t __attribute__((weak)) arch_trace_now(void)
 {
-    uint64_t now = arch_clock_now();
-    uint64_t delta_ns = 0;
-    if (deadline_ns > now)
-    {
-        delta_ns = deadline_ns - now;
-    }
-    // Clamp the delta to the one-shot range BEFORE converting, so a far-future
-    // (or saturated UINT64_MAX) deadline can't overflow the ns*freq product. A
-    // clamped deadline fires early and the kernel re-arms the remainder from
-    // kickos_isr_timer (a harmless extra wake).
-    uint64_t f = SystemCoreClock;
-    uint64_t max_delta_ns = ~0ull;
-    if (f != 0)
-    {
-        max_delta_ns = (static_cast<uint64_t>(SYST_RVR_MAX) * 1000000000ull) / f;
-    }
-    uint64_t cyc;
-    if (delta_ns >= max_delta_ns)
-    {
-        cyc = SYST_RVR_MAX;
-    }
-    else
-    {
-        cyc = ns_to_cycles(delta_ns);
-    }
-    if (cyc == 0)
-    {
-        cyc = 1; // never program 0 (fires immediately / not at all)
-    }
-    reg32(SYST_CSR) = 0;                        // disable while reprogramming
-    reg32(SCB_ICSR) = ICSR_PENDSTCLR;           // drop any pend latched while masked
-    reg32(SYST_RVR) = static_cast<uint32_t>(cyc);
-    reg32(SYST_CVR) = 0;                        // clear -> reload on next tick
-    reg32(SYST_CSR) = SYST_CSR_CLKSOURCE | SYST_CSR_TICKINT | SYST_CSR_ENABLE;
+    return reg32(DWT_CYCCNT);
 }
 
-void arch_timer_disarm(void)
-{
-    reg32(SYST_CSR) = 0;
-    // "disarm" must mean no callback: clear a SysTick that pended while the line
-    // was BASEPRI-masked, else it fires once on lock release after we disarmed.
-    reg32(SCB_ICSR) = ICSR_PENDSTCLR;
-}
-
-// --- MPU: hardware enforcement is M2 (item 12); no-op on M1 -----------------
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
-{
-    (void)regions;
-    (void)n;
-    // M1 is privilege + SVC only. Per-task MPU region programming (K64F SYSMPU /
-    // v7-M PMSA) lands in M2; until then no memory isolation is enforced on the
-    // target (matches the roadmap: "MCUs first come up with privilege + SVC").
-}
-
-uintptr_t arch_ram_base(void)
-{
-    return reinterpret_cast<uintptr_t>(__kickos_ram_start);
-}
-
-size_t arch_ram_size(void)
-{
-    return static_cast<size_t>(__kickos_ram_end - __kickos_ram_start);
-}
-
-void* arch_ram_alloc(size_t size)
-{
-    size_t total = arch_ram_size();
-    size_t need = (size + 31u) & ~static_cast<size_t>(31u); // 32-byte aligned
-    arch_irq_state_t s = arch_irq_save();
-    void* p = nullptr;
-    if (need != 0 and need <= total - g_ram_used)
-    {
-        p = __kickos_ram_start + g_ram_used;
-        g_ram_used += need;
-    }
-    arch_irq_restore(s);
-    return p;
-}
-
-uintptr_t arch_mpu_probe_addr(void)
-{
-    // No MPU on M1 -> no address faults on unprivileged access. The isolation
-    // self-test's fault stage is a no-op here (roadmap: "minus the enforced-
-    // MPU-fault case"). Return 0 to signal "no probe address available".
-    return 0;
-}
-
-// --- Interrupt controller (NVIC) --------------------------------------------
-void arch_irq_mask(int line)
-{
-    if (line < 0)
-    {
-        return;
-    }
-    unsigned l = static_cast<unsigned>(line);
-    reg32(NVIC_ICER0 + (l >> 5) * 4) = 1u << (l & 31);
-}
-
+// --- Interrupt controller (NVIC). mask/inject are core-generic (arm/common);
+// only unmask is arch-specific: it programs the BASEPRI-maskable priority band
+// the crit section relies on, which v6-M (PRIMASK-masks-all) has no analogue for.
 void arch_irq_unmask(int line)
 {
     if (line < 0)
@@ -315,41 +215,10 @@ void arch_irq_unmask(int line)
     reg32(NVIC_ISER0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 
-void arch_irq_inject(int irq)
-{
-    if (irq < 0)
-    {
-        return;
-    }
-    unsigned l = static_cast<unsigned>(irq);
-    // Match the proven sim semantics: a masked (disabled) line drops the raise
-    // rather than latching pending to fire on unmask. The driver re-arms by
-    // unmasking at irq_ack (item 11a revisits this on real silicon).
-    if ((reg32(NVIC_ISER0 + (l >> 5) * 4) & (1u << (l & 31))) == 0)
-    {
-        return;
-    }
-    reg32(NVIC_ISPR0 + (l >> 5) * 4) = 1u << (l & 31);
-}
-
-// --- Idle / halt ------------------------------------------------------------
-void arch_idle_wait(void)
-{
-    __asm volatile("wfi");
-}
-
 // arch_shutdown is chip-specific (a real MCU halts; QEMU exits via semihosting),
 // so it lives in the chip backend, not here.
 
 // --- Kernel-facing ISR entries ----------------------------------------------
-// SysTick expiry: disarm (one-shot tickless model) then run the kernel handler,
-// which re-arms the next deadline via arch_timer_arm.
-void SysTick_Handler(void)
-{
-    reg32(SYST_CSR) = 0;
-    kickos_isr_timer();
-}
-
 // Common external-IRQ entry: the chip vector table routes NVIC lines here. The
 // exception number in IPSR is 16 + external-line, so the line is IPSR - 16.
 void kickos_armv7m_default_irq(void)

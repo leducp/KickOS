@@ -30,8 +30,23 @@
     .thumb_func
     .global PendSV_Handler
 PendSV_Handler:
+#if KICKOS_BENCH
+    /* Bench: timestamp the switch entry (DWT CYCCNT @ 0xE0001004). r0/r1 are
+       caller-saved (HW-stacked), free to clobber here. */
+    ldr     r0, =0xE0001004
+    ldr     r0, [r0]
+    ldr     r1, =g_bench_sw_start
+    str     r0, [r1]
+#endif
     ldr     r3, =g_arch_current
     ldr     r2, [r3]                /* outgoing ctx* (0 => first start) */
+#if KICKOS_TELEMETRY
+    /* Spill the OUTGOING ctx* now, before the swap clobbers r2 -- the telemetry
+       tail emits from this spilled value and the incoming ctx* it actually loads,
+       never re-reading g_arch_next (a SysTick preempting PendSV can rewrite it).
+       r3 is pushed only to keep MSP 8-byte aligned across the later bl. */
+    push    {r2, r3}
+#endif
     cbz     r2, 1f                  /* nothing to save on the first entry */
     mrs     r0, psp
 #if defined(__ARM_FP)
@@ -61,6 +76,38 @@ PendSV_Handler:
     bfi     r3, r2, #0, #1          /* CONTROL.nPRIV = incoming npriv */
     msr     control, r3
     isb
+#if KICKOS_BENCH
+    /* Bench: delta = now - entry stamp -> kickos_bench_switch_done. Read here,
+       right after the switch body, BEFORE any telemetry emit -- so the measured
+       window brackets only the save/restore, not the emit. r1 (incoming ctx*) and
+       the entry-spilled {r2,r3} below it are preserved across the balanced push/pop
+       (telemetry reads them next). Keep MSP 8-byte aligned; save EXC_RETURN. */
+    push    {r0, r1, r2, lr}
+    ldr     r0, =0xE0001004
+    ldr     r0, [r0]
+    ldr     r1, =g_bench_sw_start
+    ldr     r1, [r1]
+    subs    r0, r0, r1
+    bl      kickos_bench_switch_done
+    pop     {r0, r1, r2, lr}
+#endif
+#if KICKOS_TELEMETRY
+    /* SWITCH completion hook. Emit {from,to} from the PHYSICALLY-swapped contexts:
+       r1 is the incoming ctx* we loaded above; r2 (popped) is the outgoing ctx*
+       we spilled at entry. trace_tid lives at offset 12. from = 0xFFFF on the
+       first switch (outgoing ctx* was 0). EXC_RETURN (lr) is saved across the bl,
+       MSP kept 8-byte aligned. */
+    pop     {r2, r3}                /* r2 = outgoing ctx* (r3 = alignment pad) */
+    ldr     r1, [r1, #12]           /* r1 = to_tid (incoming.trace_tid) */
+    movw    r0, #0xFFFF             /* default from = no-thread */
+    cmp     r2, #0
+    beq     4f
+    ldr     r0, [r2, #12]           /* from_tid = outgoing.trace_tid */
+4:
+    push    {r0, lr}                /* save EXC_RETURN; r0 pad keeps 8B alignment */
+    bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
+    pop     {r0, lr}                /* restore EXC_RETURN */
+#endif
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
 
 /* ------------------------------------------------------------------------- */

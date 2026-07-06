@@ -26,6 +26,13 @@ struct arch_context
     // Fixed resting privilege (set once at init); the SVC trampoline restores it
     // on syscall return so a privileged thread issuing a syscall is not demoted.
     uint32_t resting_npriv;
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // Owning thread's trace id (stamped in thread_create). switch.S reads it at
+    // offset 12 from the physically-swapped contexts to emit the SWITCH record.
+    // Elided when telemetry is off (OFF layout byte-unchanged).
+    uint32_t trace_tid;
+#endif
 };
 
 #endif

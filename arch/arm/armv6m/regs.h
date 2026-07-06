@@ -12,35 +12,15 @@
 
 #include <stdint.h>
 
+#include "../common/regs.h" // reg32, SCB_ICSR/ICSR_*, SysTick, NVIC (shared)
+
 namespace kickos
 {
     namespace armv6m
     {
-        inline volatile uint32_t& reg32(uintptr_t addr)
-        {
-            return *reinterpret_cast<volatile uint32_t*>(addr);
-        }
-
-        // --- System Control Block ---
-        constexpr uintptr_t SCB_ICSR = 0xE000ED04;
+        // --- System Control Block (arch-specific: SHPR is word-access only) ---
         constexpr uintptr_t SCB_SHPR2 = 0xE000ED1C; // SVCall (#11)
         constexpr uintptr_t SCB_SHPR3 = 0xE000ED20; // PendSV (#14) / SysTick (#15)
-        constexpr uint32_t ICSR_PENDSVSET = 1u << 28;
-        constexpr uint32_t ICSR_PENDSTCLR = 1u << 25;
-
-        // --- SysTick ---
-        constexpr uintptr_t SYST_CSR = 0xE000E010;
-        constexpr uintptr_t SYST_RVR = 0xE000E014;
-        constexpr uintptr_t SYST_CVR = 0xE000E018;
-        constexpr uint32_t SYST_CSR_ENABLE = 1u << 0;
-        constexpr uint32_t SYST_CSR_TICKINT = 1u << 1;
-        constexpr uint32_t SYST_CSR_CLKSOURCE = 1u << 2;
-        constexpr uint32_t SYST_RVR_MAX = 0x00FFFFFF;
-
-        // --- NVIC ---
-        constexpr uintptr_t NVIC_ISER0 = 0xE000E100;
-        constexpr uintptr_t NVIC_ICER0 = 0xE000E180;
-        constexpr uintptr_t NVIC_ISPR0 = 0xE000E200;
 
         // System-handler priorities (only the top 2 bits are implemented on
         // v6-M). PendSV lowest so it tail-chains after every other exception;

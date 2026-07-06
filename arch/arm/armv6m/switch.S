@@ -26,6 +26,12 @@
 PendSV_Handler:
     ldr     r2, =g_arch_current
     ldr     r3, [r2]                /* outgoing ctx* (0 => first start) */
+#if KICKOS_TELEMETRY
+    /* Spill the outgoing ctx* before the swap clobbers it; the tail emits from
+       this + the incoming ctx* it loads, never re-reading g_arch_next. r2 is
+       pushed only to keep MSP 8-byte aligned across the later bl. */
+    push    {r2, r3}
+#endif
     cmp     r3, #0
     beq     1f
     /* --- save outgoing --- */
@@ -64,6 +70,20 @@ PendSV_Handler:
     orrs    r2, r0                  /* set nPRIV */
     msr     control, r2
     isb
+#if KICKOS_TELEMETRY
+    /* SWITCH completion hook, BEFORE the EXC_RETURN reconstruction: lr is
+       clobbered by the bl but rebuilt (0xFFFFFFFD) right after, so it needs no
+       save. r1 = incoming ctx* (loaded above); the popped r3 = outgoing ctx*.
+       trace_tid @ offset 12; from = 0xFFFF on the first switch. */
+    pop     {r2, r3}                /* r3 = outgoing ctx* (r2 = alignment pad) */
+    ldr     r1, [r1, #12]           /* r1 = to_tid (incoming.trace_tid) */
+    ldr     r0, =0xFFFF             /* default from = no-thread */
+    cmp     r3, #0
+    beq     4f
+    ldr     r0, [r3, #12]           /* from_tid = outgoing.trace_tid */
+4:
+    bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
+#endif
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
     mov     lr, r0
     bx      lr
