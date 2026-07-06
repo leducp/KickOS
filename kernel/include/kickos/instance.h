@@ -35,6 +35,22 @@ namespace kickos
         arch_context boot{};
         SchedPolicy const* policy = nullptr;
 
+        // Per-Kernel monotonic thread-id counter (thread.cc). Starts at 0 so the
+        // first thread created (idle, in kmain) is id 0; wraps skip 0 and 0xFFFF.
+        uint16_t next_tid = 0;
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+        // --- telemetry counters (ktrace.h; instance-scoped, spike deliverable 5) ---
+        // seq: monotonic per-record sequence (loss detection). records_attempted:
+        // every record the frontend tried to emit (== last seq issued; carried in
+        // SESSION for the host cross-check). dropped: records the sink refused
+        // (ring full) -- records_attempted - dropped == records delivered.
+        uint16_t trace_seq = 0;
+        uint32_t trace_records_attempted = 0;
+        uint32_t trace_dropped = 0;
+        uint16_t trace_probe_overhead = 0; // measured once at ktrace_init (SESSION)
+#endif
+
         // --- tickless time (time.cc) ---
         Thread* sleepq = nullptr; // sorted ascending by deadline_ns
 

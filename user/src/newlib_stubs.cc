@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Newlib-compatible userspace porting layer (the toolchain-libc porting layer): the bottom edge that lets the toolchain's libstdc++/libsupc++ sit on
-// top of KickOS by routing its OS calls through KickOS syscalls. NOT compiled
+// Newlib-compatible userspace porting layer: the bottom edge that lets the
+// toolchain's libstdc++/libsupc++ sit on top of KickOS by routing its OS calls
+// (the newlib syscall interface) through KickOS syscalls. NOT compiled
 // for the sim (host glibc already provides these symbols); wired in from M1
 // when userspace links the ARM toolchain libc.
 

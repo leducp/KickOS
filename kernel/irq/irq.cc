@@ -7,6 +7,7 @@
 #include <kickos/sync.h>
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
+#include <kickos/ktrace.h>
 
 namespace kickos
 {
@@ -178,5 +179,11 @@ extern "C" void kickos_isr_irq(int irq)
     ::kickos::Kernel& k = ::kickos::kernel();
     // Every slot is a valid callback (the null-object default), so no null check:
     // an unbound line dispatches to irq_default_handler (mask + spurious count).
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    ::kickos::ktrace_irq_enter(static_cast<uint16_t>(irq));
+#endif
     k.irq_table[irq].handler(k.irq_table[irq].arg);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    ::kickos::ktrace_irq_exit(static_cast<uint16_t>(irq));
+#endif
 }

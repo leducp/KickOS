@@ -31,3 +31,18 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
             "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
   set_tests_properties(oot_export PROPERTIES TIMEOUT 120)
 endif()
+
+# The same acceptance criterion for a bare-metal package: install the MCU
+# package, then build an out-of-tree app against it with the SHIPPED cross
+# toolchain (build-only; an MCU ELF can't run on the host). Registered on the
+# qemu board -- the runnable ARM CI target -- so the MCU packaging surface
+# (shipped toolchain + board.cmake, the INSTALL_INTERFACE linker script, the
+# single-board guard) gets real coverage the sim gate can't give.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
+  add_test(
+    NAME    oot_export_mcu
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_oot_export_mcu.sh"
+            "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
+            "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
+  set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 120)
+endif()

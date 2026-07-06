@@ -67,6 +67,13 @@ uint64_t kos_clock_now(void);   // monotonic nanoseconds
 // exhausted. On MCU this pool is a linker-defined region.
 void* kos_ram_alloc(size_t size);
 
+// Borrow the KERNEL'S single diagnostic LED (the kernel also drives it for
+// self-debug, e.g. solid on panic). Not an app-owned device: this is provisional
+// until the capability model gives userspace a real GPIO driver. No-op on boards
+// with no known LED.
+void kos_kernel_diag_led_set(int on);
+void kos_kernel_diag_led_toggle(void);
+
 #ifdef __cplusplus
 }
 #endif

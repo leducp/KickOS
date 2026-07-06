@@ -37,6 +37,16 @@ namespace kos
     {
         return kos_clock_now();
     }
+    // Borrow the kernel's diagnostic LED (see kos_kernel_diag_led_set): a shared
+    // status pin, not an app-owned device -- provisional until caps land.
+    inline void kernel_diag_led(bool on)
+    {
+        kos_kernel_diag_led_set(on);
+    }
+    inline void kernel_diag_led_toggle()
+    {
+        kos_kernel_diag_led_toggle();
+    }
 #if defined(KICKOS_ENABLE_SELFTEST)
     inline void* guard_addr()
     {
