@@ -13,21 +13,71 @@ provides two halves:
 - a **chip** backend (`arch/arm/chip/<chip>/`) — the hardware edges: reset/startup
   + vector table, clock tree, UART console, `arch_init`/`arch_shutdown`, the
   linker script (which defines the user-RAM region `__kickos_ram_start/_end`), and
-  `SystemCoreClock` (defined in the chip C, not the linker script).
+  `SystemCoreClock` (defined in the chip C, not the linker script). Optionally a
+  chip may override `arch_diag_led_init`/`arch_diag_led_set` (the kernel
+  diagnostic LED, `kdiag_led_*`); both have weak no-op defaults, so a board with
+  no known LED just leaves them out.
 
-### Adding a board/chip (the four edit points)
+### Adding a board/chip (the three edit points)
 
-1. `cmake/kickos.cmake` — add the board to `kickos_resolve_board` (→ arch) and, if
-   it has a brought-up chip, to `kickos_resolve_chip` (→ chip dir name).
-2. `cmake/toolchain-arm-none-eabi.cmake` — add the board → `-mcpu/-mfpu` row.
-3. `CMakePresets.json` — add a configure + build preset (only for boards that
+1. `boards/<board>/board.cmake` — the board descriptor: one file setting
+   `KICKOS_ARCH`, `KICKOS_CHIP` (empty for the sim), and `KICKOS_MCPU`
+   (`-mcpu/-mfpu/-mfloat-abi`). This is the **single source of truth** for the
+   board → {arch, chip, CPU} triple: the ARM cross toolchain includes it
+   pre-`project()` for the `-mcpu` baseline, and the build's board resolver
+   (`cmake/kickos.cmake`, `kickos_load_board_descriptor`) includes the same file
+   for arch + chip. The two can never disagree. (This replaced the old triplet:
+   a `-mcpu` ladder in the toolchain + `kickos_resolve_board`/`kickos_resolve_chip`
+   ladders in `kickos.cmake`.)
+2. `CMakePresets.json` — add a configure + build preset (only for boards that
    actually build/link today).
-4. `arch/arm/chip/<chip>/` — the chip sources (`*.cc`, `*.S`, auto-globbed) and a
-   linker script named exactly `<chip>.ld` (the app link picks it up by that name).
+3. `arch/arm/chip/<chip>/` — the chip sources (`*.cc`, `*.S`, auto-globbed), a
+   linker script named exactly `<chip>.ld`, and `include/kickos/board_config.h`
+   with the board facts. CMake derives the dir from the chip name, puts it on the
+   include path, and installs it — **no root-CMake edit needed** (this used to be a
+   silently-failing step).
 
-Status: the **armv7m arch backend exists** (Cortex-M3/M4) and is validated on QEMU
-(`qemu` board / `mps2` chip). The K64F **chip** backend (MCG clocks/UART/linker on
-real silicon) is the next M1 step.
+`boards/<board>/` is also where per-board overrides of a shared chip live: a
+board-specific `include/kickos/board_config.h` (preferred over the chip default)
+and/or a `<chip>.ld` linker override — proven on the `stm32f411` pair
+(f411disco + blackpill) and the `stm32f103` pair (bluepill + bluepill-c8).
+
+`board_config.h` is a pure-`#define` header (so `startup.S` includes it too),
+pulled in by `kernel/include/kickos/config/{board,system}.h`. It sets:
+   - `KICKOS_MAX_IRQ` — the chip's NVIC line count. The `startup.S` vector table
+     derives its `.rept` from this exact macro, so the vector table and the kernel
+     IRQ table are **one fact**, not the same number copied into two files (the old
+     silent-skew hazard). Defaults to 32 if the header is absent.
+   - `KICKOS_MAX_THREADS` + the idle/root/user stack sizes, sized to the chip's
+     SRAM. Too big and the link fails on the linker-script RAM `ASSERT`.
+   Every knob is `#ifndef`-guarded, so a `-DKICKOS_...=` on the CMake line still
+   overrides for a one-off (edit the header for a persistent/shipped change). The
+   sim has no chip header and falls through to the config-header defaults.
+
+A chip whose flash boot needs a checksummed second stage (RP2040 boot2) adds a
+fifth point: `cmake/<chip>_checksum.py` plus a `boot2.S`/`boot2.ld` in the chip
+dir; the build wires the multi-stage boot2 image automatically (keyed on
+`${KICKOS_CHIP}`). A chip on a non-ARM ISA additionally needs a new arch backend +
+toolchain file — see `arch/xtensa/` (ESP32) or `arch/rx/` (RX72M) for worked examples.
+
+Status — two arch backends (**armv7m** Cortex-M3/M4/M4F, **armv6m** Cortex-M0/M0+)
+and nine chips, by validation tier:
+
+| Chip | Board | Core | Validation |
+|------|-------|------|------------|
+| `mps2` | qemu | M4F | QEMU (runnable CI gate) |
+| `nrf51` | microbit | M0 | QEMU (runnable CI gate) |
+| `xmc4800` | xmc4800-relax | M4F | **hardware** (LED + USIC VCOM console) |
+| `stm32f411` | f411disco | M4F | **hardware** (LED + UART + ping-pong) |
+| `stm32f302` | f302nucleo | M4F | **hardware** (LED PB13 + console) |
+| `stm32f103` | bluepill | M3 | **hardware** (LED + UART; sized to 10 KiB LD floor) |
+| `rp2040` | picopi | M0+ | **hardware** (LED blink; UART untested) |
+| `mk64f` | frdmk64f | M4F | build-only (flash to run) |
+| `sam3x8e` | due | M3 | build-only |
+
+Build-only chips are verified by construction (register review + image
+inspection); flash to a board to confirm. `apps/blink` is a no-UART LED smoke
+test available on every board with a known LED.
 
 ---
 
@@ -187,6 +237,47 @@ site):
   advances. This makes the QEMU gate a *functional* check, not a timing-accurate
   one; real silicon runs the clock and the compare off the same source.
 
+## The RP2040 chip (`board`: `picopi`, chip `rp2040`, armv6m) — hardware-validated
+
+The Raspberry Pi Pico (RP2040, Cortex-M0+) is the first KickOS target **confirmed
+running on real silicon** (`apps/blink` blinks the onboard LED on GP25). Three
+things make it the most involved chip bring-up so far:
+
+- **Flash second stage (boot2) + XIP.** The RP2040 executes in place from external
+  QSPI flash, but only after a 256-byte second stage configures the Synopsys SSI.
+  The bootrom copies those 256 bytes to SRAM, checks a **CRC-32/MPEG-2** over bytes
+  0..251 (little-endian at 0xFC), and jumps in. `boot2.S` does the minimum
+  (datasheet §4.10.3): disable the SSI, program the "03h serial read per access"
+  XIP mode (`CTRLR0=0x001f0300`, `SPI_CTRLR0=0x03000218`, BAUDR=4), re-enable, then
+  set VTOR and hand off to the app vector table at 0x1000_0100. It is
+  position-independent (runs from a bootrom-chosen SRAM address). The build wires
+  the multi-stage image: assemble+link `boot2.S` (own `boot2.ld`, ≤252 bytes) →
+  `objcopy -O binary` → `cmake/rp2040_checksum.py` (appends the CRC, emits a
+  `.boot2` data blob) → into the chip archive, force-linked with `-Wl,-u`.
+  - **picolibc `-T` gotcha, again.** The boot2 *sub-link* hits the same default-
+    linker-script trap as the app link: `boot2.ld` must be passed with a
+    driver-level `-T` (not `-Wl,-T`) or picolibc's default script collides.
+- **No PLL — one 12 MHz crystal drives everything.** For a first bring-up the clock
+  tree is deliberately minimal (no PLL sequencing): enable the XOSC, switch
+  `clk_ref` to it (so `clk_sys` follows to 12 MHz — precise SysTick,
+  `SystemCoreClock=12e6`), and point `clk_peri` at it (precise UART baud). A
+  1 MHz watchdog tick feeds the 64-bit system TIMER, which is `arch_clock_now`
+  (the RAW halves, hi/lo/hi re-read — no DWT on v6-M, and core-safe if core 1 is
+  ever launched). Every poll is **bounded**: a dead crystal degrades to the ROSC
+  default instead of hanging.
+- **Reset-release ordering is load-bearing.** A peripheral's `RESET_DONE` only
+  asserts once it has a running clock. IO_BANK0/PADS_BANK0/TIMER (clk_sys/clk_ref,
+  live at reset) are released first; **UART0 is clocked by `clk_peri` and must be
+  released *after* `clocks_init`** — release it first and its `RESET_DONE` never
+  asserts, hanging the boot with no sign of life. (This exact bug bit the first
+  bring-up; the LED-bisection diagnostic localized it to the reset poll.)
+
+No RP2040 model ships in mainline QEMU, so there is no CI gate; the image is
+build-verified (boot2 CRC recomputed, `.boot2` at 0x1000_0000, vectors at
+0x1000_0100) and confirmed by flashing a Pico (BOOTSEL + `picotool load -x`).
+The board is always BOOTSEL-recoverable, so a wrong boot2/clock config cannot
+permanently brick it.
+
 ## Verification status
 
 The arch backend **cross-compiles clean** for Cortex-M4/M3, and the **spike is
@@ -197,7 +288,7 @@ privileged and an unprivileged thread** → SysTick one-shot driving `sleep` →
 semaphore block/wake reschedule, all on a real Cortex-M4 core. The #1 M1 risk is
 retired.
 
-Next runtime target is the K64F **chip** step (M1 item 10) — the same arch layer,
-a real SYSMPU-less bring-up (MCG clocks, UART0, linker with the flash config
-field); roadmap acceptance: "UART output matches the sim, minus the
-enforced-MPU-fault case."
+Since then the chip layer has been brought up on hardware: `mk64f` (build-only)
+and **`rp2040` — running on a real Raspberry Pi Pico** (see the RP2040 section).
+Remaining M1 chips (F411/F103) reuse the `mps2`/`mk64f`/`rp2040` patterns. Hardware
+MPU enforcement is M2 (item 12).
