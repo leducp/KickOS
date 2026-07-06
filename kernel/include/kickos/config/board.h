@@ -13,7 +13,16 @@
 
 #include <kickos/units.h>
 
-// In-kernel IRQ-table size (sim placeholder; right-sized per chip at M1).
+// Per-board facts (MAX_IRQ + the provisioning knobs in config/system.h) live in
+// the selected board's board_config.h; CMake adds that dir to the include path
+// and installs it for out-of-tree consumers. A plain sim/standalone build has
+// none and falls through to the defaults below (which are the sim values). A
+// CMake -D still overrides (the header guards are #ifndef).
+#if defined(__has_include) && __has_include(<kickos/board_config.h>)
+#include <kickos/board_config.h>
+#endif
+
+// In-kernel IRQ-table size (sim placeholder; right-sized per chip via the header).
 #ifndef KICKOS_MAX_IRQ
 #define KICKOS_MAX_IRQ 32
 #endif

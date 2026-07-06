@@ -12,7 +12,6 @@ set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
 set(KICKOS_ARCH   "sim"  CACHE STRING "KickOS arch backend selected by this toolchain")
-set(KICKOS_IS_SIM ON     CACHE BOOL   "Target is the host sim")
 
 # Native compilers; let CMake discover them unless the user overrides.
 if(NOT DEFINED CMAKE_C_COMPILER)

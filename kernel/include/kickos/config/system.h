@@ -11,6 +11,14 @@
 
 #include <kickos/units.h>
 
+// The selected board's provisioning (MAX_THREADS + the stack sizes) comes from
+// board_config.h; CMake puts it on the include path. Absent (sim/standalone),
+// the #ifndef defaults below apply -- they are the generous-RAM sim values. A
+// CMake -D still overrides.
+#if defined(__has_include) && __has_include(<kickos/board_config.h>)
+#include <kickos/board_config.h>
+#endif
+
 // Max registered kernel objects for the M0 sim handle tables.
 #ifndef KICKOS_MAX_SEMAPHORES
 #define KICKOS_MAX_SEMAPHORES 16

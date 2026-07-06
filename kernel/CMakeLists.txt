@@ -5,7 +5,10 @@ set(KICKOS_KERNEL_SOURCES
   sched/sched.cc
   sched/policy_fifo_rr.cc
   thread/thread.cc
+  ktrace/ktrace.cc
   init/console.cc
+  init/console_tx.cc
+  init/led.cc
   init/instance.cc
   init/kmain.cc)
 
@@ -16,8 +19,36 @@ foreach(_f sync/sync.cc time/time.cc syscall/syscall.cc irq/irq.cc)
   endif()
 endforeach()
 
+# Cycle-accurate microbenchmark accumulator (paired with the PendSV CYCCNT bracket
+# in switch.S); only in KICKOS_BENCH builds. ARMv7-M only: bench.cc hard-codes the
+# DWT/STIR registers and dsb/isb, so it does not build on other arches.
+if(KICKOS_BENCH AND KICKOS_ARCH STREQUAL "armv7m")
+  list(APPEND KICKOS_KERNEL_SOURCES bench/bench.cc)
+endif()
+
 add_library(kickos_kernel STATIC ${KICKOS_KERNEL_SOURCES})
 kickos_apply_freestanding(kickos_kernel)
+
+# The switch-completion hook (kickos_trace_switch_done in ktrace.cc) runs in the
+# ARM PendSV tail with the incoming thread's FP registers still live, so its emit
+# path must not touch any FP register: build it -mgeneral-regs-only on ARM when
+# telemetry is enabled. (No-op on the sim, where the hook runs in ordinary code.)
+if(KICKOS_TELEMETRY_ON AND (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m"))
+  set_source_files_properties(ktrace/ktrace.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
+endif()
+
+# console_tx_isr drains the ring from ISR context, so its emit path must take no
+# FP register (no lazy FP stacking on the drain) -- same treatment as ktrace.
+if(KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
+  set_source_files_properties(init/console_tx.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
+endif()
+
+# kickos_bench_switch_done runs in the PendSV tail with the incoming thread's FP
+# live, so its path must take no FP register -- same rule as ktrace/console_tx.
+# (bench.cc is armv7m-only, so this only fires when it is actually built.)
+if(KICKOS_BENCH AND KICKOS_ARCH STREQUAL "armv7m")
+  set_source_files_properties(bench/bench.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
+endif()
 target_include_directories(kickos_kernel PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")

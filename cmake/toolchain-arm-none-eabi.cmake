@@ -15,47 +15,43 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 
 # The board picks the arch; the *chip* picks the exact core + FPU. Both F103
 # (Cortex-M3, no FPU) and F411 (Cortex-M4F) resolve to the armv7m arch but need
-# different -mcpu, so the CPU flags key off the board, not the arch.
+# different -mcpu, so the CPU flags key off the board, not the arch. That fact
+# (arch + chip + -mcpu) lives in ONE place per board: boards/<board>/board.cmake,
+# included here (pre-project, for -mcpu) and by the build's board resolver
+# (cmake/kickos.cmake) so the toolchain and the build can never disagree.
 set(KICKOS_BOARD "frdmk64f" CACHE STRING "Target board: qemu|frdmk64f|f411disco|bluepill|picopi")
 
-if(KICKOS_BOARD STREQUAL "qemu")
-  # QEMU mps2-an386 (Cortex-M4F): the runnable armv7m verification target.
-  set(KICKOS_ARCH "armv7m")
-  set(_kos_cpu -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=softfp)
-elseif(KICKOS_BOARD STREQUAL "frdmk64f")
-  set(KICKOS_ARCH "armv7m")
-  set(_kos_cpu -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=softfp)
-elseif(KICKOS_BOARD STREQUAL "f411disco")
-  set(KICKOS_ARCH "armv7m")
-  set(_kos_cpu -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=softfp)
-elseif(KICKOS_BOARD STREQUAL "bluepill")
-  set(KICKOS_ARCH "armv7m")
-  set(_kos_cpu -mcpu=cortex-m3 -mfloat-abi=soft)
-elseif(KICKOS_BOARD STREQUAL "f302nucleo")
-  # STM32F302R8 (Cortex-M4F).
-  set(KICKOS_ARCH "armv7m")
-  set(_kos_cpu -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=softfp)
-elseif(KICKOS_BOARD STREQUAL "due")
-  # Arduino Due, AT91SAM3X8E (Cortex-M3, no FPU).
-  set(KICKOS_ARCH "armv7m")
-  set(_kos_cpu -mcpu=cortex-m3 -mfloat-abi=soft)
-elseif(KICKOS_BOARD STREQUAL "xmc4800")
-  # XMC4800 Relax Kit (Cortex-M4F).
-  set(KICKOS_ARCH "armv7m")
-  set(_kos_cpu -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=softfp)
-elseif(KICKOS_BOARD STREQUAL "picopi")
-  set(KICKOS_ARCH "armv6m")
-  set(_kos_cpu -mcpu=cortex-m0plus -mfloat-abi=soft)
-elseif(KICKOS_BOARD STREQUAL "microbit")
-  # BBC micro:bit v1 (nRF51822, Cortex-M0): the runnable armv6m QEMU target.
-  set(KICKOS_ARCH "armv6m")
-  set(_kos_cpu -mcpu=cortex-m0 -mfloat-abi=soft)
+# In-tree the descriptor is boards/<board>/board.cmake relative to the repo root
+# (this file lives in <repo>/cmake). An installed MCU package ships the one board
+# it was built for beside this toolchain file (see the root CMakeLists install).
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake")
+  include("${CMAKE_CURRENT_LIST_DIR}/../boards/${KICKOS_BOARD}/board.cmake") # in-tree
+elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/board.cmake")
+  # Installed single-board package: the one shipped descriptor is authoritative.
+  # Adopt its board id so the -mcpu + KICKOS_BOARD label are the package's, not
+  # this file's frdmk64f default; a genuine request for a DIFFERENT board must
+  # fail (the package ships exactly one arch/chip/linker), not silently mislabel.
+  include("${CMAKE_CURRENT_LIST_DIR}/board.cmake")
+  if(NOT KICKOS_BOARD STREQUAL "frdmk64f"
+     AND NOT KICKOS_BOARD STREQUAL "${KICKOS_BOARD_ID}")
+    message(FATAL_ERROR "KickOS: this package provides board '${KICKOS_BOARD_ID}', "
+      "not '${KICKOS_BOARD}' -- a KickOS MCU package is single-board")
+  endif()
+  set(KICKOS_BOARD "${KICKOS_BOARD_ID}" CACHE STRING "Target board" FORCE)
 else()
-  message(FATAL_ERROR "KickOS arm toolchain: unknown board '${KICKOS_BOARD}'")
+  message(FATAL_ERROR "KickOS arm toolchain: no board descriptor for '${KICKOS_BOARD}'")
 endif()
 
+# A bare-metal ARM board's descriptor must define KICKOS_MCPU. The sim descriptor
+# (KICKOS_ARCH=sim) does not -- catch a misdirected -DKICKOS_BOARD=sim (or any
+# non-MCU board) under the ARM toolchain up front, not as an opaque later failure.
+if(NOT DEFINED KICKOS_MCPU)
+  message(FATAL_ERROR "KickOS arm toolchain: board '${KICKOS_BOARD}' has no "
+    "KICKOS_MCPU (is it the sim? use the host toolchain for that)")
+endif()
+set(_kos_cpu ${KICKOS_MCPU})
+
 set(KICKOS_ARCH   "${KICKOS_ARCH}" CACHE STRING "KickOS arch backend selected by this toolchain")
-set(KICKOS_IS_SIM OFF              CACHE BOOL   "Target is the host sim")
 
 # The per-chip CPU baseline, exported so sub-links that bypass the normal compile
 # path (e.g. the RP2040 boot2 second-stage link in arch/CMakeLists.txt) reuse the

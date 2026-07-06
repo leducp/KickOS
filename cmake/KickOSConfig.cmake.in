@@ -13,10 +13,18 @@ if(CMAKE_VERSION VERSION_LESS 3.24)
 endif()
 
 # The board/arch this package was built for; lets a consumer omit BOARD in
-# kickos_add_application() and get the packaged target.
-if(NOT DEFINED KICKOS_BOARD)
-  set(KICKOS_BOARD "@KICKOS_BOARD@")
+# kickos_add_application() and get the packaged target. A KickOS package is
+# single-board (exactly one arch/chip/linker), so a consumer who selected a
+# different board (e.g. -DKICKOS_BOARD before find_package, using their own
+# toolchain) must fail clearly rather than have that name silently map to the
+# packaged arch/chip. (Our shipped ARM toolchain already adopts the packaged
+# board, so this only bites a genuine cross-board request.)
+if(DEFINED KICKOS_BOARD AND NOT KICKOS_BOARD STREQUAL "@KICKOS_BOARD@")
+  message(FATAL_ERROR "KickOS: this package was built for board '@KICKOS_BOARD@', "
+    "but KICKOS_BOARD='${KICKOS_BOARD}' was requested -- a KickOS package is "
+    "single-board. Use a package built for '${KICKOS_BOARD}', or unset KICKOS_BOARD.")
 endif()
+set(KICKOS_BOARD "@KICKOS_BOARD@")
 set(KICKOS_ARCH "@KICKOS_ARCH@")
 set(KICKOS_CHIP "@KICKOS_CHIP@")
 
