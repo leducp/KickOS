@@ -7,7 +7,7 @@
  *
  * The RX ICUD relocatable interrupt vector table (INTB) has 256 entries; the
  * software-INT slots 0..15 carry no peripheral source (IRn is defined only for
- * n = 16..255, UM §15.2.1) so the full table is emitted (spike §5).
+ * n = 16..255, UM sec.15.2.1) so the full table is emitted (spike sec.5).
  */
 #ifndef KICKOS_BOARD_CONFIG_H
 #define KICKOS_BOARD_CONFIG_H

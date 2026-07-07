@@ -7,9 +7,9 @@
  *   Code flash : 4 MiB  @ 0xFFC0_0000 .. 0xFFFF_FFFF (UM memory map)
  *   SRAM       : 512 KiB @ 0x0000_0000 (main on-chip RAM; expansion RAM omitted)
  *   OFSM       : option-setting memory @ 0xFE7F_5D00 (MDE/OFS0/OFS1) -- data in
- *                the image, not code (UM §7). Determines endian + WDT/LVD state.
+ *                the image, not code (UM sec.7). Determines endian + WDT/LVD state.
  *
- * Two vector tables (UM §2.6):
+ * Two vector tables (UM sec.2.6):
  *   - Fixed exception table at 0xFFFF_FF80 (EXTB reset value). Its last word,
  *     0xFFFF_FFFC, is the RESET vector (fetched by hardware at power-on).
  *   - Relocatable interrupt table (INTB), 256 words in ROM; startup sets INTB.
@@ -40,7 +40,7 @@ _kernel_stack_size = 8K;               /* ISP (boot/ISR) stack reservation */
 SECTIONS
 {
     /* Option-setting memory: little-endian + WDT/LVD off (all-ones defaults;
-       UM §7.2.5 MDE little-endian = 0xFFFFFFFF, §7.2.3/4 OFS0/OFS1). */
+       UM sec.7.2.5 MDE little-endian = 0xFFFFFFFF, sec.7.2.3/4 OFS0/OFS1). */
     .ofsm : { KEEP(*(.ofsm)) } > OFSM
 
     .rvectors : ALIGN(4)

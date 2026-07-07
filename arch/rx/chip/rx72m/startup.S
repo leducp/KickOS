@@ -6,7 +6,7 @@
  *   - .rvectors : the 256-entry relocatable interrupt table (INTB); the syscall
  *                 trap sits at slot 1, the CMTW0 compare-match ISR at slot 30.
  *   - .fvectors : the fixed exception table at 0xFFFFFF80 whose last word
- *                 (0xFFFFFFFC) is the reset vector (UM §2.6.1, §5.5.6).
+ *                 (0xFFFFFFFC) is the reset vector (UM sec.2.6.1, sec.5.5.6).
  *   - _start    : set the ISP + INTB, then hand off to the C runtime init.
  *
  * (RX72M Group User's Manual: Hardware, r01uh0804ej0120, Rev.1.20.)
@@ -17,8 +17,8 @@
     .text
 
 /* ------------------------------------------------------------------------- */
-/* Option-setting memory (UM §7). All-ones = little-endian (MDE §7.2.5), WDT   */
-/* stopped after reset (OFS0 §7.2.3), LVD/HOCO off (OFS1 §7.2.4). Emitted so    */
+/* Option-setting memory (UM sec.7). All-ones = little-endian (MDE sec.7.2.5), WDT   */
+/* stopped after reset (OFS0 sec.7.2.3), LVD/HOCO off (OFS1 sec.7.2.4). Emitted so    */
 /* the boot config is deterministic, not dependent on erased-flash values.      */
 /* ------------------------------------------------------------------------- */
     .section .ofsm, "a"
@@ -54,7 +54,7 @@ _g_rvectors:
 
 /* ------------------------------------------------------------------------- */
 /* Fixed exception vector table @ 0xFFFFFF80 (EXTB reset). Offsets from ISA UM  */
-/* §5.5: privileged +0x50, access +0x54, undefined +0x5C, address +0x60, FP     */
+/* sec.5.5: privileged +0x50, access +0x54, undefined +0x5C, address +0x60, FP     */
 /* +0x64, NMI +0x78, reset +0x7C (= 0xFFFFFFFC).                                */
 /* ------------------------------------------------------------------------- */
     .section .fvectors, "a"

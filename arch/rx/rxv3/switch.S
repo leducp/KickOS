@@ -28,7 +28,7 @@
  * psABI (verified by disassembling rx-elf-gcc -misa=v3): args in R1-R4, 5th+ on
  * the stack ([SP+4] at entry, [SP]=return address), result in R1; callee-saved =
  * R6-R13 (empirically GCC RX preserves R6-R13, NOT R6-R11); R0=SP. INT saves ONLY
- * PC then PSW to the ISP (ISA UM §5.5.9): after INT [ISP]=PC, [ISP+4]=PSW; RTE
+ * PC then PSW to the ISP (ISA UM sec.5.5.9): after INT [ISP]=PC, [ISP+4]=PSW; RTE
  * pops PC then PSW. Interrupt acceptance switches to the ISP (U=0) and pushes the
  * frame there regardless of the interrupted stack (RXv3 ISA / HW UM exception-
  * handling; the full-context frame layout follows the RX psABI register split).
@@ -46,7 +46,7 @@
 
     .text
 
-/* PSW bit masks (ISA UM §1.2.2.4): I=b16, U=b17, PM=b20. NB: RX gas lexes a
+/* PSW bit masks (ISA UM sec.1.2.2.4): I=b16, U=b17, PM=b20. NB: RX gas lexes a
  * leading "PSW"/"USP"/... as a control register, so these names avoid that. */
     .equ BIT_U,       0x00020000   /* PSW.U (select USP) */
     .equ MASK_NOT_PM, 0xffefffff   /* clear PSW.PM (-> supervisor) */

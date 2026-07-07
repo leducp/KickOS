@@ -42,22 +42,22 @@ namespace
     // APB1 clock feeding USART2. Reset HSI => PCLK1 = 8 MHz; clock_init sets 32 MHz.
     uint32_t pclk1_hz = 8000000u;
 
-    // RCC (RM0365 §9): F3 layout, base 0x40021000.
+    // RCC (RM0365 sec.9): F3 layout, base 0x40021000.
     constexpr uintptr_t RCC_BASE = 0x40021000;
-    constexpr uintptr_t RCC_CR = RCC_BASE + 0x00;   // Clock control (RM0365 §9.4.1)
-    constexpr uintptr_t RCC_CFGR = RCC_BASE + 0x04; // Clock configuration (RM0365 §9.4.2)
+    constexpr uintptr_t RCC_CR = RCC_BASE + 0x00;   // Clock control (RM0365 sec.9.4.1)
+    constexpr uintptr_t RCC_CFGR = RCC_BASE + 0x04; // Clock configuration (RM0365 sec.9.4.2)
     constexpr uintptr_t RCC_AHBENR = RCC_BASE + 0x14;
     constexpr uintptr_t RCC_APB1ENR = RCC_BASE + 0x1C;
     constexpr uint32_t AHBENR_IOPAEN = 1u << 17; // GPIOA (ports are on AHB)
     constexpr uint32_t APB1ENR_USART2EN = 1u << 17;
 
-    // RCC_CR (RM0365 §9.4.1).
+    // RCC_CR (RM0365 sec.9.4.1).
     constexpr uint32_t CR_HSION = 1u << 0;
     constexpr uint32_t CR_HSIRDY = 1u << 1;
     constexpr uint32_t CR_PLLON = 1u << 24;
     constexpr uint32_t CR_PLLRDY = 1u << 25;
 
-    // RCC_CFGR (RM0365 §9.4.2). PLLSRC(16)=0 -> HSI/2 feeds the PLL; PLLMUL[21:18]
+    // RCC_CFGR (RM0365 sec.9.4.2). PLLSRC(16)=0 -> HSI/2 feeds the PLL; PLLMUL[21:18]
     // = 1110B (x16). HSI/2 = 4 MHz * 16 = 64 MHz. Buses: AHB /1, APB1 /2 (32 MHz,
     // <= its 36 MHz max), APB2 /1 (64 MHz).
     constexpr uint32_t CFGR_SW_MASK = 0x3u << 0;
@@ -82,12 +82,12 @@ namespace
     // A missing/failed PLL must not hang the boot; every ready-flag poll is bounded.
     constexpr uint32_t CLOCK_POLL_LIMIT = 0x100000u;
 
-    // GPIOA on AHB at 0x48000000 (§11). MODER 2b/pin, AFRL 4b/pin.
+    // GPIOA on AHB at 0x48000000 (sec.11). MODER 2b/pin, AFRL 4b/pin.
     constexpr uintptr_t GPIOA_BASE = 0x48000000;
     constexpr uintptr_t GPIOA_MODER = GPIOA_BASE + 0x00;
     constexpr uintptr_t GPIOA_AFRL = GPIOA_BASE + 0x20;
 
-    // USART2 (§29), NEW model. On APB1 (PCLK1 = 32 MHz after clock_init).
+    // USART2 (sec.29), NEW model. On APB1 (PCLK1 = 32 MHz after clock_init).
     constexpr uintptr_t USART2_BASE = 0x40004400;
     constexpr uintptr_t USART2_CR1 = USART2_BASE + 0x00;
     constexpr uintptr_t USART2_BRR = USART2_BASE + 0x0C;

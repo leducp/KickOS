@@ -41,19 +41,19 @@ namespace
 {
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
-    // RCC (RM0008 §7).
+    // RCC (RM0008 sec.7).
     constexpr uintptr_t RCC_BASE = 0x40021000;
-    constexpr uintptr_t RCC_CR = RCC_BASE + 0x00;   // Clock control (RM0008 §7.3.1, p.99)
-    constexpr uintptr_t RCC_CFGR = RCC_BASE + 0x04; // Clock configuration (RM0008 §7.3.2, p.101)
+    constexpr uintptr_t RCC_CR = RCC_BASE + 0x00;   // Clock control (RM0008 sec.7.3.1, p.99)
+    constexpr uintptr_t RCC_CFGR = RCC_BASE + 0x04; // Clock configuration (RM0008 sec.7.3.2, p.101)
     constexpr uintptr_t RCC_APB2ENR = RCC_BASE + 0x18;
 
-    // RCC_CR bits (RM0008 §7.3.1, p.99-100).
+    // RCC_CR bits (RM0008 sec.7.3.1, p.99-100).
     constexpr uint32_t CR_HSEON = 1u << 16;
     constexpr uint32_t CR_HSERDY = 1u << 17;
     constexpr uint32_t CR_PLLON = 1u << 24;
     constexpr uint32_t CR_PLLRDY = 1u << 25;
 
-    // RCC_CFGR bits (RM0008 §7.3.2, p.101-103).
+    // RCC_CFGR bits (RM0008 sec.7.3.2, p.101-103).
     constexpr uint32_t CFGR_SW_MASK = 0x3u << 0;
     constexpr uint32_t CFGR_SW_PLL = 0x2u << 0;    // SW=10: PLL as system clock
     constexpr uint32_t CFGR_SWS_MASK = 0x3u << 2;
@@ -65,8 +65,8 @@ namespace
     constexpr uint32_t CFGR_PLLXTPRE_DIV1 = 0u << 17; // HSE not divided before PLL
     constexpr uint32_t CFGR_PLLMUL9 = 0x7u << 18;    // PLLMUL=0111: input x9 -> 8*9 = 72 MHz
 
-    // FLASH interface (RM0008 §3.3.3, p.58-59).
-    constexpr uintptr_t FLASH_ACR = 0x40022000;      // Flash access control (RM0008 §3.3.3, p.58)
+    // FLASH interface (RM0008 sec.3.3.3, p.58-59).
+    constexpr uintptr_t FLASH_ACR = 0x40022000;      // Flash access control (RM0008 sec.3.3.3, p.58)
     constexpr uint32_t ACR_LATENCY_2WS = 0x2u << 0;  // LATENCY=010: two wait states (48<SYSCLK<=72 MHz)
     constexpr uint32_t ACR_LATENCY_MASK = 0x7u << 0;
     constexpr uint32_t ACR_PRFTBE = 1u << 4;         // prefetch buffer enable
@@ -78,7 +78,7 @@ namespace
     constexpr uint32_t APB2ENR_IOPAEN = 1u << 2;
     constexpr uint32_t APB2ENR_USART1EN = 1u << 14;
 
-    // GPIOA (§9), CRL/CRH model. USART1 TX=PA9, RX=PA10 live in CRH (pins 8-15).
+    // GPIOA (sec.9), CRL/CRH model. USART1 TX=PA9, RX=PA10 live in CRH (pins 8-15).
     constexpr uintptr_t GPIOA_BASE = 0x40010800;
     constexpr uintptr_t GPIOA_CRH = GPIOA_BASE + 0x04;
     // PA9  = AF push-pull, 50 MHz : CNF=10 MODE=11 -> nibble 0xB, bits [7:4]
@@ -87,7 +87,7 @@ namespace
     constexpr uint32_t CRH_PA10 = 0x4u << 8;
     constexpr uint32_t CRH_PA9_PA10_MASK = (0xFu << 4) | (0xFu << 8);
 
-    // USART1 (§27), classic SR/DR. On APB2 (PCLK2 = 72 MHz after clock_init).
+    // USART1 (sec.27), classic SR/DR. On APB2 (PCLK2 = 72 MHz after clock_init).
     constexpr uintptr_t USART1_BASE = 0x40013800;
     constexpr uintptr_t USART1_SR = USART1_BASE + 0x00;
     constexpr uintptr_t USART1_DR = USART1_BASE + 0x04;
@@ -97,7 +97,7 @@ namespace
     constexpr uint32_t CR1_UE = 1u << 13;
     constexpr uint32_t CR1_TE = 1u << 3;
     constexpr uint32_t CR1_RE = 1u << 2;
-    // BRR at PCLK2 = 72 MHz, 115200 baud, oversampling 16 (RM0008 §27.3.4, §27.6.3):
+    // BRR at PCLK2 = 72 MHz, 115200 baud, oversampling 16 (RM0008 sec.27.3.4, sec.27.6.3):
     //   USARTDIV = 72e6 / (16 * 115200) = 39.0625
     //   mantissa = 39 (0x27), fraction = round(0.0625 * 16) = 1  -> exact, 0% error
     //   BRR = (39 << 4) | 1 = 0x271
@@ -123,13 +123,13 @@ namespace
     // (8 MHz) selected and return, so a boardswapped/crystalless part still boots.
     void clock_init()
     {
-        // 1. Flash: 2 wait states + prefetch, ahead of the switch (RM0008 §3.3.3, p.59).
+        // 1. Flash: 2 wait states + prefetch, ahead of the switch (RM0008 sec.3.3.3, p.59).
         uint32_t acr = r32(FLASH_ACR);
         acr &= ~ACR_LATENCY_MASK;
         acr |= ACR_LATENCY_2WS | ACR_PRFTBE;
         r32(FLASH_ACR) = acr;
 
-        // 2. Enable HSE and wait for it to stabilize (RM0008 §7.3.1, HSEON/HSERDY).
+        // 2. Enable HSE and wait for it to stabilize (RM0008 sec.7.3.1, HSEON/HSERDY).
         r32(RCC_CR) |= CR_HSEON;
         if (!poll_set(RCC_CR, CR_HSERDY))
         {
@@ -137,7 +137,7 @@ namespace
         }
 
         // 3. PLL source/multiplier + bus prescalers. PLLMUL/PLLSRC are writable only
-        //    while the PLL is off, which it is at reset (RM0008 §7.3.2, p.101-103).
+        //    while the PLL is off, which it is at reset (RM0008 sec.7.3.2, p.101-103).
         uint32_t cfgr = r32(RCC_CFGR);
         cfgr &= ~(0xFu << 4);    // clear HPRE  [7:4]
         cfgr &= ~(0x7u << 8);    // clear PPRE1 [10:8]
@@ -148,14 +148,14 @@ namespace
         cfgr |= CFGR_PLLSRC_HSE | CFGR_PLLXTPRE_DIV1 | CFGR_PLLMUL9;
         r32(RCC_CFGR) = cfgr;
 
-        // 4. Enable the PLL and wait for lock (RM0008 §7.3.1, PLLON/PLLRDY).
+        // 4. Enable the PLL and wait for lock (RM0008 sec.7.3.1, PLLON/PLLRDY).
         r32(RCC_CR) |= CR_PLLON;
         if (!poll_set(RCC_CR, CR_PLLRDY))
         {
             return; // PLL failed -> stay on HSI
         }
 
-        // Switch SYSCLK to the PLL and confirm via SWS (RM0008 §7.3.2, SW/SWS).
+        // Switch SYSCLK to the PLL and confirm via SWS (RM0008 sec.7.3.2, SW/SWS).
         uint32_t sw = r32(RCC_CFGR);
         sw &= ~CFGR_SW_MASK;
         sw |= CFGR_SW_PLL;
