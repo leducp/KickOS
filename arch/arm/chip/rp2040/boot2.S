@@ -2,17 +2,17 @@
  * Copyright (c) 2026 Philippe Leduc
  *
  * RP2040 second-stage bootloader (boot2). Clean-room from the RP2040 datasheet
- * (§2.8.1 boot sequence, §4.10 SSI); no vendor sources consulted.
+ * (sec.2.8.1 boot sequence, sec.4.10 SSI); no vendor sources consulted.
  *
  * Context: the bootrom copies the first 256 bytes of flash into SRAM5, verifies
  * the CRC-32/MPEG-2 over bytes 0..251 (checksum tool: cmake/rp2040_checksum.py),
  * then JUMPS into this payload running FROM SRAM. At that point the bootrom has
  * already muxed the QSPI pins and left the Synopsys SSI enabled in a plain 1-bit
- * SPI mode used for the 03h reads that loaded us. Our only job (§2.8.1.3) is to
+ * SPI mode used for the 03h reads that loaded us. Our only job (sec.2.8.1.3) is to
  * reconfigure the SSI for execute-in-place so the CPU can fetch directly from the
  * 0x1000_0000 XIP window, then hand control to the application vector table.
  *
- * XIP mode here is the near-universal "03h serial read per access" (§4.10.3):
+ * XIP mode here is the near-universal "03h serial read per access" (sec.4.10.3):
  * each XIP access issues an 8-bit 0x03 command + 24-bit address, then clocks in
  * data on a single line. Slow but compatible with any SPI flash -- correct for
  * first bring-up. All other setup (PLLs, regulator, faster QSPI modes) is the
@@ -27,7 +27,7 @@
     .cpu cortex-m0plus
     .thumb
 
-    /* The SSI register block (§4.10.13) and its byte offsets. */
+    /* The SSI register block (sec.4.10.13) and its byte offsets. */
     .equ XIP_SSI_BASE,   0x18000000
     .equ SSI_CTRLR0,     0x00
     .equ SSI_CTRLR1,     0x04
@@ -55,7 +55,7 @@
 _rp2040_boot2_entry:
     ldr     r3, =XIP_SSI_BASE
 
-    /* The SSI cannot be reconfigured while enabled (§4.10.9): disable it. */
+    /* The SSI cannot be reconfigured while enabled (sec.4.10.9): disable it. */
     movs    r1, #0
     str     r1, [r3, #SSI_SSIENR]
 

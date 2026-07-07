@@ -72,7 +72,7 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 # -ffunction/-fdata-sections + --gc-sections (at link) drop unreferenced code so
 # the image is minimal. RX instructions are always little-endian; only *data*
 # endianness is selectable and GNU RX defaults to little-endian, matching the
-# MDE option word the linker script emits (spike §1, §6).
+# MDE option word the linker script emits (spike sec.1, sec.6).
 string(JOIN " " _kos_common ${_kos_cpu} -ffunction-sections -fdata-sections)
 set(CMAKE_C_FLAGS_INIT   "${_kos_common}")
 set(CMAKE_CXX_FLAGS_INIT "${_kos_common}")

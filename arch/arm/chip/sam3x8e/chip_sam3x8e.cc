@@ -45,22 +45,22 @@ namespace
     constexpr uintptr_t SCB_VTOR = 0xE000ED08;
     constexpr uintptr_t FLASH_BASE = 0x00080000; // real flash (aliased at 0x0)
 
-    // EEFC (§18): the two flash banks. FWS (EEFC_FMR bits 11:8) sets the flash
-    // read/write wait states; per §45 the AC-flash table, FWS=4 (5 read cycles)
+    // EEFC (sec.18): the two flash banks. FWS (EEFC_FMR bits 11:8) sets the flash
+    // read/write wait states; per sec.45 the AC-flash table, FWS=4 (5 read cycles)
     // covers up to 90 MHz at VDDCORE 1.8V -- required for 84 MHz. Set BEFORE the
     // clock is raised. EEFC_FMR at 0x400E0A00 (bank 0) / 0x400E0C00 (bank 1).
     constexpr uintptr_t EEFC0_FMR = 0x400E0A00;
     constexpr uintptr_t EEFC1_FMR = 0x400E0C00;
     constexpr uint32_t FMR_FWS_4 = 4u << 8;
 
-    // PMC (§28): clock generator + status. Base 0x400E0600.
+    // PMC (sec.28): clock generator + status. Base 0x400E0600.
     constexpr uintptr_t PMC_BASE = 0x400E0600;
     constexpr uintptr_t CKGR_MOR = PMC_BASE + 0x20;   // Main Oscillator Register
     constexpr uintptr_t CKGR_PLLAR = PMC_BASE + 0x28; // PLLA Register
     constexpr uintptr_t PMC_MCKR = PMC_BASE + 0x30;   // Master Clock Register
     constexpr uintptr_t PMC_SR = PMC_BASE + 0x68;     // Status Register
 
-    // CKGR_MOR (§28): crystal oscillator. KEY 0x37 (bits 23:16) gates the write;
+    // CKGR_MOR (sec.28): crystal oscillator. KEY 0x37 (bits 23:16) gates the write;
     // MOSCXTST (15:8) is the crystal startup counter (in SLCK/8); keep the fast RC
     // (MOSCRCEN) enabled while the crystal warms up, then MOSCSEL picks the crystal.
     constexpr uint32_t MOR_KEY = 0x37u << 16;
@@ -70,7 +70,7 @@ namespace
     constexpr uint32_t MOR_MOSCSEL = 1u << 24;
     constexpr uint32_t MOR_CRYSTAL = MOR_KEY | MOR_MOSCXTST | MOR_MOSCRCEN | MOR_MOSCXTEN;
 
-    // CKGR_PLLAR (§28): PLLA = MAINCK * (MULA+1) / DIVA. ONE (bit 29) reads 1;
+    // CKGR_PLLAR (sec.28): PLLA = MAINCK * (MULA+1) / DIVA. ONE (bit 29) reads 1;
     // MULA (26:16) = 13 -> x14; DIVA (7:0) = 1; PLLCOUNT (13:8) = LOCK delay in SLCK.
     // 12 MHz * 14 / 1 = 168 MHz.
     constexpr uint32_t PLLAR_ONE = 1u << 29;
@@ -78,19 +78,19 @@ namespace
     constexpr uint32_t PLLAR_COUNT = 0x3Fu << 8;
     constexpr uint32_t PLLAR_DIVA = 1u << 0;
 
-    // PMC_MCKR (§28): CSS (1:0) source, PRES (6:4) prescaler. PLLA/2 = 84 MHz.
+    // PMC_MCKR (sec.28): CSS (1:0) source, PRES (6:4) prescaler. PLLA/2 = 84 MHz.
     constexpr uint32_t MCKR_CSS_MAIN = 1u << 0;
     constexpr uint32_t MCKR_CSS_PLLA = 2u << 0;
     constexpr uint32_t MCKR_PRES_DIV2 = 1u << 4;
 
-    // PMC_SR (§28) poll bits.
+    // PMC_SR (sec.28) poll bits.
     constexpr uint32_t SR_MOSCXTS = 1u << 0;   // crystal oscillator stable
     constexpr uint32_t SR_LOCKA = 1u << 1;     // PLLA locked
     constexpr uint32_t SR_MCKRDY = 1u << 3;    // master clock ready
     constexpr uint32_t SR_MOSCSELS = 1u << 16; // main oscillator selection done
 
     // Bounded poll: a missing/dead crystal degrades (falls back to slow clock on a
-    // PLLA switch, per §28) instead of hanging the boot.
+    // PLLA switch, per sec.28) instead of hanging the boot.
     void pmc_wait(uint32_t bit)
     {
         for (uint32_t i = 0; i < 0x100000u; i++)
@@ -104,11 +104,11 @@ namespace
 
     void clock_init()
     {
-        // 1. Flash wait states first, both banks (§18 / §45), before raising MCK.
+        // 1. Flash wait states first, both banks (sec.18 / sec.45), before raising MCK.
         r32(EEFC0_FMR) = FMR_FWS_4;
         r32(EEFC1_FMR) = FMR_FWS_4;
 
-        // 2. Start the 12 MHz crystal, then select it as the main clock (§28).
+        // 2. Start the 12 MHz crystal, then select it as the main clock (sec.28).
         r32(CKGR_MOR) = MOR_CRYSTAL;
         pmc_wait(SR_MOSCXTS);
         r32(CKGR_MOR) = MOR_CRYSTAL | MOR_MOSCSEL;
@@ -118,11 +118,11 @@ namespace
         r32(PMC_MCKR) = MCKR_CSS_MAIN;
         pmc_wait(SR_MCKRDY);
 
-        // 3. PLLA = 12 MHz * 14 / 1 = 168 MHz (§28 CKGR_PLLAR).
+        // 3. PLLA = 12 MHz * 14 / 1 = 168 MHz (sec.28 CKGR_PLLAR).
         r32(CKGR_PLLAR) = PLLAR_ONE | PLLAR_MULA | PLLAR_COUNT | PLLAR_DIVA;
         pmc_wait(SR_LOCKA);
 
-        // 4. Switch MCK to PLLA/2 = 84 MHz. §28 mandates, for a PLL source: set
+        // 4. Switch MCK to PLLA/2 = 84 MHz. sec.28 mandates, for a PLL source: set
         //    PRES, wait MCKRDY, then set CSS, wait MCKRDY (two writes, not one).
         r32(PMC_MCKR) = MCKR_PRES_DIV2 | MCKR_CSS_MAIN;
         pmc_wait(SR_MCKRDY);
@@ -132,17 +132,17 @@ namespace
         SystemCoreClock = 84000000u;
     }
 
-    // PMC (§28): per-peripheral clock enable by peripheral ID.
+    // PMC (sec.28): per-peripheral clock enable by peripheral ID.
     constexpr uintptr_t PMC_PCER0 = 0x400E0610;
     constexpr uint32_t PID_UART = 1u << 8;
     constexpr uint32_t PID_PIOA = 1u << 11;
 
-    // PIOA (§31): route PA8/PA9 to the UART (peripheral A).
+    // PIOA (sec.31): route PA8/PA9 to the UART (peripheral A).
     constexpr uintptr_t PIOA_BASE = 0x400E0E00;
     constexpr uintptr_t PIOA_PDR = PIOA_BASE + 0x04; // give pins to the peripheral
     constexpr uint32_t PA8_PA9 = (1u << 8) | (1u << 9);
 
-    // UART (§34), dedicated simple UART.
+    // UART (sec.34), dedicated simple UART.
     constexpr uintptr_t UART_BASE = 0x400E0800;
     constexpr uintptr_t UART_CR = UART_BASE + 0x00;
     constexpr uintptr_t UART_MR = UART_BASE + 0x04;
@@ -154,7 +154,7 @@ namespace
     constexpr uint32_t MR_NO_PARITY = 4u << 9; // PAR=100 (none), CHMODE=normal
     constexpr uint32_t SR_TXRDY = 1u << 1;
     // CD = MCK/(16*baud) = 84e6/(16*115200) = 45.57 -> 46; actual 84e6/(16*46) =
-    // 114130 baud (-0.93%, well inside the 5% limit in §34).
+    // 114130 baud (-0.93%, well inside the 5% limit in sec.34).
     constexpr uint32_t BRGR_115200 = 46;
 
     void uart_init()

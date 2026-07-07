@@ -4,7 +4,7 @@
 // Kernel synchronization primitives. Blocking funnels through the scheduler's
 // single reschedule() point; a post readies the highest-priority waiter and
 // hands it the token directly, so a post from ISR context drives an immediate
-// (interrupt-exit) switch to the woken thread — scheduler trigger #3 (thread
+// (interrupt-exit) switch to the woken thread -- scheduler trigger #3 (thread
 // ctx) and #4 (IRQ ctx).
 
 #ifndef KICKOS_SYNC_H

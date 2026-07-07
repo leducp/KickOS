@@ -155,7 +155,7 @@ void arch_context_init(struct arch_context* ctx,
                        void* stack_base, size_t stack_size,
                        int privileged)
 {
-    constexpr uint32_t FPSW_INIT = 0x00000100u; // RX FPSW reset posture (RM §2.12)
+    constexpr uint32_t FPSW_INIT = 0x00000100u; // RX FPSW reset posture (RM sec.2.12)
 
     uintptr_t top = reinterpret_cast<uintptr_t>(stack_base) + stack_size;
     top &= ~static_cast<uintptr_t>(3); // 4-byte aligned stack
@@ -310,7 +310,7 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     (void)regions;
     (void)n;
-    // M2: reprogram RSPAGEn/REPAGEn.UAC/V on switch-in (spike §4). No enforcement
+    // M2: reprogram RSPAGEn/REPAGEn.UAC/V on switch-in (spike sec.4). No enforcement
     // on M1.x -- privilege + syscall only.
 }
 
@@ -363,7 +363,7 @@ void arch_irq_unmask(int line)
     // Program the source priority BELOW the kernel lock level before enabling, so
     // a device line cannot preempt an IrqLock-held section (the armv7m NVIC_IPR
     // care). TODO(HW): the ICUD shares IPR entries per a source table (IPR index
-    // != vector in general, UM §15.2.4); this index==line write is correct only
+    // != vector in general, UM sec.15.2.4); this index==line write is correct only
     // for sources with a 1:1 IPR and must be replaced by the table on real HW.
     reg8(ICU_IPR_BASE + static_cast<unsigned>(line)) = static_cast<uint8_t>(IPL_DEVICE);
     icu_ier_set(line, true);
@@ -383,7 +383,7 @@ void arch_irq_inject(int irq)
     }
     // RX cannot pend an arbitrary peripheral line from software (edge sources
     // accept only a 0 write to IRn.IR); only the two software interrupts are
-    // software-settable (UM §15.2.5). SWINT is the context-switch line, so test
+    // software-settable (UM sec.15.2.5). SWINT is the context-switch line, so test
     // scaffolding routes injection to SWINT2; other lines drop. Real drivers never
     // inject.
     if (irq == SWINT2_VECTOR)
@@ -440,7 +440,7 @@ void kickos_rxv3_init(void)
                              (1u << (SWINT_VECTOR & 7)));
 
     // CMTW1: free-running 32-bit counter (CCLR=001 disables clearing, so it wraps
-    // at 2^32 on its own), PCLK/8, no interrupt -- read-extended in software (§5).
+    // at 2^32 on its own), PCLK/8, no interrupt -- read-extended in software (sec.5).
     // It is also the raw telemetry trace clock (arch_trace_now).
     reg16(CMTW1_BASE + CMTW_CMWSTR) = 0;
     reg32(CMTW1_BASE + CMTW_CMWCNT) = 0;

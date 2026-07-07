@@ -61,11 +61,11 @@ namespace
 {
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
-    // RCC (RM0383 §6): clock control + PLL + peripheral clock enables.
+    // RCC (RM0383 sec.6): clock control + PLL + peripheral clock enables.
     constexpr uintptr_t RCC_BASE = 0x40023800;
-    constexpr uintptr_t RCC_CR = RCC_BASE + 0x00;      // §6.3.1 (RM lines 5129-5194)
-    constexpr uintptr_t RCC_PLLCFGR = RCC_BASE + 0x04; // §6.3.2 (RM lines 5227-5324)
-    constexpr uintptr_t RCC_CFGR = RCC_BASE + 0x08;    // §6.3.3 (RM lines 5333-5474)
+    constexpr uintptr_t RCC_CR = RCC_BASE + 0x00;      // sec.6.3.1 (RM lines 5129-5194)
+    constexpr uintptr_t RCC_PLLCFGR = RCC_BASE + 0x04; // sec.6.3.2 (RM lines 5227-5324)
+    constexpr uintptr_t RCC_CFGR = RCC_BASE + 0x08;    // sec.6.3.3 (RM lines 5333-5474)
     constexpr uintptr_t RCC_AHB1ENR = RCC_BASE + 0x30;
     constexpr uintptr_t RCC_APB1ENR = RCC_BASE + 0x40;
     constexpr uint32_t AHB1ENR_GPIOAEN = 1u << 0;
@@ -103,7 +103,7 @@ namespace
     constexpr uint32_t SYSCLK_PLL_HZ = 84000000u;
     constexpr uint32_t PCLK1_PLL_HZ = 42000000u; // APB1 = 84/2
 
-    // FLASH (RM §3.8.1, lines 2784-2828). At 3.3 V (2.7-3.6 V) and HCLK=84 MHz,
+    // FLASH (RM sec.3.8.1, lines 2784-2828). At 3.3 V (2.7-3.6 V) and HCLK=84 MHz,
     // Table 5 (RM line 2066: 64 < HCLK <= 90) requires 2 wait states. Prefetch +
     // I/D caches (ART) restore ~0-WS effective execution (RM line 2121).
     constexpr uintptr_t FLASH_ACR = 0x40023C00;
@@ -122,12 +122,12 @@ namespace
     // crystal never comes up.
     uint32_t pclk1_hz = 16000000u;
 
-    // GPIOA (§8): MODER (2b/pin) + AFRL (4b/pin, pins 0-7). USART2 = AF7.
+    // GPIOA (sec.8): MODER (2b/pin) + AFRL (4b/pin, pins 0-7). USART2 = AF7.
     constexpr uintptr_t GPIOA_BASE = 0x40020000;
     constexpr uintptr_t GPIOA_MODER = GPIOA_BASE + 0x00;
     constexpr uintptr_t GPIOA_AFRL = GPIOA_BASE + 0x20;
 
-    // USART2 (§19), classic SR/DR. On APB1 (42 MHz on PLL, 16 MHz on HSI fallback).
+    // USART2 (sec.19), classic SR/DR. On APB1 (42 MHz on PLL, 16 MHz on HSI fallback).
     constexpr uintptr_t USART2_BASE = 0x40004400;
     constexpr uintptr_t USART2_SR = USART2_BASE + 0x00;
     constexpr uintptr_t USART2_DR = USART2_BASE + 0x04;

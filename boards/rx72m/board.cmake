@@ -3,7 +3,7 @@
 #
 # Board descriptor for a Renesas RX72M board (RX72M Group, RXv3 core). Included
 # by cmake/toolchain-rx-elf.cmake. Sets the arch/family/chip resolution and the
-# per-board CPU baseline in ONE place (the spike §1 board-descriptor seam).
+# per-board CPU baseline in ONE place (the spike sec.1 board-descriptor seam).
 #
 #   KICKOS_ARCH_FAMILY  rx   -> arch/rx/... source tree + include routing
 #   KICKOS_ARCH         rxv3 -> arch/rx/rxv3 backend (context switch, syscall)

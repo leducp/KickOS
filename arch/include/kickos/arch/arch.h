@@ -105,7 +105,7 @@ struct arch_mpu_region
 };
 
 // Load the running thread's regions on switch-in (replaces the whole active
-// set). sim: mprotect over the user-RAM arena — grant the listed regions,
+// set). sim: mprotect over the user-RAM arena -- grant the listed regions,
 // everything else no-access. Regions must be page-aligned and non-overlapping.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 

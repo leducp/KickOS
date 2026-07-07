@@ -5,7 +5,7 @@
 // trampoline / ARM SVC handler) reads the number + args and calls
 // syscall_dispatch(); the result is delivered back to the caller frame.
 // Kernel objects addressable from userspace (semaphores, threads) live in
-// static pools referenced by small integer handles — no pointers cross the
+// static pools referenced by small integer handles -- no pointers cross the
 // boundary.
 
 #include <kickos/arch/arch.h>
