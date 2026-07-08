@@ -53,7 +53,7 @@ privileged kernel — threads, protection domains, IPC, capabilities, IRQ routin
 *everything else* (filesystems, networking, console, device drivers) as **unprivileged userspace
 servers reached by IPC**. The design choices already made are downstream of this goal, not
 incidental: **capabilities, not fds or global ids** for object access (a per-task typed handle
-table — ambient authority contradicts the isolation pillar; see M2 12b); a **deliberately minimal
+table — ambient authority contradicts the isolation pillar; see M3 12b); a **deliberately minimal
 syscall surface** (`read`/`open`/`socket` are userspace stubs over IPC to servers, never kernel
 calls — the debug console `write` is the sole sanctioned exception, cf. `seL4_DebugPutChar`);
 and **services published by static capability distribution** (seL4/CapDL-style — the root task
@@ -619,7 +619,7 @@ demonstrator for tier 2.
     unmask. C++ sugar: `auto irq = kos::Irq::request(line); irq.wait();`.
     **Latency invariant (protect it forever):** the object is bound to the line at register time, so
     the ISR wakes a **pre-bound target directly** — *never* a handle/table lookup in ISR context
-    (this survives the M2 capability model, 12b: capabilities are cold arm-path only). The `Semaphore`
+    (this survives the M3 capability model, 12b: capabilities are cold arm-path only). The `Semaphore`
     is the M0.2 notification for simplicity; a single-waiter line (the common case) can later use a
     lighter **direct-to-thread notification** (per-thread pending bit + wake, coalescing — cf.
     FreeRTOS task notifications) instead of a full counting sem. Multi-object `wait_any` (Later) is
@@ -709,7 +709,7 @@ nothing. Settle the pattern once, on sim, before M1 replicates object pools acro
     reused, so a stale handle (id of a destroyed sem) can alias a fresh one — an ABA/use-after-free
     the bump allocator never had (ids were never recycled). Fail-loud fix: pack a small
     **generation counter** into the handle (id + gen); a stale handle fails validation loudly rather
-    than silently poking a reused slot. **Migration-safe for the M2 capability model (12b):** keep
+    than silently poking a reused slot. **Migration-safe for the M3 capability model (12b):** keep
     the returned id **opaque** (userspace must not assume it's a global array index), and route every
     object lookup through **one validate-and-resolve chokepoint**, so swapping "global id → object"
     for "per-task handle → object" later touches a single place. The gen-counter here is a stopgap
@@ -872,38 +872,100 @@ Recommended spine: **M1.1 (11b) → telemetry (11d) → ESP32 (11c) → M2**; th
 
 ### Milestone 2 — hardware MPU enforcement (per chip)
 
-12. `arch_mpu_apply()` chip backends wired into the task-switch hook: **K64F SYSMPU** first,
-    then **RP2040 ARMv6-M PMSA**, then **F411 ARMv7-M PMSA**. Fault handler reports the offending
-    thread/address; the wild-write demo traps on hardware, matching the sim. Complete the
-    **memory domain** model (sim already enforces per-domain *data* isolation — M0 step 9):
-    - TCB `regions[]` → `Thread → Domain*` (a shared region set) **+ per-thread private stacks
-      carved from user RAM** (so a sibling can't scribble another thread's stack — not enforced in
-      M0, where stacks live in the kernel pool);
-    - **authenticated grant ownership** — a domain may only grant/share a region it owns (M0
-      trusts the spawner's `mem_base`); a credential/handle model instead of raw pointers;
-    - **syscall-argument (user-pointer) validation** — the kernel must bounds-check user pointers
-      (`write` buf, `clock_now` out-ptr, spawn params) against the caller's regions, closing the
-      confused-deputy path that M0's whole-arena syscall raise leaves open;
-    - non-overlapping grants, `attr` = unprivileged rights, supervisor via background/RGD0, and
-      **PMSA power-of-two size/alignment** for region placement (M0's byte-granular `arch_ram_alloc`
-      suits SYSMPU/RX; v7-M needs pow2 regions — via linker sections or aligned allocation).
+The MPU **mechanism** fans out per ISA/chip like the M1 target list did; the
+**security model** it enforces (domains, private stacks, arg-validation, pow2
+placement) is arch-independent, lands once, and is co-developed with the reference
+pair below. Capability handles and authenticated grant ownership are their own
+milestone (**M3**) — enforcement first, the object/credential model on top of it.
+
+**API discipline (the 8g lesson).** The goal across the fan-out is to prove
+`struct arch_mpu_region {base, size, attr}` is *sufficient*: every mechanism's
+encoding (PMP NAPOT/TOR, v7-M pow2 + subregion-disable, SYSMPU byte-granular
+start/end, RX 16-byte pages) stays **inside `arch_mpu_apply`** and never leaks a
+per-arch field into the struct. A backend that seems to need a new field is the
+signal to reshape, not to add an escape hatch — which is why the mechanisms land one
+distinct class at a time, not in a batch.
+
+12. **Track A — `arch_mpu_apply()` backends wired into the task-switch hook**, one
+    distinct mechanism class at a time. Each: the fault handler reports the offending
+    {thread, address}; the wild-write demo traps, matching the sim.
+    - **12.1 — RISC-V PMP on `qemu-virt`** (first — the only backend that traps in
+      **CI without silicon**). **NAPOT** encoding (pow2, mirrors v7-M, so the pair
+      below shares one placement model). Re-exercises the PMP **fail-closed** gotcha
+      (empty PMP = all-deny in U-mode) while the scaffold is fresh.
+    - **12.2 — XMC4800 ARMv7-M PMSA** (first real HW: on-board J-Link, available,
+      pow2 regions). It is the **telemetry M2 gate** — the cycle-accurate DWT baseline
+      was captured here, so the MPU-reprogram cost is measured against a number already
+      in hand. 12.1 + 12.2 are the **reference pair**: taken end-to-end (trap-on-HW
+      mandatory), they co-develop all of Track B before the fan-out continues.
+    - **12.3 — K64F SYSMPU** — byte-granular start/end, the first mechanism that
+      *relaxes* the pow2 constraint (validates the API absorbs it without a new field).
+    - **12.4 — RX72M RSPAGE/REPAGE** — 16-byte pages, arbitrary base+size, non-ARM
+      (the seam-honesty check: the abstraction isn't secretly ARM-shaped).
+    - **12.5 — batch tail** (same-mechanism repeats; HW re-validation batched per the
+      M1.x deferral rule): **F411/F302** (more v7-M PMSA, board/chip-split proof),
+      **esp32c6** (same PMP backend as `qemu-virt`, a 2nd chip), **RP2040** ARMv6-M
+      PMSA (a subset of the v7-M RBAR/RASR interface), and the **ESP32 (Xtensa)**
+      graceful **no-op** — the "isolation is MPU-enforced where available, best-effort
+      otherwise" posture made concrete.
+
+    **Track B — the security model** (arch-independent; co-developed with the 12.1/12.2
+    reference pair). Completes the **memory domain** model (the sim already enforces
+    per-domain *data* isolation — M0 step 9):
+    - TCB `regions[]` → `Thread → Domain*` (a shared region set) **+ per-thread private
+      stacks carved from user RAM** (so a sibling can't scribble another thread's stack
+      — not enforced in M0, where stacks live in the kernel pool);
+    - **PMSA power-of-two size/alignment** for region placement — the one thing the pow2
+      backends (12.1 NAPOT, 12.2 v7-M) force that SYSMPU/RX relax; `arch_ram_alloc` and
+      the private-stack carving need pow2-aligned blocks (linker sections or aligned
+      allocation). Non-overlapping grants, `attr` = unprivileged rights, supervisor via
+      background region / RGD0.
+    - **syscall-argument (user-pointer) validation** — the soundness floor for
+      enforcement (a prerequisite, not a cap feature). The M1.x close-out review's
+      punch-list (`kernel/syscall/syscall.cc`): (1) **`clock_now`** writes 8 bytes
+      through an unvalidated user out-pointer — the one syscall that turns a user
+      address into a *privileged store* (a full MPU-bypassing write primitive at M2);
+      (2) **`thread_spawn`** dereferences an unvalidated user params struct and stores
+      `p->name` as a raw pointer the fault reporter later `%s`-prints (an info-leak
+      oracle). Fix both: copy-in the struct via a checked user-read, bound-check writable
+      out-pointers (and the `write` buf) against the caller's granted regions, and copy
+      `name` into a fixed TCB buffer rather than aliasing the user pointer. Closes the
+      confused-deputy path M0's whole-arena syscall raise leaves open (invariants
+      `user-args-validated-at-boundary`, `handle-not-pointer-across-boundary`,
+      `mpu-apply-on-every-switch-in`).
+    - **authenticated grant ownership → M3.** A domain may only grant/share a region it
+      owns; that credential model is the *memory-side twin* of capability handles (12b),
+      so it is designed alongside them in M3, not here. M2 keeps today's spawner-trusted
+      grant (`mem_base`), which is sound while the spawner/root is trusted (mutual-
+      distrust multi-domain is *Later*).
 
 12a. Move **`KICKOS_TIMER_MIN_DELTA_NS`** out of the global config into the **board/arch layer**,
      tuned per chip (sub-µs on a hardware compare vs. the sim's ~20 µs signal-delivery floor),
      ideally derived from measured arm+dispatch latency rather than a hand-picked default. Note
      it also floors the finest RR quantum.
 
+### Milestone 3 — capabilities & object model
+
+The object/credential model layered on M2's enforcement: capability handles,
+**authenticated grant ownership** (the memory-side twin, designed here alongside its
+object-side counterpart), the synchronization surface, and the console-device
+handover. **Items retain their `12b`/`12c` identifiers** — those are load-bearing
+cross-references in `docs/console.md`, `kernel/syscall/syscall.cc`,
+`docs/invariants.md`, and this doc; a clean renumber rides along with the item-13
+ARCHITECTURE.md / ROADMAP.md split (its natural moment).
+
 12b. **Capability handles — the object-side twin of the memory-grant hardening above.** Decision:
      KickOS moves off the current *global object id* (`sem_create` returns an id every task can name
      — ambient authority, the opposite of MPU-first isolation) to a **per-task typed handle table**
      à la Zircon `zx_handle_t` / seL4 capabilities: refcounted objects, rights bits, "destroy on
      last close." Memory grant : address range :: capability handle : kernel object — the same
-     authenticated-per-domain-ownership problem (12's third bullet) applied to objects instead of
-     RAM, so design them as twins here. **Why M2, not M0.4:** capabilities are an *enforcement*
-     feature and enforcement is only real once the HW MPU constrains unprivileged userspace (M2);
-     and by here the handle/rights ABI is designed against **all** object types that exist (sem +
-     mutex from M0.1, irq-handle from M0.2, plus any M1/M2 additions), not over-fit to semaphores
-     on the sim (the 8g abstraction-shaping lesson). Refcounting also dissolves the 8m/8n lifecycle
+     authenticated-per-domain-ownership problem (M2 Track B's grant-ownership bullet, deferred to
+     here) applied to objects instead of RAM, so design them as twins here. **Why M3 (after M2), not
+     M0.4:** capabilities are an *enforcement* feature and enforcement is only real once M2's HW MPU
+     constrains unprivileged userspace, so caps layer on top rather than shipping before they can
+     mean anything; and by here the handle/rights ABI is designed against **all** object types that
+     exist (sem + mutex from M0.1, irq-handle from M0.2, plus any M1/M2 additions), not over-fit to
+     semaphores on the sim (the 8g abstraction-shaping lesson). Refcounting also dissolves the 8m/8n lifecycle
      hazards: "destroy on last close" replaces "reject destroy if waiters," and the handle table
      subsumes 8m's generation-tagged-id ABA workaround. **Cost, stated honestly:** per-task table
      RAM + a resolve indirection per syscall + refcount inc/dec — a deliberate isolation-vs-static-
@@ -938,19 +1000,9 @@ Recommended spine: **M1.1 (11b) → telemetry (11d) → ESP32 (11c) → M2**; th
        stays the always-present 1-bit last resort. Routing userspace output through a kernel syscall
        to "share" the device is rejected — an ambient-authority console service contradicts the
        microkernel split.
-     - **Syscall-argument validation (the M1.x close-out review's boundary punch-list).** M1.x is a
-       privilege-only boundary (`arch_mpu_apply` is a no-op on every MCU), so a user pointer handed
-       to a syscall is dereferenced by the kernel with no check — latent today, a real isolation
-       break once the MPU lands. Two concrete sites the review confirmed (`kernel/syscall/syscall.cc`):
-       (1) **`clock_now`** writes 8 bytes through an unvalidated user out-pointer — the one syscall
-       that turns a user address into a *privileged store* (a full MPU-bypassing write primitive at
-       M2). (2) **`thread_spawn`** dereferences an unvalidated user params struct and stores
-       `p->name` as a raw pointer the fault reporter later `%s`-prints (an info-leak oracle at M2).
-       M2 fix for both: copy-in the struct via a checked user-read, bound-check writable out-pointers
-       against the caller's granted region, and copy `name` into a fixed TCB buffer rather than
-       aliasing the user pointer. This punch-list must be closed as part of making `arch_mpu_apply`
-       real (invariants `user-args-validated-at-boundary`, `handle-not-pointer-across-boundary`,
-       `mpu-apply-on-every-switch-in` in `docs/invariants.md`).
+     - **Syscall-argument validation is an M2 prerequisite, not a cap feature** — see **M2 Track B**
+       (the `clock_now` / `thread_spawn` punch-list). It closes as part of making `arch_mpu_apply`
+       real; caps then resolve *handles* at that already-checked boundary rather than raw pointers.
 
 12c. **Synchronization surface under capabilities — one blocking primitive, not an
      object zoo.** The strategic decision 12b's ABI forces, made here explicitly rather
@@ -982,7 +1034,7 @@ Recommended spine: **M1.1 (11b) → telemetry (11d) → ESP32 (11c) → M2**; th
        (M1.x/M2 bring-up must not over-fit the handle/rights ABI to a pre-cap sync zoo —
        the 8g abstraction-shaping lesson 12b already invokes).
 
-### Milestone 2.1 — docs housekeeping (after M2)
+### Milestone 3.1 — docs housekeeping (after M3)
 
 13. Split this document once the roadmap section has churned enough to read half-changelog: a
     timeless **`ARCHITECTURE.md`** (pillars, invariants, porting seam, scheduler/MPU/domain
