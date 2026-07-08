@@ -17,8 +17,19 @@
 
 namespace
 {
+#if defined(__riscv)
+    // RISC-V: the cycle CSR (rdcycle) is the trace/bench counter (arch_trace_now).
+    inline uint32_t cyccnt()
+    {
+        uint32_t v;
+        __asm volatile("rdcycle %0" : "=r"(v));
+        return v;
+    }
+#elif !defined(__RX__)
     inline uint32_t cyccnt() { return *reinterpret_cast<volatile uint32_t*>(0xE0001004u); }
+#endif
 
+#if !defined(__RX__)
     // IRQ-entry latency: a bench handler timestamps its own entry; kickos_bench_irq_once
     // triggers the line via STIR and returns (entry - trigger) cycles.
     volatile uint32_t g_irq_entry = 0;
@@ -29,6 +40,7 @@ namespace
         g_irq_entry = cyccnt();
         g_irq_seen = 1;
     }
+#endif
 }
 
 extern "C"
@@ -39,18 +51,35 @@ extern "C"
     // app activates no other IRQ source, so any line the console does not own is free.
     void kickos_bench_irq_setup(int line)
     {
+#if defined(__RX__)
+        (void)line; // RX: IRQ-entry bench not wired (needs a dedicated SWINT2 vector);
+                    // the context-switch cost below is the measured baseline.
+#else
         kickos::irq_attach(line, bench_irq_handler, nullptr);
         arch_irq_unmask(line);
+#endif
     }
 
     // One IRQ-entry-latency sample in cycles (0 if the IRQ did not fire). MUST run
     // in a PRIVILEGED thread (DWT CYCCNT + STIR are privileged registers).
     uint32_t kickos_bench_irq_once(int line)
     {
+#if defined(__RX__)
+        (void)line;
+        return 0; // IRQ-entry bench not wired on RX (see kickos_bench_irq_setup)
+#else
         g_irq_seen = 0;
         uint32_t t0 = cyccnt();
+#if defined(__riscv)
+        // No STIR on RISC-V; raise the line via the arch inject seam. On a target
+        // with no software-injectable device line (qemu-virt, no PLIC) inject is a
+        // no-op, so the IRQ never fires and this sample returns 0 -- the switch-cost
+        // number below is the meaningful one there (the C6 interrupt matrix injects).
+        arch_irq_inject(line);
+#else
         *reinterpret_cast<volatile uint32_t*>(0xE000EF00u) = static_cast<uint32_t>(line); // STIR
         __asm volatile("dsb; isb" ::: "memory");
+#endif
         for (uint32_t i = 0; i < 100000u and g_irq_seen == 0; i++)
         {
             __asm volatile("nop");
@@ -60,9 +89,10 @@ extern "C"
             return 0;
         }
         return g_irq_entry - t0;
+#endif
     }
 
-    // Switch-entry CYCCNT timestamp, written by PendSV_Handler (switch.S).
+    // Switch-entry timestamp, written by the switch handler (switch.S).
     uint32_t g_bench_sw_start = 0;
 
     uint32_t kickos_bench_core_hz(void) { return SystemCoreClock; }

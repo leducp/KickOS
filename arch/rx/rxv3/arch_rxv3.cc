@@ -126,6 +126,10 @@ namespace
         unsigned l = static_cast<unsigned>(line);
         volatile uint8_t& ier = reg8(ICU_IER_BASE + (l >> 3));
         uint8_t bit = static_cast<uint8_t>(1u << (l & 7));
+        // IER packs 8 lines per byte, so this RMW must be atomic against a device
+        // ISR's arch_irq_mask on a sibling line -- callable from unlocked syscall
+        // context (irq_attach/irq_unmask). Matches the riscv/xtensa mask primitives.
+        arch_irq_state_t s = arch_irq_save();
         if (on)
         {
             ier = static_cast<uint8_t>(ier | bit);
@@ -134,6 +138,7 @@ namespace
         {
             ier = static_cast<uint8_t>(ier & ~bit);
         }
+        arch_irq_restore(s);
     }
 }
 
@@ -255,8 +260,26 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 }
 #endif
 
+// Last absolute deadline programmed into CMTW0 (UINT64_MAX == disarmed). Touched
+// only from arch_timer_arm/disarm, which run under the kernel IrqLock, so it stays
+// in sync with the hardware.
+static uint64_t g_rx_armed_ns = ~0ull;
+
 void arch_timer_arm(uint64_t deadline_ns)
 {
+    // Idempotent re-arm: ktime_rearm calls this on EVERY context switch. If the
+    // one-shot is already running toward this exact deadline, leave CMWCNT alone --
+    // resetting it to 0 each switch (players ping-ponging faster than the deadline)
+    // means the compare is never reached and a far deadline (e.g. a reporter's 0.5s
+    // sleep) starves. RX-local: ARM SysTick / riscv mtimecmp tolerate the re-arm and
+    // are left on their own path (a generic guard mis-fires on riscv's quantized
+    // mtime -- see the tickless timer notes).
+    if (deadline_ns == g_rx_armed_ns and
+        (reg16(CMTW0_BASE + CMTW_CMWSTR) & CMWSTR_STR) != 0)
+    {
+        return;
+    }
+    g_rx_armed_ns = deadline_ns;
     uint64_t now = arch_clock_now();
     uint64_t delta_ns = 0;
     if (deadline_ns > now)
@@ -301,6 +324,7 @@ void arch_timer_arm(uint64_t deadline_ns)
 
 void arch_timer_disarm(void)
 {
+    g_rx_armed_ns = ~0ull;
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;
     reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0; // drop a pending compare-match request
 }

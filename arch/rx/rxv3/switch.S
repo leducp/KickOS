@@ -51,6 +51,10 @@
     .equ BIT_U,       0x00020000   /* PSW.U (select USP) */
     .equ MASK_NOT_PM, 0xffefffff   /* clear PSW.PM (-> supervisor) */
     .equ ICU_SWINTR,  0x000872E0   /* ICU.SWINTR: bit0 pends SWINT (vector 27) */
+    .equ ICU_IR_SWINT, 0x0008701B  /* ICU.IR027: the SWINT request flag (0x87000+27) */
+#if KICKOS_BENCH
+    .equ CMTW1_CMWCNT, 0x00094290  /* free-running 7.5 MHz counter (bench time base) */
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* arch_switch(from, to): R1=from (ignored -- the switcher saves g_arch_current),*/
@@ -75,9 +79,23 @@ _arch_switch:
 /* ------------------------------------------------------------------------- */
     .global _kickos_rx_pendsw
 _kickos_rx_pendsw:
-    /* Relocate the 2-word HW frame [PC][PSW] from the ISP to the outgoing USP,
-       carrying a scratch copy of R15 with it (freed to work with). */
+    /* Consume the SWINT request in-handler (ICU.IR027 is NOT auto-cleared on
+       acceptance for the software interrupt; every other RX ISR clears its own IR
+       flag likewise). Without this, back-to-back switches re-trigger a stale SWINT
+       and the switcher live-locks (~10M switches, no forward progress) on HW; the
+       slow path masked it. R15 is free here (reloaded by the mvfc below). */
     push.l  r15                /* [ISP]=R15, 4[ISP]=PC, 8[ISP]=PSW */
+    mov.l   #ICU_IR_SWINT, r15
+    mov.b   #0, [r15]
+#if KICKOS_BENCH
+    /* Bench: stamp switch entry (CMTW1). Balanced push/pop keeps the ISP frame. */
+    pushm   r14-r15
+    mov.l   #CMTW1_CMWCNT, r15
+    mov.l   [r15], r14
+    mov.l   #_g_bench_sw_start, r15
+    mov.l   r14, [r15]
+    popm    r14-r15
+#endif
     mvfc    usp, r15
     sub     #12, r15
     mvtc    r15, usp           /* room for [R15][PC][PSW] on the USP */
@@ -125,6 +143,22 @@ _kickos_rx_pendsw:
     mov.l   #_g_arch_current, r14
     mov.l   r15, [r14]         /* g_arch_current = incoming */
     mov.l   [r15], r0          /* R0 = incoming->sp */
+#if KICKOS_BENCH
+    /* Bench: switch-body delta (entry stamp -> now). CMTW1 ticks scaled to ICLK
+       cycles (ICLK 240 MHz = CMTW1 7.5 MHz x32), via the shared accumulator. Measures
+       the save+swap window; a C call is safe here (R0 = incoming sp = bottom of the
+       frame, so bsr pushes below it -- same as the telemetry hook). */
+    mov.l   #CMTW1_CMWCNT, r1
+    mov.l   [r1], r1
+    mov.l   #_g_bench_sw_start, r2
+    mov.l   [r2], r2
+    sub     r2, r1             /* r1 = delta (CMTW1 ticks) */
+    shll    #5, r1             /* x32 -> ~ICLK cycles */
+    bsr.a   _kickos_bench_switch_done
+    mov.l   #_g_arch_current, r14
+    mov.l   [r14], r15
+    mov.l   [r15], r0          /* reload R0 = incoming->sp */
+#endif
 #if KICKOS_TELEMETRY
     /* SWITCH-completion hook, emitted from the two PHYSICALLY-swapped contexts.
        Runs on the incoming USP (below its saved frame) with I=0; clobbers only
