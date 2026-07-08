@@ -201,7 +201,12 @@ void arch_irq_inject(int irq)
 }
 
 // --- Idle / halt ------------------------------------------------------------
-void arch_idle_wait(void)
+// weak: real silicon halts (WFI) to save power. A QEMU semihosting-clock chip
+// (mps2, nrf51) overrides this to SPIN: QEMU <= 10 freezes the semihosting
+// SYS_CLOCK -- our monotonic clock there -- while the core is in WFI, so a timed
+// sleep with every thread idle would never wake (the clock stops). QEMU 11 fixed
+// it; spinning keeps the clock advancing on the older QEMU the CI runner ships.
+void __attribute__((weak)) arch_idle_wait(void)
 {
     __asm volatile("wfi");
 }

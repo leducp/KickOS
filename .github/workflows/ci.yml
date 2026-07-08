@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: CECILL-C
+# KickOS CI: the deterministic, host-runnable green gates (docs/m2-readiness.md #6).
+# Silicon boards and the RX/Xtensa vendor toolchains are NOT here -- they stay a
+# manual/self-hosted step per the HW-test deferral policy. Every job mirrors a
+# `--preset` invocation.
+#
+# RISC-V uses the xPack riscv-none-elf toolchain (pinned): ubuntu-latest's apt
+# gcc-riscv64-unknown-elf ships no rv32imac newlib/libgloss, and unlike ARM there
+# is no drop-in apt lib package. xPack bundles the rv32imac multilib; we symlink it
+# to the riscv64-unknown-elf-* prefix the toolchain file expects.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Authoritative deterministic gate: full ctest on the host sim -- selftest, the
+  # stress soak (incl. thread-reclaim churn), sched_exit, mpu_fault, telemetry
+  # golden-vector, and the out-of-tree export check.
+  sim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
+      - run: cmake --preset sim
+      - run: cmake --build --preset sim
+      - run: ctest --preset sim --output-on-failure
+
+  # armv7m (mps2-an386) + armv6m (microbit) under QEMU. libnewlib-arm-none-eabi
+  # supplies the C library the split apt gcc package omits.
+  qemu-arm:
+    runs-on: ubuntu-latest
+    # The mps2/nrf51 QEMU targets clock off semihosting SYS_CLOCK, which QEMU <= 10
+    # (ubuntu-latest ships 8.2) freezes while the core is halted in WFI -- so a
+    # timed sleep with every thread idle never wakes. The arch idle path spins on
+    # these QEMU-only chips to keep the clock advancing (see arch_idle_wait). This
+    # timeout is just failure headroom on a loaded runner; passing gates exit early.
+    env:
+      QEMU_TIMEOUT: "30"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM toolchain + QEMU
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi qemu-system-arm
+      # --repeat until-pass:4: the mps2 QEMU timer is coarse (DWT frozen; ~100 Hz
+      # semihosting clock), so the run gates can transiently miss their output
+      # window under CI-host load. Retry rides that out; a real hang still fails
+      # (each attempt is bounded by the gate's own timeout).
+      - name: armv7m (mps2-an386)
+        run: |
+          cmake --preset qemu
+          cmake --build --preset qemu
+          ctest --preset qemu --output-on-failure --repeat until-pass:4
+      - name: armv6m (microbit)
+        run: |
+          cmake --preset microbit
+          cmake --build --preset microbit
+          ctest --preset microbit --output-on-failure --repeat until-pass:4
+
+  # rv32imac (virt) under QEMU, plus build-only checks of the other two rv32 boards.
+  # No idle fix needed here: RISC-V clocks off the CLINT mtime, which keeps ticking
+  # during WFI (unlike the ARM semihosting clock). QEMU_TIMEOUT is failure headroom.
+  qemu-riscv:
+    runs-on: ubuntu-latest
+    env:
+      QEMU_TIMEOUT: "30"
+      XPACK_RV: "14.3.0-1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install RISC-V toolchain (xPack) + QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
+          curl -fsSL -o /tmp/rv.tar.gz \
+            "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RV}/xpack-riscv-none-elf-gcc-${XPACK_RV}-linux-x64.tar.gz"
+          sudo tar -C /opt -xf /tmp/rv.tar.gz
+          tc="/opt/xpack-riscv-none-elf-gcc-${XPACK_RV}/bin"
+          # xPack ships riscv-none-elf-*; the toolchain file wants riscv64-unknown-elf-*.
+          sudo mkdir -p /opt/rvbin
+          for t in gcc g++ cpp as ld ar ranlib objcopy objdump size nm strip gcc-ar gcc-ranlib gcc-nm readelf; do
+            sudo ln -sf "$tc/riscv-none-elf-$t" "/opt/rvbin/riscv64-unknown-elf-$t"
+          done
+          echo "/opt/rvbin" >> "$GITHUB_PATH"
+      - name: rv32imac (virt) run gate
+        run: |
+          cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN=/opt/rvbin
+          cmake --build --preset qemu-riscv
+          ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
+      - name: build-only rv32 boards
+        run: |
+          cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN=/opt/rvbin
+          cmake --build --preset esp32c6-wroom
+          cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN=/opt/rvbin
+          cmake --build --preset qemu-riscv-bench
+
+  # Build-only sweep of the remaining ARM boards (catches build/link/linker-script
+  # regressions). No run step -- these need silicon or a machine model CI does not
+  # carry. RX/Xtensa omitted (vendor toolchains); RISC-V is the qemu-riscv job above.
+  build-boards:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [frdmk64f, f411disco, blackpill, bluepill, bluepill-c8, picopi,
+                 f302nucleo, due, xmc4800-relax, qemu-telem]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi
+      - run: cmake --preset ${{ matrix.preset }}
+      - run: cmake --build --preset ${{ matrix.preset }}
