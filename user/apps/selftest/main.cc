@@ -115,8 +115,9 @@ namespace
     void t_fifo()
     {
         log_reset();
-        kos::thread::spawn(fifo_worker, reinterpret_cast<void*>('A'), "fifoA", 10);
-        kos::thread::spawn(fifo_worker, reinterpret_cast<void*>('B'), "fifoB", 10);
+        int a = kos::thread::spawn(fifo_worker, reinterpret_cast<void*>('A'), "fifoA", 10);
+        int b = kos::thread::spawn(fifo_worker, reinterpret_cast<void*>('B'), "fifoB", 10);
+        TAP_CHECK(a >= 0 and b >= 0); // spawn failure (e.g. exhausted thread pool) would hang the join
         wait_n(2);
         TAP_CHECK(log_eq("AB")); // A (spawned first, equal prio) runs to completion first
     }
@@ -140,12 +141,19 @@ namespace
     {
         log_reset();
         g_go = kos_sem_create(0);
-        kos::thread::spawn(preempt_high, nullptr, "high", 20);
-        kos::thread::spawn(preempt_low, nullptr, "low", 8);
+        int hi = kos::thread::spawn(preempt_high, nullptr, "high", 20);
+        int lo = kos::thread::spawn(preempt_low, nullptr, "low", 8);
+        TAP_CHECK(hi >= 0 and lo >= 0); // spawn failure would hang the join below
         wait_n(2);
+        kos_sem_destroy(g_go); // reclaim: the suite must be pool-honest (runs on MAX_SEMAPHORES=4)
         TAP_CHECK(log_eq("lHL"));
     }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // The IRQ tests below drive kos_irq_inject, a KICKOS_ENABLE_SELFTEST-only
+    // syscall. Without the flag inject is a kernel no-op, so registering these would
+    // deadlock on a handler that never fires -- gate the definitions with the
+    // registrations (main) so a plain build simply omits them.
     // --- IRQ-context post (tier 2) ---------------------------------------------
     int g_irq = -1;
     void irq_waiter(void*)
@@ -166,23 +174,30 @@ namespace
         log_reset();
         g_irq = kos_sem_create(0);
         kos_irq_attach(5, g_irq);
-        kos::thread::spawn(irq_waiter, nullptr, "irqW", 15);
-        kos::thread::spawn(irq_injector, nullptr, "irqI", 8);
+        int w = kos::thread::spawn(irq_waiter, nullptr, "irqW", 15);
+        int inj = kos::thread::spawn(irq_injector, nullptr, "irqI", 8);
+        TAP_CHECK(w >= 0 and inj >= 0); // spawn failure would hang the join below
         wait_n(2);
+        kos_sem_destroy(g_irq); // reclaim (line 5 stays bound to a now-stale handle -> fails safe)
         TAP_CHECK(log_eq("iWr"));
     }
 
+#endif // KICKOS_ENABLE_SELFTEST (IRQ-context post)
+
     // --- Round-robin interleave ------------------------------------------------
+    // Burn target per iteration (~2 quanta); t_rr sizes it to the target's clock so
+    // the slice always preempts mid-burn, coarse-clock boards included.
+    uint64_t g_rr_burn_ns = 2000000ull;
     void rr_worker(void* arg)
     {
         char c = arg_char(arg);
         for (int i = 0; i < 3; i++)
         {
             log_put(c);
-            // Burn ~2 ms, longer than the 1 ms slice, so the timer preempts to
-            // the equal-priority peer mid-run.
+            // Burn longer than the slice so the timer preempts to the equal-priority
+            // peer mid-run (g_rr_burn_ns is scaled to the quantum in t_rr).
             uint64_t start = kos_clock_now();
-            while (kos_clock_now() - start < 2000000ull)
+            while (kos_clock_now() - start < g_rr_burn_ns)
             {
             }
         }
@@ -190,11 +205,32 @@ namespace
     }
     void t_rr()
     {
+        // The RR quantum must be resolvable by the monotonic clock, or the slice
+        // can't preempt mid-burn and the interleave never happens. Don't assume a
+        // fine clock: scale the quantum to the target's clock granule so RR is
+        // exercised on EVERY board (the coarse QEMU semihosting clock included) --
+        // a quantum below the clock's resolution is neither testable nor shippable.
+        // Measure one full granule (two consecutive edges, phase-independent; the
+        // probe spins so the clock advances, no WFI).
+        uint64_t e0 = kos_clock_now();
+        uint64_t e1 = e0;
+        while (e1 == e0) { e1 = kos_clock_now(); }
+        uint64_t e2 = e1;
+        while (e2 == e1) { e2 = kos_clock_now(); }
+        uint64_t granule = e2 - e1;
+        uint64_t quantum = 1000000ull; // 1 ms on a fine clock (the shipped case)
+        if (quantum < granule * 4)
+        {
+            quantum = granule * 4; // coarse clock: keep the slice well above a granule
+        }
+        g_rr_burn_ns = quantum * 2; // ~2 slices per burn -> guaranteed mid-burn preempt
+
         log_reset();
-        kos::thread::spawn(rr_worker, reinterpret_cast<void*>('A'), "rrA", 10,
-                           KOS_POLICY_RR, 1000000u, /*privileged=*/true);
-        kos::thread::spawn(rr_worker, reinterpret_cast<void*>('B'), "rrB", 10,
-                           KOS_POLICY_RR, 1000000u, /*privileged=*/true);
+        int a = kos::thread::spawn(rr_worker, reinterpret_cast<void*>('A'), "rrA", 10,
+                                   KOS_POLICY_RR, static_cast<uint32_t>(quantum), /*privileged=*/true);
+        int b = kos::thread::spawn(rr_worker, reinterpret_cast<void*>('B'), "rrB", 10,
+                                   KOS_POLICY_RR, static_cast<uint32_t>(quantum), /*privileged=*/true);
+        TAP_CHECK(a >= 0 and b >= 0); // spawn failure would hang the join below
         wait_n(2);
         // Sustained interleave: each of B's earlier iterations precedes A's next
         // (a pure-FIFO scheduler would run A's three to completion first).
@@ -219,8 +255,9 @@ namespace
     void t_sleep()
     {
         log_reset();
-        kos::thread::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{40}), "sleepL", 10);
-        kos::thread::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{10}), "sleepS", 10);
+        int l = kos::thread::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{40}), "sleepL", 10);
+        int s = kos::thread::spawn(sleeper, reinterpret_cast<void*>(uintptr_t{10}), "sleepS", 10);
+        TAP_CHECK(l >= 0 and s >= 0); // spawn failure would hang the join below
         wait_n(2);
         TAP_CHECK(log_eq("SL")); // the short sleeper wakes first
     }
@@ -240,15 +277,22 @@ namespace
     {
         log_reset();
         g_multi = kos_sem_create(0);
-        kos::thread::spawn(multi_worker, reinterpret_cast<void*>('A'), "multiA", 10);
-        kos::thread::spawn(multi_worker, reinterpret_cast<void*>('B'), "multiB", 10);
+        int a = kos::thread::spawn(multi_worker, reinterpret_cast<void*>('A'), "multiA", 10);
+        int b = kos::thread::spawn(multi_worker, reinterpret_cast<void*>('B'), "multiB", 10);
+        // A silently-dropped spawn (e.g. an exhausted thread pool) leaves the
+        // workers non-existent, so main would post to nobody and hang in wait_n --
+        // fail loud here instead. (This is the XMC MAX_THREADS=8 pool-exhaustion
+        // deadlock that hid behind an ignored spawn return.)
+        TAP_CHECK(a >= 0 and b >= 0);
         kos_sleep_ns(5000000ull); // let both block on g_multi
         kos_sem_post(g_multi);
         kos_sem_post(g_multi);
         wait_n(2);
+        kos_sem_destroy(g_multi); // reclaim
         TAP_CHECK(count('A') == 1 and count('B') == 1); // both woke
     }
 
+#if defined(KICKOS_ENABLE_SELFTEST) // inject-driven (see the tier-2 block above)
     // --- Tier-1 IRQ-as-event: unprivileged userspace driver --------------------
     int g_irqdrv_done = -1;
     int g_irqdrv_ready = -1;
@@ -275,8 +319,9 @@ namespace
         g_mmio = kos_ram_alloc(4096);
         TAP_CHECK(g_mmio != nullptr);
         *static_cast<volatile int*>(g_mmio) = 0;
-        kos::thread::spawn(irq_driver, nullptr, "irqdrv", 15, KOS_POLICY_FIFO, 0,
-                           /*privileged=*/false, g_mmio, 4096);
+        int drv = kos::thread::spawn(irq_driver, nullptr, "irqdrv", 15, KOS_POLICY_FIFO, 0,
+                                     /*privileged=*/false, g_mmio, 4096);
+        TAP_CHECK(drv >= 0); // spawn failure would hang the ready handshake below
         kos_sem_wait(g_irqdrv_ready);
         for (int i = 1; i <= 3; i++)
         {
@@ -284,6 +329,8 @@ namespace
             kos_irq_inject(kIrqLine);
             kos_sem_wait(g_irqdrv_done); // serviced + acked
         }
+        kos_sem_destroy(g_irqdrv_done); // reclaim (driver has exited: higher prio ran to completion)
+        kos_sem_destroy(g_irqdrv_ready);
         TAP_CHECK(g_seen[0] == 0x101 and g_seen[1] == 0x102 and g_seen[2] == 0x103);
     }
 
@@ -312,8 +359,10 @@ namespace
     {
         g_mask_ready = kos_sem_create(0);
         g_mask_serviced = 0;
-        kos::thread::spawn(mask_driver, nullptr, "maskdrv", 1); // below root (prio 2)
-        kos_sem_wait(g_mask_ready);                             // line registered
+        int drv = kos::thread::spawn(mask_driver, nullptr, "maskdrv", 1); // below root (prio 2)
+        TAP_CHECK(drv >= 0);        // spawn failure would hang the ready handshake below
+        kos_sem_wait(g_mask_ready); // line registered
+        kos_sem_destroy(g_mask_ready);                          // handshake done -> reclaim
         kos_irq_inject(kMaskLine);                              // fire 1: ISR masks + posts
         kos_irq_inject(kMaskLine);                              // fire 2: line masked -> dropped
         wait_n(1);
@@ -322,6 +371,8 @@ namespace
         wait_n(1);
         TAP_CHECK(g_mask_serviced == 2);
     }
+
+#endif // KICKOS_ENABLE_SELFTEST (tier-1 IRQ + mask)
 
     // --- Semaphore destroy: freelist reuse + generation-tagged handles ---------
     void t_sem_destroy()
@@ -345,7 +396,8 @@ namespace
     void t_sem_destroy_busy()
     {
         g_dsem = kos_sem_create(0);
-        kos::thread::spawn(destroy_waiter, nullptr, "dwaiter", 15);
+        int w = kos::thread::spawn(destroy_waiter, nullptr, "dwaiter", 15);
+        TAP_CHECK(w >= 0);                         // spawn failure would hang wait_n(1) below
         kos_sleep_ns(2000000ull);                 // let it block on g_dsem
         TAP_CHECK(kos_sem_destroy(g_dsem) == -1); // has a waiter -> refused
         kos_sem_post(g_dsem);                     // release the waiter
@@ -382,7 +434,11 @@ namespace
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
+#if KICKOS_HAVE_MPU
     // --- Privileged guard access survives a syscall ----------------------------
+    // Needs enforced protection: kos_guard_addr returns a real guarded page only
+    // where a wild access faults (sim now; per chip at M2). On a board without it
+    // the probe is 0 and this would fault, so it is compiled out there.
     void t_mpu_guard()
     {
         volatile int* g = static_cast<volatile int*>(kos_guard_addr());
@@ -390,6 +446,7 @@ namespace
         kos_yield(); // a syscall must restore the caller's MPU posture, not PROT_NONE
         TAP_CHECK(*g == 0x1234);
     }
+#endif
 
     // --- One driver per line: a second claim on a bound line is refused --------
     void t_irq_ownership()
@@ -399,12 +456,17 @@ namespace
         TAP_CHECK(kos_irq_attach(kLine, sem) == 0);  // first claim wins
         TAP_CHECK(kos_irq_attach(kLine, sem) == -1); // second is refused (no steal)
         TAP_CHECK(kos_irq_register(kLine) == -1);    // tier-1 cannot steal it either
+        kos_sem_destroy(sem); // reclaim (line 11 stays bound to a now-stale handle -> fails safe)
     }
 
     // --- Spurious IRQ: an unbound line is masked + counted, never dropped -------
     void t_irq_spurious()
     {
         constexpr int kFreeLine = 9; // no driver bound to this line
+        // Enable the line so the injected raise reaches the default handler on
+        // masked-by-default controllers (ARM NVIC, RX); sim/riscv are unmasked by
+        // default, so this is a no-op there.
+        kos_irq_unmask(kFreeLine);
         uint32_t before = kos_irq_spurious_count();
         kos_irq_inject(kFreeLine);   // default handler runs: mask + bump counter
         TAP_CHECK(kos_irq_spurious_count() == before + 1);
@@ -421,22 +483,26 @@ int main(int, char**)
     g_lock = kos_sem_create(1);
     g_done = kos_sem_create(0);
 
+    // Core scheduler / sync / time -- no test-only syscalls, runs on every board.
     tap::add("svc_roundtrip", t_svc);
     tap::add("fifo_order", t_fifo);
     tap::add("preempt_on_ready", t_preempt);
-    tap::add("irq_thread_ctx", t_irq);
     tap::add("rr_interleave", t_rr);
     tap::add("sleep_order", t_sleep);
     tap::add("multi_wait", t_multi);
-    tap::add("irq_as_event", t_irqdrv);
-    tap::add("irq_mask_drop", t_irq_mask);
     tap::add("sem_destroy", t_sem_destroy);
     tap::add("sem_destroy_quiescent", t_sem_destroy_busy);
     tap::add("sem_raii", t_sem_raii);
 #if defined(KICKOS_ENABLE_SELFTEST)
-    tap::add("mpu_privileged_guard", t_mpu_guard);
+    // Need the software-inject syscall (compiled out of the production ABI).
+    tap::add("irq_thread_ctx", t_irq);
+    tap::add("irq_as_event", t_irqdrv);
+    tap::add("irq_mask_drop", t_irq_mask);
     tap::add("irq_ownership", t_irq_ownership);
     tap::add("irq_spurious", t_irq_spurious);
+#if KICKOS_HAVE_MPU
+    tap::add("mpu_privileged_guard", t_mpu_guard); // needs enforced protection
+#endif
 #endif
 
     // Every test joins its workers, so main returns as the last live thread:
