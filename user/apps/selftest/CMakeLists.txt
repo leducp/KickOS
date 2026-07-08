@@ -32,6 +32,33 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(oot_export PROPERTIES TIMEOUT 120)
 endif()
 
+# The SAME TAP suite on the runnable QEMU targets -- the identical binary rebuilt
+# per target, exercising the real ISA switch mechanism (armv7m/armv6m PendSV,
+# rv32imac msip), not just the sim. Needs KICKOS_ENABLE_SELFTEST (the qemu* presets
+# enable it); rr_interleave sizes its RR quantum to the target's clock so it runs
+# even on the coarse QEMU semihosting clock.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
+  add_test(NAME qemu_selftest
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" "$<TARGET_FILE:selftest>")
+  set_tests_properties(qemu_selftest PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+endif()
+# microbit (nrf51) runs the SAME suite on armv6m. Its small pool (MAX_SEMAPHORES=4 /
+# MAX_THREADS=2) is precisely why the suite is pool-honest -- every test reclaims its
+# semaphores, so peak concurrent stays within 4. Gating armv6m here keeps that platform
+# from regressing silently (a deferral would be a silent hole).
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
+  add_test(NAME microbit_selftest
+    COMMAND "${CMAKE_COMMAND}" -E env QEMU_MACHINE=microbit
+            "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" "$<TARGET_FILE:selftest>")
+  set_tests_properties(microbit_selftest PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+endif()
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
+  add_test(NAME qemu_riscv_selftest
+    COMMAND "${CMAKE_COMMAND}" -E env QEMU=qemu-system-riscv32 QEMU_MACHINE=virt "QEMU_EXTRA=-bios none"
+            "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" "$<TARGET_FILE:selftest>")
+  set_tests_properties(qemu_riscv_selftest PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+endif()
+
 # The same acceptance criterion for a bare-metal package: install the MCU
 # package, then build an out-of-tree app against it with the SHIPPED cross
 # toolchain (build-only; an MCU ELF can't run on the host). Registered on the

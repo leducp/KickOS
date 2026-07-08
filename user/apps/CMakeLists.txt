@@ -6,6 +6,7 @@ add_subdirectory(hello_c)
 add_subdirectory(selftest)
 add_subdirectory(mpu_fault)
 add_subdirectory(sched_exit)
+add_subdirectory(stress)
 
 # Telemetry gate apps. tele_pingpong (bounded, self-terminating) also drives the
 # QEMU structural gate (it exits, so mps2 flushes the ring via semihosting), so it
@@ -29,7 +30,7 @@ endif()
 # Context-switch microbenchmark: only in KICKOS_BENCH builds (needs the PendSV
 # CYCCNT bracket + the kernel accumulator). armv7m + DWT boards (and QEMU for the
 # plumbing; its DWT may be frozen, so the real number comes from silicon).
-if(KICKOS_BENCH AND KICKOS_ARCH STREQUAL "armv7m")
+if(KICKOS_BENCH AND (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "rv32imac" OR KICKOS_ARCH STREQUAL "rxv3"))
   add_subdirectory(bench)
 endif()
 
