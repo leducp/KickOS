@@ -19,7 +19,7 @@ enum kos_syscall_nr
     KOS_SYS_sem_wait = 5,       // (handle)   -> 0, or -1 bad handle (void C wrapper drops it)
     KOS_SYS_sem_post = 6,       // (handle)   -> 0, or -1 bad handle (void C wrapper drops it)
     KOS_SYS_sem_destroy = 17,   // (handle)              -> 0, or -1 (bad/has waiters); nr appended
-    KOS_SYS_thread_spawn = 7,   // (kos_thread_params*)  -> thread id, or -1
+    KOS_SYS_thread_spawn = 7,   // (kos_thread_params*)  -> opaque thread handle, or -1
     KOS_SYS_exit = 8,           // (code)                -> does not return
     KOS_SYS_irq_inject = 9,     // (irq)                 -> 0
     KOS_SYS_guard_addr = 10,    // ()  -> protected probe addr (self-test only)
@@ -31,7 +31,8 @@ enum kos_syscall_nr
     KOS_SYS_irq_ack = 16,       // (handle)              -> 0, or -1 on bad handle
     KOS_SYS_irq_spurious = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
     KOS_SYS_diag_led_set = 19,  // (on)                  -> 0 (kernel diagnostic LED)
-    KOS_SYS_diag_led_toggle = 20 // ()                   -> 0 (kernel diagnostic LED)
+    KOS_SYS_diag_led_toggle = 20, // ()                  -> 0 (kernel diagnostic LED)
+    KOS_SYS_irq_unmask = 21     // (irq)  -> 0, or -1 (enable a line; self-test only)
 };
 
 // 64-bit values are passed/returned as two uintptr_t halves so the ABI is

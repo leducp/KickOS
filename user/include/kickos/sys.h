@@ -47,6 +47,9 @@ void* kos_guard_addr(void);
 // Test-only: count of IRQs that fired on a line with no driver (masked by the
 // default handler). For the spurious-IRQ self-test.
 uint32_t kos_irq_spurious_count(void);
+// Test-only: enable a controller line directly, so an injected raise reaches the
+// default handler on masked-by-default controllers (ARM NVIC, RX). Privileged.
+int kos_irq_unmask(int line); // 0, or -1
 #endif
 
 // Bind device line `irq` so that firing it posts semaphore `sem_id` from ISR

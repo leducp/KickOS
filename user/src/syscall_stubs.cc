@@ -121,6 +121,14 @@ int kos_irq_ack(int handle)
         arch_syscall(KOS_SYS_irq_ack, static_cast<uintptr_t>(handle), 0, 0, 0));
 }
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+int kos_irq_unmask(int line)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_irq_unmask, static_cast<uintptr_t>(line), 0, 0, 0));
+}
+#endif
+
 uint64_t kos_clock_now(void)
 {
     uint64_t out = 0;

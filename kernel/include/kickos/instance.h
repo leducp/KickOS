@@ -63,9 +63,15 @@ namespace kickos
         Semaphore sems[KICKOS_MAX_SEMAPHORES];
         bool sem_used[KICKOS_MAX_SEMAPHORES];
         uint16_t sem_gen[KICKOS_MAX_SEMAPHORES];
+        // Thread pool: bump-allocated, then EXITED slots reclaimed at spawn (a slot
+        // is free iff its TCB state is EXITED -- authoritative, maintained by the
+        // scheduler). thread_gen is bumped on reclaim so a handle to the previous
+        // occupant fails to resolve (ABA), the twin of sem_gen. All allocation goes
+        // through thread_spawn(). (gen wraps every 2^16 reuses of one slot.)
         Thread thread_pool[KICKOS_MAX_THREADS];
         alignas(16) unsigned char thread_stacks[KICKOS_MAX_THREADS][KICKOS_USER_STACK_SIZE];
         int thread_next = 0;
+        uint16_t thread_gen[KICKOS_MAX_THREADS];
 
         // --- interrupt dispatch + IRQ-as-event bindings (irq.cc) ---
         IrqEntry irq_table[KICKOS_MAX_IRQ]; // line -> handler; ISR reads by index
