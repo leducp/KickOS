@@ -105,6 +105,7 @@ namespace kickos
         }
         IrqLock lock;
         set_default(irq); // restore the null-object, not a null slot
+        arch_irq_mask(irq); // register/attach armed the line; detach disarms it
     }
 
     int irq_register(int line)
@@ -134,6 +135,11 @@ namespace kickos
         b.line = line;
         b.used = true;
         irq_attach(line, irq_event_isr, &b);
+        // Arm the line for its first IRQ. Without this the line is delivered only
+        // after the first irq_ack -- fine on controllers unmasked-by-default
+        // (sim/riscv) but a deadlock on default-masked ones (ARM NVIC, RX): the
+        // first raise is dropped, so the wait never wakes and ack never runs.
+        arch_irq_unmask(line);
         return handle;
     }
 
