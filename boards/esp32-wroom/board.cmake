@@ -11,7 +11,7 @@
 # no -mcpu selection here: the ABI baseline is fixed by the toolchain file. The
 # windowed ABI (the toolchain default) is used so the prebuilt esp32 libgcc/libc
 # multilib links cleanly (see cmake/toolchain-xtensa-esp32-elf.cmake).
-set(KICKOS_BOARD_ID "esp32wroom")
+set(KICKOS_BOARD_ID "esp32-wroom")
 set(KICKOS_ARCH_FAMILY "xtensa")
 set(KICKOS_ARCH "lx6")
 set(KICKOS_CHIP "esp32")

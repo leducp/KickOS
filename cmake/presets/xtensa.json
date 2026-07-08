@@ -1,0 +1,20 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "esp32-wroom",
+      "displayName": "ESP32-WROOM-32 (Xtensa LX6, windowed ABI) - build-only [first non-ARM ISA]",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32-wroom",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-xtensa-esp32-elf.cmake",
+      "cacheVariables": {
+        "KICKOS_BOARD": "esp32-wroom",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "esp32-wroom", "configurePreset": "esp32-wroom" }
+  ]
+}

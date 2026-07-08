@@ -1,0 +1,20 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "rx72m",
+      "displayName": "Renesas RX72M (RXv3) - build-only, HW validation deferred",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/rx72m",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-rx-elf.cmake",
+      "cacheVariables": {
+        "KICKOS_BOARD": "rx72m",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "rx72m", "configurePreset": "rx72m" }
+  ]
+}

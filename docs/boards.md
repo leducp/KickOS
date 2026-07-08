@@ -11,6 +11,8 @@ where its console + LED live. For J-Link / RTT details see [flashing.md](flashin
 | `sim` | host process | — | host stdout | `ctest --preset sim` | ✅ CI |
 | `qemu` | mps2-an386 / M4 | — | semihosting | `ctest --preset qemu` | ✅ CI |
 | `microbit` | nRF51822 / M0 | — | semihosting | `ctest --preset microbit` | ✅ CI |
+| `qemu-riscv` | QEMU virt / RV32IMAC | — | semihosting | `ctest --preset qemu-riscv` | ✅ CI (first RISC-V) |
+| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | (WROOM, TBD) | UART0 (ROM), 115200 | esptool (TODO) | ⚠️ build-only |
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 → VCOM; + RTT | onboard J-Link | ✅ LED + VCOM console |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | ✅ LED + UART + ping-pong |
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | ⚠️ build-only (2nd F411 board; 25 MHz HSE) |

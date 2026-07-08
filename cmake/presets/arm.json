@@ -1,0 +1,121 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "arm-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-arm-none-eabi.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "qemu",
+      "displayName": "QEMU mps2-an386 (Cortex-M4F, armv7m) - runnable",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/qemu",
+      "cacheVariables": { "KICKOS_BOARD": "qemu", "KICKOS_ENABLE_SELFTEST": "ON" }
+    },
+    {
+      "name": "frdmk64f",
+      "displayName": "NXP FRDM-K64F (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/frdmk64f",
+      "cacheVariables": { "KICKOS_BOARD": "frdmk64f" }
+    },
+    {
+      "name": "f411disco",
+      "displayName": "STM32F411 Discovery (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/f411disco",
+      "cacheVariables": { "KICKOS_BOARD": "f411disco" }
+    },
+    {
+      "name": "blackpill",
+      "displayName": "WeAct STM32F411CEU6 Black Pill (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/blackpill",
+      "cacheVariables": { "KICKOS_BOARD": "blackpill" }
+    },
+    {
+      "name": "bluepill",
+      "displayName": "STM32F103 Blue Pill, low-density clone / 10 KiB (Cortex-M3)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/bluepill",
+      "cacheVariables": { "KICKOS_BOARD": "bluepill" }
+    },
+    {
+      "name": "bluepill-c8",
+      "displayName": "STM32F103C8 Blue Pill, genuine 20 KiB (Cortex-M3)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/bluepill-c8",
+      "cacheVariables": { "KICKOS_BOARD": "bluepill-c8" }
+    },
+    {
+      "name": "microbit",
+      "displayName": "BBC micro:bit v1 (nRF51, Cortex-M0, armv6m) - runnable",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/microbit",
+      "cacheVariables": { "KICKOS_BOARD": "microbit", "KICKOS_ENABLE_SELFTEST": "ON" }
+    },
+    {
+      "name": "picopi",
+      "displayName": "Raspberry Pi Pico (RP2040, Cortex-M0+, armv6m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/picopi",
+      "cacheVariables": { "KICKOS_BOARD": "picopi" }
+    },
+    {
+      "name": "f302nucleo",
+      "displayName": "ST Nucleo-F302R8 (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/f302nucleo",
+      "cacheVariables": { "KICKOS_BOARD": "f302nucleo" }
+    },
+    {
+      "name": "due",
+      "displayName": "Arduino Due (AT91SAM3X8E, Cortex-M3) [EXPERIMENTAL: clock/console]",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/due",
+      "cacheVariables": { "KICKOS_BOARD": "due" }
+    },
+    {
+      "name": "xmc4800-relax",
+      "displayName": "Infineon XMC4800 Relax Kit (Cortex-M4F, armv7m)",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/xmc4800-relax",
+      "cacheVariables": { "KICKOS_BOARD": "xmc4800-relax" }
+    },
+    {
+      "name": "qemu-telem",
+      "displayName": "QEMU mps2-an386 + telemetry - QEMU structural gate (PendSV asm)",
+      "inherits": "qemu",
+      "binaryDir": "${sourceDir}/build/qemu-telem",
+      "cacheVariables": {
+        "KICKOS_TELEMETRY": "rtt",
+        "KICKOS_CONSOLE": "both"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "qemu",      "configurePreset": "qemu" },
+    { "name": "qemu-telem", "configurePreset": "qemu-telem" },
+    { "name": "frdmk64f",  "configurePreset": "frdmk64f" },
+    { "name": "f411disco", "configurePreset": "f411disco" },
+    { "name": "blackpill",  "configurePreset": "blackpill" },
+    { "name": "bluepill",  "configurePreset": "bluepill" },
+    { "name": "bluepill-c8", "configurePreset": "bluepill-c8" },
+    { "name": "microbit",  "configurePreset": "microbit" },
+    { "name": "picopi",    "configurePreset": "picopi" },
+    { "name": "f302nucleo","configurePreset": "f302nucleo" },
+    { "name": "due",       "configurePreset": "due" },
+    { "name": "xmc4800-relax", "configurePreset": "xmc4800-relax" }
+  ],
+  "testPresets": [
+    { "name": "qemu",       "configurePreset": "qemu",       "output": { "outputOnFailure": true } },
+    { "name": "qemu-telem", "configurePreset": "qemu-telem", "output": { "outputOnFailure": true } },
+    { "name": "microbit",   "configurePreset": "microbit",   "output": { "outputOnFailure": true } }
+  ]
+}
