@@ -13,6 +13,56 @@ Every non-sim build emits three images next to the app ELF (via
 - `<app>.bin` — raw binary (no addresses; you supply the load address).
 
 e.g. `build/xmc4800-relax/user/apps/blink/blink.{elf-less name,hex,bin}`.
+Espressif boards additionally emit `<app>.app.bin` (the bootable image).
+
+## One command: `tools/flash.sh`
+
+For the common case, don't hand-craft the tool invocation — let the dispatcher do it:
+
+```sh
+tools/flash.sh <board> [app]      # app defaults to hello
+tools/flash.sh --list             # every board + the backend it would use
+```
+
+It resolves the board → chip (from `boards/<board>/board.cmake`), finds the emitted
+image, then runs the **first suitable backend whose tool is on your `PATH`** — the
+only assumption is that the tool is on `PATH` (no hardcoded install locations):
+
+| chip | backend(s), priority order | image / notes |
+|---|---|---|
+| `esp32c6` / `esp32` | `esptool` | `<app>.app.bin` @ `0x0` (C-series) / `0x1000` (esp32); port auto-detected |
+| `stm32f1/f3/f4` | `stlink` → `jlink` | `<app>.bin` @ `0x08000000` (stlink) |
+| `rp2040` | `picotool` (hold BOOTSEL) | ELF |
+| `nrf51` | `pyocd` → `jlink` | `<app>.hex` |
+| `sam3x8e` | `bossac` | `<app>.bin`; double-tap RESET for SAM-BA |
+| `mk64f` | `jlink` → `pyocd` | `.hex` |
+| `xmc4800` / `rx72m` | `jlink` | `.hex` (addresses embedded) |
+| `mps2` / `virt` / sim | — | not flashed; run in QEMU/host (`ctest --preset <board>`) |
+
+Each backend is a standalone script you can also run directly — same
+`<board> [app]` interface, sharing `tools/flash-common.sh`:
+
+```sh
+tools/flash-jlink.sh   bluepill        # or flash-esptool.sh / flash-stlink.sh / …
+```
+
+Knobs (honored by the dispatcher and every backend):
+
+- `FLASH_TOOL=esptool|stlink|jlink|picotool|pyocd|bossac` — **force a backend** when
+  a chip has several (e.g. use your own J-Link on a Blue Pill instead of an ST-Link:
+  `FLASH_TOOL=jlink tools/flash.sh bluepill`).
+- `FLASH_PORT=/dev/ttyACMx` — force the serial port (else first `ttyACM*`/`ttyUSB*`).
+- `DRY_RUN=1` — print the command without running it.
+
+Example — flash the C6 over its native USB with the esp-idf env active:
+
+```sh
+. $IDF_PATH/export.sh                       # puts esptool on PATH
+cmake --build build/esp32c6-wroom --target hello
+tools/flash.sh esp32c6-wroom                # -> flash-esptool.sh: esptool --chip esp32c6 …
+```
+
+The sections below are the per-tool deep-dives.
 
 ## XMC4800 Relax Kit — onboard SEGGER J-Link
 
