@@ -97,6 +97,25 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
   install(TARGETS kickos_arch_lx6 EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xtensa/lx6/include" PARENT_SCOPE)
+elseif(KICKOS_ARCH STREQUAL "rv32imac")
+  # RISC-V RV32IMAC (ESP32-C6 + QEMU virt): single mtvec trap that demuxes on
+  # mcause -- ONE deferred switcher via CLINT msip (the RX SWINT / ARM PendSV
+  # model), ecall syscall trap -> a privileged-thread trampoline (switch.S); the
+  # core-generic seam (mstatus.MIE crit, rdcycle trace clock, wfi idle, PMP stub)
+  # in arch_rv32imac.cc. No F/D extension -> soft-float, so the switch banks no FP.
+  # The chip layer (arch/riscv/chip/{virt,esp32c6}) supplies arch_init/console/
+  # shutdown + the clock/timer + the CLINT base + linker script + startup.
+  add_library(kickos_arch_rv32imac STATIC
+    riscv/rv32imac/arch_rv32imac.cc
+    riscv/rv32imac/switch.S)
+  kickos_apply_freestanding(kickos_arch_rv32imac)
+  target_include_directories(kickos_arch_rv32imac PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv32imac/include>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+  install(TARGETS kickos_arch_rv32imac EXPORT KickOSTargets
+          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/riscv/rv32imac/include" PARENT_SCOPE)
 else()
   message(FATAL_ERROR "KickOS: arch backend '${KICKOS_ARCH}' not available")
 endif()

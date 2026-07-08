@@ -19,10 +19,10 @@ foreach(_f sync/sync.cc time/time.cc syscall/syscall.cc irq/irq.cc)
   endif()
 endforeach()
 
-# Cycle-accurate microbenchmark accumulator (paired with the PendSV CYCCNT bracket
-# in switch.S); only in KICKOS_BENCH builds. ARMv7-M only: bench.cc hard-codes the
-# DWT/STIR registers and dsb/isb, so it does not build on other arches.
-if(KICKOS_BENCH AND KICKOS_ARCH STREQUAL "armv7m")
+# Cycle-accurate microbenchmark accumulator (paired with the cycle-counter bracket
+# in switch.S); only in KICKOS_BENCH builds. armv7m (DWT/STIR) and rv32imac (rdcycle
+# + arch_irq_inject) supply the counter/trigger via a __riscv branch in bench.cc.
+if(KICKOS_BENCH AND (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "rv32imac" OR KICKOS_ARCH STREQUAL "rxv3"))
   list(APPEND KICKOS_KERNEL_SOURCES bench/bench.cc)
 endif()
 
@@ -43,9 +43,10 @@ if(KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
   set_source_files_properties(init/console_tx.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
 endif()
 
-# kickos_bench_switch_done runs in the PendSV tail with the incoming thread's FP
-# live, so its path must take no FP register -- same rule as ktrace/console_tx.
-# (bench.cc is armv7m-only, so this only fires when it is actually built.)
+# armv7m only: kickos_bench_switch_done runs in the PendSV tail with the incoming
+# thread's lazily-stacked FP live, so its path must take no FP register (same rule
+# as ktrace/console_tx). -mgeneral-regs-only is not valid on rxv3/rv32imac, and
+# neither needs it (rxv3 calls it before the FP restore; rv32imac has no hazard).
 if(KICKOS_BENCH AND KICKOS_ARCH STREQUAL "armv7m")
   set_source_files_properties(bench/bench.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
 endif()

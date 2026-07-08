@@ -1,0 +1,44 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "riscv-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-riscv-none-elf.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "qemu-riscv",
+      "displayName": "QEMU virt (RISC-V RV32IMAC, M-mode) - runnable [first RISC-V ISA]",
+      "inherits": "riscv-base",
+      "binaryDir": "${sourceDir}/build/qemu-riscv",
+      "cacheVariables": { "KICKOS_BOARD": "qemu-riscv", "KICKOS_ENABLE_SELFTEST": "ON" }
+    },
+    {
+      "name": "qemu-riscv-bench",
+      "displayName": "QEMU virt (RISC-V) + KICKOS_BENCH - context-switch microbench",
+      "inherits": "qemu-riscv",
+      "binaryDir": "${sourceDir}/build/qemu-riscv-bench",
+      "cacheVariables": { "KICKOS_BENCH": "ON" }
+    },
+    {
+      "name": "esp32c6-wroom",
+      "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC) - build-only, HW validation deferred",
+      "inherits": "riscv-base",
+      "binaryDir": "${sourceDir}/build/esp32c6-wroom",
+      "cacheVariables": { "KICKOS_BOARD": "esp32c6-wroom" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "qemu-riscv",    "configurePreset": "qemu-riscv" },
+    { "name": "qemu-riscv-bench", "configurePreset": "qemu-riscv-bench" },
+    { "name": "esp32c6-wroom", "configurePreset": "esp32c6-wroom" }
+  ],
+  "testPresets": [
+    { "name": "qemu-riscv", "configurePreset": "qemu-riscv", "output": { "outputOnFailure": true } }
+  ]
+}

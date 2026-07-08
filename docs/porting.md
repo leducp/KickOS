@@ -278,6 +278,66 @@ build-verified (boot2 CRC recomputed, `.boot2` at 0x1000_0000, vectors at
 The board is always BOOTSEL-recoverable, so a wrong boot2/clock config cannot
 permanently brick it.
 
+## The RISC-V RV32IMAC arch (boards `qemu-riscv`→chip `virt`, `esp32c6-wroom`→chip `esp32c6`)
+
+The first RISC-V ISA (ESP32-C6 + the QEMU `virt` run target), sharing one arch
+(`arch/riscv/rv32imac/`) across two chips. Closest to the RX72M model: a single
+save-frame, deferred switch.
+
+- **Trap model** = ONE `mtvec` DIRECT-mode handler (`trap_entry`, switch.S) that
+  saves the FULL interrupted context (28 GPRs + `mepc` + `mstatus`, 128 B) on the
+  running thread's own stack, then demuxes on `mcause`: ecall (8/11), machine
+  software / msip (the switcher), machine timer / mtip. `gp`/`tp` are not saved
+  (link-time constant). ONE frame format for a voluntary block and a preemptive
+  wake — the RX/PendSV property.
+- **Context switch** = deferred via the **CLINT machine software interrupt
+  (`msip`)**. `arch_switch` records `g_arch_next` + pends msip; the physical swap
+  ALWAYS happens in the msip trap (`.Lswitch`). Held off while an IrqLock masks
+  `mstatus.MIE`. The CLINT base is chip-provided (`g_clint_msip`).
+- **Syscall** = **`ecall`** → `svc_trampoline` running **M-mode (privileged) on the
+  caller's own stack** (mret with `MPP=M`), so a blocking dispatch's continuation
+  is per-thread (the arch.h contract). The frame keeps the caller's `mstatus`
+  (`MPP`=caller priv) for the return; `mepc`+4 skips the (4-byte) `ecall`.
+- **Critical section** = `mstatus.MIE` (clear via `csrrci`, restore via `csrs`);
+  `arch_in_isr` reads `g_isr_depth` (bumped only by the timer/external paths).
+  `arch_idle_wait` = `wfi`.
+- **Trace clock** = the `rdcycle` CSR (always present, 32-bit raw; `mcounteren`
+  lets U-mode read it). **Clock/one-shot timer** are chip-provided (virt: CLINT
+  `mtime`/`mtimecmp`; C6: SYSTIMER — TODO(HW)).
+- **PMP** — a **permissive bootstrap entry** (pmpaddr0 NAPOT-all, pmpcfg0 = RWX,
+  U-accessible) is set in `kickos_rv32_init`. RISC-V is fail-CLOSED: once PMP is
+  implemented, a U-mode access with no matching entry FAULTS (unlike ARM, where
+  unprivileged is unrestricted until the MPU clamps). So without this, an
+  unprivileged thread can't fetch its first instruction. Per-task PMP enforcement
+  is **M2** (`arch_mpu_apply` is a no-op now — the ARM/RX M1 posture). No F/D
+  extension → soft-float, so the switch banks no FP.
+- **`arch_irq_inject`** (fake-a-device-firing test/bench scaffolding) uses the
+  **supervisor software interrupt** (`mip.SSIP`, `mcause`=1) as a private channel —
+  the RISC-V analog of the host sim's `raise(SIGUSR1)`. The **PLIC has no
+  software-generated interrupt** (unlike the Cortex-A GIC's SGIs; QEMU faithfully
+  rejects a software pending-write), so a real device IRQ cannot be faked through
+  it. Masking is a software bitmask (the sim's `irq_masked` twin); a raise on a
+  masked line drops. The bench's IRQ-entry-latency sample and the IRQ self-tests
+  (`irq_thread_ctx` / `irq_as_event` / `irq_mask_drop`) run on `virt` this way.
+  SSIP needs S-mode (present on the QEMU virt CPU); the C6 is M/U-only, so its
+  inject routes to an interrupt-matrix "from-CPU" line at HW bring-up. A real
+  device-interrupt *receive* path (a PLIC over `meip`) is a driver-era concern.
+
+### The QEMU verification target (`board`: `qemu-riscv`, chip `virt`)
+
+A runnable rv32imac target validates the arch on real emulated RISC-V:
+`qemu-system-riscv32 -M virt -bios none -nographic -semihosting`. `-bios none`
+runs our image directly in **machine mode** (no OpenSBI). The `virt` chip
+(`arch/riscv/chip/virt/`) uses the standard CLINT (`mtime`/`mtimecmp` @ 10 MHz,
+`msip`) + RISC-V **semihosting** for the console (`SYS_WRITEC`) and exit
+(`SYS_EXIT_EXTENDED`) — the mps2 model — so it needs no UART; the image links to
+run from DRAM at `0x8000_0000`. `ctest --preset qemu-riscv` boots `hello` and
+asserts the ping-pong (reset → scheduler(msip) → ecall syscalls → CLINT timer →
+semaphore reschedule). The C6 board (`esp32c6-wroom`, chip `esp32c6`, build-only) is flash-to-validate:
+esptool image + real UART/SYSTIMER/watchdog/CLINT register values are the HW pass.
+
+---
+
 ## Verification status
 
 The arch backend **cross-compiles clean** for Cortex-M4/M3, and the **spike is

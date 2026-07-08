@@ -129,26 +129,28 @@ function(kickos_emit_image target)
       VERBATIM)
   endif()
 
-  # ESP32 (Xtensa) only: the raw objcopy .bin is NOT bootable -- the ESP32 ROM
-  # loader needs the Espressif image format (magic 0xE9, segment table, checksum),
-  # and a raw .bin also spans the IRAM/DRAM VMA gap. esptool.py elf2image builds
-  # the bootable image from the ELF. Graceful: if esptool is not on PATH / in the
-  # esp-idf env, skip the step and tell the user how to produce the image, rather
-  # than failing the build (the ELF + raw .bin/.hex are still emitted).
-  if(KICKOS_CHIP STREQUAL "esp32")
-    find_program(KICKOS_ESPTOOL NAMES esptool.py esptool)
+  # Espressif chips (Xtensa esp32, RISC-V esp32c6): the raw objcopy .bin is NOT
+  # bootable -- the ROM loader needs the Espressif image format (magic 0xE9, segment
+  # table, checksum); esptool elf2image builds it from the ELF (entry -> _start,
+  # segments -> SRAM). Graceful: if esptool is not on PATH (i.e. the esp-idf env is
+  # not active), skip and tell the user, rather than failing the build (the ELF +
+  # raw .bin/.hex are still emitted). --chip is the KickOS chip name (esptool accepts
+  # esp32 / esp32c6 verbatim). Prefer `esptool` (esptool.py is deprecated in v5).
+  if(KICKOS_CHIP STREQUAL "esp32" OR KICKOS_CHIP STREQUAL "esp32c6")
+    find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)
     if(KICKOS_ESPTOOL)
       add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND ${KICKOS_ESPTOOL} --chip esp32 elf2image
+        COMMAND ${KICKOS_ESPTOOL} --chip ${KICKOS_CHIP} elf2image
                 --output $<TARGET_FILE_DIR:${target}>/${target}.app.bin
                 $<TARGET_FILE:${target}>
         BYPRODUCTS ${target}.app.bin
-        COMMENT "esptool elf2image -> ${target}.app.bin (bootable ESP32 image)"
+        COMMENT "esptool elf2image -> ${target}.app.bin (bootable ${KICKOS_CHIP} image)"
         VERBATIM)
     else()
       message(STATUS "KickOS: esptool not found -- ${target}.app.bin (bootable "
-        "ESP32 image) not produced. Run: esptool.py --chip esp32 elf2image "
-        "--output ${target}.app.bin <elf>  (the raw ${target}.bin is NOT bootable).")
+        "${KICKOS_CHIP} image) not produced. Activate the esp-idf env, or run: "
+        "esptool --chip ${KICKOS_CHIP} elf2image --output ${target}.app.bin <elf>  "
+        "(the raw ${target}.bin is NOT bootable).")
     endif()
   endif()
 endfunction()
