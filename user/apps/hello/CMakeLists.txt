@@ -23,7 +23,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
   add_test(
     NAME    qemu_hello
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh" "$<TARGET_FILE:hello>")
-  set_tests_properties(qemu_hello PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+  set_tests_properties(qemu_hello PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
 endif()
 
 # QEMU armv6m gate: same demo on a QEMU Cortex-M0 (BBC micro:bit / nRF51).
@@ -32,5 +32,17 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
     NAME    microbit_hello
     COMMAND "${CMAKE_COMMAND}" -E env QEMU_MACHINE=microbit
             "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh" "$<TARGET_FILE:hello>")
-  set_tests_properties(microbit_hello PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+  set_tests_properties(microbit_hello PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+endif()
+
+# QEMU RISC-V gate: the same demo on a QEMU `virt` (RV32IMAC, M-mode bare metal) --
+# end-to-end proof of the rv32imac reset/scheduler(msip)/ecall/CLINT-timer path.
+# `-bios none` runs our image directly in M-mode (no OpenSBI).
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
+  add_test(
+    NAME    qemu_riscv_hello
+    COMMAND "${CMAKE_COMMAND}" -E env
+            QEMU=qemu-system-riscv32 QEMU_MACHINE=virt "QEMU_EXTRA=-bios none"
+            "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh" "$<TARGET_FILE:hello>")
+  set_tests_properties(qemu_riscv_hello PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
 endif()

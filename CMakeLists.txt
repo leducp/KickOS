@@ -152,16 +152,33 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
   set(KICKOS_TRACE_ARCH 3)
 elseif(KICKOS_ARCH STREQUAL "lx6")
   set(KICKOS_TRACE_ARCH 4)
+elseif(KICKOS_ARCH STREQUAL "rv32imac")
+  set(KICKOS_TRACE_ARCH 5)
 endif()
 if(NOT DEFINED KICKOS_HAVE_TRACE_CLOCK)
   set(KICKOS_HAVE_TRACE_CLOCK 0)
   if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "armv7m"
-     OR KICKOS_ARCH STREQUAL "rxv3" OR KICKOS_ARCH STREQUAL "lx6")
-    set(KICKOS_HAVE_TRACE_CLOCK 1) # sim clock/1000; armv7m weak DWT; rxv3 CMTW1; lx6 CCOUNT
+     OR KICKOS_ARCH STREQUAL "rxv3" OR KICKOS_ARCH STREQUAL "lx6"
+     OR KICKOS_ARCH STREQUAL "rv32imac")
+    set(KICKOS_HAVE_TRACE_CLOCK 1) # sim clock/1000; armv7m weak DWT; rxv3 CMTW1; lx6 CCOUNT; rv32imac rdcycle
   elseif(KICKOS_CHIP STREQUAL "rp2040" OR KICKOS_CHIP STREQUAL "nrf51")
     set(KICKOS_HAVE_TRACE_CLOCK 1) # armv6m chips that ship arch_trace_now (default)
   endif()
 endif()
+
+# Enforced-memory-protection capability. 1 only where a wild access to another
+# domain's memory actually FAULTS -- so a test/feature that needs a real guard page
+# (selftest mpu_privileged_guard) is gated on it and stays green on boards without
+# it. Today only the sim (mprotect) enforces; M2 sets it per chip as SYSMPU/PMSA/PMP
+# land, and the ESP32 (no MPU) deliberately stays 0. OVERRIDABLE like the trace
+# clock above -- a board/chip/preset may set it directly.
+if(NOT DEFINED KICKOS_HAVE_MPU)
+  set(KICKOS_HAVE_MPU 0)
+  if(KICKOS_ARCH STREQUAL "sim")
+    set(KICKOS_HAVE_MPU 1)
+  endif()
+endif()
+add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
 if(NOT DEFINED KICKOS_TELEMETRY)
   set(KICKOS_TELEMETRY "off")
@@ -203,6 +220,27 @@ include(GNUInstallDirs)
 
 if(KICKOS_BUILD_TESTS)
   enable_testing()
+
+  # Rebuild the tree before any test runs, so `ctest` / `ctest --preset` can never
+  # execute a stale binary (configure-only + ctest would otherwise silently run the
+  # previous build). The build is one CTest fixture (SETUP); every test registered
+  # below is auto-wired to require it by the add_test wrapper just after.
+  add_test(NAME kickos_build COMMAND "${CMAKE_COMMAND}" --build "${PROJECT_BINARY_DIR}")
+  set_tests_properties(kickos_build PROPERTIES FIXTURES_SETUP kickos_build TIMEOUT 900)
+
+  # Make every subsequently-registered test require that fixture, without editing
+  # each app's CMakeLists. A macro (not a function) so set_property runs in the
+  # caller's directory scope -- the only scope where the test it just added exists.
+  # kickos_build itself was registered above, before this wrapper, so it never
+  # requires itself. Every test here uses the add_test(NAME <n> COMMAND ...) form.
+  macro(add_test)
+    _add_test(${ARGV})
+    if("${ARGV0}" STREQUAL "NAME")
+      set_property(TEST "${ARGV1}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
+    else()
+      set_property(TEST "${ARGV0}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
+    endif()
+  endmacro()
 endif()
 
 # Components are added as they land; guarded so every step boundary configures.
@@ -383,6 +421,9 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
             DESTINATION "${KICKOS_CMAKE_DIR}")
   elseif(KICKOS_ARCH_FAMILY STREQUAL "xtensa")
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-xtensa-esp32-elf.cmake"
+            DESTINATION "${KICKOS_CMAKE_DIR}")
+  elseif(KICKOS_ARCH_FAMILY STREQUAL "riscv")
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-riscv-none-elf.cmake"
             DESTINATION "${KICKOS_CMAKE_DIR}")
   else()
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-arm-none-eabi.cmake"

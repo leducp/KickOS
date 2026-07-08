@@ -10,6 +10,7 @@ set -u
 elf="${1:?usage: check_qemu_exit.sh <sched_exit.elf>}"
 qemu="${QEMU:-qemu-system-arm}"
 machine="${QEMU_MACHINE:-mps2-an386}"   # armv7m default; microbit for armv6m
+extra_arg="${QEMU_EXTRA:-}"             # e.g. -icount shift=auto (CI: coarse mps2 timer)
 
 if ! command -v "$qemu" >/dev/null 2>&1; then
     # Exit 77 -> CTest SKIP (not PASS), so a QEMU-less box doesn't green-light it.
@@ -17,7 +18,7 @@ if ! command -v "$qemu" >/dev/null 2>&1; then
     exit 77
 fi
 
-out="$(timeout 8 "$qemu" -M "$machine" -nographic -semihosting -kernel "$elf" 2>&1)"
+out="$(timeout "${QEMU_TIMEOUT:-8}" "$qemu" -M "$machine" $extra_arg -nographic -semihosting -kernel "$elf" 2>&1)"
 echo "$out"
 
 if echo "$out" | grep -qiE "panic|unreachable"; then

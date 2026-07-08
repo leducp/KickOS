@@ -102,6 +102,15 @@ uint32_t arch_trace_now(void)
     return static_cast<uint32_t>(arch_clock_now() / 1000ull); // us
 }
 
+// Override the arch layer's weak WFI idle: the clock is the semihosting SYS_CLOCK
+// (arch_clock_now above), and QEMU <= 10 stops it while the core halts in WFI, so
+// a sleep with every thread idle never wakes. Spin instead. This nrf51 backend is
+// a QEMU validation vehicle (see file banner), so the wasted cycles cost nothing.
+void arch_idle_wait(void)
+{
+    __asm volatile("nop");
+}
+
 void arch_shutdown(int status)
 {
     uint32_t block[2];

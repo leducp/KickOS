@@ -119,6 +119,15 @@ uint32_t arch_trace_now(void)
     return static_cast<uint32_t>(arch_clock_now() / 1000ull); // us
 }
 
+// Override the arch layer's weak WFI idle: this target's clock is the semihosting
+// SYS_CLOCK (arch_clock_now above), and QEMU <= 10 stops it while the core halts
+// in WFI -- so a sleep with every thread idle never wakes. Spin instead. QEMU-only
+// board, so the wasted cycles cost nothing real.
+void arch_idle_wait(void)
+{
+    __asm volatile("nop");
+}
+
 void arch_console_write(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)

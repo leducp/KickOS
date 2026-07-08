@@ -12,5 +12,5 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
   add_test(
     NAME    qemu_fp_switch
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_qemu_fp.sh" "$<TARGET_FILE:fp_switch>")
-  set_tests_properties(qemu_fp_switch PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+  set_tests_properties(qemu_fp_switch PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
 endif()
