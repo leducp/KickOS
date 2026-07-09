@@ -43,6 +43,27 @@ namespace kickos
                        void* stack_base, size_t stack_size, ThreadAttr const& attr);
 }
 
+// Enter the panic / fault dead-end. Called FIRST by kpanic and by every arch fault
+// reporter, before any dump is printed. Three premise-free steps, in order:
+//   1. mask IRQs on this core (arch_irq_save, never restored -- we do not return),
+//      so the timer/scheduler/other threads stop while the dump prints and the
+//      terminal blinks (kpanic runs in THREAD context; the fault path is already
+//      masked, where this is a harmless re-mask);
+//   2. force the console onto the synchronous polled writer for all subsequent
+//      output -- works whether or not this arch armed the buffered ring, which
+//      retires the whole "did this arch arm the ring?" class of fault-path bugs;
+//   3. drain bytes already queued in the ring so the dump prints in order.
+// Idempotent: safe to call again from kfault_terminate after a reporter called it.
+extern "C" void kpanic_enter(void);
+
+// Terminal for the panic / fault dead-end, shared by kpanic and the arch fault
+// handlers. The weak default (console.cc) blinks the diag LED in a distinctive
+// pattern forever -- the right signal on real, headless hardware. The host and
+// QEMU targets override it (sim.cc / chip_mps2 / chip_virt / chip_nrf51) to exit
+// with a fault status, so the test harness catches a fault instead of timing out
+// on a spin. extern "C": overridden across TUs and called from the arch handlers.
+extern "C" void kfault_terminate(void) __attribute__((noreturn));
+
 #define KICKOS_ASSERT(cond)                     \
     do                                          \
     {                                           \

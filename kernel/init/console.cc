@@ -122,19 +122,80 @@ namespace kickos
 
     void kpanic(char const* msg)
     {
-        g_console_panicking = true; // subsequent kputs take the polled path
-        kdiag_led_set(true);        // solid LED = fault, visible on a UART-less board
-        console_tx_flush_sync();    // drain already-queued bytes in order, then panic
+        kpanic_enter(); // mask IRQs + force sync path + flush queued bytes
         kputs("\nKERNEL PANIC: ");
         kputs(msg);
         kputs("\n");
-        arch_shutdown(1);
+        kfault_terminate(); // blink forever (real HW) or exit with a fault status (host/QEMU)
     }
 }
 
-// Fallback synchronous writer: a chip with a buffered console overrides this with
-// its polled UART writer; every other chip (and sim) reuses arch_console_write,
-// which is already the polled/stdout writer there.
+// See kernel.h. Defined here so it can touch the file-local panic flag; extern "C"
+// so the arch fault reporters (separate TUs) can call it. Ordering matters: mask
+// FIRST (no ISR can enqueue after), then set the flag, then flush what is already
+// queued.
+extern "C" void kpanic_enter(void)
+{
+    (void)arch_irq_save(); // never restored: the panic/fault path does not return
+    g_console_panicking = true;
+    console_tx_flush_sync();
+}
+
+namespace
+{
+    // Wall-clock delay for the panic blink, so the pattern is the SAME real duration
+    // on every board (a fixed nop count blurs into fast flicker on a fast core). Uses
+    // arch_clock_now (up on any post-boot fault); a wrap-proof iteration guard bails
+    // rather than hanging if the clock is dead (a pre-clock-init fault).
+    void panic_delay_ms(uint32_t ms)
+    {
+        uint64_t const start = arch_clock_now();
+        uint64_t const span = static_cast<uint64_t>(ms) * 1000000ull;
+        // A dead clock (a pre-clock-init fault) never advances, so the wait below
+        // would hang forever. Guard on NO-ADVANCE, not an iteration count: probe
+        // until the clock ticks at least once. If it never moves across a bounded
+        // number of reads, treat it as stopped and give up (the blink degrades, but
+        // the panic path does not hang). Once it moves we trust it and wait for real.
+        uint32_t probe = 0;
+        while (arch_clock_now() == start)
+        {
+            probe++;
+            if (probe >= (1u << 24)) // ~16M reads, no tick: clock is stopped
+            {
+                return;
+            }
+        }
+        while (arch_clock_now() - start < span)
+        {
+        }
+    }
+}
+
+// Weak: the real-hardware dead-end. A distinctive heartbeat -- three 0.2 s blinks
+// then a 2 s gap, forever -- says "panicked" at a glance on a board with no console.
+// Overridden by the host/QEMU chips to exit with a fault status (see kernel.h).
+extern "C" __attribute__((weak, noreturn)) void kfault_terminate(void)
+{
+    kpanic_enter(); // idempotent; masks IRQs for any path reaching here directly
+    for (;;)
+    {
+        for (int b = 0; b < 3; b++)
+        {
+            ::kickos::kdiag_led_set(true);
+            panic_delay_ms(200);
+            ::kickos::kdiag_led_set(false);
+            panic_delay_ms(200);
+        }
+        panic_delay_ms(2000); // 2 s dark gap before the next burst
+    }
+}
+
+// Fallback synchronous writer. Every chip with a buffered console (K64F, XMC, RX72M,
+// ESP32, the STM32/RP2040/SAM3X fleet, and the sim) MUST override this with its
+// polled writer -- otherwise the weak alias below routes back into the buffered
+// ring, and panic/fault output enqueues into a ring whose drain ISR is masked and
+// never runs. Polled-only chips (mps2/virt/nrf51/esp32c6) reuse arch_console_write,
+// which is already their polled writer, so the weak default is correct for them.
 extern "C" __attribute__((weak)) void arch_console_write_sync(char const* buf, size_t n)
 {
     arch_console_write(buf, n);
