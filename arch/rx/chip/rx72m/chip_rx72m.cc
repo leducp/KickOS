@@ -19,6 +19,7 @@
 // bring-up, so the console baud and timer tick math are identical.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <stdint.h>
 
@@ -137,6 +138,7 @@ namespace
     constexpr uintptr_t SCI6_SSR = SCI6 + 0x04;   // serial status
     constexpr uintptr_t SCI6_SEMR = SCI6 + 0x07;  // serial extended mode
     constexpr uint8_t SCR_TE = 1u << 5;           // transmit enable
+    constexpr uint8_t SCR_TIE = 1u << 7;          // transmit-data-empty interrupt enable
     constexpr uint8_t SSR_TDRE = 1u << 7;         // transmit-data-empty
     constexpr uint8_t SEMR_ABCS = 1u << 4;        // 8 base-clock cycles per bit
     constexpr uint8_t SEMR_BGDM = 1u << 6;        // baud generator double-speed
@@ -145,6 +147,12 @@ namespace
     // Actual baud 60e6/(8*65) = 115385 (+0.16% error). (UM sec.42 async baud table.)
     constexpr uint8_t SCI6_BRR_115200 = 64;
     constexpr uint8_t SCI6_SEMR_115200 = SEMR_BGDM | SEMR_ABCS; // 0x50
+
+    // SCI6 transmit-data-empty (TXI6) interrupt: vector 87, IER0A.IEN7, IPR087
+    // (UM sec.15.3.1 interrupt vector table). Edge-triggered; for this line the IPR
+    // index equals the vector number, so the generic arch_irq_unmask (index==line)
+    // programs it correctly. INTB[87] is routed to the drain ISR in startup.S.
+    constexpr int SCI6_TXI_VECTOR = 87;
 
     void unlock_registers(bool on)
     {
@@ -225,8 +233,24 @@ namespace
         for (volatile uint32_t d = 0; d < 10000u; d++) // >= 1-bit settle before TE (sec.42 init)
         {
         }
-        r8(SCI6_SCR) = SCR_TE;            // enable transmitter
+        r8(SCI6_SCR) = SCR_TE;            // enable transmitter (TIE off; the ring primes it)
     }
+
+    // --- Buffered console TX backend (console_tx.h). The ring drains via the SCI6
+    // transmit-data-empty interrupt (TXI6, vector 87); slot_free/push touch one
+    // register, and irq_enable/irq_disable gate SCR.TIE. Enabling TIE while SSR.TDRE
+    // is set is expected to raise TXI6 (the idle->busy prime relies on this; HW-
+    // unverified -- see the review checklist "SCR.TIE-while-TDRE actually fires
+    // TXI"). The RMW keeps SCR_TE set so the transmitter stays on. ---
+    int rx_tx_slot_free(void) { return (r8(SCI6_SSR) & SSR_TDRE) != 0; }
+    void rx_tx_push(uint8_t b) { r8(SCI6_TDR) = b; }
+    void rx_tx_irq_enable(void) { r8(SCI6_SCR) = static_cast<uint8_t>(r8(SCI6_SCR) | SCR_TIE); }
+    void rx_tx_irq_disable(void) { r8(SCI6_SCR) = static_cast<uint8_t>(r8(SCI6_SCR) & ~SCR_TIE); }
+
+    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
+    char console_tx_buf[CONSOLE_TX_SIZE];
+    console_tx_backend const rx_console_backend = {
+        rx_tx_slot_free, rx_tx_push, rx_tx_irq_enable, rx_tx_irq_disable};
 }
 
 extern "C"
@@ -259,6 +283,13 @@ void arch_init(void)
 
 void arch_console_write(char const* buf, size_t n)
 {
+    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+}
+
+// Bounded polled writer: panic / fault / pre-arm boot route here (console.cc). Must
+// stay reachable with the scheduler and IRQs down -- no ring, no interrupt.
+void arch_console_write_sync(char const* buf, size_t n)
+{
     for (size_t i = 0; i < n; i++)
     {
         uint32_t spin = 0;
@@ -271,6 +302,17 @@ void arch_console_write(char const* buf, size_t n)
         }
         r8(SCI6_TDR) = static_cast<uint8_t>(buf[i]);
     }
+}
+
+// Arch seam (console_tx.h): hand the kernel the SCI6 backend + ring storage + the
+// TXI6 line. console_buffer_init binds the drain ISR, unmasks the line (IPR087 +
+// IER0A.IEN7 via arch_irq_unmask), and arms the ring.
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = CONSOLE_TX_SIZE;
+    *irq_line = SCI6_TXI_VECTOR;
+    return &rx_console_backend;
 }
 
 void arch_diag_led_init(void)

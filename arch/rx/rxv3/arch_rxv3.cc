@@ -16,8 +16,27 @@
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 
 #include "regs.h"
+#include <kickos/console_tx.h> // console_tx_isr: drained by the TXI ISR below
 
 #include <stddef.h> // offsetof
+
+// Fault reporting (see the .fvectors shims in startup.S): the reporter calls
+// kpanic_enter first, which masks IRQs, forces the synchronous polled writer, and
+// flushes the ring -- so the dump is safe from an exception even though RX72M arms
+// the buffered SCI6 console. kfault_terminate is the shared panic/fault dead-end
+// (kernel.h).
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
+}
+extern "C" void kpanic_enter(void);
+extern "C" void kfault_terminate(void) __attribute__((noreturn));
+
+// Verbose CPU-context dump. Default on; -DKICKOS_PANIC_DUMP=0 keeps only the
+// one-line fault marker. Same knob and default on every arch reporter.
+#ifndef KICKOS_PANIC_DUMP
+#define KICKOS_PANIC_DUMP 1
+#endif
 
 // The SWINT switcher (switch.S) saves the full context: R1-R15 (single-precision
 // FP lives in the GPR file), FPSW, the two accumulators, AND -- with -mdfpu (the
@@ -59,6 +78,20 @@ namespace
     // the first-level DEVICE-IRQ dispatchers, never by the syscall INT path, so
     // arch_in_isr() reads false throughout syscall_dispatch (arch.h contract).
     volatile int g_in_isr = 0;
+
+    // Software IRQ controller for INJECTED logical lines. The RX ICU cannot pend an
+    // arbitrary peripheral line from software (only the two software interrupts are
+    // settable), so injected lines are delivered over the single SWINT2 doorbell:
+    // g_inject_line carries the logical line, g_irq_masked gates it. Mirrors the
+    // sim/xtensa/riscv model. Lines < kSoftIrqLines are software (this controller);
+    // lines >= it are real ICU vectors gated by ICU.IER (e.g. console TXI6 = 87).
+    // RX's own sub-32 vectors (SWINT 26/27, timer CMWI0 30) are configured directly
+    // by the arch/chip init and never pass through the arch_irq_* seam, so they do
+    // not collide. Masked-by-default (RX is a masked controller): a line is armed
+    // only by arch_irq_unmask (kernel irq_register/irq_ack), like the ARM NVIC.
+    constexpr int kSoftIrqLines = 32;
+    volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
+    volatile int g_inject_line = -1;
 }
 
 extern "C"
@@ -139,6 +172,37 @@ namespace
             ier = static_cast<uint8_t>(ier & ~bit);
         }
         arch_irq_restore(s);
+    }
+
+    // RX72M ICU IPR index for a vector. IR (UM sec.15.2.1) and IER (sec.15.2.2)
+    // are indexed 1:1 by vector; only IPR (sec.15.2.4) is shared -- several sources
+    // collapse onto one IPR entry, so the IPR index is NOT the vector number in
+    // general. This table carries the mappings confirmed against the UM interrupt
+    // vector table (sec.15.3.1); an unlisted vector falls back to identity, which
+    // holds for the 1:1 SCIg/peripheral block this backend arms today (SCI6 TXI6 =
+    // vector 87 -> IPR087). A shared source NOT listed here would be given the
+    // wrong IPR: add it (and cite the UM) before enabling that device line.
+    struct ipr_map_entry
+    {
+        uint16_t vector;
+        uint8_t ipr;
+    };
+    constexpr ipr_map_entry kIprMap[] = {
+        {SWINT2_VECTOR, 3}, // SWINT2(26)+SWINT(27) share ICU.IPR[3] (RX72x BSP)
+        {SWINT_VECTOR, 3},
+        {CMWI0_VECTOR, 6},  // CMTW0 CMWI0(30) -> ICU.IPR[6]
+    };
+
+    inline unsigned vector_to_ipr(int vector)
+    {
+        for (unsigned i = 0; i < sizeof(kIprMap) / sizeof(kIprMap[0]); i++)
+        {
+            if (kIprMap[i].vector == vector)
+            {
+                return kIprMap[i].ipr;
+            }
+        }
+        return static_cast<unsigned>(vector); // identity: 1:1 IPR sources
     }
 }
 
@@ -235,6 +299,45 @@ void arch_irq_restore(arch_irq_state_t state)
 int arch_in_isr(void)
 {
     return g_in_isr;
+}
+
+// C side of the RX exception handler (startup.S .fvectors shims branch here with
+// r1=cause [the fixed-vector offset], r2=stacked PC, r3=stacked PSW). Dump the
+// context, then hand off to the shared dead-end (blink on real HW). Runs on the
+// ISP in supervisor mode. kpanic_enter masks IRQs (raises PSW.IPL, never restored --
+// this path does not return), forces the polled writer, and flushes the ring.
+void kickos_rx_fault_report(uint32_t cause, uint32_t pc, uint32_t psw)
+{
+    kpanic_enter();
+    char const* what = "trap";
+    if (cause == 0x50)
+    {
+        what = "privileged instruction";
+    }
+    else if (cause == 0x54)
+    {
+        what = "access exception";
+    }
+    else if (cause == 0x5C)
+    {
+        what = "undefined instruction";
+    }
+    else if (cause == 0x60)
+    {
+        what = "address exception";
+    }
+    else if (cause == 0x64)
+    {
+        what = "floating-point";
+    }
+#if KICKOS_PANIC_DUMP
+    ::kickos::kprintf("\n=== RX EXCEPTION (%s) ===\n  PC=0x%x PSW=0x%x\n", what, pc, psw);
+#else
+    (void)pc;
+    (void)psw;
+    ::kickos::kprintf("\n=== RX EXCEPTION (%s) ===\n", what);
+#endif
+    kfault_terminate();
 }
 
 // --- Tickless clock (CMTW1) + one-shot timer (CMTW0) ------------------------
@@ -375,6 +478,11 @@ void arch_irq_mask(int line)
     {
         return;
     }
+    if (line < kSoftIrqLines)
+    {
+        g_irq_masked |= (1u << static_cast<unsigned>(line));
+        return;
+    }
     icu_ier_set(line, false);
 }
 
@@ -384,36 +492,34 @@ void arch_irq_unmask(int line)
     {
         return;
     }
+    if (line < kSoftIrqLines)
+    {
+        g_irq_masked &= ~(1u << static_cast<unsigned>(line));
+        return;
+    }
     // Program the source priority BELOW the kernel lock level before enabling, so
     // a device line cannot preempt an IrqLock-held section (the armv7m NVIC_IPR
-    // care). TODO(HW): the ICUD shares IPR entries per a source table (IPR index
-    // != vector in general, UM sec.15.2.4); this index==line write is correct only
-    // for sources with a 1:1 IPR and must be replaced by the table on real HW.
-    reg8(ICU_IPR_BASE + static_cast<unsigned>(line)) = static_cast<uint8_t>(IPL_DEVICE);
+    // care). IPR is shared per the ICU source table, so the index comes from
+    // vector_to_ipr -- NOT the vector (IR/IER stay vector-indexed via icu_ier_set).
+    reg8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
     icu_ier_set(line, true);
 }
 
 void arch_irq_inject(int irq)
 {
-    if (irq < 0)
+    // Only logical lines are injectable. A real peripheral line cannot be pended from
+    // software on RX, and drivers never inject -- so anything >= kSoftIrqLines drops.
+    if (irq < 0 or irq >= kSoftIrqLines)
     {
         return;
     }
-    unsigned l = static_cast<unsigned>(irq);
-    // Match the proven sim semantics: a masked line drops the raise.
-    if ((reg8(ICU_IER_BASE + (l >> 3)) & (1u << (l & 7))) == 0)
+    // A masked line drops the raise (the proven sim semantics).
+    if ((g_irq_masked & (1u << static_cast<unsigned>(irq))) != 0)
     {
         return;
     }
-    // RX cannot pend an arbitrary peripheral line from software (edge sources
-    // accept only a 0 write to IRn.IR); only the two software interrupts are
-    // software-settable (UM sec.15.2.5). SWINT is the context-switch line, so test
-    // scaffolding routes injection to SWINT2; other lines drop. Real drivers never
-    // inject.
-    if (irq == SWINT2_VECTOR)
-    {
-        reg8(ICU_SWINT2R) = SWINT2R_SWINT2;
-    }
+    g_inject_line = irq;                // recorded BEFORE the doorbell (the ISR reads it)
+    reg8(ICU_SWINT2R) = SWINT2R_SWINT2; // ring SWINT2 -> kickos_rx_swint2 dispatches it
 }
 
 // --- Idle -------------------------------------------------------------------
@@ -431,6 +537,37 @@ __attribute__((interrupt)) void kickos_rx_timer_isr(void)
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;  // one-shot: stop until re-armed
     g_in_isr++;
     kickos_isr_timer(); // re-arms the next deadline
+    g_in_isr--;
+}
+
+// Buffered-console drain ISR. Routed from INTB[87] (SCI6 TXI6) by the chip's
+// startup.S; the ring/backend/line come from the chip via arch_console_tx_backend,
+// and console_buffer_init unmasks the line + arms the ring. TXI6 is edge-triggered
+// (UM sec.15.3.1): the ICU clears IR087 on accept, so no source flag is touched
+// here -- console_tx_isr pushes bytes and gates SCR.TIE, which re-arms the edge.
+__attribute__((interrupt)) void kickos_rx_console_txi_isr(void)
+{
+    g_in_isr++;
+    console_tx_isr();
+    g_in_isr--;
+}
+
+// SWINT2 doorbell: the software IRQ controller's delivery vector. arch_irq_inject
+// latched the logical line in g_inject_line and pended SWINT2; run its bound handler.
+// Clear IR026 first -- a software interrupt's request flag is NOT auto-cleared on
+// accept (the same omission that livelocked SWINT), so leaving it set re-fires the
+// doorbell forever. kickos_isr_irq runs the handler, which masks the line itself
+// (irq_event_isr / the null-object default), so no masking here.
+__attribute__((interrupt)) void kickos_rx_swint2(void)
+{
+    reg8(ICU_IR_BASE + SWINT2_VECTOR) = 0;
+    g_in_isr++;
+    int line = g_inject_line;
+    g_inject_line = -1;
+    if (line >= 0)
+    {
+        kickos_isr_irq(line);
+    }
     g_in_isr--;
 }
 
@@ -462,6 +599,11 @@ void kickos_rxv3_init(void)
     reg8(ICU_IER_BASE + (SWINT_VECTOR >> 3)) =
         static_cast<uint8_t>(reg8(ICU_IER_BASE + (SWINT_VECTOR >> 3)) |
                              (1u << (SWINT_VECTOR & 7)));
+
+    // SWINT2 is the software-inject doorbell (arch_irq_inject -> kickos_rx_swint2). It
+    // shares SWINT's IPR (IPL_PENDSW, set above) and needs its own IER bit enabled so
+    // an injected logical line is delivered. startup.S routes INTB[26] to the ISR.
+    icu_ier_set(SWINT2_VECTOR, true);
 
     // CMTW1: free-running 32-bit counter (CCLR=001 disables clearing, so it wraps
     // at 2^32 on its own), PCLK/8, no interrupt -- read-extended in software (sec.5).

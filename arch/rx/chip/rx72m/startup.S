@@ -32,8 +32,9 @@
 /* Relocatable interrupt vector table (INTB). Slot n -> handler for INT/IRQ n.  */
 /* Slots 0..15 carry no peripheral source; slot 1 = syscall trap (regs.h        */
 /* SYSCALL_VECTOR), slot 27 = SWINT (the deferred context switch, PendSV analog),*/
-/* slot 30 = CMTW0 compare match (CMWI0). Slot 26 (SWINT2) stays the default     */
-/* handler -- it is the test-injection line (arch_irq_inject).                   */
+/* slot 30 = CMTW0 compare match (CMWI0), slot 87 = SCI6 TXI6 (buffered console  */
+/* drain). Slot 26 = SWINT2, the software-inject doorbell: arch_irq_inject latches  */
+/* the logical line + pends SWINT2, and kickos_rx_swint2 dispatches it.            */
 /* ------------------------------------------------------------------------- */
     .section .rvectors, "a"
     .balign 4
@@ -41,15 +42,20 @@
 _g_rvectors:
     .word _rx_trap                    /* 0: BRK (unused) */
     .word _kickos_rx_syscall_trap     /* 1: syscall trap (INT #1) */
-    .rept 25
-    .word _kickos_rx_default_irq      /* 2..26 (26 = SWINT2, test injection) */
+    .rept 24
+    .word _kickos_rx_default_irq      /* 2..25 */
     .endr
+    .word _kickos_rx_swint2           /* 26: SWINT2 -> software-inject doorbell */
     .word _kickos_rx_pendsw           /* 27: SWINT -> deferred context switch */
     .word _kickos_rx_default_irq      /* 28 */
     .word _kickos_rx_default_irq      /* 29 */
     .word _kickos_rx_timer_isr        /* 30: CMTW0 compare match (CMWI0) */
-    .rept (KICKOS_MAX_IRQ - 31)
-    .word _kickos_rx_default_irq      /* 31..255 */
+    .rept (87 - 31)
+    .word _kickos_rx_default_irq      /* 31..86 */
+    .endr
+    .word _kickos_rx_console_txi_isr  /* 87: SCI6 TXI6 -> buffered console drain */
+    .rept (KICKOS_MAX_IRQ - 88)
+    .word _kickos_rx_default_irq      /* 88..255 */
     .endr
 
 /* ------------------------------------------------------------------------- */
@@ -64,12 +70,12 @@ _g_fvectors:
     .rept 20                          /* 0x00..0x4C: reserved */
     .word _rx_trap
     .endr
-    .word _rx_trap                    /* 0x50 privileged instruction */
-    .word _rx_trap                    /* 0x54 access exception (MPU: M2) */
+    .word _rx_ex_priv                 /* 0x50 privileged instruction */
+    .word _rx_ex_access               /* 0x54 access exception (MPU: M2) */
     .word _rx_trap                    /* 0x58 reserved */
-    .word _rx_trap                    /* 0x5C undefined instruction */
-    .word _rx_trap                    /* 0x60 address exception */
-    .word _rx_trap                    /* 0x64 floating-point */
+    .word _rx_ex_undef                /* 0x5C undefined instruction */
+    .word _rx_ex_addr                 /* 0x60 address exception */
+    .word _rx_ex_fp                   /* 0x64 floating-point */
     .word _rx_trap                    /* 0x68 reserved */
     .word _rx_trap                    /* 0x6C reserved */
     .word _rx_trap                    /* 0x70 reserved */
@@ -89,7 +95,35 @@ _start:
     mvtc    r5, intb              /* relocatable interrupt table base */
     bra.a   _rx_reset_handler     /* C runtime init + kmain (noreturn) */
 
-/* A catch-all trap for exceptions not yet handled (M1.x): halt. */
+/* Exception entry shims (fixed vector table). On an RX exception the CPU pushes  */
+/* PC then PSW to the ISP (so [R0]=PC, 4[R0]=PSW) and clears U (R0 = ISP). Each    */
+/* shim tags the cause (its fixed-vector offset) in r1, loads PC/PSW into r2/r3,   */
+/* and tail-branches to the C reporter (dumps context, then never returns).       */
+    .global _rx_ex_priv
+_rx_ex_priv:
+    mov     #0x50, r1
+    bra     1f
+    .global _rx_ex_access
+_rx_ex_access:
+    mov     #0x54, r1
+    bra     1f
+    .global _rx_ex_undef
+_rx_ex_undef:
+    mov     #0x5C, r1
+    bra     1f
+    .global _rx_ex_addr
+_rx_ex_addr:
+    mov     #0x60, r1
+    bra     1f
+    .global _rx_ex_fp
+_rx_ex_fp:
+    mov     #0x64, r1
+    bra     1f
+/* Catch-all for the reserved slots, BRK, and NMI: cause 0 ("trap"). */
     .global _rx_trap
 _rx_trap:
-    bra     _rx_trap
+    mov     #0, r1
+1:
+    mov.l   [r0], r2              /* stacked PC  */
+    mov.l   4[r0], r3             /* stacked PSW */
+    bra.a   _kickos_rx_fault_report
