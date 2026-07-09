@@ -152,6 +152,13 @@ void arch_shutdown(int status)
 }
 
 // --- C-runtime bring-up (called by _start in startup.S) ---------------------
+// A fault/panic on this QEMU target must EXIT with a status so a CTest run
+// catches it (no LED; the weak blink terminal would spin to a harness timeout).
+void kfault_terminate(void)
+{
+    arch_shutdown(132);
+}
+
 void Reset_Handler(void)
 {
     // .data image lives at its VMA in RAM (QEMU loads segments in place), so the
