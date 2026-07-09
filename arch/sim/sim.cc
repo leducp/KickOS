@@ -8,6 +8,7 @@
 // mirroring the ARM PendSV-on-exception-return model.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <ucontext.h>
 #include <signal.h>
@@ -23,6 +24,15 @@
 #include <kickos/rtt.h>
 #include <kickos/trace/record.h>
 #endif
+
+// Kernel entry points used by the sim's fault reporters (sim.cc does not pull in
+// kernel.h; kfault_terminate is defined below, in the extern "C" block).
+namespace kickos
+{
+    void kprintf(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+}
+extern "C" void kpanic_enter(void);
+extern "C" void kfault_terminate(void);
 
 namespace
 {
@@ -78,7 +88,24 @@ namespace
 
         // --- emulated device IRQ hand-off (async-signal to ISR) ---
         volatile sig_atomic_t pending_irq = -1;
-        volatile sig_atomic_t irq_masked = 0; // bit L set => line L suppressed
+        // bit L set => line L suppressed. All lines start MASKED at reset (the
+        // arch.h reset contract, matching the NVIC/RX silicon posture); a driver
+        // unmasks its line (arch_irq_unmask, or irq_register) before use.
+        volatile sig_atomic_t irq_masked = static_cast<sig_atomic_t>(0xFFFFFFFFu);
+
+        // --- emulated buffered-console TX-empty interrupt source ---
+        // The console ring drains through a real SIGUSR1 delivery (isr_depth++ ->
+        // kickos_isr_irq(TX line) -> console_tx_isr), exactly like a hardware TX
+        // IRQ. tx_enabled is the peripheral-level enable (irq_enable/irq_disable);
+        // tx_asserted is the level line. tx_budget is a SYNTHETIC per-ISR-delivery
+        // slot budget (host stdout never blocks, so without it the ring would drain
+        // in one shot and never fill/wrap) -- it constrains slot_free ONLY inside
+        // the drain ISR, so the synchronous prime/flush/overflow paths still see an
+        // always-free channel and never stall.
+        volatile sig_atomic_t tx_enabled = 0;
+        volatile sig_atomic_t tx_asserted = 0;
+        volatile sig_atomic_t in_tx_isr = 0; // scopes the synthetic budget to the ISR
+        int tx_budget = 0;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
         // Consume-once switch-emit hand-off. The physically-outgoing tid is armed
@@ -250,6 +277,104 @@ namespace
         }
     }
 
+    // --- Buffered console TX backend (console_tx.h) ----------------------------
+    // A fictional TX peripheral: push writes one byte to host stdout; slot_free is
+    // an always-free channel EXCEPT inside the drain ISR, where a small synthetic
+    // budget forces the ring to drain over several deliveries (so it genuinely
+    // fills, primes, wraps, and empties). irq_enable/irq_disable gate + assert the
+    // emulated TX-empty line, delivered via SIGUSR1.
+    enum
+    {
+        kTxLine = 30,       // < KICKOS_MAX_IRQ / kSimIrqLines; not used by any test/bench
+        // Deliberately small: the sim's only reason to buffer is to exercise the
+        // ring paths, so the ring is sized so ordinary console traffic WRAPS it
+        // (usable 127 > the largest single burst these gates emit, so bursts still
+        // take the fast enqueue+prime path rather than always overflowing) while
+        // cumulative output crosses the index-mask boundary many times.
+        kTxRingSize = 128,  // power of two (index masking); usable capacity 127
+        kTxBudget = 8       // bytes drained per ISR delivery (synthetic slot budget)
+    };
+    char g_tx_ring[kTxRingSize];
+
+    int sim_tx_slot_free()
+    {
+        // Sync paths (prime/flush/overflow) must never stall: host stdout is
+        // infinitely fast, so report free. The budget only bites in ISR context.
+        if (sim().in_tx_isr == 0)
+        {
+            return 1;
+        }
+        if (sim().tx_budget > 0)
+        {
+            return 1;
+        }
+        return 0;
+    }
+
+    void sim_tx_push(uint8_t b)
+    {
+        if (sim().in_tx_isr != 0 and sim().tx_budget > 0)
+        {
+            sim().tx_budget--;
+        }
+        char c = static_cast<char>(b);
+        for (;;)
+        {
+            ssize_t w = write(1, &c, 1);
+            if (w == 1)
+            {
+                break;
+            }
+            // A scheduling signal (no SA_RESTART) can interrupt the write; retry
+            // rather than drop the byte. Any hard error: nowhere left to report.
+            if (w < 0 and errno == EINTR)
+            {
+                continue;
+            }
+            break;
+        }
+    }
+
+    void sim_tx_irq_enable()
+    {
+        // Enabling the TX-empty IRQ on a channel with queued bytes asserts the
+        // line. Called from console_tx_write under IrqLock (SIGUSR1 blocked), so
+        // the raise stays pending until the lock releases -> the drain then runs
+        // in genuine ISR context, not inline in the producer.
+        sim().tx_enabled = 1;
+        sim().tx_asserted = 1;
+        raise(SIGUSR1);
+    }
+
+    void sim_tx_irq_disable()
+    {
+        sim().tx_enabled = 0;
+        sim().tx_asserted = 0;
+    }
+
+    console_tx_backend const g_sim_tx_backend = {
+        sim_tx_slot_free, sim_tx_push, sim_tx_irq_enable, sim_tx_irq_disable};
+
+    // Run one TX-drain ISR delivery: refill the synthetic budget, dispatch the TX
+    // line through the real IRQ table (kickos_isr_irq -> console_tx_isr), then, if
+    // the peripheral IRQ is still enabled afterwards (ring not yet empty -- budget
+    // ran out), re-assert the level line so the next SIGUSR1 continues the drain.
+    // console_tx_isr calls irq_disable when the ring empties, which clears
+    // tx_enabled and ends the chain. Bounded: every delivery drains >= kTxBudget
+    // bytes from a finite ring, so it always terminates.
+    void console_tx_service()
+    {
+        sim().tx_budget = kTxBudget;
+        sim().in_tx_isr = 1;
+        kickos_isr_irq(kTxLine);
+        sim().in_tx_isr = 0;
+        if (sim().tx_enabled != 0)
+        {
+            sim().tx_asserted = 1;
+            raise(SIGUSR1); // pending (SIGUSR1 blocked in-handler); redelivered on return
+        }
+    }
+
     void on_sigalrm(int, siginfo_t*, void*)
     {
         SimContext* interrupted = sim().current;
@@ -262,6 +387,13 @@ namespace
     {
         SimContext* interrupted = sim().current;
         isr_frame_enter();
+        // The emulated TX-empty line shares this signal (a shared interrupt vector).
+        // Consume the assertion; console_tx_service re-asserts if bytes remain.
+        if (sim().tx_asserted != 0)
+        {
+            sim().tx_asserted = 0;
+            console_tx_service();
+        }
         int irq = sim().pending_irq;
         sim().pending_irq = -1;
         if (irq >= 0)
@@ -274,12 +406,31 @@ namespace
     void on_sigsegv(int, siginfo_t* si, void*)
     {
         uintptr_t addr = reinterpret_cast<uintptr_t>(si->si_addr);
+        // Establish ISR context (parity with the ARM fault path, where IPSR is
+        // non-zero in the fault handler): kickos_isr_fault reports via kprintf, and
+        // the console routing guard MUST see arch_in_isr() to take the synchronous
+        // writer -- else the fault line would be enqueued into the buffered ring
+        // and lost when this handler _exit()s without draining it.
+        isr_frame_enter();
         // We cannot distinguish read vs write portably here; report as write since
         // the demo/wild-write path is a store. Reporting routes through the kernel.
         kickos_isr_fault(addr, 1);
         // kickos_isr_fault is expected to terminate or recover; if it returns we
         // cannot safely resume the faulting store, so halt.
         arch_shutdown(2);
+    }
+
+    // Illegal instruction (host: x86 `ud2` from __builtin_trap): the sim's CPU-fault
+    // reporter, the analogue of the MCU arch reporters (kickos_armv7m_fault_report et
+    // al.). kpanic_enter masks signals, forces the synchronous polled writer, and
+    // flushes the ring -- so the dump survives the ARMED console ring instead of being
+    // enqueued and lost. Then the shared dead-end exits 132. Drives the fault-dump gate.
+    void on_sigill(int, siginfo_t* si, void*)
+    {
+        isr_frame_enter();
+        kpanic_enter();
+        ::kickos::kprintf("\n=== SIM FAULT (illegal instruction) at %p ===\n", si->si_addr);
+        kfault_terminate(); // -> arch_shutdown(132)
     }
 
     // Ctrl+C / kill: halt the sim cleanly instead of dying by default action.
@@ -346,6 +497,8 @@ void arch_init(void)
     fa.sa_mask = sim().irq_signals;
     fa.sa_sigaction = on_sigsegv;
     sigaction(SIGSEGV, &fa, nullptr);
+    fa.sa_sigaction = on_sigill;
+    sigaction(SIGILL, &fa, nullptr);
 
     // Graceful halt on Ctrl+C / kill.
     struct sigaction ta{};
@@ -370,6 +523,13 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 }
 #endif
 
+// The host sim must EXIT on a fault/panic so CTest sees the status -- there is no
+// LED and the weak blink terminal (kernel.h) would spin forever. Override it.
+void kfault_terminate(void)
+{
+    arch_shutdown(132);
+}
+
 void arch_shutdown(int status)
 {
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -385,6 +545,11 @@ void arch_shutdown(int status)
     // default in the CWD.
     kickos_trace_final_session();
     kickos_trace_report_counters();
+    // report_counters printed the "[ktrace] counters" line via kprintf -> the
+    // buffered console ring, but IRQs/signals are masked here so the SIGUSR1-driven
+    // drain ISR can never run. Drain it synchronously (drain_sync pushes straight
+    // to stdout, no signal needed) before _exit, else the line is stranded.
+    console_tx_flush_sync();
     char const* path = getenv("KICKOS_TRACE_FILE");
     if (path == nullptr)
     {
@@ -418,7 +583,19 @@ void arch_shutdown(int status)
     _exit(status);
 }
 
+// Normal path: enqueue into the console ring; the SIGUSR1-driven drain ISR
+// (console_tx_isr) writes it out. Before the ring is armed (early boot) and in
+// ISR/panic/fault context, the routing guard in console.cc calls the sync writer
+// below instead. Falls back to the sync writer itself until the ring is armed.
 void arch_console_write(char const* buf, size_t n)
+{
+    console_tx_write(buf, n);
+}
+
+// The bounded synchronous stdout writer (panic / fault / pre-arm boot). The ring's
+// prime/flush/overflow paths ultimately land here too, one byte at a time, via
+// sim_tx_push.
+void arch_console_write_sync(char const* buf, size_t n)
 {
     size_t off = 0;
     while (off < n)
@@ -441,6 +618,16 @@ void arch_console_write(char const* buf, size_t n)
         }
         off += static_cast<size_t>(w);
     }
+}
+
+// Arch seam (console_tx.h): hand the kernel the ring storage + the emulated TX
+// line so console_buffer_init binds console_tx_isr and arms the buffered path.
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = g_tx_ring;
+    *size = kTxRingSize;
+    *irq_line = kTxLine;
+    return &g_sim_tx_backend;
 }
 
 // --- Context / switching ---------------------------------------------------
