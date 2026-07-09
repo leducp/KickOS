@@ -150,6 +150,10 @@ uintptr_t arch_syscall(uintptr_t nr,
 // line before waking its driver (thread context), which unmasks via irq_ack once
 // serviced -- so the line cannot re-fire while it is being handled. A raise of a
 // masked line is suppressed (sim: dropped).
+//
+// RESET CONTRACT (uniform across every arch): all lines start MASKED at reset. A
+// driver unmasks its line (arch_irq_unmask, or irq_register which arms it) before
+// use; nothing may assume a line is deliverable until it has been unmasked.
 void arch_irq_mask(int line);
 void arch_irq_unmask(int line);
 
