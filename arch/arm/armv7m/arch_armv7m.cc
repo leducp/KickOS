@@ -232,6 +232,78 @@ void kickos_armv7m_default_irq(void)
     }
 }
 
+// --- Fault reporting: a shared HardFault (+ MemManage/BusFault/UsageFault, which
+// the chip vectors route here too) that dumps the CPU context before the dead-end.
+// Replaces the per-chip stubs that discarded everything. -----------------------
+#ifndef KICKOS_PANIC_DUMP
+#define KICKOS_PANIC_DUMP 1
+#endif
+}
+
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
+}
+extern "C" void kpanic_enter(void);
+extern "C" void kfault_terminate(void) __attribute__((noreturn));
+
+extern "C"
+{
+
+// C side of the fault handler: `frame` points at the hardware-stacked exception
+// frame {r0,r1,r2,r3,r12,lr,pc,xPSR}; `exc_return` is the EXC_RETURN in LR (bit 2
+// selects the pre-fault stack). Dump it plus the fault-status registers, then hand
+// off to the shared terminal (blink on real HW, exit on host/QEMU).
+void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
+{
+    kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
+#if KICKOS_PANIC_DUMP
+    uint32_t cfsr = kickos::arm::reg32(0xE000ED28);
+    uint32_t hfsr = kickos::arm::reg32(0xE000ED2C);
+    char const* stk = "MSP";
+    if (exc_return & 0x4u)
+    {
+        stk = "PSP";
+    }
+    ::kickos::kprintf("\n=== HARD FAULT ===\n");
+    ::kickos::kprintf("  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n",
+                      frame[6], frame[5], frame[7], stk);
+    ::kickos::kprintf("  R0=0x%x R1=0x%x R2=0x%x R3=0x%x R12=0x%x\n",
+                      frame[0], frame[1], frame[2], frame[3], frame[4]);
+    ::kickos::kprintf("  CFSR=0x%x HFSR=0x%x\n", cfsr, hfsr);
+    // MMFAR/BFAR only hold a valid address when the matching CFSR VALID bit is set
+    // (MMARVALID = bit 7, BFARVALID = bit 15); otherwise their contents are stale.
+    if (cfsr & (1u << 7))
+    {
+        ::kickos::kprintf("  MMFAR=0x%x\n", kickos::arm::reg32(0xE000ED34));
+    }
+    if (cfsr & (1u << 15))
+    {
+        ::kickos::kprintf("  BFAR=0x%x\n", kickos::arm::reg32(0xE000ED38));
+    }
+#else
+    (void)frame;
+    (void)exc_return;
+    ::kickos::kprintf("\n=== HARD FAULT ===\n");
+#endif
+    kfault_terminate();
+}
+
+// Naked entry: choose the stacked frame (MSP vs PSP per EXC_RETURN bit 2) and pass
+// it, with EXC_RETURN, to the C reporter. Naked so no prologue perturbs the SP
+// before we read it. The chip vector tables point HardFault/MemManage/BusFault/
+// UsageFault all here.
+__attribute__((naked)) void HardFault_Handler(void)
+{
+    __asm volatile(
+        "tst lr, #4          \n"
+        "ite eq              \n"
+        "mrseq r0, msp       \n"
+        "mrsne r0, psp       \n"
+        "mov r1, lr          \n"
+        "b kickos_armv7m_fault_report \n");
+}
+
 // --- One-time core bring-up, called by the chip's arch_init -----------------
 // Installs the system-handler priorities the BASEPRI crit section depends on and
 // starts the DWT cycle counter that backs the monotonic clock.

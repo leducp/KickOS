@@ -17,6 +17,7 @@
 // toggles the onboard "L" LED (PB27) for a no-UART smoke test.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <stdint.h>
 
@@ -63,10 +64,20 @@ namespace
     // CKGR_MOR (sec.28): crystal oscillator. KEY 0x37 (bits 23:16) gates the write;
     // MOSCXTST (15:8) is the crystal startup counter (in SLCK/8); keep the fast RC
     // (MOSCRCEN) enabled while the crystal warms up, then MOSCSEL picks the crystal.
+    //
+    // MOSCXTS asserts when the MOSCXTST counter expires, NOT on physical crystal
+    // detection -- so MOSCXTST MUST cover the crystal's worst-case warm-up or the
+    // status lies and PLLA locks on a still-settling MAINCK (the intermittent-boot
+    // race). SLCK is the on-chip slow RC, spec'd 22..42 kHz, so size the count at
+    // the FAST end. Time = MOSCXTST * 8 / SLCK. 0x80 = 128 -> 24.4 ms @42 kHz,
+    // 31.2 ms @32 kHz, 46.5 ms @22 kHz -- comfortably past the ~15 ms crystal spec.
+    // GUESS pending Due silicon: confirm the crystal's startup spec and, if a faster
+    // boot matters, trim toward the ~15 ms figure (0x50 gives ~15.2 ms @42 kHz, no
+    // margin). Larger = safer but slower boot.
     constexpr uint32_t MOR_KEY = 0x37u << 16;
     constexpr uint32_t MOR_MOSCXTEN = 1u << 0;
     constexpr uint32_t MOR_MOSCRCEN = 1u << 3;
-    constexpr uint32_t MOR_MOSCXTST = 0x3Fu << 8;
+    constexpr uint32_t MOR_MOSCXTST = 0x80u << 8;
     constexpr uint32_t MOR_MOSCSEL = 1u << 24;
     constexpr uint32_t MOR_CRYSTAL = MOR_KEY | MOR_MOSCXTST | MOR_MOSCRCEN | MOR_MOSCXTEN;
 
@@ -89,45 +100,79 @@ namespace
     constexpr uint32_t SR_MCKRDY = 1u << 3;    // master clock ready
     constexpr uint32_t SR_MOSCSELS = 1u << 16; // main oscillator selection done
 
-    // Bounded poll: a missing/dead crystal degrades (falls back to slow clock on a
-    // PLLA switch, per sec.28) instead of hanging the boot.
-    void pmc_wait(uint32_t bit)
+    // Bounded poll; true iff the bit set before the bound expired. The bound is a
+    // raw spin count on the reset 4 MHz RC: ~1M iterations is hundreds of ms, well
+    // past the MOSCXTST window (tens of ms) and every SLCK-counted status delay,
+    // so a good crystal always returns true. A false return means the source never
+    // came up -- the caller MUST NOT proceed to select it (that is the boot race).
+    bool pmc_wait(uint32_t bit)
     {
         for (uint32_t i = 0; i < 0x100000u; i++)
         {
             if ((r32(PMC_SR) & bit) != 0)
             {
-                break;
+                return true;
             }
         }
+        return false;
     }
 
     void clock_init()
     {
-        // 1. Flash wait states first, both banks (sec.18 / sec.45), before raising MCK.
+        // 1. Flash wait states first, both banks (sec.18 / sec.45), before raising
+        //    MCK. Over-provisioning is safe: FWS=4 also covers the RC/main fallbacks.
         r32(EEFC0_FMR) = FMR_FWS_4;
         r32(EEFC1_FMR) = FMR_FWS_4;
 
-        // 2. Start the 12 MHz crystal, then select it as the main clock (sec.28).
+        // 2. Start the 12 MHz crystal (RC stays MAINCK meanwhile). If MOSCXTS never
+        //    asserts there is no usable crystal: stay on the 4 MHz fast RC so the core
+        //    and diag LED still run. The UART divisor is computed for 84 MHz MCK, so
+        //    the console is unusable on this path -- degraded, not dead-locked.
         r32(CKGR_MOR) = MOR_CRYSTAL;
-        pmc_wait(SR_MOSCXTS);
+        if (!pmc_wait(SR_MOSCXTS))
+        {
+            SystemCoreClock = 4000000u;
+            return;
+        }
+
+        // 3. Select the crystal as MAINCK, then run MCK off it before touching PLLA.
         r32(CKGR_MOR) = MOR_CRYSTAL | MOR_MOSCSEL;
-        pmc_wait(SR_MOSCSELS);
-
-        // Run MCK off the 12 MHz main clock (PRES=1) before touching PLLA.
+        if (!pmc_wait(SR_MOSCSELS))
+        {
+            SystemCoreClock = 4000000u;
+            return;
+        }
         r32(PMC_MCKR) = MCKR_CSS_MAIN;
-        pmc_wait(SR_MCKRDY);
+        if (!pmc_wait(SR_MCKRDY))
+        {
+            SystemCoreClock = 4000000u;
+            return;
+        }
 
-        // 3. PLLA = 12 MHz * 14 / 1 = 168 MHz (sec.28 CKGR_PLLAR).
+        // 4. PLLA = 12 MHz * 14 / 1 = 168 MHz (sec.28 CKGR_PLLAR). If it never locks,
+        //    MCK is already stable on the 12 MHz crystal -- stay there (best-effort;
+        //    console still off since BRGR targets 84 MHz).
         r32(CKGR_PLLAR) = PLLAR_ONE | PLLAR_MULA | PLLAR_COUNT | PLLAR_DIVA;
-        pmc_wait(SR_LOCKA);
+        if (!pmc_wait(SR_LOCKA))
+        {
+            SystemCoreClock = 12000000u;
+            return;
+        }
 
-        // 4. Switch MCK to PLLA/2 = 84 MHz. sec.28 mandates, for a PLL source: set
+        // 5. Switch MCK to PLLA/2 = 84 MHz. sec.28 mandates, for a PLL source: set
         //    PRES, wait MCKRDY, then set CSS, wait MCKRDY (two writes, not one).
         r32(PMC_MCKR) = MCKR_PRES_DIV2 | MCKR_CSS_MAIN;
-        pmc_wait(SR_MCKRDY);
+        if (!pmc_wait(SR_MCKRDY))
+        {
+            SystemCoreClock = 12000000u;
+            return;
+        }
         r32(PMC_MCKR) = MCKR_PRES_DIV2 | MCKR_CSS_PLLA;
-        pmc_wait(SR_MCKRDY);
+        if (!pmc_wait(SR_MCKRDY))
+        {
+            SystemCoreClock = 12000000u;
+            return;
+        }
 
         SystemCoreClock = 84000000u;
     }
@@ -146,6 +191,8 @@ namespace
     constexpr uintptr_t UART_BASE = 0x400E0800;
     constexpr uintptr_t UART_CR = UART_BASE + 0x00;
     constexpr uintptr_t UART_MR = UART_BASE + 0x04;
+    constexpr uintptr_t UART_IER = UART_BASE + 0x08; // interrupt enable (write 1 to set)
+    constexpr uintptr_t UART_IDR = UART_BASE + 0x0C; // interrupt disable (write 1 to clear)
     constexpr uintptr_t UART_SR = UART_BASE + 0x14;
     constexpr uintptr_t UART_THR = UART_BASE + 0x1C;
     constexpr uintptr_t UART_BRGR = UART_BASE + 0x20;
@@ -153,6 +200,7 @@ namespace
     constexpr uint32_t CR_RXEN_TXEN = (1u << 4) | (1u << 6);
     constexpr uint32_t MR_NO_PARITY = 4u << 9; // PAR=100 (none), CHMODE=normal
     constexpr uint32_t SR_TXRDY = 1u << 1;
+    constexpr uint32_t IER_TXRDY = 1u << 1; // TXRDY bit in IER/IDR/IMR (same position as SR)
     // CD = MCK/(16*baud) = 84e6/(16*115200) = 45.57 -> 46; actual 84e6/(16*46) =
     // 114130 baud (-0.93%, well inside the 5% limit in sec.34).
     constexpr uint32_t BRGR_115200 = 46;
@@ -164,8 +212,27 @@ namespace
         r32(UART_CR) = CR_RSTRX_RSTTX;
         r32(UART_MR) = MR_NO_PARITY;
         r32(UART_BRGR) = BRGR_115200;
+        r32(UART_IDR) = 0xFFFFFFFFu; // all UART interrupt sources off; the ring arms TXRDY
         r32(UART_CR) = CR_RXEN_TXEN;
     }
+
+    // --- Buffered console TX backend (console_tx.h). The ring drains via the UART
+    // TXRDY interrupt, level-triggered: writing IER.TXRDY while SR.TXRDY=1 (THR
+    // empty) raises it immediately. IER/IDR are write-1-to-set/clear (no RMW).
+    // slot_free/push touch one data register. ---
+    int sam_tx_slot_free(void) { return (r32(UART_SR) & SR_TXRDY) != 0; }
+    void sam_tx_push(uint8_t b) { r32(UART_THR) = b; }
+    void sam_tx_irq_enable(void) { r32(UART_IER) = IER_TXRDY; }
+    void sam_tx_irq_disable(void) { r32(UART_IDR) = IER_TXRDY; }
+
+    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
+    char console_tx_buf[CONSOLE_TX_SIZE];
+    console_tx_backend const sam_console_backend = {
+        sam_tx_slot_free, sam_tx_push, sam_tx_irq_enable, sam_tx_irq_disable};
+
+    // NVIC: the dedicated UART is peripheral ID 8, and on the SAM3X the NVIC line
+    // equals the peripheral ID -> line 8 (matches PID_UART = 1u << 8 above).
+    constexpr int UART_IRQ = 8;
 }
 
 extern "C"
@@ -180,13 +247,31 @@ void arch_init(void)
 
 void arch_console_write(char const* buf, size_t n)
 {
+    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+}
+
+void arch_console_write_sync(char const* buf, size_t n)
+{
     for (size_t i = 0; i < n; i++)
     {
+        uint32_t spin = 0;
         while ((r32(UART_SR) & SR_TXRDY) == 0)
         {
+            if (++spin > 1000000u)
+            {
+                return; // bounded: a wedged UART must not hang the panic path (drop)
+            }
         }
         r32(UART_THR) = static_cast<uint8_t>(buf[i]);
     }
+}
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = CONSOLE_TX_SIZE;
+    *irq_line = UART_IRQ;
+    return &sam_console_backend;
 }
 
 // Kernel diagnostic LED: "L" LED = PB27 via PIO controller B, active-high.
@@ -249,11 +334,6 @@ void Reset_Handler(void)
     arch_init();
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
-}
-
-void HardFault_Handler(void)
-{
-    arch_shutdown(132);
 }
 
 }

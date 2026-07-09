@@ -16,7 +16,7 @@
 // P1.4. This matches the RM's ASC BootStrap-Loader mapping: "Port pins used are
 // P1.4 (U0C0_DX0B) for USIC RX and P1.5 (U0C0_DOUT0) for USIC" (RM p.19-*).
 //
-// Clock: fPERIPH = fCPU/2 = 60 MHz after the crystal PLL bring-up in
+// Clock: fPERIPH = fCPU/2 = 72 MHz after the crystal PLL bring-up in
 // chip_xmc4800.cc clock_init() (runs before this). Baud is 115200.
 
 #include "usic.h"
@@ -153,7 +153,7 @@ void kickos_xmc_usic_init(void)
     u::kernel_clock_enable(U0C0);
 
     // Baud rate generator (fractional divider + ASC bit-time dividers).
-    u::set_baud(U0C0, u::BAUD_115200_60MHZ);
+    u::set_baud(U0C0, u::BAUD_115200_72MHZ);
 
     // Shift + transmit + protocol config while the channel is still disabled.
     u::reg32(U0C0 + u::off::SCTR) = SCTR_WLE_8 | SCTR_FLE_8 | SCTR_TRM_ACTIVE | SCTR_PDL;

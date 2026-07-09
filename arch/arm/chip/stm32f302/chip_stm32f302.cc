@@ -16,6 +16,7 @@
 // rather than hanging. Flash to confirm, or watch LD2 (PB13) blink.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <stdint.h>
 
@@ -97,6 +98,7 @@ namespace
     constexpr uint32_t CR1_UE = 1u << 0;
     constexpr uint32_t CR1_TE = 1u << 3;
     constexpr uint32_t CR1_RE = 1u << 2;
+    constexpr uint32_t CR1_TXEIE = 1u << 7; // TXE (TX-data-register-empty) interrupt enable
 
     // USART2SEL resets to 00 -> PCLK1 clocks USART2. OVER8=0 -> BRR = fck/baud,
     // rounded to nearest. At PCLK1=32 MHz: 32e6/115200 = 277.8 -> 278 (-0.08%).
@@ -185,8 +187,26 @@ namespace
 
         r32(USART2_CR1) = 0;               // BRR writable only while UE=0
         r32(USART2_BRR) = usart_brr(pclk1_hz, 115200u);
-        r32(USART2_CR1) = CR1_UE | CR1_TE | CR1_RE;
+        r32(USART2_CR1) = CR1_UE | CR1_TE | CR1_RE; // TXEIE stays clear; the ring primes it
     }
+
+    // --- Buffered console TX backend (console_tx.h). The ring drains via the
+    // USART2 TXE interrupt (level-triggered: TXEIE armed while ISR.TXE=1 raises it
+    // immediately). This is the newer USART (ISR/TDR), but CR1.TXEIE is bit 7 as on
+    // the classic model. slot_free/push touch one data register. ---
+    int f3_tx_slot_free(void) { return (r32(USART2_ISR) & ISR_TXE) != 0; }
+    void f3_tx_push(uint8_t b) { r32(USART2_TDR) = b; }
+    void f3_tx_irq_enable(void) { r32(USART2_CR1) |= CR1_TXEIE; }
+    void f3_tx_irq_disable(void) { r32(USART2_CR1) &= ~CR1_TXEIE; }
+
+    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
+    char console_tx_buf[CONSOLE_TX_SIZE];
+    console_tx_backend const f3_console_backend = {
+        f3_tx_slot_free, f3_tx_push, f3_tx_irq_enable, f3_tx_irq_disable};
+
+    // NVIC: USART2 global interrupt (RX/TX combined) = line 38 (RM0365 vector
+    // table). Only TXEIE is armed, so the drain ISR is the sole source.
+    constexpr int USART2_IRQ = 38;
 }
 
 extern "C"
@@ -203,13 +223,31 @@ void arch_init(void)
 
 void arch_console_write(char const* buf, size_t n)
 {
+    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+}
+
+void arch_console_write_sync(char const* buf, size_t n)
+{
     for (size_t i = 0; i < n; i++)
     {
+        uint32_t spin = 0;
         while ((r32(USART2_ISR) & ISR_TXE) == 0)
         {
+            if (++spin > 1000000u)
+            {
+                return; // bounded: a wedged UART must not hang the panic path (drop)
+            }
         }
         r32(USART2_TDR) = static_cast<uint8_t>(buf[i]);
     }
+}
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = CONSOLE_TX_SIZE;
+    *irq_line = USART2_IRQ;
+    return &f3_console_backend;
 }
 
 // Kernel diagnostic LED: LD2 = PB13, active-high. The Nucleo-F302R8 wires LD2 to
@@ -270,11 +308,6 @@ void Reset_Handler(void)
     arch_init();
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
-}
-
-void HardFault_Handler(void)
-{
-    arch_shutdown(132);
 }
 
 }
