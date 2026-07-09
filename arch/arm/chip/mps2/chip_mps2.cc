@@ -189,6 +189,14 @@ void arch_shutdown(int status)
 
 // C-runtime bring-up (the reset vector). Runs on MSP; touches only linker
 // symbols until .data/.bss are live.
+// A fault/panic on this QEMU target must EXIT with a status so a CTest run
+// catches it -- there is no LED, and the weak blink terminal (kernel.h) would
+// just spin until the harness times out. Override it to exit.
+void kfault_terminate(void)
+{
+    arch_shutdown(132);
+}
+
 void Reset_Handler(void)
 {
     uint32_t* src = &_sidata;
@@ -209,13 +217,6 @@ void Reset_Handler(void)
     arch_init();
     kickos::kmain(0, nullptr);
     arch_shutdown(0); // kmain returns only if the scheduler unwinds to boot
-}
-
-void HardFault_Handler(void)
-{
-    // No MPU on M1: a fault here is a genuine bug. Exit loudly with a distinct
-    // code so a QEMU/CTest run reports it rather than hanging silently.
-    arch_shutdown(132);
 }
 
 }

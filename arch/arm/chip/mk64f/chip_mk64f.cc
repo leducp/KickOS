@@ -97,6 +97,17 @@ namespace
     constexpr uintptr_t PORTB_PCR17 = 0x4004A044; // UART0_TX (ALT3)
     constexpr uint32_t PCR_MUX_ALT3 = 3u << 8;
 
+    // Kernel diagnostic LED: FRDM-K64F onboard RGB, RED = PTB22, ACTIVE-LOW (pin
+    // low = lit). PORTB is already clocked by uart0_init (SCGC5 bit 10); the LED
+    // init re-enables it so it stands alone. GPIO module offsets are K64 RM ch.55:
+    // PSOR 0x04 (set -> high), PCOR 0x08 (clear -> low), PDDR 0x14 (1 = output).
+    constexpr uintptr_t PORTB_PCR22 = 0x4004A058; // PCRn = base + n*4 (PTB22)
+    constexpr uint32_t PCR_MUX_GPIO = 1u << 8;    // MUX[10:8]=001 = GPIO (ALT1)
+    constexpr uintptr_t GPIOB_PSOR = 0x400FF044;
+    constexpr uintptr_t GPIOB_PCOR = 0x400FF048;
+    constexpr uintptr_t GPIOB_PDDR = 0x400FF054;
+    constexpr uint32_t LED_RED_BIT = 1u << 22;
+
     constexpr uintptr_t UART0_BASE = 0x4006A000;
     constexpr uintptr_t UART0_BDH = UART0_BASE + 0x00; // 8-bit
     constexpr uintptr_t UART0_BDL = UART0_BASE + 0x01;
@@ -272,8 +283,13 @@ void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
+        uint32_t spin = 0;
         while ((r8(UART0_S1) & S1_TDRE) == 0)
         {
+            if (++spin > 1000000u)
+            {
+                return; // bounded: a wedged UART must not hang the panic path (drop)
+            }
         }
         r8(UART0_D) = static_cast<uint8_t>(buf[i]);
     }
@@ -285,6 +301,27 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     *size = CONSOLE_TX_SIZE;
     *irq_line = UART0_RXTX_IRQ;
     return &k64_console_backend;
+}
+
+// Kernel diagnostic LED = FRDM-K64F onboard RED (PTB22), active-low.
+void arch_diag_led_init(void)
+{
+    r32(SIM_SCGC5) |= SCGC5_PORTB; // clock PORTB (idempotent; uart0_init also sets it)
+    r32(PORTB_PCR22) = PCR_MUX_GPIO;
+    r32(GPIOB_PDDR) |= LED_RED_BIT; // PTB22 output
+    r32(GPIOB_PSOR) = LED_RED_BIT;  // start OFF: drive high (active-low)
+}
+
+void arch_diag_led_set(int on)
+{
+    if (on != 0)
+    {
+        r32(GPIOB_PCOR) = LED_RED_BIT; // lit: drive low
+    }
+    else
+    {
+        r32(GPIOB_PSOR) = LED_RED_BIT; // off: drive high
+    }
 }
 
 void arch_shutdown(int status)
@@ -320,11 +357,6 @@ void Reset_Handler(void)
     arch_init();
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
-}
-
-void HardFault_Handler(void)
-{
-    arch_shutdown(132);
 }
 
 }

@@ -18,6 +18,7 @@
 // LED (PC13, active-low) for a no-UART smoke test.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <stdint.h>
 
@@ -97,6 +98,7 @@ namespace
     constexpr uint32_t CR1_UE = 1u << 13;
     constexpr uint32_t CR1_TE = 1u << 3;
     constexpr uint32_t CR1_RE = 1u << 2;
+    constexpr uint32_t CR1_TXEIE = 1u << 7; // TX-data-register-empty interrupt enable
     // BRR at PCLK2 = 72 MHz, 115200 baud, oversampling 16 (RM0008 sec.27.3.4, sec.27.6.3):
     //   USARTDIV = 72e6 / (16 * 115200) = 39.0625
     //   mantissa = 39 (0x27), fraction = round(0.0625 * 16) = 1  -> exact, 0% error
@@ -181,8 +183,26 @@ namespace
 
         r32(USART1_CR1) = 0;         // disable while configuring
         r32(USART1_BRR) = BRR_115200;
-        r32(USART1_CR1) = CR1_UE | CR1_TE | CR1_RE;
+        r32(USART1_CR1) = CR1_UE | CR1_TE | CR1_RE; // TXEIE stays clear; the ring primes it
     }
+
+    // --- Buffered console TX backend (console_tx.h). The ring drains via the
+    // USART1 TXE (TX-data-register-empty) interrupt, which is level-triggered:
+    // enabling TXEIE while TXE=1 raises it immediately. slot_free/push touch one
+    // data register; irq_enable/disable gate TXEIE at the peripheral. ---
+    int f1_tx_slot_free(void) { return (r32(USART1_SR) & SR_TXE) != 0; }
+    void f1_tx_push(uint8_t b) { r32(USART1_DR) = b; }
+    void f1_tx_irq_enable(void) { r32(USART1_CR1) |= CR1_TXEIE; }
+    void f1_tx_irq_disable(void) { r32(USART1_CR1) &= ~CR1_TXEIE; }
+
+    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
+    char console_tx_buf[CONSOLE_TX_SIZE];
+    console_tx_backend const f1_console_backend = {
+        f1_tx_slot_free, f1_tx_push, f1_tx_irq_enable, f1_tx_irq_disable};
+
+    // NVIC: USART1 global interrupt (RX/TX combined) = line 37 (RM0008 vector
+    // table). Only TXEIE is armed, so the drain ISR is the sole source.
+    constexpr int USART1_IRQ = 37;
 }
 
 extern "C"
@@ -198,13 +218,31 @@ void arch_init(void)
 
 void arch_console_write(char const* buf, size_t n)
 {
+    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+}
+
+void arch_console_write_sync(char const* buf, size_t n)
+{
     for (size_t i = 0; i < n; i++)
     {
+        uint32_t spin = 0;
         while ((r32(USART1_SR) & SR_TXE) == 0)
         {
+            if (++spin > 1000000u)
+            {
+                return; // bounded: a wedged UART must not hang the panic path (drop)
+            }
         }
         r32(USART1_DR) = static_cast<uint8_t>(buf[i]);
     }
+}
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = CONSOLE_TX_SIZE;
+    *irq_line = USART1_IRQ;
+    return &f1_console_backend;
 }
 
 // Kernel diagnostic LED: PC13, active-LOW (lit when the pin is driven low).
@@ -260,11 +298,6 @@ void Reset_Handler(void)
     arch_init();
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
-}
-
-void HardFault_Handler(void)
-{
-    arch_shutdown(132);
 }
 
 }

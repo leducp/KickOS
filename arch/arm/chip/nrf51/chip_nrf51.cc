@@ -124,6 +124,14 @@ void arch_shutdown(int status)
     }
 }
 
+// micro:bit is also run under QEMU for CI, where a fault/panic must EXIT with a
+// status (not blink forever -> harness timeout). Override the weak blink terminal
+// to exit; this keeps the shared real/QEMU binary CI-clean.
+void kfault_terminate(void)
+{
+    arch_shutdown(132);
+}
+
 void Reset_Handler(void)
 {
     uint32_t* src = &_sidata;
@@ -143,11 +151,6 @@ void Reset_Handler(void)
     arch_init();
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
-}
-
-void HardFault_Handler(void)
-{
-    arch_shutdown(132);
 }
 
 }

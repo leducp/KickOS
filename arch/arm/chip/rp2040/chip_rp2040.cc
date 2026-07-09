@@ -5,12 +5,14 @@
 // are clean-room from the RP2040 datasheet (RP-008371-DS); hand-rolled, no vendor
 // SDK sources, consistent with the arch layer's regs.h.
 //
-// M1 scope: privilege + SVC, no hardware MPU. Clocking is deliberately minimal --
-// NO PLL: the 12 MHz crystal drives everything directly (clk_ref -> clk_sys and
-// clk_peri = 12 MHz). That gives a precise UART baud and a precise SysTick without
-// the PLL sequencing risk, which is the right posture for a first bring-up. The
-// 64-bit monotonic clock (arch.h requires one; v6-M has no DWT) comes from the
-// RP2040 system TIMER, fed by a 1 MHz tick divided from clk_ref.
+// M1 scope: privilege + SVC, no hardware MPU. clk_sys is raised to 125 MHz off
+// PLL_SYS (12 MHz XOSC x125 /6 /2); SystemCoreClock tracks it so the SysTick
+// ns<->cycle math (arch_arm_common) stays coherent. clk_ref stays on the 12 MHz
+// XOSC and the WATCHDOG /12 tick is untouched, so the 1 MHz system TIMER
+// (arch_clock_now / arch_trace_now; arch.h requires a 64-bit monotonic clock and
+// v6-M has no DWT) is PLL-independent. clk_peri follows clk_sys to 125 MHz, so the
+// UART baud divisors are recomputed for 125 MHz (uart0_init). If the crystal or the
+// PLL never comes up the board degrades to XOSC/ROSC timing instead of hanging.
 //
 // NOT run in this environment (no RP2040 model in mainline QEMU); verified by
 // build + image inspection. Flash to a Pico (drag the UF2/.bin via BOOTSEL, or
@@ -22,6 +24,7 @@
 // flash. See boot2.S and cmake/rp2040_checksum.py.
 
 #include <kickos/arch/arch.h>
+#include <kickos/console_tx.h>
 
 #include <stdint.h>
 
@@ -38,8 +41,8 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    // clk_sys = clk_ref = XOSC = 12 MHz (no PLL). SysTick uses the processor
-    // clock, so this is its tick rate for the ns->cycles conversion.
+    // Pre-init value (12 MHz XOSC, reset). clocks_init() raises this to 125 MHz
+    // once clk_sys is on PLL_SYS; SysTick (processor clock) reads it live.
     uint32_t SystemCoreClock = 12000000u;
 }
 
@@ -59,6 +62,7 @@ namespace
     constexpr uintptr_t RESETS_RESET_DONE = RESETS_BASE + 0x8;
     constexpr uint32_t RESET_IO_BANK0 = 1u << 5;
     constexpr uint32_t RESET_PADS_BANK0 = 1u << 8;
+    constexpr uint32_t RESET_PLL_SYS = 1u << 12;
     constexpr uint32_t RESET_TIMER = 1u << 21;
     constexpr uint32_t RESET_UART0 = 1u << 22;
 
@@ -77,13 +81,39 @@ namespace
     constexpr uintptr_t CLOCKS_BASE = 0x40008000;
     constexpr uintptr_t CLK_REF_CTRL = CLOCKS_BASE + 0x30;
     constexpr uintptr_t CLK_REF_SELECTED = CLOCKS_BASE + 0x38;
+    constexpr uintptr_t CLK_SYS_CTRL = CLOCKS_BASE + 0x3c;
+    constexpr uintptr_t CLK_SYS_SELECTED = CLOCKS_BASE + 0x44;
     constexpr uintptr_t CLK_PERI_CTRL = CLOCKS_BASE + 0x48;
     constexpr uint32_t CLK_REF_SRC_XOSC = 0x2;           // CTRL.SRC glitchless
     constexpr uint32_t CLK_REF_SELECTED_XOSC = 1u << 2;  // one-hot readback
-    // clk_peri: ENABLE(bit11) | AUXSRC. XOSC_CLKSRC=0x4 normally; CLK_SYS=0x0 in
-    // the degraded (no-crystal) fallback.
+    // clk_sys glitchless mux: SRC bit0 (0=clk_ref, 1=aux); AUXSRC[7:5]=0 selects
+    // clksrc_pll_sys. SELECTED is one-hot on SRC (bit0=ref, bit1=aux).
+    constexpr uint32_t CLK_SYS_AUXSRC_PLL = 0x0u << 5;
+    constexpr uint32_t CLK_SYS_SRC_REF = 0x0;
+    constexpr uint32_t CLK_SYS_SRC_AUX = 0x1;
+    constexpr uint32_t CLK_SYS_SELECTED_REF = 1u << 0;
+    constexpr uint32_t CLK_SYS_SELECTED_AUX = 1u << 1;
+    constexpr uint32_t CLK_SYS_HZ = 125000000u; // clk_sys once on PLL_SYS
+    // clk_peri: ENABLE(bit11) | AUXSRC. XOSC_CLKSRC=0x4 (12 MHz, used if the PLL
+    // never locks); CLK_SYS=0x0 tracks clk_sys (125 MHz on PLL, ROSC in fallback).
     constexpr uint32_t CLK_PERI_ENABLE_XOSC = (1u << 11) | (0x4u << 5);
     constexpr uint32_t CLK_PERI_ENABLE_CLK_SYS = (1u << 11) | (0x0u << 5);
+
+    // --- PLL_SYS (0x40028000, datasheet 2.18): 12 MHz XOSC / REFDIV x FBDIV = VCO,
+    // then / POSTDIV1 / POSTDIV2. 12 / 1 * 125 = 1500 MHz VCO (in 400..1600), /6 /2
+    // = 125 MHz. The PLL reference is the XOSC directly (not clk_ref). -----------
+    constexpr uintptr_t PLL_SYS_BASE = 0x40028000;
+    constexpr uintptr_t PLL_SYS_CS = PLL_SYS_BASE + 0x0;
+    constexpr uintptr_t PLL_SYS_PWR = PLL_SYS_BASE + 0x4;
+    constexpr uintptr_t PLL_SYS_FBDIV_INT = PLL_SYS_BASE + 0x8;
+    constexpr uintptr_t PLL_SYS_PRIM = PLL_SYS_BASE + 0xc;
+    constexpr uint32_t PLL_CS_LOCK = 1u << 31;
+    constexpr uint32_t PLL_CS_REFDIV_1 = 1u;             // CS.REFDIV[5:0]
+    constexpr uint32_t PLL_FBDIV_125 = 125u;             // FBDIV_INT[11:0]
+    constexpr uint32_t PLL_PWR_PD = 1u << 0;
+    constexpr uint32_t PLL_PWR_POSTDIVPD = 1u << 3;
+    constexpr uint32_t PLL_PWR_VCOPD = 1u << 5;
+    constexpr uint32_t PLL_PRIM_POSTDIV = (6u << 16) | (2u << 12); // POSTDIV1=6, POSTDIV2=2
 
     // --- WATCHDOG tick (0x40058000): source of the 1 MHz TIMER tick -----------
     constexpr uintptr_t WATCHDOG_TICK = 0x40058000 + 0x2c;
@@ -123,11 +153,28 @@ namespace
     constexpr uintptr_t UART0_FBRD = UART0_BASE + 0x28;
     constexpr uintptr_t UART0_LCR_H = UART0_BASE + 0x2c;
     constexpr uintptr_t UART0_CR = UART0_BASE + 0x30;
-    constexpr uint32_t FR_TXFF = 1u << 5; // TX FIFO full
-    // baud = clk_peri / (16 x (IBRD + FBRD/64)); 12 MHz, 115200 -> IBRD 6, FBRD 33.
+    constexpr uintptr_t UART0_IMSC = UART0_BASE + 0x38; // interrupt mask set/clear
+    constexpr uint32_t FR_TXFF = 1u << 5; // TX (single holding location) full
+    constexpr uint32_t IMSC_TXIM = 1u << 5; // transmit interrupt mask
+    // baud = clk_peri / (16 x (IBRD + FBRD/64)), FBRD = round(frac x 64) (PL011 /
+    // SDK rounding). clk_peri 12 MHz, 115200 -> IBRD 6, FBRD 33; clk_peri 125 MHz
+    // (clk_sys on PLL) -> IBRD 67, FBRD 52 (actual 115207 baud, +0.006%).
     constexpr uint32_t UART_IBRD_115200 = 6;
     constexpr uint32_t UART_FBRD_115200 = 33;
-    constexpr uint32_t LCR_H_8N1_FIFO = (0x3u << 5) | (1u << 4); // WLEN=8, FEN
+    constexpr uint32_t UART_IBRD_125MHZ = 67;
+    constexpr uint32_t UART_FBRD_125MHZ = 52;
+    // Chosen by clocks_init (which source clk_peri lands on), consumed by
+    // uart0_init. Boot is single-threaded and sequential, so no guard is needed.
+    uint32_t g_uart_ibrd = UART_IBRD_115200;
+    uint32_t g_uart_fbrd = UART_FBRD_115200;
+    // WLEN=8, no parity, one stop. FEN is deliberately LEFT OFF: with the TX FIFO
+    // enabled the PL011 transmit interrupt fires only as the FIFO level descends
+    // through the watermark, so a one-byte prime would never re-trigger the drain.
+    // With the FIFO disabled the ring's idle->busy prime (console_tx.cc) starts the
+    // transfer regardless of whether UARTTXINTR is level- or transition-triggered
+    // at rest -- the exact at-rest assertion is HW-unverified (see the review's HW
+    // checklist: "PL011 TXRIS asserted-at-rest with FEN=0"). This board is build-only.
+    constexpr uint32_t LCR_H_8N1 = (0x3u << 5); // WLEN=8
     constexpr uint32_t CR_ENABLE = (1u << 0) | (1u << 8) | (1u << 9); // UARTEN,TXE,RXE
 
     // Bounded so a dead/missing crystal or stuck peripheral degrades instead of
@@ -153,12 +200,36 @@ namespace
         wait_mask(RESETS_RESET_DONE, mask); // bounded; best-effort
     }
 
+    // Bring PLL_SYS up to 125 MHz. Returns false (PLL left powered down) if the VCO
+    // never locks, so the caller can stay on the crystal instead of switching
+    // clk_sys onto a dead PLL. Datasheet 2.18.2 sequence.
+    bool pll_sys_lock()
+    {
+        // Reset the block first so a warm reboot can't run this off stale dividers.
+        r32(RESETS_RESET + ATOMIC_SET) = RESET_PLL_SYS;
+        r32(RESETS_RESET + ATOMIC_CLR) = RESET_PLL_SYS;
+        wait_mask(RESETS_RESET_DONE, RESET_PLL_SYS);
+
+        // Load REFDIV + FBDIV BEFORE powering the VCO.
+        r32(PLL_SYS_CS) = PLL_CS_REFDIV_1;
+        r32(PLL_SYS_FBDIV_INT) = PLL_FBDIV_125;
+        // Power up main regulator + VCO (clear PD, VCOPD). DSMPD stays set (integer
+        // FBDIV, no delta-sigma); POSTDIVPD stays set until after lock.
+        r32(PLL_SYS_PWR + ATOMIC_CLR) = PLL_PWR_PD | PLL_PWR_VCOPD;
+        if (not wait_mask(PLL_SYS_CS, PLL_CS_LOCK))
+        {
+            return false;
+        }
+        r32(PLL_SYS_PRIM) = PLL_PRIM_POSTDIV;
+        r32(PLL_SYS_PWR + ATOMIC_CLR) = PLL_PWR_POSTDIVPD; // enable post-dividers
+        return true;
+    }
+
     void clocks_init()
     {
-        // Try the 12 MHz crystal, then run the reference clock (and thus clk_sys)
-        // and the peripheral clock from it -- one precise source. If the crystal
-        // never stabilizes, degrade to the ROSC that clk_sys already runs on at
-        // reset so the board still boots (approximate timing) instead of hanging.
+        // Bring up the 12 MHz crystal and put clk_ref on it. If it never stabilizes,
+        // degrade to the ROSC that clk_sys already runs on at reset so the board
+        // still boots (approximate timing) instead of hanging.
         r32(XOSC_STARTUP) = XOSC_STARTUP_DELAY;
         // Program the frequency range, THEN start the oscillator (datasheet
         // sequence): a combined write is avoided so ENABLE never latches before
@@ -169,22 +240,45 @@ namespace
         bool xosc_ok = wait_mask(XOSC_STATUS, XOSC_STATUS_STABLE);
         if (xosc_ok)
         {
-            // clk_ref <- XOSC (glitchless mux); clk_sys follows to 12 MHz. Poll
-            // the one-hot SELECTED before proceeding.
+            // clk_ref <- XOSC (glitchless mux); clk_sys follows to 12 MHz via its
+            // SRC=clk_ref reset default. Poll the one-hot SELECTED before proceeding.
             r32(CLK_REF_CTRL) = CLK_REF_SRC_XOSC;
             xosc_ok = wait_mask(CLK_REF_SELECTED, CLK_REF_SELECTED_XOSC);
         }
 
-        if (xosc_ok)
-        {
-            r32(CLK_PERI_CTRL) = CLK_PERI_ENABLE_XOSC; // UART clock <- XOSC 12 MHz
-            r32(WATCHDOG_TICK) = WATCHDOG_TICK_CFG;    // 12 MHz / 12 = 1 MHz tick
-        }
-        else
+        if (not xosc_ok)
         {
             SystemCoreClock = ROSC_NOMINAL_HZ;             // clk_sys stayed on ROSC
             r32(CLK_PERI_CTRL) = CLK_PERI_ENABLE_CLK_SYS;  // UART clock <- clk_sys
             r32(WATCHDOG_TICK) = WATCHDOG_TICK_CFG_ROSC;   // ~6.5 MHz / 7 ~= 1 MHz
+            return;
+        }
+
+        // clk_ref stays on the 12 MHz XOSC: the WATCHDOG /12 tick and thus the 1 MHz
+        // system TIMER (arch_clock_now / arch_trace_now) derive from clk_ref and MUST
+        // NOT track the PLL.
+        r32(WATCHDOG_TICK) = WATCHDOG_TICK_CFG; // 12 MHz / 12 = 1 MHz tick
+
+        if (pll_sys_lock())
+        {
+            // Switch the clk_sys glitchless mux onto the PLL (datasheet 2.15.3.1):
+            // set AUXSRC while still on clk_ref, then flip SRC to aux and poll SELECTED.
+            r32(CLK_SYS_CTRL) = CLK_SYS_AUXSRC_PLL | CLK_SYS_SRC_REF;
+            wait_mask(CLK_SYS_SELECTED, CLK_SYS_SELECTED_REF);
+            r32(CLK_SYS_CTRL) = CLK_SYS_AUXSRC_PLL | CLK_SYS_SRC_AUX;
+            wait_mask(CLK_SYS_SELECTED, CLK_SYS_SELECTED_AUX);
+            // CLK_SYS_DIV stays at its reset value (INT=1, /1). Update the core-clock
+            // truth in the SAME step (arch_arm_common SysTick reads SystemCoreClock).
+            SystemCoreClock = CLK_SYS_HZ;
+            g_uart_ibrd = UART_IBRD_125MHZ;
+            g_uart_fbrd = UART_FBRD_125MHZ;
+            r32(CLK_PERI_CTRL) = CLK_PERI_ENABLE_CLK_SYS; // UART clock <- clk_sys 125 MHz
+        }
+        else
+        {
+            // PLL never locked: clk_sys still follows clk_ref (12 MHz). SystemCoreClock
+            // and the UART divisors keep their 12 MHz defaults.
+            r32(CLK_PERI_CTRL) = CLK_PERI_ENABLE_XOSC; // UART clock <- XOSC 12 MHz
         }
     }
 
@@ -197,11 +291,32 @@ namespace
         r32(PADS_GPIO1 + ATOMIC_SET) = PAD_IE;
 
         // Divisors latch only on the subsequent LCR_H write, so order matters.
-        r32(UART0_IBRD) = UART_IBRD_115200;
-        r32(UART0_FBRD) = UART_FBRD_115200;
-        r32(UART0_LCR_H) = LCR_H_8N1_FIFO;
+        r32(UART0_IBRD) = g_uart_ibrd;
+        r32(UART0_FBRD) = g_uart_fbrd;
+        r32(UART0_LCR_H) = LCR_H_8N1;
+        r32(UART0_IMSC) = 0; // all UART interrupt sources masked; the ring arms TXIM
         r32(UART0_CR) = CR_ENABLE;
     }
+
+    // --- Buffered console TX backend (console_tx.h). The ring drains via the PL011
+    // transmit interrupt with the FIFO disabled (see LCR_H_8N1); the idle->busy
+    // prime starts the transfer whether TXIM is level- or transition-triggered at
+    // rest (HW-unverified; build-only board). slot_free/push touch one data register;
+    // irq_enable/disable use the RP2040 atomic set/clear aliases so no read-modify-
+    // write on IMSC is needed. ---
+    int rp_tx_slot_free(void) { return (r32(UART0_FR) & FR_TXFF) == 0; }
+    void rp_tx_push(uint8_t b) { r32(UART0_DR) = b; }
+    void rp_tx_irq_enable(void) { r32(UART0_IMSC + ATOMIC_SET) = IMSC_TXIM; }
+    void rp_tx_irq_disable(void) { r32(UART0_IMSC + ATOMIC_CLR) = IMSC_TXIM; }
+
+    constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
+    char console_tx_buf[CONSOLE_TX_SIZE];
+    console_tx_backend const rp_console_backend = {
+        rp_tx_slot_free, rp_tx_push, rp_tx_irq_enable, rp_tx_irq_disable};
+
+    // NVIC: UART0_IRQ = line 20 (RP2040 datasheet interrupt table); UART1 = 21.
+    // Only TXIM is armed, so the drain ISR is the sole source on this line.
+    constexpr int UART0_IRQ = 20;
 }
 
 extern "C"
@@ -223,13 +338,31 @@ void arch_init(void)
 
 void arch_console_write(char const* buf, size_t n)
 {
+    console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
+}
+
+void arch_console_write_sync(char const* buf, size_t n)
+{
     for (size_t i = 0; i < n; i++)
     {
+        uint32_t spin = 0;
         while ((r32(UART0_FR) & FR_TXFF) != 0)
         {
+            if (++spin > 1000000u)
+            {
+                return; // bounded: a wedged UART must not hang the panic path (drop)
+            }
         }
         r32(UART0_DR) = static_cast<uint8_t>(buf[i]);
     }
+}
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = CONSOLE_TX_SIZE;
+    *irq_line = UART0_IRQ;
+    return &rp_console_backend;
 }
 
 // Kernel diagnostic LED: GP25 via SIO, active-high (NOT the Pico W CYW43 LED).
@@ -316,11 +449,6 @@ void Reset_Handler(void)
     arch_init();
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
-}
-
-void HardFault_Handler(void)
-{
-    arch_shutdown(132);
 }
 
 }

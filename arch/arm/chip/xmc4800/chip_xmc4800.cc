@@ -6,8 +6,8 @@
 //
 // M1 scope: privilege + SVC, no MPU. The watchdog is OFF at reset (WDT_CTR.ENB
 // = 0), so the reset path is just FPU + C-runtime + VTOR. arch_init then runs
-// clock_init() to bring the SCU up from the 12 MHz crystal PLL to fCPU=120 MHz
-// (fPERIPH=60 MHz) -- the uncalibrated fOFI (~24 MHz) is too inaccurate for a
+// clock_init() to bring the SCU up from the 12 MHz crystal PLL to fCPU=144 MHz
+// (fPERIPH=72 MHz) -- the uncalibrated fOFI (~24 MHz) is too inaccurate for a
 // stable UART baud. Code/vectors are linked at the cached flash alias
 // 0x0800_0000.
 //
@@ -37,7 +37,7 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
-    uint32_t SystemCoreClock = 120000000u; // fCPU after clock_init (drives SysTick)
+    uint32_t SystemCoreClock = 144000000u; // fCPU after clock_init (drives SysTick)
 }
 
 namespace
@@ -54,9 +54,9 @@ namespace
         __asm volatile("isb" ::: "memory");
     }
 
-    // ---- Clock tree: 12 MHz XTAL -> system PLL -> fSYS=fCPU=120 MHz -----------
+    // ---- Clock tree: 12 MHz XTAL -> system PLL -> fSYS=fCPU=144 MHz -----------
     // Sequence and register values are clean-room from the XMC4700/4800 RM V1.3
-    // (SCU clock/PLL chapter + flash chapter). The 120 MHz profile -- NDIV/PDIV/
+    // (SCU clock/PLL chapter + flash chapter). The 144 MHz profile -- NDIV/PDIV/
     // K2DIV and the staged K2DIV ramp -- is the RM's crystal-PLL bring-up for
     // this part; register addresses/fields are the RM's SCU/FLASH/memory-map values.
 
@@ -113,16 +113,19 @@ namespace
     // baud mid-shift -- selecting fPLL here keeps peripherals at speed while asleep.
     constexpr uint32_t SLEEPCR_SYSSEL_PLL = 1u << 0;
 
-    // FCON.WSPFLASH[3:0] is the flash access time in fCPU cycles (RM formula 8.1:
-    // the encoded value IS the cycle count; 0 and 1 both mean one cycle). 120 MHz
-    // needs 4 access cycles to satisfy ta -> field 4.
+    // FCON.WSPFLASH[3:0] is the flash read wait-state count in fCPU cycles (RM
+    // 8.4.4 formula 8.1: WSPFLASH x (1/fCPU) >= ta; fields 0 and 1 both mean one
+    // cycle). At 144 MHz field 4 gives a 27.8 ns access window, covering the data
+    // sheet ta (~22 ns) -- the same value Infineon's XMCLib ships for its 144 MHz
+    // profile, so this is UNCHANGED from the 120 MHz profile.
     constexpr uint32_t FCON_WSPFLASH_MASK = 15u << 0;
     constexpr uint32_t FCON_WSPFLASH_4CYC = 4u << 0;
 
-    // 120 MHz profile: fVCO = 12 MHz * NDIV/PDIV = 12*40/1 = 480 MHz;
-    // fPLL = fVCO/K2DIV = 480/4 = 120 MHz. PLLCON1 fields NDIV[14:8], K2DIV[22:16],
-    // PDIV[27:24], each written as (value-1) (RM PLLCON1 fields).
-    constexpr uint32_t PLL_NDIV = 40;
+    // 144 MHz profile: fVCO = 12 MHz * NDIV/PDIV = 12*24/1 = 288 MHz;
+    // fPLL = fVCO/K2DIV = 288/2 = 144 MHz. fVCO=288 is the VCO frequency Infineon's
+    // XMCLib uses for this part's 144 MHz profile. PLLCON1 fields NDIV[14:8],
+    // K2DIV[22:16], PDIV[27:24], each written as (value-1) (RM PLLCON1 fields).
+    constexpr uint32_t PLL_NDIV = 24;
     constexpr uint32_t PLL_PDIV = 1;
 
     uint32_t pllcon1_value(uint32_t k2div)
@@ -205,10 +208,10 @@ namespace
         }
 
         // Bypass + disconnect the VCO, program the dividers, reconnect, relock.
-        // Lock first at a low K2DIV (~24 MHz), then ramp down to 120 MHz below.
+        // Lock first at a low K2DIV (~24 MHz), then ramp down to 144 MHz below.
         r32(SCU_PLLCON0) |= PLLCON0_VCOBYP;
         r32(SCU_PLLCON0) |= PLLCON0_FINDIS;
-        r32(SCU_PLLCON1) = pllcon1_value(20); // 480/20 = 24 MHz
+        r32(SCU_PLLCON1) = pllcon1_value(12); // 288/12 = 24 MHz
         r32(SCU_PLLCON0) |= PLLCON0_OSCDISCDIS;
         r32(SCU_PLLCON0) &= ~PLLCON0_FINDIS;
         r32(SCU_PLLCON0) |= PLLCON0_RESLD;
@@ -226,18 +229,18 @@ namespace
         // (never powered here); SOSCWDGT was already re-armed above.
         r32(SCU_TRAPDIS) &= ~TRAP_SVCOLCKT;
 
-        // Clock dividers: fSYS = fPLL/1, fCPU = fSYS/1, fPERIPH = fCPU/2 = 60 MHz.
+        // Clock dividers: fSYS = fPLL/1, fCPU = fSYS/1, fPERIPH = fCPU/2 = 72 MHz.
         r32(SCU_SYSCLKCR) = SYSCLKCR_SYSSEL_PLL; // fPLL selected, SYSDIV /1
         r32(SCU_CPUCLKCR) = 0;                   // CPUDIV disabled -> fCPU = fSYS
         r32(SCU_PBCLKCR) = PBCLKCR_PBDIV_DIV2;   // fPERIPH = fCPU/2
 
-        // Ramp K2DIV down to the final 120 MHz in steps to avoid a VDDC droop on
+        // Ramp K2DIV down to the final 144 MHz in steps to avoid a VDDC droop on
         // a large jump (K2DIV = fVCO/target).
         r32(SCU_PLLCON0) &= ~PLLCON0_OSCDISCDIS;
-        r32(SCU_PLLCON1) = pllcon1_value(10); clock_delay(); // 480/10 = 48 MHz
-        r32(SCU_PLLCON1) = pllcon1_value(6);  clock_delay(); // 480/6  = 80 MHz
-        r32(SCU_PLLCON1) = pllcon1_value(5);  clock_delay(); // 480/5  = 96 MHz
-        r32(SCU_PLLCON1) = pllcon1_value(4);  clock_delay(); // 480/4  = 120 MHz
+        r32(SCU_PLLCON1) = pllcon1_value(6); clock_delay(); // 288/6 = 48 MHz
+        r32(SCU_PLLCON1) = pllcon1_value(4); clock_delay(); // 288/4 = 72 MHz
+        r32(SCU_PLLCON1) = pllcon1_value(3); clock_delay(); // 288/3 = 96 MHz
+        r32(SCU_PLLCON1) = pllcon1_value(2); clock_delay(); // 288/2 = 144 MHz
 
         // Keep the system clock on fPLL through SLEEP so a post-print WFI does not
         // rescale the USIC baud mid-shift (see SLEEPCR_SYSSEL_PLL).
@@ -250,8 +253,8 @@ extern "C"
 
 void arch_init(void)
 {
-    // Scale the SCU from the reset fOFI to the 12 MHz crystal PLL (fCPU=120 MHz,
-    // fPERIPH=60 MHz) FIRST: the USIC baud constants are computed for fPERIPH=60
+    // Scale the SCU from the reset fOFI to the 12 MHz crystal PLL (fCPU=144 MHz,
+    // fPERIPH=72 MHz) FIRST: the USIC baud constants are computed for fPERIPH=72
     // MHz, and SysTick derives from fCPU. Then bring up the console; finally
     // kickos_armv7m_init installs the NVIC/SHPR priorities.
     clock_init();
@@ -328,11 +331,6 @@ void Reset_Handler(void)
     arch_init();
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
-}
-
-void HardFault_Handler(void)
-{
-    arch_shutdown(132);
 }
 
 }

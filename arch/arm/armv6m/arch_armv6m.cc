@@ -15,6 +15,25 @@
 
 #include <stddef.h> // offsetof
 
+// Fault reporting (the shared HardFault handler below): the reporter calls
+// kpanic_enter first, which masks IRQs, forces the synchronous polled writer, and
+// flushes the ring -- so the dump is safe from fault context whether or not the
+// chip armed the buffered console (rp2040 does, nrf51 does not). kfault_terminate
+// is the shared panic/fault dead-end (kernel.h; nrf51 overrides it to exit under
+// QEMU, rp2040 uses the weak blink).
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
+}
+extern "C" void kpanic_enter(void);
+extern "C" void kfault_terminate(void) __attribute__((noreturn));
+
+// Verbose CPU-context dump. Default on; -DKICKOS_PANIC_DUMP=0 keeps only the
+// one-line fault marker. Same knob and default on every arch reporter.
+#ifndef KICKOS_PANIC_DUMP
+#define KICKOS_PANIC_DUMP 1
+#endif
+
 static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @0");
 static_assert(offsetof(struct arch_context, npriv) == 4, "switch.S expects ctx.npriv @4");
 static_assert(offsetof(struct arch_context, resting_npriv) == 8,
@@ -115,6 +134,53 @@ void kickos_armv6m_default_irq(void)
     {
         kickos_isr_irq(line);
     }
+}
+
+// --- Fault reporting: the shared HardFault handler. HardFault is the ONLY fault
+// exception on v6-M (no MemManage/BusFault/UsageFault, and no CFSR/HFSR/MMFAR/BFAR
+// fault-status registers), so the dump is the stacked frame only. Replaces the
+// per-chip stubs that discarded everything. ----------------------------------------
+void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
+{
+    kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
+    ::kickos::kprintf("\n=== HARD FAULT ===\n");
+#if KICKOS_PANIC_DUMP
+    char const* stk = "MSP";
+    if (exc_return & 0x4u)
+    {
+        stk = "PSP";
+    }
+    ::kickos::kprintf("  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n",
+                      frame[6], frame[5], frame[7], stk);
+    ::kickos::kprintf("  R0=0x%x R1=0x%x R2=0x%x R3=0x%x R12=0x%x\n",
+                      frame[0], frame[1], frame[2], frame[3], frame[4]);
+#else
+    (void)frame;
+    (void)exc_return;
+#endif
+    kfault_terminate();
+}
+
+// Naked entry: pick the stacked frame (MSP vs PSP per EXC_RETURN bit 2) and pass it,
+// with EXC_RETURN, to the C reporter. Naked so no prologue perturbs the SP before we
+// read it. v6-M has no IT block, so the stack select is branch-based (movs/tst/beq/
+// mrs) -- the v7-M ite/mrseq form is illegal here.
+__attribute__((naked)) void HardFault_Handler(void)
+{
+    __asm volatile(
+        "mov  r1, lr          \n"
+        "movs r0, #4          \n"
+        "tst  r0, r1          \n"
+        "beq  1f              \n"
+        "mrs  r0, psp         \n"
+        "b    2f              \n"
+        "1:                   \n"
+        "mrs  r0, msp         \n"
+        "2:                   \n"
+        // ldr+bx, not b: the Thumb-1 unconditional branch is +-2 KB, and with
+        // --gc-sections the reporter can land farther than that from this handler.
+        "ldr  r2, =kickos_armv6m_fault_report \n"
+        "bx   r2              \n");
 }
 
 // Install the system-handler priorities (SHPR is word-access only on v6-M).

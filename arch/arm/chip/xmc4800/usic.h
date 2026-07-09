@@ -140,9 +140,13 @@ namespace usic
         uint8_t dctq;  // BRG.DCTQ[4:0]; count  = dctq+1 (tq per bit)
     };
 
-    // 115200 baud from fPERIPH = 60 MHz (proven; see set_baud for the derivation):
+    // 115200 baud from fPERIPH = 60 MHz (see set_baud for the derivation):
     // STEP=755, PDIV+1=24, PCTQ+1=1, DCTQ+1=16 -> 115203.9 baud (+0.0033%).
     constexpr Baud BAUD_115200_60MHZ = { 755u, 23u, 0u, 15u };
+
+    // 115200 baud from fPERIPH = 72 MHz (fCPU=144 MHz profile; same derivation):
+    // STEP=367, PDIV+1=14, PCTQ+1=1, DCTQ+1=16 -> 115199.5 baud (-0.0004%).
+    constexpr Baud BAUD_115200_72MHZ = { 367u, 13u, 0u, 15u };
 
     // ---- Generic USIC-common operations (all take the channel base) ----------
 
