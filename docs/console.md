@@ -117,14 +117,14 @@ sizing (512 B, > `kprintf`'s 256 B buffer) keeps this path rare.
 ## The synchronous path and the panic-safe seam
 
 `arch_console_write_sync` is the bounded polled writer — the one that is safe with
-the scheduler and IRQs down. The seam is arranged so only the two buffered chips
+the scheduler and IRQs down. The seam is arranged so only the buffered backends
 carry a distinct implementation:
 
 - A **weak default** in `console.cc` forwards `arch_console_write_sync` →
-  `arch_console_write`. Every polled-only chip and the sim reuse their normal
-  writer for free.
-- K64F and XMC **override** it with their real polled UART writer (the pre-11i
-  loop, kept verbatim).
+  `arch_console_write`. Every polled-only chip reuses its normal writer for free.
+- K64F, XMC, and the sim **override** it with their real synchronous writer — the
+  MCUs with their pre-11i polled UART loop (kept verbatim), the sim with a bounded
+  one-byte-at-a-time `write(1, …)` to host stdout.
 
 **Panic and fault.** `kpanic` sets `g_console_panicking` (forcing every subsequent
 write to the sync path), flushes the ring in order (`console_tx_flush_sync` —
@@ -152,11 +152,21 @@ ring never names a register; the chip supplies only these pokes.
   the IRQ gate = `CCR.TBIEN` routed by `INPR.TBINP` to service-request output SR0,
   line = **NVIC 84**. The gate lives in the shared USIC layer
   (`usic.cc`: `tx_irq_route`/`enable`/`disable`); the backend is in `usic_uart.cc`.
+- **sim (fictional TX peripheral)** — `slot_free`/`push`/`irq_enable`/`irq_disable`
+  over a host-emulated TX-empty line delivered by `SIGUSR1` (a shared vector with
+  the IRQ-inject signal); `push` writes one byte to host stdout, `irq_enable`
+  `raise()`s the line, and the drain ISR (`console_tx_service` → `kickos_isr_irq`)
+  runs the real `console_tx_isr`. A **synthetic per-delivery slot budget** forces
+  the ring to drain over several deliveries so it genuinely fills, primes, wraps,
+  and empties — host stdout never blocks, so without it the ring would drain in one
+  shot. `arch/sim/sim.cc`.
 
-Both IRQ-line numbers are the one HW-confirm item flagged in the code (a wrong line
-silently never drains — the ring fills and everything falls back to the bounded
-sync path, so it *looks* like it works). Neither board runs in-tree, so the
-buffered drain is HW-validation-gated; the sync path is exercised on QEMU.
+Both MCU IRQ-line numbers are the one HW-confirm item flagged in the code (a wrong
+line silently never drains — the ring fills and everything falls back to the bounded
+sync path, so it *looks* like it works). Neither MCU runs in-tree, so their buffered
+drain is HW-validation-gated. **The sim's backend closes that gap:** it exercises
+the full SPSC ring — producer, publish+prime, async drain ISR, wrap, and
+overflow — in-tree under `ctest`, which is what the MCU sync path alone cannot cover.
 
 ## Boot ordering
 
@@ -168,9 +178,29 @@ would have to be reordered so the console arms earlier.)
 
 ## The sim
 
-The sim provides no backend (`arch_console_tx_backend` weak-returns null), so it is
-never armed: every write takes the sync path → the weak alias → `arch_console_write`
-→ host stdout, raw (no CRLF, so the TAP stream stays clean for the test harness).
+The sim supplies a **fictional TX peripheral** (see Per-chip backend above), so it
+arms the buffered path like a real chip: after `console_buffer_init`, steady-state
+writes go through `console_tx_write` into the SPSC ring and drain asynchronously in
+a `SIGUSR1`-delivered TX-empty ISR. This is deliberate — the MCU backends never run
+in-tree, so the sim is the **only** in-tree exerciser of the ring/drain/wrap/overflow
+paths; the selftest and stress runs push enough output to fill and wrap the ring
+repeatedly under `ctest`.
+
+Details specific to the sim:
+
+- **Output is still raw** — CRLF expansion stays off (`KICKOS_CONSOLE_CRLF`), so the
+  TAP stream is byte-clean for the test harness.
+- **The emulated TX line shares `SIGUSR1`** with the IRQ-inject path (a shared
+  interrupt vector): `on_sigusr1` consumes the assertion, runs the drain, and
+  re-asserts if the synthetic slot budget left bytes queued.
+- **The fault handler enters ISR context** (`isr_frame_enter` before
+  `kickos_isr_fault`) so the routing guard sees `arch_in_isr()` and takes the sync
+  writer — parity with the ARM fault path, where the report must not be enqueued
+  into a ring that the handler `_exit()`s without draining.
+- **`arch_shutdown` flushes synchronously** (`console_tx_flush_sync`) before
+  `_exit`, because IRQs/signals are masked there and the `SIGUSR1` drain can no
+  longer run — otherwise the final `[ktrace] counters` line would be stranded in
+  the ring.
 
 ## Invariants a change must not break
 

@@ -12,9 +12,17 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
+    },
+    {
+      "name": "esp32-wroom-st",
+      "displayName": "ESP32-WROOM-32 (Xtensa LX6) + selftest (full IRQ suite) - HW-validated 14/14",
+      "inherits": "esp32-wroom",
+      "binaryDir": "${sourceDir}/build/esp32-wroom-st",
+      "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" }
     }
   ],
   "buildPresets": [
-    { "name": "esp32-wroom", "configurePreset": "esp32-wroom" }
+    { "name": "esp32-wroom", "configurePreset": "esp32-wroom" },
+    { "name": "esp32-wroom-st", "configurePreset": "esp32-wroom-st" }
   ]
 }

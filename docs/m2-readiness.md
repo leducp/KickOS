@@ -100,9 +100,89 @@ RX and Xtensa use vendor toolchains (not in apt) — kept out of CI for now (one
 at a time); build those boards manually. Silicon likewise stays a manual/self-hosted
 step per the HW-test deferral policy.
 
+## 7. Fleet uniformity — make M1 a coherent standalone release
+
+M1 is the first HW-support milestone and could ship as a public release on its own.
+So M1 must be UNIFORM: every board the same shape, so M2's cost is purely MPU wiring
+(not "and also finish the console on 8 boards"), and an external reviewer picking any
+board gets identical behaviour. Non-M2 work that improves coherence is done HERE.
+
+### Board readiness matrix
+
+| Board(s) | arch / chip | Runs via | Selftest | Console |
+|---|---|---|---|---|
+| sim | host | native | 15/15 + stress + mpu_fault | ring + sync (in-tree ring CI) |
+| qemu | armv7m / mps2 | QEMU | 14/14 | polled (semihosting) |
+| qemu-riscv | rv32imac / virt | QEMU | 14/14 | polled (semihosting) |
+| microbit | armv6m / nrf51 | QEMU | pass | polled (semihosting) |
+| XMC4800 | armv7m / xmc4800 | silicon | 14/14 (HW 2026-07-09) + HARD FAULT dump | ring + sync |
+| K64F | armv7m / mk64f | silicon | pass | ring + sync |
+| ESP32-WROOM | lx6 / esp32 | silicon | 14/14 (HW 2026-07-09) + XTENSA dump | ring |
+| ESP32-C6 | rv32imac / esp32c6 | silicon | runs (hello); one-shot TAP not capturable over USB-JTAG | polled (USB-JTAG) |
+| RX72M | rxv3 / rx72m | silicon | 14/14 (HW 2026-07-09; sw IRQ controller) | ring; console ttyUSB0/FT232 |
+| blackpill, f411disco | armv7m / stm32f411 | build-only (-st) | build-clean | ring (build-only) |
+| bluepill(-c8) | armv7m / stm32f103 | build-only (-st) | build-clean | ring (build-only) |
+| f302nucleo | armv7m / stm32f302 | build-only (-st) | build-clean | ring (build-only) |
+| due | armv7m / sam3x8e | build-only (-st) | build-clean | ring (build-only) |
+| picopi | armv6m / rp2040 | build-only (-st) | build-clean | ring (build-only) |
+
+Every board has a `<board>-st` preset (base + `KICKOS_ENABLE_SELFTEST=ON`) so the
+full 14-test suite is a first-class, per-board config -- not an ad-hoc `-D`. The
+selftest/fault/mpu_fault apps are **diagnostic** (`kickos_add_diagnostic_app`, built
+only under that flag: they use the test-only syscall surface / deliberately fault, so
+they never enter a production image). Flash an `-st` build with
+`FLASH_BUILD=build/<board>-st tools/flash.sh <board> selftest`.
+
+### Console policy (decided)
+
+Buffered IRQ-drained ring on every board with a real byte-FIFO UART; POLLED stays
+for (a) the semihosting dev vehicles (mps2, virt, microbit) — synchronous, no
+TX-empty IRQ to drain — and (b) USB-CDC / USB-Serial-JTAG endpoints (ESP32-C6),
+which are USB endpoints, not byte-FIFO UARTs, so the ring model does not fit. Today
+only K64F + XMC4800 have the ring; generalise it (they are the template) to RX72M,
+ESP32 (UART0), and the STM32/RP2040/SAM3X fleet. `arch_console_write` -> the ring;
+`arch_console_write_sync` -> the polled writer (panic/fault path).
+
+**Dependency:** the ring needs a working device-interrupt RECEIVE path per arch.
+ARM (NVIC) + RX (INTB) already have it -> mechanical. Xtensa needs the UART0-TX
+physical interrupt wired into the level-1 dispatcher. **ESP32-C6 has NO external
+device-IRQ path yet** -> its ring requires the interrupt-matrix build, which is the
+SAME work as IRQ-inject Option 2 -> Option 2 on the C6 unlocks BOTH the console and
+selftest 10-14. (This is the "do the inevitable thing once" call.)
+
+### Remaining M1-uniformity gaps
+- Ring console generalised (2026-07-09): RX72M, ESP32-WROOM/UART0, STM32x3, RP2040,
+  SAM3X all committed; ESP32-C6 stays polled (USB-Serial-JTAG). HW-revalidate the
+  ESP32-WROOM ring + capture once re-plugged. sim ring done (2026-07-09): a
+  synthetic TX peripheral (SIGUSR1-delivered TX-empty line + per-delivery slot
+  budget) arms the buffered path in-tree, so ctest now exercises the SPSC
+  ring/drain/wrap/overflow paths the HW-gated MCU backends never run in-tree.
+- RX72M selftest 14/14 on silicon (2026-07-09): DONE via the arch/rx software IRQ
+  controller (SWINT2 doorbell); console captured on ttyUSB0/FT232. Closed.
+- XMC4800 + ESP32-WROOM re-validated on silicon (2026-07-09): 14/14 + fault dump
+  through the armed ring. Closed.
+- ESP32-C6: runs on silicon (hello streams), but one-shot boot output (selftest TAP)
+  is NOT capturable over its self-hosted USB-JTAG (re-enumerates on reset; the polled
+  console drops during the gap). Options: capture over the board's CH343P UART bridge,
+  or a pre-crash/pre-test boot delay to land output after re-enum. Also no diag-LED
+  blink on C6 (WS2812 RGB on GPIO8 -- needs an addressable driver, not a pin toggle;
+  TODO). C6 selftest 10-14 pass/fail on silicon still unconfirmed (capture-gated), but
+  the INTPRI-threshold suspicion was disproven -- see [[kickos-panic-console-review]].
+- Build-only boards: build-clean incl. the -st (selftest) presets; on-silicon deferred
+  until units are at disposal.
+
 ## Then: M2 proper
 
 Per `architecture.md`: MPU-enforcement fan-out — reference pair (RISC-V PMP/NAPOT +
 XMC v7-M PMSA) → K64F SYSMPU → RX → tail; plus the arch-independent security model
 (domains, per-thread private stacks, syscall-arg/user-pointer validation, pow2 region
 placement). Capabilities + authenticated grants are M3.
+
+## M3 (later)
+
+Capabilities + authenticated grants (the seL4-principled object model). **Also M3:
+user-selectable CPU clock / low-power mode** — once the fleet-wide "max frequency by
+default" baseline is confirmed (see [[kickos-clock-audit]]), expose a per-chip clock
+select so an app can trade speed for power. Depends on each chip having an explicit
+clock bring-up (not just inheriting the ROM/reset default) and a truthful CPU/timer
+Hz that the scheduler's ns↔tick math tracks when the clock changes.

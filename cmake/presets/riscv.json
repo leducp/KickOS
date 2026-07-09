@@ -31,12 +31,20 @@
       "inherits": "riscv-base",
       "binaryDir": "${sourceDir}/build/esp32c6-wroom",
       "cacheVariables": { "KICKOS_BOARD": "esp32c6-wroom" }
+    },
+    {
+      "name": "esp32c6-wroom-st",
+      "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC) + selftest (full IRQ suite)",
+      "inherits": "esp32c6-wroom",
+      "binaryDir": "${sourceDir}/build/esp32c6-wroom-st",
+      "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" }
     }
   ],
   "buildPresets": [
     { "name": "qemu-riscv",    "configurePreset": "qemu-riscv" },
     { "name": "qemu-riscv-bench", "configurePreset": "qemu-riscv-bench" },
-    { "name": "esp32c6-wroom", "configurePreset": "esp32c6-wroom" }
+    { "name": "esp32c6-wroom", "configurePreset": "esp32c6-wroom" },
+    { "name": "esp32c6-wroom-st", "configurePreset": "esp32c6-wroom-st" }
   ],
   "testPresets": [
     { "name": "qemu-riscv", "configurePreset": "qemu-riscv", "output": { "outputOnFailure": true } }

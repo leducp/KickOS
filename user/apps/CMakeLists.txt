@@ -8,6 +8,11 @@ add_subdirectory(mpu_fault)
 add_subdirectory(sched_exit)
 add_subdirectory(stress)
 
+# Diagnostic apps -- self-gated on KICKOS_ENABLE_SELFTEST via kickos_add_diagnostic_app
+# (see each CMakeLists), so no per-board list here. `fault` deliberately executes an
+# illegal instruction; it is never built into a production image.
+add_subdirectory(fault)
+
 # Telemetry gate apps. tele_pingpong (bounded, self-terminating) also drives the
 # QEMU structural gate (it exits, so mps2 flushes the ring via semihosting), so it
 # builds for the sim AND the qemu board when telemetry is on. tele_flood's
@@ -36,12 +41,14 @@ endif()
 
 # Board-specific bring-up demo: blinks an onboard LED (boards with a known LED).
 if(KICKOS_BOARD STREQUAL "picopi"
+   OR KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "f411disco"
    OR KICKOS_BOARD STREQUAL "blackpill"
    OR KICKOS_BOARD STREQUAL "bluepill"
    OR KICKOS_BOARD STREQUAL "bluepill-c8"
    OR KICKOS_BOARD STREQUAL "f302nucleo"
    OR KICKOS_BOARD STREQUAL "due"
-   OR KICKOS_BOARD STREQUAL "xmc4800-relax")
+   OR KICKOS_BOARD STREQUAL "xmc4800-relax"
+   OR KICKOS_BOARD STREQUAL "esp32-wroom")
   add_subdirectory(blink)
 endif()

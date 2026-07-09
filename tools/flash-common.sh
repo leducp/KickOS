@@ -17,8 +17,15 @@ run()  { say "+ $*"; [ -n "${DRY_RUN:-}" ] || "$@"; }
 
 # first present serial device (override with FLASH_PORT); empty + nonzero if none
 pick_port() {
+    # An explicit FLASH_PORT is STRICT: use it, or fail -- NEVER fall through to
+    # another board's port. (Falling through once sent esptool at the wrong device
+    # on a multi-board bench.) Only auto-scan when FLASH_PORT is unset.
+    if [ -n "${FLASH_PORT:-}" ]; then
+        [ -e "$FLASH_PORT" ] && { echo "$FLASH_PORT"; return 0; }
+        return 1
+    fi
     local p
-    for p in ${FLASH_PORT:-} /dev/ttyACM0 /dev/ttyACM1 /dev/ttyUSB0 /dev/ttyUSB1; do
+    for p in /dev/ttyACM0 /dev/ttyACM1 /dev/ttyUSB0 /dev/ttyUSB1; do
         [ -e "$p" ] && { echo "$p"; return 0; }
     done
     return 1
@@ -46,9 +53,14 @@ flash_resolve() {
         virt) die "'$FL_BOARD' is a QEMU target -- run it: ctest --preset qemu-riscv" ;;
     esac
 
+    # Build dir defaults to build/<board>; override with FLASH_BUILD to flash a
+    # variant preset's output (e.g. FLASH_BUILD=build/rx72m-st for the selftest build,
+    # which carries the diagnostic apps that the plain board build does not).
+    local bd="${FLASH_BUILD:-$FL_ROOT/build/$FL_BOARD}"
     # kickos_emit_image outputs: ELF, .hex, .bin, and .app.bin for Espressif.
-    local ad="$FL_ROOT/build/$FL_BOARD/user/apps/$FL_APP"
+    local ad="$bd/user/apps/$FL_APP"
     FL_ELF="$ad/$FL_APP"; FL_BIN="$FL_ELF.bin"; FL_HEX="$FL_ELF.hex"; FL_APPBIN="$FL_ELF.app.bin"
-    [ -e "$FL_ELF" ] || die "not built: build/$FL_BOARD/user/apps/$FL_APP/$FL_APP
-       build it: cmake --preset $FL_BOARD && cmake --build build/$FL_BOARD --target $FL_APP"
+    [ -e "$FL_ELF" ] || die "not built: $ad/$FL_APP
+       build it: cmake --preset $FL_BOARD && cmake --build $bd --target $FL_APP
+       (for the selftest/diagnostic build use the -st preset: FLASH_BUILD=$FL_ROOT/build/$FL_BOARD-st)"
 }

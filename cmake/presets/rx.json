@@ -12,9 +12,17 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
+    },
+    {
+      "name": "rx72m-st",
+      "displayName": "Renesas RX72M (RXv3) + selftest (full IRQ suite) - HW-validated 14/14",
+      "inherits": "rx72m",
+      "binaryDir": "${sourceDir}/build/rx72m-st",
+      "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" }
     }
   ],
   "buildPresets": [
-    { "name": "rx72m", "configurePreset": "rx72m" }
+    { "name": "rx72m", "configurePreset": "rx72m" },
+    { "name": "rx72m-st", "configurePreset": "rx72m-st" }
   ]
 }
