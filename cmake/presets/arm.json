@@ -97,7 +97,16 @@
         "KICKOS_TELEMETRY": "rtt",
         "KICKOS_CONSOLE": "both"
       }
-    }
+    },
+    { "name": "frdmk64f-st", "displayName": "FRDM-K64F + selftest (full IRQ suite)", "inherits": "frdmk64f", "binaryDir": "${sourceDir}/build/frdmk64f-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
+    { "name": "xmc4800-relax-st", "displayName": "XMC4800 Relax + selftest (full IRQ suite)", "inherits": "xmc4800-relax", "binaryDir": "${sourceDir}/build/xmc4800-relax-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
+    { "name": "f411disco-st", "displayName": "STM32F411 Disco + selftest", "inherits": "f411disco", "binaryDir": "${sourceDir}/build/f411disco-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
+    { "name": "blackpill-st", "displayName": "STM32F411 Black Pill + selftest", "inherits": "blackpill", "binaryDir": "${sourceDir}/build/blackpill-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
+    { "name": "bluepill-st", "displayName": "STM32F103 Blue Pill + selftest", "inherits": "bluepill", "binaryDir": "${sourceDir}/build/bluepill-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
+    { "name": "bluepill-c8-st", "displayName": "STM32F103C8 Blue Pill + selftest", "inherits": "bluepill-c8", "binaryDir": "${sourceDir}/build/bluepill-c8-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
+    { "name": "picopi-st", "displayName": "RP2040 Pico + selftest", "inherits": "picopi", "binaryDir": "${sourceDir}/build/picopi-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
+    { "name": "f302nucleo-st", "displayName": "Nucleo-F302R8 + selftest", "inherits": "f302nucleo", "binaryDir": "${sourceDir}/build/f302nucleo-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
+    { "name": "due-st", "displayName": "Arduino Due + selftest", "inherits": "due", "binaryDir": "${sourceDir}/build/due-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } }
   ],
   "buildPresets": [
     { "name": "qemu",      "configurePreset": "qemu" },
@@ -111,7 +120,16 @@
     { "name": "picopi",    "configurePreset": "picopi" },
     { "name": "f302nucleo","configurePreset": "f302nucleo" },
     { "name": "due",       "configurePreset": "due" },
-    { "name": "xmc4800-relax", "configurePreset": "xmc4800-relax" }
+    { "name": "xmc4800-relax", "configurePreset": "xmc4800-relax" },
+    { "name": "frdmk64f-st", "configurePreset": "frdmk64f-st" },
+    { "name": "xmc4800-relax-st", "configurePreset": "xmc4800-relax-st" },
+    { "name": "f411disco-st", "configurePreset": "f411disco-st" },
+    { "name": "blackpill-st", "configurePreset": "blackpill-st" },
+    { "name": "bluepill-st", "configurePreset": "bluepill-st" },
+    { "name": "bluepill-c8-st", "configurePreset": "bluepill-c8-st" },
+    { "name": "picopi-st", "configurePreset": "picopi-st" },
+    { "name": "f302nucleo-st", "configurePreset": "f302nucleo-st" },
+    { "name": "due-st", "configurePreset": "due-st" }
   ],
   "testPresets": [
     { "name": "qemu",       "configurePreset": "qemu",       "output": { "outputOnFailure": true } },

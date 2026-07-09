@@ -2,10 +2,14 @@
 # Copyright (c) 2026 Philippe Leduc
 
 # The memory-domain isolation gate, in its own binary (it ends the process on
-# the deliberate cross-domain fault).
-kickos_add_application(mpu_fault
+# the deliberate cross-domain fault). Diagnostic app: built only under
+# KICKOS_ENABLE_SELFTEST (it deliberately faults; not a production image).
+kickos_add_diagnostic_app(mpu_fault
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
+if(NOT TARGET mpu_fault)
+  return() # diagnostics off -> app not built; skip its tests
+endif()
 
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(NAME mpu_fault COMMAND "$<TARGET_FILE:mpu_fault>")

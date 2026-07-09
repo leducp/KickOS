@@ -138,9 +138,28 @@ function(kickos_emit_image target)
   # esp32 / esp32c6 verbatim). Prefer `esptool` (esptool.py is deprecated in v5).
   if(KICKOS_CHIP STREQUAL "esp32" OR KICKOS_CHIP STREQUAL "esp32c6")
     find_program(KICKOS_ESPTOOL NAMES esptool esptool.py)
+    # Our app IS the image at the ROM bootloader offset (0x1000 on esp32), so the
+    # first-stage ROM loads it using the header's flash mode BEFORE any code
+    # reconfigures the SPI pins. esptool's elf2image default is QIO, which the esp32
+    # ROM reads unreliably from that position -- it loads segment 0 then reads a
+    # garbage segment-1 header (`load:0xffffffff,len:-1`) and RTC-WDT reset-loops.
+    # Force DIO for esp32 (same reason esp-idf always flashes its 2nd-stage
+    # bootloader as DIO). Verified on ESP32-D0WD-V3 silicon 2026-07-08.
+    set(_kos_img_mode "")
+    if(KICKOS_CHIP STREQUAL "esp32")
+      set(_kos_img_mode --flash_mode dio)
+    elseif(KICKOS_CHIP STREQUAL "esp32c6")
+      # ESP32-C6: our app is a RAM-only image at flash 0x0 with NO 2nd-stage
+      # bootloader, so the RISC-V ROM loader needs --ram-only-header (which implies
+      # --dont-append-digest) to boot it -- a plain elf2image image is loaded but
+      # never entered (`ets_loader.c 67`). DIO for the same reason as esp32 (the ROM
+      # mis-reads a QIO header from the boot position -> "Checksum failure" reset
+      # loop). Verified on ESP32-C6-WROOM silicon 2026-07-08.
+      set(_kos_img_mode --ram-only-header --dont-append-digest --flash_mode dio)
+    endif()
     if(KICKOS_ESPTOOL)
       add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND ${KICKOS_ESPTOOL} --chip ${KICKOS_CHIP} elf2image
+        COMMAND ${KICKOS_ESPTOOL} --chip ${KICKOS_CHIP} elf2image ${_kos_img_mode}
                 --output $<TARGET_FILE_DIR:${target}>/${target}.app.bin
                 $<TARGET_FILE:${target}>
         BYPRODUCTS ${target}.app.bin
@@ -194,4 +213,21 @@ function(kickos_add_application name)
   target_link_libraries(${name} PRIVATE kickos)
   # MCU: emit flashable .bin/.hex (no-op on the sim).
   kickos_emit_image(${name})
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_add_diagnostic_app(<name> SOURCES <src...> BOARD <board>)
+#   A DIAGNOSTIC (test/bring-up) app -- built ONLY when KICKOS_ENABLE_SELFTEST is
+#   on, because it depends on the test-only syscall surface (kos_irq_inject,
+#   kos_guard_addr, ...) that is deliberately kept OUT of the production ABI, and/or
+#   deliberately faults. A production build carries no diagnostic image. Callers
+#   should `if(NOT TARGET <name>) return() endif()` before registering its tests so
+#   a non-diagnostic build skips them cleanly. Distinct from kickos_add_application,
+#   which is for user/demo apps that build on every configuration.
+# ---------------------------------------------------------------------------
+function(kickos_add_diagnostic_app name)
+  if(NOT KICKOS_ENABLE_SELFTEST)
+    return()
+  endif()
+  kickos_add_application(${name} ${ARGN})
 endfunction()
