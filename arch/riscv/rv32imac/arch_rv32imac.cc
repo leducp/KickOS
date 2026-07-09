@@ -26,6 +26,24 @@
 
 #include <stdint.h>
 
+// Fault reporting (see the .Lfault shim in switch.S): the reporter calls kpanic_enter
+// first, which masks IRQs, forces the synchronous polled writer, and flushes the ring
+// -- so the dump is safe from the fault path whether or not the chip armed a buffered
+// console (today none on RISC-V does; the guard is premise-free regardless).
+// kfault_terminate is the shared panic/fault dead-end (kernel.h).
+namespace kickos
+{
+    void kprintf(char const* fmt, ...);
+}
+extern "C" void kpanic_enter(void);
+extern "C" void kfault_terminate(void) __attribute__((noreturn));
+
+// Verbose CPU-context dump. Default on; -DKICKOS_PANIC_DUMP=0 keeps only the
+// one-line fault marker. Same knob and default on every arch reporter.
+#ifndef KICKOS_PANIC_DUMP
+#define KICKOS_PANIC_DUMP 1
+#endif
+
 // switch.S hard-codes the save-frame layout AND ctx.sp @0 / trace_tid @4. The frame
 // (on the thread's own stack, ctx.sp = its base, low->high) is 32 words / 128 bytes:
 //   [0 mepc][1 mstatus][2 ra][3 t0][4 t1][5 t2][6 s0][7 s1][8 a0]..[15 a7]
@@ -212,24 +230,29 @@ uintptr_t arch_mpu_probe_addr(void)
 }
 
 // --- Interrupt controller (software-injected test scaffolding) ---------------
-// arch_irq_inject fakes a device firing -- test/bench scaffolding (arch.h). RISC-V
-// gives NO way to software-raise a real external (PLIC) interrupt: the PLIC, like
-// the Cortex-A GIC, has no software-generated-interrupt, and its pending bits are
-// driven by hardware gateways (QEMU models this faithfully -- a software pending-
-// write does not stick). So injection uses the SUPERVISOR SOFTWARE interrupt
-// (mip.SSIP, a software-writable bit, mcause=1) as a private channel -- the exact
-// analog of the host sim's raise(SIGUSR1). Masking is a software bitmask (the sim's
-// irq_masked twin); a raise on a masked line is dropped. A real device-interrupt
-// receive path (a PLIC over meip) is a separate, driver-era concern (none yet).
+// arch_irq_inject fakes a device firing -- test/bench scaffolding (arch.h). It masks
+// with a software bitmask (a raise on a masked line is dropped) and records the
+// logical line in g_inject_line, then hands the actual raise to a chip-overridable
+// delivery hook (arch_rv_inject_deliver). ONE physical doorbell carries every logical
+// line; g_inject_line tells the trap which line it was -- so arch_irq_mask/unmask
+// stay pure-software and are decoupled from the physical interrupt.
 //
-// SSIP needs S-mode, present on the QEMU virt CPU (the run target). The ESP32-C6 is
-// M/U-only (no SSIP); when it is brought up on silicon, inject routes to an
-// interrupt-matrix "from-CPU" line instead -- the C6 is build-only now and runs no
-// injected-IRQ tests, so the SSIP path is exercised only where it exists.
+// virt default: the SUPERVISOR SOFTWARE interrupt (mip.SSIP, a software-writable bit,
+// mcause=1) as a private channel (RISC-V gives no software-raise of a real PLIC line;
+// QEMU models that faithfully). SSIP needs S-mode, present on the QEMU virt CPU.
+//
+// ESP32-C6 override (chip_esp32c6.cc): the C6 HP core is M/U-only (no SSIP), so its
+// override raises a real machine interrupt via the interrupt matrix + INTPRI local
+// controller -- a FROM_CPU source routed to a dedicated CPU interrupt ID. That ID
+// vectors here as mcause=<ID> (the C6 reports mcause = interrupt ID, not the standard
+// mcause=11), demuxed to .Lext in switch.S -> kickos_rv_ext_dispatch below.
 namespace
 {
     constexpr uint32_t MIP_SSIP = 1u << 1;
-    volatile uint32_t g_irq_masked = 0;  // bit set = line masked (default: unmasked)
+    // bit set = line masked. All lines start MASKED at reset (the arch.h reset
+    // contract, matching the NVIC/RX silicon posture); a driver unmasks its line
+    // (arch_irq_unmask, or irq_register) before use.
+    volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     volatile int g_inject_line = -1;     // the pending software-injected line
 }
 
@@ -255,6 +278,21 @@ void arch_irq_unmask(int line)
     arch_irq_restore(s);
 }
 
+// The chip's delivery hook: raise the physical doorbell. Weak default = the virt
+// SSIP path; the ESP32-C6 overrides it (interrupt matrix FROM_CPU source). Keeping
+// the default here means the qemu-virt inject path is byte-for-byte unchanged.
+__attribute__((weak)) void arch_rv_inject_deliver(int line)
+{
+    (void)line; // ONE doorbell for all lines; the trap reads g_inject_line
+    __asm volatile("csrs mip, %0" ::"r"(MIP_SSIP) : "memory");
+}
+
+// The chip's end-of-interrupt hook, run at the head of the external-doorbell trap
+// (.Lext) BEFORE the line's ISR, so a level-triggered source is de-asserted and does
+// not re-fire on mret. Weak no-op default (the virt SSIP path clears its own pending
+// in kickos_rv_dispatch_soft; the C6 overrides this).
+__attribute__((weak)) void arch_rv_ext_eoi(void) {}
+
 void arch_irq_inject(int irq)
 {
     if (irq < 0 or irq >= 32)
@@ -265,16 +303,31 @@ void arch_irq_inject(int irq)
     {
         return; // masked line: drop the raise (matches the sim/ARM/RX semantics)
     }
-    g_inject_line = irq; // set BEFORE pending, so the trap sees it
-    __asm volatile("csrs mip, %0" ::"r"(MIP_SSIP) : "memory");
+    g_inject_line = irq; // set BEFORE the raise, so the trap sees it
+    arch_rv_inject_deliver(irq);
 }
 
-// SSIP dispatch (switch.S .Lssoft), ISR context. Clear the software interrupt, then
-// run the injected line's first-level ISR (kickos_isr_irq masks the line + wakes its
-// driver -- kernel/irq/irq.cc); the driver re-unmasks via irq_ack.
+// SSIP dispatch (switch.S .Lssoft, virt), ISR context. Clear the software interrupt,
+// then run the injected line's first-level ISR (kickos_isr_irq masks the line + wakes
+// its driver -- kernel/irq/irq.cc); the driver re-unmasks via irq_ack.
 void kickos_rv_dispatch_soft(void)
 {
     __asm volatile("csrc mip, %0" ::"r"(MIP_SSIP) : "memory");
+    int line = g_inject_line;
+    g_inject_line = -1;
+    if (line >= 0)
+    {
+        kickos_isr_irq(line);
+    }
+}
+
+// External-doorbell dispatch (switch.S .Lext), ISR context. Only reached on a chip
+// whose arch_rv_inject_deliver raises a real machine external interrupt (the C6).
+// EOI the chip's controller source first (so a level source cannot re-fire), then run
+// the injected line's ISR -- identical downstream handling to the SSIP path.
+void kickos_rv_ext_dispatch(void)
+{
+    arch_rv_ext_eoi();
     int line = g_inject_line;
     g_inject_line = -1;
     if (line >= 0)
@@ -290,12 +343,76 @@ void arch_idle_wait(void)
 }
 
 // --- Unhandled trap (switch.S .Lfault): a fault is a genuine bug at M1 --------
-// Exit loudly with a distinct status so a QEMU/CTest run reports it rather than
-// hanging. arch_shutdown is chip-provided (semihosting exit on virt).
-void kickos_rv_unhandled_trap(void)
+// The .Lfault shim reads the trap CSRs and passes them here. Dump the context, then
+// hand off to the shared dead-end (blink on real HW, exit with a fault status on
+// QEMU/virt so a CTest run reports it rather than hanging). ecall (mcause 8/11) is
+// demuxed before .Lfault, so it never reaches this reporter.
+void kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
+                            uint32_t mstatus)
 {
-    arch_shutdown(139);
+    kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
+    char const* what = "trap";
+    if (mcause == 0)
+    {
+        what = "instruction address misaligned";
+    }
+    else if (mcause == 1)
+    {
+        what = "instruction access fault";
+    }
+    else if (mcause == 2)
+    {
+        what = "illegal instruction";
+    }
+    else if (mcause == 3)
+    {
+        what = "breakpoint";
+    }
+    else if (mcause == 4)
+    {
+        what = "load address misaligned";
+    }
+    else if (mcause == 5)
+    {
+        what = "load access fault";
+    }
+    else if (mcause == 6)
+    {
+        what = "store address misaligned";
+    }
+    else if (mcause == 7)
+    {
+        what = "store access fault";
+    }
+    else if (mcause == 12)
+    {
+        what = "instruction page fault";
+    }
+    else if (mcause == 13)
+    {
+        what = "load page fault";
+    }
+    else if (mcause == 15)
+    {
+        what = "store page fault";
+    }
+    ::kickos::kprintf("\n=== RISC-V TRAP (%s) ===\n", what);
+#if KICKOS_PANIC_DUMP
+    ::kickos::kprintf("  mcause=0x%x mepc=0x%x\n", mcause, mepc);
+    ::kickos::kprintf("  mtval=0x%x mstatus=0x%x\n", mtval, mstatus);
+#else
+    (void)mepc;
+    (void)mtval;
+    (void)mstatus;
+#endif
+    kfault_terminate();
 }
+
+// Whether this core implements the mcounteren CSR. Weakly true (SiFive/QEMU virt);
+// a chip whose core traps on `csrw mcounteren` (e.g. the ESP32-C6 HP core) overrides
+// this to 0 so bring-up skips the write instead of taking an illegal-instruction
+// trap into the not-yet-usable handler.
+__attribute__((weak)) int arch_rv_has_mcounteren(void) { return 1; }
 
 // --- One-time core bring-up, called by the chip's arch_init -----------------
 // The chip has already set g_clint_msip (+ its timer base). Install the single
@@ -322,19 +439,27 @@ void kickos_rv32_init(void)
     __asm volatile("csrw mie, %0" ::"r"(mie) : "memory");
 
     // Let U-mode threads read cycle/time/instret (rdcycle in arch_trace_now, and a
-    // userspace clock read) instead of trapping. mcounteren bits CY|TM|IR.
-    __asm volatile("csrw mcounteren, %0" ::"r"(0x7u) : "memory");
+    // userspace clock read) instead of trapping. mcounteren bits CY|TM|IR. Skipped
+    // on cores that trap on the write (see arch_rv_has_mcounteren; the ESP32-C6 HP
+    // core is one -- it faults, hanging bring-up).
+    if (arch_rv_has_mcounteren() != 0)
+    {
+        __asm volatile("csrw mcounteren, %0" ::"r"(0x7u) : "memory");
+    }
 
-    // Permissive bootstrap PMP: ONE NAPOT entry covering the whole address space,
-    // R+W+X, U-accessible. RISC-V is fail-CLOSED -- once PMP is implemented (it is on
-    // this core), a U-mode access with NO matching entry FAULTS (unlike ARM, where
+    // Permissive bootstrap PMP: ONE entry covering the whole address space, R+W+X,
+    // U-accessible. RISC-V is fail-CLOSED -- once PMP is implemented (it is on this
+    // core), a U-mode access with NO matching entry FAULTS (unlike ARM, where
     // unprivileged is unrestricted until the MPU clamps it). So an unprivileged
     // thread can't even fetch its first instruction without this. It gives U-mode
     // full access (no isolation) -- exactly the ARM/RX M1 posture; M2's arch_mpu_apply
-    // refines per-thread PMP. pmpaddr0 all-ones = NAPOT match-everything; pmpcfg0
-    // byte0 = A=NAPOT(0x18) | X(0x4) | W(0x2) | R(0x1) = 0x1F.
+    // refines per-thread PMP. Use TOR (A=01, top = pmpaddr0<<2) rather than the
+    // all-ones NAPOT idiom: the ESP32-C6 PMP does not honor the all-ones-NAPOT
+    // match-everything special case (U-mode still takes an instruction-access fault),
+    // whereas TOR with pmpaddr0 = 0xFFFFFFFF covers [0, 0x4_00000000) on both it and
+    // QEMU virt. pmpcfg0 byte0 = A=TOR(0x08) | X(0x4) | W(0x2) | R(0x1) = 0x0F.
     __asm volatile("csrw pmpaddr0, %0" ::"r"(0xFFFFFFFFu) : "memory");
-    __asm volatile("csrw pmpcfg0, %0" ::"r"(0x1Fu) : "memory");
+    __asm volatile("csrw pmpcfg0, %0" ::"r"(0x0Fu) : "memory");
 }
 
 }

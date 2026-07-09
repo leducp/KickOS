@@ -26,6 +26,8 @@
  * is mepc+4.
  */
 
+#include <kickos/arch/rv_trap_ids.h>
+
     .equ F_MEPC,     0
     .equ F_MSTATUS,  4
     .equ F_RA,       8
@@ -135,7 +137,9 @@ trap_entry:
     li      t1, 7
     beq     t0, t1, .Ltimer         /* machine timer (mtip) */
     li      t1, 1
-    beq     t0, t1, .Lssoft         /* supervisor software (ssip) -> injected IRQ */
+    beq     t0, t1, .Lssoft         /* supervisor software (ssip) -> injected IRQ (virt) */
+    li      t1, KICKOS_RV_INJECT_DOORBELL_CPU_INT
+    beq     t0, t1, .Lext           /* the C6 external inject doorbell (rv_trap_ids.h) */
     /* spurious: just return */
     j       .Lrestore
 
@@ -162,6 +166,23 @@ trap_entry:
     addi    t1, t1, 1
     sw      t1, 0(t0)
     call    kickos_rv_dispatch_soft
+    la      t0, g_isr_depth
+    lw      t1, 0(t0)
+    addi    t1, t1, -1
+    sw      t1, 0(t0)
+    j       .Lrestore
+
+/* --- External inject doorbell (a real machine interrupt via the C6 interrupt      */
+/* matrix; the C6 reports mcause = the CPU interrupt ID, here 31). Same ISR-context  */
+/* discipline as .Lssoft: kickos_rv_ext_dispatch EOIs the chip source, then runs the */
+/* injected line's kickos_isr_irq. MIE=0 throughout the trap, so a wake's pended     */
+/* msip switch fires only after mret, with g_isr_depth back to 0 (deterministic).    */
+.Lext:
+    la      t0, g_isr_depth
+    lw      t1, 0(t0)
+    addi    t1, t1, 1
+    sw      t1, 0(t0)
+    call    kickos_rv_ext_dispatch
     la      t0, g_isr_depth
     lw      t1, 0(t0)
     addi    t1, t1, -1
@@ -278,9 +299,17 @@ svc_trampoline:
     addi    sp, sp, FRAME
     mret
 
-/* --- Unhandled exception: report + halt (a fault is a genuine bug at M1). --- */
+/* --- Unhandled exception: dump the trap CSRs + hand off to the shared dead-end   */
+/* (a fault is a genuine bug at M1). mcause/mepc/mtval/mstatus are still live -- no */
+/* trap has been taken since the vector -- so read them straight into the args. The */
+/* saved frame is at sp (a valid stack for the call). kickos_rv_fault_report is      */
+/* [[noreturn]] (blink on real HW, exit on QEMU); the spin is a belt-and-braces stop. */
 .Lfault:
-    call    kickos_rv_unhandled_trap
+    csrr    a0, mcause
+    csrr    a1, mepc
+    csrr    a2, mtval
+    csrr    a3, mstatus
+    call    kickos_rv_fault_report
 1:  j       1b
 
 /* ------------------------------------------------------------------------- */

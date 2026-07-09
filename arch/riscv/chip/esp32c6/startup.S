@@ -7,7 +7,7 @@
  * (Reset_Handler: .data/.bss/init_array + arch_init + kmain). mtvec is installed
  * later by kickos_rv32_init (from arch_init).
  *
- * BUILD-ONLY: verified by build + image inspection; not yet run on silicon.
+ * Validated on ESP32-C6 silicon.
  */
 
     .section .text.init, "ax"
