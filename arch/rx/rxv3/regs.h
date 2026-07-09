@@ -48,10 +48,9 @@ namespace kickos
         constexpr uintptr_t ICU_IER_BASE = 0x00087200;
         // IPRr 4-bit per-source priority (UM sec.15.2.4 p.482). NOTE: the IPR index is
         // NOT the vector number in general -- the ICUD shares IPR entries per a
-        // source table (e.g. CMWI0 vector 30 => IPR006). For the lines this backend
-        // programs directly (the CMTW timer + SWINT) the chip/timer setup uses the
-        // documented index; the generic path below approximates index == line and
-        // is marked TODO where the shared-IPR table must be consulted on real HW.
+        // source table (e.g. CMWI0 vector 30 => IPR006). arch_irq_unmask maps
+        // vector -> IPR index via vector_to_ipr (arch_rxv3.cc); the lines the chip
+        // programs directly (the CMTW timer + SWINT) use the documented index.
         constexpr uintptr_t ICU_IPR_BASE = 0x00087300;
         // Software interrupt generation (UM sec.15.2.5 p.484): writing 1 to SWINTR.SWINT
         // pends the software interrupt (SWINT, vector 27) -- the only line software
