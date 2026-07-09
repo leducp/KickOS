@@ -145,27 +145,26 @@ _kickos_lx6_halt:
 
 /* ------------------------------------------------------------------------- */
 /* Unhandled synchronous exception (e.g. Coprocessor0Disabled from an FP insn   */
-/* in the integer-only build -- see chip_esp32.cc). Poke a fixed "XCPT\n" tag    */
-/* straight into the UART0 TX FIFO -- a raw MMIO store needs no stack and no C    */
-/* call, so it is safe from the exception vector (a0 is already free, saved in    */
-/* EXCSAVE1; a2/a3 belong to the doomed interruptee and may be clobbered) -- then */
-/* halt. Best-effort: assumes the ROM left UART0 up (it did). noreturn.           */
+/* in the integer-only build -- see chip_esp32.cc). Capture the fault special      */
+/* registers, then make a WINDOWED C call into the reporter to dump them over the  */
+/* console before the shared dead-end. Entered EXCM=1 with a0 = EXCCAUSE (read by   */
+/* _UserExceptionVector) and a1 = the interruptee SP. The four special regs go into */
+/* the call4 argument registers (a6-a9) BEFORE the window ABI is re-enabled: a later */
+/* window spill overwrites EPC1/EXCVADDR, but the captured GPR copies survive. Best- */
+/* effort: assumes a1 is usable (a stack fault can't be dumped). noreturn.          */
 /* ------------------------------------------------------------------------- */
     .align 4
     .global _kickos_lx6_fault
     .type _kickos_lx6_fault, @function
 _kickos_lx6_fault:
-    movi    a2, 0x3FF40000        /* UART0_FIFO */
-    movi    a3, 'X'
-    s32i    a3, a2, 0
-    movi    a3, 'C'
-    s32i    a3, a2, 0
-    movi    a3, 'P'
-    s32i    a3, a2, 0
-    movi    a3, 'T'
-    s32i    a3, a2, 0
-    movi    a3, 10                /* '\n' */
-    s32i    a3, a2, 0
+    mov     a6, a0                /* arg0 = EXCCAUSE (from _UserExceptionVector) */
+    rsr.ps  a9                    /* arg3 = PS at fault (EXCM=1); read before we change it */
+    rsr.excvaddr a7               /* arg1 = EXCVADDR */
+    rsr.epc1 a8                   /* arg2 = EPC1 (faulting PC) */
+    movi    a0, PS_BOOT           /* WOE=1, UM=1, INTLEVEL=15, EXCM=0: C-callable posture */
+    wsr.ps  a0
+    rsync
+    call4   kickos_lx6_fault_report
     j       _kickos_lx6_halt
     .size _kickos_lx6_fault, .-_kickos_lx6_fault
 
