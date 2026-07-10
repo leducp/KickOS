@@ -33,6 +33,8 @@ int main(int, char**)
     __asm volatile(".word 0x00000000"); // all-zero encoding: illegal on RV32
 #elif defined(__arm__) || defined(__thumb__)
     __asm volatile("udf #0");
+#elif defined(__RX__)
+    __asm volatile("brk"); // RX has no undefined-instruction mnemonic; BRK traps via rvector[0]
 #else
     __builtin_trap(); // host/sim: x86 ud2 -> SIGILL -> on_sigill reporter
 #endif

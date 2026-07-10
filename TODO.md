@@ -114,6 +114,31 @@ Divergences worth closing for M1, most impactful first:
 - **M3 — capabilities + authenticated grants** (seL4-principled object model), **and
   user-selectable CPU clock / low-power mode** (needs explicit per-chip clock bring-up
   first, from the audit above).
+  - **`sys_cpu_clock_hz()` syscall** — expose the running core clock (Hz) to userspace.
+    Today the bench hardwires the kernel's `SystemCoreClock` for its cycle→ns math; a
+    read syscall lets any app convert cycle counts / interpret timings itself, and is the
+    natural read-side precursor to the user clock-select above. (Small; not an M1 blocker.)
+- **M2 — worst-case ISR latency (shorten interrupt-masked critical sections).** The
+  uniform bench surfaced that under sustained syscall load the kernel spends too long
+  masked. Ranked plan (see `M1_state.md` §3.1 + the crit-section analysis):
+  - [x] **R2** — armv7m: skip the redundant BASEPRI raise + DSB/ISB on nested IrqLocks
+        (only the outer raise needs them). Landed `5ba57fd`. Correct (ctests green) but
+        **below the current bench's noise floor** — see the measurement gap below.
+  - [ ] **R1** — thread a single `now` through switch_to->ktime_rearm->arch_timer_arm +
+        arm_slice (kills the 3x arch_clock_now pileup per RR switch; on RX each is a
+        nested lock + two 64-bit divides). Cross-arch signature change.
+  - [ ] **R3** — fold the min-delta clock read past arch_timer_arm's idempotency guard
+        (so an unchanged-deadline re-arm reads the clock zero times). Combine with R1.
+        R3b: add the idempotent-arm guard to xtensa.
+  - [ ] **R6** — xtensa: its cooperative switch runs INLINE under RSIL (masked), unlike
+        the 4 other arches that defer the register save/restore to an unmasked handler.
+        The one structural outlier; **high risk** (touches windowed-switch atomicity).
+  - **Measurement gap (do first):** the current bench measures throughput + *best-case*
+    IRQ entry (reporter injects while uncontended), NOT masked-span delay — so R1/R2/R6
+    are not demonstrable with it. Need a worst-case-ISR-latency probe (inject while a
+    masked syscall span is in flight) to justify + validate these before landing R1/R6.
+  - Note: the earlier **bench self-report starvation is already FIXED** by the
+    reporter-as-root/woken-by-workload redesign (not a timer sleep).
 - **Driver era (12b)** — userspace UART/console driver takes the peripheral as a
   capability; kernel relinquishes it (`console_tx_deinit`), panic path moves to a
   kernel-retained transport. See `docs/console.md` "Future".

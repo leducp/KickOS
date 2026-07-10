@@ -74,6 +74,24 @@
     .type xtensa_switch, @function
 xtensa_switch:
     entry   a1, 32
+#if KICKOS_BENCH
+    /* Bench: bank the PREVIOUS switch's cost (end-start), then stamp this switch's
+       start. Done here in `from`'s windowed context -- a call is safe (same as the
+       trace hook); the windowed exit below cannot host a call, so the cost lands one
+       switch late (irrelevant over millions of switches). a2=from/a3=to survive the
+       call4 (they sit below the callee window). */
+    movi    a7, g_bench_sw_end
+    l32i    a7, a7, 0
+    beqz    a7, .Lbench_prime         /* no previous switch yet */
+    movi    a6, g_bench_sw_start
+    l32i    a6, a6, 0
+    sub     a6, a7, a6                /* a6 = delta = end - start (call4 arg0) */
+    call4   kickos_bench_switch_done
+.Lbench_prime:
+    rsr.ccount a7
+    movi    a6, g_bench_sw_start
+    s32i    a7, a6, 0                 /* stamp this switch's start */
+#endif
 #if KICKOS_TELEMETRY
     /* SWITCH record, emitted before any state save while still in `from`'s windowed
        context. from=a2 / to=a3 are the definitive switch args (no shared-state
@@ -115,6 +133,13 @@ xtensa_switch:
     l32i    a1, a3, CTX_SP        /* a1 = to->sp   (switch stacks) */
     l32i    a4, a3, CTX_PS        /* to->ps */
     l32i    a0, a3, CTX_PC        /* to->pc (return addr, carries CALLINC) */
+#if KICKOS_BENCH
+    /* Stamp this switch's END (COOP path). a5/a6 are dead here (retw discards this
+       window); the next switch entry banks (end - start). */
+    rsr.ccount a5
+    movi    a6, g_bench_sw_end
+    s32i    a5, a6, 0
+#endif
     wsr.ps  a4
     rsync
     retw

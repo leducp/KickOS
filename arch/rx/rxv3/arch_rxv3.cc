@@ -374,11 +374,13 @@ void arch_timer_arm(uint64_t deadline_ns)
     // one-shot is already running toward this exact deadline, leave CMWCNT alone --
     // resetting it to 0 each switch (players ping-ponging faster than the deadline)
     // means the compare is never reached and a far deadline (e.g. a reporter's 0.5s
-    // sleep) starves. RX-local: ARM SysTick / riscv mtimecmp tolerate the re-arm and
-    // are left on their own path (a generic guard mis-fires on riscv's quantized
-    // mtime -- see the tickless timer notes).
-    if (deadline_ns == g_rx_armed_ns and
-        (reg16(CMTW0_BASE + CMTW_CMWSTR) & CMWSTR_STR) != 0)
+    // sleep) starves. "Running toward it" is tracked purely in software: the timer
+    // ISR sets g_rx_armed_ns = ~0 before it re-arms, so its own re-arm is never
+    // skipped, and a reschedule with the same pending deadline is. (An earlier guard
+    // read CMWSTR.STR to decide this, but that HW readback raced at full switch speed
+    // -- the guard intermittently failed, reset CMWCNT, and the far deadline starved
+    // on silicon whenever the CPU never idled.)
+    if (deadline_ns == g_rx_armed_ns)
     {
         return;
     }
@@ -535,6 +537,7 @@ __attribute__((interrupt)) void kickos_rx_timer_isr(void)
 {
     reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0; // clear the request flag
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;  // one-shot: stop until re-armed
+    g_rx_armed_ns = ~0ull;                // invalidate so kickos_isr_timer's re-arm reprograms
     g_in_isr++;
     kickos_isr_timer(); // re-arms the next deadline
     g_in_isr--;

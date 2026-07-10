@@ -86,6 +86,14 @@ extern "C"
     // differs per chip (qemu-virt 0x0200_0000; the C6 exposes its own).
     volatile uint32_t* g_clint_msip = nullptr;
 
+#if KICKOS_BENCH
+    // Bench cycle source. Default null -> switch.S/bench use `rdcycle`. A core whose
+    // `rdcycle` traps (the ESP32-C6 HP core has no Zicntr counters) points this at a
+    // free-running MMIO counter instead (its core-clocked CLINT MTIME low word), so
+    // the switch bracket reads that. Set by the chip before the first switch.
+    volatile uint32_t* g_bench_cycle_src = nullptr;
+#endif
+
     // switch.S entry points + the kernel/user thread-return trampolines.
     void trap_entry(void);
     void kickos_rv_mtvec(void); // the vectored mtvec table (switch.S)

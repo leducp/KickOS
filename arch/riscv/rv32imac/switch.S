@@ -194,8 +194,15 @@ trap_entry:
 /* the outgoing thread's s0/s1 are already saved to its frame above.             */
 .Lswitch:
 #if KICKOS_BENCH
-    rdcycle t0                      /* stamp switch entry (bench smoke metric) */
-    la      t1, g_bench_sw_start
+    /* stamp switch entry. g_bench_cycle_src != 0 -> read that MMIO counter (a core
+       whose rdcycle traps, e.g. the C6, points it at CLINT MTIME); else rdcycle. */
+    la      t0, g_bench_cycle_src
+    lw      t0, 0(t0)
+    beqz    t0, 6f
+    lw      t0, 0(t0)
+    j       7f
+6:  rdcycle t0
+7:  la      t1, g_bench_sw_start
     sw      t0, 0(t1)
 #endif
     la      t0, g_clint_msip
@@ -215,8 +222,13 @@ trap_entry:
     lw      s1, 4(t3)               /* to_tid = incoming->trace_tid */
 #endif
 #if KICKOS_BENCH
-    rdcycle t0                      /* delta = now - entry -> bench (before telemetry) */
-    la      t1, g_bench_sw_start
+    la      t0, g_bench_cycle_src   /* delta = now - entry -> bench (before telemetry) */
+    lw      t0, 0(t0)
+    beqz    t0, 8f
+    lw      t0, 0(t0)
+    j       9f
+8:  rdcycle t0
+9:  la      t1, g_bench_sw_start
     lw      t1, 0(t1)
     sub     a0, t0, t1
     call    kickos_bench_switch_done

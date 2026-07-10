@@ -164,9 +164,18 @@ void arch_context_init(struct arch_context* ctx,
 arch_irq_state_t arch_irq_save(void)
 {
     uint32_t prev;
-    uint32_t lock = PRIO_LOCK_BASEPRI;
     __asm volatile("mrs %0, basepri" : "=r"(prev));
-    __asm volatile("msr basepri, %0" ::"r"(lock) : "memory");
+    // Nested-lock fast path: if BASEPRI already masks at least as strongly as the
+    // lock, the section is already in effect -- no BASEPRI change and thus no barrier
+    // is needed. Skips the DSB+ISB (a pipeline flush) on every nested IrqLock; the hot
+    // syscall->sem->wake->reschedule->ktime_rearm path nests ~6-8. Lower BASEPRI value
+    // = stronger mask; 0 = no mask. (A weaker prev, e.g. a device band 0x30, still
+    // raises to the lock below.)
+    if (prev != 0 and prev <= PRIO_LOCK_BASEPRI)
+    {
+        return prev;
+    }
+    __asm volatile("msr basepri, %0" ::"r"(PRIO_LOCK_BASEPRI) : "memory");
     // Raising BASEPRI is not self-synchronizing: without these barriers an
     // interrupt could be taken on the following instruction under the OLD mask
     // (ARMv7-M ARM, "Barriers" -- a BASEPRI write needs DSB+ISB to take effect).
