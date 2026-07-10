@@ -19,10 +19,12 @@ foreach(_f sync/sync.cc time/time.cc syscall/syscall.cc irq/irq.cc)
   endif()
 endforeach()
 
-# Cycle-accurate microbenchmark accumulator (paired with the cycle-counter bracket
-# in switch.S); only in KICKOS_BENCH builds. armv7m (DWT/STIR) and rv32imac (rdcycle
-# + arch_irq_inject) supply the counter/trigger via a __riscv branch in bench.cc.
-if(KICKOS_BENCH AND (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "rv32imac" OR KICKOS_ARCH STREQUAL "rxv3"))
+# Microbenchmark accumulator (paired with the cycle-counter bracket in switch.S).
+# Built for every arch in a KICKOS_BENCH build: it supplies the throughput metric's
+# helpers everywhere, plus the cycle accumulator + IRQ trigger on the arches that have
+# a counter (armv7m DWT/STIR, rv32imac rdcycle/MTIME + inject, rxv3 CMTW1, xtensa
+# CCOUNT). On M0/sim it links but the cycle path is inert (switch.S brackets nothing).
+if(KICKOS_BENCH)
   list(APPEND KICKOS_KERNEL_SOURCES bench/bench.cc)
 endif()
 

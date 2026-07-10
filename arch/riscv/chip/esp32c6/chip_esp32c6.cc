@@ -408,6 +408,12 @@ void arch_init(void)
     wdt_disable_all(); // or the ROM-armed watchdogs reset the part in seconds
 
     g_clint_msip = r32p(CLINT_MSIP);   // the deferred-switch software interrupt
+#if KICKOS_BENCH
+    // The C6 traps on `rdcycle`; give the bench the core-clocked CLINT MTIME low word
+    // (== CPU cycles at this PLL) as its free-running counter. Set before any switch.
+    extern volatile uint32_t* g_bench_cycle_src;
+    g_bench_cycle_src = r32p(CLINT_MTIME);
+#endif
     arch_timer_disarm();               // MTIMECMP = max: no timer fire until armed
     r32(CLINT_MTIMECTL) = MTIMECTL_MTCE | MTIMECTL_MTIE; // start the counter + enable
 

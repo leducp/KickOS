@@ -32,10 +32,12 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
   add_subdirectory(fp_switch)
 endif()
 
-# Context-switch microbenchmark: only in KICKOS_BENCH builds (needs the PendSV
-# CYCCNT bracket + the kernel accumulator). armv7m + DWT boards (and QEMU for the
-# plumbing; its DWT may be frozen, so the real number comes from silicon).
-if(KICKOS_BENCH AND (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "rv32imac" OR KICKOS_ARCH STREQUAL "rxv3"))
+# Context-switch microbenchmark. Built for EVERY arch in a KICKOS_BENCH build: the
+# throughput metric (ctx-switches/s via the monotonic clock) is universal. Per-switch
+# cycle cost + IRQ latency are reported only where switch.S brackets the swap with a
+# cycle counter (armv7m DWT, rxv3 CMTW1, rv32imac rdcycle/MTIME-seam, xtensa CCOUNT);
+# on M0 / sim / frozen-QEMU-DWT the bench reports throughput only (scnt==0 at runtime).
+if(KICKOS_BENCH)
   add_subdirectory(bench)
 endif()
 
