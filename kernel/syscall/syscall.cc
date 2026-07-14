@@ -101,6 +101,17 @@ namespace kickos
             {
                 return -1;
             }
+            // Caller-provided stack (optional): validate BEFORE allocating a slot, so a bad
+            // one is a clean spawn error, not a leaked slot / silent overflow. stack_base==0
+            // means "use the kernel default". A provided stack must clear the floor and be
+            // aligned (base AND size KICKOS_STACK_ALIGN-aligned, so the initial top is aligned).
+            if (p->stack_base != nullptr
+                and (p->stack_size < KICKOS_MIN_STACK_SIZE
+                     or (reinterpret_cast<uintptr_t>(p->stack_base) & (KICKOS_STACK_ALIGN - 1)) != 0
+                     or (p->stack_size & (KICKOS_STACK_ALIGN - 1)) != 0))
+            {
+                return -1;
+            }
             Kernel& k = kernel();
             // Reclaim an EXITED slot or bump-allocate (ThreadPool::alloc). Single-core: an
             // EXITED thread is guaranteed off-CPU by the time any other thread reaches here
@@ -130,8 +141,16 @@ namespace kickos
             attr.mem_base = p->mem_base;
             attr.mem_size = p->mem_size;
 
-            thread_create(&k.threads.slots[i], p->entry, p->arg,
-                          k.threads.stacks[i], KICKOS_USER_STACK_SIZE, attr);
+            // Caller's stack if given (a thread's stack is a userspace concern), else the
+            // kernel's default per-thread slab.
+            void* stack = k.threads.stacks[i];
+            size_t stack_size = KICKOS_USER_STACK_SIZE;
+            if (p->stack_base != nullptr)
+            {
+                stack = p->stack_base;
+                stack_size = p->stack_size;
+            }
+            thread_create(&k.threads.slots[i], p->entry, p->arg, stack, stack_size, attr);
             return k.threads.handle_for(i);
         }
 
