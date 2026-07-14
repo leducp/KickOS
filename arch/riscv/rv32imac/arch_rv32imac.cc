@@ -29,7 +29,7 @@
 // Fault reporting (see the .Lfault shim in switch.S): the reporter calls kpanic_enter
 // first, which masks IRQs, forces the synchronous polled writer, and flushes the ring
 // -- so the dump is safe from the fault path whether or not the chip armed a buffered
-// console (today none on RISC-V does; the guard is premise-free regardless).
+// console (the ESP32-C6 now arms one via its UART0 TX ring; qemu-virt stays polled).
 // kfault_terminate is the shared panic/fault dead-end (kernel.h).
 namespace kickos
 {

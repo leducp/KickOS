@@ -88,13 +88,20 @@ namespace
     constexpr uint32_t UART_TXFIFO_CNT_S = 16;
     constexpr uint32_t UART_TXFIFO_CNT_MASK = 0xFFu;
     constexpr uint32_t UART0_TXFIFO_LEN = 128;
-    // UART0 TX-empty interrupt (buffered console ring). TXFIFO_EMPTY asserts while the TX
-    // FIFO count <= CONF1.TXFIFO_EMPTY_THRHD (ROM default 96) -- a level source cleared by
-    // filling the FIFO or acking INT_CLR. Routed to a real CPU int (arch_rv_hw_unmask).
+    constexpr uint32_t UART0_TXFIFO_LIMIT = UART0_TXFIFO_LEN - 2; // FIFO-full mark (both paths)
+    // UART0 TX-empty interrupt (buffered console ring). TXFIFO_EMPTY asserts while the TX FIFO
+    // count <= CONF1.TXFIFO_EMPTY_THRHD -- a LEVEL source (TRM §1.6): cleared from source, by
+    // filling the FIFO past the threshold or disabling INT_ENA. We program the threshold (own
+    // the register, don't trust ROM) and route it to a real CPU int (arch_rv_hw_unmask).
     constexpr uintptr_t UART0_INT_ENA = 0x6000000C;
     constexpr uintptr_t UART0_INT_CLR = 0x60000010;
+    constexpr uintptr_t UART0_CONF1 = 0x60000024;
     constexpr uint32_t UART_TXFIFO_EMPTY_INT = 1u << 1;
-    constexpr int UART0_TX_IRQ_LINE = 16;    // logical kernel IRQ line for the ring drain
+    constexpr uint32_t UART_TXFIFO_EMPTY_THRHD_S = 8;     // CONF1[15:8]
+    constexpr uint32_t UART_TXFIFO_EMPTY_THRHD_MASK = 0xFFu;
+    constexpr uint32_t CONSOLE_TXFIFO_EMPTY_THRHD = 32;   // re-fire when the FIFO drains to <=32
+    constexpr int UART0_TX_IRQ_LINE = 16;                 // logical kernel IRQ line, ring drain
+    constexpr uint32_t CONSOLE_TX_SIZE = 512;             // ring; power of two; > kprintf's 256B buf
 
     // --- Watchdogs (TRM ch.14 MWDT, ch.15 RWDT/SWD). ALL must be disabled or the
     //     ROM-armed WDTs reset the part within seconds. Common unlock key 0x50D83AA1.
@@ -299,17 +306,25 @@ namespace
 extern "C"
 {
 
-// --- Console: UART0, bridged to the host by the on-board CH343P. Bounded poll on
-//     the TX FIFO count so a stalled UART drops bytes instead of hanging the kernel.
-//     (The native USB-Serial-JTAG at 0x6000_F000 does not reliably deliver output
-//     once the app takes over -- it needs the host CDC port actively draining and
-//     re-enumerates on every reset; UART0 has neither problem.)
+// --- Console: UART0, bridged to the host by the on-board CH343P. Buffered: thread-context
+//     output goes through the IRQ-drained ring (arch_console_write -> console_tx_write);
+//     the panic/fault/pre-arm path uses the bounded polled arch_console_write_sync below.
+//     (The native USB-Serial-JTAG at 0x6000_F000 does not reliably deliver output once the
+//     app takes over -- host-CDC-drain gated + re-enumerates on reset; UART0 has neither.)
 void arch_console_write(char const* buf, size_t n)
+{
+    console_tx_write(buf, n); // buffered ring; the routing guard (console.cc) keeps this thread-only
+}
+
+// Synchronous polled writer -- the panic / fault / pre-arm path (console.cc picks it when the
+// ring is unarmed or in ISR/panic context). Overrides the weak default that would otherwise
+// re-enter the buffered arch_console_write. Bounded so a wedged UART cannot hang the panic path.
+void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
     {
         uint32_t spin = 0;
-        while (((r32(UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_MASK) >= UART0_TXFIFO_LEN - 2)
+        while (((r32(UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_MASK) >= UART0_TXFIFO_LIMIT)
         {
             if (++spin > 200000u)
             {
@@ -379,7 +394,7 @@ void arch_rv_ext_eoi(void)
 // distinct from the software-inject doorbell). Level source: servicing clears it.
 int c6_tx_slot_free(void)
 {
-    if (((r32(UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_MASK) < UART0_TXFIFO_LEN)
+    if (((r32(UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_MASK) < UART0_TXFIFO_LIMIT)
     {
         return 1;
     }
@@ -396,14 +411,14 @@ void c6_tx_irq_disable(void)
     r32(UART0_INT_ENA) = r32(UART0_INT_ENA) & ~UART_TXFIFO_EMPTY_INT;
 }
 
-char console_tx_buf[2048]; // power of two; usable capacity 2047 (ample on this workhorse)
+char console_tx_buf[CONSOLE_TX_SIZE];
 console_tx_backend const c6_console_backend = {
     c6_tx_slot_free, c6_tx_push, c6_tx_irq_enable, c6_tx_irq_disable};
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
-    *size = 2048;
+    *size = CONSOLE_TX_SIZE;
     *irq_line = UART0_TX_IRQ_LINE;
     return &c6_console_backend;
 }
@@ -419,6 +434,17 @@ void arch_rv_hw_unmask(int line)
     {
         return;
     }
+    // The console owns UART0: silence EVERY UART source + ack any ROM-left latch BEFORE arming
+    // CPU int 30, else a stale ROM-enabled source (RX-full, break, ...) would storm the level-1
+    // dispatcher the moment MIE is set. Program the TX-empty threshold too (own the register --
+    // do not trust the ROM default). console_tx_write re-enables ONLY TXFIFO_EMPTY, later.
+    r32(UART0_INT_ENA) = 0;
+    r32(UART0_INT_CLR) = 0xFFFFFFFFu;
+    uint32_t conf1 = r32(UART0_CONF1);
+    conf1 &= ~(UART_TXFIFO_EMPTY_THRHD_MASK << UART_TXFIFO_EMPTY_THRHD_S);
+    conf1 |= (CONSOLE_TXFIFO_EMPTY_THRHD & UART_TXFIFO_EMPTY_THRHD_MASK) << UART_TXFIFO_EMPTY_THRHD_S;
+    r32(UART0_CONF1) = conf1;
+    // Route the UART0 matrix source -> CPU int 30 (level, priority), enable at the PLIC + mie.
     r32(INTMTX_UART0_MAP) = KICKOS_RV_DEV_CPU_INT;
     r32(PLIC_MXINT_PRI_BASE + 4u * KICKOS_RV_DEV_CPU_INT) = DOORBELL_PRIO;
     r32(PLIC_MXINT_TYPE) &= ~(1u << KICKOS_RV_DEV_CPU_INT);   // level (cleared from source)

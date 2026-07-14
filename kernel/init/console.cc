@@ -191,10 +191,10 @@ extern "C" __attribute__((weak, noreturn)) void kfault_terminate(void)
 }
 
 // Fallback synchronous writer. Every chip with a buffered console (K64F, XMC, RX72M,
-// ESP32, the STM32/RP2040/SAM3X fleet, and the sim) MUST override this with its
+// ESP32, ESP32-C6, the STM32/RP2040/SAM3X fleet, and the sim) MUST override this with its
 // polled writer -- otherwise the weak alias below routes back into the buffered
 // ring, and panic/fault output enqueues into a ring whose drain ISR is masked and
-// never runs. Polled-only chips (mps2/virt/nrf51/esp32c6) reuse arch_console_write,
+// never runs. Polled-only chips (mps2/virt/nrf51) reuse arch_console_write,
 // which is already their polled writer, so the weak default is correct for them.
 extern "C" __attribute__((weak)) void arch_console_write_sync(char const* buf, size_t n)
 {
