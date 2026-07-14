@@ -168,7 +168,7 @@ namespace kickos
             // park until the pended switch takes effect. (Running past here with the
             // switch merely pending is the bug this replaced: the old
             // KICKOS_UNREACHABLE executed, unmasked, before the deferred PendSV landed.)
-            for (;;)
+            while (true)
             {
                 arch_idle_wait();
             }
