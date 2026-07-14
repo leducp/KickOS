@@ -26,11 +26,9 @@ namespace kickos
     namespace
     {
         // --- Semaphore registry (generational slot pool, see slotpool.h) -----------
-        // The handle packs the slot index + a generation; on destroy the pool bumps
-        // that slot's generation, so a handle to a since-recycled slot fails to resolve
-        // -- the fail-loud fix for id reuse (ABA). The handle is opaque to userspace;
-        // sem_resolve() is the single validate-and-resolve chokepoint the M2 capability
-        // model (12b) later swaps for a unified handle table.
+        // The handle is opaque to userspace; sem_resolve() is the single validate-and-
+        // resolve chokepoint the M2 capability model (12b) later swaps for a unified
+        // handle table. (ABA/generation mechanics live in slotpool.h.)
         Semaphore* sem_resolve(int handle) { return kernel().sems.resolve(handle); }
 
         int sem_create(int initial)
@@ -343,6 +341,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-1);
             }
+            // Resolve + attach + unmask under one lock (like sem_wait/post): otherwise a
+            // concurrent sem_destroy between the resolve check and the attach could bind
+            // the line to an already-dead handle.
+            IrqLock lock;
             int irq = static_cast<int>(a0);
             int sem_handle = static_cast<int>(a1);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ or sem_resolve(sem_handle) == nullptr)

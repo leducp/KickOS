@@ -9,8 +9,7 @@
 // whose liveness is INTRINSIC (a slot is free iff its TCB.state == EXITED, maintained
 // by the scheduler as the single source of truth), migrates onto a liveness-policy
 // variant later (see the M2 handle-table roadmap) -- do NOT force a redundant used[]
-// bit onto it. The policy parameter is deliberately absent until that second case
-// lands (no speculative generality). Zero runtime cost: monomorphized per (T, N).
+// bit onto it. Zero runtime cost: monomorphized per (T, N).
 //
 // Not internally locked -- the caller serializes (IrqLock today; the one place to add
 // the SMP kernel lock later).
@@ -31,7 +30,7 @@ namespace kickos
     public:
         // Claim a free slot; returns its index, or -1 if the pool is full. The slot's
         // T is left as-is for the caller to initialize.
-        int alloc()
+        [[nodiscard]] int alloc()
         {
             for (int i = 0; i < N; i++)
             {
@@ -44,11 +43,21 @@ namespace kickos
             return -1;
         }
 
-        // Release the slot a (resolved, valid) handle names: bump its generation so
-        // outstanding handles to it stop resolving, then mark it free.
+        // Release the slot a handle names: bump its generation so outstanding handles
+        // to it stop resolving, then mark it free. Self-guards the index (a safety-
+        // critical primitive must not corrupt an adjacent slot on a malformed handle,
+        // even though callers resolve() first today).
         void free(int handle)
         {
+            if (handle < 0)
+            {
+                return;
+            }
             int const index = handle & ((1 << kIndexBits) - 1);
+            if (index >= N)
+            {
+                return;
+            }
             gen_[index]++;
             used_[index] = false;
         }
