@@ -116,15 +116,17 @@ board gets identical behaviour. Non-M2 work that improves coherence is done HERE
 | qemu-riscv | rv32imac / virt | QEMU | 14/14 | polled (semihosting) |
 | microbit | armv6m / nrf51 | QEMU | pass | polled (semihosting) |
 | XMC4800 | armv7m / xmc4800 | silicon | 14/14 (HW 2026-07-09) + HARD FAULT dump | ring + sync |
-| K64F | armv7m / mk64f | silicon | pass | ring + sync |
 | ESP32-WROOM | lx6 / esp32 | silicon | 14/14 (HW 2026-07-09) + XTENSA dump | ring |
-| ESP32-C6 | rv32imac / esp32c6 | silicon | runs (hello); one-shot TAP not capturable over USB-JTAG | polled (USB-JTAG) |
+| ESP32-C6 | rv32imac / esp32c6 | silicon | 14/14 (HW) + RISC-V TRAP dump | UART0/CH343P (native USB-JTAG flash-only) |
 | RX72M | rxv3 / rx72m | silicon | 14/14 (HW 2026-07-09; sw IRQ controller) | ring; console ttyUSB0/FT232 |
-| blackpill, f411disco | armv7m / stm32f411 | build-only (-st) | build-clean | ring (build-only) |
-| bluepill(-c8) | armv7m / stm32f103 | build-only (-st) | build-clean | ring (build-only) |
-| f302nucleo | armv7m / stm32f302 | build-only (-st) | build-clean | ring (build-only) |
-| due | armv7m / sam3x8e | build-only (-st) | build-clean | ring (build-only) |
-| picopi | armv6m / rp2040 | build-only (-st) | build-clean | ring (build-only) |
+| f411disco | armv7m / stm32f411 | silicon | 14/14 (HW 2026-07-14) + all apps + HARD FAULT + LED + bench | polled (ext UART PA2) |
+| blackpill | armv7m / stm32f411 | silicon | 14/14 (HW 2026-07-14) + bench | polled (ext UART PA2) |
+| f302nucleo | armv7m / stm32f302 | silicon | 13/14 (HW 2026-07-14; test 11 = 4 K alloc > 16 K) + bench | ST-Link VCP |
+| bluepill | armv7m / stm32f103 | silicon | 13/14 (HW 2026-07-14; test 11 = 4 K alloc > 10 K clone) | polled (ext UART PA9) |
+| picopi | armv6m / rp2040 | silicon | 14/14 (HW 2026-07-09) | UART0/GP0 |
+| bluepill-c8 | armv7m / stm32f103 | build-only (-st) | build-clean | build-only (20 K genuine variant) |
+| K64F | armv7m / mk64f | prior silicon; M2 re-confirm | pass (2026-07-09 baseline) | ring + sync |
+| due | armv7m / sam3x8e | RETIRED unit (port proven 2026-07-09) | — (unit peripheral-I/O fault) | — |
 
 Every board has a `<board>-st` preset (base + `KICKOS_ENABLE_SELFTEST=ON`) so the
 full 14-test suite is a first-class, per-board config -- not an ad-hoc `-D`. The

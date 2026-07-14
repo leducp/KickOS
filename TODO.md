@@ -1,11 +1,14 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # KickOS TODO
 
-Living checklist of what's left for **M1** (the current uniformity / bring-up
-milestone: every board boots, has a console, runs the selftest, panics visibly, and
-runs at its true clock). Check items off as they land — this file, not memory, is the
-source of truth for "where are we". M2 (MPU enforcement) and M3 (capabilities +
-clock-select) items are parked at the bottom so they aren't lost.
+**M1 VALIDATION COMPLETE (2026-07-14)** — 10 boards on silicon (5 ISAs) + 3 emulator gates
+green; every board boots, has a console, runs the selftest, panics visibly, and runs at its
+true (or safely-degraded) clock. Full record in `M1_state.md`. The items still open below are
+either optional perf, deferred to M2, or non-gating HW-unverified notes — none block M1.
+
+Living checklist for **M1** (uniformity / bring-up). Check items off as they land — this file,
+not memory, is the source of truth for "where are we". M2 (MPU enforcement) and M3
+(capabilities + clock-select) items are parked at the bottom so they aren't lost.
 
 Durable background lives in the auto-memory (`kickos-clock-audit`,
 `kickos-panic-console-review`, `m2-m3-roadmap-split`, per-board `*-hw-*`) and in
@@ -29,13 +32,15 @@ update `SystemCoreClock` in the same step so the ns↔tick math stays coherent.
       physically impossible at 12); XIP survives the clk_sys switch (boot2 SCK=31.25 MHz
       risk resolved — code runs from flash at 125). Watchdog `/12` tick kept on clk_ref=XOSC
       so the 1 MHz TIMER stays correct.
-- [x] **SAM3X8E / Arduino Due — WORKING on silicon 2026-07-09** (selftest 14/14, console
-      alive, 84 MHz PLL). The "dead console / experimental" status was NOT the crystal or a
-      HW fault: the board kept booting the ROM SAM-BA monitor because flashing used a soft
-      reset. Two fixes: (1) `flash-bossac.sh` now passes `-b` (set GPNVM1 boot-from-flash);
-      (2) the SAM3X latches boot mode at NRST/power-on — press RESET / power-cycle after
-      flashing (a soft `-R` isn't enough). Crystal-race fix (bounded `pmc_wait` + MOSCXTST
-      margin + RC fallback) also landed as part of the bring-up. Validated via J-Link SWD.
+- [x] **SAM3X8E / Arduino Due — port validated on silicon 2026-07-09** (selftest 14/14,
+      84 MHz PLL, `-b` GPNVM1 boot-from-flash + physical-RESET flashing flow). Crystal-race
+      fix (bounded `pmc_wait` + MOSCXTST margin + RC fallback) landed as part of bring-up.
+      **UNIT RETIRED 2026-07-14** (removed from the available-HW list): the physical board
+      developed a peripheral-I/O fault — core + flash-controller + native USB (SAM-BA) all
+      verified working, but PIO output (PB27 LED) won't toggle and the UART console is dead,
+      even under a provably-correct bare-metal blink flashed via two independent paths → HW,
+      not KickOS. Likely marginal all along (the MOSCXTST margin is a documented `GUESS`).
+      Port stays proven; this unit is not a reliable target. See `docs/boards.md`.
 - [x] **XMC4800 120 → 144 MHz** — DONE, validated on silicon 2026-07-09: selftest 14/14
       at 144 over the J-Link VCOM (ttyACM0); 144 confirmed by the spin ratio (1938 ms @144
       vs 2306 ms @120 = 1.19 ≈ 144/120). VCO 288/K2DIV=2; flash WS=4 unchanged (already
@@ -65,9 +70,16 @@ update `SystemCoreClock` in the same step so the ns↔tick math stays coherent.
 
 ## M1 — hardware validation (batch when units are connected)
 
-- [ ] Build-only boards still needing silicon: STM32F411/F103/F302, **K64F** — LED + console
-      + selftest (`<board>-st` presets exist). (RP2040 ✓, SAM3X ✓, ESP32/C6 ✓, XMC ✓, RX72M ✓
-      all validated on HW 2026-07-09.)
+- [x] **blackpill** (F411 25 MHz HSE) + **f411disco** (F411 84 MHz) + **f302nucleo** (F302 16 K) +
+      **bluepill** (F103 10 K clone) — all HW-validated on silicon 2026-07-14 (blackpill/f411disco
+      14/14 + bench; f302/bluepill 13/14, test 11 = RAM-size limit). Only **bluepill-c8** (genuine
+      20 K F103) stays build-only — a linker variant of the already-validated F103.
+- [ ] **K64F — NOT an M1 gate; sign-off deferred to M2** (decided 2026-07-14). It's M4F/armv7m,
+      the same path proven on silicon across XMC/f411disco/blackpill/f302 (4 boards) — redundant
+      arch coverage, not new. Its distinguishing feature is the **SYSMPU**, which is the M2
+      enforcement track, so K64F gets its formal HW re-confirm there (unit unavailable for a few
+      days). Prior silicon run exists (`k64f-hw-baseline`: 120 MHz PLL, switch 77 cyc/641 ns,
+      FP-switch 940 rounds) — a deferral, not an untested board.
 - [ ] micro:bit / nRF51 as a real silicon target: needs an **RTC-based timer** (the
       nRF51 M0 has no SysTick); today it's a QEMU vehicle only.
 - [ ] Panic/console review HW-checklist: RP2040 PL011 `TXRIS`-at-rest with FEN=0;
@@ -80,8 +92,8 @@ Capability audit across all arch/chip. Fleet is broadly uniform (every arch has 
 console, tickless timer, fault-register dump, inject-driven IRQ path, M2 MPU no-op).
 Divergences worth closing for M1, most impactful first:
 
-- [~] **mk64f diag-LED backend ADDED build-only @b5c5665** (RED PTB22 active-low) — closes
-      the code gap; still `[ ]` only because it needs an FRDM-K64F to confirm the LED lights.
+- [~] **mk64f diag-LED backend ADDED build-only @b5c5665** (RED PTB22 active-low) — code gap
+      closed; HW confirm folds into the M2 K64F SYSMPU bring-up (K64F is not an M1 gate, see above).
       **esp32(lx6) DONE** — GPIO2 (silkscreen D2), validated with `blink` on hardware.
 - [x] **IRQ default-mask posture unified** — DONE @5da8a38: riscv/xtensa/sim now init their
       mask all-MASKED (matching ARM/RX); the reset contract is documented in `arch.h` (all

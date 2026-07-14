@@ -810,10 +810,14 @@ Recommended spine: **M1.1 (11b) → telemetry (11d) → ESP32 (11c) → M2**; th
      layer on top. Added the UART RX path + error-flag (framing/overrun) accessor.
      Ready for a future SSC(SPI)/IIC(I2C) driver -- those protocols reuse the layer.
 
-11f. **Due clock (EXPERIMENTAL → resolve).** The SAM3X bring-up is marginal on HW
-     (blink intermittent, console dead — MCK isn't the 84 MHz the baud assumes).
-     Fix with a scope on PA9 / SWD read of `PMC_MCKR`/`PMC_SR`, not blind edits.
-     Flagged experimental meanwhile (`docs/boards.md`, the `due` preset).
+11f. **Due clock — RESOLVED (port proven; test unit retired).** The SAM3X port was
+     validated on silicon 2026-07-09 (selftest 14/14, 84 MHz PLL) with the crystal-race
+     fix (bounded `pmc_wait` + MOSCXTST margin + RC fallback). The physical test unit was
+     later retired (2026-07-14): it developed a peripheral-I/O fault (PIO output + UART
+     dead; core + flash + native USB verified working) reproduced under a bare-metal blink
+     flashed via two paths — hardware, not KickOS. The MOSCXTST margin remains a documented
+     `GUESS`; confirm against a healthy Due's crystal spec if one is sourced. See
+     `docs/boards.md` + `M1_state.md` §4.
 
 11g. **Debug-in-sleep** (small): set `DBGMCU` `DBG_SLEEP`/`DBG_STOP` under a
      `KICKOS_DEBUG` gate so SWD survives the idle `WFI` — no connect-under-reset
