@@ -73,27 +73,12 @@ namespace kickos
             }
         }
 
-        // --- Thread pool (instance-scoped; static allocation, kernel stacks) -------
-        // Bump-allocated, then EXITED slots reclaimed lazily at spawn (the twin of
-        // the sem freelist). Reuse goes through thread_create, which memsets the TCB
-        // and re-fabricates the arch context from scratch -- so the reused slot's
-        // privilege posture is a clean reset (the sim's mid-syscall `raised`, the ARM
-        // CONTROL.nPRIV, the RX PSW): the old "dead ctx keeps raised>0 is harmless
-        // because slots never recycle" assumption no longer holds, and this is what
-        // makes reuse safe. A handle packs the slot index + a generation bumped on
-        // reclaim, so a stale handle to a since-recycled slot fails to resolve (ABA);
-        // no syscall resolves a thread by handle yet -- when join/kill-by-id (M2+)
-        // adds one, it must ALSO reject state==EXITED: gen bumps at reclaim, not at
-        // exit, so a just-exited-but-not-yet-reused slot's handle still gen-matches.
-        constexpr int kThreadIndexBits = 8;
-        static_assert(KICKOS_MAX_THREADS <= (1 << kThreadIndexBits),
-                      "thread handle index field too small for KICKOS_MAX_THREADS");
-
-        int thread_make_handle(int index, uint16_t gen)
-        {
-            return static_cast<int>((static_cast<uint32_t>(gen) << kThreadIndexBits) |
-                                    static_cast<uint32_t>(index));
-        }
+        // --- Thread pool (slot allocation lives in ThreadPool, thread.h) -----------
+        // Reuse is safe because thread_create re-inits the TCB + re-fabricates the arch
+        // context from scratch, so a reclaimed slot's privilege posture is a clean reset
+        // (the sim's mid-syscall `raised`, the ARM CONTROL.nPRIV, the RX PSW). No syscall
+        // resolves a thread by handle yet; when join/kill-by-id adds one it must also
+        // reject state==EXITED (the generation bumps at reclaim, not exit -- see ThreadPool).
 
         int thread_spawn(kos_thread_params const* p)
         {
@@ -117,29 +102,15 @@ namespace kickos
                 return -1;
             }
             Kernel& k = kernel();
-            // Reclaim an EXITED slot before bump-allocating. Single-core: an EXITED
-            // thread is guaranteed off-CPU by the time any *other* thread reaches
-            // here -- it parked in exit_current until its switch-away committed, and
-            // only then could a successor run and call spawn. current() is RUNNING,
-            // never EXITED, so it is never picked. An EXITED thread is also off every
-            // ready/wait/timer list (exit runs from RUNNING context), so reinit is safe.
-            int i = -1;
-            for (int s = 0; s < k.thread_next; s++)
-            {
-                if (k.thread_pool[s].state == ThreadState::EXITED)
-                {
-                    i = s;
-                    k.thread_gen[s]++; // invalidate any outstanding handle to this slot
-                    break;
-                }
-            }
+            // Reclaim an EXITED slot or bump-allocate (ThreadPool::alloc). Single-core: an
+            // EXITED thread is guaranteed off-CPU by the time any other thread reaches here
+            // -- it parked in exit_current until its switch-away committed -- and is off
+            // every ready/wait/timer list, so reinit is safe. current() is RUNNING, never
+            // EXITED, so it is never picked.
+            int const i = k.threads.alloc();
             if (i < 0)
             {
-                if (k.thread_next >= KICKOS_MAX_THREADS)
-                {
-                    return -1;
-                }
-                i = k.thread_next++;
+                return -1;
             }
 
             ThreadAttr attr;
@@ -159,9 +130,9 @@ namespace kickos
             attr.mem_base = p->mem_base;
             attr.mem_size = p->mem_size;
 
-            thread_create(&k.thread_pool[i], p->entry, p->arg,
-                          k.thread_stacks[i], KICKOS_USER_STACK_SIZE, attr);
-            return thread_make_handle(i, k.thread_gen[i]);
+            thread_create(&k.threads.slots[i], p->entry, p->arg,
+                          k.threads.stacks[i], KICKOS_USER_STACK_SIZE, attr);
+            return k.threads.handle_for(i);
         }
 
     }
