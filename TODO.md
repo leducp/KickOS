@@ -106,6 +106,17 @@ Divergences worth closing for M1, most impactful first:
       a drained console still emits the full dump. (esp32c6/rx72m were already bounded.)
 - [ ] *(driver-era)* RX `kickos_rx_default_irq` is a stub while ARM/riscv/xtensa demux real
       device lines; injected lines work (selftest passes) but a real peripheral IRQ drops.
+- [ ] **ESP32-C6 buffered (ring) console** — wanted (C6 is a cheap community workhorse), but it
+      needs the **C6's first REAL peripheral-interrupt path**: today the C6 is inject-doorbell
+      only (`arch_irq_unmask` = "ONE doorbell for all lines; trap reads `g_inject_line`"; `.Lext`
+      dispatches only the FROM_CPU CPU-int 31). A UART0 TXFIFO-empty IRQ arrives via a different
+      INTMTX source → a different CPU int → an mcause the trap demux doesn't handle. Scope: route
+      UART0's INTMTX source to a CPU int; extend `switch.S`/`.Lext` to claim/dispatch a real PLIC
+      source → the console TX line → `console_tx_isr`; then the `console_tx_backend`
+      (push/slot_free/irq_enable/irq_disable on UART0 FIFO @0x60000000 + TXFIFO_EMPTY threshold in
+      CONF1 + INT_ENA bit1) + storage/line, mirroring the XMC. Twin of the RX stub above — do both
+      under one real-peripheral-IRQ-demux design. Touches `switch.S` (highest-stakes), so a
+      focused M2 task, not a tail-end add. Backend interface is `lib/include/kickos/console_tx.h`.
 
 ## M1 — misc
 
