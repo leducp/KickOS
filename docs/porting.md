@@ -70,10 +70,10 @@ and nine chips, by validation tier:
 | `xmc4800` | xmc4800-relax | M4F | **hardware** (LED + USIC VCOM console) |
 | `stm32f411` | f411disco | M4F | **hardware** (LED + UART + ping-pong) |
 | `stm32f302` | f302nucleo | M4F | **hardware** (LED PB13 + console) |
-| `stm32f103` | bluepill | M3 | **hardware** (LED + UART; sized to 10 KiB LD floor) |
-| `rp2040` | picopi | M0+ | **hardware** (LED blink; UART untested) |
-| `mk64f` | frdmk64f | M4F | build-only (flash to run) |
-| `sam3x8e` | due | M3 | build-only |
+| `stm32f103` | bluepill | M3 | **hardware** (selftest 13/14; test 11 = 4 K alloc > 10 K LD floor) |
+| `rp2040` | picopi | M0+ | **hardware** (selftest 14/14 over UART0/GP0) |
+| `mk64f` | frdmk64f | M4F | prior silicon (120 MHz baseline); formal re-confirm folds into M2 (SYSMPU) |
+| `sam3x8e` | due | M3 | port proven on silicon (2026-07-09); test unit retired (peripheral-I/O fault) |
 
 Build-only chips are verified by construction (register review + image
 inspection); flash to a board to confirm. `apps/blink` is a no-UART LED smoke

@@ -314,13 +314,19 @@ namespace
     }
     void t_irqdrv()
     {
-        g_irqdrv_done = kos_sem_create(0);
-        g_irqdrv_ready = kos_sem_create(0);
+        // Alloc before the sems: an alloc-fail early return must not leak them (pool-honest suite).
         g_mmio = kos_ram_alloc(4096);
         TAP_CHECK(g_mmio != nullptr);
         *static_cast<volatile int*>(g_mmio) = 0;
+        g_irqdrv_done = kos_sem_create(0);
+        g_irqdrv_ready = kos_sem_create(0);
         int drv = kos::thread::spawn(irq_driver, nullptr, "irqdrv", 15, KOS_POLICY_FIFO, 0,
                                      /*privileged=*/false, g_mmio, 4096);
+        if (drv < 0)
+        {
+            kos_sem_destroy(g_irqdrv_done); // reclaim before the failure return
+            kos_sem_destroy(g_irqdrv_ready);
+        }
         TAP_CHECK(drv >= 0); // spawn failure would hang the ready handshake below
         kos_sem_wait(g_irqdrv_ready);
         for (int i = 1; i <= 3; i++)

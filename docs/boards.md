@@ -12,37 +12,55 @@ where its console + LED live. For J-Link / RTT details see [flashing.md](flashin
 | `qemu` | mps2-an386 / M4 | — | semihosting | `ctest --preset qemu` | ✅ CI |
 | `microbit` | nRF51822 / M0 | — | semihosting | `ctest --preset microbit` | ✅ CI |
 | `qemu-riscv` | QEMU virt / RV32IMAC | — | semihosting | `ctest --preset qemu-riscv` | ✅ CI (first RISC-V) |
-| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | (WROOM, TBD) | UART0 (ROM), 115200 | esptool (TODO) | ⚠️ build-only |
+| `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 → CH343P VCOM (`/dev/ttyACM0`) | esptool | ✅ selftest 14/14 + PMP NAPOT + diag-LED + bench |
+| `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 → CH340 (`/dev/ttyUSB1`) | esptool | ✅ 8/8 apps incl fault dump + bench |
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 → VCOM; + RTT | onboard J-Link | ✅ LED + VCOM console |
-| `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | ✅ LED + UART + ping-pong |
-| `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | ⚠️ build-only (2nd F411 board; 25 MHz HSE) |
-| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 → ST-Link VCP | onboard ST-Link (`st-flash`) | ✅ LED + console |
-| `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | ✅ LED; ⚠️ UART untested |
-| `bluepill` | STM32F103 / M3 (10 K clone) | PC13 (active-low) | USART1, PA9/PA10, 115200 (ext adapter) | external ST-Link (SWD) | ✅ LED + UART (10 K LD part) |
+| `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | ✅ selftest 14/14 + all apps + fault dump + bench + LED |
+| `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | ✅ selftest 14/14 + bench (2nd F411; 25 MHz HSE) |
+| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 → ST-Link VCP | onboard ST-Link (`st-flash`) | ✅ selftest 13/14 (test 11 = 4 K alloc > 16 K RAM) + bench |
+| `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | ✅ LED + UART0 + selftest |
+| `bluepill` | STM32F103 / M3 (10 K clone) | PC13 (active-low) | USART1, PA9/PA10, 115200 (ext adapter) | external ST-Link (SWD) | ✅ selftest 13/14 (test 11 = 4 K alloc > 10 K RAM) + hello; stress/bench don't fit 10 K |
 | `bluepill-c8` | STM32F103C8 / M3 (20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | ⚠️ build-only (20 K linker) |
-| `due` | AT91SAM3X8E / M3 | PB27 ("L" amber) | UART, PA8/PA9, 115200 → prog-port VCOM | `bossac` | 🧪 experimental (LED only; console dead) |
-| `frdmk64f` | MK64FN1M0 / M4F | — (none) | UART0, PTB16/PTB17, 115200 → OpenSDA VCOM | J-Link (OpenSDA) | ⚠️ build-only |
+| `frdmk64f` | MK64FN1M0 / M4F | — (none) | UART0, PTB16/PTB17, 115200 → OpenSDA VCOM | J-Link (OpenSDA) | ◻ not an M1 gate — M4F path proven ×4; K64F sign-off folds into M2 (SYSMPU). Prior silicon run in `k64f-hw-baseline` |
+
+**Retired from the available-hardware list:** `due` (AT91SAM3X8E / M3). The SAM3X port
+was validated on silicon 2026-07-09 (selftest 14/14, 84 MHz PLL), but *this physical
+unit* developed a peripheral-I/O fault (2026-07-14): core + flash-controller + native
+USB (SAM-BA) all work — verified — but the PIO output (PB27 "L" LED) will not toggle and
+the UART console is dead (0 bytes), even under a provably-correct bare-metal blink flashed
+via two independent paths. A correct program driving a pin that won't move is hardware,
+not software. It was likely marginal all along (the crystal-startup margin is a documented
+`GUESS`), landing on the good side once. The **port** stays proven; the **unit** is not a
+reliable target. `due` still builds; it is just no longer bench/HW-tested.
 
 Console pins are TX/RX in that order. STM32/XMC flash base is `0x08000000`; K64F is
 `0x00000000`; the Due's `bossac` handles the offset itself.
 
+On both ESP32 boards the console is UART0 through the on-board USB-serial bridge
+(`esp32c6-wroom` = CH343P on `/dev/ttyACM0`; `esp32-wroom` = CH340 on `/dev/ttyUSB1`).
+The ESP32-C6's native USB-Serial-JTAG is flash-only here — it re-enumerates on reset
+and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
+
 ### Built but NOT hardware-tested (know before you trust it)
 
-- **`picopi` UART** (GP0/GP1) — the driver builds and the clocks are set, but it
-  has never been exercised (no adapter was on hand); only the LED is confirmed.
-- **`bluepill`** — LED confirmed on hardware; console (needs an external adapter,
-  no on-board USB-serial) not yet tested. Target is sized to the **10 KiB / 32 KiB
-  low-density floor** since many boards are LD parts/clones (see stm32f103.ld). No
-  NRST on the SWD header: wire NRST→the `R` side pin for `--connect-under-reset`,
-  else recover a `WFI`-locked board via BOOT0=1.
-- **`due` (EXPERIMENTAL)** — builds + flashes, but the clock bring-up is marginal
-  on hardware: `blink` runs *intermittently* and the UART console is dead (MCK
-  almost certainly isn't the 84 MHz the baud assumes). Needs a scope on PA9 / SWD
-  to resolve, not blind edits. Treat as unsupported until then.
-- **`frdmk64f`** — entirely build-only; also still runs at the reset FEI clock
-  (~20.97 MHz, no PLL yet), and has **no diagnostic LED** wired (the FRDM RGB LED
-  isn't mapped — `arch_diag_led_*` falls back to the weak no-op, so `blink` does
-  nothing there; `blink` isn't built for it).
+- **`bluepill`** — HW-tested 2026-07-14: selftest 13/14 (test 11's `kos_ram_alloc(4096)`
+  can't fit the 10 K arena — a genuine RAM limit, not a bug) + `hello`. `stress`/`bench`
+  don't fit 10 K. Console needs an external adapter (no on-board USB-serial), on USART1
+  PA9. Runs notably slow — consistent with the clone's HSE not locking (HSI-fallback),
+  though not confirmed via a clock read (bench doesn't fit to report it). No NRST on the
+  SWD header: wire NRST→the `R` side pin for `--connect-under-reset`, else recover a
+  `WFI`-locked board via BOOT0=1.
+- **`bluepill-c8`** — build-only (genuine 20 K variant of the HW-validated F103; only the
+  10 K `bluepill` clone was physically run).
+- **`due`** — **retired** (see the table note above): SAM3X port proven 2026-07-09, but
+  this unit now has a peripheral-I/O fault.
+- **`frdmk64f`** — **not an M1 gate** (deliberate scoping, 2026-07-14): it's Cortex-M4F /
+  armv7m, the same path already silicon-proven on 4 boards (XMC/f411disco/blackpill/f302),
+  so it adds redundancy, not arch coverage. Its unique bit — the **SYSMPU** — is M2 work
+  (the M2 enforcement track hits K64F SYSMPU after the RISC-V/XMC reference pair), so K64F
+  earns its formal HW sign-off there, when the unit is back. Not a hole: the `k64f-hw-baseline`
+  memory records a prior silicon run (120 MHz PLL, switch 77 cyc/641 ns, FP-switch 940 rounds).
+  Note it has **no diagnostic LED** wired (FRDM RGB not mapped; `blink` isn't built for it).
 - **RTT backend** — generic and wired on the XMC (`KICKOS_CONSOLE=both`); the
   UART VCOM path is the one confirmed on hardware.
 - The diagnostic LED is a kernel-owned facility (`kdiag_led_*`); a chip with no
@@ -109,8 +127,10 @@ Hold **BOOTSEL** while plugging USB (mounts as mass storage / picoboot), then:
 ```sh
 picotool load -x build/picopi/user/apps/blink/blink
 ```
-`-x` runs it after loading. UART is GP0(TX)/GP1(RX) 115200 — needs a 3.3 V
-adapter (untested so far). LED is GP25 (not the Pico W, whose LED is on the CYW43).
+`-x` runs it after loading. UART0 is GP0(TX)/GP1(RX) 115200 — needs a 3.3 V
+adapter, confirmed on silicon. LED is GP25 (not the Pico W, whose LED is on the
+CYW43). picotool/BOOTSEL is the reliable flash path here: J-Link SWD of the RP2040
+is flaky (DAP power quirks + boot2 isn't re-run on an SWD reset).
 
 ### `due` (SAM3X8E) — bossac over the Programming port
 
@@ -123,9 +143,23 @@ bossac -p ttyACMx --usb-port=0 -a -e -w -v -b -R \
 `-a` = the 1200-baud erase/reset hack, `--usb-port=0` = RS-232 (the prog port is
 UART-bridged via the 16U2), `-b` = set boot-from-flash, `-R` = reset. If it says
 "No device found", do it by hand: **hold ERASE ~2 s, tap RESET**, rerun without
-`-a`; failing that, use the **Native port** (no `--usb-port=0`). LED = PB27 ("L"
-amber). Its programming port *is* the console UART (PA8/PA9), so `picocom -b
-115200 /dev/ttyACMx` shows the console on the same cable.
+`-a`; failing that, use the **Native port** (no `--usb-port=0`). `-b` is required:
+the SAM3X latches its boot mode at NRST/power-on, so after flashing you must
+**press RESET / power-cycle** — the soft `-R` alone leaves it in the SAM-BA ROM
+monitor. LED = PB27 ("L" amber). Its programming port *is* the console UART
+(PA8/PA9), so `picocom -b 115200 /dev/ttyACMx` shows the console on the same cable.
+
+### `esp32-wroom` and `esp32c6-wroom` — esptool
+
+Flash over the on-board USB-serial bridge with `esptool` (auto-enters the ROM
+download mode via DTR/RTS; hold **BOOT** + tap **EN** if it doesn't):
+```sh
+esptool.py -p /dev/ttyUSB1 write_flash 0x1000 build/esp32-wroom/user/apps/hello/hello.bin
+```
+On the C6 use its CH343P port (`/dev/ttyACM0`); its native USB-Serial-JTAG is
+flash-capable but useless as a console (see the note under the matrix). Console =
+UART0 at 115200 on both (`esp32-wroom` GP1/GP3 → CH340; `esp32c6-wroom`
+GP16/GP17 → CH343P). LED: `esp32-wroom` GP2 (D2), `esp32c6-wroom` WS2812B on GP8.
 
 ### `xmc4800-relax` and `frdmk64f` — J-Link
 

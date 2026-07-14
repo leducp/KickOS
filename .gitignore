@@ -27,3 +27,6 @@ CMakeUserPresets.json
 *.uf2
 *.map
 compile_commands.json
+
+# session-local scratch (capture logs, tooling) — survives /tmp wipes, never committed
+.session/
