@@ -123,6 +123,17 @@ Divergences worth closing for M1, most impactful first:
   K64F SYSMPU → RX → tail; + the arch-independent security model (domains, per-thread
   private stacks, syscall-arg/user-pointer validation, pow2 region placement). See
   `docs/architecture.md` / `docs/m2-readiness.md`.
+- **M2 — handle table: mutualise the object pools** (the "M2 handle table" the sem/thread
+  pool comments already point to). The semaphore and thread pools are the *same* pattern —
+  a fixed slot array + per-slot generation + `(index, gen)` handles with an ABA-guarded
+  resolve (a generational slotmap). Factor into one `SlotPool<T, N, Live>` owning the
+  gen/alloc/free/resolve logic once. **Key constraint:** liveness must stay a *policy*, not
+  a hardcoded `used[]` bit — threads use `TCB.state == EXITED` as the single source of truth
+  (scheduler-maintained; do NOT reintroduce a bool that can desync), sems use an internal
+  bit. Stacks stay a separate slot-indexed store. Migrate sems first (simple extrinsic case,
+  verifiable against selftest `sem_*`), then threads with the intrinsic-liveness policy. This
+  is also the **substrate for M3 capabilities** (a generational object table = seL4-style
+  CNode/cap store) and the one place to lock for SMP (below).
 - **M3 — capabilities + authenticated grants** (seL4-principled object model), **and
   user-selectable CPU clock / low-power mode** (needs explicit per-chip clock bring-up
   first, from the audit above).
@@ -154,3 +165,21 @@ Divergences worth closing for M1, most impactful first:
 - **Driver era (12b)** — userspace UART/console driver takes the peripheral as a
   capability; kernel relinquishes it (`console_tx_deinit`), panic path moves to a
   kernel-retained transport. See `docs/console.md` "Future".
+- **M4 — SMP (one kernel image across cores; NOT two AMP instances).** Motivation: run the
+  dual-core RP2040 (picopi) at 100% under a single KickOS. Biggest architectural axis on the
+  roadmap — it reworks the *foundation*, not a feature: the whole kernel's mutual exclusion is
+  `IrqLock == arch_irq_save` ("interrupts off ⇒ exclusive"), which is a single-core-only
+  guarantee (masking IRQs on one core does nothing to another). Plan:
+  - **Step 1 — Big Kernel Lock.** Redefine `IrqLock` as "disable *local* interrupts + take one
+    global spinlock." Centralised, so it's a redefinition of one class, not a 200-site audit;
+    every existing critical section keeps working, kernel is SMP-*correct* (coarsely). For a
+    2-core MCU this likely already gives ~2× (user threads run concurrently; only syscalls
+    serialise on the BKL). Per-core run-queues + finer locks come later as *optimisation*.
+  - **RP2040 specifics:** M0+ has **no atomics** (no LDREX/STREX) → use the **SIO hardware
+    spinlocks** (32 in the SIO block) for the lock; launch core 1 via bootrom/SIO-FIFO
+    (`chip_rp2040.cc` already notes the core-1 milestone + the single-core `TIMELR/TIMEHR`
+    latch); per-core SysTick + per-core tickless state.
+  - **Already seam-ready:** the `KICKOS_*_BARRIER` publish seams (console_tx / rtt) are the
+    fence-injection points — flip to real fences on the SMP build. Keep centralising `IrqLock`,
+    structs-over-globals, no ad-hoc masking → keeps this a redefinition, not a rewrite.
+  - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `kickos-smp-roadmap` memory.
