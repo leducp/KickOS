@@ -390,6 +390,13 @@ namespace
         int h2 = kos_sem_create(0);
         TAP_CHECK(h2 >= 0 and h2 != h); // reused slot carries a fresh generation
         TAP_CHECK(kos_sem_destroy(h2) == 0);
+        // Malformed / out-of-range handles at the resolve boundary must fail-safe (the
+        // M2 capability model builds on sem_resolve): negative, garbage-huge, and an
+        // out-of-range index all reject. Via sem_destroy (the one sem syscall that
+        // returns a value; wait/post share the same sem_resolve chokepoint). Pool-neutral.
+        TAP_CHECK(kos_sem_destroy(-1) == -1);
+        TAP_CHECK(kos_sem_destroy(0x7fffffff) == -1);
+        TAP_CHECK(kos_sem_destroy(0x00ffffff) == -1);
     }
 
     // --- Semaphore destroy is quiescent-only (refused while a waiter is parked) -
