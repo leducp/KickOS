@@ -14,12 +14,30 @@ Xtensa LX6 — so the *same* semantics hold on every target and divergence is a 
 port quirk. North star: capability-based authority (M3) over MPU-enforced isolation (M2),
 eventually MMU-alongside-MPU. (See the `kickos-vision` note.)
 
+**Second purpose — teach how a microkernel works.** The Book doubles as a learning resource:
+a reader who knows minimal C/C++ and the basics of the compile/link/flash pipeline should be
+able to follow how a real µkernel is built, using KickOS as the worked example. That means a
+few *concept* chapters (what an OS/kernel is, monolithic vs micro, scheduling, interrupts,
+memory protection) that stand on their own before the KickOS-specific reference. **Main
+further-reading reference: Andrew S. Tanenbaum, *Modern Operating Systems* / *Operating
+Systems: Design and Implementation*** — cite the relevant Tanenbaum chapter where a concept
+is introduced, so a learner who wants the full theory has the canonical pointer. Concept
+chapters teach the idea *and* show how KickOS realises it (and where it deliberately differs,
+e.g. tickless + no MMU + capability endgame).
+
 ## Chapters (outline — fill along the path)
 
 Source column = the existing doc/material a chapter absorbs; migrate + de-narrate into here.
 
+*Part 0 (concept chapters) teaches the ideas for a learner — prereq: minimal C/C++ +
+compile/link/flash basics — citing Tanenbaum for the full theory. Parts 1+ are the KickOS
+reference. A reader who just wants the reference can start at chapter 1.*
+
 | # | Chapter | Covers | Source / status |
 |---|---|---|---|
+| 0.1 | What is an OS / a kernel? | user vs privileged, syscalls, what a kernel is *for*; Tanenbaum ch.1 | **draft me** (concept) |
+| 0.2 | Monolithic vs microkernel | why a small trusted kernel + userspace services; the seL4 lineage; trade-offs; Tanenbaum ch.1 (§1.7 structure) | **draft me** (concept) |
+| 0.3 | How to read this book + toolchain | prerequisites, the compile→link→flash pipeline, how to build/run KickOS, the arch/chip layout | new; **draft me** (concept) |
 | 1 | Overview & principles | vision, the uniform-fleet thesis, milestone map (M1 done → M2 MPU → M3 caps → M4 SMP) | new + `kickos-vision`; **draft me** |
 | 2 | Kernel model | scheduler (tickless, RR/FIFO, reporter-as-root), sync (semaphores + generational handles), time, `IrqLock` critical-section model | `docs/architecture.md` |
 | 3 | Interrupt model | two-tier IRQ (direct ISR vs IRQ-as-event), the arch dispatch seam, real-peripheral demux (per arch), the buffered console ring | `docs/console.md` + `console_tx.h` + `arch_*` |

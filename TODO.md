@@ -114,7 +114,11 @@ Divergences worth closing for M1, most impactful first:
 - [ ] *(driver-era, anytime — NOT M2)* RX `kickos_rx_default_irq` real-peripheral-IRQ demux —
       still a stub (RXv3, a different arch than the C6, so its own work; same concept). Injected
       lines pass selftest but a real peripheral IRQ drops. The C6 `.Lextdev` design is the riscv
-      reference pattern.
+      reference pattern. **When the 2nd real device line lands** (fable review finding 5): the
+      arch IRQ mask must reach the controller for real lines — add an `arch_rv_hw_mask` twin (or
+      gate `.Lextdev` dispatch on `g_irq_masked` + disable the source), else a tier-1 driver's
+      mask-until-ack and the spurious-handler mask silently fail to stop a level source (storm).
+      Unreachable today: the C6 console (line 16) is permanently owned + self-gates via INT_ENA.
 
 ## M1 — misc
 
