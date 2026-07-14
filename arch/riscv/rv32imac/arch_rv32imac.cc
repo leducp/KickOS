@@ -288,8 +288,11 @@ void arch_irq_unmask(int line)
     }
     arch_irq_state_t s = arch_irq_save();
     g_irq_masked = g_irq_masked & ~(1u << line);
+    // Chip HW routing runs INSIDE the critical section (mstatus.MIE=0) so an INTMTX/PLIC
+    // reconfigure can't glitch in the controller's transient state (C6 TRM §1.6.3.2:
+    // configure with MIE cleared + a FENCE). No-op for injected lines.
+    arch_rv_hw_unmask(line);
     arch_irq_restore(s);
-    arch_rv_hw_unmask(line); // chip hook: route a real HW line (no-op for injected lines)
 }
 
 // The chip's delivery hook: raise the physical doorbell. Weak default = the virt
