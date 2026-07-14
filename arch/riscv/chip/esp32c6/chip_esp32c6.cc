@@ -22,6 +22,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/rv_trap_ids.h>
+#include <kickos/console_tx.h>
 
 #include <stdint.h>
 
@@ -87,6 +88,13 @@ namespace
     constexpr uint32_t UART_TXFIFO_CNT_S = 16;
     constexpr uint32_t UART_TXFIFO_CNT_MASK = 0xFFu;
     constexpr uint32_t UART0_TXFIFO_LEN = 128;
+    // UART0 TX-empty interrupt (buffered console ring). TXFIFO_EMPTY asserts while the TX
+    // FIFO count <= CONF1.TXFIFO_EMPTY_THRHD (ROM default 96) -- a level source cleared by
+    // filling the FIFO or acking INT_CLR. Routed to a real CPU int (arch_rv_hw_unmask).
+    constexpr uintptr_t UART0_INT_ENA = 0x6000000C;
+    constexpr uintptr_t UART0_INT_CLR = 0x60000010;
+    constexpr uint32_t UART_TXFIFO_EMPTY_INT = 1u << 1;
+    constexpr int UART0_TX_IRQ_LINE = 16;    // logical kernel IRQ line for the ring drain
 
     // --- Watchdogs (TRM ch.14 MWDT, ch.15 RWDT/SWD). ALL must be disabled or the
     //     ROM-armed WDTs reset the part within seconds. Common unlock key 0x50D83AA1.
@@ -117,6 +125,7 @@ namespace
     //     doorbell carries every logical inject line (arch keeps g_inject_line).
     constexpr uintptr_t INTMTX_BASE = 0x60010000;
     constexpr uintptr_t INTMTX_FROM_CPU_0_MAP = INTMTX_BASE + 0x0058; // [4:0]=target CPU int
+    constexpr uintptr_t INTMTX_UART0_MAP = INTMTX_BASE + 0x00AC;      // route UART0 -> CPU int
 
     // The C6 uses the PLIC (base 0x2000_1000, M-mode window) as the CPU interrupt
     // controller -- NOT the INTPRI/INTC block (0x600C_5000), which is vestigial on
@@ -363,6 +372,68 @@ void arch_rv_ext_eoi(void)
 {
     r32(INTPRI_FROM_CPU_0) = 0;
     __asm volatile("fence" ::: "memory");
+}
+
+// --- Buffered console TX backend (console_tx.h). The ring drains via UART0's TXFIFO_EMPTY
+// interrupt, routed through the interrupt matrix to a real CPU int (KICKOS_RV_DEV_CPU_INT,
+// distinct from the software-inject doorbell). Level source: servicing clears it.
+int c6_tx_slot_free(void)
+{
+    if (((r32(UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_MASK) < UART0_TXFIFO_LEN)
+    {
+        return 1;
+    }
+    return 0;
+}
+void c6_tx_push(uint8_t b) { r32(UART0_FIFO) = b; }
+void c6_tx_irq_enable(void)
+{
+    r32(UART0_INT_CLR) = UART_TXFIFO_EMPTY_INT;                      // clear any stale latch
+    r32(UART0_INT_ENA) = r32(UART0_INT_ENA) | UART_TXFIFO_EMPTY_INT; // enable TX-empty
+}
+void c6_tx_irq_disable(void)
+{
+    r32(UART0_INT_ENA) = r32(UART0_INT_ENA) & ~UART_TXFIFO_EMPTY_INT;
+}
+
+char console_tx_buf[2048]; // power of two; usable capacity 2047 (ample on this workhorse)
+console_tx_backend const c6_console_backend = {
+    c6_tx_slot_free, c6_tx_push, c6_tx_irq_enable, c6_tx_irq_disable};
+
+console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
+{
+    *storage = console_tx_buf;
+    *size = 2048;
+    *irq_line = UART0_TX_IRQ_LINE;
+    return &c6_console_backend;
+}
+
+// Route + enable the UART0 TX-ring line: aim the interrupt matrix's UART0 source at
+// KICKOS_RV_DEV_CPU_INT, then configure that CPU int in the PLIC (level, priority) and
+// enable it there and in mie -- the same proven path as the inject doorbell, one CPU int
+// over. Other lines stay on the software doorbell (no-op). The UART's own TXFIFO_EMPTY
+// enable is toggled per-burst by the ring (c6_tx_irq_enable/disable).
+void arch_rv_hw_unmask(int line)
+{
+    if (line != UART0_TX_IRQ_LINE)
+    {
+        return;
+    }
+    r32(INTMTX_UART0_MAP) = KICKOS_RV_DEV_CPU_INT;
+    r32(PLIC_MXINT_PRI_BASE + 4u * KICKOS_RV_DEV_CPU_INT) = DOORBELL_PRIO;
+    r32(PLIC_MXINT_TYPE) &= ~(1u << KICKOS_RV_DEV_CPU_INT);   // level
+    r32(PLIC_MXINT_ENABLE) |= (1u << KICKOS_RV_DEV_CPU_INT);  // enable at the PLIC
+    __asm volatile("csrs mie, %0" ::"r"(1u << KICKOS_RV_DEV_CPU_INT) : "memory");
+}
+
+// Real-device dispatch (switch.S .Lextdev): ack the UART's level latch, then run the ring
+// drain via the console line's ISR. Servicing (filling the FIFO past THRHD, or the ring
+// emptying -> c6_tx_irq_disable) de-asserts the source so it does not re-fire on mret.
+void kickos_rv_ext_dispatch_dev(void)
+{
+    r32(UART0_INT_CLR) = UART_TXFIFO_EMPTY_INT;
+    __asm volatile("fence" ::: "memory");
+    kickos_isr_irq(UART0_TX_IRQ_LINE);
 }
 
 // --- Kernel diagnostic LED: onboard WS2812B on GPIO8, driven by RMT channel 0.

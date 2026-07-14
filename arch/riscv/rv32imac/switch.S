@@ -140,6 +140,8 @@ trap_entry:
     beq     t0, t1, .Lssoft         /* supervisor software (ssip) -> injected IRQ (virt) */
     li      t1, KICKOS_RV_INJECT_DOORBELL_CPU_INT
     beq     t0, t1, .Lext           /* the C6 external inject doorbell (rv_trap_ids.h) */
+    li      t1, KICKOS_RV_DEV_CPU_INT
+    beq     t0, t1, .Lextdev        /* a real device external IRQ (C6: UART0 TX ring) */
     /* spurious: just return */
     j       .Lrestore
 
@@ -183,6 +185,21 @@ trap_entry:
     addi    t1, t1, 1
     sw      t1, 0(t0)
     call    kickos_rv_ext_dispatch
+    la      t0, g_isr_depth
+    lw      t1, 0(t0)
+    addi    t1, t1, -1
+    sw      t1, 0(t0)
+    j       .Lrestore
+
+/* --- Real device external IRQ (C6: UART0 TX-empty, routed via the interrupt matrix to */
+/* KICKOS_RV_DEV_CPU_INT). Same ISR-context discipline as .Lext; kickos_rv_ext_dispatch_ */
+/* dev acks the level source + runs the device line's ISR (weak no-op off the C6).      */
+.Lextdev:
+    la      t0, g_isr_depth
+    lw      t1, 0(t0)
+    addi    t1, t1, 1
+    sw      t1, 0(t0)
+    call    kickos_rv_ext_dispatch_dev
     la      t0, g_isr_depth
     lw      t1, 0(t0)
     addi    t1, t1, -1

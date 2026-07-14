@@ -264,6 +264,11 @@ namespace
     volatile int g_inject_line = -1;     // the pending software-injected line
 }
 
+// Chip hook: route + enable a REAL hardware interrupt line at the controller (interrupt
+// matrix + PLIC). Weak no-op default -- software-injected lines (the doorbell) need no
+// per-line HW routing; the C6 overrides this for its UART0 TX-ring line.
+__attribute__((weak)) void arch_rv_hw_unmask(int line) { (void)line; }
+
 void arch_irq_mask(int line)
 {
     if (line < 0 or line >= 32)
@@ -284,6 +289,7 @@ void arch_irq_unmask(int line)
     arch_irq_state_t s = arch_irq_save();
     g_irq_masked = g_irq_masked & ~(1u << line);
     arch_irq_restore(s);
+    arch_rv_hw_unmask(line); // chip hook: route a real HW line (no-op for injected lines)
 }
 
 // The chip's delivery hook: raise the physical doorbell. Weak default = the virt
@@ -343,6 +349,11 @@ void kickos_rv_ext_dispatch(void)
         kickos_isr_irq(line);
     }
 }
+
+// Real-device external dispatch (switch.S .Lextdev), ISR context. Weak no-op default
+// (qemu-virt routes no real device to KICKOS_RV_DEV_CPU_INT); the C6 overrides it to ack
+// its level source and run the device line's ISR.
+__attribute__((weak)) void kickos_rv_ext_dispatch_dev(void) {}
 
 // --- Idle -------------------------------------------------------------------
 void arch_idle_wait(void)
