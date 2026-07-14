@@ -17,6 +17,7 @@
 #include <kickos/config.h>
 #include <kickos/irq.h>
 #include <kickos/list.h>
+#include <kickos/slotpool.h>
 #include <kickos/thread.h>
 #include <kickos/sync.h>
 
@@ -55,14 +56,11 @@ namespace kickos
         Thread* sleepq = nullptr; // sorted ascending by deadline_ns
 
         // --- syscall object pools (syscall.cc) ---
-        // Semaphore freelist: sem_used marks live slots; sem_gen is bumped on
-        // destroy so a stale handle (index+gen) fails to resolve rather than
-        // aliasing a recycled slot. All access goes through sem_resolve(). (gen
-        // wraps every 2^16 destroys of one slot -- acceptable until the M2 handle
-        // table subsumes it.)
-        Semaphore sems[KICKOS_MAX_SEMAPHORES];
-        bool sem_used[KICKOS_MAX_SEMAPHORES];
-        uint16_t sem_gen[KICKOS_MAX_SEMAPHORES];
+        // Semaphore registry: a generational slot pool (see slotpool.h). free() bumps
+        // the slot's generation so a stale handle (index+gen) fails to resolve rather
+        // than aliasing a recycled slot. All access goes through sem_resolve(). (gen
+        // wraps every 2^16 destroys of one slot -- acceptable at this scale.)
+        SlotPool<Semaphore, KICKOS_MAX_SEMAPHORES> sems;
         // Thread pool: bump-allocated, then EXITED slots reclaimed at spawn (a slot
         // is free iff its TCB state is EXITED -- authoritative, maintained by the
         // scheduler). thread_gen is bumped on reclaim so a handle to the previous
