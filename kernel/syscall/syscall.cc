@@ -25,52 +25,24 @@ namespace kickos
 {
     namespace
     {
-        // --- Semaphore registry (instance-scoped freelist) -------------------------
-        // A handle packs the slot index (low bits) + a generation (high bits). On
-        // destroy the slot's generation is bumped, so a handle to a since-recycled
-        // slot fails to resolve -- the fail-loud fix for id reuse (ABA). The handle
-        // is opaque to userspace; sem_resolve() is the single validate-and-resolve
-        // chokepoint the M2 capability model (12b) later swaps for a handle table.
-        constexpr int kSemIndexBits = 8;
-        static_assert(KICKOS_MAX_SEMAPHORES <= (1 << kSemIndexBits),
-                      "sem handle index field too small for KICKOS_MAX_SEMAPHORES");
-
-        int sem_make_handle(int index, uint16_t gen)
-        {
-            return static_cast<int>((static_cast<uint32_t>(gen) << kSemIndexBits) |
-                                    static_cast<uint32_t>(index));
-        }
-
-        Semaphore* sem_resolve(int handle)
-        {
-            if (handle < 0)
-            {
-                return nullptr;
-            }
-            int index = handle & ((1 << kSemIndexBits) - 1);
-            uint16_t gen = static_cast<uint16_t>(static_cast<uint32_t>(handle) >> kSemIndexBits);
-            Kernel& k = kernel();
-            if (index >= KICKOS_MAX_SEMAPHORES or not k.sem_used[index] or k.sem_gen[index] != gen)
-            {
-                return nullptr;
-            }
-            return &k.sems[index];
-        }
+        // --- Semaphore registry (generational slot pool, see slotpool.h) -----------
+        // The handle packs the slot index + a generation; on destroy the pool bumps
+        // that slot's generation, so a handle to a since-recycled slot fails to resolve
+        // -- the fail-loud fix for id reuse (ABA). The handle is opaque to userspace;
+        // sem_resolve() is the single validate-and-resolve chokepoint the M2 capability
+        // model (12b) later swaps for a unified handle table.
+        Semaphore* sem_resolve(int handle) { return kernel().sems.resolve(handle); }
 
         int sem_create(int initial)
         {
             IrqLock lock;
-            Kernel& k = kernel();
-            for (int i = 0; i < KICKOS_MAX_SEMAPHORES; i++)
+            int const i = kernel().sems.alloc();
+            if (i < 0)
             {
-                if (not k.sem_used[i])
-                {
-                    k.sem_used[i] = true;
-                    sem_init(&k.sems[i], initial);
-                    return sem_make_handle(i, k.sem_gen[i]);
-                }
+                return -1;
             }
-            return -1;
+            sem_init(kernel().sems.at(i), initial);
+            return kernel().sems.handle_for(i);
         }
 
         int sem_destroy(int handle)
@@ -87,9 +59,7 @@ namespace kickos
             {
                 return -1;
             }
-            int index = handle & ((1 << kSemIndexBits) - 1);
-            kernel().sem_gen[index]++; // invalidate outstanding handles to this slot
-            kernel().sem_used[index] = false;
+            kernel().sems.free(handle);
             return 0;
         }
 
