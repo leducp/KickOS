@@ -649,6 +649,18 @@ void arch_context_init(struct arch_context* ctx,
     sigaddset(&c->uc.uc_sigmask, SIGALRM);
     sigaddset(&c->uc.uc_sigmask, SIGUSR1);
 #endif
+    // The sim runs threads on host ucontexts, which need a host-sized stack -- an MCU-tuned
+    // small caller stack (KICKOS_MIN_STACK_SIZE is a few hundred bytes) would overflow the
+    // host. Substitute a host stack when the caller's is below the host floor; real HW uses
+    // the caller's buffer directly (verified on silicon). Rare: the default spawn path hands
+    // over the >=64K pool stack, so this malloc fires only for genuinely small caller stacks
+    // (not freed -- the sim is a dev vehicle, not a small-caller-stack stress target).
+    constexpr size_t kSimHostMinStack = 64 * 1024;
+    if (stack_size < kSimHostMinStack)
+    {
+        stack_base = malloc(kSimHostMinStack);
+        stack_size = kSimHostMinStack;
+    }
     c->uc.uc_stack.ss_sp = stack_base;
     c->uc.uc_stack.ss_size = stack_size;
     c->uc.uc_link = nullptr;

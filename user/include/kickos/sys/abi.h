@@ -70,6 +70,8 @@ struct kos_thread_params
     uint32_t quantum_ns; // RR slice; 0 => none
     void* mem_base;      // domain data region granted to the thread (0 => none)
     uint32_t mem_size;   // size of that region (bytes)
+    void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE)
+    uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
 };
 
 #endif

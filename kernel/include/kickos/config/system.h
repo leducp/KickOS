@@ -28,8 +28,21 @@
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16
 #endif
+// Default stack the kernel provides a spawned thread when the caller supplies none --
+// so casual use ("just add a task") needs no thought. A thread's stack is a userspace
+// concern, so kos_thread_params may instead carry a caller-owned stack_base/stack_size
+// to (fine-)tune per thread; the kernel validates it against the floor + alignment below.
 #ifndef KICKOS_USER_STACK_SIZE
 #define KICKOS_USER_STACK_SIZE (64 * 1024)
+#endif
+// Floor + alignment for a caller-provided thread stack (must clear the arch context + a
+// frame; 16 B suits every ISA's stack ABI). Undersized/misaligned => spawn fails, not a
+// silent overflow. The kernel-default and root/idle stacks satisfy these by construction.
+#ifndef KICKOS_MIN_STACK_SIZE
+#define KICKOS_MIN_STACK_SIZE 512
+#endif
+#ifndef KICKOS_STACK_ALIGN
+#define KICKOS_STACK_ALIGN 16
 #endif
 
 // The bootstrap idle/root thread stacks. Provisioning knobs (a syscall runs on

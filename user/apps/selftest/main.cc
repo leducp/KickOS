@@ -489,6 +489,33 @@ namespace
         TAP_CHECK(kos_irq_spurious_count() == before + 1);
     }
 #endif
+
+    // --- Caller-owned thread stack: spawn takes a caller-provided stack (and rejects an
+    // undersized/misaligned one) -- a thread's stack is a userspace concern (M1). ---------
+    int g_cstk_sem = -1;
+    void caller_stack_worker(void*) { kos_sem_post(g_cstk_sem); } // ran on the caller's stack
+    void t_caller_stack()
+    {
+        // Reject a non-null, tiny + misaligned caller stack: must fail, not run or corrupt.
+        TAP_CHECK(kos::thread::spawn(caller_stack_worker, nullptr, "badstk", 10, KOS_POLICY_FIFO,
+                                     0, false, nullptr, 0, reinterpret_cast<void*>(0x1), 8) < 0);
+        // Accept a properly-sized, aligned caller-owned stack -> the thread runs on it. Skip
+        // (still ok) when the arena can't spare one (tiny-RAM parts, like test 11's alloc):
+        // the API is arch-uniform; this only needs the memory to demonstrate it.
+        constexpr uint32_t kStk = 2048;
+        void* raw = kos_ram_alloc(kStk + 16);
+        if (raw == nullptr)
+        {
+            return;
+        }
+        void* stk = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(raw) + 15u) & ~uintptr_t{15});
+        g_cstk_sem = kos_sem_create(0);
+        int const t = kos::thread::spawn(caller_stack_worker, nullptr, "cstk", 10, KOS_POLICY_FIFO,
+                                         0, false, nullptr, 0, stk, kStk);
+        TAP_CHECK(t >= 0);        // spawn accepted the caller-owned stack
+        kos_sem_wait(g_cstk_sem); // the worker ran on it and posted
+        kos_sem_destroy(g_cstk_sem);
+    }
 }
 
 int main(int, char**)
@@ -517,6 +544,7 @@ int main(int, char**)
     tap::add("mpu_privileged_guard", t_mpu_guard); // needs enforced protection
 #endif
 #endif
+    tap::add("caller_stack", t_caller_stack); // caller-owned stack API (no test-only syscalls)
 
     // Every test joins its workers, so main returns as the last live thread:
     // the failure count becomes the process exit status (0 == all passed).

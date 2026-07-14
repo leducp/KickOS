@@ -158,10 +158,13 @@ namespace kos::thread
     // Spawning does NOT preempt the caller, even for a higher-priority thread:
     // the new thread runs once the caller next blocks or yields. Returns an opaque
     // handle (index+generation, not the telemetry thread id), or -1.
+    // `stack`/`stack_size` are optional: pass a caller-owned buffer to size a thread's
+    // stack to its need, or leave them 0 to get the kernel default (KICKOS_USER_STACK_SIZE).
     inline int spawn(void (*entry)(void*), void* arg, char const* name,
                      uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
                      uint32_t quantum_ns = 0, bool privileged = false,
-                     void* mem = nullptr, uint32_t mem_size = 0)
+                     void* mem = nullptr, uint32_t mem_size = 0,
+                     void* stack = nullptr, uint32_t stack_size = 0)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -173,6 +176,8 @@ namespace kos::thread
         p.privileged = static_cast<uint8_t>(privileged);
         p.mem_base = mem;
         p.mem_size = mem_size;
+        p.stack_base = stack;
+        p.stack_size = stack_size;
         return kos_thread_spawn(&p);
     }
 }
