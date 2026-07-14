@@ -137,20 +137,18 @@ they never enter a production image). Flash an `-st` build with
 
 ### Console policy (decided)
 
-Buffered IRQ-drained ring on every board with a real byte-FIFO UART; POLLED stays
-for (a) the semihosting dev vehicles (mps2, virt, microbit) — synchronous, no
-TX-empty IRQ to drain — and (b) USB-CDC / USB-Serial-JTAG endpoints (ESP32-C6),
-which are USB endpoints, not byte-FIFO UARTs, so the ring model does not fit. Today
-only K64F + XMC4800 have the ring; generalise it (they are the template) to RX72M,
-ESP32 (UART0), and the STM32/RP2040/SAM3X fleet. `arch_console_write` -> the ring;
-`arch_console_write_sync` -> the polled writer (panic/fault path).
+Buffered IRQ-drained ring on any board with a real byte-FIFO UART + a device-IRQ receive
+path. POLLED stays for the semihosting dev vehicles (mps2, virt, microbit) — synchronous,
+no TX-empty IRQ to drain. `arch_console_write` -> the ring; `arch_console_write_sync` ->
+the polled writer (panic/fault path).
 
-**Dependency:** the ring needs a working device-interrupt RECEIVE path per arch.
-ARM (NVIC) + RX (INTB) already have it -> mechanical. Xtensa needs the UART0-TX
-physical interrupt wired into the level-1 dispatcher. **ESP32-C6 has NO external
-device-IRQ path yet** -> its ring requires the interrupt-matrix build, which is the
-SAME work as IRQ-inject Option 2 -> Option 2 on the C6 unlocks BOTH the console and
-selftest 10-14. (This is the "do the inevitable thing once" call.)
+On the ring today: **K64F, XMC4800, and ESP32-C6** (UART0, via the real peripheral-IRQ path
+added 2026-07-14 — a 2048-byte ring, silicon-validated). To generalise onto the same
+template: RX72M, ESP32-WROOM (UART0), the STM32/RP2040/SAM3X fleet.
+
+**Dependency:** the ring needs a working device-interrupt RECEIVE path per arch. ARM (NVIC)
++ RX (INTB) have it -> mechanical. The **ESP32-C6 now has one** (UART0 TX -> interrupt matrix
+-> CPU int 30 -> `switch.S` `.Lextdev`); the RX `kickos_rx_default_irq` demux is still a stub.
 
 ### Remaining M1-uniformity gaps
 - Ring console generalised (2026-07-09): RX72M, ESP32-WROOM/UART0, STM32x3, RP2040,

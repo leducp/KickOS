@@ -142,13 +142,16 @@ of it. It does not affect real workloads (which idle/block).
   formal HW re-confirm there. A prior silicon run is on record (120 MHz PLL, switch 77 cyc/641 ns,
   FP-switch 940 rounds). A deferral, not a coverage hole.
 
-## 5. Open follow-ups (M2 — do not gate M1)
+## 5. Open follow-ups (post-M1 — do not gate M1)
 
-1. **Worst-case ISR latency** under sustained syscall load (§3.1): shorten/split interrupt-masked
-   critical sections. Ranked plan — R1 thread a single `now` through the switch→re-arm path; R2 ARM
-   skip redundant BASEPRI+barriers on nested locks (landed); R3 fold the min-delta read past the
-   idempotency guard; R6 xtensa inline-masked switch (the one structural outlier). Needs a
-   worst-case-latency probe (inject while a masked span is in flight) to demonstrate.
-2. **`sys_cpu_clock_hz()` syscall** — expose the running core clock to userspace (bench ns math;
-   read-side precursor to M3 user clock-select).
-3. **K64F re-confirm** — folds into the M2 SYSMPU bring-up (§4).
+Keyed to theme, not sequence. Only #3 is genuine M2 (MPU); the rest are orthogonal.
+
+1. **[anytime perf — not M2] Worst-case ISR latency** under sustained syscall load (§3.1):
+   shorten/split interrupt-masked critical sections. Ranked plan — R1 thread a single `now`
+   through the switch→re-arm path; R2 ARM skip redundant BASEPRI+barriers on nested locks
+   (landed); R3 fold the min-delta read past the idempotency guard; R6 xtensa inline-masked
+   switch (the one structural outlier). Needs a worst-case-latency probe (inject while a masked
+   span is in flight) to demonstrate. Scheduler/switch-path work — no MPU dependency.
+2. **[M3] `sys_cpu_clock_hz()` syscall** — expose the running core clock to userspace (bench ns
+   math; read-side precursor to M3 user clock-select). Read-only, no MPU coupling.
+3. **[M2] K64F re-confirm** — folds into the M2 SYSMPU bring-up (§4).

@@ -104,19 +104,17 @@ Divergences worth closing for M1, most impactful first:
       spin-then-drop guard (ceiling ~40-140 ms; esp32 200000). A wedged UART now drops bytes
       instead of hanging the panic path (the Due's solid-LED hang). fault_dump gates confirm
       a drained console still emits the full dump. (esp32c6/rx72m were already bounded.)
-- [ ] *(driver-era)* RX `kickos_rx_default_irq` is a stub while ARM/riscv/xtensa demux real
-      device lines; injected lines work (selftest passes) but a real peripheral IRQ drops.
-- [ ] **ESP32-C6 buffered (ring) console** — wanted (C6 is a cheap community workhorse), but it
-      needs the **C6's first REAL peripheral-interrupt path**: today the C6 is inject-doorbell
-      only (`arch_irq_unmask` = "ONE doorbell for all lines; trap reads `g_inject_line`"; `.Lext`
-      dispatches only the FROM_CPU CPU-int 31). A UART0 TXFIFO-empty IRQ arrives via a different
-      INTMTX source → a different CPU int → an mcause the trap demux doesn't handle. Scope: route
-      UART0's INTMTX source to a CPU int; extend `switch.S`/`.Lext` to claim/dispatch a real PLIC
-      source → the console TX line → `console_tx_isr`; then the `console_tx_backend`
-      (push/slot_free/irq_enable/irq_disable on UART0 FIFO @0x60000000 + TXFIFO_EMPTY threshold in
-      CONF1 + INT_ENA bit1) + storage/line, mirroring the XMC. Twin of the RX stub above — do both
-      under one real-peripheral-IRQ-demux design. Touches `switch.S` (highest-stakes), so a
-      focused M2 task, not a tail-end add. Backend interface is `lib/include/kickos/console_tx.h`.
+- [x] **ESP32-C6 real peripheral-IRQ path + buffered (ring) console — DONE** (@cc4b236,
+      silicon-validated). The C6 was inject-doorbell only; added its first real device-interrupt
+      path: UART0 TX-empty → interrupt-matrix source (0x600100AC) → a dedicated CPU int (30) →
+      `switch.S` `.Lextdev` → `kickos_rv_ext_dispatch_dev` → the console line's ISR. Level source,
+      NO PLIC claim (clears by de-assert, like the doorbell). selftest 14/14 over the buffered
+      console (2048-byte ring > total output ⇒ proves the ISR drains it), inject path intact.
+      *(anytime coherence — was mislabeled "M2"; it's interrupt plumbing, no MPU dependency.)*
+- [ ] *(driver-era, anytime — NOT M2)* RX `kickos_rx_default_irq` real-peripheral-IRQ demux —
+      still a stub (RXv3, a different arch than the C6, so its own work; same concept). Injected
+      lines pass selftest but a real peripheral IRQ drops. The C6 `.Lextdev` design is the riscv
+      reference pattern.
 
 ## M1 — misc
 
@@ -130,21 +128,24 @@ Divergences worth closing for M1, most impactful first:
 
 ## Later — not M1
 
+**Milestones are keyed to their THEME, not sequence** (audit 2026-07-14). **M2 = MPU /
+memory-protection enforcement**, specifically. Work that merely follows M1 is not "M2" unless
+it needs the MPU — the object-pool refactor, worst-case-ISR-latency perf, `sys_cpu_clock_hz`,
+and the real-peripheral-IRQ demux are orthogonal (anytime coherence / M3-substrate), tagged
+below where they were previously mislabeled.
+
 - **M2 — MPU enforcement** fan-out: reference pair (RISC-V PMP/NAPOT + XMC v7-M PMSA) →
   K64F SYSMPU → RX → tail; + the arch-independent security model (domains, per-thread
   private stacks, syscall-arg/user-pointer validation, pow2 region placement). See
   `docs/architecture.md` / `docs/m2-readiness.md`.
-- **M2 — handle table: mutualise the object pools** (the "M2 handle table" the sem/thread
-  pool comments already point to). The semaphore and thread pools are the *same* pattern —
-  a fixed slot array + per-slot generation + `(index, gen)` handles with an ABA-guarded
-  resolve (a generational slotmap). Factor into one `SlotPool<T, N, Live>` owning the
-  gen/alloc/free/resolve logic once. **Key constraint:** liveness must stay a *policy*, not
-  a hardcoded `used[]` bit — threads use `TCB.state == EXITED` as the single source of truth
-  (scheduler-maintained; do NOT reintroduce a bool that can desync), sems use an internal
-  bit. Stacks stay a separate slot-indexed store. Migrate sems first (simple extrinsic case,
-  verifiable against selftest `sem_*`), then threads with the intrinsic-liveness policy. This
-  is also the **substrate for M3 capabilities** (a generational object table = seL4-style
-  CNode/cap store) and the one place to lock for SMP (below).
+- **[anytime coherence — NOT M2] object-pool mutualisation** — DONE (step 1). The semaphore
+  pool is a generational `SlotPool<T,N>` (slotpool.h); the thread pool is grouped into a
+  tailored `ThreadPool` struct (thread.h) — deliberately **not** SlotPool: thread liveness is
+  intrinsic (`state==EXITED`) and its generation bumps at *reclaim* (so a future join-by-handle
+  can still resolve a just-exited thread), genuinely different from the sem pool, so forcing
+  one pool would be false-DRY. Full unification (a shared handle codec across sems + the M3
+  capability store) waits for that genuine second SlotPool-shaped case. (No MPU dependency —
+  was mislabeled "M2 handle table"; it's the M3-caps substrate + anytime coherence.)
 - **M3 — capabilities + authenticated grants** (seL4-principled object model), **and
   user-selectable CPU clock / low-power mode** (needs explicit per-chip clock bring-up
   first, from the audit above).
@@ -152,9 +153,10 @@ Divergences worth closing for M1, most impactful first:
     Today the bench hardwires the kernel's `SystemCoreClock` for its cycle→ns math; a
     read syscall lets any app convert cycle counts / interpret timings itself, and is the
     natural read-side precursor to the user clock-select above. (Small; not an M1 blocker.)
-- **M2 — worst-case ISR latency (shorten interrupt-masked critical sections).** The
-  uniform bench surfaced that under sustained syscall load the kernel spends too long
-  masked. Ranked plan (see `M1_state.md` §3.1 + the crit-section analysis):
+- **[anytime perf — NOT M2] worst-case ISR latency (shorten interrupt-masked critical
+  sections).** Scheduler/switch-path timing, gated on a worst-case-latency probe — no MPU
+  dependency (was mislabeled "M2"). The uniform bench surfaced that under sustained syscall
+  load the kernel spends too long masked. Ranked plan (see `M1_state.md` §3.1):
   - [x] **R2** — armv7m: skip the redundant BASEPRI raise + DSB/ISB on nested IrqLocks
         (only the outer raise needs them). Landed `5ba57fd`. Correct (ctests green) but
         **below the current bench's noise floor** — see the measurement gap below.
