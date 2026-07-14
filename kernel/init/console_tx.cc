@@ -22,19 +22,27 @@ namespace kickos
 
 namespace
 {
-    console_tx_backend const* g_be = nullptr;
-    char* g_buf = nullptr;
-    uint32_t g_size = 0; // power of two; usable capacity = g_size - 1
-    uint32_t g_mask = 0;
-    volatile uint32_t g_head = 0; // producer advances (bytes queued)
-    volatile uint32_t g_tail = 0; // ISR advances (bytes drained)
-    bool g_armed = false;
+    // All console-TX ring state in one object. Only head/tail are shared between the
+    // thread producer and the drain ISR -> volatile; the rest are set once at init and
+    // read-only after (marking the whole struct volatile would pessimize those + mislead).
+    struct ConsoleTxRing
+    {
+        console_tx_backend const* backend = nullptr;
+        char* buf = nullptr;
+        uint32_t size = 0; // power of two; usable capacity = size - 1
+        uint32_t mask = 0;
+        volatile uint32_t head = 0; // producer advances (bytes queued)
+        volatile uint32_t tail = 0; // ISR advances (bytes drained)
+        bool armed = false;
 
-    // Indices stay in [0, g_size); power-of-two size makes (head - tail) & mask the
-    // used count (unsigned wrap reduces mod g_size). One slot reserved so head==tail
-    // is unambiguously empty.
-    inline uint32_t used() { return (g_head - g_tail) & g_mask; }
-    inline uint32_t space() { return g_size - 1u - used(); }
+        // Indices stay in [0, size); power-of-two size makes (head - tail) & mask the
+        // used count (unsigned wrap reduces mod size). One slot reserved so head==tail
+        // is unambiguously empty.
+        uint32_t used() const { return (head - tail) & mask; }
+        uint32_t space() const { return size - 1u - used(); }
+    };
+
+    ConsoleTxRing g_tx;
 
     // A dead/misconfigured TX channel must NEVER hang panic/fault/boot, so every
     // synchronous poll is bounded (matches the chips' own TX_POLL_TIMEOUT) and bails
@@ -45,7 +53,7 @@ namespace
     {
         for (uint32_t i = 0; i < DRAIN_POLL_CAP; i++)
         {
-            if (g_be->slot_free() != 0)
+            if (g_tx.backend->slot_free() != 0)
             {
                 return true;
             }
@@ -59,21 +67,21 @@ namespace
     // rather than hang.
     void drain_sync()
     {
-        uint32_t const head = g_head;
-        while (g_tail != head)
+        uint32_t const head = g_tx.head;
+        while (g_tx.tail != head)
         {
             if (not wait_slot())
             {
-                g_tail = head; // stuck TX: drop the undrained bytes, don't hang
+                g_tx.tail = head; // stuck TX: drop the undrained bytes, don't hang
                 return;
             }
-            g_be->push(static_cast<uint8_t>(g_buf[g_tail]));
+            g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[g_tx.tail]));
             // Publish AFTER each byte, not once at the end: a synchronous CPU fault
             // (illegal instr / MPU / bus) can land mid-loop -- it is not gated by the
-            // interrupt mask -- and its handler flushes again. A stale g_tail would
+            // interrupt mask -- and its handler flushes again. A stale tail would
             // make that flush re-push bytes already sent, doubling output before the
-            // panic banner. Per-byte publish keeps g_tail a truthful "already sent".
-            g_tail = (g_tail + 1u) & g_mask;
+            // panic banner. Per-byte publish keeps tail a truthful "already sent".
+            g_tx.tail = (g_tx.tail + 1u) & g_tx.mask;
         }
     }
 
@@ -85,20 +93,20 @@ extern "C"
 
 void console_tx_init(console_tx_backend const* be, char* storage, uint32_t size)
 {
-    g_be = be;
-    g_buf = storage;
-    g_size = size;
-    g_mask = size - 1u;
-    g_head = 0;
-    g_tail = 0;
-    g_armed = true;
+    g_tx.backend = be;
+    g_tx.buf = storage;
+    g_tx.size = size;
+    g_tx.mask = size - 1u;
+    g_tx.head = 0;
+    g_tx.tail = 0;
+    g_tx.armed = true;
 }
 
-int console_tx_armed(void) { return static_cast<int>(g_armed); }
+int console_tx_armed(void) { return static_cast<int>(g_tx.armed); }
 
 void console_tx_write(char const* buf, size_t n)
 {
-    if (not g_armed)
+    if (not g_tx.armed)
     {
         arch_console_write_sync(buf, n);
         return;
@@ -110,18 +118,18 @@ void console_tx_write(char const* buf, size_t n)
     kickos::IrqLock lock;
 
     // Fast path: the burst fits.
-    if (n <= space())
+    if (n <= g_tx.space())
     {
-        bool const was_empty = (used() == 0);
-        uint32_t idx = g_head;
+        bool const was_empty = (g_tx.used() == 0);
+        uint32_t idx = g_tx.head;
         for (size_t i = 0; i < n; i++)
         {
-            g_buf[idx] = buf[i];
-            idx = (idx + 1u) & g_mask;
+            g_tx.buf[idx] = buf[i];
+            idx = (idx + 1u) & g_tx.mask;
         }
         KICKOS_CONSOLE_TX_BARRIER();
-        g_head = idx;
-        g_be->irq_enable();
+        g_tx.head = idx;
+        g_tx.backend->irq_enable();
         // Prime the pump on the idle->busy transition. On an edge/transition-
         // triggered TX interrupt (XMC USIC TBIEN, and -- pending HW confirmation --
         // the PL011 with FEN=0 and the RX SCI TXI), enabling the IRQ on an idle
@@ -129,10 +137,10 @@ void console_tx_write(char const* buf, size_t n)
         // transfer; its completion event then drives the drain ISR. The prime is
         // load-bearing there, NOT redundant. On a truly level-triggered part (K64F
         // TDRE, asserted while the register is empty) it is a harmless immediate send.
-        if (was_empty and g_head != g_tail and g_be->slot_free() != 0)
+        if (was_empty and g_tx.head != g_tx.tail and g_tx.backend->slot_free() != 0)
         {
-            g_be->push(static_cast<uint8_t>(g_buf[g_tail]));
-            g_tail = (g_tail + 1u) & g_mask;
+            g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[g_tx.tail]));
+            g_tx.tail = (g_tx.tail + 1u) & g_tx.mask;
         }
         return;
     }
@@ -142,7 +150,7 @@ void console_tx_write(char const* buf, size_t n)
     // the lock -- a full drain can mask IRQs for up to the drain time, an accepted
     // debug-console-flooding tradeoff in exchange for no producer/ISR race. Dropping
     // kernel debug output would be worse than the stall.
-    g_be->irq_disable();
+    g_tx.backend->irq_disable();
     drain_sync();
     for (size_t i = 0; i < n; i++)
     {
@@ -150,29 +158,29 @@ void console_tx_write(char const* buf, size_t n)
         {
             return; // stuck TX: give up rather than hang
         }
-        g_be->push(static_cast<uint8_t>(buf[i]));
+        g_tx.backend->push(static_cast<uint8_t>(buf[i]));
     }
 }
 
 void console_tx_isr(void)
 {
-    uint32_t const head = g_head; // producer cannot run during this ISR (priority)
-    while (g_tail != head and g_be->slot_free() != 0)
+    uint32_t const head = g_tx.head; // producer cannot run during this ISR (priority)
+    while (g_tx.tail != head and g_tx.backend->slot_free() != 0)
     {
-        g_be->push(static_cast<uint8_t>(g_buf[g_tail]));
+        g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[g_tx.tail]));
         // Publish per byte (not once at the end): a synchronous fault mid-drain
-        // flushes again, and a stale g_tail would re-push already-sent bytes.
-        g_tail = (g_tail + 1u) & g_mask;
+        // flushes again, and a stale tail would re-push already-sent bytes.
+        g_tx.tail = (g_tx.tail + 1u) & g_tx.mask;
     }
-    if (g_tail == head)
+    if (g_tx.tail == head)
     {
-        g_be->irq_disable();
+        g_tx.backend->irq_disable();
     }
 }
 
 void console_tx_flush_sync(void)
 {
-    if (not g_armed)
+    if (not g_tx.armed)
     {
         return;
     }
@@ -182,7 +190,7 @@ void console_tx_flush_sync(void)
     // we drain. Idempotent -- a second flush finds head==tail and does nothing. Panic
     // callers have already masked (kpanic_enter), where this nests harmlessly.
     kickos::IrqLock lock;
-    g_be->irq_disable();
+    g_tx.backend->irq_disable();
     drain_sync();
 }
 
