@@ -421,8 +421,9 @@ void arch_rv_hw_unmask(int line)
     }
     r32(INTMTX_UART0_MAP) = KICKOS_RV_DEV_CPU_INT;
     r32(PLIC_MXINT_PRI_BASE + 4u * KICKOS_RV_DEV_CPU_INT) = DOORBELL_PRIO;
-    r32(PLIC_MXINT_TYPE) &= ~(1u << KICKOS_RV_DEV_CPU_INT);   // level
+    r32(PLIC_MXINT_TYPE) &= ~(1u << KICKOS_RV_DEV_CPU_INT);   // level (cleared from source)
     r32(PLIC_MXINT_ENABLE) |= (1u << KICKOS_RV_DEV_CPU_INT);  // enable at the PLIC
+    __asm volatile("fence" ::: "memory"); // let the APB controller writes settle (TRM §1.6.3.2)
     __asm volatile("csrs mie, %0" ::"r"(1u << KICKOS_RV_DEV_CPU_INT) : "memory");
 }
 
