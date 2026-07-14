@@ -95,6 +95,53 @@ namespace kickos
         void* mem_base = nullptr;
         size_t mem_size = 0;
     };
+
+    // Static thread-slot pool (instance-scoped; the TCBs + their kernel stacks). Bump-
+    // allocated, then EXITED slots reclaimed at spawn. Liveness is INTRINSIC -- a slot is
+    // free iff its TCB state is EXITED, the scheduler's single source of truth; there is
+    // deliberately no `used[]` bit to drift out of sync. The per-slot generation bumps at
+    // RECLAIM, not at exit, so a handle to a just-exited-but-not-yet-reused slot still
+    // gen-matches (a future join-by-handle can read its result); reuse invalidates it
+    // (ABA). Tailored on purpose -- this is NOT the generic SlotPool (different liveness,
+    // generation timing, and reclaim). Caller serializes (IrqLock); reuse is safe because
+    // thread_create re-inits the TCB (incl. privilege posture) from scratch.
+    struct ThreadPool
+    {
+        static constexpr int kIndexBits = 8; // handle low bits; the generation takes the rest
+        static_assert(KICKOS_MAX_THREADS <= (1 << kIndexBits),
+                      "thread handle index field too small for KICKOS_MAX_THREADS");
+
+        Thread slots[KICKOS_MAX_THREADS];
+        alignas(16) unsigned char stacks[KICKOS_MAX_THREADS][KICKOS_USER_STACK_SIZE];
+        int next = 0;
+        uint16_t gen[KICKOS_MAX_THREADS] = {};
+
+        // Claim a slot: reclaim an EXITED one (bumping its generation to kill stale
+        // handles) or bump-allocate a fresh one. Returns the index, or -1 if full.
+        [[nodiscard]] int alloc()
+        {
+            for (int s = 0; s < next; s++)
+            {
+                if (slots[s].state == ThreadState::EXITED)
+                {
+                    gen[s]++;
+                    return s;
+                }
+            }
+            if (next >= KICKOS_MAX_THREADS)
+            {
+                return -1;
+            }
+            return next++;
+        }
+
+        // The opaque handle for a live slot index, carrying its current generation.
+        int handle_for(int index) const
+        {
+            return static_cast<int>((static_cast<uint32_t>(gen[index]) << kIndexBits) |
+                                    static_cast<uint32_t>(index));
+        }
+    };
 }
 
 #endif
