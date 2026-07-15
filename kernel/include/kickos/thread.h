@@ -13,6 +13,7 @@
 
 namespace kickos
 {
+    struct Domain; // kickos/domain.h -- the shared region set a thread belongs to
 
     enum class ThreadState : uint8_t
     {
@@ -65,6 +66,10 @@ namespace kickos
         void* stack_base;
         size_t stack_size;
 
+        // The memory domain this thread belongs to (shared region set + privilege).
+        // Its regions are copied into regions[] below at create, plus this thread's
+        // private stack; the effective set is what arch_mpu_apply loads per switch-in.
+        Domain* domain;
         arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS];
         size_t region_count;
 
@@ -95,6 +100,9 @@ namespace kickos
         // Threads sharing one region share a memory domain; base==0 => none.
         void* mem_base = nullptr;
         size_t mem_size = 0;
+        // Pre-resolved domain (thread_spawn sets this so pool exhaustion fails the
+        // spawn cleanly). null => thread_create resolves from privileged + mem_base.
+        Domain* domain = nullptr;
     };
 
     // Static thread-slot pool (instance-scoped; the TCBs + their kernel stacks). Bump-

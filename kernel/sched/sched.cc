@@ -8,6 +8,7 @@
 
 #include <kickos/sched.h>
 #include <kickos/kernel.h>
+#include <kickos/domain.h>
 #include <kickos/instance.h>
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
@@ -145,6 +146,7 @@ namespace kickos
                 IrqLock lock;
                 Kernel& k = kernel();
                 k.current->state = ThreadState::EXITED;
+                domain_release(k.current->domain); // last thread out frees the domain
                 k.policy->on_remove(k.current);
                 if (k.current != k.idle and k.live > 0)
                 {

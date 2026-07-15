@@ -28,6 +28,12 @@
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16
 #endif
+// Memory-domain pool (the shared region sets threads reference; see domain.h).
+// Worst case is one distinct domain per thread plus the two immortal singletons
+// (the kernel domain + the default unprivileged domain).
+#ifndef KICKOS_MAX_DOMAINS
+#define KICKOS_MAX_DOMAINS (KICKOS_MAX_THREADS + 2)
+#endif
 // Default stack the kernel provides a spawned thread when the caller supplies none --
 // so casual use ("just add a task") needs no thought. A thread's stack is a userspace
 // concern, so kos_thread_params may instead carry a caller-owned stack_base/stack_size
