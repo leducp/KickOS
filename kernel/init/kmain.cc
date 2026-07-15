@@ -7,6 +7,7 @@
 
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/domain.h>
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
@@ -100,6 +101,7 @@ namespace kickos
         kdiag_led_init(); // early: usable as a fault indicator from here on
         kbanner();
         sched::init();
+        domain_init(); // build the immortal kernel + default-user domains (arena ready)
         ktime_init();
         irq_init();          // seed the dispatch table before any driver attaches
         console_buffer_init(); // arm the buffered console TX drain (after irq_init)

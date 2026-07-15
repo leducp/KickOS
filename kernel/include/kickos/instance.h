@@ -15,6 +15,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config.h>
+#include <kickos/domain.h>
 #include <kickos/irq.h>
 #include <kickos/list.h>
 #include <kickos/slotpool.h>
@@ -65,6 +66,10 @@ namespace kickos
         // intrinsic liveness (a slot is free iff state==EXITED), generation bumped at
         // reclaim (ABA). All allocation goes through thread_spawn().
         ThreadPool threads;
+        // Memory-domain pool (see domain.h): shared region sets threads reference.
+        // domains[0] = kernel domain, domains[1] = default-user (both immortal);
+        // the rest are refcounted mem_base domains. All access via domain_*().
+        Domain domains[KICKOS_MAX_DOMAINS];
 
         // --- interrupt dispatch + IRQ-as-event bindings (irq.cc) ---
         IrqEntry irq_table[KICKOS_MAX_IRQ]; // line -> handler; ISR reads by index

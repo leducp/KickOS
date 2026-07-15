@@ -10,6 +10,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config.h>
+#include <kickos/domain.h>
 #include <kickos/instance.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
@@ -117,6 +118,15 @@ namespace kickos
                 }
             }
             Kernel& k = kernel();
+            // Resolve the memory domain BEFORE claiming a slot, so a domain-pool
+            // exhaustion is a clean spawn failure, not a leaked thread slot. domain_for
+            // does not take a reference (thread_create does); a domain it creates but
+            // we never reference stays refcount 0 == a free slot.
+            Domain* const dom = domain_for(p->privileged != 0, p->mem_base, p->mem_size);
+            if (dom == nullptr)
+            {
+                return -1;
+            }
             // Reclaim an EXITED slot or bump-allocate (ThreadPool::alloc). Single-core: an
             // EXITED thread is guaranteed off-CPU by the time any other thread reaches here
             // -- it parked in exit_current until its switch-away committed -- and is off
@@ -144,6 +154,7 @@ namespace kickos
             attr.privileged = (p->privileged != 0);
             attr.mem_base = p->mem_base;
             attr.mem_size = p->mem_size;
+            attr.domain = dom;
 
             // Caller's stack if given (a thread's stack is a userspace concern), else the
             // kernel's default per-thread slab.

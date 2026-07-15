@@ -3,6 +3,7 @@
 
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/domain.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/libc/string.h>
@@ -59,46 +60,44 @@ namespace kickos
         // slice_deadline_ns is policy-owned: the RR policy arms it on switch-in,
         // before the thread runs; the core carries no slice sentinel.
 
-        // MPU region set (reloaded on every switch-in). A privileged thread is the
-        // kernel domain: the whole user-RAM arena (the background-region analog),
-        // which also covers its stack. An unprivileged thread gets its domain data
-        // region (if granted) PLUS its own private stack region -- so a sibling
-        // cannot scribble its stack, and everything else faults (per-domain
-        // isolation). Region sizes round up to the pow2 the MPU can describe
-        // (arch_ram_region_size); regions are non-overlapping. NOTE: the private-
-        // stack region is enforced by the hardware MPU (Phase 1: PMSA/PMP, where the
-        // privileged switch path is exempt via the background region). The host sim
-        // leaves it inert -- the default pool stacks live in ungoverned BSS, outside
-        // the mprotect'd arena, so grant_region_set fail-closed-skips them; the sim
-        // still enforces the arena-resident domain data region.
-        size_t nr = 0;
-        if (attr.privileged)
+        // The memory domain: pre-resolved by thread_spawn (so pool exhaustion fails
+        // the spawn), else resolved here (idle/root: privileged -> kernel domain,
+        // which never fails). A reference is held for the thread's lifetime and
+        // released at exit (sched::exit_current).
+        t->domain = attr.domain;
+        if (t->domain == nullptr)
         {
-            size_t size = arch_ram_size();
-            if (size != 0)
+            t->domain = domain_for(attr.privileged, attr.mem_base, attr.mem_size);
+        }
+        domain_ref(t->domain);
+
+        // MPU region set (reloaded on every switch-in) = the domain's shared regions
+        // PLUS this thread's own private stack. A privileged (kernel-domain) thread's
+        // single region is the whole arena, which already covers its stack, so no
+        // separate stack region is added. An unprivileged thread gets its domain
+        // data region(s) + its private stack, so a sibling cannot scribble its stack.
+        // Region sizes round up to the pow2 the MPU can describe (arch_ram_region_size).
+        // NOTE: the private-stack region is enforced by the hardware MPU (Phase 1:
+        // PMSA/PMP, where the privileged switch path is exempt via the background
+        // region). The host sim leaves it inert -- default pool stacks live in
+        // ungoverned BSS outside the mprotect'd arena, so grant_region_set skips them;
+        // the sim still enforces the arena-resident domain data region.
+        size_t nr = 0;
+        if (t->domain != nullptr)
+        {
+            for (size_t i = 0;
+                 i < t->domain->region_count and nr < KICKOS_MPU_MAX_REGIONS; i++)
             {
-                t->regions[nr].base = arch_ram_base();
-                t->regions[nr].size = size;
-                t->regions[nr].attr = ARCH_MPU_R | ARCH_MPU_W;
-                nr++;
+                t->regions[nr++] = t->domain->regions[i];
             }
         }
-        else
+        if (not attr.privileged and stack_base != nullptr and stack_size != 0
+            and nr < KICKOS_MPU_MAX_REGIONS)
         {
-            if (attr.mem_base != nullptr and attr.mem_size != 0)
-            {
-                t->regions[nr].base = reinterpret_cast<uintptr_t>(attr.mem_base);
-                t->regions[nr].size = arch_ram_region_size(attr.mem_size);
-                t->regions[nr].attr = ARCH_MPU_R | ARCH_MPU_W;
-                nr++;
-            }
-            if (stack_base != nullptr and stack_size != 0)
-            {
-                t->regions[nr].base = reinterpret_cast<uintptr_t>(stack_base);
-                t->regions[nr].size = arch_ram_region_size(stack_size);
-                t->regions[nr].attr = ARCH_MPU_R | ARCH_MPU_W;
-                nr++;
-            }
+            t->regions[nr].base = reinterpret_cast<uintptr_t>(stack_base);
+            t->regions[nr].size = arch_ram_region_size(stack_size);
+            t->regions[nr].attr = ARCH_MPU_R | ARCH_MPU_W;
+            nr++;
         }
         t->region_count = nr;
 
