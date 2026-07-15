@@ -443,6 +443,11 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     // on M1.x -- privilege + syscall only.
 }
 
+size_t arch_mpu_min_region(void)
+{
+    return 16u; // RX MPU region granularity (RSPAGEn/REPAGEn); refine in M2 fan-out
+}
+
 uintptr_t arch_ram_base(void)
 {
     return reinterpret_cast<uintptr_t>(__kickos_ram_start);
@@ -455,14 +460,22 @@ size_t arch_ram_size(void)
 
 void* arch_ram_alloc(size_t size)
 {
-    size_t total = arch_ram_size();
-    size_t need = (size + 31u) & ~static_cast<size_t>(31u); // 32-byte aligned
+    if (size == 0)
+    {
+        return nullptr;
+    }
+    size_t const rsz = arch_ram_region_size(size); // pow2, naturally alignable
+    size_t const total = arch_ram_size();
+    uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_ram_start);
     arch_irq_state_t s = arch_irq_save();
     void* p = nullptr;
-    if (need != 0 and need <= total - g_ram_used)
+    uintptr_t const cur = base + g_ram_used;
+    uintptr_t const aligned = (cur + (rsz - 1)) & ~static_cast<uintptr_t>(rsz - 1);
+    size_t const off = static_cast<size_t>(aligned - base);
+    if (aligned >= cur and off <= total and rsz <= total - off)
     {
-        p = __kickos_ram_start + g_ram_used;
-        g_ram_used += need;
+        p = reinterpret_cast<void*>(aligned);
+        g_ram_used = static_cast<uint32_t>(off + rsz);
     }
     arch_irq_restore(s);
     return p;

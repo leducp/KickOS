@@ -106,12 +106,46 @@ struct arch_mpu_region
 
 // Load the running thread's regions on switch-in (replaces the whole active
 // set). sim: mprotect over the user-RAM arena -- grant the listed regions,
-// everything else no-access. Regions must be page-aligned and non-overlapping.
+// everything else no-access. Regions are non-overlapping; attr is the
+// UNPRIVILEGED access (supervisor comes from the background region / SYSMPU RGD0).
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 
-// The MPU-governed user-RAM pool. Domain data + (later) task stacks are placed
-// here so per-domain isolation is enforceable. sim: an mmap arena; MCU: a
-// linker-defined region. arch_ram_alloc bump-allocates page-aligned blocks.
+// The smallest region this arch's MPU can enforce -- a global hardware property,
+// NOT a per-region field (which would break the frozen arch_mpu_region seam):
+// ARM PMSA 32 bytes, RISC-V PMP NAPOT 8, one host page on the sim (mprotect
+// granularity). Region sizes floor to this so every descriptor is representable.
+size_t arch_mpu_min_region(void);
+
+// Round `want` up to the region geometry EVERY backend can describe with one
+// descriptor: a power of two, at least arch_mpu_min_region(). The block
+// arch_ram_alloc returns is sized and naturally aligned to this, so PMSA/NAPOT
+// can cover it; the kernel sizes each thread/domain region descriptor with the
+// SAME call, so the descriptor matches the backing block exactly.
+static inline size_t arch_ram_region_size(size_t want)
+{
+    size_t min = arch_mpu_min_region();
+    if (want < min)
+    {
+        want = min;
+    }
+    size_t p = 1;
+    while (p < want)
+    {
+        size_t next = p << 1;
+        if (next < p) // size_t overflow: unroundable, hand back the raw request
+        {
+            return want;
+        }
+        p = next;
+    }
+    return p;
+}
+
+// The MPU-governed user-RAM pool. Domain data + unprivileged-thread stacks are
+// placed here so per-domain isolation is enforceable. sim: an mmap arena; MCU: a
+// linker-defined region. arch_ram_alloc reserves a block sized by
+// arch_ram_region_size() and NATURALLY ALIGNED to that size, so exactly one MPU
+// region covers it. Returns null on exhaustion or size 0.
 uintptr_t arch_ram_base(void);
 size_t arch_ram_size(void);
 void* arch_ram_alloc(size_t size);
