@@ -81,6 +81,53 @@ namespace kickos
         // resolves a thread by handle yet; when join/kill-by-id adds one it must also
         // reject state==EXITED (the generation bumps at reclaim, not exit -- see ThreadPool).
 
+        // Confused-deputy floor: syscall_dispatch runs privileged (it bypasses the
+        // MPU), so it must never dereference a user pointer the CALLER could not
+        // itself reach. A range passes iff it lies within one region the current
+        // thread is granted -- its domain data + its own stack (thread.cc composition)
+        // -- with the required access. Privileged callers (kernel domain, trusted)
+        // bypass. LIMIT: only kernel-modelled regions are checked. On hardware a
+        // domain also owns the app's code/rodata/.data regions (M2 fan-out), but the
+        // host sim does not model those, so bounds on buffers/strings that may point
+        // into them (kconsole_write, the thread name) wait for the hardware backends.
+        // Struct + out-pointer args are always caller STACK locals, so they are in a
+        // modelled region and safe to check now.
+        bool user_range_ok(uintptr_t ptr, size_t len, uint32_t need)
+        {
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return false;
+            }
+            if (c->privileged)
+            {
+                return true;
+            }
+            if (len == 0)
+            {
+                return true;
+            }
+            uintptr_t const end = ptr + len;
+            if (end < ptr)
+            {
+                return false; // address-space wrap
+            }
+            for (size_t i = 0; i < c->region_count; i++)
+            {
+                arch_mpu_region const& r = c->regions[i];
+                if ((r.attr & need) != need)
+                {
+                    continue;
+                }
+                uintptr_t const rend = r.base + r.size;
+                if (rend >= r.base and ptr >= r.base and end <= rend)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         int thread_spawn(kos_thread_params const* p)
         {
             IrqLock lock;
@@ -88,6 +135,19 @@ namespace kickos
             {
                 return -1;
             }
+            // Copy the caller's params into kernel memory through a checked read: an
+            // unprivileged caller must not hand the kernel a pointer it could not read
+            // (a kernel address would otherwise be dereferenced privileged). The struct
+            // is a caller stack local (kos::thread::spawn), so it lies in the stack
+            // region. Read the fields from the kernel-owned copy hereafter. (The name
+            // pointer inside is still user memory; thread_create copies it bounded --
+            // validating IT against app rodata is the hardware-backend pass.)
+            if (not user_range_ok(reinterpret_cast<uintptr_t>(p), sizeof(*p), ARCH_MPU_R))
+            {
+                return -1;
+            }
+            kos_thread_params params = *p;
+            p = &params;
             // Validate the user-supplied priority: it indexes the ready lists and
             // drives a 1u<<prio bitmap shift, so an out-of-range value is an OOB write / UB.
             // Priority 0 is reserved for the idle thread.
@@ -375,9 +435,15 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_clock_now:
         {
             // Out-pointer for a 64-bit store: reject null and misalignment (an unaligned u64
-            // write faults / is UB on ARM and RISC-V). Bounds-checking a0 against the caller's
-            // writable region is the pending user-pointer-validation pass (see TODO), not M2.
+            // write faults / is UB on ARM and RISC-V), then bound it against the caller's
+            // writable regions -- the kernel writes it privileged, so an unprivileged caller
+            // must own it. The stub passes a stack local (in its stack region); privileged
+            // callers bypass. Closes the privileged-kernel-writes-a-user-pointer hole.
             if (a0 == 0 or (a0 & 0x7u) != 0)
+            {
+                return static_cast<uintptr_t>(-1);
+            }
+            if (not user_range_ok(a0, sizeof(uint64_t), ARCH_MPU_W))
             {
                 return static_cast<uintptr_t>(-1);
             }
