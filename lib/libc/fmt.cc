@@ -7,7 +7,6 @@
 
 namespace
 {
-
     struct Sink
     {
         char* buf;
@@ -81,7 +80,6 @@ namespace
             emit_uint(s, static_cast<uint64_t>(v), 10);
         }
     }
-
 }
 
 extern "C" int kvsnprintf(char* buf, size_t size, char const* fmt, va_list ap)
