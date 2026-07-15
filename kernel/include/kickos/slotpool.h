@@ -71,8 +71,10 @@ namespace kickos
                 return nullptr;
             }
             int const index = handle & ((1 << kIndexBits) - 1);
-            uint16_t const gen = static_cast<uint16_t>(static_cast<uint32_t>(handle) >> kIndexBits);
-            if (index >= N or not used_[index] or gen_[index] != gen)
+            // Full high bits, not truncated to 16: a handle carrying junk above the generation
+            // field (bits set beyond what handle_for ever produces) must fail to resolve, not alias.
+            uint32_t const gen = static_cast<uint32_t>(handle) >> kIndexBits;
+            if (index >= N or not used_[index] or static_cast<uint32_t>(gen_[index]) != gen)
             {
                 return nullptr;
             }

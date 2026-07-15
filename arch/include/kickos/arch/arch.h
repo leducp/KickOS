@@ -160,7 +160,7 @@ void arch_irq_unmask(int line);
 // Raise device line `irq` (the controller's "raise"). sim: delivers an async
 // signal so the ISR runs in interrupt context; ARM: pends the NVIC line. Drives
 // scheduler trigger #4. A real driver never raises -- it register/wait/acks;
-// raising is fake-a-device-firing test scaffolding, privilege-gated at M1 (11a).
+// raising is fake-a-device-firing test scaffolding, privilege-gated.
 void arch_irq_inject(int irq);
 
 // --- Minimal debug console (bottom edge of the in-kernel console driver) ---

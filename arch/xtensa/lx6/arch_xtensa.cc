@@ -332,8 +332,9 @@ void kickos_lx6_dispatch_l1(void)
 
     // Software doorbell (int 7): a device line was injected. Clear the latch first
     // (it has no peripheral source, so it would redeliver forever otherwise), then
-    // service the recorded LOGICAL line -- masking it before waking its driver, which
-    // re-unmasks via irq_ack once serviced so the line cannot re-fire mid-handling.
+    // service the recorded LOGICAL line. The bound handler masks/acks as needed
+    // (tier-1 via irq_event_isr + irq_ack); do NOT mask here, or a tier-2 irq_attach
+    // line stays masked forever after one delivery. Matches sim/riscv/rx.
     if ((pending & (1u << SW_INT_L1)) != 0)
     {
         uint32_t bit = 1u << static_cast<unsigned>(SW_INT_L1);
@@ -343,7 +344,6 @@ void kickos_lx6_dispatch_l1(void)
         g_inject_line = -1;
         if (line >= 0)
         {
-            arch_irq_mask(line);
             kickos_isr_irq(line);
         }
     }

@@ -49,7 +49,8 @@ namespace kickos
             ARCH_ARMV7M = 1,
             ARCH_ARMV6M = 2,
             ARCH_XTENSA = 3,
-            ARCH_RX = 4
+            ARCH_RX = 4,
+            ARCH_RISCV = 5
         };
 
         enum : uint16_t

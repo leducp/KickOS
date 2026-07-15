@@ -10,7 +10,7 @@
 //
 // Runtime verification is pending a Cortex-M4 execution target (QEMU or K64F
 // hardware); this compiles clean for the target ISA and the switch/SVC paths
-// are validated by construction + disassembly (see docs/porting.md).
+// are validated by construction + disassembly (see docs/reference/porting.md).
 
 #include <kickos/arch/arch.h>
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
@@ -38,7 +38,7 @@ namespace
     // The DWT cycle counter is 32-bit; extend it to a monotonic 64-bit cycle
     // count in software by catching wraps on each read. LIMITATION (M1): a wrap
     // that is not observed within one 2^32-cycle period (~35 s at 120 MHz) is
-    // missed. A DWT/timer overflow interrupt is the refinement (item 10/12a).
+    // missed. A DWT/timer overflow interrupt is the refinement.
     volatile uint32_t g_cyc_high = 0;
     volatile uint32_t g_cyc_last = 0;
 }

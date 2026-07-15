@@ -3,7 +3,7 @@
 
 # ISA family routes the chip glob + per-arch include path. The arm toolchain
 # predates the seam and does not set it, so default to "arm"; the rx toolchain
-# (and, separately, an xtensa one) set it explicitly (spike §1).
+# (and, separately, an xtensa one) set it explicitly (spike section 1).
 if(NOT KICKOS_ARCH_FAMILY)
   set(KICKOS_ARCH_FAMILY "arm")
 endif()
@@ -24,9 +24,9 @@ if(KICKOS_ARCH STREQUAL "sim")
   # Kernel headers for the reverse-direction callbacks are pulled via arch.h.
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sim/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "armv7m")
-  # M1: context switch (PendSV) + syscall trap (SVC trampoline) in switch.S,
+  # Context switch (PendSV) + syscall trap (SVC trampoline) in switch.S,
   # the Cortex-M core-generic seam in arch_armv7m.cc. The chip layer
-  # (arch/arm/chip/*, M1 item 10) adds arch_init/arch_console_write + the
+  # (arch/arm/chip/*) adds arch_init/arch_console_write + the
   # linker script; until then this builds as a static library only.
   add_library(kickos_arch_armv7m STATIC
     arm/armv7m/arch_armv7m.cc
@@ -48,7 +48,7 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv7m/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "armv6m")
-  # M1 item 11: Cortex-M0/M0+ (RP2040). PRIMASK crit + v6-M-subset switch.S; the
+  # Cortex-M0/M0+ (RP2040). PRIMASK crit + v6-M-subset switch.S; the
   # chip supplies arch_clock_now (no DWT) + arch_init/console + linker script.
   add_library(kickos_arch_armv6m STATIC
     arm/armv6m/arch_armv6m.cc
@@ -63,7 +63,7 @@ elseif(KICKOS_ARCH STREQUAL "armv6m")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arm/armv6m/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "rxv3")
-  # M1.x item 11h: Renesas RX72M (RXv3). Uniform SWINT deferred context switch +
+  # Renesas RX72M (RXv3). Uniform SWINT deferred context switch +
   # INT-based syscall trap (supervisor-on-USP) in switch.S; the core-generic seam
   # (crit section via MVTIPL, CMTW clock/timer, ICUD mask/unmask) in arch_rxv3.cc.
   # The chip layer (arch/rx/chip/*) supplies arch_init/arch_console_write + the
@@ -82,7 +82,7 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rx/rxv3/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "lx6")
-  # M1.x item 11c: ESP32 Xtensa LX6 -- the first non-ARM ISA. Windowed ABI, so the
+  # ESP32 Xtensa LX6 -- the first non-ARM ISA. Windowed ABI, so the
   # context switch spills all live register windows to the outgoing thread's stack
   # before the SP swap (switch.S); the mandatory window over/underflow + interrupt
   # vectors live in the chip startup.S. Syscall is a plain call (no privilege

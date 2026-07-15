@@ -19,7 +19,7 @@ board=${2:-k64f}
 # dev = J-Link device; hz = trace-clock (DWT/core = SystemCoreClock) for tick->ns.
 case "$board" in
     k64f|frdmk64f)         dev=MK64FN1M0xxx12; hz=120000000 ;;  # PLL 120 MHz (FEI 20.97 MHz if the PLL bring-up is skipped)
-    xmc4800|xmc4800-relax) dev=XMC4800-2048;   hz=120000000 ;;  # PLL 120 MHz
+    xmc4800|xmc4800-relax) dev=XMC4800-2048;   hz=144000000 ;;  # fCPU 144 MHz (SystemCoreClock; DWT CYCCNT clock)
     *) echo "telemetry-record: unknown board '$board' (known: k64f, xmc4800)" >&2; exit 1 ;;
 esac
 command -v JLinkRTTLogger >/dev/null 2>&1 || {
