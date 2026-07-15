@@ -840,12 +840,13 @@ void* arch_ram_alloc(size_t size)
     {
         return nullptr;
     }
-    size_t const rsz = arch_ram_region_size(size); // pow2, >= one page
+    size_t const rsz = arch_ram_region_size(size);      // pow2, >= one page
+    size_t const ralign = arch_ram_region_align(size);  // == rsz on the sim (min > 0)
     uintptr_t const base = reinterpret_cast<uintptr_t>(sim().arena);
     uintptr_t const cur = base + sim().arena_used;
     // Natural (absolute) alignment so one mprotect'd region covers the block;
     // subtract-form bounds are immune to the size_t wrap that (used + rsz) has.
-    uintptr_t const aligned = (cur + (rsz - 1)) & ~static_cast<uintptr_t>(rsz - 1);
+    uintptr_t const aligned = (cur + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
     size_t const off = static_cast<size_t>(aligned - base);
     if (aligned < cur or off > sim().arena_size or rsz > sim().arena_size - off)
     {
