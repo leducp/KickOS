@@ -819,6 +819,11 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     sim().applied_n = n;
 }
 
+size_t arch_mpu_min_region(void)
+{
+    return static_cast<size_t>(sim().pagesize); // mprotect granularity
+}
+
 uintptr_t arch_ram_base(void)
 {
     return reinterpret_cast<uintptr_t>(sim().arena);
@@ -831,20 +836,23 @@ size_t arch_ram_size(void)
 
 void* arch_ram_alloc(size_t size)
 {
-    if (sim().arena == nullptr)
+    if (sim().arena == nullptr or size == 0)
     {
         return nullptr;
     }
-    size_t pg = static_cast<size_t>(sim().pagesize);
-    size_t need = (size + pg - 1) & ~(pg - 1);
-    // Subtract-form bound is immune to the size_t wrap that (used + need) has.
-    if (need == 0 or need > sim().arena_size - sim().arena_used)
+    size_t const rsz = arch_ram_region_size(size); // pow2, >= one page
+    uintptr_t const base = reinterpret_cast<uintptr_t>(sim().arena);
+    uintptr_t const cur = base + sim().arena_used;
+    // Natural (absolute) alignment so one mprotect'd region covers the block;
+    // subtract-form bounds are immune to the size_t wrap that (used + rsz) has.
+    uintptr_t const aligned = (cur + (rsz - 1)) & ~static_cast<uintptr_t>(rsz - 1);
+    size_t const off = static_cast<size_t>(aligned - base);
+    if (aligned < cur or off > sim().arena_size or rsz > sim().arena_size - off)
     {
         return nullptr;
     }
-    void* p = sim().arena + sim().arena_used;
-    sim().arena_used += need;
-    return p;
+    sim().arena_used = off + rsz;
+    return reinterpret_cast<void*>(aligned);
 }
 
 uintptr_t arch_mpu_probe_addr(void)
