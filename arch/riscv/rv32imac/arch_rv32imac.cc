@@ -228,13 +228,14 @@ void* arch_ram_alloc(size_t size)
     {
         return nullptr;
     }
-    size_t const rsz = arch_ram_region_size(size); // pow2, naturally alignable
+    size_t const rsz = arch_ram_region_size(size);
+    size_t const ralign = arch_ram_region_align(size);
     size_t const total = arch_ram_size();
     uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_ram_start);
     arch_irq_state_t s = arch_irq_save();
     void* p = nullptr;
     uintptr_t const cur = base + g_ram_used;
-    uintptr_t const aligned = (cur + (rsz - 1)) & ~static_cast<uintptr_t>(rsz - 1);
+    uintptr_t const aligned = (cur + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
     size_t const off = static_cast<size_t>(aligned - base);
     if (aligned >= cur and off <= total and rsz <= total - off)
     {

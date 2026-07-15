@@ -102,6 +102,15 @@ uint32_t arch_trace_now(void)
     return static_cast<uint32_t>(arch_clock_now() / 1000ull); // us
 }
 
+// The Cortex-M0 nRF51 has NO MPU (unlike the M0+ RP2040): override the arch weak
+// default so arch_ram_alloc stays byte-granular. Otherwise pow2 region shaping
+// wastes the tiny 16 KiB part's ~4 KiB arena on an alignment gap for no isolation
+// benefit (arch_mpu_apply is a permanent no-op here).
+size_t arch_mpu_min_region(void)
+{
+    return 0u;
+}
+
 // Override the arch layer's weak WFI idle: the clock is the semihosting SYS_CLOCK
 // (arch_clock_now above), and QEMU <= 10 stops it while the core halts in WFI, so
 // a sleep with every thread idle never wakes. Spin instead. This nrf51 backend is

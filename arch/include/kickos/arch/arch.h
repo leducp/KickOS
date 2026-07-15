@@ -114,16 +114,24 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 // NOT a per-region field (which would break the frozen arch_mpu_region seam):
 // ARM PMSA 32 bytes, RISC-V PMP NAPOT 8, one host page on the sim (mprotect
 // granularity). Region sizes floor to this so every descriptor is representable.
+// A return of 0 means this arch has NO enforceable MPU (classic ESP32 LX6, the
+// nRF51 M0): allocations then stay byte-granular -- no power-of-two region shaping
+// and no natural-alignment gap (which would waste the arena on tiny parts for no
+// isolation benefit, since arch_mpu_apply is a permanent no-op there).
 size_t arch_mpu_min_region(void);
 
-// Round `want` up to the region geometry EVERY backend can describe with one
-// descriptor: a power of two, at least arch_mpu_min_region(). The block
-// arch_ram_alloc returns is sized and naturally aligned to this, so PMSA/NAPOT
-// can cover it; the kernel sizes each thread/domain region descriptor with the
-// SAME call, so the descriptor matches the backing block exactly.
+// Round `want` up to the region SIZE a backend can describe with one descriptor:
+// a power of two, at least arch_mpu_min_region() -- or just 16-byte-granular on a
+// no-MPU arch (min 0). arch_ram_alloc reserves this many bytes; the kernel sizes
+// each thread/domain region descriptor with the SAME call, so the descriptor
+// matches the backing block exactly.
 static inline size_t arch_ram_region_size(size_t want)
 {
     size_t min = arch_mpu_min_region();
+    if (min == 0)
+    {
+        return (want + 15u) & ~static_cast<size_t>(15u); // no MPU: byte-granular
+    }
     if (want < min)
     {
         want = min;
@@ -139,6 +147,19 @@ static inline size_t arch_ram_region_size(size_t want)
         p = next;
     }
     return p;
+}
+
+// Natural ALIGNMENT the block must sit on. For an MPU-shaped region this equals
+// its (power-of-two) size -- PMSA/NAPOT need base aligned to size. A no-MPU arch
+// only needs a plain 16-byte alignment (no descriptor to satisfy), which avoids
+// the pow2 alignment gap eating a tiny arena.
+static inline size_t arch_ram_region_align(size_t want)
+{
+    if (arch_mpu_min_region() == 0)
+    {
+        return 16u;
+    }
+    return arch_ram_region_size(want);
 }
 
 // The MPU-governed user-RAM pool. Domain data + unprivileged-thread stacks are
