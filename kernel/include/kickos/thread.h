@@ -50,7 +50,8 @@ namespace kickos
         // "no thread" sentinel (never assigned); 0 is idle-only after wrap.
         uint16_t id;
 
-        char const* name;
+        char name_buf[16];  // kernel-owned bounded copy; name points here
+        char const* name;   // -> name_buf (set in thread_create); never a user pointer
         uint8_t prio;
         uint8_t base_prio; // for future priority inheritance
         Policy policy;

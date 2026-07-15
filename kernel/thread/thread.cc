@@ -34,7 +34,19 @@ namespace kickos
     {
         memset(t, 0, sizeof(*t));
         t->id = assign_thread_id();
-        t->name = attr.name;
+        // Copy the name into a kernel-owned bounded buffer; never alias attr.name -- via
+        // thread_spawn it can be a user pointer, and the fault reporter %s-prints t->name
+        // (an unbounded strlen / deref of a bad user pointer on the fault path is a crash).
+        size_t ni = 0;
+        if (attr.name != nullptr)
+        {
+            for (; ni + 1 < sizeof(t->name_buf) and attr.name[ni] != '\0'; ++ni)
+            {
+                t->name_buf[ni] = attr.name[ni];
+            }
+        }
+        t->name_buf[ni] = '\0';
+        t->name = t->name_buf;
         t->prio = attr.prio;
         t->base_prio = attr.prio;
         t->policy = attr.policy;

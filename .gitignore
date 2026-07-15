@@ -28,5 +28,8 @@ CMakeUserPresets.json
 *.map
 compile_commands.json
 
-# session-local scratch (capture logs, tooling) — survives /tmp wipes, never committed
+# session-local scratch (capture logs, tooling) -- survives /tmp wipes, never committed
 .session/
+
+# local operational context (paths, rig, gotchas) -- personal, not for the public repo
+/CONTEXT.local.md

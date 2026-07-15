@@ -293,10 +293,16 @@ svc_trampoline:
 /* --- Shared restore epilogue: pop the frame at sp, mret. (t0 is scratch for    */
 /* the CSR loads, then reloaded with the rest.)                                  */
 .Lrestore:
-    lw      t0, F_MEPC(sp)
-    csrw    mepc, t0
+    /* Restore mstatus (saved with MIE=0) BEFORE mepc. The ecall-return path reaches
+       here from svc_trampoline with MIE=1 (.Lecall set MPIE=1); a trap taken between
+       the mepc and mstatus writes would clobber mepc (the nested trap overwrites it),
+       and the final mret would then jump back into this epilogue at the caller's
+       privilege with the frame half-popped. Writing mstatus first (MIE->0) closes
+       that window before mepc is set. Other entries reach here with MIE already 0. */
     lw      t0, F_MSTATUS(sp)
     csrw    mstatus, t0
+    lw      t0, F_MEPC(sp)
+    csrw    mepc, t0
     lw      ra,  F_RA(sp)
     lw      t0,  F_T0(sp)
     lw      t1,  F_T1(sp)

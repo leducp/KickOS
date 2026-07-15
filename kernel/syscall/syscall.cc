@@ -27,7 +27,7 @@ namespace kickos
     {
         // --- Semaphore registry (generational slot pool, see slotpool.h) -----------
         // The handle is opaque to userspace; sem_resolve() is the single validate-and-
-        // resolve chokepoint the M2 capability model (12b) later swaps for a unified
+        // resolve chokepoint the capability model later swaps for a unified
         // handle table. (ABA/generation mechanics live in slotpool.h.)
         Semaphore* sem_resolve(int handle) { return kernel().sems.resolve(handle); }
 
@@ -105,12 +105,16 @@ namespace kickos
             // one is a clean spawn error, not a leaked slot / silent overflow. stack_base==0
             // means "use the kernel default". A provided stack must clear the floor and be
             // aligned (base AND size KICKOS_STACK_ALIGN-aligned, so the initial top is aligned).
-            if (p->stack_base != nullptr
-                and (p->stack_size < KICKOS_MIN_STACK_SIZE
-                     or (reinterpret_cast<uintptr_t>(p->stack_base) & (KICKOS_STACK_ALIGN - 1)) != 0
-                     or (p->stack_size & (KICKOS_STACK_ALIGN - 1)) != 0))
+            if (p->stack_base != nullptr)
             {
-                return -1;
+                uintptr_t const base = reinterpret_cast<uintptr_t>(p->stack_base);
+                if (p->stack_size < KICKOS_MIN_STACK_SIZE
+                    or (base & (KICKOS_STACK_ALIGN - 1)) != 0
+                    or (p->stack_size & (KICKOS_STACK_ALIGN - 1)) != 0
+                    or base + p->stack_size < base) // base+size must not wrap the address space
+                {
+                    return -1;
+                }
             }
             Kernel& k = kernel();
             // Reclaim an EXITED slot or bump-allocate (ThreadPool::alloc). Single-core: an
@@ -359,7 +363,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_clock_now:
         {
-            if (a0 == 0)
+            // Out-pointer for a 64-bit store: reject null and misalignment (an unaligned u64
+            // write faults / is UB on ARM and RISC-V). Bounds-checking a0 against the caller's
+            // writable region is the pending user-pointer-validation pass (see TODO), not M2.
+            if (a0 == 0 or (a0 & 0x7u) != 0)
             {
                 return static_cast<uintptr_t>(-1);
             }

@@ -67,7 +67,17 @@ namespace
     // The old 16 MHz made every C6 sleep/timeout run ~10x short. If a future clock
     // bring-up sets a different CPU frequency, update this to match.
     constexpr uint64_t MTIME_HZ = 160000000ull;
-    constexpr uint64_t NS_PER_TICK = 1000000000ull / MTIME_HZ;
+    // 1e9/MTIME_HZ = 6.25 ns/tick exactly = 25/4. An integer ns-per-tick (=6) would truncate and
+    // run every sleep/timestamp 4.17% long, so convert with the exact 25/4 ratio in 64-bit
+    // (overflows only past ~1460 yr at 160 MHz). One home for the ratio; call sites stay named.
+    inline uint64_t mtime_ticks_to_ns(uint64_t ticks)
+    {
+        return ticks * 25ull / 4ull;
+    }
+    inline uint64_t mtime_ns_to_ticks(uint64_t ns)
+    {
+        return ns * 4ull / 25ull;
+    }
 
     // --- USB Serial/JTAG console (TRM ch.32; base 0x6000_F000). The ROM leaves it
     //     enumerated (it is the boot/console/flash path on this board), so we just
@@ -90,7 +100,7 @@ namespace
     constexpr uint32_t UART0_TXFIFO_LEN = 128;
     constexpr uint32_t UART0_TXFIFO_LIMIT = UART0_TXFIFO_LEN - 2; // FIFO-full mark (both paths)
     // UART0 TX-empty interrupt (buffered console ring). TXFIFO_EMPTY asserts while the TX FIFO
-    // count <= CONF1.TXFIFO_EMPTY_THRHD -- a LEVEL source (TRM §1.6): cleared from source, by
+    // count <= CONF1.TXFIFO_EMPTY_THRHD -- a LEVEL source (TRM section 1.6): cleared from source, by
     // filling the FIFO past the threshold or disabling INT_ENA. We program the threshold (own
     // the register, don't trust ROM) and route it to a real CPU int (arch_rv_hw_unmask).
     constexpr uintptr_t UART0_INT_ENA = 0x6000000C;
@@ -123,7 +133,7 @@ namespace
     constexpr uint32_t RTC_SWD_DISABLE = 1u << 30;
 
     // --- Interrupt matrix (INTMTX, base 0x6001_0000) + local interrupt controller
-    //     (INTPRI, base 0x600C_5000). TRM v1.2 §1.6 + ch.10 (register offsets from
+    //     (INTPRI, base 0x600C_5000). TRM v1.2 section 1.6 + ch.10 (register offsets from
     //     Table 10.4.2). The C6 has no S-mode, so the arch's SSIP inject channel is a
     //     no-op here; instead we raise a REAL machine interrupt. A software-settable
     //     FROM_CPU source (INTPRI_CPU_INTR_FROM_CPU_0, level) is routed through the
@@ -347,13 +357,13 @@ uint64_t arch_clock_now(void)
         hi2 = mt[1];
     } while (hi != hi2);
     uint64_t t = (static_cast<uint64_t>(hi) << 32) | lo;
-    return t * NS_PER_TICK;
+    return mtime_ticks_to_ns(t);
 }
 
 // --- One-shot next-event timer: CLINT MTIMECMP (fires when MTIME >= MTIMECMP) ----
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    uint64_t ticks = deadline_ns / NS_PER_TICK;
+    uint64_t ticks = mtime_ns_to_ticks(deadline_ns);
     volatile uint32_t* cmp = r32p(CLINT_MTIMECMP);
     cmp[1] = 0xFFFFFFFFu; // park high half so no spurious match between the two stores
     cmp[0] = static_cast<uint32_t>(ticks);
@@ -449,7 +459,7 @@ void arch_rv_hw_unmask(int line)
     r32(PLIC_MXINT_PRI_BASE + 4u * KICKOS_RV_DEV_CPU_INT) = DOORBELL_PRIO;
     r32(PLIC_MXINT_TYPE) &= ~(1u << KICKOS_RV_DEV_CPU_INT);   // level (cleared from source)
     r32(PLIC_MXINT_ENABLE) |= (1u << KICKOS_RV_DEV_CPU_INT);  // enable at the PLIC
-    __asm volatile("fence" ::: "memory"); // let the APB controller writes settle (TRM §1.6.3.2)
+    __asm volatile("fence" ::: "memory"); // let the APB controller writes settle (TRM section 1.6.3.2)
     __asm volatile("csrs mie, %0" ::"r"(1u << KICKOS_RV_DEV_CPU_INT) : "memory");
 }
 

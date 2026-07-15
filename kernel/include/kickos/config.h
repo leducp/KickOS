@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Configuration split by AUDIENCE (architecture.md 8e) into three buckets --
+// Configuration split by AUDIENCE into three buckets --
 // edit the one that matches your role, don't re-conflate them:
 //   config/limits.h  structural / fixed  -- design invariants, not knobs
 //   config/system.h  user / app          -- provisioning knobs, sized per app

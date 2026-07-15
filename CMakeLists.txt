@@ -127,17 +127,21 @@ endif()
 add_compile_definitions(KICKOS_CONSOLE_CHIP=${_con_chip} KICKOS_CONSOLE_RTT=${_con_rtt} KICKOS_CONSOLE_CRLF=${_con_crlf})
 message(STATUS "KickOS: console=${KICKOS_CONSOLE} (chip=${_con_chip} rtt=${_con_rtt} crlf=${_con_crlf})")
 
-# --- Telemetry backend selection (docs/telemetry.md) -----------------
+# --- Telemetry backend selection (docs/reference/telemetry.md) -----------------
 # KICKOS_TELEMETRY = off | rtt. Kernel-observability records (context switch,
 # syscall, IRQ) emitted to RTT channel 1. Per-board default off (a benchmarking
 # opt-in). `rtt` requires (a) a trace clock -- arch_trace_now, capability var
 # KICKOS_HAVE_TRACE_CLOCK -- and (b) the RTT transport (KICKOS_CONSOLE in
 # {rtt,both}); either missing is a hard configuration error.
 #
-# Trace-clock capability + the SESSION arch id, derived per arch/chip:
-#   sim     -> clock_now/1000 (us)             have=1, id=0
-#   armv7m  -> weak DWT CYCCNT (mps2 overrides) have=1, id=1
-#   armv6m  -> chip-provided only (no DWT)       have=chip, id=2
+# Trace-clock capability + the SESSION arch id, derived per arch/chip. The id MUST match
+# the ArchId enum in include/kickos/trace/record.h (the decoder tools/kicktrace.py follows it):
+#   sim     -> clock_now/1000 (us)             have=1,    id=0
+#   armv7m  -> weak DWT CYCCNT (mps2 overrides) have=1,    id=1
+#   armv6m  -> chip-provided only (no DWT)      have=chip, id=2
+#   lx6     -> CCOUNT                           have=1,    id=3 (xtensa)
+#   rxv3    -> chip CMTW/timer                  have=1,    id=4 (rx)
+#   rv32imac-> rdcycle                          have=1,    id=5 (riscv)
 # KICKOS_HAVE_TRACE_CLOCK is OVERRIDABLE: a board/chip/preset that provides
 # arch_trace_now can set it directly (respected if already defined) -- so the
 # armv6m chip list below is only a convenience default, not the source of truth.
@@ -148,9 +152,9 @@ if(KICKOS_ARCH STREQUAL "armv7m")
   set(KICKOS_TRACE_ARCH 1)
 elseif(KICKOS_ARCH STREQUAL "armv6m")
   set(KICKOS_TRACE_ARCH 2)
-elseif(KICKOS_ARCH STREQUAL "rxv3")
-  set(KICKOS_TRACE_ARCH 3)
 elseif(KICKOS_ARCH STREQUAL "lx6")
+  set(KICKOS_TRACE_ARCH 3)
+elseif(KICKOS_ARCH STREQUAL "rxv3")
   set(KICKOS_TRACE_ARCH 4)
 elseif(KICKOS_ARCH STREQUAL "rv32imac")
   set(KICKOS_TRACE_ARCH 5)
@@ -205,7 +209,7 @@ add_compile_definitions(KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem
 set(KICKOS_TELEMETRY_ON ${_telem}) # consumed by component CMakeLists (asm/FP flags)
 message(STATUS "KickOS: telemetry=${KICKOS_TELEMETRY} (have_trace_clock=${KICKOS_HAVE_TRACE_CLOCK} arch_id=${KICKOS_TRACE_ARCH})")
 
-# RTT publish barrier override (docs/telemetry.md G6): lib/ is a leaf and must
+# RTT publish barrier override (docs/reference/telemetry.md G6): lib/ is a leaf and must
 # not reach into an arch header, so a weakly-ordered core injects its real fence
 # here as a compile definition. Default (unset) keeps the compiler-only barrier in
 # rtt.h -- correct for the in-order M-class M1 targets. Pass the FULL call form,

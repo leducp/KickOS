@@ -53,7 +53,7 @@ REC_LEN = {
     EV_IRQ_EXIT: 9,
 }
 
-ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx"}
+ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv"}
 
 # syscall numbers -> names (keep in sync with user/include/kickos/sys/abi.h). Used
 # to break syscall cost down per-call. *sleep_ns* and *sem_wait* are BLOCKING: their

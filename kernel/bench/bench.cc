@@ -70,7 +70,7 @@ extern "C"
 {
     // Core clock in Hz. The chip backend defines the strong symbol and updates it at
     // PLL bring-up; this weak 0 is the fallback for the sim (no chip clock) -- unused
-    // there anyway, since sim reports throughput only (no cycle→ns conversion).
+    // there anyway, since sim reports throughput only (no cycle->ns conversion).
     uint32_t __attribute__((weak)) SystemCoreClock = 0;
 
     // Attach the bench handler to a spare line + unmask it (call once). The bench
