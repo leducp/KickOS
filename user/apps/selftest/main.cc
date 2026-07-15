@@ -516,6 +516,60 @@ namespace
         kos_sem_wait(g_cstk_sem); // the worker ran on it and posted
         kos_sem_destroy(g_cstk_sem);
     }
+
+    // --- Memory domains: two unprivileged threads granted the SAME region share one
+    // domain -- each reads/writes it -- while each keeps its own private stack. The
+    // negative half (a cross-domain write faults) is the standalone mpu_fault app. ---
+    volatile int* g_dshared = nullptr;
+    int g_dwrote = -1;      // writer -> reader handoff (through the shared domain)
+    int g_dread = -1;       // reader -> main handoff
+    int g_dreadback = -1;
+    constexpr int kDomSentinel = 0x5A5A;
+    void dom_writer(void*)
+    {
+        *g_dshared = kDomSentinel; // write the shared domain region (granted)
+        kos_sem_post(g_dwrote);
+    }
+    void dom_reader(void*)
+    {
+        kos_sem_wait(g_dwrote);   // after the writer stored the sentinel
+        g_dreadback = *g_dshared; // read the SAME region -> proves the shared grant
+        kos_sem_post(g_dread);
+    }
+    void t_domain_share()
+    {
+        // Skip (still ok) on a part whose arena cannot spare the region (like the
+        // caller-stack test). Alloc before the sems so an early return leaks nothing.
+        g_dshared = static_cast<volatile int*>(kos_ram_alloc(256));
+        if (g_dshared == nullptr)
+        {
+            return;
+        }
+        *g_dshared = 0;
+        g_dwrote = kos_sem_create(0);
+        g_dread = kos_sem_create(0);
+        // Spawn BOTH before either runs (spawn does not preempt): same mem_base =>
+        // they reference the ONE shared domain concurrently, each with its own stack.
+        int w = kos::thread::spawn(dom_writer, nullptr, "domW", 10, KOS_POLICY_FIFO, 0,
+                                   false, const_cast<int*>(g_dshared), 256);
+        int r = kos::thread::spawn(dom_reader, nullptr, "domR", 10, KOS_POLICY_FIFO, 0,
+                                   false, const_cast<int*>(g_dshared), 256);
+        if (w < 0 or r < 0)
+        {
+            // A tiny thread pool (microbit MAX_THREADS=2, with a low-prio driver from
+            // an earlier stage still parked) cannot host both workers concurrently:
+            // skip (still ok). sim + qemu (larger pools) exercise the shared domain.
+            // Any worker that did spawn self-completes (writes, posts, returns->exits).
+            kos::print("# domain_share: SKIP (thread pool too small for 2 concurrent)\n");
+            kos_sem_destroy(g_dwrote);
+            kos_sem_destroy(g_dread);
+            return;
+        }
+        kos_sem_wait(g_dread); // the reader saw the writer's store via the shared region
+        kos_sem_destroy(g_dwrote);
+        kos_sem_destroy(g_dread);
+        TAP_CHECK(g_dreadback == kDomSentinel);
+    }
 }
 
 int main(int, char**)
@@ -545,6 +599,7 @@ int main(int, char**)
 #endif
 #endif
     tap::add("caller_stack", t_caller_stack); // caller-owned stack API (no test-only syscalls)
+    tap::add("domain_share", t_domain_share); // two threads share one memory domain
 
     // Every test joins its workers, so main returns as the last live thread:
     // the failure count becomes the process exit status (0 == all passed).
