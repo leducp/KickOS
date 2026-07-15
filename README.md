@@ -9,21 +9,23 @@ A small **microkernel** RTOS with a clear userspace/kernel separation, MPU-first
 per-task isolation, an event-driven **tickless** scheduler, and a **first-class x86
 host "sim"** that runs the real kernel + userspace as one Linux process.
 
-See [`docs/architecture.md`](docs/architecture.md) for the full design.
+Documentation map: [`docs/README.md`](docs/README.md). Full design:
+[`docs/reference/architecture.md`](docs/reference/architecture.md).
 
 ## Status
 
-Milestone **M1** — privilege + SVC on real MCUs (no hardware MPU yet; that is
-M2). On top of the M0 x86 sim, the same kernel + userspace now cross-compiles for
-**two ARM arch backends** (armv7m Cortex-M3/M4/M4F, armv6m Cortex-M0/M0+) across
-**nine chip backends**: `mps2` (QEMU) and `nrf51` (QEMU micro:bit) are
-QEMU-validated; `rp2040` (Raspberry Pi Pico) is **hardware-validated**; `mk64f`,
-`stm32f411`, `stm32f103`, `stm32f302`, `sam3x8e` (Arduino Due) and `xmc4800` are
-build-verified (flash to run). Two non-ARM ports -- **ESP32/Xtensa LX6** and
-**Renesas RX72M/RXv3** -- are implemented and build-verified (HW validation pending).
+Milestone **M1 is complete**: the same kernel + userspace runs on **10 boards across 5 ISAs**
+-- armv7m (Cortex-M3/M4/M4F), armv6m (Cortex-M0+), Renesas **RXv3**, Xtensa **LX6**, and
+**RV32IMAC** -- plus the host **sim** and three emulator gates (QEMU `mps2-an386`, micro:bit /
+nRF51, QEMU riscv `virt`). Every board boots, has a console, runs the selftest, panics visibly,
+and runs at its true (or safely-degraded) clock. This is all on **privilege + SVC**; hardware MPU
+enforcement is the next milestone.
 
-See [`docs/porting.md`](docs/porting.md) for the per-target status and how to add
-a board.
+Silicon boards include the XMC4800, STM32F411 (f411disco / blackpill), STM32F302, STM32F103
+(bluepill), RP2040 (Pico), Renesas RX72M, ESP32-WROOM, and ESP32-C6. See
+[`M1_state.md`](M1_state.md) for the validated per-board matrix, [`roadmap.md`](roadmap.md) for
+the milestone plan (M2 = MPU enforcement, M3 = capabilities, M4 = SMP), and
+[`docs/reference/porting.md`](docs/reference/porting.md) for how to add a target.
 
 ## Building
 
@@ -35,9 +37,11 @@ cmake --preset sim && cmake --build --preset sim && ctest --preset sim --output-
 cmake --preset picopi && cmake --build --preset picopi
 ```
 
-Runnable QEMU gates: `ctest --preset qemu` (Cortex-M4) and `ctest --preset
-microbit` (Cortex-M0). Other MCU presets: `frdmk64f`, `f411disco`, `bluepill`,
-`f302nucleo`, `due`, `xmc4800`.
+Runnable emulator gates: `ctest --preset qemu` (Cortex-M4), `ctest --preset microbit`
+(Cortex-M0), `ctest --preset qemu-riscv` (RV32IMAC). MCU presets include `frdmk64f`,
+`f411disco`, `blackpill`, `bluepill`, `f302nucleo`, `due`, `xmc4800-relax`, `esp32-wroom`,
+`esp32c6-wroom`, and `rx72m` (each with a `-st` selftest variant). Flashing is per-board --
+see [`docs/flashing.md`](docs/flashing.md) and [`docs/reference/boards.md`](docs/reference/boards.md).
 
 ## License
 
@@ -45,5 +49,5 @@ CeCILL-C V1.0 (LGPL-compatible, file-level copyleft). See [`LICENSE`](LICENSE).
 Every source file carries an `SPDX-License-Identifier: CECILL-C` header.
 
 Design ideas are studied from other RTOSes (NuttX, Argon, RIOT, ChibiOS,
-µC/OS-III, RTEMS, ThreadX, RT-Thread) but never copied — see the *Licensing &
+uC/OS-III, RTEMS, ThreadX, RT-Thread) but never copied -- see the *Licensing &
 clean-room discipline* section of the architecture doc.
