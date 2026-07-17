@@ -99,9 +99,6 @@ namespace
     volatile uint32_t g_cyc_high = 0;
     volatile uint32_t g_cyc_last = 0;
 
-    // User-RAM bump allocator (arch_ram_alloc), bounds from the chip linker script.
-    volatile uint32_t g_ram_used = 0;
-
     inline uint32_t rd_ccount()
     {
         uint32_t v;
@@ -144,10 +141,6 @@ namespace
 
 extern "C"
 {
-    // Linker-provided user-RAM bounds (chip linker script).
-    extern unsigned char __kickos_ram_start[];
-    extern unsigned char __kickos_ram_end[];
-
     // The core clock in Hz, defined + maintained by the chip backend.
     extern uint32_t SystemCoreClock;
 
@@ -442,12 +435,6 @@ uint32_t arch_trace_now(void)
     return rd_ccount();
 }
 
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
-{
-    ctx->trace_tid = id;
-}
-#endif
 
 void arch_timer_arm(uint64_t deadline_ns)
 {
@@ -506,44 +493,18 @@ size_t arch_mpu_min_region(void)
     return 0u;
 }
 
-uintptr_t arch_ram_base(void)
-{
-    return reinterpret_cast<uintptr_t>(__kickos_ram_start);
-}
-
-size_t arch_ram_size(void)
-{
-    return static_cast<size_t>(__kickos_ram_end - __kickos_ram_start);
-}
-
-void* arch_ram_alloc(size_t size)
+// No hardware MPU: no descriptor to satisfy, so a nonzero 16-byte-aligned window is
+// "encodable" (arch_mpu_apply is a no-op here, nothing is actually enforced).
+bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size == 0)
     {
-        return nullptr;
+        return false;
     }
-    size_t const rsz = arch_ram_region_size(size);
-    size_t const ralign = arch_ram_region_align(size);
-    size_t const total = arch_ram_size();
-    uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_ram_start);
-    arch_irq_state_t s = arch_irq_save();
-    void* p = nullptr;
-    uintptr_t const cur = base + g_ram_used;
-    uintptr_t const aligned = (cur + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
-    size_t const off = static_cast<size_t>(aligned - base);
-    if (aligned >= cur and off <= total and rsz <= total - off)
-    {
-        p = reinterpret_cast<void*>(aligned);
-        g_ram_used = static_cast<uint32_t>(off + rsz);
-    }
-    arch_irq_restore(s);
-    return p;
+    return (base & 15u) == 0 and (size & 15u) == 0;
 }
 
-uintptr_t arch_mpu_probe_addr(void)
-{
-    return 0; // no enforced MPU -> no unprivileged-access fault to probe
-}
+
 
 // --- Interrupt controller: a SOFTWARE controller over the logical device lines --
 // Xtensa INTSET latches only the software-type interrupts (int 7/29), so a logical

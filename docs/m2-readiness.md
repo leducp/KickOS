@@ -87,17 +87,24 @@ Scoped to deterministic, host-runnable gates -- no flaky or HW-only steps:
   a silent hole.
 - **qemu-riscv** (`virt`): `ctest` -- the **full `selftest` suite** (on rv32imac msip) +
   hello + sched_exit; never the stress soak (QEMU host-crashes flakily under heavy
-  PMP-reprogram load; guest is clean -- see item 1). Uses the **xPack
-  `riscv-none-elf` toolchain** (pinned), symlinked to the `riscv64-unknown-elf-` prefix:
-  apt's riscv gcc ships no rv32imac newlib/libgloss and Ubuntu has no drop-in lib
-  package like ARM's. Also build-checks `esp32c6-wroom` + `qemu-riscv-bench`.
-  (mtime clock -> no WFI idle issue.)
-- Toolchains: ARM = apt `gcc-arm-none-eabi` **+ `libnewlib-arm-none-eabi`** (the C
-  library the split apt package omits); RISC-V = pinned xPack tarball.
+  PMP-reprogram load; guest is clean -- see item 1). Uses the pinned **RISCStar**
+  `riscv32-none-elf` toolchain (newlib, soft-float rv32imac/ilp32 multilib) -- the same
+  tarball as local, downloaded + cached. Also build-checks `esp32c6-wroom` +
+  `qemu-riscv-bench`. (mtime clock -> no WFI idle issue.)
+- Toolchains: the **SAME pinned vendor tarballs as local** -- Arm GNU Toolchain (ARM) +
+  RISCStar (RISC-V), both newlib -- downloaded and `actions/cache`-cached; the toolchain
+  bin is put on `$PATH` so CMake's try_compile resolves the cross compiler. No apt
+  `gcc-arm-none-eabi` / xPack.
 
 RX and Xtensa use vendor toolchains (not in apt) -- kept out of CI for now (one step
 at a time); build those boards manually. Silicon likewise stays a manual/self-hosted
 step per the HW-test deferral policy.
+
+**CI matches local (pinned vendor toolchains).** Both local and CI build with the same pinned
+vendor tarballs -- **Arm GNU Toolchain** (ARM) and **RISCStar** (RISC-V), both newlib, joining
+GNURX (RX) -- so the fleet is uniformly newlib on pinned toolchains everywhere. CI downloads +
+`actions/cache`-caches them (validated in an `ubuntu:24.04` container). RX/Xtensa silicon stays a
+manual/self-hosted step per the HW-test deferral policy.
 
 ## 7. Fleet uniformity -- make M1 a coherent standalone release
 
@@ -176,6 +183,95 @@ Per `reference/architecture.md`: MPU-enforcement fan-out -- reference pair (RISC
 XMC v7-M PMSA) -> K64F SYSMPU -> RX -> tail; plus the arch-independent security model
 (domains, per-thread private stacks, syscall-arg/user-pointer validation, pow2 region
 placement). Capabilities + authenticated grants are M3.
+
+### M2 enforcement fan-out -- status (fleet sync-point, in progress)
+
+Goal: full selftest (17/17) under enforcement on every MPU-capable chip -- an
+M2 sync-point mirroring the M1 on-silicon validation pass.
+
+Shared mechanism (done): the arch-independent pieces are `arch_domain_static_regions`
+(kernel/domain), `kickos_ranges_init` + the linker copy/zero tables
+(arch/common/startup_ranges.cc; a chip's `.ld` emits the tables and a pow2 `.appdata`
+block grouping objects under `user/`), and `arch_mpu_probe_addr` (a kernel-side guard
+word; arch/common/arch_ram_common.cc). Errno-class per-thread state is NOT in the
+shared app-data region: it grants per-thread (the stack now, TLS at M3).
+
+| Chip | MPU flavour | State |
+|------|-------------|-------|
+| K64F (frdmk64f) | SYSMPU (bus, byte-granular) | **DONE -- silicon 17/17** (SRAM/domain isolation). Two HW-only bugs fixed: RGD0 supervisor SM (`=same-as-user`) and SRAM_L-via-code-bus (M0) master. **Peripheral gating resolved on silicon (k64drv, Stage 2): SYSMPU does NOT gate peripherals; the AIPS bridge does (per privilege+master, per 4 KB slot, NOT per-thread). So per-thread peripheral isolation is not achievable on K64F -- see `reference/architecture.md` Memory domains.** |
+| XMC4800 | v7-M PMSA | **DONE -- silicon 17/17.** |
+| rp2040 (picopi) | v6-M PMSA (M0+, 8 regions) | Build + enforcement-link validated (reuses the XMC PMSA backend). **HW pending** (flash via BOOTSEL). |
+| STM32F411 (f411disco/blackpill) | v7-M PMSA | Build + enforcement-link validated. **HW pending** (ST-Link). |
+| RX72M | RX MPU (UM sec.17) | **DONE -- silicon 20/20** (enforcement selftest, 2026-07-17) **+ mpu_fault cross-domain trap** (a user write to another domain raises the access exception, vector 0x54, decoded via MPESTS/MPDEA -> "MPU FAULT: task 'domainA'"). arch_mpu_apply (MPBAC=0 user background + 8 RSPAGEn/REPAGEn regions; RX checks user mode only, so no supervisor-field hazard) reprograms live from the timer ISR on every preemptive switch, glitch-free (UAC R/W/X order, inclusive REPAGE end, supervisor-never-checked, MPEN-latch-on-RTE all confirmed). The test-4 wedge that blocked this was NOT an MPU bug: a hardcoded 8-byte alignment guard on the clock_now out-pointer (`kernel/syscall/syscall.cc`) rejected RX's 4-byte-aligned u64 stack local, so kos_clock_now returned 0 and the rr_interleave granule spin hung -- fixed with `alignof(uint64_t)` (a pre-enforcement regression from 9d7ffa6, untested on RX). |
+| STM32F302 (f302nucleo) | v7-M PMSA | **Links again (provisioned), enforcement deferred on RAM.** g_instance sized 12288->6080 B (KICKOS_STACK_POOL_ALIGN=16 + smaller sem/irq pools) so the 16 KiB part builds; arena is 3712 B. Not a viable enforcement target: even the conditional app-data block + a 4 KiB-alloc selftest test exceed that arena. Non-enforcement only for now. |
+| ESP32-C6 | RISC-V PMP/NAPOT | **DONE -- silicon 18/18 selftest under enforcement + mpu_fault cross-domain trap (2026-07-17). The earlier boot-loop was an elf2image RAM-only-header flag error, NOT a code bug.** (a),(b) RESOLVED: `esp32c6.ld` now carries the same `#if KICKOS_HAVE_MPU` block as `virt.ld` -- a pow2 NAPOT code region at ORIGIN (0x4080_0000 is 8 MiB-aligned, so 64K code + 4K appdata are naturally NAPOT-aligned) + the `.appdata`/`.appbss` block + the Reset_Handler appbss zeroing; `user/` objects build `-msmall-data-limit=0`, so `-DKICKOS_HAVE_MPU=1` links all apps clean with app globals confirmed landing in `.appdata`/`.appbss` (verified by nm/objdump). (c) The single-code-region approach is architecturally sound: C6 TRM Table 1.4-1 puts HP SRAM in ONE unified Instruction/Data region (0x4000_0000..0x4FFF_FFFF -- one address for fetch AND load/store, unlike the classic-ESP32 split IRAM/DRAM), so one RX NAPOT region covers U-mode fetch. The U-mode PMP trap FIRES correctly from SRAM -- PROVEN on silicon (18/18 selftest under enforcement + mpu_fault: a U-mode cross-domain store faults mcause=7 and is reported). (d) **PERIPHERAL side (deferred, follow-on -- NOT needed for SRAM enforcement + the selftest): the C6 has a SECOND, bus-side permission unit -- APM/PMS (C6 TRM Ch.16 PMP-APM Management), Access Permission Management -- that defaults DENY-USER on peripheral targets, independent of PMP.** PMP discriminates peripheral access per-thread (CPU-side), but APM must be given a one-time global open before any unprivileged peripheral access succeeds; it is not per-thread. So a C6 userspace driver needs BOTH the PMP grant (per-thread) AND the APM open (global). The APM layer is currently undriven -- scoped in `docs/design-c6-driver.md` (GPIO-blink, an 8 B PMP window + a one-time APM REE0 open). |
+| microbit/nRF51, STM32F103, ESP32 LX6 | no per-task MPU | N/A -- `arch_mpu_probe_addr`/`arch_domain_static_regions` return 0; no app-data block. |
+
+Conditional-appdata infra: **DONE.** The chip linker scripts are cpp-preprocessed
+(arch/CMakeLists.txt) so the `.appdata` block, its grouping, the app copy/zero-table
+entries, and the overflow ASSERT are `#if KICKOS_HAVE_MPU`. A non-enforcement build
+reserves nothing and keeps app globals in the kernel `.data/.bss` (zero-overhead);
+the startup uniformly calls `kickos_ranges_init` (one range when off, two when on).
+Verified fleet-wide: default builds show 0 app-data refs in the generated script,
+enforcement builds keep the block; XMC re-flashed 17/17 through the preprocessed .ld.
+
+### Driver era / peripheral-isolation status (2026-07-16)
+
+The first unprivileged userspace drivers landed on top of M2 enforcement. This is
+"anytime coherence" (a userspace driver has no MPU dependency the enforcement backends
+did not already provide), but it stresses the peripheral-MMIO side of the isolation model
+and surfaced the fleet's per-thread-peripheral ceiling.
+
+**MMIO-grant mechanism (task #9): LANDED + committed.** `kos_thread_params.mmio_base/
+mmio_size` (Option A grant-at-spawn), the `arch_mpu_region_encodable(base,size)` arch seam
+(exact-cover, no rounding), `thread_spawn` boundary validation (privileged-only, no-wrap,
+encodable), and `domain_for` appending the MMIO region as a never-shared capability. Also
+closed a Critical: an unprivileged caller's `mem_base` grant is now arena-bounds-checked
+(was a peripheral/kernel-SRAM self-grant escalation). See `design-task9-mmio-driver.md`.
+
+**Fleet per-thread peripheral-isolation matrix** (the headline finding -- full table +
+CPU-side-vs-bus-slave-side principle in `reference/architecture.md` Memory domains, worked
+bring-up in `book/peripheral-isolation-and-the-hardware-ceiling.md`):
+
+| Chip / unit | Per-thread peripheral isolation | Evidence |
+|---|---|---|
+| XMC4800 -- ARM v7-M PMSA (CPU-side) | **YES** | silicon-proven (xmcspi, 2026-07-17): a granted USIC DEV window works + an ungranted SCU poke faults MemManage. (Some USIC config registers are PV-write-only at the bus -- a kernel-vs-user privilege split under the PMSA, not a per-thread gate.) |
+| RISC-V PMP (ESP32-C6) | **YES** by PMP (SRAM enforcement silicon-proven) | PMP discriminates per-thread -- SRAM enforcement DONE on silicon (18/18 + mpu_fault); a SEPARATE APM/PMS bus unit defaults deny-user (one-time global open), still needed for per-thread PERIPHERAL isolation (follow-on: `docs/design-c6-driver.md`) |
+| RX72M -- RXv3 MPU (CPU-side) | **YES** | SRAM/domain enforcement DONE on silicon (2026-07-17: selftest 20/20 + mpu_fault cross-domain trap); a real granted peripheral window not yet run on silicon (task #3) |
+| K64F -- SYSMPU (bus-slave-side) | **NO** | silicon-proven: SYSMPU does NOT gate the AIPS peripheral bridge; the AIPS PACR does (per privilege+master, per 4 KB slot, all-user once opened) -- no per-thread peripheral boundary |
+
+**Per-board driver status (truthful):**
+- **k64drv (K64F, PIT):** DONE on silicon -- the first unprivileged MMIO driver; it is what
+  ANSWERED the SYSMPU-vs-AIPS question above (SYSMPU inert for peripherals; AIPS gates,
+  coarse). Also added a weak `arch_fault_report_extra` hook (K64F decodes SYSMPU CESR/EARn/
+  EDRn + BusFault). `user/apps/k64drv/`.
+- **xmcspi (XMC4800, USIC0-CH1 SSC loopback):** DONE on silicon (2026-07-17) -- the CANONICAL
+  per-thread PMSA MMIO-isolation proof: a granted 512-byte USIC DEV window does an internal SSC
+  loopback (4 words tx==rx) AND an ungranted SCU poke faults MemManage (CFSR=0x82,
+  MMFAR=0x50004648), per thread. Internal loopback, no jumper. The USIC CCR/FDR/BRG are
+  PV-write-only at the bus (RM Table 18-20) so interrupt-enable+config is privileged bring-up --
+  a K64F-AIPS-like bus-privilege layer sitting UNDER the PMSA proof. `design-spi-driver.md`,
+  `user/apps/xmcspi/`.
+- **rxdrv (RX72M, PORT8/LED6 GPIO):** DONE on silicon (2026-07-17) -- per-thread peripheral
+  isolation on the RX MPU: a granted 16-byte PODR window blinks LED6 AND an ungranted PORT8.PDR
+  poke faults ("MPU FAULT: task 'rxdrv' attempted read at 0x8c008"). First real granted
+  peripheral window on RX. `user/apps/rxdrv/`.
+- **f411spi (STM32F411, SPI1 loopback):** BUILT + fable-reviewed, silicon-validation PENDING a
+  bench swap to the 32F411E-DISCO. Redundant with xmcspi for the PMSA proof (both ARM v7-M PMSA);
+  kept as the STM32-family reference. `design-spi-driver-stm32f411.md`, `user/apps/f411spi/`.
+- **k64dspi (K64F, DSPI0 for the KickCAT ESC SPI PDI):** DONE on silicon (2026-07-17): 4-word
+  SOUT->SIN loopback tx==rx over the AIPS-opened slot, blocking on the DSPI0 EOQ IRQ with the
+  auto-rearm API (no explicit ack). Designed WITHIN the K64F ceiling: the DSPI window grant is
+  documentation, not enforcement (AIPS opens the slot to all user code); the microkernel invariant
+  is kept (driver in userspace) and the coarse per-slot ceiling is accepted, documented. Brief:
+  `design-spi-driver-k64f-dspi.md`. (This is the transport the KickCAT-on-K64F plan builds on --
+  `design-kickcat-k64f.md`.)
+
+**Canonical per-thread PMSA silicon proof: DONE (xmcspi on XMC4800, 2026-07-17).** A real granted
+peripheral window works AND an ungranted peripheral access faults MemManage, per thread, on PMSA
+silicon -- the fleet's former one honest peripheral-isolation gap is closed. Per-thread peripheral
+isolation is now silicon-proven on all three CPU-side units: PMSA (xmcspi), RX MPU (rxdrv), and
+RISC-V PMP (c6blink). f411spi remains a build-only STM32-family reference (the disco is absent).
 
 ## M3 (later)
 

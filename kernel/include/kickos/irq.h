@@ -34,6 +34,12 @@ namespace kickos
         Semaphore sem;
         int line = -1;
         bool used = false;
+        // Set only when an irq_wait RETURNS (event consumed, line masked by the
+        // ISR, awaiting rearm) -- never in the ISR. Setting it in the ISR races
+        // the ack;compute;wait shape: unmask before the event is serviced re-fires
+        // the still-asserted line -> phantom sem post -> next wait returns with no
+        // event -> the driver drains an empty device FIFO. Thread-ctx-only + IrqLock.
+        bool needs_rearm = false;
     };
 
     // Seed the dispatch table with the null-object default (call once at boot,
@@ -50,8 +56,14 @@ namespace kickos
 
     // Tier 1: IRQ-as-event (usable from unprivileged userspace via syscalls).
     int irq_register(int line); // -> handle, or -1
-    int irq_wait(int handle);   // block until the line fires; 0, or -1 on bad handle
-    int irq_ack(int handle);    // unmask the line so it can fire again; 0, or -1
+    // Block until the line fires; 0, or -1 on bad handle. Auto-rearms the
+    // previously-consumed line on entry, so `wait; service` alone keeps receiving
+    // IRQs -- an explicit irq_ack is OPTIONAL.
+    int irq_wait(int handle);
+    // Unmask the previously-consumed line so it can fire again; 0, or -1.
+    // OPTIONAL and idempotent: the next irq_wait rearms anyway, and a redundant
+    // ack after that wait is a no-op (needs_rearm already false).
+    int irq_ack(int handle);
 }
 
 #endif

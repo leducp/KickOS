@@ -65,6 +65,10 @@ namespace kickos
 
         void* stack_base;
         size_t stack_size;
+        // stack_base was demand-allocated by the kernel (convenient spawn) and must
+        // be harvested onto the free list when this slot is reclaimed. A caller-owned
+        // stack (app-supplied) is never harvested -- the app owns that memory.
+        bool kstack_owned;
 
         // The memory domain this thread belongs to (shared region set + privilege).
         // Its regions are copied into regions[] below at create, plus this thread's
@@ -100,19 +104,29 @@ namespace kickos
         // Threads sharing one region share a memory domain; base==0 => none.
         void* mem_base = nullptr;
         size_t mem_size = 0;
+        // Optional device/MMIO region granted to an unprivileged thread (R|W|DEV,
+        // never executable). Privileged-only at the spawn boundary; a domain that
+        // carries one is a capability and is never shared. base==0 => none.
+        void* mmio_base = nullptr;
+        size_t mmio_size = 0;
         // Pre-resolved domain (thread_spawn sets this so pool exhaustion fails the
         // spawn cleanly). null => thread_create resolves from privileged + mem_base.
         Domain* domain = nullptr;
+        // The stack passed to thread_create was demand-allocated by the kernel and is
+        // owned by the free list (harvest at reclaim). false for caller-owned and the
+        // static idle/root stacks.
+        bool kstack_owned = false;
     };
 
-    // Static thread-slot pool (instance-scoped; the TCBs + their kernel stacks). Bump-
-    // allocated, then EXITED slots reclaimed at spawn. Liveness is INTRINSIC -- a slot is
-    // free iff its TCB state is EXITED, the scheduler's single source of truth; there is
-    // deliberately no `used[]` bit to drift out of sync. The per-slot generation bumps at
-    // RECLAIM, not at exit, so a handle to a just-exited-but-not-yet-reused slot still
-    // gen-matches (a future join-by-handle can read its result); reuse invalidates it
-    // (ABA). Tailored on purpose -- this is NOT the generic SlotPool (different liveness,
-    // generation timing, and reclaim). Caller serializes (IrqLock); reuse is safe because
+    // Static thread-slot pool (instance-scoped; the TCBs only -- default stacks are
+    // demand-allocated from the arena, not pre-reserved here). Bump-allocated, then
+    // EXITED slots reclaimed at spawn. Liveness is INTRINSIC -- a slot is free iff its
+    // TCB state is EXITED, the scheduler's single source of truth; there is deliberately
+    // no `used[]` bit to drift out of sync. The per-slot generation bumps at RECLAIM,
+    // not at exit, so a handle to a just-exited-but-not-yet-reused slot still gen-matches
+    // (a future join-by-handle can read its result); reuse invalidates it (ABA). Tailored
+    // on purpose -- this is NOT the generic SlotPool (different liveness, generation
+    // timing, and reclaim). Caller serializes (IrqLock); reuse is safe because
     // thread_create re-inits the TCB (incl. privilege posture) from scratch.
     struct ThreadPool
     {
@@ -121,9 +135,41 @@ namespace kickos
                       "thread handle index field too small for KICKOS_MAX_THREADS");
 
         Thread slots[KICKOS_MAX_THREADS];
-        alignas(16) unsigned char stacks[KICKOS_MAX_THREADS][KICKOS_USER_STACK_SIZE];
         int next = 0;
         uint16_t gen[KICKOS_MAX_THREADS] = {};
+
+        // Free list of reclaimed kernel-default stacks -- a SINGLE size class
+        // (KICKOS_USER_STACK_SIZE), so no fragmentation and the link needs no side
+        // table: it is stored in the dead block itself. A block enters the list only
+        // at the exited-slot reclaim point (alloc, below), where its former owner is
+        // provably off-CPU. FUTURE (M4): a general multi-size-class freeing allocator
+        // (for arch_ram_alloc at large) subsumes this; this is the special case for
+        // default thread stacks only.
+        void* stack_free_list = nullptr;
+#if KICKOS_HAVE_MPU
+        // A demand-allocated stack is granted as ONE MPU region, so its size must be a
+        // power of two the descriptor can name (PMSA/NAPOT); arch_ram_alloc then hands
+        // out a naturally-aligned block, a valid region base.
+        static_assert((KICKOS_USER_STACK_SIZE & (KICKOS_USER_STACK_SIZE - 1)) == 0,
+                      "KICKOS_USER_STACK_SIZE must be a power of two under MPU enforcement");
+#endif
+        static_assert(KICKOS_USER_STACK_SIZE >= sizeof(void*),
+                      "a reclaimed stack block must be able to hold the free-list link");
+
+        void stack_push(void* block)
+        {
+            *reinterpret_cast<void**>(block) = stack_free_list;
+            stack_free_list = block;
+        }
+        void* stack_pop()
+        {
+            void* block = stack_free_list;
+            if (block != nullptr)
+            {
+                stack_free_list = *reinterpret_cast<void**>(block);
+            }
+            return block;
+        }
 
         // Claim a slot: reclaim an EXITED one (bumping its generation to kill stale
         // handles) or bump-allocate a fresh one. Returns the index, or -1 if full.
@@ -133,6 +179,19 @@ namespace kickos
             {
                 if (slots[s].state == ThreadState::EXITED)
                 {
+                    // Harvest the exited thread's kernel-allocated stack HERE, at the
+                    // reclaim point -- not at exit. By now the exited thread is provably
+                    // off-CPU (invariant exit-parks-for-deferred-switch, sched.cc: it
+                    // parked in exit_current until its switch-away committed), so writing
+                    // the free-list link into its stack cannot race the final context
+                    // save. Move ownership to the list (clear the flag) so a later
+                    // reclaim of this same slot -- e.g. after a release() -- never
+                    // double-pushes the block.
+                    if (slots[s].kstack_owned)
+                    {
+                        stack_push(slots[s].stack_base);
+                        slots[s].kstack_owned = false;
+                    }
                     gen[s]++;
                     return s;
                 }
@@ -142,6 +201,30 @@ namespace kickos
                 return -1;
             }
             return next++;
+        }
+
+        // Undo a slot claimed by alloc() when the spawn fails AFTER the claim (e.g. the
+        // arena has no stack to give). Must NOT burn a generation and must NOT leave a
+        // hole alloc() would never revisit -- so it mirrors alloc()'s two cases:
+        //   * a reclaimed EXITED slot: alloc() bumped its generation to invalidate the
+        //     prior occupant's handle, but no reuse happened, so revert that bump (the
+        //     prior occupant's join-by-handle must still resolve) and leave it EXITED,
+        //     still reclaimable. (Its stack, if any, was already harvested by alloc --
+        //     correct regardless of this spawn's fate; kstack_owned is now false.)
+        //   * a fresh bump slot (INACTIVE, from zero-init, always the last one under the
+        //     spawn lock): un-bump `next`, else it becomes a permanent hole (alloc only
+        //     ever reclaims EXITED, never INACTIVE).
+        void release(int i)
+        {
+            if (slots[i].state == ThreadState::EXITED)
+            {
+                gen[i]--;
+                return;
+            }
+            if (i == next - 1)
+            {
+                next--;
+            }
         }
 
         // The opaque handle for a live slot index, carrying its current generation.

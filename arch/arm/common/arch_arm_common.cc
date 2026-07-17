@@ -3,8 +3,8 @@
 //
 // Core-generic ARM Cortex-M arch backend: the parts of the arch.h seam whose
 // implementation is IDENTICAL on ARMv6-M and ARMv7-M (deferred PendSV switch,
-// SysTick one-shot timer, NVIC mask/unmask/inject, the RAM bump allocator, the
-// idle wait, and the SysTick ISR entry). Compiled into BOTH kickos_arch_armv6m
+// SysTick one-shot timer, NVIC mask/unmask/inject, the idle wait, and the
+// SysTick ISR entry). Compiled into BOTH kickos_arch_armv6m
 // and kickos_arch_armv7m.
 //
 // The arch-profile-specific edges stay in arch_armv{6,7}m.cc: context init (the
@@ -25,16 +25,10 @@ namespace
     using namespace kickos::arm;
     using namespace kickos::units; // _s == 1e9 ns
 
-    // User-RAM region for arch_ram_alloc, defined by the chip linker script.
-    // Bump-allocated; freed only wholesale (matches the sim arena's M0 model).
-    volatile uint32_t g_ram_used = 0;
 }
 
 extern "C"
 {
-    // Linker-provided user-RAM bounds (chip linker script, M1 item 10).
-    extern unsigned char __kickos_ram_start[];
-    extern unsigned char __kickos_ram_end[];
 
     // CMSIS convention: the core clock in Hz, defined + maintained by the chip.
     extern uint32_t SystemCoreClock;
@@ -49,13 +43,6 @@ extern "C"
 // ===========================================================================
 extern "C"
 {
-
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
-{
-    ctx->trace_tid = id;
-}
-#endif
 
 // --- Switch: always deferred to PendSV (the outgoing ctx is g_arch_current) --
 void arch_switch(struct arch_context* from, struct arch_context* to)
@@ -153,57 +140,114 @@ void arch_timer_disarm(void)
     reg32(SCB_ICSR) = ICSR_PENDSTCLR;
 }
 
-// --- MPU: hardware enforcement is M2 (item 12); no-op until the PMSA backend --
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+// --- MPU: ARM PMSA backend (v6-M/v7-M share the register map) ----------------
+#if KICKOS_HAVE_MPU
+namespace
+{
+    // Encode one region into an MPU_RASR value. attr is the UNPRIVILEGED access
+    // (supervisor comes from the PRIVDEFENA background region): a code region is
+    // R+X (RO, executable); data / stack / device is RW + execute-never. Device
+    // memory gets the ordered device type. `size` is a power of two >= 32, and the
+    // region base is naturally aligned to it (arch_ram_region_size / the linker).
+    uint32_t mpu_rasr(size_t size, uint32_t attr)
+    {
+        using namespace kickos::arm;
+        uint32_t const size_field =
+            static_cast<uint32_t>(__builtin_ctz(static_cast<unsigned>(size))) - 1u;
+        uint32_t rasr = MPU_RASR_ENABLE | (size_field << 1);
+        if (attr & ARCH_MPU_X)
+        {
+            rasr |= MPU_RASR_AP_RO | MPU_RASR_MEM_NORMAL; // code: RO + executable
+        }
+        else if (attr & ARCH_MPU_DEV)
+        {
+            rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_DEVICE; // MMIO
+        }
+        else
+        {
+            rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_NORMAL; // data/stack
+        }
+        return rasr;
+    }
+}
+
+void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+{
+    using namespace kickos::arm;
+    // A domain switch / privilege change can only take effect atomically, so
+    // disable the MPU while reprogramming, then re-enable with the PRIVDEFENA
+    // background (privileged code keeps the default map; unprivileged code sees
+    // only the programmed regions). MEMFAULTENA makes a violation a clean
+    // MemManage rather than an escalated HardFault.
+    reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA;
+    reg32(MPU_CTRL) = 0;
+    __asm volatile("dsb" ::: "memory");
+    // Program regions[0..n), disable the rest up to the hardware descriptor count
+    // (MPU_TYPE.DREGION) -- so a thread with fewer regions than the last one leaves
+    // no stale window enabled.
+    size_t const hw_regions = (reg32(MPU_TYPE) >> 8) & 0xFFu;
+    for (size_t i = 0; i < hw_regions; i++)
+    {
+        reg32(MPU_RNR) = static_cast<uint32_t>(i);
+        // PMSA requires a power-of-two size with a naturally-aligned base. Encode
+        // ONLY such regions; a non-pow2 region is fail-closed (descriptor disabled),
+        // never silently mis-encoded (ctz would under-size it and the base would
+        // snap). Unprivileged regions are pow2 by construction (arch_ram_region_*
+        // + the pow2 linker code/data sections); a privileged thread's non-pow2
+        // whole-arena grant is simply dropped here -- harmless, it runs on the
+        // PRIVDEFENA background. (Linker contract: code/data regions must be pow2.)
+        if (i < n and regions[i].size >= 32
+            and (regions[i].size & (regions[i].size - 1)) == 0)
+        {
+            reg32(MPU_RBAR) = static_cast<uint32_t>(regions[i].base) & ~0x1Fu;
+            reg32(MPU_RASR) = mpu_rasr(regions[i].size, regions[i].attr);
+        }
+        else
+        {
+            reg32(MPU_RASR) = 0; // unused / non-pow2: disable the descriptor
+        }
+    }
+    __asm volatile("dsb" ::: "memory");
+    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;
+    __asm volatile("dsb" ::: "memory");
+    __asm volatile("isb" ::: "memory");
+}
+#else
+// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only.
+void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     (void)regions;
     (void)n;
 }
+#endif
 
 size_t __attribute__((weak)) arch_mpu_min_region(void)
 {
     return 32u; // ARMv6-M / v7-M PMSA min region; a no-MPU chip (nRF51) overrides to 0
 }
 
-uintptr_t arch_ram_base(void)
-{
-    return reinterpret_cast<uintptr_t>(__kickos_ram_start);
-}
-
-size_t arch_ram_size(void)
-{
-    return static_cast<size_t>(__kickos_ram_end - __kickos_ram_start);
-}
-
-void* arch_ram_alloc(size_t size)
+// PMSA needs a power-of-two size >= 32 with the base naturally aligned to it (the
+// RBAR base masking in arch_mpu_apply assumes exactly that). K64F (SYSMPU, byte-
+// granular) overrides this strongly; a no-MPU ARM chip (min 0) falls to the
+// 16-byte-granular branch.
+bool __attribute__((weak)) arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size == 0)
     {
-        return nullptr;
+        return false;
     }
-    size_t const rsz = arch_ram_region_size(size);
-    size_t const ralign = arch_ram_region_align(size);
-    size_t const total = arch_ram_size();
-    uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_ram_start);
-    arch_irq_state_t s = arch_irq_save();
-    void* p = nullptr;
-    uintptr_t const cur = base + g_ram_used;
-    // Natural (absolute) alignment: PMSA/NAPOT require base aligned to size.
-    uintptr_t const aligned = (cur + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
-    size_t const off = static_cast<size_t>(aligned - base);
-    if (aligned >= cur and off <= total and rsz <= total - off)
+    size_t const min = arch_mpu_min_region();
+    if (min == 0)
     {
-        p = reinterpret_cast<void*>(aligned);
-        g_ram_used = static_cast<uint32_t>(off + rsz);
+        return (base & 15u) == 0 and (size & 15u) == 0;
     }
-    arch_irq_restore(s);
-    return p;
+    if (size < min or (size & (size - 1)) != 0)
+    {
+        return false;
+    }
+    return (base & (size - 1)) == 0;
 }
 
-uintptr_t arch_mpu_probe_addr(void)
-{
-    return 0; // no MPU on M1 -> no probe address available
-}
 
 // --- Interrupt controller (NVIC) --------------------------------------------
 void arch_irq_mask(int line)

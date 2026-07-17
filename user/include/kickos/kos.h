@@ -150,6 +150,21 @@ namespace kos
     };
 }
 
+// Define a caller-owned thread stack buffer for kos::thread::spawn's `stack`
+// argument -- the OPTIONAL way to own a thread's stack (leave it off and the kernel
+// demand-allocates a KICKOS_USER_STACK_SIZE default). Under MPU enforcement the
+// stack is granted as ONE region, so the size must be a power of two and the buffer
+// naturally aligned to it (a valid PMSA/NAPOT base). Without enforcement the stack is
+// never a region: a 16-byte ABI alignment suffices and avoids wasting a large gap.
+#if KICKOS_HAVE_MPU
+#define KOS_STACK_DEFINE(name, size)                                              \
+    static_assert(((size) & ((size) - 1)) == 0,                                   \
+                  "KOS_STACK_DEFINE: size must be a power of two under MPU");      \
+    alignas(size) unsigned char name[size]
+#else
+#define KOS_STACK_DEFINE(name, size) alignas(16) unsigned char name[size]
+#endif
+
 namespace kos::thread
 {
     // Start a thread (not a process: KickOS has one address space, isolation is
@@ -160,11 +175,13 @@ namespace kos::thread
     // handle (index+generation, not the telemetry thread id), or -1.
     // `stack`/`stack_size` are optional: pass a caller-owned buffer to size a thread's
     // stack to its need, or leave them 0 to get the kernel default (KICKOS_USER_STACK_SIZE).
+    // `mmio`/`mmio_size` grant a device register block (R|W|DEV); PRIVILEGED caller only.
     inline int spawn(void (*entry)(void*), void* arg, char const* name,
                      uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
                      uint32_t quantum_ns = 0, bool privileged = false,
                      void* mem = nullptr, uint32_t mem_size = 0,
-                     void* stack = nullptr, uint32_t stack_size = 0)
+                     void* stack = nullptr, uint32_t stack_size = 0,
+                     void* mmio = nullptr, uint32_t mmio_size = 0)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -176,6 +193,8 @@ namespace kos::thread
         p.privileged = static_cast<uint8_t>(privileged);
         p.mem_base = mem;
         p.mem_size = mem_size;
+        p.mmio_base = mmio;
+        p.mmio_size = mmio_size;
         p.stack_base = stack;
         p.stack_size = stack_size;
         return kos_thread_spawn(&p);

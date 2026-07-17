@@ -51,7 +51,6 @@ extern "C"
 {
     void kickos_armv7m_init(void);
 
-    extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
@@ -331,16 +330,7 @@ void Reset_Handler(void)
 {
     enable_fpu(); // before any code that a hard-float ABI might emit FP into
 
-    uint32_t* src = &_sidata;
-    uint32_t* dst = &_sdata;
-    while (dst < &_edata)
-    {
-        *dst++ = *src++;
-    }
-    for (uint32_t* b = &_sbss; b < &_ebss; b++)
-    {
-        *b = 0;
-    }
+    kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

@@ -71,9 +71,6 @@ namespace
     volatile uint32_t g_cyc_high = 0;
     volatile uint32_t g_cyc_last = 0;
 
-    // User-RAM bump allocator (chip linker script defines the bounds).
-    volatile uint32_t g_ram_used = 0;
-
     // Software in-ISR nesting counter (RX has no IPSR-equivalent). Bumped only by
     // the first-level DEVICE-IRQ dispatchers, never by the syscall INT path, so
     // arch_in_isr() reads false throughout syscall_dispatch (arch.h contract).
@@ -92,6 +89,40 @@ namespace
     constexpr int kSoftIrqLines = 32;
     volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     volatile int g_inject_line = -1;
+
+    // Build-only MPU wedge localizer (DEFAULT OFF: -DKICKOS_RX_MPU_TRACE=1). Raw
+    // polled SCI6 byte, bounded spin, touching no ring or global -- safe from ISR and
+    // fault context. It interleaves with the buffered TAP output; the LAST byte before
+    // the console goes silent localizes the wedge that appears at rr_interleave (the
+    // first switch driven from the CMTW0 timer ISR under enforcement):
+    //   'T' then silence          -> hang in ktime_on_timer/tick_rr BEFORE apply
+    //   'T' '[' then silence      -> hang INSIDE arch_mpu_apply's MPU register writes
+    //   'T' '[' ']' then silence  -> hang AFTER apply (pendsw switch / re-arm / switched-in)
+    //   'T[]' flooding forever    -> timer/switch livelock (no forward progress)
+    //   'F' anywhere              -> an access exception fired (a FAULT, not a hang)
+    // The '[' / ']' pair is emitted only from ISR context (g_in_isr>0), so the thread-
+    // context switches of tests 1-3 stay quiet and only the test-4 timer path prints.
+#ifndef KICKOS_RX_MPU_TRACE
+#define KICKOS_RX_MPU_TRACE 0
+#endif
+#if KICKOS_RX_MPU_TRACE
+    void rx_mpu_mark(char c)
+    {
+        constexpr uintptr_t SCI6_SSR = 0x0008A0C4; // TDRE = b7
+        constexpr uintptr_t SCI6_TDR = 0x0008A0C3;
+        uint32_t spin = 0;
+        while ((reg8(SCI6_SSR) & (1u << 7)) == 0)
+        {
+            if (++spin > 200000u)
+            {
+                return; // wedged FIFO must never block the localizer itself
+            }
+        }
+        reg8(SCI6_TDR) = static_cast<uint8_t>(c);
+    }
+#else
+    inline void rx_mpu_mark(char) {}
+#endif
 }
 
 extern "C"
@@ -101,10 +132,6 @@ extern "C"
     // by arch_context_init as the fabricated frame's return address for a user
     // thread (kickos_thread_return for a kernel thread).
     void kickos_user_thread_return(void);
-
-    // Linker-provided user-RAM bounds (chip linker script).
-    extern unsigned char __kickos_ram_start[];
-    extern unsigned char __kickos_ram_end[];
 
     // The CMTW input-clock frequency in Hz (PCLKB / prescale), defined by the
     // chip. Drives the ns<->cycle conversions for the clock + one-shot timer.
@@ -308,7 +335,37 @@ int arch_in_isr(void)
 // this path does not return), forces the polled writer, and flushes the ring.
 void kickos_rx_fault_report(uint32_t cause, uint32_t pc, uint32_t psw)
 {
+    rx_mpu_mark('F'); // localizer: an exception fired (a FAULT, not a hang) -- raw, pre-console
     kpanic_enter();
+#if KICKOS_HAVE_MPU
+    // The access exception (fixed vector +0x54) IS the RX MPU violation, and the RX
+    // MPU checks user mode only (UM sec.17.1.1) -- so one taken with the faulting
+    // PSW.PM set is an unprivileged thread hitting an ungranted region. Route it to
+    // the shared reporter that names the task + address, exactly like the riscv PMP
+    // and ARM MemManage paths. MPESTS.DMPER => operand access (address in MPDEA, DRW
+    // gives read vs write); MPESTS.IMPER => instruction fetch (address is the stacked
+    // PC). An access exception from supervisor cannot be an MPU fault (supervisor is
+    // never checked), so it falls through to the generic dump = a genuine kernel bug.
+    if (cause == 0x54 and (psw & PSW_PM) != 0)
+    {
+        uint32_t const sts = reg32(MPU_MPESTS);
+        if ((sts & (MPU_MPESTS_IMPER | MPU_MPESTS_DMPER)) != 0)
+        {
+            uintptr_t addr = pc;
+            int is_write = 0;
+            if ((sts & MPU_MPESTS_DMPER) != 0)
+            {
+                addr = reg32(MPU_MPDEA);
+                if ((sts & MPU_MPESTS_DRW) != 0)
+                {
+                    is_write = 1;
+                }
+            }
+            reg32(MPU_MPECLR) = MPU_MPECLR_CLR;
+            kickos_isr_fault(addr, is_write); // names the task, then arch_shutdown (noreturn)
+        }
+    }
+#endif
     char const* what = "trap";
     if (cause == 0x50)
     {
@@ -356,12 +413,6 @@ uint32_t arch_trace_now(void)
     return reg32(CMTW1_BASE + CMTW_CMWCNT);
 }
 
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
-{
-    ctx->trace_tid = id;
-}
-#endif
 
 // Last absolute deadline programmed into CMTW0 (UINT64_MAX == disarmed). Touched
 // only from arch_timer_arm/disarm, which run under the kernel IrqLock, so it stays
@@ -434,58 +485,131 @@ void arch_timer_disarm(void)
     reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0; // drop a pending compare-match request
 }
 
-// --- MPU: hardware enforcement is M2; no-op on M1 (matches armv7m) ----------
+// --- MPU: per-thread memory protection (RX72M MPU, UM sec.17) ---------------
+// On RX the MPU checks accesses ONLY in user mode; supervisor is never checked
+// and always permitted (UM sec.17.1.1 / the sec.17.3.4 flow). So a PRIVILEGED
+// (PM=0) thread keeps full access no matter what these registers hold, and there
+// is no K64F-style supervisor-field hazard to guard against -- there is simply no
+// supervisor field. Enforcement therefore reduces to: a no-access background
+// (MPBAC=0) so a user thread faults everywhere it has no explicit region, plus
+// the running thread's regions loaded into the eight RSPAGEn/REPAGEn slots.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
+#if KICKOS_HAVE_MPU
+    if (g_in_isr)
+    {
+        rx_mpu_mark('['); // localizer: entering the MPU register writes from ISR ctx
+    }
+    // One-time: background = no user access (UBAC=0), then enable. Overlaps OR
+    // their permission bits with the background (UM sec.17.1.4), so a nonzero
+    // MPBAC would silently grant every user thread -- it must stay 0. MPOPI.INV
+    // clears any stale region V bits (reset leaves REPAGEn.V=0, but be explicit).
+    // MPU registers are supervisor-only and not PRCR-gated (UM Table 13.1), so no
+    // unlock. MPEN takes effect on the RTE into user mode (UM sec.17.2.3).
+    static bool mpu_ready = false;
+    if (not mpu_ready)
+    {
+        reg16(MPU_MPOPI) = MPU_MPOPI_INV;
+        reg32(MPU_MPBAC) = 0;
+        reg32(MPU_MPEN) = MPU_MPEN_MPEN;
+        mpu_ready = true;
+    }
+    // Skip the register rewrite when the incoming set already matches what the MPU
+    // holds. RR ping-pong between two PRIVILEGED threads reprograms the IDENTICAL
+    // kernel-domain region on every timer tick, and RX supervisor is never checked,
+    // so the registers already describe a correct set -- rewriting them (from the
+    // timer ISR, at RR frequency) only adds MPU-bus traffic. Compare against the
+    // last-applied set; on a match the hardware is already correct, so return.
+    static struct arch_mpu_region s_last[MPU_REGION_COUNT];
+    static size_t s_last_n = ~static_cast<size_t>(0);
+    bool same = (n == s_last_n);
+    for (size_t i = 0; same and i < n and i < MPU_REGION_COUNT; i++)
+    {
+        if (s_last[i].base != regions[i].base or s_last[i].size != regions[i].size
+            or s_last[i].attr != regions[i].attr)
+        {
+            same = false;
+        }
+    }
+    if (not same)
+    {
+        // Load regions[0..n) into slots 0..n-1; invalidate the rest. Write RSPAGEn
+        // (start) BEFORE REPAGEn, and put V in the REPAGEn write so a slot is never
+        // momentarily valid with a stale end/attr.
+        for (size_t i = 0; i < MPU_REGION_COUNT; i++)
+        {
+            uintptr_t const rsp = MPU_RSPAGE_BASE + i * MPU_REGION_STRIDE;
+            uintptr_t const rep = MPU_REPAGE_BASE + i * MPU_REGION_STRIDE;
+            if (i < n and regions[i].size >= 16)
+            {
+                uintptr_t const base = regions[i].base;
+                uintptr_t const end = base + regions[i].size - 1; // inclusive last byte
+                uint32_t uac = 0;
+                if (regions[i].attr & ARCH_MPU_R)
+                {
+                    uac |= MPU_UAC_R;
+                }
+                if (regions[i].attr & ARCH_MPU_W)
+                {
+                    uac |= MPU_UAC_W;
+                }
+                if (regions[i].attr & ARCH_MPU_X)
+                {
+                    uac |= MPU_UAC_X;
+                }
+                reg32(rsp) = static_cast<uint32_t>(base) & MPU_PAGE_MASK;
+                reg32(rep) = (static_cast<uint32_t>(end) & MPU_PAGE_MASK) | uac | MPU_REPAGE_V;
+            }
+            else
+            {
+                reg32(rep) = 0; // clears V -> slot inactive
+            }
+        }
+        // UM sec.17.4.3: read back an MPU register so the writes are in effect before
+        // the scheduler's RTE drops into user mode -- the RX visibility barrier (the
+        // ARM DSB/ISB analog). The asm consumes the value so the volatile load is
+        // really issued and is not reordered past here.
+        uint32_t const mpu_sync = reg32(MPU_MPEN);
+        __asm volatile("" ::"r"(mpu_sync) : "memory");
+        // Cache the applied set so an identical follow-up switch skips the rewrite.
+        s_last_n = n;
+        for (size_t i = 0; i < n and i < MPU_REGION_COUNT; i++)
+        {
+            s_last[i] = regions[i];
+        }
+    }
+    if (g_in_isr)
+    {
+        rx_mpu_mark(']'); // localizer: MPU writes + readback barrier completed
+    }
+#else
     (void)regions;
     (void)n;
-    // M2: reprogram RSPAGEn/REPAGEn.UAC/V on switch-in (spike sec.4). No enforcement
-    // on M1.x -- privilege + syscall only.
+#endif
 }
 
 size_t arch_mpu_min_region(void)
 {
-    return 16u; // RX MPU region granularity (RSPAGEn/REPAGEn); refine in M2 fan-out
+    // RX MPU page = 16 bytes (RSPAGEn/REPAGEn address[31:4], UM sec.17.1.2). Like
+    // SYSMPU the hardware takes arbitrary page-granular bounds, so the pow2 shaping
+    // the shared alloc/linker path applies is a describable superset, not a
+    // requirement -- returning the page size keeps every descriptor representable.
+    return 16u;
 }
 
-uintptr_t arch_ram_base(void)
+// The RX MPU is byte-granular on a 16-byte page (RSPAGEn/REPAGEn hold addr[31:4]);
+// a window is exact iff base and base+size both land on a 16-byte boundary. No
+// power-of-two size is required.
+bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
-    return reinterpret_cast<uintptr_t>(__kickos_ram_start);
-}
-
-size_t arch_ram_size(void)
-{
-    return static_cast<size_t>(__kickos_ram_end - __kickos_ram_start);
-}
-
-void* arch_ram_alloc(size_t size)
-{
-    if (size == 0)
+    if (size < 16u)
     {
-        return nullptr;
+        return false;
     }
-    size_t const rsz = arch_ram_region_size(size);
-    size_t const ralign = arch_ram_region_align(size);
-    size_t const total = arch_ram_size();
-    uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_ram_start);
-    arch_irq_state_t s = arch_irq_save();
-    void* p = nullptr;
-    uintptr_t const cur = base + g_ram_used;
-    uintptr_t const aligned = (cur + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
-    size_t const off = static_cast<size_t>(aligned - base);
-    if (aligned >= cur and off <= total and rsz <= total - off)
-    {
-        p = reinterpret_cast<void*>(aligned);
-        g_ram_used = static_cast<uint32_t>(off + rsz);
-    }
-    arch_irq_restore(s);
-    return p;
+    return (base & 15u) == 0 and (size & 15u) == 0;
 }
 
-uintptr_t arch_mpu_probe_addr(void)
-{
-    return 0; // no enforced MPU on M1.x -> no probe address (real on M2)
-}
+
 
 // --- Interrupt controller (ICUD) --------------------------------------------
 void arch_irq_mask(int line)
@@ -549,6 +673,7 @@ void arch_idle_wait(void)
 // CMWI0 -> the timer ISR and every other line -> the default stub.
 __attribute__((interrupt)) void kickos_rx_timer_isr(void)
 {
+    rx_mpu_mark('T'); // localizer: CMTW0 timer accepted (first RR-preempt path)
     reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0; // clear the request flag
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;  // one-shot: stop until re-armed
     g_rx_armed_ns = ~0ull;                // invalidate so kickos_isr_timer's re-arm reprograms

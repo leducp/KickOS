@@ -23,13 +23,13 @@
 namespace kickos
 {
     int kmain(int argc, char** argv);
+    void kprintf(char const* fmt, ...);
 }
 
 extern "C"
 {
     void kickos_armv7m_init(void);
 
-    extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
@@ -259,6 +259,51 @@ namespace
     char console_tx_buf[CONSOLE_TX_SIZE];
     console_tx_backend const k64_console_backend = {
         k64_tx_slot_free, k64_tx_push, k64_tx_irq_enable, k64_tx_irq_disable};
+
+    // --- SYSMPU (K64 RM section 19); base 0x4000_D000 -------------------------
+    // NXP's byte/32-granular bus-master protection -- NOT the ARM core MPU
+    // (__MPU_PRESENT=0 here), so K64F overrides the weak ARM PMSA arch_mpu_apply.
+    // The Cortex-M4 core is TWO crossbar masters (RM 3.3.6.1): M0 = code bus
+    // (instruction fetch + flash literal/rodata reads), M1 = system bus (SRAM +
+    // peripheral data). RGD0 is the supervisor background; RGD1..11 are per-thread
+    // USER grants. An access is allowed if ANY valid descriptor grants it (union),
+    // so RGD0 (supervisor rwx everywhere) always covers privileged code.
+    constexpr uintptr_t SYSMPU_CESR = 0x4000D000;
+    constexpr uintptr_t SYSMPU_RGD = 0x4000D400;    // RGDn word k = RGD + n*0x10 + k*4
+    constexpr uintptr_t SYSMPU_RGDAAC0 = 0x4000D800; // WORD2 alt view (keeps VLD)
+    constexpr uint32_t SYSMPU_CESR_VLD = 1u << 0;    // global MPU enable
+    constexpr size_t SYSMPU_RGD_COUNT = 12;
+    // Error capture (K64 RM 19.3): EARn 0xD010+n*8, EDRn 0xD014+n*8, 5 slave ports.
+    // CESR[31:27] SPERR: bit 31 -> slave port 0 ... bit 27 -> slave port 4.
+    constexpr uintptr_t SYSMPU_EAR0 = 0x4000D010; // EARn = EAR0 + n*8
+    constexpr uintptr_t SYSMPU_EDR0 = 0x4000D014; // EDRn = EDR0 + n*8
+    constexpr size_t SYSMPU_SLAVE_PORTS = 5;
+
+#if KICKOS_HAVE_MPU
+    // WORD2 for the core's two crossbar masters (attr = the UNPRIVILEGED rights).
+    // The Cortex-M4 core reaches memory as M0 (code bus) OR M1 (system bus), chosen
+    // by ADDRESS: M0 serves flash AND SRAM_L (both < 0x2000_0000), M1 serves SRAM_U
+    // + peripherals. A thread's stack/data can sit in EITHER SRAM bank (this chip's
+    // RAM pool starts in SRAM_L @ 0x1FFF_0000), and an exception (un)stack to a
+    // SRAM_L stack is an M0 data access -- so granting data only on M1 denies it.
+    // Grant the rights on BOTH masters: the RGD is address-bounded, so this widens
+    // only the bus a thread may use, not the range it reaches. M0UM[2:0] @ bits 2:0
+    // (r=bit2,w=bit1,x=bit0); M1UM[2:0] @ bits 8:6 (r=8,w=7,x=6). Supervisor SM left
+    // 0 (=r/w/x) -> RGD0 background covers privileged; execute stays code-bus only.
+    uint32_t sysmpu_word2(uint32_t attr)
+    {
+        uint32_t w = (1u << 2) | (1u << 8); // read: M0 + M1
+        if (attr & ARCH_MPU_W)
+        {
+            w |= (1u << 1) | (1u << 7); // write: M0 + M1
+        }
+        if (attr & ARCH_MPU_X)
+        {
+            w |= (1u << 0); // execute: code bus (M0) only
+        }
+        return w;
+    }
+#endif
 }
 
 extern "C"
@@ -272,6 +317,113 @@ void arch_init(void)
     clock_init();
     uart0_init();
     kickos_armv7m_init();
+}
+
+// SYSMPU backend: overrides the weak ARM PMSA arch_mpu_apply (K64F has no ARM
+// core MPU). Reloads the running thread's per-thread USER grants (RGD1..) on every
+// switch-in; supervisor + DMA stay covered by RGD0. Gated on KICKOS_HAVE_MPU.
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+{
+#if KICKOS_HAVE_MPU
+    // One-time: make RGD0 a supervisor-only background. At reset RGD0 grants ALL
+    // masters rwx over all memory; strip the core's USER access on BOTH masters so
+    // a U-mode access then needs a per-thread RGD, while supervisor (the privileged
+    // kernel) keeps full rwx. RGDAAC0 is the WORD2 alt view (does not clear VLD).
+    static bool rgd0_ready = false;
+    if (not rgd0_ready)
+    {
+        // CRITICAL: RGD0 resets with the SUPERVISOR fields M0SM/M1SM = 0b11 = "same
+        // as user mode" (K64 RM 19.6.1). Clearing only the user fields (M0UM/M1UM)
+        // therefore drops SUPERVISOR access too -- it defers to the now-zero user
+        // field -- and the privileged kernel faults on its very next instruction
+        // fetch, double-faults while stacking, and the core locks up -> reset with
+        // no dump (this was the task #12 symptom). So ALSO clear M0SM/M1SM to 0b00
+        // (= supervisor r/w/x), pinning supervisor full-access independent of UM.
+        // Bit fields (both core masters): M0UM[2:0] M0SM[4:3], M1UM[8:6] M1SM[10:9].
+        constexpr uint32_t core_user_and_sm =
+            (0x7u << 0) | (0x3u << 3) | (0x7u << 6) | (0x3u << 9);
+        r32(SYSMPU_RGDAAC0) &= ~core_user_and_sm;
+        r32(SYSMPU_CESR) |= SYSMPU_CESR_VLD; // (already enabled at reset)
+        rgd0_ready = true;
+    }
+    // Program RGD1..(n) from the region set; invalidate the rest. RGD0 stays the
+    // background. Writing WORD2 clears VLD, so set WORD0/1/2 then WORD3=VLD last.
+    for (size_t i = 0; i + 1 < SYSMPU_RGD_COUNT; i++)
+    {
+        uintptr_t const rgd = SYSMPU_RGD + (i + 1) * 0x10;
+        if (i < n and regions[i].size >= 32)
+        {
+            uintptr_t const base = regions[i].base;
+            uintptr_t const end = base + regions[i].size - 1;
+            r32(rgd + 0x0) = static_cast<uint32_t>(base);          // WORD0 SRTADDR[31:5]
+            r32(rgd + 0x4) = static_cast<uint32_t>(end);           // WORD1 ENDADDR[31:5]
+            r32(rgd + 0x8) = sysmpu_word2(regions[i].attr);        // WORD2 (clears VLD)
+            r32(rgd + 0xC) = 1u;                                   // WORD3 VLD=1
+        }
+        else
+        {
+            r32(rgd + 0xC) = 0u; // invalidate the descriptor
+        }
+    }
+    __asm volatile("dsb" ::: "memory");
+    __asm volatile("isb" ::: "memory");
+#else
+    (void)regions;
+    (void)n;
+#endif
+}
+
+// SYSMPU is byte-granular on a 32-byte page (SRTADDR/ENDADDR are addr[31:5]); a
+// window is exact iff base and base+size both land on a 32-byte boundary. Overrides
+// the weak PMSA (pow2) encodability -- SYSMPU needs NO power-of-two size.
+bool arch_mpu_region_encodable(uintptr_t base, size_t size)
+{
+    if (size < 32u)
+    {
+        return false;
+    }
+    return (base & 31u) == 0 and (size & 31u) == 0;
+}
+
+// Chip fault-decode hook (arch.h): a SYSMPU protection error reaches the core as a
+// BUS error (escalates to HardFault; the CFSR MMFSR is 0, so the shared reporter
+// cannot name it). Read the SYSMPU error capture and print the faulting address +
+// master + access type for whichever slave port latched. IMPORTANT (K64 RM 3.3.6.2
+// / 3.3.7.1): the MPU slave ports cover flash, SRAM_L/U and FlexBus ONLY -- the AIPS
+// peripheral bridges and the GPIO controller are NOT MPU slave ports ("protection
+// built into the bridge"), so a peripheral-window violation does NOT set SPERR here;
+// that no-SPERR case is itself the diagnostic (peripheral MMIO is not SYSMPU-gated).
+// Runs privileged (RGD0 full access), so it cannot itself fault.
+void arch_fault_report_extra(void)
+{
+    uint32_t cesr = r32(SYSMPU_CESR);
+    uint32_t sperr = cesr >> 27; // CESR[31:27]; bit 31 -> port 0
+    if (sperr == 0)
+    {
+        kickos::kprintf("  SYSMPU: no protection error latched (CESR=0x%x) -- a bus "
+                        "fault outside an MPU slave port (peripheral bridge?)\n", cesr);
+        return;
+    }
+    for (size_t port = 0; port < SYSMPU_SLAVE_PORTS; port++)
+    {
+        if ((sperr & (1u << (4 - port))) == 0)
+        {
+            continue;
+        }
+        uint32_t ear = r32(SYSMPU_EAR0 + port * 8u);
+        uint32_t edr = r32(SYSMPU_EDR0 + port * 8u);
+        uint32_t master = (edr >> 4) & 0xFu;
+        char const* rw = "R";
+        if (edr & 1u)
+        {
+            rw = "W";
+        }
+        kickos::kprintf("  SYSMPU ISOLATION FAULT: port=%u addr=0x%x master=%u %s "
+                        "EDR=0x%x\n", static_cast<unsigned>(port), ear, master, rw, edr);
+        // W1C this port's SPERR, but PRESERVE VLD (bit 0, plain R/W): a bare
+        // `= 1u<<(31-port)` writes VLD=0 and disables the whole SYSMPU.
+        r32(SYSMPU_CESR) = (cesr & SYSMPU_CESR_VLD) | (1u << (31 - port));
+    }
 }
 
 void arch_console_write(char const* buf, size_t n)
@@ -340,16 +492,7 @@ void Reset_Handler(void)
     enable_fpu();   // before ANY later code (the copy loops are integer, but a
                     // hard-float ABI could emit FP anywhere; CPACR-off FP faults)
 
-    uint32_t* src = &_sidata;
-    uint32_t* dst = &_sdata;
-    while (dst < &_edata)
-    {
-        *dst++ = *src++;
-    }
-    for (uint32_t* b = &_sbss; b < &_ebss; b++)
-    {
-        *b = 0;
-    }
+    kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

@@ -31,6 +31,8 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
   add_library(kickos_arch_armv7m STATIC
     arm/armv7m/arch_armv7m.cc
     arm/common/arch_arm_common.cc
+    common/arch_ram_common.cc
+    common/startup_ranges.cc
     arm/armv7m/switch.S)
   kickos_apply_freestanding(kickos_arch_armv7m)
   # arch_trace_now (weak DWT read) lives here and runs on the PendSV-tail emit
@@ -53,6 +55,8 @@ elseif(KICKOS_ARCH STREQUAL "armv6m")
   add_library(kickos_arch_armv6m STATIC
     arm/armv6m/arch_armv6m.cc
     arm/common/arch_arm_common.cc
+    common/arch_ram_common.cc
+    common/startup_ranges.cc
     arm/armv6m/switch.S)
   kickos_apply_freestanding(kickos_arch_armv6m)
   target_include_directories(kickos_arch_armv6m PUBLIC
@@ -70,6 +74,8 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
   # linker script.
   add_library(kickos_arch_rxv3 STATIC
     rx/rxv3/arch_rxv3.cc
+    common/arch_ram_common.cc
+    common/startup_ranges.cc
     rx/rxv3/switch.S)
   kickos_apply_freestanding(kickos_arch_rxv3)
   target_include_directories(kickos_arch_rxv3 PUBLIC
@@ -90,6 +96,8 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
   # arch_init/console/shutdown + startup vectors + linker script.
   add_library(kickos_arch_lx6 STATIC
     xtensa/lx6/arch_xtensa.cc
+    common/arch_ram_common.cc
+    common/startup_ranges.cc
     xtensa/lx6/switch.S)
   kickos_apply_freestanding(kickos_arch_lx6)
   target_include_directories(kickos_arch_lx6 PUBLIC
@@ -109,6 +117,8 @@ elseif(KICKOS_ARCH STREQUAL "rv32imac")
   # shutdown + the clock/timer + the CLINT base + linker script + startup.
   add_library(kickos_arch_rv32imac STATIC
     riscv/rv32imac/arch_rv32imac.cc
+    common/arch_ram_common.cc
+    common/startup_ranges.cc
     riscv/rv32imac/switch.S)
   kickos_apply_freestanding(kickos_arch_rv32imac)
   target_include_directories(kickos_arch_rv32imac PUBLIC
@@ -159,8 +169,9 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     set(_boot2_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}_boot2_checksummed.S")
     # Stage 1: assemble + link the position-independent loader to a raw image.
     # It is self-contained (no libc/startfiles); its own linker script caps it at
-    # 252 bytes. The -T is passed at the DRIVER level (not -Wl,-T) so the picolibc
-    # toolchain suppresses its default linker script (see boot2.ld).
+    # 252 bytes. The -T is passed at the DRIVER level (see boot2.ld); with the
+    # newlib toolchain no default linker script is injected, so this form only
+    # applies our boot2.ld.
     add_custom_command(
       OUTPUT "${_boot2_bin}"
       COMMAND ${CMAKE_C_COMPILER} ${KICKOS_MCPU_FLAGS} -mthumb
@@ -211,8 +222,22 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   if(EXISTS "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
     set(_ld "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
   endif()
-  # Ship the linker script so an out-of-tree consumer can link an image (the
+  # Preprocess the linker script through cpp so KICKOS_HAVE_MPU gates sections
+  # (zero-overhead: a non-enforcement build reserves no app-data block/region -- the
+  # #if guards vanish). cpp strips comments and passes MEMORY/SECTIONS/LONG/wildcard
+  # tokens through unchanged. The GENERATED script (named <chip>.ld) is what the link
+  # and the installed package use, so the INSTALL_INTERFACE -T path is unchanged.
+  set(_ld_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.ld")
+  add_custom_command(
+    OUTPUT "${_ld_gen}"
+    COMMAND ${CMAKE_C_COMPILER} -E -P -x c -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
+            "${_ld}" -o "${_ld_gen}"
+    DEPENDS "${_ld}"
+    COMMENT "linker: preprocess ${KICKOS_CHIP}.ld (KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})"
+    VERBATIM)
+  add_custom_target(kickos_ldscript_${KICKOS_CHIP} ALL DEPENDS "${_ld_gen}")
+  # Ship the generated linker script so an out-of-tree consumer can link an image (the
   # `kickos` INTERFACE bakes an INSTALL_INTERFACE -T pointing at this copy).
-  install(FILES "${_ld}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
-  set(KICKOS_LINKER_SCRIPT "${_ld}" PARENT_SCOPE)
+  install(FILES "${_ld_gen}" DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
+  set(KICKOS_LINKER_SCRIPT "${_ld_gen}" PARENT_SCOPE)
 endif()

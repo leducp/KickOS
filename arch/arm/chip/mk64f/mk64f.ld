@@ -28,6 +28,15 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);   /* initial MSP: top of SRAM_U */
 _kernel_stack_size = 8K;               /* boot/handler (MSP) stack */
 
+/* App-owned globals get their own MPU region so an unprivileged thread reaches its
+   own .data/.bss but not the kernel's. The region MUST be pow2-sized + pow2-aligned
+   for the PMSA/NAPOT backends (SYSMPU is byte-granular but shares the block), so the
+   app data is padded up to this pow2 size; a real app whose globals exceed it trips
+   the ASSERT below. Keep it a power of two. */
+#if KICKOS_HAVE_MPU
+_appdata_size = 4K;
+#endif
+
 SECTIONS
 {
     .isr_vector ORIGIN(FLASH) :
@@ -67,6 +76,50 @@ SECTIONS
         __exidx_end = .;
     } > FLASH
 
+    /* Copy/zero tables for the generic C-runtime init (kickos_ranges_init): flash
+       rodata, read before .data exists. Copy triples {src,dst,len}; zero pairs
+       {dst,len}. App ranges first, kernel ranges second (order is immaterial). */
+    .kickos_init_tables : ALIGN(4)
+    {
+        __kickos_copy_table_start = .;
+#if KICKOS_HAVE_MPU
+        LONG(LOADADDR(.appdata)); LONG(ADDR(.appdata)); LONG(SIZEOF(.appdata));
+#endif
+        LONG(LOADADDR(.data));    LONG(ADDR(.data));    LONG(SIZEOF(.data));
+        __kickos_copy_table_end = .;
+        __kickos_zero_table_start = .;
+#if KICKOS_HAVE_MPU
+        LONG(ADDR(.appbss)); LONG(SIZEOF(.appbss));
+#endif
+        LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
+        __kickos_zero_table_end = .;
+    } > FLASH
+
+    /* App-owned globals as a pow2 MPU region at the base of RAM (ORIGIN is already
+       64 KiB-aligned). Grouped by path (objects under a user/ dir = the app object +
+       user runtime); placed BEFORE the kernel .data/.bss so those input sections are
+       consumed here and the kernel catch-all below gets only kernel/arch/lib.
+       .appdata is loaded from flash; .appbss + the pad are zeroed (no stale
+       read-back through the grant). */
+#if KICKOS_HAVE_MPU
+    .appdata ORIGIN(RAM) : ALIGN(4)
+    {
+        __kickos_appdata_start = .;
+        *user*(.data .data.*)
+        . = ALIGN(4);
+    } > RAM AT > FLASH
+
+    .appbss (NOLOAD) : ALIGN(4)
+    {
+        *user*(.bss .bss.*)
+        *user*(COMMON)
+        . = ALIGN(4);
+        _appdata_used_end = .;
+        . = __kickos_appdata_start + _appdata_size; /* pad the block up to pow2 */
+        __kickos_appdata_end = .;
+    } > RAM
+#endif
+
     _sidata = LOADADDR(.data);
 
     .data : ALIGN(4)
@@ -90,8 +143,23 @@ SECTIONS
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
 
+    /* App code region for unprivileged threads (RX): the whole flash. SYSMPU is
+       byte/32-granular (no pow2 rule), so this is start=0/end=1M-1. Lets an
+       unprivileged thread fetch its code + read flash rodata via the core's code
+       bus (crossbar master 0). Cleanly disjoint from the RAM arena/stacks. */
+    __kickos_code_start = ORIGIN(FLASH);
+    __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);
+
     /DISCARD/ : { *(.ARM.attributes) }
 }
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
+
+/* App globals must fit the pow2 region. If this trips, raise _appdata_size to the
+   next power of two (it is the app's MPU-granted .data/.bss window). A zero-sized
+   used-end means the user-path selector matched nothing -- check the build layout. */
+#if KICKOS_HAVE_MPU
+ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
+       "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
+#endif

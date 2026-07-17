@@ -4,10 +4,10 @@
 # manual/self-hosted step per the HW-test deferral policy. Every job mirrors a
 # `--preset` invocation.
 #
-# RISC-V uses the xPack riscv-none-elf toolchain (pinned): ubuntu-latest's apt
-# gcc-riscv64-unknown-elf ships no rv32imac newlib/libgloss, and unlike ARM there
-# is no drop-in apt lib package. xPack bundles the rv32imac multilib; we symlink it
-# to the riscv64-unknown-elf-* prefix the toolchain file expects.
+# Toolchains are the SAME pinned vendor tarballs used locally (reproducibility): the
+# official Arm GNU Toolchain (arm-none-eabi, newlib) and the RISCstar toolchain
+# (riscv32-none-elf, newlib, rv32imac soft-float multilib). Both are downloaded +
+# cached; no apt gcc-arm-none-eabi / xPack. The sim job uses the host g++.
 
 name: CI
 
@@ -19,6 +19,14 @@ on:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # Keep these in lockstep with cmake/toolchain-arm-none-eabi.cmake /
+  # toolchain-riscv-none-elf.cmake defaults (the Apps/... paths locally).
+  ARM_TC_DIR: arm-gnu-toolchain-15.3.rel1-x86_64-arm-none-eabi
+  ARM_TC_URL: https://gitlab.arm.com/gnu-toolchains-for-arm/gnu-toolchain/-/releases/15.3.rel1/downloads/arm-gnu-toolchain-15.3.rel1-x86_64-arm-none-eabi.tar.xz
+  RV_TC_DIR: riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf
+  RV_TC_URL: https://releases.riscstar.com/toolchain/16.1-r1/riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf.tar.xz
 
 jobs:
   # Authoritative deterministic gate: full ctest on the host sim -- selftest, the
@@ -34,8 +42,7 @@ jobs:
       - run: cmake --build --preset sim
       - run: ctest --preset sim --output-on-failure
 
-  # armv7m (mps2-an386) + armv6m (microbit) under QEMU. libnewlib-arm-none-eabi
-  # supplies the C library the split apt gcc package omits.
+  # armv7m (mps2-an386) + armv6m (microbit) under QEMU, on the pinned Arm GNU toolchain.
   qemu-arm:
     runs-on: ubuntu-latest
     # The mps2/nrf51 QEMU targets clock off semihosting SYS_CLOCK, which QEMU <= 10
@@ -47,57 +54,81 @@ jobs:
       QEMU_TIMEOUT: "30"
     steps:
       - uses: actions/checkout@v4
-      - name: Install ARM toolchain + QEMU
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi qemu-system-arm
+      - name: Install QEMU + build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-arm curl xz-utils
+      - name: Cache Arm GNU toolchain
+        id: cache-arm
+        uses: actions/cache@v4
+        with:
+          path: ~/tc/${{ env.ARM_TC_DIR }}
+          key: ${{ env.ARM_TC_DIR }}
+      - name: Download Arm GNU toolchain
+        if: steps.cache-arm.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/tc
+          curl -fsSL -o /tmp/arm.tar.xz "$ARM_TC_URL"
+          tar -C ~/tc -xf /tmp/arm.tar.xz
+      - name: Put toolchain on PATH + bin
+        # PATH (not just -D) is REQUIRED: the KICKOS_*_TOOLCHAIN_BIN cache override does
+        # not propagate to CMake's try_compile ABI check, but PATH is inherited -- so the
+        # toolchain-file find_program resolves the cross compiler there via PATH.
+        run: |
+          echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
+          echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
       # --repeat until-pass:4: the mps2 QEMU timer is coarse (DWT frozen; ~100 Hz
       # semihosting clock), so the run gates can transiently miss their output
       # window under CI-host load. Retry rides that out; a real hang still fails
       # (each attempt is bounded by the gate's own timeout).
       - name: armv7m (mps2-an386)
         run: |
-          cmake --preset qemu
+          cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
           ctest --preset qemu --output-on-failure --repeat until-pass:4
       - name: armv6m (microbit)
         run: |
-          cmake --preset microbit
+          cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset microbit
           ctest --preset microbit --output-on-failure --repeat until-pass:4
 
-  # rv32imac (virt) under QEMU, plus build-only checks of the other two rv32 boards.
+  # rv32imac (virt) under QEMU, plus build-only checks of the other two rv32 boards,
+  # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
   # No idle fix needed here: RISC-V clocks off the CLINT mtime, which keeps ticking
   # during WFI (unlike the ARM semihosting clock). QEMU_TIMEOUT is failure headroom.
   qemu-riscv:
     runs-on: ubuntu-latest
     env:
       QEMU_TIMEOUT: "30"
-      XPACK_RV: "14.3.0-1"
     steps:
       - uses: actions/checkout@v4
-      - name: Install RISC-V toolchain (xPack) + QEMU
+      - name: Install QEMU + build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
+      - name: Cache RISCstar toolchain
+        id: cache-rv
+        uses: actions/cache@v4
+        with:
+          path: ~/tc/${{ env.RV_TC_DIR }}
+          key: ${{ env.RV_TC_DIR }}
+      - name: Download RISCstar toolchain
+        if: steps.cache-rv.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
-          curl -fsSL -o /tmp/rv.tar.gz \
-            "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RV}/xpack-riscv-none-elf-gcc-${XPACK_RV}-linux-x64.tar.gz"
-          sudo tar -C /opt -xf /tmp/rv.tar.gz
-          tc="/opt/xpack-riscv-none-elf-gcc-${XPACK_RV}/bin"
-          # xPack ships riscv-none-elf-*; the toolchain file wants riscv64-unknown-elf-*.
-          sudo mkdir -p /opt/rvbin
-          for t in gcc g++ cpp as ld ar ranlib objcopy objdump size nm strip gcc-ar gcc-ranlib gcc-nm readelf; do
-            sudo ln -sf "$tc/riscv-none-elf-$t" "/opt/rvbin/riscv64-unknown-elf-$t"
-          done
-          echo "/opt/rvbin" >> "$GITHUB_PATH"
+          mkdir -p ~/tc
+          curl -fsSL -o /tmp/rv.tar.xz "$RV_TC_URL"
+          tar -C ~/tc -xf /tmp/rv.tar.xz
+      - name: Put toolchain on PATH + bin
+        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        run: |
+          echo "$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_PATH"
+          echo "KICKOS_RISCV_TOOLCHAIN_BIN=$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_ENV"
       - name: rv32imac (virt) run gate
         run: |
-          cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN=/opt/rvbin
+          cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
       - name: build-only rv32 boards
         run: |
-          cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN=/opt/rvbin
+          cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom
-          cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN=/opt/rvbin
+          cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-bench
 
   # Build-only sweep of the remaining ARM boards (catches build/link/linker-script
@@ -112,7 +143,24 @@ jobs:
                  f302nucleo, due, xmc4800-relax, qemu-telem]
     steps:
       - uses: actions/checkout@v4
-      - name: Install ARM toolchain
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi
-      - run: cmake --preset ${{ matrix.preset }}
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils
+      - name: Cache Arm GNU toolchain
+        id: cache-arm
+        uses: actions/cache@v4
+        with:
+          path: ~/tc/${{ env.ARM_TC_DIR }}
+          key: ${{ env.ARM_TC_DIR }}
+      - name: Download Arm GNU toolchain
+        if: steps.cache-arm.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/tc
+          curl -fsSL -o /tmp/arm.tar.xz "$ARM_TC_URL"
+          tar -C ~/tc -xf /tmp/arm.tar.xz
+      - name: Put toolchain on PATH + bin
+        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        run: |
+          echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
+          echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}

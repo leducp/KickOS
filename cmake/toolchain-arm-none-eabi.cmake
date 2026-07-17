@@ -9,6 +9,15 @@
 # the board/chip layer at the application-link step; here we only pin the
 # cross compiler and the per-chip -mcpu/-mfpu/-mfloat-abi baseline so the right
 # multilib is selected uniformly for compile AND link.
+#
+# This file prefers the pinned Apps Arm GNU Toolchain (the official Arm
+# arm-none-eabi build, newlib-based: --with-newlib, ships libstdc++/libsupc++,
+# nano.specs, rmprofile multilibs) over whatever arm-none-eabi-gcc happens to be
+# on PATH. Reasons: reproducibility (one pinned compiler across the fleet) and
+# newlib's full libstdc++ -- required for the eventual full-C++ opt-in, which
+# Debian's picolibc-based apt toolchain cannot provide. It still falls back to an
+# on-PATH arm-none-eabi-gcc (the finds keep PATH search) so a machine without the
+# Apps directory -- e.g. CI -- still resolves a toolchain.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
@@ -58,11 +67,18 @@ set(KICKOS_ARCH   "${KICKOS_ARCH}" CACHE STRING "KickOS arch backend selected by
 # exact same -mcpu/-mfpu instead of hardcoding a value that could drift from here.
 set(KICKOS_MCPU_FLAGS "${_kos_cpu}" CACHE INTERNAL "Per-chip -mcpu/-mfpu baseline")
 
-find_program(CMAKE_C_COMPILER   arm-none-eabi-gcc REQUIRED)
-find_program(CMAKE_CXX_COMPILER arm-none-eabi-g++ REQUIRED)
-find_program(CMAKE_ASM_COMPILER arm-none-eabi-gcc REQUIRED)
-find_program(CMAKE_OBJCOPY      arm-none-eabi-objcopy REQUIRED)
-find_program(CMAKE_SIZE         arm-none-eabi-size)
+# The pinned prebuilt Arm GNU (newlib) toolchain location. Overridable; the finds
+# also honour PATH, so a host without this directory falls back to an on-PATH
+# arm-none-eabi-gcc (e.g. CI).
+set(KICKOS_ARM_TOOLCHAIN_BIN
+    "/home/leduc/Apps/toolchains/arm-gnu-toolchain-15.3.rel1-x86_64-arm-none-eabi/bin"
+    CACHE PATH "Directory holding the arm-none-eabi-* programs")
+
+find_program(CMAKE_C_COMPILER   arm-none-eabi-gcc     HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
+find_program(CMAKE_CXX_COMPILER arm-none-eabi-g++     HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
+find_program(CMAKE_ASM_COMPILER arm-none-eabi-gcc     HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
+find_program(CMAKE_OBJCOPY      arm-none-eabi-objcopy HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
+find_program(CMAKE_SIZE         arm-none-eabi-size    HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}")
 
 # The compiler cannot produce a runnable executable without the board's linker
 # script + startup, which are not present during CMake's compiler probe. Probe

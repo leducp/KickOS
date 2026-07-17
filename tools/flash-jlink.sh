@@ -29,5 +29,9 @@ esac
 
 script=$(mktemp); trap 'rm -f "$script"' EXIT
 printf 'loadfile %s\nr\ng\nq\n' "$FL_HEX" > "$script"   # r=reset g=go q=quit
-say "$FL_BOARD [$dev] <- $FL_HEX (loadfile; addresses embedded)"
-run JLinkExe -device "$dev" -if SWD -speed 4000 -autoconnect 1 -CommanderScript "$script"
+# On a multi-J-Link bench JLinkExe must be told WHICH probe: export JLINK_SN=<serial>
+# (SelectEmuBySN). With one probe connected it is optional.
+sn_arg=""
+[ -n "${JLINK_SN:-}" ] && sn_arg="-SelectEmuBySN $JLINK_SN"
+say "$FL_BOARD [$dev]${JLINK_SN:+ SN=$JLINK_SN} <- $FL_HEX (loadfile; addresses embedded)"
+run JLinkExe -device "$dev" -if SWD -speed 4000 -autoconnect 1 ${sn_arg} -CommanderScript "$script"

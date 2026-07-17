@@ -14,9 +14,20 @@
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 2
 #endif
+/* 16 KiB SRAM, 2 threads: right-size the sem/irq-handle pools down from the
+   system.h 16/8 defaults (reclaims ~300 B BSS; the linker ASSERT would otherwise
+   just have to fit them). Mirrors the nRF51 (same 16 KiB part). */
+#ifndef KICKOS_MAX_SEMAPHORES
+#define KICKOS_MAX_SEMAPHORES 4
+#endif
+#ifndef KICKOS_MAX_IRQ_HANDLES
+#define KICKOS_MAX_IRQ_HANDLES 4
+#endif
 #ifndef KICKOS_USER_STACK_SIZE
 #define KICKOS_USER_STACK_SIZE 2048
 #endif
+/* (f302 is not an enforcement target: its 16 KiB SRAM cannot hold the app-data
+   block + arena. Default stacks are demand-allocated from the arena, not a pool.) */
 #ifndef KICKOS_IDLE_STACK_SIZE
 #define KICKOS_IDLE_STACK_SIZE 512
 #endif

@@ -158,6 +158,8 @@ namespace
     }
 #endif
 
+    void arena_lower_to_applied(); // defined below; used by the trampoline
+
     // --- Trampoline pointer packing (makecontext takes ints) -------------------
     void trampoline(unsigned hi, unsigned lo)
     {
@@ -171,6 +173,17 @@ namespace
         trace_emit_switch_in();
         sigprocmask(SIG_UNBLOCK, &sim().irq_signals, nullptr);
 #endif
+        // Enter user code under this thread's OWN resting MPU posture. arch_mpu_apply
+        // at the starting switch left the arena raised (and recorded this thread's set);
+        // lower to it now -- on this thread's own stack, which the gap-based lower keeps
+        // mapped -- so the thread is enforced from its first instruction, not only after
+        // its first syscall. Mask the emulated IRQ lines across the transition so no ISR
+        // reprograms the arena mid-way.
+        {
+            arch_irq_state_t s = arch_irq_save();
+            arena_lower_to_applied();
+            arch_irq_restore(s);
+        }
         c->entry(c->arg);
         kickos_thread_return(); // noreturn
     }
@@ -193,14 +206,12 @@ namespace
         return prot;
     }
 
-    void arena_protect_none()
-    {
-        if (sim().arena != nullptr)
-        {
-            mprotect(sim().arena, sim().arena_size, PROT_NONE);
-        }
-    }
     // Privileged posture: whole arena accessible (the background-region analog).
+    // Used while KERNEL code runs: on hardware the privileged switch/syscall path is
+    // exempt via the background region, so kernel code always reaches any RAM. The
+    // sim mirrors that -- crucially, an unprivileged thread's own stack is now an
+    // arena block, so kernel code (syscall dispatch, the scheduler) that runs ON that
+    // stack MUST keep it mapped; raising the whole arena guarantees it.
     void arena_raise_all()
     {
         if (sim().arena != nullptr)
@@ -208,37 +219,96 @@ namespace
             mprotect(sim().arena, sim().arena_size, PROT_READ | PROT_WRITE);
         }
     }
-    // Grant a validated region set: each region must be a page-aligned sub-range
-    // of the arena, else it is skipped (fail-closed) so a bad/hostile grant can
-    // never mprotect host memory or de-execute code.
-    void grant_region_set(struct arch_mpu_region const* regions, size_t n)
+    // Is [base,base+size) a page-aligned sub-range of the arena? (fail-closed: a
+    // bad/hostile grant must never mprotect host memory or de-execute code.)
+    bool arena_region_valid(uintptr_t base, size_t size)
     {
-        uintptr_t astart = reinterpret_cast<uintptr_t>(sim().arena);
-        size_t pg = static_cast<size_t>(sim().pagesize);
-        for (size_t i = 0; i < n; i++)
+        uintptr_t const astart = reinterpret_cast<uintptr_t>(sim().arena);
+        size_t const pg = static_cast<size_t>(sim().pagesize);
+        if (size == 0 or size > sim().arena_size)
         {
-            uintptr_t base = regions[i].base;
-            size_t size = regions[i].size;
-            if (size == 0 or size > sim().arena_size)
-            {
-                continue;
-            }
-            if (base < astart or base - astart > sim().arena_size - size)
-            {
-                continue;
-            }
-            if ((base - astart) % pg != 0 or size % pg != 0)
-            {
-                continue;
-            }
-            mprotect(reinterpret_cast<void*>(base), size, prot_from_attr(regions[i].attr));
+            return false;
         }
+        if (base < astart or base - astart > sim().arena_size - size)
+        {
+            return false;
+        }
+        return (base - astart) % pg == 0 and size % pg == 0;
     }
-    // Re-grant the remembered resting set (arena no-access, then each region).
+    // Lower the arena from the raised (whole-RW) posture to the currently-running
+    // thread's resting region set, WITHOUT ever transiently unmapping a granted
+    // region. This is load-bearing: the caller runs on its OWN arena-resident stack,
+    // which is one of these regions -- the old "PROT_NONE all; then re-grant" would
+    // unmap that stack for the window in between and fault on the very next push.
+    // Instead, since the arena is already whole-RW, PROT_NONE only the GAPS between
+    // granted regions (leaving the regions, hence the live stack, mapped throughout),
+    // then set each region to its exact attr (an RW->RO change never unmaps). Regions
+    // are validated and insertion-sorted by base so the gaps are computed correctly.
     void arena_lower_to_applied()
     {
-        arena_protect_none();
-        grant_region_set(sim().applied, sim().applied_n);
+        if (sim().arena == nullptr)
+        {
+            return;
+        }
+        uintptr_t const astart = reinterpret_cast<uintptr_t>(sim().arena);
+        uintptr_t const aend = astart + sim().arena_size;
+
+        struct SortedRegion
+        {
+            uintptr_t base;
+            size_t size;
+            uint32_t attr;
+        };
+        // Local cap generously above KICKOS_MPU_MAX_REGIONS (8) without pulling a
+        // kernel config header across the arch seam; extra entries are clamped.
+        constexpr size_t kCap = 32;
+        SortedRegion sorted[kCap];
+        size_t m = 0;
+        for (size_t i = 0; i < sim().applied_n and m < kCap; i++)
+        {
+            uintptr_t const b = sim().applied[i].base;
+            size_t const s = sim().applied[i].size;
+            if (not arena_region_valid(b, s))
+            {
+                continue;
+            }
+            size_t j = m;
+            while (j > 0 and sorted[j - 1].base > b)
+            {
+                sorted[j] = sorted[j - 1];
+                j--;
+            }
+            sorted[j].base = b;
+            sorted[j].size = s;
+            sorted[j].attr = sim().applied[i].attr;
+            m++;
+        }
+        // PROT_NONE each gap; the granted regions themselves are never touched here,
+        // so the live stack stays mapped across the whole transition.
+        uintptr_t cursor = astart;
+        for (size_t i = 0; i < m; i++)
+        {
+            if (sorted[i].base > cursor)
+            {
+                mprotect(reinterpret_cast<void*>(cursor), sorted[i].base - cursor, PROT_NONE);
+            }
+            uintptr_t const rend = sorted[i].base + sorted[i].size;
+            if (rend > cursor)
+            {
+                cursor = rend;
+            }
+        }
+        if (cursor < aend)
+        {
+            mprotect(reinterpret_cast<void*>(cursor), aend - cursor, PROT_NONE);
+        }
+        // Now pin each region to its exact rights (RW stays RW; a future RO region
+        // narrows without unmapping).
+        for (size_t i = 0; i < m; i++)
+        {
+            mprotect(reinterpret_cast<void*>(sorted[i].base), sorted[i].size,
+                     prot_from_attr(sorted[i].attr));
+        }
     }
 
     // Restore MPU state for the now-running context after a switch-in. A context
@@ -453,8 +523,15 @@ void arch_init(void)
 {
     sim().pagesize = sysconf(_SC_PAGESIZE);
 
-    // The user-RAM arena the MPU emulation governs (domain data + probe page).
-    sim().arena_size = 256 * 1024;
+    // The user-RAM arena the MPU emulation governs. It now hosts the demand-allocated
+    // default thread stacks (one KICKOS_USER_STACK_SIZE block per convenient spawn,
+    // reclaimed via the free list) on top of domain-data allocs and the probe page --
+    // so it must fit the whole thread pool at once. The sim runs the fixed default
+    // provisioning (KICKOS_MAX_THREADS=16 * KICKOS_USER_STACK_SIZE=64 KiB == 1 MiB);
+    // 2 MiB leaves generous headroom for those small allocs and natural-alignment
+    // padding. (Arch-pure: no kernel config header here; the host has ample RAM and a
+    // real chip sizes its arena from the linker script.)
+    sim().arena_size = 2 * 1024 * 1024;
     sim().arena = static_cast<unsigned char*>(
         mmap(nullptr, sim().arena_size, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
@@ -803,25 +880,40 @@ void arch_timer_disarm(void)
 }
 
 // --- MPU: mprotect over the user-RAM arena ---------------------------------
+// Called at switch-in (switch_to, arch_start) for the INCOMING thread -- but while
+// still executing on the OUTGOING thread's stack (arch_switch has not swapped yet).
+// So this must NOT lower to the incoming resting posture here: that would PROT_NONE
+// the outgoing thread's stack (not in the incoming set) and fault the swap itself,
+// now that unprivileged stacks are arena-resident. Instead RECORD the incoming set
+// and RAISE the arena (whole-RW, the privileged-switch background): the outgoing
+// stack stays mapped through swapcontext, and the incoming thread's resting posture
+// is applied on ITS OWN stack at its return-to-user boundary (arena_lower_to_applied
+// from the syscall unwind, or the trampoline for a fresh thread). The regions pointer
+// is the caller's TCB regions[] -- stable while the thread runs.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     if (sim().arena == nullptr)
     {
         return;
     }
-    // Replace the whole active set: arena no-access, then grant this thread's
-    // (validated) regions, and remember the set as its resting posture so a
-    // syscall raise can be lowered back to exactly it. The regions pointer is
-    // the caller's TCB regions[] -- stable while the thread runs.
-    arena_protect_none();
-    grant_region_set(regions, n);
     sim().applied = regions;
     sim().applied_n = n;
+    arena_raise_all();
 }
 
 size_t arch_mpu_min_region(void)
 {
     return static_cast<size_t>(sim().pagesize); // mprotect granularity
+}
+
+// mprotect governs only the mmap'd arena, so no real peripheral window is
+// encodable here: fail closed. A sim driver test drives an arena-backed fake
+// device (a data grant), never a real MMIO grant.
+bool arch_mpu_region_encodable(uintptr_t base, size_t size)
+{
+    (void)base;
+    (void)size;
+    return false;
 }
 
 uintptr_t arch_ram_base(void)
@@ -855,6 +947,11 @@ void* arch_ram_alloc(size_t size)
     sim().arena_used = off + rsz;
     return reinterpret_cast<void*>(aligned);
 }
+
+// arch_domain_static_regions lives in kernel/domain/domain.cc (arch-independent).
+// On the host/sim build the weak __kickos_code_*/__kickos_appdata_* linker symbols
+// are undefined -> null -> it returns 0: the app's code/.data/.bss are host-process
+// memory, not the mprotect'd arena, so the sim governs only the arena, never them.
 
 uintptr_t arch_mpu_probe_addr(void)
 {

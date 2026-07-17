@@ -103,13 +103,13 @@
   - *applies:* user/kernel boundary; kernel (all arches)
   - *source:* kernel/syscall/syscall.cc:1-9,34-94,213-229; kernel/include/kickos/instance.h:57-68
 
-- **`privilege-only-boundary-m1`** -- At M1 the user/kernel boundary is privilege-only (CONTROL.nPRIV / PSW.PM + SVC trap); there is NO hardware MPU enforcement, so arch_mpu_apply is a no-op on every MCU backend and an unprivileged thread can still read/write kernel memory. Code must not assume memory isolation between domains until M2.
-  - *applies:* user/kernel boundary, MPU; armv7m, armv6m, rx, xtensa (sim DOES enforce via mprotect)
-  - *source:* arch/arm/common/arch_arm_common.cc:139-144; arch/rx/rxv3/arch_rxv3.cc:304-311; arch/xtensa/lx6/arch_xtensa.cc:347-352; arch/sim/sim.cc:606-621
+- **`privilege-only-boundary-m1`** -- The M1 posture: the user/kernel boundary was privilege-only (CONTROL.nPRIV / PSW.PM + SVC trap) with arch_mpu_apply a no-op on every MCU backend, so an unprivileged thread could read/write kernel memory. **SUPERSEDED at M2** (see below): the MCU backends now enforce -- K64F SYSMPU + XMC PMSA proven on silicon, RISC-V PMP enforced (QEMU); RX72M written but HW-unproven; xtensa/no-MPU parts stay privilege-only. Historical: code written before M2 must not assume isolation.
+  - *applies:* user/kernel boundary, MPU; armv7m, armv6m, rx, xtensa (sim enforces via mprotect; xtensa has no per-task MPU)
+  - *source:* superseded -- see `mpu-apply-on-every-switch-in` for the enforcing backends
 
-- **`mpu-apply-on-every-switch-in`** -- The running thread's MPU region set must be (re)loaded on every switch-in and at first start, replacing the whole active set; region granting must be fail-closed (a region not a page-aligned sub-range of the arena is skipped, never applied to host memory). A privileged thread gets the whole arena; an unprivileged thread gets only its domain region.
-  - *applies:* context switch, MPU, user/kernel boundary; kernel + sim (MCU no-op today)
-  - *source:* kernel/sched/sched.cc:31-38,80-85; kernel/thread/thread.cc:54-72; arch/sim/sim.cc:187-227,606-621
+- **`mpu-apply-on-every-switch-in`** -- The running thread's MPU region set must be (re)loaded on every switch-in and at first start, replacing the whole active set; region granting must be fail-closed (a region not a page-aligned/pow2 sub-range the backend can describe is skipped, never applied). A privileged thread gets a permissive background (the whole arena / supervisor-all); an unprivileged thread gets only its explicit set (app code RX + app-data RW-NX + domain region(s) + its private stack). ENFORCED on MCU at M2: SYSMPU (K64F), PMSA (XMC + the armv7m/armv6m PMSA backend), PMP/NAPOT (RISC-V); RX MPU written but HW-unproven; sim via mprotect.
+  - *applies:* context switch, MPU, user/kernel boundary; kernel + sim + the MCU MPU backends (M2)
+  - *source:* kernel/sched/sched.cc:31-38,80-85; kernel/thread/thread.cc (region-set build); arch/arm/chip/mk64f/chip_mk64f.cc (arch_mpu_apply, SYSMPU); arch/arm/common/arch_arm_common.cc (mpu_rasr/arch_mpu_apply, PMSA); arch/riscv/rv32imac/arch_rv32imac.cc (arch_mpu_apply, PMP); arch/rx/rxv3/arch_rxv3.cc (arch_mpu_apply, RX MPU); arch/sim/sim.cc
 
 ## Tickless timer & clock
 
@@ -147,13 +147,13 @@
   - *applies:* IRQ dispatch; kernel
   - *source:* kernel/irq/irq.cc:81-98,110-138
 
-- **`isr-mask-then-wake-ack-unmask`** -- The first-level ISR must mask the line (so it cannot re-fire while its driver services it in thread context) then post the bound notification; the driver re-enables the line via irq_ack once serviced. A raise of a masked line is dropped (level-coalesced), not latched. The ISR handler runs by index with its arg being the pre-bound binding -- no table search on the hot path (latency invariant).
+- **`isr-mask-then-wake-wait-rearm`** -- The first-level ISR must mask the line (so it cannot re-fire while its driver services it in thread context) then post the bound notification. The line is re-armed (unmasked) by the driver's NEXT irq_wait, which auto-re-arms the previously-consumed line before blocking -- so a `wait; service` loop alone keeps receiving IRQs (no forgot-to-ack deadlock). Calling irq_wait asserts the previous event was fully serviced (e.g. device W1C done) before the auto-re-arm unmask -- the same service-before-unmask ordering the explicit ack used to carry. irq_ack stays OPTIONAL and idempotent: an early re-arm, still wanted for the compute-then-wait shape on drop-on-masked/edge sources (a raise of a masked line is dropped/level-coalesced, not latched, so re-arm before running unrelated compute to avoid missing an edge); a double ack, or an ack after the next wait already re-armed, is a no-op. The per-binding needs_rearm flag is set when irq_wait RETURNS (event consumed) -- NEVER in the ISR (ISR-set races the ack;compute;wait unmask -> phantom wake -> empty-FIFO read). irq_register arms the first IRQ (needs_rearm starts false). The ISR handler runs by index with its arg being the pre-bound binding -- no table search on the hot path (latency invariant).
   - *applies:* IRQ dispatch, ISR wakes pre-bound target; kernel + all arches
-  - *source:* kernel/irq/irq.cc:31-40,157-167,173-189; arch/include/kickos/arch/arch.h:144-160; arch/sim/sim.cc:715-725
+  - *source:* kernel/irq/irq.cc:35-52,146-192; kernel/include/kickos/irq.h:31-42; arch/include/kickos/arch/arch.h:144-160; arch/sim/sim.cc:715-725
 
-- **`line-masking-owned-by-handler`** -- A bound IRQ line must re-deliver on every fire; masking policy is owned by the handler tier, NOT the arch first-level / doorbell dispatcher, which only demuxes the physical source and calls kickos_isr_irq(line). A tier-1 (IRQ-as-event) binding masks on entry (irq_event_isr) and the driver unmasks via irq_ack; a tier-2 (irq_attach) binding has no ack path, so any masking the arch dispatcher imposes strands it -- the line dies after one delivery and later injects are dropped. End-property, not code shape: an arch's dispatcher must not add masking its handler tier never undoes (the xtensa doorbell once did, and a tier-2 waiter hung).
+- **`line-masking-owned-by-handler`** -- A bound IRQ line must re-deliver on every fire; masking policy is owned by the handler tier, NOT the arch first-level / doorbell dispatcher, which only demuxes the physical source and calls kickos_isr_irq(line). A tier-1 (IRQ-as-event) binding masks on entry (irq_event_isr) and re-arms (unmasks) on the driver's next irq_wait, or earlier via the optional irq_ack; a tier-2 (irq_attach) binding has no re-arm path, so any masking the arch dispatcher imposes strands it -- the line dies after one delivery and later injects are dropped. End-property, not code shape: an arch's dispatcher must not add masking its handler tier never undoes (the xtensa doorbell once did, and a tier-2 waiter hung).
   - *applies:* IRQ dispatch; software-doorbell backends: sim, rv32imac, rxv3, xtensa
-  - *source:* kernel/irq/irq.cc (irq_event_isr masks, irq_ack unmasks); arch/xtensa/lx6/arch_xtensa.cc, arch/riscv/rv32imac/arch_rv32imac.cc, arch/rx/rxv3/arch_rxv3.cc, arch/sim/sim.cc (doorbell dispatchers: demux + deliver only)
+  - *source:* kernel/irq/irq.cc (irq_event_isr masks; irq_wait auto-re-arms, irq_ack optional early re-arm); arch/xtensa/lx6/arch_xtensa.cc, arch/riscv/rv32imac/arch_rv32imac.cc, arch/rx/rxv3/arch_rxv3.cc, arch/sim/sim.cc (doorbell dispatchers: demux + deliver only)
 
 ## Console
 

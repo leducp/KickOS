@@ -128,6 +128,43 @@ namespace kickos
             return false;
         }
 
+        // A user-supplied read buffer (console output, a name string) the kernel
+        // will dereference privileged. It must not let an unprivileged caller
+        // launder ANOTHER domain's MPU-governed memory through the kernel: if the
+        // range touches the governed arena it must lie within a granted region
+        // (else reject). A range entirely OUTSIDE the arena is allowed -- that is
+        // the app's code/rodata (string literals) which the kernel cannot yet model
+        // as a region. LIMIT: on hardware, "outside the arena" also spans kernel
+        // RAM; the fully-sound check (require a granted code/rodata region) lands
+        // with the linker code/data-region seam -- until then the MPU is a no-op on
+        // MCU (nothing to leak), and this closes the CONFIRMED cross-domain arena
+        // read the sim actually enforces.
+        bool user_buffer_ok(uintptr_t ptr, size_t len)
+        {
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return false;
+            }
+            if (c->privileged or len == 0)
+            {
+                return true;
+            }
+            uintptr_t const end = ptr + len;
+            if (end < ptr)
+            {
+                return false; // wrap
+            }
+            uintptr_t const astart = arch_ram_base();
+            uintptr_t const aend = astart + arch_ram_size();
+            bool const hits_arena = (ptr < aend and end > astart);
+            if (not hits_arena)
+            {
+                return true; // code/rodata etc. -- not domain-governed memory
+            }
+            return user_range_ok(ptr, len, ARCH_MPU_R); // arena => must be granted
+        }
+
         int thread_spawn(kos_thread_params const* p)
         {
             IrqLock lock;
@@ -142,7 +179,16 @@ namespace kickos
             // region. Read the fields from the kernel-owned copy hereafter. (The name
             // pointer inside is still user memory; thread_create copies it bounded --
             // validating IT against app rodata is the hardware-backend pass.)
-            if (not user_range_ok(reinterpret_cast<uintptr_t>(p), sizeof(*p), ARCH_MPU_R))
+            // Reject a misaligned struct pointer BEFORE the typed copy below: the kernel
+            // does that load privileged, and a misaligned word load traps in the kernel on
+            // a strict-align arch (rv32imac) -- a user-triggerable kernel fault. alignof is
+            // the arch-correct requirement, same rationale as the clock_now out-pointer.
+            uintptr_t const pu = reinterpret_cast<uintptr_t>(p);
+            if ((pu & (alignof(kos_thread_params) - 1)) != 0)
+            {
+                return -1;
+            }
+            if (not user_range_ok(pu, sizeof(*p), ARCH_MPU_R))
             {
                 return -1;
             }
@@ -176,13 +222,69 @@ namespace kickos
                 {
                     return -1;
                 }
+                // An unprivileged thread's stack is granted as one MPU region, so its
+                // base must be naturally aligned to the (pow2) region size, else the
+                // descriptor is invalid (PMSA/NAPOT snap the base and the enforced
+                // window covers the wrong span). kos_ram_alloc hands out exactly such
+                // naturally-aligned blocks. (Privileged threads get the whole arena +
+                // the background region, so their stack needs no separate descriptor.)
+                if (p->privileged == 0)
+                {
+                    size_t const rsz = arch_ram_region_size(p->stack_size);
+                    if ((base & (rsz - 1)) != 0)
+                    {
+                        return -1;
+                    }
+                }
+            }
+            // Data-region grant from an UNPRIVILEGED caller: confine it to the
+            // user-RAM arena. Without this an unprivileged thread spawns a child and
+            // grants it an R|W window over peripheral space or kernel SRAM -- the same
+            // escalation the MMIO gate below blocks, reached through the mem_base path.
+            // Gate on the CALLER (a privileged spawner is trusted, like the MMIO gate);
+            // bound the ROUNDED size, since that is what arch_mpu_apply programs.
+            // Per-block ownership (not just arena membership) is M3 capabilities.
+            if (not sched::current()->privileged and p->mem_base != nullptr and p->mem_size != 0)
+            {
+                uintptr_t const dbase = reinterpret_cast<uintptr_t>(p->mem_base);
+                uintptr_t const dend = dbase + arch_ram_region_size(p->mem_size);
+                uintptr_t const astart = arch_ram_base();
+                uintptr_t const aend = astart + arch_ram_size();
+                if (dend < dbase or dbase < astart or dend > aend)
+                {
+                    return -1;
+                }
+            }
+            // MMIO grant (optional): a device register window handed to an
+            // unprivileged driver. PRIVILEGED-ONLY -- unlike the RAM mem_base grant,
+            // MMIO is NOT self-grantable, else a user thread maps arbitrary peripheral
+            // space and defeats isolation. Validate BEFORE claiming a slot. The window
+            // is granted EXACTLY as given (attr R|W|DEV, fixed in domain_for): reject,
+            // never round, what one MPU descriptor cannot cover -- rounding an MMIO
+            // window over-grants the neighbouring registers.
+            if (p->mmio_base != nullptr)
+            {
+                if (not sched::current()->privileged)
+                {
+                    return -1;
+                }
+                uintptr_t const mbase = reinterpret_cast<uintptr_t>(p->mmio_base);
+                if (p->mmio_size == 0 or mbase + p->mmio_size < mbase)
+                {
+                    return -1;
+                }
+                if (not arch_mpu_region_encodable(mbase, p->mmio_size))
+                {
+                    return -1;
+                }
             }
             Kernel& k = kernel();
             // Resolve the memory domain BEFORE claiming a slot, so a domain-pool
             // exhaustion is a clean spawn failure, not a leaked thread slot. domain_for
             // does not take a reference (thread_create does); a domain it creates but
             // we never reference stays refcount 0 == a free slot.
-            Domain* const dom = domain_for(p->privileged != 0, p->mem_base, p->mem_size);
+            Domain* const dom = domain_for(p->privileged != 0, p->mem_base, p->mem_size,
+                                           p->mmio_base, p->mmio_size);
             if (dom == nullptr)
             {
                 return -1;
@@ -200,7 +302,13 @@ namespace kickos
 
             ThreadAttr attr;
             attr.name = "user";
-            if (p->name != nullptr)
+            // Only trust a caller-supplied name pointer from a PRIVILEGED caller:
+            // thread_create dereferences it (bounded copy into the TCB), so an
+            // unprivileged caller's pointer could fault the kernel (DoS) or aim at
+            // another domain's page (info-leak into the name buffer). Unprivileged
+            // threads keep the default name until the code/rodata-region seam lets
+            // the kernel validate a user string pointer safely.
+            if (p->name != nullptr and sched::current()->privileged)
             {
                 attr.name = p->name;
             }
@@ -214,16 +322,32 @@ namespace kickos
             attr.privileged = (p->privileged != 0);
             attr.mem_base = p->mem_base;
             attr.mem_size = p->mem_size;
+            attr.mmio_base = p->mmio_base;
+            attr.mmio_size = p->mmio_size;
             attr.domain = dom;
 
-            // Caller's stack if given (a thread's stack is a userspace concern), else the
-            // kernel's default per-thread slab.
-            void* stack = k.threads.stacks[i];
-            size_t stack_size = KICKOS_USER_STACK_SIZE;
-            if (p->stack_base != nullptr)
+            // Caller's stack if given (a thread's stack is a userspace concern), else a
+            // kernel-default stack, demand-allocated: reuse a reclaimed block from the
+            // free list, else bump a fresh one from the arena (naturally aligned into a
+            // valid MPU region). BOTH failing (arena exhausted) is a clean spawn failure
+            // -- release the slot we just claimed so we neither leak a TCB nor burn the
+            // prior occupant's join handle.
+            void* stack = p->stack_base;
+            size_t stack_size = p->stack_size;
+            if (p->stack_base == nullptr)
             {
-                stack = p->stack_base;
-                stack_size = p->stack_size;
+                stack = k.threads.stack_pop();
+                if (stack == nullptr)
+                {
+                    stack = arch_ram_alloc(KICKOS_USER_STACK_SIZE);
+                }
+                if (stack == nullptr)
+                {
+                    k.threads.release(i);
+                    return -1;
+                }
+                stack_size = KICKOS_USER_STACK_SIZE;
+                attr.kstack_owned = true;
             }
             thread_create(&k.threads.slots[i], p->entry, p->arg, stack, stack_size, attr);
             return k.threads.handle_for(i);
@@ -282,16 +406,20 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_kconsole_write:
         {
             // Explicit (buf, len): the kernel must never strlen a user pointer.
-            // Bound-checking buf against the caller's regions is M2 (item 12), but
-            // len is a plain scalar: clamp it now so a garbage/huge value can't
-            // walk off RAM (HardFault -> whole board, no MPU to contain it) or
-            // monopolize the UART for an unbounded stretch.
+            // Clamp len (a garbage/huge value must not walk off RAM or hog the UART),
+            // then bound buf against the caller's memory so an unprivileged thread
+            // cannot launder another domain's arena page out through the console
+            // (the kernel reads buf privileged). Reject => wrote nothing.
             constexpr size_t kMaxConsoleWrite = 4096;
             char const* buf = reinterpret_cast<char const*>(a0);
             size_t len = static_cast<size_t>(a1);
             if (len > kMaxConsoleWrite)
             {
                 len = kMaxConsoleWrite;
+            }
+            if (not user_buffer_ok(a0, len))
+            {
+                return 0; // cross-domain / bad buffer -- write nothing
             }
             kconsole_write(buf, len); // fan-out (chip + RTT), not the raw transport
             return len;
@@ -434,12 +562,13 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_clock_now:
         {
-            // Out-pointer for a 64-bit store: reject null and misalignment (an unaligned u64
-            // write faults / is UB on ARM and RISC-V), then bound it against the caller's
-            // writable regions -- the kernel writes it privileged, so an unprivileged caller
-            // must own it. The stub passes a stack local (in its stack region); privileged
-            // callers bypass. Closes the privileged-kernel-writes-a-user-pointer hole.
-            if (a0 == 0 or (a0 & 0x7u) != 0)
+            // Out-pointer for a 64-bit store: reject null and misalignment, then bound it
+            // against the caller's writable regions -- the kernel writes it privileged, so an
+            // unprivileged caller must own it. The stub passes a stack local (in its stack
+            // region); privileged callers bypass the ownership check. Closes the privileged-
+            // kernel-writes-a-user-pointer hole. Alignment is alignof(uint64_t) -- arch-specific
+            // (4 on RX, 8 on ARM/RISC-V) and exactly what makes the typed store below well-defined.
+            if (a0 == 0 or (a0 & (alignof(uint64_t) - 1)) != 0)
             {
                 return static_cast<uintptr_t>(-1);
             }

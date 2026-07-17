@@ -37,6 +37,11 @@ namespace kickos
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
+// Kernel MPU-violation reporter (kernel/init/console.cc): names the offending task
+// and shuts down cleanly (the reported-fault path). A U-mode load/store access fault
+// is a PMP domain violation, so it routes here for the same "MPU FAULT: task '<name>'"
+// marker the sim (SIGSEGV over the guard page) and the reference backends emit.
+extern "C" void kickos_isr_fault(uintptr_t addr, int is_write);
 
 // Verbose CPU-context dump. Default on; -DKICKOS_PANIC_DUMP=0 keeps only the
 // one-line fault marker. Same knob and default on every arch reporter.
@@ -64,8 +69,6 @@ namespace
     constexpr uint32_t MSTATUS_MPIE = 1u << 7;
     constexpr uint32_t MSTATUS_MPP_M = 3u << 11; // MPP = machine (U = 0)
 
-    // User-RAM bump allocator (chip linker script defines the bounds).
-    volatile uint32_t g_ram_used = 0;
 }
 
 extern "C"
@@ -99,10 +102,6 @@ extern "C"
     void kickos_rv_mtvec(void); // the vectored mtvec table (switch.S)
     void kickos_thread_return(void);
     void kickos_user_thread_return(void);
-
-    // Linker-provided user-RAM bounds (chip linker script).
-    extern unsigned char __kickos_ram_start[];
-    extern unsigned char __kickos_ram_end[];
 }
 
 // ===========================================================================
@@ -191,65 +190,113 @@ uint32_t arch_trace_now(void)
     return v;
 }
 
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
-{
-    ctx->trace_tid = id;
-}
-#endif
 
-// --- MPU: PMP exists on this core but enforcement is M2 (matches the ARM ports)
+// --- MPU: RISC-V PMP backend (NAPOT per region) ------------------------------
+#if KICKOS_HAVE_MPU
+namespace
+{
+    // NAPOT encoding: for a region of size 2^k (k>=3) aligned to its size,
+    // pmpaddr = (base>>2) | ((size>>3)-1) -- the trailing 1s encode the size.
+    uint32_t pmp_napot_addr(uintptr_t base, size_t size)
+    {
+        return (static_cast<uint32_t>(base) >> 2)
+             | ((static_cast<uint32_t>(size) >> 3) - 1u);
+    }
+    // cfg byte: A=NAPOT (0b11<<3) | R | W? | X?  (attr = the U-mode rights; M-mode
+    // bypasses these unlocked entries, which is the privileged-background analog).
+    uint8_t pmp_cfg(uint32_t attr)
+    {
+        uint32_t c = 0x18u | 0x1u; // NAPOT | R
+        if (attr & ARCH_MPU_W)
+        {
+            c |= 0x2u;
+        }
+        if (attr & ARCH_MPU_X)
+        {
+            c |= 0x4u;
+        }
+        return static_cast<uint8_t>(c);
+    }
+    // csrw takes an immediate CSR number, so the 8 pmpaddr writes are unrolled.
+    void write_pmpaddr(size_t i, uint32_t v)
+    {
+        switch (i)
+        {
+            case 0: __asm volatile("csrw pmpaddr0, %0" ::"r"(v) : "memory"); break;
+            case 1: __asm volatile("csrw pmpaddr1, %0" ::"r"(v) : "memory"); break;
+            case 2: __asm volatile("csrw pmpaddr2, %0" ::"r"(v) : "memory"); break;
+            case 3: __asm volatile("csrw pmpaddr3, %0" ::"r"(v) : "memory"); break;
+            case 4: __asm volatile("csrw pmpaddr4, %0" ::"r"(v) : "memory"); break;
+            case 5: __asm volatile("csrw pmpaddr5, %0" ::"r"(v) : "memory"); break;
+            case 6: __asm volatile("csrw pmpaddr6, %0" ::"r"(v) : "memory"); break;
+            case 7: __asm volatile("csrw pmpaddr7, %0" ::"r"(v) : "memory"); break;
+            default: break;
+        }
+    }
+}
+
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+{
+    // Build 8 PMP entries (0..7). A region is NAPOT-encoded only if its size is a
+    // power of two >= 8 (unprivileged regions come from the pow2 allocator); a
+    // non-pow2 region -- e.g. a privileged thread's whole-arena grant -- is left
+    // OFF, which is harmless since that thread runs in M-mode and bypasses PMP.
+    uint32_t addr[8] = {0};
+    uint8_t cfg[8] = {0};
+    for (size_t i = 0; i < 8; i++)
+    {
+        if (i < n and regions[i].size >= 8
+            and (regions[i].size & (regions[i].size - 1)) == 0)
+        {
+            addr[i] = pmp_napot_addr(regions[i].base, regions[i].size);
+            cfg[i] = pmp_cfg(regions[i].attr);
+        }
+    }
+    // Write the addresses, then the two cfg words (which activate the entries).
+    // This overwrites the permissive bootstrap TOR entry (kickos_rv32_init); the
+    // kernel is in M-mode here and bypasses PMP, so the transient is safe.
+    for (size_t i = 0; i < 8; i++)
+    {
+        write_pmpaddr(i, addr[i]);
+    }
+    uint32_t const cfg0 = static_cast<uint32_t>(cfg[0]) | (static_cast<uint32_t>(cfg[1]) << 8)
+                        | (static_cast<uint32_t>(cfg[2]) << 16) | (static_cast<uint32_t>(cfg[3]) << 24);
+    uint32_t const cfg1 = static_cast<uint32_t>(cfg[4]) | (static_cast<uint32_t>(cfg[5]) << 8)
+                        | (static_cast<uint32_t>(cfg[6]) << 16) | (static_cast<uint32_t>(cfg[7]) << 24);
+    __asm volatile("csrw pmpcfg0, %0" ::"r"(cfg0) : "memory");
+    __asm volatile("csrw pmpcfg1, %0" ::"r"(cfg1) : "memory");
+    // Order the PMP update before the mret (arch_switch) that drops to U-mode, so
+    // the incoming thread's fetches/loads see the new entries. Per the priv spec
+    // the writing hart sees PMP changes on its next access, but a fence is the
+    // conservative guarantee across the M->U transition (fable step-1 F4).
+    __asm volatile("fence" ::: "memory");
+}
+#else
+// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + syscall only,
+// exactly the ARM/RX M1 posture. The permissive bootstrap PMP stays in place.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     (void)regions;
     (void)n;
-    // M2: program pmpaddr/pmpcfg on switch-in. No enforcement now -- privilege +
-    // syscall only, exactly the ARM/RX M1 posture.
 }
+#endif
 
 size_t arch_mpu_min_region(void)
 {
     return 8u; // RISC-V PMP NAPOT minimum region size
 }
 
-uintptr_t arch_ram_base(void)
+// PMP NAPOT needs a power-of-two size >= 8 with the base naturally aligned to it
+// (the encoding folds the size into the trailing address bits).
+bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
-    return reinterpret_cast<uintptr_t>(__kickos_ram_start);
-}
-
-size_t arch_ram_size(void)
-{
-    return static_cast<size_t>(__kickos_ram_end - __kickos_ram_start);
-}
-
-void* arch_ram_alloc(size_t size)
-{
-    if (size == 0)
+    if (size < 8u or (size & (size - 1)) != 0)
     {
-        return nullptr;
+        return false;
     }
-    size_t const rsz = arch_ram_region_size(size);
-    size_t const ralign = arch_ram_region_align(size);
-    size_t const total = arch_ram_size();
-    uintptr_t const base = reinterpret_cast<uintptr_t>(__kickos_ram_start);
-    arch_irq_state_t s = arch_irq_save();
-    void* p = nullptr;
-    uintptr_t const cur = base + g_ram_used;
-    uintptr_t const aligned = (cur + (ralign - 1)) & ~static_cast<uintptr_t>(ralign - 1);
-    size_t const off = static_cast<size_t>(aligned - base);
-    if (aligned >= cur and off <= total and rsz <= total - off)
-    {
-        p = reinterpret_cast<void*>(aligned);
-        g_ram_used = static_cast<uint32_t>(off + rsz);
-    }
-    arch_irq_restore(s);
-    return p;
+    return (base & (size - 1)) == 0;
 }
 
-uintptr_t arch_mpu_probe_addr(void)
-{
-    return 0; // no enforced MPU on M1.x -> no probe address (real on M2)
-}
 
 // --- Interrupt controller (software-injected test scaffolding) ---------------
 // arch_irq_inject fakes a device firing -- test/bench scaffolding (arch.h). It masks
@@ -387,6 +434,17 @@ void kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
                             uint32_t mstatus)
 {
     kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
+    // A load/store access fault (mcause 5/7) taken FROM U-mode (mstatus.MPP==0) is a PMP
+    // domain violation by an unprivileged thread -- route it to the kernel reporter that
+    // names the task and exits via the reported-fault path (matches the sim + the ARM
+    // MemManage split). mtval holds the faulting address. An access fault from M-mode
+    // (MPP!=0) is a genuine kernel bug (M-mode bypasses the unlocked PMP entries), so it
+    // falls through to the generic dump + kfault_terminate below.
+    bool const from_user = (mstatus & MSTATUS_MPP_M) == 0;
+    if (from_user and (mcause == 5 or mcause == 7))
+    {
+        kickos_isr_fault(mtval, mcause == 7); // never returns (arch_shutdown)
+    }
     char const* what = "trap";
     if (mcause == 0)
     {

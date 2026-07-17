@@ -27,6 +27,13 @@ extern "C"
 // sim: install signal handlers, create the interval timer, map the RAM arena.
 void arch_init(void);
 
+// C-runtime data init driven by the linker's copy/zero range tables (init .data,
+// zero .bss, for as many ranges as the chip declares -- e.g. a separate pow2 app-
+// data block under MPU enforcement). Called from a chip's Reset_Handler before the
+// static ctors and arch_init; a chip whose linker script emits no tables need not
+// call it. Runs before any global is live, so it must touch none of its own.
+void kickos_ranges_init(void);
+
 // Terminate the whole system with the given process/exit status. On the sim
 // this ends the host process; on MCUs it halts.
 void arch_shutdown(int status) __attribute__((noreturn));
@@ -120,6 +127,16 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 // isolation benefit, since arch_mpu_apply is a permanent no-op there).
 size_t arch_mpu_min_region(void);
 
+// True iff (base,size) is coverable EXACTLY by ONE MPU descriptor on this arch with
+// NO rounding -- the encodability test for an MMIO grant, which must never round (a
+// rounded MMIO window over-grants the neighbouring registers = an isolation leak, so
+// unlike arch_ram_region_size this rejects rather than snaps). pow2 archs (PMSA/PMP):
+// size a power of two >= arch_mpu_min_region() AND base naturally aligned to size.
+// byte-granular archs (SYSMPU 32B / RX 16B): size >= the page granule AND base and
+// base+size aligned to it. no-MPU arch (min 0): a nonzero 16-byte-aligned window.
+// The sim (mprotect cannot map real MMIO) returns false: fail-closed.
+bool arch_mpu_region_encodable(uintptr_t base, size_t size);
+
 // Round `want` up to the region SIZE a backend can describe with one descriptor:
 // a power of two, at least arch_mpu_min_region() -- or just 16-byte-granular on a
 // no-MPU arch (min 0). arch_ram_alloc reserves this many bytes; the kernel sizes
@@ -170,6 +187,16 @@ static inline size_t arch_ram_region_align(size_t want)
 uintptr_t arch_ram_base(void);
 size_t arch_ram_size(void);
 void* arch_ram_alloc(size_t size);
+
+// The shared, app-wide regions every UNPRIVILEGED thread needs just to run under
+// enforcement: its code (RX) and its static data/.bss (RW, no-execute). Unlike a
+// privileged thread, an unprivileged one gets NO background-region default, so it
+// faults fetching its own instructions / reading its own globals unless these are
+// explicit regions. Fills up to `max` descriptors from the chip's linker-defined
+// sections and returns the count; 0 when the arch does not model them (no-MPU
+// backends, and the host sim, whose code/data are ungoverned). The kernel prepends
+// these to an unprivileged thread's set (thread.cc), then the domain regions + stack.
+size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max);
 
 // An address that faults on unprivileged access (sim: a reserved arena page no
 // domain owns). Used by the isolation self-test.
@@ -243,6 +270,13 @@ void arch_console_write_sync(char const* buf, size_t n);
 // per-chip register quirk.
 void arch_diag_led_init(void);
 void arch_diag_led_set(int on);
+
+// --- Chip-specific fault decode (optional) ----------------------------------
+// Called by the core fault reporter after it dumps the CPU frame + fault-status
+// registers, so a chip whose isolation trap does NOT surface in the core CFSR
+// (K64F SYSMPU -> a bus error, not a MemManage) can add its own capture. WEAK
+// no-op default (per-arch); a chip backend with an external MPU strong-overrides.
+void arch_fault_report_extra(void);
 
 // --- Idle -------------------------------------------------------------------
 // Block until the next interrupt (ARM WFI; sim sigsuspend).

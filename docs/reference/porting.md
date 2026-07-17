@@ -212,8 +212,11 @@ abandoned (the system never returns to boot).
 - **NVIC** backs `arch_irq_mask/unmask/inject`. `inject` drops a raise on a
   masked (disabled) line to match the proven sim semantics; the spurious /
   unhandled-IRQ error policy is revisited on real silicon.
-- **MPU** -- `arch_mpu_apply` is a **no-op on M1** (privilege + SVC only); per-task
-  hardware MPU enforcement is M2.
+- **MPU** -- the shared ARMv7-M **PMSA** backend (`arch_arm_common.cc`:
+  `arch_mpu_apply` + `arch_mpu_region_encodable`) provides per-task enforcement at M2.
+  On F411 it is **build + enforcement-link validated; silicon proof pending** (the
+  canonical PMSA per-thread MMIO proof is `design-spi-driver-stm32f411.md`); PMSA
+  enforcement is proven on silicon on XMC4800. See `m2-readiness.md`.
 
 ---
 
@@ -227,11 +230,14 @@ exit (`SYS_EXIT_EXTENDED`), so it needs no UART; its linker script maps code at
 
 Two toolchain/QEMU gotchas the chip layer resolves (both documented at their fix
 site):
-- **picolibc default linker script.** This toolchain (Debian arm-none-eabi) is
-  picolibc-based; its spec injects a default `-T picolibc.ld` *unless it sees a
-  driver-level `-T`*. A `-Wl,-T` is invisible to that check, so both scripts
-  applied and collided at address 0. The app link passes `-T` at the driver
-  level (see the `kickos` interface `target_link_options`).
+- **Default linker script.** The pinned Arm GNU toolchain (newlib) injects no
+  default linker script, so the app's board script applies cleanly. The app link
+  passes its script with a **driver-level `-T`** (not `-Wl,-T`) regardless -- it
+  is correct either way, and it is what the earlier Debian arm-none-eabi toolchain
+  (picolibc) *required*, since picolibc's spec injected a default `-T picolibc.ld`
+  unless it saw a driver-level `-T` (a `-Wl,-T` was invisible to that check and the
+  two scripts collided at address 0). Keep the driver-level form. (See the `kickos`
+  interface `target_link_options`.)
 - **QEMU's DWT cycle counter is frozen.** The arch layer's default
   `arch_clock_now` (DWT `CYCCNT`) is `weak`; the `mps2` chip overrides it with
   the semihosting `SYS_CLOCK` (the monotonic clock source is legitimately
@@ -259,9 +265,9 @@ things make it the most involved chip bring-up so far:
   the multi-stage image: assemble+link `boot2.S` (own `boot2.ld`, <=252 bytes) ->
   `objcopy -O binary` -> `cmake/rp2040_checksum.py` (appends the CRC, emits a
   `.boot2` data blob) -> into the chip archive, force-linked with `-Wl,-u`.
-  - **picolibc `-T` gotcha, again.** The boot2 *sub-link* hits the same default-
-    linker-script trap as the app link: `boot2.ld` must be passed with a
-    driver-level `-T` (not `-Wl,-T`) or picolibc's default script collides.
+  - **Driver-level `-T`, again.** The boot2 *sub-link* passes `boot2.ld` with a
+    driver-level `-T` (not `-Wl,-T`) for the same reason as the app link -- required
+    under the old picolibc apt toolchain, retained (harmless) under newlib.
 - **No PLL -- one 12 MHz crystal drives everything.** For a first bring-up the clock
   tree is deliberately minimal (no PLL sequencing): enable the XOSC, switch
   `clk_ref` to it (so `clk_sys` follows to 12 MHz -- precise SysTick,
@@ -314,8 +320,11 @@ save-frame, deferred switch.
   implemented, a U-mode access with no matching entry FAULTS (unlike ARM, where
   unprivileged is unrestricted until the MPU clamps). So without this, an
   unprivileged thread can't fetch its first instruction. Per-task PMP enforcement
-  is **M2** (`arch_mpu_apply` is a no-op now -- the ARM/RX M1 posture). No F/D
-  extension -> soft-float, so the switch banks no FP.
+  landed at **M2**: `arch_mpu_apply` programs NAPOT entries on switch-in (+
+  `arch_mpu_region_encodable` for the grant check) -- **enforced on qemu-riscv**; the
+  ESP32-C6 image specifics (all-SRAM image, gp-relative small-data, code-from-RAM,
+  and a separate APM/PMS bus permission unit) are still **blocked**, see
+  `m2-readiness.md`. No F/D extension -> soft-float, so the switch banks no FP.
 - **`arch_irq_inject`** (fake-a-device-firing test/bench scaffolding) uses the
   **supervisor software interrupt** (`mip.SSIP`, `mcause`=1) as a private channel --
   the RISC-V analog of the host sim's `raise(SIGUSR1)`. The **PLIC has no
@@ -353,7 +362,8 @@ privileged and an unprivileged thread** -> SysTick one-shot driving `sleep` ->
 semaphore block/wake reschedule, all on a real Cortex-M4 core. The #1 M1 risk is
 retired.
 
-Since then the chip layer has been brought up on hardware: `mk64f` (build-only)
-and **`rp2040` -- running on a real Raspberry Pi Pico** (see the RP2040 section).
+Since then the chip layer has been brought up on real hardware: `mk64f` (M1
+baseline + M2 SYSMPU + the first unprivileged MMIO drivers) and **`rp2040` --
+running on a real Raspberry Pi Pico** (see the RP2040 section).
 Remaining M1 chips (F411/F103) reuse the `mps2`/`mk64f`/`rp2040` patterns. Hardware
 MPU enforcement is M2.

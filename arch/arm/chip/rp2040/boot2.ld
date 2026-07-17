@@ -6,9 +6,11 @@
  * bootrom, so ORIGIN is nominal; LENGTH caps the payload at 252 bytes (the ROM's
  * CRC-32 occupies bytes 252..255, appended later by rp2040_checksum.py).
  *
- * A driver-level -T (this file) is REQUIRED: the picolibc-based arm-none-eabi
- * toolchain injects its own default linker script unless it sees a -T at the gcc
- * driver level, and that default's tiny `flash` region collides with boot2.
+ * This file is supplied via a driver-level -T. The newlib arm-none-eabi
+ * toolchain injects no default linker script, so this script applies alone and
+ * caps the payload as intended. (The old picolibc apt toolchain REQUIRED the -T
+ * at the driver level: it injected a default picolibc.ld unless it saw one, and
+ * that default's tiny `flash` region collided with boot2.)
  */
 
 MEMORY
