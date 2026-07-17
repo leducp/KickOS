@@ -106,6 +106,51 @@ namespace kickos
         constexpr int CMWI0_VECTOR = 30; // CMTW0 compare match (UM interrupt table)
         constexpr int CMWI1_VECTOR = 31; // CMTW1 compare match
 
+        // --- Memory-Protection Unit (HW UM sec.17, base 0008 6400h) ---
+        // Eight access-control regions (n=0..7) + one background region. Page
+        // granularity is 16 bytes: the page number is address[31:4], carried in
+        // bits[31:4] of the start/end page registers (UM sec.17.1.2).
+        //   RSPAGEn @ 0x86400 + n*8: RSPN[27:0] = start page = start_addr>>4,
+        //     so the register value is start_addr with the low 4 bits masked off.
+        //   REPAGEn @ 0x86404 + n*8: REPN[27:0] = END page (INCLUSIVE -- the end
+        //     page is part of the region, UM sec.17.2.2), plus UAC[2:0] and V.
+        constexpr uintptr_t MPU_RSPAGE_BASE = 0x00086400; // + region*8
+        constexpr uintptr_t MPU_REPAGE_BASE = 0x00086404; // + region*8
+        constexpr uintptr_t MPU_REGION_STRIDE = 8;
+        constexpr size_t MPU_REGION_COUNT = 8;
+        // REPAGEn low bits (UM sec.17.2.2): V = region-valid, UAC[2:0] user-mode
+        // access = b3 Read / b2 Write / b1 Execute (1 = permitted). Note the bit
+        // order: read is the HIGH bit, execute the low -- NOT r/w/x LSB-first.
+        constexpr uint32_t MPU_REPAGE_V = 1u << 0;
+        constexpr uint32_t MPU_UAC_R = 1u << 3;
+        constexpr uint32_t MPU_UAC_W = 1u << 2;
+        constexpr uint32_t MPU_UAC_X = 1u << 1;
+        constexpr uint32_t MPU_PAGE_MASK = 0xFFFFFFF0u; // address -> page bits[31:4]
+        // MPEN @ 0x86500 b0: global enable. Address checking begins on the RTE/RTFI
+        // that next shifts to user mode (UM sec.17.2.3). MPBAC @ 0x86504: background
+        // (whole 4 GB) user-mode access in UBAC[2:0], same b3/b2/b1 layout as UAC;
+        // 0 => user has NO access outside an explicit region. MPOPI @ 0x86526 b0:
+        // writing 1 clears the V bit of every region (UM sec.17.2.10). MPU registers
+        // are supervisor-only and are NOT gated by PRCR (UM Table 13.1 omits them).
+        constexpr uintptr_t MPU_MPEN = 0x00086500;
+        constexpr uintptr_t MPU_MPBAC = 0x00086504;
+        constexpr uintptr_t MPU_MPOPI = 0x00086526; // 16-bit
+        constexpr uint32_t MPU_MPEN_MPEN = 1u << 0;
+        constexpr uint16_t MPU_MPOPI_INV = 1u << 0;
+        // Error-status decode for the access-exception reporter (UM sec.17.2.5-7).
+        // MPECLR @ 0x86508 b0 CLR: write 1 clears the latched status. MPESTS @
+        // 0x8650C: IMPER b0 = instruction-fetch violation, DMPER b1 = operand-access
+        // violation, DRW b2 = 1 write / 0 read (valid only when DMPER=1). MPDEA @
+        // 0x86514: the operand-access faulting address (the fetch address is the
+        // stacked PC).
+        constexpr uintptr_t MPU_MPECLR = 0x00086508;
+        constexpr uintptr_t MPU_MPESTS = 0x0008650C;
+        constexpr uintptr_t MPU_MPDEA = 0x00086514;
+        constexpr uint32_t MPU_MPECLR_CLR = 1u << 0;
+        constexpr uint32_t MPU_MPESTS_IMPER = 1u << 0;
+        constexpr uint32_t MPU_MPESTS_DMPER = 1u << 1;
+        constexpr uint32_t MPU_MPESTS_DRW = 1u << 2;
+
         // --- Syscall trap vector ---
         // arch_syscall issues INT #<this>; the handler is installed at INTB[<this>].
         // Slots 0..15 of the INTB table carry no peripheral source (IRn exists only

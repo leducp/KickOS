@@ -38,7 +38,10 @@ endif()
 # QEMU RISC-V gate: the same demo on a QEMU `virt` (RV32IMAC, M-mode bare metal) --
 # end-to-end proof of the rv32imac reset/scheduler(msip)/ecall/CLINT-timer path.
 # `-bios none` runs our image directly in M-mode (no OpenSBI).
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
+# NOT under enforcement: hello shares its two semaphores (main()'s stack locals) with the
+# ping/pong child threads, so a child's deref is a cross-domain read of the root thread's
+# private stack -- PMP/PMSA correctly faults it. Enforcement-safe demos are the gated ones.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
   add_test(
     NAME    qemu_riscv_hello
     COMMAND "${CMAKE_COMMAND}" -E env

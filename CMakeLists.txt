@@ -184,6 +184,13 @@ if(NOT DEFINED KICKOS_HAVE_MPU)
 endif()
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
+# RX MPU enforcement wedge-localizer trace (arch/rx/rxv3/arch_rxv3.cc): a raw polled
+# SCI6 marker, off by default. Forwarded to the compiler only when set on the command
+# line (a plain -D never becomes a compile definition on its own).
+if(DEFINED KICKOS_RX_MPU_TRACE)
+  add_compile_definitions(KICKOS_RX_MPU_TRACE=${KICKOS_RX_MPU_TRACE})
+endif()
+
 if(NOT DEFINED KICKOS_TELEMETRY)
   set(KICKOS_TELEMETRY "off")
 endif()
@@ -270,6 +277,15 @@ endif()
 # The arch<->kernel callback cycle is resolved as one rescanned archive group.
 if(TARGET kickos_kernel)
   add_library(kickos INTERFACE)
+  # Full-C++ per-app opt-in (docs/design-kickcat-k64f.md, "Libc strategy"): an app
+  # target with the KICKOS_FULL_CXX property set (via kickos_add_application(... FULL_CXX))
+  # compiles its C++ TUs with -fexceptions/-frtti and links the toolchain's
+  # libstdc++/libsupc++; every other target keeps the freestanding default below.
+  # The property is read on the CONSUMING (app) target, so this one INTERFACE
+  # target serves both postures. Kernel/lib/arch are never consumers here -- they
+  # get the freestanding clamp directly via kickos_apply_freestanding().
+  set(KICKOS_FREESTANDING_WHEN "$<NOT:$<BOOL:$<TARGET_PROPERTY:KICKOS_FULL_CXX>>>")
+  set(KICKOS_FULL_CXX_WHEN "$<BOOL:$<TARGET_PROPERTY:KICKOS_FULL_CXX>>")
   # On MCU the chip backend (arch_init/console + reset vector) joins the rescan
   # group; the arch<->kernel<->chip callback cycles resolve as one archive group.
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
@@ -304,31 +320,41 @@ if(TARGET kickos_kernel)
   # target (mirrors the KICKOS_RTT_CH1_SIZE forwarding via KICKOS_PROVISION_OVERRIDES).
   target_compile_definitions(kickos INTERFACE
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
-    KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH})
+    KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
+    # KOS_STACK_DEFINE (kos.h) branches on this: an out-of-tree app TU that owns a
+    # thread stack must see the same enforcement posture as the prebuilt kernel.
+    KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
   target_compile_options(kickos INTERFACE -include kickos/app.h)
   if(KICKOS_ARCH STREQUAL "sim")
     find_package(Threads REQUIRED)
     target_link_libraries(kickos INTERFACE Threads::Threads rt)
   else()
-    # MCU: the bare-metal link is -nostdlib++ (no libsupc++/libstdc++), so app TUs
-    # must compile freestanding too -- otherwise EH/RTTI tables from a destructor
-    # reference __gxx_personality_v0 / __cxa_end_cleanup and the link fails. (An
-    # app opting into full C++ would additionally link the toolchain's libsupc++;
-    # that opt-in is a later story.)
+    # MCU: the bare-metal link is -nostdlib++ (no libsupc++/libstdc++) by default,
+    # so app TUs must compile freestanding too -- otherwise EH/RTTI tables from a
+    # destructor reference __gxx_personality_v0 / __cxa_end_cleanup and the link
+    # fails. A FULL_CXX app instead compiles -fexceptions/-frtti and links the
+    # toolchain libstdc++ (the -nostdlib++ in the link recipe is dropped for it).
     target_compile_options(kickos INTERFACE
-      "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
+      "$<$<AND:$<COMPILE_LANGUAGE:CXX>,${KICKOS_FREESTANDING_WHEN}>:${KICKOS_FREESTANDING_CXX_FLAGS}>"
+      "$<$<AND:$<COMPILE_LANGUAGE:CXX>,${KICKOS_FULL_CXX_WHEN}>:-fexceptions;-frtti>")
   endif()
   # MCU bare-metal link recipe (baked into the interface target): our reset object
   # instead of crt0, the chip linker script, dead-code elimination, and a force-
   # reference to the vector table (else --gc-sections would drop it).
   if(NOT (KICKOS_ARCH STREQUAL "sim") AND KICKOS_LINKER_SCRIPT)
-    # -T at the DRIVER level (not -Wl,-T): the picolibc-based toolchain's spec
-    # only suppresses its default linker script (picolibc.ld) when it sees a
-    # driver-level -T; a -Wl,-T is invisible to that check and both scripts would
-    # apply (colliding at address 0).
+    # -T at the DRIVER level. The newlib arm-none-eabi toolchain injects no
+    # default linker script (verified: its specs name no .ld, and -T / -Wl,-T
+    # link identically -- only our board script applies, no double-script), so
+    # this need not be driver-level for newlib. It is kept driver-level anyway:
+    # it works, and the RP2040 boot2 sub-link (arch/CMakeLists.txt) uses the same
+    # form. (The old picolibc apt toolchain REQUIRED driver-level -T -- its spec
+    # only suppressed the default picolibc.ld when it saw a driver-level -T.)
     target_link_options(kickos INTERFACE
       -nostartfiles
-      -nostdlib++              # freestanding C++: no libstdc++ (keep libc/libgcc)
+      # Freestanding (default): no libstdc++ (keep libc/libgcc). A FULL_CXX app
+      # drops -nostdlib++ so the g++ driver auto-links the toolchain's
+      # libstdc++/libsupc++ (its EH, RTTI, operator new/delete) over newlib.
+      "$<${KICKOS_FREESTANDING_WHEN}:-nostdlib++>"
       -Wl,--gc-sections
       -Wl,--no-warn-rwx-segments
       # ARM's vector table (g_isr_vector) is a data object nothing references, so

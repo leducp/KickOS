@@ -36,6 +36,24 @@ extern "C"
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
+    // DWARF EH frame table (virt.ld) + the libgcc registrar. RISC-V exceptions use
+    // DWARF .eh_frame, normally registered by crtbegin's frame_dummy -- but our
+    // -nostartfiles link drops crtbegin, so a full-C++ app registers the table by hand
+    // at boot (Reset_Handler). WEAK ref: a freestanding image references no _Unwind_*,
+    // so __register_frame's libgcc object (unwind-dw2-fde) is never pulled -- the ref
+    // stays null and the call is skipped, keeping the FDE machinery + newlib malloc +
+    // its 64 KB heap arena OUT of freestanding images. A FULL_CXX app pulls
+    // _Unwind_Find_FDE (same libgcc object), defining __register_frame, so the ref
+    // resolves and registration runs.
+    extern uint32_t __eh_frame_start;
+    void __register_frame(void*) __attribute__((weak));
+#if KICKOS_HAVE_MPU
+    // App-data NAPOT region (virt.ld): the .appbss + pow2 pad must be zeroed like any
+    // .bss (the loaded .appdata rides LMA == VMA, so no copy). Zeroed through the RW
+    // grant so an unprivileged thread never reads stale bytes from its data region.
+    extern uint32_t __kickos_appbss_start, __kickos_appdata_end;
+#endif
+
     // Nominal core clock (Hz). QEMU's rdcycle is not cycle-accurate, so this only
     // feeds the bench's cycles->ns print (a smoke number here; the C6 gives the
     // real one). Match the `virt` mtime rate so the two clocks are consistent.
@@ -172,6 +190,16 @@ void Reset_Handler(void)
     for (uint32_t* b = &_sbss; b < &_ebss; b++)
     {
         *b = 0;
+    }
+#if KICKOS_HAVE_MPU
+    for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appdata_end; b++)
+    {
+        *b = 0;
+    }
+#endif
+    if (__register_frame != nullptr) // weak: null in a freestanding image (see decl)
+    {
+        __register_frame(&__eh_frame_start); // DWARF EH: register before ctors/throws
     }
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {

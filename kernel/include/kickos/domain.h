@@ -48,9 +48,12 @@ namespace kickos
 
     // Resolve the domain a thread belongs to. privileged -> kernel; unprivileged
     // with a data region -> find-or-create shared by (base,size); otherwise ->
-    // default-user. Does NOT take a reference (thread_create does, via domain_ref).
-    // Returns null ONLY when a new slot is needed but the pool is exhausted.
-    Domain* domain_for(bool privileged, void* mem_base, size_t mem_size);
+    // default-user. An MMIO grant (mmio_base != 0) is a capability: it ALWAYS gets a
+    // fresh, unshared domain carrying {data region?, MMIO region R|W|DEV}. Does NOT
+    // take a reference (thread_create does, via domain_ref). Returns null ONLY when a
+    // new slot is needed but the pool is exhausted.
+    Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
+                       void* mmio_base, size_t mmio_size);
 
     void domain_ref(Domain* d);     // a thread joins the domain
     void domain_release(Domain* d); // a thread leaves; frees the slot at zero

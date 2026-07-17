@@ -115,8 +115,13 @@ layer: K64F SYSMPU, RP2040 ARMv6-M PMSA, F411 ARMv7-M PMSA, C6 RISC-V PMP.
    switch is decided; every trigger just calls it. The tick is one optional caller among many.
 3. **Tickless by default.** No mandatory periodic interrupt; a single "next-event" timer is
    armed for the earliest deadline. Pure-FIFO idle arms nothing.
-4. **Identical userspace across arches.** Userspace links **KickOS libc only** -- never host
-   glibc, even on sim. Host libc is used *only* by the sim kernel's arch backend.
+4. **Identical userspace across arches (on target).** On an MCU, a plain userspace app links the
+   **KickOS freestanding libc** (the zero-overhead default); an app that opts into full C++ instead
+   links the **toolchain's** libc + libstdc++ (see the layered libc model in the toolchain-libc
+   lesson below). The **sim is deliberately exempt**: it is a hosted ELF, so its arch backend and
+   any full-C++ app ride **host libc/libstdc++** -- forcing "KickOS libc only" there buys nothing
+   and would block the sim's whole purpose (running real userspace, e.g. a KickCAT slave). The
+   uniformity that matters is the **arch-neutral syscall/porting seam**, not one libc binary.
 5. **Static allocation first, heap optional.** Kernel objects support link-time-static
    placement (e.g. `ThreadWithStack<2048>`) so a system can run with the heap disabled.
 6. **Dual API in userspace.** A plain C syscall layer with ergonomic C++ RAII wrappers on top.
@@ -163,12 +168,29 @@ Key borrowed ideas, attributed:
 
 ### Toolchain-libc lesson from NuttX (fix for its C++/sim pain)
 
-NuttX offers `CONFIG_LIBCXXTOOLCHAIN` (+ `LIBSUPCXX_TOOLCHAIN`) to link the toolchain's own
-`libstdc++`/`libsupc++`. That was painful because those libs (and the libgcc unwinder) expect a
-**newlib-style OS porting layer** below them. **Design rule: make the userspace C ABI
-newlib-compatible.** Then "full C++" in userspace is an opt-in that links the toolchain's
-`libstdc++` -- no custom STL -- and the same porting layer lets the sim ride host `libstdc++`
-while routing `sbrk`/`write`/locks through KickOS.
+NuttX ships its **own** libc (`libs/libc/`) whose headers are **deliberately not
+newlib-compatible** -- its own docs warn that mixing them with another libc's headers "is bound to
+cause you problems." NuttX still supports linking the toolchain's own C++ runtime
+(`CONFIG_LIBCXXTOOLCHAIN` + `CONFIG_LIBSUPCXX_TOOLCHAIN`, alongside `CONFIG_LIBCXX`/`CONFIG_UCLIBCXX`),
+but because that runtime was built against the *toolchain's* libc, hosting it over NuttX's own
+libc yields a steady stream of **header/type/namespace ABI mismatches** -- conflicting
+`div_t`/`ldiv_t` between `<cstdlib>` and NuttX's `<stdlib.h>`, `<cmath>` failing because toolchain
+headers `using std::abs;` names NuttX never put in `std`, and having to *add* locale support so
+libstdc++ can sit on top. A secondary tax is the runtime porting layer libsupc++/libgcc assume
+(`_impure_ptr` from `vterminate.o`, unwinder locks).
+
+**KickOS sidesteps the mismatch class by never putting toolchain C++ on our own libc.** The libc
+strategy is layered: a plain app links KickOS's **freestanding** libc (no libstdc++); an app that
+opts into full C++ links `libstdc++`/`libsupc++` over the **libc they were built against**. The
+fleet is on **pinned vendor toolchains that are all newlib** -- Arm GNU Toolchain (ARM),
+RISCStar (RISC-V), GNURX (RX) -- so the full-C++ opt-in links libstdc++/libsupc++ over their
+native **newlib** on every arch, no per-toolchain libc special-casing; our `newlib_stubs.cc`
+fits directly. **Design rule: keep KickOS's own libc newlib-*family*-compatible** so the *sim*
+can ride host `libstdc++` and so freestanding/newlib interop stays clean. What remains on target
+is only the well-trodden **syscall-stub** porting layer -- uniformly the newlib bottom edge
+(`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit`, `_impure_ptr`/reent, `__malloc_lock` when
+threaded, C++ guard/lock hooks) routed to KickOS syscalls. (Honest caveat: that stub tax is real
+-- we sidestep the header/ABI class, not the bottom-edge class.)
 
 ---
 
@@ -354,6 +376,32 @@ explicit regions (background map); a domain is ~3 (code, data/heap, optional MMI
 stack + the fault guard -- comfortably within 8. Data/heap placement uses linker sections so a
 domain's RAM is one power-of-two-aligned PMSA region.
 
+**Peripheral (MMIO) isolation is hardware-bounded.** Per-thread *memory* (SRAM) isolation is
+uniform across the fleet, but per-thread *peripheral* isolation is only as strong as the silicon
+allows, and the fleet splits on one fact: **does the chip's per-thread protection unit sit on the
+CPU access path (so it sees MMIO addresses) or on a bus-slave port (so it does not)?** A CPU-side
+unit (ARM PMSA, RISC-V PMP, RX MPU) checks every load/store address including the peripheral
+aperture, so a granted peripheral window is a genuine per-thread capability and an ungranted
+peripheral access faults. A bus-slave-side unit (K64F SYSMPU) never sees the peripheral bridge, so
+it cannot gate peripherals at all -- a separate, coarser authority does, and that authority is not
+per-thread. (Narrative + the worked K64F bring-up: `../book/peripheral-isolation-and-the-hardware-ceiling.md`.)
+
+| Chip / unit | MPU covers MMIO? | Separate peripheral gate | Per-thread MMIO isolation | Evidence |
+|---|---|---|---|---|
+| XMC4800 -- ARM v7-M PMSA (CPU-side) | yes | none per-thread (some peripheral registers are PV-write-only at the bus -- a kernel/user split, not a per-master gate) | **yes** | silicon-proven: a granted USIC-SSC DEV window works + an ungranted peripheral poke faults MemManage (xmcspi loopback, 2026-07-17) |
+| RISC-V PMP (qemu-riscv; ESP32-C6) | yes | ESP32-C6 APM/PMS (per security-mode, default-deny user; needs a one-time global open) | **yes** (PMP discriminates per thread; APM opened once) | PMP path proven on qemu-riscv; **C6 SRAM enforcement + per-thread peripheral isolation PROVEN on silicon** (18/18 + mpu_fault; `c6blink` drives the APM open + an 8 B PMP window, ungranted poke PMP-faults) |
+| RX72M -- RXv3 MPU (CPU-side) | yes | none (PRCR is an unrelated write-latch, not a privilege gate) | **yes** | SRAM/domain enforcement silicon-proven (selftest 20/20 + mpu_fault cross-domain trap, 2026-07-17); a real granted peripheral window not yet run on silicon |
+| K64F -- SYSMPU (bus-slave-side) | **no** | **AIPS PACR** (by privilege+master, per 4 KB slot, NOT per-thread) | **no** | silicon-proven: an unprivileged PIT access faults via AIPS while SYSMPU latches no error; clearing the slot's PACR SP bit then admits ALL user code |
+
+Consequences: on a CPU-side-MPU chip an unprivileged userspace driver can be granted only its own
+peripheral window (the MMIO-grant model, `design-task9-mmio-driver.md`). On **K64F** that model is
+unavailable: the kernel can open a peripheral slot to user mode (clear the AIPS `PACR` `SP` bit) or
+keep it supervisor-only, but once open it is reachable by *every* unprivileged thread -- there is
+no per-domain peripheral boundary. K64F peripheral drivers therefore either accept coarse
+(kernel-vs-user, per-slot) isolation or mediate through a kernel syscall; SRAM/domain isolation is
+unaffected (SYSMPU still enforces it, 17/17). `ARCH_MPU_DEV` is meaningful only where the unit
+carries a memory-type field (ARM PMSA: device + XN); it is a silent no-op on PMP and RX (R/W/X only).
+
 **Domains vs kernel instances (complementary, not competing).** The KickCAT whole-bus sim runs
 many slaves, and **each slave is its own MCU -> its own KickOS kernel instance**; several
 instances co-reside in one host process (invariant #7, instance-scoped state -- the KickCAT
@@ -384,10 +432,12 @@ API. Two flavors:
   this.
 - **Userspace drivers (unprivileged -- the goal)** -- a user task granted, at creation:
   (1) **MMIO** -- the device register block added to its MPU regions (device attrs, RW,
-  no-execute); (2) **IRQ-as-event** -- `irq_register(irq)` then loop `irq_wait(h)` / service /
-  `irq_ack(h)`. The kernel's generic ISR stub masks the line, posts the driver's notification
-  (sem/thread-flag), flags reschedule -> PendSV switches to the now-ready driver task. The driver
-  never runs in handler mode.
+  no-execute); (2) **IRQ-as-event** -- `irq_register(irq)` then loop `irq_wait(h)` / service.
+  The kernel's generic ISR stub masks the line, posts the driver's notification
+  (sem/thread-flag), flags reschedule -> PendSV switches to the now-ready driver task; the next
+  `irq_wait` auto-re-arms the consumed line, so no explicit ack is needed (`irq_ack(h)` stays an
+  OPTIONAL early re-arm for the compute-then-wait shape on drop-on-masked/edge sources). The
+  driver never runs in handler mode.
 
 **API sketch (arch-neutral):** `irq_attach/detach` (in-kernel); `irq_register/wait/ack/unmask`
 (userspace, handle-based -- the C++ `kos::Irq` wraps the handle so a driver writes
@@ -413,13 +463,17 @@ feeds the slave app.
   to the kernel heap or `=delete`d. No implicitly heap-allocating STL. `extern "C"` at
   asm/startup/syscall seams.
 - **Userspace**: default freestanding subset; **each app may opt into full C++**
-  (`-fexceptions -frtti`) by linking the toolchain's own `libstdc++`/`libsupc++` -- works because
-  the userspace C ABI is newlib-compatible.
-- **libc**: one freestanding libc for kernel + userspace, identical on sim and target. Userspace
-  additionally exposes a **newlib-compatible porting layer** (`_sbrk/_write/_read/_close/_fstat/
-  _isatty/_exit/_kill/_getpid`, `__errno`, C++ guard/thread hooks) backed by KickOS syscall
-  stubs -- the seam that lets both toolchain and host `libstdc++` sit on top with their bottom
-  edge routed through KickOS.
+  (`-fexceptions -frtti`) by linking the toolchain's `libstdc++`/`libsupc++` over the **toolchain's
+  own libc** -- newlib on every arch (Arm GNU / RISCStar / GNURX are all newlib) -- so the C++
+  runtime rides its native libc, no cross-libc header/ABI collision (see the NuttX lesson above).
+  KickOS's own freestanding libc backs the default apps that never link libstdc++.
+- **libc**: one freestanding KickOS libc for the kernel + freestanding userspace, identical on sim
+  and target. Its ABI is kept **newlib-family-compatible** so the *sim* rides host `libstdc++` and
+  newlib interop stays clean. The bottom edge is a syscall-stub porting layer
+  (`_sbrk`, `_write/_read/_close/_fstat/_isatty/_exit/_kill/_getpid`, `_impure_ptr`/reent,
+  `__malloc_lock` when threaded, and C++ guard/lock hooks) routed to KickOS
+  syscalls: the same seam under both the sim's host `libstdc++` and a target full-C++ app's
+  toolchain newlib -- one newlib seam fleet-wide. (The full seam detail: `docs/design-kickcat-k64f.md`.)
 
 ---
 

@@ -39,6 +39,12 @@ extern "C"
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
+#if KICKOS_HAVE_MPU
+    // App-data NAPOT region (esp32c6.ld): the .appbss + pow2 pad must be zeroed like
+    // any .bss (the loaded .appdata rides LMA == VMA, so no copy). Zeroed through the
+    // RW grant so an unprivileged thread never reads stale bytes from its data region.
+    extern uint32_t __kickos_appbss_start, __kickos_appdata_end;
+#endif
 
     // Core clock in Hz. MEASURED ~160 MHz on silicon (2026-07-09): the ROM first-stage
     // loader brings up the PLL and leaves the CPU on it -- NOT XTAL/1=40 MHz as first
@@ -99,6 +105,33 @@ namespace
     constexpr uint32_t UART_TXFIFO_CNT_MASK = 0xFFu;
     constexpr uint32_t UART0_TXFIFO_LEN = 128;
     constexpr uint32_t UART0_TXFIFO_LIMIT = UART0_TXFIFO_LEN - 2; // FIFO-full mark (both paths)
+
+    // --- Early boot markers (raw UART0, pre-console). DEBUG tool, default OFF: build
+    //     with -DKICKOS_C6_EARLY_MARK=1 to emit a byte at each boot stage (A..H). The
+    //     ROM leaves UART0 up (its boot log printed through it) and _start sets gp/sp
+    //     before Reset_Handler, so a byte can be pushed to the TX FIFO before KickOS
+    //     inits its own console -- localizes an early boot hang: the LAST marker seen
+    //     names the last stage reached. Bounded spin: a wedged FIFO never blocks boot.
+    //     Touches no global, so it is safe before .data/.bss are live.
+#ifndef KICKOS_C6_EARLY_MARK
+#define KICKOS_C6_EARLY_MARK 0
+#endif
+#if KICKOS_C6_EARLY_MARK
+    void c6_early_mark(char c)
+    {
+        uint32_t spin = 0;
+        while (((r32(UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_MASK) >= UART0_TXFIFO_LIMIT)
+        {
+            if (++spin > 200000u)
+            {
+                return;
+            }
+        }
+        r32(UART0_FIFO) = static_cast<uint8_t>(c);
+    }
+#else
+    inline void c6_early_mark(char) {}
+#endif
     // UART0 TX-empty interrupt (buffered console ring). TXFIFO_EMPTY asserts while the TX FIFO
     // count <= CONF1.TXFIFO_EMPTY_THRHD -- a LEVEL source (TRM section 1.6): cleared from source, by
     // filling the FIFO past the threshold or disabling INT_ENA. We program the threshold (own
@@ -514,6 +547,7 @@ void arch_diag_led_set(int on)
 void arch_init(void)
 {
     wdt_disable_all(); // or the ROM-armed watchdogs reset the part in seconds
+    c6_early_mark('E'); // watchdogs disabled -- no more ROM WDT reset past here
 
     g_clint_msip = r32p(CLINT_MSIP);   // the deferred-switch software interrupt
 #if KICKOS_BENCH
@@ -526,7 +560,9 @@ void arch_init(void)
     r32(CLINT_MTIMECTL) = MTIMECTL_MTCE | MTIMECTL_MTIE; // start the counter + enable
 
     kickos_rv32_init();  // vectored mtvec + mie(MSIE|MTIE|SSIE) + mcounteren + PMP
+    c6_early_mark('F');  // mtvec + mie + permissive bootstrap PMP installed
     inject_doorbell_init(); // wire the interrupt matrix FROM_CPU doorbell (device IRQs)
+    c6_early_mark('G');  // inject doorbell wired -- arch_init complete
 }
 
 void arch_shutdown(int status)
@@ -542,6 +578,7 @@ void arch_shutdown(int status)
 // --- C-runtime bring-up (the reset entry, called by _start in startup.S) ------
 void Reset_Handler(void)
 {
+    c6_early_mark('A'); // entry reached: _start set gp/sp/tp and the call landed
     // The ROM loader copies the image segments to SRAM (LMA == VMA), so the copy is
     // a no-op; kept for uniformity with the other ports.
     uint32_t* src = &_sidata;
@@ -554,11 +591,21 @@ void Reset_Handler(void)
     {
         *b = 0;
     }
+    c6_early_mark('B'); // .data copied + .bss zeroed
+#if KICKOS_HAVE_MPU
+    for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appdata_end; b++)
+    {
+        *b = 0;
+    }
+    c6_early_mark('C'); // .appbss zeroed (enforcement layout symbols resolved sanely)
+#endif
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();
     }
+    c6_early_mark('D'); // C++ static constructors (init_array) ran
     arch_init();
+    c6_early_mark('H'); // arch_init returned -- kmain next (kbanner is the first console output)
     kickos::kmain(0, nullptr);
     arch_shutdown(0);
 }

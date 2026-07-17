@@ -175,13 +175,19 @@ function(kickos_emit_image target)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_add_application(<name> SOURCES <src...> BOARD <board>)
+# kickos_add_application(<name> SOURCES <src...> BOARD <board> [FULL_CXX])
 #   Links the app against the KickOS component libraries and emits the image.
 #   For sim this is a runnable host ELF whose entry (host main) lives in the
 #   sim arch backend; the app must define kickos_app_main().
+#
+#   FULL_CXX (opt-in, docs/design-kickcat-k64f.md "Libc strategy"): compile this
+#   app's C++ TUs with -fexceptions/-frtti (NOT the freestanding clamp) and link
+#   the toolchain's libstdc++/libsupc++ over newlib, so exceptions + STL + RTTI
+#   work. Off by default: every other app stays freestanding, no libstdc++,
+#   zero-overhead. No effect on the sim (already hosted against host libstdc++).
 # ---------------------------------------------------------------------------
 function(kickos_add_application name)
-  cmake_parse_arguments(APP "" "BOARD" "SOURCES" ${ARGN})
+  cmake_parse_arguments(APP "FULL_CXX" "BOARD" "SOURCES" ${ARGN})
   if(NOT APP_SOURCES)
     message(FATAL_ERROR "kickos_add_application(${name}): SOURCES required")
   endif()
@@ -207,7 +213,25 @@ function(kickos_add_application name)
   # The `kickos` interface target carries the component link group (+ threads on
   # sim). (MCU image emission -- objcopy .bin/.uf2 -- will hang off here at M1.)
   add_executable(${name} ${APP_SOURCES})
+  # Full-C++ opt-in: the `kickos` interface target reads this property (per
+  # consuming target) to swap the freestanding clamp for -fexceptions/-frtti and
+  # to keep libstdc++ in the link (drop -nostdlib++). Off -> freestanding default.
+  if(APP_FULL_CXX)
+    set_target_properties(${name} PROPERTIES KICKOS_FULL_CXX ON)
+  endif()
+  # The chip linker script is passed as a driver -T option (see the `kickos` target),
+  # which CMake does NOT treat as a link dependency -- so an edited .ld would silently
+  # not relink and a stale image would flash. Make it an explicit link dependency.
+  if(KICKOS_LINKER_SCRIPT AND NOT (KICKOS_ARCH STREQUAL "sim"))
+    set_target_properties(${name} PROPERTIES LINK_DEPENDS "${KICKOS_LINKER_SCRIPT}")
+  endif()
   target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
+  # RISC-V PMP enforcement: keep the app's own globals out of the gp-relative
+  # small-data window (unreachable by an unprivileged thread) so they land in the
+  # .appdata NAPOT region -- see user/CMakeLists.txt for the rationale.
+  if(_arch STREQUAL "rv32imac" AND DEFINED KICKOS_HAVE_MPU AND KICKOS_HAVE_MPU)
+    target_compile_options(${name} PRIVATE -msmall-data-limit=0)
+  endif()
   # The OS-agnostic entry glue (-Dmain / -include app.h) rides the `kickos`
   # usage target below, so the plain add_executable path gets it too.
   target_link_libraries(${name} PRIVATE kickos)

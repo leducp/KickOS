@@ -56,6 +56,7 @@ namespace kickos
         t->state = ThreadState::INACTIVE;
         t->stack_base = stack_base;
         t->stack_size = stack_size;
+        t->kstack_owned = attr.kstack_owned;
         t->region_count = 0;
         // slice_deadline_ns is policy-owned: the RR policy arms it on switch-in,
         // before the thread runs; the core carries no slice sentinel.
@@ -67,32 +68,53 @@ namespace kickos
         t->domain = attr.domain;
         if (t->domain == nullptr)
         {
-            t->domain = domain_for(attr.privileged, attr.mem_base, attr.mem_size);
+            t->domain = domain_for(attr.privileged, attr.mem_base, attr.mem_size,
+                                   attr.mmio_base, attr.mmio_size);
         }
         domain_ref(t->domain);
 
-        // MPU region set (reloaded on every switch-in) = the domain's shared regions
-        // PLUS this thread's own private stack. A privileged (kernel-domain) thread's
-        // single region is the whole arena, which already covers its stack, so no
-        // separate stack region is added. An unprivileged thread gets its domain
-        // data region(s) + its private stack, so a sibling cannot scribble its stack.
+        // MPU region set (reloaded on every switch-in). A privileged (kernel-domain)
+        // thread gets the whole arena, and the background region covers its code,
+        // kernel data, and stack -- one region suffices. An unprivileged thread has
+        // NO background default, so its set is assembled explicitly:
+        //   [app code (RX) + app static-data (RW-NX)]  -- so it can run at all
+        //   + [domain data region(s)]                  -- what it shares / was granted
+        //   + [its own private stack]                  -- a sibling can't scribble it
         // Region sizes round up to the pow2 the MPU can describe (arch_ram_region_size).
-        // NOTE: the private-stack region is enforced by the hardware MPU (Phase 1:
-        // PMSA/PMP, where the privileged switch path is exempt via the background
-        // region). The host sim leaves it inert -- default pool stacks live in
-        // ungoverned BSS outside the mprotect'd arena, so grant_region_set skips them;
-        // the sim still enforces the arena-resident domain data region.
+        // NOTE: the code/static-data + private-stack regions are enforced by the
+        // hardware MPU (PMSA/PMP, where the privileged switch path is exempt via the
+        // background region). On the host sim, app code/data still live outside the
+        // mprotect'd arena so the sim skips those regions -- but a kernel-default stack
+        // is now arena-resident (demand-allocated, not a BSS pool slab), so the sim DOES
+        // enforce the private-stack region too: a sibling faults on another's stack.
         size_t nr = 0;
+        if (not attr.privileged)
+        {
+            // App-wide code + static-data regions (linker-defined; empty on no-MPU
+            // arches and the sim). These let the unprivileged thread fetch its own
+            // instructions and reach its own globals.
+            nr += arch_domain_static_regions(&t->regions[nr],
+                                             KICKOS_MPU_MAX_REGIONS - nr);
+        }
+        bool const wants_stack =
+            (not attr.privileged and stack_base != nullptr and stack_size != 0);
+        // The whole set MUST fit: a truncated set (especially one that drops the
+        // thread's OWN stack) would fault the thread on its own memory and, worse,
+        // hand it a hardware window snapped to the wrong span. Today's worst case is
+        // 5 of 8 (code + appdata + domain data + granted MMIO + stack); a future
+        // multi-region domain that overflows is a bug to catch here, not to swallow
+        // silently.
+        KICKOS_ASSERT(nr + (t->domain != nullptr ? t->domain->region_count : 0)
+                          + (wants_stack ? 1u : 0u)
+                      <= KICKOS_MPU_MAX_REGIONS);
         if (t->domain != nullptr)
         {
-            for (size_t i = 0;
-                 i < t->domain->region_count and nr < KICKOS_MPU_MAX_REGIONS; i++)
+            for (size_t i = 0; i < t->domain->region_count; i++)
             {
                 t->regions[nr++] = t->domain->regions[i];
             }
         }
-        if (not attr.privileged and stack_base != nullptr and stack_size != 0
-            and nr < KICKOS_MPU_MAX_REGIONS)
+        if (wants_stack)
         {
             t->regions[nr].base = reinterpret_cast<uintptr_t>(stack_base);
             t->regions[nr].size = arch_ram_region_size(stack_size);

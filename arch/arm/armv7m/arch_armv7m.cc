@@ -221,6 +221,16 @@ void arch_irq_unmask(int line)
     // masks priorities numerically >= 0x20. Without this a device IRQ would
     // preempt an IrqLock-held section and corrupt kernel state (regs.h band).
     reinterpret_cast<volatile uint8_t*>(NVIC_IPR0)[l] = static_cast<uint8_t>(PRIO_DEVICE);
+    // Tier-1 re-arm contract: irq_ack calls this AFTER the driver has cleared the
+    // device flag, so the line is deasserted. DRAIN that clear (dsb -- the W1C may
+    // still be in the write buffer, and exception entry does not order device
+    // writes), then clear any LATCHED NVIC pending BEFORE enabling: otherwise a stale
+    // pend fires a spurious IRQ the instant ISER is set, and the driver's next
+    // irq_wait wakes with no event behind it. A still-asserted level source simply
+    // re-latches, so a real event is never lost. Harmless at first-arm (register):
+    // no stale pend to preserve.
+    __asm volatile("dsb" ::: "memory");
+    reg32(NVIC_ICPR0 + (l >> 5) * 4) = 1u << (l & 31);
     reg32(NVIC_ISER0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 
@@ -274,12 +284,23 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     {
         stk = "PSP";
     }
-    ::kickos::kprintf("\n=== HARD FAULT ===\n");
+    // A set MMFSR byte (CFSR[7:0]) means the MemManage (MPU) fault took it -- label
+    // it as such so an isolation trap reads clearly; otherwise the generic label.
+    char const* label = "HARD FAULT";
+    if (cfsr & 0xFFu)
+    {
+        label = "MPU FAULT";
+    }
+    ::kickos::kprintf("\n=== %s ===\n", label);
     ::kickos::kprintf("  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n",
                       frame[6], frame[5], frame[7], stk);
     ::kickos::kprintf("  R0=0x%x R1=0x%x R2=0x%x R3=0x%x R12=0x%x\n",
                       frame[0], frame[1], frame[2], frame[3], frame[4]);
     ::kickos::kprintf("  CFSR=0x%x HFSR=0x%x\n", cfsr, hfsr);
+    if (cfsr & (1u << 10)) // BFSR IMPRECISERR: the stacked PC is past the faulting store
+    {
+        ::kickos::kprintf("  (imprecise bus fault: PC/regs are post-fault, not the culprit)\n");
+    }
     // MMFAR/BFAR only hold a valid address when the matching CFSR VALID bit is set
     // (MMARVALID = bit 7, BFARVALID = bit 15); otherwise their contents are stale.
     if (cfsr & (1u << 7))
@@ -290,12 +311,19 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     {
         ::kickos::kprintf("  BFAR=0x%x\n", kickos::arm::reg32(0xE000ED38));
     }
+    arch_fault_report_extra(); // chip hook: e.g. K64F SYSMPU error capture
 #else
     (void)frame;
     (void)exc_return;
     ::kickos::kprintf("\n=== HARD FAULT ===\n");
 #endif
     kfault_terminate();
+}
+
+// WEAK no-op: a chip whose isolation trap does not surface in the core CFSR
+// (K64F SYSMPU) strong-overrides this to add its own capture (arch.h).
+void __attribute__((weak)) arch_fault_report_extra(void)
+{
 }
 
 // Naked entry: choose the stacked frame (MSP vs PSP per EXC_RETURN bit 2) and pass

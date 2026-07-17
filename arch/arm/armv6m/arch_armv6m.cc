@@ -121,6 +121,12 @@ void arch_irq_unmask(int line)
         return;
     }
     unsigned l = static_cast<unsigned>(line);
+    // Tier-1 re-arm: drain the driver's device-flag clear (dsb), then clear any
+    // latched NVIC pending before enabling, else a stale pend fires a spurious IRQ
+    // on ISER and the next irq_wait wakes with no event (see the v7-M note). A
+    // still-asserted level source re-latches, so a real event is not lost.
+    __asm volatile("dsb" ::: "memory");
+    reg32(NVIC_ICPR0 + (l >> 5) * 4) = 1u << (l & 31);
     reg32(NVIC_ISER0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 

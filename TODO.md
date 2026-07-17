@@ -145,6 +145,38 @@ below where they were previously mislabeled.
   K64F SYSMPU -> RX -> tail; + the arch-independent security model (domains, per-thread
   private stacks, syscall-arg/user-pointer validation, pow2 region placement). See
   `docs/reference/architecture.md` / `docs/m2-readiness.md`.
+- **Driver era -- unprivileged MMIO drivers + peripheral-isolation ceiling** (needs the M2
+  grant seam; the drivers themselves are anytime coherence). Status in `docs/m2-readiness.md`
+  (Driver era subsection) + the fleet peripheral-isolation matrix in
+  `docs/reference/architecture.md`.
+  - [x] **MMIO-grant mechanism (task #9)** -- DONE + committed 2026-07-16.
+        `kos_thread_params.mmio_base/mmio_size` (grant-at-spawn), the
+        `arch_mpu_region_encodable` arch seam (exact-cover, no rounding), privileged-only
+        `thread_spawn` validation, `domain_for` appends MMIO as a never-shared capability.
+        PLUS a Critical fix: an unprivileged `mem_base` grant is now arena-bounds-checked
+        (closed a peripheral/kernel-SRAM self-grant escalation). See `docs/design-task9-mmio-driver.md`.
+  - [x] **K64F first unprivileged driver (k64drv, PIT)** -- DONE on silicon 2026-07-16;
+        added the weak `arch_fault_report_extra` hook (K64F decodes SYSMPU CESR/EARn/EDRn).
+  - [x] **SYSMPU peripheral-gating question -- ANSWERED on silicon 2026-07-16:** SYSMPU does
+        NOT gate AIPS peripheral-bridge accesses under user mode; the AIPS bridge PACR does
+        (per privilege+master, per 4 KB slot, NOT per-thread). So **per-thread peripheral
+        isolation is IMPOSSIBLE on K64F**; it holds on the CPU-side-MPU chips (XMC PMSA,
+        RISC-V PMP, RX MPU). Hardware-ceiling docs DONE (`reference/architecture.md` matrix +
+        `book/peripheral-isolation-and-the-hardware-ceiling.md`).
+  - [~] **F411 canonical per-thread PMSA driver (f411spi, SPI1 loopback)** -- BUILT +
+        fable-reviewed; **silicon-validation PENDING** a bench swap to the 32F411E-DISCO. It
+        first-proves granted-SPI-works AND ungranted-peripheral-faults per thread on PMSA
+        silicon -- the fleet's one honest peripheral-isolation gap. `docs/design-spi-driver-stm32f411.md`.
+  - [~] **K64F/DSPI driver (k64dspi, DSPI0 for the KickCAT ESC SPI PDI)** -- design brief DONE
+        (`docs/design-spi-driver-k64f-dspi.md`); implementation IN PROGRESS (build-only).
+        Designed within the K64F coarse-peripheral ceiling (window grant is documentation, not
+        enforcement); microkernel invariant kept (driver in userspace). Needs silicon.
+  - [ ] **C6 PMP enforcement still BLOCKED** (all-SRAM image / gp-relative small-data /
+        code-from-RAM) AND now a known second blocker: a **separate APM/PMS bus permission
+        unit** that defaults deny-user on peripheral targets (needs a one-time global open,
+        not per-thread), on top of the PMP grant. See the C6 row in `docs/m2-readiness.md`.
+  - [ ] **RX72M MPU still build-only / silicon-unproven** + m2-review-followup #5 (RX rounds
+        misaligned regions instead of skipping -- fail-closed drift). See `docs/m2-review-followups.md`.
 - **[anytime coherence -- NOT M2] object-pool mutualisation** -- DONE (step 1). The semaphore
   pool is a generational `SlotPool<T,N>` (slotpool.h); the thread pool is grouped into a
   tailored `ThreadPool` struct (thread.h) -- deliberately **not** SlotPool: thread liveness is
@@ -153,6 +185,12 @@ below where they were previously mislabeled.
   one pool would be false-DRY. Full unification (a shared handle codec across sems + the M3
   capability store) waits for that genuine second SlotPool-shaped case. (No MPU dependency --
   was mislabeled "M2 handle table"; it's the M3-caps substrate + anytime coherence.)
+- **[anytime coherence -- NOT M2] general freeing allocator (M4).** `arch_ram_alloc` is a
+  wholesale bump allocator (freed only at reset). Default thread stacks now reclaim via a
+  single-size-class intrusive free list in `ThreadPool` (thread.h) -- the special case that needs
+  no size metadata (one class == `KICKOS_USER_STACK_SIZE`, link stored in the dead block). A
+  GENERAL multi-size-class freeing allocator for `arch_ram_alloc`/`kos_ram_alloc` at large is M4;
+  it would subsume this free list. Until then, only default stacks are reclaimable.
 - **[anytime coherence -- NOT M2] user-pointer validation at the syscall boundary.** M2 is MPU
   *enforcement*; validating a user pointer is arch-neutral kernel logic that matters MORE at M1
   (no MPU to contain an OOB access -- see the `user-args-validated-at-boundary` invariant).
@@ -192,9 +230,9 @@ below where they were previously mislabeled.
     masked syscall span is in flight) to justify + validate these before landing R1/R6.
   - Note: the earlier **bench self-report starvation is already FIXED** by the
     reporter-as-root/woken-by-workload redesign (not a timer sleep).
-- **Driver era** -- userspace UART/console driver takes the peripheral as a
-  capability; kernel relinquishes it (`console_tx_deinit`), panic path moves to a
-  kernel-retained transport. See `docs/reference/console.md` "Future".
+- **Console device handover (driver era)** -- userspace UART/console driver takes the
+  peripheral as a capability; kernel relinquishes it (`console_tx_deinit`), panic path moves
+  to a kernel-retained transport. See `docs/reference/console.md` "Future".
 - **M4 -- SMP (one kernel image across cores; NOT two AMP instances).** Motivation: run the
   dual-core RP2040 (picopi) at 100% under a single KickOS. Biggest architectural axis on the
   roadmap -- it reworks the *foundation*, not a feature: the whole kernel's mutual exclusion is

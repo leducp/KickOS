@@ -149,14 +149,28 @@ namespace kickos
         {
             IrqLock lock;
             b = binding_of(handle);
-        }
-        if (b == nullptr)
-        {
-            return -1;
+            if (b == nullptr)
+            {
+                return -1;
+            }
+            // Auto-rearm the line consumed by the previous wait (no explicit ack
+            // needed). needs_rearm starts false, so the first wait just blocks.
+            if (b->needs_rearm)
+            {
+                b->needs_rearm = false;
+                arch_irq_unmask(b->line);
+            }
         }
         // The binding is stable (bindings are never moved or freed in M0.2), so
         // parking on its sem outside the lock is safe.
         sem_wait(&b->sem);
+        // Event consumed: flag the line for rearm HERE, not in the ISR. The ISR
+        // masked before posting, so the line is masked now; setting the flag on
+        // wait-return (never in ISR) is what makes ack;compute;wait phantom-free.
+        {
+            IrqLock lock;
+            b->needs_rearm = true;
+        }
         return 0;
     }
 
@@ -168,7 +182,13 @@ namespace kickos
         {
             return -1;
         }
-        arch_irq_unmask(b->line);
+        // OPTIONAL + idempotent: only unmask if a wait consumed an event and left
+        // the line masked. A double ack, or an ack after auto-rearm, is a no-op.
+        if (b->needs_rearm)
+        {
+            b->needs_rearm = false;
+            arch_irq_unmask(b->line);
+        }
         return 0;
     }
 }

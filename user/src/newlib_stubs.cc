@@ -76,4 +76,21 @@ void* _sbrk(intptr_t incr)
     s_brk = next;
     return prev;
 }
+
+// Newlib's malloc brackets every arena mutation with __malloc_lock/__malloc_unlock.
+// The pinned vendor toolchains are all built single-thread (--disable-threads), so
+// no reentrancy guard is needed for the single-threaded full-C++ opt-in (see the
+// design's "single-thread" caveat). Provide no-op weak stubs so a full-C++ app that
+// heap-allocates (operator new -> malloc) links; weak so a future thread-safe libc
+// port can override, and unreferenced (freestanding app) so it costs nothing.
+// FOOTGUN: a full-C++ app that spawns threads and heap-allocates from more than one
+// gets NO reentrancy guard here -- concurrent malloc silently corrupts the arena.
+// Real thread-safe stubs (an IrqLock or per-thread arena) are a prerequisite of the
+// multi-threaded-full-C++ milestone; until then keep such apps single-alloc-thread.
+__attribute__((weak)) void __malloc_lock(void*)
+{
+}
+__attribute__((weak)) void __malloc_unlock(void*)
+{
+}
 }

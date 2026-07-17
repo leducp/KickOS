@@ -378,6 +378,95 @@ namespace
         TAP_CHECK(g_mask_serviced == 2);
     }
 
+    // --- Auto-rearm: wait; service with NO explicit ack ------------------------
+    // irq_wait re-arms the previously-consumed line itself, so a driver that never
+    // acks still receives every subsequent IRQ. Driver runs ABOVE root (like
+    // t_irqdrv) so it re-arms (reaches its next wait) before root injects again --
+    // no masked-line window (a masked inject would be dropped, sim/ARM alike).
+    int g_autorearm_ready = -1;
+    int g_autorearm_seen = 0;
+    constexpr int kAutoRearmLine = 8;
+
+    void autorearm_driver(void*)
+    {
+        auto irq = kos::Irq::request(kAutoRearmLine);
+        kos_sem_post(g_autorearm_ready);
+        for (int i = 0; i < 3; i++)
+        {
+            irq.wait(); // no ack: the next wait re-arms the line on its own
+            g_autorearm_seen++;
+            kos_sem_post(g_done);
+        }
+    }
+    void t_irq_autorearm()
+    {
+        g_autorearm_ready = kos_sem_create(0);
+        g_autorearm_seen = 0;
+        int drv = kos::thread::spawn(autorearm_driver, nullptr, "autoirq", 15);
+        TAP_CHECK(drv >= 0); // spawn failure would hang the ready handshake below
+        kos_sem_wait(g_autorearm_ready);
+        kos_sem_destroy(g_autorearm_ready);
+        for (int i = 0; i < 3; i++)
+        {
+            kos_irq_inject(kAutoRearmLine);
+            wait_n(1);
+        }
+        TAP_CHECK(g_autorearm_seen == 3); // all three delivered without a single ack
+    }
+
+    // --- Pitfall-1 regression: no phantom wake in the ack;compute;wait shape ----
+    // After an explicit ack re-arms the line, exactly ONE injected event must
+    // yield exactly ONE wait-return: the second wait BLOCKS. A variant that sets
+    // needs_rearm in the ISR (instead of on wait-return) would unmask early and
+    // phantom-post, leaving the driver to service an event that never came. Driver
+    // runs BELOW root so root sequences each step; every inject targets an armed
+    // line (register / explicit ack / rearm-at-wait), never a masked one.
+    int g_phantom_ready = -1;
+    int g_phantom_seen = 0;
+    constexpr int kPhantomLine = 10;
+
+    void phantom_driver(void*)
+    {
+        auto irq = kos::Irq::request(kPhantomLine);
+        kos_sem_post(g_phantom_ready);
+        irq.wait();           // consume fire #1 -> needs_rearm set, line masked
+        irq.ack();            // ack;compute;wait shape: unmask now, needs_rearm clear
+        kos_sem_post(g_done); // acked; root injects the one mid-compute event
+        irq.wait();           // consume that one event
+        g_phantom_seen++;
+        kos_sem_post(g_done);
+        irq.wait();           // MUST block: only one event was injected, no phantom
+        g_phantom_seen++;     // reached only on a phantom wake (the bug)
+        kos_sem_post(g_done);
+    }
+    void t_irq_phantom()
+    {
+        g_phantom_ready = kos_sem_create(0);
+        g_phantom_seen = 0;
+        int drv = kos::thread::spawn(phantom_driver, nullptr, "phantirq", 1); // below root
+        TAP_CHECK(drv >= 0); // spawn failure would hang the ready handshake below
+        kos_sem_wait(g_phantom_ready);
+        kos_sem_destroy(g_phantom_ready);
+
+        kos_irq_inject(kPhantomLine); // fire #1
+        wait_n(1);                    // driver consumed #1 and acked (line armed)
+
+        kos_irq_inject(kPhantomLine); // the one mid-compute event, on the armed line
+        wait_n(1);                    // serviced exactly once
+        TAP_CHECK(g_phantom_seen == 1);
+
+        // The driver is now parked in its third wait. It is lower priority, so
+        // sleeping yields the CPU to it: a phantom wake would bump seen here.
+        kos_sleep_ns(2000000ull);
+        TAP_CHECK(g_phantom_seen == 1); // second wait genuinely blocked -> no phantom
+
+        // Prove that wait is live (blocked, not lost) and the line re-armed itself:
+        // a fresh inject delivers.
+        kos_irq_inject(kPhantomLine);
+        wait_n(1);
+        TAP_CHECK(g_phantom_seen == 2);
+    }
+
 #endif // KICKOS_ENABLE_SELFTEST (tier-1 IRQ + mask)
 
     // --- Semaphore destroy: freelist reuse + generation-tagged handles ---------
@@ -570,6 +659,58 @@ namespace
         kos_sem_destroy(g_dread);
         TAP_CHECK(g_dreadback == kDomSentinel);
     }
+
+    // --- MMIO grant boundary (task #9): privileged-only + encodable-only ---------
+    // An MMIO grant is a capability, so the boundary REJECTS two ways (no real device
+    // is mapped here -- the positive grant is HW-only, Stage 2):
+    //   * a window one MPU descriptor cannot cover exactly (rounding would over-grant
+    //     the neighbouring registers), and
+    //   * any grant attempted by an UNPRIVILEGED caller (else a user thread maps
+    //     arbitrary peripheral space and defeats isolation).
+    // The sim's arch_mpu_region_encodable is fail-closed (always false), so both halves
+    // land as a -1 spawn there; on an enforcing MCU the first still rejects the
+    // non-encodable window and the second the privilege violation.
+    int g_mmio_unpriv_rc = -2;
+    int g_mmio_done = -1;
+    void mmio_noop(void*) {}
+    void mmio_unpriv_worker(void*)
+    {
+        // Unprivileged caller: the privilege gate must refuse the MMIO grant.
+        g_mmio_unpriv_rc = kos::thread::spawn(mmio_noop, nullptr, "mmiochild", 10,
+                                              KOS_POLICY_FIFO, 0, false, nullptr, 0,
+                                              nullptr, 0, reinterpret_cast<void*>(0x1000u), 4096);
+        kos_sem_post(g_mmio_done);
+    }
+    void t_mmio_grant()
+    {
+        // Privileged caller, non-encodable window (size 1, unaligned base): rejected,
+        // not rounded.
+        TAP_CHECK(kos::thread::spawn(mmio_noop, nullptr, "mmiobad", 10, KOS_POLICY_FIFO,
+                                     0, false, nullptr, 0, nullptr, 0,
+                                     reinterpret_cast<void*>(0x1001u), 1) < 0);
+        // A non-null base with size 0 is rejected at the boundary (before domain_for).
+        TAP_CHECK(kos::thread::spawn(mmio_noop, nullptr, "mmio0", 10, KOS_POLICY_FIFO,
+                                     0, false, nullptr, 0, nullptr, 0,
+                                     reinterpret_cast<void*>(0x2000u), 0) < 0);
+        // A window whose base+size wraps the address space is rejected (32-bit MCU;
+        // on the 64-bit sim the fail-closed encoder rejects it first -- either way -1).
+        TAP_CHECK(kos::thread::spawn(mmio_noop, nullptr, "mmioW2", 10, KOS_POLICY_FIFO,
+                                     0, false, nullptr, 0, nullptr, 0,
+                                     reinterpret_cast<void*>(0xFFFFFFF0u), 0x20) < 0);
+        g_mmio_done = kos_sem_create(0);
+        g_mmio_unpriv_rc = -2;
+        int w = kos::thread::spawn(mmio_unpriv_worker, nullptr, "mmioW", 10);
+        if (w < 0)
+        {
+            // Tiny thread pool (e.g. microbit MAX_THREADS=2): skip the unpriv half.
+            kos::print("# mmio_grant: SKIP unpriv half (thread pool too small)\n");
+            kos_sem_destroy(g_mmio_done);
+            return;
+        }
+        kos_sem_wait(g_mmio_done);
+        kos_sem_destroy(g_mmio_done);
+        TAP_CHECK(g_mmio_unpriv_rc < 0);
+    }
 }
 
 int main(int, char**)
@@ -592,6 +733,8 @@ int main(int, char**)
     tap::add("irq_thread_ctx", t_irq);
     tap::add("irq_as_event", t_irqdrv);
     tap::add("irq_mask_drop", t_irq_mask);
+    tap::add("irq_autorearm", t_irq_autorearm);
+    tap::add("irq_phantom_wake", t_irq_phantom);
     tap::add("irq_ownership", t_irq_ownership);
     tap::add("irq_spurious", t_irq_spurious);
 #if KICKOS_HAVE_MPU
@@ -600,6 +743,7 @@ int main(int, char**)
 #endif
     tap::add("caller_stack", t_caller_stack); // caller-owned stack API (no test-only syscalls)
     tap::add("domain_share", t_domain_share); // two threads share one memory domain
+    tap::add("mmio_grant", t_mmio_grant);     // MMIO-grant boundary: privileged-only + encodable-only
 
     // Every test joins its workers, so main returns as the last live thread:
     // the failure count becomes the process exit status (0 == all passed).

@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Cross toolchain for the KickOS RISC-V targets (riscv64-unknown-elf, the distro
-# GNU RISC-V cross compiler -- multilib, so `-march=rv32imac -mabi=ilp32` selects
-# the rv32imac/ilp32 newlib/libgcc). Sibling of toolchain-rx-elf.cmake: bare-metal
-# freestanding, no host libc, no default startfiles. The board/chip layer supplies
-# the linker script + startup at the application-link step; here we pin the cross
-# compiler and the RV32IMAC ISA/ABI baseline so the right multilib is selected
-# uniformly for compile AND link.
+# Cross toolchain for the KickOS RISC-V targets (riscv32-none-elf, the pinned
+# RISCStar GNU RISC-V cross compiler -- newlib, multilib, so `-march=rv32imac
+# -mabi=ilp32` selects the rv32imac/ilp32 SOFT-FLOAT newlib/libgcc + libstdc++
+# out of the box). Sibling of toolchain-rx-elf.cmake: bare-metal freestanding, no
+# host libc, no default startfiles. The board/chip layer supplies the linker
+# script + startup at the application-link step; here we pin the cross compiler
+# and the RV32IMAC ISA/ABI baseline so the right multilib is selected uniformly
+# for compile AND link.
 #
 # This file introduces the family value "riscv" (arm|rx|xtensa|riscv). The
 # per-board arch/chip/CPU facts live in a board descriptor
 # (boards/<board>/board.cmake) that this file includes -- the same seam every
-# other family's toolchain uses. RV32IMAC is a clean standard ISA (no windowed
-# ABI, no vendor fork): a stock riscv64-unknown-elf gcc is the clean-room choice,
-# mirroring how the ARM family uses apt's gcc-arm-none-eabi.
+# other family's toolchain uses. RISCStar is a pinned, reproducible prebuilt
+# (newlib, rv32imac/ilp32 soft-float multilib with libstdc++ OOTB) -- same
+# rationale as the RX GNURX and the official ARM toolchains: one exact compiler
+# every host builds with, no distro drift. The soft-float rv32imac/ilp32 multilib
+# is the C6-safety guarantee: no F/D instructions leak into the image.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR riscv)
@@ -46,15 +49,16 @@ set(KICKOS_ARCH_FAMILY "riscv"                 CACHE STRING "KickOS ISA family (
 # ISA baseline instead of hardcoding a value that could drift from here.
 set(KICKOS_MCPU_FLAGS "${_kos_cpu}" CACHE INTERNAL "Per-board RISC-V ISA baseline")
 
-# The distro cross compiler is on PATH (/usr/bin, apt gcc-riscv64-unknown-elf);
-# overridable + PATH-searched for a host that installs it elsewhere.
-set(KICKOS_RISCV_TOOLCHAIN_BIN "" CACHE PATH "Directory holding the riscv64-unknown-elf-* programs")
+# The pinned RISCStar cross compiler. Overridable; also honours PATH.
+set(KICKOS_RISCV_TOOLCHAIN_BIN
+    "/home/leduc/Apps/toolchains/riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf/bin"
+    CACHE PATH "Directory holding the riscv32-none-elf-* programs")
 
-find_program(CMAKE_C_COMPILER   riscv64-unknown-elf-gcc     HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
-find_program(CMAKE_CXX_COMPILER riscv64-unknown-elf-g++     HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
-find_program(CMAKE_ASM_COMPILER riscv64-unknown-elf-gcc     HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
-find_program(CMAKE_OBJCOPY      riscv64-unknown-elf-objcopy HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
-find_program(CMAKE_SIZE         riscv64-unknown-elf-size    HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}")
+find_program(CMAKE_C_COMPILER   riscv32-none-elf-gcc     HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
+find_program(CMAKE_CXX_COMPILER riscv32-none-elf-g++     HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
+find_program(CMAKE_ASM_COMPILER riscv32-none-elf-gcc     HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
+find_program(CMAKE_OBJCOPY      riscv32-none-elf-objcopy HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
+find_program(CMAKE_SIZE         riscv32-none-elf-size    HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}")
 
 # No linker script + startup during CMake's compiler probe (the board supplies
 # them at the app-link step), so probe with a static library -- a step boundary
