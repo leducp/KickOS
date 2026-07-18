@@ -37,6 +37,10 @@ namespace kos
     {
         return kos_clock_now();
     }
+    inline void clock_set_realtime(uint64_t unix_ns)
+    {
+        kos_clock_set_realtime(unix_ns);
+    }
     // Borrow the kernel's diagnostic LED (see kos_kernel_diag_led_set): a shared
     // status pin, not an app-owned device -- provisional until caps land.
     inline void kernel_diag_led(bool on)

@@ -11,6 +11,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/time.h>
 
 extern "C"
 {
@@ -51,6 +52,29 @@ int _getpid(void)
 int _kill(int, int)
 {
     return -1;
+}
+
+// Wall-clock offset over the monotonic kos_clock_now(): unix_ns = now() + offset.
+// Default 0 -> wall time reads boot-relative until kos_clock_set_realtime syncs it.
+// No RTC/NTP source yet; this is the only writer.
+static uint64_t s_wall_offset_ns = 0;
+
+void kos_clock_set_realtime(uint64_t unix_ns)
+{
+    s_wall_offset_ns = unix_ns - kos_clock_now();
+}
+
+// Backs newlib's gettimeofday() (and so std::chrono::system_clock::now()).
+// steady_clock deliberately does NOT route through here: this toolchain's
+// libstdc++ implements steady_clock::now() and system_clock::now() identically,
+// both calling gettimeofday -- so a monotonic path must bypass libc and call
+// kos_clock_now() directly (see kickcat's OS/KickOS/Time.cc::now()).
+int _gettimeofday(struct timeval* tv, void*)
+{
+    uint64_t wall_ns = kos_clock_now() + s_wall_offset_ns;
+    tv->tv_sec = static_cast<time_t>(wall_ns / 1000000000ull);
+    tv->tv_usec = static_cast<suseconds_t>((wall_ns % 1000000000ull) / 1000ull);
+    return 0;
 }
 
 void _exit(int code)

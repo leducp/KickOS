@@ -65,6 +65,13 @@ int kos_irq_wait(int handle);   // block until the line fires; 0, or -1 on bad h
 int kos_irq_ack(int handle);    // unmask the line; 0, or -1 on bad handle
 uint64_t kos_clock_now(void);   // monotonic nanoseconds
 
+// Set the Unix-epoch wall clock: unix_ns is the current time, and the offset
+// stored is unix_ns - kos_clock_now(). Backs newlib's _gettimeofday (see
+// newlib_stubs.cc), so std::chrono::system_clock::now() reads true epoch time
+// after this is called; default offset 0 leaves wall time reading boot-relative.
+// Does NOT affect kos_clock_now() -- that stays a pure monotonic counter.
+void kos_clock_set_realtime(uint64_t unix_ns);
+
 // Allocate a page-aligned block from the MPU-governed user-RAM pool, to hand to
 // a thread as its domain data region (see kos_thread_params.mem_base). NULL if
 // exhausted. On MCU this pool is a linker-defined region.
