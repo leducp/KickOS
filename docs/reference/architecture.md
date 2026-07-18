@@ -134,8 +134,9 @@ layer: K64F SYSMPU, RP2040 ARMv6-M PMSA, F411 ARMv7-M PMSA, C6 RISC-V PMP.
    needs per-instance event delivery.
 8. **Dependency inversion -- the app consumes the kernel.** The application owns the top-level
    build; KickOS is a prebuilt package (libraries + headers + startup + board linker script +
-   flags) consumed as a plain `add_executable` linked against the exported `kickos` target (with
-   `kickos_add_application()` as optional sugar). The app defines a known entry
+   flags) consumed as a plain `add_executable` linked against the exported `kickos` target -- or
+   `kickos_cxx` for a full-C++ (exceptions/STL/RTTI) app (with `kickos_add_application()` as
+   optional sugar). The app defines a known entry
    (`kickos_app_main()`) that the kernel's boot path calls after init.
 9. **Conventions.** Traditional include guards `KICKOS_<PATH>_H` (no `#pragma once`); no ternary
    operators; comments only for hidden constraints/invariants. **Allman brace style**, enforced by
@@ -499,7 +500,8 @@ feeds the slave app.
   target_link_libraries(my_slave PRIVATE kickos)   # `kickos` = the whole OS as usage reqs
   ```
   The exported `kickos` INTERFACE target carries the component link group + flags (sim: host libc
-  threads). `kickos_add_application(<name> SOURCES... BOARD...)` remains as **optional sugar** and is
+  threads); a full-C++ app links `kickos_cxx` instead (both sit over a posture-neutral `kickos_core`).
+  `kickos_add_application(<name> SOURCES... BOARD...)` remains as **optional sugar** and is
   where per-board image emission (`.bin`/`.hex`/`.uf2`) hangs on MCU targets. On the MCU side the
   linker script / `crt0` / entry live in the exported ARM toolchain (mirroring NuttX), so the
   same two lines yield a flashable image; switching sim<->MCU is a one-word `BOARD`/toolchain

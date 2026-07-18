@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F/DSPI0 blocking SPI transport (see spi_transport.h). A privileged bring-up
+// K64F/DSPI0 blocking SPI transport (see <kickos/driver/k64dspi.h>). A privileged bring-up
 // shim configures DSPI0 + opens its AIPS slot + spawns the UNPRIVILEGED driver
 // thread; client threads call spi_transfer()/spi_enable_cs()/spi_disable_cs(), which
 // hand a descriptor to the driver over a semaphore handshake and block. The driver
@@ -37,7 +37,7 @@
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
-#include "spi_transport.h"
+#include <kickos/driver/k64dspi.h>
 
 #include <stdint.h>
 
@@ -96,11 +96,12 @@ namespace
     // Conservative loopback baud (PBR /7, BR scaler 16) -- fine over a jumper.
     constexpr uint32_t CTAR0_PBR_DIV7 = 0x3u << 16;
     constexpr uint32_t CTAR0_BR_SC16 = 0x4u << 0;
-    // Conservative real-ESC bring-up baud: PBR /2, BR scaler 16 -> ~1.9 MHz at a 60 MHz
-    // bus, well within the LAN9252 SPI ceiling and a safe first-contact rate. Raise once
-    // BYTE_TEST is proven; the datasheet CS/inter-frame delays (CSSCK/ASC/DT) should also
-    // be set here for higher rates (bench-verify).
-    constexpr uint32_t CTAR0_PBR_DIV2 = 0x0u << 16;
+    // Real-ESC baud ~10 MHz (PBR /3, BR scaler 2 -> 60/(3*2)), matching the NuttX
+    // example. BYTE_TEST proved the link; the slow ~1.9 MHz rate (PBR /2, BR scaler 16)
+    // plus the per-batch IRQ latency made the 512-byte mailbox read exceed the LAN9252's
+    // 10 ms internal read timeout (-ETIMEDOUT), so the mailbox never processed.
+    constexpr uint32_t CTAR0_PBR_DIV3 = 0x1u << 16;
+    constexpr uint32_t CTAR0_BR_SC2 = 0x0u << 0;
 
     // SR (RM 50.3.5) / RSER (RM 50.3.6)
     constexpr uint32_t SR_EOQF = 1u << 28; // w1c
@@ -114,6 +115,7 @@ namespace
     constexpr int SPI0_IRQ = 26; // RM ch.3 vector table: DSPI0 single vector
 
     constexpr uint32_t TX_FIFO_DEPTH = 4u; // SPI0 TX FIFO = 4 entries
+    constexpr size_t RX_FIFO_DEPTH = 4u;   // SPI0 RX FIFO = 4 entries
 
     // Largest single logical transfer. LAN9252 CSR accesses are <= 7 bytes
     // (3-byte cmd + <=4 aligned payload); process-data bursts stay well under this.
@@ -188,13 +190,15 @@ namespace
     }
 
     // Run the descriptor now sitting in the shared state. CS requests drive the GPIO;
-    // a data request batches frames up to the TX FIFO depth (EOQ terminates each batch,
-    // one wake per batch), drains the RX FIFO into g_bounce in place, and W1Cs SR.EOQF
-    // before the next kos_irq_wait re-arms line 26. CS is asserted before the first
-    // clock and released after the last frame drains -- but only when the transfer is
-    // NOT inside an explicit enable_cs..disable_cs bracket (g_cs_active), so CS is never
-    // toggled between the cmd and payload frames of one CSR access.
-    void run_request(uintptr_t win, int irq)
+    // a data request POLLS the DSPI FIFO (fill TX, drain RX, repeat) -- no EOQ, no
+    // per-batch IRQ wait -- because the GPIO CS holds the line across the whole
+    // transfer. One tight loop clocks N bytes (the batch+IRQ model spent ~1 reschedule
+    // per 4 bytes, so a 512-byte mailbox read blew the LAN9252's 10 ms read window). CS
+    // is asserted before the first clock and released after the last byte drains, but
+    // only when the transfer is NOT inside an explicit enable_cs..disable_cs bracket
+    // (g_cs_active), so CS is never toggled between the cmd and payload frames of one
+    // CSR access.
+    void run_request(uintptr_t win)
     {
         if (g_req_kind == REQ_CS_LOW)
         {
@@ -223,40 +227,32 @@ namespace
             cs_low();
         }
 
-        size_t i = 0;
-        while (i < len)
+        // Polled full-duplex. Fill the TX FIFO as far as it will go, drain whatever has
+        // arrived, repeat -- SR TXCTR[15:12] = TX FIFO count, RXCTR[7:4] = RX count.
+        // No EOQ, no per-batch IRQ: at 4-entry depth + ~10 MHz the FIFO-cycle time is
+        // shorter than the reschedule latency, so spinning beats sleeping for the short
+        // CSR/mailbox transfers here (a deep FIFO or eDMA would flip that -- see TODO).
+        size_t pushed = 0;
+        size_t popped = 0;
+        while (popped < len)
         {
-            size_t batch = len - i;
-            if (batch > TX_FIFO_DEPTH)
+            // Drain first: the 4-deep RX FIFO must never overflow (a dropped byte would
+            // leave popped < len forever -> hang).
+            if (((*sr >> 4) & 0xFu) > 0u)
             {
-                batch = TX_FIFO_DEPTH;
+                g_bounce[popped] = static_cast<unsigned char>(*popr & 0xFFu);
+                popped++;
             }
-
-            for (size_t j = 0; j < batch; j++)
+            // Push only while fewer than RX_FIFO_DEPTH bytes are IN FLIGHT, so every
+            // completed frame always has a free RX slot. Capping on TXCTR alone is not
+            // enough: in-flight = TX FIFO + shift register + RX FIFO, so filling TX to
+            // its own depth can push RX past 4 and drop a byte (the 512-byte read hang).
+            if (pushed < len and (pushed - popped) < RX_FIFO_DEPTH
+                and ((*sr >> 12) & 0xFu) < TX_FIFO_DEPTH)
             {
-                size_t const idx = i + j;
-                uint32_t frame = (g_bounce[idx] & 0xFFu);
-
-                // EOQ terminates each FIFO batch: one wake per batch (== one wake per
-                // logical transfer for the len<=4 CSR accesses). CS is held by the GPIO
-                // across the whole transfer, so the STOPPED gap between batches is inert.
-                if (j == batch - 1)
-                {
-                    frame |= PUSHR_EOQ;
-                }
-
-                *pushr = frame;
+                *pushr = static_cast<uint32_t>(g_bounce[pushed]) & 0xFFu;
+                pushed++;
             }
-
-            kos_irq_wait(irq); // block until this batch's EOQF raises line 26
-
-            for (size_t j = 0; j < batch; j++)
-            {
-                g_bounce[i + j] = static_cast<unsigned char>(*popr & 0xFFu);
-            }
-
-            *sr = SR_EOQF; // W1C before the next kos_irq_wait re-arms (anti-storm)
-            i += batch;
         }
 
         if (self_bracket)
@@ -275,25 +271,12 @@ namespace
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
 
-        int h = kos_irq_register(SPI0_IRQ);
-        if (h < 0)
-        {
-            kos::print("[k64dspi] ERROR: irq_register(DSPI0) failed\n");
-            while (true)
-            {
-                kos_sleep_ns(1000000000ull);
-            }
-        }
-
-        // Announce before the first blocking wait: if IRQ 26 never fires (misrouted
-        // line / NVIC / RSER) the driver hangs in kos_irq_wait -- this disambiguates a
-        // hung-waiting-for-IRQ board from a dead one / missing console.
-        kos::print("[k64dspi] transport ready (DSPI0 driver waiting for requests)\n");
+        kos::print("[k64dspi] transport ready (DSPI0 driver, polled FIFO)\n");
 
         while (true)
         {
             kos_sem_wait(g_req); // block until a client posts a descriptor
-            run_request(win, h);
+            run_request(win);
             kos_sem_post(g_done);
         }
     }
@@ -360,7 +343,7 @@ extern "C"
         }
         else
         {
-            ctar |= CTAR0_PBR_DIV2 | CTAR0_BR_SC16;
+            ctar |= CTAR0_PBR_DIV3 | CTAR0_BR_SC2;
         }
         r32(SPI0_BASE + CTAR0_OFFSET) = ctar;
 

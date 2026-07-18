@@ -213,12 +213,6 @@ function(kickos_add_application name)
   # The `kickos` interface target carries the component link group (+ threads on
   # sim). (MCU image emission -- objcopy .bin/.uf2 -- will hang off here at M1.)
   add_executable(${name} ${APP_SOURCES})
-  # Full-C++ opt-in: the `kickos` interface target reads this property (per
-  # consuming target) to swap the freestanding clamp for -fexceptions/-frtti and
-  # to keep libstdc++ in the link (drop -nostdlib++). Off -> freestanding default.
-  if(APP_FULL_CXX)
-    set_target_properties(${name} PROPERTIES KICKOS_FULL_CXX ON)
-  endif()
   # The chip linker script is passed as a driver -T option (see the `kickos` target),
   # which CMake does NOT treat as a link dependency -- so an edited .ld would silently
   # not relink and a stale image would flash. Make it an explicit link dependency.
@@ -232,9 +226,13 @@ function(kickos_add_application name)
   if(_arch STREQUAL "rv32imac" AND DEFINED KICKOS_HAVE_MPU AND KICKOS_HAVE_MPU)
     target_compile_options(${name} PRIVATE -msmall-data-limit=0)
   endif()
-  # The OS-agnostic entry glue (-Dmain / -include app.h) rides the `kickos`
-  # usage target below, so the plain add_executable path gets it too.
-  target_link_libraries(${name} PRIVATE kickos)
+  # The OS-agnostic entry glue (-Dmain / -include app.h) rides each leaf's core, so
+  # the plain add_executable path gets it too. FULL_CXX picks the full-C++ leaf.
+  if(APP_FULL_CXX)
+    target_link_libraries(${name} PRIVATE kickos_cxx)
+  else()
+    target_link_libraries(${name} PRIVATE kickos)
+  endif()
   # MCU: emit flashable .bin/.hex (no-op on the sim).
   kickos_emit_image(${name})
 endfunction()

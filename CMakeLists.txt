@@ -276,90 +276,54 @@ endif()
 # kickos_add_application() is then optional sugar (and, on MCU, the image step).
 # The arch<->kernel callback cycle is resolved as one rescanned archive group.
 if(TARGET kickos_kernel)
-  add_library(kickos INTERFACE)
-  # Full-C++ per-app opt-in (docs/design-kickcat-k64f.md, "Libc strategy"): an app
-  # target with the KICKOS_FULL_CXX property set (via kickos_add_application(... FULL_CXX))
-  # compiles its C++ TUs with -fexceptions/-frtti and links the toolchain's
-  # libstdc++/libsupc++; every other target keeps the freestanding default below.
-  # The property is read on the CONSUMING (app) target, so this one INTERFACE
-  # target serves both postures. Kernel/lib/arch are never consumers here -- they
-  # get the freestanding clamp directly via kickos_apply_freestanding().
-  set(KICKOS_FREESTANDING_WHEN "$<NOT:$<BOOL:$<TARGET_PROPERTY:KICKOS_FULL_CXX>>>")
-  set(KICKOS_FULL_CXX_WHEN "$<BOOL:$<TARGET_PROPERTY:KICKOS_FULL_CXX>>")
+  # Posture-neutral requirements shared by both leaves. Consumers link a leaf
+  # (kickos / kickos_cxx), never kickos_core directly; core carries everything
+  # except the freestanding-vs-full-C++ compile clamp and the -nostdlib++ link.
+  add_library(kickos_core INTERFACE)
   # On MCU the chip backend (arch_init/console + reset vector) joins the rescan
   # group; the arch<->kernel<->chip callback cycles resolve as one archive group.
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
-    target_link_libraries(kickos INTERFACE
+    target_link_libraries(kickos_core INTERFACE
       "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
   else()
-    target_link_libraries(kickos INTERFACE
+    target_link_libraries(kickos_core INTERFACE
       "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,kickos_arch_${KICKOS_ARCH},kickos_lib>")
   endif()
-  # OS-agnostic app entry (architecture.md 8j), carried as usage requirements so
-  # both the plain add_executable path and kickos_add_application inherit them
-  # (in-tree and out-of-tree): the app writes a plain `int main`, renamed to the
-  # kernel-called symbol; app.h is force-included so the renamed C++ main gets C
-  # linkage (unmangled).
-  target_compile_definitions(kickos INTERFACE main=kickos_app_main)
-  # Provisioning normally travels via the shipped board_config.h (config/{board,
-  # system}.h include it), so an out-of-tree consumer's TUs compile to the same
-  # layout as the prebuilt libs by reading the same header -- one source of truth.
-  # The ONE exception: a transient -D knob override changed the values the libs
-  # were built with but not the shipped header, so carry those specific overrides
-  # on the interface target too (they win over the header's #ifndef) -- else an
-  # OOT TU including a kernel-internal header would disagree on the layout (ODR).
+  # OS-agnostic app entry (architecture.md 8j): the app writes a plain `int main`,
+  # renamed to the kernel-called symbol; app.h is force-included so the renamed C++
+  # main gets C linkage (unmangled).
+  target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)
+  # A transient -D knob override changed the values the libs were built with but not
+  # the shipped board_config.h, so carry those overrides here too (they win over the
+  # header's #ifndef) -- else an OOT TU including a kernel-internal header would
+  # disagree on the layout (ODR).
   if(KICKOS_PROVISION_OVERRIDES)
-    target_compile_definitions(kickos INTERFACE ${KICKOS_PROVISION_OVERRIDES})
+    target_compile_definitions(kickos_core INTERFACE ${KICKOS_PROVISION_OVERRIDES})
   endif()
-  # The telemetry defines are directory-scope (add_compile_definitions above), so
-  # they reach the prebuilt libs but NOT an out-of-tree TU that includes a kernel-
-  # internal header. KICKOS_TELEMETRY gates fields in struct Kernel (instance.h)
-  # and arch_context (context.h), so an OOT telemetry build compiling against the
-  # default (off) header would disagree on the layout (ODR); KICKOS_TRACE_ARCH sets
-  # the arch id emitted by the inline ktrace_session. Carry them on the interface
-  # target (mirrors the KICKOS_RTT_CH1_SIZE forwarding via KICKOS_PROVISION_OVERRIDES).
-  target_compile_definitions(kickos INTERFACE
+  # KICKOS_TELEMETRY gates fields in struct Kernel (instance.h) and arch_context
+  # (context.h); KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h). An OOT TU that
+  # includes a kernel-internal header must see the same posture as the prebuilt libs
+  # (ODR), so carry them as usage requirements.
+  target_compile_definitions(kickos_core INTERFACE
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
-    # KOS_STACK_DEFINE (kos.h) branches on this: an out-of-tree app TU that owns a
-    # thread stack must see the same enforcement posture as the prebuilt kernel.
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
-  target_compile_options(kickos INTERFACE -include kickos/app.h)
+  target_compile_options(kickos_core INTERFACE -include kickos/app.h)
   if(KICKOS_ARCH STREQUAL "sim")
     find_package(Threads REQUIRED)
-    target_link_libraries(kickos INTERFACE Threads::Threads rt)
-  else()
-    # MCU: the bare-metal link is -nostdlib++ (no libsupc++/libstdc++) by default,
-    # so app TUs must compile freestanding too -- otherwise EH/RTTI tables from a
-    # destructor reference __gxx_personality_v0 / __cxa_end_cleanup and the link
-    # fails. A FULL_CXX app instead compiles -fexceptions/-frtti and links the
-    # toolchain libstdc++ (the -nostdlib++ in the link recipe is dropped for it).
-    target_compile_options(kickos INTERFACE
-      "$<$<AND:$<COMPILE_LANGUAGE:CXX>,${KICKOS_FREESTANDING_WHEN}>:${KICKOS_FREESTANDING_CXX_FLAGS}>"
-      "$<$<AND:$<COMPILE_LANGUAGE:CXX>,${KICKOS_FULL_CXX_WHEN}>:-fexceptions;-frtti>")
+    target_link_libraries(kickos_core INTERFACE Threads::Threads rt)
   endif()
-  # MCU bare-metal link recipe (baked into the interface target): our reset object
-  # instead of crt0, the chip linker script, dead-code elimination, and a force-
-  # reference to the vector table (else --gc-sections would drop it).
+  # MCU bare-metal link recipe (posture-neutral part): our reset object instead of
+  # crt0, the chip linker script, dead-code elimination, and force-refs to objects
+  # nothing references (else --gc-sections drops them). -nostdlib++ is NOT here --
+  # it belongs to the freestanding leaf only.
   if(NOT (KICKOS_ARCH STREQUAL "sim") AND KICKOS_LINKER_SCRIPT)
-    # -T at the DRIVER level. The newlib arm-none-eabi toolchain injects no
-    # default linker script (verified: its specs name no .ld, and -T / -Wl,-T
-    # link identically -- only our board script applies, no double-script), so
-    # this need not be driver-level for newlib. It is kept driver-level anyway:
-    # it works, and the RP2040 boot2 sub-link (arch/CMakeLists.txt) uses the same
-    # form. (The old picolibc apt toolchain REQUIRED driver-level -T -- its spec
-    # only suppressed the default picolibc.ld when it saw a driver-level -T.)
-    target_link_options(kickos INTERFACE
+    target_link_options(kickos_core INTERFACE
       -nostartfiles
-      # Freestanding (default): no libstdc++ (keep libc/libgcc). A FULL_CXX app
-      # drops -nostdlib++ so the g++ driver auto-links the toolchain's
-      # libstdc++/libsupc++ (its EH, RTTI, operator new/delete) over newlib.
-      "$<${KICKOS_FREESTANDING_WHEN}:-nostdlib++>"
       -Wl,--gc-sections
       -Wl,--no-warn-rwx-segments
-      # ARM's vector table (g_isr_vector) is a data object nothing references, so
-      # force it in (else --gc-sections drops it). RX pulls its two vector tables
-      # via ENTRY(_start) + KEEP() in the linker script, so it needs no force-ref
+      # ARM's vector table (g_isr_vector) is a data object nothing references. RX
+      # pulls its vector tables via ENTRY(_start) + KEEP(), so it needs no force-ref
       # (and has no g_isr_vector -- forcing it would leave a dangling undefined).
       "$<$<STREQUAL:${KICKOS_ARCH_FAMILY},arm>:-Wl,-u,g_isr_vector>"
       -Wl,-u,_exit             # force our libc syscall stubs in (libc's raise->_exit)
@@ -372,7 +336,30 @@ if(TARGET kickos_kernel)
       "$<BUILD_INTERFACE:SHELL:-T ${KICKOS_LINKER_SCRIPT}>"
       "$<INSTALL_INTERFACE:SHELL:-T $<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
   endif()
-  install(TARGETS kickos EXPORT KickOSTargets)
+
+  # Two posture leaves over the neutral core. A pure-C / freestanding app links
+  # `kickos`; a full-C++ (exceptions/STL/RTTI) app links `kickos_cxx`. A misspelled
+  # leaf name is a hard CMake error, not a silent freestanding downgrade.
+  add_library(kickos INTERFACE)
+  target_link_libraries(kickos INTERFACE kickos_core)
+  add_library(kickos_cxx INTERFACE)
+  target_link_libraries(kickos_cxx INTERFACE kickos_core)
+  if(NOT (KICKOS_ARCH STREQUAL "sim"))
+    # Freestanding (default): no EH/RTTI in the app's C++ TUs, and -nostdlib++ drops
+    # libsupc++/libstdc++ -- a stray operator new / EH table then fails the link loud.
+    target_compile_options(kickos INTERFACE
+      "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
+    target_link_options(kickos INTERFACE -nostdlib++)
+    # Full C++: -fexceptions/-frtti, and omitting -nostdlib++ lets the g++ driver
+    # auto-link the toolchain libstdc++/libsupc++ (EH, RTTI, new/delete) over newlib.
+    # kickos_cxx never sees the freestanding clamp, so there is no -fno-exceptions to
+    # override -- the two flag sets never collide on one command line.
+    target_compile_options(kickos_cxx INTERFACE
+      "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
+  endif()
+
+  # kickos_core is a link dependency of both leaves, so it must be in the export set.
+  install(TARGETS kickos_core kickos kickos_cxx EXPORT KickOSTargets)
 endif()
 
 # Apps link a full image: the sim links against host libc; an MCU board links

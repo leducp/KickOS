@@ -23,7 +23,13 @@ whenever it is ready, tagged as such in `TODO.md`.
 ## Next
 
 ### M2 -- hardware MPU enforcement
-Make per-task isolation real on silicon. Two halves:
+Make per-task isolation real on silicon. **Status:** the enforcement mechanism has landed on
+silicon across the reference set -- K64F SYSMPU, XMC PMSA, RX72M MPU, ESP32-C6 PMP -- each with
+selftest under enforcement plus a cross-domain `mpu_fault` trap; the arch-independent floor
+(memory domains, per-thread private stacks, pow2 region placement, confused-deputy out-pointer
+copy-in) is in. Remaining tail (STM32/RP2040 silicon, C6 peripheral APM open, RX region-skip
+fail-closed fix, the deferred syscall-buffer bounds) is tracked in `TODO.md` / `docs/m2-readiness.md`.
+Two halves:
 - **Mechanism, per chip** -- `arch_mpu_apply()` backends wired into the task-switch hook, one
   distinct mechanism class at a time (the discipline: prove `{base,size,attr}` is sufficient,
   never leak a per-arch field). Reference pair first: **RISC-V PMP/NAPOT** (traps in CI without

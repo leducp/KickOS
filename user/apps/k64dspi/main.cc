@@ -3,7 +3,7 @@
 //
 // K64F/DSPI0 SPI transport silicon validation (task #9 Stage 3 -> KickCAT Stage C).
 // Two build modes over the SAME callable blocking transport (spi_transfer /
-// spi_enable_cs / spi_disable_cs, see spi_transport.h):
+// spi_enable_cs / spi_disable_cs, see <kickos/driver/k64dspi.h>):
 //
 //   DEFAULT -- LAN9252 BYTE_TEST probe. An EasyCAT LAN9252 shield is on the Arduino
 //   R3 header; the probe reads the ESC's byte-order signature register (0x0064) and
@@ -33,7 +33,7 @@
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
-#include "spi_transport.h"
+#include <kickos/driver/k64dspi.h>
 
 #include <stdint.h>
 #include <stddef.h>

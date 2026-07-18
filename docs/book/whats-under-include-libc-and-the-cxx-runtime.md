@@ -148,12 +148,13 @@ deliberate cost decision.
   `std::to_string`) drags it in. That cost is libc-independent -- it is the price of the
   feature, not of a brand.
 
-The plumbing that flips between the two is a single CMake property. `kickos_add_application(... FULL_CXX)`
-sets `KICKOS_FULL_CXX` on the app target; the exported `kickos` interface target reads
-it on the *consuming* app (see `CMakeLists.txt` around the `KICKOS_FULL_CXX_WHEN`
-generator expression) and switches that app's TUs to `-fexceptions -frtti` and its link
-to keep `libstdc++`. One target serves both postures; the kernel and libs are clamped
-freestanding directly via `kickos_apply_freestanding()` and are never consumers.
+The plumbing that flips between the two is which target the app links. The exported
+package ships three interface targets over a posture-neutral `kickos_core`: an app links
+`kickos` for the freestanding default (`-fno-exceptions -fno-rtti`, `-nostdlib++`) or
+`kickos_cxx` for full C++ (`-fexceptions -frtti`, `libstdc++`/`libsupc++` kept). A
+misspelled leaf is a hard link error, not a silent freestanding downgrade. The kernel and
+libs are clamped freestanding directly via `kickos_apply_freestanding()` and are never
+consumers. (`kickos_add_application(... FULL_CXX)` remains as sugar and just selects the leaf.)
 
 ## The NuttX trap: never host toolchain C++ on your own libc
 
@@ -245,10 +246,10 @@ reaches for it.
 Under per-task MPU isolation (Chapter 7), one extra fact matters: the C++ runtime's
 **writable state must land in a region the isolated thread was granted**, while its
 read-only tables come along for free. When this chapter was drafted that was a plan,
-proven only on qemu-riscv. It is now **proven on real K64F silicon**: a `FULL_CXX`
-KickCAT EtherCAT slave -- exceptions, RTTI, and the STL all live -- reached
-`INIT -> PRE_OP` under K64F SYSMPU enforcement, an unprivileged thread running the full
-runtime out of its own granted regions.
+proven only on qemu-riscv. It is now **proven on real K64F silicon**: a full-C++
+KickCAT EtherCAT slave (linking `kickos_cxx`) -- exceptions, RTTI, and the STL all live --
+reached `OPERATIONAL` under K64F SYSMPU enforcement, an unprivileged thread running the
+full runtime out of its own granted regions.
 
 - **Writable, must be in the granted data region:** the libc heap arena (`s_heap`), the
   newlib malloc bins and reent (`_impure_*`), libgcc's FDE registry list heads, and

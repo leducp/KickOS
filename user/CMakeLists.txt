@@ -25,3 +25,6 @@ target_include_directories(kickos_user PUBLIC
 target_link_libraries(kickos_user PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
 install(TARGETS kickos_user EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+
+# Chip-specific exported userspace drivers (kickos_k64dspi, ...).
+add_subdirectory(driver)

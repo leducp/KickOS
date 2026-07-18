@@ -4,25 +4,30 @@
 Scoping for the north-star integration (see `reference/architecture.md`, "Sim end-goal"):
 run KickCAT's `freedom-k64f` EtherCAT slave example on KickOS -- first on the sim over
 `EmulatedESC`, then on K64F over a real LAN9252 ESC via the unprivileged DSPI0 driver.
-KickCAT lives at `../KickCAT` (used, not vendored). This is a PLAN, not implemented.
+KickCAT lives at `../KickCAT` (used, not vendored). Stage A (the sim slave) has LANDED as
+`user/apps/kickcat_slave` (a CI test); the K64F hardware path below is still the plan.
 
 ## Verdict
 
-Not runnable today on either path. The de-risking fact: KickCAT already cross-compiles for
+The sim path has LANDED (Stage A, `user/apps/kickcat_slave`). The K64F hardware path is not
+runnable today. The de-risking fact: KickCAT already cross-compiles for
 Cortex-M4F (its own `examples/slave/nuttx/lan9252/freedom-k64f` target), so the library builds
-for our exact chip. The blockers are in KickOS, ranked by size:
+for our exact chip. The blockers below were the original KickOS gaps; all are now resolved
+(recorded here as the design record). The consumer app itself now lives in the KickCAT tree
+(the KickOS-side `examples/freedom-slave` was removed) -- see "The ESC transport" below.
 
-1. **Full-C++ userspace opt-in is unimplemented (gating).** KickCAT is exception-using,
-   STL/heap-using C++17. On MCU the exported `kickos` target forces `-fno-exceptions -fno-rtti`
-   on app C++ TUs and links `-nostdlib++` over newlib; the opt-in is flagged "a later story"
-   and not built. On the **sim** this is nearly free (host `libstdc++`, no freestanding clamp),
-   which is why the sim path is the smallest first step.
-2. **The `k64dspi` driver is a loopback demo, not a transport.** It pushes a fixed 4-byte
-   pattern and exposes no callable `spi_transfer`. The real API is already specced in
-   `design-spi-driver-k64f-dspi.md` but must be built.
-3. Secondary: `k64dspi` is build-only (never silicon-validated); no LAN9252 board on the bench;
-   K64F peripheral isolation is coarse (AIPS ceiling -- driver-in-userspace holds, but no
-   per-thread peripheral boundary).
+1. **Full-C++ userspace opt-in (RESOLVED).** KickCAT is exception-using, STL/heap-using
+   C++17. Full C++ is now a per-app opt-in: an app links the exported `kickos_cxx` target
+   (`-fexceptions -frtti`, `libstdc++`/`libsupc++` kept) instead of the freestanding `kickos`.
+   Proven on real K64F silicon -- the slave reached `OPERATIONAL` under SYSMPU enforcement.
+2. **The `k64dspi` driver is a real transport (RESOLVED).** It exposes callable
+   `spi_transfer`/`spi_enable_cs`/`spi_disable_cs` (+ `spi_driver_start`), exported as the
+   `kickos_k64dspi` lib with the public header `<kickos/driver/k64dspi.h>` (source at
+   `user/driver/k64dspi`). An out-of-tree consumer links it on top of the OS.
+3. **`k64dspi` silicon (RESOLVED).** The polled-FIFO transport (~10 MHz) reached `OPERATIONAL`
+   against a real LAN9252. K64F peripheral isolation stays coarse (AIPS ceiling --
+   driver-in-userspace holds, but no per-thread peripheral boundary): an accepted, documented
+   bound, not a gap.
 
 ## The KickCAT OS backend (small)
 
@@ -134,7 +139,7 @@ tables to a domain.
 
 ## Staged plan
 
-- **A -- Sim slave on `EmulatedESC` (no hardware, CI-provable, smallest).** Add the Time-only
+- **A -- Sim slave on `EmulatedESC` (no hardware, CI-provable, smallest) -- LANDED (`user/apps/kickcat_slave`).** Add the Time-only
   KickOS backend; enable full C++ on the sim app (host libstdc++, near-free); a sim app that
   builds `EmulatedESC` + `PDO` + `slave::Slave` and runs `routine()`. Proves OS-abstraction +
   KickCAT-on-KickOS-libc + the slave state machine, under CTest. (Single instance first;
@@ -151,6 +156,7 @@ tables to a domain.
   flash, bring a master up. Proves the north star: one slave on KickOS/K64F over a real SPI ESC,
   mirroring the Stage-A sim slave.
 
-Critical path: the OS backend is trivial; the two real efforts are **(1) userspace full-C++
-opt-in** (blocks all MCU work) and **(2) the `spi_transfer` transport + CS-hold `AbstractSPI`
-backend**. `k64dspi` silicon validation (unrun) and the K64F specifics sit under Stages C-D.
+Critical path (all resolved): the OS backend was trivial; the two real efforts were
+**(1) userspace full-C++ opt-in** (now the `kickos_cxx` leaf) and **(2) the `spi_transfer`
+transport + CS-hold `AbstractSPI` backend** (now the exported `kickos_k64dspi` driver).
+`k64dspi` reached `OPERATIONAL` against a real LAN9252 on K64F silicon (Stages C-D).

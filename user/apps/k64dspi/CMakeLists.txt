@@ -8,11 +8,14 @@
 # image). Registered only for the frdmk64f board (chip-specific DSPI/PORTD/AIPS
 # bring-up) AND enforcement builds (the MMIO-grant seam is an M2 construct).
 kickos_add_diagnostic_app(k64dspi
-  SOURCES main.cc spi_transport.cc
+  SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
 if(NOT TARGET k64dspi)
   return() # diagnostics off -> app not built
 endif()
+
+# The DSPI0 transport is the exported kickos_k64dspi driver, not a local copy.
+target_link_libraries(k64dspi PRIVATE kickos_k64dspi)
 
 # Default: the LAN9252 BYTE_TEST probe (EasyCAT shield on the Arduino header, HW PCS0
 # on D9/PTC4). Set -DK64DSPI_LOOPBACK=ON to build the SOUT->SIN loopback self-test

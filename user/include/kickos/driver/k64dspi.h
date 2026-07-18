@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Callable blocking SPI transport over the K64F/DSPI0 unprivileged driver
-// (user/apps/k64dspi). The privileged bring-up shim (spi_driver_start) clock-gates
+// The K64F/DSPI0 unprivileged SPI driver: a callable blocking transport.
+// The privileged bring-up shim (spi_driver_start) clock-gates
 // + PORTD-muxes + configures DSPI0 while halted, opens the DSPI AIPS slot to user
 // mode, sets up the software GPIO chip select on PTC4, and spawns the UNPRIVILEGED
 // driver thread that owns the DSPI register window + IRQ 26 + the PTC4 CS GPIO.
@@ -20,8 +20,8 @@
 // declares spi_transfer/spi_enable_cs/spi_disable_cs as extern "C" locally, so it
 // links this transport without a KickOS header dependency (the Time-backend seam).
 
-#ifndef KICKOS_APP_K64DSPI_SPI_TRANSPORT_H
-#define KICKOS_APP_K64DSPI_SPI_TRANSPORT_H
+#ifndef KICKOS_DRIVER_K64DSPI_H
+#define KICKOS_DRIVER_K64DSPI_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -54,4 +54,4 @@ extern "C"
 }
 #endif
 
-#endif // KICKOS_APP_K64DSPI_SPI_TRANSPORT_H
+#endif // KICKOS_DRIVER_K64DSPI_H

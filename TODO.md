@@ -167,16 +167,22 @@ below where they were previously mislabeled.
         fable-reviewed; **silicon-validation PENDING** a bench swap to the 32F411E-DISCO. It
         first-proves granted-SPI-works AND ungranted-peripheral-faults per thread on PMSA
         silicon -- the fleet's one honest peripheral-isolation gap. `docs/design-spi-driver-stm32f411.md`.
-  - [~] **K64F/DSPI driver (k64dspi, DSPI0 for the KickCAT ESC SPI PDI)** -- design brief DONE
-        (`docs/design-spi-driver-k64f-dspi.md`); implementation IN PROGRESS (build-only).
-        Designed within the K64F coarse-peripheral ceiling (window grant is documentation, not
-        enforcement); microkernel invariant kept (driver in userspace). Needs silicon.
-  - [ ] **C6 PMP enforcement still BLOCKED** (all-SRAM image / gp-relative small-data /
-        code-from-RAM) AND now a known second blocker: a **separate APM/PMS bus permission
-        unit** that defaults deny-user on peripheral targets (needs a one-time global open,
-        not per-thread), on top of the PMP grant. See the C6 row in `docs/m2-readiness.md`.
-  - [ ] **RX72M MPU still build-only / silicon-unproven** + m2-review-followup #5 (RX rounds
-        misaligned regions instead of skipping -- fail-closed drift). See `docs/m2-review-followups.md`.
+  - [x] **K64F/DSPI driver (k64dspi, DSPI0 for the KickCAT ESC SPI PDI)** -- DONE on silicon:
+        the polled-FIFO transport (~10 MHz) reached OPERATIONAL against a real LAN9252. Exported
+        as the `kickos_k64dspi` lib (`<kickos/driver/k64dspi.h>`, source `user/driver/k64dspi`)
+        so an out-of-tree consumer links it. Within the K64F coarse-peripheral ceiling (window
+        grant is documentation, not enforcement); microkernel invariant kept (driver in userspace).
+  - [x] **C6 PMP SRAM enforcement DONE on silicon** (18/18 selftest under enforcement +
+        mpu_fault cross-domain trap, 2026-07-17) -- the earlier blockers (all-SRAM image /
+        gp-relative small-data / code-from-RAM) were resolved. REMAINING (peripheral side,
+        follow-on -- NOT needed for SRAM enforcement): a **separate APM/PMS bus permission
+        unit** defaults deny-user on peripheral targets and needs a one-time global open (not
+        per-thread) on top of the PMP grant before a C6 userspace driver reaches a peripheral.
+        See the C6 row in `docs/m2-readiness.md` + `docs/design-c6-driver.md`.
+  - [x] **RX72M MPU DONE on silicon** (selftest 20/20 under enforcement + mpu_fault
+        cross-domain trap, 2026-07-17). REMAINING: m2-review-followup #5 (RX rounds
+        misaligned regions instead of skipping -- fail-closed drift, build-robustness).
+        See `docs/m2-review-followups.md`.
 - **[anytime coherence -- NOT M2] object-pool mutualisation** -- DONE (step 1). The semaphore
   pool is a generational `SlotPool<T,N>` (slotpool.h); the thread pool is grouped into a
   tailored `ThreadPool` struct (thread.h) -- deliberately **not** SlotPool: thread liveness is
