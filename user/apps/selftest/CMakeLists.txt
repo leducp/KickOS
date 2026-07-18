@@ -73,3 +73,19 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
             "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
   set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 120)
 endif()
+
+# Boot-ctor-split guard: on an enforced armv7m link (.kickos_app_init_array exists),
+# assert no closed-set kernel ctor leaked into the app-ctor window (would run after
+# kmain). Runs against this selftest ELF -- a plain app is enough: the check needs
+# the section symbols plus the four kernel archives, not app/libstdc++ ctors.
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
+  add_test(
+    NAME    kernel_ctor_placement
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_kernel_ctor_placement.sh"
+            "$<TARGET_FILE:selftest>" "${CMAKE_NM}" "${CMAKE_OBJCOPY}"
+            "$<TARGET_FILE:kickos_kernel>"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
+            "$<TARGET_FILE:kickos_lib>")
+  set_tests_properties(kernel_ctor_placement PROPERTIES TIMEOUT 60)
+endif()
