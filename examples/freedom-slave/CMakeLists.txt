@@ -36,6 +36,7 @@ kickos_add_application(freedom_slave
   SOURCES
     main.cc
     spi_transport.cc
+    ${FREEDOM_EXAMPLE_DIR}/freedom_app.cc
     ${FREEDOM_EXAMPLE_DIR}/freedom_slave.cc
     ${FREEDOM_EXAMPLE_DIR}/od_populator.cc
   BOARD   frdmk64f
