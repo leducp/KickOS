@@ -150,14 +150,6 @@ namespace
     int g_cs_active = 0;
     int g_gpio_cs = 0;
 
-    // Instrumentation (Stage-D CoE bring-up): logical writes (tx != null) vs reads
-    // (rx != null), so the slave can show whether it is issuing mailbox-response
-    // WRITES when the master's SDO read times out. Read via spi_transfer_stats().
-    uint32_t g_reads = 0;
-    uint32_t g_writes = 0;
-    uint32_t g_toolong = 0; // spi_transfer rejections (len > BOUNCE_MAX) -- the BOUNCE_MAX suspect
-    uint32_t g_maxlen = 0;  // largest len seen (does the mailbox/PRAM path exceed BOUNCE_MAX?)
-
     void mem_copy(void* dst, void const* src, size_t n)
     {
         unsigned char* d = static_cast<unsigned char*>(dst);
@@ -390,25 +382,11 @@ extern "C"
         }
         if (len > BOUNCE_MAX)
         {
-            g_toolong++;
             return -1;
         }
         if (g_lock < 0)
         {
             return -1; // transport not started
-        }
-
-        if (len > g_maxlen)
-        {
-            g_maxlen = static_cast<uint32_t>(len);
-        }
-        if (tx != nullptr)
-        {
-            g_writes++;
-        }
-        if (rx != nullptr)
-        {
-            g_reads++;
         }
 
         kos_sem_wait(g_lock);
@@ -468,29 +446,5 @@ extern "C"
         kos_sem_post(g_req);
         kos_sem_wait(g_done);
         kos_sem_post(g_lock);
-    }
-
-    void spi_transfer_stats(uint32_t* reads, uint32_t* writes)
-    {
-        if (reads != nullptr)
-        {
-            *reads = g_reads;
-        }
-        if (writes != nullptr)
-        {
-            *writes = g_writes;
-        }
-    }
-
-    void spi_transfer_diag(uint32_t* toolong, uint32_t* maxlen)
-    {
-        if (toolong != nullptr)
-        {
-            *toolong = g_toolong;
-        }
-        if (maxlen != nullptr)
-        {
-            *maxlen = g_maxlen;
-        }
     }
 }

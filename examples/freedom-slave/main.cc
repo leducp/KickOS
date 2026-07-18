@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Out-of-tree KickOS consumer app: the KickCAT LAN9252 EtherCAT slave on the
-// Freedom-K64F over DSPI0. Neither the slave logic (freedom::run) nor the app shell
-// (freedom::app_run -- console, state trace, run loop) live here: both are shared,
-// CTT-proven sources compiled verbatim from the KickCAT example tree. This file is
-// only the two KickOS-specific seams: the DSPI0 SPI backend (brought up on an
-// UNPRIVILEGED slave thread under MPU enforcement) and the OPERATIONAL data source
-// (a synthetic counter -- no accel/LED hardware on this bench; real support post-M3).
+// KickOS consumer: the KickCAT LAN9252 slave on the Freedom-K64F over DSPI0. The slave
+// logic (freedom::run) and app shell (freedom::app_run) are shared; this file is only the
+// two KickOS seams -- the DSPI0 SPI backend (unprivileged slave thread under the MPU) and
+// the OPERATIONAL data source (a synthetic counter; no accel/LED hardware on this bench).
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -18,8 +15,6 @@
 #include "kickcat/kickos/SPI.h"
 
 #include <memory>
-
-using namespace kickcat;
 
 namespace
 {
@@ -32,9 +27,8 @@ namespace
         uint16_t tick;
     };
 
-    // No accel/LED hardware: feed the accel TxPDO (0x6000..0x6005, slave->master) a
-    // synthetic counter so the process data changes and the slave holds OP; the LED
-    // RxPDO (0x7000..0x7002, master->slave) is accepted and ignored.
+    // No accel/LED hardware: a synthetic counter keeps the TxPDO changing so OP holds;
+    // the RxPDO LED outputs are ignored.
     void kickos_data_source(void* vctx, freedom::Pdo const& io)
     {
         KickosCtx* ctx = static_cast<KickosCtx*>(vctx);

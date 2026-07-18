@@ -49,12 +49,11 @@ target_link_libraries(freedom_slave PRIVATE kickcat)
 # main.cc includes the shared core's freedom_slave.h out of the KickCAT example dir.
 target_include_directories(freedom_slave PRIVATE ${FREEDOM_EXAMPLE_DIR})
 
-# Opt-in Stage-D CoE bring-up tracing: KickCAT's own slave/CoE debug macros (SM config,
-# mailbox/SDO flow) route through fprintf -> newlib _write -> console. OFF by default.
+# Opt-in CoE bring-up tracing: KickCAT's own slave/CoE debug macros route through
+# fprintf -> newlib _write -> console. OFF by default.
 option(FREEDOM_SLAVE_COE_TRACE "Enable KickCAT mailbox/CoE debug tracing" OFF)
 if(FREEDOM_SLAVE_COE_TRACE)
   target_compile_definitions(kickcat PRIVATE
     DEBUG_SLAVE_INFO DEBUG_SLAVE_WARNING DEBUG_SLAVE_ERROR
     DEBUG_COE_INFO DEBUG_COE_WARNING DEBUG_COE_ERROR)
-  target_compile_definitions(freedom_slave PRIVATE FREEDOM_SLAVE_COE_TRACE)
 endif()

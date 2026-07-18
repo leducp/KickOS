@@ -50,12 +50,6 @@ extern "C"
     void spi_enable_cs(void);
     void spi_disable_cs(void);
 
-    // Instrumentation: cumulative logical reads (rx != NULL) and writes (tx != NULL).
-    void spi_transfer_stats(uint32_t* reads, uint32_t* writes);
-
-    // Instrumentation: count of len>BOUNCE_MAX rejections + largest len seen.
-    void spi_transfer_diag(uint32_t* toolong, uint32_t* maxlen);
-
 #ifdef __cplusplus
 }
 #endif
