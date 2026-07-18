@@ -37,12 +37,25 @@ SECTIONS
         . = ALIGN(4);
     } > FLASH
 
+    /* Global ctors SPLIT: .init_array keeps ONLY the closed KickOS-owned set
+       (kernel/arch/chip/lib), run early by Reset_Handler; other (app/lib) ctors
+       land in .kickos_app_init_array and run from root_entry with the kernel live. */
     .init_array :
     {
         __init_array_start = .;
+        KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_arch_armv7m.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_chip_mps2.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
+        __init_array_end = .;
+    } > FLASH
+
+    .kickos_app_init_array :
+    {
+        __kickos_app_init_array_start = .;
         KEEP(*(SORT(.init_array.*)))
         KEEP(*(.init_array))
-        __init_array_end = .;
+        __kickos_app_init_array_end = .;
     } > FLASH
 
     .ARM.exidx :

@@ -56,12 +56,25 @@ SECTIONS
         . = ALIGN(4);
     } > DRAM
 
+    /* Global ctors SPLIT: .init_array keeps ONLY the closed KickOS-owned set
+       (kernel/arch/chip/lib), run early by Reset_Handler; other (app/lib) ctors
+       land in .kickos_app_init_array and run from root_entry with the kernel live. */
     .init_array : ALIGN(4)
     {
         __init_array_start = .;
+        KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_arch_lx6.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_chip_esp32.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
+        __init_array_end = .;
+    } > DRAM
+
+    .kickos_app_init_array : ALIGN(4)
+    {
+        __kickos_app_init_array_start = .;
         KEEP(*(SORT(.init_array.*)))
         KEEP(*(.init_array))
-        __init_array_end = .;
+        __kickos_app_init_array_end = .;
     } > DRAM
 
     _sidata = LOADADDR(.data);

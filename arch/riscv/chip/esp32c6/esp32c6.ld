@@ -59,12 +59,26 @@ SECTIONS
         . = ALIGN(4);
     } > RAM
 
+    /* Global ctors SPLIT: .init_array keeps ONLY the closed KickOS-owned set
+       (kernel/arch/chip/lib), run early by Reset_Handler; other (app/lib) ctors
+       land in .kickos_app_init_array and run from root_entry with the kernel live.
+       Both are code, so _code_used_end trails the app section (end of all code). */
     .init_array : ALIGN(4)
     {
         __init_array_start = .;
+        KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_arch_rv32imac.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_chip_esp32c6.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
+        __init_array_end = .;
+    } > RAM
+
+    .kickos_app_init_array : ALIGN(4)
+    {
+        __kickos_app_init_array_start = .;
         KEEP(*(SORT(.init_array.*)))
         KEEP(*(.init_array))
-        __init_array_end = .;
+        __kickos_app_init_array_end = .;
 #if KICKOS_HAVE_MPU
         . = ALIGN(4);
         _code_used_end = .;            /* end of real code+rodata (checked below) */

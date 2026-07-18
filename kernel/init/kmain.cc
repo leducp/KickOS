@@ -22,6 +22,19 @@ extern "C" void console_buffer_init(void);
 // trailing output is not stranded in the ring (kpanic/fault already flush).
 extern "C" void console_tx_flush_sync(void);
 
+// Non-kernel (app / libstdc++ / newlib / library) global ctors. On a migrated MCU
+// the chip linker routes them here, OUT of .init_array (which keeps only the kernel
+// ctors that Reset_Handler must run before kmain constructs the instance). We run
+// them from root_entry -- in a thread, kernel live -- because a ctor may issue a
+// KickOS syscall (kos_clock_now) that needs ktime_init + a current thread. Weak:
+// undefined on sim and not-yet-migrated chips -> null -> skipped (there the ctors
+// still run via the host runtime / the chip's own full .init_array loop).
+extern "C"
+{
+    extern void (*__kickos_app_init_array_start[])() __attribute__((weak));
+    extern void (*__kickos_app_init_array_end[])() __attribute__((weak));
+}
+
 // Identity, injected by the build (see kernel/CMakeLists.txt); fall back so the
 // TU still compiles standalone.
 #ifndef KICKOS_VERSION
@@ -68,6 +81,10 @@ namespace kickos
             kprintf("   arch    %s\n", KICKOS_ARCH_NAME);
             kprintf("   sched   %s\n", sched);
             kprintf("   build   %s %s\n", __DATE__, __TIME__);
+            if (kickos_app_build_stamp != nullptr)
+            {
+                kprintf("   app     %s\n", kickos_app_build_stamp());
+            }
             kputs("\n");
         }
 
@@ -81,6 +98,16 @@ namespace kickos
 
         void root_entry(void* arg)
         {
+            // App/library ctors run here (kernel live, in a thread), before main --
+            // the normal C++ order. Null on sim / unmigrated chips (see the decl).
+            if (__kickos_app_init_array_start != nullptr)
+            {
+                for (void (**fn)() = __kickos_app_init_array_start;
+                     fn != __kickos_app_init_array_end; fn++)
+                {
+                    (*fn)();
+                }
+            }
             AppArgs const* a = static_cast<AppArgs const*>(arg);
             int status = kickos_app_main(a->argc, a->argv);
             // A returning main is a single-shot app: exit with its status. A

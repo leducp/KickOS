@@ -72,12 +72,27 @@ SECTIONS
         . = ALIGN(4);
     } > ROM
 
+    /* Global ctors SPLIT: .init_array keeps ONLY the closed KickOS-owned set
+       (kernel/arch/chip/lib), run early by Reset_Handler; other (app/lib) ctors
+       land in .kickos_app_init_array and run from root_entry with the kernel live.
+       RX prepends one underscore, so the C `__kickos_app_init_array_*` in kmain
+       resolves to the triple-underscore linker symbols below. */
     .init_array : ALIGN(4)
     {
         ___init_array_start = .;
+        KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_arch_rxv3.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_chip_rx72m.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
+        ___init_array_end = .;
+    } > ROM
+
+    .kickos_app_init_array : ALIGN(4)
+    {
+        ___kickos_app_init_array_start = .;
         KEEP(*(SORT(.init_array.*)))
         KEEP(*(.init_array))
-        ___init_array_end = .;
+        ___kickos_app_init_array_end = .;
     } > ROM
 
     /* Copy/zero tables for the generic C-runtime init (kickos_ranges_init): flash
