@@ -64,7 +64,7 @@ flash_resolve() {
     # path. A trailing .hex/.bin/.elf is stripped to a base; the siblings derive from
     # it (jlink loads .hex, st-flash the .bin, esptool the .app.bin).
     local base
-    if [ -n "$FLASH_IMAGE" ]; then
+    if [ -n "${FLASH_IMAGE:-}" ]; then
         base=${FLASH_IMAGE%.hex}; base=${base%.bin}; base=${base%.elf}
     else
         base="$bd/user/apps/$FL_APP/$FL_APP"

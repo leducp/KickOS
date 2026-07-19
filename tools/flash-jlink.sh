@@ -24,6 +24,7 @@ case "$FL_BOARD" in
     f302nucleo)           dev=STM32F302R8    ;;
     microbit)             dev=nRF51822_xxAA  ;;
     rx72m)                dev=R5F572MNDxBD   ;;
+    picopi)               dev=RP2040_M0_0    ;;  # RP2040 core0; J-Link drives the QSPI loader
     *) die "flash-jlink: no J-Link -device string for board '$FL_BOARD' (add a row)" ;;
 esac
 

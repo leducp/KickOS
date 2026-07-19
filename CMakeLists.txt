@@ -182,6 +182,38 @@ if(NOT DEFINED KICKOS_HAVE_MPU)
     set(KICKOS_HAVE_MPU 1)
   endif()
 endif()
+
+# Fail-loud floor: KICKOS_HAVE_MPU=1 must never silently do nothing. Enforcement is
+# real only where the chip's linker script carves the KICKOS_HAVE_MPU .appdata window
+# AND the arch ships a real arch_mpu_apply -- otherwise arch_domain_static_regions
+# reads the WEAK __kickos_appdata_* symbols as 0, grants zero regions, and the "MPU"
+# build enforces nothing. Capability is an EXPLICIT per-port opt-in, not inferred from
+# the linker plumbing: a validated chip ships arch/<family>/chip/<chip>/mpu.cmake
+# (KICKOS_CHIP_ENFORCES_MPU ON); a chip that merely has the .appdata block but is
+# unvalidated (imxrt1062, MPU deferred) ships none and is rejected here. The sim
+# enforces via host mprotect (no chip, no linker script) and is capable by arch.
+set(KICKOS_CHIP_ENFORCES_MPU OFF)
+if(KICKOS_ARCH STREQUAL "sim")
+  set(KICKOS_CHIP_ENFORCES_MPU ON)
+elseif(KICKOS_CHIP)
+  set(_mpu_optin "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/mpu.cmake")
+  if(EXISTS "${_mpu_optin}")
+    include("${_mpu_optin}")
+  endif()
+endif()
+if(KICKOS_HAVE_MPU AND NOT KICKOS_CHIP_ENFORCES_MPU)
+  message(FATAL_ERROR
+    "KICKOS_HAVE_MPU=1 requested on board '${KICKOS_BOARD}' "
+    "(arch=${KICKOS_ARCH} chip=${KICKOS_CHIP}), which has no MPU enforcement block -- "
+    "enforcement would be a silent no-op (arch_domain_static_regions grants zero "
+    "regions because the linker script carves no KICKOS_HAVE_MPU .appdata window). "
+    "Enforcement-capable boards today: sim, frdmk64f, f411disco, picopi, "
+    "xmc4800-relax, qemu-riscv, esp32c6-wroom, rx72m. Either build '${KICKOS_BOARD}' "
+    "without KICKOS_HAVE_MPU, or bring the port up: add a KICKOS_HAVE_MPU .appdata "
+    "window to its linker script and drop a mpu.cmake (KICKOS_CHIP_ENFORCES_MPU ON) "
+    "beside it once enforcement is validated on hardware.")
+endif()
+
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
 # RX MPU enforcement wedge-localizer trace (arch/rx/rxv3/arch_rxv3.cc): a raw polled
@@ -326,7 +358,11 @@ if(TARGET kickos_kernel)
       # pulls its vector tables via ENTRY(_start) + KEEP(), so it needs no force-ref
       # (and has no g_isr_vector -- forcing it would leave a dangling undefined).
       "$<$<STREQUAL:${KICKOS_ARCH_FAMILY},arm>:-Wl,-u,g_isr_vector>"
-      -Wl,-u,_exit             # force our libc syscall stubs in (libc's raise->_exit)
+      # Force our libc syscall stubs in (libc's raise->_exit). The RX psABI prefixes
+      # C identifiers with a leading underscore, so C `_exit` is asm `__exit`; forcing
+      # `_exit` there would pull nothing and drop newlib_stubs.o (RX sbrk/__dso_handle).
+      "$<$<STREQUAL:${KICKOS_ARCH_FAMILY},rx>:-Wl,-u,__exit>"
+      "$<$<NOT:$<STREQUAL:${KICKOS_ARCH_FAMILY},rx>>:-Wl,-u,_exit>"
       # A chip with a checksummed flash second stage (RP2040 boot2) must force its
       # .boot2 blob object in too -- nothing references it.
       $<$<BOOL:${KICKOS_BOOT2_FORCE_SYMBOL}>:-Wl,-u,${KICKOS_BOOT2_FORCE_SYMBOL}>

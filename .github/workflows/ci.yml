@@ -23,8 +23,12 @@ concurrency:
 env:
   # Keep these in lockstep with cmake/toolchain-arm-none-eabi.cmake /
   # toolchain-riscv-none-elf.cmake defaults (the Apps/... paths locally).
-  ARM_TC_DIR: arm-gnu-toolchain-15.3.rel1-x86_64-arm-none-eabi
-  ARM_TC_URL: https://gitlab.arm.com/gnu-toolchains-for-arm/gnu-toolchain/-/releases/15.3.rel1/downloads/arm-gnu-toolchain-15.3.rel1-x86_64-arm-none-eabi.tar.xz
+  # CI uses 15.2.rel1 (the newest arm-none-eabi that developer.arm.com serves anonymously;
+  # 15.3.rel1 is gitlab-only + login-gated). The dev/silicon toolchain is 15.3.rel1 -- the
+  # presets resolve arm-none-eabi-* via PATH (not a pinned path), so this CI-only minor skew
+  # is harmless for build-regression coverage.
+  ARM_TC_DIR: arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi
+  ARM_TC_URL: https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz
   RV_TC_DIR: riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf
   RV_TC_URL: https://releases.riscstar.com/toolchain/16.1-r1/riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf.tar.xz
 
@@ -66,7 +70,9 @@ jobs:
         if: steps.cache-arm.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/tc
-          curl -fsSL -o /tmp/arm.tar.xz "$ARM_TC_URL"
+          # developer.arm.com 302-redirects to an anonymous Azure blob; fail loud if not xz.
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/arm.tar.xz "$ARM_TC_URL"
+          file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/arm.tar.xz
       - name: Put toolchain on PATH + bin
         # PATH (not just -D) is REQUIRED: the KICKOS_*_TOOLCHAIN_BIN cache override does
@@ -112,7 +118,8 @@ jobs:
         if: steps.cache-rv.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/tc
-          curl -fsSL -o /tmp/rv.tar.xz "$RV_TC_URL"
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/rv.tar.xz "$RV_TC_URL"
+          file /tmp/rv.tar.xz | grep -q XZ || { echo "rv toolchain: $RV_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/rv.tar.xz
       - name: Put toolchain on PATH + bin
         # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
@@ -131,6 +138,42 @@ jobs:
           cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-bench
 
+  # rv32imac (virt) UNDER PMP ENFORCEMENT (-DKICKOS_HAVE_MPU=1): runs the full-C++
+  # throw under PMP + the gp-in-appdata CI gates (riscv_no_smalldata, qemu_riscv_cxxtest,
+  # qemu_riscv_mpu_fault -- docs/design-riscv-gp-split.md, docs/design-cxx-under-mpu.md).
+  # Deterministic (~3s, no silicon). Same RISCstar toolchain as the non-enforcement job.
+  qemu-riscv-mpu:
+    runs-on: ubuntu-latest
+    env:
+      QEMU_TIMEOUT: "30"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU + build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
+      - name: Cache RISCstar toolchain
+        id: cache-rv
+        uses: actions/cache@v4
+        with:
+          path: ~/tc/${{ env.RV_TC_DIR }}
+          key: ${{ env.RV_TC_DIR }}
+      - name: Download RISCstar toolchain
+        if: steps.cache-rv.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/tc
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/rv.tar.xz "$RV_TC_URL"
+          file /tmp/rv.tar.xz | grep -q XZ || { echo "rv toolchain: $RV_TC_URL served non-xz (gated/redirect?)"; exit 1; }
+          tar -C ~/tc -xf /tmp/rv.tar.xz
+      - name: Put toolchain on PATH + bin
+        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        run: |
+          echo "$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_PATH"
+          echo "KICKOS_RISCV_TOOLCHAIN_BIN=$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - name: rv32imac (virt) enforcement gate
+        run: |
+          cmake --preset qemu-riscv -DKICKOS_HAVE_MPU=1 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-riscv
+          ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
+
   # Build-only sweep of the remaining ARM boards (catches build/link/linker-script
   # regressions). No run step -- these need silicon or a machine model CI does not
   # carry. RX/Xtensa omitted (vendor toolchains); RISC-V is the qemu-riscv job above.
@@ -140,7 +183,7 @@ jobs:
       fail-fast: false
       matrix:
         preset: [frdmk64f, f411disco, blackpill, bluepill, bluepill-c8, picopi,
-                 f302nucleo, due, xmc4800-relax, qemu-telem]
+                 f302nucleo, due, xmc4800-relax, qemu-telem, teensy41, pizero2350]
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools
@@ -155,7 +198,9 @@ jobs:
         if: steps.cache-arm.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/tc
-          curl -fsSL -o /tmp/arm.tar.xz "$ARM_TC_URL"
+          # developer.arm.com 302-redirects to an anonymous Azure blob; fail loud if not xz.
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/arm.tar.xz "$ARM_TC_URL"
+          file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/arm.tar.xz
       - name: Put toolchain on PATH + bin
         # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
