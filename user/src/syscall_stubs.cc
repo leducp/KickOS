@@ -50,6 +50,23 @@ void kos_sem_post(int sem)
     arch_syscall(KOS_SYS_sem_post, static_cast<uintptr_t>(sem), 0, 0, 0);
 }
 
+int kos_mutex_create(void)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_mutex_create, 0, 0, 0, 0));
+}
+
+int kos_mutex_lock(int mtx)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_mutex_lock,
+                                         static_cast<uintptr_t>(mtx), 0, 0, 0));
+}
+
+int kos_mutex_unlock(int mtx)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_mutex_unlock,
+                                         static_cast<uintptr_t>(mtx), 0, 0, 0));
+}
+
 int kos_handle_close(int cap)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_handle_close,

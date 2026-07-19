@@ -69,6 +69,12 @@ namespace kickos
         uint8_t sem_refs[KICKOS_MAX_SEMAPHORES] = {};
         static_assert(KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES <= 255,
                       "sem_refs is uint8_t: MAX_THREADS x MAX_HANDLES must not exceed 255");
+        // PI-mutex pool + its parallel object-side refcount, same shape as the sems
+        // (cap.cc owns the accounting; the array keeps SlotPool generic).
+        SlotPool<Mutex, KICKOS_MAX_MUTEXES> mutexes;
+        uint8_t mutex_refs[KICKOS_MAX_MUTEXES] = {};
+        static_assert(KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES <= 255,
+                      "mutex_refs is uint8_t: MAX_THREADS x MAX_HANDLES must not exceed 255");
         // The endpoint pool (#4) needs a wider bound: alias slots each pin one ref on
         // their root, so its assert is MAX_THREADS*MAX_HANDLES + MAX_ENDPOINTS <= 255.
         // Thread pool (see ThreadPool in thread.h): the TCBs + their kernel stacks,

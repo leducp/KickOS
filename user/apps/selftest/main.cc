@@ -606,6 +606,442 @@ namespace
         TAP_CHECK(c.id() == aid);
     }
 
+    // --- PI mutex: basic lock/unlock + mutual exclusion (H1) -------------------
+    // Three equal-priority workers each do ITERS non-atomic read-yield-write cycles
+    // under the mutex. The kos_yield() inside the critical section hands the CPU to a
+    // peer mid-update; if the lock did NOT serialize, the peer would read the stale
+    // value and updates would be lost (final < expected). Exact conservation proves
+    // mutual exclusion.
+    constexpr int MTX_ITERS = 20;
+    int g_mtx_shared = 0;
+    // A mutex cap carries CAP_TRANSFER only (possession IS the lock/unlock authority,
+    // no WAIT/SIGNAL split), so it must be delegated with a TRANSFER-only mask -- a
+    // CH_FULL mask is not a subset and delegation would reject it.
+    constexpr uint8_t CH_MTX = KOS_CAP_TRANSFER;
+    void mtx_basic_worker(void*) // caps: done@1, mutex@2
+    {
+        for (int i = 0; i < MTX_ITERS; i++)
+        {
+            kos_mutex_lock(2);      // the delegated mutex cap
+            int tmp = g_mtx_shared; // read
+            kos_yield();            // yield MID critical section -> peer must not enter
+            g_mtx_shared = tmp + 1; // write-back (lost if the lock didn't hold)
+            kos_mutex_unlock(2);
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void t_mutex_basic()
+    {
+        int m = kos_mutex_create();
+        TAP_CHECK(m >= 0);
+        g_mtx_shared = 0;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {m, CH_MTX}}; // done@1, mutex@2
+        int a = kos::thread::spawn_caps(mtx_basic_worker, nullptr, "mbA", 10, caps, 2);
+        int b = kos::thread::spawn_caps(mtx_basic_worker, nullptr, "mbB", 10, caps, 2);
+        int c = kos::thread::spawn_caps(mtx_basic_worker, nullptr, "mbC", 10, caps, 2);
+        TAP_CHECK(a >= 0 and b >= 0 and c >= 0);
+        wait_n(3);
+        TAP_CHECK(kos_handle_close(m) == 0);
+        TAP_CHECK(g_mtx_shared == 3 * MTX_ITERS); // no lost update -> mutual exclusion held
+    }
+
+    // Clock-scaled time unit (mirrors t_rr): measure one clock granule, then pick a
+    // unit several granules wide so sleeps and busy-spins are resolvable on coarse
+    // clocks (QEMU semihosting) as well as the fine sim clock.
+    uint64_t mtx_time_unit()
+    {
+        uint64_t e0 = kos_clock_now();
+        uint64_t e1 = e0;
+        while (e1 == e0) { e1 = kos_clock_now(); }
+        uint64_t e2 = e1;
+        while (e2 == e1) { e2 = kos_clock_now(); }
+        uint64_t granule = e2 - e1;
+        uint64_t unit = 1000000ull; // 1 ms on a fine clock
+        if (unit < granule * 4)
+        {
+            unit = granule * 4;
+        }
+        return unit;
+    }
+    void mtx_spin(uint64_t ns)
+    {
+        uint64_t start = kos_clock_now();
+        while (kos_clock_now() - start < ns)
+        {
+        }
+    }
+
+    // --- PI donation: boost-on-contention + revert-by-recompute (H2, H4, H8) ----
+    // low(8) holds the mutex and busy-spins. high(20) wakes mid-spin and blocks on
+    // the mutex, boosting low to 20. med(12) then wakes but must NOT preempt the
+    // boosted low. So low finishes its critical section ('u') BEFORE med runs ('m')
+    // -- the observable inversion-avoidance. After low unlocks it reverts to base 8,
+    // so med (12) runs before low resumes ('z') -- the observable revert. high runs
+    // the instant low hands off ('H' right after 'u').
+    uint64_t g_mtx_unit = 1000000ull;
+    void pi_low(void*) // caps: done@1, lock@2, mutex@3
+    {
+        kos_mutex_lock(3);
+        log_put('l');
+        mtx_spin(g_mtx_unit * 4); // hold across high's and med's wake instants
+        log_put('u');
+        kos_mutex_unlock(3); // hands off to high (preempts here); low reverts to base
+        log_put('z');        // reached only after med (12) has run -> proves revert
+        kos_sem_post(CH_DONE);
+    }
+    void pi_high(void*) // caps: done@1, lock@2, mutex@3
+    {
+        kos_sleep_ns(g_mtx_unit * 1);
+        log_put('h');
+        kos_mutex_lock(3); // low holds it -> block + boost low to 20
+        log_put('H');
+        kos_mutex_unlock(3);
+        kos_sem_post(CH_DONE);
+    }
+    void pi_med(void*) // caps: done@1, lock@2
+    {
+        kos_sleep_ns(g_mtx_unit * 2);
+        log_put('m');
+        kos_sem_post(CH_DONE);
+    }
+    void t_mutex_pi()
+    {
+        log_reset();
+        g_mtx_unit = mtx_time_unit();
+        int m = kos_mutex_create();
+        TAP_CHECK(m >= 0);
+        kos_cap_grant lcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {m, CH_MTX}};
+        kos_cap_grant mcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
+        int lo = kos::thread::spawn_caps(pi_low, nullptr, "piLo", 8, lcaps, 3);
+        int hi = kos::thread::spawn_caps(pi_high, nullptr, "piHi", 20, lcaps, 3);
+        int md = kos::thread::spawn_caps(pi_med, nullptr, "piMd", 12, mcaps, 2);
+        TAP_CHECK(lo >= 0 and hi >= 0 and md >= 0);
+        wait_n(3);
+        TAP_CHECK(kos_handle_close(m) == 0);
+        TAP_CHECK(count('l') == 1 and count('u') == 1 and count('h') == 1
+                  and count('H') == 1 and count('m') == 1 and count('z') == 1);
+        TAP_CHECK(nth('h', 1) < nth('u', 1)); // high contended while low still held it
+        TAP_CHECK(nth('u', 1) < nth('m', 1)); // BOOST: boosted low finished CS before med
+        TAP_CHECK(nth('u', 1) < nth('H', 1)); // high acquired only after low released
+        TAP_CHECK(nth('m', 1) < nth('z', 1)); // REVERT: low back at base, med ran first
+    }
+
+    // --- Chained/nested boost across two mutexes (H5) ---------------------------
+    // A(20) waits on M1 owned by B(10); B waits on M2 owned by C(5). The boost must
+    // PROPAGATE two hops: C is raised to A's priority. A medium thread D(15) wakes
+    // while C spins; if the chain boost reached >= 15, D cannot preempt C, so C
+    // finishes its critical section ('e') BEFORE D runs ('d'). That single ordering
+    // is the whole chain: it can only hold if the boost travelled B -> C.
+    void ch_c(void*) // caps: done@1, lock@2, M2@3
+    {
+        kos_mutex_lock(3); // M2
+        log_put('c');
+        mtx_spin(g_mtx_unit * 8); // hold past D's wake at 4u, with margin
+        log_put('e');
+        kos_mutex_unlock(3);
+        log_put('C');
+        kos_sem_post(CH_DONE);
+    }
+    void ch_b(void*) // caps: done@1, lock@2, M1@3, M2@4
+    {
+        kos_sleep_ns(g_mtx_unit * 1);
+        kos_mutex_lock(3); // M1 (before A tries it)
+        log_put('b');
+        kos_mutex_lock(4); // M2: C holds it -> block, boost C to 10
+        kos_mutex_unlock(4);
+        kos_mutex_unlock(3);
+        kos_sem_post(CH_DONE);
+    }
+    void ch_a(void*) // caps: done@1, lock@2, M1@3
+    {
+        kos_sleep_ns(g_mtx_unit * 2);
+        kos_mutex_lock(3); // M1: B holds it -> block, boost B to 20, chain-boost C to 20
+        kos_mutex_unlock(3);
+        kos_sem_post(CH_DONE);
+    }
+    void ch_d(void*) // caps: done@1, lock@2
+    {
+        kos_sleep_ns(g_mtx_unit * 4); // wake well after the chain has fully formed (~2u)
+        log_put('d');
+        kos_sem_post(CH_DONE);
+    }
+    void t_mutex_chain()
+    {
+        log_reset();
+        g_mtx_unit = mtx_time_unit();
+        int m1 = kos_mutex_create();
+        int m2 = kos_mutex_create();
+        TAP_CHECK(m1 >= 0 and m2 >= 0);
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {m2, CH_MTX}};
+        kos_cap_grant bcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL},
+                                 {m1, CH_MTX}, {m2, CH_MTX}};
+        kos_cap_grant acaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {m1, CH_MTX}};
+        kos_cap_grant dcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
+        int c = kos::thread::spawn_caps(ch_c, nullptr, "chC", 5, ccaps, 3);
+        int b = kos::thread::spawn_caps(ch_b, nullptr, "chB", 10, bcaps, 4);
+        int a = kos::thread::spawn_caps(ch_a, nullptr, "chA", 20, acaps, 3);
+        int d = kos::thread::spawn_caps(ch_d, nullptr, "chD", 15, dcaps, 2);
+        TAP_CHECK(c >= 0 and b >= 0 and a >= 0 and d >= 0);
+        wait_n(4);
+        TAP_CHECK(kos_handle_close(m1) == 0 and kos_handle_close(m2) == 0);
+        TAP_CHECK(count('c') == 1 and count('e') == 1 and count('d') == 1
+                  and count('b') == 1 and count('C') == 1);
+        TAP_CHECK(nth('b', 1) < nth('e', 1)); // chain formed (B took M1 before C released M2)
+        TAP_CHECK(nth('e', 1) < nth('d', 1)); // CHAIN BOOST: C ran above med across two hops
+    }
+
+    // --- Owner dies holding the mutex: waiter gets OWNER_DIED (H7, R3) ----------
+    // Sleep-sequenced (like the PI test) so it does not depend on privileged-main's
+    // posts preempting synchronously: owner (low) acquires and holds across a sleep,
+    // the higher-priority waiter wakes mid-hold and blocks on the mutex, then the
+    // owner wakes and exits WHILE still holding -> cap_teardown force-unlocks and the
+    // woken waiter's lock() returns OWNER_DIED.
+    int g_od_result = -99;
+    void od_owner(void*) // caps: mutex@1, holds@2
+    {
+        kos_mutex_lock(1);
+        kos_sem_post(2);              // holds: owner now owns it
+        kos_sleep_ns(g_mtx_unit * 3); // hold past the waiter's block, then exit owning
+        kos_exit(0);                  // exits still owning -> force-unlock (R3)
+    }
+    void od_waiter(void*) // caps: done@1, mutex@2
+    {
+        kos_sleep_ns(g_mtx_unit * 1);    // wake while the owner still holds it
+        g_od_result = kos_mutex_lock(2); // block; woken by the dying owner with OWNER_DIED
+        if (g_od_result >= 0)
+        {
+            kos_mutex_unlock(2);
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void t_mutex_owner_died()
+    {
+        g_od_result = -99;
+        g_mtx_unit = mtx_time_unit();
+        int m = kos_mutex_create();
+        int holds = kos_sem_create(0);
+        TAP_CHECK(m >= 0 and holds >= 0);
+        kos_cap_grant ocaps[] = {{m, CH_MTX}, {holds, CH_FULL}}; // mtx@1, holds@2
+        kos_cap_grant wcaps[] = {{g_done, CH_FULL}, {m, CH_MTX}}; // done@1, mtx@2
+        int ow = kos::thread::spawn_caps(od_owner, nullptr, "odOwn", 8, ocaps, 2);
+        int wt = kos::thread::spawn_caps(od_waiter, nullptr, "odWt", 12, wcaps, 2);
+        TAP_CHECK(ow >= 0 and wt >= 0);
+        kos_sem_wait(holds); // owner acquired the mutex (then sleeps, still holding)
+        wait_n(1);           // only the waiter posts done (owner exited)
+        TAP_CHECK(g_od_result == KOS_MUTEX_OWNER_DIED);
+        TAP_CHECK(kos_handle_close(m) == 0);
+        kos_sem_destroy(holds);
+    }
+
+    // --- Deadlock refused with -2 (H6): self-lock + a two-mutex wait cycle ------
+    int g_cyc_rb = -99;
+    void cyc_a(void*) // caps: done@1, M1@2, M2@3, have1@4, goA@5
+    {
+        kos_mutex_lock(2); // M1
+        kos_sem_post(4);   // have1
+        kos_sem_wait(5);   // goA
+        int r = kos_mutex_lock(3); // M2: B holds -> block; later handed off (r==0)
+        if (r == 0)
+        {
+            kos_mutex_unlock(3);
+        }
+        kos_mutex_unlock(2);
+        kos_sem_post(CH_DONE);
+    }
+    void cyc_b(void*) // caps: done@1, M2@2, M1@3, have2@4, goB@5
+    {
+        kos_mutex_lock(2); // M2
+        kos_sem_post(4);   // have2
+        kos_sem_wait(5);   // goB
+        g_cyc_rb = kos_mutex_lock(3); // M1: closes the cycle -> refused with -2
+        if (g_cyc_rb == 0)
+        {
+            kos_mutex_unlock(3);
+        }
+        kos_mutex_unlock(2); // release M2 -> hands it to A
+        kos_sem_post(CH_DONE);
+    }
+    void t_mutex_deadlock()
+    {
+        // Self-deadlock: a recursive lock is refused (-2), not parked, and leaves the
+        // mutex holdable/releasable normally.
+        int self = kos_mutex_create();
+        TAP_CHECK(self >= 0);
+        TAP_CHECK(kos_mutex_lock(self) == 0);
+        TAP_CHECK(kos_mutex_lock(self) == -2); // recursive -> refused
+        TAP_CHECK(kos_mutex_unlock(self) == 0);
+        TAP_CHECK(kos_handle_close(self) == 0);
+
+        // Cross-thread cycle: A owns M1 + waits M2; B owns M2 + tries M1 -> -2.
+        g_cyc_rb = -99;
+        int m1 = kos_mutex_create();
+        int m2 = kos_mutex_create();
+        int have1 = kos_sem_create(0);
+        int have2 = kos_sem_create(0);
+        int goA = kos_sem_create(0);
+        int goB = kos_sem_create(0);
+        TAP_CHECK(m1 >= 0 and m2 >= 0 and have1 >= 0 and have2 >= 0 and goA >= 0 and goB >= 0);
+        kos_cap_grant acaps[] = {{g_done, CH_FULL}, {m1, CH_MTX}, {m2, CH_MTX},
+                                 {have1, CH_FULL}, {goA, CH_FULL}};
+        kos_cap_grant bcaps[] = {{g_done, CH_FULL}, {m2, CH_MTX}, {m1, CH_MTX},
+                                 {have2, CH_FULL}, {goB, CH_FULL}};
+        int a = kos::thread::spawn_caps(cyc_a, nullptr, "cycA", 10, acaps, 5);
+        int b = kos::thread::spawn_caps(cyc_b, nullptr, "cycB", 10, bcaps, 5);
+        TAP_CHECK(a >= 0 and b >= 0);
+        kos_sem_wait(have1); // A owns M1
+        kos_sem_wait(have2); // B owns M2
+        kos_sem_post(goA);   // A tries M2 -> blocks (B owns it)
+        kos_sem_post(goB);   // B tries M1 -> would cycle -> -2, not parked
+        wait_n(2);
+        TAP_CHECK(g_cyc_rb == -2);
+        TAP_CHECK(kos_handle_close(m1) == 0 and kos_handle_close(m2) == 0);
+        kos_sem_destroy(have1);
+        kos_sem_destroy(have2);
+        kos_sem_destroy(goA);
+        kos_sem_destroy(goB);
+    }
+
+    // --- Closing a mutex you OWN is refused (R2) --------------------------------
+    void t_mutex_close_owned()
+    {
+        int m = kos_mutex_create();
+        TAP_CHECK(m >= 0);
+        TAP_CHECK(kos_mutex_lock(m) == 0);
+        TAP_CHECK(kos_handle_close(m) == -1); // refused: you cannot close a mutex you hold
+        TAP_CHECK(kos_mutex_unlock(m) == 0);
+        TAP_CHECK(kos_handle_close(m) == 0);  // released -> close now succeeds
+    }
+
+    // --- Multiple held mutexes: revert is recompute, NOT restore-to-base (H3) ---
+    // B (base 6) holds M1 and M2; H (prio 20) waits on M1, boosting B to 20; D (12)
+    // competes. B unlocks M2 while H still waits on M1: with recompute B STAYS at 20
+    // (M1's waiter still floors it), so D cannot preempt B and B runs on to unlock M1
+    // -> H acquires and runs BEFORE D. A restore-to-base bug would drop B to 6 at the
+    // M2 unlock, letting D(12) preempt immediately -> D would run before H. So
+    // nth('H') < nth('d') is the discriminator.
+    void mh_b(void*) // caps: done@1, lock@2, M1@3, M2@4
+    {
+        kos_mutex_lock(3); // M1
+        kos_mutex_lock(4); // M2
+        log_put('b');
+        mtx_spin(g_mtx_unit * 3); // hold across H's block on M1
+        kos_mutex_unlock(4);      // release M2 while H waits on M1 -> B must STAY boosted
+        log_put('x');
+        mtx_spin(g_mtx_unit * 3); // hold across D's wake; boosted B must not be preempted
+        kos_mutex_unlock(3);      // release M1 -> hand to H, B drops to base
+        kos_sem_post(CH_DONE);
+    }
+    void mh_h(void*) // caps: done@1, lock@2, M1@3
+    {
+        kos_sleep_ns(g_mtx_unit * 1);
+        kos_mutex_lock(3); // M1: B holds -> block, boost B to 20
+        log_put('H');
+        kos_mutex_unlock(3);
+        kos_sem_post(CH_DONE);
+    }
+    void mh_d(void*) // caps: done@1, lock@2
+    {
+        kos_sleep_ns(g_mtx_unit * 4); // wake after B unlocked M2, while B should still be boosted
+        log_put('d');
+        kos_sem_post(CH_DONE);
+    }
+    void t_mutex_multi_held()
+    {
+        log_reset();
+        g_mtx_unit = mtx_time_unit();
+        int m1 = kos_mutex_create();
+        int m2 = kos_mutex_create();
+        TAP_CHECK(m1 >= 0 and m2 >= 0);
+        kos_cap_grant bcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL},
+                                 {m1, CH_MTX}, {m2, CH_MTX}};
+        kos_cap_grant hcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {m1, CH_MTX}};
+        kos_cap_grant dcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
+        int b = kos::thread::spawn_caps(mh_b, nullptr, "mhB", 6, bcaps, 4);
+        int h = kos::thread::spawn_caps(mh_h, nullptr, "mhH", 20, hcaps, 3);
+        int d = kos::thread::spawn_caps(mh_d, nullptr, "mhD", 12, dcaps, 2);
+        TAP_CHECK(b >= 0 and h >= 0 and d >= 0);
+        wait_n(3);
+        TAP_CHECK(kos_handle_close(m1) == 0 and kos_handle_close(m2) == 0);
+        TAP_CHECK(count('b') == 1 and count('x') == 1 and count('H') == 1 and count('d') == 1);
+        TAP_CHECK(nth('x', 1) < nth('H', 1)); // M2 released before M1 handed off
+        TAP_CHECK(nth('H', 1) < nth('d', 1)); // RECOMPUTE: B stayed boosted, H ran before D
+    }
+
+    // --- unlock by a non-owner / of an unlocked mutex both return -1 ------------
+    // The runtime owner check that became user-reachable (the old KICKOS_ASSERT must
+    // never panic once exposed).
+    int g_nonowner_rc = -99;
+    void nonowner_unlock(void*) // caps: done@1, mutex@2
+    {
+        g_nonowner_rc = kos_mutex_unlock(2); // caller is not the owner -> -1
+        kos_sem_post(CH_DONE);
+    }
+    void t_mutex_unlock_errors()
+    {
+        int m = kos_mutex_create();
+        TAP_CHECK(m >= 0);
+        TAP_CHECK(kos_mutex_unlock(m) == -1); // unlocked: caller is not the (null) owner
+        TAP_CHECK(kos_mutex_lock(m) == 0);
+        g_nonowner_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {m, CH_MTX}}; // done@1, mutex@2
+        int w = kos::thread::spawn_caps(nonowner_unlock, nullptr, "nonown", 10, caps, 2);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        TAP_CHECK(g_nonowner_rc == -1);       // non-owner unlock refused, no panic
+        TAP_CHECK(kos_mutex_unlock(m) == 0);  // the real owner still unlocks
+        TAP_CHECK(kos_handle_close(m) == 0);
+    }
+
+    // --- Owner dies holding with NO waiter: m->owner cleared, re-lockable (R3) ---
+    void od_solo_owner(void*) // caps: mutex@1, holds@2
+    {
+        kos_mutex_lock(1);
+        kos_sem_post(2); // holds
+        kos_exit(0);     // exits owning, no waiter -> force-unlock nulls m->owner
+    }
+    void t_mutex_owner_died_nowaiter()
+    {
+        int m = kos_mutex_create();
+        int holds = kos_sem_create(0);
+        TAP_CHECK(m >= 0 and holds >= 0);
+        kos_cap_grant ocaps[] = {{m, CH_MTX}, {holds, CH_FULL}}; // mtx@1, holds@2
+        int ow = kos::thread::spawn_caps(od_solo_owner, nullptr, "odSolo", 8, ocaps, 2);
+        TAP_CHECK(ow >= 0);
+        kos_sem_wait(holds); // owner acquired, then exits (higher prio, runs to exit)
+        // If force-unlock did not null m->owner, this lock would block forever on a
+        // dead owner. It must acquire cleanly (fresh, uncontended -> 0).
+        TAP_CHECK(kos_mutex_lock(m) == 0);
+        TAP_CHECK(kos_mutex_unlock(m) == 0);
+        TAP_CHECK(kos_handle_close(m) == 0);
+        kos_sem_destroy(holds);
+    }
+
+    // --- Delegated-mutex refcount: child closes its cap, parent still locks ------
+    void deleg_closer(void*) // caps: done@1, mutex@2
+    {
+        kos_handle_close(2);   // drop the child's delegated cap (refs 2 -> 1)
+        kos_sem_post(CH_DONE);
+    }
+    void t_mutex_deleg_refcount()
+    {
+        int m = kos_mutex_create(); // refs = 1 (main)
+        TAP_CHECK(m >= 0);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {m, CH_MTX}}; // done@1, mutex@2 (refs -> 2)
+        int w = kos::thread::spawn_caps(deleg_closer, nullptr, "delcl", 10, caps, 2);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        // Child closed its cap (and exited): the object must survive on main's cap.
+        TAP_CHECK(kos_mutex_lock(m) == 0);
+        TAP_CHECK(kos_mutex_unlock(m) == 0);
+        TAP_CHECK(kos_handle_close(m) == 0); // last close frees it
+        // Pool honesty: create/close well past the pool must not exhaust.
+        for (int i = 0; i < 40; i++)
+        {
+            int x = kos_mutex_create();
+            TAP_CHECK(x >= 0 and kos_handle_close(x) == 0);
+        }
+    }
+
 #if defined(KICKOS_ENABLE_SELFTEST)
 #if KICKOS_HAVE_MPU
     // --- Privileged guard access survives a syscall ----------------------------
@@ -921,6 +1357,17 @@ int main(int, char**)
     tap::add("sem_destroy", t_sem_destroy);
     tap::add("sem_destroy_quiescent", t_sem_destroy_busy);
     tap::add("sem_raii", t_sem_raii);
+    // PI-mutex capability (M3): production syscalls only, so runs on every board.
+    tap::add("mutex_basic", t_mutex_basic);             // H1 mutual exclusion
+    tap::add("mutex_pi_donation", t_mutex_pi);          // H2/H4/H8 boost + revert
+    tap::add("mutex_chain_boost", t_mutex_chain);       // H5 chained boost
+    tap::add("mutex_owner_died", t_mutex_owner_died);   // H7/R3 exit-while-owning
+    tap::add("mutex_deadlock", t_mutex_deadlock);       // H6 self + cycle refusal
+    tap::add("mutex_close_owned", t_mutex_close_owned); // R2 close-of-owned refused
+    tap::add("mutex_multi_held", t_mutex_multi_held);   // H3 recompute vs restore-to-base
+    tap::add("mutex_unlock_errors", t_mutex_unlock_errors); // non-owner / unlocked -> -1
+    tap::add("mutex_owner_died_nowaiter", t_mutex_owner_died_nowaiter); // R3 no-waiter branch
+    tap::add("mutex_deleg_refcount", t_mutex_deleg_refcount); // child close, parent still locks
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     tap::add("irq_thread_ctx", t_irq);

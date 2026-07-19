@@ -138,7 +138,48 @@ namespace kickos
             }
             t->state = ThreadState::READY;
             kernel().policy->on_ready(t); // enqueue on the ready structure
-            reschedule();                 // switches now (thread ctx) or defers (ISR ctx) if warranted
+            // If the CURRENT thread is EXITED we are inside cap_teardown on the exit
+            // path (the mutex force-unlock, and #4's endpoint EPIPE-wake, wake from
+            // there). Do NOT switch away now: the EXITED thread is still on the ready
+            // structure (on_remove runs later in exit_current), so a switch would let
+            // ThreadPool::alloc reclaim its slot -> ready-list corruption / UAF, or
+            // strand it. exit_current does the real switch via its own final
+            // reschedule after on_remove. (Previously safe only by a delicate PI
+            // invariant -- dying owner's prio >= its transfer target -- which #4's
+            // EPIPE-wake would not satisfy.)
+            if (kernel().current->state == ThreadState::EXITED)
+            {
+                return;
+            }
+            reschedule(); // switches now (thread ctx) or defers (ISR ctx) if warranted
+        }
+
+        void set_prio(Thread* t, uint8_t p)
+        {
+            IrqLock lock;
+            if (t->prio == p)
+            {
+                return;
+            }
+            // READY *and* RUNNING threads are on a ready list keyed by t->prio (the
+            // running thread sits at the front of ready[prio]). Both must be re-seated:
+            // remove at the OLD prio, change it, re-add at the NEW one (via the policy
+            // hooks). A bare t->prio write would strand the node in the wrong per-prio
+            // list and desync the bitmap -- and for a RUNNING thread would leave it at
+            // the head of its BOOSTED list after a self-lower, so pick_next keeps
+            // returning it and the subsequent reschedule never switches. Re-add is
+            // push_back: the thread lands at the tail of its new level. The caller
+            // reschedules right after (a lowered RUNNING thread may now yield the CPU).
+            if (t->state == ThreadState::READY or t->state == ThreadState::RUNNING)
+            {
+                kernel().policy->on_remove(t);
+                t->prio = p;
+                kernel().policy->on_ready(t);
+                return;
+            }
+            // BLOCKED (wq_pop_highest rescans at pop) and SLEEPING (timer list is
+            // deadline-sorted, prio-independent) are on no ready list: just take it.
+            t->prio = p;
         }
 
         void exit_current(int code)

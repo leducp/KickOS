@@ -33,8 +33,16 @@ enum kos_syscall_nr
     KOS_SYS_diag_led_set = 19,  // (on)                  -> 0 (kernel diagnostic LED)
     KOS_SYS_diag_led_toggle = 20, // ()                  -> 0 (kernel diagnostic LED)
     KOS_SYS_irq_unmask = 21,    // (irq)  -> 0, or -1 (enable a line; self-test only)
-    KOS_SYS_cpu_clock_hz = 22   // ()  -> running core clock in Hz (u32), 0 if unknown
+    KOS_SYS_cpu_clock_hz = 22,  // ()  -> running core clock in Hz (u32), 0 if unknown
+    KOS_SYS_mutex_create = 23,  // ()     -> opaque mutex cap, or -1 (pool/table full)
+    KOS_SYS_mutex_lock = 24,    // (cap)  -> 0, 1 (owner died holding it), -1 bad cap, -2 deadlock
+    KOS_SYS_mutex_unlock = 25   // (cap)  -> 0, or -1 (bad cap, or caller not owner)
 };
+
+// mutex_lock return: the previous owner exited while holding the mutex; this caller
+// now owns it, but the protected invariant may be inconsistent (POSIX EOWNERDEAD).
+// Must match kickos::MUTEX_OWNER_DIED.
+#define KOS_MUTEX_OWNER_DIED 1
 
 // 64-bit values are passed/returned as two uintptr_t halves so the ABI is
 // identical on 32-bit (ARM M-class) and 64-bit (sim) targets: never rely on

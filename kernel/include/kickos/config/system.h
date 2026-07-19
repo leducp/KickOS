@@ -24,6 +24,12 @@
 #define KICKOS_MAX_SEMAPHORES 16
 #endif
 
+// Priority-inheritance mutex pool (M3; see cap.h / sync.h). Additive CAP_MUTEX
+// object pool, sized like the sems. Tiny 10 KiB boards override to 4.
+#ifndef KICKOS_MAX_MUTEXES
+#define KICKOS_MAX_MUTEXES 8
+#endif
+
 // Static thread pool the syscall thread_spawn draws from (+ its kernel stacks).
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16

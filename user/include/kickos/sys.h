@@ -37,6 +37,20 @@ int kos_sem_create(int initial); // -> opaque cap handle, or -1
 void kos_sem_wait(int sem);
 void kos_sem_post(int sem);
 
+// Priority-inheritance mutex. Like a semaphore, the handle is an OPAQUE per-task
+// CAPABILITY -- share it with a child by delegating it via kos_thread_params.caps.
+// Possession IS the authority to lock and unlock (no rights split); create grants a
+// CAP_TRANSFER-only cap. While a lower-priority holder is contended by a
+// higher-priority waiter, the holder is boosted to the waiter's priority until it
+// unlocks (bounded priority inversion). Not recursive: locking a mutex you already
+// hold returns -2. No trylock/timed lock (parity with the unexposed sem_trywait).
+int kos_mutex_create(void); // -> opaque cap handle, or -1 (pool/table full)
+// 0 locked; KOS_MUTEX_OWNER_DIED (1) locked but the previous owner died holding it
+// (protected state may be inconsistent); -1 bad cap; -2 refused, would deadlock.
+int kos_mutex_lock(int mtx);
+// 0, or -1 (bad cap, or the caller is not the owner). Only the owner may unlock.
+int kos_mutex_unlock(int mtx);
+
 // Drop THIS thread's capability. Type-agnostic (a cap knows its own type) and
 // refcounted: the underlying object is destroyed only at the LAST close across all
 // holders. Always succeeds on a live cap, even while other holders remain open (it

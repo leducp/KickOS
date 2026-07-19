@@ -127,6 +127,67 @@ namespace kos
         int id_;
     };
 
+    // Owning priority-inheritance mutex: ctor creates, dtor closes its cap (last
+    // close frees the object). Non-copyable, movable (a moved-from handle is emptied
+    // so the dtor won't double-close). lock/unlock return the raw syscall codes (see
+    // kos_mutex_lock: 0, KOS_MUTEX_OWNER_DIED, -1, -2).
+    class Mutex
+    {
+    public:
+        Mutex()
+            : id_(kos_mutex_create())
+        {
+        }
+        ~Mutex()
+        {
+            // Closing a mutex you still hold is refused (R2: kos_handle_close -> -1),
+            // so destroying a locked kos::Mutex leaks its cap -- the correct fail-safe
+            // (unlock before scope exit). Unlock a mutex before letting it die.
+            if (id_ >= 0)
+            {
+                kos_handle_close(id_);
+            }
+        }
+
+        Mutex(Mutex const&) = delete;
+        Mutex& operator=(Mutex const&) = delete;
+
+        Mutex(Mutex&& other) noexcept
+            : id_(other.id_)
+        {
+            other.id_ = -1;
+        }
+        Mutex& operator=(Mutex&& other) noexcept
+        {
+            if (this != &other)
+            {
+                if (id_ >= 0)
+                {
+                    kos_handle_close(id_);
+                }
+                id_ = other.id_;
+                other.id_ = -1;
+            }
+            return *this;
+        }
+
+        int lock()
+        {
+            return kos_mutex_lock(id_);
+        }
+        int unlock()
+        {
+            return kos_mutex_unlock(id_);
+        }
+        int id() const
+        {
+            return id_;
+        }
+
+    private:
+        int id_;
+    };
+
     // IRQ-as-event handle (tier-1 userspace driver):
     //   auto irq = kos::Irq::request(line); irq.wait(); ...; irq.ack();
     // Non-owning handle wrapper; IRQ handles have no release path yet (out of

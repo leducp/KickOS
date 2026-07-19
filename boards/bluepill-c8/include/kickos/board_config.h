@@ -20,6 +20,10 @@
 #ifndef KICKOS_MAX_HANDLES
 #define KICKOS_MAX_HANDLES 6
 #endif
+/* M3 PI-mutex pool: tiny-board floor (RAM is 20 KiB). */
+#ifndef KICKOS_MAX_MUTEXES
+#define KICKOS_MAX_MUTEXES 4
+#endif
 #ifndef KICKOS_USER_STACK_SIZE
 #define KICKOS_USER_STACK_SIZE 2048
 #endif

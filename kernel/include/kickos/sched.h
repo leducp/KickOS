@@ -68,6 +68,14 @@ namespace kickos
         // Make a previously-removed thread runnable again; preempts if warranted.
         void wake(Thread* t);
 
+        // The SOLE writer of a thread's effective priority (Thread::prio). A READY
+        // thread is re-seated through the policy hooks (rq_remove locates its list by
+        // reading t->prio, so a bare field write would corrupt the ready lists);
+        // RUNNING/BLOCKED/SLEEPING take the value directly (wait queues scan lazily at
+        // pop, the timer list is prio-independent). Does NOT reschedule -- the caller
+        // decides. Used by priority inheritance; no code else may write t->prio.
+        void set_prio(Thread* t, uint8_t p);
+
         // Terminate the current thread with exit code `code`; never returns. The
         // code is used only if this is the last non-idle thread (it ends the
         // process); otherwise the thread just leaves the run set.

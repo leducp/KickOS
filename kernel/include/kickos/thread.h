@@ -15,6 +15,7 @@
 namespace kickos
 {
     struct Domain; // kickos/domain.h -- the shared region set a thread belongs to
+    struct Mutex;  // kickos/sync.h -- PI bookkeeping links (blocked_on + held list)
 
     enum class ThreadState : uint8_t
     {
@@ -54,8 +55,9 @@ namespace kickos
 
         char name_buf[16];  // kernel-owned bounded copy; name points here
         char const* name;   // -> name_buf (set in thread_create); never a user pointer
-        uint8_t prio;
-        uint8_t base_prio; // for future priority inheritance
+        uint8_t prio;      // EFFECTIVE priority: the only field sched/policy/wq read.
+                           // Sole writer is sched::set_prio (re-seats READY threads).
+        uint8_t base_prio; // assignment anchor; PI raises `prio` above it, never below
         Policy policy;
         ThreadState state;
         bool privileged;
@@ -78,7 +80,17 @@ namespace kickos
         arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS];
         size_t region_count;
 
-        intptr_t wait_result; // reserved for timed wait (unused today)
+        intptr_t wait_result; // wake-status channel (mutex: 0 / KOS_MUTEX_OWNER_DIED);
+                              // the waker writes it before sched::wake, the sleeper
+                              // reads it after wq_block returns. Timed wait shares it.
+
+        // Priority-inheritance bookkeeping (M3 mutex). blocked_on is the mutex this
+        // thread is parked on (nullptr otherwise) -- the chain-walk edge. held_list is
+        // the head of the mutexes this thread OWNS, linked through Mutex::next_held;
+        // recompute_prio scans it. Both are touched only under IrqLock at the mutex
+        // block/unblock sites.
+        Mutex* blocked_on;
+        Mutex* held_list;
 
         uint64_t switch_count; // introspection
 

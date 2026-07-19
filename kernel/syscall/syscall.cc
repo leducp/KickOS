@@ -63,6 +63,37 @@ namespace kickos
             return cap;
         }
 
+        // --- PI-mutex capability (mirrors sem_create) ------------------------------
+        // A mutex lives in the global pool (slotpool.h); a task names it by a per-task
+        // CAP_MUTEX capability. Possession IS the lock/unlock authority (no WAIT/SIGNAL
+        // split), so the creator cap carries CAP_TRANSFER only and lock/unlock resolve
+        // with need == 0. Rollback on a full table mirrors sem_create.
+        int mutex_create()
+        {
+            IrqLock lock;
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return -1;
+            }
+            int const i = kernel().mutexes.alloc();
+            if (i < 0)
+            {
+                return -1;
+            }
+            mutex_init(kernel().mutexes.at(i));
+            kernel().mutex_refs[i] = 1;
+            int const obj = kernel().mutexes.handle_for(i);
+            int const cap = cap_install(c, obj, CapType::CAP_MUTEX, CAP_TRANSFER);
+            if (cap < 0)
+            {
+                kernel().mutex_refs[i] = 0;
+                kernel().mutexes.free(obj);
+                return -1;
+            }
+            return cap;
+        }
+
         // Privileged in-kernel IRQ handler bound by KOS_SYS_irq_attach: posts a
         // semaphore from ISR context, driving the interrupt-exit switch (trigger #4).
         // arg is the GLOBAL sem handle irq_attach resolved+stored (NOT a cap): an ISR
@@ -552,6 +583,43 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             }
             sem_post(s);
             return 0;
+        }
+        case KOS_SYS_mutex_create:
+        {
+            return static_cast<uintptr_t>(mutex_create());
+        }
+        case KOS_SYS_mutex_lock:
+        {
+            // Resolve under a short lock; mutex_lock then takes its OWN lock for the
+            // acquire/park and (critically) releases it before the resume barrier +
+            // wait_result read, so the ARM deferred-PendSV block completes first (a
+            // continuous lock across mutex_lock would reintroduce the stale read).
+            // The resolve->call window needs no lock: the caller's own cap pins the
+            // mutex (mutex_refs >= 1), and there is no cross-thread close/kill path
+            // that could free it, so the resolved pointer stays valid. need == 0:
+            // possession is the authority.
+            Mutex* m;
+            {
+                IrqLock lock;
+                m = static_cast<Mutex*>(
+                    cap_resolve(sched::current(), static_cast<int>(a0), CapType::CAP_MUTEX, 0));
+            }
+            if (m == nullptr)
+            {
+                return static_cast<uintptr_t>(-1);
+            }
+            return static_cast<uintptr_t>(mutex_lock(m));
+        }
+        case KOS_SYS_mutex_unlock:
+        {
+            IrqLock lock;
+            Mutex* m = static_cast<Mutex*>(
+                cap_resolve(sched::current(), static_cast<int>(a0), CapType::CAP_MUTEX, 0));
+            if (m == nullptr)
+            {
+                return static_cast<uintptr_t>(-1);
+            }
+            return static_cast<uintptr_t>(mutex_unlock(m)); // -1 if not owner (no panic)
         }
         case KOS_SYS_thread_spawn:
         {

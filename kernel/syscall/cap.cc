@@ -56,6 +56,51 @@ namespace kickos
             }
         }
 
+        // Slot index of the mutex a global handle names (via the live object, as with
+        // sems). -1 if it does not resolve.
+        int mutex_index_of(int obj_handle)
+        {
+            Mutex* m = kernel().mutexes.resolve(obj_handle);
+            if (m == nullptr)
+            {
+                return -1;
+            }
+            return static_cast<int>(m - kernel().mutexes.at(0));
+        }
+
+        // Drop one reference to mutex `obj_handle`; free at refs -> 0. Same accounting
+        // shape as sem_ref_drop, same leak-don't-strand guard: refs -> 0 with a waiter
+        // still parked is unreachable via close (a parked waiter is BLOCKED, cannot run
+        // handle_close, so its own cap pins refs >= 1), so it asserts teardown and
+        // leaks rather than stranding. R4: refs -> 0 also implies owner == nullptr (an
+        // owner's own cap pins a ref via the R2 close guard, and R3 force-unlocked
+        // before this drop on the exit path) -- assert it.
+        void mutex_ref_drop(int obj_handle, bool teardown)
+        {
+            int const idx = mutex_index_of(obj_handle);
+            if (idx < 0)
+            {
+                return;
+            }
+            uint8_t& r = kernel().mutex_refs[idx];
+            if (r > 0)
+            {
+                r--;
+            }
+            if (r == 0)
+            {
+                Mutex* m = kernel().mutexes.resolve(obj_handle);
+                if (m != nullptr and not m->waiters.empty())
+                {
+                    KICKOS_ASSERT(teardown); // refs->0 with a waiter parked is unreachable via close
+                    r = 1;                   // leak, never strand
+                    return;
+                }
+                KICKOS_ASSERT(m == nullptr or m->owner == nullptr); // R4: never free a locked, reachable mutex
+                kernel().mutexes.free(obj_handle);
+            }
+        }
+
         // Drop one reference to the object a (now-detached) cap entry named; dispatch to
         // the per-type accounting arm. A future type reaching the default without its own
         // arm traps in debug -- a silent skip would leak its reference with no diagnostic
@@ -66,6 +111,9 @@ namespace kickos
             {
             case CapType::CAP_SEM:
                 sem_ref_drop(e.obj, teardown);
+                return;
+            case CapType::CAP_MUTEX:
+                mutex_ref_drop(e.obj, teardown);
                 return;
             default:
                 KICKOS_ASSERT(false);
@@ -79,12 +127,26 @@ namespace kickos
         // (refuse-owned / force-unlock) and #4 (EPIPE-wake) fill their arms here.
         int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown)
         {
-            (void)closer;
-            (void)teardown;
             switch (static_cast<CapType>(e.type))
             {
             case CapType::CAP_SEM:
                 return 0;
+            case CapType::CAP_MUTEX:
+            {
+                Mutex* m = kernel().mutexes.resolve(e.obj);
+                if (m == nullptr or m->owner != closer)
+                {
+                    return 0; // not the owner: an ordinary refcount close, no protocol
+                }
+                if (not teardown)
+                {
+                    return -1; // R2: refuse a voluntary close of a mutex you OWN
+                }
+                // R3: the owner is exiting -- force-unlock BEFORE the ref drop so a
+                // waiter is never stranded; the woken lock() caller gets OWNER_DIED.
+                mutex_force_unlock(m, closer);
+                return 0;
+            }
             default:
                 return 0;
             }
@@ -105,6 +167,16 @@ namespace kickos
                 return;
             }
             kernel().sem_refs[idx]++;
+            return;
+        }
+        case CapType::CAP_MUTEX:
+        {
+            int const idx = mutex_index_of(obj_handle);
+            if (idx < 0)
+            {
+                return;
+            }
+            kernel().mutex_refs[idx]++;
             return;
         }
         default:
@@ -159,7 +231,11 @@ namespace kickos
         {
             return kernel().sems.resolve(e->obj);
         }
-        return nullptr; // CAP_MUTEX / CAP_ENDPOINT pools are additive, land later
+        if (want == CapType::CAP_MUTEX)
+        {
+            return kernel().mutexes.resolve(e->obj);
+        }
+        return nullptr; // CAP_ENDPOINT pool is additive, lands later
     }
 
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
