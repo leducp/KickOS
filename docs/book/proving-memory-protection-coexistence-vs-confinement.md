@@ -4,7 +4,7 @@ Copyright (c) 2026 Philippe Leduc
 -->
 # Proving memory protection: coexistence vs confinement
 
-> **Status: DRAFT.** A Chapter-7 companion about VALIDATION, not mechanism. Its two
+> A Chapter-7 companion about VALIDATION, not mechanism. Its two
 > siblings explain HOW full C++ runs under an MPU:
 > [`exceptions-and-rtti-under-memory-protection.md`](exceptions-and-rtti-under-memory-protection.md)
 > (what a throw/catch touches at runtime) and

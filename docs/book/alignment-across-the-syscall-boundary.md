@@ -104,7 +104,7 @@ validate-and-resolve chokepoint, all for the same reason -- the kernel dereferen
 what the caller chose:
 
 - **Ownership** -- the range must lie within a region the caller was granted (bounds-checked
-  against its MPU regions), or the kernel leaks//corrupts memory the caller could not itself reach.
+  against its MPU regions), or the kernel leaks/corrupts memory the caller could not itself reach.
 - **Width** -- copy a user struct *into* kernel memory once and read fields from the copy, rather
   than re-dereferencing a pointer the caller could mutate concurrently.
 - **Aliasing / lifetime** -- copy user strings into a fixed kernel buffer before use; a fault

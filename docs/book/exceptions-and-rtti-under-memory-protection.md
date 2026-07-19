@@ -4,7 +4,7 @@ Copyright (c) 2026 Philippe Leduc
 -->
 # Exceptions and RTTI under memory protection
 
-> **Status: DRAFT.** A Chapter-7 companion (prereq: the C++ runtime chapter 0.4,
+> A Chapter-7 companion (prereq: the C++ runtime chapter 0.4,
 > [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md),
 > and the memory-protection idea of Chapter 7). That chapter taught *what* the C++
 > runtime is made of -- three stacked libraries -- and ended on a one-paragraph "MPU

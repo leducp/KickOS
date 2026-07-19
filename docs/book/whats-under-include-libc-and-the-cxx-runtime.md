@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # What's under #include: the C library and the C++ runtime
 
-> **Status: DRAFT.** A Part-0 concept chapter (prereq: minimal C/C++ + the
+> A Part-0 concept chapter (prereq: minimal C/C++ + the
 > compile/link/flash pipeline of 0.3). It teaches *what a C library actually is* --
 > a bag of functions plus a bottom edge -- and *what the C++ runtime is made of* --
 > three stacked libraries -- so a reader understands why "just `#include <vector>`"

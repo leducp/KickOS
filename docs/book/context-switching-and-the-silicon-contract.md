@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Context switching and the silicon contract
 
-> **Status: DRAFT.** The conceptual chapter behind the per-ISA context-switch
+> The conceptual chapter behind the per-ISA context-switch
 > sections (Chapter 4). It teaches *what* a context switch must preserve and *why*
 > that forces assembly and a precise CPU/silicon contract; each ISA's concrete
 > realisation (register set, trap entry, exception-return instruction) is a section

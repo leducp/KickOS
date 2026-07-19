@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Thread stacks: who owns the memory?
 
-> **Status: DRAFT.** A worked example of a design where BOTH trivial answers are
+> A worked example of a design where BOTH trivial answers are
 > wrong -- one burns RAM, the other leaks it -- and the "proper" answer risks
 > over-engineering. The lesson is how KickOS keeps it simple: constrain the problem
 > until the correct solution *is* the simple one. Points into

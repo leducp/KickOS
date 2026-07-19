@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Peripheral isolation and the hardware ceiling
 
-> **Status: DRAFT.** A worked example of the rule that governs every isolation
+> A worked example of the rule that governs every isolation
 > claim KickOS makes: *you can only enforce what the silicon enforces.* The same
 > microkernel design -- an unprivileged userspace driver granted just its own
 > device window -- is a genuine per-thread capability on one chip and physically

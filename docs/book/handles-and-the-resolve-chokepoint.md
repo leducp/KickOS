@@ -4,15 +4,11 @@ Copyright (c) 2026 Philippe Leduc
 -->
 # Naming a kernel object: the handle and the resolve chokepoint
 
-> **Status: DRAFT -- teaches a DESIGNED, not-yet-landed mechanism.** The per-task
-> capability table is the M3 keystone: it is gate-reviewed and specified in
-> [`../design-m3-handle-table.md`](../design-m3-handle-table.md) (the design of record),
-> but no code implements it yet. This chapter teaches the *concept* and the KickOS design.
-> Where the mechanism already exists in a simpler, global form today -- the kernel's
-> semaphore `SlotPool` and its `sem_resolve` chokepoint -- the text says so and treats the
-> per-task table as the M3 evolution of that shape. Nothing here is claimed as landed,
-> tested, or silicon-proven. For the exact object model see the code it narrates over:
-> `kernel/include/kickos/slotpool.h`, `kernel/syscall/syscall.cc`.
+> This chapter teaches the per-task capability handle mechanism -- the *concept* and
+> KickOS's design reasoning. For the exact, current object model, link to the code-synced
+> Reference: `../reference/architecture.md` ("Object model, capabilities & IPC") and the
+> code it describes -- `kernel/include/kickos/cap.h`, `kernel/syscall/cap.cc`,
+> `kernel/syscall/syscall.cc`, `kernel/include/kickos/slotpool.h`.
 
 A microkernel spends its life doing things to objects on behalf of tasks that cannot touch
 those objects directly: wait on *this* semaphore, post to *that* one, send on *that*
@@ -245,9 +241,9 @@ shifts meaning:
 
 This is Zircon's `zx_handle_close` semantics, and it makes close the single lifecycle op
 for every cap type (a cap knows its own type). It is a genuine behavioral shift, not just
-renamed plumbing -- see [`../design-m3-handle-table.md`](../design-m3-handle-table.md)
-section 4 for the refcount bound, the leak-don't-strand rule for parked waiters, and the
-exit-teardown path.
+renamed plumbing -- see `../reference/architecture.md` ("Object model, capabilities & IPC")
+and `kernel/syscall/cap.cc` for the refcount, the leak-don't-strand rule for parked waiters,
+and the exit-teardown path.
 
 ## Low barrier: no capability manifest (the anti-CapDL discipline)
 
@@ -305,8 +301,8 @@ confusing two of its own objects, and the kernel never so much as blinks.
 
 ## Where to go next
 
-- The design of record, with every amendment, RAM table, and edge case:
-  [`../design-m3-handle-table.md`](../design-m3-handle-table.md).
+- The exact object model, the rights/refcount contract, and the B1 delegation ABI:
+  `../reference/architecture.md` ("Object model, capabilities & IPC").
 - The generational pool the guard rides on, and its ABA mechanics: `slotpool.h`.
 - The chokepoint as it exists today: `sem_resolve` / `KOS_SYS_sem_wait` in
   `kernel/syscall/syscall.cc`.

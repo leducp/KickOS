@@ -4,7 +4,7 @@ Copyright (c) 2026 Philippe Leduc
 -->
 # Where your RAM goes: the full-C++ memory floor and splitting kernel from app in the linker
 
-> **Status: DRAFT.** A Chapter-7 companion, downstream of the C++ runtime chapter 0.4
+> A Chapter-7 companion, downstream of the C++ runtime chapter 0.4
 > ([`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md))
 > and the runtime-memory chapter
 > ([*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md),
@@ -16,12 +16,7 @@ Copyright (c) 2026 Philippe Leduc
 > and [`../design-riscv-gp-split.md`](../design-riscv-gp-split.md) for the RISC-V `gp`
 > anchor; the worked linker example is
 > [`../../arch/arm/chip/mk64f/mk64f.ld`](../../arch/arm/chip/mk64f/mk64f.ld). This chapter is
-> the LAYOUT: which side of the wall each byte lands on. The proof status of full C++ under
-> enforcement is scoped in the companion -- the confined UNPRIVILEGED throw is RUN-PROVEN on
-> qemu-riscv (the committed `cxxtest` spawns an unprivileged worker; `qemu_riscv_cxxtest` ALL
-> PASS under PMP), and the runtime is silicon-validated to RUN with enforcement active (the old
-> privileged-root cxxtest) on five arches, with the silicon U-mode throw build-verified pending a
-> bench re-flash.
+> the LAYOUT: which side of the wall each byte lands on.
 
 A freestanding KickOS app pays almost nothing for its writable state: a few globals, its
 stack. Flip on full C++ -- `-fexceptions -frtti`, the toolchain's `libstdc++`/`libsupc++`
