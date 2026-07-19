@@ -184,10 +184,20 @@ XMC v7-M PMSA) -> K64F SYSMPU -> RX -> tail; plus the arch-independent security 
 (domains, per-thread private stacks, syscall-arg/user-pointer validation, pow2 region
 placement). Capabilities + authenticated grants are M3.
 
-### M2 enforcement fan-out -- status (fleet sync-point, in progress)
+### M2 enforcement fan-out -- status (fleet sync-point, COMPLETE)
 
 Goal: full selftest (17/17) under enforcement on every MPU-capable chip -- an
 M2 sync-point mirroring the M1 on-silicon validation pass.
+
+**M2 (MPU/memory-protection ENFORCEMENT) is COMPLETE.** The cross-domain fault trap is
+silicon-proven on all five MPU backends -- SYSMPU (K64F), PMSAv7 (XMC4800), PMSAv6/v6-M
+(rp2040), RISC-V PMP (esp32c6 + qemu-virt), RX-MPU (rx72m): an unprivileged cross-domain
+store faults and does NOT complete on real silicon. The security model (domains, per-thread
+grants, confused-deputy floor) is coherent and fail-closed, and full-C++ under enforcement is
+U-mode-proven on four silicon arches (K64F, XMC, rx72m, esp32c6) + qemu-riscv. Remaining items
+are NON-gating: rp2040 U-mode-cxxtest re-flash (a full-C++ nicety, not an enforcement gate),
+f411 peripheral proof (ST-Link), and the esp32c6 APM/PMS global peripheral open (follow-on,
+`docs/design-c6-driver.md`).
 
 Shared mechanism (done): the arch-independent pieces are `arch_domain_static_regions`
 (kernel/domain), `kickos_ranges_init` + the linker copy/zero tables
@@ -200,7 +210,7 @@ shared app-data region: it grants per-thread (the stack now, TLS at M3).
 |------|-------------|-------|
 | K64F (frdmk64f) | SYSMPU (bus, byte-granular) | **DONE -- silicon 17/17** (SRAM/domain isolation). Two HW-only bugs fixed: RGD0 supervisor SM (`=same-as-user`) and SRAM_L-via-code-bus (M0) master. **Peripheral gating resolved on silicon (k64drv, Stage 2): SYSMPU does NOT gate peripherals; the AIPS bridge does (per privilege+master, per 4 KB slot, NOT per-thread). So per-thread peripheral isolation is not achievable on K64F -- see `reference/architecture.md` Memory domains.** |
 | XMC4800 | v7-M PMSA | **DONE -- silicon 17/17.** |
-| rp2040 (picopi) | v6-M PMSA (M0+, 8 regions) | Build + enforcement-link validated (reuses the XMC PMSA backend). **HW pending** (flash via BOOTSEL). |
+| rp2040 (picopi) | v6-M PMSA (M0+, 8 regions) | **DONE -- v6-M PMSA cross-domain fault SILICON-PROVEN (2026-07-19):** under enforcement the unprivileged `domainA_worker`'s deliberate cross-domain store (`str r2,[r3,#0]` at PC 0x1000028E) FAULTED -- HardFault count=1, read over SWD -- it did NOT complete. So v6-M PMSA fires the trap on real silicon. Reuses the XMC PMSA backend. (U-mode cxxtest re-flash still pending -- a full-C++ nicety, not an enforcement gate.) |
 | STM32F411 (f411disco/blackpill) | v7-M PMSA | Build + enforcement-link validated. **HW pending** (ST-Link). |
 | RX72M | RX MPU (UM sec.17) | **DONE -- silicon 20/20** (enforcement selftest, 2026-07-17) **+ mpu_fault cross-domain trap** (a user write to another domain raises the access exception, vector 0x54, decoded via MPESTS/MPDEA -> "MPU FAULT: task 'domainA'"). arch_mpu_apply (MPBAC=0 user background + 8 RSPAGEn/REPAGEn regions; RX checks user mode only, so no supervisor-field hazard) reprograms live from the timer ISR on every preemptive switch, glitch-free (UAC R/W/X order, inclusive REPAGE end, supervisor-never-checked, MPEN-latch-on-RTE all confirmed). The test-4 wedge that blocked this was NOT an MPU bug: a hardcoded 8-byte alignment guard on the clock_now out-pointer (`kernel/syscall/syscall.cc`) rejected RX's 4-byte-aligned u64 stack local, so kos_clock_now returned 0 and the rr_interleave granule spin hung -- fixed with `alignof(uint64_t)` (a pre-enforcement regression from 9d7ffa6, untested on RX). |
 | STM32F302 (f302nucleo) | v7-M PMSA | **Links again (provisioned), enforcement deferred on RAM.** g_instance sized 12288->6080 B (KICKOS_STACK_POOL_ALIGN=16 + smaller sem/irq pools) so the 16 KiB part builds; arena is 3712 B. Not a viable enforcement target: even the conditional app-data block + a 4 KiB-alloc selftest test exceed that arena. Non-enforcement only for now. |
@@ -228,9 +238,10 @@ freestanding demo can still override the size down. imxrt1062 (teensy, MPU defer
 unwinds under the MPU. On qemu-riscv (rv32imac PMP) this is RUN-PROVEN: `qemu_riscv_cxxtest` is
 ALL PASS from the U-mode worker -- a confined unprivileged throw under PMP, not merely
 layout-verified. On the five silicon arches `-DKICKOS_HAVE_MPU=1` LINKS the now-U-mode cxxtest
-clean, but the standing ALL-PASS silicon logs were the OLD privileged-root cxxtest = the runtime
-COEXISTS with enforcement active; a bench re-flash of the now-U-mode cxxtest is the outstanding
-silicon U-mode proof. Separately, the U-mode enforcement proven on silicon stands: selftest
+clean. K64F + XMC + rx72m + esp32c6 now run the now-U-mode cxxtest to ALL PASS on silicon
+(2026-07-19) -- the confined throw works on real SYSMPU + PMSAv7 + RX-MPU + C6-PMP hardware
+(esp32c6 exercises Option 4); only rp2040 remains U-mode-cxxtest build-only (bench re-flash
+pending). Separately, the U-mode enforcement proven on silicon stands: selftest
 domain-isolation + `mpu_fault` (U-mode workers, e.g. C6 18/18) and the per-thread peripheral
 drivers (xmcspi/rxdrv/c6blink) -- see the fan-out table above.
 

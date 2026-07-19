@@ -8,16 +8,19 @@ UNPRIVILEGED, MPU-isolated userspace thread -- the convergence the north star ne
 an UNPRIVILEGED worker (`kos::thread::spawn(cxx_worker, ..., privileged=false)`, 8 KB app-arena
 stack) that runs the whole throw/catch/unwind + STL + RTTI body under the MPU. On qemu-riscv
 (rv32imac PMP) that is RUN-PROVEN: `ctest -R qemu_riscv_cxxtest` is ALL PASS from the U-mode
-worker -- the deterministic RISC-V/PMP gate. On the five silicon arches (frdmk64f, xmc4800-relax,
-picopi, rx72m, esp32c6) the now-U-mode cxxtest is BUILD-VERIFIED here (links clean under
-enforcement); the standing silicon ALL-PASS logs (2026-07-19) were the OLD privileged cxxtest =
-the runtime COEXISTS with enforcement. A bench re-flash of the now-U-mode cxxtest is the
-outstanding silicon U-mode proof.
+worker -- the deterministic RISC-V/PMP gate. On silicon, frdmk64f (SYSMPU, EHABI), xmc4800-relax
+(PMSAv7, EHABI), rx72m (RX-MPU, SjLj) and esp32c6 (rv32imac PMP, DWARF) now run the U-mode cxxtest
+to ALL PASS (2026-07-19): the unprivileged worker throws/catches under enforcement on real hardware
+across all three EH models, and esp32c6 EXERCISES Option 4's gp-in-appdata on the C6 PMP. Only picopi
+(RP2040, EHABI) remains U-mode BUILD-VERIFIED (links clean; a bench re-flash of the now-U-mode cxxtest
+is its only remaining silicon U-mode proof) -- but its v6-M PMSA cross-domain fault IS silicon-proven
+(2026-07-19: the unprivileged worker's cross-domain store faulted, HardFault, read over SWD).
 
 ## Verdict
 
-**Feasible; the confined U-mode throw is RUN-PROVEN on qemu-riscv (rv32imac PMP); silicon is
-privileged-coexistence run-proven + U-mode build-only.** cxxtest -- exceptions caught by exact
+**Feasible; the confined U-mode throw is RUN-PROVEN on qemu-riscv (PMP) and on frdmk64f + xmc4800-relax
++ rx72m + esp32c6 silicon (2026-07-19); only rp2040 remains U-mode build-only, and its v6-M enforcement
+fault trap is itself silicon-proven.** cxxtest -- exceptions caught by exact
 type and `std::exception` base, stack-unwind dtors, `std::vector`, `std::string`, virtual
 dispatch, `dynamic_cast` hit+miss, `typeid` -- runs to completion under enforcement. The committed
 cxxtest spawns an UNPRIVILEGED worker that throws/catches/unwinds under the MPU, and on qemu-riscv
@@ -27,9 +30,10 @@ gp-in-appdata is thereby EXERCISED by a running confined test. On the five silic
 all three EH models -- EHABI (frdmk64f, xmc4800-relax, picopi), SjLj (rx72m), DWARF (esp32c6) --
 the standing ALL-PASS logs (2026-07-19) were the OLD privileged cxxtest: they prove the full-C++
 runtime (libstdc++/libsupc++/newlib + the EH-table-homing layout) BOOTS AND RUNS while enforcement
-is active (runtime/MPU coexistence). cxxtest is now U-mode on those boards too, but only
-BUILD-VERIFIED here (links clean under enforcement) -- a bench re-flash of the now-U-mode cxxtest
-is the outstanding silicon U-mode proof. The five gated blockers are all real; four are cheap, one
+is active (runtime/MPU coexistence). K64F + XMC + rx72m + esp32c6 now ALSO run the U-mode cxxtest to
+ALL PASS on silicon (2026-07-19) -- the confined throw works on real SYSMPU + PMSAv7 + RX-MPU + C6-PMP
+hardware; only rp2040 remains U-mode build-only (bench re-flash pending, though its v6-M cross-domain
+fault trap is silicon-proven). The five gated blockers are all real; four are cheap, one
 (RISC-V `gp`/small-data) is the hard part.
 
 The fleet spans **three EH models** -- EHABI (ARM: K64F, XMC, rp2040), SjLj (RX72M), and DWARF
@@ -177,10 +181,10 @@ re-flash for the silicon U-mode proof.
 
 | Arch / unit | EH model | FDE reg. | `gp` issue | Code region | Region cost | Status |
 |---|---|---|---|---|---|---|
-| K64F SYSMPU (frdmk64f) | EHABI (.exidx) | none | no | exact (32 B granular) | +0 for SRAM/data | **frdmk64f silicon: priv-coexistence PASS; U-mode build-only** |
-| ARM PMSA v7-M (XMC4800) | EHABI (.exidx) | none (linker syms) | no | pow2 128 K (sub-regions help) | +0 | **xmc4800-relax silicon: priv-coexistence PASS; U-mode build-only** |
-| ARM PMSA (RP2040, Cortex-M0+/armv6m) | EHABI (.exidx) | none (linker syms) | no | pow2 128 K | +0 | **picopi silicon 2026-07-19: priv-coexistence 9/9 PASS; U-mode build-only** |
-| RX MPU (RX72M, RXv3) | SjLj (.gcc_except_table in ROM) | none (SjLj chain) | no (RX has no gp small-data) | exact (16 B granular) | +0 | **rx72m silicon 2026-07-19: priv-coexistence 9/9 PASS; U-mode build-only** |
+| K64F SYSMPU (frdmk64f) | EHABI (.exidx) | none | no | exact (32 B granular) | +0 for SRAM/data | **frdmk64f silicon: U-mode cxxtest ALL PASS (2026-07-19)** |
+| ARM PMSA v7-M (XMC4800) | EHABI (.exidx) | none (linker syms) | no | pow2 128 K (sub-regions help) | +0 | **xmc4800-relax silicon: U-mode cxxtest ALL PASS (2026-07-19)** |
+| ARM PMSA (RP2040, Cortex-M0+/armv6m) | EHABI (.exidx) | none (linker syms) | no | pow2 128 K | +0 | **picopi silicon: priv-coexistence 9/9 PASS; v6-M cross-domain fault SILICON-PROVEN (2026-07-19); U-mode cxxtest build-only** |
+| RX MPU (RX72M, RXv3) | SjLj (.gcc_except_table in ROM) | none (SjLj chain) | no (RX has no gp small-data) | exact (16 B granular) | +0 | **rx72m silicon: U-mode cxxtest ALL PASS (2026-07-19)** |
 | RISC-V PMP (esp32c6, virt) | DWARF | boot `__register_frame` | **yes (solved: gp-in-appdata)** | pow2 128 K | +0 | **U-mode RUN-PROVEN on qemu-virt (`qemu_riscv_cxxtest` ALL PASS from the unprivileged worker); esp32c6 silicon privileged-coexistence ALL PASS 2026-07-19, U-mode build-only** |
 
 Consumption of the 8-region budget is **+0** everywhere: EH/exidx tables ride the code region,
