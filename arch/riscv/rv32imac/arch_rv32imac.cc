@@ -330,6 +330,14 @@ namespace
 // per-line HW routing; the C6 overrides this for its UART0 TX-ring line.
 __attribute__((weak)) void arch_rv_hw_unmask(int line) { (void)line; }
 
+// Chip hook twin: disable a REAL hardware interrupt line at the controller. Weak no-op
+// default -- the software bitmask alone drops an injected raise, but a level-triggered
+// device source keeps re-asserting until the controller is told to mask it, so a driver's
+// mask-until-ack / spurious-handler mask must reach the HW once a real line exists (else a
+// storm). The C6 overrides arch_rv_hw_unmask for its UART0 TX-ring line; its counterpart
+// mask override lands with the 2nd real device line (see TODO fable finding 5).
+__attribute__((weak)) void arch_rv_hw_mask(int line) { (void)line; }
+
 void arch_irq_mask(int line)
 {
     if (line < 0 or line >= 32)
@@ -338,6 +346,9 @@ void arch_irq_mask(int line)
     }
     arch_irq_state_t s = arch_irq_save();
     g_irq_masked = g_irq_masked | (1u << line);
+    // Reach the controller to mask a REAL line inside the critical section (mstatus.MIE=0),
+    // mirroring arch_irq_unmask. No-op for injected lines.
+    arch_rv_hw_mask(line);
     arch_irq_restore(s);
 }
 
@@ -434,14 +445,15 @@ void kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
                             uint32_t mstatus)
 {
     kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
-    // A load/store access fault (mcause 5/7) taken FROM U-mode (mstatus.MPP==0) is a PMP
-    // domain violation by an unprivileged thread -- route it to the kernel reporter that
-    // names the task and exits via the reported-fault path (matches the sim + the ARM
-    // MemManage split). mtval holds the faulting address. An access fault from M-mode
-    // (MPP!=0) is a genuine kernel bug (M-mode bypasses the unlocked PMP entries), so it
-    // falls through to the generic dump + kfault_terminate below.
+    // An access fault taken FROM U-mode (mstatus.MPP==0) is a PMP domain violation by an
+    // unprivileged thread -- instruction fetch (mcause 1) as well as load (5) / store (7);
+    // a fetch from an ungranted region must report the same as a data access. Route it to
+    // the kernel reporter that names the task and exits via the reported-fault path
+    // (matches the sim + the ARM MemManage split). mtval holds the faulting address. An
+    // access fault from M-mode (MPP!=0) is a genuine kernel bug (M-mode bypasses the
+    // unlocked PMP entries), so it falls through to the generic dump + kfault_terminate.
     bool const from_user = (mstatus & MSTATUS_MPP_M) == 0;
-    if (from_user and (mcause == 5 or mcause == 7))
+    if (from_user and (mcause == 1 or mcause == 5 or mcause == 7))
     {
         kickos_isr_fault(mtval, mcause == 7); // never returns (arch_shutdown)
     }

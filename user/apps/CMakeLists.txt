@@ -24,16 +24,20 @@ endif()
 # exceptions + STL + RTTI over the toolchain libstdc++/newlib. Gated to the K64F
 # silicon target and the runnable QEMU armv7m/RISC-V verification boards -- boards
 # with enough RAM for the 64 KB libc heap arena and where it is actually run.
-# NOT under MPU enforcement (KICKOS_HAVE_MPU): libstdc++'s EH unwind reads the DWARF
-# frame registry + .eh_frame + its malloc'd FDE node from kernel-owned memory -- a
-# cross-domain read an unprivileged thread would fault on under PMP/PMSA -- and the
-# full-C++ image also overflows the per-app NAPOT code region. Full-C++ under
-# enforcement (granting the EH tables + heap to the domain, or a privileged slave
-# thread) is a later stage.
-if((KICKOS_BOARD STREQUAL "frdmk64f"
-    OR KICKOS_BOARD STREQUAL "qemu"
-    OR KICKOS_BOARD STREQUAL "qemu-riscv")
-   AND NOT KICKOS_HAVE_MPU)
+# frdmk64f builds under MPU enforcement too -- the KickOS full-C++-under-isolation gate.
+# mk64f.ld routes libkickos_user.a's heap arena + the libstdc++ writable state into the
+# granted .appdata/.appbss window (archive:member colon-inclusion of the closed kernel
+# set), and the EHABI .exidx tables are read-only in flash, reached via the code grant --
+# so an unprivileged thread runs the full runtime (the freedom-k64f slave reached
+# OPERATIONAL under SYSMPU). The operator runs cxxtest on K64F silicon.
+# qemu armv7m / qemu-riscv stay non-enforcement: mps2 has no enforcement block, and
+# RISC-V full-C++ under PMP still faults (DWARF unwind reads a malloc'd FDE registry +
+# libc globals the *user* selector leaves kernel-side). The other MPU chips need the
+# mk64f .appdata selector fanned out first (docs/m2-review-followups.md).
+if(KICKOS_BOARD STREQUAL "frdmk64f"
+   OR KICKOS_BOARD STREQUAL "xmc4800-relax"
+   OR ((KICKOS_BOARD STREQUAL "qemu" OR KICKOS_BOARD STREQUAL "qemu-riscv")
+       AND NOT KICKOS_HAVE_MPU))
   add_subdirectory(cxxtest)
 endif()
 

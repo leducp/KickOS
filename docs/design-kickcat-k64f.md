@@ -131,11 +131,19 @@ static dtors / `atexit` handlers never run (returning from `kickos_app_main` goe
 `root_entry -> arch_shutdown`, never `exit()`); a throwing ctor before the scheduler may wedge
 rather than exit. On RISC-V the `.eh_frame` table is registered at boot via a *weak*
 `__register_frame` (freestanding images never pull the FDE machinery + heap; a FULL_CXX link does).
-Known gap for a future full-C++-*under-enforcement* stage: the `*user*(.bss)` linker selector
-matches directly-compiled app objects but not `libkickos_user.a` archive members, so the libc heap
-arena would land in kernel `.bss` (the appdata-overflow ASSERT does not see it) -- fine today
-because full-C++ is gated out of enforcement, but it must be closed before granting the heap/EH
-tables to a domain.
+Full-C++ *under enforcement* is DONE on K64F: `mk64f.ld` routes `libkickos_user.a`'s heap arena +
+the libstdc++ writable state into `.appdata`/`.appbss` via `archive:member` colon-inclusion of the
+closed kernel set (a bare `*user*` selector missed the archive members), and the EHABI `.exidx`
+tables are read-only in flash, reached through the code grant -- so an unprivileged thread runs the
+full runtime (the freedom-k64f slave reached OPERATIONAL under SYSMPU; cxxtest ALL PASS on K64F
+silicon under enforcement). The colon-inversion is now fanned out to all 6 enforcement chip linker
+scripts (m2-review-followups #1+#2; xmc4800/esp32c6 silicon-confirmed 20/20), so the runtime's
+writable state lands app-side everywhere. Full C++ under enforcement is then heap-size-gated,
+NOT a RAM ceiling: the default 64K `s_heap` forces a 128K pow2 `.appdata` window, but the heap is a
+provisioning knob (`KICKOS_HEAP_SIZE`). xmc4800 sets 16K (a 32K window) and runs cxxtest under PMSA
+enforcement on silicon (ALL PASS) -- full C++ proven on a second arch beyond K64F. Only a part whose
+RAM cannot spare the pow2 window for its actual heap need is truly gated. On RISC-V/PMP the DWARF FDE
+registry + libc globals are a further, distinct concern. See `docs/m2-review-followups.md`.
 
 ## Staged plan
 

@@ -953,6 +953,43 @@ void* arch_ram_alloc(size_t size)
 // are undefined -> null -> it returns 0: the app's code/.data/.bss are host-process
 // memory, not the mprotect'd arena, so the sim governs only the arena, never them.
 
+// GNU ld default-script symbols bounding the host executable image (ELF header .. end
+// of .bss). Array form + a uintptr_t decay dodges -Warray-compare.
+extern "C" unsigned char __executable_start[];
+extern "C" unsigned char _end[];
+
+// The confused-deputy floor's read hook (arch.h). A string literal / thread name the
+// app hands the kernel lives in the host binary's .text/.rodata/.data, NOT the
+// mprotect'd arena -- no per-domain region can name it (unlike hardware, where the
+// linker carves code/rodata as real MPU regions). Admit a range wholly inside the
+// image and NOT touching the arena; reject a wild pointer outside both. CAVEAT: the
+// image also holds the kernel's own code/.data (one binary), so this cannot separate
+// app rodata from kernel statics -- the sim provably can't. The boundary it DOES
+// enforce (a cross-domain arena read) stays closed: an arena range is disjoint from
+// the image (separate anonymous mmap) and falls through to the region check.
+bool arch_user_text_readable(uintptr_t ptr, size_t len)
+{
+    if (len == 0)
+    {
+        return true;
+    }
+    uintptr_t const end = ptr + len;
+    if (end < ptr)
+    {
+        return false; // wrap
+    }
+    uintptr_t const istart = reinterpret_cast<uintptr_t>(__executable_start);
+    uintptr_t const iend = reinterpret_cast<uintptr_t>(_end);
+    if (iend <= istart or ptr < istart or end > iend)
+    {
+        return false;
+    }
+    uintptr_t const astart = reinterpret_cast<uintptr_t>(sim().arena);
+    uintptr_t const aend = astart + sim().arena_size;
+    bool const hits_arena = (sim().arena != nullptr and ptr < aend and end > astart);
+    return not hits_arena;
+}
+
 uintptr_t arch_mpu_probe_addr(void)
 {
     return reinterpret_cast<uintptr_t>(sim().guard);

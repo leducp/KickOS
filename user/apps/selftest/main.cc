@@ -583,6 +583,16 @@ namespace
     // undersized/misaligned one) -- a thread's stack is a userspace concern (M1). ---------
     int g_cstk_sem = -1;
     void caller_stack_worker(void*) { kos_sem_post(g_cstk_sem); } // ran on the caller's stack
+    // Statically-defined caller-owned stack (the KOS_STACK_DEFINE shape), exercised on
+    // no-MPU builds only -- this is the path that regressed: KOS_STACK_DEFINE aligns to 16
+    // without an MPU, which the kernel's (formerly ungated) stack natural-alignment check
+    // then rejected. Under MPU the macro naturally-aligns to a full region (a page on the
+    // sim backend), so the static buffer would not fit a small-appdata enforcement chip's
+    // fixed .appdata window (e.g. C6 = 4K); the MPU caller-owned-stack path is covered by
+    // the dynamic alloc'd stack above.
+#if !KICKOS_HAVE_MPU
+    KOS_STACK_DEFINE(g_cstk_static, 512);
+#endif
     void t_caller_stack()
     {
         // Reject a non-null, tiny + misaligned caller stack: must fail, not run or corrupt.
@@ -604,6 +614,19 @@ namespace
         TAP_CHECK(t >= 0);        // spawn accepted the caller-owned stack
         kos_sem_wait(g_cstk_sem); // the worker ran on it and posted
         kos_sem_destroy(g_cstk_sem);
+#if !KICKOS_HAVE_MPU
+        // Same shape via a statically-defined KOS_STACK_DEFINE buffer, unprivileged. This
+        // buffer is only 16-byte aligned (no MPU); spawn must still accept + run it -- the
+        // path that regressed, since with no region descriptor the natural-alignment check
+        // must not apply.
+        g_cstk_sem = kos_sem_create(0);
+        int const ts = kos::thread::spawn(caller_stack_worker, nullptr, "cstkS", 10, KOS_POLICY_FIFO,
+                                          0, false, nullptr, 0, g_cstk_static,
+                                          static_cast<uint32_t>(sizeof(g_cstk_static)));
+        TAP_CHECK(ts >= 0);       // spawn accepted the static caller-owned stack
+        kos_sem_wait(g_cstk_sem); // the worker ran on it and posted
+        kos_sem_destroy(g_cstk_sem);
+#endif
     }
 
     // --- Memory domains: two unprivileged threads granted the SAME region share one
@@ -711,6 +734,91 @@ namespace
         kos_sem_destroy(g_mmio_done);
         TAP_CHECK(g_mmio_unpriv_rc < 0);
     }
+
+    // --- Confused-deputy readable-buffer floor ---------------------------------
+    // syscall_dispatch runs privileged and bypasses the MPU, so a user pointer it
+    // READS (the kconsole_write buffer, a thread name) must lie in memory the
+    // UNPRIVILEGED caller could itself reach. A rodata string literal lives in the
+    // app's code/rodata (a real MPU region on HW, the host image on the sim) and
+    // MUST be accepted; a pointer into no granted region (the un-owned guard page)
+    // MUST be rejected, never read. All checks run from an UNPRIVILEGED worker
+    // (main is privileged and bypasses the floor).
+    char const kCdLit[] = "# [confdep] unpriv rodata literal reaches the console\n";
+    long g_cd_lit_rc = -99;    // worker: kconsole_write(rodata literal) -> expect len
+    int g_cd_goodspawn = -99;  // worker: spawn rc of a child NAMED from .rodata
+    int g_cd_goodname_ran = 0; // that child ran (name-copy path did not break spawn)
+    int g_cd_kidsem = -1;      // grandchild -> worker handoff
+    int g_cd_done = -1;        // worker -> main
+#if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
+    int g_cd_neg_ran = 0;       // the negative half actually ran (guard page available)
+    long g_cd_bad_rc = -99;     // worker: kconsole_write(guard page) -> expect 0 (rejected)
+    int g_cd_badname_spawn = -99; // spawn rc with a BOGUS name pointer -> expect >= 0
+    int g_cd_badname_ran = 0;   // that child ran (kernel walked the bad name safely)
+#endif
+    void cd_kid(void* arg)
+    {
+        *static_cast<int*>(arg) = 1;
+        kos_sem_post(g_cd_kidsem);
+    }
+    void cd_worker(void*) // UNPRIVILEGED
+    {
+        g_cd_lit_rc = kos_kconsole_write(kCdLit, strlen(kCdLit)); // rodata: accepted
+
+        g_cd_kidsem = kos_sem_create(0);
+        // A child NAMED from .rodata: the kernel bounds + copies the string. Userspace
+        // cannot read a TCB name back, so acceptance shows as the child running.
+        g_cd_goodspawn = kos::thread::spawn(cd_kid, &g_cd_goodname_ran, "cdgood", 9);
+        if (g_cd_goodspawn >= 0)
+        {
+            kos_sem_wait(g_cd_kidsem);
+        }
+#if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
+        void* bad = kos_guard_addr(); // an arena page granted to no domain
+        if (bad != nullptr)
+        {
+            // Bogus console buffer: rejected -> 0, and never read (a wrong-accept would
+            // return 8, having read the guard page the caller cannot reach).
+            g_cd_bad_rc = kos_kconsole_write(bad, 8);
+            // Bogus NAME pointer: the kernel must bound the walk (no fault), drop the
+            // name, and still spawn the child.
+            g_cd_badname_spawn = kos::thread::spawn(cd_kid, &g_cd_badname_ran,
+                                                    static_cast<char const*>(bad), 9);
+            if (g_cd_badname_spawn >= 0)
+            {
+                kos_sem_wait(g_cd_kidsem);
+            }
+            g_cd_neg_ran = 1;
+        }
+#endif
+        kos_sem_destroy(g_cd_kidsem);
+        kos_sem_post(g_cd_done);
+    }
+    void t_confused_deputy()
+    {
+        g_cd_done = kos_sem_create(0);
+        int w = kos::thread::spawn(cd_worker, nullptr, "cdwork", 10);
+        if (w < 0)
+        {
+            kos::print("# confused_deputy: SKIP (thread pool too small)\n");
+            kos_sem_destroy(g_cd_done);
+            return;
+        }
+        kos_sem_wait(g_cd_done);
+        kos_sem_destroy(g_cd_done);
+        // Positive (every backend): an unprivileged rodata literal reached the console.
+        TAP_CHECK(g_cd_lit_rc == static_cast<long>(sizeof(kCdLit) - 1));
+        // Positive: a child named from .rodata spawned and ran (the name-copy path works).
+        TAP_CHECK(g_cd_goodspawn >= 0 and g_cd_goodname_ran == 1);
+#if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
+        // Negative (enforcing backend): a bogus buffer/name is rejected, never read,
+        // and never faults the kernel.
+        if (g_cd_neg_ran)
+        {
+            TAP_CHECK(g_cd_bad_rc == 0);
+            TAP_CHECK(g_cd_badname_spawn >= 0 and g_cd_badname_ran == 1);
+        }
+#endif
+    }
 }
 
 int main(int, char**)
@@ -744,6 +852,7 @@ int main(int, char**)
     tap::add("caller_stack", t_caller_stack); // caller-owned stack API (no test-only syscalls)
     tap::add("domain_share", t_domain_share); // two threads share one memory domain
     tap::add("mmio_grant", t_mmio_grant);     // MMIO-grant boundary: privileged-only + encodable-only
+    tap::add("confused_deputy", t_confused_deputy); // readable-buffer/name floor (accept rodata, reject bogus)
 
     // Every test joins its workers, so main returns as the last live thread:
     // the failure count becomes the process exit status (0 == all passed).

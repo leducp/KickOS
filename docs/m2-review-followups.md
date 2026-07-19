@@ -10,10 +10,15 @@ one cross-arch label drift + the HW-unproven RX register risk.
 
 ## Status
 - [x] #3 invariants.md stale for M2 -- FIXED this session.
-- [ ] #1 `*user*` selector path-substring fragile (Major, PLAUSIBLE)
-- [ ] #2 "matched nothing" ASSERT claimed but absent (Major, CONFIRMED)
-- [ ] #4 RISC-V U-mode instruction-access fault (mcause=1) not labelled MPU FAULT
-- [ ] #5 RX backend rounds (masks) misaligned regions instead of skipping (fail-closed drift)
+- [x] #1 `*user*` selector path-substring fragile -- FIXED: the 6 enforcement chip
+      linker scripts adopt mk64f's archive:member colon-inversion (path-independent).
+      Silicon-confirmed xmc4800/esp32c6 selftest 20/20.
+- [x] #2 "matched nothing" ASSERT claimed but absent -- FIXED: kernel-side selector-death
+      ASSERT added to all 6 scripts (RISC-V brackets the closed-set .bss only).
+- [x] #4 RISC-V U-mode instruction-access fault (mcause=1) not labelled MPU FAULT -- FIXED.
+- [x] #5 RX backend rounds (masks) misaligned regions instead of skipping -- FIXED: skip
+      an unrepresentable region (slot V=0), fail-closed like ARM/PMP. RX HW re-run pending
+      (board not on the bench).
 - [x] #6 K64F peripheral-gating -- RESOLVED on silicon (see below): SYSMPU does NOT gate
       peripherals; the AIPS bridge does (coarse, per-slot, not per-thread).
 - [ ] nits (below)

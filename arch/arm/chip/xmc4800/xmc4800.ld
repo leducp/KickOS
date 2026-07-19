@@ -19,11 +19,13 @@ _kernel_stack_size = 8K;
 
 /* App-owned globals get their own PMSA region so an unprivileged thread reaches its
    own .data/.bss but not the kernel's. PMSA needs the region pow2-sized AND aligned
-   to its size, so the app data is padded up to this pow2 and placed at ORIGIN(RAM)
-   (already 4K-aligned); an app whose globals exceed it trips the ASSERT. Power of
-   two only. Gated on enforcement: a no-MPU build reserves nothing (zero-overhead). */
+   to its size, so the app window is padded up to this pow2 and section-aligned to its
+   size above the kernel data; an app whose globals exceed it trips the ASSERT. Power
+   of two only. Gated on enforcement: a no-MPU build reserves nothing (zero-overhead). */
 #if KICKOS_HAVE_MPU
-_appdata_size = 4K;
+/* 32K holds a full-C++ app's 16K heap (KICKOS_HEAP_SIZE) + libstdc++ writable state;
+   a freestanding app uses a fraction and pays the pow2 pad (RAM is ample here). */
+_appdata_size = 32K;
 #endif
 
 SECTIONS
@@ -80,39 +82,83 @@ SECTIONS
         __kickos_copy_table_end = .;
         __kickos_zero_table_start = .;
 #if KICKOS_HAVE_MPU
-        LONG(ADDR(.appbss)); LONG(SIZEOF(.appbss));
+        /* Zero the whole granted window past the loaded .appdata: the pre-.appbss
+           alignment gap (forced by an over-aligned .appbss object), .appbss, and the
+           pad -- so no stale read-back anywhere in the app grant. */
+        LONG(__kickos_appdata_load_end); LONG(__kickos_appdata_end - __kickos_appdata_load_end);
 #endif
         LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
         __kickos_zero_table_end = .;
     } > FLASH
 
+    _sidata = LOADADDR(.data);
+
 #if KICKOS_HAVE_MPU
-    /* App-owned globals as a pow2 PMSA region at the base of RAM (ORIGIN is 4K-
-       aligned). Grouped by path (objects under a user/ dir = the app object + user
-       runtime); placed BEFORE the kernel .data/.bss so those input sections are
-       consumed here and the kernel catch-all below gets only kernel/arch/lib.
-       .appdata is loaded from flash; .appbss + the pad are zeroed (no stale
-       read-back through the grant). Gated on enforcement (zero-overhead). */
-    .appdata ORIGIN(RAM) : ALIGN(4)
+    /* Enforcement layout (mirrors mk64f.ld). Writable state is SPLIT kernel-side vs
+       app-side with an INVERTED selection: the CLOSED KickOS-owned set (kernel/arch/
+       chip/lib) is captured FIRST, in script order, via the `archive:member` colon
+       syntax into the kernel .data/.bss at the RAM base; the .appdata/.appbss catch-alls
+       that follow then take EVERYTHING ELSE -- the app's own objects, the toolchain
+       runtime (libc/libgcc/libstdc++/libsupc++), KickCAT, libkickos_user.a's heap, and
+       any unknown NEW archive. An unmatched archive lands app-side (reachable), never
+       kernel-side (faults). Colon syntax, NOT EXCLUDE_FILE: this binutils does not match
+       archive members inside EXCLUDE_FILE, and a bare `*user*` missed the toolchain
+       runtime + the heap arena. PMSA needs the app window pow2-sized AND aligned to its
+       size: the kernel data sits at the RAM base and a section-level
+       ALIGN(_appdata_size) on .appdata aligns the window base above it (a top-level
+       `. = ALIGN()` is swallowed by the region pointer under `> RAM`). */
+    .data : ALIGN(4)
+    {
+        _sdata = .;
+        *libkickos_kernel.a:*(.data .data.*)
+        *libkickos_arch_armv7m.a:*(.data .data.*)
+        *libkickos_chip_xmc4800.a:*(.data .data.*)
+        *libkickos_lib.a:*(.data .data.*)
+        . = ALIGN(4);
+        _edata = .;
+    } > RAM AT > FLASH
+
+    .bss (NOLOAD) : ALIGN(4)
+    {
+        _sbss = .;
+        *libkickos_kernel.a:*(.bss .bss.*)
+        *libkickos_arch_armv7m.a:*(.bss .bss.*)
+        *libkickos_chip_xmc4800.a:*(.bss .bss.*)
+        *libkickos_lib.a:*(.bss .bss.*)
+        *libkickos_kernel.a:*(COMMON)
+        *libkickos_arch_armv7m.a:*(COMMON)
+        *libkickos_chip_xmc4800.a:*(COMMON)
+        *libkickos_lib.a:*(COMMON)
+        . = ALIGN(4);
+        _ebss = .;
+    } > RAM
+
+    /* App-granted RW window: pow2 PMSA region, base aligned to its size by the section-
+       level ALIGN (a top-level `. = ALIGN()` is swallowed by the region pointer under
+       `> RAM`). All remaining .data/.bss/COMMON (app + runtime + KickCAT). .appdata is
+       loaded from flash; the gap past it + .appbss + the pad are zeroed. */
+    .appdata : ALIGN(_appdata_size)
     {
         __kickos_appdata_start = .;
-        *user*(.data .data.*)
+        *(.data .data.*)
         . = ALIGN(4);
+        __kickos_appdata_load_end = .;
     } > RAM AT > FLASH
 
     .appbss (NOLOAD) : ALIGN(4)
     {
-        *user*(.bss .bss.*)
-        *user*(COMMON)
+        *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
-        . = __kickos_appdata_start + _appdata_size; /* pad the block up to pow2 */
+        /* Assert BEFORE the pad below: a bare pad to an already-overflowed window is
+           ld's cryptic "location counter backwards"; this prints the actionable message
+           first. Assigned to a throwaway symbol so it evaluates without moving `.`. */
+        _appdata_fits = ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
+               "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
+        . = __kickos_appdata_start + _appdata_size; /* pad the granted window */
         __kickos_appdata_end = .;
     } > RAM
-#endif
-
-    _sidata = LOADADDR(.data);
-
+#else
     .data : ALIGN(4)
     {
         _sdata = .;
@@ -129,6 +175,7 @@ SECTIONS
         . = ALIGN(4);
         _ebss = .;
     } > RAM
+#endif
 
     . = ALIGN(32);
     __kickos_ram_start = .;
@@ -150,9 +197,16 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
 
 /* App globals must fit the pow2 region. If this trips, raise _appdata_size to the
-   next power of two (it is the app's MPU-granted .data/.bss window). A zero-sized
-   used-end means the user-path selector matched nothing -- check the build layout. */
+   next power of two (it is the app's MPU-granted .data/.bss window). */
 #if KICKOS_HAVE_MPU
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
+/* Selector-mismatch guard. The inverted scheme captures the CLOSED KickOS-owned set
+   into kernel .data/.bss and lets .appdata/.appbss catch the rest, so a broken selector
+   shows up as an EMPTY KERNEL side (kernel writable state silently leaked into the app
+   window). libkickos_kernel.a always contributes .bss, so an empty kernel .bss is the
+   loud signal the colon selectors matched nothing (a renamed lib). NOT app-side: an
+   empty .appdata is legitimate (a minimal freestanding app --gc-sections'd bare). */
+ASSERT(_ebss > _sbss,
+       "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
 #endif

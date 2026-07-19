@@ -110,40 +110,81 @@ SECTIONS
         ___kickos_copy_table_end = .;
         ___kickos_zero_table_start = .;
 #if KICKOS_HAVE_MPU
-        LONG(ADDR(.appbss)); LONG(SIZEOF(.appbss));
+        /* Zero the whole granted window past the loaded .appdata: the pre-.appbss
+           alignment gap (forced by an over-aligned .appbss object), .appbss, and the
+           pad -- so no stale read-back anywhere in the app grant. */
+        LONG(___kickos_appdata_load_end); LONG(___kickos_appdata_end - ___kickos_appdata_load_end);
 #endif
         LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
         ___kickos_zero_table_end = .;
     } > ROM
 
-    /* App-owned globals as a pow2 MPU region at the base of RAM (ORIGIN is 0, so
-       maximally aligned). Grouped by path (objects under a user/ dir = the app
-       object + user runtime); placed BEFORE the kernel .data/.bss so those input
-       sections are consumed here and the kernel catch-all below gets only
-       kernel/arch/lib. .appdata is loaded from ROM; .appbss + the pad are zeroed. */
+    __sidata = LOADADDR(.data);
+
 #if KICKOS_HAVE_MPU
-    .appdata ORIGIN(RAM) : ALIGN(4)
+    /* Enforcement layout (mirrors mk64f.ld). Writable state SPLIT kernel-side vs app-
+       side with an INVERTED selection: the CLOSED KickOS-owned set (kernel/arch/chip/
+       lib) is captured FIRST via `archive:member` colon syntax into the kernel .data/
+       .bss at the RAM base; the .appdata/.appbss catch-alls take EVERYTHING ELSE (app +
+       toolchain runtime + libkickos_user.a's heap + any unknown NEW archive). An
+       unmatched archive lands app-side (reachable), never kernel-side (faults). Colon
+       syntax, NOT EXCLUDE_FILE (this binutils does not match archive members there); a
+       bare `*user*` missed the toolchain runtime + heap. Both closed-set and catch-all
+       carry BOTH the GCC .data/.bss AND the RX-native D/B names -- a KickOS TU that emits
+       an RX-native section must still be captured kernel-side. The RX MPU takes arbitrary
+       16-byte bounds, but the shared linker path shapes the app window as a pow2 aligned
+       above the kernel data by a top-level ALIGN. */
+    .data : ALIGN(4)
+    {
+        __sdata = .;
+        *libkickos_kernel.a:*(.data .data.* D D_1 D_2)
+        *libkickos_arch_rxv3.a:*(.data .data.* D D_1 D_2)
+        *libkickos_chip_rx72m.a:*(.data .data.* D D_1 D_2)
+        *libkickos_lib.a:*(.data .data.* D D_1 D_2)
+        . = ALIGN(4);
+        __edata = .;
+    } > RAM AT > ROM
+
+    .bss (NOLOAD) : ALIGN(4)
+    {
+        __sbss = .;
+        *libkickos_kernel.a:*(.bss .bss.* B B_1 B_2)
+        *libkickos_arch_rxv3.a:*(.bss .bss.* B B_1 B_2)
+        *libkickos_chip_rx72m.a:*(.bss .bss.* B B_1 B_2)
+        *libkickos_lib.a:*(.bss .bss.* B B_1 B_2)
+        *libkickos_kernel.a:*(COMMON)
+        *libkickos_arch_rxv3.a:*(COMMON)
+        *libkickos_chip_rx72m.a:*(COMMON)
+        *libkickos_lib.a:*(COMMON)
+        . = ALIGN(4);
+        __ebss = .;
+    } > RAM
+
+    /* App-granted RW window: pow2 MPU region, base aligned to its size by the section-
+       level ALIGN (a top-level `. = ALIGN()` is swallowed by the region pointer under
+       `> RAM`). All remaining .data/.bss/COMMON + RX-native D/B (app + runtime + KickCAT).
+       .appdata is loaded from ROM; the gap past it + .appbss + the pad are zeroed. */
+    .appdata : ALIGN(_appdata_size)
     {
         ___kickos_appdata_start = .;
-        *user*(.data .data.*)
-        *user*(D D_1 D_2)      /* RX-native initialized data (if any) */
+        *(.data .data.*)
+        *(D D_1 D_2)           /* RX-native initialized data */
         . = ALIGN(4);
+        ___kickos_appdata_load_end = .;
     } > RAM AT > ROM
 
     .appbss (NOLOAD) : ALIGN(4)
     {
-        *user*(.bss .bss.*)
-        *user*(B B_1 B_2)      /* RX-native bss (if any) */
-        *user*(COMMON)
+        *(.bss .bss.* COMMON)
+        *(B B_1 B_2)           /* RX-native bss */
         . = ALIGN(4);
         _appdata_used_end = .;
+        _appdata_fits = ASSERT(_appdata_used_end <= ___kickos_appdata_start + _appdata_size,
+               "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
         . = ___kickos_appdata_start + _appdata_size; /* pad the block up to pow2 */
         ___kickos_appdata_end = .;
     } > RAM
-#endif
-
-    __sidata = LOADADDR(.data);
-
+#else
     .data : ALIGN(4)
     {
         __sdata = .;
@@ -162,6 +203,7 @@ SECTIONS
         . = ALIGN(4);
         __ebss = .;
     } > RAM
+#endif
 
     . = ALIGN(32);
     ___kickos_ram_start = .;
@@ -188,9 +230,16 @@ ASSERT(___kickos_ram_start <= ___kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + ISP stack)")
 
 /* App globals must fit the pow2 region. If this trips, raise _appdata_size to the
-   next power of two (it is the app's MPU-granted .data/.bss window). A zero-sized
-   used-end means the user-path selector matched nothing -- check the build layout. */
+   next power of two (it is the app's MPU-granted .data/.bss window). */
 #if KICKOS_HAVE_MPU
 ASSERT(_appdata_used_end <= ___kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
+/* Selector-mismatch guard. The inverted scheme captures the CLOSED KickOS-owned set
+   into kernel .data/.bss and lets .appdata/.appbss catch the rest, so a broken selector
+   shows up as an EMPTY KERNEL side (kernel writable state silently leaked into the app
+   window). libkickos_kernel.a always contributes .bss, so an empty kernel .bss is the
+   loud signal the colon selectors matched nothing (a renamed lib). NOT app-side: an
+   empty .appdata is legitimate (a minimal freestanding app --gc-sections'd bare). */
+ASSERT(__ebss > __sbss,
+       "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
 #endif

@@ -85,8 +85,15 @@ void _exit(int code)
     }
 }
 
-// Bump allocator over a fixed userspace heap arena.
-static char s_heap[64 * 1024];
+// Bump allocator over a fixed userspace heap arena. Size is provisioned: full-C++
+// under MPU enforcement routes s_heap into the granted .appdata window, which is a
+// pow2 region -- a small-RAM part sets a smaller KICKOS_HEAP_SIZE so the window fits
+// (default 64K suits a 256K-RAM part). Only linked when _sbrk is referenced (malloc).
+#include <kickos/board_config.h>
+#ifndef KICKOS_HEAP_SIZE
+#define KICKOS_HEAP_SIZE (64 * 1024)
+#endif
+static char s_heap[KICKOS_HEAP_SIZE];
 static char* s_brk = s_heap;
 
 void* _sbrk(intptr_t incr)

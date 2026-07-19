@@ -198,6 +198,22 @@ void* arch_ram_alloc(size_t size);
 // these to an unprivileged thread's set (thread.cc), then the domain regions + stack.
 size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max);
 
+// True iff [ptr, ptr+len) is app code/rodata/.data the backend recognizes as
+// caller-readable but does NOT describe as one of the running thread's MPU regions.
+// The confused-deputy floor (syscall_dispatch) reads a user buffer/name privileged;
+// it first checks the granted regions and, only if that misses, this hook -- so the
+// two together cover exactly what the UNPRIVILEGED caller could itself reach.
+//   enforcing MPU backend: code/rodata/.data ARE real regions (see
+//     arch_domain_static_regions), so the region check already admits them and this
+//     returns false -- any address outside the set is genuinely unreachable.
+//   non-enforcing backend: no per-domain isolation exists to breach, so a range that
+//     does NOT touch the user-RAM arena (app code/rodata in flash/ROM) is admitted.
+//   host sim: app + kernel share one binary, sections are not MPU regions, so a range
+//     wholly inside the host image (and not the arena) is admitted; a wild pointer
+//     outside both is rejected. It cannot separate app rodata from kernel statics --
+//     the security boundary it DOES enforce (cross-domain arena reads) stays closed.
+bool arch_user_text_readable(uintptr_t ptr, size_t len);
+
 // An address that faults on unprivileged access (sim: a reserved arena page no
 // domain owns). Used by the isolation self-test.
 uintptr_t arch_mpu_probe_addr(void);

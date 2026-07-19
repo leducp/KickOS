@@ -72,6 +72,10 @@ namespace kickos
 #if defined(KICKOS_SCHED_PERIODIC_TICK)
             sched = "periodic tick";
 #endif
+            char const* mpu = "off";
+#if KICKOS_HAVE_MPU
+            mpu = "enforce";
+#endif
             char const* rule = "  ==============================================\n";
             kputs("\n");
             kputs(rule);
@@ -79,6 +83,7 @@ namespace kickos
             kputs(rule);
             kprintf("   board   %s\n", KICKOS_BOARD_NAME);
             kprintf("   arch    %s\n", KICKOS_ARCH_NAME);
+            kprintf("   mpu     %s\n", mpu);
             kprintf("   sched   %s\n", sched);
             kprintf("   build   %s %s\n", __DATE__, __TIME__);
             if (kickos_app_build_stamp != nullptr)

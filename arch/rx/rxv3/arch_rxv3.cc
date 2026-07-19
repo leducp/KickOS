@@ -536,11 +536,14 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
         // Load regions[0..n) into slots 0..n-1; invalidate the rest. Write RSPAGEn
         // (start) BEFORE REPAGEn, and put V in the REPAGEn write so a slot is never
         // momentarily valid with a stale end/attr.
+        // A region the 16-byte pages cannot represent EXACTLY is fail-closed (slot left
+        // V=0), never masked wider -- rounding base/end to page bounds would grant up to
+        // 15 bytes beyond the region on each side (matches ARM PMSA / RISC-V PMP skip).
         for (size_t i = 0; i < MPU_REGION_COUNT; i++)
         {
             uintptr_t const rsp = MPU_RSPAGE_BASE + i * MPU_REGION_STRIDE;
             uintptr_t const rep = MPU_REPAGE_BASE + i * MPU_REGION_STRIDE;
-            if (i < n and regions[i].size >= 16)
+            if (i < n and arch_mpu_region_encodable(regions[i].base, regions[i].size))
             {
                 uintptr_t const base = regions[i].base;
                 uintptr_t const end = base + regions[i].size - 1; // inclusive last byte
@@ -557,6 +560,8 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
                 {
                     uac |= MPU_UAC_X;
                 }
+                // The low-nibble masks are RSPAGE/REPAGE field encoding (page-exact by
+                // the encodable gate above; REPAGE[3:0] carry UAC/V), not rounding.
                 reg32(rsp) = static_cast<uint32_t>(base) & MPU_PAGE_MASK;
                 reg32(rep) = (static_cast<uint32_t>(end) & MPU_PAGE_MASK) | uac | MPU_REPAGE_V;
             }
@@ -713,13 +718,38 @@ __attribute__((interrupt)) void kickos_rx_swint2(void)
     g_in_isr--;
 }
 
-// Device-line default entry. TODO(HW): RX has no cheap current-vector read, so
-// per-line dispatch (identifying `line` for kickos_isr_irq) needs either
-// per-vector trampolines or a driver-supplied handler -- a driver-era concern;
-// no device drivers exist at M1.x, so this is a safe stub.
+// Chip hook: name the pending real-device line for the shared default ISR. The
+// INTB routes EVERY device source to kickos_rx_default_irq and the RXv3 core has
+// no cheap current-vector read, so the first-level ISR cannot identify the line on
+// its own -- a chip that wires a real peripheral overrides this to read its
+// source's IR/status flag and return the vector (>= 0), or -1 for "none pending".
+// Weak no-op default returns -1: the M1.x posture wires no real device (only
+// injected logical lines, delivered over SWINT2). Mirrors the riscv
+// kickos_rv_ext_dispatch_dev weak chip hook.
+__attribute__((weak)) int kickos_rx_dev_pending_line(void) { return -1; }
+
+// Device-line default entry: the real first-level ISR for every INTB device slot.
+// The chip hook names the fired line (the one fact RX cannot derive); the rest is
+// the generic first-level sequence, identical to the SWINT2 inject path above and
+// the riscv .Lextdev dispatch -- clear the ICU edge-request flag, then post the
+// bound target. kickos_isr_irq runs the handler, which masks the line at the ICU
+// IER (irq_event_isr / the null-object default), so the unprivileged driver
+// services it without a re-fire; no masking here. (A level source keeps IRn
+// asserted -- writing 0 is then a no-op -- but the IER mask still gates re-entry.)
+// BUILD-ONLY: with no chip override the hook returns -1 and this is inert, exactly
+// the prior stub; a real routed peripheral needs RX silicon to validate.
 __attribute__((interrupt)) void kickos_rx_default_irq(void)
 {
     g_in_isr++;
+    int line = kickos_rx_dev_pending_line();
+    // Bound the hook's line to the RX ICU IR register space (256 vectors, one byte each)
+    // before indexing it: a bogus vector from a future chip override must not scribble an
+    // arbitrary register (the reg8 write precedes kickos_isr_irq's own range check).
+    if (line >= 0 and line < 256)
+    {
+        reg8(ICU_IR_BASE + static_cast<unsigned>(line)) = 0;
+        kickos_isr_irq(line);
+    }
     g_in_isr--;
 }
 

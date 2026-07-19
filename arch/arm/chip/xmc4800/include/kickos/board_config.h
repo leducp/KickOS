@@ -17,6 +17,11 @@
 #ifndef KICKOS_USER_STACK_SIZE
 #define KICKOS_USER_STACK_SIZE 4096
 #endif
+/* Full-C++ heap arena kept small so the pow2 .appdata window fits 128K RAM under MPU
+   enforcement (the 64K default would force a 128K window that does not fit). */
+#ifndef KICKOS_HEAP_SIZE
+#define KICKOS_HEAP_SIZE (16 * 1024)
+#endif
 #ifndef KICKOS_IDLE_STACK_SIZE
 #define KICKOS_IDLE_STACK_SIZE 2048
 #endif

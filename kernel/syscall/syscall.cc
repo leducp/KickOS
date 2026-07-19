@@ -84,14 +84,12 @@ namespace kickos
         // Confused-deputy floor: syscall_dispatch runs privileged (it bypasses the
         // MPU), so it must never dereference a user pointer the CALLER could not
         // itself reach. A range passes iff it lies within one region the current
-        // thread is granted -- its domain data + its own stack (thread.cc composition)
-        // -- with the required access. Privileged callers (kernel domain, trusted)
-        // bypass. LIMIT: only kernel-modelled regions are checked. On hardware a
-        // domain also owns the app's code/rodata/.data regions (M2 fan-out), but the
-        // host sim does not model those, so bounds on buffers/strings that may point
-        // into them (kconsole_write, the thread name) wait for the hardware backends.
-        // Struct + out-pointer args are always caller STACK locals, so they are in a
-        // modelled region and safe to check now.
+        // thread is granted -- app code/rodata (RX) + static data (RW) + its domain
+        // data + its own stack (thread.cc composition) -- with the required access.
+        // Privileged callers (kernel domain, trusted) bypass. Struct + out-pointer
+        // args are caller STACK locals; a read buffer / name string may instead point
+        // into the app's code/rodata/.data -- see user_readable_ok for how those are
+        // recognized on every backend (real MPU regions on HW, the host image on sim).
         bool user_range_ok(uintptr_t ptr, size_t len, uint32_t need)
         {
             Thread* c = sched::current();
@@ -128,41 +126,22 @@ namespace kickos
             return false;
         }
 
-        // A user-supplied read buffer (console output, a name string) the kernel
-        // will dereference privileged. It must not let an unprivileged caller
-        // launder ANOTHER domain's MPU-governed memory through the kernel: if the
-        // range touches the governed arena it must lie within a granted region
-        // (else reject). A range entirely OUTSIDE the arena is allowed -- that is
-        // the app's code/rodata (string literals) which the kernel cannot yet model
-        // as a region. LIMIT: on hardware, "outside the arena" also spans kernel
-        // RAM; the fully-sound check (require a granted code/rodata region) lands
-        // with the linker code/data-region seam -- until then the MPU is a no-op on
-        // MCU (nothing to leak), and this closes the CONFIRMED cross-domain arena
-        // read the sim actually enforces.
-        bool user_buffer_ok(uintptr_t ptr, size_t len)
+        // A user-supplied READ buffer (console output, a name string) the kernel
+        // dereferences privileged. It passes iff it lies within a region the caller is
+        // granted (app code/rodata/.data + domain data + stack) OR, where the backend
+        // does not model code/rodata as a region, within the app's readable code/data
+        // extent (arch_user_text_readable): the host image on the sim, flash/ROM on a
+        // non-enforcing MCU. A pointer into no granted region and outside that extent
+        // (another domain's arena page, kernel memory, a wild pointer) is rejected, so
+        // an unprivileged caller cannot launder it out through the kernel. Privileged
+        // callers and len==0 pass via user_range_ok.
+        bool user_readable_ok(uintptr_t ptr, size_t len)
         {
-            Thread* c = sched::current();
-            if (c == nullptr)
-            {
-                return false;
-            }
-            if (c->privileged or len == 0)
+            if (user_range_ok(ptr, len, ARCH_MPU_R))
             {
                 return true;
             }
-            uintptr_t const end = ptr + len;
-            if (end < ptr)
-            {
-                return false; // wrap
-            }
-            uintptr_t const astart = arch_ram_base();
-            uintptr_t const aend = astart + arch_ram_size();
-            bool const hits_arena = (ptr < aend and end > astart);
-            if (not hits_arena)
-            {
-                return true; // code/rodata etc. -- not domain-governed memory
-            }
-            return user_range_ok(ptr, len, ARCH_MPU_R); // arena => must be granted
+            return arch_user_text_readable(ptr, len);
         }
 
         int thread_spawn(kos_thread_params const* p)
@@ -177,8 +156,8 @@ namespace kickos
             // (a kernel address would otherwise be dereferenced privileged). The struct
             // is a caller stack local (kos::thread::spawn), so it lies in the stack
             // region. Read the fields from the kernel-owned copy hereafter. (The name
-            // pointer inside is still user memory; thread_create copies it bounded --
-            // validating IT against app rodata is the hardware-backend pass.)
+            // pointer inside is still user memory; it is walked under a per-byte
+            // readable check below before the kernel copies it.)
             // Reject a misaligned struct pointer BEFORE the typed copy below: the kernel
             // does that load privileged, and a misaligned word load traps in the kernel on
             // a strict-align arch (rv32imac) -- a user-triggerable kernel fault. alignof is
@@ -228,6 +207,10 @@ namespace kickos
                 // window covers the wrong span). kos_ram_alloc hands out exactly such
                 // naturally-aligned blocks. (Privileged threads get the whole arena +
                 // the background region, so their stack needs no separate descriptor.)
+                // Without MPU there is no region descriptor to form, so this does not
+                // apply -- matching KOS_STACK_DEFINE, which only natural-aligns a caller
+                // stack under enforcement (16-byte ABI alignment otherwise).
+#if KICKOS_HAVE_MPU
                 if (p->privileged == 0)
                 {
                     size_t const rsz = arch_ram_region_size(p->stack_size);
@@ -236,6 +219,7 @@ namespace kickos
                         return -1;
                     }
                 }
+#endif
             }
             // Data-region grant from an UNPRIVILEGED caller: confine it to the
             // user-RAM arena. Without this an unprivileged thread spawns a child and
@@ -302,15 +286,41 @@ namespace kickos
 
             ThreadAttr attr;
             attr.name = "user";
-            // Only trust a caller-supplied name pointer from a PRIVILEGED caller:
-            // thread_create dereferences it (bounded copy into the TCB), so an
-            // unprivileged caller's pointer could fault the kernel (DoS) or aim at
-            // another domain's page (info-leak into the name buffer). Unprivileged
-            // threads keep the default name until the code/rodata-region seam lets
-            // the kernel validate a user string pointer safely.
-            if (p->name != nullptr and sched::current()->privileged)
+            // Copy the caller's name into kernel memory, checking EACH source byte is
+            // caller-readable before the privileged copy dereferences it -- the kernel
+            // must not fault (DoS) on, or leak another domain's page through, a bad name
+            // pointer. This BOUNDS the walk: a string not NUL-terminated within a
+            // granted region stops at the first unreachable byte. If the very first byte
+            // is unreachable the name is dropped (default "user" stands). A privileged
+            // caller passes user_readable_ok wholesale, so its name copies as before.
+            char namebuf[16]; // matches Thread::name_buf; thread_create re-clamps anyway
+            if (p->name != nullptr)
             {
-                attr.name = p->name;
+                uintptr_t const np = reinterpret_cast<uintptr_t>(p->name);
+                size_t ni = 0;
+                bool name_ok = false;
+                for (; ni + 1 < sizeof(namebuf); ni++)
+                {
+                    if (not user_readable_ok(np + ni, 1))
+                    {
+                        break; // unreachable byte -- bound the walk here
+                    }
+                    namebuf[ni] = p->name[ni];
+                    if (p->name[ni] == '\0')
+                    {
+                        name_ok = true;
+                        break;
+                    }
+                }
+                if (ni + 1 >= sizeof(namebuf))
+                {
+                    name_ok = true; // filled to the cap with readable bytes, no NUL yet
+                }
+                namebuf[ni] = '\0';
+                if (name_ok)
+                {
+                    attr.name = namebuf;
+                }
             }
             attr.prio = p->prio;
             attr.policy = Policy::FIFO;
@@ -417,7 +427,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 len = kMaxConsoleWrite;
             }
-            if (not user_buffer_ok(a0, len))
+            if (not user_readable_ok(a0, len))
             {
                 return 0; // cross-domain / bad buffer -- write nothing
             }

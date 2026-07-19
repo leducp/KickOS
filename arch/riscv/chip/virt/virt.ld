@@ -103,36 +103,78 @@ SECTIONS
        harmless (an unprivileged thread never branches there). */
     __kickos_code_end = __kickos_code_start + _code_size;
 
-    /* App-owned globals as a pow2 NAPOT region, pinned by EXPLICIT VMA right after the
-       code region. Grouped by path (objects under a user/ dir = the app object + user
-       runtime), placed BEFORE the kernel .data/.bss so those input sections are
-       consumed here and the kernel catch-all gets only kernel/arch/lib. Both sub-
-       sections carry an explicit address: an explicit VMA on an EMPTY output section
-       does NOT advance the `> RAM` region pointer, so a top-level `. =` or a following
-       address-less section would fold back onto the code -- deriving .appbss's start
-       from SIZEOF(.appdata) pins it regardless. .appdata is loaded in place (LMA == VMA
-       on this RAM image); .appbss + the pow2 pad are zeroed by the Reset_Handler (no
-       stale read-back through the RW grant). App globals land here only under
-       -msmall-data-limit=0 (see the header note). */
-    .appdata __kickos_code_end : ALIGN(4)
+    _sidata = LOADADDR(.data);          /* == VMA here (RAM image), so the copy is a no-op */
+
+    /* Enforcement layout (mirrors mk64f.ld). Writable state SPLIT kernel-side vs app-
+       side with an INVERTED selection: the CLOSED KickOS-owned set (kernel/arch/chip/
+       lib) is captured FIRST via `archive:member` colon syntax into the kernel .data/
+       .bss right after the code region; the .appdata/.appbss catch-alls take EVERYTHING
+       ELSE. CRITICAL RISC-V caveat: ONLY .data/.bss/COMMON invert -- the gp-relative
+       small-data (.sdata/.sdata2/.sbss, incl. prebuilt libc/libgcc) MUST stay CATCH-ALL
+       in the single __global_pointer$ window here, or gp-relative addressing breaks. App
+       globals reach .appdata only under -msmall-data-limit=0 (routes them to .data/.bss,
+       not the gp window -- see the header note). Kernel .data is pinned at __kickos_code_end;
+       the app window is a pow2 NAPOT region aligned above the kernel data by a top-level
+       ALIGN (kernel .data/.bss are non-empty and advance the region pointer, so no
+       explicit-VMA empty-section fold-back). */
+    .data __kickos_code_end : ALIGN(8)
+    {
+        _sdata = .;
+        *libkickos_kernel.a:*(.data .data.*)
+        *libkickos_arch_rv32imac.a:*(.data .data.*)
+        *libkickos_chip_virt.a:*(.data .data.*)
+        *libkickos_lib.a:*(.data .data.*)
+        . = ALIGN(8);
+        PROVIDE(__global_pointer$ = . + 0x800);  /* gp: middle of the small-data window */
+        *(.sdata .sdata.* .sdata2.*)             /* catch-all: all gp small-data stays here */
+        . = ALIGN(4);
+        _edata = .;
+    } > RAM AT > RAM
+
+    .bss (NOLOAD) : ALIGN(4)
+    {
+        _sbss = .;
+        *(.sbss .sbss.*)                         /* catch-all: all gp small-bss stays here */
+        __kernel_bss_start = .;
+        *libkickos_kernel.a:*(.bss .bss.*)
+        *libkickos_arch_rv32imac.a:*(.bss .bss.*)
+        *libkickos_chip_virt.a:*(.bss .bss.*)
+        *libkickos_lib.a:*(.bss .bss.*)
+        *libkickos_kernel.a:*(COMMON)
+        *libkickos_arch_rv32imac.a:*(COMMON)
+        *libkickos_chip_virt.a:*(COMMON)
+        *libkickos_lib.a:*(COMMON)
+        __kernel_bss_end = .;
+        . = ALIGN(4);
+        _ebss = .;
+    } > RAM
+
+    /* App-owned globals as a pow2 NAPOT region above the kernel data. The top-level
+       ALIGN puts the base at a natural pow2 boundary (NAPOT). .appbss is pinned right
+       after .appdata via SIZEOF, so __kickos_appbss_start == the .appdata load end and
+       the Reset_Handler's [__kickos_appbss_start, __kickos_appdata_end) zero covers the
+       whole grant with no external gap; .appdata rides LMA == VMA (loaded in place). The
+       window base is aligned to _appdata_size by the section-level ALIGN (a top-level
+       `. = ALIGN()` is swallowed by the region pointer under `> RAM`). */
+    .appdata : ALIGN(_appdata_size)
     {
         __kickos_appdata_start = .;
-        *user*(.data .data.*)
+        *(.data .data.*)
         . = ALIGN(4);
     } > RAM AT > RAM
 
     .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
     {
         __kickos_appbss_start = .;
-        *user*(.bss .bss.*)
-        *user*(COMMON)
+        *(.bss .bss.* COMMON)
         . = ALIGN(4);
         _appdata_used_end = .;
+        _appdata_fits = ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
+               "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
         . = __kickos_appdata_start + _appdata_size; /* pad the block up to pow2 */
         __kickos_appdata_end = .;
     } > RAM
-#endif
-
+#else
     _sidata = LOADADDR(.data);          /* == VMA here (RAM image), so the copy is a no-op */
 
     .data : ALIGN(8)
@@ -155,6 +197,7 @@ SECTIONS
         . = ALIGN(4);
         _ebss = .;
     } > RAM
+#endif
 
     /* From here up to _kernel_stack_size below _estack is the arch_ram_alloc pool
        (runtime bump-allocated -- just symbols, no section to reserve). */
@@ -173,8 +216,16 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
    if this trips). */
 ASSERT(_code_used_end <= __kickos_code_end,
        "KickOS: app code overflows _code_size (raise it to the next pow2)")
-/* App globals must fit the pow2 app-data region. A zero-sized used-end means the
-   user-path selector matched nothing -- check the build layout / small-data flag. */
+/* App globals must fit the pow2 app-data region (raise _appdata_size to the next pow2
+   if this trips). */
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
+/* Selector-mismatch guard for the inverted closed-set .data/.bss capture. Only
+   .data/.bss/COMMON invert; .sdata/.sbss stay catch-all in the gp window, so the whole
+   kernel .bss (_sbss.._ebss) is never empty and _ebss > _sbss would NOT detect a dead
+   colon selector. Bracket the closed-set portion instead: libkickos_kernel.a always
+   contributes .bss, so an empty bracket means the colon selectors matched nothing (a
+   renamed lib), leaking kernel writable state into the app window. */
+ASSERT(__kernel_bss_end > __kernel_bss_start,
+       "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
 #endif

@@ -88,4 +88,33 @@ uintptr_t arch_mpu_probe_addr(void)
 #endif
 }
 
+bool arch_user_text_readable(uintptr_t ptr, size_t len)
+{
+#if KICKOS_HAVE_MPU
+    // Enforcing backend: the unprivileged thread's code/rodata/.data are real MPU
+    // regions, so the syscall's region check already admits them; anything not in
+    // the set is unreachable and must be rejected.
+    (void)ptr;
+    (void)len;
+    return false;
+#else
+    // No MPU enforcement: nothing to launder, so admit any range that does NOT touch
+    // the user-RAM arena (the app's code/rodata in flash/ROM). An arena range is left
+    // to the region check, so a future enforcing build of this backend stays sound.
+    if (len == 0)
+    {
+        return true;
+    }
+    uintptr_t const end = ptr + len;
+    if (end < ptr)
+    {
+        return false; // wrap
+    }
+    uintptr_t const astart = arch_ram_base();
+    uintptr_t const aend = astart + arch_ram_size();
+    bool const hits_arena = (ptr < aend and end > astart);
+    return not hits_arena;
+#endif
+}
+
 }
