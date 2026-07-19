@@ -65,9 +65,14 @@ namespace
     constexpr uintptr_t MCG_C6 = 0x40064005;
     constexpr uintptr_t MCG_S = 0x40064006;
 
+    // Bus clock = core / BUS_DIV. Used by BOTH the OUTDIV2 field below AND the PIT
+    // clock rate in arch_clock_now, so retuning the divider cannot silently rescale
+    // kernel time.
+    constexpr uint32_t BUS_DIV = 2;
     // SIM_CLKDIV1: core /1 (120), bus /2 (60), FlexBus /2 (60), flash /5 (24 MHz
     // -- FLASHCLK must stay <= 25 MHz). Field = divide-1, in nibbles [31:16].
-    constexpr uint32_t CLKDIV1_120MHZ = (0u << 28) | (1u << 24) | (1u << 20) | (4u << 16);
+    constexpr uint32_t CLKDIV1_120MHZ =
+        (0u << 28) | ((BUS_DIV - 1u) << 24) | (1u << 20) | (4u << 16);
 
     constexpr uint8_t OSC0_CR_ERCLKEN = 1u << 7;
     constexpr uint8_t C2_RANGE_VHF = 2u << 4; // RANGE0=2; EREFS0=0 => external clock (not xtal)
@@ -123,6 +128,68 @@ namespace
     // NVIC: UART0 status sources (RX/TX combined) = IRQ 31 (UART0 error = 32).
     // Confirm against the K64 RM interrupt-vector-assignments table.
     constexpr int UART0_RXTX_IRQ = 31;
+
+    // --- PIT: the monotonic time base (K64 RM ch.44) ----------------------------
+    // The v7-M default clock is the DWT cycle counter, but on this part DWT_CYCCNT
+    // reads are unreliable (it lives in the core debug power domain and returns
+    // garbage -- observed 0x40000001 == DWT_CTRL -- intermittently), which the
+    // software wrap-extension turns into a phantom 2^32 clock jump and strands every
+    // timed wait. The PIT is a plain peripheral on the bus clock: chain two 32-bit
+    // channels into a free-running 64-bit down-counter and use it as arch_clock_now.
+    // ONLY the monotonic clock moves off DWT; arch_trace_now + the KICKOS_BENCH
+    // switch.S timestamps intentionally stay on raw DWT_CYCCNT (an intermittent glitch
+    // there skews a telemetry/bench sample -- tolerable -- but is fatal to the
+    // scheduler's monotonic clock, which is why only this one source moved).
+    // CEILING: the kernel time base (ch0/ch1) and PIT_MCR share ONE AIPS peripheral
+    // slot. A userspace PIT driver that opens that slot to U-mode (k64drv clears
+    // PACR55.SP) thereby reaches ch0/ch1 and MCR -- a rogue MCR=MDIS write would
+    // freeze the kernel clock. This is the accepted K64F coarse-peripheral (per-AIPS-
+    // slot) protection ceiling; see reference/architecture.md.
+    constexpr uintptr_t SIM_SCGC6 = 0x4004803C;
+    constexpr uint32_t SCGC6_PIT = 1u << 23;
+    constexpr uintptr_t PIT_MCR = 0x40037000;
+    constexpr uintptr_t PIT_LDVAL0 = 0x40037100;
+    constexpr uintptr_t PIT_CVAL0 = 0x40037104;
+    constexpr uintptr_t PIT_TCTRL0 = 0x40037108;
+    constexpr uintptr_t PIT_LDVAL1 = 0x40037110;
+    constexpr uintptr_t PIT_CVAL1 = 0x40037114;
+    constexpr uintptr_t PIT_TCTRL1 = 0x40037118;
+    constexpr uint32_t PIT_TCTRL_TEN = 1u << 0; // timer enable
+    constexpr uint32_t PIT_TCTRL_CHN = 1u << 2; // chain to the previous channel
+
+    void pit_clock_init()
+    {
+        // Boot-order constraint: arch_clock_now MUST NOT run before this. The PIT is
+        // clock-gated out of reset and an ungated AIPS read BusFaults; ktime/clock
+        // reads only start after arch_init calls this.
+        r32(SIM_SCGC6) |= SCGC6_PIT; // clock the PIT module
+        r32(PIT_MCR) = 0;            // MDIS=0 (enable), FRZ=0
+        // Free-running: both channels reload from all-ones; ch1 (MSW) decrements
+        // when ch0 (LSW) rolls under. Program reloads, chain ch1 to ch0, then
+        // enable ch0 last so the 64-bit counter starts coherently.
+        r32(PIT_LDVAL0) = 0xFFFFFFFFu;
+        r32(PIT_LDVAL1) = 0xFFFFFFFFu;
+        r32(PIT_TCTRL1) = PIT_TCTRL_CHN | PIT_TCTRL_TEN;
+        r32(PIT_TCTRL0) = PIT_TCTRL_TEN;
+    }
+
+    // Elapsed PIT ticks since start (the counter runs DOWN from all-ones). Read the
+    // MSW LAST and retry until it is stable across the LSW read: the final read is
+    // the one that validates the pair, so a preemption straddling a ch0 roll-under
+    // cannot return a torn (backward-stepped) value. Concurrency-safe with no IRQ
+    // save -- every load re-reads hardware, nothing is cached across the window.
+    uint64_t pit_ticks()
+    {
+        uint32_t hi;
+        uint32_t lo;
+        do
+        {
+            hi = r32(PIT_CVAL1);
+            lo = r32(PIT_CVAL0);
+        } while (r32(PIT_CVAL1) != hi);
+        uint64_t down = (static_cast<uint64_t>(hi) << 32) | lo;
+        return ~down; // 0xFFFF... - down == elapsed
+    }
 
     void wdog_disable()
     {
@@ -315,8 +382,34 @@ void arch_init(void)
     // 120 MHz BEFORE UART (baud) + SysTick are programmed; on failure both fall
     // back cleanly to the 20.97 MHz FEI clock (SystemCoreClock unchanged).
     clock_init();
+    pit_clock_init(); // monotonic time base (see pit_clock_init note; replaces DWT)
     uart0_init();
     kickos_armv7m_init();
+}
+
+// Monotonic clock override: convert free-running PIT ticks (bus clock = core/2) to
+// ns, replacing the weak DWT-backed arch_clock_now (unreliable on this silicon).
+// ns = ticks * 1e9 / pit_hz via a cached reciprocal multiply (mult = (1e9<<32)/hz,
+// ns = (ticks*mult)>>32, split 64x64 to avoid overflow) -- the one 64-bit divide
+// runs only when the clock changes at boot.
+uint64_t arch_clock_now(void)
+{
+    uint32_t pit_hz = SystemCoreClock / BUS_DIV; // PIT is clocked by the bus clock
+    static uint64_t cached_hz = 0;
+    static uint64_t mult = 0;
+    if (pit_hz != cached_hz)
+    {
+        if (pit_hz == 0)
+        {
+            return 0;
+        }
+        mult = ((static_cast<uint64_t>(1000000000ull) << 32) + (pit_hz >> 1)) / pit_hz;
+        cached_hz = pit_hz;
+    }
+    uint64_t ticks = pit_ticks();
+    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
+    uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFull;
+    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
 }
 
 // SYSMPU backend: overrides the weak ARM PMSA arch_mpu_apply (K64F has no ARM

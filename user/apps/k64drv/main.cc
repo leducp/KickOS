@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // K64F GPIO/timer FIRST unprivileged userspace driver over the MMIO-grant seam
-// (task #9 Stage 2). A privileged bring-up shim clocks + programs PIT channel 0 and
+// (task #9 Stage 2). A privileged bring-up shim clocks + programs PIT channel 2 and
 // opens the PIT peripheral slot to user mode; the UNPRIVILEGED driver thread is
-// granted the PIT ch0 window (32 B @ 0x4003_7100, spanning ch0+ch1 at the 0x10 stride)
-// + the PIT ch0 IRQ (tier-1). It W1C's its own timer flag with a direct unprivileged
+// granted the PIT ch2 window (32 B @ 0x4003_7120, spanning ch2+ch3 at the 0x10 stride)
+// + the PIT ch2 IRQ (tier-1). ch2 (not ch0/ch1): the kernel monotonic clock owns the
+// chained ch0+ch1 pair, so a userspace timer must live elsewhere. It W1C's its own flag
 // write to the peripheral, toggles the diag LED, heartbeats, then reads PIT_MCR at
 // 0x4003_7000 -- OUTSIDE the SYSMPU window but in the same 4 KB slot.
 //
@@ -36,10 +37,12 @@ namespace
     constexpr uintptr_t SIM_SCGC6 = 0x4004803Cu;  // 12.2.13/325
     constexpr uint32_t SCGC6_PIT = 1u << 23;      // PIT clock gate (bit 23)
     constexpr uintptr_t PIT_MCR = 0x40037000u;    // 41.3.1: MDIS=bit1, FRZ=bit0
-    constexpr uintptr_t PIT_CH0 = 0x40037100u;    // ch0 window base (LDVAL/CVAL/TCTRL/TFLG)
-    constexpr uintptr_t PIT_LDVAL0 = 0x40037100u; // 41.3.2
-    constexpr uintptr_t PIT_TCTRL0 = 0x40037108u; // 41.3.4: CHN=b2, TIE=b1, TEN=b0
-    constexpr uint32_t PIT_CH0_WINDOW = 32u;      // SYSMPU 32B-granular; 0x100 is 32-aligned
+    // ch2, NOT ch0/ch1: the kernel monotonic clock (arch_clock_now) owns the chained
+    // ch0+ch1 pair as its 64-bit time base -- this driver must never touch them.
+    constexpr uintptr_t PIT_CH2 = 0x40037120u;    // ch2 window base (LDVAL/CVAL/TCTRL/TFLG)
+    constexpr uintptr_t PIT_LDVAL2 = 0x40037120u; // 41.3.2
+    constexpr uintptr_t PIT_TCTRL2 = 0x40037128u; // 41.3.4: CHN=b2, TIE=b1, TEN=b0
+    constexpr uint32_t PIT_CH2_WINDOW = 32u;      // SYSMPU 32B-granular; 0x120 is 32-aligned
     // K64 RM Table 4-2 + 20.2.2/20.2.3: PIT @ 0x4003_7000 is AIPS0 slot 55 -> PACR55,
     // field 7 (bits [3:0]) of PACRG at 0x4000_0048. Nibble = reserved[3]/SP[2]/WP[1]/TP[0];
     // AIPS0_PACRG resets to 0x4444_4444 (3.3.8.4) so SP=1 => supervisor-only at reset.
@@ -48,7 +51,7 @@ namespace
     constexpr uint32_t TFLG_OFFSET = 0x0Cu;        // TFLG0 = base + 0x0C (41.3.5, TIF=b0 w1c)
     constexpr uint32_t TCTRL_TEN = 1u << 0;
     constexpr uint32_t TCTRL_TIE = 1u << 1;
-    constexpr int PIT0_IRQ = 48; // K64 RM Table 3-5: PIT ch0 = IRQ 48
+    constexpr int PIT2_IRQ = 50; // K64 RM Table 3-5: PIT ch2 = IRQ 50
     constexpr int DRIVER_TICKS = 10;
 
     inline volatile uint32_t& r32(uintptr_t a)
@@ -56,19 +59,19 @@ namespace
         return *reinterpret_cast<volatile uint32_t*>(a);
     }
 
-    // UNPRIVILEGED driver: granted app code+data (auto), the PIT ch0 window (via
+    // UNPRIVILEGED driver: granted app code+data (auto), the PIT ch2 window (via
     // the spawn MMIO grant) and the PIT IRQ (tier-1). It touches no file-scope
     // mutable state -- the window base arrives as the thread arg VALUE (never
     // dereferenced as memory), and the format buffer lives on its granted stack.
     void pit_driver(void* arg)
     {
-        uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // PIT ch0 window base
-        volatile uint32_t* tflg0 = reinterpret_cast<volatile uint32_t*>(win + TFLG_OFFSET);
+        uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // PIT ch2 window base
+        volatile uint32_t* tflg2 = reinterpret_cast<volatile uint32_t*>(win + TFLG_OFFSET);
 
-        int h = kos_irq_register(PIT0_IRQ);
+        int h = kos_irq_register(PIT2_IRQ);
         if (h < 0)
         {
-            kos::print("[k64drv] ERROR: irq_register(PIT0) failed\n");
+            kos::print("[k64drv] ERROR: irq_register(PIT2) failed\n");
             while (true)
             {
                 kos_sleep_ns(1000000000ull);
@@ -81,7 +84,7 @@ namespace
         for (int tick = 0; tick < DRIVER_TICKS; tick++)
         {
             kos_irq_wait(h);
-            *tflg0 = 1u; // W1C TIF: direct unprivileged write to the peripheral (reaches
+            *tflg2 = 1u; // W1C TIF: direct unprivileged write to the peripheral (reaches
                          // PIT via the AIPS-opened slot; the SYSMPU RGD is inert here).
                          // Clears the level so the line does not storm on the next re-arm.
             kos::kernel_diag_led_toggle();
@@ -112,7 +115,9 @@ int main(int, char**)
 {
     // Privileged bring-up (this main runs privileged): the one-time unsafe setup
     // the unprivileged driver must NOT be able to do -- clock-gate + module enable
-    // + timer program. Then hand the driver ONLY the ch0 register window.
+    // + timer program. Then hand the driver ONLY the ch2 register window. NOTE: the
+    // kernel clock already clock-gated the PIT and enabled MCR at boot; SCGC6/MCR here
+    // are idempotent, and this must NOT disturb ch0/ch1 (the kernel time base).
     r32(SIM_SCGC6) |= SCGC6_PIT;      // clock the PIT (also enables its AIPS slot)
     r32(AIPS0_PACRG) &= ~PACR_PIT_SP; // open PIT slot 55 to user mode (clear SP; RM 20.2.3)
     r32(PIT_MCR) = 0u;                // MDIS=0 (module on), FRZ=0
@@ -125,14 +130,14 @@ int main(int, char**)
     {
         ldval -= 1u;
     }
-    r32(PIT_LDVAL0) = ldval;
-    r32(PIT_TCTRL0) = TCTRL_TEN | TCTRL_TIE; // TFLG untouched (reset 0); driver owns it
+    r32(PIT_LDVAL2) = ldval;
+    r32(PIT_TCTRL2) = TCTRL_TEN | TCTRL_TIE; // TFLG untouched (reset 0); driver owns it
 
-    int drv = kos::thread::spawn(pit_driver, reinterpret_cast<void*>(PIT_CH0), "k64drv", 10,
+    int drv = kos::thread::spawn(pit_driver, reinterpret_cast<void*>(PIT_CH2), "k64drv", 10,
                                  KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                  /*mem=*/nullptr, /*mem_size=*/0,
                                  /*stack=*/nullptr, /*stack_size=*/0,
-                                 /*mmio=*/reinterpret_cast<void*>(PIT_CH0), PIT_CH0_WINDOW);
+                                 /*mmio=*/reinterpret_cast<void*>(PIT_CH2), PIT_CH2_WINDOW);
     if (drv < 0)
     {
         // Console is the only oracle at the bench: a silent dead board would be
