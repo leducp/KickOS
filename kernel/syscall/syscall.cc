@@ -429,10 +429,7 @@ namespace kickos
             {
                 cap_install_at(child, ci + 1, deleg_obj[ci],
                                static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
-                if (deleg_type[ci] == static_cast<uint8_t>(CapType::CAP_SEM))
-                {
-                    sem_ref_inc(deleg_obj[ci]);
-                }
+                obj_ref_inc(static_cast<CapType>(deleg_type[ci]), deleg_obj[ci]);
             }
             return k.threads.handle_for(i);
         }

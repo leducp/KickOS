@@ -103,9 +103,10 @@ namespace kickos
     // direct syscall until then). Present so the spawn path has the seam.
     void cap_install_defaults(Thread* child);
 
-    // Bump one reference to the semaphore named by a global handle (delegation). The
-    // handle MUST resolve (caller validated it). Caller holds IrqLock.
-    void sem_ref_inc(int obj_handle);
+    // Bump one reference to the object named by a global handle (delegation + create).
+    // Dispatches on cap type; the handle MUST resolve (caller validated it). Caller
+    // holds IrqLock. Unknown type traps in debug. Additive: each new pool gains one arm.
+    void obj_ref_inc(CapType type, int obj_handle);
 }
 
 #endif

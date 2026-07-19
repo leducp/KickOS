@@ -26,24 +26,14 @@ namespace kickos
             return static_cast<int>(s - kernel().sems.at(0));
         }
 
-        // Drop one reference to the object a (now-detached) cap entry named; free it at
-        // refs -> 0. Only CAP_SEM has a pool today. `teardown` = the noreturn exit path:
-        // it must never strand a parked waiter, so a would-be free with waiters still
-        // linked LEAKS (floors refs at 1). That branch is unreachable today (a parked
-        // waiter pins its own cap => refs >= 1), so the non-teardown close path asserts it.
-        void obj_ref_drop(CapEntry const& e, bool teardown)
+        // Drop one reference to semaphore `obj_handle`; free it at refs -> 0. `teardown`
+        // = the noreturn exit path: it must never strand a parked waiter, so a would-be
+        // free with waiters still linked LEAKS (floors refs at 1). That branch is
+        // unreachable via close today (a parked waiter pins its own cap => refs >= 1),
+        // so it asserts teardown. Same accounting shape every future pool's arm mirrors.
+        void sem_ref_drop(int obj_handle, bool teardown)
         {
-            // Only CAP_SEM has a pool today. A future mutex/endpoint type reaching here
-            // without its own drop arm must trap in debug -- a silent skip would leak its
-            // reference forever, bleeding the pool with no diagnostic. In a build with
-            // asserts compiled out the guard still avoids treating a non-sem handle as a
-            // sem index (safe leak, which the debug tripwire would have caught in test).
-            KICKOS_ASSERT(e.type == static_cast<uint8_t>(CapType::CAP_SEM));
-            if (e.type != static_cast<uint8_t>(CapType::CAP_SEM))
-            {
-                return;
-            }
-            int const idx = sem_index_of(e.obj);
+            int const idx = sem_index_of(obj_handle);
             if (idx < 0)
             {
                 return; // already gone -- cannot happen under correct refcounting
@@ -55,26 +45,72 @@ namespace kickos
             }
             if (r == 0)
             {
-                Semaphore* s = kernel().sems.resolve(e.obj);
+                Semaphore* s = kernel().sems.resolve(obj_handle);
                 if (s != nullptr and not s->waiters.empty())
                 {
                     KICKOS_ASSERT(teardown); // refs->0 with a waiter parked is unreachable via close
                     r = 1;                   // leak, never strand
                     return;
                 }
-                kernel().sems.free(e.obj);
+                kernel().sems.free(obj_handle);
+            }
+        }
+
+        // Drop one reference to the object a (now-detached) cap entry named; dispatch to
+        // the per-type accounting arm. A future type reaching the default without its own
+        // arm traps in debug -- a silent skip would leak its reference with no diagnostic
+        // (release builds still avoid treating a foreign handle as a sem index: safe leak).
+        void obj_ref_drop(CapEntry const& e, bool teardown)
+        {
+            switch (static_cast<CapType>(e.type))
+            {
+            case CapType::CAP_SEM:
+                sem_ref_drop(e.obj, teardown);
+                return;
+            default:
+                KICKOS_ASSERT(false);
+                return;
+            }
+        }
+
+        // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
+        // Returns 0, or -1 to refuse a voluntary (non-teardown) close. CAP_SEM has no
+        // protocol -- this is why semaphores never needed the hook. The seam #3
+        // (refuse-owned / force-unlock) and #4 (EPIPE-wake) fill their arms here.
+        int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown)
+        {
+            (void)closer;
+            (void)teardown;
+            switch (static_cast<CapType>(e.type))
+            {
+            case CapType::CAP_SEM:
+                return 0;
+            default:
+                return 0;
             }
         }
     }
 
-    void sem_ref_inc(int obj_handle)
+    // Public (replaces sem_ref_inc; also the type-agnostic delegation entry point). Bump
+    // one reference to the object a global handle names. Handle MUST resolve. Holds IrqLock.
+    void obj_ref_inc(CapType type, int obj_handle)
     {
-        int const idx = sem_index_of(obj_handle);
-        if (idx < 0)
+        switch (type)
         {
+        case CapType::CAP_SEM:
+        {
+            int const idx = sem_index_of(obj_handle);
+            if (idx < 0)
+            {
+                return;
+            }
+            kernel().sem_refs[idx]++;
             return;
         }
-        kernel().sem_refs[idx]++;
+        default:
+            KICKOS_ASSERT(false); // unknown type must trap in debug
+            return;
+        }
     }
 
     CapEntry* cap_lookup(Thread* c, int cap_handle)
@@ -160,6 +196,10 @@ namespace kickos
         {
             return -1;
         }
+        if (obj_close_protocol(c, *e, /*teardown=*/false) != 0)
+        {
+            return -1; // protocol refused the close (e.g. #3: owner closing a held mutex)
+        }
         CapEntry const detached = *e;
         // Stale the handle + empty the slot BEFORE dropping the ref, so the slot is
         // cleanly reusable and no stale handle resolves during the drop.
@@ -180,6 +220,7 @@ namespace kickos
             {
                 continue;
             }
+            obj_close_protocol(c, e, /*teardown=*/true);
             CapEntry const detached = e;
             e.gen++;
             e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);

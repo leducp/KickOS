@@ -30,6 +30,17 @@ namespace kickos
         List waiters;
     };
 
+    // The waitq primitive shared by every blocking object (sem today; mutex/endpoint
+    // later). A waitq IS a List of BLOCKED threads; these are its only two operations.
+    // Remove+return the highest-priority waiter (FIFO among equals), or nullptr; pure
+    // select+unlink, no state/schedule change. ISR-callable (sem_post uses it). The
+    // priority scan is lazy at-pop so a waiter boosted while parked needs no re-queue.
+    Thread* wq_pop_highest(List& q);
+    // Park current on q and switch away; returns once a waker popped it and woke it.
+    // Thread context only; caller holds ONE continuous IrqLock across the block
+    // decision AND this call (lost-wake freedom).
+    void wq_block(List& q);
+
     void sem_init(Semaphore* s, int initial);
     void sem_wait(Semaphore* s);
     bool sem_trywait(Semaphore* s); // non-blocking; true if token taken

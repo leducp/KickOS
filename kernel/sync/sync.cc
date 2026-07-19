@@ -8,44 +8,41 @@
 
 namespace kickos
 {
-    namespace
+    // Remove and return the highest-priority waiter (FIFO among equal priority).
+    // The list mechanics are shared (List); the priority scan is the only
+    // wait-queue-specific policy on top.
+    Thread* wq_pop_highest(List& q)
     {
-        // Remove and return the highest-priority waiter (FIFO among equal priority).
-        // The list mechanics are shared (List); the priority scan is the only
-        // wait-queue-specific policy on top.
-        Thread* wq_pop_highest(List& q)
+        Thread* best = thread_of(q.head);
+        if (best == nullptr)
         {
-            Thread* best = thread_of(q.head);
-            if (best == nullptr)
-            {
-                return nullptr;
-            }
-            for (ListNode* n = q.head->next; n != nullptr; n = n->next)
-            {
-                Thread* t = thread_of(n);
-                if (t->prio > best->prio)
-                {
-                    best = t;
-                }
-            }
-            q.unlink(&best->link);
-            best->wait_queue = nullptr;
-            return best;
+            return nullptr;
         }
+        for (ListNode* n = q.head->next; n != nullptr; n = n->next)
+        {
+            Thread* t = thread_of(n);
+            if (t->prio > best->prio)
+            {
+                best = t;
+            }
+        }
+        q.unlink(&best->link);
+        best->wait_queue = nullptr;
+        return best;
+    }
 
-        // Park the current thread on `q` and switch away; returns when woken.
-        void block_on(List& q)
-        {
-            Thread* c = sched::current();
-            // Detach from the ready list FIRST: the ready list and wait queues
-            // share the TCB link node, so pushing onto the wait queue would clobber
-            // the links that the ready-list removal needs to read.
-            sched::detach_current();
-            c->state = ThreadState::BLOCKED;
-            c->wait_queue = &q;
-            q.push_back(&c->link);
-            sched::reschedule(); // switch away; returns when woken
-        }
+    // Park the current thread on `q` and switch away; returns when woken.
+    void wq_block(List& q)
+    {
+        Thread* c = sched::current();
+        // Detach from the ready list FIRST: the ready list and wait queues
+        // share the TCB link node, so pushing onto the wait queue would clobber
+        // the links that the ready-list removal needs to read.
+        sched::detach_current();
+        c->state = ThreadState::BLOCKED;
+        c->wait_queue = &q;
+        q.push_back(&c->link);
+        sched::reschedule(); // switch away; returns when woken
     }
 
     // --- Semaphore -------------------------------------------------------------
@@ -63,7 +60,7 @@ namespace kickos
             s->count--;
             return;
         }
-        block_on(s->waiters);
+        wq_block(s->waiters);
         // Woken with the token handed to us directly; nothing to decrement.
     }
 
@@ -111,7 +108,7 @@ namespace kickos
         }
         // wq_pop_highest wakes the most urgent waiter, but m->owner is NOT boosted here:
         // priority inversion is unbounded until inheritance lands (base_prio = restore-to slot).
-        block_on(m->waiters);
+        wq_block(m->waiters);
         // On wake we are the new owner (ownership transferred by mutex_unlock).
     }
 
