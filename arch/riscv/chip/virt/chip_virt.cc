@@ -48,10 +48,13 @@ extern "C"
     extern uint32_t __eh_frame_start;
     void __register_frame(void*) __attribute__((weak));
 #if KICKOS_HAVE_MPU
-    // App-data NAPOT region (virt.ld): the .appbss + pow2 pad must be zeroed like any
-    // .bss (the loaded .appdata rides LMA == VMA, so no copy). Zeroed through the RW
-    // grant so an unprivileged thread never reads stale bytes from its data region.
-    extern uint32_t __kickos_appbss_start, __kickos_appdata_end;
+    // App-data NAPOT region (virt.ld). .appdata holds the app + C++-runtime .data and
+    // the gp small-data window; its VMA jumps to the pow2 window base above the NOLOAD
+    // kernel .bss, so LMA != VMA and it needs a copy (like .data) before .appbss + pad
+    // are zeroed. All through the RW grant, so an unprivileged thread never reads stale
+    // bytes from its data region.
+    extern uint32_t _appdata_lma, __kickos_appdata_start, __kickos_appbss_start,
+        __kickos_appdata_end;
 #endif
 
     // Nominal core clock (Hz). QEMU's rdcycle is not cycle-accurate, so this only
@@ -192,6 +195,12 @@ void Reset_Handler(void)
         *b = 0;
     }
 #if KICKOS_HAVE_MPU
+    uint32_t* asrc = &_appdata_lma;
+    uint32_t* adst = &__kickos_appdata_start;
+    while (adst < &__kickos_appbss_start) // .appdata: LMA != VMA (see decl)
+    {
+        *adst++ = *asrc++;
+    }
     for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appdata_end; b++)
     {
         *b = 0;

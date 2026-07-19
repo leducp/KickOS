@@ -91,6 +91,17 @@ function(kickos_apply_freestanding target)
   target_compile_options(${target} PRIVATE
     ${KICKOS_WARN_FLAGS} ${KICKOS_FREESTANDING_FLAGS}
     "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
+  # RISC-V PMP enforcement: the KickOS-owned libs (kernel/arch/chip/lib/user, all
+  # freestanding) emit NO gp-relative small-data, so the single gp window holds only
+  # app + C++-runtime small-data and can sit inside the granted .appdata region.
+  # -msmall-data-limit=0 routes every KickOS global to ordinary .data/.bss, captured
+  # kernel-side by the linker colon selectors. NOT applied to the app: its
+  # -fexceptions TUs need gp-relative small-data or __cxa_throw hangs in the FDE walk
+  # (docs/design-cxx-under-mpu.md). A CI guard (check_riscv_no_smalldata.sh) asserts
+  # the built archives carry zero .sdata/.sbss.
+  if(KICKOS_ARCH STREQUAL "rv32imac" AND KICKOS_HAVE_MPU)
+    target_compile_options(${target} PRIVATE -msmall-data-limit=0)
+  endif()
 endfunction()
 
 # hosted C++ TUs: the sim arch backend only
@@ -220,12 +231,11 @@ function(kickos_add_application name)
     set_target_properties(${name} PROPERTIES LINK_DEPENDS "${KICKOS_LINKER_SCRIPT}")
   endif()
   target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
-  # RISC-V PMP enforcement: keep the app's own globals out of the gp-relative
-  # small-data window (unreachable by an unprivileged thread) so they land in the
-  # .appdata NAPOT region -- see user/CMakeLists.txt for the rationale.
-  if(_arch STREQUAL "rv32imac" AND DEFINED KICKOS_HAVE_MPU AND KICKOS_HAVE_MPU)
-    target_compile_options(${name} PRIVATE -msmall-data-limit=0)
-  endif()
+  # NB: the app is NOT built -msmall-data-limit=0 under RISC-V PMP. With the gp
+  # window anchored inside the .appdata grant (chip .ld), the app's small globals
+  # land in that granted window, and keeping small-data enabled is REQUIRED -- the
+  # flag on a -fexceptions TU hangs __cxa_throw in the FDE walk. Only the KickOS
+  # libs get the flag (kickos_apply_freestanding). See docs/design-cxx-under-mpu.md.
   # The OS-agnostic entry glue (-Dmain / -include app.h) rides each leaf's core, so
   # the plain add_executable path gets it too. FULL_CXX picks the full-C++ leaf.
   if(APP_FULL_CXX)

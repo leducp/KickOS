@@ -39,11 +39,22 @@ extern "C"
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
+
+    // DWARF EH frame table (esp32c6.ld) + the libgcc registrar. RISC-V exceptions use
+    // DWARF .eh_frame, normally registered by crtbegin's frame_dummy -- but the
+    // -nostartfiles link drops crtbegin, so a full-C++ app registers the table by hand
+    // at boot. WEAK ref: a freestanding image references no _Unwind_*, so the libgcc
+    // registrar object is never pulled, the ref stays null, and the call is skipped.
+    extern uint32_t __eh_frame_start;
+    void __register_frame(void*) __attribute__((weak));
 #if KICKOS_HAVE_MPU
-    // App-data NAPOT region (esp32c6.ld): the .appbss + pow2 pad must be zeroed like
-    // any .bss (the loaded .appdata rides LMA == VMA, so no copy). Zeroed through the
-    // RW grant so an unprivileged thread never reads stale bytes from its data region.
-    extern uint32_t __kickos_appbss_start, __kickos_appdata_end;
+    // App-data NAPOT region (esp32c6.ld). .appdata holds the app + C++-runtime .data and
+    // the gp small-data window; its VMA jumps to the pow2 window base above the NOLOAD
+    // kernel .bss, so LMA != VMA and it needs a copy (like .data) before .appbss + pad
+    // are zeroed. All through the RW grant, so an unprivileged thread never reads stale
+    // bytes from its data region.
+    extern uint32_t _appdata_lma, __kickos_appdata_start, __kickos_appbss_start,
+        __kickos_appdata_end;
 #endif
 
     // Core clock in Hz. MEASURED ~160 MHz on silicon (2026-07-09): the ROM first-stage
@@ -593,12 +604,22 @@ void Reset_Handler(void)
     }
     c6_early_mark('B'); // .data copied + .bss zeroed
 #if KICKOS_HAVE_MPU
+    uint32_t* asrc = &_appdata_lma;
+    uint32_t* adst = &__kickos_appdata_start;
+    while (adst < &__kickos_appbss_start) // .appdata: LMA != VMA (see decl)
+    {
+        *adst++ = *asrc++;
+    }
     for (uint32_t* b = &__kickos_appbss_start; b < &__kickos_appdata_end; b++)
     {
         *b = 0;
     }
-    c6_early_mark('C'); // .appbss zeroed (enforcement layout symbols resolved sanely)
+    c6_early_mark('C'); // .appdata copied + .appbss zeroed (enforcement symbols sane)
 #endif
+    if (__register_frame != nullptr) // weak: null in a freestanding image (see decl)
+    {
+        __register_frame(&__eh_frame_start); // DWARF EH: register before ctors/throws
+    }
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)
     {
         (*fn)();

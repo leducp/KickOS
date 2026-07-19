@@ -89,3 +89,19 @@ if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
             "$<TARGET_FILE:kickos_lib>")
   set_tests_properties(kernel_ctor_placement PROPERTIES TIMEOUT 60)
 endif()
+
+# RISC-V-under-PMP small-data guard: the gp window sits inside the app grant, so the
+# KickOS libs (built -msmall-data-limit=0) must emit ZERO .sdata/.sbss -- a stray
+# kernel global there is reachable/writable by an unprivileged thread. Assert per
+# archive (docs/design-riscv-gp-split.md, Option 4).
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
+  add_test(
+    NAME    riscv_no_smalldata
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_riscv_no_smalldata.sh"
+            "${CMAKE_OBJDUMP}"
+            "$<TARGET_FILE:kickos_kernel>"
+            "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
+            "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
+            "$<TARGET_FILE:kickos_lib>")
+  set_tests_properties(riscv_no_smalldata PROPERTIES TIMEOUT 60)
+endif()

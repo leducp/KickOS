@@ -23,5 +23,8 @@
 #ifndef KICKOS_ROOT_STACK_SIZE
 #define KICKOS_ROOT_STACK_SIZE 8192
 #endif
+#ifndef KICKOS_HEAP_SIZE
+#define KICKOS_HEAP_SIZE (16 * 1024) /* libc heap arena for full-C++; lives in the app window */
+#endif
 
 #endif /* KICKOS_BOARD_CONFIG_H */

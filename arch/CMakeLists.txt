@@ -228,9 +228,17 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # tokens through unchanged. The GENERATED script (named <chip>.ld) is what the link
   # and the installed package use, so the INSTALL_INTERFACE -T path is unchanged.
   set(_ld_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.ld")
+  # Per-build app-data window size. Each chip .ld carries its own freestanding default
+  # (a small window, tightest isolation); a full-C++ build overrides it here with the
+  # larger writable window the toolchain runtime needs (heap + libstdc++/unwind state).
+  # Forwarded only when set, so a plain build keeps the chip default.
+  set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
+  if(DEFINED KICKOS_APPDATA_SIZE)
+    list(APPEND _ld_defs -DKICKOS_APPDATA_SIZE=${KICKOS_APPDATA_SIZE})
+  endif()
   add_custom_command(
     OUTPUT "${_ld_gen}"
-    COMMAND ${CMAKE_C_COMPILER} -E -P -x c -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
+    COMMAND ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs}
             "${_ld}" -o "${_ld_gen}"
     DEPENDS "${_ld}"
     COMMENT "linker: preprocess ${KICKOS_CHIP}.ld (KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})"

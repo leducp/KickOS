@@ -30,12 +30,21 @@ endif()
 # set), and the EHABI .exidx tables are read-only in flash, reached via the code grant --
 # so an unprivileged thread runs the full runtime (the freedom-k64f slave reached
 # OPERATIONAL under SYSMPU). The operator runs cxxtest on K64F silicon.
-# qemu armv7m / qemu-riscv stay non-enforcement: mps2 has no enforcement block, and
-# RISC-V full-C++ under PMP still faults (DWARF unwind reads a malloc'd FDE registry +
-# libc globals the *user* selector leaves kernel-side). The other MPU chips need the
-# mk64f .appdata selector fanned out first (docs/m2-review-followups.md).
+# picopi (rp2040/EHABI), rx72m (RXv3/SjLj) and esp32c6-wroom (rv32imac/DWARF) build
+# cxxtest ONLY under enforcement -- each chip .ld homes the toolchain EH tables (EHABI
+# .ARM.extab / DWARF .eh_frame+.gcc_except_table / RX SjLj .gcc_except_table) into the
+# app code+data grants and routes the runtime writable state into the .appdata window.
+# qemu (armv7m/mps2) stays non-enforcement (no enforcement block). qemu-riscv builds
+# BOTH: non-enforcement (freestanding path) and, when KICKOS_HAVE_MPU is set, the
+# full-C++ throw under PMP -- the deterministic runtime gate for the gp-in-appdata
+# layout (docs/design-riscv-gp-split.md), no silicon needed.
 if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
+   OR ((KICKOS_BOARD STREQUAL "picopi"
+        OR KICKOS_BOARD STREQUAL "rx72m"
+        OR KICKOS_BOARD STREQUAL "esp32c6-wroom"
+        OR KICKOS_BOARD STREQUAL "qemu-riscv")
+       AND KICKOS_HAVE_MPU)
    OR ((KICKOS_BOARD STREQUAL "qemu" OR KICKOS_BOARD STREQUAL "qemu-riscv")
        AND NOT KICKOS_HAVE_MPU))
   add_subdirectory(cxxtest)

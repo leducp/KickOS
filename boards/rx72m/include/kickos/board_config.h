@@ -28,4 +28,13 @@
 #define KICKOS_ROOT_STACK_SIZE 8192
 #endif
 
+/* Userspace malloc arena (newlib_stubs.cc s_heap). Under full-C++ MPU enforcement it
+ * routes into the granted .appdata window, so it must fit alongside libstdc++/unwind
+ * writable globals in the pow2 app-data region. Without this, newlib defaults to a 64K
+ * heap, which would force the RX app window past 32K; 16K fits the 32K window like the
+ * other silicon chips. */
+#ifndef KICKOS_HEAP_SIZE
+#define KICKOS_HEAP_SIZE (16 * 1024)
+#endif
+
 #endif /* KICKOS_BOARD_CONFIG_H */

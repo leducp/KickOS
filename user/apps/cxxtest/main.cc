@@ -7,8 +7,17 @@
 // and RTTI (dynamic_cast + typeid). Built ONLY under the FULL_CXX opt-in (see
 // CMakeLists.txt); a freestanding app cannot use any of this. Prints one PASS/FAIL
 // line per check then returns (clean exit -> QEMU SYS_EXIT).
+//
+// The checks run in a spawned UNPRIVILEGED worker, not inline in main: main is the
+// privileged root thread, which bypasses the MPU, so an inline throw would never
+// touch the app grant. Under enforcement the worker's throw/catch drives the DWARF/
+// EHABI/SjLj unwinder over eh_globals + the FDE registry, and every new/vector/string
+// allocation goes through the app-side arena -- all of which must lie in the worker's
+// reachable grant. That is the real gate: full-C++ inside MPU confinement (the RISC-V
+// gp-in-appdata layout, docs/design-riscv-gp-split.md).
 
 #include <kickos/kos.h>
+#include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
 #include <exception>
@@ -155,21 +164,51 @@ namespace
         bool typeid_ok = typeid(*b) == typeid(Derived) and typeid(*bp) == typeid(Base);
         report("typeid reflects dynamic type", typeid_ok);
     }
+
+    int g_done = -1; // worker -> main handoff
+
+    // UNPRIVILEGED: the whole full-C++ body runs here, under the MPU. Exceptions
+    // unwind, RTTI matches, and STL/new allocate all through the worker's own grant.
+    void cxx_worker(void*)
+    {
+        test_exceptions();
+        test_stl();
+        test_rtti();
+
+        char const* verdict = "SOME FAILED\n";
+        if (g_fails == 0)
+        {
+            verdict = "ALL PASS\n";
+        }
+        kos::print(verdict);
+        kos_sem_post(g_done);
+    }
 }
 
 int main(int, char**)
 {
     kos::print("KickOS full-C++ opt-in test\n");
 
-    test_exceptions();
-    test_stl();
-    test_rtti();
+    g_done = kos_sem_create(0);
+    // Default spawn => UNPRIVILEGED (privileged=false). prio 10 sits above root
+    // (KICKOS_PRIO_MIN+1), so once main blocks on g_done the worker runs to completion
+    // and root wakes as the last live thread (the selftest orchestration shape). Stack:
+    // the kernel default KICKOS_USER_STACK_SIZE (8 KB on every gated board), demand-
+    // allocated from the app arena -- headroom for the EH unwind + libstdc++ working set,
+    // and it fits each board's window (a static KOS_STACK_DEFINE buffer would have to be a
+    // pow2 region inside C6's 4 KB .appdata, which 8 KB cannot).
+    int w = kos::thread::spawn(cxx_worker, nullptr, "cxxwork", 10);
+    if (w < 0)
+    {
+        kos::print("SOME FAILED\n"); // spawn failure: fail loud, do not fall back to privileged
+        return 1;
+    }
+    kos_sem_wait(g_done);
+    kos_sem_destroy(g_done);
 
     if (g_fails == 0)
     {
-        kos::print("ALL PASS\n");
         return 0;
     }
-    kos::print("SOME FAILED\n");
     return 1;
 }

@@ -54,6 +54,27 @@ int _kill(int, int)
     return -1;
 }
 
+#ifdef __riscv
+// Newlib's getentropy() bottom edge, needed by the RISC-V full-C++ link: KEEPing
+// .eh_frame (DWARF EH) retains the libc arc4random/getentropy FDEs, which pin the
+// getentropy dependency chain against --gc-sections, so this symbol must resolve to
+// link. NOT a cryptographic source -- KickOS exposes no HW RNG yet; seeded weakly off
+// the monotonic clock so the buffer is merely non-constant. Callers needing real
+// entropy must wait for an RNG driver. Guarded for RISC-V (ARM uses EHABI .ARM.exidx,
+// keeps no .eh_frame, and never pulls this chain).
+int _getentropy(void* buf, size_t len)
+{
+    uint64_t x = kos_clock_now();
+    unsigned char* p = static_cast<unsigned char*>(buf);
+    for (size_t i = 0; i < len; i++)
+    {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        p[i] = static_cast<unsigned char>(x >> 56);
+    }
+    return 0;
+}
+#endif
+
 // Wall-clock offset over the monotonic kos_clock_now(): unix_ns = now() + offset.
 // Default 0 -> wall time reads boot-relative until kos_clock_set_realtime syncs it.
 // No RTC/NTP source yet; this is the only writer.
@@ -96,7 +117,7 @@ void _exit(int code)
 static char s_heap[KICKOS_HEAP_SIZE];
 static char* s_brk = s_heap;
 
-void* _sbrk(intptr_t incr)
+static void* heap_bump(intptr_t incr)
 {
     char* prev = s_brk;
     char* next = s_brk + incr;
@@ -107,6 +128,27 @@ void* _sbrk(intptr_t incr)
     s_brk = next;
     return prev;
 }
+
+void* _sbrk(intptr_t incr)
+{
+    return heap_bump(incr);
+}
+
+#ifdef __RX__
+// SjLj atexit/EH registration references __dso_handle; the RX libc may not
+// provide one. Weak so a libc that does still wins.
+__attribute__((weak)) void* __dso_handle = nullptr;
+
+// The RX psABI prefixes every C identifier with a leading underscore at the asm
+// level, so the C `_sbrk` above mangles to asm `__sbrk` -- newlib references asm
+// `_sbrk` and would otherwise fall through to libnosys sbrk (which pulls `_end`
+// and breaks the app-window layout). A C function named `sbrk` mangles to asm
+// `_sbrk`, satisfying newlib; it shares the one bump arena via heap_bump.
+void* sbrk(intptr_t incr)
+{
+    return heap_bump(incr);
+}
+#endif
 
 // Newlib's malloc brackets every arena mutation with __malloc_lock/__malloc_unlock.
 // The pinned vendor toolchains are all built single-thread (--disable-threads), so

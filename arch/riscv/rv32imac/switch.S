@@ -22,8 +22,10 @@
  *
  * Save frame (128 B, low->high on the thread's stack; ctx.sp = its base). Must match
  * arch_context_init (arch_rv32imac.cc). gp/tp are NOT saved (link-time constant
- * across threads). ecall is always 4 bytes (no compressed form), so the user return
- * is mepc+4.
+ * across threads); gp is instead force-reloaded to __global_pointer$ in .Lrestore so a
+ * U-mode thread cannot corrupt it for the next thread (Option-4 puts gp in live app
+ * small-data). ecall is always 4 bytes (no compressed form), so the user return is
+ * mepc+4.
  */
 
 #include <kickos/arch/rv_trap_ids.h>
@@ -293,6 +295,19 @@ svc_trampoline:
 /* --- Shared restore epilogue: pop the frame at sp, mret. (t0 is scratch for    */
 /* the CSR loads, then reloaded with the rest.)                                  */
 .Lrestore:
+    /* Force gp to its canonical link-time value before returning to any (re)dispatched
+       thread. gp is NOT per-thread (see the frame comment), but Option-4 anchors
+       __global_pointer$ inside the LIVE app small-data window, so a malicious U-mode
+       thread can write gp arbitrarily; the next thread's gp-relative small-data loads
+       would then resolve at attacker-chosen addresses. This choke point (every dispatch
+       path funnels here) makes gp self-healing per switch. norelax: the assembler would
+       otherwise relax `la gp, __global_pointer$` to a no-op that assumes gp already holds
+       it. Cheap (2 instrs) and the kernel uses no gp-relative code, so clobbering gp here
+       is safe. See docs/design-riscv-gp-split.md. */
+    .option push
+    .option norelax
+    la      gp, __global_pointer$
+    .option pop
     /* Restore mstatus (saved with MIE=0) BEFORE mepc. The ecall-return path reaches
        here from svc_trampoline with MIE=1 (.Lecall set MPIE=1); a trap taken between
        the mepc and mstatus writes would clobber mepc (the nested trap overwrites it),

@@ -43,9 +43,17 @@ _kernel_stack_size = 8K;               /* ISP (boot/ISR) stack reservation */
    PMSA/NAPOT backends share the block), so the app data is padded up to this pow2
    size; a real app whose globals exceed it trips the ASSERT below. Keep it pow2.
    Gated on KICKOS_HAVE_MPU (the script is cpp-preprocessed): a non-enforcement
-   build reserves no app-data block and separates nothing (zero overhead). */
+   build reserves no app-data block and separates nothing (zero overhead).
+   The full-C++ cxxtest gate routes a 16K malloc arena (KICKOS_HEAP_SIZE, set in the
+   board_config) + libstdc++/unwind globals into this window (~18K), so the default is
+   32K (matches virt.ld/esp32c6.ld); override it down for a tight freestanding demo. The
+   former 4K default could not hold the heap arena and the pow2 pad-back in .appbss moved
+   the location counter backwards before the ASSERT could fire. */
 #if KICKOS_HAVE_MPU
-_appdata_size = 4K;
+#ifndef KICKOS_APPDATA_SIZE
+#define KICKOS_APPDATA_SIZE 32K
+#endif
+_appdata_size = KICKOS_APPDATA_SIZE;
 #endif
 
 SECTIONS
@@ -69,6 +77,16 @@ SECTIONS
         *(L)                   /* literal pool */
         KEEP(*(.init))
         KEEP(*(.fini))
+        . = ALIGN(4);
+    } > ROM
+
+    /* SjLj exception landing-pad tables (read-only). The RX toolchain uses
+       setjmp/longjmp EH, so unwinding reads .gcc_except_table, not DWARF. Placed
+       explicitly in ROM: left orphaned it falls into the fixed 0x80-byte FVECT and
+       overflows it. The unprivileged app domain reads it via its ROM code grant. */
+    .gcc_except_table : ALIGN(4)
+    {
+        KEEP(*(.gcc_except_table .gcc_except_table.*))
         . = ALIGN(4);
     } > ROM
 

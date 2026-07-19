@@ -22,9 +22,16 @@ _kernel_stack_size = 8K;
    own .data/.bss but not the kernel's. PMSA needs the region pow2-sized AND aligned
    to its size, so the app window is padded to this pow2 and section-aligned to its
    size above the kernel data; an app whose globals exceed it trips the ASSERT.
-   Power of two only. */
+   Power of two only. The full-C++ cxxtest gate routes a 16K malloc arena
+   (KICKOS_HEAP_SIZE) + libstdc++/unwind globals into this window (~18K measured), so
+   the default is 32K (matches virt.ld/esp32c6.ld); a tight freestanding demo can
+   override it down. The former 4K default could not hold the heap arena and the pow2
+   pad-back below moved the location counter backwards before the ASSERT could fire. */
 #if KICKOS_HAVE_MPU
-_appdata_size = 4K;
+#ifndef KICKOS_APPDATA_SIZE
+#define KICKOS_APPDATA_SIZE 32K
+#endif
+_appdata_size = KICKOS_APPDATA_SIZE;
 #endif
 
 SECTIONS
@@ -35,7 +42,11 @@ SECTIONS
         KEEP(*(.boot2))
     } > FLASH
 
-    .text :
+    /* .text VMA is PINNED to 0x1000_0100 (not merely asserted): boot2 occupies the
+       first 0x100, and the vector table is the first thing here, so pinning fixes
+       the vector table address instead of leaving it to whatever the linker packs
+       ahead of it. */
+    .text ORIGIN(FLASH) + 0x100 :
     {
         KEEP(*(.isr_vector))   /* vector table at 0x1000_0100 */
         *(.text .text.*)
@@ -44,6 +55,20 @@ SECTIONS
         KEEP(*(.init))
         KEEP(*(.fini))
         . = ALIGN(4);
+    } > FLASH
+
+    /* EHABI unwind instructions + LSDA (read-only). Given explicit homes in the FLASH
+       code window right after .text so they never orphan into the 0x1000_0100 vector
+       slot; the unprivileged app reads them via its RX code grant. libstdc++ may emit
+       .gcc_except_table even on EHABI, so it is homed too. */
+    .ARM.extab :
+    {
+        *(.ARM.extab* .gnu.linkonce.armextab.*)
+    } > FLASH
+
+    .gcc_except_table :
+    {
+        *(.gcc_except_table .gcc_except_table.*)
     } > FLASH
 
     /* Global ctors SPLIT: .init_array keeps ONLY the closed KickOS-owned set
