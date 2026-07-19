@@ -77,8 +77,8 @@ the thinnest possible bridge from a newlib expectation to a KickOS syscall:
   overhead, and a future thread-safe libc can override the weak symbols. The footgun,
   called out in the file: an app that spawns threads and heap-allocates from *more than
   one* gets no reentrancy guard -- concurrent `malloc` silently corrupts the arena.
-  Real stubs (an `IrqLock` or a per-domain arena) are a prerequisite of the
-  multi-threaded-full-C++ milestone; until then, keep such apps single-alloc-thread.
+  Real stubs (an `IrqLock` or a per-domain arena) are the prerequisite for
+  multi-threaded full-C++ allocation; without them, keep such apps single-alloc-thread.
 
 The rest (`_read` returns 0, `_close`/`_kill` return `-1`, `_isatty` returns 1) are
 honest stubs for a system with no filesystem: enough for the library to be *coherent*,
@@ -241,15 +241,15 @@ constructors that may call into them. Get the bottom edge wrong and the library 
 reach the OS; get the boot order wrong and the OS is not there yet when the library
 reaches for it.
 
-## The MPU twist (M2), proven on K64F
+## The MPU twist: the runtime's writable state must be granted
 
 Under per-task MPU isolation (Chapter 7), one extra fact matters: the C++ runtime's
 **writable state must land in a region the isolated thread was granted**, while its
-read-only tables come along for free. When this chapter was drafted that was a plan,
-proven only on qemu-riscv. It is now **proven on real K64F silicon**: a full-C++
-KickCAT EtherCAT slave (linking `kickos_cxx`) -- exceptions, RTTI, and the STL all live --
-reached `OPERATIONAL` under K64F SYSMPU enforcement, an unprivileged thread running the
-full runtime out of its own granted regions.
+read-only tables come along for free. An unprivileged thread running the full runtime --
+exceptions, RTTI, the STL all live -- reaches all of it only because every writable
+runtime global was placed inside one of its granted regions; a full-C++ app (linking
+`kickos_cxx`) runs out of its own granted regions with the protection unit enforcing on
+every access.
 
 - **Writable, must be in the granted data region:** the libc heap arena (`s_heap`), the
   newlib malloc bins and reent (`_impure_*`), libgcc's FDE registry list heads, and
@@ -271,12 +271,12 @@ libstdc++, libsupc++), and KickCAT. An unmatched archive therefore lands app-sid
 `.appdata` window ends up holding exactly the runtime's writable state -- `s_heap`,
 newlib's `_impure_ptr`/`__malloc_av_`, and libsupc++'s `eh_globals` + emergency pool --
 while the read-only EH tables (`.ARM.exidx`/`.ARM.extab`), `type_info`, and vtables ride
-flash. Isolation was verified with `nm`: no kernel writable symbol sits inside the app
-window. The gotcha: the design doc planned the split with `EXCLUDE_FILE`, but **this
+flash. Isolation is checkable with `nm`: no kernel writable symbol may sit inside the app
+window. The gotcha: `EXCLUDE_FILE` looks like the natural tool for the split, but **this
 binutils (arm-none-eabi 15.3) does not match archive members inside `EXCLUDE_FILE`** -- a
 bare `*libkickos_kernel.a` there matches nothing. The mechanism that *does* work is
-colon-inclusion, `*libkickos_kernel.a:*(...)`, which selects members by archive; so the
-plan's "exclude the kernel from the app window" became "include the kernel first, let the
+colon-inclusion, `*libkickos_kernel.a:*(...)`, which selects members by archive; so
+"exclude the kernel from the app window" becomes "include the kernel first, let the
 rest fall through." Same isolation, opposite selector.
 
 Two arch wrinkles worth naming:
@@ -291,17 +291,18 @@ Two arch wrinkles worth naming:
   window (`-msmall-data-limit=0`) *breaks* DWARF unwinding on a `-fexceptions` TU. The fix
   is to stop fighting `gp` and move it: anchor `__global_pointer$` inside the granted data
   region so small-data lands in-region and unwinding keeps working. This is RISC-V-only;
-  ARM and RX have no `gp` small-data model. The full account is
-  `../design-cxx-under-mpu.md`.
+  ARM and RX have no `gp` small-data model. The full account is the companion chapter
+  [*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md);
+  the porting contract is `../reference/porting.md` (RISC-V arch, `gp` anchor).
 
 ## Where to go next
 
-- The authoritative in-repo contract: `../reference/architecture.md` -- the "C++ decisions"
-  and "Toolchain-libc lesson from NuttX" sections.
-- The full-C++-under-MPU design and its proofs (qemu-riscv, then K64F silicon):
-  `../design-cxx-under-mpu.md`.
-- The libc strategy and the newlib seam in the north-star integration:
-  `../design-kickcat-k64f.md` ("Libc strategy for the full-C++ opt-in").
+- The authoritative in-repo contract: `../reference/architecture.md` -- the "C++ decisions",
+  "Memory domains", and "Toolchain-libc lesson from NuttX" sections.
+- Full C++ under memory protection, in depth: the companion chapters
+  [*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md)
+  and [*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md).
+- The libc strategy and the newlib seam: `../reference/architecture.md` ("C++ decisions").
 - The actual bottom-edge stubs: `../../user/src/newlib_stubs.cc`.
 - Memory protection, which decides where the runtime's writable state must live:
   Chapter 7, *Memory protection (M2)*.

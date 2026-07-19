@@ -25,7 +25,7 @@ its own. Memory protection is a hardware unit, and whether that unit can gate a
 *peripheral* access -- and at what granularity -- is a property of the chip, not of
 the kernel. On some chips the promise holds exactly. On others the hardware simply
 cannot express it, and no amount of clever kernel code recovers it. This chapter is
-the concrete story of discovering that boundary on real silicon.
+about where that boundary falls, with the K64F as the instructive case.
 
 *Further reading: Tanenbaum, Modern Operating Systems, ch.1 (protection, user vs
 kernel mode) and ch.3 (memory management / protection hardware -- why the MMU or MPU,
@@ -53,49 +53,48 @@ data live in, so per-thread memory isolation is uniform across the fleet. For
 *peripherals* it is the whole game. A CPU-side unit can carve a per-thread device
 window; a bus-slave-side unit is blind to devices and something else must gate them.
 
-## The K64F experiment: what the datasheet did not say
+## The K64F case: SYSMPU cannot gate peripherals
 
-KickOS's first userspace driver was built on the FRDM-K64F to answer precisely this
-question on hardware. A privileged bring-up shim starts a periodic timer (the PIT);
-the unprivileged driver thread is granted *only* the PIT's register window and its
-interrupt, and its job each tick is to write-1-clear the timer's own flag through that
-granted window -- the direct unprivileged device write that would prove the grant.
+The FRDM-K64F makes the question concrete. Consider an unprivileged driver thread
+granted *only* a periodic timer's (the PIT's) register window and its interrupt, whose
+job each tick is to write-1-clear the timer's own flag through that granted window --
+the direct unprivileged device write a working grant must allow. A privileged bring-up
+shim starts the timer.
 
-The reference manual already hinted at trouble: the SYSMPU's guarded slave ports are
-flash and the SRAM banks; the peripheral bridge is listed as "protection built into
-the bridge," a different mechanism entirely. But a manual reading is a hypothesis, not
-a result -- so we flashed it.
+The reference manual foretells the outcome: the SYSMPU's guarded slave ports are flash
+and the SRAM banks; the peripheral bridge is listed as "protection built into the
+bridge," a different mechanism entirely.
 
-The board answered in one clean run. The *privileged* shim's writes to the PIT
-succeeded (the timer ran and fired its interrupt). The *unprivileged* driver's very
-first write to a PIT register -- an address *inside* its granted SYSMPU window --
-took a bus fault. And the SYSMPU's own error register latched **nothing**: it had not
-denied the access, because it never saw it. Same peripheral, same clock, same run;
-the only difference was privilege. The conclusion is forced:
+On this silicon the behavior splits by privilege alone. The *privileged* shim's writes
+to the PIT succeed (the timer runs and fires its interrupt). The *unprivileged*
+driver's write to a PIT register -- an address *inside* its granted SYSMPU window --
+takes a bus fault. And the SYSMPU's own error register latches **nothing**: it did not
+deny the access, because it never saw it. Same peripheral, same clock; the only
+difference is privilege. The conclusion is forced:
 
-1. **SYSMPU does not gate peripherals.** It latched no error; the fault came from
-   elsewhere. (This settled the open question the SPI design brief was blocked on.)
+1. **SYSMPU does not gate peripherals.** It latches no error; the fault comes from
+   elsewhere.
 2. **But peripherals are gated anyway** -- by the peripheral bridge itself. That bridge
    (Kinetis calls it AIPS) enforces access per *privilege level and bus master*, and
    its per-peripheral control (a `PACR` field) resets to *supervisor-only*. An
    unprivileged store therefore never reaches the register; the bridge rejects it with
-   the bus fault we saw.
+   that bus fault.
 
-The fix that made the driver run confirmed the mechanism: the privileged shim clears
-the supervisor-protect bit for the timer's peripheral slot, and the unprivileged
-driver then ticks cleanly. So user-mode peripheral access on K64F *is* controllable
--- just not by the MPU, and not the way the design assumed.
+The fix confirms the mechanism: the privileged shim clears the supervisor-protect bit
+for the timer's peripheral slot, and the unprivileged driver then ticks cleanly. So
+user-mode peripheral access on K64F *is* controllable -- just not by the MPU, and not
+per-thread.
 
-## Why the fix is not the isolation we wanted
+## Why the opened slot is not per-thread isolation
 
-Opening the AIPS slot got the driver working, but read what the knob actually is. The
+Opening the AIPS slot gets the driver working, but read what the knob actually is. The
 bridge decides by *privilege and master* -- "may user-mode code touch this peripheral
 slot?" -- and there is exactly one user privilege level and one CPU master. It has no
 notion of *which* unprivileged thread, because a thread is a software idea the bus has
 never heard of. So the moment the slot is opened for the driver, it is open to **every**
 unprivileged thread in the system. And the granularity is a whole 4 KB peripheral slot,
-coarser than the MPU's byte-level windows (we watched the driver read a register
-outside its fine SYSMPU window but inside the same slot, and it succeeded).
+coarser than the MPU's byte-level windows: a register outside the fine SYSMPU window
+but inside the same slot is still reachable.
 
 That is the ceiling. On K64F you get a *kernel-vs-user, per-peripheral* boundary:
 peripherals you leave closed are unreachable by any user code, and peripherals you
@@ -116,7 +115,7 @@ the outlier, and shows *why*:
 |---|---|---|---|
 | XMC4800 -- ARM v7-M PMSA | CPU-side | yes | **yes** -- and no second gate to fight |
 | ESP32-C6 -- RISC-V PMP | CPU-side | yes | **yes** -- PMP discriminates per thread; a coarse APM gate must be opened once |
-| RX72M -- RX MPU | CPU-side | yes | **yes** (architecturally; this backend is not yet silicon-proven) |
+| RX72M -- RX MPU | CPU-side | yes | **yes** (the CPU-side RX MPU sees the peripheral aperture) |
 | K64F -- SYSMPU | bus-slave-side | **no** | **no** -- AIPS gates per privilege, not per thread |
 
 Two chips are worth pairing. The ESP32-C6 has the *same shape* as the K64F -- a
@@ -132,11 +131,10 @@ devices.
 
 ## The lesson
 
-The design brief that started this work assumed a portable model: grant a driver its
-device window, done. That model is real -- on CPU-side-MPU chips (XMC, PMP, RX) it is
-exactly right, and it is where KickOS should demonstrate the unprivileged-driver
-story. But it is a *CPU-side-MPU* model, not a universal one, and writing it as a
-portable guarantee would have been a promise the K64F cannot keep.
+The tempting portable model is: grant a driver its device window, done. That model is
+real -- on CPU-side-MPU chips (XMC, PMP, RX) it is exactly right, and it is where the
+unprivileged-driver story lives. But it is a *CPU-side-MPU* model, not a universal one,
+and writing it as a portable guarantee would be a promise the K64F cannot keep.
 
 So the rule KickOS follows, in the reference and in the code, is to state the ceiling
 per chip rather than a single portable claim: memory isolation is uniform; peripheral

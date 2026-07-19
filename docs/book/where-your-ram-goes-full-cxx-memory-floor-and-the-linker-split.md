@@ -11,10 +11,10 @@ Copyright (c) 2026 Philippe Leduc
 > which established *what* writable state the runtime keeps). This chapter answers two
 > practical questions a porter and an app author both ask: **how much writable RAM does a
 > full-C++ app cost, and why**, and **how is one linked image cut into a kernel side and
-> an app side so a memory-protection unit can fence them apart**. Points into
-> [`../design-cxx-under-mpu.md`](../design-cxx-under-mpu.md) for the sizing measurements
-> and [`../design-riscv-gp-split.md`](../design-riscv-gp-split.md) for the RISC-V `gp`
-> anchor; the worked linker example is
+> an app side so a memory-protection unit can fence them apart**. For the exact contract
+> it binds into the Reference: [`../reference/architecture.md`](../reference/architecture.md)
+> (the region-set model and budget) and [`../reference/porting.md`](../reference/porting.md)
+> (the RISC-V `gp` anchor); the worked linker example is
 > [`../../arch/arm/chip/mk64f/mk64f.ld`](../../arch/arm/chip/mk64f/mk64f.ld). This chapter is
 > the LAYOUT: which side of the wall each byte lands on.
 
@@ -254,8 +254,8 @@ One arch needs a step the others do not. On RISC-V the `gp` small-data window mu
 anchored **inside** the app's granted data region, not kernel-side, or an unprivileged
 throw faults reading its own `gp`-relative runtime globals. The full account -- why, and
 why "empty the kernel `gp` side and move the anchor" beats every alternative -- is the
-companion chapter and [`../design-riscv-gp-split.md`](../design-riscv-gp-split.md). In the
-linker script it is a `PROVIDE(__global_pointer$ = ...)` placed within the app-data block
+companion chapter [*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md).
+In the linker script it is a `PROVIDE(__global_pointer$ = ...)` placed within the app-data block
 plus the KickOS libs compiled `-msmall-data-limit=0` so they vacate the window. ARM and RX
 scripts have no `gp` and skip this entirely.
 
@@ -294,7 +294,7 @@ not a silent leak.
   [*Exceptions and RTTI under memory protection*](exceptions-and-rtti-under-memory-protection.md).
 - The bottom-edge stubs and the boot-order ctor story:
   [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md).
-- The sizing measurements and the region-set design:
-  [`../design-cxx-under-mpu.md`](../design-cxx-under-mpu.md).
-- The RISC-V `gp` split in full: [`../design-riscv-gp-split.md`](../design-riscv-gp-split.md).
+- The region-set model and the C++-under-MPU budget:
+  [`../reference/architecture.md`](../reference/architecture.md) ("Memory domains", "C++ decisions").
+- The RISC-V `gp` anchor contract: [`../reference/porting.md`](../reference/porting.md) (RISC-V arch).
 - Memory protection and how regions are granted at spawn: Chapter 7, *Memory protection (M2)*.

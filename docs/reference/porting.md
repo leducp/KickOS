@@ -325,6 +325,18 @@ save-frame, deferred switch.
   ESP32-C6 image specifics (all-SRAM image, gp-relative small-data, code-from-RAM,
   and a separate APM/PMS bus permission unit) are still **blocked**, see
   `m2-readiness.md`. No F/D extension -> soft-float, so the switch banks no FP.
+- **`gp` anchor for full-C++ under MPU** -- RISC-V small-data addresses globals as
+  `gp + imm` from one `__global_pointer$`. For a full-C++ app under per-task
+  enforcement the anchor MUST sit **inside the app's granted data region**: the
+  runtime's small globals (`eh_globals`, `_impure_ptr`, the FDE registry heads) and a
+  `-fexceptions` TU's `gp`-relative EH references (`DW.ref.*`, LSDA datarel) all live
+  in that window, so an out-of-region anchor faults an unprivileged throw. Contract:
+  link `PROVIDE(__global_pointer$ = ...)` within the app-data block, and compile the
+  KickOS libs `-msmall-data-limit=0` so they emit no small-data and vacate the window
+  (else granting it would hand a U-thread the kernel's own scheduler small-data). App
+  TUs stay compiled *with* small-data so unwinding works. Folds into the app-data grant
+  at +0 regions; `switch.S` is untouched (`gp` stays one link-time constant). ARM and RX
+  have no small-data model and skip this.
 - **`arch_irq_inject`** (fake-a-device-firing test/bench scaffolding) uses the
   **supervisor software interrupt** (`mip.SSIP`, `mcause`=1) as a private channel --
   the RISC-V analog of the host sim's `raise(SIGUSR1)`. The **PLIC has no

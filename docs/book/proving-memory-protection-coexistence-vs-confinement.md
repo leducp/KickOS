@@ -12,22 +12,21 @@ Copyright (c) 2026 Philippe Leduc
 > (the writable floor + the linker split). This chapter answers a different question:
 > once you have all that, *how do you know it actually protects anything* -- and how a
 > test can print "ALL PASS" while proving nothing. It binds to
-> [`../design-cxx-under-mpu.md`](../design-cxx-under-mpu.md) for the honest scope.
+> [`../reference/architecture.md`](../reference/architecture.md) (the region-set model)
+> and the test sources under `user/apps/{cxxtest,mpu_fault,selftest}/`.
 
-## A pass that proved nothing
+## The trap: "the MPU is on" is not "the MPU protects"
 
-KickOS once had `cxxtest` -- the full-C++ smoke test: throw, catch, unwind a local
-destructor, grow a `std::vector`, `dynamic_cast`, `typeid` -- printing `ALL PASS` under a
-boot banner that read `mpu     enforce`, on five silicon arches. The tempting headline
-wrote itself: *full C++ under MPU enforcement, proven on the fleet.*
+Consider a full-C++ smoke test -- throw, catch, unwind a local destructor, grow a
+`std::vector`, `dynamic_cast`, `typeid` -- that prints `ALL PASS` under a boot banner
+reading `mpu     enforce`. The tempting headline writes itself: *full C++ under MPU
+enforcement, proven.* The headline is wrong, and not because a check is faulty -- every
+assertion can be sound -- but because of *where the code ran*.
 
-A review caught that the headline was wrong. Not because a check was faulty -- every
-assertion in `cxxtest` was sound -- but because of *where the code ran*. The old
-`cxxtest` ran its body **inline in `main()`**. And on KickOS, `main()` runs in the
-**privileged root thread**. Privileged code **bypasses the MPU**. So the pass showed the
-runtime *coexisted* with a protection unit that happened to be switched on. It showed
-**nothing** about isolation, because not one of those loads and stores was ever
-protection-checked.
+If the test body runs **inline in `main()`**, it runs in the **privileged root thread**,
+and privileged code **bypasses the MPU**. Such a pass shows only that the runtime
+*coexists* with a protection unit that happens to be switched on. It shows **nothing**
+about isolation, because not one of those loads and stores was ever protection-checked.
 
 That gap -- "the MPU is on" mistaken for "the MPU protects" -- is the lesson of this
 chapter. It is a general trap, not a C++ one; it applies to any claim that a memory
@@ -72,10 +71,10 @@ one separately. Passing one does not imply the other.
 
 The code under test must run in an **unprivileged** thread, so its every load and store is
 subject to the protection unit. In KickOS that is `kos::thread::spawn(..., privileged =
-false)` -- the default. The fix to `cxxtest` was exactly this: instead of running the body
-in `main()`, it now spawns `cxx_worker` unprivileged (`user/apps/cxxtest/main.cc`) and the
+false)` -- the default. `cxxtest` does exactly this: rather than run the body in `main()`,
+it spawns `cxx_worker` unprivileged (`user/apps/cxxtest/main.cc`) and the
 throw/catch/unwind/RTTI/STL all execute there, under the unit, reaching only the worker's
-granted regions. `selftest` (`user/apps/selftest/main.cc`) was already built this way:
+granted regions. `selftest` (`user/apps/selftest/main.cc`) is built the same way:
 its workers are spawned unprivileged, and `main()` is a pure orchestrator that spawns,
 joins on a semaphore, and asserts -- it never does the thing it is testing.
 
@@ -127,34 +126,29 @@ IRQ-as-event driver that reads only its granted MMIO. Together the positive (all
 accesses succeed from U-mode) and the negative (a disallowed access traps) are what make
 "protected" a claim and not a hope.
 
-## Why coexistence still matters -- name it, don't inflate it
+## Coexistence vs confinement -- two claims, don't conflate them
 
-None of this makes the original silicon logs worthless. They prove something real, just
-weaker than the headline: the full-C++ runtime -- libstdc++/libsupc++/newlib, the
-EH-table-homing layout, the boot-time FDE registration on DWARF arches -- **boots and runs
-to completion with enforcement active**. That is *runtime/MPU coexistence*, and it is a
-genuine milestone: it means the enforcement machinery does not break the runtime, and the
-EH tables and writable floor are homed such that a full-C++ image links and runs on an
-MPU board at all. What it is *not* is proof that an unprivileged thread is confined by
-that MPU.
+Running a full-C++ test image with the MPU switched on establishes something real, but
+weaker than the headline: the runtime -- libstdc++/libsupc++/newlib, the EH-table-homing
+layout, the boot-time FDE registration on DWARF arches -- **boots and runs to completion
+with enforcement active**. That is *runtime/MPU coexistence*: the enforcement machinery
+does not break the runtime, and the EH tables and writable floor are homed such that a
+full-C++ image links and runs on an MPU board at all. What it is *not* is proof that an
+unprivileged thread is *confined* by that MPU.
 
-So KickOS states the two claims separately and honestly (see
-[`../design-cxx-under-mpu.md`](../design-cxx-under-mpu.md)):
+So the two are stated separately, because neither implies the other:
 
-- **Confined U-mode throw -- RUN-PROVEN** on qemu-riscv (rv32imac PMP), where
-  `qemu_riscv_cxxtest` runs the unprivileged worker to `ALL PASS` under PMP, and
-  silicon-proven where a bench re-flash of the now-U-mode `cxxtest` has been run (rx72m,
-  esp32c6). This is the strong claim: the fence was up and the confined code lived inside
-  it.
-- **Runtime coexists under enforcement (privileged) -- silicon-proven** across the fleet:
-  the runtime and the enforcement are on at the same time and nothing breaks. The
-  now-U-mode `cxxtest` links clean on every board; a bench re-flash is what upgrades a
-  given board from the coexistence claim to the confinement claim.
+- **Confined execution** -- the code under test runs unprivileged, so its accesses are
+  actually checked, and it stays inside its grants. A spawned unprivileged `cxx_worker`
+  establishes this: the fence is up and the confined code lives inside it.
+- **Coexistence** -- the runtime and the enforcement are active at the same time and
+  nothing breaks. A privileged run establishes this and nothing more; it says nothing
+  about confinement, because the privileged side is never fenced.
 
-And enforcement itself -- that the boundary bites -- is proven *separately* and does not
-lean on `cxxtest` at all: it rests on `mpu_fault` (the negative), on `selftest`'s
-`domain_share` / guard / confused-deputy checks (the positives), and on the unprivileged
-peripheral drivers that reach only their granted MMIO.
+And enforcement itself -- that the boundary *bites* -- is a third, independent claim that
+does not lean on the C++ test at all: it rests on `mpu_fault` (the negative), on
+`selftest`'s `domain_share` / guard / confused-deputy checks (the positives), and on the
+unprivileged peripheral drivers that reach only their granted MMIO.
 
 ## The transferable rule
 
@@ -177,8 +171,8 @@ have to *earn* -- from an unprivileged thread, with a fault you asserted.
   EH models): [`exceptions-and-rtti-under-memory-protection.md`](exceptions-and-rtti-under-memory-protection.md).
 - Where the writable floor comes from and how the linker splits kernel from app:
   [*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md).
-- The honest scope of what is run-proven vs coexistence-proven:
-  [`../design-cxx-under-mpu.md`](../design-cxx-under-mpu.md).
+- The region-set model and the C++-under-MPU contract:
+  [`../reference/architecture.md`](../reference/architecture.md) ("Memory domains", "C++ decisions").
 - Memory protection itself, and the root/orchestrator model: Chapter 7, *Memory
   protection (M2)*.
 - Further reading: Tanenbaum, *Modern Operating Systems*, ch.1 (user vs kernel mode as the

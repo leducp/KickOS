@@ -2,8 +2,8 @@
 # Porting an RTOS to a New ISA: a RISC-V Worked Example
 
 > *KickOS Book -- a per-ISA teaching chapter: how a small preemptive
-> kernel meets a processor it has never seen. We use RISC-V RV32IMAC (the
-> ESP32-C6, plus QEMU's `virt` machine) as the worked example, but the shape of
+> kernel meets a processor it has never seen. RISC-V RV32IMAC (the
+> ESP32-C6, plus QEMU's `virt` machine) is the worked example, but the shape of
 > the argument is the same for any ISA.*
 
 Most OS textbooks teach the *concepts* -- a context switch saves registers, a
@@ -44,10 +44,10 @@ compose well with a preemptive kernel.
 RISC-V has a single machine-mode trap vector, `mtvec`. In *direct* mode every
 trap -- timer interrupt, software interrupt, an `ecall`, a fault -- enters the same
 handler, which reads `mcause` to learn *why*. (There is a *vectored* mode too;
-we choose direct because one well-understood entry point is easier to reason
+KickOS uses direct because one well-understood entry point is easier to reason
 about than a table of them.)
 
-So the very first thing our handler does, before it knows anything, is **save the
+So the very first thing the handler does, before it knows anything, is **save the
 full register context** onto the running thread's own stack, then demux:
 
 ```
@@ -65,8 +65,8 @@ global pointer is a link-time constant shared by every thread; the thread pointe
 is unused (no thread-local storage). Saving invariants wastes cycles -- a small
 lesson in knowing your ABI. Second, **the handler runs on the interrupted
 thread's stack**, not a separate interrupt stack. This is a choice (RISC-V
-provides `mscratch` to swap in a dedicated stack); we take the simpler route
-because our thread stacks are sized with headroom, exactly as the RX port saves
+provides `mscratch` to swap in a dedicated stack); the simpler route works here
+because the thread stacks are sized with headroom, exactly as the RX port saves
 onto the user stack.
 
 ## 3. The single-frame deferred switch (the heart of it)
@@ -89,8 +89,8 @@ subtle bugs (KickOS's Xtensa port needs exactly this two-format split, because
 its register windows make a uniform frame impractical -- and it pays for it in
 complexity).
 
-RISC-V lets us avoid it. We adopt the **single-frame, always-deferred** model
-(the same one the ARM PendSV and RX SWINT backends use):
+RISC-V lets a port avoid it. KickOS adopts the **single-frame, always-deferred**
+model (the same one the ARM PendSV and RX SWINT backends use):
 
 > **The physical register swap NEVER happens inline. It always happens in one
 > place -- the software-interrupt trap -- which always saves the full frame.**
@@ -119,9 +119,9 @@ Why is this safe and elegant?
 The voluntary case now looks exactly like the involuntary one: the thread that
 called `arch_switch` is simply *frozen mid-instruction* by the msip trap, its
 complete state captured, and resumed -- mid-instruction -- when it is next
-scheduled. There is no "voluntary frame" to distinguish. This is why the RISC-V
-port's thread-exit stress test passes on the first try where other designs fret
-over edge cases: there are no edges, only one path.
+scheduled. There is no "voluntary frame" to distinguish. This is why a thread-exit
+stress test has no edge cases to trip over on the single-frame model where a
+two-format design must: there are no edges, only one path.
 
 ## 4. The system call: privilege without losing your continuation
 
@@ -130,8 +130,8 @@ A system call must (a) raise privilege and (b) let a *blocking* syscall (like
 off, returning the result to user code as if the call were an ordinary function.
 
 The tempting shortcut -- handle the syscall directly in the trap handler -- breaks
-(b). If `sem_wait` blocks while we are "in the trap handler," the state we would
-suspend and resume is the *handler's*, not a clean per-thread continuation. The
+(b). If `sem_wait` blocks while execution is "in the trap handler," the state that
+would suspend and resume is the *handler's*, not a clean per-thread continuation. The
 kernel's blocking primitives assume they run in **thread context**.
 
 The fix (shared by every KickOS privilege port) is a **trampoline**. On `ecall`
@@ -170,23 +170,23 @@ You cannot single-step trust into a context switch. The productive order is:
 
 1. **Emulator before silicon.** QEMU's `virt` machine is a standard RISC-V
    platform with a documented CLINT (timer + software interrupt) and RISC-V
-   *semihosting* (the host lends you a console and an exit code). We bring the
+   *semihosting* (the host lends you a console and an exit code). Bring the
    arch up there first -- it de-risks the switch/trap/syscall logic against a
    known-good machine -- *then* layer the real chip (the ESP32-C6, with its own
-   UART, watchdogs, and timer) on the already-proven core. One arch, two chips:
-   the emulator chip and the silicon chip, exactly as the ARM port validates on
+   UART, watchdogs, and timer) on the de-risked core. One arch, two chips:
+   the emulator chip and the silicon chip, the same shape as the ARM port on
    QEMU's `mps2` before real Cortex-M parts.
 2. **Semihosting is your first `printf`.** Before a UART driver exists, the magic
    `ebreak` sequence hands a string to the host. The banner printing is your
    proof that reset, the C runtime, and the first thread all work.
 3. **A distinct fault exit code.** An unhandled exception routes to a handler that
-   exits with a recognizable status. When the run stopped with that code instead
-   of hanging, we *knew* it was a fault and could ask the CPU what and where.
+   exits with a recognizable status. A run that stops with that code instead of
+   hanging is unambiguously a fault -- you can then ask the CPU what and where.
 
-## 6. Where RISC-V actually surprised us
+## 6. Three RISC-V specifics the seam must absorb
 
-Three ISA-specific facts bit during bring-up -- the parts a textbook's idealized
-machine hides:
+Three ISA-specific facts a textbook's idealized machine hides -- each one the seam
+has to absorb before an unfamiliar RISC-V core runs:
 
 - **`Zicsr` is a separate extension.** Modern toolchains split the CSR
   instructions (`csrr`, `csrw`, `mret`) out of the base ISA. `-march=rv32imac`
@@ -196,13 +196,13 @@ machine hides:
   with no MPU configured can access everything -- memory protection *subtracts*
   permission. On RISC-V it is the reverse: **once Physical Memory Protection is
   implemented, a user-mode access that matches no PMP entry faults.** So the very
-  first instruction fetch of the first unprivileged thread took an *instruction
-  access fault* -- the thread could not even fetch its own code. The fix is a
+  first instruction fetch of the first unprivileged thread takes an *instruction
+  access fault* -- the thread cannot even fetch its own code. The fix is a
   single permissive bootstrap PMP entry (all memory, read/write/execute,
   user-accessible) that grants the same "unprivileged but unrestricted" posture
-  ARM gives for free. Real per-task isolation (narrowing that entry per thread)
-  is a later milestone; the point here is the *polarity* difference, which is
-  easy to forget and produces a baffling first fault.
+  ARM gives for free. Real per-task isolation narrows that entry per thread
+  (Chapter 7, *Memory protection*); the point here is the *polarity* difference,
+  which is easy to forget and produces a baffling first fault.
 - **No hardware float, and that is fine.** RV32IMAC has no F/D extension, so the
   compiler uses soft-float and the context switch banks no floating-point
   registers -- simpler than the ARM M4F or RX DPFPU paths. A thread that compiles

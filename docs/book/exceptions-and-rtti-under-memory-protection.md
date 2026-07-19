@@ -10,10 +10,10 @@ Copyright (c) 2026 Philippe Leduc
 > runtime is made of -- three stacked libraries -- and ended on a one-paragraph "MPU
 > twist". This chapter is that twist in full: what a `throw`/`catch`/`dynamic_cast`
 > actually touches *at runtime*, why a memory-protection unit makes it hard, and how an
-> UNPRIVILEGED thread reaches all of it without a fault. Points into
-> [`../design-cxx-under-mpu.md`](../design-cxx-under-mpu.md) (the region-set design and
-> its proofs) and [`../design-riscv-gp-split.md`](../design-riscv-gp-split.md) (the
-> RISC-V `gp` fix) for the authoritative contract; this chapter explains, those bind.
+> UNPRIVILEGED thread reaches all of it without a fault. For the exact contract it binds
+> into the Reference: [`../reference/architecture.md`](../reference/architecture.md) (the
+> region-set model -- "Memory domains" and "C++ decisions") and
+> [`../reference/porting.md`](../reference/porting.md) (the RISC-V `gp` anchor).
 
 You write `throw std::runtime_error("no")` in a worker thread, a frame or two up a
 `catch` grabs it, and on the way out every local destructor runs. On a hosted desktop
@@ -152,17 +152,17 @@ subject of the companion chapter,
 [*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md);
 the invariant it must satisfy is this one.
 
-The budget payoff, spelled out in [`../design-cxx-under-mpu.md`](../design-cxx-under-mpu.md):
-the full EH + RTTI + heap footprint costs **+0 protection regions** on every arch. Tables
+The budget payoff: the full EH + RTTI + heap footprint costs **+0 protection regions**
+on every arch. Tables
 and RTTI fold into the code grant, all writable state folds into the one app-data grant.
 A full-C++ thread needs the same region count as a bare freestanding one -- three (code +
 data + stack), plus one per granted domain/MMIO region.
 
 ## The RISC-V gp wrinkle -- when placing app globals breaks unwinding
 
-Three of the four validated arches (EHABI x3, SjLj x1) reach the picture above with only
-linker placement. RISC-V does not, and the reason is a collision between two mechanisms
-that both want the same register.
+EHABI and SjLj reach the picture above with only linker placement; DWARF adds the boot
+registration hook above. RISC-V needs one thing more, and the reason is a collision
+between two mechanisms that both want the same register.
 
 RISC-V's **small-data optimization** addresses small globals (<= 8 bytes by default) as
 `gp + immediate`, relative to a single `__global_pointer$` anchor set once at boot. That
@@ -176,65 +176,59 @@ them away from `gp` corrupts the lookup and `__cxa_throw` hangs in an unbounded 
 The very flag that places app globals in the granted region is incompatible with
 exceptions.
 
-The fix (Option 4 in [`../design-riscv-gp-split.md`](../design-riscv-gp-split.md), proven
-on qemu-riscv) is to **stop fighting `gp` and move it**: keep the app compiled *with*
+The fix is to **stop fighting `gp` and move it**: keep the app compiled *with*
 small-data so unwinding works, compile the **KickOS libs** `-msmall-data-limit=0` so they
-emit no small-data and vacate the `gp` window entirely (measurement in that doc: the
-kernel's own scheduler state -- `g_arch_current`, the CLINT doorbell -- lives in `gp`
-small-data today, so this step is load-bearing, not cosmetic; leaving it there and
-granting the window would hand an unprivileged thread the scheduler), and anchor
+emit no small-data and vacate the `gp` window entirely (this step is load-bearing, not
+cosmetic: the kernel's own scheduler state -- `g_arch_current`, the CLINT doorbell -- lives
+in `gp` small-data, so leaving it there and granting the window would hand an unprivileged
+thread the scheduler), and anchor
 `__global_pointer$` **inside** the app's granted data region. Now the single `gp` window
 holds only app + C++-runtime small-data and is covered by the app grant, `gp` stays one
 link-time constant (no context-switch cost, `switch.S` untouched), and it folds into the
-existing app-data region at +0 protection entries. That study also rules out the tempting
+existing app-data region at +0 protection entries. This also rules out the tempting
 "two `gp` bases, reload on the kernel<->user boundary" split: a single-image link has
 exactly one `__global_pointer$`, so two runtime `gp` values would make one reference set
 address wild memory. ARM and RX have no `gp` small-data model, so none of this applies to
 them.
 
-## The payoff -- and exactly what is proven
+## The payoff -- one invariant across three exception models
 
-Here is the honest scope, because the distinction is itself the lesson. There are TWO claims;
-the first is RUN-PROVEN under enforcement on qemu-riscv, the second is silicon-proven for
-coexistence and build-verified for U-mode.
+The design collapses to a single invariant that holds on every arch: **the read-only two
+pieces (EH tables + RTTI) ride the app's code grant, the writable two (heap + unwinder
+state) ride the app's data grant, and a confined unprivileged thread never reaches past
+either.** A worker spawned unprivileged (`kos::thread::spawn(cxx_worker, ...,
+privileged=false)`) can throw, catch, unwind a non-trivial local destructor,
+`dynamic_cast`, and `typeid` entirely inside its own granted regions -- the same region
+count as a bare freestanding thread (code + data + stack), no extra region for the
+runtime.
 
-**Claim 1 -- a confined UNPRIVILEGED thread throws under the MPU (RUN-PROVEN on qemu-riscv).**
-This is the stronger claim the design is built for, and the one the chapter above describes. The
-committed `cxxtest` spawns an unprivileged worker (`kos::thread::spawn(cxx_worker, ...,
-privileged=false)`, 8 KB app-arena stack) that throws, catches, unwinds a non-trivial local
-destructor, `dynamic_cast`s, and `typeid`s -- all under the MPU. On qemu-riscv (rv32imac PMP)
-`qemu_riscv_cxxtest` runs it to ALL PASS from the U-mode worker: the nm-verified layout (heap +
-`eh_globals` + the FDE registry + unwinder state inside the app's granted data region) plus the
-RISC-V gp-in-appdata fix (Option 4) are EXERCISED by a running confined test, not merely
-layout-inspected.
+The invariant is satisfied differently by each exception model, but the placement rule is
+the same in all three:
 
-**Claim 2 -- the full-C++ runtime coexists with enforcement (silicon-proven, 5 arches).** With
-the MPU/PMP turned on, a full-C++ app throws, catches, unwinds, `dynamic_cast`s, and `typeid`s,
-and it all runs -- across three exception models:
+- **ARM EHABI** (K64F, XMC, RP2040) -- tables found by linker symbol (`__exidx_start`),
+  no registration, no `gp`. Read-only `.ARM.exidx`/`.ARM.extab` in the code grant, the
+  writable `eh_globals` + emergency pool in the data grant. Under SYSMPU (K64F) and PMSA
+  (XMC, RP2040).
+- **GNURX SjLj** (RX72M) -- `.gcc_except_table` (LSDA) in ROM under the code grant, a
+  writable setjmp context chain in the data grant, no `__register_frame`. Under the RX MPU.
+- **DWARF** (ESP32-C6 / RISC-V, and any future Xtensa) -- the boot `__register_frame` hook
+  homes the FDE registry node in the granted heap, `.eh_frame` folds into the code grant,
+  and the `gp` anchor sits in the app data region. Under PMP.
 
-- **K64F, XMC, RP2040** -- ARM EHABI. Tables found by linker symbol, no registration, no
-  `gp`. `cxxtest` runs under SYSMPU (K64F) and PMSA (XMC, RP2040).
-- **RX72M** -- GNURX SjLj. `.gcc_except_table` in ROM, a writable context chain in the app
-  window, no `__register_frame`. Runs under the RX MPU.
-- **ESP32-C6** (DWARF/RISC-V) -- the boot `__register_frame` hook, the
-  `.eh_frame`-folded-into-code layout, and the `gp`-in-appdata move (Option 4). Runs under PMP.
-
-The standing silicon ALL-PASS logs were the OLD cxxtest running in the **PRIVILEGED root thread**:
-they prove the runtime + the EH-table-homing layout BOOT AND RUN with enforcement active. cxxtest
-is now U-mode on those boards too, but only BUILD-VERIFIED here (it links clean under enforcement);
-a bench re-flash of the now-U-mode cxxtest is the outstanding silicon U-mode proof.
-
-Same runtime, same four pieces of memory, three exception models, one invariant: **read-only
-tables ride the code grant, writable state rides the data grant, and a confined thread must never
-reach past either** -- run-proven on qemu-riscv (U-mode) and proven to COEXIST with enforcement on
-five silicon arches, with the silicon U-mode throw build-verified and pending a bench re-flash.
+Same runtime, same four pieces of memory, three exception models, one invariant. The
+distinction that makes it a *proof* and not a hope -- running the throw in a confined
+unprivileged thread rather than inline in privileged `main()` -- is the subject of the
+companion chapter
+[*Proving memory protection*](proving-memory-protection-coexistence-vs-confinement.md).
 
 ## Where to go next
 
-- The region-set design and the qemu-riscv + silicon proofs:
-  [`../design-cxx-under-mpu.md`](../design-cxx-under-mpu.md).
-- The RISC-V `gp` option space and why "gp-in-appdata" is the right fix:
-  [`../design-riscv-gp-split.md`](../design-riscv-gp-split.md).
+- The region-set model and the C++-under-MPU contract:
+  [`../reference/architecture.md`](../reference/architecture.md) ("Memory domains", "C++ decisions").
+- The RISC-V `gp` anchor contract:
+  [`../reference/porting.md`](../reference/porting.md) (RISC-V arch).
+- How the claim is actually proven (confined vs coexistence):
+  [*Proving memory protection*](proving-memory-protection-coexistence-vs-confinement.md).
 - What the C++ runtime *is* (the three stacked libraries) and the boot-order story:
   [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md).
 - Where the writable floor comes from and how the linker partitions one image:
