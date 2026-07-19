@@ -149,6 +149,16 @@ namespace
         TAP_CHECK(log_eq("lHL"));
     }
 
+    // --- Core clock read syscall -----------------------------------------------
+    void t_cpu_clock_hz()
+    {
+        uint32_t hz = kos_cpu_clock_hz();
+        TAP_CHECK(hz == kos_cpu_clock_hz()); // read-only + stable across reads
+        // 0 == the backend has no silicon core clock (host sim); a real core
+        // reports a plausible rate (>= 1 MHz, below every board's post-init clock).
+        TAP_CHECK(hz == 0u or hz >= 1000000u);
+    }
+
 #if defined(KICKOS_ENABLE_SELFTEST)
     // The IRQ tests below drive kos_irq_inject, a KICKOS_ENABLE_SELFTEST-only
     // syscall. Without the flag inject is a kernel no-op, so registering these would
@@ -836,6 +846,7 @@ int main(int, char**)
     tap::add("svc_roundtrip", t_svc);
     tap::add("fifo_order", t_fifo);
     tap::add("preempt_on_ready", t_preempt);
+    tap::add("cpu_clock_hz", t_cpu_clock_hz);
     tap::add("rr_interleave", t_rr);
     tap::add("sleep_order", t_sleep);
     tap::add("multi_wait", t_multi);

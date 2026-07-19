@@ -856,6 +856,13 @@ uint32_t arch_trace_now(void)
     return static_cast<uint32_t>(arch_clock_now() / 1000ull);
 }
 
+// The host has no silicon core clock; the sim reports throughput only, so there
+// is no meaningful cycle->ns rate to expose. 0 == unknown (the ABI contract).
+uint32_t arch_cpu_clock_hz(void)
+{
+    return 0;
+}
+
 void arch_timer_arm(uint64_t deadline_ns)
 {
     if (not sim().timer_created)

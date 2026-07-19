@@ -435,6 +435,11 @@ uint32_t arch_trace_now(void)
     return rd_ccount();
 }
 
+uint32_t arch_cpu_clock_hz(void)
+{
+    return SystemCoreClock;
+}
+
 
 void arch_timer_arm(uint64_t deadline_ns)
 {

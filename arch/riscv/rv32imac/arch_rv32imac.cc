@@ -108,6 +108,13 @@ extern "C"
 extern "C"
 {
 
+// CMSIS core clock, defined + maintained by the chip at PLL bring-up.
+extern uint32_t SystemCoreClock;
+uint32_t arch_cpu_clock_hz(void)
+{
+    return SystemCoreClock;
+}
+
 // --- Context init: fabricate a first-resume frame (see the layout above) -----
 // The frame is identical to what the msip switcher saves, so the first switch-in
 // (arch_start) restores it and mret's into entry(arg): mepc=entry, a0=arg, ra=the

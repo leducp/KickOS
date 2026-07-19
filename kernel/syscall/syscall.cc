@@ -589,6 +589,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             *reinterpret_cast<uint64_t*>(a0) = arch_clock_now();
             return 0;
         }
+        case KOS_SYS_cpu_clock_hz:
+        {
+            // Read-only, no user pointer: the u32 fits a register, so return it
+            // directly (like sem_create / ram_alloc) rather than via an out-ptr.
+            return static_cast<uintptr_t>(arch_cpu_clock_hz());
+        }
         case KOS_SYS_ram_alloc:
         {
             // Privileged-only: domains are carved by the privileged setup path,

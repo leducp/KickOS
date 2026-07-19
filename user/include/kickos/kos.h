@@ -37,6 +37,11 @@ namespace kos
     {
         return kos_clock_now();
     }
+    // Running core clock in Hz (0 on the host sim); read-only, see kos_cpu_clock_hz.
+    inline uint32_t cpu_clock_hz()
+    {
+        return kos_cpu_clock_hz();
+    }
     inline void clock_set_realtime(uint64_t unix_ns)
     {
         kos_clock_set_realtime(unix_ns);

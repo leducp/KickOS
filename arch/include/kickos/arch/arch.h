@@ -74,6 +74,10 @@ uint64_t arch_clock_now(void); // monotonic nanoseconds
 void arch_timer_arm(uint64_t deadline_ns);
 void arch_timer_disarm(void);
 
+// Running core clock in Hz (the CMSIS SystemCoreClock the chip tracks at PLL
+// bring-up). 0 where the backend has no silicon core clock (the host sim).
+uint32_t arch_cpu_clock_hz(void);
+
 // --- Trace clock (telemetry timestamp seam) --------------------------------
 // A dedicated high-resolution monotonic counter for telemetry timestamps: the
 // ns arch_clock_now is too coarse to time a context switch (~1-5 us). u32 by

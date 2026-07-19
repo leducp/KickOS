@@ -136,6 +136,11 @@ uint64_t kos_clock_now(void)
     return out;
 }
 
+uint32_t kos_cpu_clock_hz(void)
+{
+    return static_cast<uint32_t>(arch_syscall(KOS_SYS_cpu_clock_hz, 0, 0, 0, 0));
+}
+
 void* kos_ram_alloc(size_t size)
 {
     return reinterpret_cast<void*>(

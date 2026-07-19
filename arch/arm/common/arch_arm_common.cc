@@ -63,6 +63,11 @@ int arch_in_isr(void)
     return (ipsr & 0x1FF) != 0;
 }
 
+uint32_t arch_cpu_clock_hz(void)
+{
+    return SystemCoreClock;
+}
+
 // --- One-shot timer (SysTick). Clock (arch_clock_now) is per-arch: chip-
 // provided on v6-M (no DWT), a weak DWT default on v7-M. -----------------------
 // Absolute deadline the running SysTick was last programmed for (UINT64_MAX ==

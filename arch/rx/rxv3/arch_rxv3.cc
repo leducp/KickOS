@@ -141,6 +141,13 @@ extern "C"
     // compiler cannot see.
     struct arch_context* volatile g_arch_current = nullptr;
     struct arch_context* volatile g_arch_next = nullptr;
+
+    // CMSIS core clock (ICLK), defined + maintained by the chip at PLL lock.
+    extern uint32_t SystemCoreClock;
+    uint32_t arch_cpu_clock_hz(void)
+    {
+        return SystemCoreClock;
+    }
 }
 
 namespace

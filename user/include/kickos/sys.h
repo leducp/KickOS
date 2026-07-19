@@ -65,6 +65,11 @@ int kos_irq_wait(int handle);   // block until the line fires; 0, or -1 on bad h
 int kos_irq_ack(int handle);    // unmask the line; 0, or -1 on bad handle
 uint64_t kos_clock_now(void);   // monotonic nanoseconds
 
+// Running core clock in Hz, so an app can do its own cycle<->ns math without the
+// kernel hardwiring SystemCoreClock for it. 0 if the backend has no silicon core
+// clock (the host sim). Read-only: user clock-select is not exposed.
+uint32_t kos_cpu_clock_hz(void);
+
 // Set the Unix-epoch wall clock: unix_ns is the current time, and the offset
 // stored is unix_ns - kos_clock_now(). Backs newlib's _gettimeofday (see
 // newlib_stubs.cc), so std::chrono::system_clock::now() reads true epoch time

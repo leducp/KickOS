@@ -32,7 +32,8 @@ enum kos_syscall_nr
     KOS_SYS_irq_spurious = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
     KOS_SYS_diag_led_set = 19,  // (on)                  -> 0 (kernel diagnostic LED)
     KOS_SYS_diag_led_toggle = 20, // ()                  -> 0 (kernel diagnostic LED)
-    KOS_SYS_irq_unmask = 21     // (irq)  -> 0, or -1 (enable a line; self-test only)
+    KOS_SYS_irq_unmask = 21,    // (irq)  -> 0, or -1 (enable a line; self-test only)
+    KOS_SYS_cpu_clock_hz = 22   // ()  -> running core clock in Hz (u32), 0 if unknown
 };
 
 // 64-bit values are passed/returned as two uintptr_t halves so the ABI is

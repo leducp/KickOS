@@ -210,10 +210,11 @@ below where they were previously mislabeled.
 - **M3 -- capabilities + authenticated grants** (seL4-principled object model), **and
   user-selectable CPU clock / low-power mode** (needs explicit per-chip clock bring-up
   first, from the audit above).
-  - **`sys_cpu_clock_hz()` syscall** -- expose the running core clock (Hz) to userspace.
-    Today the bench hardwires the kernel's `SystemCoreClock` for its cycle->ns math; a
-    read syscall lets any app convert cycle counts / interpret timings itself, and is the
-    natural read-side precursor to the user clock-select above. (Small; not an M1 blocker.)
+  - [x] **`sys_cpu_clock_hz()` syscall** -- DONE @638620d (build+sim/qemu verified). Read-only
+    `KOS_SYS_cpu_clock_hz` via the `arch_cpu_clock_hz()` seam (mirrors `clock_now`), value
+    returned in-register (no out-pointer), each backend reuses its CMSIS `SystemCoreClock`;
+    sim returns 0. selftest `t_cpu_clock_hz` covers both branches; all 5 ISAs + sim build,
+    runtime green on sim/armv7m/rv32imac. Read-side precursor to user clock-select below.
 - **[anytime perf -- NOT M2] worst-case ISR latency (shorten interrupt-masked critical
   sections).** Scheduler/switch-path timing, gated on a worst-case-latency probe -- no MPU
   dependency (was mislabeled "M2"). The uniform bench surfaced that under sustained syscall
