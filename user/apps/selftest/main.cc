@@ -316,7 +316,13 @@ namespace
     {
         // Alloc before the sems: an alloc-fail early return must not leak them (pool-honest suite).
         g_mmio = kos_ram_alloc(4096);
-        TAP_CHECK(g_mmio != nullptr);
+        if (g_mmio == nullptr)
+        {
+            // A tiny RAM arena (microbit: 16 KiB SRAM) cannot spare a 4 KiB page for the
+            // mock MMIO region: skip (still ok), like the pool-too-small skips below.
+            kos::print("# irq_as_event: SKIP (4 KiB MMIO-page alloc failed -- board too small)\n");
+            return;
+        }
         *static_cast<volatile int*>(g_mmio) = 0;
         g_irqdrv_done = kos_sem_create(0);
         g_irqdrv_ready = kos_sem_create(0);
