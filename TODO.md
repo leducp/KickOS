@@ -239,7 +239,15 @@ below where they were previously mislabeled.
 - **Console device handover (driver era)** -- userspace UART/console driver takes the
   peripheral as a capability; kernel relinquishes it (`console_tx_deinit`), panic path moves
   to a kernel-retained transport. See `docs/reference/console.md` "Future".
-- **M4 -- SMP (one kernel image across cores; NOT two AMP instances).** Motivation: run the
+- **M4 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spikes
+  2026-07-19: `docs/design-multicore.md` (AMP-vs-SMP feasibility on rp2040 + rp2350) and
+  `docs/design-multicore-ipc.md` (the RP2040 cross-core IPC). The spike REVISED the earlier
+  "SMP-only, NOT AMP" call below: ARMv6-M (M0+) has no atomics (no LDREX/STREX; the SIO bus is
+  non-atomic too), so RP2040 SMP is capped at coarse Big-Kernel-Lock forever -- AMP (two
+  core-private kernels + IPC) is the better FIRST step there, and fine-grained lock-free SMP is
+  reachable only on RP2350 (M33 exclusives / Hazard3 A-ext). AMP + IPC and the invariant
+  refactors are the near-term items; the SMP-BKL plan (one kernel image across cores) stays the
+  endgame. Motivation: run the
   dual-core RP2040 (picopi) at 100% under a single KickOS. Biggest architectural axis on the
   roadmap -- it reworks the *foundation*, not a feature: the whole kernel's mutual exclusion is
   `IrqLock == arch_irq_save` ("interrupts off => exclusive"), which is a single-core-only
@@ -257,3 +265,25 @@ below where they were previously mislabeled.
     fence-injection points -- flip to real fences on the SMP build. Keep centralising `IrqLock`,
     structs-over-globals, no ad-hoc masking -> keeps this a redefinition, not a rewrite.
   - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M4).
+  - **AMP-first on RP2040 (spike verdict, the recommended near-term step).** Two core-private
+    `Kernel` instances -- the `KICKOS_MULTI_INSTANCE` per-instance seam (`instance.h:89`, built
+    for the KickCAT multi-slave sim) is the ~80% substrate; re-key it on SIO CPUID instead of
+    host-TLS. Each core keeps its own run queue + `IrqLock`==PRIMASK, so NO mutual-exclusion
+    refactor: AMP de-risks the shared mechanics (core-1 launch, IPC, console arbitration) that
+    SMP also needs, and sidesteps the no-atomics problem entirely.
+  - **Cross-core IPC -- required for AMP; none exists today** (`Semaphore`/`Mutex` are intra-core
+    only). Design in `docs/design-multicore-ipc.md`: a per-direction SPSC ring in a shared-SRAM
+    window (one writer per index + `DMB` ordering -> no lock, no atomics needed on M0+) with the
+    SIO 8x32 FIFO used only as a doorbell (write a tag, raise `SIO_IRQ_PROCn`). API = a `Channel`
+    (ring + a `Semaphore` in the receiver's kernel) exposed as `KOS_SYS_chan_{open,send,recv}`;
+    blocking `recv` parks on the local run queue via `sem_wait`, the peer's SIO ISR drains + wakes
+    via the already-ISR-safe `sem_post`. New arch surface is small: `arch_cpu_id`, `arch_dmb`, and
+    an `arch_ipc_notify`/`arch_ipc_drain` doorbell pair (so RP2350 SIO-v2 doorbells back the same
+    API). The one genuinely-new isolation decision: a fixed `.shared_ipc` region (pow2 for PMSA)
+    granted R|W in BOTH cores' MPU sets -- the ONLY cross-core-writable memory; everything else
+    stays per-core-private, preserving the per-core-MPU isolation the AMP verdict rests on.
+  - **Three single-core invariants to refactor (either path)** -- `IrqLock`==PRIMASK (local-only
+    masking; -> BKL or per-core), the single global current-thread/run-queue (per-CPU), and the
+    unsynchronised console + boot-on-one-core + single `arch_mpu_apply`. The arch globals
+    `g_arch_current`/`g_arch_next` (+ rv32imac `g_isr_depth`/`g_clint_msip`) are the shared
+    prerequisite that gates even AMP.

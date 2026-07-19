@@ -3,23 +3,44 @@
 
 Scope: make the full-C++ opt-in (exceptions + STL + RTTI, commit dc632bd) work for an
 UNPRIVILEGED, MPU-isolated userspace thread -- the convergence the north star needs
-(unprivileged C++ servers/drivers reached by IPC). Today `cxxtest` is gated
-`AND NOT KICKOS_HAVE_MPU`; this doc scopes how to lift that gate, backed by a working
-qemu-riscv experiment. PLAN, not landed -- experiment code lives only in the working tree.
+(unprivileged C++ servers/drivers reached by IPC). `cxxtest` was gated
+`AND NOT KICKOS_HAVE_MPU`; this doc scopes lifting that gate. The committed `cxxtest` now spawns
+an UNPRIVILEGED worker (`kos::thread::spawn(cxx_worker, ..., privileged=false)`, 8 KB app-arena
+stack) that runs the whole throw/catch/unwind + STL + RTTI body under the MPU. On qemu-riscv
+(rv32imac PMP) that is RUN-PROVEN: `ctest -R qemu_riscv_cxxtest` is ALL PASS from the U-mode
+worker -- the deterministic RISC-V/PMP gate. On the five silicon arches (frdmk64f, xmc4800-relax,
+picopi, rx72m, esp32c6) the now-U-mode cxxtest is BUILD-VERIFIED here (links clean under
+enforcement); the standing silicon ALL-PASS logs (2026-07-19) were the OLD privileged cxxtest =
+the runtime COEXISTS with enforcement. A bench re-flash of the now-U-mode cxxtest is the
+outstanding silicon U-mode proof.
 
 ## Verdict
 
-**Feasible, and PROVEN on qemu-riscv.** An unprivileged PMP-isolated thread ran throw/catch
-(with unwind of a non-trivial local dtor), `std::vector` over the heap, and `dynamic_cast`/
-`typeid` -- then MPU-FAULTED on an ungranted kernel address, confirming PMP was enforcing the
-whole time. The five gated blockers are all real; four are cheap, one (RISC-V `gp`/small-data)
-is the hard part and is what the experiment had to solve.
+**Feasible; the confined U-mode throw is RUN-PROVEN on qemu-riscv (rv32imac PMP); silicon is
+privileged-coexistence run-proven + U-mode build-only.** cxxtest -- exceptions caught by exact
+type and `std::exception` base, stack-unwind dtors, `std::vector`, `std::string`, virtual
+dispatch, `dynamic_cast` hit+miss, `typeid` -- runs to completion under enforcement. The committed
+cxxtest spawns an UNPRIVILEGED worker that throws/catches/unwinds under the MPU, and on qemu-riscv
+it RUNS to ALL PASS (`ctest -R qemu_riscv_cxxtest`) -- so a confined unprivileged thread throwing
+under PMP is now demonstrated by a standing in-tree test, not merely layout-verified. Option 4's
+gp-in-appdata is thereby EXERCISED by a running confined test. On the five silicon arches spanning
+all three EH models -- EHABI (frdmk64f, xmc4800-relax, picopi), SjLj (rx72m), DWARF (esp32c6) --
+the standing ALL-PASS logs (2026-07-19) were the OLD privileged cxxtest: they prove the full-C++
+runtime (libstdc++/libsupc++/newlib + the EH-table-homing layout) BOOTS AND RUNS while enforcement
+is active (runtime/MPU coexistence). cxxtest is now U-mode on those boards too, but only
+BUILD-VERIFIED here (links clean under enforcement) -- a bench re-flash of the now-U-mode cxxtest
+is the outstanding silicon U-mode proof. The five gated blockers are all real; four are cheap, one
+(RISC-V `gp`/small-data) is the hard part.
 
-The key structural facts that make it work:
-- On DWARF-EH arches (RISC-V, RX) the EH tables (`.eh_frame`, `.gcc_except_table`) already
-  sit inside the `.text` output section, i.e. inside the per-app **code region** granted RX --
-  so unwinding *reads* them from a granted region for free. Same for RTTI `type_info`/vtables
-  (`.rodata`, also in the code region).
+The fleet spans **three EH models** -- EHABI (ARM: K64F, XMC, rp2040), SjLj (RX72M), and DWARF
+(RISC-V esp32c6/virt + Xtensa esp32). All three keep their EH tables in read-only sections that
+already ride the per-app **code region** granted RX, so unwinding *reads* them for free:
+- DWARF (RISC-V): `.eh_frame` + `.gcc_except_table` sit inside the `.text` output section.
+- SjLj (RX72M): the setjmp/longjmp landing-pad tables (`.gcc_except_table`) are homed in ROM,
+  inside the code region. No `.eh_frame`, no `__register_frame`.
+- EHABI (ARM): `.ARM.exidx`/`.ARM.extab` ride the code region, found via linker symbols.
+
+RTTI `type_info`/vtables (`.rodata`) also live in the code region.
 - The runtime's *writable* state (heap, FDE registry, malloc bins, newlib reent, the libsupc++
   `eh_globals` + emergency pool) is the problem: it lands **kernel-side**, unreachable by the
   unprivileged thread. Fixing that is blockers #4 + the `gp` issue below.
@@ -32,7 +53,7 @@ adds nothing to the *count* -- everything folds into the two existing static reg
 
 | Runtime need | Section | Region it must land in | Static or dynamic |
 |---|---|---|---|
-| `.eh_frame` / `.gcc_except_table` (DWARF) | in `.text` | code (RX) | static, already granted |
+| `.eh_frame` (DWARF) / `.gcc_except_table` (DWARF+SjLj) | in `.text`/ROM | code (RX) | static, already granted |
 | `.ARM.exidx` / `.ARM.extab` (ARM EHABI) | in `.text`/rodata | code (RX) | static, already granted |
 | RTTI `type_info`, vtables | `.rodata` | code (RX) | static, already granted |
 | landing pads | `.text` | code (RX) | static, already granted |
@@ -48,7 +69,7 @@ everything writable rides the one appdata region. Budget stays 3 (code+appdata+s
 
 ## The malloc'd FDE node (blocker #2)
 
-On RISC-V/RX, `__register_frame(&__eh_frame_start)` registers the DWARF table; libgcc mallocs a
+On DWARF arches (RISC-V), `__register_frame(&__eh_frame_start)` registers the DWARF table; libgcc mallocs a
 `struct object` to hold it. KickOS already calls `__register_frame` **at boot in `Reset_Handler`
 (privileged)**, before any drop to unprivileged -- so the node is malloc'd from the libc heap
 *while privileged*. Once that heap arena is in the granted appdata region (below), the node lands
@@ -57,7 +78,10 @@ required** -- boot-time registration + a granted heap is sufficient (verified: t
 registers at boot and the unprivileged throw unwinds without faulting).
 
 ARM EHABI has **no runtime registration at all**: `.ARM.exidx` is found via linker symbols
-(`__exidx_start`/`__exidx_end`) in the code region. ARM sidesteps this blocker entirely.
+(`__exidx_start`/`__exidx_end`) in the code region. ARM sidesteps this blocker entirely. RX SjLj
+likewise registers no FDE list -- landing pads are reached via the SjLj context chain, not a
+registered table -- so RX also sidesteps it, needing only a weak `__dso_handle` and an RX-mangled
+`sbrk` (a C `sbrk` -> asm `_sbrk`, because RX's C `_sbrk` mangles to asm `__sbrk`).
 
 ## Code-region sizing (blocker #3)
 
@@ -137,26 +161,48 @@ in the image but its VMA jumps to the 128 K code boundary), so `Reset_Handler` m
 `.appdata` LMA->VMA** before zeroing `.appbss` (mirrors the existing `.data` copy). Without it,
 `__malloc_av_` reads uninitialized memory and malloc faults.
 
+On esp32c6 silicon this WAS the open item: the image links, boots, and registers the DWARF
+frame, but the U-mode THROW path was blocked because the prebuilt libstdc++ EH writable state
+(`eh_globals`, the FDE registry) landed in the shared `gp` small-data window, kernel-side. The
+resolution is **"Option 4"** of docs/design-riscv-gp-split.md: empty the kernel `gp` side by
+compiling the KickOS libs `-msmall-data-limit=0`, then anchor `__global_pointer$` inside the
+`.appdata` window so that toolchain-runtime small-data lands in the granted region. LANDED and
+nm-verified. On qemu-riscv Option 4 is now EXERCISED by a running confined U-mode throw
+(`qemu_riscv_cxxtest` ALL PASS from the unprivileged worker) -- the deterministic gate. On esp32c6
+silicon the standing 2026-07-19 cxxtest ALL PASS was the OLD privileged run (Option 4 layout-
+correct, COEXISTS with PMP active); the now-U-mode cxxtest is build-verified here, pending a bench
+re-flash for the silicon U-mode proof.
+
 ## Per-arch feasibility matrix
 
-| Arch / unit | EH model | FDE reg. | `gp` issue | Code region | Region cost (EH+RTTI+heap) | Status |
+| Arch / unit | EH model | FDE reg. | `gp` issue | Code region | Region cost | Status |
 |---|---|---|---|---|---|---|
-| RISC-V PMP (virt, C6) | DWARF | boot `__register_frame` | **yes (solved: gp-in-appdata)** | pow2 128 K | +0 (folds into code+appdata) | **PROVEN on qemu-riscv** |
-| ARM PMSA v7-M (XMC, F411) | EHABI (.exidx) | none (linker syms) | no | pow2 128 K (sub-regions help) | +0 | untested, expected easiest |
-| RX MPU (RX72M) | DWARF | boot `__register_frame` | RX small-data TBD | exact (16 B granular) | +0 | untested; verify RX small-data model |
-| K64F SYSMPU | EHABI (.exidx) | none | no | exact (32 B granular) | +0 for SRAM/data | untested; SRAM-only isolation, coarse peripherals |
+| K64F SYSMPU (frdmk64f) | EHABI (.exidx) | none | no | exact (32 B granular) | +0 for SRAM/data | **frdmk64f silicon: priv-coexistence PASS; U-mode build-only** |
+| ARM PMSA v7-M (XMC4800) | EHABI (.exidx) | none (linker syms) | no | pow2 128 K (sub-regions help) | +0 | **xmc4800-relax silicon: priv-coexistence PASS; U-mode build-only** |
+| ARM PMSA (RP2040, Cortex-M0+/armv6m) | EHABI (.exidx) | none (linker syms) | no | pow2 128 K | +0 | **picopi silicon 2026-07-19: priv-coexistence 9/9 PASS; U-mode build-only** |
+| RX MPU (RX72M, RXv3) | SjLj (.gcc_except_table in ROM) | none (SjLj chain) | no (RX has no gp small-data) | exact (16 B granular) | +0 | **rx72m silicon 2026-07-19: priv-coexistence 9/9 PASS; U-mode build-only** |
+| RISC-V PMP (esp32c6, virt) | DWARF | boot `__register_frame` | **yes (solved: gp-in-appdata)** | pow2 128 K | +0 | **U-mode RUN-PROVEN on qemu-virt (`qemu_riscv_cxxtest` ALL PASS from the unprivileged worker); esp32c6 silicon privileged-coexistence ALL PASS 2026-07-19, U-mode build-only** |
 
-Consumption of the 8-region budget is **+0** everywhere: RX/exidx tables ride the code region,
-all writable runtime state rides the one appdata region. ARM (EHABI, no registration, no gp) is
-the least-effort next target; RISC-V is done; RX needs its small-data model checked (does RXv3
-GCC use a gp-like base register? if so, the same gp-in-appdata trick applies; if it addresses
-absolutely, only the colon-selector fix is needed).
+Consumption of the 8-region budget is **+0** everywhere: EH/exidx tables ride the code region,
+all writable runtime state rides the one appdata region. The confined U-mode throw is RUN-PROVEN
+on qemu-riscv (rv32imac PMP): `qemu_riscv_cxxtest` is ALL PASS from the unprivileged worker. On
+all FIVE silicon arches (K64F/SYSMPU, XMC4800/PMSA, RP2040/PMSA, RX72M/RX-MPU, esp32c6/RISC-V-PMP)
+the standing 2026-07-19 ALL-PASS logs were the OLD privileged cxxtest: they prove the runtime
+COEXISTS with enforcement active. cxxtest is now U-mode on those boards too but only build-verified
+here (links clean); a bench re-flash is the outstanding silicon U-mode proof. RX turned out to
+need neither `gp` work nor DWARF registration: RXv3 GCC addresses absolutely (no gp small-data
+window) and its
+SjLj EH registers no FDE list, so the colon-selector data-side fix plus a weak `__dso_handle` and
+an RX-mangled `sbrk` sufficed.
 
-## Experiment (the evidence anchor)
+## Experiment (the original evidence anchor -- now folded into the committed cxxtest)
 
-qemu-riscv `virt`, `-DKICKOS_HAVE_MPU=1`, RISCStar newlib toolchain. App `cxxumpu`: privileged
-root spawns an **unprivileged** worker (`kos::thread::spawn(..., privileged=false)`) that runs
-full C++. Changes applied (working tree only):
+qemu-riscv `virt`, `-DKICKOS_HAVE_MPU=1`, RISCStar newlib toolchain. The original throwaway app
+`cxxumpu` -- privileged root spawns an **unprivileged** worker
+(`kos::thread::spawn(..., privileged=false)`) that runs full C++ -- has since been folded into the
+committed `cxxtest` (same spawn shape, now the standing `qemu_riscv_cxxtest` gate), so the
+U-mode-confined claim now rests on a running in-tree test, not this record. The changes below are
+all LANDED:
 - virt.ld: `_code_size`/`_appdata_size` = 128 K; colon-selectors routing app + libc/libgcc/
   libstdc++/libkickos_user `.data/.sdata/.bss/.sbss` into `.appdata`/`.appbss`; `__global_pointer$`
   anchored inside `.appdata`; `_appdata_lma` exported.
@@ -172,25 +218,29 @@ Result:
 [umpu] ALL DONE
 ... (probe) MPU FAULT: task 'umpu' attempted write at 0x80041000 -- reported
 ```
-The final line (an added ungranted-write probe) confirms PMP was enforcing throughout: the C++
+The final line (an added ungranted-write probe) confirmed PMP was enforcing throughout: the C++
 runtime did all its work inside the granted code + appdata + stack regions, and stepping outside
-faulted. This is the full convergence proof on one arch.
+faulted. That convergence is now a standing proof: the committed `cxxtest` spawns the same
+unprivileged worker and `qemu_riscv_cxxtest` runs it to ALL PASS under PMP in CI.
 
 ## Staged plan
 
-- **S1 -- RISC-V land (done in spirit).** Promote the experiment's virt.ld + Reset_Handler copy +
-  cmake changes to real (guarded by KICKOS_HAVE_MPU); add the zero-match ASSERT; un-gate `cxxtest`
-  on qemu-riscv under MPU as an unprivileged-worker CI test. Decide the fleet-wide
-  `-msmall-data-limit=0` on KickOS RISC-V libs (measure the code-size delta first).
-- **S2 -- ARM PMSA (expected cheapest).** No gp, no registration: just raise the code region to
-  128 K, add the colon-selectors for the data-side runtime globals to the ARM chip .ld files,
-  ensure `.ARM.exidx`/`.ARM.extab` are in the granted code region. Prove on qemu-arm (mps2), then
-  XMC/F411 silicon.
-- **S3 -- RX MPU.** Confirm the RXv3 small-data/`gp`-analog model; apply the colon-selectors and
-  (if RX has a gp-like base) the base-in-appdata trick; exact-size the code region. Prove on
-  rx72m silicon.
-- **S4 -- K64F SYSMPU.** EHABI + coarse SRAM regions; colon-selectors for the data side; code in
-  flash granted RX. Peripheral isolation stays coarse (AIPS ceiling), unrelated to EH.
+- **S1 -- RISC-V land (DONE).** The experiment's virt.ld + Reset_Handler copy + cmake changes are
+  real (guarded by KICKOS_HAVE_MPU); the zero-match ASSERT is in; `cxxtest` is un-gated on
+  qemu-riscv under MPU and runs as the `qemu_riscv_cxxtest` unprivileged-worker CI test (ALL PASS).
+  Still open: decide the fleet-wide `-msmall-data-limit=0` on KickOS RISC-V libs (measure the
+  code-size delta first).
+- **S2 -- ARM PMSA (DONE, validated on xmc4800-relax + picopi silicon).** No gp, no registration:
+  raise the code region to 128 K, add the colon-selectors for the data-side runtime globals to the
+  ARM chip .ld files, ensure `.ARM.exidx`/`.ARM.extab` are in the granted code region. cxxtest
+  passes under enforcement on XMC4800 and RP2040 (picopi 9/9).
+- **S3 -- RX MPU (DONE, validated 2026-07-19 on rx72m).** RXv3 GCC has no gp small-data window
+  (addresses absolutely) and uses SjLj EH (no `__register_frame`): the colon-selector data-side
+  fix, a weak `__dso_handle`, and an RX-mangled `sbrk` (a C `sbrk` -> asm `_sbrk`, since RX's C
+  `_sbrk` mangles to asm `__sbrk`) sufficed; code region exact-sized. cxxtest 9/9 PASS.
+- **S4 -- K64F SYSMPU (DONE, validated on frdmk64f silicon).** EHABI + coarse SRAM regions;
+  colon-selectors for the data side; code in flash granted RX. Peripheral isolation stays coarse
+  (AIPS ceiling), unrelated to EH.
 - **S5 -- multi-thread hardening (cross-cutting).** Today the runtime is single-full-C++-thread:
   `eh_globals`/`emergency_pool` are single globals and `__malloc_lock` is a weak no-op. Two
   unprivileged full-C++ threads throwing/allocating concurrently corrupt shared state. Needs real
@@ -202,12 +252,17 @@ faulted. This is the full convergence proof on one arch.
 
 ## Confidence + hardest unsolved bit
 
-- **High:** region-set design (+0 regions), the colon-selector fix, boot-time FDE registration
-  from a granted heap, the `.appdata` LMA->VMA copy -- all verified end-to-end on qemu-riscv.
+- **Proven (qemu-riscv, U-mode):** region-set design (+0 regions), the colon-selector fix,
+  boot-time FDE registration from a granted heap, the `.appdata` LMA->VMA copy -- verified
+  end-to-end by the committed `cxxtest` unprivileged worker (`qemu_riscv_cxxtest` ALL PASS under
+  PMP).
 - **High:** code-region sizing numbers (measured).
-- **Medium:** ARM/RX/K64F feasibility -- reasoned from the EH model + region granularity, not yet
-  built. ARM is low-risk (EHABI removes two blockers); RX carries the one open question (its
-  small-data model).
+- **High (runtime silicon-validated privileged; U-mode build-only):** ARM/RX/K64F feasibility --
+  the standing silicon logs are the OLD privileged cxxtest running to completion with enforcement
+  active on frdmk64f (SYSMPU), xmc4800-relax + picopi (PMSA, EHABI), and rx72m (RX MPU, SjLj) --
+  runtime/MPU coexistence. The now-U-mode cxxtest links clean on all four; a bench re-flash is the
+  outstanding silicon U-mode proof. The one RX open question (its small-data model) is closed:
+  RXv3 addresses absolutely, no gp analog.
 - **Hardest unsolved bit:** the **fleet-wide `-msmall-data-limit=0` on KickOS RISC-V libs**. It is
   the linchpin that frees `gp` for the app+runtime, but it is a broad build change with a
   code-size cost, and it is inelegant (the ISA's small-data optimization is sacrificed OS-wide to
