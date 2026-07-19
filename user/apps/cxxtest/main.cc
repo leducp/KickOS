@@ -165,7 +165,9 @@ namespace
         report("typeid reflects dynamic type", typeid_ok);
     }
 
-    int g_done = -1; // worker -> main handoff
+    int g_done = -1; // worker -> main handoff (MAIN's cap; delegated to the worker)
+    // B1: fresh child table => handle == index; the worker's delegated g_done is at index 1.
+    constexpr int CH_DONE = 1;
 
     // UNPRIVILEGED: the whole full-C++ body runs here, under the MPU. Exceptions
     // unwind, RTTI matches, and STL/new allocate all through the worker's own grant.
@@ -181,7 +183,7 @@ namespace
             verdict = "ALL PASS\n";
         }
         kos::print(verdict);
-        kos_sem_post(g_done);
+        kos_sem_post(CH_DONE); // g_done (delegated from main)
     }
 }
 
@@ -197,7 +199,8 @@ int main(int, char**)
     // allocated from the app arena -- headroom for the EH unwind + libstdc++ working set,
     // and it fits each board's window (a static KOS_STACK_DEFINE buffer would have to be a
     // pow2 region inside C6's 4 KB .appdata, which 8 KB cannot).
-    int w = kos::thread::spawn(cxx_worker, nullptr, "cxxwork", 10);
+    kos_cap_grant caps[] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}}; // g_done@1
+    int w = kos::thread::spawn_caps(cxx_worker, nullptr, "cxxwork", 10, caps, 1);
     if (w < 0)
     {
         kos::print("SOME FAILED\n"); // spawn failure: fail loud, do not fall back to privileged

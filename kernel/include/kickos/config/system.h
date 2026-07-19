@@ -28,6 +28,12 @@
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16
 #endif
+// Per-task capability-table slots (M3 handle table; see cap.h). Cost is
+// MAX_THREADS x MAX_HANDLES x 8 bytes. Floor 6 on the tiny 10 KiB boards (the
+// irqdrv selftest section holds 4 live sem caps at once); default 8 elsewhere.
+#ifndef KICKOS_MAX_HANDLES
+#define KICKOS_MAX_HANDLES 8
+#endif
 // Memory-domain pool (the shared region sets threads reference; see domain.h).
 // Worst case is one distinct domain per thread plus the two immortal singletons
 // (the kernel domain + the default unprivileged domain).

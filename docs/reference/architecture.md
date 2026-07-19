@@ -510,28 +510,63 @@ feeds the slave app.
 
 ---
 
-## Object model, capabilities & IPC (design)
+## Object model, capabilities & IPC
 
 The object/credential model layered on the MPU enforcement. Enforcement is only meaningful once
 hardware constrains unprivileged userspace, so this model is designed against *all* object types
-that exist (semaphore, mutex, IRQ handle, memory grant), not over-fit to one.
+that exist (semaphore, mutex, IRQ handle, memory grant), not over-fit to one. **Status: the
+SEMAPHORE capability path is LANDED (M3), silicon-validated under enforcement; `CAP_MUTEX` /
+`CAP_ENDPOINT` are reserved type values whose object pools land additively later.** The contract
+below is code-synced to `kernel/include/kickos/cap.h`, `kernel/syscall/cap.cc`,
+`kernel/syscall/syscall.cc`.
 
 - **Per-task typed handle table, not global ids or fds.** A global object id every task can name
-  is ambient authority -- the opposite of the isolation pillar. Instead: a per-task table of
-  refcounted objects with rights bits and "destroy on last close" (Zircon `zx_handle_t` / seL4
-  capability shape). Returned handles stay **opaque** (userspace must not assume an array index),
-  and every lookup routes through **one validate-and-resolve chokepoint**. Cost, stated honestly:
-  per-task table RAM + a resolve indirection per syscall + refcount traffic -- an isolation trade,
-  not a free win.
+  is ambient authority -- the opposite of the isolation pillar. Each `Thread` embeds a fixed
+  `CapEntry handles[KICKOS_MAX_HANDLES]` (default 8, floor 6 on the tiny boards); a `CapEntry` is
+  8 bytes = (global object handle, `CapType`, rights, cap-gen). Handles are **opaque** to
+  userspace (never assume an array index). The table is a pure per-task naming+rights layer that
+  WRAPs the unchanged global object pools (`slotpool.h`), it does not replace them: object
+  liveness is a global property (the pool + its refcount), capability possession is per-task. Cost,
+  stated honestly: per-task table RAM + a resolve indirection per syscall + refcount traffic -- an
+  isolation trade, not a free win.
+- **One resolve chokepoint (`cap_resolve`).** It validates index / liveness / type / rights
+  (`(rights & need) == need`), then WRAPs to the object pool, which re-checks the object-gen. Its
+  precondition is the resolve contract: **the caller holds `IrqLock`, and the resolved pointer is
+  used under the SAME continuous lock** -- so a concurrent `handle_close` cannot free the object
+  between resolve and use. Two independent generations guard it: per-task **cap-gen**
+  (use-after-close) plus global **object-gen** (use-after-destroy), both `uint16_t`.
+- **Rights are three bits, each enforced at a real site (no dead field):** `CAP_WAIT` (`sem_wait`),
+  `CAP_SIGNAL` (`sem_post`), `CAP_TRANSFER` (may be delegated). Memory R/W/X is NOT a cap right --
+  it lives in the MPU region descriptor and is enforced by hardware; duplicating it in the cap
+  would be the forbidden checked-twice field.
+- **Lifecycle -- refcounted destroy-on-last-close.** `sem_create` allocates the object (refs = 1)
+  and returns a full-rights (`WAIT|SIGNAL|TRANSFER`) cap handle into the creator's table.
+  `KOS_SYS_handle_close(cap)` (type-agnostic, renamed from the old `sem_destroy`) drops MY handle:
+  bump the slot cap-gen, empty the entry, `refs--`; the object frees only at the LAST close
+  (refs -> 0). Thread exit closes every held cap (`cap_teardown`, called from `exit_current`) so
+  no thread leaks references. A teardown-close that would strand a parked waiter LEAKS (floors
+  refs at 1), never strands -- unreachable today (every parked waiter pins its own cap).
+- **B1 wire contract (8 apps depend on it):** a fresh child table has cap-gen 0 in every slot, so
+  on a fresh table `handle == index`; delegation places delegated cap `i` at child index `i + 1`,
+  and index 0 is reserved (`cap_install_defaults` installs nothing today -- a plain app needs no
+  manifest). Delegation rides `kos_thread_params.caps` (each entry `(source_cap, rights_mask)`),
+  requires the source cap carry `CAP_TRANSFER`, and NARROWS rights subset-only (`child.rights =
+  parent.rights & mask`; a mask adding a bit the parent lacks is rejected, never widened); the
+  WHOLE list is validated before the child slot is claimed (no half-populated child, no dangling
+  ref bumps).
 - **Resolution is cold-path.** A handle is bound to its target at arm time; an ISR **never**
-  resolves a handle -- it wakes a pre-bound target directly (the latency invariant from the IRQ
-  path). Capabilities are an arm-path concern only.
+  resolves a cap -- `irq_attach` resolves the cap ONCE (requires `CAP_SIGNAL`) and stores the
+  GLOBAL object handle in the binding, which `irq_sem_post` re-resolves from the pool per fire
+  (an ISR runs on a random interrupted thread's table, so `cap_resolve` from ISR context is
+  meaningless). Capabilities are an arm-path concern only.
 - **Authenticated grant ownership** is the memory-side twin: a domain may grant/share only a
   region it owns. Same problem as handles, applied to RAM instead of objects; designed together.
 - **Low-barrier is a hard constraint.** A plain app never writes a capability manifest: the
-  runtime/root task wires a **sane default capability set** (stdout to the console driver, a
-  working `printf`), and customization is opt-in. Do not resurrect CapDL-manifest-to-boot
-  friction -- that is the exact seL4 pain KickOS exists to avoid.
+  runtime/root task wires the default cap set (`cap_install_defaults`), which installs NOTHING
+  today -- index 0 is reserved by convention for the future console cap, and `write`/`printf`
+  stays a direct syscall until console handover (#4) gives it a cap argument. Customization is
+  opt-in delegation. Do not resurrect CapDL-manifest-to-boot friction -- the exact seL4 pain
+  KickOS exists to avoid.
 
 **Synchronization surface -- one blocking primitive, not an object zoo.** The kernel exposes the
 minimum that genuinely needs scheduler involvement: a cap-named **blocking wait/wake** object (the

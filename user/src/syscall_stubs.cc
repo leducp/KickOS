@@ -50,10 +50,15 @@ void kos_sem_post(int sem)
     arch_syscall(KOS_SYS_sem_post, static_cast<uintptr_t>(sem), 0, 0, 0);
 }
 
-int kos_sem_destroy(int sem)
+int kos_handle_close(int cap)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_sem_destroy,
-                                         static_cast<uintptr_t>(sem), 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_handle_close,
+                                         static_cast<uintptr_t>(cap), 0, 0, 0));
+}
+
+int kos_sem_destroy(int cap)
+{
+    return kos_handle_close(cap);
 }
 
 int kos_thread_spawn(struct kos_thread_params const* params)

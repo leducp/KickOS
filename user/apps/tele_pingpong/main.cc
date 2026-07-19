@@ -24,22 +24,27 @@ namespace
     kos::Semaphore* g_ping = nullptr;
     kos::Semaphore* g_pong = nullptr;
 
+    // B1 well-known child cap indices: (ping_s, pong_s) delegated -> ping@1, pong@2.
+    constexpr int CH_PING = 1;
+    constexpr int CH_PONG = 2;
+    constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+
     void ping(void*)
     {
         while (true)
         {
-            g_ping->wait();
+            kos_sem_wait(CH_PING);
             kos::sleep_ns(kBeatNs);
-            g_pong->post();
+            kos_sem_post(CH_PONG);
         }
     }
     void pong(void*)
     {
         while (true)
         {
-            g_pong->wait();
+            kos_sem_wait(CH_PONG);
             kos::sleep_ns(kBeatNs);
-            g_ping->post();
+            kos_sem_post(CH_PING);
         }
     }
     // Periodic sleeper: fixed-duration sleeps whose deadlines coalesce with the
@@ -62,8 +67,9 @@ int main(int, char**)
     g_ping = &ping_s;
     g_pong = &pong_s;
 
-    kos::thread::spawn(ping, nullptr, "ping", 10);
-    kos::thread::spawn(pong, nullptr, "pong", 10);
+    kos_cap_grant caps[] = {{ping_s.id(), CH_FULL}, {pong_s.id(), CH_FULL}}; // ping@1, pong@2
+    kos::thread::spawn_caps(ping, nullptr, "ping", 10, caps, 2);
+    kos::thread::spawn_caps(pong, nullptr, "pong", 10, caps, 2);
     for (int i = 0; i < kSleepers; i++)
     {
         kos::thread::spawn(sleeper, nullptr, "sleeper", 5);

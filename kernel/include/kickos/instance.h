@@ -62,6 +62,13 @@ namespace kickos
         // than aliasing a recycled slot. All access goes through sem_resolve(). (gen
         // wraps every 2^16 destroys of one slot -- acceptable at this scale.)
         SlotPool<Semaphore, KICKOS_MAX_SEMAPHORES> sems;
+        // Object-side refcount for the sem pool, owned by the cap layer (cap.cc):
+        // "how many caps name slot i". alloc sets 1; delegate bumps; close decrements;
+        // 0 => sems.free(). Parallel array so slotpool.h stays generic. uint8_t bounds
+        // the max caps naming one object -- assert every table cannot exceed it.
+        uint8_t sem_refs[KICKOS_MAX_SEMAPHORES] = {};
+        static_assert(KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES <= 255,
+                      "sem_refs is uint8_t: MAX_THREADS x MAX_HANDLES must not exceed 255");
         // Thread pool (see ThreadPool in thread.h): the TCBs + their kernel stacks,
         // intrinsic liveness (a slot is free iff state==EXITED), generation bumped at
         // reclaim (ABA). All allocation goes through thread_spawn().

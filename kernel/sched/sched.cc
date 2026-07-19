@@ -7,6 +7,7 @@
 // the default FIFO/RR policy lives in policy_fifo_rr.cc.
 
 #include <kickos/sched.h>
+#include <kickos/cap.h>
 #include <kickos/kernel.h>
 #include <kickos/domain.h>
 #include <kickos/instance.h>
@@ -146,6 +147,9 @@ namespace kickos
                 IrqLock lock;
                 Kernel& k = kernel();
                 k.current->state = ThreadState::EXITED;
+                // Close every cap the exiting thread holds BEFORE its slot is
+                // reclaimable, else it leaks object references (destroy-on-last-close).
+                cap_teardown(k.current);
                 domain_release(k.current->domain); // last thread out frees the domain
                 k.policy->on_remove(k.current);
                 if (k.current != k.idle and k.live > 0)

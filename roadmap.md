@@ -44,13 +44,18 @@ Two halves:
 The object/credential model on top of M2's enforcement:
 - **Per-task typed handle table** (Zircon/seL4 shape) replacing global object ids -- rights bits,
   refcounted, destroy-on-last-close; **authenticated grant ownership** as its memory-side twin.
+  **LANDED -- the first M3 capability:** the semaphore syscall ABI migrated from global object ids
+  to a per-task `CapEntry` table with a single `cap_resolve` chokepoint, silicon-validated under
+  enforcement on all four M2 mechanism classes, plus authenticated-grant spawn delegation
+  (subset-only rights narrowing, deterministic B1 placement). The items below stay open.
 - **One blocking primitive**, not an object zoo -- a cap-named wait/wake object; richer sync
   built in userspace; the sole justified typed object is a priority-inheritance mutex.
 - **Console *device* handover** -- a userspace UART driver takes the peripheral as a capability;
   the kernel relinquishes it and the panic path reclaims + re-inits it.
 - **Low-barrier hard constraint** -- a plain app never writes a capability manifest; the runtime
   wires a sane default cap set (never resurrect CapDL-to-boot friction).
-- **User-selectable CPU clock / low-power mode** + a `sys_cpu_clock_hz()` read syscall.
+- **User-selectable CPU clock / low-power mode** -- the `sys_cpu_clock_hz()` read syscall has
+  landed; the write side (clock-select / low-power) stays open.
 
 ### M4 -- SMP (one kernel image across cores)
 Run a multi-core part (dual-core RP2040) at 100% under a single KickOS -- not two AMP instances.

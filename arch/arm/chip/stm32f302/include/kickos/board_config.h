@@ -23,6 +23,10 @@
 #ifndef KICKOS_MAX_IRQ_HANDLES
 #define KICKOS_MAX_IRQ_HANDLES 4
 #endif
+/* M3 cap table: floor 6 (holds the 4 live sem caps of the irqdrv section). */
+#ifndef KICKOS_MAX_HANDLES
+#define KICKOS_MAX_HANDLES 6
+#endif
 #ifndef KICKOS_USER_STACK_SIZE
 #define KICKOS_USER_STACK_SIZE 2048
 #endif

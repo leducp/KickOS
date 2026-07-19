@@ -16,9 +16,9 @@ enum kos_syscall_nr
     KOS_SYS_yield = 2,          // ()                    -> 0
     KOS_SYS_sleep_ns = 3,       // (ns_lo, ns_hi)        -> 0
     KOS_SYS_sem_create = 4,     // (initial)             -> opaque sem handle, or -1
-    KOS_SYS_sem_wait = 5,       // (handle)   -> 0, or -1 bad handle (void C wrapper drops it)
-    KOS_SYS_sem_post = 6,       // (handle)   -> 0, or -1 bad handle (void C wrapper drops it)
-    KOS_SYS_sem_destroy = 17,   // (handle)              -> 0, or -1 (bad/has waiters); nr appended
+    KOS_SYS_sem_wait = 5,       // (cap)      -> 0, or -1 bad cap (void C wrapper drops it)
+    KOS_SYS_sem_post = 6,       // (cap)      -> 0, or -1 bad cap (void C wrapper drops it)
+    KOS_SYS_handle_close = 17,  // (cap)   -> 0, or -1 (bad cap); type-agnostic, refcounted close
     KOS_SYS_thread_spawn = 7,   // (kos_thread_params*)  -> opaque thread handle, or -1
     KOS_SYS_exit = 8,           // (code)                -> does not return
     KOS_SYS_irq_inject = 9,     // (irq)                 -> 0
@@ -59,6 +59,26 @@ enum kos_policy
     KOS_POLICY_RR = 1
 };
 
+// Capability rights (must mirror kickos::CapRights). A delegation NARROWS only:
+// the child cap gets parent.rights & mask; a mask adding a bit the parent lacks is
+// rejected. Delegating requires the parent cap carry KOS_CAP_TRANSFER.
+enum kos_cap_rights
+{
+    KOS_CAP_WAIT = 1 << 0,    // sem_wait
+    KOS_CAP_SIGNAL = 1 << 1,  // sem_post
+    KOS_CAP_TRANSFER = 1 << 2 // may be delegated onward
+};
+
+// One entry of a spawn delegation list: hand the child a narrowed copy of the
+// parent cap `source_cap`. Deterministic placement (B1): delegated cap i lands at
+// the child's table index i+1 (index 0 reserved), and a fresh child table has
+// cap-gen 0 so the child's handle value == its index -- known a priori, no handoff.
+struct kos_cap_grant
+{
+    int source_cap;      // a cap handle in the SPAWNING thread's table
+    uint8_t rights_mask; // subset of the source cap's rights (kos_cap_rights bits)
+};
+
 // Thread-creation parameters (kernel allocates TCB + stack from a static pool).
 struct kos_thread_params
 {
@@ -75,6 +95,8 @@ struct kos_thread_params
     uint32_t mmio_size;  // size of that region (bytes)
     void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE)
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
+    struct kos_cap_grant const* caps; // optional caps to delegate to the child (0 => none)
+    uint8_t cap_count;   // number of entries in caps[]; caps land at child indices 1..cap_count
 };
 
 #endif

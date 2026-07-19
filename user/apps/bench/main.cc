@@ -41,31 +41,38 @@ namespace
     // M0; the report prints the actual window (ms) so it is self-documenting.
     constexpr uint32_t ROUNDS_PER_REPORT = 20000;
 
-    kos::Semaphore* g_a = nullptr;
+    kos::Semaphore* g_a = nullptr;    // MAIN's caps; the ping-pong sems (reporter side)
     kos::Semaphore* g_b = nullptr;
     kos::Semaphore* g_gate = nullptr;
     volatile uint32_t g_rounds = 0;
 
-    void player_a(void*)
+    // B1 well-known child cap indices (fresh child table => handle == index). MAIN
+    // delegates the sems per spawn in a fixed order; the players name them by these.
+    constexpr int CH_A = 1;    // ping-pong sem A (delegated first to both players)
+    constexpr int CH_B = 2;    // ping-pong sem B (delegated second)
+    constexpr int CH_GATE = 3; // reporter-wake gate (delegated third to player_b only)
+    constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+
+    void player_a(void*) // caps: A@1, B@2
     {
         while (true)
         {
-            g_a->wait();
-            g_b->post();
+            kos_sem_wait(CH_A);
+            kos_sem_post(CH_B);
         }
     }
-    void player_b(void*)
+    void player_b(void*) // caps: A@1, B@2, gate@3
     {
         while (true)
         {
-            g_b->wait();
-            g_a->post();
+            kos_sem_wait(CH_B);
+            kos_sem_post(CH_A);
             // Deterministically wake the reporter every N rounds -- a semaphore post
             // (direct reschedule to the higher-prio reporter), never a timer, so it
             // cannot be starved by this CPU-bound ping-pong.
             if ((++g_rounds % ROUNDS_PER_REPORT) == 0)
             {
-                g_gate->post();
+                kos_sem_post(CH_GATE);
             }
         }
     }
@@ -183,8 +190,10 @@ int main(int, char**)
     // Players at prio 1 (KICKOS_PRIO_MIN) -- below root's prio 2 so the reporter (root)
     // preempts them when player_b posts the gate. Only two spawned threads: fits the
     // smallest pool (KICKOS_MAX_THREADS == 2).
-    int ra = kos::thread::spawn(player_a, nullptr, "bench_a", 1);
-    int rb = kos::thread::spawn(player_b, nullptr, "bench_b", 1);
+    kos_cap_grant acaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}};                    // A@1, B@2
+    kos_cap_grant bcaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}, {gate.id(), CH_FULL}}; // +gate@3
+    int ra = kos::thread::spawn_caps(player_a, nullptr, "bench_a", 1, acaps, 2);
+    int rb = kos::thread::spawn_caps(player_b, nullptr, "bench_b", 1, bcaps, 3);
     if (ra < 0 or rb < 0)
     {
         kos::print("bench: FAILED to spawn players (thread pool too small?)\n");

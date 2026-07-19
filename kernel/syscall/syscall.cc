@@ -9,6 +9,7 @@
 // boundary.
 
 #include <kickos/arch/arch.h>
+#include <kickos/cap.h>
 #include <kickos/config.h>
 #include <kickos/domain.h>
 #include <kickos/instance.h>
@@ -26,48 +27,50 @@ namespace kickos
 {
     namespace
     {
-        // --- Semaphore registry (generational slot pool, see slotpool.h) -----------
-        // The handle is opaque to userspace; sem_resolve() is the single validate-and-
-        // resolve chokepoint the capability model later swaps for a unified
-        // handle table. (ABA/generation mechanics live in slotpool.h.)
-        Semaphore* sem_resolve(int handle) { return kernel().sems.resolve(handle); }
+        // --- Semaphore capabilities (per-task cap table over the global pool) -------
+        // A sem lives in the global generational pool (slotpool.h); a task names it by
+        // a per-task CAP_SEM capability (cap.h). cap_resolve is the single validate-and-
+        // resolve chokepoint (per-task cap-gen guard, then the pool's object-gen guard).
+        // sem_wait needs CAP_WAIT, sem_post needs CAP_SIGNAL.
 
         int sem_create(int initial)
         {
             IrqLock lock;
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return -1;
+            }
             int const i = kernel().sems.alloc();
             if (i < 0)
             {
                 return -1;
             }
             sem_init(kernel().sems.at(i), initial);
-            return kernel().sems.handle_for(i);
-        }
-
-        int sem_destroy(int handle)
-        {
-            IrqLock lock;
-            Semaphore* s = sem_resolve(handle);
-            if (s == nullptr)
+            kernel().sem_refs[i] = 1; // this creator's cap is the first reference
+            int const obj = kernel().sems.handle_for(i);
+            // Install the owning cap with full rights (WAIT|SIGNAL|TRANSFER) in the
+            // creator's table; the returned CAP handle is what userspace sees. A full
+            // table is a clean failure: release the just-claimed sem (refs -> 0).
+            int const cap = cap_install(c, obj, CapType::CAP_SEM,
+                                        CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER);
+            if (cap < 0)
             {
+                kernel().sem_refs[i] = 0;
+                kernel().sems.free(obj);
                 return -1;
             }
-            // Quiescent-only: refuse while waiters are parked (waking them with an
-            // error needs the wait_result channel timed wait adds -- Later).
-            if (not s->waiters.empty())
-            {
-                return -1;
-            }
-            kernel().sems.free(handle);
-            return 0;
+            return cap;
         }
 
         // Privileged in-kernel IRQ handler bound by KOS_SYS_irq_attach: posts a
         // semaphore from ISR context, driving the interrupt-exit switch (trigger #4).
+        // arg is the GLOBAL sem handle irq_attach resolved+stored (NOT a cap): an ISR
+        // must never resolve a cap (current() is a random interrupted thread's table).
         void irq_sem_post(void* arg)
         {
             int handle = static_cast<int>(reinterpret_cast<intptr_t>(arg));
-            Semaphore* s = sem_resolve(handle);
+            Semaphore* s = kernel().sems.resolve(handle);
             if (s != nullptr)
             {
                 sem_post(s);
@@ -262,6 +265,62 @@ namespace kickos
                     return -1;
                 }
             }
+            // Spawn-time capability delegation (M3). Validate the WHOLE list BEFORE
+            // claiming anything (finding 9): every source cap must resolve in the
+            // CALLER's table, carry CAP_TRANSFER, and the mask must be a subset (narrow
+            // only, never widen); cap_count + 1 must fit the child table (index 0
+            // reserved). Only after every check passes do we install + bump refs, so a
+            // mid-install failure -- which validation makes impossible -- cannot leave a
+            // half-populated child with dangling ref bumps.
+            int deleg_obj[KICKOS_MAX_HANDLES];
+            uint8_t deleg_type[KICKOS_MAX_HANDLES];
+            uint8_t deleg_rights[KICKOS_MAX_HANDLES];
+            int const ncaps = static_cast<int>(p->cap_count);
+            if (ncaps > 0)
+            {
+                // index 0 reserved => at most KICKOS_MAX_HANDLES-1 delegable.
+                if (ncaps >= KICKOS_MAX_HANDLES)
+                {
+                    return -1;
+                }
+                uintptr_t const cu = reinterpret_cast<uintptr_t>(p->caps);
+                if (p->caps == nullptr or (cu & (alignof(kos_cap_grant) - 1)) != 0)
+                {
+                    return -1;
+                }
+                if (not user_range_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps),
+                                      ARCH_MPU_R))
+                {
+                    return -1;
+                }
+                // Snapshot the whole grant array into kernel memory in one pass right after
+                // the range check, then validate from the copy -- so a future SMP kernel
+                // cannot let a peer core rewrite p->caps[ci] between check and read
+                // (the classic double-fetch seam; single-core IrqLock closes it today).
+                kos_cap_grant gbuf[KICKOS_MAX_HANDLES];
+                for (int ci = 0; ci < ncaps; ci++)
+                {
+                    gbuf[ci] = p->caps[ci];
+                }
+                Thread* const caller = sched::current();
+                for (int ci = 0; ci < ncaps; ci++)
+                {
+                    kos_cap_grant const g = gbuf[ci];
+                    CapEntry* se = cap_lookup(caller, g.source_cap);
+                    if (se == nullptr or (se->rights & CAP_TRANSFER) != CAP_TRANSFER)
+                    {
+                        return -1;
+                    }
+                    uint8_t const mask = g.rights_mask;
+                    if ((mask & se->rights) != mask) // mask must be a subset -- no widening
+                    {
+                        return -1;
+                    }
+                    deleg_obj[ci] = se->obj;
+                    deleg_type[ci] = se->type;
+                    deleg_rights[ci] = static_cast<uint8_t>(se->rights & mask);
+                }
+            }
             Kernel& k = kernel();
             // Resolve the memory domain BEFORE claiming a slot, so a domain-pool
             // exhaustion is a clean spawn failure, not a leaked thread slot. domain_for
@@ -360,6 +419,21 @@ namespace kickos
                 attr.kstack_owned = true;
             }
             thread_create(&k.threads.slots[i], p->entry, p->arg, stack, stack_size, attr);
+            // The child table is fresh (thread_create zeroed it to CAP_EMPTY, cap-gen 0),
+            // so the reserved default set is a no-op and each delegated cap i lands at
+            // index i+1 with handle value i+1 (B1). Validation above guarantees this
+            // install cannot fail; bump each named object's refcount as its new cap lands.
+            Thread* const child = &k.threads.slots[i];
+            cap_install_defaults(child);
+            for (int ci = 0; ci < ncaps; ci++)
+            {
+                cap_install_at(child, ci + 1, deleg_obj[ci],
+                               static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
+                if (deleg_type[ci] == static_cast<uint8_t>(CapType::CAP_SEM))
+                {
+                    sem_ref_inc(deleg_obj[ci]);
+                }
+            }
             return k.threads.handle_for(i);
         }
 
@@ -449,17 +523,20 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             return static_cast<uintptr_t>(sem_create(static_cast<int>(a0)));
         }
-        case KOS_SYS_sem_destroy:
+        case KOS_SYS_handle_close:
         {
-            return static_cast<uintptr_t>(sem_destroy(static_cast<int>(a0)));
+            // Type-agnostic close: drop THIS task's cap (a cap knows its own type).
+            // Refcounted -- the object is freed only at the last close.
+            IrqLock lock;
+            return static_cast<uintptr_t>(handle_close(sched::current(), static_cast<int>(a0)));
         }
         case KOS_SYS_sem_wait:
         {
             // Resolve and use under one lock (sem_wait/sem_post nest their own):
-            // otherwise a concurrent sem_destroy could free the slot between
-            // resolve and use, defeating the quiescent-only guarantee.
+            // otherwise a concurrent close could free the slot between resolve and use.
             IrqLock lock;
-            Semaphore* s = sem_resolve(static_cast<int>(a0));
+            Semaphore* s = static_cast<Semaphore*>(
+                cap_resolve(sched::current(), static_cast<int>(a0), CapType::CAP_SEM, CAP_WAIT));
             if (s == nullptr)
             {
                 return static_cast<uintptr_t>(-1);
@@ -470,7 +547,8 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_sem_post:
         {
             IrqLock lock;
-            Semaphore* s = sem_resolve(static_cast<int>(a0));
+            Semaphore* s = static_cast<Semaphore*>(
+                cap_resolve(sched::current(), static_cast<int>(a0), CapType::CAP_SEM, CAP_SIGNAL));
             if (s == nullptr)
             {
                 return static_cast<uintptr_t>(-1);
@@ -545,17 +623,29 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 return static_cast<uintptr_t>(-1);
             }
             // Resolve + attach + unmask under one lock (like sem_wait/post): otherwise a
-            // concurrent sem_destroy between the resolve check and the attach could bind
-            // the line to an already-dead handle.
+            // concurrent close between the resolve check and the attach could bind the
+            // line to an already-dead handle.
             IrqLock lock;
             int irq = static_cast<int>(a0);
-            int sem_handle = static_cast<int>(a1);
-            if (irq < 0 or irq >= KICKOS_MAX_IRQ or sem_resolve(sem_handle) == nullptr)
+            int cap_handle = static_cast<int>(a1);
+            // Resolve the CAP once, HERE (requires CAP_SIGNAL -- an ISR posts), and store
+            // the GLOBAL sem handle in the binding: irq_sem_post re-resolves that global
+            // via the pool per fire (an ISR must NEVER resolve a cap -- current() is a
+            // random interrupted thread's table). The binding holds no ref, so a
+            // last-close (now reachable via a thread exit) makes it a dead binding that
+            // fails safe, not a wrong post.
+            CapEntry* e = nullptr;
+            if (irq >= 0 and irq < KICKOS_MAX_IRQ)
+            {
+                e = cap_lookup(sched::current(), cap_handle);
+            }
+            if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_SEM)
+                or (e->rights & CAP_SIGNAL) != CAP_SIGNAL
+                or kernel().sems.resolve(e->obj) == nullptr)
             {
                 return static_cast<uintptr_t>(-1);
             }
-            // Store the handle (not a pointer): irq_sem_post re-resolves each fire,
-            // so a since-destroyed sem fails safe instead of poking a stale slot.
+            int const sem_handle = e->obj;
             // irq_attach fails (-1) if the line is already owned -- no stealing.
             if (not irq_attach(irq, irq_sem_post,
                                reinterpret_cast<void*>(static_cast<intptr_t>(sem_handle))))

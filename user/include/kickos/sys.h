@@ -28,13 +28,21 @@ void kos_print(char const* s);
 void kos_yield(void);
 void kos_sleep_ns(uint64_t ns);
 
-// Counting semaphore. The returned handle is OPAQUE (index + generation); do not
-// assume it's an array index. sem_destroy is quiescent-only (fails with waiters)
-// and bumps the slot generation, so a stale handle fails to resolve.
-int kos_sem_create(int initial); // -> opaque handle, or -1
+// Counting semaphore. The returned handle is an OPAQUE per-task CAPABILITY (index +
+// generation in THIS thread's table); do not assume it's an array index, and it does
+// NOT name the same object in another thread -- to share a sem with a child, delegate
+// it via kos_thread_params.caps (see kos_cap_grant). sem_create grants the creator a
+// full-rights (WAIT|SIGNAL|TRANSFER) cap.
+int kos_sem_create(int initial); // -> opaque cap handle, or -1
 void kos_sem_wait(int sem);
 void kos_sem_post(int sem);
-int kos_sem_destroy(int sem); // 0, or -1 (bad handle / has waiters)
+
+// Drop THIS thread's capability. Type-agnostic (a cap knows its own type) and
+// refcounted: the underlying object is destroyed only at the LAST close across all
+// holders. Always succeeds on a live cap, even while other holders remain open (it
+// touches no waiters). Returns 0, or -1 on a bad/stale cap.
+int kos_handle_close(int cap);
+int kos_sem_destroy(int cap); // alias of kos_handle_close (source compatibility)
 
 int kos_thread_spawn(struct kos_thread_params const* params);
 void kos_exit(int code) __attribute__((noreturn));

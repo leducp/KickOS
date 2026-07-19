@@ -67,8 +67,9 @@ namespace kos
         kos_exit(code);
     }
 
-    // Owning counting semaphore: ctor creates, dtor destroys. Non-copyable,
-    // movable (a moved-from handle is emptied so the dtor won't double-free).
+    // Owning counting semaphore: ctor creates, dtor closes its cap (last close frees
+    // the object). Non-copyable, movable (a moved-from handle is emptied so the dtor
+    // won't double-close).
     class Semaphore
     {
     public:
@@ -190,7 +191,8 @@ namespace kos::thread
                      uint32_t quantum_ns = 0, bool privileged = false,
                      void* mem = nullptr, uint32_t mem_size = 0,
                      void* stack = nullptr, uint32_t stack_size = 0,
-                     void* mmio = nullptr, uint32_t mmio_size = 0)
+                     void* mmio = nullptr, uint32_t mmio_size = 0,
+                     kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -206,7 +208,22 @@ namespace kos::thread
         p.mmio_size = mmio_size;
         p.stack_base = stack;
         p.stack_size = stack_size;
+        p.caps = caps;
+        p.cap_count = cap_count;
         return kos_thread_spawn(&p);
+    }
+
+    // Delegate a fixed cap list to the child (B1: cap i -> child index i+1). The
+    // common cross-thread-sem shape: a child that must wait/post sems the parent owns.
+    // Covers the extra args the caps-using workers need (privileged rr/stress workers;
+    // a shared mem grant for the domain test).
+    inline int spawn_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
+                          kos_cap_grant const* caps, uint8_t cap_count,
+                          uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
+                          bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0)
+    {
+        return spawn(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
+                     nullptr, 0, nullptr, 0, caps, cap_count);
     }
 }
 

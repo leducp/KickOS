@@ -21,6 +21,12 @@ namespace
     kos::Semaphore* g_ping = nullptr;
     kos::Semaphore* g_pong = nullptr;
 
+    // B1 well-known child cap indices (fresh child table => handle == index). Both sems
+    // are delegated to each player in the order (ping_sem, pong_sem) -> ping@1, pong@2.
+    constexpr int CH_PING = 1;
+    constexpr int CH_PONG = 2;
+    constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+
     void say(char const* who, int n)
     {
         char b[48];
@@ -34,10 +40,10 @@ namespace
         int n = 0;
         while (true)
         {
-            g_ping->wait();
+            kos_sem_wait(CH_PING);
             kos::sleep_ns(kBeatNs);
             say("ping", ++n);
-            g_pong->post();
+            kos_sem_post(CH_PONG);
         }
     }
     void pong(void*)
@@ -45,10 +51,10 @@ namespace
         int n = 0;
         while (true)
         {
-            g_pong->wait();
+            kos_sem_wait(CH_PONG);
             kos::sleep_ns(kBeatNs);
             say("pong", ++n);
-            g_ping->post();
+            kos_sem_post(CH_PING);
         }
     }
 }
@@ -63,8 +69,10 @@ int main(int, char**)
     g_ping = &ping_sem;
     g_pong = &pong_sem;
 
-    kos::thread::spawn(ping, nullptr, "ping", 10);
-    kos::thread::spawn(pong, nullptr, "pong", 10);
+    // Both players get (ping_sem, pong_sem) delegated -> ping@1, pong@2 (CH_PING/CH_PONG).
+    kos_cap_grant caps[] = {{ping_sem.id(), CH_FULL}, {pong_sem.id(), CH_FULL}};
+    kos::thread::spawn_caps(ping, nullptr, "ping", 10, caps, 2);
+    kos::thread::spawn_caps(pong, nullptr, "pong", 10, caps, 2);
 
     // A daemon: main never returns (returning would exit), so the two players
     // run until interrupted. Park at low priority on a semaphore nobody posts.

@@ -102,10 +102,10 @@ namespace
         return 3;
     }
 
-    void slave_thread(void*)
+    void slave_thread(void*) // caps: done@1 (delegated by main)
     {
         g_result = run_slave();
-        g_done->post();
+        kos_sem_post(1); // g_done (delegated cap at child index 1, fresh table)
     }
 }
 
@@ -116,7 +116,8 @@ int main(int, char**)
     kos::Semaphore done(0);
     g_done = &done;
 
-    int th = kos::thread::spawn(slave_thread, nullptr, "kickcat-slave", 10);
+    kos_cap_grant caps[] = {{done.id(), KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}};
+    int th = kos::thread::spawn_caps(slave_thread, nullptr, "kickcat-slave", 10, caps, 1);
     if (th < 0)
     {
         kos::print("  FAIL: could not spawn slave thread\n");

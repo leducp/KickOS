@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #include <kickos/arch/arch.h>
+#include <kickos/cap.h>
 #include <kickos/config.h>
 #include <kickos/list.h>
 
@@ -80,6 +81,11 @@ namespace kickos
         intptr_t wait_result; // reserved for timed wait (unused today)
 
         uint64_t switch_count; // introspection
+
+        // Per-task capability table (M3): typed, rights-bearing, refcounted handles
+        // naming global objects. thread_create's memset zeroes it to all-CAP_EMPTY
+        // (CAP_EMPTY == 0). Cost = KICKOS_MAX_THREADS x KICKOS_MAX_HANDLES x 8 bytes.
+        CapEntry handles[KICKOS_MAX_HANDLES];
     };
 
     // Recover the TCB owning a ready/wait list node (nullptr-safe).
