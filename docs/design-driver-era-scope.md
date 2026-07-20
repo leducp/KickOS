@@ -2,10 +2,11 @@
 # The driver era -- scope / gap analysis
 
 **EXPLORATORY -- NOT A CONTRACT.** A scoping lens over the work that turns the M3
-mechanisms (proven on XMC / K64F only) into a real, fleet-wide capability. Numbering is
-deliberately IN FLUX (see "The milestone-numbering question"), so this doc names work by
-THEME -- "the driver era" -- not by Mx. No implementation here; a checklist lands in
-`TODO.md` and the design in `docs/reference/` only after the user picks a number + gate.
+mechanisms (proven on XMC / K64F only) into a real, fleet-wide capability. Ordering is now
+DECIDED (Option A: driver era = **M4**, SMP = **M5**, MMU = **M6**; see section 4), but this
+doc still names work by THEME -- "the driver era" -- where the number is not load-bearing. No
+implementation here; a checklist lands in `TODO.md` and the design in `docs/reference/` only
+after the per-item gate.
 
 Framing (user's words): **M3 = POC** -- endpoints/IPC, console handover, clock-select, the
 fault-funnel reclaim all PROVEN, but each on ONE or TWO chips. **The driver era = the real
@@ -18,7 +19,7 @@ XMC-only (+ some K64F) testing hid. The console handover was never tried fleet-w
 
 1. State of the M3 mechanisms (what landed, on which silicon)
 2. Gap list -- the driver-era work, per item, effort + dependency + silicon-gating
-3. Driver-framework depth -- the bring-up DAG, the API taxonomy, multi-instance, DMA
+3. Driver-framework depth -- the bring-up DAG, the API taxonomy, multi-instance, DMA, GPIO
 4. The milestone-numbering question -- driver-era vs SMP vs MMU, ordering options + rec
 5. Priority / sequencing -- what unblocks what; silicon-gated vs doable-now
 
@@ -206,55 +207,63 @@ Peripheral drivers are not independent -- they sit on shared, central authoritie
 be up first. The INIT service (G7) brings them up in this order:
 
 ```
-                 +----------------+
-                 |  CLOCK-TREE    |  (PLL, dividers/muxes, central refcounted
-                 |  service       |   tree-gates; rate-change-notifier fan-out)
-                 +----------------+
-                    |         |
-          +---------+         +---------+
-          v                             v
-   +----------------+            +----------------+
-   |  PINMUX        |            |  (kernel clock |
-   |  service       |            |   residue:     |
-   | (per-pin auth, |            |   re-anchor)   |
-   |  central like  |            +----------------+
-   |  the clock tree|
-   |  OR per-grant) |
-   +----------------+
-       |     |     |
-       v     v     v
-   +------+ ...    (every peripheral needs a pin route)
-   | GPIO |  <--- foundational leaf: raw pin drive; also the SPI-CS provider
-   +------+
-       |
-   ----+-------------------------------+------------------+
-   v                                   v                  v
-+------+ needs {clock,pinmux}      +------+ needs      +------+ needs
-| UART |                          | I2C  | {clock,    | SPI  | {clock,pinmux,
-+------+                          +------+  pinmux}    +------+  GPIO for CS}
-                                                          ^
-                                              GPIO edge: SPI CS is usually a
-                                              GPIO line, so SPI depends on GPIO
+        +---------------------------------------------+
+        |  INIT service (privileged root)             |
+        |  ONE-SHOT at bring-up, from a board pin-map: |
+        |   * PINMUX -- privileged pin-function config |
+        |     (NO runtime service; folds into init)    |
+        |   * gate clocks, grant MMIO caps, spawn      |
+        +---------------------------------------------+
+                  |                        |
+                  v                        v
+         +----------------+       +----------------+
+         |  CLOCK-TREE    |       | (kernel clock  |
+         |  service       |       |  residue:      |
+         |  RUNTIME: PLL, |       |  re-anchor)    |
+         |  dividers,     |       +----------------+
+         |  central gates,|
+         |  DVFS + rate-  |
+         |  change notify |
+         +----------------+
+                  |
+                  v
+         +----------------+   RUNTIME pin ALLOCATOR + IRQ DEMUX: on request
+         |  GPIO service  |   (cold IPC, one-shot) checks a pin is free, marks
+         | (pin allocator |   it owned, MINTS a per-pin MMIO cap -> the driver
+         |  + IRQ demux)  |   then read/writes the pin DIRECTLY (no IPC). Owns
+         +----------------+   shared IRQ lines + demuxes. Also the SPI-CS source.
+             |     |     |
+             v     v     v
+      +------+ needs {clock}   +------+ {clock}  +------+ {clock, a GPIO
+      | UART | (pins pre-muxed)| I2C  |          | SPI  |  cap for its CS}
+      +------+                 +------+          +------+
 ```
 
-Foundational services (the three the peripheral drivers stand on):
-- **CLOCK-TREE** (G7) -- owner of the shared PLL/dividers/central gates. A rate change
-  cascades to every derived-clock consumer (UART re-derives baud, SPI its prescaler) via a
-  Common-Clock-Framework-shape notifier. Central + refcounted (a branch feeding two
-  peripherals gates off only when BOTH idle). Kernel residue = re-anchor its own clock.
-- **PINMUX** -- a shared per-pin authority. Same design question as the clock tree: CENTRAL
-  authority (a pinmux service owns all pin-mux registers, hands routes) vs PER-DRIVER GRANT
-  (each driver granted its pin's IOCR/PORT window). Pin-mux registers often live in a SHARED
-  block (XMC P1_IOCR4, K64F PORTx_PCR, an SCU/PORT peripheral) -- exactly the clock-tree
-  "shared block => central refcount" argument -- so PINMUX likely wants to be central too,
-  NOT a per-thread grant (the grant model can't cleanly split one PORT register across
-  drivers). This is a real open design decision.
-- **GPIO** -- foundational leaf: raw pin drive; ALSO the SPI-CS provider, so SPI depends on
-  it. GPIO itself needs pinmux (route the pin to GPIO function) + clock (port clock gate).
+Foundational shapes -- the peripheral drivers stand on THREE distinct kinds, matched to how
+often each CHANGES at runtime:
+- **CLOCK-TREE -- a RUNTIME service** (persistent). Owner of the shared PLL/dividers/central
+  gates. A rate change (DVFS) cascades to every derived-clock consumer (UART re-derives baud,
+  SPI its prescaler) via a Common-Clock-Framework-shape notifier. Central + refcounted (a
+  branch feeding two peripherals gates off only when BOTH idle). Kernel residue = re-anchor its
+  own clock. It CHANGES at runtime, so it must be a standing service.
+- **GPIO -- a RUNTIME pin ALLOCATOR that mints per-pin caps** (unified model, see 3.5). A driver
+  asks for a pin (cold IPC, one-shot at bring-up); the service checks it is free, marks it
+  owned, and delegates a capability granting DIRECT MMIO to that pin's set/clear + input
+  registers; the driver then reads/writes DIRECTLY, no IPC per operation. Allocation is
+  arbitrated (service); operation is direct (the cap IS the fast path). Also owns shared GPIO
+  IRQ lines + demuxes them, and is the SPI-CS provider -- so SPI depends on it.
+- **PINMUX -- ONE-SHOT init-time config, NOT a service.** Pin-function assignment is set once at
+  bring-up and does not change at runtime (unlike a hot GPIO CS, or the clock tree under DVFS),
+  so it needs no persistent service: it COLLAPSES into the init service's bring-up sequence.
+  Init muxes a driver's pins (privileged -- the mux registers live in the shared SCU/PORT block
+  alongside the clock gates, natural since init is the privileged root that grants caps + spawns
+  anyway), THEN spawns the driver, which never touches pinmux at runtime. Driven by a board
+  pin-map. Caveat: rare dynamic pin RE-config (runtime repurpose, or reconfiguring pins for
+  low-power sleep) would be a COLD privileged call if ever needed -- not the common path.
 
-Consequence: the init service is a topological bring-up (clock -> pinmux -> gpio -> the
-byte/transfer drivers -> apps), spawning each with the right caps. This is why the init
-service is a GATING enabler for the driver era, not a nicety.
+Consequence: the init service is a topological bring-up (clock -> mux the pins -> gpio -> the
+byte/transfer drivers -> apps), doing the one-shot pinmux itself and spawning each driver with
+the right caps. This is why the init service is a GATING enabler for the driver era, not a nicety.
 
 ### 3.2 Driver API taxonomy by I/O model
 The classical driver shapes map onto TWO IPC patterns:
@@ -336,9 +345,88 @@ Verdict: **defer DMA to a dedicated sub-topic**; drivers are polled/IRQ first. W
 lands, kernel-mediated descriptor validation + a central channel allocator is the shape. Flag
 this as a distinct HARD problem, not part of the first driver-framework cut.
 
+### 3.5 GPIO sharing -- a pin allocator that mints per-pin capabilities
+The concern: a HOT pin (an SPI chip-select, toggled every transaction, potentially at MHz)
+routed through a central GPIO service = an IPC round-trip PER TOGGLE = prohibitive.
+
+The model (UNIFIED -- one mechanism, not two tiers): the GPIO service is a PIN ALLOCATOR that
+mints per-pin CAPABILITIES.
+1. A driver (e.g. SPI, for its CS) asks the GPIO service for a pin -- IPC, ONE-SHOT at bring-up
+   (cold, cheap).
+2. The service checks the pin is free (its allocation bookkeeping -- it knows which pins are
+   taken), marks it owned by that driver, and MINTS a capability granting DIRECT MMIO access to
+   that pin's set/clear + input registers, delegating it to the driver.
+3. The driver drives the pin DIRECTLY via the cap -- NO IPC per operation (the hot path is
+   solved by the cap itself, not by a separate "fast tier").
+4. That pin of the port is now unavailable to others (prevents double-allocation); on
+   release / driver-death the cap is revoked and the pin freed.
+
+So ALLOCATION is arbitrated (service, cold IPC); OPERATION is direct (the cap IS the fast path).
+This is just the general capability pattern -- a service owning a resource + delegating sub-caps
+on request = the roadmap's "service publication + capability delegation" applied to pins.
+
+**The three operations, matched to hardware granularity:**
+- **WRITE** (set/clear register) and **READ** (input data register) -- both per-pin-addressable,
+  so the granted per-pin MMIO cap covers them DIRECTLY, no IPC either way.
+- **IRQ** -- the wrinkle: GPIO interrupt lines are SHARED at the silicon level, so they do NOT
+  map cleanly to the per-pin cap. Two cases:
+  - **Dedicated per-pin IRQ line** (e.g. STM32 EXTI0-4 are individual NVIC lines) -> grant that
+    IRQ line DIRECTLY to the pin's owner via the existing tier-1 IRQ-as-event
+    (`irq_register`/wait/ack), no service on the path.
+  - **Shared IRQ line** (the COMMON case -- K64F: one PORTx IRQ for all pins on a port, handler
+    reads ISFR to find which; STM32 EXTI9_5 / EXTI15_10 group many pins into one NVIC line) ->
+    the GPIO SERVICE owns the shared line, DEMUXES it (reads ISFR -> pin mask), and delivers the
+    per-pin event to the owner via IPC/notification (it already holds the pin->owner map from
+    allocation, so it is the natural demux point); it acks ISFR after delivering. The driver
+    subscribes to its pin's IRQ when it requests the pin.
+  IPC on the IRQ path is acceptable (unlike a CS toggle) because the hardware FORCES the demux
+  for a shared line (no direct alternative) and GPIO IRQs are typically lower-rate. It is the
+  userspace twin of the kernel's real-peripheral-IRQ demux (C6 `.Lextdev` / the RX demux, G5).
+
+So the GPIO service is TWO roles matched to hardware granularity: a pin ALLOCATOR (mints per-pin
+caps for write/read + a dedicated-per-pin IRQ line = all direct) AND an IRQ DEMUX (owns shared
+lines, routes per-pin events over IPC).
+
+**Two implications to record:**
+- **NEW MECHANISM (a driver-era keystone): runtime delegation of an MMIO (per-pin) capability
+  from a holding service to a requester.** Today MMIO grants are SPAWN-TIME only (`thread_spawn`
+  `mmio_base`); this adds "a running service MINTS + DELEGATES an MMIO sub-cap at runtime." NOT
+  GPIO-specific -- the SPI/I2C call-reply layer (3.2) and the clock-control cap (the
+  power-manager, G7) want the SAME primitive. Flag it as a shared driver-era capability
+  extension, not a GPIO detail.
+- **HARDWARE CEILING applies to the REGISTER grant, not the allocation** (same ceiling class as
+  peripheral isolation). GPIO registers are usually PORT-granular (16-32 pins per register
+  block), so a minted cap can over-cover:
+  - Per-pin / bit-band / atomic set-reset chips (Cortex-M3 bit-banding, STM32 BSRR) -> the cap
+    is truly ONE pin (finer grant, or an RMW-free atomic set/clear).
+  - PORT-granular chips -> the minted cap covers the whole port's register block, so a buggy
+    driver could still poke a co-resident pin.
+  The service's bookkeeping guarantees ALLOCATION-exclusivity ALWAYS (chip-independent);
+  REGISTER-exclusivity holds only where the silicon allows a finer grant (chip-dependent
+  enforcement floor). Chip-independent allocation layer + chip-dependent enforcement floor --
+  exactly the peripheral-isolation pattern (3.3 / section 2.1's "isolation ceiling").
+
+Mitigations for the register over-grant, best-to-worst by chip capability: (a) per-pin /
+bit-band / atomic set-reset registers (grant finer or avoid RMW); (b) dedicate a whole port to
+one driver (board layout) so the over-grant is harmless; (c) a lightweight kernel GPIO set/clear
+syscall that validates the pin against the grant -- one SVC, no service switch, cheaper than IPC
+but still too slow for MHz CS; (d) accept the port over-grant for a trusted driver (pragmatic
+default on port-granular chips).
+
+Principle: allocation/pinmux decided at setup (init + the GPIO allocator); HOT toggles direct
+via the minted cap; the service is on the COLD path only (allocate / release / shared-IRQ
+demux). GPIO's hot path makes the direct-cap fast path MANDATORY, unlike the cold clock/pinmux
+config. Cross-ref the pinmux (3.1) + DMA (3.4) sections -- same
+shared-resource-vs-performance-vs-isolation tension, different hot/cold profile.
+
 ---
 
 ## 4. THE MILESTONE-NUMBERING QUESTION (primary deliverable)
+
+> **DECIDED 2026-07-20 -- Option A.** The user chose **driver era -> SMP -> MMU**: driver era =
+> **M4**, SMP = **M5**, MMU / new-platform = **M6** (`roadmap.md`). The analysis below is retained
+> as the RATIONALE; QW-3 (4.1) now carries **M5** (SMP's number). Work is still named by THEME
+> where the number is not load-bearing, but the ordering is no longer open.
 
 The tension: `roadmap.md` says **M4 = SMP** (one kernel image across cores); the user now
 describes **M4 = the driver era**. The roadmap also tags the driver-era pieces (init service,
@@ -358,8 +446,8 @@ This section lays out the ORDER of ALL remaining big rocks -- the user decides t
 
 Parked item that MOVES WITH SMP's number: **QW-3** (`design-mmu-era-exploration.md:330`) --
 keep the shared-IPC ring contract PHYSICALLY addressed from day one. It was flagged for
-"M3/M4"; it belongs with the SMP/AMP cross-core IPC work, so it carries SMP's number wherever
-that lands.
+"M3/M4"; it belongs with the SMP/AMP cross-core IPC work, so it carries SMP's number -- now
+**M5** (see the DECIDED banner above).
 
 ### 4.2 Dependency DAG across the big rocks
 ```
@@ -436,9 +524,10 @@ hardware momentum is the stronger pull, Option C is the honest compromise: land 
 "make-M3-real" core first (drivers + reclaim + clock-select + init), then SMP, then the
 heavier framework (call/reply drivers, clock-tree service, DMA).
 
-Whatever the choice: keep the doc + `TODO.md` **milestone-number-neutral** and name the work
-by THEME ("the driver era") until the user assigns numbers, because the roadmap's own
-"anytime-coherence" tagging means several of these pieces are not strictly gated by number.
+Now DECIDED (Option A, see the banner atop this section): driver era = M4, SMP = M5, MMU = M6.
+The doc still names the work by THEME ("the driver era") where the number is not load-bearing,
+because the roadmap's own "anytime-coherence" tagging means several of these pieces are not
+strictly gated by number.
 
 ---
 
