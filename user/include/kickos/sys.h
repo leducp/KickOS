@@ -109,8 +109,15 @@ uint64_t kos_clock_now(void);   // monotonic nanoseconds
 
 // Running core clock in Hz, so an app can do its own cycle<->ns math without the
 // kernel hardwiring SystemCoreClock for it. 0 if the backend has no silicon core
-// clock (the host sim). Read-only: user clock-select is not exposed.
+// clock (the host sim).
 uint32_t kos_cpu_clock_hz(void);
+
+// Retune the core clock to a P-state (the MECHANISM seam; policy belongs to a future
+// userspace power manager). Returns the ACTUALLY-LANDED core Hz -- compare it against
+// what the requested point implies to learn whether you got it. Returns 0 when the
+// chip cannot change its clock, the caller is unprivileged, or a userspace driver owns
+// the console (a retune would garble a baud the kernel cannot relocate). Privileged.
+uint32_t kos_cpu_clock_set(kos_pstate_t pstate);
 
 // Set the Unix-epoch wall clock: unix_ns is the current time, and the offset
 // stored is unix_ns - kos_clock_now(). Backs newlib's _gettimeofday (see

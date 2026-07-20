@@ -209,6 +209,9 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include"
+    # A retunable chip (arch_cpu_clock_set) names the KOS_PSTATE_* selector from the
+    # shared syscall ABI (user/include/kickos/sys/abi.h).
+    "${CMAKE_CURRENT_SOURCE_DIR}/../user/include"
     # Telemetry: a chip's arch_shutdown may dump the ch1 ring via the transport
     # (mps2 semihosting file), so it reads lib's rtt.h (chip -> lib, downward).
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")

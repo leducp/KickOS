@@ -175,6 +175,25 @@ namespace
         TAP_CHECK(hz == 0u or hz >= 1000000u);
     }
 
+    // Clock-select seam (M3). Emulator-safe half: an unprivileged caller (the selftest
+    // runs unprivileged) AND every emulator backend (sim/qemu/qemu-riscv use the weak
+    // arch_cpu_clock_set default) return 0 == "did not / cannot move", leaving timing
+    // untouched. The real per-chip retune + coherence tail (re-anchor / baud / re-arm)
+    // is SILICON-ONLY on XMC4800 + K64F; see docs/design-m3-clock-select.md sec 6.
+    void t_cpu_clock_set()
+    {
+        uint32_t const before = kos_cpu_clock_hz();
+        uint64_t const t0 = kos_clock_now();
+        // Every P-state must come back 0 here (unprivileged / cannot-change): 0 NEVER
+        // means "moved", so this is the clean no-op case.
+        TAP_CHECK(kos_cpu_clock_set(KOS_PSTATE_LOW) == 0u);
+        TAP_CHECK(kos_cpu_clock_set(KOS_PSTATE_MID) == 0u);
+        TAP_CHECK(kos_cpu_clock_set(KOS_PSTATE_MAX) == 0u);
+        // The seam left the clock and the monotonic time base untouched.
+        TAP_CHECK(kos_cpu_clock_hz() == before);
+        TAP_CHECK(kos_clock_now() >= t0);
+    }
+
 #if defined(KICKOS_ENABLE_SELFTEST)
     // The IRQ tests below drive kos_irq_inject, a KICKOS_ENABLE_SELFTEST-only
     // syscall. Without the flag inject is a kernel no-op, so registering these would
@@ -1737,6 +1756,7 @@ int main(int, char**)
     tap::add("fifo_order", t_fifo);
     tap::add("preempt_on_ready", t_preempt);
     tap::add("cpu_clock_hz", t_cpu_clock_hz);
+    tap::add("cpu_clock_set", t_cpu_clock_set);
     tap::add("rr_interleave", t_rr);
     tap::add("sleep_order", t_sleep);
     tap::add("multi_wait", t_multi);

@@ -925,6 +925,22 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             sched::set_prio(pub, saved_prio);
             return 0;
         }
+        case KOS_SYS_cpu_clock_set:
+        {
+            // Privileged-only (like console_publish / ram_alloc): it mutates
+            // SystemCoreClock, retimes every thread's SysTick basis, and moves the
+            // shared console baud -- an unprivileged retune could DoS every task's
+            // timing. Return 0 (== the cannot-change sentinel) on the unprivileged
+            // path so the caller needs only ONE error test. The coherence sequence
+            // (mask / disarm / flush / retune / re-arm) lives in cpu_clock_set.
+            Thread* c = sched::current();
+            if (c == nullptr or not c->privileged)
+            {
+                return 0;
+            }
+            return static_cast<uintptr_t>(
+                cpu_clock_set(static_cast<kos_pstate_t>(a0)));
+        }
         case KOS_SYS_thread_spawn:
         {
             return static_cast<uintptr_t>(

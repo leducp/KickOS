@@ -287,6 +287,15 @@ extern "C" __attribute__((weak)) void arch_console_write_sync(char const* buf, s
 // straight-line register STORES (safe to repeat from a partial nested-fault state).
 extern "C" __attribute__((weak)) void arch_console_reclaim(void) {}
 
+// Clock-retune console coherence hooks (arch.h). WEAK no-op defaults: a board whose
+// console peripheral clock does NOT move with the core clock -- or that cannot retune
+// at all (weak arch_cpu_clock_set) -- needs neither. A chip whose UART baud tracks the
+// core/bus clock overrides both: flush_sync waits for the TX shift register to go idle
+// (so no byte is mid-flight at the old baud), retune reprograms the baud from the new
+// SystemCoreClock. See docs/design-m3-clock-select.md sec 2.2/2.3.
+extern "C" __attribute__((weak)) void arch_console_flush_sync(void) {}
+extern "C" __attribute__((weak)) void arch_console_retune(void) {}
+
 // Memory-protection violation caught by the arch backend (sim: SIGSEGV over
 // the guard page). Report the offending task + address through the console.
 // M0: the intended wild-write demo is the final act, so we shut down cleanly

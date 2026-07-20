@@ -14,7 +14,7 @@ set(KICKOS_KERNEL_SOURCES
   init/kmain.cc)
 
 # Optional components are appended as they land (kept bisectable).
-foreach(_f sync/sync.cc time/time.cc syscall/syscall.cc syscall/cap.cc irq/irq.cc)
+foreach(_f sync/sync.cc time/time.cc time/clock_select.cc syscall/syscall.cc syscall/cap.cc irq/irq.cc)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
     list(APPEND KICKOS_KERNEL_SOURCES "${_f}")
   endif()

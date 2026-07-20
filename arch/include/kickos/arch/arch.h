@@ -78,6 +78,39 @@ void arch_timer_disarm(void);
 // bring-up). 0 where the backend has no silicon core clock (the host sim).
 uint32_t arch_cpu_clock_hz(void);
 
+// Retune the core/bus clock to a P-state and return the ACTUALLY-LANDED core Hz --
+// ALWAYS the truth about where the clock now sits, never a status:
+//   - a retune that fully succeeds returns the requested point's Hz;
+//   - a retune that FAILS and parks on a safe fallback (e.g. K64F fail_to_fei ->
+//     ~20.97 MHz) returns THAT fallback Hz -- non-zero, the clock DID move, so the
+//     caller MUST run the coherence tail;
+//   - 0 is returned ONLY when this chip cannot change its clock at all (weak default
+//     / unsupported backend). 0 NEVER means "failed but moved".
+// The backend performs the flash-wait-state / voltage step and the arch_clock_now
+// re-anchor INTERNALLY, bracketing the exact PLL/divider write (the re-anchor is the
+// SOLE writer of the arch_clock_now mult on a re-anchor chip). MUST be called from
+// privileged thread context with interrupts already masked by the caller and NOT from
+// ISR context (see the coherence sequence, docs/design-m3-clock-select.md sec 2.3).
+// Weak default returns 0 (this chip cannot change its clock).
+//
+// `target` carries a kos_pstate_t (sys/abi.h) as a plain u32 -- the seam stays ISA- and
+// ABI-neutral (it names a P-state concept, not a mechanism), so a backend that opts in
+// includes sys/abi.h itself to name the KOS_PSTATE_* points. The achievable set is small
+// and chip-specific; the truthful landed Hz is the RETURN value, not this selector.
+uint32_t arch_cpu_clock_set(uint32_t target);
+
+// Console coherence hooks for a clock retune (both WEAK no-op by default; only a chip
+// whose console peripheral clock moves with the core clock overrides them):
+//   arch_console_flush_sync -- block until the TX shift register is fully idle
+//     (transmission-complete, NOT merely buffer-empty), so no in-flight byte is still
+//     clocking out at the OLD baud when the peripheral clock moves (S6). Called under
+//     the caller's IrqLock, BEFORE the rate change.
+//   arch_console_retune -- re-derive + reprogram the console baud from the CURRENT
+//     SystemCoreClock, AFTER the clock has landed. Called only when the clock actually
+//     moved (achieved != previous).
+void arch_console_flush_sync(void);
+void arch_console_retune(void);
+
 // --- Trace clock (telemetry timestamp seam) --------------------------------
 // A dedicated high-resolution monotonic counter for telemetry timestamps: the
 // ns arch_clock_now is too coarse to time a context switch (~1-5 us). u32 by

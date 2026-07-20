@@ -40,8 +40,22 @@ enum kos_syscall_nr
     KOS_SYS_endpoint_create = 26, // ()                              -> endpoint cap (full rights), or -1
     KOS_SYS_send = 27,          // (cap, buf, len)                   -> bytes transferred, or -1
     KOS_SYS_recv = 28,          // (cap, buf, cap_len, u32* badge)   -> bytes received, or -1
-    KOS_SYS_console_publish = 29 // (endpoint_cap) -> 0, or -1 (bad cap / not privileged)
+    KOS_SYS_console_publish = 29, // (endpoint_cap) -> 0, or -1 (bad cap / not privileged)
+    KOS_SYS_cpu_clock_set = 30   // (kos_pstate_t as u32) -> landed core Hz (u32);
+                                 //   0 == cannot-change / unsupported / not-privileged
 };
+
+// P-state selector for KOS_SYS_cpu_clock_set. A fixed-width u32 enum (NOT a raw Hz):
+// the achievable set is small and chip-specific, and the truthful landed Hz is the
+// syscall's return value. Carried as a plain u32 in the syscall register, so the width
+// is the stable ABI -- append new states, never reorder. New deep-sleep states (STOP/
+// STANDBY, tickless deep-sleep) append here later without an ABI break.
+typedef enum kos_pstate_e : uint32_t
+{
+    KOS_PSTATE_MAX = 0, // full PLL (the boot clock: XMC 144 / K64F 120 MHz)
+    KOS_PSTATE_MID,     // a reduced locked-PLL / staged point (chip rounds to nearest)
+    KOS_PSTATE_LOW      // deep power saving (crystal/RC direct or a low staged point)
+} kos_pstate_t;
 
 // Shared payload bound: send REJECTS a len above this; recv clamps its capacity to it.
 #define KOS_EP_MSG_MAX 256
