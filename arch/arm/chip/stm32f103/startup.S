@@ -34,8 +34,13 @@ g_isr_vector:
     .word PendSV_Handler             /* 14: PendSV */
     .word SysTick_Handler            /* 15: SysTick */
 
-    /* External interrupts 0..42 -> the generic IRQ-as-event entry. */
-    .rept KICKOS_MAX_IRQ
+    /* External interrupts 0..42 -> the generic IRQ-as-event entry, except NVIC 29
+     * (TIM3) which carries the monotonic-clock wrap observer (chip_stm32f103.cc). */
+    .rept 29
+    .word kickos_armv7m_default_irq
+    .endr
+    .word kickos_tim3_clock_isr      /* 29: TIM3 update (clock-chain wrap) */
+    .rept (KICKOS_MAX_IRQ - 30)
     .word kickos_armv7m_default_irq
     .endr
 

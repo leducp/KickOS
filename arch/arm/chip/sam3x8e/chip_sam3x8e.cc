@@ -214,31 +214,45 @@ namespace
     // CPCTRG=0 so RC never resets it) off TIMER_CLOCK1 = MCK/2, and use it as
     // arch_clock_now. TC0 ch0 does not collide with the one-shot tickless timer
     // (SysTick, core-generic) nor any driver (none on this port). ONLY the
-    // monotonic clock moves off DWT; arch_trace_now stays on raw DWT_CYCCNT. The
-    // low-res RTT is avoided; a 32-bit TC at 42 MHz is a clean full-range source.
+    // monotonic clock moves off DWT; arch_trace_now stays on raw DWT_CYCCNT.
     constexpr uintptr_t TC0_BASE = 0x40080000;
     constexpr uintptr_t TC0_CCR0 = TC0_BASE + 0x00; // channel control
     constexpr uintptr_t TC0_CMR0 = TC0_BASE + 0x04; // channel mode
     constexpr uintptr_t TC0_CV0 = TC0_BASE + 0x10;  // counter value (read-only)
+    constexpr uintptr_t TC0_SR0 = TC0_BASE + 0x20;  // status (read clears flags)
+    constexpr uintptr_t TC0_IER0 = TC0_BASE + 0x24; // interrupt enable (write-1-set)
     constexpr uint32_t TC_CMR_TCCLKS_MCK2 = 0x0u << 0; // TIMER_CLOCK1 = MCK/2
     constexpr uint32_t TC_CCR_CLKEN = 1u << 0;
     constexpr uint32_t TC_CCR_SWTRG = 1u << 2;
-    constexpr uint32_t PID_TC0 = 1u << 27; // TC0 channel 0 = peripheral ID 27
+    constexpr uint32_t TC_SR_COVFS = 1u << 0; // counter overflow status
+    constexpr uint32_t PID_TC0 = 1u << 27;    // TC0 channel 0 = peripheral ID 27
+    constexpr int TC0_IRQ = 27;               // NVIC line == peripheral ID 27
 
     // Software 64-bit extension of the 32-bit TC_CV0. Reads are RELIABLE (unlike
-    // DWT): the counter wraps every 2^32/42e6 ~= 102 s and the tickless re-arm
-    // reads the clock several times per second (SysTick 24-bit caps a single arm
-    // near 0.2 s), so a wrap is always observed before the next one.
+    // DWT): the counter wraps every 2^32/42e6 ~= 102 s. The wrap is folded either
+    // by a thread read or, when the system is idle with the tickless timer
+    // disarmed, by the TC0 overflow (COVFS) ISR below -- exactly once (whoever
+    // reads first advances g_clk_last, so the other sees no backward step). Without
+    // that ISR a wrap across a fully-quiescent >102 s idle would be lost (a slow
+    // DWT-style leap).
     volatile uint32_t g_clk_high = 0;
     volatile uint32_t g_clk_last = 0;
 
     void tc_clock_init()
     {
-        // Boot-order: arch_clock_now MUST NOT run before this (an ungated TC read
-        // would fault). arch_init calls it before kickos_armv7m_init.
+        // Boot-order: nothing before arch_init may read the clock. A static ctor
+        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on the
+        // ungated TC access (it was a harmless DWT read before this override).
+        // WFI-clocking constraint: TC0 keeps counting in WFI only in Sleep mode
+        // (PMC_FSMR.LPM=0, the default). If Wait mode is ever selected MCK stops,
+        // freezing TC0 AND SysTick -- the whole time base halts, not just this clock.
         r32(PMC_PCER0) = PID_TC0;                 // clock TC0 channel 0
         r32(TC0_CMR0) = TC_CMR_TCCLKS_MCK2;       // MCK/2, capture, RC does not reset
         r32(TC0_CCR0) = TC_CCR_CLKEN | TC_CCR_SWTRG; // enable + start counting
+        uint32_t drop = r32(TC0_SR0);             // read-to-clear any pending status
+        (void)drop;                               // ((void)r32) would elide the access
+        r32(TC0_IER0) = TC_SR_COVFS;              // wrap observer for the idle case
+        arch_irq_unmask(TC0_IRQ);                 // NVIC enable in the maskable band
     }
 
     // Wrap-catch must be atomic against a concurrent reader (thread + ISR), so the
@@ -322,6 +336,17 @@ uint64_t arch_clock_now(void)
     uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
     uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFull;
     return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+}
+
+// TC0 ch0 overflow (COVFS) ISR, vectored at NVIC 27 in startup.S. Observes the
+// 102 s wrap while the tickless timer is disarmed and no thread reads the clock;
+// tc_ticks folds it into g_clk_high (idempotent vs a concurrent thread read).
+// Runs in the maskable band, so an IrqLock defers it harmlessly.
+void kickos_tc0_clock_isr(void)
+{
+    uint32_t drop = r32(TC0_SR0); // read-to-clear acks COVFS ((void)r32 would elide)
+    (void)drop;
+    tc_ticks();
 }
 
 void arch_console_write(char const* buf, size_t n)

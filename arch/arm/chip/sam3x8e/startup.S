@@ -34,8 +34,13 @@ g_isr_vector:
     .word PendSV_Handler             /* 14: PendSV */
     .word SysTick_Handler            /* 15: SysTick */
 
-    /* Peripheral interrupts 0..44 -> the generic IRQ-as-event entry. */
-    .rept KICKOS_MAX_IRQ
+    /* Peripheral interrupts 0..44 -> the generic IRQ-as-event entry, except line 27
+     * (TC0 ch0) which carries the monotonic-clock wrap observer (chip_sam3x8e.cc). */
+    .rept 27
+    .word kickos_armv7m_default_irq
+    .endr
+    .word kickos_tc0_clock_isr       /* 27: TC0 ch0 overflow (clock wrap) */
+    .rept (KICKOS_MAX_IRQ - 28)
     .word kickos_armv7m_default_irq
     .endr
 
