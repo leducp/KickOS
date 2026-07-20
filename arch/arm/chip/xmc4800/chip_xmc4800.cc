@@ -159,6 +159,125 @@ namespace
         }
     }
 
+    // --- CCU40: the monotonic time base (RM ch.23) ------------------------------
+    // The v7-M default clock is the DWT cycle counter, but on this silicon DWT_CYCCNT
+    // reads are unreliable (core debug power domain; observed returning DWT_CTRL's
+    // value) and the 32->64 software wrap-extension turns one bad read into a phantom
+    // 2^32 jump that strands every timed wait. CCU40's four 16-bit slices are chained
+    // (CC41/CC42/CC43 each count the overflow of the slice below) into ONE free-running
+    // 64-bit HARDWARE counter on fCCU -- a plain peripheral, not the debug domain --
+    // read as arch_clock_now. Being 64-bit in hardware there is NO software wrap word,
+    // so no read can manufacture a wrap (the DWT failure mode is structurally absent).
+    // ONLY the monotonic clock moves off DWT; arch_trace_now + the KICKOS_BENCH
+    // timestamps stay on raw DWT_CYCCNT (a glitch there skews a telemetry sample --
+    // tolerable -- but is fatal to the scheduler's monotonic clock, moved here).
+    //
+    // Register addresses/bits are the RM's SCU + CCU4 values, cross-checked against
+    // the XMC4800 CMSIS device header. A previous CCU4 attempt set only CLKSET.CCUCEN
+    // and the slices never counted: CCU40 also comes out of SCU reset both CLOCK-GATED
+    // (CGATCLR0) and held in PERIPHERAL RESET (PRCLR0), and needs the module prescaler
+    // run bit (GIDLC.SPRB) -- all three are required before any slice advances.
+    constexpr uintptr_t SCU_CLKSET = 0x50004604;   // CLK + 0x04
+    constexpr uintptr_t SCU_CCUCLKCR = 0x50004620; // CLK + 0x20
+    constexpr uintptr_t SCU_CGATCLR0 = 0x50004648; // CLK + 0x48 (peripheral clock gating clear)
+    constexpr uintptr_t SCU_PRCLR0 = 0x50004414;   // RCU + 0x14 (peripheral reset clear)
+    constexpr uint32_t CLKSET_CCUCEN = 1u << 4;    // enable fCCU generation
+    constexpr uint32_t CCUCLKCR_CCUDIV = 1u << 0;  // 0 -> fCCU = fSYS
+    constexpr uint32_t CGAT_CCU40 = 1u << 2;       // CCU40 clock-gate bit
+    constexpr uint32_t PR_CCU40 = 1u << 2;         // CCU40 reset bit
+
+    constexpr uintptr_t CCU40_BASE = 0x4000C000;
+    constexpr uintptr_t CCU40_GIDLC = CCU40_BASE + 0x00C; // global idle clear
+    constexpr uintptr_t CCU40_GCSS = CCU40_BASE + 0x010;  // global channel set (shadow transfer)
+    constexpr uintptr_t CCU4_SLICE0 = CCU40_BASE + 0x100; // CC40; slices are 0x100 apart
+    constexpr uintptr_t CCU4_SLICE_STRIDE = 0x100;
+    constexpr uintptr_t CC4_CMC = 0x004;   // TCE @bit20 (concatenation enable)
+    constexpr uintptr_t CC4_TCSET = 0x00C; // TRBS @bit0
+    constexpr uintptr_t CC4_TC = 0x014;    // counting mode (0 = edge-aligned up-count)
+    constexpr uintptr_t CC4_PSC = 0x024;   // prescaler (0 = fCCU/1)
+    constexpr uintptr_t CC4_PRS = 0x034;   // shadow period
+    constexpr uintptr_t CC4_TIMER = 0x070; // current 16-bit slice value
+    constexpr uint32_t GIDLC_SPRB = 1u << 8;    // start the module prescaler
+    constexpr uint32_t GIDLC_CLEAR_ALL = 0xFu;  // CS0I..CS3I: clear idle, slices 0-3
+    constexpr uint32_t GCSS_SHADOW_ALL =        // S0SE|S1SE|S2SE|S3SE
+        (1u << 0) | (1u << 4) | (1u << 8) | (1u << 12);
+    constexpr uint32_t CMC_TCE = 1u << 20;    // count the previous slice's overflow
+    constexpr uint32_t TCSET_TRBS = 1u << 0;  // set the slice run bit
+    constexpr uint32_t CC4_PERIOD_MAX = 0xFFFFu;
+    // SLEEPCR.CCUCR (RM SCU): keep fCCU running while the core is in SLEEP. The idle
+    // path is a plain WFI (SLEEP, not DEEPSLEEP), and by default the CCU clock gates
+    // off in SLEEP -- which freezes this counter on every tickless idle, so a sleep
+    // deadline is only ever approached during the brief wake windows and a 40 ms sleep
+    // stretches into tens of seconds. (A future DEEPSLEEP user must set DSLEEPCR too.)
+    constexpr uint32_t SLEEPCR_CCUCR = 1u << 20;
+
+    inline volatile uint32_t& cc4(unsigned slice, uintptr_t reg)
+    {
+        return r32(CCU4_SLICE0 + slice * CCU4_SLICE_STRIDE + reg);
+    }
+
+    void ccu4_clock_init()
+    {
+        // Boot-order constraint: arch_clock_now MUST NOT run before this -- CCU40 is
+        // clock-gated + in reset out of SCU reset, so a TIMER read would BusFault.
+        r32(SCU_CLKSET) = CLKSET_CCUCEN;        // fCCU on (fSYS-derived)
+        r32(SCU_CCUCLKCR) &= ~CCUCLKCR_CCUDIV;  // CCUDIV=0 -> fCCU = fSYS = SystemCoreClock
+        r32(SCU_CGATCLR0) = CGAT_CCU40;         // ungate the CCU40 module clock
+        r32(SCU_PRCLR0) = PR_CCU40;             // release the CCU40 peripheral reset
+        r32(SCU_SLEEPCR) |= SLEEPCR_CCUCR;      // keep fCCU alive through WFI idle
+
+        // Clear idle for all four slices AND start the module prescaler in one write;
+        // without SPRB the slice clock never runs and every TIMER stays 0.
+        r32(CCU40_GIDLC) = GIDLC_SPRB | GIDLC_CLEAR_ALL;
+
+        for (unsigned s = 0; s < 4; s++)
+        {
+            cc4(s, CC4_TC) = 0;               // edge-aligned up-count, no external events
+            cc4(s, CC4_PSC) = 0;              // CC40 = fCCU/1; the linked slices ignore PSC
+            cc4(s, CC4_PRS) = CC4_PERIOD_MAX; // wrap at 0xFFFF so each slice carries the next
+        }
+        // Concatenate: CC41/CC42/CC43 count the overflow of the slice below; CC40 (the
+        // 16 LSBs) must keep TCE=0 and counts fCCU directly (RM 23.2.9).
+        cc4(0, CC4_CMC) = 0;
+        cc4(1, CC4_CMC) = CMC_TCE;
+        cc4(2, CC4_CMC) = CMC_TCE;
+        cc4(3, CC4_CMC) = CMC_TCE;
+
+        r32(CCU40_GCSS) = GCSS_SHADOW_ALL; // transfer PRS -> PR for every slice
+
+        for (unsigned s = 0; s < 4; s++)
+        {
+            cc4(s, CC4_TCSET) = TCSET_TRBS; // set every slice run bit
+        }
+    }
+
+    // Coherent 64-bit read of the concatenated CC40..CC43 counter (counts UP). Only
+    // CC40 advances every fCCU tick; the upper slices carry rarely. Read the top three
+    // slices then the low one, and retry while any upper slice changed across the low
+    // read: a carry crossing ANY slice boundary during the window flips one of the
+    // re-verified words, so the returned snapshot can never straddle a wrap. Every load
+    // re-reads hardware (no cached word), so this is concurrency-safe with no IRQ save.
+    uint64_t ccu4_ticks()
+    {
+        uint32_t s3;
+        uint32_t s2;
+        uint32_t s1;
+        uint32_t lo;
+        do
+        {
+            s3 = cc4(3, CC4_TIMER) & 0xFFFFu;
+            s2 = cc4(2, CC4_TIMER) & 0xFFFFu;
+            s1 = cc4(1, CC4_TIMER) & 0xFFFFu;
+            lo = cc4(0, CC4_TIMER) & 0xFFFFu;
+        } while ((cc4(1, CC4_TIMER) & 0xFFFFu) != s1
+                 or (cc4(2, CC4_TIMER) & 0xFFFFu) != s2
+                 or (cc4(3, CC4_TIMER) & 0xFFFFu) != s3);
+        return (static_cast<uint64_t>(s3) << 48)
+               | (static_cast<uint64_t>(s2) << 32)
+               | (static_cast<uint64_t>(s1) << 16)
+               | lo;
+    }
+
     // Let a K2DIV step settle before the next one. A generous fixed nop count
     // (a per-frequency settle delay; ~50 us is ample).
     void clock_delay()
@@ -257,8 +376,36 @@ void arch_init(void)
     // MHz, and SysTick derives from fCPU. Then bring up the console; finally
     // kickos_armv7m_init installs the NVIC/SHPR priorities.
     clock_init();
+    ccu4_clock_init(); // monotonic time base (see ccu4_clock_init note; replaces DWT)
     kickos_xmc_usic_init();
     kickos_armv7m_init();
+}
+
+// Monotonic clock override: convert free-running CCU40 (64-bit hardware counter on
+// fCCU = fSYS) ticks to ns, replacing the weak DWT-backed arch_clock_now (unreliable
+// on this silicon). ns = ticks * 1e9 / ccu_hz via a cached reciprocal multiply
+// (mult = (1e9<<32)/hz, ns = (ticks*mult)>>32, split 64x64 to avoid overflow); the
+// one 64-bit divide runs only when SystemCoreClock changes at boot.
+uint64_t arch_clock_now(void)
+{
+    uint32_t ccu_hz = SystemCoreClock; // fCCU = fSYS (CCUDIV=0); fSYS = SystemCoreClock
+    static uint64_t cached_hz = 0;
+    static uint64_t mult = 0;
+    if (ccu_hz != cached_hz)
+    {
+        if (ccu_hz == 0)
+        {
+            return 0;
+        }
+        mult = ((static_cast<uint64_t>(1000000000ull) << 32) + (ccu_hz >> 1)) / ccu_hz;
+        cached_hz = ccu_hz;
+    }
+    uint64_t ticks = ccu4_ticks();
+    uint64_t a = ticks >> 32;
+    uint64_t b = ticks & 0xFFFFFFFFull;
+    uint64_t c = mult >> 32;
+    uint64_t d = mult & 0xFFFFFFFFull;
+    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
 }
 
 // Native transport = USIC0 ASC on P1.5/P1.4 (the Relax Kit VCOM -> ttyACM0). RTT
