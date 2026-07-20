@@ -15,6 +15,12 @@ namespace kickos
 {
     namespace
     {
+        // Console stdout target: the GLOBAL gen-encoded endpoint handle a userspace
+        // console driver serves, or -1 pre-publish. The kernel holds ONE ref on it
+        // (moved on re-publish); cap_install_defaults seats a send-only copy at index 0
+        // of every child. See docs/design-m3-console-handover-stageii.md (D3/D4/S3).
+        int g_stdout_target = -1;
+
         // Slot index of the semaphore a global handle names (via the live object, so
         // the SlotPool handle codec is never assumed here). -1 if it does not resolve.
         int sem_index_of(int obj_handle)
@@ -337,12 +343,10 @@ namespace kickos
 
     int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights)
     {
-        // Find any free slot (the design's "find CAP_EMPTY slot"). Index 0 stays
-        // "reserved by convention" only in that cap_install_defaults seats nothing there
-        // and delegation places at i+1 (so a fresh delegated child keeps 0 empty); a
-        // thread's OWN sem_create may use index 0 -- else the reservation would cost every
-        // table a usable slot (root then cannot hold the stress soak's 8 concurrent caps).
-        for (int i = 0; i < KICKOS_MAX_HANDLES; i++)
+        // Index 0 is the kernel stdout slot (B3): cap_install_defaults seats the published
+        // console cap there, and nothing else may. An own create scans from 1 so it never
+        // lands at 0. Costs one slot per table (own caps live in [1 .. MAX-1]).
+        for (int i = 1; i < KICKOS_MAX_HANDLES; i++)
         {
             if (c->handles[i].type == static_cast<uint8_t>(CapType::CAP_EMPTY))
             {
@@ -397,6 +401,32 @@ namespace kickos
 
     void cap_install_defaults(Thread* child)
     {
-        (void)child; // installs nothing today; index 0 reserved by convention (section 6)
+        // Pre-publish: nothing seated (index 0 empty) -- the selftest/bring-up world that
+        // never publishes is untouched, and its apps fall back to kconsole_write.
+        if (g_stdout_target < 0)
+        {
+            return;
+        }
+        // Post-publish: seat a SEND-ONLY (CAP_SIGNAL, no WAIT/TRANSFER) copy of the
+        // console endpoint at index 0. CAP_SIGNAL bumps endpoint_refs but NOT recv_holders
+        // (a client is not a receiver), so it does not hold the dead-endpoint gate open.
+        // The child's own cap_teardown drops this ref at exit.
+        cap_install_at(child, 0, g_stdout_target, CapType::CAP_ENDPOINT, CAP_SIGNAL);
+        obj_ref_inc(CapType::CAP_ENDPOINT, g_stdout_target, CAP_SIGNAL);
+    }
+
+    // Move the kernel's stdout-target ref to `obj_handle` (D3/S3). Caller holds IrqLock.
+    // Take the new ref BEFORE dropping the old so re-publishing the SAME endpoint never
+    // transiently frees it. The ref carries rights 0 (identity, no WAIT) so it never
+    // bumps recv_holders. Routed through obj_ref_inc / endpoint_ref_drop, never raw
+    // endpoint_refs[] arithmetic, so the free-at-zero teardown + waiter guard still apply.
+    void cap_console_publish(int obj_handle)
+    {
+        obj_ref_inc(CapType::CAP_ENDPOINT, obj_handle, 0);
+        if (g_stdout_target >= 0)
+        {
+            endpoint_ref_drop(g_stdout_target, /*teardown=*/false);
+        }
+        g_stdout_target = obj_handle;
     }
 }

@@ -78,8 +78,8 @@ namespace kickos
     // Install a cap naming `obj_handle` into the first free slot of c's table. Returns
     // the cap handle (cap-gen << KCAP_INDEX_BITS | index), or -1 if the table is full.
     // Does NOT touch the object refcount -- the caller owns that (sem_create sets refs=1
-    // at alloc). Index 0 is reserved only in that defaults/delegation avoid it; a thread's
-    // own sem_create may land there.
+    // at alloc). Index 0 is the kernel stdout slot (B3): the scan starts at 1, so an own
+    // create never lands at 0 (own caps live in [1 .. MAX-1]).
     int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights);
 
     // Install a cap at a SPECIFIC (assumed-free) index -- delegation's deterministic
@@ -98,10 +98,15 @@ namespace kickos
     // own cap, so refs >= 1). Caller holds IrqLock.
     void cap_teardown(Thread* c);
 
-    // The privileged default cap set for a freshly spawned child. Installs NOTHING
-    // today (index 0 reserved by convention for a future console cap; write() is a
-    // direct syscall until then). Present so the spawn path has the seam.
+    // The privileged default cap set for a freshly spawned child. Pre-publish it installs
+    // NOTHING (index 0 empty; write() falls back to kconsole_write). Post-publish it seats
+    // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4.
     void cap_install_defaults(Thread* child);
+
+    // Move the kernel's stdout-target ref to `obj_handle` (the console handover publish
+    // path, D3/S3). Caller holds IrqLock. Takes the new ref before dropping the old, so a
+    // re-publish of the same endpoint never transiently frees it; ref carries rights 0.
+    void cap_console_publish(int obj_handle);
 
     // Bump one reference to the object named by a global handle (delegation + create).
     // Dispatches on cap type; the handle MUST resolve (caller validated it). Caller
