@@ -71,6 +71,21 @@ primitive; introspection; a HAL/driver model; pluggable EDF / rate-monotonic pol
 MPU-isolated user modules; POSIX / CMSIS-RTOS2 compat; TLSF heap; RP2040 SMP; Renode CI; and
 **the Book** as the durable how-&-why reference (see `docs/book/`).
 
+### Userspace init service (M6; not hardware-gated -- anytime-coherence)
+Today the user's `main` doubles as pid-1: it IS the init entry, holds full userspace
+rights, and spawns every task -- so (1) the app's `main` is really the SYSTEM init wearing
+the app's name, and (2) that init pattern (create endpoint, publish console, spawn the
+driver with caps, close the parent cap, spawn apps -- exactly the M3 handover choreography)
+gets re-hand-rolled by every root task. Idea: rename the entry (`kos_init_entry` /
+`kos_init_userspace`) to separate init from the app, and ship a DEFAULT init service that
+does configurable bring-up then calls the real user `main` with a configurable capability
+set. A power user links their OWN init service instead. Constraints: keep the LOW-BARRIER
+zero-config default (a plain app still writes no manifest -- the default init wires the sane
+cap set; never reintroduce CapDL-to-boot friction), and the entry RENAME is a consumer-facing
+breaking change -- settle the entry-point seam EARLY (a cheap-now-vs-break-later quick-win)
+rather than after consumers bake in `main`. Formalizes the implicit root task; not gated by
+any hardware capability, so it could land before M6.
+
 ### The MMU / new-platform horizon (post-M6, foundational)
 The biggest axis beyond the MCU fleet: today the whole memory model is **one physical address
 space + per-thread MPU regions**. A real **MMU (VMSA / page tables)** adds virtual address spaces
