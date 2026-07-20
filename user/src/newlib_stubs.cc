@@ -51,8 +51,12 @@ int _write(int fd, char const* buf, int len)
             // Pre-handover (index 0 empty) or the driver died (EPIPE): pin the probe to -1
             // and fall back on the REMAINDER only -- resending the whole buffer would
             // duplicate on the debug console the chunks already delivered to the driver.
+            // Return the FULL len (not the remainder): the first `sent` bytes were already
+            // accepted via IPC, so reporting a short write would make newlib retry and
+            // re-send them. Mirror the success path's `return len`.
             g_stdout_probe = -1;
-            return static_cast<int>(kos_kconsole_write(buf + sent, total - sent));
+            kos_kconsole_write(buf + sent, total - sent);
+            return len;
         }
         g_stdout_probe = 1;
         sent += static_cast<size_t>(r);
