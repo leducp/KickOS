@@ -11,6 +11,12 @@
 //   per-switch cost + IRQ-entry latency -- in CPU cycles, only where the arch has a
 //     cycle counter that switch.S brackets the swap with (armv7m DWT, rxv3 CMTW1,
 //     rv32imac rdcycle/MTIME, xtensa CCOUNT). Absent (scnt==0) on M0/sim/frozen-QEMU.
+//   worst-case ISR latency -- BEST-case IRQ entry above injects while uncontended; this
+//     injects at the START of a masked span (arch_irq_save, the IrqLock seam) and times
+//     inject->ISR-entry across it, modelling the M3 endpoint copy-under-IrqLock. Two
+//     views: `wcase-irq` cycle sweep over span sizes (real only where the counter runs)
+//     and `wcase-hold` ns/256B-span via clock_now (portable -- the number that survives
+//     a frozen DWT / the sim).
 //
 // The reporter is woken by the workload itself (player_b posts a gate every N rounds),
 // NOT by a timer -- so it cannot be starved by the players saturating the CPU (a real
@@ -28,6 +34,8 @@ extern "C"
     uint32_t kickos_bench_core_hz(void);
     void kickos_bench_irq_setup(int line);
     uint32_t kickos_bench_irq_once(int line);
+    uint32_t kickos_bench_irq_masked_once(int line, uint32_t span_bytes);
+    uint32_t kickos_bench_masked_hold_ns(uint32_t span_bytes);
 }
 
 namespace
@@ -127,6 +135,19 @@ namespace
                       static_cast<uint32_t>(d_ns / 1000000ull));
             kos::print(s);
 
+            // Worst-case ISR latency, portable term: how long interrupts stay masked
+            // across one endpoint-sized (256B) copy span -- the interval an ISR waits
+            // behind such a syscall critical section. clock_now-based, so it survives a
+            // frozen/absent cycle counter (mps2 DWT / sim); the cycle sweep below adds
+            // the exception-entry term where a counter exists.
+            uint32_t hold_ns = kickos_bench_masked_hold_ns(256);
+            if (hold_ns != 0)
+            {
+                ksnprintf(s, sizeof(s),
+                          "  wcase-hold: %u ns masked / 256B endpoint-copy span\n", hold_ns);
+                kos::print(s);
+            }
+
             // Per-switch cost + IRQ latency only where switch.S bracketed real cycles.
             uint32_t smin, savg, smax, scnt;
             kickos_bench_switch_report(&smin, &savg, &smax, &scnt);
@@ -167,6 +188,38 @@ namespace
             ksnprintf(s, sizeof(s), "  irq:    %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n",
                       imin, iavg, imax, to_ns(imin, hz), to_ns(iavg, hz), to_ns(imax, hz), icnt);
             kos::print(s);
+
+            // Worst-case inject->entry: raise the line at the START of a masked span,
+            // then measure the delay until the ISR runs, swept over span sizes (0 =
+            // fixed cost; 256 = endpoint-copy max). Real cycles only where the counter
+            // advances (frozen -> ~1 on mps2 DWT, same as the best-case line above).
+            static const uint32_t wspans[] = {0, 64, 256, 1024};
+            for (unsigned si = 0; si < sizeof(wspans) / sizeof(wspans[0]); si++)
+            {
+                uint32_t wmin = 0xFFFFFFFFu, wmax = 0, wcnt = 0;
+                uint64_t wsum = 0;
+                for (int k = 0; k < IRQ_SAMPLES; k++)
+                {
+                    uint32_t c = kickos_bench_irq_masked_once(BENCH_IRQ_LINE, wspans[si]);
+                    if (c != 0)
+                    {
+                        if (c < wmin) { wmin = c; }
+                        if (c > wmax) { wmax = c; }
+                        wsum += c;
+                        wcnt++;
+                    }
+                }
+                if (wcnt == 0)
+                {
+                    continue;
+                }
+                uint32_t wavg = static_cast<uint32_t>(wsum / wcnt);
+                ksnprintf(s, sizeof(s),
+                          "  wcase-irq[%uB]: %u/%u/%u cyc  %u/%u/%u ns  (inject->entry, n=%u)\n",
+                          wspans[si], wmin, wavg, wmax,
+                          to_ns(wmin, hz), to_ns(wavg, hz), to_ns(wmax, hz), wcnt);
+                kos::print(s);
+            }
 
             // Sample prev_* AFTER the report so the next window excludes this report's
             // own IRQ-sampling + print time (the players were paused during it).
