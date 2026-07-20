@@ -7,6 +7,14 @@ project(KickOS VERSION 0.0.1 LANGUAGES C CXX ASM)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
 
+# Consumer-detection signals, styled like the built-in platform vars (LINUX/WIN32)
+# and the reserved platform macros (__linux__/__APPLE__). KickOS IS the platform.
+# KICKOS: a plain boolean an add_subdirectory(KickOS) consumer tests with if(KICKOS),
+# exactly like if(LINUX). __KickOS__: defined for every in-tree TU here, and carried
+# to downstream consumers as a usage requirement of the kickos/kickos_cxx leaves.
+set(KICKOS TRUE CACHE INTERNAL "Building against KickOS")
+add_compile_definitions(__KickOS__=1)
+
 # --- Board / arch selection -------------------------------------------------
 set(KICKOS_BOARD "sim" CACHE STRING "Target board: sim|qemu|frdmk64f|picopi|f411disco|bluepill")
 # One descriptor per board (boards/<board>/board.cmake) sets arch + chip + -mcpu
@@ -380,6 +388,10 @@ if(TARGET kickos_kernel)
   target_link_libraries(kickos INTERFACE kickos_core)
   add_library(kickos_cxx INTERFACE)
   target_link_libraries(kickos_cxx INTERFACE kickos_core)
+  # Carry __KickOS__ to downstream consumers (both leaves link kickos_core, which is
+  # in the export set, so find_package consumers get it too). In-tree TUs already have
+  # it from the add_compile_definitions above.
+  target_compile_definitions(kickos_core INTERFACE __KickOS__=1)
   if(NOT (KICKOS_ARCH STREQUAL "sim"))
     # Freestanding (default): no EH/RTTI in the app's C++ TUs, and -nostdlib++ drops
     # libsupc++/libstdc++ -- a stray operator new / EH table then fails the link loud.
