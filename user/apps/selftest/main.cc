@@ -1339,6 +1339,313 @@ namespace
         }
 #endif
     }
+
+    // --- Endpoint IPC: synchronous rendezvous send/recv (M3 #4 stage i) ----------
+    // The endpoint cap is delegated to workers at child index 2 (done@1, E@2). Workers
+    // are UNPRIVILEGED so the kernel's copy into/from a parked peer runs against real
+    // enforcement (the cross-domain privileged write, design section 3.1).
+    char const kEpMsg[] = "hello-endpoint"; // 14 bytes (strlen), no NUL sent
+    constexpr uint8_t EP_SIGNAL_ONLY = KOS_CAP_SIGNAL; // send right only
+    constexpr uint8_t EP_WAIT_ONLY = KOS_CAP_WAIT;     // recv right only
+    int g_ep = -1; // main's endpoint cap (created per test)
+    char g_ep_rbuf[64];
+    volatile long g_ep_rn = -99;         // worker recv return
+    volatile uint32_t g_ep_rbadge = 0xffffffffu;
+    volatile int g_ep_rcap = 64;         // capacity the recv worker passes
+    volatile long g_ep_sn = -99;         // worker send return
+
+    void ep_recv_worker(void*) // caps: done@1, E@2 (unpriv)
+    {
+        // The recv buffer is a STACK local (in the thread's own granted stack region):
+        // an unprivileged caller's writable check has no text fallback, so a global here
+        // would be rejected on the sim / no-MPU backends. Copy the result into a global
+        // (a direct store, not a syscall) for main to inspect.
+        char buf[64];
+        uint32_t badge = 0xdeadu;
+        long n = kos_recv(2, buf, static_cast<size_t>(g_ep_rcap), &badge);
+        g_ep_rn = n;
+        g_ep_rbadge = badge;
+        size_t k = 0;
+        if (n > 0)
+        {
+            k = static_cast<size_t>(n);
+            if (k > sizeof(buf))
+            {
+                k = sizeof(buf);
+            }
+            memcpy(g_ep_rbuf, buf, k);
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void ep_send_worker(void*) // caps: done@1, E@2 (unpriv)
+    {
+        g_ep_sn = kos_send(2, kEpMsg, strlen(kEpMsg));
+        kos_sem_post(CH_DONE);
+    }
+
+    void t_endpoint_rendezvous()
+    {
+        size_t const mlen = strlen(kEpMsg);
+        g_ep = kos_endpoint_create();
+        TAP_CHECK(g_ep >= 0);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, CH_FULL}}; // done@1, E@2
+
+        // (A) receiver parks first; sender (main) delivers into the parked buffer.
+        g_ep_rn = -99; g_ep_rbadge = 0xdeadu; g_ep_rcap = 64;
+        int w = kos::thread::spawn_caps(ep_recv_worker, nullptr, "eprx", 12, caps, 2,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w >= 0);
+        kos_sleep_ns(3000000ull); // let the worker park in recv
+        long sc = kos_send(g_ep, kEpMsg, mlen);
+        TAP_CHECK(sc == static_cast<long>(mlen)); // sender delivered n bytes
+        wait_n(1);
+        TAP_CHECK(g_ep_rn == static_cast<long>(mlen) and memcmp(g_ep_rbuf, kEpMsg, mlen) == 0);
+        TAP_CHECK(g_ep_rbadge == 0); // badge always written on success (stage i: 0)
+
+        // (B) sender parks first; receiver (main) takes from the parked buffer.
+        g_ep_sn = -99;
+        int w2 = kos::thread::spawn_caps(ep_send_worker, nullptr, "eptx", 12, caps, 2,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w2 >= 0);
+        kos_sleep_ns(3000000ull); // let the worker park in send
+        char rbuf[64];
+        uint32_t badge = 0xdeadu;
+        long rc = kos_recv(g_ep, rbuf, sizeof(rbuf), &badge);
+        TAP_CHECK(rc == static_cast<long>(mlen) and memcmp(rbuf, kEpMsg, mlen) == 0);
+        TAP_CHECK(badge == 0);
+        wait_n(1);
+        TAP_CHECK(g_ep_sn == static_cast<long>(mlen));
+
+        // (C) zero-length is a valid signal (n == 0 on both sides, NOT -1).
+        g_ep_rn = -99; g_ep_rcap = 64;
+        int w3 = kos::thread::spawn_caps(ep_recv_worker, nullptr, "epz", 12, caps, 2,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w3 >= 0);
+        kos_sleep_ns(3000000ull);
+        TAP_CHECK(kos_send(g_ep, kEpMsg, 0) == 0);
+        wait_n(1);
+        TAP_CHECK(g_ep_rn == 0);
+
+        // (D) truncation: send mlen into a 4-byte capacity -> both return 4.
+        g_ep_rn = -99; g_ep_rcap = 4;
+        int w4 = kos::thread::spawn_caps(ep_recv_worker, nullptr, "eptr", 12, caps, 2,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w4 >= 0);
+        kos_sleep_ns(3000000ull);
+        TAP_CHECK(kos_send(g_ep, kEpMsg, mlen) == 4);
+        wait_n(1);
+        TAP_CHECK(g_ep_rn == 4 and memcmp(g_ep_rbuf, kEpMsg, 4) == 0);
+
+        TAP_CHECK(kos_handle_close(g_ep) == 0); // last cap -> endpoint freed
+    }
+
+    // --- Oversize reject + bad cap (main only; no parking) -----------------------
+    void t_endpoint_reject()
+    {
+        char big[KOS_EP_MSG_MAX + 8];
+        memset(big, 'x', sizeof(big));
+        g_ep = kos_endpoint_create();
+        TAP_CHECK(g_ep >= 0);
+        // Oversize send is rejected up front (F4) -- returns -1 WITHOUT parking (main is
+        // the sole WAIT holder, so a park would hang the suite).
+        TAP_CHECK(kos_send(g_ep, big, KOS_EP_MSG_MAX + 1) == -1);
+        // Bad caps reject at the resolve boundary on both paths.
+        char one[1] = {0};
+        TAP_CHECK(kos_send(0x7fffffff, one, 1) == -1);
+        TAP_CHECK(kos_recv(0x7fffffff, g_ep_rbuf, 1, nullptr) == -1);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+    }
+
+    // --- Rights denial: send needs SIGNAL, recv needs WAIT -----------------------
+    volatile int g_ep_wait_send_rc = -99;   // WAIT-only cap send -> -1
+    volatile int g_ep_signal_recv_rc = -99; // SIGNAL-only cap recv -> -1
+    void ep_rights_worker(void*) // caps: done@1, E(WAIT)@2, E(SIGNAL)@3
+    {
+        char b[8] = {0};
+        g_ep_wait_send_rc = static_cast<int>(kos_send(2, b, 1));   // WAIT-only -> no SIGNAL -> -1
+        g_ep_signal_recv_rc = static_cast<int>(kos_recv(3, b, sizeof(b), nullptr)); // SIGNAL-only -> -1
+        kos_sem_post(CH_DONE);
+    }
+    void t_endpoint_rights()
+    {
+        g_ep = kos_endpoint_create();
+        TAP_CHECK(g_ep >= 0);
+        g_ep_wait_send_rc = -99; g_ep_signal_recv_rc = -99;
+        // Two narrowed caps to the same endpoint: WAIT-only at index 2, SIGNAL-only at 3.
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_WAIT_ONLY}, {g_ep, EP_SIGNAL_ONLY}};
+        int w = kos::thread::spawn_caps(ep_rights_worker, nullptr, "eprt", 12, caps, 3,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        TAP_CHECK(g_ep_wait_send_rc == -1);   // send refused without SIGNAL
+        TAP_CHECK(g_ep_signal_recv_rc == -1); // recv refused without WAIT
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+    }
+
+    // --- EPIPE: a parked sender is woken -1 when the last WAIT-cap holder drops it -
+    // A SIGNAL-only delegation does NOT bump recv_holders, so main's cap is the sole
+    // WAIT holder: closing it takes recv_holders 1->0 and EPIPEs the parked sender.
+    volatile long g_ep_epipe_rc = -99;
+    void ep_epipe_worker(void*) // caps: done@1, E(SIGNAL)@2
+    {
+        g_ep_epipe_rc = kos_send(2, kEpMsg, strlen(kEpMsg)); // parks; woken -1 on EPIPE
+        kos_sem_post(CH_DONE);
+    }
+    void t_endpoint_epipe()
+    {
+        g_ep = kos_endpoint_create();
+        TAP_CHECK(g_ep >= 0);
+        g_ep_epipe_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}}; // done@1, E(SIGNAL)@2
+        int w = kos::thread::spawn_caps(ep_epipe_worker, nullptr, "epep", 12, caps, 2,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w >= 0);
+        kos_sleep_ns(3000000ull);              // let the sender park (recv_holders == 1 == main)
+        TAP_CHECK(kos_handle_close(g_ep) == 0); // last WAIT cap -> EPIPE the parked sender
+        wait_n(1);
+        TAP_CHECK(g_ep_epipe_rc == -1); // sender woken with EPIPE, not a byte count
+    }
+
+    // --- Dead endpoint (unparked): send after the last WAIT cap is gone -> -1 -----
+    // Distinct from the parked-then-EPIPE case: the sender never parks (F1 dead-check).
+    volatile long g_ep_dead_rc = -99;
+    int g_ep_go = -1;
+    void ep_dead_worker(void*) // caps: done@1, E(SIGNAL)@2, go@3
+    {
+        kos_sem_wait(3);                                     // go: main has dropped its WAIT cap
+        g_ep_dead_rc = kos_send(2, kEpMsg, strlen(kEpMsg)); // recv_holders == 0 -> -1 immediately
+        kos_sem_post(CH_DONE);
+    }
+    void t_endpoint_dead()
+    {
+        g_ep = kos_endpoint_create();
+        g_ep_go = kos_sem_create(0);
+        TAP_CHECK(g_ep >= 0 and g_ep_go >= 0);
+        g_ep_dead_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}, {g_ep_go, CH_FULL}};
+        int w = kos::thread::spawn_caps(ep_dead_worker, nullptr, "epde", 12, caps, 3,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w >= 0);
+        // Close main's (only) WAIT cap FIRST: recv_holders -> 0, no sender parked yet.
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        kos_sem_post(g_ep_go); // now the worker sends into the dead endpoint
+        wait_n(1);
+        TAP_CHECK(g_ep_dead_rc == -1); // rejected immediately, never parked
+        kos_sem_destroy(g_ep_go);
+    }
+
+#if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
+    // --- Bound-check: a recv/send pointer outside the caller's regions -> -1 ------
+    // The write-oracle / cross-domain-read is closed the same way as the console
+    // buffer: an unprivileged caller cannot launder an un-owned page through IPC.
+    volatile long g_ep_badrecv_rc = -99;
+    volatile long g_ep_badsend_rc = -99;
+    int g_ep_bnd_neg_ran = 0;
+    void ep_bound_worker(void*) // caps: done@1, E@2 (unpriv)
+    {
+        void* bad = kos_guard_addr(); // an arena page granted to no domain
+        if (bad != nullptr)
+        {
+            g_ep_badrecv_rc = kos_recv(2, bad, 8, nullptr);           // write oracle -> -1
+            g_ep_badsend_rc = kos_send(2, static_cast<char const*>(bad), 8); // cross-domain read -> -1
+            g_ep_bnd_neg_ran = 1;
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void t_endpoint_bound()
+    {
+        g_ep = kos_endpoint_create();
+        TAP_CHECK(g_ep >= 0);
+        g_ep_badrecv_rc = -99; g_ep_badsend_rc = -99; g_ep_bnd_neg_ran = 0;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, CH_FULL}}; // done@1, E@2
+        int w = kos::thread::spawn_caps(ep_bound_worker, nullptr, "epbn", 12, caps, 2,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        if (g_ep_bnd_neg_ran)
+        {
+            TAP_CHECK(g_ep_badrecv_rc == -1); // bad recv buffer rejected, never parked
+            TAP_CHECK(g_ep_badsend_rc == -1); // bad send buffer rejected, never parked
+        }
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+    }
+#endif
+
+    // --- Cross-domain rendezvous under enforcement (F5) --------------------------
+    // Two UNPRIVILEGED workers in DIFFERENT memory domains rendezvous: the arriving
+    // side's kernel copy lands in the parked peer's domain (not the arriver's loaded
+    // regions), exercising the privileged background write. The payload buffers live
+    // in each worker's own granted domain region. Delegation accounting is validated
+    // by the clean endpoint free at the end (both a WAIT and a SIGNAL cap delegated).
+    volatile long g_xd_send_rc = -99;
+    volatile long g_xd_recv_rc = -99;
+    volatile int g_xd_match = 0;
+    int g_xd_done = -1; // PRIVATE completion sem: workers post it at CH_DONE, not the shared g_done
+    void xd_send_worker(void* arg) // caps: done@1, E(SIGNAL)@2; arg = domain buffer
+    {
+        char* b = static_cast<char*>(arg);
+        for (size_t i = 0; i < 8; i++)
+        {
+            b[i] = static_cast<char>('a' + i);
+        }
+        g_xd_send_rc = kos_send(2, b, 8);
+        kos_sem_post(CH_DONE);
+    }
+    void xd_recv_worker(void* arg) // caps: done@1, E(WAIT)@2; arg = domain buffer
+    {
+        char* b = static_cast<char*>(arg);
+        long n = kos_recv(2, b, 8, nullptr);
+        g_xd_recv_rc = n;
+        int ok = 1;
+        for (int i = 0; i < 8; i++)
+        {
+            if (b[i] != static_cast<char>('a' + i))
+            {
+                ok = 0;
+            }
+        }
+        g_xd_match = ok;
+        kos_sem_post(CH_DONE);
+    }
+    void t_endpoint_crossdomain()
+    {
+        void* sbuf = kos_ram_alloc(256);
+        void* rbuf = kos_ram_alloc(256);
+        if (sbuf == nullptr or rbuf == nullptr)
+        {
+            kos::print("# endpoint_crossdomain: SKIP (arena cannot spare two domain regions)\n");
+            return;
+        }
+        g_ep = kos_endpoint_create();
+        TAP_CHECK(g_ep >= 0);
+        g_xd_done = kos_sem_create(0); // PRIVATE: never satisfies another test's wait_n(g_done)
+        g_xd_send_rc = -99; g_xd_recv_rc = -99; g_xd_match = 0;
+        kos_cap_grant scaps[] = {{g_xd_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}}; // done@1, E(SIGNAL)@2
+        kos_cap_grant rcaps[] = {{g_xd_done, CH_FULL}, {g_ep, EP_WAIT_ONLY}};   // done@1, E(WAIT)@2
+        int s = kos::thread::spawn_caps(xd_send_worker, sbuf, "xdTx", 12, scaps, 2,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false, sbuf, 256);
+        int r = kos::thread::spawn_caps(xd_recv_worker, rbuf, "xdRx", 12, rcaps, 2,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false, rbuf, 256);
+        if (s < 0 or r < 0)
+        {
+            kos::print("# endpoint_crossdomain: SKIP (thread pool too small for 2 concurrent)\n");
+            // A lone sender parks then EPIPE-wakes on the close below and posts g_xd_done; a lone
+            // receiver is an accepted permanent park (design 4.1: no receiver-side EPIPE) and is
+            // NOT swept up. Either way the post lands on this test's PRIVATE sem, so it cannot
+            // falsely satisfy the next test; we drop main's caps and do not wait for completion.
+            kos_handle_close(g_ep);
+            kos_sem_destroy(g_xd_done);
+            return;
+        }
+        for (int i = 0; i < 2; i++)
+        {
+            kos_sem_wait(g_xd_done); // this test's own completion sem, not the shared g_done
+        }
+        TAP_CHECK(g_xd_send_rc == 8 and g_xd_recv_rc == 8);
+        TAP_CHECK(g_xd_match == 1); // the byte-exact payload crossed domains
+        TAP_CHECK(kos_handle_close(g_ep) == 0); // both delegated caps already torn down -> freed
+        kos_sem_destroy(g_xd_done);
+    }
 }
 
 int main(int, char**)
@@ -1368,6 +1675,16 @@ int main(int, char**)
     tap::add("mutex_unlock_errors", t_mutex_unlock_errors); // non-owner / unlocked -> -1
     tap::add("mutex_owner_died_nowaiter", t_mutex_owner_died_nowaiter); // R3 no-waiter branch
     tap::add("mutex_deleg_refcount", t_mutex_deleg_refcount); // child close, parent still locks
+    // Endpoint IPC (M3 #4 stage i): production syscalls, so runs on every board.
+    tap::add("endpoint_rendezvous", t_endpoint_rendezvous); // both orderings + zero-len + truncation
+    tap::add("endpoint_reject", t_endpoint_reject);         // F4 oversize + bad cap
+    tap::add("endpoint_rights", t_endpoint_rights);         // send needs SIGNAL, recv needs WAIT
+    tap::add("endpoint_epipe", t_endpoint_epipe);           // parked sender woken -1 on last WAIT close
+    tap::add("endpoint_dead", t_endpoint_dead);             // F1 dead endpoint: send -> -1, no park
+    tap::add("endpoint_crossdomain", t_endpoint_crossdomain); // F5 cross-domain copy + delegation
+#if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
+    tap::add("endpoint_bound", t_endpoint_bound); // bound-check: bad recv/send buffer -> -1
+#endif
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     tap::add("irq_thread_ctx", t_irq);
