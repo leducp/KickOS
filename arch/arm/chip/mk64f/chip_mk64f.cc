@@ -291,6 +291,11 @@ namespace
     // bring-up (e.g. the EXT mux switched but PLL LOCK timed out) would leave the
     // core running at 50/120 MHz while all software believes 20.97 MHz -- and would
     // leave CLKS=EXT armed so a late-arriving reference completes the switch mid-run.
+    // This is the ONE place the "return the truthful landed Hz" contract is ASSUMED
+    // rather than confirmed: FEI is the internal-reference reset posture (no external
+    // dependency, so it cannot itself fail to land), the two mcg_wait results below
+    // are best-effort and intentionally discarded, and the caller unconditionally sets
+    // SystemCoreClock = 20971520.
     bool fail_to_fei()
     {
         r8(MCG_C6) = 0;             // clear PLLS + VDIV
@@ -520,6 +525,10 @@ uint32_t arch_cpu_clock_set(uint32_t target)
     // Commit the NEW pricing -- the SOLE writer of mult (B2). base_ns holds history at
     // old pricing; the staged MCG walk (the worst-case masked span, ~1 ms) is the only
     // mispriced interval (frozen skew), bounded by folding the anchor to the edge.
+    // The three stores are protected against ISR/other-thread tearing by the caller's
+    // IrqLock, but NOT against a synchronous CPU fault (HardFault/NMI) landing between
+    // them whose handler reads arch_clock_now (e.g. panic_delay_ms) -- a few-instruction,
+    // panic-path-only window, accepted as-is (not hardened, to avoid over-engineering it).
     uint32_t const bus = landed / BUS_DIV;
     g_clk_base_ns = ns0;
     g_clk_base_ticks = t0;
