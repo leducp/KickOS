@@ -328,14 +328,14 @@ one function to implement per arch; if not, it is a hunt across every syscall.
 PROPOSAL -- schedule, do not implement here.
 
 **QW-3. Keep the shared-IPC ring contract PHYSICALLY addressed from day one.**
-What: when the M4 IPC ring lands (design-multicore-ipc), specify that ring
+What: when the M5 IPC ring lands (design-multicore-ipc), specify that ring
 control words and slot references are offsets / physical addresses, NEVER a
 pointer valid in one core's space -- even though on RP2040 (homogeneous, one
 physical space) a raw pointer would work fine.
 Why cheap now / expensive later: it costs nothing on RP2040 (physical == virtual)
 but is the exact property section 4 needs for A53/M7. Baking a VA into the ring on
 the homogeneous prototype would silently work until the first MMU peer, then break
-the wire format. Getting the invariant into the M4 design text is free; retrofitting
+the wire format. Getting the invariant into the M5 design text is free; retrofitting
 it after apps depend on the layout is not.
 PROPOSAL -- schedule (fold into the M4 IPC design), do not implement here.
 

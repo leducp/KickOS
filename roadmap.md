@@ -57,7 +57,26 @@ The object/credential model on top of M2's enforcement:
 - **User-selectable CPU clock / low-power mode** -- the `sys_cpu_clock_hz()` read syscall has
   landed; the write side (clock-select / low-power) stays open.
 
-### M4 -- SMP (one kernel image across cores)
+### M4 -- the driver era (make M3 real, fleet-wide)
+M3 proved the mechanisms (endpoints/IPC, console handover, panic reclaim, clock-select) but each
+on ONE or TWO chips. The driver era reuses them and makes them REAL ACROSS THE FLEET, then grows
+a driver framework on top. Single-core throughout. Full gap list + sequencing in
+`docs/design-driver-era-scope.md`.
+- **Fleet userspace UART / console drivers + per-chip `arch_console_reclaim` + handover
+  validation** -- `user/driver/xmcuart` is the only console driver today; every other board is
+  still kernel-owned, and only XMC + K64F ship a reclaim body (the fault-funnel porting invariant:
+  no real reclaim => a driver-garbled UART silently eats the panic banner). One driver per chip
+  family, silicon-available first; isolation is real only where the MPU gates peripherals.
+- **Clock-select fleet-wide** -- extend `arch_cpu_clock_set` per opt-in chip, or keep the weak
+  default explicitly.
+- **The enabling services** -- **init** (separate init from the app; spawn drivers-with-caps in
+  dependency order; settle the entry-point rename EARLY), **clock-tree / power-manager**, **pinmux**
+  (one-shot init-time config), **gpio** (a pin allocator that mints per-pin caps -- cold IPC to
+  allocate, direct MMIO to toggle). Deep-dive prose under "## Later" below.
+- **The driver framework** -- a call/reply (reply-cap) IPC layer on CAP_ENDPOINT for synchronous
+  SPI/I2C drivers; the driver-lib / demo split; multi-instance = thread-per-instance.
+
+### M5 -- SMP (one kernel image across cores)
 Run a multi-core part (dual-core RP2040) at 100% under a single KickOS -- not two AMP instances.
 Reworks the foundation: `IrqLock` ("interrupts off => exclusive") is single-core-only. Plan: a
 **Big Kernel Lock** first (redefine `IrqLock` = local-IRQ-off + one global spinlock -- coarse but
@@ -88,8 +107,8 @@ home is the **driver era** -- spawning drivers-with-caps + a proper driver API i
 "KickOS runs on one board" into "any app builds on KickOS," and the init service is a gating
 enabler for that. It is when real user apps can actually land: today KickCAT is the only
 consumer and it is a POC (one board, a driver more demo than proper API), not evidence the
-real-app story exists yet. Not gated by any hardware capability, so it pairs with the
-driver-era workstream (whatever milestone number that carries) rather than a fixed M4/M6.
+real-app story exists yet. Not gated by any hardware capability; its home is the
+driver-era workstream (now **M4**), not a later hardware-gated milestone.
 
 ### Userspace power-manager service (driver-era; mechanism/policy split)
 The M3 clock-select syscall (`arch_cpu_clock_set`) is deliberately a MECHANISM seam: change
@@ -116,7 +135,7 @@ Authority is a delegatable clock-control CAPABILITY (the service holds it like a
 an MMIO grant), not full privilege. This is the console-handover pattern applied to the clock:
 machinery -> userspace service, kernel keeps only the re-anchor + privileged-step residue.
 
-### The MMU / new-platform horizon (post-M6, foundational)
+### M6 -- the MMU / new-platform horizon (foundational)
 The biggest axis beyond the MCU fleet: today the whole memory model is **one physical address
 space + per-thread MPU regions**. A real **MMU (VMSA / page tables)** adds virtual address spaces
 -- a foundational change, not a port, and its own milestone-class effort. The **Domain seam** is
@@ -127,7 +146,7 @@ Concrete targets that motivate it:
   `__KickOS__` earns its name.
 - **i.MX8MP -- heterogeneous AMP across profiles** -- an **MMU KickOS on the Cortex-A53(s)**
   (VMSA) alongside an **MPU KickOS on the Cortex-M7**, one per core-cluster, over cross-core IPC.
-  Extends the M4 AMP/IPC work from homogeneous cores to a heterogeneous application-core +
+  Extends the M5 AMP/IPC work from homogeneous cores to a heterogeneous application-core +
   MCU-core split under a shared IPC contract.
 Captured, not scheduled -- an exploratory design/research spike scopes feasibility (the MMU memory
-model, the two boot models, the A53/M7 IPC seam) when M3/M4 have settled.
+model, the two boot models, the A53/M7 IPC seam) when M4 (driver era) / M5 (SMP) have settled.

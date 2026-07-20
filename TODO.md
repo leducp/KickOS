@@ -60,13 +60,13 @@ Book + exploratory (M3-adjacent, not milestone-gating):
       and the minimal-syscall-surface design (debug-console `write` the sole kernel exception;
       read/open/socket = userspace stubs over IPC). Slot ch.2.x/3.x; timeless per Book conventions.
       It is the current gap: taught only obliquely by 7.1 (boundary alignment) + 8.1 (resolve).
-- [ ] **Exploratory spike: microkernel IPC performance** (M3 #4 -> M4). The Mach-era "IPC too slow"
+- [ ] **Exploratory spike: microkernel IPC performance** (M3 #4 -> M5). The Mach-era "IPC too slow"
       critique vs the L4/seL4 answer -- (a) fast SYNCHRONOUS IPC (direct switch to the woken
       receiver + register/bounded-copy; KickOS's sem_post already hands the token off and drives an
       immediate switch, so the fastpath shape exists) for control/RPC, and (b) shared-memory + async
-      notifications (non-blocking) for throughput -- the M4 cross-core design
+      notifications (non-blocking) for throughput -- the M5 cross-core design
       (`docs/design-multicore-ipc.md`) already uses an SPSC ring + doorbell, exactly that shape.
-      Survey the literature, map both to CAP_ENDPOINT (#4) + the M4 rings, recommend the
+      Survey the literature, map both to CAP_ENDPOINT (#4) + the M5 rings, recommend the
       control-plane-vs-data-plane IPC strategy + a micro-benchmark. Good deep-research candidate.
 
 ## Clock hardening (2026-07-20) -- clock off the debug-domain / narrow counters
@@ -276,11 +276,11 @@ below where they were previously mislabeled.
   one pool would be false-DRY. Full unification (a shared handle codec across sems + the M3
   capability store) waits for that genuine second SlotPool-shaped case. (No MPU dependency --
   was mislabeled "M2 handle table"; it's the M3-caps substrate + anytime coherence.)
-- **[anytime coherence -- NOT M2] general freeing allocator (M4).** `arch_ram_alloc` is a
+- **[anytime coherence -- NOT M2] general freeing allocator (M5).** `arch_ram_alloc` is a
   wholesale bump allocator (freed only at reset). Default thread stacks now reclaim via a
   single-size-class intrusive free list in `ThreadPool` (thread.h) -- the special case that needs
   no size metadata (one class == `KICKOS_USER_STACK_SIZE`, link stored in the dead block). A
-  GENERAL multi-size-class freeing allocator for `arch_ram_alloc`/`kos_ram_alloc` at large is M4;
+  GENERAL multi-size-class freeing allocator for `arch_ram_alloc`/`kos_ram_alloc` at large is M5;
   it would subsume this free list. Until then, only default stacks are reclaimable.
 - **[anytime coherence -- NOT M2] user-pointer validation at the syscall boundary.** M2 is MPU
   *enforcement*; validating a user pointer is arch-neutral kernel logic that matters MORE at M1
@@ -335,7 +335,7 @@ below where they were previously mislabeled.
 - **Console device handover (driver era)** -- userspace UART/console driver takes the
   peripheral as a capability; kernel relinquishes it (`console_tx_deinit`), panic path moves
   to a kernel-retained transport. See `docs/reference/console.md` "Future".
-- **M4 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spikes
+- **M5 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spikes
   2026-07-19: `docs/design-multicore.md` (AMP-vs-SMP feasibility on rp2040 + rp2350) and
   `docs/design-multicore-ipc.md` (the RP2040 cross-core IPC). The spike REVISED the earlier
   "SMP-only, NOT AMP" call below: ARMv6-M (M0+) has no atomics (no LDREX/STREX; the SIO bus is
@@ -360,7 +360,7 @@ below where they were previously mislabeled.
   - **Already seam-ready:** the `KICKOS_*_BARRIER` publish seams (console_tx / rtt) are the
     fence-injection points -- flip to real fences on the SMP build. Keep centralising `IrqLock`,
     structs-over-globals, no ad-hoc masking -> keeps this a redefinition, not a rewrite.
-  - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M4).
+  - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M5).
   - **AMP-first on RP2040 (spike verdict, the recommended near-term step).** Two core-private
     `Kernel` instances -- the `KICKOS_MULTI_INSTANCE` per-instance seam (`instance.h:89`, built
     for the KickCAT multi-slave sim) is the ~80% substrate; re-key it on SIO CPUID instead of
