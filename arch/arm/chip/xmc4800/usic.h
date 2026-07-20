@@ -157,6 +157,18 @@ namespace usic
     // STEP=367, PDIV+1=14, PCTQ+1=1, DCTQ+1=16 -> 115199.5 baud (-0.0004%).
     constexpr Baud BAUD_115200_72MHZ = { 367u, 13u, 0u, 15u };
 
+    // Clock-select low-power P-states (fPERIPH = fCPU/2 = fSYS/2). Same RM formula:
+    // baud = fPERIPH*STEP/1024 / ((PDIV+1)*(DCTQ+1)). SILICON-PENDING -- formula-derived
+    // like the two above, validated on the Relax Kit in the separate silicon pass.
+    //
+    // 115200 baud from fPERIPH = 48 MHz (fCPU=96 MHz, KOS_PSTATE_MID):
+    // STEP=354, PDIV+1=9, DCTQ+1=16 -> 48e6*354/1024/9/16 = 115237 baud (+0.03%).
+    constexpr Baud BAUD_115200_48MHZ = { 354u, 8u, 0u, 15u };
+
+    // 115200 baud from fPERIPH = 24 MHz (fCPU=48 MHz, KOS_PSTATE_LOW):
+    // STEP=393, PDIV+1=5, DCTQ+1=16 -> 24e6*393/1024/5/16 = 115137 baud (-0.05%).
+    constexpr Baud BAUD_115200_24MHZ = { 393u, 4u, 0u, 15u };
+
     // ---- Generic USIC-common operations (all take the channel base) ----------
 
     // Ungate then de-reset the module via SCU. Ordering is mandatory (RM 11.6:

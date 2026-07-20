@@ -26,6 +26,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+extern "C"
+{
+    // fCPU (drives fPERIPH = fCPU/2). Defined in chip_xmc4800.cc; the baud re-derive on
+    // a clock-select reads the LANDED value here.
+    extern uint32_t SystemCoreClock;
+}
+
 namespace
 {
     namespace u = kickos::xmc::usic;
@@ -260,6 +267,39 @@ void kickos_xmc_usic_write(char const* buf, size_t n)
     {
         (void)tx_wait_idle();
     }
+}
+
+// Clock-select console coherence (arch.h). fPERIPH = fCPU/2 tracks a clock-select, so
+// the USIC baud MUST be re-derived after a retune, and no byte may be mid-shift at the
+// old baud when fPERIPH moves. Both run under the caller's IrqLock (see cpu_clock_set).
+//
+// flush_sync: the generic step already poll-drained the software ring into TBUF; wait
+// for the buffer->shifter handoff (TDV clear) then the shifter to empty (PSR.BUSY clear),
+// both bounded -- the exact drain kickos_xmc_usic_write does after a print.
+void arch_console_flush_sync(void)
+{
+    if (tx_wait_ready())
+    {
+        (void)tx_wait_idle();
+    }
+}
+
+// retune: reprogram the baud generator (FDR + BRG) for the new fPERIPH = SystemCoreClock/2,
+// selecting the precomputed point for the landed clock. SILICON-PENDING: the live baud
+// reprogram (channel enabled, but idle + IRQs masked here) is validated on the Relax Kit
+// in the separate silicon pass. An unrecognized clock leaves the baud untouched (a P-state
+// whose fPERIPH has no in-tolerance divisor should be rejected at the seam -- ruling 2).
+void arch_console_retune(void)
+{
+    u::Baud b;
+    switch (SystemCoreClock)
+    {
+    case 144000000u: b = u::BAUD_115200_72MHZ; break; // fPERIPH 72 MHz
+    case 96000000u:  b = u::BAUD_115200_48MHZ; break; // fPERIPH 48 MHz
+    case 48000000u:  b = u::BAUD_115200_24MHZ; break; // fPERIPH 24 MHz
+    default: return;                                   // unknown clock: do not touch baud
+    }
+    u::set_baud(U0C0, b);
 }
 
 // Non-blocking RX drain: copy up to n received words into buf, return the count

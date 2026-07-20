@@ -20,6 +20,8 @@
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
 
+#include <kickos/sys/abi.h> // kos_pstate_t / KOS_PSTATE_* (clock-select)
+
 #include <stdint.h>
 
 namespace kickos
@@ -288,6 +290,81 @@ namespace
         }
     }
 
+    // --- arch_clock_now epoch anchor + clock-select re-anchor (B2/S2) -----------
+    // ns = base_ns + (raw_ticks - base_ticks)*mult. The SOLE writer of `mult` is
+    // clock_anchor_init (boot) and arch_cpu_clock_set (the re-anchor at the rate edge);
+    // arch_clock_now only READS. WHY sole-writer: the old lazy `if (hz != cached_hz)
+    // recompute` inside arch_clock_now, if it survived, would let any now() called
+    // between the SystemCoreClock write and the re-anchor recompute mult itself against
+    // the new Hz and bake the phantom forward jump (all history repriced 6x) into
+    // base_ns PERMANENTLY.
+    uint64_t g_clk_base_ns = 0;
+    uint64_t g_clk_base_ticks = 0;
+    uint64_t g_clk_mult = 0;
+
+    uint64_t clock_recip(uint32_t hz)
+    {
+        return ((static_cast<uint64_t>(1000000000ull) << 32) + (hz >> 1)) / hz;
+    }
+
+    // ns from a raw tick count under the CURRENT anchor (used by arch_clock_now AND to
+    // capture history at OLD pricing during a re-anchor). 64x64 split as before.
+    uint64_t clock_ns_from(uint64_t ticks)
+    {
+        uint64_t delta = ticks - g_clk_base_ticks;
+        uint64_t a = delta >> 32;
+        uint64_t b = delta & 0xFFFFFFFFull;
+        uint64_t c = g_clk_mult >> 32;
+        uint64_t d = g_clk_mult & 0xFFFFFFFFull;
+        return g_clk_base_ns + ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    }
+
+    void clock_anchor_init()
+    {
+        uint32_t const hz = SystemCoreClock; // fCCU = fSYS = SystemCoreClock
+        if (hz == 0)
+        {
+            return;
+        }
+        g_clk_mult = clock_recip(hz);
+        g_clk_base_ticks = 0; // BOOT-IDENTICAL: now = raw_ticks*mult (the old first read)
+        g_clk_base_ns = 0;
+    }
+
+    // FCON.WSPFLASH[3:0]: flash read wait-states in fCPU cycles. WHY set-before-rise:
+    // a raw fCPU increase past the current wait-state's access window makes an
+    // instruction fetch from flash return before the data is valid -> a fetch fault,
+    // not merely wrong timing (RM 8.4.4). So widen WS before a rise, relax after a fall.
+    void set_flash_ws(uint32_t ws)
+    {
+        uint32_t fcon = r32(FLASH_FCON);
+        fcon &= ~FCON_WSPFLASH_MASK;
+        fcon |= (ws << 0) & FCON_WSPFLASH_MASK;
+        r32(FLASH_FCON) = fcon;
+    }
+
+    // Walk K2DIV one step at a time from `from` to `to` (fPLL = fVCO/K2DIV = 288/K2DIV),
+    // settling between steps. WHY stepwise, never a jump: a large K2DIV DECREASE (a
+    // frequency RISE) draws a current step the core supply cannot service in one edge
+    // -- a VDDC droop -- so the boot ramp and this retune both stair-step. The PLL stays
+    // LOCKED across a K2DIV change (only the output divider moves), so no relock/poll.
+    void pll_k2div_staircase(uint32_t from_k2, uint32_t to_k2)
+    {
+        uint32_t k = from_k2;
+        while (k > to_k2)
+        {
+            k--;
+            r32(SCU_PLLCON1) = pllcon1_value(k);
+            clock_delay();
+        }
+        while (k < to_k2)
+        {
+            k++;
+            r32(SCU_PLLCON1) = pllcon1_value(k);
+            clock_delay();
+        }
+    }
+
     void clock_init()
     {
         // Flash read wait-states MUST be raised to the 120 MHz value BEFORE the
@@ -376,7 +453,8 @@ void arch_init(void)
     // MHz, and SysTick derives from fCPU. Then bring up the console; finally
     // kickos_armv7m_init installs the NVIC/SHPR priorities.
     clock_init();
-    ccu4_clock_init(); // monotonic time base (see ccu4_clock_init note; replaces DWT)
+    ccu4_clock_init();   // monotonic time base (see ccu4_clock_init note; replaces DWT)
+    clock_anchor_init(); // set the arch_clock_now mult ONCE from the final clock (B2)
     kickos_xmc_usic_init();
     kickos_armv7m_init();
 }
@@ -388,24 +466,78 @@ void arch_init(void)
 // one 64-bit divide runs only when SystemCoreClock changes at boot.
 uint64_t arch_clock_now(void)
 {
-    uint32_t ccu_hz = SystemCoreClock; // fCCU = fSYS (CCUDIV=0); fSYS = SystemCoreClock
-    static uint64_t cached_hz = 0;
-    static uint64_t mult = 0;
-    if (ccu_hz != cached_hz)
+    // Pure epoch read (B2): the mult is written ONLY by clock_anchor_init (boot) and
+    // the arch_cpu_clock_set re-anchor -- never recomputed here -- so a read in the
+    // window around a retune can never bake the phantom rate jump into the anchor.
+    return clock_ns_from(ccu4_ticks());
+}
+
+// Clock-select MECHANISM (arch.h): retune fSYS among the locked-PLL points via the
+// K2DIV staircase, fold the re-anchor into the rate edge, return the LANDED Hz. The
+// generic coherence tail (baud re-derive, SysTick re-arm) runs in cpu_clock_set. Called
+// privileged, IRQs already masked (single-core: the timer is quiesced). fCCU=fSYS and
+// fPERIPH=fCPU/2 both follow SystemCoreClock, so the CCU40 clock AND the USIC baud move.
+uint32_t arch_cpu_clock_set(uint32_t target)
+{
+    uint32_t const previous = SystemCoreClock;
+    uint32_t want_hz;
+    uint32_t want_k2;
+    uint32_t want_ws;
+    switch (static_cast<kos_pstate_t>(target))
     {
-        if (ccu_hz == 0)
-        {
-            return 0;
-        }
-        mult = ((static_cast<uint64_t>(1000000000ull) << 32) + (ccu_hz >> 1)) / ccu_hz;
-        cached_hz = ccu_hz;
+    case KOS_PSTATE_MAX:
+        want_hz = 144000000u; want_k2 = 2u; want_ws = 4u; // fPERIPH 72 MHz
+        break;
+    case KOS_PSTATE_MID:
+        want_hz = 96000000u; want_k2 = 3u; want_ws = 3u;  // fPERIPH 48 MHz
+        break;
+    default: // KOS_PSTATE_LOW
+        want_hz = 48000000u; want_k2 = 6u; want_ws = 2u;  // fPERIPH 24 MHz
+        break;
     }
-    uint64_t ticks = ccu4_ticks();
-    uint64_t a = ticks >> 32;
-    uint64_t b = ticks & 0xFFFFFFFFull;
-    uint64_t c = mult >> 32;
-    uint64_t d = mult & 0xFFFFFFFFull;
-    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    if (want_hz == previous)
+    {
+        return previous; // no move (generic also guards; keep the backend honest)
+    }
+    // Only retune BETWEEN the known locked-PLL points. A boot that fell back to fOFI
+    // (~24 MHz, PLL never locked) or any unexpected state is left untouched -- return
+    // the truthful current Hz rather than driving a K2DIV staircase off a bypassed PLL.
+    uint32_t cur_k2;
+    if (previous == 144000000u) { cur_k2 = 2u; }
+    else if (previous == 96000000u) { cur_k2 = 3u; }
+    else if (previous == 48000000u) { cur_k2 = 6u; }
+    else { return previous; }
+
+    // Re-anchor capture AT the edge: history priced at the OLD mult before it moves.
+    uint64_t const t0 = ccu4_ticks();
+    uint64_t const ns0 = clock_ns_from(t0);
+
+    if (want_hz > previous)
+    {
+        // RISE: widen flash wait-states BEFORE the frequency climbs (S3), then walk
+        // K2DIV DOWN the staircase (every intermediate point is <= want_hz, so want_ws
+        // covers them all).
+        set_flash_ws(want_ws);
+        pll_k2div_staircase(cur_k2, want_k2);
+    }
+    else
+    {
+        // FALL: drop the frequency first (K2DIV UP), THEN relax flash wait-states -- the
+        // old (higher) WS is safe across the whole descent.
+        pll_k2div_staircase(cur_k2, want_k2);
+        set_flash_ws(want_ws);
+    }
+
+    SystemCoreClock = want_hz; // fCCU=fSYS and fPERIPH=fCPU/2 both track this now
+
+    // Commit the NEW pricing -- the SOLE writer of mult (B2). base_ns holds history at
+    // old pricing, base_ticks the tick at the edge, so `now` is continuous (no jump):
+    // ticks in the brief masked staircase are the only ones mispriced (frozen skew).
+    g_clk_base_ns = ns0;
+    g_clk_base_ticks = t0;
+    g_clk_mult = clock_recip(want_hz);
+    __asm volatile("" ::: "memory"); // pin the triple write order vs a later now() read
+    return want_hz;
 }
 
 // Native transport = USIC0 ASC on P1.5/P1.4 (the Relax Kit VCOM -> ttyACM0). RTT
