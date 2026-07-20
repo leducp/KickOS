@@ -199,6 +199,61 @@ namespace
         pclk1_hz = PCLK1_PLL_HZ;
     }
 
+    // --- TIM2: the monotonic time base (RM0383 sec.13) --------------------------
+    // The v7-M default clock is the DWT cycle counter (core debug power domain),
+    // but that DWT intermittently returns aliased garbage on parts in this fleet,
+    // which the software 32->64 wrap-extension turns into a phantom 2^32 jump that
+    // strands every timed wait. TIM2 is a plain 32-bit general-purpose timer on
+    // APB1 (not the debug domain): free-run it and use it as arch_clock_now. ONLY
+    // the monotonic clock moves off DWT; arch_trace_now stays on raw DWT_CYCCNT (a
+    // glitch there skews a telemetry sample -- tolerable -- but is fatal to the
+    // scheduler clock). TIM2 does not collide with the one-shot tickless timer
+    // (SysTick, core-generic) nor any driver (none use TIM2 on this port).
+    constexpr uintptr_t TIM2_BASE = 0x40000000;
+    constexpr uintptr_t TIM2_CR1 = TIM2_BASE + 0x00;
+    constexpr uintptr_t TIM2_EGR = TIM2_BASE + 0x14;
+    constexpr uintptr_t TIM2_CNT = TIM2_BASE + 0x24;
+    constexpr uintptr_t TIM2_PSC = TIM2_BASE + 0x28;
+    constexpr uintptr_t TIM2_ARR = TIM2_BASE + 0x2C;
+    constexpr uint32_t APB1ENR_TIM2EN = 1u << 0;
+    constexpr uint32_t TIM_CR1_CEN = 1u << 0;
+    constexpr uint32_t TIM_EGR_UG = 1u << 0;
+
+    // Software 64-bit extension of the 32-bit TIM2_CNT. Reads are RELIABLE (unlike
+    // DWT), so the extension is safe: TIM2 wraps every 2^32/84e6 ~= 51 s, and the
+    // tickless re-arm reads the clock at least ~5x/s (SysTick 24-bit caps a single
+    // arm near 0.2 s), so a wrap is always observed before the next one.
+    volatile uint32_t g_clk_high = 0;
+    volatile uint32_t g_clk_last = 0;
+
+    void tim2_clock_init()
+    {
+        // Boot-order: arch_clock_now MUST NOT run before this (an ungated APB1 read
+        // would fault). arch_init calls it before kickos_armv7m_init.
+        r32(RCC_APB1ENR) |= APB1ENR_TIM2EN;
+        r32(TIM2_CR1) = 0;             // stop; upcount, defaults
+        r32(TIM2_PSC) = 0;             // no prescale: count at the timer kernel clock
+        r32(TIM2_ARR) = 0xFFFFFFFFu;   // full 32-bit free-run
+        r32(TIM2_EGR) = TIM_EGR_UG;    // latch PSC/ARR into the shadow regs
+        r32(TIM2_CR1) = TIM_CR1_CEN;   // enable
+    }
+
+    // Wrap-catch must be atomic against a concurrent reader (thread + ISR), so the
+    // extend runs under the crit section -- same proven shape as the arch DWT read.
+    uint64_t tim2_ticks()
+    {
+        arch_irq_state_t s = arch_irq_save();
+        uint32_t cur = r32(TIM2_CNT);
+        if (cur < g_clk_last)
+        {
+            g_clk_high++;
+        }
+        g_clk_last = cur;
+        uint64_t hi = g_clk_high;
+        arch_irq_restore(s);
+        return (hi << 32) | cur;
+    }
+
     void enable_fpu()
     {
         r32(0xE000ED88) |= (0xFu << 20); // CPACR: CP10/CP11 full access
@@ -254,8 +309,35 @@ void arch_init(void)
     // on the HSE crystal + PLL first, then configure the console at the resulting
     // APB1 clock (clock_init leaves us on HSI 16 MHz if the crystal is absent).
     clock_init();
+    tim2_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
     usart2_init();
     kickos_armv7m_init();
+}
+
+// Monotonic clock override: free-running TIM2 ticks -> ns, replacing the weak
+// DWT-backed arch_clock_now (unreliable on this silicon). TIM2 is on APB1; with
+// HPRE=/1 and PPRE1 in {/1,/2} the STM32 APB timer-clock doubler makes the timer
+// kernel clock equal HCLK == SystemCoreClock across the PLL and both HSI-fallback
+// states (retuning PPRE1 to /4+ would break this identity). ns = ticks*1e9/hz via
+// a cached reciprocal multiply (the one 64-bit divide runs only at a clock change).
+uint64_t arch_clock_now(void)
+{
+    uint32_t tim_hz = SystemCoreClock;
+    static uint64_t cached_hz = 0;
+    static uint64_t mult = 0;
+    if (tim_hz != cached_hz)
+    {
+        if (tim_hz == 0)
+        {
+            return 0;
+        }
+        mult = ((1000000000ull << 32) + (tim_hz >> 1)) / tim_hz;
+        cached_hz = tim_hz;
+    }
+    uint64_t ticks = tim2_ticks();
+    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
+    uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFull;
+    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
 }
 
 void arch_console_write(char const* buf, size_t n)
