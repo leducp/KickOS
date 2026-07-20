@@ -56,6 +56,10 @@ namespace kickos
     // 8 bytes, 4-aligned; carries the object pool's handle codec verbatim (no
     // re-encoding). gen is the per-slot cap generation, bumped on close (the
     // per-task use-after-close ABA guard, at parity with the object pool's u16 gen).
+    // INVARIANT (address-space-agnostic; MMU-era load-bearing): a cap names its
+    // object ONLY by generational handle -- never by a physical address or a region
+    // base. No physaddr is ever stored here or delivered as a badge/payload, so the
+    // cap layer carries no single-physical-space assumption for the MMU era to undo.
     struct CapEntry
     {
         int32_t obj;    // global generational object handle (WRAP target); ignored if EMPTY
