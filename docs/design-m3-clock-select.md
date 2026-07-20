@@ -24,12 +24,17 @@ gate pattern).
 
 ## 0. The one thing that makes this hard
 
-On XMC4800, K64F, and STM32F411 the hardened wide monotonic timer that backs
-`arch_clock_now` is clocked from the SAME domain the clock-select changes:
+On XMC4800 and K64F -- the TWO backends that ship `arch_cpu_clock_set` -- the
+hardened wide monotonic timer that backs `arch_clock_now` is clocked from the SAME
+domain the clock-select changes:
 
 - XMC4800: CCU40 runs on `fCCU = fSYS = SystemCoreClock` (`chip_xmc4800.cc:391`).
 - K64F: PIT runs on `bus = SystemCoreClock / BUS_DIV` (`chip_mk64f.cc:413`).
-- STM32F411: TIM2 runs on APB1 == HCLK == `SystemCoreClock` (`chip_stm32f411.cc:339-341`).
+
+(STM32F411's TIM2 is likewise APB1 == HCLK == `SystemCoreClock`, but F411 does NOT
+implement runtime clock-select -- `arch_cpu_clock_set` is the weak default returning
+0 -- so it has no jump hazard. It received only the B2 `arch_clock_now` cleanup below,
+applied as uniform sole-writer hygiene.)
 
 Each `arch_clock_now` today converts raw ticks to ns with a cached reciprocal
 `mult` recomputed lazily `if (hz != cached_hz)` -- an explicit "changes once at
@@ -51,10 +56,12 @@ The fix is section 2's epoch re-anchor. But the fix has a REQUIRED PRECONDITION
 `arch_clock_now` MUST BE REMOVED. If it survives, any `now()` called in the window
 between the `SystemCoreClock` update and the re-anchor recomputes `mult` itself
 against the new Hz and bakes the phantom forward jump into `base_ns` PERMANENTLY.
-After this change the re-anchor step (section 2.1) is the SOLE writer of `mult`;
-`arch_clock_now` only ever READS the anchor triple, never recomputes it. This is a
-concrete edit to `arch_clock_now` in `chip_xmc4800.cc`, `chip_mk64f.cc`, and
-`chip_stm32f411.cc`.
+After this change `mult` has a SINGLE writer -- `clock_anchor_init` at boot plus, on
+a retune backend, the re-anchor step (section 2.1); `arch_clock_now` only ever READS
+the anchor triple, never recomputes it. This is a concrete edit to `arch_clock_now`
+in `chip_xmc4800.cc`, `chip_mk64f.cc`, and `chip_stm32f411.cc` -- the last purely as
+sole-writer hygiene, since F411 does not retune (weak-default `arch_cpu_clock_set`)
+and so has no re-anchor.
 
 rp2040's monotonic TIMER (on clk_ref) and the sim are structurally immune to the
 `now` jump and need no re-anchor. rp2040's CONSOLE is NOT immune -- clk_peri
@@ -113,11 +120,13 @@ Per-chip feasibility:
   lower the frequency first, then relax flash wait states. General rule for ANY
   chip: flash-WS (and voltage) go UP before frequency goes up, DOWN after
   frequency goes down.
-- **STM32F411 -- FIXED SET only.** `PLLCFGR` is writable only while the PLL is
-  OFF (`chip_stm32f411.cc:179-180`). A retune means: switch SYSCLK to HSI, stop
-  the PLL, rewrite N/P, restart, wait `PLLRDY`, switch SYSCLK back -- doable but
-  it briefly parks on HSI 16 MHz. MID/LOW = HSI-direct, or a second precomputed
-  PLL profile.
+- **STM32F411 -- DEFERRED, retune NOT implemented for M3.** F411 ships the weak
+  default (`arch_cpu_clock_set` returns 0); it got only the B2 `arch_clock_now`
+  cleanup. A future retune is feasible as a FIXED SET: `PLLCFGR` is writable only
+  while the PLL is OFF (`chip_stm32f411.cc:179-180`), so it would switch SYSCLK to
+  HSI, stop the PLL, rewrite N/P, restart, wait `PLLRDY`, switch back -- briefly
+  parking on HSI 16 MHz -- with MID/LOW = HSI-direct or a second precomputed PLL
+  profile. Not done here (would also need the TC-flush edit noted in 2.2).
 - **K64F -- FIXED SET, staged.** MCG is a state machine (FEI/FBE/PBE/PEE,
   `chip_mk64f.cc:268-311`). Retune walks PEE->PBE, reprograms C6 VDIV, walks back,
   each step LOCK/status-polled. LOW = drop to FBE (external) or FEI (~20.97 MHz).
@@ -190,19 +199,16 @@ mult       = reciprocal of the NEW timer clock    // sole writer of mult (B2)
 
 The baud divisor is a function of the peripheral clock, which moves with the core
 clock. K64F already has a re-derive helper (`chip_mk64f.cc:595-599`,
-`sbr/brfa` from live `SystemCoreClock`); STM32 computes `usart_brr(pclk1, baud)`
-(`chip_stm32f411.cc:296`); XMC's USIC constants are computed for fPERIPH=72 MHz
-(`chip_xmc4800.cc:374-378`). The clock-select MUST re-run the baud derivation
-against the new clock, or the console garbles. Two hazards:
+`sbr/brfa` from live `SystemCoreClock`); XMC's USIC constants are computed for
+fPERIPH=72 MHz (`chip_xmc4800.cc:374-378`). The clock-select MUST re-run the baud
+derivation against the new clock, or the console garbles. Two hazards:
 
 - Re-derive only AFTER the TX shift register is SHIFT-IDLE (transmission
   complete), not merely after the TX buffer is empty (review S6). Draining to
   buffer-empty (TXE/TDRE) still leaves one character CLOCKING OUT of the shift
   register; changing the baud then garbles that in-flight byte. The flush MUST
-  poll transmission-complete (TC). NOTE: the STM32 sync writer currently polls
-  only `SR_TXE` (`chip_stm32f411.cc:379`) and there is NO `SR_TC` constant defined
-  -- adding a TC constant and a TC-poll to the flush path is a required edit.
-  Analogous TC/shift-idle polls are required in each affected chip's sync flush.
+  poll transmission-complete (TC) -- the TC/shift-idle poll is required in each
+  retune backend's sync flush (XMC, K64F).
 - At LOW P-states some baud/clock pairs have no accurate divisor (e.g. 115200 off
   a 16 MHz HSI has >1% error on some parts). A P-state whose clock cannot produce
   a console baud within tolerance is REJECTED AT THE SEAM (ruling 2): the backend
@@ -362,12 +368,14 @@ per chip:
 - **nrf51: immune.** `arch_clock_now` is semihosting-backed
   (`chip_nrf51.cc:76-99`), not on any core-derived counter.
 - **sim: immune.** Host-clock backed (`sim.cc:843`).
-- **XMC4800 / K64F / STM32F411: NOT immune.** Their counter clock moves with the
-  core/bus clock (section 0). WITHOUT the re-anchor these are exactly the chips
-  whose `now` would jump. WITH it, they stay monotonic and correct. These three
-  are the only backends whose `arch_cpu_clock_set` must perform the re-anchor at
-  the rate edge for M3 (they are also the only three shipping `arch_cpu_clock_set`,
-  so the sets coincide).
+- **XMC4800 / K64F: NOT immune.** Their counter clock moves with the core/bus
+  clock (section 0). WITHOUT the re-anchor these are exactly the chips whose `now`
+  would jump. WITH it, they stay monotonic and correct. These TWO are the only
+  backends shipping `arch_cpu_clock_set`, so they are also the only two whose
+  backend performs the re-anchor at the rate edge for M3; the sets coincide.
+  (STM32F411's TIM2 is same-domain and WOULD jump under a retune, but F411 does not
+  retune -- weak-default `arch_cpu_clock_set` -- so it never re-anchors; it carries
+  only the B2 sole-writer cleanup.)
 
 No chip's `now` runs BACKWARD across the change under the re-anchor (base_ns is
 computed before mult swaps, and raw_ticks only increases). Forward jump is
@@ -390,7 +398,7 @@ Emulator-testable (QEMU mps2 / sim / rp2040 where modelled):
 - Unsupported path: on sim/mps2 `sys_cpu_clock_set` returns 0 and leaves timing
   untouched; unprivileged caller returns 0.
 
-Silicon-only (XMC Relax Kit, K64F FRDM, STM32F411 Disco):
+Silicon-only (XMC Relax Kit, K64F FRDM):
 
 - **Sleep-across-change:** thread sleeps N ms; a co-thread retunes the clock
   mid-sleep; assert wake lands within tolerance of the ORIGINAL wall-clock
@@ -401,12 +409,17 @@ Silicon-only (XMC Relax Kit, K64F FRDM, STM32F411 Disco):
 - **Monotonic `now`:** tight loop sampling `sys_clock_now()` across several
   retunes; assert strictly non-decreasing and no multi-second forward step (the
   jump this note exists to prevent).
-- **Staged-failure (the B1 regression):** on K64F force the relock to fail so the
-  MCG parks on `fail_to_fei` (~20.97 MHz). Assert `set` returns the truthful ~21
-  MHz (NOT 0), that the coherence tail RAN (baud re-derived to the fallback clock,
-  `now` continuous, no jump), and that a sleep across the event still wakes on
-  time. This is the direct test that the clock-DID-move-on-failure path is not
-  treated as a no-op.
+- **Staged-failure (the B1 regression) -- NOT exercisable on K64F today.** The B1
+  GATING LOGIC (run the coherence tail whenever `hz != previous`, never on a success
+  flag) is correct and would fire for a staged fallback landing on a DISTINCT
+  intermediate Hz. But K64F's achievable set is currently binary -- MAX = 120 MHz
+  PEE, LOW = ~20.97 MHz FEI, and MID rounds UP to MAX -- and `fail_to_fei` only runs
+  on a RISE (FEI -> PEE), where `previous` is already the ~20.97 MHz FEI point. A
+  failed relock parks right back on that same ~20.97 MHz, so hz == previous and the
+  tail is (correctly) skipped -- a real staged fallback is indistinguishable from a
+  plain no-op here. Exercising the gate needs a genuine 3rd K64F staged point (a
+  distinct intermediate Hz); deferred as silicon-risky and out of scope now -- do NOT
+  add one just to test the gate.
 - **cannot-change vs moved:** on sim/mps2 assert `set` returns 0 and leaves
   timing/baud untouched (the only clean-no-op case).
 - **Console-owned reject (S4):** hand the console to a userspace driver
