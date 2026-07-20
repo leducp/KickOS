@@ -20,6 +20,7 @@
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
 #include <kickos/ktrace.h>
+#include <kickos/console_tx.h>
 
 #include <kickos/sys/abi.h>
 
@@ -815,6 +816,46 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             return static_cast<uintptr_t>(
                 endpoint_recv(static_cast<int>(a0), a1, static_cast<size_t>(a2), a3));
+        }
+        case KOS_SYS_console_publish:
+        {
+            // Hand the console UART to a userspace driver named by an endpoint cap.
+            // Privileged-only (like ram_alloc / MMIO grant): it disables a live IRQ line
+            // and mutates global console routing. See the handover design (D3).
+            Thread* c = sched::current();
+            if (c == nullptr or not c->privileged)
+            {
+                return static_cast<uintptr_t>(-1);
+            }
+            int handle = -1;
+            {
+                IrqLock lock;
+                // Resolve the endpoint cap to its GLOBAL gen-encoded handle -- NOT the pool
+                // index (S3). cap_lookup validates the cap-gen; re-check type + object
+                // liveness (mirrors irq_attach's resolve-once pattern). Any rights: the
+                // publish is identity-only.
+                CapEntry* e = cap_lookup(c, static_cast<int>(a0));
+                if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT)
+                    or kernel().endpoints.resolve(e->obj) == nullptr)
+                {
+                    return static_cast<uintptr_t>(-1);
+                }
+                handle = e->obj;
+                if (console_owner_is_kernel() != 0)
+                {
+                    console_tx_deinit(); // D2 relinquish (idempotent; skipped on re-publish)
+                }
+                cap_console_publish(handle); // take the kernel stdout ref, drop any prior target
+                console_owner_set_user();    // flip to USER_OWNED -- LAST
+            }
+            // B1: drain any stale chip writer that raced past the pre-flip state read, with
+            // the lock RELEASED, before returning. After the flip no path increments the
+            // count, so it strictly drains. Root spawns the driver only after this returns,
+            // so the preempted writer is off the device before the driver touches it.
+            while (console_chip_writers() != 0)
+            {
+            }
+            return 0;
         }
         case KOS_SYS_thread_spawn:
         {

@@ -39,7 +39,8 @@ enum kos_syscall_nr
     KOS_SYS_mutex_unlock = 25,  // (cap)  -> 0, or -1 (bad cap, or caller not owner)
     KOS_SYS_endpoint_create = 26, // ()                              -> endpoint cap (full rights), or -1
     KOS_SYS_send = 27,          // (cap, buf, len)                   -> bytes transferred, or -1
-    KOS_SYS_recv = 28           // (cap, buf, cap_len, u32* badge)   -> bytes received, or -1
+    KOS_SYS_recv = 28,          // (cap, buf, cap_len, u32* badge)   -> bytes received, or -1
+    KOS_SYS_console_publish = 29 // (endpoint_cap) -> 0, or -1 (bad cap / not privileged)
 };
 
 // Shared payload bound: send REJECTS a len above this; recv clamps its capacity to it.

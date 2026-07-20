@@ -64,6 +64,13 @@ long kos_send(int ep, void const* buf, size_t len);
 // (always 0 in this stage). -> bytes received (>= 0), or -1 (bad cap/buffer).
 long kos_recv(int ep, void* buf, size_t cap_len, uint32_t* badge);
 
+// Hand the kernel console UART over to a userspace driver serving endpoint `ep`.
+// Privileged-only (returns -1 for an unprivileged caller or a bad cap). After this the
+// kernel chip path drops (RTT, if built, still carries kernel output); libc stdout routes
+// through the driver via cap index 0 (seated into children spawned AFTER the publish).
+// Re-callable to re-point at a fresh driver. -> 0, or -1.
+int kos_console_publish(int ep);
+
 // Drop THIS thread's capability. Type-agnostic (a cap knows its own type) and
 // refcounted: the underlying object is destroyed only at the LAST close across all
 // holders. Always succeeds on a live cap, even while other holders remain open (it

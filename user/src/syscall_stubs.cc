@@ -89,6 +89,12 @@ long kos_recv(int ep, void* buf, size_t cap_len, uint32_t* badge)
                                           reinterpret_cast<uintptr_t>(badge)));
 }
 
+int kos_console_publish(int ep)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_console_publish,
+                                         static_cast<uintptr_t>(ep), 0, 0, 0));
+}
+
 int kos_handle_close(int cap)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_handle_close,
