@@ -68,6 +68,21 @@ Multi-domain isolation + cross-domain shared-memory IPC; message-passing IPC + u
 **service publication** (naming/discovery, capability delegation, badged endpoints, an interface
 convention); runloops + multi-object waiting; timed wait (`sem_timedwait`) as one unified wait
 primitive; introspection; a HAL/driver model; pluggable EDF / rate-monotonic policies; loadable
-MPU-isolated user modules; POSIX / CMSIS-RTOS2 compat; TLSF heap; RP2040 SMP; Renode CI; the
-**A-profile / MMU (VMSA)** horizon (application-class cores behind the same Domain seam); and
+MPU-isolated user modules; POSIX / CMSIS-RTOS2 compat; TLSF heap; RP2040 SMP; Renode CI; and
 **the Book** as the durable how-&-why reference (see `docs/book/`).
+
+### The MMU / new-platform horizon (post-M6, foundational)
+The biggest axis beyond the MCU fleet: today the whole memory model is **one physical address
+space + per-thread MPU regions**. A real **MMU (VMSA / page tables)** adds virtual address spaces
+-- a foundational change, not a port, and its own milestone-class effort. The **Domain seam** is
+deliberately shaped to absorb it (a domain becomes a page-table root instead of an MPU region set).
+Concrete targets that motivate it:
+- **x86_64 PC target** -- KickOS as an actual OS on a PC (QEMU-first, then bare metal): MMU
+  paging, a different boot/privilege/interrupt model (long mode, ring0/3, APIC). This is where
+  `__KickOS__` earns its name.
+- **i.MX8MP -- heterogeneous AMP across profiles** -- an **MMU KickOS on the Cortex-A53(s)**
+  (VMSA) alongside an **MPU KickOS on the Cortex-M7**, one per core-cluster, over cross-core IPC.
+  Extends the M4 AMP/IPC work from homogeneous cores to a heterogeneous application-core +
+  MCU-core split under a shared IPC contract.
+Captured, not scheduled -- an exploratory design/research spike scopes feasibility (the MMU memory
+model, the two boot models, the A53/M7 IPC seam) when M3/M4 have settled.
