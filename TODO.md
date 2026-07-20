@@ -18,8 +18,31 @@ board/console readiness matrix is `docs/m2-readiness.md`.
 - [x] `sys_cpu_clock_hz()` read syscall; [x] per-task capability handle table (sem ABI) +
       authenticated-grant delegation; [x] priority-inheritance mutex (CAP_MUTEX). All on master,
       silicon-validated UNDER ENFORCEMENT on K64F (SYSMPU) + C6 (PMP). Design in Book ch.8.1 +
-      `reference/architecture.md`. Remaining M3: console/endpoint handover (spike done,
-      `docs/design-m3-console-handover.md`), user clock-select.
+      `reference/architecture.md`.
+
+Remaining M3 (to finish the milestone) -- gated flow (fable design review -> branch -> silicon):
+- [ ] **Writable user-pointer bound-check** at the syscall boundary (arch-neutral). Prerequisite:
+      a recv into an unchecked out-buffer is a privileged write oracle. (See the parked syscall-arg
+      validation item lower in this file.)
+- [ ] **Endpoint/IPC object (CAP_ENDPOINT)** -- additive per `docs/design-m3-substrate.md`:
+      `SlotPool<Endpoint,N>` + `endpoint_refs` + one `cap_resolve` case + obj_ref_inc/drop and
+      obj_close_protocol (EPIPE-wake) arms; synchronous rendezvous, kernel-copied bounded payload,
+      parks on the shared `wq_block`/`wq_pop_highest` primitive; badging object-side; send/recv
+      syscalls (recv gated on the bound-check above). CapEntry stays frozen (CAP_ENDPOINT reserved).
+- [ ] **Console device handover** (`docs/design-m3-console-handover.md`) -- a userspace UART driver
+      takes the console as a capability. Publish-BEFORE-spawn: `console_tx_deinit` under one IrqLock
+      (state=USER_OWNED set last), THEN spawn the driver with the MMIO grant + a console endpoint.
+      Seat a stdout endpoint cap at index 0 (this makes `cap_install_defaults` / the low-barrier #5
+      real); `_write` probes `kos_send(0)` then falls back to `kconsole_write`.
+- [ ] **Panic-path console reclaim** -- kernel re-seizes + re-inits the UART on panic
+      (`arch_console_reclaim` per chip); driver-death = EPIPE-wake parked senders + root respawn/
+      re-publish (NO kernel auto-adoption). Needs a scramble-then-force-panic HW test per backend
+      (a wrong reclaim looks exactly like silent panic loss -- the worst failure mode).
+- [ ] **User-selectable CPU clock / low-power mode** -- per-chip clock-select syscall; keep the
+      scheduler ns<->tick math coherent across a clock change (the clock-hardening timers make `now`
+      trustworthy for this). Read side (`sys_cpu_clock_hz`) already landed.
+Silicon target for the handover: the CPU-side-MPU boards (XMC/RX/C6) where per-thread peripheral
+isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
 
 ## Clock hardening (2026-07-20) -- clock off the debug-domain / narrow counters
 Root cause: v7-M `arch_clock_now` used DWT_CYCCNT (core DEBUG power domain), sw-extended 32->64.
