@@ -71,7 +71,7 @@ primitive; introspection; a HAL/driver model; pluggable EDF / rate-monotonic pol
 MPU-isolated user modules; POSIX / CMSIS-RTOS2 compat; TLSF heap; RP2040 SMP; Renode CI; and
 **the Book** as the durable how-&-why reference (see `docs/book/`).
 
-### Userspace init service (M6; not hardware-gated -- anytime-coherence)
+### Userspace init service (driver-era; not hardware-gated -- anytime-coherence)
 Today the user's `main` doubles as pid-1: it IS the init entry, holds full userspace
 rights, and spawns every task -- so (1) the app's `main` is really the SYSTEM init wearing
 the app's name, and (2) that init pattern (create endpoint, publish console, spawn the
@@ -83,8 +83,13 @@ set. A power user links their OWN init service instead. Constraints: keep the LO
 zero-config default (a plain app still writes no manifest -- the default init wires the sane
 cap set; never reintroduce CapDL-to-boot friction), and the entry RENAME is a consumer-facing
 breaking change -- settle the entry-point seam EARLY (a cheap-now-vs-break-later quick-win)
-rather than after consumers bake in `main`. Formalizes the implicit root task; not gated by
-any hardware capability, so it could land before M6.
+rather than after consumers bake in `main`. Formalizes the implicit root task. Its NATURAL
+home is the **driver era** -- spawning drivers-with-caps + a proper driver API is what turns
+"KickOS runs on one board" into "any app builds on KickOS," and the init service is a gating
+enabler for that. It is when real user apps can actually land: today KickCAT is the only
+consumer and it is a POC (one board, a driver more demo than proper API), not evidence the
+real-app story exists yet. Not gated by any hardware capability, so it pairs with the
+driver-era workstream (whatever milestone number that carries) rather than a fixed M4/M6.
 
 ### The MMU / new-platform horizon (post-M6, foundational)
 The biggest axis beyond the MCU fleet: today the whole memory model is **one physical address
