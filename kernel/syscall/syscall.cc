@@ -28,6 +28,10 @@ namespace kickos
 {
     namespace
     {
+        // B1 backstop: max yield passes kos_console_publish waits for the in-flight
+        // chip-writer count to reach 0 before declaring a stuck writer (a real bug).
+        constexpr uint32_t CONSOLE_PUBLISH_DRAIN_MAX = 1000000u;
+
         // --- Semaphore capabilities (per-task cap table over the global pool) -------
         // A sem lives in the global generational pool (slotpool.h); a task names it by
         // a per-task CAP_SEM capability (cap.h). cap_resolve is the single validate-and-
@@ -852,9 +856,32 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // the lock RELEASED, before returning. After the flip no path increments the
             // count, so it strictly drains. Root spawns the driver only after this returns,
             // so the preempted writer is off the device before the driver touches it.
+            //
+            // The scheduler is STRICT PRIORITY, so a bare busy-spin here would LIVELOCK: an
+            // in-flight writer preempted mid arch_console_write_sync (a polled loop run
+            // WITHOUT IrqLock) can only finish once rescheduled, and it may be LOWER priority
+            // than this publisher (root, typically high). Drop to the minimum real priority
+            // and yield each pass so that lower-prio writer runs to completion. Safe to
+            // drain-to-zero because the state is already USER_OWNED: no path increments the
+            // count anymore, and an in-flight writer never blocks between enter and leave (a
+            // polled write), so a non-zero count always means a RUNNABLE writer exists.
+            Thread* pub = sched::current();
+            uint8_t const saved_prio = pub->prio;
+            sched::set_prio(pub, KICKOS_PRIO_MIN);
+            // Generous bounded backstop: each pass is a full scheduler round and a poke is a
+            // handful of polled bytes, so a count that never drains is a real bug. Fail LOUD
+            // rather than hang silently or (worse) proceed while a writer still pokes the UART.
+            uint32_t guard = 0;
             while (console_chip_writers() != 0)
             {
+                sched::yield();
+                guard = guard + 1;
+                if (guard >= CONSOLE_PUBLISH_DRAIN_MAX)
+                {
+                    kpanic("console_publish: chip-writer drain did not converge");
+                }
             }
+            sched::set_prio(pub, saved_prio);
             return 0;
         }
         case KOS_SYS_thread_spawn:
