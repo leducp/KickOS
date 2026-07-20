@@ -1646,6 +1646,48 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0); // both delegated caps already torn down -> freed
         kos_sem_destroy(g_xd_done);
     }
+
+    // --- B3: index 0 is the kernel stdout slot; an own create never lands there ---------
+    void t_cap_index0()
+    {
+        // The low KCAP_INDEX_BITS bits of a cap handle are its table slot (cap.h:
+        // KCAP_INDEX_BITS == 4). cap_install scans from 1, so an own sem/endpoint/mutex
+        // create never returns slot 0 -- that slot is filled only by the console default.
+        constexpr int kIdxMask = 0xF;
+        int s = kos_sem_create(0);
+        TAP_CHECK(s >= 0 and (s & kIdxMask) != 0);
+        int e = kos_endpoint_create();
+        TAP_CHECK(e >= 0 and (e & kIdxMask) != 0);
+        int m = kos_mutex_create();
+        TAP_CHECK(m >= 0 and (m & kIdxMask) != 0);
+        TAP_CHECK(kos_handle_close(s) == 0);
+        TAP_CHECK(kos_handle_close(e) == 0);
+        TAP_CHECK(kos_handle_close(m) == 0);
+    }
+
+    // --- console_publish is privileged-only; a bad cap is rejected with no side effect --
+    int g_pub_rc = -99;
+    void pub_denied_worker(void*) // caps: done@1
+    {
+        // Unprivileged caller: rejected before any console state change, so this never
+        // actually hands over the console -- the rest of the suite keeps printing.
+        g_pub_rc = kos_console_publish(1);
+        kos_sem_post(CH_DONE);
+    }
+    void t_console_publish()
+    {
+        // Privileged MAIN: a bad/stale cap is rejected before the deinit/flip, so the
+        // console stays kernel-owned (a real publish here would silence the TAP output).
+        TAP_CHECK(kos_console_publish(-1) == -1);
+        TAP_CHECK(kos_console_publish(0x7fffffff) == -1);
+        // Unprivileged child: the privileged-only gate rejects it.
+        g_pub_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(pub_denied_worker, nullptr, "pubDen", 10, caps, 1);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        TAP_CHECK(g_pub_rc == -1);
+    }
 }
 
 int main(int, char**)
@@ -1685,6 +1727,9 @@ int main(int, char**)
 #if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
     tap::add("endpoint_bound", t_endpoint_bound); // bound-check: bad recv/send buffer -> -1
 #endif
+    // Console handover mechanism (M3 #4 stage ii-a): production syscalls, every board.
+    tap::add("cap_index0", t_cap_index0);              // B3 index-0 reservation (own create != slot 0)
+    tap::add("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     tap::add("irq_thread_ctx", t_irq);
