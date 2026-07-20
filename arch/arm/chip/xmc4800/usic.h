@@ -51,6 +51,7 @@ namespace usic
         constexpr uintptr_t TCSR = 0x038;   // Transmit Control/Status
         constexpr uintptr_t PCR = 0x03C;    // Protocol Control (mode-dependent)
         constexpr uintptr_t CCR = 0x040;    // Channel Control (MODE select)
+        constexpr uintptr_t CMTR = 0x044;   // Capture Mode Timer (capture-only; inert for ASC TX)
         constexpr uintptr_t PSR = 0x048;    // Protocol Status (mode-dependent)
         constexpr uintptr_t PSCR = 0x04C;   // Protocol Status Clear
         constexpr uintptr_t RBUFSR = 0x050; // Receiver Buffer Status
@@ -97,11 +98,12 @@ namespace usic
     // transfer -> not ready. TCSR is the same across protocols.
     constexpr uint32_t TCSR_TDV = 1u << 7;
 
-    // FMR.MTDV[5:4] (RM p.18-191): modify TDV without an RMW. 01B forces TDV to 0
-    // (clear). Reclaim uses it to drop a stale TDV word a dead-baud driver may have
-    // left, so no garbage byte precedes the polled panic banner. Write-only effect;
-    // TDV is a status bit control writes to TCSR do not clear.
-    constexpr uint32_t FMR_MTDV_CLEAR = 0x1u << 4;
+    // FMR.MTDV[1:0] (RM p.18-193): 10B clears TCSR.TDV (and TE); 01B would SET TDV.
+    // Reclaim writes 10B to drop a stale TDV word a dead-baud driver may have left:
+    // with TDV=0 the pending TBUF word is gated off (TCSR.TDEN starts a transfer
+    // only while TDV=1), so it is never sent before the polled panic banner. Write-
+    // only; TCSR control writes do not clear TDV.
+    constexpr uint32_t FMR_MTDV_CLEAR = 0x2u << 0;
 
     // CCR.TBIEN (RM p.18-160): Transmit-Buffer Interrupt Enable -- fires the
     // standard-transmit-buffer interrupt when a word moves TBUF->shifter (TBUF now
