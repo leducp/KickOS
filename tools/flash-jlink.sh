@@ -25,6 +25,7 @@ case "$FL_BOARD" in
     microbit)             dev=nRF51822_xxAA  ;;
     rx72m)                dev=R5F572MNDxBD   ;;
     picopi)               dev=RP2040_M0_0    ;;  # RP2040 core0; J-Link drives the QSPI loader
+    pizero2350)           dev=RP2350_M33_0   ;;  # RP2350 (Waveshare Pi-Zero) Cortex-M33 core0
     *) die "flash-jlink: no J-Link -device string for board '$FL_BOARD' (add a row)" ;;
 esac
 

@@ -23,11 +23,13 @@
 //     watchdog.
 //   - PADS gained an ISO (isolation) bit that resets SET and must be cleared to use
 //     a pad (9.11.3).
-//   - 52 NVIC lines; UART0_IRQ = 33 (3.2).
+//   - 52 NVIC lines; the console is on UART1 (UART1_IRQ = 34, 3.2) -- see the
+//     IO_BANK0 block below for why the Pi-Zero header forces UART1, not UART0.
 //
 // NOT run in this environment (no RP2350 model in mainline QEMU; no bench access);
-// verified by build + image inspection. Flash via BOOTSEL/picotool to confirm UART0
-// output on GP0 (pin). The board is always BOOTSEL-recoverable, so a wrong
+// verified by build + image inspection. Flash via BOOTSEL/picotool to confirm UART1
+// output on GP4 (Waveshare RP2350-Pi-Zero 40-pin header pin 8). The board is always
+// BOOTSEL-recoverable, so a wrong
 // clock/boot config cannot permanently brick it.
 
 #include <kickos/arch/arch.h>
@@ -73,7 +75,7 @@ namespace
     constexpr uint32_t RESET_PADS_BANK0 = 1u << 9;
     constexpr uint32_t RESET_PLL_SYS = 1u << 14;
     constexpr uint32_t RESET_TIMER0 = 1u << 23;
-    constexpr uint32_t RESET_UART0 = 1u << 26;
+    constexpr uint32_t RESET_UART1 = 1u << 27; // RP2350 DS Table 535 (RESETS: RESET)
 
     // --- XOSC (0x40048000, datasheet 8.2): 12 MHz crystal ---------------------
     constexpr uintptr_t XOSC_BASE = 0x40048000;
@@ -148,28 +150,33 @@ namespace
     constexpr uintptr_t TIMER0_TIMERAWL = TIMER0_BASE + 0x28;
 
     // --- IO_BANK0 (0x40028000, datasheet 9.11.1): pin function select ----------
+    // The Waveshare RP2350-Pi-Zero routes the 40-pin header UART (Pi pin 8 "TXD",
+    // pin 10 "RXD") to RP2350 GP4/GP5, NOT GP0/GP1 (board schematic, connector J5).
+    // GP4/GP5 mux ONLY UART1 (F2); UART0 does not reach these pins on any funcsel
+    // (RP2350 DS Table 2, GPIO Bank 0 functions). CTRL = base + 0x04 + n*0x08.
     constexpr uintptr_t IO_BANK0_BASE = 0x40028000;
-    constexpr uintptr_t IO_GPIO0_CTRL = IO_BANK0_BASE + 0x04; // GP0 = UART0 TX
-    constexpr uintptr_t IO_GPIO1_CTRL = IO_BANK0_BASE + 0x0c; // GP1 = UART0 RX
-    constexpr uint32_t IO_FUNCSEL_UART = 2;                   // F2 = UART0
+    constexpr uintptr_t IO_GPIO4_CTRL = IO_BANK0_BASE + 0x24; // GP4 = UART1 TX
+    constexpr uintptr_t IO_GPIO5_CTRL = IO_BANK0_BASE + 0x2c; // GP5 = UART1 RX
+    constexpr uint32_t IO_FUNCSEL_UART = 2;                   // F2 = UART1 TX/RX
 
     // --- PADS_BANK0 (0x40038000, datasheet 9.11.3) ----------------------------
     constexpr uintptr_t PADS_BANK0_BASE = 0x40038000;
-    constexpr uintptr_t PADS_GPIO0 = PADS_BANK0_BASE + 0x04;
-    constexpr uintptr_t PADS_GPIO1 = PADS_BANK0_BASE + 0x08;
+    constexpr uintptr_t PADS_GPIO4 = PADS_BANK0_BASE + 0x14; // base + 0x04 + n*0x04
+    constexpr uintptr_t PADS_GPIO5 = PADS_BANK0_BASE + 0x18;
     constexpr uint32_t PAD_ISO = 1u << 8; // pad isolation (resets SET -- clear to use)
     constexpr uint32_t PAD_OD = 1u << 7;  // output disable
     constexpr uint32_t PAD_IE = 1u << 6;  // input enable
 
-    // --- UART0 (0x40070000, datasheet 12.1): ARM PL011 -------------------------
-    constexpr uintptr_t UART0_BASE = 0x40070000;
-    constexpr uintptr_t UART0_DR = UART0_BASE + 0x00;
-    constexpr uintptr_t UART0_FR = UART0_BASE + 0x18;
-    constexpr uintptr_t UART0_IBRD = UART0_BASE + 0x24;
-    constexpr uintptr_t UART0_FBRD = UART0_BASE + 0x28;
-    constexpr uintptr_t UART0_LCR_H = UART0_BASE + 0x2c;
-    constexpr uintptr_t UART0_CR = UART0_BASE + 0x30;
-    constexpr uintptr_t UART0_IMSC = UART0_BASE + 0x38; // interrupt mask set/clear
+    // --- UART1 (0x40078000, datasheet 12.1): ARM PL011. The console is on UART1,
+    // not UART0: the Pi-Zero header TX/RX pins land on GP4/GP5, which mux only UART1.
+    constexpr uintptr_t UART1_BASE = 0x40078000;
+    constexpr uintptr_t UART1_DR = UART1_BASE + 0x00;
+    constexpr uintptr_t UART1_FR = UART1_BASE + 0x18;
+    constexpr uintptr_t UART1_IBRD = UART1_BASE + 0x24;
+    constexpr uintptr_t UART1_FBRD = UART1_BASE + 0x28;
+    constexpr uintptr_t UART1_LCR_H = UART1_BASE + 0x2c;
+    constexpr uintptr_t UART1_CR = UART1_BASE + 0x30;
+    constexpr uintptr_t UART1_IMSC = UART1_BASE + 0x38; // interrupt mask set/clear
     constexpr uint32_t FR_TXFF = 1u << 5;               // TX (single holding location) full
     constexpr uint32_t IMSC_TXIM = 1u << 5;             // transmit interrupt mask
     // baud = clk_peri / (16 x (IBRD + FBRD/64)), FBRD = round(frac x 64). clk_peri
@@ -179,7 +186,7 @@ namespace
     constexpr uint32_t UART_FBRD_115200 = 33;
     constexpr uint32_t UART_IBRD_150MHZ = 81;
     constexpr uint32_t UART_FBRD_150MHZ = 24;
-    // Chosen by clocks_init (which source clk_peri lands on), consumed by uart0_init.
+    // Chosen by clocks_init (which source clk_peri lands on), consumed by uart1_init.
     // Boot is single-threaded and sequential, so no guard is needed.
     uint32_t g_uart_ibrd = UART_IBRD_115200;
     uint32_t g_uart_fbrd = UART_FBRD_115200;
@@ -303,22 +310,22 @@ namespace
         }
     }
 
-    void uart0_init()
+    void uart1_init()
     {
-        // Route GP0/GP1 to UART0 and make the pads usable. The RP2350 pads reset
+        // Route GP4/GP5 to UART1 and make the pads usable. The RP2350 pads reset
         // ISOLATED (PAD_ISO set) -- clear it or the pad stays disconnected.
-        r32(IO_GPIO0_CTRL) = IO_FUNCSEL_UART;
-        r32(IO_GPIO1_CTRL) = IO_FUNCSEL_UART;
-        r32(PADS_GPIO0 + ATOMIC_CLR) = PAD_ISO | PAD_OD; // TX: connect, drive out
-        r32(PADS_GPIO1 + ATOMIC_CLR) = PAD_ISO;          // RX: connect
-        r32(PADS_GPIO1 + ATOMIC_SET) = PAD_IE;           // RX: input enable
+        r32(IO_GPIO4_CTRL) = IO_FUNCSEL_UART;
+        r32(IO_GPIO5_CTRL) = IO_FUNCSEL_UART;
+        r32(PADS_GPIO4 + ATOMIC_CLR) = PAD_ISO | PAD_OD; // TX: connect, drive out
+        r32(PADS_GPIO5 + ATOMIC_CLR) = PAD_ISO;          // RX: connect
+        r32(PADS_GPIO5 + ATOMIC_SET) = PAD_IE;           // RX: input enable
 
         // Divisors latch only on the subsequent LCR_H write, so order matters.
-        r32(UART0_IBRD) = g_uart_ibrd;
-        r32(UART0_FBRD) = g_uart_fbrd;
-        r32(UART0_LCR_H) = LCR_H_8N1;
-        r32(UART0_IMSC) = 0; // all UART interrupt sources masked; the ring arms TXIM
-        r32(UART0_CR) = CR_ENABLE;
+        r32(UART1_IBRD) = g_uart_ibrd;
+        r32(UART1_FBRD) = g_uart_fbrd;
+        r32(UART1_LCR_H) = LCR_H_8N1;
+        r32(UART1_IMSC) = 0; // all UART interrupt sources masked; the ring arms TXIM
+        r32(UART1_CR) = CR_ENABLE;
     }
 
     // --- Buffered console TX backend (console_tx.h). The ring drains via the PL011
@@ -327,19 +334,19 @@ namespace
     // use the RP2350 atomic set/clear aliases so no read-modify-write on IMSC. ---
     int rp_tx_slot_free(void)
     {
-        return (r32(UART0_FR) & FR_TXFF) == 0;
+        return (r32(UART1_FR) & FR_TXFF) == 0;
     }
     void rp_tx_push(uint8_t b)
     {
-        r32(UART0_DR) = b;
+        r32(UART1_DR) = b;
     }
     void rp_tx_irq_enable(void)
     {
-        r32(UART0_IMSC + ATOMIC_SET) = IMSC_TXIM;
+        r32(UART1_IMSC + ATOMIC_SET) = IMSC_TXIM;
     }
     void rp_tx_irq_disable(void)
     {
-        r32(UART0_IMSC + ATOMIC_CLR) = IMSC_TXIM;
+        r32(UART1_IMSC + ATOMIC_CLR) = IMSC_TXIM;
     }
 
     constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
@@ -347,9 +354,9 @@ namespace
     console_tx_backend const rp_console_backend = {
         rp_tx_slot_free, rp_tx_push, rp_tx_irq_enable, rp_tx_irq_disable};
 
-    // NVIC: UART0_IRQ = line 33 (RP2350 datasheet 3.2, Table 95). Only TXIM is armed,
+    // NVIC: UART1_IRQ = line 34 (RP2350 datasheet 3.2, Table 95). Only TXIM is armed,
     // so the drain ISR is the sole source on this line.
-    constexpr int UART0_IRQ = 33;
+    constexpr int UART1_IRQ = 34;
 }
 
 extern "C"
@@ -360,12 +367,12 @@ void arch_init(void)
     // Reset-release ordering is load-bearing (the RP2040 lesson): a peripheral's
     // RESET_DONE only asserts once it has a running clock. IO_BANK0/PADS_BANK0/TIMER0
     // are clocked by clk_sys/clk_ref (already live off the ROSC at reset), so release
-    // them now. UART0 is clocked by clk_peri, which is OFF until clocks_init -- release
+    // them now. UART1 is clocked by clk_peri, which is OFF until clocks_init -- release
     // it BEFORE that and its RESET_DONE never asserts, hanging the boot.
     unreset(RESET_IO_BANK0 | RESET_PADS_BANK0 | RESET_TIMER0);
     clocks_init();
-    unreset(RESET_UART0);
-    uart0_init();
+    unreset(RESET_UART1);
+    uart1_init();
     kickos_armv7m_init();
 }
 
@@ -379,14 +386,14 @@ void arch_console_write_sync(char const* buf, size_t n)
     for (size_t i = 0; i < n; i++)
     {
         uint32_t spin = 0;
-        while ((r32(UART0_FR) & FR_TXFF) != 0)
+        while ((r32(UART1_FR) & FR_TXFF) != 0)
         {
             if (++spin > 1000000u)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
-        r32(UART0_DR) = static_cast<uint8_t>(buf[i]);
+        r32(UART1_DR) = static_cast<uint8_t>(buf[i]);
     }
 }
 
@@ -394,7 +401,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 {
     *storage = console_tx_buf;
     *size = CONSOLE_TX_SIZE;
-    *irq_line = UART0_IRQ;
+    *irq_line = UART1_IRQ;
     return &rp_console_backend;
 }
 
