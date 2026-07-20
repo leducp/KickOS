@@ -175,21 +175,48 @@ namespace
         TAP_CHECK(hz == 0u or hz >= 1000000u);
     }
 
-    // Clock-select seam (M3). Emulator-safe half: an unprivileged caller (the selftest
-    // runs unprivileged) AND every emulator backend (sim/qemu/qemu-riscv use the weak
-    // arch_cpu_clock_set default) return 0 == "did not / cannot move", leaving timing
-    // untouched. The real per-chip retune + coherence tail (re-anchor / baud / re-arm)
-    // is SILICON-ONLY on XMC4800 + K64F; see docs/design-m3-clock-select.md sec 6.
+    // Clock-select seam (M3): kos_cpu_clock_set is PRIVILEGED (syscall gate returns
+    // the sentinel 0 == "cannot change" to any unprivileged caller, with NO retune).
+    // This test exercises exactly that unprivileged-reject contract. It MUST run from
+    // a spawned UNPRIVILEGED child: the selftest root thread is privileged (kmain), so
+    // a call made here would actually retune on a chip with a real backend (XMC/K64F)
+    // and leave the core clock moved for the rest of the suite. The privileged
+    // real-retune + coherence tail (re-anchor / baud / re-arm) is covered by the
+    // clockretune harness, silicon-only; see docs/design-m3-clock-select.md sec 6.
+    uint32_t g_clkset_low = 1; // child: kos_cpu_clock_set(LOW), expect 0 (rejected)
+    uint32_t g_clkset_mid = 1;
+    uint32_t g_clkset_max = 1;
+    int g_clkset_done = -1;
+    void clkset_unpriv_worker(void*) // UNPRIVILEGED; caps: g_clkset_done@1 (CH_DONE)
+    {
+        g_clkset_low = kos_cpu_clock_set(KOS_PSTATE_LOW);
+        g_clkset_mid = kos_cpu_clock_set(KOS_PSTATE_MID);
+        g_clkset_max = kos_cpu_clock_set(KOS_PSTATE_MAX);
+        kos_sem_post(CH_DONE); // g_clkset_done (delegated from main)
+    }
     void t_cpu_clock_set()
     {
         uint32_t const before = kos_cpu_clock_hz();
         uint64_t const t0 = kos_clock_now();
-        // Every P-state must come back 0 here (unprivileged / cannot-change): 0 NEVER
-        // means "moved", so this is the clean no-op case.
-        TAP_CHECK(kos_cpu_clock_set(KOS_PSTATE_LOW) == 0u);
-        TAP_CHECK(kos_cpu_clock_set(KOS_PSTATE_MID) == 0u);
-        TAP_CHECK(kos_cpu_clock_set(KOS_PSTATE_MAX) == 0u);
-        // The seam left the clock and the monotonic time base untouched.
+        g_clkset_low = 1;
+        g_clkset_mid = 1;
+        g_clkset_max = 1;
+        g_clkset_done = kos_sem_create(0);
+        kos_cap_grant caps[] = {{g_clkset_done, CH_FULL}}; // g_clkset_done@1 (CH_DONE)
+        int w = kos::thread::spawn_caps(clkset_unpriv_worker, nullptr, "clkset", 10, caps, 1);
+        if (w < 0)
+        {
+            kos::print("# cpu_clock_set: SKIP (thread pool too small)\n");
+            kos_sem_destroy(g_clkset_done);
+            return;
+        }
+        kos_sem_wait(g_clkset_done);
+        kos_sem_destroy(g_clkset_done);
+        // Unprivileged: the gate refuses every P-state -> 0, so no real retune fired.
+        TAP_CHECK(g_clkset_low == 0u);
+        TAP_CHECK(g_clkset_mid == 0u);
+        TAP_CHECK(g_clkset_max == 0u);
+        // The rejected seam left the clock and the monotonic time base untouched.
         TAP_CHECK(kos_cpu_clock_hz() == before);
         TAP_CHECK(kos_clock_now() >= t0);
     }
