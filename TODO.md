@@ -21,14 +21,18 @@ board/console readiness matrix is `docs/m2-readiness.md`.
       `reference/architecture.md`.
 
 Remaining M3 (to finish the milestone) -- gated flow (fable design review -> branch -> silicon):
-- [ ] **Writable user-pointer bound-check** at the syscall boundary (arch-neutral). Prerequisite:
-      a recv into an unchecked out-buffer is a privileged write oracle. (See the parked syscall-arg
-      validation item lower in this file.)
-- [ ] **Endpoint/IPC object (CAP_ENDPOINT)** -- additive per `docs/design-m3-substrate.md`:
-      `SlotPool<Endpoint,N>` + `endpoint_refs` + one `cap_resolve` case + obj_ref_inc/drop and
-      obj_close_protocol (EPIPE-wake) arms; synchronous rendezvous, kernel-copied bounded payload,
-      parks on the shared `wq_block`/`wq_pop_highest` primitive; badging object-side; send/recv
-      syscalls (recv gated on the bound-check above). CapEntry stays frozen (CAP_ENDPOINT reserved).
+- [x] **Writable user-pointer bound-check** at the syscall boundary (arch-neutral) -- landed
+      ade1879 (`user_writable_ok`; clock_now retrofitted). A recv into an unchecked out-buffer was a
+      privileged write oracle; the endpoint recv buf + badge-out reuse it.
+- [x] **Endpoint/IPC object (CAP_ENDPOINT)** -- additive per `docs/design-m3-endpoint-stagei.md`
+      (fable-reviewed): `SlotPool<Endpoint,N>` + `endpoint_refs` + `recv_holders` (struct field) +
+      one `cap_resolve` case + obj_ref_inc(rights)/drop and obj_close_protocol (EPIPE-wake) arms;
+      synchronous rendezvous, kernel-copied bounded payload, parks on the shared `wq_block`/
+      `wq_pop_highest` primitive; send/recv/create syscalls 26/27/28 (recv gated on the writable
+      check). Aliases/object-side badging DEFERRED (root-only; console needs one unbadged cap).
+      Landed on master; SILICON-VALIDATED UNDER ENFORCEMENT on K64F (SYSMPU) + XMC4800 (PMSA),
+      selftest 39/39 each incl. the HAVE_MPU-gated endpoint_bound + crossdomain (emulator qemu
+      armv7m + qemu-riscv 37/37). Rest of the fleet build-only (only k64f/xmc on the bench).
 - [ ] **Console device handover** (`docs/design-m3-console-handover.md`) -- a userspace UART driver
       takes the console as a capability. Publish-BEFORE-spawn: `console_tx_deinit` under one IrqLock
       (state=USER_OWNED set last), THEN spawn the driver with the MMIO grant + a console endpoint.
