@@ -9,6 +9,9 @@ is `M1_raw_meas.md` (+ `M1_state.md`); the M1-vs-M3 delta table is at the bottom
 
 Bench window: 2026-07-20. Repo branch `m3-integration`, kernel/app tree at `5f3574b`
 (this doc committed on top). Toolchain per `.session/env.sh` (full-C++ ARM GNU 15.3).
+Correction re-run 2026-07-20 (same bench window): the selftest `t_cpu_clock_set` TEST bug (see
+Findings #1) was fixed and BOTH boards re-flashed -> 42/42. The XMC/K64F selftest captures below
+are the corrected 42/42 runs; the kernel/PI/clock-select code was NOT changed.
 
 Probe / VCOM map resolved LIVE this session (SN drifts across USB swaps -- do not trust literals):
 - XMC4800-Relax: J-Link `1366:1024` SN `000591165896` -> `/dev/serial/by-id/usb-SEGGER_J-Link_000591165896-if00`
@@ -32,7 +35,12 @@ Bench conditions vs M1 (fairness):
 Build: preset `xmc4800-relax-st` + `-DKICKOS_HAVE_MPU=1`, target `selftest`
 (`build/xmc4800-relax-st/user/apps/selftest/selftest`).
 Flash: `JLINK_SN=000591165896 FLASH_BUILD=.../build/xmc4800-relax-st tools/flash-jlink.sh xmc4800-relax selftest` -> OK (loadfile, r;g).
-Result: **41/42 pass, 1 fail** (`not ok 5 - cpu_clock_set`).
+Result: **42/42 pass, 0 fail** (corrected; source log `.session/logs/xmc4800-selftest-42-20260720-182545.log`).
+Note: the earlier 41/42 (`not ok 5 - cpu_clock_set`) was a TEST bug, now fixed -- the test called
+the privileged-only clock-select syscall from the privileged root thread, which really RETUNED on
+XMC silicon and returned a non-zero landed Hz (the emulators have no retune backend, so it read 0
+there). The test now exercises the unprivileged-reject contract from a spawned unprivileged child;
+no retune fires. Kernel/clock-select code was unchanged.
 ```
   ==============================================
    KickOS 0.0.1  -  microkernel RTOS
@@ -41,8 +49,8 @@ Result: **41/42 pass, 1 fail** (`not ok 5 - cpu_clock_set`).
    arch    armv7m
    mpu     enforce
    sched   tickless
-   build   Jul 20 2026 17:57:52
-   app     Jul 20 2026 17:57:52
+   build   Jul 20 2026 18:24:41
+   app     Jul 20 2026 18:24:41
 
 1..42
 # [svc] console_write roundtrip
@@ -50,7 +58,7 @@ ok 1 - svc_roundtrip
 ok 2 - fifo_order
 ok 3 - preempt_on_ready
 ok 4 - cpu_clock_hz
-not ok 5 - cpu_clock_set # /home/leduc/projets/KickOS/user/apps/selftest/main.cc:189: kos_cpu_clock_set(KOS_PSTATE_LOW) == 0u
+ok 5 - cpu_clock_set
 ok 6 - rr_interleave
 ok 7 - sleep_order
 ok 8 - multi_wait
@@ -89,7 +97,7 @@ ok 40 - domain_share
 ok 41 - mmio_grant
 # [confdep] unpriv rodata literal reaches the console
 ok 42 - confused_deputy
-# 1 test(s) failed
+# all tests passed
 ```
 
 ### bench (no MPU, telemetry OFF -- matches M1)
@@ -179,8 +187,12 @@ Source log: `.session/logs/xmc-consoledemo.log` (2026-07-20). App `consoledemo`,
 Build: preset `frdmk64f-st` + `-DKICKOS_HAVE_MPU=1`, target `selftest`
 (`build/frdmk64f-st/user/apps/selftest/selftest`).
 Flash: `JLINK_SN=000621000000 FLASH_BUILD=.../build/frdmk64f-st tools/flash-jlink.sh frdmk64f selftest` -> OK (loadfile, r;g).
-Result: **40/42 pass, 2 fail** (`not ok 5 - cpu_clock_set`, `not ok 14 - mutex_chain_boost`).
-Both failures reproduce IDENTICALLY across 3 consecutive reset-and-rerun cycles (deterministic, not a flake).
+Result: **42/42 pass, 0 fail** (corrected; source log `.session/logs/frdmk64f-selftest-42-20260720-182603.log`).
+Note: the earlier 40/42 was the SAME single test bug as XMC. The privileged root thread really
+retuned the K64F down to `KOS_PSTATE_LOW`, then `cpu_clock_set` (`not ok 5`) aborted on first
+TAP_CHECK BEFORE restoring MAX, so tests 6-42 ran at the too-slow ~20.97 MHz -- which is what
+made `mutex_chain_boost` (`not ok 14`) lose its timing race. With the test fixed (unprivileged
+child, no retune), the clock stays at boot MAX and BOTH pass. Kernel/PI/clock-select unchanged.
 ```
   ==============================================
    KickOS 0.0.1  -  microkernel RTOS
@@ -189,8 +201,8 @@ Both failures reproduce IDENTICALLY across 3 consecutive reset-and-rerun cycles 
    arch    armv7m
    mpu     enforce
    sched   tickless
-   build   Jul 20 2026 17:59:26
-   app     Jul 20 2026 17:59:26
+   build   Jul 20 2026 18:24:48
+   app     Jul 20 2026 18:24:48
 
 1..42
 # [svc] console_write roundtrip
@@ -198,7 +210,7 @@ ok 1 - svc_roundtrip
 ok 2 - fifo_order
 ok 3 - preempt_on_ready
 ok 4 - cpu_clock_hz
-not ok 5 - cpu_clock_set # /home/leduc/projets/KickOS/user/apps/selftest/main.cc:189: kos_cpu_clock_set(KOS_PSTATE_LOW) == 0u
+ok 5 - cpu_clock_set
 ok 6 - rr_interleave
 ok 7 - sleep_order
 ok 8 - multi_wait
@@ -207,7 +219,7 @@ ok 10 - sem_destroy_quiescent
 ok 11 - sem_raii
 ok 12 - mutex_basic
 ok 13 - mutex_pi_donation
-not ok 14 - mutex_chain_boost # /home/leduc/projets/KickOS/user/apps/selftest/main.cc:809: nth('e', 1) < nth('d', 1)
+ok 14 - mutex_chain_boost
 ok 15 - mutex_owner_died
 ok 16 - mutex_deadlock
 ok 17 - mutex_close_owned
@@ -237,7 +249,7 @@ ok 40 - domain_share
 ok 41 - mmio_grant
 # [confdep] unpriv rodata literal reaches the console
 ok 42 - confused_deputy
-# 2 test(s) failed
+# all tests passed
 ```
 
 ### bench (no MPU, telemetry OFF -- matches M1)
@@ -336,29 +348,32 @@ M3-only probes (no M1 baseline):
   (K64F DWT dead: reads 1 cyc).
 
 Verdict:
-- **XMC4800-Relax: PASS** (selftest 41/42 -- the lone fail is `cpu_clock_set`, see below;
-  bench clean with a small, expected M3 switch/IRQ regression; clock-retune monotonic; console handover OK).
-- **FRDM-K64F: PASS-WITH-FINDINGS** (selftest 40/42; bench wall-clock valid but DWT cyc dead;
-  clock-retune monotonic). Two deterministic selftest failures below.
+- **XMC4800-Relax: PASS** (selftest 42/42 after the test fix below; bench clean with a small,
+  expected M3 switch/IRQ regression; clock-retune monotonic; console handover OK).
+- **FRDM-K64F: PASS** (selftest 42/42 after the test fix below; bench wall-clock valid but DWT
+  cyc dead -- finding #3; clock-retune monotonic).
 
 --------------------------------------------------------------------------------
 
-## Findings (captured verbatim, NOT fixed -- validation pass)
+## Findings
 
-1. **`cpu_clock_set` fails under enforcement on BOTH boards** (`not ok 5`,
-   `main.cc:189: kos_cpu_clock_set(KOS_PSTATE_LOW) == 0u`). The clockretune harness (a
-   *privileged* app) drives the same set to LOW and back successfully (see its capture:
-   `after set(LOW): cpu_clock_hz = 48000000` on XMC, `= 20971520` on K64F). So the syscall
-   works from a privileged caller; the selftest thread is unprivileged and gets a non-zero
-   return. Consistent across both boards -> looks like a privilege-gating mismatch between the
-   test expectation and the M3 `cpu_clock_set` syscall, not board-specific silicon. NOT fixed.
+1. **`cpu_clock_set` + K64F `mutex_chain_boost` -- FIXED (single test bug).** The original 41/42
+   (XMC) and 40/42 (K64F) were ONE selftest bug, not a kernel/silicon issue. `t_cpu_clock_set`
+   asserted `kos_cpu_clock_set(...) == 0` (the unprivileged-reject sentinel) but ran on the
+   selftest ROOT thread, which is unconditionally PRIVILEGED (kmain). `cpu_clock_set` is
+   privileged-only, so on a chip with a real retune backend (XMC/K64F) the privileged call
+   actually RETUNED and returned a non-zero landed Hz -> `not ok 5`. Worse, TAP_CHECK aborts on
+   first failure, so the test bailed AFTER `set(LOW)` and never restored MAX; on K64F the whole
+   suite then ran at ~20.97 MHz, and that too-slow clock lost the timing race in
+   `mutex_chain_boost` -> `not ok 14`. The emulators "passed" only because they have no retune
+   backend (weak default returns 0). Fix (test-only, kernel untouched): `t_cpu_clock_set` now
+   spawns an UNPRIVILEGED child that calls `kos_cpu_clock_set` for each P-state and reports the
+   result; the parent asserts the child saw 0 (privilege gate refuses -> no retune, clock stays
+   at boot MAX). Privileged real-retune coverage stays in the `clockretune` harness. Re-validated
+   2026-07-20: BOTH boards 42/42 (`ok 5 - cpu_clock_set`, `ok 14 - mutex_chain_boost`); source
+   logs `.session/logs/{xmc4800,frdmk64f}-selftest-42-*.log`.
 
-2. **K64F `mutex_chain_boost` fails deterministically** (`not ok 14`,
-   `main.cc:809: nth('e', 1) < nth('d', 1)`). A priority-inheritance chain-boost ordering
-   assertion. Reproduced identically on 3/3 reset-and-rerun cycles -- deterministic, not a
-   timing flake. XMC passes this same test. K64F-specific ordering result. NOT fixed.
-
-3. **K64F bench DWT cycle counter reads 0 free-running** (`switch 0/0/0 cyc`, `irq`/`wcase-irq`
+2. **K64F bench DWT cycle counter reads 0 free-running** (`switch 0/0/0 cyc`, `irq`/`wcase-irq`
    `1/1/1 cyc`). Deterministic across reruns. Wall-clock (`clock_now`) numbers unaffected and
    valid. XMC DWT counts normally (79 cyc etc.). The M1 K64F record (77 cyc/641 ns) came from a
    DWT-live run, so this pass cannot produce a comparable K64F cyc delta. NOT fixed.
