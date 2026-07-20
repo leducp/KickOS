@@ -566,3 +566,54 @@ decision itself.
 - The clock-tree rate-change fan-out  MATTERS ONLY ONCE  multiple derived-clock consumers
   (drivers) exist -- so clock-tree SERVICE follows the first drivers, though the clock
   MECHANISM (G4) can precede them.
+
+## 6. M4 design decisions (fable review 2026-07-20 + review discussion)
+
+Adversarial review in `design-m4-fable-review.md`; these are the accept/revise calls that
+supersede the earlier prose above where they differ.
+
+- **Clock: there IS an M4 service, scoped to the SAFE parts; only the live cascade defers.**
+  Three-way split: (1) a clock ORACLE -- a driver queries its PARENT/BRANCH clock (a UART
+  needs its fPERIPH for baud, SPI its prescaler); `sys_cpu_clock_hz()` only gives the CORE
+  clock, so this is a real, read-only, cascade-free need, AND it is the seam a later
+  rate-change notify walks. (2) one-shot BOOT tree config/select+gate per branch (pinmux-
+  shaped, privileged pokes behind the kernel seam). (3) the live DVFS rate-change CASCADE
+  (cross-domain notify -> quiesce -> re-derive, a two-phase commit across untrusted drivers)
+  is DEFERRED and built against the CONSOLE as the first forced notify instance (M3 today
+  merely REFUSES a retune while the console is USER_OWNED -- `clock_select.cc:32`, verified
+  correct; that refuse-path is where the handshake grows). Authority is a SYSCALL-GATING
+  capability, never an SCU/RCC MMIO grant (that window ungates any peripheral / kills the
+  kernel timer clock); the kernel keeps every shared-clock-block register, so a service bug
+  is restartable policy, not a flash/PLL hard fault. Fixes the roadmap "Later/clock-tree" prose.
+- **GPIO: driver-owned CS output is IN M4 (finding 9 corrected).** The KickCAT ESC SPI needs
+  a driver-controlled CS: the K64F POC reached OPERATIONAL on hardware PCS0 (PTC4), but the
+  driver-era generalization -- multi-device buses (one HW PCS, N devices), boards whose CS
+  net has no HW-PCS pin, and transactions holding CS across FIFO refills -- forces a
+  driver-owned GPIO CS. It is served by the EXISTING grant-at-spawn MMIO mechanism (task #9),
+  NOT new runtime minting. This makes the per-chip MUX-FREE-WINDOW gate load-bearing: on XMC
+  the GPIO data window is inseparable from IOCR, so a CS-toggle grant also grants pin-remux
+  (escalation) -- the homework is to expose an atomic set/clear window excluding the mux,
+  pinmux staying a one-shot privileged init step (moot on K64F: coarse-AIPS = documentation).
+  Shared ports use a non-blocking demux (per-subscription semaphore/notification with
+  sticky-pending, ack ISFR before delivery -- NEVER a parked rendezvous send, which would let
+  one slow subscriber deafen the whole port). DEFERRED: runtime-mint-and-delegate per-pin caps
+  (no forcing consumer -- CS is covered by spawn-time grant) unless dynamic pin allocation lands.
+- **Call/reply must carry the scheduling contract (finding 4).** Synchronous SPI/I2C over
+  CAP_ENDPOINT without priority donation = unbounded inversion on every transaction (KickCAT
+  cyclic traffic is the victim). The reply-cap design gate MUST include direct-handoff /
+  priority donation on call (as sem_post's token handoff already does), else it is not an
+  RTOS API.
+- **Transfer ABI is offset-based from day one (finding 10, the one M6 landmine).** A large-
+  transfer request speaks {region-cap, offset, len}, never a raw pointer -- cheap now, an
+  ABI break at M6 when a domain becomes a page-table root. Pull the QW-3 DISCIPLINE (not the
+  ring impl) into the M4 call/reply gate.
+- **Timed / abortable IPC -> EARLY-M4.** Gates BOTH the clock-cascade quiesce-timeout and a
+  driver-death waiter wake. Open since the handover spike; call/reply makes it load-bearing.
+- **Driver crash/restart + resource reclaim** (pin caps, clock-gate refcounts, AIPS slots,
+  endpoint holders) is a named M4 gap -- only the panic-path console reclaim exists today.
+- **RP2350 M33 arch question (settle in this pass).** The M33 is ARMv8-M Mainline; KickOS rides
+  the `armv7m` layer for the core (NVIC/SysTick/SVC/BASEPRI/regfile are a v7-M superset --
+  first silicon 40/40 mpu-off) and diverges only at the MPU: PMSAv8 (RBAR+RLAR+MAIR) is a
+  different unit from v7-M PMSAv7 (RBAR+RASR), so enforcement needs a new v8-M backend
+  (`design-rp2350-mpu-armv8m.md`). Decide: "armv7m board + v8-M MPU backend" vs a real
+  `armv8m` arch split. Gates M4 (RP2350 enforcement) and M5 (dual-M33 SMP endgame).
