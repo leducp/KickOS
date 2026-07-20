@@ -78,6 +78,12 @@ if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
   add_subdirectory(xmcspi)
 endif()
 
+# XMC4800 console handover demo -- the kernel relinquishes the UART to the
+# unprivileged kickos_xmcuart driver and a worker's printf reaches the wire through
+# it (M3 #4 stage ii-a). Self-gates on xmc4800-relax + enforcement in its own
+# CMakeLists; a real user app, so no KICKOS_ENABLE_SELFTEST requirement.
+add_subdirectory(consoledemo)
+
 # ESP32-C6 GPIO10 blink -- the canonical per-thread peripheral-MMIO isolation
 # reference on RISC-V PMP (GPIO/IO_MUX/APM bring-up + the one-time APM open), so only
 # for the esp32c6-wroom board and enforcement builds; also self-gates on
