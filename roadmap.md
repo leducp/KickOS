@@ -101,6 +101,21 @@ driver cannot safely touch (flash wait states, voltage/regulator scaling, PLL re
 kernel-side behind the seam; the power manager drives policy through it. Pairs with the driver
 era + the init service; the M3 seam is the stepping stone, not the final home.
 
+**The fuller vision -- a clock-tree service.** The service is really the OWNER of the whole
+clock TREE: the PLL, dividers/muxes, and the tree-level clock gates (which live in the shared
+SCU/RCC/SIM block, NOT per-peripheral windows, so they are refcounted CENTRALLY -- a branch
+feeding two peripherals gates off only when both are idle; per-driver gating covers only a
+peripheral's LOCAL enable). Because peripheral clocks are DERIVED from the shared PLL, a rate
+change CASCADES: every derived-clock consumer must re-derive (a UART re-derives baud, an SPI
+its prescaler) -- a rate-change-notifier fan-out (Linux Common-Clock-Framework shape). The
+kernel is itself such a consumer (its monotonic clock + timer), so it can never fully leave:
+the irreducible KERNEL RESIDUE is (a) re-anchor its own clock atomically on a rate change, and
+(b) gate the safety-critical privileged steps (flash wait-states, voltage/regulator, PLL
+relock) so a service BUG is wrong policy (restartable), not a flash-controller hard-fault.
+Authority is a delegatable clock-control CAPABILITY (the service holds it like a driver holds
+an MMIO grant), not full privilege. This is the console-handover pattern applied to the clock:
+machinery -> userspace service, kernel keeps only the re-anchor + privileged-step residue.
+
 ### The MMU / new-platform horizon (post-M6, foundational)
 The biggest axis beyond the MCU fleet: today the whole memory model is **one physical address
 space + per-thread MPU regions**. A real **MMU (VMSA / page tables)** adds virtual address spaces
