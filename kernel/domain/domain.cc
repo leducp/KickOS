@@ -59,6 +59,23 @@ namespace kickos
         g_default_user->region_count = 0;
     }
 
+    // Region-set accessors. domain.cc is the backing-store owner: writers below
+    // (domain_init, domain_for) touch regions[] directly; every OTHER reader goes
+    // through these, so the representation can change under them (MMU era).
+    size_t domain_region_count(Domain const* d)
+    {
+        if (d == nullptr)
+        {
+            return 0;
+        }
+        return d->region_count;
+    }
+
+    arch_mpu_region const* domain_region_at(Domain const* d, size_t i)
+    {
+        return &d->regions[i];
+    }
+
     Domain* domain_kernel(void)
     {
         return g_kernel;
@@ -96,11 +113,14 @@ namespace kickos
             for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
             {
                 Domain& d = k.domains[i];
-                if (d.refcount > 0 and not d.privileged and d.region_count == 1
-                    and d.regions[0].base == base and d.regions[0].size == rsz
-                    and d.regions[0].attr == (ARCH_MPU_R | ARCH_MPU_W))
+                if (d.refcount > 0 and not d.privileged and domain_region_count(&d) == 1)
                 {
-                    return &d;
+                    arch_mpu_region const* r0 = domain_region_at(&d, 0);
+                    if (r0->base == base and r0->size == rsz
+                        and r0->attr == (ARCH_MPU_R | ARCH_MPU_W))
+                    {
+                        return &d;
+                    }
                 }
             }
         }
