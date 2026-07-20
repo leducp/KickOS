@@ -196,10 +196,12 @@ endif()
 # AND the arch ships a real arch_mpu_apply -- otherwise arch_domain_static_regions
 # reads the WEAK __kickos_appdata_* symbols as 0, grants zero regions, and the "MPU"
 # build enforces nothing. Capability is an EXPLICIT per-port opt-in, not inferred from
-# the linker plumbing: a validated chip ships arch/<family>/chip/<chip>/mpu.cmake
-# (KICKOS_CHIP_ENFORCES_MPU ON); a chip that merely has the .appdata block but is
-# unvalidated (imxrt1062, MPU deferred) ships none and is rejected here. The sim
-# enforces via host mprotect (no chip, no linker script) and is capable by arch.
+# the linker plumbing: a chip ships arch/<family>/chip/<chip>/mpu.cmake
+# (KICKOS_CHIP_ENFORCES_MPU ON); a chip that merely has the .appdata block but ships
+# no such file is rejected here. imxrt1062 (teensy41) ships one as BUILD-ONLY
+# scaffolding -- its enforcement path compiles but has never run on silicon (see the
+# chip mpu.cmake SILICON-PENDING note). The sim enforces via host mprotect (no chip,
+# no linker script) and is capable by arch.
 set(KICKOS_CHIP_ENFORCES_MPU OFF)
 if(KICKOS_ARCH STREQUAL "sim")
   set(KICKOS_CHIP_ENFORCES_MPU ON)
@@ -216,7 +218,7 @@ if(KICKOS_HAVE_MPU AND NOT KICKOS_CHIP_ENFORCES_MPU)
     "enforcement would be a silent no-op (arch_domain_static_regions grants zero "
     "regions because the linker script carves no KICKOS_HAVE_MPU .appdata window). "
     "Enforcement-capable boards today: sim, frdmk64f, f411disco, picopi, "
-    "xmc4800-relax, qemu-riscv, esp32c6-wroom, rx72m. Either build '${KICKOS_BOARD}' "
+    "xmc4800-relax, teensy41, qemu-riscv, esp32c6-wroom, rx72m. Either build '${KICKOS_BOARD}' "
     "without KICKOS_HAVE_MPU, or bring the port up: add a KICKOS_HAVE_MPU .appdata "
     "window to its linker script and drop a mpu.cmake (KICKOS_CHIP_ENFORCES_MPU ON) "
     "beside it once enforcement is validated on hardware.")
