@@ -252,6 +252,11 @@ before publish returns (it lowers its own priority and yields so a lower-priorit
 can finish -- the scheduler is strict-priority). The panic path funnels through
 `kpanic_enter`, which flips a handed-over UART to `RECLAIMED` and polled-prints.
 
+Known artifact (XMC4800 ASC): if the crashed driver cleared `SCTR.PDL`, the TX pin is
+held low across the fault, and reclaim's return to idle-high frames exactly one spurious
+leading byte (~`0xC0`) before the panic banner. It is a physical UART line-recovery
+transient (not lost/garbled output); the banner and fault dump that follow are byte-clean.
+
 Still **not built**: the real `arch_console_reclaim` bodies (the per-chip full-window
 register rewrite that recovers a UART a buggy driver scrambled -- the wiring exists, the
 bodies are a weak no-op today) and the userspace UART driver itself. See

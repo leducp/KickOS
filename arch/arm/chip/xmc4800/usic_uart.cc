@@ -218,14 +218,25 @@ void arch_console_reclaim(void)
     u::reg32(U0C0 + u::off::PCR) = PCR_ASC_SP | PCR_ASC_SMD | PCR_ASC_TSTEN;
     u::select_input(U0C0, u::off::DX0CR, DX0_DSEL_B); // DX0 RX input mux
 
-    // (d) Drop a stale Transmit-Data-Valid word (dead-baud driver) so no garbage byte
-    // precedes the banner. FMR.MTDV=01 clears TDV without an RMW (TCSR control writes
-    // above do not clear the TDV status bit).
+    // (d) Drop a stale Transmit-Data-Valid word a hostile driver may have loaded into
+    // TBUF (TDV=1): FMR.MTDV=10B clears TDV so the pending word is gated off and never
+    // sent (TCSR.TDEN starts a transfer only while TDV=1). Absolute write; TCSR control
+    // writes above do not clear the TDV status bit. (This does NOT remove the leading
+    // reconfig byte -- see the KNOWN ARTIFACT note at (e).)
     u::reg32(U0C0 + u::off::FMR) = u::FMR_MTDV_CLEAR;
 
     // (e) Clear stale protocol status flags, then re-enable the channel LAST (config
     // must be complete before the enabling MODE write). TBIEN stays clear: panic is
     // polled, not IRQ-driven.
+    //
+    // KNOWN ARTIFACT: a driver that clears SCTR.PDL (passive level -> 0) drives the ASC
+    // TX pin (P1.5 ALT2 = DOUT) LOW; the line stays low across the fault and this reclaim
+    // and only returns to idle-high at the SCTR (PDL=1) write above / this MODE re-enable.
+    // The receiver frames that single low->high recovery edge as ONE spurious leading
+    // byte (~0xC0) before the banner. It is a physical line-recovery transient, not a
+    // TBUF/TDV word (clearing TDV at (d) does not remove it); the banner + dump that
+    // follow are byte-clean. Unavoidable from the TX side once the line has been pinned
+    // low past a frame boundary.
     u::reg32(U0C0 + u::off::PSCR) = 0xFFFFFFFFu;
     u::reg32(U0C0 + u::off::CCR) = CCR_MODE_ASC;
 }
