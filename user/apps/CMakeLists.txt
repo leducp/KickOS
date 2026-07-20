@@ -84,6 +84,10 @@ endif()
 # CMakeLists; a real user app, so no KICKOS_ENABLE_SELFTEST requirement.
 add_subdirectory(consoledemo)
 
+# Privileged runtime clock-retune HW harness -- self-gates on KICKOS_CLOCK_RETUNE_TEST
+# (OFF by default) + xmc4800-relax/frdmk64f + enforcement in its own CMakeLists.
+add_subdirectory(clockretune)
+
 # ESP32-C6 GPIO10 blink -- the canonical per-thread peripheral-MMIO isolation
 # reference on RISC-V PMP (GPIO/IO_MUX/APM bring-up + the one-time APM open), so only
 # for the esp32c6-wroom board and enforcement builds; also self-gates on
