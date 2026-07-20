@@ -57,6 +57,7 @@ namespace usic
         constexpr uintptr_t RBUF = 0x054;   // Receiver Buffer (read releases buffer)
         constexpr uintptr_t RBUF0 = 0x05C;  // Receiver Buffer 0
         constexpr uintptr_t RBUF1 = 0x060;  // Receiver Buffer 1
+        constexpr uintptr_t FMR = 0x068;    // Flag Modification (TDV/TBI/... modify)
         constexpr uintptr_t TBUF0 = 0x080;  // Transmit Buffer input location 0
         constexpr uintptr_t TBCTR = 0x108;  // Transmit FIFO Buffer Control
         constexpr uintptr_t RBCTR = 0x10C;  // Receive FIFO Buffer Control
@@ -95,6 +96,12 @@ namespace usic
     // TCSR.TDV (RM p.18-189): the transmit buffer still holds a word pending
     // transfer -> not ready. TCSR is the same across protocols.
     constexpr uint32_t TCSR_TDV = 1u << 7;
+
+    // FMR.MTDV[5:4] (RM p.18-191): modify TDV without an RMW. 01B forces TDV to 0
+    // (clear). Reclaim uses it to drop a stale TDV word a dead-baud driver may have
+    // left, so no garbage byte precedes the polled panic banner. Write-only effect;
+    // TDV is a status bit control writes to TCSR do not clear.
+    constexpr uint32_t FMR_MTDV_CLEAR = 0x1u << 4;
 
     // CCR.TBIEN (RM p.18-160): Transmit-Buffer Interrupt Enable -- fires the
     // standard-transmit-buffer interrupt when a word moves TBUF->shifter (TBUF now

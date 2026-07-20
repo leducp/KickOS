@@ -183,6 +183,53 @@ void kickos_xmc_usic_init(void)
     u::reg32(P1_IOCR4) = iocr;
 }
 
+// Panic-path reclaim (console.cc D6): force U0C0 back to a known polled-ready ASC
+// channel after a userspace driver may have garbled EVERY writable register inside
+// its granted 0x200 window. Runs with IRQs masked, privileged; MUST be idempotent +
+// re-entrant, so it is straight-line ABSOLUTE stores only -- NO read-modify-write on
+// any driver-touched register (an RMW on a garbled value is not safe to repeat from a
+// nested-fault re-entry). Overrides the weak no-op in console.cc.
+//
+// Reclaim depth = rewrite every in-window writable register init sets (baud/mode/DMA/
+// IRQ) PLUS the ones init leaves at reset default that a hostile driver can set to
+// cause SILENT LOSS -- here KSCFG.MODEN (module clock gate). Registers OUTSIDE the
+// window (SCU_CGATCLR0/PRCLR0 system clock gate, P1_IOCR4 pin mux) are privileged and
+// unreachable by the driver -> intact -> not touched.
+void arch_console_reclaim(void)
+{
+    // (a) Module kernel clock FIRST. The driver can clear KSCFG.MODEN (window offset
+    // 0x00C), which gates the channel kernel clock; with it off EVERY later write here
+    // is silently dropped and the banner is lost. kernel_clock_enable writes
+    // MODEN|BPMODEN (absolute) and does the RM-mandated read-back before further access.
+    u::kernel_clock_enable(U0C0);
+
+    // (b) Stop the channel and any driver FIFO/DMA/mode before reprogramming. Disabling
+    // via CCR.MODE=0 halts an in-flight transfer; the FIFO controls may have been armed
+    // by the driver (init never touches them).
+    u::reg32(U0C0 + u::off::CCR) = 0;
+    u::reg32(U0C0 + u::off::TBCTR) = 0;
+    u::reg32(U0C0 + u::off::RBCTR) = 0;
+
+    // (c) Re-establish baud + full ASC config to the exact init values. TCSR absolute
+    // store also clears any DMA-trigger / interrupt-enable bits the driver set.
+    u::set_baud(U0C0, u::BAUD_115200_72MHZ); // FDR + BRG
+    u::reg32(U0C0 + u::off::SCTR) = SCTR_WLE_8 | SCTR_FLE_8 | SCTR_TRM_ACTIVE | SCTR_PDL;
+    u::reg32(U0C0 + u::off::TCSR) = TCSR_TDEN_TDV | TCSR_TDSSM;
+    u::reg32(U0C0 + u::off::PCR) = PCR_ASC_SP | PCR_ASC_SMD | PCR_ASC_TSTEN;
+    u::select_input(U0C0, u::off::DX0CR, DX0_DSEL_B); // DX0 RX input mux
+
+    // (d) Drop a stale Transmit-Data-Valid word (dead-baud driver) so no garbage byte
+    // precedes the banner. FMR.MTDV=01 clears TDV without an RMW (TCSR control writes
+    // above do not clear the TDV status bit).
+    u::reg32(U0C0 + u::off::FMR) = u::FMR_MTDV_CLEAR;
+
+    // (e) Clear stale protocol status flags, then re-enable the channel LAST (config
+    // must be complete before the enabling MODE write). TBIEN stays clear: panic is
+    // polled, not IRQ-driven.
+    u::reg32(U0C0 + u::off::PSCR) = 0xFFFFFFFFu;
+    u::reg32(U0C0 + u::off::CCR) = CCR_MODE_ASC;
+}
+
 void kickos_xmc_usic_write(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
