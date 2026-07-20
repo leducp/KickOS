@@ -19,6 +19,19 @@ kickos_add_application(consoledemo
 # The polled UART TX transport is the exported kickos_xmcuart driver, not a local copy.
 target_link_libraries(consoledemo PRIVATE kickos_xmcuart)
 
+# Scramble-then-panic reclaim test mode (design D-test 3). OFF by default: this is a
+# deliberate HARDWARE test, not the normal handover demo. When ON, consoledemo spawns
+# an unprivileged scrambler that garbles the granted U0C0 window to the true silent-
+# loss state (KSCFG.MODEN=0, gated clock) and then forces an MPU fault, so an operator
+# can confirm the "KERNEL PANIC" banner STILL reaches the wire (arch_console_reclaim
+# recovered the UART). Enable with -DKICKOS_SCRAMBLE_TEST=ON. PASS is silicon-observable.
+option(KICKOS_SCRAMBLE_TEST "consoledemo: scramble-then-panic console-reclaim test mode" OFF)
+if(KICKOS_SCRAMBLE_TEST)
+  target_compile_definitions(consoledemo PRIVATE CONSOLEDEMO_SCRAMBLE_TEST=1)
+else()
+  target_compile_definitions(consoledemo PRIVATE CONSOLEDEMO_SCRAMBLE_TEST=0)
+endif()
+
 # No CTest gate: this app answers a HARDWARE question (userspace UART ownership +
 # the client->driver->wire path) and is validated by the operator on silicon (XMC
 # has no QEMU model; a live publish also silences the sim TAP), not by the in-env sim.
