@@ -91,6 +91,16 @@ consumer and it is a POC (one board, a driver more demo than proper API), not ev
 real-app story exists yet. Not gated by any hardware capability, so it pairs with the
 driver-era workstream (whatever milestone number that carries) rather than a fixed M4/M6.
 
+### Userspace power-manager service (driver-era; mechanism/policy split)
+The M3 clock-select syscall (`arch_cpu_clock_set`) is deliberately a MECHANISM seam: change
+the CPU/bus clock COHERENTLY (re-anchor the monotonic clock, re-derive baud, re-arm timers)
+and return the landed Hz. POLICY -- which P-state when, DVFS, idle/low-power governors --
+belongs in userspace, in a dedicated **power-manager driver/service**, exactly as the console
+DEVICE moved to a userspace UART driver. Like the console, the privileged steps a userspace
+driver cannot safely touch (flash wait states, voltage/regulator scaling, PLL relock) stay
+kernel-side behind the seam; the power manager drives policy through it. Pairs with the driver
+era + the init service; the M3 seam is the stepping stone, not the final home.
+
 ### The MMU / new-platform horizon (post-M6, foundational)
 The biggest axis beyond the MCU fleet: today the whole memory model is **one physical address
 space + per-thread MPU regions**. A real **MMU (VMSA / page tables)** adds virtual address spaces
