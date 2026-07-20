@@ -33,18 +33,22 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
       Landed on master; SILICON-VALIDATED UNDER ENFORCEMENT on K64F (SYSMPU) + XMC4800 (PMSA),
       selftest 39/39 each incl. the HAVE_MPU-gated endpoint_bound + crossdomain (emulator qemu
       armv7m + qemu-riscv 37/37). Rest of the fleet build-only (only k64f/xmc on the bench).
-- [ ] **Console device handover** (`docs/design-m3-console-handover.md`) -- a userspace UART driver
-      takes the console as a capability. Publish-BEFORE-spawn: `console_tx_deinit` under one IrqLock
-      (state=USER_OWNED set last), THEN spawn the driver with the MMIO grant + a console endpoint.
-      Seat a stdout endpoint cap at index 0 (this makes `cap_install_defaults` / the low-barrier #5
-      real); `_write` probes `kos_send(0)` then falls back to `kconsole_write`.
-- [ ] **Panic-path console reclaim** -- kernel re-seizes + re-inits the UART on panic
-      (`arch_console_reclaim` per chip); driver-death = EPIPE-wake parked senders + root respawn/
-      re-publish (NO kernel auto-adoption). Needs a scramble-then-force-panic HW test per backend
-      (a wrong reclaim looks exactly like silent panic loss -- the worst failure mode).
-- [ ] **User-selectable CPU clock / low-power mode** -- per-chip clock-select syscall; keep the
-      scheduler ns<->tick math coherent across a clock change (the clock-hardening timers make `now`
-      trustworthy for this). Read side (`sys_cpu_clock_hz`) already landed.
+- [x] **Console device handover** -- `ConsoleState{KERNEL_OWNED,USER_OWNED,RECLAIMED}` drop-routing,
+      `console_tx_deinit` (USER_OWNED set last) + the B1 in-flight-writer drain, `kos_console_publish`
+      (#29, privileged), stdout cap seated at index 0, `_write` probes `kos_send(0)` then falls back.
+      Userspace polled XMC UART driver (`user/driver/xmcuart` + `consoledemo`). SILICON PASS on XMC:
+      end-to-end app printf -> IPC -> userspace driver -> wire, under enforcement.
+- [x] **Panic-path console reclaim** -- `arch_console_reclaim` per chip (XMC full in-window rewrite,
+      KSCFG.MODEN-first; K64F uart0 + zero MODEM/C3/S2/IR/C7816), `kickos_isr_fault`->`kpanic_enter`
+      funnel (all 6 arches audited safe), driver-death EPIPE-wake. SILICON PASS on XMC (scramble-then-
+      panic: banner survives a driver-garbled UART; one intrinsic leading line-transient byte, doc'd).
+      K64F reclaim built + reviewed, silicon-pending (no K64F console driver yet). Porting invariant in
+      `reference/porting.md`.
+- [x] **User-selectable CPU clock / low-power mode** -- `arch_cpu_clock_set` mechanism seam + syscall
+      30 (privileged) + coherence tail (epoch re-anchor sole mult-writer, baud re-derive, timer re-arm,
+      USER_OWNED refusal). SILICON PASS on XMC (144/48) + K64F (120/20.97): monotonic `now` across
+      retune, ratio-correct timing, no fault. XMC full retune, K64F staged; other chips weak-default-0.
+      Policy -> future userspace power-manager/clock-tree service (roadmap). Read side already landed.
 Silicon target for the handover: the CPU-side-MPU boards (XMC/RX/C6) where per-thread peripheral
 isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
 
