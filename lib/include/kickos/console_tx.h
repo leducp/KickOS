@@ -46,7 +46,10 @@ struct console_tx_backend
 // Arm the buffered path. `size` MUST be a power of two (index masking); usable
 // capacity is size-1. Called once from console_buffer_init after irq_init has
 // seeded the dispatch table. Until then, writes route to the synchronous path.
-void console_tx_init(struct console_tx_backend const* be, char* storage, uint32_t size);
+// `irq_line` is stashed for console_tx_deinit and set BEFORE armed flips, so no
+// window has the ring armed with a stale (-1) line.
+void console_tx_init(struct console_tx_backend const* be, char* storage, uint32_t size,
+                     int irq_line);
 
 // Nonzero once console_tx_init has run (the routing guard in console.cc reads it).
 int console_tx_armed(void);

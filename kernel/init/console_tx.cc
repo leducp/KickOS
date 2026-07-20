@@ -92,7 +92,7 @@ namespace
 extern "C"
 {
 
-void console_tx_init(console_tx_backend const* be, char* storage, uint32_t size)
+void console_tx_init(console_tx_backend const* be, char* storage, uint32_t size, int irq_line)
 {
     g_tx.backend = be;
     g_tx.buf = storage;
@@ -100,6 +100,7 @@ void console_tx_init(console_tx_backend const* be, char* storage, uint32_t size)
     g_tx.mask = size - 1u;
     g_tx.head = 0;
     g_tx.tail = 0;
+    g_tx.irq_line = irq_line; // set BEFORE armed: deinit must never see armed with a stale line
     g_tx.armed = true;
 }
 
@@ -173,6 +174,11 @@ void console_tx_write(char const* buf, size_t n)
     }
 }
 
+// The ISR drain pokes the device but is deliberately NOT bracketed by the B1
+// chip-writer count: console_tx_deinit detaches the handler and NVIC-masks the TX
+// line under IrqLock strictly BEFORE kos_console_publish flips the state, so this ISR
+// can never fire once the console is USER_OWNED -- there is no stale-writer window for
+// the count to guard here.
 void console_tx_isr(void)
 {
     uint32_t const head = g_tx.head; // producer cannot run during this ISR (priority)
@@ -233,8 +239,7 @@ void console_buffer_init(void)
         kickos::kpanic("console_buffer_init: irq_attach failed");
     }
     arch_irq_unmask(line);
-    console_tx_init(be, buf, size);
-    g_tx.irq_line = line; // stashed for console_tx_deinit (relinquish detaches the line)
+    console_tx_init(be, buf, size, line); // line folded in: set atomically with armed
 }
 
 // Relinquish the buffered TX path so a userspace driver can take the UART (D2). One
