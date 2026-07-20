@@ -18,6 +18,22 @@ provides two halves:
   diagnostic LED, `kdiag_led_*`); both have weak no-op defaults, so a board with
   no known LED just leaves them out.
 
+### Fault-reporter contract (panic must survive console handover)
+
+A chip's fault/exception reporter MUST, before ANY console output: call
+`kpanic_enter()` first, and emit only via `kprintf`/`console_emit` -- NEVER
+`arch_console_write_sync` directly. Both are load-bearing once a board enables
+console *device handover* (a userspace driver takes the UART): `kpanic_enter`'s
+reclaim branch re-seizes + re-inits the relinquished UART (`arch_console_reclaim`),
+and `console_emit` honors `ConsoleState` (drops the chip path while USER_OWNED,
+routes to the polled writer once RECLAIMED). A reporter that prints before
+`kpanic_enter`, or pokes the sync writer directly, would emit to a relinquished
+(possibly dead) UART and SILENTLY lose the panic banner -- the worst failure mode
+in the system. All six current fault reporters satisfy this; a new arch port must
+too. Additionally, before a board turns on handover it must supply a real
+`arch_console_reclaim` body (the generic default is a weak no-op -- a silent
+reclaim failure otherwise); today only XMC (USIC) and K64F (UART0) have one.
+
 ### Adding a board/chip (the three edit points)
 
 1. `boards/<board>/board.cmake` -- the board descriptor: one file setting
