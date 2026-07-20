@@ -277,6 +277,12 @@ void arch_irq_inject(int irq);
 void arch_console_write(char const* buf, size_t n);
 void arch_console_write_sync(char const* buf, size_t n);
 
+// Force the UART back to a known polled-ready channel on the panic path after a
+// userspace console driver may have left its granted register window garbled (D6).
+// WEAK no-op default in console.cc (boards that never hand over need nothing); a chip
+// that supports handover overrides it with an idempotent full-window register rewrite.
+void arch_console_reclaim(void);
+
 // --- Single on-board kernel diagnostic LED (optional) ----------------------
 // The board's one diagnostic LED -- the raw bottom edge of the kernel diag LED
 // (kdiag_led_*), a sibling of the console: a last-resort self-debug facility

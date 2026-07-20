@@ -33,6 +33,7 @@ namespace
         uint32_t mask = 0;
         volatile uint32_t head = 0; // producer advances (bytes queued)
         volatile uint32_t tail = 0; // ISR advances (bytes drained)
+        int irq_line = -1;          // TX IRQ line (from the backend); console_tx_deinit detaches it
         bool armed = false;
 
         // Indices stay in [0, size); power-of-two size makes (head - tail) & mask the
@@ -108,7 +109,17 @@ void console_tx_write(char const* buf, size_t n)
 {
     if (not g_tx.armed)
     {
+        // Disarm fallback. Re-read ownership (B1): a producer that raced past the arm
+        // check must DROP the chip write unless the kernel still owns the UART, else it
+        // poll-pokes a device a userspace driver now owns. Bracket the poke with the
+        // in-flight count so publish drains a stale writer before the driver starts.
+        if (console_owner_is_kernel() == 0)
+        {
+            return;
+        }
+        console_chip_writer_enter();
         arch_console_write_sync(buf, n);
+        console_chip_writer_leave();
         return;
     }
 
@@ -223,6 +234,27 @@ void console_buffer_init(void)
     }
     arch_irq_unmask(line);
     console_tx_init(be, buf, size);
+    g_tx.irq_line = line; // stashed for console_tx_deinit (relinquish detaches the line)
+}
+
+// Relinquish the buffered TX path so a userspace driver can take the UART (D2). One
+// IrqLock makes the four steps atomic against every buffered producer and the drain ISR
+// (all IrqLock); flush_sync's own IrqLock nests harmlessly. Idempotent: the null-backend
+// guard also covers polled-only chips (mps2/virt/nrf51 never arm) and a re-publish (the
+// ring already disarmed). The caller (kos_console_publish) flips g_console_state to
+// USER_OWNED strictly AFTER this returns, so a synchronous fault mid-deinit still panics
+// on a kernel-owned, kernel-inited UART.
+void console_tx_deinit(void)
+{
+    if (not g_tx.armed)
+    {
+        return;
+    }
+    kickos::IrqLock lock;
+    console_tx_flush_sync();     // a. drain queued bytes on a still-kernel-owned UART
+    g_tx.backend->irq_disable();       // b. stop the TX-empty IRQ at the peripheral
+    kickos::irq_detach(g_tx.irq_line); // c. null the handler + NVIC-mask the line
+    g_tx.armed = false;          // d. disarm the ring (producer stops buffering)
 }
 
 } // extern "C"
