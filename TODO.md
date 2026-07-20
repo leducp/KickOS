@@ -44,6 +44,23 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
 Silicon target for the handover: the CPU-side-MPU boards (XMC/RX/C6) where per-thread peripheral
 isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
 
+Book + exploratory (M3-adjacent, not milestone-gating):
+- [ ] **Book chapter: the syscall mechanism** (dedicated subagent) -- the user<->kernel boundary
+      from the ground up: the trap trampoline per arch (ARM SVC / RISC-V ecall / RX INT / Xtensa /
+      sim mprotect-emulated), the syscall-number + arg-register ABI (KOS_SYS_*, value-in-reg vs
+      out-pointer), the privilege transition (nPRIV/MPP/PSW.PM), the return path, validate-then-use,
+      and the minimal-syscall-surface design (debug-console `write` the sole kernel exception;
+      read/open/socket = userspace stubs over IPC). Slot ch.2.x/3.x; timeless per Book conventions.
+      It is the current gap: taught only obliquely by 7.1 (boundary alignment) + 8.1 (resolve).
+- [ ] **Exploratory spike: microkernel IPC performance** (M3 #4 -> M4). The Mach-era "IPC too slow"
+      critique vs the L4/seL4 answer -- (a) fast SYNCHRONOUS IPC (direct switch to the woken
+      receiver + register/bounded-copy; KickOS's sem_post already hands the token off and drives an
+      immediate switch, so the fastpath shape exists) for control/RPC, and (b) shared-memory + async
+      notifications (non-blocking) for throughput -- the M4 cross-core design
+      (`docs/design-multicore-ipc.md`) already uses an SPSC ring + doorbell, exactly that shape.
+      Survey the literature, map both to CAP_ENDPOINT (#4) + the M4 rings, recommend the
+      control-plane-vs-data-plane IPC strategy + a micro-benchmark. Good deep-research candidate.
+
 ## Clock hardening (2026-07-20) -- clock off the debug-domain / narrow counters
 Root cause: v7-M `arch_clock_now` used DWT_CYCCNT (core DEBUG power domain), sw-extended 32->64.
 On K64F+XMC silicon DWT intermittently returns aliased garbage -> phantom 2^32 wrap -> clock
