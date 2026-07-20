@@ -121,6 +121,12 @@ struct arch_mpu_region
 // UNPRIVILEGED access (supervisor comes from the background region / SYSMPU RGD0).
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 
+// MMU-era NOTE (concepts, never mechanisms): a future VMSA/paging port introduces
+// a PARALLEL arch_aspace_* family (build/switch/map a page-table root), NOT an
+// overload of arch_mpu_apply and NOT a reinterpretation of arch_mpu_region. The
+// MPU seam stays a flat, non-translating protection-region set; do not try to
+// cram "load a page table" into it. See docs/design-mmu-era-exploration.md.
+
 // The smallest region this arch's MPU can enforce -- a global hardware property,
 // NOT a per-region field (which would break the frozen arch_mpu_region seam):
 // ARM PMSA 32 bytes, RISC-V PMP NAPOT 8, one host page on the sim (mprotect
@@ -146,6 +152,13 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size);
 // no-MPU arch (min 0). arch_ram_alloc reserves this many bytes; the kernel sizes
 // each thread/domain region descriptor with the SAME call, so the descriptor
 // matches the backing block exactly.
+// SEAM (MMU era): this is the SINGLE point that couples allocation size to MPU
+// descriptor geometry. Its callers use it for exactly two things -- the bump
+// allocator's reservation (arch_ram_common) and forming MPU descriptors
+// (thread.cc, domain_for, the spawn-time grant checks); none treats the rounded
+// value as usable capacity beyond the block it describes. A future frame/page
+// allocator selects BESIDE this behind the same arch family, so the pow2 shaping
+// stays contained here -- do NOT add a caller that assumes alloc size == this.
 static inline size_t arch_ram_region_size(size_t want)
 {
     size_t min = arch_mpu_min_region();
