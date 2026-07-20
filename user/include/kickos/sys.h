@@ -51,6 +51,19 @@ int kos_mutex_lock(int mtx);
 // 0, or -1 (bad cap, or the caller is not the owner). Only the owner may unlock.
 int kos_mutex_unlock(int mtx);
 
+// Synchronous IPC rendezvous endpoint. The handle is an OPAQUE per-task CAPABILITY
+// (like a sem/mutex): delegate it to a child via kos_thread_params.caps. create grants
+// a full-rights cap (send needs SIGNAL, recv needs WAIT). send and recv block until the
+// peer arrives; the kernel copies min(sent, capacity) bytes (receiver-side truncation is
+// not an error). A send above KOS_EP_MSG_MAX is rejected (-1); recv clamps its capacity.
+int kos_endpoint_create(void); // -> opaque cap handle, or -1 (pool/table full)
+// Send `len` bytes. -> bytes transferred (>= 0), or -1 (bad cap/buffer, len too big, dead
+// endpoint, or EPIPE: the last receiver went away while parked). n == 0 is a valid signal.
+long kos_send(int ep, void const* buf, size_t len);
+// Receive up to `cap_len` bytes into buf; badge (if non-null) receives the sender badge
+// (always 0 in this stage). -> bytes received (>= 0), or -1 (bad cap/buffer).
+long kos_recv(int ep, void* buf, size_t cap_len, uint32_t* badge);
+
 // Drop THIS thread's capability. Type-agnostic (a cap knows its own type) and
 // refcounted: the underlying object is destroyed only at the LAST close across all
 // holders. Always succeeds on a live cap, even while other holders remain open (it

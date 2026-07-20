@@ -36,8 +36,14 @@ enum kos_syscall_nr
     KOS_SYS_cpu_clock_hz = 22,  // ()  -> running core clock in Hz (u32), 0 if unknown
     KOS_SYS_mutex_create = 23,  // ()     -> opaque mutex cap, or -1 (pool/table full)
     KOS_SYS_mutex_lock = 24,    // (cap)  -> 0, 1 (owner died holding it), -1 bad cap, -2 deadlock
-    KOS_SYS_mutex_unlock = 25   // (cap)  -> 0, or -1 (bad cap, or caller not owner)
+    KOS_SYS_mutex_unlock = 25,  // (cap)  -> 0, or -1 (bad cap, or caller not owner)
+    KOS_SYS_endpoint_create = 26, // ()                              -> endpoint cap (full rights), or -1
+    KOS_SYS_send = 27,          // (cap, buf, len)                   -> bytes transferred, or -1
+    KOS_SYS_recv = 28           // (cap, buf, cap_len, u32* badge)   -> bytes received, or -1
 };
+
+// Shared payload bound: send REJECTS a len above this; recv clamps its capacity to it.
+#define KOS_EP_MSG_MAX 256
 
 // mutex_lock return: the previous owner exited while holding the mutex; this caller
 // now owns it, but the protected invariant may be inconsistent (POSIX EOWNERDEAD).
@@ -72,8 +78,8 @@ enum kos_policy
 // rejected. Delegating requires the parent cap carry KOS_CAP_TRANSFER.
 enum kos_cap_rights
 {
-    KOS_CAP_WAIT = 1 << 0,    // sem_wait
-    KOS_CAP_SIGNAL = 1 << 1,  // sem_post
+    KOS_CAP_WAIT = 1 << 0,    // sem_wait; endpoint recv
+    KOS_CAP_SIGNAL = 1 << 1,  // sem_post; endpoint send
     KOS_CAP_TRANSFER = 1 << 2 // may be delegated onward
 };
 

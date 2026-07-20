@@ -30,6 +30,13 @@
 #define KICKOS_MAX_MUTEXES 8
 #endif
 
+// Endpoint (IPC rendezvous) pool (M3 #4; see cap.h / endpoint.h). Additive
+// CAP_ENDPOINT object pool. Default covers console + a service or two; tiny
+// boards override. The u8 endpoint_refs assert in instance.h holds either way.
+#ifndef KICKOS_MAX_ENDPOINTS
+#define KICKOS_MAX_ENDPOINTS 4
+#endif
+
 // Static thread pool the syscall thread_spawn draws from (+ its kernel stacks).
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16

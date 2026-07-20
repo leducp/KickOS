@@ -94,6 +94,42 @@ namespace kickos
             return cap;
         }
 
+        // --- Endpoint capability (IPC rendezvous; mirrors sem_create) ---------------
+        // An endpoint lives in the global pool (slotpool.h); a task names it by a
+        // per-task CAP_ENDPOINT capability. The creator cap carries full rights
+        // (WAIT|SIGNAL|TRANSFER); send needs CAP_SIGNAL, recv needs CAP_WAIT. Two
+        // counters init visibly paired: endpoint_refs (all caps) and recv_holders
+        // (WAIT-bearing caps). Rollback on a full table unwinds BOTH.
+        int endpoint_create()
+        {
+            IrqLock lock;
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return -1;
+            }
+            int const i = kernel().endpoints.alloc();
+            if (i < 0)
+            {
+                return -1;
+            }
+            Endpoint* ep = kernel().endpoints.at(i);
+            ep->send_waiters = List{};
+            ep->recv_waiters = List{};
+            ep->recv_holders = 1;         // creator holds a WAIT-bearing cap
+            kernel().endpoint_refs[i] = 1; // this creator's cap is the first reference
+            int const obj = kernel().endpoints.handle_for(i);
+            int const cap = cap_install(c, obj, CapType::CAP_ENDPOINT,
+                                        CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER);
+            if (cap < 0)
+            {
+                kernel().endpoint_refs[i] = 0;
+                kernel().endpoints.free(obj);
+                return -1;
+            }
+            return cap;
+        }
+
         // Privileged in-kernel IRQ handler bound by KOS_SYS_irq_attach: posts a
         // semaphore from ISR context, driving the interrupt-exit switch (trigger #4).
         // arg is the GLOBAL sem handle irq_attach resolved+stored (NOT a cap): an ISR
@@ -187,6 +223,139 @@ namespace kickos
         bool user_writable_ok(uintptr_t ptr, size_t len)
         {
             return user_range_ok(ptr, len, ARCH_MPU_W);
+        }
+
+        // Bounded byte copy (<= KOS_EP_MSG_MAX). Both endpoints do it under IrqLock,
+        // one side of which is a PARKED peer's user buffer (see endpoint.h): the
+        // waker's own MPU regions are loaded, so it reaches the peer's memory only via
+        // privileged background access (arch contract, design section 3.1).
+        void ep_copy(uintptr_t dst, uintptr_t src, size_t n)
+        {
+            char* d = reinterpret_cast<char*>(dst);
+            char const* s = reinterpret_cast<char const*>(src);
+            for (size_t i = 0; i < n; i++)
+            {
+                d[i] = s[i];
+            }
+        }
+
+        // Synchronous send: rendezvous with a parked receiver (deliver now) or park.
+        // FULLY LOCKLESS from dispatch (see design section 3): a caller IrqLock spanning
+        // this would keep BASEPRI raised across wq_confirm_resume and livelock ARM.
+        // Returns bytes transferred (>= 0), or -1 (bad cap/buffer, dead endpoint, EPIPE).
+        int endpoint_send(int cap, uintptr_t buf, size_t len)
+        {
+            if (len > KOS_EP_MSG_MAX)
+            {
+                return -1; // F4: reject oversize, never silently clamp
+            }
+            if (not user_readable_ok(buf, len))
+            {
+                return -1; // sender's own buffer, checked once in caller context
+            }
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return -1;
+            }
+            uint64_t epoch = 0;
+            {
+                IrqLock lock;
+                Endpoint* e = static_cast<Endpoint*>(
+                    cap_resolve(c, cap, CapType::CAP_ENDPOINT, CAP_SIGNAL));
+                if (e == nullptr)
+                {
+                    return -1;
+                }
+                if (e->recv_holders == 0)
+                {
+                    return -1; // F1: dead endpoint -- no receiver can ever exist
+                }
+                Thread* w = wq_pop_highest(e->recv_waiters);
+                if (w != nullptr)
+                {
+                    size_t n = len;
+                    if (w->ipc.len < n)
+                    {
+                        n = w->ipc.len; // receiver-side datagram truncation (not an error)
+                    }
+                    ep_copy(w->ipc.buf, buf, n); // sender-ctx copy into the parked receiver's buffer
+                    if (w->ipc.badge_out != 0)
+                    {
+                        *reinterpret_cast<uint32_t*>(w->ipc.badge_out) = 0; // stage i: badge 0
+                    }
+                    w->wait_result = static_cast<intptr_t>(n);
+                    sched::wake(w);
+                    return static_cast<int>(n); // did not block: no resume barrier
+                }
+                c->ipc.buf = buf;
+                c->ipc.len = len;
+                c->ipc.badge_out = 0;
+                epoch = c->switch_count;
+                wq_block(e->send_waiters);
+            }
+            wq_confirm_resume(c, epoch);
+            return static_cast<int>(c->wait_result); // n (>= 0), or -1 EPIPE
+        }
+
+        // Synchronous recv: take from a parked sender (copy now) or park. FULLY LOCKLESS
+        // from dispatch, same reason as endpoint_send. Returns bytes received (>= 0), or
+        // -1 (bad cap/buffer). n == 0 is a VALID zero-length signal, not an error.
+        int endpoint_recv(int cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out)
+        {
+            if (cap_len > KOS_EP_MSG_MAX)
+            {
+                cap_len = KOS_EP_MSG_MAX; // capacity clamp is harmless
+            }
+            if (not user_writable_ok(buf, cap_len))
+            {
+                return -1;
+            }
+            if (badge_out != 0
+                and ((badge_out & (alignof(uint32_t) - 1)) != 0
+                     or not user_writable_ok(badge_out, sizeof(uint32_t))))
+            {
+                return -1; // alignment load-bearing for the privileged u32 store below
+            }
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return -1;
+            }
+            uint64_t epoch = 0;
+            {
+                IrqLock lock;
+                Endpoint* e = static_cast<Endpoint*>(
+                    cap_resolve(c, cap, CapType::CAP_ENDPOINT, CAP_WAIT));
+                if (e == nullptr)
+                {
+                    return -1;
+                }
+                Thread* s = wq_pop_highest(e->send_waiters);
+                if (s != nullptr)
+                {
+                    size_t n = s->ipc.len;
+                    if (cap_len < n)
+                    {
+                        n = cap_len; // truncate into the receiver's capacity
+                    }
+                    ep_copy(buf, s->ipc.buf, n); // receiver-ctx copy from the parked sender's buffer
+                    if (badge_out != 0)
+                    {
+                        *reinterpret_cast<uint32_t*>(badge_out) = 0;
+                    }
+                    s->wait_result = static_cast<intptr_t>(n);
+                    sched::wake(s);
+                    return static_cast<int>(n);
+                }
+                c->ipc.buf = buf;
+                c->ipc.len = cap_len;
+                c->ipc.badge_out = badge_out;
+                epoch = c->switch_count;
+                wq_block(e->recv_waiters);
+            }
+            wq_confirm_resume(c, epoch);
+            return static_cast<int>(c->wait_result);
         }
 
         int thread_spawn(kos_thread_params const* p)
@@ -471,7 +640,7 @@ namespace kickos
             {
                 cap_install_at(child, ci + 1, deleg_obj[ci],
                                static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
-                obj_ref_inc(static_cast<CapType>(deleg_type[ci]), deleg_obj[ci]);
+                obj_ref_inc(static_cast<CapType>(deleg_type[ci]), deleg_obj[ci], deleg_rights[ci]);
             }
             return k.threads.handle_for(i);
         }
@@ -521,8 +690,6 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                                       uintptr_t a0, uintptr_t a1,
                                       uintptr_t a2, uintptr_t a3)
 {
-    (void)a2; // unused by the current syscalls (all take <= 2 args or an out-ptr)
-    (void)a3;
     KTRACE_SYSCALL_SCOPE(nr);
     switch (nr)
     {
@@ -631,6 +798,23 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 return static_cast<uintptr_t>(-1);
             }
             return static_cast<uintptr_t>(mutex_unlock(m)); // -1 if not owner (no panic)
+        }
+        case KOS_SYS_endpoint_create:
+        {
+            return static_cast<uintptr_t>(endpoint_create());
+        }
+        case KOS_SYS_send:
+        {
+            // FULLY LOCKLESS (no dispatch IrqLock): endpoint_send takes its own lock for
+            // the resolve/deliver/park, then releases it before the resume barrier -- a
+            // spanning caller lock would livelock ARM (design section 3).
+            return static_cast<uintptr_t>(
+                endpoint_send(static_cast<int>(a0), a1, static_cast<size_t>(a2)));
+        }
+        case KOS_SYS_recv:
+        {
+            return static_cast<uintptr_t>(
+                endpoint_recv(static_cast<int>(a0), a1, static_cast<size_t>(a2), a3));
         }
         case KOS_SYS_thread_spawn:
         {

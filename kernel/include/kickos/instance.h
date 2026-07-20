@@ -16,6 +16,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/config.h>
 #include <kickos/domain.h>
+#include <kickos/endpoint.h>
 #include <kickos/irq.h>
 #include <kickos/list.h>
 #include <kickos/slotpool.h>
@@ -75,8 +76,15 @@ namespace kickos
         uint8_t mutex_refs[KICKOS_MAX_MUTEXES] = {};
         static_assert(KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES <= 255,
                       "mutex_refs is uint8_t: MAX_THREADS x MAX_HANDLES must not exceed 255");
-        // The endpoint pool (#4) needs a wider bound: alias slots each pin one ref on
-        // their root, so its assert is MAX_THREADS*MAX_HANDLES + MAX_ENDPOINTS <= 255.
+        // Endpoint (IPC rendezvous) pool + its parallel object-side refcount, same
+        // shape as sems/mutexes (cap.cc owns the accounting). recv_holders lives IN
+        // the Endpoint struct, NOT here (its single home). endpoint_refs counts ALL
+        // caps naming a slot; the wider bound covers it summing with the cap tables.
+        SlotPool<Endpoint, KICKOS_MAX_ENDPOINTS> endpoints;
+        uint8_t endpoint_refs[KICKOS_MAX_ENDPOINTS] = {};
+        static_assert(KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES + KICKOS_MAX_ENDPOINTS <= 255,
+                      "endpoint_refs is uint8_t: MAX_THREADS x MAX_HANDLES + MAX_ENDPOINTS "
+                      "must not exceed 255");
         // Thread pool (see ThreadPool in thread.h): the TCBs + their kernel stacks,
         // intrinsic liveness (a slot is free iff state==EXITED), generation bumped at
         // reclaim (ABA). All allocation goes through thread_spawn().

@@ -67,6 +67,28 @@ int kos_mutex_unlock(int mtx)
                                          static_cast<uintptr_t>(mtx), 0, 0, 0));
 }
 
+int kos_endpoint_create(void)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_endpoint_create, 0, 0, 0, 0));
+}
+
+long kos_send(int ep, void const* buf, size_t len)
+{
+    return static_cast<long>(arch_syscall(KOS_SYS_send,
+                                          static_cast<uintptr_t>(ep),
+                                          reinterpret_cast<uintptr_t>(buf),
+                                          static_cast<uintptr_t>(len), 0));
+}
+
+long kos_recv(int ep, void* buf, size_t cap_len, uint32_t* badge)
+{
+    return static_cast<long>(arch_syscall(KOS_SYS_recv,
+                                          static_cast<uintptr_t>(ep),
+                                          reinterpret_cast<uintptr_t>(buf),
+                                          static_cast<uintptr_t>(cap_len),
+                                          reinterpret_cast<uintptr_t>(badge)));
+}
+
 int kos_handle_close(int cap)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_handle_close,

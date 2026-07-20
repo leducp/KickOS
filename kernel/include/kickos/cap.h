@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Per-task capability table: a typed, rights-bearing, refcounted handle NAMING
-// a global generational object (a semaphore today; mutex/endpoint reserved). The
+// a global generational object (semaphore, PI mutex, or IPC endpoint). The
 // cap table is a pure per-task naming+rights layer that WRAPS the unchanged global
 // object pools (slotpool.h): a CapEntry stores (global-object-handle, type, rights)
 // and cap_resolve is two-level -- the per-task cap-gen guard here, then the object
@@ -40,16 +40,16 @@ namespace kickos
     {
         CAP_EMPTY = 0, // an unused slot -- must be 0 so a zeroed TCB is an empty table
         CAP_SEM,
-        CAP_MUTEX,   // reserved: the mutex object pool lands later (additive)
-        CAP_ENDPOINT // reserved: the endpoint object pool lands later (additive)
+        CAP_MUTEX,   // PI mutex object pool
+        CAP_ENDPOINT // synchronous IPC endpoint object pool
     };
 
     // Rights bits enforced at cap_resolve ((rights & need) == need); CAP_TRANSFER is
     // enforced at the delegate site. Every bit maps to a real check -- no dead field.
     enum CapRights : uint8_t
     {
-        CAP_WAIT = 1 << 0,    // sem_wait / sem_trywait
-        CAP_SIGNAL = 1 << 1,  // sem_post
+        CAP_WAIT = 1 << 0,    // sem_wait / sem_trywait; endpoint recv
+        CAP_SIGNAL = 1 << 1,  // sem_post; endpoint send
         CAP_TRANSFER = 1 << 2 // may be delegated into a child table (section 6)
     };
 
@@ -68,7 +68,7 @@ namespace kickos
     // The one resolve chokepoint: validate a per-task cap handle and return the named
     // global object, or nullptr (bad index, empty, stale cap-gen, wrong type, or
     // missing rights). Returns void* (dispatch-on-type over the object pools); the
-    // caller casts to the type it asked for. Only CAP_SEM resolves today.
+    // caller casts to the type it asked for. CAP_SEM/CAP_MUTEX/CAP_ENDPOINT all resolve.
     void* cap_resolve(Thread* c, int cap_handle, CapType want, uint8_t need);
 
     // Validate a cap handle and return its table entry (type-agnostic; for delegation
@@ -106,7 +106,9 @@ namespace kickos
     // Bump one reference to the object named by a global handle (delegation + create).
     // Dispatches on cap type; the handle MUST resolve (caller validated it). Caller
     // holds IrqLock. Unknown type traps in debug. Additive: each new pool gains one arm.
-    void obj_ref_inc(CapType type, int obj_handle);
+    // `rights` is the cap's rights bits: the endpoint arm bumps recv_holders when they
+    // carry CAP_WAIT; the sem/mutex arms ignore it.
+    void obj_ref_inc(CapType type, int obj_handle, uint8_t rights);
 }
 
 #endif
