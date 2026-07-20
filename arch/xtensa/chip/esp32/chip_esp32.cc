@@ -294,6 +294,86 @@ namespace
         r32(UART0_CLKDIV) = (frac << 20) | (integer & 0xFFFFF);
     }
 
+    // --- Monotonic clock: TIMG0 timer T0, a 64-bit free-running up-counter -------
+    // Replaces the weak CCOUNT-backed arch_clock_now (arch/xtensa/lx6). CCOUNT is a
+    // 32-bit core cycle counter software-extended to 64 bits: a wrap not observed
+    // within one 2^32-cycle window (~17.9 s at 240 MHz) is lost -- the same narrow-
+    // counter + software-wrap-word class just moved off DWT on K64F (PIT) and off
+    // CCU4 on XMC. A native 64-bit HW counter has NO software wrap word, so a
+    // missed/aliased read cannot manufacture a phantom wrap. Bonus: CCOUNT is gated
+    // by WAITI (the idle path clock-gates the core, freezing CCOUNT every idle); the
+    // TIMG runs off APB, which keeps running in plain WAITI -- so this also removes
+    // the lose-time-on-every-idle error the CCOUNT source carries.
+    //
+    // Register map (ESP32 TRM ch.18 "Timer Group", TIMGn_T0* at TIMG0_BASE offsets;
+    // consistent with the WDT block at +0x48 already used here for the MWDT, so T0
+    // owns +0x00..+0x20, T1 +0x24..+0x44, WDT +0x48+).
+    constexpr uintptr_t TIMG0_T0CONFIG = TIMG0_BASE + 0x00; // TIMGn_T0CONFIG_REG
+    constexpr uintptr_t TIMG0_T0LO = TIMG0_BASE + 0x04;     // latched low 32 bits (RO)
+    constexpr uintptr_t TIMG0_T0HI = TIMG0_BASE + 0x08;     // latched high 32 bits (RO)
+    constexpr uintptr_t TIMG0_T0UPDATE = TIMG0_BASE + 0x0C; // write -> latch count to LO/HI
+    constexpr uintptr_t TIMG0_T0LOADLO = TIMG0_BASE + 0x18; // reload value, low
+    constexpr uintptr_t TIMG0_T0LOADHI = TIMG0_BASE + 0x1C; // reload value, high
+    constexpr uintptr_t TIMG0_T0LOAD = TIMG0_BASE + 0x20;   // write -> counter <- {HI,LO}
+
+    // TIMGn_T0CONFIG_REG fields (ESP32 TRM ch.18): EN[31] start, INCREASE[30] count
+    // up, AUTORELOAD[29] reload-on-alarm, DIVIDER[28:13] 16-bit APB prescaler,
+    // ALARM_EN[10]. Free-running == INCREASE=1, AUTORELOAD=0, ALARM_EN=0.
+    constexpr uint32_t TIMG_T0_EN = 1u << 31;
+    constexpr uint32_t TIMG_T0_INCREASE = 1u << 30;
+    constexpr uint32_t TIMG_T0_DIVIDER_SHIFT = 13;
+
+    // Prescaler off the 80 MHz APB (fixed on the PLL for both 160/240 MHz CPU; see
+    // clock_init_240mhz). Divider 2 is the minimum unambiguous value -- the divider
+    // field treats 0/1 as special-cased on this silicon, so 2 sidesteps that trap
+    // and gives the highest resolution: 80/2 = 40 MHz -> 25 ns/tick. A 64-bit
+    // counter at 40 MHz wraps in ~4600 years, so there is no wrap concern at all.
+    constexpr uint32_t TIMG_DIVIDER = 2;
+    constexpr uint32_t TIMG_HZ = APB_CLOCK_HZ / TIMG_DIVIDER; // 40 MHz
+
+    // ticks -> ns reciprocal multiply (the K64F pit pattern): ns = ticks*1e9/HZ via
+    // mult = (1e9<<32)/HZ, ns = (ticks*mult)>>32, done as a 64x64->64 split so the
+    // product never overflows. HZ is a compile-time constant here (APB is fixed on
+    // the PLL), so the one divide folds at build time -- unlike K64F, whose bus
+    // clock could be one of two runtime values.
+    constexpr uint64_t TIMG_NS_MULT =
+        ((static_cast<uint64_t>(1000000000ull) << 32) + (TIMG_HZ / 2)) / TIMG_HZ;
+
+    void timg_clock_init()
+    {
+        // Boot-order constraint: arch_clock_now MUST NOT run before this, and this
+        // MUST run AFTER clock_init_240mhz (the counter rate is derived off the
+        // 80 MHz PLL APB; running it on the 40 MHz XTAL APB would tick at half rate).
+        // The TIMG0 APB clock is already live -- the ROM armed its MWDT and
+        // clock_init_240mhz's wait_slow_cycle drives TIMG0 RTCCALICFG -- so no DPORT
+        // peripheral-clock ungate is needed here.
+        // Free-running up-counter: no alarm, no autoreload, prescaler = TIMG_DIVIDER.
+        r32(TIMG0_T0CONFIG) = TIMG_T0_INCREASE | (TIMG_DIVIDER << TIMG_T0_DIVIDER_SHIFT);
+        r32(TIMG0_T0LOADLO) = 0;
+        r32(TIMG0_T0LOADHI) = 0;
+        r32(TIMG0_T0LOAD) = 1; // any write loads the counter from {LOADHI,LOADLO} = 0
+        r32(TIMG0_T0CONFIG) =
+            TIMG_T0_EN | TIMG_T0_INCREASE | (TIMG_DIVIDER << TIMG_T0_DIVIDER_SHIFT);
+    }
+
+    // Read the 64-bit T0 count. The live counter is NOT directly readable: write
+    // T0UPDATE to latch it into the T0LO/T0HI shadow regs, THEN read LO+HI (the
+    // LTMR64 twin). A bare LO/HI read without the latch is stale. The whole
+    // latch-then-read runs under the crit section: the LO/HI shadow is one shared
+    // resource, so an interleaved reader's UPDATE landing between our LO and HI
+    // reads would tear the pair across a low-word rollover -- exactly the torn read
+    // this change exists to remove. On the classic ESP32 T0UPDATE has no ready/self-
+    // clearing bit (that is an S2/S3 addition); a single write latches synchronously.
+    uint64_t timg_ticks()
+    {
+        arch_irq_state_t s = arch_irq_save();
+        r32(TIMG0_T0UPDATE) = 1;
+        uint32_t lo = r32(TIMG0_T0LO);
+        uint32_t hi = r32(TIMG0_T0HI);
+        arch_irq_restore(s);
+        return (static_cast<uint64_t>(hi) << 32) | lo;
+    }
+
     // --- Buffered console TX backend (console_tx.h). The ring drains via the UART0
     // TX-empty interrupt; slot_free/push touch the FIFO + status regs, irq_enable/
     // disable gate UART_TXFIFO_EMPTY_INT AT THE PERIPHERAL (the CPU line stays armed
@@ -388,8 +468,24 @@ void arch_init(void)
     // (startup.S). Double stays soft-float (__muldf3): the LX6 FPU is single-only.
     wdt_disable();
     clock_init_240mhz(); // 40 MHz XTAL -> 240 MHz PLL; updates SystemCoreClock + UART0 baud
+    timg_clock_init();   // 64-bit monotonic time base; AFTER the PLL (rate is off APB)
     kickos_lx6_init();
     uart0_irq_setup(); // route + arm the UART0 TX-empty interrupt for the console ring
+}
+
+// Monotonic clock override: convert the free-running TIMG0 T0 64-bit count (40 MHz,
+// off the fixed 80 MHz APB) to ns via the cached reciprocal multiply, replacing the
+// weak CCOUNT-backed arch_clock_now (arch/xtensa/lx6) whose 32-bit + software-wrap
+// source loses a wrap unobserved within ~17.9 s and stalls under WAITI. Only the
+// scheduler's monotonic clock moves: arch_trace_now + the KICKOS_BENCH switch.S
+// timestamps intentionally stay on raw CCOUNT (a cycle-accurate trace source; an
+// intermittent skew there is a tolerable telemetry sample, fatal only to the clock).
+uint64_t arch_clock_now(void)
+{
+    uint64_t ticks = timg_ticks();
+    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
+    uint64_t c = TIMG_NS_MULT >> 32, d = TIMG_NS_MULT & 0xFFFFFFFFull;
+    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
 }
 
 void arch_console_write(char const* buf, size_t n)
