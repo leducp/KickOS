@@ -88,6 +88,10 @@ add_subdirectory(consoledemo)
 # (OFF by default) + xmc4800-relax/frdmk64f + enforcement in its own CMakeLists.
 add_subdirectory(clockretune)
 
+# Clock-hardening wrap/soak HW harness -- self-gates on KICKOS_CLOCKSOAK_TEST (OFF by
+# default) in its own CMakeLists; arch-neutral, builds for any board.
+add_subdirectory(clocksoak)
+
 # ESP32-C6 GPIO10 blink -- the canonical per-thread peripheral-MMIO isolation
 # reference on RISC-V PMP (GPIO/IO_MUX/APM bring-up + the one-time APM open), so only
 # for the esp32c6-wroom board and enforcement builds; also self-gates on
