@@ -178,6 +178,17 @@ namespace kickos
             return arch_user_text_readable(ptr, len);
         }
 
+        // A user-supplied WRITE buffer / out-pointer the kernel stores into privileged
+        // (an endpoint recv buffer, a clock_now result). It passes iff it lies within a
+        // region the caller is granted WRITE. No arch_user_text_readable twin: code/rodata
+        // is never a legitimate write target, so an out-pointer into it is rejected here
+        // even though it would read back fine. Privileged callers and len==0 pass via
+        // user_range_ok.
+        bool user_writable_ok(uintptr_t ptr, size_t len)
+        {
+            return user_range_ok(ptr, len, ARCH_MPU_W);
+        }
+
         int thread_spawn(kos_thread_params const* p)
         {
             IrqLock lock;
@@ -737,7 +748,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-1);
             }
-            if (not user_range_ok(a0, sizeof(uint64_t), ARCH_MPU_W))
+            if (not user_writable_ok(a0, sizeof(uint64_t)))
             {
                 return static_cast<uintptr_t>(-1);
             }
