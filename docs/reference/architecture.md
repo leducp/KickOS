@@ -515,10 +515,10 @@ feeds the slave app.
 The object/credential model layered on the MPU enforcement. Enforcement is only meaningful once
 hardware constrains unprivileged userspace, so this model is designed against *all* object types
 that exist (semaphore, mutex, IRQ handle, memory grant), not over-fit to one. **Status: the
-SEMAPHORE capability path is LANDED (M3), silicon-validated under enforcement; `CAP_MUTEX` /
-`CAP_ENDPOINT` are reserved type values whose object pools land additively later.** The contract
-below is code-synced to `kernel/include/kickos/cap.h`, `kernel/syscall/cap.cc`,
-`kernel/syscall/syscall.cc`.
+SEMAPHORE, PI-MUTEX (`CAP_MUTEX`), and ENDPOINT/IPC (`CAP_ENDPOINT`) capability paths are LANDED
+(M3), silicon-validated under enforcement; each object pool was added additively via the recipe in
+Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h`,
+`kernel/syscall/cap.cc`, `kernel/syscall/syscall.cc`.
 
 - **Per-task typed handle table, not global ids or fds.** A global object id every task can name
   is ambient authority -- the opposite of the isolation pillar. Each `Thread` embeds a fixed
