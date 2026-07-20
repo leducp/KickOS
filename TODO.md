@@ -14,6 +14,43 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is `M1_state.md`; the
 board/console readiness matrix is `docs/m2-readiness.md`.
 
+## M3 -- landed so far (2026-07-20)
+- [x] `sys_cpu_clock_hz()` read syscall; [x] per-task capability handle table (sem ABI) +
+      authenticated-grant delegation; [x] priority-inheritance mutex (CAP_MUTEX). All on master,
+      silicon-validated UNDER ENFORCEMENT on K64F (SYSMPU) + C6 (PMP). Design in Book ch.8.1 +
+      `reference/architecture.md`. Remaining M3: console/endpoint handover (spike done,
+      `docs/design-m3-console-handover.md`), user clock-select.
+
+## Clock hardening (2026-07-20) -- clock off the debug-domain / narrow counters
+Root cause: v7-M `arch_clock_now` used DWT_CYCCNT (core DEBUG power domain), sw-extended 32->64.
+On K64F+XMC silicon DWT intermittently returns aliased garbage -> phantom 2^32 wrap -> clock
+leaps ~35 s -> every timed wait strands (intermittent ~50-75%, silicon-only). Masqueraded as a
+"test-5 stall" and invalidated this session's earlier single-run silicon claims. Fragility class
+= narrow counter + sw wrap-extension (fails via a bad read OR a missed wrap). Fix = a wide,
+reliably-readable, NON-debug free-running peripheral counter. Book ch.2.1 teaches it.
+- [x] **K64F** 64-bit PIT -- SILICON 20/20 (+ mutex 10/10, under enforcement).
+- [x] **XMC4800** 64-bit CCU4 (4 slices concat) -- SILICON 18/18; fixed fCCU WFI-gating (SLEEPCR).
+- [~] **F411/F302** TIM2(32b), **F103** TIM2->TIM3 chained, **SAM3X** TC0 ch0(32b) -- on master,
+      reviewed+fixed (f103 tear-discriminator; per-timer overflow-IRQ wrap observer; f411 APB1LPENR).
+      **BUILD-ONLY, SILICON PENDING.**
+- [~] **ESP32 (Xtensa)** 64-bit TIMG0 (UPDATE-latch) -- also fixes a latent CCOUNT WAITI-freeze.
+      **BUILD-ONLY, SILICON PENDING.**
+- RISC-V (CLINT mtime) + RX (CMTW): already sound, unchanged.
+
+Silicon-test-later (fleet+Xtensa; `.session/*-clock*.patch` are backups):
+1. idle-wrap observer: quiescent > 1 wrap period (51/67/59/102 s) -> clock still correct.
+2. f103: soak across chain wraps -> no +59.6 s leap, no backward stall.
+3. rate/monotonicity vs wall clock (2x error = wrong Hz); no backward step under IRQ load.
+4. WFI keeps counting (f411 APB1LPENR; sam3x FSMR Sleep-not-Wait; Xtensa TIMG UPDATE-latch settle +
+   DPORT ungate assumption -- the two things unverifiable build-only).
+5. overflow lands in the chip clock ISR (NVIC TIM2=28/TIM3=29/TC0=27, RM-sourced).
+6. debug-halt > 1 wrap period loses a wrap (DBGMCU freeze unset) -- bench artifact, not a bug.
+
+Clock follow-ups (not blocking): arch_trace_now + KICKOS_BENCH still read raw DWT/CCOUNT (telemetry
+may glitch on K64F/XMC -- tolerable, NOT the scheduler clock); ticks->ns epilogue duplicated ~7x
+(hoist an arch/arm/common helper). ENV (this box): sim/kickcat_slave build needs `tinyxml2`
+reinstalled -- a 2026-07-20 system change dropped it; unrelated to KickOS.
+
 ## M1 -- clocks (fleet audit 2026-07-09; detail in `M1_state.md`)
 
 Every board's timing math is ACCURATE (no ESP32-C6-class constant bug survived the
