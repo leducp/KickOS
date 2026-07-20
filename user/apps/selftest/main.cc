@@ -1663,6 +1663,43 @@ namespace
         TAP_CHECK(kos_handle_close(s) == 0);
         TAP_CHECK(kos_handle_close(e) == 0);
         TAP_CHECK(kos_handle_close(m) == 0);
+
+        // Pre-publish (the sim never hands over -- a real publish would silence this TAP
+        // stream), g_stdout_target < 0, so cap_install_defaults seats NOTHING at index 0.
+        // Sending on the empty stdout slot therefore fails cleanly rather than resolving a
+        // stale/aliased object -- this exercises the pre-publish cap_install_defaults branch.
+        TAP_CHECK(kos_send(0, "x", 1) == -1);
+
+        // Exhaustion: own-creates fill the remaining slots [1 .. MAX_HANDLES-1] and then
+        // fail cleanly with -1 -- slot 0 stays reserved even at the LAST free slot, and a
+        // full table never crashes or returns 0. (Index field is 4 bits: MAX_HANDLES <= 16.)
+        int held[16];
+        int n = 0;
+        for (;;)
+        {
+            int h = kos_sem_create(0);
+            if (h < 0)
+            {
+                break;
+            }
+            TAP_CHECK((h & kIdxMask) != 0); // never slot 0, not even the last free one
+            held[n] = h;
+            n = n + 1;
+            if (n >= static_cast<int>(sizeof(held) / sizeof(held[0])))
+            {
+                break;
+            }
+        }
+        TAP_CHECK(n >= 1);
+        TAP_CHECK(kos_sem_create(0) == -1); // table full -> clean -1
+        TAP_CHECK(kos_sem_create(0) == -1); // still -1 (idempotent failure, no side effect)
+        for (int i = 0; i < n; i++)
+        {
+            TAP_CHECK(kos_handle_close(held[i]) == 0);
+        }
+        int again = kos_sem_create(0); // table recovers once slots are freed
+        TAP_CHECK(again >= 0 and (again & kIdxMask) != 0);
+        TAP_CHECK(kos_handle_close(again) == 0);
     }
 
     // --- console_publish is privileged-only; a bad cap is rejected with no side effect --
