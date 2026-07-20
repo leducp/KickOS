@@ -230,10 +230,41 @@ namespace kickos
             return user_range_ok(ptr, len, ARCH_MPU_W);
         }
 
+        // The kernel<->user byte-access seam. IDENTITY today: a validated user
+        // address is directly kernel-dereferenceable (one physical space), so these
+        // are plain copies. The MMU era reimplements exactly these (per arch:
+        // translate / copy across address spaces); every kernel-side user-pointer
+        // dereference funnels here, so that becomes one function to change, not a
+        // hunt across syscalls. Callers MUST validate first (user_range_ok /
+        // user_readable_ok / user_writable_ok) -- this is the ACCESS, not the check.
+        // Byte loops, not memcpy: freestanding, and the arch rewrite hooks here.
+        void kaccess_from_user(void* kdst, uintptr_t usrc, size_t n)
+        {
+            char* d = static_cast<char*>(kdst);
+            char const* s = reinterpret_cast<char const*>(usrc);
+            for (size_t i = 0; i < n; i++)
+            {
+                d[i] = s[i];
+            }
+        }
+
+        void kaccess_to_user(uintptr_t udst, void const* ksrc, size_t n)
+        {
+            char* d = reinterpret_cast<char*>(udst);
+            char const* s = static_cast<char const*>(ksrc);
+            for (size_t i = 0; i < n; i++)
+            {
+                d[i] = s[i];
+            }
+        }
+
         // Bounded byte copy (<= KOS_EP_MSG_MAX). Both endpoints do it under IrqLock,
         // one side of which is a PARKED peer's user buffer (see endpoint.h): the
         // waker's own MPU regions are loaded, so it reaches the peer's memory only via
-        // privileged background access (arch contract, design section 3.1).
+        // privileged background access (arch contract, design section 3.1). This is
+        // the user<->user peer of the kaccess_*_user seam above (both ends are user
+        // memory, not one kernel side): the ONE endpoint access the MMU era rewrites
+        // as a cross-aspace copy. All endpoint payload movement funnels here already.
         void ep_copy(uintptr_t dst, uintptr_t src, size_t n)
         {
             char* d = reinterpret_cast<char*>(dst);
@@ -287,7 +318,8 @@ namespace kickos
                     ep_copy(w->ipc.buf, buf, n); // sender-ctx copy into the parked receiver's buffer
                     if (w->ipc.badge_out != 0)
                     {
-                        *reinterpret_cast<uint32_t*>(w->ipc.badge_out) = 0; // stage i: badge 0
+                        uint32_t const badge = 0; // stage i: badge 0
+                        kaccess_to_user(w->ipc.badge_out, &badge, sizeof(badge));
                     }
                     w->wait_result = static_cast<intptr_t>(n);
                     sched::wake(w);
@@ -347,7 +379,8 @@ namespace kickos
                     ep_copy(buf, s->ipc.buf, n); // receiver-ctx copy from the parked sender's buffer
                     if (badge_out != 0)
                     {
-                        *reinterpret_cast<uint32_t*>(badge_out) = 0;
+                        uint32_t const badge = 0;
+                        kaccess_to_user(badge_out, &badge, sizeof(badge));
                     }
                     s->wait_result = static_cast<intptr_t>(n);
                     sched::wake(s);
@@ -390,7 +423,8 @@ namespace kickos
             {
                 return -1;
             }
-            kos_thread_params params = *p;
+            kos_thread_params params;
+            kaccess_from_user(&params, pu, sizeof(params));
             p = &params;
             // Validate the user-supplied priority: it indexes the ready lists and
             // drives a 1u<<prio bitmap shift, so an out-of-range value is an OOB write / UB.
@@ -516,7 +550,9 @@ namespace kickos
                 kos_cap_grant gbuf[KICKOS_MAX_HANDLES];
                 for (int ci = 0; ci < ncaps; ci++)
                 {
-                    gbuf[ci] = p->caps[ci];
+                    kaccess_from_user(&gbuf[ci],
+                                      cu + static_cast<size_t>(ci) * sizeof(kos_cap_grant),
+                                      sizeof(kos_cap_grant));
                 }
                 Thread* const caller = sched::current();
                 for (int ci = 0; ci < ncaps; ci++)
@@ -580,8 +616,8 @@ namespace kickos
                     {
                         break; // unreachable byte -- bound the walk here
                     }
-                    namebuf[ni] = p->name[ni];
-                    if (p->name[ni] == '\0')
+                    kaccess_from_user(&namebuf[ni], np + ni, 1);
+                    if (namebuf[ni] == '\0')
                     {
                         name_ok = true;
                         break;
@@ -706,6 +742,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // cannot launder another domain's arena page out through the console
             // (the kernel reads buf privileged). Reject => wrote nothing.
             constexpr size_t kMaxConsoleWrite = 4096;
+            // MMU-era NOTE: this hands a user pointer straight to kconsole_write, which
+            // streams it privileged -- the one kernel-side user read NOT funnelled
+            // through kaccess_from_user. Funnelling it needs a bounce buffer + chunk
+            // loop (a real design choice: buffer size vs kernel-stack budget), not an
+            // identity refactor, so it is deferred to the copy_from_user work.
             char const* buf = reinterpret_cast<char const*>(a0);
             size_t len = static_cast<size_t>(a1);
             if (len > kMaxConsoleWrite)
@@ -1004,7 +1045,8 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-1);
             }
-            *reinterpret_cast<uint64_t*>(a0) = arch_clock_now();
+            uint64_t const now = arch_clock_now();
+            kaccess_to_user(a0, &now, sizeof(now));
             return 0;
         }
         case KOS_SYS_cpu_clock_hz:
