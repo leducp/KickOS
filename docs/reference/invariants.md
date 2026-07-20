@@ -161,17 +161,17 @@
 
 ## Console
 
-- **`console-single-producer`** -- The buffered console ring is a strict single-producer/single-consumer: the buffered path (arch_console_write) is entered ONLY from thread context with the ring armed and not panicking; ISR context, fault context, panic, and pre-arm boot all fall back to the bounded polled writer (arch_console_write_sync). console_emit is the single routing chokepoint; any new path that logs from a raw ISR must not reach the buffered producer.
+- **`console-single-producer`** -- The buffered console ring is a strict single-producer/single-consumer: the buffered path (arch_console_write) is entered ONLY from thread context with the ring armed and not panicking; ISR context, fault context, panic, and pre-arm boot all fall back to the bounded polled writer (arch_console_write_sync). console_emit is the single routing chokepoint; any new path that logs from a raw ISR must not reach the buffered producer. console_emit consults the three-state ownership axis g_console_state (KERNEL_OWNED buffered/sync as above; USER_OWNED drops the chip path entirely -- RTT still carries it; RECLAIMED polled-only) BEFORE the buffered-vs-sync sub-decision. A device poke while KERNEL_OWNED brackets itself in the g_chip_writers count so kos_console_publish (which flips the state to USER_OWNED last) drains a stale racing writer off the device before returning; console_tx_write's disarm fallback re-reads the state and DROPS the poke unless still KERNEL_OWNED.
   - *applies:* console single-producer ring; kernel + buffered-console chips
-  - *source:* kernel/init/console.cc:50-60; lib/include/kickos/console_tx.h:53-62; docs/reference/console.md
+  - *source:* kernel/init/console.cc:47-127 (state axis + g_chip_writers + console_emit), 204-220 (kpanic_enter reclaim wiring); kernel/init/console_tx.cc:108-124 (disarm re-check), 247-258 (console_tx_deinit); kernel/syscall/syscall.cc (KOS_SYS_console_publish drain); lib/include/kickos/console_tx.h; docs/reference/console.md
 
 - **`console-publish-prime-atomic`** -- The producer's 'copy burst, publish head, enable TX IRQ' must publish head and enable the IRQ together under IrqLock, atomic against the ISR's 'drain to empty, disable IRQ', so there is no lost wakeup; the TX IRQ stays enabled whenever the ring is non-empty and the ISR disables it only on empty. The TX ISR therefore MUST sit in the IrqLock-maskable device band and must never sem_post/switch/block.
   - *applies:* console single-producer ring, ISR band; kernel + buffered-console chips (mk64f, xmc4800)
   - *source:* kernel/init/console_tx.cc:70-127; lib/include/kickos/console_tx.h:36-62; docs/reference/console.md
 
-- **`panic-console-probe-independent`** -- Panic/fault output must not depend on the buffered ring or on an external debug probe: kpanic sets g_console_panicking, flushes queued bytes in order via console_tx_flush_sync, then prints through the polled synchronous writer and halts. The synchronous writer must remain a real transport (weak default aliases arch_console_write), never RTT-only.
+- **`panic-console-probe-independent`** -- Panic/fault output must not depend on the buffered ring or on an external debug probe: kpanic_enter sets g_console_panicking, flushes queued bytes in order via console_tx_flush_sync, then prints through the polled synchronous writer and halts. On a handed-over (USER_OWNED) UART kpanic_enter first calls arch_console_reclaim() and flips the state to RECLAIMED so the polled banner reaches a device the kernel forcibly took back; kickos_isr_fault funnels through kpanic_enter FIRST so a terminal fault in the userspace driver still reclaims and prints. The synchronous writer must remain a real transport (weak default aliases arch_console_write), never RTT-only.
   - *applies:* console panic-sync; kernel + all chips
-  - *source:* kernel/init/console.cc:36-41,50-60,123-164; docs/reference/console.md
+  - *source:* kernel/init/console.cc:41,101-127,204-220 (kpanic_enter + reclaim), 288 (weak arch_console_reclaim), 296-300 (kickos_isr_fault funnel); docs/reference/console.md
 
 ## Telemetry
 

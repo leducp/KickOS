@@ -587,14 +587,23 @@ fixed kernel buffers rather than aliasing (a fault reporter that `%s`-prints an 
 pointer is an info-leak oracle). Handles then resolve at that already-checked boundary. This
 closes the confused-deputy path a whole-arena syscall raise would leave open.
 
-**Console device handover.** The kernel owns the buffered debug console at boot. When a userspace
-UART driver later takes the device as a capability, two drivers cannot share one peripheral, so
-the kernel must **relinquish** it (disable the TX interrupt, detach, flush) -- teardown built
-against the real handover caller, not speculatively. The **field panic path must reclaim** the
-UART: force-retake the peripheral, re-init it to a known baud/state (userspace config is
-untrusted), then polled-print. The diag LED stays the always-present 1-bit last resort. Routing
-userspace output through a kernel syscall to "share" the device is rejected -- an ambient-authority
-console service contradicts the microkernel split.
+**Console device handover.** The kernel owns the buffered debug console at boot. Because two
+drivers cannot share one peripheral, a three-state ownership axis `g_console_state`
+(KERNEL_OWNED / USER_OWNED / RECLAIMED) gates `console_emit` ahead of its buffered-vs-sync
+decision: in USER_OWNED the kernel touches the device on no path (RTT still carries kernel
+output). The privileged syscall `kos_console_publish` performs the handover -- it
+**relinquishes** the buffered path via `console_tx_deinit` (flush, disable the TX interrupt,
+detach/NVIC-mask, disarm), takes a kernel ref on the userspace driver's stdout endpoint, then
+flips the state to USER_OWNED last; a stale chip writer that raced the flip is drained (via the
+`g_chip_writers` count, with the publisher yielding at lowered priority so a lower-priority
+writer can finish) before publish returns. The **field panic path reclaims** the UART:
+`kpanic_enter` calls `arch_console_reclaim` and flips to RECLAIMED, and `kickos_isr_fault`
+funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
+the diag LED stays the always-present 1-bit last resort. Still to build: the per-chip
+`arch_console_reclaim` bodies (force-retake the peripheral and rewrite every in-window register
+to a known baud/state, since userspace config is untrusted -- weak no-op today) and the userspace
+UART driver itself. Routing userspace output through a kernel syscall to "share" the device is
+rejected -- an ambient-authority console service contradicts the microkernel split.
 
 **Service publication.** A published userspace driver = **endpoint capability (control) +
 shared-memory grant (data)**. How a client finds and may invoke a server across domains: (1)

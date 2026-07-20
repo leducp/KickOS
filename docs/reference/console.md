@@ -29,9 +29,13 @@ kconsole_write                 -- frontend, fans out to compile-time backends
    \- chip  (CONSOLE=chip|both): CRLF-expand '\n'->'\r\n' (MCU only), then per chunk:
         v
 console_emit                   -- THE routing guard
-   |   armed && !arch_in_isr() && !panicking ?
-   +- YES -> arch_console_write        (buffered)
-   \- NO  -> arch_console_write_sync   (polled, always safe)
+   |   g_console_state ?                            (ownership axis, checked FIRST)
+   +- USER_OWNED  -> DROP  (a userspace driver owns the UART; RTT still carries it)
+   +- RECLAIMED   -> arch_console_write_sync        (panic took it back; polled)
+   \- KERNEL_OWNED:
+        |   armed && !arch_in_isr() && !panicking ?
+        +- YES -> arch_console_write        (buffered)
+        \- NO  -> arch_console_write_sync   (polled, always safe)
         v
 [buffered]  console_tx_write:   memcpy burst into the SPSC ring (lock-free)
                                 -> IrqLock { publish head; enable TX IRQ } -> return
@@ -64,14 +68,30 @@ dev/bring-up transport, never the sole panic path in the field (see Invariants).
 
 ## The routing guard: `console_emit`
 
-`console_emit` is the **single choke point** that decides buffered vs synchronous:
+`console_emit` is the **single choke point** that decides where output goes. It first
+consults the **ownership axis** `g_console_state` (who owns the UART TX register),
+because in the middle value the kernel must touch the device on *no* path at all:
+
+```
+USER_OWNED    ->  DROP: the kernel touches nothing (RTT still carries the bytes)
+RECLAIMED     ->  arch_console_write_sync (panic reclaimed the UART -> polled only)
+KERNEL_OWNED  ->  the buffered-vs-sync sub-decision below
+```
+
+and only when `KERNEL_OWNED` does it make the buffered-vs-synchronous choice:
 
 ```
 armed && !arch_in_isr() && !g_console_panicking  ->  arch_console_write      (buffered)
 otherwise                                         ->  arch_console_write_sync (polled)
 ```
 
-This is the load-bearing invariant of the whole design: **the buffered producer is
+`g_console_state` starts `KERNEL_OWNED` (every board that never hands over stays here,
+so the sub-decision is the whole story for them); `kos_console_publish` flips it to
+`USER_OWNED`, and a panic on a handed-over UART flips it to `RECLAIMED`. See
+[architecture.md](architecture.md), "Console device handover".
+
+The `KERNEL_OWNED` sub-decision is the load-bearing invariant of the whole design:
+**the buffered producer is
 only ever entered in ordinary thread context.** Any ISR/fault caller, a panic in
 progress, and all pre-arm boot output take the polled path. That is what lets the
 ring be a true single-producer / single-consumer structure without a general lock
@@ -221,10 +241,19 @@ Details specific to the sim:
    because RTT needs a J-Link and the userspace driver may be the thing that
    crashed. The diag LED is the always-present 1-bit last resort.
 
-## Future (capability handover)
+## Capability handover
 
-When a userspace UART driver takes the device as a capability, the kernel must
-relinquish it: a `console_tx_deinit` (disable TX IRQ -> `irq_detach` -> flush ->
-disarm), written against that real caller -- not now. The panic path then moves to
-a kernel-retained transport per invariant 4. See [architecture.md](architecture.md),
-"Object model, capabilities & IPC" -> "Console device handover".
+The kernel-side handover mechanism is **landed**. `console_tx_deinit` (flush -> disable
+TX IRQ -> `irq_detach`/NVIC-mask -> disarm the ring, all under one `IrqLock`) relinquishes
+the buffered path, and the privileged syscall `kos_console_publish` (29) calls it, takes a
+kernel ref on the stdout endpoint, and flips `g_console_state` to `USER_OWNED` last. A
+stale in-flight chip writer that raced the flip is drained via the `g_chip_writers` count
+before publish returns (it lowers its own priority and yields so a lower-priority writer
+can finish -- the scheduler is strict-priority). The panic path funnels through
+`kpanic_enter`, which flips a handed-over UART to `RECLAIMED` and polled-prints.
+
+Still **not built**: the real `arch_console_reclaim` bodies (the per-chip full-window
+register rewrite that recovers a UART a buggy driver scrambled -- the wiring exists, the
+bodies are a weak no-op today) and the userspace UART driver itself. See
+[architecture.md](architecture.md), "Object model, capabilities & IPC" ->
+"Console device handover".
