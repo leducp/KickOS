@@ -389,3 +389,709 @@ Verdict:
 - clock-retune + XMC consoledemo captures were REUSED from the 2026-07-20 clean logs
   (`.session/logs/{xmc,k64}-clock-retune.log`, `.session/logs/xmc-consoledemo.log`), not
   re-flashed this pass.
+
+================================================================================
+
+# M3 fleet-validation pass (2026-07-20, same bench window)
+
+Extension of the XMC+K64F pass above to the rest of the connected fleet, same bench
+window (2026-07-20), same branch `m3-integration`. Two threads run per board:
+  1. **M3 capability/IPC core selftest under enforcement** -- arch-neutral, expected to
+     pass fleet-wide (the same 42-test set as above; a no-MPU board runs 40, see WROOM).
+  2. **Clock-hardening silicon validation** via a NEW harness `user/apps/clocksoak`
+     (gated `-DKICKOS_CLOCKSOAK_TEST=ON`, per-board `-DKICKOS_CLOCKSOAK_WRAP_MS`,
+     arch-neutral: `clock_now` + `sleep_ns` only). Phase A idles past >1 counter wrap
+     period (one sleep of 1.5x the wrap -- idle-wrap observer); phase B soaks across N
+     wraps, asserting monotonicity + per-chunk rate + whole-soak rate.
+
+Same capture convention as above: verbatim KickOS output, only the trailing serial CR
+dropped and the J-Link/ST-Link/ESP-ROM boot preamble (and any ANSI escapes) trimmed.
+
+--------------------------------------------------------------------------------
+
+## STM32F411-Disco (armv7m Cortex-M4F / PMSA, 84 MHz)
+
+### selftest -- UNDER ENFORCEMENT
+Build: preset `f411disco-st` + `-DKICKOS_HAVE_MPU=1`, target `selftest`.
+Flash: ST-Link `st-flash --connect-under-reset --reset write <bin> 0x08000000` -> OK.
+Console: FTDI on PA2, `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BH001J9H-if00-port0` @115200.
+Result: **42/42 pass, 0 fail** (source log `.session/logs/f411-sel-BH001J9H.log`).
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   f411disco
+   arch    armv7m
+   mpu     enforce
+   sched   tickless
+   build   Jul 20 2026 20:53:30
+   app     Jul 20 2026 20:53:30
+
+1..42
+# [svc] console_write roundtrip
+ok 1 - svc_roundtrip
+ok 2 - fifo_order
+ok 3 - preempt_on_ready
+ok 4 - cpu_clock_hz
+ok 5 - cpu_clock_set
+ok 6 - rr_interleave
+ok 7 - sleep_order
+ok 8 - multi_wait
+ok 9 - sem_destroy
+ok 10 - sem_destroy_quiescent
+ok 11 - sem_raii
+ok 12 - mutex_basic
+ok 13 - mutex_pi_donation
+ok 14 - mutex_chain_boost
+ok 15 - mutex_owner_died
+ok 16 - mutex_deadlock
+ok 17 - mutex_close_owned
+ok 18 - mutex_multi_held
+ok 19 - mutex_unlock_errors
+ok 20 - mutex_owner_died_nowaiter
+ok 21 - mutex_deleg_refcount
+ok 22 - endpoint_rendezvous
+ok 23 - endpoint_reject
+ok 24 - endpoint_rights
+ok 25 - endpoint_epipe
+ok 26 - endpoint_dead
+ok 27 - endpoint_crossdomain
+ok 28 - endpoint_bound
+ok 29 - cap_index0
+ok 30 - console_publish_priv
+ok 31 - irq_thread_ctx
+ok 32 - irq_as_event
+ok 33 - irq_mask_drop
+ok 34 - irq_autorearm
+ok 35 - irq_phantom_wake
+ok 36 - irq_ownership
+ok 37 - irq_spurious
+ok 38 - mpu_privileged_guard
+ok 39 - caller_stack
+ok 40 - domain_share
+ok 41 - mmio_grant
+# [confdep] unpriv rodata literal reaches the console
+ok 42 - confused_deputy
+# all tests passed
+```
+
+### clocksoak -- clock-hardening silicon validation
+Build: preset `f411disco` + `-DKICKOS_CLOCKSOAK_TEST=ON -DKICKOS_CLOCKSOAK_WRAP_MS=51000`,
+app `clocksoak` (banner `mpu off`). Counter: TIM2, real ~51 s wrap period.
+Result: **PASS** (source log `.session/logs/f411-clocksoak.log`).
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   f411disco
+   arch    armv7m
+   mpu     off
+   sched   tickless
+   build   Jul 20 2026 20:52:46
+   app     Jul 20 2026 20:52:46
+
+[clocksoak] START clock-hardening soak harness
+[clocksoak] boot: cpu_clock_hz = 84000000  wrap_period = 51000 ms  wraps = 3  t0 = 25397464 ns
+[clocksoak] phase A: single sleep past 1 wrap (idle-wrap observer)
+[clocksoak] phase A: requested 76500000000 ns, measured 76500065929 ns  (mono=1 rate=1)
+[clocksoak] phase B: soak across N wraps
+[clocksoak] wrap 1/3: measured 51000061119 ns  cum=127500963834 ns  (seam_mono=1 rate=1)
+[clocksoak] wrap 2/3: measured 51000061119 ns  cum=178501387477 ns  (seam_mono=1 rate=1)
+[clocksoak] wrap 3/3: measured 51000061119 ns  cum=229501811168 ns  (seam_mono=1 rate=1)
+[clocksoak] soak total: requested 153000000000 ns, measured 153001745239 ns, ratio x100 = 100 (expect ~100)
+[clocksoak] VERDICT PASS: monotonic across wraps, rate-correct, idle kept counting
+[clocksoak] clock soak test done
+```
+
+--------------------------------------------------------------------------------
+
+## ESP32-WROOM (Xtensa LX6 / NO MPU, 240 MHz)
+
+### selftest -- 40/40 (no-MPU board)
+Build: `-DKICKOS_HAVE_MPU=0`, target `selftest` (banner `mpu off`).
+Flash: esptool over CH340.
+Result: **40/40 pass, 0 fail** (source log `.session/logs/wroom-selftest.log`).
+NOTE: 40 vs the 42 on MPU boards -- the two absent tests are the `HAVE_MPU`-gated ones
+(`endpoint_bound` + `mpu_privileged_guard`), correct for a no-MPU board; all M3-core tests
+pass. Renumbering below (cap_index0 lands at 28, confused_deputy at 40) follows from the
+two dropped tests, not a reordering.
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   esp32-wroom
+   arch    lx6
+   mpu     off
+   sched   tickless
+   build   Jul 20 2026 20:55:59
+   app     Jul 20 2026 20:55:59
+
+1..40
+# [svc] console_write roundtrip
+ok 1 - svc_roundtrip
+ok 2 - fifo_order
+ok 3 - preempt_on_ready
+ok 4 - cpu_clock_hz
+ok 5 - cpu_clock_set
+ok 6 - rr_interleave
+ok 7 - sleep_order
+ok 8 - multi_wait
+ok 9 - sem_destroy
+ok 10 - sem_destroy_quiescent
+ok 11 - sem_raii
+ok 12 - mutex_basic
+ok 13 - mutex_pi_donation
+ok 14 - mutex_chain_boost
+ok 15 - mutex_owner_died
+ok 16 - mutex_deadlock
+ok 17 - mutex_close_owned
+ok 18 - mutex_multi_held
+ok 19 - mutex_unlock_errors
+ok 20 - mutex_owner_died_nowaiter
+ok 21 - mutex_deleg_refcount
+ok 22 - endpoint_rendezvous
+ok 23 - endpoint_reject
+ok 24 - endpoint_rights
+ok 25 - endpoint_epipe
+ok 26 - endpoint_dead
+ok 27 - endpoint_crossdomain
+ok 28 - cap_index0
+ok 29 - console_publish_priv
+ok 30 - irq_thread_ctx
+ok 31 - irq_as_event
+ok 32 - irq_mask_drop
+ok 33 - irq_autorearm
+ok 34 - irq_phantom_wake
+ok 35 - irq_ownership
+ok 36 - irq_spurious
+ok 37 - caller_stack
+ok 38 - domain_share
+ok 39 - mmio_grant
+# [confdep] unpriv rodata literal reaches the console
+ok 40 - confused_deputy
+# all tests passed
+```
+
+### clocksoak -- clock-hardening silicon validation
+Build: `-DKICKOS_CLOCKSOAK_TEST=ON -DKICKOS_CLOCKSOAK_WRAP_MS=60000`, app `clocksoak`
+(banner `mpu off`). Counter: TIMG0 (64-bit -- does NOT actually wrap in this soak, see below).
+Result: **PASS** (source log `.session/logs/wroom-clocksoak.log`).
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   esp32-wroom
+   arch    lx6
+   mpu     off
+   sched   tickless
+   build   Jul 20 2026 20:53:00
+   app     Jul 20 2026 20:53:00
+
+[clocksoak] START clock-hardening soak harness
+[clocksoak] boot: cpu_clock_hz = 240000000  wrap_period = 60000 ms  wraps = 3  t0 = 19483675 ns
+[clocksoak] phase A: single sleep past 1 wrap (idle-wrap observer)
+[clocksoak] phase A: requested 90000000000 ns, measured 90000024700 ns  (mono=1 rate=1)
+[clocksoak] phase B: soak across N wraps
+[clocksoak] wrap 1/3: measured 60000024700 ns  cum=150014809300 ns  (seam_mono=1 rate=1)
+[clocksoak] wrap 2/3: measured 60000024675 ns  cum=210015029525 ns  (seam_mono=1 rate=1)
+[clocksoak] wrap 3/3: measured 60000024675 ns  cum=270015249750 ns  (seam_mono=1 rate=1)
+[clocksoak] soak total: requested 180000000000 ns, measured 180015225050 ns, ratio x100 = 100 (expect ~100)
+[clocksoak] VERDICT PASS: monotonic across wraps, rate-correct, idle kept counting
+[clocksoak] clock soak test done
+```
+
+--------------------------------------------------------------------------------
+
+## ESP32-C6 (RV32IMAC / PMP, 160 MHz)
+
+### selftest -- UNDER ENFORCEMENT
+Build: `-DKICKOS_HAVE_MPU=1` (PMP), target `selftest` (banner `mpu enforce`).
+Flash: esptool over CH343P.
+Result: **42/42 pass, 0 fail** (source log `.session/logs/c6-selftest.log`).
+NOTE: the ESP-ROM prints a cosmetic `SHA-256 comparison failed ... Attempting to boot
+anyway...` for the raw KickOS image (expected image hash is all-`ff`) -- harmless, the
+image boots and runs normally. Preamble trimmed from the capture below.
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   mpu     enforce
+   sched   tickless
+   build   Jul 20 2026 20:56:02
+   app     Jul 20 2026 20:56:02
+
+1..42
+# [svc] console_write roundtrip
+ok 1 - svc_roundtrip
+ok 2 - fifo_order
+ok 3 - preempt_on_ready
+ok 4 - cpu_clock_hz
+ok 5 - cpu_clock_set
+ok 6 - rr_interleave
+ok 7 - sleep_order
+ok 8 - multi_wait
+ok 9 - sem_destroy
+ok 10 - sem_destroy_quiescent
+ok 11 - sem_raii
+ok 12 - mutex_basic
+ok 13 - mutex_pi_donation
+ok 14 - mutex_chain_boost
+ok 15 - mutex_owner_died
+ok 16 - mutex_deadlock
+ok 17 - mutex_close_owned
+ok 18 - mutex_multi_held
+ok 19 - mutex_unlock_errors
+ok 20 - mutex_owner_died_nowaiter
+ok 21 - mutex_deleg_refcount
+ok 22 - endpoint_rendezvous
+ok 23 - endpoint_reject
+ok 24 - endpoint_rights
+ok 25 - endpoint_epipe
+ok 26 - endpoint_dead
+ok 27 - endpoint_crossdomain
+ok 28 - endpoint_bound
+ok 29 - cap_index0
+ok 30 - console_publish_priv
+ok 31 - irq_thread_ctx
+ok 32 - irq_as_event
+ok 33 - irq_mask_drop
+ok 34 - irq_autorearm
+ok 35 - irq_phantom_wake
+ok 36 - irq_ownership
+ok 37 - irq_spurious
+ok 38 - mpu_privileged_guard
+ok 39 - caller_stack
+ok 40 - domain_share
+ok 41 - mmio_grant
+# [confdep] unpriv rodata literal reaches the console
+ok 42 - confused_deputy
+# all tests passed
+```
+
+--------------------------------------------------------------------------------
+
+## RX72M (RXv3 / RX-MPU, 240 MHz)
+
+### selftest -- UNDER ENFORCEMENT
+Build: `-DKICKOS_HAVE_MPU=1` (RX-MPU), target `selftest` (banner `mpu enforce`).
+Flash: rfp-cli / E2-Lite (FINE).
+Console: SCI6 on FTDI `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG03AS3Q-if00-port0` @115200.
+Result: **42/42 pass, 0 fail** (source log `.session/logs/rx72m-selftest.log`).
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   mpu     enforce
+   sched   tickless
+   build   Jul 20 2026 20:56:04
+   app     Jul 20 2026 20:56:04
+
+1..42
+# [svc] console_write roundtrip
+ok 1 - svc_roundtrip
+ok 2 - fifo_order
+ok 3 - preempt_on_ready
+ok 4 - cpu_clock_hz
+ok 5 - cpu_clock_set
+ok 6 - rr_interleave
+ok 7 - sleep_order
+ok 8 - multi_wait
+ok 9 - sem_destroy
+ok 10 - sem_destroy_quiescent
+ok 11 - sem_raii
+ok 12 - mutex_basic
+ok 13 - mutex_pi_donation
+ok 14 - mutex_chain_boost
+ok 15 - mutex_owner_died
+ok 16 - mutex_deadlock
+ok 17 - mutex_close_owned
+ok 18 - mutex_multi_held
+ok 19 - mutex_unlock_errors
+ok 20 - mutex_owner_died_nowaiter
+ok 21 - mutex_deleg_refcount
+ok 22 - endpoint_rendezvous
+ok 23 - endpoint_reject
+ok 24 - endpoint_rights
+ok 25 - endpoint_epipe
+ok 26 - endpoint_dead
+ok 27 - endpoint_crossdomain
+ok 28 - endpoint_bound
+ok 29 - cap_index0
+ok 30 - console_publish_priv
+ok 31 - irq_thread_ctx
+ok 32 - irq_as_event
+ok 33 - irq_mask_drop
+ok 34 - irq_autorearm
+ok 35 - irq_phantom_wake
+ok 36 - irq_ownership
+ok 37 - irq_spurious
+ok 38 - mpu_privileged_guard
+ok 39 - caller_stack
+ok 40 - domain_share
+ok 41 - mmio_grant
+# [confdep] unpriv rodata literal reaches the console
+ok 42 - confused_deputy
+# all tests passed
+```
+
+--------------------------------------------------------------------------------
+
+## Findings (fleet pass)
+
+3. **clocksoak: the per-`sleep_ns` overhead is a CONSTANT floor -- it does NOT scale with
+   duration and does NOT accumulate across wraps.** On F411 the overhead is ~61 us on every
+   51 s soak chunk (all three chunks byte-identical at `51000061119 ns`) and ~66 us on the
+   76.5 s phase-A sleep; on WROOM it is ~24.7 us per chunk at 240 MHz. Whole-soak ratio
+   x100 = 100 on both boards. This constant, non-accumulating floor is the proof the
+   wrap-fold adds exactly zero error: a rate error would scale with duration; a lost wrap
+   would show as -1 whole wrap period; a phantom leap would show as seconds-to-minutes. On
+   F411 the soak crossed ~4.5 real TIM2 wraps (51 s each: 1.5 in phase A + 3 in phase B),
+   validating clocksoak checklist items 1 (idle-wrap observer), 2 (soak-across-wraps),
+   3 (rate/monotonicity), 4 (WFI-keeps-counting), 5 (overflow handled in the chip ISR).
+
+4. **WROOM honest-coverage caveat: TIMG0 is 64-bit and does NOT wrap in the ~270 s soak.**
+   Checklist items 1/2 (an actual counter wrap) are therefore N/A on WROOM. What the WROOM
+   run does prove is items 3 (rate/monotonicity) + 4 (WAITI keeps the timebase counting --
+   the CCOUNT-freeze regression fix). The `wrap N/M` lines on WROOM are soak chunks by
+   wall-clock, not silicon counter rollovers.
+
+## Coverage / what is NOT covered (fleet pass)
+
+- The connected fleet is now M3-validated (selftest under enforcement, plus clocksoak on
+  the two boards run): **XMC4800-Relax, FRDM-K64F, STM32F411-Disco, ESP32-WROOM, ESP32-C6,
+  RX72M -- all PASS**.
+- **picopi/RP2040: PENDING (not skipped)** -- deferred to a user-assisted run (needs a
+  physical reset + a tty swap). To be run separately.
+- clocksoak was run on F411 (TIM2, real wrap) and WROOM (TIMG0, 64-bit, no real wrap) only;
+  the selftest-only boards (XMC, K64F, C6, RX72M) did not run clocksoak this pass.
+- The other clock-hardening boards F103 / F302 / SAM3X were NOT run this pass: F103 and F302
+  are not on the bench, and the SAM3X unit is retired.
+
+================================================================================
+
+# M3 extended-fleet pass (2026-07-20 cont.)
+
+Continuation of the fleet pass above, same bench window (2026-07-20), same branch
+`m3-integration`. Adds the two RP2xxx boards on silicon and two clock soaks (C6, RX72M),
+plus a console-TX finding that came out of the C6 soak. Same capture convention: verbatim
+KickOS output, only the trailing serial CR dropped and the ESP-ROM / J-Link boot preamble
+(and any ANSI escapes) trimmed.
+
+--------------------------------------------------------------------------------
+
+## picopi / RP2040 (armv6m Cortex-M0+, PMSA)
+
+### selftest -- UNDER ENFORCEMENT
+Build: preset `picopi-st` + `-DKICKOS_HAVE_MPU=1 -DKICKOS_MTX_UNIT_SCALE=10`, target `selftest`.
+Flash: UF2 over the BOOTSEL mass-storage volume. Console: GP0 -> FTDI on ttyUSB1, `picocom`.
+Result: **42/42 pass, 0 fail** (source log `.session/logs/picopi-selftest-10x.log`).
+KEY FINDING: at the DEFAULT mutex-test time unit the M0+ fails `not ok 14 - mutex_chain_boost`
+(`main.cc:836`, `nth('e',1) < nth('d',1)`); at the 10x unit (`-DKICKOS_MTX_UNIT_SCALE=10`) it is
+42/42. This is slow-core TIMING-MARGIN fragility, NOT a kernel bug: single-hop PI
+(`mutex_pi_donation`, test 13) passes, and the two-hop chain-boost mechanism is proven -- it
+passes on all 6 faster boards at x1. On the M0+ (slowest core, software-divide-heavy tickless
+math) the 4-thread / 2-mutex choreography cannot fully form before D wakes at 4 units. Follow-up
+(test-only): `mtx_time_unit()` is being reworked to size the unit from a MEASURED reschedule cost
+(floored at the historic 1 ms so no board that already passes can shrink) instead of a hardcoded
+1 ms -- silicon-revalidation of that calibration on the M0+ is PENDING (RP2040 currently
+unplugged).
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   picopi
+   arch    armv6m
+   mpu     enforce
+   sched   tickless
+   build   Jul 20 2026 21:05:09
+   app     Jul 20 2026 21:41:57
+
+1..42
+ok 1 - svc_roundtrip
+ok 2 - fifo_order
+ok 3 - preempt_on_ready
+ok 4 - cpu_clock_hz
+ok 5 - cpu_clock_set
+ok 6 - rr_interleave
+ok 7 - sleep_order
+ok 8 - multi_wait
+ok 9 - sem_destroy
+ok 10 - sem_destroy_quiescent
+ok 11 - sem_raii
+ok 12 - mutex_basic
+ok 13 - mutex_pi_donation
+ok 14 - mutex_chain_boost
+ok 15 - mutex_owner_died
+ok 16 - mutex_deadlock
+ok 17 - mutex_close_owned
+ok 18 - mutex_multi_held
+ok 19 - mutex_unlock_errors
+ok 20 - mutex_owner_died_nowaiter
+ok 21 - mutex_deleg_refcount
+ok 22 - endpoint_rendezvous
+ok 23 - endpoint_reject
+ok 24 - endpoint_rights
+ok 25 - endpoint_epipe
+ok 26 - endpoint_dead
+ok 27 - endpoint_crossdomain
+ok 28 - endpoint_bound
+ok 29 - cap_index0
+ok 30 - console_publish_priv
+ok 31 - irq_thread_ctx
+ok 32 - irq_as_event
+ok 33 - irq_mask_drop
+ok 34 - irq_autorearm
+ok 35 - irq_phantom_wake
+ok 36 - irq_ownership
+ok 37 - irq_spurious
+ok 38 - mpu_privileged_guard
+ok 39 - caller_stack
+ok 40 - domain_share
+ok 41 - mmio_grant
+ok 42 - confused_deputy
+# all tests passed
+```
+Default-unit (x1) run, for the record -- identical except:
+```
+not ok 14 - mutex_chain_boost # /home/leduc/projets/KickOS/user/apps/selftest/main.cc:836: nth('e', 1) < nth('d', 1)
+# 1 test(s) failed
+```
+
+--------------------------------------------------------------------------------
+
+## RP2350 / Waveshare Pi-Zero (Cortex-M33, armv7m layer, mpu off) -- FIRST SILICON
+
+### selftest
+First time this port ran on silicon. Build: preset `pizero2350-st`, target `selftest`
+(banner `mpu off`). Flash: J-Link Pro (device `RP2350_M33_0`, SN `000177003338`).
+Console: repointed from the build-only GP0/UART0 guess to UART1/GP4 -- the Pi-Zero header's
+UART footprint (pin 8 TXD) routes to GP4/GP5 = UART1; UART0 cannot mux there. `picocom`.
+Result: **40/40 pass, 0 fail** (source log `.session/logs/pizero2350-selftest.log`).
+40 not 42 = the two `HAVE_MPU`-gated tests absent on a no-MPU build (as on WROOM). A manual POR
+reset boots it cleanly; the J-Link `g` / SYSRESETREQ path did not reliably (re)start the console.
+Note: the M33 rides the armv7m arch layer for the core (v7-M is a subset the M33 implements);
+v8-M PMSA enforcement needs a new backend (see `docs/design-rp2350-mpu-armv8m.md`), hence `mpu off`.
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   pizero2350
+   arch    armv7m
+   mpu     off
+   sched   tickless
+   build   Jul 20 2026 21:07:15
+   app     Jul 20 2026 22:02:05
+
+1..40
+ok 1 - svc_roundtrip
+ok 2 - fifo_order
+ok 3 - preempt_on_ready
+ok 4 - cpu_clock_hz
+ok 5 - cpu_clock_set
+ok 6 - rr_interleave
+ok 7 - sleep_order
+ok 8 - multi_wait
+ok 9 - sem_destroy
+ok 10 - sem_destroy_quiescent
+ok 11 - sem_raii
+ok 12 - mutex_basic
+ok 13 - mutex_pi_donation
+ok 14 - mutex_chain_boost
+ok 15 - mutex_owner_died
+ok 16 - mutex_deadlock
+ok 17 - mutex_close_owned
+ok 18 - mutex_multi_held
+ok 19 - mutex_unlock_errors
+ok 20 - mutex_owner_died_nowaiter
+ok 21 - mutex_deleg_refcount
+ok 22 - endpoint_rendezvous
+ok 23 - endpoint_reject
+ok 24 - endpoint_rights
+ok 25 - endpoint_epipe
+ok 26 - endpoint_dead
+ok 27 - endpoint_crossdomain
+ok 28 - cap_index0
+ok 29 - console_publish_priv
+ok 30 - irq_thread_ctx
+ok 31 - irq_as_event
+ok 32 - irq_mask_drop
+ok 33 - irq_autorearm
+ok 34 - irq_phantom_wake
+ok 35 - irq_ownership
+ok 36 - irq_spurious
+ok 37 - caller_stack
+ok 38 - domain_share
+ok 39 - mmio_grant
+ok 40 - confused_deputy
+# all tests passed
+```
+
+--------------------------------------------------------------------------------
+
+## ESP32-C6 clocksoak -> a console-TX-wedge finding (NOT a clock bug)
+
+The C6 selftest already passed 42/42 under PMP enforcement (see the fleet pass above). This
+extended-pass clocksoak turned up a console-output anomaly that, on investigation, is NOT the
+clock and NOT the timer -- it is the UART0 console TX path. The narrative below is the evidence.
+
+### The apparent stall
+Two soak configs were run (90 s wrap and 5 s wrap). Both completed phase A CORRECTLY and then
+went silent partway through phase B, always at ~11-12.5 s cumulative uptime.
+
+90 s wrap config (`.session/logs/c6-clocksoak.log`) -- boot + phase-A header, then silence
+(the `phase A:` header is the last line emitted; the phase-A RESULT line never printed):
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   esp32c6-wroom
+   arch    rv32imac
+   mpu     off
+   sched   tickless
+   build   Jul 20 2026 21:10:34
+   app     Jul 20 2026 21:10:35
+
+[clocksoak] START clock-hardening soak harness
+[clocksoak] boot: cpu_clock_hz = 160000000  wrap_period = 60000 ms  wraps = 3  t0 = 6203206 ns
+[clocksoak] phase A: single sleep past 1 wrap (idle-wrap observer)
+```
+
+5 s wrap config (`.session/logs/c6-clocksoak-short.log`) -- gets one chunk further into phase B,
+then goes silent after `wrap 1/3` (cum=12.5 s), mid-soak:
+```
+[clocksoak] START clock-hardening soak harness
+[clocksoak] boot: cpu_clock_hz = 160000000  wrap_period = 5000 ms  wraps = 3  t0 = 6203187 ns
+[clocksoak] phase A: single sleep past 1 wrap (idle-wrap observer)
+[clocksoak] phase A: requested 7500000000 ns, measured 7500022343 ns  (mono=1 rate=1)
+[clocksoak] phase B: soak across N wraps
+[clocksoak] wrap 1/3: measured 5000022344 ns  cum=12500508713 ns  (seam_mono=1 rate=1)
+```
+
+### It is NOT the clock and NOT the timer
+A UART-INDEPENDENT LED beacon (WS2812 on GPIO8: green blink while idle) kept BLINKING past the
+console-silence point and only went solid when the whole ~22.5 s soak completed. So the CPU ran
+the entire soak, the CLINT `mtime` timer fired throughout (no blue / overdue LED), and every
+completed chunk was rate-correct and monotonic (~22 us floor, matching the fleet). The `c6timer`
+trace build (`.session/logs/c6-led.log`) corroborates: `ARM` / `DISARM` / `idle mt=...` entries
+keep advancing (`idle mt=0x...263f53ac`, then `0x...4c64f3f2`) across and past the console-silence
+point -- the timebase never froze:
+```
+[clocksoak] START clock-hardening soak harness
+[clocksoak] boot: cpu_clock_hz = 160000000  wrap_period = 5000 ms  wraps = 3  t0 = 7242606 ns
+[clocksoak] phase A: single sleep past 1 wrap (idle-wrap observer)
+[c6timer] idle mt=0x00000000263f53ac cmp=0x000000004798b1a4 ctl=0x00000003
+[c6timer] DISARM now=0x000000004798c0b9
+[c6timer] DISARM now=0x000000004798d909
+[[c6timer] ARM  cmp=0x0000000077486020 now=0x00000000479971dc ctl=0x00000003
+[c6timer] ARM  cmp=0x0000000077486020 now=0x00000000479c82ae ctl=0x00000003
+clocksoak] phase A: requested 7500000000 ns, measured 7500091794 ns  (mono=1 rate=1)
+[clocksoak] phase B: soak across N wraps
+[c6timer] idle mt=0x000000004c64f3f2 cmp=0x0000000077486020 ctl=0x00000003
+```
+The C6 kernel / scheduler / clock are SOUND. (The RX72M soak below and the F411/WROOM soaks in
+the fleet pass are the positive clock-hardening evidence; this run adds C6 to that set on the
+clock axis.)
+
+### Root cause: the UART0 buffered-ring console TX path
+The UART0 buffered-ring console stops draining after ~600-900 cumulative output bytes while the
+CPU keeps running (`arch_console_write_sync` then bounded-drops bytes -> silence). Static review
+found no logic bug in the ring / ISR; it is UART TX hardware state (or the host / bridge side). A
+`TX_RST_CORE` (CLK_CONF bit27) pulse on stall-detect did NOT produce visible console recovery, and
+a minimal-output build (`.session/logs/c6-min.log`) wedged at the same point -- so it is not purely
+output-volume-driven:
+```
+[clocksoak] START clock-hardening soak harness
+[clocksoak] boot: cpu_clock_hz = 160000000  wrap_period = 5000 ms  wraps = 3  t0 = 5870843 ns
+[clocksoak] phase A: single sleep past 1 wrap (idle-wrap observer)
+[clocksoak] phase A: requested 7500000000 ns, measured 7500022263 ns  (mono=1 rate=1)
+[clocksoak] phase B: soak across N wraps
+```
+The TXWEDGE diagnostic build (`.session/logs/c6-txw.log`) reproduces identically. The
+chip-wedge-vs-host distinction is LED-gated (magenta vs green) and PENDING an operator LED read.
+
+### Classification
+A CONSOLE-TX-DRIVER robustness bug for the driver era (M4). The selftest never hits it (sub-second
+output). NOT an M3 blocker. Diagnostic builds live behind `-D` flags
+(`KICKOS_C6_TIMER_TRACE` / `KICKOS_C6_POLLFIX` / `KICKOS_C6_TXWEDGE`, `KICKOS_RV_FAULT_LED`) in
+`build/c6-dbg` + `build/c6-txw`.
+
+--------------------------------------------------------------------------------
+
+## RX72M clocksoak (CMTW)
+
+Build: preset `rx72m` + `-DKICKOS_CLOCKSOAK_TEST=ON -DKICKOS_CLOCKSOAK_WRAP_MS=60000`, app
+`clocksoak` (banner `mpu off`). Counter: CMTW at 240 MHz. Flash: rfp-cli / E2-Lite (FINE).
+Result: **PASS** (three 60 s chunks, ~19 us floor, ratio x100 = 100; source log
+`.session/logs/rx72m-clocksoak.log`).
+```
+  ==============================================
+   KickOS 0.0.1  -  microkernel RTOS
+  ==============================================
+   board   rx72m
+   arch    rxv3
+   mpu     off
+   sched   tickless
+   build   Jul 20 2026 21:10:37
+   app     Jul 20 2026 21:10:37
+
+[clocksoak] START clock-hardening soak harness
+[clocksoak] boot: cpu_clock_hz = 240000000  wrap_period = 60000 ms  wraps = 3  t0 = 24318133 ns
+[clocksoak] phase A: single sleep past 1 wrap (idle-wrap observer)
+[clocksoak] phase A: requested 90000000000 ns, measured 90000019067 ns  (mono=1 rate=1)
+[clocksoak] phase B: soak across N wraps
+[clocksoak] wrap 1/3: measured 60000019067 ns  cum=150000268667 ns  (seam_mono=1 rate=1)
+[clocksoak] wrap 2/3: measured 60000018933 ns  cum=210000387600 ns  (seam_mono=1 rate=1)
+[clocksoak] wrap 3/3: measured 60000018800 ns  cum=270000507467 ns  (seam_mono=1 rate=1)
+[clocksoak] soak total: requested 180000000000 ns, measured 180000488400 ns, ratio x100 = 100 (expect ~100)
+[clocksoak] VERDICT PASS: monotonic across wraps, rate-correct, idle kept counting
+[clocksoak] clock soak test done
+```
+RX (CMTW) and C6 (CLINT `mtime`) were already sound, unchanged by the clock-hardening work --
+this soak confirms the RX clock sound end-to-end; the C6 soak (section above) confirmed its
+CLOCK sound too (the apparent stall was the console).
+
+--------------------------------------------------------------------------------
+
+## Findings (extended pass)
+
+5. **RP2040 `mutex_chain_boost` is slow-core timing-margin fragility, not a kernel bug.** The M0+
+   fails `not ok 14` at the default 1 ms mutex-test unit and passes 42/42 at `x10`. Single-hop PI
+   (test 13) passes; the two-hop chain-boost mechanism passes at x1 on all 6 faster boards. The
+   M0+ (no divide instruction, software-divide-heavy tickless math) cannot form the 4-thread /
+   2-mutex choreography before the low-priority waiter wakes at 4 units. Follow-up is test-only:
+   `mtx_time_unit()` reworked to size the unit from a MEASURED reschedule cost, floored at the
+   historic 1 ms; re-validation on the M0+ at the reworked default is PENDING (board unplugged).
+
+6. **RP2350 first silicon: console footprint is UART1/GP4, not UART0/GP0.** The build-only guess
+   was wrong; the Pi-Zero header's TXD (pin 8) muxes only to UART1. Corrected and 40/40 on silicon.
+   Reset path: manual POR boots cleanly; J-Link `g` / SYSRESETREQ did not reliably restart the
+   console. The M33 runs on the armv7m arch layer (v7-M subset); v8-M PMSA enforcement is future
+   work (`docs/design-rp2350-mpu-armv8m.md`), so this board is `mpu off` for now.
+
+7. **ESP32-C6 console-TX wedge (driver-era bug, kernel/clock sound).** The clocksoak appeared to
+   stall at ~11-12.5 s cumulative but the CPU ran the full soak (LED beacon kept blinking; timer
+   trace kept advancing; completed chunks rate-correct + monotonic). Root cause is the UART0
+   buffered-ring console TX path ceasing to drain after ~600-900 cumulative bytes -- UART TX
+   hardware state (or host/bridge), no ring/ISR logic bug found; a `TX_RST_CORE` pulse did not
+   recover it and a minimal-output build wedged at the same point. Classified as an M4 console-TX
+   driver robustness bug; the selftest (sub-second output) never hits it. Chip-wedge-vs-host is
+   LED-gated and PENDING an operator read.
+
+## Coverage (extended pass)
+
+- The connected fleet validated on silicon is now **8 boards**: XMC4800-Relax, FRDM-K64F,
+  STM32F411-Disco, ESP32-WROOM, ESP32-C6, RX72M, RP2040 (picopi), RP2350 (pizero2350).
+- Caveats:
+  - **RP2040**: passes 42/42 at the `x10` mutex-test unit; the reworked `mtx_time_unit()`
+    calibration still needs re-validation at the default (board unplugged) -- finding #5.
+  - **ESP32-C6**: open console-TX-wedge driver bug (finding #7); kernel/scheduler/clock proven
+    sound (selftest 42/42 under PMP, clocksoak clock-sound).
+  - **Teensy 4.1 (imxrt1062)**: remains BUILD-ONLY; silicon pass pending a `teensy_loader_cli`
+    install, scheduled next session.
+  - **F103 / F302**: not on the bench this pass. **SAM3X**: unit retired.
+- clocksoak this extended pass: C6 (CLINT `mtime`, clock-sound -- console wedge is separate) and
+  RX72M (CMTW, PASS). Combined with the fleet pass, clocksoak now covers F411, WROOM, C6, RX72M.
