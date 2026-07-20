@@ -234,6 +234,30 @@ namespace
     volatile uint32_t g_clk_high = 0;
     volatile uint32_t g_clk_last = 0;
 
+    // arch_clock_now epoch anchor (B2). ns = base_ns + (raw_ticks - base_ticks)*mult.
+    // The SOLE writer of `mult` is clock_anchor_init at boot (this chip does not retune
+    // its clock at runtime -- arch_cpu_clock_set is the weak default returning 0 -- so
+    // there is no re-anchor). Removing the old lazy `if (hz != cached_hz) recompute`
+    // means arch_clock_now only ever READS these; if a fixed-set retune is added later
+    // it must re-anchor here at the rate edge, never recompute mult inside the read.
+    // BOOT-IDENTICAL: base_ticks=0, base_ns=0 -> now = raw_ticks*mult, exactly the old
+    // formula's first read (the old cache computed the same mult on first call).
+    uint64_t g_clk_base_ns = 0;
+    uint64_t g_clk_base_ticks = 0;
+    uint64_t g_clk_mult = 0;
+
+    void clock_anchor_init()
+    {
+        uint32_t const hz = SystemCoreClock;
+        if (hz == 0)
+        {
+            return; // leave mult 0 (unreachable: SystemCoreClock is always set by clock_init)
+        }
+        g_clk_mult = ((1000000000ull << 32) + (hz >> 1)) / hz;
+        g_clk_base_ticks = 0; // byte-identical to the old ticks*mult first read
+        g_clk_base_ns = 0;
+    }
+
     void tim2_clock_init()
     {
         // Boot-order: nothing before arch_init may read the clock. A static ctor
@@ -325,7 +349,8 @@ void arch_init(void)
     // on the HSE crystal + PLL first, then configure the console at the resulting
     // APB1 clock (clock_init leaves us on HSI 16 MHz if the crystal is absent).
     clock_init();
-    tim2_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
+    tim2_clock_init();   // monotonic time base (replaces the unreliable DWT clock)
+    clock_anchor_init(); // set the arch_clock_now mult ONCE from the final clock (B2)
     usart2_init();
     kickos_armv7m_init();
 }
@@ -338,22 +363,13 @@ void arch_init(void)
 // a cached reciprocal multiply (the one 64-bit divide runs only at a clock change).
 uint64_t arch_clock_now(void)
 {
-    uint32_t tim_hz = SystemCoreClock;
-    static uint64_t cached_hz = 0;
-    static uint64_t mult = 0;
-    if (tim_hz != cached_hz)
-    {
-        if (tim_hz == 0)
-        {
-            return 0;
-        }
-        mult = ((1000000000ull << 32) + (tim_hz >> 1)) / tim_hz;
-        cached_hz = tim_hz;
-    }
-    uint64_t ticks = tim2_ticks();
-    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
-    uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFull;
-    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    // Pure epoch read (B2): mult is written only by clock_anchor_init (boot). The old
+    // lazy `if (hz != cached_hz) recompute` is REMOVED so a read can never bake a rate
+    // change into the anchor. delta = raw_ticks - base_ticks (base 0 at boot).
+    uint64_t delta = tim2_ticks() - g_clk_base_ticks;
+    uint64_t a = delta >> 32, b = delta & 0xFFFFFFFFull;
+    uint64_t c = g_clk_mult >> 32, d = g_clk_mult & 0xFFFFFFFFull;
+    return g_clk_base_ns + ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
 }
 
 // TIM2 overflow (update) ISR, vectored at NVIC 28 in startup.S. Its only job is to
