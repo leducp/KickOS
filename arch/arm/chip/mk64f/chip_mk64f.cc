@@ -116,14 +116,30 @@ namespace
     constexpr uintptr_t UART0_BASE = 0x4006A000;
     constexpr uintptr_t UART0_BDH = UART0_BASE + 0x00; // 8-bit
     constexpr uintptr_t UART0_BDL = UART0_BASE + 0x01;
+    constexpr uintptr_t UART0_C1 = UART0_BASE + 0x02;
     constexpr uintptr_t UART0_C2 = UART0_BASE + 0x03;
     constexpr uintptr_t UART0_S1 = UART0_BASE + 0x04;
+    constexpr uintptr_t UART0_S2 = UART0_BASE + 0x05;
+    constexpr uintptr_t UART0_C3 = UART0_BASE + 0x06;
     constexpr uintptr_t UART0_D = UART0_BASE + 0x07;
     constexpr uintptr_t UART0_C4 = UART0_BASE + 0x0A;
+    constexpr uintptr_t UART0_C5 = UART0_BASE + 0x0B;
+    constexpr uintptr_t UART0_MODEM = UART0_BASE + 0x0D;
+    constexpr uintptr_t UART0_IR = UART0_BASE + 0x0E;
+    constexpr uintptr_t UART0_PFIFO = UART0_BASE + 0x10;
+    constexpr uintptr_t UART0_CFIFO = UART0_BASE + 0x11;
+    constexpr uintptr_t UART0_C7816 = UART0_BASE + 0x18;
     constexpr uint8_t C2_TE = 1u << 3;
     constexpr uint8_t C2_RE = 1u << 2;
     constexpr uint8_t C2_TIE = 1u << 7; // transmit-interrupt enable: IRQ while S1.TDRE
     constexpr uint8_t S1_TDRE = 1u << 7;
+    // CFIFO command bits (K64 RM 60.3.9): write 1 to flush the TX / RX FIFO buffer.
+    constexpr uint8_t CFIFO_RXFLUSH = 1u << 6;
+    constexpr uint8_t CFIFO_TXFLUSH = 1u << 7;
+    // MODEM.TXCTSE (K64 RM 60.3.13): CTS hardware flow control -- if a driver sets it,
+    // the polled writer waits forever on an absent CTS and drops every byte (SILENT
+    // LOSS). Named for the scramble test; reclaim clears the whole register (MODEM=0).
+    constexpr uint8_t MODEM_TXCTSE = 1u << 0;
 
     // NVIC: UART0 status sources (RX/TX combined) = IRQ 31 (UART0 error = 32).
     // Confirm against the K64 RM interrupt-vector-assignments table.
@@ -546,6 +562,47 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     *size = CONSOLE_TX_SIZE;
     *irq_line = UART0_RXTX_IRQ;
     return &k64_console_backend;
+}
+
+// Panic-path reclaim (console.cc D6): force UART0 back to a known polled-ready 8N1
+// TX channel after a userspace driver may have garbled EVERY writable register in its
+// granted window. Runs with IRQs masked, privileged; MUST be idempotent + re-entrant,
+// so it is straight-line ABSOLUTE stores only -- NO read-modify-write (an RMW on a
+// garbled value is not safe to repeat from a nested-fault re-entry; note this drops
+// the C2 |= TIE style used on the non-panic backend paths). Overrides the weak no-op
+// in console.cc.
+//
+// Reclaim depth = rewrite what uart0_init sets (BDH/BDL/C4/C1/C2) PLUS the registers
+// init leaves at reset default that a hostile driver can set to cause SILENT LOSS --
+// each cleared to 0 below with the failure it prevents. The clock gates (SIM_SCGC4
+// UART0 / SCGC5 PORTB) and pin mux (PORTB_PCR16/17) sit in SEPARATE privileged
+// peripherals OUTSIDE the UART0 window -> unreachable by the driver -> intact -> not
+// touched.
+void arch_console_reclaim(void)
+{
+    r8(UART0_C2) = 0;    // disable TX/RX/TIE so the driver stops; also lets the config
+                         // registers below (which require TE/RE clear) be rewritten
+    r8(UART0_C5) = 0;    // TDMAS/RDMAS: disable the peripheral's own DMA request enable
+    r8(UART0_MODEM) = 0; // TXCTSE=0: else the bounded polled writer waits forever on an
+                         // absent CTS and drops every byte -- the true silent-loss case
+    r8(UART0_C3) = 0;    // TXINV=0: an inverted TX line corrupts every framed byte
+    r8(UART0_S2) = 0;    // clear any driver-set line-polarity / config status bits
+    r8(UART0_IR) = 0;    // IREN=0: infrared modulation on the TX pin
+    r8(UART0_C7816) = 0; // ISO-7816 smartcard framing off
+    r8(UART0_PFIFO) = 0; // TX/RX FIFO disabled (single-datum mode, as at reset)
+    r8(UART0_CFIFO) = CFIFO_TXFLUSH | CFIFO_RXFLUSH; // flush any queued FIFO contents
+
+    // Re-derive baud from the live SystemCoreClock (as uart0_init): 120 MHz or the
+    // 20.97 MHz FEI fallback. BDH before BDL (BDL write latches the divisor).
+    uint32_t const baud = 115200u;
+    uint32_t const sbr = SystemCoreClock / (16u * baud);
+    uint32_t const brfa = (SystemCoreClock * 2u) / baud - sbr * 32u;
+    r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
+    r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
+    r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F);
+
+    r8(UART0_C1) = 0;       // 8N1, no loops/parity/wake
+    r8(UART0_C2) = C2_TE;   // TX enable only (the polled banner needs no RX)
 }
 
 // Kernel diagnostic LED = FRDM-K64F onboard RED (PTB22), active-low.
