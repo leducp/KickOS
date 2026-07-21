@@ -268,6 +268,18 @@ below where they were previously mislabeled.
         cross-domain trap, 2026-07-17). REMAINING: m2-review-followup #5 (RX rounds
         misaligned regions instead of skipping -- fail-closed drift, build-robustness).
         See `docs/m2-review-followups.md`.
+  - [~] **MPU-commit / deferred-switch soundness race -- armv6m FIXED, fleet-wide PENDING.**
+        `switch_to()` calls `arch_mpu_apply(next)` EAGERLY, but every arch with a deferred
+        (PendSV/software-IRQ) switch keeps running the OUTGOING thread with `next`'s region
+        set until the physical swap -> it can fault on its own stack (or, worse, on a no-MPU
+        build, silently run under the wrong isolation). Found on RP2040/armv6m under
+        mutex-chain churn (selftest test 14 HardFault; cur/MPU=chA while chC physically ran),
+        fixed by committing the MPU in the PendSV epilogue (armv6m `kickos_armv6m_mpu_commit`,
+        silicon 42/42 on the 50ms x300 repro). LATENT the same way on **v7-M / RX / RISC-V**
+        (all eager-apply + deferred switch) -- unobserved there under looser timing, but a real
+        soundness hole. Complete fix = move MPU-commit into EACH deferred arch's switch
+        epilogue (stash-in-apply / commit-after-swap). GATE ON A FABLE REVIEW + per-arch
+        silicon re-validation before it lands (core switch-path change). Pre-M4.
 - **[anytime coherence -- NOT M2] object-pool mutualisation** -- DONE (step 1). The semaphore
   pool is a generational `SlotPool<T,N>` (slotpool.h); the thread pool is grouped into a
   tailored `ThreadPool` struct (thread.h) -- deliberately **not** SlotPool: thread liveness is
