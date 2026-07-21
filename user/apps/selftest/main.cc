@@ -694,18 +694,53 @@ namespace
     // Clock-scaled time unit (mirrors t_rr): measure one clock granule, then pick a
     // unit several granules wide so sleeps and busy-spins are resolvable on coarse
     // clocks (QEMU semihosting) as well as the fine sim clock.
+    // Size the unit from the MEASURED reschedule cost, not the clock granule: the PI
+    // choreography holds only if the lock/block/boost chain forms within the slack
+    // between scheduled wakes, and that slack must dominate a reschedule round-trip --
+    // which on a slow core (armv6m M0+: software 64-bit divides in the tickless math) is
+    // far larger than the clock resolution the old 1 ms constant keyed on (the M0+
+    // soft-failed the chain test at 1 ms; ~10-30 ms is enough). Floored at 1 ms so no
+    // faster board that passed shrinks; capped so a pathological reading cannot stretch
+    // the run.
     uint64_t mtx_time_unit()
     {
-        uint64_t e0 = kos_clock_now();
-        uint64_t e1 = e0;
-        while (e1 == e0) { e1 = kos_clock_now(); }
-        uint64_t e2 = e1;
-        while (e2 == e1) { e2 = kos_clock_now(); }
-        uint64_t granule = e2 - e1;
-        uint64_t unit = 1000000ull; // 1 ms on a fine clock
-        if (unit < granule * 4)
+        // Clock resolution: a lower bound (a unit below a few granules is unmeasurable).
+        uint64_t g0 = kos_clock_now();
+        uint64_t g1 = g0;
+        while (g1 == g0) { g1 = kos_clock_now(); }
+        uint64_t g2 = g1;
+        while (g2 == g1) { g2 = kos_clock_now(); }
+        uint64_t granule = g2 - g1;
+
+        // Reschedule cost: per-sleep OVERHEAD above a small real sleep (arm + idle +
+        // wake + switch) -- the scheduling jitter a 1-unit gap must out-scale.
+        constexpr uint32_t N = 8;
+        constexpr uint64_t probe = 200000ull; // 200 us
+        uint64_t t0 = kos_clock_now();
+        for (uint32_t i = 0; i < N; i++)
         {
-            unit = granule * 4;
+            kos_sleep_ns(probe);
+        }
+        uint64_t rt = (kos_clock_now() - t0) / N;
+        uint64_t overhead = 0;
+        if (rt > probe)
+        {
+            overhead = rt - probe;
+        }
+
+        uint64_t unit = overhead * 32;
+        uint64_t const gfloor = granule * 4;
+        if (unit < gfloor)
+        {
+            unit = gfloor;
+        }
+        if (unit < 1000000ull)
+        {
+            unit = 1000000ull; // 1 ms floor: fast-core behavior unchanged
+        }
+        if (unit > 30000000ull)
+        {
+            unit = 30000000ull; // 30 ms cap: glitch guard
         }
         return unit;
     }
