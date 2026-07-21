@@ -249,10 +249,11 @@ namespace
     constexpr uint32_t CTRL_TE = 1u << 19;
     constexpr uint32_t CTRL_RE = 1u << 18;
 
-    // Reset UART clock root (CSCDR1 defaults, RM 14): pll3_80m / 1 = 80 MHz.
-    // ASSUMED for the first bring-up -- validate against the real UART root once
-    // the CCM bring-up lands (baud tracks this).
-    constexpr uint32_t UART_CLK_ROOT_HZ = 80000000u;
+    // LPUART clock root: 24 MHz. clock_init() is deferred (we inherit the tree the
+    // Teensy bootloader left), and Teensyduino runs the LPUARTs off the 24 MHz crystal
+    // oscillator (CSCDR1 UART_CLK_SEL=osc), NOT the chip-reset pll3_80m -- so the baud
+    // divisor tracks 24 MHz. (Silicon: 80 MHz here gave 3.3x-off garbage; 24 MHz is clean.)
+    constexpr uint32_t UART_CLK_ROOT_HZ = 24000000u;
 
     // NVIC: LPUART6 combined TX/RX = IRQ 25 (RM Table 4-2).
     constexpr int LPUART6_IRQ = 25;
