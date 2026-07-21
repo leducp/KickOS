@@ -176,7 +176,15 @@ namespace
     }
 }
 
-void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+// The MPU hardware-programming step (disable / reprogram descriptors / re-enable).
+// Split out of arch_mpu_apply so a DEFERRED-switch arch (armv6m: the switch is a
+// pended PendSV) can invoke it from the PendSV switch epilogue -- i.e. atomically
+// with the PHYSICAL context switch -- instead of eagerly from switch_to. Eager apply
+// on a deferred switch reprograms the MPU for the INCOMING thread while the OUTGOING
+// thread is still physically running (PendSV not fired yet), so the outgoing thread
+// executes with the incoming thread's shrunk region set and faults on its own stack.
+// v7-M keeps the eager path (arch_mpu_apply below) unchanged.
+extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, size_t n)
 {
     using namespace kickos::arm;
     // A domain switch / privilege change can only take effect atomically, so
@@ -216,6 +224,13 @@ void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions,
     reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
+}
+
+// Default (v7-M) apply: program the hardware eagerly. armv6m provides a STRONG
+// override (arch_armv6m.cc) that stashes the set and commits it from PendSV.
+void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+{
+    kickos_arm_mpu_program(regions, n);
 }
 #else
 // No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only.

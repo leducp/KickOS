@@ -34,6 +34,59 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 #define KICKOS_PANIC_DUMP 1
 #endif
 
+// --- Deferred MPU commit (armv6m fix for the eager-apply / deferred-switch desync) --
+// On armv6m the context switch is a PENDED PendSV: switch_to() runs to completion on
+// the OUTGOING thread and the physical register/PSP swap only happens later, inside
+// PendSV. The shared arch_mpu_apply reprograms the MPU immediately, so in that window
+// the outgoing thread executes with the INCOMING thread's region set and faults on its
+// own stack (selftest test 14 mutex_chain HardFault: cur=chA/MPU=chA while chC is the
+// physical thread in mtx_spin). Fix: arch_mpu_apply here only STASHES the requested
+// region set; kickos_armv6m_mpu_commit programs the hardware, and PendSV (switch.S)
+// calls it AFTER the physical swap -- so the MPU is reprogrammed atomically with the
+// context switch. v7-M is untouched (keeps the eager weak arch_mpu_apply).
+#if KICKOS_HAVE_MPU
+extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, size_t n);
+
+namespace
+{
+    // PMSA hardware caps descriptors at 8; stash a private copy (not a pointer) so the
+    // commit never chases a TCB whose region set changed after the stash.
+    constexpr size_t kMaxPendRegions = 8;
+    arch_mpu_region g_pend_regions[kMaxPendRegions];
+    size_t g_pend_count = 0;
+}
+
+// STRONG override of the weak shared arch_mpu_apply: record only, no hardware write.
+extern "C" void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+{
+    if (n > kMaxPendRegions)
+    {
+        n = kMaxPendRegions;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        g_pend_regions[i] = regions[i];
+    }
+    g_pend_count = n;
+}
+
+// Commit the stashed set to the MPU hardware. Called from PendSV after the physical
+// context swap. cpsid brackets the disable/reprogram/re-enable so a device IRQ (prio
+// 0, above PendSV) cannot observe a half-programmed / disabled MPU.
+extern "C" void kickos_armv6m_mpu_commit(void)
+{
+    uint32_t primask;
+    __asm volatile("mrs %0, primask" : "=r"(primask));
+    __asm volatile("cpsid i" ::: "memory");
+    kickos_arm_mpu_program(g_pend_regions, g_pend_count);
+    __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
+}
+#else
+// No MPU on this v6-M board (nrf51/microbit): PendSV still calls the commit symbol
+// unconditionally, so provide an empty one.
+extern "C" void kickos_armv6m_mpu_commit(void) {}
+#endif
+
 static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @0");
 static_assert(offsetof(struct arch_context, npriv) == 4, "switch.S expects ctx.npriv @4");
 static_assert(offsetof(struct arch_context, resting_npriv) == 8,
