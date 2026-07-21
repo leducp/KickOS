@@ -777,7 +777,8 @@ ok 42 - confused_deputy
 
 Continuation of the fleet pass above, same bench window (2026-07-20), same branch
 `m3-integration`. Adds the two RP2xxx boards on silicon and two clock soaks (C6, RX72M),
-plus a console-TX finding that came out of the C6 soak. Same capture convention: verbatim
+plus a host-side capture-tool artifact that came out of the C6 soak (first mis-read as a
+console-TX driver bug, since corrected). Same capture convention: verbatim
 KickOS output, only the trailing serial CR dropped and the ESP-ROM / J-Link boot preamble
 (and any ANSI escapes) trimmed.
 
@@ -789,16 +790,12 @@ KickOS output, only the trailing serial CR dropped and the ESP-ROM / J-Link boot
 Build: preset `picopi-st` + `-DKICKOS_HAVE_MPU=1 -DKICKOS_MTX_UNIT_SCALE=10`, target `selftest`.
 Flash: UF2 over the BOOTSEL mass-storage volume. Console: GP0 -> FTDI on ttyUSB1, `picocom`.
 Result: **42/42 pass, 0 fail** (source log `.session/logs/picopi-selftest-10x.log`).
-KEY FINDING: at the DEFAULT mutex-test time unit the M0+ fails `not ok 14 - mutex_chain_boost`
-(`main.cc:836`, `nth('e',1) < nth('d',1)`); at the 10x unit (`-DKICKOS_MTX_UNIT_SCALE=10`) it is
-42/42. This is slow-core TIMING-MARGIN fragility, NOT a kernel bug: single-hop PI
-(`mutex_pi_donation`, test 13) passes, and the two-hop chain-boost mechanism is proven -- it
-passes on all 6 faster boards at x1. On the M0+ (slowest core, software-divide-heavy tickless
-math) the 4-thread / 2-mutex choreography cannot fully form before D wakes at 4 units. Follow-up
-(test-only): `mtx_time_unit()` is being reworked to size the unit from a MEASURED reschedule cost
-(floored at the historic 1 ms so no board that already passes can shrink) instead of a hardcoded
-1 ms -- silicon-revalidation of that calibration on the M0+ is PENDING (RP2040 currently
-unplugged).
+KEY FINDING (this M3 pass): at the DEFAULT mutex-test time unit the M0+ failed
+`not ok 14 - mutex_chain_boost` (`main.cc:836`, `nth('e',1) < nth('d',1)`) and needed the 10x
+unit (`-DKICKOS_MTX_UNIT_SCALE=10`) to reach 42/42. This was read as slow-core timing-margin
+fragility. UPDATE 2026-07-21: root-caused on silicon to TWO separate defects, both now FIXED (see
+Finding #5). The x10 capture above stays for the record; the fixed default run is 42/42 (source
+log `.session/logs/rp2040-default.log`, build Jul 21 2026 13:38:38, identical 42-test list).
 ```
   ==============================================
    KickOS 0.0.1  -  microkernel RTOS
@@ -860,6 +857,24 @@ Default-unit (x1) run, for the record -- identical except:
 not ok 14 - mutex_chain_boost # /home/leduc/projets/KickOS/user/apps/selftest/main.cc:836: nth('e', 1) < nth('d', 1)
 # 1 test(s) failed
 ```
+
+### Silicon fault dump -- the enforcement-soundness race (pre-fix)
+A 50 ms x300 instrumented chain-repro build (`.session/logs/rp2040-stguard.log`) faulted 2/2 runs
+on silicon, exposing a REAL enforcement race (see Finding #5), NOT a timing artifact. Trimmed to
+the fault frame -- note SP-OUTSIDE-OWN-STACK while the live HW MPU regions match the (wrong) `cur`
+thread, i.e. physical-thread != logical-current:
+```
+=== HARD FAULT ===
+  PC=0x10002096 LR=0x1000b4cf xPSR=0x61000000 (PSP)
+  SP(pre-fault PSP)=0x20011fd0  frame@0x20011fb0
+  cur tid=35 'chA' priv=0 stack=[0x20014000,0x20016000) nreg=3
+  SP-OUTSIDE-OWN-STACK  tcb-saved ctx.sp=0x20015e80 switch_count=2
+  tcb reg[2] base=0x20014000 end=0x20016000 attr=0x3
+  MPU_CTRL=0x5 hw_regions=8
+  hw reg[2] RBAR=0x20014002 RASR=0x13030019
+```
+MPU enforcement turned a would-be-silent cross-stack corruption into a catchable fault. Post-fix
+the same repro runs 42/42 clean.
 
 --------------------------------------------------------------------------------
 
@@ -932,15 +947,18 @@ ok 40 - confused_deputy
 
 --------------------------------------------------------------------------------
 
-## ESP32-C6 clocksoak -> a console-TX-wedge finding (NOT a clock bug)
+## ESP32-C6 clocksoak -> a host-side capture artifact (NOT a clock bug, NOT a driver bug)
 
 The C6 selftest already passed 42/42 under PMP enforcement (see the fleet pass above). This
-extended-pass clocksoak turned up a console-output anomaly that, on investigation, is NOT the
-clock and NOT the timer -- it is the UART0 console TX path. The narrative below is the evidence.
+extended-pass clocksoak first LOOKED like a console-output stall; on investigation (corrected
+2026-07-21) it is neither the clock, nor the timer, nor the C6 UART -- it is a HOST-SIDE capture
+artifact in the pyserial `.session/cap_esp.py` tool. The narrative below is the evidence; the
+earlier "M4 console-TX-driver bug" classification is REFUTED.
 
-### The apparent stall
-Two soak configs were run (90 s wrap and 5 s wrap). Both completed phase A CORRECTLY and then
-went silent partway through phase B, always at ~11-12.5 s cumulative uptime.
+### The apparent stall (a truncated cap_esp.py capture)
+Two soak configs were captured with the pyserial `.session/cap_esp.py` (90 s wrap and 5 s wrap).
+Both completed phase A CORRECTLY and then went silent partway through phase B, always at
+~11-12.5 s cumulative uptime.
 
 90 s wrap config (`.session/logs/c6-clocksoak.log`) -- boot + phase-A header, then silence
 (the `phase A:` header is the last line emitted; the phase-A RESULT line never printed):
@@ -996,28 +1014,29 @@ The C6 kernel / scheduler / clock are SOUND. (The RX72M soak below and the F411/
 the fleet pass are the positive clock-hardening evidence; this run adds C6 to that set on the
 clock axis.)
 
-### Root cause: the UART0 buffered-ring console TX path
-The UART0 buffered-ring console stops draining after ~600-900 cumulative output bytes while the
-CPU keeps running (`arch_console_write_sync` then bounded-drops bytes -> silence). Static review
-found no logic bug in the ring / ISR; it is UART TX hardware state (or the host / bridge side). A
-`TX_RST_CORE` (CLK_CONF bit27) pulse on stall-detect did NOT produce visible console recovery, and
-a minimal-output build (`.session/logs/c6-min.log`) wedged at the same point -- so it is not purely
-output-volume-driven:
-```
-[clocksoak] START clock-hardening soak harness
-[clocksoak] boot: cpu_clock_hz = 160000000  wrap_period = 5000 ms  wraps = 3  t0 = 5870843 ns
-[clocksoak] phase A: single sleep past 1 wrap (idle-wrap observer)
-[clocksoak] phase A: requested 7500000000 ns, measured 7500022263 ns  (mono=1 rate=1)
-[clocksoak] phase B: soak across N wraps
-```
-The TXWEDGE diagnostic build (`.session/logs/c6-txw.log`) reproduces identically. The
-chip-wedge-vs-host distinction is LED-gated (magenta vs green) and PENDING an operator LED read.
+### The bytes DID leave the chip (LED-gated TX-wedge probe)
+A LED-gated run drove the WS2812 beacon MAGENTA on any UART0 TX-FIFO-drain stall (the TX-wedge
+probe) and left it GREEN otherwise. Across the full soak the beacon NEVER went magenta -- so the
+on-chip UART0 TX FIFO drained fine the whole time and the wedge probe never tripped. The bytes
+left the chip; they were dropped on the HOST side of the link. This retires the earlier
+"UART0 buffered-ring console stops draining" hypothesis: the ring / ISR / TX FIFO were never the
+problem.
 
-### Classification
-A CONSOLE-TX-DRIVER robustness bug for the driver era (M4). The selftest never hits it (sub-second
-output). NOT an M3 blocker. Diagnostic builds live behind `-D` flags
-(`KICKOS_C6_TIMER_TRACE` / `KICKOS_C6_POLLFIX` / `KICKOS_C6_TXWEDGE`, `KICKOS_RV_FAULT_LED`) in
-`build/c6-dbg` + `build/c6-txw`.
+### The clean run + root cause (host-side capture artifact)
+Re-capturing the SAME clocksoak with PICOCOM on `/dev/ttyACM0` (DTR-safe) ran it end to end --
+3 wraps, whole-soak ratio x100 = 100, monotonic:
+```
+[clocksoak] VERDICT PASS: monotonic across wraps, rate-correct, idle kept counting
+[clocksoak] clock soak test done
+```
+So the C6 clocksoak PASSES. ROOT CAUSE is a host capture-tool artifact: the pyserial
+`.session/cap_esp.py` dropped the output on long / idle-gapped runs (a quadratic
+decode + regex-over-a-growing-buffer stall overflowed the serial RX), where picocom / cat do not.
+The `c6-clocksoak-short.log` capture above was the truncated cap_esp run; the picocom run is the
+clean one. NOT a KickOS bug, NOT a C6 driver bug -- the C6 chip / kernel / scheduler / clock /
+UART are ALL SOUND (selftest 42/42 under PMP stands; the clocksoak is clock-clean).
+
+Bench lesson: capture long ESP runs with picocom or cat (DTR-safe), not the pyserial cap_esp.py.
 
 --------------------------------------------------------------------------------
 
@@ -1052,19 +1071,30 @@ Result: **PASS** (three 60 s chunks, ~19 us floor, ratio x100 = 100; source log
 ```
 RX (CMTW) and C6 (CLINT `mtime`) were already sound, unchanged by the clock-hardening work --
 this soak confirms the RX clock sound end-to-end; the C6 soak (section above) confirmed its
-CLOCK sound too (the apparent stall was the console).
+CLOCK sound too (the apparent stall was a host capture-tool artifact).
 
 --------------------------------------------------------------------------------
 
 ## Findings (extended pass)
 
-5. **RP2040 `mutex_chain_boost` is slow-core timing-margin fragility, not a kernel bug.** The M0+
-   fails `not ok 14` at the default 1 ms mutex-test unit and passes 42/42 at `x10`. Single-hop PI
-   (test 13) passes; the two-hop chain-boost mechanism passes at x1 on all 6 faster boards. The
-   M0+ (no divide instruction, software-divide-heavy tickless math) cannot form the 4-thread /
-   2-mutex choreography before the low-priority waiter wakes at 4 units. Follow-up is test-only:
-   `mtx_time_unit()` reworked to size the unit from a MEASURED reschedule cost, floored at the
-   historic 1 ms; re-validation on the M0+ at the reworked default is PENDING (board unplugged).
+5. **RP2040 `mutex_chain_boost` -- root-caused on silicon to TWO defects, both FIXED (2026-07-21;
+   the earlier "just slow-core timing-margin, not a kernel bug" read was incomplete).**
+   (a) **A REAL enforcement-soundness race (kernel, armv6m).** `switch_to()` applies the MPU
+   EAGERLY (`arch_mpu_apply(next)`) but the armv6m context swap is a DEFERRED PendSV -- so in the
+   window before the physical swap the OUTGOING thread runs with `next`'s region set and faults on
+   its OWN stack. The instrumented silicon dump (above) caught it: SP-OUTSIDE-OWN-STACK with the
+   live HW MPU matching the (wrong) `cur` thread, and PC in one thread's code while `cur` was
+   another -> physical-thread != logical-current. MPU enforcement turned a would-be-silent stack
+   corruption into a catchable fault. Fix: armv6m `arch_mpu_apply` now only STASHES the region
+   set; `kickos_armv6m_mpu_commit` programs the HW in the PendSV epilogue, ATOMICALLY with the
+   physical swap. v7-M unchanged. Silicon-validated: a 50 ms x300 chain-repro that faulted 2/2
+   pre-fix now runs 42/42 clean. Latent fleet-wide (v7-M / RX / RISC-V share the same
+   eager-apply + deferred-switch shape) -- TODO-tracked, fable-gated. Committed on `m3-integration`.
+   (b) **The default-unit soft-fail (separate).** The M0+ was also too slow to form the 4-thread /
+   2-mutex chain at the old hardcoded 1 ms `mtx` unit (needed `x10`). Fixed by a self-calibrating
+   `mtx_time_unit()` that measures reschedule cost (1 ms floor / 30 ms cap): RP2040 DEFAULT
+   selftest now 42/42 (source `.session/logs/rp2040-default.log`). qemu-armv7m + qemu-riscv CI
+   gates still pass.
 
 6. **RP2350 first silicon: console footprint is UART1/GP4, not UART0/GP0.** The build-only guess
    was wrong; the Pi-Zero header's TXD (pin 8) muxes only to UART1. Corrected and 40/40 on silicon.
@@ -1072,26 +1102,38 @@ CLOCK sound too (the apparent stall was the console).
    console. The M33 runs on the armv7m arch layer (v7-M subset); v8-M PMSA enforcement is future
    work (`docs/design-rp2350-mpu-armv8m.md`), so this board is `mpu off` for now.
 
-7. **ESP32-C6 console-TX wedge (driver-era bug, kernel/clock sound).** The clocksoak appeared to
-   stall at ~11-12.5 s cumulative but the CPU ran the full soak (LED beacon kept blinking; timer
-   trace kept advancing; completed chunks rate-correct + monotonic). Root cause is the UART0
-   buffered-ring console TX path ceasing to drain after ~600-900 cumulative bytes -- UART TX
-   hardware state (or host/bridge), no ring/ISR logic bug found; a `TX_RST_CORE` pulse did not
-   recover it and a minimal-output build wedged at the same point. Classified as an M4 console-TX
-   driver robustness bug; the selftest (sub-second output) never hits it. Chip-wedge-vs-host is
-   LED-gated and PENDING an operator read.
+7. **ESP32-C6 clocksoak "stall" was a HOST capture artifact -- kernel/clock/UART all sound
+   (corrected 2026-07-21; the earlier M4 console-TX-driver classification is REFUTED).** The
+   pyserial `.session/cap_esp.py` captures went silent at ~11-12.5 s cumulative, but the C6 ran
+   the full soak: a UART-independent WS2812 beacon kept blinking through the whole ~22.5 s and
+   went solid only at completion, and the `c6timer` trace kept advancing past the silence point.
+   An LED-gated run showed the beacon NEVER went magenta -> the on-chip UART0 TX FIFO drained
+   fine and the TX-wedge probe never tripped, so bytes LEFT the chip. Re-capturing the same soak
+   with picocom on `/dev/ttyACM0` reached `VERDICT PASS` (3 wraps, ratio x100 = 100, monotonic).
+   Root cause: cap_esp.py drops output on long / idle-gapped runs (quadratic decode + regex over a
+   growing buffer overflows the RX) where picocom / cat do not. NOT a KickOS bug, NOT a C6 driver
+   bug; selftest 42/42 under PMP stands. Bench lesson: capture long ESP runs with picocom or cat,
+   not cap_esp.py.
+
+8. **microbit CI gate was red on pool exhaustion, not a real failure -- FIXED (test-only).** The
+   mutex / endpoint tests need 3-4 threads and several cap-slots, but microbit's pool is tiny
+   (`MAX_THREADS=2`, main cap table 3 free). The tests hard-failed on the shortage and LEAKED,
+   cascading later tests red. Fixed by giving them the same pool-shortage SKIP guard (clean up +
+   skip) the sibling multi-thread tests already use: microbit now green, while full-pool boards
+   still RUN the tests. Committed.
 
 ## Coverage (extended pass)
 
 - The connected fleet validated on silicon is now **8 boards**: XMC4800-Relax, FRDM-K64F,
   STM32F411-Disco, ESP32-WROOM, ESP32-C6, RX72M, RP2040 (picopi), RP2350 (pizero2350).
 - Caveats:
-  - **RP2040**: passes 42/42 at the `x10` mutex-test unit; the reworked `mtx_time_unit()`
-    calibration still needs re-validation at the default (board unplugged) -- finding #5.
-  - **ESP32-C6**: open console-TX-wedge driver bug (finding #7); kernel/scheduler/clock proven
-    sound (selftest 42/42 under PMP, clocksoak clock-sound).
+  - **RP2040**: 42/42 at the DEFAULT unit after the two 2026-07-21 fixes (armv6m MPU-commit race +
+    self-calibrating `mtx_time_unit()`); the `x10` capture is the pre-fix M3-pass workaround --
+    finding #5.
+  - **ESP32-C6**: fully clean -- selftest 42/42 under PMP and the clocksoak PASSES; the apparent
+    console stall was a host cap_esp.py capture artifact, not a chip / driver bug (finding #7).
   - **Teensy 4.1 (imxrt1062)**: remains BUILD-ONLY; silicon pass pending a `teensy_loader_cli`
     install, scheduled next session.
   - **F103 / F302**: not on the bench this pass. **SAM3X**: unit retired.
-- clocksoak this extended pass: C6 (CLINT `mtime`, clock-sound -- console wedge is separate) and
+- clocksoak this extended pass: C6 (CLINT `mtime`, PASS -- clean once captured with picocom) and
   RX72M (CMTW, PASS). Combined with the fleet pass, clocksoak now covers F411, WROOM, C6, RX72M.
