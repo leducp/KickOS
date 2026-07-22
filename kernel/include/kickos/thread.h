@@ -80,9 +80,21 @@ namespace kickos
         arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS];
         size_t region_count;
 
-        intptr_t wait_result; // wake-status channel (mutex: 0 / KOS_MUTEX_OWNER_DIED);
-                              // the waker writes it before sched::wake, the sleeper
-                              // reads it after wq_block returns. Timed wait shares it.
+        intptr_t wait_result; // wake-status channel (mutex: 0 / KOS_MUTEX_OWNER_DIED;
+                              // endpoint: byte count >= 0, or -1 EPIPE/dead); the waker
+                              // writes it before sched::wake, the sleeper reads it after
+                              // wq_block returns. Timed wait shares it.
+
+        // Parked-IPC descriptor: valid ONLY while this thread is parked on an endpoint
+        // waitq (send_waiters/recv_waiters). The arriving peer reads it privileged under
+        // the lock to copy into/out of this thread's buffer (bound-checked at park entry).
+        struct IpcDesc
+        {
+            uintptr_t buf;       // this thread's own message buffer (already bound-checked)
+            size_t    len;       // sender: bytes to send; receiver: buffer capacity
+            uintptr_t badge_out; // receiver only: where to store the badge (0 => none)
+        };
+        IpcDesc ipc;
 
         // Priority-inheritance bookkeeping (M3 mutex). blocked_on is the mutex this
         // thread is parked on (nullptr otherwise) -- the chain-walk edge. held_list is

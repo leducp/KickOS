@@ -180,39 +180,22 @@ namespace
     }
 }
 
-int main(int, char**)
+// One full conservation round, repeatable: resets the accumulators, allocates THIS
+// round's per-pair sems, spawns + kicks + joins the conservation set, runs the churn
+// phase, checks exact conservation, then destroys the per-pair sems it created so the
+// sem pool returns to exactly what it was on entry. g_done/g_mtx are MAIN's and are
+// NOT touched here (they self-balance: every worker posts g_done once and is joined;
+// g_mtx is released as often as taken). Returns the failure count for this round.
+int run_stress_round(int pairs, int sleepers, int live)
 {
-    kos::print("stress: scheduler + semaphore + tickless-timer conservation test\n");
+    g_naps_done = 0;
+    g_handoffs = 0;
+    g_churn_runs = 0;
 
-    g_done = kos_sem_create(0);
-    g_mtx = kos_sem_create(1);
-    // Every create/spawn is checked: a board with a smaller thread/sem pool than
-    // this soak needs must SKIP cleanly, not hang a join on a thread that was never
-    // created or race on a counter whose mutex silently failed to allocate.
-    bool ok = (g_done >= 0 and g_mtx >= 0);
-
-    // Size the soak to this board's pool: probe the concurrent budget, then shrink
-    // the (large-pool) footprint until the live set fits. The sim (budget 16) keeps
-    // 3 pairs + 6 sleepers unchanged; XMC (budget 8) lands on 3 pairs + 2 sleepers.
-    int budget = ok ? probe_budget() : 0;
-    int pairs = MAX_PAIRS;
-    int sleepers = MAX_SLEEPERS;
-    while (2 * pairs + sleepers > budget and sleepers > 0)
-    {
-        sleepers--;
-    }
-    while (2 * pairs + sleepers > budget and pairs > 1)
-    {
-        pairs--;
-    }
-    int live = 2 * pairs + sleepers; // conservation footprint == churn batch
-    if (not ok or budget < 2 or live > budget)
-    {
-        kos::print("STRESS SKIP (board thread/sem pool too small)\n# stress complete\n");
-        return 0;
-    }
-
+    bool ok = true;
+    int made_pairs = 0; // pairs whose BOTH sems were created -- destroy exactly these
     int spawned = 0;
+
     // Mixed priorities straddling the sleepers' band; the last pair is RR.
     for (int i = 0; ok and i < pairs; i++)
     {
@@ -223,6 +206,7 @@ int main(int, char**)
             ok = false;
             break;
         }
+        made_pairs++;
         uint8_t prio = static_cast<uint8_t>(8 + i); // 8,9,10
         uint8_t policy = KOS_POLICY_FIFO;
         uint32_t quantum = 0;
@@ -258,10 +242,19 @@ int main(int, char**)
         }
         spawned++;
     }
+
+    // A mid-round create/spawn failure means the pool did not return to its start
+    // state (a leak): a hard FAIL, not a SKIP -- main already proved the budget fits
+    // on entry. Do NOT join a half-spawned set (a lone ping would hang the join);
+    // reclaim the sems we created and report the failure so the soak halts on it.
     if (not ok or spawned != live)
     {
-        kos::print("STRESS SKIP (board thread/sem pool too small)\n# stress complete\n");
-        return 0;
+        for (int i = 0; i < made_pairs; i++)
+        {
+            kos_sem_destroy(g_pair_a[i]);
+            kos_sem_destroy(g_pair_b[i]);
+        }
+        return 1;
     }
 
     // Kick each pair once; the token then circulates ROUNDS times per side.
@@ -324,6 +317,84 @@ int main(int, char**)
         fails++;
     }
 
+    // Reclaim this round's per-pair sems (workers are all joined -> no user left).
+    for (int i = 0; i < made_pairs; i++)
+    {
+        kos_sem_destroy(g_pair_a[i]);
+        kos_sem_destroy(g_pair_b[i]);
+    }
+    return fails;
+}
+
+int main(int, char**)
+{
+    kos::print("stress: scheduler + semaphore + tickless-timer conservation test\n");
+
+    g_done = kos_sem_create(0);
+    g_mtx = kos_sem_create(1);
+    // Every create/spawn is checked: a board with a smaller thread/sem pool than
+    // this soak needs must SKIP cleanly, not hang a join on a thread that was never
+    // created or race on a counter whose mutex silently failed to allocate.
+    bool ok = (g_done >= 0 and g_mtx >= 0);
+
+    // Size the soak to this board's pool: probe the concurrent budget, then shrink
+    // the (large-pool) footprint until the live set fits. The sim (budget 16) keeps
+    // 3 pairs + 6 sleepers unchanged; XMC (budget 8) lands on 3 pairs + 2 sleepers.
+    int budget = 0;
+    if (ok)
+    {
+        budget = probe_budget();
+    }
+    int pairs = MAX_PAIRS;
+    int sleepers = MAX_SLEEPERS;
+    while (2 * pairs + sleepers > budget and sleepers > 0)
+    {
+        sleepers--;
+    }
+    while (2 * pairs + sleepers > budget and pairs > 1)
+    {
+        pairs--;
+    }
+    int live = 2 * pairs + sleepers; // conservation footprint == churn batch
+    if (not ok or budget < 2 or live > budget)
+    {
+        kos::print("STRESS SKIP (board thread/sem pool too small)\n# stress complete\n");
+        return 0;
+    }
+
+#ifdef KICKOS_STRESS_FOREVER
+    // Endurance soak: repeat the round forever. A clean round prints a compact
+    // heartbeat; the first failing round prints it and FREEZES so the FAIL is the
+    // last thing on the wire and the iter counter stops advancing (a silent hang
+    // shows the same frozen counter). The freeze reads a volatile so the empty loop
+    // is not elided.
+    for (long iter = 1;; iter++)
+    {
+        int fails = run_stress_round(pairs, sleepers, live);
+        char s[200];
+        if (fails == 0)
+        {
+            ksnprintf(s, sizeof(s), "[soak] iter %ld PASS  naps %ld handoffs %ld churn %ld\n",
+                      iter, g_naps_done, g_handoffs, g_churn_runs);
+            kos::print(s);
+        }
+        else
+        {
+            ksnprintf(s, sizeof(s), "[soak] iter %ld STRESS FAIL (%d)\n# soak halted\n", iter, fails);
+            kos::print(s);
+            volatile bool halt = true;
+            while (halt)
+            {
+            }
+        }
+    }
+    return 0; // unreachable
+#else
+    int fails = run_stress_round(pairs, sleepers, live);
+
+    long exp_naps = static_cast<long>(sleepers) * NAPS;
+    long exp_hand = static_cast<long>(2 * pairs) * ROUNDS;
+    long exp_churn = static_cast<long>(live) * CHURN_GENERATIONS;
     char s[200];
     ksnprintf(s, sizeof(s), "  naps %ld/%ld  handoffs %ld/%ld  churn %ld/%ld\n",
               g_naps_done, exp_naps, g_handoffs, exp_hand, g_churn_runs, exp_churn);
@@ -337,4 +408,5 @@ int main(int, char**)
         kos::print("STRESS FAIL\n# stress complete\n");
     }
     return fails;
+#endif
 }

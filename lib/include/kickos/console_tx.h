@@ -46,7 +46,10 @@ struct console_tx_backend
 // Arm the buffered path. `size` MUST be a power of two (index masking); usable
 // capacity is size-1. Called once from console_buffer_init after irq_init has
 // seeded the dispatch table. Until then, writes route to the synchronous path.
-void console_tx_init(struct console_tx_backend const* be, char* storage, uint32_t size);
+// `irq_line` is stashed for console_tx_deinit and set BEFORE armed flips, so no
+// window has the ring armed with a stale (-1) line.
+void console_tx_init(struct console_tx_backend const* be, char* storage, uint32_t size,
+                     int irq_line);
 
 // Nonzero once console_tx_init has run (the routing guard in console.cc reads it).
 int console_tx_armed(void);
@@ -70,6 +73,21 @@ void console_tx_flush_sync(void);
 // synchronous path (sim + polled-only chips). Called once by console_buffer_init.
 struct console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size,
                                                          int* irq_line);
+
+// Relinquish the buffered TX path (flush, disable the TX IRQ, detach the line, disarm)
+// so a userspace driver can take the UART. Idempotent (no-op if not armed / already
+// relinquished). Runs under one IrqLock. See the console-handover design (D2).
+void console_tx_deinit(void);
+
+// Console device-ownership seam (handover, stage ii). g_console_state lives in
+// console.cc; these let console_tx.cc gate its disarm-fallback chip write and let the
+// kos_console_publish syscall drive the handover. The chip-writer count brackets every
+// kernel-owned device poke so publish can drain a stale writer (B1). See D1/D3.
+int console_owner_is_kernel(void);   // nonzero while the kernel owns the UART (KERNEL_OWNED)
+void console_owner_set_user(void);   // flip to USER_OWNED (publish's LAST step)
+void console_chip_writer_enter(void); // bracket a kernel-owned device poke (count++)
+void console_chip_writer_leave(void); // (count--)
+int console_chip_writers(void);      // in-flight kernel chip writers (publish drain spin)
 
 #ifdef __cplusplus
 }

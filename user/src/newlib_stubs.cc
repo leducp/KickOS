@@ -16,13 +16,52 @@
 extern "C"
 {
 
+// Stdout probe state, one per process lifetime: 0 unprobed, 1 seated (send to the
+// console endpoint at cap index 0), -1 dead/not-seated (STICKY -- fall back to the debug
+// console forever, one wasted syscall total). A re-published target is picked up only by
+// a freshly spawned process (the design's accepted D8 limitation).
+static int g_stdout_probe = 0;
+
 int _write(int fd, char const* buf, int len)
 {
-    // Pre-driver bootstrap: all libc stdio falls back to the debug console
-    // regardless of fd (8l); once a userspace console driver exists, stdout/
-    // stderr route to it instead. KickOS has no fd namespace to honor.
+    // KickOS has no fd namespace: all libc stdio (any fd) goes to the console. If a
+    // userspace driver has taken stdout (cap index 0 seated), route there via kos_send;
+    // otherwise fall back to the debug console (kconsole_write). See the handover design (D5).
     (void)fd;
-    return static_cast<int>(kos_kconsole_write(buf, static_cast<size_t>(len)));
+    if (len <= 0)
+    {
+        return 0;
+    }
+    size_t const total = static_cast<size_t>(len);
+    if (g_stdout_probe == -1)
+    {
+        return static_cast<int>(kos_kconsole_write(buf, total)); // sticky: never re-probe
+    }
+    size_t sent = 0;
+    while (sent < total)
+    {
+        size_t chunk = total - sent;
+        if (chunk > KOS_EP_MSG_MAX)
+        {
+            chunk = KOS_EP_MSG_MAX;
+        }
+        long const r = kos_send(0, buf + sent, chunk); // index 0 == the stdout endpoint cap
+        if (r < 0)
+        {
+            // Pre-handover (index 0 empty) or the driver died (EPIPE): pin the probe to -1
+            // and fall back on the REMAINDER only -- resending the whole buffer would
+            // duplicate on the debug console the chunks already delivered to the driver.
+            // Return the FULL len (not the remainder): the first `sent` bytes were already
+            // accepted via IPC, so reporting a short write would make newlib retry and
+            // re-send them. Mirror the success path's `return len`.
+            g_stdout_probe = -1;
+            kos_kconsole_write(buf + sent, total - sent);
+            return len;
+        }
+        g_stdout_probe = 1;
+        sent += static_cast<size_t>(r);
+    }
+    return len;
 }
 
 int _read(int, char*, int)

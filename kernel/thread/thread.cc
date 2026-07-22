@@ -104,14 +104,15 @@ namespace kickos
         // 5 of 8 (code + appdata + domain data + granted MMIO + stack); a future
         // multi-region domain that overflows is a bug to catch here, not to swallow
         // silently.
-        KICKOS_ASSERT(nr + (t->domain != nullptr ? t->domain->region_count : 0)
+        KICKOS_ASSERT(nr + domain_region_count(t->domain)
                           + (wants_stack ? 1u : 0u)
                       <= KICKOS_MPU_MAX_REGIONS);
         if (t->domain != nullptr)
         {
-            for (size_t i = 0; i < t->domain->region_count; i++)
+            size_t const dn = domain_region_count(t->domain);
+            for (size_t i = 0; i < dn; i++)
             {
-                t->regions[nr++] = t->domain->regions[i];
+                t->regions[nr++] = *domain_region_at(t->domain, i);
             }
         }
         if (wants_stack)

@@ -39,6 +39,15 @@ namespace kickos
         uint16_t refcount; // live threads; 0 and not immortal => free slot
     };
 
+    // Read-only view of a domain's shared region set. The ONLY sanctioned way to
+    // read a domain's regions from outside domain.cc (thread.cc composition,
+    // domain_for dedup): domain.cc owns the backing store, so the MMU era can turn
+    // it into an arch_aspace* page-table root behind these two calls without
+    // touching callers. count is null-safe (returns 0); domain_region_at requires
+    // i < domain_region_count(d).
+    size_t domain_region_count(Domain const* d);
+    arch_mpu_region const* domain_region_at(Domain const* d, size_t i);
+
     // Boot: build the two immortal domains (kernel = whole arena/privileged,
     // default-user = empty/unprivileged). Call once, after arch_init.
     void domain_init(void);

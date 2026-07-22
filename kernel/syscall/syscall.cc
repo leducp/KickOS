@@ -20,6 +20,7 @@
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
 #include <kickos/ktrace.h>
+#include <kickos/console_tx.h>
 
 #include <kickos/sys/abi.h>
 
@@ -27,6 +28,10 @@ namespace kickos
 {
     namespace
     {
+        // B1 backstop: max yield passes kos_console_publish waits for the in-flight
+        // chip-writer count to reach 0 before declaring a stuck writer (a real bug).
+        constexpr uint32_t CONSOLE_PUBLISH_DRAIN_MAX = 1000000u;
+
         // --- Semaphore capabilities (per-task cap table over the global pool) -------
         // A sem lives in the global generational pool (slotpool.h); a task names it by
         // a per-task CAP_SEM capability (cap.h). cap_resolve is the single validate-and-
@@ -89,6 +94,42 @@ namespace kickos
             {
                 kernel().mutex_refs[i] = 0;
                 kernel().mutexes.free(obj);
+                return -1;
+            }
+            return cap;
+        }
+
+        // --- Endpoint capability (IPC rendezvous; mirrors sem_create) ---------------
+        // An endpoint lives in the global pool (slotpool.h); a task names it by a
+        // per-task CAP_ENDPOINT capability. The creator cap carries full rights
+        // (WAIT|SIGNAL|TRANSFER); send needs CAP_SIGNAL, recv needs CAP_WAIT. Two
+        // counters init visibly paired: endpoint_refs (all caps) and recv_holders
+        // (WAIT-bearing caps). Rollback on a full table unwinds BOTH.
+        int endpoint_create()
+        {
+            IrqLock lock;
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return -1;
+            }
+            int const i = kernel().endpoints.alloc();
+            if (i < 0)
+            {
+                return -1;
+            }
+            Endpoint* ep = kernel().endpoints.at(i);
+            ep->send_waiters = List{};
+            ep->recv_waiters = List{};
+            ep->recv_holders = 1;         // creator holds a WAIT-bearing cap
+            kernel().endpoint_refs[i] = 1; // this creator's cap is the first reference
+            int const obj = kernel().endpoints.handle_for(i);
+            int const cap = cap_install(c, obj, CapType::CAP_ENDPOINT,
+                                        CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER);
+            if (cap < 0)
+            {
+                kernel().endpoint_refs[i] = 0;
+                kernel().endpoints.free(obj);
                 return -1;
             }
             return cap;
@@ -178,6 +219,183 @@ namespace kickos
             return arch_user_text_readable(ptr, len);
         }
 
+        // A user-supplied WRITE buffer / out-pointer the kernel stores into privileged
+        // (an endpoint recv buffer, a clock_now result). It passes iff it lies within a
+        // region the caller is granted WRITE. No arch_user_text_readable twin: code/rodata
+        // is never a legitimate write target, so an out-pointer into it is rejected here
+        // even though it would read back fine. Privileged callers and len==0 pass via
+        // user_range_ok.
+        bool user_writable_ok(uintptr_t ptr, size_t len)
+        {
+            return user_range_ok(ptr, len, ARCH_MPU_W);
+        }
+
+        // The kernel<->user byte-access seam. IDENTITY today: a validated user
+        // address is directly kernel-dereferenceable (one physical space), so these
+        // are plain copies. The MMU era reimplements exactly these (per arch:
+        // translate / copy across address spaces); every kernel-side user-pointer
+        // dereference funnels here, so that becomes one function to change, not a
+        // hunt across syscalls. Callers MUST validate first (user_range_ok /
+        // user_readable_ok / user_writable_ok) -- this is the ACCESS, not the check.
+        // Byte loops, not memcpy: freestanding, and the arch rewrite hooks here.
+        void kaccess_from_user(void* kdst, uintptr_t usrc, size_t n)
+        {
+            char* d = static_cast<char*>(kdst);
+            char const* s = reinterpret_cast<char const*>(usrc);
+            for (size_t i = 0; i < n; i++)
+            {
+                d[i] = s[i];
+            }
+        }
+
+        void kaccess_to_user(uintptr_t udst, void const* ksrc, size_t n)
+        {
+            char* d = reinterpret_cast<char*>(udst);
+            char const* s = static_cast<char const*>(ksrc);
+            for (size_t i = 0; i < n; i++)
+            {
+                d[i] = s[i];
+            }
+        }
+
+        // Bounded byte copy (<= KOS_EP_MSG_MAX). Both endpoints do it under IrqLock,
+        // one side of which is a PARKED peer's user buffer (see endpoint.h): the
+        // waker's own MPU regions are loaded, so it reaches the peer's memory only via
+        // privileged background access (arch contract, design section 3.1). This is
+        // the user<->user peer of the kaccess_*_user seam above (both ends are user
+        // memory, not one kernel side): the ONE endpoint access the MMU era rewrites
+        // as a cross-aspace copy. All endpoint payload movement funnels here already.
+        void ep_copy(uintptr_t dst, uintptr_t src, size_t n)
+        {
+            char* d = reinterpret_cast<char*>(dst);
+            char const* s = reinterpret_cast<char const*>(src);
+            for (size_t i = 0; i < n; i++)
+            {
+                d[i] = s[i];
+            }
+        }
+
+        // Synchronous send: rendezvous with a parked receiver (deliver now) or park.
+        // FULLY LOCKLESS from dispatch (see design section 3): a caller IrqLock spanning
+        // this would keep BASEPRI raised across wq_confirm_resume and livelock ARM.
+        // Returns bytes transferred (>= 0), or -1 (bad cap/buffer, dead endpoint, EPIPE).
+        int endpoint_send(int cap, uintptr_t buf, size_t len)
+        {
+            if (len > KOS_EP_MSG_MAX)
+            {
+                return -1; // F4: reject oversize, never silently clamp
+            }
+            if (not user_readable_ok(buf, len))
+            {
+                return -1; // sender's own buffer, checked once in caller context
+            }
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return -1;
+            }
+            uint64_t epoch = 0;
+            {
+                IrqLock lock;
+                Endpoint* e = static_cast<Endpoint*>(
+                    cap_resolve(c, cap, CapType::CAP_ENDPOINT, CAP_SIGNAL));
+                if (e == nullptr)
+                {
+                    return -1;
+                }
+                if (e->recv_holders == 0)
+                {
+                    return -1; // F1: dead endpoint -- no receiver can ever exist
+                }
+                Thread* w = wq_pop_highest(e->recv_waiters);
+                if (w != nullptr)
+                {
+                    size_t n = len;
+                    if (w->ipc.len < n)
+                    {
+                        n = w->ipc.len; // receiver-side datagram truncation (not an error)
+                    }
+                    ep_copy(w->ipc.buf, buf, n); // sender-ctx copy into the parked receiver's buffer
+                    if (w->ipc.badge_out != 0)
+                    {
+                        uint32_t const badge = 0; // stage i: badge 0
+                        kaccess_to_user(w->ipc.badge_out, &badge, sizeof(badge));
+                    }
+                    w->wait_result = static_cast<intptr_t>(n);
+                    sched::wake(w);
+                    return static_cast<int>(n); // did not block: no resume barrier
+                }
+                c->ipc.buf = buf;
+                c->ipc.len = len;
+                c->ipc.badge_out = 0;
+                epoch = c->switch_count;
+                wq_block(e->send_waiters);
+            }
+            wq_confirm_resume(c, epoch);
+            return static_cast<int>(c->wait_result); // n (>= 0), or -1 EPIPE
+        }
+
+        // Synchronous recv: take from a parked sender (copy now) or park. FULLY LOCKLESS
+        // from dispatch, same reason as endpoint_send. Returns bytes received (>= 0), or
+        // -1 (bad cap/buffer). n == 0 is a VALID zero-length signal, not an error.
+        int endpoint_recv(int cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out)
+        {
+            if (cap_len > KOS_EP_MSG_MAX)
+            {
+                cap_len = KOS_EP_MSG_MAX; // capacity clamp is harmless
+            }
+            if (not user_writable_ok(buf, cap_len))
+            {
+                return -1;
+            }
+            if (badge_out != 0
+                and ((badge_out & (alignof(uint32_t) - 1)) != 0
+                     or not user_writable_ok(badge_out, sizeof(uint32_t))))
+            {
+                return -1; // alignment load-bearing for the privileged u32 store below
+            }
+            Thread* c = sched::current();
+            if (c == nullptr)
+            {
+                return -1;
+            }
+            uint64_t epoch = 0;
+            {
+                IrqLock lock;
+                Endpoint* e = static_cast<Endpoint*>(
+                    cap_resolve(c, cap, CapType::CAP_ENDPOINT, CAP_WAIT));
+                if (e == nullptr)
+                {
+                    return -1;
+                }
+                Thread* s = wq_pop_highest(e->send_waiters);
+                if (s != nullptr)
+                {
+                    size_t n = s->ipc.len;
+                    if (cap_len < n)
+                    {
+                        n = cap_len; // truncate into the receiver's capacity
+                    }
+                    ep_copy(buf, s->ipc.buf, n); // receiver-ctx copy from the parked sender's buffer
+                    if (badge_out != 0)
+                    {
+                        uint32_t const badge = 0;
+                        kaccess_to_user(badge_out, &badge, sizeof(badge));
+                    }
+                    s->wait_result = static_cast<intptr_t>(n);
+                    sched::wake(s);
+                    return static_cast<int>(n);
+                }
+                c->ipc.buf = buf;
+                c->ipc.len = cap_len;
+                c->ipc.badge_out = badge_out;
+                epoch = c->switch_count;
+                wq_block(e->recv_waiters);
+            }
+            wq_confirm_resume(c, epoch);
+            return static_cast<int>(c->wait_result);
+        }
+
         int thread_spawn(kos_thread_params const* p)
         {
             IrqLock lock;
@@ -205,7 +423,8 @@ namespace kickos
             {
                 return -1;
             }
-            kos_thread_params params = *p;
+            kos_thread_params params;
+            kaccess_from_user(&params, pu, sizeof(params));
             p = &params;
             // Validate the user-supplied priority: it indexes the ready lists and
             // drives a 1u<<prio bitmap shift, so an out-of-range value is an OOB write / UB.
@@ -331,7 +550,9 @@ namespace kickos
                 kos_cap_grant gbuf[KICKOS_MAX_HANDLES];
                 for (int ci = 0; ci < ncaps; ci++)
                 {
-                    gbuf[ci] = p->caps[ci];
+                    kaccess_from_user(&gbuf[ci],
+                                      cu + static_cast<size_t>(ci) * sizeof(kos_cap_grant),
+                                      sizeof(kos_cap_grant));
                 }
                 Thread* const caller = sched::current();
                 for (int ci = 0; ci < ncaps; ci++)
@@ -395,8 +616,8 @@ namespace kickos
                     {
                         break; // unreachable byte -- bound the walk here
                     }
-                    namebuf[ni] = p->name[ni];
-                    if (p->name[ni] == '\0')
+                    kaccess_from_user(&namebuf[ni], np + ni, 1);
+                    if (namebuf[ni] == '\0')
                     {
                         name_ok = true;
                         break;
@@ -460,7 +681,7 @@ namespace kickos
             {
                 cap_install_at(child, ci + 1, deleg_obj[ci],
                                static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
-                obj_ref_inc(static_cast<CapType>(deleg_type[ci]), deleg_obj[ci]);
+                obj_ref_inc(static_cast<CapType>(deleg_type[ci]), deleg_obj[ci], deleg_rights[ci]);
             }
             return k.threads.handle_for(i);
         }
@@ -510,8 +731,6 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                                       uintptr_t a0, uintptr_t a1,
                                       uintptr_t a2, uintptr_t a3)
 {
-    (void)a2; // unused by the current syscalls (all take <= 2 args or an out-ptr)
-    (void)a3;
     KTRACE_SYSCALL_SCOPE(nr);
     switch (nr)
     {
@@ -523,6 +742,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // cannot launder another domain's arena page out through the console
             // (the kernel reads buf privileged). Reject => wrote nothing.
             constexpr size_t kMaxConsoleWrite = 4096;
+            // MMU-era NOTE: this hands a user pointer straight to kconsole_write, which
+            // streams it privileged -- the one kernel-side user read NOT funnelled
+            // through kaccess_from_user. Funnelling it needs a bounce buffer + chunk
+            // loop (a real design choice: buffer size vs kernel-stack budget), not an
+            // identity refactor, so it is deferred to the copy_from_user work.
             char const* buf = reinterpret_cast<char const*>(a0);
             size_t len = static_cast<size_t>(a1);
             if (len > kMaxConsoleWrite)
@@ -620,6 +844,102 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 return static_cast<uintptr_t>(-1);
             }
             return static_cast<uintptr_t>(mutex_unlock(m)); // -1 if not owner (no panic)
+        }
+        case KOS_SYS_endpoint_create:
+        {
+            return static_cast<uintptr_t>(endpoint_create());
+        }
+        case KOS_SYS_send:
+        {
+            // FULLY LOCKLESS (no dispatch IrqLock): endpoint_send takes its own lock for
+            // the resolve/deliver/park, then releases it before the resume barrier -- a
+            // spanning caller lock would livelock ARM (design section 3).
+            return static_cast<uintptr_t>(
+                endpoint_send(static_cast<int>(a0), a1, static_cast<size_t>(a2)));
+        }
+        case KOS_SYS_recv:
+        {
+            return static_cast<uintptr_t>(
+                endpoint_recv(static_cast<int>(a0), a1, static_cast<size_t>(a2), a3));
+        }
+        case KOS_SYS_console_publish:
+        {
+            // Hand the console UART to a userspace driver named by an endpoint cap.
+            // Privileged-only (like ram_alloc / MMIO grant): it disables a live IRQ line
+            // and mutates global console routing. See the handover design (D3).
+            Thread* c = sched::current();
+            if (c == nullptr or not c->privileged)
+            {
+                return static_cast<uintptr_t>(-1);
+            }
+            int handle = -1;
+            {
+                IrqLock lock;
+                // Resolve the endpoint cap to its GLOBAL gen-encoded handle -- NOT the pool
+                // index (S3). cap_lookup validates the cap-gen; re-check type + object
+                // liveness (mirrors irq_attach's resolve-once pattern). Any rights: the
+                // publish is identity-only.
+                CapEntry* e = cap_lookup(c, static_cast<int>(a0));
+                if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT)
+                    or kernel().endpoints.resolve(e->obj) == nullptr)
+                {
+                    return static_cast<uintptr_t>(-1);
+                }
+                handle = e->obj;
+                if (console_owner_is_kernel() != 0)
+                {
+                    console_tx_deinit(); // D2 relinquish (idempotent; skipped on re-publish)
+                }
+                cap_console_publish(handle); // take the kernel stdout ref, drop any prior target
+                console_owner_set_user();    // flip to USER_OWNED -- LAST
+            }
+            // B1: drain any stale chip writer that raced past the pre-flip state read, with
+            // the lock RELEASED, before returning. After the flip no path increments the
+            // count, so it strictly drains. Root spawns the driver only after this returns,
+            // so the preempted writer is off the device before the driver touches it.
+            //
+            // The scheduler is STRICT PRIORITY, so a bare busy-spin here would LIVELOCK: an
+            // in-flight writer preempted mid arch_console_write_sync (a polled loop run
+            // WITHOUT IrqLock) can only finish once rescheduled, and it may be LOWER priority
+            // than this publisher (root, typically high). Drop to the minimum real priority
+            // and yield each pass so that lower-prio writer runs to completion. Safe to
+            // drain-to-zero because the state is already USER_OWNED: no path increments the
+            // count anymore, and an in-flight writer never blocks between enter and leave (a
+            // polled write), so a non-zero count always means a RUNNABLE writer exists.
+            Thread* pub = sched::current();
+            uint8_t const saved_prio = pub->prio;
+            sched::set_prio(pub, KICKOS_PRIO_MIN);
+            // Generous bounded backstop: each pass is a full scheduler round and a poke is a
+            // handful of polled bytes, so a count that never drains is a real bug. Fail LOUD
+            // rather than hang silently or (worse) proceed while a writer still pokes the UART.
+            uint32_t guard = 0;
+            while (console_chip_writers() != 0)
+            {
+                sched::yield();
+                guard = guard + 1;
+                if (guard >= CONSOLE_PUBLISH_DRAIN_MAX)
+                {
+                    kpanic("console_publish: chip-writer drain did not converge");
+                }
+            }
+            sched::set_prio(pub, saved_prio);
+            return 0;
+        }
+        case KOS_SYS_cpu_clock_set:
+        {
+            // Privileged-only (like console_publish / ram_alloc): it mutates
+            // SystemCoreClock, retimes every thread's SysTick basis, and moves the
+            // shared console baud -- an unprivileged retune could DoS every task's
+            // timing. Return 0 (== the cannot-change sentinel) on the unprivileged
+            // path so the caller needs only ONE error test. The coherence sequence
+            // (mask / disarm / flush / retune / re-arm) lives in cpu_clock_set.
+            Thread* c = sched::current();
+            if (c == nullptr or not c->privileged)
+            {
+                return 0;
+            }
+            return static_cast<uintptr_t>(
+                cpu_clock_set(static_cast<kos_pstate_t>(a0)));
         }
         case KOS_SYS_thread_spawn:
         {
@@ -737,11 +1057,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-1);
             }
-            if (not user_range_ok(a0, sizeof(uint64_t), ARCH_MPU_W))
+            if (not user_writable_ok(a0, sizeof(uint64_t)))
             {
                 return static_cast<uintptr_t>(-1);
             }
-            *reinterpret_cast<uint64_t*>(a0) = arch_clock_now();
+            uint64_t const now = arch_clock_now();
+            kaccess_to_user(a0, &now, sizeof(now));
             return 0;
         }
         case KOS_SYS_cpu_clock_hz:

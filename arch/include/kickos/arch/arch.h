@@ -78,6 +78,39 @@ void arch_timer_disarm(void);
 // bring-up). 0 where the backend has no silicon core clock (the host sim).
 uint32_t arch_cpu_clock_hz(void);
 
+// Retune the core/bus clock to a P-state and return the ACTUALLY-LANDED core Hz --
+// ALWAYS the truth about where the clock now sits, never a status:
+//   - a retune that fully succeeds returns the requested point's Hz;
+//   - a retune that FAILS and parks on a safe fallback (e.g. K64F fail_to_fei ->
+//     ~20.97 MHz) returns THAT fallback Hz -- non-zero, the clock DID move, so the
+//     caller MUST run the coherence tail;
+//   - 0 is returned ONLY when this chip cannot change its clock at all (weak default
+//     / unsupported backend). 0 NEVER means "failed but moved".
+// The backend performs the flash-wait-state / voltage step and the arch_clock_now
+// re-anchor INTERNALLY, bracketing the exact PLL/divider write (the re-anchor is the
+// SOLE writer of the arch_clock_now mult on a re-anchor chip). MUST be called from
+// privileged thread context with interrupts already masked by the caller and NOT from
+// ISR context (see the coherence sequence, docs/design-m3-clock-select.md sec 2.3).
+// Weak default returns 0 (this chip cannot change its clock).
+//
+// `target` carries a kos_pstate_t (sys/abi.h) as a plain u32 -- the seam stays ISA- and
+// ABI-neutral (it names a P-state concept, not a mechanism), so a backend that opts in
+// includes sys/abi.h itself to name the KOS_PSTATE_* points. The achievable set is small
+// and chip-specific; the truthful landed Hz is the RETURN value, not this selector.
+uint32_t arch_cpu_clock_set(uint32_t target);
+
+// Console coherence hooks for a clock retune (both WEAK no-op by default; only a chip
+// whose console peripheral clock moves with the core clock overrides them):
+//   arch_console_flush_sync -- block until the TX shift register is fully idle
+//     (transmission-complete, NOT merely buffer-empty), so no in-flight byte is still
+//     clocking out at the OLD baud when the peripheral clock moves (S6). Called under
+//     the caller's IrqLock, BEFORE the rate change.
+//   arch_console_retune -- re-derive + reprogram the console baud from the CURRENT
+//     SystemCoreClock, AFTER the clock has landed. Called only when the clock actually
+//     moved (achieved != previous).
+void arch_console_flush_sync(void);
+void arch_console_retune(void);
+
 // --- Trace clock (telemetry timestamp seam) --------------------------------
 // A dedicated high-resolution monotonic counter for telemetry timestamps: the
 // ns arch_clock_now is too coarse to time a context switch (~1-5 us). u32 by
@@ -121,6 +154,12 @@ struct arch_mpu_region
 // UNPRIVILEGED access (supervisor comes from the background region / SYSMPU RGD0).
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 
+// MMU-era NOTE (concepts, never mechanisms): a future VMSA/paging port introduces
+// a PARALLEL arch_aspace_* family (build/switch/map a page-table root), NOT an
+// overload of arch_mpu_apply and NOT a reinterpretation of arch_mpu_region. The
+// MPU seam stays a flat, non-translating protection-region set; do not try to
+// cram "load a page table" into it. See docs/design-mmu-era-exploration.md.
+
 // The smallest region this arch's MPU can enforce -- a global hardware property,
 // NOT a per-region field (which would break the frozen arch_mpu_region seam):
 // ARM PMSA 32 bytes, RISC-V PMP NAPOT 8, one host page on the sim (mprotect
@@ -146,6 +185,13 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size);
 // no-MPU arch (min 0). arch_ram_alloc reserves this many bytes; the kernel sizes
 // each thread/domain region descriptor with the SAME call, so the descriptor
 // matches the backing block exactly.
+// SEAM (MMU era): this is the SINGLE point that couples allocation size to MPU
+// descriptor geometry. Its callers use it for exactly two things -- the bump
+// allocator's reservation (arch_ram_common) and forming MPU descriptors
+// (thread.cc, domain_for, the spawn-time grant checks); none treats the rounded
+// value as usable capacity beyond the block it describes. A future frame/page
+// allocator selects BESIDE this behind the same arch family, so the pow2 shaping
+// stays contained here -- do NOT add a caller that assumes alloc size == this.
 static inline size_t arch_ram_region_size(size_t want)
 {
     size_t min = arch_mpu_min_region();
@@ -250,14 +296,39 @@ uintptr_t arch_syscall(uintptr_t nr,
 //
 // mask/unmask gate delivery of a line. The generic first-level ISR masks the
 // line before waking its driver (thread context), which unmasks via irq_ack once
-// serviced -- so the line cannot re-fire while it is being handled. A raise of a
-// masked line is suppressed (sim: dropped).
+// serviced -- so the line cannot re-fire while it is being handled. A raise that
+// lands on a MASKED line is LATCHED one-deep (coalesced), not dropped: it is
+// redelivered through the normal ISR path the instant the line is unmasked.
 //
 // RESET CONTRACT (uniform across every arch): all lines start MASKED at reset. A
 // driver unmasks its line (arch_irq_unmask, or irq_register which arms it) before
 // use; nothing may assume a line is deliverable until it has been unmasked.
+//
+// LOCKING CONTRACT: all four of mask/unmask/inject/clear_pending are SELF-BRACKETED
+// (each does its own interrupt-masked critical section over its state RMW), so a
+// caller need not hold IrqLock -- the test-scaffolding syscalls (irq_inject,
+// irq_unmask) call them bare.
+//
+// SINGLE-DOORBELL CONTRACT (software backends: sim, rv32imac, xtensa, rxv3-soft):
+// a coalesced redelivery is carried through ONE shared cell + ONE physical doorbell
+// and the per-line pending bit is cleared as it is rung. So AT MOST ONE unmask with
+// a pending redelivery may occur per IrqLock/interrupts-masked region -- a second
+// would clobber the first's identity and lose an event. Holds today (irq_register/
+// wait/ack each unmask exactly one line per lock section); a future bulk-rearm path
+// needs the identity-free dispatcher (see TODO M4).
 void arch_irq_mask(int line);
+
+// Enable delivery of a line, PRESERVING any raise latched while it was masked: a
+// latched raise fires through the normal first-level ISR path (kickos_isr_irq)
+// after enable -- never a direct notification from unmask itself.
 void arch_irq_unmask(int line);
+
+// Discard any raise latched on a line (best-effort: a controller that cannot drop
+// a native pending -- e.g. the PLIC for a real device line -- no-ops there). The
+// explicit discard primitive: called at first-arm (irq_register / console_tx /
+// bench) to drop pre-registration garbage, and reserved for the M4 level-trigger
+// rearm path.
+void arch_irq_clear_pending(int line);
 
 // Raise device line `irq` (the controller's "raise"). sim: delivers an async
 // signal so the ISR runs in interrupt context; ARM: pends the NVIC line. Drives
@@ -276,6 +347,12 @@ void arch_irq_inject(int irq);
 //                              buffered console overrides it with its polled writer.
 void arch_console_write(char const* buf, size_t n);
 void arch_console_write_sync(char const* buf, size_t n);
+
+// Force the UART back to a known polled-ready channel on the panic path after a
+// userspace console driver may have left its granted register window garbled (D6).
+// WEAK no-op default in console.cc (boards that never hand over need nothing); a chip
+// that supports handover overrides it with an idempotent full-window register rewrite.
+void arch_console_reclaim(void);
 
 // --- Single on-board kernel diagnostic LED (optional) ----------------------
 // The board's one diagnostic LED -- the raw bottom edge of the kernel diag LED

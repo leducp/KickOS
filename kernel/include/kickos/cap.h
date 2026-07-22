@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Per-task capability table: a typed, rights-bearing, refcounted handle NAMING
-// a global generational object (a semaphore today; mutex/endpoint reserved). The
+// a global generational object (semaphore, PI mutex, or IPC endpoint). The
 // cap table is a pure per-task naming+rights layer that WRAPS the unchanged global
 // object pools (slotpool.h): a CapEntry stores (global-object-handle, type, rights)
 // and cap_resolve is two-level -- the per-task cap-gen guard here, then the object
@@ -40,22 +40,26 @@ namespace kickos
     {
         CAP_EMPTY = 0, // an unused slot -- must be 0 so a zeroed TCB is an empty table
         CAP_SEM,
-        CAP_MUTEX,   // reserved: the mutex object pool lands later (additive)
-        CAP_ENDPOINT // reserved: the endpoint object pool lands later (additive)
+        CAP_MUTEX,   // PI mutex object pool
+        CAP_ENDPOINT // synchronous IPC endpoint object pool
     };
 
     // Rights bits enforced at cap_resolve ((rights & need) == need); CAP_TRANSFER is
     // enforced at the delegate site. Every bit maps to a real check -- no dead field.
     enum CapRights : uint8_t
     {
-        CAP_WAIT = 1 << 0,    // sem_wait / sem_trywait
-        CAP_SIGNAL = 1 << 1,  // sem_post
+        CAP_WAIT = 1 << 0,    // sem_wait / sem_trywait; endpoint recv
+        CAP_SIGNAL = 1 << 1,  // sem_post; endpoint send
         CAP_TRANSFER = 1 << 2 // may be delegated into a child table (section 6)
     };
 
     // 8 bytes, 4-aligned; carries the object pool's handle codec verbatim (no
     // re-encoding). gen is the per-slot cap generation, bumped on close (the
     // per-task use-after-close ABA guard, at parity with the object pool's u16 gen).
+    // INVARIANT (address-space-agnostic; MMU-era load-bearing): a cap names its
+    // object ONLY by generational handle -- never by a physical address or a region
+    // base. No physaddr is ever stored here or delivered as a badge/payload, so the
+    // cap layer carries no single-physical-space assumption for the MMU era to undo.
     struct CapEntry
     {
         int32_t obj;    // global generational object handle (WRAP target); ignored if EMPTY
@@ -68,7 +72,7 @@ namespace kickos
     // The one resolve chokepoint: validate a per-task cap handle and return the named
     // global object, or nullptr (bad index, empty, stale cap-gen, wrong type, or
     // missing rights). Returns void* (dispatch-on-type over the object pools); the
-    // caller casts to the type it asked for. Only CAP_SEM resolves today.
+    // caller casts to the type it asked for. CAP_SEM/CAP_MUTEX/CAP_ENDPOINT all resolve.
     void* cap_resolve(Thread* c, int cap_handle, CapType want, uint8_t need);
 
     // Validate a cap handle and return its table entry (type-agnostic; for delegation
@@ -78,8 +82,8 @@ namespace kickos
     // Install a cap naming `obj_handle` into the first free slot of c's table. Returns
     // the cap handle (cap-gen << KCAP_INDEX_BITS | index), or -1 if the table is full.
     // Does NOT touch the object refcount -- the caller owns that (sem_create sets refs=1
-    // at alloc). Index 0 is reserved only in that defaults/delegation avoid it; a thread's
-    // own sem_create may land there.
+    // at alloc). Index 0 is the kernel stdout slot (B3): the scan starts at 1, so an own
+    // create never lands at 0 (own caps live in [1 .. MAX-1]).
     int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights);
 
     // Install a cap at a SPECIFIC (assumed-free) index -- delegation's deterministic
@@ -98,15 +102,22 @@ namespace kickos
     // own cap, so refs >= 1). Caller holds IrqLock.
     void cap_teardown(Thread* c);
 
-    // The privileged default cap set for a freshly spawned child. Installs NOTHING
-    // today (index 0 reserved by convention for a future console cap; write() is a
-    // direct syscall until then). Present so the spawn path has the seam.
+    // The privileged default cap set for a freshly spawned child. Pre-publish it installs
+    // NOTHING (index 0 empty; write() falls back to kconsole_write). Post-publish it seats
+    // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4.
     void cap_install_defaults(Thread* child);
+
+    // Move the kernel's stdout-target ref to `obj_handle` (the console handover publish
+    // path, D3/S3). Caller holds IrqLock. Takes the new ref before dropping the old, so a
+    // re-publish of the same endpoint never transiently frees it; ref carries rights 0.
+    void cap_console_publish(int obj_handle);
 
     // Bump one reference to the object named by a global handle (delegation + create).
     // Dispatches on cap type; the handle MUST resolve (caller validated it). Caller
     // holds IrqLock. Unknown type traps in debug. Additive: each new pool gains one arm.
-    void obj_ref_inc(CapType type, int obj_handle);
+    // `rights` is the cap's rights bits: the endpoint arm bumps recv_holders when they
+    // carry CAP_WAIT; the sem/mutex arms ignore it.
+    void obj_ref_inc(CapType type, int obj_handle, uint8_t rights);
 }
 
 #endif

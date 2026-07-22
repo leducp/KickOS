@@ -5,6 +5,13 @@ kickos_add_application(stress
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
 
+# Endurance soak: repeat the conservation round forever (heartbeat per round, freeze
+# on the first FAIL). OFF keeps the single-round CTest-gate behaviour byte-identical.
+option(KICKOS_STRESS_FOREVER "stress: loop the conservation round forever (soak)" OFF)
+if(KICKOS_STRESS_FOREVER)
+  target_compile_definitions(stress PRIVATE KICKOS_STRESS_FOREVER)
+endif()
+
 # Bounded, self-verifying concurrency stress -- exercises scheduler + semaphores +
 # the tickless timer under many mixed-priority threads, then asserts conservation.
 # Sim gate: deterministic virtual time, so it is a reliable CI check. On MCUs it is

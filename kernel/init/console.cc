@@ -36,8 +36,59 @@
 namespace
 {
     // Set at the top of kpanic so all subsequent console output takes the polled
-    // path (the buffered ring's ISR is being torn down / cannot be trusted).
+    // path (the buffered ring's ISR is being torn down / cannot be trusted). Only
+    // load-bearing while KERNEL_OWNED; RECLAIMED subsumes it once handed over.
     volatile bool g_console_panicking = false;
+
+    // Console device-ownership axis (orthogonal to the buffered-vs-sync decision):
+    // who owns the UART TX register. Consulted BEFORE the buffered/sync sub-decision,
+    // because in USER_OWNED the kernel must touch the device on NO path at all.
+    // See docs/design-m3-console-handover-stageii.md (D1).
+    enum class ConsoleState : uint8_t
+    {
+        KERNEL_OWNED, // boot default; kernel drives the UART (buffered ring or polled)
+        USER_OWNED,   // a userspace driver owns the UART; kernel chip path DROPS
+        RECLAIMED     // panic forcibly took the UART back; polled-only
+    };
+    volatile ConsoleState g_console_state = ConsoleState::KERNEL_OWNED;
+
+    // In-flight kernel chip writers (B1): incremented under the same read that decided
+    // to poke the device while KERNEL_OWNED, decremented after. kos_console_publish
+    // spins on this (state already flipped to USER_OWNED) so a writer that raced past a
+    // stale KERNEL_OWNED read drains off the device before the userspace driver touches
+    // it. After the flip NO path increments it, so it strictly drains to 0.
+    volatile int g_chip_writers = 0;
+}
+
+// Console-ownership seam shared with console_tx.cc (disarm-fallback gate) and the
+// kos_console_publish syscall (handover). Declared in console_tx.h. The chip-writer
+// count RMW runs under IrqLock: console_emit can run in ISR/fault context, so a plain
+// volatile ++/-- could tear against a thread producer's ++/--.
+extern "C" int console_owner_is_kernel(void)
+{
+    return static_cast<int>(g_console_state == ConsoleState::KERNEL_OWNED);
+}
+
+extern "C" void console_owner_set_user(void)
+{
+    g_console_state = ConsoleState::USER_OWNED;
+}
+
+extern "C" void console_chip_writer_enter(void)
+{
+    kickos::IrqLock lock;
+    g_chip_writers = g_chip_writers + 1; // explicit RMW: '++' on volatile is deprecated (C++20)
+}
+
+extern "C" void console_chip_writer_leave(void)
+{
+    kickos::IrqLock lock;
+    g_chip_writers = g_chip_writers - 1;
+}
+
+extern "C" int console_chip_writers(void)
+{
+    return g_chip_writers;
 }
 
 namespace kickos
@@ -49,13 +100,29 @@ namespace kickos
     // from ISR context).
     static void console_emit(char const* buf, size_t n)
     {
-        if (console_tx_armed() != 0 and arch_in_isr() == 0 and not g_console_panicking)
+        switch (g_console_state)
         {
-            arch_console_write(buf, n);
-        }
-        else
-        {
-            arch_console_write_sync(buf, n);
+        case ConsoleState::KERNEL_OWNED:
+            // Bracket the device poke with the in-flight count under the SAME state read
+            // (B1). The buffered branch's poke happens inside console_tx_write's IrqLock
+            // (serialized with deinit); the else branch's polled poke does not, so the
+            // count is what publish drains against.
+            console_chip_writer_enter();
+            if (console_tx_armed() != 0 and arch_in_isr() == 0 and not g_console_panicking)
+            {
+                arch_console_write(buf, n); // buffered ring
+            }
+            else
+            {
+                arch_console_write_sync(buf, n); // polled
+            }
+            console_chip_writer_leave();
+            return;
+        case ConsoleState::USER_OWNED:
+            return; // DROP: the driver owns the UART (RTT still carries it, see kconsole_write)
+        case ConsoleState::RECLAIMED:
+            arch_console_write_sync(buf, n); // panic reclaimed it -> polled only
+            return;
         }
     }
 
@@ -137,6 +204,18 @@ namespace kickos
 extern "C" void kpanic_enter(void)
 {
     (void)arch_irq_save(); // never restored: the panic/fault path does not return
+    // Force the UART back to a polled-ready channel if a userspace driver held it, so the
+    // panic banner reaches the wire. Idempotent + re-entrant (a nested fault re-enters
+    // here with state still USER_OWNED and re-runs reclaim cleanly). Runs BEFORE the flush
+    // (which is a no-op post-handover -- the ring is disarmed). M2 DEPENDENCY: only a
+    // TERMINAL fault exit may reclaim; a future kill-and-resume fault path must NOT (the
+    // driver keeps the device, a dark report on that path is correct) -- gate reclaim on
+    // "this fault terminates the system," not on "a fault happened."
+    if (g_console_state == ConsoleState::USER_OWNED)
+    {
+        arch_console_reclaim();
+        g_console_state = ConsoleState::RECLAIMED;
+    }
     g_console_panicking = true;
     console_tx_flush_sync();
 }
@@ -201,12 +280,33 @@ extern "C" __attribute__((weak)) void arch_console_write_sync(char const* buf, s
     arch_console_write(buf, n);
 }
 
+// Force the UART back to a known polled-ready channel after a userspace driver may have
+// left its registers garbled (panic reclaim, D6). WEAK no-op default: boards that never
+// hand over need nothing, and this pass only WIRES the call -- the real per-chip bodies
+// (XMC/K64F full-window rewrite) land in the next pass. Must be written as idempotent
+// straight-line register STORES (safe to repeat from a partial nested-fault state).
+extern "C" __attribute__((weak)) void arch_console_reclaim(void) {}
+
+// Clock-retune console coherence hooks (arch.h). WEAK no-op defaults: a board whose
+// console peripheral clock does NOT move with the core clock -- or that cannot retune
+// at all (weak arch_cpu_clock_set) -- needs neither. A chip whose UART baud tracks the
+// core/bus clock overrides both: flush_sync waits for the TX shift register to go idle
+// (so no byte is mid-flight at the old baud), retune reprograms the baud from the new
+// SystemCoreClock. See docs/design-m3-clock-select.md sec 2.2/2.3.
+extern "C" __attribute__((weak)) void arch_console_flush_sync(void) {}
+extern "C" __attribute__((weak)) void arch_console_retune(void) {}
+
 // Memory-protection violation caught by the arch backend (sim: SIGSEGV over
 // the guard page). Report the offending task + address through the console.
 // M0: the intended wild-write demo is the final act, so we shut down cleanly
 // after reporting. M2 will turn this into per-task fault + resume.
 extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
 {
+    // Funnel through kpanic_enter FIRST (B2): a terminal fault in USER_OWNED must reclaim
+    // the UART (the likeliest post-handover faulter IS the console driver itself), else the
+    // report prints to a device the kernel no longer owns and the system halts silently.
+    // kpanic_enter is idempotent and subsumes the flush, preserving the terminal behavior.
+    kpanic_enter();
     ::kickos::Thread* c = ::kickos::sched::current();
     char const* who = "?";
     if (c != nullptr)
@@ -218,7 +318,6 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
     {
         dir = "write";
     }
-    console_tx_flush_sync(); // emit any queued bytes before the fault line (in ISR ctx)
     ::kickos::kprintf("\nMPU FAULT: task '%s' attempted %s at %p -- reported\n",
                       who, dir, reinterpret_cast<void*>(addr));
     arch_shutdown(0);

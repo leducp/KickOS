@@ -138,7 +138,16 @@ namespace kickos
         // Arm the line for its first IRQ. Without this the line is delivered only
         // after the first irq_ack -- fine on controllers unmasked-by-default
         // (sim/riscv) but a deadlock on default-masked ones (ARM NVIC, RX): the
-        // first raise is dropped, so the wait never wakes and ack never runs.
+        // first raise only latches on the masked line and never fires, so the wait
+        // never wakes and ack never runs.
+        //
+        // Clear BEFORE enabling: any raise latched on the line before a driver
+        // owned it is pre-registration garbage; the latch-and-coalesce contract
+        // would otherwise redeliver it and phantom-wake the very first irq_wait.
+        // INVARIANT: a latched raise preserved across unmask redelivers via the
+        // normal ISR path (irq_event_isr masks + posts, needs_rearm is set only on
+        // wait-return) -- unmask never sem_posts directly.
+        arch_irq_clear_pending(line);
         arch_irq_unmask(line);
         return handle;
     }

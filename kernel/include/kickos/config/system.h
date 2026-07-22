@@ -30,15 +30,23 @@
 #define KICKOS_MAX_MUTEXES 8
 #endif
 
+// Endpoint (IPC rendezvous) pool (M3 #4; see cap.h / endpoint.h). Additive
+// CAP_ENDPOINT object pool. Default covers console + a service or two; tiny
+// boards override. The u8 endpoint_refs assert in instance.h holds either way.
+#ifndef KICKOS_MAX_ENDPOINTS
+#define KICKOS_MAX_ENDPOINTS 4
+#endif
+
 // Static thread pool the syscall thread_spawn draws from (+ its kernel stacks).
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16
 #endif
 // Per-task capability-table slots (M3 handle table; see cap.h). Cost is
-// MAX_THREADS x MAX_HANDLES x 8 bytes. Floor 6 on the tiny 10 KiB boards (the
-// irqdrv selftest section holds 4 live sem caps at once); default 8 elsewhere.
+// MAX_THREADS x MAX_HANDLES x 8 bytes. Index 0 is the kernel stdout slot (B3), so
+// own caps live in [1 .. MAX-1]; default 9 keeps 8 usable own-cap slots (the stress
+// soak's peak). Floor 6 on the tiny 10 KiB boards (5 usable; polled-only, no handover).
 #ifndef KICKOS_MAX_HANDLES
-#define KICKOS_MAX_HANDLES 8
+#define KICKOS_MAX_HANDLES 9
 #endif
 // Memory-domain pool (the shared region sets threads reference; see domain.h).
 // Worst case is one distinct domain per thread plus the two immortal singletons

@@ -57,12 +57,34 @@ namespace
     // IRQ-entry latency: a bench handler timestamps its own entry; kickos_bench_irq_once
     // triggers the line and returns (entry - trigger) cycles.
     volatile uint32_t g_irq_entry = 0;
+    volatile uint64_t g_irq_entry_ns = 0; // clock_now stamp for the frozen-counter arches
     volatile uint32_t g_irq_seen = 0;
 
     void bench_irq_handler(void*)
     {
-        g_irq_entry = cyccnt();
+        g_irq_entry = cyccnt();           // cheapest stamp first
+        g_irq_entry_ns = arch_clock_now();
         g_irq_seen = 1;
+    }
+
+    // Masked-span body: a byte copy across these models the M3 endpoint copy-under-
+    // IrqLock (bounded by KOS_EP_MSG_MAX). volatile so it is neither elided nor
+    // hoisted out of the masked window.
+    constexpr uint32_t BENCH_LAT_SPAN_MAX = 1024;
+    volatile uint8_t g_lat_src[BENCH_LAT_SPAN_MAX] = {0};
+    volatile uint8_t g_lat_dst[BENCH_LAT_SPAN_MAX] = {0};
+
+    // Set the line pending. On ARM a direct STIR write (works while PRIMASK holds the
+    // span masked); elsewhere the arch inject seam (no-op where no line is software-
+    // injectable -- the sample then reads 0).
+    inline void bench_irq_raise(int line)
+    {
+#if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
+        *reinterpret_cast<volatile uint32_t*>(0xE000EF00u) = static_cast<uint32_t>(line); // STIR
+        __asm volatile("dsb; isb" ::: "memory");
+#else
+        arch_irq_inject(line);
+#endif
     }
 }
 
@@ -78,6 +100,7 @@ extern "C"
     void kickos_bench_irq_setup(int line)
     {
         (void)kickos::irq_attach(line, bench_irq_handler, nullptr); // line 20 is always free here
+        arch_irq_clear_pending(line); // discard pre-arm garbage (latch-and-coalesce contract)
         arch_irq_unmask(line);
     }
 
@@ -93,15 +116,7 @@ extern "C"
         arch_irq_unmask(line);
         g_irq_seen = 0;
         uint32_t t0 = cyccnt();
-#if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
-        *reinterpret_cast<volatile uint32_t*>(0xE000EF00u) = static_cast<uint32_t>(line); // STIR
-        __asm volatile("dsb; isb" ::: "memory");
-#else
-        // RISC-V (PLIC/msip), RX (SWINT2 doorbell), xtensa: raise via the arch inject
-        // seam. Where no software-injectable line exists (qemu-virt) it is a no-op and
-        // the sample returns 0 -- the switch-cost number is the meaningful one there.
-        arch_irq_inject(line);
-#endif
+        bench_irq_raise(line);
         for (uint32_t i = 0; i < 100000u and g_irq_seen == 0; i++)
         {
             __asm volatile("nop");
@@ -119,6 +134,82 @@ extern "C"
             d = 1;
         }
         return d;
+    }
+
+    // WORST-case ISR-entry latency: raise the line at the START of a masked span, hold
+    // interrupts off across a bounded body (span_bytes of the endpoint-copy model),
+    // then release; the pending IRQ fires on unmask and the handler stamps entry.
+    // Returns inject->entry cycles (worst case = span hold + exception entry); 0 where
+    // the line is not injectable. The mask is the SAME arch_irq_save/restore seam
+    // kickos::IrqLock wraps, so the span is the identical primitive every syscall
+    // critical section holds. Frozen-counter arches (mps2 DWT / sim) read ~1, exactly
+    // as the best-case line does -- the ns hold below is the number that survives there.
+    uint32_t kickos_bench_irq_masked_once(int line, uint32_t span_bytes)
+    {
+        if (span_bytes > BENCH_LAT_SPAN_MAX)
+        {
+            span_bytes = BENCH_LAT_SPAN_MAX;
+        }
+        arch_irq_unmask(line);
+        g_irq_seen = 0;
+        arch_irq_state_t st = arch_irq_save(); // begin span -- a raised IRQ is held off
+        uint32_t t0 = cyccnt();
+        bench_irq_raise(line);                 // pending now; cannot fire until restore
+        for (uint32_t i = 0; i < span_bytes; i++)
+        {
+            g_lat_dst[i] = g_lat_src[i];
+        }
+        arch_irq_restore(st);                  // unmask -> pending IRQ runs, stamps entry
+        for (uint32_t i = 0; i < 100000u and g_irq_seen == 0; i++)
+        {
+            __asm volatile("nop");
+        }
+        if (g_irq_seen == 0)
+        {
+            return 0;
+        }
+        uint32_t d = g_irq_entry - t0;
+        if (d == 0)
+        {
+            d = 1;
+        }
+        return d;
+    }
+
+    // Portable worst-case term: how long interrupts stay masked across ONE span_bytes
+    // copy, in ns via clock_now -- the interval an ISR waits behind such a syscall
+    // critical section. Auto-amplifies (doubles reps under one mask) until the window
+    // clears the coarse-clock floor, so even mps2's 10 ms semihosting clock resolves it;
+    // returns ns-per-copy. Survives a frozen/absent cycle counter -> the cross-arch
+    // number. 0 if the clock never advanced.
+    uint32_t kickos_bench_masked_hold_ns(uint32_t span_bytes)
+    {
+        if (span_bytes == 0 or span_bytes > BENCH_LAT_SPAN_MAX)
+        {
+            span_bytes = BENCH_LAT_SPAN_MAX;
+        }
+        uint32_t reps = 256;
+        for (int tries = 0; tries < 24; tries++)
+        {
+            arch_irq_state_t st = arch_irq_save();
+            uint64_t n0 = arch_clock_now();
+            for (uint32_t r = 0; r < reps; r++)
+            {
+                for (uint32_t i = 0; i < span_bytes; i++)
+                {
+                    g_lat_dst[i] = g_lat_src[i];
+                }
+            }
+            uint64_t n1 = arch_clock_now();
+            arch_irq_restore(st);
+            uint64_t d = n1 - n0;
+            if (d >= 40000000ull) // 40 ms: >= 4 ticks of the coarsest (10 ms) clock
+            {
+                return static_cast<uint32_t>(d / reps);
+            }
+            reps *= 2;
+        }
+        return 0;
     }
 
     // Switch-entry timestamp, written by the switch handler (switch.S).

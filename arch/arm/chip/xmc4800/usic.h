@@ -51,12 +51,14 @@ namespace usic
         constexpr uintptr_t TCSR = 0x038;   // Transmit Control/Status
         constexpr uintptr_t PCR = 0x03C;    // Protocol Control (mode-dependent)
         constexpr uintptr_t CCR = 0x040;    // Channel Control (MODE select)
+        constexpr uintptr_t CMTR = 0x044;   // Capture Mode Timer (capture-only; inert for ASC TX)
         constexpr uintptr_t PSR = 0x048;    // Protocol Status (mode-dependent)
         constexpr uintptr_t PSCR = 0x04C;   // Protocol Status Clear
         constexpr uintptr_t RBUFSR = 0x050; // Receiver Buffer Status
         constexpr uintptr_t RBUF = 0x054;   // Receiver Buffer (read releases buffer)
         constexpr uintptr_t RBUF0 = 0x05C;  // Receiver Buffer 0
         constexpr uintptr_t RBUF1 = 0x060;  // Receiver Buffer 1
+        constexpr uintptr_t FMR = 0x068;    // Flag Modification (TDV/TBI/... modify)
         constexpr uintptr_t TBUF0 = 0x080;  // Transmit Buffer input location 0
         constexpr uintptr_t TBCTR = 0x108;  // Transmit FIFO Buffer Control
         constexpr uintptr_t RBCTR = 0x10C;  // Receive FIFO Buffer Control
@@ -95,6 +97,13 @@ namespace usic
     // TCSR.TDV (RM p.18-189): the transmit buffer still holds a word pending
     // transfer -> not ready. TCSR is the same across protocols.
     constexpr uint32_t TCSR_TDV = 1u << 7;
+
+    // FMR.MTDV[1:0] (RM p.18-193): 10B clears TCSR.TDV (and TE); 01B would SET TDV.
+    // Reclaim writes 10B to drop a stale TDV word a dead-baud driver may have left:
+    // with TDV=0 the pending TBUF word is gated off (TCSR.TDEN starts a transfer
+    // only while TDV=1), so it is never sent before the polled panic banner. Write-
+    // only; TCSR control writes do not clear TDV.
+    constexpr uint32_t FMR_MTDV_CLEAR = 0x2u << 0;
 
     // CCR.TBIEN (RM p.18-160): Transmit-Buffer Interrupt Enable -- fires the
     // standard-transmit-buffer interrupt when a word moves TBUF->shifter (TBUF now
@@ -147,6 +156,18 @@ namespace usic
     // 115200 baud from fPERIPH = 72 MHz (fCPU=144 MHz profile; same derivation):
     // STEP=367, PDIV+1=14, PCTQ+1=1, DCTQ+1=16 -> 115199.5 baud (-0.0004%).
     constexpr Baud BAUD_115200_72MHZ = { 367u, 13u, 0u, 15u };
+
+    // Clock-select low-power P-states (fPERIPH = fCPU/2 = fSYS/2). Same RM formula:
+    // baud = fPERIPH*STEP/1024 / ((PDIV+1)*(DCTQ+1)). SILICON-PENDING -- formula-derived
+    // like the two above, validated on the Relax Kit in the separate silicon pass.
+    //
+    // 115200 baud from fPERIPH = 48 MHz (fCPU=96 MHz, KOS_PSTATE_MID):
+    // STEP=354, PDIV+1=9, DCTQ+1=16 -> 48e6*354/1024/9/16 = 115237 baud (+0.03%).
+    constexpr Baud BAUD_115200_48MHZ = { 354u, 8u, 0u, 15u };
+
+    // 115200 baud from fPERIPH = 24 MHz (fCPU=48 MHz, KOS_PSTATE_LOW):
+    // STEP=393, PDIV+1=5, DCTQ+1=16 -> 24e6*393/1024/5/16 = 115137 baud (-0.05%).
+    constexpr Baud BAUD_115200_24MHZ = { 393u, 4u, 0u, 15u };
 
     // ---- Generic USIC-common operations (all take the channel base) ----------
 
