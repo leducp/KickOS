@@ -84,6 +84,12 @@ PendSV_Handler:
 4:
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
 #endif
+    /* Deferred MPU commit: reprogram the MPU for the INCOMING thread now that the
+       physical PSP/register swap is complete -- atomically with the switch, NOT
+       eagerly in switch_to (see arch_armv6m.cc). Context (r4-r11) is callee-saved
+       across this call; r0-r3/r12 are reloaded from the HW frame on exception
+       return; lr is rebuilt right below. */
+    bl      kickos_armv6m_mpu_commit
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
     mov     lr, r0
     bx      lr

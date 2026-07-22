@@ -257,6 +257,13 @@ trap_entry:
     mv      a1, s1
     call    kickos_trace_switch_done   /* (from,to) from the swapped contexts */
 #endif
+    /* Deferred MPU commit: program the incoming thread's PMP now that the physical
+       swap (g_arch_current = incoming, sp = incoming->sp) is complete -- atomically
+       with the switch, NOT eagerly in switch_to (shared seam, see arch_rv32imac.cc /
+       docs/design-mpu-commit-deferred.md). Runs here in the M-mode msip trap with
+       MIE=0, before .Lrestore pops the frame and mret drops to U-mode. sp survives the
+       call (callee-saved); every caller-saved clobber is reloaded by .Lrestore next. */
+    call    kickos_arch_mpu_commit
     j       .Lrestore
 
 /* --- ecall: redirect mret into svc_trampoline running M-mode (privileged) on  */
@@ -379,6 +386,10 @@ arch_start:
     li      a0, 0xFFFF              /* from = no-thread (decoder's first-switch) */
     call    kickos_trace_switch_done   /* sp (callee-saved) survives */
 #endif
+    /* Deferred MPU commit for the first thread: program its PMP after g_arch_current
+       is seeded and sp = first->sp, before .Lrestore mrets into U-mode (same seam as
+       .Lswitch). MIE is still 0 here (the fabricated mstatus enables it only on mret). */
+    call    kickos_arch_mpu_commit
     j       .Lrestore
 
 /* ------------------------------------------------------------------------- */

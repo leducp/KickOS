@@ -242,8 +242,40 @@ namespace
     }
 }
 
+namespace
+{
+    struct arch_mpu_region g_pend_regions[8];
+    size_t g_pend_count = 0;
+}
+
+// STASH-ONLY apply (deferred-commit seam, docs/design-mpu-commit-deferred.md): record
+// the incoming set; kickos_arch_mpu_commit writes the PMP CSRs from the .Lswitch switch
+// epilogue (switch.S) AFTER the physical msip-driven swap. Eager apply on the deferred
+// switch would run the OUTGOING user thread under the incoming PMP set until msip fires
+// -> it faults on its own stack. Name + semantics match the ARM seam (arch_arm_common.cc);
+// rv32imac is its own arch lib, so the stash is local (no cross-arch symbol sharing).
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
+    if (n > 8)
+    {
+        n = 8;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        g_pend_regions[i] = regions[i];
+    }
+    g_pend_count = n;
+}
+
+// Program the 8 PMP entries from the stash. Called from .Lswitch / arch_start after the
+// physical swap; that path runs in the M-mode trap with MIE=0, so the CSR writes are
+// atomic vs interrupts -- the trap context IS the bracket (no MIE toggle here: enabling
+// interrupts mid-trap would be a bug). regions/n are bound to the stash so the body is
+// verbatim.
+void kickos_arch_mpu_commit(void)
+{
+    struct arch_mpu_region const* const regions = g_pend_regions;
+    size_t const n = g_pend_count;
     // Build 8 PMP entries (0..7). A region is NAPOT-encoded only if its size is a
     // power of two >= 8 (unprivileged regions come from the pow2 allocator); a
     // non-pow2 region -- e.g. a privileged thread's whole-arena grant -- is left
@@ -286,6 +318,8 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     (void)regions;
     (void)n;
 }
+// .Lswitch/arch_start call this unconditionally; provide an empty no-MPU commit.
+void kickos_arch_mpu_commit(void) {}
 #endif
 
 size_t arch_mpu_min_region(void)
@@ -307,8 +341,9 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 
 // --- Interrupt controller (software-injected test scaffolding) ---------------
 // arch_irq_inject fakes a device firing -- test/bench scaffolding (arch.h). It masks
-// with a software bitmask (a raise on a masked line is dropped) and records the
-// logical line in g_inject_line, then hands the actual raise to a chip-overridable
+// with a software bitmask (a raise on a masked line latches one-deep, redelivered at
+// unmask) and records the logical line in g_inject_line, then hands the actual raise
+// to a chip-overridable
 // delivery hook (arch_rv_inject_deliver). ONE physical doorbell carries every logical
 // line; g_inject_line tells the trap which line it was -- so arch_irq_mask/unmask
 // stay pure-software and are decoupled from the physical interrupt.
@@ -330,7 +365,15 @@ namespace
     // (arch_irq_unmask, or irq_register) before use.
     volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     volatile int g_inject_line = -1;     // the pending software-injected line
+    // bit set = a raise landed on this software line while masked (latched one-
+    // deep, coalesced). Redelivered through the doorbell at unmask. Scoped to the
+    // software-inject lines; a real PLIC line holds its own pending in hardware.
+    volatile uint32_t g_irq_pending = 0;
 }
+
+// Forward decl: arch_irq_unmask redelivers a coalesced latch through this doorbell,
+// which is defined below.
+void arch_rv_inject_deliver(int line);
 
 // Chip hook: route + enable a REAL hardware interrupt line at the controller (interrupt
 // matrix + PLIC). Weak no-op default -- software-injected lines (the doorbell) need no
@@ -371,6 +414,28 @@ void arch_irq_unmask(int line)
     // reconfigure can't glitch in the controller's transient state (C6 TRM section 1.6.3.2:
     // configure with MIE cleared + a FENCE). No-op for injected lines.
     arch_rv_hw_unmask(line);
+    // Latch-and-coalesce: a raise taken on this software line while it was masked
+    // redelivers now through the doorbell. The raise sets mip.SSIP with MIE=0, so it
+    // fires at arch_irq_restore -- the normal ISR path, not a direct post.
+    if ((g_irq_pending & (1u << line)) != 0)
+    {
+        g_irq_pending = g_irq_pending & ~(1u << line);
+        g_inject_line = line;
+        arch_rv_inject_deliver(line);
+    }
+    arch_irq_restore(s);
+}
+
+void arch_irq_clear_pending(int line)
+{
+    if (line < 0 or line >= 32)
+    {
+        return;
+    }
+    // Software-inject lines only: drop the latched raise. A real PLIC line has no
+    // software pending to clear here (native no-op).
+    arch_irq_state_t s = arch_irq_save();
+    g_irq_pending = g_irq_pending & ~(1u << line);
     arch_irq_restore(s);
 }
 
@@ -397,7 +462,10 @@ void arch_irq_inject(int irq)
     }
     if ((g_irq_masked & (1u << irq)) != 0)
     {
-        return; // masked line: drop the raise (matches the sim/ARM/RX semantics)
+        // Latch-and-coalesce: a masked line latches the raise one-deep; it
+        // redelivers through the doorbell at unmask, it is NOT dropped.
+        g_irq_pending = g_irq_pending | (1u << irq);
+        return;
     }
     g_inject_line = irq; // set BEFORE the raise, so the trap sees it
     arch_rv_inject_deliver(irq);

@@ -145,7 +145,11 @@ SECTIONS
         __kickos_appdata_load_end = .;
     } > RAM AT > FLASH
 
-    .appbss (NOLOAD) : ALIGN(4)
+    /* Pin the base to the window (start + SIZEOF .appdata), NOT the default location
+       counter: an EMPTY .appdata (an app with no initialized globals -- the bench) does
+       not carry its ALIGN(_appdata_size) forward, so a defaulted .appbss falls back to
+       kernel-.bss-end, BELOW the granted window, and every app-global access faults. */
+    .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
     {
         *(.bss .bss.* COMMON)
         . = ALIGN(4);
@@ -201,6 +205,9 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 #if KICKOS_HAVE_MPU
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
        "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
+/* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */
+ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
+       "KickOS: .appbss placed below the app-data window base (empty .appdata alignment-drop regression)")
 /* Selector-mismatch guard. The inverted scheme captures the CLOSED KickOS-owned set
    into kernel .data/.bss and lets .appdata/.appbss catch the rest, so a broken selector
    shows up as an EMPTY KERNEL side (kernel writable state silently leaked into the app

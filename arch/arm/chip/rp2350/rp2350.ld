@@ -18,10 +18,13 @@
  * is the striped region used here as main RAM; the two 4 KiB non-striped banks at
  * 0x2008_0000/0x2008_1000 are left reserved (future per-core stacks).
  *
- * The armv8-m / PMSAv8 MPU backend is DEFERRED (see docs/design-rp2350.md). PMSAv8
- * uses RBAR/RLAR base+limit (non-pow2), so the pow2 app-window machinery of the
- * v6-M/v7-M PMSA chips (rp2040.ld .appdata) does NOT apply and is intentionally
- * omitted here; the enforcement layout lands with that backend.
+ * ENFORCEMENT (KICKOS_HAVE_MPU): the armv8-m / PMSAv8 MPU backend
+ * (arch/arm/common/arch_arm_pmsav8.cc, docs/design-rp2350-mpu-armv8m.md). PMSAv8 uses
+ * RBAR/RLAR base+limit at a 32-byte granule (NON-pow2, like SYSMPU), so the app-data
+ * window is just two 32-byte-aligned symbols -- NONE of the pow2 .appdata machinery of
+ * the v6-M/v7-M PMSA chips (rp2040.ld ALIGN(pow2)) is needed. The writable state is
+ * split KERNEL vs app exactly as mk64f.ld (the other byte-granular backend). A
+ * non-enforcement build (KICKOS_HAVE_MPU=0) reserves no window and is unchanged.
  */
 
 ENTRY(Reset_Handler)
@@ -34,6 +37,18 @@ MEMORY
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 8K;
+
+/* App-owned globals get their own MPU region so an unprivileged thread reaches its own
+   .data/.bss but not the kernel's. PMSAv8 is 32-byte granular with an arbitrary base
+   (no pow2 rule), so the window base need only be 32-byte aligned and the size a
+   32-byte multiple; the app data is padded up to _appdata_size for a fixed grant.
+   Overridable (a full-C++ build needs a larger heap + libstdc++/unwind window). */
+#if KICKOS_HAVE_MPU
+#ifndef KICKOS_APPDATA_SIZE
+#define KICKOS_APPDATA_SIZE 128K
+#endif
+_appdata_size = KICKOS_APPDATA_SIZE;
+#endif
 
 SECTIONS
 {
@@ -99,15 +114,80 @@ SECTIONS
     .kickos_init_tables : ALIGN(4)
     {
         __kickos_copy_table_start = .;
+#if KICKOS_HAVE_MPU
+        LONG(LOADADDR(.appdata)); LONG(ADDR(.appdata)); LONG(SIZEOF(.appdata));
+#endif
         LONG(LOADADDR(.data));    LONG(ADDR(.data));    LONG(SIZEOF(.data));
         __kickos_copy_table_end = .;
         __kickos_zero_table_start = .;
+#if KICKOS_HAVE_MPU
+        /* Zero the whole granted window past the loaded .appdata (the pre-.appbss
+           alignment gap, .appbss, and the pad) so no stale read-back in the app grant. */
+        LONG(__kickos_appdata_load_end); LONG(__kickos_appdata_end - __kickos_appdata_load_end);
+#endif
         LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
         __kickos_zero_table_end = .;
     } > FLASH
 
     _sidata = LOADADDR(.data);
 
+#if KICKOS_HAVE_MPU
+    /* Enforcement layout (mirrors mk64f.ld, the other byte-granular backend). Writable
+       state is split KERNEL vs app with an INVERTED selector: the CLOSED KickOS-owned
+       set (kernel/arch/chip/lib) is captured FIRST into kernel .data/.bss; the appdata
+       catch-alls that follow take EVERYTHING ELSE (app objects + toolchain runtime), so
+       an unmatched archive lands app-side (reachable), never kernel-side (faults). The
+       `archive:member` colon syntax is used (this binutils does not match archive
+       members inside EXCLUDE_FILE). PMSAv8 is 32-byte granular with an arbitrary base,
+       so the app window needs no pow2 base -- it is simply placed above kernel data. */
+    .data : ALIGN(4)
+    {
+        _sdata = .;
+        *libkickos_kernel.a:*(.data .data.*)
+        *libkickos_arch_armv7m.a:*(.data .data.*)
+        *libkickos_chip_rp2350.a:*(.data .data.*)
+        *libkickos_lib.a:*(.data .data.*)
+        . = ALIGN(4);
+        _edata = .;
+    } > RAM AT > FLASH
+
+    .bss (NOLOAD) : ALIGN(4)
+    {
+        _sbss = .;
+        *libkickos_kernel.a:*(.bss .bss.*)
+        *libkickos_arch_armv7m.a:*(.bss .bss.*)
+        *libkickos_chip_rp2350.a:*(.bss .bss.*)
+        *libkickos_lib.a:*(.bss .bss.*)
+        *libkickos_kernel.a:*(COMMON)
+        *libkickos_arch_armv7m.a:*(COMMON)
+        *libkickos_chip_rp2350.a:*(COMMON)
+        *libkickos_lib.a:*(COMMON)
+        . = ALIGN(4);
+        _ebss = .;
+    } > RAM
+
+    /* App-granted RW window: all remaining .data/.bss/COMMON (app + runtime). .appdata
+       is loaded from flash; .appbss + the pad are zeroed (no stale read-back). */
+    .appdata : ALIGN(32)
+    {
+        __kickos_appdata_start = .;
+        *(.data .data.*)
+        . = ALIGN(4);
+        __kickos_appdata_load_end = .;
+    } > RAM AT > FLASH
+
+    /* Pin the base to the window (start + SIZEOF .appdata), NOT the location counter: an
+       EMPTY .appdata (an app with no initialized globals) does not carry the section
+       ALIGN forward, so a defaulted .appbss would fall back to kernel-.bss-end. */
+    .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
+    {
+        *(.bss .bss.* COMMON)
+        . = ALIGN(4);
+        _appdata_used_end = .;
+        . = __kickos_appdata_start + _appdata_size; /* pad the granted window */
+        __kickos_appdata_end = .;
+    } > RAM
+#else
     .data : ALIGN(4)
     {
         _sdata = .;
@@ -124,6 +204,7 @@ SECTIONS
         . = ALIGN(4);
         _ebss = .;
     } > RAM
+#endif
 
     . = ALIGN(32);
     __kickos_ram_start = .;
@@ -140,6 +221,20 @@ SECTIONS
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
+
+#if KICKOS_HAVE_MPU
+/* App globals must fit the granted window. If this trips, raise KICKOS_APPDATA_SIZE. */
+ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
+       "KickOS: app .data/.bss overflow _appdata_size (raise KICKOS_APPDATA_SIZE)")
+/* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */
+ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
+       "KickOS: .appbss placed below the app-data window base (empty .appdata alignment-drop regression)")
+/* Selector-mismatch guard: the inverted scheme leaves an EMPTY KERNEL side if the
+   closed-set archive selector matched nothing (renamed lib?). An empty .appdata is
+   legitimate (a minimal app), so the loud signal is an empty kernel .bss. */
+ASSERT(_ebss > _sbss,
+       "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
+#endif
 
 /* The vector table (and thus the initial SP/PC the bootrom reads) must sit at the
    flash image base, and the IMAGE_DEF block must be within the first 4 KiB. */

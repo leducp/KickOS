@@ -108,6 +108,18 @@ PendSV_Handler:
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
     pop     {r0, lr}                /* restore EXC_RETURN */
 #endif
+    /* Deferred MPU commit: program the incoming thread's regions now that the
+       physical PSP/register swap is done -- atomically with the switch, NOT eagerly
+       in switch_to (shared seam, see arch_arm_common.cc / design-mpu-commit-deferred).
+       Eager apply would run the OUTGOING thread under the incoming region set until
+       PendSV fires -> a fault on its own stack. Callee regs (r4-r11) survive the call
+       (AAPCS); r0-r3/r12 are reloaded from the HW frame on exception return; lr holds
+       EXC_RETURN and must be preserved across the bl (r0 pad keeps MSP 8-byte aligned).
+       Resolves to the weak PMSAv7 commit (F411/XMC) or a chip's strong override (K64F
+       SYSMPU); a no-MPU board gets the empty weak commit. */
+    push    {r0, lr}
+    bl      kickos_arch_mpu_commit
+    pop     {r0, lr}
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
 
 /* ------------------------------------------------------------------------- */

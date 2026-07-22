@@ -89,6 +89,9 @@ namespace
     constexpr int kSoftIrqLines = 32;
     volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     volatile int g_inject_line = -1;
+    // bit set = a raise landed on this soft line while masked (latched one-deep,
+    // coalesced). Redelivered through the SWINT2 doorbell at unmask.
+    volatile uint32_t g_irq_pending = 0;
 
     // Build-only MPU wedge localizer (DEFAULT OFF: -DKICKOS_RX_MPU_TRACE=1). Raw
     // polled SCI6 byte, bounded spin, touching no ring or global -- safe from ISR and
@@ -500,9 +503,44 @@ void arch_timer_disarm(void)
 // supervisor field. Enforcement therefore reduces to: a no-access background
 // (MPBAC=0) so a user thread faults everywhere it has no explicit region, plus
 // the running thread's regions loaded into the eight RSPAGEn/REPAGEn slots.
+//
+// Deferred-commit seam (docs/design-mpu-commit-deferred.md): arch_mpu_apply only
+// STASHES the incoming set; kickos_arch_mpu_commit programs the RSPAGEn/REPAGEn slots
+// from the SWINT switch epilogue (switch.S, kickos_rx_restore) AFTER the physical
+// register/PSW swap. Eager apply on RX's deferred SWINT switch would load the incoming
+// region set while the OUTGOING user thread is still physically running -> it faults on
+// its own stack. Name + semantics match the ARM seam (arch_arm_common.cc); RX is its
+// own arch lib, so the stash is local (no cross-arch symbol sharing).
+#if KICKOS_HAVE_MPU
+namespace
+{
+    struct arch_mpu_region g_pend_regions[MPU_REGION_COUNT];
+    size_t g_pend_count = 0;
+}
+
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
-#if KICKOS_HAVE_MPU
+    if (n > MPU_REGION_COUNT)
+    {
+        n = MPU_REGION_COUNT;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        g_pend_regions[i] = regions[i];
+    }
+    g_pend_count = n;
+}
+
+// Program the RX MPU from the stash. Called from the SWINT switcher (kickos_rx_pendsw
+// -> kickos_rx_restore, and the arch_start first-entry path) after the physical swap.
+// That handler runs with PSW.I=0, so the register writes are already atomic vs
+// interrupts; the arch_irq_save/restore (IPL) bracket is nested-safe insurance and
+// matches the seam contract. regions/n are bound to the stash so the body is verbatim.
+void kickos_arch_mpu_commit(void)
+{
+    arch_irq_state_t const irq = arch_irq_save();
+    struct arch_mpu_region const* const regions = g_pend_regions;
+    size_t const n = g_pend_count;
     if (g_in_isr)
     {
         rx_mpu_mark('['); // localizer: entering the MPU register writes from ISR ctx
@@ -594,11 +632,17 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     {
         rx_mpu_mark(']'); // localizer: MPU writes + readback barrier completed
     }
+    arch_irq_restore(irq);
+}
 #else
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+{
     (void)regions;
     (void)n;
-#endif
 }
+// PendSV/SWINT epilogue calls this unconditionally; provide an empty no-MPU commit.
+void kickos_arch_mpu_commit(void) {}
+#endif
 
 size_t arch_mpu_min_region(void)
 {
@@ -624,18 +668,26 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 
 
 // --- Interrupt controller (ICUD) --------------------------------------------
+// Self-bracketed (arch_irq_save/restore) so the soft-line g_irq_masked/g_irq_pending
+// RMWs are atomic against a device ISR regardless of the caller: kos_irq_inject/unmask
+// reach here without an IrqLock (syscall.cc), and a bare RMW preempted mid-update would
+// write back a stale mask -> re-enable a mid-service line -> phantom wake.
 void arch_irq_mask(int line)
 {
     if (line < 0)
     {
         return;
     }
+    arch_irq_state_t s = arch_irq_save();
     if (line < kSoftIrqLines)
     {
         g_irq_masked |= (1u << static_cast<unsigned>(line));
-        return;
     }
-    icu_ier_set(line, false);
+    else
+    {
+        icu_ier_set(line, false);
+    }
+    arch_irq_restore(s);
 }
 
 void arch_irq_unmask(int line)
@@ -644,17 +696,50 @@ void arch_irq_unmask(int line)
     {
         return;
     }
+    arch_irq_state_t s = arch_irq_save();
     if (line < kSoftIrqLines)
     {
         g_irq_masked &= ~(1u << static_cast<unsigned>(line));
+        // Latch-and-coalesce: a raise taken on this soft line while masked
+        // redelivers now through SWINT2 -- the normal ISR path, not a direct post.
+        if ((g_irq_pending & (1u << static_cast<unsigned>(line))) != 0)
+        {
+            g_irq_pending &= ~(1u << static_cast<unsigned>(line));
+            g_inject_line = line;
+            reg8(ICU_SWINT2R) = SWINT2R_SWINT2;
+        }
+    }
+    else
+    {
+        // Program the source priority BELOW the kernel lock level before enabling, so
+        // a device line cannot preempt an IrqLock-held section (the armv7m NVIC_IPR
+        // care). IPR is shared per the ICU source table, so the index comes from
+        // vector_to_ipr -- NOT the vector (IR/IER stay vector-indexed via icu_ier_set).
+        // A real ICU line is preserve-correct already: IR latches a request while
+        // IER=0, so re-enabling here fires a raise taken while masked.
+        reg8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
+        icu_ier_set(line, true);
+    }
+    arch_irq_restore(s);
+}
+
+void arch_irq_clear_pending(int line)
+{
+    if (line < 0)
+    {
         return;
     }
-    // Program the source priority BELOW the kernel lock level before enabling, so
-    // a device line cannot preempt an IrqLock-held section (the armv7m NVIC_IPR
-    // care). IPR is shared per the ICU source table, so the index comes from
-    // vector_to_ipr -- NOT the vector (IR/IER stay vector-indexed via icu_ier_set).
-    reg8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
-    icu_ier_set(line, true);
+    arch_irq_state_t s = arch_irq_save();
+    if (line < kSoftIrqLines)
+    {
+        g_irq_pending &= ~(1u << static_cast<unsigned>(line));
+    }
+    else
+    {
+        // Real ICU line: drop the latched request flag (IR is vector-indexed).
+        reg8(ICU_IR_BASE + static_cast<unsigned>(line)) = 0;
+    }
+    arch_irq_restore(s);
 }
 
 void arch_irq_inject(int irq)
@@ -665,13 +750,19 @@ void arch_irq_inject(int irq)
     {
         return;
     }
-    // A masked line drops the raise (the proven sim semantics).
+    arch_irq_state_t s = arch_irq_save();
+    // Latch-and-coalesce: a raise on a masked soft line latches one-deep
+    // (redelivered at unmask), it is NOT dropped.
     if ((g_irq_masked & (1u << static_cast<unsigned>(irq))) != 0)
     {
-        return;
+        g_irq_pending |= (1u << static_cast<unsigned>(irq));
     }
-    g_inject_line = irq;                // recorded BEFORE the doorbell (the ISR reads it)
-    reg8(ICU_SWINT2R) = SWINT2R_SWINT2; // ring SWINT2 -> kickos_rx_swint2 dispatches it
+    else
+    {
+        g_inject_line = irq;                // recorded BEFORE the doorbell (the ISR reads it)
+        reg8(ICU_SWINT2R) = SWINT2R_SWINT2; // ring SWINT2 -> kickos_rx_swint2 dispatches it
+    }
+    arch_irq_restore(s);
 }
 
 // --- Idle -------------------------------------------------------------------

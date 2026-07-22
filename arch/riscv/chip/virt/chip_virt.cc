@@ -77,13 +77,17 @@ namespace
 
     // --- RISC-V semihosting (QEMU implements the host side; the magic sequence is
     //     slli x0,x0,0x1f / ebreak / srai x0,x0,7 -- must NOT be compressed). ---
+    // .balign 16 (not 4): QEMU's magic-sequence check reads the words at ebreak-4 and
+    // ebreak+4; if the 12-byte sequence straddles a 4K page it fails to recognize the
+    // call and the ebreak traps as a plain breakpoint. 16 divides 4096, so the block
+    // never crosses a page. (A layout shift can otherwise land srai on a page start.)
     inline long semihost(long op, void* arg)
     {
         register long a0 __asm("a0") = op;
         register void* a1 __asm("a1") = arg;
         __asm volatile(".option push\n"
                        ".option norvc\n"
-                       ".balign 4\n"
+                       ".balign 16\n"
                        "slli x0, x0, 0x1f\n"
                        "ebreak\n"
                        "srai x0, x0, 7\n"

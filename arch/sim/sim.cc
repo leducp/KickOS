@@ -88,10 +88,15 @@ namespace
 
         // --- emulated device IRQ hand-off (async-signal to ISR) ---
         volatile sig_atomic_t pending_irq = -1;
-        // bit L set => line L suppressed. All lines start MASKED at reset (the
+        // bit L set => line L masked (a raise latches, see irq_pending). All lines
+        // start MASKED at reset (the
         // arch.h reset contract, matching the NVIC/RX silicon posture); a driver
         // unmasks its line (arch_irq_unmask, or irq_register) before use.
         volatile sig_atomic_t irq_masked = static_cast<sig_atomic_t>(0xFFFFFFFFu);
+        // bit L set => a raise landed on line L while it was masked (latched one-
+        // deep, coalesced). Redelivered through the ISR path at unmask -- mirrors
+        // the NVIC holding ISPR pending independently of ISER.
+        volatile sig_atomic_t irq_pending = 0;
 
         // --- emulated buffered-console TX-empty interrupt source ---
         // The console ring drains through a real SIGUSR1 delivery (isr_depth++ ->
@@ -1043,13 +1048,19 @@ enum
     kSimIrqLines = 32
 };
 
+// Self-bracketed (arch_irq_save/restore) so the irq_masked/irq_pending RMWs are
+// atomic against a device ISR regardless of the caller: kos_irq_inject/unmask reach
+// here without an IrqLock (syscall.cc), and a bare RMW preempted mid-update would
+// write back a stale mask -> re-enable a mid-service line -> phantom wake.
 void arch_irq_mask(int line)
 {
     if (line < 0 or line >= kSimIrqLines)
     {
         return;
     }
+    arch_irq_state_t s = arch_irq_save();
     sim().irq_masked |= static_cast<int>(1u << line);
+    arch_irq_restore(s);
 }
 
 void arch_irq_unmask(int line)
@@ -1058,19 +1069,50 @@ void arch_irq_unmask(int line)
     {
         return;
     }
+    arch_irq_state_t s = arch_irq_save();
     sim().irq_masked &= static_cast<int>(~(1u << line));
+    // Latch-and-coalesce: a raise taken while the line was masked redelivers now,
+    // through the ISR path (raise(SIGUSR1) -> on_sigusr1 -> kickos_isr_irq), the way
+    // the NVIC pend-fires on enable. The raise pends under this bracket (SIGUSR1
+    // blocked) and lands at its release -- the outer IrqLock release if the caller
+    // holds one -- in ISR context, never a direct post here.
+    if (static_cast<unsigned>(sim().irq_pending) & (1u << line))
+    {
+        sim().irq_pending &= static_cast<int>(~(1u << line));
+        sim().pending_irq = line;
+        raise(SIGUSR1);
+    }
+    arch_irq_restore(s);
+}
+
+void arch_irq_clear_pending(int line)
+{
+    if (line < 0 or line >= kSimIrqLines)
+    {
+        return;
+    }
+    arch_irq_state_t s = arch_irq_save();
+    sim().irq_pending &= static_cast<int>(~(1u << line));
+    arch_irq_restore(s);
 }
 
 void arch_irq_inject(int irq)
 {
-    // A masked line's raise is dropped (level-coalesced): the driver re-arms by
-    // unmasking at irq_ack, and the next raise delivers.
+    arch_irq_state_t s = arch_irq_save();
+    // Latch-and-coalesce: a raise on a masked in-range line sets the one-deep pending
+    // bit (redelivered at unmask), NOT dropped. An unmasked line -- or a never-maskable
+    // line >= kSimIrqLines -- delivers now (the raise pends under this bracket and
+    // lands at its release, in ISR context).
     if (irq >= 0 and irq < kSimIrqLines and (static_cast<unsigned>(sim().irq_masked) & (1u << irq)))
     {
-        return;
+        sim().irq_pending |= static_cast<int>(1u << irq);
     }
-    sim().pending_irq = irq;
-    raise(SIGUSR1); // delivered synchronously on this thread -> ISR context
+    else
+    {
+        sim().pending_irq = irq;
+        raise(SIGUSR1);
+    }
+    arch_irq_restore(s);
 }
 
 // --- Idle -------------------------------------------------------------------

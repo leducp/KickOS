@@ -18,6 +18,8 @@
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
 
+#include <kickos/sys/abi.h> // kos_pstate_t / KOS_PSTATE_* (clock-select)
+
 #include <stdint.h>
 
 namespace kickos
@@ -116,14 +118,31 @@ namespace
     constexpr uintptr_t UART0_BASE = 0x4006A000;
     constexpr uintptr_t UART0_BDH = UART0_BASE + 0x00; // 8-bit
     constexpr uintptr_t UART0_BDL = UART0_BASE + 0x01;
+    constexpr uintptr_t UART0_C1 = UART0_BASE + 0x02;
     constexpr uintptr_t UART0_C2 = UART0_BASE + 0x03;
     constexpr uintptr_t UART0_S1 = UART0_BASE + 0x04;
+    constexpr uintptr_t UART0_S2 = UART0_BASE + 0x05;
+    constexpr uintptr_t UART0_C3 = UART0_BASE + 0x06;
     constexpr uintptr_t UART0_D = UART0_BASE + 0x07;
     constexpr uintptr_t UART0_C4 = UART0_BASE + 0x0A;
+    constexpr uintptr_t UART0_C5 = UART0_BASE + 0x0B;
+    constexpr uintptr_t UART0_MODEM = UART0_BASE + 0x0D;
+    constexpr uintptr_t UART0_IR = UART0_BASE + 0x0E;
+    constexpr uintptr_t UART0_PFIFO = UART0_BASE + 0x10;
+    constexpr uintptr_t UART0_CFIFO = UART0_BASE + 0x11;
+    constexpr uintptr_t UART0_C7816 = UART0_BASE + 0x18;
     constexpr uint8_t C2_TE = 1u << 3;
     constexpr uint8_t C2_RE = 1u << 2;
     constexpr uint8_t C2_TIE = 1u << 7; // transmit-interrupt enable: IRQ while S1.TDRE
     constexpr uint8_t S1_TDRE = 1u << 7;
+    constexpr uint8_t S1_TC = 1u << 6;  // transmit complete: shifter idle (not just TDRE)
+    // CFIFO command bits (K64 RM 60.3.9): write 1 to flush the TX / RX FIFO buffer.
+    constexpr uint8_t CFIFO_RXFLUSH = 1u << 6;
+    constexpr uint8_t CFIFO_TXFLUSH = 1u << 7;
+    // MODEM.TXCTSE (K64 RM 60.3.13): CTS hardware flow control -- if a driver sets it,
+    // the polled writer waits forever on an absent CTS and drops every byte (SILENT
+    // LOSS). Named for the scramble test; reclaim clears the whole register (MODEM=0).
+    constexpr uint8_t MODEM_TXCTSE = 1u << 0;
 
     // NVIC: UART0 status sources (RX/TX combined) = IRQ 31 (UART0 error = 32).
     // Confirm against the K64 RM interrupt-vector-assignments table.
@@ -191,6 +210,42 @@ namespace
         return ~down; // 0xFFFF... - down == elapsed
     }
 
+    // --- arch_clock_now epoch anchor + clock-select re-anchor (B2/S2) -----------
+    // ns = base_ns + (raw_ticks - base_ticks)*mult, mult = reciprocal of the PIT (bus)
+    // clock. The SOLE writer of `mult` is clock_anchor_init (boot) and arch_cpu_clock_set
+    // (the re-anchor at the rate edge); arch_clock_now only READS. WHY sole-writer: the
+    // old lazy `if (hz != cached_hz) recompute` inside arch_clock_now, if it survived,
+    // would let a now() called between the SystemCoreClock write and the re-anchor
+    // recompute mult against the new bus clock and bake the phantom jump into base_ns.
+    uint64_t g_clk_base_ns = 0;
+    uint64_t g_clk_base_ticks = 0;
+    uint64_t g_clk_mult = 0;
+
+    uint64_t clock_recip(uint32_t hz)
+    {
+        return ((static_cast<uint64_t>(1000000000ull) << 32) + (hz >> 1)) / hz;
+    }
+
+    uint64_t clock_ns_from(uint64_t ticks)
+    {
+        uint64_t delta = ticks - g_clk_base_ticks;
+        uint64_t a = delta >> 32, b = delta & 0xFFFFFFFFull;
+        uint64_t c = g_clk_mult >> 32, d = g_clk_mult & 0xFFFFFFFFull;
+        return g_clk_base_ns + ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    }
+
+    void clock_anchor_init()
+    {
+        uint32_t const hz = SystemCoreClock / BUS_DIV; // PIT is clocked by the bus clock
+        if (hz == 0)
+        {
+            return;
+        }
+        g_clk_mult = clock_recip(hz);
+        g_clk_base_ticks = 0; // BOOT-IDENTICAL: now = raw_ticks*mult (the old first read)
+        g_clk_base_ns = 0;
+    }
+
     void wdog_disable()
     {
         // WDOG resets the part ~238 ms after reset if left enabled, so this runs
@@ -236,6 +291,11 @@ namespace
     // bring-up (e.g. the EXT mux switched but PLL LOCK timed out) would leave the
     // core running at 50/120 MHz while all software believes 20.97 MHz -- and would
     // leave CLKS=EXT armed so a late-arriving reference completes the switch mid-run.
+    // This is the ONE place the "return the truthful landed Hz" contract is ASSUMED
+    // rather than confirmed: FEI is the internal-reference reset posture (no external
+    // dependency, so it cannot itself fail to land), the two mcg_wait results below
+    // are best-effort and intentionally discarded, and the caller unconditionally sets
+    // SystemCoreClock = 20971520.
     bool fail_to_fei()
     {
         r8(MCG_C6) = 0;             // clear PLLS + VDIV
@@ -248,14 +308,11 @@ namespace
 
     // FEI -> FBE -> PBE -> PEE off the FRDM's 50 MHz external clock. On any failure
     // after the external switch is requested, restores the FEI posture (fail_to_fei)
-    // so SystemCoreClock stays the truth.
-    bool clock_init()
+    // so SystemCoreClock stays the truth. Does NOT touch SIM_CLKDIV1 or SystemCoreClock
+    // -- the caller widens the dividers before the rise and records the landed Hz, so
+    // this walk is reused by boot (clock_init) and the runtime up-retune (cpu_clock_set).
+    bool mcg_to_pee()
     {
-        // Set the bus dividers BEFORE the core scales up (RM 26: widen dividers
-        // first, else bus/flash overrun when MCGOUTCLK jumps to 120 MHz). Safe now
-        // because we are still on the ~20.97 MHz FEI clock.
-        r32(SIM_CLKDIV1) = CLKDIV1_120MHZ;
-
         // 50 MHz external clock into EXTAL0 (EREFS0=0 = bypass the crystal osc).
         r8(OSC0_CR) = OSC0_CR_ERCLKEN;
         r8(MCG_C2) = C2_RANGE_VHF;
@@ -290,9 +347,21 @@ namespace
         {
             return fail_to_fei();
         }
-
-        SystemCoreClock = 120000000u;
         return true;
+    }
+
+    bool clock_init()
+    {
+        // Set the bus dividers BEFORE the core scales up (RM 26: widen dividers
+        // first, else bus/flash overrun when MCGOUTCLK jumps to 120 MHz). Safe now
+        // because we are still on the ~20.97 MHz FEI clock.
+        r32(SIM_CLKDIV1) = CLKDIV1_120MHZ;
+        if (mcg_to_pee())
+        {
+            SystemCoreClock = 120000000u;
+            return true;
+        }
+        return false; // fail_to_fei parked us on FEI; SystemCoreClock stays 20.97 MHz
     }
 
     void uart0_init()
@@ -382,7 +451,8 @@ void arch_init(void)
     // 120 MHz BEFORE UART (baud) + SysTick are programmed; on failure both fall
     // back cleanly to the 20.97 MHz FEI clock (SystemCoreClock unchanged).
     clock_init();
-    pit_clock_init(); // monotonic time base (see pit_clock_init note; replaces DWT)
+    pit_clock_init();    // monotonic time base (see pit_clock_init note; replaces DWT)
+    clock_anchor_init(); // set the arch_clock_now mult ONCE from the final clock (B2)
     uart0_init();
     kickos_armv7m_init();
 }
@@ -394,30 +464,132 @@ void arch_init(void)
 // runs only when the clock changes at boot.
 uint64_t arch_clock_now(void)
 {
-    uint32_t pit_hz = SystemCoreClock / BUS_DIV; // PIT is clocked by the bus clock
-    static uint64_t cached_hz = 0;
-    static uint64_t mult = 0;
-    if (pit_hz != cached_hz)
-    {
-        if (pit_hz == 0)
-        {
-            return 0;
-        }
-        mult = ((static_cast<uint64_t>(1000000000ull) << 32) + (pit_hz >> 1)) / pit_hz;
-        cached_hz = pit_hz;
-    }
-    uint64_t ticks = pit_ticks();
-    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
-    uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFull;
-    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    // Pure epoch read (B2): the mult is written ONLY by clock_anchor_init (boot) and the
+    // arch_cpu_clock_set re-anchor -- never recomputed here -- so a read in the window
+    // around a retune can never bake the phantom rate jump into the anchor.
+    return clock_ns_from(pit_ticks());
 }
 
-// SYSMPU backend: overrides the weak ARM PMSA arch_mpu_apply (K64F has no ARM
-// core MPU). Reloads the running thread's per-thread USER grants (RGD1..) on every
-// switch-in; supervisor + DMA stay covered by RGD0. Gated on KICKOS_HAVE_MPU.
-void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+// Clock-select MECHANISM (arch.h): a staged fixed set. MAX/MID land on PEE (120 MHz);
+// LOW parks on the FEI internal clock (~20.97 MHz). Returns the LANDED core Hz -- a
+// failed relock (fail_to_fei) still MOVED the clock and returns the truthful ~20.97 MHz
+// (never 0), so cpu_clock_set runs the coherence tail (B1). The generic tail re-derives
+// the baud + re-arms SysTick. Called privileged, IRQs already masked. PIT is bus =
+// core/BUS_DIV, so the monotonic clock's rate moves and MUST be re-anchored here.
+uint32_t arch_cpu_clock_set(uint32_t target)
 {
+    uint32_t const previous = SystemCoreClock;
+    // Achievable set is {120 MHz PEE, 20.97 MHz FEI}; MID rounds UP to MAX (no distinct
+    // mid point on this staged chip). The truthful landed Hz is the return value.
+    uint32_t want = 120000000u;
+    if (static_cast<kos_pstate_t>(target) == KOS_PSTATE_LOW)
+    {
+        want = 20971520u;
+    }
+    if (want == previous)
+    {
+        return previous;
+    }
+
+    // Re-anchor capture AT the edge: history priced at the OLD mult before it moves.
+    uint64_t const t0 = pit_ticks();
+    uint64_t const ns0 = clock_ns_from(t0);
+
+    uint32_t landed;
+    if (want > previous)
+    {
+        // RISE (FEI -> PEE): widen the bus/flash dividers BEFORE MCGOUTCLK climbs (RM
+        // 26; the flash divider /5 keeps FLASHCLK <= 25 MHz) -- the flash-WS-before-rise
+        // discipline for this part. Then walk FEI->FBE->PBE->PEE.
+        r32(SIM_CLKDIV1) = CLKDIV1_120MHZ;
+        if (mcg_to_pee())
+        {
+            landed = 120000000u;
+        }
+        else
+        {
+            landed = 20971520u; // relock failed -> parked on FEI (B1: truthful, tail runs)
+        }
+    }
+    else
+    {
+        // FALL (PEE -> FEI): drop the MCG first (fail_to_fei walks it back to the FEI
+        // reset posture). The /5 flash divider is safe at any lower core clock, so no
+        // post-fall divider relax is needed (leaving it wider never faults).
+        fail_to_fei();
+        landed = 20971520u;
+    }
+
+    SystemCoreClock = landed;
+
+    // Commit the NEW pricing -- the SOLE writer of mult (B2). base_ns holds history at
+    // old pricing; the staged MCG walk (the worst-case masked span, ~1 ms) is the only
+    // mispriced interval (frozen skew), bounded by folding the anchor to the edge.
+    // The three stores are protected against ISR/other-thread tearing by the caller's
+    // IrqLock, but NOT against a synchronous CPU fault (HardFault/NMI) landing between
+    // them whose handler reads arch_clock_now (e.g. panic_delay_ms) -- a few-instruction,
+    // panic-path-only window, accepted as-is (not hardened, to avoid over-engineering it).
+    uint32_t const bus = landed / BUS_DIV;
+    g_clk_base_ns = ns0;
+    g_clk_base_ticks = t0;
+    g_clk_mult = clock_recip(bus);
+    __asm volatile("" ::: "memory"); // pin the triple write order vs a later now() read
+    return landed;
+}
+
+// Clock-select console coherence (arch.h). UART0 is system-clocked, so its baud moves
+// with a clock-select and must be re-derived; and no byte may be mid-shift at the old
+// baud when the clock moves. Both run under the caller's IrqLock (see cpu_clock_set).
+void arch_console_flush_sync(void)
+{
+    // Wait for the shift register to fully empty (S1.TC), not merely the data register
+    // (S1.TDRE): TDRE leaves one byte still clocking out. Bounded like the sync writer.
+    uint32_t spin = 0;
+    while ((r8(UART0_S1) & S1_TC) == 0)
+    {
+        if (++spin > 1000000u)
+        {
+            return; // a wedged UART must not hang the retune (matches the sync writer)
+        }
+    }
+}
+
+void arch_console_retune(void)
+{
+    // Re-derive SBR + the 1/32 fine-adjust from the landed SystemCoreClock (120 MHz or
+    // the 20.97 MHz FEI point), as uart0_init does. The divisor write needs TX/RX
+    // disabled; TIE stays clear (the console ring re-primes it on the next write).
+    r8(UART0_C2) = 0;
+    uint32_t const baud = 115200u;
+    uint32_t const sbr = SystemCoreClock / (16u * baud);
+    uint32_t const brfa = (SystemCoreClock * 2u) / baud - sbr * 32u;
+    r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
+    r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
+    r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F);
+    r8(UART0_C2) = C2_TE | C2_RE;
+}
+
 #if KICKOS_HAVE_MPU
+// Shared pending-region stash written by the ARM-common weak arch_mpu_apply (stash-
+// only). K64F does NOT override arch_mpu_apply -- it uses that shared stash and
+// overrides only the commit -- so there is no duplicate arch_mpu_apply symbol.
+extern "C" size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out);
+
+// SYSMPU commit: STRONG override of the weak PMSAv7 kickos_arch_mpu_commit (K64F has
+// no ARM core MPU). Programs the running thread's per-thread USER grants (RGD1..) from
+// the shared stash; supervisor + DMA stay covered by RGD0. Called from the armv7m
+// PendSV epilogue AFTER the physical swap (deferred-commit seam) -- this closes on K64F
+// the same eager-apply race the PMSAv7 path closes on F411/XMC. cpsid brackets the
+// reprogram: the eager path ran under the caller's BASEPRI IrqLock (device band masked),
+// but PendSV is lowest-priority, so a device IRQ could otherwise preempt a half-written
+// (VLD-cleared) descriptor set.
+extern "C" void kickos_arch_mpu_commit(void)
+{
+    struct arch_mpu_region const* regions;
+    size_t const n = kickos_arm_mpu_pending(&regions);
+    uint32_t primask;
+    __asm volatile("mrs %0, primask" : "=r"(primask));
+    __asm volatile("cpsid i" ::: "memory");
     // One-time: make RGD0 a supervisor-only background. At reset RGD0 grants ALL
     // masters rwx over all memory; strip the core's USER access on BOTH masters so
     // a U-mode access then needs a per-thread RGD, while supervisor (the privileged
@@ -460,11 +632,9 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     }
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
-#else
-    (void)regions;
-    (void)n;
-#endif
+    __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
 }
+#endif
 
 // SYSMPU is byte-granular on a 32-byte page (SRTADDR/ENDADDR are addr[31:5]); a
 // window is exact iff base and base+size both land on a 32-byte boundary. Overrides
@@ -546,6 +716,47 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     *size = CONSOLE_TX_SIZE;
     *irq_line = UART0_RXTX_IRQ;
     return &k64_console_backend;
+}
+
+// Panic-path reclaim (console.cc D6): force UART0 back to a known polled-ready 8N1
+// TX channel after a userspace driver may have garbled EVERY writable register in its
+// granted window. Runs with IRQs masked, privileged; MUST be idempotent + re-entrant,
+// so it is straight-line ABSOLUTE stores only -- NO read-modify-write (an RMW on a
+// garbled value is not safe to repeat from a nested-fault re-entry; note this drops
+// the C2 |= TIE style used on the non-panic backend paths). Overrides the weak no-op
+// in console.cc.
+//
+// Reclaim depth = rewrite what uart0_init sets (BDH/BDL/C4/C1/C2) PLUS the registers
+// init leaves at reset default that a hostile driver can set to cause SILENT LOSS --
+// each cleared to 0 below with the failure it prevents. The clock gates (SIM_SCGC4
+// UART0 / SCGC5 PORTB) and pin mux (PORTB_PCR16/17) sit in SEPARATE privileged
+// peripherals OUTSIDE the UART0 window -> unreachable by the driver -> intact -> not
+// touched.
+void arch_console_reclaim(void)
+{
+    r8(UART0_C2) = 0;    // disable TX/RX/TIE so the driver stops; also lets the config
+                         // registers below (which require TE/RE clear) be rewritten
+    r8(UART0_C5) = 0;    // TDMAS/RDMAS: disable the peripheral's own DMA request enable
+    r8(UART0_MODEM) = 0; // TXCTSE=0: else the bounded polled writer waits forever on an
+                         // absent CTS and drops every byte -- the true silent-loss case
+    r8(UART0_C3) = 0;    // TXINV=0: an inverted TX line corrupts every framed byte
+    r8(UART0_S2) = 0;    // clear any driver-set line-polarity / config status bits
+    r8(UART0_IR) = 0;    // IREN=0: infrared modulation on the TX pin
+    r8(UART0_C7816) = 0; // ISO-7816 smartcard framing off
+    r8(UART0_PFIFO) = 0; // TX/RX FIFO disabled (single-datum mode, as at reset)
+    r8(UART0_CFIFO) = CFIFO_TXFLUSH | CFIFO_RXFLUSH; // flush any queued FIFO contents
+
+    // Re-derive baud from the live SystemCoreClock (as uart0_init): 120 MHz or the
+    // 20.97 MHz FEI fallback. BDH before BDL (BDL write latches the divisor).
+    uint32_t const baud = 115200u;
+    uint32_t const sbr = SystemCoreClock / (16u * baud);
+    uint32_t const brfa = (SystemCoreClock * 2u) / baud - sbr * 32u;
+    r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
+    r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
+    r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F);
+
+    r8(UART0_C1) = 0;       // 8N1, no loops/parity/wake
+    r8(UART0_C2) = C2_TE;   // TX enable only (the polled banner needs no RX)
 }
 
 // Kernel diagnostic LED = FRDM-K64F onboard RED (PTB22), active-low.

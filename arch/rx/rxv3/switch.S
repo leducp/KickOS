@@ -173,6 +173,19 @@ _kickos_rx_pendsw:
     /* Shared restore epilogue (also entered by arch_start). R0 = incoming frame. */
     .global _kickos_rx_restore
 _kickos_rx_restore:
+    /* Deferred MPU commit: program the incoming thread's regions now that the
+       physical swap (g_arch_current = incoming, R0 = incoming->sp) is complete --
+       atomically with the switch, NOT eagerly in switch_to (shared seam, see
+       arch_rxv3.cc / docs/design-mpu-commit-deferred.md). Runs before the frame is
+       popped and before RTE drops to user mode. R0 (=USP) survives the call (RX
+       psABI); the C function pushes BELOW the incoming frame. Reload R0 from
+       g_arch_current->sp afterward (defensive; matches the bench/telemetry hooks) --
+       every register in the frame is popped next, so the call's caller-saved
+       clobbers are harmless. */
+    bsr.a   _kickos_arch_mpu_commit
+    mov.l   #_g_arch_current, r15
+    mov.l   [r15], r15
+    mov.l   [r15], r0          /* R0 = incoming->sp (frame base for the pops) */
 #if defined(__RX_DFPU_INSNS__)
     /* Reload the DPFPU file first (it is the lowest part of the frame) -- reverse
        of the save: DPSW/DCMR/DECNT (DPOPM.L) then DR0-DR15 (DPOPM.D). */

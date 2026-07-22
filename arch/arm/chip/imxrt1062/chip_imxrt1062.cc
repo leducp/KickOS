@@ -33,6 +33,9 @@ namespace kickos
 extern "C"
 {
     void kickos_armv7m_init(void);
+    void kickos_armv7m_icache_enable(void); // arch/arm/armv7m/cache.cc
+    void kickos_armv7m_dcache_enable(void); // (pre-M4)
+    void kickos_arm_mpu_fixed_init(void);   // arch/arm/common (programs the fixed regions)
     void _boot_entry(void); // startup.S: sets MSP, jumps to Reset_Handler
 
     extern void (*__init_array_start[])();
@@ -41,13 +44,21 @@ extern "C"
     extern uint32_t g_isr_vector[];       // startup.S: vector table @ 0x6000_2000
     extern char __boot_image_length[];    // linker: on-flash image extent
 
-    // Core clock in Hz (CMSIS convention), owned by the chip. PLACEHOLDER: the
-    // CCM/PLL bring-up is deferred, so this does NOT reflect the true post-ROM core
-    // frequency (the boot ROM leaves the part at ~396-600 MHz). 24 MHz is a stand-in;
-    // being ~16x too low means SysTick periods computed from it are ~16x SHORT, so
-    // timed sleeps expire early. Set this from the real core-clock root once the CCM
-    // bring-up lands.
-    uint32_t SystemCoreClock = 24000000u;
+    // Core clock (AHB_CLK_ROOT feeding the Cortex-M7 / SysTick / DWT), Hz, CMSIS
+    // convention, owned by the chip. clock_init() is deferred, so KickOS inherits
+    // the boot ROM's CCM tree, NOT the reset default. RM (IMXRT1060RM rev3) Table 9-7
+    // "ROM Clock Setting" fixes that tree; Table 9-5 confirms 396 MHz is the default
+    // boot frequency (BOOT_FREQ=0, LPB_BOOT=0). Field-by-field from Table 9-7:
+    //   CCM_ANALOG_PLL_ARM = 0x80002042: LOCK|ENABLE, DIV_SELECT[6:0]=0x42=66
+    //     -> PLL_ARM = 24 MHz * 66 / 2 = 792 MHz (RM 14.8.1 PLL_ARM formula).
+    //   CCM_CACRR = 0x00000001: ARM_PODF[2:0]=1 -> /2 -> 396 MHz (RM 14.7.7).
+    //   CCM_CBCMR = 0x75AE8104: PRE_PERIPH_CLK_SEL[19:18]=0b11 -> divided PLL1 (RM 14.7.5).
+    //   CCM_CBCDR = 0x000A8200: PERIPH_CLK_SEL[25]=0 -> pre_periph; AHB_PODF[12:10]=0
+    //     -> /1 -> AHB_CLK_ROOT = 396 MHz (RM 14.7.4, clock tree Fig 14-2).
+    // Both timers count this clock, so 396 MHz makes SysTick (SYST_RVR from
+    // SystemCoreClock) and the DWT ns<->cycle math coherent. The old 24 MHz stand-in
+    // was ~16.5x low, so SysTick periods were ~16.5x short -> timed sleeps fired early.
+    uint32_t SystemCoreClock = 396000000u;
 }
 
 // ===========================================================================
@@ -249,13 +260,71 @@ namespace
     constexpr uint32_t CTRL_TE = 1u << 19;
     constexpr uint32_t CTRL_RE = 1u << 18;
 
-    // Reset UART clock root (CSCDR1 defaults, RM 14): pll3_80m / 1 = 80 MHz.
-    // ASSUMED for the first bring-up -- validate against the real UART root once
-    // the CCM bring-up lands (baud tracks this).
-    constexpr uint32_t UART_CLK_ROOT_HZ = 80000000u;
+    // LPUART clock root: 20 MHz. clock_init() is deferred (we inherit the tree the
+    // boot ROM / HalfKay left). The ROM's CCM handoff state is fixed: RM Table 9-7
+    // "ROM Clock Setting" sets CCM_CSCDR1 = 0x06490B03, i.e. UART_CLK_SEL=0 (bit 6 ->
+    // pll3_80m) and UART_CLK_PODF=0b000011 = divide-by-4 (RM 14.7.9). With PLL_USB1
+    // up (RM Table 9-7 CCM_ANALOG_PLL_USB1 = 0x8000_3040: LOCK|POWER|ENABLE, DIV_SELECT=0
+    // -> 480 MHz), pll3_80m = 480/6 = 80 MHz, so uart_clk_root = 80/4 = 20 MHz (clock
+    // tree RM Fig 14-3). This is why BOTH earlier guesses gave garbage: neither the
+    // reset-default 80 MHz (PODF ignored) nor 24 MHz (wrong mux) is what the ROM leaves.
+    constexpr uint32_t UART_CLK_ROOT_HZ = 20000000u;
 
     // NVIC: LPUART6 combined TX/RX = IRQ 25 (RM Table 4-2).
     constexpr int LPUART6_IRQ = 25;
+
+    inline volatile uint16_t& r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
+
+    // --- Watchdogs (RM ch.57 WDOG1/2, ch.58 RTWDOG). The RT1062 hands the app ARMED
+    // watchdogs: WDOG1/2 WMCR.PDE (reset 1) is a 16 s power-down counter, and the
+    // RTWDOG (WDOG3) resets to CS.EN=1 and the boot ROM RE-ENABLES it on exit (RM
+    // 58.4) with a short LPO timeout. KickOS services none of them, so the RTWDOG
+    // reset-loops the board (the banner reprints every timeout). Disable all three
+    // first thing at reset. ------------------------------------------------------
+    constexpr uintptr_t WDOG1_WMCR = 0x400B8008;
+    constexpr uintptr_t WDOG2_WMCR = 0x400D0008;
+    constexpr uintptr_t RTWDOG_CS = 0x400BC000;
+    constexpr uintptr_t RTWDOG_CNT = 0x400BC004;
+    constexpr uintptr_t RTWDOG_TOVAL = 0x400BC008;
+    constexpr uint32_t RTWDOG_UNLOCK = 0xD928C520u; // RM 58.3.2.2.1 unlock key
+    constexpr uint32_t RTWDOG_CS_EN = 1u << 7;
+    constexpr uint32_t RTWDOG_CS_RCS = 1u << 10; // reconfig-success flag
+
+    void watchdog_disable()
+    {
+        // WDOG1/2 main timer is WDE=0 (off) at reset; only the 16 s power-down counter
+        // needs clearing. 16-bit access ONLY (RM 57.8.1: a 32-bit access is illegal).
+        r16(WDOG1_WMCR) = 0;
+        r16(WDOG2_WMCR) = 0;
+        // RTWDOG: an app reconfig only takes effect >= 2.5 LPO(32 kHz) clocks (~76 us)
+        // after the ROM exits (RM 58.4); attempted earlier it is silently dropped. Spin
+        // past that window, then unlock + clear EN (IRQs masked across the 128-bus-clock
+        // window, TOVAL non-zero), and CONFIRM via CS.RCS -- retry if the write missed.
+        for (volatile uint32_t d = 0; d < 200000u; d++)
+        {
+        }
+        for (int tries = 0; tries < 8; tries++)
+        {
+            uint32_t primask;
+            __asm volatile("mrs %0, primask" : "=r"(primask));
+            __asm volatile("cpsid i" ::: "memory");
+            r32(RTWDOG_CNT) = RTWDOG_UNLOCK;
+            r32(RTWDOG_TOVAL) = 0x0000FFFFu;
+            r32(RTWDOG_CS) = r32(RTWDOG_CS) & ~RTWDOG_CS_EN;
+            __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
+            uint32_t spin = 0;
+            while ((r32(RTWDOG_CS) & RTWDOG_CS_RCS) == 0 and ++spin < 100000u)
+            {
+            }
+            if ((r32(RTWDOG_CS) & RTWDOG_CS_RCS) != 0)
+            {
+                break;
+            }
+            for (volatile uint32_t d = 0; d < 20000u; d++)
+            {
+            }
+        }
+    }
 
     void enable_fpu()
     {
@@ -271,6 +340,71 @@ namespace
     // 600 MHz CCM/ARM-PLL config is a follow-up; see the design doc.
     void clock_init() {}
 
+    // --- Monotonic clock: GPT1 free-running off the 24 MHz crystal oscillator ----
+    // (RM ch.52). The armv7m arch provides NO clock fallback: the DWT is debug-domain
+    // and unreliable on the M7 (lockable, absent under a debugger reset). We source
+    // GPT1 from ipg_clk_24M (CLKSRC=0b101 + EN_24M, RM Table 52-3), so the counter is
+    // fixed at 24 MHz and IMMUNE to any ARM-PLL retune (the 396->600 MHz follow-up) --
+    // no re-anchor on cpu_clock_set. Free-run 32-bit counter (RM 52.7.1.2 FRR=1),
+    // extended to 64-bit monotonic ns in software (wraps every 2^32/24e6 ~= 179 s;
+    // the scheduler reads far more often, and clocksoak validates multi-wrap).
+    constexpr uintptr_t GPT1_BASE = 0x401EC000;      // RM Table 3-3 (AIPS-2)
+    constexpr uintptr_t GPT1_CR = GPT1_BASE + 0x00;
+    constexpr uintptr_t GPT1_PR = GPT1_BASE + 0x04;
+    constexpr uintptr_t GPT1_SR = GPT1_BASE + 0x08;
+    constexpr uintptr_t GPT1_IR = GPT1_BASE + 0x0C;
+    constexpr uintptr_t GPT1_CNT = GPT1_BASE + 0x24; // RM 52.7.1: main counter (RO)
+    constexpr uint32_t CR_EN = 1u << 0;
+    constexpr uint32_t CR_ENMOD = 1u << 1;           // reset counter to 0 on enable
+    constexpr uint32_t CR_DBGEN = 1u << 2;           // keep counting in debug ...
+    constexpr uint32_t CR_WAITEN = 1u << 3;          // ... wait ...
+    constexpr uint32_t CR_DOZEEN = 1u << 4;          // ... doze ...
+    constexpr uint32_t CR_STOPEN = 1u << 5;          // ... and stop mode
+    constexpr uint32_t CR_CLKSRC_24M = 5u << 6;      // CLKSRC=0b101: 24 MHz osc
+    constexpr uint32_t CR_FRR = 1u << 9;             // free-run (roll at 0xFFFFFFFF)
+    constexpr uint32_t CR_EN_24M = 1u << 10;         // enable the 24 MHz osc input
+    constexpr uint32_t CR_SWR = 1u << 15;            // software reset (self-clears)
+    constexpr uintptr_t CCM_CCGR1 = 0x400FC06C;      // GPT1: CG10 [21:20], CG11 [23:22]
+    constexpr uint32_t CCGR1_GPT1 = (3u << 20) | (3u << 22); // bus + serial, on
+    constexpr uint32_t GPT_HZ = 24000000u;
+
+    uint32_t g_gpt_hi = 0;   // software high word; read/updated under the crit section
+    uint32_t g_gpt_last = 0;
+
+    uint64_t gpt_ticks()
+    {
+        // Called from thread and ISR context: the wrap-extend read must be atomic
+        // against a concurrent reader, so run it under the crit section.
+        arch_irq_state_t s = arch_irq_save();
+        uint32_t cur = r32(GPT1_CNT);
+        if (cur < g_gpt_last)
+        {
+            g_gpt_hi++;
+        }
+        g_gpt_last = cur;
+        uint64_t hi = g_gpt_hi;
+        arch_irq_restore(s);
+        return (hi << 32) | cur;
+    }
+
+    void gpt_clock_init()
+    {
+        r32(CCM_CCGR1) |= CCGR1_GPT1;   // clock GPT1 (bus + serial)
+        r32(GPT1_CR) = 0;               // CLKSRC only changes while EN=0 (RM 52.4)
+        r32(GPT1_CR) = CR_SWR;          // software reset
+        while ((r32(GPT1_CR) & CR_SWR) != 0)
+        {
+        }
+        r32(GPT1_IR) = 0;               // polled clock: no compare/rollover IRQs
+        r32(GPT1_SR) = 0x3Fu;           // W1C: clear any latched status
+        r32(GPT1_PR) = 0;               // PRESCALER=/1, PRESCALER24M=/1 -> 24 MHz
+        // Program all config with EN=0, then set EN last (RM 52.6.1).
+        uint32_t const cr = CR_CLKSRC_24M | CR_EN_24M | CR_FRR | CR_ENMOD
+                          | CR_DBGEN | CR_WAITEN | CR_DOZEEN | CR_STOPEN;
+        r32(GPT1_CR) = cr;
+        r32(GPT1_CR) = cr | CR_EN;
+    }
+
     void uart6_init()
     {
         r32(CCM_CCGR3) |= CCGR3_LPUART6; // clock LPUART6 (reset already enables it)
@@ -284,9 +418,13 @@ namespace
         r32(LPUART6_GLOBAL) = 0;
 
         // baud = uart_clk / ((OSR+1) * SBR). OSR=15 (16x oversample).
+        // Round SBR to nearest, NOT truncate: at the 20 MHz root the ideal divisor is
+        // 10.85, and truncation (->10 = 125000 baud, +8.5%) blows past receiver
+        // tolerance; nearest (->11 = 113636 baud, -1.36%) is in tolerance.
         uint32_t const baud = 115200u;
         uint32_t const osr = 15u;
-        uint32_t sbr = UART_CLK_ROOT_HZ / (baud * (osr + 1u));
+        uint32_t const div = baud * (osr + 1u);
+        uint32_t sbr = (UART_CLK_ROOT_HZ + (div / 2u)) / div;
         if (sbr == 0)
         {
             sbr = 1;
@@ -294,6 +432,30 @@ namespace
         r32(LPUART6_BAUD) = (osr << 24) | (sbr & 0x1FFFu);
         r32(LPUART6_CTRL) = CTRL_TE | CTRL_RE; // TIE stays clear; the ring primes it
     }
+
+#ifdef KICKOS_UART_BEACON
+    // Baud-beacon diagnostic (docs/design-teensy-rt1062.md bring-up note). Programs
+    // LPUART6 BAUD with a FIXED SBR (independent of UART_CLK_ROOT_HZ) and transmits
+    // 0x55 ('U', alternating bits) forever. Flash once, then sweep the host reader
+    // baud; the reader baud that reads clean 0x55 IS the on-wire baud, so
+    //   real_uart_clk = clean_reader_baud * (OSR+1) * BEACON_SBR = clean_reader_baud * 176.
+    // BEACON_SBR=11, OSR=15 (16x): at the RM-derived 20 MHz root this is 20e6/(16*11) =
+    // 113636 baud, which reads clean at host 115200 (-1.36%, within receiver tolerance).
+    constexpr uint32_t BEACON_SBR = 11u;
+    void uart6_beacon(void)
+    {
+        r32(LPUART6_CTRL) = 0;
+        r32(LPUART6_BAUD) = (15u << 24) | (BEACON_SBR & 0x1FFFu);
+        r32(LPUART6_CTRL) = CTRL_TE;
+        while (true)
+        {
+            while ((r32(LPUART6_STAT) & STAT_TDRE) == 0)
+            {
+            }
+            r32(LPUART6_DATA) = 0x55u;
+        }
+    }
+#endif
 
     // --- Buffered console TX backend (console_tx.h) ---
     int lp6_tx_slot_free(void) { return (r32(LPUART6_STAT) & STAT_TDRE) != 0; }
@@ -312,10 +474,69 @@ extern "C"
 
 void arch_init(void)
 {
+#if KICKOS_HAVE_MPU
+    // M7 XIP anti-speculation + L1 caches (ERR011573; docs/design-teensy-mpu-hang.md).
+    // ORDER IS LOAD-BEARING: the fixed MPU regions -- which mark the unbacked external
+    // Normal bands (FlexSPI beyond the 8 MiB image + the SEMC aperture) as Device, so
+    // the M7 cannot speculatively prefetch into an AHB slave that never responds -- must
+    // be LIVE BEFORE the cache is enabled, because a cache is what arms that speculation.
+    kickos_arm_mpu_fixed_init();
+    // I-cache is the config the fix was silicon-proven with. The D-cache is a PRE-M4 step,
+    // opt-in via -DKICKOS_IMXRT_DCACHE=1 until silicon-validated as the default (safe today:
+    // single-core, no DMA; the only coherency obligation arrives with M4-era DMA). TODO.md.
+    kickos_armv7m_icache_enable();
+#if defined(KICKOS_IMXRT_DCACHE) && KICKOS_IMXRT_DCACHE
+    kickos_armv7m_dcache_enable();
+#endif
+#endif
     clock_init();
+    gpt_clock_init(); // monotonic clock up before the scheduler reads it
     uart6_init();
+#ifdef KICKOS_UART_BEACON
+    uart6_beacon(); // never returns: raw 0x55 stream for host baud sweep
+#endif
     kickos_armv7m_init();
 }
+
+#if KICKOS_HAVE_MPU
+// Chip fixed (thread-invariant) MPU regions, programmed once into the LOW slots by the
+// shared kickos_arm_mpu_fixed_init; per-thread grants sit above them (higher slot wins).
+// ERR011573 / Arm 1013783-B: the M7 speculatively prefetches Normal memory, and the
+// ARMv7-M default map leaves 0x6000_0000-0x9FFF_FFFF Normal -- so speculation past the
+// populated 8 MiB of flash, or into the unbacked SEMC aperture, hits an AHB slave that
+// never responds and stalls the core with NO fault. Wrap both external Normal bands
+// Device + XN + no-access; overlay the real 8 MiB as Normal cacheable priv-RO+X.
+// (Option A: keep PRIVDEFENA for RAM/peripherals; the whole-map explicit "Option B"
+// hardening is post-M6 -- TODO.md.) The row type mirrors arch/arm/common/mpu.h.
+extern "C"
+{
+    struct kickos_arm_mpu_fixed_region
+    {
+        uint32_t base;
+        uint32_t rasr;
+    };
+
+    size_t kickos_arm_mpu_fixed(struct kickos_arm_mpu_fixed_region const** out)
+    {
+        // PMSAv7 RASR: ENABLE | size_field<<1 | AP<<24 | TEX/C/B | XN.
+        constexpr uint32_t EN = 1u;
+        constexpr uint32_t XN = 1u << 28;
+        constexpr uint32_t AP_NONE = 0x0u << 24; // no access (priv + unpriv)
+        constexpr uint32_t AP_PRO = 0x5u << 24;  // priv RO, unpriv none
+        constexpr uint32_t DEVICE = (1u << 18) | (1u << 16); // shareable Device (non-speculatable)
+        constexpr uint32_t NORMAL = (1u << 17) | (1u << 16); // Normal WB cacheable
+        constexpr uint32_t SZ_512M = (29u - 1u) << 1;
+        constexpr uint32_t SZ_8M = (23u - 1u) << 1; // == LENGTH(FLASH), the populated image
+        static kickos_arm_mpu_fixed_region const rows[] = {
+            {0x60000000u, EN | SZ_512M | AP_NONE | XN | DEVICE}, // FlexSPI aperture wrap
+            {0x60000000u, EN | SZ_8M | AP_PRO | NORMAL},         // populated-flash overlay (RO+X)
+            {0x80000000u, EN | SZ_512M | AP_NONE | XN | DEVICE}, // SEMC aperture wrap
+        };
+        *out = rows;
+        return sizeof(rows) / sizeof(rows[0]);
+    }
+}
+#endif
 
 void arch_console_write(char const* buf, size_t n)
 {
@@ -346,6 +567,31 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     return &lp6_console_backend;
 }
 
+// Monotonic clock (arch.h contract; the armv7m layer provides no fallback). GPT1
+// 24 MHz ticks -> ns. Fixed 24 MHz, so the reciprocal-multiply constant is compile-
+// time (no per-read divide, no re-anchor across an ARM-PLL retune).
+uint64_t arch_clock_now(void)
+{
+    uint64_t ticks = gpt_ticks();
+    // ns = ticks * 1e9 / 24e6, as (ticks * MULT) >> 32, split 64x64 to avoid overflow.
+    constexpr uint64_t MULT =
+        ((static_cast<uint64_t>(1000000000ull) << 32) + (GPT_HZ / 2u)) / GPT_HZ;
+    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFu;
+    uint64_t c = MULT >> 32, d = MULT & 0xFFFFFFFFu;
+    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+}
+
+// Override the weak WFI idle. The tickless wakeup timer is SysTick, clocked off the
+// core clock -- which the RT106x halts under WFI, so SysTick stops counting and a
+// sleep with every thread idle never wakes (the GPT monotonic clock keeps running,
+// but it is not the wakeup source). Spin so the core clock, and thus SysTick, stays
+// alive. A GPT output-compare wakeup (GPT counts through WAIT via CR_WAITEN, so WFI
+// would be safe) is the power-optimal follow-up; a busy idle is correct for now.
+void arch_idle_wait(void)
+{
+    __asm volatile("nop");
+}
+
 void arch_shutdown(int status)
 {
     (void)status; // no exit on bare metal
@@ -361,6 +607,7 @@ void Reset_Handler(void)
     // MSP was set by _boot_entry (the ROM enters via IVT.entry, not the reset
     // vector). Point VTOR at our table (@ 0x6000_2000, not flash base) before any
     // interrupt path runs.
+    watchdog_disable(); // FIRST: the ROM hands off a running RTWDOG (RM 58.4)
     enable_fpu(); // before ANY later code that could emit FP (softfp ABI)
     r32(0xE000ED08) = reinterpret_cast<uintptr_t>(g_isr_vector); // SCB->VTOR
     __asm volatile("dsb" ::: "memory");

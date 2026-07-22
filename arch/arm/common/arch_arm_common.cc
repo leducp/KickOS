@@ -17,6 +17,7 @@
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the ns/cycle conversions
 
 #include "regs.h"
+#include "mpu.h"
 
 #include <stddef.h>
 
@@ -149,6 +150,16 @@ void arch_timer_disarm(void)
 #if KICKOS_HAVE_MPU
 namespace
 {
+    // Max per-thread regions the deferred-commit stash carries (must be >= the kernel's
+    // KICKOS_MPU_MAX_REGIONS; both are 8). Hoisted here so the fixed-region init can
+    // bound-check against it. Sizes g_pend_regions below.
+    constexpr size_t kMaxPendRegions = 8; // == KICKOS_MPU_MAX_REGIONS (kernel config)
+
+    // Count of chip fixed regions occupying the LOW MPU slots [0, g_fixed_count).
+    // Set once by kickos_arm_mpu_fixed_init; per-thread grants are programmed ABOVE it.
+    // 0 for every chip without a fixed-region hook -> those chips are byte-identical.
+    size_t g_fixed_count = 0;
+
     // Encode one region into an MPU_RASR value. attr is the UNPRIVILEGED access
     // (supervisor comes from the PRIVDEFENA background region): a code region is
     // R+X (RO, executable); data / stack / device is RW + execute-never. Device
@@ -176,7 +187,15 @@ namespace
     }
 }
 
-void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+// The MPU hardware-programming step (disable / reprogram descriptors / re-enable).
+// Split out of arch_mpu_apply so a DEFERRED-switch arch (armv6m: the switch is a
+// pended PendSV) can invoke it from the PendSV switch epilogue -- i.e. atomically
+// with the PHYSICAL context switch -- instead of eagerly from switch_to. Eager apply
+// on a deferred switch reprograms the MPU for the INCOMING thread while the OUTGOING
+// thread is still physically running (PendSV not fired yet), so the outgoing thread
+// executes with the incoming thread's shrunk region set and faults on its own stack.
+// v7-M keeps the eager path (arch_mpu_apply below) unchanged.
+extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, size_t n)
 {
     using namespace kickos::arm;
     // A domain switch / privilege change can only take effect atomically, so
@@ -187,12 +206,17 @@ void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions,
     reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA;
     reg32(MPU_CTRL) = 0;
     __asm volatile("dsb" ::: "memory");
-    // Program regions[0..n), disable the rest up to the hardware descriptor count
-    // (MPU_TYPE.DREGION) -- so a thread with fewer regions than the last one leaves
-    // no stale window enabled.
+    // Chip fixed regions own the LOW slots [0, k) -- programmed once by
+    // kickos_arm_mpu_fixed_init and NEVER touched here (disabling the MPU above does
+    // not clear descriptors, so they survive the reprogram). Per-thread grants go in
+    // [k, hw), so a grant sits ABOVE the fixed background and correctly overrides it
+    // (PMSAv7: highest-numbered region wins). k == 0 on every chip without a fixed
+    // hook, making the emitted sequence byte-identical to the pre-seam behavior.
     size_t const hw_regions = (reg32(MPU_TYPE) >> 8) & 0xFFu;
-    for (size_t i = 0; i < hw_regions; i++)
+    size_t const k = g_fixed_count;
+    for (size_t i = k; i < hw_regions; i++)
     {
+        size_t const j = i - k; // per-thread region index
         reg32(MPU_RNR) = static_cast<uint32_t>(i);
         // PMSA requires a power-of-two size with a naturally-aligned base. Encode
         // ONLY such regions; a non-pow2 region is fail-closed (descriptor disabled),
@@ -201,11 +225,11 @@ void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions,
         // + the pow2 linker code/data sections); a privileged thread's non-pow2
         // whole-arena grant is simply dropped here -- harmless, it runs on the
         // PRIVDEFENA background. (Linker contract: code/data regions must be pow2.)
-        if (i < n and regions[i].size >= 32
-            and (regions[i].size & (regions[i].size - 1)) == 0)
+        if (j < n and regions[j].size >= 32
+            and (regions[j].size & (regions[j].size - 1)) == 0)
         {
-            reg32(MPU_RBAR) = static_cast<uint32_t>(regions[i].base) & ~0x1Fu;
-            reg32(MPU_RASR) = mpu_rasr(regions[i].size, regions[i].attr);
+            reg32(MPU_RBAR) = static_cast<uint32_t>(regions[j].base) & ~0x1Fu;
+            reg32(MPU_RASR) = mpu_rasr(regions[j].size, regions[j].attr);
         }
         else
         {
@@ -217,13 +241,111 @@ void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions,
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
 }
+
+// Weak default: no chip fixed regions. A chip (i.MX RT1062) strong-overrides this.
+size_t __attribute__((weak)) kickos_arm_mpu_fixed(struct kickos_arm_mpu_fixed_region const** out)
+{
+    (void)out;
+    return 0;
+}
+
+// One-time: program the chip's fixed regions into the LOW slots [0, k), cache k, and
+// enable the MPU (with the PRIVDEFENA background). Call from the chip arch_init BEFORE
+// enabling caches and before the scheduler starts. Idempotent-safe to call once.
+void kickos_arm_mpu_fixed_init(void)
+{
+    using namespace kickos::arm;
+    struct kickos_arm_mpu_fixed_region const* fixed = nullptr;
+    size_t const k = kickos_arm_mpu_fixed(&fixed);
+    size_t const hw_regions = (reg32(MPU_TYPE) >> 8) & 0xFFu;
+    // The fixed set plus a full per-thread set must fit the hardware descriptors, or a
+    // per-thread grant would silently fall off the top. Fail loud (a chip-config bug
+    // caught at boot), never truncate. No kernel assert on the arch path -> spin.
+    if (k + kMaxPendRegions > hw_regions)
+    {
+        for (;;)
+        {
+            __asm volatile("wfi");
+        }
+    }
+    reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA;
+    reg32(MPU_CTRL) = 0;
+    __asm volatile("dsb" ::: "memory");
+    for (size_t i = 0; i < k; i++)
+    {
+        reg32(MPU_RNR) = static_cast<uint32_t>(i);
+        reg32(MPU_RBAR) = fixed[i].base & ~0x1Fu;
+        reg32(MPU_RASR) = fixed[i].rasr;
+    }
+    g_fixed_count = k;
+    __asm volatile("dsb" ::: "memory");
+    reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;
+    __asm volatile("dsb" ::: "memory");
+    __asm volatile("isb" ::: "memory");
+}
+
+// --- Deferred MPU-commit seam (shared across every ARM backend) ---------------
+// The switch is a PENDED PendSV on every ARM arch: switch_to() calls arch_mpu_apply
+// on the OUTGOING thread, but the physical register/PSP swap only happens later in
+// PendSV. Programming the hardware eagerly would run the outgoing thread under the
+// INCOMING thread's regions until PendSV fires -> a fault on its own stack (proven on
+// RP2040; docs/design-mpu-commit-deferred.md). So arch_mpu_apply only STASHES the
+// region set here; kickos_arch_mpu_commit programs the hardware, called from each
+// deferred arch's PendSV epilogue AFTER the physical swap. A private copy (not a
+// pointer) means the commit never chases a TCB whose region set changed after the stash.
+namespace
+{
+    arch_mpu_region g_pend_regions[kMaxPendRegions]; // kMaxPendRegions hoisted above
+    size_t g_pend_count = 0;
+}
+
+// Read the pending stash. Lets a chip whose MPU is NOT PMSAv7 (K64F SYSMPU) program
+// its own hardware from the SAME stash by strong-overriding only the commit below.
+size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out)
+{
+    *out = g_pend_regions;
+    return g_pend_count;
+}
+
+// STASH-ONLY apply (weak): record the incoming set, no hardware write. Shared by
+// every ARM backend -- PMSAv7 (v6-M/v7-M) and K64F SYSMPU alike; a chip overrides
+// only the commit, never this.
+void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+{
+    if (n > kMaxPendRegions)
+    {
+        n = kMaxPendRegions;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        g_pend_regions[i] = regions[i];
+    }
+    g_pend_count = n;
+}
+
+// Commit the stash to the PMSAv7 hardware (weak default: F411/XMC on v7-M, RP2040/
+// microbit on v6-M). cpsid brackets the disable/reprogram/re-enable so a preempting
+// IRQ cannot observe a half-programmed MPU -- valid asm on both v6-M and v7-M. A chip
+// with a different MPU (K64F SYSMPU) strong-overrides this; the arch's switch.S calls
+// it by this fixed name after the physical swap.
+void __attribute__((weak)) kickos_arch_mpu_commit(void)
+{
+    uint32_t primask;
+    __asm volatile("mrs %0, primask" : "=r"(primask));
+    __asm volatile("cpsid i" ::: "memory");
+    kickos_arm_mpu_program(g_pend_regions, g_pend_count);
+    __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
+}
 #else
-// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only.
+// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only. apply is a
+// no-op; the commit is an empty weak default (each deferred arch's PendSV epilogue
+// calls the commit symbol unconditionally, so it must always resolve).
 void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     (void)regions;
     (void)n;
 }
+void __attribute__((weak)) kickos_arch_mpu_commit(void) {}
 #endif
 
 size_t __attribute__((weak)) arch_mpu_min_region(void)
@@ -272,12 +394,9 @@ void arch_irq_inject(int irq)
         return;
     }
     unsigned l = static_cast<unsigned>(irq);
-    // Match the proven sim semantics: a masked (disabled) line drops the raise
-    // rather than latching pending to fire on unmask.
-    if ((reg32(NVIC_ISER0 + (l >> 5) * 4) & (1u << (l & 31))) == 0)
-    {
-        return;
-    }
+    // Latch-and-coalesce: the NVIC holds ISPR pending independently of ISER, so a
+    // raise on a masked (disabled) line latches and fires the instant the line is
+    // enabled -- write ISPR unconditionally, do not drop.
     reg32(NVIC_ISPR0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 

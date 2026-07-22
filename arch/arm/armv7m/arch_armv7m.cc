@@ -34,13 +34,6 @@ namespace
 {
     using namespace kickos::arm;    // reg32 (shared core regs)
     using namespace kickos::armv7m; // BASEPRI band, DWT_*, SHPR (arch-specific)
-
-    // The DWT cycle counter is 32-bit; extend it to a monotonic 64-bit cycle
-    // count in software by catching wraps on each read. LIMITATION (M1): a wrap
-    // that is not observed within one 2^32-cycle period (~35 s at 120 MHz) is
-    // missed. A DWT/timer overflow interrupt is the refinement.
-    volatile uint32_t g_cyc_high = 0;
-    volatile uint32_t g_cyc_last = 0;
 }
 
 extern "C"
@@ -58,47 +51,6 @@ extern "C"
 namespace
 {
     using namespace kickos::units; // _s == 1e9 ns
-
-    inline uint64_t now_cycles()
-    {
-        // Called from thread and ISR context; the wrap-extend read must be
-        // atomic against a concurrent reader, so run it under the crit section.
-        arch_irq_state_t s = arch_irq_save();
-        uint32_t cur = reg32(DWT_CYCCNT);
-        if (cur < g_cyc_last)
-        {
-            g_cyc_high++;
-        }
-        g_cyc_last = cur;
-        uint64_t hi = g_cyc_high;
-        arch_irq_restore(s);
-        return (hi << 32) | cur;
-    }
-
-    inline uint64_t cycles_to_ns(uint64_t cyc)
-    {
-        uint64_t f = SystemCoreClock;
-        if (f == 0)
-        {
-            return 0;
-        }
-        // ns = cyc * 1e9 / f via a cached reciprocal multiply: mult = (1e9<<32)/f,
-        // then ns = (cyc * mult) >> 32 (64x64->high, split to avoid overflow). The
-        // one 64-bit divide runs only when the clock changes (once at boot); a raw
-        // ns divide here cost three 64-bit variable divides on EVERY clock read
-        // (arch_clock_now runs twice per sleep_ns + on every ktime_now). Verified
-        // <0.01 ppm vs the exact split across the MCU clock range.
-        static uint64_t cached_f = 0;
-        static uint64_t mult = 0;
-        if (f != cached_f)
-        {
-            mult = ((static_cast<uint64_t>(1_s) << 32) + (f >> 1)) / f;
-            cached_f = f;
-        }
-        uint64_t a = cyc >> 32, b = cyc & 0xFFFFFFFFu;
-        uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFu;
-        return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
-    }
 
     inline uint64_t ns_to_cycles(uint64_t ns)
     {
@@ -189,14 +141,13 @@ void arch_irq_restore(arch_irq_state_t state)
     __asm volatile("msr basepri, %0" ::"r"(state) : "memory");
 }
 
-// --- Tickless clock (DWT); the one-shot SysTick timer is core-generic --------
-// weak: the monotonic clock SOURCE is chip-specific (the arch.h note: "free-
-// running TIM/DWT + compare (or SysTick)"). DWT is the default for real silicon;
-// a chip whose DWT is absent/unimplemented (e.g. QEMU) overrides this.
-uint64_t __attribute__((weak)) arch_clock_now(void)
-{
-    return cycles_to_ns(now_cycles());
-}
+// --- Monotonic clock: NO armv7m default -------------------------------------
+// arch_clock_now is a REQUIRED chip contract (a strong per-chip definition over a
+// dedicated peripheral timer). There is deliberately no weak DWT fallback here: the
+// DWT is debug-domain (gated by DEMCR.TRCENA, lockable on Cortex-M7, absent under
+// QEMU) and every chip that ever relied on the old fallback hit a broken clock, so a
+// board that forgets to provide one must fail LOUD at link time, not hang on its
+// first sleep. The one-shot SysTick timer is core-generic (arch_arm_common).
 
 // weak: telemetry trace clock = the raw DWT cycle counter (32-bit, wraps). Cycle-
 // accurate on real silicon and already running (kickos_armv7m_init enabled it).
@@ -221,17 +172,25 @@ void arch_irq_unmask(int line)
     // masks priorities numerically >= 0x20. Without this a device IRQ would
     // preempt an IrqLock-held section and corrupt kernel state (regs.h band).
     reinterpret_cast<volatile uint8_t*>(NVIC_IPR0)[l] = static_cast<uint8_t>(PRIO_DEVICE);
-    // Tier-1 re-arm contract: irq_ack calls this AFTER the driver has cleared the
-    // device flag, so the line is deasserted. DRAIN that clear (dsb -- the W1C may
-    // still be in the write buffer, and exception entry does not order device
-    // writes), then clear any LATCHED NVIC pending BEFORE enabling: otherwise a stale
-    // pend fires a spurious IRQ the instant ISER is set, and the driver's next
-    // irq_wait wakes with no event behind it. A still-asserted level source simply
-    // re-latches, so a real event is never lost. Harmless at first-arm (register):
-    // no stale pend to preserve.
+    // Latch-and-coalesce: PRESERVE any latched NVIC pending across enable -- a raise
+    // that arrived while the line was masked fires through the normal ISR path the
+    // instant ISER is set. Drain a preceding device-flag clear (dsb -- the W1C may
+    // still sit in the write buffer, and exception entry does not order device
+    // writes) so a level source that is genuinely deasserted does not re-latch.
+    __asm volatile("dsb" ::: "memory");
+    reg32(NVIC_ISER0 + (l >> 5) * 4) = 1u << (l & 31);
+}
+
+void arch_irq_clear_pending(int line)
+{
+    if (line < 0)
+    {
+        return;
+    }
+    unsigned l = static_cast<unsigned>(line);
+    // Drain any pending device write, then drop the latched NVIC pending (ICPR).
     __asm volatile("dsb" ::: "memory");
     reg32(NVIC_ICPR0 + (l >> 5) * 4) = 1u << (l & 31);
-    reg32(NVIC_ISER0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 
 // arch_shutdown is chip-specific (a real MCU halts; QEMU exits via semihosting),
@@ -352,12 +311,10 @@ void kickos_armv7m_init(void)
     shpr3 |= (PRIO_PENDSV << 16) | (PRIO_SYSTICK << 24);
     reg32(SCB_SHPR3) = shpr3;
 
-    // Enable the DWT cycle counter (monotonic clock source).
+    // Enable the DWT cycle counter (telemetry trace timestamp source; arch_trace_now).
     reg32(DCB_DEMCR) |= DEMCR_TRCENA;
     reg32(DWT_CYCCNT) = 0;
     reg32(DWT_CTRL) |= DWT_CTRL_CYCCNTENA;
-    g_cyc_high = 0;
-    g_cyc_last = 0;
 }
 
 }
