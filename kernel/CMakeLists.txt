@@ -14,7 +14,7 @@ set(KICKOS_KERNEL_SOURCES
   init/kmain.cc)
 
 # Optional components are appended as they land (kept bisectable).
-foreach(_f sync/sync.cc time/time.cc syscall/syscall.cc syscall/cap.cc irq/irq.cc)
+foreach(_f sync/sync.cc time/time.cc time/clock_select.cc syscall/syscall.cc syscall/cap.cc irq/irq.cc)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
     list(APPEND KICKOS_KERNEL_SOURCES "${_f}")
   endif()
@@ -31,6 +31,23 @@ endif()
 
 add_library(kickos_kernel STATIC ${KICKOS_KERNEL_SOURCES})
 kickos_apply_freestanding(kickos_kernel)
+
+# Build-time stamp (kickos_build_stamp[], read by the kmain banner). Regenerated on
+# EVERY build so the banner reflects the image actually linked -- __DATE__/__TIME__ bakes
+# per-TU and goes stale on incremental builds (see cmake/build_stamp.cmake). The custom
+# target has no OUTPUT, so it is always out of date and reruns each build; the kernel lib
+# recompiles the tiny generated TU and dependents relink, keeping the stamp truthful.
+set(_kos_build_stamp "${CMAKE_BINARY_DIR}/kickos_build_stamp.cc")
+add_custom_target(kickos_build_stamp_gen
+  BYPRODUCTS "${_kos_build_stamp}"
+  COMMAND "${CMAKE_COMMAND}"
+    "-DOUT=${_kos_build_stamp}" "-DSRC=${CMAKE_SOURCE_DIR}"
+    -P "${CMAKE_SOURCE_DIR}/cmake/build_stamp.cmake"
+  COMMENT "kickos: stamping build time"
+  VERBATIM)
+set_source_files_properties("${_kos_build_stamp}" PROPERTIES GENERATED TRUE)
+target_sources(kickos_kernel PRIVATE "${_kos_build_stamp}")
+add_dependencies(kickos_kernel kickos_build_stamp_gen)
 
 # The switch-completion hook (kickos_trace_switch_done in ktrace.cc) runs in the
 # ARM PendSV tail with the incoming thread's FP registers still live, so its emit

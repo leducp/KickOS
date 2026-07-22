@@ -7,6 +7,14 @@ project(KickOS VERSION 0.0.1 LANGUAGES C CXX ASM)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
 
+# Consumer-detection signals, styled like the built-in platform vars (LINUX/WIN32)
+# and the reserved platform macros (__linux__/__APPLE__). KickOS IS the platform.
+# KICKOS: a plain boolean an add_subdirectory(KickOS) consumer tests with if(KICKOS),
+# exactly like if(LINUX). __KickOS__: defined for every in-tree TU here, and carried
+# to downstream consumers as a usage requirement of the kickos/kickos_cxx leaves.
+set(KICKOS TRUE CACHE INTERNAL "Building against KickOS")
+add_compile_definitions(__KickOS__=1)
+
 # --- Board / arch selection -------------------------------------------------
 set(KICKOS_BOARD "sim" CACHE STRING "Target board: sim|qemu|frdmk64f|picopi|f411disco|bluepill")
 # One descriptor per board (boards/<board>/board.cmake) sets arch + chip + -mcpu
@@ -188,10 +196,12 @@ endif()
 # AND the arch ships a real arch_mpu_apply -- otherwise arch_domain_static_regions
 # reads the WEAK __kickos_appdata_* symbols as 0, grants zero regions, and the "MPU"
 # build enforces nothing. Capability is an EXPLICIT per-port opt-in, not inferred from
-# the linker plumbing: a validated chip ships arch/<family>/chip/<chip>/mpu.cmake
-# (KICKOS_CHIP_ENFORCES_MPU ON); a chip that merely has the .appdata block but is
-# unvalidated (imxrt1062, MPU deferred) ships none and is rejected here. The sim
-# enforces via host mprotect (no chip, no linker script) and is capable by arch.
+# the linker plumbing: a chip ships arch/<family>/chip/<chip>/mpu.cmake
+# (KICKOS_CHIP_ENFORCES_MPU ON); a chip that merely has the .appdata block but ships
+# no such file is rejected here. imxrt1062 (teensy41) ships one as BUILD-ONLY
+# scaffolding -- its enforcement path compiles but has never run on silicon (see the
+# chip mpu.cmake SILICON-PENDING note). The sim enforces via host mprotect (no chip,
+# no linker script) and is capable by arch.
 set(KICKOS_CHIP_ENFORCES_MPU OFF)
 if(KICKOS_ARCH STREQUAL "sim")
   set(KICKOS_CHIP_ENFORCES_MPU ON)
@@ -208,7 +218,7 @@ if(KICKOS_HAVE_MPU AND NOT KICKOS_CHIP_ENFORCES_MPU)
     "enforcement would be a silent no-op (arch_domain_static_regions grants zero "
     "regions because the linker script carves no KICKOS_HAVE_MPU .appdata window). "
     "Enforcement-capable boards today: sim, frdmk64f, f411disco, picopi, "
-    "xmc4800-relax, qemu-riscv, esp32c6-wroom, rx72m. Either build '${KICKOS_BOARD}' "
+    "xmc4800-relax, teensy41, pizero2350, qemu-riscv, esp32c6-wroom, rx72m. Either build '${KICKOS_BOARD}' "
     "without KICKOS_HAVE_MPU, or bring the port up: add a KICKOS_HAVE_MPU .appdata "
     "window to its linker script and drop a mpu.cmake (KICKOS_CHIP_ENFORCES_MPU ON) "
     "beside it once enforcement is validated on hardware.")
@@ -255,6 +265,17 @@ message(STATUS "KickOS: telemetry=${KICKOS_TELEMETRY} (have_trace_clock=${KICKOS
 # e.g. -DKICKOS_RTT_PUBLISH_BARRIER_DEF="__atomic_thread_fence(__ATOMIC_RELEASE)".
 if(DEFINED KICKOS_RTT_PUBLISH_BARRIER_DEF)
   add_compile_definitions("KICKOS_RTT_PUBLISH_BARRIER()=${KICKOS_RTT_PUBLISH_BARRIER_DEF}")
+endif()
+
+# Local numeric TZ offset (e.g. "+0200"), computed ONCE at configure, exposed to app
+# TUs so kickos_app_build_stamp() can align its line with the CMake build stamp (which
+# appends the same "%z"). Passed as a BARE token (-DKICKOS_APP_TZ=+0200), not a quoted
+# string: embedded escaped quotes double up on a reconfigure of an existing build dir,
+# so app.h stringizes the token in C instead. `date` failing (empty) just skips the
+# define -- app.h stays offset-free then, keeping a plain hosted app build portable.
+execute_process(COMMAND date +%z OUTPUT_VARIABLE _apptz OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(NOT _apptz STREQUAL "")
+  add_compile_definitions(KICKOS_APP_TZ=${_apptz})
 endif()
 
 # Standard install dirs; included before the components so their
@@ -380,6 +401,10 @@ if(TARGET kickos_kernel)
   target_link_libraries(kickos INTERFACE kickos_core)
   add_library(kickos_cxx INTERFACE)
   target_link_libraries(kickos_cxx INTERFACE kickos_core)
+  # Carry __KickOS__ to downstream consumers (both leaves link kickos_core, which is
+  # in the export set, so find_package consumers get it too). In-tree TUs already have
+  # it from the add_compile_definitions above.
+  target_compile_definitions(kickos_core INTERFACE __KickOS__=1)
   if(NOT (KICKOS_ARCH STREQUAL "sim"))
     # Freestanding (default): no EH/RTTI in the app's C++ TUs, and -nostdlib++ drops
     # libsupc++/libstdc++ -- a stray operator new / EH table then fails the link loud.

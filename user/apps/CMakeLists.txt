@@ -12,6 +12,7 @@ add_subdirectory(stress)
 # (see each CMakeLists), so no per-board list here. `fault` deliberately executes an
 # illegal instruction; it is never built into a production image.
 add_subdirectory(fault)
+add_subdirectory(specfault)
 
 # KickCAT EtherCAT slave over the software EmulatedESC (Stage A of
 # docs/design-kickcat-k64f.md). Sim-only; consumes the sibling KickCAT checkout
@@ -77,6 +78,20 @@ endif()
 if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
   add_subdirectory(xmcspi)
 endif()
+
+# XMC4800 console handover demo -- the kernel relinquishes the UART to the
+# unprivileged kickos_xmcuart driver and a worker's printf reaches the wire through
+# it (M3 #4 stage ii-a). Self-gates on xmc4800-relax + enforcement in its own
+# CMakeLists; a real user app, so no KICKOS_ENABLE_SELFTEST requirement.
+add_subdirectory(consoledemo)
+
+# Privileged runtime clock-retune HW harness -- self-gates on KICKOS_CLOCK_RETUNE_TEST
+# (OFF by default) + xmc4800-relax/frdmk64f + enforcement in its own CMakeLists.
+add_subdirectory(clockretune)
+
+# Clock-hardening wrap/soak HW harness -- self-gates on KICKOS_CLOCKSOAK_TEST (OFF by
+# default) in its own CMakeLists; arch-neutral, builds for any board.
+add_subdirectory(clocksoak)
 
 # ESP32-C6 GPIO10 blink -- the canonical per-thread peripheral-MMIO isolation
 # reference on RISC-V PMP (GPIO/IO_MUX/APM bring-up + the one-time APM open), so only

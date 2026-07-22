@@ -30,6 +30,7 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
   # linker script; until then this builds as a static library only.
   add_library(kickos_arch_armv7m STATIC
     arm/armv7m/arch_armv7m.cc
+    arm/armv7m/cache.cc
     arm/common/arch_arm_common.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
@@ -143,6 +144,17 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/*.S")
 
+  # PMSAv8 MPU backend (Cortex-M33): a v8-M chip's mpu.cmake sets
+  # KICKOS_ARM_PMSAV8_SOURCE to arm/common/arch_arm_pmsav8.cc. It is NOT in the
+  # always-compiled armv7m arch list (the v6-M/v7-M fleet must never link it); it is
+  # pulled into the CHIP library only for an enforcement build so its strong
+  # kickos_arch_mpu_commit + arch_mpu_region_encodable override the weak v7-M defs.
+  # Gated on KICKOS_HAVE_MPU so a non-enforcement build of the same chip stays
+  # byte-identical to the plain armv7m fleet.
+  if(KICKOS_HAVE_MPU AND KICKOS_ARM_PMSAV8_SOURCE)
+    list(APPEND _chip_src "${KICKOS_ARM_PMSAV8_SOURCE}")
+  endif()
+
   # A chip whose flash boot needs a checksummed second-stage loader ships a
   # boot2.S. It is NOT compiled into the library directly: it must be assembled +
   # linked to a raw binary, wrapped with a ROM-verified CRC, and re-emitted as a
@@ -197,6 +209,15 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
 
   add_library(kickos_chip_${KICKOS_CHIP} STATIC ${_chip_src})
   kickos_apply_freestanding(kickos_chip_${KICKOS_CHIP})
+  # M7 D-cache: forward the option to the imxrt chip TU so arch_init calls
+  # kickos_armv7m_dcache_enable(). Default ON -- silicon-validated (selftest 43/43 + a
+  # ~38 M-switch soak under enforcement, a measurable throughput win). Safe while the M7 is
+  # single-core with no DMA; M4 DMA drivers MUST add clean/invalidate cache maintenance
+  # around DMA buffers. Set OFF to opt back out.
+  option(KICKOS_IMXRT_DCACHE "imxrt1062: enable the Cortex-M7 L1 D-cache" ON)
+  if(KICKOS_CHIP STREQUAL "imxrt1062" AND KICKOS_IMXRT_DCACHE)
+    target_compile_definitions(kickos_chip_${KICKOS_CHIP} PRIVATE KICKOS_IMXRT_DCACHE=1)
+  endif()
   # A v7-M chip that OVERRIDES arch_trace_now (mps2's semihosting clock) has that
   # function on the PendSV-tail emit path, so its TU must be FP-register-free too.
   # (v6-M chips have no FPU, so -mgeneral-regs-only is moot there.)
@@ -209,6 +230,9 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include"
+    # A retunable chip (arch_cpu_clock_set) names the KOS_PSTATE_* selector from the
+    # shared syscall ABI (user/include/kickos/sys/abi.h).
+    "${CMAKE_CURRENT_SOURCE_DIR}/../user/include"
     # Telemetry: a chip's arch_shutdown may dump the ch1 ring via the transport
     # (mps2 semihosting file), so it reads lib's rtt.h (chip -> lib, downward).
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")

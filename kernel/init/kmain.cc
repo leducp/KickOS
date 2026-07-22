@@ -15,22 +15,29 @@
 #include <kickos/config/system.h>
 #include <kickos/ktrace.h>
 
-// Buffered-console bring-up (console_tx.cc): binds the TX drain ISR + arms the
-// ring once the chip offers a backend. No-op on sim / polled-only chips.
-extern "C" void console_buffer_init(void);
-// Drain the buffered console before a clean shutdown so a single-shot app's
-// trailing output is not stranded in the ring (kpanic/fault already flush).
-extern "C" void console_tx_flush_sync(void);
-
-// Non-kernel (app / libstdc++ / newlib / library) global ctors. On a migrated MCU
-// the chip linker routes them here, OUT of .init_array (which keeps only the kernel
-// ctors that Reset_Handler must run before kmain constructs the instance). We run
-// them from root_entry -- in a thread, kernel live -- because a ctor may issue a
-// KickOS syscall (kos_clock_now) that needs ktime_init + a current thread. Weak:
-// undefined on sim and not-yet-migrated chips -> null -> skipped (there the ctors
-// still run via the host runtime / the chip's own full .init_array loop).
 extern "C"
 {
+    // Buffered-console bring-up (console_tx.cc): binds the TX drain ISR + arms the
+    // ring once the chip offers a backend. No-op on sim / polled-only chips.
+    void console_buffer_init(void);
+    // Drain the buffered console before a clean shutdown so a single-shot app's
+    // trailing output is not stranded in the ring (kpanic/fault already flush).
+    void console_tx_flush_sync(void);
+    // Generated per-build by CMake (cmake/build_stamp.cmake) so the banner reflects the
+    // image actually linked, not the (stale-on-incremental) __DATE__/__TIME__ of a TU.
+    // Local build time (with offset) + the commit (git describe --dirty --always).
+    extern char const kickos_build_time[];
+    extern char const kickos_build_commit[];
+    // Per-app source compile time (weak; null when no app defines it). See app.h.
+    char const* kickos_app_build_stamp(void) __attribute__((weak));
+
+    // Non-kernel (app / libstdc++ / newlib / library) global ctors. On a migrated MCU
+    // the chip linker routes them here, OUT of .init_array (which keeps only the kernel
+    // ctors that Reset_Handler must run before kmain constructs the instance). We run
+    // them from root_entry -- in a thread, kernel live -- because a ctor may issue a
+    // KickOS syscall (kos_clock_now) that needs ktime_init + a current thread. Weak:
+    // undefined on sim and not-yet-migrated chips -> null -> skipped (there the ctors
+    // still run via the host runtime / the chip's own full .init_array loop).
     extern void (*__kickos_app_init_array_start[])() __attribute__((weak));
     extern void (*__kickos_app_init_array_end[])() __attribute__((weak));
 }
@@ -85,11 +92,12 @@ namespace kickos
             kprintf("   arch    %s\n", KICKOS_ARCH_NAME);
             kprintf("   mpu     %s\n", mpu);
             kprintf("   sched   %s\n", sched);
-            kprintf("   build   %s %s\n", __DATE__, __TIME__);
+            kprintf("   build   %s\n", kickos_build_time);
             if (kickos_app_build_stamp != nullptr)
             {
                 kprintf("   app     %s\n", kickos_app_build_stamp());
             }
+            kprintf("   commit  %s\n", kickos_build_commit);
             kputs("\n");
         }
 
