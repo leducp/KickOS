@@ -44,14 +44,16 @@ struct arch_context
 
     // Saved return address (a0) WITH its top-2-bit window CALLINC field intact --
     // the value the resuming `retw` uses to rotate the window back to the caller
-    // and drive the underflow reload. COOP only. Offset 8. A fresh thread seeds
-    // this with the trampoline entry encoded as a call4 return address
-    // (arch_context_init).
+    // and drive the underflow reload. COOP only. Offset 8.
     uint32_t pc;
 
-    // Which resume path reconstitutes this thread: KICKOS_RESUME_COOP (default,
-    // set by arch_context_init + the xtensa_switch save) or KICKOS_RESUME_IRQ (set
-    // by the level-1 interrupt exit when it preempts this thread). Offset 12.
+    // Which resume path reconstitutes this thread: KICKOS_RESUME_COOP (set by the
+    // xtensa_switch save when a running thread blocks) or KICKOS_RESUME_IRQ (set by
+    // the level-1 interrupt exit when it preempts this thread, AND by
+    // arch_context_init for a FRESH thread -- a fresh thread is started via the same
+    // rfe restore path as a preempted one, from a fabricated interrupt frame, so its
+    // outermost trampoline frame is a real `entry`-established window rather than a
+    // phantom retw target). Offset 12.
     uint32_t resume_kind;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

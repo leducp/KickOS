@@ -157,8 +157,9 @@ xtensa_switch:
 /* arch_start(boot=a2, first=a3): enter the first thread from the boot context.    */
 /* `boot` is ignored and the boot stack abandoned (the system always terminates    */
 /* via arch_shutdown, never by unwinding to boot). Records g_arch_current, spills   */
-/* the boot windows (so the retw underflows purely from `first`'s stack), then      */
-/* resumes `first` exactly as xtensa_switch resumes any thread.                     */
+/* the boot windows, then resumes `first` by the path its resume_kind selects --    */
+/* exactly as xtensa_switch does. A fresh thread (arch_context_init) is always      */
+/* KICKOS_RESUME_IRQ, so the first thread is entered via the rfe restore.           */
 /* ------------------------------------------------------------------------- */
     .align 4
     .global arch_start
@@ -182,26 +183,39 @@ arch_start:
     SPILL_ALL_WINDOWS
 
     l32i    a3, a1, 0
-    l32i    a1, a3, 0            /* a1 = first->sp */
-    l32i    a4, a3, 4            /* first->ps */
-    l32i    a0, a3, 8            /* first->pc */
+    l32i    a5, a3, CTX_KIND      /* first->resume_kind */
+    bnez    a5, .Lstart_resume_irq
+    l32i    a1, a3, CTX_SP       /* a1 = first->sp */
+    l32i    a4, a3, CTX_PS       /* first->ps */
+    l32i    a0, a3, CTX_PC       /* first->pc */
     wsr.ps  a4
     rsync
     retw
+.Lstart_resume_irq:
+    /* Single-frame window here (SPILL_ALL_WINDOWS) -- the precondition the shared rfe
+       epilogue assumes. Hand it the interrupt-frame base and let it rfe into `first`. */
+    l32i    a1, a3, CTX_SP       /* a1 = first->sp (interrupt frame base) */
+    movi    a2, _kickos_lx6_irq_restore
+    jx      a2
     .size arch_start, .-arch_start
 
 /* ------------------------------------------------------------------------- */
 /* _thread_trampoline: a fresh thread's first-resume landing. arch_context_init     */
-/* fabricates the stack so the first retw underflows INTO this point (as a call4     */
-/* return) with a1 = the thread's stack top, a2 = entry, a3 = arg. This frame did    */
-/* NOT execute `entry` (the fabricated underflow set a1), so it makes no stack       */
-/* locals; it just calls entry(arg) via call8 (args land in a10+). If entry returns, */
+/* fabricates a 256-byte interrupt frame; _kickos_lx6_irq_restore rfe's here with    */
+/* PS.CALLINC=1 and the frame's a6/a7 holding entry/arg. The `entry` below is        */
+/* MANDATORY (not a compiled-in accident): it opens this as a real CALL4 window      */
+/* frame -- rotating a6/a7 into a2/a3 and setting WindowStart -- so the outermost    */
+/* frame overflows through valid base-save-area linkage when a deep non-blocking     */
+/* call chain wraps WindowBase around the whole 64-AR file. Without it the frame is  */
+/* a phantom with no caller linkage and the wrap corrupts a saved PC. (Xtensa ISA,   */
+/* Windowed Register Option; ref: FreeRTOS vPortTaskWrapper.) If entry returns,      */
 /* route to kickos_thread_return (noreturn).                                          */
 /* ------------------------------------------------------------------------- */
     .align 4
     .global _thread_trampoline
     .type _thread_trampoline, @function
 _thread_trampoline:
+    entry   a1, 32                /* open a real CALL4 frame: a2=entry, a3=arg */
     mov     a10, a3               /* arg -> first C argument (call8 window) */
     callx8  a2                    /* entry(arg) */
     call8   kickos_thread_return  /* noreturn */

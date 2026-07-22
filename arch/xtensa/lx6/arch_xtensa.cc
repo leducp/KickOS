@@ -60,17 +60,22 @@ static_assert(offsetof(struct arch_context, trace_tid) == 16,
 
 namespace
 {
-    // PS fields (Xtensa ISA / corebits.h): UM=bit5, WOE=bit18. A resumed thread
-    // runs windowed (WOE=1) with interrupts enabled (INTLEVEL=0).
+    // PS fields (Xtensa ISA / corebits.h): EXCM=bit4, UM=bit5, CALLINC=bits[17:16],
+    // WOE=bit18. A resumed thread runs windowed (WOE=1) with interrupts enabled
+    // (INTLEVEL=0).
     constexpr uint32_t PS_UM = 0x20;
+    constexpr uint32_t PS_EXCM = 0x10;
     constexpr uint32_t PS_WOE = 0x40000;
+    constexpr uint32_t PS_CALLINC1 = 0x1u << 16; // CALLINC=1 (the trampoline `entry` rotates by this)
 
-    // A call4 return address carries CALLINC=1 in bits [31:30]; the fresh-thread
-    // resume (arch_start) uses it so the first retw takes the 4-register underflow
-    // path into the trampoline (switch.S). The low 30 bits are the target; the top
-    // 2 bits of the live PC supply the region, so masking to 30 bits is safe here
-    // (the whole image links inside one 1 GiB region).
-    constexpr uint32_t PC_CALL4 = 0x1u << 30;
+    // Interrupt-frame layout (startup.S F_*): a fresh thread is started via the same
+    // rfe restore path as a preempted one (_kickos_lx6_irq_restore), so its initial
+    // context is a fabricated 256-byte interrupt frame. Offsets MUST match startup.S.
+    constexpr uint32_t F_PC = 0x00;
+    constexpr uint32_t F_PS = 0x04;
+    constexpr uint32_t F_A0 = 0x20; // a0..a15 contiguous, 4 bytes each
+    constexpr uint32_t F_SIZE = 0x100;
+    inline uint32_t f_areg(unsigned n) { return F_A0 + n * 4u; }
 
     // Critical-section interrupt level: mask the C-handleable levels 1-3 (the timer
     // + all device lines), leaving the high-level 4-7 / NMI zero-latency band
@@ -180,6 +185,9 @@ extern "C"
     // unmasks its line (arch_irq_unmask, or irq_register) before use.
     static volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     static volatile int g_inject_line = -1;    // pending software-injected logical line
+    // bit set = a raise landed on this logical line while masked (latched one-deep,
+    // coalesced). Redelivered through the int-7 doorbell at unmask.
+    static volatile uint32_t g_irq_pending = 0;
 
     // A PHYSICAL device interrupt bound by the chip (esp32 UART0 TX-empty -> the
     // buffered console drain). The interrupt matrix routes the peripheral source to
@@ -235,13 +243,23 @@ namespace
 extern "C"
 {
 
-// --- Context init: fabricate a first-resume frame for switch.S/arch_start ----
-// The windowed resume rebuilds the incoming call chain from the thread's stack
-// via the window-underflow vector. So the fabricated stack must look exactly like
-// a thread that suspended inside xtensa_switch after being reached from the
-// trampoline by a call4: the trampoline's a0-a3 sit in the base save area below
-// the (fabricated) switch frame, and ctx.pc is the trampoline encoded as a call4
-// return address.
+// --- Context init: fabricate a first-resume interrupt frame -------------------
+// A fresh thread is started via the SAME rfe restore path as a preempted one
+// (_kickos_lx6_irq_restore, startup.S), NOT a fabricated `retw` underflow. This is
+// the reference-canonical Xtensa task start (FreeRTOS vPortTaskWrapper / NuttX
+// up_initial_state): the thread enters the trampoline through rfe with PS.CALLINC=1
+// and the trampoline's own `entry` prologue then establishes a proper CALL4 window
+// frame. The old retw scheme left the trampoline as a phantom windowed frame with
+// no valid base-save-area caller linkage; a non-blocking exit (entry->run->exit
+// with no intervening block) descends deep enough to wrap WindowBase around the
+// whole 64-AR file, forcing that phantom frame to overflow through invalid linkage
+// -> corrupted return PC -> branch into data RAM. The rfe start makes the trampoline
+// a real ENTRY-established frame, exactly like every other windowed function.
+//
+// `entry` rotates the window by PS.CALLINC and, for a call4 frame, maps the caller's
+// a6/a7 to the callee's a2/a3 (Xtensa ISA, Windowed Register Option) -- so the entry
+// fn + arg are placed in the frame's a6/a7, and the outermost a0 is 0 (safe: the
+// trampoline never returns, and a 0 return terminates any spill/backtrace).
 void arch_context_init(struct arch_context* ctx,
                        void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size,
@@ -252,22 +270,30 @@ void arch_context_init(struct arch_context* ctx,
     uintptr_t top = reinterpret_cast<uintptr_t>(stack_base) + stack_size;
     top &= ~static_cast<uintptr_t>(15);        // 16-byte stack alignment (ABI)
 
-    uint32_t sp_tramp = static_cast<uint32_t>(top);   // trampoline frame (outermost)
-    uint32_t sp_sw = sp_tramp - 32;                   // fabricated xtensa_switch frame
+    uint32_t frame_base = static_cast<uint32_t>(top) - F_SIZE;
+    uint8_t* fb = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(frame_base));
+    for (uint32_t i = 0; i < F_SIZE; i += 4)
+    {
+        *reinterpret_cast<uint32_t*>(fb + i) = 0;
+    }
+    auto set = [fb](uint32_t off, uint32_t v)
+    { *reinterpret_cast<uint32_t*>(fb + off) = v; };
 
-    // The first retw (call4) underflows the trampoline's window from the base save
-    // area at [sp_sw - 16 .. sp_sw - 4] (Xtensa base-save-area convention).
-    uint32_t* save = reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(sp_sw - 16));
-    save[0] = 0;                                        // a0: trampoline never retw's
-    save[1] = sp_tramp;                                 // a1: trampoline SP
-    save[2] = reinterpret_cast<uint32_t>(entry);        // a2: entry
-    save[3] = reinterpret_cast<uint32_t>(arg);          // a3: arg
+    set(F_PC, reinterpret_cast<uint32_t>(_thread_trampoline));
+    // EXCM set so the restore's PS write is not interruptible mid-sequence; rfe
+    // clears it. CALLINC=1 so the trampoline's `entry` opens a CALL4 frame and
+    // rotates a6/a7 -> a2/a3. INTLEVEL=0: the thread runs with interrupts enabled.
+    set(F_PS, PS_UM | PS_WOE | PS_EXCM | PS_CALLINC1);
+    set(f_areg(1), static_cast<uint32_t>(top));         // a1 = stack top (entry's input SP)
+    set(f_areg(6), reinterpret_cast<uint32_t>(entry));  // a6 -> trampoline a2 (entry fn)
+    set(f_areg(7), reinterpret_cast<uint32_t>(arg));    // a7 -> trampoline a3 (arg)
+    // a0/a4 already 0: a0 is discarded by the entry rotation; a4 becomes the
+    // trampoline's a0 (its return address) -- 0 is the safe outermost value.
 
-    ctx->sp = sp_sw;
-    ctx->ps = PS_WOE | PS_UM;                           // windowed, ints enabled, INTLEVEL 0
-    ctx->pc = PC_CALL4
-              | (reinterpret_cast<uint32_t>(_thread_trampoline) & 0x3FFFFFFFu);
-    ctx->resume_kind = KICKOS_RESUME_COOP;              // enters via the trampoline retw
+    ctx->sp = frame_base;                               // base of the interrupt frame
+    ctx->ps = 0;                                        // unused for an IRQ-resumed thread
+    ctx->pc = 0;                                        // (PS/PC live in the frame)
+    ctx->resume_kind = KICKOS_RESUME_IRQ;              // enters via rfe (irq_restore)
 }
 
 // --- Switch: synchronous in thread context; deferred in ISR context ----------
@@ -534,8 +560,30 @@ void arch_irq_unmask(int line)
     {
         return;
     }
+    unsigned l = static_cast<unsigned>(line) & 31u;
     arch_irq_state_t s = arch_irq_save();
-    g_irq_masked = g_irq_masked & ~(1u << (static_cast<unsigned>(line) & 31u));
+    g_irq_masked = g_irq_masked & ~(1u << l);
+    // Latch-and-coalesce: a raise taken while this line was masked redelivers now
+    // through the int-7 doorbell -- the normal ISR path, not a direct post.
+    if ((g_irq_pending & (1u << l)) != 0)
+    {
+        g_irq_pending = g_irq_pending & ~(1u << l);
+        g_inject_line = static_cast<int>(l);
+        uint32_t bit = 1u << static_cast<unsigned>(SW_INT_L1);
+        phys_int_enable(bit);
+        __asm volatile("wsr.intset %0; rsync" ::"a"(bit) : "memory");
+    }
+    arch_irq_restore(s);
+}
+
+void arch_irq_clear_pending(int line)
+{
+    if (line < 0)
+    {
+        return;
+    }
+    arch_irq_state_t s = arch_irq_save();
+    g_irq_pending = g_irq_pending & ~(1u << (static_cast<unsigned>(line) & 31u));
     arch_irq_restore(s);
 }
 
@@ -545,9 +593,11 @@ void arch_irq_inject(int irq)
     {
         return;
     }
-    // A raise on a masked line is dropped (the proven sim/ARM/RISC-V semantics).
+    // Latch-and-coalesce: a raise on a masked line latches one-deep (redelivered at
+    // unmask), it is NOT dropped.
     if ((g_irq_masked & (1u << (static_cast<unsigned>(irq) & 31u))) != 0)
     {
+        g_irq_pending = g_irq_pending | (1u << (static_cast<unsigned>(irq) & 31u));
         return;
     }
     g_inject_line = irq; // recorded BEFORE ringing the doorbell (the dispatcher reads it)
