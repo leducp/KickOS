@@ -18,7 +18,8 @@ On the C6, an HP-CPU access to an HP peripheral in **user (REE) mode** passes **
 permission units in series (TRM 16.1, Table 16.1-1):
 
 1. **PMP** -- CPU-side, per-hart, checked FIRST. The KickOS per-thread MMIO grant programs
-   it (`arch_mpu_apply`, NAPOT). This is the **per-thread** line: a granted window works, an
+   it (`kickos_arch_mpu_commit`, NAPOT; `arch_mpu_apply` stashes the grant on switch-in). This
+   is the **per-thread** line: a granted window works, an
    ungranted access with no matching entry FAULTS (RISC-V PMP is fail-closed).
 2. **APM** (Access Permission Management, TRM Ch.16) -- bus-side, per **security mode**
    (TEE/REE0/REE1/REE2), NOT per-thread. Checked only if PMP passes ("If the PMP check
@@ -213,7 +214,7 @@ exists (k64drv). The C6 delivers the per-thread line K64F cannot, at the cost of
 background permit K64F does not need.
 
 ## Region / slot budget
-Unprivileged driver PMP entries (`arch_mpu_apply` builds 8): app code (RX NAPOT) + app data
+Unprivileged driver PMP entries (`kickos_arch_mpu_commit` builds 8): app code (RX NAPOT) + app data
 (RW) + private stack (RW) + GPIO MMIO (RW-NX, 8 B) = **4 of 8**. Comfortable. APM cost: one
 region of 16 (region 0 reserved as the deny catch-all; region 1 = the GPIO block permit).
 

@@ -18,6 +18,22 @@ provides two halves:
   diagnostic LED, `kdiag_led_*`); both have weak no-op defaults, so a board with
   no known LED just leaves them out.
 
+### Fault-reporter contract (panic must survive console handover)
+
+A chip's fault/exception reporter MUST, before ANY console output: call
+`kpanic_enter()` first, and emit only via `kprintf`/`console_emit` -- NEVER
+`arch_console_write_sync` directly. Both are load-bearing once a board enables
+console *device handover* (a userspace driver takes the UART): `kpanic_enter`'s
+reclaim branch re-seizes + re-inits the relinquished UART (`arch_console_reclaim`),
+and `console_emit` honors `ConsoleState` (drops the chip path while USER_OWNED,
+routes to the polled writer once RECLAIMED). A reporter that prints before
+`kpanic_enter`, or pokes the sync writer directly, would emit to a relinquished
+(possibly dead) UART and SILENTLY lose the panic banner -- the worst failure mode
+in the system. All six current fault reporters satisfy this; a new arch port must
+too. Additionally, before a board turns on handover it must supply a real
+`arch_console_reclaim` body (the generic default is a weak no-op -- a silent
+reclaim failure otherwise); today only XMC (USIC) and K64F (UART0) have one.
+
 ### Adding a board/chip (the three edit points)
 
 1. `boards/<board>/board.cmake` -- the board descriptor: one file setting
@@ -209,11 +225,17 @@ abandoned (the system never returns to boot).
 - **One-shot timer** = **SysTick** in a disarm-on-fire (tickless) mode. Deadlines
   beyond the 24-bit range fire early and the kernel re-arms the remainder (a
   harmless extra wake). A dedicated chip compare timer is the refinement.
-- **NVIC** backs `arch_irq_mask/unmask/inject`. `inject` drops a raise on a
-  masked (disabled) line to match the proven sim semantics; the spurious /
-  unhandled-IRQ error policy is revisited on real silicon.
-- **MPU** -- the shared ARMv7-M **PMSA** backend (`arch_arm_common.cc`:
-  `arch_mpu_apply` + `arch_mpu_region_encodable`) provides per-task enforcement at M2.
+- **NVIC** backs `arch_irq_mask/unmask/inject`. `inject` latches a raise on a
+  masked (disabled) line (ISPR holds pending independent of ISER): it coalesces
+  one-deep and fires at the next `unmask`. `arch_irq_clear_pending` (ICPR) is the
+  explicit discard, used at first-arm to drop pre-registration garbage.
+- **MPU** -- the shared ARMv7-M **PMSA** backend (`arch_arm_common.cc`) provides per-task
+  enforcement at M2. `arch_mpu_apply` only **stashes** the incoming region set (shared/weak);
+  the weak `kickos_arch_mpu_commit` / `kickos_arm_mpu_program` **program the hardware** from the
+  PendSV switch epilogue, after the physical swap (the deferred-commit seam,
+  `design-mpu-commit-deferred.md`). A chip with a non-PMSAv7 MPU overrides the commit, never
+  `arch_mpu_apply` (K64F SYSMPU, RP2350 PMSAv8). `arch_mpu_region_encodable` bounds a grant to
+  what the backend can describe.
   On F411 it is **build + enforcement-link validated; silicon proof pending** (the
   canonical PMSA per-thread MMIO proof is `design-spi-driver-stm32f411.md`); PMSA
   enforcement is proven on silicon on XMC4800. See `m2-readiness.md`.
@@ -320,8 +342,9 @@ save-frame, deferred switch.
   implemented, a U-mode access with no matching entry FAULTS (unlike ARM, where
   unprivileged is unrestricted until the MPU clamps). So without this, an
   unprivileged thread can't fetch its first instruction. Per-task PMP enforcement
-  landed at **M2**: `arch_mpu_apply` programs NAPOT entries on switch-in (+
-  `arch_mpu_region_encodable` for the grant check) -- **enforced on qemu-riscv**; the
+  landed at **M2**: `arch_mpu_apply` stashes the incoming set on switch-in and
+  `kickos_arch_mpu_commit` programs the NAPOT PMP entries from the `.Lswitch` epilogue after the
+  physical swap (the deferred-commit seam) (+ `arch_mpu_region_encodable` for the grant check) -- **enforced on qemu-riscv**; the
   ESP32-C6 image specifics (all-SRAM image, gp-relative small-data, code-from-RAM,
   and a separate APM/PMS bus permission unit) are still **blocked**, see
   `m2-readiness.md`. No F/D extension -> soft-float, so the switch banks no FP.
@@ -343,8 +366,9 @@ save-frame, deferred switch.
   software-generated interrupt** (unlike the Cortex-A GIC's SGIs; QEMU faithfully
   rejects a software pending-write), so a real device IRQ cannot be faked through
   it. Masking is a software bitmask (the sim's `irq_masked` twin); a raise on a
-  masked line drops. The bench's IRQ-entry-latency sample and the IRQ self-tests
-  (`irq_thread_ctx` / `irq_as_event` / `irq_mask_drop`) run on `virt` this way.
+  masked line latches one-deep (redelivered at the next unmask). The bench's
+  IRQ-entry-latency sample and the IRQ self-tests (`irq_thread_ctx` /
+  `irq_as_event` / `irq_mask_coalesce`) run on `virt` this way.
   SSIP needs S-mode (present on the QEMU virt CPU); the C6 is M/U-only, so its
   inject routes to an interrupt-matrix "from-CPU" line at HW bring-up. A real
   device-interrupt *receive* path (a PLIC over `meip`) is a driver-era concern.

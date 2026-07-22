@@ -230,8 +230,9 @@ Zero-copy vs copy tradeoff:
 
 ## 3. MPU -- the shared IPC region (the one genuinely-new isolation decision)
 
-Each core has its own MPU and programs it on every switch (`arch_mpu_apply`,
-arch/arm/common/arch_arm_common.cc:174, shared v6-M/v7-M PMSA; RP2040's M0+ carries
+Each core has its own MPU and programs it on every switch (`arch_mpu_apply` stashes the set,
+`kickos_arch_mpu_commit`/`kickos_arm_mpu_program` program it from the switch epilogue,
+arch/arm/common/arch_arm_common.cc, shared v6-M/v7-M PMSA; RP2040's M0+ carries
 the optional 8-region PMSAv6 and rp2040.ld already has `KICKOS_HAVE_MPU`
 enforcement blocks). Today no region is reachable from two cores.
 
@@ -251,7 +252,7 @@ cores' linker scripts agree on, pow2-sized and pow2-aligned so PMSA can encode i
 ```
 
 Both cores add this window to their endpoint threads'/domains' MPU region set as a
-normal R|W data region (`ARCH_MPU_R | ARCH_MPU_W`, `arch_mpu_apply` encodes it XN
+normal R|W data region (`ARCH_MPU_R | ARCH_MPU_W`, `mpu_rasr` encodes it XN
 data, arch_arm_common.cc:168). It is the ONLY region present in BOTH cores' grants.
 
 Isolation implication (IPC-4): every other region -- each core's kernel .data/.bss,

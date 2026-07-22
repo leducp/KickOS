@@ -151,9 +151,9 @@ table from one fact. UART0_IRQ = 33.
 
 Not built this pass; `KICKOS_HAVE_MPU=0`. The Cortex-M33 MPU is **PMSAv8**, which
 is materially better than the v6-M/v7-M PMSA the fleet uses today, and the seam
-already fits it (`arch_mpu_apply(regions,n)` + `arch_mpu_region_encodable`; the
-region-set contract in architecture.md treats `attr` as unprivileged rights, which
-PMSAv8 honors).
+already fits it: `arch_mpu_apply` stays the shared stash, a PMSAv8 backend overrides
+only `kickos_arch_mpu_commit` (+ `arch_mpu_region_encodable`); the region-set contract
+in architecture.md treats `attr` as unprivileged rights, which PMSAv8 honors.
 
 - **RBAR/RLAR base+limit, not base+size-pow2.** A region is `[BASE, LIMIT]` at
   32-byte granularity (RBAR bits[31:5]=base, RLAR bits[31:5]=limit, EN in RLAR).
@@ -171,10 +171,11 @@ PMSAv8 honors).
   privileged domain reached via the background map, spending ~0 explicit regions.
 - **8 regions** (MPU_TYPE.DREGION; M33 typically 8). Budget identical to the fleet:
   code(RX) + data(RW-NX) + optional MMIO + per-thread stack + guard, within 8.
-- Work: a new `arch_mpu_apply` path (RBAR/RLAR/MAIR encode) either in
-  `arch_arm_common.cc` behind a v8 switch or a small `armv8m`-specific TU;
-  `arch_mpu_region_encodable` becomes trivial (any 32-byte-aligned range encodes).
-  Silicon proof: the `mpu_fault` selftest (ungranted write faults MemManage).
+- Work: a strong `kickos_arch_mpu_commit` override (RBAR/RLAR/MAIR encode) in a small
+  `armv8m`-specific TU that reads the shared stash; `arch_mpu_region_encodable` becomes
+  trivial (any 32-byte-aligned range encodes). Silicon proof: the `mpu_fault` selftest
+  (ungranted write faults MemManage). (Now built via that commit override -- see
+  `design-rp2350-mpu-armv8m.md`.)
 
 ## DEFERRED (b): Hazard3 RV32IMAC(B) target + the ~70% shared layer
 

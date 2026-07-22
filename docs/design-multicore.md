@@ -59,10 +59,11 @@ INV-3  The arch switch target is a bare global pair, no CPU index.
   CLINT msip word). Two cores each need their own of every one of these.
 
 INV-4  One MPU/PMP, programmed on the local unit each switch.
-  `arch_mpu_apply` reloads the whole active set on switch-in (sched.cc:34):
-  ARM PMSA (arch_arm_common.cc:174), RISC-V PMP (arch_rv32imac.cc:238). Each core
-  has its OWN MPU/PMP -- programming is inherently per-core. This is an isolation
-  WIN (below), but the apply site assumes it drives the one-and-only MPU.
+  `arch_mpu_apply` stashes the whole active set at the switch decision (sched.cc:34);
+  `kickos_arch_mpu_commit` programs the hardware from the switch epilogue: ARM PMSA
+  (arch_arm_common.cc), RISC-V PMP (arch_rv32imac.cc). Each core has its OWN MPU/PMP
+  -- programming is inherently per-core. This is an isolation WIN (below), but the
+  commit site assumes it drives the one-and-only MPU.
 
 INV-5  Boot owns the whole machine on one core.
   `kmain` (kernel/init/kmain.cc:126-167) does all bring-up, creates idle+root, and
@@ -203,7 +204,7 @@ explicit memory partition and a FIFO/doorbell channel.
 ### KickOS-fit angles
 
   - Per-core MPU/domain: an isolation WIN either way -- each core enforces its own
-    domain set; the Domain model (domain.cc) is unchanged, only `arch_mpu_apply`
+    domain set; the Domain model (domain.cc) is unchanged, only `kickos_arch_mpu_commit`
     gains a per-core "which MPU" (implicit: the caller's core).
   - Tickless per core: the next-event timer (time.cc, `ktime_rearm`, sched.cc:38)
     is already per-decision; it just needs per-CPU deadline state and a per-core

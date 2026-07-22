@@ -89,8 +89,11 @@ place by proving a distinct point about the arch/chip seam:
   a privilege split, which forces the isolation model to treat both as *optional* per-arch
   capabilities (best-effort where absent).
 
-**MPU is chip-specific, not arch-specific.** `arch_mpu_apply()` is implemented at the **chip**
-layer: K64F SYSMPU, RP2040 ARMv6-M PMSA, F411 ARMv7-M PMSA, C6 RISC-V PMP.
+**MPU hardware programming is target-specific (chip or arch), not one shared routine.** The
+switch-in `arch_mpu_apply()` only **stashes** the incoming region set (shared, weak);
+`kickos_arch_mpu_commit()` **programs the hardware** from the context-switch epilogue, after the
+physical swap, and is the per-target override -- K64F SYSMPU, ARM PMSAv7 (RP2040/F411, the shared
+weak default), RP2350 PMSAv8, C6/virt RISC-V PMP, RX72M MPU. (See `design-mpu-commit-deferred.md`.)
 
 ---
 
@@ -254,9 +257,11 @@ per-arch in `arch/<arch>/include/kickos/arch/context.h`.
 - `arch_timer_arm(deadline)` / `arch_timer_disarm()` + `arch_clock_now()` -- monotonic clock +
   one-shot next-event timer. ARM: free-running TIM/DWT + compare (or SysTick). Sim:
   `clock_gettime(MONOTONIC)` + `timer_create`/`SIGALRM`.
-- `arch_mpu_apply(regions, n)` + `arch_mpu_probe_addr()` -- load per-task MPU regions on
-  switch-in; per **chip**: K64F **SYSMPU**, RP2040 ARMv6-M PMSA, F411 ARMv7-M PMSA. Sim:
-  `mprotect` over an mmap'd guard page. F103: no-op.
+- `arch_mpu_apply(regions, n)` + `arch_mpu_probe_addr()` -- `arch_mpu_apply` **stashes** the
+  incoming region set on switch-in (shared/weak); `kickos_arch_mpu_commit()` **programs the
+  hardware** from the switch epilogue, per **chip/arch**: K64F **SYSMPU**, ARM **PMSA** (v6-M/
+  v7-M), RISC-V **PMP**, RX **MPU**. Sim: `arch_mpu_apply` `mprotect`s the arena directly
+  (synchronous switch, no deferred commit). F103: no-op.
 - `arch_syscall(nr, a0..a3)` -- the user->kernel trap; runs `syscall_dispatch()` in privileged
   **thread** context so a blocking syscall is an ordinary synchronous switch (see the contract
   in `arch.h`). 64-bit args/results are split into `uintptr_t` halves (`sys/abi.h`), so no
@@ -327,7 +332,8 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
   arch-independent **syscall table**, returns in r0. Sim: a trampoline flips an emulated-
   privilege flag (+ `mprotect` toggles kernel-mem accessibility) and calls `syscall_dispatch()`.
 - **MPU per domain, first-class** (see *Memory domains* below): the running thread's domain
-  region set is loaded by `arch_mpu_apply()` on every switch-in. A thread touching a domain
+  region set is reloaded on every switch-in (`arch_mpu_apply` stashes it; `kickos_arch_mpu_commit`
+  programs the hardware after the physical swap). A thread touching a domain
   region not granted to it faults -> kernel reports. (M0 isolates granted **data** regions;
   per-thread private *stacks* -- a sibling can't scribble another's stack -- arrive with the M2
   `Domain` object, since M0 stacks still live in the kernel pool, not the arena.)
@@ -437,7 +443,8 @@ API. Two flavors:
   The kernel's generic ISR stub masks the line, posts the driver's notification
   (sem/thread-flag), flags reschedule -> PendSV switches to the now-ready driver task; the next
   `irq_wait` auto-re-arms the consumed line, so no explicit ack is needed (`irq_ack(h)` stays an
-  OPTIONAL early re-arm for the compute-then-wait shape on drop-on-masked/edge sources). The
+  OPTIONAL early re-arm that reacts sooner to a latched raise; the latch-and-coalesce contract
+  keeps the event either way). The
   driver never runs in handler mode.
 
 **API sketch (arch-neutral):** `irq_attach/detach` (in-kernel); `irq_register/wait/ack/unmask`
@@ -515,10 +522,10 @@ feeds the slave app.
 The object/credential model layered on the MPU enforcement. Enforcement is only meaningful once
 hardware constrains unprivileged userspace, so this model is designed against *all* object types
 that exist (semaphore, mutex, IRQ handle, memory grant), not over-fit to one. **Status: the
-SEMAPHORE capability path is LANDED (M3), silicon-validated under enforcement; `CAP_MUTEX` /
-`CAP_ENDPOINT` are reserved type values whose object pools land additively later.** The contract
-below is code-synced to `kernel/include/kickos/cap.h`, `kernel/syscall/cap.cc`,
-`kernel/syscall/syscall.cc`.
+SEMAPHORE, PI-MUTEX (`CAP_MUTEX`), and ENDPOINT/IPC (`CAP_ENDPOINT`) capability paths are LANDED
+(M3), silicon-validated under enforcement; each object pool was added additively via the recipe in
+Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h`,
+`kernel/syscall/cap.cc`, `kernel/syscall/syscall.cc`.
 
 - **Per-task typed handle table, not global ids or fds.** A global object id every task can name
   is ambient authority -- the opposite of the isolation pillar. Each `Thread` embeds a fixed
@@ -587,14 +594,23 @@ fixed kernel buffers rather than aliasing (a fault reporter that `%s`-prints an 
 pointer is an info-leak oracle). Handles then resolve at that already-checked boundary. This
 closes the confused-deputy path a whole-arena syscall raise would leave open.
 
-**Console device handover.** The kernel owns the buffered debug console at boot. When a userspace
-UART driver later takes the device as a capability, two drivers cannot share one peripheral, so
-the kernel must **relinquish** it (disable the TX interrupt, detach, flush) -- teardown built
-against the real handover caller, not speculatively. The **field panic path must reclaim** the
-UART: force-retake the peripheral, re-init it to a known baud/state (userspace config is
-untrusted), then polled-print. The diag LED stays the always-present 1-bit last resort. Routing
-userspace output through a kernel syscall to "share" the device is rejected -- an ambient-authority
-console service contradicts the microkernel split.
+**Console device handover.** The kernel owns the buffered debug console at boot. Because two
+drivers cannot share one peripheral, a three-state ownership axis `g_console_state`
+(KERNEL_OWNED / USER_OWNED / RECLAIMED) gates `console_emit` ahead of its buffered-vs-sync
+decision: in USER_OWNED the kernel touches the device on no path (RTT still carries kernel
+output). The privileged syscall `kos_console_publish` performs the handover -- it
+**relinquishes** the buffered path via `console_tx_deinit` (flush, disable the TX interrupt,
+detach/NVIC-mask, disarm), takes a kernel ref on the userspace driver's stdout endpoint, then
+flips the state to USER_OWNED last; a stale chip writer that raced the flip is drained (via the
+`g_chip_writers` count, with the publisher yielding at lowered priority so a lower-priority
+writer can finish) before publish returns. The **field panic path reclaims** the UART:
+`kpanic_enter` calls `arch_console_reclaim` and flips to RECLAIMED, and `kickos_isr_fault`
+funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
+the diag LED stays the always-present 1-bit last resort. Still to build: the per-chip
+`arch_console_reclaim` bodies (force-retake the peripheral and rewrite every in-window register
+to a known baud/state, since userspace config is untrusted -- weak no-op today) and the userspace
+UART driver itself. Routing userspace output through a kernel syscall to "share" the device is
+rejected -- an ambient-authority console service contradicts the microkernel split.
 
 **Service publication.** A published userspace driver = **endpoint capability (control) +
 shared-memory grant (data)**. How a client finds and may invoke a server across domains: (1)

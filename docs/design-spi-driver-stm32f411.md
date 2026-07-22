@@ -11,8 +11,9 @@ ack`), and the k64drv privileged-shim -> unprivileged-driver structure
 
 ## Why this exists -- the honest gap it closes (read first)
 On PMSA the MPU is CPU-side and covers ALL address space, peripherals included. A granted
-DEV MMIO window is therefore a GENUINE per-thread capability: `arch_mpu_apply` reprograms
-the window on every switch-in, so a thread reaches exactly its granted registers and an
+DEV MMIO window is therefore a GENUINE per-thread capability: the per-thread MPU is reprogrammed
+on every switch-in (`arch_mpu_apply` stashes the grant, `kickos_arch_mpu_commit` programs it from
+the switch epilogue), so a thread reaches exactly its granted registers and an
 ungranted peripheral access faults MemManage. This is structurally unlike K64F, where the
 SYSMPU is bus-slave-side (flash/SRAM/FlexBus only) and peripherals are gated by the AIPS
 bridge per-4KB-slot, all-user -- k64drv proved a K64F peripheral window grant is INERT and
@@ -97,7 +98,7 @@ Then the driver announces-before-poke (k64drv idiom) and reads an UNGRANTED peri
 GPIOB `0x4002_0400`, outside the 32 B SPI1 window. On PMSA this MUST fault MemManage;
 `kickos_armv7m_fault_report` labels it "MPU FAULT" and prints `MMFAR=0x40020400` (a data
 access violation sets MMFSR/MMARVALID; F411 startup.S routes MemManage -> HardFault_Handler
--> the reporter; MEMFAULTENA is set by `arch_mpu_apply`). This is the per-thread peripheral
+-> the reporter; MEMFAULTENA is set by `kickos_arm_mpu_program`). This is the per-thread peripheral
 isolation result the fleet was missing -- and, being terminal, it is the LAST thing the
 driver does.
 

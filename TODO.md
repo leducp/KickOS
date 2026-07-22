@@ -14,6 +14,100 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is `M1_state.md`; the
 board/console readiness matrix is `docs/m2-readiness.md`.
 
+## M3 -- landed so far (2026-07-20)
+- [x] `sys_cpu_clock_hz()` read syscall; [x] per-task capability handle table (sem ABI) +
+      authenticated-grant delegation; [x] priority-inheritance mutex (CAP_MUTEX). All on master,
+      silicon-validated UNDER ENFORCEMENT on K64F (SYSMPU) + C6 (PMP). Design in Book ch.8.1 +
+      `reference/architecture.md`.
+
+Remaining M3 (to finish the milestone) -- gated flow (fable design review -> branch -> silicon):
+- [x] **Writable user-pointer bound-check** at the syscall boundary (arch-neutral) -- landed
+      ade1879 (`user_writable_ok`; clock_now retrofitted). A recv into an unchecked out-buffer was a
+      privileged write oracle; the endpoint recv buf + badge-out reuse it.
+- [x] **Endpoint/IPC object (CAP_ENDPOINT)** -- additive per `docs/design-m3-endpoint-stagei.md`
+      (fable-reviewed): `SlotPool<Endpoint,N>` + `endpoint_refs` + `recv_holders` (struct field) +
+      one `cap_resolve` case + obj_ref_inc(rights)/drop and obj_close_protocol (EPIPE-wake) arms;
+      synchronous rendezvous, kernel-copied bounded payload, parks on the shared `wq_block`/
+      `wq_pop_highest` primitive; send/recv/create syscalls 26/27/28 (recv gated on the writable
+      check). Aliases/object-side badging DEFERRED (root-only; console needs one unbadged cap).
+      Landed on master; SILICON-VALIDATED UNDER ENFORCEMENT on K64F (SYSMPU) + XMC4800 (PMSA),
+      selftest 39/39 each incl. the HAVE_MPU-gated endpoint_bound + crossdomain (emulator qemu
+      armv7m + qemu-riscv 37/37). Rest of the fleet build-only (only k64f/xmc on the bench).
+- [x] **Console device handover** -- `ConsoleState{KERNEL_OWNED,USER_OWNED,RECLAIMED}` drop-routing,
+      `console_tx_deinit` (USER_OWNED set last) + the B1 in-flight-writer drain, `kos_console_publish`
+      (#29, privileged), stdout cap seated at index 0, `_write` probes `kos_send(0)` then falls back.
+      Userspace polled XMC UART driver (`user/driver/xmcuart` + `consoledemo`). SILICON PASS on XMC:
+      end-to-end app printf -> IPC -> userspace driver -> wire, under enforcement.
+- [x] **Panic-path console reclaim** -- `arch_console_reclaim` per chip (XMC full in-window rewrite,
+      KSCFG.MODEN-first; K64F uart0 + zero MODEM/C3/S2/IR/C7816), `kickos_isr_fault`->`kpanic_enter`
+      funnel (all 6 arches audited safe), driver-death EPIPE-wake. SILICON PASS on XMC (scramble-then-
+      panic: banner survives a driver-garbled UART; one intrinsic leading line-transient byte, doc'd).
+      K64F reclaim built + reviewed, silicon-pending (no K64F console driver yet). Porting invariant in
+      `reference/porting.md`.
+- [x] **User-selectable CPU clock / low-power mode** -- `arch_cpu_clock_set` mechanism seam + syscall
+      30 (privileged) + coherence tail (epoch re-anchor sole mult-writer, baud re-derive, timer re-arm,
+      USER_OWNED refusal). SILICON PASS on XMC (144/48) + K64F (120/20.97): monotonic `now` across
+      retune, ratio-correct timing, no fault. XMC full retune, K64F staged; other chips weak-default-0.
+      Policy -> future userspace power-manager/clock-tree service (roadmap). Read side already landed.
+Silicon target for the handover: the CPU-side-MPU boards (XMC/RX/C6) where per-thread peripheral
+isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
+
+- [ ] **Teensy 4.1 (i.MX RT1062, M7) MPU-enforce hang -- SILICON-PENDING, fable-gated** -- the
+      `teensy41-st -DKICKOS_HAVE_MPU=1` build hangs deterministically at test 6 `rr_interleave`:
+      the switch INTO the first KOS_POLICY_RR worker never delivers control (no `# rrw enter`).
+      No-MPU Teensy is 41/41 and MPU preempt (test 3) passes, so it is {enforce}x{RR}x{M7} only.
+      NOT an M3 merge blocker -- enforcement is silicon-proven on 4 backends incl. an armv7m
+      PMSAv7 (XMC). Full diagnosis + ruled-out list + live hypotheses in
+      `docs/design-teensy-mpu-hang.md`. Next: bench CFSR/SHCSR/MMFAR + PendSV re-entry dump on
+      the first RR slice; fable review before any core change.
+
+Book + exploratory (M3-adjacent, not milestone-gating):
+- [ ] **Book chapter: the syscall mechanism** (dedicated subagent) -- the user<->kernel boundary
+      from the ground up: the trap trampoline per arch (ARM SVC / RISC-V ecall / RX INT / Xtensa /
+      sim mprotect-emulated), the syscall-number + arg-register ABI (KOS_SYS_*, value-in-reg vs
+      out-pointer), the privilege transition (nPRIV/MPP/PSW.PM), the return path, validate-then-use,
+      and the minimal-syscall-surface design (debug-console `write` the sole kernel exception;
+      read/open/socket = userspace stubs over IPC). Slot ch.2.x/3.x; timeless per Book conventions.
+      It is the current gap: taught only obliquely by 7.1 (boundary alignment) + 8.1 (resolve).
+- [ ] **Exploratory spike: microkernel IPC performance** (M3 #4 -> M5). The Mach-era "IPC too slow"
+      critique vs the L4/seL4 answer -- (a) fast SYNCHRONOUS IPC (direct switch to the woken
+      receiver + register/bounded-copy; KickOS's sem_post already hands the token off and drives an
+      immediate switch, so the fastpath shape exists) for control/RPC, and (b) shared-memory + async
+      notifications (non-blocking) for throughput -- the M5 cross-core design
+      (`docs/design-multicore-ipc.md`) already uses an SPSC ring + doorbell, exactly that shape.
+      Survey the literature, map both to CAP_ENDPOINT (#4) + the M5 rings, recommend the
+      control-plane-vs-data-plane IPC strategy + a micro-benchmark. Good deep-research candidate.
+
+## Clock hardening (2026-07-20) -- clock off the debug-domain / narrow counters
+Root cause: v7-M `arch_clock_now` used DWT_CYCCNT (core DEBUG power domain), sw-extended 32->64.
+On K64F+XMC silicon DWT intermittently returns aliased garbage -> phantom 2^32 wrap -> clock
+leaps ~35 s -> every timed wait strands (intermittent ~50-75%, silicon-only). Masqueraded as a
+"test-5 stall" and invalidated this session's earlier single-run silicon claims. Fragility class
+= narrow counter + sw wrap-extension (fails via a bad read OR a missed wrap). Fix = a wide,
+reliably-readable, NON-debug free-running peripheral counter. Book ch.2.1 teaches it.
+- [x] **K64F** 64-bit PIT -- SILICON 20/20 (+ mutex 10/10, under enforcement).
+- [x] **XMC4800** 64-bit CCU4 (4 slices concat) -- SILICON 18/18; fixed fCCU WFI-gating (SLEEPCR).
+- [~] **F411/F302** TIM2(32b), **F103** TIM2->TIM3 chained, **SAM3X** TC0 ch0(32b) -- on master,
+      reviewed+fixed (f103 tear-discriminator; per-timer overflow-IRQ wrap observer; f411 APB1LPENR).
+      **BUILD-ONLY, SILICON PENDING.**
+- [~] **ESP32 (Xtensa)** 64-bit TIMG0 (UPDATE-latch) -- also fixes a latent CCOUNT WAITI-freeze.
+      **BUILD-ONLY, SILICON PENDING.**
+- RISC-V (CLINT mtime) + RX (CMTW): already sound, unchanged.
+
+Silicon-test-later (fleet+Xtensa; `.session/*-clock*.patch` are backups):
+1. idle-wrap observer: quiescent > 1 wrap period (51/67/59/102 s) -> clock still correct.
+2. f103: soak across chain wraps -> no +59.6 s leap, no backward stall.
+3. rate/monotonicity vs wall clock (2x error = wrong Hz); no backward step under IRQ load.
+4. WFI keeps counting (f411 APB1LPENR; sam3x FSMR Sleep-not-Wait; Xtensa TIMG UPDATE-latch settle +
+   DPORT ungate assumption -- the two things unverifiable build-only).
+5. overflow lands in the chip clock ISR (NVIC TIM2=28/TIM3=29/TC0=27, RM-sourced).
+6. debug-halt > 1 wrap period loses a wrap (DBGMCU freeze unset) -- bench artifact, not a bug.
+
+Clock follow-ups (not blocking): arch_trace_now + KICKOS_BENCH still read raw DWT/CCOUNT (telemetry
+may glitch on K64F/XMC -- tolerable, NOT the scheduler clock); ticks->ns epilogue duplicated ~7x
+(hoist an arch/arm/common helper). ENV (this box): sim/kickcat_slave build needs `tinyxml2`
+reinstalled -- a 2026-07-20 system change dropped it; unrelated to KickOS.
+
 ## M1 -- clocks (fleet audit 2026-07-09; detail in `M1_state.md`)
 
 Every board's timing math is ACCURATE (no ESP32-C6-class constant bug survived the
@@ -183,6 +277,37 @@ below where they were previously mislabeled.
         cross-domain trap, 2026-07-17). REMAINING: m2-review-followup #5 (RX rounds
         misaligned regions instead of skipping -- fail-closed drift, build-robustness).
         See `docs/m2-review-followups.md`.
+  - [~] **MPU-commit / deferred-switch soundness race -- armv6m FIXED, fleet-wide PENDING.**
+        `switch_to()` calls `arch_mpu_apply(next)` EAGERLY, but every arch with a deferred
+        (PendSV/software-IRQ) switch keeps running the OUTGOING thread with `next`'s region
+        set until the physical swap -> it can fault on its own stack (or, worse, on a no-MPU
+        build, silently run under the wrong isolation). Found on RP2040/armv6m under
+        mutex-chain churn (selftest test 14 HardFault; cur/MPU=chA while chC physically ran),
+        fixed by committing the MPU in the PendSV epilogue (armv6m `kickos_armv6m_mpu_commit`,
+        silicon 42/42 on the 50ms x300 repro). LATENT the same way on **v7-M / RX / RISC-V**
+        (all eager-apply + deferred switch) -- unobserved there under looser timing, but a real
+        soundness hole. Complete fix = move MPU-commit into EACH deferred arch's switch
+        epilogue (stash-in-apply / commit-after-swap). GATE ON A FABLE REVIEW + per-arch
+        silicon re-validation before it lands (core switch-path change). Pre-M4.
+- **[M4] level-trigger tier-1 bindings.** The tier-1 IRQ contract is now latch-and-coalesce
+  (a raise on a masked line latches one-deep, redelivered at unmask -- edge-safe, no lost
+  pulse). A LEVEL source needs the opposite at rearm: after the driver clears the device, a
+  still-asserted line must NOT redeliver a stale latch. The seam is already in place --
+  `arch_irq_clear_pending` (added with the coalesce fix) discards the latch; the M4 work is a
+  per-binding trigger-type bit in `IrqBinding` (default EDGE) that, for LEVEL sources, makes
+  the `irq_wait`/`irq_ack` rearm do `arch_irq_clear_pending(line); arch_irq_unmask(line)` (a
+  genuinely-asserted level source re-latches on its own; a deasserted one stays quiet). NOT
+  added now: no user/test drives a level binding yet (milestone discipline -- the API bit lands
+  with its first consumer). Phantom-defense for level devices lives here too.
+- **[M4, lands with bulk-rearm] identity-free coalesced redelivery on the software backends.**
+  Today sim/rv32imac/xtensa/rxv3-soft carry a coalesced redelivery through ONE shared cell
+  (`pending_irq` / `g_inject_line`) + one physical doorbell, clearing the per-line pending bit
+  as it is rung -- so AT MOST ONE `arch_irq_unmask` with a pending redelivery may fire per
+  IrqLock region (a second clobbers the first and loses an event). Safe today (register/wait/ack
+  each unmask exactly one line per lock section), but a future BULK-rearm path (re-arm many lines
+  under one lock) would violate it. Fix when that path lands: stop clearing `g_irq_pending` at
+  ring time; have the doorbell dispatcher drain `g_irq_pending & ~g_irq_masked`, looping
+  `kickos_isr_irq` over the set bits. Contract stated at the `arch_irq_unmask` decl (arch.h).
 - **[anytime coherence -- NOT M2] object-pool mutualisation** -- DONE (step 1). The semaphore
   pool is a generational `SlotPool<T,N>` (slotpool.h); the thread pool is grouped into a
   tailored `ThreadPool` struct (thread.h) -- deliberately **not** SlotPool: thread liveness is
@@ -191,11 +316,11 @@ below where they were previously mislabeled.
   one pool would be false-DRY. Full unification (a shared handle codec across sems + the M3
   capability store) waits for that genuine second SlotPool-shaped case. (No MPU dependency --
   was mislabeled "M2 handle table"; it's the M3-caps substrate + anytime coherence.)
-- **[anytime coherence -- NOT M2] general freeing allocator (M4).** `arch_ram_alloc` is a
+- **[anytime coherence -- NOT M2] general freeing allocator (M5).** `arch_ram_alloc` is a
   wholesale bump allocator (freed only at reset). Default thread stacks now reclaim via a
   single-size-class intrusive free list in `ThreadPool` (thread.h) -- the special case that needs
   no size metadata (one class == `KICKOS_USER_STACK_SIZE`, link stored in the dead block). A
-  GENERAL multi-size-class freeing allocator for `arch_ram_alloc`/`kos_ram_alloc` at large is M4;
+  GENERAL multi-size-class freeing allocator for `arch_ram_alloc`/`kos_ram_alloc` at large is M5;
   it would subsume this free list. Until then, only default stacks are reclaimable.
 - **[anytime coherence -- NOT M2] user-pointer validation at the syscall boundary.** M2 is MPU
   *enforcement*; validating a user pointer is arch-neutral kernel logic that matters MORE at M1
@@ -250,9 +375,17 @@ below where they were previously mislabeled.
 - **Console device handover (driver era)** -- userspace UART/console driver takes the
   peripheral as a capability; kernel relinquishes it (`console_tx_deinit`), panic path moves
   to a kernel-retained transport. See `docs/reference/console.md` "Future".
-- **M4 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spikes
+- **M5 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spikes
   2026-07-19: `docs/design-multicore.md` (AMP-vs-SMP feasibility on rp2040 + rp2350) and
-  `docs/design-multicore-ipc.md` (the RP2040 cross-core IPC). The spike REVISED the earlier
+  `docs/design-multicore-ipc.md` (the RP2040 cross-core IPC); the SMP candidate ranking + staged
+  model + the SMP-is-per-chip-capability constraint are in `docs/design-m5-smp.md`. Candidate
+  ranking by the real gate (inter-core atomic + arch-switch maturity): **RP2350 BEST** (M33
+  LDREX/STREX enable fine-grained; also 2x Hazard3 -> prove SMP on ARM and RISC-V of one chip),
+  **RP2040 big-lock-only** (armv6m has no exclusives; SIO hardware spinlocks -> single big kernel
+  lock forever), **ESP32 LX6 last** (S32C1I CAS exists but windowed ABI is hardest; unblocked now
+  that the fresh-thread-start bug is fixed at 700ec98, still gated on the model proven on M-profile
+  first). Staged: (1) big-kernel-lock SMP first (correct on every dual-core, single-core build
+  byte-identical), (2) fine-grained only where exclusives exist (RP2350), (3) LX6 after. The spike REVISED the earlier
   "SMP-only, NOT AMP" call below: ARMv6-M (M0+) has no atomics (no LDREX/STREX; the SIO bus is
   non-atomic too), so RP2040 SMP is capped at coarse Big-Kernel-Lock forever -- AMP (two
   core-private kernels + IPC) is the better FIRST step there, and fine-grained lock-free SMP is
@@ -275,7 +408,7 @@ below where they were previously mislabeled.
   - **Already seam-ready:** the `KICKOS_*_BARRIER` publish seams (console_tx / rtt) are the
     fence-injection points -- flip to real fences on the SMP build. Keep centralising `IrqLock`,
     structs-over-globals, no ad-hoc masking -> keeps this a redefinition, not a rewrite.
-  - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M4).
+  - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M5).
   - **AMP-first on RP2040 (spike verdict, the recommended near-term step).** Two core-private
     `Kernel` instances -- the `KICKOS_MULTI_INSTANCE` per-instance seam (`instance.h:89`, built
     for the KickCAT multi-slave sim) is the ~80% substrate; re-key it on SIO CPUID instead of
@@ -298,3 +431,124 @@ below where they were previously mislabeled.
     unsynchronised console + boot-on-one-core + single `arch_mpu_apply`. The arch globals
     `g_arch_current`/`g_arch_next` (+ rv32imac `g_isr_depth`/`g_clint_msip`) are the shared
     prerequisite that gates even AMP.
+
+## Pre-M4 perf: caches / flash accelerators (fleet audit 2026-07-22)
+
+Per-chip audit (each vs its RM in `/home/leduc/sync/obsidian/docs/`): does the HW have a
+software-controllable cache/accelerator, and do we use it? Binary, not "fast enough".
+
+- [x] **RX72M: enable the 8 KB ROM cache** (pre-M4) -- DONE (5ab2575). `rom_cache_enable()` in
+      `chip_rx72m.cc`: after clock-up, `ROMCIV`=1 + bounded poll, then `ROMCE.ROMCEN`=1 (not
+      PRCR-gated; 16-bit access). Silicon-validated UNDER ENFORCEMENT: selftest 43/43 + soak 389,
+      and the enforce bench went 46772 -> 15405 ns/sw (~3.0x, the flash-instruction-fetch win).
+      Caveat carried forward: invalidate after any future flash self-program (auto-invalidated at
+      reset today). RM sec 64.4.1/64.4.2/64.7.1.
+- [x] **Teensy M7: enable the D-cache** (pre-M4) -- DONE. Silicon-validated (selftest 43/43 +
+      a ~38 M-switch soak under enforcement, a measurable throughput win) and made the imxrt
+      default (`KICKOS_IMXRT_DCACHE ON`, `arch/CMakeLists.txt`); enabled via
+      `kickos_armv7m_dcache_enable()` in `chip_imxrt1062.cc` arch_init. Safe today (single-core,
+      no DMA); the coherency obligation arrives with M4-era DMA (non-cacheable DMA pool or
+      per-buffer clean/invalidate) -- carry this into the M4 driver work.
+
+Fleet re-validation follow-ups (from the 2026-07-22 M3-branch gate; see `M3_raw_meas.md`):
+- [x] **WROOM (Xtensa LX6) soak wedge -- FIXED (700ec98).** Was pre-existing (master), Xtensa-only.
+      Root cause: `arch_context_init` started fresh threads via a fabricated `retw` into a trampoline
+      with NO `entry` instruction (phantom window frame, garbage caller-linkage); a worker running
+      entry->run->EXIT with no block walked WindowBase around the 64-AR/16-slot file until it collided
+      with the phantom frame -> spill garbage -> branch into stack -> silent halt (boundary ~4 = file
+      size / per-thread window use). Fix: start fresh threads via the `rfe` path with a real `entry`
+      prologue (FreeRTOS/NuttX-canonical); COOP block/resume untouched. Fable-reviewed SOUND;
+      HW-validated on WROOM (soak 25/25, selftest 41/41 regression, bench baseline). This also
+      unblocks the ESP32 LX6 SMP path.
+- [x] **RP2350 (Cortex-M33) ARMv8-M PMSAv8 MPU backend** -- DONE (e2179da). {base,size,attr} seam ->
+      RBAR/RLAR base+limit + MAIR indirection; strong `kickos_arch_mpu_commit` override on the shared
+      deferred-commit seam (K64F precedent); compile-time-gated so the v7-M/v6-M fleet is byte-identical.
+      Fable-reviewed SOUND; silicon-validated on RP2350: selftest 43/43 under enforce, `mpu_fault` clean
+      cross-domain MemManage denial, bench + soak 411+ no fault. RP2350 now enforces. (Advisories A-D
+      below are the non-blocking follow-ups.)
+- [ ] **[post-M4] Port the Thread-Metric benchmark suite to KickOS** -- so we can compare honestly
+      against FreeRTOS / Zephyr / ThreadX / PX5 (all run Thread-Metric). Run all contenders on ONE
+      board at ONE fixed clock, MPU-on-both-sides where applicable, reporting core/clock/MPU/flags +
+      the exact "what is a switch" definition. Published raw-switch figures put KickOS's bracketed
+      switch (~66-83 cyc M4/M7) in the ChibiOS band -- but every public number is no-MPU/monolithic,
+      so only a like-for-like suite run is defensible. (Zephyr's ~468-524 cyc coop figure looks
+      inflated by default-config/methodology, not the kernel -- the suite run would settle it.)
+- [ ] **RP2350 v8-M backend advisories A-D (fable review, non-blocking hardening).** From the
+      PMSAv8 backend review; none block first enforcement, all are build-robustness / fail-closed
+      drift.
+      (A) **Fail-closed on non-32-exact regions** in `arch_arm_pmsav8.cc` commit -- mirror rxv3's
+          per-region `arch_mpu_region_encodable` check and SKIP (not round) an unencodable region,
+          since `__kickos_appdata_start` abuts kernel `_ebss`.
+      (B) **Alignment ASSERT** `ASSERT((__kickos_appdata_start & 31) == 0)` in `rp2350.ld` (and add
+          the same to `mk64f.ld` -- same latent edge).
+      (C) **`DREGION >= kMaxPendRegions` boot check** in `kickos_arm_pmsav8_init` (read
+          `MPU_TYPE.DREGION`, do not hard-code 8; fail loud if the budget does not fit).
+      (D) **Comment nit** `arch_arm_pmsav8.cc:45-46` / `regs_v8m.h:36-37` -- the PRIVDEFENA-background
+          note overstates: a MATCHED region's AP also bounds privileged access.
+- [ ] **Skip-if-unchanged MPU-commit optimization (post-M3, fleet-wide perf).** The per-switch
+      `kickos_arch_mpu_commit` reprograms the MPU + issues DSB;ISB UNCONDITIONALLY every switch
+      (measured ~2.3x throughput cost on RP2350 enforce vs mpu-off). Skip the reprogram + barriers
+      when the next thread's region set is unchanged (same-domain switch / region-set generation
+      compare). Helps EVERY enforce board. Note the SMP caveat already flagged in
+      `docs/design-rp2350-mpu-armv8m.md`: any such cache must be per-core (or omitted) under M5, not
+      a shared static.
+- [ ] **ESP32-C6 enforce-bench ns-scaling** (measurement-only, not M3). `cyc` counts correct; ns
+      ~8x high because `rdcycle` traps on the C6 so the bench samples an MMIO counter whose rate
+      differs from `SystemCoreClock`. Also RP2350 bench `irq` reads a bogus 1 cyc (irq-probe not
+      wired for the M33). Per-chip bench-instrumentation cleanup, not a kernel bug.
+- **No gap (already accelerated), for the record:** STM32F411 ART (ICEN|DCEN|PRFTEN + 2WS,
+  `chip_stm32f411.cc:171`); STM32F103/F302 prefetch buffer (M3/F3 have no I/D cache in HW);
+  K64F FMC cache+speculation on by reset default (`PFB*CR=0x3004001F`); XMC4800 PMU buffers
+  default-on + WS set (`chip_xmc4800.cc:373`); RP2040 XIP cache on by bootrom; ESP32-C6 cache
+  fronts external flash only -> irrelevant to KickOS's HP-SRAM execution.
+- **RP2350 (deferred M4): XIP cache on by reset + bootrom-invalidated -> NO enable needed** (unlike
+  the M7). No Device anti-speculation wrap either -- the M33 isn't speculative and the QMI
+  bus-ERRORS (not stalls) on unbacked reads. For the PMSAv8 backend, carry: (1) bound the RX
+  region to actual code extent (RLAR arbitrary limit, no pow2 pad) -- the M7 "bounded code"
+  lesson; (2) set `XIP_CTRL.NO_UNCACHED_*`/`NO_UNTRANSLATED_*` so mirror-window aliases
+  bus-error (saves MPU/SAU regions); (3) MAIR NORMAL-WBWA on the flash region so the cache
+  serves hits under enforcement; (4) invalidate-by-address after any future flash program.
+  Fold into `docs/design-rp2350-mpu-armv8m.md`. (Also: `docs/design-rp2350.md:12` doc-drift --
+  says UART0/GP0-1, actual port is UART1/GP4-5; fix when that file is next touched.)
+- Common caveat for ALL the flash caches/buffers: they are NOT coherent across a flash
+  program/erase -- any future in-field flash-write/OTA path must invalidate the relevant
+  cache/speculation buffer. Not a live risk (KickOS is a fixed flash image today).
+
+## Post-M6 optimizations (not scheduled)
+
+- [ ] **RISC-V context-switch cost** (post-M6, fable-gated) -- the rv32 trap saves the full
+      integer file (~60 stack words/switch vs armv7m's ~18); ~3.5x per-handoff, general to RISC-V
+      (Hazard3 shares it, NOT C6-specific). Levers: (a) cooperative fast-path (callee-saved-only
+      voluntary switch, ~2x, portable incl. C6); (b) optional Zcmp `cm.push`/`cm.pop` compile-gated
+      path (Hazard3-only, code-size mainly). Prerequisite: fix the rv32 bench bracket (it currently
+      excludes the save/restore). Full design in `docs/design-riscv-switch-cost.md`; roadmap
+      "Later". Surfaced by the M3 C6 enforcement soak (C6 ~10.5k iters vs XMC ~33.9k, same window).
+
+- [ ] **ARMv8-M TrustZone kernel-confinement backend -- opt-in, per-chip** (post-M6, fable-gated,
+      needs the M4 service model + M5 SMP settled). The armv8-M-with-Security-Extension mechanism for
+      kernel confinement: kernel/TCB in Secure state, apps in Non-secure. NOT per-task isolation and
+      NOT an MPU replacement (MPU_NS still does all per-task work, same per-switch cost); it is the
+      strongest armv8-M realization of "Option B" (confine the kernel), layered ON TOP of Option B,
+      not instead of it. Buys a hardware TCB boundary (NS-privileged cannot touch Secure memory) + a
+      PSA-style secure-services partition for roots-of-trust that fits the capability-gated-services
+      model. Machinery: SAU/IDAU partition, secure-gateway veneers + S/NS call ABI, banked SPs, NVIC
+      ITNS interrupt targeting, a separate Secure build/link. Per-chip capability -- M23/M33/M55/M85
+      MAY implement it, detect + fall back to Option B alone; RP2350's M33 is a concrete target (also
+      the PMSAv8 + SMP target). Security/assurance play, not perf. Design in
+      `docs/design-armv8m-trustzone.md`.
+- [ ] **Confine the trusted kernel with an explicit MPU map ("Option B") -- FLEET-WIDE hardening**
+      (post-M6, fable-gated, per-arch). Today privileged/kernel execution runs UNCONFINED on each
+      backend's permissive background; a kernel wild pointer rides it silently instead of faulting.
+      Option B removes that background so even the kernel is confined and a stray kernel access
+      FAULTS (defense-in-depth / debuggability -- catch our own bugs early; NOT a security boundary,
+      the kernel is trusted). This is NOT a bug fix anywhere -- the M7 speculation stall is already
+      closed by "Option A" (wrap the leaky external Normal bands, keep PRIVDEFENA;
+      `docs/design-teensy-mpu-hang.md`); no other arch has that stall. Per-arch mechanism:
+        - armv7m/armv6m PMSA (XMC/F411/RP2040/microbit): drop PRIVDEFENA + region-0 4 GiB
+          Strongly-ordered/no-access/XN floor + explicit kernel regions (code RX, RAM RW, periph
+          Device). M0+ is region-tight (8 descriptors).
+        - K64F SYSMPU: restrict RGD0 (today supervisor-full) + explicit supervisor RGDs.
+        - RISC-V PMP (C6): LOCKED PMP entries (bind M-mode too).
+        - RX-MPU (RX72M): restrict the supervisor region set. Xtensa (WROOM): N/A (no MPU).
+      Cost: forks the fleet-wide "privileged = background" contract every board rests on (incl. the
+      armv7m non-pow2-arena-drop path) -- needs a per-arch fable pass + probe-ful bring-up.
