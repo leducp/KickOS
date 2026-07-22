@@ -63,6 +63,13 @@ namespace
     constexpr uint16_t PRCR_LOCK = 0xA500;          // key 0xA5, all protect bits 0
     constexpr uintptr_t SYSTEM_MEMWAIT = 0x0008101C; // 8-bit code-flash wait control (sec.9.2)
     constexpr uint8_t MEMWAIT_ONE_WAIT = 0x01;       // MEMWAIT=1: one wait (required >120 MHz)
+
+    // --- FLASH ROM cache (UM sec.64.4.1/64.4.2). 16-bit access; not in the PRCR
+    // Table 13.1 protect list, so no unlock needed (unlike the clock regs). ---
+    constexpr uintptr_t FLASH_ROMCE = 0x00081000;    // ROM cache enable (sec.64.4.1)
+    constexpr uintptr_t FLASH_ROMCIV = 0x00081004;   // ROM cache invalidate (sec.64.4.2)
+    constexpr uint16_t ROMCE_ROMCEN = 1u << 0;       // enable ROM cache
+    constexpr uint16_t ROMCIV_ROMCIV = 1u << 0;      // write 1 = start; reads 1 while in progress
     constexpr uintptr_t SYSTEM_MSTPCRA = 0x00080010; // 32-bit module stop A
     constexpr uintptr_t SYSTEM_MSTPCRB = 0x00080014; // 32-bit module stop B
     constexpr uint32_t MSTPA_CMTW1 = 1u << 0;       // UM sec.11 MSTPCRA b0 = CMTW unit 1
@@ -213,6 +220,22 @@ namespace
         return true;
     }
 
+    // Enable the 8 KB flash ROM cache (UM sec.64.7.1). Reset auto-invalidates it, so
+    // there is no coherency risk today; a future flash self-program must re-invalidate
+    // (write ROMCIV=1) before re-enable. Bounded invalidate poll degrades, never hangs.
+    void rom_cache_enable()
+    {
+        r16(FLASH_ROMCIV) = ROMCIV_ROMCIV;
+        for (uint32_t i = 0; i < CLOCK_POLL_LIMIT; i++)
+        {
+            if ((r16(FLASH_ROMCIV) & ROMCIV_ROMCIV) == 0)
+            {
+                break;
+            }
+        }
+        r16(FLASH_ROMCE) = ROMCE_ROMCEN;
+    }
+
     void sci6_console_init()
     {
         // Pin mux: route PB1->TXD6, PB0->RXD6 (UM sec.23). Unlock the MPC (clear
@@ -263,6 +286,8 @@ void arch_init(void)
     r32(SYSTEM_MSTPCRA) &= ~(MSTPA_CMTW0 | MSTPA_CMTW1);
     r32(SYSTEM_MSTPCRB) &= ~MSTPB_SCI6;
     unlock_registers(false);
+
+    rom_cache_enable(); // MEMWAIT set above; ROM cache is not PRCR-gated
 
     if (on_pll)
     {

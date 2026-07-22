@@ -172,6 +172,134 @@ namespace
         }
     }
 
+    // --- TIM2->TIM3 chain: the monotonic time base (RM0008 sec.15) --------------
+    // The v7-M default clock is the DWT cycle counter (core debug power domain),
+    // which intermittently returns aliased garbage on parts in this fleet; the
+    // software 32->64 wrap-extension turns one bad read into a phantom 2^32 jump
+    // that strands every timed wait. The F1 has no 32-bit timer -- all GP timers
+    // are 16-bit -- so a single free-runner would wrap every ~0.9 ms and lose
+    // whole wraps between clock reads (the same missed-wrap failure class as DWT).
+    // Instead chain two 16-bit timers into a 32-bit counter: TIM2 (master) counts
+    // at the timer kernel clock and emits TRGO on each overflow; TIM3 (slave, ext
+    // clock mode 1 off ITR1=TIM2) counts those overflows -> {TIM3:TIM2} is one
+    // 32-bit counter that wraps every ~59 s. Neither timer collides with the
+    // one-shot tickless timer (SysTick, core-generic) nor any driver (none on this
+    // port). ONLY the monotonic clock moves off DWT; arch_trace_now stays on DWT.
+    constexpr uintptr_t RCC_APB1ENR = RCC_BASE + 0x1C;
+    constexpr uint32_t APB1ENR_TIM2EN = 1u << 0;
+    constexpr uint32_t APB1ENR_TIM3EN = 1u << 1;
+
+    constexpr uintptr_t TIM2_BASE = 0x40000000;
+    constexpr uintptr_t TIM3_BASE = 0x40000400;
+    constexpr uintptr_t TIM2_CR1 = TIM2_BASE + 0x00;
+    constexpr uintptr_t TIM2_CR2 = TIM2_BASE + 0x04;
+    constexpr uintptr_t TIM2_EGR = TIM2_BASE + 0x14;
+    constexpr uintptr_t TIM2_CNT = TIM2_BASE + 0x24;
+    constexpr uintptr_t TIM2_PSC = TIM2_BASE + 0x28;
+    constexpr uintptr_t TIM2_ARR = TIM2_BASE + 0x2C;
+    constexpr uintptr_t TIM3_CR1 = TIM3_BASE + 0x00;
+    constexpr uintptr_t TIM3_SMCR = TIM3_BASE + 0x08;
+    constexpr uintptr_t TIM3_DIER = TIM3_BASE + 0x0C;
+    constexpr uintptr_t TIM3_SR = TIM3_BASE + 0x10;
+    constexpr uintptr_t TIM3_EGR = TIM3_BASE + 0x14;
+    constexpr uintptr_t TIM3_CNT = TIM3_BASE + 0x24;
+    constexpr uintptr_t TIM3_PSC = TIM3_BASE + 0x28;
+    constexpr uintptr_t TIM3_ARR = TIM3_BASE + 0x2C;
+    constexpr uint32_t TIM_CR1_CEN = 1u << 0;
+    constexpr uint32_t TIM_EGR_UG = 1u << 0;
+    constexpr uint32_t TIM_DIER_UIE = 1u << 0; // update (overflow) interrupt enable
+    constexpr uint32_t TIM_SR_UIF = 1u << 0;   // update (overflow) flag, rc_w0
+    constexpr uint32_t TIM2_CR2_MMS_UPDATE = 0x2u << 4; // MMS=010: TRGO on update
+    constexpr uint32_t TIM3_SMCR_TS_ITR1 = 0x1u << 4;   // TS=001: trigger = ITR1 = TIM2
+    constexpr uint32_t TIM3_SMCR_SMS_EXT1 = 0x7u << 0;  // SMS=111: ext clock mode 1
+    constexpr int TIM3_IRQ = 29;                        // NVIC position 29 = TIM3 (RM0008)
+
+    // Software 64-bit extension of the 32-bit chained counter. Reads are RELIABLE
+    // (unlike DWT): the pair wraps every 2^32/72e6 ~= 59 s. The wrap is folded
+    // either by a thread read or, when the system is idle with the tickless timer
+    // disarmed, by the TIM3 (high-half) overflow ISR below -- exactly once (whoever
+    // reads first advances g_clk_last, so the other sees no backward step). Without
+    // that ISR a wrap across a fully-quiescent >59 s idle would be lost (a slow
+    // DWT-style leap).
+    volatile uint32_t g_clk_high = 0;
+    volatile uint32_t g_clk_last = 0;
+
+    void timer_clock_init()
+    {
+        // Boot-order: nothing before arch_init may read the clock. A static ctor
+        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on the
+        // ungated APB1 access (it was a harmless DWT read before this override).
+        r32(RCC_APB1ENR) |= APB1ENR_TIM2EN | APB1ENR_TIM3EN;
+
+        // TIM2 master: free-run 16-bit, emit TRGO on each overflow.
+        r32(TIM2_CR1) = 0;
+        r32(TIM2_PSC) = 0;
+        r32(TIM2_ARR) = 0x0000FFFFu;
+        r32(TIM2_CR2) = TIM2_CR2_MMS_UPDATE;
+        r32(TIM2_EGR) = TIM_EGR_UG;
+
+        // TIM3 slave: clocked by TIM2's TRGO (ITR1), free-run 16-bit. Its overflow
+        // (the 32-bit chain wrap) drives the idle wrap observer.
+        r32(TIM3_CR1) = 0;
+        r32(TIM3_PSC) = 0;
+        r32(TIM3_ARR) = 0x0000FFFFu;
+        r32(TIM3_SMCR) = TIM3_SMCR_TS_ITR1 | TIM3_SMCR_SMS_EXT1;
+        r32(TIM3_EGR) = TIM_EGR_UG;
+        r32(TIM3_SR) = ~TIM_SR_UIF;    // drop the UG-induced UIF before arming the IRQ
+        r32(TIM3_DIER) = TIM_DIER_UIE; // wrap observer for the disarmed-timer idle case
+
+        // Enable the slave first so no master TRGO edge is missed, then the master.
+        r32(TIM3_CR1) = TIM_CR1_CEN;
+        r32(TIM2_CR1) = TIM_CR1_CEN;
+        // No arch_irq_clear_pending: a pend latched here (latch-and-coalesce) redelivers
+        // one benign kickos_isr_timer tick on enable, which the tickless handler tolerates.
+        arch_irq_unmask(TIM3_IRQ);     // NVIC enable in the maskable device band
+    }
+
+    // Read the chained 32-bit counter torn-read-safe (re-read the TIM3 high half
+    // last: a stable high half validates the low half against a straddled TIM2
+    // roll-under), then software-extend to 64-bit. The whole read runs under the
+    // crit section so the wrap-catch is atomic against a concurrent reader (the
+    // timers themselves keep counting regardless of the IRQ mask, hence the retry).
+    uint64_t timer_ticks()
+    {
+        arch_irq_state_t s = arch_irq_save();
+        uint32_t hi = r32(TIM3_CNT) & 0xFFFFu;
+        uint32_t lo;
+        while (true)
+        {
+            lo = r32(TIM2_CNT) & 0xFFFFu;
+            uint32_t hi2 = r32(TIM3_CNT) & 0xFFFFu;
+            if (hi2 == hi)
+            {
+                break;
+            }
+            hi = hi2;
+        }
+        uint32_t cur = (hi << 16) | lo;
+        // The hi/lo/hi guard still admits a master-wrap(TIM2)->slave-increment(TIM3)
+        // SKEW: lo can be post-wrap-low while hi is still pre-increment, yielding a
+        // value up to ~65536 BELOW the last read. A magnitude discriminator tells
+        // that tear from a genuine 32-bit wrap (gap ~2^32): only a large gap bumps
+        // the high half; a small backward tear is clamped so the clock stays
+        // monotonic (misreading the tear as a wrap would leap the clock +59.6 s).
+        if (cur < g_clk_last)
+        {
+            if (g_clk_last - cur > 0x80000000u)
+            {
+                g_clk_high++;       // genuine chain wrap
+            }
+            else
+            {
+                cur = g_clk_last;   // torn chained read: clamp, stay monotonic
+            }
+        }
+        g_clk_last = cur;
+        uint64_t high = g_clk_high;
+        arch_irq_restore(s);
+        return (high << 32) | cur;
+    }
+
     void usart1_init()
     {
         r32(RCC_APB2ENR) |= APB2ENR_IOPAEN | APB2ENR_AFIOEN | APB2ENR_USART1EN;
@@ -212,8 +340,45 @@ void arch_init(void)
 {
     // Clock first (HSE/PLL -> 72 MHz), then the console derives its BRR from PCLK2.
     clock_init();
+    timer_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
     usart1_init();
     kickos_armv7m_init();
+}
+
+// Monotonic clock override: free-running TIM2->TIM3 chain ticks -> ns, replacing
+// the weak DWT-backed arch_clock_now (unreliable on this silicon). The chained
+// counter's LSB increments at TIM2's kernel clock; with HPRE=/1 and PPRE1 in
+// {/1,/2} the STM32 APB timer-clock doubler makes that equal HCLK ==
+// SystemCoreClock across the PLL and the HSI-fallback states. ns = ticks*1e9/hz
+// via a cached reciprocal multiply (the one 64-bit divide runs only at a change).
+uint64_t arch_clock_now(void)
+{
+    uint32_t tim_hz = SystemCoreClock;
+    static uint64_t cached_hz = 0;
+    static uint64_t mult = 0;
+    if (tim_hz != cached_hz)
+    {
+        if (tim_hz == 0)
+        {
+            return 0;
+        }
+        mult = ((1000000000ull << 32) + (tim_hz >> 1)) / tim_hz;
+        cached_hz = tim_hz;
+    }
+    uint64_t ticks = timer_ticks();
+    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
+    uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFull;
+    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+}
+
+// TIM3 (high-half) overflow ISR, vectored at NVIC 29 in startup.S. Observes the
+// 59 s chain wrap while the tickless timer is disarmed and no thread reads the
+// clock; timer_ticks folds it into g_clk_high (idempotent vs a concurrent thread
+// read). Runs in the maskable band, so an IrqLock defers it harmlessly.
+void kickos_tim3_clock_isr(void)
+{
+    r32(TIM3_SR) = ~TIM_SR_UIF; // ack the update flag (rc_w0)
+    timer_ticks();
 }
 
 void arch_console_write(char const* buf, size_t n)

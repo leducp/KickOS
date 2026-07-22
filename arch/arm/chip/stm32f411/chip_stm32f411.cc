@@ -199,6 +199,103 @@ namespace
         pclk1_hz = PCLK1_PLL_HZ;
     }
 
+    // --- TIM2: the monotonic time base (RM0383 sec.13) --------------------------
+    // The v7-M default clock is the DWT cycle counter (core debug power domain),
+    // but that DWT intermittently returns aliased garbage on parts in this fleet,
+    // which the software 32->64 wrap-extension turns into a phantom 2^32 jump that
+    // strands every timed wait. TIM2 is a plain 32-bit general-purpose timer on
+    // APB1 (not the debug domain): free-run it and use it as arch_clock_now. ONLY
+    // the monotonic clock moves off DWT; arch_trace_now stays on raw DWT_CYCCNT (a
+    // glitch there skews a telemetry sample -- tolerable -- but is fatal to the
+    // scheduler clock). TIM2 does not collide with the one-shot tickless timer
+    // (SysTick, core-generic) nor any driver (none use TIM2 on this port).
+    constexpr uintptr_t RCC_APB1LPENR = RCC_BASE + 0x60;
+    constexpr uintptr_t TIM2_BASE = 0x40000000;
+    constexpr uintptr_t TIM2_CR1 = TIM2_BASE + 0x00;
+    constexpr uintptr_t TIM2_DIER = TIM2_BASE + 0x0C;
+    constexpr uintptr_t TIM2_SR = TIM2_BASE + 0x10;
+    constexpr uintptr_t TIM2_EGR = TIM2_BASE + 0x14;
+    constexpr uintptr_t TIM2_CNT = TIM2_BASE + 0x24;
+    constexpr uintptr_t TIM2_PSC = TIM2_BASE + 0x28;
+    constexpr uintptr_t TIM2_ARR = TIM2_BASE + 0x2C;
+    constexpr uint32_t APB1ENR_TIM2EN = 1u << 0;
+    constexpr uint32_t TIM_CR1_CEN = 1u << 0;
+    constexpr uint32_t TIM_EGR_UG = 1u << 0;
+    constexpr uint32_t TIM_DIER_UIE = 1u << 0; // update (overflow) interrupt enable
+    constexpr uint32_t TIM_SR_UIF = 1u << 0;   // update (overflow) flag, rc_w0
+    constexpr int TIM2_IRQ = 28;               // NVIC position 28 = TIM2 (RM0383)
+
+    // Software 64-bit extension of the 32-bit TIM2_CNT. Reads are RELIABLE (unlike
+    // DWT): TIM2 wraps every 2^32/84e6 ~= 51 s. The wrap is folded either by a
+    // thread read or, when the system is idle with the tickless timer disarmed, by
+    // the TIM2 overflow ISR below -- exactly once (whoever reads first advances
+    // g_clk_last, so the other sees no backward step). Without that ISR a wrap
+    // across a fully-quiescent >51 s idle would be lost (a slow DWT-style leap).
+    volatile uint32_t g_clk_high = 0;
+    volatile uint32_t g_clk_last = 0;
+
+    // arch_clock_now epoch anchor (B2). ns = base_ns + (raw_ticks - base_ticks)*mult.
+    // The SOLE writer of `mult` is clock_anchor_init at boot (this chip does not retune
+    // its clock at runtime -- arch_cpu_clock_set is the weak default returning 0 -- so
+    // there is no re-anchor). Removing the old lazy `if (hz != cached_hz) recompute`
+    // means arch_clock_now only ever READS these; if a fixed-set retune is added later
+    // it must re-anchor here at the rate edge, never recompute mult inside the read.
+    // BOOT-IDENTICAL: base_ticks=0, base_ns=0 -> now = raw_ticks*mult, exactly the old
+    // formula's first read (the old cache computed the same mult on first call).
+    uint64_t g_clk_base_ns = 0;
+    uint64_t g_clk_base_ticks = 0;
+    uint64_t g_clk_mult = 0;
+
+    void clock_anchor_init()
+    {
+        uint32_t const hz = SystemCoreClock;
+        if (hz == 0)
+        {
+            return; // leave mult 0 (unreachable: SystemCoreClock is always set by clock_init)
+        }
+        g_clk_mult = ((1000000000ull << 32) + (hz >> 1)) / hz;
+        g_clk_base_ticks = 0; // byte-identical to the old ticks*mult first read
+        g_clk_base_ns = 0;
+    }
+
+    void tim2_clock_init()
+    {
+        // Boot-order: nothing before arch_init may read the clock. A static ctor
+        // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on the
+        // ungated APB1 access (it was a harmless DWT read before this override).
+        r32(RCC_APB1ENR) |= APB1ENR_TIM2EN;
+        // Keep TIM2 clocked in Sleep mode (WFI); TIM2LPEN resets to 1 but make the
+        // dependency explicit -- clearing it would freeze the clock the instant the
+        // idle thread executes WFI.
+        r32(RCC_APB1LPENR) |= APB1ENR_TIM2EN;
+        r32(TIM2_CR1) = 0;             // stop; upcount, defaults
+        r32(TIM2_PSC) = 0;             // no prescale: count at the timer kernel clock
+        r32(TIM2_ARR) = 0xFFFFFFFFu;   // full 32-bit free-run
+        r32(TIM2_EGR) = TIM_EGR_UG;    // latch PSC/ARR into the shadow regs (sets UIF)
+        r32(TIM2_SR) = ~TIM_SR_UIF;    // drop the UG-induced UIF before arming the IRQ
+        r32(TIM2_DIER) = TIM_DIER_UIE; // wrap observer for the disarmed-timer idle case
+        r32(TIM2_CR1) = TIM_CR1_CEN;   // enable
+        // No arch_irq_clear_pending: a pend latched here (latch-and-coalesce) redelivers
+        // one benign kickos_isr_timer tick on enable, which the tickless handler tolerates.
+        arch_irq_unmask(TIM2_IRQ);     // NVIC enable in the maskable device band
+    }
+
+    // Wrap-catch must be atomic against a concurrent reader (thread + ISR), so the
+    // extend runs under the crit section.
+    uint64_t tim2_ticks()
+    {
+        arch_irq_state_t s = arch_irq_save();
+        uint32_t cur = r32(TIM2_CNT);
+        if (cur < g_clk_last)
+        {
+            g_clk_high++;
+        }
+        g_clk_last = cur;
+        uint64_t hi = g_clk_high;
+        arch_irq_restore(s);
+        return (hi << 32) | cur;
+    }
+
     void enable_fpu()
     {
         r32(0xE000ED88) |= (0xFu << 20); // CPACR: CP10/CP11 full access
@@ -254,8 +351,37 @@ void arch_init(void)
     // on the HSE crystal + PLL first, then configure the console at the resulting
     // APB1 clock (clock_init leaves us on HSI 16 MHz if the crystal is absent).
     clock_init();
+    tim2_clock_init();   // monotonic time base (replaces the unreliable DWT clock)
+    clock_anchor_init(); // set the arch_clock_now mult ONCE from the final clock (B2)
     usart2_init();
     kickos_armv7m_init();
+}
+
+// Monotonic clock override: free-running TIM2 ticks -> ns, replacing the weak
+// DWT-backed arch_clock_now (unreliable on this silicon). TIM2 is on APB1; with
+// HPRE=/1 and PPRE1 in {/1,/2} the STM32 APB timer-clock doubler makes the timer
+// kernel clock equal HCLK == SystemCoreClock across the PLL and both HSI-fallback
+// states (retuning PPRE1 to /4+ would break this identity). ns = ticks*1e9/hz via
+// a cached reciprocal multiply (the one 64-bit divide runs only at a clock change).
+uint64_t arch_clock_now(void)
+{
+    // Pure epoch read (B2): mult is written only by clock_anchor_init (boot). The old
+    // lazy `if (hz != cached_hz) recompute` is REMOVED so a read can never bake a rate
+    // change into the anchor. delta = raw_ticks - base_ticks (base 0 at boot).
+    uint64_t delta = tim2_ticks() - g_clk_base_ticks;
+    uint64_t a = delta >> 32, b = delta & 0xFFFFFFFFull;
+    uint64_t c = g_clk_mult >> 32, d = g_clk_mult & 0xFFFFFFFFull;
+    return g_clk_base_ns + ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+}
+
+// TIM2 overflow (update) ISR, vectored at NVIC 28 in startup.S. Its only job is to
+// observe the 51 s wrap while the tickless timer is disarmed and no thread reads
+// the clock; tim2_ticks folds it into g_clk_high (idempotent vs a concurrent
+// thread read). Runs in the maskable band, so an IrqLock defers it harmlessly.
+void kickos_tim2_clock_isr(void)
+{
+    r32(TIM2_SR) = ~TIM_SR_UIF; // ack the update flag (rc_w0)
+    tim2_ticks();
 }
 
 void arch_console_write(char const* buf, size_t n)
