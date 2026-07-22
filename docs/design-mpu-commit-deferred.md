@@ -82,7 +82,7 @@ under its own regions.
 | armv7-m PMSAv7 | XMC4800, F411 | shared weak | shared weak PMSAv7 | `armv7m/switch.S` | REFERENCE here -- build-only, silicon-pending |
 | armv7-m SYSMPU | FRDM-K64F | shared weak | strong (chip) | `armv7m/switch.S` | build-only, silicon-pending |
 | armv7-m no-MPU | qemu (mps2) | shared weak no-op | shared weak empty | `armv7m/switch.S` | build-only |
-| armv8-m PMSAv8 | RP2350 (pizero2350) | (TODO) | TODO strong (RLAR/MAIR) | `armv7m/switch.S` reuse | design-only (separate worktree; needs PMSAv8 backend) |
+| armv8-m PMSAv8 | RP2350 (pizero2350) | shared weak | strong (RLAR/MAIR, `arch_arm_pmsav8.cc`) | `armv7m/switch.S` reuse | DONE -- silicon-validated (RP2350: selftest 43/43 enforce, clean cross-domain `mpu_fault`, bench + soak; authority: `docs/design-rp2350-mpu-armv8m.md`) |
 | RX MPU | RX72M | local stash | `kickos_arch_mpu_commit` (RSPAGEn/REPAGEn) | `rxv3/switch.S` (`kickos_rx_restore`) | DONE (build-only) -- silicon-pending |
 | rv32imac PMP | qemu-virt, ESP32-C6 | local stash | `kickos_arch_mpu_commit` (pmpaddr/pmpcfg CSRs) | `rv32imac/switch.S` (`.Lswitch` + `arch_start`) | DONE (build-only) -- silicon-pending |
 
@@ -145,8 +145,9 @@ Minimum silicon set, each under `KICKOS_HAVE_MPU=1` with selftest green + an
 extended chain-repro: XMC4800 (armv7-m PMSAv7, the named validation target),
 F411 (PMSAv7), FRDM-K64F (SYSMPU), RX72M (RX MPU), and ESP32-C6 (rv32imac PMP;
 qemu-virt covers the PMP path in emulation but the C6 is the silicon witness).
-RP2350 PMSAv8 remains design-only (separate worktree) and is validated when its
-commit backend is implemented.
+RP2350 PMSAv8 is implemented (`arch/arm/common/arch_arm_pmsav8.cc`, overriding
+`kickos_arch_mpu_commit`) and silicon-validated on the pizero2350 (see
+`docs/design-rp2350-mpu-armv8m.md`).
 
 Merge is **fable-review-gated**: the seam touches the switch assembly of every
 enforcing arch (armv6-m/armv7-m/RX/rv32imac), so the design and each backend's
