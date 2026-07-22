@@ -226,6 +226,30 @@ single leaf consumed from two trust domains. This is a build-graph and
 source-tree placement question, not an API question; the API is fixed by rules 3
 and 4 above. It is the concrete deliverable that makes the DRY core real.
 
+### 7. Enforcing single-ownership: the grant refuses kernel-reserved blocks
+
+Rule 1 is only real if the kernel can REFUSE a grant that overlaps a resource it
+owns. Today (M3) the MMIO-grant path (`kernel/syscall/syscall.cc`) enforces three
+things: privileged-only (an unprivileged thread cannot self-grant, so a userspace
+driver can never map peripheral space on its own), a valid non-overflowing range,
+and encodable (exactly one MPU descriptor, no rounding -- a rounded window
+over-grants the neighbouring registers). What it does NOT have is a mechanical
+kernel-reserved-block overlap check. So the kernel's own peripherals (the timebase
+block above all) are protected today only by construction + trust: unprivileged
+code cannot self-grant, and the privileged granter (root / chip bring-up) simply
+does not hand out kernel-owned blocks (the default caps exclude them). A buggy or
+over-broad grant issued by privileged code would currently succeed and open a hole
+-- an unprivileged thread could then poke the kernel's timer and break the timebase.
+
+M4 requirement: an explicit kernel-reserved-block set (timebase block, IRQ
+controller, MPU, every owns-for-life peripheral) plus an overlap predicate in the
+grant path, so a grant overlapping a kernel-owned block is REFUSED mechanically,
+not merely by convention. That turns rule 1 from "trust the granter" into "the
+kernel refuses". Note this is orthogonal to DRY code reuse: sharing the class-driver
+register logic is a link-time decision; refusing the resource grant is a runtime
+capability decision -- the kernel-owned timer INSTANCE is never granted even though
+its register CODE is shared.
+
 ### Worked example: the RT1062 watchdogs
 
 The current `arch/arm/chip/imxrt1062/chip_imxrt1062.cc` `watchdog_disable()` is
