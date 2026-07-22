@@ -59,37 +59,13 @@
     rotw    4
     .endm
 
-/* Level-1 interrupt frame (built on the interruptee's stack). 256 bytes. */
-    .set F_PC,   0x00
-    .set F_PS,   0x04
-    .set F_SAR,  0x08
-    .set F_LBEG, 0x0C
-    .set F_LEND, 0x10
-    .set F_LCNT, 0x14
-    .set F_A0,   0x20              /* a0..a15 contiguous, 4 bytes each */
-    .set F_A1,   0x24
-    .set F_A2,   0x28
-    .set F_A3,   0x2C
-    .set F_A4,   0x30
-    .set F_A5,   0x34
-    .set F_A6,   0x38
-    .set F_A7,   0x3C
-    .set F_A8,   0x40
-    .set F_A9,   0x44
-    .set F_A10,  0x48
-    .set F_A11,  0x4C
-    .set F_A12,  0x50
-    .set F_A13,  0x54
-    .set F_A14,  0x58
-    .set F_A15,  0x5C
-    /* Single-precision FPU (CP0) save area: f0-f15 then FCR, FSR. Fits the frame's
-       existing slack (the a-regs end at 0x5C; 0x60..0xA7 was unused). FP is banked
-       ONLY on the preemptive path -- the compiler spills live f-regs across the
-       cooperative switch's call (caller-saved), so xtensa_switch needs none. */
-    .set F_F0,   0x60              /* f0..f15 contiguous, 4 bytes each -> ..0x9C */
-    .set F_FCR,  0xA0              /* FP control (0x60 + 16*4) */
-    .set F_FSR,  0xA4              /* FP status */
-    .set F_SIZE, 0x100
+/* Level-1 interrupt frame (built on the interruptee's stack). 256 bytes. The F_*
+   offsets are single-sourced in the shared asm-safe header (also #included by the
+   C++ frame fabricator arch_context_init); the FPU save area (F_F0/F_FCR/F_FSR)
+   fits the a-regs' slack (they end at 0x5C; 0x60..0xA7 was unused). FP is banked
+   ONLY on this preemptive path -- the cooperative switch's caller-saved f-regs are
+   spilled by the compiler, so xtensa_switch needs none. */
+#include <kickos/arch/xtensa_frame.h>
 
     .text
 

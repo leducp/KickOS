@@ -21,6 +21,7 @@
 // privilege are no-ops.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/xtensa_frame.h> // F_* interrupt-frame offsets, shared with startup.S
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 
 #include <stddef.h> // offsetof
@@ -68,14 +69,10 @@ namespace
     constexpr uint32_t PS_WOE = 0x40000;
     constexpr uint32_t PS_CALLINC1 = 0x1u << 16; // CALLINC=1 (the trampoline `entry` rotates by this)
 
-    // Interrupt-frame layout (startup.S F_*): a fresh thread is started via the same
-    // rfe restore path as a preempted one (_kickos_lx6_irq_restore), so its initial
-    // context is a fabricated 256-byte interrupt frame. Offsets MUST match startup.S.
-    constexpr uint32_t F_PC = 0x00;
-    constexpr uint32_t F_PS = 0x04;
-    constexpr uint32_t F_A0 = 0x20; // a0..a15 contiguous, 4 bytes each
-    constexpr uint32_t F_SIZE = 0x100;
-    inline uint32_t f_areg(unsigned n) { return F_A0 + n * 4u; }
+    // Interrupt-frame field accessor. The frame offsets (F_PC/F_PS/F_A0/F_SIZE, the
+    // F_AREG stride, ...) are single-sourced in kickos/arch/xtensa_frame.h and shared
+    // verbatim with the save/restore asm in startup.S -- no more hand-synced copies.
+    inline uint32_t f_areg(unsigned n) { return F_AREG(n); }
 
     // Critical-section interrupt level: mask the C-handleable levels 1-3 (the timer
     // + all device lines), leaving the high-level 4-7 / NMI zero-latency band
