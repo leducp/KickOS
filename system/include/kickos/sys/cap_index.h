@@ -24,6 +24,8 @@
 enum kos_cap_index
 {
     KOS_CAP_STDOUT = 0,    // send-only console endpoint; cap_install_defaults seats it
+    // Reserved range 1..3 is kernel-seated-only by convention today; the delegation-packing
+    // enforcement that seats these lands with the clock-service step.
     KOS_CAP_CLOCK = 1,     // reserved: a board's well-known clock/time service cap
     KOS_CAP_SERVICE = 2,   // reserved: a second well-known service cap slot
     KOS_CAP_RESERVED3 = 3, // reserved spare; hold the range, do not repurpose ad hoc

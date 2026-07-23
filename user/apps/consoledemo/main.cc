@@ -116,6 +116,14 @@ namespace
 
 int main(int, char**)
 {
+    // Pre-publish poison write (M4.3 silicon repro): root's cap 0 is empty here, so
+    // this send fails and falls back to the kernel UART path. Pre-fix it pinned the
+    // process-wide sticky probe dead and the worker's lines vanished; post-fix each
+    // _write re-classifies per thread, so this line goes out the kernel path and the
+    // worker's lines still reach xmcuart. Emitted before the handover, on the wire.
+    printf("[init] pre-publish line\n");
+    fflush(stdout);
+
     // 1-4: publish + spawn the driver + drop root's WAIT cap (all inside the helper).
     if (xmcuart_console_start(DRIVER_PRIO) != 0)
     {

@@ -259,32 +259,31 @@ Consequences to carry:
 
 ### D5 -- `_write` migration (libc-side, kernel stays simple)
 
-`user/src/newlib_stubs.cc`. One probe per process lifetime:
+`user/src/newlib_stubs.cc`. No persistent state -- each `_write` re-classifies per
+invocation against the CALLING thread's own cap index 0:
 
 ```
-static int g_stdout_probe = 0;   // 0 unprobed, 1 seated, -1 dead/not-seated (STICKY)
-
 _write(fd, buf, len):
-    if g_stdout_probe == -1:                             // sticky: never re-probe (S5)
-        return kos_kconsole_write(buf, len)
     size_t sent = 0
     while sent < len:
         size_t chunk = min(len - sent, KOS_EP_MSG_MAX)
         int r = kos_send(0, buf + sent, chunk)           // index 0 == KOS_CAP_STDOUT
         if r < 0:                                        // pre-handover, or driver died (EPIPE)
-            g_stdout_probe = -1                          // STICKY -1: no more kos_send(0) ever (S5)
             return kos_kconsole_write(buf + sent, len - sent)  // resend ONLY the REMAINDER (S5)
-        g_stdout_probe = 1
         sent += r
     return len
 ```
 
 `KOS_SYS_kconsole_write` keeps its exact semantics; its chip path simply DROPS in
-`USER_OWNED` per D1 while RTT still carries it. Two S5 rules are load-bearing:
-- **Sticky `-1`.** Once any `kos_send(0)` returns `-1` (dead endpoint / EPIPE, or a
-  pre-handover app whose index 0 is empty) the probe is pinned to `-1` for the process
-  lifetime -- one wasted syscall total, not one per write forever. Re-published targets are
-  picked up only by freshly spawned processes (D8 limitation, called out there).
+`USER_OWNED` per D1 while RTT still carries it. Two rules are load-bearing:
+- **Per-invocation re-probe.** There is NO process-wide sticky state: every `_write`
+  attempts `kos_send(0)` and, only on failure, falls back for THAT write. cap 0 is
+  per-thread and fixed at spawn, so the classification is stable within a thread without
+  caching it -- and, crucially, a pre-publish thread's failure (its index 0 empty) never
+  poisons a post-publish thread whose index 0 IS seated. The cost is one wasted syscall per
+  write for a permanently-dark client, not one total; that is the deliberate trade for
+  correct per-thread routing. Re-published targets are still picked up only by freshly
+  spawned children (their index 0 names the dead endpoint -- D8 limitation, called out there).
 - **Remainder-only fallback.** The fallback resends `buf + sent .. len`, never the whole
   `buf` -- otherwise the chunks already delivered to the driver are duplicated on RTT when a
   mid-stream `-1` hits.
@@ -489,7 +488,7 @@ spawned only AFTER both publish and a confirmed driver spawn. If the driver spaw
 `kos_console_publish` returned, `g_console_state` is already `USER_OWNED`, `g_stdout_target`
 names an endpoint with no receiver, and every app spawned afterward parks on its first
 `printf` probe forever (the send blocks with no receiver; no EPIPE because root's ref may
-still hold, and even sticky-`-1` fallback only helps once the send actually returns `-1`).
+still hold, and the fallback only helps once the send actually returns `-1`).
 The kernel cannot cheaply detect "published but no live driver," so root MUST treat
 publish+spawn as inseparable and must not spawn console-dependent apps if the driver spawn
 did not succeed.
@@ -564,9 +563,10 @@ Emulator-testable (QEMU/sim, in-tree `ctest`):
   `cap_install_defaults` seats `{CAP_SIGNAL}` at index 0, bumps `endpoint_refs` but NOT
   `recv_holders`, and that child teardown drops the ref.
 - **U-test 4 (EPIPE on driver death).** A parked sender + last recv-holder close -> sender
-  woken `-1`; `_write` falls back to the REMAINDER only (S5) and pins the sticky probe to
-  `-1` (a second `_write` issues NO further `kos_send(0)`). This exercises the LANDED close
-  protocol through the new fallback path.
+  woken `-1`; `_write` falls back to the REMAINDER only (S5). With the per-invocation re-probe
+  a second `_write` DOES re-attempt `kos_send(0)` (no sticky state), so the assertion is that
+  the fallback covers the remainder of each failing write, not that later writes stop probing.
+  This exercises the LANDED close protocol through the fallback path.
 - **U-test 5 (index-0 reservation, B3 -- re-validates landed cap.cc).** Assert a task's own
   `sem`/`endpoint`/`mutex` create never returns handle index 0 (scan starts at 1); assert
   `cap_install_at(_, 0, _)` from `cap_install_defaults` is the only writer of slot 0; run the
@@ -628,8 +628,9 @@ design sections above already reflect them.
    per-board option, not M3 scope.
 3. **Old-client recovery = accept old-apps-dark for stage ii (Q3).** A client re-probe cannot
    recover old apps: their index-0 cap names the DEAD endpoint permanently, so re-probing
-   index 0 still hits a dead object. Meanwhile the sticky probe = `-1` (S5) keeps them from
-   wasting a syscall per write. The real future fix is a distinct stdout CAP TYPE resolved
+   index 0 still hits a dead object. With the per-invocation re-probe (S5) such a client does
+   spend one wasted syscall per write (there is no sticky state), accepted as the cost of
+   correct per-thread routing. The real future fix is a distinct stdout CAP TYPE resolved
    against `g_stdout_target` at send time (so a re-publish transparently redirects live
    clients) -- recorded for later, NOT built now.
 4. **`g_stdout_target` kernel ref = KEEP it (Q4 -> S3).** The publish-held refcount closes
