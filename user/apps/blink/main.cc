@@ -20,14 +20,14 @@
 
 namespace
 {
-    constexpr uint64_t kBlinkNs = 200000000ull; // 0.2 s per edge -> ~2.5 Hz
+    constexpr uint64_t BLINK_NS = 200000000ull; // 0.2 s per edge -> ~2.5 Hz
 
     void blinker(void*)
     {
         while (true)
         {
             kos_kernel_diag_led_toggle();
-            kos_sleep_ns(kBlinkNs);
+            kos_sleep_ns(BLINK_NS);
         }
     }
 }

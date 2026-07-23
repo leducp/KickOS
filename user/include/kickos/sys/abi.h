@@ -19,43 +19,43 @@
 // return a u32 Hz with a 0 == cannot/unknown sentinel; both stay OUT of the scheme.
 enum kos_syscall_nr
 {
-    KOS_SYS_kconsole_write = 1, // (buf, len)            -> bytes written, or -KOS_EFAULT (bad buffer)
-    KOS_SYS_yield = 2,          // ()                    -> 0
-    KOS_SYS_sleep_ns = 3,       // (ns_lo, ns_hi)        -> 0
-    KOS_SYS_sem_create = 4,     // (initial)             -> opaque sem handle, or -KOS_E* (ENOMEM)
-    KOS_SYS_sem_wait = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM (C wrapper now surfaces it)
-    KOS_SYS_sem_post = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM (C wrapper now surfaces it)
-    KOS_SYS_handle_close = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)
-    KOS_SYS_thread_spawn = 7,   // (kos_thread_params*)  -> opaque thread handle, or -KOS_E*
-    KOS_SYS_exit = 8,           // (code)                -> does not return
-    KOS_SYS_irq_inject = 9,     // (irq)                 -> 0, or -KOS_EINVAL (self-test only)
-    KOS_SYS_guard_addr = 10,    // ()  -> protected probe addr (self-test only)
-    KOS_SYS_irq_attach = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY)
-    KOS_SYS_clock_now = 12,     // (uint64_t* out)       -> 0, or -KOS_EINVAL/-KOS_EFAULT (bad out-ptr)
-    KOS_SYS_ram_alloc = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
-    KOS_SYS_irq_register = 14,  // (line)                -> irq handle, or -KOS_E* (EINVAL/EBUSY/ENOMEM)
-    KOS_SYS_irq_wait = 15,      // (handle)              -> 0, or -KOS_EBADF
-    KOS_SYS_irq_ack = 16,       // (handle)              -> 0, or -KOS_EBADF
-    KOS_SYS_irq_spurious = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
-    KOS_SYS_diag_led_set = 19,  // (on)                  -> 0 (kernel diagnostic LED)
-    KOS_SYS_diag_led_toggle = 20, // ()                  -> 0 (kernel diagnostic LED)
-    KOS_SYS_irq_unmask = 21,    // (irq)  -> 0, or -KOS_E* (EPERM/EINVAL; self-test only)
-    KOS_SYS_cpu_clock_hz = 22,  // ()  -> running core clock in Hz (u32), 0 if unknown (NO KOS_E*)
-    KOS_SYS_mutex_create = 23,  // ()     -> opaque mutex cap, or -KOS_ENOMEM (pool/table full)
-    KOS_SYS_mutex_lock = 24,    // (cap)  -> 0 held; -KOS_EOWNERDEAD held-but-owner-died; -KOS_EBADF
+    KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len)            -> bytes written, or -KOS_EFAULT (bad buffer)
+    KOS_SYS_YIELD = 2,          // ()                    -> 0
+    KOS_SYS_SLEEP_NS = 3,       // (ns_lo, ns_hi)        -> 0
+    KOS_SYS_SEM_CREATE = 4,     // (initial)             -> opaque sem handle, or -KOS_E* (ENOMEM)
+    KOS_SYS_SEM_WAIT = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM (C wrapper now surfaces it)
+    KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM (C wrapper now surfaces it)
+    KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)
+    KOS_SYS_THREAD_SPAWN = 7,   // (kos_thread_params*)  -> opaque thread handle, or -KOS_E*
+    KOS_SYS_EXIT = 8,           // (code)                -> does not return
+    KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, or -KOS_EINVAL (self-test only)
+    KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
+    KOS_SYS_IRQ_ATTACH = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY)
+    KOS_SYS_CLOCK_NOW = 12,     // (uint64_t* out)       -> 0, or -KOS_EINVAL/-KOS_EFAULT (bad out-ptr)
+    KOS_SYS_RAM_ALLOC = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
+    KOS_SYS_IRQ_REGISTER = 14,  // (line)                -> irq handle, or -KOS_E* (EINVAL/EBUSY/ENOMEM)
+    KOS_SYS_IRQ_WAIT = 15,      // (handle)              -> 0, or -KOS_EBADF
+    KOS_SYS_IRQ_ACK = 16,       // (handle)              -> 0, or -KOS_EBADF
+    KOS_SYS_IRQ_SPURIOUS = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
+    KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
+    KOS_SYS_DIAG_LED_TOGGLE = 20, // ()                  -> 0 (kernel diagnostic LED)
+    KOS_SYS_IRQ_UNMASK = 21,    // (irq)  -> 0, or -KOS_E* (EPERM/EINVAL; self-test only)
+    KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u32), 0 if unknown (NO KOS_E*)
+    KOS_SYS_MUTEX_CREATE = 23,  // ()     -> opaque mutex cap, or -KOS_ENOMEM (pool/table full)
+    KOS_SYS_MUTEX_LOCK = 24,    // (cap)  -> 0 held; -KOS_EOWNERDEAD held-but-owner-died; -KOS_EBADF
                                 //   / -KOS_EDEADLK NOT held (see the wrapper decl for the caveat)
-    KOS_SYS_mutex_unlock = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner)
-    KOS_SYS_endpoint_create = 26, // ()                          -> endpoint cap, or -KOS_ENOMEM
-    KOS_SYS_send = 27,          // (cap, buf, len)  -> bytes transferred, or -KOS_E* (see kos_send)
-    KOS_SYS_recv = 28,          // (cap, buf, cap_len, u32* badge) -> bytes received, or -KOS_E*
-    KOS_SYS_console_publish = 29, // (endpoint_cap) -> 0, -KOS_EPERM (not priv), -KOS_EBADF (bad cap)
-    KOS_SYS_cpu_clock_set = 30,  // (kos_pstate_t as u32) -> landed core Hz (u32); 0 == cannot-change
-    KOS_SYS_grant_probe = 31     // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
+    KOS_SYS_MUTEX_UNLOCK = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner)
+    KOS_SYS_ENDPOINT_CREATE = 26, // ()                          -> endpoint cap, or -KOS_ENOMEM
+    KOS_SYS_SEND = 27,          // (cap, buf, len)  -> bytes transferred, or -KOS_E* (see kos_send)
+    KOS_SYS_RECV = 28,          // (cap, buf, cap_len, u32* badge) -> bytes received, or -KOS_E*
+    KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (not priv), -KOS_EBADF (bad cap)
+    KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u32); 0 == cannot-change
+    KOS_SYS_GRANT_PROBE = 31     // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
                                  //   the raw reserved-block base/size; a BAD op returns -KOS_EINVAL
                                  //   (self-test only; compiled out unless KICKOS_HAVE_MPU)
 };
 
-// P-state selector for KOS_SYS_cpu_clock_set. A fixed-width u32 enum (NOT a raw Hz):
+// P-state selector for KOS_SYS_CPU_CLOCK_SET. A fixed-width u32 enum (NOT a raw Hz):
 // the achievable set is small and chip-specific, and the truthful landed Hz is the
 // syscall's return value. Carried as a plain u32 in the syscall register, so the width
 // is the stable ABI -- append new states, never reorder. New deep-sleep states (STOP/

@@ -28,6 +28,20 @@ set(KICKOS_BOARD "@KICKOS_BOARD@")
 set(KICKOS_ARCH "@KICKOS_ARCH@")
 set(KICKOS_CHIP "@KICKOS_CHIP@")
 
+# The init provider was frozen INTO the exported link recipe at KickOS build time
+# (kickos_core's LINK_GROUP names @KICKOS_INIT_PROVIDER@). A consumer override would
+# silently no-op, because the shipped recipe still pulls the packaged provider, so a
+# DIFFERENT KICKOS_INIT_PROVIDER must fail clearly instead. To use a custom init in
+# an installed package, rebuild KickOS with -DKICKOS_INIT_PROVIDER pointing at an
+# exported target.
+if(DEFINED KICKOS_INIT_PROVIDER AND NOT KICKOS_INIT_PROVIDER STREQUAL "@KICKOS_INIT_PROVIDER@")
+  message(FATAL_ERROR "KickOS: this package was built with KICKOS_INIT_PROVIDER='@KICKOS_INIT_PROVIDER@', "
+    "but KICKOS_INIT_PROVIDER='${KICKOS_INIT_PROVIDER}' was requested. The provider is frozen into the "
+    "exported link recipe, so an override here would silently no-op. Rebuild KickOS with the desired "
+    "provider, or unset KICKOS_INIT_PROVIDER.")
+endif()
+set(KICKOS_INIT_PROVIDER "@KICKOS_INIT_PROVIDER@")
+
 # The `kickos` target pulls POSIX threads only on the host sim; a bare-metal
 # package must not require Threads (there is no pthreads on an MCU).
 if(KICKOS_ARCH STREQUAL "sim")

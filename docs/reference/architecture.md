@@ -139,8 +139,14 @@ weak default), RP2350 PMSAv8, C6/virt RISC-V PMP, RX72M MPU. (See `design-mpu-co
    build; KickOS is a prebuilt package (libraries + headers + startup + board linker script +
    flags) consumed as a plain `add_executable` linked against the exported `kickos` target -- or
    `kickos_cxx` for a full-C++ (exceptions/STL/RTTI) app (with `kickos_add_application()` as
-   optional sugar). The app defines a known entry
-   (`kickos_app_main()`) that the kernel's boot path calls after init.
+   optional sugar). The kernel's root thread calls one init seam `kickos_init_entry(argc, argv)`
+   (`<kickos/sys/init.h>`) after kernel init; the CMake cache var `KICKOS_INIT_PROVIDER` selects
+   the target that supplies it (default `kickos_default_init`, a thin passthrough
+   `kickos_init_entry -> kickos_default_init_run -> kickos_app_main`), so a plain app still writes
+   only `int main` and no manifest. App/libstdc++ global ctors run in the root thread BEFORE the
+   seam; RETURNING from the seam is a single-shot shutdown with that status, a persistent init
+   never returns (parks/loops). A bad/missing provider is a build-time FATAL_ERROR, never a silent
+   fallback (not weak symbols).
 9. **Conventions.** Traditional include guards `KICKOS_<PATH>_H` (no `#pragma once`); no ternary
    operators; comments only for hidden constraints/invariants. **Allman brace style**, enforced by
    the checked-in `.clang-format`, matched to the sibling projects `../KickCAT` / `../kickmsg`
@@ -226,6 +232,10 @@ KickOS/
     libc/                           # freestanding: mem/str, small vsnprintf, heap, assert
     libcxx/                         # __cxa_* stubs, guards, operator new/delete
     rtt.cc                          # SEGGER RTT backend (console ch0 + telemetry ch1)
+  system/                           # kickos_system: fleet-wide system layer
+    include/kickos/sys/             # errno.h (KOS_E* taxonomy), cap_index.h (frozen
+                                    #   well-known cap indices), init.h (the init seam)
+    init/                           # kickos_default_init: default init provider (passthrough)
   user/
     include/                        # userspace API + syscall stubs
     apps/                           # hello, selftest (TAP gate), stress, sched_exit, mpu_fault,
@@ -331,7 +341,7 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
 - **Syscalls via `SVC`**: handler reads number + args (r0-r3), dispatches through an
   arch-independent **syscall table**, returns in r0. Sim: a trampoline flips an emulated-
   privilege flag (+ `mprotect` toggles kernel-mem accessibility) and calls `syscall_dispatch()`.
-- **Syscall return ABI (`user/include/kickos/sys/errno.h`).** A syscall that can fail returns its
+- **Syscall return ABI (`system/include/kickos/sys/errno.h`).** A syscall that can fail returns its
   error as the **negated** code `-KOS_Exxx`; a success -- a handle, a count, a byte-count -- is
   **non-negative**, so `rc < 0` is unambiguously an error and never aliases a valid handle/count
   (handles are bounded well under `INT_MAX`, counts stay small). The code set mirrors POSIX
@@ -535,9 +545,21 @@ feeds the slave app.
   presets in `CMakePresets.json` + `cmake/presets/*.json`.
 - Board select `-DKICKOS_BOARD=<board>` (or a preset); the board descriptor pins chip, arch,
   memory map, console driver, clock config, linker script.
-- Static libs: `kickos_kernel`, `kickos_arch_<arch>`, `kickos_lib`, `kickos_user`
-  (linked as one `--start-group`/`--end-group` set, since arch<->kernel reference
-  each other).
+- Static libs: `kickos_kernel` (TCB/scheduler), `kickos_arch_<arch>`, `kickos_lib`, `kickos_user`
+  (linked as one RESCAN link group, since arch<->kernel reference each other). A clean split
+  separates `kickos_kernel` (TCB/scheduler) from **`kickos_system`** -- the fleet-wide system
+  layer: an INTERFACE header home for the syscall error taxonomy (`errno.h`), the frozen
+  capability-index convention (`cap_index.h`), and the init seam (`init.h`), and the designated
+  future home of the class/service driver layer + per-board bring-up descriptor (not yet
+  populated). `kickos_system` carries no archive, so it links separately (never in a RESCAN
+  group) and is propagated to every app via `kickos_core`.
+- **Init provider (the entry seam target).** The target supplying `kickos_init_entry` is a
+  separate library selected by the `KICKOS_INIT_PROVIDER` cache var (default `kickos_default_init`,
+  a `kickos_system` service that passes through to the app's `main`); it is spliced into the link
+  group right after `kickos_kernel` and resolved across the RESCAN boundary. A power user names
+  their own target; a missing/unknown provider is a CMake FATAL_ERROR -- never a silent fallback,
+  never a weak symbol -- and the installed package refuses a consumer override of the frozen
+  provider.
 - **Dependency-inversion packaging (the DX goal).** KickOS installs/exports a CMake package
   (config + libs + startup object + board linker script + flags). Consumption modes: **in-tree**
   (`add_subdirectory`) and **out-of-tree** (`find_package(KickOS)` / FetchContent / export
@@ -592,12 +614,12 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
   would be the forbidden checked-twice field.
 - **Lifecycle -- refcounted destroy-on-last-close.** `sem_create` allocates the object (refs = 1)
   and returns a full-rights (`WAIT|SIGNAL|TRANSFER`) cap handle into the creator's table.
-  `KOS_SYS_handle_close(cap)` (type-agnostic, renamed from the old `sem_destroy`) drops MY handle:
+  `KOS_SYS_HANDLE_CLOSE(cap)` (type-agnostic, renamed from the old `sem_destroy`) drops MY handle:
   bump the slot cap-gen, empty the entry, `refs--`; the object frees only at the LAST close
   (refs -> 0). Thread exit closes every held cap (`cap_teardown`, called from `exit_current`) so
   no thread leaks references. A teardown-close that would strand a parked waiter LEAKS (floors
   refs at 1), never strands -- unreachable today (every parked waiter pins its own cap).
-- **Well-known reserved cap indices (`user/include/kickos/sys/cap_index.h`, FROZEN).** Indices
+- **Well-known reserved cap indices (`system/include/kickos/sys/cap_index.h`, FROZEN).** Indices
   `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..4)`) are reserved well-known slots: index 0 =
   `KOS_CAP_STDOUT` (the send-only console endpoint), 1..3 held for a future clock/service cap.
   An **own-create** (`sem`/`mutex`/`endpoint` create) scans placement from

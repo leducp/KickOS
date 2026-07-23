@@ -12,6 +12,9 @@ kickos_apply_freestanding(kickos_xmcuart)
 # the transitive lib/arch includes, and orders the component group after this lib
 # at the final link.
 target_link_libraries(kickos_xmcuart PUBLIC kickos_user)
+# sys.h/abi.h pull errno.h from kickos_system (kickos_user carries it only PRIVATE).
+target_include_directories(kickos_xmcuart PRIVATE
+  "${PROJECT_SOURCE_DIR}/system/include")
 # Rule 6 (M4, decision R-A): the per-byte transmit-ready poll is the shared USIC
 # register logic, so it comes from the freestanding kickos_class_xmc4800 leaf --
 # the same object the kernel timebase will link in Phase A -- not a local copy.

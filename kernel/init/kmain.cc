@@ -12,6 +12,7 @@
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
+#include <kickos/sys/init.h>
 #include <kickos/arch/arch.h>
 #include <kickos/config/system.h>
 #include <kickos/ktrace.h>
@@ -123,9 +124,9 @@ namespace kickos
                 }
             }
             AppArgs const* a = static_cast<AppArgs const*>(arg);
-            int status = kickos_app_main(a->argc, a->argv);
-            // A returning main is a single-shot app: exit with its status. A
-            // daemon-style app never returns here (it parks or loops). Flush the
+            int status = kickos_init_entry(a->argc, a->argv);
+            // A returning init is a single-shot system: exit with its status. A
+            // persistent init never returns here (it parks or loops). Flush the
             // buffered console first, else trailing output stays stranded in the ring.
             console_tx_flush_sync();
             arch_shutdown(status);

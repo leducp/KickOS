@@ -74,9 +74,11 @@ endif()
 target_include_directories(kickos_kernel PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
-# The kernel implements the userspace syscall ABI, so it reads that contract.
+# The kernel implements the userspace syscall ABI, so it reads that contract; the
+# system headers (errno.h via sync.h, cap_index.h via cap.h) live in kickos_system.
 target_include_directories(kickos_kernel PRIVATE
-  "${PROJECT_SOURCE_DIR}/user/include")
+  "${PROJECT_SOURCE_DIR}/user/include"
+  "${PROJECT_SOURCE_DIR}/system/include")
 target_link_libraries(kickos_kernel PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
 
 # Identity baked into the boot banner (kmain kbanner()).

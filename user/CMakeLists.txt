@@ -17,6 +17,9 @@ kickos_apply_freestanding(kickos_user)
 target_include_directories(kickos_user PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+# abi.h includes <kickos/sys/errno.h>, which now lives in kickos_system.
+target_include_directories(kickos_user PRIVATE
+  "${PROJECT_SOURCE_DIR}/system/include")
 target_link_libraries(kickos_user PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
 install(TARGETS kickos_user EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")

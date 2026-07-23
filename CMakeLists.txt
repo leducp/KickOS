@@ -317,7 +317,7 @@ if(KICKOS_BUILD_TESTS)
 endif()
 
 # Components are added as they land; guarded so every step boundary configures.
-foreach(_dir lib arch kernel user)
+foreach(_dir lib arch kernel user system)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_dir}/CMakeLists.txt")
     add_subdirectory(${_dir})
   endif()
@@ -337,6 +337,14 @@ endif()
 # this exported interface target, so no source tree is needed to link an image.
 # kickos_add_application() is then optional sugar (and, on MCU, the image step).
 # The arch<->kernel callback cycle is resolved as one rescanned archive group.
+# The userspace init service: the CMake target that defines kickos_init_entry (the
+# symbol the kernel root thread calls after init). Default = the built-in
+# kickos_system service (kickos_default_init, a thin passthrough to the app's main);
+# a power user names their own target. Defined before kickos_core so the LINK_GROUP
+# below can pull the provider archive.
+set(KICKOS_INIT_PROVIDER "kickos_default_init" CACHE STRING
+  "CMake target providing kickos_init_entry (the userspace init service). Default = the built-in kickos_system service; a power user names their own target.")
+
 if(TARGET kickos_kernel)
   # Posture-neutral requirements shared by both leaves. Consumers link a leaf
   # (kickos / kickos_cxx), never kickos_core directly; core carries everything
@@ -344,13 +352,21 @@ if(TARGET kickos_kernel)
   add_library(kickos_core INTERFACE)
   # On MCU the chip backend (arch_init/console + reset vector) joins the rescan
   # group; the arch<->kernel<->chip callback cycles resolve as one archive group.
+  # KICKOS_INIT_PROVIDER sits right after kickos_kernel: the kernel references
+  # kickos_init_entry across the rescan boundary, and the provider archive being
+  # in-group resolves it. No -Wl,-u is needed; gc-sections keeps it via the live
+  # reset->kmain->root_entry chain.
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
     target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
+      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
   else()
     target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,kickos_arch_${KICKOS_ARCH},kickos_lib>")
+      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},kickos_arch_${KICKOS_ARCH},kickos_lib>")
   endif()
+  # kickos_system is INTERFACE (contributes no archive), so it must NOT sit in the
+  # RESCAN group; link it separately. This is what propagates the relocated system
+  # headers (init.h, errno.h, cap_index.h) to every app.
+  target_link_libraries(kickos_core INTERFACE kickos_system)
   # OS-agnostic app entry (architecture.md 8j): the app writes a plain `int main`,
   # renamed to the kernel-called symbol; app.h is force-included so the renamed C++
   # main gets C linkage (unmangled).
@@ -371,6 +387,10 @@ if(TARGET kickos_kernel)
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
+  # Force-include the seam header so an app-TU-defined kickos_init_entry gets C
+  # linkage (it cannot silently mangle and fall back to the default provider). SHELL:
+  # keeps the second -include from being de-duplicated against the app.h one above.
+  target_compile_options(kickos_core INTERFACE "SHELL:-include kickos/sys/init.h")
   if(KICKOS_ARCH STREQUAL "sim")
     find_package(Threads REQUIRED)
     target_link_libraries(kickos_core INTERFACE Threads::Threads rt)
@@ -442,6 +462,23 @@ if(KICKOS_BUILD_APPS
   add_subdirectory(user/apps)
 endif()
 
+# Validate the selected init provider LATE: a provider defined in user/apps or a
+# superproject is not a target yet at the kickos_core site above, so checking there
+# would false-trip. Guarded on kickos_core so a libraries-only configure (a named
+# but unbrought-up chip) does not demand a provider it never links.
+if(TARGET kickos_core)
+  if(NOT TARGET ${KICKOS_INIT_PROVIDER})
+    message(FATAL_ERROR "KICKOS_INIT_PROVIDER='${KICKOS_INIT_PROVIDER}' is not a CMake target. Name a target that defines kickos_init_entry, or unset to use the default kickos_default_init.")
+  endif()
+  # A non-default provider that is not in the export set will not survive
+  # install/export: find_package(KickOS) consumers would link a recipe naming a
+  # target they never got. An in-tree-only provider is fine for a source-tree build.
+  if(NOT KICKOS_INIT_PROVIDER STREQUAL "kickos_default_init")
+    message(STATUS "KickOS: init provider = ${KICKOS_INIT_PROVIDER} (non-default). "
+      "For an installed/exported package it must also be install(EXPORT KickOSTargets).")
+  endif()
+endif()
+
 # --- Install / export: the dependency-inversion package --------------------
 # Consumers do find_package(KickOS) + kickos_add_application() out of tree.
 include(CMakePackageConfigHelpers)
@@ -463,6 +500,7 @@ install(DIRECTORY
           "${CMAKE_CURRENT_SOURCE_DIR}/kernel/include/"
           "${CMAKE_CURRENT_SOURCE_DIR}/lib/include/"
           "${CMAKE_CURRENT_SOURCE_DIR}/user/include/"
+          "${CMAKE_CURRENT_SOURCE_DIR}/system/include/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
 # Ship the selected board's board_config.h (MAX_IRQ + provisioning) so an

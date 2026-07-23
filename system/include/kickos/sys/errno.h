@@ -7,9 +7,8 @@
 // and counts stay small). Pointer-returning (ram_alloc) and Hz-returning
 // (cpu_clock_hz/set) syscalls stay OUT of this scheme -- see their own contracts.
 //
-// Standalone for now; its final home MAY move to a future kickos_system library
-// alongside cap_index.h; keep it dependency-free so that move is a pure
-// relocation. Shared verbatim by the kernel dispatch and the userspace wrappers.
+// Lives in the kickos_system library alongside cap_index.h; keep it dependency-free.
+// Shared verbatim by the kernel dispatch and the userspace wrappers.
 //
 // Values mirror the common POSIX errno numbers so they read at a glance; only the
 // MAGNITUDE is contract (the sign is applied at the return site). Every code is

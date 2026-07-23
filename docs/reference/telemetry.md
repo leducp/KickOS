@@ -241,7 +241,7 @@ Hook points, each gated so *off* is truly free -- including the asm
 - **Syscall enter/exit.** `syscall_dispatch` (`kernel/syscall/syscall.cc`) wraps
   the dispatch in an RAII bracket: `SYSCALL_ENTER{t,tid,nr}` on entry,
   `SYSCALL_EXIT{t,tid,nr}` from the destructor on every ordinary return path.
-  `KOS_SYS_exit` switches away permanently inside the dispatch, so it is
+  `KOS_SYS_EXIT` switches away permanently inside the dispatch, so it is
   recorded ENTER-only (the decoder tolerates it, section 7). For a *blocking*
   syscall the ENTER->EXIT delta is block duration, not dispatch cost -- the
   decoder segments on-CPU overhead by intervening SWITCHes.
@@ -468,7 +468,7 @@ The same instrumented stream gives, at increasing cost:
   with it.
 - **ch1 ring size:** `KICKOS_RTT_CH1_SIZE`, default 4096 bytes (per-board/preset
   overridable; `sim-telem` uses 16384 because the host drains only at shutdown).
-- **No-return syscalls** (`KOS_SYS_exit`): recorded as `SYSCALL_ENTER` with no
+- **No-return syscalls** (`KOS_SYS_EXIT`): recorded as `SYSCALL_ENTER` with no
   `SYSCALL_EXIT`. The decoder tolerates unmatched ENTERs (exit(), or threads
   blocked mid-syscall at shutdown) and flags only orphan EXITs; on-CPU
   attribution ends at the next SWITCH away from the tid.

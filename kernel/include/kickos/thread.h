@@ -171,8 +171,8 @@ namespace kickos
     // thread_create re-inits the TCB (incl. privilege posture) from scratch.
     struct ThreadPool
     {
-        static constexpr int kIndexBits = 8; // handle low bits; the generation takes the rest
-        static_assert(KICKOS_MAX_THREADS <= (1 << kIndexBits),
+        static constexpr int INDEX_BITS = 8; // handle low bits; the generation takes the rest
+        static_assert(KICKOS_MAX_THREADS <= (1 << INDEX_BITS),
                       "thread handle index field too small for KICKOS_MAX_THREADS");
 
         Thread slots[KICKOS_MAX_THREADS];
@@ -271,7 +271,7 @@ namespace kickos
         // The opaque handle for a live slot index, carrying its current generation.
         int handle_for(int index) const
         {
-            return static_cast<int>((static_cast<uint32_t>(gen[index]) << kIndexBits) |
+            return static_cast<int>((static_cast<uint32_t>(gen[index]) << INDEX_BITS) |
                                     static_cast<uint32_t>(index));
         }
     };

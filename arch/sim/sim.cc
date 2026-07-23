@@ -267,10 +267,10 @@ namespace
         };
         // Local cap generously above KICKOS_MPU_MAX_REGIONS (8) without pulling a
         // kernel config header across the arch seam; extra entries are clamped.
-        constexpr size_t kCap = 32;
-        SortedRegion sorted[kCap];
+        constexpr size_t CAP = 32;
+        SortedRegion sorted[CAP];
         size_t m = 0;
-        for (size_t i = 0; i < sim().applied_n and m < kCap; i++)
+        for (size_t i = 0; i < sim().applied_n and m < CAP; i++)
         {
             uintptr_t const b = sim().applied[i].base;
             size_t const s = sim().applied[i].size;
@@ -361,16 +361,16 @@ namespace
     // emulated TX-empty line, delivered via SIGUSR1.
     enum
     {
-        kTxLine = 30,       // < KICKOS_MAX_IRQ / kSimIrqLines; not used by any test/bench
+        TX_LINE = 30,       // < KICKOS_MAX_IRQ / SIM_IRQ_LINES; not used by any test/bench
         // Deliberately small: the sim's only reason to buffer is to exercise the
         // ring paths, so the ring is sized so ordinary console traffic WRAPS it
         // (usable 127 > the largest single burst these gates emit, so bursts still
         // take the fast enqueue+prime path rather than always overflowing) while
         // cumulative output crosses the index-mask boundary many times.
-        kTxRingSize = 128,  // power of two (index masking); usable capacity 127
-        kTxBudget = 8       // bytes drained per ISR delivery (synthetic slot budget)
+        TX_RING_SIZE = 128,  // power of two (index masking); usable capacity 127
+        TX_BUDGET = 8       // bytes drained per ISR delivery (synthetic slot budget)
     };
-    char g_tx_ring[kTxRingSize];
+    char g_tx_ring[TX_RING_SIZE];
 
     int sim_tx_slot_free()
     {
@@ -436,13 +436,13 @@ namespace
     // the peripheral IRQ is still enabled afterwards (ring not yet empty -- budget
     // ran out), re-assert the level line so the next SIGUSR1 continues the drain.
     // console_tx_isr calls irq_disable when the ring empties, which clears
-    // tx_enabled and ends the chain. Bounded: every delivery drains >= kTxBudget
+    // tx_enabled and ends the chain. Bounded: every delivery drains >= TX_BUDGET
     // bytes from a finite ring, so it always terminates.
     void console_tx_service()
     {
-        sim().tx_budget = kTxBudget;
+        sim().tx_budget = TX_BUDGET;
         sim().in_tx_isr = 1;
-        kickos_isr_irq(kTxLine);
+        kickos_isr_irq(TX_LINE);
         sim().in_tx_isr = 0;
         if (sim().tx_enabled != 0)
         {
@@ -708,8 +708,8 @@ void arch_console_write_sync(char const* buf, size_t n)
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = g_tx_ring;
-    *size = kTxRingSize;
-    *irq_line = kTxLine;
+    *size = TX_RING_SIZE;
+    *irq_line = TX_LINE;
     return &g_sim_tx_backend;
 }
 
@@ -738,11 +738,11 @@ void arch_context_init(struct arch_context* ctx,
     // the caller's buffer directly (verified on silicon). Rare: the default spawn path hands
     // over the >=64K pool stack, so this malloc fires only for genuinely small caller stacks
     // (not freed -- the sim is a dev vehicle, not a small-caller-stack stress target).
-    constexpr size_t kSimHostMinStack = 64 * 1024;
-    if (stack_size < kSimHostMinStack)
+    constexpr size_t SIM_HOST_MIN_STACK = 64 * 1024;
+    if (stack_size < SIM_HOST_MIN_STACK)
     {
-        stack_base = malloc(kSimHostMinStack);
-        stack_size = kSimHostMinStack;
+        stack_base = malloc(SIM_HOST_MIN_STACK);
+        stack_size = SIM_HOST_MIN_STACK;
     }
     c->uc.uc_stack.ss_sp = stack_base;
     c->uc.uc_stack.ss_size = stack_size;
@@ -1062,7 +1062,7 @@ uintptr_t arch_syscall(uintptr_t nr,
 // always delivers). A board needing more than 32 lines must widen irq_masked.
 enum
 {
-    kSimIrqLines = 32
+    SIM_IRQ_LINES = 32
 };
 
 // Self-bracketed (arch_irq_save/restore) so the irq_masked/irq_pending RMWs are
@@ -1071,7 +1071,7 @@ enum
 // write back a stale mask -> re-enable a mid-service line -> phantom wake.
 void arch_irq_mask(int line)
 {
-    if (line < 0 or line >= kSimIrqLines)
+    if (line < 0 or line >= SIM_IRQ_LINES)
     {
         return;
     }
@@ -1082,7 +1082,7 @@ void arch_irq_mask(int line)
 
 void arch_irq_unmask(int line)
 {
-    if (line < 0 or line >= kSimIrqLines)
+    if (line < 0 or line >= SIM_IRQ_LINES)
     {
         return;
     }
@@ -1104,7 +1104,7 @@ void arch_irq_unmask(int line)
 
 void arch_irq_clear_pending(int line)
 {
-    if (line < 0 or line >= kSimIrqLines)
+    if (line < 0 or line >= SIM_IRQ_LINES)
     {
         return;
     }
@@ -1118,9 +1118,9 @@ void arch_irq_inject(int irq)
     arch_irq_state_t s = arch_irq_save();
     // Latch-and-coalesce: a raise on a masked in-range line sets the one-deep pending
     // bit (redelivered at unmask), NOT dropped. An unmasked line -- or a never-maskable
-    // line >= kSimIrqLines -- delivers now (the raise pends under this bracket and
+    // line >= SIM_IRQ_LINES -- delivers now (the raise pends under this bracket and
     // lands at its release, in ISR context).
-    if (irq >= 0 and irq < kSimIrqLines and (static_cast<unsigned>(sim().irq_masked) & (1u << irq)))
+    if (irq >= 0 and irq < SIM_IRQ_LINES and (static_cast<unsigned>(sim().irq_masked) & (1u << irq)))
     {
         sim().irq_pending |= static_cast<int>(1u << irq);
     }

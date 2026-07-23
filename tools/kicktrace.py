@@ -69,7 +69,7 @@ SYSCALL_NAME = {
 TRACE_MAGIC = 0x4B545243
 TIMER_LINE = 0xFFFE
 NO_THREAD = 0xFFFF
-# Note: KOS_SYS_exit is a no-return syscall, recorded as SYSCALL_ENTER with no
+# Note: KOS_SYS_EXIT is a no-return syscall, recorded as SYSCALL_ENTER with no
 # matching EXIT (one per exiting thread). The structural check tolerates unmatched
 # ENTERs (exit(), or threads blocked at shutdown) and flags only orphan EXITs.
 SEQ_MOD = 1 << 16

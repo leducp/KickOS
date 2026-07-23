@@ -383,11 +383,11 @@ namespace
     int g_irqdrv_ready = -1;
     void* g_mmio = nullptr; // fake device MMIO word, granted to the driver
     int g_seen[3] = {0, 0, 0};
-    constexpr int kIrqLine = 7;
+    constexpr int IRQ_LINE = 7;
 
     void irq_driver(void*)
     {
-        auto irq = kos::Irq::request(kIrqLine);
+        auto irq = kos::Irq::request(IRQ_LINE);
         kos_sem_post(CH_READY); // g_irqdrv_ready: registered + about to park: safe to fire
         for (int i = 0; i < 3; i++)
         {
@@ -424,7 +424,7 @@ namespace
         for (int i = 1; i <= 3; i++)
         {
             *static_cast<volatile int*>(g_mmio) = 0x100 + i; // "device" produces data
-            kos_irq_inject(kIrqLine);
+            kos_irq_inject(IRQ_LINE);
             kos_sem_wait(g_irqdrv_done); // serviced + acked
         }
         kos_sem_destroy(g_irqdrv_done); // reclaim (driver has exited: higher prio ran to completion)
@@ -440,11 +440,11 @@ namespace
     // single latch redelivered when ack unmasks the line.
     int g_mask_ready = -1;
     int g_mask_serviced = 0;
-    constexpr int kMaskLine = 6;
+    constexpr int MASK_LINE = 6;
 
     void mask_driver(void*)
     {
-        auto irq = kos::Irq::request(kMaskLine);
+        auto irq = kos::Irq::request(MASK_LINE);
         kos_sem_post(CH_READY); // g_mask_ready
         for (int i = 0; i < 3; i++)
         {
@@ -465,9 +465,9 @@ namespace
         kos_sem_destroy(g_mask_ready);
         // Three back-to-back onto the parked (lower-prio) driver's line: #1 delivers
         // + masks; #2 latches on the masked line; #3 coalesces into that one latch.
-        kos_irq_inject(kMaskLine);
-        kos_irq_inject(kMaskLine);
-        kos_irq_inject(kMaskLine);
+        kos_irq_inject(MASK_LINE);
+        kos_irq_inject(MASK_LINE);
+        kos_irq_inject(MASK_LINE);
         // Deterministic: block until the two services (the delivery + the single
         // coalesced redelivery) have both landed -- no sleep-based ordering here.
         wait_n(2);
@@ -476,7 +476,7 @@ namespace
         kos_sleep_ns(2000000ull);
         TAP_CHECK(g_mask_serviced == 2); // exactly two; the third raise coalesced
         // Release the parked third wait with a fresh event so the driver exits + joins.
-        kos_irq_inject(kMaskLine);
+        kos_irq_inject(MASK_LINE);
         wait_n(1);
         TAP_CHECK(g_mask_serviced == 3);
     }
@@ -488,11 +488,11 @@ namespace
     // a raise onto a still-masked line would latch-and-coalesce, not be lost.
     int g_autorearm_ready = -1;
     int g_autorearm_seen = 0;
-    constexpr int kAutoRearmLine = 8;
+    constexpr int AUTO_REARM_LINE = 8;
 
     void autorearm_driver(void*)
     {
-        auto irq = kos::Irq::request(kAutoRearmLine);
+        auto irq = kos::Irq::request(AUTO_REARM_LINE);
         kos_sem_post(CH_READY); // g_autorearm_ready
         for (int i = 0; i < 3; i++)
         {
@@ -512,7 +512,7 @@ namespace
         kos_sem_destroy(g_autorearm_ready);
         for (int i = 0; i < 3; i++)
         {
-            kos_irq_inject(kAutoRearmLine);
+            kos_irq_inject(AUTO_REARM_LINE);
             wait_n(1);
         }
         TAP_CHECK(g_autorearm_seen == 3); // all three delivered without a single ack
@@ -527,11 +527,11 @@ namespace
     // line (register / explicit ack / rearm-at-wait), never a masked one.
     int g_phantom_ready = -1;
     int g_phantom_seen = 0;
-    constexpr int kPhantomLine = 10;
+    constexpr int PHANTOM_LINE = 10;
 
     void phantom_driver(void*)
     {
-        auto irq = kos::Irq::request(kPhantomLine);
+        auto irq = kos::Irq::request(PHANTOM_LINE);
         kos_sem_post(CH_READY); // g_phantom_ready
         irq.wait();            // consume fire #1 -> needs_rearm set, line masked
         irq.ack();             // ack;compute;wait shape: unmask now, needs_rearm clear
@@ -553,10 +553,10 @@ namespace
         kos_sem_wait(g_phantom_ready);
         kos_sem_destroy(g_phantom_ready);
 
-        kos_irq_inject(kPhantomLine); // fire #1
+        kos_irq_inject(PHANTOM_LINE); // fire #1
         wait_n(1);                    // driver consumed #1 and acked (line armed)
 
-        kos_irq_inject(kPhantomLine); // the one mid-compute event, on the armed line
+        kos_irq_inject(PHANTOM_LINE); // the one mid-compute event, on the armed line
         wait_n(1);                    // serviced exactly once
         TAP_CHECK(g_phantom_seen == 1);
 
@@ -567,7 +567,7 @@ namespace
 
         // Prove that wait is live (blocked, not lost) and the line re-armed itself:
         // a fresh inject delivers.
-        kos_irq_inject(kPhantomLine);
+        kos_irq_inject(PHANTOM_LINE);
         wait_n(1);
         TAP_CHECK(g_phantom_seen == 2);
     }
@@ -1223,29 +1223,29 @@ namespace
     // --- One driver per line: a second claim on a bound line is refused --------
     void t_irq_ownership()
     {
-        constexpr int kLine = 11; // unused by the other IRQ tests
+        constexpr int LINE = 11; // unused by the other IRQ tests
         int sem = kos_sem_create(0);
-        TAP_CHECK(kos_irq_attach(kLine, sem) == 0);          // first claim wins
-        TAP_CHECK(kos_irq_attach(kLine, sem) == -KOS_EBUSY); // second is refused (no steal)
-        TAP_CHECK(kos_irq_register(kLine) == -KOS_EBUSY);    // tier-1 cannot steal it either
+        TAP_CHECK(kos_irq_attach(LINE, sem) == 0);          // first claim wins
+        TAP_CHECK(kos_irq_attach(LINE, sem) == -KOS_EBUSY); // second is refused (no steal)
+        TAP_CHECK(kos_irq_register(LINE) == -KOS_EBUSY);    // tier-1 cannot steal it either
         kos_sem_destroy(sem); // reclaim (line 11 stays bound to a now-stale handle -> fails safe)
     }
 
     // --- Spurious IRQ: an unbound line is masked + counted, never dropped -------
     void t_irq_spurious()
     {
-        constexpr int kFreeLine = 9; // no driver bound to this line
+        constexpr int FREE_LINE = 9; // no driver bound to this line
         // Enable the line so the injected raise reaches the default handler on
         // masked-by-default controllers (ARM NVIC, RX); sim/riscv are unmasked by
         // default, so this is a no-op there.
-        kos_irq_unmask(kFreeLine);
+        kos_irq_unmask(FREE_LINE);
         uint32_t before = kos_irq_spurious_count();
-        kos_irq_inject(kFreeLine);   // default handler runs: mask + bump counter
+        kos_irq_inject(FREE_LINE);   // default handler runs: mask + bump counter
         TAP_CHECK(kos_irq_spurious_count() == before + 1);
         // The default handler masked the line, so a second raise LATCHES on the
         // masked line (coalesced, not delivered): the handler does not re-run, so
         // the counter must NOT advance until the line is unmasked again.
-        kos_irq_inject(kFreeLine);
+        kos_irq_inject(FREE_LINE);
         TAP_CHECK(kos_irq_spurious_count() == before + 1);
     }
 
@@ -1257,11 +1257,11 @@ namespace
     // lower-prio driver registers + waits: that first wait MUST block.
     int g_stale_ready = -1;
     int g_stale_seen = 0;
-    constexpr int kStaleLine = 12;
+    constexpr int STALE_LINE = 12;
 
     void stale_driver(void*)
     {
-        auto irq = kos::Irq::request(kStaleLine); // first-arm clears the stale latch
+        auto irq = kos::Irq::request(STALE_LINE); // first-arm clears the stale latch
         kos_sem_post(CH_READY);                   // g_stale_ready
         irq.wait();                               // MUST block: the garbage was discarded
         g_stale_seen++;                           // only after root injects a REAL event
@@ -1274,11 +1274,11 @@ namespace
         // Pre-registration garbage on the unbound line: unmask so the default handler
         // runs (mask + count) on the first raise, then a second raise latches on the
         // now-masked line -- the stale pending that first-arm must discard.
-        kos_irq_unmask(kStaleLine);
+        kos_irq_unmask(STALE_LINE);
         uint32_t before = kos_irq_spurious_count();
-        kos_irq_inject(kStaleLine); // default handler: mask + count
+        kos_irq_inject(STALE_LINE); // default handler: mask + count
         TAP_CHECK(kos_irq_spurious_count() == before + 1);
-        kos_irq_inject(kStaleLine); // masked now -> latches garbage (pre-registration)
+        kos_irq_inject(STALE_LINE); // masked now -> latches garbage (pre-registration)
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_stale_ready, CH_FULL}}; // done@1, ready@2
         int drv = kos::thread::spawn_caps(stale_driver, nullptr, "staleirq", 1, caps, 2); // below root
         TAP_CHECK(drv >= 0);         // spawn failure would hang the ready handshake below
@@ -1288,7 +1288,7 @@ namespace
         kos_sleep_ns(2000000ull);
         TAP_CHECK(g_stale_seen == 0);
         // Liveness: a real event delivers on the freshly-armed line, driver exits + joins.
-        kos_irq_inject(kStaleLine);
+        kos_irq_inject(STALE_LINE);
         wait_n(1);
         TAP_CHECK(g_stale_seen == 1);
     }
@@ -1317,8 +1317,8 @@ namespace
         // Accept a properly-sized, aligned caller-owned stack -> the thread runs on it. Skip
         // (still ok) when the arena can't spare one (tiny-RAM parts, like test 11's alloc):
         // the API is arch-uniform; this only needs the memory to demonstrate it.
-        constexpr uint32_t kStk = 2048;
-        void* raw = kos_ram_alloc(kStk + 16);
+        constexpr uint32_t STK = 2048;
+        void* raw = kos_ram_alloc(STK + 16);
         if (raw == nullptr)
         {
             return;
@@ -1327,7 +1327,7 @@ namespace
         g_cstk_sem = kos_sem_create(0);
         kos_cap_grant caps[] = {{g_cstk_sem, CH_FULL}}; // -> g_cstk_sem @1 (CH_DONE)
         int const t = kos::thread::spawn(caller_stack_worker, nullptr, "cstk", 10, KOS_POLICY_FIFO,
-                                         0, false, nullptr, 0, stk, kStk, nullptr, 0, caps, 1);
+                                         0, false, nullptr, 0, stk, STK, nullptr, 0, caps, 1);
         TAP_CHECK(t >= 0);        // spawn accepted the caller-owned stack
         kos_sem_wait(g_cstk_sem); // the worker ran on it and posted
         kos_sem_destroy(g_cstk_sem);
@@ -1355,10 +1355,10 @@ namespace
     int g_dwrote = -1;      // writer -> reader handoff (through the shared domain)
     int g_dread = -1;       // reader -> main handoff
     int g_dreadback = -1;
-    constexpr int kDomSentinel = 0x5A5A;
+    constexpr int DOM_SENTINEL = 0x5A5A;
     void dom_writer(void*) // caps: g_dwrote@1 (CH_DONE)
     {
-        *g_dshared = kDomSentinel; // write the shared domain region (granted)
+        *g_dshared = DOM_SENTINEL; // write the shared domain region (granted)
         kos_sem_post(CH_DONE);     // g_dwrote
     }
     void dom_reader(void*) // caps: g_dwrote@1 (CH_DONE), g_dread@2 (CH_READY)
@@ -1401,7 +1401,7 @@ namespace
         kos_sem_wait(g_dread); // the reader saw the writer's store via the shared region
         kos_sem_destroy(g_dwrote);
         kos_sem_destroy(g_dread);
-        TAP_CHECK(g_dreadback == kDomSentinel);
+        TAP_CHECK(g_dreadback == DOM_SENTINEL);
     }
 
     // --- MMIO grant boundary (task #9): privileged-only + encodable-only ---------
@@ -1601,7 +1601,7 @@ namespace
     // MUST be accepted; a pointer into no granted region (the un-owned guard page)
     // MUST be rejected, never read. All checks run from an UNPRIVILEGED worker
     // (main is privileged and bypasses the floor).
-    char const kCdLit[] = "# [confdep] unpriv rodata literal reaches the console\n";
+    char const CD_LIT[] = "# [confdep] unpriv rodata literal reaches the console\n";
     long g_cd_lit_rc = -99;    // worker: kconsole_write(rodata literal) -> expect len
     int g_cd_goodspawn = -99;  // worker: spawn rc of a child NAMED from .rodata
     int g_cd_goodname_ran = 0; // that child ran (name-copy path did not break spawn)
@@ -1620,7 +1620,7 @@ namespace
     }
     void cd_worker(void*) // UNPRIVILEGED; caps: g_cd_done@1 (CH_DONE), delegated by main
     {
-        g_cd_lit_rc = kos_kconsole_write(kCdLit, strlen(kCdLit)); // rodata: accepted
+        g_cd_lit_rc = kos_kconsole_write(CD_LIT, strlen(CD_LIT)); // rodata: accepted
 
         // cd_worker creates its OWN sem (unprivileged create is allowed) and RE-delegates
         // it to a grandchild -- nested delegation requires the source cap carry TRANSFER,
@@ -1671,7 +1671,7 @@ namespace
         kos_sem_wait(g_cd_done);
         kos_sem_destroy(g_cd_done);
         // Positive (every backend): an unprivileged rodata literal reached the console.
-        TAP_CHECK(g_cd_lit_rc == static_cast<long>(sizeof(kCdLit) - 1));
+        TAP_CHECK(g_cd_lit_rc == static_cast<long>(sizeof(CD_LIT) - 1));
         // Positive: a child named from .rodata spawned and ran (the name-copy path works).
         // The grandchild needs its own stack; on a tiny arena (microbit: 16 KiB SRAM, which
         // already cannot spare irq_as_event's 4 KiB page) that alloc can fail. Skip the
@@ -1699,7 +1699,7 @@ namespace
     // The endpoint cap is delegated to workers at child index 2 (done@1, E@2). Workers
     // are UNPRIVILEGED so the kernel's copy into/from a parked peer runs against real
     // enforcement (the cross-domain privileged write, design section 3.1).
-    char const kEpMsg[] = "hello-endpoint"; // 14 bytes (strlen), no NUL sent
+    char const EP_MSG[] = "hello-endpoint"; // 14 bytes (strlen), no NUL sent
     constexpr uint8_t EP_SIGNAL_ONLY = KOS_CAP_SIGNAL; // send right only
     constexpr uint8_t EP_WAIT_ONLY = KOS_CAP_WAIT;     // recv right only
     int g_ep = -1; // main's endpoint cap (created per test)
@@ -1734,13 +1734,13 @@ namespace
     }
     void ep_send_worker(void*) // caps: done@1, E@2 (unpriv)
     {
-        g_ep_sn = kos_send(2, kEpMsg, strlen(kEpMsg));
+        g_ep_sn = kos_send(2, EP_MSG, strlen(EP_MSG));
         kos_sem_post(CH_DONE);
     }
 
     void t_endpoint_rendezvous()
     {
-        size_t const mlen = strlen(kEpMsg);
+        size_t const mlen = strlen(EP_MSG);
         g_ep = kos_endpoint_create();
         TAP_CHECK(g_ep >= 0);
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, CH_FULL}}; // done@1, E@2
@@ -1751,10 +1751,10 @@ namespace
                                         KOS_POLICY_FIFO, 0, /*privileged=*/false);
         TAP_CHECK(w >= 0);
         kos_sleep_ns(3000000ull); // let the worker park in recv
-        long sc = kos_send(g_ep, kEpMsg, mlen);
+        long sc = kos_send(g_ep, EP_MSG, mlen);
         TAP_CHECK(sc == static_cast<long>(mlen)); // sender delivered n bytes
         wait_n(1);
-        TAP_CHECK(g_ep_rn == static_cast<long>(mlen) and memcmp(g_ep_rbuf, kEpMsg, mlen) == 0);
+        TAP_CHECK(g_ep_rn == static_cast<long>(mlen) and memcmp(g_ep_rbuf, EP_MSG, mlen) == 0);
         TAP_CHECK(g_ep_rbadge == 0); // badge always written on success (stage i: 0)
 
         // (B) sender parks first; receiver (main) takes from the parked buffer.
@@ -1766,7 +1766,7 @@ namespace
         char rbuf[64];
         uint32_t badge = 0xdeadu;
         long rc = kos_recv(g_ep, rbuf, sizeof(rbuf), &badge);
-        TAP_CHECK(rc == static_cast<long>(mlen) and memcmp(rbuf, kEpMsg, mlen) == 0);
+        TAP_CHECK(rc == static_cast<long>(mlen) and memcmp(rbuf, EP_MSG, mlen) == 0);
         TAP_CHECK(badge == 0);
         wait_n(1);
         TAP_CHECK(g_ep_sn == static_cast<long>(mlen));
@@ -1777,7 +1777,7 @@ namespace
                                          KOS_POLICY_FIFO, 0, /*privileged=*/false);
         TAP_CHECK(w3 >= 0);
         kos_sleep_ns(3000000ull);
-        TAP_CHECK(kos_send(g_ep, kEpMsg, 0) == 0);
+        TAP_CHECK(kos_send(g_ep, EP_MSG, 0) == 0);
         wait_n(1);
         TAP_CHECK(g_ep_rn == 0);
 
@@ -1787,9 +1787,9 @@ namespace
                                          KOS_POLICY_FIFO, 0, /*privileged=*/false);
         TAP_CHECK(w4 >= 0);
         kos_sleep_ns(3000000ull);
-        TAP_CHECK(kos_send(g_ep, kEpMsg, mlen) == 4);
+        TAP_CHECK(kos_send(g_ep, EP_MSG, mlen) == 4);
         wait_n(1);
-        TAP_CHECK(g_ep_rn == 4 and memcmp(g_ep_rbuf, kEpMsg, 4) == 0);
+        TAP_CHECK(g_ep_rn == 4 and memcmp(g_ep_rbuf, EP_MSG, 4) == 0);
 
         TAP_CHECK(kos_handle_close(g_ep) == 0); // last cap -> endpoint freed
     }
@@ -1843,7 +1843,7 @@ namespace
     volatile long g_ep_epipe_rc = -99;
     void ep_epipe_worker(void*) // caps: done@1, E(SIGNAL)@2
     {
-        g_ep_epipe_rc = kos_send(2, kEpMsg, strlen(kEpMsg)); // parks; woken -KOS_EPIPE on EPIPE
+        g_ep_epipe_rc = kos_send(2, EP_MSG, strlen(EP_MSG)); // parks; woken -KOS_EPIPE on EPIPE
         kos_sem_post(CH_DONE);
     }
     void t_endpoint_epipe()
@@ -1868,7 +1868,7 @@ namespace
     void ep_dead_worker(void*) // caps: done@1, E(SIGNAL)@2, go@3
     {
         kos_sem_wait(3);                                     // go: main has dropped its WAIT cap
-        g_ep_dead_rc = kos_send(2, kEpMsg, strlen(kEpMsg)); // recv_holders == 0 -> -KOS_EPIPE now
+        g_ep_dead_rc = kos_send(2, EP_MSG, strlen(EP_MSG)); // recv_holders == 0 -> -KOS_EPIPE now
         kos_sem_post(CH_DONE);
     }
     void t_endpoint_dead()
@@ -2017,13 +2017,13 @@ namespace
         // LOUDLY if cap_install ever regresses to scanning from 1 (own creates would then
         // land at index 1..3, aliasing the reserved range). Delegation uses explicit
         // indices, so it is blind to the scan floor -- only an OWN create catches it.
-        constexpr int kIdxMask = 0xF;
+        constexpr int IDX_MASK = 0xF;
         int s = kos_sem_create(0);
-        TAP_CHECK(s >= 0 and (s & kIdxMask) >= KOS_CAP_FIRST_DYNAMIC);
+        TAP_CHECK(s >= 0 and (s & IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
         int e = kos_endpoint_create();
-        TAP_CHECK(e >= 0 and (e & kIdxMask) >= KOS_CAP_FIRST_DYNAMIC);
+        TAP_CHECK(e >= 0 and (e & IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
         int m = kos_mutex_create();
-        TAP_CHECK(m >= 0 and (m & kIdxMask) >= KOS_CAP_FIRST_DYNAMIC);
+        TAP_CHECK(m >= 0 and (m & IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
         TAP_CHECK(kos_handle_close(s) == 0);
         TAP_CHECK(kos_handle_close(e) == 0);
         TAP_CHECK(kos_handle_close(m) == 0);
@@ -2047,7 +2047,7 @@ namespace
             {
                 break;
             }
-            TAP_CHECK((h & kIdxMask) >= KOS_CAP_FIRST_DYNAMIC); // never a reserved slot, not even the last free one
+            TAP_CHECK((h & IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC); // never a reserved slot, not even the last free one
             held[n] = h;
             n = n + 1;
             if (n >= static_cast<int>(sizeof(held) / sizeof(held[0])))
@@ -2063,7 +2063,7 @@ namespace
             TAP_CHECK(kos_handle_close(held[i]) == 0);
         }
         int again = kos_sem_create(0); // table recovers once slots are freed
-        TAP_CHECK(again >= 0 and (again & kIdxMask) != 0);
+        TAP_CHECK(again >= 0 and (again & IDX_MASK) != 0);
         TAP_CHECK(kos_handle_close(again) == 0);
     }
 

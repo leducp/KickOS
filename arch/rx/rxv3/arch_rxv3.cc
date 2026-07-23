@@ -80,13 +80,13 @@ namespace
     // arbitrary peripheral line from software (only the two software interrupts are
     // settable), so injected lines are delivered over the single SWINT2 doorbell:
     // g_inject_line carries the logical line, g_irq_masked gates it. Mirrors the
-    // sim/xtensa/riscv model. Lines < kSoftIrqLines are software (this controller);
+    // sim/xtensa/riscv model. Lines < SOFT_IRQ_LINES are software (this controller);
     // lines >= it are real ICU vectors gated by ICU.IER (e.g. console TXI6 = 87).
     // RX's own sub-32 vectors (SWINT 26/27, timer CMWI0 30) are configured directly
     // by the arch/chip init and never pass through the arch_irq_* seam, so they do
     // not collide. Masked-by-default (RX is a masked controller): a line is armed
     // only by arch_irq_unmask (kernel irq_register/irq_ack), like the ARM NVIC.
-    constexpr int kSoftIrqLines = 32;
+    constexpr int SOFT_IRQ_LINES = 32;
     volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     volatile int g_inject_line = -1;
     // bit set = a raise landed on this soft line while masked (latched one-deep,
@@ -224,7 +224,7 @@ namespace
         uint16_t vector;
         uint8_t ipr;
     };
-    constexpr ipr_map_entry kIprMap[] = {
+    constexpr ipr_map_entry IPR_MAP[] = {
         {SWINT2_VECTOR, 3}, // SWINT2(26)+SWINT(27) share ICU.IPR[3] (RX72x BSP)
         {SWINT_VECTOR, 3},
         {CMWI0_VECTOR, 6},  // CMTW0 CMWI0(30) -> ICU.IPR[6]
@@ -232,11 +232,11 @@ namespace
 
     inline unsigned vector_to_ipr(int vector)
     {
-        for (unsigned i = 0; i < sizeof(kIprMap) / sizeof(kIprMap[0]); i++)
+        for (unsigned i = 0; i < sizeof(IPR_MAP) / sizeof(IPR_MAP[0]); i++)
         {
-            if (kIprMap[i].vector == vector)
+            if (IPR_MAP[i].vector == vector)
             {
-                return kIprMap[i].ipr;
+                return IPR_MAP[i].ipr;
             }
         }
         return static_cast<unsigned>(vector); // identity: 1:1 IPR sources
@@ -687,7 +687,7 @@ void arch_irq_mask(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    if (line < kSoftIrqLines)
+    if (line < SOFT_IRQ_LINES)
     {
         g_irq_masked |= (1u << static_cast<unsigned>(line));
     }
@@ -705,7 +705,7 @@ void arch_irq_unmask(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    if (line < kSoftIrqLines)
+    if (line < SOFT_IRQ_LINES)
     {
         g_irq_masked &= ~(1u << static_cast<unsigned>(line));
         // Latch-and-coalesce: a raise taken on this soft line while masked
@@ -738,7 +738,7 @@ void arch_irq_clear_pending(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    if (line < kSoftIrqLines)
+    if (line < SOFT_IRQ_LINES)
     {
         g_irq_pending &= ~(1u << static_cast<unsigned>(line));
     }
@@ -753,8 +753,8 @@ void arch_irq_clear_pending(int line)
 void arch_irq_inject(int irq)
 {
     // Only logical lines are injectable. A real peripheral line cannot be pended from
-    // software on RX, and drivers never inject -- so anything >= kSoftIrqLines drops.
-    if (irq < 0 or irq >= kSoftIrqLines)
+    // software on RX, and drivers never inject -- so anything >= SOFT_IRQ_LINES drops.
+    if (irq < 0 or irq >= SOFT_IRQ_LINES)
     {
         return;
     }

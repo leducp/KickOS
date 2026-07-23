@@ -105,8 +105,7 @@ Silicon-test-later (fleet+Xtensa; `.session/*-clock*.patch` are backups):
 
 Clock follow-ups (not blocking): arch_trace_now + KICKOS_BENCH still read raw DWT/CCOUNT (telemetry
 may glitch on K64F/XMC -- tolerable, NOT the scheduler clock); ticks->ns epilogue duplicated ~7x
-(hoist an arch/arm/common helper). ENV (this box): sim/kickcat_slave build needs `tinyxml2`
-reinstalled -- a 2026-07-20 system change dropped it; unrelated to KickOS.
+(hoist an arch/arm/common helper).
 
 ## M1 -- clocks (fleet audit 2026-07-09; detail in `M1_state.md`)
 

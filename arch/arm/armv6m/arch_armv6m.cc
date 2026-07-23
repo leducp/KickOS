@@ -51,17 +51,17 @@ namespace
 {
     // PMSA hardware caps descriptors at 8; stash a private copy (not a pointer) so the
     // commit never chases a TCB whose region set changed after the stash.
-    constexpr size_t kMaxPendRegions = 8;
-    arch_mpu_region g_pend_regions[kMaxPendRegions];
+    constexpr size_t MAX_PEND_REGIONS = 8;
+    arch_mpu_region g_pend_regions[MAX_PEND_REGIONS];
     size_t g_pend_count = 0;
 }
 
 // STRONG override of the weak shared arch_mpu_apply: record only, no hardware write.
 extern "C" void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
-    if (n > kMaxPendRegions)
+    if (n > MAX_PEND_REGIONS)
     {
-        n = kMaxPendRegions;
+        n = MAX_PEND_REGIONS;
     }
     for (size_t i = 0; i < n; i++)
     {

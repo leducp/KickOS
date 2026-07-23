@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Generational slot pool: a fixed array of N slots, each with a generation counter.
-// Handles pack (gen << kIndexBits) | index; free() bumps the slot's generation so a
+// Handles pack (gen << INDEX_BITS) | index; free() bumps the slot's generation so a
 // stale handle (naming a since-recycled slot) fails to resolve -- the ABA guard.
 //
 // Liveness here is EXTRINSIC: the pool owns a used[] bit per slot. The thread pool,
@@ -24,8 +24,8 @@ namespace kickos
     template <class T, int N>
     class SlotPool
     {
-        static constexpr int kIndexBits = 8; // handle low bits; the generation takes the rest
-        static_assert(N <= (1 << kIndexBits), "SlotPool: N exceeds the handle index field");
+        static constexpr int INDEX_BITS = 8; // handle low bits; the generation takes the rest
+        static_assert(N <= (1 << INDEX_BITS), "SlotPool: N exceeds the handle index field");
 
     public:
         // Claim a free slot; returns its index, or -1 if the pool is full. The slot's
@@ -53,7 +53,7 @@ namespace kickos
             {
                 return;
             }
-            int const index = handle & ((1 << kIndexBits) - 1);
+            int const index = handle & ((1 << INDEX_BITS) - 1);
             if (index >= N)
             {
                 return;
@@ -70,10 +70,10 @@ namespace kickos
             {
                 return nullptr;
             }
-            int const index = handle & ((1 << kIndexBits) - 1);
+            int const index = handle & ((1 << INDEX_BITS) - 1);
             // Full high bits, not truncated to 16: a handle carrying junk above the generation
             // field (bits set beyond what handle_for ever produces) must fail to resolve, not alias.
-            uint32_t const gen = static_cast<uint32_t>(handle) >> kIndexBits;
+            uint32_t const gen = static_cast<uint32_t>(handle) >> INDEX_BITS;
             if (index >= N or not used_[index] or static_cast<uint32_t>(gen_[index]) != gen)
             {
                 return nullptr;
@@ -87,7 +87,7 @@ namespace kickos
         // The opaque handle for a live slot index, carrying its current generation.
         int handle_for(int index) const
         {
-            return static_cast<int>((static_cast<uint32_t>(gen_[index]) << kIndexBits) |
+            return static_cast<int>((static_cast<uint32_t>(gen_[index]) << INDEX_BITS) |
                                     static_cast<uint32_t>(index));
         }
 

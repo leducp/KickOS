@@ -12,7 +12,7 @@ namespace tap
 {
     namespace
     {
-        constexpr int kMaxTests = 64;
+        constexpr int MAX_TESTS = 64;
 
         struct Entry
         {
@@ -20,7 +20,7 @@ namespace tap
             TestFn fn;
         };
 
-        Entry g_tests[kMaxTests];
+        Entry g_tests[MAX_TESTS];
         int g_count = 0;
 
         bool g_failed = false;
@@ -44,7 +44,7 @@ namespace tap
 
     void add(char const* name, TestFn fn)
     {
-        if (g_count < kMaxTests)
+        if (g_count < MAX_TESTS)
         {
             g_tests[g_count].name = name;
             g_tests[g_count].fn = fn;

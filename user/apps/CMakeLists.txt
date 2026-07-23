@@ -15,27 +15,6 @@ add_subdirectory(stress)
 add_subdirectory(fault)
 add_subdirectory(specfault)
 
-# KickCAT EtherCAT slave over the software EmulatedESC (Stage A of
-# docs/design-kickcat-k64f.md). Sim-only; consumes the sibling KickCAT checkout
-# (used, not vendored). KickCAT is deferred in M4, so it is optional: add it only
-# when BOTH the checkout AND tinyxml2 (KickCAT's ESI-parser dep) are present.
-# Probing here keeps a missing dep from reaching the hard find_package(tinyxml2
-# CONFIG REQUIRED) inside the KickCAT tree (lib/CMakeLists.txt).
-if(KICKOS_ARCH STREQUAL "sim")
-  set(_kickcat_dir "${KICKCAT_DIR}")
-  if(NOT _kickcat_dir)
-    set(_kickcat_dir "${CMAKE_SOURCE_DIR}/../KickCAT")
-  endif()
-  find_package(tinyxml2 CONFIG QUIET)
-  if(EXISTS "${_kickcat_dir}/lib/slave/include/kickcat/ESC/EmulatedESC.h"
-     AND tinyxml2_FOUND)
-    add_subdirectory(kickcat_slave)
-  else()
-    message(STATUS "KickOS: kickcat_slave skipped -- KickCAT checkout or tinyxml2 absent (KickCAT deferred in M4)")
-  endif()
-  unset(_kickcat_dir)
-endif()
-
 # Full-C++ opt-in smoke test (Stage B of docs/design-kickcat-k64f.md): exercises
 # exceptions + STL + RTTI over the toolchain libstdc++/newlib. Gated to the K64F
 # silicon target and the runnable QEMU armv7m/RISC-V verification boards -- boards

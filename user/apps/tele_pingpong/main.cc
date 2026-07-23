@@ -17,9 +17,9 @@
 
 namespace
 {
-    constexpr int kSleepers = 3;
-    constexpr uint64_t kBeatNs = 1000000ull; // 1 ms
-    constexpr uint64_t kRunNs = 40000000ull; // main lets the workers run ~40 ms
+    constexpr int SLEEPERS = 3;
+    constexpr uint64_t BEAT_NS = 1000000ull; // 1 ms
+    constexpr uint64_t RUN_NS = 40000000ull; // main lets the workers run ~40 ms
 
     kos::Semaphore* g_ping = nullptr;
     kos::Semaphore* g_pong = nullptr;
@@ -34,7 +34,7 @@ namespace
         while (true)
         {
             kos_sem_wait(CH_PING);
-            kos::sleep_ns(kBeatNs);
+            kos::sleep_ns(BEAT_NS);
             kos_sem_post(CH_PONG);
         }
     }
@@ -43,7 +43,7 @@ namespace
         while (true)
         {
             kos_sem_wait(CH_PONG);
-            kos::sleep_ns(kBeatNs);
+            kos::sleep_ns(BEAT_NS);
             kos_sem_post(CH_PING);
         }
     }
@@ -70,7 +70,7 @@ int main(int, char**)
     kos_cap_grant caps[] = {{ping_s.id(), CH_FULL}, {pong_s.id(), CH_FULL}}; // ping@1, pong@2
     kos::thread::spawn_caps(ping, nullptr, "ping", 10, caps, 2);
     kos::thread::spawn_caps(pong, nullptr, "pong", 10, caps, 2);
-    for (int i = 0; i < kSleepers; i++)
+    for (int i = 0; i < SLEEPERS; i++)
     {
         kos::thread::spawn(sleeper, nullptr, "sleeper", 5);
     }
@@ -78,7 +78,7 @@ int main(int, char**)
     // Let the daemons run for a bounded time (root is prio 2, below the workers,
     // so it runs only while they are all blocked -- then this sleep expires and we
     // return, ending the run cleanly through the boot path's arch_shutdown).
-    kos::sleep_ns(kRunNs);
+    kos::sleep_ns(RUN_NS);
     kos::print("tele_pingpong: done\n");
     return 0;
 }

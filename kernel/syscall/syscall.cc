@@ -141,7 +141,7 @@ namespace kickos
             return cap;
         }
 
-        // Privileged in-kernel IRQ handler bound by KOS_SYS_irq_attach: posts a
+        // Privileged in-kernel IRQ handler bound by KOS_SYS_IRQ_ATTACH: posts a
         // semaphore from ISR context, driving the interrupt-exit switch (trigger #4).
         // arg is the GLOBAL sem handle irq_attach resolved+stored (NOT a cap): an ISR
         // must never resolve a cap (current() is a random interrupted thread's table).
@@ -764,7 +764,7 @@ namespace
     }
 
     // RAII SYSCALL_ENTER/EXIT bracket. The EXIT fires in the destructor on EVERY
-    // ordinary return path -- but KOS_SYS_exit switches away permanently inside the
+    // ordinary return path -- but KOS_SYS_EXIT switches away permanently inside the
     // dispatch (never returns to this frame), so its destructor never runs and it
     // is recorded as ENTER-only (the decoder handles the missing EXIT).
     struct SyscallTrace
@@ -793,14 +793,14 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
     KTRACE_SYSCALL_SCOPE(nr);
     switch (nr)
     {
-        case KOS_SYS_kconsole_write:
+        case KOS_SYS_KCONSOLE_WRITE:
         {
             // Explicit (buf, len): the kernel must never strlen a user pointer.
             // Clamp len (a garbage/huge value must not walk off RAM or hog the UART),
             // then bound buf against the caller's memory so an unprivileged thread
             // cannot launder another domain's arena page out through the console
             // (the kernel reads buf privileged). Reject => wrote nothing.
-            constexpr size_t kMaxConsoleWrite = 4096;
+            constexpr size_t MAX_CONSOLE_WRITE = 4096;
             // MMU-era NOTE: this hands a user pointer straight to kconsole_write, which
             // streams it privileged -- the one kernel-side user read NOT funnelled
             // through kaccess_from_user. Funnelling it needs a bounce buffer + chunk
@@ -808,9 +808,9 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // identity refactor, so it is deferred to the copy_from_user work.
             char const* buf = reinterpret_cast<char const*>(a0);
             size_t len = static_cast<size_t>(a1);
-            if (len > kMaxConsoleWrite)
+            if (len > MAX_CONSOLE_WRITE)
             {
-                len = kMaxConsoleWrite;
+                len = MAX_CONSOLE_WRITE;
             }
             if (not user_readable_ok(a0, len))
             {
@@ -821,29 +821,29 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             kconsole_write(buf, len); // fan-out (chip + RTT), not the raw transport
             return len;
         }
-        case KOS_SYS_yield:
+        case KOS_SYS_YIELD:
         {
             sched::yield();
             return 0;
         }
-        case KOS_SYS_sleep_ns:
+        case KOS_SYS_SLEEP_NS:
         {
             ktime_sleep_ns(kos_u64_join(static_cast<uint32_t>(a0),
                                         static_cast<uint32_t>(a1)));
             return 0;
         }
-        case KOS_SYS_sem_create:
+        case KOS_SYS_SEM_CREATE:
         {
             return static_cast<uintptr_t>(sem_create(static_cast<int>(a0)));
         }
-        case KOS_SYS_handle_close:
+        case KOS_SYS_HANDLE_CLOSE:
         {
             // Type-agnostic close: drop THIS task's cap (a cap knows its own type).
             // Refcounted -- the object is freed only at the last close.
             IrqLock lock;
             return static_cast<uintptr_t>(handle_close(sched::current(), static_cast<int>(a0)));
         }
-        case KOS_SYS_sem_wait:
+        case KOS_SYS_SEM_WAIT:
         {
             // Resolve and use under one lock (sem_wait/sem_post nest their own):
             // otherwise a concurrent close could free the slot between resolve and use.
@@ -858,7 +858,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             sem_wait(s);
             return 0;
         }
-        case KOS_SYS_sem_post:
+        case KOS_SYS_SEM_POST:
         {
             IrqLock lock;
             int err = 0;
@@ -871,11 +871,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             sem_post(s);
             return 0;
         }
-        case KOS_SYS_mutex_create:
+        case KOS_SYS_MUTEX_CREATE:
         {
             return static_cast<uintptr_t>(mutex_create());
         }
-        case KOS_SYS_mutex_lock:
+        case KOS_SYS_MUTEX_LOCK:
         {
             // Resolve under a short lock; mutex_lock then takes its OWN lock for the
             // acquire/park and (critically) releases it before the resume barrier +
@@ -900,7 +900,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // negative but still an ACQUIRE -- the wrapper decl documents the held-vs-not caveat.
             return static_cast<uintptr_t>(mutex_lock(m));
         }
-        case KOS_SYS_mutex_unlock:
+        case KOS_SYS_MUTEX_UNLOCK:
         {
             IrqLock lock;
             int err = 0;
@@ -912,11 +912,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             }
             return static_cast<uintptr_t>(mutex_unlock(m)); // 0, or -KOS_EPERM if not owner (no panic)
         }
-        case KOS_SYS_endpoint_create:
+        case KOS_SYS_ENDPOINT_CREATE:
         {
             return static_cast<uintptr_t>(endpoint_create());
         }
-        case KOS_SYS_send:
+        case KOS_SYS_SEND:
         {
             // FULLY LOCKLESS (no dispatch IrqLock): endpoint_send takes its own lock for
             // the resolve/deliver/park, then releases it before the resume barrier -- a
@@ -924,12 +924,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return static_cast<uintptr_t>(
                 endpoint_send(static_cast<int>(a0), a1, static_cast<size_t>(a2)));
         }
-        case KOS_SYS_recv:
+        case KOS_SYS_RECV:
         {
             return static_cast<uintptr_t>(
                 endpoint_recv(static_cast<int>(a0), a1, static_cast<size_t>(a2), a3));
         }
-        case KOS_SYS_console_publish:
+        case KOS_SYS_CONSOLE_PUBLISH:
         {
             // Hand the console UART to a userspace driver named by an endpoint cap.
             // Privileged-only (like ram_alloc / MMIO grant): it disables a live IRQ line
@@ -992,7 +992,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             sched::set_prio(pub, saved_prio);
             return 0;
         }
-        case KOS_SYS_cpu_clock_set:
+        case KOS_SYS_CPU_CLOCK_SET:
         {
             // Privileged-only (like console_publish / ram_alloc): it mutates
             // SystemCoreClock, retimes every thread's SysTick basis, and moves the
@@ -1011,18 +1011,18 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return static_cast<uintptr_t>(
                 cpu_clock_set(static_cast<kos_pstate_t>(a0)));
         }
-        case KOS_SYS_thread_spawn:
+        case KOS_SYS_THREAD_SPAWN:
         {
             return static_cast<uintptr_t>(
                 thread_spawn(reinterpret_cast<kos_thread_params const*>(a0)));
         }
-        case KOS_SYS_exit:
+        case KOS_SYS_EXIT:
         {
             sched::exit_current(static_cast<int>(a0)); // noreturn
             return 0;
         }
 #if defined(KICKOS_ENABLE_SELFTEST)
-        case KOS_SYS_irq_inject:
+        case KOS_SYS_IRQ_INJECT:
         {
             // Test scaffolding only (real IRQs come from devices), so compiled out
             // of the production ABI -- like guard_addr below. The line is
@@ -1042,16 +1042,16 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             arch_irq_inject(irq);
             return 0;
         }
-        case KOS_SYS_guard_addr:
+        case KOS_SYS_GUARD_ADDR:
         {
             return arch_mpu_probe_addr();
         }
-        case KOS_SYS_irq_spurious:
+        case KOS_SYS_IRQ_SPURIOUS:
         {
             return static_cast<uintptr_t>(irq_spurious_count());
         }
 #if KICKOS_HAVE_MPU
-        case KOS_SYS_grant_probe:
+        case KOS_SYS_GRANT_PROBE:
         {
             // Test scaffolding: exercise the Rule 7 grant predicates directly, so the
             // overlap arithmetic (equal / contained / partial / one-byte-edge / alias)
@@ -1118,7 +1118,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return 0u;
         }
 #endif
-        case KOS_SYS_irq_unmask:
+        case KOS_SYS_IRQ_UNMASK:
         {
             // Test scaffolding: enable an UNBOUND line so an injected raise reaches
             // the default (spurious) handler on masked-by-default controllers (ARM
@@ -1137,7 +1137,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return 0;
         }
 #endif
-        case KOS_SYS_irq_attach:
+        case KOS_SYS_IRQ_ATTACH:
         {
             // Tier-2 installs a privileged in-kernel handler: privileged-only, so
             // an unprivileged thread cannot bind (or steal) a line's dispatch.
@@ -1186,7 +1186,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             arch_irq_unmask(irq);
             return 0;
         }
-        case KOS_SYS_clock_now:
+        case KOS_SYS_CLOCK_NOW:
         {
             // Out-pointer for a 64-bit store: reject null and misalignment, then bound it
             // against the caller's writable regions -- the kernel writes it privileged, so an
@@ -1206,14 +1206,14 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             kaccess_to_user(a0, &now, sizeof(now));
             return 0;
         }
-        case KOS_SYS_cpu_clock_hz:
+        case KOS_SYS_CPU_CLOCK_HZ:
         {
             // Read-only, no user pointer: the u32 fits a register, so return it
             // directly rather than via an out-ptr. Stays OUT of the -KOS_E* scheme:
             // it is a u32 Hz whose 0 sentinel already means unknown/no-silicon-clock.
             return static_cast<uintptr_t>(arch_cpu_clock_hz());
         }
-        case KOS_SYS_ram_alloc:
+        case KOS_SYS_RAM_ALLOC:
         {
             // Privileged-only: domains are carved by the privileged setup path,
             // not by arbitrary user threads (avoids a DoS on the shared pool and
@@ -1232,26 +1232,26 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return reinterpret_cast<uintptr_t>(
                 arch_ram_alloc(static_cast<size_t>(a0)));
         }
-        case KOS_SYS_irq_register:
+        case KOS_SYS_IRQ_REGISTER:
         {
             return static_cast<uintptr_t>(irq_register(static_cast<int>(a0)));
         }
-        case KOS_SYS_irq_wait:
+        case KOS_SYS_IRQ_WAIT:
         {
             return static_cast<uintptr_t>(irq_wait(static_cast<int>(a0)));
         }
-        case KOS_SYS_irq_ack:
+        case KOS_SYS_IRQ_ACK:
         {
             return static_cast<uintptr_t>(irq_ack(static_cast<int>(a0)));
         }
-        case KOS_SYS_diag_led_set:
+        case KOS_SYS_DIAG_LED_SET:
         {
             // Benign single LED (the kernel's diagnostic pin, borrowed): left
             // unprivileged like the console. A no-op on boards with no LED.
             kdiag_led_set(a0 != 0);
             return 0;
         }
-        case KOS_SYS_diag_led_toggle:
+        case KOS_SYS_DIAG_LED_TOGGLE:
         {
             kdiag_led_toggle();
             return 0;

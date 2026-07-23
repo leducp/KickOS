@@ -11,7 +11,7 @@
 //
 // Locking: none internal. Every entry point's precondition is CALLER HOLDS IrqLock,
 // and a resolved object pointer is used under the SAME continuous lock (mirrors the
-// KOS_SYS_sem_wait resolve-and-use invariant in syscall.cc). That, with the
+// KOS_SYS_SEM_WAIT resolve-and-use invariant in syscall.cc). That, with the
 // pin-by-own-cap refcount invariant, is why one holder's handle_close cannot free
 // an object another holder just resolved.
 

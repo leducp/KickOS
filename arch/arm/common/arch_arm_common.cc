@@ -153,7 +153,7 @@ namespace
     // Max per-thread regions the deferred-commit stash carries (must be >= the kernel's
     // KICKOS_MPU_MAX_REGIONS; both are 8). Hoisted here so the fixed-region init can
     // bound-check against it. Sizes g_pend_regions below.
-    constexpr size_t kMaxPendRegions = 8; // == KICKOS_MPU_MAX_REGIONS (kernel config)
+    constexpr size_t MAX_PEND_REGIONS = 8; // == KICKOS_MPU_MAX_REGIONS (kernel config)
 
     // Count of chip fixed regions occupying the LOW MPU slots [0, g_fixed_count).
     // Set once by kickos_arm_mpu_fixed_init; per-thread grants are programmed ABOVE it.
@@ -261,7 +261,7 @@ void kickos_arm_mpu_fixed_init(void)
     // The fixed set plus a full per-thread set must fit the hardware descriptors, or a
     // per-thread grant would silently fall off the top. Fail loud (a chip-config bug
     // caught at boot), never truncate. No kernel assert on the arch path -> spin.
-    if (k + kMaxPendRegions > hw_regions)
+    if (k + MAX_PEND_REGIONS > hw_regions)
     {
         for (;;)
         {
@@ -295,7 +295,7 @@ void kickos_arm_mpu_fixed_init(void)
 // pointer) means the commit never chases a TCB whose region set changed after the stash.
 namespace
 {
-    arch_mpu_region g_pend_regions[kMaxPendRegions]; // kMaxPendRegions hoisted above
+    arch_mpu_region g_pend_regions[MAX_PEND_REGIONS]; // MAX_PEND_REGIONS hoisted above
     size_t g_pend_count = 0;
 }
 
@@ -312,9 +312,9 @@ size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out)
 // only the commit, never this.
 void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
-    if (n > kMaxPendRegions)
+    if (n > MAX_PEND_REGIONS)
     {
-        n = kMaxPendRegions;
+        n = MAX_PEND_REGIONS;
     }
     for (size_t i = 0; i < n; i++)
     {

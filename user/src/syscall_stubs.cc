@@ -14,7 +14,7 @@ extern "C"
 
 long kos_kconsole_write(void const* buf, size_t len)
 {
-    return static_cast<long>(arch_syscall(KOS_SYS_kconsole_write,
+    return static_cast<long>(arch_syscall(KOS_SYS_KCONSOLE_WRITE,
                                           reinterpret_cast<uintptr_t>(buf),
                                           static_cast<uintptr_t>(len), 0, 0));
 }
@@ -26,55 +26,55 @@ void kos_print(char const* s)
 
 void kos_yield(void)
 {
-    arch_syscall(KOS_SYS_yield, 0, 0, 0, 0);
+    arch_syscall(KOS_SYS_YIELD, 0, 0, 0, 0);
 }
 
 void kos_sleep_ns(uint64_t ns)
 {
-    arch_syscall(KOS_SYS_sleep_ns, kos_u64_lo(ns), kos_u64_hi(ns), 0, 0);
+    arch_syscall(KOS_SYS_SLEEP_NS, kos_u64_lo(ns), kos_u64_hi(ns), 0, 0);
 }
 
 int kos_sem_create(int initial)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_sem_create,
+    return static_cast<int>(arch_syscall(KOS_SYS_SEM_CREATE,
                                          static_cast<uintptr_t>(initial), 0, 0, 0));
 }
 
 int kos_sem_wait(int sem)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_sem_wait, static_cast<uintptr_t>(sem), 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_SEM_WAIT, static_cast<uintptr_t>(sem), 0, 0, 0));
 }
 
 int kos_sem_post(int sem)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_sem_post, static_cast<uintptr_t>(sem), 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_SEM_POST, static_cast<uintptr_t>(sem), 0, 0, 0));
 }
 
 int kos_mutex_create(void)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_mutex_create, 0, 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_CREATE, 0, 0, 0, 0));
 }
 
 int kos_mutex_lock(int mtx)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_mutex_lock,
+    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_LOCK,
                                          static_cast<uintptr_t>(mtx), 0, 0, 0));
 }
 
 int kos_mutex_unlock(int mtx)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_mutex_unlock,
+    return static_cast<int>(arch_syscall(KOS_SYS_MUTEX_UNLOCK,
                                          static_cast<uintptr_t>(mtx), 0, 0, 0));
 }
 
 int kos_endpoint_create(void)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_endpoint_create, 0, 0, 0, 0));
+    return static_cast<int>(arch_syscall(KOS_SYS_ENDPOINT_CREATE, 0, 0, 0, 0));
 }
 
 long kos_send(int ep, void const* buf, size_t len)
 {
-    return static_cast<long>(arch_syscall(KOS_SYS_send,
+    return static_cast<long>(arch_syscall(KOS_SYS_SEND,
                                           static_cast<uintptr_t>(ep),
                                           reinterpret_cast<uintptr_t>(buf),
                                           static_cast<uintptr_t>(len), 0));
@@ -82,7 +82,7 @@ long kos_send(int ep, void const* buf, size_t len)
 
 long kos_recv(int ep, void* buf, size_t cap_len, uint32_t* badge)
 {
-    return static_cast<long>(arch_syscall(KOS_SYS_recv,
+    return static_cast<long>(arch_syscall(KOS_SYS_RECV,
                                           static_cast<uintptr_t>(ep),
                                           reinterpret_cast<uintptr_t>(buf),
                                           static_cast<uintptr_t>(cap_len),
@@ -91,13 +91,13 @@ long kos_recv(int ep, void* buf, size_t cap_len, uint32_t* badge)
 
 int kos_console_publish(int ep)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_console_publish,
+    return static_cast<int>(arch_syscall(KOS_SYS_CONSOLE_PUBLISH,
                                          static_cast<uintptr_t>(ep), 0, 0, 0));
 }
 
 int kos_handle_close(int cap)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_handle_close,
+    return static_cast<int>(arch_syscall(KOS_SYS_HANDLE_CLOSE,
                                          static_cast<uintptr_t>(cap), 0, 0, 0));
 }
 
@@ -108,13 +108,13 @@ int kos_sem_destroy(int cap)
 
 int kos_thread_spawn(struct kos_thread_params const* params)
 {
-    return static_cast<int>(arch_syscall(KOS_SYS_thread_spawn,
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SPAWN,
                                          reinterpret_cast<uintptr_t>(params), 0, 0, 0));
 }
 
 void kos_exit(int code)
 {
-    arch_syscall(KOS_SYS_exit, static_cast<uintptr_t>(code), 0, 0, 0);
+    arch_syscall(KOS_SYS_EXIT, static_cast<uintptr_t>(code), 0, 0, 0);
     __builtin_unreachable();
 }
 
@@ -131,56 +131,56 @@ void kickos_user_thread_return(void)
 
 void kos_irq_inject(int irq)
 {
-    arch_syscall(KOS_SYS_irq_inject, static_cast<uintptr_t>(irq), 0, 0, 0);
+    arch_syscall(KOS_SYS_IRQ_INJECT, static_cast<uintptr_t>(irq), 0, 0, 0);
 }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
 void* kos_guard_addr(void)
 {
-    return reinterpret_cast<void*>(arch_syscall(KOS_SYS_guard_addr, 0, 0, 0, 0));
+    return reinterpret_cast<void*>(arch_syscall(KOS_SYS_GUARD_ADDR, 0, 0, 0, 0));
 }
 
 uint32_t kos_irq_spurious_count(void)
 {
-    return static_cast<uint32_t>(arch_syscall(KOS_SYS_irq_spurious, 0, 0, 0, 0));
+    return static_cast<uint32_t>(arch_syscall(KOS_SYS_IRQ_SPURIOUS, 0, 0, 0, 0));
 }
 
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size)
 {
-    return arch_syscall(KOS_SYS_grant_probe, op, base, size, 0);
+    return arch_syscall(KOS_SYS_GRANT_PROBE, op, base, size, 0);
 }
 #endif
 
 int kos_irq_attach(int irq, int sem_id)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_irq_attach, static_cast<uintptr_t>(irq),
+        arch_syscall(KOS_SYS_IRQ_ATTACH, static_cast<uintptr_t>(irq),
                      static_cast<uintptr_t>(sem_id), 0, 0));
 }
 
 int kos_irq_register(int line)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_irq_register, static_cast<uintptr_t>(line), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_REGISTER, static_cast<uintptr_t>(line), 0, 0, 0));
 }
 
 int kos_irq_wait(int handle)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_irq_wait, static_cast<uintptr_t>(handle), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_WAIT, static_cast<uintptr_t>(handle), 0, 0, 0));
 }
 
 int kos_irq_ack(int handle)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_irq_ack, static_cast<uintptr_t>(handle), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_ACK, static_cast<uintptr_t>(handle), 0, 0, 0));
 }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
 int kos_irq_unmask(int line)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_irq_unmask, static_cast<uintptr_t>(line), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_UNMASK, static_cast<uintptr_t>(line), 0, 0, 0));
 }
 #endif
 
@@ -191,7 +191,7 @@ uint64_t kos_clock_now(void)
     // out-ptr -- impossible for this well-formed stack local, so purely defensive) the
     // out value is never written, so report 0 rather than an uninitialized time.
     long const rc = static_cast<long>(
-        arch_syscall(KOS_SYS_clock_now, reinterpret_cast<uintptr_t>(&out), 0, 0, 0));
+        arch_syscall(KOS_SYS_CLOCK_NOW, reinterpret_cast<uintptr_t>(&out), 0, 0, 0));
     if (rc < 0)
     {
         return 0;
@@ -201,28 +201,28 @@ uint64_t kos_clock_now(void)
 
 uint32_t kos_cpu_clock_hz(void)
 {
-    return static_cast<uint32_t>(arch_syscall(KOS_SYS_cpu_clock_hz, 0, 0, 0, 0));
+    return static_cast<uint32_t>(arch_syscall(KOS_SYS_CPU_CLOCK_HZ, 0, 0, 0, 0));
 }
 
 uint32_t kos_cpu_clock_set(kos_pstate_t pstate)
 {
     return static_cast<uint32_t>(
-        arch_syscall(KOS_SYS_cpu_clock_set, static_cast<uintptr_t>(pstate), 0, 0, 0));
+        arch_syscall(KOS_SYS_CPU_CLOCK_SET, static_cast<uintptr_t>(pstate), 0, 0, 0));
 }
 
 void* kos_ram_alloc(size_t size)
 {
     return reinterpret_cast<void*>(
-        arch_syscall(KOS_SYS_ram_alloc, static_cast<uintptr_t>(size), 0, 0, 0));
+        arch_syscall(KOS_SYS_RAM_ALLOC, static_cast<uintptr_t>(size), 0, 0, 0));
 }
 
 void kos_kernel_diag_led_set(int on)
 {
-    arch_syscall(KOS_SYS_diag_led_set, static_cast<uintptr_t>(on), 0, 0, 0);
+    arch_syscall(KOS_SYS_DIAG_LED_SET, static_cast<uintptr_t>(on), 0, 0, 0);
 }
 
 void kos_kernel_diag_led_toggle(void)
 {
-    arch_syscall(KOS_SYS_diag_led_toggle, 0, 0, 0, 0);
+    arch_syscall(KOS_SYS_DIAG_LED_TOGGLE, 0, 0, 0, 0);
 }
 }

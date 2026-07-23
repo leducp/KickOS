@@ -15,13 +15,13 @@ namespace
 {
     // Enough to overflow any reasonable ch1 ring: each yield emits 2 records
     // (SYSCALL_ENTER + SYSCALL_EXIT) ~= 22 bytes, so 20000 yields ~= 440 KiB.
-    constexpr int kYields = 20000;
+    constexpr int YIELDS = 20000;
 }
 
 int main(int, char**)
 {
     kos::print("tele_flood: overflowing the ch1 ring\n");
-    for (int i = 0; i < kYields; i++)
+    for (int i = 0; i < YIELDS; i++)
     {
         // yield with no other ready thread returns immediately (no switch), but
         // still traps -> a SYSCALL_ENTER/EXIT pair per iteration. Pure record

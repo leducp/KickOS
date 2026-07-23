@@ -182,7 +182,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [frdmk64f, f411disco, blackpill, bluepill, bluepill-c8, picopi,
+        preset: [frdmk64f, f411disco, blackpill, bluepill-c8, picopi,
                  f302nucleo, due, xmc4800-relax, qemu-telem, teensy41, pizero2350]
     steps:
       - uses: actions/checkout@v4

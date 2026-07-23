@@ -14,7 +14,7 @@
 
 namespace
 {
-    constexpr uint64_t kBeatNs = 400000000ull; // 0.4 s between hits
+    constexpr uint64_t BEAT_NS = 400000000ull; // 0.4 s between hits
 
     int g_ping = -1; // token held by 'ping' first (MAIN's cap)
     int g_pong = -1;
@@ -37,7 +37,7 @@ namespace
         while (true)
         {
             kos_sem_wait(CH_PING);
-            kos_sleep_ns(kBeatNs);
+            kos_sleep_ns(BEAT_NS);
             say("ping", ++n);
             kos_sem_post(CH_PONG);
         }
@@ -48,7 +48,7 @@ namespace
         while (true)
         {
             kos_sem_wait(CH_PONG);
-            kos_sleep_ns(kBeatNs);
+            kos_sleep_ns(BEAT_NS);
             say("pong", ++n);
             kos_sem_post(CH_PING);
         }

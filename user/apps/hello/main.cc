@@ -14,7 +14,7 @@
 
 namespace
 {
-    constexpr uint64_t kBeatNs = 400000000ull; // 0.4 s between hits
+    constexpr uint64_t BEAT_NS = 400000000ull; // 0.4 s between hits
 
     // Shared by both players; bound in main() once the kernel is up. (A global
     // kos::Semaphore would run its ctor -- a syscall -- before the scheduler.)
@@ -41,7 +41,7 @@ namespace
         while (true)
         {
             kos_sem_wait(CH_PING);
-            kos::sleep_ns(kBeatNs);
+            kos::sleep_ns(BEAT_NS);
             say("ping", ++n);
             kos_sem_post(CH_PONG);
         }
@@ -52,7 +52,7 @@ namespace
         while (true)
         {
             kos_sem_wait(CH_PONG);
-            kos::sleep_ns(kBeatNs);
+            kos::sleep_ns(BEAT_NS);
             say("pong", ++n);
             kos_sem_post(CH_PING);
         }

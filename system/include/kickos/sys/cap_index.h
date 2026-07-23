@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// FROZEN well-known capability-table index convention. Standalone for now; its
-// final home MAY move to a future kickos_system library; keep it dependency-free
-// so that move is a pure relocation.
+// FROZEN well-known capability-table index convention. Lives in the kickos_system
+// library; keep it dependency-free (it is shared verbatim by the kernel and every
+// userspace TU).
 
 #ifndef KICKOS_SYS_CAP_INDEX_H
 #define KICKOS_SYS_CAP_INDEX_H
