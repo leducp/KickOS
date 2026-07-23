@@ -23,7 +23,7 @@ namespace kickos
 {
 namespace mk64f
 {
-namespace classdrv
+namespace driver
 {
     // DSPI Status Register (RM 50.3.5): SR.RXCTR[7:4] = RX FIFO fill level.
     constexpr uintptr_t DSPI_SR_OFFSET = 0x2Cu;

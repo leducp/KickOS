@@ -23,7 +23,7 @@ namespace kickos
 {
 namespace xmc
 {
-namespace classdrv
+namespace driver
 {
     // Transmit buffer ready to accept the next word (TCSR.TDV clear). Pure read
     // of TCSR -- side-effect-free, safe on any clocked USIC channel. Shared by the

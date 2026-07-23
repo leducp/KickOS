@@ -7,7 +7,7 @@ namespace kickos
 {
 namespace esp32c6
 {
-namespace classdrv
+namespace driver
 {
     uint32_t gpio_out_read(uintptr_t gpio_base)
     {

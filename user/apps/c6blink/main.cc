@@ -169,7 +169,7 @@ int main(int, char**)
 
     // Read back the GPIO output latch through the shared class leaf (Rule 6):
     // baseline output state before the unprivileged driver drives GPIO10. Pure read.
-    uint32_t const out = kickos::esp32c6::classdrv::gpio_out_read(GPIO_BASE);
+    uint32_t const out = kickos::esp32c6::driver::gpio_out_read(GPIO_BASE);
     char rb[48];
     ksnprintf(rb, sizeof(rb), "[c6blink] GPIO_OUT readback 0x%lx\n",
               static_cast<unsigned long>(out));

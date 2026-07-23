@@ -79,6 +79,12 @@ endif()
 # CMakeLists; a real user app, so no KICKOS_ENABLE_SELFTEST requirement.
 add_subdirectory(consoledemo)
 
+# K64F console handover demo -- the kernel relinquishes UART0 to the unprivileged
+# kickos_k64uart driver and a worker's printf reaches the wire through it (coarse-AIPS
+# FUNCTIONAL + reclaim-proof). Self-gates on frdmk64f + enforcement in its own
+# CMakeLists; a real user app, so no KICKOS_ENABLE_SELFTEST requirement.
+add_subdirectory(k64console)
+
 # Privileged runtime clock-retune HW harness -- self-gates on KICKOS_CLOCK_RETUNE_TEST
 # (OFF by default) + xmc4800-relax/frdmk64f + enforcement in its own CMakeLists.
 add_subdirectory(clockretune)

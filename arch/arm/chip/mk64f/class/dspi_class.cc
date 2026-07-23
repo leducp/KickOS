@@ -7,7 +7,7 @@ namespace kickos
 {
 namespace mk64f
 {
-namespace classdrv
+namespace driver
 {
     uint32_t dspi_rx_count(uintptr_t base)
     {

@@ -7,7 +7,7 @@ namespace kickos
 {
 namespace rx
 {
-namespace classdrv
+namespace driver
 {
     uint8_t port_odr_read(uintptr_t podr_base, unsigned port)
     {

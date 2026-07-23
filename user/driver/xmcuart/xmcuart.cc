@@ -71,7 +71,7 @@ namespace
     {
         for (uint32_t i = 0; i < TX_POLL_TIMEOUT; i++)
         {
-            if (kickos::xmc::classdrv::usic_tx_ready(win))
+            if (kickos::xmc::driver::usic_tx_ready(win))
             {
                 r32(win + TBUF0_OFFSET) = v;
                 return true;

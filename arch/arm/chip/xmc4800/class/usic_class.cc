@@ -9,7 +9,7 @@ namespace kickos
 {
 namespace xmc
 {
-namespace classdrv
+namespace driver
 {
     bool usic_tx_ready(uintptr_t base)
     {

@@ -22,7 +22,7 @@ namespace kickos
 {
 namespace esp32c6
 {
-namespace classdrv
+namespace driver
 {
     // GPIO_OUT_REG (TRM Reg 7.1): the output data latch for GPIO0..31.
     constexpr uintptr_t GPIO_OUT_OFFSET = 0x04u;

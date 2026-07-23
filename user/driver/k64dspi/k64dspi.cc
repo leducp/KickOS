@@ -240,7 +240,7 @@ namespace
         {
             // Drain first: the 4-deep RX FIFO must never overflow (a dropped byte would
             // leave popped < len forever -> hang). RX fill level via the shared leaf.
-            if (kickos::mk64f::classdrv::dspi_rx_count(win) > 0u)
+            if (kickos::mk64f::driver::dspi_rx_count(win) > 0u)
             {
                 g_bounce[popped] = static_cast<unsigned char>(*popr & 0xFFu);
                 popped++;

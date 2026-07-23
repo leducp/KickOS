@@ -125,7 +125,7 @@ int main(int, char**)
     // Read back PORT8's output latch through the shared class leaf (Rule 6):
     // confirms the pin drove high (LED off) before the unprivileged driver takes
     // over. PODR_BLOCK is the byte-per-port block base; index 8 == PORT8.
-    uint8_t const podr8 = kickos::rx::classdrv::port_odr_read(PODR_BLOCK, 8);
+    uint8_t const podr8 = kickos::rx::driver::port_odr_read(PODR_BLOCK, 8);
     char rb[48];
     ksnprintf(rb, sizeof(rb), "[rxdrv] PORT8 PODR readback 0x%x\n", podr8);
     kos::print(rb);

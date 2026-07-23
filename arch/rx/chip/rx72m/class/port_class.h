@@ -23,7 +23,7 @@ namespace kickos
 {
 namespace rx
 {
-namespace classdrv
+namespace driver
 {
     // Read a port's output data latch (PODR). podr_base is the PODR block base
     // (PORT0.PODR); port is the port index (PORT8 -> 8). Pure read -- reading PODR
