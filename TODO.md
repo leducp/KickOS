@@ -375,6 +375,18 @@ below where they were previously mislabeled.
 - **Console device handover (driver era)** -- userspace UART/console driver takes the
   peripheral as a capability; kernel relinquishes it (`console_tx_deinit`), panic path moves
   to a kernel-retained transport. See `docs/reference/console.md` "Future".
+- **[M4.x] Per-thread libc state via real TLS (local-exec).** No per-thread userspace storage
+  exists today (newlib `--disable-threads`, threads share one flat image, only the kernel TCB is
+  per-thread) -- so `errno` is a shared global, libc `malloc` is not thread-safe (`__malloc_lock`
+  no-op), and `thread_local`/`__thread` silently break. "Fully usable" needs these, so real TLS is
+  the compliant mechanism (not a newlib `_REENT`-swap hack, which would still leave `thread_local`
+  broken): a per-thread TLS block in the thread's data grant + a per-arch thread pointer set on the
+  context switch (ARM `TPIDRURW`, RISC-V `tp`, Xtensa `THREADPTR`; RX has no TLS register -> sw-tp
+  spike), local-exec model (fully static / no dlopen -> offsets fixed at link). `errno` + newlib
+  reent + `thread_local` all ride on it (one mechanism). Prereq SMP (M5) needs anyway. First sibling
+  of this family LANDED (M4.3): the `_write` stdout re-probe -- deleted the process-global sticky
+  `g_stdout_probe` (per-invocation classify against the calling thread's own cap 0; no per-thread
+  storage needed for it).
 - **M5 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spikes
   2026-07-19: `docs/design-multicore.md` (AMP-vs-SMP feasibility on rp2040 + rp2350) and
   `docs/design-multicore-ipc.md` (the RP2040 cross-core IPC); the SMP candidate ranking + staged
