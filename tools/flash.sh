@@ -10,7 +10,7 @@
 # The ONLY assumption is that the flasher is on PATH (no hardcoded install dirs).
 # A chip may have several valid backends (e.g. an STM32 -> stlink OR jlink); the
 # first present wins, unless FLASH_TOOL picks one -- e.g. use your own J-Link on a
-# Blue Pill instead of an ST-Link:  FLASH_TOOL=jlink tools/flash.sh bluepill
+# Blue Pill instead of an ST-Link:  FLASH_TOOL=jlink tools/flash.sh bluepill-c8
 #
 # Usage:
 #   tools/flash.sh <board> [app]     # app defaults to hello

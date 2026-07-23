@@ -4,6 +4,7 @@
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/domain.h>
+#include <kickos/grant.h> // grant_hits_reserved (backstop assert)
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/libc/string.h>
@@ -21,7 +22,7 @@ namespace kickos
             Kernel& k = kernel();
             uint16_t id = k.next_tid;
             uint32_t n = static_cast<uint32_t>(k.next_tid) + 1u;
-            if (n >= 0xFFFFu)
+            if (n >= KICKOS_TID_NONE)
             {
                 n = 1u;
             }
@@ -68,8 +69,11 @@ namespace kickos
         t->domain = attr.domain;
         if (t->domain == nullptr)
         {
+            // idle/root only (thread_spawn pre-resolves the domain). Both are
+            // privileged, so this short-circuits to the kernel domain and the grant
+            // predicate never runs; pass caller_privileged=true for that trusted path.
             t->domain = domain_for(attr.privileged, attr.mem_base, attr.mem_size,
-                                   attr.mmio_base, attr.mmio_size);
+                                   attr.mmio_base, attr.mmio_size, true);
         }
         domain_ref(t->domain);
 
@@ -123,6 +127,19 @@ namespace kickos
             nr++;
         }
         t->region_count = nr;
+
+        // Rule 7 backstop: no assembled region may overlap a kernel-reserved block.
+        // domain_for already refuses an inadmissible grant, so this is defence in
+        // depth against a future region source that bypasses that predicate -- it
+        // catches the leak at composition, before the thread ever runs. Privileged
+        // (kernel-domain) threads carry the whole-arena region, which is reserved-
+        // disjoint by grant_reserved_validate at boot.
+#if KICKOS_HAVE_MPU
+        for (size_t i = 0; i < nr; i++)
+        {
+            KICKOS_ASSERT(not grant_hits_reserved(t->regions[i].base, t->regions[i].size));
+        }
+#endif
 
         arch_context_init(&t->ctx, entry, arg, stack_base, stack_size, attr.privileged);
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

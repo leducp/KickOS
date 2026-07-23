@@ -144,6 +144,13 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/*.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/*.S")
 
+  # The class/ subdir holds the Rule 6 class-driver leaf (below); it is built as
+  # its OWN kickos_class_<chip> lib, never into the chip library. The glob above is
+  # non-recursive so class/*.cc is already excluded, but filter defensively so a
+  # future recursive glob cannot silently pull the leaf into the kernel-linked chip
+  # object (which would break the leaf's separate bare-include-path contract).
+  list(FILTER _chip_src EXCLUDE REGEX "/class/")
+
   # PMSAv8 MPU backend (Cortex-M33): a v8-M chip's mpu.cmake sets
   # KICKOS_ARM_PMSAV8_SOURCE to arm/common/arch_arm_pmsav8.cc. It is NOT in the
   # always-compiled armv7m arch list (the v6-M/v7-M fleet must never link it); it is
@@ -238,6 +245,39 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/include")
   install(TARGETS kickos_chip_${KICKOS_CHIP} EXPORT KickOSTargets
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+
+  # --- Rule 6 class-driver leaf (M4, decision R-A) -----------------------------
+  # A chip that factors register logic shared between the kernel and an
+  # unprivileged userspace driver puts it in a FREESTANDING, STATELESS leaf under
+  # <family>/chip/<chip>/class/ -- POD + free functions by explicit base, no
+  # ctor/dtor, no mutable static (rules 3/4). It is built as kickos_class_<chip>,
+  # its OWN static lib on a bare include path: repo include/ + this chip's register
+  # dir ONLY, deliberately NOT kernel/include. KickOS links kernel + driver into one
+  # MPU-partitioned ELF, so this leaf is ONE shared read-only copy consumed from two
+  # trust domains -- which is why it must carry no writable state. The kernel-side
+  # (timebase) consumer is DEFERRED to Phase A; today the leaf is pulled in by the
+  # chip's userspace driver/app so it is not --gc-sections-stripped.
+  set(_class_dir
+    "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/class")
+  if(EXISTS "${_class_dir}")
+    file(GLOB _class_src CONFIGURE_DEPENDS "${_class_dir}/*.cc")
+    add_library(kickos_class_${KICKOS_CHIP} STATIC ${_class_src})
+    kickos_apply_freestanding(kickos_class_${KICKOS_CHIP})
+    # PUBLIC: the class/ dir carries the leaf's own header, propagated to whichever
+    # driver/app links this lib. PRIVATE: repo include/ + the chip register dir --
+    # the leaf's whole world. NO kernel/include (verified via compile_commands): the
+    # leaf must compile under the kernel bar without seeing kernel headers.
+    target_include_directories(kickos_class_${KICKOS_CHIP}
+      PUBLIC
+        "$<BUILD_INTERFACE:${_class_dir}>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+      PRIVATE
+        "${CMAKE_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}")
+    install(TARGETS kickos_class_${KICKOS_CHIP} EXPORT KickOSTargets
+            ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  endif()
+
   # Linker script: a board that knows its silicon size (e.g. a genuine 20 KiB C8
   # vs the 10 KiB clone floor) overrides the chip default with its own copy under
   # boards/<board>/<chip>.ld; otherwise use the chip default. The shipped copy is

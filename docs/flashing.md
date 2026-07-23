@@ -43,14 +43,14 @@ Each backend is a standalone script you can also run directly -- same
 `<board> [app]` interface, sharing `tools/flash-common.sh`:
 
 ```sh
-tools/flash-jlink.sh   bluepill        # or flash-esptool.sh / flash-stlink.sh / ...
+tools/flash-jlink.sh   bluepill-c8     # or flash-esptool.sh / flash-stlink.sh / ...
 ```
 
 Knobs (honored by the dispatcher and every backend):
 
 - `FLASH_TOOL=esptool|stlink|jlink|picotool|pyocd|bossac` -- **force a backend** when
   a chip has several (e.g. use your own J-Link on a Blue Pill instead of an ST-Link:
-  `FLASH_TOOL=jlink tools/flash.sh bluepill`).
+  `FLASH_TOOL=jlink tools/flash.sh bluepill-c8`).
 - `FLASH_PORT=/dev/ttyACMx` -- force the serial port (else first `ttyACM*`/`ttyUSB*`).
 - `DRY_RUN=1` -- print the command without running it.
 

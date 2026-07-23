@@ -39,6 +39,8 @@
 
 #include <kickos/driver/k64dspi.h>
 
+#include <dspi_class.h> // Rule 6 class-driver leaf: shared DSPI RX-FIFO fill-level read
+
 #include <stdint.h>
 
 namespace
@@ -237,8 +239,8 @@ namespace
         while (popped < len)
         {
             // Drain first: the 4-deep RX FIFO must never overflow (a dropped byte would
-            // leave popped < len forever -> hang).
-            if (((*sr >> 4) & 0xFu) > 0u)
+            // leave popped < len forever -> hang). RX fill level via the shared leaf.
+            if (kickos::mk64f::classdrv::dspi_rx_count(win) > 0u)
             {
                 g_bounce[popped] = static_cast<unsigned char>(*popr & 0xFFu);
                 popped++;

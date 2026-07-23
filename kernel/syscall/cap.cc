@@ -11,6 +11,8 @@
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 
+#include <kickos/sys/errno.h>
+
 namespace kickos
 {
     namespace
@@ -175,9 +177,9 @@ namespace kickos
         }
 
         // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
-        // Returns 0, or -1 to refuse a voluntary (non-teardown) close. CAP_SEM has no
-        // protocol -- this is why semaphores never needed the hook. The seam #3
-        // (refuse-owned / force-unlock) and #4 (EPIPE-wake) fill their arms here.
+        // Returns 0, or a negative -KOS_E* to refuse a voluntary (non-teardown) close.
+        // CAP_SEM has no protocol -- this is why semaphores never needed the hook. The
+        // seam #3 (refuse-owned / force-unlock) and #4 (EPIPE-wake) fill their arms here.
         int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown)
         {
             switch (static_cast<CapType>(e.type))
@@ -193,7 +195,7 @@ namespace kickos
                 }
                 if (not teardown)
                 {
-                    return -1; // R2: refuse a voluntary close of a mutex you OWN
+                    return -KOS_EBUSY; // R2: refuse a voluntary close of a mutex you OWN (unlock first)
                 }
                 // R3: the owner is exiting -- force-unlock BEFORE the ref drop so a
                 // waiter is never stranded; the woken lock() caller gets OWNER_DIED.
@@ -214,7 +216,7 @@ namespace kickos
                         Thread* s;
                         while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
                         {
-                            s->wait_result = -1; // EPIPE
+                            s->wait_result = -KOS_EPIPE; // last receiver gone: EPIPE the parked sender
                             sched::wake(s);
                         }
                     }
@@ -302,8 +304,9 @@ namespace kickos
         return &e;
     }
 
-    void* cap_resolve(Thread* c, int cap_handle, CapType want, uint8_t need)
+    void* cap_resolve_e(Thread* c, int cap_handle, CapType want, uint8_t need, int* err)
     {
+        *err = KOS_EBADF; // bad index / empty / stale cap-gen / wrong type / stale object
         CapEntry* e = cap_lookup(c, cap_handle);
         if (e == nullptr)
         {
@@ -315,26 +318,49 @@ namespace kickos
         }
         if ((e->rights & need) != need) // rights enforced HERE, nowhere else
         {
+            *err = KOS_EPERM; // named a valid cap but it lacks a required right
             return nullptr;
         }
-        // WRAP: the stored global handle re-checks the object-gen in its own pool.
+        // WRAP: the stored global handle re-checks the object-gen in its own pool. A
+        // stale object (freed under a still-live cap) stays EBADF (set above).
+        void* p = nullptr;
         if (want == CapType::CAP_SEM)
         {
-            return kernel().sems.resolve(e->obj);
+            p = kernel().sems.resolve(e->obj);
         }
-        if (want == CapType::CAP_MUTEX)
+        else if (want == CapType::CAP_MUTEX)
         {
-            return kernel().mutexes.resolve(e->obj);
+            p = kernel().mutexes.resolve(e->obj);
         }
-        if (want == CapType::CAP_ENDPOINT)
+        else if (want == CapType::CAP_ENDPOINT)
         {
-            return kernel().endpoints.resolve(e->obj);
+            p = kernel().endpoints.resolve(e->obj);
         }
-        return nullptr;
+        if (p != nullptr)
+        {
+            *err = 0;
+        }
+        return p;
+    }
+
+    void* cap_resolve(Thread* c, int cap_handle, CapType want, uint8_t need)
+    {
+        int err = 0;
+        return cap_resolve_e(c, cap_handle, want, need, &err);
     }
 
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
     {
+        // Bounds + reserved-slot guard (defense-in-depth; every caller already validates its
+        // index). Index 0 is the kernel stdout slot -- ONLY cap_install_defaults seats it,
+        // writing the slot directly, so cap_install_at rejects 0 outright: no delegation or
+        // own-create may alias stdout. An out-of-range index is a kernel bug: trap in debug,
+        // no-op in release rather than scribble another thread's slot.
+        if (index <= KOS_CAP_STDOUT or index >= KICKOS_MAX_HANDLES)
+        {
+            KICKOS_ASSERT(false);
+            return;
+        }
         CapEntry& e = c->handles[index];
         e.obj = obj_handle;
         e.type = static_cast<uint8_t>(type);
@@ -343,10 +369,12 @@ namespace kickos
 
     int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights)
     {
-        // Index 0 is the kernel stdout slot (B3): cap_install_defaults seats the published
-        // console cap there, and nothing else may. An own create scans from 1 so it never
-        // lands at 0. Costs one slot per table (own caps live in [1 .. MAX-1]).
-        for (int i = 1; i < KICKOS_MAX_HANDLES; i++)
+        // Own-create placement: scan from KICKOS_CAP_FIRST_DYNAMIC so an own create can NEVER
+        // land on a reserved well-known index (0 .. FIRST_DYNAMIC-1). Reserved slots are
+        // seated only by the kernel (stdout) or by explicit spawn delegation -- frozen
+        // policy, see <kickos/sys/cap_index.h>. Costs FIRST_DYNAMIC slots per table; own
+        // caps live in [FIRST_DYNAMIC .. MAX-1].
+        for (int i = KICKOS_CAP_FIRST_DYNAMIC; i < KICKOS_MAX_HANDLES; i++)
         {
             if (c->handles[i].type == static_cast<uint8_t>(CapType::CAP_EMPTY))
             {
@@ -363,11 +391,12 @@ namespace kickos
         CapEntry* e = cap_lookup(c, cap_handle);
         if (e == nullptr)
         {
-            return -1;
+            return -KOS_EBADF;
         }
-        if (obj_close_protocol(c, *e, /*teardown=*/false) != 0)
+        int const refused = obj_close_protocol(c, *e, /*teardown=*/false);
+        if (refused != 0)
         {
-            return -1; // protocol refused the close (e.g. #3: owner closing a held mutex)
+            return refused; // protocol refused the close (#3: owner closing a held mutex -> -KOS_EBUSY)
         }
         CapEntry const detached = *e;
         // Stale the handle + empty the slot BEFORE dropping the ref, so the slot is
@@ -408,10 +437,15 @@ namespace kickos
             return;
         }
         // Post-publish: seat a SEND-ONLY (CAP_SIGNAL, no WAIT/TRANSFER) copy of the
-        // console endpoint at index 0. CAP_SIGNAL bumps endpoint_refs but NOT recv_holders
-        // (a client is not a receiver), so it does not hold the dead-endpoint gate open.
+        // console endpoint at the reserved stdout slot (index 0). CAP_SIGNAL bumps
+        // endpoint_refs but NOT recv_holders (a client is not a receiver), so it does not
+        // hold the dead-endpoint gate open. Written DIRECTLY (not via cap_install_at, which
+        // rejects index 0): this is the sole path allowed to write the reserved stdout slot.
         // The child's own cap_teardown drops this ref at exit.
-        cap_install_at(child, 0, g_stdout_target, CapType::CAP_ENDPOINT, CAP_SIGNAL);
+        CapEntry& e = child->handles[KOS_CAP_STDOUT];
+        e.obj = g_stdout_target;
+        e.type = static_cast<uint8_t>(CapType::CAP_ENDPOINT);
+        e.rights = CAP_SIGNAL;
         obj_ref_inc(CapType::CAP_ENDPOINT, g_stdout_target, CAP_SIGNAL);
     }
 

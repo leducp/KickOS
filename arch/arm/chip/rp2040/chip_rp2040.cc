@@ -24,6 +24,7 @@
 // flash. See boot2.S and cmake/rp2040_checksum.py.
 
 #include <kickos/arch/arch.h>
+#include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
 
 #include <stdint.h>
@@ -347,7 +348,7 @@ void arch_console_write_sync(char const* buf, size_t n)
         uint32_t spin = 0;
         while ((r32(UART0_FR) & FR_TXFF) != 0)
         {
-            if (++spin > 1000000u)
+            if (++spin > KICKOS_POLL_SPIN_MAX)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }
@@ -427,6 +428,33 @@ void arch_shutdown(int status)
         __asm volatile("wfi");
     }
 }
+
+#if KICKOS_HAVE_MPU
+// Rule 7 reserved set (RP2040 datasheet). Owns-for-life: the 64-bit TIMER (monotonic
+// base), the WATCHDOG (its /12 TICK feeds the 1 MHz TIMER -- reserved despite the
+// general watchdog-exclusion, R3), and the RESETS + CLOCKS control blocks. Each is a
+// full 16 KB window so the SET/CLR/XOR atomic aliases (+0x1000/+0x2000/+0x3000) are
+// covered too (R2). M0+ has no bit-band -> weak arch_bitband_present 0.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const blocks[] = {
+        {0x40054000u, 0x4000u}, // TIMER: 64-bit us monotonic (DS 4.6)
+        {0x40058000u, 0x4000u}, // WATCHDOG: TICK generator for the TIMER (DS 4.7, R3)
+        {0x4000C000u, 0x4000u}, // RESETS: peripheral reset control (DS 2.14)
+        {0x40008000u, 0x4000u}, // CLOCKS: clock generators (DS 2.15)
+    };
+    size_t n = sizeof(blocks) / sizeof(blocks[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = blocks[i];
+    }
+    return n;
+}
+#endif
 
 void Reset_Handler(void)
 {

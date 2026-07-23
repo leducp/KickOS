@@ -28,6 +28,8 @@
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
+#include <gpio_class.h> // Rule 6 class-driver leaf: shared GPIO output-latch read
+
 #include <stdint.h>
 
 // This app EXISTS to prove PMP per-thread peripheral enforcement. Without it the
@@ -164,6 +166,14 @@ int main(int, char**)
     r32(HP_APM_FILTER_EN) = r32(HP_APM_FILTER_EN) | APM_REGION1_EN;
     // HP_APM_FUNC_CTRL (0x00C4) resets to 0xF (M0-M3 enforcing) -- left as-is.
     __asm volatile("fence" ::: "memory"); // settle the APM config before the driver runs
+
+    // Read back the GPIO output latch through the shared class leaf (Rule 6):
+    // baseline output state before the unprivileged driver drives GPIO10. Pure read.
+    uint32_t const out = kickos::esp32c6::classdrv::gpio_out_read(GPIO_BASE);
+    char rb[48];
+    ksnprintf(rb, sizeof(rb), "[c6blink] GPIO_OUT readback 0x%lx\n",
+              static_cast<unsigned long>(out));
+    kos::print(rb);
 
     // Spawn the UNPRIVILEGED driver granted ONLY the 8 B W1TS/W1TC window. No IRQ.
     int drv = kos::thread::spawn(blink_driver,

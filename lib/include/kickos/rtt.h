@@ -25,6 +25,13 @@
 #endif
 
 #ifdef __cplusplus
+// Up-channel indices in the RTT control block (host reads up[0..up_count-1]).
+enum { RTT_CH_CONSOLE = 0, RTT_CH_TELEMETRY = 1 };
+// A ring's flags == 0 selects NO_BLOCK_SKIP: a full buffer drops rather than blocks.
+constexpr uint32_t RTT_FLAG_NO_BLOCK_SKIP = 0;
+#endif
+
+#ifdef __cplusplus
 extern "C"
 {
 #endif

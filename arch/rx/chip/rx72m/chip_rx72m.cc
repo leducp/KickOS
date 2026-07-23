@@ -368,6 +368,34 @@ void arch_shutdown(int status)
     }
 }
 
+#if KICKOS_HAVE_MPU
+// Rule 7 reserved set (RX72M UM). Owns-for-life: the CMTW time base (both units --
+// CMTW0 @0x94200 timebase and CMTW1 @0x94280 bench/trace clock fit one 0x100 block),
+// the ICU (the RX IRQ controller is MPU-GOVERNED memory, unlike the ARM PPB, so it
+// must be reserved -- the kernel uses IER @0x87203 and IPR @0x87306, so the window
+// spans IR/IER/IPR = 0x400, NOT the 0x300 that would miss IPR), the bus-side MPU
+// register file, and the SYSTEM clock/reset gate block.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const blocks[] = {
+        {0x00094200u, 0x100u}, // CMTW0 + CMTW1: time base + bench clock (UM sec.28)
+        {0x00087000u, 0x400u}, // ICU: IR + IER + IPR (UM sec.15) -- MPU-governed IRQ controller
+        {0x00086400u, 0x140u}, // MPU: RSPAGE/REPAGE + MPEN/MPBAC/MPOPI register file (UM sec.17)
+        {0x00080000u, 0x100u}, // SYSTEM: MSTPCR / SCKCR / PLLCR clock+reset gates (UM sec.9/11)
+    };
+    size_t n = sizeof(blocks) / sizeof(blocks[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = blocks[i];
+    }
+    return n;
+}
+#endif
+
 // C runtime init, reached from _start (startup.S). Never returns.
 void rx_reset_handler(void)
 {

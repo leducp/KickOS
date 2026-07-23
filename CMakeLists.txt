@@ -16,7 +16,7 @@ set(KICKOS TRUE CACHE INTERNAL "Building against KickOS")
 add_compile_definitions(__KickOS__=1)
 
 # --- Board / arch selection -------------------------------------------------
-set(KICKOS_BOARD "sim" CACHE STRING "Target board: sim|qemu|frdmk64f|picopi|f411disco|bluepill")
+set(KICKOS_BOARD "sim" CACHE STRING "Target board: sim|qemu|frdmk64f|picopi|f411disco|bluepill-c8")
 # One descriptor per board (boards/<board>/board.cmake) sets arch + chip + -mcpu
 # + the ISA family; the cross toolchain file already read the same file pre-project
 # for the CPU flags. Family (arm|rx|xtensa|sim|...) routes arch/<family>/... and the
@@ -64,7 +64,7 @@ endif()
 set(KICKOS_PROVISION_OVERRIDES "")
 foreach(_knob KICKOS_MAX_IRQ KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE
               KICKOS_IDLE_STACK_SIZE KICKOS_ROOT_STACK_SIZE
-              KICKOS_MAX_SEMAPHORES KICKOS_MAX_IRQ_HANDLES
+              KICKOS_MAX_SEMAPHORES KICKOS_MAX_HANDLES KICKOS_MAX_IRQ_HANDLES
               KICKOS_RTT_CH1_SIZE)
   if(DEFINED ${_knob})
     add_compile_definitions(${_knob}=${${_knob}})
@@ -142,30 +142,41 @@ message(STATUS "KickOS: console=${KICKOS_CONSOLE} (chip=${_con_chip} rtt=${_con_
 # KICKOS_HAVE_TRACE_CLOCK -- and (b) the RTT transport (KICKOS_CONSOLE in
 # {rtt,both}); either missing is a hard configuration error.
 #
-# Trace-clock capability + the SESSION arch id, derived per arch/chip. The id MUST match
-# the ArchId enum in include/kickos/trace/record.h (the decoder tools/kicktrace.py follows it):
+# Trace-clock capability + the SESSION arch id. The id MUST match the ArchId enum in
+# include/kickos/trace/record.h (the decoder tools/kicktrace.py follows it); a
+# static_assert there pins ARCH_RISCV == 5 so a reorder of the enum trips the build:
 #   sim     -> clock_now/1000 (us)             have=1,    id=0
 #   armv7m  -> weak DWT CYCCNT (mps2 overrides) have=1,    id=1
 #   armv6m  -> chip-provided only (no DWT)      have=chip, id=2
 #   lx6     -> CCOUNT                           have=1,    id=3 (xtensa)
 #   rxv3    -> chip CMTW/timer                  have=1,    id=4 (rx)
 #   rv32imac-> rdcycle                          have=1,    id=5 (riscv)
-# KICKOS_HAVE_TRACE_CLOCK is OVERRIDABLE: a board/chip/preset that provides
-# arch_trace_now can set it directly (respected if already defined) -- so the
-# armv6m chip list below is only a convenience default, not the source of truth.
-# (This is the seam the coming board.cmake reconciliation folds per-chip caps into,
-# replacing the hardcoded chip names.)
-set(KICKOS_TRACE_ARCH 0)
-if(KICKOS_ARCH STREQUAL "armv7m")
-  set(KICKOS_TRACE_ARCH 1)
-elseif(KICKOS_ARCH STREQUAL "armv6m")
-  set(KICKOS_TRACE_ARCH 2)
-elseif(KICKOS_ARCH STREQUAL "lx6")
-  set(KICKOS_TRACE_ARCH 3)
-elseif(KICKOS_ARCH STREQUAL "rxv3")
-  set(KICKOS_TRACE_ARCH 4)
-elseif(KICKOS_ARCH STREQUAL "rv32imac")
-  set(KICKOS_TRACE_ARCH 5)
+# A chip declares its own capabilities in arch/<family>/chip/<chip>/caps.cmake
+# (mirrors the mpu.cmake opt-in); the arch-level ladders below are the fallback for a
+# chip that declares nothing. The fragment is included FIRST so a chip value wins,
+# then the ladders fill whatever it left unset -- this is what replaces the hardcoded
+# armv6m chip names (rp2040, nrf51) the trace-clock ladder used to carry.
+# KICKOS_HAVE_TRACE_CLOCK stays OVERRIDABLE: a board/preset that pre-defines it wins
+# over both, because the fragments and the ladder guard their set with NOT DEFINED.
+if(KICKOS_CHIP)
+  set(_caps_optin "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/caps.cmake")
+  if(EXISTS "${_caps_optin}")
+    include("${_caps_optin}")
+  endif()
+endif()
+if(NOT DEFINED KICKOS_TRACE_ARCH)
+  set(KICKOS_TRACE_ARCH 0)
+  if(KICKOS_ARCH STREQUAL "armv7m")
+    set(KICKOS_TRACE_ARCH 1)
+  elseif(KICKOS_ARCH STREQUAL "armv6m")
+    set(KICKOS_TRACE_ARCH 2)
+  elseif(KICKOS_ARCH STREQUAL "lx6")
+    set(KICKOS_TRACE_ARCH 3)
+  elseif(KICKOS_ARCH STREQUAL "rxv3")
+    set(KICKOS_TRACE_ARCH 4)
+  elseif(KICKOS_ARCH STREQUAL "rv32imac")
+    set(KICKOS_TRACE_ARCH 5)
+  endif()
 endif()
 if(NOT DEFINED KICKOS_HAVE_TRACE_CLOCK)
   set(KICKOS_HAVE_TRACE_CLOCK 0)
@@ -173,8 +184,6 @@ if(NOT DEFINED KICKOS_HAVE_TRACE_CLOCK)
      OR KICKOS_ARCH STREQUAL "rxv3" OR KICKOS_ARCH STREQUAL "lx6"
      OR KICKOS_ARCH STREQUAL "rv32imac")
     set(KICKOS_HAVE_TRACE_CLOCK 1) # sim clock/1000; armv7m weak DWT; rxv3 CMTW1; lx6 CCOUNT; rv32imac rdcycle
-  elseif(KICKOS_CHIP STREQUAL "rp2040" OR KICKOS_CHIP STREQUAL "nrf51")
-    set(KICKOS_HAVE_TRACE_CLOCK 1) # armv6m chips that ship arch_trace_now (default)
   endif()
 endif()
 

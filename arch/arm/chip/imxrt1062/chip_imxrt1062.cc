@@ -19,6 +19,8 @@
 // root (baud), and the actual post-ROM core frequency (SystemCoreClock).
 
 #include <kickos/arch/arch.h>
+#include <kickos/config/limits.h>
+#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 
 #include <stddef.h>
@@ -550,7 +552,7 @@ void arch_console_write_sync(char const* buf, size_t n)
         uint32_t spin = 0;
         while ((r32(LPUART6_STAT) & STAT_TDRE) == 0)
         {
-            if (++spin > 1000000u)
+            if (++spin > KICKOS_POLL_SPIN_MAX)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }
@@ -573,12 +575,9 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 uint64_t arch_clock_now(void)
 {
     uint64_t ticks = gpt_ticks();
-    // ns = ticks * 1e9 / 24e6, as (ticks * MULT) >> 32, split 64x64 to avoid overflow.
-    constexpr uint64_t MULT =
-        ((static_cast<uint64_t>(1000000000ull) << 32) + (GPT_HZ / 2u)) / GPT_HZ;
-    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFu;
-    uint64_t c = MULT >> 32, d = MULT & 0xFFFFFFFFu;
-    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    // ns = ticks * 1e9 / 24e6, the divide folds at build time (GPT_HZ is constant).
+    constexpr uint64_t MULT = kickos::arch_clk_recip_q32(GPT_HZ);
+    return kickos::arch_clk_mul_q32(ticks, MULT);
 }
 
 // Override the weak WFI idle. The tickless wakeup timer is SysTick, clocked off the
@@ -601,6 +600,29 @@ void arch_shutdown(int status)
         __asm volatile("wfi");
     }
 }
+
+#if KICKOS_HAVE_MPU
+// Rule 7 reserved set (RT1060 RM). Owns-for-life: the GPT1 monotonic time base and
+// the CCM (CCGR clock-gate roots). Bases are the constants above; sizes one 4 KB AIPS
+// slot each. M7 has NO bit-band, so arch_bitband_present keeps the weak 0 default.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const blocks[] = {
+        {0x401EC000u, 0x1000u}, // GPT1: monotonic time base (RM ch.52, Table 3-3)
+        {0x400FC000u, 0x1000u}, // CCM: CCGR clock-gate roots (RM ch.14)
+    };
+    size_t n = sizeof(blocks) / sizeof(blocks[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = blocks[i];
+    }
+    return n;
+}
+#endif
 
 void Reset_Handler(void)
 {

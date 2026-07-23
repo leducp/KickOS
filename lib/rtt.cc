@@ -57,9 +57,9 @@ extern "C"
         {'S', 'E', 'G', 'G', 'E', 'R', ' ', 'R', 'T', 'T', 0, 0, 0, 0, 0, 0},
         2,
         1,
-        {{"Terminal", up_buf, sizeof up_buf, 0, 0, 0},
-         {"Telemetry", up1_buf, sizeof up1_buf, 0, 0, 0}},
-        {{"Terminal", down_buf, sizeof down_buf, 0, 0, 0}},
+        {{"Terminal", up_buf, sizeof up_buf, 0, 0, RTT_FLAG_NO_BLOCK_SKIP},
+         {"Telemetry", up1_buf, sizeof up1_buf, 0, 0, RTT_FLAG_NO_BLOCK_SKIP}},
+        {{"Terminal", down_buf, sizeof down_buf, 0, 0, RTT_FLAG_NO_BLOCK_SKIP}},
     };
 }
 
@@ -69,7 +69,7 @@ extern "C"
 // once.
 extern "C" void kickos_rtt_write(char const* buf, size_t n)
 {
-    RingBuffer& up = _SEGGER_RTT.up[0];
+    RingBuffer& up = _SEGGER_RTT.up[RTT_CH_CONSOLE];
     uint32_t const size = up.size;
 
     for (size_t i = 0; i < n; i++)
@@ -96,7 +96,7 @@ extern "C" void kickos_rtt_write(char const* buf, size_t n)
 // space for all `n` bytes up front and drop the record entirely if it won't fit.
 extern "C" int kickos_rtt_write_record_ch1(uint8_t const* rec, size_t n)
 {
-    RingBuffer& up = _SEGGER_RTT.up[1];
+    RingBuffer& up = _SEGGER_RTT.up[RTT_CH_TELEMETRY];
     uint32_t const size = up.size;
     uint32_t const wr = up.wr_off;
     uint32_t const rd = up.rd_off;
@@ -127,7 +127,7 @@ extern "C" int kickos_rtt_write_record_ch1(uint8_t const* rec, size_t n)
 // Host-side (sim flush); not called on the measured path.
 extern "C" size_t kickos_rtt_ch1_drain(char* out, size_t max)
 {
-    RingBuffer& up = _SEGGER_RTT.up[1];
+    RingBuffer& up = _SEGGER_RTT.up[RTT_CH_TELEMETRY];
     uint32_t const size = up.size;
     size_t copied = 0;
     while (copied < max && up.rd_off != up.wr_off)

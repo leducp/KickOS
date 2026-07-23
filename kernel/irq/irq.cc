@@ -9,6 +9,8 @@
 #include <kickos/arch/arch.h>
 #include <kickos/ktrace.h>
 
+#include <kickos/sys/errno.h>
+
 namespace kickos
 {
     namespace
@@ -113,7 +115,7 @@ namespace kickos
         IrqLock lock;
         if (line < 0 or line >= KICKOS_MAX_IRQ)
         {
-            return -1;
+            return -KOS_EINVAL; // bad irq line
         }
         Kernel& k = kernel();
         // One driver per line: a line is free iff it still holds the null-object
@@ -121,11 +123,11 @@ namespace kickos
         // check would reject every line).
         if (k.irq_table[line].handler != irq_default_handler)
         {
-            return -1;
+            return -KOS_EBUSY; // line already owned -- no stealing
         }
         if (k.irq_binding_count >= KICKOS_MAX_IRQ_HANDLES)
         {
-            return -1;
+            return -KOS_ENOMEM; // binding pool exhausted
         }
         // Bump-allocated: no unregister/free path yet (freelist deferred, like the
         // thread pool -- the sem pool's generational SlotPool (slotpool.h) is the pattern).
@@ -160,7 +162,7 @@ namespace kickos
             b = binding_of(handle);
             if (b == nullptr)
             {
-                return -1;
+                return -KOS_EBADF; // bad irq handle
             }
             // Auto-rearm the line consumed by the previous wait (no explicit ack
             // needed). needs_rearm starts false, so the first wait just blocks.
@@ -189,7 +191,7 @@ namespace kickos
         IrqBinding* b = binding_of(handle);
         if (b == nullptr)
         {
-            return -1;
+            return -KOS_EBADF; // bad irq handle
         }
         // OPTIONAL + idempotent: only unmask if a wait consumed an event and left
         // the line masked. A double ack, or an ack after auto-rearm, is a no-op.

@@ -11,6 +11,7 @@
 // the 80 MHz APB after the switch. arch_console_write polls the UART0 TX FIFO.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 
 #include <stdint.h>
@@ -336,8 +337,7 @@ namespace
     // product never overflows. HZ is a compile-time constant here (APB is fixed on
     // the PLL), so the one divide folds at build time -- unlike K64F, whose bus
     // clock could be one of two runtime values.
-    constexpr uint64_t TIMG_NS_MULT =
-        ((static_cast<uint64_t>(1000000000ull) << 32) + (TIMG_HZ / 2)) / TIMG_HZ;
+    constexpr uint64_t TIMG_NS_MULT = kickos::arch_clk_recip_q32(TIMG_HZ);
 
     void timg_clock_init()
     {
@@ -483,9 +483,7 @@ void arch_init(void)
 uint64_t arch_clock_now(void)
 {
     uint64_t ticks = timg_ticks();
-    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
-    uint64_t c = TIMG_NS_MULT >> 32, d = TIMG_NS_MULT & 0xFFFFFFFFull;
-    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    return kickos::arch_clk_mul_q32(ticks, TIMG_NS_MULT);
 }
 
 void arch_console_write(char const* buf, size_t n)

@@ -12,6 +12,7 @@
 #include <kickos/cap.h>
 #include <kickos/config.h>
 #include <kickos/domain.h>
+#include <kickos/grant.h>
 #include <kickos/instance.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
@@ -30,7 +31,12 @@ namespace kickos
     {
         // B1 backstop: max yield passes kos_console_publish waits for the in-flight
         // chip-writer count to reach 0 before declaring a stuck writer (a real bug).
-        constexpr uint32_t CONSOLE_PUBLISH_DRAIN_MAX = 1000000u;
+        constexpr uint32_t CONSOLE_PUBLISH_DRAIN_MAX = KICKOS_POLL_SPIN_MAX;
+
+        // Endpoint badge delivered to a receiver. Stage i has no per-endpoint badge
+        // scheme yet, so every message carries this. Distinct from the "no out-ptr"
+        // markers (ipc.badge_out == 0), which mean the receiver asked for no badge.
+        constexpr uint32_t KOS_BADGE_NONE = 0;
 
         // --- Semaphore capabilities (per-task cap table over the global pool) -------
         // A sem lives in the global generational pool (slotpool.h); a task names it by
@@ -44,12 +50,12 @@ namespace kickos
             Thread* c = sched::current();
             if (c == nullptr)
             {
-                return -1;
+                return -KOS_EPERM; // no caller context (defensive; unreachable from a real syscall)
             }
             int const i = kernel().sems.alloc();
             if (i < 0)
             {
-                return -1;
+                return -KOS_ENOMEM; // sem pool exhausted
             }
             sem_init(kernel().sems.at(i), initial);
             kernel().sem_refs[i] = 1; // this creator's cap is the first reference
@@ -63,7 +69,7 @@ namespace kickos
             {
                 kernel().sem_refs[i] = 0;
                 kernel().sems.free(obj);
-                return -1;
+                return -KOS_ENOMEM; // cap table full
             }
             return cap;
         }
@@ -79,12 +85,12 @@ namespace kickos
             Thread* c = sched::current();
             if (c == nullptr)
             {
-                return -1;
+                return -KOS_EPERM; // no caller context (defensive)
             }
             int const i = kernel().mutexes.alloc();
             if (i < 0)
             {
-                return -1;
+                return -KOS_ENOMEM; // mutex pool exhausted
             }
             mutex_init(kernel().mutexes.at(i));
             kernel().mutex_refs[i] = 1;
@@ -94,7 +100,7 @@ namespace kickos
             {
                 kernel().mutex_refs[i] = 0;
                 kernel().mutexes.free(obj);
-                return -1;
+                return -KOS_ENOMEM; // cap table full
             }
             return cap;
         }
@@ -111,12 +117,12 @@ namespace kickos
             Thread* c = sched::current();
             if (c == nullptr)
             {
-                return -1;
+                return -KOS_EPERM; // no caller context (defensive)
             }
             int const i = kernel().endpoints.alloc();
             if (i < 0)
             {
-                return -1;
+                return -KOS_ENOMEM; // endpoint pool exhausted
             }
             Endpoint* ep = kernel().endpoints.at(i);
             ep->send_waiters = List{};
@@ -130,7 +136,7 @@ namespace kickos
             {
                 kernel().endpoint_refs[i] = 0;
                 kernel().endpoints.free(obj);
-                return -1;
+                return -KOS_ENOMEM; // cap table full
             }
             return cap;
         }
@@ -278,34 +284,36 @@ namespace kickos
         // Synchronous send: rendezvous with a parked receiver (deliver now) or park.
         // FULLY LOCKLESS from dispatch (see design section 3): a caller IrqLock spanning
         // this would keep BASEPRI raised across wq_confirm_resume and livelock ARM.
-        // Returns bytes transferred (>= 0), or -1 (bad cap/buffer, dead endpoint, EPIPE).
+        // Returns bytes transferred (>= 0), or -KOS_E* (EINVAL oversize, EFAULT bad buffer,
+        // EBADF/EPERM bad cap or missing SIGNAL, EPIPE dead endpoint / last receiver left).
         int endpoint_send(int cap, uintptr_t buf, size_t len)
         {
             if (len > KOS_EP_MSG_MAX)
             {
-                return -1; // F4: reject oversize, never silently clamp
+                return -KOS_EINVAL; // F4: reject oversize, never silently clamp
             }
             if (not user_readable_ok(buf, len))
             {
-                return -1; // sender's own buffer, checked once in caller context
+                return -KOS_EFAULT; // sender's own buffer, checked once in caller context
             }
             Thread* c = sched::current();
             if (c == nullptr)
             {
-                return -1;
+                return -KOS_EPERM; // no caller context (defensive)
             }
             uint64_t epoch = 0;
             {
                 IrqLock lock;
+                int err = 0;
                 Endpoint* e = static_cast<Endpoint*>(
-                    cap_resolve(c, cap, CapType::CAP_ENDPOINT, CAP_SIGNAL));
+                    cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_SIGNAL, &err));
                 if (e == nullptr)
                 {
-                    return -1;
+                    return -err; // EBADF (bad cap) or EPERM (no SIGNAL right)
                 }
                 if (e->recv_holders == 0)
                 {
-                    return -1; // F1: dead endpoint -- no receiver can ever exist
+                    return -KOS_EPIPE; // F1: dead endpoint -- no receiver can ever exist
                 }
                 Thread* w = wq_pop_highest(e->recv_waiters);
                 if (w != nullptr)
@@ -318,7 +326,7 @@ namespace kickos
                     ep_copy(w->ipc.buf, buf, n); // sender-ctx copy into the parked receiver's buffer
                     if (w->ipc.badge_out != 0)
                     {
-                        uint32_t const badge = 0; // stage i: badge 0
+                        uint32_t const badge = KOS_BADGE_NONE;
                         kaccess_to_user(w->ipc.badge_out, &badge, sizeof(badge));
                     }
                     w->wait_result = static_cast<intptr_t>(n);
@@ -332,12 +340,13 @@ namespace kickos
                 wq_block(e->send_waiters);
             }
             wq_confirm_resume(c, epoch);
-            return static_cast<int>(c->wait_result); // n (>= 0), or -1 EPIPE
+            return static_cast<int>(c->wait_result); // n (>= 0), or -KOS_EPIPE (last receiver left)
         }
 
         // Synchronous recv: take from a parked sender (copy now) or park. FULLY LOCKLESS
         // from dispatch, same reason as endpoint_send. Returns bytes received (>= 0), or
-        // -1 (bad cap/buffer). n == 0 is a VALID zero-length signal, not an error.
+        // -KOS_E* (EFAULT bad buffer/out-ptr, EINVAL misaligned badge, EBADF/EPERM bad cap or
+        // missing WAIT). n == 0 is a VALID zero-length signal, not an error.
         int endpoint_recv(int cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out)
         {
             if (cap_len > KOS_EP_MSG_MAX)
@@ -346,27 +355,33 @@ namespace kickos
             }
             if (not user_writable_ok(buf, cap_len))
             {
-                return -1;
+                return -KOS_EFAULT;
             }
             if (badge_out != 0
                 and ((badge_out & (alignof(uint32_t) - 1)) != 0
                      or not user_writable_ok(badge_out, sizeof(uint32_t))))
             {
-                return -1; // alignment load-bearing for the privileged u32 store below
+                // Misalignment is a malformed arg (EINVAL); an unowned out-ptr is EFAULT.
+                if ((badge_out & (alignof(uint32_t) - 1)) != 0)
+                {
+                    return -KOS_EINVAL; // alignment load-bearing for the privileged u32 store below
+                }
+                return -KOS_EFAULT;
             }
             Thread* c = sched::current();
             if (c == nullptr)
             {
-                return -1;
+                return -KOS_EPERM; // no caller context (defensive)
             }
             uint64_t epoch = 0;
             {
                 IrqLock lock;
+                int err = 0;
                 Endpoint* e = static_cast<Endpoint*>(
-                    cap_resolve(c, cap, CapType::CAP_ENDPOINT, CAP_WAIT));
+                    cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_WAIT, &err));
                 if (e == nullptr)
                 {
-                    return -1;
+                    return -err; // EBADF (bad cap) or EPERM (no WAIT right)
                 }
                 Thread* s = wq_pop_highest(e->send_waiters);
                 if (s != nullptr)
@@ -379,7 +394,7 @@ namespace kickos
                     ep_copy(buf, s->ipc.buf, n); // receiver-ctx copy from the parked sender's buffer
                     if (badge_out != 0)
                     {
-                        uint32_t const badge = 0;
+                        uint32_t const badge = KOS_BADGE_NONE;
                         kaccess_to_user(badge_out, &badge, sizeof(badge));
                     }
                     s->wait_result = static_cast<intptr_t>(n);
@@ -401,7 +416,7 @@ namespace kickos
             IrqLock lock;
             if (p == nullptr)
             {
-                return -1;
+                return -KOS_EINVAL; // null params
             }
             // Copy the caller's params into kernel memory through a checked read: an
             // unprivileged caller must not hand the kernel a pointer it could not read
@@ -417,11 +432,11 @@ namespace kickos
             uintptr_t const pu = reinterpret_cast<uintptr_t>(p);
             if ((pu & (alignof(kos_thread_params) - 1)) != 0)
             {
-                return -1;
+                return -KOS_EINVAL; // misaligned params struct
             }
             if (not user_range_ok(pu, sizeof(*p), ARCH_MPU_R))
             {
-                return -1;
+                return -KOS_EFAULT; // params not readable by the caller
             }
             kos_thread_params params;
             kaccess_from_user(&params, pu, sizeof(params));
@@ -431,14 +446,14 @@ namespace kickos
             // Priority 0 is reserved for the idle thread.
             if (p->prio < KICKOS_PRIO_MIN or p->prio > KICKOS_PRIO_MAX)
             {
-                return -1;
+                return -KOS_EINVAL; // out-of-range priority
             }
             // No privilege escalation: only a privileged thread may spawn one (a
             // privileged thread is granted the whole arena). The granted domain
             // region's geometry is validated arch-side in arch_mpu_apply.
             if (p->privileged != 0 and not sched::current()->privileged)
             {
-                return -1;
+                return -KOS_EPERM; // unprivileged caller cannot spawn a privileged child
             }
             // Caller-provided stack (optional): validate BEFORE allocating a slot, so a bad
             // one is a clean spawn error, not a leaked slot / silent overflow. stack_base==0
@@ -452,7 +467,7 @@ namespace kickos
                     or (p->stack_size & (KICKOS_STACK_ALIGN - 1)) != 0
                     or base + p->stack_size < base) // base+size must not wrap the address space
                 {
-                    return -1;
+                    return -KOS_EINVAL; // bad caller stack: size / alignment / wrap
                 }
                 // An unprivileged thread's stack is granted as one MPU region, so its
                 // base must be naturally aligned to the (pow2) region size, else the
@@ -464,55 +479,85 @@ namespace kickos
                 // apply -- matching KOS_STACK_DEFINE, which only natural-aligns a caller
                 // stack under enforcement (16-byte ABI alignment otherwise).
 #if KICKOS_HAVE_MPU
+                // The stack is committed as one R|W MPU region (thread.cc), so [R10]
+                // this keys on the CHILD's privilege: a privileged child gets the whole
+                // arena + background and needs no stack descriptor.
                 if (p->privileged == 0)
                 {
                     size_t const rsz = arch_ram_region_size(p->stack_size);
                     if ((base & (rsz - 1)) != 0)
                     {
-                        return -1;
+                        return -KOS_EINVAL; // stack base not naturally aligned to its region size
+                    }
+                    // Rule 7: admit the stack region through the same predicate as any
+                    // grant -- arena-confined for EVERY caller (10C, no privileged waiver)
+                    // and reserved-block-clear. Refusal is -KOS_EPERM (the code the
+                    // out-of-arena selftest asserts). Without this an out-of-arena
+                    // stack_base grants an R|W window over peripheral / kernel SRAM.
+                    if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
+                                                    sched::current()->privileged))
+                    {
+                        return -KOS_EPERM; // stack outside the arena / hits a reserved block
                     }
                 }
 #endif
             }
-            // Data-region grant from an UNPRIVILEGED caller: confine it to the
-            // user-RAM arena. Without this an unprivileged thread spawns a child and
-            // grants it an R|W window over peripheral space or kernel SRAM -- the same
-            // escalation the MMIO gate below blocks, reached through the mem_base path.
-            // Gate on the CALLER (a privileged spawner is trusted, like the MMIO gate);
-            // bound the ROUNDED size, since that is what arch_mpu_apply programs.
-            // Per-block ownership (not just arena membership) is M3 capabilities.
-            if (not sched::current()->privileged and p->mem_base != nullptr and p->mem_size != 0)
+            // Data-region grant: the arena-confinement + Rule 7 reserved-block admission
+            // for mem_base now lives in domain_for (evaluated for EVERY caller on the
+            // committed R|W geometry -- 10C). [R11] Keep only a trivial UNGATED wrap check
+            // here so a wrapping mem_base is a clean -KOS_EINVAL on every board, including
+            // no-MPU parts where domain_for's predicate is a no-op stub and would not
+            // catch it. (No-MPU boundary change: the old ungated arena bound on no-MPU
+            // parts is dropped -- there is no MPU region to escalate through there.)
+            if (p->mem_base != nullptr and p->mem_size != 0)
             {
                 uintptr_t const dbase = reinterpret_cast<uintptr_t>(p->mem_base);
-                uintptr_t const dend = dbase + arch_ram_region_size(p->mem_size);
-                uintptr_t const astart = arch_ram_base();
-                uintptr_t const aend = astart + arch_ram_size();
-                if (dend < dbase or dbase < astart or dend > aend)
+                if (dbase + p->mem_size < dbase)
                 {
-                    return -1;
+                    return -KOS_EINVAL; // mem_base window wraps the address space
                 }
+#if KICKOS_HAVE_MPU
+                // Errno coherence with the stack_base path above: a Rule-7 / out-of-arena
+                // data grant is a POLICY refusal (-KOS_EPERM), not pool exhaustion. domain_for
+                // stays the authoritative chokepoint (it re-checks the same predicate), but its
+                // single nullptr sentinel collapses to -KOS_ENOMEM below and cannot distinguish
+                // "retry later" from "never". Pre-check it here on the SAME committed geometry
+                // (arch_ram_region_size) so an unprivileged child's inadmissible mem_base earns
+                // -KOS_EPERM; a genuine domain-pool exhaustion still falls through to -KOS_ENOMEM.
+                // A privileged child bypasses domain_for's grant check (it gets the whole arena),
+                // so gate on the CHILD's privilege, exactly as domain_for does.
+                if (p->privileged == 0)
+                {
+                    if (not grant_region_admissible(dbase, arch_ram_region_size(p->mem_size),
+                                                    ARCH_MPU_R | ARCH_MPU_W,
+                                                    sched::current()->privileged))
+                    {
+                        return -KOS_EPERM; // data grant outside the arena / hits a reserved block
+                    }
+                }
+#endif
             }
-            // MMIO grant (optional): a device register window handed to an
-            // unprivileged driver. PRIVILEGED-ONLY -- unlike the RAM mem_base grant,
-            // MMIO is NOT self-grantable, else a user thread maps arbitrary peripheral
-            // space and defeats isolation. Validate BEFORE claiming a slot. The window
-            // is granted EXACTLY as given (attr R|W|DEV, fixed in domain_for): reject,
-            // never round, what one MPU descriptor cannot cover -- rounding an MMIO
-            // window over-grants the neighbouring registers.
+            // MMIO grant (optional): a device register window handed to an unprivileged
+            // driver. This is the PRECISE-ERROR boundary -- privileged-only (EPERM) and
+            // exact-shape (EINVAL: zero-size, wrap, non-encodable), the codes the selftest
+            // asserts. The AUTHORITATIVE Rule 7 admission (reserved-block overlap, bit-band
+            // alias) is domain_for's grant_region_admissible on the same window; keeping
+            // this thin gate here preserves the specific errno a malformed request earns,
+            // which domain_for's single nullptr sentinel cannot express.
             if (p->mmio_base != nullptr)
             {
                 if (not sched::current()->privileged)
                 {
-                    return -1;
+                    return -KOS_EPERM; // MMIO is privileged-only -- never self-grantable
                 }
                 uintptr_t const mbase = reinterpret_cast<uintptr_t>(p->mmio_base);
                 if (p->mmio_size == 0 or mbase + p->mmio_size < mbase)
                 {
-                    return -1;
+                    return -KOS_EINVAL; // zero-size or wrapping MMIO window
                 }
                 if (not arch_mpu_region_encodable(mbase, p->mmio_size))
                 {
-                    return -1;
+                    return -KOS_EINVAL; // window one MPU descriptor cannot cover exactly
                 }
             }
             // Spawn-time capability delegation (M3). Validate the WHOLE list BEFORE
@@ -528,20 +573,23 @@ namespace kickos
             int const ncaps = static_cast<int>(p->cap_count);
             if (ncaps > 0)
             {
-                // index 0 reserved => at most KICKOS_MAX_HANDLES-1 delegable.
+                // Delegated cap i lands at child index i+1 (index 0 reserved for stdout), so
+                // at most KICKOS_MAX_HANDLES-1 are delegable. This i+1 packing is UNCHANGED
+                // by the frozen cap-index range; an explicit per-grant destination index is
+                // deferred (see cap_index.h), so delegation still fills from index 1.
                 if (ncaps >= KICKOS_MAX_HANDLES)
                 {
-                    return -1;
+                    return -KOS_EINVAL; // cap_count too big for the child table
                 }
                 uintptr_t const cu = reinterpret_cast<uintptr_t>(p->caps);
                 if (p->caps == nullptr or (cu & (alignof(kos_cap_grant) - 1)) != 0)
                 {
-                    return -1;
+                    return -KOS_EINVAL; // null / misaligned grant array
                 }
                 if (not user_range_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps),
                                       ARCH_MPU_R))
                 {
-                    return -1;
+                    return -KOS_EFAULT; // grant array not readable by the caller
                 }
                 // Snapshot the whole grant array into kernel memory in one pass right after
                 // the range check, then validate from the copy -- so a future SMP kernel
@@ -559,14 +607,18 @@ namespace kickos
                 {
                     kos_cap_grant const g = gbuf[ci];
                     CapEntry* se = cap_lookup(caller, g.source_cap);
-                    if (se == nullptr or (se->rights & CAP_TRANSFER) != CAP_TRANSFER)
+                    if (se == nullptr)
                     {
-                        return -1;
+                        return -KOS_EBADF; // source cap names nothing valid
+                    }
+                    if ((se->rights & CAP_TRANSFER) != CAP_TRANSFER)
+                    {
+                        return -KOS_EPERM; // source cap is not delegable (no TRANSFER right)
                     }
                     uint8_t const mask = g.rights_mask;
                     if ((mask & se->rights) != mask) // mask must be a subset -- no widening
                     {
-                        return -1;
+                        return -KOS_EINVAL; // grant mask widens beyond the source rights
                     }
                     deleg_obj[ci] = se->obj;
                     deleg_type[ci] = se->type;
@@ -579,10 +631,17 @@ namespace kickos
             // does not take a reference (thread_create does); a domain it creates but
             // we never reference stays refcount 0 == a free slot.
             Domain* const dom = domain_for(p->privileged != 0, p->mem_base, p->mem_size,
-                                           p->mmio_base, p->mmio_size);
+                                           p->mmio_base, p->mmio_size,
+                                           sched::current()->privileged);
             if (dom == nullptr)
             {
-                return -1;
+                // nullptr is domain_for's single refusal sentinel: EITHER the domain
+                // pool is exhausted OR the grant is inadmissible (Rule 7 reserved-block
+                // hit, out-of-arena data, or a misaligned/malformed region). The precise
+                // MMIO shape/privilege errors were already returned at the boundary above;
+                // everything else collapses to ENOMEM here (the errno is coarse, but the
+                // spawn correctly fails either way).
+                return -KOS_ENOMEM;
             }
             // Reclaim an EXITED slot or bump-allocate (ThreadPool::alloc). Single-core: an
             // EXITED thread is guaranteed off-CPU by the time any other thread reaches here
@@ -592,7 +651,7 @@ namespace kickos
             int const i = k.threads.alloc();
             if (i < 0)
             {
-                return -1;
+                return -KOS_ENOMEM; // thread pool exhausted
             }
 
             ThreadAttr attr;
@@ -604,7 +663,7 @@ namespace kickos
             // granted region stops at the first unreachable byte. If the very first byte
             // is unreachable the name is dropped (default "user" stands). A privileged
             // caller passes user_readable_ok wholesale, so its name copies as before.
-            char namebuf[16]; // matches Thread::name_buf; thread_create re-clamps anyway
+            char namebuf[KICKOS_THREAD_NAME_MAX]; // matches Thread::name_buf; thread_create re-clamps anyway
             if (p->name != nullptr)
             {
                 uintptr_t const np = reinterpret_cast<uintptr_t>(p->name);
@@ -665,7 +724,7 @@ namespace kickos
                 if (stack == nullptr)
                 {
                     k.threads.release(i);
-                    return -1;
+                    return -KOS_ENOMEM; // stack arena exhausted
                 }
                 stack_size = KICKOS_USER_STACK_SIZE;
                 attr.kstack_owned = true;
@@ -755,7 +814,9 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             }
             if (not user_readable_ok(a0, len))
             {
-                return 0; // cross-domain / bad buffer -- write nothing
+                // Cross-domain / bad buffer -- write nothing. Negative code, NOT 0: a
+                // len-0 write legitimately returns 0, so 0 must not double as reject.
+                return static_cast<uintptr_t>(-KOS_EFAULT);
             }
             kconsole_write(buf, len); // fan-out (chip + RTT), not the raw transport
             return len;
@@ -787,11 +848,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // Resolve and use under one lock (sem_wait/sem_post nest their own):
             // otherwise a concurrent close could free the slot between resolve and use.
             IrqLock lock;
+            int err = 0;
             Semaphore* s = static_cast<Semaphore*>(
-                cap_resolve(sched::current(), static_cast<int>(a0), CapType::CAP_SEM, CAP_WAIT));
+                cap_resolve_e(sched::current(), static_cast<int>(a0), CapType::CAP_SEM, CAP_WAIT, &err));
             if (s == nullptr)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-err); // EBADF (bad/closed cap) or EPERM (no WAIT right)
             }
             sem_wait(s);
             return 0;
@@ -799,11 +861,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_sem_post:
         {
             IrqLock lock;
+            int err = 0;
             Semaphore* s = static_cast<Semaphore*>(
-                cap_resolve(sched::current(), static_cast<int>(a0), CapType::CAP_SEM, CAP_SIGNAL));
+                cap_resolve_e(sched::current(), static_cast<int>(a0), CapType::CAP_SEM, CAP_SIGNAL, &err));
             if (s == nullptr)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-err); // EBADF (bad/closed cap) or EPERM (no SIGNAL right)
             }
             sem_post(s);
             return 0;
@@ -823,27 +886,31 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // that could free it, so the resolved pointer stays valid. need == 0:
             // possession is the authority.
             Mutex* m;
+            int err = 0;
             {
                 IrqLock lock;
                 m = static_cast<Mutex*>(
-                    cap_resolve(sched::current(), static_cast<int>(a0), CapType::CAP_MUTEX, 0));
+                    cap_resolve_e(sched::current(), static_cast<int>(a0), CapType::CAP_MUTEX, 0, &err));
             }
             if (m == nullptr)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-err); // -KOS_EBADF (need == 0, so never EPERM here)
             }
+            // 0 / -KOS_EOWNERDEAD (HELD, owner died) / -KOS_EDEADLK (NOT held). EOWNERDEAD is
+            // negative but still an ACQUIRE -- the wrapper decl documents the held-vs-not caveat.
             return static_cast<uintptr_t>(mutex_lock(m));
         }
         case KOS_SYS_mutex_unlock:
         {
             IrqLock lock;
+            int err = 0;
             Mutex* m = static_cast<Mutex*>(
-                cap_resolve(sched::current(), static_cast<int>(a0), CapType::CAP_MUTEX, 0));
+                cap_resolve_e(sched::current(), static_cast<int>(a0), CapType::CAP_MUTEX, 0, &err));
             if (m == nullptr)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-err); // -KOS_EBADF (bad cap)
             }
-            return static_cast<uintptr_t>(mutex_unlock(m)); // -1 if not owner (no panic)
+            return static_cast<uintptr_t>(mutex_unlock(m)); // 0, or -KOS_EPERM if not owner (no panic)
         }
         case KOS_SYS_endpoint_create:
         {
@@ -870,7 +937,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             Thread* c = sched::current();
             if (c == nullptr or not c->privileged)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-KOS_EPERM); // privileged-only
             }
             int handle = -1;
             {
@@ -883,7 +950,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT)
                     or kernel().endpoints.resolve(e->obj) == nullptr)
                 {
-                    return static_cast<uintptr_t>(-1);
+                    return static_cast<uintptr_t>(-KOS_EBADF); // bad / non-endpoint / stale cap
                 }
                 handle = e->obj;
                 if (console_owner_is_kernel() != 0)
@@ -933,6 +1000,9 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // timing. Return 0 (== the cannot-change sentinel) on the unprivileged
             // path so the caller needs only ONE error test. The coherence sequence
             // (mask / disarm / flush / retune / re-arm) lives in cpu_clock_set.
+            // NOTE: this syscall stays OUT of the -KOS_E* scheme -- it returns a u32 Hz
+            // whose 0 sentinel already means cannot/unsupported/not-privileged, and the
+            // console-owned refusal (an EBUSY-shaped condition) surfaces as "unchanged Hz".
             Thread* c = sched::current();
             if (c == nullptr or not c->privileged)
             {
@@ -957,7 +1027,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // Test scaffolding only (real IRQs come from devices), so compiled out
             // of the production ABI -- like guard_addr below. The line is
             // unprivileged-user-reachable: validate it at the boundary and reject a
-            // bad value with -1 rather than passing it to the controller. (Never
+            // bad value with -KOS_EINVAL rather than passing it to the controller. (Never
             // KICKOS_UNREACHABLE a user-supplied number -- that would let a user
             // halt the kernel.)
             // Deliberately NOT privilege-gated (unlike irq_unmask/irq_attach): this
@@ -967,7 +1037,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             int irq = static_cast<int>(a0);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-KOS_EINVAL); // bad irq line
             }
             arch_irq_inject(irq);
             return 0;
@@ -980,6 +1050,74 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             return static_cast<uintptr_t>(irq_spurious_count());
         }
+#if KICKOS_HAVE_MPU
+        case KOS_SYS_grant_probe:
+        {
+            // Test scaffolding: exercise the Rule 7 grant predicates directly, so the
+            // overlap arithmetic (equal / contained / partial / one-byte-edge / alias)
+            // and the RAM/DEV admission rules are unit-testable without forging a real
+            // MPU descriptor. Pure reads, no state change, so not privilege-gated (like
+            // guard_addr). op selects the predicate + posture; the kernel supplies the
+            // attr so userspace needs no ARCH_MPU_* enum. Compiled only under enforcement
+            // (grant_hits_reserved / arch_reserved_blocks exist only then).
+            uintptr_t const op = a0;
+            uintptr_t const base = a1;
+            size_t const size = static_cast<size_t>(a2);
+            uint32_t const rw = ARCH_MPU_R | ARCH_MPU_W;
+            uint32_t const dev = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV;
+            bool result = false;
+            switch (op)
+            {
+                case 0:
+                    result = grant_hits_reserved(base, size);
+                    break;
+                case 1:
+                    result = grant_region_admissible(base, size, rw, true);
+                    break;
+                case 2:
+                    result = grant_region_admissible(base, size, rw, false);
+                    break;
+                case 3:
+                    result = grant_region_admissible(base, size, dev, true);
+                    break;
+                case 4:
+                    result = grant_region_admissible(base, size, dev, false);
+                    break;
+                case 5:
+                {
+                    struct arch_reserved_block blk[KICKOS_MAX_RESERVED];
+                    return arch_reserved_blocks(blk, KICKOS_MAX_RESERVED);
+                }
+                case 6:
+                {
+                    struct arch_reserved_block blk[KICKOS_MAX_RESERVED];
+                    size_t const n = arch_reserved_blocks(blk, KICKOS_MAX_RESERVED);
+                    if (base >= n)
+                    {
+                        return 0;
+                    }
+                    return blk[base].base;
+                }
+                case 7:
+                {
+                    struct arch_reserved_block blk[KICKOS_MAX_RESERVED];
+                    size_t const n = arch_reserved_blocks(blk, KICKOS_MAX_RESERVED);
+                    if (base >= n)
+                    {
+                        return 0;
+                    }
+                    return blk[base].size;
+                }
+                default:
+                    return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            if (result)
+            {
+                return 1u;
+            }
+            return 0u;
+        }
+#endif
         case KOS_SYS_irq_unmask:
         {
             // Test scaffolding: enable an UNBOUND line so an injected raise reaches
@@ -988,12 +1126,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // line), like irq_attach.
             if (not sched::current()->privileged)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-KOS_EPERM); // arms a controller line: privileged-only
             }
             int irq = static_cast<int>(a0);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-KOS_EINVAL); // bad irq line
             }
             arch_irq_unmask(irq);
             return 0;
@@ -1005,7 +1143,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // an unprivileged thread cannot bind (or steal) a line's dispatch.
             if (not sched::current()->privileged)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-KOS_EPERM);
             }
             // Resolve + attach + unmask under one lock (like sem_wait/post): otherwise a
             // concurrent close between the resolve check and the attach could bind the
@@ -1013,29 +1151,32 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             IrqLock lock;
             int irq = static_cast<int>(a0);
             int cap_handle = static_cast<int>(a1);
+            if (irq < 0 or irq >= KICKOS_MAX_IRQ)
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL); // bad irq line
+            }
             // Resolve the CAP once, HERE (requires CAP_SIGNAL -- an ISR posts), and store
             // the GLOBAL sem handle in the binding: irq_sem_post re-resolves that global
             // via the pool per fire (an ISR must NEVER resolve a cap -- current() is a
             // random interrupted thread's table). The binding holds no ref, so a
             // last-close (now reachable via a thread exit) makes it a dead binding that
             // fails safe, not a wrong post.
-            CapEntry* e = nullptr;
-            if (irq >= 0 and irq < KICKOS_MAX_IRQ)
-            {
-                e = cap_lookup(sched::current(), cap_handle);
-            }
+            CapEntry* e = cap_lookup(sched::current(), cap_handle);
             if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_SEM)
-                or (e->rights & CAP_SIGNAL) != CAP_SIGNAL
                 or kernel().sems.resolve(e->obj) == nullptr)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-KOS_EBADF); // bad / non-sem / stale cap
+            }
+            if ((e->rights & CAP_SIGNAL) != CAP_SIGNAL)
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM); // cap lacks SIGNAL (an ISR posts)
             }
             int const sem_handle = e->obj;
-            // irq_attach fails (-1) if the line is already owned -- no stealing.
+            // irq_attach fails if the line is already owned -- no stealing (EBUSY).
             if (not irq_attach(irq, irq_sem_post,
                                reinterpret_cast<void*>(static_cast<intptr_t>(sem_handle))))
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-KOS_EBUSY);
             }
             // Enable the line: a userspace tier-2 binding has no separate unmask
             // syscall (tier-1 unmasks via register/irq_ack), so attach must arm it.
@@ -1055,11 +1196,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // (4 on RX, 8 on ARM/RISC-V) and exactly what makes the typed store below well-defined.
             if (a0 == 0 or (a0 & (alignof(uint64_t) - 1)) != 0)
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-KOS_EINVAL); // null or misaligned out-ptr
             }
             if (not user_writable_ok(a0, sizeof(uint64_t)))
             {
-                return static_cast<uintptr_t>(-1);
+                return static_cast<uintptr_t>(-KOS_EFAULT); // out-ptr not owned by the caller
             }
             uint64_t const now = arch_clock_now();
             kaccess_to_user(a0, &now, sizeof(now));
@@ -1068,7 +1209,8 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_cpu_clock_hz:
         {
             // Read-only, no user pointer: the u32 fits a register, so return it
-            // directly (like sem_create / ram_alloc) rather than via an out-ptr.
+            // directly rather than via an out-ptr. Stays OUT of the -KOS_E* scheme:
+            // it is a u32 Hz whose 0 sentinel already means unknown/no-silicon-clock.
             return static_cast<uintptr_t>(arch_cpu_clock_hz());
         }
         case KOS_SYS_ram_alloc:
@@ -1077,10 +1219,15 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // not by arbitrary user threads (avoids a DoS on the shared pool and
             // matches static-allocation-first). IrqLock: arch_ram_alloc does an
             // unguarded read-modify-write of the bump pointer.
+            // POINTER return -- OUT of the -KOS_E* scheme: a negative errno cast to
+            // void* would be a non-NULL pointer. EVERY failure path returns 0 (NULL) so
+            // the documented `if (p == NULL)` check is correct: the not-privileged reject
+            // and the arena-exhausted reject both yield NULL (arch_ram_alloc already
+            // returns 0 when exhausted).
             IrqLock lock;
             if (not sched::current()->privileged)
             {
-                return static_cast<uintptr_t>(-1);
+                return 0; // NULL, not (uintptr_t)-1 -- the latent dual-sentinel bug fixed
             }
             return reinterpret_cast<uintptr_t>(
                 arch_ram_alloc(static_cast<size_t>(a0)));
@@ -1112,8 +1259,8 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         default:
         {
             // Unknown syscall from userspace is a caller error, not a kernel
-            // invariant violation: fault the caller (-1), never panic the kernel.
-            return static_cast<uintptr_t>(-1);
+            // invariant violation: fault the caller (EINVAL), never panic the kernel.
+            return static_cast<uintptr_t>(-KOS_EINVAL);
         }
     }
 }

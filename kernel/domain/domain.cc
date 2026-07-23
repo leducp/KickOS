@@ -3,6 +3,7 @@
 
 #include <kickos/domain.h>
 
+#include <kickos/grant.h> // grant_region_admissible (Rule 7 chokepoint)
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h> // KICKOS_ASSERT
@@ -11,8 +12,12 @@ namespace kickos
 {
     namespace
     {
-        Domain* g_kernel = nullptr;       // domains[0]
-        Domain* g_default_user = nullptr; // domains[1]
+        // The two immortal domains occupy the first fixed pool slots (class-of the
+        // cap index-0 reservation): index 0 is the kernel domain, 1 the default user.
+        enum { KDOM_KERNEL_INDEX = 0, KDOM_DEFAULT_USER_INDEX = 1 };
+
+        Domain* g_kernel = nullptr;       // domains[KDOM_KERNEL_INDEX]
+        Domain* g_default_user = nullptr; // domains[KDOM_DEFAULT_USER_INDEX]
 
         // A slot is free iff it is not immortal and holds no live thread.
         Domain* free_slot()
@@ -39,7 +44,7 @@ namespace kickos
         }
         // Kernel domain: the whole user-RAM arena, privileged (the background-region
         // analog). Immortal -- root/idle and every privileged thread reference it.
-        g_kernel = &k.domains[0];
+        g_kernel = &k.domains[KDOM_KERNEL_INDEX];
         g_kernel->privileged = true;
         g_kernel->immortal = true;
         size_t size = arch_ram_size();
@@ -53,7 +58,7 @@ namespace kickos
         // Default user domain: no granted arena region, unprivileged. Immortal --
         // every unprivileged thread with no explicit grant shares it (the app
         // domain; its code/data are ungoverned on the sim, real regions on HW).
-        g_default_user = &k.domains[1];
+        g_default_user = &k.domains[KDOM_DEFAULT_USER_INDEX];
         g_default_user->privileged = false;
         g_default_user->immortal = true;
         g_default_user->region_count = 0;
@@ -87,17 +92,48 @@ namespace kickos
     }
 
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
-                       void* mmio_base, size_t mmio_size)
+                       void* mmio_base, size_t mmio_size, bool caller_privileged)
     {
         if (privileged)
         {
             return g_kernel;
         }
         bool const has_data = (mem_base != nullptr and mem_size != 0);
+        // R6: a non-null MMIO base with size 0 is a malformed request, NOT "no MMIO".
+        // The spawn boundary rejects it (syscall.cc) with -KOS_EINVAL; refuse it here
+        // too so domain_for is a complete chokepoint even for a caller that skips the
+        // boundary (thread.cc idle/root pass mmio_base == nullptr, so this never bites
+        // them -- it is defence in depth).
+        if (mmio_base != nullptr and mmio_size == 0)
+        {
+            return nullptr;
+        }
         bool const has_mmio = (mmio_base != nullptr and mmio_size != 0);
         if (not has_data and not has_mmio)
         {
             return g_default_user;
+        }
+        // Rule 7: admit the PROSPECTIVE COMMITTED geometry before allocating a slot,
+        // so a refusal is a clean spawn failure (nullptr), not a half-built domain.
+        // Under no enforcement grant_region_admissible is an inline `return true`.
+        if (has_data)
+        {
+            uintptr_t const db = reinterpret_cast<uintptr_t>(mem_base);
+            if (not grant_region_admissible(db, arch_ram_region_size(mem_size),
+                                            ARCH_MPU_R | ARCH_MPU_W, caller_privileged))
+            {
+                return nullptr;
+            }
+        }
+        if (has_mmio)
+        {
+            uintptr_t const mb = reinterpret_cast<uintptr_t>(mmio_base);
+            if (not grant_region_admissible(mb, mmio_size,
+                                            ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV,
+                                            caller_privileged))
+            {
+                return nullptr;
+            }
         }
         Kernel& k = kernel();
         uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);

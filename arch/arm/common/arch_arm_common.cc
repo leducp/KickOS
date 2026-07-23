@@ -375,6 +375,15 @@ bool __attribute__((weak)) arch_mpu_region_encodable(uintptr_t base, size_t size
     return (base & (size - 1)) == 0;
 }
 
+// Rule 7 bit-band flag (arch.h): 0 by default -- M0+/M7 have no bit-band alias. The
+// bit-band M4 chips (mk64f, stm32f411, xmc4800) strong-override to 1 so the grant
+// path also refuses a reserved block's alias image. Defined unconditionally (unused
+// where the grant module is not linked, i.e. KICKOS_HAVE_MPU=0).
+int __attribute__((weak)) arch_bitband_present(void)
+{
+    return 0;
+}
+
 
 // --- Interrupt controller (NVIC) --------------------------------------------
 void arch_irq_mask(int line)

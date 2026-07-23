@@ -11,6 +11,7 @@
 
 #include <kickos/console_tx.h>
 
+#include <kickos/config/limits.h>
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
@@ -48,7 +49,7 @@ namespace
     // A dead/misconfigured TX channel must NEVER hang panic/fault/boot, so every
     // synchronous poll is bounded (matches the chips' own TX_POLL_TIMEOUT) and bails
     // rather than spinning forever. Cap dwarfs a real per-byte wait at any baud.
-    constexpr uint32_t DRAIN_POLL_CAP = 1000000u;
+    constexpr uint32_t DRAIN_POLL_CAP = KICKOS_POLL_SPIN_MAX;
 
     bool wait_slot()
     {

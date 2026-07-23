@@ -22,7 +22,7 @@ and runs at its true (or safely-degraded) clock. This is all on **privilege + SV
 enforcement is the next milestone.
 
 Silicon boards include the XMC4800, STM32F411 (f411disco / blackpill), STM32F302, STM32F103
-(bluepill), RP2040 (Pico), Renesas RX72M, ESP32-WROOM, and ESP32-C6. See
+(bluepill-c8), RP2040 (Pico), Renesas RX72M, ESP32-WROOM, and ESP32-C6. See
 [`M1_state.md`](M1_state.md) for the validated per-board matrix, [`roadmap.md`](roadmap.md) for
 the milestone plan (M2 = MPU enforcement, M3 = capabilities, M4 = SMP), and
 [`docs/reference/porting.md`](docs/reference/porting.md) for how to add a target.
@@ -39,7 +39,7 @@ cmake --preset picopi && cmake --build --preset picopi
 
 Runnable emulator gates: `ctest --preset qemu` (Cortex-M4), `ctest --preset microbit`
 (Cortex-M0), `ctest --preset qemu-riscv` (RV32IMAC). MCU presets include `frdmk64f`,
-`f411disco`, `blackpill`, `bluepill`, `f302nucleo`, `due`, `xmc4800-relax`, `esp32-wroom`,
+`f411disco`, `blackpill`, `bluepill-c8`, `f302nucleo`, `due`, `xmc4800-relax`, `esp32-wroom`,
 `esp32c6-wroom`, and `rx72m` (each with a `-st` selftest variant). Flashing is per-board --
 see [`docs/flashing.md`](docs/flashing.md) and [`docs/reference/boards.md`](docs/reference/boards.md).
 

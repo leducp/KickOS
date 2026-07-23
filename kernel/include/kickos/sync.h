@@ -12,6 +12,8 @@
 
 #include <kickos/thread.h>
 
+#include <kickos/sys/errno.h> // KOS_E* codes (mutex/sem returns speak the fleet taxonomy)
+
 namespace kickos
 {
     // A wait queue is just a List of blocked threads (the shared TCB link node);
@@ -37,9 +39,10 @@ namespace kickos
     };
 
     // wait_result value delivered to a lock() caller woken because the owner exited
-    // while holding the mutex (mirrors POSIX EOWNERDEAD): the protected invariant may
-    // be inconsistent. Must match KOS_MUTEX_OWNER_DIED in the user ABI.
-    static constexpr intptr_t MUTEX_OWNER_DIED = 1;
+    // while holding the mutex (mirrors POSIX EOWNERDEAD): the lock IS held but the
+    // protected invariant may be inconsistent. A NEGATIVE code in the fleet taxonomy
+    // (surfaced verbatim as mutex_lock's return) -- distinct from the not-held negatives.
+    static constexpr intptr_t MUTEX_OWNER_DIED = -KOS_EOWNERDEAD;
 
     // The waitq primitive shared by every blocking object (sem today; mutex/endpoint
     // later). A waitq IS a List of BLOCKED threads; these are its only two operations.
@@ -84,14 +87,15 @@ namespace kickos
     void mutex_init(Mutex* m);
     // Acquire. Uncontended: take it (two stores, no prio work). Contended: run a
     // two-pass chain walk (pass 1 cycle/deadlock detection read-only, pass 2 PI
-    // boost), then park. Returns 0 locked, MUTEX_OWNER_DIED (1) if handed the mutex
-    // by a dying owner, or -2 if the acquire would deadlock (self-lock or a wait
-    // cycle) -- refused WITHOUT parking and WITHOUT leaking a boost.
+    // boost), then park. Returns 0 locked; -KOS_EOWNERDEAD if handed the mutex by a
+    // dying owner (the lock IS held -- NOT a failed acquire); or -KOS_EDEADLK if the
+    // acquire would deadlock (self-lock or a wait cycle) -- refused WITHOUT parking and
+    // WITHOUT leaking a boost. The -KOS_EBADF bad-cap reject is at the syscall resolve.
     int mutex_lock(Mutex* m);
     // Release + hand-off to the highest waiter, then re-establish the ex-owner's
     // effective priority by recompute over its remaining held mutexes. Returns 0, or
-    // -1 if the caller is not the owner (a user-triggerable runtime error, never a
-    // panic once syscall-exposed).
+    // -KOS_EPERM if the caller is not the owner (a user-triggerable runtime error,
+    // never a panic once syscall-exposed).
     int mutex_unlock(Mutex* m);
     // Exit teardown (R3): the owning thread is EXITED; force-unlock, delivering
     // MUTEX_OWNER_DIED to the woken waiter. No recompute for the dying thread.

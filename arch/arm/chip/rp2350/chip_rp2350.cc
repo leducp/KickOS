@@ -33,6 +33,7 @@
 // clock/boot config cannot permanently brick it.
 
 #include <kickos/arch/arch.h>
+#include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
 
 #include <stdint.h>
@@ -397,7 +398,7 @@ void arch_console_write_sync(char const* buf, size_t n)
         uint32_t spin = 0;
         while ((r32(UART1_FR) & FR_TXFF) != 0)
         {
-            if (++spin > 1000000u)
+            if (++spin > KICKOS_POLL_SPIN_MAX)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }
@@ -452,6 +453,33 @@ void arch_shutdown(int status)
         __asm volatile("wfi");
     }
 }
+
+#if KICKOS_HAVE_MPU
+// Rule 7 reserved set (RP2350 datasheet). Owns-for-life: the 64-bit TIMER0 (monotonic
+// base), the TICKS block (its TIMER0 generator is the 1 MHz source -- the RP2040
+// watchdog role moved here), and the RESETS + CLOCKS control blocks. Full 16 KB
+// windows each so the SET/CLR/XOR atomic aliases are covered. M33 (Arm) has no
+// bit-band -> weak arch_bitband_present 0.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const blocks[] = {
+        {0x400B0000u, 0x4000u}, // TIMER0: 64-bit us monotonic (DS 12.8)
+        {0x40108000u, 0x4000u}, // TICKS: TIMER0 tick generator, 1 MHz source (DS 8.5)
+        {0x40020000u, 0x4000u}, // RESETS: peripheral reset control (DS 7.5)
+        {0x40010000u, 0x4000u}, // CLOCKS: clock generators (DS 8.1)
+    };
+    size_t n = sizeof(blocks) / sizeof(blocks[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = blocks[i];
+    }
+    return n;
+}
+#endif
 
 void Reset_Handler(void)
 {

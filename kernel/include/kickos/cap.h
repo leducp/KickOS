@@ -21,6 +21,13 @@
 #include <stdint.h>
 
 #include <kickos/config/system.h> // KICKOS_MAX_HANDLES (the codec must address it)
+#include <kickos/sys/cap_index.h> // KICKOS_CAP_FIRST_DYNAMIC (frozen reserved range)
+
+// The frozen reserved range must leave at least one dynamic slot, or no own-create could
+// ever succeed. Every board's KICKOS_MAX_HANDLES (floor 9: FIRST_DYNAMIC + main's 2
+// permanent caps + a 3-own-cap test peak) is budgeted against this.
+static_assert(KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC,
+              "no dynamic cap slots left: raise KICKOS_MAX_HANDLES or shrink the reserved range");
 
 namespace kickos
 {
@@ -75,6 +82,12 @@ namespace kickos
     // caller casts to the type it asked for. CAP_SEM/CAP_MUTEX/CAP_ENDPOINT all resolve.
     void* cap_resolve(Thread* c, int cap_handle, CapType want, uint8_t need);
 
+    // As cap_resolve, but distinguishes WHY it failed so a syscall can return the right
+    // taxonomy code: on nullptr, *err is KOS_EBADF (bad index / empty / stale gen /
+    // wrong type / stale object) or KOS_EPERM (the cap lacks a required right). *err is
+    // 0 on success. cap_resolve is this with the reason discarded.
+    void* cap_resolve_e(Thread* c, int cap_handle, CapType want, uint8_t need, int* err);
+
     // Validate a cap handle and return its table entry (type-agnostic; for delegation
     // and close). nullptr on bad index / empty / stale cap-gen.
     CapEntry* cap_lookup(Thread* c, int cap_handle);
@@ -82,8 +95,9 @@ namespace kickos
     // Install a cap naming `obj_handle` into the first free slot of c's table. Returns
     // the cap handle (cap-gen << KCAP_INDEX_BITS | index), or -1 if the table is full.
     // Does NOT touch the object refcount -- the caller owns that (sem_create sets refs=1
-    // at alloc). Index 0 is the kernel stdout slot (B3): the scan starts at 1, so an own
-    // create never lands at 0 (own caps live in [1 .. MAX-1]).
+    // at alloc). Indices 0 .. KICKOS_CAP_FIRST_DYNAMIC-1 are the frozen reserved range
+    // (0 = kernel stdout, B3): the scan starts at KICKOS_CAP_FIRST_DYNAMIC (4), so an own
+    // create never lands in the reserved range (own caps live in [FIRST_DYNAMIC .. MAX-1]).
     int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights);
 
     // Install a cap at a SPECIFIC (assumed-free) index -- delegation's deterministic
@@ -92,7 +106,7 @@ namespace kickos
 
     // Type-agnostic close: bump the slot's cap-gen (stale the handle), empty the entry,
     // then drop one reference to the named object (freeing it at refs -> 0). Returns 0,
-    // or -1 if the handle does not resolve. Succeeds while other holders remain open.
+    // or -KOS_EBADF if the handle does not resolve. Succeeds while other holders remain open.
     int handle_close(Thread* c, int cap_handle);
 
     // Exit teardown: close every non-EMPTY handle before the TCB slot is reclaimable

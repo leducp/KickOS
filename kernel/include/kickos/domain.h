@@ -59,10 +59,17 @@ namespace kickos
     // with a data region -> find-or-create shared by (base,size); otherwise ->
     // default-user. An MMIO grant (mmio_base != 0) is a capability: it ALWAYS gets a
     // fresh, unshared domain carrying {data region?, MMIO region R|W|DEV}. Does NOT
-    // take a reference (thread_create does, via domain_ref). Returns null ONLY when a
-    // new slot is needed but the pool is exhausted.
+    // take a reference (thread_create does, via domain_ref).
+    //
+    // Rule 7 chokepoint: the PROSPECTIVE COMMITTED geometry (data region rounded to
+    // arch_ram_region_size, R|W; MMIO exact, R|W|DEV) is run through
+    // grant_region_admissible at entry (after the privileged / no-grant short-circuits,
+    // before dedup). caller_privileged is the SPAWNER's posture (never read from
+    // sched::current() here -- R8), gating the MMIO privileged-only rule. Returns null
+    // on a grant refusal (reserved-block hit, out-of-arena data, non-encodable /
+    // unprivileged MMIO) OR when a new slot is needed but the pool is exhausted.
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
-                       void* mmio_base, size_t mmio_size);
+                       void* mmio_base, size_t mmio_size, bool caller_privileged);
 
     void domain_ref(Domain* d);     // a thread joins the domain
     void domain_release(Domain* d); // a thread leaves; frees the slot at zero

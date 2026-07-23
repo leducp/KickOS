@@ -167,7 +167,8 @@ update `SystemCoreClock` in the same step so the ns<->tick math stays coherent.
 - [x] **blackpill** (F411 25 MHz HSE) + **f411disco** (F411 84 MHz) + **f302nucleo** (F302 16 K) +
       **bluepill** (F103 10 K clone) -- all HW-validated on silicon 2026-07-14 (blackpill/f411disco
       14/14 + bench; f302/bluepill 13/14, test 11 = RAM-size limit). Only **bluepill-c8** (genuine
-      20 K F103) stays build-only -- a linker variant of the already-validated F103.
+      20 K F103) stays build-only -- a linker variant of the already-validated F103. (The 10 K
+      `bluepill` clone has since been retired -- see docs/reference/boards.md; use `bluepill-c8`.)
 - [x] **K64F revalidated on silicon 2026-07-15** (OpenSDA/J-Link): full selftest streamed
       in-order over the buffered console ring; bench re-confirmed 77 cyc / 641 ns switch (=> 120
       MHz), 160 cyc / 1333 ns IRQ-entry; fault-dump verified (UsageFault UNDEFINSTR -> HardFault).

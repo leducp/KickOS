@@ -14,5 +14,10 @@ if(NOT TARGET c6blink)
   return() # diagnostics off -> app not built
 endif()
 
+# Rule 6 (M4, decision R-A): the GPIO output-latch readback is shared register
+# logic, so it comes from the freestanding kickos_class_esp32c6 leaf -- the same
+# object the kernel timebase will link in Phase A -- not a local copy.
+target_link_libraries(c6blink PRIVATE kickos_class_esp32c6)
+
 # No CTest gate: this app answers a HARDWARE question (C6 PMP + APM peripheral
 # enforcement) and is validated by the operator on silicon, not by the in-env sim/QEMU.

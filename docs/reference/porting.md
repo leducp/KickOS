@@ -88,7 +88,7 @@ by validation tier:
 | `xmc4800` | xmc4800-relax | M4F | **hardware** (LED + USIC VCOM console over the buffered ring) |
 | `stm32f411` | f411disco / blackpill | M4F | **hardware** (LED + UART + ping-pong) |
 | `stm32f302` | f302nucleo | M4 | **hardware** (LED PB13 + console; RAM-limited selftest) |
-| `stm32f103` | bluepill | M3 | **hardware** (RAM-limited selftest; test 11 = 4 K alloc > 10 K LD floor) |
+| `stm32f103` | bluepill-c8 | M3 | **hardware** (F103 port HW-proven on the now-retired 10 K clone, 2026-07-14; RAM-limited selftest, test 11 = 4 K alloc; c8 build-only) |
 | `rp2040` | picopi | M0+ | **hardware** (selftest over UART0/GP0) |
 | `mk64f` | frdmk64f | M4F | **hardware** (revalidated 2026-07-15: full selftest + buffered console ring on silicon); SYSMPU is the M2 enforcement backend |
 | `rx72m` | rx72m | RXv3 | **hardware** (selftest + SCI6 console; DPFPU switch) |
@@ -236,6 +236,13 @@ abandoned (the system never returns to boot).
   `design-mpu-commit-deferred.md`). A chip with a non-PMSAv7 MPU overrides the commit, never
   `arch_mpu_apply` (K64F SYSMPU, RP2350 PMSAv8). `arch_mpu_region_encodable` bounds a grant to
   what the backend can describe.
+- **Rule 7 reserved blocks (M4)** -- an enforcing chip MUST define `arch_reserved_blocks`
+  (its owns-for-life peripherals: timebase, IRQ controller, MPU, clock/reset gates); there
+  is no weak default, so a missing one is a link error. A new **ARMv7-M chip with the
+  Cortex-M bit-band alias (any M3/M4)** must also override `arch_bitband_present()` to return
+  **1** -- the weak default is 0, which is fail-OPEN for the bit-band alias refusal (a device
+  grant into a reserved block's `0x42000000`/`0x22000000` alias image would be admitted).
+  M7 (no bit-band) and non-ARM archs keep 0.
   On F411 it is **build + enforcement-link validated; silicon proof pending** (the
   canonical PMSA per-thread MMIO proof is `design-spi-driver-stm32f411.md`); PMSA
   enforcement is proven on silicon on XMC4800. See `m2-readiness.md`.

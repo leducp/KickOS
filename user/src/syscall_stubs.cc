@@ -40,14 +40,14 @@ int kos_sem_create(int initial)
                                          static_cast<uintptr_t>(initial), 0, 0, 0));
 }
 
-void kos_sem_wait(int sem)
+int kos_sem_wait(int sem)
 {
-    arch_syscall(KOS_SYS_sem_wait, static_cast<uintptr_t>(sem), 0, 0, 0);
+    return static_cast<int>(arch_syscall(KOS_SYS_sem_wait, static_cast<uintptr_t>(sem), 0, 0, 0));
 }
 
-void kos_sem_post(int sem)
+int kos_sem_post(int sem)
 {
-    arch_syscall(KOS_SYS_sem_post, static_cast<uintptr_t>(sem), 0, 0, 0);
+    return static_cast<int>(arch_syscall(KOS_SYS_sem_post, static_cast<uintptr_t>(sem), 0, 0, 0));
 }
 
 int kos_mutex_create(void)
@@ -144,6 +144,11 @@ uint32_t kos_irq_spurious_count(void)
 {
     return static_cast<uint32_t>(arch_syscall(KOS_SYS_irq_spurious, 0, 0, 0, 0));
 }
+
+uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size)
+{
+    return arch_syscall(KOS_SYS_grant_probe, op, base, size, 0);
+}
 #endif
 
 int kos_irq_attach(int irq, int sem_id)
@@ -182,7 +187,15 @@ int kos_irq_unmask(int line)
 uint64_t kos_clock_now(void)
 {
     uint64_t out = 0;
-    arch_syscall(KOS_SYS_clock_now, reinterpret_cast<uintptr_t>(&out), 0, 0, 0);
+    // Surface the syscall status instead of discarding it: on a reject (bad/misaligned
+    // out-ptr -- impossible for this well-formed stack local, so purely defensive) the
+    // out value is never written, so report 0 rather than an uninitialized time.
+    long const rc = static_cast<long>(
+        arch_syscall(KOS_SYS_clock_now, reinterpret_cast<uintptr_t>(&out), 0, 0, 0));
+    if (rc < 0)
+    {
+        return 0;
+    }
     return out;
 }
 

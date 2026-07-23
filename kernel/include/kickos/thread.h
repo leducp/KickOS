@@ -33,6 +33,17 @@ namespace kickos
         RR
     };
 
+    // Kernel-owned bounded copy of a thread name (never aliases a user pointer).
+    constexpr size_t KICKOS_THREAD_NAME_MAX = 16;
+
+    // Per-Kernel monotonic thread identity (telemetry). idle is created first, so
+    // idle == KICKOS_TID_IDLE; KICKOS_TID_NONE is the never-assigned "no thread"
+    // sentinel. trace::TRACE_NO_THREAD aliases KICKOS_TID_NONE (record.h is a lower,
+    // dependency-free layer that cannot see this header; ktrace.cc static_asserts
+    // the two stay equal).
+    constexpr uint16_t KICKOS_TID_NONE = 0xFFFF;
+    constexpr uint16_t KICKOS_TID_IDLE = 0;
+
     // The TCB. Intrusive links keep the scheduler allocation-free.
     struct Thread
     {
@@ -53,7 +64,7 @@ namespace kickos
         // "no thread" sentinel (never assigned); 0 is idle-only after wrap.
         uint16_t id;
 
-        char name_buf[16];  // kernel-owned bounded copy; name points here
+        char name_buf[KICKOS_THREAD_NAME_MAX]; // kernel-owned bounded copy; name points here
         char const* name;   // -> name_buf (set in thread_create); never a user pointer
         uint8_t prio;      // EFFECTIVE priority: the only field sched/policy/wq read.
                            // Sole writer is sched::set_prio (re-seats READY threads).
@@ -80,8 +91,8 @@ namespace kickos
         arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS];
         size_t region_count;
 
-        intptr_t wait_result; // wake-status channel (mutex: 0 / KOS_MUTEX_OWNER_DIED;
-                              // endpoint: byte count >= 0, or -1 EPIPE/dead); the waker
+        intptr_t wait_result; // wake-status channel (mutex: 0 / -KOS_EOWNERDEAD;
+                              // endpoint: byte count >= 0, or -KOS_EPIPE); the waker
                               // writes it before sched::wake, the sleeper reads it after
                               // wq_block returns. Timed wait shares it.
 

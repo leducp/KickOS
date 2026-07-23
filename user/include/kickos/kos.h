@@ -107,16 +107,17 @@ namespace kos
             return *this;
         }
 
-        // On a moved-from / failed handle (id_ < 0) these no-op in the kernel
-        // (sem_resolve fails); an error-returning wait is the wait_result channel
-        // timed wait adds (Later).
-        void wait()
+        // Return the syscall status (0, or a negative -KOS_E*), surfaced now instead of
+        // swallowed: on a moved-from / failed / closed handle these do NOT block or signal
+        // -- they return -KOS_EBADF (so a caller can tell a real wait/post from a no-op),
+        // where before the thread silently proceeded as if synchronized.
+        int wait()
         {
-            kos_sem_wait(id_);
+            return kos_sem_wait(id_);
         }
-        void post()
+        int post()
         {
-            kos_sem_post(id_);
+            return kos_sem_post(id_);
         }
         int id() const
         {
@@ -130,7 +131,9 @@ namespace kos
     // Owning priority-inheritance mutex: ctor creates, dtor closes its cap (last
     // close frees the object). Non-copyable, movable (a moved-from handle is emptied
     // so the dtor won't double-close). lock/unlock return the raw syscall codes (see
-    // kos_mutex_lock: 0, KOS_MUTEX_OWNER_DIED, -1, -2).
+    // kos_mutex_lock: 0, -KOS_EOWNERDEAD, -KOS_EBADF, -KOS_EDEADLK). ROBUST-MUTEX CAVEAT:
+    // -KOS_EOWNERDEAD means the lock IS held (owner died) -- do NOT treat every rc < 0 as
+    // "not acquired" or you strand the mutex; special-case rc == -KOS_EOWNERDEAD as held.
     class Mutex
     {
     public:
@@ -140,7 +143,7 @@ namespace kos
         }
         ~Mutex()
         {
-            // Closing a mutex you still hold is refused (R2: kos_handle_close -> -1),
+            // Closing a mutex you still hold is refused (R2: kos_handle_close -> -KOS_EBUSY),
             // so destroying a locked kos::Mutex leaks its cap -- the correct fail-safe
             // (unlock before scope exit). Unlock a mutex before letting it die.
             if (id_ >= 0)
@@ -243,7 +246,7 @@ namespace kos::thread
     // thread a domain data region (threads sharing one region share a domain).
     // Spawning does NOT preempt the caller, even for a higher-priority thread:
     // the new thread runs once the caller next blocks or yields. Returns an opaque
-    // handle (index+generation, not the telemetry thread id), or -1.
+    // handle (index+generation, not the telemetry thread id), or a negative -KOS_E* code.
     // `stack`/`stack_size` are optional: pass a caller-owned buffer to size a thread's
     // stack to its need, or leave them 0 to get the kernel default (KICKOS_USER_STACK_SIZE).
     // `mmio`/`mmio_size` grant a device register block (R|W|DEV); PRIVILEGED caller only.

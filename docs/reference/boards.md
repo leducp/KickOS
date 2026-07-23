@@ -19,8 +19,7 @@ where its console + LED live. For J-Link / RTT details see [flashing.md](../flas
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | [x] selftest 14/14 + bench (2nd F411; 25 MHz HSE) |
 | `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] selftest 13/14 (test 11 = 4 K alloc > 16 K RAM) + bench |
 | `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + selftest |
-| `bluepill` | STM32F103 / M3 (10 K clone) | PC13 (active-low) | USART1, PA9/PA10, 115200 (ext adapter) | external ST-Link (SWD) | [x] selftest 13/14 (test 11 = 4 K alloc > 10 K RAM) + hello; stress/bench don't fit 10 K |
-| `bluepill-c8` | STM32F103C8 / M3 (20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only (20 K linker) |
+| `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only (64 K/20 K linker; links the full app set incl selftest + stress) |
 | `frdmk64f` | MK64FN1M0 / M4F | -- (none) | UART0, PTB16/PTB17, 115200 -> OpenSDA VCOM | J-Link (OpenSDA) | [x] HW 2026-07-15 (full selftest over the buffered console ring, 120 MHz); SYSMPU sign-off = M2 |
 
 **Retired from the available-hardware list:** `due` (AT91SAM3X8E / M3). The SAM3X port
@@ -43,15 +42,14 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
 
 ### Per-board caveats (know before you trust it)
 
-- **`bluepill`** -- HW-tested 2026-07-14: selftest 13/14 (test 11's `kos_ram_alloc(4096)`
-  can't fit the 10 K arena -- a genuine RAM limit, not a bug) + `hello`. `stress`/`bench`
-  don't fit 10 K. Console needs an external adapter (no on-board USB-serial), on USART1
-  PA9. Runs notably slow -- consistent with the clone's HSE not locking (HSI-fallback),
-  though not confirmed via a clock read (bench doesn't fit to report it). No NRST on the
-  SWD header: wire NRST->the `R` side pin for `--connect-under-reset`, else recover a
-  `WFI`-locked board via BOOT0=1.
-- **`bluepill-c8`** -- build-only (genuine 20 K variant of the HW-validated F103; only the
-  10 K `bluepill` clone was physically run).
+- **`bluepill` (32 KiB/10 KiB low-density clone) -- retired.** The clone's 32 KiB flash
+  fit only `hello`/`blink` (~2 KiB spare); `selftest` (~55 KiB text) and `stress` never
+  fit, so it could not run the self-verifying suite or any driver -- a maintenance burden
+  with no test value. Use the genuine 64 KiB/20 KiB `bluepill-c8` for STM32F103 coverage
+  (same `stm32f103` chip backend; links the full app set incl `selftest`/`stress`). The
+  F103 port was HW-proven on the clone silicon (2026-07-14, selftest 13/14) before retirement.
+- **`bluepill-c8`** -- build-only (genuine 64 KiB/20 KiB F103C8; the F103 port was
+  physically run only on the now-retired 10 K clone). Links the full app set.
 - **`due`** -- **retired** (see the table note above): SAM3X port proven 2026-07-09, but
   this unit now has a peripheral-I/O fault.
 - **`frdmk64f`** -- **HW-revalidated 2026-07-15** (OpenSDA J-Link): full selftest streamed
@@ -71,7 +69,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
 ## Flashing
 
 Every non-sim build emits `<app>`, `<app>.hex`, `<app>.bin` next to the app ELF.
-`blink` is the no-UART smoke test (built for xmc/f411/f302/picopi/bluepill/due);
+`blink` is the no-UART smoke test (built for xmc/f411/f302/picopi/bluepill-c8/due);
 `hello` prints the banner + ping-pong; both under `build/<preset>/user/apps/`.
 
 ### STM32 with an onboard ST-Link -- `f411disco`, `f302nucleo`
@@ -86,7 +84,7 @@ chip works without it). Nucleo consoles reach the ST-Link VCP (`ttyACM*`) with n
 wiring; the F411-DISCO does **not** route USART2 to its VCP -- use an external
 3.3 V USB-UART adapter (TX->RX crossed, GND, no VCC).
 
-### `bluepill` -- external ST-Link over SWD
+### `bluepill-c8` -- external ST-Link over SWD
 
 The Blue Pill has no onboard debugger. Wire an ST-Link (a standalone V2 dongle,
 or a Nucleo's ST-Link freed by pulling its **CN2** jumpers -- see below) to the
@@ -94,7 +92,7 @@ or a Nucleo's ST-Link freed by pulling its **CN2** jumpers -- see below) to the
 `SWDIO<->DIO`, `SWCLK<->CLK`, `GND<->GND` (power over USB or `3V3` -- one supply, shared
 GND). A **fresh** chip needs no reset line -- SWD can halt it, so a plain:
 ```sh
-st-flash --reset write build/bluepill/user/apps/blink/blink.bin 0x08000000
+st-flash --reset write build/bluepill-c8/user/apps/blink/blink.bin 0x08000000
 ```
 works (`--reset` here is a software SYSRESETREQ over SWD). Only *re-flashing a
 board already running KickOS* needs `--connect-under-reset` (the idle thread

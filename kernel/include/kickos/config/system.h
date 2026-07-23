@@ -42,11 +42,17 @@
 #define KICKOS_MAX_THREADS 16
 #endif
 // Per-task capability-table slots (M3 handle table; see cap.h). Cost is
-// MAX_THREADS x MAX_HANDLES x 8 bytes. Index 0 is the kernel stdout slot (B3), so
-// own caps live in [1 .. MAX-1]; default 9 keeps 8 usable own-cap slots (the stress
-// soak's peak). Floor 6 on the tiny 10 KiB boards (5 usable; polled-only, no handover).
+// MAX_THREADS x MAX_HANDLES x 8 bytes. Indices 0 .. KICKOS_CAP_FIRST_DYNAMIC-1 are the
+// FROZEN well-known reserved range (index 0 = kernel stdout; see cap_index.h); own caps
+// live in [FIRST_DYNAMIC .. MAX-1]. With FIRST_DYNAMIC=4 the default 12 keeps 8 usable
+// own-cap slots (the stress soak's peak / t_mutex_deadlock's 8-cap simultaneity).
+// FULL-selftest prerequisite: KICKOS_MAX_HANDLES >= 9. That is FIRST_DYNAMIC(4) + the
+// suite's 2 permanent caps (g_done/g_lock) + a 3-own-cap test peak (cap_index0 holds
+// sem+endpoint+mutex at once). The four tiny boards floor at exactly 9 so they can run
+// it. A board that cannot afford 9 still runs KickOS (real apps use 1-3 caps) but is not
+// a full-selftest target: below 9 the selftest hard-fails on cap exhaustion by design.
 #ifndef KICKOS_MAX_HANDLES
-#define KICKOS_MAX_HANDLES 9
+#define KICKOS_MAX_HANDLES 12
 #endif
 // Memory-domain pool (the shared region sets threads reference; see domain.h).
 // Worst case is one distinct domain per thread plus the two immortal singletons

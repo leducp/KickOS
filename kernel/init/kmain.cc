@@ -8,6 +8,7 @@
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/domain.h>
+#include <kickos/grant.h>
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
@@ -142,6 +143,7 @@ namespace kickos
         kbanner();
         sched::init();
         domain_init(); // build the immortal kernel + default-user domains (arena ready)
+        grant_reserved_validate(); // Rule 7: reserved set well-formed + arena/app disjoint
         ktime_init();
         irq_init();          // seed the dispatch table before any driver attaches
         console_buffer_init(); // arm the buffered console TX drain (after irq_init)
@@ -156,7 +158,7 @@ namespace kickos
                       g_idle_stack, sizeof(g_idle_stack), idle_attr);
         // Idle is created first, so it MUST be trace id 0 (the telemetry decoder
         // keys CPU% off tid 0 == idle). Assert the invariant, not just assume it.
-        KICKOS_ASSERT(g_idle_tcb.id == 0);
+        KICKOS_ASSERT(g_idle_tcb.id == KICKOS_TID_IDLE);
 
         // Root runs at a low priority: adding a thread does not itself reschedule,
         // so root still runs first (nothing higher is READY until it spawns them)

@@ -13,7 +13,7 @@ No open hardware dependency: nothing gating M1 waits on a board that isn't in ha
 
 | ISA | Silicon boards | Emulated |
 |---|---|---|
-| armv7m (Cortex-M4F/M4/M3) | XMC4800, f411disco, blackpill, f302nucleo, bluepill | qemu (mps2-an386) |
+| armv7m (Cortex-M4F/M4/M3) | XMC4800, f411disco, blackpill, f302nucleo, bluepill (F103, clone retired post-M1) | qemu (mps2-an386) |
 | armv6m (Cortex-M0/M0+) | picopi (RP2040) | microbit (nRF51) |
 | RXv3 | RX72M | -- |
 | Xtensa LX6 | ESP32-WROOM | -- |
@@ -44,7 +44,7 @@ kernel must emit the register dump. `--` = app not built for that board.
 | **f411disco** | STM32F411 M4F @84 MHz / 128 K | [x] 14/14 | [x] | [x] | [x] | [x] | [x] `HARD FAULT` | -- | [x] LED |
 | **blackpill** | STM32F411 M4F @84 MHz / 128 K | [x] 14/14 | [x] | [x] | [x] | [x] | [x] `HARD FAULT` | -- | -- |
 | **f302nucleo** | STM32F302 M4 @64 MHz / 16 K | (!) 13/14^1 | [x] | [x] | [x] | [x] | [x] `HARD FAULT` | -- | [x] |
-| **bluepill** | STM32F103 M3 / 10 K clone | (!) 13/14^1 | [x] | [no]^2 | [no]^2 | -- | -- | -- | -- |
+| **bluepill** (retired post-M1) | STM32F103 M3 / 10 K clone | (!) 13/14^1 | [x] | [no]^2 | [no]^2 | -- | -- | -- | -- |
 | **picopi** | RP2040 M0+ @125 MHz | [x] 14/14 | [x] | [x] | [x] | [x] | [x] | -- | [x] |
 | **RX72M** | RXv3 @240 MHz | [x] 14/14 | [x] | [x] | [x] | [x] | [x] `RX EXCEPTION` | -- | -- |
 | **ESP32-WROOM** | Xtensa LX6 @240 MHz | [x] 14/14 | [x] | [x] | [x] | [x] | [x] `XTENSA EXCEPTION` | -- | [x] |

@@ -665,6 +665,14 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 15u) == 0 and (size & 15u) == 0;
 }
 
+// Rule 7 (arch.h): RX has no Cortex-M bit-band alias. Concrete 0 (not weak): the
+// ARM-common weak default is not in an RX link, so the grant module resolves this
+// symbol from the arch layer.
+int arch_bitband_present(void)
+{
+    return 0;
+}
+
 
 
 // --- Interrupt controller (ICUD) --------------------------------------------

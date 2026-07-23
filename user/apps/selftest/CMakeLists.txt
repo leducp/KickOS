@@ -3,6 +3,12 @@
 
 # The M0 verification app + the CI gates. Links the freestanding TAP harness
 # (tests/tap) directly; the app self-asserts and emits TAP over the console.
+#
+# FULL-selftest prerequisite: KICKOS_MAX_HANDLES >= 9 (FIRST_DYNAMIC 4 + 2 permanent
+# suite caps + a 3-own-cap test peak; see config/system.h). The four tiny boards floor
+# at 9 for this reason. A below-9 build (e.g. a manual -DKICKOS_MAX_HANDLES=6 override)
+# is not a full-selftest target: its suite hard-fails on cap exhaustion by design. Real
+# apps use 1-3 caps and run fine below the floor; only the full suite needs 9.
 kickos_add_application(selftest
   SOURCES main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc"
   BOARD   ${KICKOS_BOARD})

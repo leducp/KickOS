@@ -338,6 +338,14 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & (size - 1)) == 0;
 }
 
+// Rule 7 (arch.h): RISC-V has no Cortex-M bit-band alias, so the grant path never
+// tests an alias image here. Concrete 0 (not weak): the ARM-common weak default is
+// not in a RISC-V link, so the grant module resolves this symbol from the arch layer.
+int arch_bitband_present(void)
+{
+    return 0;
+}
+
 
 // --- Interrupt controller (software-injected test scaffolding) ---------------
 // arch_irq_inject fakes a device firing -- test/bench scaffolding (arch.h). It masks

@@ -128,7 +128,7 @@ board gets identical behaviour. Non-M2 work that improves coherence is done HERE
 | f411disco | armv7m / stm32f411 | silicon | 14/14 (HW 2026-07-14) + all apps + HARD FAULT + LED + bench | polled (ext UART PA2) |
 | blackpill | armv7m / stm32f411 | silicon | 14/14 (HW 2026-07-14) + bench | polled (ext UART PA2) |
 | f302nucleo | armv7m / stm32f302 | silicon | 13/14 (HW 2026-07-14; test 11 = 4 K alloc > 16 K) + bench | ST-Link VCP |
-| bluepill | armv7m / stm32f103 | silicon | 13/14 (HW 2026-07-14; test 11 = 4 K alloc > 10 K clone) | polled (ext UART PA9) |
+| bluepill (retired post-M1) | armv7m / stm32f103 | silicon | 13/14 (HW 2026-07-14; test 11 = 4 K alloc > 10 K clone) | polled (ext UART PA9) |
 | picopi | armv6m / rp2040 | silicon | 14/14 (HW 2026-07-09) | UART0/GP0 |
 | bluepill-c8 | armv7m / stm32f103 | build-only (-st) | build-clean | build-only (20 K genuine variant) |
 | K64F | armv7m / mk64f | prior silicon; M2 re-confirm | pass (2026-07-09 baseline) | ring + sync |
@@ -150,7 +150,7 @@ the polled writer (panic/fault path).
 
 On the ring today: **K64F, XMC4800, ESP32-WROOM, RX72M, and ESP32-C6** -- all
 silicon-validated (the C6 via its own UART0 peripheral-IRQ path added 2026-07-14, a
-2048-byte ring). The STM32 fleet (f411disco, blackpill, f302nucleo, bluepill) and
+2048-byte ring). The STM32 fleet (f411disco, blackpill, f302nucleo, bluepill-c8) and
 picopi (RP2040) stay polled: real UART, `arch_console_write_sync` bounded per board, but
 no IRQ-drained receive path wired onto the template yet (a driver-era, non-M2 task).
 

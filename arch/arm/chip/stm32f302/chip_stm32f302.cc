@@ -16,6 +16,8 @@
 // rather than hanging. Flash to confirm, or watch LD2 (PB13) blink.
 
 #include <kickos/arch/arch.h>
+#include <kickos/config/limits.h>
+#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 
 #include <stdint.h>
@@ -307,13 +309,11 @@ uint64_t arch_clock_now(void)
         {
             return 0;
         }
-        mult = ((1000000000ull << 32) + (tim_hz >> 1)) / tim_hz;
+        mult = kickos::arch_clk_recip_q32(tim_hz);
         cached_hz = tim_hz;
     }
     uint64_t ticks = tim2_ticks();
-    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
-    uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFull;
-    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    return kickos::arch_clk_mul_q32(ticks, mult);
 }
 
 // TIM2 overflow (update) ISR, vectored at NVIC 28 in startup.S. Observes the 67 s
@@ -338,7 +338,7 @@ void arch_console_write_sync(char const* buf, size_t n)
         uint32_t spin = 0;
         while ((r32(USART2_ISR) & ISR_TXE) == 0)
         {
-            if (++spin > 1000000u)
+            if (++spin > KICKOS_POLL_SPIN_MAX)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }

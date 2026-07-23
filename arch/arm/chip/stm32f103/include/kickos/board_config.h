@@ -24,9 +24,11 @@
 #ifndef KICKOS_MAX_SEMAPHORES
 #define KICKOS_MAX_SEMAPHORES 4
 #endif
-/* M3 cap table: floor 6 (holds the 4 live sem caps of the irqdrv section). */
+/* M3 cap table floor: FIRST_DYNAMIC(4) reserved + main's 2 permanent caps
+   (g_done/g_lock) + 3 concurrent own-caps (cap_index0 holds sem+endpoint+mutex) = 9.
+   Below this the reduced selftest suite exhausts main's dynamic slots. */
 #ifndef KICKOS_MAX_HANDLES
-#define KICKOS_MAX_HANDLES 6
+#define KICKOS_MAX_HANDLES 9
 #endif
 #ifndef KICKOS_MAX_IRQ_HANDLES
 #define KICKOS_MAX_IRQ_HANDLES 4

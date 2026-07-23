@@ -241,14 +241,43 @@ does not hand out kernel-owned blocks (the default caps exclude them). A buggy o
 over-broad grant issued by privileged code would currently succeed and open a hole
 -- an unprivileged thread could then poke the kernel's timer and break the timebase.
 
-M4 requirement: an explicit kernel-reserved-block set (timebase block, IRQ
-controller, MPU, every owns-for-life peripheral) plus an overlap predicate in the
-grant path, so a grant overlapping a kernel-owned block is REFUSED mechanically,
-not merely by convention. That turns rule 1 from "trust the granter" into "the
-kernel refuses". Note this is orthogonal to DRY code reuse: sharing the class-driver
-register logic is a link-time decision; refusing the resource grant is a runtime
-capability decision -- the kernel-owned timer INSTANCE is never granted even though
-its register CODE is shared.
+M4 requirement (LANDED): an explicit kernel-reserved-block set (timebase block, IRQ
+controller, MPU, clock/reset gates -- every owns-for-life peripheral) plus an overlap
+predicate in the grant path, so a grant overlapping a kernel-owned block is REFUSED
+mechanically, not merely by convention. That turns rule 1 from "trust the granter"
+into "the kernel refuses". This is orthogonal to DRY code reuse: sharing the
+class-driver register logic is a link-time decision; refusing the resource grant is a
+runtime capability decision -- the kernel-owned timer INSTANCE is never granted even
+though its register CODE is shared.
+
+Mechanism as landed:
+
+- Each enforcing chip declares its reserved set via `arch_reserved_blocks()`
+  (`arch/include/kickos/arch/arch.h`) -- there is NO weak default, so a port that
+  forgets to declare one fails to LINK rather than silently opening a hole
+  (affirmative fail-closed). The set is owns-for-life only: the watchdog INSTANCE is
+  excluded (neutralize-then-grant), unless its tick feeds the timebase (rp2040/rp2350).
+- `kernel/grant` holds the predicate. `grant_hits_reserved(base,size)` is a
+  closed-form last-byte overlap over the set (adjacency allowed, so a driver may sit
+  flush against a reserved block -- e.g. the K64F PIT CH2 grant at reserved_last+1);
+  on a bit-band core (`arch_bitband_present()`) it also tests each reserved block's
+  bit-band ALIAS image. `grant_region_admissible(base,size,attr,caller_privileged)`
+  is the full single-region policy: refuse size-0/wrap, refuse ANY reserved-block hit
+  (privileged callers bound too), then for a device grant require privileged + exactly
+  one MPU descriptor + not a bit-band alias, or for RAM require natural alignment and
+  confinement to the user arena for EVERY caller.
+- `domain_for()` (`kernel/domain`) is the chokepoint: it runs the predicate on the
+  prospective committed geometry (data region rounded to the MPU descriptor size R|W;
+  MMIO exact R|W|DEV) before it allocates a domain slot. The caller-owned-stack path
+  in `thread_spawn` runs the same predicate on the stack region, and `thread_create`
+  carries a backstop assert that no assembled region overlaps a reserved block.
+- `grant_reserved_validate()` runs once at boot (`kmain`, after `domain_init`): it
+  asserts every reserved block is well-formed and that the static grantable extents
+  (the arena, app code, appdata) are reserved-disjoint.
+
+Under no enforcement (`KICKOS_HAVE_MPU=0`) the whole module compiles out to inline
+no-op stubs (admissible always true, hits_reserved always false), so the call sites
+stay identical and pay zero flash.
 
 ### Worked example: the RT1062 watchdogs
 

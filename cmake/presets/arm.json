@@ -47,13 +47,6 @@
       "cacheVariables": { "KICKOS_BOARD": "blackpill" }
     },
     {
-      "name": "bluepill",
-      "displayName": "STM32F103 Blue Pill, low-density clone / 10 KiB (Cortex-M3)",
-      "inherits": "arm-base",
-      "binaryDir": "${sourceDir}/build/bluepill",
-      "cacheVariables": { "KICKOS_BOARD": "bluepill" }
-    },
-    {
       "name": "bluepill-c8",
       "displayName": "STM32F103C8 Blue Pill, genuine 20 KiB (Cortex-M3)",
       "inherits": "arm-base",
@@ -117,7 +110,6 @@
     { "name": "xmc4800-relax-st", "displayName": "XMC4800 Relax + selftest (full IRQ suite)", "inherits": "xmc4800-relax", "binaryDir": "${sourceDir}/build/xmc4800-relax-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
     { "name": "f411disco-st", "displayName": "STM32F411 Disco + selftest", "inherits": "f411disco", "binaryDir": "${sourceDir}/build/f411disco-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
     { "name": "blackpill-st", "displayName": "STM32F411 Black Pill + selftest", "inherits": "blackpill", "binaryDir": "${sourceDir}/build/blackpill-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
-    { "name": "bluepill-st", "displayName": "STM32F103 Blue Pill + selftest", "inherits": "bluepill", "binaryDir": "${sourceDir}/build/bluepill-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
     { "name": "bluepill-c8-st", "displayName": "STM32F103C8 Blue Pill + selftest", "inherits": "bluepill-c8", "binaryDir": "${sourceDir}/build/bluepill-c8-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
     { "name": "picopi-st", "displayName": "RP2040 Pico + selftest", "inherits": "picopi", "binaryDir": "${sourceDir}/build/picopi-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
     { "name": "pizero2350-st", "displayName": "RP2350 Pi-Zero + selftest", "inherits": "pizero2350", "binaryDir": "${sourceDir}/build/pizero2350-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
@@ -131,7 +123,6 @@
     { "name": "teensy41",  "configurePreset": "teensy41" },
     { "name": "f411disco", "configurePreset": "f411disco" },
     { "name": "blackpill",  "configurePreset": "blackpill" },
-    { "name": "bluepill",  "configurePreset": "bluepill" },
     { "name": "bluepill-c8", "configurePreset": "bluepill-c8" },
     { "name": "microbit",  "configurePreset": "microbit" },
     { "name": "picopi",    "configurePreset": "picopi" },
@@ -144,7 +135,6 @@
     { "name": "xmc4800-relax-st", "configurePreset": "xmc4800-relax-st" },
     { "name": "f411disco-st", "configurePreset": "f411disco-st" },
     { "name": "blackpill-st", "configurePreset": "blackpill-st" },
-    { "name": "bluepill-st", "configurePreset": "bluepill-st" },
     { "name": "bluepill-c8-st", "configurePreset": "bluepill-c8-st" },
     { "name": "picopi-st", "configurePreset": "picopi-st" },
     { "name": "pizero2350-st", "configurePreset": "pizero2350-st" },

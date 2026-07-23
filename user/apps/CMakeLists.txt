@@ -3,9 +3,10 @@
 
 add_subdirectory(hello)
 add_subdirectory(hello_c)
-add_subdirectory(selftest)
 add_subdirectory(mpu_fault)
 add_subdirectory(sched_exit)
+
+add_subdirectory(selftest)
 add_subdirectory(stress)
 
 # Diagnostic apps -- self-gated on KICKOS_ENABLE_SELFTEST via kickos_add_diagnostic_app
@@ -16,9 +17,23 @@ add_subdirectory(specfault)
 
 # KickCAT EtherCAT slave over the software EmulatedESC (Stage A of
 # docs/design-kickcat-k64f.md). Sim-only; consumes the sibling KickCAT checkout
-# (used, not vendored) and self-skips if it is absent.
+# (used, not vendored). KickCAT is deferred in M4, so it is optional: add it only
+# when BOTH the checkout AND tinyxml2 (KickCAT's ESI-parser dep) are present.
+# Probing here keeps a missing dep from reaching the hard find_package(tinyxml2
+# CONFIG REQUIRED) inside the KickCAT tree (lib/CMakeLists.txt).
 if(KICKOS_ARCH STREQUAL "sim")
-  add_subdirectory(kickcat_slave)
+  set(_kickcat_dir "${KICKCAT_DIR}")
+  if(NOT _kickcat_dir)
+    set(_kickcat_dir "${CMAKE_SOURCE_DIR}/../KickCAT")
+  endif()
+  find_package(tinyxml2 CONFIG QUIET)
+  if(EXISTS "${_kickcat_dir}/lib/slave/include/kickcat/ESC/EmulatedESC.h"
+     AND tinyxml2_FOUND)
+    add_subdirectory(kickcat_slave)
+  else()
+    message(STATUS "KickOS: kickcat_slave skipped -- KickCAT checkout or tinyxml2 absent (KickCAT deferred in M4)")
+  endif()
+  unset(_kickcat_dir)
 endif()
 
 # Full-C++ opt-in smoke test (Stage B of docs/design-kickcat-k64f.md): exercises
@@ -141,7 +156,6 @@ if(KICKOS_BOARD STREQUAL "picopi"
    OR KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "f411disco"
    OR KICKOS_BOARD STREQUAL "blackpill"
-   OR KICKOS_BOARD STREQUAL "bluepill"
    OR KICKOS_BOARD STREQUAL "bluepill-c8"
    OR KICKOS_BOARD STREQUAL "f302nucleo"
    OR KICKOS_BOARD STREQUAL "due"

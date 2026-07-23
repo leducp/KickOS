@@ -17,6 +17,8 @@
 // toggles the onboard "L" LED (PB27) for a no-UART smoke test.
 
 #include <kickos/arch/arch.h>
+#include <kickos/config/limits.h>
+#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 
 #include <stdint.h>
@@ -331,13 +333,11 @@ uint64_t arch_clock_now(void)
         {
             return 0;
         }
-        mult = ((1000000000ull << 32) + (tc_hz >> 1)) / tc_hz;
+        mult = kickos::arch_clk_recip_q32(tc_hz);
         cached_hz = tc_hz;
     }
     uint64_t ticks = tc_ticks();
-    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
-    uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFull;
-    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    return kickos::arch_clk_mul_q32(ticks, mult);
 }
 
 // TC0 ch0 overflow (COVFS) ISR, vectored at NVIC 27 in startup.S. Observes the
@@ -363,7 +363,7 @@ void arch_console_write_sync(char const* buf, size_t n)
         uint32_t spin = 0;
         while ((r32(UART_SR) & SR_TXRDY) == 0)
         {
-            if (++spin > 1000000u)
+            if (++spin > KICKOS_POLL_SPIN_MAX)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }

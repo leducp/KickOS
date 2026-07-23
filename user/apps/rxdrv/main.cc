@@ -28,6 +28,8 @@
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
+#include <port_class.h> // Rule 6 class-driver leaf: shared PORT output-latch read
+
 #include <stdint.h>
 
 // This app EXISTS to prove RX MPU per-thread peripheral enforcement. Without it the
@@ -119,6 +121,14 @@ int main(int, char**)
     r8(PORT8_PMR) = static_cast<uint8_t>(r8(PORT8_PMR) & ~LED6);  // GPIO (not peripheral)
     r8(PORT8_PODR) = static_cast<uint8_t>(r8(PORT8_PODR) | LED6); // high => LED off
     r8(PORT8_PDR) = static_cast<uint8_t>(r8(PORT8_PDR) | LED6);   // output
+
+    // Read back PORT8's output latch through the shared class leaf (Rule 6):
+    // confirms the pin drove high (LED off) before the unprivileged driver takes
+    // over. PODR_BLOCK is the byte-per-port block base; index 8 == PORT8.
+    uint8_t const podr8 = kickos::rx::classdrv::port_odr_read(PODR_BLOCK, 8);
+    char rb[48];
+    ksnprintf(rb, sizeof(rb), "[rxdrv] PORT8 PODR readback 0x%x\n", podr8);
+    kos::print(rb);
 
     // Spawn the UNPRIVILEGED driver granted ONLY the 16 B PODR window. No IRQ.
     int drv = kos::thread::spawn(blink_driver,

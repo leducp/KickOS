@@ -28,7 +28,7 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 # (arch + chip + -mcpu) lives in ONE place per board: boards/<board>/board.cmake,
 # included here (pre-project, for -mcpu) and by the build's board resolver
 # (cmake/kickos.cmake) so the toolchain and the build can never disagree.
-set(KICKOS_BOARD "frdmk64f" CACHE STRING "Target board: qemu|frdmk64f|f411disco|bluepill|picopi")
+set(KICKOS_BOARD "frdmk64f" CACHE STRING "Target board: qemu|frdmk64f|f411disco|bluepill-c8|picopi")
 
 # In-tree the descriptor is boards/<board>/board.cmake relative to the repo root
 # (this file lives in <repo>/cmake). An installed MCU package ships the one board

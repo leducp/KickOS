@@ -43,6 +43,10 @@ namespace kickos
         };
 
         // Architecture id carried in the SESSION record (host tool labels traces).
+        // These ids are WIRE VALUES: the build's KICKOS_TRACE_ARCH ladder
+        // (CMakeLists.txt) and the decoder (tools/kicktrace.py) key off them, so
+        // they MUST NOT be reordered or renumbered. The static_assert below pins the
+        // last id so a reorder trips the build.
         enum ArchId : uint8_t
         {
             ARCH_SIM = 0,
@@ -52,6 +56,11 @@ namespace kickos
             ARCH_RX = 4,
             ARCH_RISCV = 5
         };
+        // Pin EVERY id: a reorder of the intermediate entries must trip the build, not
+        // just a change to the last one (KICKOS_TRACE_ARCH in CMake must match these).
+        static_assert(ARCH_SIM == 0 and ARCH_ARMV7M == 1 and ARCH_ARMV6M == 2
+                          and ARCH_XTENSA == 3 and ARCH_RX == 4 and ARCH_RISCV == 5,
+                      "KICKOS_TRACE_ARCH ids must match enum ArchId");
 
         enum : uint16_t
         {

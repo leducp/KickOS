@@ -15,6 +15,7 @@
 // -nographic -semihosting -kernel <elf>.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 
 #include <stdint.h>
 
@@ -73,7 +74,7 @@ namespace
     constexpr uintptr_t CLINT_MTIMECMP = CLINT_BASE + 0x4000; // 64-bit
     constexpr uintptr_t CLINT_MTIME = CLINT_BASE + 0xBFF8;     // 64-bit
     constexpr uint64_t MTIME_HZ = 10000000ull;                 // `virt` mtime = 10 MHz
-    constexpr uint64_t NS_PER_TICK = 1000000000ull / MTIME_HZ; // 100 ns
+    constexpr uint64_t NS_PER_TICK = kickos::KICKOS_NS_PER_SEC / MTIME_HZ; // 100 ns
 
     // --- RISC-V semihosting (QEMU implements the host side; the magic sequence is
     //     slli x0,x0,0x1f / ebreak / srai x0,x0,7 -- must NOT be compressed). ---
@@ -175,6 +176,29 @@ void arch_shutdown(int status)
         __asm volatile("wfi");
     }
 }
+
+#if KICKOS_HAVE_MPU
+// Rule 7 reserved set (QEMU virt memory map + RISC-V Privileged ISA). The CLINT owns
+// the machine timer: mtimecmp @+0x4000 is the tickless deadline source and mtime @
+// +0xBFF8 the monotonic clock -- both inside the standard 64 KB CLINT window at
+// 0x02000000. That is the whole timebase + IPI controller in one block.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const blocks[] = {
+        {0x02000000u, 0x10000u}, // CLINT: msip + mtimecmp (tickless) + mtime
+    };
+    size_t n = sizeof(blocks) / sizeof(blocks[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = blocks[i];
+    }
+    return n;
+}
+#endif
 
 // --- C-runtime bring-up (called by _start in startup.S) ---------------------
 // A fault/panic on this QEMU target must EXIT with a status so a CTest run

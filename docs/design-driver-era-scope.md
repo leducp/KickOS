@@ -187,7 +187,7 @@ driver status.)
 | ESP32-WROOM (LX6) | Xtensa UART0 @0x3FF40000 (128-FIFO) | none (no MPU) | ring | GAP | 3 (functional only) |
 | STM32F411 (disco/blackpill) | USART2 @0x40004400 (old SR/DR), PA2 | PMSA (build-only HW) | polled | GAP | 3 (STM32 old-model reference driver) |
 | STM32F302 (nucleo) | USART2 @0x40004400 (NEW ISR/TDR), VCP | PMSA (RAM-tight) | polled | GAP | 4 (STM32 NEW-model variant) |
-| STM32F103 (bluepill) | USART1 @0x40013800 (old SR/DR), PA9 | none | polled | GAP | 4 (shares F411 old-model driver) |
+| STM32F103 (bluepill-c8) | USART1 @0x40013800 (old SR/DR), PA9 | none | polled | GAP | 4 (shares F411 old-model driver) |
 | RP2040 (picopi) | ARM PL011 UART0 @0x40034000 (FIFO) | v6-M PMSA per-thread | polled | GAP | 3 (PL011 reference; SMP board) |
 | SAM3X (due) | SAM3X UART @0x400E0800 | none | RETIRED | skip | -- (unit retired, HW fault) |
 | imxrt1062 (teensy) | NXP LPUART6 @0x40198000 (FIFO) | MPU deferred | build-only | skip for now | -- (not in silicon fleet) |

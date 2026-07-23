@@ -217,7 +217,7 @@ namespace kickos
             }
             if (m->owner == c)
             {
-                return -2; // self-deadlock: recursive lock is refused, not parked
+                return -KOS_EDEADLK; // self-deadlock: recursive lock is refused, not parked
             }
             // Pass 1: cycle/deadlock detection, READ ONLY. Walk owner -> blocked_on ->
             // owner ... ; if it reaches c, blocking c on m would close a wait cycle.
@@ -230,7 +230,7 @@ namespace kickos
                 {
                     if (t == c)
                     {
-                        return -2; // would deadlock -- refuse, no boost written
+                        return -KOS_EDEADLK; // would deadlock -- refuse, no boost written
                     }
                     if (t->blocked_on == nullptr)
                     {
@@ -291,7 +291,7 @@ namespace kickos
         Thread* c = sched::current();
         if (m->owner != c)
         {
-            return -1; // only the owner may unlock -- runtime error, never a panic
+            return -KOS_EPERM; // only the owner may unlock -- runtime error, never a panic
         }
         held_remove(c, m);
         Thread* w = wq_pop_highest(m->waiters);

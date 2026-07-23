@@ -576,6 +576,34 @@ void arch_init(void)
     c6_early_mark('G');  // inject doorbell wired -- arch_init complete
 }
 
+#if KICKOS_HAVE_MPU
+// Rule 7 reserved set (ESP32-C6 TRM). The CPU sub-system page at 0x20001000 holds BOTH
+// the PLIC (real IRQ controller, @0x20001000) and the core-local CLINT (@0x20001800:
+// MSIP switch doorbell + MTIME/MTIMECMP tickless timer @0x20001808/0x20001810) -- both
+// inside one 4 KB page, so a single entry covers the whole timebase + IRQ controller.
+// INTMTX (interrupt matrix routing) and PCR (the system clock/reset gate controller --
+// the C6's clock-gate block, which the chip programs and on which the MTIME rate
+// depends) are the other two owns-for-life blocks.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const blocks[] = {
+        {0x20001000u, 0x1000u}, // PLIC (@+0x000) + CLINT MSIP/MTIME/MTIMECMP (@+0x800..) (TRM ch.1.7)
+        {0x60010000u, 0x1000u}, // INTMTX: interrupt matrix (TRM, memory map Table 5.3-2)
+        {0x60096000u, 0x1000u}, // PCR: clock + reset gate controller (TRM PCR ch.; regs @+0x2c/+0x30)
+    };
+    size_t n = sizeof(blocks) / sizeof(blocks[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = blocks[i];
+    }
+    return n;
+}
+#endif
+
 void arch_shutdown(int status)
 {
     (void)status; // no exit on bare metal

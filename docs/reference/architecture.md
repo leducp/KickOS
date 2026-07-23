@@ -331,6 +331,16 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
 - **Syscalls via `SVC`**: handler reads number + args (r0-r3), dispatches through an
   arch-independent **syscall table**, returns in r0. Sim: a trampoline flips an emulated-
   privilege flag (+ `mprotect` toggles kernel-mem accessibility) and calls `syscall_dispatch()`.
+- **Syscall return ABI (`user/include/kickos/sys/errno.h`).** A syscall that can fail returns its
+  error as the **negated** code `-KOS_Exxx`; a success -- a handle, a count, a byte-count -- is
+  **non-negative**, so `rc < 0` is unambiguously an error and never aliases a valid handle/count
+  (handles are bounded well under `INT_MAX`, counts stay small). The code set mirrors POSIX
+  magnitudes -- `EPERM` `EBADF` `EINVAL` `EFAULT` `ENOMEM` `EPIPE` `EDEADLK` `EBUSY` -- plus
+  **`EOWNERDEAD`**, the robust-mutex case: a mutex *acquired* while its prior owner died holding it,
+  still returned negative (`-KOS_EOWNERDEAD`) for the caller to special-case as HELD. Two syscalls
+  stay OUT of this scheme by return type: `ram_alloc` returns a pointer (every failure is NULL -- a
+  negated errno cast to a pointer would be non-NULL) and `cpu_clock_hz`/`cpu_clock_set` return a
+  u32 Hz whose 0 already means unknown / no-silicon-clock.
 - **MPU per domain, first-class** (see *Memory domains* below): the running thread's domain
   region set is reloaded on every switch-in (`arch_mpu_apply` stashes it; `kickos_arch_mpu_commit`
   programs the hardware after the physical swap). A thread touching a domain
@@ -409,6 +419,27 @@ no per-domain peripheral boundary. K64F peripheral drivers therefore either acce
 unaffected (SYSMPU still enforces it, 17/17). `ARCH_MPU_DEV` is meaningful only where the unit
 carries a memory-type field (ARM PMSA: device + XN); it is a silent no-op on PMP and RX (R/W/X only).
 
+**Rule 7 -- the grant path refuses kernel-reserved blocks.** Single-ownership of a peripheral is
+only real if the kernel can *refuse* a grant overlapping a block it owns for life (timebase, IRQ
+controller, MPU, clock/reset gates). The refusal is **mechanical and binds every granter,
+privileged ones included** -- it is not "trust the granter". `grant_region_admissible(base, size,
+attr, caller_privileged)` (`kernel/grant`) is the single-region policy: refuse size-0/wrap, refuse
+ANY reserved-block overlap, then for a **device** grant require privileged + exactly one MPU
+descriptor (no rounding) + not a bit-band alias, or for a **RAM** grant require natural
+power-of-two alignment AND confinement to the user arena **for every caller** (no privileged
+waiver). `domain_for` (`kernel/domain`) runs it at the **region-commit chokepoint** on the
+prospective committed geometry before it allocates a domain slot; the caller-owned-stack path in
+`thread_spawn` runs the same predicate on the stack region, and `thread_create` carries a backstop
+assert. Each enforcing chip declares its owns-for-life set via `arch_reserved_blocks` (`arch.h`) --
+there is **no weak default**, so an enforcing port that forgets one fails to *link* (affirmative
+fail-closed); the set is owns-for-life only (a neutralize-then-grant watchdog is excluded unless
+its tick feeds the timebase). On a **bit-band core** (`arch_bitband_present()` != 0) the overlap
+test also covers each reserved block's word-per-bit alias image, and a device grant reaching
+either alias window is refused. `grant_reserved_validate` asserts once at boot (`kmain`) that the
+arena + app extents are reserved-disjoint. Under no enforcement (`KICKOS_HAVE_MPU=0`) the whole
+module is inline no-op stubs, so the call sites pay zero flash. (Design + worked K64F PIT case:
+`../design-m4-driver-model.md` sec.7.)
+
 **Domains vs kernel instances (complementary, not competing).** The KickCAT whole-bus sim runs
 many slaves, and **each slave is its own MCU -> its own KickOS kernel instance**; several
 instances co-reside in one host process (invariant #7, instance-scoped state -- the KickCAT
@@ -455,6 +486,19 @@ sim = signal-driven injection). Userspace never *injects* -- reacting is `regist
 raw in-handler-mode callbacks are the privileged `irq_attach` (TCB, not defended). `irq_inject`
 is only the sim's fake-a-device-firing mechanism (test scaffolding, gated/privileged),
 never a userspace primitive.
+
+**Class-driver leaf (shared register logic across the trust boundary).** Where the kernel and a
+userspace driver run the same device register sequence, that logic is factored into a
+**freestanding class-driver leaf** (`kickos_class_<chip>`, e.g. `xmc4800/class/usic_class.h`)
+written to the kernel bar: POD state + free functions taking the instance context by **explicit
+base** (`op(uintptr_t base, ...)`, never an internal instance index), **no** constructor/
+destructor, **no** mutable static, no exceptions/STL -- so it links **unchanged from BOTH the
+privileged TCB and an unprivileged userspace driver**. RAII-owning handles and STL ergonomics live
+ONLY in the userspace service/inline wrapper above it; the class/service boundary IS the
+constructor-freedom boundary. This is orthogonal to Rule 7: sharing the register *code* is a
+link-time decision, refusing the resource *grant* is a runtime one -- the kernel-owned timer
+instance is never granted even though its register code is shared. (Design:
+`../design-m4-driver-model.md` sec.3-4, 6.)
 
 **Consistency payoff:** identical driver code in the **sim** (IRQ = injected event) and on
 **hardware** (real NVIC line). This is exactly the KickCAT path: the ESC SYNC0/PDI IRQ (real) or
@@ -553,10 +597,22 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
   (refs -> 0). Thread exit closes every held cap (`cap_teardown`, called from `exit_current`) so
   no thread leaks references. A teardown-close that would strand a parked waiter LEAKS (floors
   refs at 1), never strands -- unreachable today (every parked waiter pins its own cap).
+- **Well-known reserved cap indices (`user/include/kickos/sys/cap_index.h`, FROZEN).** Indices
+  `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..4)`) are reserved well-known slots: index 0 =
+  `KOS_CAP_STDOUT` (the send-only console endpoint), 1..3 held for a future clock/service cap.
+  An **own-create** (`sem`/`mutex`/`endpoint` create) scans placement from
+  `KICKOS_CAP_FIRST_DYNAMIC`, so it can **never alias a reserved slot**; a reserved slot is seated
+  ONLY by the kernel (`cap_install_defaults` seats stdout, and is the sole writer of index 0) or
+  by explicit spawn delegation (indices 1..3). Userspace only *names* a reserved slot by these
+  constants -- it never chooses the index. Frozen = never renumber; append by raising the last
+  reserved index and `KICKOS_CAP_FIRST_DYNAMIC` together, keeping the range small (each reserved
+  slot is one fewer dynamic slot, floored to >=1 by the `cap.h` static_assert).
 - **B1 wire contract (8 apps depend on it):** a fresh child table has cap-gen 0 in every slot, so
-  on a fresh table `handle == index`; delegation places delegated cap `i` at child index `i + 1`,
-  and index 0 is reserved (`cap_install_defaults` installs nothing today -- a plain app needs no
-  manifest). Delegation rides `kos_thread_params.caps` (each entry `(source_cap, rights_mask)`),
+  on a fresh table `handle == index`; delegation places delegated cap `i` at child index `i + 1`
+  (so delegated caps fill the reserved range 1..3), and `cap_install_defaults` seats the stdout
+  cap at index 0 only once the console is published (pre-publish it seats nothing -- a plain app
+  needs no manifest and falls back to `kconsole_write`). Delegation rides
+  `kos_thread_params.caps` (each entry `(source_cap, rights_mask)`),
   requires the source cap carry `CAP_TRANSFER`, and NARROWS rights subset-only (`child.rights =
   parent.rights & mask`; a mask adding a bit the parent lacks is rejected, never widened); the
   WHOLE list is validated before the child slot is claimed (no half-populated child, no dangling
@@ -569,11 +625,11 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
 - **Authenticated grant ownership** is the memory-side twin: a domain may grant/share only a
   region it owns. Same problem as handles, applied to RAM instead of objects; designed together.
 - **Low-barrier is a hard constraint.** A plain app never writes a capability manifest: the
-  runtime/root task wires the default cap set (`cap_install_defaults`), which installs NOTHING
-  today -- index 0 is reserved by convention for the future console cap, and `write`/`printf`
-  stays a direct syscall until console handover (#4) gives it a cap argument. Customization is
-  opt-in delegation. Do not resurrect CapDL-manifest-to-boot friction -- the exact seL4 pain
-  KickOS exists to avoid.
+  runtime/root task wires the default cap set (`cap_install_defaults`), which seats the stdout cap
+  at reserved index 0 once the console is published and nothing before -- `write`/`printf` stays a
+  direct syscall until console handover (#4) gives it a cap argument. Customization is opt-in
+  delegation. Do not resurrect CapDL-manifest-to-boot friction -- the exact seL4 pain KickOS
+  exists to avoid.
 
 **Synchronization surface -- one blocking primitive, not an object zoo.** The kernel exposes the
 minimum that genuinely needs scheduler involvement: a cap-named **blocking wait/wake** object (the

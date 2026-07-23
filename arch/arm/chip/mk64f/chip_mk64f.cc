@@ -16,6 +16,7 @@
 // RANGE0=2), not a crystal; PRDIV/VDIV encodings; and the FRDIV /1536 mapping.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 
 #include <kickos/sys/abi.h> // kos_pstate_t / KOS_PSTATE_* (clock-select)
@@ -223,15 +224,13 @@ namespace
 
     uint64_t clock_recip(uint32_t hz)
     {
-        return ((static_cast<uint64_t>(1000000000ull) << 32) + (hz >> 1)) / hz;
+        return kickos::arch_clk_recip_q32(hz);
     }
 
     uint64_t clock_ns_from(uint64_t ticks)
     {
         uint64_t delta = ticks - g_clk_base_ticks;
-        uint64_t a = delta >> 32, b = delta & 0xFFFFFFFFull;
-        uint64_t c = g_clk_mult >> 32, d = g_clk_mult & 0xFFFFFFFFull;
-        return g_clk_base_ns + ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+        return g_clk_base_ns + kickos::arch_clk_mul_q32(delta, g_clk_mult);
     }
 
     void clock_anchor_init()
@@ -646,6 +645,40 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
         return false;
     }
     return (base & 31u) == 0 and (size & 31u) == 0;
+}
+
+#if KICKOS_HAVE_MPU
+// Rule 7 reserved set (K64 RM). Owns-for-life: the PIT time base, the clock/reset
+// gate blocks, and the bus-side SYSMPU (granting it would be total escalation --
+// userspace could rewrite the isolation regions). The watchdog INSTANCE is excluded
+// (neutralize-then-grant). Bases are the constants above; sizes hand-typed per RM.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    static struct arch_reserved_block const blocks[] = {
+        {0x40037000u, 0x120u},  // PIT: MCR + ch0 + ch1 (RM ch.44). NOT ch2 @0x40037120 --
+                                //   k64drv legitimately grants CH2; the adjacency-allowed
+                                //   overlap predicate lets that grant sit at reserved_last+1.
+        {0x40048000u, 0x1000u}, // SIM: SCGC clock-gate registers (RM ch.12)
+        {0x40064000u, 0x1000u}, // MCG: PLL / clock source (RM ch.25)
+        {0x4000D000u, 0x1000u}, // SYSMPU: the bus-side MPU itself (RM ch.19)
+    };
+    size_t n = sizeof(blocks) / sizeof(blocks[0]);
+    if (n > max)
+    {
+        n = max;
+    }
+    for (size_t i = 0; i < n; i++)
+    {
+        out[i] = blocks[i];
+    }
+    return n;
+}
+#endif
+
+// K64F is a Cortex-M4 with the bit-band peripheral/SRAM alias.
+int arch_bitband_present(void)
+{
+    return 1;
 }
 
 // Chip fault-decode hook (arch.h): a SYSMPU protection error reaches the core as a

@@ -32,6 +32,8 @@
 
 #include <kickos/driver/xmcuart.h>
 
+#include <usic_class.h> // Rule 6 class-driver leaf: shared USIC transmit-ready read
+
 #include <stdint.h>
 
 namespace
@@ -48,14 +50,9 @@ namespace
     // channel U0C1 (0x4003_0200) and the SCU/IOCR peripherals are OUTSIDE it.
     constexpr uint32_t U0C0_WINDOW = 0x200u;
 
-    // Per-channel offsets (RM Table 18-20 "USIC Kernel-Related and Kernel Registers").
-    constexpr uintptr_t TCSR_OFFSET = 0x038u;  // Transmit Control/Status
+    // Per-channel offset (RM Table 18-20 "USIC Kernel-Related and Kernel Registers").
+    // The transmit-ready poll (TCSR.TDV) now lives in the shared class leaf.
     constexpr uintptr_t TBUF0_OFFSET = 0x080u; // Transmit Buffer input location 0
-
-    // TCSR.TDV (RM p.18-189): the transmit buffer still holds a word pending
-    // transfer -> NOT ready to accept the next byte. Same poll bit the kernel
-    // polled writer uses (usic.cc tx_ready: (TCSR & TDV) == 0).
-    constexpr uint32_t TCSR_TDV = 1u << 7;
 
     // Bounded so a mis-configured baud/enable never HANGS the driver thread on a
     // single byte (which would wedge every stdout client parked on send). Far
@@ -74,7 +71,7 @@ namespace
     {
         for (uint32_t i = 0; i < TX_POLL_TIMEOUT; i++)
         {
-            if ((r32(win + TCSR_OFFSET) & TCSR_TDV) == 0u)
+            if (kickos::xmc::classdrv::usic_tx_ready(win))
             {
                 r32(win + TBUF0_OFFSET) = v;
                 return true;

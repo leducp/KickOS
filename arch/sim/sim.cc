@@ -8,6 +8,7 @@
 // mirroring the ARM PendSV-on-exception-return model.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/console_tx.h>
 
 #include <ucontext.h>
@@ -849,7 +850,7 @@ uint64_t arch_clock_now(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull +
+    return static_cast<uint64_t>(ts.tv_sec) * kickos::KICKOS_NS_PER_SEC +
            static_cast<uint64_t>(ts.tv_nsec);
 }
 
@@ -875,8 +876,8 @@ void arch_timer_arm(uint64_t deadline_ns)
         return;
     }
     struct itimerspec its{};
-    its.it_value.tv_sec = static_cast<time_t>(deadline_ns / 1000000000ull);
-    its.it_value.tv_nsec = static_cast<long>(deadline_ns % 1000000000ull);
+    its.it_value.tv_sec = static_cast<time_t>(deadline_ns / kickos::KICKOS_NS_PER_SEC);
+    its.it_value.tv_nsec = static_cast<long>(deadline_ns % kickos::KICKOS_NS_PER_SEC);
     // it_interval left zero -> one-shot.
     timer_settime(sim().timer, TIMER_ABSTIME, &its, nullptr);
 }
@@ -926,6 +927,22 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     (void)base;
     (void)size;
     return false;
+}
+
+// Rule 7: the sim owns no MPU-governable peripheral (its "devices" are arena-backed
+// fakes reached via a data grant), so it reserves nothing. The grant path then never
+// refuses on a reserved-block hit here -- only the arena / encodability rules apply.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    (void)out;
+    (void)max;
+    return KICKOS_RESERVED_NONE;
+}
+
+// No Cortex-M bit-band on the host.
+int arch_bitband_present(void)
+{
+    return 0;
 }
 
 uintptr_t arch_ram_base(void)

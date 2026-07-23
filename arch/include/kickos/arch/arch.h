@@ -268,6 +268,31 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len);
 // domain owns). Used by the isolation self-test.
 uintptr_t arch_mpu_probe_addr(void);
 
+// --- Rule 7: kernel-reserved MMIO blocks (docs/design-m4-driver-model.md sec.7) --
+// The owns-for-life peripherals a grant must NEVER hand to userspace: the timebase
+// block, the IRQ controller, the (bus-side) MPU, and the clock/reset gate registers.
+// The grant path (kernel/grant) refuses any region overlapping one of these.
+struct arch_reserved_block
+{
+    uintptr_t base;
+    size_t size;
+};
+
+// Fill `out` (capacity `max`, the kernel passes KICKOS_MAX_RESERVED) with this
+// chip's reserved blocks and return the count. KICKOS_RESERVED_NONE (0) is legal
+// (the sim owns nothing MPU-governable). NO weak default on purpose: an enforcing
+// port that forgets to declare its set is a LINK error, not a silent open hole
+// (affirmative fail-closed). Defined per enforcing chip under #if KICKOS_HAVE_MPU.
+#define KICKOS_RESERVED_NONE 0u
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max);
+
+// Nonzero on a core with the Cortex-M bit-band peripheral/SRAM alias (M3/M4): a
+// reserved peripheral block is then ALSO reachable through its word-per-bit alias
+// image, and a device grant touching either alias window is refused (kernel/grant).
+// WEAK 0 default (no alias -- M0+/M7/RISC-V/RX); the bit-band M4 chips
+// (mk64f, stm32f411, xmc4800) strong-override to 1.
+int arch_bitband_present(void);
+
 // --- Syscall trap (user -> kernel) -----------------------------------------
 // Issued by the userspace syscall stubs; returns the syscall result.
 //

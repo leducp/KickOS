@@ -19,6 +19,11 @@
 
 namespace kickos
 {
+    // record.h is a lower, dependency-free layer and cannot see thread.h, so the
+    // "no thread" sentinel is spelled twice; keep them in lockstep here.
+    static_assert(trace::TRACE_NO_THREAD == KICKOS_TID_NONE,
+                  "trace::TRACE_NO_THREAD must equal KICKOS_TID_NONE");
+
     void ktrace_init(void)
     {
         IrqLock lock;

@@ -18,6 +18,7 @@
 // LED (PC13, active-low) for a no-UART smoke test.
 
 #include <kickos/arch/arch.h>
+#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 
 #include <stdint.h>
@@ -362,13 +363,11 @@ uint64_t arch_clock_now(void)
         {
             return 0;
         }
-        mult = ((1000000000ull << 32) + (tim_hz >> 1)) / tim_hz;
+        mult = kickos::arch_clk_recip_q32(tim_hz);
         cached_hz = tim_hz;
     }
     uint64_t ticks = timer_ticks();
-    uint64_t a = ticks >> 32, b = ticks & 0xFFFFFFFFull;
-    uint64_t c = mult >> 32, d = mult & 0xFFFFFFFFull;
-    return ((a * c) << 32) + a * d + b * c + ((b * d) >> 32);
+    return kickos::arch_clk_mul_q32(ticks, mult);
 }
 
 // TIM3 (high-half) overflow ISR, vectored at NVIC 29 in startup.S. Observes the
