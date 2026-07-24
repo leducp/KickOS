@@ -2,7 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 
 cmake_minimum_required(VERSION 3.24)
-project(KickOS VERSION 0.0.1 LANGUAGES C CXX ASM)
+# Version scheme: 0.<milestone>.<submilestone> (drives KICKOS_VERSION -> the boot banner).
+project(KickOS VERSION 0.4.3 LANGUAGES C CXX ASM)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
