@@ -17,6 +17,12 @@
 //
 // Build-only here; flash via the on-board debugger.
 
+#include "mmap.h"
+#include "regs/ccu4.h"
+#include "regs/flash.h"
+#include "regs/port.h"
+#include "regs/scu.h"
+
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
@@ -24,6 +30,12 @@
 #include <kickos/sys/abi.h> // kos_pstate_t / KOS_PSTATE_* (clock-select)
 
 #include <stdint.h>
+
+namespace mmap = kickos::xmc::mmap;
+namespace scu = kickos::xmc::reg::scu;
+namespace ccu4 = kickos::xmc::reg::ccu4;
+namespace flash = kickos::xmc::reg::flash;
+namespace rp = kickos::xmc::reg::port;
 
 namespace kickos
 {
@@ -47,7 +59,6 @@ namespace
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
     constexpr uintptr_t SCB_VTOR = 0xE000ED08;
-    constexpr uintptr_t FLASH_BASE = 0x08000000; // cached flash alias (link base)
 
     void enable_fpu()
     {
@@ -62,77 +73,13 @@ namespace
     // K2DIV and the staged K2DIV ramp -- is the RM's crystal-PLL bring-up for
     // this part; register addresses/fields are the RM's SCU/FLASH/memory-map values.
 
-    // SCU sub-unit registers (RM SCU chapter, bases: TRAP 0x50004160, CLK 0x50004600,
-    // OSC 0x50004700, PLL 0x50004710).
-    constexpr uintptr_t SCU_TRAPDIS = 0x50004168;   // TRAP + 0x08
-    constexpr uintptr_t SCU_TRAPCLR = 0x5000416C;   // TRAP + 0x0C
-    constexpr uintptr_t SCU_SYSCLKCR = 0x5000460C;  // CLK  + 0x0C
-    constexpr uintptr_t SCU_CPUCLKCR = 0x50004610;  // CLK  + 0x10
-    constexpr uintptr_t SCU_PBCLKCR = 0x50004614;   // CLK  + 0x14
-    constexpr uintptr_t SCU_SLEEPCR = 0x50004630;   // CLK  + 0x30
-    constexpr uintptr_t SCU_OSCHPCTRL = 0x50004704; // OSC  + 0x04
-    constexpr uintptr_t SCU_PLLSTAT = 0x50004710;   // PLL  + 0x00
-    constexpr uintptr_t SCU_PLLCON0 = 0x50004714;   // PLL  + 0x04
-    constexpr uintptr_t SCU_PLLCON1 = 0x50004718;   // PLL  + 0x08
-    constexpr uintptr_t SCU_PLLCON2 = 0x5000471C;   // PLL  + 0x0C
-    // FLASH FCON (PMU/FLASH0 0x58001000 + 0x1014 = 0x58002014; RM flash chapter).
-    constexpr uintptr_t FLASH_FCON = 0x58002014;
-
-    // TRAP bits (RM): OSC watchdog, system/USB VCO-lock traps.
-    constexpr uint32_t TRAP_SOSCWDGT = 1u << 0;
-    constexpr uint32_t TRAP_SVCOLCKT = 1u << 2;
-    constexpr uint32_t TRAP_UVCOLCKT = 1u << 3;
-
-    // OSCHPCTRL (RM): MODE[5:4]=0 -> external crystal; OSCVAL[19:16].
-    constexpr uint32_t OSCHPCTRL_MODE_MASK = 3u << 4;
-    constexpr uint32_t OSCHPCTRL_OSCVAL_MASK = 15u << 16;
-    // OSCVAL = XTAL/FOSCREF - 1 = 12e6/2.5e6 - 1 = 3.
-    constexpr uint32_t OSCHPCTRL_OSCVAL = 3u << 16;
-
-    // PLLSTAT (RM): crystal usable = PLLHV|PLLLV|PLLSP.
-    constexpr uint32_t PLLSTAT_VCOBYST = 1u << 0;
-    constexpr uint32_t PLLSTAT_VCOLOCK = 1u << 2;
-    constexpr uint32_t PLLSTAT_OSC_USABLE = (1u << 7) | (1u << 8) | (1u << 9);
-
-    // PLLCON0 (RM).
-    constexpr uint32_t PLLCON0_VCOBYP = 1u << 0;
-    constexpr uint32_t PLLCON0_VCOPWD = 1u << 1;
-    constexpr uint32_t PLLCON0_FINDIS = 1u << 4;
-    constexpr uint32_t PLLCON0_OSCDISCDIS = 1u << 6;
-    constexpr uint32_t PLLCON0_PLLPWD = 1u << 16;
-    constexpr uint32_t PLLCON0_OSCRES = 1u << 17;
-    constexpr uint32_t PLLCON0_RESLD = 1u << 18;
-
-    // PLLCON2.PINSEL=0 selects OSC_HP (crystal) as the PLL input (RM).
-    constexpr uint32_t PLLCON2_PINSEL = 1u << 0;
-
-    // SYSCLKCR.SYSSEL(16)=1 -> fSYS from fPLL; SYSDIV[7:0]=0 -> /1 (RM).
-    constexpr uint32_t SYSCLKCR_SYSSEL_PLL = 1u << 16;
-    // PBCLKCR.PBDIV(0)=1 -> fPERIPH = fCPU/2 (RM).
-    constexpr uint32_t PBCLKCR_PBDIV_DIV2 = 1u << 0;
-    // SLEEPCR.SYSSEL(0): 0 = fOFI as system clock in SLEEP, 1 = fPLL (RM p.11-169).
-    // The reset value is 0, so a WFI would drop fSYS to fOFI and rescale the USIC
-    // baud mid-shift -- selecting fPLL here keeps peripherals at speed while asleep.
-    constexpr uint32_t SLEEPCR_SYSSEL_PLL = 1u << 0;
-
-    // FCON.WSPFLASH[3:0] is the flash read wait-state count in fCPU cycles (RM
-    // 8.4.4 formula 8.1: WSPFLASH x (1/fCPU) >= ta; fields 0 and 1 both mean one
-    // cycle). At 144 MHz field 4 gives a 27.8 ns access window, covering the data
-    // sheet ta (~22 ns) -- the same value Infineon's XMCLib ships for its 144 MHz
-    // profile, so this is UNCHANGED from the 120 MHz profile.
-    constexpr uint32_t FCON_WSPFLASH_MASK = 15u << 0;
-    constexpr uint32_t FCON_WSPFLASH_4CYC = 4u << 0;
-
     // 144 MHz profile: fVCO = 12 MHz * NDIV/PDIV = 12*24/1 = 288 MHz;
-    // fPLL = fVCO/K2DIV = 288/2 = 144 MHz. fVCO=288 is the VCO frequency Infineon's
-    // XMCLib uses for this part's 144 MHz profile. PLLCON1 fields NDIV[14:8],
-    // K2DIV[22:16], PDIV[27:24], each written as (value-1) (RM PLLCON1 fields).
-    constexpr uint32_t PLL_NDIV = 24;
-    constexpr uint32_t PLL_PDIV = 1;
-
+    // fPLL = fVCO/K2DIV = 288/2 = 144 MHz. Each PLLCON1 field is written as (value-1).
     uint32_t pllcon1_value(uint32_t k2div)
     {
-        return ((PLL_NDIV - 1u) << 8) | ((k2div - 1u) << 16) | ((PLL_PDIV - 1u) << 24);
+        return ((scu::PLL_NDIV - 1u) << scu::PLLCON1_NDIV_SHIFT)
+             | ((k2div - 1u) << scu::PLLCON1_K2DIV_SHIFT)
+             | ((scu::PLL_PDIV - 1u) << scu::PLLCON1_PDIV_SHIFT);
     }
 
     // Bounded like the rp2040 wait_mask / the USIC TX poll: a missing crystal
@@ -180,77 +127,49 @@ namespace
     // and the slices never counted: CCU40 also comes out of SCU reset both CLOCK-GATED
     // (CGATCLR0) and held in PERIPHERAL RESET (PRCLR0), and needs the module prescaler
     // run bit (GIDLC.SPRB) -- all three are required before any slice advances.
-    constexpr uintptr_t SCU_CLKSET = 0x50004604;   // CLK + 0x04
-    constexpr uintptr_t SCU_CCUCLKCR = 0x50004620; // CLK + 0x20
-    constexpr uintptr_t SCU_CGATCLR0 = 0x50004648; // CLK + 0x48 (peripheral clock gating clear)
-    constexpr uintptr_t SCU_PRCLR0 = 0x50004414;   // RCU + 0x14 (peripheral reset clear)
-    constexpr uint32_t CLKSET_CCUCEN = 1u << 4;    // enable fCCU generation
-    constexpr uint32_t CCUCLKCR_CCUDIV = 1u << 0;  // 0 -> fCCU = fSYS
-    constexpr uint32_t CGAT_CCU40 = 1u << 2;       // CCU40 clock-gate bit
-    constexpr uint32_t PR_CCU40 = 1u << 2;         // CCU40 reset bit
-
-    constexpr uintptr_t CCU40_BASE = 0x4000C000;
-    constexpr uintptr_t CCU40_GIDLC = CCU40_BASE + 0x00C; // global idle clear
-    constexpr uintptr_t CCU40_GCSS = CCU40_BASE + 0x010;  // global channel set (shadow transfer)
-    constexpr uintptr_t CCU4_SLICE0 = CCU40_BASE + 0x100; // CC40; slices are 0x100 apart
-    constexpr uintptr_t CCU4_SLICE_STRIDE = 0x100;
-    constexpr uintptr_t CC4_CMC = 0x004;   // TCE @bit20 (concatenation enable)
-    constexpr uintptr_t CC4_TCSET = 0x00C; // TRBS @bit0
-    constexpr uintptr_t CC4_TC = 0x014;    // counting mode (0 = edge-aligned up-count)
-    constexpr uintptr_t CC4_PSC = 0x024;   // prescaler (0 = fCCU/1)
-    constexpr uintptr_t CC4_PRS = 0x034;   // shadow period
-    constexpr uintptr_t CC4_TIMER = 0x070; // current 16-bit slice value
-    constexpr uint32_t GIDLC_SPRB = 1u << 8;    // start the module prescaler
-    constexpr uint32_t GIDLC_CLEAR_ALL = 0xFu;  // CS0I..CS3I: clear idle, slices 0-3
-    constexpr uint32_t GCSS_SHADOW_ALL =        // S0SE|S1SE|S2SE|S3SE
-        (1u << 0) | (1u << 4) | (1u << 8) | (1u << 12);
-    constexpr uint32_t CMC_TCE = 1u << 20;    // count the previous slice's overflow
-    constexpr uint32_t TCSET_TRBS = 1u << 0;  // set the slice run bit
-    constexpr uint32_t CC4_PERIOD_MAX = 0xFFFFu;
     // SLEEPCR.CCUCR (RM SCU): keep fCCU running while the core is in SLEEP. The idle
     // path is a plain WFI (SLEEP, not DEEPSLEEP), and by default the CCU clock gates
     // off in SLEEP -- which freezes this counter on every tickless idle, so a sleep
     // deadline is only ever approached during the brief wake windows and a 40 ms sleep
     // stretches into tens of seconds. (A future DEEPSLEEP user must set DSLEEPCR too.)
-    constexpr uint32_t SLEEPCR_CCUCR = 1u << 20;
 
     inline volatile uint32_t& cc4(unsigned slice, uintptr_t reg)
     {
-        return r32(CCU4_SLICE0 + slice * CCU4_SLICE_STRIDE + reg);
+        return r32(ccu4::slice(slice, reg));
     }
 
     void ccu4_clock_init()
     {
         // Boot-order constraint: arch_clock_now MUST NOT run before this -- CCU40 is
         // clock-gated + in reset out of SCU reset, so a TIMER read would BusFault.
-        r32(SCU_CLKSET) = CLKSET_CCUCEN;        // fCCU on (fSYS-derived)
-        r32(SCU_CCUCLKCR) &= ~CCUCLKCR_CCUDIV;  // CCUDIV=0 -> fCCU = fSYS = SystemCoreClock
-        r32(SCU_CGATCLR0) = CGAT_CCU40;         // ungate the CCU40 module clock
-        r32(SCU_PRCLR0) = PR_CCU40;             // release the CCU40 peripheral reset
-        r32(SCU_SLEEPCR) |= SLEEPCR_CCUCR;      // keep fCCU alive through WFI idle
+        r32(scu::CLKSET) = scu::CLKSET_CCUCEN;          // fCCU on (fSYS-derived)
+        r32(scu::CCUCLKCR) &= ~scu::CCUCLKCR_CCUDIV;    // CCUDIV=0 -> fCCU = fSYS = SystemCoreClock
+        r32(scu::CGATCLR0) = scu::CCU40_GATE_BIT;       // ungate the CCU40 module clock
+        r32(scu::PRCLR0) = scu::CCU40_RESET_BIT;        // release the CCU40 peripheral reset
+        r32(scu::SLEEPCR) |= scu::SLEEPCR_CCUCR;        // keep fCCU alive through WFI idle
 
         // Clear idle for all four slices AND start the module prescaler in one write;
         // without SPRB the slice clock never runs and every TIMER stays 0.
-        r32(CCU40_GIDLC) = GIDLC_SPRB | GIDLC_CLEAR_ALL;
+        r32(ccu4::GIDLC) = ccu4::GIDLC_SPRB | ccu4::GIDLC_CLEAR_ALL;
 
         for (unsigned s = 0; s < 4; s++)
         {
-            cc4(s, CC4_TC) = 0;               // edge-aligned up-count, no external events
-            cc4(s, CC4_PSC) = 0;              // CC40 = fCCU/1; the linked slices ignore PSC
-            cc4(s, CC4_PRS) = CC4_PERIOD_MAX; // wrap at 0xFFFF so each slice carries the next
+            cc4(s, ccu4::slice_off::TC) = 0;                    // edge-aligned up-count, no external events
+            cc4(s, ccu4::slice_off::PSC) = 0;                  // CC40 = fCCU/1; the linked slices ignore PSC
+            cc4(s, ccu4::slice_off::PRS) = ccu4::PERIOD_MAX;   // wrap at 0xFFFF so each slice carries the next
         }
         // Concatenate: CC41/CC42/CC43 count the overflow of the slice below; CC40 (the
         // 16 LSBs) must keep TCE=0 and counts fCCU directly (RM 23.2.9).
-        cc4(0, CC4_CMC) = 0;
-        cc4(1, CC4_CMC) = CMC_TCE;
-        cc4(2, CC4_CMC) = CMC_TCE;
-        cc4(3, CC4_CMC) = CMC_TCE;
+        cc4(0, ccu4::slice_off::CMC) = 0;
+        cc4(1, ccu4::slice_off::CMC) = ccu4::CMC_TCE;
+        cc4(2, ccu4::slice_off::CMC) = ccu4::CMC_TCE;
+        cc4(3, ccu4::slice_off::CMC) = ccu4::CMC_TCE;
 
-        r32(CCU40_GCSS) = GCSS_SHADOW_ALL; // transfer PRS -> PR for every slice
+        r32(ccu4::GCSS) = ccu4::GCSS_SHADOW_ALL; // transfer PRS -> PR for every slice
 
         for (unsigned s = 0; s < 4; s++)
         {
-            cc4(s, CC4_TCSET) = TCSET_TRBS; // set every slice run bit
+            cc4(s, ccu4::slice_off::TCSET) = ccu4::TCSET_TRBS; // set every slice run bit
         }
     }
 
@@ -268,13 +187,13 @@ namespace
         uint32_t lo;
         do
         {
-            s3 = cc4(3, CC4_TIMER) & 0xFFFFu;
-            s2 = cc4(2, CC4_TIMER) & 0xFFFFu;
-            s1 = cc4(1, CC4_TIMER) & 0xFFFFu;
-            lo = cc4(0, CC4_TIMER) & 0xFFFFu;
-        } while ((cc4(1, CC4_TIMER) & 0xFFFFu) != s1
-                 or (cc4(2, CC4_TIMER) & 0xFFFFu) != s2
-                 or (cc4(3, CC4_TIMER) & 0xFFFFu) != s3);
+            s3 = cc4(3, ccu4::slice_off::TIMER) & 0xFFFFu;
+            s2 = cc4(2, ccu4::slice_off::TIMER) & 0xFFFFu;
+            s1 = cc4(1, ccu4::slice_off::TIMER) & 0xFFFFu;
+            lo = cc4(0, ccu4::slice_off::TIMER) & 0xFFFFu;
+        } while ((cc4(1, ccu4::slice_off::TIMER) & 0xFFFFu) != s1
+                 or (cc4(2, ccu4::slice_off::TIMER) & 0xFFFFu) != s2
+                 or (cc4(3, ccu4::slice_off::TIMER) & 0xFFFFu) != s3);
         return (static_cast<uint64_t>(s3) << 48)
                | (static_cast<uint64_t>(s2) << 32)
                | (static_cast<uint64_t>(s1) << 16)
@@ -334,10 +253,10 @@ namespace
     // not merely wrong timing (RM 8.4.4). So widen WS before a rise, relax after a fall.
     void set_flash_ws(uint32_t ws)
     {
-        uint32_t fcon = r32(FLASH_FCON);
-        fcon &= ~FCON_WSPFLASH_MASK;
-        fcon |= (ws << 0) & FCON_WSPFLASH_MASK;
-        r32(FLASH_FCON) = fcon;
+        uint32_t fcon = r32(flash::FCON);
+        fcon &= ~flash::FCON_WSPFLASH_MASK;
+        fcon |= (ws << 0) & flash::FCON_WSPFLASH_MASK;
+        r32(flash::FCON) = fcon;
     }
 
     // Walk K2DIV one step at a time from `from` to `to` (fPLL = fVCO/K2DIV = 288/K2DIV),
@@ -351,13 +270,13 @@ namespace
         while (k > to_k2)
         {
             k--;
-            r32(SCU_PLLCON1) = pllcon1_value(k);
+            r32(scu::PLLCON1) = pllcon1_value(k);
             clock_delay();
         }
         while (k < to_k2)
         {
             k++;
-            r32(SCU_PLLCON1) = pllcon1_value(k);
+            r32(scu::PLLCON1) = pllcon1_value(k);
             clock_delay();
         }
     }
@@ -367,76 +286,76 @@ namespace
         // Flash read wait-states MUST be raised to the 120 MHz value BEFORE the
         // CPU clock is scaled up, else instruction fetches from flash fault (RM
         // flash chapter: widen the access window before increasing fCPU).
-        uint32_t fcon = r32(FLASH_FCON);
-        fcon &= ~FCON_WSPFLASH_MASK;
-        fcon |= FCON_WSPFLASH_4CYC;
-        r32(FLASH_FCON) = fcon;
+        uint32_t fcon = r32(flash::FCON);
+        fcon &= ~flash::FCON_WSPFLASH_MASK;
+        fcon |= flash::FCON_WSPFLASH_4CYC;
+        r32(flash::FCON) = fcon;
 
         // Disable + clear the OSC/VCO-lock traps so bring-up transients don't trap.
-        uint32_t traps = TRAP_SOSCWDGT | TRAP_SVCOLCKT | TRAP_UVCOLCKT;
-        r32(SCU_TRAPDIS) |= traps;
-        r32(SCU_TRAPCLR) = traps;
+        uint32_t traps = scu::TRAP_SOSCWDGT | scu::TRAP_SVCOLCKT | scu::TRAP_UVCOLCKT;
+        r32(scu::TRAPDIS) |= traps;
+        r32(scu::TRAPCLR) = traps;
 
         // Power up the PLL (clear VCO + PLL power-down).
-        r32(SCU_PLLCON0) &= ~(PLLCON0_VCOPWD | PLLCON0_PLLPWD);
+        r32(scu::PLLCON0) &= ~(scu::PLLCON0_VCOPWD | scu::PLLCON0_PLLPWD);
 
         // Enable OSC_HP on the 12 MHz crystal unless it is already in XTAL mode.
-        if ((r32(SCU_OSCHPCTRL) & OSCHPCTRL_MODE_MASK) != 0)
+        if ((r32(scu::OSCHPCTRL) & scu::OSCHPCTRL_MODE_MASK) != 0)
         {
-            uint32_t osc = r32(SCU_OSCHPCTRL);
-            osc &= ~(OSCHPCTRL_MODE_MASK | OSCHPCTRL_OSCVAL_MASK);
-            osc |= OSCHPCTRL_OSCVAL; // MODE=0 external crystal + OSCVAL=3
-            r32(SCU_OSCHPCTRL) = osc;
+            uint32_t osc = r32(scu::OSCHPCTRL);
+            osc &= ~(scu::OSCHPCTRL_MODE_MASK | scu::OSCHPCTRL_OSCVAL_MASK);
+            osc |= scu::OSCHPCTRL_OSCVAL; // MODE=0 external crystal + OSCVAL=3
+            r32(scu::OSCHPCTRL) = osc;
 
-            r32(SCU_PLLCON2) &= ~PLLCON2_PINSEL; // PLL input <- OSC_HP
-            r32(SCU_PLLCON0) &= ~PLLCON0_OSCRES; // restart OSC watchdog
+            r32(scu::PLLCON2) &= ~scu::PLLCON2_PINSEL; // PLL input <- OSC_HP
+            r32(scu::PLLCON0) &= ~scu::PLLCON0_OSCRES; // restart OSC watchdog
 
-            if (not clock_wait_set(SCU_PLLSTAT, PLLSTAT_OSC_USABLE))
+            if (not clock_wait_set(scu::PLLSTAT, scu::PLLSTAT_OSC_USABLE))
             {
                 SystemCoreClock = 24000000u; // no usable crystal -> CPU stays on fOFI
                 return;                       // SysTick tracks it; USIC baud will be off
             }
-            r32(SCU_TRAPDIS) &= ~TRAP_SOSCWDGT;
+            r32(scu::TRAPDIS) &= ~scu::TRAP_SOSCWDGT;
         }
 
         // Bypass + disconnect the VCO, program the dividers, reconnect, relock.
         // Lock first at a low K2DIV (~24 MHz), then ramp down to 144 MHz below.
-        r32(SCU_PLLCON0) |= PLLCON0_VCOBYP;
-        r32(SCU_PLLCON0) |= PLLCON0_FINDIS;
-        r32(SCU_PLLCON1) = pllcon1_value(12); // 288/12 = 24 MHz
-        r32(SCU_PLLCON0) |= PLLCON0_OSCDISCDIS;
-        r32(SCU_PLLCON0) &= ~PLLCON0_FINDIS;
-        r32(SCU_PLLCON0) |= PLLCON0_RESLD;
+        r32(scu::PLLCON0) |= scu::PLLCON0_VCOBYP;
+        r32(scu::PLLCON0) |= scu::PLLCON0_FINDIS;
+        r32(scu::PLLCON1) = pllcon1_value(12); // 288/12 = 24 MHz
+        r32(scu::PLLCON0) |= scu::PLLCON0_OSCDISCDIS;
+        r32(scu::PLLCON0) &= ~scu::PLLCON0_FINDIS;
+        r32(scu::PLLCON0) |= scu::PLLCON0_RESLD;
 
-        if (not clock_wait_set(SCU_PLLSTAT, PLLSTAT_VCOLOCK))
+        if (not clock_wait_set(scu::PLLSTAT, scu::PLLSTAT_VCOLOCK))
         {
             SystemCoreClock = 24000000u; // PLL never locked -> CPU stays on fOFI
             return;                      // SysTick tracks it; USIC baud will be off
         }
 
         // Leave bypass: fPLL drives the tree; wait for normal (non-bypass) mode.
-        r32(SCU_PLLCON0) &= ~PLLCON0_VCOBYP;
-        clock_wait_clear(SCU_PLLSTAT, PLLSTAT_VCOBYST);
+        r32(scu::PLLCON0) &= ~scu::PLLCON0_VCOBYP;
+        clock_wait_clear(scu::PLLSTAT, scu::PLLSTAT_VCOBYST);
         // Re-arm the trap for the PLL we just locked (system VCO), not the USB VCO
         // (never powered here); SOSCWDGT was already re-armed above.
-        r32(SCU_TRAPDIS) &= ~TRAP_SVCOLCKT;
+        r32(scu::TRAPDIS) &= ~scu::TRAP_SVCOLCKT;
 
         // Clock dividers: fSYS = fPLL/1, fCPU = fSYS/1, fPERIPH = fCPU/2 = 72 MHz.
-        r32(SCU_SYSCLKCR) = SYSCLKCR_SYSSEL_PLL; // fPLL selected, SYSDIV /1
-        r32(SCU_CPUCLKCR) = 0;                   // CPUDIV disabled -> fCPU = fSYS
-        r32(SCU_PBCLKCR) = PBCLKCR_PBDIV_DIV2;   // fPERIPH = fCPU/2
+        r32(scu::SYSCLKCR) = scu::SYSCLKCR_SYSSEL_PLL; // fPLL selected, SYSDIV /1
+        r32(scu::CPUCLKCR) = 0;                        // CPUDIV disabled -> fCPU = fSYS
+        r32(scu::PBCLKCR) = scu::PBCLKCR_PBDIV_DIV2;   // fPERIPH = fCPU/2
 
         // Ramp K2DIV down to the final 144 MHz in steps to avoid a VDDC droop on
         // a large jump (K2DIV = fVCO/target).
-        r32(SCU_PLLCON0) &= ~PLLCON0_OSCDISCDIS;
-        r32(SCU_PLLCON1) = pllcon1_value(6); clock_delay(); // 288/6 = 48 MHz
-        r32(SCU_PLLCON1) = pllcon1_value(4); clock_delay(); // 288/4 = 72 MHz
-        r32(SCU_PLLCON1) = pllcon1_value(3); clock_delay(); // 288/3 = 96 MHz
-        r32(SCU_PLLCON1) = pllcon1_value(2); clock_delay(); // 288/2 = 144 MHz
+        r32(scu::PLLCON0) &= ~scu::PLLCON0_OSCDISCDIS;
+        r32(scu::PLLCON1) = pllcon1_value(6); clock_delay(); // 288/6 = 48 MHz
+        r32(scu::PLLCON1) = pllcon1_value(4); clock_delay(); // 288/4 = 72 MHz
+        r32(scu::PLLCON1) = pllcon1_value(3); clock_delay(); // 288/3 = 96 MHz
+        r32(scu::PLLCON1) = pllcon1_value(2); clock_delay(); // 288/2 = 144 MHz
 
         // Keep the system clock on fPLL through SLEEP so a post-print WFI does not
-        // rescale the USIC baud mid-shift (see SLEEPCR_SYSSEL_PLL).
-        r32(SCU_SLEEPCR) |= SLEEPCR_SYSSEL_PLL;
+        // rescale the USIC baud mid-shift (see scu::SLEEPCR_SYSSEL_PLL).
+        r32(scu::SLEEPCR) |= scu::SLEEPCR_SYSSEL_PLL;
     }
 }
 
@@ -537,6 +456,31 @@ uint32_t arch_cpu_clock_set(uint32_t target)
     return want_hz;
 }
 
+// Branch-clock oracle (arch.h): report the branch clock feeding a peripheral block
+// so a userspace driver derives its own divisor. On the XMC4800 every USIC runs at
+// fPERIPH = fCPU/2 (SCU PBCLKCR.PBDIV=1), so the invariant is SystemCoreClock/2
+// computed from the LIVE clock (a clock-select retune is auto-reflected, not a baked
+// snapshot). Match the three USIC module ranges (each is two 0x200 channels: USIC0
+// @0x40030000, USIC1 @0x48020000, USIC2 @0x48024000); any other block is unknown
+// here and returns 0 so the driver keeps its explicit fallback.
+uint32_t arch_periph_clock_hz(uintptr_t base)
+{
+    bool in_usic = base >= mmap::USIC0_CH0_BASE and base < mmap::USIC0_CH0_BASE + mmap::USIC_MODULE_SPAN;
+    if (base >= mmap::USIC1_CH0_BASE and base < mmap::USIC1_CH0_BASE + mmap::USIC_MODULE_SPAN)
+    {
+        in_usic = true;
+    }
+    if (base >= mmap::USIC2_CH0_BASE and base < mmap::USIC2_CH0_BASE + mmap::USIC_MODULE_SPAN)
+    {
+        in_usic = true;
+    }
+    if (in_usic)
+    {
+        return SystemCoreClock / 2u; // fPERIPH = fCPU/2 (PBCLKCR.PBDIV=1)
+    }
+    return 0;
+}
+
 // Native transport = USIC0 ASC on P1.5/P1.4 (the Relax Kit VCOM -> ttyACM0). RTT
 // (if KICKOS_CONSOLE=both) is teed by the kernel console core, not here.
 //   arch_console_write      -- buffered (console ring drains via the TB interrupt).
@@ -557,21 +501,50 @@ void arch_console_write_sync(char const* buf, size_t n)
 // PR9 (bit 9+16) drives low.
 void arch_diag_led_init(void)
 {
-    constexpr uintptr_t P5_IOCR8 = 0x48028500 + 0x18;
-    r32(P5_IOCR8) = 0x10u << 11; // PC9 = 0b10000 (output push-pull), bits [15:11]
+    uintptr_t const P5_IOCR8 = rp::base(5) + rp::iocr_off(9);
+    r32(P5_IOCR8) = rp::PC_OUTPUT_PP_GP << rp::pc_shift(9); // PC9 output push-pull
 }
 
 void arch_diag_led_set(int on)
 {
-    constexpr uintptr_t P5_OMR = 0x48028500 + 0x04;
+    uintptr_t const P5_OMR = rp::base(5) + rp::off::OMR;
     if (on)
     {
         r32(P5_OMR) = 1u << 9;
     }
     else
     {
-        r32(P5_OMR) = 1u << (9 + 16);
+        r32(P5_OMR) = 1u << (9 + rp::OMR_RESET_SHIFT);
     }
+}
+
+// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console
+// or steal the diag LED. P1.4/P1.5 = console RX/TX; P5.9 = diag LED.
+static bool xmc_pin_kernel_owned(uint32_t port, uint32_t pin)
+{
+    return (port == 1u and (pin == 4u or pin == 5u)) or (port == 5u and pin == 9u);
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). IOCR address + PC-field encoding
+// come from regs/port.h (shared with the console pin setup). func = the raw 5-bit PC
+// code (0x10 = output push-pull general-purpose; 0x12 = PP alt-func-2, the console TX).
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port > 15u or pin > 15u or func > rp::PC_FIELD_MASK)
+    {
+        return -KOS_EINVAL;
+    }
+    if (xmc_pin_kernel_owned(port, pin))
+    {
+        return -KOS_EBUSY;
+    }
+    uintptr_t const iocr = rp::base(port) + rp::iocr_off(pin);
+    uint32_t const shift = rp::pc_shift(pin);
+    uint32_t v = r32(iocr);
+    v &= ~(rp::PC_FIELD_MASK << shift);
+    v |= (func & rp::PC_FIELD_MASK) << shift;
+    r32(iocr) = v;
+    return 0;
 }
 
 void arch_shutdown(int status)
@@ -592,8 +565,8 @@ void arch_shutdown(int status)
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {
-        {0x4000C000u, 0x1000u}, // CCU40: timebase slice + global control (RM ch.23)
-        {0x50004000u, 0x1000u}, // SCU: CGATSET clock gates / PRSET resets / PLL (RM SCU ch.)
+        {mmap::CCU40_BASE, 0x1000u}, // CCU40: timebase slice + global control (RM ch.23)
+        {mmap::SCU_BASE, 0x1000u},   // SCU: CGATSET clock gates / PRSET resets / PLL (RM SCU ch.)
     };
     size_t n = sizeof(blocks) / sizeof(blocks[0]);
     if (n > max)
@@ -617,7 +590,7 @@ int arch_bitband_present(void)
 void Reset_Handler(void)
 {
     enable_fpu();
-    r32(SCB_VTOR) = FLASH_BASE; // vectors live at the cached flash alias
+    r32(SCB_VTOR) = mmap::FLASH_CACHED_BASE; // vectors live at the cached flash alias
 
     kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)

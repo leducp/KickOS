@@ -3,6 +3,8 @@
 
 #include "uart_class.h"
 
+#include "../regs/uart.h"
+
 namespace kickos
 {
 namespace mk64f
@@ -14,8 +16,8 @@ namespace driver
         // BYTE read (RM 52.3: the UART register file is byte-wide). A wider load here
         // would read S2/C3/D too, and touching D pops a received byte.
         volatile uint8_t const& s1 =
-            *reinterpret_cast<volatile uint8_t*>(base + UART_S1_OFFSET);
-        if ((s1 & UART_S1_TDRE) != 0)
+            *reinterpret_cast<volatile uint8_t*>(base + reg::uart::S1_OFFSET);
+        if ((s1 & reg::uart::S1_TDRE) != 0)
         {
             return true;
         }

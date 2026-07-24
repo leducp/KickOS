@@ -9,9 +9,9 @@
 // unchanged into BOTH the kernel (Phase A timebase, deferred) and an unprivileged
 // userspace GPIO driver. One shared read-only copy, so no writable state.
 //
-// The C6 chip layer keeps its register map inline (no shared chip header), so this
-// leaf owns the one register it reads -- GPIO_OUT_REG (TRM v1.2 Reg 7.1, at block
-// base + 0x04); it does not duplicate a definition that lives anywhere else.
+// The register it reads -- GPIO_OUT_REG (TRM v1.2 Reg 7.1) -- is defined once in the
+// chip's register map (regs/gpio.h, reg::gpio::OUT_OFFSET); the .cc consumes that
+// base-relative offset rather than carrying its own copy.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_CLASS_GPIO_CLASS_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_CLASS_GPIO_CLASS_H
@@ -24,9 +24,6 @@ namespace esp32c6
 {
 namespace driver
 {
-    // GPIO_OUT_REG (TRM Reg 7.1): the output data latch for GPIO0..31.
-    constexpr uintptr_t GPIO_OUT_OFFSET = 0x04u;
-
     // Read back the GPIO output latch. gpio_base is the GPIO Matrix block base
     // (0x6009_1000). Pure read -- side-effect-free. Shared by the kernel and a
     // userspace GPIO driver that reads back what it drove.

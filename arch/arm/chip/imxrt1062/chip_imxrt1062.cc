@@ -23,8 +23,21 @@
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 
+// Bases in mmap.h, NVIC lines in irq.h, per-peripheral offsets/fields in regs/.
+#include "mmap.h"
+#include "irq.h"
+#include "regs/ccm.h"
+#include "regs/gpt.h"
+#include "regs/iomuxc.h"
+#include "regs/lpuart.h"
+#include "regs/wdog.h"
+
 #include <stddef.h>
 #include <stdint.h>
+
+namespace mmap = kickos::imxrt1062::mmap;
+namespace reg = kickos::imxrt1062::reg;
+namespace irq = kickos::imxrt1062::irq;
 
 namespace kickos
 {
@@ -237,44 +250,6 @@ namespace
 namespace
 {
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
-
-    // --- CCM clock gating (RM 14.7) ---
-    constexpr uintptr_t CCM_CCGR3 = 0x400FC074;      // lpuart6 = CG3 [7:6]
-    constexpr uint32_t CCGR3_LPUART6 = 3u << 6;
-
-    // --- IOMUXC pin mux (RM ch.11) ---
-    constexpr uintptr_t IOMUXC_SW_MUX_AD_B0_02 = 0x401F80C4; // Teensy pin 1 = TX1
-    constexpr uintptr_t IOMUXC_SW_MUX_AD_B0_03 = 0x401F80C8; // Teensy pin 0 = RX1
-    constexpr uint32_t MUX_ALT2 = 2u;                 // ALT2 = LPUART6_TX / _RX
-    constexpr uintptr_t IOMUXC_LPUART6_RX_SELECT_INPUT = 0x401F84E4; // daisy (RM ch.11)
-    constexpr uint32_t RX_DAISY_AD_B0_03 = 1u;
-
-    // --- LPUART6 (RM: Low Power UART); base from AIPS-2 map (RM Table 3-3) ---
-    constexpr uintptr_t LPUART6_BASE = 0x40198000;
-    constexpr uintptr_t LPUART6_GLOBAL = LPUART6_BASE + 0x08;
-    constexpr uintptr_t LPUART6_BAUD = LPUART6_BASE + 0x10;
-    constexpr uintptr_t LPUART6_STAT = LPUART6_BASE + 0x14;
-    constexpr uintptr_t LPUART6_CTRL = LPUART6_BASE + 0x18;
-    constexpr uintptr_t LPUART6_DATA = LPUART6_BASE + 0x1C;
-    constexpr uint32_t GLOBAL_RST = 1u << 1;
-    constexpr uint32_t STAT_TDRE = 1u << 23;
-    constexpr uint32_t CTRL_TIE = 1u << 23;
-    constexpr uint32_t CTRL_TE = 1u << 19;
-    constexpr uint32_t CTRL_RE = 1u << 18;
-
-    // LPUART clock root: 20 MHz. clock_init() is deferred (we inherit the tree the
-    // boot ROM / HalfKay left). The ROM's CCM handoff state is fixed: RM Table 9-7
-    // "ROM Clock Setting" sets CCM_CSCDR1 = 0x06490B03, i.e. UART_CLK_SEL=0 (bit 6 ->
-    // pll3_80m) and UART_CLK_PODF=0b000011 = divide-by-4 (RM 14.7.9). With PLL_USB1
-    // up (RM Table 9-7 CCM_ANALOG_PLL_USB1 = 0x8000_3040: LOCK|POWER|ENABLE, DIV_SELECT=0
-    // -> 480 MHz), pll3_80m = 480/6 = 80 MHz, so uart_clk_root = 80/4 = 20 MHz (clock
-    // tree RM Fig 14-3). This is why BOTH earlier guesses gave garbage: neither the
-    // reset-default 80 MHz (PODF ignored) nor 24 MHz (wrong mux) is what the ROM leaves.
-    constexpr uint32_t UART_CLK_ROOT_HZ = 20000000u;
-
-    // NVIC: LPUART6 combined TX/RX = IRQ 25 (RM Table 4-2).
-    constexpr int LPUART6_IRQ = 25;
-
     inline volatile uint16_t& r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
 
     // --- Watchdogs (RM ch.57 WDOG1/2, ch.58 RTWDOG). The RT1062 hands the app ARMED
@@ -283,21 +258,12 @@ namespace
     // 58.4) with a short LPO timeout. KickOS services none of them, so the RTWDOG
     // reset-loops the board (the banner reprints every timeout). Disable all three
     // first thing at reset. ------------------------------------------------------
-    constexpr uintptr_t WDOG1_WMCR = 0x400B8008;
-    constexpr uintptr_t WDOG2_WMCR = 0x400D0008;
-    constexpr uintptr_t RTWDOG_CS = 0x400BC000;
-    constexpr uintptr_t RTWDOG_CNT = 0x400BC004;
-    constexpr uintptr_t RTWDOG_TOVAL = 0x400BC008;
-    constexpr uint32_t RTWDOG_UNLOCK = 0xD928C520u; // RM 58.3.2.2.1 unlock key
-    constexpr uint32_t RTWDOG_CS_EN = 1u << 7;
-    constexpr uint32_t RTWDOG_CS_RCS = 1u << 10; // reconfig-success flag
-
     void watchdog_disable()
     {
         // WDOG1/2 main timer is WDE=0 (off) at reset; only the 16 s power-down counter
         // needs clearing. 16-bit access ONLY (RM 57.8.1: a 32-bit access is illegal).
-        r16(WDOG1_WMCR) = 0;
-        r16(WDOG2_WMCR) = 0;
+        r16(reg::wdog::WDOG1_WMCR) = 0;
+        r16(reg::wdog::WDOG2_WMCR) = 0;
         // RTWDOG: an app reconfig only takes effect >= 2.5 LPO(32 kHz) clocks (~76 us)
         // after the ROM exits (RM 58.4); attempted earlier it is silently dropped. Spin
         // past that window, then unlock + clear EN (IRQs masked across the 128-bus-clock
@@ -310,15 +276,15 @@ namespace
             uint32_t primask;
             __asm volatile("mrs %0, primask" : "=r"(primask));
             __asm volatile("cpsid i" ::: "memory");
-            r32(RTWDOG_CNT) = RTWDOG_UNLOCK;
-            r32(RTWDOG_TOVAL) = 0x0000FFFFu;
-            r32(RTWDOG_CS) = r32(RTWDOG_CS) & ~RTWDOG_CS_EN;
+            r32(reg::wdog::RTWDOG_CNT) = reg::wdog::RTWDOG_UNLOCK;
+            r32(reg::wdog::RTWDOG_TOVAL) = 0x0000FFFFu;
+            r32(reg::wdog::RTWDOG_CS) = r32(reg::wdog::RTWDOG_CS) & ~reg::wdog::RTWDOG_CS_EN;
             __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
             uint32_t spin = 0;
-            while ((r32(RTWDOG_CS) & RTWDOG_CS_RCS) == 0 and ++spin < 100000u)
+            while ((r32(reg::wdog::RTWDOG_CS) & reg::wdog::RTWDOG_CS_RCS) == 0 and ++spin < 100000u)
             {
             }
-            if ((r32(RTWDOG_CS) & RTWDOG_CS_RCS) != 0)
+            if ((r32(reg::wdog::RTWDOG_CS) & reg::wdog::RTWDOG_CS_RCS) != 0)
             {
                 break;
             }
@@ -350,26 +316,6 @@ namespace
     // no re-anchor on cpu_clock_set. Free-run 32-bit counter (RM 52.7.1.2 FRR=1),
     // extended to 64-bit monotonic ns in software (wraps every 2^32/24e6 ~= 179 s;
     // the scheduler reads far more often, and clocksoak validates multi-wrap).
-    constexpr uintptr_t GPT1_BASE = 0x401EC000;      // RM Table 3-3 (AIPS-2)
-    constexpr uintptr_t GPT1_CR = GPT1_BASE + 0x00;
-    constexpr uintptr_t GPT1_PR = GPT1_BASE + 0x04;
-    constexpr uintptr_t GPT1_SR = GPT1_BASE + 0x08;
-    constexpr uintptr_t GPT1_IR = GPT1_BASE + 0x0C;
-    constexpr uintptr_t GPT1_CNT = GPT1_BASE + 0x24; // RM 52.7.1: main counter (RO)
-    constexpr uint32_t CR_EN = 1u << 0;
-    constexpr uint32_t CR_ENMOD = 1u << 1;           // reset counter to 0 on enable
-    constexpr uint32_t CR_DBGEN = 1u << 2;           // keep counting in debug ...
-    constexpr uint32_t CR_WAITEN = 1u << 3;          // ... wait ...
-    constexpr uint32_t CR_DOZEEN = 1u << 4;          // ... doze ...
-    constexpr uint32_t CR_STOPEN = 1u << 5;          // ... and stop mode
-    constexpr uint32_t CR_CLKSRC_24M = 5u << 6;      // CLKSRC=0b101: 24 MHz osc
-    constexpr uint32_t CR_FRR = 1u << 9;             // free-run (roll at 0xFFFFFFFF)
-    constexpr uint32_t CR_EN_24M = 1u << 10;         // enable the 24 MHz osc input
-    constexpr uint32_t CR_SWR = 1u << 15;            // software reset (self-clears)
-    constexpr uintptr_t CCM_CCGR1 = 0x400FC06C;      // GPT1: CG10 [21:20], CG11 [23:22]
-    constexpr uint32_t CCGR1_GPT1 = (3u << 20) | (3u << 22); // bus + serial, on
-    constexpr uint32_t GPT_HZ = 24000000u;
-
     uint32_t g_gpt_hi = 0;   // software high word; read/updated under the crit section
     uint32_t g_gpt_last = 0;
 
@@ -378,7 +324,7 @@ namespace
         // Called from thread and ISR context: the wrap-extend read must be atomic
         // against a concurrent reader, so run it under the crit section.
         arch_irq_state_t s = arch_irq_save();
-        uint32_t cur = r32(GPT1_CNT);
+        uint32_t cur = r32(reg::gpt::GPT1_CNT);
         if (cur < g_gpt_last)
         {
             g_gpt_hi++;
@@ -391,33 +337,34 @@ namespace
 
     void gpt_clock_init()
     {
-        r32(CCM_CCGR1) |= CCGR1_GPT1;   // clock GPT1 (bus + serial)
-        r32(GPT1_CR) = 0;               // CLKSRC only changes while EN=0 (RM 52.4)
-        r32(GPT1_CR) = CR_SWR;          // software reset
-        while ((r32(GPT1_CR) & CR_SWR) != 0)
+        r32(reg::ccm::CCGR1) |= reg::ccm::CCGR1_GPT1; // clock GPT1 (bus + serial)
+        r32(reg::gpt::GPT1_CR) = 0;               // CLKSRC only changes while EN=0 (RM 52.4)
+        r32(reg::gpt::GPT1_CR) = reg::gpt::CR_SWR; // software reset
+        while ((r32(reg::gpt::GPT1_CR) & reg::gpt::CR_SWR) != 0)
         {
         }
-        r32(GPT1_IR) = 0;               // polled clock: no compare/rollover IRQs
-        r32(GPT1_SR) = 0x3Fu;           // W1C: clear any latched status
-        r32(GPT1_PR) = 0;               // PRESCALER=/1, PRESCALER24M=/1 -> 24 MHz
+        r32(reg::gpt::GPT1_IR) = 0;               // polled clock: no compare/rollover IRQs
+        r32(reg::gpt::GPT1_SR) = 0x3Fu;           // W1C: clear any latched status
+        r32(reg::gpt::GPT1_PR) = 0;               // PRESCALER=/1, PRESCALER24M=/1 -> 24 MHz
         // Program all config with EN=0, then set EN last (RM 52.6.1).
-        uint32_t const cr = CR_CLKSRC_24M | CR_EN_24M | CR_FRR | CR_ENMOD
-                          | CR_DBGEN | CR_WAITEN | CR_DOZEEN | CR_STOPEN;
-        r32(GPT1_CR) = cr;
-        r32(GPT1_CR) = cr | CR_EN;
+        uint32_t const cr = reg::gpt::CR_CLKSRC_24M | reg::gpt::CR_EN_24M | reg::gpt::CR_FRR
+                          | reg::gpt::CR_ENMOD | reg::gpt::CR_DBGEN | reg::gpt::CR_WAITEN
+                          | reg::gpt::CR_DOZEEN | reg::gpt::CR_STOPEN;
+        r32(reg::gpt::GPT1_CR) = cr;
+        r32(reg::gpt::GPT1_CR) = cr | reg::gpt::CR_EN;
     }
 
     void uart6_init()
     {
-        r32(CCM_CCGR3) |= CCGR3_LPUART6; // clock LPUART6 (reset already enables it)
+        r32(reg::ccm::CCGR3) |= reg::ccm::CCGR3_LPUART6; // clock LPUART6 (reset already enables it)
 
-        r32(IOMUXC_SW_MUX_AD_B0_02) = MUX_ALT2; // TX
-        r32(IOMUXC_SW_MUX_AD_B0_03) = MUX_ALT2; // RX
-        r32(IOMUXC_LPUART6_RX_SELECT_INPUT) = RX_DAISY_AD_B0_03;
+        r32(reg::iomuxc::SW_MUX_AD_B0_02) = reg::iomuxc::MUX_ALT2; // TX
+        r32(reg::iomuxc::SW_MUX_AD_B0_03) = reg::iomuxc::MUX_ALT2; // RX
+        r32(reg::iomuxc::LPUART6_RX_SELECT_INPUT) = reg::iomuxc::RX_DAISY_AD_B0_03;
 
-        r32(LPUART6_CTRL) = 0;               // disable TX/RX while configuring
-        r32(LPUART6_GLOBAL) = GLOBAL_RST;    // module software reset
-        r32(LPUART6_GLOBAL) = 0;
+        r32(reg::lpuart::LPUART6_CTRL) = 0;                     // disable TX/RX while configuring
+        r32(reg::lpuart::LPUART6_GLOBAL) = reg::lpuart::GLOBAL_RST; // module software reset
+        r32(reg::lpuart::LPUART6_GLOBAL) = 0;
 
         // baud = uart_clk / ((OSR+1) * SBR). OSR=15 (16x oversample).
         // Round SBR to nearest, NOT truncate: at the 20 MHz root the ideal divisor is
@@ -426,13 +373,13 @@ namespace
         uint32_t const baud = 115200u;
         uint32_t const osr = 15u;
         uint32_t const div = baud * (osr + 1u);
-        uint32_t sbr = (UART_CLK_ROOT_HZ + (div / 2u)) / div;
+        uint32_t sbr = (reg::lpuart::UART_CLK_ROOT_HZ + (div / 2u)) / div;
         if (sbr == 0)
         {
             sbr = 1;
         }
-        r32(LPUART6_BAUD) = (osr << 24) | (sbr & 0x1FFFu);
-        r32(LPUART6_CTRL) = CTRL_TE | CTRL_RE; // TIE stays clear; the ring primes it
+        r32(reg::lpuart::LPUART6_BAUD) = (osr << 24) | (sbr & 0x1FFFu);
+        r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE; // TIE stays clear; the ring primes it
     }
 
 #ifdef KICKOS_UART_BEACON
@@ -446,24 +393,24 @@ namespace
     constexpr uint32_t BEACON_SBR = 11u;
     void uart6_beacon(void)
     {
-        r32(LPUART6_CTRL) = 0;
-        r32(LPUART6_BAUD) = (15u << 24) | (BEACON_SBR & 0x1FFFu);
-        r32(LPUART6_CTRL) = CTRL_TE;
+        r32(reg::lpuart::LPUART6_CTRL) = 0;
+        r32(reg::lpuart::LPUART6_BAUD) = (15u << 24) | (BEACON_SBR & 0x1FFFu);
+        r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE;
         while (true)
         {
-            while ((r32(LPUART6_STAT) & STAT_TDRE) == 0)
+            while ((r32(reg::lpuart::LPUART6_STAT) & reg::lpuart::STAT_TDRE) == 0)
             {
             }
-            r32(LPUART6_DATA) = 0x55u;
+            r32(reg::lpuart::LPUART6_DATA) = 0x55u;
         }
     }
 #endif
 
     // --- Buffered console TX backend (console_tx.h) ---
-    int lp6_tx_slot_free(void) { return (r32(LPUART6_STAT) & STAT_TDRE) != 0; }
-    void lp6_tx_push(uint8_t b) { r32(LPUART6_DATA) = b; }
-    void lp6_tx_irq_enable(void) { r32(LPUART6_CTRL) |= CTRL_TIE; }
-    void lp6_tx_irq_disable(void) { r32(LPUART6_CTRL) &= ~CTRL_TIE; }
+    int lp6_tx_slot_free(void) { return (r32(reg::lpuart::LPUART6_STAT) & reg::lpuart::STAT_TDRE) != 0; }
+    void lp6_tx_push(uint8_t b) { r32(reg::lpuart::LPUART6_DATA) = b; }
+    void lp6_tx_irq_enable(void) { r32(reg::lpuart::LPUART6_CTRL) |= reg::lpuart::CTRL_TIE; }
+    void lp6_tx_irq_disable(void) { r32(reg::lpuart::LPUART6_CTRL) &= ~reg::lpuart::CTRL_TIE; }
 
     constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
     char console_tx_buf[CONSOLE_TX_SIZE];
@@ -550,14 +497,14 @@ void arch_console_write_sync(char const* buf, size_t n)
     for (size_t i = 0; i < n; i++)
     {
         uint32_t spin = 0;
-        while ((r32(LPUART6_STAT) & STAT_TDRE) == 0)
+        while ((r32(reg::lpuart::LPUART6_STAT) & reg::lpuart::STAT_TDRE) == 0)
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
-        r32(LPUART6_DATA) = static_cast<uint8_t>(buf[i]);
+        r32(reg::lpuart::LPUART6_DATA) = static_cast<uint8_t>(buf[i]);
     }
 }
 
@@ -565,7 +512,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 {
     *storage = console_tx_buf;
     *size = CONSOLE_TX_SIZE;
-    *irq_line = LPUART6_IRQ;
+    *irq_line = irq::LPUART6_IRQ;
     return &lp6_console_backend;
 }
 
@@ -576,7 +523,7 @@ uint64_t arch_clock_now(void)
 {
     uint64_t ticks = gpt_ticks();
     // ns = ticks * 1e9 / 24e6, the divide folds at build time (GPT_HZ is constant).
-    constexpr uint64_t MULT = kickos::arch_clk_recip_q32(GPT_HZ);
+    constexpr uint64_t MULT = kickos::arch_clk_recip_q32(reg::gpt::GPT_HZ);
     return kickos::arch_clk_mul_q32(ticks, MULT);
 }
 
@@ -608,8 +555,8 @@ void arch_shutdown(int status)
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {
-        {0x401EC000u, 0x1000u}, // GPT1: monotonic time base (RM ch.52, Table 3-3)
-        {0x400FC000u, 0x1000u}, // CCM: CCGR clock-gate roots (RM ch.14)
+        {mmap::GPT1_BASE, 0x1000u}, // GPT1: monotonic time base (RM ch.52, Table 3-3)
+        {mmap::CCM_BASE, 0x1000u},  // CCM: CCGR clock-gate roots (RM ch.14)
     };
     size_t n = sizeof(blocks) / sizeof(blocks[0]);
     if (n > max)

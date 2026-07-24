@@ -23,6 +23,24 @@
 
 #include <stdint.h>
 
+// Hand-rolled register map for this chip (clean-room, no vendor CMSIS pack).
+// Bases in mmap.h, NVIC lines in irq.h, per-peripheral offsets/fields in regs/.
+#include "mmap.h"
+#include "irq.h"
+#include "regs/gpio.h"
+#include "regs/mcg.h"
+#include "regs/osc.h"
+#include "regs/pit.h"
+#include "regs/port.h"
+#include "regs/sim.h"
+#include "regs/sysmpu.h"
+#include "regs/uart.h"
+#include "regs/wdog.h"
+
+namespace mmap = kickos::mk64f::mmap;
+namespace reg = kickos::mk64f::reg;
+namespace irq = kickos::mk64f::irq;
+
 namespace kickos
 {
     int kmain(int argc, char** argv);
@@ -48,26 +66,6 @@ namespace
     inline volatile uint16_t& r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
     inline volatile uint8_t& r8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
 
-    // --- Peripheral registers (refman memory map) ---
-    constexpr uintptr_t WDOG_STCTRLH = 0x40052000; // 16-bit
-    constexpr uintptr_t WDOG_UNLOCK = 0x4005200E;  // 16-bit
-    constexpr uint16_t WDOG_UNLOCK_1 = 0xC520;
-    constexpr uint16_t WDOG_UNLOCK_2 = 0xD928;
-
-    constexpr uintptr_t SIM_SCGC4 = 0x40048034; // UART0 = bit 10
-    constexpr uintptr_t SIM_SCGC5 = 0x40048038; // PORTB = bit 10
-    constexpr uintptr_t SIM_CLKDIV1 = 0x40048044;
-    constexpr uint32_t SCGC4_UART0 = 1u << 10;
-    constexpr uint32_t SCGC5_PORTB = 1u << 10;
-
-    // --- Clock (MCG + OSC0 + SIM_CLKDIV1), K64 RM chapters 24/25/26 ---
-    constexpr uintptr_t OSC0_CR = 0x40065000; // 8-bit
-    constexpr uintptr_t MCG_C1 = 0x40064000;  // 8-bit each
-    constexpr uintptr_t MCG_C2 = 0x40064001;
-    constexpr uintptr_t MCG_C5 = 0x40064004;
-    constexpr uintptr_t MCG_C6 = 0x40064005;
-    constexpr uintptr_t MCG_S = 0x40064006;
-
     // Bus clock = core / BUS_DIV. Used by BOTH the OUTDIV2 field below AND the PIT
     // clock rate in arch_clock_now, so retuning the divider cannot silently rescale
     // kernel time.
@@ -77,23 +75,6 @@ namespace
     constexpr uint32_t CLKDIV1_120MHZ =
         (0u << 28) | ((BUS_DIV - 1u) << 24) | (1u << 20) | (4u << 16);
 
-    constexpr uint8_t OSC0_CR_ERCLKEN = 1u << 7;
-    constexpr uint8_t C2_RANGE_VHF = 2u << 4; // RANGE0=2; EREFS0=0 => external clock (not xtal)
-    constexpr uint8_t C1_CLKS_EXT = 2u << 6;  // CLKS=2 external reference
-    constexpr uint8_t C1_CLKS_PLL = 0u << 6;  // CLKS=0 FLL/PLL output (PLL, since PLLS=1)
-    constexpr uint8_t C1_IREFS_INT = 1u << 2; // IREFS=1 internal ref (FEI posture, CLKS=0)
-    constexpr uint8_t C1_FRDIV_1536 = 7u << 3; // RANGE!=0: /1536 -> 50 MHz FLL ref = 32.6 kHz
-    constexpr uint8_t C5_PRDIV_20 = 19u;       // (PRDIV0+1)=20 -> PLL ref 50/20 = 2.5 MHz
-    constexpr uint8_t C6_PLLS = 1u << 6;
-    constexpr uint8_t C6_VDIV_48 = 24u; // (VDIV0+24)=48 -> VCO 2.5*48 = 120 MHz
-
-    constexpr uint8_t S_IREFST = 1u << 4;    // 0 = external ref selected
-    constexpr uint8_t S_CLKST_MASK = 3u << 2;
-    constexpr uint8_t S_CLKST_EXT = 2u << 2; // MCGOUTCLK = external ref
-    constexpr uint8_t S_CLKST_PLL = 3u << 2; // MCGOUTCLK = PLL
-    constexpr uint8_t S_PLLST = 1u << 5;     // PLL (not FLL) is the PLLS source
-    constexpr uint8_t S_LOCK0 = 1u << 6;
-
     // Bounded like the xmc clock_wait / rp2040 wait_mask: a missing external clock
     // degrades (returns false -> FEI fallback) instead of hanging the boot.
     constexpr uint32_t MCG_POLL_TIMEOUT = 1000000u;
@@ -101,53 +82,33 @@ namespace
     // OpenSDA VCOM is PTB16/PTB17. Per the K64 signal-mux table these pins are
     // UART0_RX/UART0_TX at ALT3 (PTB16 has no UART1 option) -- the FRDM-K64F user
     // guide's "UART1" label is a doc typo; UART0 is what the silicon exposes.
-    constexpr uintptr_t PORTB_PCR16 = 0x4004A040; // UART0_RX (ALT3)
-    constexpr uintptr_t PORTB_PCR17 = 0x4004A044; // UART0_TX (ALT3)
-    constexpr uint32_t PCR_MUX_ALT3 = 3u << 8;
+    constexpr uintptr_t PORTB_PCR16 = mmap::PORTB_BASE + 16u * reg::port::PCR_STRIDE; // UART0_RX (ALT3)
+    constexpr uintptr_t PORTB_PCR17 = mmap::PORTB_BASE + 17u * reg::port::PCR_STRIDE; // UART0_TX (ALT3)
 
     // Kernel diagnostic LED: FRDM-K64F onboard RGB, RED = PTB22, ACTIVE-LOW (pin
     // low = lit). PORTB is already clocked by uart0_init (SCGC5 bit 10); the LED
-    // init re-enables it so it stands alone. GPIO module offsets are K64 RM ch.55:
-    // PSOR 0x04 (set -> high), PCOR 0x08 (clear -> low), PDDR 0x14 (1 = output).
-    constexpr uintptr_t PORTB_PCR22 = 0x4004A058; // PCRn = base + n*4 (PTB22)
-    constexpr uint32_t PCR_MUX_GPIO = 1u << 8;    // MUX[10:8]=001 = GPIO (ALT1)
-    constexpr uintptr_t GPIOB_PSOR = 0x400FF044;
-    constexpr uintptr_t GPIOB_PCOR = 0x400FF048;
-    constexpr uintptr_t GPIOB_PDDR = 0x400FF054;
+    // init re-enables it so it stands alone.
+    constexpr uintptr_t PORTB_PCR22 = mmap::PORTB_BASE + 22u * reg::port::PCR_STRIDE;
+    constexpr uintptr_t GPIOB_PSOR = mmap::GPIOB_BASE + reg::gpio::PSOR_OFFSET;
+    constexpr uintptr_t GPIOB_PCOR = mmap::GPIOB_BASE + reg::gpio::PCOR_OFFSET;
+    constexpr uintptr_t GPIOB_PDDR = mmap::GPIOB_BASE + reg::gpio::PDDR_OFFSET;
     constexpr uint32_t LED_RED_BIT = 1u << 22;
 
-    constexpr uintptr_t UART0_BASE = 0x4006A000;
-    constexpr uintptr_t UART0_BDH = UART0_BASE + 0x00; // 8-bit
-    constexpr uintptr_t UART0_BDL = UART0_BASE + 0x01;
-    constexpr uintptr_t UART0_C1 = UART0_BASE + 0x02;
-    constexpr uintptr_t UART0_C2 = UART0_BASE + 0x03;
-    constexpr uintptr_t UART0_S1 = UART0_BASE + 0x04;
-    constexpr uintptr_t UART0_S2 = UART0_BASE + 0x05;
-    constexpr uintptr_t UART0_C3 = UART0_BASE + 0x06;
-    constexpr uintptr_t UART0_D = UART0_BASE + 0x07;
-    constexpr uintptr_t UART0_C4 = UART0_BASE + 0x0A;
-    constexpr uintptr_t UART0_C5 = UART0_BASE + 0x0B;
-    constexpr uintptr_t UART0_MODEM = UART0_BASE + 0x0D;
-    constexpr uintptr_t UART0_IR = UART0_BASE + 0x0E;
-    constexpr uintptr_t UART0_PFIFO = UART0_BASE + 0x10;
-    constexpr uintptr_t UART0_CFIFO = UART0_BASE + 0x11;
-    constexpr uintptr_t UART0_C7816 = UART0_BASE + 0x18;
-    constexpr uint8_t C2_TE = 1u << 3;
-    constexpr uint8_t C2_RE = 1u << 2;
-    constexpr uint8_t C2_TIE = 1u << 7; // transmit-interrupt enable: IRQ while S1.TDRE
-    constexpr uint8_t S1_TDRE = 1u << 7;
-    constexpr uint8_t S1_TC = 1u << 6;  // transmit complete: shifter idle (not just TDRE)
-    // CFIFO command bits (K64 RM 60.3.9): write 1 to flush the TX / RX FIFO buffer.
-    constexpr uint8_t CFIFO_RXFLUSH = 1u << 6;
-    constexpr uint8_t CFIFO_TXFLUSH = 1u << 7;
-    // MODEM.TXCTSE (K64 RM 60.3.13): CTS hardware flow control -- if a driver sets it,
-    // the polled writer waits forever on an absent CTS and drops every byte (SILENT
-    // LOSS). Named for the scramble test; reclaim clears the whole register (MODEM=0).
-    constexpr uint8_t MODEM_TXCTSE = 1u << 0;
-
-    // NVIC: UART0 status sources (RX/TX combined) = IRQ 31 (UART0 error = 32).
-    // Confirm against the K64 RM interrupt-vector-assignments table.
-    constexpr int UART0_RXTX_IRQ = 31;
+    constexpr uintptr_t UART0_BDH = mmap::UART0_BASE + reg::uart::BDH_OFFSET;
+    constexpr uintptr_t UART0_BDL = mmap::UART0_BASE + reg::uart::BDL_OFFSET;
+    constexpr uintptr_t UART0_C1 = mmap::UART0_BASE + reg::uart::C1_OFFSET;
+    constexpr uintptr_t UART0_C2 = mmap::UART0_BASE + reg::uart::C2_OFFSET;
+    constexpr uintptr_t UART0_S1 = mmap::UART0_BASE + reg::uart::S1_OFFSET;
+    constexpr uintptr_t UART0_S2 = mmap::UART0_BASE + reg::uart::S2_OFFSET;
+    constexpr uintptr_t UART0_C3 = mmap::UART0_BASE + reg::uart::C3_OFFSET;
+    constexpr uintptr_t UART0_D = mmap::UART0_BASE + reg::uart::D_OFFSET;
+    constexpr uintptr_t UART0_C4 = mmap::UART0_BASE + reg::uart::C4_OFFSET;
+    constexpr uintptr_t UART0_C5 = mmap::UART0_BASE + reg::uart::C5_OFFSET;
+    constexpr uintptr_t UART0_MODEM = mmap::UART0_BASE + reg::uart::MODEM_OFFSET;
+    constexpr uintptr_t UART0_IR = mmap::UART0_BASE + reg::uart::IR_OFFSET;
+    constexpr uintptr_t UART0_PFIFO = mmap::UART0_BASE + reg::uart::PFIFO_OFFSET;
+    constexpr uintptr_t UART0_CFIFO = mmap::UART0_BASE + reg::uart::CFIFO_OFFSET;
+    constexpr uintptr_t UART0_C7816 = mmap::UART0_BASE + reg::uart::C7816_OFFSET;
 
     // --- PIT: the monotonic time base (K64 RM ch.44) ----------------------------
     // The v7-M default clock is the DWT cycle counter, but on this part DWT_CYCCNT
@@ -165,32 +126,20 @@ namespace
     // PACR55.SP) thereby reaches ch0/ch1 and MCR -- a rogue MCR=MDIS write would
     // freeze the kernel clock. This is the accepted K64F coarse-peripheral (per-AIPS-
     // slot) protection ceiling; see reference/architecture.md.
-    constexpr uintptr_t SIM_SCGC6 = 0x4004803C;
-    constexpr uint32_t SCGC6_PIT = 1u << 23;
-    constexpr uintptr_t PIT_MCR = 0x40037000;
-    constexpr uintptr_t PIT_LDVAL0 = 0x40037100;
-    constexpr uintptr_t PIT_CVAL0 = 0x40037104;
-    constexpr uintptr_t PIT_TCTRL0 = 0x40037108;
-    constexpr uintptr_t PIT_LDVAL1 = 0x40037110;
-    constexpr uintptr_t PIT_CVAL1 = 0x40037114;
-    constexpr uintptr_t PIT_TCTRL1 = 0x40037118;
-    constexpr uint32_t PIT_TCTRL_TEN = 1u << 0; // timer enable
-    constexpr uint32_t PIT_TCTRL_CHN = 1u << 2; // chain to the previous channel
-
     void pit_clock_init()
     {
         // Boot-order constraint: arch_clock_now MUST NOT run before this. The PIT is
         // clock-gated out of reset and an ungated AIPS read BusFaults; ktime/clock
         // reads only start after arch_init calls this.
-        r32(SIM_SCGC6) |= SCGC6_PIT; // clock the PIT module
-        r32(PIT_MCR) = 0;            // MDIS=0 (enable), FRZ=0
+        r32(reg::sim::SCGC6) |= reg::sim::SCGC6_PIT; // clock the PIT module
+        r32(reg::pit::MCR) = 0;                      // MDIS=0 (enable), FRZ=0
         // Free-running: both channels reload from all-ones; ch1 (MSW) decrements
         // when ch0 (LSW) rolls under. Program reloads, chain ch1 to ch0, then
         // enable ch0 last so the 64-bit counter starts coherently.
-        r32(PIT_LDVAL0) = 0xFFFFFFFFu;
-        r32(PIT_LDVAL1) = 0xFFFFFFFFu;
-        r32(PIT_TCTRL1) = PIT_TCTRL_CHN | PIT_TCTRL_TEN;
-        r32(PIT_TCTRL0) = PIT_TCTRL_TEN;
+        r32(reg::pit::LDVAL0) = 0xFFFFFFFFu;
+        r32(reg::pit::LDVAL1) = 0xFFFFFFFFu;
+        r32(reg::pit::TCTRL1) = reg::pit::TCTRL_CHN | reg::pit::TCTRL_TEN;
+        r32(reg::pit::TCTRL0) = reg::pit::TCTRL_TEN;
     }
 
     // Elapsed PIT ticks since start (the counter runs DOWN from all-ones). Read the
@@ -204,9 +153,9 @@ namespace
         uint32_t lo;
         do
         {
-            hi = r32(PIT_CVAL1);
-            lo = r32(PIT_CVAL0);
-        } while (r32(PIT_CVAL1) != hi);
+            hi = r32(reg::pit::CVAL1);
+            lo = r32(reg::pit::CVAL0);
+        } while (r32(reg::pit::CVAL1) != hi);
         uint64_t down = (static_cast<uint64_t>(hi) << 32) | lo;
         return ~down; // 0xFFFF... - down == elapsed
     }
@@ -253,16 +202,16 @@ namespace
         // other (RM 24.3.1) -- emit both stores back-to-back in ONE asm block so
         // an unoptimized (-O0) build cannot insert a helper call between them
         // (a non-inlined store helper would blow the 20-cycle budget).
-        volatile uint16_t* unlock = reinterpret_cast<volatile uint16_t*>(WDOG_UNLOCK);
-        uint32_t k1 = WDOG_UNLOCK_1;
-        uint32_t k2 = WDOG_UNLOCK_2;
+        volatile uint16_t* unlock = reinterpret_cast<volatile uint16_t*>(reg::wdog::UNLOCK);
+        uint32_t k1 = reg::wdog::UNLOCK_KEY_1;
+        uint32_t k2 = reg::wdog::UNLOCK_KEY_2;
         __asm volatile("strh %1, [%0]\n\t"
                        "strh %2, [%0]"
                        ::"r"(unlock), "r"(k1), "r"(k2) : "memory");
         // STCTRLH := reset value 0x01D3 with WDOGEN cleared, keeping ALLOWUPDATE
         // and the reset-1 reserved bit 8 (matches NXP SystemInit; 0x0010 would
         // clear that reserved bit -- pointless risk on never-run silicon).
-        r16(WDOG_STCTRLH) = 0x01D2;
+        r16(reg::wdog::STCTRLH) = reg::wdog::STCTRLH_DISABLE;
     }
 
     void enable_fpu()
@@ -277,7 +226,7 @@ namespace
     {
         for (uint32_t i = 0; i < MCG_POLL_TIMEOUT; i++)
         {
-            if ((r8(MCG_S) & mask) == want)
+            if ((r8(reg::mcg::S) & mask) == want)
             {
                 return true;
             }
@@ -297,11 +246,11 @@ namespace
     // SystemCoreClock = 20971520.
     bool fail_to_fei()
     {
-        r8(MCG_C6) = 0;             // clear PLLS + VDIV
-        r8(MCG_C5) = 0;             // clear PRDIV
-        r8(MCG_C1) = C1_IREFS_INT;  // CLKS=0 (FLL output) + internal ref -> FEI
-        mcg_wait(S_IREFST, S_IREFST); // best-effort: internal ref reselected
-        mcg_wait(S_CLKST_MASK, 0);    // CLKST=0 (FEI/FLL output)
+        r8(reg::mcg::C6) = 0;                     // clear PLLS + VDIV
+        r8(reg::mcg::C5) = 0;                     // clear PRDIV
+        r8(reg::mcg::C1) = reg::mcg::C1_IREFS_INT; // CLKS=0 (FLL output) + internal ref -> FEI
+        mcg_wait(reg::mcg::S_IREFST, reg::mcg::S_IREFST); // best-effort: internal ref reselected
+        mcg_wait(reg::mcg::S_CLKST_MASK, 0);              // CLKST=0 (FEI/FLL output)
         return false;
     }
 
@@ -313,36 +262,36 @@ namespace
     bool mcg_to_pee()
     {
         // 50 MHz external clock into EXTAL0 (EREFS0=0 = bypass the crystal osc).
-        r8(OSC0_CR) = OSC0_CR_ERCLKEN;
-        r8(MCG_C2) = C2_RANGE_VHF;
+        r8(reg::osc::CR) = reg::osc::CR_ERCLKEN;
+        r8(reg::mcg::C2) = reg::mcg::C2_RANGE_VHF;
 
         // FEI -> FBE: take the external reference; /1536 keeps the (PEE-unused) FLL
         // input inside its 31.25-39.0625 kHz window.
-        r8(MCG_C1) = C1_CLKS_EXT | C1_FRDIV_1536;
-        if (not mcg_wait(S_IREFST, 0))
+        r8(reg::mcg::C1) = reg::mcg::C1_CLKS_EXT | reg::mcg::C1_FRDIV_1536;
+        if (not mcg_wait(reg::mcg::S_IREFST, 0))
         {
             return fail_to_fei();
         }
-        if (not mcg_wait(S_CLKST_MASK, S_CLKST_EXT))
+        if (not mcg_wait(reg::mcg::S_CLKST_MASK, reg::mcg::S_CLKST_EXT))
         {
             return fail_to_fei();
         }
 
         // FBE -> PBE: PLL ref 2.5 MHz, VCO 120 MHz. Wait for PLL-selected + lock.
-        r8(MCG_C5) = C5_PRDIV_20;
-        r8(MCG_C6) = C6_PLLS | C6_VDIV_48;
-        if (not mcg_wait(S_PLLST, S_PLLST))
+        r8(reg::mcg::C5) = reg::mcg::C5_PRDIV_20;
+        r8(reg::mcg::C6) = reg::mcg::C6_PLLS | reg::mcg::C6_VDIV_48;
+        if (not mcg_wait(reg::mcg::S_PLLST, reg::mcg::S_PLLST))
         {
             return fail_to_fei();
         }
-        if (not mcg_wait(S_LOCK0, S_LOCK0))
+        if (not mcg_wait(reg::mcg::S_LOCK0, reg::mcg::S_LOCK0))
         {
             return fail_to_fei();
         }
 
         // PBE -> PEE: select the PLL output as MCGOUTCLK.
-        r8(MCG_C1) = C1_CLKS_PLL | C1_FRDIV_1536;
-        if (not mcg_wait(S_CLKST_MASK, S_CLKST_PLL))
+        r8(reg::mcg::C1) = reg::mcg::C1_CLKS_PLL | reg::mcg::C1_FRDIV_1536;
+        if (not mcg_wait(reg::mcg::S_CLKST_MASK, reg::mcg::S_CLKST_PLL))
         {
             return fail_to_fei();
         }
@@ -354,7 +303,7 @@ namespace
         // Set the bus dividers BEFORE the core scales up (RM 26: widen dividers
         // first, else bus/flash overrun when MCGOUTCLK jumps to 120 MHz). Safe now
         // because we are still on the ~20.97 MHz FEI clock.
-        r32(SIM_CLKDIV1) = CLKDIV1_120MHZ;
+        r32(reg::sim::CLKDIV1) = CLKDIV1_120MHZ;
         if (mcg_to_pee())
         {
             SystemCoreClock = 120000000u;
@@ -365,10 +314,10 @@ namespace
 
     void uart0_init()
     {
-        r32(SIM_SCGC5) |= SCGC5_PORTB; // clock PORTB
-        r32(SIM_SCGC4) |= SCGC4_UART0; // clock UART0
-        r32(PORTB_PCR16) = PCR_MUX_ALT3;
-        r32(PORTB_PCR17) = PCR_MUX_ALT3;
+        r32(reg::sim::SCGC5) |= reg::sim::SCGC5_PORTB; // clock PORTB
+        r32(reg::sim::SCGC4) |= reg::sim::SCGC4_UART0; // clock UART0
+        r32(PORTB_PCR16) = reg::port::PCR_MUX_ALT3;
+        r32(PORTB_PCR17) = reg::port::PCR_MUX_ALT3;
 
         r8(UART0_C2) = 0; // disable TX/RX while configuring
         // baud = clk / (16 x (SBR + BRFA/32)); UART0 is system-clocked, so derive
@@ -380,15 +329,15 @@ namespace
         r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
         r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
         r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F); // BRFA fine-adjust (low 5 bits)
-        r8(UART0_C2) = C2_TE | C2_RE; // TIE stays clear; the console ring primes it
+        r8(UART0_C2) = reg::uart::C2_TE | reg::uart::C2_RE; // TIE stays clear; the console ring primes it
     }
 
     // --- Buffered console TX backend (console_tx.h). The ring drains via the
     // UART0 TX-empty interrupt; slot_free/push touch one data register. ---
-    int k64_tx_slot_free(void) { return (r8(UART0_S1) & S1_TDRE) != 0; }
+    int k64_tx_slot_free(void) { return (r8(UART0_S1) & reg::uart::S1_TDRE) != 0; }
     void k64_tx_push(uint8_t b) { r8(UART0_D) = b; }
-    void k64_tx_irq_enable(void) { r8(UART0_C2) = static_cast<uint8_t>(r8(UART0_C2) | C2_TIE); }
-    void k64_tx_irq_disable(void) { r8(UART0_C2) = static_cast<uint8_t>(r8(UART0_C2) & ~C2_TIE); }
+    void k64_tx_irq_enable(void) { r8(UART0_C2) = static_cast<uint8_t>(r8(UART0_C2) | reg::uart::C2_TIE); }
+    void k64_tx_irq_disable(void) { r8(UART0_C2) = static_cast<uint8_t>(r8(UART0_C2) & ~reg::uart::C2_TIE); }
 
     constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
     char console_tx_buf[CONSOLE_TX_SIZE];
@@ -402,18 +351,8 @@ namespace
     // (instruction fetch + flash literal/rodata reads), M1 = system bus (SRAM +
     // peripheral data). RGD0 is the supervisor background; RGD1..11 are per-thread
     // USER grants. An access is allowed if ANY valid descriptor grants it (union),
-    // so RGD0 (supervisor rwx everywhere) always covers privileged code.
-    constexpr uintptr_t SYSMPU_CESR = 0x4000D000;
-    constexpr uintptr_t SYSMPU_RGD = 0x4000D400;    // RGDn word k = RGD + n*0x10 + k*4
-    constexpr uintptr_t SYSMPU_RGDAAC0 = 0x4000D800; // WORD2 alt view (keeps VLD)
-    constexpr uint32_t SYSMPU_CESR_VLD = 1u << 0;    // global MPU enable
-    constexpr size_t SYSMPU_RGD_COUNT = 12;
-    // Error capture (K64 RM 19.3): EARn 0xD010+n*8, EDRn 0xD014+n*8, 5 slave ports.
-    // CESR[31:27] SPERR: bit 31 -> slave port 0 ... bit 27 -> slave port 4.
-    constexpr uintptr_t SYSMPU_EAR0 = 0x4000D010; // EARn = EAR0 + n*8
-    constexpr uintptr_t SYSMPU_EDR0 = 0x4000D014; // EDRn = EDR0 + n*8
-    constexpr size_t SYSMPU_SLAVE_PORTS = 5;
-
+    // so RGD0 (supervisor rwx everywhere) always covers privileged code. Register
+    // map (bases/offsets/WORD2 fields) is in regs/sysmpu.h.
 #if KICKOS_HAVE_MPU
     // WORD2 for the core's two crossbar masters (attr = the UNPRIVILEGED rights).
     // The Cortex-M4 core reaches memory as M0 (code bus) OR M1 (system bus), chosen
@@ -422,19 +361,18 @@ namespace
     // RAM pool starts in SRAM_L @ 0x1FFF_0000), and an exception (un)stack to a
     // SRAM_L stack is an M0 data access -- so granting data only on M1 denies it.
     // Grant the rights on BOTH masters: the RGD is address-bounded, so this widens
-    // only the bus a thread may use, not the range it reaches. M0UM[2:0] @ bits 2:0
-    // (r=bit2,w=bit1,x=bit0); M1UM[2:0] @ bits 8:6 (r=8,w=7,x=6). Supervisor SM left
+    // only the bus a thread may use, not the range it reaches. Supervisor SM left
     // 0 (=r/w/x) -> RGD0 background covers privileged; execute stays code-bus only.
     uint32_t sysmpu_word2(uint32_t attr)
     {
-        uint32_t w = (1u << 2) | (1u << 8); // read: M0 + M1
+        uint32_t w = reg::sysmpu::WORD2_M0UM_R | reg::sysmpu::WORD2_M1UM_R; // read: M0 + M1
         if (attr & ARCH_MPU_W)
         {
-            w |= (1u << 1) | (1u << 7); // write: M0 + M1
+            w |= reg::sysmpu::WORD2_M0UM_W | reg::sysmpu::WORD2_M1UM_W; // write: M0 + M1
         }
         if (attr & ARCH_MPU_X)
         {
-            w |= (1u << 0); // execute: code bus (M0) only
+            w |= reg::sysmpu::WORD2_M0UM_X; // execute: code bus (M0) only
         }
         return w;
     }
@@ -500,7 +438,7 @@ uint32_t arch_cpu_clock_set(uint32_t target)
         // RISE (FEI -> PEE): widen the bus/flash dividers BEFORE MCGOUTCLK climbs (RM
         // 26; the flash divider /5 keeps FLASHCLK <= 25 MHz) -- the flash-WS-before-rise
         // discipline for this part. Then walk FEI->FBE->PBE->PEE.
-        r32(SIM_CLKDIV1) = CLKDIV1_120MHZ;
+        r32(reg::sim::CLKDIV1) = CLKDIV1_120MHZ;
         if (mcg_to_pee())
         {
             landed = 120000000u;
@@ -544,7 +482,7 @@ void arch_console_flush_sync(void)
     // Wait for the shift register to fully empty (S1.TC), not merely the data register
     // (S1.TDRE): TDRE leaves one byte still clocking out. Bounded like the sync writer.
     uint32_t spin = 0;
-    while ((r8(UART0_S1) & S1_TC) == 0)
+    while ((r8(UART0_S1) & reg::uart::S1_TC) == 0)
     {
         if (++spin > 1000000u)
         {
@@ -565,7 +503,29 @@ void arch_console_retune(void)
     r8(UART0_BDH) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
     r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
     r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F);
-    r8(UART0_C2) = C2_TE | C2_RE;
+    r8(UART0_C2) = reg::uart::C2_TE | reg::uart::C2_RE;
+}
+
+// Branch-clock oracle (arch.h): report the branch clock feeding a peripheral
+// block so a userspace driver derives its own divisor. The K64 clock tree splits
+// the UART tree in two: UART0/UART1 are system-clocked (= SystemCoreClock), while
+// UART2/3/4 and the bus peripherals (DSPI0, PIT) run at the bus clock (SystemCore
+// Clock / BUS_DIV). Two branches on one chip is exactly why the oracle is keyed by
+// block base. Computed from the LIVE SystemCoreClock so a clock-select retune is
+// reflected. Any block this chip does not model returns 0 (the driver keeps its
+// explicit fallback). Exact block-base match: the contract only promises the base.
+uint32_t arch_periph_clock_hz(uintptr_t base)
+{
+    if (base == mmap::UART0_BASE or base == mmap::UART1_BASE)
+    {
+        return SystemCoreClock; // system-clocked UARTs
+    }
+    if (base == mmap::UART2_BASE or base == mmap::UART3_BASE or base == mmap::UART4_BASE
+        or base == mmap::DSPI0_BASE or base == mmap::PIT_BASE)
+    {
+        return SystemCoreClock / BUS_DIV; // bus-clocked peripherals
+    }
+    return 0;
 }
 
 #if KICKOS_HAVE_MPU
@@ -605,28 +565,31 @@ extern "C" void kickos_arch_mpu_commit(void)
         // (= supervisor r/w/x), pinning supervisor full-access independent of UM.
         // Bit fields (both core masters): M0UM[2:0] M0SM[4:3], M1UM[8:6] M1SM[10:9].
         constexpr uint32_t core_user_and_sm =
-            (0x7u << 0) | (0x3u << 3) | (0x7u << 6) | (0x3u << 9);
-        r32(SYSMPU_RGDAAC0) &= ~core_user_and_sm;
-        r32(SYSMPU_CESR) |= SYSMPU_CESR_VLD; // (already enabled at reset)
+            reg::sysmpu::WORD2_M0UM_R | reg::sysmpu::WORD2_M0UM_W | reg::sysmpu::WORD2_M0UM_X
+            | reg::sysmpu::WORD2_M0SM
+            | reg::sysmpu::WORD2_M1UM_R | reg::sysmpu::WORD2_M1UM_W | reg::sysmpu::WORD2_M1UM_X
+            | reg::sysmpu::WORD2_M1SM;
+        r32(reg::sysmpu::RGDAAC0) &= ~core_user_and_sm;
+        r32(reg::sysmpu::CESR) |= reg::sysmpu::CESR_VLD; // (already enabled at reset)
         rgd0_ready = true;
     }
     // Program RGD1..(n) from the region set; invalidate the rest. RGD0 stays the
     // background. Writing WORD2 clears VLD, so set WORD0/1/2 then WORD3=VLD last.
-    for (size_t i = 0; i + 1 < SYSMPU_RGD_COUNT; i++)
+    for (size_t i = 0; i + 1 < reg::sysmpu::RGD_COUNT; i++)
     {
-        uintptr_t const rgd = SYSMPU_RGD + (i + 1) * 0x10;
+        uintptr_t const rgd = reg::sysmpu::RGD + (i + 1) * reg::sysmpu::RGD_STRIDE;
         if (i < n and regions[i].size >= 32)
         {
             uintptr_t const base = regions[i].base;
             uintptr_t const end = base + regions[i].size - 1;
-            r32(rgd + 0x0) = static_cast<uint32_t>(base);          // WORD0 SRTADDR[31:5]
-            r32(rgd + 0x4) = static_cast<uint32_t>(end);           // WORD1 ENDADDR[31:5]
-            r32(rgd + 0x8) = sysmpu_word2(regions[i].attr);        // WORD2 (clears VLD)
-            r32(rgd + 0xC) = 1u;                                   // WORD3 VLD=1
+            r32(rgd + 0x0) = static_cast<uint32_t>(base);              // WORD0 SRTADDR[31:5]
+            r32(rgd + 0x4) = static_cast<uint32_t>(end);              // WORD1 ENDADDR[31:5]
+            r32(rgd + reg::sysmpu::RGD_WORD2) = sysmpu_word2(regions[i].attr); // WORD2 (clears VLD)
+            r32(rgd + reg::sysmpu::RGD_WORD3) = reg::sysmpu::RGD_WORD3_VLD;    // WORD3 VLD=1
         }
         else
         {
-            r32(rgd + 0xC) = 0u; // invalidate the descriptor
+            r32(rgd + reg::sysmpu::RGD_WORD3) = 0u; // invalidate the descriptor
         }
     }
     __asm volatile("dsb" ::: "memory");
@@ -651,16 +614,16 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 // Rule 7 reserved set (K64 RM). Owns-for-life: the PIT time base, the clock/reset
 // gate blocks, and the bus-side SYSMPU (granting it would be total escalation --
 // userspace could rewrite the isolation regions). The watchdog INSTANCE is excluded
-// (neutralize-then-grant). Bases are the constants above; sizes hand-typed per RM.
+// (neutralize-then-grant). Bases from mmap.h; sizes hand-typed per RM.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {
-        {0x40037000u, 0x120u},  // PIT: MCR + ch0 + ch1 (RM ch.44). NOT ch2 @0x40037120 --
+        {mmap::PIT_BASE, 0x120u}, // PIT: MCR + ch0 + ch1 (RM ch.44). NOT ch2 @0x40037120 --
                                 //   k64drv legitimately grants CH2; the adjacency-allowed
                                 //   overlap predicate lets that grant sit at reserved_last+1.
-        {0x40048000u, 0x1000u}, // SIM: SCGC clock-gate registers (RM ch.12)
-        {0x40064000u, 0x1000u}, // MCG: PLL / clock source (RM ch.25)
-        {0x4000D000u, 0x1000u}, // SYSMPU: the bus-side MPU itself (RM ch.19)
+        {mmap::SIM_BASE, 0x1000u},    // SIM: SCGC clock-gate registers (RM ch.12)
+        {mmap::MCG_BASE, 0x1000u},    // MCG: PLL / clock source (RM ch.25)
+        {mmap::SYSMPU_BASE, 0x1000u}, // SYSMPU: the bus-side MPU itself (RM ch.19)
     };
     size_t n = sizeof(blocks) / sizeof(blocks[0]);
     if (n > max)
@@ -692,7 +655,7 @@ int arch_bitband_present(void)
 // Runs privileged (RGD0 full access), so it cannot itself fault.
 void arch_fault_report_extra(void)
 {
-    uint32_t cesr = r32(SYSMPU_CESR);
+    uint32_t cesr = r32(reg::sysmpu::CESR);
     uint32_t sperr = cesr >> 27; // CESR[31:27]; bit 31 -> port 0
     if (sperr == 0)
     {
@@ -700,14 +663,14 @@ void arch_fault_report_extra(void)
                         "fault outside an MPU slave port (peripheral bridge?)\n", cesr);
         return;
     }
-    for (size_t port = 0; port < SYSMPU_SLAVE_PORTS; port++)
+    for (size_t port = 0; port < reg::sysmpu::SLAVE_PORTS; port++)
     {
         if ((sperr & (1u << (4 - port))) == 0)
         {
             continue;
         }
-        uint32_t ear = r32(SYSMPU_EAR0 + port * 8u);
-        uint32_t edr = r32(SYSMPU_EDR0 + port * 8u);
+        uint32_t ear = r32(reg::sysmpu::EAR0 + port * 8u);
+        uint32_t edr = r32(reg::sysmpu::EDR0 + port * 8u);
         uint32_t master = (edr >> 4) & 0xFu;
         char const* rw = "R";
         if (edr & 1u)
@@ -718,7 +681,7 @@ void arch_fault_report_extra(void)
                         "EDR=0x%x\n", static_cast<unsigned>(port), ear, master, rw, edr);
         // W1C this port's SPERR, but PRESERVE VLD (bit 0, plain R/W): a bare
         // `= 1u<<(31-port)` writes VLD=0 and disables the whole SYSMPU.
-        r32(SYSMPU_CESR) = (cesr & SYSMPU_CESR_VLD) | (1u << (31 - port));
+        r32(reg::sysmpu::CESR) = (cesr & reg::sysmpu::CESR_VLD) | (1u << (31 - port));
     }
 }
 
@@ -732,7 +695,7 @@ void arch_console_write_sync(char const* buf, size_t n)
     for (size_t i = 0; i < n; i++)
     {
         uint32_t spin = 0;
-        while ((r8(UART0_S1) & S1_TDRE) == 0)
+        while ((r8(UART0_S1) & reg::uart::S1_TDRE) == 0)
         {
             if (++spin > 1000000u)
             {
@@ -747,7 +710,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 {
     *storage = console_tx_buf;
     *size = CONSOLE_TX_SIZE;
-    *irq_line = UART0_RXTX_IRQ;
+    *irq_line = irq::UART0_RXTX_IRQ;
     return &k64_console_backend;
 }
 
@@ -777,7 +740,7 @@ void arch_console_reclaim(void)
     r8(UART0_IR) = 0;    // IREN=0: infrared modulation on the TX pin
     r8(UART0_C7816) = 0; // ISO-7816 smartcard framing off
     r8(UART0_PFIFO) = 0; // TX/RX FIFO disabled (single-datum mode, as at reset)
-    r8(UART0_CFIFO) = CFIFO_TXFLUSH | CFIFO_RXFLUSH; // flush any queued FIFO contents
+    r8(UART0_CFIFO) = reg::uart::CFIFO_TXFLUSH | reg::uart::CFIFO_RXFLUSH; // flush any queued FIFO contents
 
     // Re-derive baud from the live SystemCoreClock (as uart0_init): 120 MHz or the
     // 20.97 MHz FEI fallback. BDH before BDL (BDL write latches the divisor).
@@ -788,15 +751,15 @@ void arch_console_reclaim(void)
     r8(UART0_BDL) = static_cast<uint8_t>(sbr & 0xFF);
     r8(UART0_C4) = static_cast<uint8_t>(brfa & 0x1F);
 
-    r8(UART0_C1) = 0;       // 8N1, no loops/parity/wake
-    r8(UART0_C2) = C2_TE;   // TX enable only (the polled banner needs no RX)
+    r8(UART0_C1) = 0;              // 8N1, no loops/parity/wake
+    r8(UART0_C2) = reg::uart::C2_TE; // TX enable only (the polled banner needs no RX)
 }
 
 // Kernel diagnostic LED = FRDM-K64F onboard RED (PTB22), active-low.
 void arch_diag_led_init(void)
 {
-    r32(SIM_SCGC5) |= SCGC5_PORTB; // clock PORTB (idempotent; uart0_init also sets it)
-    r32(PORTB_PCR22) = PCR_MUX_GPIO;
+    r32(reg::sim::SCGC5) |= reg::sim::SCGC5_PORTB; // clock PORTB (idempotent; uart0_init also sets it)
+    r32(PORTB_PCR22) = reg::port::PCR_MUX_GPIO;
     r32(GPIOB_PDDR) |= LED_RED_BIT; // PTB22 output
     r32(GPIOB_PSOR) = LED_RED_BIT;  // start OFF: drive high (active-low)
 }
@@ -811,6 +774,33 @@ void arch_diag_led_set(int on)
     {
         r32(GPIOB_PSOR) = LED_RED_BIT; // off: drive high
     }
+}
+
+// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console
+// or steal the diag LED. PTB16/17 = console RX/TX; PTB22 = diag LED.
+static bool mk64f_pin_kernel_owned(uint32_t port, uint32_t pin)
+{
+    return port == 1u and (pin == 16u or pin == 17u or pin == 22u);
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). PORTx base = 0x40049000 + port*0x1000
+// (A=0..E=4); SCGC5 port-clock bit = 1u<<(9+port); PCRn = base + pin*4. func = the raw PCR
+// value (0x100 = MUX ALT1 = GPIO; 0x300 = ALT3 = the console UART). Gate the PORT clock
+// FIRST (unclocked PCR access faults).
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port > 4u or pin > 31u)
+    {
+        return -KOS_EINVAL;
+    }
+    if (mk64f_pin_kernel_owned(port, pin))
+    {
+        return -KOS_EBUSY;
+    }
+    r32(reg::sim::SCGC5) |= (1u << (reg::sim::SCGC5_PORT_SHIFT + port)); // gate this PORT's clock (idempotent)
+    uintptr_t const pcr = mmap::PORTA_BASE + port * mmap::PORT_STRIDE + pin * reg::port::PCR_STRIDE;
+    r32(pcr) = func;
+    return 0;
 }
 
 void arch_shutdown(int status)

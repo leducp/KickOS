@@ -14,9 +14,8 @@
 // panic-critical console through a kickos_class link edge is out of scope here.
 // Today the leaf serves only the userspace k64uart driver.
 //
-// The K64F chip layer keeps its register map inline (no shared chip header), so
-// this leaf owns the one UART register it reads: S1 (RM 52.3.5). It does not
-// duplicate a definition that lives anywhere else.
+// The register map it reads (S1, RM 52.3.5) comes from the chip's shared
+// regs/uart.h -- the leaf sources the offset/field from there, not a local copy.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_MK64F_CLASS_UART_CLASS_H
 #define KICKOS_ARCH_ARM_CHIP_MK64F_CLASS_UART_CLASS_H
@@ -29,10 +28,6 @@ namespace mk64f
 {
 namespace driver
 {
-    // UART Status Register 1 (RM 52.3.5): S1.TDRE bit 7 = transmit-data-register empty.
-    constexpr uintptr_t UART_S1_OFFSET = 0x04u;
-    constexpr uint8_t UART_S1_TDRE = 1u << 7;
-
     // True when UART0 can accept another byte into the data register (D). The K64F
     // UART register block is BYTE-mapped, so the read must be an 8-bit load: a 32-bit
     // load at base+4 spans S1/S2/C3/D and reading D pops the RX FIFO.

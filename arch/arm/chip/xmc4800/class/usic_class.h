@@ -11,7 +11,7 @@
 // MPU-partitioned ELF, so this leaf is one shared read-only copy. That is why
 // it must carry no writable state.
 //
-// Register offsets + bit fields come from the chip's existing usic.h; this leaf
+// Register offsets + bit fields come from the chip's regs/usic.h; this leaf
 // adds NO register definitions of its own.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_CLASS_USIC_CLASS_H

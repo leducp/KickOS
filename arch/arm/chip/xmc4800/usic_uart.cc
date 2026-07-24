@@ -21,6 +21,11 @@
 
 #include "usic.h"
 
+#include "irq.h"
+#include "regs/port.h"
+#include "regs/scu.h"
+#include "regs/usic.h"
+
 #include <kickos/console_tx.h>
 
 #include <stddef.h>
@@ -35,62 +40,17 @@ extern "C"
 
 namespace
 {
-    namespace u = kickos::xmc::usic;
+    namespace u = kickos::xmc::usic;       // shared USIC mechanism API (usic.h)
+    namespace ru = kickos::xmc::reg::usic; // USIC register constants (regs/usic.h)
+    namespace rp = kickos::xmc::reg::port; // PORT registers + IOCR PC-field helpers
+    namespace rs = kickos::xmc::reg::scu;  // SCU clock-gate / reset pair
 
     constexpr uintptr_t U0C0 = u::U0C0_BASE;
 
-    // --- PORT1 (RM p.26-*): P1 base 0x48028100; IOCR4 controls P1.[7:4] -------
-    // Pn_IOCR0 = 0x48028010 + n*0x100, IOCR4 = IOCR0 + 4.
-    constexpr uintptr_t P1_IOCR4 = 0x48028114;
-    // PCx field is 5 bits: PC4 at [7:3], PC5 at [15:11] (RM Table for Pn_IOCR4).
-    constexpr uint32_t PC4_SHIFT = 3;
-    constexpr uint32_t PC5_SHIFT = 11;
-    constexpr uint32_t PC_MASK = 0x1Fu;
-    // PCx coding (RM Table 26-5): 10010B = push-pull, alternate output func 2.
-    // P1.5's ALT2 is U0C0.DOUT0 (RM Table 26-12 "Port I/O Functions"), the TX.
-    constexpr uint32_t PC_PP_ALT2 = 0x12u;
-    // 00000B = input, direct, no internal pull device. P1.4 is the RX input; the
-    // USIC reads it through the DX0 input stage regardless of output config.
-    constexpr uint32_t PC_INPUT = 0x00u;
-
-    // DX0CR.DSEL = 001B selects input line DX0B = P1.4 (RX) (RM p.18-173).
-    constexpr uint32_t DX0_DSEL_B = 0x1u;
-
-    // SCTR (RM p.18-183): SDIR(0)=0 LSB first; PDL(1)=1 idle/passive line high
-    // (UART idle); TRM[9:8]=01B shift control active-high (required for any
-    // transfer); FLE[21:16]=7 frame length 8 bits; WLE[27:24]=7 word length
-    // 8 bits (WLE=N means N+1 bits); DSM[3:2]=00B one bit through DX0/DOUT0.
-    constexpr uint32_t SCTR_PDL = 1u << 1;
-    constexpr uint32_t SCTR_TRM_ACTIVE = 0x1u << 8;
-    constexpr uint32_t SCTR_FLE_8 = 7u << 16;
-    constexpr uint32_t SCTR_WLE_8 = 7u << 24;
-
-    // TCSR (RM p.18-186): TDEN[11:10]=01B start a transfer when TDV=1;
-    // TDSSM(8)=1 single-shot so a buffered word is not resent (TDV clears at the
-    // transmit-buffer event).
-    constexpr uint32_t TCSR_TDEN_TDV = 0x1u << 10;
-    constexpr uint32_t TCSR_TDSSM = 1u << 8;
-
-    // PCR ASC mode (RM p.18-67): SMD(0)=1 majority sample (3 samples/bit);
-    // STPB(1)=0 one stop bit; SP[12:8]=9 sample point (must be <= DCTQ);
-    // TSTEN(17)=1 exposes the transfer-in-progress status in PSR.BUSY, used to
-    // drain the shifter without clearing anything (BUSY is type r; RM p.18-70).
-    constexpr uint32_t PCR_ASC_SMD = 1u << 0;
-    constexpr uint32_t PCR_ASC_SP = 9u << 8;
-    constexpr uint32_t PCR_ASC_TSTEN = 1u << 17;
-
-    // CCR (RM p.18-160): MODE[3:0]=2 selects the ASC (UART) protocol; writing
-    // this last enables the channel once everything else is configured.
-    constexpr uint32_t CCR_MODE_ASC = 0x2u;
-
-    // ASC-mode PSR line-error flags (RM p.18-70/71): RNS(4) receiver noise,
-    // FER0(5)/FER1(6) stop-bit framing errors, DLIF(11) data-lost (RX overrun).
-    // Parity is not enabled (CCR.PM=00B) so no parity flag is sampled here.
-    constexpr uint32_t PSR_RNS = 1u << 4;
-    constexpr uint32_t PSR_FER0 = 1u << 5;
-    constexpr uint32_t PSR_FER1 = 1u << 6;
-    constexpr uint32_t PSR_DLIF = 1u << 11;
-    constexpr uint32_t ASC_ERR_MASK = PSR_RNS | PSR_FER0 | PSR_FER1 | PSR_DLIF;
+    // P1 IOCR4 controls P1.[7:4]; P1.5 = ALT2 U0C0.DOUT0 (TX), P1.4 = DX0B input (RX).
+    constexpr uintptr_t P1_IOCR4 = rp::base(1) + rp::iocr_off(5);
+    constexpr uint32_t PC4_SHIFT = rp::pc_shift(4);
+    constexpr uint32_t PC5_SHIFT = rp::pc_shift(5);
 
     // Bounded so a misconfigured baud/enable NEVER hangs arch_console_write (it
     // feeds the kernel banner and every kos_print). Cap far exceeds any real
@@ -142,11 +102,6 @@ namespace
     char console_tx_buf[CONSOLE_TX_SIZE];
     console_tx_backend const xmc_console_backend = {
         xmc_tx_slot_free, xmc_tx_push, xmc_tx_irq_enable, xmc_tx_irq_disable};
-
-    // USIC0 service-request 0 -> NVIC line 84 (USIC0_0_IRQn). Confirm against the
-    // XMC4800 RM interrupt-node-assignment table; a wrong line silently never
-    // drains (the ring fills and falls back to the bounded sync path).
-    constexpr int USIC0_SR0_IRQ = 84;
 }
 
 extern "C"
@@ -156,21 +111,21 @@ void kickos_xmc_usic_init(void)
 {
     // Module clock on, out of reset (ungate before de-reset; RM 11.6), then the
     // kernel clock. USIC0 = bit 11 in the CGATCLR0/PRCLR0 pair.
-    u::module_clock_enable(u::SCU_CGATCLR0, u::SCU_PRCLR0, u::SCU_USIC0_BIT);
+    u::module_clock_enable(rs::CGATCLR0, rs::PRCLR0, rs::USIC0_GATE_BIT);
     u::kernel_clock_enable(U0C0);
 
     // Baud rate generator (fractional divider + ASC bit-time dividers).
     u::set_baud(U0C0, u::BAUD_115200_72MHZ);
 
     // Shift + transmit + protocol config while the channel is still disabled.
-    u::reg32(U0C0 + u::off::SCTR) = SCTR_WLE_8 | SCTR_FLE_8 | SCTR_TRM_ACTIVE | SCTR_PDL;
-    u::reg32(U0C0 + u::off::TCSR) = TCSR_TDEN_TDV | TCSR_TDSSM;
-    u::reg32(U0C0 + u::off::PCR) = PCR_ASC_SP | PCR_ASC_SMD | PCR_ASC_TSTEN;
+    u::reg32(U0C0 + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
+    u::reg32(U0C0 + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
+    u::reg32(U0C0 + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
     u::reg32(U0C0 + u::off::PSCR) = 0xFFFFFFFFu; // clear any stale protocol status flags
 
     // Route the RX input (P1.4 -> DX0B) into the ASC pre-processor. Input-stage
     // config must be done while CCR.MODE=0 (RM p.18-57).
-    u::select_input(U0C0, u::off::DX0CR, DX0_DSEL_B);
+    u::select_input(U0C0, u::off::DX0CR, ru::DX0_DSEL_B);
 
     // Route the transmit-buffer interrupt to service-request output SR0 (NVIC
     // line 84); TBIEN stays clear -- the console ring primes it on the first write.
@@ -178,15 +133,15 @@ void kickos_xmc_usic_init(void)
 
     // Enable the channel by selecting the ASC protocol (config must be complete
     // before this write).
-    u::reg32(U0C0 + u::off::CCR) = CCR_MODE_ASC;
+    u::reg32(U0C0 + u::off::CCR) = ru::CCR_MODE_ASC;
 
     // Pins LAST: P1.5 -> push-pull ALT2 (U0C0.DOUT0, TX); P1.4 -> input (RX). The
     // RM (p.18-57/58) requires the output ALT function be enabled only AFTER the
     // ASC mode is active, or the idle DOUT level can spike a spurious start bit.
     // RMW so P1.6/P1.7 (PC6/PC7) in the same IOCR4 are left untouched.
     uint32_t iocr = u::reg32(P1_IOCR4);
-    iocr &= ~((PC_MASK << PC4_SHIFT) | (PC_MASK << PC5_SHIFT));
-    iocr |= (PC_INPUT << PC4_SHIFT) | (PC_PP_ALT2 << PC5_SHIFT);
+    iocr &= ~((rp::PC_FIELD_MASK << PC4_SHIFT) | (rp::PC_FIELD_MASK << PC5_SHIFT));
+    iocr |= (rp::PC_INPUT_NOPULL << PC4_SHIFT) | (rp::PC_PP_ALT2 << PC5_SHIFT);
     u::reg32(P1_IOCR4) = iocr;
 }
 
@@ -220,10 +175,10 @@ void arch_console_reclaim(void)
     // (c) Re-establish baud + full ASC config to the exact init values. TCSR absolute
     // store also clears any DMA-trigger / interrupt-enable bits the driver set.
     u::set_baud(U0C0, u::BAUD_115200_72MHZ); // FDR + BRG
-    u::reg32(U0C0 + u::off::SCTR) = SCTR_WLE_8 | SCTR_FLE_8 | SCTR_TRM_ACTIVE | SCTR_PDL;
-    u::reg32(U0C0 + u::off::TCSR) = TCSR_TDEN_TDV | TCSR_TDSSM;
-    u::reg32(U0C0 + u::off::PCR) = PCR_ASC_SP | PCR_ASC_SMD | PCR_ASC_TSTEN;
-    u::select_input(U0C0, u::off::DX0CR, DX0_DSEL_B); // DX0 RX input mux
+    u::reg32(U0C0 + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
+    u::reg32(U0C0 + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
+    u::reg32(U0C0 + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
+    u::select_input(U0C0, u::off::DX0CR, ru::DX0_DSEL_B); // DX0 RX input mux
 
     // (d) Drop a stale Transmit-Data-Valid word a hostile driver may have loaded into
     // TBUF (TDV=1): FMR.MTDV=10B clears TDV so the pending word is gated off and never
@@ -245,7 +200,7 @@ void arch_console_reclaim(void)
     // follow are byte-clean. Unavoidable from the TX side once the line has been pinned
     // low past a frame boundary.
     u::reg32(U0C0 + u::off::PSCR) = 0xFFFFFFFFu;
-    u::reg32(U0C0 + u::off::CCR) = CCR_MODE_ASC;
+    u::reg32(U0C0 + u::off::CCR) = ru::CCR_MODE_ASC;
 }
 
 void kickos_xmc_usic_write(char const* buf, size_t n)
@@ -322,14 +277,14 @@ size_t kickos_xmc_usic_read(char* buf, size_t n)
 // the raw PSR error bits that were set (0 = clean line). HW-unvalidated.
 uint32_t kickos_xmc_usic_errors(void)
 {
-    return u::status_read_clear(U0C0, ASC_ERR_MASK);
+    return u::status_read_clear(U0C0, ru::ASC_ERR_MASK);
 }
 
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
     *storage = console_tx_buf;
     *size = CONSOLE_TX_SIZE;
-    *irq_line = USIC0_SR0_IRQ;
+    *irq_line = kickos::xmc::irq::USIC0_SR0;
     return &xmc_console_backend;
 }
 

@@ -16,6 +16,22 @@
 
 #include <stdint.h>
 
+// Hand-rolled register map for this chip (clean-room, no ESP-IDF/HAL pack).
+// Bases in mmap.h, matrix/CPU/logical IRQ numbers in irq.h, per-peripheral
+// offsets/fields in regs/.
+#include "mmap.h"
+#include "irq.h"
+#include "regs/uart.h"
+#include "regs/timg.h"
+#include "regs/rtc_cntl.h"
+#include "regs/dport.h"
+#include "regs/gpio.h"
+#include "regs/system.h"
+
+namespace mmap = kickos::esp32::mmap;
+namespace reg = kickos::esp32::reg;
+namespace irq = kickos::esp32::irq;
+
 namespace kickos
 {
     int kmain(int argc, char** argv);
@@ -46,47 +62,10 @@ namespace
 {
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
-    // --- UART0 (TRM UART chapter). ROM leaves it configured at 115200 8N1. ---
-    constexpr uintptr_t UART0_BASE = 0x3FF40000;
-    constexpr uintptr_t UART0_FIFO = UART0_BASE + 0x00;
-    constexpr uintptr_t UART0_INT_ENA = UART0_BASE + 0x0C; // per-source interrupt enable
-    constexpr uintptr_t UART0_INT_CLR = UART0_BASE + 0x10; // write-1-to-clear
-    constexpr uintptr_t UART0_STATUS = UART0_BASE + 0x1C;
-    constexpr uintptr_t UART0_CONF1 = UART0_BASE + 0x24;
-    // STATUS.TXFIFO_CNT is bits [23:16]: bytes currently in the 128-entry TX FIFO.
-    constexpr uint32_t TXFIFO_CNT_SHIFT = 16;
-    constexpr uint32_t TXFIFO_CNT_MASK = 0xFF;
-    constexpr uint32_t TXFIFO_LIMIT = 126; // leave headroom below the 128-deep FIFO
-
-    // UART interrupt bit 1 = TX FIFO below the empty threshold. A LEVEL source: it
-    // stays asserted while txfifo_cnt < CONF1.TXFIFO_EMPTY_THRHD, so INT_ENA (not
-    // INT_CLR) is what gates it -- the K64F TDRE twin. This is the ONLY UART source
-    // the console arms; the drain ISR clears it by dropping INT_ENA when the ring
-    // empties.
-    constexpr uint32_t UART_TXFIFO_EMPTY_INT = 1u << 1;
-    // CONF1.TXFIFO_EMPTY_THRHD: fire while the FIFO holds fewer than this many bytes.
-    // The TX FIFO is 128 deep, so the field is 7-bit (mask 0x7F), not 8. 64 keeps the
-    // FIFO fed without one interrupt per byte -- it fits either width, so this mask is
-    // conservative rather than behavior-changing. Exact field width/position is
-    // HW-unverified (review checklist: "CONF1 THRHD width").
-    constexpr uint32_t TXFIFO_EMPTY_THRHD_SHIFT = 8;
-    constexpr uint32_t TXFIFO_EMPTY_THRHD_MASK = 0x7F;
-    constexpr uint32_t TXFIFO_EMPTY_THRHD = 64;
-
-    // Interrupt matrix (DPORT): route the UART0 peripheral interrupt SOURCE to a CPU
-    // interrupt NUMBER on the PRO CPU. UART0's map register is DPORT+0x18C (peripheral
-    // source 34). Target CPU interrupt 13: an external, LEVEL-triggered, level-1 line
-    // (bit 13 is in KICKOS_L1_INT_MASK) and free here -- the timer owns internal int
-    // 6, the software doorbell internal int 7, neither matrix-routable.
-    constexpr uintptr_t DPORT_PRO_UART_INTR_MAP = 0x3FF0018C;
-    constexpr uint32_t UART0_CPU_INT = 13;
-
     // Logical kernel IRQ line the console_tx drain ISR is bound to (irq_table index).
-    // DISTINCT namespace from the CPU interrupt number above: on this arch the arch.h
-    // irq_* seam is a software controller over logical lines, decoupled from the
-    // physical Xtensa interrupts. Kept clear of the selftest's injected lines
-    // (5/6/7/9/11) and the bench line (20).
-    constexpr int CONSOLE_TX_LINE = 30;
+    // DISTINCT namespace from the CPU interrupt number: on this arch the arch.h irq_*
+    // seam is a software controller over logical lines, decoupled from the physical
+    // Xtensa interrupts. See regs irq.h for the three numbering spaces.
 
     // --- Watchdogs. The ROM (running the image in flash-boot mode) leaves THREE
     //     watchdogs armed: the RTC WDT and the two Timer Group MWDTs (TIMG0, TIMG1).
@@ -97,95 +76,43 @@ namespace
     //     Clearing WDT_EN alone is NOT enough: the ROM arms the stage-0 watchdog
     //     via the separate FLASHBOOT_MOD_EN bit (a flash-boot watchdog independent
     //     of WDT_EN), which stays live until explicitly cleared. So each WDT needs
-    //     both WDT_EN and FLASHBOOT_MOD_EN cleared. Bits/offsets are from the ESP32
-    //     TRM (RTC_CNTL + TIMG watchdog register chapters). NOTE: the classic ESP32
-    //     has NO RTC super-watchdog (SWD) --
-    //     that block (RTC_CNTL_SWD_*) was introduced on the ESP32-S2 and later, so
-    //     there is nothing more to disable here. ---
-    constexpr uint32_t WDT_WKEY = 0x50D83AA1;         // RTC + TIMG MWDT write-protect key
-    constexpr uint32_t WDT_EN = 1u << 31;             // {RTC,TIMG}_WDTCONFIG0.WDT_EN
-    constexpr uint32_t RTC_WDT_FLASHBOOT_EN = 1u << 10;  // RTC_CNTL_WDT_FLASHBOOT_MOD_EN
-    constexpr uint32_t TIMG_WDT_FLASHBOOT_EN = 1u << 14; // TIMG_WDT_FLASHBOOT_MOD_EN
-
-    constexpr uintptr_t RTC_CNTL_BASE = 0x3FF48000;
-    constexpr uintptr_t RTC_WDTCONFIG0 = RTC_CNTL_BASE + 0x8C;
-    constexpr uintptr_t RTC_WDTWPROTECT = RTC_CNTL_BASE + 0xA4;
-
-    // Timer groups are 0x1000 apart (TIMG0 @ 0x3FF5F000, TIMG1 @ 0x3FF60000).
-    constexpr uintptr_t TIMG0_BASE = 0x3FF5F000;
-    constexpr uintptr_t TIMG1_BASE = 0x3FF60000;
-    constexpr uintptr_t TIMG_WDTCONFIG0_OFF = 0x48;
-    constexpr uintptr_t TIMG_WDTWPROTECT_OFF = 0x64;
-
+    //     both WDT_EN and FLASHBOOT_MOD_EN cleared. NOTE: the classic ESP32 has NO
+    //     RTC super-watchdog (SWD) -- that block (RTC_CNTL_SWD_*) was introduced on
+    //     the ESP32-S2 and later, so there is nothing more to disable here. ---
     void timg_wdt_disable(uintptr_t base)
     {
-        r32(base + TIMG_WDTWPROTECT_OFF) = WDT_WKEY;
-        r32(base + TIMG_WDTCONFIG0_OFF) &= ~(WDT_EN | TIMG_WDT_FLASHBOOT_EN);
-        r32(base + TIMG_WDTWPROTECT_OFF) = 0;
+        r32(base + reg::timg::WDTWPROTECT_OFF) = reg::timg::WDT_WKEY;
+        r32(base + reg::timg::WDTCONFIG0_OFF) &= ~(reg::timg::WDT_EN | reg::timg::WDT_FLASHBOOT_MOD_EN);
+        r32(base + reg::timg::WDTWPROTECT_OFF) = 0;
     }
 
     void wdt_disable()
     {
-        r32(RTC_WDTWPROTECT) = WDT_WKEY;
-        r32(RTC_WDTCONFIG0) &= ~(WDT_EN | RTC_WDT_FLASHBOOT_EN);
-        r32(RTC_WDTWPROTECT) = 0;
+        r32(reg::rtc_cntl::WDTWPROTECT) = reg::rtc_cntl::WDT_WKEY;
+        r32(reg::rtc_cntl::WDTCONFIG0) &= ~(reg::rtc_cntl::WDT_EN | reg::rtc_cntl::WDT_FLASHBOOT_MOD_EN);
+        r32(reg::rtc_cntl::WDTWPROTECT) = 0;
 
-        timg_wdt_disable(TIMG0_BASE);
-        timg_wdt_disable(TIMG1_BASE);
+        timg_wdt_disable(mmap::TIMG0_BASE);
+        timg_wdt_disable(mmap::TIMG1_BASE);
     }
 
     // --- CPU clock: raise the core from the ROM's 40 MHz XTAL to the 240 MHz PLL.
     //     The classic ESP32 makes 240 MHz from the 480 MHz BBPLL divided by 2. The
     //     BBPLL analog register file is NOT memory-mapped -- it is reached over the
     //     chip's internal "reg-I2C" bus, whose bit-level transaction lives in the
-    //     ESP32 ROM. We call that ROM routine at its fixed entry (0x400041A4, the
-    //     same symbol the IDF links as _regi2c_impl_write) rather than re-implement
+    //     ESP32 ROM. We call that ROM routine at its fixed entry (mmap::ROM_REGI2C_WRITE,
+    //     the same symbol the IDF links as _regi2c_impl_write) rather than re-implement
     //     the analog-master protocol. Register addresses/bitfields and the 480 MHz/
     //     40 MHz-XTAL analog values are clean-room facts from the ESP32 TRM (RTC_CNTL
     //     + DPORT clock chapters, analog-PLL description). ---
-    constexpr uint32_t CPU_CLOCK_HZ = 240000000u;
-    constexpr uint32_t APB_CLOCK_HZ = 80000000u; // fixed 80 MHz on PLL (both 160/240 CPU)
-    constexpr uint32_t CONSOLE_BAUD = 115200u;   // the baud the ROM left UART0 at
-
-    constexpr uintptr_t RTC_CNTL_OPTIONS0 = RTC_CNTL_BASE + 0x00;
-    constexpr uintptr_t RTC_CNTL_DBIAS_REG = RTC_CNTL_BASE + 0x7C; // core-voltage (dbias)
-    constexpr uintptr_t RTC_CNTL_CLK_CONF = RTC_CNTL_BASE + 0x70;
-    constexpr uint32_t RTC_CNTL_BIAS_I2C_FORCE_PD = 1u << 18; // internal reg-I2C bus PD
-    constexpr uint32_t RTC_CNTL_BB_I2C_FORCE_PD = 1u << 6;
-    constexpr uint32_t RTC_CNTL_BBPLL_I2C_FORCE_PD = 1u << 8;
-    constexpr uint32_t RTC_CNTL_BBPLL_FORCE_PD = 1u << 10;
-    constexpr uint32_t DIG_DBIAS_SHIFT = 11; // RTC_CNTL_DIG_DBIAS_WAK [13:11]
-    constexpr uint32_t DIG_DBIAS_MASK = 0x7;
-    constexpr uint32_t DIG_DBIAS_1V25 = 7;   // core voltage required for 240 MHz
-    constexpr uint32_t SOC_CLK_SEL_SHIFT = 27; // RTC_CNTL_SOC_CLK_SEL [28:27]
-    constexpr uint32_t SOC_CLK_SEL_MASK = 0x3;
-    constexpr uint32_t SOC_CLK_SEL_PLL = 1;    // 0=XTAL 1=PLL 2=CK8M 3=APLL
-
-    constexpr uintptr_t DPORT_CPU_PER_CONF = 0x3FF0003C;
-    constexpr uint32_t CPUPERIOD_SEL_240 = 2; // CPUPERIOD_SEL [1:0]: 0=80 1=160 2=240
 
     // The classic-ESP32 BBPLL has NO memory-mapped lock/ready bit (esp-idf itself
     // times the PLL enable with a fixed delay). Its real robustness primitive is a
     // slow-clock-domain barrier: start a TIMG0 RTC calibration for 0 slow cycles and
     // wait for RDY, which the hardware sets on the next RTC-slow edge -- so the analog
     // writes we just made have provably latched across the clock-domain crossing
-    // before we switch the CPU onto the PLL. RTCCALICFG = TIMG0 + 0x68.
-    constexpr uintptr_t TIMG0_RTCCALICFG = TIMG0_BASE + 0x68;
-    constexpr uint32_t RTC_CALI_START = 1u << 31; // CLK_SEL=[14:13]=0 (RTC_SLOW), MAX=[30:16]=0
-    constexpr uint32_t RTC_CALI_RDY = 1u << 15;
-
-    // Internal analog-I2C bus gate: bits [17:8] gate the analog blocks; bit 17 is
-    // the BBPLL. Reset gates all, then ungate the BBPLL block before reg-I2C access.
-    constexpr uintptr_t ANA_CONFIG_REG = 0x6000E044;
-    constexpr uint32_t ANA_CONFIG_ALL_GATES = 0x3FFu << 8;
-    constexpr uint32_t ANA_CONFIG_BBPLL_GATE = 1u << 17;
-
-    // UART0 fractional clock divider: integer part [19:0], 1/16 fraction [23:20].
-    constexpr uintptr_t UART0_CLKDIV = UART0_BASE + 0x14;
-
-    // BBPLL over reg-I2C: block id 0x66, host id 4 (ESP32 TRM analog-PLL block).
-    constexpr uint8_t I2C_BBPLL = 0x66;
-    constexpr uint8_t I2C_BBPLL_HOSTID = 4;
+    // before we switch the CPU onto the PLL.
+    constexpr uintptr_t TIMG0_RTCCALICFG = mmap::TIMG0_BASE + reg::timg::RTCCALICFG_OFF;
 
     inline uint32_t rd_ccount()
     {
@@ -211,8 +138,8 @@ namespace
         // ROM _regi2c_impl_write(block, host_id, reg_add, data) -- windowed ABI,
         // fixed ROM address. Does the whole analog reg-I2C transaction internally.
         auto rom_regi2c_write =
-            reinterpret_cast<void (*)(uint8_t, uint8_t, uint8_t, uint8_t)>(0x400041A4u);
-        rom_regi2c_write(I2C_BBPLL, I2C_BBPLL_HOSTID, reg_add, data);
+            reinterpret_cast<void (*)(uint8_t, uint8_t, uint8_t, uint8_t)>(mmap::ROM_REGI2C_WRITE);
+        rom_regi2c_write(reg::system::I2C_BBPLL, reg::system::I2C_BBPLL_HOSTID, reg_add, data);
     }
 
     // Wait one RTC-slow cycle so pending analog/RTC writes latch across the clock
@@ -220,11 +147,11 @@ namespace
     // the cap rather than hanging -- the caller's fixed settle delay still covers it.
     void wait_slow_cycle()
     {
-        r32(TIMG0_RTCCALICFG) = 0;               // CLK_SEL=RTC_SLOW, MAX=0, clear RDY/START
-        r32(TIMG0_RTCCALICFG) = RTC_CALI_START;  // RDY sets on the next slow edge
+        r32(TIMG0_RTCCALICFG) = 0;                       // CLK_SEL=RTC_SLOW, MAX=0, clear RDY/START
+        r32(TIMG0_RTCCALICFG) = reg::timg::CALI_START;   // RDY sets on the next slow edge
         for (uint32_t i = 0; i < 200000u; i++)
         {
-            if ((r32(TIMG0_RTCCALICFG) & RTC_CALI_RDY) != 0)
+            if ((r32(TIMG0_RTCCALICFG) & reg::timg::CALI_RDY) != 0)
             {
                 return;
             }
@@ -235,13 +162,14 @@ namespace
     {
         // Open the internal reg-I2C bus to the BBPLL: reset gates all analog blocks,
         // then ungate BBPLL (bit 17).
-        r32(ANA_CONFIG_REG) |= ANA_CONFIG_ALL_GATES;
-        r32(ANA_CONFIG_REG) &= ~ANA_CONFIG_BBPLL_GATE;
+        r32(reg::system::ANA_CONFIG) |= reg::system::ANA_CONFIG_ALL_GATES;
+        r32(reg::system::ANA_CONFIG) &= ~reg::system::ANA_CONFIG_BBPLL_GATE;
 
         // Power up the reg-I2C bus and the BBPLL analog block (clear force-power-down).
-        r32(RTC_CNTL_OPTIONS0) &= ~RTC_CNTL_BIAS_I2C_FORCE_PD;
-        r32(RTC_CNTL_OPTIONS0) &=
-            ~(RTC_CNTL_BB_I2C_FORCE_PD | RTC_CNTL_BBPLL_FORCE_PD | RTC_CNTL_BBPLL_I2C_FORCE_PD);
+        r32(reg::rtc_cntl::OPTIONS0) &= ~reg::rtc_cntl::BIAS_I2C_FORCE_PD;
+        r32(reg::rtc_cntl::OPTIONS0) &= ~(reg::rtc_cntl::BB_I2C_FORCE_PD |
+                                          reg::rtc_cntl::BBPLL_FORCE_PD |
+                                          reg::rtc_cntl::BBPLL_I2C_FORCE_PD);
         wait_slow_cycle(); // the power-up must latch before the reg-I2C config writes
 
         // BBPLL reset/calibration defaults (byte offsets 0/1/4/10/12 in the block).
@@ -253,10 +181,10 @@ namespace
 
         // Raise core voltage to 1.25 V BEFORE locking the PLL -- 240 MHz is unstable
         // at the XTAL-boot voltage. Still on the 40 MHz XTAL here, so 40 cyc/us.
-        uint32_t dbias = r32(RTC_CNTL_DBIAS_REG);
-        dbias &= ~(DIG_DBIAS_MASK << DIG_DBIAS_SHIFT);
-        dbias |= DIG_DBIAS_1V25 << DIG_DBIAS_SHIFT;
-        r32(RTC_CNTL_DBIAS_REG) = dbias;
+        uint32_t dbias = r32(reg::rtc_cntl::DBIAS_REG);
+        dbias &= ~(reg::rtc_cntl::DIG_DBIAS_MASK << reg::rtc_cntl::DIG_DBIAS_SHIFT);
+        dbias |= reg::rtc_cntl::DIG_DBIAS_1V25 << reg::rtc_cntl::DIG_DBIAS_SHIFT;
+        r32(reg::rtc_cntl::DBIAS_REG) = dbias;
         delay_us(3, 40);
 
         // Program the BBPLL to 480 MHz for a 40 MHz crystal: div_ref=0, div7_0=28,
@@ -272,27 +200,28 @@ namespace
 
         // Select 480/2 = 240 MHz, then route the CPU off the XTAL onto the PLL. The
         // divider must be set before the source flip.
-        r32(DPORT_CPU_PER_CONF) = CPUPERIOD_SEL_240;
-        uint32_t clk = r32(RTC_CNTL_CLK_CONF);
-        clk &= ~(SOC_CLK_SEL_MASK << SOC_CLK_SEL_SHIFT);
-        clk |= SOC_CLK_SEL_PLL << SOC_CLK_SEL_SHIFT;
-        r32(RTC_CNTL_CLK_CONF) = clk;
+        r32(reg::dport::CPU_PER_CONF) = reg::dport::CPUPERIOD_SEL_240;
+        uint32_t clk = r32(reg::rtc_cntl::CLK_CONF);
+        clk &= ~(reg::rtc_cntl::SOC_CLK_SEL_MASK << reg::rtc_cntl::SOC_CLK_SEL_SHIFT);
+        clk |= reg::rtc_cntl::SOC_CLK_SEL_PLL << reg::rtc_cntl::SOC_CLK_SEL_SHIFT;
+        r32(reg::rtc_cntl::CLK_CONF) = clk;
 
         // CCOUNT/CCOMPARE0 now tick at 240 MHz: publish it so arch_xtensa.cc's
         // ns<->cycle math (which reads SystemCoreClock live) stays coherent.
-        SystemCoreClock = CPU_CLOCK_HZ;
+        SystemCoreClock = reg::system::CPU_CLOCK_HZ;
         delay_us(30, 240); // settle at the new clock (240 cyc/us now)
 
         // APB doubled 40->80 MHz, so the ROM's UART0 divider now halves the baud.
         // Drain any in-flight byte, then recompute CLKDIV for 80 MHz APB. clkdiv is
         // in 1/16 units: integer=[19:0], fraction=[23:20].
-        while (((r32(UART0_STATUS) >> TXFIFO_CNT_SHIFT) & TXFIFO_CNT_MASK) != 0)
+        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK) != 0)
         {
         }
-        uint32_t clkdiv16 = (APB_CLOCK_HZ << 4) / CONSOLE_BAUD;
+        uint32_t clkdiv16 = (reg::system::APB_CLOCK_HZ << 4) / reg::uart::CONSOLE_BAUD;
         uint32_t integer = clkdiv16 >> 4;
         uint32_t frac = clkdiv16 & 0xF;
-        r32(UART0_CLKDIV) = (frac << 20) | (integer & 0xFFFFF);
+        r32(reg::uart::CLKDIV) =
+            (frac << reg::uart::CLKDIV_FRAC_SHIFT) | (integer & reg::uart::CLKDIV_INT_MASK);
     }
 
     // --- Monotonic clock: TIMG0 timer T0, a 64-bit free-running up-counter -------
@@ -305,32 +234,19 @@ namespace
     // by WAITI (the idle path clock-gates the core, freezing CCOUNT every idle); the
     // TIMG runs off APB, which keeps running in plain WAITI -- so this also removes
     // the lose-time-on-every-idle error the CCOUNT source carries.
-    //
-    // Register map (ESP32 TRM ch.18 "Timer Group", TIMGn_T0* at TIMG0_BASE offsets;
-    // consistent with the WDT block at +0x48 already used here for the MWDT, so T0
-    // owns +0x00..+0x20, T1 +0x24..+0x44, WDT +0x48+).
-    constexpr uintptr_t TIMG0_T0CONFIG = TIMG0_BASE + 0x00; // TIMGn_T0CONFIG_REG
-    constexpr uintptr_t TIMG0_T0LO = TIMG0_BASE + 0x04;     // latched low 32 bits (RO)
-    constexpr uintptr_t TIMG0_T0HI = TIMG0_BASE + 0x08;     // latched high 32 bits (RO)
-    constexpr uintptr_t TIMG0_T0UPDATE = TIMG0_BASE + 0x0C; // write -> latch count to LO/HI
-    constexpr uintptr_t TIMG0_T0LOADLO = TIMG0_BASE + 0x18; // reload value, low
-    constexpr uintptr_t TIMG0_T0LOADHI = TIMG0_BASE + 0x1C; // reload value, high
-    constexpr uintptr_t TIMG0_T0LOAD = TIMG0_BASE + 0x20;   // write -> counter <- {HI,LO}
-
-    // TIMGn_T0CONFIG_REG fields (ESP32 TRM ch.18): EN[31] start, INCREASE[30] count
-    // up, AUTORELOAD[29] reload-on-alarm, DIVIDER[28:13] 16-bit APB prescaler,
-    // ALARM_EN[10]. Free-running == INCREASE=1, AUTORELOAD=0, ALARM_EN=0.
-    constexpr uint32_t TIMG_T0_EN = 1u << 31;
-    constexpr uint32_t TIMG_T0_INCREASE = 1u << 30;
-    constexpr uint32_t TIMG_T0_DIVIDER_SHIFT = 13;
+    constexpr uintptr_t TIMG0_T0CONFIG = mmap::TIMG0_BASE + reg::timg::T0CONFIG_OFF;
+    constexpr uintptr_t TIMG0_T0LO = mmap::TIMG0_BASE + reg::timg::T0LO_OFF;
+    constexpr uintptr_t TIMG0_T0HI = mmap::TIMG0_BASE + reg::timg::T0HI_OFF;
+    constexpr uintptr_t TIMG0_T0UPDATE = mmap::TIMG0_BASE + reg::timg::T0UPDATE_OFF;
+    constexpr uintptr_t TIMG0_T0LOADLO = mmap::TIMG0_BASE + reg::timg::T0LOADLO_OFF;
+    constexpr uintptr_t TIMG0_T0LOADHI = mmap::TIMG0_BASE + reg::timg::T0LOADHI_OFF;
+    constexpr uintptr_t TIMG0_T0LOAD = mmap::TIMG0_BASE + reg::timg::T0LOAD_OFF;
 
     // Prescaler off the 80 MHz APB (fixed on the PLL for both 160/240 MHz CPU; see
-    // clock_init_240mhz). Divider 2 is the minimum unambiguous value -- the divider
-    // field treats 0/1 as special-cased on this silicon, so 2 sidesteps that trap
-    // and gives the highest resolution: 80/2 = 40 MHz -> 25 ns/tick. A 64-bit
+    // clock_init_240mhz). reg::timg::DIVIDER=2 gives the highest resolution while
+    // dodging the field's special-cased 0/1: 80/2 = 40 MHz -> 25 ns/tick. A 64-bit
     // counter at 40 MHz wraps in ~4600 years, so there is no wrap concern at all.
-    constexpr uint32_t TIMG_DIVIDER = 2;
-    constexpr uint32_t TIMG_HZ = APB_CLOCK_HZ / TIMG_DIVIDER; // 40 MHz
+    constexpr uint32_t TIMG_HZ = reg::system::APB_CLOCK_HZ / reg::timg::DIVIDER; // 40 MHz
 
     // ticks -> ns reciprocal multiply (the K64F pit pattern): ns = ticks*1e9/HZ via
     // mult = (1e9<<32)/HZ, ns = (ticks*mult)>>32, done as a 64x64->64 split so the
@@ -347,13 +263,13 @@ namespace
         // The TIMG0 APB clock is already live -- the ROM armed its MWDT and
         // clock_init_240mhz's wait_slow_cycle drives TIMG0 RTCCALICFG -- so no DPORT
         // peripheral-clock ungate is needed here.
-        // Free-running up-counter: no alarm, no autoreload, prescaler = TIMG_DIVIDER.
-        r32(TIMG0_T0CONFIG) = TIMG_T0_INCREASE | (TIMG_DIVIDER << TIMG_T0_DIVIDER_SHIFT);
+        // Free-running up-counter: no alarm, no autoreload, prescaler = reg::timg::DIVIDER.
+        r32(TIMG0_T0CONFIG) = reg::timg::T0_INCREASE | (reg::timg::DIVIDER << reg::timg::T0_DIVIDER_SHIFT);
         r32(TIMG0_T0LOADLO) = 0;
         r32(TIMG0_T0LOADHI) = 0;
         r32(TIMG0_T0LOAD) = 1; // any write loads the counter from {LOADHI,LOADLO} = 0
         r32(TIMG0_T0CONFIG) =
-            TIMG_T0_EN | TIMG_T0_INCREASE | (TIMG_DIVIDER << TIMG_T0_DIVIDER_SHIFT);
+            reg::timg::T0_EN | reg::timg::T0_INCREASE | (reg::timg::DIVIDER << reg::timg::T0_DIVIDER_SHIFT);
     }
 
     // Read the 64-bit T0 count. The live counter is NOT directly readable: write
@@ -376,20 +292,21 @@ namespace
 
     // --- Buffered console TX backend (console_tx.h). The ring drains via the UART0
     // TX-empty interrupt; slot_free/push touch the FIFO + status regs, irq_enable/
-    // disable gate UART_TXFIFO_EMPTY_INT AT THE PERIPHERAL (the CPU line stays armed
-    // in INTENABLE). ---
+    // disable gate reg::uart::TXFIFO_EMPTY_INT AT THE PERIPHERAL (the CPU line stays
+    // armed in INTENABLE). ---
     int esp32_tx_slot_free(void)
     {
-        return ((r32(UART0_STATUS) >> TXFIFO_CNT_SHIFT) & TXFIFO_CNT_MASK) < TXFIFO_LIMIT;
+        return ((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK) <
+               reg::uart::TXFIFO_LIMIT;
     }
-    void esp32_tx_push(uint8_t b) { r32(UART0_FIFO) = b; }
+    void esp32_tx_push(uint8_t b) { r32(reg::uart::FIFO) = b; }
     void esp32_tx_irq_enable(void)
     {
-        r32(UART0_INT_ENA) = r32(UART0_INT_ENA) | UART_TXFIFO_EMPTY_INT;
+        r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;
     }
     void esp32_tx_irq_disable(void)
     {
-        r32(UART0_INT_ENA) = r32(UART0_INT_ENA) & ~UART_TXFIFO_EMPTY_INT;
+        r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~reg::uart::TXFIFO_EMPTY_INT;
     }
 
     constexpr uint32_t CONSOLE_TX_SIZE = 512; // power of two; > kprintf's 256B buffer
@@ -409,16 +326,17 @@ namespace
         // and ack anything it left latched. Critical: CPU int 13 is armed below while
         // the ring is still unarmed, so a stale ROM-enabled source would storm the
         // level-1 dispatcher. console_tx_write re-enables ONLY TXFIFO_EMPTY, later.
-        r32(UART0_INT_ENA) = 0;
-        r32(UART0_INT_CLR) = 0xFFFFFFFFu;
+        r32(reg::uart::INT_ENA) = 0;
+        r32(reg::uart::INT_CLR) = 0xFFFFFFFFu;
 
-        uint32_t conf1 = r32(UART0_CONF1);
-        conf1 &= ~(TXFIFO_EMPTY_THRHD_MASK << TXFIFO_EMPTY_THRHD_SHIFT);
-        conf1 |= (TXFIFO_EMPTY_THRHD & TXFIFO_EMPTY_THRHD_MASK) << TXFIFO_EMPTY_THRHD_SHIFT;
-        r32(UART0_CONF1) = conf1;
+        uint32_t conf1 = r32(reg::uart::CONF1);
+        conf1 &= ~(reg::uart::TXFIFO_EMPTY_THRHD_MASK << reg::uart::TXFIFO_EMPTY_THRHD_SHIFT);
+        conf1 |= (reg::uart::TXFIFO_EMPTY_THRHD & reg::uart::TXFIFO_EMPTY_THRHD_MASK)
+                 << reg::uart::TXFIFO_EMPTY_THRHD_SHIFT;
+        r32(reg::uart::CONF1) = conf1;
 
-        r32(DPORT_PRO_UART_INTR_MAP) = UART0_CPU_INT;
-        kickos_lx6_bind_console_int(static_cast<int>(UART0_CPU_INT), CONSOLE_TX_LINE);
+        r32(reg::dport::PRO_UART_INTR_MAP) = irq::UART0_CPU_INT;
+        kickos_lx6_bind_console_int(static_cast<int>(irq::UART0_CPU_INT), irq::CONSOLE_TX_LINE);
     }
 }
 
@@ -426,33 +344,23 @@ extern "C"
 {
 
 // --- Kernel diagnostic LED: the onboard LED on GPIO2 (active-high; DOIT ESP32
-//     DevKit v1 / NodeMCU-32S blue LED). GPIO
-//     bank-0 write-1-to-set/clear registers; GPIO2's pad is switched to the GPIO
-//     function via its IO_MUX register (MCU_SEL=GPIO(2), driver strength 2, input
-//     disabled). Base 0x3FF4_4000 (GPIO) / 0x3FF4_9000 (IO_MUX).
-constexpr uintptr_t GPIO_OUT_W1TS = 0x3FF44008;
-constexpr uintptr_t GPIO_OUT_W1TC = 0x3FF4400C;
-constexpr uintptr_t GPIO_ENABLE_W1TS = 0x3FF44024;
-constexpr uintptr_t IO_MUX_GPIO2 = 0x3FF49000 + 0x40;
-constexpr uint32_t LED_BIT = 1u << 2;
-constexpr uint32_t IO_MUX_GPIO_FUNC = (2u << 12) | (2u << 10); // MCU_SEL=GPIO, DRV=2, IE off
-
+//     DevKit v1 / NodeMCU-32S blue LED). Register map in regs/gpio.h. ---
 void arch_diag_led_init(void)
 {
-    r32(IO_MUX_GPIO2) = IO_MUX_GPIO_FUNC;
-    r32(GPIO_ENABLE_W1TS) = LED_BIT;
-    r32(GPIO_OUT_W1TC) = LED_BIT; // start dark
+    r32(reg::gpio::IO_MUX_GPIO2) = reg::gpio::IO_MUX_GPIO_FUNC;
+    r32(reg::gpio::ENABLE_W1TS) = reg::gpio::LED_BIT;
+    r32(reg::gpio::OUT_W1TC) = reg::gpio::LED_BIT; // start dark
 }
 
 void arch_diag_led_set(int on)
 {
     if (on)
     {
-        r32(GPIO_OUT_W1TS) = LED_BIT;
+        r32(reg::gpio::OUT_W1TS) = reg::gpio::LED_BIT;
     }
     else
     {
-        r32(GPIO_OUT_W1TC) = LED_BIT;
+        r32(reg::gpio::OUT_W1TC) = reg::gpio::LED_BIT;
     }
 }
 
@@ -499,14 +407,15 @@ void arch_console_write_sync(char const* buf, size_t n)
     for (size_t i = 0; i < n; i++)
     {
         uint32_t spin = 0;
-        while (((r32(UART0_STATUS) >> TXFIFO_CNT_SHIFT) & TXFIFO_CNT_MASK) >= TXFIFO_LIMIT)
+        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK) >=
+               reg::uart::TXFIFO_LIMIT)
         {
             if (++spin > 200000u)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
-        r32(UART0_FIFO) = static_cast<uint8_t>(buf[i]);
+        r32(reg::uart::FIFO) = static_cast<uint8_t>(buf[i]);
     }
 }
 
@@ -514,7 +423,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 {
     *storage = console_tx_buf;
     *size = CONSOLE_TX_SIZE;
-    *irq_line = CONSOLE_TX_LINE;
+    *irq_line = irq::CONSOLE_TX_LINE;
     return &esp32_console_backend;
 }
 

@@ -3,6 +3,8 @@
 
 #include "gpio_class.h"
 
+#include "../regs/gpio.h"
+
 namespace kickos
 {
 namespace esp32c6
@@ -12,7 +14,7 @@ namespace driver
     uint32_t gpio_out_read(uintptr_t gpio_base)
     {
         volatile uint32_t const& out =
-            *reinterpret_cast<volatile uint32_t*>(gpio_base + GPIO_OUT_OFFSET);
+            *reinterpret_cast<volatile uint32_t*>(gpio_base + reg::gpio::OUT_OFFSET);
         return out;
     }
 }

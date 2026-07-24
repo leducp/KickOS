@@ -3,7 +3,7 @@
 
 #include "usic_class.h"
 
-#include <usic.h> // chip register offsets + bit fields (register-header dir on the leaf include path)
+#include <regs/usic.h> // chip register offsets + bit fields (register-header dir on the leaf include path)
 
 namespace kickos
 {
@@ -14,8 +14,8 @@ namespace driver
     bool usic_tx_ready(uintptr_t base)
     {
         volatile uint32_t const& tcsr =
-            *reinterpret_cast<volatile uint32_t*>(base + usic::off::TCSR);
-        return (tcsr & usic::TCSR_TDV) == 0u;
+            *reinterpret_cast<volatile uint32_t*>(base + reg::usic::off::TCSR);
+        return (tcsr & reg::usic::TCSR_TDV) == 0u;
     }
 }
 }

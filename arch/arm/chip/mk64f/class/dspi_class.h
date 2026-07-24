@@ -10,9 +10,8 @@
 // userspace DSPI driver. One shared read-only copy in the MPU-partitioned ELF, so
 // no writable state.
 //
-// The K64F chip layer keeps its register map inline (no shared chip header), so
-// this leaf owns the one DSPI register it reads -- SR (RM 50.3.5); it does not
-// duplicate a definition that lives anywhere else.
+// The register map it reads (SR, RM 50.3.5) comes from the chip's shared
+// regs/dspi.h -- the leaf sources the offset/fields from there, not a local copy.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_MK64F_CLASS_DSPI_CLASS_H
 #define KICKOS_ARCH_ARM_CHIP_MK64F_CLASS_DSPI_CLASS_H
@@ -25,11 +24,6 @@ namespace mk64f
 {
 namespace driver
 {
-    // DSPI Status Register (RM 50.3.5): SR.RXCTR[7:4] = RX FIFO fill level.
-    constexpr uintptr_t DSPI_SR_OFFSET = 0x2Cu;
-    constexpr uint32_t DSPI_SR_RXCTR_SHIFT = 4u;
-    constexpr uint32_t DSPI_SR_RXCTR_MASK = 0xFu;
-
     // Number of received words waiting in the 4-deep RX FIFO. Pure read of SR --
     // side-effect-free (the W1C flags in SR clear only on a write). Shared drain
     // predicate for the userspace polled-FIFO driver and any future kernel user.

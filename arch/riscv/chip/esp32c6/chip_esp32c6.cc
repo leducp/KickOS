@@ -26,6 +26,27 @@
 
 #include <stdint.h>
 
+// Hand-rolled register map for this chip (clean-room, no ESP-IDF/HAL sources).
+// Bases in mmap.h, CPU-int/kernel IRQ lines in irq.h, per-peripheral offsets/fields
+// in regs/. (regs/usb_serial_jtag.h + regs/apm.h exist but are not consumed here:
+// the USB console is unused and APM is programmed by the enforcement backend.)
+#include "mmap.h"
+#include "irq.h"
+#include "regs/clint.h"
+#include "regs/uart.h"
+#include "regs/wdt.h"
+#include "regs/intmtx.h"
+#include "regs/intpri.h"
+#include "regs/plic.h"
+#include "regs/rmt.h"
+#include "regs/pcr.h"
+#include "regs/gpio.h"
+#include "regs/io_mux.h"
+
+namespace mmap = kickos::esp32c6::mmap;
+namespace reg = kickos::esp32c6::reg;
+namespace irq = kickos::esp32c6::irq;
+
 namespace kickos
 {
     int kmain(int argc, char** argv);
@@ -71,21 +92,10 @@ namespace
     inline volatile uint32_t* r32p(uintptr_t a) { return reinterpret_cast<volatile uint32_t*>(a); }
     inline volatile uint32_t& r32(uintptr_t a) { return *r32p(a); }
 
-    // --- Core-local CLINT (TRM ch.1.7; CPU sub-system base 0x2000_0000, regs @0x1800).
-    constexpr uintptr_t CLINT_MSIP = 0x20001800;     // bit0: machine software int pending (switch)
-    constexpr uintptr_t CLINT_MTIMECTL = 0x20001804; // MTCE|MTIE|MTIP|MTOF
-    constexpr uintptr_t CLINT_MTIME = 0x20001808;    // 64-bit counter
-    constexpr uintptr_t CLINT_MTIMECMP = 0x20001810; // 64-bit compare
-    constexpr uint32_t MTIMECTL_MTCE = 1u << 0;      // enable the timer counter
-    constexpr uint32_t MTIMECTL_MTIE = 1u << 1;      // enable the timer interrupt
-    // MEASURED ~160 MHz on silicon (2026-07-09): a kos_sleep_ns(0.4s) beat ran 9.9x
-    // too fast against the host wall clock, i.e. the CLINT MTIME is core-clocked at
-    // the ROM's PLL frequency (~160 MHz), NOT the 16 MHz SYSTIMER rate first assumed.
-    // The old 16 MHz made every C6 sleep/timeout run ~10x short. If a future clock
-    // bring-up sets a different CPU frequency, update this to match.
-    constexpr uint64_t MTIME_HZ = 160000000ull;
-    // 1e9/MTIME_HZ = 6.25 ns/tick exactly = 25/4. An integer ns-per-tick (=6) would truncate and
-    // run every sleep/timestamp 4.17% long, so convert with the exact 25/4 ratio in 64-bit
+    // --- Core-local CLINT (regs/clint.h): MSIP switch doorbell + MTIME/MTIMECMP.
+    // MTIME is core-clocked ~160 MHz (reg::clint::MTIME_HZ): 1e9/160e6 = 6.25 ns/tick =
+    // 25/4 exactly. An integer ns-per-tick (=6) would truncate and run every
+    // sleep/timestamp 4.17% long, so convert with the exact 25/4 ratio in 64-bit
     // (overflows only past ~1460 yr at 160 MHz). One home for the ratio; call sites stay named.
     inline uint64_t mtime_ticks_to_ns(uint64_t ticks)
     {
@@ -96,26 +106,16 @@ namespace
         return ns * 4ull / 25ull;
     }
 
-    // --- USB Serial/JTAG console (TRM ch.32; base 0x6000_F000). The ROM leaves it
-    //     enumerated (it is the boot/console/flash path on this board), so we just
-    //     write bytes: poll EP1_CONF[0] for FIFO room, write to EP1, flush via [1].
-    constexpr uintptr_t USB_EP1 = 0x6000F000;             // RDWR_BYTE [7:0]
-    constexpr uintptr_t USB_EP1_CONF = 0x6000F004;
-    constexpr uint32_t USB_WR_DONE = 1u << 0;             // WT bit0: flush buffered bytes to host
-    constexpr uint32_t USB_IN_EP_DATA_FREE = 1u << 1;     // RO bit1: TX FIFO has room
+    // --- USB Serial/JTAG console (regs/usb_serial_jtag.h; TRM ch.32; base 0x6000_F000).
+    //     NOT the KickOS console: the host CDC drain gates output and it re-enumerates on
+    //     reset, so boot output is dropped. UART0 (below) is the real console.
 
-    // --- UART0 console (TRM ch.26; base 0x6000_0000). The real console on this board:
-    //     UART0 (GPIO16/17) is bridged to the host by the CH343P (U4) as a plain COM
-    //     port -- unlike the native USB-Serial-JTAG it does NOT re-enumerate on reset
-    //     and has no CDC host-connection gating, so boot output is never dropped. The
-    //     ROM already sets UART0 up (baud/pins) for its own boot log, so we just push
+    // --- UART0 console (regs/uart.h; TRM ch.26; base 0x6000_0000). The real console on
+    //     this board: UART0 (GPIO16/17) is bridged to the host by the CH343P (U4) as a
+    //     plain COM port -- unlike the native USB-Serial-JTAG it does NOT re-enumerate on
+    //     reset and has no CDC host-connection gating, so boot output is never dropped.
+    //     The ROM already sets UART0 up (baud/pins) for its own boot log, so we just push
     //     bytes: poll STATUS.TXFIFO_CNT for room, write the FIFO. FIFO depth 128.
-    constexpr uintptr_t UART0_FIFO = 0x60000000;          // write = push a TX byte
-    constexpr uintptr_t UART0_STATUS = 0x6000001C;        // TXFIFO_CNT [23:16]
-    constexpr uint32_t UART_TXFIFO_CNT_S = 16;
-    constexpr uint32_t UART_TXFIFO_CNT_MASK = 0xFFu;
-    constexpr uint32_t UART0_TXFIFO_LEN = 128;
-    constexpr uint32_t UART0_TXFIFO_LIMIT = UART0_TXFIFO_LEN - 2; // FIFO-full mark (both paths)
 
     // --- Early boot markers (raw UART0, pre-console). DEBUG tool, default OFF: build
     //     with -DKICKOS_C6_EARLY_MARK=1 to emit a byte at each boot stage (A..H). The
@@ -131,14 +131,15 @@ namespace
     void c6_early_mark(char c)
     {
         uint32_t spin = 0;
-        while (((r32(UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_MASK) >= UART0_TXFIFO_LIMIT)
+        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) >=
+               reg::uart::TXFIFO_LIMIT)
         {
             if (++spin > 200000u)
             {
                 return;
             }
         }
-        r32(UART0_FIFO) = static_cast<uint8_t>(c);
+        r32(reg::uart::FIFO) = static_cast<uint8_t>(c);
     }
 #else
     inline void c6_early_mark(char) {}
@@ -147,62 +148,23 @@ namespace
     // count <= CONF1.TXFIFO_EMPTY_THRHD -- a LEVEL source (TRM section 1.6): cleared from source, by
     // filling the FIFO past the threshold or disabling INT_ENA. We program the threshold (own
     // the register, don't trust ROM) and route it to a real CPU int (arch_rv_hw_unmask).
-    constexpr uintptr_t UART0_INT_ENA = 0x6000000C;
-    constexpr uintptr_t UART0_INT_CLR = 0x60000010;
-    constexpr uintptr_t UART0_CONF1 = 0x60000024;
-    constexpr uint32_t UART_TXFIFO_EMPTY_INT = 1u << 1;
-    constexpr uint32_t UART_TXFIFO_EMPTY_THRHD_S = 8;     // CONF1[15:8]
-    constexpr uint32_t UART_TXFIFO_EMPTY_THRHD_MASK = 0xFFu;
     constexpr uint32_t CONSOLE_TXFIFO_EMPTY_THRHD = 32;   // re-fire when the FIFO drains to <=32
-    constexpr int UART0_TX_IRQ_LINE = 16;                 // logical kernel IRQ line, ring drain
     constexpr uint32_t CONSOLE_TX_SIZE = 512;             // ring; power of two; > kprintf's 256B buf
 
-    // --- Watchdogs (TRM ch.14 MWDT, ch.15 RWDT/SWD). ALL must be disabled or the
-    //     ROM-armed WDTs reset the part within seconds. Common unlock key 0x50D83AA1.
-    constexpr uint32_t WDT_WKEY = 0x50D83AA1;
-    constexpr uintptr_t TIMG0_BASE = 0x60008000;
-    constexpr uintptr_t TIMG1_BASE = 0x60009000;
-    constexpr uintptr_t TIMG_WDTCONFIG0 = 0x0048;         // EN=bit31, FLASHBOOT_MOD_EN=bit14
-    constexpr uintptr_t TIMG_WDTWPROTECT = 0x0064;
-    constexpr uint32_t TIMG_WDT_EN = 1u << 31;
-    constexpr uint32_t TIMG_WDT_FLASHBOOT = 1u << 14;
+    // --- Watchdogs (regs/wdt.h; TRM ch.14 MWDT, ch.15 RWDT/SWD). ALL must be disabled
+    //     or the ROM-armed WDTs reset the part within seconds. Common unlock key 0x50D83AA1.
 
-    constexpr uintptr_t RTC_WDT_BASE = 0x600B1C00;
-    constexpr uintptr_t RTC_WDT_CONFIG0 = 0x0000;         // EN=bit31, FLASHBOOT_MOD_EN=bit12
-    constexpr uintptr_t RTC_WDT_WPROTECT = 0x0018;
-    constexpr uint32_t RTC_WDT_EN = 1u << 31;
-    constexpr uint32_t RTC_WDT_FLASHBOOT = 1u << 12;
-    constexpr uintptr_t RTC_SWD_CONFIG = 0x001C;          // SWD_DISABLE=bit30
-    constexpr uintptr_t RTC_SWD_WPROTECT = 0x0020;
-    constexpr uint32_t RTC_SWD_DISABLE = 1u << 30;
-
-    // --- Interrupt matrix (INTMTX, base 0x6001_0000) + local interrupt controller
-    //     (INTPRI, base 0x600C_5000). TRM v1.2 section 1.6 + ch.10 (register offsets from
-    //     Table 10.4.2). The C6 has no S-mode, so the arch's SSIP inject channel is a
-    //     no-op here; instead we raise a REAL machine interrupt. A software-settable
-    //     FROM_CPU source (INTPRI_CPU_INTR_FROM_CPU_0, level) is routed through the
-    //     matrix to a dedicated CPU interrupt ID, which the C6 core vectors as
+    // --- Interrupt matrix (INTMTX) + local interrupt controller (INTPRI). The C6 has no
+    //     S-mode, so the arch's SSIP inject channel is a no-op here; instead we raise a
+    //     REAL machine interrupt. A software-settable FROM_CPU source (level) is routed
+    //     through the matrix to a dedicated CPU interrupt ID, which the C6 core vectors as
     //     mcause = ID (Espressif's custom scheme, not the standard mcause=11). ONE
     //     doorbell carries every logical inject line (arch keeps g_inject_line).
-    constexpr uintptr_t INTMTX_BASE = 0x60010000;
-    constexpr uintptr_t INTMTX_FROM_CPU_0_MAP = INTMTX_BASE + 0x0058; // [4:0]=target CPU int
-    constexpr uintptr_t INTMTX_UART0_MAP = INTMTX_BASE + 0x00AC;      // route UART0 -> CPU int
 
-    // The C6 uses the PLIC (base 0x2000_1000, M-mode window) as the CPU interrupt
-    // controller -- NOT the INTPRI/INTC block (0x600C_5000), which is vestigial on
-    // this core (esp-idf: "ESP32C6 should use the PLIC ... instead of INTC"). Enable,
-    // type, per-int priority, and threshold ALL live in the PLIC. INTPRI keeps only the
-    // software-settable FROM_CPU source triggers.
-    constexpr uintptr_t PLIC_MX_BASE = 0x20001000;
-    constexpr uintptr_t PLIC_MXINT_ENABLE = PLIC_MX_BASE + 0x0000;    // bit n: enable CPU int n
-    constexpr uintptr_t PLIC_MXINT_TYPE = PLIC_MX_BASE + 0x0004;      // bit n: 0=level 1=edge
-    constexpr uintptr_t PLIC_MXINT_CLEAR = PLIC_MX_BASE + 0x0008;     // bit n: edge-clear
-    constexpr uintptr_t PLIC_MXINT_PRI_BASE = PLIC_MX_BASE + 0x0010;  // PRI_n @ +0x4*n, [3:0]=1..15
-    constexpr uintptr_t PLIC_MXINT_THRESH = PLIC_MX_BASE + 0x0090;    // fire when prio > thresh
-    constexpr uintptr_t PLIC_MXINT_CLAIM = PLIC_MX_BASE + 0x0094;     // pending/claim
-
-    constexpr uintptr_t INTPRI_BASE = 0x600C5000;
-    constexpr uintptr_t INTPRI_FROM_CPU_0 = INTPRI_BASE + 0x0090;     // bit0: assert the source
+    // The C6 uses the PLIC (M-mode window) as the CPU interrupt controller -- NOT the
+    // INTPRI/INTC block, which is vestigial on this core (esp-idf: "ESP32C6 should use
+    // the PLIC ... instead of INTC"). Enable, type, per-int priority, and threshold ALL
+    // live in the PLIC. INTPRI keeps only the software-settable FROM_CPU source triggers.
 
     // Dedicated CPU interrupt ID for the inject doorbell. Must be one of the C6's
     // external IDs (1-2, 5-6, 8-31; local CLINT owns 0/3/4/7) and not collide with
@@ -213,23 +175,23 @@ namespace
 
     void timg_mwdt_disable(uintptr_t base)
     {
-        r32(base + TIMG_WDTWPROTECT) = WDT_WKEY;                       // unlock
-        r32(base + TIMG_WDTCONFIG0) &= ~(TIMG_WDT_EN | TIMG_WDT_FLASHBOOT);
-        r32(base + TIMG_WDTWPROTECT) = 0;                             // re-lock
+        r32(base + reg::wdt::TIMG_WDTWPROTECT) = reg::wdt::WKEY;       // unlock
+        r32(base + reg::wdt::TIMG_WDTCONFIG0) &= ~(reg::wdt::TIMG_WDT_EN | reg::wdt::TIMG_WDT_FLASHBOOT);
+        r32(base + reg::wdt::TIMG_WDTWPROTECT) = 0;                    // re-lock
     }
 
     void wdt_disable_all()
     {
-        timg_mwdt_disable(TIMG0_BASE);
-        timg_mwdt_disable(TIMG1_BASE);
+        timg_mwdt_disable(mmap::TIMG0_BASE);
+        timg_mwdt_disable(mmap::TIMG1_BASE);
         // RTC (LP) watchdog.
-        r32(RTC_WDT_BASE + RTC_WDT_WPROTECT) = WDT_WKEY;
-        r32(RTC_WDT_BASE + RTC_WDT_CONFIG0) &= ~(RTC_WDT_EN | RTC_WDT_FLASHBOOT);
-        r32(RTC_WDT_BASE + RTC_WDT_WPROTECT) = 0;
+        r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_WDT_WPROTECT) = reg::wdt::WKEY;
+        r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_WDT_CONFIG0) &= ~(reg::wdt::RTC_WDT_EN | reg::wdt::RTC_WDT_FLASHBOOT);
+        r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_WDT_WPROTECT) = 0;
         // Super watchdog (SWD): set the disable bit (its own write-protect key).
-        r32(RTC_WDT_BASE + RTC_SWD_WPROTECT) = WDT_WKEY;
-        r32(RTC_WDT_BASE + RTC_SWD_CONFIG) |= RTC_SWD_DISABLE;
-        r32(RTC_WDT_BASE + RTC_SWD_WPROTECT) = 0;
+        r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_SWD_WPROTECT) = reg::wdt::WKEY;
+        r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_SWD_CONFIG) |= reg::wdt::RTC_SWD_DISABLE;
+        r32(mmap::RTC_WDT_BASE + reg::wdt::RTC_SWD_WPROTECT) = 0;
     }
 
     // One-time inject-doorbell wiring. Called from arch_init with MIE still 0 (the
@@ -240,11 +202,11 @@ namespace
     // with bits 3/7 = the standard msip/mtip). FROM_CPU_0 is left de-asserted.
     void inject_doorbell_init()
     {
-        r32(INTMTX_FROM_CPU_0_MAP) = DOORBELL_CPU_INT;            // route the source -> CPU int
-        r32(PLIC_MXINT_PRI_BASE + 4u * DOORBELL_CPU_INT) = DOORBELL_PRIO;
-        r32(PLIC_MXINT_TYPE) &= ~(1u << DOORBELL_CPU_INT);        // level
-        r32(PLIC_MXINT_THRESH) = 0;                              // fire for any prio > 0
-        r32(PLIC_MXINT_ENABLE) |= (1u << DOORBELL_CPU_INT);      // enable at the PLIC
+        r32(reg::intmtx::FROM_CPU_0_MAP) = DOORBELL_CPU_INT;     // route the source -> CPU int
+        r32(reg::plic::MXINT_PRI_BASE + 4u * DOORBELL_CPU_INT) = DOORBELL_PRIO;
+        r32(reg::plic::MXINT_TYPE) &= ~(1u << DOORBELL_CPU_INT); // level
+        r32(reg::plic::MXINT_THRESH) = 0;                       // fire for any prio > 0
+        r32(reg::plic::MXINT_ENABLE) |= (1u << DOORBELL_CPU_INT); // enable at the PLIC
         __asm volatile("fence" ::: "memory");                    // settle before MIE is enabled
         __asm volatile("csrs mie, %0" ::"r"(1u << DOORBELL_CPU_INT) : "memory");
     }
@@ -252,49 +214,9 @@ namespace
     // --- Diagnostic LED: onboard WS2812B (board LED2, DI on GPIO8, VDD tied to 3V3,
     //     no enable pin). GPIO bit-bang FAILS here: the register-write latency exceeds
     //     the WS2812B ~400 ns bit high-time even at 160 MHz, so software cannot form
-    //     valid bits (LED latched solid white). The RMT peripheral (TRM ch.30) clocks
+    //     valid bits (LED latched solid white). The RMT peripheral (regs/rmt.h) clocks
     //     the pulse train in hardware, so timing is exact. GRB order, 24 bits MSB
     //     first. Panic path: single frame, polled, no interrupts/DMA.
-
-    // RMT (TRM ch.30; base 0x6000_6000). Two TX channels (0,1) + two RX (2,3); TX
-    // channels own their RAM implicitly (no MEM_OWNER). We use channel 0.
-    constexpr uintptr_t RMT_BASE = 0x60006000;
-    constexpr uintptr_t RMT_CH0CONF0 = RMT_BASE + 0x10;  // one config reg per TX channel
-    constexpr uintptr_t RMT_INT_RAW = RMT_BASE + 0x38;
-    constexpr uintptr_t RMT_INT_CLR = RMT_BASE + 0x44;
-    constexpr uintptr_t RMT_SYS_CONF = RMT_BASE + 0x68;
-    constexpr uintptr_t RMT_CH0_RAM = RMT_BASE + 0x400; // 48-word (192 B) channel-0 block
-    // CH0CONF0 bits. tx_start/mem_rd_rst/apb_mem_rst/conf_update are write-triggered
-    // (self-clearing); div_cnt/mem_size/idle/carrier are R/W and need conf_update to latch.
-    constexpr uint32_t RMT_TX_START = 1u << 0;
-    constexpr uint32_t RMT_MEM_RD_RST = 1u << 1;
-    constexpr uint32_t RMT_APB_MEM_RST = 1u << 2;
-    constexpr uint32_t RMT_IDLE_OUT_EN = 1u << 6;   // drive idle level (idle_out_lv=0 -> rest low)
-    constexpr uint32_t RMT_CARRIER_EN = 1u << 21;   // default 1 -- MUST clear (no IR carrier)
-    constexpr uint32_t RMT_CONF_UPDATE = 1u << 24;
-    constexpr uint32_t RMT_DIV_CNT_S = 8;           // [15:8] per-channel clock divider
-    constexpr uint32_t RMT_MEM_SIZE_S = 16;         // [18:16] RAM blocks
-    constexpr uint32_t RMT_CH0_TX_END = 1u << 0;    // INT_RAW bit0: TX done
-    constexpr uint32_t RMT_APB_FIFO_MASK = 1u << 0; // SYS_CONF: 1 = access RAM directly (not FIFO)
-
-    // RMT clock is muxed/divided in PCR on the C6 (not RMT_SYS_CONF). Source select
-    // SCLK_SEL: 1=PLL_F80M, 2=RC_FAST, 3=XTAL. Group divisor = SCLK_DIV_NUM+1.
-    constexpr uintptr_t PCR_RMT_CONF = 0x60096000 + 0x2c;      // CLK_EN bit0, RST_EN bit1
-    constexpr uintptr_t PCR_RMT_SCLK_CONF = 0x60096000 + 0x30;
-    constexpr uint32_t PCR_RMT_CLK_EN = 1u << 0;
-    constexpr uint32_t PCR_RMT_RST_EN = 1u << 1;
-    constexpr uint32_t PCR_RMT_SCLK_EN = 1u << 22;
-    constexpr uint32_t PCR_RMT_SCLK_SEL_S = 20;                // [21:20]
-    constexpr uint32_t PCR_RMT_SCLK_DIV_NUM_S = 12;            // [19:12]
-
-    // GPIO matrix + IO_MUX (GPIO8). Route RMT ch-0 TX signal (index 71) out to GPIO8:
-    // FUNC8_OUT_SEL = signal index (NOT 128), output enable, IO_MUX MCU_SEL=1 (GPIO func).
-    constexpr uintptr_t GPIO_ENABLE_W1TS = 0x60091000 + 0x24;
-    constexpr uintptr_t GPIO_FUNC8_OUT_SEL_CFG = 0x60091000 + 0x574;
-    constexpr uintptr_t IO_MUX_GPIO8 = 0x60090000 + 0x24;
-    constexpr uint32_t RMT_SIG_OUT0_IDX = 71;                  // gpio_sig_map.h
-    constexpr uint32_t IO_MUX_MCU_SEL_GPIO = 1u << 12;         // MCU_SEL=1 -> GPIO matrix
-    constexpr uint32_t IO_MUX_FUN_DRV_2 = 2u << 10;            // ~20 mA drive
 
     // WS2812B pulse widths in RMT ticks. Clock: XTAL 40 MHz / group 1 / div_cnt 2 =
     // 20 MHz -> 50 ns/tick. Each 32-bit RAM word holds two {duration:15, level:1}
@@ -309,7 +231,7 @@ namespace
 
     // R/W part of CH0CONF0 (WT bits held 0): div_cnt, 1 RAM block, idle drives low.
     constexpr uint32_t RMT_CH0_CFG =
-        (RMT_DIV_CNT << RMT_DIV_CNT_S) | (1u << RMT_MEM_SIZE_S) | RMT_IDLE_OUT_EN;
+        (RMT_DIV_CNT << reg::rmt::DIV_CNT_S) | (1u << reg::rmt::MEM_SIZE_S) | reg::rmt::IDLE_OUT_EN;
 
     inline uint32_t ws_word(uint32_t thigh, uint32_t tlow)
     {
@@ -322,7 +244,7 @@ namespace
     // arch_diag_led_set).
     void rmt_send_ws2812(uint32_t color)
     {
-        volatile uint32_t* ram = reinterpret_cast<volatile uint32_t*>(RMT_CH0_RAM);
+        volatile uint32_t* ram = reinterpret_cast<volatile uint32_t*>(reg::rmt::CH0_RAM);
         for (int i = 0; i < 24; i++)
         {
             uint32_t bit = (color >> (23 - i)) & 1u; // MSB first
@@ -338,16 +260,16 @@ namespace
         // Latch entry: a long low, then a {0,0} pulse (duration 0 = stop marker).
         ram[24] = WS_RESET; // pulse0 = low 60 us; pulse1 = {0,0}
 
-        r32(RMT_INT_CLR) = RMT_CH0_TX_END;                        // clear stale done flag
-        r32(RMT_CH0CONF0) = RMT_CH0_CFG | RMT_MEM_RD_RST | RMT_APB_MEM_RST; // reset RAM pointers
-        r32(RMT_CH0CONF0) = RMT_CH0_CFG;
-        r32(RMT_CH0CONF0) = RMT_CH0_CFG | RMT_CONF_UPDATE;        // latch config
-        r32(RMT_CH0CONF0) = RMT_CH0_CFG | RMT_TX_START;           // go
+        r32(reg::rmt::INT_CLR) = reg::rmt::CH0_TX_END;                        // clear stale done flag
+        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::MEM_RD_RST | reg::rmt::APB_MEM_RST; // reset RAM pointers
+        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG;
+        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::CONF_UPDATE;        // latch config
+        r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::TX_START;           // go
 
         // Blocking (panic ctx: interrupts masked, no DMA). Bounded so a wedged RMT
         // never hangs the fault path -- ~25 words * 1.25 us + 60 us latch is < 100 us.
         uint32_t spin = 0;
-        while ((r32(RMT_INT_RAW) & RMT_CH0_TX_END) == 0)
+        while ((r32(reg::rmt::INT_RAW) & reg::rmt::CH0_TX_END) == 0)
         {
             if (++spin > 2000000u)
             {
@@ -378,21 +300,22 @@ void arch_console_write_sync(char const* buf, size_t n)
     for (size_t i = 0; i < n; i++)
     {
         uint32_t spin = 0;
-        while (((r32(UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_MASK) >= UART0_TXFIFO_LIMIT)
+        while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) >=
+               reg::uart::TXFIFO_LIMIT)
         {
             if (++spin > 200000u)
             {
                 return; // FIFO not draining -> drop (never block the kernel)
             }
         }
-        r32(UART0_FIFO) = static_cast<uint8_t>(buf[i]);
+        r32(reg::uart::FIFO) = static_cast<uint8_t>(buf[i]);
     }
 }
 
 // --- Tickless clock: the 64-bit CLINT MTIME -> ns -------------------------------
 uint64_t arch_clock_now(void)
 {
-    volatile uint32_t* mt = r32p(CLINT_MTIME);
+    volatile uint32_t* mt = r32p(reg::clint::MTIME);
     uint32_t hi, lo, hi2;
     do
     {
@@ -408,7 +331,7 @@ uint64_t arch_clock_now(void)
 void arch_timer_arm(uint64_t deadline_ns)
 {
     uint64_t ticks = mtime_ns_to_ticks(deadline_ns);
-    volatile uint32_t* cmp = r32p(CLINT_MTIMECMP);
+    volatile uint32_t* cmp = r32p(reg::clint::MTIMECMP);
     cmp[1] = 0xFFFFFFFFu; // park high half so no spurious match between the two stores
     cmp[0] = static_cast<uint32_t>(ticks);
     cmp[1] = static_cast<uint32_t>(ticks >> 32);
@@ -416,7 +339,7 @@ void arch_timer_arm(uint64_t deadline_ns)
 
 void arch_timer_disarm(void)
 {
-    volatile uint32_t* cmp = r32p(CLINT_MTIMECMP);
+    volatile uint32_t* cmp = r32p(reg::clint::MTIMECMP);
     cmp[0] = 0xFFFFFFFFu;
     cmp[1] = 0xFFFFFFFFu;
 }
@@ -432,14 +355,14 @@ int arch_rv_has_mcounteren(void) { return 0; }
 void arch_rv_inject_deliver(int line)
 {
     (void)line;
-    r32(INTPRI_FROM_CPU_0) = 1;
+    r32(reg::intpri::FROM_CPU_0) = 1;
 }
 
 // EOI, run at the head of the .Lext trap: de-assert the level source so it does not
 // re-fire on mret, then fence so the de-assert settles (INTPRI is APB, multi-cycle).
 void arch_rv_ext_eoi(void)
 {
-    r32(INTPRI_FROM_CPU_0) = 0;
+    r32(reg::intpri::FROM_CPU_0) = 0;
     __asm volatile("fence" ::: "memory");
 }
 
@@ -448,21 +371,22 @@ void arch_rv_ext_eoi(void)
 // distinct from the software-inject doorbell). Level source: servicing clears it.
 int c6_tx_slot_free(void)
 {
-    if (((r32(UART0_STATUS) >> UART_TXFIFO_CNT_S) & UART_TXFIFO_CNT_MASK) < UART0_TXFIFO_LIMIT)
+    if (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) <
+        reg::uart::TXFIFO_LIMIT)
     {
         return 1;
     }
     return 0;
 }
-void c6_tx_push(uint8_t b) { r32(UART0_FIFO) = b; }
+void c6_tx_push(uint8_t b) { r32(reg::uart::FIFO) = b; }
 void c6_tx_irq_enable(void)
 {
-    r32(UART0_INT_CLR) = UART_TXFIFO_EMPTY_INT;                      // clear any stale latch
-    r32(UART0_INT_ENA) = r32(UART0_INT_ENA) | UART_TXFIFO_EMPTY_INT; // enable TX-empty
+    r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;                              // clear any stale latch
+    r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;   // enable TX-empty
 }
 void c6_tx_irq_disable(void)
 {
-    r32(UART0_INT_ENA) = r32(UART0_INT_ENA) & ~UART_TXFIFO_EMPTY_INT;
+    r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~reg::uart::TXFIFO_EMPTY_INT;
 }
 
 char console_tx_buf[CONSOLE_TX_SIZE];
@@ -473,7 +397,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 {
     *storage = console_tx_buf;
     *size = CONSOLE_TX_SIZE;
-    *irq_line = UART0_TX_IRQ_LINE;
+    *irq_line = irq::UART0_TX_LINE;
     return &c6_console_backend;
 }
 
@@ -484,7 +408,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 // enable is toggled per-burst by the ring (c6_tx_irq_enable/disable).
 void arch_rv_hw_unmask(int line)
 {
-    if (line != UART0_TX_IRQ_LINE)
+    if (line != irq::UART0_TX_LINE)
     {
         return;
     }
@@ -492,17 +416,17 @@ void arch_rv_hw_unmask(int line)
     // CPU int 30, else a stale ROM-enabled source (RX-full, break, ...) would storm the level-1
     // dispatcher the moment MIE is set. Program the TX-empty threshold too (own the register --
     // do not trust the ROM default). console_tx_write re-enables ONLY TXFIFO_EMPTY, later.
-    r32(UART0_INT_ENA) = 0;
-    r32(UART0_INT_CLR) = 0xFFFFFFFFu;
-    uint32_t conf1 = r32(UART0_CONF1);
-    conf1 &= ~(UART_TXFIFO_EMPTY_THRHD_MASK << UART_TXFIFO_EMPTY_THRHD_S);
-    conf1 |= (CONSOLE_TXFIFO_EMPTY_THRHD & UART_TXFIFO_EMPTY_THRHD_MASK) << UART_TXFIFO_EMPTY_THRHD_S;
-    r32(UART0_CONF1) = conf1;
+    r32(reg::uart::INT_ENA) = 0;
+    r32(reg::uart::INT_CLR) = 0xFFFFFFFFu;
+    uint32_t conf1 = r32(reg::uart::CONF1);
+    conf1 &= ~(reg::uart::TXFIFO_EMPTY_THRHD_MASK << reg::uart::TXFIFO_EMPTY_THRHD_S);
+    conf1 |= (CONSOLE_TXFIFO_EMPTY_THRHD & reg::uart::TXFIFO_EMPTY_THRHD_MASK) << reg::uart::TXFIFO_EMPTY_THRHD_S;
+    r32(reg::uart::CONF1) = conf1;
     // Route the UART0 matrix source -> CPU int 30 (level, priority), enable at the PLIC + mie.
-    r32(INTMTX_UART0_MAP) = KICKOS_RV_DEV_CPU_INT;
-    r32(PLIC_MXINT_PRI_BASE + 4u * KICKOS_RV_DEV_CPU_INT) = DOORBELL_PRIO;
-    r32(PLIC_MXINT_TYPE) &= ~(1u << KICKOS_RV_DEV_CPU_INT);   // level (cleared from source)
-    r32(PLIC_MXINT_ENABLE) |= (1u << KICKOS_RV_DEV_CPU_INT);  // enable at the PLIC
+    r32(reg::intmtx::UART0_MAP) = KICKOS_RV_DEV_CPU_INT;
+    r32(reg::plic::MXINT_PRI_BASE + 4u * KICKOS_RV_DEV_CPU_INT) = DOORBELL_PRIO;
+    r32(reg::plic::MXINT_TYPE) &= ~(1u << KICKOS_RV_DEV_CPU_INT);   // level (cleared from source)
+    r32(reg::plic::MXINT_ENABLE) |= (1u << KICKOS_RV_DEV_CPU_INT);  // enable at the PLIC
     __asm volatile("fence" ::: "memory"); // let the APB controller writes settle (TRM section 1.6.3.2)
     __asm volatile("csrs mie, %0" ::"r"(1u << KICKOS_RV_DEV_CPU_INT) : "memory");
 }
@@ -512,32 +436,33 @@ void arch_rv_hw_unmask(int line)
 // emptying -> c6_tx_irq_disable) de-asserts the source so it does not re-fire on mret.
 void kickos_rv_ext_dispatch_dev(void)
 {
-    r32(UART0_INT_CLR) = UART_TXFIFO_EMPTY_INT;
+    r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;
     __asm volatile("fence" ::: "memory");
-    kickos_isr_irq(UART0_TX_IRQ_LINE);
+    kickos_isr_irq(irq::UART0_TX_LINE);
 }
 
 // --- Kernel diagnostic LED: onboard WS2812B on GPIO8, driven by RMT channel 0.
 void arch_diag_led_init(void)
 {
     // Ungate + reset the RMT, then select its source clock. PCR owns both on the C6.
-    r32(PCR_RMT_CONF) |= PCR_RMT_CLK_EN;                       // APB register clock
-    r32(PCR_RMT_CONF) |= PCR_RMT_RST_EN;                       // assert peripheral reset
-    r32(PCR_RMT_CONF) &= ~PCR_RMT_RST_EN;                      // deassert
+    r32(reg::pcr::RMT_CONF) |= reg::pcr::RMT_CLK_EN;           // APB register clock
+    r32(reg::pcr::RMT_CONF) |= reg::pcr::RMT_RST_EN;           // assert peripheral reset
+    r32(reg::pcr::RMT_CONF) &= ~reg::pcr::RMT_RST_EN;          // deassert
     // XTAL 40 MHz source, group divisor 1 (DIV_NUM field 0), function clock enabled.
-    r32(PCR_RMT_SCLK_CONF) = (3u << PCR_RMT_SCLK_SEL_S) | (0u << PCR_RMT_SCLK_DIV_NUM_S) | PCR_RMT_SCLK_EN;
+    r32(reg::pcr::RMT_SCLK_CONF) =
+        (3u << reg::pcr::RMT_SCLK_SEL_S) | (0u << reg::pcr::RMT_SCLK_DIV_NUM_S) | reg::pcr::RMT_SCLK_EN;
 
-    r32(RMT_SYS_CONF) |= RMT_APB_FIFO_MASK;                    // access channel RAM directly
+    r32(reg::rmt::SYS_CONF) |= reg::rmt::APB_FIFO_MASK;        // access channel RAM directly
     // Channel 0: div_cnt=2 (-> 20 MHz tick), 1 RAM block, idle drives low (WS2812 reset),
     // carrier off. Latch it.
-    r32(RMT_CH0CONF0) = RMT_CH0_CFG;                           // carrier_en defaults 1 -> cleared here
-    r32(RMT_CH0CONF0) = RMT_CH0_CFG | RMT_CONF_UPDATE;
+    r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG;                     // carrier_en defaults 1 -> cleared here
+    r32(reg::rmt::CH0CONF0) = RMT_CH0_CFG | reg::rmt::CONF_UPDATE;
 
     // Route RMT ch-0 TX -> GPIO8: GPIO matrix out-sel = signal 71, output enable,
     // IO_MUX pad on the GPIO function with a driver.
-    r32(GPIO_FUNC8_OUT_SEL_CFG) = RMT_SIG_OUT0_IDX;
-    r32(GPIO_ENABLE_W1TS) = 1u << 8;
-    r32(IO_MUX_GPIO8) = IO_MUX_MCU_SEL_GPIO | IO_MUX_FUN_DRV_2;
+    r32(reg::gpio::func_out_sel_cfg(8)) = reg::gpio::RMT_SIG_OUT0_IDX;
+    r32(reg::gpio::ENABLE_W1TS) = 1u << 8;
+    r32(reg::io_mux::GPIO8) = reg::io_mux::MCU_SEL_GPIO | reg::io_mux::FUN_DRV_2;
 
     rmt_send_ws2812(0); // start dark
 }
@@ -560,15 +485,15 @@ void arch_init(void)
     wdt_disable_all(); // or the ROM-armed watchdogs reset the part in seconds
     c6_early_mark('E'); // watchdogs disabled -- no more ROM WDT reset past here
 
-    g_clint_msip = r32p(CLINT_MSIP);   // the deferred-switch software interrupt
+    g_clint_msip = r32p(reg::clint::MSIP);   // the deferred-switch software interrupt
 #if KICKOS_BENCH
     // The C6 traps on `rdcycle`; give the bench the core-clocked CLINT MTIME low word
     // (== CPU cycles at this PLL) as its free-running counter. Set before any switch.
     extern volatile uint32_t* g_bench_cycle_src;
-    g_bench_cycle_src = r32p(CLINT_MTIME);
+    g_bench_cycle_src = r32p(reg::clint::MTIME);
 #endif
     arch_timer_disarm();               // MTIMECMP = max: no timer fire until armed
-    r32(CLINT_MTIMECTL) = MTIMECTL_MTCE | MTIMECTL_MTIE; // start the counter + enable
+    r32(reg::clint::MTIMECTL) = reg::clint::MTIMECTL_MTCE | reg::clint::MTIMECTL_MTIE; // start the counter + enable
 
     kickos_rv32_init();  // vectored mtvec + mie(MSIE|MTIE|SSIE) + mcounteren + PMP
     c6_early_mark('F');  // mtvec + mie + permissive bootstrap PMP installed
