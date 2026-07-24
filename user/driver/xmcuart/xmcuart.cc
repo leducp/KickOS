@@ -89,6 +89,28 @@ namespace
             (void)poll_put(win, static_cast<uint8_t>(*s));
         }
     }
+
+    // Query the branch clock feeding U0C0 and print it on the RTT / kernel debug
+    // path (D7-safe: kos::print bypasses the endpoint, so the driver never self-
+    // sends). On the XMC4800 fPERIPH = fCPU/2 = 72 MHz; the driver does NOT touch
+    // baud (the kernel's stands). This proves the oracle returns a plausible branch
+    // clock a driver could size its own divisor from.
+    void print_periph_clock(void)
+    {
+        uint32_t const hz = kos_periph_clock_hz(U0C0_BASE);
+        char buf[16];
+        size_t i = sizeof(buf);
+        buf[--i] = '\0';
+        uint32_t v = hz;
+        do
+        {
+            buf[--i] = static_cast<char>('0' + (v % 10u));
+            v /= 10u;
+        } while (v != 0u and i != 0);
+        kos::print("[xmcuart] U0C0 branch clock (Hz): ");
+        kos::print(&buf[i]);
+        kos::print("\n");
+    }
 }
 
 extern "C"
@@ -97,6 +119,10 @@ extern "C"
 void xmcuart_console_driver(void* arg)
 {
     uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // U0C0 window base
+
+    // Report the queried branch clock (expect 72 MHz) on the RTT/kernel path before
+    // touching the wire. Read-only proof: the driver keeps the kernel's baud.
+    print_periph_clock();
 
     // First-light banner straight to the granted window (proves the window map +
     // poll/TBUF path independent of the endpoint). NOT libc stdio.

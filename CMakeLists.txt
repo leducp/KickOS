@@ -248,6 +248,8 @@ add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 if(NOT DEFINED KICKOS_CONSOLE_BRINGUP)
   if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
     set(KICKOS_CONSOLE_BRINGUP "kickos_console_xmcuart")
+  elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)
+    set(KICKOS_CONSOLE_BRINGUP "kickos_console_k64uart")
   else()
     set(KICKOS_CONSOLE_BRINGUP "kickos_console_none")
   endif()
@@ -261,11 +263,38 @@ set(KICKOS_CONSOLE_BRINGUP "${KICKOS_CONSOLE_BRINGUP}" CACHE STRING
 if(NOT DEFINED KICKOS_CONSOLE_BRINGUP_LIBS)
   if(KICKOS_CONSOLE_BRINGUP STREQUAL "kickos_console_xmcuart")
     set(KICKOS_CONSOLE_BRINGUP_LIBS "kickos_console_xmcuart;kickos_xmcuart;kickos_class_xmc4800")
+  elseif(KICKOS_CONSOLE_BRINGUP STREQUAL "kickos_console_k64uart")
+    set(KICKOS_CONSOLE_BRINGUP_LIBS "kickos_console_k64uart;kickos_k64uart;kickos_class_mk64f")
   else()
     set(KICKOS_CONSOLE_BRINGUP_LIBS "${KICKOS_CONSOLE_BRINGUP}")
   endif()
 endif()
 message(STATUS "KickOS: console bring-up = ${KICKOS_CONSOLE_BRINGUP} (libs: ${KICKOS_CONSOLE_BRINGUP_LIBS})")
+
+# Board pin-map provider selection (the default-init pin-mux step). The default init
+# applies the board pin map BEFORE the console bring-up (see system/init/pinmux_run.cc
+# + <kickos/sys/pinmap.h>). KICKOS_BOARD_PINMAP names the CMake target that DEFINES
+# kickos_board_pinmap; it back-references kickos_user (via kos_pinmux_set at apply time)
+# and is read by kickos_default_init, so it must join the rescan link group below.
+# Default is kickos_pinmap_none (count = 0: nothing to mux). Resolved per-board AFTER
+# KICKOS_HAVE_MPU is known, like KICKOS_CONSOLE_BRINGUP above; must sit after that block.
+if(NOT DEFINED KICKOS_BOARD_PINMAP)
+  if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
+    set(KICKOS_BOARD_PINMAP "kickos_pinmap_xmc4800relax")
+  elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)
+    set(KICKOS_BOARD_PINMAP "kickos_pinmap_frdmk64f")
+  else()
+    set(KICKOS_BOARD_PINMAP "kickos_pinmap_none")
+  endif()
+endif()
+set(KICKOS_BOARD_PINMAP "${KICKOS_BOARD_PINMAP}" CACHE STRING
+  "CMake target defining kickos_board_pinmap (the default-init pin-mux step). Default kickos_pinmap_none (nothing to mux).")
+# Each provider is a pure data lib with no further deps, so the lib closure is just the
+# selected target. A custom provider may pre-set KICKOS_BOARD_PINMAP_LIBS.
+if(NOT DEFINED KICKOS_BOARD_PINMAP_LIBS)
+  set(KICKOS_BOARD_PINMAP_LIBS "${KICKOS_BOARD_PINMAP}")
+endif()
+message(STATUS "KickOS: board pin-map = ${KICKOS_BOARD_PINMAP} (libs: ${KICKOS_BOARD_PINMAP_LIBS})")
 
 # RX MPU enforcement wedge-localizer trace (arch/rx/rxv3/arch_rxv3.cc): a raw polled
 # SCI6 marker, off by default. Forwarded to the compiler only when set on the command
@@ -394,10 +423,10 @@ if(TARGET kickos_kernel)
   # in-group to rescan-resolve. It is one item on the none default, three on xmcuart.
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
     target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
+      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
   else()
     target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},kickos_arch_${KICKOS_ARCH},kickos_lib>")
+      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_arch_${KICKOS_ARCH},kickos_lib>")
   endif()
   # kickos_system is INTERFACE (contributes no archive), so it must NOT sit in the
   # RESCAN group; link it separately. This is what propagates the relocated system

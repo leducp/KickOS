@@ -9,6 +9,11 @@ add_subdirectory(sched_exit)
 add_subdirectory(selftest)
 add_subdirectory(stress)
 
+# GPIO pin-allocator demo (M4.3): board-agnostic (the pin is two compile defs), so
+# built for every board -- on a chip with no GPIO backend claim returns -KOS_ENOSYS
+# and the app parks.
+add_subdirectory(gpioblink)
+
 # Diagnostic apps -- self-gated on KICKOS_ENABLE_SELFTEST via kickos_add_diagnostic_app
 # (see each CMakeLists), so no per-board list here. `fault` deliberately executes an
 # illegal instruction; it is never built into a production image.

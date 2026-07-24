@@ -57,6 +57,12 @@ namespace
     // path is used here; S1 comes from the class leaf.
     constexpr uintptr_t D_OFFSET = 0x07u; // UART Data Register (RM 52.3.11)
 
+    // Baud-divisor registers (RM 52.3): BDH/BDL hold SBR[12:0], C4 the BRFA 1/32
+    // fine-adjust. All three lie inside the granted 0x20 window.
+    constexpr uintptr_t BDH_OFFSET = 0x00u;
+    constexpr uintptr_t BDL_OFFSET = 0x01u;
+    constexpr uintptr_t C4_OFFSET = 0x0Au;
+
     // Bounded so a mis-configured baud/enable never HANGS the driver thread on a single
     // byte (which would wedge every stdout client parked on send). Far exceeds any real
     // per-byte wait at 115200 baud; on timeout the byte is dropped and the loop
@@ -83,6 +89,29 @@ namespace
         return false;
     }
 
+    // Own the baud divisor from the queried branch clock: ask the kernel for UART0's
+    // branch clock and re-derive SBR/BRFA for 115200 from it, then write BDH/BDL/C4
+    // inside the already-granted window. This is the driver owning its divisor from the
+    // queried branch, the pattern the whole coming driver era uses (the kernel no longer
+    // hardwires the baud for it). On a 0 (the oracle does not know this block) keep the
+    // kernel-programmed baud. Same K64 formula the chip layer's uart0_init uses; UART0 is
+    // byte-mapped so r8. The re-derived value equals what the kernel already programmed,
+    // so the wire stays legible; the write proves the driver can own the divisor.
+    void rederive_baud(uintptr_t win)
+    {
+        uint32_t const clk = kos_periph_clock_hz(UART0_BASE);
+        if (clk == 0u)
+        {
+            return;
+        }
+        uint32_t const baud = 115200u;
+        uint32_t const sbr = clk / (16u * baud);
+        uint32_t const brfa = (clk * 2u) / baud - sbr * 32u;
+        r8(win + BDH_OFFSET) = static_cast<uint8_t>((sbr >> 8) & 0x1F);
+        r8(win + BDL_OFFSET) = static_cast<uint8_t>(sbr & 0xFF);
+        r8(win + C4_OFFSET) = static_cast<uint8_t>(brfa & 0x1F);
+    }
+
     // Direct-to-window diagnostic (NOT stdio, NOT the endpoint): exercises the exact
     // poll+D path so first-light on silicon is visible before any endpoint traffic.
     void win_puts(uintptr_t win, char const* s)
@@ -100,6 +129,10 @@ extern "C"
 void k64uart_console_driver(void* arg)
 {
     uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // UART0 window base
+
+    // Re-derive the baud from the queried branch clock BEFORE first light, so the
+    // banner already rides the driver-owned divisor.
+    rederive_baud(win);
 
     // First-light banner straight to the window (proves the reachability + poll/D path
     // independent of the endpoint). NOT libc stdio.

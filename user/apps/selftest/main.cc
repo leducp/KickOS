@@ -177,6 +177,28 @@ namespace
         TAP_CHECK(hz == 0u or hz >= 1000000u);
     }
 
+    // Branch-clock oracle (M4.3): kos_periph_clock_hz.
+    void t_periph_clock_hz()
+    {
+        // A base no backend models returns 0 on EVERY target, proving the dispatch
+        // path + the weak/strong-override plumbing reach the arch seam. On the host
+        // sim any base returns 0 (no silicon clock), mirroring cpu_clock_hz's sim-0.
+        uint32_t const bogus = kos_periph_clock_hz(0xDEAD0000u);
+        TAP_CHECK(bogus == 0u);
+        TAP_CHECK(bogus == kos_periph_clock_hz(0xDEAD0000u)); // read-only + stable
+    }
+
+    // Pin-mux syscall (M4.3): kos_pinmux_set. An out-of-range port/pin is REJECTED
+    // (rc < 0) on every target -- -KOS_EINVAL where a chip owns its PORT/IOCR block,
+    // -KOS_ENOSYS on the weak-seam targets (host sim) -- so garbage is never silently
+    // accepted and the dispatch -> arch-seam plumbing is proven. This runs from the
+    // privileged root, but touches no hardware: both rejects return BEFORE any write.
+    void t_pinmux_set()
+    {
+        TAP_CHECK(kos_pinmux_set(99u, 0u, 0x10u) < 0);  // port out of range
+        TAP_CHECK(kos_pinmux_set(0u, 99u, 0x10u) < 0);  // pin out of range
+    }
+
     // Clock-select seam (M3): kos_cpu_clock_set is PRIVILEGED (syscall gate returns
     // the sentinel 0 == "cannot change" to any unprivileged caller, with NO retune).
     // This test exercises exactly that unprivileged-reject contract. It MUST run from
@@ -2104,6 +2126,8 @@ int main(int, char**)
     tap::add("fifo_order", t_fifo);
     tap::add("preempt_on_ready", t_preempt);
     tap::add("cpu_clock_hz", t_cpu_clock_hz);
+    tap::add("periph_clock_hz", t_periph_clock_hz);
+    tap::add("pinmux_set", t_pinmux_set);
     tap::add("cpu_clock_set", t_cpu_clock_set);
     tap::add("rr_interleave", t_rr);
     tap::add("sleep_order", t_sleep);

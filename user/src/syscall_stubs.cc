@@ -95,6 +95,14 @@ int kos_console_publish(int ep)
                                          static_cast<uintptr_t>(ep), 0, 0, 0));
 }
 
+int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_PINMUX_SET,
+                                         static_cast<uintptr_t>(port),
+                                         static_cast<uintptr_t>(pin),
+                                         static_cast<uintptr_t>(func), 0));
+}
+
 int kos_handle_close(int cap)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_HANDLE_CLOSE,
@@ -202,6 +210,12 @@ uint64_t kos_clock_now(void)
 uint32_t kos_cpu_clock_hz(void)
 {
     return static_cast<uint32_t>(arch_syscall(KOS_SYS_CPU_CLOCK_HZ, 0, 0, 0, 0));
+}
+
+uint32_t kos_periph_clock_hz(uintptr_t base)
+{
+    return static_cast<uint32_t>(
+        arch_syscall(KOS_SYS_PERIPH_CLOCK_HZ, base, 0, 0, 0));
 }
 
 uint32_t kos_cpu_clock_set(kos_pstate_t pstate)

@@ -9,7 +9,14 @@
 
 extern "C" int kickos_init_entry(int argc, char** argv)
 {
-    // Bring the console up first. On a board with a userspace console driver this
+    // Order is clock->pinmux->console->app. Apply the board pin map first (the DAG
+    // middle): a nonzero result is a loud failure, returned WITHOUT running the app.
+    int const pinmux_rc = kickos_pinmux_run();
+    if (pinmux_rc != 0)
+    {
+        return pinmux_rc;
+    }
+    // Bring the console up next. On a board with a userspace console driver this
     // performs the handover, so the app's stdout reaches the wire through the driver
     // with zero app code; on a board with none it is a no-op (kernel console kept).
     // A nonzero result is a loud failure: return it WITHOUT running the app, so the

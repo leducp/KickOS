@@ -1220,6 +1220,28 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // it is a u32 Hz whose 0 sentinel already means unknown/no-silicon-clock.
             return static_cast<uintptr_t>(arch_cpu_clock_hz());
         }
+        case KOS_SYS_PERIPH_CLOCK_HZ:
+        {
+            // Read-only branch-clock oracle: report the branch clock feeding the
+            // register block at a0. Ungated (any thread), mirroring CPU_CLOCK_HZ:
+            // a u32 Hz whose 0 sentinel already means unknown, OUT of the -KOS_E*
+            // scheme. Cascade-free; a wrong value only garbles the caller's OWN
+            // divisor math, and the caller granted that block anyway.
+            return static_cast<uintptr_t>(arch_periph_clock_hz(a0));
+        }
+        case KOS_SYS_PINMUX_SET:
+        {
+            // One-shot init-time pin-function config (the clock->pinmux->gpio bring-up DAG
+            // middle). Privileged-only: the mux registers live in the shared SCU/PORT block
+            // the kernel keeps. a0=port, a1=pin, a2=func (all chip-opaque; neutrality is the
+            // {port,pin,func} shape, not the encoding). Backend rejects kernel-owned pins.
+            Thread* c = sched::current();
+            if (c == nullptr or not c->privileged)
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            return static_cast<uintptr_t>(arch_pinmux_set(a0, a1, a2));
+        }
         case KOS_SYS_RAM_ALLOC:
         {
             // Privileged-only: domains are carved by the privileged setup path,

@@ -15,8 +15,8 @@
 // Return-encoding contract (see errno.h). A syscall that can fail returns its error
 // as -KOS_Exxx (negative); success is a non-negative handle / byte-count / count, so
 // the two are collision-free. EXCEPTIONS: ram_alloc returns a pointer (0/NULL on ANY
-// failure -- it cannot carry a negative errno in-band) and cpu_clock_hz / cpu_clock_set
-// return a u32 Hz with a 0 == cannot/unknown sentinel; both stay OUT of the scheme.
+// failure, unable to carry a negative errno in-band) and cpu_clock_hz / cpu_clock_set /
+// periph_clock_hz return a u32 Hz with a 0 == cannot/unknown sentinel; all stay OUT of the scheme.
 enum kos_syscall_nr
 {
     KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len)            -> bytes written, or -KOS_EFAULT (bad buffer)
@@ -50,9 +50,11 @@ enum kos_syscall_nr
     KOS_SYS_RECV = 28,          // (cap, buf, cap_len, u32* badge) -> bytes received, or -KOS_E*
     KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (not priv), -KOS_EBADF (bad cap)
     KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u32); 0 == cannot-change
-    KOS_SYS_GRANT_PROBE = 31     // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
+    KOS_SYS_GRANT_PROBE = 31,    // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
                                  //   the raw reserved-block base/size; a BAD op returns -KOS_EINVAL
                                  //   (self-test only; compiled out unless KICKOS_HAVE_MPU)
+    KOS_SYS_PERIPH_CLOCK_HZ = 32, // (base) -> peripheral branch clock in Hz (u32), 0 if unknown (NO KOS_E*)
+    KOS_SYS_PINMUX_SET = 33   // (port, pin, func) -> 0, -KOS_EPERM (not priv), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
 };
 
 // P-state selector for KOS_SYS_CPU_CLOCK_SET. A fixed-width u32 enum (NOT a raw Hz):

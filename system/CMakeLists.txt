@@ -22,7 +22,8 @@ target_include_directories(kickos_system INTERFACE
 add_library(kickos_default_init STATIC
   init/default_init_entry.cc
   init/default_init_run.cc
-  init/console_bringup.cc)
+  init/console_bringup.cc
+  init/pinmux_run.cc)
 kickos_apply_freestanding(kickos_default_init)
 # It must NOT link kickos_core (that would force-include app.h with -Dmain and fire
 # app.h's weak-stamp block here). Give it just the include paths it needs: its own
@@ -41,5 +42,26 @@ kickos_apply_freestanding(kickos_console_none)
 target_include_directories(kickos_console_none PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-install(TARGETS kickos_system kickos_default_init kickos_console_none EXPORT KickOSTargets
+# Board pin-map providers: each DEFINES kickos_board_pinmap (see <kickos/sys/pinmap.h>),
+# selected by KICKOS_BOARD_PINMAP. Pure data TUs (no further deps); one definition of
+# kickos_board_pinmap per image, so each is its own TU like kickos_console_none. pinmap.h
+# needs only stdint, so system/include suffices.
+add_library(kickos_pinmap_none STATIC init/pinmap_none.cc)
+kickos_apply_freestanding(kickos_pinmap_none)
+target_include_directories(kickos_pinmap_none PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+add_library(kickos_pinmap_xmc4800relax STATIC init/pinmap_xmc4800relax.cc)
+kickos_apply_freestanding(kickos_pinmap_xmc4800relax)
+target_include_directories(kickos_pinmap_xmc4800relax PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+add_library(kickos_pinmap_frdmk64f STATIC init/pinmap_frdmk64f.cc)
+kickos_apply_freestanding(kickos_pinmap_frdmk64f)
+target_include_directories(kickos_pinmap_frdmk64f PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+install(TARGETS kickos_system kickos_default_init kickos_console_none
+        kickos_pinmap_none kickos_pinmap_xmc4800relax kickos_pinmap_frdmk64f
+        EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")

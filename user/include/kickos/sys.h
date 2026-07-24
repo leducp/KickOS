@@ -141,6 +141,19 @@ uint64_t kos_clock_now(void);   // monotonic nanoseconds
 // clock (the host sim).
 uint32_t kos_cpu_clock_hz(void);
 
+// Read-only oracle: the branch (peripheral) clock in Hz feeding the register block
+// at `base`, so a driver derives its own baud/prescaler instead of hardwiring a
+// number. `base` is the peripheral register-BLOCK base (e.g. UART0 @ 0x4006A000).
+// Returns 0 when the chip does not know this block's clock (or the host sim): the
+// driver then keeps its explicit fallback. Cascade-free (no rate-change notify).
+uint32_t kos_periph_clock_hz(uintptr_t base);
+
+// One-shot init-time pin-function config: point pin `pin` of port `port` at raw
+// chip function code `func` (the PC/PCR encoding, opaque here). Privileged-only.
+// Returns 0, -KOS_EPERM (unprivileged), -KOS_EINVAL (out of range), -KOS_EBUSY
+// (kernel-owned pin, e.g. the console/diag-LED), or -KOS_ENOSYS (no chip backend).
+int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
+
 // Retune the core clock to a P-state (the MECHANISM seam; policy belongs to a future
 // userspace power manager). Returns the ACTUALLY-LANDED core Hz -- compare it against
 // what the requested point implies to learn whether you got it. Returns 0 when the

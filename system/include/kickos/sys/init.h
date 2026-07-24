@@ -60,6 +60,13 @@ int kickos_default_init_run(int argc, char** argv);
 // app on a nonzero result. MUST NOT use libc stdio (bring-up self-deadlock rule).
 int kickos_console_bringup_run(void);
 
+// Apply the selected board's pin map (see <kickos/sys/pinmap.h>) BEFORE the console
+// bring-up: the DAG middle of the clock->pinmux->console->app chain. A board with an
+// empty map (count = 0) is a no-op. Returns 0 on success, or the first failing
+// entry's negative rc. The default kickos_init_entry runs this FIRST and aborts the
+// app on a nonzero result. MUST NOT use libc stdio (same bring-up rule as above).
+int kickos_pinmux_run(void);
+
 #ifdef __cplusplus
 }
 #endif

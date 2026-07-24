@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# K64F console handover demo: the kernel relinquishes UART0 to the unprivileged
-# kickos_k64uart driver and a worker's printf() reaches the wire through it. A real
-# user-facing app (kickos_add_application), not a diagnostic. It uses only the
-# production endpoint/console-publish ABI. Registered only for the frdmk64f board
-# (chip-specific UART0 window + AIPS open) AND enforcement builds (the memory-fault
-# reclaim trigger needs SYSMPU; the handover is otherwise coarse-AIPS FUNCTIONAL).
+# K64F console bring-up demo (M4.3): the DEFAULT INIT relinquishes UART0 to the
+# unprivileged kickos_k64uart driver BEFORE this app's main, and a worker's printf()
+# reaches the wire through it with zero handover code in the app. A real user-facing app
+# (kickos_add_application), not a diagnostic. It uses only the production endpoint/
+# console-publish ABI. Registered only for the frdmk64f board (chip-specific UART0
+# window + AIPS open) AND enforcement builds (the memory-fault reclaim trigger needs
+# SYSMPU; the handover is otherwise coarse-AIPS FUNCTIONAL). On this board the default
+# KICKOS_CONSOLE_BRINGUP is kickos_console_k64uart, so the driver is linked through
+# kickos_core; the app links no driver lib itself.
 if(NOT (KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU))
   return()
 endif()
@@ -14,9 +17,6 @@ endif()
 kickos_add_application(k64console
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
-
-# The polled UART TX transport is the exported kickos_k64uart driver, not a local copy.
-target_link_libraries(k64console PRIVATE kickos_k64uart)
 
 # Scramble-then-panic reclaim test mode. OFF by default: this is a deliberate HARDWARE
 # test, not the normal handover demo. When ON, k64console spawns an unprivileged

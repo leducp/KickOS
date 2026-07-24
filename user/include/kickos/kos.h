@@ -42,6 +42,12 @@ namespace kos
     {
         return kos_cpu_clock_hz();
     }
+    // Branch clock feeding the register block at `base` in Hz (0 if unknown / sim);
+    // read-only, see kos_periph_clock_hz.
+    inline uint32_t periph_clock_hz(uintptr_t base)
+    {
+        return kos_periph_clock_hz(base);
+    }
     inline void clock_set_realtime(uint64_t unix_ns)
     {
         kos_clock_set_realtime(unix_ns);

@@ -78,6 +78,25 @@ void arch_timer_disarm(void);
 // bring-up). 0 where the backend has no silicon core clock (the host sim).
 uint32_t arch_cpu_clock_hz(void);
 
+// Read-only branch-clock oracle: the peripheral branch clock in Hz feeding the
+// register block whose base is `base`, so a userspace driver derives its own
+// baud/prescaler. `base` is the peripheral register-BLOCK base (e.g. a K64F UART
+// at 0x4006A000); a backend MAY range-match within a block, but the contract only
+// promises correctness for the block base itself. Returns 0 when this chip does
+// not know the block's clock. The WEAK default returns 0 for every block, and a
+// wrong branch clock silently garbles the wire, so 0 (not the core clock) is the
+// safe unknown: the driver then falls back to its own explicit constant. Read-only
+// and cascade-free; the DVFS rate-change notify is deferred.
+uint32_t arch_periph_clock_hz(uintptr_t base);
+
+// One-shot init-time pin-function config: point (port, pin) at the raw chip
+// function code `func` (the PC/PCR encoding, opaque to the caller). Returns 0,
+// -KOS_EINVAL (out of range), or -KOS_EBUSY (a kernel-owned pin the backend
+// refuses). The WEAK default returns -KOS_ENOSYS so a non-empty board pin-map
+// fails LOUD on a chip with no PORT/IOCR backend; a chip that owns its mux block
+// (XMC4800, K64F) strong-overrides this.
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
+
 // Retune the core/bus clock to a P-state and return the ACTUALLY-LANDED core Hz --
 // ALWAYS the truth about where the clock now sits, never a status:
 //   - a retune that fully succeeds returns the requested point's Hz;

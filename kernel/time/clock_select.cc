@@ -14,6 +14,7 @@
 #include <kickos/console_tx.h>
 
 #include <kickos/sys/abi.h>
+#include <kickos/sys/errno.h>
 
 namespace kickos
 {
@@ -78,4 +79,25 @@ extern "C" uint32_t __attribute__((weak)) arch_cpu_clock_set(uint32_t target)
 {
     (void)target;
     return 0;
+}
+
+// Weak default for the branch-clock oracle: this chip does not know any block's
+// branch clock. MUST return 0 (never the core clock): a wrong branch clock silently
+// garbles the wire, so 0 makes the querying driver use its explicit fallback. A chip
+// that knows its peripheral clock tree (XMC4800, K64F) strong-overrides this. Lives
+// in the same neutral kernel TU as the weak arch_cpu_clock_set so every arch build
+// gets the default. See arch.h for the contract.
+extern "C" uint32_t __attribute__((weak)) arch_periph_clock_hz(uintptr_t base)
+{
+    (void)base;
+    return 0;
+}
+
+// Weak default: this chip has no pin-mux backend. Return -KOS_ENOSYS so a non-empty
+// board pin-map fails LOUD (a bare "apply" would be a silent no-op success). A chip
+// that owns its PORT/IOCR block strong-overrides this.
+extern "C" int __attribute__((weak)) arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    (void)port; (void)pin; (void)func;
+    return -KOS_ENOSYS;
 }
