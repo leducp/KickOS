@@ -17,6 +17,12 @@ and, for hardware facts, the TRM section.)
   `arch_*` entry point must guarantee.
 - **`console.md`** -- the console model: polled vs buffered ring, the sync (panic) path, the
   arch forwarding seam.
+- **`ipc-call-reply.md`** -- the synchronous call/reply contract: the one-shot `CAP_REPLY`
+  capability, `KOS_SYS_CALL`/`KOS_SYS_REPLY`, the widened `kos_recv_info`, the priority-donation
+  funnel, the death matrix, and the documented limits.
+- **`bus-service.md`** -- the SPI/I2C bus-service wire ABI over call/reply: `kos_bus_req`/`seg`/
+  `rsp`/`cfg`, the inline budget, the segment model, chip-select policy, and the neutral client
+  wrapper.
 - **`telemetry.md`** -- the trace wire-format: the record layout, the pure encoders/decoders,
   and the golden-vector source of truth.
 - **`boards.md`** -- per-board reference: pins, console, LED, flash backend, and per-target

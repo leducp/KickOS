@@ -138,11 +138,12 @@ tables are read-only in flash, reached through the code grant -- so an unprivile
 full runtime (the freedom-k64f slave reached OPERATIONAL under SYSMPU; cxxtest ALL PASS on K64F
 silicon under enforcement). The colon-inversion is now fanned out to all 6 enforcement chip linker
 scripts (m2-review-followups #1+#2; xmc4800/esp32c6 silicon-confirmed 20/20), so the runtime's
-writable state lands app-side everywhere. Full C++ under enforcement is then heap-size-gated,
-NOT a RAM ceiling: the default 64K `s_heap` forces a 128K pow2 `.appdata` window, but the heap is a
-provisioning knob (`KICKOS_HEAP_SIZE`). xmc4800 sets 16K (a 32K window) and runs cxxtest under PMSA
-enforcement on silicon (ALL PASS) -- full C++ proven on a second arch beyond K64F. Only a part whose
-RAM cannot spare the pow2 window for its actual heap need is truly gated. On RISC-V/PMP the DWARF FDE
+writable state lands app-side everywhere. Full C++ under enforcement is then window-gated,
+NOT a RAM ceiling: there is no separate heap number -- the heap is simply the leftover pad of the
+granted `.appdata` window after the app's statics, so the one per-board knob is the window size
+(`KICKOS_APPDATA_SIZE`). xmc4800 sets a 32K window and runs cxxtest under PMSA enforcement on silicon
+(ALL PASS) -- full C++ proven on a second arch beyond K64F. Only a part whose RAM cannot spare the
+pow2 window for its actual heap need is truly gated. On RISC-V/PMP the DWARF FDE
 registry + libc globals are a further, distinct concern. See `docs/m2-review-followups.md`.
 
 ## Staged plan

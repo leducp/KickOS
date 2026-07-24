@@ -226,9 +226,10 @@ Verified fleet-wide: default builds show 0 app-data refs in the generated script
 enforcement builds keep the block; XMC re-flashed 17/17 through the preprocessed .ld.
 
 Per-board `_appdata_size` default: the full-C++ silicon chips (rp2040, esp32c6, rx72m)
-and qemu-virt default `_appdata_size` to **32K** under `KICKOS_HAVE_MPU` -- enough for a
-16K libc heap (`KICKOS_HEAP_SIZE`, set in each board_config) + libstdc++/unwind writable
-state + the RISC-V gp small-data window (~18K measured on all three). So `-DKICKOS_HAVE_MPU=1`
+and qemu-virt default `_appdata_size` to **32K** under `KICKOS_HAVE_MPU` -- enough for the
+app statics + libstdc++/unwind writable state + the RISC-V gp small-data window (~18K
+measured on all three), with the remaining pad serving as the libc heap (there is no
+separate heap-size number; the window `KICKOS_APPDATA_SIZE` is the one knob). So `-DKICKOS_HAVE_MPU=1`
 links every app **including cxxtest** with NO manual `-DKICKOS_APPDATA_SIZE`; a tight
 freestanding demo can still override the size down. imxrt1062 (teensy, MPU deferred) keeps a
 128K default and fail-closes its base alignment (`ALIGN(_appdata_size)`).

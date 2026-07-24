@@ -29,27 +29,27 @@ lands on.
 address space is laid out and protected). The linker script here is exactly the tool that
 authors that layout by hand on a system with no loader to do it at runtime.*
 
-## The writable floor, and why it is about 32K
+## The writable floor: what actually sits on it
 
 The runtime-memory chapter listed the writable pieces; here is what they *cost*. A
-full-C++ app's writable RAM is dominated by two contributors:
+full-C++ app's writable RAM has two contributors, and they are smaller than intuition
+suggests:
 
-- **The heap arena** (`s_heap` in [`../../user/src/newlib_stubs.cc`](../../user/src/newlib_stubs.cc)),
-  a single static buffer that `malloc`/`operator new` carve from. This is a *provisioning*
-  number, not a law -- `KICKOS_HEAP_SIZE`, default 64 KiB but set to **16 KiB** on the
-  small-RAM boards (XMC, RP2040, ESP32-C6). It is usually the largest single item.
+- **The heap** -- what `malloc`/`operator new` hand out. This is *dynamic*: it is whatever
+  the app allocates and has not returned to `malloc`'s free list. It is not a fixed buffer
+  the OS provisions up front; it is bounded only by the RAM left over for it (the next
+  section). A useful anchor for the ceiling: a full-EH/STL `cxxtest` run -- exceptions
+  thrown and caught, RTTI, `std::string`/container churn -- peaks near **6 KiB** of live
+  heap. Most freestanding-plus-a-little-STL apps sit well under that.
 - **The runtime's own writable globals** -- newlib's reent (`_impure_ptr`) and malloc
   bins, libsupc++'s `eh_globals` + emergency pool + handler pointers, and (DWARF arches
   only) the FDE registry heads and node. Call it the *runtime writable tax*: a few KiB,
   fixed, paid the moment `libstdc++`/`libsupc++` join the link.
 
-Add them and round to what a protection unit can grant, and you land near **32 KiB**.
-That is not a guess -- it is exactly how the reference full-C++ board is provisioned:
-[`../../arch/arm/chip/xmc4800/xmc4800.ld`](../../arch/arm/chip/xmc4800/xmc4800.ld) sizes
-its app window at `32K` with the note "holds a full-C++ app's 16K heap (KICKOS_HEAP_SIZE)
-+ libstdc++ writable state." So the floor is: **your heap, plus a few KiB of fixed runtime
-tax, rounded up to a grantable window.** A freestanding app uses a fraction of it and (on
-the pow2 arches) pays the padding.
+So the floor is modest: a few KiB of fixed tax plus a working-set heap that, even for a
+heavy C++ test, tops out in single-digit KiB. What makes it a *layout* problem rather than
+a sizing problem is not how big it is -- it is that every byte of it must land on the app
+side of the protection wall, and the heap must have somewhere to grow.
 
 ## The EH cost is per-toolchain, not per-board
 
@@ -69,38 +69,80 @@ property of the toolchain, not the chip:
   the headline cost is the read-only `.eh_frame` inflating the code grant.
 
 The lesson for sizing a new board: the writable floor is roughly toolchain-independent
-(heap + a few KiB), but the **code-region** size a full-C++ app needs depends on the EH
-model -- DWARF arches must budget extra code space for `.eh_frame`, ARM and RX do not.
+(a few KiB of tax plus the app's live heap), but the **code-region** size a full-C++ app
+needs depends on the EH model -- DWARF arches must budget extra code space for `.eh_frame`,
+ARM and RX do not.
 
-## The two knobs
+## The window is the budget; the heap is the remainder
 
-Two board-config values govern the floor; both are overridable per board (or per app):
+There is no separate heap-size number to provision. The app's dynamic memory is simply
+**whatever RAM is left inside the app's data window after its statics** -- so the single
+per-board knob is the *window*, and the heap falls out of it.
 
-- **`KICKOS_HEAP_SIZE`** -- the size of `s_heap`, the libc arena. Default 64 KiB
-  ([`../../user/src/newlib_stubs.cc`](../../user/src/newlib_stubs.cc)); 16 KiB on the
-  small-RAM boards. This is the app's total dynamic-allocation budget; there is no `free`
-  back to the OS, so `malloc`'s own free list reuses within it.
-- **`KICKOS_APPDATA_SIZE`** -- the size of the *granted data window* that must hold the
-  heap **and** all the runtime writable tax. It must be `>= KICKOS_HEAP_SIZE +
-  runtime-writable-state`. On PMSA (ARM v7-M) and PMP (RISC-V) it must be a **power of
-  two** and the window is padded up to it (so a 16 KiB heap plus a few KiB of tax rounds to
-  a 32 KiB window); on SYSMPU (K64F, 32-byte granular) and the RX MPU (16-byte granular)
-  it can be sized more exactly. A linker `ASSERT` fires if the app's real `.data`/`.bss`
-  overflow the window -- the fix is to raise `KICKOS_APPDATA_SIZE` to the next power of
-  two, not to silently truncate.
+On an enforcement (MPU) chip that knob is **`KICKOS_APPDATA_SIZE`**, and it does double
+duty: it is the *isolation boundary* -- the granted, MPU-shaped data region an unprivileged
+thread may touch -- **and** the whole writable RAM budget for the app side. The app's
+`.data`/`.bss` are laid down at the bottom of the window; everything above them, up to the
+window's end, is the heap:
 
-The relationship is the thing to remember: `KICKOS_HEAP_SIZE` sizes the arena;
-`KICKOS_APPDATA_SIZE` sizes the *region that arena lives in*, and the region must have room
-for the arena plus everything else the runtime writes.
+- `_kickos_heap_start = ALIGN(_appdata_used_end, 8)` -- just past the app's statics.
+- `_kickos_heap_limit = __kickos_appdata_end` -- the window's end (its padded, grantable
+  edge on the pow2 arches).
+
+`_sbrk` ([`../../user/src/newlib_stubs.cc`](../../user/src/newlib_stubs.cc)) bumps a single
+break pointer between that pair and never frees back to the OS, so `malloc`'s own free list
+reuses within the pad. The heap is the pad. Grow the window and the heap grows with it; add
+statics and the heap shrinks by exactly that much.
+
+On a **non-MPU** chip there is no window and no isolation boundary, so the heap cannot be
+"leftover window pad" -- there is no window. Instead the linker reserves an explicit
+`.userheap (NOLOAD)` section, sized by **`KICKOS_USER_HEAP_SIZE`**, carved out of RAM
+*before* the thread-stack arena. The same `_kickos_heap_start`/`_kickos_heap_limit` symbols
+bracket it, so `_sbrk` is identical on both paths -- only where the bounds come from
+differs. A board that provisions no heap at all defines neither symbol, and an app that
+pulls in `malloc` then fails at **link** with an undefined reference to `_kickos_heap_start`
+-- fail-loud, and only for an app that actually allocates.
+
+### The two failure modes
+
+Because the heap is a remainder, the two ways to get it wrong are distinct and land at
+different times:
+
+- **Statics too big for the window.** The app's `.data`/`.bss` overflow
+  `KICKOS_APPDATA_SIZE` before the heap even begins. This is a **link error** -- the script
+  `ASSERT`s `_appdata_used_end <= window_end` and prints "raise it to the next pow2." The
+  fix is to grow the window (or shrink the statics), never to truncate.
+- **A heap-hungry app on a too-tight window.** The statics fit, but at runtime the app
+  allocates past `_kickos_heap_limit`; `_sbrk` returns `-1` and `malloc` returns NULL. This
+  is a **runtime** condition, not a link error -- because the linker cannot know an app's
+  peak working set. A board that wants this caught deterministically opts into
+  **`KICKOS_HEAP_MIN`**: when set, the script `ASSERT`s the available heap span is at least
+  that many bytes, turning a too-tight window into a link failure. It is off by default so
+  a board only pays the determinism it asks for.
+
+The boot banner makes the outcome visible without a debugger: it prints
+`heap  N KiB available` from the live `_kickos_heap_start`/`_kickos_heap_limit` span, or
+`heap  none` when no heap was provisioned. That line is the quickest check that a window
+change did what you meant.
+
+### Sizing it in practice
+
+Anchor the window on the *measured* peak, not a round guess. A full-EH/STL `cxxtest`
+working set peaks near 6 KiB of heap, so a window whose pad leaves on the order of **16 KiB**
+above the statics is comfortable for essentially any app in the fleet, with headroom.
+Provisioning far above the measured peak just burns RAM: the pad is zeroed at boot (below)
+and, on a pow2 arch, rounding the window up wastes the gap to the next power of two -- so an
+oversized window hurts twice, and on a small-RAM board it simply will not link.
 
 ## Now the linker: one image, cut in two
 
-Everything above is about *how much* writable RAM. The rest of this chapter is about
-*which side of the protection wall* each byte lands on -- and that is decided entirely in
-the chip linker script. KickOS links the kernel, the arch/chip backends, the app, and the
-whole toolchain runtime into **one ELF image**. A memory-protection unit then needs that
-one image partitioned so an unprivileged thread reaches its own code and data but never
-the kernel's. The linker script is where that partition is authored. Read
+Everything above is about *how much* writable RAM and where the heap comes from. The rest
+of this chapter is about *which side of the protection wall* each byte lands on -- and that
+is decided entirely in the chip linker script. KickOS links the kernel, the arch/chip
+backends, the app, and the whole toolchain runtime into **one ELF image**. A
+memory-protection unit then needs that one image partitioned so an unprivileged thread
+reaches its own code and data but never the kernel's. The linker script is where that
+partition is authored. Read
 [`../../arch/arm/chip/mk64f/mk64f.ld`](../../arch/arm/chip/mk64f/mk64f.ld) alongside this
 section; it is the reference scheme and every other chip mirrors it.
 
@@ -146,15 +188,53 @@ Two properties make this the right design:
   kernel from the app window" via `EXCLUDE_FILE`, but this binutils (arm-none-eabi 15.3)
   **does not match archive members inside `EXCLUDE_FILE`** -- a bare `*libkickos_kernel.a`
   there matches nothing. And a bare `*user*` substring matches only an object's basename,
-  so it misses `libkickos_user.a`'s `s_heap` and the entire toolchain runtime (which has no
-  "user" in any name). The mechanism that works is the colon form
-  `*libkickos_kernel.a:*(...)`, which selects by archive. So the plan's "exclude the
-  kernel" became "**include the kernel first, let the rest fall through**" -- same
-  isolation, opposite selector, and path/name-substring independent.
+  so it misses the toolchain runtime (which has no "user" in any name). The mechanism that
+  works is the colon form `*libkickos_kernel.a:*(...)`, which selects by archive. So the
+  plan's "exclude the kernel" became "**include the kernel first, let the rest fall
+  through**" -- same isolation, opposite selector, and path/name-substring independent.
 
 The `.bss`/`.appbss` pair mirrors this exactly (the closed set into kernel `.bss`, the rest
 into `.appbss`), and the app window is padded to `_appdata_size` so the granted region has
-a fixed size.
+a fixed, grantable size.
+
+### The heap lives in the window's leftover pad
+
+The heap-is-the-remainder model of the previous section is authored right here, at the tail
+of the app window. Once the app's `.appbss` has been laid down, the script marks the end of
+the real statics, pads up to the granted window size, and hands the gap to the heap:
+
+```
+    . = ALIGN(4);
+    _appdata_used_end = .;                 /* end of the app's real .data/.bss */
+    _appdata_fits = ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
+           "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
+    . = __kickos_appdata_start + _appdata_size;   /* pad the granted window */
+    __kickos_appdata_end = .;
+    /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
+    _kickos_heap_start = ALIGN(_appdata_used_end, 8);
+    _kickos_heap_limit = __kickos_appdata_end;
+```
+
+The `ASSERT` fires *before* the pad assignment on purpose: a bare pad to an
+already-overflowed window is `ld`'s cryptic "location counter backwards," so the actionable
+message must be evaluated first. On a non-enforcement chip there is no window, and the same
+symbol pair instead brackets a standalone `.userheap` block reserved ahead of the
+thread-stack arena:
+
+```
+    .userheap (NOLOAD) :
+    {
+        . = ALIGN(8);
+        _kickos_heap_start = .;
+        . += KICKOS_USER_HEAP_SIZE;
+        _kickos_heap_limit = .;
+    } > RAM
+```
+
+Either way `_sbrk` sees one contiguous `[_kickos_heap_start, _kickos_heap_limit)` span, and
+the optional `KICKOS_HEAP_MIN` `ASSERT` at the bottom of the script -- `#ifdef`-gated so it
+costs nothing when unset -- turns a too-small span into a link error instead of a runtime
+`malloc` NULL.
 
 ### The ctor split: kernel constructors early, app constructors with the kernel live
 
@@ -242,8 +322,9 @@ triples `{src, dst, len}` for initialized data, zero pairs `{dst, len}` for `.bs
 
 Under enforcement the app window gets its own entries: `.appdata` is copied from its flash
 load address to its RAM home just like `.data`, and the whole granted window past the
-loaded `.appdata` (the alignment gap, `.appbss`, and the pad) is zeroed -- so there is no
-stale read-back anywhere in a region the app can read. The RISC-V script adds one wrinkle
+loaded `.appdata` (the alignment gap, `.appbss`, and the pad) is zeroed. That pad is the
+heap, so zeroing it is also what hands `_sbrk` a clean, defined heap -- and it guarantees
+no stale read-back anywhere in a region the app can read. The RISC-V script adds one wrinkle
 its `Reset_Handler` must honor: `.appdata`'s load address and run address differ, so it
 must copy `.appdata` before zeroing `.appbss`, or `malloc`'s bins read uninitialized
 memory.
@@ -273,12 +354,15 @@ top-to-bottom as a sequence of decisions:
    fail-safe.
 3. **Are the two ctor groups separated?** `.init_array` (closed set, early) vs
    `.kickos_app_init_array` (everything else, from a thread).
-4. **Is the app window a grantable shape?** `_appdata_size` power-of-two and aligned on
-   PMSA/PMP; exact-sizable on SYSMPU/RX. The `ASSERT`s at the bottom are the guardrails --
-   an overflow means raise the knob, an empty kernel `.bss` means a selector matched
-   nothing (a renamed lib).
-5. **Does RAM get stood up before C runs?** The copy/zero tables, and (RISC-V) the
-   `.appdata` LMA->VMA copy in `Reset_Handler`.
+4. **Is the app window a grantable shape, and where does the heap fall?** `_appdata_size`
+   power-of-two and aligned on PMSA/PMP; exact-sizable on SYSMPU/RX. The heap is the pad
+   between `_appdata_used_end` and the window end (or, off enforcement, the `.userheap`
+   block). The `ASSERT`s at the bottom are the guardrails -- a `.data`/`.bss` overflow means
+   the statics do not fit and the window must grow; an empty kernel `.bss` means a selector
+   matched nothing (a renamed lib); a `KICKOS_HEAP_MIN` failure means the pad left for the
+   heap is too thin.
+5. **Does RAM get stood up before C runs?** The copy/zero tables (the zeroed pad is the
+   heap), and (RISC-V) the `.appdata` LMA->VMA copy in `Reset_Handler`.
 
 To *author* a new chip's script, copy mk64f.ld (ARM SYSMPU/PMSA), rx72m.ld (RX MPU, SjLj,
 exact-size), or esp32c6.ld (RISC-V PMP, DWARF, `gp` anchor) as the nearest template,

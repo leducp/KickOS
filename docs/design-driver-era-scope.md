@@ -274,42 +274,64 @@ driver its pin windows at spawn -> the byte/transfer drivers -> apps), doing the
 itself; there is no GPIO service on the path (pins toggle directly, 3.5). This is why the init
 service is a GATING enabler for the driver era, not a nicety.
 
+**The bring-up inputs are CONSUMER DATA, not tree literals** (spike `design-m4-oot-board-config.md`,
+mechanism landed M4.4). kickos is a library of MECHANISM (kernel, the pinmux runner, the
+service-list runner, the driver CLASS/service targets); the board/product supplies POLICY as
+two POD tables + a `main`: `kos_board_pinmap` (the `{port,pin,func}` routing) and
+`kos_service_list` (an ordered set of `kos_service_bringup {start, cfg}` entries the default init
+walks BEFORE `main`). Per-instance parameters -- register base, grant window, priority, target hz,
+CS choice, I2C address -- travel as DATA in `kos_service_cfg`, not baked into the driver TU, so the
+SAME driver-class target serves N instances by config alone (the LPUART1..8 / N-SPI case). The
+console is just the first `KOS_SVC_CONSOLE` entry in the list (it SUBSUMES the old single-console
+`kos_console_bringup` hook). Each list/pinmap definition is one strong symbol chosen by a CMake
+target knob (`KICKOS_SERVICE_LIST` / `KICKOS_BOARD_PINMAP`), fail-loud on a missing/misspelled
+target -- no runtime manifest, no silent fallback (the anti-CapDL tenet). **Per-BOARD today**
+(the in-tree `frdmk64f` / `xmc4800-relax` configs are REFERENCE EXAMPLES); the **per-app / fleet
+rollout + the missing pinmux backends (only mk64f + xmc4800 exist) is the M4.5 strategy-sync
+pass.** See `reference/architecture.md` ("Service publication") + `system/include/kickos/sys/service.h`.
+
 ### 3.2 Driver API taxonomy by I/O model
 The classical driver shapes map onto TWO IPC patterns:
 
 | Driver | I/O model | IPC pattern | Kernel primitive |
 |---|---|---|---|
 | UART (console) | ASYNC byte-stream rx/tx | endpoint rendezvous + IRQ-as-event | CAP_ENDPOINT (LANDED) + tier-1 IRQ event |
-| SPI | SYNC full-duplex transfer(tx,rx,len) | **CALL / REPLY** transaction | CAP_ENDPOINT + a call/reply layer (**deferred**) |
-| I2C | SYNC addressed start/addr/rw/stop | **CALL / REPLY** transaction | same |
+| SPI | SYNC full-duplex transfer(tx,rx,len) | **CALL / REPLY** transaction | CAP_ENDPOINT + call/reply (**LANDED**: CAP_REPLY, `KOS_SYS_CALL`/`REPLY` 34/35) |
+| I2C | SYNC addressed start/addr/rw/stop | **CALL / REPLY** transaction | same substrate; the wire CONTRACT lands, the driver body follows a bench target |
 
-**KEY INSIGHT: the driver era surfaces the call/reply IPC requirement.** The console (async
-stream) rides the synchronous *rendezvous* that already landed. But SPI/I2C are
+**KEY INSIGHT: the driver era surfaced the call/reply IPC requirement -- now satisfied.** The
+console (async stream) rides the synchronous *rendezvous* that landed in M3. SPI/I2C are
 request/reply TRANSACTIONS: a client sends a transfer request, BLOCKS, and gets the result
-back -- which is exactly the "call/reply fastpath" the M3 endpoint spike DEFERRED (TODO
-notes the sem_post token-handoff already drives an immediate switch, so the fastpath SHAPE
-exists, but the reply-capability half is not built).
+back. That is the L4-style "call/reply fastpath" the M3 endpoint spike DEFERRED and M4.4
+built: a one-shot **reply capability** whose object NAMES the parked caller (no new object
+pool), `KOS_SYS_CALL`/`KOS_SYS_REPLY` over the existing `CAP_ENDPOINT` rendezvous, and the
+priority-donation contract that makes it an RTOS primitive rather than an inversion trap. The
+exact contract is `reference/ipc-call-reply.md`; the why is `book/synchronous-call-and-reply.md`.
 
 Analysis -- does {async-stream rendezvous (landed)} + {a call/reply layer} cover
 uart+spi+i2c?
 - UART: covered by the landed rendezvous + IRQ event. The tx side is a stream; the rx side
   is IRQ-as-event feeding the endpoint. No call/reply needed.
-- SPI/I2C: need call/reply. The transfer contract on top of CAP_ENDPOINT + the MMIO grant:
-  - client holds a cap to the driver's request endpoint; driver holds its SPI MMIO grant.
-  - `transfer(tx_buf, rx_buf, len)` = client `kos_send`s a request {op, len, inline-or-
-    shared tx bytes}, then blocks on the REPLY. The endpoint's kernel-copied bounded payload
-    already carries small transfers inline; larger ones want a granted shared buffer (avoid a
-    double copy) -- that shared-buffer path is the same physical-addressing discipline QW-3
-    flags for the IPC ring.
-  - driver does the MMIO transaction under its grant, `kos_send`s the reply {status, rx bytes}
-  - the missing piece = a REPLY capability (a one-shot, auto-consumed cap back to the caller)
-    so the driver replies to exactly the caller without a standing per-client endpoint. This
-    is the L4 call/reply fastpath. It is the concrete driver-era ask on top of M3's endpoints.
-- I2C = SPI's shape + addressing/start-stop framing in the request struct; same IPC.
+- SPI/I2C: realized by call/reply. The transfer contract on top of CAP_ENDPOINT + the MMIO grant:
+  - client holds a SIGNAL cap to the driver's request endpoint; driver holds its SPI MMIO grant.
+  - `spi_transfer(tx, rx, len)` = client frames a `kos_bus_req` in a stack buffer and `kos_call`s
+    it (in-place: the reply overwrites the request buffer), blocking until the reply. The
+    endpoint's kernel-copied bounded payload carries small transfers inline (~212 B under
+    `KOS_EP_MSG_MAX`); larger ones want a granted shared buffer, which the wire ABI already
+    reserves (`region_cap`/`offset`, DEFERRED) so it lands without an ABI break -- the same
+    physical-addressing discipline QW-3 flags for the IPC ring.
+  - driver does the MMIO transaction under its grant and `kos_reply`s a `kos_bus_rsp` {status, rx}.
+  - the REPLY capability is the piece that landed: a one-shot, auto-consumed cap whose object
+    NAMES the parked caller, so the driver replies to exactly that caller without a standing
+    per-client endpoint (the L4 call/reply fastpath).
+- I2C = SPI's shape + addressing/start-stop framing in the segment list; same IPC, same wire
+  header. The CONTRACT (`reference/bus-service.md`) lands with the SPI services; the first I2C
+  driver body waits on a bench target device.
 
-Recommendation: **build the call/reply (reply-cap) layer on CAP_ENDPOINT as the first
-driver-framework primitive** -- it is the shared substrate for every synchronous driver
-(SPI, I2C, and later block/net). The async-stream half is already there for UART.
+Outcome: **the call/reply (reply-cap) layer on CAP_ENDPOINT is the first driver-framework
+primitive** -- the shared substrate for every synchronous driver (SPI, I2C, and later
+block/net). The async-stream half was already there for UART. Contracts:
+`reference/ipc-call-reply.md` (transport) + `reference/bus-service.md` (the SPI/I2C wire).
 
 ### 3.3 Multi-instance threading (the "4 SPI" question)
 A chip with N SPI peripherals -- two shapes:
@@ -645,6 +667,15 @@ pinmux, clock/power, and bus (SPI/I2C) service APIs proven GENUINELY VENDOR-NEUT
 accidentally shaped around one vendor's register model, clock tree, or pin scheme. A driver
 that lands cleanly on one vendor and then forces an API change to land on the next is the
 signal that the API leaked a vendor assumption; the matrix is how that leak gets caught.
+
+The **bus (SPI/I2C) API is now realized** as call/reply (`reference/ipc-call-reply.md`) under a
+chip-neutral wire contract (`reference/bus-service.md`) + the thread-per-instance service model
+(3.2/3.3), and its first neutrality check is passed on two of the four matrix boards at once:
+XMC4800 (USIC-SSC, hardware MSLS/SELO0 CS via `PCR.FEM`) and FRDM-K64F (DSPI, driver-owned GPIO
+CS via direct `PSOR`/`PCOR`) run the SAME `kos_bus_req`/`rsp` wire and the SAME chip-neutral
+`spi_client` wrapper -- CS policy and the controller register model stay class-internal, so the
+wire named neither. The RX72M (RXv3/RX-MPU) and ESP32-C6 (PMP) legs, and the I2C driver body,
+extend the check across the remaining axes.
 
 ### 7.1 The four-board neutrality matrix
 Four easy-to-flash boards, chosen for DIVERSITY across BOTH axes at once -- vendor AND
