@@ -134,7 +134,7 @@ namespace
 
         // 2. Enable HSE and wait for it to stabilize (RM0008 sec.7.3.1, HSEON/HSERDY).
         r32(RCC_CR) |= CR_HSEON;
-        if (!poll_set(RCC_CR, CR_HSERDY))
+        if (not poll_set(RCC_CR, CR_HSERDY))
         {
             return; // no crystal -> stay on HSI
         }
@@ -153,7 +153,7 @@ namespace
 
         // 4. Enable the PLL and wait for lock (RM0008 sec.7.3.1, PLLON/PLLRDY).
         r32(RCC_CR) |= CR_PLLON;
-        if (!poll_set(RCC_CR, CR_PLLRDY))
+        if (not poll_set(RCC_CR, CR_PLLRDY))
         {
             return; // PLL failed -> stay on HSI
         }
@@ -430,16 +430,6 @@ void arch_diag_led_set(int on)
     else
     {
         r32(GPIOC_BSRR) = 1u << 13;        // BS13 -> PC13 high -> LED off
-    }
-}
-
-void arch_shutdown(int status)
-{
-    (void)status; // no exit on bare metal
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
     }
 }
 

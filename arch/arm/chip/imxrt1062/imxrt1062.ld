@@ -43,6 +43,11 @@ _kernel_stack_size = 8K;               /* boot/handler (MSP) stack */
 _appdata_size = KICKOS_APPDATA_SIZE;
 #endif
 
+/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch). */
+#ifndef KICKOS_USER_HEAP_SIZE
+#define KICKOS_USER_HEAP_SIZE 16K
+#endif
+
 SECTIONS
 {
     /* FlexSPI serial-NOR configuration block (FCB), 512 B at flash offset 0
@@ -189,6 +194,9 @@ SECTIONS
         _appdata_used_end = .;
         . = __kickos_appdata_start + _appdata_size;
         __kickos_appdata_end = .;
+        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
+        _kickos_heap_start = ALIGN(_appdata_used_end, 8);
+        _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
 #else
     .data : ALIGN(4)
@@ -206,6 +214,18 @@ SECTIONS
         *(COMMON)
         . = ALIGN(4);
         _ebss = .;
+    } > RAM
+#endif
+
+#if !KICKOS_HAVE_MPU
+    /* Non-enforcement build: no .appdata window, so the newlib heap is an explicit
+       section carved from RAM before the thread arena. */
+    .userheap (NOLOAD) :
+    {
+        . = ALIGN(8);
+        _kickos_heap_start = .;
+        . += KICKOS_USER_HEAP_SIZE;
+        _kickos_heap_limit = .;
     } > RAM
 #endif
 
@@ -235,4 +255,10 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
        "KickOS: .appbss placed below the app-data window base (empty .appdata alignment-drop regression)")
 ASSERT(_ebss > _sbss,
        "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
+#endif
+
+/* Opt-in link-time heap floor (undefined by default). */
+#ifdef KICKOS_HEAP_MIN
+ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
+       "KickOS: heap below KICKOS_HEAP_MIN")
 #endif

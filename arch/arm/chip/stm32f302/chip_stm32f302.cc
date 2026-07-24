@@ -20,6 +20,8 @@
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 
+#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
+
 #include <stdint.h>
 
 namespace kickos
@@ -109,13 +111,6 @@ namespace
         return (fck + baud / 2u) / baud;
     }
 
-    void enable_fpu()
-    {
-        r32(0xE000ED88) |= (0xFu << 20); // CPACR: CP10/CP11 full access
-        __asm volatile("dsb" ::: "memory");
-        __asm volatile("isb" ::: "memory");
-    }
-
     bool poll_set(uintptr_t reg, uint32_t mask)
     {
         for (uint32_t i = 0; i < CLOCK_POLL_LIMIT; i++)
@@ -134,7 +129,7 @@ namespace
     void clock_init()
     {
         r32(RCC_CR) |= CR_HSION;
-        if (!poll_set(RCC_CR, CR_HSIRDY))
+        if (not poll_set(RCC_CR, CR_HSIRDY))
         {
             return; // no HSI (cannot happen at reset) -> stay put
         }
@@ -152,7 +147,7 @@ namespace
         r32(RCC_CFGR) = cfgr;
 
         r32(RCC_CR) |= CR_PLLON;
-        if (!poll_set(RCC_CR, CR_PLLRDY))
+        if (not poll_set(RCC_CR, CR_PLLRDY))
         {
             return; // PLL failed -> stay on HSI 8 MHz
         }
@@ -382,19 +377,9 @@ void arch_diag_led_set(int on)
     }
 }
 
-void arch_shutdown(int status)
-{
-    (void)status;
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
-}
-
 void Reset_Handler(void)
 {
-    enable_fpu();
+    kickos_armv7m_enable_fpu();
 
     uint32_t* src = &_sidata;
     uint32_t* dst = &_sdata;

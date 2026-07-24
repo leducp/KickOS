@@ -263,7 +263,7 @@ void kickos_arm_mpu_fixed_init(void)
     // caught at boot), never truncate. No kernel assert on the arch path -> spin.
     if (k + MAX_PEND_REGIONS > hw_regions)
     {
-        for (;;)
+        while (true)
         {
             __asm volatile("wfi");
         }
@@ -418,6 +418,18 @@ void arch_irq_inject(int irq)
 void __attribute__((weak)) arch_idle_wait(void)
 {
     __asm volatile("wfi");
+}
+
+// weak: mask interrupts and halt. A chip that terminates through a debug channel
+// (mps2/nrf51 semihosting exit) strong-overrides this; bare-metal chips fall through.
+void __attribute__((weak)) arch_shutdown(int status)
+{
+    (void)status;
+    __asm volatile("cpsid i" ::: "memory");
+    while (true)
+    {
+        __asm volatile("wfi");
+    }
 }
 
 // --- Kernel-facing ISR entries ----------------------------------------------

@@ -327,16 +327,6 @@ uint32_t arch_trace_now(void)
     return r32(reg::timer::TIMERAWL);
 }
 
-void arch_shutdown(int status)
-{
-    (void)status; // no exit on bare metal
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
-}
-
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RP2350 datasheet). Owns-for-life: the 64-bit TIMER0 (monotonic
 // base), the TICKS block (its TIMER0 generator is the 1 MHz source -- the RP2040

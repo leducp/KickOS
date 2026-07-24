@@ -46,15 +46,19 @@ _kernel_stack_size = 16K;
    region (retained, not discarded -- see .text), and libstdc++/libsupc++ text pushes
    real code+rodata past 64K. */
 _code_size = 128K;
-/* App writable window: 16K malloc arena (KICKOS_HEAP_SIZE) + libstdc++/unwind globals +
-   the gp small-data window measure ~18K under full-C++, so 32K is the fitting pow2
-   (matches virt.ld). A freestanding app needs far less; override it down. The former 4K
-   default could not hold the heap arena and the pow2 pad-back in .appbss moved the
-   location counter backwards before the ASSERT could fire. */
+/* App writable window: the pad (window minus app statics + runtime + gp small-data) IS
+   the newlib heap; cxxtest's measured peak (~4.2K on RISC-V DWARF) and printf both fit
+   the pad a 32K window leaves (~14K, matches virt.ld). Override it down for a tight
+   freestanding demo. */
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 32K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
+#endif
+
+/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch). */
+#ifndef KICKOS_USER_HEAP_SIZE
+#define KICKOS_USER_HEAP_SIZE 16K
 #endif
 
 SECTIONS
@@ -193,6 +197,9 @@ SECTIONS
                "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
         . = __kickos_appdata_start + _appdata_size; /* pad the block up to pow2 */
         __kickos_appdata_end = .;
+        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
+        _kickos_heap_start = ALIGN(_appdata_used_end, 8);
+        _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
 #else
     _sidata = LOADADDR(.data);
@@ -216,6 +223,18 @@ SECTIONS
         *(COMMON)
         . = ALIGN(4);
         _ebss = .;
+    } > RAM
+#endif
+
+#if !KICKOS_HAVE_MPU
+    /* Non-enforcement build: no .appdata window, so the newlib heap is an explicit
+       section carved from RAM before the thread arena. */
+    .userheap (NOLOAD) :
+    {
+        . = ALIGN(8);
+        _kickos_heap_start = .;
+        . += KICKOS_USER_HEAP_SIZE;
+        _kickos_heap_limit = .;
     } > RAM
 #endif
 
@@ -252,4 +271,10 @@ ASSERT(__sdata_end <= __global_pointer$ + 0x800,
        "KickOS: runtime small-data overflows the gp + 0x800 reach")
 ASSERT(__sdata_start >= __global_pointer$ - 0x800,
        "KickOS: runtime small-data underflows the gp - 0x800 reach")
+#endif
+
+/* Opt-in link-time heap floor (undefined by default). */
+#ifdef KICKOS_HEAP_MIN
+ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
+       "KickOS: heap below KICKOS_HEAP_MIN")
 #endif

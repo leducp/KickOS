@@ -193,8 +193,8 @@ void arch_irq_clear_pending(int line)
     reg32(NVIC_ICPR0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 
-// arch_shutdown is chip-specific (a real MCU halts; QEMU exits via semihosting),
-// so it lives in the chip backend, not here.
+// arch_shutdown has a weak default in arch_arm_common (mask + halt); a chip that
+// exits through a debug channel (QEMU semihosting) strong-overrides it there.
 
 // --- Kernel-facing ISR entries ----------------------------------------------
 // Common external-IRQ entry: the chip vector table routes NVIC lines here. The

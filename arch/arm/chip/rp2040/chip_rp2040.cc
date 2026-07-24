@@ -309,16 +309,6 @@ uint32_t arch_trace_now(void)
     return r32(reg::timer::TIMERAWL);
 }
 
-void arch_shutdown(int status)
-{
-    (void)status; // no exit on bare metal
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
-}
-
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RP2040 datasheet). Owns-for-life: the 64-bit TIMER (monotonic
 // base), the WATCHDOG (its /12 TICK feeds the 1 MHz TIMER -- reserved despite the

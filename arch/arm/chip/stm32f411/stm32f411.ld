@@ -22,8 +22,20 @@ _kernel_stack_size = 8K;
    to its size, so the app window is padded to this pow2 and section-aligned to its
    size above the kernel data; an app whose globals exceed it trips the ASSERT.
    Power of two only. */
+/* The window pad (window minus app statics + runtime) IS the newlib heap. A 4K window
+   leaves only ~2K pad under enforcement -- below printf's 4K stdio granule -- so the
+   default is 16K (~14K pad, >= the 8K floor). 128 KiB RAM, so the pad is cheap. Power
+   of two only. */
 #if KICKOS_HAVE_MPU
-_appdata_size = 4K;
+#ifndef KICKOS_APPDATA_SIZE
+#define KICKOS_APPDATA_SIZE 16K
+#endif
+_appdata_size = KICKOS_APPDATA_SIZE;
+#endif
+
+/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch). */
+#ifndef KICKOS_USER_HEAP_SIZE
+#define KICKOS_USER_HEAP_SIZE 8K
 #endif
 
 SECTIONS
@@ -156,6 +168,9 @@ SECTIONS
                "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
         . = __kickos_appdata_start + _appdata_size; /* pad the granted window */
         __kickos_appdata_end = .;
+        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
+        _kickos_heap_start = ALIGN(_appdata_used_end, 8);
+        _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
 #else
     .data : ALIGN(4)
@@ -173,6 +188,18 @@ SECTIONS
         *(COMMON)
         . = ALIGN(4);
         _ebss = .;
+    } > RAM
+#endif
+
+#if !KICKOS_HAVE_MPU
+    /* Non-enforcement build: no .appdata window, so the newlib heap is an explicit
+       section carved from RAM before the thread arena. */
+    .userheap (NOLOAD) :
+    {
+        . = ALIGN(8);
+        _kickos_heap_start = .;
+        . += KICKOS_USER_HEAP_SIZE;
+        _kickos_heap_limit = .;
     } > RAM
 #endif
 
@@ -210,4 +237,10 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
    empty .appdata is legitimate (a minimal freestanding app --gc-sections'd bare). */
 ASSERT(_ebss > _sbss,
        "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
+#endif
+
+/* Opt-in link-time heap floor (undefined by default). */
+#ifdef KICKOS_HEAP_MIN
+ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
+       "KickOS: heap below KICKOS_HEAP_MIN")
 #endif

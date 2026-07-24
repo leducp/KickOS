@@ -131,7 +131,7 @@ namespace
         //    and diag LED still run. The UART divisor is computed for 84 MHz MCK, so
         //    the console is unusable on this path -- degraded, not dead-locked.
         r32(CKGR_MOR) = MOR_CRYSTAL;
-        if (!pmc_wait(SR_MOSCXTS))
+        if (not pmc_wait(SR_MOSCXTS))
         {
             SystemCoreClock = 4000000u;
             return;
@@ -139,13 +139,13 @@ namespace
 
         // 3. Select the crystal as MAINCK, then run MCK off it before touching PLLA.
         r32(CKGR_MOR) = MOR_CRYSTAL | MOR_MOSCSEL;
-        if (!pmc_wait(SR_MOSCSELS))
+        if (not pmc_wait(SR_MOSCSELS))
         {
             SystemCoreClock = 4000000u;
             return;
         }
         r32(PMC_MCKR) = MCKR_CSS_MAIN;
-        if (!pmc_wait(SR_MCKRDY))
+        if (not pmc_wait(SR_MCKRDY))
         {
             SystemCoreClock = 4000000u;
             return;
@@ -155,7 +155,7 @@ namespace
         //    MCK is already stable on the 12 MHz crystal -- stay there (best-effort;
         //    console still off since BRGR targets 84 MHz).
         r32(CKGR_PLLAR) = PLLAR_ONE | PLLAR_MULA | PLLAR_COUNT | PLLAR_DIVA;
-        if (!pmc_wait(SR_LOCKA))
+        if (not pmc_wait(SR_LOCKA))
         {
             SystemCoreClock = 12000000u;
             return;
@@ -164,13 +164,13 @@ namespace
         // 5. Switch MCK to PLLA/2 = 84 MHz. sec.28 mandates, for a PLL source: set
         //    PRES, wait MCKRDY, then set CSS, wait MCKRDY (two writes, not one).
         r32(PMC_MCKR) = MCKR_PRES_DIV2 | MCKR_CSS_MAIN;
-        if (!pmc_wait(SR_MCKRDY))
+        if (not pmc_wait(SR_MCKRDY))
         {
             SystemCoreClock = 12000000u;
             return;
         }
         r32(PMC_MCKR) = MCKR_PRES_DIV2 | MCKR_CSS_PLLA;
-        if (!pmc_wait(SR_MCKRDY))
+        if (not pmc_wait(SR_MCKRDY))
         {
             SystemCoreClock = 12000000u;
             return;
@@ -401,16 +401,6 @@ void arch_diag_led_set(int on)
     else
     {
         r32(PIOB_CODR) = 1u << 27;
-    }
-}
-
-void arch_shutdown(int status)
-{
-    (void)status;
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
     }
 }
 

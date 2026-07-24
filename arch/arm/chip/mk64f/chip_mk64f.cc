@@ -25,6 +25,7 @@
 
 // Hand-rolled register map for this chip (clean-room, no vendor CMSIS pack).
 // Bases in mmap.h, NVIC lines in irq.h, per-peripheral offsets/fields in regs/.
+#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"
 #include "irq.h"
 #include "regs/gpio.h"
@@ -212,14 +213,6 @@ namespace
         // and the reset-1 reserved bit 8 (matches NXP SystemInit; 0x0010 would
         // clear that reserved bit -- pointless risk on never-run silicon).
         r16(reg::wdog::STCTRLH) = reg::wdog::STCTRLH_DISABLE;
-    }
-
-    void enable_fpu()
-    {
-        volatile uint32_t* cpacr = reinterpret_cast<volatile uint32_t*>(0xE000ED88);
-        *cpacr |= (0xFu << 20); // CP10/CP11 full access
-        __asm volatile("dsb" ::: "memory");
-        __asm volatile("isb" ::: "memory");
     }
 
     bool mcg_wait(uint8_t mask, uint8_t want)
@@ -803,20 +796,10 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return 0;
 }
 
-void arch_shutdown(int status)
-{
-    (void)status; // no exit on bare metal
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
-}
-
 void Reset_Handler(void)
 {
     wdog_disable(); // first: the watchdog would reset the part mid-bring-up
-    enable_fpu();   // before ANY later code (the copy loops are integer, but a
+    kickos_armv7m_enable_fpu(); // before ANY later code (the copy loops are integer, but a
                     // hard-float ABI could emit FP anywhere; CPACR-off FP faults)
 
     kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss

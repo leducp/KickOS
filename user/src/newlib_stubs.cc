@@ -138,22 +138,23 @@ void _exit(int code)
     }
 }
 
-// Bump allocator over a fixed userspace heap arena. Size is provisioned: full-C++
-// under MPU enforcement routes s_heap into the granted .appdata window, which is a
-// pow2 region -- a small-RAM part sets a smaller KICKOS_HEAP_SIZE so the window fits
-// (default 64K suits a 256K-RAM part). Only linked when _sbrk is referenced (malloc).
-#include <kickos/board_config.h>
-#ifndef KICKOS_HEAP_SIZE
-#define KICKOS_HEAP_SIZE (64 * 1024)
-#endif
-static char s_heap[KICKOS_HEAP_SIZE];
-static char* s_brk = s_heap;
+// Bump allocator over the userspace heap window. The bounds are LINKER symbols, not
+// a static array: on an MPU chip the heap IS the unused pad of the granted .appdata
+// window; on a non-MPU chip it is an explicit .userheap section (arch/*/chip/*.ld).
+// A board that provisions no heap defines neither symbol, so an app that pulls malloc
+// fails at LINK ("undefined reference to _kickos_heap_start") -- the intended
+// fail-loud, and only for an app that actually allocates. Only linked when _sbrk is
+// referenced (malloc). RX prepends one underscore, so the C `_kickos_heap_start` here
+// resolves to the linker symbol `__kickos_heap_start` the RX .ld defines.
+extern char _kickos_heap_start[];
+extern char _kickos_heap_limit[];
+static char* s_brk = _kickos_heap_start;
 
 static void* heap_bump(intptr_t incr)
 {
     char* prev = s_brk;
     char* next = s_brk + incr;
-    if (next < s_heap or next > s_heap + sizeof(s_heap))
+    if (next < _kickos_heap_start or next > _kickos_heap_limit)
     {
         return reinterpret_cast<void*>(-1);
     }

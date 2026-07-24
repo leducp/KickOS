@@ -4,7 +4,9 @@
  * Linker script for the AT91SAM3X8E (Arduino Due), Cortex-M3.
  *   Flash : 512 KiB @ 0x0008_0000  (Flash 0; aliased to 0x0 at boot. VTOR is set
  *                                   to this base in the reset handler.)
- *   SRAM  :  64 KiB @ 0x2000_0000  (SRAM0; SRAM1 @ 0x2008_0000 is left unused)
+ *   SRAM  :  96 KiB @ 0x2007_0000  (the contiguous alias: SRAM0 64 KiB + SRAM1 32 KiB
+ *                                   joined at 0x2007_0000..0x2008_8000, so both banks
+ *                                   are usable as one region -- NOT 64 KiB @ 0x2000_0000)
  */
 
 ENTRY(Reset_Handler)
@@ -12,11 +14,17 @@ ENTRY(Reset_Handler)
 MEMORY
 {
     FLASH (rx)  : ORIGIN = 0x00080000, LENGTH = 512K
-    RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 64K
+    RAM   (rwx) : ORIGIN = 0x20070000, LENGTH = 96K
 }
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 8K;
+
+/* Newlib heap: an explicit .userheap section carved from RAM before the thread arena
+   (no MPU .appdata window on this chip). 0 is legal for a board with no malloc app. */
+#ifndef KICKOS_USER_HEAP_SIZE
+#define KICKOS_USER_HEAP_SIZE 16K
+#endif
 
 SECTIONS
 {
@@ -78,6 +86,14 @@ SECTIONS
         _ebss = .;
     } > RAM
 
+    .userheap (NOLOAD) :
+    {
+        . = ALIGN(8);
+        _kickos_heap_start = .;
+        . += KICKOS_USER_HEAP_SIZE;
+        _kickos_heap_limit = .;
+    } > RAM
+
     . = ALIGN(32);
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
@@ -87,3 +103,9 @@ SECTIONS
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
+
+/* Opt-in link-time heap floor (undefined by default). */
+#ifdef KICKOS_HEAP_MIN
+ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
+       "KickOS: heap below KICKOS_HEAP_MIN")
+#endif

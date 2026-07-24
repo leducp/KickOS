@@ -9,6 +9,8 @@
 
 #include <kickos/arch/arch.h>
 
+#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
+
 #include <stdint.h>
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -53,16 +55,6 @@ namespace
     constexpr long SYS_CLOCK = 0x10;
     constexpr long SYS_EXIT_EXTENDED = 0x20;
     constexpr uint32_t ADP_Stopped_ApplicationExit = 0x20026u;
-
-    void enable_fpu()
-    {
-        // CPACR: grant full access to CP10/CP11 (the FPU). Without this, any FP
-        // instruction the compiler emits would UsageFault.
-        volatile uint32_t* cpacr = reinterpret_cast<volatile uint32_t*>(0xE000ED88);
-        *cpacr |= (0xFu << 20);
-        __asm volatile("dsb" ::: "memory");
-        __asm volatile("isb" ::: "memory");
-    }
 
     void run_init_array()
     {
@@ -158,7 +150,7 @@ void arch_shutdown(int status)
         if (fh > 0)
         {
             char buf[256];
-            for (;;)
+            while (true)
             {
                 size_t got = kickos_rtt_ch1_drain(buf, sizeof(buf));
                 if (got == 0)
@@ -212,7 +204,7 @@ void Reset_Handler(void)
     // Enable the FPU BEFORE running static constructors: with the hard-float ABI
     // the compiler may emit FP instructions in a global initializer, which would
     // UsageFault (CP10/CP11 disabled at reset) -> HardFault before kmain.
-    enable_fpu();
+    kickos_armv7m_enable_fpu();
     run_init_array();
     arch_init();
     kickos::kmain(0, nullptr);

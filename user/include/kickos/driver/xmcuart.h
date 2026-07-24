@@ -25,6 +25,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <kickos/sys/service.h> // kos_service_cfg (the bring-up config)
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -45,10 +47,12 @@ extern "C"
     //   3. spawn the UNPRIVILEGED driver granted the USIC0 CH0 window + {E | WAIT},
     //   4. close root's own WAIT-bearing cap on E (S4: else driver death cannot EPIPE
     //      and clients hang).
-    // `driver_prio` must be >= every client's priority (D9: no PI on rendezvous).
-    // Returns 0, or < 0 on any failure (endpoint/publish/spawn). On failure the
-    // caller MUST NOT spawn console-dependent apps (S6: publish+spawn are inseparable).
-    int xmcuart_console_start(uint8_t driver_prio);
+    // `cfg` carries the USIC0 CH0 window base/size and the driver priority as data (a
+    // KOS_SVC_CONSOLE service entry); cfg->prio must be >= every client's priority
+    // (D9: no PI on rendezvous). Returns 0, or < 0 on any failure
+    // (endpoint/publish/spawn). On failure the caller MUST NOT spawn console-dependent
+    // apps (S6: publish+spawn are inseparable).
+    int xmcuart_console_start(struct kos_service_cfg const* cfg);
 
 #ifdef __cplusplus
 }

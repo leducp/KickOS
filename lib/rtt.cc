@@ -130,7 +130,7 @@ extern "C" size_t kickos_rtt_ch1_drain(char* out, size_t max)
     RingBuffer& up = _SEGGER_RTT.up[RTT_CH_TELEMETRY];
     uint32_t const size = up.size;
     size_t copied = 0;
-    while (copied < max && up.rd_off != up.wr_off)
+    while (copied < max and up.rd_off != up.wr_off)
     {
         out[copied] = up.buffer[up.rd_off];
         copied++;

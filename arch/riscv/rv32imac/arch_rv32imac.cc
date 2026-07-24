@@ -229,15 +229,15 @@ namespace
     {
         switch (i)
         {
-            case 0: __asm volatile("csrw pmpaddr0, %0" ::"r"(v) : "memory"); break;
-            case 1: __asm volatile("csrw pmpaddr1, %0" ::"r"(v) : "memory"); break;
-            case 2: __asm volatile("csrw pmpaddr2, %0" ::"r"(v) : "memory"); break;
-            case 3: __asm volatile("csrw pmpaddr3, %0" ::"r"(v) : "memory"); break;
-            case 4: __asm volatile("csrw pmpaddr4, %0" ::"r"(v) : "memory"); break;
-            case 5: __asm volatile("csrw pmpaddr5, %0" ::"r"(v) : "memory"); break;
-            case 6: __asm volatile("csrw pmpaddr6, %0" ::"r"(v) : "memory"); break;
-            case 7: __asm volatile("csrw pmpaddr7, %0" ::"r"(v) : "memory"); break;
-            default: break;
+            case 0: { __asm volatile("csrw pmpaddr0, %0" ::"r"(v) : "memory"); break; }
+            case 1: { __asm volatile("csrw pmpaddr1, %0" ::"r"(v) : "memory"); break; }
+            case 2: { __asm volatile("csrw pmpaddr2, %0" ::"r"(v) : "memory"); break; }
+            case 3: { __asm volatile("csrw pmpaddr3, %0" ::"r"(v) : "memory"); break; }
+            case 4: { __asm volatile("csrw pmpaddr4, %0" ::"r"(v) : "memory"); break; }
+            case 5: { __asm volatile("csrw pmpaddr5, %0" ::"r"(v) : "memory"); break; }
+            case 6: { __asm volatile("csrw pmpaddr6, %0" ::"r"(v) : "memory"); break; }
+            case 7: { __asm volatile("csrw pmpaddr7, %0" ::"r"(v) : "memory"); break; }
+            default: { break; }
         }
     }
 }

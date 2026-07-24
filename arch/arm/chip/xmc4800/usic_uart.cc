@@ -249,10 +249,10 @@ void arch_console_retune(void)
     u::Baud b;
     switch (SystemCoreClock)
     {
-    case 144000000u: b = u::BAUD_115200_72MHZ; break; // fPERIPH 72 MHz
-    case 96000000u:  b = u::BAUD_115200_48MHZ; break; // fPERIPH 48 MHz
-    case 48000000u:  b = u::BAUD_115200_24MHZ; break; // fPERIPH 24 MHz
-    default: return;                                   // unknown clock: do not touch baud
+    case 144000000u: { b = u::BAUD_115200_72MHZ; break; } // fPERIPH 72 MHz
+    case 96000000u:  { b = u::BAUD_115200_48MHZ; break; } // fPERIPH 48 MHz
+    case 48000000u:  { b = u::BAUD_115200_24MHZ; break; } // fPERIPH 24 MHz
+    default: { return; }                                  // unknown clock: do not touch baud
     }
     u::set_baud(U0C0, b);
 }

@@ -31,6 +31,12 @@ MEMORY
 _estack = ORIGIN(DRAM) + LENGTH(DRAM); /* initial stack: top of DRAM */
 _kernel_stack_size = 8K;               /* boot/interrupt stack reserve */
 
+/* Newlib heap: an explicit .userheap section carved from DRAM before the thread arena
+   (this chip has no MPU .appdata window). 0 is legal for a board with no malloc app. */
+#ifndef KICKOS_USER_HEAP_SIZE
+#define KICKOS_USER_HEAP_SIZE 16K
+#endif
+
 SECTIONS
 {
     /* Xtensa exception/interrupt vectors at VECBASE. Must be 1 KiB aligned; the
@@ -96,6 +102,14 @@ SECTIONS
         _ebss = .;
     } > DRAM
 
+    .userheap (NOLOAD) :
+    {
+        . = ALIGN(8);
+        _kickos_heap_start = .;
+        . += KICKOS_USER_HEAP_SIZE;
+        _kickos_heap_limit = .;
+    } > DRAM
+
     /* User-RAM pool (arch_ram_alloc) between static data and the reserved stack. */
     . = ALIGN(16);
     __kickos_ram_start = .;
@@ -106,3 +120,9 @@ SECTIONS
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows DRAM (no room for the user-RAM pool + stack)")
+
+/* Opt-in link-time heap floor (undefined by default). */
+#ifdef KICKOS_HEAP_MIN
+ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
+       "KickOS: heap below KICKOS_HEAP_MIN")
+#endif

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 USIC channel registers + bit fields, including the ASC (UART) mode
-// layer. Clean-room from the XMC4700/XMC4800 Reference Manual (V1.3, 2016-07);
-// no XMCLib/DAVE/CMSIS vendor source. "RM p.NN" are the manual's printed pages.
-// A USIC channel is addressed by base (see mmap.h) + the offsets below.
+// XMC4800 USIC channel registers + bit fields, including the ASC (UART) and
+// SSC (SPI) mode layers. Clean-room from the XMC4700/XMC4800 Reference Manual
+// (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM p.NN" are the
+// manual's printed pages. A USIC channel is addressed by base (see mmap.h) +
+// the offsets below.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_USIC_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_USIC_H
@@ -15,8 +16,10 @@
 
 namespace kickos::xmc::reg::usic
 {
-    // Console channel (Relax Kit VCOM): USIC0 channel 0.
+    // Console channel (Relax Kit VCOM): USIC0 channel 0. The SSC (SPI) drivers
+    // use the sibling channel 1.
     constexpr uintptr_t U0C0_BASE = mmap::USIC0_CH0_BASE;
+    constexpr uintptr_t U0C1_BASE = mmap::USIC0_CH1_BASE;
 
     // Per-channel register offsets from the channel base (RM Table 18-20).
     namespace off
@@ -128,6 +131,74 @@ namespace kickos::xmc::reg::usic
 
     // DX0CR.DSEL = 001B selects input line DX0B = P1.4 (console RX) (RM p.18-173).
     constexpr uint32_t DX0_DSEL_B = 0x1u;
+
+    // ---- SSC (SPI) mode field constants --------------------------------------
+    // Shared by the XMC SSC users: user/driver/xmcssc, user/apps/xmcspi,
+    // user/apps/xmccshold. Only atomic offsets/bits live here; each driver
+    // assembles its own PCR/TCSR/PSCR write masks from these (mechanism, not policy).
+
+    // Fixed 72 MHz SSC baud profile (fCPU=144 MHz), reused verbatim by all SSC
+    // users: FDR fractional mode (DM=10B, FDR_DM_FRACTIONAL above) STEP=367; BRG
+    // PDIV+1=14, PCTQ+1=1, DCTQ+1=16 (RM eq.18.8; RM p.18-178 / p.18-179). The
+    // exact rate is immaterial over an on-chip loopback, only that the clock runs.
+    constexpr uint32_t FDR_STEP_367 = 367u;
+    constexpr uint32_t BRG_PDIV_13 = 13u << 16; // PDIV+1 = 14
+    constexpr uint32_t BRG_DCTQ_15 = 15u << 10; // DCTQ+1 = 16
+    constexpr uint32_t BRG_PCTQ_0 = 0u << 8;    // PCTQ+1 = 1
+
+    // SCTR (RM p.18-183): SDIR(0)=1 MSB-first (SPI bit order); FLE[21:16]=63 (0x3F)
+    // leaves the frame length to the software TCSR.SOF/EOF markers (RM 18.4.3.6).
+    // SCTR_TRM_ACTIVE / SCTR_WLE_8 / SCTR_FLE_8 are shared with the ASC layer above.
+    constexpr uint32_t SCTR_SDIR_MSB = 1u << 0;
+    constexpr uint32_t SCTR_FLE_63 = 0x3Fu << 16;
+
+    // TCSR (RM p.18-186..189): SOF(5)/EOF(6) mark the TBUF word as FIRST/LAST of a
+    // software-governed frame (sampled when TDV goes valid). TCSR_TDEN_TDV /
+    // TCSR_TDSSM are shared with the ASC layer above.
+    constexpr uint32_t TCSR_SOF = 1u << 5;
+    constexpr uint32_t TCSR_EOF = 1u << 6;
+
+    // PCR [SSC Mode] (RM p.18-169 / p.18-98..100): MSLSEN(0)=1 SSC master (internal
+    // MSLS generation); SELCTR(1)=1 direct-select for SELO[7:0]; SELINV(2)=1
+    // active-low SELOx; FEM(3)=1 Frame End Mode (MSLS held across a software gap ->
+    // one CS bracket per multi-word frame, RM 18.4.5.1); SELO0(bit16)=1 arms SELO0.
+    constexpr uint32_t PCR_MSLSEN = 1u << 0;
+    constexpr uint32_t PCR_SELCTR_DIRECT = 1u << 1;
+    constexpr uint32_t PCR_SELINV_LOW = 1u << 2;
+    constexpr uint32_t PCR_FEM = 1u << 3;
+    constexpr uint32_t PCR_SELO0 = 1u << 16;
+
+    // DX0CR (RM p.18-173): INSW(4)=1 routes the synchronized input to the data
+    // shift unit (SSC receive path); DSEL[2:0]=110B selects internal input "G" =
+    // the channel's own transmitter (LOOP-BACK, RM 18.2.3.5) -- no port pin.
+    constexpr uint32_t DX0CR_INSW = 1u << 4;
+    constexpr uint32_t DX0CR_DSEL_G = 0x6u;
+
+    // INPR (RM p.18-168): RINP[10:8]/AINP[14:12] select the service-request output
+    // SRx for the receive / alternative-receive interrupts (SR1 here).
+    constexpr uint32_t INPR_RINP_SR1 = 1u << 8;
+    constexpr uint32_t INPR_AINP_SR1 = 1u << 12;
+
+    // CCR (RM p.18-160): MODE[3:0]=0001B selects the SSC protocol (written last to
+    // enable the channel); RIEN(14)/AIEN(15) are the receive interrupt enables.
+    constexpr uint32_t CCR_MODE_SSC = 0x1u;
+    constexpr uint32_t CCR_RIEN = 1u << 14;
+    constexpr uint32_t CCR_AIEN = 1u << 15;
+
+    // PSR [SSC Mode] (RM p.18-170 / p.18-102): MSLS(0) current MSLS level; MSLSEV(2)
+    // MSLS-changed event (sticky); RIF(14)/AIF(15) receive / alternative-receive
+    // complete (first word of a frame -> AIF, later words -> RIF).
+    constexpr uint32_t PSR_MSLS = 1u << 0;
+    constexpr uint32_t PSR_MSLSEV = 1u << 2;
+    constexpr uint32_t PSR_RIF = 1u << 14;
+    constexpr uint32_t PSR_AIF = 1u << 15;
+
+    // PSCR (RM p.18-171): W1C. CST0(0) clears MSLS (stops a running frame), CST2(2)
+    // clears MSLSEV, CRIF(14)/CAIF(15) clear RIF/AIF.
+    constexpr uint32_t PSCR_MSLS = 1u << 0;
+    constexpr uint32_t PSCR_MSLSEV = 1u << 2;
+    constexpr uint32_t PSCR_CRIF = 1u << 14;
+    constexpr uint32_t PSCR_CAIF = 1u << 15;
 
     // ---- Precomputed baud-generator parameters (raw register field values) ----
     // No runtime solver: a new baud is a documented hand-calc of the RM formula

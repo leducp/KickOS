@@ -236,6 +236,10 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   target_include_directories(kickos_chip_${KICKOS_CHIP} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/${KICKOS_ARCH}/include"
+    # The family-common backend headers (arm/common/regs.h: core SCB/SysTick regs +
+    # the shared kickos_armv7m_enable_fpu). A chip has no regs.h of its own, so a
+    # chip #include "regs.h" resolves here.
+    "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/../kernel/include"
     # A retunable chip (arch_cpu_clock_set) names the KOS_PSTATE_* selector from the
     # shared syscall ABI (user/include/kickos/sys/abi.h), which pulls errno.h from
@@ -301,6 +305,18 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
   if(DEFINED KICKOS_APPDATA_SIZE)
     list(APPEND _ld_defs -DKICKOS_APPDATA_SIZE=${KICKOS_APPDATA_SIZE})
+  endif()
+  # Non-MPU heap: the .userheap section carved before the thread arena. Forwarded only
+  # when set, so a plain build keeps the chip default. (On an MPU chip the heap is the
+  # .appdata window pad instead, so this is inert there.)
+  if(DEFINED KICKOS_USER_HEAP_SIZE)
+    list(APPEND _ld_defs -DKICKOS_USER_HEAP_SIZE=${KICKOS_USER_HEAP_SIZE})
+  endif()
+  # Opt-in link-time heap floor: when set, the .ld ASSERTs the available heap is at
+  # least this many bytes. Undefined by default (a too-small heap is a runtime bump
+  # failure, not a link error, unless a board opts into this determinism).
+  if(DEFINED KICKOS_HEAP_MIN)
+    list(APPEND _ld_defs -DKICKOS_HEAP_MIN=${KICKOS_HEAP_MIN})
   endif()
   add_custom_command(
     OUTPUT "${_ld_gen}"

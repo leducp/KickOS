@@ -24,6 +24,7 @@
 #include <kickos/console_tx.h>
 
 // Bases in mmap.h, NVIC lines in irq.h, per-peripheral offsets/fields in regs/.
+#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"
 #include "irq.h"
 #include "regs/ccm.h"
@@ -294,16 +295,6 @@ namespace
         }
     }
 
-    void enable_fpu()
-    {
-        // M7 CPACR CP10/CP11 full access. FP context is enabled even under the
-        // softfp ABI (a hard-float TU could emit FP; CPACR-off FP faults).
-        volatile uint32_t* cpacr = reinterpret_cast<volatile uint32_t*>(0xE000ED88);
-        *cpacr |= (0xFu << 20);
-        __asm volatile("dsb" ::: "memory");
-        __asm volatile("isb" ::: "memory");
-    }
-
     // DEFERRED: leave the boot-ROM clock tree untouched (no PLL bring-up). The
     // 600 MHz CCM/ARM-PLL config is a follow-up; see the design doc.
     void clock_init() {}
@@ -538,16 +529,6 @@ void arch_idle_wait(void)
     __asm volatile("nop");
 }
 
-void arch_shutdown(int status)
-{
-    (void)status; // no exit on bare metal
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
-}
-
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RT1060 RM). Owns-for-life: the GPT1 monotonic time base and
 // the CCM (CCGR clock-gate roots). Bases are the constants above; sizes one 4 KB AIPS
@@ -577,7 +558,7 @@ void Reset_Handler(void)
     // vector). Point VTOR at our table (@ 0x6000_2000, not flash base) before any
     // interrupt path runs.
     watchdog_disable(); // FIRST: the ROM hands off a running RTWDOG (RM 58.4)
-    enable_fpu(); // before ANY later code that could emit FP (softfp ABI)
+    kickos_armv7m_enable_fpu(); // before ANY later code that could emit FP (softfp ABI)
     r32(0xE000ED08) = reinterpret_cast<uintptr_t>(g_isr_vector); // SCB->VTOR
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");

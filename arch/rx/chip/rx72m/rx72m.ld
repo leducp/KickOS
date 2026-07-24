@@ -44,16 +44,21 @@ _kernel_stack_size = 8K;               /* ISP (boot/ISR) stack reservation */
    size; a real app whose globals exceed it trips the ASSERT below. Keep it pow2.
    Gated on KICKOS_HAVE_MPU (the script is cpp-preprocessed): a non-enforcement
    build reserves no app-data block and separates nothing (zero overhead).
-   The full-C++ cxxtest gate routes a 16K malloc arena (KICKOS_HEAP_SIZE, set in the
-   board_config) + libstdc++/unwind globals into this window (~18K), so the default is
-   32K (matches virt.ld/esp32c6.ld); override it down for a tight freestanding demo. The
-   former 4K default could not hold the heap arena and the pow2 pad-back in .appbss moved
-   the location counter backwards before the ASSERT could fire. */
+   The window pad (window minus app statics + runtime) IS the newlib heap; cxxtest's
+   measured peak (~4.2K on RISC-V-class DWARF, ~5.9K ARM) and printf both fit the pad a
+   32K window leaves (~14K). Override it down for a tight freestanding demo. */
 #if KICKOS_HAVE_MPU
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 32K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
+#endif
+
+/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch).
+   RX prepends one underscore, so the C `_kickos_heap_*` resolves to the double-underscore
+   linker symbols defined below. */
+#ifndef KICKOS_USER_HEAP_SIZE
+#define KICKOS_USER_HEAP_SIZE 16K
 #endif
 
 SECTIONS
@@ -205,6 +210,10 @@ SECTIONS
                "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
         . = ___kickos_appdata_start + _appdata_size; /* pad the block up to pow2 */
         ___kickos_appdata_end = .;
+        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). Double
+           underscore: C `_kickos_heap_*` gains the RX one-underscore psABI prefix. */
+        __kickos_heap_start = ALIGN(_appdata_used_end, 8);
+        __kickos_heap_limit = ___kickos_appdata_end;
     } > RAM
 #else
     .data : ALIGN(4)
@@ -224,6 +233,19 @@ SECTIONS
         *(COMMON)
         . = ALIGN(4);
         __ebss = .;
+    } > RAM
+#endif
+
+#if !KICKOS_HAVE_MPU
+    /* Non-enforcement build: no .appdata window, so the newlib heap is an explicit
+       section carved from RAM before the thread arena. Double underscore per the RX
+       psABI (C `_kickos_heap_*`). */
+    .userheap (NOLOAD) :
+    {
+        . = ALIGN(8);
+        __kickos_heap_start = .;
+        . += KICKOS_USER_HEAP_SIZE;
+        __kickos_heap_limit = .;
     } > RAM
 #endif
 
@@ -267,4 +289,10 @@ ASSERT(ADDR(.appbss) >= ___kickos_appdata_start,
    empty .appdata is legitimate (a minimal freestanding app --gc-sections'd bare). */
 ASSERT(__ebss > __sbss,
        "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
+#endif
+
+/* Opt-in link-time heap floor (undefined by default). Double underscore per RX psABI. */
+#ifdef KICKOS_HEAP_MIN
+ASSERT(__kickos_heap_limit - __kickos_heap_start >= KICKOS_HEAP_MIN,
+       "KickOS: heap below KICKOS_HEAP_MIN")
 #endif

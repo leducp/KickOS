@@ -111,7 +111,7 @@ namespace
         r8(cgc::MOSCCR) = cgc::MOSCCR_MAIN_RUN;    // 3. start the main clock oscillator
         uint8_t mosccr_rb = r8(cgc::MOSCCR);       // read back before dependent writes (sec.9.2.8)
         (void)mosccr_rb;
-        if (!poll_flag(cgc::OSCOVFSR, cgc::OSCOVFSR_MOOVF, CLOCK_POLL_LIMIT))
+        if (not poll_flag(cgc::OSCOVFSR, cgc::OSCOVFSR_MOOVF, CLOCK_POLL_LIMIT))
         {
             return false;
         }
@@ -124,7 +124,7 @@ namespace
         (void)memwait_rb;
         r16(cgc::PLLCR) = cgc::PLLCR_PLL_240MHZ;   // 5. multiplier + input divider
         r8(cgc::PLLCR2) = cgc::PLLCR2_PLL_RUN;     // 6. run the PLL
-        if (!poll_flag(cgc::OSCOVFSR, cgc::OSCOVFSR_PLOVF, CLOCK_POLL_LIMIT))
+        if (not poll_flag(cgc::OSCOVFSR, cgc::OSCOVFSR_PLOVF, CLOCK_POLL_LIMIT))
         {
             return false;
         }

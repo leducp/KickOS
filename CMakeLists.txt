@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.24)
 # Version scheme: 0.<milestone>.<submilestone> (drives KICKOS_VERSION -> the boot banner).
-project(KickOS VERSION 0.4.3 LANGUAGES C CXX ASM)
+project(KickOS VERSION 0.4.4 LANGUAGES C CXX ASM)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
@@ -247,13 +247,12 @@ add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 # KICKOS_CONSOLE above, AFTER KICKOS_HAVE_MPU is known (the xmcuart handover is an
 # enforcement construct). Must sit after the MPU block for that reason.
 if(NOT DEFINED KICKOS_CONSOLE_BRINGUP)
-  if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
-    set(KICKOS_CONSOLE_BRINGUP "kickos_console_xmcuart")
-  elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)
-    set(KICKOS_CONSOLE_BRINGUP "kickos_console_k64uart")
-  else()
-    set(KICKOS_CONSOLE_BRINGUP "kickos_console_none")
-  endif()
+  # M4.4: the frdmk64f and xmc4800-relax consoles moved INTO the service list
+  # (KICKOS_SERVICE_LIST below) as a KOS_SVC_CONSOLE entry, so no board defaults to
+  # the single-console hook anymore. The hook stays as the explicit escape hatch until
+  # the M4.5 fleet migration retires it. Every board keeps the kernel console unless
+  # its service list brings one up.
+  set(KICKOS_CONSOLE_BRINGUP "kickos_console_none")
 endif()
 set(KICKOS_CONSOLE_BRINGUP "${KICKOS_CONSOLE_BRINGUP}" CACHE STRING
   "CMake target defining kickos_board_console (the default-init console bring-up). Default kickos_console_none (keep the kernel console).")
@@ -262,15 +261,46 @@ set(KICKOS_CONSOLE_BRINGUP "${KICKOS_CONSOLE_BRINGUP}" CACHE STRING
 # override on XMC still injects a linkable provider. A custom provider may pre-set
 # KICKOS_CONSOLE_BRINGUP_LIBS with its own dep list.
 if(NOT DEFINED KICKOS_CONSOLE_BRINGUP_LIBS)
-  if(KICKOS_CONSOLE_BRINGUP STREQUAL "kickos_console_xmcuart")
-    set(KICKOS_CONSOLE_BRINGUP_LIBS "kickos_console_xmcuart;kickos_xmcuart;kickos_class_xmc4800")
-  elseif(KICKOS_CONSOLE_BRINGUP STREQUAL "kickos_console_k64uart")
-    set(KICKOS_CONSOLE_BRINGUP_LIBS "kickos_console_k64uart;kickos_k64uart;kickos_class_mk64f")
-  else()
-    set(KICKOS_CONSOLE_BRINGUP_LIBS "${KICKOS_CONSOLE_BRINGUP}")
-  endif()
+  # M4.4: the k64uart/xmcuart console providers were subsumed by the service list, so
+  # the only console-hook provider left is kickos_console_none (its own lib closure).
+  # A custom provider pre-sets KICKOS_CONSOLE_BRINGUP_LIBS with its own dep list.
+  set(KICKOS_CONSOLE_BRINGUP_LIBS "${KICKOS_CONSOLE_BRINGUP}")
 endif()
 message(STATUS "KickOS: console bring-up = ${KICKOS_CONSOLE_BRINGUP} (libs: ${KICKOS_CONSOLE_BRINGUP_LIBS})")
+
+# Service-list provider selection (the default-init service bring-up walk). The
+# default init walks the board's service list BEFORE the console hook + the app main,
+# so a plain app gets its board's userspace services -- starting with the console, now
+# a KOS_SVC_CONSOLE entry -- with zero app code (see system/init/service_list_run.cc +
+# <kickos/sys/service.h>). KICKOS_SERVICE_LIST names the CMake target that DEFINES
+# kickos_board_services; KICKOS_SERVICE_LIST_LIBS is that target plus every driver +
+# class leaf its start()s reference (all back-reference kickos_user, so they must join
+# the rescan link group below). Default is kickos_services_none (count = 0: no-op).
+# Resolved per-board AFTER KICKOS_HAVE_MPU is known, like KICKOS_CONSOLE_BRINGUP above.
+if(NOT DEFINED KICKOS_SERVICE_LIST)
+  if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
+    set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax")
+  elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)
+    set(KICKOS_SERVICE_LIST "kickos_services_frdmk64f")
+  else()
+    set(KICKOS_SERVICE_LIST "kickos_services_none")
+  endif()
+endif()
+set(KICKOS_SERVICE_LIST "${KICKOS_SERVICE_LIST}" CACHE STRING
+  "CMake target defining kickos_board_services (the default-init service bring-up walk). Default kickos_services_none (count = 0: no services).")
+# Derive the lib closure from the selected target EVERY configure (like the console
+# knob), so an explicit A/B override still injects a linkable provider. A custom
+# provider may pre-set KICKOS_SERVICE_LIST_LIBS with its own dep list.
+if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
+  if(KICKOS_SERVICE_LIST STREQUAL "kickos_services_xmc4800relax")
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_xmc4800relax;kickos_xmcuart;kickos_xmcssc;kickos_class_xmc4800")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_frdmk64f")
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_frdmk64f;kickos_k64dspi;kickos_k64uart;kickos_class_mk64f")
+  else()
+    set(KICKOS_SERVICE_LIST_LIBS "${KICKOS_SERVICE_LIST}")
+  endif()
+endif()
+message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST} (libs: ${KICKOS_SERVICE_LIST_LIBS})")
 
 # Board pin-map provider selection (the default-init pin-mux step). The default init
 # applies the board pin map BEFORE the console bring-up (see system/init/pinmux_run.cc
@@ -421,13 +451,16 @@ if(TARGET kickos_kernel)
   # KICKOS_CONSOLE_BRINGUP_LIBS follows the provider: the provider references
   # kickos_board_console, the console-none/driver providers back-reference kickos_user,
   # and the driver's class leaf back-references it too, so the whole closure must be
-  # in-group to rescan-resolve. It is one item on the none default, three on xmcuart.
+  # in-group to rescan-resolve. It is one item on the none default, three on a driver.
+  # KICKOS_SERVICE_LIST_LIBS follows it for the same reason: the list TU references its
+  # drivers' start()s, and those back-reference kickos_user + a class leaf (one item on
+  # the none default, three on a migrated board).
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
     target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
+      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
   else()
     target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_arch_${KICKOS_ARCH},kickos_lib>")
+      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_arch_${KICKOS_ARCH},kickos_lib>")
   endif()
   # kickos_system is INTERFACE (contributes no archive), so it must NOT sit in the
   # RESCAN group; link it separately. This is what propagates the relocated system
@@ -547,6 +580,11 @@ if(TARGET kickos_core)
   # chip's user/driver/ subtree, so it is not a target at the kickos_core site above).
   if(NOT TARGET ${KICKOS_CONSOLE_BRINGUP})
     message(FATAL_ERROR "KICKOS_CONSOLE_BRINGUP='${KICKOS_CONSOLE_BRINGUP}' is not a CMake target. Name a target that defines kickos_board_console, or use the default kickos_console_none (keep the kernel console).")
+  endif()
+  # Same late validation for the service-list provider (defined in system/ or a chip's
+  # user/driver/ subtree, so it is not a target at the kickos_core site above).
+  if(NOT TARGET ${KICKOS_SERVICE_LIST})
+    message(FATAL_ERROR "KICKOS_SERVICE_LIST='${KICKOS_SERVICE_LIST}' is not a CMake target. Name a target that defines kickos_board_services, or use the default kickos_services_none (count = 0).")
   endif()
 endif()
 

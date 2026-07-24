@@ -22,16 +22,19 @@ _kernel_stack_size = 8K;
    own .data/.bss but not the kernel's. PMSA needs the region pow2-sized AND aligned
    to its size, so the app window is padded to this pow2 and section-aligned to its
    size above the kernel data; an app whose globals exceed it trips the ASSERT.
-   Power of two only. The full-C++ cxxtest gate routes a 16K malloc arena
-   (KICKOS_HEAP_SIZE) + libstdc++/unwind globals into this window (~18K measured), so
-   the default is 32K (matches virt.ld/esp32c6.ld); a tight freestanding demo can
-   override it down. The former 4K default could not hold the heap arena and the pow2
-   pad-back below moved the location counter backwards before the ASSERT could fire. */
+   Power of two only. The window pad (window minus app statics + runtime) IS the newlib
+   heap; cxxtest's measured peak (~5.9K) and printf (~5.9K, 4K stdio granule) both fit
+   the ~14K pad a 32K window leaves. A tight freestanding demo can override it down. */
 #if KICKOS_HAVE_MPU
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 32K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
+#endif
+
+/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch). */
+#ifndef KICKOS_USER_HEAP_SIZE
+#define KICKOS_USER_HEAP_SIZE 16K
 #endif
 
 SECTIONS
@@ -188,6 +191,9 @@ SECTIONS
                "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)");
         . = __kickos_appdata_start + _appdata_size; /* pad the granted window */
         __kickos_appdata_end = .;
+        /* The newlib heap IS the window pad: [ALIGN(used_end,8), window end). */
+        _kickos_heap_start = ALIGN(_appdata_used_end, 8);
+        _kickos_heap_limit = __kickos_appdata_end;
     } > RAM
 #else
     .data : ALIGN(4)
@@ -205,6 +211,18 @@ SECTIONS
         *(COMMON)
         . = ALIGN(4);
         _ebss = .;
+    } > RAM
+#endif
+
+#if !KICKOS_HAVE_MPU
+    /* Non-enforcement build: no .appdata window, so the newlib heap is an explicit
+       section carved from RAM before the thread arena. */
+    .userheap (NOLOAD) :
+    {
+        . = ALIGN(8);
+        _kickos_heap_start = .;
+        . += KICKOS_USER_HEAP_SIZE;
+        _kickos_heap_limit = .;
     } > RAM
 #endif
 
@@ -242,6 +260,12 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
    empty .appdata is legitimate (a minimal freestanding app --gc-sections'd bare). */
 ASSERT(_ebss > _sbss,
        "KickOS: kernel .bss empty -- closed-set archive selector matched nothing (renamed lib?)")
+#endif
+
+/* Opt-in link-time heap floor (undefined by default). */
+#ifdef KICKOS_HEAP_MIN
+ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
+       "KickOS: heap below KICKOS_HEAP_MIN")
 #endif
 
 /* The vector table must sit immediately after the 256-byte boot2. */

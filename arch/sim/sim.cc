@@ -394,7 +394,7 @@ namespace
             sim().tx_budget--;
         }
         char c = static_cast<char>(b);
-        for (;;)
+        while (true)
         {
             ssize_t w = write(1, &c, 1);
             if (w == 1)
@@ -642,7 +642,7 @@ void arch_shutdown(int status)
     if (fd >= 0)
     {
         char buf[512];
-        for (;;)
+        while (true)
         {
             size_t got = kickos_rtt_ch1_drain(buf, sizeof(buf));
             if (got == 0)

@@ -23,8 +23,11 @@ namespace kickos
 
         // --- System Control Block ---
         constexpr uintptr_t SCB_ICSR = 0xE000ED04; // Interrupt Control and State
+        constexpr uintptr_t SCB_VTOR = 0xE000ED08; // Vector Table Offset
+        constexpr uintptr_t SCB_CPACR = 0xE000ED88; // Coprocessor Access Control
         constexpr uint32_t ICSR_PENDSVSET = 1u << 28;
         constexpr uint32_t ICSR_PENDSTCLR = 1u << 25; // clear a pending SysTick
+        constexpr uint32_t CPACR_CP10_CP11_FULL = 0xFu << 20; // FPU: CP10/CP11 full access
 
         // --- SysTick ---
         constexpr uintptr_t SYST_CSR = 0xE000E010; // control/status
@@ -63,6 +66,17 @@ namespace kickos
         constexpr uintptr_t SCB_SHCSR = 0xE000ED24;
         constexpr uint32_t SHCSR_MEMFAULTENA = 1u << 16;
     }
+}
+
+// Enable the FPU (CP10/CP11 full access) then serialize (DSB+ISB) so a later FP
+// instruction cannot be prefetched ahead of the enable. static inline: the caller
+// gets the bare CPACR poke it wrote by hand. ARMv7-M chips with an FPU call this
+// from arch_init before any code a hard-float ABI could emit FP into.
+static inline void kickos_armv7m_enable_fpu()
+{
+    kickos::arm::reg32(kickos::arm::SCB_CPACR) |= kickos::arm::CPACR_CP10_CP11_FULL;
+    __asm volatile("dsb" ::: "memory");
+    __asm volatile("isb" ::: "memory");
 }
 
 #endif

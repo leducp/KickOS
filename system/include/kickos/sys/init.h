@@ -60,6 +60,16 @@ int kickos_default_init_run(int argc, char** argv);
 // app on a nonzero result. MUST NOT use libc stdio (bring-up self-deadlock rule).
 int kickos_console_bringup_run(void);
 
+// Run the selected board's service list (see <kickos/sys/service.h>): walk each
+// entry's start() in array order (the console is a KOS_SVC_CONSOLE entry). Returns 0
+// on success (or empty list), or the first failing entry's negative code. The default
+// kickos_init_entry runs this AFTER the pin map and BEFORE the console hook + app
+// main, aborting the app on a nonzero result. During the M4.4 migration this runs
+// ALONGSIDE kickos_console_bringup_run: exactly one does work per board (a migrated
+// board fills its list and sets its console hook to none; an un-migrated board has an
+// empty list and keeps its hook). MUST NOT use libc stdio (bring-up self-deadlock rule).
+int kickos_service_list_run(void);
+
 // Apply the selected board's pin map (see <kickos/sys/pinmap.h>) BEFORE the console
 // bring-up: the DAG middle of the clock->pinmux->console->app chain. A board with an
 // empty map (count = 0) is a no-op. Returns 0 on success, or the first failing

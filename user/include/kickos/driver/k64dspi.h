@@ -1,54 +1,55 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The K64F/DSPI0 unprivileged SPI driver: a callable blocking transport.
-// The privileged bring-up shim (spi_driver_start) clock-gates
-// + PORTD-muxes + configures DSPI0 while halted, opens the DSPI AIPS slot to user
-// mode, sets up the software GPIO chip select on PTC4, and spawns the UNPRIVILEGED
-// driver thread that owns the DSPI register window + IRQ 26 + the PTC4 CS GPIO.
-// Client threads (e.g. a KickCAT slave) then call spi_transfer():
-// it copies the caller's buffer into a shared bounce buffer, hands a descriptor to
-// the driver thread over a semaphore handshake, and blocks until the driver has run
-// the DSPI frames and posted completion. The caller NEVER touches MMIO/grants/IRQs.
+// The K64F/DSPI0 SPI bus SERVICE (M4.4). A privileged one-time bring-up
+// (k64dspi_spi_start) clock-gates + PORTD-muxes + configures DSPI0 while halted,
+// opens the DSPI AIPS slot to user mode, sets up the software GPIO chip select on
+// PTC4, creates the request ENDPOINT, and spawns the UNPRIVILEGED driver thread
+// that owns the DSPI register window + the PTC4 CS GPIO and serves the bus wire ABI
+// (<kickos/sys/bus.h>) over that endpoint via kos_recv -> transact -> kos_reply.
 //
-// The bounce copy is REQUIRED under MPU enforcement: the driver thread cannot read
-// a client's private stack (a different domain). The shared descriptor + bounce
-// buffer are file-scope state in the app's .appdata window, which the kernel grants
-// R|W to every unprivileged thread of the app -- so any client thread reaches them.
+// Clients speak the neutral wrapper (<kickos/driver/spi_client.h>): spi_transfer /
+// spi_transact / spi_config over a SIGNAL-bearing cap on the endpoint. Because a
+// kos_call caller must be a spawned pool thread (the root/init thread is guarded),
+// the client is always a spawned thread that receives the endpoint's SIGNAL cap by
+// spawn-time delegation. The bring-up runs in the root/init thread and records the
+// endpoint's cap handle (k64dspi_endpoint) so the app -- same thread, same cap
+// table -- can delegate a SIGNAL-narrowed cap to each client it spawns.
 //
-// KickCAT's AbstractSPI backend (KickCAT lib/slave/driver/src/kickos/SPI.cc)
-// declares spi_transfer/spi_enable_cs/spi_disable_cs as extern "C" locally, so it
-// links this transport without a KickOS header dependency (the Time-backend seam).
+// Chip select is a SOFTWARE GPIO on PTC4 (Arduino D9 = LAN9252 SCS), NOT hardware
+// PCS0: the driver brackets the whole transaction by driving PTC4 low (assert) /
+// high (release) around all segments. This fixes the confirmed Stage-D bug: DSPI's
+// CONT/PCS model has no zero-clock CS deassert, so releasing hardware PCS0 clocked a
+// trailing dummy byte that corrupted length-sensitive LAN9252 mailbox writes.
+//
+// GPIO access path (K64 RM 3.10.1.1 / 3.3.6.2 / 3.3.7.1 / 4.6): GPIO is a direct
+// crossbar slave with NO access protection -- not an AIPS-Lite slot (no PACR) and
+// not a SYSMPU slave port. So the unprivileged driver reaches GPIOC's data registers
+// with NO grant; only the PTC4 pin-mux + direction are set privileged one-time in
+// the bring-up. DSPI0 privilege stays AIPS-PACR slot 44 as before.
 
 #ifndef KICKOS_DRIVER_K64DSPI_H
 #define KICKOS_DRIVER_K64DSPI_H
-
-#include <stddef.h>
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-    // Privileged bring-up: clock/mux/config DSPI0, open its AIPS slot, create the
-    // handshake semaphores, and spawn the unprivileged driver thread. Call ONCE from
-    // the privileged app main before any client thread issues a transfer. The
-    // loopback flag configures a conservative baud (safe over a SOUT->SIN jumper);
-    // pass false for the LAN9252 boot baud/mode (Stage D). Returns 0, or <0 on error.
-    int spi_driver_start(int loopback);
+    struct kos_service_cfg;
 
-    // Blocking full-duplex transfer of `len` bytes. tx==NULL shifts dummy 0x00;
-    // rx==NULL discards the received bytes. Returns bytes transferred, or <0.
-    // CS follows the most recent spi_enable_cs/spi_disable_cs (software GPIO on PTC4);
-    // a transfer outside a bracket self-asserts CS. Serialized: one caller at a time.
-    int spi_transfer(void* tx, void* rx, size_t len);
+    // KOS_SVC_SPI service start(): the privileged one-time bring-up + endpoint +
+    // unprivileged driver spawn. Reads the controller base/window, target Hz, and
+    // CS policy from the service cfg. Returns 0, or a negative -KOS_E*. NO libc
+    // stdio (the service-list HARD RULE); diagnostics use kos::print.
+    int k64dspi_spi_start(struct kos_service_cfg const* cfg);
 
-    // Assert / release CS across a header+payload transfer pair (LAN9252 CSR framing).
-    // enable drives the PTC4 GPIO low and holds it across the pair; disable drives it
-    // high after the last frame drains -- a software CS, no trailing clocked byte.
-    void spi_enable_cs(void);
-    void spi_disable_cs(void);
+    // The DSPI0 service endpoint cap handle in the ROOT/init thread's table (set by
+    // k64dspi_spi_start, valid for the rest of that thread's life). The app -- which
+    // runs in the SAME root thread after the service walk -- delegates a
+    // SIGNAL-narrowed copy of this cap to each SPI client it spawns. Returns a
+    // negative value if the service did not come up.
+    int k64dspi_endpoint(void);
 
 #ifdef __cplusplus
 }

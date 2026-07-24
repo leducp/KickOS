@@ -18,6 +18,7 @@
 // inspection. Flash (ST-LINK/openocd) to confirm; apps/blink toggles an onboard
 // LED (PD12) for a no-UART smoke test.
 
+#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"
 #include "irq.h"
 #include "regs/flash.h"
@@ -142,7 +143,7 @@ namespace
             flash::ACR_LATENCY_2WS | flash::ACR_PRFTEN | flash::ACR_ICEN | flash::ACR_DCEN;
 
         r32(rcc::CR) |= rcc::CR_HSEON;
-        if (!wait_mask(rcc::CR, rcc::CR_HSERDY))
+        if (not wait_mask(rcc::CR, rcc::CR_HSERDY))
         {
             return; // no crystal: stay on HSI 16 MHz
         }
@@ -155,13 +156,13 @@ namespace
         r32(rcc::CFGR) = rcc::CFGR_HPRE_DIV1 | rcc::CFGR_PPRE1_DIV2 | rcc::CFGR_PPRE2_DIV1;
 
         r32(rcc::CR) |= rcc::CR_PLLON;
-        if (!wait_mask(rcc::CR, rcc::CR_PLLRDY))
+        if (not wait_mask(rcc::CR, rcc::CR_PLLRDY))
         {
             return; // PLL never locked: stay on HSI 16 MHz
         }
 
         r32(rcc::CFGR) = (r32(rcc::CFGR) & ~rcc::CFGR_SW_MASK) | rcc::CFGR_SW_PLL;
-        if (!wait_mask(rcc::CFGR, rcc::CFGR_SWS_PLL)) // SWS reads back the active source
+        if (not wait_mask(rcc::CFGR, rcc::CFGR_SWS_PLL)) // SWS reads back the active source
         {
             return; // switch did not take: HSI still drives SYSCLK
         }
@@ -250,13 +251,6 @@ namespace
         uint64_t hi = g_clk_high;
         arch_irq_restore(s);
         return (hi << 32) | cur;
-    }
-
-    void enable_fpu()
-    {
-        r32(0xE000ED88) |= (0xFu << 20); // CPACR: CP10/CP11 full access
-        __asm volatile("dsb" ::: "memory");
-        __asm volatile("isb" ::: "memory");
     }
 
     void usart2_init()
@@ -381,7 +375,7 @@ void arch_diag_led_set(int on)
     constexpr uintptr_t bsrr = KICKOS_LED_GPIO + gpio::BSRR; // [15:0]=set, [31:16]=reset
     bool high = (on != 0);
 #if KICKOS_LED_ACTIVE_LOW
-    high = !high; // lit when driven low
+    high = not high; // lit when driven low
 #endif
     if (high)
     {
@@ -390,16 +384,6 @@ void arch_diag_led_set(int on)
     else
     {
         r32(bsrr) = 1u << (KICKOS_LED_PIN + 16);
-    }
-}
-
-void arch_shutdown(int status)
-{
-    (void)status; // no exit on bare metal
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
     }
 }
 
@@ -434,7 +418,7 @@ int arch_bitband_present(void)
 
 void Reset_Handler(void)
 {
-    enable_fpu(); // before any code that a hard-float ABI might emit FP into
+    kickos_armv7m_enable_fpu(); // before any code that a hard-float ABI might emit FP into
 
     kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss
     for (void (**fn)() = __init_array_start; fn != __init_array_end; fn++)

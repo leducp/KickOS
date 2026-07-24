@@ -17,6 +17,7 @@
 //
 // Build-only here; flash via the on-board debugger.
 
+#include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"
 #include "regs/ccu4.h"
 #include "regs/flash.h"
@@ -59,13 +60,6 @@ namespace
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
     constexpr uintptr_t SCB_VTOR = 0xE000ED08;
-
-    void enable_fpu()
-    {
-        r32(0xE000ED88) |= (0xFu << 20); // CPACR: CP10/CP11 full access
-        __asm volatile("dsb" ::: "memory");
-        __asm volatile("isb" ::: "memory");
-    }
 
     // ---- Clock tree: 12 MHz XTAL -> system PLL -> fSYS=fCPU=144 MHz -----------
     // Sequence and register values are clean-room from the XMC4700/4800 RM V1.3
@@ -402,14 +396,20 @@ uint32_t arch_cpu_clock_set(uint32_t target)
     switch (static_cast<kos_pstate_t>(target))
     {
     case KOS_PSTATE_MAX:
+    {
         want_hz = 144000000u; want_k2 = 2u; want_ws = 4u; // fPERIPH 72 MHz
         break;
+    }
     case KOS_PSTATE_MID:
+    {
         want_hz = 96000000u; want_k2 = 3u; want_ws = 3u;  // fPERIPH 48 MHz
         break;
+    }
     default: // KOS_PSTATE_LOW
+    {
         want_hz = 48000000u; want_k2 = 6u; want_ws = 2u;  // fPERIPH 24 MHz
         break;
+    }
     }
     if (want_hz == previous)
     {
@@ -547,16 +547,6 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return 0;
 }
 
-void arch_shutdown(int status)
-{
-    (void)status;
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
-}
-
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (XMC4[78]00 RM). Owns-for-life: the CCU40 monotonic time base
 // (its slice + the global-control prefix) and the SCU (clock gates / peripheral
@@ -589,7 +579,7 @@ int arch_bitband_present(void)
 
 void Reset_Handler(void)
 {
-    enable_fpu();
+    kickos_armv7m_enable_fpu();
     r32(SCB_VTOR) = mmap::FLASH_CACHED_BASE; // vectors live at the cached flash alias
 
     kickos_ranges_init(); // init .data + the pow2 app-data block; zero .bss + app-bss
