@@ -80,13 +80,30 @@ long kos_send(int ep, void const* buf, size_t len)
                                           static_cast<uintptr_t>(len), 0));
 }
 
-long kos_recv(int ep, void* buf, size_t cap_len, uint32_t* badge)
+long kos_recv(int ep, void* buf, size_t cap_len, struct kos_recv_info* info)
 {
     return static_cast<long>(arch_syscall(KOS_SYS_RECV,
                                           static_cast<uintptr_t>(ep),
                                           reinterpret_cast<uintptr_t>(buf),
                                           static_cast<uintptr_t>(cap_len),
-                                          reinterpret_cast<uintptr_t>(badge)));
+                                          reinterpret_cast<uintptr_t>(info)));
+}
+
+long kos_call(int ep, void* buf, size_t send_len, size_t recv_cap)
+{
+    return static_cast<long>(arch_syscall(KOS_SYS_CALL,
+                                          static_cast<uintptr_t>(ep),
+                                          reinterpret_cast<uintptr_t>(buf),
+                                          static_cast<uintptr_t>(send_len),
+                                          static_cast<uintptr_t>(recv_cap)));
+}
+
+int kos_reply(int reply_cap, void const* buf, size_t len)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_REPLY,
+                                         static_cast<uintptr_t>(reply_cap),
+                                         reinterpret_cast<uintptr_t>(buf),
+                                         static_cast<uintptr_t>(len), 0));
 }
 
 int kos_console_publish(int ep)

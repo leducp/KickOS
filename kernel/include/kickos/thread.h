@@ -33,6 +33,17 @@ namespace kickos
         RR
     };
 
+    // Call/reply state (M4.4). A thread is CALL_NONE unless it is mid-kos_call:
+    // CALL_SEND_WAIT while parked on an endpoint's send_waiters before a receiver has
+    // taken its request, CALL_REPLY_WAIT while parked queue-less waiting for the reply.
+    // Zero == CALL_NONE, so the thread_create memset leaves a fresh TCB call-idle.
+    enum CallState : uint8_t
+    {
+        CALL_NONE = 0,
+        CALL_SEND_WAIT,
+        CALL_REPLY_WAIT
+    };
+
     // Kernel-owned bounded copy of a thread name (never aliases a user pointer).
     constexpr size_t KICKOS_THREAD_NAME_MAX = 16;
 
@@ -107,11 +118,21 @@ namespace kickos
         };
         IpcDesc ipc;
 
+        // Call/reply descriptor (M4.4): valid while parked in a kos_call. call_rx_cap
+        // is the reply capacity (in-place: the request buffer becomes the reply target);
+        // call_seq is bumped per call and its low 8 bits ride the minted reply cap (the
+        // late-reply ABA guard, one-shot); call_state is a CallState. Written by the
+        // caller before parking and by the popper/replier under IrqLock (single-writer
+        // at every stage, same discipline as ipc). Zeroed by the thread_create memset.
+        size_t call_rx_cap;
+        uint16_t call_seq;
+        uint8_t call_state;
+
         // Priority-inheritance bookkeeping (M3 mutex). blocked_on is the mutex this
         // thread is parked on (nullptr otherwise) -- the chain-walk edge. held_list is
         // the head of the mutexes this thread OWNS, linked through Mutex::next_held;
-        // recompute_prio scans it. Both are touched only under IrqLock at the mutex
-        // block/unblock sites.
+        // thread_effective_prio scans it. Both are touched only under IrqLock at the
+        // mutex block/unblock sites.
         Mutex* blocked_on;
         Mutex* held_list;
 
@@ -266,6 +287,29 @@ namespace kickos
             {
                 next--;
             }
+        }
+
+        // Index of a TCB in this pool, or -1 if it is not a pool slot (e.g. the
+        // file-static root/idle TCBs). UB-free: compares addresses as integers rather
+        // than subtracting pointers that may not point into slots[].
+        int index_of(Thread const* t) const
+        {
+            uintptr_t const base = reinterpret_cast<uintptr_t>(&slots[0]);
+            uintptr_t const p = reinterpret_cast<uintptr_t>(t);
+            if (p < base)
+            {
+                return -1;
+            }
+            uintptr_t const off = p - base;
+            if (off >= sizeof(slots))
+            {
+                return -1;
+            }
+            if (off % sizeof(Thread) != 0)
+            {
+                return -1; // interior pointer, not a slot base
+            }
+            return static_cast<int>(off / sizeof(Thread));
         }
 
         // The opaque handle for a live slot index, carrying its current generation.

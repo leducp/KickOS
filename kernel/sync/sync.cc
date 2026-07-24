@@ -3,6 +3,8 @@
 
 #include <kickos/sync.h>
 #include <kickos/sched.h>
+#include <kickos/cap.h>
+#include <kickos/instance.h>
 #include <kickos/kernel.h>
 #include <kickos/irqlock.h>
 
@@ -12,6 +14,18 @@ namespace kickos
     // The list mechanics are shared (List); the priority scan is the only
     // wait-queue-specific policy on top.
     Thread* wq_pop_highest(List& q)
+    {
+        Thread* best = wq_peek_highest(q);
+        if (best != nullptr)
+        {
+            q.unlink(&best->link); // O(1): List is doubly-linked, no predecessor scan
+            best->wait_queue = nullptr;
+        }
+        return best;
+    }
+
+    // Same scan as wq_pop_highest but leaves the queue intact (B3 probe-before-pop).
+    Thread* wq_peek_highest(List& q)
     {
         Thread* best = thread_of(q.head);
         if (best == nullptr)
@@ -26,8 +40,6 @@ namespace kickos
                 best = t;
             }
         }
-        q.unlink(&best->link);
-        best->wait_queue = nullptr;
         return best;
     }
 
@@ -147,23 +159,6 @@ namespace kickos
             return best;
         }
 
-        // Re-establish invariant I2 for t: effective prio == max(base, highest waiter
-        // across ALL mutexes t holds). This is the revert -- NEVER restore-to-base,
-        // which is wrong when t holds more than one contended mutex.
-        uint8_t recompute_prio(Thread* t)
-        {
-            uint8_t p = t->base_prio;
-            for (Mutex* h = t->held_list; h != nullptr; h = h->next_held)
-            {
-                uint8_t const hw = highest_waiter_prio(h);
-                if (hw > p)
-                {
-                    p = hw;
-                }
-            }
-            return p;
-        }
-
         // Hand ownership of m to the popped waiter w. `status` and the blocked_on
         // clear are written by the WAKER here, under the lock -- NOT by the woken
         // thread after it resumes. On ARM the woken thread resumes only after a
@@ -193,6 +188,52 @@ namespace kickos
                 sched::set_prio(w, wp);
             }
         }
+    }
+
+    // The single effective-priority funnel (D3). Mutex term (the old recompute_prio),
+    // then the call/reply donors: each live CAP_REPLY in t's table names a parked caller,
+    // and each endpoint where t is the server contributes its highest parked SEND_WAIT
+    // caller. Bounded by KICKOS_MAX_HANDLES; no object-pool scan.
+    uint8_t thread_effective_prio(Thread* t)
+    {
+        uint8_t p = t->base_prio;
+        for (Mutex* h = t->held_list; h != nullptr; h = h->next_held)
+        {
+            uint8_t const hw = highest_waiter_prio(h);
+            if (hw > p)
+            {
+                p = hw;
+            }
+        }
+        for (int i = 0; i < KICKOS_MAX_HANDLES; i++)
+        {
+            CapEntry const& e = t->handles[i];
+            if (e.type == static_cast<uint8_t>(CapType::CAP_REPLY))
+            {
+                Thread* caller = cap_reply_caller(e.obj);
+                if (caller != nullptr and caller->prio > p)
+                {
+                    p = caller->prio;
+                }
+            }
+            else if (e.type == static_cast<uint8_t>(CapType::CAP_ENDPOINT)
+                     and (e.rights & CAP_WAIT) != 0)
+            {
+                Endpoint* ep = kernel().endpoints.resolve(e.obj);
+                if (ep != nullptr and ep->server == t)
+                {
+                    for (ListNode* n = ep->send_waiters.head; n != nullptr; n = n->next)
+                    {
+                        Thread* s = thread_of(n);
+                        if (s->call_state == CALL_SEND_WAIT and s->prio > p)
+                        {
+                            p = s->prio;
+                        }
+                    }
+                }
+            }
+        }
+        return p;
     }
 
     void mutex_init(Mutex* m)
@@ -298,7 +339,7 @@ namespace kickos
         if (w == nullptr)
         {
             m->owner = nullptr;
-            uint8_t const np = recompute_prio(c);
+            uint8_t const np = thread_effective_prio(c);
             if (np != c->prio)
             {
                 // Lowering ourselves may make a middle-priority READY thread the
@@ -309,7 +350,7 @@ namespace kickos
             return 0;
         }
         transfer_to(m, w, 0); // hand off + boost w from remaining waiters
-        uint8_t const np = recompute_prio(c);
+        uint8_t const np = thread_effective_prio(c);
         if (np != c->prio)
         {
             sched::set_prio(c, np); // revert our boost over what we STILL hold

@@ -10,6 +10,8 @@
 
 namespace kickos
 {
+    struct Thread; // kickos/thread.h -- Endpoint::server names the conventional receiver
+
     // A cap-named synchronous rendezvous point. No kernel payload storage: the
     // parked side's own (bound-checked, stable-because-BLOCKED) user buffer is the
     // storage, and the ARRIVING thread does the bounded copy under IrqLock.
@@ -28,6 +30,11 @@ namespace kickos
         // refcount (endpoint_refs[] counts ALL caps): it gates the send-side
         // dead-endpoint check and fires EPIPE at 0. The single home for this state.
         uint8_t recv_holders;
+        // The conventional single receiver, set at every recv (v1: one server per
+        // endpoint, documented not enforced). The D2 boost target when a caller parks
+        // on send_waiters. A raw Thread* cleared in the endpoint close/teardown arm when
+        // the server drops its WAIT cap (B2), so it never dangles onto a reused TCB.
+        Thread* server;
     };
 }
 

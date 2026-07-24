@@ -50,6 +50,10 @@ namespace kickos
     // select+unlink, no state/schedule change. ISR-callable (sem_post uses it). The
     // priority scan is lazy at-pop so a waiter boosted while parked needs no re-queue.
     Thread* wq_pop_highest(List& q);
+    // Return the highest-priority waiter WITHOUT unlinking it (the probe half of a
+    // probe-before-pop: B3's reply-cap fastpath must know it can mint before it pops).
+    // Under the same IrqLock a following wq_pop_highest returns this exact thread.
+    Thread* wq_peek_highest(List& q);
     // Park current on q and switch away; returns once a waker popped it and woke it.
     // Thread context only; caller holds ONE continuous IrqLock across the block
     // decision AND this call (lost-wake freedom).
@@ -100,6 +104,15 @@ namespace kickos
     // Exit teardown (R3): the owning thread is EXITED; force-unlock, delivering
     // MUTEX_OWNER_DIED to the woken waiter. No recompute for the dying thread.
     void mutex_force_unlock(Mutex* m, Thread* dying);
+
+    // The single effective-priority recompute funnel (M4.4, D3). t's effective prio is
+    // the max of: its base_prio; the highest waiter across every mutex it holds (the PI
+    // term); the prio of the caller behind each CAP_REPLY in its cap table; and the
+    // highest parked SEND_WAIT caller on each endpoint where ep->server == t. Never
+    // restore-to-base -- a revert must respect every live donor. This REPLACES the old
+    // mutex-only recompute: mutex_unlock now reverts through here too, so a mutex unlock
+    // mid-transaction cannot deflate a live call donation. Caller holds IrqLock.
+    uint8_t thread_effective_prio(Thread* t);
 }
 
 #endif

@@ -22,6 +22,7 @@
 enum kos_errno
 {
     KOS_EPERM = 1,       // privilege denied / missing cap right / not the owner
+    KOS_ESRCH = 3,       // reply target gone: a one-shot reply cap's caller is stale (aborted/reused)
     KOS_EBADF = 9,       // handle names nothing valid: bad index, empty, stale gen, wrong type
     KOS_ENOMEM = 12,     // exhaustion: an object pool / cap table / RAM arena is full
     KOS_EFAULT = 14,     // user buffer/pointer not owned by the caller (isolation reject)

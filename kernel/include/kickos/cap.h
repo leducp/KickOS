@@ -47,8 +47,10 @@ namespace kickos
     {
         CAP_EMPTY = 0, // an unused slot -- must be 0 so a zeroed TCB is an empty table
         CAP_SEM,
-        CAP_MUTEX,   // PI mutex object pool
-        CAP_ENDPOINT // synchronous IPC endpoint object pool
+        CAP_MUTEX,    // PI mutex object pool
+        CAP_ENDPOINT, // synchronous IPC endpoint object pool
+        CAP_REPLY     // one-shot L4-style reply cap; obj NAMES the parked caller by
+                      // generational thread handle (no object pool, no refcount)
     };
 
     // Rights bits enforced at cap_resolve ((rights & need) == need); CAP_TRANSFER is
@@ -138,8 +140,21 @@ namespace kickos
     // Dispatches on cap type; the handle MUST resolve (caller validated it). Caller
     // holds IrqLock. Unknown type traps in debug. Additive: each new pool gains one arm.
     // `rights` is the cap's rights bits: the endpoint arm bumps recv_holders when they
-    // carry CAP_WAIT; the sem/mutex arms ignore it.
+    // carry CAP_WAIT; the sem/mutex arms ignore it. CAP_REPLY is a no-op (no pool ref).
     void obj_ref_inc(CapType type, int obj_handle, uint8_t rights);
+
+    // True if c's table has a free dynamic slot (one cap_install could take). Same
+    // scan span as cap_install; the probe-before-mint predicate for the reply cap
+    // (B3: never pop a receiver a reply cap cannot be minted into). Caller holds IrqLock.
+    bool cap_has_free_slot(Thread* c);
+
+    // Resolve a CAP_REPLY entry's packed obj word to the parked caller thread, or
+    // nullptr if it is stale. The full one-shot guard: index in range, thread-gen
+    // match, state == BLOCKED, call_state == REPLY_WAIT, and the packed seq8 matches
+    // the caller's live call_seq. Used by kos_reply, the reply-cap death arm, and the
+    // effective-priority funnel. Caller holds IrqLock. Decodes with MASKED shifts (the
+    // seq8 top bit makes obj negative -- an arithmetic shift would corrupt the handle).
+    Thread* cap_reply_caller(int32_t obj);
 }
 
 #endif

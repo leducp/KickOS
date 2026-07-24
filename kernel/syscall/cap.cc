@@ -162,17 +162,29 @@ namespace kickos
             switch (static_cast<CapType>(e.type))
             {
             case CapType::CAP_SEM:
+            {
                 sem_ref_drop(e.obj, teardown);
                 return;
+            }
             case CapType::CAP_MUTEX:
+            {
                 mutex_ref_drop(e.obj, teardown);
                 return;
+            }
             case CapType::CAP_ENDPOINT:
+            {
                 endpoint_ref_drop(e.obj, teardown);
                 return;
+            }
+            case CapType::CAP_REPLY:
+            {
+                return; // names a thread by generational handle: holds no pool refcount
+            }
             default:
+            {
                 KICKOS_ASSERT(false);
                 return;
+            }
             }
         }
 
@@ -185,7 +197,9 @@ namespace kickos
             switch (static_cast<CapType>(e.type))
             {
             case CapType::CAP_SEM:
+            {
                 return 0;
+            }
             case CapType::CAP_MUTEX:
             {
                 Mutex* m = kernel().mutexes.resolve(e.obj);
@@ -208,23 +222,75 @@ namespace kickos
                 // receiver can ever exist -- so EPIPE every parked sender. Fired exactly
                 // once (recv_holders -> 0), on BOTH voluntary close and exit teardown.
                 Endpoint* ep = kernel().endpoints.resolve(e.obj);
-                if (ep != nullptr and (e.rights & CAP_WAIT) != 0 and ep->recv_holders > 0)
+                if (ep != nullptr and (e.rights & CAP_WAIT) != 0)
                 {
-                    ep->recv_holders--;
-                    if (ep->recv_holders == 0)
+                    // B2: this closer was the conventional server -- drop the dangling
+                    // pointer (else a later D2 boost writes a reused TCB) and kill any
+                    // lingering D2 donation. A dying closer is never rescheduled, so it
+                    // skips its own recompute (mirrors mutex_force_unlock).
+                    if (ep->server == closer)
                     {
-                        Thread* s;
-                        while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
+                        ep->server = nullptr;
+                        // A live closer self-lowers: give up the CPU if a higher thread is
+                        // now the top runnable (H8), mirroring mutex_unlock's no-waiter path.
+                        if (not teardown)
                         {
-                            s->wait_result = -KOS_EPIPE; // last receiver gone: EPIPE the parked sender
-                            sched::wake(s);
+                            uint8_t const np = thread_effective_prio(closer);
+                            if (np != closer->prio)
+                            {
+                                sched::set_prio(closer, np);
+                                sched::reschedule();
+                            }
+                        }
+                    }
+                    if (ep->recv_holders > 0)
+                    {
+                        ep->recv_holders--;
+                        if (ep->recv_holders == 0)
+                        {
+                            Thread* s;
+                            while ((s = wq_pop_highest(ep->send_waiters)) != nullptr)
+                            {
+                                // last receiver gone: EPIPE the parked sender. A SEND_WAIT
+                                // caller returns via kos_call's B1 call_state clear.
+                                s->wait_result = -KOS_EPIPE;
+                                sched::wake(s);
+                            }
                         }
                     }
                 }
                 return 0; // endpoints NEVER refuse a close (unlike mutex R2)
             }
-            default:
+            case CapType::CAP_REPLY:
+            {
+                // m9: run the SAME full stale-resolve as kos_reply before waking. Fires on
+                // both voluntary close of a reply cap AND server-death teardown. If the
+                // caller is still parked, EPIPE it; the one-shot consume (empty + gen bump)
+                // happens at the shared close/teardown site after this returns. A dying
+                // closer skips its recompute (EXITED, never rescheduled).
+                Thread* caller = cap_reply_caller(e.obj);
+                if (caller != nullptr)
+                {
+                    caller->call_state = CALL_NONE; // stop the funnel counting this donor
+                    caller->wait_result = -KOS_EPIPE;
+                }
+                // Deflate BEFORE waking (H8): the wake's reschedule must run against our
+                // reverted priority, else the woken high-prio caller cannot preempt the
+                // still-boosted closer. Mirrors endpoint_reply's deflate-then-wake order.
+                if (not teardown)
+                {
+                    sched::set_prio(closer, thread_effective_prio(closer));
+                }
+                if (caller != nullptr)
+                {
+                    sched::wake(caller);
+                }
                 return 0;
+            }
+            default:
+            {
+                return 0;
+            }
             }
         }
     }
@@ -272,9 +338,17 @@ namespace kickos
             }
             return;
         }
+        case CapType::CAP_REPLY:
+        {
+            (void)obj_handle;
+            (void)rights;
+            return; // names a thread by generational handle: no pool refcount to bump
+        }
         default:
+        {
             KICKOS_ASSERT(false); // unknown type must trap in debug
             return;
+        }
         }
     }
 
@@ -384,6 +458,49 @@ namespace kickos
             }
         }
         return -1;
+    }
+
+    bool cap_has_free_slot(Thread* c)
+    {
+        for (int i = KICKOS_CAP_FIRST_DYNAMIC; i < KICKOS_MAX_HANDLES; i++)
+        {
+            if (c->handles[i].type == static_cast<uint8_t>(CapType::CAP_EMPTY))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    Thread* cap_reply_caller(int32_t obj)
+    {
+        // MASKED shifts (m6): the seq8 top bit makes obj negative, so an arithmetic
+        // shift would corrupt the packed thread handle.
+        uint32_t const u = static_cast<uint32_t>(obj);
+        int const handle = static_cast<int>(u & 0xFFFFFFu);
+        uint8_t const seq8 = static_cast<uint8_t>(u >> 24);
+        int const index = handle & ((1 << ThreadPool::INDEX_BITS) - 1);
+        uint32_t const gen =
+            (static_cast<uint32_t>(handle) >> ThreadPool::INDEX_BITS) & 0xFFFFu;
+        ThreadPool& tp = kernel().threads;
+        if (index < 0 or index >= tp.next)
+        {
+            return nullptr;
+        }
+        if (static_cast<uint32_t>(tp.gen[index]) != gen)
+        {
+            return nullptr; // slot reclaimed under the cap -- stale
+        }
+        Thread* t = &tp.slots[index];
+        if (t->state != ThreadState::BLOCKED or t->call_state != CALL_REPLY_WAIT)
+        {
+            return nullptr; // not parked in a call anymore (replied / aborted)
+        }
+        if (static_cast<uint8_t>(t->call_seq & 0xFF) != seq8)
+        {
+            return nullptr; // a newer call rolled the seq (late-reply ABA guard)
+        }
+        return t;
     }
 
     int handle_close(Thread* c, int cap_handle)

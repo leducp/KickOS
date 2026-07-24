@@ -75,10 +75,27 @@ int kos_endpoint_create(void); // -> opaque cap handle, or -KOS_ENOMEM (pool/tab
 // EFAULT (bad buffer), EBADF/EPERM (bad cap / no SIGNAL right), EPIPE (dead endpoint, or the
 // last receiver went away while parked). n == 0 is a valid zero-length signal, not an error.
 long kos_send(int ep, void const* buf, size_t len);
-// Receive up to `cap_len` bytes into buf; badge (if non-null) receives the sender badge
-// (always 0 in this stage). -> bytes received (>= 0), or a negative -KOS_E*: EFAULT (bad
-// buffer / out-ptr), EINVAL (misaligned badge), EBADF/EPERM (bad cap / no WAIT right).
-long kos_recv(int ep, void* buf, size_t cap_len, uint32_t* badge);
+// Receive up to `cap_len` bytes into buf; `info` (if non-null) receives the sender badge
+// and reply cap (kos_recv_info: reply_cap == -1 for a plain kos_send, a real one-shot
+// CAP_REPLY handle for a kos_call). Passing info == NULL is an INFO-LESS recv: it REJECTS
+// calls (the caller's kos_call fails -KOS_ENOSYS) and behaves as before for plain sends.
+// -> bytes received (>= 0), or a negative -KOS_E*: EFAULT (bad buffer / out-ptr), EINVAL
+// (misaligned out-ptr), EBADF/EPERM (bad cap / no WAIT right).
+long kos_recv(int ep, void* buf, size_t cap_len, struct kos_recv_info* info);
+
+// Synchronous call/reply (L4-style). kos_call delivers `send_len` request bytes and
+// blocks until the server replies into the SAME buffer (in-place, up to `recv_cap`); it
+// mints a one-shot reply cap in the server's recv info. -> reply bytes (>= 0), or a
+// negative -KOS_E*: EINVAL (request > KOS_EP_MSG_MAX), EFAULT (bad buffer), EBADF/EPERM
+// (bad cap / no SIGNAL), EPIPE (dead endpoint or server died mid-call), ENOMEM (server
+// cap table full), ENOSYS (server took an info-less recv, so it hosts no calls).
+long kos_call(int ep, void* buf, size_t send_len, size_t recv_cap);
+// Complete the call named by `reply_cap` (from kos_recv_info.reply_cap): copy `len` reply
+// bytes to the parked caller and wake it. The cap is one-shot (consumed here; a server
+// loop must reply or kos_handle_close it on EVERY path, else the caller parks forever).
+// -> 0, or a negative -KOS_E*: EBADF (bad / non-reply cap), EFAULT (bad reply buffer),
+// ESRCH (the caller is already gone -- aborted or its slot reused; cap consumed anyway).
+int kos_reply(int reply_cap, void const* buf, size_t len);
 
 // Hand the kernel console UART over to a userspace driver serving endpoint `ep`.
 // Privileged-only (-KOS_EPERM for an unprivileged caller, -KOS_EBADF for a bad cap). After this the
@@ -110,10 +127,11 @@ void* kos_guard_addr(void);
 // default handler). For the spurious-IRQ self-test.
 uint32_t kos_irq_spurious_count(void);
 // Test-only: exercise a Rule 7 grant predicate directly (no descriptor forged).
-//   op 0 -> grant_hits_reserved(base,size)                 (0/1)
-//   op 1/2 -> grant_region_admissible RAM, privileged/unprivileged   (0/1)
-//   op 3/4 -> grant_region_admissible DEV, privileged/unprivileged   (0/1)
-//   op 5 -> reserved-block count;  op 6/7 -> block[base].{base,size}
+// `op` is an enum kos_grant_op (abi.h):
+//   HITS_RESERVED -> grant_hits_reserved(base,size)                  (0/1)
+//   RAM_PRIVILEGED/RAM_UNPRIVILEGED -> grant_region_admissible RAM   (0/1)
+//   DEV_PRIVILEGED/DEV_UNPRIVILEGED -> grant_region_admissible DEV   (0/1)
+//   RESERVED_COUNT -> reserved-block count; RESERVED_BASE/RESERVED_SIZE -> block[base].{base,size}
 // Only meaningful under enforcement (returns -KOS_EINVAL where the kernel has no
 // grant module). For the Rule 7 overlap-matrix self-test.
 uintptr_t kos_grant_probe(uintptr_t op, uintptr_t base, uintptr_t size);

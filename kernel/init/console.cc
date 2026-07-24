@@ -103,6 +103,7 @@ namespace kickos
         switch (g_console_state)
         {
         case ConsoleState::KERNEL_OWNED:
+        {
             // Bracket the device poke with the in-flight count under the SAME state read
             // (B1). The buffered branch's poke happens inside console_tx_write's IrqLock
             // (serialized with deinit); the else branch's polled poke does not, so the
@@ -118,11 +119,16 @@ namespace kickos
             }
             console_chip_writer_leave();
             return;
+        }
         case ConsoleState::USER_OWNED:
+        {
             return; // DROP: the driver owns the UART (RTT still carries it, see kconsole_write)
+        }
         case ConsoleState::RECLAIMED:
+        {
             arch_console_write_sync(buf, n); // panic reclaimed it -> polled only
             return;
+        }
         }
     }
 
@@ -256,7 +262,7 @@ namespace
 extern "C" __attribute__((weak, noreturn)) void kfault_terminate(void)
 {
     kpanic_enter(); // idempotent; masks IRQs for any path reaching here directly
-    for (;;)
+    while (true)
     {
         for (int b = 0; b < 3; b++)
         {

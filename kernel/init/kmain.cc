@@ -42,7 +42,15 @@ extern "C"
     // still run via the host runtime / the chip's own full .init_array loop).
     extern void (*__kickos_app_init_array_start[])() __attribute__((weak));
     extern void (*__kickos_app_init_array_end[])() __attribute__((weak));
+
+    // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit).
+    // Weak: the sim (host heap) and a malloc-free image define neither -> both null ->
+    // the banner reports "none". RX prepends one underscore (matches its .ld symbol).
+    extern char _kickos_heap_start[] __attribute__((weak));
+    extern char _kickos_heap_limit[] __attribute__((weak));
 }
+
+#include <stdint.h>
 
 // Identity, injected by the build (see kernel/CMakeLists.txt); fall back so the
 // TU still compiles standalone.
@@ -100,6 +108,17 @@ namespace kickos
                 kprintf("   app     %s\n", kickos_app_build_stamp());
             }
             kprintf("   commit  %s\n", kickos_build_commit);
+            uintptr_t const heap_lo = reinterpret_cast<uintptr_t>(_kickos_heap_start);
+            uintptr_t const heap_hi = reinterpret_cast<uintptr_t>(_kickos_heap_limit);
+            if (heap_hi > heap_lo)
+            {
+                kprintf("   heap    %u KiB available\n",
+                        static_cast<unsigned>((heap_hi - heap_lo) / 1024));
+            }
+            else
+            {
+                kprintf("   heap    none\n");
+            }
             kputs("\n");
         }
 

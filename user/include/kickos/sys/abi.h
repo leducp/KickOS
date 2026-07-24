@@ -47,15 +47,48 @@ enum kos_syscall_nr
     KOS_SYS_MUTEX_UNLOCK = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner)
     KOS_SYS_ENDPOINT_CREATE = 26, // ()                          -> endpoint cap, or -KOS_ENOMEM
     KOS_SYS_SEND = 27,          // (cap, buf, len)  -> bytes transferred, or -KOS_E* (see kos_send)
-    KOS_SYS_RECV = 28,          // (cap, buf, cap_len, u32* badge) -> bytes received, or -KOS_E*
+    KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or -KOS_E*
     KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (not priv), -KOS_EBADF (bad cap)
     KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u32); 0 == cannot-change
     KOS_SYS_GRANT_PROBE = 31,    // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
                                  //   the raw reserved-block base/size; a BAD op returns -KOS_EINVAL
                                  //   (self-test only; compiled out unless KICKOS_HAVE_MPU)
     KOS_SYS_PERIPH_CLOCK_HZ = 32, // (base) -> peripheral branch clock in Hz (u32), 0 if unknown (NO KOS_E*)
-    KOS_SYS_PINMUX_SET = 33   // (port, pin, func) -> 0, -KOS_EPERM (not priv), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
+    KOS_SYS_PINMUX_SET = 33,  // (port, pin, func) -> 0, -KOS_EPERM (not priv), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
+    KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EPERM/EPIPE/ENOMEM/ENOSYS)
+    KOS_SYS_REPLY = 35        // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
 };
+
+// `op` selector for KOS_SYS_GRANT_PROBE (self-test only). Values are a frozen
+// contract: append, never reorder. Ops 0..4 return the predicate as 0/1; ops 5..7
+// return a raw count / reserved-block base / size. A BAD op returns -KOS_EINVAL.
+enum kos_grant_op
+{
+    KOS_GRANT_OP_HITS_RESERVED = 0,   // grant_hits_reserved(base, size)
+    KOS_GRANT_OP_RAM_PRIVILEGED = 1,  // grant_region_admissible RAM, privileged caller
+    KOS_GRANT_OP_RAM_UNPRIVILEGED = 2, // grant_region_admissible RAM, unprivileged caller
+    KOS_GRANT_OP_DEV_PRIVILEGED = 3,  // grant_region_admissible DEV, privileged caller
+    KOS_GRANT_OP_DEV_UNPRIVILEGED = 4, // grant_region_admissible DEV, unprivileged caller
+    KOS_GRANT_OP_RESERVED_COUNT = 5,  // count of arch_reserved_blocks
+    KOS_GRANT_OP_RESERVED_BASE = 6,   // reserved block[base].base (base indexes the block)
+    KOS_GRANT_OP_RESERVED_SIZE = 7    // reserved block[base].size (base indexes the block)
+};
+
+// Widened KOS_SYS_RECV out-pointer (was a bare u32 badge). 8 bytes, 4-aligned. A
+// plain kos_send arrival delivers reply_cap == -1; a kos_call arrival delivers a
+// real one-shot reply cap handle (>= 0) the receiver must eventually kos_reply or
+// kos_handle_close. A receiver that passes a null out-ptr (info-less recv) REJECTS
+// calls (the caller's kos_call fails -KOS_ENOSYS) and behaves as before for plain sends.
+struct kos_recv_info
+{
+    uint32_t badge;    // sender badge (KOS_BADGE_NONE == 0 in this stage)
+    int32_t reply_cap; // -1 plain send; else a one-shot CAP_REPLY handle in the receiver's table
+};
+#ifdef __cplusplus
+static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
+#else
+_Static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
+#endif
 
 // P-state selector for KOS_SYS_CPU_CLOCK_SET. A fixed-width u32 enum (NOT a raw Hz):
 // the achievable set is small and chip-specific, and the truthful landed Hz is the
@@ -114,6 +147,11 @@ enum kos_cap_rights
 // parent cap `source_cap`. Deterministic placement (B1): delegated cap i lands at
 // the child's table index i+1 (index 0 reserved), and a fresh child table has
 // cap-gen 0 so the child's handle value == its index -- known a priori, no handoff.
+//
+// Table index of the FIRST delegated cap (i == 0). A driver spawned with one
+// delegated recv cap reads it here with no handoff; delegated cap i is at
+// KOS_SPAWN_DELEGATED_CAP0 + i.
+#define KOS_SPAWN_DELEGATED_CAP0 1
 struct kos_cap_grant
 {
     int source_cap;      // a cap handle in the SPAWNING thread's table
