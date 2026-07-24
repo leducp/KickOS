@@ -9,5 +9,15 @@
 
 extern "C" int kickos_init_entry(int argc, char** argv)
 {
+    // Bring the console up first. On a board with a userspace console driver this
+    // performs the handover, so the app's stdout reaches the wire through the driver
+    // with zero app code; on a board with none it is a no-op (kernel console kept).
+    // A nonzero result is a loud failure: return it WITHOUT running the app, so the
+    // app never runs against a dark console.
+    int const rc = kickos_console_bringup_run();
+    if (rc != 0)
+    {
+        return rc;
+    }
     return kickos_default_init_run(argc, argv);
 }

@@ -79,11 +79,18 @@ endif()
 # CMakeLists; a real user app, so no KICKOS_ENABLE_SELFTEST requirement.
 add_subdirectory(consoledemo)
 
-# K64F console handover demo -- the kernel relinquishes UART0 to the unprivileged
+# K64F console handover demo. The kernel relinquishes UART0 to the unprivileged
 # kickos_k64uart driver and a worker's printf reaches the wire through it (coarse-AIPS
 # FUNCTIONAL + reclaim-proof). Self-gates on frdmk64f + enforcement in its own
 # CMakeLists; a real user app, so no KICKOS_ENABLE_SELFTEST requirement.
 add_subdirectory(k64console)
+
+# Per-thread stdout classification regression (M4.3): a root pre-publish printf must
+# not poison a post-publish worker's route to the console endpoint. Software-only
+# (no MMIO) counting console driver; the verdict rides the exit status. Self-gates on
+# the qemu (mps2) board in its own CMakeLists (the only place newlib_stubs is compiled
+# AND the run is automatable; sim never compiles newlib_stubs, XMC has no QEMU model).
+add_subdirectory(initdemo)
 
 # Privileged runtime clock-retune HW harness -- self-gates on KICKOS_CLOCK_RETUNE_TEST
 # (OFF by default) + xmc4800-relax/frdmk64f + enforcement in its own CMakeLists.

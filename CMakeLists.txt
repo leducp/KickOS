@@ -235,6 +235,38 @@ endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
+# Console bring-up provider selection (the default-init console handover).
+# The default init brings the console driver up BEFORE the app's main, so a plain
+# app prints through the userspace driver with zero app code (see
+# system/init/console_bringup.cc + <kickos/sys/bringup.h>). KICKOS_CONSOLE_BRINGUP
+# names the CMake target that DEFINES kickos_board_console; KICKOS_CONSOLE_BRINGUP_LIBS
+# is that target plus its driver + class-leaf deps (all of which back-reference
+# kickos_user, so they must join the rescan link group below). Default is
+# kickos_console_none (start = NULL: keep the kernel console). Resolved per-board like
+# KICKOS_CONSOLE above, AFTER KICKOS_HAVE_MPU is known (the xmcuart handover is an
+# enforcement construct). Must sit after the MPU block for that reason.
+if(NOT DEFINED KICKOS_CONSOLE_BRINGUP)
+  if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
+    set(KICKOS_CONSOLE_BRINGUP "kickos_console_xmcuart")
+  else()
+    set(KICKOS_CONSOLE_BRINGUP "kickos_console_none")
+  endif()
+endif()
+set(KICKOS_CONSOLE_BRINGUP "${KICKOS_CONSOLE_BRINGUP}" CACHE STRING
+  "CMake target defining kickos_board_console (the default-init console bring-up). Default kickos_console_none (keep the kernel console).")
+# Derive the lib closure from the selected target EVERY configure (not only on the
+# default path), so an explicit -DKICKOS_CONSOLE_BRINGUP=kickos_console_none A/B
+# override on XMC still injects a linkable provider. A custom provider may pre-set
+# KICKOS_CONSOLE_BRINGUP_LIBS with its own dep list.
+if(NOT DEFINED KICKOS_CONSOLE_BRINGUP_LIBS)
+  if(KICKOS_CONSOLE_BRINGUP STREQUAL "kickos_console_xmcuart")
+    set(KICKOS_CONSOLE_BRINGUP_LIBS "kickos_console_xmcuart;kickos_xmcuart;kickos_class_xmc4800")
+  else()
+    set(KICKOS_CONSOLE_BRINGUP_LIBS "${KICKOS_CONSOLE_BRINGUP}")
+  endif()
+endif()
+message(STATUS "KickOS: console bring-up = ${KICKOS_CONSOLE_BRINGUP} (libs: ${KICKOS_CONSOLE_BRINGUP_LIBS})")
+
 # RX MPU enforcement wedge-localizer trace (arch/rx/rxv3/arch_rxv3.cc): a raw polled
 # SCI6 marker, off by default. Forwarded to the compiler only when set on the command
 # line (a plain -D never becomes a compile definition on its own).
@@ -356,12 +388,16 @@ if(TARGET kickos_kernel)
   # kickos_init_entry across the rescan boundary, and the provider archive being
   # in-group resolves it. No -Wl,-u is needed; gc-sections keeps it via the live
   # reset->kmain->root_entry chain.
+  # KICKOS_CONSOLE_BRINGUP_LIBS follows the provider: the provider references
+  # kickos_board_console, the console-none/driver providers back-reference kickos_user,
+  # and the driver's class leaf back-references it too, so the whole closure must be
+  # in-group to rescan-resolve. It is one item on the none default, three on xmcuart.
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
     target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
+      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
   else()
     target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},kickos_arch_${KICKOS_ARCH},kickos_lib>")
+      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_CONSOLE_BRINGUP_LIBS},kickos_arch_${KICKOS_ARCH},kickos_lib>")
   endif()
   # kickos_system is INTERFACE (contributes no archive), so it must NOT sit in the
   # RESCAN group; link it separately. This is what propagates the relocated system
@@ -476,6 +512,11 @@ if(TARGET kickos_core)
   if(NOT KICKOS_INIT_PROVIDER STREQUAL "kickos_default_init")
     message(STATUS "KickOS: init provider = ${KICKOS_INIT_PROVIDER} (non-default). "
       "For an installed/exported package it must also be install(EXPORT KickOSTargets).")
+  endif()
+  # Same late validation for the console bring-up provider (defined in system/ or a
+  # chip's user/driver/ subtree, so it is not a target at the kickos_core site above).
+  if(NOT TARGET ${KICKOS_CONSOLE_BRINGUP})
+    message(FATAL_ERROR "KICKOS_CONSOLE_BRINGUP='${KICKOS_CONSOLE_BRINGUP}' is not a CMake target. Name a target that defines kickos_board_console, or use the default kickos_console_none (keep the kernel console).")
   endif()
 endif()
 

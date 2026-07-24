@@ -84,8 +84,10 @@ long kos_recv(int ep, void* buf, size_t cap_len, uint32_t* badge);
 // Privileged-only (-KOS_EPERM for an unprivileged caller, -KOS_EBADF for a bad cap). After this the
 // kernel chip path drops (RTT, if built, still carries kernel output); libc stdout routes
 // through the driver via cap index 0 (seated into children spawned AFTER the publish).
-// Re-callable to re-point at a fresh driver. -> 0, -KOS_EPERM (unprivileged), or
-// -KOS_EBADF (bad / non-endpoint / stale cap).
+// It also seats the CALLER's own cap index 0 to `ep`, so the publishing thread (the
+// init/root thread) can itself print through the driver afterwards. Re-callable to
+// re-point at a fresh driver (which also re-points the caller's cap 0). -> 0,
+// -KOS_EPERM (unprivileged), or -KOS_EBADF (bad / non-endpoint / stale cap).
 int kos_console_publish(int ep);
 
 // Drop THIS thread's capability. Type-agnostic (a cap knows its own type) and

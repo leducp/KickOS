@@ -428,25 +428,42 @@ namespace kickos
         }
     }
 
+    // Seat (or re-seat) a thread's reserved stdout slot (index 0) as a SEND-ONLY
+    // (CAP_SIGNAL, no WAIT/TRANSFER) copy of console endpoint `target`. CAP_SIGNAL bumps
+    // endpoint_refs but NOT recv_holders (a client is not a receiver), so it does not hold
+    // the dead-endpoint gate open. Written DIRECTLY (not via cap_install_at, which rejects
+    // index 0): this and cap_install_defaults are the sole writers of the reserved stdout
+    // slot, and the slot-0 cap-gen is never bumped (kernel-only policy, so a client's stale
+    // handle can never resolve it). Take the new ref BEFORE dropping any prior one (the same
+    // take-new-before-drop-old order cap_console_publish uses), so re-seating the same
+    // endpoint never transiently frees it. The thread's own cap_teardown drops this ref at
+    // exit. Caller holds IrqLock.
+    void cap_seat_stdout(Thread* t, int target)
+    {
+        obj_ref_inc(CapType::CAP_ENDPOINT, target, CAP_SIGNAL);
+        CapEntry& e = t->handles[KOS_CAP_STDOUT];
+        bool const had_prior = (e.type != static_cast<uint8_t>(CapType::CAP_EMPTY));
+        CapEntry const prior = e;
+        e.obj = target;
+        e.type = static_cast<uint8_t>(CapType::CAP_ENDPOINT);
+        e.rights = CAP_SIGNAL;
+        if (had_prior)
+        {
+            obj_ref_drop(prior, /*teardown=*/false);
+        }
+    }
+
     void cap_install_defaults(Thread* child)
     {
-        // Pre-publish: nothing seated (index 0 empty) -- the selftest/bring-up world that
+        // Pre-publish: nothing seated (index 0 empty). The selftest/bring-up world that
         // never publishes is untouched, and its apps fall back to kconsole_write.
         if (g_stdout_target < 0)
         {
             return;
         }
-        // Post-publish: seat a SEND-ONLY (CAP_SIGNAL, no WAIT/TRANSFER) copy of the
-        // console endpoint at the reserved stdout slot (index 0). CAP_SIGNAL bumps
-        // endpoint_refs but NOT recv_holders (a client is not a receiver), so it does not
-        // hold the dead-endpoint gate open. Written DIRECTLY (not via cap_install_at, which
-        // rejects index 0): this is the sole path allowed to write the reserved stdout slot.
-        // The child's own cap_teardown drops this ref at exit.
-        CapEntry& e = child->handles[KOS_CAP_STDOUT];
-        e.obj = g_stdout_target;
-        e.type = static_cast<uint8_t>(CapType::CAP_ENDPOINT);
-        e.rights = CAP_SIGNAL;
-        obj_ref_inc(CapType::CAP_ENDPOINT, g_stdout_target, CAP_SIGNAL);
+        // Post-publish: seat the send-only stdout cap. A fresh child's slot 0 is empty, so
+        // cap_seat_stdout takes the ref with no prior to drop.
+        cap_seat_stdout(child, g_stdout_target);
     }
 
     // Move the kernel's stdout-target ref to `obj_handle` (D3/S3). Caller holds IrqLock.

@@ -2079,7 +2079,9 @@ namespace
     void t_console_publish()
     {
         // Privileged MAIN: a bad/stale cap is rejected before the deinit/flip, so the
-        // console stays kernel-owned (a real publish here would silence the TAP output).
+        // console stays kernel-owned and the TAP stream survives. (On a driver board the
+        // M4.3 default init makes a real publish, which would silence TAP; the sim selects
+        // KICKOS_CONSOLE_BRINGUP=kickos_console_none, so no live publish ever happens here.)
         TAP_CHECK(kos_console_publish(-1) == -KOS_EBADF);
         TAP_CHECK(kos_console_publish(0x7fffffff) == -KOS_EBADF);
         // Unprivileged child: the privileged-only gate rejects it.

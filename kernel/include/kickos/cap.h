@@ -116,6 +116,14 @@ namespace kickos
     // own cap, so refs >= 1). Caller holds IrqLock.
     void cap_teardown(Thread* c);
 
+    // Seat (or re-seat) thread t's reserved stdout slot (index 0) as a SEND-ONLY
+    // (CAP_SIGNAL) copy of console endpoint `target`. Written DIRECTLY (cap_install_at
+    // rejects index 0): this and cap_install_defaults are the sole writers of the
+    // reserved slot, and the slot-0 cap-gen is never bumped (kernel-only policy). Takes
+    // the new ref BEFORE dropping any prior one (cap_console_publish order) so re-seating
+    // the same endpoint never transiently frees it. Caller holds IrqLock.
+    void cap_seat_stdout(Thread* t, int target);
+
     // The privileged default cap set for a freshly spawned child. Pre-publish it installs
     // NOTHING (index 0 empty; write() falls back to kconsole_write). Post-publish it seats
     // a send-only (CAP_SIGNAL) copy of the console endpoint at index 0. See D4.

@@ -958,6 +958,13 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                     console_tx_deinit(); // D2 relinquish (idempotent; skipped on re-publish)
                 }
                 cap_console_publish(handle); // take the kernel stdout ref, drop any prior target
+                // Seat the PUBLISHER's own stdout cap (index 0) to the just-published
+                // endpoint, still under this lock. Root was created before any publish, so
+                // its slot 0 is empty and cap_install_defaults never seated it; without this
+                // the init/root thread's own printf would kos_send(0) -> -KOS_EBADF and fall
+                // back to the now-dark kernel path. Children spawned after this still get it
+                // via cap_install_defaults. On re-publish this re-points the caller's slot 0.
+                cap_seat_stdout(c, handle);
                 console_owner_set_user();    // flip to USER_OWNED -- LAST
             }
             // B1: drain any stale chip writer that raced past the pre-flip state read, with
