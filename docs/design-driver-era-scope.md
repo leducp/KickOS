@@ -232,16 +232,16 @@ be up first. The INIT service (G7) brings them up in this order:
          +----------------+
                   |
                   v
-         +----------------+   RUNTIME pin ALLOCATOR + IRQ DEMUX: on request
-         |  GPIO service  |   (cold IPC, one-shot) checks a pin is free, marks
-         | (pin allocator |   it owned, MINTS a per-pin MMIO cap -> the driver
-         |  + IRQ demux)  |   then read/writes the pin DIRECTLY (no IPC). Owns
-         +----------------+   shared IRQ lines + demuxes. Also the SPI-CS source.
+         +----------------+   ONE-SHOT PINMUX (init does it, privileged): assign
+         |  PINMUX step   |   each driver's pin functions from the board pin-map,
+         | (in init, not  |   THEN grant the pin's register window at spawn. No
+         |  a service)    |   GPIO service on the path -- the driver toggles the
+         +----------------+   granted window DIRECTLY (see 3.5).
              |     |     |
              v     v     v
-      +------+ needs {clock}   +------+ {clock}  +------+ {clock, a GPIO
-      | UART | (pins pre-muxed)| I2C  |          | SPI  |  cap for its CS}
-      +------+                 +------+          +------+
+      +------+ needs {clock}   +------+ {clock}  +------+ {clock, a granted
+      | UART | (pins pre-muxed)| I2C  |          | SPI  |  pin window for a
+      +------+                 +------+          +------+   direct-GPIO CS}
 ```
 
 Foundational shapes -- the peripheral drivers stand on THREE distinct kinds, matched to how
@@ -251,12 +251,15 @@ often each CHANGES at runtime:
   SPI its prescaler) via a Common-Clock-Framework-shape notifier. Central + refcounted (a
   branch feeding two peripherals gates off only when BOTH idle). Kernel residue = re-anchor its
   own clock. It CHANGES at runtime, so it must be a standing service.
-- **GPIO -- a RUNTIME pin ALLOCATOR that mints per-pin caps** (unified model, see 3.5). A driver
-  asks for a pin (cold IPC, one-shot at bring-up); the service checks it is free, marks it
-  owned, and delegates a capability granting DIRECT MMIO to that pin's set/clear + input
-  registers; the driver then reads/writes DIRECTLY, no IPC per operation. Allocation is
-  arbitrated (service); operation is direct (the cap IS the fast path). Also owns shared GPIO
-  IRQ lines + demuxes them, and is the SPI-CS provider -- so SPI depends on it.
+- **GPIO -- NOT a service; a DIRECT-MMIO grant** (see 3.5). Pin TOGGLING is direct MMIO, never a
+  syscall. A driver that needs a pin gets that pin's register window granted AT SPAWN (the grant-
+  at-spawn MMIO path) and writes it itself, under a per-chip isolation ceiling on the window. The
+  kernel touches GPIO only for the one-shot PINMUX at init (below). The runtime pin ALLOCATOR that
+  mints-and-delegates per-pin caps, and the shared GPIO IRQ demux, are DEFERRED to M4.4 -- no
+  driver forces them yet (the SPI-CS path is a direct-grant pin, not a minted cap). A kernel pin
+  allocator + toggle syscall was built (af7d99a) and REMOVED after the 3.5 latency spike showed a
+  syscall cannot serve a hot CS. (This reverses the earlier "GPIO service mints per-pin caps"
+  model.)
 - **PINMUX -- ONE-SHOT init-time config, NOT a service.** Pin-function assignment is set once at
   bring-up and does not change at runtime (unlike a hot GPIO CS, or the clock tree under DVFS),
   so it needs no persistent service: it COLLAPSES into the init service's bring-up sequence.
@@ -266,9 +269,10 @@ often each CHANGES at runtime:
   pin-map. Caveat: rare dynamic pin RE-config (runtime repurpose, or reconfiguring pins for
   low-power sleep) would be a COLD privileged call if ever needed -- not the common path.
 
-Consequence: the init service is a topological bring-up (clock -> mux the pins -> gpio -> the
-byte/transfer drivers -> apps), doing the one-shot pinmux itself and spawning each driver with
-the right caps. This is why the init service is a GATING enabler for the driver era, not a nicety.
+Consequence: the init service is a topological bring-up (clock -> mux the pins -> grant each
+driver its pin windows at spawn -> the byte/transfer drivers -> apps), doing the one-shot pinmux
+itself; there is no GPIO service on the path (pins toggle directly, 3.5). This is why the init
+service is a GATING enabler for the driver era, not a nicety.
 
 ### 3.2 Driver API taxonomy by I/O model
 The classical driver shapes map onto TWO IPC patterns:
@@ -350,79 +354,83 @@ Verdict: **defer DMA to a dedicated sub-topic**; drivers are polled/IRQ first. W
 lands, kernel-mediated descriptor validation + a central channel allocator is the shape. Flag
 this as a distinct HARD problem, not part of the first driver-framework cut.
 
-### 3.5 GPIO sharing -- a pin allocator that mints per-pin capabilities
-The concern: a HOT pin (an SPI chip-select, toggled every transaction, potentially at MHz)
-routed through a central GPIO service = an IPC round-trip PER TOGGLE = prohibitive.
+### 3.5 GPIO -- direct-MMIO grant, not a kernel service
+**DECIDED (spike `design-m4-gpio-direct-spike.md`).** GPIO is NOT a kernel service or a pin
+allocator that mints caps. The kernel touches GPIO only for the ONE-SHOT privileged PINMUX at
+init (3.1); pin TOGGLING is DIRECT MMIO. A driver that needs a pin gets that pin's register
+block granted at spawn (the task #9 grant-at-spawn MMIO path) and writes it itself, with a
+per-chip isolation ceiling on the granted window. A kernel pin allocator + toggle syscall
+(`GPIO_CLAIM`/`WRITE`/`READ`) WAS built (af7d99a) and then REMOVED after the latency spike below
+showed the syscall path cannot serve a hot pin. (This reverses the earlier "GPIO service mints
+per-pin caps" model this section used to carry.)
 
-The model (UNIFIED -- one mechanism, not two tiers): the GPIO service is a PIN ALLOCATOR that
-mints per-pin CAPABILITIES.
-1. A driver (e.g. SPI, for its CS) asks the GPIO service for a pin -- IPC, ONE-SHOT at bring-up
-   (cold, cheap).
-2. The service checks the pin is free (its allocation bookkeeping -- it knows which pins are
-   taken), marks it owned by that driver, and MINTS a capability granting DIRECT MMIO access to
-   that pin's set/clear + input registers, delegating it to the driver.
-3. The driver drives the pin DIRECTLY via the cap -- NO IPC per operation (the hot path is
-   solved by the cap itself, not by a separate "fast tier").
-4. That pin of the port is now unavailable to others (prevents double-allocation); on
-   release / driver-death the cap is revoked and the pin freed.
+**Why direct, not a syscall.** The hot case is an SPI chip-select toggled every transaction. A
+`GPIO_WRITE` SVC round trip is ~100-200 cycles (exception entry + decode + `IrqLock` +
+`cap_resolve` + one store + exception return -- none of it elidable, the cap resolve IS the
+validation that justifies the syscall), so ~0.7-1.7 us per toggle at the fleet clocks. A mode-2
+CS brackets the transfer with two toggles; a 16-bit frame at 72 MHz SCLK is only 222 ns, a
+16-byte transfer 1.78 us. Two `GPIO_WRITE` SVCs add 1.4-3.4 us of overhead SERIALIZED into a
+transaction whose entire payload is smaller than that -- 7-16x slower for the 16-bit frame -- and
+inject `IrqLock` spans into the highest-rate path in the system. Rule of thumb: **kernel-mediated
+GPIO is fine at <= ~1 kHz and NEVER inside a bus transaction; direct MMIO for everything hotter.**
+Forcing the whole fleet through the slow path to paper over one chip's inability to isolate a
+toggle register from its mux would be the wrong tradeoff -- KickOS accepts per-chip isolation
+ceilings (the K64F coarse-AIPS precedent, 3.7 / section 2.1).
 
-So ALLOCATION is arbitrated (service, cold IPC); OPERATION is direct (the cap IS the fast path).
-This is just the general capability pattern -- a service owning a resource + delegating sub-caps
-on request = the roadmap's "service publication + capability delegation" applied to pins.
+**SPI chip-select has TWO first-class modes**, selected per DEVICE by the SPI driver, never by
+chip:
+- **Mode 1 -- hardware PCS**: the engine-native chip select. Preferred and optimal wherever the
+  device is wired to a HW-PCS pin and tolerates the engine's CS behavior (per-frame de-assert, or
+  a CONT window over the whole transaction). Hardware-timed, zero software overhead.
+- **Mode 2 -- driver-owned direct GPIO CS**: required when the device needs a coherent CS level
+  held across a multi-byte transaction the engine cannot sustain (de-asserts per frame / breaks
+  across FIFO refills -- the Stage-D DSPI bug where releasing HW PCS0 clocked a trailing dummy
+  byte and corrupted a length-sensitive ESC mailbox write), or when the CS net has no HW-PCS pin.
+  This is the production KickCAT CS path on K64F today (`user/driver/k64dspi`, PTC4 by PSOR/PCOR
+  from the unprivileged driver thread).
 
-**The three operations, matched to hardware granularity:**
-- **WRITE** (set/clear register) and **READ** (input data register) -- both per-pin-addressable,
-  so the granted per-pin MMIO cap covers them DIRECTLY, no IPC either way.
-- **IRQ** -- the wrinkle: GPIO interrupt lines are SHARED at the silicon level, so they do NOT
-  map cleanly to the per-pin cap. Two cases:
-  - **Dedicated per-pin IRQ line** (e.g. STM32 EXTI0-4 are individual NVIC lines) -> grant that
-    IRQ line DIRECTLY to the pin's owner via the existing tier-1 IRQ-as-event
-    (`irq_register`/wait/ack), no service on the path.
-  - **Shared IRQ line** (the COMMON case -- K64F: one PORTx IRQ for all pins on a port, handler
-    reads ISFR to find which; STM32 EXTI9_5 / EXTI15_10 group many pins into one NVIC line) ->
-    the GPIO SERVICE owns the shared line, DEMUXES it (reads ISFR -> pin mask), and delivers the
-    per-pin event to the owner via IPC/notification (it already holds the pin->owner map from
-    allocation, so it is the natural demux point); it acks ISFR after delivering. The driver
-    subscribes to its pin's IRQ when it requests the pin.
-  IPC on the IRQ path is acceptable (unlike a CS toggle) because the hardware FORCES the demux
-  for a shared line (no direct alternative) and GPIO IRQs are typically lower-rate. It is the
-  userspace twin of the kernel's real-peripheral-IRQ demux (C6 `.Lextdev` / the RX demux, G5).
+**Per-chip isolation ceiling for a direct toggle window** -- can the atomic set/clear + input
+registers be granted as a narrow window that EXCLUDES the pin-mux and all shared authority?
 
-So the GPIO service is TWO roles matched to hardware granularity: a pin ALLOCATOR (mints per-pin
-caps for write/read + a dedicated-per-pin IRQ line = all direct) AND an IRQ DEMUX (owns shared
-lines, routes per-pin events over IPC).
+| chip | mux-free toggle window carvable? | enforcement floor (GPIO data) | hot GPIO-CS (mode 2) direct? |
+|---|---|---|---|
+| **XMC4800** (PMSAv7) | **NO** -- OMR (+0x04) and IOCR0-12 (+0x10-0x1C) share one 32 B min-region/subregion; no bit-band at 0x48028000. Read-only IN window IS carvable | 32 B min; smallest honest grant = 64 B whole-port window INCLUDING that port's mux | **YES** via dedicated port (board layout makes the over-grant harmless) or trusted over-grant; never via kernel toggle |
+| **K64F** (SYSMPU+AIPS) | MOOT -- GPIO block is a crossbar slave with no PACR / no SYSMPU coverage | **NONE** for GPIO data+direction (every unpriv thread reaches every pin); mux stays supervisor via AIPS | **YES, silicon-proven** (k64dspi PSOR/PCOR per transaction); no grant needed |
+| **RX72M** (RX-MPU) | **YES, mux-free**: PODR page [0x0008C020,+0x10) excludes PDR/PMR/MPC | 16 B pages, byte-exact, 8 regions. Residue: 16 ports' output data per page. Peripheral enforcement UNVERIFIED on silicon | **YES** -- direct grant + BSET/BCLR single-instruction discipline (PODR is RMW, no set/clear alias) |
+| **ESP32-C6** (PMP) | **YES, best in fleet**: 8 B NAPOT over W1TS/W1TC (+0x08); IO_MUX + in-block FUNCn_OUT_SEL excluded | 4 B granularity, 16 entries (backend uses 8). Residue: bank-wide data bitmask, zero mux authority. Small-NAPOT-over-peripheral needs one silicon check | **YES** -- direct grant (atomic W1TS/W1TC) |
+| **ESP32-WROOM** (LX6, no MPU) | MOOT -- no MPU, no privilege split | **NONE** (trust-only chip) | **YES trivially** (atomic W1TS/W1TC; nothing to isolate) |
 
-**Two implications to record:**
-- **NEW MECHANISM (a driver-era keystone): runtime delegation of an MMIO (per-pin) capability
-  from a holding service to a requester.** Today MMIO grants are SPAWN-TIME only (`thread_spawn`
-  `mmio_base`); this adds "a running service MINTS + DELEGATES an MMIO sub-cap at runtime." NOT
-  GPIO-specific -- the SPI/I2C call-reply layer (3.2) and the clock-control cap (the
-  power-manager, G7) want the SAME primitive. Flag it as a shared driver-era capability
-  extension, not a GPIO detail.
-- **HARDWARE CEILING applies to the REGISTER grant, not the allocation** (same ceiling class as
-  peripheral isolation). GPIO registers are usually PORT-granular (16-32 pins per register
-  block), so a minted cap can over-cover:
-  - Per-pin / bit-band / atomic set-reset chips (Cortex-M3 bit-banding, STM32 BSRR) -> the cap
-    is truly ONE pin (finer grant, or an RMW-free atomic set/clear).
-  - PORT-granular chips -> the minted cap covers the whole port's register block, so a buggy
-    driver could still poke a co-resident pin.
-  The service's bookkeeping guarantees ALLOCATION-exclusivity ALWAYS (chip-independent);
-  REGISTER-exclusivity holds only where the silicon allows a finer grant (chip-dependent
-  enforcement floor). Chip-independent allocation layer + chip-dependent enforcement floor --
-  exactly the peripheral-isolation pattern (3.3 / section 2.1's "isolation ceiling").
+ALLOCATION exclusivity is chip-INDEPENDENT (bookkeeping); REGISTER-grant exclusivity is a
+chip-DEPENDENT floor -- exactly the isolation-ceiling pattern of 3.7 / section 2.1. The two chips
+that cannot draw a per-pin line (XMC by PMSAv7 subregion math, K64F by having no peripheral gate
+at all) are hardware ceilings of the class KickOS already documents, not an argument for a
+kernel-mediated fleet default. Verdict: direct MMIO mode-2 CS is viable on every chip; the kernel
+toggle is viable nowhere hot.
 
-Mitigations for the register over-grant, best-to-worst by chip capability: (a) per-pin /
-bit-band / atomic set-reset registers (grant finer or avoid RMW); (b) dedicate a whole port to
-one driver (board layout) so the over-grant is harmless; (c) a lightweight kernel GPIO set/clear
-syscall that validates the pin against the grant -- one SVC, no service switch, cheaper than IPC
-but still too slow for MHz CS; (d) accept the port over-grant for a trusted driver (pragmatic
-default on port-granular chips).
+**Deferred to M4.4** (the driver batch that consumes this):
+- **N MMIO windows per spawn** -- `thread_spawn` carries exactly ONE window today
+  (`attr.mmio_base`); an XMC SPI driver with a mode-2 CS needs TWO (USIC channel + port), a C6
+  driver its peripheral window + the W1TS/W1TC entry. Additive (a small bounded N, each
+  admissibility-checked + region/PMP-budget-checked as today), no new object model. Zero windows
+  needed on K64F / WROOM (open floor).
+- **The vendor-neutral `kos_gpio` helper** -- `kos_gpio_claim_out` (cold arbitration + mux
+  verify) returning a descriptor `{mode, set_addr, clr_addr, in_addr, mask}` with per-chip styles
+  folded in, so `kos_gpio_set/clear/get` inline to one store/load (BSET/BCLR on RX) and the SAME
+  driver logic runs on all five chips; `kos_gpio_require_direct` fails LOUD at bring-up
+  (no-deferral) so a hot-CS driver never runs degraded on a chip that can only offer the kernel
+  path.
+- **Runtime mint-and-delegate** of a per-pin window to an already-running holder -- NO forcing
+  consumer (every M4 CS is known at bring-up and served by grant-at-spawn); it is a kernel
+  object-model change (generation / revoke-vs-running-holder / region-budget-at-mint) that must
+  not be smuggled in through GPIO. Deferred until a dynamic-allocation consumer on a carvable chip
+  exists.
+- **Shared-IRQ demux** and any userspace GPIO service -- cold-path only, lands with its first
+  real IRQ-consuming consumer; orthogonal to the toggle path (a shared GPIO IRQ line hardware-
+  forces a demux, so IPC there is acceptable; a CS toggle never is).
 
-Principle: allocation/pinmux decided at setup (init + the GPIO allocator); HOT toggles direct
-via the minted cap; the service is on the COLD path only (allocate / release / shared-IRQ
-demux). GPIO's hot path makes the direct-cap fast path MANDATORY, unlike the cold clock/pinmux
-config. Cross-ref the pinmux (3.1) + DMA (3.4) sections -- same
-shared-resource-vs-performance-vs-isolation tension, different hot/cold profile.
+Cross-ref the pinmux (3.1) + DMA (3.4) sections -- same shared-resource-vs-performance-vs-
+isolation tension, different hot/cold profile. The allocation-vs-register ceiling is the
+peripheral-isolation pattern (3.3 / section 2.1) applied at pin granularity.
 
 ---
 
@@ -590,19 +598,22 @@ supersede the earlier prose above where they differ.
   capability, never an SCU/RCC MMIO grant (that window ungates any peripheral / kills the
   kernel timer clock); the kernel keeps every shared-clock-block register, so a service bug
   is restartable policy, not a flash/PLL hard fault. Fixes the roadmap "Later/clock-tree" prose.
-- **GPIO: driver-owned CS output is IN M4 (finding 9 corrected).** The KickCAT ESC SPI needs
-  a driver-controlled CS: the K64F POC reached OPERATIONAL on hardware PCS0 (PTC4), but the
-  driver-era generalization -- multi-device buses (one HW PCS, N devices), boards whose CS
-  net has no HW-PCS pin, and transactions holding CS across FIFO refills -- forces a
-  driver-owned GPIO CS. It is served by the EXISTING grant-at-spawn MMIO mechanism (task #9),
-  NOT new runtime minting. This makes the per-chip MUX-FREE-WINDOW gate load-bearing: on XMC
-  the GPIO data window is inseparable from IOCR, so a CS-toggle grant also grants pin-remux
-  (escalation) -- the homework is to expose an atomic set/clear window excluding the mux,
-  pinmux staying a one-shot privileged init step (moot on K64F: coarse-AIPS = documentation).
-  Shared ports use a non-blocking demux (per-subscription semaphore/notification with
-  sticky-pending, ack ISFR before delivery -- NEVER a parked rendezvous send, which would let
-  one slow subscriber deafen the whole port). DEFERRED: runtime-mint-and-delegate per-pin caps
-  (no forcing consumer -- CS is covered by spawn-time grant) unless dynamic pin allocation lands.
+- **GPIO: direct-MMIO grant, kernel does only pinmux (finding 9 superseded by the spike
+  `design-m4-gpio-direct-spike.md`).** The KickCAT ESC SPI needs a driver-owned CS (multi-device
+  buses, boards with no HW-PCS pin, CS held across FIFO refills), so mode-2 direct GPIO CS is IN
+  M4 -- served by the grant-at-spawn MMIO mechanism (task #9); a hot pin NEVER routes through a
+  syscall (~100-200-cycle SVC vs a 222 ns CS edge, section 3.5). A kernel pin allocator + toggle
+  syscall was built (af7d99a) then REMOVED once the latency spike confirmed it is non-viable for
+  a hot pin. The earlier "expose an atomic set/clear window excluding the mux" homework is CLOSED
+  as a documented NEGATIVE result on XMC: OMR (+0x04) and IOCR0-12 (+0x10-0x1C) share the one
+  32 B PMSAv7 min-region/subregion, so any region granting the toggle grants that port's remux --
+  address arithmetic, not a silicon question. The XMC answer is a dedicated-port grant (board
+  layout makes the over-grant harmless) or a trusted over-grant, the K64F-coarse-AIPS ceiling
+  class. Pinmux stays a one-shot privileged init step, verified (not set) by the cold claim path.
+  Shared-port IRQ demux (if ever needed) is a non-blocking per-subscription notification with
+  sticky-pending, ack ISFR before delivery -- NEVER a parked rendezvous send that would let one
+  slow subscriber deafen the port. DEFERRED to M4.4: N-windows-per-spawn, the vendor-neutral
+  `kos_gpio` helper, runtime mint-and-delegate (no forcing consumer). See section 3.5.
 - **Call/reply must carry the scheduling contract (finding 4).** Synchronous SPI/I2C over
   CAP_ENDPOINT without priority donation = unbounded inversion on every transaction (KickCAT
   cyclic traffic is the victim). The reply-cap design gate MUST include direct-handoff /
