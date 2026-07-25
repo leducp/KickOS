@@ -22,6 +22,7 @@
 #include <kickos/config/limits.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
 // Bases in mmap.h, NVIC lines in irq.h, per-peripheral offsets/fields in regs/.
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
@@ -505,6 +506,76 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     *size = CONSOLE_TX_SIZE;
     *irq_line = irq::LPUART6_IRQ;
     return &lp6_console_backend;
+}
+
+// Pad-mux table for KOS_SYS_PINMUX_SET. Selector is the datasheet-natural pair
+// (port = GPIO bank 1..5, pin = bit within the bank); a 1:1 pad<->GPIO position.
+// Value = the pad's SW_MUX_CTL_PAD address. 0 = hole (unbonded / not tabled) ->
+// EINVAL. The table is INTENTIONALLY PARTIAL: only GPIO1.IO00..05 and GPIO2.IO00..03
+// are named (regs/iomuxc.h). An un-tabled pad hard-fails EINVAL, never a silent write.
+static uintptr_t const imxrt_pad_mux[6][32] = {
+    {}, // bank 0 unused (GPIO banks are 1-based)
+    {   // GPIO1 = GPIO_AD_B0_xx (IO00..IO15) / GPIO_AD_B1_xx (IO16..IO31)
+        reg::iomuxc::SW_MUX_AD_B0_00, reg::iomuxc::SW_MUX_AD_B0_01,
+        reg::iomuxc::SW_MUX_AD_B0_02, reg::iomuxc::SW_MUX_AD_B0_03,
+        reg::iomuxc::SW_MUX_AD_B0_04, reg::iomuxc::SW_MUX_AD_B0_05,
+    },
+    {   // GPIO2 = GPIO_B0_xx (IO00..IO15) / GPIO_B1_xx (IO16..IO31)
+        reg::iomuxc::SW_MUX_B0_00, reg::iomuxc::SW_MUX_B0_01,
+        reg::iomuxc::SW_MUX_B0_02, reg::iomuxc::SW_MUX_B0_03,
+    },
+};
+
+// Daisy (SELECT_INPUT) table, keyed by func's OWN index bits[15:8] -- NOT parallel
+// to the pad table (a SELECT_INPUT belongs to a (pad, MUX_MODE) pair, not to a pad).
+// Only the LPUART6_RX daisy exists so far; room is reserved for more.
+static uintptr_t const imxrt_daisy[] = {
+    reg::iomuxc::LPUART6_RX_SELECT_INPUT, // index 0
+};
+
+// GPIO1.IO02/03 (= GPIO_AD_B0_02/03) are the LPUART6 console pads: refuse so a
+// board map cannot dark the console.
+static bool imxrt_pin_kernel_owned(uint32_t port, uint32_t pin)
+{
+    return port == 1u and (pin == 2u or pin == 3u);
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). func encoding:
+//   bits[4:0]  = MUX_MODE | SION (SION = bit4), written to SW_MUX_CTL_PAD
+//   bit[16]    = has-daisy
+//   bits[15:8] = daisy-table index (imxrt_daisy)
+//   bits[23:20]= daisy value written to the SELECT_INPUT register
+// SW_PAD_CTL is left at reset defaults. That is fine for the console-class route and
+// this build-only exercise, but is NOT safe generically (drive/pull/hysteresis
+// depend on the pad + net). All range/ownership/index validation happens BEFORE any
+// register write (no half-applied pad on a rejected request).
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port < 1u or port > 5u or pin > 31u)
+    {
+        return -KOS_EINVAL;
+    }
+    uintptr_t const pad = imxrt_pad_mux[port][pin];
+    if (pad == 0u)
+    {
+        return -KOS_EINVAL; // hole: unbonded or not tabled
+    }
+    if (imxrt_pin_kernel_owned(port, pin))
+    {
+        return -KOS_EBUSY;
+    }
+    bool const has_daisy = (func & (1u << 16)) != 0u;
+    uint32_t const daisy_idx = (func >> 8) & 0xFFu;
+    if (has_daisy and daisy_idx >= sizeof(imxrt_daisy) / sizeof(imxrt_daisy[0]))
+    {
+        return -KOS_EINVAL;
+    }
+    r32(pad) = func & reg::iomuxc::MUX_FIELD_MASK;
+    if (has_daisy)
+    {
+        r32(imxrt_daisy[daisy_idx]) = (func >> 20) & 0xFu;
+    }
+    return 0;
 }
 
 // Monotonic clock (arch.h contract; the armv7m layer provides no fallback). GPT1

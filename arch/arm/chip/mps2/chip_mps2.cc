@@ -6,6 +6,9 @@
 // exception/clock setup), and the debug console. QEMU semihosting stands in for
 // a UART here (console + exit code), so this target needs no peripheral driver;
 // the K64F chip layer (item 10) swaps semihosting for real MCG clocks + UART0.
+//
+// The emulated CMSDK has no pin-function mux; arch_pinmux_set is intentionally
+// left as the weak ENOSYS seam.
 
 #include <kickos/arch/arch.h>
 

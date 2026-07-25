@@ -21,6 +21,8 @@ namespace kickos::rp2350::reg::pads
     constexpr uintptr_t GPIO4 = mmap::PADS_BANK0_BASE + 0x14u;
     constexpr uintptr_t GPIO5 = mmap::PADS_BANK0_BASE + 0x18u;
 
+    constexpr uintptr_t gpio(uint32_t n) { return GPIO_BASE + n * GPIO_STRIDE; }
+
     constexpr uint32_t ISO = 1u << 8; // pad isolation (resets SET -- clear to use)
     constexpr uint32_t OD = 1u << 7;  // output disable
     constexpr uint32_t IE = 1u << 6;  // input enable

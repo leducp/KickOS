@@ -76,6 +76,16 @@ kickos_apply_freestanding(kickos_pinmap_frdmk64f)
 target_include_directories(kickos_pinmap_frdmk64f PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+add_library(kickos_pinmap_picopi STATIC init/pinmap_picopi.cc)
+kickos_apply_freestanding(kickos_pinmap_picopi)
+target_include_directories(kickos_pinmap_picopi PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+add_library(kickos_pinmap_f302nucleo STATIC init/pinmap_f302nucleo.cc)
+kickos_apply_freestanding(kickos_pinmap_f302nucleo)
+target_include_directories(kickos_pinmap_f302nucleo PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
 # Board service-list providers: each DEFINES kickos_board_services (see
 # <kickos/sys/service.h>), selected by KICKOS_SERVICE_LIST. Like the pinmap providers
 # above they are board descriptors, so they live in system/init; unlike them they link
@@ -104,5 +114,6 @@ endif()
 install(TARGETS kickos_system kickos_default_init kickos_console_none
         kickos_services_none
         kickos_pinmap_none kickos_pinmap_xmc4800relax kickos_pinmap_frdmk64f
+        kickos_pinmap_picopi kickos_pinmap_f302nucleo
         EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")

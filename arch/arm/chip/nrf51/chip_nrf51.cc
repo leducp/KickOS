@@ -15,6 +15,9 @@
 // (2) unprivileged execution -- the M0 has no Unpriv/Priv extension (M0+ does),
 // so the nPRIV separation runs on QEMU but degrades to all-privileged on the
 // real M0. The real v6-M privilege+timer target is the RP2040 (M0+).
+//
+// No central pinmux -- routing is per-peripheral PSEL; arch_pinmux_set is
+// intentionally left as the weak ENOSYS seam.
 
 #include <kickos/arch/arch.h>
 

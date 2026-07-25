@@ -26,6 +26,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
 #include <stdint.h>
 
@@ -278,6 +279,44 @@ void arch_diag_led_set(int on)
     {
         r32(reg::sio::GPIO_OUT_CLR) = 1u << 25;
     }
+}
+
+// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console
+// or steal the diag LED. GP0/GP1 = UART0 TX/RX; GP25 = diag LED via SIO.
+static bool rp2040_pin_kernel_owned(uint32_t pin)
+{
+    return pin == 0u or pin == 1u or pin == 25u;
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). func packs the IO_BANK0 CTRL
+// funcsel in bits[4:0] plus pad/SIO side effects: bit[8] set pad IE, bit[9] clear
+// pad OD (drive out), bit[16] enable the SIO output (GPIO_OE_SET, 1<<pin). IE resets
+// 1 here, so bit[8] is belt-and-braces. IO_BANK0/PADS are already unreset+clocked
+// from arch_init, so no clock gate is needed.
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port != 0u or pin > 29u)
+    {
+        return -KOS_EINVAL;
+    }
+    if (rp2040_pin_kernel_owned(pin))
+    {
+        return -KOS_EBUSY;
+    }
+    r32(reg::io_bank0::gpio_ctrl(pin)) = func & 0x1fu;
+    if ((func & (1u << 8)) != 0u)
+    {
+        r32(reg::atomic::as_set(reg::pads::gpio(pin))) = reg::pads::IE;
+    }
+    if ((func & (1u << 9)) != 0u)
+    {
+        r32(reg::atomic::as_clr(reg::pads::gpio(pin))) = reg::pads::OD;
+    }
+    if ((func & (1u << 16)) != 0u)
+    {
+        r32(reg::sio::GPIO_OE_SET) = 1u << pin;
+    }
+    return 0;
 }
 
 // Monotonic clock from the 64-bit system TIMER (microseconds -> ns). Uses the

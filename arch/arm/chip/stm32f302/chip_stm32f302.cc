@@ -19,6 +19,7 @@
 #include <kickos/config/limits.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 
@@ -91,6 +92,25 @@ namespace
     constexpr uintptr_t GPIOA_BASE = 0x48000000;
     constexpr uintptr_t GPIOA_MODER = GPIOA_BASE + 0x00;
     constexpr uintptr_t GPIOA_AFRL = GPIOA_BASE + 0x20;
+
+    // --- Pin-mux (KOS_SYS_PINMUX_SET) -------------------------------------------
+    // GPIO ports are on AHB: GPIOA + port*0x400 (A=0..F=5). RCC_AHBENR IOPxEN =
+    // bit (17+port). func: bits[1:0] = MODER field written verbatim (00 in, 01 out,
+    // 10 AF, 11 analog); bits[7:4] = AF number, into AFRL (pin<8) / AFRH (pin>=8).
+    // OTYPER/OSPEEDR/PUPDR stay at their reset values.
+    constexpr uintptr_t GPIO_STRIDE = 0x400;
+    constexpr uintptr_t GPIO_MODER_OFF = 0x00;
+    constexpr uintptr_t GPIO_AFRL_OFF = 0x20;
+    constexpr uintptr_t GPIO_AFRH_OFF = 0x24;
+    constexpr uint32_t AHBENR_IOP_SHIFT = 17u;
+    constexpr uint32_t PINMUX_PORT_MAX = 5u; // GPIOA..GPIOF
+
+    // Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the
+    // console or steal the diag LED. PA2/PA3 = USART2 console; PB13 = LD2.
+    bool f3_pin_kernel_owned(uint32_t port, uint32_t pin)
+    {
+        return (port == 0u and (pin == 2u or pin == 3u)) or (port == 1u and pin == 13u);
+    }
 
     // USART2 (sec.29), NEW model. On APB1 (PCLK1 = 32 MHz after clock_init).
     constexpr uintptr_t USART2_BASE = 0x40004400;
@@ -375,6 +395,40 @@ void arch_diag_led_set(int on)
     {
         r32(GPIOB_BSRR) = 1u << (13 + 16);
     }
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). func = bits[1:0] MODER field
+// (verbatim) + bits[7:4] AF number. Validate range + kernel-owned BEFORE gating a
+// clock or touching a register (a gate-then-fail path would leak an enabled clock).
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port > PINMUX_PORT_MAX or pin > 15u)
+    {
+        return -KOS_EINVAL;
+    }
+    if (f3_pin_kernel_owned(port, pin))
+    {
+        return -KOS_EBUSY;
+    }
+    r32(RCC_AHBENR) |= (1u << (AHBENR_IOP_SHIFT + port)); // gate this port's clock (idempotent)
+    uintptr_t const base = GPIOA_BASE + port * GPIO_STRIDE;
+    uint32_t const mode_shift = pin * 2u;
+    uint32_t moder = r32(base + GPIO_MODER_OFF);
+    moder &= ~(0x3u << mode_shift);
+    moder |= (func & 0x3u) << mode_shift;
+    r32(base + GPIO_MODER_OFF) = moder;
+    uintptr_t afr = base + GPIO_AFRL_OFF;
+    uint32_t af_shift = pin * 4u;
+    if (pin >= 8u)
+    {
+        afr = base + GPIO_AFRH_OFF;
+        af_shift = (pin - 8u) * 4u;
+    }
+    uint32_t afv = r32(afr);
+    afv &= ~(0xFu << af_shift);
+    afv |= ((func >> 4) & 0xFu) << af_shift;
+    r32(afr) = afv;
+    return 0;
 }
 
 void Reset_Handler(void)

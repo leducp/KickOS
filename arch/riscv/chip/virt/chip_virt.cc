@@ -13,6 +13,9 @@
 // at 0x0200_0000 -- msip (hart 0) @+0x0000, mtimecmp @+0x4000, mtime @+0xBFF8; the
 // `virt` mtime runs at 10 MHz. Run with: qemu-system-riscv32 -M virt -bios none
 // -nographic -semihosting -kernel <elf>.
+//
+// Virtual board, no pads (semihosting console); arch_pinmux_set is intentionally
+// left as the weak ENOSYS seam.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)

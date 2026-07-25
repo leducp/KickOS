@@ -15,6 +15,7 @@ namespace kickos::stm32f411::reg::gpio
 {
     constexpr uintptr_t MODER = 0x00u; // 2 bits/pin
     constexpr uintptr_t AFRL = 0x20u;  // 4 bits/pin, pins 0-7
+    constexpr uintptr_t AFRH = 0x24u;  // 4 bits/pin, pins 8-15
     constexpr uintptr_t BSRR = 0x18u;  // atomic set [15:0] / reset [31:16]
 
     // MODER 2-bit field encodings.

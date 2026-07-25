@@ -13,6 +13,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
 #include <stdint.h>
 
@@ -362,6 +363,40 @@ void arch_diag_led_set(int on)
     {
         r32(reg::gpio::OUT_W1TC) = reg::gpio::LED_BIT;
     }
+}
+
+// Pins arch_pinmux_set refuses (EBUSY). GPIO1/GPIO3 = the U0 console TX/RX.
+// GPIO6..11 drive the SPI flash the image executes from (XIP) -- remuxing ANY of
+// them bricks execution, so this refusal is not optional.
+static bool esp32_pin_kernel_owned(uint32_t pin)
+{
+    return pin == 1u or pin == 3u or (pin >= 6u and pin <= 11u);
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). port must be 0 (the WROOM has a
+// single GPIO bank). func = the raw IO_MUX_GPIOn word (MCU_SEL | drive | FUN_IE),
+// written verbatim to the pad's IO_MUX register -- like the esp32c6 backend. The GPIO
+// number indexes reg::gpio::IO_MUX_OFF, whose offsets are scrambled in silicon (never
+// pin*4); a 0 offset is a nonexistent/unbonded GPIO and fails EINVAL. GPIO-matrix
+// signal routing (the second half of a full mux) is DEFERRED; this is the IO_MUX layer
+// only. Validation runs before the register write.
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port != 0u or pin > 39u)
+    {
+        return -KOS_EINVAL;
+    }
+    uint32_t const off = reg::gpio::IO_MUX_OFF[pin];
+    if (off == 0u)
+    {
+        return -KOS_EINVAL; // nonexistent (20/24/28..31) or unbonded on WROOM (37/38)
+    }
+    if (esp32_pin_kernel_owned(pin))
+    {
+        return -KOS_EBUSY;
+    }
+    r32(mmap::IO_MUX_BASE + off) = func;
+    return 0;
 }
 
 void arch_init(void)

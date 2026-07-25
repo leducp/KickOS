@@ -21,7 +21,10 @@ namespace kickos::rp2350::reg::io_bank0
     constexpr uintptr_t GPIO4_CTRL = mmap::IO_BANK0_BASE + 0x24u; // GP4 = UART1 TX
     constexpr uintptr_t GPIO5_CTRL = mmap::IO_BANK0_BASE + 0x2cu; // GP5 = UART1 RX
 
+    constexpr uintptr_t gpio_ctrl(uint32_t n) { return CTRL_BASE + n * CTRL_STRIDE; }
+
     constexpr uint32_t FUNCSEL_UART = 2u; // F2 = UART1 TX/RX
+    constexpr uint32_t FUNCSEL_SIO = 5u;  // F5 = SIO (software GPIO)
 }
 
 #endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_IO_BANK0_H

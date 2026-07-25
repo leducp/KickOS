@@ -20,6 +20,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
 #include <stdint.h>
 
@@ -88,6 +89,27 @@ namespace
     constexpr uint32_t CRH_PA9 = 0xBu << 4;
     constexpr uint32_t CRH_PA10 = 0x4u << 8;
     constexpr uint32_t CRH_PA9_PA10_MASK = (0xFu << 4) | (0xFu << 8);
+
+    // --- Pin-mux (KOS_SYS_PINMUX_SET) -------------------------------------------
+    // GPIO ports: GPIOA + port*0x400. RCC_APB2ENR IOPxEN = bit (2+port); AFIOEN
+    // (bit 0) also gated. func = the raw 4-bit CRL/CRH nibble (0xB = AF push-pull
+    // 50 MHz, 0x3 = GP push-pull output 50 MHz, 0x4 = floating input); the nibble
+    // sits at (pin%8)*4 in CRL (pin<8) / CRH (pin>=8). Sufficient for the
+    // default-mapped peripherals only: alternate-function REMAP goes through
+    // AFIO_MAPR (per-peripheral, out of scope here), and a pull-up/down input
+    // (CNF=10) additionally needs an ODR write the 4-bit nibble cannot carry.
+    constexpr uintptr_t GPIO_STRIDE = 0x400;
+    constexpr uintptr_t GPIO_CRL_OFF = 0x00;
+    constexpr uintptr_t GPIO_CRH_OFF = 0x04;
+    constexpr uint32_t APB2ENR_IOP_SHIFT = 2u;
+    constexpr uint32_t PINMUX_PORT_MAX = 4u; // GPIOA..GPIOE
+
+    // Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the
+    // console or steal the diag LED. PA9/PA10 = USART1 console; PC13 = LED.
+    bool f1_pin_kernel_owned(uint32_t port, uint32_t pin)
+    {
+        return (port == 0u and (pin == 9u or pin == 10u)) or (port == 2u and pin == 13u);
+    }
 
     // USART1 (sec.27), classic SR/DR. On APB2 (PCLK2 = 72 MHz after clock_init).
     constexpr uintptr_t USART1_BASE = 0x40013800;
@@ -431,6 +453,36 @@ void arch_diag_led_set(int on)
     {
         r32(GPIOC_BSRR) = 1u << 13;        // BS13 -> PC13 high -> LED off
     }
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). func = the raw 4-bit CRL/CRH
+// nibble. Validate range + kernel-owned BEFORE gating a clock or touching a
+// register (a gate-then-fail path would leak an enabled clock).
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port > PINMUX_PORT_MAX or pin > 15u)
+    {
+        return -KOS_EINVAL;
+    }
+    if (f1_pin_kernel_owned(port, pin))
+    {
+        return -KOS_EBUSY;
+    }
+    // AFIOEN is needed for any alternate-function pin; the port clock is per-port.
+    r32(RCC_APB2ENR) |= APB2ENR_AFIOEN | (1u << (APB2ENR_IOP_SHIFT + port));
+    uintptr_t const base = GPIOA_BASE + port * GPIO_STRIDE;
+    uintptr_t cr = base + GPIO_CRL_OFF;
+    uint32_t shift = pin * 4u;
+    if (pin >= 8u)
+    {
+        cr = base + GPIO_CRH_OFF;
+        shift = (pin - 8u) * 4u;
+    }
+    uint32_t v = r32(cr);
+    v &= ~(0xFu << shift);
+    v |= (func & 0xFu) << shift;
+    r32(cr) = v;
+    return 0;
 }
 
 void Reset_Handler(void)

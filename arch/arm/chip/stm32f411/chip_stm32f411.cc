@@ -32,6 +32,7 @@
 #include <kickos/board_config.h> // per-board HSE freq + LED pin (Disco vs Black Pill)
 #include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
 #include <stdint.h>
 
@@ -385,6 +386,61 @@ void arch_diag_led_set(int on)
     {
         r32(bsrr) = 1u << (KICKOS_LED_PIN + 16);
     }
+}
+
+// Board LED port index, derived from the LED's GPIO base at compile time (Disco PD12
+// -> port 3; Black Pill PC13 -> port 2). Refused so a board map cannot steal the LED.
+constexpr uint32_t LED_PORT_INDEX = (KICKOS_LED_GPIO - mmap::GPIOA_BASE) / mmap::GPIO_STRIDE;
+
+// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console or
+// steal the diag LED. PA2/PA3 = USART2 TX/RX; the LED port/pin is board-derived above.
+static bool f411_pin_kernel_owned(uint32_t port, uint32_t pin)
+{
+    if (port == 0u and (pin == 2u or pin == 3u))
+    {
+        return true;
+    }
+    if (port == LED_PORT_INDEX and pin == KICKOS_LED_PIN)
+    {
+        return true;
+    }
+    return false;
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). func bits[1:0] are the MODER
+// 2-bit field written verbatim (00=in, 01=out, 10=AF, 11=analog); bits[7:4] are the
+// AF number (AFRL for pin<8, AFRH for pin>=8). Gates the port's AHB1ENR bit (=port)
+// first (an unclocked GPIO register access faults). PUPDR/OSPEEDR stay at reset.
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port > 7u or pin > 15u)
+    {
+        return -KOS_EINVAL;
+    }
+    if (f411_pin_kernel_owned(port, pin))
+    {
+        return -KOS_EBUSY;
+    }
+    r32(rcc::AHB1ENR) |= (1u << port); // gate this port's clock (idempotent)
+    uintptr_t const base = mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE;
+    uint32_t moder = r32(base + gpio::MODER);
+    moder &= ~(0x3u << (pin * 2u));
+    moder |= (func & 0x3u) << (pin * 2u);
+    r32(base + gpio::MODER) = moder;
+
+    uint32_t const af = (func >> 4u) & 0xFu;
+    uintptr_t afr = base + gpio::AFRL;
+    uint32_t shift = pin * 4u;
+    if (pin >= 8u)
+    {
+        afr = base + gpio::AFRH;
+        shift = (pin - 8u) * 4u;
+    }
+    uint32_t v = r32(afr);
+    v &= ~(0xFu << shift);
+    v |= af << shift;
+    r32(afr) = v;
+    return 0;
 }
 
 #if KICKOS_HAVE_MPU

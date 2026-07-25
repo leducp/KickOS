@@ -23,6 +23,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/rv_trap_ids.h>
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
 #include <stdint.h>
 
@@ -478,6 +479,31 @@ void arch_diag_led_set(int on)
         rgb = 0xFF0000u;
     }
     rmt_send_ws2812(rgb);
+}
+
+// Kernel-owned pins arch_pinmux_set refuses so a board map cannot steal the console
+// or the diag LED. GPIO16/17 = UART0 TX/RX (CH343P bridge); GPIO8 = WS2812 diag LED.
+static bool c6_pin_kernel_owned(uint32_t pin)
+{
+    return pin == 8u or pin == 16u or pin == 17u;
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). func is the raw IO_MUX_GPIOn_REG
+// word (MCU_SEL | drive | IE), written verbatim via io_mux::gpio(pin). This is the
+// IO_MUX layer only: routing a peripheral output through the GPIO matrix (the second
+// signal-index write) is deferred.
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port != 0u or pin > 30u)
+    {
+        return -KOS_EINVAL;
+    }
+    if (c6_pin_kernel_owned(pin))
+    {
+        return -KOS_EBUSY;
+    }
+    r32(reg::io_mux::gpio(pin)) = func;
+    return 0;
 }
 
 void arch_init(void)

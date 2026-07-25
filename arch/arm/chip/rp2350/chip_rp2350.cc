@@ -35,6 +35,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
 #include <stdint.h>
 
@@ -47,6 +48,7 @@
 #include "regs/pads.h"
 #include "regs/pll.h"
 #include "regs/resets.h"
+#include "regs/sio.h"
 #include "regs/ticks.h"
 #include "regs/timer.h"
 #include "regs/uart.h"
@@ -296,6 +298,47 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     *size = CONSOLE_TX_SIZE;
     *irq_line = irq::UART1_IRQ;
     return &rp_console_backend;
+}
+
+// Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console.
+// GP4/GP5 = UART1 TX/RX (the only console pins on the Pi-Zero header). No diag LED.
+static bool rp2350_pin_kernel_owned(uint32_t pin)
+{
+    return pin == 4u or pin == 5u;
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). func packs the IO_BANK0 CTRL
+// funcsel in bits[4:0] plus pad/SIO side effects: bit[8] set pad IE, bit[9] clear
+// pad OD (drive out), bit[16] enable the SIO output (GPIO_OE_SET, 1<<pin). The pad
+// ISO bit is ALWAYS cleared: RP2350 pads reset ISOLATED and stay dead otherwise. IE
+// resets 0 here, so a peripheral INPUT requires bit[8]. IO_BANK0/PADS are already
+// unreset+clocked from arch_init, so no clock gate is needed.
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port != 0u or pin > 29u)
+    {
+        return -KOS_EINVAL;
+    }
+    if (rp2350_pin_kernel_owned(pin))
+    {
+        return -KOS_EBUSY;
+    }
+    r32(reg::io_bank0::gpio_ctrl(pin)) = func & 0x1fu;
+    uint32_t clr = reg::pads::ISO;
+    if ((func & (1u << 9)) != 0u)
+    {
+        clr |= reg::pads::OD;
+    }
+    r32(reg::pads::gpio(pin) + mmap::ATOMIC_CLR) = clr;
+    if ((func & (1u << 8)) != 0u)
+    {
+        r32(reg::pads::gpio(pin) + mmap::ATOMIC_SET) = reg::pads::IE;
+    }
+    if ((func & (1u << 16)) != 0u)
+    {
+        r32(reg::sio::GPIO_OE_SET) = 1u << pin;
+    }
+    return 0;
 }
 
 // Monotonic clock from the 64-bit system TIMER0 (microseconds -> ns). Uses the

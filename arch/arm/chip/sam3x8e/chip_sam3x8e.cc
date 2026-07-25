@@ -20,6 +20,7 @@
 #include <kickos/config/limits.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
 #include <stdint.h>
 
@@ -188,6 +189,36 @@ namespace
     constexpr uintptr_t PIOA_BASE = 0x400E0E00;
     constexpr uintptr_t PIOA_PDR = PIOA_BASE + 0x04; // give pins to the peripheral
     constexpr uint32_t PA8_PA9 = (1u << 8) | (1u << 9);
+
+    // --- Pin-mux (KOS_SYS_PINMUX_SET) -------------------------------------------
+    // One PIO controller per port: PIOA + port*0x200 (A=0..D=3). PMC_PCER0 clock
+    // bit = (11+port) (PIOA is peripheral ID 11). func selects the routing:
+    //   0x00 = GPIO output (PIO_PER + PIO_OER), 0x01 = GPIO input (PIO_PER + PIO_ODR),
+    //   0x10 = peripheral A (ABSR bit CLEAR, then PIO_PDR),
+    //   0x11 = peripheral B (ABSR bit SET,   then PIO_PDR).
+    // The ABSR write MUST precede PDR (PDR hands the pin to whichever peripheral
+    // ABSR currently selects). The OER/ODR write is MANDATORY: PER alone leaves the
+    // output driver at its reset state, giving a dead output. PIO pull-ups are
+    // enabled at reset (datasheet reset state); this backend does not touch PUER/PUDR.
+    constexpr uintptr_t PIO_STRIDE = 0x200;
+    constexpr uintptr_t PIO_PER_OFF = 0x00;
+    constexpr uintptr_t PIO_PDR_OFF = 0x04;
+    constexpr uintptr_t PIO_OER_OFF = 0x10;
+    constexpr uintptr_t PIO_ODR_OFF = 0x14;
+    constexpr uintptr_t PIO_ABSR_OFF = 0x70;
+    constexpr uint32_t PMC_PID_PIO_SHIFT = 11u;
+    constexpr uint32_t PINMUX_PORT_MAX = 3u; // PIOA..PIOD
+    constexpr uint32_t PINMUX_FUNC_GPIO_OUT = 0x00u;
+    constexpr uint32_t PINMUX_FUNC_GPIO_IN = 0x01u;
+    constexpr uint32_t PINMUX_FUNC_PERIPH_A = 0x10u;
+    constexpr uint32_t PINMUX_FUNC_PERIPH_B = 0x11u;
+
+    // Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the
+    // console or steal the diag LED. PA8/PA9 = console UART; PB27 = "L" LED.
+    bool sam_pin_kernel_owned(uint32_t port, uint32_t pin)
+    {
+        return (port == 0u and (pin == 8u or pin == 9u)) or (port == 1u and pin == 27u);
+    }
 
     // UART (sec.34), dedicated simple UART.
     constexpr uintptr_t UART_BASE = 0x400E0800;
@@ -402,6 +433,55 @@ void arch_diag_led_set(int on)
     {
         r32(PIOB_CODR) = 1u << 27;
     }
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). func selects GPIO out/in or
+// peripheral A/B (see the constant block). Validate range + func + kernel-owned
+// BEFORE gating a clock or touching a register (a gate-then-fail path would leak
+// an enabled clock).
+int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
+{
+    if (port > PINMUX_PORT_MAX or pin > 31u)
+    {
+        return -KOS_EINVAL;
+    }
+    if (func != PINMUX_FUNC_GPIO_OUT and func != PINMUX_FUNC_GPIO_IN and
+        func != PINMUX_FUNC_PERIPH_A and func != PINMUX_FUNC_PERIPH_B)
+    {
+        return -KOS_EINVAL;
+    }
+    if (sam_pin_kernel_owned(port, pin))
+    {
+        return -KOS_EBUSY;
+    }
+    r32(PMC_PCER0) = 1u << (PMC_PID_PIO_SHIFT + port); // clock this PIO (write-1-to-set)
+    uintptr_t const base = PIOA_BASE + port * PIO_STRIDE;
+    uint32_t const mask = 1u << pin;
+    if (func == PINMUX_FUNC_GPIO_OUT)
+    {
+        r32(base + PIO_PER_OFF) = mask;
+        r32(base + PIO_OER_OFF) = mask;
+    }
+    else if (func == PINMUX_FUNC_GPIO_IN)
+    {
+        r32(base + PIO_PER_OFF) = mask;
+        r32(base + PIO_ODR_OFF) = mask;
+    }
+    else
+    {
+        uint32_t absr = r32(base + PIO_ABSR_OFF);
+        if (func == PINMUX_FUNC_PERIPH_B)
+        {
+            absr |= mask;
+        }
+        else
+        {
+            absr &= ~mask;
+        }
+        r32(base + PIO_ABSR_OFF) = absr; // ABSR before PDR: PDR hands the pin to the selected peripheral
+        r32(base + PIO_PDR_OFF) = mask;
+    }
+    return 0;
 }
 
 void Reset_Handler(void)
