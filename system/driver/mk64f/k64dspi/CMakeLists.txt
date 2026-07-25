@@ -3,26 +3,6 @@
 
 # kickos_k64dspi: the K64F/DSPI0 unprivileged SPI driver (privileged bring-up + an
 # unprivileged driver thread; clients call spi_transfer/spi_enable_cs/spi_disable_cs
-# -- see <kickos/driver/k64dspi.h>). Exported so an out-of-tree consumer (e.g. a
-# KickCAT LAN9252 slave) links it on top of the OS. Its .data/.bss (the bounce
-# buffer + descriptor) land in .appdata: libkickos_k64dspi.a is not in the mk64f.ld
-# closed kernel set, so the .appdata catch-all captures it -- user-reachable.
-add_library(kickos_k64dspi STATIC k64dspi.cc)
-kickos_apply_freestanding(kickos_k64dspi)
-# Unprivileged userspace code: kickos_user carries user/include (kos.h/sys.h) plus
-# the transitive lib/arch includes, and orders the component group after this lib
-# at the final link.
-target_link_libraries(kickos_k64dspi PUBLIC kickos_user)
-# sys.h/abi.h pull errno.h from kickos_system (kickos_user carries it only PRIVATE).
-target_include_directories(kickos_k64dspi PRIVATE
-  "${PROJECT_SOURCE_DIR}/system/include")
-# Rule 6 (M4, decision R-A): the DSPI RX-FIFO fill-level read is shared register
-# logic, so it comes from the freestanding kickos_class_mk64f leaf -- the same
-# object the kernel timebase will link in Phase A -- not a local copy.
-target_link_libraries(kickos_k64dspi PRIVATE kickos_class_mk64f)
-install(TARGETS kickos_k64dspi EXPORT KickOSTargets
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-
-# The frdmk64f service-list provider (kickos_services_frdmk64f) is a board descriptor,
-# so it lives in system/init (service_list_frdmk64f.cc) alongside pinmap_frdmk64f and
-# is declared in system/CMakeLists.txt; it links kickos_k64dspi + kickos_k64uart there.
+# -- see <kickos/driver/k64dspi.h>). The DSPI RX-FIFO fill-level read is shared
+# register logic, so it links the kickos_class_mk64f leaf, not a local copy.
+kickos_add_driver(k64dspi CLASS kickos_class_mk64f)

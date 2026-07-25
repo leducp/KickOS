@@ -3,9 +3,9 @@
 //
 // The per-board service list: an ordered set of userspace services the default init
 // brings up BEFORE the app's main, so a plain app gets its board's drivers (starting
-// with the console) with zero app code. Generalizes the single-console bring-up hook
-// (<kickos/sys/bringup.h>): the console is just a KOS_SVC_CONSOLE entry. Per-instance
-// config travels as DATA in kos_service_cfg, not as literals in the driver TU. Lives
+// with the console) with zero app code. This is the sole userspace-console bring-up
+// path: the console is just the first KOS_SVC_CONSOLE entry. Per-instance config
+// travels as DATA in kos_service_cfg, not as literals in the driver TU. Lives
 // in the kickos_system library; keep it dependency-free (shared verbatim by the init
 // body and every per-board provider TU).
 //
@@ -54,7 +54,7 @@ struct kos_service_cfg
     uint32_t mmio_window;    // grant window size in bytes (arch-encodable; per-chip granule)
     uint32_t hz;             // target clock (SPI/I2C bit clock, UART baud); driver rounds DOWN
     uint16_t addr;           // I2C 7/10-bit slave address slot; 0 when unused
-    uint8_t prio;            // driver thread priority (was kos_console_bringup.driver_prio)
+    uint8_t prio;            // driver thread priority
     uint8_t kind;            // enum kos_svc_kind; start() rejects a mismatched cfg
     uint8_t cs_policy;       // enum kos_svc_cs_policy (SPI; driver-internal)
     uint8_t cs_index;        // HW CS line index, or the driver's GPIO pin slot
@@ -80,9 +80,8 @@ struct kos_service_list
 
 // The selected board's service list. EXACTLY ONE definition links per image, chosen
 // by the KICKOS_SERVICE_LIST CMake target (default kickos_services_none, count = 0),
-// exactly like kickos_board_pinmap / kickos_board_console. See
-// system/init/services_none.cc and a per-board provider such as
-// user/driver/k64uart/service_list.cc.
+// exactly like kickos_board_pinmap. See system/init/services_none.cc and a per-board
+// provider such as system/init/service_list_frdmk64f.cc.
 extern struct kos_service_list const kickos_board_services;
 
 #ifdef __cplusplus

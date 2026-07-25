@@ -53,17 +53,32 @@ REC_LEN = {
     EV_IRQ_EXIT: 9,
 }
 
+# TODO(de-drift): ARCH_NAME is a hand-maintained mirror of the C++ source of truth
+# (kickos::trace::ArchId in include/kickos/trace/record.h). The number is the WIRE
+# contract; the string here is a human label. The tests/telemetry idmap cross-check
+# fails the build if the number set drifts. The durable fix is to GENERATE this from
+# the C++ enum (nanobind / a codegen step); that is future-milestone work.
 ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv"}
 
-# syscall numbers -> names (keep in sync with user/include/kickos/sys/abi.h). Used
-# to break syscall cost down per-call. *sleep_ns* and *sem_wait* are BLOCKING: their
-# ENTER..EXIT span includes intended block time, so judge them by on-CPU overhead.
+# syscall numbers -> names. Used to break syscall cost down per-call. *sleep_ns* and
+# *sem_wait* are BLOCKING: their ENTER..EXIT span includes intended block time, so
+# judge them by on-CPU overhead.
+#
+# TODO(de-drift): this is a hand-maintained mirror of the C++ source of truth (enum
+# kos_syscall_nr in user/include/kickos/sys/abi.h). The number is the ABI contract;
+# the string here is a human label. The tests/telemetry idmap cross-check fails the
+# build if the number set drifts from abi.h. The durable fix is to GENERATE this from
+# the C++ enum (nanobind / a codegen step); that is future-milestone work.
 SYSCALL_NAME = {
     1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
     6: "sem_post", 7: "thread_spawn", 8: "exit", 9: "irq_inject", 10: "guard_addr",
     11: "irq_attach", 12: "clock_now", 13: "ram_alloc", 14: "irq_register",
-    15: "irq_wait", 16: "irq_ack", 17: "sem_destroy", 18: "irq_spurious",
-    19: "diag_led_set", 20: "diag_led_toggle",
+    15: "irq_wait", 16: "irq_ack", 17: "handle_close", 18: "irq_spurious",
+    19: "diag_led_set", 20: "diag_led_toggle", 21: "irq_unmask", 22: "cpu_clock_hz",
+    23: "mutex_create", 24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
+    27: "send", 28: "recv", 29: "console_publish", 30: "cpu_clock_set",
+    31: "grant_probe", 32: "periph_clock_hz", 33: "pinmux_set", 34: "call",
+    35: "reply",
 }
 
 TRACE_MAGIC = 0x4B545243

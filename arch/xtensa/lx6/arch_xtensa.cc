@@ -23,8 +23,15 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/xtensa_frame.h> // F_* interrupt-frame offsets, shared with startup.S
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
+#include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <stddef.h> // offsetof
+
+// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
+// for the arch this backend implements, or a SESSION record mislabels the trace.
+// A wrong caps.cmake value breaks the build here instead of drifting silently.
+static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_XTENSA,
+              "KICKOS_TRACE_ARCH does not match ArchId::ARCH_XTENSA for lx6");
 
 // Fault reporting (see the _kickos_lx6_fault shim in startup.S, which captures the
 // fault special registers and calls here with the window ABI live): the reporter

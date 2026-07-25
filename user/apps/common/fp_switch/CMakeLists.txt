@@ -9,8 +9,6 @@ kickos_add_application(fp_switch
 # reports s16-s31 preserved ("FP OK") and never "FP FAIL". Validates the PendSV
 # FP save/restore on real armv7m before flashing.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
-  add_test(
-    NAME    qemu_fp_switch
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_qemu_fp.sh" "$<TARGET_FILE:fp_switch>")
-  set_tests_properties(qemu_fp_switch PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME qemu_fp_switch TARGET fp_switch BOARD qemu
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_fp.sh")
 endif()

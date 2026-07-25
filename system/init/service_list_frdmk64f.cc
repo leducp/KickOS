@@ -8,8 +8,8 @@
 //   [1] KOS_SVC_SPI     -> k64dspi_spi_start     (DSPI0 bus service on an endpoint).
 // Per-instance config travels as DATA (kos_service_cfg), never as literals in a
 // driver TU. Selected by KICKOS_SERVICE_LIST=kickos_services_frdmk64f (the frdmk64f
-// enforcement default); the board's console hook is kickos_console_none, so the
-// console comes up via this list. EXACTLY ONE kickos_board_services links per image.
+// enforcement default); the console comes up via this list (its first KOS_SVC_CONSOLE
+// entry). EXACTLY ONE kickos_board_services links per image.
 //
 // This combined list lives with the DSPI driver (not the UART driver) because it now
 // spans both; the CMake target links kickos_k64uart AND kickos_k64dspi so both

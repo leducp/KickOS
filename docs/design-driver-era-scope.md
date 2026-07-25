@@ -282,8 +282,8 @@ two POD tables + a `main`: `kos_board_pinmap` (the `{port,pin,func}` routing) an
 walks BEFORE `main`). Per-instance parameters -- register base, grant window, priority, target hz,
 CS choice, I2C address -- travel as DATA in `kos_service_cfg`, not baked into the driver TU, so the
 SAME driver-class target serves N instances by config alone (the LPUART1..8 / N-SPI case). The
-console is just the first `KOS_SVC_CONSOLE` entry in the list (it SUBSUMES the old single-console
-`kos_console_bringup` hook). Each list/pinmap definition is one strong symbol chosen by a CMake
+console is just the first `KOS_SVC_CONSOLE` entry in the list (the service list is the sole
+userspace-console bring-up path). Each list/pinmap definition is one strong symbol chosen by a CMake
 target knob (`KICKOS_SERVICE_LIST` / `KICKOS_BOARD_PINMAP`), fail-loud on a missing/misspelled
 target -- no runtime manifest, no silent fallback (the anti-CapDL tenet). **Per-BOARD today**
 (the in-tree `frdmk64f` / `xmc4800-relax` configs are REFERENCE EXAMPLES); the **per-app / fleet

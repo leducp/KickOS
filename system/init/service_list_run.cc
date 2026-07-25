@@ -5,7 +5,8 @@
 // (see <kickos/sys/service.h>) in array order before the app's main. Each entry's
 // start() is a one-shot handover; a nonzero return short-circuits so the app never
 // runs against a half-brought-up board. A board with an empty list (count = 0) is a
-// no-op. This generalizes the single-console hook (console_bringup.cc).
+// no-op. This is the sole userspace-console bring-up path (the console is the list's
+// first KOS_SVC_CONSOLE entry).
 //
 // HARD RULE (see <kickos/sys/service.h>): no libc stdio here. Every start() holds
 // the only WAIT cap between publish and its driver's first recv, so a printf would

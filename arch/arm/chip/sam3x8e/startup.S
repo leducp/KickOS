@@ -9,6 +9,7 @@
  */
 
 #include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
+#include "core_vectors.inc"        /* shared core-exception vector block */
 
     .syntax unified
     .thumb
@@ -17,22 +18,7 @@
     .align 9
     .global g_isr_vector
 g_isr_vector:
-    .word _estack                    /* 0: initial MSP */
-    .word Reset_Handler              /* 1: reset */
-    .word NMI_Handler                /* 2 */
-    .word HardFault_Handler          /* 3 */
-    .word HardFault_Handler          /* 4: MemManage */
-    .word HardFault_Handler          /* 5: BusFault */
-    .word HardFault_Handler          /* 6: UsageFault */
-    .word 0                          /* 7 */
-    .word 0                          /* 8 */
-    .word 0                          /* 9 */
-    .word 0                          /* 10 */
-    .word SVC_Handler                /* 11: SVCall */
-    .word 0                          /* 12: DebugMonitor */
-    .word 0                          /* 13 */
-    .word PendSV_Handler             /* 14: PendSV */
-    .word SysTick_Handler            /* 15: SysTick */
+    KICKOS_CORE_VECTORS_V7M
 
     /* Peripheral interrupts 0..44 -> the generic IRQ-as-event entry, except line 27
      * (TC0 ch0) which carries the monotonic-clock wrap observer (chip_sam3x8e.cc). */

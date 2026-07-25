@@ -12,8 +12,15 @@
 #include <kickos/arch/arch.h>
 
 #include "regs.h"
+#include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <stddef.h> // offsetof
+
+// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
+// for the arch this backend implements, or a SESSION record mislabels the trace.
+// A wrong caps.cmake value breaks the build here instead of drifting silently.
+static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_ARMV6M,
+              "KICKOS_TRACE_ARCH does not match ArchId::ARCH_ARMV6M for armv6m");
 
 // Fault reporting (the shared HardFault handler below): the reporter calls
 // kpanic_enter first, which masks IRQs, forces the synchronous polled writer, and

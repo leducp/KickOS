@@ -25,10 +25,12 @@
 
 #include <kickos/driver/k64dspi.h>
 
-#include <kickos/sys/bus.h>     // kos_bus_req/seg/rsp/cfg wire ABI
-#include <kickos/sys/service.h> // kos_service_cfg (base/window/prio/cs as data)
-#include <kickos/sys/bytes.h>   // mem_copy
-#include <kickos/io/mmio.h>     // r32
+#include <kickos/sys/bus.h>         // kos_bus_req/seg/rsp/cfg wire ABI
+#include <kickos/sys/service.h>     // kos_service_cfg (base/window/prio/cs as data)
+#include <kickos/sys/bytes.h>          // mem_copy
+#include <kickos/sys/spi_service.h>    // kickos::spi::serve_loop (shared choreography)
+#include <kickos/sys/driver_bringup.h> // kickos::driver::spawn_unprivileged
+#include <kickos/io/mmio.h>            // r32
 
 #include <dspi_class.h> // Rule 6 class-driver leaf: shared DSPI RX-FIFO fill-level read
 
@@ -251,112 +253,6 @@ namespace
     // The DSPI0 service endpoint cap in the ROOT/init thread's table (set by the
     // bring-up, read by the app to delegate SIGNAL to its clients). -1 = not up.
     int g_spi0_ep = -1;
-
-    // Build a service-level error reply (no rx) and complete the call. ALWAYS
-    // consumes the reply cap.
-    void reply_error(int reply_cap, int16_t status)
-    {
-        struct kos_bus_rsp rsp;
-        rsp.status = status;
-        rsp.len = 0;
-        kos_reply(reply_cap, &rsp, sizeof(rsp));
-    }
-
-    // Parse + run one request; ALWAYS completes the call (consumes reply_cap on every
-    // path, success or error -- a leaked reply cap parks the client forever).
-    void serve_one(DspiBus& bus, unsigned char const* msg, size_t n, int reply_cap)
-    {
-        if (n < sizeof(struct kos_bus_req))
-        {
-            reply_error(reply_cap, -KOS_EINVAL);
-            return;
-        }
-        struct kos_bus_req req;
-        mem_copy(&req, msg, sizeof(req)); // msg may be unaligned for the 32-bit fields
-
-        if (req.proto != KOS_BUS_SPI)
-        {
-            reply_error(reply_cap, -KOS_EINVAL);
-            return;
-        }
-        if (req.region_cap != -1)
-        {
-            reply_error(reply_cap, -KOS_ENOSYS); // region path is DEFERRED (inline only)
-            return;
-        }
-
-        if (req.op == KOS_BUS_OP_CONFIG)
-        {
-            size_t const need = sizeof(struct kos_bus_req) + sizeof(struct kos_bus_cfg);
-            if (req.nseg != 0 or n < need)
-            {
-                reply_error(reply_cap, -KOS_EINVAL);
-                return;
-            }
-            struct kos_bus_cfg cfg;
-            mem_copy(&cfg, msg + sizeof(struct kos_bus_req), sizeof(cfg));
-            uint32_t const achieved = bus.configure(cfg.hz, cfg.mode, cfg.word_bits, cfg.cs_policy);
-
-            unsigned char rbuf[sizeof(struct kos_bus_rsp) + sizeof(uint32_t)];
-            struct kos_bus_rsp* rsp = reinterpret_cast<struct kos_bus_rsp*>(rbuf);
-            rsp->status = 0;
-            rsp->len = static_cast<uint16_t>(sizeof(uint32_t));
-            mem_copy(rbuf + sizeof(struct kos_bus_rsp), &achieved, sizeof(achieved));
-            kos_reply(reply_cap, rbuf, sizeof(rbuf));
-            return;
-        }
-
-        if (req.op != KOS_BUS_OP_XFER)
-        {
-            reply_error(reply_cap, -KOS_EINVAL);
-            return;
-        }
-
-        if (req.nseg < 1u or req.nseg > KOS_BUS_SEG_MAX)
-        {
-            reply_error(reply_cap, -KOS_EINVAL);
-            return;
-        }
-        size_t const framing =
-            sizeof(struct kos_bus_req) + static_cast<size_t>(req.nseg) * sizeof(struct kos_bus_seg);
-        if (n < framing)
-        {
-            reply_error(reply_cap, -KOS_EINVAL);
-            return;
-        }
-
-        // Concatenated full-duplex bytes = the sum of every segment length; the CS
-        // spans all of them (one coherent transaction, no per-segment CS toggle).
-        size_t total = 0;
-        for (unsigned s = 0; s < req.nseg; s++)
-        {
-            struct kos_bus_seg seg;
-            mem_copy(&seg, msg + sizeof(struct kos_bus_req) + s * sizeof(struct kos_bus_seg),
-                     sizeof(seg));
-            total += seg.len;
-        }
-        if (framing + total > n)
-        {
-            reply_error(reply_cap, -KOS_EINVAL); // segment lengths exceed the message
-            return;
-        }
-        if (total + sizeof(struct kos_bus_rsp) > KOS_EP_MSG_MAX)
-        {
-            reply_error(reply_cap, -KOS_EINVAL); // reply would not fit the wire
-            return;
-        }
-
-        // Gather tx into the reply buffer past its header, run in place (rx
-        // overwrites tx), then complete the call from the same buffer.
-        unsigned char rbuf[KOS_EP_MSG_MAX];
-        struct kos_bus_rsp* rsp = reinterpret_cast<struct kos_bus_rsp*>(rbuf);
-        unsigned char* work = rbuf + sizeof(struct kos_bus_rsp);
-        mem_copy(work, msg + framing, total);
-        bus.transfer(work, total);
-        rsp->status = 0;
-        rsp->len = static_cast<uint16_t>(total);
-        kos_reply(reply_cap, rbuf, sizeof(struct kos_bus_rsp) + total);
-    }
 }
 
 extern "C"
@@ -378,22 +274,7 @@ extern "C"
 
         kos::print("[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS on PTC4)\n");
 
-        int const ep = KOS_SPAWN_DELEGATED_CAP0; // delegated {E | WAIT} recv cap
-        unsigned char msg[KOS_EP_MSG_MAX];
-        while (true)
-        {
-            struct kos_recv_info info = {0u, -1};
-            long const n = kos_recv(ep, msg, sizeof(msg), &info);
-            if (n < 0)
-            {
-                break; // EPIPE / dead endpoint: exit, let root respawn
-            }
-            if (info.reply_cap < 0)
-            {
-                continue; // plain send: not part of the bus call/reply protocol
-            }
-            serve_one(bus, msg, static_cast<size_t>(n), info.reply_cap);
-        }
+        kickos::spi::serve_loop(bus);
 
         kos_exit(0);
     }
@@ -469,19 +350,11 @@ extern "C"
         //    on coarse-AIPS but kept for spawn-signature portability with PMSA/PMP)
         //    and a WAIT-only recv cap on E (child index 1). No SIGNAL/TRANSFER on the
         //    child cap: the driver receives, it does not send or re-delegate.
-        kos_cap_grant const caps[1] = {
-            { /*source_cap=*/ep, /*rights_mask=*/KOS_CAP_WAIT },
-        };
-        int const drv = kos::thread::spawn(
-            k64dspi_service, reinterpret_cast<void*>(win_base), cfg->name,
-            driver_prio, KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
-            /*mem=*/nullptr, /*mem_size=*/0, /*stack=*/nullptr, /*stack_size=*/0,
-            /*mmio=*/reinterpret_cast<void*>(win_base), win_size,
-            caps, /*cap_count=*/1);
+        int const drv = kickos::driver::spawn_unprivileged(
+            k64dspi_service, win_base, win_size, cfg->name, driver_prio, ep,
+            "[k64dspi] ERROR: driver spawn failed\n");
         if (drv < 0)
         {
-            kos::print("[k64dspi] ERROR: driver spawn failed\n");
-            kos_handle_close(ep);
             return -1;
         }
 

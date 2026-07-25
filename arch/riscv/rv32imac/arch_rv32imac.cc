@@ -23,8 +23,15 @@
 //     here. RV32IMAC has no F/D extension -> soft-float, so the switch banks no FP.
 
 #include <kickos/arch/arch.h>
+#include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <stdint.h>
+
+// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
+// for the arch this backend implements, or a SESSION record mislabels the trace.
+// A wrong caps.cmake value breaks the build here instead of drifting silently.
+static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_RISCV,
+              "KICKOS_TRACE_ARCH does not match ArchId::ARCH_RISCV for rv32imac");
 
 // Fault reporting (see the .Lfault shim in switch.S): the reporter calls kpanic_enter
 // first, which masks IRQs, forces the synchronous polled writer, and flushes the ring

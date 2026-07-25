@@ -17,8 +17,15 @@
 
 #include "regs.h"
 #include <kickos/console_tx.h> // console_tx_isr: drained by the TXI ISR below
+#include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <stddef.h> // offsetof
+
+// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
+// for the arch this backend implements, or a SESSION record mislabels the trace.
+// A wrong caps.cmake value breaks the build here instead of drifting silently.
+static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_RX,
+              "KICKOS_TRACE_ARCH does not match ArchId::ARCH_RX for rxv3");
 
 // Fault reporting (see the .fvectors shims in startup.S): the reporter calls
 // kpanic_enter first, which masks IRQs, forces the synchronous polled writer, and

@@ -1329,7 +1329,11 @@ namespace
     // fixed .appdata window (e.g. C6 = 4K); the MPU caller-owned-stack path is covered by
     // the dynamic alloc'd stack above.
 #if !KICKOS_HAVE_MPU
-    KOS_STACK_DEFINE(g_cstk_static, 512);
+    // 2048, not KICKOS_MIN_STACK_SIZE (512): the worker runs the whole deepest kernel
+    // dispatch (syscall trap frame + thread-exit teardown) on THIS stack, which overruns
+    // 512 by ~112 B into whatever globals sit just below the buffer. Matches the dynamic
+    // caller stack (STK) below, which runs the same worker + exit path.
+    KOS_STACK_DEFINE(g_cstk_static, 2048);
 #endif
     void t_caller_stack()
     {
@@ -2623,8 +2627,8 @@ namespace
     {
         // Privileged MAIN: a bad/stale cap is rejected before the deinit/flip, so the
         // console stays kernel-owned and the TAP stream survives. (On a driver board the
-        // M4.3 default init makes a real publish, which would silence TAP; the sim selects
-        // KICKOS_CONSOLE_BRINGUP=kickos_console_none, so no live publish ever happens here.)
+        // default init makes a real publish, which would silence TAP; the sim selects
+        // KICKOS_SERVICE_LIST=kickos_services_none, so no live publish ever happens here.)
         TAP_CHECK(kos_console_publish(-1) == -KOS_EBADF);
         TAP_CHECK(kos_console_publish(0x7fffffff) == -KOS_EBADF);
         // Unprivileged child: the privileged-only gate rejects it.

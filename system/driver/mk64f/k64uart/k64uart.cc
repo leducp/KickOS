@@ -33,8 +33,9 @@
 
 #include <kickos/driver/k64uart.h>
 
-#include <kickos/sys/service.h> // kos_service_cfg (base/window/prio as data)
-#include <kickos/io/mmio.h>     // r8
+#include <kickos/sys/service.h>        // kos_service_cfg (base/window/prio as data)
+#include <kickos/sys/driver_bringup.h> // kickos::driver::spawn_unprivileged
+#include <kickos/io/mmio.h>            // r8
 
 #include <uart_class.h> // Rule 6 class-driver leaf: shared UART transmit-ready read
 
@@ -200,22 +201,14 @@ int k64uart_console_start(struct kos_service_cfg const* cfg)
     //    recv cap (lands at the child's table index 1). No SIGNAL/TRANSFER on the child
     //    cap: the driver receives, it does not send or re-delegate. driver_prio must be
     //    >= every client (D9: rendezvous has no PI).
-    kos_cap_grant const caps[1] = {
-        { /*source_cap=*/ep, /*rights_mask=*/KOS_CAP_WAIT },
-    };
-    int const drv = kos::thread::spawn(
-        k64uart_console_driver, reinterpret_cast<void*>(win_base), cfg->name,
-        driver_prio, KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
-        /*mem=*/nullptr, /*mem_size=*/0, /*stack=*/nullptr, /*stack_size=*/0,
-        /*mmio=*/reinterpret_cast<void*>(win_base), win_size,
-        caps, /*cap_count=*/1);
+    //    On failure the helper reports (RTT path) + closes ep: publish already
+    //    flipped USER_OWNED, so the console is dark and the caller MUST NOT spawn
+    //    console-dependent apps after this (S6).
+    int const drv = kickos::driver::spawn_unprivileged(
+        k64uart_console_driver, win_base, win_size, cfg->name, driver_prio, ep,
+        "[k64uart] ERROR: driver spawn failed\n");
     if (drv < 0)
     {
-        // Publish already flipped USER_OWNED; the console is dark until a driver exists.
-        // Report and fail. The caller MUST NOT spawn console-dependent apps after this
-        // (S6). RTT path only (kos::print), never stdio.
-        kos::print("[k64uart] ERROR: driver spawn failed\n");
-        kos_handle_close(ep);
         return -1;
     }
 

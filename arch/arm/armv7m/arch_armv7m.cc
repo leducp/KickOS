@@ -16,8 +16,15 @@
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 
 #include "regs.h"
+#include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <stddef.h> // offsetof
+
+// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
+// for the arch this backend implements, or a SESSION record mislabels the trace.
+// A wrong caps.cmake value breaks the build here instead of drifting silently.
+static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_ARMV7M,
+              "KICKOS_TRACE_ARCH does not match ArchId::ARCH_ARMV7M for armv7m");
 
 // switch.S hard-codes these arch_context field offsets; keep struct and asm in
 // sync (a silent reorder would corrupt the saved SP / privilege state).

@@ -14,6 +14,18 @@ kickos_add_application(selftest
   BOARD   ${KICKOS_BOARD})
 target_include_directories(selftest PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
 
+# Size-optimise selftest's OWN TUs. It carries ~150 TAP cases exercising the whole
+# syscall/IPC/mutex/endpoint surface; at the fleet Debug default (-g, no -O) its
+# .text is ~72K and overflows the 64K-flash parts (stm32f103 bluepill-c8, stm32f302).
+# -Os reclaims ~10K here with ZERO coverage loss, keeps every test, and touches only
+# code that exists solely in this diagnostic image -- the kernel/arch/lib archives
+# stay at the board build type, so the -st image's kernel is identical to the same
+# board's non-st build. -g is preserved (still debuggable). No effect on the sim
+# (host build), which has no flash budget.
+if(NOT (KICKOS_ARCH STREQUAL "sim"))
+  target_compile_options(selftest PRIVATE -Os)
+endif()
+
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # Full M0 verification: every scheduler/sync/time/MPU bullet as a TAP test.
   # The guard-probe test needs KICKOS_ENABLE_SELFTEST (the sim preset enables it);
@@ -44,25 +56,20 @@ endif()
 # enable it); rr_interleave sizes its RR quantum to the target's clock so it runs
 # even on the coarse QEMU semihosting clock.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
-  add_test(NAME qemu_selftest
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" "$<TARGET_FILE:selftest>")
-  set_tests_properties(qemu_selftest PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME qemu_selftest TARGET selftest BOARD qemu
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
 endif()
 # microbit (nrf51) runs the SAME suite on armv6m. Its small pool (MAX_SEMAPHORES=4 /
 # MAX_THREADS=2) is precisely why the suite is pool-honest -- every test reclaims its
 # semaphores, so peak concurrent stays within 4. Gating armv6m here keeps that platform
 # from regressing silently (a deferral would be a silent hole).
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
-  add_test(NAME microbit_selftest
-    COMMAND "${CMAKE_COMMAND}" -E env QEMU_MACHINE=microbit
-            "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" "$<TARGET_FILE:selftest>")
-  set_tests_properties(microbit_selftest PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
-  add_test(NAME qemu_riscv_selftest
-    COMMAND "${CMAKE_COMMAND}" -E env QEMU=qemu-system-riscv32 QEMU_MACHINE=virt "QEMU_EXTRA=-bios none"
-            "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" "$<TARGET_FILE:selftest>")
-  set_tests_properties(qemu_riscv_selftest PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
 endif()
 
 # The same acceptance criterion for a bare-metal package: install the MCU

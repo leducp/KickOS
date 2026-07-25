@@ -12,7 +12,8 @@
 //     empty; _write's kos_send(0) fails and falls back to the kernel console path.
 //     That line is the kernel-path proof (and exercises the per-thread _write reprobe:
 //     a stale process-wide probe would have poisoned the worker's later output).
-//   * The default init (KICKOS_CONSOLE_BRINGUP=kickos_console_xmcuart on this board)
+//   * The default init walks this board's service list (KICKOS_SERVICE_LIST=
+//     kickos_services_xmc4800relax), whose first KOS_SVC_CONSOLE entry
 //     runs xmcuart_console_start(): create endpoint E, kos_console_publish(E) (kernel
 //     UART goes dark, stdout routes to E, and the publisher's own cap 0 is seated),
 //     spawn the unprivileged driver granted the USIC0 CH0 window + {E | WAIT}, close

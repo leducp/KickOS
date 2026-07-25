@@ -18,6 +18,7 @@
 // LED (PC13, active-low) for a no-UART smoke test.
 
 #include <kickos/arch/arch.h>
+#include <kickos/config/limits.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
@@ -414,7 +415,7 @@ void arch_console_write_sync(char const* buf, size_t n)
         uint32_t spin = 0;
         while ((r32(USART1_SR) & SR_TXE) == 0)
         {
-            if (++spin > 1000000u)
+            if (++spin > KICKOS_POLL_SPIN_MAX)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }

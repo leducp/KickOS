@@ -20,19 +20,14 @@ endif()
 # QEMU armv7m gate: boot the image on a QEMU Cortex-M4 and assert the userspace
 # ping-pong runs -- end-to-end proof of the reset/scheduler/SVC/timer path.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
-  add_test(
-    NAME    qemu_hello
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh" "$<TARGET_FILE:hello>")
-  set_tests_properties(qemu_hello PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME qemu_hello TARGET hello BOARD qemu
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh")
 endif()
 
 # QEMU armv6m gate: same demo on a QEMU Cortex-M0 (BBC micro:bit / nRF51).
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
-  add_test(
-    NAME    microbit_hello
-    COMMAND "${CMAKE_COMMAND}" -E env QEMU_MACHINE=microbit
-            "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh" "$<TARGET_FILE:hello>")
-  set_tests_properties(microbit_hello PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME microbit_hello TARGET hello BOARD microbit
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh")
 endif()
 
 # QEMU RISC-V gate: the same demo on a QEMU `virt` (RV32IMAC, M-mode bare metal) --
@@ -42,10 +37,6 @@ endif()
 # ping/pong child threads, so a child's deref is a cross-domain read of the root thread's
 # private stack -- PMP/PMSA correctly faults it. Enforcement-safe demos are the gated ones.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
-  add_test(
-    NAME    qemu_riscv_hello
-    COMMAND "${CMAKE_COMMAND}" -E env
-            QEMU=qemu-system-riscv32 QEMU_MACHINE=virt "QEMU_EXTRA=-bios none"
-            "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh" "$<TARGET_FILE:hello>")
-  set_tests_properties(qemu_riscv_hello PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME qemu_riscv_hello TARGET hello BOARD qemu-riscv
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh")
 endif()

@@ -8,9 +8,8 @@
 //   [1] KOS_SVC_SPI     -> xmc_spi0_start        (USIC0 CH1 SSC bus service on an endpoint).
 // Per-instance config travels as DATA (kos_service_cfg), never as literals in a
 // driver TU. Selected by KICKOS_SERVICE_LIST=kickos_services_xmc4800relax (the
-// xmc4800-relax enforcement default); the board's console hook is kickos_console_none,
-// so the console comes up via this list. EXACTLY ONE kickos_board_services links per
-// image.
+// xmc4800-relax enforcement default); the console comes up via this list (its first
+// KOS_SVC_CONSOLE entry). EXACTLY ONE kickos_board_services links per image.
 //
 // This combined list lives with the SSC (SPI) driver (not the UART driver) because it
 // now spans both; the CMake target links kickos_xmcuart AND kickos_xmcssc so both

@@ -7,14 +7,14 @@
 // a thin passthrough to the app's kickos_app_main).
 //
 // Lifecycle. Two postures, chosen by whether the entry RETURNS:
-//   * DEFAULT / single-shot. The default init first brings the console up
-//     (kickos_console_bringup_run: on a board with a userspace console driver it runs
-//     the handover so the app's stdout reaches the wire through the driver; on a board
-//     with none it is a no-op and the kernel console stays), then runs the plain app's
-//     kickos_app_main: that main IS the program, and its return is the process exit.
-//     A nonzero bring-up result short-circuits: the entry returns it WITHOUT running
-//     the app, so the app never runs against a dark console. RETURNING from
-//     kickos_init_entry tears the system down (root_entry flushes the console, then
+//   * DEFAULT / single-shot. The default init first walks the board's service list
+//     (kickos_service_list_run: on a board with a userspace console driver the console
+//     is the list's first KOS_SVC_CONSOLE entry, so the app's stdout reaches the wire
+//     through the driver; on a board with an empty list the kernel console stays), then
+//     runs the plain app's kickos_app_main: that main IS the program, and its return is
+//     the process exit. A nonzero bring-up result short-circuits: the entry returns it
+//     WITHOUT running the app, so the app never runs against a dark console. RETURNING
+//     from kickos_init_entry tears the system down (root_entry flushes the console, then
 //     arch_shutdown(status)). Fine for a batch/demo/self-test app.
 //   * REAL service-spawning init. An init that brings up services (owns the
 //     console-endpoint chain, respawns drivers, performs future well-known publishes)
@@ -48,30 +48,21 @@ int kickos_init_entry(int argc, char** argv);
 
 // The default init body (runs the app's kickos_app_main). Exposed so a custom init
 // provider can delegate to it. This is JUST the app-main step: it does NOT bring the
-// console up (that is kickos_console_bringup_run below), so a custom init composes the
-// two in whatever order it needs.
+// service list up (that is kickos_service_list_run below), so a custom init composes
+// the two in whatever order it needs.
 int kickos_default_init_run(int argc, char** argv);
 
-// Run the selected board's console bring-up (see <kickos/sys/bringup.h>): on a board
-// with a userspace console driver, perform the handover so the app's stdout reaches
-// the wire through the driver; on a board with none, a no-op that keeps the kernel
-// console. Returns 0 on success (or no-driver), or the driver's negative failure
-// code. The default kickos_init_entry runs this BEFORE the app main and aborts the
-// app on a nonzero result. MUST NOT use libc stdio (bring-up self-deadlock rule).
-int kickos_console_bringup_run(void);
-
 // Run the selected board's service list (see <kickos/sys/service.h>): walk each
-// entry's start() in array order (the console is a KOS_SVC_CONSOLE entry). Returns 0
-// on success (or empty list), or the first failing entry's negative code. The default
-// kickos_init_entry runs this AFTER the pin map and BEFORE the console hook + app
-// main, aborting the app on a nonzero result. During the M4.4 migration this runs
-// ALONGSIDE kickos_console_bringup_run: exactly one does work per board (a migrated
-// board fills its list and sets its console hook to none; an un-migrated board has an
-// empty list and keeps its hook). MUST NOT use libc stdio (bring-up self-deadlock rule).
+// entry's start() in array order. On a board with a userspace console driver the
+// console is the first KOS_SVC_CONSOLE entry, so this is the sole userspace-console
+// bring-up path. Returns 0 on success (or empty list), or the first failing entry's
+// negative code. The default kickos_init_entry runs this AFTER the pin map and BEFORE
+// the app main, aborting the app on a nonzero result. MUST NOT use libc stdio (bring-up
+// self-deadlock rule).
 int kickos_service_list_run(void);
 
-// Apply the selected board's pin map (see <kickos/sys/pinmap.h>) BEFORE the console
-// bring-up: the DAG middle of the clock->pinmux->console->app chain. A board with an
+// Apply the selected board's pin map (see <kickos/sys/pinmap.h>) BEFORE the service
+// list: the DAG middle of the clock->pinmux->service->app chain. A board with an
 // empty map (count = 0) is a no-op. Returns 0 on success, or the first failing
 // entry's negative rc. The default kickos_init_entry runs this FIRST and aborts the
 // app on a nonzero result. MUST NOT use libc stdio (same bring-up rule as above).

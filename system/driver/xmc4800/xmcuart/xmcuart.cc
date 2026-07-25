@@ -32,8 +32,9 @@
 
 #include <kickos/driver/xmcuart.h>
 
-#include <kickos/sys/service.h> // kos_service_cfg (base/window/prio as data)
-#include <kickos/io/mmio.h>     // r32
+#include <kickos/sys/service.h>        // kos_service_cfg (base/window/prio as data)
+#include <kickos/sys/driver_bringup.h> // kickos::driver::spawn_unprivileged
+#include <kickos/io/mmio.h>            // r32
 
 #include <usic_class.h> // Rule 6 class-driver leaf: shared USIC transmit-ready read
 
@@ -174,22 +175,14 @@ int xmcuart_console_start(struct kos_service_cfg const* cfg)
     //    narrowed {E | WAIT} recv cap (lands at the child's table index 1). No
     //    SIGNAL/TRANSFER on the child cap: the driver receives, it does not send or
     //    re-delegate. driver_prio must be >= every client (D9: rendezvous has no PI).
-    kos_cap_grant const caps[1] = {
-        { /*source_cap=*/ep, /*rights_mask=*/KOS_CAP_WAIT },
-    };
-    int const drv = kos::thread::spawn(
-        xmcuart_console_driver, reinterpret_cast<void*>(win_base), cfg->name,
-        driver_prio, KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
-        /*mem=*/nullptr, /*mem_size=*/0, /*stack=*/nullptr, /*stack_size=*/0,
-        /*mmio=*/reinterpret_cast<void*>(win_base), win_size,
-        caps, /*cap_count=*/1);
+    //    On failure the helper reports (RTT path) + closes ep: publish already
+    //    flipped USER_OWNED, so the console is dark and the caller MUST NOT spawn
+    //    console-dependent apps after this (S6).
+    int const drv = kickos::driver::spawn_unprivileged(
+        xmcuart_console_driver, win_base, win_size, cfg->name, driver_prio, ep,
+        "[xmcuart] ERROR: driver spawn failed\n");
     if (drv < 0)
     {
-        // Publish already flipped USER_OWNED; the console is dark until a driver
-        // exists. Report and fail -- the caller MUST NOT spawn console-dependent
-        // apps after this (S6). RTT path only (kos::print), never stdio.
-        kos::print("[xmcuart] ERROR: driver spawn failed\n");
-        kos_handle_close(ep);
         return -1;
     }
 

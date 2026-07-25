@@ -263,3 +263,170 @@ function(kickos_add_diagnostic_app name)
   endif()
   kickos_add_application(${name} ${ARGN})
 endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_add_driver(<name> [SOURCES <src...>] [CLASS <leaf>] [REGDIR <dir>])
+#   The one shape of an unprivileged chip/device driver library
+#   (kickos_k64dspi, kickos_xmcssc, ...): a freestanding STATIC lib that links
+#   kickos_user (user/include + the component group ordered after it), sees
+#   system/include (sys.h/abi.h pull errno.h from kickos_system, which
+#   kickos_user carries only PRIVATE), optionally sees a chip register dir
+#   (REGDIR, e.g. arch/arm/chip/xmc4800 for regs/usic.h -- definitions only, no
+#   code/kernel headers), optionally links a chip class leaf (CLASS, decision
+#   R-A: shared register logic like a FIFO-level read comes from the freestanding
+#   kickos_class_<chip> leaf, not a local copy), and is EXPORTED so an out-of-tree
+#   consumer (e.g. a KickCAT LAN9252 slave) links it on top of the OS. Its
+#   .data/.bss land in .appdata (the lib is outside the closed kernel set, so the
+#   chip .ld catch-all captures it -- user-reachable). The target is
+#   kickos_<name>; SOURCES defaults to <name>.cc.
+function(kickos_add_driver name)
+  cmake_parse_arguments(DRV "" "CLASS;REGDIR" "SOURCES" ${ARGN})
+  if(NOT DRV_SOURCES)
+    set(DRV_SOURCES "${name}.cc")
+  endif()
+  add_library(kickos_${name} STATIC ${DRV_SOURCES})
+  kickos_apply_freestanding(kickos_${name})
+  target_link_libraries(kickos_${name} PUBLIC kickos_user)
+  target_include_directories(kickos_${name} PRIVATE
+    "${PROJECT_SOURCE_DIR}/system/include")
+  if(DRV_REGDIR)
+    target_include_directories(kickos_${name} PRIVATE
+      "${PROJECT_SOURCE_DIR}/${DRV_REGDIR}")
+  endif()
+  if(DRV_CLASS)
+    target_link_libraries(kickos_${name} PRIVATE ${DRV_CLASS})
+  endif()
+  install(TARGETS kickos_${name} EXPORT KickOSTargets
+          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_add_qemu_test(NAME <n> TARGET <app> BOARD <b> SCRIPT <sh>
+#                      [MACHINE <m>] [TIMEOUT <s>] [ARGS <arg...>])
+#   Register a QEMU boot gate: run SCRIPT against the app's ELF and treat exit 77
+#   as SKIP (a missing qemu-system is a skip, not a failure). The QEMU env prefix
+#   is keyed on the target board so the copy-pasted `-E env QEMU=... QEMU_MACHINE=
+#   ... QEMU_EXTRA=-bios none` string lives in exactly one place (a typo there
+#   silently mis-targets QEMU):
+#     qemu       -> no env (the armv7m mps2-an386 default lives in the scripts),
+#                   unless MACHINE is given (e.g. mps2-an386 for the generic
+#                   fault-dump script) -> QEMU_MACHINE=<MACHINE>.
+#     microbit   -> QEMU_MACHINE=microbit (armv6m Cortex-M0).
+#     qemu-riscv -> QEMU=qemu-system-riscv32 QEMU_MACHINE=virt QEMU_EXTRA=-bios none
+#                   (RV32IMAC bare-metal in M-mode, no OpenSBI).
+#   ARGS are extra script arguments after the ELF (e.g. the expected fault-dump
+#   banner, or a decoder path). TIMEOUT defaults to 60s.
+#   Keep the per-test `if(KICKOS_BUILD_TESTS AND ...)` guard AT THE CALL SITE: the
+#   HAVE_MPU / arch conditions vary per test, so they do NOT belong in the macro.
+#   NOT for the sim PASS/FAIL_REGULAR_EXPRESSION tests (a different shape).
+function(kickos_add_qemu_test)
+  cmake_parse_arguments(QT "" "NAME;TARGET;BOARD;SCRIPT;MACHINE;TIMEOUT" "ARGS" ${ARGN})
+  if(NOT QT_NAME OR NOT QT_TARGET OR NOT QT_BOARD OR NOT QT_SCRIPT)
+    message(FATAL_ERROR "kickos_add_qemu_test: NAME, TARGET, BOARD and SCRIPT are required")
+  endif()
+  set(_env "")
+  if(QT_BOARD STREQUAL "qemu-riscv")
+    set(_env QEMU=qemu-system-riscv32 QEMU_MACHINE=virt "QEMU_EXTRA=-bios none")
+  elseif(QT_BOARD STREQUAL "microbit")
+    set(_env QEMU_MACHINE=microbit)
+  elseif(QT_BOARD STREQUAL "qemu")
+    if(QT_MACHINE)
+      set(_env QEMU_MACHINE=${QT_MACHINE})
+    endif()
+  else()
+    message(FATAL_ERROR "kickos_add_qemu_test(${QT_NAME}): unknown BOARD '${QT_BOARD}'")
+  endif()
+  if(_env)
+    add_test(NAME "${QT_NAME}"
+      COMMAND "${CMAKE_COMMAND}" -E env ${_env}
+              "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
+  else()
+    add_test(NAME "${QT_NAME}"
+      COMMAND "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
+  endif()
+  if(NOT QT_TIMEOUT)
+    set(QT_TIMEOUT 60)
+  endif()
+  set_tests_properties("${QT_NAME}" PROPERTIES TIMEOUT ${QT_TIMEOUT} SKIP_RETURN_CODE 77)
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_add_board_provider(<name> SOURCE <cc> [LINK <libs...>])
+#   A board-descriptor provider library (pinmap or service-list): a freestanding
+#   STATIC lib defining one board-descriptor symbol (kickos_board_pinmap or
+#   kickos_board_services), seeing only system/include, exported to KickOSTargets.
+#   Folding the install(EXPORT) into the per-provider call removes the separate
+#   hand-maintained install(TARGETS ...) list (a drift hazard: add a provider,
+#   forget the install). LINK carries a service list's board driver targets (they
+#   back-reference kickos_user, so they join the rescan link group); a pure pinmap
+#   provider passes none. The target is kickos_<name>.
+function(kickos_add_board_provider name)
+  cmake_parse_arguments(BP "" "SOURCE" "LINK" ${ARGN})
+  if(NOT BP_SOURCE)
+    message(FATAL_ERROR "kickos_add_board_provider(${name}): SOURCE required")
+  endif()
+  add_library(kickos_${name} STATIC ${BP_SOURCE})
+  kickos_apply_freestanding(kickos_${name})
+  target_include_directories(kickos_${name} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(BP_LINK)
+    target_link_libraries(kickos_${name} PUBLIC ${BP_LINK})
+  endif()
+  install(TARGETS kickos_${name} EXPORT KickOSTargets
+          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_board_names(<out>)
+#   The fleet's board names, from the SOLE source of truth: boards/*/board.cmake.
+#   Used for the KICKOS_BOARD cache-var help so it can never go stale (it used to
+#   hardcode 6 of the 16+ boards). Sorted for a stable string.
+function(kickos_board_names out)
+  file(GLOB _descs "${KICKOS_BOARDS_DIR}/*/board.cmake")
+  set(_names "")
+  foreach(_d ${_descs})
+    get_filename_component(_dir "${_d}" DIRECTORY)
+    get_filename_component(_b "${_dir}" NAME)
+    list(APPEND _names "${_b}")
+  endforeach()
+  list(SORT _names)
+  set(${out} "${_names}" PARENT_SCOPE)
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_enforcing_mpu_boards(<out>)
+#   The boards whose chip enforces memory protection, derived at configure time
+#   from the SOLE source of truth -- the arch/*/chip/*/mpu.cmake opt-in files
+#   (KICKOS_CHIP_ENFORCES_MPU) -- reverse-mapped to board names via the board
+#   descriptors, plus the sim (which enforces at the arch level via host mprotect
+#   and ships no chip mpu.cmake). Feeds the "enforcement-capable boards" hint in
+#   the KICKOS_HAVE_MPU rejection so that list can never drift from reality (it
+#   used to hardcode a board list that already omitted a stm32f411 board). Reads
+#   each descriptor in this function's scope so the KICKOS_CHIP/ARCH it sets never
+#   leak into the caller's build.
+function(kickos_enforcing_mpu_boards out)
+  file(GLOB _mpus "${CMAKE_CURRENT_SOURCE_DIR}/arch/*/chip/*/mpu.cmake")
+  set(_chips "")
+  foreach(_m ${_mpus})
+    get_filename_component(_chipdir "${_m}" DIRECTORY)
+    get_filename_component(_chip "${_chipdir}" NAME)
+    list(APPEND _chips "${_chip}")
+  endforeach()
+  file(GLOB _descs "${KICKOS_BOARDS_DIR}/*/board.cmake")
+  set(_boards "")
+  foreach(_d ${_descs})
+    get_filename_component(_dir "${_d}" DIRECTORY)
+    get_filename_component(_b "${_dir}" NAME)
+    set(KICKOS_ARCH "")
+    set(KICKOS_CHIP "")
+    include("${_d}")
+    if(KICKOS_ARCH STREQUAL "sim")
+      list(APPEND _boards "${_b}")
+    elseif(KICKOS_CHIP AND KICKOS_CHIP IN_LIST _chips)
+      list(APPEND _boards "${_b}")
+    endif()
+  endforeach()
+  list(SORT _boards)
+  list(JOIN _boards ", " _joined)
+  set(${out} "${_joined}" PARENT_SCOPE)
+endfunction()

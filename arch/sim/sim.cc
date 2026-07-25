@@ -21,10 +21,16 @@
 #include <stdlib.h>
 #include <fcntl.h>
 
+#include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #include <kickos/rtt.h>
-#include <kickos/trace/record.h>
 #endif
+
+// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
+// for the arch this backend implements, or a SESSION record mislabels the trace.
+// A wrong caps.cmake value breaks the build here instead of drifting silently.
+static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_SIM,
+              "KICKOS_TRACE_ARCH does not match ArchId::ARCH_SIM for sim");
 
 // Kernel entry points used by the sim's fault reporters (sim.cc does not pull in
 // kernel.h; kfault_terminate is defined below, in the extern "C" block).

@@ -22,24 +22,18 @@ endif()
 
 # qemu (armv7m): udf -> HardFault -> kickos_armv7m_fault_report -> exit 132.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
-  add_test(NAME qemu_fault_dump
-    COMMAND "${CMAKE_COMMAND}" -E env QEMU_MACHINE=mps2-an386
-            "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh" "$<TARGET_FILE:fault>" "HARD FAULT")
-  set_tests_properties(qemu_fault_dump PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME qemu_fault_dump TARGET fault BOARD qemu MACHINE mps2-an386
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh" ARGS "HARD FAULT")
 endif()
 
 # microbit (armv6m): the same, exercising the ldr+bx reporter branch end-to-end.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
-  add_test(NAME microbit_fault_dump
-    COMMAND "${CMAKE_COMMAND}" -E env QEMU_MACHINE=microbit
-            "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh" "$<TARGET_FILE:fault>" "HARD FAULT")
-  set_tests_properties(microbit_fault_dump PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME microbit_fault_dump TARGET fault BOARD microbit
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh" ARGS "HARD FAULT")
 endif()
 
 # qemu-riscv (rv32imac): illegal instruction -> kickos_rv_fault_report -> exit 132.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
-  add_test(NAME qemu_riscv_fault_dump
-    COMMAND "${CMAKE_COMMAND}" -E env QEMU=qemu-system-riscv32 QEMU_MACHINE=virt "QEMU_EXTRA=-bios none"
-            "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh" "$<TARGET_FILE:fault>" "RISC-V TRAP")
-  set_tests_properties(qemu_riscv_fault_dump PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME qemu_riscv_fault_dump TARGET fault BOARD qemu-riscv
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh" ARGS "RISC-V TRAP")
 endif()

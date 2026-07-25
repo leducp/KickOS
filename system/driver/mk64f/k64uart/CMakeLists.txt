@@ -3,25 +3,6 @@
 
 # kickos_k64uart: the K64F/UART0 userspace polled UART TX console driver (an
 # unprivileged driver thread + a privileged one-shot handover bring-up; see
-# <kickos/driver/k64uart.h>). Exported so an out-of-tree consumer links it on top
-# of the OS. It carries no shared state, so it has no .data/.bss to home in
-# .appdata; the driver's recv buffer lives on its granted stack.
-add_library(kickos_k64uart STATIC k64uart.cc)
-kickos_apply_freestanding(kickos_k64uart)
-# Unprivileged userspace code: kickos_user carries user/include (kos.h/sys.h) plus
-# the transitive lib/arch includes, and orders the component group after this lib
-# at the final link.
-target_link_libraries(kickos_k64uart PUBLIC kickos_user)
-# sys.h/abi.h pull errno.h from kickos_system (kickos_user carries it only PRIVATE).
-target_include_directories(kickos_k64uart PRIVATE
-  "${PROJECT_SOURCE_DIR}/system/include")
-# Rule 6 (M4, decision R-A): the per-byte transmit-ready poll is the shared UART
-# register logic, so it comes from the freestanding kickos_class_mk64f leaf (the
-# same object the kernel console could link in Phase A), not a local copy.
-target_link_libraries(kickos_k64uart PRIVATE kickos_class_mk64f)
-install(TARGETS kickos_k64uart EXPORT KickOSTargets
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
-
-# The frdmk64f service-list provider (kickos_services_frdmk64f) now spans BOTH the
-# console and the SPI service, so it lives with the DSPI driver
-# (user/driver/k64dspi/service_list.cc) and links kickos_k64uart from there.
+# <kickos/driver/k64uart.h>). The per-byte transmit-ready poll is shared UART
+# register logic, so it links the kickos_class_mk64f leaf, not a local copy.
+kickos_add_driver(k64uart CLASS kickos_class_mk64f)

@@ -12,6 +12,7 @@
  */
 
 #include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
+#include "core_vectors.inc"        /* shared core-exception vector block */
 
     .syntax unified
     .thumb
@@ -21,22 +22,7 @@
     .align 2
     .global g_isr_vector
 g_isr_vector:
-    .word _estack                    /* 0: initial MSP */
-    .word Reset_Handler              /* 1: reset */
-    .word NMI_Handler                /* 2 */
-    .word HardFault_Handler          /* 3 */
-    .word 0                          /* 4 */
-    .word 0                          /* 5 */
-    .word 0                          /* 6 */
-    .word 0                          /* 7 */
-    .word 0                          /* 8 */
-    .word 0                          /* 9 */
-    .word 0                          /* 10 */
-    .word SVC_Handler                /* 11: SVCall */
-    .word 0                          /* 12 */
-    .word 0                          /* 13 */
-    .word PendSV_Handler             /* 14: PendSV */
-    .word SysTick_Handler            /* 15: SysTick */
+    KICKOS_CORE_VECTORS_V6M
 
     /* External interrupts 0..31 -> the generic IRQ-as-event entry. */
     .rept KICKOS_MAX_IRQ

@@ -18,9 +18,6 @@ kickos_add_application(initdemo
 # The verdict rides the exit status (console is dark post-publish), so the harness
 # reads QEMU's process exit code rather than grepping stdout.
 if(KICKOS_BUILD_TESTS)
-  add_test(
-    NAME    qemu_initdemo
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_qemu_initdemo.sh"
-            "$<TARGET_FILE:initdemo>")
-  set_tests_properties(qemu_initdemo PROPERTIES TIMEOUT 40 SKIP_RETURN_CODE 77)
+  kickos_add_qemu_test(NAME qemu_initdemo TARGET initdemo BOARD qemu
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_initdemo.sh" TIMEOUT 40)
 endif()

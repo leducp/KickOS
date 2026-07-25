@@ -16,6 +16,7 @@
 // RANGE0=2), not a crystal; PRDIV/VDIV encodings; and the FRDIV /1536 mapping.
 
 #include <kickos/arch/arch.h>
+#include <kickos/config/limits.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 
@@ -477,7 +478,7 @@ void arch_console_flush_sync(void)
     uint32_t spin = 0;
     while ((r8(UART0_S1) & reg::uart::S1_TC) == 0)
     {
-        if (++spin > 1000000u)
+        if (++spin > KICKOS_POLL_SPIN_MAX)
         {
             return; // a wedged UART must not hang the retune (matches the sync writer)
         }
@@ -690,7 +691,7 @@ void arch_console_write_sync(char const* buf, size_t n)
         uint32_t spin = 0;
         while ((r8(UART0_S1) & reg::uart::S1_TDRE) == 0)
         {
-            if (++spin > 1000000u)
+            if (++spin > KICKOS_POLL_SPIN_MAX)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }

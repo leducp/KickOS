@@ -18,16 +18,15 @@ target_include_directories(kickos_system INTERFACE
 # service-list providers below, which link this build's driver targets.
 add_subdirectory(driver)
 
-# The default init provider. Three TUs: the entry (kickos_init_entry), the app-main
-# run body (kickos_default_init_run), and the console bring-up step
-# (kickos_console_bringup_run, which references the CMake-selected kickos_board_console
-# resolved across the rescan link group). A delegating override references only the
-# run body, so keeping the entry in its own TU stops it dragging in a second definition
-# of kickos_init_entry.
+# The default init provider. Four TUs: the entry (kickos_init_entry), the app-main
+# run body (kickos_default_init_run), the service-list walk (kickos_service_list_run,
+# which references the CMake-selected kickos_board_services resolved across the rescan
+# link group), and the pin-mux step. A delegating override references only the run body,
+# so keeping the entry in its own TU stops it dragging in a second definition of
+# kickos_init_entry.
 add_library(kickos_default_init STATIC
   init/default_init_entry.cc
   init/default_init_run.cc
-  init/console_bringup.cc
   init/service_list_run.cc
   init/pinmux_run.cc)
 kickos_apply_freestanding(kickos_default_init)
@@ -38,82 +37,42 @@ target_include_directories(kickos_default_init PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${PROJECT_SOURCE_DIR}/user/include")
 
-# The universal-default console bring-up provider: defines kickos_board_console with
-# start = NULL, so the default init keeps the kernel console. Selected by
-# KICKOS_CONSOLE_BRINGUP on every board that ships no userspace console driver. Its
-# own TU so a board that DOES select a driver provider never also drags this in (one
-# definition of kickos_board_console per image).
-add_library(kickos_console_none STATIC init/console_none.cc)
-kickos_apply_freestanding(kickos_console_none)
-target_include_directories(kickos_console_none PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include")
-
 # The universal-default service-list provider: defines kickos_board_services with
 # count = 0, so the default init brings no services up. Selected by KICKOS_SERVICE_LIST
 # on every board that ships no service list. Its own TU so a board that DOES select a
 # list never also drags this in (one definition of kickos_board_services per image).
-add_library(kickos_services_none STATIC init/services_none.cc)
-kickos_apply_freestanding(kickos_services_none)
-target_include_directories(kickos_services_none PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+# All the board providers (this + the pinmaps + the per-board service lists below) go
+# through kickos_add_board_provider, which self-installs to KickOSTargets -- so there
+# is no separate hand-maintained install(TARGETS ...) list to drift out of sync.
+kickos_add_board_provider(services_none SOURCE init/services_none.cc)
 
 # Board pin-map providers: each DEFINES kickos_board_pinmap (see <kickos/sys/pinmap.h>),
 # selected by KICKOS_BOARD_PINMAP. Pure data TUs (no further deps); one definition of
-# kickos_board_pinmap per image, so each is its own TU like kickos_console_none. pinmap.h
+# kickos_board_pinmap per image, so each is its own TU like kickos_services_none. pinmap.h
 # needs only stdint, so system/include suffices.
-add_library(kickos_pinmap_none STATIC init/pinmap_none.cc)
-kickos_apply_freestanding(kickos_pinmap_none)
-target_include_directories(kickos_pinmap_none PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include")
-
-add_library(kickos_pinmap_xmc4800relax STATIC init/pinmap_xmc4800relax.cc)
-kickos_apply_freestanding(kickos_pinmap_xmc4800relax)
-target_include_directories(kickos_pinmap_xmc4800relax PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include")
-
-add_library(kickos_pinmap_frdmk64f STATIC init/pinmap_frdmk64f.cc)
-kickos_apply_freestanding(kickos_pinmap_frdmk64f)
-target_include_directories(kickos_pinmap_frdmk64f PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include")
-
-add_library(kickos_pinmap_picopi STATIC init/pinmap_picopi.cc)
-kickos_apply_freestanding(kickos_pinmap_picopi)
-target_include_directories(kickos_pinmap_picopi PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include")
-
-add_library(kickos_pinmap_f302nucleo STATIC init/pinmap_f302nucleo.cc)
-kickos_apply_freestanding(kickos_pinmap_f302nucleo)
-target_include_directories(kickos_pinmap_f302nucleo PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include")
+kickos_add_board_provider(pinmap_none SOURCE init/pinmap_none.cc)
+kickos_add_board_provider(pinmap_xmc4800relax SOURCE init/pinmap_xmc4800relax.cc)
+kickos_add_board_provider(pinmap_frdmk64f SOURCE init/pinmap_frdmk64f.cc)
+kickos_add_board_provider(pinmap_picopi SOURCE init/pinmap_picopi.cc)
+kickos_add_board_provider(pinmap_f302nucleo SOURCE init/pinmap_f302nucleo.cc)
 
 # Board service-list providers: each DEFINES kickos_board_services (see
 # <kickos/sys/service.h>), selected by KICKOS_SERVICE_LIST. Like the pinmap providers
 # above they are board descriptors, so they live in system/init; unlike them they link
-# the board's driver targets, so each is gated to the chip whose drivers exist. Each
-# links BOTH the console and the SPI driver so the driver + its class leaf come along.
-# service.h lives in kickos_system (system/include); the driver libs it links carry
-# user/include (kos.h/sys.h + the driver headers) transitively.
+# the board's driver targets (LINK), so each is gated to the chip whose drivers exist.
+# Each links BOTH the console and the SPI driver so the driver + its class leaf come
+# along. service.h lives in kickos_system (system/include); the driver libs it links
+# carry user/include (kos.h/sys.h + the driver headers) transitively.
 if(KICKOS_CHIP STREQUAL "mk64f")
-  add_library(kickos_services_frdmk64f STATIC init/service_list_frdmk64f.cc)
-  kickos_apply_freestanding(kickos_services_frdmk64f)
-  target_link_libraries(kickos_services_frdmk64f PUBLIC kickos_k64dspi kickos_k64uart)
-  target_include_directories(kickos_services_frdmk64f PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  install(TARGETS kickos_services_frdmk64f EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  kickos_add_board_provider(services_frdmk64f SOURCE init/service_list_frdmk64f.cc
+    LINK kickos_k64dspi kickos_k64uart)
 elseif(KICKOS_CHIP STREQUAL "xmc4800")
-  add_library(kickos_services_xmc4800relax STATIC init/service_list_xmc4800relax.cc)
-  kickos_apply_freestanding(kickos_services_xmc4800relax)
-  target_link_libraries(kickos_services_xmc4800relax PUBLIC kickos_xmcuart kickos_xmcssc)
-  target_include_directories(kickos_services_xmc4800relax PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/include")
-  install(TARGETS kickos_services_xmc4800relax EXPORT KickOSTargets
-          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+  kickos_add_board_provider(services_xmc4800relax SOURCE init/service_list_xmc4800relax.cc
+    LINK kickos_xmcuart kickos_xmcssc)
 endif()
 
-install(TARGETS kickos_system kickos_default_init kickos_console_none
-        kickos_services_none
-        kickos_pinmap_none kickos_pinmap_xmc4800relax kickos_pinmap_frdmk64f
-        kickos_pinmap_picopi kickos_pinmap_f302nucleo
+# The header home + the init framework lib are not board providers, so they keep an
+# explicit install here (kickos_system is INTERFACE: no archive, exported for headers).
+install(TARGETS kickos_system kickos_default_init
         EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
