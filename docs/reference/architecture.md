@@ -579,6 +579,15 @@ feeds the slave app.
   linker script / `crt0` / entry live in the exported ARM toolchain (mirroring NuttX), so the
   same two lines yield a flashable image; switching sim<->MCU is a one-word `BOARD`/toolchain
   change. First-class acceptance criterion.
+- **Declaring a driver / QEMU test / board provider.** Three macros in `cmake/kickos.cmake` give
+  each its single shape: `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR])` -- a freestanding,
+  exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side; `kickos_add_qemu_test(NAME
+  TARGET BOARD SCRIPT ...)` -- a QEMU boot gate (exit 77 = SKIP) that keeps the per-board QEMU env
+  prefix in exactly one place; and `kickos_add_board_provider(<name> SOURCE [LINK])` -- a pinmap or
+  service-list descriptor lib that folds its `install(EXPORT)` in so adding a provider cannot drift
+  from a hand-maintained install list. The `KICKOS_BOARD` cache-var help and the MPU-enforcement
+  board list are **derived from globs** over `boards/*/board.cmake`, so neither goes stale against
+  the fleet.
 - **CTest** runs the sim ELF natively in CI.
 
 ---

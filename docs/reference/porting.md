@@ -100,6 +100,27 @@ Build-only chips are verified by construction (register review + image
 inspection); flash to a board to confirm. `apps/blink` is a no-UART LED smoke
 test available on every board with a known LED.
 
+### Pin-function config (`arch_pinmux_set`)
+
+One-shot init-time pin muxing is an arch/chip-seam entry
+(`arch/include/kickos/arch/arch.h`): `int arch_pinmux_set(uint32_t port, uint32_t
+pin, uint32_t func)`, reached from userspace as syscall `KOS_SYS_PINMUX_SET` (33),
+privileged-only. `func` is a **chip-opaque** function code (the PORT/PCR/IOCR
+encoding), so the ABI `{port, pin, func}` stays vendor-neutral while each backend
+owns its own encoding. Returns 0, `-KOS_EINVAL` (out of range), or `-KOS_EBUSY` (a
+kernel-owned pin the backend refuses). The **WEAK default returns `-KOS_ENOSYS`**, so
+a non-empty board pin-map fails LOUD on a chip with no backend rather than silently
+mis-muxing.
+
+Backends exist for `mk64f`, `xmc4800`, `rp2040`, `rp2350`, `esp32c6`, `stm32f411`,
+`stm32f103`, `stm32f302`, `sam3x8e`, `imxrt1062`, `esp32`. `nrf51`, `mps2`, and
+`virt` keep the weak `-KOS_ENOSYS` (no central mux block -- per-peripheral PSEL,
+emulated, or virtual). Per-backend caveats: `stm32f103` covers default-mapped
+peripherals only (AFIO_MAPR remap out of scope); `imxrt1062` keys `port`=GPIO-bank /
+`pin`=bit against a PARTIAL pad table (a hole returns `-KOS_EINVAL`). The board
+supplies the routing as a `kos_board_pinmap` table the init service walks before the
+service list; the init DAG is pinmux -> service list -> app.
+
 ---
 
 ## The ARMv7-M syscall spike (the M1 de-risk)

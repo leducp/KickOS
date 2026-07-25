@@ -3,7 +3,7 @@
 
 cmake_minimum_required(VERSION 3.24)
 # Version scheme: 0.<milestone>.<submilestone> (drives KICKOS_VERSION -> the boot banner).
-project(KickOS VERSION 0.4.4 LANGUAGES C CXX ASM)
+project(KickOS VERSION 0.4.5 LANGUAGES C CXX ASM)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
@@ -241,6 +241,38 @@ if(KICKOS_HAVE_MPU AND NOT KICKOS_CHIP_ENFORCES_MPU)
 endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
+
+# --- Per-arch caller-provided-stack floor (KICKOS_MIN_STACK_SIZE) -----------
+# A syscall runs on the CALLING thread's stack, and the deepest such dispatch is the
+# thread-exit teardown (syscall_dispatch -> exit_current -> reschedule -> switch_to ->
+# the timer rearm). A caller-provided stack below that depth passes the spawn check
+# (syscall_thread.cc) then silently overflows on exit, so the floor MUST cover the
+# arch's deepest dispatch. Sized here per arch = the MEASURED deepest dispatch (static
+# -fstack-usage of the exit chain, cross-checked against the switch.S context save)
+# rounded up to a 128 B multiple with margin; forwarded as a -D. config/system.h keeps
+# a conservative MAX-across-arches #ifndef default, so a build that bypasses this ladder
+# is safe-but-wasteful, never silently-too-low. A board / command-line -D wins (guarded
+# on NOT DEFINED), so a board may still tighten or widen it. Like KICKOS_HAVE_MPU above,
+# this is an arch property, not a board-provisioning knob.
+if(NOT DEFINED KICKOS_MIN_STACK_SIZE)
+  if(KICKOS_ARCH STREQUAL "armv6m")
+    set(KICKOS_MIN_STACK_SIZE 512)   # measured ~392 B (no FPU)
+  elseif(KICKOS_ARCH STREQUAL "armv7m")
+    set(KICKOS_MIN_STACK_SIZE 640)   # measured ~424 B (+ headroom for a live FP frame)
+  elseif(KICKOS_ARCH STREQUAL "rxv3")
+    set(KICKOS_MIN_STACK_SIZE 640)   # measured ~428 B (+ headroom for a DPFPU frame)
+  elseif(KICKOS_ARCH STREQUAL "rv32imac")
+    set(KICKOS_MIN_STACK_SIZE 896)   # measured ~624 B (runtime watermark)
+  elseif(KICKOS_ARCH STREQUAL "lx6")
+    set(KICKOS_MIN_STACK_SIZE 896)   # measured ~624 B (windowed-ABI spill)
+  elseif(KICKOS_ARCH STREQUAL "sim")
+    set(KICKOS_MIN_STACK_SIZE 1024)  # measured ~896 B host; unconstrained (host stack)
+  endif()
+endif()
+if(DEFINED KICKOS_MIN_STACK_SIZE)
+  add_compile_definitions(KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE})
+endif()
+message(STATUS "KickOS: caller-stack floor KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_STACK_SIZE} (arch=${KICKOS_ARCH})")
 
 # Service-list provider selection (the default-init service bring-up walk). The
 # default init walks the board's service list BEFORE the app main, so a plain app gets

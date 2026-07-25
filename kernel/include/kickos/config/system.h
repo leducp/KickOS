@@ -67,11 +67,18 @@
 #ifndef KICKOS_USER_STACK_SIZE
 #define KICKOS_USER_STACK_SIZE (64 * 1024)
 #endif
-// Floor + alignment for a caller-provided thread stack (must clear the arch context + a
-// frame; 16 B suits every ISA's stack ABI). Undersized/misaligned => spawn fails, not a
-// silent overflow. The kernel-default and root/idle stacks satisfy these by construction.
+// Floor + alignment for a caller-provided thread stack. The floor is the arch's DEEPEST
+// thread-exit dispatch: a syscall runs on the caller's OWN stack, and the exit teardown
+// (exit_current -> reschedule -> switch_to -> the timer rearm) is the deepest such chain,
+// so a stack below it passes the spawn check then silently overflows on exit. It is set
+// PER ARCH in the top-level CMakeLists (the measured deepest dispatch + margin) and
+// forwarded as a -D; this #ifndef default is the conservative MAX across arches, so a
+// build that bypasses that ladder is safe-but-wasteful, never silently-too-low. 16 B
+// alignment suits every ISA's stack ABI. Undersized/misaligned => spawn fails, not a
+// silent overflow. (The kernel-default and root stacks clear this by construction; the
+// idle stack may be smaller -- it only spins, never running the exit dispatch.)
 #ifndef KICKOS_MIN_STACK_SIZE
-#define KICKOS_MIN_STACK_SIZE 512
+#define KICKOS_MIN_STACK_SIZE 1024
 #endif
 #ifndef KICKOS_STACK_ALIGN
 #define KICKOS_STACK_ALIGN 16

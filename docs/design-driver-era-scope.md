@@ -286,9 +286,19 @@ console is just the first `KOS_SVC_CONSOLE` entry in the list (the service list 
 userspace-console bring-up path). Each list/pinmap definition is one strong symbol chosen by a CMake
 target knob (`KICKOS_SERVICE_LIST` / `KICKOS_BOARD_PINMAP`), fail-loud on a missing/misspelled
 target -- no runtime manifest, no silent fallback (the anti-CapDL tenet). **Per-BOARD today**
-(the in-tree `frdmk64f` / `xmc4800-relax` configs are REFERENCE EXAMPLES); the **per-app / fleet
-rollout + the missing pinmux backends (only mk64f + xmc4800 exist) is the M4.5 strategy-sync
-pass.** See `reference/architecture.md` ("Service publication") + `system/include/kickos/sys/service.h`.
+(the in-tree `frdmk64f` / `xmc4800-relax` configs are REFERENCE EXAMPLES); the per-app / fleet
+service-list rollout is future work.
+
+**Pinmux backends now cover 11 fleet chips** (M4.5): the original mk64f + xmc4800 plus rp2040,
+rp2350, esp32c6, stm32f411, stm32f103, stm32f302, sam3x8e, imxrt1062, esp32. `nrf51`, `mps2`, and
+`virt` keep the weak `-KOS_ENOSYS` default -- they have no central pinmux block (per-peripheral
+PSEL, emulated, or virtual), so a non-empty board pin-map is what fails loud there. The ABI is
+unchanged `{u16 port, u16 pin, u32 func}` with `func` a chip-OPAQUE per-chip encoding, so the wire
+stays neutral while each backend owns its encoding; stm32f103 covers default-mapped peripherals
+only (AFIO_MAPR remap is out of scope), and imxrt1062 keys `port`=GPIO-bank / `pin`=bit against a
+PARTIAL pad table (holes return `-KOS_EINVAL`). Two exercising board pin-maps ship (picopi GP2,
+f302nucleo PA0). See `reference/porting.md` (the pinmux seam) +
+`reference/architecture.md` ("Service publication") + `system/include/kickos/sys/service.h`.
 
 ### 3.2 Driver API taxonomy by I/O model
 The classical driver shapes map onto TWO IPC patterns:

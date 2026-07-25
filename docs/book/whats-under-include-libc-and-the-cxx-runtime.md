@@ -196,6 +196,33 @@ left behind. Consequences an app author must know: catch your own exceptions; an
 from a worker thread terminates the *whole image*, not just the thread; static
 destructors and `atexit` do not run on the normal return path.
 
+### The terminate handler: what an uncaught throw drags in, and trimming it
+
+When an uncaught exception reaches `std::terminate`, libstdc++'s *default* terminate
+handler is `__gnu_cxx::__verbose_terminate_handler` -- and it tries to be helpful in a
+way that only makes sense on a hosted system: it **demangles** the exception's type name
+and prints it, along with `what()`, before aborting. That politeness is expensive on a
+freestanding target. Pulling in that one handler drags in `__cxa_demangle` -- a full
+Itanium-ABI name demangler -- and, through it, newlib's floating-point `printf`/`dtoa`:
+tens of kilobytes of code the embedded image never calls for any purpose other than
+pretty-printing the message of a crash it is about to `abort` on. A microcontroller has a
+debugger on the fault, or it has nothing; either way it has no reader for that line.
+
+The lever that removes it is a property of **how a linker pulls objects out of an
+archive**: a member is extracted only to satisfy a symbol that is otherwise *undefined*.
+`__verbose_terminate_handler` lives in its own object (`vterminate.o`) inside
+`libstdc++.a`. If the program already provides a **strong definition** of that symbol,
+the reference is satisfied before the archive is even scanned, the member is never
+extracted, and the demangler + float-`dtoa` it would have pulled in never enter the link.
+So a freestanding runtime supplies its own **lean** handler -- print the *mangled* type
+name and `what()`, then `abort` -- and reclaims the whole demangler/`dtoa` tail. Exceptions
+still throw and catch exactly as before; only the message printed on an *uncaught* abort
+changes, from a demangled type name to a mangled one. On the tightest parts that reclaimed
+tail is the difference between a full-EH+RTTI+STL image fitting in flash and not. It is the
+same principle as the freestanding/full split that opened this section, applied one symbol
+at a time: pay only for the runtime you actually use, and a demangled abort message is a
+line item a headless system can decline.
+
 ## When the runtime starts: global constructors and boot order
 
 The C++ runtime does not only sit *on* the OS -- it assumes the OS is already *running*

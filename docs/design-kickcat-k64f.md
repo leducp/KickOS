@@ -146,6 +146,19 @@ granted `.appdata` window after the app's statics, so the one per-board knob is 
 pow2 window for its actual heap need is truly gated. On RISC-V/PMP the DWARF FDE
 registry + libc globals are a further, distinct concern. See `docs/m2-review-followups.md`.
 
+**The verbose-terminate handler (a ~63 KB reclaim on the FULL_CXX path).** libstdc++'s default
+`std::terminate` handler, `__gnu_cxx::__verbose_terminate_handler`, demangles the thrown type
+before aborting and so drags in `__cxa_demangle` + newlib float `dtoa` (~63 KB) that a freestanding
+image never otherwise touches. KickOS ships its OWN lean `__verbose_terminate_handler` on the
+FULL_CXX link path (the `kickos_cxx_rt` object): a strong definition satisfies the symbol before
+`libstdc++.a` is scanned, so `vterminate.o` is never extracted and the demangler/`dtoa` tail stays
+out of the link (the archive-extraction lever, taught in the Book chapter
+`book/whats-under-include-libc-and-the-cxx-runtime.md`). The terse handler prints the *mangled*
+type + `what()` then aborts -- catch/throw are unchanged, only an uncaught-abort message differs.
+The reclaim UNGATES the full EH+STL+RTTI `cxxtest` on `bluepill-c8` (64 K flash); `f302nucleo`
+stays gated for a different reason -- its 4 K `.userheap` is below the ~5.9 K cxxtest peak, a RAM
+ceiling the flash reclaim does not touch.
+
 ## Staged plan
 
 - **A -- Sim slave on `EmulatedESC` (no hardware, CI-provable, smallest) -- LANDED (`user/apps/kickcat_slave`).** Add the Time-only

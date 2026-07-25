@@ -157,6 +157,32 @@ driver dies). The service loop is: `kos_recv` a request with a `kos_recv_info`; 
 `reply_cap < 0` it is a plain send (not this protocol) -- ignore; otherwise run the class
 transaction under the MMIO grant and `kos_reply` a `kos_bus_rsp`.
 
+## The shared serve loop (`<kickos/sys/spi_service.h>`)
+
+A concrete SPI service supplies only its silicon; the recv / parse / reply choreography is
+shared and templated over the chip's `Bus` class. `kickos::spi::serve_loop<Bus>(bus)` blocks on
+the delegated WAIT recv cap (`KOS_SPAWN_DELEGATED_CAP0`), drops plain sends (no reply cap), and
+hands every call to `serve_one`, which parses the `kos_bus_req` / `seg` / `cfg` framing, enforces
+the inline budget, and ALWAYS consumes the reply cap (the invariant above) -- returning when the
+endpoint dies (`n < 0` -> `EPIPE`) so the driver thread can exit and let root respawn. The `Bus`
+supplies exactly the two members the template calls (the implicit interface):
+
+    uint32_t configure(uint32_t hz, uint8_t mode, uint8_t word_bits, uint8_t cs_policy); // -> achieved hz
+    void     transfer(unsigned char* buf, size_t len);                                   // full-duplex, in place
+
+`Bus` is defined in an anonymous namespace, so each instantiation is TU-local (internal linkage,
+no COMDAT). `k64dspi` and `xmcssc` are the two reference services; a new bus driver writes only
+its `Bus` and calls `serve_loop`.
+
+## The spawn helper (`<kickos/sys/driver_bringup.h>`)
+
+`kickos::driver::spawn_unprivileged(entry, win_base, win_size, name, prio, ep, fail_tag)` is the
+shared tail of every unprivileged-driver bring-up: it spawns the driver thread unprivileged with
+its granted MMIO window (passed as BOTH the entry arg value and the grant) and a WAIT-only recv
+cap on the service endpoint at child cap index 1, printing `fail_tag` and closing the endpoint on
+a spawn failure. The privileged, per-class bring-up (pinmux, clock, register init) stays in the
+caller; only the identical 14-arg `kos::thread::spawn` shape is factored here.
+
 ## The client wrapper (`<kickos/driver/spi_client.h>`)
 
 Chip-neutral -- no chip register, no CS knowledge, no MMIO; the same object links against

@@ -1329,10 +1329,10 @@ namespace
     // fixed .appdata window (e.g. C6 = 4K); the MPU caller-owned-stack path is covered by
     // the dynamic alloc'd stack above.
 #if !KICKOS_HAVE_MPU
-    // 2048, not KICKOS_MIN_STACK_SIZE (512): the worker runs the whole deepest kernel
-    // dispatch (syscall trap frame + thread-exit teardown) on THIS stack, which overruns
-    // 512 by ~112 B into whatever globals sit just below the buffer. Matches the dynamic
-    // caller stack (STK) below, which runs the same worker + exit path.
+    // 2048, generously above the per-arch KICKOS_MIN_STACK_SIZE floor: the worker runs the
+    // whole deepest kernel dispatch (syscall trap frame + thread-exit teardown) on THIS
+    // stack. Matches the dynamic caller stack (STK) below, which runs the same worker + exit
+    // path. (The floor is now sized to that deepest dispatch per arch; 2048 clears it easily.)
     KOS_STACK_DEFINE(g_cstk_static, 2048);
 #endif
     void t_caller_stack()
@@ -1351,6 +1351,14 @@ namespace
             return;
         }
         void* stk = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(raw) + 15u) & ~uintptr_t{15});
+        // Reject a PROPERLY-ALIGNED but sub-floor caller stack -- the exact bug the per-arch
+        // floor fixes: an aligned 512 B stack once passed the check, then overflowed the
+        // RISC-V exit dispatch (~624 B). One alignment unit below the floor, aligned base:
+        // the size check must reject it BEFORE any slot / region work. (16 = KICKOS_STACK_ALIGN.)
+        TAP_CHECK(kos::thread::spawn(caller_stack_worker, nullptr, "undf", 10, KOS_POLICY_FIFO,
+                                     0, false, nullptr, 0, stk, KICKOS_MIN_STACK_SIZE - 16u,
+                                     nullptr, 0, nullptr, 0)
+                  == -KOS_EINVAL);
         g_cstk_sem = kos_sem_create(0);
         kos_cap_grant caps[] = {{g_cstk_sem, CH_FULL}}; // -> g_cstk_sem @1 (CH_DONE)
         int const t = kos::thread::spawn(caller_stack_worker, nullptr, "cstk", 10, KOS_POLICY_FIFO,

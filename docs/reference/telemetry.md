@@ -11,7 +11,7 @@
 > emit frontend (section 3, `kernel/include/kickos/ktrace.h`); **deliverable 5**
 > = the instance-scoped counters (section 5, `kernel/include/kickos/instance.h`);
 > **deliverable 8** = the host decoder (section 7, `tools/kicktrace.py`);
-> **CI gates 1-4** = section 8; **G6** = the publish-barrier injection
+> **CI gates 1-5** = section 8; **G6** = the publish-barrier injection
 > (section 4, root `CMakeLists.txt`).
 
 The architecture: a frontend/backend split (pure encoders under thin locked emit
@@ -377,6 +377,16 @@ live stream via `--follow` (stdin/fifo, e.g. `JLinkRTTLogger -RTTChannel 1`;
    This is the ONLY automated coverage of the PendSV-tail C-callback
    (EXC_RETURN save, MSP alignment, `-mgeneral-regs-only`); without it that asm
    is validated only by the manual XMC step.
+5. **Trace-metadata drift guard** (`tests/telemetry/gen_idmap.cc` + `check_idmap.py`,
+   ctest `telemetry_idmap`) -- emits the C++ source of truth (the `ArchId` enum plus
+   the syscall-number set 1..35) and asserts that `kicktrace.py`'s `ARCH_NAME` /
+   `SYSCALL_NAME` dicts key EXACTLY those numbers (none missing, none extra), so a new
+   syscall or arch id the decoder was never taught trips CI instead of silently
+   mislabelling a trace. Complements the in-source `static_assert` in
+   `include/kickos/trace/record.h`, which pins every `ArchId` value so a reorder trips
+   the *build* (`KICKOS_TRACE_ARCH` in CMake must match the enum). **Durable fix (TODO):**
+   generate both decoder tables from the C++ source, so there is one source of truth
+   rather than two hand-maintained copies this gate merely cross-checks.
 
 ## 9. Perturbation (stated, measured, partly correctable)
 
@@ -465,7 +475,9 @@ The same instrumented stream gives, at increasing cost:
 - **arch id (SESSION.arch, u8):** `0=sim, 1=armv7m, 2=armv6m, 3=xtensa, 4=rx,
   5=riscv (rv32imac)` -- the `ArchId` enum in `include/kickos/trace/record.h`;
   the build bakes it in as `KICKOS_TRACE_ARCH` and the decoder labels the trace
-  with it.
+  with it. A `static_assert` pins every value (a reorder trips the build), and the
+  `telemetry_idmap` gate (section 8) cross-checks the decoder's `ARCH_NAME` /
+  `SYSCALL_NAME` tables against the C++ source.
 - **ch1 ring size:** `KICKOS_RTT_CH1_SIZE`, default 4096 bytes (per-board/preset
   overridable; `sim-telem` uses 16384 because the host drains only at shutdown).
 - **No-return syscalls** (`KOS_SYS_EXIT`): recorded as `SYSCALL_ENTER` with no
