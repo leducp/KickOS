@@ -37,8 +37,11 @@ add_subdirectory(clocksoak)
 
 # Full-C++ opt-in smoke test (Stage B of docs/design-kickcat-k64f.md): exercises
 # exceptions + STL + RTTI over the toolchain libstdc++/newlib. Gated to the K64F
-# silicon target and the runnable QEMU armv7m/RISC-V verification boards -- boards
-# with enough RAM for the 64 KB libc heap arena and where it is actually run.
+# silicon target, the runnable QEMU armv7m/RISC-V verification boards, and the 64K-flash
+# boards that fit after the M4.5 vterminate reclaim (a strong __verbose_terminate_handler
+# stops the linker pulling libstdc++'s demangle + float dtoa, ~63K .text). Each board's
+# RAM must also cover the runtime heap: the freestanding chips carve a fixed .userheap
+# (the MPU chips route the runtime writable state into the granted .appdata window).
 # frdmk64f builds under MPU enforcement too -- the KickOS full-C++-under-isolation gate.
 # mk64f.ld routes libkickos_user.a's heap arena + the libstdc++ writable state into the
 # granted .appdata/.appbss window (archive:member colon-inclusion of the closed kernel
@@ -61,7 +64,14 @@ if(KICKOS_BOARD STREQUAL "frdmk64f"
         OR KICKOS_BOARD STREQUAL "qemu-riscv")
        AND KICKOS_HAVE_MPU)
    OR ((KICKOS_BOARD STREQUAL "qemu" OR KICKOS_BOARD STREQUAL "qemu-riscv")
-       AND NOT KICKOS_HAVE_MPU))
+       AND NOT KICKOS_HAVE_MPU)
+   # bluepill-c8 (stm32f103, 64K/20K, silicon non-MPU): cxxtest is 57K .text after the
+   # vterminate reclaim (fits 64K flash) and its 8K .userheap clears the 5.9K measured
+   # cxxtest heap peak. Operator-run on silicon (no QEMU model).
+   # f302nucleo (stm32f302, 64K/16K) is deliberately NOT here: cxxtest fits its flash too,
+   # but the 4K .userheap the 16K SRAM allows is below the 5.9K peak, so malloc would fail
+   # at runtime. Not inflating the heap to force it (no-deferral).
+   OR KICKOS_BOARD STREQUAL "bluepill-c8")
   add_subdirectory(cxxtest)
 endif()
 

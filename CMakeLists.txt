@@ -545,10 +545,30 @@ if(TARGET kickos_kernel)
     # override -- the two flag sets never collide on one command line.
     target_compile_options(kickos_cxx INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
+
+    # A strong __gnu_cxx::__verbose_terminate_handler so the linker never extracts
+    # libstdc++'s vterminate.o (~65K of demangle + float dtoa). Must be a real object
+    # unconditionally on the link line (not an archive member), so it wins over the
+    # driver-appended libstdc++. This TU itself is compiled -fexceptions -frtti;
+    # kickos_apply_freestanding's -fno-exceptions would break its compile, so it is
+    # deliberately NOT applied here. INTERFACE flags on kickos_cxx do not reach this
+    # object lib's own compile, hence the direct flags. The per-chip -mcpu baseline
+    # comes from the toolchain file globally.
+    add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
+    target_compile_features(kickos_cxx_rt PRIVATE cxx_std_17)
+    target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
+    target_link_libraries(kickos_cxx_rt PRIVATE kickos_core)
+    target_link_libraries(kickos_cxx INTERFACE $<TARGET_OBJECTS:kickos_cxx_rt>)
   endif()
 
   # kickos_core is a link dependency of both leaves, so it must be in the export set.
   install(TARGETS kickos_core kickos kickos_cxx EXPORT KickOSTargets)
+  # $<TARGET_OBJECTS:kickos_cxx_rt> lands verbatim in KickOSTargets.cmake, so the
+  # object lib must be in the export set or an OOT find_package(KickOS) breaks.
+  if(TARGET kickos_cxx_rt)
+    install(TARGETS kickos_cxx_rt EXPORT KickOSTargets
+      OBJECTS DESTINATION "${CMAKE_INSTALL_LIBDIR}/kickos")
+  endif()
 endif()
 
 # Apps link a full image: the sim links against host libc; an MCU board links
