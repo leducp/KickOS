@@ -139,15 +139,15 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
     "  compiler : ${_cxx}\n"
     "  flags    : ${_flags_text}\n"
     "problem(s):${_why}\n"
-    "This is usually a PATH fall-through: ${_override_var} names a directory that "
-    "does not exist on this host, so find_program kept searching and settled on a "
+    "This is a PATH fall-through: ${_override_var} is unset (or names a directory that "
+    "does not exist on this host), so find_program kept searching and settled on a "
     "distro cross gcc that is C-only (no libstdc++/libsupc++) and/or picolibc-based. "
     "Nothing here is wrong with your checkout.\n"
     "Fix -- install the official toolchain KickOS builds with and point the build at "
-    "its bin/ directory:\n"
+    "its bin/ directory, by either route:\n"
     "  ${_tc_url}\n"
     "  cmake --preset <preset> -D${_override_var}=/path/to/toolchain/bin\n"
-    "(or put that bin/ first on PATH -- CMake's own compiler probe inherits PATH, so "
-    "CI sets both). Reuse of an existing build dir keeps the old cached compiler: "
-    "reconfigure into a fresh one.")
+    "  export ${_override_var}=/path/to/toolchain/bin   # or put that bin/ on PATH\n"
+    "Reuse of an existing build dir keeps the old cached compiler: reconfigure into a "
+    "fresh one.")
 endfunction()

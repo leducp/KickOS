@@ -63,6 +63,16 @@ set(KICKOS_RX_TOOLCHAIN_BIN
     "$ENV{KICKOS_RX_TOOLCHAIN_BIN}"
     CACHE PATH "Directory holding the rx-elf-* programs (empty => use PATH)")
 
+# Put the RESOLVED hint back into the environment, because CMake's compiler-ABI probe
+# re-reads this toolchain file in a SEPARATE cmake process with its own fresh cache: a
+# -D cache override never reaches that child, but the environment and PATH do. Without
+# this, `cmake -DKICKOS_RX_TOOLCHAIN_BIN=<good bin>` would configure the build with the
+# compiler you asked for while the ABI probe found none at all (no rx-elf-* on PATH),
+# so the configure died inside the probe, nowhere near the option you set. Re-exporting
+# makes -D, the environment and a reconfigure all agree. An empty value clears the
+# variable, leaving PATH to decide. Same in all four family toolchain files.
+set(ENV{KICKOS_RX_TOOLCHAIN_BIN} "${KICKOS_RX_TOOLCHAIN_BIN}")
+
 find_program(CMAKE_C_COMPILER   rx-elf-gcc     HINTS "${KICKOS_RX_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_CXX_COMPILER rx-elf-g++     HINTS "${KICKOS_RX_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_ASM_COMPILER rx-elf-gcc     HINTS "${KICKOS_RX_TOOLCHAIN_BIN}" REQUIRED)

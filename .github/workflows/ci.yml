@@ -34,12 +34,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Keep these in lockstep with cmake/toolchain-arm-none-eabi.cmake /
-  # toolchain-riscv-none-elf.cmake defaults (the Apps/... paths locally).
+  # These name the vendor tarballs, nothing in cmake/: no toolchain file carries a
+  # default compiler path any more (all four seed KICKOS_*_TOOLCHAIN_BIN from the
+  # environment), so only the variable NAMES have to agree.
   # CI uses 15.2.rel1 (the newest arm-none-eabi that developer.arm.com serves anonymously;
-  # 15.3.rel1 is gitlab-only + login-gated). The dev/silicon toolchain is 15.3.rel1 -- the
-  # presets resolve arm-none-eabi-* via PATH (not a pinned path), so this CI-only minor skew
-  # is harmless for build-regression coverage.
+  # 15.3.rel1 is gitlab-only + login-gated). The dev/silicon toolchain is 15.3.rel1 -- no
+  # preset pins a compiler path, so this CI-only minor skew is harmless for
+  # build-regression coverage.
   ARM_TC_DIR: arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi
   ARM_TC_URL: https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz
   RV_TC_DIR: riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf
@@ -100,9 +101,12 @@ jobs:
           file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/arm.tar.xz
       - name: Put toolchain on PATH + bin
-        # PATH (not just -D) is REQUIRED: the KICKOS_*_TOOLCHAIN_BIN cache override does
-        # not propagate to CMake's try_compile ABI check, but PATH is inherited -- so the
-        # toolchain-file find_program resolves the cross compiler there via PATH.
+        # Two routes, and either one alone is sufficient. The toolchain files seed
+        # KICKOS_*_TOOLCHAIN_BIN from the environment and re-export the resolved value,
+        # so the hint now also reaches CMake's try_compile ABI check -- that child cmake
+        # re-reads the toolchain file with a fresh cache, so it inherits the environment
+        # and PATH but never a -D cache entry. Belt-and-braces is deliberate: PATH is
+        # also what an empty hint falls back to.
         run: |
           echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -147,7 +151,7 @@ jobs:
           file /tmp/rv.tar.xz | grep -q XZ || { echo "rv toolchain: $RV_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/rv.tar.xz
       - name: Put toolchain on PATH + bin
-        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
         run: |
           echo "$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_RISCV_TOOLCHAIN_BIN=$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -189,7 +193,7 @@ jobs:
           file /tmp/rv.tar.xz | grep -q XZ || { echo "rv toolchain: $RV_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/rv.tar.xz
       - name: Put toolchain on PATH + bin
-        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
         run: |
           echo "$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_RISCV_TOOLCHAIN_BIN=$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -227,9 +231,9 @@ jobs:
           file /tmp/xt.tar.xz | grep -q XZ || { echo "xtensa toolchain: $XT_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/xt.tar.xz
       - name: Put toolchain on PATH + bin
-        # Both, for the same reason as qemu-arm: try_compile does not inherit the -D
-        # cache override, so PATH must also resolve xtensa-esp32-elf-*. The env var is
-        # what cmake/toolchain-xtensa-esp32-elf.cmake seeds KICKOS_XTENSA_BIN from.
+        # Both, for the same reason as qemu-arm: either alone is sufficient. The env var
+        # is what cmake/toolchain-xtensa-esp32-elf.cmake seeds KICKOS_XTENSA_BIN from,
+        # and it re-exports the resolved value so try_compile inherits it too.
         run: |
           echo "$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_XTENSA_BIN=$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -273,7 +277,7 @@ jobs:
           file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/arm.tar.xz
       - name: Put toolchain on PATH + bin
-        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
         run: |
           echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -337,7 +341,7 @@ jobs:
           file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/arm.tar.xz
       - name: Put toolchain on PATH + bin
-        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
         run: |
           echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"

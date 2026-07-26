@@ -52,6 +52,17 @@ set(KICKOS_XTENSA_BIN
     "$ENV{KICKOS_XTENSA_BIN}"
     CACHE PATH "Directory holding xtensa-esp32-elf-* programs (empty => use PATH)")
 
+# Put the RESOLVED hint back into the environment, because CMake's compiler-ABI probe
+# re-reads this toolchain file in a SEPARATE cmake process with its own fresh cache: a
+# -D cache override never reaches that child, but the environment and PATH do. Without
+# this, `cmake -DKICKOS_XTENSA_BIN=<good bin>` would configure the build with the
+# compiler you asked for while the ABI probe found none at all (the Espressif toolchain
+# is not on PATH by default), so the configure died inside the probe, nowhere near the
+# option you set. Re-exporting makes -D, the environment and a reconfigure all agree.
+# An empty value clears the variable, leaving PATH to decide. Same in all four family
+# toolchain files.
+set(ENV{KICKOS_XTENSA_BIN} "${KICKOS_XTENSA_BIN}")
+
 find_program(CMAKE_C_COMPILER   xtensa-esp32-elf-gcc     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)
 find_program(CMAKE_CXX_COMPILER xtensa-esp32-elf-g++     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)
 find_program(CMAKE_ASM_COMPILER xtensa-esp32-elf-gcc     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)
