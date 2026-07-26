@@ -34,11 +34,27 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # full clean run, so a mid-run fault (which exits 0 via the reported-fault
   # path) is caught as a truncated run, not a false pass. CTest checks FAIL
   # before PASS, so a "not ok" still fails.
+  # `# skipped: [1-9]` is a FAILURE here: the sim's pools host the entire suite, so a
+  # skip means a test stopped running rather than that the board cannot host it. Until
+  # the harness had a real SKIP state such a test reported a plain `ok` and this gate
+  # could not see it at all.
   add_test(NAME selftest COMMAND "$<TARGET_FILE:selftest>")
   set_tests_properties(selftest PROPERTIES
     TIMEOUT 30
     PASS_REGULAR_EXPRESSION "# all tests passed"
-    FAIL_REGULAR_EXPRESSION "not ok")
+    FAIL_REGULAR_EXPRESSION "not ok;# skipped: [1-9]")
+
+  # The OTHER console posture. This gate is the sim's only coverage of the published
+  # route (kos_send on stdout cap index 0 -> userspace driver): the test above, and
+  # every QEMU gate, run kickos_services_none, where the kernel owns the console and
+  # that route is never touched -- which is how M4.5's console handover silenced the
+  # whole TAP stream on xmc4800-relax and frdmk64f with CI fully green. One provider
+  # links per image, so it needs its own build tree; the script makes one.
+  add_test(
+    NAME    sim_published_console
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_published.sh"
+            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+  set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
 
   # Dependency-inversion acceptance: an out-of-tree app builds against the
   # exported KickOS package (find_package + kickos_add_application) and runs.
@@ -66,6 +82,19 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
+  # The one board with a legitimate skip budget: MAX_THREADS=2 / MAX_SEMAPHORES=4 means
+  # the multi-worker choreographies (the mutex PI suite, domain_share, the 3-and-4-thread
+  # call/reply cases) genuinely cannot run here, and irq_as_event cannot spare a 4 KiB
+  # page out of 16 KiB SRAM. Every OTHER board keeps the script's default budget of 0.
+  #
+  # This number is a CEILING, not a measurement, and deliberately loose: 8 whole-test
+  # skips were measured on the last green microbit run (8850bb0), and the M4.4 call/reply
+  # cases add up to four more whose choreography needs 3+ pool slots. It cannot be
+  # tightened to an exact count yet because microbit does not currently reach the end of
+  # the suite -- see the two pre-existing breakages noted in docs/reference/boards.md.
+  # Re-measure and tighten once it does; the gate prints the count and the skipped names
+  # on a breach, so the right value is one failing run away.
+  set_tests_properties(microbit_selftest PROPERTIES ENVIRONMENT "MAX_SKIPS=12")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
