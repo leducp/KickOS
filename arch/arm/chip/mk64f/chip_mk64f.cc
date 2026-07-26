@@ -17,7 +17,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
-#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
+#include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
 #include <kickos/console_tx.h>
 
 #include <kickos/sys/abi.h> // kos_pstate_t / KOS_PSTATE_* (clock-select)
@@ -162,39 +162,11 @@ namespace
         return ~down; // 0xFFFF... - down == elapsed
     }
 
-    // --- arch_clock_now epoch anchor + clock-select re-anchor (B2/S2) -----------
-    // ns = base_ns + (raw_ticks - base_ticks)*mult, mult = reciprocal of the PIT (bus)
-    // clock. The SOLE writer of `mult` is clock_anchor_init (boot) and arch_cpu_clock_set
-    // (the re-anchor at the rate edge); arch_clock_now only READS. WHY sole-writer: the
-    // old lazy `if (hz != cached_hz) recompute` inside arch_clock_now, if it survived,
-    // would let a now() called between the SystemCoreClock write and the re-anchor
-    // recompute mult against the new bus clock and bake the phantom jump into base_ns.
-    uint64_t g_clk_base_ns = 0;
-    uint64_t g_clk_base_ticks = 0;
-    uint64_t g_clk_mult = 0;
-
-    uint64_t clock_recip(uint32_t hz)
-    {
-        return kickos::arch_clk_recip_q32(hz);
-    }
-
-    uint64_t clock_ns_from(uint64_t ticks)
-    {
-        uint64_t delta = ticks - g_clk_base_ticks;
-        return g_clk_base_ns + kickos::arch_clk_mul_q32(delta, g_clk_mult);
-    }
-
-    void clock_anchor_init()
-    {
-        uint32_t const hz = SystemCoreClock / BUS_DIV; // PIT is clocked by the bus clock
-        if (hz == 0)
-        {
-            return;
-        }
-        g_clk_mult = clock_recip(hz);
-        g_clk_base_ticks = 0; // BOOT-IDENTICAL: now = raw_ticks*mult (the old first read)
-        g_clk_base_ns = 0;
-    }
+    // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Written ONLY
+    // at a rate edge: init() in arch_init and reprice() in arch_cpu_clock_set. The PIT
+    // is clocked by the BUS clock, not the core clock, so every rate handed to the
+    // anchor is SystemCoreClock / BUS_DIV.
+    kickos::arch_clk_anchor g_clk;
 
     void wdog_disable()
     {
@@ -382,23 +354,19 @@ void arch_init(void)
     // 120 MHz BEFORE UART (baud) + SysTick are programmed; on failure both fall
     // back cleanly to the 20.97 MHz FEI clock (SystemCoreClock unchanged).
     clock_init();
-    pit_clock_init();    // monotonic time base (see pit_clock_init note; replaces DWT)
-    clock_anchor_init(); // set the arch_clock_now mult ONCE from the final clock (B2)
+    pit_clock_init(); // monotonic time base (see pit_clock_init note; replaces DWT)
+    g_clk.init(SystemCoreClock / BUS_DIV); // anchor ONCE from the final bus clock (B2)
     uart0_init();
     kickos_armv7m_init();
 }
 
-// Monotonic clock override: convert free-running PIT ticks (bus clock = core/2) to
-// ns, replacing the weak DWT-backed arch_clock_now (unreliable on this silicon).
-// ns = ticks * 1e9 / pit_hz via a cached reciprocal multiply (mult = (1e9<<32)/hz,
-// ns = (ticks*mult)>>32, split 64x64 to avoid overflow) -- the one 64-bit divide
-// runs only when the clock changes at boot.
+// Monotonic clock override: convert free-running PIT ticks (bus clock = core/2) to ns,
+// replacing the weak DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch
+// read: the anchor holds the rate, so a read in the window around a retune cannot bake
+// the phantom rate jump into the epoch.
 uint64_t arch_clock_now(void)
 {
-    // Pure epoch read (B2): the mult is written ONLY by clock_anchor_init (boot) and the
-    // arch_cpu_clock_set re-anchor -- never recomputed here -- so a read in the window
-    // around a retune can never bake the phantom rate jump into the anchor.
-    return clock_ns_from(pit_ticks());
+    return g_clk.ns_from(pit_ticks());
 }
 
 // Clock-select MECHANISM (arch.h): a staged fixed set. MAX/MID land on PEE (120 MHz);
@@ -424,7 +392,7 @@ uint32_t arch_cpu_clock_set(uint32_t target)
 
     // Re-anchor capture AT the edge: history priced at the OLD mult before it moves.
     uint64_t const t0 = pit_ticks();
-    uint64_t const ns0 = clock_ns_from(t0);
+    uint64_t const ns0 = g_clk.ns_from(t0);
 
     uint32_t landed;
     if (want > previous)
@@ -453,18 +421,14 @@ uint32_t arch_cpu_clock_set(uint32_t target)
 
     SystemCoreClock = landed;
 
-    // Commit the NEW pricing -- the SOLE writer of mult (B2). base_ns holds history at
-    // old pricing; the staged MCG walk (the worst-case masked span, ~1 ms) is the only
-    // mispriced interval (frozen skew), bounded by folding the anchor to the edge.
-    // The three stores are protected against ISR/other-thread tearing by the caller's
-    // IrqLock, but NOT against a synchronous CPU fault (HardFault/NMI) landing between
-    // them whose handler reads arch_clock_now (e.g. panic_delay_ms) -- a few-instruction,
-    // panic-path-only window, accepted as-is (not hardened, to avoid over-engineering it).
-    uint32_t const bus = landed / BUS_DIV;
-    g_clk_base_ns = ns0;
-    g_clk_base_ticks = t0;
-    g_clk_mult = clock_recip(bus);
-    __asm volatile("" ::: "memory"); // pin the triple write order vs a later now() read
+    // Commit the NEW pricing (B2). base_ns holds history at old pricing; the staged MCG
+    // walk (the worst-case masked span, ~1 ms) is the only mispriced interval (frozen
+    // skew), bounded by folding the anchor to the edge. The three stores are protected
+    // against ISR/other-thread tearing by the caller's IrqLock, but NOT against a
+    // synchronous CPU fault (HardFault/NMI) landing between them whose handler reads
+    // arch_clock_now (e.g. panic_delay_ms) -- a few-instruction, panic-path-only window,
+    // accepted as-is (not hardened, to avoid over-engineering it).
+    g_clk.reprice(t0, ns0, landed / BUS_DIV);
     return landed;
 }
 
