@@ -113,6 +113,50 @@ namespace
         return static_cast<char>(reinterpret_cast<uintptr_t>(arg));
     }
 
+    // Self-contained probe worker: takes a slot and a stack, posts, exits. Nothing
+    // waits on it, so any subset of a probe batch always drains.
+    void pool_probe_worker(void*)
+    {
+        kos_sem_post(CH_DONE);
+    }
+
+    // Can this board host `n` workers CONCURRENTLY, right now?
+    //
+    // Most tests can spawn first and ask afterwards, because their workers each
+    // self-complete: whoever got a slot posts g_done and a partial batch drains. A
+    // choreography whose workers wait on EACH OTHER cannot -- the ones that did start
+    // block forever on a rendezvous the missing ones would have completed, and the
+    // drain in the "pool too small" arm never returns. That is not hypothetical: it is
+    // how call_infoless_revert hung the armv6m gate from M4.4 to M4.5.1. Such a test
+    // must ask BEFORE it spawns anything, and this is how.
+    //
+    // Probing beats reading a knob. The answer has to fold in the slots a board's
+    // service-list drivers are already holding and whether the arena can still give
+    // each worker a stack -- neither of which KICKOS_MAX_THREADS describes, and which
+    // the app cannot see anyway (it is kernel-side config).
+    //
+    // Safe immediately before the real spawns: spawning does not itself reschedule, so
+    // all `n` probes are resident at once (that is what makes this a CONCURRENCY test
+    // rather than a repeated one-slot check), and root is the lowest-priority thread in
+    // the system (kmain), so each probe runs all the way through exit before root is
+    // scheduled again. By the time wait_n returns, every probe slot is EXITED
+    // (reclaimable) and every probe stack is back on the pool's free list.
+    bool pool_can_host(int n)
+    {
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int got = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (kos::thread::spawn_caps(pool_probe_worker, nullptr, "probe", 10, caps, 1) < 0)
+            {
+                break;
+            }
+            got++;
+        }
+        wait_n(got);
+        return got == n;
+    }
+
     // --- SVC argument/return roundtrip -----------------------------------------
     // PROVES: the kconsole_write SVC marshals a (buf, len) pair into the kernel and
     // brings the resulting byte count back out, on whatever trap mechanism the arch
@@ -2018,6 +2062,18 @@ namespace
     }
     void t_call_infoless_revert()
     {
+        // Ask the pool BEFORE spawning anything. These four workers are mutually
+        // dependent -- the server parks in recv for the filler's send, the caller's
+        // boost is what the spoiler races -- so a partial set cannot be drained: the
+        // ones that started wait on posts the missing ones would have made. Guarding
+        // after the spawns, as this test used to, therefore does not skip on a small
+        // board, it HANGS, and that is what took the microbit gate down from M4.4
+        // (9ae301f) to M4.5.1.
+        if (not pool_can_host(4))
+        {
+            tap::skip("pool too small (4 interdependent workers)");
+            return;
+        }
         log_reset();
         g_call_unit = mtx_time_unit();
         g_ci_rc = -99;
@@ -2030,20 +2086,9 @@ namespace
         int cl = kos::thread::spawn_caps(ci_caller, nullptr, "ciC", 20, ccaps, 3);
         int sp = kos::thread::spawn_caps(ci_spoiler, nullptr, "ciM", 12, mcaps, 2);
         int fl = kos::thread::spawn_caps(ci_filler, nullptr, "ciF", 6, ccaps, 3);
-        if (sv < 0 or cl < 0 or sp < 0 or fl < 0)
-        {
-            // Not enough thread slots (tiny boards): drain whoever spawned (each posts
-            // g_done), close the endpoint so nothing leaks, and skip.
-            int n = 0;
-            if (sv >= 0) { n++; }
-            if (cl >= 0) { n++; }
-            if (sp >= 0) { n++; }
-            if (fl >= 0) { n++; }
-            wait_n(n);
-            kos_handle_close(g_ep);
-            tap::skip("pool too small");
-            return;
-        }
+        // The probe above just held four slots and four stacks, and nothing else runs
+        // between it and here, so a failure now is a pool bug, not a small board.
+        TAP_CHECK(sv >= 0 and cl >= 0 and sp >= 0 and fl >= 0);
         char warm[4] = {0};
         kos_send(g_ep, warm, 4); // second plain sender; recv#1 eats the filler, recv#2 eats this
         wait_n(4);

@@ -18,11 +18,24 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 2K;
 
-/* Newlib heap: an explicit .userheap section carved from RAM before the thread arena
-   (no MPU .appdata window on this chip). Only 16 KiB RAM, so the heap is 4K (covers
-   printf's 4K stdio granule). 0 is legal for a board with no malloc app. */
+/* Newlib heap: EMPTY on this chip. The .userheap carve comes out of RAM ahead of the
+   thread arena, and 16 KiB cannot pay for both: the selftest image's statics already
+   leave only ~5.5 KiB of arena, and a 4K heap takes enough of that to starve the pool
+   of thread stacks -- every kos::thread::spawn then fails. No app built for this board
+   allocates, so 0 is the honest budget and the arena gets all of it. A variant that
+   does need a heap asks with -DKICKOS_USER_HEAP_SIZE=<n> and pays for it in stacks.
+
+   The section stays at zero length rather than being deleted, because deleting it
+   would break EVERY link on this board, not just an allocating one: _sbrk shares a TU
+   with _exit/_write (user/src/newlib_stubs.cc) and the link force-links it with
+   -u,_exit, so its STRONG reference to _kickos_heap_start is present in every image
+   and outranks the weak one kmain's banner uses. The heap model's link-time fail-loud
+   ("undefined reference to _kickos_heap_start", intended to fire only for an app that
+   allocates) is therefore not reachable from a linker script; here an allocating app
+   fails at RUNTIME instead -- _sbrk refuses every request against an empty window and
+   malloc returns NULL. Boot banner reports `heap none`. */
 #ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 4K
+#define KICKOS_USER_HEAP_SIZE 0
 #endif
 
 SECTIONS
@@ -121,7 +134,10 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
-/* Opt-in link-time heap floor (undefined by default). */
+/* Opt-in link-time heap floor (undefined by default). The default heap here is empty,
+   so any floor at all fails the link unless KICKOS_USER_HEAP_SIZE is raised to match --
+   which is the point: it is the one way to make this board's heap budget a link error
+   rather than a runtime NULL. */
 #ifdef KICKOS_HEAP_MIN
 ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
        "KickOS: heap below KICKOS_HEAP_MIN")

@@ -87,14 +87,20 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # call/reply cases) genuinely cannot run here, and irq_as_event cannot spare a 4 KiB
   # page out of 16 KiB SRAM. Every OTHER board keeps the script's default budget of 0.
   #
-  # This number is a CEILING, not a measurement, and deliberately loose: 8 whole-test
-  # skips were measured on the last green microbit run (8850bb0), and the M4.4 call/reply
-  # cases add up to four more whose choreography needs 3+ pool slots. It cannot be
-  # tightened to an exact count yet because microbit does not currently reach the end of
-  # the suite -- see the two pre-existing breakages noted in docs/reference/boards.md.
-  # Re-measure and tighten once it does; the gate prints the count and the skipped names
-  # on a breach, so the right value is one failing run away.
-  set_tests_properties(microbit_selftest PROPERTIES ENVIRONMENT "MAX_SKIPS=12")
+  # 10 is a MEASURED count, not a ceiling -- these ten and no others, stable across
+  # repeated runs:
+  #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_deadlock,
+  #   mutex_multi_held    -- 3-worker PI choreographies on a 2-slot pool
+  #   call_infoless_revert (4 workers), call_donation (3)  -- M4.4 call/reply
+  #   domain_share, confused_deputy                        -- 2 concurrent workers
+  #   irq_as_event                                         -- wants a 4 KiB MMIO page
+  # It replaces the loose 12 that stood in while the board could not reach its own
+  # summary line (the gate was red from 9ae301f/M4.4 to M4.5.1). Raising it again should
+  # mean a board capability changed; a test that merely stopped running must show up as
+  # a breach, which is why the slack is gone. caller_stack and mmio_grant additionally
+  # report PARTIAL -- they assert their invariant and say which half the arena/pool could
+  # not host, so they count as passes, not skips.
+  set_tests_properties(microbit_selftest PROPERTIES ENVIRONMENT "MAX_SKIPS=10")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
