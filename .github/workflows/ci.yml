@@ -1,13 +1,19 @@
 # SPDX-License-Identifier: CECILL-C
 # KickOS CI: the deterministic, host-runnable green gates (docs/m2-readiness.md #6).
-# Silicon boards and the RX/Xtensa vendor toolchains are NOT here -- they stay a
-# manual/self-hosted step per the HW-test deferral policy. Every job mirrors a
-# `--preset` invocation.
+# Silicon RUN validation is NOT here -- it stays a manual/bench step per the HW-test
+# deferral policy. Every job mirrors a `--preset` invocation.
+#
+# ISA coverage: sim (host), armv7m + armv6m (QEMU run), rv32imac (QEMU run, plain and
+# under PMP), Xtensa LX6 (build-only). Renesas RX is the ONE ISA with no gate: RX72M
+# needs -misa=v3 and -mdfpu, which exist only in the registration-gated Renesas GNURX
+# build -- upstream rx-elf GCC rejects both -- so RX cannot be built on a hosted
+# runner and remains bench-validated.
 #
 # Toolchains are the SAME pinned vendor tarballs used locally (reproducibility): the
-# official Arm GNU Toolchain (arm-none-eabi, newlib) and the RISCstar toolchain
-# (riscv32-none-elf, newlib, rv32imac soft-float multilib). Both are downloaded +
-# cached; no apt gcc-arm-none-eabi / xPack. The sim job uses the host g++.
+# official Arm GNU Toolchain (arm-none-eabi, newlib), the RISCstar toolchain
+# (riscv32-none-elf, newlib, rv32imac soft-float multilib), and Espressif's
+# crosstool-NG Xtensa build. All downloaded + cached; no apt gcc-arm-none-eabi /
+# xPack. The sim job uses the host g++.
 
 name: CI
 
@@ -31,6 +37,18 @@ env:
   ARM_TC_URL: https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz
   RV_TC_DIR: riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf
   RV_TC_URL: https://releases.riscstar.com/toolchain/16.1-r1/riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf.tar.xz
+  # Espressif's Xtensa toolchain: a PUBLIC GitHub release asset (anonymous, no
+  # registration), unlike the RX vendor toolchain. The tarball is named
+  # xtensa-esp-elf (the unified toolchain) but still installs the per-chip
+  # xtensa-esp32-elf-* program names the toolchain file looks for, and unpacks to a
+  # version-less xtensa-esp-elf/ -- hence the separate tag in the cache key.
+  # Do NOT downgrade to esp-12.2.0 (the last release whose asset is literally named
+  # xtensa-esp32-elf): its GCC 12.2 predates -nostdlib++, which the freestanding-C++
+  # posture passes, so every compile dies on "unrecognized command-line option".
+  # esp-16.1.0_20260609 is the version actually verified to build the fleet.
+  XT_TC_DIR: xtensa-esp-elf
+  XT_TC_TAG: esp-16.1.0_20260609
+  XT_TC_URL: https://github.com/espressif/crosstool-NG/releases/download/esp-16.1.0_20260609/xtensa-esp-elf-16.1.0_20260609-x86_64-linux-gnu.tar.xz
 
 jobs:
   # Authoritative deterministic gate: full ctest on the host sim -- selftest, the
@@ -174,9 +192,54 @@ jobs:
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
 
+  # Xtensa LX6 (esp32-wroom) build-only gate. No run step: upstream QEMU ships no ESP32
+  # machine model, so this catches build/link/linker-script + windowed-ABI asm
+  # regressions only -- HW validation stays a bench step. Both the plain and the
+  # selftest config are built (the latter pulls the full IRQ suite, which is what is
+  # HW-validated). esptool is deliberately NOT installed: it is only needed for the
+  # bootable .app.bin elf2image post-step, which CI cannot boot anyway -- the ELF link
+  # is the regression signal, and CMake reports the skip without failing.
+  xtensa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils file
+      - name: Cache Xtensa toolchain
+        id: cache-xt
+        uses: actions/cache@v4
+        with:
+          path: ~/tc/${{ env.XT_TC_DIR }}
+          # Tag in the key: the extracted dir is version-less, so a tag bump must miss.
+          key: ${{ env.XT_TC_DIR }}-${{ env.XT_TC_TAG }}
+      - name: Download Xtensa toolchain
+        if: steps.cache-xt.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/tc
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/xt.tar.xz "$XT_TC_URL"
+          file /tmp/xt.tar.xz | grep -q XZ || { echo "xtensa toolchain: $XT_TC_URL served non-xz (gated/redirect?)"; exit 1; }
+          tar -C ~/tc -xf /tmp/xt.tar.xz
+      - name: Put toolchain on PATH + bin
+        # Both, for the same reason as qemu-arm: try_compile does not inherit the -D
+        # cache override, so PATH must also resolve xtensa-esp32-elf-*. The env var is
+        # what cmake/toolchain-xtensa-esp32-elf.cmake seeds KICKOS_XTENSA_BIN from.
+        run: |
+          echo "$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_PATH"
+          echo "KICKOS_XTENSA_BIN=$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - name: xtensa lx6 (esp32-wroom) build gate
+        run: |
+          cmake --preset esp32-wroom -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
+          cmake --build --preset esp32-wroom
+      - name: xtensa lx6 + selftest config
+        run: |
+          cmake --preset esp32-wroom-st -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
+          cmake --build --preset esp32-wroom-st
+
   # Build-only sweep of the remaining ARM boards (catches build/link/linker-script
   # regressions). No run step -- these need silicon or a machine model CI does not
-  # carry. RX/Xtensa omitted (vendor toolchains); RISC-V is the qemu-riscv job above.
+  # carry. RX omitted: RX72M needs -misa=v3/-mdfpu, which exist only in the
+  # registration-gated Renesas GNURX build (upstream rx-elf GCC rejects both), so it
+  # stays a bench step. Xtensa is the job above; RISC-V is the qemu-riscv job.
   build-boards:
     runs-on: ubuntu-latest
     strategy:
