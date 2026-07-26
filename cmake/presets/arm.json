@@ -83,7 +83,7 @@
     },
     {
       "name": "due",
-      "displayName": "Arduino Due (AT91SAM3X8E, Cortex-M3) [EXPERIMENTAL: clock/console]",
+      "displayName": "Arduino Due (AT91SAM3X8E, Cortex-M3)",
       "inherits": "arm-base",
       "binaryDir": "${sourceDir}/build/due",
       "cacheVariables": { "KICKOS_BOARD": "due" }

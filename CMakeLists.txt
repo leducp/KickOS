@@ -212,10 +212,9 @@ endif()
 # build enforces nothing. Capability is an EXPLICIT per-port opt-in, not inferred from
 # the linker plumbing: a chip ships arch/<family>/chip/<chip>/mpu.cmake
 # (KICKOS_CHIP_ENFORCES_MPU ON); a chip that merely has the .appdata block but ships
-# no such file is rejected here. imxrt1062 (teensy41) ships one as BUILD-ONLY
-# scaffolding -- its enforcement path compiles but has never run on silicon (see the
-# chip mpu.cmake SILICON-PENDING note). The sim enforces via host mprotect (no chip,
-# no linker script) and is capable by arch.
+# no such file is rejected here. The sim enforces via host mprotect (no chip,
+# no linker script) and is capable by arch. Which ports are proven on hardware is
+# NOT recorded here -- see docs/reference/boards.md.
 set(KICKOS_CHIP_ENFORCES_MPU OFF)
 if(KICKOS_ARCH STREQUAL "sim")
   set(KICKOS_CHIP_ENFORCES_MPU ON)

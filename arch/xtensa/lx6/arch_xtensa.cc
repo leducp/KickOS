@@ -9,7 +9,7 @@
 // interrupt entry) + linker script + SystemCoreClock. Clean-room: Xtensa special
 // registers per the Xtensa ISA reference; ESP32 interrupt numbers per the TRM.
 //
-// M1.x scope (build-only, HW deferred): the cooperative (thread-context) switch,
+// Arch scope: the cooperative (thread-context) switch,
 // the RSIL critical section, the CCOUNT/CCOMPARE0 timer, the plain-call syscall,
 // the level-1 interrupt dispatch (kickos_lx6_dispatch_l1 -> kickos_isr_timer /
 // kickos_isr_irq), AND the preemptive switch-on-ISR-exit are complete. A switch
@@ -19,6 +19,7 @@
 // path its resume_kind selects (retw for a cooperatively-blocked thread, rfe for
 // one previously preempted). There is no privilege split on this core, so MPU/
 // privilege are no-ops.
+// Validation status of the Xtensa port: see docs/reference/boards.md.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/xtensa_frame.h> // F_* interrupt-frame offsets, shared with startup.S

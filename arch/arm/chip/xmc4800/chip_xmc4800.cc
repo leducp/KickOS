@@ -15,7 +15,8 @@
 // (ttyACM0) at 115200; see usic_uart.cc. apps/blink toggles LED1 (P5.9). The
 // XMC4800 also carries an on-chip EtherCAT node, a natural future KickCAT target.
 //
-// Build-only here; flash via the on-board debugger.
+// Flashes via the on-board J-Link-OB debugger.
+// Validation status of this port: see docs/reference/boards.md.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"

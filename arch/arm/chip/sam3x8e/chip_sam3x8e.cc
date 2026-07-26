@@ -13,8 +13,9 @@
 // Peripheral clocks are individually gated in the PMC. Console = the dedicated
 // UART on PA8/PA9 at a true 115200 once the crystal/PLLA clock is up.
 //
-// Build-only here; flash with bossac (the Due programming port). apps/blink
-// toggles the onboard "L" LED (PB27) for a no-UART smoke test.
+// Flashes with bossac over the Due programming port; apps/blink toggles the
+// onboard "L" LED (PB27) for a no-UART smoke test.
+// Validation status of this port: see docs/reference/boards.md.
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>

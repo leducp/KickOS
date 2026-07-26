@@ -4,6 +4,31 @@
 Status of every board target: what works, what only builds, how to flash it, and
 where its console + LED live. For J-Link / RTT details see [flashing.md](../flashing.md).
 
+## This file is the status of record -- code must not restate it
+
+**Validation status lives here and nowhere else.** Whether a board has run on silicon, what it
+has been proven to do, and what is still only built are tracked in the matrix below -- not in
+code comments, not in `mpu.cmake`, not in a preset `displayName`. A status claim written into
+code goes stale silently the moment work lands: nothing compiles it, no test reads it, and the
+person who fixes the thing never thinks to grep for prose about it. That is not hypothetical
+here -- stale `SILICON-PENDING` / `BUILD-ONLY` markers left in `mpu.cmake` and `CMakePresets`
+survived the work that invalidated them and misled two separate audits into reporting
+`teensy41` as an unvalidated build-only port months after its enforcement selftest passed on
+hardware.
+
+So: code that genuinely needs to mention status carries a **pointer** and no claim --
+`validation status: see docs/reference/boards.md` -- and a fixed pass count (`14/14`) is never
+written into a build file. What *does* belong in code is a **durable technical fact**: the
+Teensy exposes no SWD header, the MKL02 holds the K64F bootloader, the nRF51 has no SysTick,
+a baud constant is formula-derived rather than measured. Those are properties of the part, not
+of our progress, and they do not drift.
+
+Deeper evidence behind any row: [`../m2-readiness.md`](../m2-readiness.md) is the enforcement
+ledger (which chip is proven to enforce, and by what evidence), and each `../design-*.md`
+record carries its own status header (see [`../design/README.md`](../design/README.md) for the
+marker taxonomy). `../TODO.md` is the live task list. Where those and this file disagree, the
+code wins, then this file.
+
 ## Status matrix
 
 | Board (preset) | SoC / core | LED (blink) | Console | Flash tool | HW-validated |
@@ -15,11 +40,11 @@ where its console + LED live. For J-Link / RTT details see [flashing.md](../flas
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench |
 | `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | P80 (LED6, active-low) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **No CI gate** -- see *CI coverage* below |
-| `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] LED + VCOM console |
+| `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | [x] full selftest + all apps + fault dump + bench + LED; enforcement link-validated, MPU **HW pending** |
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | [x] full selftest + bench (2nd F411; 25 MHz HSE); enforcement link-validated, MPU **HW pending** |
 | `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] selftest minus the 4 KiB-alloc test (16 K RAM) + bench; not an enforcement target (3712 B arena) |
-| `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + selftest |
+| `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + full selftest with `sched_exit` (2026-07-09, 125 MHz PLL); PMSAv6 cross-domain denial silicon-proven 2026-07-19 (M0+ has no MemManage -- it escalates to HardFault) -- the fleet's only armv6m enforcement proof; U-mode `cxxtest` still awaits a bench re-flash |
 | `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only (64 K/20 K linker; links the full app set incl selftest + stress) |
 | `frdmk64f` | MK64FN1M0 / M4F | -- (none) | UART0, PTB16/PTB17, 115200 -> OpenSDA VCOM | J-Link (OpenSDA) | [x] HW 2026-07-15 (full selftest over the buffered console ring, 120 MHz); SYSMPU enforcement + `mpu_fault` trap silicon-proven at M2 |
 | `teensy41` | i.MX RT1062 / M7 @396 MHz | -- (none wired) | LPUART6 ("Serial1", pins 0/1), 115200 | `teensy_loader_cli` (HalfKay, `.hex`) | [x] full selftest + soak under PMSAv7 enforcement, after the M7 anti-speculation fix (ERR011573; `../design-teensy-mpu-hang.md`) |
@@ -85,6 +110,15 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   backend (`base+limit` RBAR/RLAR + MAIR, compile-gated so the v7-M/v6-M fleet is byte-identical).
   Console is **UART1 on GP4/GP5** -- UART0's pins are not brought out on the Pi-Zero header.
   BOOTSEL-recoverable, so a bad clock or boot-block config cannot brick it.
+- **`xmc4800-relax` and `frdmk64f` under `-DKICKOS_HAVE_MPU=1` print no TAP by default, and
+  that is not an enforcement failure.** Both boards default to a `KICKOS_SERVICE_LIST` that
+  brings up their userspace UART driver and publishes stdout, which routes the TAP stream away
+  from the kernel console; what reaches the wire is the banner, `[xmcuart|k64uart] driver up`,
+  a stray `x`, then silence. The `x` is `selftest`'s `cap_index0` asserting that stdout is
+  *not* published. Reproduced on both chips and from a pre-enforcement baseline, so it is a
+  property of the service-list publish, not of the MPU. Build with
+  `-DKICKOS_SERVICE_LIST=kickos_services_none` to get an observable verdict while keeping
+  enforcement on -- that is how both boards were signed off (56/56 each, 2026-07-26).
 - **RTT backend** -- generic and wired on the XMC (`KICKOS_CONSOLE=both`); the
   UART VCOM path is the one confirmed on hardware.
 - The diagnostic LED is a kernel-owned facility (`kdiag_led_*`); a chip with no

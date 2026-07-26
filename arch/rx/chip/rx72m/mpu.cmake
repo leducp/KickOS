@@ -6,6 +6,7 @@
 # instead of reading the WEAK __kickos_appdata_* symbols as 0) AND its arch ships a
 # real arch_mpu_apply -- so KICKOS_HAVE_MPU=1 actually faults a cross-domain access.
 # The top CMakeLists fail-loud floor includes this in its own scope, so a plain set
-# (no PARENT_SCOPE) is what it reads. A capable-but-unvalidated port (imxrt1062) ships
-# no such file and is rejected until validated.
+# (no PARENT_SCOPE) is what it reads; a chip that carves the window but ships no
+# mpu.cmake is rejected there, so capability is an explicit opt-in, never inferred.
+# Validation status of this port: see docs/reference/boards.md.
 set(KICKOS_CHIP_ENFORCES_MPU ON)

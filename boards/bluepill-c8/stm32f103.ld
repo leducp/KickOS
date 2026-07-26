@@ -5,7 +5,7 @@
  * density): 64 KiB flash / 20 KiB SRAM. Overrides the chip default
  * (arch/arm/chip/stm32f103/stm32f103.ld), which is sized to the 10 KiB
  * low-density floor for clones. Selected by CMake when KICKOS_BOARD=bluepill-c8.
- * HW-UNTESTED (only a low-density clone has been run on hardware).
+ * Validation status of this port: see docs/reference/boards.md.
  *   Flash : 64 KiB @ 0x0800_0000  (aliased to 0x0 at boot; vectors live here)
  *   SRAM  : 20 KiB @ 0x2000_0000
  */

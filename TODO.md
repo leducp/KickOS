@@ -52,14 +52,22 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
 Silicon target for the handover: the CPU-side-MPU boards (XMC/RX/C6) where per-thread peripheral
 isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
 
-- [ ] **Teensy 4.1 (i.MX RT1062, M7) MPU-enforce hang -- SILICON-PENDING, fable-gated** -- the
-      `teensy41-st -DKICKOS_HAVE_MPU=1` build hangs deterministically at test 6 `rr_interleave`:
-      the switch INTO the first KOS_POLICY_RR worker never delivers control (no `# rrw enter`).
-      No-MPU Teensy is 41/41 and MPU preempt (test 3) passes, so it is {enforce}x{RR}x{M7} only.
-      NOT an M3 merge blocker -- enforcement is silicon-proven on 4 backends incl. an armv7m
-      PMSAv7 (XMC). Full diagnosis + ruled-out list + live hypotheses in
-      `docs/design-teensy-mpu-hang.md`. Next: bench CFSR/SHCSR/MMFAR + PendSV re-entry dump on
-      the first RR slice; fable review before any core change.
+- [x] **Teensy 4.1 (i.MX RT1062, M7) MPU-enforce hang -- ROOT-CAUSED AND FIXED @c072712.** The
+      deterministic `teensy41-st -DKICKOS_HAVE_MPU=1` hang at test 6 `rr_interleave` was never a
+      switch bug. A dropped (non-pow2) whole-arena grant left the worker on the PRIVDEFENA
+      background, which types the entire 1 GiB FlexSPI/SEMC aperture as Normal; the M7 -- the one
+      core in the fleet that speculates -- prefetched past the populated 8 MiB into an AHB slave
+      that never responds, and an in-order core cannot retire behind an access that never
+      completes, so it stalled forever with NO fault to report (NXP ERR011573 / Arm 1013783-B).
+      Fixed by a new shared seam, `kickos_arm_mpu_fixed` in `arch/arm/common/`: a chip declares
+      thread-invariant regions that are programmed once into the LOW descriptor slots (so
+      per-thread grants still override them), and imxrt wraps the unbacked apertures as
+      Device + XN + no-access *before* the I-cache is enabled -- ordering is load-bearing,
+      because the cache is what arms the speculation. Enforcement selftest went from a hang to a
+      full pass with a clean soak; the durable teaching is Book ch.7.6. Full record:
+      `docs/design-teensy-mpu-hang.md` (LANDED). Its residuals are tracked separately: D-cache
+      default-on is done (below), "Option B" is the fleet-wide post-M6 item, and the
+      reprogram-window / HFNMIENA bypasses are accepted in the design record.
 
 Book + exploratory (M3-adjacent, not milestone-gating):
 - [ ] **Book chapter: the syscall mechanism** (dedicated subagent) -- the user<->kernel boundary

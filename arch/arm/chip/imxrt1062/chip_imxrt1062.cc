@@ -546,7 +546,7 @@ static bool imxrt_pin_kernel_owned(uint32_t port, uint32_t pin)
 //   bits[15:8] = daisy-table index (imxrt_daisy)
 //   bits[23:20]= daisy value written to the SELECT_INPUT register
 // SW_PAD_CTL is left at reset defaults. That is fine for the console-class route and
-// this build-only exercise, but is NOT safe generically (drive/pull/hysteresis
+// this narrow exercise, but is NOT safe generically (drive/pull/hysteresis
 // depend on the pad + net). All range/ownership/index validation happens BEFORE any
 // register write (no half-applied pad on a rejected request).
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
