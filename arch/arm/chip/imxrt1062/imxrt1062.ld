@@ -111,6 +111,18 @@ SECTIONS
         __init_array_end = .;
     } > FLASH
 
+    /* Teardown mirror of the ctor split: place .fini_array on the APP side (never the
+       privileged bucket) so an unplaced one cannot be ORPHANED outside every stated
+       boundary, and ASSERT it empty -- nothing walks it. Full rationale in
+       arch/arm/chip/stm32f411/stm32f411.ld. */
+    .kickos_app_fini_array :
+    {
+        __kickos_app_fini_array_start = .;
+        KEEP(*(SORT(.fini_array.*)))
+        KEEP(*(.fini_array))
+        __kickos_app_fini_array_end = .;
+    } > FLASH
+
     .kickos_app_init_array :
     {
         __kickos_app_init_array_start = .;
@@ -246,6 +258,12 @@ SECTIONS
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
+
+/* Static destructors are unsupported: nothing walks .fini_array (see the section
+   comment), so a global with a non-trivial destructor is silently dropped rather than
+   run. Fail the link instead of shipping a destructor that never fires. */
+ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
+       "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 #if KICKOS_HAVE_MPU
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
