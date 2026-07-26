@@ -71,8 +71,8 @@ endif()
 # rv32imac msip), not just the sim. Needs KICKOS_ENABLE_SELFTEST (the qemu* presets
 # enable it); rr_interleave sizes its RR quantum to the target's clock so it runs
 # even on the coarse QEMU semihosting clock.
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
-  kickos_add_qemu_test(NAME qemu_selftest TARGET selftest BOARD qemu
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
+  kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_selftest TARGET selftest BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
 endif()
 # microbit (nrf51) runs the SAME suite on armv6m. Its small pool (MAX_SEMAPHORES=4 /
