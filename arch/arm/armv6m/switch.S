@@ -86,10 +86,11 @@ PendSV_Handler:
 #endif
     /* Deferred MPU commit: reprogram the MPU for the INCOMING thread now that the
        physical PSP/register swap is complete -- atomically with the switch, NOT
-       eagerly in switch_to (see arch_armv6m.cc). Context (r4-r11) is callee-saved
-       across this call; r0-r3/r12 are reloaded from the HW frame on exception
-       return; lr is rebuilt right below. */
-    bl      kickos_armv6m_mpu_commit
+       eagerly in switch_to (shared seam, see arch_arm_common.cc). Context (r4-r11) is
+       callee-saved across this call; r0-r3/r12 are reloaded from the HW frame on
+       exception return; lr is rebuilt right below. Same symbol v7-M calls, so a fix
+       to the commit bracketing or barrier ordering reaches both. */
+    bl      kickos_arch_mpu_commit
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
     mov     lr, r0
     bx      lr
