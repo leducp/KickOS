@@ -113,12 +113,37 @@ namespace
         return static_cast<char>(reinterpret_cast<uintptr_t>(arg));
     }
 
-    // --- SVC roundtrip ---------------------------------------------------------
+    // --- SVC argument/return roundtrip -----------------------------------------
+    // PROVES: the kconsole_write SVC marshals a (buf, len) pair into the kernel and
+    // brings the resulting byte count back out, on whatever trap mechanism the arch
+    // uses (sim trampoline, ARM SVC, RISC-V ecall) -- and that the count comes from
+    // the len WE passed, not from a kernel-side walk of the buffer.
+    //
+    // DOES NOT PROVE DELIVERY, and no longer claims to. kos_kconsole_write returns
+    // `len` for any readable buffer whether or not console_emit then discarded every
+    // byte -- which is exactly what it does once a board's service list hands the UART
+    // to a userspace driver (kernel/init/console.cc, USER_OWNED) -- and userspace has
+    // no readback. So this test was called "console_write roundtrip" while being
+    // structurally incapable of noticing a dark console, and passed vacuously right
+    // through the M4.5 silencing. Re-scoped rather than strengthened: delivery is only
+    // observable where the transport ACKNOWLEDGES, i.e. the published stdout endpoint,
+    // and that IS asserted -- by cap_index0's post-publish arm and by the harness's own
+    // route probe, both of which key off a real rendezvous return. Concretely: the two
+    // `# [svc] ...` lines below are ABSENT from a published board's log while this test
+    // still reports `ok`. That absence IS the drop, and it is precisely why asserting on
+    // the returned count alone can never be more than an ABI check.
     void t_svc()
     {
-        char const* s = "# [svc] console_write roundtrip\n";
-        long r = kos_kconsole_write(s, strlen(s));
-        TAP_CHECK(r == static_cast<long>(strlen(s)));
+        char const* s = "# [svc] kconsole_write arg/return roundtrip (not a delivery check)\n";
+        size_t const n = strlen(s);
+        TAP_CHECK(kos_kconsole_write(s, n) == static_cast<long>(n));
+        TAP_CHECK(kos_kconsole_write(s, 0) == 0); // a len-0 write is a legitimate 0 (sys.h)
+        // len is honoured, not second-guessed: pass a PREFIX (itself a whole line, so the
+        // TAP stream stays well formed) and require the short count back. A kernel that
+        // strlen'd the buffer instead would return more -- and spill the tail marker.
+        char const* pfx = "# [svc] len-honoured prefix\nTRAILING-MUST-NOT-APPEAR";
+        long const cut = static_cast<long>(strlen("# [svc] len-honoured prefix\n"));
+        TAP_CHECK(kos_kconsole_write(pfx, static_cast<size_t>(cut)) == cut);
     }
 
     // --- FIFO ordering ---------------------------------------------------------
@@ -231,7 +256,7 @@ namespace
         int w = kos::thread::spawn_caps(clkset_unpriv_worker, nullptr, "clkset", 10, caps, 1);
         if (w < 0)
         {
-            kos::print("# cpu_clock_set: SKIP (thread pool too small)\n");
+            tap::skip("thread pool too small");
             kos_sem_destroy(g_clkset_done);
             return;
         }
@@ -427,8 +452,8 @@ namespace
         if (g_mmio == nullptr)
         {
             // A tiny RAM arena (microbit: 16 KiB SRAM) cannot spare a 4 KiB page for the
-            // mock MMIO region: skip (still ok), like the pool-too-small skips below.
-            kos::print("# irq_as_event: SKIP (4 KiB MMIO-page alloc failed -- board too small)\n");
+            // mock MMIO region: a real TAP SKIP (counted), like the pool-too-small skips below.
+            tap::skip("4 KiB MMIO-page alloc failed -- board too small");
             return;
         }
         *static_cast<volatile int*>(g_mmio) = 0;
@@ -732,7 +757,7 @@ namespace
             if (c >= 0) { n++; }
             wait_n(n);
             kos_handle_close(m);
-            kos::print("# mutex_basic: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         wait_n(3);
@@ -855,7 +880,7 @@ namespace
             if (md >= 0) { n++; }
             wait_n(n);
             kos_handle_close(m);
-            kos::print("# mutex_pi_donation: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         wait_n(3);
@@ -935,7 +960,7 @@ namespace
             wait_n(n);
             kos_handle_close(m1);
             kos_handle_close(m2);
-            kos::print("# mutex_chain_boost: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         wait_n(4);
@@ -1051,7 +1076,7 @@ namespace
             if (have2 >= 0) { kos_sem_destroy(have2); }
             if (goA >= 0) { kos_sem_destroy(goA); }
             if (goB >= 0) { kos_sem_destroy(goB); }
-            kos::print("# mutex_deadlock: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         kos_cap_grant acaps[] = {{g_done, CH_FULL}, {m1, CH_MTX}, {m2, CH_MTX},
@@ -1143,7 +1168,7 @@ namespace
             wait_n(n);
             kos_handle_close(m1);
             kos_handle_close(m2);
-            kos::print("# mutex_multi_held: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         wait_n(3);
@@ -1341,13 +1366,16 @@ namespace
         TAP_CHECK(kos::thread::spawn(caller_stack_worker, nullptr, "badstk", 10, KOS_POLICY_FIFO,
                                      0, false, nullptr, 0, reinterpret_cast<void*>(0x1), 8)
                   == -KOS_EINVAL);
-        // Accept a properly-sized, aligned caller-owned stack -> the thread runs on it. Skip
-        // (still ok) when the arena can't spare one (tiny-RAM parts, like test 11's alloc):
-        // the API is arch-uniform; this only needs the memory to demonstrate it.
+        // Accept a properly-sized, aligned caller-owned stack -> the thread runs on it.
+        // Drop this half when the arena can't spare one (tiny-RAM parts, like test 11's
+        // alloc): the API is arch-uniform; this only needs the memory to demonstrate it.
+        // The reject case above already ran, so the test stays `ok` and says which half
+        // it dropped -- it used to return here in total silence.
         constexpr uint32_t STK = 2048;
         void* raw = kos_ram_alloc(STK + 16);
         if (raw == nullptr)
         {
+            tap::diag("caller_stack: PARTIAL -- accept half not run (arena cannot spare a stack)");
             return;
         }
         void* stk = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(raw) + 15u) & ~uintptr_t{15});
@@ -1404,11 +1432,13 @@ namespace
     }
     void t_domain_share()
     {
-        // Skip (still ok) on a part whose arena cannot spare the region (like the
-        // caller-stack test). Alloc before the sems so an early return leaks nothing.
+        // Nothing to assert on a part whose arena cannot spare the region, so this is a
+        // real SKIP, not a pass (it used to return here silently and count as `ok`).
+        // Alloc before the sems so an early return leaks nothing.
         g_dshared = static_cast<volatile int*>(kos_ram_alloc(256));
         if (g_dshared == nullptr)
         {
+            tap::skip("arena cannot spare the shared region");
             return;
         }
         *g_dshared = 0;
@@ -1426,9 +1456,9 @@ namespace
         {
             // A tiny thread pool (microbit MAX_THREADS=2, with a low-prio driver from
             // an earlier stage still parked) cannot host both workers concurrently:
-            // skip (still ok). sim + qemu (larger pools) exercise the shared domain.
+            // a real TAP SKIP. sim + qemu (larger pools) exercise the shared domain.
             // Any worker that did spawn self-completes (writes, posts, returns->exits).
-            kos::print("# domain_share: SKIP (thread pool too small for 2 concurrent)\n");
+            tap::skip("thread pool too small for 2 concurrent");
             kos_sem_destroy(g_dwrote);
             kos_sem_destroy(g_dread);
             return;
@@ -1482,8 +1512,10 @@ namespace
         int w = kos::thread::spawn_caps(mmio_unpriv_worker, nullptr, "mmioW", 10, caps, 1);
         if (w < 0)
         {
-            // Tiny thread pool (e.g. microbit MAX_THREADS=2): skip the unpriv half.
-            kos::print("# mmio_grant: SKIP unpriv half (thread pool too small)\n");
+            // Tiny thread pool (e.g. microbit MAX_THREADS=2). The three privileged
+            // encodability cases above already ran, so this stays `ok` and names the half
+            // it dropped -- a whole-test SKIP would understate what was proven.
+            tap::diag("mmio_grant: PARTIAL -- unprivileged half not run (thread pool too small)");
             kos_sem_destroy(g_mmio_done);
             return;
         }
@@ -1519,8 +1551,10 @@ namespace
         int w = kos::thread::spawn_caps(stkarena_unpriv_worker, nullptr, "stkW", 10, caps, 1);
         if (w < 0)
         {
-            // Tiny thread pool (e.g. microbit MAX_THREADS=2): skip the unpriv half.
-            kos::print("# stackbase_arena: SKIP (thread pool too small)\n");
+            // The unprivileged child IS this test -- there is no privileged half to fall
+            // back on -- so a tiny thread pool (microbit MAX_THREADS=2) leaves nothing to
+            // assert: a whole-test SKIP, not a partial.
+            tap::skip("thread pool too small");
             kos_sem_destroy(g_stkarena_done);
             return;
         }
@@ -1534,8 +1568,10 @@ namespace
     // Exercises grant_hits_reserved / grant_region_admissible directly (kos_grant_probe,
     // test-only). The RAM-path cases run wherever the arena exists (sim). The reserved-
     // OVERLAP matrix needs a board that actually declares reserved blocks; the runnable
-    // MPU board (sim) reserves nothing, so that half SKIPs there and runs on an enforcing
-    // MCU. (The bit-band alias-hit case needs a bit-band M4 and is HW-only.)
+    // MPU board (sim) reserves nothing, so that half reports PARTIAL there (the test
+    // still asserts the RAM/DEV admission cases, so it is NOT a whole-test SKIP) and runs
+    // for real on an enforcing MCU. (The bit-band alias-hit case needs a bit-band M4 and
+    // is HW-only.)
     void grant_noop(void*) {}
     void t_grant_reserved()
     {
@@ -1549,6 +1585,10 @@ namespace
             TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, a, 2048) == 1);       // in-arena, aligned, privileged
             TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_UNPRIVILEGED, a, 2048) == 1);     // in-arena, aligned, unprivileged
             TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, a + 16, 2048) == 0);  // R1: base not aligned to the region size
+        }
+        else
+        {
+            tap::diag("grant_reserved: PARTIAL -- arena-relative RAM cases not run (2 KiB alloc failed)");
         }
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, 0x1000u, 0x1000u) == 0);      // out-of-arena RAM refused
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, 0xFFFFFFF0u, 0x20u) == 0);    // wrap (32-bit) / out-of-arena (64-bit) refused
@@ -1577,7 +1617,7 @@ namespace
         uintptr_t const n = kos_grant_probe(KOS_GRANT_OP_RESERVED_COUNT, 0, 0);
         if (n == 0)
         {
-            kos::print("# grant_reserved: SKIP overlap matrix (board reserves nothing)\n");
+            tap::diag("grant_reserved: PARTIAL -- reserved-overlap matrix not run (board reserves nothing)");
             return;
         }
         uintptr_t const rb = kos_grant_probe(KOS_GRANT_OP_RESERVED_BASE, 0, 0);       // block[0].base
@@ -1636,8 +1676,17 @@ namespace
     // MUST be accepted; a pointer into no granted region (the un-owned guard page)
     // MUST be rejected, never read. All checks run from an UNPRIVILEGED worker
     // (main is privileged and bypasses the floor).
-    char const CD_LIT[] = "# [confdep] unpriv rodata literal reaches the console\n";
-    long g_cd_lit_rc = -99;    // worker: kconsole_write(rodata literal) -> expect len
+    // WHAT THE POSITIVE HALF PROVES: that the floor ACCEPTED an unprivileged caller's
+    // rodata pointer -- not that the bytes reached a console. kos_kconsole_write returns
+    // `len` for every accepted buffer even when console_emit then drops all of it (any
+    // published board), so a delivery claim here would be vacuous, and the old literal
+    // ("...reaches the console") made exactly that claim. Its real force comes from
+    // being PAIRED with the guard-page negative below: same syscall, same unprivileged
+    // caller, -KOS_EFAULT -- together they show the floor discriminates reachable from
+    // unreachable. Where no guard page exists (no enforcement) the positive stands alone
+    // and is correspondingly weaker; that is inherent, not an oversight.
+    char const CD_LIT[] = "# [confdep] unpriv rodata buffer accepted by the readable floor\n";
+    long g_cd_lit_rc = -99;    // worker: kconsole_write(rodata literal) -> expect len (accepted, not delivered)
     int g_cd_goodspawn = -99;  // worker: spawn rc of a child NAMED from .rodata
     int g_cd_goodname_ran = 0; // that child ran (name-copy path did not break spawn)
     int g_cd_kidsem = -1;      // grandchild -> worker handoff
@@ -1699,13 +1748,15 @@ namespace
         int w = kos::thread::spawn_caps(cd_worker, nullptr, "cdwork", 10, caps, 1);
         if (w < 0)
         {
-            kos::print("# confused_deputy: SKIP (thread pool too small)\n");
+            tap::skip("thread pool too small");
             kos_sem_destroy(g_cd_done);
             return;
         }
         kos_sem_wait(g_cd_done);
         kos_sem_destroy(g_cd_done);
-        // Positive (every backend): an unprivileged rodata literal reached the console.
+        // Positive (every backend): the floor accepted an unprivileged caller's rodata
+        // pointer and read exactly len bytes from it. See CD_LIT on why this is an
+        // acceptance check and deliberately not a delivery check.
         TAP_CHECK(g_cd_lit_rc == static_cast<long>(sizeof(CD_LIT) - 1));
         // Positive: a child named from .rodata spawned and ran (the name-copy path works).
         // The grandchild needs its own stack; on a tiny arena (microbit: 16 KiB SRAM, which
@@ -1715,7 +1766,7 @@ namespace
         // on the roomier sim/qemu backends.
         if (g_cd_goodspawn < 0)
         {
-            kos::print("# confused_deputy: SKIP grandchild half (arena too small for its stack)\n");
+            tap::diag("confused_deputy: PARTIAL -- grandchild-name half not run (arena too small for its stack)");
             return;
         }
         TAP_CHECK(g_cd_goodname_ran == 1);
@@ -1990,7 +2041,7 @@ namespace
             if (fl >= 0) { n++; }
             wait_n(n);
             kos_handle_close(g_ep);
-            kos::print("# call_infoless_revert: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         char warm[4] = {0};
@@ -2043,7 +2094,7 @@ namespace
             if (cl >= 0) { n++; }
             wait_n(n);
             kos_handle_close(g_ep);
-            kos::print("# call_close_reply: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         wait_n(2);
@@ -2135,7 +2186,7 @@ namespace
             // (sv<0) or a lone server parked in recv (cl<0). Neither can be drained: close
             // and skip. Never fires on the CI targets (>= 2 thread slots).
             kos_handle_close(g_ep);
-            kos::print("# call_happy: SKIP (pool too small for 2 threads)\n");
+            tap::skip("pool too small for 2 threads");
             return;
         }
         wait_n(2);
@@ -2164,7 +2215,7 @@ namespace
             // EPIPE'd and posts, THEN drain it. Never fires on the CI targets.
             kos_handle_close(g_ep);
             if (cl2 >= 0) { wait_n(1); }
-            kos::print("# call_happy: SKIP slowpath (pool too small)\n");
+            tap::diag("call_happy: PARTIAL -- slowpath half not run (pool too small)");
             return;
         }
         wait_n(2);
@@ -2233,7 +2284,7 @@ namespace
         if (sv < 0 or cl < 0)
         {
             kos_handle_close(g_ep); // lone parked server or nothing spawned: nothing to drain
-            kos::print("# call_truncation: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         wait_n(2);
@@ -2284,7 +2335,7 @@ namespace
         if (sv < 0 or cl < 0)
         {
             kos_handle_close(g_ep); // lone parked server or nothing spawned: nothing to drain
-            kos::print("# call_double_reply: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         wait_n(2);
@@ -2329,7 +2380,7 @@ namespace
         if (sv < 0 or cl < 0)
         {
             kos_handle_close(g_ep); // lone parked server or nothing spawned: nothing to drain
-            kos::print("# call_server_death: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         wait_n(2);
@@ -2433,7 +2484,7 @@ namespace
             if (sp >= 0) { n++; }
             wait_n(n);
             kos_handle_close(g_ep);
-            kos::print("# call_donation: SKIP (pool too small)\n");
+            tap::skip("pool too small");
             return;
         }
         wait_n(3);
@@ -2523,7 +2574,7 @@ namespace
         void* rbuf = kos_ram_alloc(256);
         if (sbuf == nullptr or rbuf == nullptr)
         {
-            kos::print("# endpoint_crossdomain: SKIP (arena cannot spare two domain regions)\n");
+            tap::skip("arena cannot spare two domain regions");
             return;
         }
         g_ep = kos_endpoint_create();
@@ -2538,7 +2589,7 @@ namespace
                                         KOS_POLICY_FIFO, 0, /*privileged=*/false, rbuf, 256);
         if (s < 0 or r < 0)
         {
-            kos::print("# endpoint_crossdomain: SKIP (thread pool too small for 2 concurrent)\n");
+            tap::skip("thread pool too small for 2 concurrent");
             // A lone sender parks then EPIPE-wakes on the close below and posts g_xd_done; a lone
             // receiver is an accepted permanent park (design 4.1: no receiver-side EPIPE) and is
             // NOT swept up. Either way the post lands on this test's PRIVATE sem, so it cannot
@@ -2583,11 +2634,32 @@ namespace
         TAP_CHECK(kos_handle_close(e) == 0);
         TAP_CHECK(kos_handle_close(m) == 0);
 
-        // Pre-publish (the sim never hands over -- a real publish would silence this TAP
-        // stream), g_stdout_target < 0, so cap_install_defaults seats NOTHING at index 0.
-        // Sending on the empty stdout slot therefore fails cleanly rather than resolving a
-        // stale/aliased object -- this exercises the pre-publish cap_install_defaults branch.
-        TAP_CHECK(kos_send(0, "x", 1) == -KOS_EBADF);
+        // Index 0 is the kernel stdout slot, and BOTH of its postures are asserted here --
+        // this test used to hardcode the pre-publish one, which made it fail on every
+        // board whose service list publishes the console (and, before the harness became
+        // publish-aware, its `not ok` was itself swallowed).
+        //
+        // The discriminator is a ZERO-length send: a valid zero-length signal per
+        // <kickos/sys.h>, so unlike the 1-byte probe below it puts NO byte on the wire in
+        // either posture -- the old unconditional "x" is what left a stray character in
+        // front of the published TAP stream.
+        long const stdout_seated = kos_send(0, "", 0);
+        if (stdout_seated == -KOS_EBADF)
+        {
+            // Pre-publish (g_stdout_target < 0): cap_install_defaults seats NOTHING at
+            // index 0, so a send fails cleanly rather than resolving a stale/aliased
+            // object. Exercises the pre-publish cap_install_defaults branch.
+            TAP_CHECK(kos_send(0, "x", 1) == -KOS_EBADF);
+        }
+        else
+        {
+            // Post-publish: cap_seat_stdout put a send-only (CAP_SIGNAL) endpoint cap at
+            // index 0, so the zero-length signal rendezvoused with the console driver and
+            // reported 0 bytes transferred. Exercises the other cap_install_defaults
+            // branch -- and, because a rendezvous only completes with a live receiver, it
+            // is the one place the suite proves console output is actually being ACKed.
+            TAP_CHECK(stdout_seated == 0);
+        }
 
         // Exhaustion: own-creates fill the remaining slots [FIRST_DYNAMIC .. MAX_HANDLES-1]
         // and then fail cleanly with -KOS_ENOMEM -- the reserved range stays off-limits even at the
@@ -2633,10 +2705,11 @@ namespace
     }
     void t_console_publish()
     {
-        // Privileged MAIN: a bad/stale cap is rejected before the deinit/flip, so the
-        // console stays kernel-owned and the TAP stream survives. (On a driver board the
-        // default init makes a real publish, which would silence TAP; the sim selects
-        // KICKOS_SERVICE_LIST=kickos_services_none, so no live publish ever happens here.)
+        // Privileged MAIN: a bad/stale cap is rejected before the deinit/flip, so console
+        // ownership is left exactly as the board's service list set it -- whichever posture
+        // that is. (This test never publishes anything itself: both caps below are invalid,
+        // and the unprivileged child is refused by the privilege gate. A board that DID
+        // publish keeps its driver, and the harness follows it there -- see tests/tap/tap.cc.)
         TAP_CHECK(kos_console_publish(-1) == -KOS_EBADF);
         TAP_CHECK(kos_console_publish(0x7fffffff) == -KOS_EBADF);
         // Unprivileged child: the privileged-only gate rejects it.
