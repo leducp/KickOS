@@ -4,9 +4,9 @@
 The exact wire contract a client and an unprivileged bus driver exchange 1:1 over a
 `kos_call` endpoint (`ipc-call-reply.md` is the transport). Code source of truth:
 `user/include/kickos/sys/bus.h` (the wire ABI), `user/include/kickos/driver/spi_client.h`
-+ `user/driver/spi_client/spi_client.cc` (the neutral client wrapper),
-`user/driver/k64dspi/k64dspi.cc` + `user/driver/xmcssc/xmcssc.cc` (the two reference SPI
-services). If a page and the code disagree, the page is the bug.
++ `user/lib/spi_client/spi_client.cc` (the neutral client wrapper),
+`system/driver/mk64f/k64dspi/k64dspi.cc` + `system/driver/xmc4800/xmcssc/xmcssc.cc` (the two
+reference SPI services). If a page and the code disagree, the page is the bug.
 
 ## Layering
 
