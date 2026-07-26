@@ -35,7 +35,7 @@ code wins, then this file.
 |---|---|---|---|---|---|
 | `sim` | host process | -- | host stdout | `ctest --preset sim` | [x] CI |
 | `qemu` | mps2-an386 / M4 | -- | semihosting | `ctest --preset qemu` | [x] CI |
-| `microbit` | nRF51822 / M0 | -- | semihosting | `ctest --preset microbit` | [x] CI |
+| `microbit` | nRF51822 / M0 | -- | semihosting | `ctest --preset microbit` | [!] CI gate RED -- see *microbit: the armv6m run gate is red* below |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench |
 | `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
@@ -155,6 +155,24 @@ the board".
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a
   hosted runner, so RX is bench-validated only. A change that touches the arch seam is *not*
   covered for RX by a green CI run; build it locally.
+- **microbit: the armv6m run gate is red**, and has been since `9ae301f` (M4.4). Two independent
+  pre-existing breakages, both a consequence of a 16 KiB-SRAM board meeting choreographies sized
+  for larger ones:
+  1. That commit gave `nrf51.ld` a 4 KiB `.userheap` carved from RAM *before* the thread arena.
+     On 16 KiB SRAM that starves the arena, so **every** `kos::thread::spawn` fails and the
+     selftest suite cascades to 39 `not ok`. `-DKICKOS_USER_HEAP_SIZE=0` restores the pre-M4.4
+     arena and the suite runs again, which localises it to the heap carve-out rather than to
+     armv6m: the board needs an explicit heap-vs-arena budget, not a fleet-uniform 4 KiB.
+  2. With the arena restored, the run then **hangs** at `call_infoless_revert`. That test spawns
+     four workers; on a 2-slot pool two spawn and two fail, and its partial-spawn drain waits on
+     `g_done` posts from a call/reply choreography that cannot complete with half its cast. The
+     pool-too-small guard needs to fire *before* the spawns, not after.
+
+  Neither is an armv6m mechanism fault -- the ISA switch path, the last green run (`8850bb0`)
+  and the `-DKICKOS_USER_HEAP_SIZE=0` probe all agree the port itself is sound. Until both are
+  fixed the board reaches neither its verdict nor its skip summary, so `microbit_selftest`
+  carries a deliberately loose `MAX_SKIPS` ceiling rather than a measured budget (see
+  `../../user/apps/common/selftest/CMakeLists.txt`).
 - **Xtensa is build-only** because upstream QEMU ships no ESP32 machine model. The gate builds
   both `esp32-wroom` and `esp32-wroom-st` (the `-st` config is what is HW-validated), catching
   link / linker-script / windowed-ABI asm regressions. `esptool` is deliberately absent: only the
