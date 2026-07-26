@@ -31,7 +31,6 @@ extern "C"
     void kickos_armv7m_init(void);
 
     // Linker-script symbols (mps2.ld).
-    extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
@@ -192,18 +191,25 @@ void kfault_terminate(void)
     arch_shutdown(132);
 }
 
+#if KICKOS_HAVE_MPU
+// Rule 7 reserved set: this chip owns NO MPU-governable MMIO. Its console and its
+// monotonic time base are both semihosting calls (arch_console_write /
+// arch_clock_now above), not device registers, and the only registers the port
+// touches -- SysTick, NVIC, SCB -- live in the Private Peripheral Bus (0xE000_0000),
+// which the MPU does not govern, so no region could ever grant it away. Same
+// posture as the sim (arch/sim/sim.cc): KICKOS_RESERVED_NONE is legal per arch.h.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    (void)out;
+    (void)max;
+    return KICKOS_RESERVED_NONE;
+}
+#endif
+
 void Reset_Handler(void)
 {
-    uint32_t* src = &_sidata;
-    uint32_t* dst = &_sdata;
-    while (dst < &_edata)
-    {
-        *dst++ = *src++;
-    }
-    for (uint32_t* b = &_sbss; b < &_ebss; b++)
-    {
-        *b = 0;
-    }
+    // init .data + (under enforcement) the pow2 app-data block; zero .bss + app-bss
+    kickos_ranges_init();
     // Enable the FPU BEFORE running static constructors: with the hard-float ABI
     // the compiler may emit FP instructions in a global initializer, which would
     // UsageFault (CP10/CP11 disabled at reset) -> HardFault before kmain.

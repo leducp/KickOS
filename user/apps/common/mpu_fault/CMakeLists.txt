@@ -27,3 +27,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND KICKOS_HAVE_MPU
   kickos_add_qemu_test(NAME qemu_riscv_mpu_fault TARGET mpu_fault BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_mpu_fault.sh")
 endif()
+
+# The ARM peer of that gate, and the thing ARM enforcement did not have until the mps2
+# chip grew an .appdata window: proof that a PMSAv7 denial actually TRAPS at runtime,
+# not merely that the enforcement layout links. Every other enforcing ARM port is
+# silicon, so build-boards-mpu could only ever check the link surface.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu" AND KICKOS_HAVE_MPU)
+  kickos_add_qemu_test(NAME qemu_mpu_fault TARGET mpu_fault BOARD qemu
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_mpu_fault.sh")
+endif()
