@@ -1,6 +1,13 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design brief: unprivileged userspace SPI driver
 
+> **Status: LANDED** -- `xmcspi` shipped as `user/apps/xmc4800-relax/xmcspi/` and is
+> silicon-proven (2026-07-17): the canonical per-thread PMSA MMIO-isolation result, where a
+> granted 512-byte USIC DEV window does an internal SSC loopback (4 words, `tx == rx`) AND an
+> ungranted SCU poke faults MemManage (`CFSR=0x82`). The "pending silicon" note further down
+> predates that run. Note the milestone numbers in the correction below predate the M4/M5/M6
+> renumbering (`design-driver-era-scope.md` sec.4). See `design/README.md` for the taxonomy.
+
 > **TARGET CORRECTION (read first).** The SPI driver KickCAT actually needs is on the
 > **K64F (DSPI)** -- the goal is a REAL driver with REAL usage *before* M3, feeding the
 > KickCAT slave stack. So the implementation target is **K64F/DSPI**, and resolving

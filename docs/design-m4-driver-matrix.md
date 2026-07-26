@@ -1,6 +1,9 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # M4 driver-coverage matrix -- per-board peripheral survey + complexity/gain backlog
 
+> **Status: ACTIVE** -- the live prioritized backlog for the milestone in flight (M4).
+> See `design/README.md` for the marker taxonomy.
+
 **EXPLORATORY -- NOT A CONTRACT.** The complement of `docs/design-driver-era-scope.md`
 (the WORK) and `roadmap.md` (the milestone): this doc is the SURVEY -- what each of the
 four neutrality boards actually carries on silicon, what KickOS already drives, and a
@@ -28,7 +31,7 @@ an a-priori list -- is what stops scope ballooning into a four-vendor BSP.
 
 ## 1. Legend
 
-Coverage (against the tree today: `arch/*/chip/*`, `user/driver/*`, `user/apps/*`):
+Coverage (against the tree today: `arch/*/chip/*`, `system/driver/*/*`, `user/apps/*`):
 - **driven** -- a real KickOS body drives it (kernel or userspace).
 - **partial** -- touched for one narrow purpose (e.g. kernel tick, console ring), not a
   general driver / not the service-API shape.

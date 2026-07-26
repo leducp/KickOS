@@ -1,6 +1,10 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design brief: task #9 -- unprivileged userspace driver + MMIO grant
 
+> **Status: LANDED** -- the current contract is `reference/architecture.md` (Memory domains) and
+> `reference/invariants.md` (`grant-refuses-kernel-reserved-blocks`).
+> See `design/README.md` for the marker taxonomy.
+
 **LANDED.** The MMIO-grant mechanism is implemented and committed:
 `kos_thread_params.mmio_base/mmio_size` (Option A grant-at-spawn), the
 `arch_mpu_region_encodable(base,size)` arch seam (exact-cover, no rounding: PMSA/PMP

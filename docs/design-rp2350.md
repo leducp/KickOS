@@ -3,14 +3,23 @@
 
 # RP2350 bring-up (Cortex-M33) -- design spike
 
+> **Status: LANDED** -- the Cortex-M33 port shipped and runs on silicon, and the PMSAv8 MPU it
+> deferred landed too (`design-rp2350-mpu-armv8m.md`). Kept as the bring-up reasoning: the
+> IMAGE_DEF / vector-pin invariant below is still the thing that bricks a boot if you get it
+> wrong. Current per-board facts live in `reference/boards.md`. The **Hazard3 RV32IMAC(B)** core
+> remains unimplemented (`design-rp2350-hazard3.md`, EXPLORATORY).
+> See `design/README.md` for the marker taxonomy.
+
 Terse, invariant-first. Register facts are clean-room from the RP2350 datasheet
 RP-008373-DS-2 (section numbers cited inline and in the chip source). This pass
 brings up the **Cortex-M33** only, to a clean compile+link; the **Hazard3
 RV32IMAC(B)** core and the **PMSAv8 MPU** are designed here and implemented later.
 
 Target board: Waveshare RP2350 Pi-Zero form factor (`boards/pizero2350`), 16 MiB
-QSPI, UART0 console on GP0/GP1. Not flashed (no bench); build + image-inspection
-verified. BOOTSEL-recoverable, so a wrong clock/boot config cannot brick it.
+QSPI, console on **UART1 / GP4-GP5** -- this doc originally said UART0 on GP0/GP1, but the
+Pi-Zero header does not bring those pins out, and the shipped port uses UART1
+(`arch/arm/chip/rp2350/chip_rp2350.cc`). Since flashed and validated on the bench.
+BOOTSEL-recoverable, so a wrong clock/boot config cannot brick it.
 
 The M33 reuses the existing `armv7m` arch backend **verbatim** (armv8-m is a
 superset of armv7-m for the thread/switch/NVIC/SVC/PendSV path; `switch.S`, the

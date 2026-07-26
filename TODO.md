@@ -36,7 +36,7 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
 - [x] **Console device handover** -- `ConsoleState{KERNEL_OWNED,USER_OWNED,RECLAIMED}` drop-routing,
       `console_tx_deinit` (USER_OWNED set last) + the B1 in-flight-writer drain, `kos_console_publish`
       (#29, privileged), stdout cap seated at index 0, `_write` probes `kos_send(0)` then falls back.
-      Userspace polled XMC UART driver (`user/driver/xmcuart` + `consoledemo`). SILICON PASS on XMC:
+      Userspace polled XMC UART driver (`system/driver/xmc4800/xmcuart` + `consoledemo`). SILICON PASS on XMC:
       end-to-end app printf -> IPC -> userspace driver -> wire, under enforcement.
 - [x] **Panic-path console reclaim** -- `arch_console_reclaim` per chip (XMC full in-window rewrite,
       KSCFG.MODEN-first; K64F uart0 + zero MODEM/C3/S2/IR/C7816), `kickos_isr_fault`->`kpanic_enter`
@@ -263,7 +263,7 @@ below where they were previously mislabeled.
         silicon -- the fleet's one honest peripheral-isolation gap. `docs/design-spi-driver-stm32f411.md`.
   - [x] **K64F/DSPI driver (k64dspi, DSPI0 for the KickCAT ESC SPI PDI)** -- DONE on silicon:
         the polled-FIFO transport (~10 MHz) reached OPERATIONAL against a real LAN9252. Exported
-        as the `kickos_k64dspi` lib (`<kickos/driver/k64dspi.h>`, source `user/driver/k64dspi`)
+        as the `kickos_k64dspi` lib (`<kickos/driver/k64dspi.h>`, source `system/driver/mk64f/k64dspi`)
         so an out-of-tree consumer links it. Within the K64F coarse-peripheral ceiling (window
         grant is documentation, not enforcement); microkernel invariant kept (driver in userspace).
   - [x] **C6 PMP SRAM enforcement DONE on silicon** (18/18 selftest under enforcement +

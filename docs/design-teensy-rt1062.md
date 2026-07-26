@@ -1,6 +1,14 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Teensy 4.1 / i.MX RT1062 bring-up (spike)
 
+> **Status: LANDED** -- the port shipped and runs on silicon. Two of the deferrals below have
+> since closed: **MPU enforcement** works (and required a chip fixed-region wrap for the M7's
+> speculative access -- `design-teensy-mpu-hang.md`) and the **L1 I-cache** is enabled as part of
+> that fix. Still deferred: the 600 MHz PLL tree (`SystemCoreClock` is the ROM-default 396 MHz),
+> the FlexRAM ITCM/DTCM split, and the D-cache (built, opt-in behind
+> `-DKICKOS_IMXRT_DCACHE=1`). Per-board facts: `reference/boards.md`.
+> See `design/README.md` for the marker taxonomy.
+
 First-pass port of KickOS to the PJRC Teensy 4.1 (NXP i.MX RT1062, Cortex-M7).
 Bounded scope: **design + scaffold to a clean compile+link of a minimal image.**
 Not flashed (no bench), no MPU, no L1 cache, no PLL bring-up -- those are DEFERRED

@@ -1,6 +1,14 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design note: M3 #4 stage (ii) -- console device handover + panic-path reclaim
 
+> **Status: LANDED** -- console device handover shipped and is silicon-proven on XMC: an app
+> `printf` reaches the wire through IPC and an unprivileged userspace driver, under enforcement,
+> and the panic path reclaims a driver-garbled UART so the banner survives. Two console drivers
+> exist now (`system/driver/xmc4800/xmcuart`, `system/driver/mk64f/k64uart`); fleet-wide rollout
+> is M4 work (`design-driver-era-scope.md` G1). The current contract is
+> `reference/console.md` + `reference/invariants.md` (the three `console-*` invariants).
+> See `design/README.md` for the marker taxonomy.
+
 **Authoritative implementation spec (fable review folded in, rulings resolved). Not a spike.** Stage (i)
 (the endpoint object + `send`/`recv`/`create`) has LANDED: syscalls 26/27/28,
 `kernel/include/kickos/endpoint.h`, root-only caps, `recv_holders` dead-gate + EPIPE.
@@ -17,7 +25,7 @@ Code truth consulted (do not re-survey): `kernel/init/console.cc` (`console_emit
 `arch/arm/chip/xmc4800/usic_uart.cc:148-205` (`kickos_xmc_usic_init`/`_write`),
 `arch/arm/chip/mk64f/chip_mk64f.cc:298-316` (`uart0_init`, file-local),
 `user/include/kickos/sys/abi.h` (syscall enum, ends at 28; `kos_thread_params` mmio grant),
-`user/driver/k64dspi/` (the unprivileged-driver precedent), `user/src/newlib_stubs.cc:19-26`
+`system/driver/mk64f/k64dspi/` (the unprivileged-driver precedent), `user/src/newlib_stubs.cc:19-26`
 (`_write`), `kernel/syscall/cap.cc` (`cap_install_defaults` installs nothing today;
 `cap_install` free-slot scan :341-355 -- CHANGED by B3 to start at index 1),
 `kernel/syscall/syscall.cc:304-318` (`endpoint_recv` writable-arg checks, Q8).
@@ -251,11 +259,13 @@ Consequences to carry:
 - This CHANGES landed stage-(i) `cap.cc` behavior -- it needs re-validation on the ii-a
   silicon run (the cap selftests and any test that assumed a first create at index 0).
 - It costs one handle slot per table (own-caps now live in `[1 .. MAX-1]`).
-- `KICKOS_MAX_HANDLES` default is 8; the tiny-board floor is 6 (`bluepill-c8`, `stm32f103`,
-  `stm32f302`, `nrf51` -- all polled-only, none publish a handover). If the stress soak needs
-  8 concurrent OWN caps it now needs `MAX_HANDLES >= 9` (8 own + slot 0); on the default-8
-  boards that requires a bump, and the tiny boards cannot host that soak at all. Confirm the
-  soak's real concurrent-cap count against `MAX_HANDLES - 1` before the ii-a run.
+- `KICKOS_MAX_HANDLES` costs one handle slot per table. This was written against a default of 8
+  with a tiny-board floor of 6; the sizing was raised as the reserved range grew, and the values
+  that actually shipped are **default 12** with the four tiny boards (`bluepill-c8`, `stm32f103`,
+  `stm32f302`, `nrf51` -- all polled-only, none publish a handover) at **9**
+  (`kernel/include/kickos/config/system.h`). 9 is `KICKOS_CAP_FIRST_DYNAMIC` + the suite's 2
+  permanent caps + a 3-own-cap peak, i.e. the full-selftest prerequisite; with FIRST_DYNAMIC=4 the
+  default 12 leaves 8 usable own-cap slots, which covers the stress soak's peak.
 
 ### D5 -- `_write` migration (libc-side, kernel stays simple)
 
@@ -452,14 +462,16 @@ the driver's region set maps the U0C0 window; another unprivileged thread faults
 SCU/IOCR stay privileged. That is why XMC is the first target -- the security boundary is
 real and enforced at the window edge. K64F (SYSMPU + AIPS) works FUNCTIONALLY but peripheral
 isolation is coarse: to let the unprivileged driver reach UART0 a privileged bring-up shim
-must open the AIPS PACR slot GLOBALLY (as `user/driver/k64dspi` opens the DSPI slot), after
+must open the AIPS PACR slot GLOBALLY (as `system/driver/mk64f/k64dspi` opens the DSPI slot), after
 which any unprivileged thread can poke UART0. "Driver owns the device" on K64F is convention
 plus the kernel/user split, not per-thread enforcement -- document it, do not pretend it.
 
-**Build/lib location.** Mirror `user/driver/` and the k64dspi precedent: a new
-`user/driver/xmcuart/` exporting `kickos_xmcuart` (STATIC, `kickos_apply_freestanding`,
-`target_link_libraries(... kickos_user)`, `install(EXPORT KickOSTargets)`), guarded in
-`user/driver/CMakeLists.txt` by `KICKOS_CHIP STREQUAL "xmc4800"`. Its `.data`/`.bss` land
+**Build/lib location.** Mirror the k64dspi precedent: a driver lib exporting `kickos_xmcuart`
+(STATIC, `kickos_apply_freestanding`, `target_link_libraries(... kickos_user)`,
+`install(EXPORT KickOSTargets)`), guarded so only this build's chip is added. It landed as
+`system/driver/xmc4800/xmcuart/`, keyed by `KICKOS_CHIP` in `system/driver/CMakeLists.txt` --
+`system/`, not `user/`, because a chip driver lib is board support a consumer links on top of the
+OS rather than an app, even though it builds unprivileged. Its `.data`/`.bss` land
 in `.appdata` (not in the kernel closed set), user-reachable, exactly as k64dspi does. The
 driver ships an optional privileged bring-up helper (no-op on XMC; opens the AIPS slot +
 spawns the thread on the later K64F port).

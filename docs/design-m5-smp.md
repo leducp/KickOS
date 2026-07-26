@@ -3,6 +3,9 @@
 
 # SMP candidates and the staged model (M5)
 
+> **Status: EXPLORATORY** -- a spike, not a contract. Nothing here is implemented. M5 is the
+> milestone after the M4 driver era. See `design/README.md` for the marker taxonomy.
+
 Status: DESIGN SPIKE. Forward-looking. This is M5. No build/runtime code change
 here -- it ranks the multi-core parts in hand by the ONE gate that actually decides
 SMP feasibility, and fixes the staged model (big-kernel-lock first, fine-grained

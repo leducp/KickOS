@@ -3,6 +3,8 @@
 
 # RP2350 Hazard3 (RISC-V) port -- feasibility / design spike
 
+> **Status: EXPLORATORY** -- see `design/README.md` for the marker taxonomy.
+
 **EXPLORATORY -- NOT A CONTRACT. NO IMPLEMENTATION.** A feasibility study for running
 KickOS on the RP2350's **RISC-V Hazard3** cores, as a sibling of the existing ARM
 Cortex-M33 port (`arch/arm/chip/rp2350/`, `docs/design-rp2350.md`). Register facts that

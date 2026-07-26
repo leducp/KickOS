@@ -1,11 +1,19 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
-# KickOS pre-M2 readiness -- task list
+# KickOS enforcement ledger (opened as the pre-M2 readiness list)
 
-> The remaining work to put a **solid, cross-board-verified foundation** under M2
-> (MPU enforcement -- the design lives in `reference/architecture.md` / `reference/invariants.md`). M2
-> wires `arch_mpu_apply` into the context-switch hook and adds per-task memory
-> protection; it stacks directly on the scheduler / IRQ / timer paths, so those
-> must be trustworthy on real silicon first. Ordered by priority.
+> **What this file is now.** It opened as the pre-M2 readiness list -- the work needed to put a
+> **solid, cross-board-verified foundation** under M2 (MPU enforcement; the design lives in
+> `reference/architecture.md` / `reference/invariants.md`), since M2 wires `arch_mpu_apply` into
+> the context-switch hook and stacks directly on the scheduler / IRQ / timer paths, which had to
+> be trustworthy on real silicon first. That list is done, and the file kept growing with the
+> evidence rather than being closed: it now also carries the **per-chip MPU fan-out** and the
+> silicon proofs for **M2**, **M3** and the **M4.4** driver work. Read it as the answer to
+> "which chip is proven to enforce, and by what evidence" -- the title is historical, the content
+> is current. Sections 1-7 are the original readiness items, ordered by priority; everything from
+> *Then: M2 proper* onward is the enforcement record.
+>
+> Companion docs: `reference/boards.md` for per-board wiring and what CI re-checks per ISA,
+> `../M1_state.md` for the M1 per-app fleet pass, `../TODO.md` for the live task list.
 
 ## 1. Thread-slot reclamation (FIRST PRIORITY) -- [x] DONE
 
@@ -268,28 +276,28 @@ bring-up in `book/peripheral-isolation-and-the-hardware-ceiling.md`):
 |---|---|---|
 | XMC4800 -- ARM v7-M PMSA (CPU-side) | **YES** | silicon-proven (xmcspi, 2026-07-17): a granted USIC DEV window works + an ungranted SCU poke faults MemManage. (Some USIC config registers are PV-write-only at the bus -- a kernel-vs-user privilege split under the PMSA, not a per-thread gate.) |
 | RISC-V PMP (ESP32-C6) | **YES** by PMP (SRAM enforcement silicon-proven) | PMP discriminates per-thread -- SRAM enforcement DONE on silicon (18/18 + mpu_fault); a SEPARATE APM/PMS bus unit defaults deny-user (one-time global open), still needed for per-thread PERIPHERAL isolation (follow-on: `docs/design-c6-driver.md`) |
-| RX72M -- RXv3 MPU (CPU-side) | **YES** | SRAM/domain enforcement DONE on silicon (2026-07-17: selftest 20/20 + mpu_fault cross-domain trap); a real granted peripheral window not yet run on silicon (task #3) |
+| RX72M -- RXv3 MPU (CPU-side) | **YES** | SRAM/domain enforcement DONE on silicon (2026-07-17: selftest 20/20 + mpu_fault cross-domain trap), AND a real granted peripheral window -- `rxdrv`, same date (see the per-board driver list below) |
 | K64F -- SYSMPU (bus-slave-side) | **NO** | silicon-proven: SYSMPU does NOT gate the AIPS peripheral bridge; the AIPS PACR does (per privilege+master, per 4 KB slot, all-user once opened) -- no per-thread peripheral boundary |
 
 **Per-board driver status (truthful):**
 - **k64drv (K64F, PIT):** DONE on silicon -- the first unprivileged MMIO driver; it is what
   ANSWERED the SYSMPU-vs-AIPS question above (SYSMPU inert for peripherals; AIPS gates,
   coarse). Also added a weak `arch_fault_report_extra` hook (K64F decodes SYSMPU CESR/EARn/
-  EDRn + BusFault). `user/apps/k64drv/`.
+  EDRn + BusFault). `user/apps/frdmk64f/k64drv/`.
 - **xmcspi (XMC4800, USIC0-CH1 SSC loopback):** DONE on silicon (2026-07-17) -- the CANONICAL
   per-thread PMSA MMIO-isolation proof: a granted 512-byte USIC DEV window does an internal SSC
   loopback (4 words tx==rx) AND an ungranted SCU poke faults MemManage (CFSR=0x82,
   MMFAR=0x50004648), per thread. Internal loopback, no jumper. The USIC CCR/FDR/BRG are
   PV-write-only at the bus (RM Table 18-20) so interrupt-enable+config is privileged bring-up --
   a K64F-AIPS-like bus-privilege layer sitting UNDER the PMSA proof. `design-spi-driver.md`,
-  `user/apps/xmcspi/`.
+  `user/apps/xmc4800-relax/xmcspi/`.
 - **rxdrv (RX72M, PORT8/LED6 GPIO):** DONE on silicon (2026-07-17) -- per-thread peripheral
   isolation on the RX MPU: a granted 16-byte PODR window blinks LED6 AND an ungranted PORT8.PDR
   poke faults ("MPU FAULT: task 'rxdrv' attempted read at 0x8c008"). First real granted
-  peripheral window on RX. `user/apps/rxdrv/`.
+  peripheral window on RX. `user/apps/rx72m/rxdrv/`.
 - **f411spi (STM32F411, SPI1 loopback):** BUILT + fable-reviewed, silicon-validation PENDING a
   bench swap to the 32F411E-DISCO. Redundant with xmcspi for the PMSA proof (both ARM v7-M PMSA);
-  kept as the STM32-family reference. `design-spi-driver-stm32f411.md`, `user/apps/f411spi/`.
+  kept as the STM32-family reference. `design-spi-driver-stm32f411.md`, `user/apps/f411disco/f411spi/`.
 - **k64dspi (K64F, DSPI0 for the KickCAT ESC SPI PDI):** DONE on silicon (2026-07-17): 4-word
   SOUT->SIN loopback tx==rx over the AIPS-opened slot, blocking on the DSPI0 EOQ IRQ with the
   auto-rearm API (no explicit ack). Designed WITHIN the K64F ceiling: the DSPI window grant is
