@@ -8,7 +8,7 @@
 # N-way OR at each of the eight call sites that used to read
 # `KICKOS_BOARD STREQUAL "qemu"`, so adding an image is a one-line change.
 # Inherited by every add_subdirectory below.
-set(KICKOS_QEMU_MPS2_BOARDS qemu)
+set(KICKOS_QEMU_MPS2_BOARDS qemu qemu-m33)
 # The board name as a CTest-name prefix, so each image reports under its own name and
 # the an386 board keeps the names it has always had (qemu_hello, qemu_selftest, ...).
 string(REPLACE "-" "_" KICKOS_QEMU_MPS2_TAG "${KICKOS_BOARD}")
@@ -64,20 +64,22 @@ add_subdirectory(clocksoak)
 # cxxtest ONLY under enforcement -- each chip .ld homes the toolchain EH tables (EHABI
 # .ARM.extab / DWARF .eh_frame+.gcc_except_table / RX SjLj .gcc_except_table) into the
 # app code+data grants and routes the runtime writable state into the .appdata window.
-# The QEMU mps2 images stay non-enforcement (no enforcement block). qemu-riscv builds
-# BOTH: non-enforcement (freestanding path) and, when KICKOS_HAVE_MPU is set, the
-# full-C++ throw under PMP -- the deterministic runtime gate for the gp-in-appdata
-# layout (docs/design-riscv-gp-split.md), no silicon needed.
+# The QEMU mps2 images build it in BOTH postures, and that pairing is the point: the
+# non-enforcement build is the plain libstdc++ smoke, while the same gate under
+# KICKOS_HAVE_MPU runs the whole runtime -- throw/unwind, STL, RTTI -- as an
+# unprivileged thread, which on qemu-m33 is the only runtime coverage of full C++ under
+# PMSAv8 anywhere in the fleet (the other armv8-M enforcing ports are all silicon).
+# qemu-riscv likewise builds both: the full-C++ throw under PMP is the deterministic
+# gate for the gp-in-appdata layout (docs/design-riscv-gp-split.md), no silicon needed.
 if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
+   OR KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS
    OR ((KICKOS_BOARD STREQUAL "picopi"
         OR KICKOS_BOARD STREQUAL "rx72m"
         OR KICKOS_BOARD STREQUAL "esp32c6-wroom"
         OR KICKOS_BOARD STREQUAL "qemu-riscv")
        AND KICKOS_HAVE_MPU)
-   OR ((KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS
-        OR KICKOS_BOARD STREQUAL "qemu-riscv")
-       AND NOT KICKOS_HAVE_MPU)
+   OR (KICKOS_BOARD STREQUAL "qemu-riscv" AND NOT KICKOS_HAVE_MPU)
    # bluepill-c8 (stm32f103, 64K/20K, silicon non-MPU): cxxtest is 57K .text after the
    # vterminate reclaim (fits 64K flash) and its 8K .userheap clears the 5.9K measured
    # cxxtest heap peak. Operator-run on silicon (no QEMU model).
@@ -105,7 +107,8 @@ endif()
 # KICKOS_QEMU_MPS2_BOARDS: an FPU is a core capability, not a per-image gate.
 if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
-   OR KICKOS_BOARD STREQUAL "qemu")
+   OR KICKOS_BOARD STREQUAL "qemu"
+   OR KICKOS_BOARD STREQUAL "qemu-m33")
   add_subdirectory(fp_switch)
 endif()
 

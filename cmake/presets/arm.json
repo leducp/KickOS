@@ -19,6 +19,13 @@
       "cacheVariables": { "KICKOS_BOARD": "qemu", "KICKOS_ENABLE_SELFTEST": "ON" }
     },
     {
+      "name": "qemu-m33",
+      "displayName": "QEMU mps2-an505 (Cortex-M33, PMSAv8) - runnable",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/qemu-m33",
+      "cacheVariables": { "KICKOS_BOARD": "qemu-m33", "KICKOS_ENABLE_SELFTEST": "ON" }
+    },
+    {
       "name": "frdmk64f",
       "displayName": "NXP FRDM-K64F (Cortex-M4F, armv7m)",
       "inherits": "arm-base",
@@ -118,6 +125,7 @@
   ],
   "buildPresets": [
     { "name": "qemu",      "configurePreset": "qemu" },
+    { "name": "qemu-m33",  "configurePreset": "qemu-m33" },
     { "name": "qemu-telem", "configurePreset": "qemu-telem" },
     { "name": "frdmk64f",  "configurePreset": "frdmk64f" },
     { "name": "teensy41",  "configurePreset": "teensy41" },
@@ -143,6 +151,7 @@
   ],
   "testPresets": [
     { "name": "qemu",       "configurePreset": "qemu",       "output": { "outputOnFailure": true } },
+    { "name": "qemu-m33",   "configurePreset": "qemu-m33",   "output": { "outputOnFailure": true } },
     { "name": "qemu-telem", "configurePreset": "qemu-telem", "output": { "outputOnFailure": true } },
     { "name": "microbit",   "configurePreset": "microbit",   "output": { "outputOnFailure": true } }
   ]

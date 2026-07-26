@@ -13,7 +13,10 @@ kickos_add_application(cxxtest
 
 # QEMU armv7m gate: boot the image on each MPS2 image and assert the exceptions/STL/
 # RTTI checks all pass -- end-to-end proof that libstdc++ executes on real armv7m
-# without hardware. The app returns 0 -> semihosting SYS_EXIT.
+# without hardware. The app returns 0 -> semihosting SYS_EXIT. Under
+# -DKICKOS_HAVE_MPU=1 the same gate proves the runtime runs UNPRIVILEGED, with its
+# writable state routed into the .appdata grant: on qemu-m33 that is the only runtime
+# coverage of full C++ under PMSAv8 anywhere in the fleet.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_cxxtest TARGET cxxtest BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_cxxtest.sh")
