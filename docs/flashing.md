@@ -12,7 +12,11 @@ Every non-sim build emits three images next to the app ELF (via
 - `<app>.hex` -- Intel HEX (addresses embedded).
 - `<app>.bin` -- raw binary (no addresses; you supply the load address).
 
-e.g. `build/xmc4800-relax/user/apps/blink/blink.{elf-less name,hex,bin}`.
+The build tree mirrors `user/apps/`: a fleet-wide app emits under
+`build/<board>/user/apps/common/<app>/`, a board-specific one under
+`build/<board>/user/apps/<board>/<app>/` -- e.g.
+`build/xmc4800-relax/user/apps/common/blink/blink.{elf-less name,hex,bin}` and
+`build/xmc4800-relax/user/apps/xmc4800-relax/xmcspi/xmcspi.hex`.
 Espressif boards additionally emit `<app>.app.bin` (the bootable image).
 
 ## One command: `tools/flash.sh`
@@ -32,11 +36,13 @@ only assumption is that the tool is on `PATH` (no hardcoded install locations):
 |---|---|---|
 | `esp32c6` / `esp32` | `esptool` | `<app>.app.bin` @ `0x0` (C-series) / `0x1000` (esp32); port auto-detected |
 | `stm32f1/f3/f4` | `stlink` -> `jlink` | `<app>.bin` @ `0x08000000` (stlink) |
-| `rp2040` | `picotool` (hold BOOTSEL) | ELF |
+| `rp2040` / `rp2350` | `picotool` (hold BOOTSEL) | ELF |
 | `nrf51` | `pyocd` -> `jlink` | `<app>.hex` |
 | `sam3x8e` | `bossac` | `<app>.bin`; double-tap RESET for SAM-BA |
 | `mk64f` | `jlink` -> `pyocd` | `.hex` |
-| `xmc4800` / `rx72m` | `jlink` | `.hex` (addresses embedded) |
+| `imxrt1062` | `teensy` (`teensy_loader_cli`) | `.hex`; tap the button for HalfKay |
+| `xmc4800` | `jlink` | `.hex` (addresses embedded) |
+| `rx72m` | `rfp` (`rfp-cli` + E2 Lite) | `.hex` (carries the reset vector + option memory) |
 | `mps2` / `virt` / sim | -- | not flashed; run in QEMU/host (`ctest --preset <board>`) |
 
 Each backend is a standalone script you can also run directly -- same
@@ -48,7 +54,7 @@ tools/flash-jlink.sh   bluepill-c8     # or flash-esptool.sh / flash-stlink.sh /
 
 Knobs (honored by the dispatcher and every backend):
 
-- `FLASH_TOOL=esptool|stlink|jlink|picotool|pyocd|bossac` -- **force a backend** when
+- `FLASH_TOOL=esptool|stlink|jlink|picotool|pyocd|bossac|rfp|teensy` -- **force a backend** when
   a chip has several (e.g. use your own J-Link on a Blue Pill instead of an ST-Link:
   `FLASH_TOOL=jlink tools/flash.sh bluepill-c8`).
 - `FLASH_PORT=/dev/ttyACMx` -- force the serial port (else first `ttyACM*`/`ttyUSB*`).
@@ -78,7 +84,7 @@ base -- see `arch/arm/chip/xmc4800/xmc4800.ld`).
 
 ```sh
 cat > /tmp/xmc.jlink <<'EOF'
-loadbin build/xmc4800-relax/user/apps/blink/blink.bin 0x08000000
+loadbin build/xmc4800-relax/user/apps/common/blink/blink.bin 0x08000000
 r
 g
 qc
@@ -94,7 +100,7 @@ no address.) `r` resets, `g` runs, `qc` quits. LED1 (P5.9) should blink.
 
 ```sh
 JLinkExe -device XMC4800-2048 -if SWD -speed 4000 -autoconnect 1
-J-Link> loadbin build/xmc4800-relax/user/apps/blink/blink.bin 0x08000000
+J-Link> loadbin build/xmc4800-relax/user/apps/common/blink/blink.bin 0x08000000
 J-Link> r
 J-Link> g
 J-Link> q
@@ -104,7 +110,7 @@ J-Link> q
 
 ```sh
 JLinkGDBServer -device XMC4800-2048 -if SWD -speed 4000      # terminal 1
-arm-none-eabi-gdb build/xmc4800-relax/user/apps/blink/blink \      # terminal 2
+arm-none-eabi-gdb build/xmc4800-relax/user/apps/common/blink/blink \      # terminal 2
   -ex 'target remote :2331' -ex load -ex 'monitor reset' -ex continue
 ```
 
@@ -131,8 +137,9 @@ Any board with a J-Link works the same -- only the `-device` string changes:
 **Helper:** `tools/flash-jlink.sh <board> [app]` (app defaults to `hello`) wraps the
 `JLinkExe` dance: it maps the board to the right `-device` string and `loadfile`s the
 emitted `.hex` (whose addresses are embedded, so no load base is needed -- the same
-`.hex` works regardless of the per-board flash origin). It flashes
-`build/<board>/user/apps/<app>`; override the build dir with `FLASH_BUILD`.
+`.hex` works regardless of the per-board flash origin). It finds the app under
+`build/<board>/user/apps/<board>/<app>/` or `build/<board>/user/apps/common/<app>/`;
+override the build dir with `FLASH_BUILD`, or name an image outright with `FLASH_IMAGE`.
 
 ```sh
 tools/flash-jlink.sh frdmk64f              # build/frdmk64f/.../hello.hex  -> MK64FN1M0xxx12
