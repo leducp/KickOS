@@ -600,11 +600,17 @@ feeds the slave app.
   ```
   The exported `kickos` INTERFACE target carries the component link group + flags (sim: host libc
   threads); a full-C++ app links `kickos_cxx` instead (both sit over a posture-neutral `kickos_core`).
-  `kickos_add_application(<name> SOURCES... BOARD...)` remains as **optional sugar** and is
-  where per-board image emission (`.bin`/`.hex`/`.uf2`) hangs on MCU targets. On the MCU side the
-  linker script / `crt0` / entry live in the exported ARM toolchain (mirroring NuttX), so the
-  same two lines yield a flashable image; switching sim<->MCU is a one-word `BOARD`/toolchain
-  change. First-class acceptance criterion.
+  Those two lines are the whole supported path **on MCU targets too**, not just the sim: the
+  bare-metal link recipe, the chip linker script and -- via `INTERFACE_LINK_DEPENDS` -- a real
+  build-system dependency on that script all ride the exported target, so an edited `.ld` relinks
+  instead of leaving a stale image to flash. Bare metal adds exactly one optional line,
+  `kickos_emit_image(<target>)`, because turning the ELF into `.bin`/`.hex`/`.uf2` is a `POST_BUILD`
+  action and no usage requirement can carry an action. `kickos_add_application(<name> SOURCES...
+  BOARD...)` remains **optional sugar** with no powers the plain path lacks; the in-tree fleet uses
+  it, downstream projects need not. Switching sim<->MCU is a one-word `BOARD`/toolchain change.
+  First-class acceptance criterion, gated both ways (`tests/check_oot_export{,_mcu}.sh`).
+  KickOS's own warning flags are **never** part of that interface -- they are this project's
+  hygiene policy, applied `PRIVATE` to targets we own, and a consumer's diagnostics stay theirs.
 - **Declaring a driver / QEMU test / board provider.** Three macros in `cmake/kickos.cmake` give
   each its single shape: `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR])` -- a freestanding,
   exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side; `kickos_add_qemu_test(NAME
