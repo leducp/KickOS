@@ -34,7 +34,10 @@ code wins, then this file.
 | Board (preset) | SoC / core | LED (blink) | Console | Flash tool | HW-validated |
 |---|---|---|---|---|---|
 | `sim` | host process | -- | host stdout | `ctest --preset sim` | [x] CI |
-| `qemu` | mps2-an386 / M4 | -- | semihosting | `ctest --preset qemu` | [x] CI |
+| `qemu` | mps2-an386 / M4 | -- | semihosting | `ctest --preset qemu` | [x] CI, plain and under PMSAv7 enforcement (the ARM runtime enforcement gate -- see *CI coverage* below) |
+| `qemu-m33` | mps2-an505 / M33 | -- | semihosting | `ctest --preset qemu-m33` | [x] CI, plain and under **PMSAv8** enforcement incl. full-C++ `cxxtest` + the `mpu_fault` MemManage trap |
+| `qemu-m7` | mps2-an500 / M7 | -- | semihosting | `ctest --preset qemu-m7` | [x] CI, plain and under PMSAv7 enforcement (16 MPU regions) |
+| `qemu-m3` | mps2-an385 / M3 | -- | semihosting | `ctest --preset qemu-m3` | [x] CI, plain and under PMSAv7 enforcement (soft-float; no FP switch path) |
 | `microbit` | nRF51822 / M0 | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured skip budget -- see *microbit* below) |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench |
@@ -137,19 +140,30 @@ the board".
 |---|---|---|---|
 | host | `sim` | full `ctest` -- the authoritative deterministic gate | **runtime** (host `mprotect`) |
 | rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate; C6 + bench build-only | **runtime** (PMP, the `qemu-riscv-mpu` job) |
-| armv7m | `qemu`, and the board sweep | `qemu` (mps2-an386) run gate + build sweep | **build only** (`build-boards-mpu`) |
+| armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, and the board sweep | four MPS2 run gates (an386/an505/an500/an385) + build sweep | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
 | armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build | **build only** |
 | Xtensa LX6 | `esp32-wroom` | build only, plain and `-st` | -- (no per-task unit) |
 | RXv3 | `rx72m` | **none** | -- |
 
-- **ARM enforcement is a build gate, not a run gate.** QEMU models no enforcement-capable KickOS
-  ARM chip: the enforcing ports are all silicon parts, and the one runnable armv7m target (`qemu`
-  / mps2) ships no enforcement block, so `--preset qemu -DKICKOS_HAVE_MPU=1` is a hard configure
-  error by design. What `build-boards-mpu` *does* prove is the enforcement-only **link surface** --
-  the pow2 `.appdata`/`.appbss` window and its placement ASSERTs, the `archive:member` selectors,
-  the app grant symbols, and `arch_reserved_blocks`, which has no weak default on purpose, so an
-  enforcing port that forgets its reserved set fails to link. Cross-domain **trapping** is not
-  proven there; that is silicon-only (see the matrix above and `../m2-readiness.md`).
+- **ARM enforcement is now a run gate too, on both PMSA revisions.** It was build-only for a
+  long time, and the reason was real: every enforcing ARM port was a silicon part, and the one
+  runnable armv7m target shipped no enforcement block, so `--preset qemu -DKICKOS_HAVE_MPU=1`
+  was a hard configure error. Giving `mps2.ld` the enforcement layout removed both halves of
+  that at once, because the chip serves four QEMU FPGA images: `qemu`/`qemu-m7`/`qemu-m3`
+  exercise the shared armv7m **PMSAv7** commit and `qemu-m33` (mps2-an505) the dedicated
+  **PMSAv8** backend, whose RBAR/RLAR encoding is a different register layout entirely. Each
+  runs the full TAP suite unprivileged and takes a real `mpu_fault` MemManage denial, and the
+  M33 additionally runs `cxxtest` -- the whole libstdc++ runtime, throw and unwind included --
+  as an unprivileged thread under PMSAv8.
+
+  `build-boards-mpu` still matters and still runs: it covers the enforcement-only **link
+  surface** of the boards QEMU cannot model -- the pow2 `.appdata`/`.appbss` window and its
+  placement ASSERTs, the `archive:member` selectors, the app grant symbols, and
+  `arch_reserved_blocks`, which has no weak default on purpose, so an enforcing port that
+  forgets its reserved set fails to link. What is still NOT covered in CI is
+  **chip-specific** trapping: SYSMPU (K64F), the M7 anti-speculation wrap (i.MX RT1062) and
+  PMSAv6 (M0+) have no QEMU model, and stay silicon-proven (see the matrix above and
+  `../m2-readiness.md`).
 - **Renesas RX has no CI gate at all.** RX72M needs `-misa=v3` and `-mdfpu`
   (`boards/rx72m/board.cmake`), and both exist only in the registration-gated Renesas GNURX
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a

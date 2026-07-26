@@ -10,12 +10,15 @@
 # build -- upstream rx-elf GCC rejects both -- so RX cannot be built on a hosted
 # runner at all.
 #
-# MPU-enforcement coverage is deliberately asymmetric: it is exercised at RUNTIME on
-# the sim (host mprotect) and on rv32imac (PMP, the qemu-riscv-mpu job), but on ARM it
-# is a BUILD gate only (build-boards-mpu). QEMU models no enforcement-capable KickOS
-# ARM chip -- the enforcing ports are all silicon parts, and the one runnable armv7m
-# target (qemu/mps2) ships no enforcement block -- so CI covers only the link surface
-# of ARM PMSA/SYSMPU trapping, never the trap itself.
+# MPU-enforcement coverage is exercised at RUNTIME on all three ISA families with a
+# per-task unit: the sim (host mprotect), rv32imac (PMP, the qemu-riscv-mpu job), and
+# ARM on both PMSA revisions (the enforcement step in qemu-arm -- PMSAv7 on the
+# an386/an500/an385 images, PMSAv8 on the an505's Cortex-M33). ARM was a BUILD gate
+# only until mps2.ld grew the .appdata window; before that every enforcing ARM port was
+# a silicon part and the one runnable armv7m target shipped no enforcement block.
+# build-boards-mpu stays, and is still the ONLY coverage of the chip-specific
+# enforcement backends QEMU carries no model for (SYSMPU, the M7 anti-speculation wrap,
+# PMSAv6) -- for those, CI still proves the link surface and not the trap.
 #
 # Two code-hygiene gates, with deliberately different reach. Warnings-as-errors rides
 # EVERY job below, because the KICKOS_WERROR default in cmake/kickos.cmake is on for
@@ -188,6 +191,51 @@ jobs:
           cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
           ctest --preset qemu --output-on-failure --repeat until-pass:4
+      # The SAME chip backend on the three other MPS2 FPGA images, as steps in THIS job
+      # rather than jobs of their own: the toolchain download, its cache and
+      # qemu-system-arm are already paid for here, and each run is a couple of seconds
+      # (selftest is ~2.2 s), so a separate job would spend more time provisioning than
+      # testing. --repeat until-pass:4 for the same coarse-semihosting-clock reason as
+      # the an386 step above.
+      #
+      # Each image buys coverage the an386 cannot: the M33 is armv8-M (PMSAv8), the M7
+      # implements 16 MPU regions where the M4 has 8, and the M3 has no FPU at all, so
+      # the soft-float switch path is what actually runs. That last posture otherwise
+      # exists only on boards CI cannot run (due, bluepill-c8).
+      - name: armv8-m mainline (mps2-an505, Cortex-M33)
+        run: |
+          cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-m33
+          ctest --preset qemu-m33 --output-on-failure --repeat until-pass:4
+      - name: armv7m (mps2-an500, Cortex-M7)
+        run: |
+          cmake --preset qemu-m7 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-m7
+          ctest --preset qemu-m7 --output-on-failure --repeat until-pass:4
+      - name: armv7m soft-float (mps2-an385, Cortex-M3)
+        run: |
+          cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-m3
+          ctest --preset qemu-m3 --output-on-failure --repeat until-pass:4
+      # ARM MPU ENFORCEMENT AT RUNTIME -- the peer of the qemu-riscv-mpu job, and the
+      # thing ARM did not have until mps2.ld grew an .appdata window. build-boards-mpu
+      # can only ever check that the enforcement layout LINKS, because every other
+      # enforcing ARM port is silicon. These four run the full TAP suite as unprivileged
+      # threads and take a real MemManage denial in mpu_fault, over BOTH PMSA
+      # revisions: v7 on the M4/M7/M3, v8 on the M33 (a different register layout, so
+      # not the same code path at all). Out-of-tree build dirs, because the presets
+      # above already own build/<preset> in the non-enforcement posture.
+      - name: ARM PMSA enforcement run gates (v7 + v8)
+        run: |
+          for b in qemu qemu-m33 qemu-m7 qemu-m3; do
+            cmake -S . -B "build/$b-mpu" -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm-none-eabi.cmake \
+              -DCMAKE_BUILD_TYPE=Debug -DKICKOS_BOARD="$b" \
+              -DKICKOS_ENABLE_SELFTEST=ON -DKICKOS_HAVE_MPU=1 \
+              -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+            cmake --build "build/$b-mpu"
+            ctest --test-dir "build/$b-mpu" --output-on-failure --repeat until-pass:4
+          done
       - name: armv6m (microbit)
         run: |
           cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
@@ -365,13 +413,13 @@ jobs:
   # shipping arch/arm/chip/<chip>/mpu.cmake); a board without one is rejected at
   # configure time by the fail-loud floor in the top CMakeLists.
   #
-  # BUILD-ONLY, and it cannot be otherwise today: QEMU carries no machine model for any
-  # of these chips, and the runnable armv7m target (qemu/mps2) cannot stand in because
-  # it ships no enforcement block -- `--preset qemu -DKICKOS_HAVE_MPU=1` is a hard
-  # configure error by design. So cross-domain TRAPPING is not proven here at all; for
-  # where it is, see docs/reference/boards.md. Bringing mps2 up as a runnable
-  # enforcement target is the follow-up that would give ARM a real runtime gate (the
-  # rv32imac PMP job's peer).
+  # BUILD-ONLY, and it cannot be otherwise: QEMU carries no machine model for any of
+  # these chips, so cross-domain TRAPPING is not proven here. It no longer follows that
+  # ARM has no runtime enforcement gate -- the qemu-arm job now runs one on all four
+  # MPS2 images -- but that gate cannot stand in for THIS matrix, because what is
+  # unproven here is chip-specific: SYSMPU is not PMSA at all, the imxrt1062 needs the
+  # M7 anti-speculation region wrap, and picopi is PMSAv6 on a core with no MemManage.
+  # Those stay silicon-proven; see docs/reference/boards.md.
   #
   # Honest limitation, so this job is not read as proving more than it does: the one
   # ctest gate it registers, kernel_ctor_placement, currently passes VACUOUSLY on these
