@@ -527,6 +527,18 @@ if(TARGET kickos_kernel)
       # the KickOS source tree present.
       "$<BUILD_INTERFACE:SHELL:-T ${KICKOS_LINKER_SCRIPT}>"
       "$<INSTALL_INTERFACE:SHELL:-T $<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
+    # ...and the same script as a real link DEPENDENCY, not just a flag. -T reaches
+    # the linker as an opaque driver option, so nothing in it tells the build system
+    # that the image is a function of that file: edit the .ld and the link is not
+    # re-run, leaving a stale image to be flashed. INTERFACE_LINK_DEPENDS puts the
+    # file on the link edge, and being an INTERFACE property it rides the export --
+    # so a plain add_executable + target_link_libraries(app PRIVATE kickos) consumer
+    # gets the correct edge with no helper and no knowledge that the hazard exists.
+    # Paths mirror the -T above (build tree: the generated script; installed: the
+    # shipped copy), because the dependency must name the file actually linked.
+    set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
+      "$<BUILD_INTERFACE:${KICKOS_LINKER_SCRIPT}>"
+      "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
   endif()
 
   # Two posture leaves over the neutral core. A pure-C / freestanding app links
