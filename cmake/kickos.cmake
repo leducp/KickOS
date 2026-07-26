@@ -29,6 +29,20 @@
 # installed package has no boards/ tree, so the fallback below applies there.
 # ---------------------------------------------------------------------------
 get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
+
+# Are we building the KickOS tree itself, or is this file the copy shipped inside an
+# installed package? The boards/ tree is the signal: it sits beside cmake/ in a source
+# tree, and an installed package ships kickos.cmake alone under <prefix>/lib/cmake/
+# KickOS with no boards/ sibling. Named once here because three separate decisions
+# turn on that same answer (the board-descriptor fallback below, the -Werror default,
+# and whether our warning policy is stamped on an application target) -- one signal
+# with one spelling, so they can never drift into disagreeing about who is building.
+if(EXISTS "${KICKOS_BOARDS_DIR}")
+  set(KICKOS_IN_TREE TRUE)
+else()
+  set(KICKOS_IN_TREE FALSE)
+endif()
+
 # The descriptor also carries KICKOS_ARCH_FAMILY (arm|rx|sim|...): the source-tree
 # family that routes arch/<family>/... and the family-specific cross toolchain. A
 # board that omits it falls back to a derivation from the arch (armv6m/armv7m -> arm,
@@ -49,7 +63,7 @@ function(kickos_load_board_descriptor board out_arch out_chip out_family)
     include("${_desc}")
     set(${out_arch} "${KICKOS_ARCH}" PARENT_SCOPE)
     set(${out_chip} "${KICKOS_CHIP}" PARENT_SCOPE)
-  elseif(NOT EXISTS "${KICKOS_BOARDS_DIR}"
+  elseif(NOT KICKOS_IN_TREE
          AND DEFINED KICKOS_ARCH AND board STREQUAL "${KICKOS_BOARD}")
     # Installed package: no boards/ tree at all, so fall back to the arch/chip this
     # package recorded (KickOSConfig) for the single board it was built for. Gated
@@ -77,6 +91,15 @@ endfunction()
 #   arch/sim                  -> hosted (bridges to host libc), still no exc/rtti.
 # Applied per-target so a hosted arch TU and a freestanding kernel TU coexist
 # in one binary.
+#
+# WARNING FLAGS NEVER LEAVE THIS PROJECT. They are our hygiene policy, not part of
+# the interface: which diagnostics a downstream project wants is its own call, and
+# ours can contradict its policy or simply break its build for reasons that have
+# nothing to do with using KickOS correctly. So they are applied PRIVATE to targets
+# we own, and the exported `kickos`/`kickos_cxx` usage targets carry none of them.
+# The one place this could regress is an application target, which the in-tree fleet
+# and a consumer both create -- see the KICKOS_IN_TREE guard in
+# kickos_add_application().
 # ---------------------------------------------------------------------------
 set(KICKOS_WARN_FLAGS
   -Wall -Wextra -Wshadow -Wundef)
@@ -110,19 +133,15 @@ set(KICKOS_WARN_FLAGS
 # scope: a compiler upgrade lands new diagnostics on five toolchains at once, and a
 # contributor must be able to keep building while they are cleared.
 #
-# The in-tree guard (a boards/ tree exists -- the same "is this an installed package"
-# signal kickos_load_board_descriptor uses) keeps the default OFF for a consumer, and
-# it is the reason this is not simply `set(KICKOS_WERROR ON)`:
-# kickos_add_application() stamps these flags on the CONSUMER's app TUs too, and
-# promoting somebody else's warnings to hard errors is not our call to make. Widening
-# the in-tree scope makes that guard load-bearing rather than incidental -- it used to
-# be backstopped by the arch test as well, and now it stands alone.
+# KICKOS_IN_TREE (a boards/ tree exists) keeps the default OFF for a consumer, and it
+# is the reason this is not simply `set(KICKOS_WERROR ON)`: promoting somebody else's
+# warnings to hard errors is not our call to make. It is now a second line of defence
+# rather than the only one -- kickos_add_application() no longer stamps
+# KICKOS_WARN_FLAGS on a consumer's app at all, so out of tree there is nothing for
+# -Werror to ride on in the first place. Keep it: a future in-tree-only helper could
+# reintroduce a path, and OFF is the right default for a consumer regardless.
 if(NOT DEFINED KICKOS_WERROR)
-  if(EXISTS "${KICKOS_BOARDS_DIR}")
-    set(KICKOS_WERROR ON)
-  else()
-    set(KICKOS_WERROR OFF)
-  endif()
+  set(KICKOS_WERROR ${KICKOS_IN_TREE})
 endif()
 if(KICKOS_WERROR)
   list(APPEND KICKOS_WARN_FLAGS -Werror)
@@ -305,7 +324,16 @@ function(kickos_add_application name)
   # paths produce the same image. What is left here is convenience, not capability:
   # board validation, and the image emission that cannot ride a usage requirement.
   add_executable(${name} ${APP_SOURCES})
-  target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
+  # Our warning policy, and ONLY on our own code. In tree, every app under user/apps
+  # is ours and gets the fleet posture. Out of tree the application target belongs to
+  # the consumer, and stamping -Wall/-Wextra/-Wshadow/-Wundef on it would impose our
+  # taste on their source -- which can contradict their own policy or simply break
+  # their build over something that is not a KickOS usage error. Nothing else here
+  # differs between the two, which is why this is the only KICKOS_IN_TREE branch in
+  # the function.
+  if(KICKOS_IN_TREE)
+    target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
+  endif()
   # NB: the app is NOT built -msmall-data-limit=0 under RISC-V PMP. With the gp
   # window anchored inside the .appdata grant (chip .ld), the app's small globals
   # land in that granted window, and keeping small-data enabled is REQUIRED -- the
