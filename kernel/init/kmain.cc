@@ -33,15 +33,24 @@ extern "C"
     // Per-app source compile time (weak; null when no app defines it). See app.h.
     char const* kickos_app_build_stamp(void) __attribute__((weak));
 
-    // Non-kernel (app / libstdc++ / newlib / library) global ctors. On a migrated MCU
-    // the chip linker routes them here, OUT of .init_array (which keeps only the kernel
-    // ctors that Reset_Handler must run before kmain constructs the instance). We run
-    // them from root_entry -- in a thread, kernel live -- because a ctor may issue a
-    // KickOS syscall (kos_clock_now) that needs ktime_init + a current thread. Weak:
-    // undefined on sim and not-yet-migrated chips -> null -> skipped (there the ctors
-    // still run via the host runtime / the chip's own full .init_array loop).
-    extern void (*__kickos_app_init_array_start[])() __attribute__((weak));
-    extern void (*__kickos_app_init_array_end[])() __attribute__((weak));
+    // Non-kernel (app / libstdc++ / newlib / library) global ctors. The linker script
+    // routes them here, OUT of .init_array (which keeps only the kernel ctors that
+    // Reset_Handler must run before kmain constructs the instance). We run them from
+    // root_entry -- in a thread, kernel live -- because a ctor may issue a KickOS
+    // syscall (kos_clock_now) that needs ktime_init + a current thread.
+    //
+    // STRONG on purpose: every target must STATE its window. The chip scripts define
+    // these bounds around the app-ctor bucket; a hosted target whose own runtime has
+    // already run the ctors states an explicitly EMPTY one (arch/sim/start.cc). That
+    // makes the two situations distinguishable at LINK time, which is the whole point:
+    //   present but empty -> start == end -> the walk below iterates zero times, silent
+    //   absent            -> undefined symbol -> the link FAILS, loudly
+    // These were once WEAK, which collapsed "absent" into a null the walk skipped. A
+    // script that forgot to partition .init_array then ran every app ctor privileged
+    // from Reset_Handler *and* skipped the late walk entirely, with no diagnostic --
+    // which is exactly how the bluepill-c8 regression stayed silent until d5e7f06.
+    extern void (*__kickos_app_init_array_start[])();
+    extern void (*__kickos_app_init_array_end[])();
 
     // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit).
     // Weak: the sim (host heap) and a malloc-free image define neither -> both null ->
@@ -133,14 +142,12 @@ namespace kickos
         void root_entry(void* arg)
         {
             // App/library ctors run here (kernel live, in a thread), before main --
-            // the normal C++ order. Null on sim / unmigrated chips (see the decl).
-            if (__kickos_app_init_array_start != nullptr)
+            // the normal C++ order. No null guard: the bounds are strong, so an empty
+            // window is start == end and this loop simply does not run (see the decl).
+            for (void (**fn)() = __kickos_app_init_array_start;
+                 fn != __kickos_app_init_array_end; fn++)
             {
-                for (void (**fn)() = __kickos_app_init_array_start;
-                     fn != __kickos_app_init_array_end; fn++)
-                {
-                    (*fn)();
-                }
+                (*fn)();
             }
             AppArgs const* a = static_cast<AppArgs const*>(arg);
             int status = kickos_init_entry(a->argc, a->argv);
