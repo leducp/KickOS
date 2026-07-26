@@ -79,7 +79,15 @@ namespace
             // Deterministically wake the reporter every N rounds -- a semaphore post
             // (direct reschedule to the higher-prio reporter), never a timer, so it
             // cannot be starved by this CPU-bound ping-pong.
-            if ((++g_rounds % ROUNDS_PER_REPORT) == 0)
+            //
+            // Explicit RMW through a local: '++' on a volatile is deprecated (C++20),
+            // and `++g_rounds % N` also re-READ the volatile to get the value it had
+            // just stored. This is the one writer, so the extra load was harmless --
+            // but testing the value we stored is what was meant. Same shape as the
+            // console chip-writer count (kernel/init/console.cc).
+            uint32_t const round = g_rounds + 1;
+            g_rounds = round;
+            if ((round % ROUNDS_PER_REPORT) == 0)
             {
                 kos_sem_post(CH_GATE);
             }
@@ -129,11 +137,20 @@ namespace
                 ns_per_sw = static_cast<uint32_t>(d_ns / switches);
             }
 
+            // Every %u argument below is cast to `unsigned` explicitly: uint32_t is
+            // `unsigned long` on the newlib targets and plain `unsigned` on the host and
+            // Xtensa, so an uncast one is a -Wformat mismatch on half the fleet. Casting
+            // rather than PRIu32 keeps ONE literal format string on every target, which
+            // matters because ksnprintf is our own reduced formatter (lib/libc/fmt.cc)
+            // and these templates get read and pasted into the raw-measurement notes by
+            // hand. `unsigned` is 32-bit everywhere KickOS runs, so nothing truncates.
+            // Same convention as the other measurement app, user/apps/common/clocksoak.
             char s[160];
             ksnprintf(s, sizeof(s),
                       "  throughput: %u ctx-sw/s  (%u ns/sw avg over %u switches / %u ms)\n",
-                      sw_per_s, ns_per_sw, static_cast<uint32_t>(switches),
-                      static_cast<uint32_t>(d_ns / 1000000ull));
+                      static_cast<unsigned>(sw_per_s), static_cast<unsigned>(ns_per_sw),
+                      static_cast<unsigned>(switches),
+                      static_cast<unsigned>(d_ns / 1000000ull));
             kos::print(s);
 
             // Worst-case ISR latency, portable term: how long interrupts stay masked
@@ -145,7 +162,8 @@ namespace
             if (hold_ns != 0)
             {
                 ksnprintf(s, sizeof(s),
-                          "  wcase-hold: %u ns masked / 256B endpoint-copy span\n", hold_ns);
+                          "  wcase-hold: %u ns masked / 256B endpoint-copy span\n",
+                          static_cast<unsigned>(hold_ns));
                 kos::print(s);
             }
 
@@ -184,10 +202,16 @@ namespace
             }
 
             ksnprintf(s, sizeof(s), "  switch: %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n",
-                      smin, savg, smax, to_ns(smin, hz), to_ns(savg, hz), to_ns(smax, hz), scnt);
+                      static_cast<unsigned>(smin), static_cast<unsigned>(savg),
+                      static_cast<unsigned>(smax), static_cast<unsigned>(to_ns(smin, hz)),
+                      static_cast<unsigned>(to_ns(savg, hz)),
+                      static_cast<unsigned>(to_ns(smax, hz)), static_cast<unsigned>(scnt));
             kos::print(s);
             ksnprintf(s, sizeof(s), "  irq:    %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n",
-                      imin, iavg, imax, to_ns(imin, hz), to_ns(iavg, hz), to_ns(imax, hz), icnt);
+                      static_cast<unsigned>(imin), static_cast<unsigned>(iavg),
+                      static_cast<unsigned>(imax), static_cast<unsigned>(to_ns(imin, hz)),
+                      static_cast<unsigned>(to_ns(iavg, hz)),
+                      static_cast<unsigned>(to_ns(imax, hz)), static_cast<unsigned>(icnt));
             kos::print(s);
 
             // Worst-case inject->entry: raise the line at the START of a masked span,
@@ -217,8 +241,11 @@ namespace
                 uint32_t wavg = static_cast<uint32_t>(wsum / wcnt);
                 ksnprintf(s, sizeof(s),
                           "  wcase-irq[%uB]: %u/%u/%u cyc  %u/%u/%u ns  (inject->entry, n=%u)\n",
-                          wspans[si], wmin, wavg, wmax,
-                          to_ns(wmin, hz), to_ns(wavg, hz), to_ns(wmax, hz), wcnt);
+                          static_cast<unsigned>(wspans[si]), static_cast<unsigned>(wmin),
+                          static_cast<unsigned>(wavg), static_cast<unsigned>(wmax),
+                          static_cast<unsigned>(to_ns(wmin, hz)),
+                          static_cast<unsigned>(to_ns(wavg, hz)),
+                          static_cast<unsigned>(to_ns(wmax, hz)), static_cast<unsigned>(wcnt));
                 kos::print(s);
             }
 
@@ -275,7 +302,9 @@ namespace
         char s[160];
         ksnprintf(s, sizeof(s),
                   "  call/reply: %u round-trips/s  (%u ns/round-trip over %u calls / %u ms)\n",
-                  rt_per_s, ns_per_rt, CALLREPLY_REPS, static_cast<uint32_t>(d_ns / 1000000ull));
+                  static_cast<unsigned>(rt_per_s), static_cast<unsigned>(ns_per_rt),
+                  static_cast<unsigned>(CALLREPLY_REPS),
+                  static_cast<unsigned>(d_ns / 1000000ull));
         kos::print(s);
         kos_sem_post(2);
     }

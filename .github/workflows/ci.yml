@@ -1,33 +1,37 @@
 # SPDX-License-Identifier: CECILL-C
 # KickOS CI: the deterministic, host-runnable green gates (docs/m2-readiness.md #6).
-# Silicon RUN validation is NOT here -- it stays a manual/bench step per the HW-test
-# deferral policy. Every job mirrors a `--preset` invocation.
+# Every job mirrors a `--preset` invocation. Nothing here runs on silicon, so nothing
+# here is evidence about a port's hardware status -- that has one home, and it is
+# docs/reference/boards.md.
 #
 # ISA coverage: sim (host), armv7m + armv6m (QEMU run), rv32imac (QEMU run, plain and
 # under PMP), Xtensa LX6 (build-only). Renesas RX is the ONE ISA with no gate: RX72M
 # needs -misa=v3 and -mdfpu, which exist only in the registration-gated Renesas GNURX
 # build -- upstream rx-elf GCC rejects both -- so RX cannot be built on a hosted
-# runner and remains bench-validated.
+# runner at all.
 #
 # MPU-enforcement coverage is deliberately asymmetric: it is exercised at RUNTIME on
 # the sim (host mprotect) and on rv32imac (PMP, the qemu-riscv-mpu job), but on ARM it
 # is a BUILD gate only (build-boards-mpu). QEMU models no enforcement-capable KickOS
 # ARM chip -- the enforcing ports are all silicon parts, and the one runnable armv7m
-# target (qemu/mps2) ships no enforcement block -- so ARM PMSA/SYSMPU trapping stays
-# silicon-validated (docs/m2-readiness.md) and CI covers only its link surface.
+# target (qemu/mps2) ships no enforcement block -- so CI covers only the link surface
+# of ARM PMSA/SYSMPU trapping, never the trap itself.
 #
-# Code-hygiene gates are host-only for now: warnings-as-errors (the sim job, via the
-# KICKOS_WERROR default in cmake/kickos.cmake) and UBSan (the sim-ubsan job). Both were
-# verified FREE at adoption -- a from-scratch sim build is warning-clean, and the full
-# suite reports zero UBSan diagnostics -- so neither buys a red build, while both only
-# get more expensive the longer they are deferred. Neither reaches the cross targets:
-# UBSan has no bare-metal runtime, and -Werror stays sim-only because a fleet flip is
-# NOT free today. A local -DKICKOS_WERROR=ON sweep (arm-none-eabi 15.3.rel1, RISCstar,
-# xtensa-esp-elf) came back clean on every preset in the matrices below except
-# qemu-riscv-bench, whose `bench` app carries 32 diagnostics (31 -Wformat from %u
-# against a uint32_t that is `unsigned long` on both newlib targets, 1 -Wvolatile) --
-# so flipping the fleet on would turn the qemu-riscv job red on pre-existing debt.
-# Fixing bench and then extending the default outward is the follow-up.
+# Two code-hygiene gates, with deliberately different reach. Warnings-as-errors rides
+# EVERY job below, because the KICKOS_WERROR default in cmake/kickos.cmake is on for
+# any in-tree build -- no job here passes a flag for it, and adding one would only let
+# CI and the desk drift apart. UBSan is the sim alone (the sim-ubsan job), and cannot
+# be otherwise: there is no bare-metal sanitizer runtime to link against.
+#
+# -Werror widened from sim-only to the fleet once the one dirty spot was cleaned (the
+# `bench` app's -Wformat/-Wvolatile debt, which is why qemu-riscv-bench was the preset
+# that blocked it). Both gates were verified FREE at their adoption -- every preset
+# builds warning-clean on the pinned toolchains, and the suite reports zero UBSan
+# diagnostics -- so neither buys a red build today, while both get more expensive the
+# longer they are deferred. A toolchain bump is the expected way this goes red: four
+# compilers run across these jobs (host g++, arm-none-eabi, riscv32-none-elf,
+# xtensa-esp-elf), and a new diagnostic in any of them now fails a build rather than
+# scrolling past. -DKICKOS_WERROR=OFF is the escape hatch while that is cleared.
 #
 # Toolchains are the SAME pinned vendor tarballs used locally (reproducibility): the
 # official Arm GNU Toolchain (arm-none-eabi, newlib), the RISCstar toolchain
@@ -76,10 +80,10 @@ jobs:
   # stress soak (incl. thread-reclaim churn), sched_exit, mpu_fault, telemetry
   # golden-vector, and the out-of-tree export check.
   #
-  # This is also the warnings-as-errors gate, and it needs no flag here: the sim
-  # build defaults KICKOS_WERROR on (cmake/kickos.cmake), so -Werror rides the
-  # normal per-target warning flags. Deliberately sim-only -- see that file for the
-  # scoping rationale and the -DKICKOS_WERROR override.
+  # Warnings-as-errors needs no flag here, and neither does any other job: every
+  # in-tree build defaults KICKOS_WERROR on (cmake/kickos.cmake), so -Werror rides
+  # the normal per-target warning flags. See that file for the scoping rule -- an
+  # INSTALLED package deliberately leaves it off -- and the -DKICKOS_WERROR override.
   sim:
     runs-on: ubuntu-latest
     steps:
@@ -270,9 +274,9 @@ jobs:
 
   # Xtensa LX6 (esp32-wroom) build-only gate. No run step: upstream QEMU ships no ESP32
   # machine model, so this catches build/link/linker-script + windowed-ABI asm
-  # regressions only -- HW validation stays a bench step. Both the plain and the
-  # selftest config are built (the latter pulls the full IRQ suite, which is what is
-  # HW-validated). esptool is deliberately NOT installed: it is only needed for the
+  # regressions only, never a run. Both the plain and the selftest config are built,
+  # the latter because it pulls in the full IRQ suite and so covers considerably more
+  # link surface. esptool is deliberately NOT installed: it is only needed for the
   # bootable .app.bin elf2image post-step, which CI cannot boot anyway -- the ELF link
   # is the regression signal, and CMake reports the skip without failing.
   xtensa:
@@ -364,9 +368,10 @@ jobs:
   # BUILD-ONLY, and it cannot be otherwise today: QEMU carries no machine model for any
   # of these chips, and the runnable armv7m target (qemu/mps2) cannot stand in because
   # it ships no enforcement block -- `--preset qemu -DKICKOS_HAVE_MPU=1` is a hard
-  # configure error by design. So cross-domain TRAPPING is not proven here; that stays
-  # silicon/bench-validated. Bringing mps2 up as a runnable enforcement target is the
-  # follow-up that would give ARM a real runtime gate (the rv32imac PMP job's peer).
+  # configure error by design. So cross-domain TRAPPING is not proven here at all; for
+  # where it is, see docs/reference/boards.md. Bringing mps2 up as a runnable
+  # enforcement target is the follow-up that would give ARM a real runtime gate (the
+  # rv32imac PMP job's peer).
   #
   # Honest limitation, so this job is not read as proving more than it does: the one
   # ctest gate it registers, kernel_ctor_placement, currently passes VACUOUSLY on these

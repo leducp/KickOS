@@ -93,11 +93,16 @@ extern "C" int console_chip_writers(void)
 
 namespace kickos
 {
+#if KICKOS_CONSOLE_CHIP
     // Route one already-CRLF-expanded chunk to the chip. The buffered path is used
     // only in ordinary thread context with the ring armed; panic, any ISR/fault
     // context, and pre-arm boot fall back to the bounded polled writer. This is the
     // single choke point that keeps the ring a true single-producer (never entered
     // from ISR context).
+    //
+    // Guarded on the chip backend because this is the chip transport's router and
+    // kconsole_write only reaches it from inside the same guard -- with the backend
+    // compiled out it has no caller at all (KICKOS_CONSOLE=none / =rtt).
     static void console_emit(char const* buf, size_t n)
     {
         switch (g_console_state)
@@ -131,6 +136,7 @@ namespace kickos
         }
         }
     }
+#endif
 
     // Fan-out to every enabled backend (compile-time). Per-backend locking: the
     // RTT ring is a WrOff read-modify-write written from thread/ISR/fault contexts,
@@ -140,6 +146,14 @@ namespace kickos
     // transmission (a 256B write at 115200 would mask interrupts for ~22 ms).
     void kconsole_write(char const* buf, size_t n)
     {
+#if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
+        // KICKOS_CONSOLE=none: every backend is compiled out, so this is deliberately
+        // a sink. Kept as a real (empty) function rather than an #ifdef at every call
+        // site -- the kernel still panics, faults and boots identically on a board with
+        // no console, it just says nothing.
+        (void)buf;
+        (void)n;
+#endif
 #if KICKOS_CONSOLE_RTT
         {
             IrqLock lock;
