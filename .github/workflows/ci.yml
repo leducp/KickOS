@@ -9,6 +9,13 @@
 # build -- upstream rx-elf GCC rejects both -- so RX cannot be built on a hosted
 # runner and remains bench-validated.
 #
+# MPU-enforcement coverage is deliberately asymmetric: it is exercised at RUNTIME on
+# the sim (host mprotect) and on rv32imac (PMP, the qemu-riscv-mpu job), but on ARM it
+# is a BUILD gate only (build-boards-mpu). QEMU models no enforcement-capable KickOS
+# ARM chip -- the enforcing ports are all silicon parts, and the one runnable armv7m
+# target (qemu/mps2) ships no enforcement block -- so ARM PMSA/SYSMPU trapping stays
+# silicon-validated (docs/m2-readiness.md) and CI covers only its link surface.
+#
 # Toolchains are the SAME pinned vendor tarballs used locally (reproducibility): the
 # official Arm GNU Toolchain (arm-none-eabi, newlib), the RISCstar toolchain
 # (riscv32-none-elf, newlib, rv32imac soft-float multilib), and Espressif's
@@ -272,3 +279,68 @@ jobs:
           echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
+
+  # ARM MPU-ENFORCEMENT build gate: the same ARM boards again, but configured with
+  # -DKICKOS_HAVE_MPU=1. This is the ONLY job that builds the enforcement-only link
+  # surface -- nothing else in this file compiles it, on any arch except rv32imac:
+  # the pow2 .appdata/.appbss window plus its overflow/placement ASSERTs, the
+  # `archive:member` closed-set selectors that split kernel-owned writable state from
+  # app-owned, the app code/data grant symbols, and arch_reserved_blocks -- which has
+  # NO weak default on purpose (arch/include/kickos/arch/arch.h), so an enforcing port
+  # that forgets to declare its reserved set is a LINK error caught here instead of a
+  # silent open hole. The matrix is exactly the enforcement-capable ARM set (the boards
+  # shipping arch/arm/chip/<chip>/mpu.cmake); a board without one is rejected at
+  # configure time by the fail-loud floor in the top CMakeLists.
+  #
+  # BUILD-ONLY, and it cannot be otherwise today: QEMU carries no machine model for any
+  # of these chips, and the runnable armv7m target (qemu/mps2) cannot stand in because
+  # it ships no enforcement block -- `--preset qemu -DKICKOS_HAVE_MPU=1` is a hard
+  # configure error by design. So cross-domain TRAPPING is not proven here; that stays
+  # silicon/bench-validated. Bringing mps2 up as a runnable enforcement target is the
+  # follow-up that would give ARM a real runtime gate (the rv32imac PMP job's peer).
+  #
+  # Honest limitation, so this job is not read as proving more than it does: the one
+  # ctest gate it registers, kernel_ctor_placement, currently passes VACUOUSLY on these
+  # boards. Every app in this matrix links with an EMPTY .kickos_app_init_array window
+  # (only the full-C++ cxxtest image has a non-empty one), so the check takes its
+  # "window empty -> PASS" early-out and never inspects a pointer. What it does still
+  # prove is that the enforced ctor-split section symbols EXIST -- it fails loudly when
+  # they do not. Re-pointing it at a non-empty window is a separate follow-up.
+  #
+  # No `ctest --preset`: cmake/presets/arm.json defines test presets only for
+  # qemu/qemu-telem/microbit, so these boards are driven by --test-dir on the preset's
+  # binaryDir. picopi is armv6m -- it links under enforcement but registers no ctor
+  # gate (that check is armv7m-only), so its ctest run is the build fixture alone.
+  build-boards-mpu:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [frdmk64f, f411disco, blackpill, pizero2350, teensy41,
+                 xmc4800-relax, picopi]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils
+      - name: Cache Arm GNU toolchain
+        id: cache-arm
+        uses: actions/cache@v4
+        with:
+          path: ~/tc/${{ env.ARM_TC_DIR }}
+          key: ${{ env.ARM_TC_DIR }}
+      - name: Download Arm GNU toolchain
+        if: steps.cache-arm.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/tc
+          # developer.arm.com 302-redirects to an anonymous Azure blob; fail loud if not xz.
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/arm.tar.xz "$ARM_TC_URL"
+          file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
+          tar -C ~/tc -xf /tmp/arm.tar.xz
+      - name: Put toolchain on PATH + bin
+        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        run: |
+          echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
+          echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - run: cmake --preset ${{ matrix.preset }} -DKICKOS_HAVE_MPU=1 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+      - run: cmake --build --preset ${{ matrix.preset }}
+      - run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
