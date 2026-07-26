@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The runnable QEMU MPS2 boards. One chip backend (mps2) can stand behind several FPGA
-# images, which all share a memory map, a console and a clock -- so the gates below are
-# per-IMAGE facts, not per-chip ones, and a gate that holds on one image holds on any
-# other the arch backend claims to support. Named once here rather than repeated as an
-# N-way OR at each of the eight call sites that used to read
-# `KICKOS_BOARD STREQUAL "qemu"`, so adding an image is a one-line change.
+# The runnable QEMU MPS2 boards: ONE chip backend (mps2) behind four FPGA images --
+# an386/M4 (`qemu`), an505/M33 (`qemu-m33`, PMSAv8), an500/M7 (`qemu-m7`, 16 MPU
+# regions) and an385/M3 (`qemu-m3`, no FPU). They share a memory map, a console and a
+# clock, so the gates below are per-IMAGE facts rather than per-chip ones, and a gate
+# that holds on one image holds on all of them. Named once here rather than repeated as
+# a four-way OR at each of the eight call sites that used to read
+# `KICKOS_BOARD STREQUAL "qemu"`, so adding a fifth image is a one-line change.
 # Inherited by every add_subdirectory below.
-set(KICKOS_QEMU_MPS2_BOARDS qemu qemu-m33)
+#
+# The one exception is an FPU: qemu-m3 is soft-float, so fp_switch is not built for it
+# (see its inclusion list further down) -- that is a core capability, not a gate.
+set(KICKOS_QEMU_MPS2_BOARDS qemu qemu-m33 qemu-m7 qemu-m3)
 # The board name as a CTest-name prefix, so each image reports under its own name and
 # the an386 board keeps the names it has always had (qemu_hello, qemu_selftest, ...).
 string(REPLACE "-" "_" KICKOS_QEMU_MPS2_TAG "${KICKOS_BOARD}")
@@ -104,11 +108,13 @@ endif()
 # FP context-switch torture test: builds for the M4F dev boards (and the QEMU
 # Cortex-M4F for the in-env gate). Uses vldmia/vstmia {s16-s31}, so armv7m+FPU only --
 # which is why the QEMU images are enumerated here instead of taken from
-# KICKOS_QEMU_MPS2_BOARDS: an FPU is a core capability, not a per-image gate.
+# KICKOS_QEMU_MPS2_BOARDS: an FPU is a core capability, not a per-image gate, and
+# qemu-m3 (an385, Cortex-M3, soft-float) has no s16-s31 to preserve.
 if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
    OR KICKOS_BOARD STREQUAL "qemu"
-   OR KICKOS_BOARD STREQUAL "qemu-m33")
+   OR KICKOS_BOARD STREQUAL "qemu-m33"
+   OR KICKOS_BOARD STREQUAL "qemu-m7")
   add_subdirectory(fp_switch)
 endif()
 
