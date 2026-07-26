@@ -42,11 +42,15 @@ set(KICKOS_ARCH        "${KICKOS_ARCH}" CACHE STRING "KickOS arch backend select
 set(KICKOS_ARCH_FAMILY "xtensa"         CACHE STRING "KickOS arch family (arm|xtensa)")
 
 # The Espressif prebuilt toolchain is not on PATH by default (it lives under
-# ~/.espressif, unlike apt's gcc-arm-none-eabi). Allow an override and search the
-# known install location; a consumer on a different host sets KICKOS_XTENSA_BIN.
+# ~/.espressif, unlike apt's gcc-arm-none-eabi), so the finds below take a HINT.
+# Seeded from the environment rather than a literal path so no contributor's home
+# directory is baked into the repo: export KICKOS_XTENSA_BIN once (or pass -D) to
+# pin a specific install. Left empty, HINTS contributes nothing and PATH decides,
+# which is what CI relies on. Note a pinned install SHADOWS an on-PATH toolchain,
+# so point this at the version you actually mean.
 set(KICKOS_XTENSA_BIN
-    "/home/leduc/.espressif/tools/xtensa-esp-elf/esp-16.1.0_20260609/xtensa-esp-elf/bin"
-    CACHE PATH "Directory holding xtensa-esp32-elf-* programs")
+    "$ENV{KICKOS_XTENSA_BIN}"
+    CACHE PATH "Directory holding xtensa-esp32-elf-* programs (empty => use PATH)")
 
 find_program(CMAKE_C_COMPILER   xtensa-esp32-elf-gcc     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)
 find_program(CMAKE_CXX_COMPILER xtensa-esp32-elf-g++     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)

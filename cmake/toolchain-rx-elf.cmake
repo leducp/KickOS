@@ -53,10 +53,15 @@ set(KICKOS_ARCH_FAMILY "${KICKOS_ARCH_FAMILY}" CACHE STRING "KickOS ISA family (
 # ISA baseline instead of hardcoding a value that could drift from here.
 set(KICKOS_MCPU_FLAGS "${_kos_cpu}" CACHE INTERNAL "Per-board RX ISA baseline")
 
-# The prebuilt GNU RX toolchain location. Overridable; also honours PATH.
+# The prebuilt GNU RX toolchain location, seeded from the environment rather than a
+# literal path so no contributor's home directory is baked into the repo: export
+# KICKOS_RX_TOOLCHAIN_BIN once (or pass -D) to pin an install. Left empty, HINTS
+# contributes nothing and PATH decides. RX72M needs the RENESAS GNURX build --
+# -misa=v3 and -mdfpu (boards/rx72m/board.cmake) do not exist in upstream GCC's
+# rx-elf, so an upstream build fails at configure. That is why RX has no CI gate.
 set(KICKOS_RX_TOOLCHAIN_BIN
-    "/home/leduc/Apps/toolchains/gcc_14.2.0.202511_rx_elf/bin"
-    CACHE PATH "Directory holding the rx-elf-* programs")
+    "$ENV{KICKOS_RX_TOOLCHAIN_BIN}"
+    CACHE PATH "Directory holding the rx-elf-* programs (empty => use PATH)")
 
 find_program(CMAKE_C_COMPILER   rx-elf-gcc     HINTS "${KICKOS_RX_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_CXX_COMPILER rx-elf-g++     HINTS "${KICKOS_RX_TOOLCHAIN_BIN}" REQUIRED)

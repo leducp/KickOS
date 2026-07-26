@@ -17,7 +17,11 @@
 # newlib's full libstdc++ -- required for the eventual full-C++ opt-in, which
 # Debian's picolibc-based apt toolchain cannot provide. It still falls back to an
 # on-PATH arm-none-eabi-gcc (the finds keep PATH search) so a machine without the
-# Apps directory -- e.g. CI -- still resolves a toolchain.
+# Apps directory -- e.g. CI -- still resolves a toolchain. That fallback is
+# capability-gated (the check right after the finds): a resolved compiler without
+# newlib + libstdc++ for THIS board's multilib is refused at configure time, so a
+# missing pin directory can never quietly hand the build the very toolchain the
+# pin exists to avoid.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
@@ -79,6 +83,19 @@ find_program(CMAKE_CXX_COMPILER arm-none-eabi-g++     HINTS "${KICKOS_ARM_TOOLCH
 find_program(CMAKE_ASM_COMPILER arm-none-eabi-gcc     HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_OBJCOPY      arm-none-eabi-objcopy HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_SIZE         arm-none-eabi-size    HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}")
+
+# Those finds say a program NAMED arm-none-eabi-g++ exists, not that it can build
+# KickOS: HINTS fall through to PATH when the directory above is absent (another
+# host, a fresh clone, CI), and Debian's on-PATH arm-none-eabi is C-only picolibc
+# -- exactly the toolchain the pin dodges. Prove the capability here instead of
+# discovering it at `#include <exception>` 40 build steps later. ${_kos_cpu} +
+# -mthumb are passed so the probe resolves THIS board's multilib, not the
+# compiler's default one.
+include("${CMAKE_CURRENT_LIST_DIR}/toolchain-cxx-runtime-check.cmake")
+kickos_require_usable_cross_cxx("arm" "${CMAKE_CXX_COMPILER}"
+  KICKOS_ARM_TOOLCHAIN_BIN
+  "https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz"
+  ${_kos_cpu} -mthumb)
 
 # The compiler cannot produce a runnable executable without the board's linker
 # script + startup, which are not present during CMake's compiler probe. Probe

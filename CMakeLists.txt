@@ -681,9 +681,15 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
             DESTINATION "${KICKOS_CMAKE_DIR}")
   elseif(KICKOS_ARCH_FAMILY STREQUAL "riscv")
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-riscv-none-elf.cmake"
+                  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-cxx-runtime-check.cmake"
             DESTINATION "${KICKOS_CMAKE_DIR}")
   else()
+    # The compiler-capability gate is include()d by the ARM + RISC-V toolchain
+    # files from their own list dir, so it must land beside them in the package
+    # (the RX/Xtensa files do not use it -- no C-only same-name twin exists to
+    # fall through to).
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-arm-none-eabi.cmake"
+                  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-cxx-runtime-check.cmake"
             DESTINATION "${KICKOS_CMAKE_DIR}")
   endif()
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/board.cmake"

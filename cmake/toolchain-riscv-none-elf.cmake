@@ -17,7 +17,11 @@
 # (newlib, rv32imac/ilp32 soft-float multilib with libstdc++ OOTB) -- same
 # rationale as the RX GNURX and the official ARM toolchains: one exact compiler
 # every host builds with, no distro drift. The soft-float rv32imac/ilp32 multilib
-# is the C6-safety guarantee: no F/D instructions leak into the image.
+# is the C6-safety guarantee: no F/D instructions leak into the image. The finds
+# keep PATH search so a host without the pinned directory still resolves a
+# compiler, and that fallback is capability-gated (the check right after the
+# finds): a resolved compiler without newlib + libstdc++ for THIS board's
+# multilib is refused at configure time, not at link.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR riscv)
@@ -59,6 +63,19 @@ find_program(CMAKE_CXX_COMPILER riscv32-none-elf-g++     HINTS "${KICKOS_RISCV_T
 find_program(CMAKE_ASM_COMPILER riscv32-none-elf-gcc     HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_OBJCOPY      riscv32-none-elf-objcopy HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_SIZE         riscv32-none-elf-size    HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}")
+
+# Those finds say a program NAMED riscv32-none-elf-g++ exists, not that it can
+# build KickOS: HINTS fall through to PATH when the directory above is absent
+# (another host, a fresh clone, CI), and distro rv32 cross builds are routinely
+# C-only picolibc with no libstdc++ for the soft-float rv32imac/ilp32 multilib.
+# Prove the capability here instead of discovering it deep in the build.
+# ${_kos_cpu} is passed so the probe resolves THIS board's multilib (soft-float
+# rv32imac/ilp32), not the compiler's default one.
+include("${CMAKE_CURRENT_LIST_DIR}/toolchain-cxx-runtime-check.cmake")
+kickos_require_usable_cross_cxx("riscv" "${CMAKE_CXX_COMPILER}"
+  KICKOS_RISCV_TOOLCHAIN_BIN
+  "https://releases.riscstar.com/toolchain/16.1-r1/riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf.tar.xz"
+  ${_kos_cpu})
 
 # No linker script + startup during CMake's compiler probe (the board supplies
 # them at the app-link step), so probe with a static library -- a step boundary
