@@ -446,7 +446,7 @@ below where they were previously mislabeled.
 
 ## Pre-M4 perf: caches / flash accelerators (fleet audit 2026-07-22)
 
-Per-chip audit (each vs its RM in `/home/leduc/sync/obsidian/docs/`): does the HW have a
+Per-chip audit (each vs its RM; see `CONTEXT.local.md` for the local RM set): does the HW have a
 software-controllable cache/accelerator, and do we use it? Binary, not "fast enough".
 
 - [x] **RX72M: enable the 8 KB ROM cache** (pre-M4) -- DONE (5ab2575). `rom_cache_enable()` in
