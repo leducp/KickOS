@@ -108,7 +108,9 @@ as specified rather than redesigned:
 
 ## Unprivileged ctors and `main` -- stages 2-8
 
-Stage 1 (arena-allocated boot stacks) LANDED as `e19ba78`. The rest, in dependency order:
+Stage 1 (arena-allocated boot stacks) LANDED on the M4.5.1 branch -- see
+`m4.5.1: take the root and idle stacks from the arena, not .bss`. The rest, in
+dependency order:
 - [ ] **2. `thread_regions_recompose`** -- recompute a thread's region set when its privilege
       changes, so the drop below has something coherent to apply.
 - [ ] **3. `KOS_SYS_DROP_PRIV` on sim + ARM** -- the syscall plus its first two backends, which
