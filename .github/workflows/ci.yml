@@ -16,6 +16,19 @@
 # target (qemu/mps2) ships no enforcement block -- so ARM PMSA/SYSMPU trapping stays
 # silicon-validated (docs/m2-readiness.md) and CI covers only its link surface.
 #
+# Code-hygiene gates are host-only for now: warnings-as-errors (the sim job, via the
+# KICKOS_WERROR default in cmake/kickos.cmake) and UBSan (the sim-ubsan job). Both were
+# verified FREE at adoption -- a from-scratch sim build is warning-clean, and the full
+# suite reports zero UBSan diagnostics -- so neither buys a red build, while both only
+# get more expensive the longer they are deferred. Neither reaches the cross targets:
+# UBSan has no bare-metal runtime, and -Werror stays sim-only because a fleet flip is
+# NOT free today. A local -DKICKOS_WERROR=ON sweep (arm-none-eabi 15.3.rel1, RISCstar,
+# xtensa-esp-elf) came back clean on every preset in the matrices below except
+# qemu-riscv-bench, whose `bench` app carries 32 diagnostics (31 -Wformat from %u
+# against a uint32_t that is `unsigned long` on both newlib targets, 1 -Wvolatile) --
+# so flipping the fleet on would turn the qemu-riscv job red on pre-existing debt.
+# Fixing bench and then extending the default outward is the follow-up.
+#
 # Toolchains are the SAME pinned vendor tarballs used locally (reproducibility): the
 # official Arm GNU Toolchain (arm-none-eabi, newlib), the RISCstar toolchain
 # (riscv32-none-elf, newlib, rv32imac soft-float multilib), and Espressif's
@@ -62,6 +75,11 @@ jobs:
   # Authoritative deterministic gate: full ctest on the host sim -- selftest, the
   # stress soak (incl. thread-reclaim churn), sched_exit, mpu_fault, telemetry
   # golden-vector, and the out-of-tree export check.
+  #
+  # This is also the warnings-as-errors gate, and it needs no flag here: the sim
+  # build defaults KICKOS_WERROR on (cmake/kickos.cmake), so -Werror rides the
+  # normal per-target warning flags. Deliberately sim-only -- see that file for the
+  # scoping rationale and the -DKICKOS_WERROR override.
   sim:
     runs-on: ubuntu-latest
     steps:
@@ -71,6 +89,53 @@ jobs:
       - run: cmake --preset sim
       - run: cmake --build --preset sim
       - run: ctest --preset sim --output-on-failure
+
+  # The same sim gate rebuilt under UndefinedBehaviorSanitizer: a cheap runtime-UB
+  # net (signed overflow, out-of-range shifts, misaligned/null loads, bogus enum and
+  # bool values) over the whole kernel plus the full ctest suite. Verified to report
+  # NOTHING at adoption time, so it starts green and every future report is real
+  # signal. -fno-sanitize-recover=all is what makes it a GATE: UBSan's default is
+  # print-and-continue, which leaves the test exit status 0 and the job green while
+  # the diagnostic scrolls past unread.
+  #
+  # UBSan and deliberately NOT AddressSanitizer. The sim switches threads with
+  # ucontext (swapcontext onto an mmap'd stack), and ASan cannot follow a stack
+  # switch it was not told about: without __sanitizer_start_switch_fiber /
+  # __sanitizer_finish_switch_fiber annotations bracketing the switch it treats each
+  # new stack as a wild region and the sim hangs instead of failing. UBSan
+  # intercepts no stacks at all, so it needs nothing from the context switch.
+  # Teaching arch/sim the fiber annotations is the follow-up that would buy
+  # ASan/LSan; until then, do not simply add -fsanitize=address here.
+  #
+  # The flags arrive through the standard CFLAGS/CXXFLAGS ENVIRONMENT rather than
+  # -DCMAKE_C/CXX_FLAGS, and that choice is load-bearing: the oot_export gate in
+  # this very suite installs the (now instrumented) package and configures a fresh
+  # out-of-tree consumer in a CHILD cmake. A -D reaches only this build tree, so
+  # that consumer links instrumented archives without the UBSan runtime and dies on
+  # undefined __ubsan_handle_* -- a red test that is pure flag-injection artefact.
+  # The environment IS inherited by the child, so it builds with the same flags and
+  # oot_export stays a real, running gate rather than something excluded to hide a
+  # self-inflicted failure. Hence `env:` at JOB level, not on the configure/build
+  # steps: the inheriting child cmake is spawned by the CTEST step, so scoping the
+  # variables to the earlier steps is exactly the mistake that puts oot_export back
+  # in the red.
+  #
+  # A separate binaryDir (-B) keeps the instrumented tree out of the plain `sim`
+  # preset's build/sim, so a developer can run this locally without discarding their
+  # normal build. ctest is therefore driven by --test-dir (there is no sanitizer
+  # test preset), exactly as build-boards-mpu does it.
+  sim-ubsan:
+    runs-on: ubuntu-latest
+    env:
+      CFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
+      CXXFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
+      - run: cmake --preset sim -B build/sim-ubsan
+      - run: cmake --build build/sim-ubsan
+      - run: ctest --test-dir build/sim-ubsan --output-on-failure
 
   # armv7m (mps2-an386) + armv6m (microbit) under QEMU, on the pinned Arm GNU toolchain.
   qemu-arm:

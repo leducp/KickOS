@@ -76,6 +76,42 @@ endfunction()
 set(KICKOS_WARN_FLAGS
   -Wall -Wextra -Wshadow -Wundef)
 
+# Warnings-as-errors -- a knob here, and deliberately DEFAULT-ON FOR THE SIM ONLY.
+#
+# A knob in this file rather than a -Werror pasted into the CI job, because it then
+# rides the same per-target path as the warning flags it belongs to: it lands only on
+# OUR compiles, never on CMake's own try_compile/ABI probes or on a toolchain-injected
+# command line, which a global CMAKE_C/CXX_FLAGS injection would also hit. And a
+# developer gets the identical gate from a plain `cmake --preset sim`, so the desk and
+# CI agree by construction -- nobody discovers a new warning only after pushing.
+#
+# Sim-only is the honest scope at adoption time: the host sim tree was verified
+# warning-clean from scratch, so the gate costs nothing today and only gets cheaper
+# than paying the debt later. The cross targets are NOT free yet -- a sweep with this
+# knob forced ON found every ARM/RISC-V/Xtensa CI preset clean EXCEPT the
+# KICKOS_BENCH build (user/apps/common/bench/main.cc: 31 -Wformat from %u against a
+# uint32_t that is `unsigned long` on newlib, plus one -Wvolatile), which the
+# qemu-riscv-bench preset builds. Cleaning bench up and then widening the default is
+# a deliberate follow-up, one sweep at a time; the knob is overridable BOTH ways in
+# the meantime (-DKICKOS_WERROR=OFF to unblock a bisect, -DKICKOS_WERROR=ON to sweep
+# a port), using the same `if(NOT DEFINED ...)` shape as the other arch-derived
+# defaults (KICKOS_HAVE_MPU, KICKOS_MIN_STACK_SIZE).
+#
+# The in-tree guard (a boards/ tree exists -- the same "is this an installed package"
+# signal kickos_load_board_descriptor uses) keeps the default OFF for a consumer:
+# kickos_add_application() stamps these flags on the CONSUMER's app TUs too, and
+# promoting somebody else's warnings to hard errors is not our call to make.
+if(NOT DEFINED KICKOS_WERROR)
+  if(KICKOS_ARCH STREQUAL "sim" AND EXISTS "${KICKOS_BOARDS_DIR}")
+    set(KICKOS_WERROR ON)
+  else()
+    set(KICKOS_WERROR OFF)
+  endif()
+endif()
+if(KICKOS_WERROR)
+  list(APPEND KICKOS_WARN_FLAGS -Werror)
+endif()
+
 # Flags valid for every language (C, C++, ASM); the C++-only ones are guarded
 # below so a target mixing .cc and .S (the ARM arch backends) stays warning-free.
 set(KICKOS_FREESTANDING_FLAGS
