@@ -166,9 +166,9 @@ namespace kickos
         // which domain_for's single nullptr sentinel cannot express.
         if (p->mmio_base != nullptr)
         {
-            if (not sched::current()->privileged)
+            if (not cap_check_authority(sched::current(), AUTH_MEMORY))
             {
-                return -KOS_EPERM; // MMIO is privileged-only -- never self-grantable
+                return -KOS_EPERM; // MMIO needs AUTH_MEMORY -- never self-grantable
             }
             uintptr_t const mbase = reinterpret_cast<uintptr_t>(p->mmio_base);
             if (p->mmio_size == 0 or mbase + p->mmio_size < mbase)
@@ -178,6 +178,35 @@ namespace kickos
             if (not arch_mpu_region_encodable(mbase, p->mmio_size))
             {
                 return -KOS_EINVAL; // window one MPU descriptor cannot cover exactly
+            }
+        }
+        // Authority cap (optional): the child's seat at KOS_CAP_AUTHORITY. Validated here,
+        // with the other boundary checks, so a bad request is a clean spawn refusal rather
+        // than a half-built child.
+        if (p->authority != 0)
+        {
+            if ((p->authority & ~CAP_AUTH_ALL) != 0)
+            {
+                // Object rights (WAIT/SIGNAL/TRANSFER) mean nothing on this type. Refuse
+                // rather than mask: a caller passing them has misunderstood something, and
+                // silently dropping the bits would hide which.
+                return -KOS_EINVAL; // non-authority bits in the authority mask
+            }
+            // Narrow-only, exactly like a cap_grant mask: the caller must already hold
+            // every bit it hands on. cap_check_authority IS that question, and it answers
+            // true wholesale for a privileged caller -- which is what lets today's
+            // privileged root seat a narrowed authority on a child before any board flips.
+            if (not cap_check_authority(sched::current(), p->authority))
+            {
+                return -KOS_EPERM; // cannot grant an authority the caller does not hold
+            }
+            // Delegated cap i lands at child index i+1, so cap_count >= 2 puts a delegated
+            // cap on the authority slot. Refuse the pair instead of letting one silently
+            // overwrite the other; per-grant destination indices are the deferred fix (see
+            // <kickos/sys/cap_index.h>).
+            if (static_cast<int>(p->cap_count) >= KOS_CAP_AUTHORITY)
+            {
+                return -KOS_EINVAL; // delegation packing would collide with the authority slot
             }
         }
         // Spawn-time capability delegation (M3). Validate the WHOLE list BEFORE
@@ -356,6 +385,9 @@ namespace kickos
         // install cannot fail; bump each named object's refcount as its new cap lands.
         Thread* const child = &k.threads.slots[i];
         cap_install_defaults(child);
+        // Before the delegation loop: the guard above already refused any cap_count that
+        // could reach index 2, so the two cannot fight over the slot in either order.
+        cap_seat_authority(child, p->authority);
         for (int ci = 0; ci < ncaps; ci++)
         {
             cap_install_at(child, ci + 1, deleg_obj[ci],

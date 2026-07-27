@@ -249,12 +249,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_CONSOLE_PUBLISH:
         {
             // Hand the console UART to a userspace driver named by an endpoint cap.
-            // Privileged-only (like ram_alloc / MMIO grant): it disables a live IRQ line
-            // and mutates global console routing. See the handover design (D3).
+            // AUTH_DEVICE (like shutdown): it disables a live IRQ line and mutates global
+            // console routing. See the handover design (D3).
             Thread* c = sched::current();
-            if (c == nullptr or not c->privileged)
+            if (not cap_check_authority(c, AUTH_DEVICE))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM); // privileged-only
+                return static_cast<uintptr_t>(-KOS_EPERM);
             }
             int handle = -1;
             {
@@ -325,10 +325,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // path so the caller needs only ONE error test. The coherence sequence
             // (mask / disarm / flush / retune / re-arm) lives in cpu_clock_set.
             // NOTE: this syscall stays OUT of the -KOS_E* scheme -- it returns a u32 Hz
-            // whose 0 sentinel already means cannot/unsupported/not-privileged, and the
+            // whose 0 sentinel already means cannot/unsupported/not-permitted, and the
             // console-owned refusal (an EBUSY-shaped condition) surfaces as "unchanged Hz".
             Thread* c = sched::current();
-            if (c == nullptr or not c->privileged)
+            if (not cap_check_authority(c, AUTH_CLOCK))
             {
                 return 0;
             }
@@ -353,12 +353,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // thread -- console_tx_flush_sync walks the kernel-side console ring, and
             // arch_shutdown is a privileged chip operation.
             //
-            // Privileged-only, matching exactly who can end the system today: root_entry
-            // (privileged) and the scheduler's own idle-exhaustion path. Widening this to
-            // an unprivileged holder is stage 1's AUTH_DEVICE gate, not this change --
-            // an ungated shutdown would hand every worker thread a kill switch.
+            // AUTH_DEVICE, the same authority as console_publish: both hand the machine's
+            // shared device state to someone. An ungated shutdown would be a kill switch
+            // in every worker thread, which is why this is never simply open.
             Thread* c = sched::current();
-            if (c == nullptr or not c->privileged)
+            if (not cap_check_authority(c, AUTH_DEVICE))
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
@@ -479,11 +478,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             // Test scaffolding: enable an UNBOUND line so an injected raise reaches
             // the default (spurious) handler on masked-by-default controllers (ARM
-            // NVIC, RX), which else drop it. Privileged-only (it arms a controller
-            // line), like irq_attach.
-            if (not sched::current()->privileged)
+            // NVIC, RX), which else drop it. AUTH_IRQ (it arms a controller line),
+            // like irq_attach.
+            if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM); // arms a controller line: privileged-only
+                return static_cast<uintptr_t>(-KOS_EPERM); // arms a controller line
             }
             int irq = static_cast<int>(a0);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
@@ -496,9 +495,9 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
 #endif
         case KOS_SYS_IRQ_ATTACH:
         {
-            // Tier-2 installs a privileged in-kernel handler: privileged-only, so
-            // an unprivileged thread cannot bind (or steal) a line's dispatch.
-            if (not sched::current()->privileged)
+            // Tier-2 installs a privileged in-kernel handler, so AUTH_IRQ: a thread
+            // without it cannot bind (or steal) a line's dispatch.
+            if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
@@ -582,11 +581,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_PINMUX_SET:
         {
             // One-shot init-time pin-function config (the clock->pinmux->gpio bring-up DAG
-            // middle). Privileged-only: the mux registers live in the shared SCU/PORT block
-            // the kernel keeps. a0=port, a1=pin, a2=func (all chip-opaque; neutrality is the
+            // middle). AUTH_PINMUX: the mux registers live in the shared SCU/PORT block the
+            // kernel keeps. a0=port, a1=pin, a2=func (all chip-opaque; neutrality is the
             // {port,pin,func} shape, not the encoding). Backend rejects kernel-owned pins.
             Thread* c = sched::current();
-            if (c == nullptr or not c->privileged)
+            if (not cap_check_authority(c, AUTH_PINMUX))
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
@@ -594,17 +593,17 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_RAM_ALLOC:
         {
-            // Privileged-only: domains are carved by the privileged setup path,
-            // not by arbitrary user threads (avoids a DoS on the shared pool and
-            // matches static-allocation-first). IrqLock: arch_ram_alloc does an
-            // unguarded read-modify-write of the bump pointer.
+            // AUTH_MEMORY: domains are carved by the setup path, not by arbitrary user
+            // threads (avoids a DoS on the shared pool and matches static-allocation-first).
+            // IrqLock: arch_ram_alloc does an unguarded read-modify-write of the bump
+            // pointer.
             // POINTER return -- OUT of the -KOS_E* scheme: a negative errno cast to
             // void* would be a non-NULL pointer. EVERY failure path returns 0 (NULL) so
-            // the documented `if (p == NULL)` check is correct: the not-privileged reject
+            // the documented `if (p == NULL)` check is correct: the not-permitted reject
             // and the arena-exhausted reject both yield NULL (arch_ram_alloc already
             // returns 0 when exhausted).
             IrqLock lock;
-            if (not sched::current()->privileged)
+            if (not cap_check_authority(sched::current(), AUTH_MEMORY))
             {
                 return 0; // NULL, not (uintptr_t)-1 -- the latent dual-sentinel bug fixed
             }

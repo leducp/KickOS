@@ -2813,6 +2813,83 @@ namespace
         wait_n(1);
         TAP_CHECK(g_wrbuf_rc == -KOS_EBADF); // not -KOS_EFAULT: the global was writable
     }
+
+    // --- The authority capability: the non-privileged arm of the eight gates ----------
+    // Each authority gate is `privileged OR holds this AUTH_* bit`. Root is privileged, so
+    // the whole suite already leans on the privileged arm; this covers the OTHER one, which
+    // would otherwise ship unexercised until stage 2 flips a board -- the same vacuity trap
+    // the ctor-placement gate fell into.
+    //
+    // The child is UNPRIVILEGED and holds AUTH_PINMUX and nothing else, so exactly one gate
+    // must accept it and the rest must refuse. Acceptance reads as "not -KOS_EPERM", because
+    // a gate that lets the call through returns its OWN answer instead -- -KOS_ENOSYS on a
+    // weak-seam target like the sim, -KOS_EINVAL where a chip owns the block -- and that
+    // distinction is exactly what a privilege refusal erases.
+    void auth_noop(void*) {}
+    volatile long g_auth_pinmux = -99;   // AUTH_PINMUX held    -> anything but -KOS_EPERM
+    volatile long g_auth_shutdown = -99; // AUTH_DEVICE absent  -> -KOS_EPERM
+    volatile long g_auth_regrant = -99;  // may not hand on a bit it does not hold
+    volatile long g_auth_collide = -99;  // delegation packing reaching the authority slot
+    volatile long g_auth_badbits = -99;  // object rights offered as an authority
+    void auth_worker(void*) // UNPRIVILEGED, authority = AUTH_PINMUX; caps: done@1
+    {
+        // The bit it HOLDS: past the gate, so pinmux answers for itself.
+        g_auth_pinmux = kos_pinmux_set(99u, 0u, 0x10u);
+        // A bit it does NOT hold, at a different gate -- so this also proves the bits are
+        // independent rather than one lump. shutdown is the highest-stakes of the four and
+        // it stands for all of them; console_publish_priv and shutdown_priv already cover
+        // the privilege dimension of the same gates. Safe to call precisely BECAUSE the
+        // child lacks AUTH_DEVICE: a regression ends the run here with a clean status,
+        // which the harness sees as a truncated TAP stream.
+        g_auth_shutdown = kos_shutdown(0);
+        // Three spawn probes off ONE params struct, all refused before a pool slot is
+        // claimed, so their codes are deterministic even on a full pool. One struct is not
+        // tidiness: a frame-local kos_thread_params costs an inline ~52-byte zero-init per
+        // site, and this suite links within ~100 bytes of the f302nucleo flash ceiling. It
+        // must be a frame local rather than a global, because thread_spawn reads the struct
+        // through user_range_ok with no static-data fallback, so a global would be
+        // -KOS_EFAULT on the sim and on every no-MPU board.
+        kos_thread_params kid{};
+        kid.entry = auth_noop;
+        kid.prio = 9;
+        // Narrow-only, the same rule a cap_grant mask obeys: holding AUTH_PINMUX does not
+        // let it seat AUTH_DEVICE on a child.
+        kid.authority = KOS_AUTH_DEVICE;
+        g_auth_regrant = kos_thread_spawn(&kid);
+        // Delegated cap i lands at child index i+1, so two delegated caps reach the
+        // authority slot. Refused, rather than one silently overwriting the other.
+        kos_cap_grant two[] = {{CH_DONE, CH_FULL}, {CH_DONE, CH_FULL}};
+        kid.caps = two;
+        kid.cap_count = 2;
+        kid.authority = KOS_AUTH_PINMUX;
+        g_auth_collide = kos_thread_spawn(&kid);
+        // Object rights mean nothing on this type, so they are refused, not masked off.
+        kid.cap_count = 1;
+        kid.authority = KOS_CAP_WAIT;
+        g_auth_badbits = kos_thread_spawn(&kid);
+        kos_sem_post(CH_DONE);
+    }
+    void t_authority_cap()
+    {
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(auth_worker, nullptr, "authW", 10, caps, 1,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                        nullptr, 0, /*authority=*/KOS_AUTH_PINMUX);
+        if (w < 0)
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        // Grouped, because each TAP_CHECK carries __FILE__ and its stringified condition as
+        // rodata and this image is at the f302nucleo ceiling. Held bit accepted (pinmux
+        // returned its own answer: -KOS_ENOSYS on a weak seam, -KOS_EINVAL where a chip owns
+        // the block), unheld bit refused at another gate, and the three spawn refusals.
+        TAP_CHECK(g_auth_pinmux != -KOS_EPERM and g_auth_pinmux < 0);
+        TAP_CHECK(g_auth_shutdown == -KOS_EPERM);
+        TAP_CHECK(g_auth_regrant == -KOS_EPERM and g_auth_collide == -KOS_EINVAL
+                  and g_auth_badbits == -KOS_EINVAL);
+    }
 }
 
 int main(int, char**)
@@ -2869,6 +2946,7 @@ int main(int, char**)
     tap::add("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
     tap::add("shutdown_priv", t_shutdown_denied);        // KOS_SYS_SHUTDOWN privileged-only
     tap::add("writable_global", t_writable_global);      // out-buffer in an app global
+    tap::add("authority_cap", t_authority_cap);          // CAP_AUTHORITY: both arms of the gates
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     tap::add("irq_thread_ctx", t_irq);
