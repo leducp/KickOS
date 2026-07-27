@@ -8,7 +8,7 @@
 #include <kickos/kernel.h>
 #include <kickos/irqlock.h>
 
-#include <kickos/sys/abi.h> // KOS_SEM_COUNT_MAX (the ceiling is ABI, not policy)
+#include <kickos/sys/abi.h> // KOS_SEM_COUNT_MAX
 
 #include <limits.h>
 
@@ -57,13 +57,10 @@ namespace kickos
     // sim (the switch already happened synchronously inside wq_block).
     void wq_confirm_resume(Thread* c, uint64_t epoch)
     {
-        // Bounded like every other synchronous poll in the tree (KICKOS_POLL_SPIN_MAX;
-        // the console-publish drain a few files away is the pattern). This one used to
-        // be the exception -- a masked or lost PendSV left it spinning forever with no
-        // diagnostic, which is the one failure mode this project refuses everywhere
-        // else. The cap is enormous relative to a real wait (the switch is pended and
-        // fires as soon as the caller's IrqLock drops), so reaching it means the switch
-        // is never coming: fail LOUD.
+        // Bounded like every other synchronous poll in the tree (KICKOS_POLL_SPIN_MAX).
+        // A masked or lost PendSV used to leave this spinning forever with no diagnostic.
+        // The switch is pended and fires as soon as the caller's IrqLock drops, so the cap
+        // is far above any real wait: reaching it means the switch is never coming.
         uint32_t spin = 0;
         while (*static_cast<uint64_t volatile*>(&c->switch_count) == epoch)
         {
@@ -89,8 +86,8 @@ namespace kickos
     }
 
     // --- Semaphore -------------------------------------------------------------
-    // The ceiling must itself be representable in Semaphore::count, else the bound in
-    // sem_post is the overflow it exists to prevent.
+    // The ceiling must be representable in Semaphore::count, else the bound in sem_post is
+    // itself the overflow it prevents.
     static_assert(KOS_SEM_COUNT_MAX <= INT_MAX,
                   "KOS_SEM_COUNT_MAX must fit Semaphore::count (an int)");
 

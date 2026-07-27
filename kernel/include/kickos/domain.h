@@ -65,16 +65,15 @@ namespace kickos
     // arch_ram_region_size, R|W; MMIO exact, R|W|DEV) is run through
     // grant_region_admissible at entry (after the privileged / no-grant short-circuits,
     // before dedup). caller_privileged is the SPAWNER's posture (never read from
-    // sched::current() here -- R8), gating the MMIO privileged-only rule.
+    // sched::current() here; R8), gating the MMIO privileged-only rule.
     //
-    // Returns null on refusal and writes WHY to *err (never null; set to 0 on success),
-    // because the two reasons want opposite things from the caller:
-    //   KOS_EPERM  -- the grant is inadmissible (reserved-block hit, out-of-arena data,
-    //                 unprivileged DEV). Never admissible: fix the grant.
-    //   KOS_EINVAL -- malformed geometry (an MMIO base with a zero extent).
-    //   KOS_ENOMEM -- the domain pool is full. Nothing wrong with the grant; retry later.
-    // This IS the authoritative admission, so the spawn boundary does not pre-check the
-    // same predicate to recover the errno -- it forwards this one.
+    // Returns null on refusal and writes the reason to *err (never null; 0 on success):
+    //   KOS_EPERM   the grant is inadmissible (reserved-block hit, out-of-arena data,
+    //               unprivileged DEV). Fix the grant.
+    //   KOS_EINVAL  malformed geometry (an MMIO base with a zero extent).
+    //   KOS_ENOMEM  the domain pool is full. Retry later.
+    // This is the authoritative admission; the spawn boundary forwards *err instead of
+    // pre-checking the same predicate.
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
                        void* mmio_base, size_t mmio_size, bool caller_privileged,
                        int* err);

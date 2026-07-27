@@ -102,38 +102,27 @@ endif()
 
 # HOLDING MEASURE, pending the maintainer decision tracked as N16 in TODO.md.
 #
-# f302nucleo and bluepill-c8 have 64 KiB of flash, and the fleet-uniform selftest image
-# no longer fits it at the fleet Debug default -- which is `-g` with NO -O at all. This
-# batch's kernel hardening costs 184 bytes on f302nucleo against the 104 bytes of
-# headroom it had, so the board stopped linking on kernel code, not on a new test.
+# f302nucleo and bluepill-c8 have 64 KiB of flash and the fleet-uniform selftest no longer
+# fits at the fleet Debug default, which is `-g` with no -O. The same image is 48,848 bytes
+# at -Os against 65,720 at the default, so -Os sheds no coverage and returns 16.7 KiB.
 #
-# The measurement that decides what to do about it: the SAME image is 48,848 bytes at
-# -Os and 65,720 at the default. The ceiling is 74% real code and 26% unoptimised
-# codegen -- so the choice N16 poses (shed coverage, or accept these boards as
-# build-only) has a third answer nobody had costed. Taking -Os here sheds NO coverage:
-# every test the suite has still builds, and 16.7 KiB of headroom comes back.
-#
-# What it costs, stated plainly: the -st image's kernel is no longer codegen-identical
-# to the same board's non-st build, which the selftest -Os block (see
-# user/apps/common/selftest/CMakeLists.txt) deliberately preserved when it optimised the
-# app's own TUs only. Both boards are build-only for the suite -- no bench unit, no QEMU
-# model -- so what they provide is a link check, and this keeps them providing one. -g is
-# kept, so they stay debuggable. Scoped to these two boards and reverted by deleting this
-# block; widening it to the fleet is the maintainer's call, not a side effect of a
-# hardening batch.
+# The cost: the -st image's kernel is no longer codegen-identical to the same board's
+# non-st build, which the selftest -Os block (user/apps/common/selftest/CMakeLists.txt)
+# preserved by optimising the app's own TUs only. Both boards are build-only for the
+# suite, so what they provide is a link check. -g is kept. Delete this block to revert;
+# widening it to the fleet is the maintainer's call.
 if(KICKOS_ENABLE_SELFTEST AND (KICKOS_BOARD STREQUAL "f302nucleo"
                                OR KICKOS_BOARD STREQUAL "bluepill-c8"))
   add_compile_options(-Os)
   message(STATUS "KickOS: -Os across the ${KICKOS_BOARD} selftest tree (64 KiB flash; see N16)")
 endif()
 
-# Internal-consistency guards that are too expensive (or too noisy) to carry in a
-# shipped image: today the intrusive-list membership checks in <kickos/list.h>. OFF by
-# default, so a board image is byte-identical to what it was. The sim preset turns it
-# ON -- a host build has no flash budget, and a guard nothing builds is a guard that
-# rots. Always defined (0 or 1), never merely undefined, so `#if KICKOS_DEBUG` is
-# -Wundef-clean; carried to consumers below for the same ODR reason as KICKOS_HAVE_MPU,
-# since it changes the body of an inline function in a shipped header.
+# Internal-consistency guards too expensive to carry in a shipped image: today the
+# intrusive-list membership checks in <kickos/list.h>. OFF by default, so a board image is
+# unchanged; the sim preset turns it ON, since a host build has no flash budget. Always
+# defined (0 or 1), never merely undefined, so `#if KICKOS_DEBUG` is -Wundef-clean.
+# Carried to consumers for the same ODR reason as KICKOS_HAVE_MPU: it changes the body of
+# an inline function in a shipped header.
 option(KICKOS_DEBUG "Build the internal-consistency guards (list membership, ...)" OFF)
 if(KICKOS_DEBUG)
   add_compile_definitions(KICKOS_DEBUG=1)
@@ -503,11 +492,10 @@ if(TARGET kickos_kernel)
   # start()s, and those back-reference kickos_user + a class leaf, so the whole closure
   # must be in-group to rescan-resolve (one item on the none default, three on a
   # migrated board).
-  # The archive list, named once. The GROUP itself is built per posture leaf below
-  # rather than here, because its tail differs: an MCU link has to pull the toolchain
-  # runtime into the same group, and which runtime that is IS the posture. CMake also
-  # forbids one target's link closure from carrying the same library in two different
-  # groups, so there can only be one group and it has to be the leaf's.
+  # The archive list, named once. The group itself is built per posture leaf below,
+  # because its tail differs: an MCU link pulls the toolchain runtime into the same group,
+  # and which runtime that is IS the posture. CMake also forbids one target's closure from
+  # carrying a library in two groups, so the one group must be the leaf's.
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
     set(_kickos_group "kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib")
   else()
@@ -593,17 +581,13 @@ if(TARGET kickos_kernel)
   target_link_libraries(kickos INTERFACE kickos_core)
   add_library(kickos_cxx INTERFACE)
   target_link_libraries(kickos_cxx INTERFACE kickos_core)
-  # The rescan group, per leaf. On MCU the toolchain runtime joins it, and that is
-  # load-bearing rather than tidy: newlib's `_sbrk_r` references `_sbrk`, which
-  # libkickos_user.a provides on demand, and the g++ driver appends its libraries AFTER
-  # everything CMake emits -- so with them outside the group the linker meets `_sbrk_r`
-  # (freestanding) or `operator new` -> `malloc` -> `_sbrk_r` (full C++) long past the
-  # point it could still go back for the member. That was invisible while `_sbrk` shared
-  # the -Wl,-u,_exit force-linked object, which put it in the link before libc ever
-  # asked. Naming these here adds no library the driver would not link anyway; it only
-  # fixes WHERE they are scanned. The freestanding leaf deliberately does not name
-  # libstdc++ -- it links -nostdlib++, and a stray operator new must stay a link error.
-  # Sim links host glibc through the normal driver path and keeps the bare group.
+  # The rescan group, per leaf. On MCU the toolchain runtime joins it: newlib's `_sbrk_r`
+  # references `_sbrk`, which libkickos_user.a provides on demand, and the g++ driver
+  # appends its libraries after everything CMake emits. Outside the group, the linker meets
+  # `_sbrk_r` past the point it could go back for the member. Naming them here adds no
+  # library the driver would not link anyway; it fixes where they are scanned. The
+  # freestanding leaf does not name libstdc++: it links -nostdlib++, and a stray operator
+  # new must stay a link error. Sim keeps the bare group and links host glibc.
   if(KICKOS_ARCH STREQUAL "sim")
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
     target_link_libraries(kickos_cxx INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
@@ -628,14 +612,11 @@ if(TARGET kickos_kernel)
     # override -- the two flag sets never collide on one command line.
     target_compile_options(kickos_cxx INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
-    # A second rescan group, for the same reason the core group took libc (see there),
-    # one layer further out: on this leaf the allocator demand starts in libstdc++'s
-    # operator new, and the g++ driver appends libstdc++ AFTER everything CMake emits.
-    # So the chain operator new -> malloc -> _sbrk_r -> _sbrk has to be closable in a
-    # group that contains all three providers, or the on-demand `_sbrk` member is
-    # already behind the linker when libstdc++ asks for it. Naming them here does not
-    # add libraries the driver would not link anyway; it only fixes where they are
-    # scanned. Listed after kickos_core, so the core group is still resolved first.
+    # A second rescan group, one layer further out. On this leaf the allocator demand
+    # starts in libstdc++'s operator new, and the g++ driver appends libstdc++ after
+    # everything CMake emits, so the chain from operator new down to `_sbrk` must be
+    # closable in a group holding all three providers. Listed after kickos_core, so the
+    # core group resolves first.
     target_link_libraries(kickos_cxx INTERFACE
       "$<LINK_GROUP:RESCAN,stdc++,supc++,c,kickos_user>")
 
@@ -650,10 +631,9 @@ if(TARGET kickos_kernel)
     add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
     target_compile_features(kickos_cxx_rt PRIVATE cxx_std_17)
     target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
-    # kickos_core no longer carries the archive group (it moved to the leaves, above),
-    # so name the archives this object needs for their INCLUDE dirs. It links nothing --
-    # it IS an object library -- so these are usage requirements only, and PRIVATE keeps
-    # them from reaching a consumer of the objects.
+    # kickos_core no longer carries the archive group (it moved to the leaves above), so
+    # name the archives this object needs for their include dirs. An object library links
+    # nothing, so these are usage requirements only, and PRIVATE keeps them off consumers.
     target_link_libraries(kickos_cxx_rt PRIVATE kickos_core kickos_user kickos_kernel)
     target_link_libraries(kickos_cxx INTERFACE $<TARGET_OBJECTS:kickos_cxx_rt>)
   endif()

@@ -138,10 +138,10 @@ void _exit(int code)
     }
 }
 
-// The heap bottom edge (_sbrk + its bump arena) lives in newlib_sbrk.cc, deliberately
-// NOT here: this TU is force-linked into every image by -Wl,-u,_exit, so a strong
-// reference to _kickos_heap_start from here lands in every link and defeats the
-// link-time fail-loud a heapless board relies on.
+// The heap bottom edge (_sbrk and its bump arena) lives in newlib_sbrk.cc, not here: this
+// TU is force-linked into every image by -Wl,-u,_exit, so a strong reference to
+// _kickos_heap_start from here would land in every link and defeat the fail-loud a heapless
+// board relies on.
 
 #ifdef __RX__
 // SjLj atexit/EH registration references __dso_handle; the RX libc may not
@@ -156,26 +156,21 @@ __attribute__((weak)) void* __dso_handle = nullptr;
 // heap-allocates (operator new -> malloc) links; weak so a future thread-safe libc
 // port can override, and unreferenced (freestanding app) so it costs nothing.
 //
-// FOOTGUN, and these stubs stay no-ops DELIBERATELY rather than for want of effort:
-// a correct guard is not expressible from userspace as the ABI stands today. Three
-// facts, each measured rather than assumed, and all three have to change:
+// FOOTGUN: these stubs stay no-ops because a correct guard is not expressible from
+// userspace as the ABI stands. Three facts, all of which have to change:
 //
-//   1. Newlib takes this lock RECURSIVELY. In the linked image, `_free_r` acquires it
-//      and then calls `_malloc_trim_r`, which acquires it again (verified by
-//      disassembling cxxtest). So a plain non-recursive lock self-deadlocks, and a
-//      "second entry means a second thread" detector fires on a legitimate free.
-//   2. A recursive lock needs to answer "am I already the owner", and userspace has
-//      NO thread identity: there is no self syscall, and a stack address is not a
-//      reliable key (a caller-provided stack has its own extent).
-//   3. Even given identity, there is no lock object two threads can name. KickOS
-//      capabilities are PER-TASK -- a mutex handle created by one thread indexes a
-//      different table in another -- and sharing one needs spawn-time delegation to a
-//      reserved index, of which none are left.
+//   1. Newlib takes this lock recursively: `_free_r` acquires it and calls
+//      `_malloc_trim_r`, which acquires it again (seen in the linked cxxtest image). A
+//      non-recursive lock self-deadlocks, and a re-entry detector fires on a valid free.
+//   2. A recursive lock needs an owner identity, and userspace has none. There is no self
+//      syscall, and a stack address is not a reliable key.
+//   3. Even given identity, there is no lock object two threads can name: capabilities
+//      are per-task, so a mutex handle indexes a different table in another thread, and
+//      sharing one needs spawn-time delegation to a reserved index. None are left.
 //
-// So the fix is not a few lines here: it is per-thread libc state (the M4.x TLS item),
-// or a kernel-held lock behind a syscall, which is a designed change and not this one.
-// Until then a full-C++ app that heap-allocates from more than one thread corrupts the
-// arena silently -- keep such apps single-alloc-thread.
+// The fix is per-thread libc state (the M4.x TLS item) or a kernel-held lock behind a
+// syscall. Until then, a full-C++ app that heap-allocates from more than one thread
+// corrupts the arena silently. Keep such apps single-alloc-thread.
 __attribute__((weak)) void __malloc_lock(void*)
 {
 }

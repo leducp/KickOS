@@ -44,12 +44,11 @@ namespace kickos
         // fields from the kernel-owned copy hereafter. (The name pointer inside is
         // still user memory; it is walked under a per-byte readable check below
         // before the kernel copies it.)
-        // user_readable_ok, not the raw user_range_ok: the struct may be a caller
-        // stack local OR an app global, and on a backend that models no static-data
-        // region -- every no-MPU chip, and the host sim, whose globals live in the
-        // host image rather than the arena -- a global lies in no granted region.
-        // The arch_user_text_readable arm is what recognises it there; an enforcing
-        // backend returns false from that arm and is byte-identical.
+        // user_readable_ok, not the raw user_range_ok: the struct may be a caller stack
+        // local or an app global, and on a backend that models no static-data region
+        // (every no-MPU chip, and the host sim) a global lies in no granted region.
+        // arch_user_text_readable is the arm that recognises it. An enforcing backend
+        // returns false there and is byte-identical.
         // Reject a misaligned struct pointer BEFORE the typed copy below: the kernel
         // does that load privileged, and a misaligned word load traps in the kernel on
         // a strict-align arch (rv32imac) -- a user-triggerable kernel fault. alignof is
@@ -129,13 +128,11 @@ namespace kickos
         }
         // Data-region grant: the arena-confinement + Rule 7 reserved-block admission
         // for mem_base lives in domain_for (evaluated for EVERY caller on the committed
-        // R|W geometry -- 10C), which now reports -KOS_EPERM for it directly, so there is
-        // no pre-check here recovering an errno the chokepoint could not express. [R11]
-        // Keep only a trivial UNGATED wrap check so a wrapping mem_base is a clean
-        // -KOS_EINVAL on every board, including no-MPU parts where domain_for's predicate
-        // is a no-op stub and would not catch it. (No-MPU boundary change: the old ungated
-        // arena bound on no-MPU parts is dropped -- there is no MPU region to escalate
-        // through there.)
+        // R|W geometry, 10C), which reports -KOS_EPERM directly, so nothing here pre-checks
+        // it to recover an errno. [R11] Keep only a trivial UNGATED wrap check, so a
+        // wrapping mem_base is a clean -KOS_EINVAL on every board, including no-MPU parts
+        // where domain_for's predicate is a no-op stub. (No-MPU boundary change: the old
+        // ungated arena bound there is dropped; there is no MPU region to escalate through.)
         if (p->mem_base != nullptr and p->mem_size != 0)
         {
             uintptr_t const dbase = reinterpret_cast<uintptr_t>(p->mem_base);
@@ -222,8 +219,8 @@ namespace kickos
             {
                 return -KOS_EINVAL; // null / misaligned grant array
             }
-            // user_readable_ok for the same reason as the params struct above: a
-            // caller may perfectly well keep its grant array in a global.
+            // user_readable_ok for the same reason as the params struct above: the array
+            // may be a global.
             if (not user_readable_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps)))
             {
                 return -KOS_EFAULT; // grant array not readable by the caller
@@ -273,10 +270,8 @@ namespace kickos
                                        sched::current()->privileged, &derr);
         if (dom == nullptr)
         {
-            // domain_for says WHICH refusal this is, so forward it verbatim: EPERM for
-            // an inadmissible grant (fix the grant), ENOMEM for a full domain pool
-            // (retry later). Collapsing both into ENOMEM used to make those two
-            // indistinguishable to a caller that can only act on one of them.
+            // domain_for says which refusal this is, so forward it: EPERM for an
+            // inadmissible grant, ENOMEM for a full domain pool.
             return -derr;
         }
         // Reclaim an EXITED slot or bump-allocate (ThreadPool::alloc). Single-core: an

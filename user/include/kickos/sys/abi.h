@@ -106,12 +106,11 @@ typedef enum kos_pstate_e : uint32_t
 // Shared payload bound: send REJECTS a len above this; recv clamps its capacity to it.
 #define KOS_EP_MSG_MAX 256
 
-// Counting-semaphore ceiling. The kernel keeps the count in an `int`, so this IS the
-// type's range rather than a policy number: sem_create refuses an initial value outside
-// [0, KOS_SEM_COUNT_MAX] with -KOS_EINVAL, and a post at the ceiling is refused with
-// -KOS_EOVERFLOW. Signed overflow is undefined behaviour -- the compiler is entitled to
-// assume it cannot happen -- and post is reachable from unprivileged code, so the count
-// is bounded at the boundary instead of trusting the caller to stop.
+// Counting-semaphore ceiling. The kernel keeps the count in an `int`, so this is the
+// type's range rather than a policy number. sem_create refuses an initial outside
+// [0, KOS_SEM_COUNT_MAX] with -KOS_EINVAL; a post at the ceiling is refused with
+// -KOS_EOVERFLOW. Signed overflow is undefined and post is reachable from unprivileged
+// code, so the count is bounded at the boundary.
 #define KOS_SEM_COUNT_MAX 0x7FFFFFFF
 
 // The robust-mutex "owner died" case is now a NEGATIVE code in the fleet taxonomy:

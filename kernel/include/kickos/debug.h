@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// KICKOS_DEBUG_ASSERT: an internal-consistency check that is NOT carried in a shipped
-// image. Distinct from KICKOS_ASSERT (kernel.h), which is always live because it guards
-// an invariant whose violation is unrecoverable at runtime -- these guard mistakes a
-// caller could make, where the value is catching them AT the mistake in a build set up
-// to look, not paying for the check on every board forever.
+// KICKOS_DEBUG_ASSERT: an internal-consistency check compiled out of a shipped image.
+// KICKOS_ASSERT (kernel.h) is always live because it guards an invariant that cannot be
+// recovered from at runtime. These guard mistakes a caller could make instead.
 //
-// A deliberately tiny leaf: it declares kpanic itself rather than including kernel.h,
-// because kernel.h pulls thread.h which pulls list.h -- one of this header's own users.
+// Declares kpanic rather than including kernel.h, which pulls thread.h and then list.h,
+// one of this header's own users.
 
 #ifndef KICKOS_DEBUG_H
 #define KICKOS_DEBUG_H

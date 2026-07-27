@@ -3,16 +3,14 @@
 //
 // The userspace heap bottom edge: newlib's _sbrk over a bump arena.
 //
-// ITS OWN TRANSLATION UNIT ON PURPOSE. The design is that a board provisioning no heap
-// defines neither bound symbol, so an app that pulls malloc fails at LINK with
-// "undefined reference to _kickos_heap_start" rather than at runtime with a NULL from
-// malloc. That only works if this object is pulled by a REAL allocator reference: while
-// it shared a TU with _exit, the fleet-wide -Wl,-u,_exit (CMakeLists.txt) force-linked
-// that object into every image, so the strong reference was always present and the
-// fail-loud could never fire -- a linker script could not withhold it. Keeping _sbrk
-// alone here restores archive semantics: no malloc, no member, no reference.
+// Its own translation unit on purpose. A board provisioning no heap defines neither bound
+// symbol, so an app pulling malloc fails at link with "undefined reference to
+// _kickos_heap_start" instead of returning NULL at runtime. That needs this object pulled
+// by a real allocator reference. While it shared a TU with _exit, the fleet-wide
+// -Wl,-u,_exit (CMakeLists.txt) force-linked that object into every image, so the strong
+// reference was always present and no linker script could withhold it.
 //
-// Do not add anything to this file that an image might want WITHOUT a heap.
+// Do not add anything here that an image might want without a heap.
 
 #include <kickos/sys.h>
 
@@ -22,11 +20,10 @@
 extern "C"
 {
 
-// The bounds are LINKER symbols, not a static array: on an MPU chip the heap IS the
-// unused pad of the granted .appdata window; on a non-MPU chip it is an explicit
-// .userheap section (arch/*/chip/*.ld). RX prepends one underscore, so the C
-// `_kickos_heap_start` here resolves to the linker symbol `__kickos_heap_start` the
-// RX .ld defines.
+// The bounds are linker symbols, not a static array: on an MPU chip the heap is the unused
+// pad of the granted .appdata window; on a non-MPU chip it is an explicit .userheap section
+// (arch/*/chip/*.ld). RX prepends one underscore, so the C `_kickos_heap_start` here
+// resolves to the linker symbol `__kickos_heap_start` the RX .ld defines.
 extern char _kickos_heap_start[];
 extern char _kickos_heap_limit[];
 static char* s_brk = _kickos_heap_start;
@@ -49,11 +46,10 @@ void* _sbrk(intptr_t incr)
 }
 
 #ifdef __RX__
-// The RX psABI prefixes every C identifier with a leading underscore at the asm level,
-// so the C `_sbrk` above mangles to asm `__sbrk` -- newlib references asm `_sbrk` and
-// would otherwise fall through to libnosys sbrk (which pulls `_end` and breaks the
-// app-window layout). A C function named `sbrk` mangles to asm `_sbrk`, satisfying
-// newlib; it shares the one bump arena via heap_bump.
+// The RX psABI prefixes every C identifier with a leading underscore at the asm level, so
+// the C `_sbrk` above mangles to asm `__sbrk`. Newlib references asm `_sbrk` and would
+// otherwise fall through to libnosys sbrk, which pulls `_end` and breaks the app-window
+// layout. A C function named `sbrk` mangles to asm `_sbrk` and shares the bump arena.
 void* sbrk(intptr_t incr)
 {
     return heap_bump(incr);

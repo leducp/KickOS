@@ -683,11 +683,10 @@ namespace
         TAP_CHECK(kos_handle_close(-1) == -KOS_EBADF);
         TAP_CHECK(kos_handle_close(0x7fffffff) == -KOS_EBADF);
         TAP_CHECK(kos_handle_close(0x00ffffff) == -KOS_EBADF);
-        // The count is bounded at BOTH ends. A sem may not be born outside
-        // [0, KOS_SEM_COUNT_MAX], and a post with no waiter and the count already at the
-        // ceiling is refused instead of incrementing an int past its range -- which is UB,
-        // and post is reachable from unprivileged code. Creating one AT the ceiling is what
-        // makes the refusal reachable in a test at all: the alternative is 2^31 posts.
+        // The count is bounded at both ends: a sem may not be born outside
+        // [0, KOS_SEM_COUNT_MAX], and a post with no waiter at the ceiling is refused
+        // rather than incrementing an int past its range. Creating one at the ceiling is
+        // what makes the refusal reachable here; the alternative is 2^31 posts.
         TAP_CHECK(kos_sem_create(-1) == -KOS_EINVAL);
         int const hmax = kos_sem_create(KOS_SEM_COUNT_MAX);
         TAP_CHECK(hmax >= 0 and kos_sem_post(hmax) == -KOS_EOVERFLOW
@@ -1651,9 +1650,9 @@ namespace
         // --- End-to-end errno coherence (MAJOR 2): an unprivileged child whose mem_base
         // lies OUTSIDE the arena is refused with -KOS_EPERM (policy refusal), NOT
         // -KOS_ENOMEM (pool exhaustion) -- coherent with the stack_base path
-        // (t_stackbase_arena). domain_for is the authoritative chokepoint and now reports
-        // WHICH refusal it made, so this code comes from there rather than from a
-        // duplicate pre-check at the spawn boundary. Caller is privileged (main); the CHILD is
+        // (t_stackbase_arena). domain_for is the authoritative chokepoint and reports which
+        // refusal it made, so this code comes from there, not from a duplicate pre-check at
+        // the spawn boundary. Caller is privileged (main); the CHILD is
         // unprivileged, so domain_for evaluates the grant (0xE0000000 is 2048-aligned, so
         // ONLY arena containment can reject it). Fails before any slot is claimed.
         int const mrc = kos::thread::spawn(grant_noop, nullptr, "membad", 10, KOS_POLICY_FIFO,
@@ -2843,7 +2842,7 @@ namespace
     volatile long g_auth_badbits = -99;  // object rights offered as an authority
     volatile long g_auth_capsarr = -99;  // the grant ARRAY read, reached past the early refusals
     kos_thread_params g_auth_kid;  // deliberately static: see auth_worker (N15)
-    kos_cap_grant g_auth_two[2];   // ditto -- the OTHER read thread_spawn validates
+    kos_cap_grant g_auth_two[2];   // ditto; the other read thread_spawn validates
     void auth_worker(void*) // UNPRIVILEGED, authority = AUTH_PINMUX; caps: done@1
     {
         // The bit it HOLDS: past the gate, so pinmux answers for itself.
@@ -2860,12 +2859,11 @@ namespace
         // tidiness: a frame-local kos_thread_params costs an inline zero-init per site, and
         // this suite links within ~100 bytes of the f302nucleo flash ceiling.
         //
-        // g_auth_kid and g_auth_two are GLOBALS on purpose, and that is the whole of this
-        // test's N15 coverage: thread_spawn reads the params struct and the grant array
-        // through user_readable_ok, so a caller may keep either in static data. Before that
-        // fix both reads were a raw user_range_ok with no arch_user_text_readable arm, and
-        // all three probes below answered -KOS_EFAULT on the sim and on every no-MPU board
-        // instead of the codes they assert.
+        // g_auth_kid and g_auth_two are globals on purpose, and that is this test's N15
+        // coverage: thread_spawn reads the params struct and the grant array through
+        // user_readable_ok, so a caller may keep either in static data. With the earlier raw
+        // user_range_ok the probes below answered -KOS_EFAULT on the sim and on every
+        // no-MPU board.
         kos_thread_params& kid = g_auth_kid;
         kid.entry = auth_noop;
         kid.prio = 9;
@@ -2885,12 +2883,11 @@ namespace
         kid.cap_count = 1;
         kid.authority = KOS_CAP_WAIT;
         g_auth_badbits = kos_thread_spawn(&kid);
-        // All three probes above are refused by an authority check that runs BEFORE the
-        // delegation loop, so none of them reads g_auth_two at all -- the array is the
-        // second N15 site and needs a probe that gets that far. An unresolvable
-        // source_cap is refused -KOS_EBADF from inside the loop, which is only reachable
-        // once the array itself has been admitted; with the raw range check it answers
-        // -KOS_EFAULT instead. Refused before a pool slot is claimed, like the others.
+        // The three probes above are refused by an authority check that runs before the
+        // delegation loop, so none of them reads g_auth_two. The array is the second N15
+        // site and needs a probe that gets that far: an unresolvable source_cap is refused
+        // -KOS_EBADF from inside the loop, reachable only once the array is admitted. With
+        // the raw range check it answered -KOS_EFAULT. Refused before a slot is claimed.
         g_auth_two[0] = {0x7fffffff, CH_FULL};
         kid.authority = 0;
         g_auth_capsarr = kos_thread_spawn(&kid);

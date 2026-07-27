@@ -12,7 +12,7 @@
 
 #include <stddef.h>
 
-#include <kickos/debug.h> // KICKOS_DEBUG_ASSERT (a leaf: kernel.h would close a cycle)
+#include <kickos/debug.h> // KICKOS_DEBUG_ASSERT (a leaf; kernel.h would close a cycle)
 
 // Recover the enclosing struct from a pointer to one of its members.
 #define KICKOS_CONTAINER_OF(ptr, type, member) \
@@ -38,12 +38,10 @@ namespace kickos
             return head == nullptr;
         }
 
-        // KICKOS_DEBUG guards. Queue integrity rests entirely on caller discipline: a
-        // node inserted twice, or unlinked from a list it is not on, corrupts the links
-        // silently and the damage surfaces somewhere else entirely -- a scheduler walk
-        // that loops, or a wait queue that loses a thread. Both are cheap to catch AT
-        // the mistake. Compiled out by default (a shipped image is byte-identical); the
-        // sim gate builds them, so they run against the whole suite on every sim run.
+        // KICKOS_DEBUG guards. Queue integrity rests on caller discipline: a node
+        // inserted twice, or unlinked from a list it is not on, corrupts the links
+        // silently and surfaces somewhere else. Compiled out by default, so a shipped
+        // image is byte-identical; the sim gate builds them.
 #if KICKOS_DEBUG
         bool contains(ListNode const* n) const
         {
@@ -60,9 +58,8 @@ namespace kickos
 
         void push_back(ListNode* n)
         {
-            // A detached node has both links null AND is on no list. The link check is
-            // O(1) and catches re-insertion into THIS list; the membership scan catches
-            // the case a stale-but-nulled node would slip past.
+            // A detached node has both links null and is on no list. The link check is
+            // O(1); the scan catches a node whose links were nulled while still listed.
             KICKOS_DEBUG_ASSERT(n->next == nullptr and n->prev == nullptr);
             KICKOS_DEBUG_ASSERT(not contains(n));
             KICKOS_DEBUG_ASSERT(n != tail);
@@ -81,9 +78,9 @@ namespace kickos
 
         void unlink(ListNode* n)
         {
-            // Unlinking a node that is NOT on this list splices this list's head/tail
-            // onto that node's neighbours -- it corrupts two lists at once and returns
-            // quietly. The scan is O(n) over a queue bounded by KICKOS_MAX_THREADS.
+            // Unlinking a node not on this list splices this list's head/tail onto that
+            // node's neighbours, corrupting both lists quietly. The scan is O(n) over a
+            // queue bounded by KICKOS_MAX_THREADS.
             KICKOS_DEBUG_ASSERT(contains(n));
             if (n->prev != nullptr)
             {
