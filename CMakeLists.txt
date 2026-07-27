@@ -100,6 +100,33 @@ if(KICKOS_ENABLE_SELFTEST)
   add_compile_definitions(KICKOS_ENABLE_SELFTEST=1)
 endif()
 
+# HOLDING MEASURE, pending the maintainer decision tracked as N16 in TODO.md.
+#
+# f302nucleo and bluepill-c8 have 64 KiB of flash, and the fleet-uniform selftest image
+# no longer fits it at the fleet Debug default -- which is `-g` with NO -O at all. This
+# batch's kernel hardening costs 184 bytes on f302nucleo against the 104 bytes of
+# headroom it had, so the board stopped linking on kernel code, not on a new test.
+#
+# The measurement that decides what to do about it: the SAME image is 48,848 bytes at
+# -Os and 65,720 at the default. The ceiling is 74% real code and 26% unoptimised
+# codegen -- so the choice N16 poses (shed coverage, or accept these boards as
+# build-only) has a third answer nobody had costed. Taking -Os here sheds NO coverage:
+# every test the suite has still builds, and 16.7 KiB of headroom comes back.
+#
+# What it costs, stated plainly: the -st image's kernel is no longer codegen-identical
+# to the same board's non-st build, which the selftest -Os block (see
+# user/apps/common/selftest/CMakeLists.txt) deliberately preserved when it optimised the
+# app's own TUs only. Both boards are build-only for the suite -- no bench unit, no QEMU
+# model -- so what they provide is a link check, and this keeps them providing one. -g is
+# kept, so they stay debuggable. Scoped to these two boards and reverted by deleting this
+# block; widening it to the fleet is the maintainer's call, not a side effect of a
+# hardening batch.
+if(KICKOS_ENABLE_SELFTEST AND (KICKOS_BOARD STREQUAL "f302nucleo"
+                               OR KICKOS_BOARD STREQUAL "bluepill-c8"))
+  add_compile_options(-Os)
+  message(STATUS "KickOS: -Os across the ${KICKOS_BOARD} selftest tree (64 KiB flash; see N16)")
+endif()
+
 # --- Console backend selection (docs/console-design.md) --------------------
 # KICKOS_CONSOLE = chip | rtt | both | none. `chip` = the board's native transport
 # (UART / semihosting / USIC); `rtt` = SEGGER RTT (needs a debug probe); resolved
@@ -564,6 +591,16 @@ if(TARGET kickos_kernel)
     # override -- the two flag sets never collide on one command line.
     target_compile_options(kickos_cxx INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
+    # A second rescan group, for the same reason the core group took libc (see there),
+    # one layer further out: on this leaf the allocator demand starts in libstdc++'s
+    # operator new, and the g++ driver appends libstdc++ AFTER everything CMake emits.
+    # So the chain operator new -> malloc -> _sbrk_r -> _sbrk has to be closable in a
+    # group that contains all three providers, or the on-demand `_sbrk` member is
+    # already behind the linker when libstdc++ asks for it. Naming them here does not
+    # add libraries the driver would not link anyway; it only fixes where they are
+    # scanned. Listed after kickos_core, so the core group is still resolved first.
+    target_link_libraries(kickos_cxx INTERFACE
+      "$<LINK_GROUP:RESCAN,stdc++,supc++,c,kickos_user>")
 
     # A strong __gnu_cxx::__verbose_terminate_handler so the linker never extracts
     # libstdc++'s vterminate.o (~65K of demangle + float dtoa). Must be a real object
