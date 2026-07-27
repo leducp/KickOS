@@ -283,6 +283,25 @@ size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max);
 //     the security boundary it DOES enforce (cross-domain arena reads) stays closed.
 bool arch_user_text_readable(uintptr_t ptr, size_t len);
 
+// The WRITE twin of the hook above: true iff [ptr, ptr+len) is app static data the
+// backend recognizes as caller-writable but does NOT describe as one of the running
+// thread's MPU regions. user_writable_ok checks the granted regions first and falls
+// back here, exactly as user_readable_ok does.
+//   enforcing MPU backend: .appdata/.appbss IS a real region (see
+//     arch_domain_static_regions), so the region check already admits it and this
+//     returns false -- an address outside the set is genuinely unreachable.
+//   non-enforcing backend: there is no per-thread isolation to breach (the thread can
+//     already store anywhere with a plain instruction), so a range that does NOT touch
+//     the user-RAM arena is admitted. An arena range still falls through to the region
+//     check, so a later enforcing build of the same backend stays sound.
+//   host sim: app and kernel share one host image whose sections are not MPU regions,
+//     so a range wholly inside the image and clear of the arena is admitted.
+// Without this hook an unprivileged thread's writable set is its own STACK ALONE on
+// every backend that models no static-data region -- so a recv buffer or an out-pointer
+// that lives in a global is refused -KOS_EFAULT. That is latent while root is
+// privileged (privileged callers bypass the check) and a boot failure after the flip.
+bool arch_user_data_writable(uintptr_t ptr, size_t len);
+
 // An address that faults on unprivileged access (sim: a reserved arena page no
 // domain owns). Used by the isolation self-test.
 uintptr_t arch_mpu_probe_addr(void);

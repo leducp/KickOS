@@ -1841,10 +1841,11 @@ namespace
 
     void ep_recv_worker(void*) // caps: done@1, E@2 (unpriv)
     {
-        // The recv buffer is a STACK local (in the thread's own granted stack region):
-        // an unprivileged caller's writable check has no text fallback, so a global here
-        // would be rejected on the sim / no-MPU backends. Copy the result into a global
-        // (a direct store, not a syscall) for main to inspect.
+        // The recv buffer is a STACK local, and the result reaches main through a global
+        // by a direct store rather than by the syscall. A global buffer would be accepted
+        // now that user_writable_ok has a static-data fallback (see writable_global), but
+        // keeping the buffer thread-private is what keeps this test about the rendezvous
+        // instead of about the writable check.
         char buf[64];
         struct kos_recv_info info = {0xdeadu, 0x55};
         long n = kos_recv(2, buf, static_cast<size_t>(g_ep_rcap), &info);
@@ -2785,6 +2786,33 @@ namespace
         wait_n(1);
         TAP_CHECK(g_shutdown_rc == -KOS_EPERM); // unprivileged shutdown refused
     }
+
+    // --- a syscall buffer that lives in an app GLOBAL, from an unprivileged thread ----
+    // An unprivileged thread's writable set is [app static data] + its domain + its own
+    // stack. On any backend that does not model app static data as an MPU region -- every
+    // no-MPU chip, and the host sim, whose globals sit in the host image rather than the
+    // mprotect'd arena -- that collapses to the stack alone, so a syscall buffer in a
+    // global is refused EFAULT even though the thread can plainly store there itself.
+    //
+    // recv validates its buffer BEFORE resolving the cap, so a deliberately invalid cap
+    // separates the two answers with no rendezvous and no sender: EBADF means the buffer
+    // was admitted and we got as far as the cap, EFAULT means it was not.
+    char g_wrbuf[16];
+    long g_wrbuf_rc = -99;
+    void wrbuf_worker(void*) // caps: done@1
+    {
+        g_wrbuf_rc = kos_recv(0x7fffffff, g_wrbuf, sizeof(g_wrbuf), nullptr);
+        kos_sem_post(CH_DONE);
+    }
+    void t_writable_global()
+    {
+        g_wrbuf_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(wrbuf_worker, nullptr, "wrGlob", 10, caps, 1);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        TAP_CHECK(g_wrbuf_rc == -KOS_EBADF); // not -KOS_EFAULT: the global was writable
+    }
 }
 
 int main(int, char**)
@@ -2840,6 +2868,7 @@ int main(int, char**)
     tap::add("cap_index0", t_cap_index0);              // B3 index-0 reservation + FIRST_DYNAMIC floor
     tap::add("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
     tap::add("shutdown_priv", t_shutdown_denied);        // KOS_SYS_SHUTDOWN privileged-only
+    tap::add("writable_global", t_writable_global);      // out-buffer in an app global
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     tap::add("irq_thread_ctx", t_irq);

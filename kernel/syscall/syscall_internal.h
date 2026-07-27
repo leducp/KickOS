@@ -35,8 +35,9 @@ namespace kickos
     // readable code/data extent (arch_user_text_readable).
     bool user_readable_ok(uintptr_t ptr, size_t len);
 
-    // A user WRITE buffer / out-pointer: granted WRITE region only (no code/rodata
-    // twin -- an out-pointer into code is rejected).
+    // A user WRITE buffer / out-pointer: granted WRITE region OR the app's writable
+    // static-data extent (arch_user_data_writable), for the backends that model no
+    // static-data region -- no-MPU chips and the host sim.
     bool user_writable_ok(uintptr_t ptr, size_t len);
 
     // The kernel<->user byte-access seam (identity today; one physical space).
