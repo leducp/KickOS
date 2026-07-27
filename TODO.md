@@ -66,6 +66,27 @@ hardening, roughly ordered by exposure.
       userspace driver still holds queued bytes loses them: `console_tx_flush_sync()` is a no-op
       (the ring was disarmed by `console_tx_deinit`) and `arch_shutdown` then spins forever.
       Shutdown has to drain through the owning driver, not the retired kernel ring.
+- [ ] **Give `thread_spawn`'s two READ checks the same static-data fallback the write side just
+      got.** `thread_spawn` validates the params struct and the `caps[]` array with raw
+      `user_range_ok(..., ARCH_MPU_R)` rather than `user_readable_ok`, so neither picks up
+      `arch_user_text_readable`. Consequence: an unprivileged caller whose `kos_thread_params` or
+      `kos_cap_grant[]` lives in a **global** rather than a frame local gets `-KOS_EFAULT` on the
+      host sim and on every no-MPU board -- the exact hole `arch_user_data_writable` just closed on
+      the write side, still open on the read side, two call sites away. Latent today only because
+      `kos::thread::spawn` builds its struct as a frame local; the selftest's `authority_cap`
+      worker carries a comment saying it must, which is the same
+      known-and-worked-around-but-unfiled shape as the writable hole. Fix is one word at each site,
+      but it wants its own test (a global params struct spawn).
+- [ ] **The fleet-uniform selftest image no longer fits the smallest flash.** `f302nucleo-st`
+      links with **96 bytes** of its 64 KiB free and `bluepill-c8-st` with 284 (measured at the
+      stage-1 commit); the three tests stage 0 and 1 added consumed ~1.9 KiB of headroom and forced
+      `authority_cap` to group its assertions and share one params struct across three spawn
+      probes. The next test on either board is a link failure, and `TAP_CHECK` is expensive
+      precisely because it embeds `__FILE__` plus its stringified condition. Note CI does not catch
+      this: its ARM matrix builds the **plain** presets, not the `-st` ones. Either give the suite a
+      way to shed coverage a board cannot use, or accept these two boards as build-only for
+      selftest and say so. Same class as `tests/tap/tap.cc`'s `MAX_TESTS = 64` (59 registered on
+      sim now, and `tap::add` drops silently past the ceiling rather than failing the build).
 - [ ] **Reclaim `arch_ram_alloc`'s alignment run-up** (M5 allocator work). The bytes skipped
       ahead of each allocation to satisfy its alignment are dropped on the floor -- which is why
       boot-stack allocation *order* is load-bearing today (idle must be allocated before root).
@@ -78,9 +99,15 @@ hardening, roughly ordered by exposure.
       root cause that made 4 look necessary. Four attempts hides a gate that fails most runs.
 - [ ] **Tighten the sim `mpu_fault` failure regex** to match what `tests/check_qemu_mpu_fault.sh`
       already asserts; the sim side accepts more than it should, so it can pass on the wrong fault.
-- [ ] **Pin a clang-format version, reformat, add a gate.** 142 of 285 tracked C++ files diverge
-      from the checked-in `.clang-format`, so the config is decorative. Pin the version first
-      (output moves between releases), reformat in one commit, then gate -- in that order.
+- [ ] **Pin a clang-format version, reformat, add a gate.** Re-measured 2026-07-27: **144 of 289**
+      tracked C++ files diverge from the checked-in `.clang-format` under clang-format 21.1.8, so
+      the config is decorative. Pin the version first (output moves between releases), reformat in
+      one commit, then gate -- in that order.
+      One concrete disagreement, found while adding a file: the config says
+      `IndentExternBlock: NoIndent`, `user/src/syscall_stubs.cc` obeys it, and
+      `kernel/init/kmain.cc` does the opposite. So "reformat" is not purely mechanical -- it will
+      restyle every `extern "C"` block in the kernel, and that choice should be made deliberately
+      rather than discovered in the diff.
 - [ ] **Add a licence-header gate** now, while SPDX coverage is 100%: cheap to hold from here,
       expensive to re-establish once it slips.
 - [ ] **Pin GitHub Actions to commit SHAs**, not moving tags -- a tag is a supply-chain seam
@@ -97,11 +124,17 @@ as specified rather than redesigned:
 - Syscall **37**, behind an `arch_reboot` seam with a **weak `-KOS_ENOSYS` default** -- a chip
   that cannot do it declines honestly instead of pretending. (36 went to `KOS_SYS_SHUTDOWN`;
   a number is allocated when a syscall is built, not when it is designed.)
-- `CAP_REBOOT` resolved via `cap_lookup`, **not** `cap_resolve_e`: the latter cannot resolve a
-  cap with no backing pool object. Seated at `KOS_CAP_RESERVED3` with `rights = 0`, which makes
-  it non-delegable -- and, with `CAP_AUTHORITY` at `KOS_CAP_SERVICE` (section below), that
-  **exhausts the reserved index range**. Share the poolless-cap check via that section's
-  `cap_check_authority` rather than duplicating it here.
+- **Authorized by `AUTH_DEVICE` on the existing authority cap -- DECIDED 2026-07-27**, rather than
+  by a `CAP_REBOOT` at `KOS_CAP_RESERVED3`. So it needs no new cap type, no sixth rights bit (there
+  is none: five bits is the whole budget), and it **leaves index 3 free** -- worth more than bit
+  granularity, because spending the last well-known index would force the next one to raise
+  `KICKOS_CAP_FIRST_DYNAMIC` and cost a dynamic slot on all four 9-handle boards. Gate it with
+  `cap_check_authority(c, AUTH_DEVICE)`, the same call `arch_shutdown` uses.
+  Recorded counter-argument: shutdown only stops execution, while reboot-to-bootloader leaves the
+  board accepting new firmware over USB, so fusing them lets anything that may publish a console
+  also enter flashing mode. Accepted because the feature is compiled out of production images; if
+  a distinct `AUTH_REBOOT` is ever wanted, merge `AUTH_PINMUX` + `AUTH_CLOCK` to free the bit.
+  See `docs/design-unprivileged-root.md` section 9.
 - Compiled out entirely unless `KICKOS_ENABLE_SELFTEST`.
 - **RP2040:** bootrom `UB` -> `reset_usb_boot`.
 - **RP2350:** bootrom `RB` -> `reboot`, with
@@ -110,6 +143,9 @@ as specified rather than redesigned:
 - **imxrt1062:** declines with `ENOSYS`, so Teensy keeps its physical button press.
 
 ## Unprivileged ctors and `main` -- start unprivileged, holding capabilities (2026-07-27)
+
+**Reasoning, blockers and the boards this does not work on are now filed as
+`docs/design-unprivileged-root.md` (ACTIVE).** This section stays the actionable checklist.
 
 A design investigation superseded stages 2-8 of the old plan: root should **start unprivileged
 holding capabilities** rather than start privileged and demote, so there is no demotion to build.
@@ -156,17 +192,30 @@ frdmk64f+blink -- the 8 B being the argv struct itself).
       confirmed failing on both broken postures beforehand. Also note the suite had already
       *worked around* this bug in `ep_recv_worker`'s comment without it being filed.
 
-**Stage 1 -- the authority capability, root still privileged.**
-- [ ] **Add `CapType::CAP_AUTHORITY`**, seated at `KOS_CAP_SERVICE` (index 2, already reserved) and
-      carrying the **five unused bits of `CapEntry.rights`** (a `uint8_t` with only
-      WAIT/SIGNAL/TRANSFER used, `kernel/include/kickos/cap.h:58-63`): `AUTH_MEMORY` (ram_alloc +
-      MMIO grant), `AUTH_PINMUX`, `AUTH_CLOCK`, `AUTH_IRQ`, `AUTH_DEVICE` (console publish,
-      shutdown, periph enable). Costs **zero dynamic slots on every board**, including the four
-      9-handle ones. Needs no-op arms in `obj_ref_inc`/`obj_ref_drop` (both `default:` assert),
-      resolution via `cap_lookup` **not** `cap_resolve_e` (the latter cannot resolve a poolless
-      cap), and one `cap_check_authority()` helper rather than open-coding at nine sites.
-- [ ] **Convert all eight gates to `privileged OR cap_check_authority(...)`**, so nothing changes
-      behaviourally and every site is exercised before the flip.
+**Stage 1 -- the authority capability, root still privileged. COMPLETE** (see
+`m4.5.1: gate the eight authority syscalls on a capability, not only on privilege`; +374 B flash
+on frdmk64f+blink, no `.bss`).
+- [x] **Added `CapType::CAP_AUTHORITY`**, seated at `KOS_CAP_AUTHORITY` (index 2, already
+      reserved, and now spelled for what it holds) carrying the **five unused bits of
+      `CapEntry.rights`**: `AUTH_MEMORY` (ram_alloc + MMIO grant), `AUTH_PINMUX`, `AUTH_CLOCK`,
+      `AUTH_IRQ`, `AUTH_DEVICE` (console publish, shutdown, periph enable). Zero dynamic slots on
+      every board. Poolless, so it resolves by reading the reserved slot and never via
+      `cap_resolve_e`; `obj_ref_inc`/`obj_ref_drop`/`obj_close_protocol` each gained an explicit
+      no-op arm rather than relying on a `default:` that asserts.
+      **Seated WITHOUT `CAP_TRANSFER`**, which makes it non-delegable rather than merely
+      undelegated -- so index 2 has exactly one writer, the kernel, and the delegation-packing
+      collision below is unreachable instead of unlikely.
+- [x] **Converted all eight gates to `cap_check_authority(caller, AUTH_*)`**, which is true when
+      the caller is privileged OR holds the bit. Behaviour-neutral: root is privileged, so every
+      gate takes the same arm as before. `kos_thread_params` gained an `authority` byte (in the
+      padding after `cap_count`, so the struct does not grow) that narrows only -- refused
+      together with `cap_count >= 2`, since a second delegated cap would land on the authority
+      slot.
+- [x] **Gate: selftest `authority_cap`.** An unprivileged child holding `AUTH_PINMUX` and nothing
+      else gets PAST the pinmux gate (which then answers for itself) while being refused at a
+      gate it holds no bit for -- so the bits are shown independent, not one lump. Confirmed to
+      FAIL with the grant removed, which is what makes it cover the arm that would otherwise ship
+      unexercised until stage 2 (the `kernel_ctor_placement` vacuity trap).
 
 **Stage 2 -- flip per board**, behind a build-enforced `KICKOS_ROOT_PRIVILEGED` knob (default ON,
 **NOT a weak symbol**: opting out of the boundary must be visible in the board's build, not

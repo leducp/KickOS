@@ -2,7 +2,7 @@
 # Design records -- index by status
 
 The `design-*.md` documents are per-topic design records: the reasoning behind a decision, the
-option space that was considered, and the evidence a claim rests on. There are 26 of them and they
+option space that was considered, and the evidence a claim rests on. There are 27 of them and they
 accumulated in commit order with no index, which made the collection hard to use -- a reader could
 not tell whether a document described the current system, a plan, or a road not taken.
 
@@ -59,6 +59,7 @@ Two things follow from this that are easy to get wrong:
 | [`design-m4-driver-matrix.md`](../design-m4-driver-matrix.md) | The per-board peripheral survey and the complexity-vs-gain backlog that bounds M4's scope |
 | [`design-m4-driver-model.md`](../design-m4-driver-model.md) | How a driver is packaged: driver-lib class, service thread, or both (the ruling: both, service composed on the class) |
 | [`design-kickcat-k64f.md`](../design-kickcat-k64f.md) | Running the KickCAT EtherCAT slave on KickOS. Sim stage landed; the K64F hardware path is still the plan |
+| [`design-unprivileged-root.md`](../design-unprivileged-root.md) | Root starts unprivileged holding capabilities instead of starting privileged and demoting -- and the boards where that does not work |
 
 ## EXPLORATORY
 
