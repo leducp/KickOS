@@ -98,7 +98,9 @@ as specified rather than redesigned:
   that cannot do it declines honestly instead of pretending.
 - `CAP_REBOOT` resolved via `cap_lookup`, **not** `cap_resolve_e`: the latter cannot resolve a
   cap with no backing pool object. Seated at `KOS_CAP_RESERVED3` with `rights = 0`, which makes
-  it non-delegable.
+  it non-delegable -- and, with `CAP_AUTHORITY` at `KOS_CAP_SERVICE` (section below), that
+  **exhausts the reserved index range**. Share the poolless-cap check via that section's
+  `cap_check_authority` rather than duplicating it here.
 - Compiled out entirely unless `KICKOS_ENABLE_SELFTEST`.
 - **RP2040:** bootrom `UB` -> `reset_usb_boot`.
 - **RP2350:** bootrom `RB` -> `reboot`, with
@@ -106,22 +108,109 @@ as specified rather than redesigned:
   **silicon-revision dependent** -- read `*(uint8_t*)0x13` and branch on it; do NOT hardcode.
 - **imxrt1062:** declines with `ENOSYS`, so Teensy keeps its physical button press.
 
-## Unprivileged ctors and `main` -- stages 2-8
+## Unprivileged ctors and `main` -- start unprivileged, holding capabilities (2026-07-27)
 
-Stage 1 (arena-allocated boot stacks) LANDED on the M4.5.1 branch -- see
-`m4.5.1: take the root and idle stacks from the arena, not .bss`. The rest, in
-dependency order:
-- [ ] **2. `thread_regions_recompose`** -- recompute a thread's region set when its privilege
-      changes, so the drop below has something coherent to apply.
-- [ ] **3. `KOS_SYS_DROP_PRIV` on sim + ARM** -- the syscall plus its first two backends, which
-      is where the contract gets pinned.
-- [ ] **4. rv32imac + rxv3 backends** -- two instructions each once stage 3 has settled the shape.
-- [ ] **5. The privileged-callback escape hatch**, for an app that genuinely needs privileged
-      init. **Build-enforced, NOT a weak symbol**: opting out of the boundary must be visible in
-      the board's build, not silently satisfied by a link-time override.
-- [ ] **6. Move app bring-up into the service lists**, so an app is started the way a driver is.
-- [ ] **7. Flip the default** -- ctors and `main` run unprivileged unless a board opts out.
-- [ ] **8. Xtensa** last, as usual (windowed ABI).
+A design investigation superseded stages 2-8 of the old plan: root should **start unprivileged
+holding capabilities** rather than start privileged and demote, so there is no demotion to build.
+`thread_regions_recompose`, `KOS_SYS_DROP_PRIV`, its per-arch backends and Xtensa-last are
+**deleted, not deferred** -- the region set is composed once in `thread_create`
+(`kernel/thread/thread.cc:94-134`) from a privilege that never changes, and the rest existed only
+to manage a transition this design does not have. The reason, recorded once: **every ISA already
+encodes thread privilege in the fabricated first frame and restores it on the first switch-in** --
+armv7m `ctx.npriv` (`arch/arm/armv7m/arch_armv7m.cc:111-119`), armv6m (`arch_armv6m.cc:102-108`),
+rv32imac `MSTATUS_MPP` (`arch_rv32imac.cc:143-158`), rxv3 `PSW_THREAD_USER`
+(`arch_rxv3.cc:279-289`), xtensa has no ring split (`arch_xtensa.cc:271-273`), sim is mprotect
+posture (`sim.cc:758-761`). Starting root unprivileged therefore needs **zero new assembly on any
+port**, and Xtensa comes along free rather than last. `drop_priv` survives only as a **contingent,
+much smaller** item: it is the only mechanism giving "privileged bring-up then self-confinement for
+life", which is what the blocked bring-up bodies below want -- in scope only if the
+`arch_periph_enable` seam (stage 3) proves insufficient.
+
+The old stage 1 (arena-allocated boot stacks) LANDED on the M4.5.1 branch -- see
+`m4.5.1: take the root and idle stacks from the arena, not .bss`. The new stages, in dependency
+order:
+
+**Stage 0 -- independent prerequisites, no behaviour change.** All three are real bugs today.
+- [ ] **Move the argv handoff out of kernel-stack storage.** `root_entry` reads `argc`/`argv` from
+      `AppArgs`, a `kmain` stack local (`kernel/init/kmain.cc:203-204,218`) living on the boot stack
+      *outside* the arena -- so an unprivileged root faults on its first statement after the ctor
+      walk, on every enforcing board, and **the sim cannot reproduce it** (`kmain`'s frame is host
+      stack). Put the two-word struct in `kickos_system`, which the linker selector already places
+      app-side.
+- [ ] **Add `KOS_SYS_SHUTDOWN(status)`** = `console_tx_flush_sync(); arch_shutdown(status)`,
+      replacing the direct calls at `kmain.cc:208-209`. Preserves the init-return-is-shutdown
+      invariant, and is the natural home for the "console bytes lost on shutdown" item above.
+- [ ] **Add a `KICKOS_HAVE_MPU=0` writable arm to `user_writable_ok`**
+      (`kernel/syscall/syscall_mem.cc:84-93`). It has no fallback where `user_readable_ok` has
+      `arch_user_text_readable`, and stm32f103, stm32f302, nrf51, sam3x8e and esp32 define neither
+      `__kickos_code_start` nor `__kickos_appdata_start` -- so an unprivileged thread's writable set
+      there is its own stack and nothing else, and any syscall out-pointer in a global returns
+      `-EFAULT`. Latent today; the flip makes it a boot failure.
+
+**Stage 1 -- the authority capability, root still privileged.**
+- [ ] **Add `CapType::CAP_AUTHORITY`**, seated at `KOS_CAP_SERVICE` (index 2, already reserved) and
+      carrying the **five unused bits of `CapEntry.rights`** (a `uint8_t` with only
+      WAIT/SIGNAL/TRANSFER used, `kernel/include/kickos/cap.h:58-63`): `AUTH_MEMORY` (ram_alloc +
+      MMIO grant), `AUTH_PINMUX`, `AUTH_CLOCK`, `AUTH_IRQ`, `AUTH_DEVICE` (console publish,
+      shutdown, periph enable). Costs **zero dynamic slots on every board**, including the four
+      9-handle ones. Needs no-op arms in `obj_ref_inc`/`obj_ref_drop` (both `default:` assert),
+      resolution via `cap_lookup` **not** `cap_resolve_e` (the latter cannot resolve a poolless
+      cap), and one `cap_check_authority()` helper rather than open-coding at nine sites.
+- [ ] **Convert all eight gates to `privileged OR cap_check_authority(...)`**, so nothing changes
+      behaviourally and every site is exercised before the flip.
+
+**Stage 2 -- flip per board**, behind a build-enforced `KICKOS_ROOT_PRIVILEGED` knob (default ON,
+**NOT a weak symbol**: opting out of the boundary must be visible in the board's build, not
+silently satisfied by a link-time override).
+- [ ] **Flip in this order:** `xmc4800-relax` with a console-only service list first (its `xmcuart`
+      bring-up is pure syscall), then f411disco, frdmk64f, pizero2350, esp32c6-wroom, rx72m.
+- [ ] **Per-board gate:** selftest green under enforcement **plus** a clean cross-domain
+      `mpu_fault` proving root is confined. **The sim is the weakest witness, not the strongest** --
+      the first real witness must be an enforcing ARM board.
+
+**Stage 3 -- the blocked bring-up bodies.**
+- [ ] **Add `arch_periph_enable(base)`**, weak `-KOS_ENOSYS`, gated `AUTH_DEVICE`, covering "ungate
+      the clock and drop supervisor-protect for the block at this base". Implement for K64F
+      (`SIM_SCGC*` + `AIPS0_PACRN`) and ESP32-C6 (the APM/PMS one-time open recorded under Driver
+      era below). Retires `k64uart` and half of `k64dspi`.
+
+**Stage 4 -- the app story.**
+- [ ] **Add `kos_cap_narrow(cap, mask)`** (rights &= mask, never widen, ~10 lines) and drop or
+      narrow the authority cap in `kickos_default_init_run` (`system/init/default_init_entry.cc`)
+      before `kickos_app_main`. **This is the actual app-facing win** -- without it an unprivileged
+      `main` can still ask the kernel to do all eight things.
+- [ ] **Declare `selftest` and `stress` privileged-root**, since they spawn privileged children
+      (`user/apps/common/selftest/main.cc:400,403`, `user/apps/common/stress/main.cc:222,224,286`).
+
+Carried over from the old plan, untouched by this design:
+- [ ] **Move app bring-up into the service lists**, so an app is started the way a driver is.
+
+Blockers and limits:
+- **Three service bring-up bodies poke MMIO directly from root** --
+  `system/driver/mk64f/k64uart/k64uart.cc:191-193` (AIPS PACR),
+  `system/driver/mk64f/k64dspi/k64dspi.cc:298-327` (clock gates, pin mux, GPIO, DSPI config),
+  `system/driver/xmc4800/xmcssc/xmcssc.cc:281-324` (USIC kernel clock, baud, protocol) --
+  and `xmc4800-relax`, the enforcement flagship, links one. Stage 3 generalizes part of this; the
+  XMC's PV-write-**only** registers are privileged by hardware design and will not generalize, so
+  **for those boards the design does not work** without a chip bring-up seam or keeping privileged
+  root.
+- **`bluepill-c8` and `f302nucleo` will likely never flip** -- both carve barely 3 KiB of arena for
+  the two boot stacks, and both are 9-handle boards.
+- **`Thread::privileged` survives**, with narrowed meaning: it selects the memory posture (kernel
+  domain + permissive background), it is the confused-deputy bypass at `syscall_mem.cc:37`, and it
+  stays the home for "may spawn a privileged child" -- which should NOT be a capability, since
+  holding it is equivalent to holding everything forever. Consequence: on a root-unprivileged
+  board, **no privileged thread can come into existence after boot**.
+- **`idle` stays privileged and holds no capabilities** -- it runs no app code, and RXv3 `WAIT` is a
+  privileged instruction while RISC-V U-mode `WFI` is optional per spec.
+- **The reserved cap index range is full after this** (0 stdout, 1 clock, 2 authority, 3 promised to
+  `CAP_REBOOT`), and the five rights bits are the entire budget for the life of the type.
+- **Delegation packing collides with reserved names** -- spawn delegation puts cap *i* at child
+  index *i+1*, so a delegated authority cap lands at index 1 (`KOS_CAP_CLOCK`). Blocks the narrowed
+  hand-off to a driver manager until the deferred explicit-destination-index work lands.
+- **Cap-gen is a `uint16_t`** with no object generation behind a poolless cap, so 65536
+  close/re-seat cycles wrap it. Unreachable in-tree; same unbounded-counter class as the
+  domain-refcount item above.
 
 ## Needs hardware (bench time, not code)
 
