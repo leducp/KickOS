@@ -46,14 +46,51 @@ namespace
     // referenced, at the instant root makes the write below.
     constexpr int CH_DONE = 1;
 
+    // Publish-aware writer. kos_print alone is NOT enough and this app is where it
+    // matters most: once a board's service list publishes the console, console_emit
+    // DROPS every byte handed to the kernel console (kernel/init/console.cc,
+    // USER_OWNED), so on the xmc4800-relax image the announce lines vanished and the
+    // capture held the fault dump with nothing to check it against. Same policy as
+    // tests/tap/tap.cc and libc's _write: try THIS thread's cap index 0 (the stdout
+    // endpoint kos_console_publish seats) and fall back to the kernel debug console for
+    // the REMAINDER only, when index 0 is empty (-KOS_EBADF) or the driver died
+    // (-KOS_EPIPE). A deliberate copy, not a new mechanism -- the app is freestanding
+    // (no libc stdio, no heap), and the three copies must stay in step.
+    void emit(char const* s)
+    {
+        size_t total = 0;
+        while (s[total] != '\0')
+        {
+            total++;
+        }
+        size_t sent = 0;
+        while (sent < total)
+        {
+            size_t chunk = total - sent;
+            if (chunk > KOS_EP_MSG_MAX)
+            {
+                chunk = KOS_EP_MSG_MAX;
+            }
+            long const r = kos_send(0, s + sent, chunk);
+            if (r < 0)
+            {
+                // Remainder only: resending from the start would duplicate on the debug
+                // console whatever the driver already took.
+                kos_kconsole_write(s + sent, total - sent);
+                return;
+            }
+            sent += static_cast<size_t>(r);
+        }
+    }
+
     void confined_child(void* arg)
     {
         volatile int* own = static_cast<volatile int*>(arg); // -> region A (granted)
         *own = 0x1111;                                       // granted -> must succeed
-        kos_print("[rootfault] child: wrote my own granted region\n");
+        emit("[rootfault] child: wrote my own granted region\n");
         kos_sem_post(CH_DONE);
         kos_sem_wait(CH_DONE); // park: keep A's domain alive under root's write
-        kos_print("[rootfault] ERROR: child unparked\n");
+        emit("[rootfault] ERROR: child unparked\n");
     }
 }
 
@@ -68,7 +105,7 @@ int main(int, char**)
     int done = kos_sem_create(0);
     if (rA == nullptr or done < 0)
     {
-        kos_print("[rootfault] ERROR: ram_alloc / sem_create refused (authority seat?)\n");
+        emit("[rootfault] ERROR: ram_alloc / sem_create refused (authority seat?)\n");
         return 1;
     }
 
@@ -83,7 +120,7 @@ int main(int, char**)
                                              /*privileged=*/false, rA, 4096);
     if (child < 0)
     {
-        kos_print("[rootfault] ERROR: child spawn refused\n");
+        emit("[rootfault] ERROR: child spawn refused\n");
         return 1;
     }
     kos_sem_wait(done); // the child wrote A and parked: the control half passed
@@ -99,14 +136,14 @@ int main(int, char**)
     ksnprintf(msg, sizeof(msg),
               "[rootfault] root: writing the child's granted region at %p (expect fault)\n",
               rA);
-    kos_print(msg);
+    emit(msg);
     *static_cast<volatile int*>(rA) = 0x2222;
 
     // Reached ONLY where root is privileged, or where the backend enforces nothing.
     // Deliberately not worded as a failure: it is the correct outcome for
     // KICKOS_ROOT_PRIVILEGED=1, and it is the control that proves the faulting run
     // faulted because of the flip.
-    kos_print("[rootfault] cross-domain write completed: root is NOT confined "
-              "(expected with KICKOS_ROOT_PRIVILEGED=1 or no enforcement)\n");
+    emit("[rootfault] cross-domain write completed: root is NOT confined "
+         "(expected with KICKOS_ROOT_PRIVILEGED=1 or no enforcement)\n");
     return 0;
 }
