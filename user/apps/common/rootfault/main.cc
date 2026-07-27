@@ -35,53 +35,18 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
-#include <kickos/libc/fmt.h> // ksnprintf: report region A's address, so a capture can be
-                             // checked against the armv7m dump's MMFAR rather than trusted
+#include <kickos/libc/fmt.h>   // ksnprintf: print region A's address for the MMFAR check
+#include <kickos/sys/emit.h>   // publish-aware write (kos_print is dropped once published)
+
+using kickos::emit;
 
 namespace
 {
-    // The child's only cap (delegated cap 0 -> child table index 1). It posts it to
-    // hand control back to root, then waits on it again to park forever -- nobody
-    // posts a second time, so the child is still blocked, and its domain still
-    // referenced, at the instant root makes the write below.
+    // The child's only cap (delegated cap 0 lands at child table index 1). It posts to
+    // hand control back to root, then waits on it again and parks: nobody posts a second
+    // time, so the child is still blocked and its domain still referenced when root makes
+    // the write below.
     constexpr int CH_DONE = 1;
-
-    // Publish-aware writer. kos_print alone is NOT enough and this app is where it
-    // matters most: once a board's service list publishes the console, console_emit
-    // DROPS every byte handed to the kernel console (kernel/init/console.cc,
-    // USER_OWNED), so on the xmc4800-relax image the announce lines vanished and the
-    // capture held the fault dump with nothing to check it against. Same policy as
-    // tests/tap/tap.cc and libc's _write: try THIS thread's cap index 0 (the stdout
-    // endpoint kos_console_publish seats) and fall back to the kernel debug console for
-    // the REMAINDER only, when index 0 is empty (-KOS_EBADF) or the driver died
-    // (-KOS_EPIPE). A deliberate copy, not a new mechanism -- the app is freestanding
-    // (no libc stdio, no heap), and the three copies must stay in step.
-    void emit(char const* s)
-    {
-        size_t total = 0;
-        while (s[total] != '\0')
-        {
-            total++;
-        }
-        size_t sent = 0;
-        while (sent < total)
-        {
-            size_t chunk = total - sent;
-            if (chunk > KOS_EP_MSG_MAX)
-            {
-                chunk = KOS_EP_MSG_MAX;
-            }
-            long const r = kos_send(0, s + sent, chunk);
-            if (r < 0)
-            {
-                // Remainder only: resending from the start would duplicate on the debug
-                // console whatever the driver already took.
-                kos_kconsole_write(s + sent, total - sent);
-                return;
-            }
-            sent += static_cast<size_t>(r);
-        }
-    }
 
     void confined_child(void* arg)
     {
