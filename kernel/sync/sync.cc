@@ -8,6 +8,10 @@
 #include <kickos/kernel.h>
 #include <kickos/irqlock.h>
 
+#include <kickos/sys/abi.h> // KOS_SEM_COUNT_MAX (the ceiling is ABI, not policy)
+
+#include <limits.h>
+
 namespace kickos
 {
     // Remove and return the highest-priority waiter (FIFO among equal priority).
@@ -73,6 +77,11 @@ namespace kickos
     }
 
     // --- Semaphore -------------------------------------------------------------
+    // The ceiling must itself be representable in Semaphore::count, else the bound in
+    // sem_post is the overflow it exists to prevent.
+    static_assert(KOS_SEM_COUNT_MAX <= INT_MAX,
+                  "KOS_SEM_COUNT_MAX must fit Semaphore::count (an int)");
+
     void sem_init(Semaphore* s, int initial)
     {
         s->count = initial;
@@ -102,16 +111,21 @@ namespace kickos
         return false;
     }
 
-    void sem_post(Semaphore* s)
+    bool sem_post(Semaphore* s)
     {
         IrqLock lock;
         Thread* w = wq_pop_highest(s->waiters);
         if (w != nullptr)
         {
             sched::wake(w); // token handed directly to the woken waiter
-            return;
+            return true;
+        }
+        if (s->count >= KOS_SEM_COUNT_MAX)
+        {
+            return false; // at the ceiling: refuse rather than wrap a signed int (UB)
         }
         s->count++;
+        return true;
     }
 
     // --- Mutex (priority inheritance) -----------------------------------------

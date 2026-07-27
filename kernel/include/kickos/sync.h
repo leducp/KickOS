@@ -78,7 +78,13 @@ namespace kickos
     void sem_init(Semaphore* s, int initial);
     void sem_wait(Semaphore* s);
     bool sem_trywait(Semaphore* s); // non-blocking; true if token taken
-    void sem_post(Semaphore* s);    // safe from thread or ISR context
+    // Hand the token to the highest-priority waiter, else bank it. Safe from thread or
+    // ISR context. Returns false ONLY when there is no waiter and the count is already
+    // at KOS_SEM_COUNT_MAX: incrementing an `int` past its range is undefined behaviour,
+    // so the post is refused and the count left alone. The syscall surfaces that as
+    // -KOS_EOVERFLOW; the two ISR posters ignore it, which is the coalescing behaviour
+    // their latch-and-redeliver contract already has.
+    bool sem_post(Semaphore* s);
 
     // Priority-inheritance mutex, thread context only. LOCKING CONTRACT differs by
     // call: mutex_unlock and mutex_force_unlock do their whole job under an IrqLock
