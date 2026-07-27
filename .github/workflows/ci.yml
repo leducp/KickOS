@@ -48,6 +48,11 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Manual per-branch run, from the Actions tab or `gh workflow run ci.yml --ref <branch>`.
+  # push is master-only and a feature branch fires nothing until a PR opens, so without
+  # this a long-lived branch cannot be exercised against the pinned CI toolchains (which
+  # are NOT the desk ones -- see ARM_TC_URL) until it is ready for review.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
