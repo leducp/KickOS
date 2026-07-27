@@ -131,22 +131,30 @@ The old stage 1 (arena-allocated boot stacks) LANDED on the M4.5.1 branch -- see
 `m4.5.1: take the root and idle stacks from the arena, not .bss`. The new stages, in dependency
 order:
 
-**Stage 0 -- independent prerequisites, no behaviour change.** All three are real bugs today.
-- [ ] **Move the argv handoff out of kernel-stack storage.** `root_entry` reads `argc`/`argv` from
-      `AppArgs`, a `kmain` stack local (`kernel/init/kmain.cc:203-204,218`) living on the boot stack
-      *outside* the arena -- so an unprivileged root faults on its first statement after the ctor
-      walk, on every enforcing board, and **the sim cannot reproduce it** (`kmain`'s frame is host
-      stack). Put the two-word struct in `kickos_system`, which the linker selector already places
-      app-side.
-- [ ] **Add `KOS_SYS_SHUTDOWN(status)`** = `console_tx_flush_sync(); arch_shutdown(status)`,
-      replacing the direct calls at `kmain.cc:208-209`. Preserves the init-return-is-shutdown
-      invariant, and is the natural home for the "console bytes lost on shutdown" item above.
-- [ ] **Add a `KICKOS_HAVE_MPU=0` writable arm to `user_writable_ok`**
-      (`kernel/syscall/syscall_mem.cc:84-93`). It has no fallback where `user_readable_ok` has
-      `arch_user_text_readable`, and stm32f103, stm32f302, nrf51, sam3x8e and esp32 define neither
-      `__kickos_code_start` nor `__kickos_appdata_start` -- so an unprivileged thread's writable set
-      there is its own stack and nothing else, and any syscall out-pointer in a global returns
-      `-EFAULT`. Latent today; the flip makes it a boot failure.
+**Stage 0 -- independent prerequisites, no behaviour change. COMPLETE** (all three were real bugs;
+each landed with its own gate, and the whole stage costs 276 B of flash and 8 B of `.bss` on
+frdmk64f+blink -- the 8 B being the argv struct itself).
+- [x] **Move the argv handoff out of kernel-stack storage** -- see `m4.5.1: move the init argv
+      handoff off the boot stack`. `root_entry` read `argc`/`argv` from a `kmain` frame local on the
+      boot stack, *outside* the arena, so an unprivileged root would fault on its first statement
+      after the ctor walk on every enforcing board -- and **the sim cannot reproduce it** (`kmain`'s
+      frame is host stack). Now `kickos_init_args` in `libkickos_user.a`, which every enforcement
+      linker script routes into the `.appdata`/`.appbss` grant. NOT the init provider's archive: a
+      build naming its own `KICKOS_INIT_PROVIDER` must not be able to remove the definition.
+      Placement verified by symbol address on all five enforcement images, not assumed.
+- [x] **Add `KOS_SYS_SHUTDOWN(status)`** -- see `m4.5.1: end the system through a syscall, not a
+      direct kernel call`. Syscall **36**; privileged-only for now, which is exactly who can end the
+      system today, and stage 1 widens it to `AUTH_DEVICE`. Still the natural home for the "console
+      bytes lost on shutdown" item above, which now has one owner instead of two call sites. Gate:
+      selftest `shutdown_priv`, checked to FAIL (run truncates mid-suite) with the gate removed.
+- [x] **Add a writable arm to `user_writable_ok`** -- see `m4.5.1: give user_writable_ok the
+      static-data arm its read twin has`. New `arch_user_data_writable` seam. **The hole was wider
+      than recorded here:** it is not just the five no-MPU chips (stm32f103, stm32f302, nrf51,
+      sam3x8e, esp32) -- **the host sim has it too**, despite building `KICKOS_HAVE_MPU=1`, because
+      its globals live in the host image rather than the mprotect'd arena. So the fix could not key
+      on `KICKOS_HAVE_MPU` alone and the sim carries its own arm. Gate: selftest `writable_global`,
+      confirmed failing on both broken postures beforehand. Also note the suite had already
+      *worked around* this bug in `ep_recv_worker`'s comment without it being filed.
 
 **Stage 1 -- the authority capability, root still privileged.**
 - [ ] **Add `CapType::CAP_AUTHORITY`**, seated at `KOS_CAP_SERVICE` (index 2, already reserved) and
