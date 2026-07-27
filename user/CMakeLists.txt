@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-set(KICKOS_USER_SOURCES src/syscall_stubs.cc)
+set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/init_args.cc)
 
 # The newlib porting layer clashes with host libc on the sim; it is linked from
 # M1 when userspace rides the ARM toolchain libc.

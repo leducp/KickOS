@@ -136,13 +136,6 @@ namespace kickos
             return p;
         }
 
-        // Host argv forwarded to the app entry (argc=0/argv=nullptr on MCU).
-        struct AppArgs
-        {
-            int argc;
-            char** argv;
-        };
-
         void kbanner()
         {
             char const* sched = "tickless";
@@ -190,7 +183,7 @@ namespace kickos
             }
         }
 
-        void root_entry(void* arg)
+        void root_entry(void*)
         {
             // App/library ctors run here (kernel live, in a thread), before main --
             // the normal C++ order. No null guard: the bounds are strong, so an empty
@@ -200,8 +193,10 @@ namespace kickos
             {
                 (*fn)();
             }
-            AppArgs const* a = static_cast<AppArgs const*>(arg);
-            int status = kickos_init_entry(a->argc, a->argv);
+            // Read the handoff from app-side storage, not from a thread argument: this
+            // is the first thing root touches, and it must stay reachable when root is
+            // unprivileged (see <kickos/sys/init.h>).
+            int status = kickos_init_entry(kickos_init_args.argc, kickos_init_args.argv);
             // A returning init is a single-shot system: exit with its status. A
             // persistent init never returns here (it parks or loops). Flush the
             // buffered console first, else trailing output stays stranded in the ring.
@@ -212,10 +207,11 @@ namespace kickos
 
     int kmain(int argc, char** argv)
     {
-        // Local, not static: sched::start() below never unwinds back here (the
-        // scheduler exits via arch_shutdown), and root_entry reads these once at
-        // entry, so this frame outlives every read.
-        AppArgs app_args{argc, argv};
+        // Publish the handoff into app-side storage before anything can read it. Not a
+        // frame local: root_entry reads it as an unprivileged thread on an enforcing
+        // board, and the boot stack this frame sits on is outside the arena.
+        kickos_init_args.argc = argc;
+        kickos_init_args.argv = argv;
 
         kdiag_led_init(); // early: usable as a fault indicator from here on
         kbanner();
@@ -261,7 +257,7 @@ namespace kickos
         root_attr.prio = KICKOS_PRIO_MIN + 1;
         root_attr.policy = Policy::FIFO;
         root_attr.privileged = true;
-        thread_create(&g_root_tcb, root_entry, &app_args,
+        thread_create(&g_root_tcb, root_entry, nullptr,
                       root_stack, KICKOS_ROOT_STACK_SIZE, root_attr);
 
         sched::start(); // returns only if the scheduler ever unwinds to boot
