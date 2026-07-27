@@ -282,6 +282,31 @@ endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
+# --- Root privilege posture (KICKOS_ROOT_PRIVILEGED) ------------------------
+# Whether kmain creates the root thread privileged. Default ON, which is the
+# posture every board shipped before this knob existed. OFF creates root
+# unprivileged, holding a CAP_AUTHORITY with every AUTH_* bit instead
+# (kernel/init/kmain.cc) -- see docs/design-unprivileged-root.md stage 2, and
+# docs/reference/boards.md for which boards are validated in which posture.
+#
+# A BUILD knob and NOT a weak symbol, deliberately. The rejected alternative was a
+# weak `bool kickos_root_privileged()` a board overrides strongly, which would let an
+# out-of-tree link silently opt out of the privilege boundary with no trace in the
+# board's build. Here the posture is a compile definition the whole tree sees, it is
+# printed at configure time, and it is carried to consumers as a usage requirement
+# below -- so opting out is visible in the build, not discoverable only by reading
+# the link map. Always defined 0 or 1 (never left undefined) so `#if` is -Wundef-clean.
+option(KICKOS_ROOT_PRIVILEGED "Create the root thread privileged (OFF: unprivileged, holding an authority cap)" ON)
+if(KICKOS_ROOT_PRIVILEGED)
+  set(_root_priv 1)
+else()
+  set(_root_priv 0)
+endif()
+add_compile_definitions(KICKOS_ROOT_PRIVILEGED=${_root_priv})
+if(NOT KICKOS_ROOT_PRIVILEGED)
+  message(STATUS "KickOS: root thread is UNPRIVILEGED (holds CAP_AUTHORITY); enforcement=${KICKOS_HAVE_MPU}")
+endif()
+
 # --- Per-arch caller-provided-stack floor (KICKOS_MIN_STACK_SIZE) -----------
 # A syscall runs on the CALLING thread's stack, and the deepest such dispatch is the
 # thread-exit teardown (syscall_dispatch -> exit_current -> reschedule -> switch_to ->
@@ -326,7 +351,14 @@ message(STATUS "KickOS: caller-stack floor KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_ST
 # handover is an enforcement construct); must sit after the MPU block for that reason.
 if(NOT DEFINED KICKOS_SERVICE_LIST)
   if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
-    set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax")
+    if(KICKOS_ROOT_PRIVILEGED)
+      set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax")
+    else()
+      # Console only. The SPI entry's bring-up body configures USIC kernel clock, baud
+      # and protocol through PV-write-only registers OUTSIDE any grantable window, so an
+      # unprivileged root cannot run it -- see KICKOS_SERVICE_LIST_ROOT_MMIO below.
+      set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax_console")
+    endif()
   elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)
     set(KICKOS_SERVICE_LIST "kickos_services_frdmk64f")
   else()
@@ -341,6 +373,8 @@ set(KICKOS_SERVICE_LIST "${KICKOS_SERVICE_LIST}" CACHE STRING
 if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
   if(KICKOS_SERVICE_LIST STREQUAL "kickos_services_xmc4800relax")
     set(KICKOS_SERVICE_LIST_LIBS "kickos_services_xmc4800relax;kickos_xmcuart;kickos_xmcssc;kickos_class_xmc4800")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_xmc4800relax_console")
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_xmc4800relax_console;kickos_xmcuart;kickos_class_xmc4800")
   elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_frdmk64f")
     set(KICKOS_SERVICE_LIST_LIBS "kickos_services_frdmk64f;kickos_k64dspi;kickos_k64uart;kickos_class_mk64f")
   else()
@@ -348,6 +382,29 @@ if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
   endif()
 endif()
 message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST} (libs: ${KICKOS_SERVICE_LIST_LIBS})")
+
+# Service lists whose bring-up bodies poke MMIO DIRECTLY from the calling (root)
+# thread, rather than only from the granted window of the driver thread they spawn.
+# Those cannot run under KICKOS_ROOT_PRIVILEGED=OFF: root faults on the first register
+# write, mid-bring-up, with the console already relinquished -- i.e. silently, on the
+# hardware, with no console left to say so. Refuse at CONFIGURE time instead. This is
+# what the build-enforced knob buys: the blocker is a message, not a dark board.
+# Retire an entry here when its bring-up body stops needing root MMIO (stage 3's
+# arch_periph_enable covers k64uart and half of k64dspi); the SoT for WHY each one is
+# listed is docs/design-unprivileged-root.md section 8.
+set(KICKOS_SERVICE_LIST_ROOT_MMIO
+  kickos_services_frdmk64f        # k64uart AIPS PACR + k64dspi clock/pin/GPIO/DSPI config
+  kickos_services_xmc4800relax)   # xmcssc USIC kernel clock, baud, protocol (PV-write-only)
+if(NOT KICKOS_ROOT_PRIVILEGED AND KICKOS_SERVICE_LIST IN_LIST KICKOS_SERVICE_LIST_ROOT_MMIO)
+  message(FATAL_ERROR
+    "KICKOS_ROOT_PRIVILEGED=OFF with KICKOS_SERVICE_LIST=${KICKOS_SERVICE_LIST}, whose "
+    "bring-up writes peripheral registers directly from root. An unprivileged root "
+    "faults on that write after the console has already been handed over, so the board "
+    "goes dark with no diagnostic. Pick a service list whose bring-up is pure syscall "
+    "(xmc4800-relax: kickos_services_xmc4800relax_console), or keep "
+    "KICKOS_ROOT_PRIVILEGED=ON for this image. See docs/design-unprivileged-root.md "
+    "section 8 and TODO.md stage 3.")
+endif()
 
 # Board pin-map provider selection (the default-init pin-mux step). The default init
 # applies the board pin map BEFORE the console bring-up (see system/init/pinmux_run.cc
@@ -532,10 +589,15 @@ if(TARGET kickos_kernel)
   # (context.h); KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h). An OOT TU that
   # includes a kernel-internal header must see the same posture as the prebuilt libs
   # (ODR), so carry them as usage requirements.
+  # KICKOS_ROOT_PRIVILEGED is here for a different reason from the ODR ones above: an
+  # app TU may legitimately need to know whether it runs as a privileged root (it
+  # decides whether spawning a privileged child can succeed at all), and this is what
+  # makes the posture readable out of tree instead of guessable.
   target_compile_definitions(kickos_core INTERFACE
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
+    KICKOS_ROOT_PRIVILEGED=${_root_priv}
     KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>)
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
   # Force-include the seam header so an app-TU-defined kickos_init_entry gets C
