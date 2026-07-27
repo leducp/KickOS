@@ -61,9 +61,10 @@ namespace
 }
 
 // Console-ownership seam shared with console_tx.cc (disarm-fallback gate) and the
-// kos_console_publish syscall (handover). Declared in console_tx.h. The chip-writer
-// count RMW runs under IrqLock: console_emit can run in ISR/fault context, so a plain
-// volatile ++/-- could tear against a thread producer's ++/--.
+// kos_console_publish syscall (handover). Declared in console_tx.h. EVERY access to the
+// chip-writer count -- both mutators and the reader -- runs under IrqLock: console_emit
+// can run in ISR/fault context, so a plain volatile ++/-- could tear against a thread
+// producer's ++/--, and an unlocked reader could observe the torn intermediate.
 extern "C" int console_owner_is_kernel(void)
 {
     return static_cast<int>(g_console_state == ConsoleState::KERNEL_OWNED);
@@ -86,8 +87,18 @@ extern "C" void console_chip_writer_leave(void)
     g_chip_writers = g_chip_writers - 1;
 }
 
+// Read under the SAME lock the two mutators take. A single load looks atomic enough to
+// leave bare, but the writers are a read-modify-write and console_emit runs in ISR and
+// fault context as well as thread context: an unlocked reader can observe the count
+// between a writer's load and its store and see a value that was never committed. The
+// consumer is kos_console_publish's handover drain, so believing a stale zero is exactly
+// the failure the drain exists to prevent -- declaring the console quiescent and handing
+// the UART to a userspace driver while a kernel writer is still poking the device.
+// No livelock risk: this takes the lock for one load and releases it, and the drain
+// yields between polls rather than spinning inside a critical section.
 extern "C" int console_chip_writers(void)
 {
+    kickos::IrqLock lock;
     return g_chip_writers;
 }
 
