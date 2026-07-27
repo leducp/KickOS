@@ -97,7 +97,7 @@ namespace kickos
     }
 
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
-                       void* mmio_base, size_t mmio_size, bool caller_privileged,
+                       void* mmio_base, size_t mmio_size, bool caller_authorized,
                        int* err)
     {
         *err = 0;
@@ -128,7 +128,7 @@ namespace kickos
         {
             uintptr_t const db = reinterpret_cast<uintptr_t>(mem_base);
             if (not grant_region_admissible(db, arch_ram_region_size(mem_size),
-                                            ARCH_MPU_R | ARCH_MPU_W, caller_privileged))
+                                            ARCH_MPU_R | ARCH_MPU_W, caller_authorized))
             {
                 *err = KOS_EPERM; // out-of-arena / reserved-block hit: never admissible
                 return nullptr;
@@ -139,9 +139,9 @@ namespace kickos
             uintptr_t const mb = reinterpret_cast<uintptr_t>(mmio_base);
             if (not grant_region_admissible(mb, mmio_size,
                                             ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV,
-                                            caller_privileged))
+                                            caller_authorized))
             {
-                *err = KOS_EPERM; // reserved block / bit-band alias / unprivileged DEV
+                *err = KOS_EPERM; // reserved block / bit-band alias / unauthorized DEV
                 return nullptr;
             }
         }

@@ -35,11 +35,17 @@ namespace kickos
     // Full admission policy for ONE prospective committed region (data or MMIO).
     // See grant.cc for the baked-in conditions; the short of it:
     //   size 0 / wrap                              -> refuse
-    //   hits a reserved block (privileged too)     -> refuse   [Rule 7 core]
-    //   DEV : privileged caller + exactly-encodable + not a bit-band alias
+    //   hits a reserved block (authorized too)     -> refuse   [Rule 7 core]
+    //   DEV : authorized caller + exactly-encodable + not a bit-band alias
     //   RAM : naturally aligned + confined to the user arena (every caller)
+    //
+    // `caller_authorized` answers "may this caller be handed a device window at all",
+    // which is AUTH_MEMORY on the caller's authority cap -- NOT `Thread::privileged`.
+    // The two were the same thing until root could be created unprivileged; the DEV
+    // arm is the ONE place this predicate reads it (the RAM arm ignores it by Choice
+    // 10C), so the caller resolves the question and passes the answer.
     bool grant_region_admissible(uintptr_t base, size_t size, uint32_t attr,
-                                 bool caller_privileged);
+                                 bool caller_authorized);
 
     // Boot self-check: every reserved block is well-formed and the static grantable
     // extents (arena + app code + appdata) are reserved-disjoint. A boot diagnostic
