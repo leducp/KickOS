@@ -302,8 +302,12 @@ silently satisfied by a link-time override).
       configure time and carried to out-of-tree consumers as a usage requirement of `kickos_core`.
       OFF creates root unprivileged and seats `CAP_AUTH_ALL` at `KOS_CAP_AUTHORITY` after
       `thread_create` (which zeroes the TCB) and before `sched::start`. The banner reports the
-      posture on the `mpu` line as a *concatenated literal*, so the default build is byte-identical
-      and f302nucleo's 96 B of free flash pays nothing.
+      posture on the `mpu` line as a *concatenated literal*, so the default posture adds no string
+      and no runtime branch there. Cost to the no-MPU tight boards, measured against `ed78926`
+      rather than assumed: f302nucleo+selftest **-4 B** of text, bluepill-c8+selftest **+8 B**. Not
+      byte-identical, as first claimed here: the `+8` is `syscall_thread.cc` calling
+      `cap_check_authority` where it read `Thread::privileged`, and the `-4` is one store dropped
+      from the selftest. Both still link.
 - [x] **A ninth authority gate that stage 1 missed, and it blocks the first board** -- see
       `m4.5.1: gate the MMIO grant on AUTH_MEMORY, not on the caller's privilege`.
       `grant_region_admissible`'s DEV arm (`kernel/grant/grant.cc`, Choice 5A) read the caller's raw
