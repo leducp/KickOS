@@ -36,11 +36,16 @@ void kos_sleep_ns(uint64_t ns);
 // NOT name the same object in another thread -- to share a sem with a child, delegate
 // it via kos_thread_params.caps (see kos_cap_grant). sem_create grants the creator a
 // full-rights (WAIT|SIGNAL|TRANSFER) cap.
-int kos_sem_create(int initial); // -> opaque cap handle, or -KOS_ENOMEM (pool/table full)
+// -> opaque cap handle; -KOS_ENOMEM (pool/table full); or -KOS_EINVAL when `initial` is
+// outside [0, KOS_SEM_COUNT_MAX] (see abi.h -- the count is a bounded int, so a sem may
+// not be born at a value a single post would overflow).
+int kos_sem_create(int initial);
 // 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EPERM (cap lacks WAIT/SIGNAL). These now
 // SURFACE the error (they were void): a wait/post on a closed cap no longer silently no-ops
 // -- check the return where a stale cap must not be mistaken for a completed wait/post.
 int kos_sem_wait(int sem);
+// Also -KOS_EOVERFLOW when there is no waiter and the count is at KOS_SEM_COUNT_MAX: the
+// token is NOT banked, because incrementing past the ceiling is undefined behaviour.
 int kos_sem_post(int sem);
 
 // Priority-inheritance mutex. Like a semaphore, the handle is an OPAQUE per-task

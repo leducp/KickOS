@@ -683,6 +683,15 @@ namespace
         TAP_CHECK(kos_handle_close(-1) == -KOS_EBADF);
         TAP_CHECK(kos_handle_close(0x7fffffff) == -KOS_EBADF);
         TAP_CHECK(kos_handle_close(0x00ffffff) == -KOS_EBADF);
+        // The count is bounded at BOTH ends. A sem may not be born outside
+        // [0, KOS_SEM_COUNT_MAX], and a post with no waiter and the count already at the
+        // ceiling is refused instead of incrementing an int past its range -- which is UB,
+        // and post is reachable from unprivileged code. Creating one AT the ceiling is what
+        // makes the refusal reachable in a test at all: the alternative is 2^31 posts.
+        TAP_CHECK(kos_sem_create(-1) == -KOS_EINVAL);
+        int const hmax = kos_sem_create(KOS_SEM_COUNT_MAX);
+        TAP_CHECK(hmax >= 0 and kos_sem_post(hmax) == -KOS_EOVERFLOW
+                  and kos_handle_close(hmax) == 0);
     }
 
     // --- Refcounted close of a DELEGATED sem: object survives while a co-holder is

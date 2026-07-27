@@ -31,6 +31,15 @@ namespace kickos
         {
             return -KOS_EPERM; // no caller context (defensive; unreachable from a real syscall)
         }
+        // The count is an `int` and every later post is bounded against
+        // KOS_SEM_COUNT_MAX, so the initial value has to land inside the same range --
+        // otherwise a sem could be BORN at INT_MAX and one post would be UB. A negative
+        // initial is refused too: sem_wait reads it as "no token" while every post is
+        // swallowed until it climbs back to 0, which no caller means to ask for.
+        if (initial < 0 or initial > KOS_SEM_COUNT_MAX)
+        {
+            return -KOS_EINVAL; // initial count outside [0, KOS_SEM_COUNT_MAX]
+        }
         int const i = kernel().sems.alloc();
         if (i < 0)
         {
