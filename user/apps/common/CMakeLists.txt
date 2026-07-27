@@ -20,6 +20,10 @@ string(REPLACE "-" "_" KICKOS_QEMU_MPS2_TAG "${KICKOS_BOARD}")
 add_subdirectory(hello)
 add_subdirectory(hello_c)
 add_subdirectory(mpu_fault)
+# The ROOT half of the isolation story (stage 2). Separate from mpu_fault because the
+# two claims are independent: mpu_fault confines a spawned child, rootfault confines
+# the thread that ran the ctors and the bring-up. Diagnostic app, self-gated.
+add_subdirectory(rootfault)
 add_subdirectory(sched_exit)
 
 add_subdirectory(selftest)
