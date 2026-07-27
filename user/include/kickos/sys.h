@@ -117,6 +117,13 @@ int kos_sem_destroy(int cap); // alias of kos_handle_close (source compatibility
 
 int kos_thread_spawn(struct kos_thread_params const* params);
 void kos_exit(int code) __attribute__((noreturn));
+
+// End the WHOLE system with `status`: drain the buffered console, then hand over to the
+// chip's shutdown. This is what a returning kickos_init_entry does (see
+// <kickos/sys/init.h>); an app that wants to stop only its own thread wants kos_exit.
+// Privileged-only, so it is NOT noreturn: it returns -KOS_EPERM to a caller that may
+// not end the system, and does not return at all on success.
+int kos_shutdown(int status);
 void kos_irq_inject(int irq);
 
 #if defined(KICKOS_ENABLE_SELFTEST)

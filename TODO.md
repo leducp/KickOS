@@ -94,8 +94,9 @@ hardening, roughly ordered by exposure.
 
 Fully designed, deliberately not implemented yet. Recorded at this fidelity so it can be *built*
 as specified rather than redesigned:
-- Syscall **36**, behind an `arch_reboot` seam with a **weak `-KOS_ENOSYS` default** -- a chip
-  that cannot do it declines honestly instead of pretending.
+- Syscall **37**, behind an `arch_reboot` seam with a **weak `-KOS_ENOSYS` default** -- a chip
+  that cannot do it declines honestly instead of pretending. (36 went to `KOS_SYS_SHUTDOWN`;
+  a number is allocated when a syscall is built, not when it is designed.)
 - `CAP_REBOOT` resolved via `cap_lookup`, **not** `cap_resolve_e`: the latter cannot resolve a
   cap with no backing pool object. Seated at `KOS_CAP_RESERVED3` with `rights = 0`, which makes
   it non-delegable -- and, with `CAP_AUTHORITY` at `KOS_CAP_SERVICE` (section below), that

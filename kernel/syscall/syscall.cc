@@ -345,6 +345,27 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             sched::exit_current(static_cast<int>(a0)); // noreturn
             return 0;
         }
+        case KOS_SYS_SHUTDOWN:
+        {
+            // End the system: drain the buffered console, then hand over to the chip's
+            // shutdown. This is the init-return-is-shutdown path (root_entry) expressed
+            // as a syscall, because neither half is reachable from an unprivileged
+            // thread -- console_tx_flush_sync walks the kernel-side console ring, and
+            // arch_shutdown is a privileged chip operation.
+            //
+            // Privileged-only, matching exactly who can end the system today: root_entry
+            // (privileged) and the scheduler's own idle-exhaustion path. Widening this to
+            // an unprivileged holder is stage 1's AUTH_DEVICE gate, not this change --
+            // an ungated shutdown would hand every worker thread a kill switch.
+            Thread* c = sched::current();
+            if (c == nullptr or not c->privileged)
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            console_tx_flush_sync();
+            arch_shutdown(static_cast<int>(a0)); // noreturn
+            return 0;
+        }
 #if defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_IRQ_INJECT:
         {

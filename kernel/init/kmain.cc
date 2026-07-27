@@ -22,9 +22,13 @@ extern "C"
     // Buffered-console bring-up (console_tx.cc): binds the TX drain ISR + arms the
     // ring once the chip offers a backend. No-op on sim / polled-only chips.
     void console_buffer_init(void);
-    // Drain the buffered console before a clean shutdown so a single-shot app's
-    // trailing output is not stranded in the ring (kpanic/fault already flush).
-    void console_tx_flush_sync(void);
+    // End the system: drains the buffered console (so a single-shot app's trailing
+    // output is not stranded in the ring -- kpanic/fault already flush) and then
+    // shuts the chip down. Reached through the syscall trap rather than by calling
+    // the two kernel halves directly, because root will not always be privileged;
+    // see <kickos/sys.h>. Declared here rather than including the userspace header
+    // into a kernel TU.
+    int kos_shutdown(int status);
     // Generated per-build by CMake (cmake/build_stamp.cmake) so the banner reflects the
     // image actually linked, not the (stale-on-incremental) __DATE__/__TIME__ of a TU.
     // Local build time (with offset) + the commit (git describe --dirty --always).
@@ -197,11 +201,12 @@ namespace kickos
             // is the first thing root touches, and it must stay reachable when root is
             // unprivileged (see <kickos/sys/init.h>).
             int status = kickos_init_entry(kickos_init_args.argc, kickos_init_args.argv);
-            // A returning init is a single-shot system: exit with its status. A
-            // persistent init never returns here (it parks or loops). Flush the
-            // buffered console first, else trailing output stays stranded in the ring.
-            console_tx_flush_sync();
-            arch_shutdown(status);
+            // A returning init is a single-shot system: end it with that status. A
+            // persistent init never returns here (it parks or loops). Only a caller
+            // permitted to end the system gets past the syscall's gate, so a return
+            // means root was refused -- report it rather than running on.
+            kos_shutdown(status);
+            KICKOS_UNREACHABLE("root: shutdown refused");
         }
     }
 

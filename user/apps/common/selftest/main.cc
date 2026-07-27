@@ -2765,6 +2765,26 @@ namespace
         wait_n(1);
         TAP_CHECK(g_pub_rc == -KOS_EPERM); // unprivileged console_publish refused
     }
+
+    // --- shutdown is privileged-only: an unprivileged thread cannot end the system ----
+    int g_shutdown_rc = -99;
+    void shutdown_denied_worker(void*) // caps: done@1
+    {
+        // Status 0 on purpose. If this gate ever regresses, the run ENDS HERE, mid-suite,
+        // with a clean exit status -- so passing 0 is what makes the regression look like
+        // a truncated TAP stream rather than a successful one.
+        g_shutdown_rc = kos_shutdown(0);
+        kos_sem_post(CH_DONE);
+    }
+    void t_shutdown_denied()
+    {
+        g_shutdown_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(shutdown_denied_worker, nullptr, "sdDen", 10, caps, 1);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        TAP_CHECK(g_shutdown_rc == -KOS_EPERM); // unprivileged shutdown refused
+    }
 }
 
 int main(int, char**)
@@ -2819,6 +2839,7 @@ int main(int, char**)
     // Console handover mechanism (M3 #4 stage ii-a): production syscalls, every board.
     tap::add("cap_index0", t_cap_index0);              // B3 index-0 reservation + FIRST_DYNAMIC floor
     tap::add("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
+    tap::add("shutdown_priv", t_shutdown_denied);        // KOS_SYS_SHUTDOWN privileged-only
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     tap::add("irq_thread_ctx", t_irq);
