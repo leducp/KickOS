@@ -72,8 +72,10 @@ namespace kickos
             // idle/root only (thread_spawn pre-resolves the domain). Both are
             // privileged, so this short-circuits to the kernel domain and the grant
             // predicate never runs; pass caller_privileged=true for that trusted path.
+            // derr therefore cannot be set here; there is no failure arm to take.
+            int derr = 0;
             t->domain = domain_for(attr.privileged, attr.mem_base, attr.mem_size,
-                                   attr.mmio_base, attr.mmio_size, true);
+                                   attr.mmio_base, attr.mmio_size, true, &derr);
         }
         domain_ref(t->domain);
 

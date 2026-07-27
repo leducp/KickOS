@@ -8,6 +8,8 @@
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h> // KICKOS_ASSERT
 
+#include <kickos/sys/errno.h>
+
 namespace kickos
 {
     namespace
@@ -92,8 +94,10 @@ namespace kickos
     }
 
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
-                       void* mmio_base, size_t mmio_size, bool caller_privileged)
+                       void* mmio_base, size_t mmio_size, bool caller_privileged,
+                       int* err)
     {
+        *err = 0;
         if (privileged)
         {
             return g_kernel;
@@ -106,6 +110,7 @@ namespace kickos
         // them -- it is defence in depth).
         if (mmio_base != nullptr and mmio_size == 0)
         {
+            *err = KOS_EINVAL; // malformed window: a base with no extent
             return nullptr;
         }
         bool const has_mmio = (mmio_base != nullptr and mmio_size != 0);
@@ -122,6 +127,7 @@ namespace kickos
             if (not grant_region_admissible(db, arch_ram_region_size(mem_size),
                                             ARCH_MPU_R | ARCH_MPU_W, caller_privileged))
             {
+                *err = KOS_EPERM; // out-of-arena / reserved-block hit: never admissible
                 return nullptr;
             }
         }
@@ -132,6 +138,7 @@ namespace kickos
                                             ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV,
                                             caller_privileged))
             {
+                *err = KOS_EPERM; // reserved block / bit-band alias / unprivileged DEV
                 return nullptr;
             }
         }
@@ -163,7 +170,8 @@ namespace kickos
         Domain* d = free_slot();
         if (d == nullptr)
         {
-            return nullptr; // pool exhausted -- the caller fails the spawn
+            *err = KOS_ENOMEM; // pool exhausted -- retry later, unlike the refusals above
+            return nullptr;
         }
         *d = Domain{};
         d->privileged = false;

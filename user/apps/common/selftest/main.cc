@@ -1651,8 +1651,9 @@ namespace
         // --- End-to-end errno coherence (MAJOR 2): an unprivileged child whose mem_base
         // lies OUTSIDE the arena is refused with -KOS_EPERM (policy refusal), NOT
         // -KOS_ENOMEM (pool exhaustion) -- coherent with the stack_base path
-        // (t_stackbase_arena). The spawn-site pre-check surfaces the Rule-7 refusal before
-        // domain_for's exhaustion sentinel. Caller is privileged (main); the CHILD is
+        // (t_stackbase_arena). domain_for is the authoritative chokepoint and now reports
+        // WHICH refusal it made, so this code comes from there rather than from a
+        // duplicate pre-check at the spawn boundary. Caller is privileged (main); the CHILD is
         // unprivileged, so domain_for evaluates the grant (0xE0000000 is 2048-aligned, so
         // ONLY arena containment can reject it). Fails before any slot is claimed.
         int const mrc = kos::thread::spawn(grant_noop, nullptr, "membad", 10, KOS_POLICY_FIFO,
