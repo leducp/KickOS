@@ -244,16 +244,19 @@ holding capabilities** rather than start privileged and demote, so there is no d
 `thread_regions_recompose`, `KOS_SYS_DROP_PRIV`, its per-arch backends and Xtensa-last are
 **deleted, not deferred** -- the region set is composed once in `thread_create`
 (`kernel/thread/thread.cc:94-134`) from a privilege that never changes, and the rest existed only
-to manage a transition this design does not have. The reason, recorded once: **every ISA already
-encodes thread privilege in the fabricated first frame and restores it on the first switch-in** --
-armv7m `ctx.npriv` (`arch/arm/armv7m/arch_armv7m.cc:111-119`), armv6m (`arch_armv6m.cc:102-108`),
-rv32imac `MSTATUS_MPP` (`arch_rv32imac.cc:143-158`), rxv3 `PSW_THREAD_USER`
-(`arch_rxv3.cc:279-289`), xtensa has no ring split (`arch_xtensa.cc:271-273`), sim is mprotect
-posture (`sim.cc:758-761`). Starting root unprivileged therefore needs **zero new assembly on any
-port**, and Xtensa comes along free rather than last. `drop_priv` survives only as a **contingent,
-much smaller** item: it is the only mechanism giving "privileged bring-up then self-confinement for
-life", which is what the blocked bring-up bodies below want -- in scope only if the
-`arch_periph_enable` seam (stage 3) proves insufficient.
+to manage a transition this design does not have. The reason, recorded once: **every ISA with a
+ring split already encodes thread privilege in the fabricated first frame and restores it on the
+first switch-in** -- armv7m `ctx.npriv` (`arch/arm/armv7m/arch_armv7m.cc:111-119`), armv6m
+(`arch_armv6m.cc:102-108`), rv32imac `MSTATUS_MPP` (`arch_rv32imac.cc:143-158`), rxv3
+`PSW_THREAD_USER` (`arch_rxv3.cc:279-289`). The two ports without a ring split store nothing:
+xtensa (`arch_xtensa.cc:271-273`) and the sim, whose `arch_context_init` takes `privileged` and
+**discards** it (`sim.cc:758-761`) -- privilege there is the thread's region set plus a
+per-context mid-syscall raise counter, so the sim has no CPU-mode axis at all. Starting root
+unprivileged therefore needs **zero new assembly on any port**, and Xtensa comes along free
+rather than last. `drop_priv` survives only as a **contingent, much smaller** item: it is the
+only mechanism giving "privileged bring-up then self-confinement for life", which is what the
+blocked bring-up bodies below want -- in scope only if the `arch_periph_enable` seam (stage 3)
+proves insufficient.
 
 The old stage 1 (arena-allocated boot stacks) LANDED on the M4.5.1 branch -- see
 `m4.5.1: take the root and idle stacks from the arena, not .bss`. The new stages, in dependency
@@ -297,12 +300,16 @@ on frdmk64f+blink, no `.bss`).
       **Seated WITHOUT `CAP_TRANSFER`**, which makes it non-delegable rather than merely
       undelegated -- so index 2 has exactly one writer, the kernel, and the delegation-packing
       collision below is unreachable instead of unlikely.
-- [x] **Converted all eight gates to `cap_check_authority(caller, AUTH_*)`**, which is true when
-      the caller is privileged OR holds the bit. Behaviour-neutral: root is privileged, so every
-      gate takes the same arm as before. `kos_thread_params` gained an `authority` byte (in the
-      padding after `cap_count`, so the struct does not grow) that narrows only -- refused
-      together with `cap_count >= 2`, since a second delegated cap would land on the authority
-      slot.
+- [x] **Converted the gates to `cap_check_authority(caller, AUTH_*)`** -- that call and nothing
+      else, with the privileged-implies-everything arm inside the function, so the rule is stated
+      once instead of at every site. Behaviour-neutral: root is privileged, so every
+      gate takes the same arm as before. **Eight sites converted, and there turned out to be
+      nine authority decisions**: `grant_region_admissible`'s DEV arm was missed here and found by
+      stage 2 below. Enumerate the decisions, not the call sites -- a count that is right the day
+      it is written is what lets the next one hide. `kos_thread_params` gained an `authority`
+      byte (in the padding after `cap_count`, so the struct does not grow) that narrows only --
+      refused together with `cap_count >= 2`, since a second delegated cap would land on the
+      authority slot.
 - [x] **Gate: selftest `authority_cap`.** An unprivileged child holding `AUTH_PINMUX` and nothing
       else gets PAST the pinmux gate (which then answers for itself) while being refused at a
       gate it holds no bit for -- so the bits are shown independent, not one lump. Confirmed to
@@ -328,7 +335,7 @@ silently satisfied by a link-time override).
 - [ ] **Add `kos_cap_narrow(cap, mask)`** (rights &= mask, never widen, ~10 lines) and drop or
       narrow the authority cap in `kickos_default_init_run` (`system/init/default_init_entry.cc`)
       before `kickos_app_main`. **This is the actual app-facing win** -- without it an unprivileged
-      `main` can still ask the kernel to do all eight things.
+      `main` can still ask the kernel to do every privileged thing there is.
 - [ ] **Declare `selftest` and `stress` privileged-root**, since they spawn privileged children
       (`user/apps/common/selftest/main.cc:400,403`, `user/apps/common/stress/main.cc:222,224,286`).
 
