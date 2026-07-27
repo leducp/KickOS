@@ -44,8 +44,12 @@ namespace kickos
         // fields from the kernel-owned copy hereafter. (The name pointer inside is
         // still user memory; it is walked under a per-byte readable check below
         // before the kernel copies it.)
-        // The struct is a caller stack local (kos::thread::spawn), so it lies in the
-        // stack region.
+        // user_readable_ok, not the raw user_range_ok: the struct may be a caller
+        // stack local OR an app global, and on a backend that models no static-data
+        // region -- every no-MPU chip, and the host sim, whose globals live in the
+        // host image rather than the arena -- a global lies in no granted region.
+        // The arch_user_text_readable arm is what recognises it there; an enforcing
+        // backend returns false from that arm and is byte-identical.
         // Reject a misaligned struct pointer BEFORE the typed copy below: the kernel
         // does that load privileged, and a misaligned word load traps in the kernel on
         // a strict-align arch (rv32imac) -- a user-triggerable kernel fault. alignof is
@@ -55,7 +59,7 @@ namespace kickos
         {
             return -KOS_EINVAL; // misaligned params struct
         }
-        if (not user_range_ok(pu, sizeof(*p), ARCH_MPU_R))
+        if (not user_readable_ok(pu, sizeof(*p)))
         {
             return -KOS_EFAULT; // params not readable by the caller
         }
@@ -218,8 +222,9 @@ namespace kickos
             {
                 return -KOS_EINVAL; // null / misaligned grant array
             }
-            if (not user_range_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps),
-                                  ARCH_MPU_R))
+            // user_readable_ok for the same reason as the params struct above: a
+            // caller may perfectly well keep its grant array in a global.
+            if (not user_readable_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps)))
             {
                 return -KOS_EFAULT; // grant array not readable by the caller
             }

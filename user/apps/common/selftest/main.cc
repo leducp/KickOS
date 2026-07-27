@@ -2841,6 +2841,9 @@ namespace
     volatile long g_auth_regrant = -99;  // may not hand on a bit it does not hold
     volatile long g_auth_collide = -99;  // delegation packing reaching the authority slot
     volatile long g_auth_badbits = -99;  // object rights offered as an authority
+    volatile long g_auth_capsarr = -99;  // the grant ARRAY read, reached past the early refusals
+    kos_thread_params g_auth_kid;  // deliberately static: see auth_worker (N15)
+    kos_cap_grant g_auth_two[2];   // ditto -- the OTHER read thread_spawn validates
     void auth_worker(void*) // UNPRIVILEGED, authority = AUTH_PINMUX; caps: done@1
     {
         // The bit it HOLDS: past the gate, so pinmux answers for itself.
@@ -2854,12 +2857,16 @@ namespace
         g_auth_shutdown = kos_shutdown(0);
         // Three spawn probes off ONE params struct, all refused before a pool slot is
         // claimed, so their codes are deterministic even on a full pool. One struct is not
-        // tidiness: a frame-local kos_thread_params costs an inline ~52-byte zero-init per
-        // site, and this suite links within ~100 bytes of the f302nucleo flash ceiling. It
-        // must be a frame local rather than a global, because thread_spawn reads the struct
-        // through user_range_ok with no static-data fallback, so a global would be
-        // -KOS_EFAULT on the sim and on every no-MPU board.
-        kos_thread_params kid{};
+        // tidiness: a frame-local kos_thread_params costs an inline zero-init per site, and
+        // this suite links within ~100 bytes of the f302nucleo flash ceiling.
+        //
+        // g_auth_kid and g_auth_two are GLOBALS on purpose, and that is the whole of this
+        // test's N15 coverage: thread_spawn reads the params struct and the grant array
+        // through user_readable_ok, so a caller may keep either in static data. Before that
+        // fix both reads were a raw user_range_ok with no arch_user_text_readable arm, and
+        // all three probes below answered -KOS_EFAULT on the sim and on every no-MPU board
+        // instead of the codes they assert.
+        kos_thread_params& kid = g_auth_kid;
         kid.entry = auth_noop;
         kid.prio = 9;
         // Narrow-only, the same rule a cap_grant mask obeys: holding AUTH_PINMUX does not
@@ -2868,8 +2875,9 @@ namespace
         g_auth_regrant = kos_thread_spawn(&kid);
         // Delegated cap i lands at child index i+1, so two delegated caps reach the
         // authority slot. Refused, rather than one silently overwriting the other.
-        kos_cap_grant two[] = {{CH_DONE, CH_FULL}, {CH_DONE, CH_FULL}};
-        kid.caps = two;
+        g_auth_two[0] = {CH_DONE, CH_FULL};
+        g_auth_two[1] = {CH_DONE, CH_FULL};
+        kid.caps = g_auth_two;
         kid.cap_count = 2;
         kid.authority = KOS_AUTH_PINMUX;
         g_auth_collide = kos_thread_spawn(&kid);
@@ -2877,6 +2885,15 @@ namespace
         kid.cap_count = 1;
         kid.authority = KOS_CAP_WAIT;
         g_auth_badbits = kos_thread_spawn(&kid);
+        // All three probes above are refused by an authority check that runs BEFORE the
+        // delegation loop, so none of them reads g_auth_two at all -- the array is the
+        // second N15 site and needs a probe that gets that far. An unresolvable
+        // source_cap is refused -KOS_EBADF from inside the loop, which is only reachable
+        // once the array itself has been admitted; with the raw range check it answers
+        // -KOS_EFAULT instead. Refused before a pool slot is claimed, like the others.
+        g_auth_two[0] = {0x7fffffff, CH_FULL};
+        kid.authority = 0;
+        g_auth_capsarr = kos_thread_spawn(&kid);
         kos_sem_post(CH_DONE);
     }
     void t_authority_cap()
@@ -2898,7 +2915,7 @@ namespace
         TAP_CHECK(g_auth_pinmux != -KOS_EPERM and g_auth_pinmux < 0);
         TAP_CHECK(g_auth_shutdown == -KOS_EPERM);
         TAP_CHECK(g_auth_regrant == -KOS_EPERM and g_auth_collide == -KOS_EINVAL
-                  and g_auth_badbits == -KOS_EINVAL);
+                  and g_auth_badbits == -KOS_EINVAL and g_auth_capsarr == -KOS_EBADF);
     }
 }
 
