@@ -6,9 +6,12 @@
 #include <kickos/grant.h> // grant_region_admissible (Rule 7 chokepoint)
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
+#include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
 #include <kickos/kernel.h> // KICKOS_ASSERT
 
 #include <kickos/sys/errno.h>
+
+#include <stdint.h> // UINT16_MAX (the refcount width the bound below pins)
 
 namespace kickos
 {
@@ -198,12 +201,31 @@ namespace kickos
         return d;
     }
 
+    // A mortal domain's refcount counts LIVE THREADS and nothing else: thread_create
+    // takes the single reference, sched::exit_current drops it. So it is bounded by the
+    // thread pool, and proving that is worth more than a runtime ceiling -- the same
+    // argument the object-refcount arrays make with their own static_asserts
+    // (instance.h), and it costs no code.
+    //
+    // Bound against the pool CEILING, not today's KICKOS_MAX_THREADS: a board sets the
+    // latter to 2..16, so an assert on it would be one that can never fire. The ceiling
+    // is the thread-handle index field, which thread.h already pins MAX_THREADS under --
+    // so this is the half of the chain that is free to move, and the two together are
+    // what make the wrap unreachable rather than merely unobserved.
+    static_assert((1ull << ThreadPool::INDEX_BITS) - 1ull <= UINT16_MAX,
+                  "Domain::refcount is uint16_t and counts live threads: the thread pool "
+                  "ceiling (1 << ThreadPool::INDEX_BITS) must fit it");
+
     void domain_ref(Domain* d)
     {
         // Immortal domains are referenced by an unbounded, transient set of threads,
         // so their refcount is meaningless (they never free); skip it to avoid a wrap.
         if (d != nullptr and not d->immortal)
         {
+            // The static_assert above makes the wrap unreachable; this catches the way
+            // it would BECOME reachable -- a reference taken by something other than a
+            // live thread, which breaks the bound before it breaks the counter.
+            KICKOS_DEBUG_ASSERT(d->refcount < KICKOS_MAX_THREADS);
             d->refcount++;
         }
     }
