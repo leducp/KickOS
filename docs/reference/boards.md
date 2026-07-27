@@ -43,7 +43,7 @@ code wins, then this file.
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench |
 | `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
 | `rx72m` | RX72M / RXv3 @240 MHz | P80 (LED6, active-low) | SCI6 ASC, PB1/PB0, 115200 -> FT232 (`/dev/ttyUSB0`); ring | `rfp-cli` (Renesas Flash Programmer) | [x] full selftest + stress + `RX EXCEPTION` dump (2026-07-09); RX-MPU enforcement selftest + `mpu_fault` cross-domain trap + `rxdrv` granted peripheral window (2026-07-17); DPFPU switch + bench. **No CI gate** -- see *CI coverage* below |
-| `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed |
+| `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | [x] full selftest + all apps + fault dump + bench + LED; enforcement link-validated, MPU **HW pending** |
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | [x] full selftest + bench (2nd F411; 25 MHz HSE); enforcement link-validated, MPU **HW pending** |
 | `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] selftest minus the 4 KiB-alloc test (16 K RAM) + bench; not an enforcement target (3712 B arena) |
@@ -113,15 +113,25 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   backend (`base+limit` RBAR/RLAR + MAIR, compile-gated so the v7-M/v6-M fleet is byte-identical).
   Console is **UART1 on GP4/GP5** -- UART0's pins are not brought out on the Pi-Zero header.
   BOOTSEL-recoverable, so a bad clock or boot-block config cannot brick it.
-- **`xmc4800-relax` and `frdmk64f` under `-DKICKOS_HAVE_MPU=1` print no TAP by default, and
-  that is not an enforcement failure.** Both boards default to a `KICKOS_SERVICE_LIST` that
-  brings up their userspace UART driver and publishes stdout, which routes the TAP stream away
-  from the kernel console; what reaches the wire is the banner, `[xmcuart|k64uart] driver up`,
-  a stray `x`, then silence. The `x` is `selftest`'s `cap_index0` asserting that stdout is
-  *not* published. Reproduced on both chips and from a pre-enforcement baseline, so it is a
-  property of the service-list publish, not of the MPU. Build with
-  `-DKICKOS_SERVICE_LIST=kickos_services_none` to get an observable verdict while keeping
-  enforcement on -- that is how both boards were signed off (56/56 each, 2026-07-26).
+- **`xmc4800-relax` and `frdmk64f` under `-DKICKOS_HAVE_MPU=1` now print TAP through their
+  userspace UART driver** (2026-07-27), so the `-DKICKOS_SERVICE_LIST=kickos_services_none`
+  workaround is no longer needed to get a verdict. The old symptom was a banner,
+  `[xmcuart|k64uart] driver up`, a stray `x`, then silence: the TAP harness wrote to the kernel
+  console, which `console_emit` drops once the UART is `USER_OWNED`, and the `x` was `cap_index0`
+  asserting stdout was *not* published. Both were fixed at the source (publish-aware harness,
+  publish-aware `cap_index0`), and each run now names its own transport:
+  `# tap route: stdout endpoint -> console driver (service list published)`. Measured with the
+  **default full service list** on both boards: 59 cases, 58 `ok`, 1 skip, 0 fail. The skip is
+  `mutex_deadlock # SKIP pool too small` on both, a genuine `KICKOS_MAX_THREADS` constraint.
+- **An app's own diagnostics are still dropped if it uses `kos_print` on a published board** --
+  same `console_emit` drop, and it is not visible in the TAP stream because the harness has its own
+  writer. This is why `apps/mpu_fault`'s `[domain]` lines were absent from every service-list
+  silicon capture, leaving the fault marker with nothing to check it against. Diagnostic apps should
+  use `kickos::emit` (`user/include/kickos/sys/emit.h`).
+- **`kpanic_enter`'s UART reclaim clips bytes the userspace driver had in flight.** Reproducible on
+  `xmc4800-relax`: the report always reaches the wire (that is the point of the reclaim), but roughly
+  the last 8 bytes queued by the polled TX writer are garbled, eating the tail of the line before the
+  dump. Announce-before-poke lines should therefore not be the *only* record of an address.
 - **RTT backend** -- generic and wired on the XMC (`KICKOS_CONSOLE=both`); the
   UART VCOM path is the one confirmed on hardware.
 - The diagnostic LED is a kernel-owned facility (`kdiag_led_*`); a chip with no
@@ -368,3 +378,61 @@ input-frequency error, and rfp's default is correct. Console is SCI6 on **PB1 (T
 Both use SEGGER J-Link (XMC = onboard J-Link-OB; K64F = OpenSDA reflashed with
 J-Link firmware). Full `JLinkExe` / GDB / RTT recipes are in
 [flashing.md](../flashing.md).
+
+Drive `JLinkExe` **headless**: `-CommanderScript <file>` (never the interactive prompt),
+`-NoGui 1` (V9.58 otherwise forks a GUI server and hangs), `-AutoConnect 1`, `-ExitOnError 1`,
+explicit `-if SWD -device <dev> -speed <n>`, and `-SelectEmuBySN <sn>` because more than one probe
+is attached. Closing stdin (`< /dev/null`) makes an unanticipated prompt fail fast instead of
+hanging. Capture the VCOM with a scripted reader, not `minicom`/`screen`, which need a keystroke to
+exit.
+
+**OpenSDA/J-Link stability on the K64F: nothing anomalous observed** (2026-07-27). Six
+flash-plus-reset cycles across two images, every connect first-try, no replug or power cycle needed.
+The older "K64F wedges its SWD and needs a physical power cycle" note is not corroborated by this
+session and should not be treated as a bench fact.
+
+### Unprivileged root
+
+`KICKOS_ROOT_PRIVILEGED=OFF` creates root unprivileged, holding a `CAP_AUTHORITY` instead of the
+whole arena. `xmc4800-relax` is the first board flipped, and the first silicon witness for the
+boundary (2026-07-27, `a463ab9`, PMSAv7, 144 MHz, console-only service list).
+
+| Evidence | Root privileged (control) | Root unprivileged |
+| --- | --- | --- |
+| Banner `mpu` line | `enforce` | `enforce, root unprivileged` |
+| Console handover to `xmcuart` | up, TAP via driver | up, TAP via driver |
+| `selftest` | 59 cases, 58 `ok`, 1 skip, 0 fail | 59 cases, 57 `ok`, 2 skips, 0 fail |
+| `rootfault` cross-domain write | completes, reports "root is NOT confined" | **MemManage trap** |
+
+The confinement fault, byte-for-byte from the wire:
+
+```
+[rootfault] child: wrote my own granted region
+[rootfault] root: writing the child's granted region at 0x20013000 (expect fault
+=== MPU FAULT ===
+  PC=0x800060c LR=0x800071d xPSR=0x1000000 (PSP)
+  R0=0x52 R1=0x3 R2=0x2222 R3=0x20013000 R12=0x0
+  CFSR=0x82 HFSR=0x0
+  MMFAR=0x20013000
+```
+
+`MMFAR` matches the address the app announced, `R3` holds it and `R2` holds the stored `0x2222`,
+`CFSR=0x82` is DACCVIOL + MMARVALID, and `(PSP)` puts the fault in thread mode. The child had
+already written the same region and was still parked, so the page belonged to a live foreign domain
+rather than being unmapped. The truncated `(expect fault` is the `kpanic_enter` reclaim clipping
+noted above, reproduced identically across resets.
+
+The same run with `KICKOS_ROOT_PRIVILEGED=ON` completes the write and prints `root is NOT confined`,
+which is what makes the trap attributable to the flip rather than to anything else on the board.
+
+The two selftest skips are posture-driven and named on the wire: `irq_as_event` (root plays the
+device, writing a page it allocated but was never granted) and `mpu_privileged_guard` (its subject
+is the privileged posture). Both trace to `kos_ram_alloc` granting its caller nothing; see `TODO.md`.
+
+**`frdmk64f` is deliberately NOT flipped** and stays privileged-root: its service list's bring-up
+writes peripheral registers directly from root, which needs stage 3's `arch_periph_enable`. Pairing
+that list with the flip is a configure-time error, not a runtime surprise. It was instead
+re-regressed under SYSMPU enforcement with a privileged root on the same day and commit: selftest
+59 cases / 58 `ok` / 1 skip / 0 fail, and `mpu_fault` still traps a child's cross-domain write with
+`SYSMPU ISOLATION FAULT: port=3 addr=0x2001b000 master=0 W EDR=0x80000003` (SYSMPU surfaces as an
+imprecise bus fault, so the core label reads `HARD FAULT` and the chip hook adds the real line).
