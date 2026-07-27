@@ -113,6 +113,48 @@ what the caller chose:
 Alignment is the cheapest of these to get subtly wrong, because a plausible constant hides the
 arch dependence. Express it as `alignof(T)` and it becomes as portable as the rest of the fleet.
 
+## Ownership has two arms, and the build macro is not the key
+
+The ownership bullet above hides a subtlety worth drawing out, because it is where a check that
+looks complete turns out to be keyed on the wrong thing.
+
+Ownership is asked as two deliberately symmetric predicates -- one for a buffer the kernel will
+**read** on the caller's behalf, one for a buffer it will **write** -- and each is answered in two
+arms. The first arm is the region check: does the range lie inside one of the running thread's
+granted regions, with the permission the access needs? The second arm exists because *a granted
+region set does not describe everything an unprivileged caller can legitimately reach, on every
+backend*. Where the linker carves app code/rodata and app static data as real protection-unit
+regions, the region check alone is complete and the second arm correctly refuses everything. Where
+the backend models no such region -- a part with no protection unit at all, and the host sim, whose
+ELF sections are not regions -- an unprivileged thread's *writable* set would be **its own stack
+alone**, so an out-pointer or a receive buffer that happens to live in a global would be refused as
+a bad address. The second arm is each backend answering for its own protection model.
+
+Which is exactly why the arm cannot be keyed on the build macro that says "this build has a
+protection unit". The host sim builds *with* that macro set -- it enforces via `mprotect` -- and yet
+it needs the fallback arm, because what the macro asserts is that a backend exists, not that static
+data is described as a region. The two are independent, and conflating them yields a check that is
+sound on the boards you tested and refuses valid pointers on the ones you did not. The rule
+generalises past this one predicate: **validate against the protection model the backend actually
+implements, not against the configuration flag you think you built with.**
+
+The sim's own arm is worth reading for what it admits it cannot do. It accepts a range wholly
+inside the host image and clear of the emulated arena -- and the host image contains the kernel's
+code and data too, because sim builds are one binary. So the sim **cannot** separate app rodata
+from kernel statics; that is a property of the environment, not an omission. What it does still
+enforce is the boundary that matters most there: a cross-domain read into another task's arena
+memory, which lives in a separate mapping and falls through to the region check. The transferable
+part is knowing *which* claims your cheapest test environment is able to carry, and not letting it
+be the only witness for the ones it cannot.
+
+One last observation, about testability rather than correctness. The write predicate is the later
+twin of the read one, and its absence is invisible for exactly as long as the callers exercising
+that path are privileged -- because a privileged caller short-circuits the whole check before
+either arm runs (Chapter 7.4,
+*[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*, axis 2). A
+boundary check whose only exerciser sits on the bypass side of the boundary is not a tested check.
+It is a check that has never run.
+
 *Points into:* `../reference/architecture.md` ("Syscall-argument validation (the soundness
 floor)", "User/kernel separation"); the confused-deputy floor it extends. Further reading:
 Tanenbaum, *Modern Operating Systems*, ch.1 (system calls, the user/kernel boundary); an ISA's
