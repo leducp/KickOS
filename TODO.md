@@ -26,9 +26,9 @@ have not yet been through CI** -- but the branch under them has: the maintainer 
 at `16d89a0`**, the tip before this batch, covering the branch's first 33 commits. Every commit
 that touches `.github/workflows/` is at or before it, so the fleet-wide `-Werror` and the rest of
 the pipeline are now observed on CI's pinned 15.2.rel1 rather than argued from a local 15.3.rel1.
-Uncovered: the 18 commits after `16d89a0` -- stage 0/1 of unprivileged-root, and this batch. That
-status is the maintainer's report, not checked from here (`gh` unauthenticated, and `ci.yml`
-triggers `push` only on `master`).
+Uncovered: everything after `16d89a0` -- stage 0/1 of unprivileged-root, and this batch -- which
+is 21 commits as of 2026-07-27. That status is the maintainer's report, not checked from here
+(`gh` unauthenticated, and `ci.yml` triggers `push` only on `master`).
 
 - [x] **Bound the semaphore `count`** -- `m4.5.1: bound the semaphore count` (66280c1). The hole
       was **sharper than filed**: `sem_create` validated nothing,
