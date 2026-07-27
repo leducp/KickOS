@@ -189,10 +189,27 @@ void* sbrk(intptr_t incr)
 // design's "single-thread" caveat). Provide no-op weak stubs so a full-C++ app that
 // heap-allocates (operator new -> malloc) links; weak so a future thread-safe libc
 // port can override, and unreferenced (freestanding app) so it costs nothing.
-// FOOTGUN: a full-C++ app that spawns threads and heap-allocates from more than one
-// gets NO reentrancy guard here -- concurrent malloc silently corrupts the arena.
-// Real thread-safe stubs (an IrqLock or per-thread arena) are a prerequisite of the
-// multi-threaded-full-C++ milestone; until then keep such apps single-alloc-thread.
+//
+// FOOTGUN, and these stubs stay no-ops DELIBERATELY rather than for want of effort:
+// a correct guard is not expressible from userspace as the ABI stands today. Three
+// facts, each measured rather than assumed, and all three have to change:
+//
+//   1. Newlib takes this lock RECURSIVELY. In the linked image, `_free_r` acquires it
+//      and then calls `_malloc_trim_r`, which acquires it again (verified by
+//      disassembling cxxtest). So a plain non-recursive lock self-deadlocks, and a
+//      "second entry means a second thread" detector fires on a legitimate free.
+//   2. A recursive lock needs to answer "am I already the owner", and userspace has
+//      NO thread identity: there is no self syscall, and a stack address is not a
+//      reliable key (a caller-provided stack has its own extent).
+//   3. Even given identity, there is no lock object two threads can name. KickOS
+//      capabilities are PER-TASK -- a mutex handle created by one thread indexes a
+//      different table in another -- and sharing one needs spawn-time delegation to a
+//      reserved index, of which none are left.
+//
+// So the fix is not a few lines here: it is per-thread libc state (the M4.x TLS item),
+// or a kernel-held lock behind a syscall, which is a designed change and not this one.
+// Until then a full-C++ app that heap-allocates from more than one thread corrupts the
+// arena silently -- keep such apps single-alloc-thread.
 __attribute__((weak)) void __malloc_lock(void*)
 {
 }
