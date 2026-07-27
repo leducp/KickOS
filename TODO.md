@@ -428,13 +428,15 @@ isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
       reprogram-window / HFNMIENA bypasses are accepted in the design record.
 
 Book + exploratory (M3-adjacent, not milestone-gating):
-- [ ] **Book chapter: the syscall mechanism** (dedicated subagent) -- the user<->kernel boundary
-      from the ground up: the trap trampoline per arch (ARM SVC / RISC-V ecall / RX INT / Xtensa /
-      sim mprotect-emulated), the syscall-number + arg-register ABI (KOS_SYS_*, value-in-reg vs
-      out-pointer), the privilege transition (nPRIV/MPP/PSW.PM), the return path, validate-then-use,
-      and the minimal-syscall-surface design (debug-console `write` the sole kernel exception;
-      read/open/socket = userspace stubs over IPC). Slot ch.2.x/3.x; timeless per Book conventions.
-      It is the current gap: taught only obliquely by 7.1 (boundary alignment) + 8.1 (resolve).
+- [x] **Book chapter: the syscall mechanism** -- landed as ch.3.9,
+      `book/the-syscall-path-trap-dispatch-return.md`. Slotted in part 3 (the trap/interrupt model)
+      rather than 2.x: it needs 3.5's saved-state + deferred-switch vocabulary to say why the
+      handler must not dispatch, and it is what part 4's per-ISA tour then instantiates. Chapter 0.2's
+      dangling "see 3.5 for the trampoline" forward reference now points here. One correction to the
+      brief: `read`/`open`/`socket` are not IPC clients, they are link-only libc bottom-edge stubs
+      (only `_write` routes over IPC, to the caller's stdout cap, with the kernel console as
+      fallback), so the chapter teaches the rule (a real one belongs to the server that owns the
+      device) rather than claiming an implementation.
 - [ ] **Exploratory spike: microkernel IPC performance** (M3 #4 -> M5). The Mach-era "IPC too slow"
       critique vs the L4/seL4 answer -- (a) fast SYNCHRONOUS IPC (direct switch to the woken
       receiver + register/bounded-copy; KickOS's sem_post already hands the token off and drives an

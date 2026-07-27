@@ -171,7 +171,9 @@ Two later chapters carry this split forward:
 
 - What happens *after* the trap lands -- how the `SVC`/`ecall` handler hands off to
   a small **trampoline** so a blocking system call can suspend and resume the
-  calling thread cleanly -- is Chapter 3.5, *[Context switching and the silicon
+  calling thread cleanly -- is Chapter 3.9, *[The syscall path: trap, dispatch,
+  return](the-syscall-path-trap-dispatch-return.md)*. The saved state that trampoline
+  freezes and restores is Chapter 3.5, *[Context switching and the silicon
   contract](context-switching-and-the-silicon-contract.md)*.
 - How a single trap handler *tells the two apart* at runtime -- reading a cause
   register to demultiplex "interrupt" from "deliberate trap/exception" -- is shown
@@ -236,8 +238,11 @@ you can get away with.**
 - **Chapter 3** (*Interrupt model*) -- how KickOS turns the raw ISR into a
   two-tier design: a tiny first-level handler plus a userspace driver thread.
 - Chapter 3.5, *[Context switching and the silicon
-  contract](context-switching-and-the-silicon-contract.md)* -- what happens after a
-  trap lands: the syscall trampoline and the saved-state contract.
+  contract](context-switching-and-the-silicon-contract.md)* -- the saved-state
+  contract a trap freezes and restores.
+- Chapter 3.9, *[The syscall path: trap, dispatch,
+  return](the-syscall-path-trap-dispatch-return.md)* -- what happens after a syscall
+  trap lands: the trampoline, the dispatch, and the way back.
 - Chapter 3.8, *[A masked interrupt is latched, not
   lost](a-masked-interrupt-is-latched-not-lost.md)* -- the pending-while-masked
   latch this chapter introduced, taken all the way to why the kernel must never
