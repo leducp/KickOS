@@ -57,8 +57,20 @@ namespace kickos
     // sim (the switch already happened synchronously inside wq_block).
     void wq_confirm_resume(Thread* c, uint64_t epoch)
     {
+        // Bounded like every other synchronous poll in the tree (KICKOS_POLL_SPIN_MAX;
+        // the console-publish drain a few files away is the pattern). This one used to
+        // be the exception -- a masked or lost PendSV left it spinning forever with no
+        // diagnostic, which is the one failure mode this project refuses everywhere
+        // else. The cap is enormous relative to a real wait (the switch is pended and
+        // fires as soon as the caller's IrqLock drops), so reaching it means the switch
+        // is never coming: fail LOUD.
+        uint32_t spin = 0;
         while (*static_cast<uint64_t volatile*>(&c->switch_count) == epoch)
         {
+            if (++spin > KICKOS_POLL_SPIN_MAX)
+            {
+                kpanic("wq_confirm_resume: switch never landed");
+            }
         }
     }
 
