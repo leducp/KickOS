@@ -127,6 +127,20 @@ if(KICKOS_ENABLE_SELFTEST AND (KICKOS_BOARD STREQUAL "f302nucleo"
   message(STATUS "KickOS: -Os across the ${KICKOS_BOARD} selftest tree (64 KiB flash; see N16)")
 endif()
 
+# Internal-consistency guards that are too expensive (or too noisy) to carry in a
+# shipped image: today the intrusive-list membership checks in <kickos/list.h>. OFF by
+# default, so a board image is byte-identical to what it was. The sim preset turns it
+# ON -- a host build has no flash budget, and a guard nothing builds is a guard that
+# rots. Always defined (0 or 1), never merely undefined, so `#if KICKOS_DEBUG` is
+# -Wundef-clean; carried to consumers below for the same ODR reason as KICKOS_HAVE_MPU,
+# since it changes the body of an inline function in a shipped header.
+option(KICKOS_DEBUG "Build the internal-consistency guards (list membership, ...)" OFF)
+if(KICKOS_DEBUG)
+  add_compile_definitions(KICKOS_DEBUG=1)
+else()
+  add_compile_definitions(KICKOS_DEBUG=0)
+endif()
+
 # --- Console backend selection (docs/console-design.md) --------------------
 # KICKOS_CONSOLE = chip | rtt | both | none. `chip` = the board's native transport
 # (UART / semihosting / USIC); `rtt` = SEGGER RTT (needs a debug probe); resolved
@@ -518,7 +532,8 @@ if(TARGET kickos_kernel)
   target_compile_definitions(kickos_core INTERFACE
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
-    KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
+    KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
+    KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>)
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
   # Force-include the seam header so an app-TU-defined kickos_init_entry gets C
   # linkage (it cannot silently mangle and fall back to the default provider). SHELL:
