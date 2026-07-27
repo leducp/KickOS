@@ -108,8 +108,12 @@ hardening, roughly ordered by exposure.
       `kernel/init/kmain.cc` does the opposite. So "reformat" is not purely mechanical -- it will
       restyle every `extern "C"` block in the kernel, and that choice should be made deliberately
       rather than discovered in the diff.
-- [ ] **Add a licence-header gate** now, while SPDX coverage is 100%: cheap to hold from here,
-      expensive to re-establish once it slips.
+- [ ] **Add a licence-header gate.** The premise that it could wait -- "coverage is 100%, so this
+      is cheap to hold" -- turned out to be false: re-measuring on 2026-07-27 found
+      `docs/design-rp2350-mpu-armv8m.md` carrying no SPDX identifier while all 26 sibling design
+      records did. Header added, so coverage is 534 of 536 tracked non-binary files (the rest are
+      `.gitignore` and the six JSON presets, none of which can carry a comment). The drift the gate
+      exists to catch had already happened unnoticed, which is the argument for adding it now.
 - [ ] **Pin GitHub Actions to commit SHAs**, not moving tags -- a tag is a supply-chain seam
       controlled by someone else.
 - [ ] **Wire the telemetry runtime gates into CI.** The `sim-telem` / `qemu-telem` presets exist
