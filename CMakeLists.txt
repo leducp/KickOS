@@ -503,12 +503,15 @@ if(TARGET kickos_kernel)
   # start()s, and those back-reference kickos_user + a class leaf, so the whole closure
   # must be in-group to rescan-resolve (one item on the none default, three on a
   # migrated board).
+  # The archive list, named once. The GROUP itself is built per posture leaf below
+  # rather than here, because its tail differs: an MCU link has to pull the toolchain
+  # runtime into the same group, and which runtime that is IS the posture. CMake also
+  # forbids one target's link closure from carrying the same library in two different
+  # groups, so there can only be one group and it has to be the leaf's.
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
-    target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib>")
+    set(_kickos_group "kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib")
   else()
-    target_link_libraries(kickos_core INTERFACE
-      "$<LINK_GROUP:RESCAN,kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_arch_${KICKOS_ARCH},kickos_lib>")
+    set(_kickos_group "kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_arch_${KICKOS_ARCH},kickos_lib")
   endif()
   # kickos_system is INTERFACE (contributes no archive), so it must NOT sit in the
   # RESCAN group; link it separately. This is what propagates the relocated system
@@ -590,6 +593,25 @@ if(TARGET kickos_kernel)
   target_link_libraries(kickos INTERFACE kickos_core)
   add_library(kickos_cxx INTERFACE)
   target_link_libraries(kickos_cxx INTERFACE kickos_core)
+  # The rescan group, per leaf. On MCU the toolchain runtime joins it, and that is
+  # load-bearing rather than tidy: newlib's `_sbrk_r` references `_sbrk`, which
+  # libkickos_user.a provides on demand, and the g++ driver appends its libraries AFTER
+  # everything CMake emits -- so with them outside the group the linker meets `_sbrk_r`
+  # (freestanding) or `operator new` -> `malloc` -> `_sbrk_r` (full C++) long past the
+  # point it could still go back for the member. That was invisible while `_sbrk` shared
+  # the -Wl,-u,_exit force-linked object, which put it in the link before libc ever
+  # asked. Naming these here adds no library the driver would not link anyway; it only
+  # fixes WHERE they are scanned. The freestanding leaf deliberately does not name
+  # libstdc++ -- it links -nostdlib++, and a stray operator new must stay a link error.
+  # Sim links host glibc through the normal driver path and keeps the bare group.
+  if(KICKOS_ARCH STREQUAL "sim")
+    target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
+    target_link_libraries(kickos_cxx INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
+  else()
+    target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group},c>")
+    target_link_libraries(kickos_cxx INTERFACE
+      "$<LINK_GROUP:RESCAN,${_kickos_group},stdc++,supc++,c>")
+  endif()
   # Carry __KickOS__ to downstream consumers (both leaves link kickos_core, which is
   # in the export set, so find_package consumers get it too). In-tree TUs already have
   # it from the add_compile_definitions above.
@@ -628,7 +650,11 @@ if(TARGET kickos_kernel)
     add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
     target_compile_features(kickos_cxx_rt PRIVATE cxx_std_17)
     target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
-    target_link_libraries(kickos_cxx_rt PRIVATE kickos_core)
+    # kickos_core no longer carries the archive group (it moved to the leaves, above),
+    # so name the archives this object needs for their INCLUDE dirs. It links nothing --
+    # it IS an object library -- so these are usage requirements only, and PRIVATE keeps
+    # them from reaching a consumer of the objects.
+    target_link_libraries(kickos_cxx_rt PRIVATE kickos_core kickos_user kickos_kernel)
     target_link_libraries(kickos_cxx INTERFACE $<TARGET_OBJECTS:kickos_cxx_rt>)
   endif()
 

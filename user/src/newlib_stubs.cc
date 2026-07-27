@@ -138,49 +138,15 @@ void _exit(int code)
     }
 }
 
-// Bump allocator over the userspace heap window. The bounds are LINKER symbols, not
-// a static array: on an MPU chip the heap IS the unused pad of the granted .appdata
-// window; on a non-MPU chip it is an explicit .userheap section (arch/*/chip/*.ld).
-// A board that provisions no heap defines neither symbol, so an app that pulls malloc
-// fails at LINK ("undefined reference to _kickos_heap_start") -- the intended
-// fail-loud, and only for an app that actually allocates. Only linked when _sbrk is
-// referenced (malloc). RX prepends one underscore, so the C `_kickos_heap_start` here
-// resolves to the linker symbol `__kickos_heap_start` the RX .ld defines.
-extern char _kickos_heap_start[];
-extern char _kickos_heap_limit[];
-static char* s_brk = _kickos_heap_start;
-
-static void* heap_bump(intptr_t incr)
-{
-    char* prev = s_brk;
-    char* next = s_brk + incr;
-    if (next < _kickos_heap_start or next > _kickos_heap_limit)
-    {
-        return reinterpret_cast<void*>(-1);
-    }
-    s_brk = next;
-    return prev;
-}
-
-void* _sbrk(intptr_t incr)
-{
-    return heap_bump(incr);
-}
+// The heap bottom edge (_sbrk + its bump arena) lives in newlib_sbrk.cc, deliberately
+// NOT here: this TU is force-linked into every image by -Wl,-u,_exit, so a strong
+// reference to _kickos_heap_start from here lands in every link and defeats the
+// link-time fail-loud a heapless board relies on.
 
 #ifdef __RX__
 // SjLj atexit/EH registration references __dso_handle; the RX libc may not
 // provide one. Weak so a libc that does still wins.
 __attribute__((weak)) void* __dso_handle = nullptr;
-
-// The RX psABI prefixes every C identifier with a leading underscore at the asm
-// level, so the C `_sbrk` above mangles to asm `__sbrk` -- newlib references asm
-// `_sbrk` and would otherwise fall through to libnosys sbrk (which pulls `_end`
-// and breaks the app-window layout). A C function named `sbrk` mangles to asm
-// `_sbrk`, satisfying newlib; it shares the one bump arena via heap_bump.
-void* sbrk(intptr_t incr)
-{
-    return heap_bump(incr);
-}
 #endif
 
 // Newlib's malloc brackets every arena mutation with __malloc_lock/__malloc_unlock.
