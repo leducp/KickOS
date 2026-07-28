@@ -319,11 +319,49 @@ on frdmk64f+blink, no `.bss`).
 **Stage 2 -- flip per board**, behind a build-enforced `KICKOS_ROOT_PRIVILEGED` knob (default ON,
 **NOT a weak symbol**: opting out of the boundary must be visible in the board's build, not
 silently satisfied by a link-time override).
-- [ ] **Flip in this order:** `xmc4800-relax` with a console-only service list first (its `xmcuart`
-      bring-up is pure syscall), then f411disco, frdmk64f, pizero2350, esp32c6-wroom, rx72m.
-- [ ] **Per-board gate:** selftest green under enforcement **plus** a clean cross-domain
-      `mpu_fault` proving root is confined. **The sim is the weakest witness, not the strongest** --
-      the first real witness must be an enforcing ARM board.
+- [x] **The knob** -- see `m4.5.1: add KICKOS_ROOT_PRIVILEGED, and seat root's authority cap when it
+      is off`. CMake option, always emitted as `0`/`1` (so `#if` is `-Wundef`-clean), printed at
+      configure time and carried to out-of-tree consumers as a usage requirement of `kickos_core`.
+      OFF creates root unprivileged and seats `CAP_AUTH_ALL` at `KOS_CAP_AUTHORITY` after
+      `thread_create` (which zeroes the TCB) and before `sched::start`. The banner reports the
+      posture on the `mpu` line as a *concatenated literal*, so the default posture adds no string
+      and no runtime branch there. Cost to the no-MPU tight boards, measured against `ed78926`
+      rather than assumed: f302nucleo+selftest **-4 B** of text, bluepill-c8+selftest **+8 B**. Not
+      byte-identical, as first claimed here: the `+8` is `syscall_thread.cc` calling
+      `cap_check_authority` where it read `Thread::privileged`, and the `-4` is one store dropped
+      from the selftest. Both still link.
+- [x] **A ninth authority gate that stage 1 missed, and it blocks the first board** -- see
+      `m4.5.1: gate the MMIO grant on AUTH_MEMORY, not on the caller's privilege`.
+      `grant_region_admissible`'s DEV arm (`kernel/grant/grant.cc`, Choice 5A) read the caller's raw
+      `Thread::privileged`. It is not in the design doc's list of surviving privilege reads, and it
+      sits directly on the console-handover path: an unprivileged root holding `AUTH_MEMORY` clears
+      the `syscall_thread.cc` gate and is then refused here, so the board goes dark. Now
+      `caller_authorized`, resolved at both call sites as `cap_check_authority(current, AUTH_MEMORY)`.
+- [x] **`xmc4800-relax` FLIPPED and witnessed on silicon.** Console-only service list added
+      (`kickos_services_xmc4800relax_console`), selected automatically for the flipped posture;
+      `KICKOS_SERVICE_LIST_ROOT_MMIO` makes the combined list a **configure-time `FATAL_ERROR`** in
+      that posture rather than a dark board. Evidence in `docs/reference/boards.md`.
+- [ ] **Remaining boards, in this order:** f411disco, frdmk64f, pizero2350, esp32c6-wroom, rx72m.
+      frdmk64f stays blocked on stage 3 (`arch_periph_enable`).
+- [x] **Per-board gate, and what it actually cost.** Both halves met on `xmc4800-relax` silicon
+      under PMSAv7. But the gate as worded is not reachable by the *unmodified* suite, and the
+      reasons are worth keeping:
+      - The cross-domain half needed a **new** app. `apps/mpu_fault` confines a spawned CHILD and
+        says nothing about root; nothing covered root, the thread that runs the ctors, the bring-up
+        and `main`. `apps/rootfault` does, and is discriminating in both postures (privileged root
+        completes the write and says so), so the fault is evidence rather than a symptom.
+      - The selftest half costs **2 skips**, named on the wire (`irq_as_event`,
+        `mpu_privileged_guard`). Consequence: a flipped image does **not** satisfy the selftest gate
+        as written, because `check_qemu_selftest.sh`'s `MAX_SKIPS` budget defaults to 0. Not changed
+        here; deciding whether posture-driven skips get a budget is a policy call, and a budget is a
+        *number*, so granting 2 would admit any 2 skips rather than these 2.
+- [ ] **`kos_ram_alloc` grants its caller nothing, which leaves it near-useless to an unprivileged
+      root.** Allocation and grant are separate acts: a region becomes reachable by being handed to
+      a spawn, so an `AUTH_MEMORY` holder can allocate a page and then not touch it. A privileged
+      root never noticed. This is the root cause of BOTH selftest skips and of the `mpu_fault`
+      restructure below, so it is a gap in the capability story rather than three test defects.
+      Needs a decision: add the region to the caller's domain at alloc, add an explicit
+      `kos_mem_attach`, or accept it and document allocate-then-hand-off as the only pattern.
 
 **Stage 3 -- the blocked bring-up bodies.**
 - [ ] **Add `arch_periph_enable(base)`**, weak `-KOS_ENOSYS`, gated `AUTH_DEVICE`, covering "ungate
@@ -336,8 +374,14 @@ silently satisfied by a link-time override).
       narrow the authority cap in `kickos_default_init_run` (`system/init/default_init_entry.cc`)
       before `kickos_app_main`. **This is the actual app-facing win** -- without it an unprivileged
       `main` can still ask the kernel to do every privileged thing there is.
-- [ ] **Declare `selftest` and `stress` privileged-root**, since they spawn privileged children
-      (`user/apps/common/selftest/main.cc:400,403`, `user/apps/common/stress/main.cc:222,224,286`).
+- [ ] **Declare `stress` privileged-root**, since it spawns privileged children
+      (`user/apps/common/stress/main.cc:222,224,286`). **`selftest` no longer needs this** -- see
+      `m4.5.1: let the selftest run under an unprivileged root`. Its two privileged spawns
+      (`rr_interleave`) were incidental: nothing `rr_worker` touches needs privilege, no assertion is
+      about privilege, and the flag dated to the original TAP-harness commit, before a thread's
+      region set was composed from its privilege at all. Now unprivileged, verified green on all
+      seven emulator gates and on both silicon boards. Worth checking whether `stress`'s three are
+      the same kind of leftover before declaring it.
 
 Carried over from the old plan, untouched by this design:
 - [ ] **Move app bring-up into the service lists**, so an app is started the way a driver is.
@@ -350,7 +394,22 @@ Blockers and limits:
   and `xmc4800-relax`, the enforcement flagship, links one. Stage 3 generalizes part of this; the
   XMC's PV-write-**only** registers are privileged by hardware design and will not generalize, so
   **for those boards the design does not work** without a chip bring-up seam or keeping privileged
-  root.
+  root. **Now enforced at configure time** (`KICKOS_SERVICE_LIST_ROOT_MMIO`) rather than left to
+  fail on the hardware: pairing such a list with `KICKOS_ROOT_PRIVILEGED=OFF` is a `FATAL_ERROR`,
+  because the runtime failure is a fault mid-bring-up *after* the console has been relinquished, i.e.
+  a silent dark board. The XMC flip drops `xmcssc` from the image entirely instead of linking it and
+  not calling it.
+- **A published console silences an app's own diagnostics** -- `kos_print` hands bytes to the kernel
+  console, and `console_emit` drops all of them once the UART is `USER_OWNED`. Found on silicon: the
+  first `rootfault` capture held a fault dump with nothing to check it against, and `mpu_fault`'s
+  captures had been marker-only on every service-list board. Fixed for both via
+  `kickos::emit` (`user/include/kickos/sys/emit.h`), which is the **third** copy of the
+  try-index-0-then-fall-back policy (`tests/tap/tap.cc`, libc `_write`). Worth a look at whether the
+  other diagnostic apps that print from a worker have the same silent-on-published-boards problem.
+- **The panic-path UART reclaim clips bytes in flight.** `kpanic_enter` takes the UART back from the
+  userspace driver so the report always reaches the wire, which works, but on `xmc4800-relax` it
+  reproducibly garbles roughly the last 8 bytes the driver had queued (the polled TX word pending in
+  `TBUF0`). Cosmetic for a terminal report, but it eats the tail of the line preceding the dump.
 - **`bluepill-c8` and `f302nucleo` will likely never flip** -- both carve barely 3 KiB of arena for
   the two boot stacks, and both are 9-handle boards.
 - **`Thread::privileged` survives**, with narrowed meaning: it selects the memory posture (kernel

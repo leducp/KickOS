@@ -118,8 +118,11 @@ namespace kickos
                 // and reserved-block-clear. Refusal is -KOS_EPERM (the code the
                 // out-of-arena selftest asserts). Without this an out-of-arena
                 // stack_base grants an R|W window over peripheral / kernel SRAM.
+                // The RAM arm ignores the authorization flag (10C); it is passed as
+                // AUTH_MEMORY anyway so both call sites feed the predicate one notion.
                 if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
-                                                sched::current()->privileged))
+                                                cap_check_authority(sched::current(),
+                                                                    AUTH_MEMORY)))
                 {
                     return -KOS_EPERM; // stack outside the arena / hits a reserved block
                 }
@@ -265,9 +268,13 @@ namespace kickos
         // does not take a reference (thread_create does); a domain it creates but
         // we never reference stays refcount 0 == a free slot.
         int derr = 0;
+        // AUTH_MEMORY, not raw privilege: it is the bit that covers the spawn-time MMIO
+        // grant, and it is what an unprivileged root holds. Resolved here rather than
+        // inside domain_for, which must not read sched::current() (R8).
         Domain* const dom = domain_for(p->privileged != 0, p->mem_base, p->mem_size,
                                        p->mmio_base, p->mmio_size,
-                                       sched::current()->privileged, &derr);
+                                       cap_check_authority(sched::current(), AUTH_MEMORY),
+                                       &derr);
         if (dom == nullptr)
         {
             // domain_for says which refusal this is, so forward it: EPERM for an

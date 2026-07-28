@@ -40,6 +40,37 @@ namespace
     constexpr uint8_t CH_FULL =
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER; // full-rights delegation
 
+    // Tests whose PREMISE is a privileged root, stated once here instead of restated at
+    // each site. On a KICKOS_ROOT_PRIVILEGED=0 board this suite's orchestrator (main ==
+    // root) is an ordinary unprivileged thread whose region set is [app code RX, app
+    // static data RW, its own stack]. Two consequences reach the tests below:
+    //
+    //   1. It cannot spawn a privileged child. thread_spawn refuses that from an
+    //      unprivileged caller, and that check is deliberately NOT a capability, because
+    //      holding it would be equivalent to holding every authority forever.
+    //   2. kos_ram_alloc reserves arena memory but GRANTS THE CALLER NOTHING. Allocation
+    //      and grant are separate acts here: a region becomes reachable by being handed
+    //      to a spawn, so root can allocate a page and then not touch it. A privileged
+    //      root never noticed, holding the whole arena. This is a gap in the capability
+    //      story rather than a defect in these tests -- an AUTH_MEMORY holder can
+    //      allocate memory it cannot use -- and it is filed in TODO.md.
+    //
+    // Zero bytes in the default posture, deliberately: a runtime `if` would keep the skip
+    // strings in .rodata on every board, and the fleet Debug default is `-g` with no -O
+    // at all, so nothing would fold them away -- f302nucleo-st links with 96 bytes free.
+    // NOTE the macro RETURNS from the enclosing test; that is what makes it a one-line
+    // guard at the top of a test body, and why it is spelled in capitals.
+#if KICKOS_ROOT_PRIVILEGED
+#define SKIP_TEST_IF_ROOT_UNPRIVILEGED(why) do { } while (0)
+#else
+#define SKIP_TEST_IF_ROOT_UNPRIVILEGED(why)                                              \
+    do                                                                                   \
+    {                                                                                    \
+        tap::skip("root unprivileged: " why);                                            \
+        return;                                                                          \
+    } while (0)
+#endif
+
     // Execution-order log: workers append a token under g_lock (race-free across
     // preemption); the orchestrator asserts on it once they have all finished.
     char g_log[128];
@@ -395,12 +426,23 @@ namespace
 
         log_reset();
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}}; // -> done@1, lock@2
+        // UNPRIVILEGED, like every other worker in this suite. These two were the only
+        // privileged spawns left, and the privilege was never load-bearing: rr_worker
+        // touches its delegated caps, the event log and g_rr_burn_ns (all app static data,
+        // granted RW to any unprivileged thread) plus kos_clock_now, and not one of the
+        // four assertions below is about privilege. The flag dates to the original TAP
+        // harness, before a thread's region set was composed from its privilege at all,
+        // and carried no rationale. Dropping it is what lets the WHOLE suite run under an
+        // unprivileged root (thread_spawn refuses a privileged child from an unprivileged
+        // caller, by design and not as a capability) without shedding a single check --
+        // and RR over unprivileged threads is the shipping posture anyway, so this
+        // exercises the region reload per slice that the privileged pair skipped.
         int a = kos::thread::spawn_caps(rr_worker, reinterpret_cast<void*>('A'), "rrA", 10,
                                         caps, 2, KOS_POLICY_RR, static_cast<uint32_t>(quantum),
-                                        /*privileged=*/true);
+                                        /*privileged=*/false);
         int b = kos::thread::spawn_caps(rr_worker, reinterpret_cast<void*>('B'), "rrB", 10,
                                         caps, 2, KOS_POLICY_RR, static_cast<uint32_t>(quantum),
-                                        /*privileged=*/true);
+                                        /*privileged=*/false);
         TAP_CHECK(a >= 0 and b >= 0); // spawn failure would hang the join below
         wait_n(2);
         // Sustained interleave: each of B's earlier iterations precedes A's next
@@ -491,6 +533,15 @@ namespace
     }
     void t_irqdrv()
     {
+        // Root PLAYS THE DEVICE here -- it writes 0x101/0x102/0x103 into the driver's
+        // granted page and injects the line -- so it needs write access to a page it
+        // allocated but was never granted. That is consequence 2 above, and it is not
+        // fixable by relabelling a flag: the mock register has to live in memory both
+        // root and the driver can reach, and under the flip no such arena region exists
+        // (app static data would reach both but is outside the arena, so it cannot be
+        // granted, which is the very thing this test covers).
+        SKIP_TEST_IF_ROOT_UNPRIVILEGED("root cannot write the driver's granted MMIO page "
+                                       "(kos_ram_alloc grants its caller nothing)");
         // Alloc before the sems: an alloc-fail early return must not leak them (pool-honest suite).
         g_mmio = kos_ram_alloc(4096);
         if (g_mmio == nullptr)
@@ -1313,6 +1364,14 @@ namespace
     // the probe is 0 and this would fault, so it is compiled out there.
     void t_mpu_guard()
     {
+        // The one test whose subject IS the privileged posture: the guarded page is
+        // granted to no domain, so only a whole-arena thread reaches it. Under the flip no
+        // privileged thread can come into existence after boot at all, so the property
+        // does not fail here -- it does not exist. Its complement, that root can NOT reach
+        // memory outside its regions, is apps/rootfault, which must be a separate binary
+        // because proving it ends the process.
+        SKIP_TEST_IF_ROOT_UNPRIVILEGED("no privileged caller exists; the inverse claim is "
+                                       "apps/rootfault");
         volatile int* g = static_cast<volatile int*>(kos_guard_addr());
         *g = 0x1234; // privileged (root): guard is RW, must not fault
         kos_yield(); // a syscall must restore the caller's MPU posture, not PROT_NONE
@@ -1493,7 +1552,13 @@ namespace
             tap::skip("arena cannot spare the shared region");
             return;
         }
-        *g_dshared = 0;
+        // No pre-zero of the region here. It asserted nothing -- the only check is
+        // g_dreadback == DOM_SENTINEL, g_dreadback is written only by the reader, and the
+        // reader runs only after the writer's post -- so a stale word could never fake the
+        // sentinel. Dropping it is also what keeps this test running in BOTH root
+        // postures: an unprivileged root cannot write a region it allocated and has not
+        // been granted, and the region is the workers' to initialise, not the
+        // orchestrator's.
         g_dwrote = kos_sem_create(0);
         g_dread = kos_sem_create(0);
         // Spawn BOTH before either runs (spawn does not preempt): same mem_base =>

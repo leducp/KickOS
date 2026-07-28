@@ -7,8 +7,10 @@
 
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/cap.h> // cap_seat_authority + CAP_AUTH_ALL (the unprivileged-root seat)
 #include <kickos/domain.h>
 #include <kickos/grant.h>
+#include <kickos/irqlock.h>
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
@@ -146,9 +148,19 @@ namespace kickos
 #if defined(KICKOS_SCHED_PERIODIC_TICK)
             sched = "periodic tick";
 #endif
-            char const* mpu = "off";
+            // Root's privilege posture rides on the mpu line rather than taking one of
+            // its own: it is the fact about a capture an operator cannot infer from the
+            // wire, and as a concatenated literal the suffix is empty TO THE BYTE in the
+            // default posture -- which is load-bearing, because f302nucleo-st links with
+            // 96 bytes of flash free and this banner reaches every board.
+#if KICKOS_ROOT_PRIVILEGED
+#define KICKOS_BANNER_ROOT ""
+#else
+#define KICKOS_BANNER_ROOT ", root unprivileged"
+#endif
+            char const* mpu = "off" KICKOS_BANNER_ROOT;
 #if KICKOS_HAVE_MPU
-            mpu = "enforce";
+            mpu = "enforce" KICKOS_BANNER_ROOT;
 #endif
             char const* rule = "  ==============================================\n";
             kputs("\n");
@@ -261,9 +273,29 @@ namespace kickos
         root_attr.name = "root";
         root_attr.prio = KICKOS_PRIO_MIN + 1;
         root_attr.policy = Policy::FIFO;
-        root_attr.privileged = true;
+        // The privilege boundary, decided ONCE here and never revisited: privilege is a
+        // property of the fabricated first frame (arch_context_init) and of the region
+        // set thread_create composes from it, so there is no demotion instant and no
+        // per-arch mechanism to build. Build knob, not a weak symbol -- see the
+        // KICKOS_ROOT_PRIVILEGED block in the root CMakeLists.txt for why.
+        root_attr.privileged = (KICKOS_ROOT_PRIVILEGED != 0);
         thread_create(&g_root_tcb, root_entry, nullptr,
                       root_stack, KICKOS_ROOT_STACK_SIZE, root_attr);
+#if !KICKOS_ROOT_PRIVILEGED
+        // An unprivileged root still has to bring the board up, so it is seated with
+        // every authority the kernel can grant. That is not a widening: it is the same
+        // set a privileged root held implicitly, now named, revocable (stage 4's
+        // kos_cap_narrow) and -- because the seat carries no CAP_TRANSFER -- undelegable.
+        //
+        // After thread_create, which zeroes the TCB (and so the cap table) and would
+        // otherwise wipe the seat. Safe before sched::start(): root is READY but cannot
+        // run yet, so the seat is in place before its first instruction. IrqLock is
+        // cap_seat_authority's documented precondition.
+        {
+            IrqLock lock;
+            cap_seat_authority(&g_root_tcb, CAP_AUTH_ALL);
+        }
+#endif
 
         sched::start(); // returns only if the scheduler ever unwinds to boot
         return 0;
