@@ -53,6 +53,12 @@ rationale, not a contract: for the current contract go to `reference/`.
 - **`flashing.md`** -- flash-tool backends + the non-J-Link paths. (Per-target wiring is
   `reference/boards.md`; this box is the tooling.)
 
+### `audit/` -- committed canvas mirrors
+The codebase-audit Cursor canvas, mirrored into git so its history is versioned. A canvas is only
+detected inside the Cursor workspace's own `canvases/` directory, so the file there is the live
+one and the copy here is a **mirror**, kept byte-identical so `diff` reveals a stale one. Read as
+a finding ledger, not a contract: `reference/` is the contract. See `audit/README.md`.
+
 ## Conventions (how the docs are kept)
 
 - **State, not path.** Docs describe the *current* design/state; they do **not** narrate the

@@ -71,6 +71,35 @@ layer**, never leaked into the core or the syscall ABI (the same arch-neutrality
 **RX72M** target exists to prove). "MPU-first per-task isolation" is the M0-M2 reality; "one
 address-space abstraction, MPU *or* MMU behind it" is the horizon.
 
+### Non-goals -- seL4 machinery deliberately NOT adopted
+
+"In the seL4 tradition" is a statement about the *shape* of the system, not a commitment to its
+mechanisms. Four are refused, and each is refused on **arithmetic**, not on taste -- which matters,
+because "we are seL4-like" otherwise reads as a promise that these are coming.
+
+- **No untyped memory and no `Retype`.** The kernel owns the arena and bump-allocates it, by
+  design. Accountability for who may obtain memory comes from Rule 7 grant admission plus the two
+  ways a region reaches a thread -- a spawn grant, and self-grant -- both gated on `AUTH_MEMORY`.
+  Untyped/Retype answers "which memory may this task obtain and from whose budget", and a
+  single-owner static arena answers it already, without a derivation object per allocation.
+- **No CNodes and no hierarchical CSpace.** A capability index is a flat **4-bit** field, which
+  caps the table at **16 entries** -- and **four boards ship 9**. Hierarchical CSpace exists to
+  address a space too large to index directly; at 16 slots the guard/radix machinery would cost
+  more than the space it organises.
+- **No derivation tree and no recursive revoke.** Refcounted last-close plus cap-generation
+  staling already gives the property that matters (a revoked capability stops working, and a stale
+  handle cannot be resurrected). A derivation tree buys *transitive* revoke, which needs
+  per-capability parentage the 16-slot table has nowhere to store.
+- **No per-instance (per-pin, per-clock, per-line) capabilities.** Roughly **100 muxable pins** on
+  the larger parts against that same **16-slot** ceiling. It does not fit and it does not nearly
+  fit, so authority is granted per *class* (`AUTH_PINMUX`, `AUTH_CLOCK`, `AUTH_DEVICE`,
+  `AUTH_MEMORY`, ...) rather than per instance. The consequence is honest and worth stating: a
+  holder of `AUTH_PINMUX` may mux **any** pin.
+
+The common thread is the 16-slot ceiling with 9-handle boards under it. If that ever changes, three
+of the four deserve revisiting -- but the ceiling is itself a deliberate consequence of the
+static-allocation ethos, so the honest expectation is that these stay refused.
+
 ## Targets
 
 KickOS runs on a host `sim` (x86-64) plus a fleet spanning five MCU ISAs. Each target earns its

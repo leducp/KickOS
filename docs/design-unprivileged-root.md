@@ -1,13 +1,18 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Unprivileged root -- start unprivileged holding capabilities
 
-> **Status: ACTIVE** -- stages 0 and 1 have landed on the M4.5.1 branch; stage 2 onward is
+> **Status: ACTIVE** -- stages 0 and 1 have landed on the M4.5.1 branch, and **stage 2 has landed
+> for its first board**: `xmc4800-relax` boots an unprivileged root and is witnessed on silicon
+> (selftest green under PMSAv7 enforcement plus a clean cross-domain `apps/rootfault`; see
+> `reference/boards.md`). The remaining boards in the flip order, and stages 3-4, are still
 > planned and hardware-gated. See `design/README.md` for the marker taxonomy. The actionable
 > checklist is `TODO.md`; this record is the reasoning behind it, which `TODO.md` does not carry.
 
 Root is the kernel's first application thread: `kmain` creates it, it runs the app and
-library constructors, then calls `kickos_init_entry`. It is privileged for its entire life,
-and it holds every authority the kernel can grant for that whole time.
+library constructors, then calls `kickos_init_entry`. It **was** privileged for its entire
+life, holding every authority the kernel can grant for that whole time -- and on a board that
+has not flipped (`KICKOS_ROOT_PRIVILEGED` defaults ON) it still is. That default is what this
+record argues should end, board by board.
 
 This record is why the fix is **start unprivileged holding capabilities** rather than **start
 privileged and demote**, what that costs, and -- the part worth writing down -- the specific
@@ -233,7 +238,17 @@ half of `k64dspi`.
 
 **Stage 4 -- the app story.** `kos_cap_narrow(cap, mask)` (rights &= mask, never widen), and
 drop or narrow the authority cap in `kickos_default_init_run` before `kickos_app_main`. Plus:
-declare `selftest` and `stress` privileged-root, since both spawn privileged children.
+declare **`stress`** privileged-root, since it spawns privileged children (three sites in
+`user/apps/common/stress/main.cc`) and a flipped board cannot create a privileged thread after
+boot.
+
+`selftest` was on that list and **came off it**. Its only two privileged spawns were in
+`rr_interleave`, and they turned out not to be a requirement at all -- the test wants two
+threads interleaving under round-robin, which privilege has nothing to do with -- so they were
+made unprivileged rather than pinning the whole suite to a posture. That matters beyond the one
+app: selftest is the thing that *witnesses* the flip, so leaving it privileged-root would have
+made the boundary untestable on exactly the boards that adopt it. It now runs in both postures
+(59/60 flipped, `mpu_privileged_guard` skipping because its subject is the privileged posture).
 
 ## 8. The three blockers
 
@@ -242,6 +257,10 @@ declare `selftest` and `stress` privileged-root, since both spawn privileged chi
 `system/driver/mk64f/k64dspi/k64dspi.cc` (clock gates, pin mux, GPIO, DSPI config), and
 `system/driver/xmc4800/xmcssc/xmcssc.cc` (USIC kernel clock, baud, protocol). `xmc4800-relax`,
 the enforcement flagship and the first board in the flip order, links one of them.
+
+**From root** is the operative phrase, and section 9 revises what that costs on the XMC: the
+registers sit in a window the driver already grants to an unprivileged thread, so the blocker is
+where the bring-up runs, not what the silicon permits.
 
 **`root_entry` read argv from the kernel stack.** Fixed in stage 0. Recorded here because of
 *how* it would have failed: an unprivileged root faults on its first statement after the ctor
@@ -252,20 +271,58 @@ five chips would have been "its own stack and nothing else".
 
 ## 9. Limits, including the boards where this does not work
 
-- **The XMC's PV-write-only registers are privileged by hardware design and will not
-  generalize.** Stage 3's `arch_periph_enable` covers "ungate a clock, drop supervisor-protect",
-  which is the K64F and C6 shape. It is not the XMC shape. **For those boards the design does
-  not work** without either a chip bring-up seam or keeping root privileged. This is the one
-  place to be blunt: the flip order starts with `xmc4800-relax` because its *console* bring-up
-  is pure syscall, not because the XMC has no problem.
+- **The XMC SPI blocker is software PLACEMENT, not hardware.** This bullet used to say the
+  PV-write-only registers were "privileged by hardware design", which framed the blocker as a
+  property of the silicon. Checked against the driver, that is not what stops the flip.
+
+  `xmcssc` already splits itself: `xmc_spi0_start` does a privileged one-time bring-up, then
+  `spawn_unprivileged(xmcssc_service, win_base, win_size, ...)` hands the U0C1 window
+  (`0x4003_0200`) to an **unprivileged** driver thread which does every transfer inside it. So
+  the window is not ungrantable -- **this driver already grants it.** What breaks under the flip
+  is that the bring-up runs in *root*, and a flipped root holds no MMIO grant for U0C1. Move
+  that sequence to something that holds the grant and the obstacle goes with it. Stage 3's
+  `arch_periph_enable` genuinely does not cover this -- it is "ungate a clock, drop
+  supervisor-protect", the K64F/C6 shape, whereas the XMC needs USIC-specific KSCFG/FDR/BRG/CCR
+  programming -- but "stage 3 does not cover it" is a different claim from "the hardware
+  forbids it", and only the first one is supported.
+
+  **The PV-write-only reading is contradicted, not untested.** That FDR/BRG/CCR/INPR reject an
+  unprivileged write comes from RM Table 18-20 as transcribed into the driver banner. This repo's
+  own silicon record refutes it, and the two were never put side by side:
+  `user/apps/xmc4800-relax/consoledemo/main.cc` spawns its scrambler `privileged=false` holding
+  the granted U0C0 window and writes exactly FDR, BRG, SCTR, TCSR, PCR, CCR and `KSCFG` from
+  inside it, and the recorded XMC silicon PASS is that the panic banner survives a
+  *driver-garbled* UART -- which it can only be if those unprivileged writes landed. So the
+  bring-up can move wholesale into the granted unprivileged driver, and needs no seam: the
+  register-level obstacle the reading described is not there.
+
+  What remains genuinely unread is **RM Table 18-20 itself** -- the banner transcribes a reading
+  of it and nobody has gone back to the table -- and the `U`/`PV`/`BE` privilege glossary is
+  reference-manual knowledge, not citable from anything in this tree.
+
+  The flip order still starts with `xmc4800-relax` because its *console* bring-up is pure
+  syscall -- that part was right.
+- **Granting a peripheral window grants the peripheral, including its own clock.** `KSCFG`
+  (`MODEN`, the USIC channel's module clock enable) lives at `win_base + off::KSCFG`, i.e.
+  *inside* the window handed to the unprivileged driver. So an MMIO grant is not "may use this
+  device": it is "may enable, configure and disable this device". This is **orthogonal to root's
+  privilege** -- it is equally true of any unprivileged holder on an unflipped board -- and it is
+  a property of window granularity, not a regression. Recorded because the natural reading of
+  "unprivileged driver" is more confined than what is actually handed over, and because a window
+  that happens to span two peripherals would hand over both.
 - **`bluepill-c8` and `f302nucleo` will likely never flip.** Both carve barely 3 KiB of arena
   for the two boot stacks, and both are 9-handle boards.
 - **On a flipped board, no privileged thread can come into existence after boot.** Spawning a
   privileged child requires the caller be privileged, and that is deliberately not a
   capability. So the flip is one-way for the lifetime of the system.
 - **`idle` stays privileged and holds no capabilities.** It runs no app code, and the
-  instructions it needs are privileged: RXv3 `WAIT` is a privileged instruction, and RISC-V
-  U-mode `WFI` is optional per spec.
+  instruction it exists to execute is not portably available unprivileged. RXv3 is categorical:
+  `WAIT` is a privileged instruction and executing it in user mode raises a privileged
+  instruction exception (RXv3 ISA UM §1.4.3). RISC-V is weaker -- `WFI` is "optionally available
+  to U-mode" and `mstatus.TW` decides whether it traps, so with no S-mode and `TW`=0 a U-mode
+  WFI is permitted, and a conforming implementation may also make it a plain NOP (priv. spec
+  §3.3.3, §3.1.6.6). The portable claim is that idle cannot *rely* on it, not that every ISA
+  forbids it; Book ch.7.5 carries the long form.
 - **The reserved capability index range is full after this** -- 0 stdout, 1 clock, 2 authority,
   3 spare. Spending index 3 would mean the next well-known capability has to raise
   `KICKOS_CAP_FIRST_DYNAMIC`, and *that* costs a dynamic slot on all four 9-handle boards.

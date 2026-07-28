@@ -27,9 +27,11 @@ enum kos_cap_index
     // Reserved range 1..3 is kernel-seated-only by convention today; the delegation-packing
     // enforcement that seats these lands with the clock-service step.
     KOS_CAP_CLOCK = 1,     // reserved: a board's well-known clock/time service cap
-    KOS_CAP_SERVICE = 2,   // reserved: a second well-known service cap slot
-    // The authority cap (CAP_AUTHORITY) is seated HERE -- same index, spelled for what it
-    // now holds. It names no pool object; its whole content is the five KOS_AUTH_* rights
+    // Index 2 was also spelled KOS_CAP_SERVICE ("a second well-known service cap slot").
+    // Retired: nothing ever referenced it, and carrying two names for one index invites a
+    // reader to think there are two slots on boards where a slot is the scarce thing.
+    // The authority cap (CAP_AUTHORITY) is seated here, spelled for what it actually
+    // holds. It names no pool object; its whole content is the five KOS_AUTH_* rights
     // bits, so it costs no dynamic slot on any board, the four 9-handle ones included.
     // Only the kernel seats it, and it is seated WITHOUT KOS_CAP_TRANSFER, which is what
     // keeps the delegation-packing collision below unreachable rather than merely unlikely.

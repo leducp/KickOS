@@ -14,6 +14,134 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is `M1_state.md`; the
 board/console readiness matrix is `docs/m2-readiness.md`.
 
+## Session record -- 2026-07-27 integration (READ THIS FIRST IF RESUMING)
+
+Three lines of work were integrated onto `M4.5.1-ci-hardening` and a day of decisions was taken
+in conversation. This section exists because none of that was in the repository, and a decision
+that lives only in a chat log gets re-litigated. **Everything below is maintainer-confirmed.**
+
+### Where the branch is
+
+`M4.5.1-ci-hardening`, **27 commits** on top of `13eab8f`
+(`refs/backup/integration-base-M4.5.1-ci-hardening`) as of this commit; re-derive with
+`git rev-list --count refs/backup/integration-base-M4.5.1-ci-hardening..HEAD` rather than
+trusting the figure, which goes stale on every commit. Linear, no merges. The two transport
+branches (`m4.5.1-book-syscall-privilege`, `m4.5.1-stage2-silicon`) were replayed and **deleted**;
+their pre-replay tips survive as `refs/backup/integration-book` (`a88ddef`) and
+`refs/backup/integration-silicon` (`6458d59`). Not pushed, and no upstream is configured.
+
+**One branch only.** Worktree branches are transport: replay them, delete the branch, remove the
+worktree with `git worktree remove`. The `.claude/worktrees/*` entries still listed belong to
+other efforts (m4.6, spi-bug, m4.5-squash) and were left alone.
+
+### Decisions taken (do not re-open without new information)
+
+- **`kos_reboot` folds into `AUTH_DEVICE`**, rather than taking a capability at a reserved index.
+  `KOS_CAP_RESERVED3` therefore **stays free**, which is worth more than bit granularity: spending
+  the last well-known index forces the next one to raise `KICKOS_CAP_FIRST_DYNAMIC` and costs a
+  dynamic slot on all four 9-handle boards. Recorded in full in the `kos_reboot` section below and
+  in `docs/design-unprivileged-root.md` section 9.
+- **`kos_ram_alloc` gets an explicit self-grant**, not an implicit one at alloc: `AUTH_MEMORY`-gated,
+  bounded by `KICKOS_MPU_MAX_REGIONS`, failing loud with `-KOS_ENOMEM`. **LANDED** as
+  `KOS_SYS_MEM_SELF_GRANT`.
+- **The selftest gate asserts a named, posture-dependent expected-skip list**, not a skip budget.
+  **LANDED** as `EXPECT_SKIPS`.
+- **`KOS_CAP_SERVICE` is retired.** The ABI is not stable yet, so a superseded spelling is deleted
+  rather than deprecated. **LANDED.**
+- **clang-format is decided against** as a gate -- see the CI-hygiene section.
+- **The canvas cites closing commits by SUBJECT, not by hash.** Hashes move under rebase; this
+  branch proved it (the A/B witness hash `a463ab9` had to be re-resolved to `22e1c5a`).
+- **The canvas is mirrored into the repo** so git carries its history. The Cursor path stays the
+  live file; the repo copy is a mirror. **LANDED** at `docs/audit/` (`m4.5.1: mirror the audit
+  canvas into the tree`, 675062d): the committed copy, a `docs/audit/README.md` carrying the mirror
+  rule, and a pointer from `docs/README.md`. `diff` between the two copies is the staleness check,
+  so a canvas edit refreshes the mirror in the same commit.
+- **Non-goals are appended to the existing `## North star` section of
+  `docs/reference/architecture.md`**, not given a new document, because that section already states
+  all three goals. **LANDED** as `### Non-goals -- seL4 machinery deliberately NOT adopted`
+  (`m4.5.1: state the seL4 machinery KickOS does not adopt, and the arithmetic refuting it`,
+  79b7a37): all four, each with its arithmetic.
+- **Sequencing: M4 driver breadth and M5 SMP wait behind goal 1** (fleet flip,
+  `arch_periph_enable`, `kos_cap_narrow`). Both multiply capability and memory complexity on a
+  fleet that still defaults to privileged root, so doing them first widens the surface that goal 1
+  then has to confine. **LANDED** in `roadmap.md` under `## Next` (`m4.5.1: put M4 driver breadth
+  and M5 SMP behind goal 1`, a5fc422).
+- **Selftest tiering (core tier + optional tiers) was to be considered for the two 64 KiB boards --
+  but MEASURE FIRST, and the measurement says it is not needed today.** See below.
+
+### The tiering measurement, taken 2026-07-27 (this is the "measure first" result)
+
+The premise was that the fleet defaults to `Debug` with no optimisation, inflating flash ~26%. It
+is **already handled**: `CMakeLists.txt:114-118` applies `-Os` across the selftest tree for exactly
+`f302nucleo` and `bluepill-c8` when `KICKOS_ENABLE_SELFTEST` is on, described in-file as a holding
+measure pending N16. Measured on the current tip, **with** the new `mem_self_grant` test in the
+suite (`text + data`, against 64 KiB of flash):
+
+| Board | flash used | free | headroom |
+| --- | --- | --- | --- |
+| `f302nucleo-st` | 49,604 B | 15,932 B | 24.3% |
+| `bluepill-c8-st` | 49,436 B | 16,100 B | 24.6% |
+
+**So size-aware presets have dissolved the problem and tiering is unnecessary for now.** Both
+boards carry the fleet-uniform suite with ~16 KiB spare. Revisit only if headroom actually erodes;
+the remaining N16 question is narrower than tiering -- whether to keep the two-board `-Os` block,
+widen it to the fleet, or replace it with per-preset build types.
+
+### One new finding: guards that exist but assert almost nothing
+
+Filed as one item because the **pattern** is the point -- a check that is present, green, and
+carrying almost no information is worse than an absent one, because it consumes the attention that
+would have gone to writing a real check.
+
+- [ ] **Replace the `.bss`-emptiness linker assert and the vacuous `kernel_ctor_placement` with one
+      post-link ELF check.**
+      - `ASSERT(_ebss > _sbss)` in the linker scripts only fires when kernel `.bss` is **entirely
+        empty**, which needs all four archive selectors to fail at once. It misses the far likelier
+        **partial** case: one KickOS archive renamed, or a new one added and not listed in all
+        **eleven** scripts. That library's writable state then sits silently inside the app's
+        granted window -- an isolation hole that the assert reports as fine.
+      - `kernel_ctor_placement` passes **vacuously fleet-wide** (same class: green, asserting
+        nothing).
+      - **Proposed fix, in an idiom the project already uses** (`check_kernel_ctor_placement.sh`,
+        `check_oot_export.sh`): a post-link ELF check asserting that **no symbol from a
+        kernel-owned object lands inside `[__kickos_appdata_start, __kickos_appdata_end)`**. That
+        catches the partial case the linker script structurally cannot.
+      - **Why not fix it in the linker script:** GNU ld cannot be asked whether an input selector
+        matched anything, so the in-script version can only ever approximate. This is a limitation
+        of the tool, not of the attempt -- worth recording so the next person does not retry it.
+
+### Remaining queue, in dependency order
+
+Ordered so each step's input exists when it starts. Items 1-2 are cheap and unblock judgement;
+the sweeps go last because they touch everything and would conflict with any of the above. Closed
+items keep their number and are struck through rather than removed, because they are cited by
+number: the canvas and the XMC entry under Blockers below both point at **item 5**.
+
+1. ~~**Measure `-Os` on the tight boards**~~ -- DONE above. Outcome: **tiering not needed.** What
+   remains of N16 is only the narrower question of how `-Os` should be expressed.
+2. **Selftest tiering** -- **do not build it** unless headroom erodes. Kept in the queue only so
+   the next reader sees it was considered and refuted by measurement, not forgotten.
+3. ~~**Non-goals into `docs/reference/architecture.md`, appended to the existing `## North star`
+   section.**~~ -- DONE (79b7a37). All four landed with the arithmetic that refuted them (no untyped
+   memory / `Retype`; no CNodes; no derivation tree; no per-instance capabilities), under
+   `### Non-goals -- seL4 machinery deliberately NOT adopted`, and the common thread is stated: the
+   16-slot ceiling with 9-handle boards under it. **That section's `read`/`open`/`socket` sentence
+   stays alone** -- the maintainer reads it as a design rule, not a status claim. It was not
+   touched, and should not be by a later pass.
+4. ~~**Record the sequencing note** (M4 driver breadth and M5 SMP behind goal 1) in `roadmap.md`.~~
+   -- DONE (a5fc422), as a block quote under `## Next`.
+5. **Move the XMC USIC bring-up into the granted driver thread.** The blocker is placement, not
+   silicon -- see the corrected entry under Blockers below. Unblocks `xmcssc` on a flipped board.
+6. **`stm32f103` `arch_mpu_min_region()` override.**
+7. **Re-point `kernel_ctor_placement` at the `cxxtest` ELF** (it is vacuous where it is now; see
+   the finding above -- these two are the same problem and can land together).
+8. **CI hygiene set, minus clang-format** (which is decided against).
+9. **Branch-wide comment sweep** -- last, because it touches everything.
+10. **Commit-message reword as a SEPARATE step after the sweep**, not folded into it.
+11. **Canvas subject-citation pass** -- after the canvas edits, so it runs over the final text. Now
+    that the mirror exists, this pass refreshes `docs/audit/` in the same commit, or `diff` stops
+    being the staleness check.
+
 ## M4.5.1 -- kernel audit follow-ups (2026-07-26) -- COMPLETE except S4 (2026-07-27)
 
 Findings from a code audit of the kernel, all rated **Medium or below** -- none is a live
@@ -26,9 +154,15 @@ have not yet been through CI** -- but the branch under them has: the maintainer 
 at `16d89a0`**, the tip before this batch, covering the branch's first 33 commits. Every commit
 that touches `.github/workflows/` is at or before it, so the fleet-wide `-Werror` and the rest of
 the pipeline are now observed on CI's pinned 15.2.rel1 rather than argued from a local 15.3.rel1.
-Uncovered: everything after `16d89a0` -- stage 0/1 of unprivileged-root, and this batch -- which
-is 21 commits as of 2026-07-27. That status is the maintainer's report, not checked from here
-(`gh` unauthenticated, and `ci.yml` triggers `push` only on `master`).
+Uncovered: everything after `16d89a0` -- stage 0/1 of unprivileged-root, this batch, the book
+work, the stage-2 flip and its silicon record, and the record passes over all of it. That is
+**49 commits as of this commit**, derived as `git rev-list --count 16d89a0..HEAD` on a branch that
+stands 82 commits from `master`, with `16d89a0` at position 33 by the same count against
+`master..16d89a0`. **Take the command over the number**: it grows with every commit until CI runs
+again. The figure this replaces (21) was correct at `3e8ed10` and went stale when the two transport
+branches were replayed in, which is the whole reason the method is written down here. CI status
+itself is the maintainer's report, not checked from here (`gh` unauthenticated, and `ci.yml`
+triggers `push` only on `master`).
 
 - [x] **Bound the semaphore `count`** -- `m4.5.1: bound the semaphore count` (66280c1). The hole
       was **sharper than filed**: `sem_create` validated nothing,
@@ -187,15 +321,30 @@ is 21 commits as of 2026-07-27. That status is the maintainer's report, not chec
       root cause that made 4 look necessary. Four attempts hides a gate that fails most runs.
 - [ ] **Tighten the sim `mpu_fault` failure regex** to match what `tests/check_qemu_mpu_fault.sh`
       already asserts; the sim side accepts more than it should, so it can pass on the wrong fault.
-- [ ] **Pin a clang-format version, reformat, add a gate.** Re-measured 2026-07-27: **144 of 289**
-      tracked C++ files diverge from the checked-in `.clang-format` under clang-format 21.1.8, so
-      the config is decorative. Pin the version first (output moves between releases), reformat in
-      one commit, then gate -- in that order.
-      One concrete disagreement, found while adding a file: the config says
-      `IndentExternBlock: NoIndent`, `user/src/syscall_stubs.cc` obeys it, and
-      `kernel/init/kmain.cc` does the opposite. So "reformat" is not purely mechanical -- it will
-      restyle every `extern "C"` block in the kernel, and that choice should be made deliberately
-      rather than discovered in the diff.
+- [ ] **Add link-only CI jobs for `f302nucleo-st` and `bluepill-c8-st`** (maintainer-confirmed
+      2026-07-27). CI builds only the plain presets, so a selftest image that overflows 64 KiB of
+      flash goes unnoticed until someone builds the `-st` preset by hand. These two boards are
+      build-only for the suite anyway -- a link check is exactly and only what they provide, so a
+      link-only job is the whole value at none of the runtime cost. Both link today with ~16 KiB
+      spare (measured in the session record above), and the job is what keeps that true.
+      Note for whoever adds it: `-Os` is applied to precisely these two boards under
+      `KICKOS_ENABLE_SELFTEST` (`CMakeLists.txt:114`), so the job must configure with the selftest
+      **on** or it will not measure the image that actually risks overflow. A local sweep of all
+      thirteen `-st` presets found one real link break that the seven emulator gates could not
+      (`esp32-wroom-st`, Xtensa, missing `kickos_arch_mpu_commit`), which is the argument for
+      widening this beyond the two tight boards later.
+- [x] ~~**Pin a clang-format version, reformat, add a gate.**~~ **DECIDED AGAINST 2026-07-27
+      (maintainer).** Not wanted as a CI gate. The checked-in `.clang-format` is a **per-file
+      starting point** -- something to run on a file you are already editing if you want it -- and
+      **not a target state the tree is supposed to converge to**. So the measurement that prompted
+      this item (144 of 289 tracked C++ files diverge under clang-format 21.1.8) is not evidence of
+      drift; it is the expected state of a config used that way, and re-measuring it will not change
+      the answer.
+      Recorded so it is not re-filed. The reformat would also not have been mechanical: the config
+      says `IndentExternBlock: NoIndent`, `user/src/syscall_stubs.cc` obeys it and
+      `kernel/init/kmain.cc` does the opposite, so gating would have restyled every `extern "C"`
+      block in the kernel as a side effect of a formatting decision nobody made deliberately.
+      Canvas finding **T9** closes with the same reasoning.
 - [ ] **Add a licence-header gate.** The premise that it could wait -- "coverage is 100%, so this
       is cheap to hold" -- turned out to be false: re-measuring on 2026-07-27 found
       `docs/design-rp2350-mpu-armv8m.md` carrying no SPDX identifier while all 26 sibling design
@@ -414,14 +563,27 @@ Blockers and limits:
   `system/driver/mk64f/k64uart/k64uart.cc:191-193` (AIPS PACR),
   `system/driver/mk64f/k64dspi/k64dspi.cc:298-327` (clock gates, pin mux, GPIO, DSPI config),
   `system/driver/xmc4800/xmcssc/xmcssc.cc:281-324` (USIC kernel clock, baud, protocol) --
-  and `xmc4800-relax`, the enforcement flagship, links one. Stage 3 generalizes part of this; the
-  XMC's PV-write-**only** registers are privileged by hardware design and will not generalize, so
-  **for those boards the design does not work** without a chip bring-up seam or keeping privileged
-  root. **Now enforced at configure time** (`KICKOS_SERVICE_LIST_ROOT_MMIO`) rather than left to
-  fail on the hardware: pairing such a list with `KICKOS_ROOT_PRIVILEGED=OFF` is a `FATAL_ERROR`,
-  because the runtime failure is a fault mid-bring-up *after* the console has been relinquished, i.e.
-  a silent dark board. The XMC flip drops `xmcssc` from the image entirely instead of linking it and
-  not calling it.
+  and `xmc4800-relax`, the enforcement flagship, links one. Stage 3 generalizes part of this. It
+  does **not** cover the XMC, which needs USIC-specific KSCFG/FDR/BRG/CCR programming rather than
+  "ungate a clock, drop supervisor-protect" -- but the reason recorded here was wrong and is worth
+  correcting, because it made a software problem look like a silicon one. **The blocker is where
+  the bring-up runs, not what the hardware permits.** `xmcssc` already hands the U0C1 window
+  (`0x4003_0200`) to an unprivileged driver thread via `spawn_unprivileged`, so the window is
+  demonstrably grantable; what fails under the flip is that `xmc_spi0_start` runs in *root*, and a
+  flipped root holds no MMIO grant for it. Moving that sequence to a holder of the grant removes
+  the obstacle. Separately, "FDR/BRG/CCR/INPR are PV-write-only" is an RM Table 18-20 reading
+  transcribed into the driver banner, and it is **contradicted, not untested**: `consoledemo`'s
+  scrambler is spawned `privileged=false` with the granted U0C0 window and writes exactly FDR, BRG,
+  SCTR, TCSR, PCR, CCR and `KSCFG` from inside it, and the recorded XMC silicon PASS is that the
+  panic banner survives a *driver-garbled* UART, which requires those unprivileged writes to have
+  landed. So the bring-up moves into the granted driver and there is no register-level blocker at
+  all. Still unread: **RM Table 18-20 itself** (the banner transcribes a reading of it), and the
+  `U`/`PV`/`BE` glossary is reference-manual knowledge, not citable from this tree. **Now enforced
+  at configure time** (`KICKOS_SERVICE_LIST_ROOT_MMIO`) rather than left to fail on the hardware:
+  pairing such a list with `KICKOS_ROOT_PRIVILEGED=OFF` is a `FATAL_ERROR`, because the runtime
+  failure is a fault mid-bring-up *after* the console has been relinquished, i.e. a silent dark
+  board. The XMC flip drops `xmcssc` from the image entirely instead of linking it and not calling
+  it.
 - **A published console silences an app's own diagnostics** -- `kos_print` hands bytes to the kernel
   console, and `console_emit` drops all of them once the UART is `USER_OWNED`. Found on silicon: the
   first `rootfault` capture held a fault dump with nothing to check it against, and `mpu_fault`'s

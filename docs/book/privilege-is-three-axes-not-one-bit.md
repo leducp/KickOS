@@ -229,14 +229,33 @@ The `idle` thread is privileged and holds no capabilities. It runs no applicatio
 code, and it exists to execute exactly one instruction -- the one that stops the core
 until an interrupt arrives -- which is privileged on real members of the fleet:
 
-- **RXv3 `WAIT` is a privileged instruction.** Executed with `PSW.PM` set to user, it
-  raises a privileged-instruction exception instead of sleeping.
-- **RISC-V `WFI` is only optionally available to U-mode**, per the privileged
-  architecture spec, and a platform may additionally make it trap from a less
-  privileged mode (`mstatus.TW`). A portable U-mode idle therefore cannot rely on it.
+- **RXv3 `WAIT` is a privileged instruction, and this one is categorical.** The RX
+  Family ISA manual lists the privileged instructions as `RTFI`, `MVTIPL`, `RTE` and
+  `WAIT`, and states that executing one in user mode "produces a privileged instruction
+  exception" (*RX Family RXv3 Instruction Set Architecture User's Manual: Software*,
+  §1.4.3 *Privileged Instruction*; the `WAIT` page is headed "WAIT (privileged
+  instruction)"). User mode is `PSW.PM` = 1 (bit 20, §2.2). There is no bit that relaxes
+  this, so on RX an unprivileged idle simply cannot execute the instruction it exists to
+  execute.
+- **RISC-V `WFI` is weaker than that, and the earlier wording here overstated it.** The
+  privileged spec says WFI "is available in all privileged modes, and optionally
+  available to U-mode" (§3.3.3), and `mstatus.TW` is what intercepts it: with `TW`=0
+  "the WFI instruction may execute in lower privilege modes when not prevented for some
+  other reason", and with `TW`=1 a WFI in any less-privileged mode that does not complete
+  within a bounded time raises an illegal-instruction exception (§3.1.6.6). KickOS runs
+  M-mode kernel + U-mode threads with **no S-mode**, and in that configuration a U-mode
+  WFI is *permitted* whenever the platform leaves `TW`=0. (Had S-mode been implemented,
+  U-mode WFI would trap; §3.1.6.6 says so explicitly.) On top of that, "a legal
+  implementation is to simply implement the WFI instruction as a NOP" (§3.3.3), so even
+  where it executes it need not actually idle the core.
 
-An unprivileged idle would have to trap into the kernel on every iteration just to
-sleep the core, which inverts the point of the cheapest loop in the system. So `idle`
+So the two are not the same kind of fact, and it is worth not flattening them: RX
+**forbids** it, RISC-V merely declines to **guarantee** it. What the fleet actually rests
+on is the weaker, portable claim -- a U-mode idle cannot rely on WFI across these parts,
+because whether it sleeps, no-ops or traps is a per-platform choice.
+
+An unprivileged idle would therefore have to trap into the kernel on every iteration just
+to sleep the core, which inverts the point of the cheapest loop in the system. So `idle`
 stays a kthread on hardware grounds, and it is a well-behaved one: it holds no
 authority capability, touches no application memory, and is the smallest possible
 body of code to have on the wrong side of the boundary. Every *other* privileged

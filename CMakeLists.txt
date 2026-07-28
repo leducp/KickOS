@@ -344,8 +344,11 @@ if(NOT DEFINED KICKOS_SERVICE_LIST)
       set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax")
     else()
       # Console only. The SPI entry's bring-up body configures USIC kernel clock, baud
-      # and protocol through PV-write-only registers OUTSIDE any grantable window, so an
-      # unprivileged root cannot run it -- see KICKOS_SERVICE_LIST_ROOT_MMIO below.
+      # and protocol from ROOT, and a flipped root holds no MMIO grant for U0C1 -- so it
+      # is PLACEMENT that stops it, not the silicon: the registers it writes (KSCFG 0x00C,
+      # FDR 0x010, BRG 0x014, CCR 0x040) all sit INSIDE the 0x200 channel window the
+      # driver already grants to an unprivileged thread. Refuse until the bring-up moves
+      # into a holder of that grant -- see KICKOS_SERVICE_LIST_ROOT_MMIO below.
       set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax_console")
     endif()
   elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)

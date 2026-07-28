@@ -22,6 +22,14 @@ whenever it is ready, tagged as such in `TODO.md`.
 
 ## Next
 
+> **Sequencing, decided 2026-07-27: M4 driver breadth and M5 SMP wait behind goal 1** -- the fleet
+> flip to an unprivileged root, `arch_periph_enable`, and `kos_cap_narrow`. Both M4 and M5 multiply
+> capability and memory complexity across a fleet that still **defaults to privileged root**
+> (`KICKOS_ROOT_PRIVILEGED` is ON everywhere but `xmc4800-relax`), so doing either first widens
+> exactly the surface goal 1 then has to confine -- more drivers poking MMIO from root, and on M5 a
+> second core's worth of region sets and capability tables. Finish confining one core's worth
+> first. This reorders effort, not scope: nothing below is cancelled.
+
 ### M2 -- hardware MPU enforcement
 Make per-task isolation real on silicon. **Status:** the enforcement mechanism has landed on
 silicon across the reference set -- K64F SYSMPU, XMC PMSA, RX72M MPU, ESP32-C6 PMP -- each with
