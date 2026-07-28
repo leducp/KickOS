@@ -201,7 +201,35 @@ void kos_clock_set_realtime(uint64_t unix_ns);
 // Allocate a page-aligned block from the MPU-governed user-RAM pool, to hand to
 // a thread as its domain data region (see kos_thread_params.mem_base). NULL if
 // exhausted. On MCU this pool is a linker-defined region.
+//
+// Allocating does NOT make the block reachable by the caller: it reserves arena
+// memory and grants nothing. Hand it to a spawn, or ask for it explicitly with
+// kos_mem_self_grant below.
 void* kos_ram_alloc(size_t size);
+
+// Add [base, base+size) to the CALLING thread's own region set, so the caller may
+// dereference memory it allocated. The explicit half of "regions are granted, never
+// implied": kos_ram_alloc reserves, this grants, and nothing grants implicitly.
+//
+// Requires AUTH_MEMORY, the same authority kos_ram_alloc takes. The region is run
+// through the same Rule 7 admission predicate as a spawn-time grant, so it must be
+// inside the user arena and clear of every kernel-reserved block; the committed
+// extent is rounded up to what the MPU can describe (arch_ram_region_size), exactly
+// as a domain data region is.
+//
+// BOUNDED by the hardware region budget, and loud when it runs out. A thread already
+// spends up to 5 of KICKOS_MPU_MAX_REGIONS on code, static data, its domain and its
+// stack, so self-grants draw on a small remainder; the refusal is -KOS_ENOMEM rather
+// than a silently truncated region set. Grant the regions a thread needs for its
+// lifetime at start-up, and do not treat this as a general mapping call.
+//
+// Returns 0 on success (including when the range is ALREADY reachable, which costs
+// no descriptor), or:
+//   -KOS_EPERM   no AUTH_MEMORY, or the range is inadmissible (outside the arena,
+//                or overlapping a reserved block)
+//   -KOS_EINVAL  size 0, or the range wraps
+//   -KOS_ENOMEM  the caller's region budget is full
+int kos_mem_self_grant(void* base, size_t size);
 
 // Borrow the KERNEL'S single diagnostic LED (the kernel also drives it for
 // self-debug, e.g. solid on panic). Not an app-owned device: this is provisional

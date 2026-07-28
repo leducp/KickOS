@@ -920,6 +920,13 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     arena_raise_all();
 }
 
+// The sim has no deferred-commit seam: arch_mpu_apply above programs the protection
+// (mprotect) as it records it, and the host "switch" is a real longjmp with no pended
+// exception, so there is nothing to commit afterwards. Defined anyway because the
+// symbol is an arch-wide contract -- the kernel's self-grant path calls it to make a
+// widened region set effective before returning to the running thread.
+void kickos_arch_mpu_commit(void) {}
+
 size_t arch_mpu_min_region(void)
 {
     return static_cast<size_t>(sim().pagesize); // mprotect granularity

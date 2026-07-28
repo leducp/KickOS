@@ -66,6 +66,26 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(oot_export PROPERTIES TIMEOUT 120)
 endif()
 
+# The expected-skip list every QEMU gate below carries (EXPECT_SKIPS, checked by name
+# in tests/check_qemu_selftest.sh). Empty means "no test may skip", which is the fleet
+# default and what every enforcing, privileged-root board meets.
+#
+# POSTURE-DEPENDENT, because one test's SUBJECT is the privileged posture. Under
+# KICKOS_ROOT_PRIVILEGED=OFF no privileged caller can come into existence after boot,
+# so mpu_privileged_guard's property does not fail -- it does not exist, and its
+# complement (that root canNOT reach memory outside its regions) is apps/rootfault, a
+# separate binary because proving it ends the process. It is only registered under
+# enforcement, so the entry is conditioned on both.
+#
+# It is deliberately the ONLY posture-driven entry. irq_as_event used to skip here too
+# -- root plays the device, writing a page it allocated but was never granted -- and
+# that was a missing capability, not a board limit: kos_mem_self_grant now lets it ask
+# for the page, so it runs in both postures and is NOT on this list.
+set(KICKOS_EXPECT_SKIPS "")
+if(KICKOS_HAVE_MPU AND NOT KICKOS_ROOT_PRIVILEGED)
+  list(APPEND KICKOS_EXPECT_SKIPS mpu_privileged_guard)
+endif()
+
 # The SAME TAP suite on the runnable QEMU targets -- the identical binary rebuilt
 # per target, exercising the real ISA switch mechanism (armv7m/armv6m PendSV,
 # rv32imac msip), not just the sim. Needs KICKOS_ENABLE_SELFTEST (the qemu* presets
@@ -74,6 +94,8 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_selftest TARGET selftest BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
+  set_property(TEST ${KICKOS_QEMU_MPS2_TAG}_selftest APPEND PROPERTY
+    ENVIRONMENT "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}")
 endif()
 # microbit (nrf51) runs the SAME suite on armv6m. Its small pool (MAX_SEMAPHORES=4 /
 # MAX_THREADS=2) is precisely why the suite is pool-honest -- every test reclaims its
@@ -82,29 +104,35 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
-  # The one board with a legitimate skip budget: MAX_THREADS=2 / MAX_SEMAPHORES=4 means
-  # the multi-worker choreographies (the mutex PI suite, domain_share, the 3-and-4-thread
-  # call/reply cases) genuinely cannot run here, and irq_as_event cannot spare a 4 KiB
-  # page out of 16 KiB SRAM. Every OTHER board keeps the script's default budget of 0.
+  # The one board with legitimate skips: MAX_THREADS=2 / MAX_SEMAPHORES=4 means the
+  # multi-worker choreographies (the mutex PI suite, domain_share, the 3-and-4-thread
+  # call/reply cases) genuinely cannot run here, and two tests cannot spare the arena.
+  # Every OTHER board keeps the script's default of "nothing may skip".
   #
-  # 10 is a MEASURED count, not a ceiling -- these ten and no others, stable across
-  # repeated runs:
+  # NAMED, not counted. This list used to be a comment beside `MAX_SKIPS=10`, which is
+  # the failure the number always had: 10 admitted ANY ten skips, so a test that
+  # silently stopped running would have taken a slot one of these vacated and CI would
+  # have stayed green. The comment was the real knowledge; now it IS the assertion, and
+  # a skip whose name is not here fails the gate and gets printed.
+  #
+  # Measured, stable across repeated runs:
   #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_deadlock,
-  #   mutex_multi_held    -- 3-worker PI choreographies on a 2-slot pool
-  #   call_infoless_revert (4 workers), call_donation (3)  -- M4.4 call/reply
-  #   domain_share, confused_deputy                        -- 2 concurrent workers
-  #   irq_as_event                                         -- wants a 4 KiB MMIO page
-  # It replaces the loose 12 that stood in while the board could not reach its own
-  # summary line (the gate was red from 9ae301f/M4.4 to M4.5.1). Raising it again should
-  # mean a board capability changed; a test that merely stopped running must show up as
-  # a breach, which is why the slack is gone. caller_stack and mmio_grant additionally
-  # report PARTIAL -- they assert their invariant and say which half the arena/pool could
-  # not host, so they count as passes, not skips.
-  set_tests_properties(microbit_selftest PROPERTIES ENVIRONMENT "MAX_SKIPS=10")
+  #   mutex_multi_held      -- 3-worker PI choreographies on a 2-slot pool
+  #   call_infoless_revert (4 workers), call_donation (3)   -- M4.4 call/reply
+  #   domain_share, confused_deputy                         -- 2 concurrent workers
+  #   irq_as_event          -- wants a 4 KiB MMIO page out of 16 KiB SRAM
+  #   mem_self_grant        -- its worker is a second concurrent thread
+  # Growing this list should mean a board capability changed. caller_stack and
+  # mmio_grant additionally report PARTIAL -- they assert their invariant and say which
+  # half the arena/pool could not host, so they count as passes, not skips.
+  set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,domain_share,confused_deputy,irq_as_event,mem_self_grant")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
+  set_property(TEST qemu_riscv_selftest APPEND PROPERTY
+    ENVIRONMENT "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}")
 endif()
 
 # The same acceptance criterion for a bare-metal package: install the MCU

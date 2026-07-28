@@ -213,9 +213,13 @@ is 21 commits as of 2026-07-27. That status is the maintainer's report, not chec
 
 Fully designed, deliberately not implemented yet. Recorded at this fidelity so it can be *built*
 as specified rather than redesigned:
-- Syscall **37**, behind an `arch_reboot` seam with a **weak `-KOS_ENOSYS` default** -- a chip
-  that cannot do it declines honestly instead of pretending. (36 went to `KOS_SYS_SHUTDOWN`;
-  a number is allocated when a syscall is built, not when it is designed.)
+- **No reserved number**, behind an `arch_reboot` seam with a **weak `-KOS_ENOSYS` default** -- a
+  chip that cannot do it declines honestly instead of pretending. This note has now named two
+  numbers that were taken before it was built: 36 went to `KOS_SYS_SHUTDOWN`, then 37 went to
+  `KOS_SYS_MEM_SELF_GRANT`. `user/include/kickos/sys/abi.h` is the authority, and the rule it
+  already stated is the right one -- **a number is allocated when a syscall is built, not when it
+  is designed** -- so stop reserving one here. It takes the next free value at build time
+  (38 as of this writing).
 - **Authorized by `AUTH_DEVICE` on the existing authority cap -- DECIDED 2026-07-27**, rather than
   by a `CAP_REBOOT` at `KOS_CAP_RESERVED3`. So it needs no new cap type, no sixth rights bit (there
   is none: five bits is the whole budget), and it **leaves index 3 free** -- worth more than bit
@@ -340,7 +344,17 @@ silently satisfied by a link-time override).
 - [x] **`xmc4800-relax` FLIPPED and witnessed on silicon.** Console-only service list added
       (`kickos_services_xmc4800relax_console`), selected automatically for the flipped posture;
       `KICKOS_SERVICE_LIST_ROOT_MMIO` makes the combined list a **configure-time `FATAL_ERROR`** in
-      that posture rather than a dark board. Evidence in `docs/reference/boards.md`.
+      that posture rather than a dark board. Evidence in `docs/reference/boards.md`. The A/B was
+      **re-captured post-rebase at `22e1c5a`**, so it witnesses the rebased combination of stage 2
+      with the kernel-audit batch, not just the pre-rebase branch.
+- [ ] **OWED: re-witness the tip on silicon.** The boards left the bench at `22e1c5a`, and four
+      commits landed after it. Two touch the enforcement path and have run **only under emulation**:
+      `af696e6` (the `kos_mem_self_grant` syscall) and `3c772b9` (programming a self-granted region
+      before the syscall returns). The merged tip is therefore **green locally only**; do not read
+      the `22e1c5a` capture as covering it. `3c772b9` first: the bug it fixes was invisible on the
+      sim and present on every enforcing backend, which is the exact shape that needs a bench
+      witness rather than an emulator one. Needs the XMC A/B re-run at tip plus the `frdmk64f`
+      SYSMPU regression. Boundary table in `docs/reference/boards.md`.
 - [ ] **Remaining boards, in this order:** f411disco, frdmk64f, pizero2350, esp32c6-wroom, rx72m.
       frdmk64f stays blocked on stage 3 (`arch_periph_enable`).
 - [x] **Per-board gate, and what it actually cost.** Both halves met on `xmc4800-relax` silicon
@@ -350,18 +364,27 @@ silently satisfied by a link-time override).
         says nothing about root; nothing covered root, the thread that runs the ctors, the bring-up
         and `main`. `apps/rootfault` does, and is discriminating in both postures (privileged root
         completes the write and says so), so the fault is evidence rather than a symptom.
-      - The selftest half costs **2 skips**, named on the wire (`irq_as_event`,
-        `mpu_privileged_guard`). Consequence: a flipped image does **not** satisfy the selftest gate
-        as written, because `check_qemu_selftest.sh`'s `MAX_SKIPS` budget defaults to 0. Not changed
-        here; deciding whether posture-driven skips get a budget is a policy call, and a budget is a
-        *number*, so granting 2 would admit any 2 skips rather than these 2.
-- [ ] **`kos_ram_alloc` grants its caller nothing, which leaves it near-useless to an unprivileged
+      - The selftest half cost **2 skips** when this was written, named on the wire
+        (`irq_as_event`, `mpu_privileged_guard`), so a flipped image did **not** satisfy the
+        selftest gate. Both halves are now closed, and the split is worth keeping because the two
+        skips had different causes. `irq_as_event` was a missing capability, not a posture cost:
+        `kos_mem_self_grant` lets root ask for the page it allocated, so it **runs** in both
+        postures. Only `mpu_privileged_guard` is genuinely posture-driven -- its subject is the
+        privileged posture. The gate now takes an expected-skip list **by name**
+        (`EXPECT_SKIPS`) instead of a count, since a budget of 2 would have admitted any 2 skips
+        rather than these 2. Measured after both: flipped `sim` skips exactly
+        `mpu_privileged_guard`, 59/60 run.
+- [x] **`kos_ram_alloc` grants its caller nothing, which left it near-useless to an unprivileged
       root.** Allocation and grant are separate acts: a region becomes reachable by being handed to
-      a spawn, so an `AUTH_MEMORY` holder can allocate a page and then not touch it. A privileged
-      root never noticed. This is the root cause of BOTH selftest skips and of the `mpu_fault`
-      restructure below, so it is a gap in the capability story rather than three test defects.
-      Needs a decision: add the region to the caller's domain at alloc, add an explicit
-      `kos_mem_attach`, or accept it and document allocate-then-hand-off as the only pattern.
+      a spawn, so an `AUTH_MEMORY` holder could allocate a page and then not touch it. A privileged
+      root never noticed. This was the root cause of BOTH selftest skips and of the `mpu_fault`
+      restructure below -- a gap in the capability story rather than three test defects.
+      **Decided: an explicit `kos_mem_self_grant` (37), not an implicit grant at alloc.** Alloc must
+      stay usable for the allocate-then-hand-off pattern that spends no region, and the caller's
+      region table is a hard, small budget (`KICKOS_MPU_MAX_REGIONS`), so spending a slot has to be
+      something the caller *asks* for. It is gated on `AUTH_MEMORY`, bounded by that budget, and
+      fails loudly with `-KOS_ENOMEM` rather than silently not enforcing -- proved both ways in
+      `t_selfgrant` (returning `-KOS_EPERM` fails the test; accepting silently faults the worker).
 
 **Stage 3 -- the blocked bring-up bodies.**
 - [ ] **Add `arch_periph_enable(base)`**, weak `-KOS_ENOSYS`, gated `AUTH_DEVICE`, covering "ungate

@@ -45,8 +45,8 @@ namespace tap
 
     // Run every registered test in order, emit TAP, and return the number that
     // FAILED (0 == all passed). Skips are reported and counted but are not failures:
-    // the harness stays honest and the per-board budget lives in the CTest gate
-    // (tests/check_qemu_selftest.sh MAX_SKIPS).
+    // the harness stays honest and the per-board list of which skips are ALLOWED, by
+    // name, lives in the CTest gate (tests/check_qemu_selftest.sh EXPECT_SKIPS).
     int run_all();
 }
 

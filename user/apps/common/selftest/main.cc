@@ -49,11 +49,10 @@ namespace
     //      unprivileged caller, and that check is deliberately NOT a capability, because
     //      holding it would be equivalent to holding every authority forever.
     //   2. kos_ram_alloc reserves arena memory but GRANTS THE CALLER NOTHING. Allocation
-    //      and grant are separate acts here: a region becomes reachable by being handed
-    //      to a spawn, so root can allocate a page and then not touch it. A privileged
-    //      root never noticed, holding the whole arena. This is a gap in the capability
-    //      story rather than a defect in these tests -- an AUTH_MEMORY holder can
-    //      allocate memory it cannot use -- and it is filed in TODO.md.
+    //      and grant are still separate acts, on purpose, but the second one is now
+    //      expressible: kos_mem_self_grant adds the block to the caller's own region
+    //      set, bounded by the MPU budget. A test that needs to touch what it allocated
+    //      asks for it (t_irqdrv does) instead of skipping.
     //
     // Zero bytes in the default posture, deliberately: a runtime `if` would keep the skip
     // strings in .rodata on every board, and the fleet Debug default is `-g` with no -O
@@ -535,13 +534,12 @@ namespace
     {
         // Root PLAYS THE DEVICE here -- it writes 0x101/0x102/0x103 into the driver's
         // granted page and injects the line -- so it needs write access to a page it
-        // allocated but was never granted. That is consequence 2 above, and it is not
-        // fixable by relabelling a flag: the mock register has to live in memory both
-        // root and the driver can reach, and under the flip no such arena region exists
-        // (app static data would reach both but is outside the arena, so it cannot be
-        // granted, which is the very thing this test covers).
-        SKIP_TEST_IF_ROOT_UNPRIVILEGED("root cannot write the driver's granted MMIO page "
-                                       "(kos_ram_alloc grants its caller nothing)");
+        // allocated. The mock register has to live in memory BOTH root and the driver
+        // can reach, and app static data will not do: it would reach both but sits
+        // outside the arena, so it cannot be granted, which is the very thing this test
+        // covers. Under an unprivileged root that used to be unreachable and the test
+        // skipped; kos_mem_self_grant is the ask that makes it expressible.
+        //
         // Alloc before the sems: an alloc-fail early return must not leak them (pool-honest suite).
         g_mmio = kos_ram_alloc(4096);
         if (g_mmio == nullptr)
@@ -551,6 +549,11 @@ namespace
             tap::skip("4 KiB MMIO-page alloc failed -- board too small");
             return;
         }
+        // Reach what we just allocated. A privileged root already holds the whole arena,
+        // so this is a no-op success there and the default posture is unchanged; under
+        // the flip it is what replaces the skip. Not TAP_CHECKed away silently: a refusal
+        // means the page stays unreachable and the writes below would fault.
+        TAP_CHECK(kos_mem_self_grant(g_mmio, 4096) == 0);
         *static_cast<volatile int*>(g_mmio) = 0;
         g_irqdrv_done = kos_sem_create(0);
         g_irqdrv_ready = kos_sem_create(0);
@@ -2888,7 +2891,12 @@ namespace
         TAP_CHECK(g_wrbuf_rc == -KOS_EBADF); // not -KOS_EFAULT: the global was writable
     }
 
-    // --- The authority capability: the non-privileged arm of the eight gates ----------
+    // --- The authority capability: the non-privileged arm of the authority gates ------
+    // Nine authority decisions, not eight: stage 1 converted eight call sites and stage 2
+    // found the ninth, grant_region_admissible's DEV arm, which was still reading
+    // Thread::privileged. Enumerate the decisions rather than carrying a count, since a
+    // count that is right the day it is written is what lets the next one hide.
+    //
     // Each authority gate is `privileged OR holds this AUTH_* bit`. Root is privileged, so
     // the whole suite already leans on the privileged arm; this covers the OTHER one, which
     // would otherwise ship unexercised until stage 2 flips a board -- the same vacuity trap
@@ -2979,6 +2987,85 @@ namespace
         TAP_CHECK(g_auth_regrant == -KOS_EPERM and g_auth_collide == -KOS_EINVAL
                   and g_auth_badbits == -KOS_EINVAL and g_auth_capsarr == -KOS_EBADF);
     }
+
+    // --- Self-grant, and the region budget that bounds it ----------------------
+    // kos_ram_alloc reserves arena memory and grants nothing; kos_mem_self_grant is
+    // the ask that makes the block reachable. The half worth a test is the REFUSAL:
+    // a thread's descriptor file is finite, so the call must fail LOUDLY at the
+    // ceiling. Truncating the region set instead would fault the thread on memory
+    // the kernel had just told it it could reach.
+    //
+    // Runs in an UNPRIVILEGED child in EVERY posture, not in root. A privileged
+    // caller already reaches the whole arena, so its self-grants are answered
+    // "already reachable" without spending a descriptor and the ceiling is
+    // unreachable -- from root in the default posture this test would be vacuous.
+    //
+    // Each descriptor is bought with kos_ram_alloc(1), the SMALLEST region this
+    // backend can describe (the allocator rounds up to arch_ram_region_size), so the
+    // loop costs a page on the sim and 16-32 bytes on an MCU instead of assuming a
+    // granule. Those blocks are not reclaimed -- arch_ram_alloc is a bump allocator
+    // with no free -- so the bound below is also what keeps the leak small.
+    constexpr int SG_MAX = 12; // > KICKOS_MPU_MAX_REGIONS, so the loop must end refused
+    volatile int g_sg_ok = 0;      // descriptors accepted before the ceiling
+    volatile long g_sg_refusal = 0; // the code that ended the loop
+    volatile long g_sg_badsize = 0;
+    volatile int g_sg_readback = -1;
+
+    void selfgrant_worker(void*)
+    {
+        // Free refusal: no arena, no descriptor, same answer on every board. The
+        // address is a valid stack local, so the refusal is about the SIZE and not
+        // about a pointer the predicate could have rejected for another reason.
+        int probe = 0;
+        g_sg_badsize = kos_mem_self_grant(&probe, 0);
+        for (int i = 0; i < SG_MAX; i++)
+        {
+            void* p = kos_ram_alloc(1);
+            if (p == nullptr)
+            {
+                g_sg_refusal = 0; // arena, not budget: the parent skips rather than fails
+                break;
+            }
+            long const rc = kos_mem_self_grant(p, 1);
+            if (rc != 0)
+            {
+                g_sg_refusal = rc;
+                break;
+            }
+            // The grant is real, not bookkeeping: touch the page it just bought. An
+            // unprivileged thread writing a region it was never granted faults, so
+            // reaching the readback at all is the positive half of this test.
+            *static_cast<volatile int*>(p) = 0x5A5A + i;
+            g_sg_readback = *static_cast<volatile int*>(p) - i;
+            g_sg_ok = g_sg_ok + 1; // not ++: -Werror=volatile rejects it from C++20
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void t_selfgrant()
+    {
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(selfgrant_worker, nullptr, "sgW", 10, caps, 1,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                        nullptr, 0, /*authority=*/KOS_AUTH_MEMORY);
+        if (w < 0)
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        if (g_sg_refusal == 0)
+        {
+            tap::skip("arena too small to reach the region ceiling");
+            return;
+        }
+        // Grouped: each TAP_CHECK carries __FILE__ plus its stringified condition as
+        // rodata, and this image sits near the f302nucleo ceiling. The ceiling was
+        // reached (at least one grant landed), it was reported as exhaustion rather
+        // than as a permission or shape error, a granted page was writable, and size 0
+        // is still rejected as malformed.
+        TAP_CHECK(g_sg_ok > 0 and g_sg_refusal == -KOS_ENOMEM);
+        TAP_CHECK(g_sg_readback == 0x5A5A and g_sg_badsize == -KOS_EINVAL);
+    }
 }
 
 int main(int, char**)
@@ -3060,6 +3147,10 @@ int main(int, char**)
 #endif
 #endif
     tap::add("confused_deputy", t_confused_deputy); // readable-buffer/name floor (accept rodata, reject bogus)
+    // Last, deliberately: it walks the caller's region budget to the ceiling and the
+    // blocks it buys are never returned (bump allocator), so running it earlier would
+    // spend arena the tests above still need on a small board.
+    tap::add("mem_self_grant", t_selfgrant); // explicit grant + the loud budget ceiling
 
     // Every test joins its workers, so main returns as the last live thread:
     // the failure count becomes the process exit status (0 == all passed).

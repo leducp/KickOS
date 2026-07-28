@@ -255,6 +255,13 @@ void* kos_ram_alloc(size_t size)
         arch_syscall(KOS_SYS_RAM_ALLOC, static_cast<uintptr_t>(size), 0, 0, 0));
 }
 
+int kos_mem_self_grant(void* base, size_t size)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_MEM_SELF_GRANT, reinterpret_cast<uintptr_t>(base),
+                     static_cast<uintptr_t>(size), 0, 0));
+}
+
 void kos_kernel_diag_led_set(int on)
 {
     arch_syscall(KOS_SYS_DIAG_LED_SET, static_cast<uintptr_t>(on), 0, 0, 0);

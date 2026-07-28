@@ -173,6 +173,25 @@ struct arch_mpu_region
 // UNPRIVILEGED access (supervisor comes from the background region / SYSMPU RGD0).
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 
+// Program the hardware from what arch_mpu_apply last recorded. On every arch whose
+// context switch is DEFERRED (ARM PendSV, RX/RISC-V software interrupt) arch_mpu_apply
+// only STASHES: the switch epilogue calls this after the physical swap, so `current`,
+// the running thread and the MPU become the incoming thread together. That seam is
+// docs/design-mpu-commit-deferred.md, and the eager apply it replaced was a real fault
+// on RP2040 silicon.
+//
+// The kernel calls this DIRECTLY in exactly one situation: the RUNNING thread's own
+// region set was just widened and it must be effective before the syscall returns
+// (KOS_SYS_MEM_SELF_GRANT). That is sound precisely because no switch is involved --
+// outgoing and incoming are the same thread, so the window the deferred seam exists to
+// close (a thread running under another thread's regions) cannot open. Do NOT call it
+// to make another thread's set live; that is the bug the seam fixed.
+//
+// Always resolves, on every arch and both enforcement postures -- the switch assembly
+// calls it unconditionally -- and is an empty no-op where apply already programs the
+// hardware (the sim) or where there is no MPU.
+void kickos_arch_mpu_commit(void);
+
 // MMU-era NOTE (concepts, never mechanisms): a future VMSA/paging port introduces
 // a PARALLEL arch_aspace_* family (build/switch/map a page-table root), NOT an
 // overload of arch_mpu_apply and NOT a reinterpretation of arch_mpu_region. The

@@ -613,6 +613,91 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return reinterpret_cast<uintptr_t>(
                 arch_ram_alloc(static_cast<size_t>(a0)));
         }
+        case KOS_SYS_MEM_SELF_GRANT:
+        {
+            // The explicit half of allocate-then-grant. KOS_SYS_RAM_ALLOC reserves
+            // arena memory and grants nothing, so an AUTH_MEMORY holder could allocate
+            // a page and then fault on it; the only way to make a region reachable was
+            // to hand it to a spawn. A privileged root never noticed, because it holds
+            // the whole arena.
+            //
+            // EXPLICIT, and not an implicit grant inside ram_alloc, because the budget
+            // is hardware: a thread already spends up to 5 of KICKOS_MPU_MAX_REGIONS on
+            // code, static data, its domain and its stack, so granting on every
+            // allocation would overrun the descriptor file on the fourth call and there
+            // is no honest way to refuse an allocation that already succeeded. Here the
+            // caller asks, and a full budget is a returned error.
+            //
+            // Added to the CALLER's own region set, not to its domain: a domain is
+            // shared, and widening it would silently hand the same window to every
+            // sibling thread. Self-grant means self.
+            IrqLock lock;
+            Thread* const c = sched::current();
+            if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            uintptr_t const base = a0;
+            size_t const size = static_cast<size_t>(a1);
+            if (size == 0 or (base + size) < base)
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            // Already reachable costs no descriptor. This is what makes the call
+            // idempotent, and it is also the whole answer for a privileged caller
+            // (user_range_ok passes it wholesale): the kernel domain's whole-arena
+            // region already grants the range, so KICKOS_ROOT_PRIVILEGED=1 behaviour
+            // is unchanged by this syscall existing.
+            if (user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W))
+            {
+                return 0;
+            }
+            // Rule 7, the same admission a spawn-time data grant takes: inside the
+            // arena, clear of every reserved block, at the geometry that will actually
+            // be committed. Rounding BEFORE the check is what keeps the predicate
+            // honest -- a window rounded up after admission could cover a neighbour
+            // the unrounded extent did not.
+            size_t const rsz = arch_ram_region_size(size);
+            // Naturally aligned, the same admission the stack grant takes
+            // (syscall_thread.cc). NOT a formality: PMSAv7 MPU_RBAR MASKS the base down
+            // to the region size, so an unaligned base would be programmed as a window
+            // starting BELOW what the caller named -- covering a neighbour it was never
+            // admitted for. Refusing is the only safe answer, and arch_ram_alloc already
+            // returns naturally-aligned blocks, so a caller granting what it allocated
+            // never sees this.
+            if (rsz == 0 or (base & (rsz - 1)) != 0)
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
+                                            cap_check_authority(c, AUTH_MEMORY)))
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            // The budget, and the loud failure. Truncating the set instead would fault
+            // the thread on memory it was told it had.
+            if (c->region_count >= KICKOS_MPU_MAX_REGIONS)
+            {
+                return static_cast<uintptr_t>(-KOS_ENOMEM);
+            }
+            c->regions[c->region_count].base = base;
+            c->regions[c->region_count].size = rsz;
+            c->regions[c->region_count].attr = ARCH_MPU_R | ARCH_MPU_W;
+            c->region_count++;
+            // Effective BEFORE the return, because the caller's next instruction may
+            // dereference the region. apply() alone is not enough: on every
+            // deferred-switch arch it only STASHES, and the hardware is programmed by
+            // the switch epilogue (docs/design-mpu-commit-deferred.md) -- so without the
+            // commit the grant would be pure bookkeeping until some unrelated context
+            // switch happened to flush it, and the caller would fault on memory the
+            // kernel had just told it it could reach. Sound here, unlike the eager apply
+            // that seam removed, because there is no switch: this thread is both the
+            // outgoing and the incoming set, so it can never run under another thread's
+            // regions. The sim's apply already programs, and its commit is a no-op.
+            arch_mpu_apply(c->regions, c->region_count);
+            kickos_arch_mpu_commit();
+            return 0;
+        }
         case KOS_SYS_IRQ_REGISTER:
         {
             return static_cast<uintptr_t>(irq_register(static_cast<int>(a0)));

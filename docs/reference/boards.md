@@ -38,7 +38,7 @@ code wins, then this file.
 | `qemu-m33` | mps2-an505 / M33 | -- | semihosting | `ctest --preset qemu-m33` | [x] CI, plain and under **PMSAv8** enforcement incl. full-C++ `cxxtest` + the `mpu_fault` MemManage trap |
 | `qemu-m7` | mps2-an500 / M7 | -- | semihosting | `ctest --preset qemu-m7` | [x] CI, plain and under PMSAv7 enforcement (16 MPU regions) |
 | `qemu-m3` | mps2-an385 / M3 | -- | semihosting | `ctest --preset qemu-m3` | [x] CI, plain and under PMSAv7 enforcement (soft-float; no FP switch path) |
-| `microbit` | nRF51822 / M0 | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured skip budget -- see *microbit* below) |
+| `microbit` | nRF51822 / M0 | -- | semihosting | `ctest --preset microbit` | [x] CI (armv6m run gate; the fleet's only measured expected-skip list -- see *microbit* below) |
 | `qemu-riscv` | QEMU virt / RV32IMAC | -- | semihosting | `ctest --preset qemu-riscv` | [x] CI (first RISC-V) |
 | `esp32c6-wroom` | ESP32-C6-WROOM-1 / RV32IMAC | GP8 (WS2812B, LED2) | UART0, GP16/GP17, 115200 -> CH343P VCOM (`/dev/ttyACM0`) | esptool | [x] full selftest + PMP NAPOT enforcement + `mpu_fault` trap + diag-LED + bench |
 | `esp32-wroom` | ESP32-D0WD / Xtensa LX6 @240 MHz | GP2 (D2, active-high) | UART0, GP1/GP3, 115200 -> CH340 (`/dev/ttyUSB1`) | esptool | [x] 8/8 apps incl fault dump + bench |
@@ -179,12 +179,15 @@ the board".
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a
   hosted runner, so RX is bench-validated only. A change that touches the arch seam is *not*
   covered for RX by a green CI run; build it locally.
-- **microbit is the armv6m run gate, and the fleet's only board with a non-zero skip budget.**
+- **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
   16 KiB SRAM and a 2-slot pool mean part of the suite genuinely cannot run here, so
-  `microbit_selftest` sets `MAX_SKIPS`; every other board keeps the script's default of 0. That
-  number is a **measurement, not slack** -- the ten tests and why each one skips are listed at the
-  call site (`../../user/apps/common/selftest/CMakeLists.txt`), so raising it should mean a board
-  capability changed, and a test that merely stopped running shows up as a breach.
+  `microbit_selftest` sets `EXPECT_SKIPS` to the eleven test **names** it cannot host; every other
+  board keeps the script's default of "nothing may skip". The list is a **measurement, not slack**
+  -- each name and why it skips is at the call site
+  (`../../user/apps/common/selftest/CMakeLists.txt`), so growing it should mean a board capability
+  changed, and a test that merely stopped running shows up as a breach. It is named rather than
+  counted for exactly that reason: the earlier `MAX_SKIPS=10` admitted *any* ten skips, so a test
+  that quietly stopped running could take a slot another one vacated and leave CI green.
 
   This gate was **RED from `9ae301f` (M4.4) until M4.5.1** -- two milestones, unnoticed, on a real
   remote. Two independent breakages, neither an armv6m mechanism fault; both were a 16 KiB part
@@ -395,14 +398,22 @@ session and should not be treated as a bench fact.
 
 `KICKOS_ROOT_PRIVILEGED=OFF` creates root unprivileged, holding a `CAP_AUTHORITY` instead of the
 whole arena. `xmc4800-relax` is the first board flipped, and the first silicon witness for the
-boundary (2026-07-27, `a463ab9`, PMSAv7, 144 MHz, console-only service list).
+boundary (2026-07-27, **`22e1c5a`**, PMSAv7, 144 MHz, console-only service list). Both arms were
+re-captured on the post-rebase tree; the earlier pre-rebase capture (`a463ab9`) is superseded and
+its hash no longer exists on this branch.
 
 | Evidence | Root privileged (control) | Root unprivileged |
 | --- | --- | --- |
 | Banner `mpu` line | `enforce` | `enforce, root unprivileged` |
 | Console handover to `xmcuart` | up, TAP via driver | up, TAP via driver |
-| `selftest` | 59 cases, 58 `ok`, 1 skip, 0 fail | 59 cases, 57 `ok`, 2 skips, 0 fail |
+| `selftest` | 59 cases, 59 `ok`, **0 skips**, 0 fail | 59 cases, 57 `ok`, 2 skips, 0 fail |
 | `rootfault` cross-domain write | completes, reports "root is NOT confined" | **MemManage trap** |
+
+The control column previously read "58 `ok`, 1 skip". That was wrong, and the way it was wrong is
+worth keeping: the 1 was `mutex_deadlock # SKIP pool too small` from the **FRDM-K64F full-service-list**
+run, transcribed into the XMC row. Under the console-only list this board skips nothing in the
+privileged arm, so the honest control is 0 -- which also makes the A/B cleaner than it looked, since
+the entire skip delta between the columns is now posture-driven rather than partly provisioning.
 
 The confinement fault, byte-for-byte from the wire:
 
@@ -425,14 +436,44 @@ noted above, reproduced identically across resets.
 The same run with `KICKOS_ROOT_PRIVILEGED=ON` completes the write and prints `root is NOT confined`,
 which is what makes the trap attributable to the flip rather than to anything else on the board.
 
-The two selftest skips are posture-driven and named on the wire: `irq_as_event` (root plays the
-device, writing a page it allocated but was never granted) and `mpu_privileged_guard` (its subject
-is the privileged posture). Both trace to `kos_ram_alloc` granting its caller nothing; see `TODO.md`.
+The two selftest skips were named on the wire: `irq_as_event` (root plays the device, writing a page
+it allocated but was never granted) and `mpu_privileged_guard` (its subject is the privileged
+posture). **This capture predates `kos_mem_self_grant`**, which is why there are two. `irq_as_event`
+was not posture cost but a missing capability, and it now runs in both postures; only
+`mpu_privileged_guard` is genuinely posture-driven. On the current tree the flipped arm skips one,
+not two -- measured under emulation on all five enforcing backends, **not re-measured on this board**
+(see the coverage boundary below).
+
+#### Coverage boundary -- what this silicon witness does and does not cover
+
+The witness above is `22e1c5a`. **Four commits have landed since, and none of them has run on
+hardware**; the boards left the bench first. They are green on all seven emulator gates, including
+the five enforcing (`-DKICKOS_HAVE_MPU=1`) QEMU backends over both PMSA revisions and RISC-V PMP,
+but that is emulation and this section is the bench record.
+
+| Commit | Touches the enforcement path? | Silicon |
+| --- | --- | --- |
+| `af696e6` self-grant syscall | yes -- new `KOS_SYS_MEM_SELF_GRANT`, writes the caller's region set | **owed** |
+| `e4e9653` volatile increment | no -- selftest source only | n/a |
+| `3c772b9` commit a self-grant before return | **yes -- MPU programming path** | **owed** |
+| `30465a0` skips gated by name | no -- CTest harness only | n/a |
+
+`3c772b9` is the one to re-witness first. It fixes a fault that **only the enforcing backends
+showed**: `arch_mpu_apply` merely stashes on every deferred-switch arch, so the grant was not
+programmed until some later switch, and the caller faulted on memory the kernel had just granted it.
+The host sim was green throughout, because its apply mprotects as it records. XMC4800 is PMSAv7 --
+exactly the class that faulted -- so the sim's agreement is worth nothing here and QEMU's PMSAv7
+model is currently the strongest evidence that exists for it.
+
+**Nothing above is contradicted by the emulator runs; the point is that they are not the same
+witness.** Re-establishing it needs the A/B re-run at the current tip plus the `frdmk64f` SYSMPU
+regression, and until then the merged state is silicon-witnessed only as far as `22e1c5a`.
 
 **`frdmk64f` is deliberately NOT flipped** and stays privileged-root: its service list's bring-up
 writes peripheral registers directly from root, which needs stage 3's `arch_periph_enable`. Pairing
 that list with the flip is a configure-time error, not a runtime surprise. It was instead
-re-regressed under SYSMPU enforcement with a privileged root on the same day and commit: selftest
-59 cases / 58 `ok` / 1 skip / 0 fail, and `mpu_fault` still traps a child's cross-domain write with
+re-regressed under SYSMPU enforcement with a privileged root on the same day and commit (`22e1c5a`,
+and subject to the same coverage boundary above): selftest 59 cases / 58 `ok` / 1 skip
+(`mutex_deadlock`, pool too small) / 0 fail, and `mpu_fault` still traps a child's cross-domain write with
 `SYSMPU ISOLATION FAULT: port=3 addr=0x2001b000 master=0 W EDR=0x80000003` (SYSMPU surfaces as an
 imprecise bus fault, so the core label reads `HARD FAULT` and the chip hook adds the real line).
