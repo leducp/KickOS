@@ -4,9 +4,12 @@
 set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/init_args.cc)
 
 # The newlib porting layer clashes with host libc on the sim; it is linked from
-# M1 when userspace rides the ARM toolchain libc.
+# M1 when userspace rides the ARM toolchain libc. newlib_sbrk.cc is a separate translation
+# unit so the archive pulls it only for an app that allocates. Merging it back into
+# newlib_stubs.cc silently disables the heapless-board link error, because -Wl,-u,_exit
+# force-links that object everywhere. See its header comment.
 if(NOT KICKOS_ARCH STREQUAL "sim")
-  list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc)
+  list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc)
 endif()
 
 add_library(kickos_user STATIC ${KICKOS_USER_SOURCES})

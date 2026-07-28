@@ -8,6 +8,10 @@
 #include <kickos/kernel.h>
 #include <kickos/irqlock.h>
 
+#include <kickos/sys/abi.h> // KOS_SEM_COUNT_MAX
+
+#include <limits.h>
+
 namespace kickos
 {
     // Remove and return the highest-priority waiter (FIFO among equal priority).
@@ -53,8 +57,17 @@ namespace kickos
     // sim (the switch already happened synchronously inside wq_block).
     void wq_confirm_resume(Thread* c, uint64_t epoch)
     {
+        // Bounded like every other synchronous poll in the tree (KICKOS_POLL_SPIN_MAX).
+        // A masked or lost PendSV used to leave this spinning forever with no diagnostic.
+        // The switch is pended and fires as soon as the caller's IrqLock drops, so the cap
+        // is far above any real wait: reaching it means the switch is never coming.
+        uint32_t spin = 0;
         while (*static_cast<uint64_t volatile*>(&c->switch_count) == epoch)
         {
+            if (++spin > KICKOS_POLL_SPIN_MAX)
+            {
+                kpanic("wq_confirm_resume: switch never landed");
+            }
         }
     }
 
@@ -73,6 +86,11 @@ namespace kickos
     }
 
     // --- Semaphore -------------------------------------------------------------
+    // The ceiling must be representable in Semaphore::count, else the bound in sem_post is
+    // itself the overflow it prevents.
+    static_assert(KOS_SEM_COUNT_MAX <= INT_MAX,
+                  "KOS_SEM_COUNT_MAX must fit Semaphore::count (an int)");
+
     void sem_init(Semaphore* s, int initial)
     {
         s->count = initial;
@@ -102,16 +120,21 @@ namespace kickos
         return false;
     }
 
-    void sem_post(Semaphore* s)
+    bool sem_post(Semaphore* s)
     {
         IrqLock lock;
         Thread* w = wq_pop_highest(s->waiters);
         if (w != nullptr)
         {
             sched::wake(w); // token handed directly to the woken waiter
-            return;
+            return true;
+        }
+        if (s->count >= KOS_SEM_COUNT_MAX)
+        {
+            return false; // at the ceiling: refuse rather than wrap a signed int (UB)
         }
         s->count++;
+        return true;
     }
 
     // --- Mutex (priority inheritance) -----------------------------------------

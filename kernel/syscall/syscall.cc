@@ -170,7 +170,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-err); // EBADF (bad/closed cap) or EPERM (no SIGNAL right)
             }
-            sem_post(s);
+            if (not sem_post(s))
+            {
+                return static_cast<uintptr_t>(-KOS_EOVERFLOW); // count already at the ceiling
+            }
             return 0;
         }
         case KOS_SYS_MUTEX_CREATE:

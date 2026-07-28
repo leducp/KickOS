@@ -138,49 +138,15 @@ void _exit(int code)
     }
 }
 
-// Bump allocator over the userspace heap window. The bounds are LINKER symbols, not
-// a static array: on an MPU chip the heap IS the unused pad of the granted .appdata
-// window; on a non-MPU chip it is an explicit .userheap section (arch/*/chip/*.ld).
-// A board that provisions no heap defines neither symbol, so an app that pulls malloc
-// fails at LINK ("undefined reference to _kickos_heap_start") -- the intended
-// fail-loud, and only for an app that actually allocates. Only linked when _sbrk is
-// referenced (malloc). RX prepends one underscore, so the C `_kickos_heap_start` here
-// resolves to the linker symbol `__kickos_heap_start` the RX .ld defines.
-extern char _kickos_heap_start[];
-extern char _kickos_heap_limit[];
-static char* s_brk = _kickos_heap_start;
-
-static void* heap_bump(intptr_t incr)
-{
-    char* prev = s_brk;
-    char* next = s_brk + incr;
-    if (next < _kickos_heap_start or next > _kickos_heap_limit)
-    {
-        return reinterpret_cast<void*>(-1);
-    }
-    s_brk = next;
-    return prev;
-}
-
-void* _sbrk(intptr_t incr)
-{
-    return heap_bump(incr);
-}
+// The heap bottom edge (_sbrk and its bump arena) lives in newlib_sbrk.cc, not here: this
+// TU is force-linked into every image by -Wl,-u,_exit, so a strong reference to
+// _kickos_heap_start from here would land in every link and defeat the fail-loud a heapless
+// board relies on.
 
 #ifdef __RX__
 // SjLj atexit/EH registration references __dso_handle; the RX libc may not
 // provide one. Weak so a libc that does still wins.
 __attribute__((weak)) void* __dso_handle = nullptr;
-
-// The RX psABI prefixes every C identifier with a leading underscore at the asm
-// level, so the C `_sbrk` above mangles to asm `__sbrk` -- newlib references asm
-// `_sbrk` and would otherwise fall through to libnosys sbrk (which pulls `_end`
-// and breaks the app-window layout). A C function named `sbrk` mangles to asm
-// `_sbrk`, satisfying newlib; it shares the one bump arena via heap_bump.
-void* sbrk(intptr_t incr)
-{
-    return heap_bump(incr);
-}
 #endif
 
 // Newlib's malloc brackets every arena mutation with __malloc_lock/__malloc_unlock.
@@ -189,10 +155,22 @@ void* sbrk(intptr_t incr)
 // design's "single-thread" caveat). Provide no-op weak stubs so a full-C++ app that
 // heap-allocates (operator new -> malloc) links; weak so a future thread-safe libc
 // port can override, and unreferenced (freestanding app) so it costs nothing.
-// FOOTGUN: a full-C++ app that spawns threads and heap-allocates from more than one
-// gets NO reentrancy guard here -- concurrent malloc silently corrupts the arena.
-// Real thread-safe stubs (an IrqLock or per-thread arena) are a prerequisite of the
-// multi-threaded-full-C++ milestone; until then keep such apps single-alloc-thread.
+//
+// FOOTGUN: these stubs stay no-ops because a correct guard is not expressible from
+// userspace as the ABI stands. Three facts, all of which have to change:
+//
+//   1. Newlib takes this lock recursively: `_free_r` acquires it and calls
+//      `_malloc_trim_r`, which acquires it again (seen in the linked cxxtest image). A
+//      non-recursive lock self-deadlocks, and a re-entry detector fires on a valid free.
+//   2. A recursive lock needs an owner identity, and userspace has none. There is no self
+//      syscall, and a stack address is not a reliable key.
+//   3. Even given identity, there is no lock object two threads can name: capabilities
+//      are per-task, so a mutex handle indexes a different table in another thread, and
+//      sharing one needs spawn-time delegation to a reserved index. None are left.
+//
+// The fix is per-thread libc state (the M4.x TLS item) or a kernel-held lock behind a
+// syscall. Until then, a full-C++ app that heap-allocates from more than one thread
+// corrupts the arena silently. Keep such apps single-alloc-thread.
 __attribute__((weak)) void __malloc_lock(void*)
 {
 }

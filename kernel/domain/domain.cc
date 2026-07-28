@@ -6,7 +6,12 @@
 #include <kickos/grant.h> // grant_region_admissible (Rule 7 chokepoint)
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
+#include <kickos/debug.h>  // KICKOS_DEBUG_ASSERT
 #include <kickos/kernel.h> // KICKOS_ASSERT
+
+#include <kickos/sys/errno.h>
+
+#include <stdint.h> // UINT16_MAX
 
 namespace kickos
 {
@@ -92,8 +97,10 @@ namespace kickos
     }
 
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
-                       void* mmio_base, size_t mmio_size, bool caller_privileged)
+                       void* mmio_base, size_t mmio_size, bool caller_privileged,
+                       int* err)
     {
+        *err = 0;
         if (privileged)
         {
             return g_kernel;
@@ -106,6 +113,7 @@ namespace kickos
         // them -- it is defence in depth).
         if (mmio_base != nullptr and mmio_size == 0)
         {
+            *err = KOS_EINVAL; // malformed window: a base with no extent
             return nullptr;
         }
         bool const has_mmio = (mmio_base != nullptr and mmio_size != 0);
@@ -122,6 +130,7 @@ namespace kickos
             if (not grant_region_admissible(db, arch_ram_region_size(mem_size),
                                             ARCH_MPU_R | ARCH_MPU_W, caller_privileged))
             {
+                *err = KOS_EPERM; // out-of-arena / reserved-block hit: never admissible
                 return nullptr;
             }
         }
@@ -132,6 +141,7 @@ namespace kickos
                                             ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV,
                                             caller_privileged))
             {
+                *err = KOS_EPERM; // reserved block / bit-band alias / unprivileged DEV
                 return nullptr;
             }
         }
@@ -163,7 +173,8 @@ namespace kickos
         Domain* d = free_slot();
         if (d == nullptr)
         {
-            return nullptr; // pool exhausted -- the caller fails the spawn
+            *err = KOS_ENOMEM; // pool exhausted: retry later
+            return nullptr;
         }
         *d = Domain{};
         d->privileged = false;
@@ -190,12 +201,23 @@ namespace kickos
         return d;
     }
 
+    // A mortal domain's refcount counts live threads and nothing else: thread_create takes
+    // the single reference, sched::exit_current drops it. The bound is the thread-handle
+    // index field, not KICKOS_MAX_THREADS, which a board sets as low as 2 and which an
+    // assert could therefore never fire on.
+    static_assert((1ull << ThreadPool::INDEX_BITS) - 1ull <= UINT16_MAX,
+                  "Domain::refcount is uint16_t and counts live threads: the thread pool "
+                  "ceiling (1 << ThreadPool::INDEX_BITS) must fit it");
+
     void domain_ref(Domain* d)
     {
         // Immortal domains are referenced by an unbounded, transient set of threads,
         // so their refcount is meaningless (they never free); skip it to avoid a wrap.
         if (d != nullptr and not d->immortal)
         {
+            // The static_assert makes the wrap unreachable. This catches what would make
+            // it reachable again: a reference held by something other than a live thread.
+            KICKOS_DEBUG_ASSERT(d->refcount < KICKOS_MAX_THREADS);
             d->refcount++;
         }
     }

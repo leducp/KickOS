@@ -14,46 +14,78 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is `M1_state.md`; the
 board/console readiness matrix is `docs/m2-readiness.md`.
 
-## M4.5.1 -- kernel audit follow-ups (2026-07-26)
+## M4.5.1 -- kernel audit follow-ups (2026-07-26) -- COMPLETE except S4 (2026-07-27)
 
 Findings from a code audit of the kernel, all rated **Medium or below** -- none is a live
 escalation or a fleet blocker. They are bound-the-unbounded / be-honest-about-the-error
-hardening, roughly ordered by exposure.
+hardening, roughly ordered by exposure. Six of seven landed; the seventh turned out not to
+be implementable where it was filed, and says so in code.
 
-- [ ] **Bound the semaphore `count`** (`kernel/sync/sync.cc:114`). `count` is a signed `int`
-      incremented on every post, with no ceiling, and post is reachable from unprivileged code
-      -- enough posts overflow it, which is UB. Cap it at a documented maximum (saturate or
-      refuse) rather than trusting the caller.
-- [ ] **Read `console_chip_writers()` under `IrqLock`** (`kernel/init/console.cc:93-96`; consumer
-      `kernel/syscall/syscall.cc:307`). Writers mutate the count under the lock, but the handover
-      drain reads it unlocked -- so the drain can see a stale count, declare the console
-      quiescent, and hand over while a writer is still in flight.
-- [ ] **Split `domain_for`'s refusal** (`kernel/syscall/syscall_thread.cc:253-264`). A policy
-      rejection (Rule 7 reserved-block hit, out-of-arena data, malformed region) and genuine
-      domain-pool exhaustion both collapse into `-KOS_ENOMEM`, so a caller cannot tell "your
-      grant is inadmissible" from "the kernel is full". Give the policy arm its own errno.
-- [ ] **Debug asserts on the intrusive list** (`kernel/include/kickos/list.h:39-74`). Nothing
-      catches inserting a node twice or unlinking one that is not on the list; both corrupt the
-      list silently and surface far from the cause. `KICKOS_DEBUG`-gated guards, zero release cost.
-- [ ] **Bound the spin in `wq_confirm_resume`** (`kernel/sync/sync.cc:54-59`). It spins on
-      `switch_count` with no iteration cap -- the one poll in the tree that hangs instead of
-      failing loud. Every other poll caps at `KICKOS_POLL_SPIN_MAX` and panics; make this match.
-- [ ] **Implement `__malloc_lock`/`__malloc_unlock`** (`user/src/newlib_stubs.cc:196-201`). They
-      are weak no-op stubs, so two threads allocating concurrently corrupt the newlib arena with
-      no diagnostic at all. An IrqLock-equivalent is the minimum; the real answer is the
-      per-thread libc state / TLS item under "Later -- not M1".
-- [ ] **Guard the `uint16_t` domain refcount** (`kernel/domain/domain.cc:193-200`). `domain_ref`
-      increments with no ceiling check. Immortal domains are already skipped (deliberately), but
-      a mortal domain referenced 65536 times wraps to 0 and the next drop frees a live domain.
+Verified on the host sim and QEMU only, each with a gate checked to FAIL first. **Nothing
+here has been through CI** (`gh` unauthenticated, and `ci.yml` triggers `push` only on
+`master`), and local ARM builds use 15.3.rel1 against CI's pinned 15.2.rel1.
+
+- [x] **Bound the semaphore `count`** -- `m4.5.1: bound the semaphore count instead of letting
+      it wrap` (2fdbf2d). The hole was **sharper than filed**: `sem_create` validated nothing,
+      so the overflow was not "enough posts" but *one* -- `kos_sem_create(INT_MAX)` then a
+      single post. Now `sem_create` refuses an initial outside `[0, KOS_SEM_COUNT_MAX]`
+      (-KOS_EINVAL) and `sem_post` refuses at the ceiling (-KOS_EOVERFLOW, a new code); the two
+      ISR posters ignore the refusal, matching their coalescing contract. Gate: the two arms of
+      `sem_destroy`, each checked to fail on its own.
+- [x] **Read `console_chip_writers()` under `IrqLock`** -- `m4.5.1: read the console writer
+      count under the lock its writers take` (e3a1f13). One load under the lock; no livelock,
+      since the drain yields between polls rather than spinning inside a critical section.
+      NOT gated: reproducing a torn read needs a race the suite cannot schedule -- the change
+      is an argument, not a demonstration, and that is worth saying.
+- [x] **Split `domain_for`'s refusal** -- `m4.5.1: tell an inadmissible grant apart from a full
+      domain pool` (e5c98d8). An out-parameter errno (EPERM inadmissible / EINVAL malformed /
+      ENOMEM exhausted), forwarded verbatim by `thread_spawn`. The spawn-boundary pre-check
+      that existed only to recover the errno the chokepoint could not express is gone, so the
+      duplication went with the fix. Gate: `grant_reserved`, checked to fail on ENOMEM.
+- [x] **Debug asserts on the intrusive list** -- `m4.5.1: catch a double insert or a foreign
+      unlink on the intrusive list` (fa16732). New `KICKOS_DEBUG` knob, default OFF (board
+      images byte-identical); **the sim preset turns it ON**, so the guards run against the
+      whole suite on every sim run instead of rotting unbuilt. Both checked to fire.
+- [x] **Bound the spin in `wq_confirm_resume`** -- `m4.5.1: bound the resume spin, like every
+      other poll in the tree` (15eed16). Measured while gating it: the loop takes **zero
+      iterations on the sim AND on qemu armv7m**, so the barrier the comments describe at
+      length has never been observed to spin even once -- see the new finding below. Proven by
+      holding the epoch so the switch never lands: an infinite hang becomes a panic on both.
+- [ ] **Implement `__malloc_lock`/`__malloc_unlock`** -- **NOT DONE, and it cannot be done
+      here.** `m4.5.1: say why the malloc lock cannot be implemented in userspace` (1e136ce)
+      replaces the vague FOOTGUN comment with three measured facts: newlib takes this lock
+      RECURSIVELY (in the linked `cxxtest` image `_free_r` holds it and calls
+      `_malloc_trim_r`, which takes it again), so a non-recursive lock self-deadlocks and a
+      re-entry detector fires on a legitimate free; a recursive lock needs thread identity and
+      userspace has none; and capabilities are per-task, so there is no lock object two threads
+      can name and no reserved index left to seat one at. "An IrqLock-equivalent" is not
+      available -- this file is userspace, which is the whole point of the surrounding
+      milestone. Real fix: the per-thread libc state / TLS item under "Later -- not M1", or a
+      kernel-held lock behind a syscall (a designed change).
+- [x] **Guard the `uint16_t` domain refcount** -- `m4.5.1: bound the domain refcount at the
+      thread pool, not at its width` (1bf2004). The count is live threads and nothing else, so
+      a `static_assert` proves the wrap unreachable, as the object-refcount arrays already do.
+      Bound against the thread HANDLE INDEX ceiling, not `KICKOS_MAX_THREADS`: a board sets the
+      latter to 2..16, so an assert on it could never fire. Checked live by widening
+      `INDEX_BITS`. Plus a `KICKOS_DEBUG` assert for the way the bound would break first.
 
 ## M4.5.1 -- found during the CI / out-of-tree hardening work (2026-07-26)
 
-- [ ] **Split `_sbrk` into its own TU.** It currently shares a TU with `_exit`/`_write`, and
-      `-Wl,-u,_exit` (`CMakeLists.txt:521`) force-links that object into every image -- so the
-      strong reference to `_kickos_heap_start` lands in every link and the documented link-time
-      fail-loud never fires. An allocating app on a heapless board therefore fails at *runtime*
-      with a NULL from `malloc` instead of failing at link. Give `_sbrk` its own TU so the
-      undefined symbol is pulled only by a real allocator user.
+- [x] **Split `_sbrk` into its own TU.** -- `m4.5.1: pull _sbrk out of the force-linked TU, and
+      let libc reach it` (572531b). **The split alone is necessary but not sufficient, which
+      the plan did not anticipate**: the g++ driver appends libc and libstdc++ AFTER everything
+      CMake emits, so an on-demand `_sbrk` member sits behind the linker by the time `_sbrk_r`
+      asks -- measured as `undefined reference to _sbrk` on EVERY allocating image fleet-wide.
+      The toolchain runtime therefore joins the rescan group, which moves the group from
+      `kickos_core` onto the two posture leaves (the freestanding leaf must NOT name libstdc++,
+      and CMake forbids one target's closure carrying a library in two groups); `kickos_cxx_rt`
+      names its include providers directly as a result.
+      Fail-loud PROVEN by construction, with both heap bounds deleted from `mps2.ld`: an app
+      calling `malloc` fails the link naming `_kickos_heap_start`, an app using `new` fails the
+      same way on the full-C++ leaf, a non-allocating app still links (the property that was
+      impossible before -- the force-linked reference broke those too), and a real board is
+      unaffected. Both out-of-tree export gates pass, so the exported package still links.
+      Follow-on now unblocked: nrf51 can drop the zero-length `.userheap` it only kept for this.
 - [ ] **Override `arch_mpu_min_region()` to 0 in `chip_stm32f103.cc`.** STM32F1 has no MPU, but
       the chip inherits the v7-M pow2 minimum and pays its alignment tax anyway -- which is what
       took `bluepill-c8`'s free arena to zero. A 0 override drops the tax on a part that has
@@ -66,27 +98,68 @@ hardening, roughly ordered by exposure.
       userspace driver still holds queued bytes loses them: `console_tx_flush_sync()` is a no-op
       (the ring was disarmed by `console_tx_deinit`) and `arch_shutdown` then spins forever.
       Shutdown has to drain through the owning driver, not the retired kernel ring.
-- [ ] **Give `thread_spawn`'s two READ checks the same static-data fallback the write side just
-      got.** `thread_spawn` validates the params struct and the `caps[]` array with raw
-      `user_range_ok(..., ARCH_MPU_R)` rather than `user_readable_ok`, so neither picks up
-      `arch_user_text_readable`. Consequence: an unprivileged caller whose `kos_thread_params` or
-      `kos_cap_grant[]` lives in a **global** rather than a frame local gets `-KOS_EFAULT` on the
-      host sim and on every no-MPU board -- the exact hole `arch_user_data_writable` just closed on
-      the write side, still open on the read side, two call sites away. Latent today only because
-      `kos::thread::spawn` builds its struct as a frame local; the selftest's `authority_cap`
-      worker carries a comment saying it must, which is the same
-      known-and-worked-around-but-unfiled shape as the writable hole. Fix is one word at each site,
-      but it wants its own test (a global params struct spawn).
-- [ ] **The fleet-uniform selftest image no longer fits the smallest flash.** `f302nucleo-st`
-      links with **96 bytes** of its 64 KiB free and `bluepill-c8-st` with 284 (measured at the
-      stage-1 commit); the three tests stage 0 and 1 added consumed ~1.9 KiB of headroom and forced
-      `authority_cap` to group its assertions and share one params struct across three spawn
-      probes. The next test on either board is a link failure, and `TAP_CHECK` is expensive
-      precisely because it embeds `__FILE__` plus its stringified condition. Note CI does not catch
-      this: its ARM matrix builds the **plain** presets, not the `-st` ones. Either give the suite a
-      way to shed coverage a board cannot use, or accept these two boards as build-only for
-      selftest and say so. Same class as `tests/tap/tap.cc`'s `MAX_TESTS = 64` (59 registered on
-      sim now, and `tap::add` drops silently past the ceiling rather than failing the build).
+- [x] **Give `thread_spawn`'s two READ checks the same static-data fallback the write side just
+      got.** -- `m4.5.1: give thread_spawn its two read checks the static-data fallback`
+      (8950923). One word at each site; byte-identical on an enforcing backend, where the
+      fallback arm returns false. Gate: the `authority_cap` worker's params struct and grant
+      array became GLOBALS -- exactly the shape that failed -- and the comment recording the bug
+      as a local workaround is gone with it. A **fourth** spawn probe was needed for the array:
+      the other three are all refused by an authority check that runs before the delegation
+      loop, so none of them read `caps[]` at all and the array site would have shipped
+      unexercised. Each of the two sites checked to fail on its own.
+- [ ] **The fleet-uniform selftest image no longer fits the smallest flash -- NEEDS A DECISION,
+      and the kernel-audit batch forced it.** Re-measured 2026-07-27 at `7eb9592`: the headroom
+      was **104 bytes** on `f302nucleo-st` and **292** on `bluepill-c8-st`, not the 96/284
+      recorded here (measure from the program headers, not `size`'s text+data). The seven
+      kernel-hardening items then cost **184 bytes** on f302nucleo, so the board stopped linking
+      on KERNEL code, before a single new test -- which is not the shape this item predicted.
+      **The measurement that should decide it:** the same f302nucleo image is **48,848 bytes at
+      `-Os`** against 65,720 at the fleet default -- and the fleet default is `CMAKE_BUILD_TYPE=
+      Debug`, i.e. `-g` with **no `-O` at all**. So the ceiling is ~74% real code and ~26%
+      unoptimised codegen, and the choice this item poses (shed coverage / accept build-only)
+      has a third answer nobody had costed: 16.7 KiB comes back for free.
+      **Holding measure landed** (`m4.5.1: give the two 64 KiB boards -Os, so they can still
+      link the suite`, 361019c): `-Os` across the selftest tree for these two boards only, `-g`
+      kept, no test dropped, one block to revert. What it costs, stated plainly: the `-st`
+      image's kernel is no longer codegen-identical to the same board's non-st build, which the
+      selftest `-Os` block deliberately preserved when it optimised the app's own TUs only. Both
+      boards are build-only for the suite (no bench unit, no QEMU model), so what they provide
+      is a link check and this keeps them providing one. **Widening `-Os` to the fleet, or
+      accepting either board as suite-exempt, is the maintainer's call.**
+      Unchanged: `TAP_CHECK` embeds `__FILE__` plus its stringified condition, so assertion
+      count is a flash cost; CI does not catch any of this, because its ARM matrix builds the
+      PLAIN board presets, not the `-st` ones. Same class as `tests/tap/tap.cc`'s
+      `MAX_TESTS = 64` (`tap::add` drops silently past the ceiling rather than failing the
+      build).
+## M4.5.1 -- found during the kernel-audit batch (2026-07-27)
+
+- [ ] **The resume barrier has never been observed to spin.** Bounding
+      `wq_confirm_resume` (15eed16) needed a gate, and calibrating one measured that the loop
+      takes **zero iterations on the host sim AND on qemu armv7m** across the whole suite: a cap
+      of one iteration does not fire. The sim is expected (its switch is synchronous inside
+      `wq_block`), but ARM is not -- the long comment at `sync.h` explains that `arch_switch`
+      only PENDS PendSV and `arch_irq_restore` has no ISB, so 1-2 instructions retire on the
+      not-yet-switched thread. Either the switch always lands before the caller reaches the
+      barrier (a call and a return later), or the window is narrower than the comment implies.
+      Worth settling, because the barrier is on the mutex/endpoint wake path on every board and
+      is currently justified by an argument nothing exercises. Silicon witness still owed --
+      timing is exactly what an emulator does not reproduce.
+- [ ] **The whole fleet builds unoptimised.** Every preset sets `CMAKE_BUILD_TYPE=Debug`, whose
+      default flags are `-g` with no `-O`. Measured on f302nucleo's selftest image: 65,720 bytes
+      at the default against 48,848 at `-Os`, a 26% reduction with no source change. Only
+      `selftest`'s OWN TUs opt into `-Os` today. This is the root cause of the 64 KiB squeeze
+      (N16 above), it inflates every board's flash and every switch's I-cache footprint, and it
+      makes the published bench figures a measurement of unoptimised code. Deciding the fleet
+      posture is a maintainer call with real trade-offs (debuggability, and `-O` changing what a
+      gate proves), which is why it is filed rather than taken.
+- [ ] **`kickos_core` no longer carries the archive group.** 572531b moved the RESCAN group onto
+      the `kickos` / `kickos_cxx` leaves, because the two postures need different toolchain
+      runtimes in it and CMake forbids one target's closure carrying a library in two groups. A
+      consumer linking `kickos_core` DIRECTLY now gets usage requirements but no archives. The
+      documented contract already says consumers link a leaf and never core, and both
+      out-of-tree export gates pass -- but core is still in the export set, so the contract is
+      now load-bearing where it used to be advice. Either state it in the exported package or
+      make linking core alone a configure-time error.
 - [ ] **Reclaim `arch_ram_alloc`'s alignment run-up** (M5 allocator work). The bytes skipped
       ahead of each allocation to satisfy its alignment are dropped on the floor -- which is why
       boot-stack allocation *order* is load-bearing today (idle must be allocated before root).

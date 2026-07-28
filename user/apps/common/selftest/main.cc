@@ -683,6 +683,14 @@ namespace
         TAP_CHECK(kos_handle_close(-1) == -KOS_EBADF);
         TAP_CHECK(kos_handle_close(0x7fffffff) == -KOS_EBADF);
         TAP_CHECK(kos_handle_close(0x00ffffff) == -KOS_EBADF);
+        // The count is bounded at both ends: a sem may not be born outside
+        // [0, KOS_SEM_COUNT_MAX], and a post with no waiter at the ceiling is refused
+        // rather than incrementing an int past its range. Creating one at the ceiling is
+        // what makes the refusal reachable here; the alternative is 2^31 posts.
+        TAP_CHECK(kos_sem_create(-1) == -KOS_EINVAL);
+        int const hmax = kos_sem_create(KOS_SEM_COUNT_MAX);
+        TAP_CHECK(hmax >= 0 and kos_sem_post(hmax) == -KOS_EOVERFLOW
+                  and kos_handle_close(hmax) == 0);
     }
 
     // --- Refcounted close of a DELEGATED sem: object survives while a co-holder is
@@ -1642,8 +1650,9 @@ namespace
         // --- End-to-end errno coherence (MAJOR 2): an unprivileged child whose mem_base
         // lies OUTSIDE the arena is refused with -KOS_EPERM (policy refusal), NOT
         // -KOS_ENOMEM (pool exhaustion) -- coherent with the stack_base path
-        // (t_stackbase_arena). The spawn-site pre-check surfaces the Rule-7 refusal before
-        // domain_for's exhaustion sentinel. Caller is privileged (main); the CHILD is
+        // (t_stackbase_arena). domain_for is the authoritative chokepoint and reports which
+        // refusal it made, so this code comes from there, not from a duplicate pre-check at
+        // the spawn boundary. Caller is privileged (main); the CHILD is
         // unprivileged, so domain_for evaluates the grant (0xE0000000 is 2048-aligned, so
         // ONLY arena containment can reject it). Fails before any slot is claimed.
         int const mrc = kos::thread::spawn(grant_noop, nullptr, "membad", 10, KOS_POLICY_FIFO,
@@ -2831,6 +2840,9 @@ namespace
     volatile long g_auth_regrant = -99;  // may not hand on a bit it does not hold
     volatile long g_auth_collide = -99;  // delegation packing reaching the authority slot
     volatile long g_auth_badbits = -99;  // object rights offered as an authority
+    volatile long g_auth_capsarr = -99;  // the grant ARRAY read, reached past the early refusals
+    kos_thread_params g_auth_kid;  // deliberately static: see auth_worker (N15)
+    kos_cap_grant g_auth_two[2];   // ditto; the other read thread_spawn validates
     void auth_worker(void*) // UNPRIVILEGED, authority = AUTH_PINMUX; caps: done@1
     {
         // The bit it HOLDS: past the gate, so pinmux answers for itself.
@@ -2844,12 +2856,15 @@ namespace
         g_auth_shutdown = kos_shutdown(0);
         // Three spawn probes off ONE params struct, all refused before a pool slot is
         // claimed, so their codes are deterministic even on a full pool. One struct is not
-        // tidiness: a frame-local kos_thread_params costs an inline ~52-byte zero-init per
-        // site, and this suite links within ~100 bytes of the f302nucleo flash ceiling. It
-        // must be a frame local rather than a global, because thread_spawn reads the struct
-        // through user_range_ok with no static-data fallback, so a global would be
-        // -KOS_EFAULT on the sim and on every no-MPU board.
-        kos_thread_params kid{};
+        // tidiness: a frame-local kos_thread_params costs an inline zero-init per site, and
+        // this suite links within ~100 bytes of the f302nucleo flash ceiling.
+        //
+        // g_auth_kid and g_auth_two are globals on purpose, and that is this test's N15
+        // coverage: thread_spawn reads the params struct and the grant array through
+        // user_readable_ok, so a caller may keep either in static data. With the earlier raw
+        // user_range_ok the probes below answered -KOS_EFAULT on the sim and on every
+        // no-MPU board.
+        kos_thread_params& kid = g_auth_kid;
         kid.entry = auth_noop;
         kid.prio = 9;
         // Narrow-only, the same rule a cap_grant mask obeys: holding AUTH_PINMUX does not
@@ -2858,8 +2873,9 @@ namespace
         g_auth_regrant = kos_thread_spawn(&kid);
         // Delegated cap i lands at child index i+1, so two delegated caps reach the
         // authority slot. Refused, rather than one silently overwriting the other.
-        kos_cap_grant two[] = {{CH_DONE, CH_FULL}, {CH_DONE, CH_FULL}};
-        kid.caps = two;
+        g_auth_two[0] = {CH_DONE, CH_FULL};
+        g_auth_two[1] = {CH_DONE, CH_FULL};
+        kid.caps = g_auth_two;
         kid.cap_count = 2;
         kid.authority = KOS_AUTH_PINMUX;
         g_auth_collide = kos_thread_spawn(&kid);
@@ -2867,6 +2883,14 @@ namespace
         kid.cap_count = 1;
         kid.authority = KOS_CAP_WAIT;
         g_auth_badbits = kos_thread_spawn(&kid);
+        // The three probes above are refused by an authority check that runs before the
+        // delegation loop, so none of them reads g_auth_two. The array is the second N15
+        // site and needs a probe that gets that far: an unresolvable source_cap is refused
+        // -KOS_EBADF from inside the loop, reachable only once the array is admitted. With
+        // the raw range check it answered -KOS_EFAULT. Refused before a slot is claimed.
+        g_auth_two[0] = {0x7fffffff, CH_FULL};
+        kid.authority = 0;
+        g_auth_capsarr = kos_thread_spawn(&kid);
         kos_sem_post(CH_DONE);
     }
     void t_authority_cap()
@@ -2888,7 +2912,7 @@ namespace
         TAP_CHECK(g_auth_pinmux != -KOS_EPERM and g_auth_pinmux < 0);
         TAP_CHECK(g_auth_shutdown == -KOS_EPERM);
         TAP_CHECK(g_auth_regrant == -KOS_EPERM and g_auth_collide == -KOS_EINVAL
-                  and g_auth_badbits == -KOS_EINVAL);
+                  and g_auth_badbits == -KOS_EINVAL and g_auth_capsarr == -KOS_EBADF);
     }
 }
 

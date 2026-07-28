@@ -40,11 +40,15 @@ namespace kickos
         }
         // Copy the caller's params into kernel memory through a checked read: an
         // unprivileged caller must not hand the kernel a pointer it could not read
-        // (a kernel address would otherwise be dereferenced privileged). The struct
-        // is a caller stack local (kos::thread::spawn), so it lies in the stack
-        // region. Read the fields from the kernel-owned copy hereafter. (The name
-        // pointer inside is still user memory; it is walked under a per-byte
-        // readable check below before the kernel copies it.)
+        // (a kernel address would otherwise be dereferenced privileged). Read the
+        // fields from the kernel-owned copy hereafter. (The name pointer inside is
+        // still user memory; it is walked under a per-byte readable check below
+        // before the kernel copies it.)
+        // user_readable_ok, not the raw user_range_ok: the struct may be a caller stack
+        // local or an app global, and on a backend that models no static-data region
+        // (every no-MPU chip, and the host sim) a global lies in no granted region.
+        // arch_user_text_readable is the arm that recognises it. An enforcing backend
+        // returns false there and is byte-identical.
         // Reject a misaligned struct pointer BEFORE the typed copy below: the kernel
         // does that load privileged, and a misaligned word load traps in the kernel on
         // a strict-align arch (rv32imac) -- a user-triggerable kernel fault. alignof is
@@ -54,7 +58,7 @@ namespace kickos
         {
             return -KOS_EINVAL; // misaligned params struct
         }
-        if (not user_range_ok(pu, sizeof(*p), ARCH_MPU_R))
+        if (not user_readable_ok(pu, sizeof(*p)))
         {
             return -KOS_EFAULT; // params not readable by the caller
         }
@@ -123,12 +127,12 @@ namespace kickos
 #endif
         }
         // Data-region grant: the arena-confinement + Rule 7 reserved-block admission
-        // for mem_base now lives in domain_for (evaluated for EVERY caller on the
-        // committed R|W geometry -- 10C). [R11] Keep only a trivial UNGATED wrap check
-        // here so a wrapping mem_base is a clean -KOS_EINVAL on every board, including
-        // no-MPU parts where domain_for's predicate is a no-op stub and would not
-        // catch it. (No-MPU boundary change: the old ungated arena bound on no-MPU
-        // parts is dropped -- there is no MPU region to escalate through there.)
+        // for mem_base lives in domain_for (evaluated for EVERY caller on the committed
+        // R|W geometry, 10C), which reports -KOS_EPERM directly, so nothing here pre-checks
+        // it to recover an errno. [R11] Keep only a trivial UNGATED wrap check, so a
+        // wrapping mem_base is a clean -KOS_EINVAL on every board, including no-MPU parts
+        // where domain_for's predicate is a no-op stub. (No-MPU boundary change: the old
+        // ungated arena bound there is dropped; there is no MPU region to escalate through.)
         if (p->mem_base != nullptr and p->mem_size != 0)
         {
             uintptr_t const dbase = reinterpret_cast<uintptr_t>(p->mem_base);
@@ -136,26 +140,6 @@ namespace kickos
             {
                 return -KOS_EINVAL; // mem_base window wraps the address space
             }
-#if KICKOS_HAVE_MPU
-            // Errno coherence with the stack_base path above: a Rule-7 / out-of-arena
-            // data grant is a POLICY refusal (-KOS_EPERM), not pool exhaustion. domain_for
-            // stays the authoritative chokepoint (it re-checks the same predicate), but its
-            // single nullptr sentinel collapses to -KOS_ENOMEM below and cannot distinguish
-            // "retry later" from "never". Pre-check it here on the SAME committed geometry
-            // (arch_ram_region_size) so an unprivileged child's inadmissible mem_base earns
-            // -KOS_EPERM; a genuine domain-pool exhaustion still falls through to -KOS_ENOMEM.
-            // A privileged child bypasses domain_for's grant check (it gets the whole arena),
-            // so gate on the CHILD's privilege, exactly as domain_for does.
-            if (p->privileged == 0)
-            {
-                if (not grant_region_admissible(dbase, arch_ram_region_size(p->mem_size),
-                                                ARCH_MPU_R | ARCH_MPU_W,
-                                                sched::current()->privileged))
-                {
-                    return -KOS_EPERM; // data grant outside the arena / hits a reserved block
-                }
-            }
-#endif
         }
         // MMIO grant (optional): a device register window handed to an unprivileged
         // driver. This is the PRECISE-ERROR boundary -- privileged-only (EPERM) and
@@ -235,8 +219,9 @@ namespace kickos
             {
                 return -KOS_EINVAL; // null / misaligned grant array
             }
-            if (not user_range_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps),
-                                  ARCH_MPU_R))
+            // user_readable_ok for the same reason as the params struct above: the array
+            // may be a global.
+            if (not user_readable_ok(cu, sizeof(kos_cap_grant) * static_cast<size_t>(ncaps)))
             {
                 return -KOS_EFAULT; // grant array not readable by the caller
             }
@@ -279,18 +264,15 @@ namespace kickos
         // exhaustion is a clean spawn failure, not a leaked thread slot. domain_for
         // does not take a reference (thread_create does); a domain it creates but
         // we never reference stays refcount 0 == a free slot.
+        int derr = 0;
         Domain* const dom = domain_for(p->privileged != 0, p->mem_base, p->mem_size,
                                        p->mmio_base, p->mmio_size,
-                                       sched::current()->privileged);
+                                       sched::current()->privileged, &derr);
         if (dom == nullptr)
         {
-            // nullptr is domain_for's single refusal sentinel: EITHER the domain
-            // pool is exhausted OR the grant is inadmissible (Rule 7 reserved-block
-            // hit, out-of-arena data, or a misaligned/malformed region). The precise
-            // MMIO shape/privilege errors were already returned at the boundary above;
-            // everything else collapses to ENOMEM here (the errno is coarse, but the
-            // spawn correctly fails either way).
-            return -KOS_ENOMEM;
+            // domain_for says which refusal this is, so forward it: EPERM for an
+            // inadmissible grant, ENOMEM for a full domain pool.
+            return -derr;
         }
         // Reclaim an EXITED slot or bump-allocate (ThreadPool::alloc). Single-core: an
         // EXITED thread is guaranteed off-CPU by the time any other thread reaches here
