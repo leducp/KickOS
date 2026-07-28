@@ -214,7 +214,10 @@ console-handover path, so stage 2 found it the hard way: an unprivileged root ho
 `AUTH_MEMORY` clears the `thread_spawn` gate, is refused here, and the board goes dark. Fixed on
 the stage-2 branch, as `m4.5.1: gate the MMIO grant on AUTH_MEMORY, not on the caller's
 privilege`. The lesson is to enumerate the *decisions* rather than count the call sites: a count
-that is right on the day it is written is exactly what lets the next one hide.
+that is right on the day it is written is exactly what lets the next one hide. (The counts above
+are themselves dated to stage 1: the set has since grown -- `KOS_SYS_MEM_SELF_GRANT` and the
+spawn-time authority-narrow check joined on the same branch. The enumeration that stays true is
+the grep: every gate is a `cap_check_authority` call site.)
 
 The reads of `Thread::privileged` that survive are exactly the set this design keeps:
 
@@ -318,10 +321,10 @@ five chips would have been "its own stack and nothing else".
 - **`idle` stays privileged and holds no capabilities.** It runs no app code, and the
   instruction it exists to execute is not portably available unprivileged. RXv3 is categorical:
   `WAIT` is a privileged instruction and executing it in user mode raises a privileged
-  instruction exception (RXv3 ISA UM §1.4.3). RISC-V is weaker -- `WFI` is "optionally available
-  to U-mode" and `mstatus.TW` decides whether it traps, so with no S-mode and `TW`=0 a U-mode
-  WFI is permitted, and a conforming implementation may also make it a plain NOP (priv. spec
-  §3.3.3, §3.1.6.6). The portable claim is that idle cannot *rely* on it, not that every ISA
+  instruction exception (RXv3 ISA UM section 1.4.3). RISC-V is weaker -- `WFI` is "optionally
+  available to U-mode" and `mstatus.TW` decides whether it traps, so with no S-mode and `TW`=0 a
+  U-mode WFI is permitted, and a conforming implementation may also make it a plain NOP (priv.
+  spec sections 3.3.3 and 3.1.6.6). The portable claim is that idle cannot *rely* on it, not that every ISA
   forbids it; Book ch.7.5 carries the long form.
 - **The reserved capability index range is full after this** -- 0 stdout, 1 clock, 2 authority,
   3 spare. Spending index 3 would mean the next well-known capability has to raise

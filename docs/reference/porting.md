@@ -83,7 +83,7 @@ where it does, cross-domain trapping is silicon-proven unless the row says other
 
 | Chip | Board | Core | MPU | Validation |
 |------|-------|------|-----|------------|
-| `mps2` | qemu | M4F | -- | QEMU (runnable CI gate) |
+| `mps2` | qemu / qemu-m33 / qemu-m7 / qemu-m3 | M4F / M33 / M7 / M3 | PMSAv7 + PMSAv8 | QEMU (four runnable CI gates, **plus runtime enforcement gates** on both PMSA revisions) |
 | `nrf51` | microbit | M0 | -- | QEMU (runnable CI gate) |
 | `virt` | qemu-riscv | RV32IMAC | PMP | QEMU (runnable CI gate, **plus a runtime enforcement gate**) |
 | `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
@@ -104,13 +104,14 @@ inspection); flash to a board to confirm. `apps/blink` is a no-UART LED smoke
 test available on every board with a known LED.
 
 **What CI does and does not re-check.** Not every row above is defended by a green CI run, and a
-porter needs to know which. Enforcement is gated at RUNTIME only on the sim (`mprotect`) and
-`virt` (PMP); on ARM it is a **build** gate, because QEMU models no enforcement-capable KickOS ARM
-chip and the one runnable armv7m target (`mps2`) ships no enforcement block. That build gate is
-still worth having -- it is the only job that compiles the enforcement-only link surface,
+porter needs to know which. Enforcement is gated at RUNTIME on the sim (`mprotect`), `virt` (PMP)
+and the four `mps2` images (full TAP suite as unprivileged threads plus a real MemManage denial;
+PMSAv7 on the M4/M7/M3, PMSAv8 on the M33). The silicon boards get an enforcement **build** sweep
+instead, and it is worth having on its own -- it compiles their enforcement-only link surface,
 including `arch_reserved_blocks`, which has **no weak default on purpose**, so an enforcing port
 that forgets to declare its reserved set fails to LINK rather than leaving a silent open hole --
-but it proves nothing about trapping. Xtensa is build-only (no upstream ESP32 machine model), and
+but their chip-specific trapping (SYSMPU, the M7 anti-speculation wrap, PMSAv6) stays
+silicon-proven. Xtensa is build-only (no upstream ESP32 machine model), and
 **Renesas RX has no CI gate at all**: RX72M needs `-misa=v3`/`-mdfpu`, which exist only in the
 registration-gated Renesas GNURX build. So a change to the arch seam is unverified for RX until
 you build it yourself. Per-ISA detail: `boards.md` ("CI coverage & cross toolchains").

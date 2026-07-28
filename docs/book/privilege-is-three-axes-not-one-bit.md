@@ -128,12 +128,13 @@ the kernel will touch on its behalf unchecked. Two mechanisms, one flag, same ax
 ## Axis 3: authority, which is not a mode at all
 
 The third power has nothing to do with what instructions a core will execute or what
-addresses a unit will admit. It is a policy question the kernel asks itself at eight
-gates in the syscall surface, each guarding an act with fleet-wide consequences:
+addresses a unit will admit. It is a policy question the kernel asks itself at a set
+of gates in the syscall surface, each guarding an act with fleet-wide consequences
+(the gates are enumerable: every one is a `cap_check_authority` call site):
 
 | Authority | Guards |
 |---|---|
-| `AUTH_MEMORY` | carving RAM from the shared arena; granting an MMIO window at spawn |
+| `AUTH_MEMORY` | carving RAM from the shared arena; granting an MMIO window at spawn; self-granting a carved range into the caller's own region set |
 | `AUTH_PINMUX` | configuring a pin's function in the shared mux block |
 | `AUTH_CLOCK` | retuning the core clock, which retimes every thread's deadlines |
 | `AUTH_IRQ` | binding an interrupt line's dispatch, and arming a controller line |
@@ -233,20 +234,20 @@ until an interrupt arrives -- which is privileged on real members of the fleet:
   Family ISA manual lists the privileged instructions as `RTFI`, `MVTIPL`, `RTE` and
   `WAIT`, and states that executing one in user mode "produces a privileged instruction
   exception" (*RX Family RXv3 Instruction Set Architecture User's Manual: Software*,
-  §1.4.3 *Privileged Instruction*; the `WAIT` page is headed "WAIT (privileged
-  instruction)"). User mode is `PSW.PM` = 1 (bit 20, §2.2). There is no bit that relaxes
+  section 1.4.3 *Privileged Instruction*; the `WAIT` page is headed "WAIT (privileged
+  instruction)"). User mode is `PSW.PM` = 1 (bit 20, section 2.2). There is no bit that relaxes
   this, so on RX an unprivileged idle simply cannot execute the instruction it exists to
   execute.
 - **RISC-V `WFI` is weaker than that, and the earlier wording here overstated it.** The
   privileged spec says WFI "is available in all privileged modes, and optionally
-  available to U-mode" (§3.3.3), and `mstatus.TW` is what intercepts it: with `TW`=0
+  available to U-mode" (section 3.3.3), and `mstatus.TW` is what intercepts it: with `TW`=0
   "the WFI instruction may execute in lower privilege modes when not prevented for some
   other reason", and with `TW`=1 a WFI in any less-privileged mode that does not complete
-  within a bounded time raises an illegal-instruction exception (§3.1.6.6). KickOS runs
+  within a bounded time raises an illegal-instruction exception (section 3.1.6.6). KickOS runs
   M-mode kernel + U-mode threads with **no S-mode**, and in that configuration a U-mode
   WFI is *permitted* whenever the platform leaves `TW`=0. (Had S-mode been implemented,
-  U-mode WFI would trap; §3.1.6.6 says so explicitly.) On top of that, "a legal
-  implementation is to simply implement the WFI instruction as a NOP" (§3.3.3), so even
+  U-mode WFI would trap; section 3.1.6.6 says so explicitly.) On top of that, "a legal
+  implementation is to simply implement the WFI instruction as a NOP" (section 3.3.3), so even
   where it executes it need not actually idle the core.
 
 So the two are not the same kind of fact, and it is worth not flattening them: RX
@@ -328,13 +329,13 @@ capability, so an authority capability can never be copied into a child's table 
 path. The reserved index has exactly one writer, the kernel, which closes the forgery
 question completely rather than arguing about it.
 
-**One question at every gate.** All eight gates ask
+**One question at every gate.** Every gate asks
 `cap_check_authority(caller, AUTH_x)`, which is true when the caller is privileged
 **or** holds that bit. "Privileged implies every authority" is therefore stated once,
-inside that function, instead of eight times at the call sites -- and the conversion
+inside that function, instead of once per call site -- and the conversion
 is behaviour-neutral by construction, since a privileged caller takes the same arm it
 always took. That property matters more than it sounds: it means every one of the
-eight sites is exercised by the existing fleet *before* anything depends on the new
+sites is exercised by the existing fleet *before* anything depends on the new
 arm, instead of shipping unexercised until the first thing that needs it.
 
 ## Why this is worth doing at all: revocation
@@ -362,7 +363,7 @@ authority narrows on the way down and never widens, exactly like a delegated rig
 mask. One rule, both capability families, checked in one place.
 
 And that is the difference the whole exercise buys. Without a droppable authority, an
-unprivileged application thread can still ask the kernel for all eight of those acts,
+unprivileged application thread can still ask the kernel for every one of those acts,
 which would make confining it a memory-isolation change and nothing more.
 
 ## The consequence for anything you want to prove

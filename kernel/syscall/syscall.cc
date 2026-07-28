@@ -658,14 +658,21 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // honest -- a window rounded up after admission could cover a neighbour
             // the unrounded extent did not.
             size_t const rsz = arch_ram_region_size(size);
+            if (rsz == 0)
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
             // Naturally aligned, the same admission the stack grant takes
             // (syscall_thread.cc). NOT a formality: PMSAv7 MPU_RBAR MASKS the base down
             // to the region size, so an unaligned base would be programmed as a window
             // starting BELOW what the caller named -- covering a neighbour it was never
             // admitted for. Refusing is the only safe answer, and arch_ram_alloc already
             // returns naturally-aligned blocks, so a caller granting what it allocated
-            // never sees this.
-            if (rsz == 0 or (base & (rsz - 1)) != 0)
+            // never sees this. Where arch_mpu_min_region() == 0 there is no descriptor
+            // to snap AND rsz is 16-byte-granular, not a power of two, so rsz - 1 is
+            // not an alignment mask: skip the check, as the stack grant does behind
+            // its #if KICKOS_HAVE_MPU.
+            if (arch_mpu_min_region() != 0 and (base & (rsz - 1)) != 0)
             {
                 return static_cast<uintptr_t>(-KOS_EINVAL);
             }

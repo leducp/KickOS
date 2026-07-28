@@ -215,7 +215,9 @@ void* kos_ram_alloc(size_t size);
 // through the same Rule 7 admission predicate as a spawn-time grant, so it must be
 // inside the user arena and clear of every kernel-reserved block; the committed
 // extent is rounded up to what the MPU can describe (arch_ram_region_size), exactly
-// as a domain data region is.
+// as a domain data region is. The gate admits ANY reserved-clear in-arena range,
+// not only memory the caller itself allocated: AUTH_MEMORY is arena-wide authority,
+// consistent with the spawn grant model.
 //
 // BOUNDED by the hardware region budget, and loud when it runs out. A thread already
 // spends up to 5 of KICKOS_MPU_MAX_REGIONS on code, static data, its domain and its
@@ -227,7 +229,9 @@ void* kos_ram_alloc(size_t size);
 // no descriptor), or:
 //   -KOS_EPERM   no AUTH_MEMORY, or the range is inadmissible (outside the arena,
 //                or overlapping a reserved block)
-//   -KOS_EINVAL  size 0, or the range wraps
+//   -KOS_EINVAL  size 0, the range wraps, or (under an MPU) the base is not
+//                naturally aligned to the rounded region size -- a base from
+//                kos_ram_alloc never trips this
 //   -KOS_ENOMEM  the caller's region budget is full
 int kos_mem_self_grant(void* base, size_t size);
 

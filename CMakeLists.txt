@@ -386,7 +386,7 @@ message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST} (libs: ${KICKOS_SE
 # listed is docs/design-unprivileged-root.md section 8.
 set(KICKOS_SERVICE_LIST_ROOT_MMIO
   kickos_services_frdmk64f        # k64uart AIPS PACR + k64dspi clock/pin/GPIO/DSPI config
-  kickos_services_xmc4800relax)   # xmcssc USIC kernel clock, baud, protocol (PV-write-only)
+  kickos_services_xmc4800relax)   # xmcssc USIC kernel clock, baud, protocol from root
 if(NOT KICKOS_ROOT_PRIVILEGED AND KICKOS_SERVICE_LIST IN_LIST KICKOS_SERVICE_LIST_ROOT_MMIO)
   message(FATAL_ERROR
     "KICKOS_ROOT_PRIVILEGED=OFF with KICKOS_SERVICE_LIST=${KICKOS_SERVICE_LIST}, whose "

@@ -496,14 +496,12 @@ silently satisfied by a link-time override).
       that posture rather than a dark board. Evidence in `docs/reference/boards.md`. The A/B was
       **re-captured post-rebase at `22e1c5a`**, so it witnesses the rebased combination of stage 2
       with the kernel-audit batch, not just the pre-rebase branch.
-- [ ] **OWED: re-witness the tip on silicon.** The boards left the bench at `22e1c5a`, and four
-      commits landed after it. Two touch the enforcement path and have run **only under emulation**:
-      `af696e6` (the `kos_mem_self_grant` syscall) and `3c772b9` (programming a self-granted region
-      before the syscall returns). The merged tip is therefore **green locally only**; do not read
-      the `22e1c5a` capture as covering it. `3c772b9` first: the bug it fixes was invisible on the
-      sim and present on every enforcing backend, which is the exact shape that needs a bench
-      witness rather than an emulator one. Needs the XMC A/B re-run at tip plus the `frdmk64f`
-      SYSMPU regression. Boundary table in `docs/reference/boards.md`.
+- [x] **Re-witness the tip on silicon: DONE 2026-07-28 at `75227d4`.** The XMC A/B re-run plus
+      the `frdmk64f` SYSMPU regression, six flash-and-capture runs, all signatures matched. The
+      two enforcement-path commits the boards left the bench before (`af696e6`, `3c772b9`) plus
+      the alignment-gate repair are witnessed by `mem_self_grant` and `mem_self_grant_nonpow2`
+      running `ok` under PMSAv7 in both postures and under SYSMPU. Updated boundary table in
+      `docs/reference/boards.md`; captures under `.session/n33-rewitness/` (machine-local).
 - [ ] **Remaining boards, in this order:** f411disco, frdmk64f, pizero2350, esp32c6-wroom, rx72m.
       frdmk64f stays blocked on stage 3 (`arch_periph_enable`).
 - [x] **Per-board gate, and what it actually cost.** Both halves met on `xmc4800-relax` silicon

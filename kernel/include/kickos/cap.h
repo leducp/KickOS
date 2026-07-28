@@ -180,10 +180,11 @@ namespace kickos
     // more AUTH_* bits)? True if it is privileged, or if it holds a CAP_AUTHORITY at
     // KOS_CAP_AUTHORITY carrying EVERY requested bit. nullptr is false (no caller context).
     //
-    // Exists so the eight authority gates read the same way instead of open-coding a
+    // Exists so the authority gates read the same way instead of open-coding a
     // privilege test each. The privileged arm is inside on purpose: "privileged implies
     // every authority" is one fact, and stating it once is what lets stage 2 flip a board
-    // without revisiting nine call sites.
+    // without revisiting every call site. (Gates are enumerable: grep cap_check_authority.
+    // A count written here went stale once already.)
     //
     // Locking: this is the ONE cap.h entry point that does NOT require IrqLock. It reads
     // `c`'s own table, and a thread's table is written only by that thread (its own

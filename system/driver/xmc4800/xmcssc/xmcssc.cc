@@ -15,7 +15,7 @@
 //   2. xmcssc_service -- the unprivileged driver thread: kos_recv a kos_bus_req,
 //      validate it, run the class transaction over the concatenated segment bytes,
 //      kos_reply a kos_bus_rsp. The reply cap is consumed on EVERY loop path.
-//   3. xmc_spi0_start -- the privileged one-time bring-up + endpoint + spawn.
+//   3. xmc_spi0_start -- the one-time bring-up (run from root) + endpoint + spawn.
 //
 // The data path is INTERNAL LOOP-BACK (DX0 = own transmitter, input "G", RM
 // 18.2.3.5): no external device on the bench, so rx == tx on-chip and SELO0 is armed
@@ -23,13 +23,13 @@
 // service proves the call/reply + bus ABI + CS-hold framing plumbing; the MSLS hold
 // itself is proven on silicon by user/apps/xmccshold.
 //
-// Register-access model (RM Table 18-20): FDR/BRG/CCR/INPR are PV-write-only at the
-// bus, so the baud profile, the channel enable, and the interrupt routing are all set
-// ONCE by the privileged bring-up. SCTR/TCSR/PCR/PSCR/RBUF/TBUF0/PSR are U-accessible
-// inside the granted window, so the unprivileged driver folds word/mode/CS framing
-// (SCTR + PCR) and runs the transfer there. CPOL/CPHA live in BRG.SCLKCFG (PV-write-
-// only) so they are fixed to SPI mode 0 at bring-up; configure() folds only bit
-// order + word size + the CS framing (the internal loopback is phase-agnostic).
+// Register split: the bring-up sets the kernel clock, baud profile (FDR/BRG), input
+// routing (INPR) and channel enable (CCR) once; the driver thread folds SCTR/TCSR/PCR
+// and runs the transfer. Everything sits inside the granted 0x200 window -- the split
+// is bring-up PLACEMENT (xmc_spi0_start runs in root), not a hardware privilege wall
+// (docs/design-unprivileged-root.md section 9). CPOL/CPHA (BRG.SCLKCFG) are fixed to
+// SPI mode 0 at bring-up; configure() folds only bit order + word size + the CS
+// framing (the internal loopback is phase-agnostic).
 //
 // Register addresses / bit fields are clean-room from the XMC4700/XMC4800 Reference
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source.
@@ -93,7 +93,7 @@ namespace
     // Nominal SSC bit clock of the fixed bring-up profile off `f_periph`: fractional
     // divider output fFD = f_periph * STEP/1024, then /(PDIV+1)/2/(DCTQ+1). Truthful
     // for the fixed profile (informational over the loopback; the client cannot
-    // retune it -- FDR/BRG are PV-write-only).
+    // retune it -- configure() never refolds FDR/BRG).
     uint32_t profile_bitclock(uint32_t f_periph)
     {
         uint64_t f_fd = (static_cast<uint64_t>(f_periph) * BAUD_STEP) / 1024u;
@@ -115,10 +115,9 @@ namespace
         }
 
         // Fold a per-device config into SCTR (word size + bit order) and PCR (the SSC
-        // CS framing), and adopt the CS policy. Both registers are U-writable inside
-        // the window (RM Table 18-20), so the UNPRIVILEGED driver may call this. The
-        // baud is fixed by the bring-up (FDR/BRG PV-write-only); returns its nominal
-        // bit clock. CPOL/CPHA (BRG.SCLKCFG, PV-write-only) are fixed to mode 0.
+        // CS framing), and adopt the CS policy. The baud is fixed by the bring-up
+        // (never refolded here); returns its nominal bit clock. CPOL/CPHA
+        // (BRG.SCLKCFG) are fixed to mode 0 at bring-up.
         uint32_t configure(uint32_t hz, uint8_t mode, uint8_t word_bits, uint8_t cs_policy)
         {
             static_cast<void>(hz); // baud is the fixed bring-up profile, not retunable
@@ -271,21 +270,23 @@ extern "C"
         uint8_t const driver_prio = cfg->prio;
         bool const cs_hw = (cfg->cs_policy == KOS_SVC_CS_HW);
 
-        // 1. Privileged one-time bring-up (runs in the root/init thread): the setup the
-        //    unprivileged driver CANNOT do -- the PV-write-only registers (FDR/BRG baud,
-        //    INPR routing, CCR enable) and the kernel clock gate. USIC0's module clock
-        //    is already ungated by the console (U0C0) bring-up; only U0C1's kernel
-        //    clock, baud, SSC-master config and the loopback input are set here. The
-        //    SCU clock tree and the port IOCR pin-mux stay privileged + out of the
-        //    driver's window (the escalation surfaces the capability keeps out).
+        // 1. One-time bring-up, run from the root/init thread: kernel clock gate,
+        //    baud (FDR/BRG), INPR routing, CCR enable. Everything written here sits
+        //    inside the grantable U0C1 window; what blocks a flipped (unprivileged)
+        //    root is this placement, not the silicon (docs/design-unprivileged-root.md
+        //    section 9). USIC0's module clock is already ungated by the console (U0C0)
+        //    bring-up; only U0C1's kernel clock, baud, SSC-master config and the
+        //    loopback input are set here. The SCU clock tree and the port IOCR pin-mux
+        //    stay out of the driver's window (the escalation surfaces the capability
+        //    keeps out).
         r32(win_base + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
         // RM p.18-165: read KSCFG back before touching other USIC registers to flush
         // the control-block pipeline; keep the volatile read from being elided.
         uint32_t kscfg_sync = r32(win_base + off::KSCFG);
         __asm volatile("" : : "r"(kscfg_sync) : "memory");
 
-        // Baud generator (fractional divider + SSC bit-time dividers): PV-write-only,
-        // so fixed here for the channel's life.
+        // Baud generator (fractional divider + SSC bit-time dividers): set once here,
+        // fixed for the channel's life.
         r32(win_base + off::FDR) = FDR_DM_FRACTIONAL | FDR_STEP_367;
         r32(win_base + off::BRG) = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
 
@@ -315,12 +316,12 @@ extern "C"
         r32(win_base + off::DX0CR) = DX0CR_INSW | DX0CR_DSEL_G;
 
         // Route the receive / alternative-receive interrupts to service-request SR1
-        // (NVIC 85). PV-write-only, so set here; NVIC 85 stays masked until the driver's
-        // kos_irq_register, so no event is lost by arming at boot.
+        // (NVIC 85). NVIC 85 stays masked until the driver's kos_irq_register, so no
+        // event is lost by arming at boot.
         r32(win_base + off::INPR) = INPR_RINP_SR1 | INPR_AINP_SR1;
 
-        // Enable the channel + arm the receive interrupts in one PV write (config now
-        // complete). CCR is PV-write-only -> the unprivileged driver cannot arm these.
+        // Enable the channel + arm the receive interrupts in one CCR write (config
+        // now complete).
         r32(win_base + off::CCR) = CCR_MODE_SSC | CCR_RIEN | CCR_AIEN;
 
         // No IOCR pin-mux: the data path is internal loopback and SELO0 is never routed

@@ -400,13 +400,15 @@ session and should not be treated as a bench fact.
 whole arena. `xmc4800-relax` is the first board flipped, and the first silicon witness for the
 boundary (2026-07-27, **`22e1c5a`**, PMSAv7, 144 MHz, console-only service list). Both arms were
 re-captured on the post-rebase tree; the earlier pre-rebase capture (`a463ab9`) is superseded and
-its hash no longer exists on this branch.
+its hash no longer exists on this branch. **Re-witnessed at the M4.5.1 tip (2026-07-28,
+`75227d4`)**: both arms re-run, and the table below is the tip capture (captures under
+`.session/n33-rewitness/`, machine-local).
 
 | Evidence | Root privileged (control) | Root unprivileged |
 | --- | --- | --- |
 | Banner `mpu` line | `enforce` | `enforce, root unprivileged` |
 | Console handover to `xmcuart` | up, TAP via driver | up, TAP via driver |
-| `selftest` | 59 cases, 59 `ok`, **0 skips**, 0 fail | 59 cases, 57 `ok`, 2 skips, 0 fail |
+| `selftest` | 61 cases, 61 `ok`, **0 skips**, 0 fail | 61 cases, 60 `ok`, 1 skip, 0 fail |
 | `rootfault` cross-domain write | completes, reports "root is NOT confined" | **MemManage trap** |
 
 The control column previously read "58 `ok`, 1 skip". That was wrong, and the way it was wrong is
@@ -428,7 +430,8 @@ The confinement fault, byte-for-byte from the wire:
 ```
 
 `MMFAR` matches the address the app announced, `R3` holds it and `R2` holds the stored `0x2222`,
-`CFSR=0x82` is DACCVIOL + MMARVALID, and `(PSP)` puts the fault in thread mode. The child had
+`CFSR=0x82` is DACCVIOL + MMARVALID, and `(PSP)` puts the fault in thread mode. The `75227d4`
+re-run reproduces PC, LR, CFSR and MMFAR identically, including the reclaim clip. The child had
 already written the same region and was still parked, so the page belonged to a live foreign domain
 rather than being unmapped. The truncated `(expect fault` is the `kpanic_enter` reclaim clipping
 noted above, reproduced identically across resets.
@@ -440,40 +443,38 @@ The two selftest skips were named on the wire: `irq_as_event` (root plays the de
 it allocated but was never granted) and `mpu_privileged_guard` (its subject is the privileged
 posture). **This capture predates `kos_mem_self_grant`**, which is why there are two. `irq_as_event`
 was not posture cost but a missing capability, and it now runs in both postures; only
-`mpu_privileged_guard` is genuinely posture-driven. On the current tree the flipped arm skips one,
-not two -- measured under emulation on all five enforcing backends, **not re-measured on this board**
-(see the coverage boundary below).
+`mpu_privileged_guard` is genuinely posture-driven. Re-measured on this board at `75227d4`: the
+flipped arm skips exactly `mpu_privileged_guard`, and `irq_as_event`, `mem_self_grant` and
+`mem_self_grant_nonpow2` all run `ok` under enforcement in both postures.
 
-#### Coverage boundary -- what this silicon witness does and does not cover
+#### Coverage boundary -- what this silicon witness covers
 
-The witness above is `22e1c5a`. **Four commits have landed since, and none of them has run on
-hardware**; the boards left the bench first. They are green on all seven emulator gates, including
-the five enforcing (`-DKICKOS_HAVE_MPU=1`) QEMU backends over both PMSA revisions and RISC-V PMP,
-but that is emulation and this section is the bench record.
+**Re-established 2026-07-28 at the tip, `75227d4`**: the XMC A/B re-run plus the `frdmk64f`
+SYSMPU regression, six flash-and-capture runs, every signature matched, zero reflashes. The gap
+this section used to record -- commits green under emulation but never run on hardware -- is
+closed for everything at or before `75227d4`.
 
 | Commit | Touches the enforcement path? | Silicon |
 | --- | --- | --- |
-| `af696e6` self-grant syscall | yes -- new `KOS_SYS_MEM_SELF_GRANT`, writes the caller's region set | **owed** |
+| `af696e6` self-grant syscall | yes -- new `KOS_SYS_MEM_SELF_GRANT`, writes the caller's region set | witnessed at `75227d4`: `mem_self_grant` `ok` under PMSAv7 (both postures) and SYSMPU |
 | `e4e9653` volatile increment | no -- selftest source only | n/a |
-| `3c772b9` commit a self-grant before return | **yes -- MPU programming path** | **owed** |
+| `3c772b9` commit a self-grant before return | **yes -- MPU programming path** | witnessed at `75227d4`: same probes; the fault it fixed was the enforcing-backend class |
 | `30465a0` skips gated by name | no -- CTest harness only | n/a |
+| `f85b51e` alignment refusal gated on a descriptor | yes -- self-grant admission | witnessed at `75227d4`: `mem_self_grant_nonpow2` `ok` on all three runs (its checked-to-fail arm is no-MPU microbit, under emulation) |
 
-`3c772b9` is the one to re-witness first. It fixes a fault that **only the enforcing backends
-showed**: `arch_mpu_apply` merely stashes on every deferred-switch arch, so the grant was not
-programmed until some later switch, and the caller faulted on memory the kernel had just granted it.
-The host sim was green throughout, because its apply mprotects as it records. XMC4800 is PMSAv7 --
-exactly the class that faulted -- so the sim's agreement is worth nothing here and QEMU's PMSAv7
-model is currently the strongest evidence that exists for it.
-
-**Nothing above is contradicted by the emulator runs; the point is that they are not the same
-witness.** Re-establishing it needs the A/B re-run at the current tip plus the `frdmk64f` SYSMPU
-regression, and until then the merged state is silicon-witnessed only as far as `22e1c5a`.
+`3c772b9` was the one to re-witness first, and the reasoning is kept because it names the class:
+it fixed a fault that **only the enforcing backends showed** -- `arch_mpu_apply` merely stashes on
+every deferred-switch arch, so the grant was not programmed until some later switch, and the
+caller faulted on memory the kernel had just granted it. The host sim was green throughout,
+because its apply mprotects as it records. XMC4800 is PMSAv7, exactly the class that faulted, so
+this silicon run is the strongest witness the fix can have.
 
 **`frdmk64f` is deliberately NOT flipped** and stays privileged-root: its service list's bring-up
 writes peripheral registers directly from root, which needs stage 3's `arch_periph_enable`. Pairing
 that list with the flip is a configure-time error, not a runtime surprise. It was instead
-re-regressed under SYSMPU enforcement with a privileged root on the same day and commit (`22e1c5a`,
-and subject to the same coverage boundary above): selftest 59 cases / 58 `ok` / 1 skip
-(`mutex_deadlock`, pool too small) / 0 fail, and `mpu_fault` still traps a child's cross-domain write with
-`SYSMPU ISOLATION FAULT: port=3 addr=0x2001b000 master=0 W EDR=0x80000003` (SYSMPU surfaces as an
-imprecise bus fault, so the core label reads `HARD FAULT` and the chip hook adds the real line).
+re-regressed under SYSMPU enforcement with a privileged root, first at `22e1c5a` and again at
+`75227d4` (2026-07-28): selftest 61 cases / 60 `ok` / 1 skip (`mutex_deadlock`, pool too small) /
+0 fail, and `mpu_fault` still traps a child's cross-domain write with
+`SYSMPU ISOLATION FAULT: port=3 addr=0x2001b000 master=0 W EDR=0x80000003` -- byte-identical to
+the prior witness (SYSMPU surfaces as an imprecise bus fault, so the core label reads
+`HARD FAULT` and the chip hook adds the real line).

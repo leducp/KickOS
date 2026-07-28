@@ -42,7 +42,8 @@ inline void emit(char const* s)
             chunk = KOS_EP_MSG_MAX;
         }
         long const r = kos_send(0, s + sent, chunk);
-        if (r < 0)
+        // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
+        if (r <= 0)
         {
             // Remainder only: resending from the start duplicates the chunks the driver
             // already took.

@@ -11,9 +11,9 @@
 // console_publish, spawn-with-MMIO-grant, handle_close -- and touches no register
 // itself, so it runs unchanged from an unprivileged root holding AUTH_MEMORY +
 // AUTH_DEVICE. xmcssc's bring-up instead writes the USIC kernel-clock, baud and
-// protocol registers from the CALLING thread, and those are PV-write-only registers
-// outside any window the kernel can grant, so no capability makes them reachable from
-// an unprivileged thread. That is a property of the silicon, not a gap in the port.
+// protocol registers from the CALLING thread, and a flipped root holds no MMIO grant
+// for U0C1: the blocker is that PLACEMENT, not the silicon -- the registers sit
+// inside the grantable 0x200 window (docs/design-unprivileged-root.md section 9).
 //
 // Selected automatically for xmc4800-relax + enforcement + KICKOS_ROOT_PRIVILEGED=OFF
 // (root CMakeLists.txt), which is also where a service list needing root MMIO is

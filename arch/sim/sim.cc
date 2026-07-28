@@ -1044,6 +1044,11 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len)
 // .text/.rodata from .data/.bss. The host's own page permissions are the backstop --
 // those pages are mapped r-x / r--, so a real write faults in the host instead of
 // silently landing. Same "the sim provably can't" limit the read hook carries.
+//
+// The sharper asymmetry has no backstop: kernel .data/.bss also sit inside the image
+// bounds on rw pages, so an unprivileged out-pointer aimed at kernel state is admitted
+// and the kernel's own store lands. The arena cross-domain boundary is what the sim
+// actually enforces; every enforcing backend rejects this class.
 bool arch_user_data_writable(uintptr_t ptr, size_t len)
 {
     return arch_user_text_readable(ptr, len);

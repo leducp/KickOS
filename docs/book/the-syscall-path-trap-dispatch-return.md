@@ -304,7 +304,7 @@ exit. Here it is free, because it is a stack frame.
 one.** Its saved CPU mode while parked inside a syscall is *privileged* -- it must be,
 or the continuation would resume unprivileged and fault on the kernel data it was in
 the middle of touching. What it goes back to at the end is its resting mode, held
-separately in the frame. That resting-versus-transient distinction is created here and
+separately in the saved context. That resting-versus-transient distinction is created here and
 consumed on the way out; Chapter 7.4 explains why it is an axis and Chapter 3.5 explains
 where in the saved state it lives. On ARM there is one further detail that makes the
 handler-versus-thread-mode choice concrete: the deferred switch arrives as a *real
@@ -316,8 +316,9 @@ that could not happen if the dispatch were running in the handler.
 The epilogue does two things, and both are contracts.
 
 **It restores the caller's resting privilege, not a hard-coded unprivileged.** The
-frame carries the caller's resting mode as a separate field and the trampoline writes
-that back (invariant `syscall-restores-resting-priv`). Hard-coding unprivileged would
+saved context carries the caller's resting mode -- a dedicated per-thread field on ARM,
+the stashed user `PSW` on RX, the saved `mstatus.MPP` on RISC-V -- and the trampoline
+writes it back (invariant `syscall-restores-resting-priv`). Hard-coding unprivileged would
 silently demote any privileged thread that ever made a syscall -- a latent bug that
 would surface far from its cause, in exactly the threads whose posture matters most.
 

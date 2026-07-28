@@ -41,7 +41,8 @@ int _write(int fd, char const* buf, int len)
             chunk = KOS_EP_MSG_MAX;
         }
         long const r = kos_send(0, buf + sent, chunk); // index 0 == the stdout endpoint cap
-        if (r < 0)
+        // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
+        if (r <= 0)
         {
             // Pre-publish (index 0 empty, -KOS_EBADF) or the driver died (-KOS_EPIPE):
             // fall back on the REMAINDER only. Resending the whole buffer would

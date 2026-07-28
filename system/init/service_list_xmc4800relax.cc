@@ -33,7 +33,7 @@ extern "C"
 
     // USIC0 CH1 @ 0x4003_0200, 0x200 B window (RM Table 18-21; the 0x200-aligned pow2
     // window that encodes on PMSA as one exact-cover descriptor). hz is informational
-    // (the baud profile is fixed and PV-write-only; the driver reports its nominal
+    // (the baud profile is fixed at bring-up; the driver reports its nominal
     // rate). CS_HW: the controller's own MSLS/SELO0 line, held across the transaction
     // by PCR.FEM=1. The call/reply path donates the caller's priority to the driver,
     // so its static prio is a floor, not the served priority.

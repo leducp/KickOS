@@ -85,6 +85,10 @@ set(KICKOS_EXPECT_SKIPS "")
 if(KICKOS_HAVE_MPU AND NOT KICKOS_ROOT_PRIVILEGED)
   list(APPEND KICKOS_EXPECT_SKIPS mpu_privileged_guard)
 endif()
+# Comma-joined before it reaches an ENVIRONMENT property: that property is itself a
+# CMake list, so an embedded semicolon from a 2-element list would split the value into
+# a second bogus environment entry. The check script splits on commas.
+list(JOIN KICKOS_EXPECT_SKIPS "," KICKOS_EXPECT_SKIPS)
 
 # The SAME TAP suite on the runnable QEMU targets -- the identical binary rebuilt
 # per target, exercising the real ISA switch mechanism (armv7m/armv6m PendSV,

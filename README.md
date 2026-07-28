@@ -47,13 +47,16 @@ oversight -- see the header of [`.github/workflows/ci.yml`](.github/workflows/ci
 |---|---|---|
 | host **sim** | full `ctest` (the authoritative gate) | **runtime** (`mprotect`) |
 | **rv32imac** | QEMU `virt` run gate | **runtime** (PMP) |
-| **armv7m** / **armv6m** | QEMU run gates (`mps2-an386`, micro:bit) + a board build sweep | **build only** |
+| **armv7m** | four MPS2 QEMU run gates (an386/an505/an500/an385) + a board build sweep | **runtime** (PMSAv7 + PMSAv8) |
+| **armv6m** | QEMU run gate (micro:bit) + `picopi` build | **build only** |
 | **Xtensa LX6** | build only (no upstream QEMU ESP32 machine model) | -- (no per-task unit) |
 | **Renesas RX** | **none** | -- |
 
-ARM enforcement is a *build* gate because QEMU models no enforcement-capable KickOS ARM chip --
-the enforcing ports are all silicon parts, and `mps2` ships no enforcement block -- so ARM
-PMSA/SYSMPU **trapping** stays silicon-validated. **RX has no gate at all**: RX72M needs
+ARM enforcement is a *run* gate since `mps2` grew an enforcement block: the four MPS2 images
+run the full TAP suite as unprivileged threads and take a real MemManage denial, over both
+PMSA revisions (v7 on the M4/M7/M3, v8 on the an505's M33). The backends QEMU carries no model
+for -- SYSMPU, the M7 anti-speculation wrap, PMSAv6 -- stay silicon-validated; see
+[`docs/reference/boards.md`](docs/reference/boards.md). **RX has no gate at all**: RX72M needs
 `-misa=v3` and `-mdfpu`, which exist only in the registration-gated Renesas GNURX build (upstream
 `rx-elf` GCC rejects both), so it cannot be built on a hosted runner and remains bench-validated.
 

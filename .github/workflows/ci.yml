@@ -407,8 +407,9 @@ jobs:
       - run: cmake --build --preset ${{ matrix.preset }}
 
   # ARM MPU-ENFORCEMENT build gate: the same ARM boards again, but configured with
-  # -DKICKOS_HAVE_MPU=1. This is the ONLY job that builds the enforcement-only link
-  # surface -- nothing else in this file compiles it, on any arch except rv32imac:
+  # -DKICKOS_HAVE_MPU=1. This is the only job that builds the enforcement-only link
+  # surface of the silicon boards -- elsewhere in this file it is compiled only for
+  # mps2 (the qemu-arm enforcement run gates) and rv32imac:
   # the pow2 .appdata/.appbss window plus its overflow/placement ASSERTs, the
   # `archive:member` closed-set selectors that split kernel-owned writable state from
   # app-owned, the app code/data grant symbols, and arch_reserved_blocks -- which has

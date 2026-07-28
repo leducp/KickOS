@@ -23,6 +23,11 @@ namespace tap
 
         Entry g_tests[MAX_TESTS];
         int g_count = 0;
+        // Registrations dropped past MAX_TESTS. add() runs from static registrars,
+        // possibly before main, so it can only record; run_all() turns a non-zero
+        // count into a failing TAP line -- a silently dropped test would otherwise
+        // be a gate that reports success without running.
+        int g_dropped = 0;
 
         // Verdict of the test currently running. One slot for the failure diagnostic
         // and the skip reason: they are mutually exclusive, and the buffer is real
@@ -62,7 +67,8 @@ namespace tap
                     chunk = KOS_EP_MSG_MAX;
                 }
                 long const r = kos_send(0, s + sent, chunk); // index 0 == the stdout endpoint cap
-                if (r < 0)
+                // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
+                if (r <= 0)
                 {
                     // Remainder only: resending from the start would duplicate on the
                     // debug console the chunks the driver already took.
@@ -101,6 +107,10 @@ namespace tap
             g_tests[g_count].name = name;
             g_tests[g_count].fn = fn;
             g_count++;
+        }
+        else
+        {
+            g_dropped++;
         }
     }
 
@@ -142,7 +152,12 @@ namespace tap
 
     int run_all()
     {
-        emitf("1..%d\n", g_count);
+        int plan = g_count;
+        if (g_dropped > 0)
+        {
+            plan++; // one extra slot for the overflow verdict below
+        }
+        emitf("1..%d\n", plan);
         // Name the transport this run actually used. An operator staring at a silent
         // VCOM needs to tell "the driver is carrying TAP" from "the kernel console is",
         // and it is the one fact no individual test line reveals.
@@ -175,6 +190,12 @@ namespace tap
             {
                 emitf("ok %d - %s\n", i + 1, g_tests[i].name);
             }
+        }
+        if (g_dropped > 0)
+        {
+            failed++;
+            emitf("not ok %d - tap_registry_overflow # %d registration(s) dropped past MAX_TESTS=%d\n",
+                  g_count + 1, g_dropped, MAX_TESTS);
         }
         // ALWAYS emitted, zero included: a gate keys its per-board skip budget off this
         // line, so its ABSENCE has to mean "truncated run", never "no skips". The

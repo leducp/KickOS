@@ -3066,6 +3066,69 @@ namespace
         TAP_CHECK(g_sg_ok > 0 and g_sg_refusal == -KOS_ENOMEM);
         TAP_CHECK(g_sg_readback == 0x5A5A and g_sg_badsize == -KOS_EINVAL);
     }
+
+    // --- Self-grant of a non-power-of-two region ------------------------------
+    // On a min-region-0 backend (nRF51, LX6) arch_ram_region_size is 16-byte-
+    // granular: 40 rounds to 48, not a power of two, so rsz - 1 is not an
+    // alignment mask. A block kos_ram_alloc handed out must still self-grant.
+    // Consecutive 48-byte bump allocations step through the 16-byte residues of
+    // 64, so within three blocks one base has bit 5 set -- exactly the base an
+    // ungated pow2 mask check refuses. On a pow2 backend every base is naturally
+    // aligned, bit 5 never fires, and this is one ordinary grant.
+    //
+    // Registered BEFORE domain_share, not with mem_self_grant: on microbit the
+    // pool cannot host a worker by the time the budget test runs, and this probe
+    // is only discriminating on exactly such a no-MPU board.
+    volatile long g_sgnp_rc = -1;
+    volatile int g_sgnp_ran = 0;
+    void sgnp_worker(void*)
+    {
+        void* pick = nullptr;
+        for (int i = 0; i < 3; i++)
+        {
+            void* p = kos_ram_alloc(40);
+            if (p == nullptr)
+            {
+                break;
+            }
+            if (pick == nullptr)
+            {
+                pick = p;
+            }
+            if ((reinterpret_cast<uintptr_t>(p) & 32u) != 0)
+            {
+                pick = p;
+                break;
+            }
+        }
+        if (pick != nullptr)
+        {
+            g_sgnp_rc = kos_mem_self_grant(pick, 40);
+            g_sgnp_ran = 1;
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void t_selfgrant_nonpow2()
+    {
+        // Unprivileged + AUTH_MEMORY, like t_selfgrant: a privileged caller is
+        // answered "already reachable" before the geometry is ever examined.
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(sgnp_worker, nullptr, "sgNP", 10, caps, 1,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                        nullptr, 0, /*authority=*/KOS_AUTH_MEMORY);
+        if (w < 0)
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        if (g_sgnp_ran == 0)
+        {
+            tap::skip("arena too small for the probe blocks");
+            return;
+        }
+        TAP_CHECK(g_sgnp_rc == 0);
+    }
 }
 
 int main(int, char**)
@@ -3138,6 +3201,8 @@ int main(int, char**)
 #endif
 #endif
     tap::add("caller_stack", t_caller_stack); // caller-owned stack API (no test-only syscalls)
+    // Here, not beside mem_self_grant: see the run-order note at t_selfgrant_nonpow2.
+    tap::add("mem_self_grant_nonpow2", t_selfgrant_nonpow2); // non-pow2 region self-grants
     tap::add("domain_share", t_domain_share); // two threads share one memory domain
     tap::add("mmio_grant", t_mmio_grant);     // MMIO-grant boundary: privileged-only + encodable-only
 #if KICKOS_HAVE_MPU
