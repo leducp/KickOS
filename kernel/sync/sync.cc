@@ -57,10 +57,9 @@ namespace kickos
     // sim (the switch already happened synchronously inside wq_block).
     void wq_confirm_resume(Thread* c, uint64_t epoch)
     {
-        // Bounded like every other synchronous poll in the tree (KICKOS_POLL_SPIN_MAX).
-        // A masked or lost PendSV used to leave this spinning forever with no diagnostic.
-        // The switch is pended and fires as soon as the caller's IrqLock drops, so the cap
-        // is far above any real wait: reaching it means the switch is never coming.
+        // Bounded (KICKOS_POLL_SPIN_MAX): the pended switch fires as soon as the
+        // caller's IrqLock drops, so the cap is far above any real wait and reaching
+        // it means the switch is never coming (a masked or lost PendSV).
         uint32_t spin = 0;
         while (*static_cast<uint64_t volatile*>(&c->switch_count) == epoch)
         {

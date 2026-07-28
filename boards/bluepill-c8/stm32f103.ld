@@ -40,17 +40,12 @@ SECTIONS
         . = ALIGN(4);
     } > FLASH
 
-    /* Global ctors SPLIT -- this board override MUST mirror the chip default
-       (arch/arm/chip/stm32f103/stm32f103.ld). It previously had a single monolithic
-       .init_array, which is a two-fold bug: (1) every APP ctor ran from
-       Reset_Handler, before kmain, so a ctor issuing a syscall (kos_clock_now needs
-       ktime_init plus a current thread) had no kernel to call; and (2) the app-ctor
-       bounds root_entry walks are declared WEAK in kmain.cc, so with no
-       .kickos_app_init_array section they resolved to 0 and the walk was skipped
-       ENTIRELY -- silently, with no diagnostic. Partition by input ARCHIVE, never by
-       section name: an app TU using __attribute__((init_priority(N))) emits
-       .init_array.0NNNN, which matches none of the four archive selectors and so
-       falls through to the app bucket below. */
+    /* Global ctors SPLIT. This board override MUST mirror the chip default
+       (arch/arm/chip/stm32f103/stm32f103.ld): a monolithic .init_array runs app
+       ctors before kmain AND leaves the weak app-ctor bounds in kmain.cc at 0, so
+       the root_entry walk is skipped silently. Partition by input ARCHIVE, never by
+       section name: __attribute__((init_priority(N))) emits .init_array.0NNNN,
+       which no archive selector matches, so it falls through to the app bucket. */
     .init_array :
     {
         __init_array_start = .;
@@ -61,9 +56,7 @@ SECTIONS
         __init_array_end = .;
     } > FLASH
 
-    /* Teardown mirror of the ctor split: place .fini_array on the APP side (never the
-       privileged bucket) so an unplaced one cannot be ORPHANED outside every stated
-       boundary, and ASSERT it empty -- nothing walks it. Full rationale in
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
        arch/arm/chip/stm32f411/stm32f411.ld. */
     .kickos_app_fini_array :
     {
@@ -125,9 +118,8 @@ SECTIONS
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
 
-/* Static destructors are unsupported: nothing walks .fini_array (see the section
-   comment), so a global with a non-trivial destructor is silently dropped rather than
-   run. Fail the link instead of shipping a destructor that never fires. */
+/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
+   rather than silently drop a destructor. */
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 /* Opt-in link-time heap floor (undefined by default). */

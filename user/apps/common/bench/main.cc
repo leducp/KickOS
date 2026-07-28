@@ -80,11 +80,7 @@ namespace
             // (direct reschedule to the higher-prio reporter), never a timer, so it
             // cannot be starved by this CPU-bound ping-pong.
             //
-            // Explicit RMW through a local: '++' on a volatile is deprecated (C++20),
-            // and `++g_rounds % N` also re-READ the volatile to get the value it had
-            // just stored. This is the one writer, so the extra load was harmless --
-            // but testing the value we stored is what was meant. Same shape as the
-            // console chip-writer count (kernel/init/console.cc).
+            // Explicit RMW through a local: '++' on a volatile is deprecated (C++20).
             uint32_t const round = g_rounds + 1;
             g_rounds = round;
             if ((round % ROUNDS_PER_REPORT) == 0)
@@ -137,14 +133,10 @@ namespace
                 ns_per_sw = static_cast<uint32_t>(d_ns / switches);
             }
 
-            // Every %u argument below is cast to `unsigned` explicitly: uint32_t is
-            // `unsigned long` on the newlib targets and plain `unsigned` on the host and
-            // Xtensa, so an uncast one is a -Wformat mismatch on half the fleet. Casting
-            // rather than PRIu32 keeps ONE literal format string on every target, which
-            // matters because ksnprintf is our own reduced formatter (lib/libc/fmt.cc)
-            // and these templates get read and pasted into the raw-measurement notes by
-            // hand. `unsigned` is 32-bit everywhere KickOS runs, so nothing truncates.
-            // Same convention as the other measurement app, user/apps/common/clocksoak.
+            // Every %u argument below is cast to `unsigned`: uint32_t is `unsigned
+            // long` on the newlib targets and plain `unsigned` on the host and Xtensa,
+            // and `unsigned` is 32-bit everywhere KickOS runs. Same convention as
+            // user/apps/common/clocksoak.
             char s[160];
             ksnprintf(s, sizeof(s),
                       "  throughput: %u ctx-sw/s  (%u ns/sw avg over %u switches / %u ms)\n",

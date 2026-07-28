@@ -192,11 +192,9 @@ namespace
     volatile uint32_t g_clk_high = 0;
     volatile uint32_t g_clk_last = 0;
 
-    // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Its SOLE
-    // writer is the init() in arch_init -- this chip does not retune at runtime
-    // (arch_cpu_clock_set is the weak default returning 0), so there is no re-anchor.
-    // A fixed-set retune added later must call reprice() at the rate edge; the read
-    // must stay pure.
+    // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Sole writer
+    // is init() in arch_init; this chip never retunes at runtime. A retune added later
+    // must call reprice() at the rate edge; the read must stay pure.
     kickos::arch_clk_anchor g_clk;
 
     void tim2_clock_init()

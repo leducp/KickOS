@@ -188,12 +188,10 @@ namespace
 }
 
 // The MPU hardware-programming step (disable / reprogram descriptors / re-enable).
-// Split out of arch_mpu_apply so it can run from the PendSV switch epilogue -- i.e.
-// atomically with the PHYSICAL context switch -- instead of eagerly from switch_to. The
-// switch is a pended PendSV on BOTH v6-M and v7-M, so both need that: an eager apply
-// reprograms the MPU for the INCOMING thread while the OUTGOING thread is still
-// physically running (PendSV not fired yet), so the outgoing thread executes with the
-// incoming thread's shrunk region set and faults on its own stack.
+// Split out of arch_mpu_apply so the PendSV epilogue can run it atomically with the
+// physical context switch. An eager apply reprograms the MPU for the incoming thread
+// while the outgoing thread is still running (PendSV not fired yet), faulting it on
+// its own stack.
 extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, size_t n)
 {
     using namespace kickos::arm;

@@ -37,10 +37,9 @@ _bf() {
 }
 
 # _app_base <builddir> <board> <app> -> emitted image base (no extension); nonzero if
-# the app is not built there. The build tree mirrors user/apps/: a board-specific app
-# lives under <board>/<app>/ (the directory IS the board gate), a fleet-wide one under
-# common/<app>/. Board-specific is searched FIRST, so if the same name exists in both
-# the board's own app wins -- that is the one its build actually emits for the board.
+# the app is not built there. The build tree mirrors user/apps/: board-specific apps
+# under <board>/<app>/, fleet-wide ones under common/<app>/. Board-specific is
+# searched FIRST, so on a name collision the board's own app wins.
 _app_base() {
     local d
     for d in "$1/user/apps/$2/$3" "$1/user/apps/common/$3"; do

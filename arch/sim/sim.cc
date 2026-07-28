@@ -920,11 +920,9 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     arena_raise_all();
 }
 
-// The sim has no deferred-commit seam: arch_mpu_apply above programs the protection
-// (mprotect) as it records it, and the host "switch" is a real longjmp with no pended
-// exception, so there is nothing to commit afterwards. Defined anyway because the
-// symbol is an arch-wide contract -- the kernel's self-grant path calls it to make a
-// widened region set effective before returning to the running thread.
+// Empty: arch_mpu_apply above already programs mprotect as it records, and the host
+// switch is a synchronous longjmp, so there is nothing to commit afterwards. Defined
+// because the symbol is an arch-wide contract (the self-grant path calls it).
 void kickos_arch_mpu_commit(void) {}
 
 size_t arch_mpu_min_region(void)
@@ -1032,23 +1030,16 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len)
     return not hits_arena;
 }
 
-// The write twin (arch.h). The sim needs its OWN arm even though it builds with
-// KICKOS_HAVE_MPU=1: its app globals live in the host image rather than the mprotect'd
-// arena, so arch_domain_static_regions models no static-data region here and an
-// unprivileged thread's writable set would otherwise be its own stack alone -- refusing
-// every syscall buffer that lives in a global. Admission is the SAME rule as the read
-// hook above: wholly inside the host image, clear of the arena.
+// The write twin (arch.h). Needed even with KICKOS_HAVE_MPU=1: sim app globals live in
+// the host image, not the arena, so arch_domain_static_regions models no static-data
+// region here. Admission is the same rule as the read hook above: wholly inside the
+// host image, clear of the arena.
 //
-// One asymmetry, stated rather than hidden: on hardware an out-pointer into code/rodata
-// is rejected, and this admits one, because the two image-bound symbols cannot separate
-// .text/.rodata from .data/.bss. The host's own page permissions are the backstop --
-// those pages are mapped r-x / r--, so a real write faults in the host instead of
-// silently landing. Same "the sim provably can't" limit the read hook carries.
-//
-// The sharper asymmetry has no backstop: kernel .data/.bss also sit inside the image
-// bounds on rw pages, so an unprivileged out-pointer aimed at kernel state is admitted
-// and the kernel's own store lands. The arena cross-domain boundary is what the sim
-// actually enforces; every enforcing backend rejects this class.
+// Two asymmetries vs hardware. An out-pointer into code/rodata is admitted (the two
+// image-bound symbols cannot separate .text/.rodata from .data/.bss); the host's r-x /
+// r-- page permissions backstop it. Kernel .data/.bss also sit inside the image on rw
+// pages, so an unprivileged out-pointer aimed at kernel state is admitted with NO
+// backstop; the sim enforces only the arena cross-domain boundary.
 bool arch_user_data_writable(uintptr_t ptr, size_t len)
 {
     return arch_user_text_readable(ptr, len);

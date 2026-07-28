@@ -37,15 +37,14 @@ void kos_sleep_ns(uint64_t ns);
 // it via kos_thread_params.caps (see kos_cap_grant). sem_create grants the creator a
 // full-rights (WAIT|SIGNAL|TRANSFER) cap.
 // -> opaque cap handle; -KOS_ENOMEM (pool/table full); or -KOS_EINVAL when `initial` is
-// outside [0, KOS_SEM_COUNT_MAX] (abi.h). The count is a bounded int, so a sem may not be
-// born at a value one post would overflow.
+// outside [0, KOS_SEM_COUNT_MAX] (abi.h).
 int kos_sem_create(int initial);
 // 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EPERM (cap lacks WAIT/SIGNAL). These now
 // SURFACE the error (they were void): a wait/post on a closed cap no longer silently no-ops
 // -- check the return where a stale cap must not be mistaken for a completed wait/post.
 int kos_sem_wait(int sem);
-// Also -KOS_EOVERFLOW with no waiter and the count at KOS_SEM_COUNT_MAX. The token is not
-// banked, because incrementing past the ceiling is undefined.
+// Also -KOS_EOVERFLOW with no waiter and the count at KOS_SEM_COUNT_MAX; the token is
+// not banked.
 int kos_sem_post(int sem);
 
 // Priority-inheritance mutex. Like a semaphore, the handle is an OPAQUE per-task
@@ -208,30 +207,28 @@ void kos_clock_set_realtime(uint64_t unix_ns);
 void* kos_ram_alloc(size_t size);
 
 // Add [base, base+size) to the CALLING thread's own region set, so the caller may
-// dereference memory it allocated. The explicit half of "regions are granted, never
-// implied": kos_ram_alloc reserves, this grants, and nothing grants implicitly.
+// dereference memory it allocated: kos_ram_alloc reserves, this grants, and nothing
+// grants implicitly.
 //
 // Requires AUTH_MEMORY, the same authority kos_ram_alloc takes. The region is run
 // through the same Rule 7 admission predicate as a spawn-time grant, so it must be
 // inside the user arena and clear of every kernel-reserved block; the committed
 // extent is rounded up to what the MPU can describe (arch_ram_region_size), exactly
 // as a domain data region is. The gate admits ANY reserved-clear in-arena range,
-// not only memory the caller itself allocated: AUTH_MEMORY is arena-wide authority,
-// consistent with the spawn grant model.
+// not only memory the caller itself allocated: AUTH_MEMORY is arena-wide authority.
 //
 // BOUNDED by the hardware region budget, and loud when it runs out. A thread already
 // spends up to 5 of KICKOS_MPU_MAX_REGIONS on code, static data, its domain and its
-// stack, so self-grants draw on a small remainder; the refusal is -KOS_ENOMEM rather
-// than a silently truncated region set. Grant the regions a thread needs for its
-// lifetime at start-up, and do not treat this as a general mapping call.
+// stack, so self-grants draw on a small remainder. Grant the regions a thread needs
+// for its lifetime at start-up; this is not a general mapping call.
 //
 // Returns 0 on success (including when the range is ALREADY reachable, which costs
 // no descriptor), or:
 //   -KOS_EPERM   no AUTH_MEMORY, or the range is inadmissible (outside the arena,
 //                or overlapping a reserved block)
 //   -KOS_EINVAL  size 0, the range wraps, or (under an MPU) the base is not
-//                naturally aligned to the rounded region size -- a base from
-//                kos_ram_alloc never trips this
+//                naturally aligned to the rounded region size (a base from
+//                kos_ram_alloc never trips this)
 //   -KOS_ENOMEM  the caller's region budget is full
 int kos_mem_self_grant(void* base, size_t size);
 

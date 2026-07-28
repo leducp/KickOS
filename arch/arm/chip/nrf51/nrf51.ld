@@ -18,22 +18,13 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 2K;
 
-/* Newlib heap: EMPTY on this chip. The .userheap carve comes out of RAM ahead of the
-   thread arena, and 16 KiB cannot pay for both: the selftest image's statics already
-   leave only ~5.5 KiB of arena, and a 4K heap takes enough of that to starve the pool
-   of thread stacks -- every kos::thread::spawn then fails. No app built for this board
-   allocates, so 0 is the honest budget and the arena gets all of it. A variant that
-   does need a heap asks with -DKICKOS_USER_HEAP_SIZE=<n> and pays for it in stacks.
-
-   The section stays at zero length rather than being deleted, because deleting it
-   would break EVERY link on this board, not just an allocating one: _sbrk shares a TU
-   with _exit/_write (user/src/newlib_stubs.cc) and the link force-links it with
-   -u,_exit, so its STRONG reference to _kickos_heap_start is present in every image
-   and outranks the weak one kmain's banner uses. The heap model's link-time fail-loud
-   ("undefined reference to _kickos_heap_start", intended to fire only for an app that
-   allocates) is therefore not reachable from a linker script; here an allocating app
-   fails at RUNTIME instead -- _sbrk refuses every request against an empty window and
-   malloc returns NULL. Boot banner reports `heap none`. */
+/* Newlib heap: EMPTY. 16 KiB RAM cannot pay for a heap and the thread arena; even a
+   4K heap starves the arena and kos::thread::spawn fails. A variant that needs a heap
+   passes -DKICKOS_USER_HEAP_SIZE=<n> and pays for it in stacks.
+   The section stays at zero length rather than being deleted: _sbrk is force-linked
+   into every image (-u,_exit shares its TU), so its strong reference to
+   _kickos_heap_start would break every link on this board. An allocating app
+   therefore fails at RUNTIME (malloc returns NULL), not at link. */
 #ifndef KICKOS_USER_HEAP_SIZE
 #define KICKOS_USER_HEAP_SIZE 0
 #endif
@@ -64,9 +55,7 @@ SECTIONS
         __init_array_end = .;
     } > FLASH
 
-    /* Teardown mirror of the ctor split: place .fini_array on the APP side (never the
-       privileged bucket) so an unplaced one cannot be ORPHANED outside every stated
-       boundary, and ASSERT it empty -- nothing walks it. Full rationale in
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
        arch/arm/chip/stm32f411/stm32f411.ld. */
     .kickos_app_fini_array :
     {
@@ -128,16 +117,13 @@ SECTIONS
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
 
-/* Static destructors are unsupported: nothing walks .fini_array (see the section
-   comment), so a global with a non-trivial destructor is silently dropped rather than
-   run. Fail the link instead of shipping a destructor that never fires. */
+/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
+   rather than silently drop a destructor. */
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 /* Opt-in link-time heap floor (undefined by default). The default heap here is empty,
-   so any floor at all fails the link unless KICKOS_USER_HEAP_SIZE is raised to match --
-   which is the point: it is the one way to make this board's heap budget a link error
-   rather than a runtime NULL. */
+   so any floor fails the link unless KICKOS_USER_HEAP_SIZE is raised to match. */
 #ifdef KICKOS_HEAP_MIN
 ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
        "KickOS: heap below KICKOS_HEAP_MIN")

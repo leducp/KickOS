@@ -6,16 +6,13 @@
 // then writes domain B's region -- which must fault. The kernel reports "MPU
 // FAULT" and shuts down. CTest asserts the marker appears (and no "did not fault").
 //
-// Static-data-free by construction: the worker takes its region base through its thread
-// ARG, by value, and derives both cells from it. No file-scope globals, and nothing in
-// memory for the parent to fill in. The only memory the worker touches is its code
-// (flash, granted RX), region A (granted), and its own stack.
+// Static-data-free by construction: the worker takes its region base through its
+// thread ARG, by value, and derives both cells from it. The only memory it touches is
+// its code (flash, granted RX), region A (granted), and its own stack.
 //
-// The arg is a value rather than a struct because root must not write region A. It is not
-// granted A, so under KICKOS_ROOT_PRIVILEGED=0 a struct placed there faults in root
-// during setup, before the worker ever runs: the gate then reports a fault by 'root' and
-// proves nothing about the child. One 8 KiB allocation, the low half granted, keeps both
-// cells derivable from the single base.
+// The arg is a value, not a struct in region A: under KICKOS_ROOT_PRIVILEGED=0 root is
+// not granted A, so filling a struct there would fault in root during setup and prove
+// nothing about the child.
 //
 // Enforced in the sim (mprotect) and on HW where the MPU backend is active
 // (KICKOS_HAVE_MPU). Where the MPU is a no-op (privilege-only boards), the

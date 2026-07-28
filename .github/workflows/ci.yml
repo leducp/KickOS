@@ -1,40 +1,21 @@
 # SPDX-License-Identifier: CECILL-C
 # KickOS CI: the deterministic, host-runnable green gates (docs/m2-readiness.md #6).
-# Every job mirrors a `--preset` invocation. Nothing here runs on silicon, so nothing
-# here is evidence about a port's hardware status -- that has one home, and it is
-# docs/reference/boards.md.
+# Every job mirrors a `--preset` invocation. Nothing here runs on silicon; a port's
+# hardware status has one home, docs/reference/boards.md.
 #
-# ISA coverage: sim (host), armv7m + armv6m (QEMU run), rv32imac (QEMU run, plain and
-# under PMP), Xtensa LX6 (build-only). Renesas RX is the ONE ISA with no gate: RX72M
-# needs -misa=v3 and -mdfpu, which exist only in the registration-gated Renesas GNURX
-# build -- upstream rx-elf GCC rejects both -- so RX cannot be built on a hosted
-# runner at all.
+# ISA coverage: sim (host), armv7m + armv6m + armv8m (QEMU run), rv32imac (QEMU run,
+# plain and under PMP), Xtensa LX6 (build-only). Renesas RX has no gate: RX72M needs
+# -misa=v3/-mdfpu, which exist only in the registration-gated Renesas GNURX build.
 #
-# MPU-enforcement coverage is exercised at RUNTIME on all three ISA families with a
-# per-task unit: the sim (host mprotect), rv32imac (PMP, the qemu-riscv-mpu job), and
-# ARM on both PMSA revisions (the enforcement step in qemu-arm -- PMSAv7 on the
-# an386/an500/an385 images, PMSAv8 on the an505's Cortex-M33). ARM was a BUILD gate
-# only until mps2.ld grew the .appdata window; before that every enforcing ARM port was
-# a silicon part and the one runnable armv7m target shipped no enforcement block.
-# build-boards-mpu stays, and is still the ONLY coverage of the chip-specific
-# enforcement backends QEMU carries no model for (SYSMPU, the M7 anti-speculation wrap,
-# PMSAv6) -- for those, CI still proves the link surface and not the trap.
+# MPU enforcement runs at RUNTIME on all three ISA families: sim (host mprotect),
+# rv32imac (PMP, qemu-riscv-mpu), ARM on both PMSA revisions (the enforcement step
+# in qemu-arm). build-boards-mpu is the only coverage of the chip-specific backends
+# QEMU has no model for (SYSMPU, the M7 anti-speculation wrap, PMSAv6): link surface
+# only, never the trap.
 #
-# Two code-hygiene gates, with deliberately different reach. Warnings-as-errors rides
-# EVERY job below, because the KICKOS_WERROR default in cmake/kickos.cmake is on for
-# any in-tree build -- no job here passes a flag for it, and adding one would only let
-# CI and the desk drift apart. UBSan is the sim alone (the sim-ubsan job), and cannot
-# be otherwise: there is no bare-metal sanitizer runtime to link against.
-#
-# -Werror widened from sim-only to the fleet once the one dirty spot was cleaned (the
-# `bench` app's -Wformat/-Wvolatile debt, which is why qemu-riscv-bench was the preset
-# that blocked it). Both gates were verified FREE at their adoption -- every preset
-# builds warning-clean on the pinned toolchains, and the suite reports zero UBSan
-# diagnostics -- so neither buys a red build today, while both get more expensive the
-# longer they are deferred. A toolchain bump is the expected way this goes red: four
-# compilers run across these jobs (host g++, arm-none-eabi, riscv32-none-elf,
-# xtensa-esp-elf), and a new diagnostic in any of them now fails a build rather than
-# scrolling past. -DKICKOS_WERROR=OFF is the escape hatch while that is cleared.
+# Warnings-as-errors rides EVERY job with no flag (KICKOS_WERROR defaults ON for any
+# in-tree build; see cmake/kickos.cmake, incl. the -DKICKOS_WERROR=OFF escape).
+# UBSan is the sim alone: there is no bare-metal sanitizer runtime to link against.
 #
 # Toolchains are the SAME pinned vendor tarballs used locally (reproducibility): the
 # official Arm GNU Toolchain (arm-none-eabi, newlib), the RISCstar toolchain
@@ -48,10 +29,8 @@ on:
   push:
     branches: [master]
   pull_request:
-  # Manual per-branch run, from the Actions tab or `gh workflow run ci.yml --ref <branch>`.
-  # push is master-only and a feature branch fires nothing until a PR opens, so without
-  # this a long-lived branch cannot be exercised against the pinned CI toolchains (which
-  # are NOT the desk ones -- see ARM_TC_URL) until it is ready for review.
+  # Manual per-branch run (`gh workflow run ci.yml --ref <branch>`): push is
+  # master-only and a feature branch fires nothing until a PR opens.
   workflow_dispatch:
 
 concurrency:
@@ -59,26 +38,21 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # These name the vendor tarballs, nothing in cmake/: no toolchain file carries a
-  # default compiler path any more (all four seed KICKOS_*_TOOLCHAIN_BIN from the
-  # environment), so only the variable NAMES have to agree.
-  # CI uses 15.2.rel1 (the newest arm-none-eabi that developer.arm.com serves anonymously;
-  # 15.3.rel1 is gitlab-only + login-gated). The dev/silicon toolchain is 15.3.rel1 -- no
-  # preset pins a compiler path, so this CI-only minor skew is harmless for
-  # build-regression coverage.
+  # These name the vendor tarballs; only the KICKOS_*_TOOLCHAIN_BIN variable NAMES
+  # must agree with the toolchain files (which seed them from the environment).
+  # CI uses 15.2.rel1, the newest arm-none-eabi that developer.arm.com serves
+  # anonymously (15.3.rel1 is gitlab-only + login-gated); the desk toolchain is
+  # 15.3.rel1, a harmless minor skew for build-regression coverage.
   ARM_TC_DIR: arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi
   ARM_TC_URL: https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz
   RV_TC_DIR: riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf
   RV_TC_URL: https://releases.riscstar.com/toolchain/16.1-r1/riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf.tar.xz
-  # Espressif's Xtensa toolchain: a PUBLIC GitHub release asset (anonymous, no
-  # registration), unlike the RX vendor toolchain. The tarball is named
-  # xtensa-esp-elf (the unified toolchain) but still installs the per-chip
-  # xtensa-esp32-elf-* program names the toolchain file looks for, and unpacks to a
-  # version-less xtensa-esp-elf/ -- hence the separate tag in the cache key.
-  # Do NOT downgrade to esp-12.2.0 (the last release whose asset is literally named
-  # xtensa-esp32-elf): its GCC 12.2 predates -nostdlib++, which the freestanding-C++
-  # posture passes, so every compile dies on "unrecognized command-line option".
-  # esp-16.1.0_20260609 is the version actually verified to build the fleet.
+  # Espressif's Xtensa toolchain (a public GitHub release asset). The tarball is
+  # named xtensa-esp-elf but installs the per-chip xtensa-esp32-elf-* program names
+  # the toolchain file looks for, and unpacks to a version-less xtensa-esp-elf/ --
+  # hence the separate tag in the cache key. Do NOT downgrade to esp-12.2.0: its
+  # GCC 12.2 predates -nostdlib++, which the freestanding-C++ posture passes, so
+  # every compile dies on "unrecognized command-line option".
   XT_TC_DIR: xtensa-esp-elf
   XT_TC_TAG: esp-16.1.0_20260609
   XT_TC_URL: https://github.com/espressif/crosstool-NG/releases/download/esp-16.1.0_20260609/xtensa-esp-elf-16.1.0_20260609-x86_64-linux-gnu.tar.xz
@@ -87,11 +61,6 @@ jobs:
   # Authoritative deterministic gate: full ctest on the host sim -- selftest, the
   # stress soak (incl. thread-reclaim churn), sched_exit, mpu_fault, telemetry
   # golden-vector, and the out-of-tree export check.
-  #
-  # Warnings-as-errors needs no flag here, and neither does any other job: every
-  # in-tree build defaults KICKOS_WERROR on (cmake/kickos.cmake), so -Werror rides
-  # the normal per-target warning flags. See that file for the scoping rule -- an
-  # INSTALLED package deliberately leaves it off -- and the -DKICKOS_WERROR override.
   sim:
     runs-on: ubuntu-latest
     steps:
@@ -102,40 +71,21 @@ jobs:
       - run: cmake --build --preset sim
       - run: ctest --preset sim --output-on-failure
 
-  # The same sim gate rebuilt under UndefinedBehaviorSanitizer: a cheap runtime-UB
-  # net (signed overflow, out-of-range shifts, misaligned/null loads, bogus enum and
-  # bool values) over the whole kernel plus the full ctest suite. Verified to report
-  # NOTHING at adoption time, so it starts green and every future report is real
-  # signal. -fno-sanitize-recover=all is what makes it a GATE: UBSan's default is
-  # print-and-continue, which leaves the test exit status 0 and the job green while
-  # the diagnostic scrolls past unread.
+  # The sim gate rebuilt under UndefinedBehaviorSanitizer. -fno-sanitize-recover=all
+  # is what makes it a GATE: UBSan's default is print-and-continue, exit status 0.
   #
-  # UBSan and deliberately NOT AddressSanitizer. The sim switches threads with
-  # ucontext (swapcontext onto an mmap'd stack), and ASan cannot follow a stack
-  # switch it was not told about: without __sanitizer_start_switch_fiber /
-  # __sanitizer_finish_switch_fiber annotations bracketing the switch it treats each
-  # new stack as a wild region and the sim hangs instead of failing. UBSan
-  # intercepts no stacks at all, so it needs nothing from the context switch.
-  # Teaching arch/sim the fiber annotations is the follow-up that would buy
-  # ASan/LSan; until then, do not simply add -fsanitize=address here.
+  # UBSan only. Do NOT add -fsanitize=address: the sim switches threads with
+  # ucontext, and without __sanitizer_start/finish_switch_fiber annotations ASan
+  # treats each new stack as a wild region and the sim hangs. UBSan intercepts no
+  # stacks and needs nothing from the context switch.
   #
-  # The flags arrive through the standard CFLAGS/CXXFLAGS ENVIRONMENT rather than
-  # -DCMAKE_C/CXX_FLAGS, and that choice is load-bearing: the oot_export gate in
-  # this very suite installs the (now instrumented) package and configures a fresh
-  # out-of-tree consumer in a CHILD cmake. A -D reaches only this build tree, so
-  # that consumer links instrumented archives without the UBSan runtime and dies on
-  # undefined __ubsan_handle_* -- a red test that is pure flag-injection artefact.
-  # The environment IS inherited by the child, so it builds with the same flags and
-  # oot_export stays a real, running gate rather than something excluded to hide a
-  # self-inflicted failure. Hence `env:` at JOB level, not on the configure/build
-  # steps: the inheriting child cmake is spawned by the CTEST step, so scoping the
-  # variables to the earlier steps is exactly the mistake that puts oot_export back
-  # in the red.
+  # Flags via the CFLAGS/CXXFLAGS ENVIRONMENT, at JOB level, not -DCMAKE_C/CXX_FLAGS
+  # on the configure step: the oot_export test's child cmake (spawned by the CTEST
+  # step) inherits the environment but never a -D, and would otherwise link
+  # instrumented archives without the UBSan runtime (undefined __ubsan_handle_*).
   #
   # A separate binaryDir (-B) keeps the instrumented tree out of the plain `sim`
-  # preset's build/sim, so a developer can run this locally without discarding their
-  # normal build. ctest is therefore driven by --test-dir (there is no sanitizer
-  # test preset), exactly as build-boards-mpu does it.
+  # preset's build/sim; ctest is driven by --test-dir (no sanitizer test preset).
   sim-ubsan:
     runs-on: ubuntu-latest
     env:
@@ -178,12 +128,9 @@ jobs:
           file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/arm.tar.xz
       - name: Put toolchain on PATH + bin
-        # Two routes, and either one alone is sufficient. The toolchain files seed
-        # KICKOS_*_TOOLCHAIN_BIN from the environment and re-export the resolved value,
-        # so the hint now also reaches CMake's try_compile ABI check -- that child cmake
-        # re-reads the toolchain file with a fresh cache, so it inherits the environment
-        # and PATH but never a -D cache entry. Belt-and-braces is deliberate: PATH is
-        # also what an empty hint falls back to.
+        # Env var and PATH; either alone is sufficient (the toolchain files seed
+        # KICKOS_*_TOOLCHAIN_BIN from the environment, and an empty hint falls back
+        # to PATH). Belt-and-braces is deliberate.
         run: |
           echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -196,17 +143,11 @@ jobs:
           cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
           ctest --preset qemu --output-on-failure --repeat until-pass:4
-      # The SAME chip backend on the three other MPS2 FPGA images, as steps in THIS job
-      # rather than jobs of their own: the toolchain download, its cache and
-      # qemu-system-arm are already paid for here, and each run is a couple of seconds
-      # (selftest is ~2.2 s), so a separate job would spend more time provisioning than
-      # testing. --repeat until-pass:4 for the same coarse-semihosting-clock reason as
-      # the an386 step above.
-      #
-      # Each image buys coverage the an386 cannot: the M33 is armv8-M (PMSAv8), the M7
-      # implements 16 MPU regions where the M4 has 8, and the M3 has no FPU at all, so
-      # the soft-float switch path is what actually runs. That last posture otherwise
-      # exists only on boards CI cannot run (due, bluepill-c8).
+      # The same chip backend on the three other MPS2 FPGA images (steps, not jobs:
+      # the toolchain and qemu-system-arm are already provisioned here). Each image
+      # buys coverage the an386 cannot: the M33 is armv8-M (PMSAv8), the M7 has 16
+      # MPU regions to the M4's 8, and the M3 has no FPU so the soft-float switch
+      # path actually runs.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
         run: |
           cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
@@ -222,14 +163,11 @@ jobs:
           cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m3
           ctest --preset qemu-m3 --output-on-failure --repeat until-pass:4
-      # ARM MPU ENFORCEMENT AT RUNTIME -- the peer of the qemu-riscv-mpu job, and the
-      # thing ARM did not have until mps2.ld grew an .appdata window. build-boards-mpu
-      # can only ever check that the enforcement layout LINKS, because every other
-      # enforcing ARM port is silicon. These four run the full TAP suite as unprivileged
-      # threads and take a real MemManage denial in mpu_fault, over BOTH PMSA
-      # revisions: v7 on the M4/M7/M3, v8 on the M33 (a different register layout, so
-      # not the same code path at all). Out-of-tree build dirs, because the presets
-      # above already own build/<preset> in the non-enforcement posture.
+      # ARM MPU enforcement at RUNTIME (the peer of qemu-riscv-mpu): the full TAP
+      # suite as unprivileged threads plus a real MemManage denial in mpu_fault,
+      # over both PMSA revisions: v7 on the M4/M7/M3, v8 on the M33 (a different
+      # register layout, not the same code path). Out-of-tree build dirs: the
+      # presets above own build/<preset> in the non-enforcement posture.
       - name: ARM PMSA enforcement run gates (v7 + v8)
         run: |
           for b in qemu qemu-m33 qemu-m7 qemu-m3; do
@@ -325,13 +263,11 @@ jobs:
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
 
-  # Xtensa LX6 (esp32-wroom) build-only gate. No run step: upstream QEMU ships no ESP32
-  # machine model, so this catches build/link/linker-script + windowed-ABI asm
-  # regressions only, never a run. Both the plain and the selftest config are built,
-  # the latter because it pulls in the full IRQ suite and so covers considerably more
-  # link surface. esptool is deliberately NOT installed: it is only needed for the
-  # bootable .app.bin elf2image post-step, which CI cannot boot anyway -- the ELF link
-  # is the regression signal, and CMake reports the skip without failing.
+  # Xtensa LX6 (esp32-wroom) build-only gate: upstream QEMU ships no ESP32 machine
+  # model, so this proves build/link/linker-script + windowed-ABI asm, never a run.
+  # The selftest config is built too (much more link surface). esptool is NOT
+  # installed: it only serves the bootable .app.bin post-step, which CI cannot boot
+  # anyway; CMake reports the skip without failing.
   xtensa:
     runs-on: ubuntu-latest
     steps:
@@ -353,9 +289,7 @@ jobs:
           file /tmp/xt.tar.xz | grep -q XZ || { echo "xtensa toolchain: $XT_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/xt.tar.xz
       - name: Put toolchain on PATH + bin
-        # Both, for the same reason as qemu-arm: either alone is sufficient. The env var
-        # is what cmake/toolchain-xtensa-esp32-elf.cmake seeds KICKOS_XTENSA_BIN from,
-        # and it re-exports the resolved value so try_compile inherits it too.
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
         run: |
           echo "$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_XTENSA_BIN=$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -370,9 +304,8 @@ jobs:
 
   # Build-only sweep of the remaining ARM boards (catches build/link/linker-script
   # regressions). No run step -- these need silicon or a machine model CI does not
-  # carry. RX omitted: RX72M needs -misa=v3/-mdfpu, which exist only in the
-  # registration-gated Renesas GNURX build (upstream rx-elf GCC rejects both), so it
-  # stays a bench step. Xtensa is the job above; RISC-V is the qemu-riscv job.
+  # carry. RX omitted (no hosted-runner toolchain; see the header). Xtensa is the
+  # job above; RISC-V is the qemu-riscv job.
   build-boards:
     runs-on: ubuntu-latest
     strategy:
@@ -406,39 +339,27 @@ jobs:
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
 
-  # ARM MPU-ENFORCEMENT build gate: the same ARM boards again, but configured with
-  # -DKICKOS_HAVE_MPU=1. This is the only job that builds the enforcement-only link
-  # surface of the silicon boards -- elsewhere in this file it is compiled only for
-  # mps2 (the qemu-arm enforcement run gates) and rv32imac:
-  # the pow2 .appdata/.appbss window plus its overflow/placement ASSERTs, the
-  # `archive:member` closed-set selectors that split kernel-owned writable state from
-  # app-owned, the app code/data grant symbols, and arch_reserved_blocks -- which has
-  # NO weak default on purpose (arch/include/kickos/arch/arch.h), so an enforcing port
-  # that forgets to declare its reserved set is a LINK error caught here instead of a
-  # silent open hole. The matrix is exactly the enforcement-capable ARM set (the boards
-  # shipping arch/arm/chip/<chip>/mpu.cmake); a board without one is rejected at
-  # configure time by the fail-loud floor in the top CMakeLists.
+  # ARM MPU-ENFORCEMENT build gate: the enforcement-capable ARM boards (those
+  # shipping arch/arm/chip/<chip>/mpu.cmake) with -DKICKOS_HAVE_MPU=1. The only job
+  # that builds the enforcement-only link surface of the silicon boards: the
+  # .appdata/.appbss window and its ASSERTs, the closed-set archive selectors, the
+  # grant symbols, and arch_reserved_blocks, which has NO weak default on purpose,
+  # so an enforcing port that forgets its reserved set is a LINK error here, not a
+  # silent open hole.
   #
-  # BUILD-ONLY, and it cannot be otherwise: QEMU carries no machine model for any of
-  # these chips, so cross-domain TRAPPING is not proven here. It no longer follows that
-  # ARM has no runtime enforcement gate -- the qemu-arm job now runs one on all four
-  # MPS2 images -- but that gate cannot stand in for THIS matrix, because what is
-  # unproven here is chip-specific: SYSMPU is not PMSA at all, the imxrt1062 needs the
-  # M7 anti-speculation region wrap, and picopi is PMSAv6 on a core with no MemManage.
-  # Those stay silicon-proven; see docs/reference/boards.md.
+  # BUILD-ONLY, necessarily: QEMU has no machine model for these chips, and what is
+  # unproven is chip-specific (SYSMPU is not PMSA, imxrt1062 needs the M7
+  # anti-speculation wrap, picopi is PMSAv6 with no MemManage). Trapping stays
+  # silicon-proven; see docs/reference/boards.md.
   #
-  # Honest limitation, so this job is not read as proving more than it does: the one
-  # ctest gate it registers, kernel_ctor_placement, currently passes VACUOUSLY on these
-  # boards. Every app in this matrix links with an EMPTY .kickos_app_init_array window
-  # (only the full-C++ cxxtest image has a non-empty one), so the check takes its
-  # "window empty -> PASS" early-out and never inspects a pointer. What it does still
-  # prove is that the enforced ctor-split section symbols EXIST -- it fails loudly when
-  # they do not. Re-pointing it at a non-empty window is a separate follow-up.
+  # The one ctest gate, kernel_ctor_placement, passes VACUOUSLY here: every app in
+  # this matrix links an empty .kickos_app_init_array window, so the check takes its
+  # "window empty -> PASS" early-out. It still proves the ctor-split section symbols
+  # EXIST, failing loudly when they do not.
   #
-  # No `ctest --preset`: cmake/presets/arm.json defines test presets only for
-  # qemu/qemu-telem/microbit, so these boards are driven by --test-dir on the preset's
-  # binaryDir. picopi is armv6m -- it links under enforcement but registers no ctor
-  # gate (that check is armv7m-only), so its ctest run is the build fixture alone.
+  # No `ctest --preset` (arm.json defines test presets only for qemu/qemu-telem/
+  # microbit): --test-dir on the preset's binaryDir. picopi links under enforcement
+  # but registers no ctor gate (armv7m-only check).
   build-boards-mpu:
     runs-on: ubuntu-latest
     strategy:

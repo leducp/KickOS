@@ -83,14 +83,12 @@ namespace kickos
 
     // A user-supplied WRITE buffer / out-pointer the kernel stores into privileged
     // (an endpoint recv buffer, a clock_now result). It passes iff it lies within a
-    // region the caller is granted WRITE OR, where the backend does not model app
-    // static data as a region, within the app's writable data extent
-    // (arch_user_data_writable): every no-MPU chip, and the host sim, whose globals live
-    // in the host image rather than the arena. Without that arm an unprivileged thread's
-    // writable set is its own STACK ALONE on those backends, so a recv buffer or an
-    // out-pointer that lives in a global is refused -KOS_EFAULT -- see the selftest's
-    // writable_global case, which fails on exactly those two postures without it.
-    // Privileged callers and len==0 pass via user_range_ok.
+    // region the caller is granted WRITE or, where the backend does not model app
+    // static data as a region (every no-MPU chip, and the host sim), within the app's
+    // writable data extent (arch_user_data_writable). Without that arm an unprivileged
+    // thread's writable set on those backends is its own stack alone, so an
+    // out-pointer that lives in a global is refused -KOS_EFAULT. Privileged callers
+    // and len==0 pass via user_range_ok.
     bool user_writable_ok(uintptr_t ptr, size_t len)
     {
         if (user_range_ok(ptr, len, ARCH_MPU_W))

@@ -110,8 +110,7 @@ typedef enum kos_pstate_e : uint32_t
 // Counting-semaphore ceiling. The kernel keeps the count in an `int`, so this is the
 // type's range rather than a policy number. sem_create refuses an initial outside
 // [0, KOS_SEM_COUNT_MAX] with -KOS_EINVAL; a post at the ceiling is refused with
-// -KOS_EOVERFLOW. Signed overflow is undefined and post is reachable from unprivileged
-// code, so the count is bounded at the boundary.
+// -KOS_EOVERFLOW.
 #define KOS_SEM_COUNT_MAX 0x7FFFFFFF
 
 // The robust-mutex "owner died" case is now a NEGATIVE code in the fleet taxonomy:
@@ -146,12 +145,11 @@ enum kos_policy
 // the child cap gets parent.rights & mask; a mask adding a bit the parent lacks is
 // rejected. Delegating requires the parent cap carry KOS_CAP_TRANSFER.
 //
-// The rights byte is SHARED between the two cap families, and which bits mean anything
+// The rights byte is SHARED between the two cap families; which bits mean anything
 // depends on the cap's TYPE. The low three below are the object rights (a semaphore,
-// mutex, endpoint or reply cap). The five KOS_AUTH_* bits are meaningful ONLY on the
-// authority cap at KOS_CAP_AUTHORITY, and they are the ENTIRE budget for the life of
-// the type -- eight bits, three spent here, five left, five named. Anything wanting a
-// sixth authority has to merge two of these, not add one.
+// mutex, endpoint or reply cap); the five KOS_AUTH_* bits are meaningful ONLY on the
+// authority cap at KOS_CAP_AUTHORITY. All eight bits are now spent: a sixth authority
+// has to merge two of these, not add one.
 enum kos_cap_rights
 {
     KOS_CAP_WAIT = 1 << 0,    // sem_wait; endpoint recv
@@ -198,15 +196,14 @@ struct kos_thread_params
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
     struct kos_cap_grant const* caps; // optional caps to delegate to the child (0 => none)
     uint8_t cap_count;   // number of entries in caps[]; caps land at child indices 1..cap_count
-    // Authority bits (kos_cap_rights KOS_AUTH_*) to seat as the child's authority cap at
-    // KOS_CAP_AUTHORITY; 0 => none. Only a thread that already holds each bit may pass it,
-    // so this narrows and never widens, exactly like a cap_grant mask. Fits in the padding
-    // after cap_count, so the struct does not grow.
+    // Authority bits (kos_cap_rights KOS_AUTH_*) to seat as the child's authority cap
+    // at KOS_CAP_AUTHORITY; 0 => none. Only a thread that already holds each bit may
+    // pass it: narrows, never widens, like a cap_grant mask. Fits in the padding after
+    // cap_count, so the struct does not grow.
     //
-    // Rejected with -KOS_EINVAL together with cap_count >= KOS_CAP_AUTHORITY: delegated cap
-    // i lands at child index i+1, so a second delegated cap would land on the authority
-    // slot. Refusing the pair is the honest reading until per-grant destination indices
-    // land (see <kickos/sys/cap_index.h>); silently letting one overwrite the other is not.
+    // Rejected with -KOS_EINVAL together with cap_count >= KOS_CAP_AUTHORITY: delegated
+    // cap i lands at child index i+1, so a second delegated cap would land on the
+    // authority slot (until per-grant destination indices land; <kickos/sys/cap_index.h>).
     uint8_t authority;
 };
 

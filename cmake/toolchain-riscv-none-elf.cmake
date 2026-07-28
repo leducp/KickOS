@@ -14,14 +14,11 @@
 # per-board arch/chip/CPU facts live in a board descriptor
 # (boards/<board>/board.cmake) that this file includes -- the same seam every
 # other family's toolchain uses. RISCStar is the reproducible prebuilt this file
-# targets (newlib, rv32imac/ilp32 soft-float multilib with libstdc++ OOTB) -- same
-# rationale as the RX GNURX and the official ARM toolchains: one exact compiler
-# every host builds with, no distro drift. The soft-float rv32imac/ilp32 multilib
-# is the C6-safety guarantee: no F/D instructions leak into the image. What
-# ENFORCES the newlib + libstdc++ requirement is the capability check right after
-# the finds, not the search hint: whatever gets resolved -- hint, PATH, or -D -- is
-# refused at configure time unless it really has them for THIS board's multilib.
-# The hint is convenience and reproducibility only.
+# targets (newlib, rv32imac/ilp32 soft-float multilib with libstdc++ OOTB). The
+# soft-float multilib is the C6-safety guarantee: no F/D instructions leak into the
+# image. The capability check after the finds is what ENFORCES newlib + libstdc++
+# for THIS board's multilib, whatever gets resolved (hint, PATH, or -D); the hint
+# is convenience and reproducibility only.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR riscv)
@@ -53,24 +50,18 @@ set(KICKOS_ARCH_FAMILY "riscv"                 CACHE STRING "KickOS ISA family (
 # ISA baseline instead of hardcoding a value that could drift from here.
 set(KICKOS_MCPU_FLAGS "${_kos_cpu}" CACHE INTERNAL "Per-board RISC-V ISA baseline")
 
-# The RISCStar cross compiler location, seeded from the environment rather than a
-# literal path so no contributor's home directory is baked into the repo: export
-# KICKOS_RISCV_TOOLCHAIN_BIN once (or pass -D) to pin an install. Left empty, HINTS
-# contributes nothing and PATH decides, which is what CI relies on. Note a pinned
-# install SHADOWS an on-PATH toolchain, so point this at the version you actually
-# mean.
+# The RISCStar cross compiler location, seeded from the environment so no
+# contributor's home directory is baked into the repo (export
+# KICKOS_RISCV_TOOLCHAIN_BIN once, or pass -D). Left empty, HINTS contributes
+# nothing and PATH decides. A pinned install SHADOWS an on-PATH toolchain.
 set(KICKOS_RISCV_TOOLCHAIN_BIN
     "$ENV{KICKOS_RISCV_TOOLCHAIN_BIN}"
     CACHE PATH "Directory holding the riscv32-none-elf-* programs (empty => use PATH)")
 
-# Put the RESOLVED hint back into the environment, because CMake's compiler-ABI probe
-# re-reads this toolchain file in a SEPARATE cmake process with its own fresh cache: a
-# -D cache override never reaches that child, but the environment and PATH do. Without
-# this, `cmake -DKICKOS_RISCV_TOOLCHAIN_BIN=<good bin>` would configure the build with
-# the compiler you asked for while the ABI probe found none at all (no riscv32-none-elf
-# on PATH), so the configure died inside the probe, nowhere near the option you set.
-# Re-exporting makes -D, the environment and a reconfigure all agree. An empty value
-# clears the variable, leaving PATH to decide.
+# Re-export the resolved hint: CMake's compiler-ABI probe re-reads this file in a
+# SEPARATE cmake process with a fresh cache, which inherits the environment and PATH
+# but never a -D cache entry. Re-exporting makes -D, the environment and a
+# reconfigure agree. An empty value clears the variable, leaving PATH to decide.
 set(ENV{KICKOS_RISCV_TOOLCHAIN_BIN} "${KICKOS_RISCV_TOOLCHAIN_BIN}")
 
 find_program(CMAKE_C_COMPILER   riscv32-none-elf-gcc     HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
@@ -79,12 +70,10 @@ find_program(CMAKE_ASM_COMPILER riscv32-none-elf-gcc     HINTS "${KICKOS_RISCV_T
 find_program(CMAKE_OBJCOPY      riscv32-none-elf-objcopy HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_SIZE         riscv32-none-elf-size    HINTS "${KICKOS_RISCV_TOOLCHAIN_BIN}")
 
-# Those finds say a program NAMED riscv32-none-elf-g++ exists, not that it can
-# build KickOS: with the hint above empty or absent, PATH decides -- and distro rv32
-# cross builds are routinely C-only picolibc with no libstdc++ for the soft-float
-# rv32imac/ilp32 multilib. Prove the capability here instead of discovering it deep
-# in the build. ${_kos_cpu} is passed so the probe resolves THIS board's multilib
-# (soft-float rv32imac/ilp32), not the compiler's default one.
+# The finds prove a program NAMED riscv32-none-elf-g++ exists, not that it can
+# build KickOS (distro rv32 cross builds are routinely C-only picolibc).
+# ${_kos_cpu} makes the probe resolve THIS board's multilib (soft-float
+# rv32imac/ilp32), not the compiler's default.
 include("${CMAKE_CURRENT_LIST_DIR}/toolchain-cxx-runtime-check.cmake")
 kickos_require_usable_cross_cxx("riscv" "${CMAKE_CXX_COMPILER}"
   KICKOS_RISCV_TOOLCHAIN_BIN

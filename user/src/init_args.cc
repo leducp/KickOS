@@ -8,8 +8,7 @@
 
 #include <kickos/sys/init.h>
 
-// No linkage-specification here on purpose. init.h already declared this name inside
-// extern "C", and a definition that follows such a declaration keeps the C linkage
-// ([dcl.link]) -- so repeating it would only invite `extern "C" struct ... = ...`, which
-// parses as an extern declaration carrying an initializer and is rejected under -Werror.
+// No linkage-specification on purpose: init.h declared this name inside extern "C",
+// so this definition keeps C linkage ([dcl.link]). `extern "C" struct ... = ...`
+// parses as an extern declaration carrying an initializer and is rejected.
 struct kos_init_args kickos_init_args = {0, nullptr};

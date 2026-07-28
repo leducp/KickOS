@@ -17,9 +17,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(hello_demo PROPERTIES TIMEOUT 15)
 endif()
 
-# QEMU armv7m gate: boot the image on each runnable MPS2 image and assert the userspace
-# ping-pong runs -- end-to-end proof of the reset/scheduler/SVC/timer path on every core
-# the armv7m arch backend claims to support.
+# QEMU armv7m gate: boot each MPS2 image and assert the userspace ping-pong runs --
+# end-to-end proof of the reset/scheduler/SVC/timer path.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_hello TARGET hello BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_hello.sh")

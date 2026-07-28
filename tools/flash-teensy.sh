@@ -8,10 +8,9 @@
 # Loads the .hex (HalfKay takes Intel HEX; its addresses are embedded, so no load
 # base). The Teensy 4.1 exposes no SWD header, so HalfKay is the flash path.
 #
-# The board must be IN HalfKay: tap the on-board button. teensy_loader_cli's own
-# -s/-r auto-entry cannot do it for us -- a soft reboot needs the Teensyduino USB
-# serial stack (KickOS's console is LPUART6, not USB) and a hard reboot needs the
-# rebootor hardware on the RESET line. So pass -w and wait for the button instead.
+# The board must be IN HalfKay: tap the on-board button. -s/-r auto-entry cannot
+# work here (a soft reboot needs the Teensyduino USB serial stack, a hard reboot
+# the rebootor hardware), so pass -w and wait for the button.
 set -euo pipefail
 FL_ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$FL_ROOT/tools/flash-common.sh"
 flash_resolve "$@"

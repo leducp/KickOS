@@ -87,12 +87,10 @@ extern "C" void console_chip_writer_leave(void)
     g_chip_writers = g_chip_writers - 1;
 }
 
-// Read under the same lock the mutators take. The writers are a read-modify-write and
-// console_emit runs in ISR and fault context, so an unlocked reader can observe a count
-// between a writer's load and its store. The consumer is kos_console_publish's handover
-// drain, where a stale zero hands the UART to a userspace driver while a kernel writer is
-// still using the device. One load under the lock; the drain yields between polls, so
-// there is no livelock.
+// Read under the same lock the mutators take: an unlocked reader can observe a count
+// between a writer's load and its store, and a stale zero in kos_console_publish's
+// handover drain hands the UART to a userspace driver while a kernel writer is still
+// using the device. The drain yields between polls, so there is no livelock.
 extern "C" int console_chip_writers(void)
 {
     kickos::IrqLock lock;
@@ -108,9 +106,8 @@ namespace kickos
     // single choke point that keeps the ring a true single-producer (never entered
     // from ISR context).
     //
-    // Guarded on the chip backend because this is the chip transport's router and
-    // kconsole_write only reaches it from inside the same guard -- with the backend
-    // compiled out it has no caller at all (KICKOS_CONSOLE=none / =rtt).
+    // Guarded on the chip backend: with it compiled out this has no caller at all
+    // (KICKOS_CONSOLE=none / =rtt).
     static void console_emit(char const* buf, size_t n)
     {
         switch (g_console_state)
@@ -155,10 +152,9 @@ namespace kickos
     void kconsole_write(char const* buf, size_t n)
     {
 #if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
-        // KICKOS_CONSOLE=none: every backend is compiled out, so this is deliberately
-        // a sink. Kept as a real (empty) function rather than an #ifdef at every call
-        // site -- the kernel still panics, faults and boots identically on a board with
-        // no console, it just says nothing.
+        // KICKOS_CONSOLE=none: every backend is compiled out and this is deliberately
+        // a sink. The kernel still panics, faults and boots identically; it just says
+        // nothing.
         (void)buf;
         (void)n;
 #endif

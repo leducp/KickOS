@@ -44,11 +44,10 @@ namespace kickos
         // fields from the kernel-owned copy hereafter. (The name pointer inside is
         // still user memory; it is walked under a per-byte readable check below
         // before the kernel copies it.)
-        // user_readable_ok, not the raw user_range_ok: the struct may be a caller stack
-        // local or an app global, and on a backend that models no static-data region
-        // (every no-MPU chip, and the host sim) a global lies in no granted region.
-        // arch_user_text_readable is the arm that recognises it. An enforcing backend
-        // returns false there and is byte-identical.
+        // user_readable_ok, not the raw user_range_ok: the struct may be an app
+        // global, which on a backend that models no static-data region (no-MPU chips,
+        // the host sim) lies in no granted region; arch_user_text_readable is the arm
+        // that recognises it.
         // Reject a misaligned struct pointer BEFORE the typed copy below: the kernel
         // does that load privileged, and a misaligned word load traps in the kernel on
         // a strict-align arch (rv32imac) -- a user-triggerable kernel fault. alignof is
@@ -118,8 +117,7 @@ namespace kickos
                 // and reserved-block-clear. Refusal is -KOS_EPERM (the code the
                 // out-of-arena selftest asserts). Without this an out-of-arena
                 // stack_base grants an R|W window over peripheral / kernel SRAM.
-                // The RAM arm ignores the authorization flag (10C); it is passed as
-                // AUTH_MEMORY anyway so both call sites feed the predicate one notion.
+                // The RAM arm ignores the authorization flag (10C).
                 if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
                                                 cap_check_authority(sched::current(),
                                                                     AUTH_MEMORY)))
@@ -174,23 +172,19 @@ namespace kickos
         {
             if ((p->authority & ~CAP_AUTH_ALL) != 0)
             {
-                // Object rights (WAIT/SIGNAL/TRANSFER) mean nothing on this type. Refuse
-                // rather than mask: a caller passing them has misunderstood something, and
-                // silently dropping the bits would hide which.
+                // Object rights (WAIT/SIGNAL/TRANSFER) mean nothing on this type;
+                // refuse rather than silently mask them off.
                 return -KOS_EINVAL; // non-authority bits in the authority mask
             }
             // Narrow-only, exactly like a cap_grant mask: the caller must already hold
-            // every bit it hands on. cap_check_authority IS that question, and it answers
-            // true wholesale for a privileged caller -- which is what lets today's
-            // privileged root seat a narrowed authority on a child before any board flips.
+            // every bit it hands on (a privileged caller holds them all).
             if (not cap_check_authority(sched::current(), p->authority))
             {
                 return -KOS_EPERM; // cannot grant an authority the caller does not hold
             }
-            // Delegated cap i lands at child index i+1, so cap_count >= 2 puts a delegated
-            // cap on the authority slot. Refuse the pair instead of letting one silently
-            // overwrite the other; per-grant destination indices are the deferred fix (see
-            // <kickos/sys/cap_index.h>).
+            // Delegated cap i lands at child index i+1, so cap_count >= 2 puts a
+            // delegated cap on the authority slot. Refuse the pair instead of letting
+            // one silently overwrite the other (see <kickos/sys/cap_index.h>).
             if (static_cast<int>(p->cap_count) >= KOS_CAP_AUTHORITY)
             {
                 return -KOS_EINVAL; // delegation packing would collide with the authority slot
@@ -268,9 +262,8 @@ namespace kickos
         // does not take a reference (thread_create does); a domain it creates but
         // we never reference stays refcount 0 == a free slot.
         int derr = 0;
-        // AUTH_MEMORY, not raw privilege: it is the bit that covers the spawn-time MMIO
-        // grant, and it is what an unprivileged root holds. Resolved here rather than
-        // inside domain_for, which must not read sched::current() (R8).
+        // AUTH_MEMORY, not raw privilege: the bit that covers the spawn-time MMIO
+        // grant. Resolved here because domain_for must not read sched::current() (R8).
         Domain* const dom = domain_for(p->privileged != 0, p->mem_base, p->mem_size,
                                        p->mmio_base, p->mmio_size,
                                        cap_check_authority(sched::current(), AUTH_MEMORY),

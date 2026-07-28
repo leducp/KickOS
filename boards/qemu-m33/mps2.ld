@@ -28,12 +28,9 @@ _estack = ORIGIN(RAM) + LENGTH(RAM);   /* initial MSP: top of RAM */
 _kernel_stack_size = 16K;              /* boot/handler (MSP) stack */
 
 /* App-owned globals get their own PMSA region so an unprivileged thread reaches its
-   own .data/.bss but not the kernel's. PMSAv8 is only 32-byte granular, so the pow2
-   window is not strictly required here as it is on the v7-M parts -- it is kept so
-   this file stays a diff of the chip default in the memory map alone, and so the
-   same layout is proven under both PMSA revisions.
-   The window pad IS the newlib heap. 2 MiB of RAM here, so unlike the 128 KiB parts
-   the pad costs nothing: 64K comfortably covers the selftest image's app-side .bss
+   own .data/.bss but not the kernel's. PMSAv8 is 32-byte granular, so the pow2
+   window is not required as on the v7-M parts; kept to match the chip default.
+   The window pad IS the newlib heap. 64K covers the selftest image's app-side .bss
    plus the ~5.9K measured cxxtest heap peak. Power of two only. */
 #if KICKOS_HAVE_MPU
 #ifndef KICKOS_APPDATA_SIZE
@@ -79,9 +76,7 @@ SECTIONS
         __init_array_end = .;
     } > FLASH
 
-    /* Teardown mirror of the ctor split: place .fini_array on the APP side (never the
-       privileged bucket) so an unplaced one cannot be ORPHANED outside every stated
-       boundary, and ASSERT it empty -- nothing walks it. Full rationale in
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
        arch/arm/chip/stm32f411/stm32f411.ld. */
     .kickos_app_fini_array :
     {
@@ -251,9 +246,8 @@ SECTIONS
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
 
-/* Static destructors are unsupported: nothing walks .fini_array (see the section
-   comment), so a global with a non-trivial destructor is silently dropped rather than
-   run. Fail the link instead of shipping a destructor that never fires. */
+/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
+   rather than silently drop a destructor. */
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 

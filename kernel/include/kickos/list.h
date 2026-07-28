@@ -38,10 +38,9 @@ namespace kickos
             return head == nullptr;
         }
 
-        // KICKOS_DEBUG guards. Queue integrity rests on caller discipline: a node
-        // inserted twice, or unlinked from a list it is not on, corrupts the links
-        // silently and surfaces somewhere else. Compiled out by default, so a shipped
-        // image is byte-identical; the sim gate builds them.
+        // KICKOS_DEBUG guards (compiled out by default). Queue integrity rests on
+        // caller discipline: a node inserted twice, or unlinked from a list it is not
+        // on, corrupts the links silently and surfaces somewhere else.
 #if KICKOS_DEBUG
         bool contains(ListNode const* n) const
         {

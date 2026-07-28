@@ -421,13 +421,10 @@ uint32_t arch_cpu_clock_set(uint32_t target)
 
     SystemCoreClock = landed;
 
-    // Commit the NEW pricing (B2). base_ns holds history at old pricing; the staged MCG
-    // walk (the worst-case masked span, ~1 ms) is the only mispriced interval (frozen
-    // skew), bounded by folding the anchor to the edge. The three stores are protected
-    // against ISR/other-thread tearing by the caller's IrqLock, but NOT against a
-    // synchronous CPU fault (HardFault/NMI) landing between them whose handler reads
-    // arch_clock_now (e.g. panic_delay_ms) -- a few-instruction, panic-path-only window,
-    // accepted as-is (not hardened, to avoid over-engineering it).
+    // Commit the NEW pricing (B2). base_ns holds history at old pricing; the staged
+    // MCG walk (masked, ~1 ms) is the only mispriced interval. The caller's IrqLock
+    // guards the stores against tearing, but not against a synchronous fault handler
+    // reading arch_clock_now between them (panic-path-only window, accepted).
     g_clk.reprice(t0, ns0, landed / BUS_DIV);
     return landed;
 }

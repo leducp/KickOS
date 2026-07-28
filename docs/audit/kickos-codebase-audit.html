@@ -149,13 +149,12 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 <h1>KickOS codebase audit &mdash; and what happened to it</h1>
 <p class="sub">Microkernel RTOS &middot; 31k lines of code across kernel, arch, user, system &middot; 20 board descriptors, 14 of them silicon / 5 ISAs &middot; 72 markdown documents including a teaching book</p>
 <p class="note">Audited at <code>64410b7</code> (v0.4.5). Re-scored at <code>3e8ed10</code>, revised at <code>a5fc422</code>, and last corrected by <code>m4.5.1: correct the stale session record, and upgrade the XMC finding to contradicted</code> &mdash; 82 commits on <code>M4.5.1-ci-hardening</code>. Every status below was checked against the tree rather than against the commit messages; image and RAM figures were re-measured from a fresh link map.</p>
-<p class="note">Hashes cited below were re-resolved after the branch was rebased and its newest commits reworded: 32 were remapped to the live commit by patch-id or a unique exact subject match. Sixteen more were squashed by that rebase and have no single successor, so they still name pre-rebase commits that resolve only against <code>backup/m4.5.1-pre-msg-trim</code>. Tracked as N20.</p>
-<p class="note">Entries added or revised from 2026-07-27 cite their closing commit by <em>subject</em> rather than hash, because a branch-wide message reword is still pending and will invalidate every hash again. Converting the older entries waits until after that reword, which changes subjects too. The two transport branches have since been replayed onto this branch and deleted, so every subject cited below resolves against this branch's tip; their pre-replay tips survive as <code>refs/backup/integration-book</code> and <code>refs/backup/integration-silicon</code>.</p>
+<p class="note">Citation resolution, after the 2026-07-28 squash: the branch's 96 commits were squashed to nine (tree-identical at the squash, verified by empty diff), so no per-finding hash or subject cited below names a commit on the live branch. All of them resolve against <code>backup/m4.5.1-pre-squash</code>, the full pre-squash history kept for exactly this purpose; the older strata resolve one layer further back against <code>backup/m4.5.1-pre-msg-trim</code> and the two <code>refs/backup/integration-*</code> refs, as before. This replaces the per-citation conversion N20 planned: one stable ref beats rewriting 83 entries after every history edit, and the entries keep the fine-grained attribution the eight theme commits no longer carry.</p>
 </div>
 
 <div class="stats">
-<div class="stat s-success"><div class="v">50</div><div class="l">Fixed on this branch</div></div>
-<div class="stat s-warning"><div class="v">30</div><div class="l">Still open</div></div>
+<div class="stat s-success"><div class="v">51</div><div class="l">Fixed on this branch</div></div>
+<div class="stat s-warning"><div class="v">29</div><div class="l">Still open</div></div>
 <div class="stat s-danger"><div class="v">2</div><div class="l">Critical / High left</div></div>
 <div class="stat s-info"><div class="v">36</div><div class="l">Found doing the work</div></div>
 <div class="stat"><div class="v">2</div><div class="l">Superseded</div></div>
@@ -352,14 +351,14 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 <p class="problem">c539d1c moved the RESCAN archive group from kickos_core onto the two posture leaves, because each needs a different toolchain runtime inside it and CMake forbids one closure carrying a library in two groups. A consumer that links kickos_core DIRECTLY now gets usage requirements but no archives. kickos_cxx_rt hit exactly this during the change and had to name its include providers itself.</p>
 <p class="fix"><span class="fixlabel">Fix: </span>The documented contract already says consumers link a leaf and never kickos_core, and both out-of-tree gates pass &#8212; but core is still in the export set, so what used to be advice is now load-bearing. Either state it in the exported package or make linking core alone a configure-time error.</p></td>
 </tr>
-<tr class="tone-info" data-status="Open" data-sev="Low" data-area="Tests &amp; CI">
+<tr class="tone-success" data-status="Fixed" data-sev="Low" data-area="Tests &amp; CI">
 <td class="c-id"><span class="fid">N20</span><span class="fresh">new</span></td>
-<td class="c-status"><span class="st st-open">Open</span></td>
+<td class="c-status"><span class="st st-fixed">Fixed</span><div class="commits">m4.5.1: resolve the record citations against the squash backup</div></td>
 <td class="c-sev">Low</td>
 <td class="c-area">Tests &amp; CI</td>
-<td class="c-body"><code class="loc">this canvas, and TODO.md &#8212; commit hashes cited in a durable record</code>
+<td class="c-body"><code class="loc">this record, and TODO.md &#8212; commit hashes cited in a durable record</code>
 <p class="problem">Found by checking this page's own citations against the tree: of the 56 commit hashes it named, 37 pointed at commits unreachable from HEAD. The branch had been rebased to trim commit messages, which rewrote most of its hashes, and nothing re-resolved the record afterwards. TODO.md has the same rot in six places, pointing into backup/m3-pre-squash from the older M3 squash. Every one of them reads as a valid citation and resolves to nothing.</p>
-<p class="fix"><span class="fixlabel">Fix: </span>32 were remapped mechanically and are fixed: git patch-id --stable maps a commit through a reword or a rebase, and a unique exact subject match covers the rest. The other 16 were squashed by that rebase and have no single successor, so they still name pre-rebase commits and are flagged in the header rather than guessed at. The durable fix is to re-resolve after any rebase, or to cite by subject, which a reword changes far less often than a hash.</p></td>
+<p class="fix"><span class="fixlabel">What landed: </span>32 were remapped mechanically (git patch-id --stable through the reword, unique exact subject match for the rest); 16 squash casualties stayed flagged rather than guessed at. The 2026-07-28 squash to eight theme commits then made per-citation conversion a losing game &#8212; a subject survives a reword but not a squash &#8212; so the convention that closed this is a resolution TARGET instead: every citation resolves against backup/m4.5.1-pre-squash, the tree-identical full history, stated once in this page's header. The residue that keeps the practice honest: create the backup ref BEFORE any history edit, and say in the record which ref citations resolve against.</p></td>
 </tr>
 <tr class="tone-info" data-status="Open" data-sev="Low" data-area="Code quality">
 <td class="c-id"><span class="fid">N29</span><span class="fresh">new</span></td>
@@ -964,7 +963,7 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 <div class="healthy-item"><div class="healthy-label">Double-fetch closed ahead of need</div><p>thread_spawn snapshots the whole cap-grant array into kernel memory before validating it, pre-empting the classic check-then-read seam even though single-core IrqLock already covers it.</p></div>
 <div class="healthy-item"><div class="healthy-label">Refcount overflow is proved impossible</div><p>sem/mutex/endpoint refs are uint8_t, each guarded by a static_assert tying MAX_THREADS x MAX_HANDLES to 255 &#8212; so a board override cannot silently wrap a refcount into a premature free.</p></div>
 <div class="healthy-item"><div class="healthy-label">Assertions are always live</div><p>KICKOS_ASSERT calls kpanic unconditionally rather than compiling out, so release builds keep every invariant check.</p></div>
-<div class="healthy-item"><div class="healthy-label">SPDX and documentation links both hold</div><p>Re-measured at a5fc422 across every tracked non-binary file: 544 of 551 carry the CECILL-C identifier. The seven without are .gitignore and the six JSON preset files, none of which can carry a comment, so coverage is complete over everything that can hold a header &#8212; including the canvas mirrored into docs/audit/. The 127-relative-link check across the markdown tree was last run at 4ea0459 and passed; this pass added a document but no new relative link.</p></div>
+<div class="healthy-item"><div class="healthy-label">SPDX and documentation links both hold</div><p>Re-measured at a5fc422 across every tracked non-binary file: 544 of 551 carry the CECILL-C identifier. The seven without are .gitignore and the six JSON preset files, none of which can carry a comment, so coverage is complete over everything that can hold a header &#8212; including the audit record under docs/audit/. The 127-relative-link check across the markdown tree was last run at 4ea0459 and passed; this pass added a document but no new relative link.</p></div>
 <div class="healthy-item"><div class="healthy-label">No unsafe libc, no secrets</div><p>No strcpy / sprintf / alloca / system anywhere in kernel, user, arch, lib or system; no credentials or keys; 7 TODO-class markers across 6 files in the live tree.</p></div>
 <div class="healthy-item"><div class="healthy-label">Assembly matches every ABI</div><p>All six switch paths check out: armv7m FP lazy-stacking and CONTROL.nPRIV, armv6m r8-r11 shuffle, RISC-V gp reload and mstatus-before-mepc, RX SWINT clear, Xtensa window spill.</p></div>
 <div class="healthy-item"><div class="healthy-label">Portable code stays portable</div><p>kernel/ and user/ carry no arch-selection #ifdef sprawl: arch choice happens at link time through board.cmake. The exceptions are honest ones &#8212; the opt-in bench cycle counter, which has to name a register per ISA, and two newlib ABI quirks in the libc stubs.</p></div>
@@ -995,8 +994,8 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 </div></div>
 <div class="bar-row"><div class="bar-label">Tests &amp; CI</div>
 <div class="bar-track">
-<div class="bar-seg seg-closed" style="width:44.0%">11</div>
-<div class="bar-seg seg-open" style="width:56.0%">14</div>
+<div class="bar-seg seg-closed" style="width:48.0%">12</div>
+<div class="bar-seg seg-open" style="width:52.0%">13</div>
 </div></div>
 <div class="bar-row"><div class="bar-label">Build &amp; packaging</div>
 <div class="bar-track">

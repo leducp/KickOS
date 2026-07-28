@@ -41,11 +41,7 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 #define KICKOS_PANIC_DUMP 1
 #endif
 
-// The deferred MPU-commit seam (arch_mpu_apply stashes, kickos_arch_mpu_commit programs
-// from the PendSV epilogue) is entirely shared -- see arch/arm/common/arch_arm_common.cc
-// and docs/design-mpu-commit-deferred.md. v6-M contributes nothing of its own: the PMSA
-// register map, the cpsid bracket, and the stash are all identical to v7-M, so this
-// backend keeps NO MPU code and switch.S calls the shared kickos_arch_mpu_commit.
+// Deferred MPU commit is shared; see arch/arm/common.
 
 static_assert(offsetof(struct arch_context, sp) == 0, "switch.S expects ctx.sp @0");
 static_assert(offsetof(struct arch_context, npriv) == 4, "switch.S expects ctx.npriv @4");

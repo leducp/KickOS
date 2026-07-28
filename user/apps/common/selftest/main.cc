@@ -40,25 +40,16 @@ namespace
     constexpr uint8_t CH_FULL =
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER; // full-rights delegation
 
-    // Tests whose PREMISE is a privileged root, stated once here instead of restated at
-    // each site. On a KICKOS_ROOT_PRIVILEGED=0 board this suite's orchestrator (main ==
-    // root) is an ordinary unprivileged thread whose region set is [app code RX, app
-    // static data RW, its own stack]. Two consequences reach the tests below:
+    // Guard for tests whose PREMISE is a privileged root. On a KICKOS_ROOT_PRIVILEGED=0
+    // board main (== root) is an ordinary unprivileged thread whose region set is
+    // [app code RX, app static data RW, its own stack]: it cannot spawn a privileged
+    // child, and kos_ram_alloc grants the caller nothing (a test that needs to touch
+    // its allocation asks with kos_mem_self_grant, as t_irqdrv does).
     //
-    //   1. It cannot spawn a privileged child. thread_spawn refuses that from an
-    //      unprivileged caller, and that check is deliberately NOT a capability, because
-    //      holding it would be equivalent to holding every authority forever.
-    //   2. kos_ram_alloc reserves arena memory but GRANTS THE CALLER NOTHING. Allocation
-    //      and grant are still separate acts, on purpose, but the second one is now
-    //      expressible: kos_mem_self_grant adds the block to the caller's own region
-    //      set, bounded by the MPU budget. A test that needs to touch what it allocated
-    //      asks for it (t_irqdrv does) instead of skipping.
-    //
-    // Zero bytes in the default posture, deliberately: a runtime `if` would keep the skip
-    // strings in .rodata on every board, and the fleet Debug default is `-g` with no -O
-    // at all, so nothing would fold them away -- f302nucleo-st links with 96 bytes free.
-    // NOTE the macro RETURNS from the enclosing test; that is what makes it a one-line
-    // guard at the top of a test body, and why it is spelled in capitals.
+    // Zero bytes in the default posture: a runtime `if` would keep the skip strings in
+    // .rodata on every board (the fleet Debug default is -g with no -O), and
+    // f302nucleo-st links with 96 bytes free. NOTE: the macro RETURNS from the
+    // enclosing test.
 #if KICKOS_ROOT_PRIVILEGED
 #define SKIP_TEST_IF_ROOT_UNPRIVILEGED(why) do { } while (0)
 #else
@@ -150,27 +141,17 @@ namespace
         kos_sem_post(CH_DONE);
     }
 
-    // Can this board host `n` workers CONCURRENTLY, right now?
-    //
-    // Most tests can spawn first and ask afterwards, because their workers each
-    // self-complete: whoever got a slot posts g_done and a partial batch drains. A
-    // choreography whose workers wait on EACH OTHER cannot -- the ones that did start
-    // block forever on a rendezvous the missing ones would have completed, and the
-    // drain in the "pool too small" arm never returns. That is not hypothetical: it is
-    // how call_infoless_revert hung the armv6m gate from M4.4 to M4.5.1. Such a test
-    // must ask BEFORE it spawns anything, and this is how.
-    //
-    // Probing beats reading a knob. The answer has to fold in the slots a board's
-    // service-list drivers are already holding and whether the arena can still give
-    // each worker a stack -- neither of which KICKOS_MAX_THREADS describes, and which
-    // the app cannot see anyway (it is kernel-side config).
+    // Can this board host `n` workers CONCURRENTLY, right now? A test whose workers
+    // wait on EACH OTHER cannot spawn first and drain a partial batch: it must ask
+    // before it spawns anything. The answer folds in the slots service-list drivers
+    // already hold and whether the arena can still stack each worker, neither of which
+    // KICKOS_MAX_THREADS describes.
     //
     // Safe immediately before the real spawns: spawning does not itself reschedule, so
-    // all `n` probes are resident at once (that is what makes this a CONCURRENCY test
-    // rather than a repeated one-slot check), and root is the lowest-priority thread in
-    // the system (kmain), so each probe runs all the way through exit before root is
-    // scheduled again. By the time wait_n returns, every probe slot is EXITED
-    // (reclaimable) and every probe stack is back on the pool's free list.
+    // all `n` probes are resident at once, and root is the lowest-priority thread
+    // (kmain), so each probe runs through exit before root is scheduled again. When
+    // wait_n returns, every probe slot is EXITED and every probe stack is back on the
+    // pool's free list.
     bool pool_can_host(int n)
     {
         kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
@@ -188,33 +169,24 @@ namespace
     }
 
     // --- SVC argument/return roundtrip -----------------------------------------
-    // PROVES: the kconsole_write SVC marshals a (buf, len) pair into the kernel and
-    // brings the resulting byte count back out, on whatever trap mechanism the arch
-    // uses (sim trampoline, ARM SVC, RISC-V ecall) -- and that the count comes from
-    // the len WE passed, not from a kernel-side walk of the buffer.
+    // Proves the kconsole_write SVC marshals a (buf, len) pair in and the byte count
+    // back out on whatever trap mechanism the arch uses (sim trampoline, ARM SVC,
+    // RISC-V ecall), and that the count comes from the len WE passed, not a
+    // kernel-side walk of the buffer.
     //
-    // DOES NOT PROVE DELIVERY, and no longer claims to. kos_kconsole_write returns
-    // `len` for any readable buffer whether or not console_emit then discarded every
-    // byte -- which is exactly what it does once a board's service list hands the UART
-    // to a userspace driver (kernel/init/console.cc, USER_OWNED) -- and userspace has
-    // no readback. So this test was called "console_write roundtrip" while being
-    // structurally incapable of noticing a dark console, and passed vacuously right
-    // through the M4.5 silencing. Re-scoped rather than strengthened: delivery is only
-    // observable where the transport ACKNOWLEDGES, i.e. the published stdout endpoint,
-    // and that IS asserted -- by cap_index0's post-publish arm and by the harness's own
-    // route probe, both of which key off a real rendezvous return. Concretely: the two
-    // `# [svc] ...` lines below are ABSENT from a published board's log while this test
-    // still reports `ok`. That absence IS the drop, and it is precisely why asserting on
-    // the returned count alone can never be more than an ABI check.
+    // NOT a delivery check: kos_kconsole_write returns `len` even when console_emit
+    // then discards every byte (kernel/init/console.cc, USER_OWNED), and userspace has
+    // no readback. Delivery is asserted where the transport acknowledges: cap_index0's
+    // post-publish arm and the harness's route probe.
     void t_svc()
     {
         char const* s = "# [svc] kconsole_write arg/return roundtrip (not a delivery check)\n";
         size_t const n = strlen(s);
         TAP_CHECK(kos_kconsole_write(s, n) == static_cast<long>(n));
         TAP_CHECK(kos_kconsole_write(s, 0) == 0); // a len-0 write is a legitimate 0 (sys.h)
-        // len is honoured, not second-guessed: pass a PREFIX (itself a whole line, so the
-        // TAP stream stays well formed) and require the short count back. A kernel that
-        // strlen'd the buffer instead would return more -- and spill the tail marker.
+        // len is honoured: pass a PREFIX (itself a whole line, so the TAP stream stays
+        // well formed) and require the short count back; a kernel that strlen'd the
+        // buffer would return more and spill the tail marker.
         char const* pfx = "# [svc] len-honoured prefix\nTRAILING-MUST-NOT-APPEAR";
         long const cut = static_cast<long>(strlen("# [svc] len-honoured prefix\n"));
         TAP_CHECK(kos_kconsole_write(pfx, static_cast<size_t>(cut)) == cut);
@@ -425,17 +397,8 @@ namespace
 
         log_reset();
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}}; // -> done@1, lock@2
-        // UNPRIVILEGED, like every other worker in this suite. These two were the only
-        // privileged spawns left, and the privilege was never load-bearing: rr_worker
-        // touches its delegated caps, the event log and g_rr_burn_ns (all app static data,
-        // granted RW to any unprivileged thread) plus kos_clock_now, and not one of the
-        // four assertions below is about privilege. The flag dates to the original TAP
-        // harness, before a thread's region set was composed from its privilege at all,
-        // and carried no rationale. Dropping it is what lets the WHOLE suite run under an
-        // unprivileged root (thread_spawn refuses a privileged child from an unprivileged
-        // caller, by design and not as a capability) without shedding a single check --
-        // and RR over unprivileged threads is the shipping posture anyway, so this
-        // exercises the region reload per slice that the privileged pair skipped.
+        // UNPRIVILEGED, like every other worker in this suite: RR over unprivileged
+        // threads is the shipping posture, and it exercises the region reload per slice.
         int a = kos::thread::spawn_caps(rr_worker, reinterpret_cast<void*>('A'), "rrA", 10,
                                         caps, 2, KOS_POLICY_RR, static_cast<uint32_t>(quantum),
                                         /*privileged=*/false);
@@ -532,13 +495,9 @@ namespace
     }
     void t_irqdrv()
     {
-        // Root PLAYS THE DEVICE here -- it writes 0x101/0x102/0x103 into the driver's
-        // granted page and injects the line -- so it needs write access to a page it
-        // allocated. The mock register has to live in memory BOTH root and the driver
-        // can reach, and app static data will not do: it would reach both but sits
-        // outside the arena, so it cannot be granted, which is the very thing this test
-        // covers. Under an unprivileged root that used to be unreachable and the test
-        // skipped; kos_mem_self_grant is the ask that makes it expressible.
+        // Root PLAYS THE DEVICE here (writes the mock register page, injects the
+        // line), so it needs write access to a page it allocated. App static data will
+        // not do: it sits outside the arena, so it cannot be granted to the driver.
         //
         // Alloc before the sems: an alloc-fail early return must not leak them (pool-honest suite).
         g_mmio = kos_ram_alloc(4096);
@@ -549,10 +508,8 @@ namespace
             tap::skip("4 KiB MMIO-page alloc failed -- board too small");
             return;
         }
-        // Reach what we just allocated. A privileged root already holds the whole arena,
-        // so this is a no-op success there and the default posture is unchanged; under
-        // the flip it is what replaces the skip. Not TAP_CHECKed away silently: a refusal
-        // means the page stays unreachable and the writes below would fault.
+        // Reach the page just allocated: a no-op success for a privileged root (whole
+        // arena); a refusal would leave it unreachable and the writes below faulting.
         TAP_CHECK(kos_mem_self_grant(g_mmio, 4096) == 0);
         *static_cast<volatile int*>(g_mmio) = 0;
         g_irqdrv_done = kos_sem_create(0);
@@ -737,10 +694,9 @@ namespace
         TAP_CHECK(kos_handle_close(-1) == -KOS_EBADF);
         TAP_CHECK(kos_handle_close(0x7fffffff) == -KOS_EBADF);
         TAP_CHECK(kos_handle_close(0x00ffffff) == -KOS_EBADF);
-        // The count is bounded at both ends: a sem may not be born outside
-        // [0, KOS_SEM_COUNT_MAX], and a post with no waiter at the ceiling is refused
-        // rather than incrementing an int past its range. Creating one at the ceiling is
-        // what makes the refusal reachable here; the alternative is 2^31 posts.
+        // The count is bounded at both ends: birth outside [0, KOS_SEM_COUNT_MAX] is
+        // refused, and a post at the ceiling with no waiter is refused rather than
+        // overflowing. Creating at the ceiling is what makes the refusal reachable.
         TAP_CHECK(kos_sem_create(-1) == -KOS_EINVAL);
         int const hmax = kos_sem_create(KOS_SEM_COUNT_MAX);
         TAP_CHECK(hmax >= 0 and kos_sem_post(hmax) == -KOS_EOVERFLOW
@@ -1367,12 +1323,10 @@ namespace
     // the probe is 0 and this would fault, so it is compiled out there.
     void t_mpu_guard()
     {
-        // The one test whose subject IS the privileged posture: the guarded page is
-        // granted to no domain, so only a whole-arena thread reaches it. Under the flip no
-        // privileged thread can come into existence after boot at all, so the property
-        // does not fail here -- it does not exist. Its complement, that root can NOT reach
-        // memory outside its regions, is apps/rootfault, which must be a separate binary
-        // because proving it ends the process.
+        // The one test whose subject IS the privileged posture: under the flip no
+        // privileged thread exists after boot, so the property is absent rather than
+        // failing. The complement (root canNOT reach outside its regions) is
+        // apps/rootfault, a separate binary because proving it ends the process.
         SKIP_TEST_IF_ROOT_UNPRIVILEGED("no privileged caller exists; the inverse claim is "
                                        "apps/rootfault");
         volatile int* g = static_cast<volatile int*>(kos_guard_addr());
@@ -1482,9 +1436,8 @@ namespace
                   == -KOS_EINVAL);
         // Accept a properly-sized, aligned caller-owned stack -> the thread runs on it.
         // Drop this half when the arena can't spare one (tiny-RAM parts, like test 11's
-        // alloc): the API is arch-uniform; this only needs the memory to demonstrate it.
-        // The reject case above already ran, so the test stays `ok` and says which half
-        // it dropped -- it used to return here in total silence.
+        // alloc): the reject case above already ran, so the test stays `ok` and says
+        // which half it dropped.
         constexpr uint32_t STK = 2048;
         void* raw = kos_ram_alloc(STK + 16);
         if (raw == nullptr)
@@ -1546,8 +1499,7 @@ namespace
     }
     void t_domain_share()
     {
-        // Nothing to assert on a part whose arena cannot spare the region, so this is a
-        // real SKIP, not a pass (it used to return here silently and count as `ok`).
+        // Nothing to assert on a part whose arena cannot spare the region: a real SKIP.
         // Alloc before the sems so an early return leaks nothing.
         g_dshared = static_cast<volatile int*>(kos_ram_alloc(256));
         if (g_dshared == nullptr)
@@ -1555,13 +1507,9 @@ namespace
             tap::skip("arena cannot spare the shared region");
             return;
         }
-        // No pre-zero of the region here. It asserted nothing -- the only check is
-        // g_dreadback == DOM_SENTINEL, g_dreadback is written only by the reader, and the
-        // reader runs only after the writer's post -- so a stale word could never fake the
-        // sentinel. Dropping it is also what keeps this test running in BOTH root
-        // postures: an unprivileged root cannot write a region it allocated and has not
-        // been granted, and the region is the workers' to initialise, not the
-        // orchestrator's.
+        // No pre-zero of the region: g_dreadback is written only by the reader, after
+        // the writer's post, so a stale word cannot fake the sentinel. An unprivileged
+        // root could not write the region anyway (allocated, never granted).
         g_dwrote = kos_sem_create(0);
         g_dread = kos_sem_create(0);
         // Spawn BOTH before either runs (spawn does not preempt): same mem_base =>
@@ -1632,9 +1580,8 @@ namespace
         int w = kos::thread::spawn_caps(mmio_unpriv_worker, nullptr, "mmioW", 10, caps, 1);
         if (w < 0)
         {
-            // Tiny thread pool (e.g. microbit MAX_THREADS=2). The three privileged
-            // encodability cases above already ran, so this stays `ok` and names the half
-            // it dropped -- a whole-test SKIP would understate what was proven.
+            // Tiny thread pool (e.g. microbit MAX_THREADS=2). The three encodability
+            // cases above already ran, so this stays `ok` and names the dropped half.
             tap::diag("mmio_grant: PARTIAL -- unprivileged half not run (thread pool too small)");
             kos_sem_destroy(g_mmio_done);
             return;
@@ -1671,9 +1618,8 @@ namespace
         int w = kos::thread::spawn_caps(stkarena_unpriv_worker, nullptr, "stkW", 10, caps, 1);
         if (w < 0)
         {
-            // The unprivileged child IS this test -- there is no privileged half to fall
-            // back on -- so a tiny thread pool (microbit MAX_THREADS=2) leaves nothing to
-            // assert: a whole-test SKIP, not a partial.
+            // The unprivileged child IS this test, so a tiny thread pool (microbit
+            // MAX_THREADS=2) leaves nothing to assert: a whole-test SKIP, not a partial.
             tap::skip("thread pool too small");
             kos_sem_destroy(g_stkarena_done);
             return;
@@ -1688,8 +1634,7 @@ namespace
     // Exercises grant_hits_reserved / grant_region_admissible directly (kos_grant_probe,
     // test-only). The RAM-path cases run wherever the arena exists (sim). The reserved-
     // OVERLAP matrix needs a board that actually declares reserved blocks; the runnable
-    // MPU board (sim) reserves nothing, so that half reports PARTIAL there (the test
-    // still asserts the RAM/DEV admission cases, so it is NOT a whole-test SKIP) and runs
+    // MPU board (sim) reserves nothing, so that half reports PARTIAL there and runs
     // for real on an enforcing MCU. (The bit-band alias-hit case needs a bit-band M4 and
     // is HW-only.)
     void grant_noop(void*) {}
@@ -1718,9 +1663,8 @@ namespace
         // --- End-to-end errno coherence (MAJOR 2): an unprivileged child whose mem_base
         // lies OUTSIDE the arena is refused with -KOS_EPERM (policy refusal), NOT
         // -KOS_ENOMEM (pool exhaustion) -- coherent with the stack_base path
-        // (t_stackbase_arena). domain_for is the authoritative chokepoint and reports which
-        // refusal it made, so this code comes from there, not from a duplicate pre-check at
-        // the spawn boundary. Caller is privileged (main); the CHILD is
+        // (t_stackbase_arena). The code comes from domain_for, the authoritative
+        // chokepoint, not from a pre-check at the spawn boundary. Caller is privileged (main); the CHILD is
         // unprivileged, so domain_for evaluates the grant (0xE0000000 is 2048-aligned, so
         // ONLY arena containment can reject it). Fails before any slot is claimed.
         int const mrc = kos::thread::spawn(grant_noop, nullptr, "membad", 10, KOS_POLICY_FIFO,
@@ -1797,15 +1741,11 @@ namespace
     // MUST be accepted; a pointer into no granted region (the un-owned guard page)
     // MUST be rejected, never read. All checks run from an UNPRIVILEGED worker
     // (main is privileged and bypasses the floor).
-    // WHAT THE POSITIVE HALF PROVES: that the floor ACCEPTED an unprivileged caller's
-    // rodata pointer -- not that the bytes reached a console. kos_kconsole_write returns
-    // `len` for every accepted buffer even when console_emit then drops all of it (any
-    // published board), so a delivery claim here would be vacuous, and the old literal
-    // ("...reaches the console") made exactly that claim. Its real force comes from
-    // being PAIRED with the guard-page negative below: same syscall, same unprivileged
-    // caller, -KOS_EFAULT -- together they show the floor discriminates reachable from
-    // unreachable. Where no guard page exists (no enforcement) the positive stands alone
-    // and is correspondingly weaker; that is inherent, not an oversight.
+    // The positive half proves the floor ACCEPTED an unprivileged caller's rodata
+    // pointer, not that the bytes reached a console: kos_kconsole_write returns `len`
+    // even when console_emit then drops it all (any published board). Its force comes
+    // from being PAIRED with the guard-page negative below (same syscall, same caller,
+    // -KOS_EFAULT); with no guard page the positive stands alone and is weaker.
     char const CD_LIT[] = "# [confdep] unpriv rodata buffer accepted by the readable floor\n";
     long g_cd_lit_rc = -99;    // worker: kconsole_write(rodata literal) -> expect len (accepted, not delivered)
     int g_cd_goodspawn = -99;  // worker: spawn rc of a child NAMED from .rodata
@@ -1876,8 +1816,7 @@ namespace
         kos_sem_wait(g_cd_done);
         kos_sem_destroy(g_cd_done);
         // Positive (every backend): the floor accepted an unprivileged caller's rodata
-        // pointer and read exactly len bytes from it. See CD_LIT on why this is an
-        // acceptance check and deliberately not a delivery check.
+        // pointer and read exactly len bytes. See CD_LIT: acceptance, not delivery.
         TAP_CHECK(g_cd_lit_rc == static_cast<long>(sizeof(CD_LIT) - 1));
         // Positive: a child named from .rodata spawned and ran (the name-copy path works).
         // The grandchild needs its own stack; on a tiny arena (microbit: 16 KiB SRAM, which
@@ -1918,11 +1857,10 @@ namespace
 
     void ep_recv_worker(void*) // caps: done@1, E@2 (unpriv)
     {
-        // The recv buffer is a STACK local, and the result reaches main through a global
-        // by a direct store rather than by the syscall. A global buffer would be accepted
-        // now that user_writable_ok has a static-data fallback (see writable_global), but
-        // keeping the buffer thread-private is what keeps this test about the rendezvous
-        // instead of about the writable check.
+        // The recv buffer is a STACK local; the result reaches main by a direct store
+        // to a global. A global buffer would be accepted (user_writable_ok has a
+        // static-data fallback; see writable_global), but thread-private keeps this
+        // test about the rendezvous, not the writable check.
         char buf[64];
         struct kos_recv_info info = {0xdeadu, 0x55};
         long n = kos_recv(2, buf, static_cast<size_t>(g_ep_rcap), &info);
@@ -2140,13 +2078,9 @@ namespace
     }
     void t_call_infoless_revert()
     {
-        // Ask the pool BEFORE spawning anything. These four workers are mutually
-        // dependent -- the server parks in recv for the filler's send, the caller's
-        // boost is what the spoiler races -- so a partial set cannot be drained: the
-        // ones that started wait on posts the missing ones would have made. Guarding
-        // after the spawns, as this test used to, therefore does not skip on a small
-        // board, it HANGS, and that is what took the microbit gate down from M4.4
-        // (9ae301f) to M4.5.1.
+        // Ask the pool BEFORE spawning anything: the four workers are mutually
+        // dependent, so a partial set cannot be drained. Guarding after the spawns
+        // does not skip on a small board, it HANGS.
         if (not pool_can_host(4))
         {
             tap::skip("pool too small (4 interdependent workers)");
@@ -2757,30 +2691,23 @@ namespace
         TAP_CHECK(kos_handle_close(e) == 0);
         TAP_CHECK(kos_handle_close(m) == 0);
 
-        // Index 0 is the kernel stdout slot, and BOTH of its postures are asserted here --
-        // this test used to hardcode the pre-publish one, which made it fail on every
-        // board whose service list publishes the console (and, before the harness became
-        // publish-aware, its `not ok` was itself swallowed).
-        //
+        // Index 0 is the kernel stdout slot; BOTH of its postures are asserted here.
         // The discriminator is a ZERO-length send: a valid zero-length signal per
-        // <kickos/sys.h>, so unlike the 1-byte probe below it puts NO byte on the wire in
-        // either posture -- the old unconditional "x" is what left a stray character in
-        // front of the published TAP stream.
+        // <kickos/sys.h>, so unlike the 1-byte probe below it puts NO byte on the wire
+        // in either posture.
         long const stdout_seated = kos_send(0, "", 0);
         if (stdout_seated == -KOS_EBADF)
         {
             // Pre-publish (g_stdout_target < 0): cap_install_defaults seats NOTHING at
-            // index 0, so a send fails cleanly rather than resolving a stale/aliased
-            // object. Exercises the pre-publish cap_install_defaults branch.
+            // index 0, so a send fails cleanly rather than resolving a stale object.
             TAP_CHECK(kos_send(0, "x", 1) == -KOS_EBADF);
         }
         else
         {
-            // Post-publish: cap_seat_stdout put a send-only (CAP_SIGNAL) endpoint cap at
-            // index 0, so the zero-length signal rendezvoused with the console driver and
-            // reported 0 bytes transferred. Exercises the other cap_install_defaults
-            // branch -- and, because a rendezvous only completes with a live receiver, it
-            // is the one place the suite proves console output is actually being ACKed.
+            // Post-publish: cap_seat_stdout put a send-only (CAP_SIGNAL) endpoint cap
+            // at index 0, so the zero-length signal rendezvoused with the console
+            // driver. A rendezvous only completes with a live receiver, so this is the
+            // one place the suite proves console output is actually ACKed.
             TAP_CHECK(stdout_seated == 0);
         }
 
@@ -2828,11 +2755,10 @@ namespace
     }
     void t_console_publish()
     {
-        // Privileged MAIN: a bad/stale cap is rejected before the deinit/flip, so console
-        // ownership is left exactly as the board's service list set it -- whichever posture
-        // that is. (This test never publishes anything itself: both caps below are invalid,
-        // and the unprivileged child is refused by the privilege gate. A board that DID
-        // publish keeps its driver, and the harness follows it there -- see tests/tap/tap.cc.)
+        // Privileged MAIN: a bad/stale cap is rejected before the deinit/flip, so
+        // console ownership stays as the board's service list set it. This test never
+        // publishes anything itself: both caps below are invalid, and the unprivileged
+        // child is refused by the privilege gate.
         TAP_CHECK(kos_console_publish(-1) == -KOS_EBADF);
         TAP_CHECK(kos_console_publish(0x7fffffff) == -KOS_EBADF);
         // Unprivileged child: the privileged-only gate rejects it.
@@ -2848,9 +2774,8 @@ namespace
     int g_shutdown_rc = -99;
     void shutdown_denied_worker(void*) // caps: done@1
     {
-        // Status 0 on purpose. If this gate ever regresses, the run ENDS HERE, mid-suite,
-        // with a clean exit status -- so passing 0 is what makes the regression look like
-        // a truncated TAP stream rather than a successful one.
+        // Status 0 on purpose: a regression ends the run here with a clean exit
+        // status, which the gate sees as a truncated TAP stream.
         g_shutdown_rc = kos_shutdown(0);
         kos_sem_post(CH_DONE);
     }
@@ -2865,15 +2790,14 @@ namespace
     }
 
     // --- a syscall buffer that lives in an app GLOBAL, from an unprivileged thread ----
-    // An unprivileged thread's writable set is [app static data] + its domain + its own
-    // stack. On any backend that does not model app static data as an MPU region -- every
-    // no-MPU chip, and the host sim, whose globals sit in the host image rather than the
-    // mprotect'd arena -- that collapses to the stack alone, so a syscall buffer in a
-    // global is refused EFAULT even though the thread can plainly store there itself.
+    // On a backend that does not model app static data as an MPU region (every no-MPU
+    // chip, and the host sim, whose globals sit outside the mprotect'd arena) the raw
+    // writable set collapses to the stack alone; user_writable_ok's static-data
+    // fallback is what admits a global buffer.
     //
-    // recv validates its buffer BEFORE resolving the cap, so a deliberately invalid cap
-    // separates the two answers with no rendezvous and no sender: EBADF means the buffer
-    // was admitted and we got as far as the cap, EFAULT means it was not.
+    // recv validates its buffer BEFORE resolving the cap, so a deliberately invalid
+    // cap separates the two answers with no rendezvous and no sender: EBADF means the
+    // buffer was admitted, EFAULT means it was not.
     char g_wrbuf[16];
     long g_wrbuf_rc = -99;
     void wrbuf_worker(void*) // caps: done@1
@@ -2892,21 +2816,14 @@ namespace
     }
 
     // --- The authority capability: the non-privileged arm of the authority gates ------
-    // Nine authority decisions, not eight: stage 1 converted eight call sites and stage 2
-    // found the ninth, grant_region_admissible's DEV arm, which was still reading
-    // Thread::privileged. Enumerate the decisions rather than carrying a count, since a
-    // count that is right the day it is written is what lets the next one hide.
+    // Each authority gate is `privileged OR holds this AUTH_* bit`; root is privileged,
+    // so the rest of the suite only exercises the privileged arm.
     //
-    // Each authority gate is `privileged OR holds this AUTH_* bit`. Root is privileged, so
-    // the whole suite already leans on the privileged arm; this covers the OTHER one, which
-    // would otherwise ship unexercised until stage 2 flips a board -- the same vacuity trap
-    // the ctor-placement gate fell into.
-    //
-    // The child is UNPRIVILEGED and holds AUTH_PINMUX and nothing else, so exactly one gate
-    // must accept it and the rest must refuse. Acceptance reads as "not -KOS_EPERM", because
-    // a gate that lets the call through returns its OWN answer instead -- -KOS_ENOSYS on a
-    // weak-seam target like the sim, -KOS_EINVAL where a chip owns the block -- and that
-    // distinction is exactly what a privilege refusal erases.
+    // The child is UNPRIVILEGED and holds AUTH_PINMUX and nothing else, so exactly one
+    // gate must accept it and the rest must refuse. Acceptance reads as "not
+    // -KOS_EPERM": a gate that lets the call through returns its OWN answer instead
+    // (-KOS_ENOSYS on a weak-seam target like the sim, -KOS_EINVAL where a chip owns
+    // the block).
     void auth_noop(void*) {}
     volatile long g_auth_pinmux = -99;   // AUTH_PINMUX held    -> anything but -KOS_EPERM
     volatile long g_auth_shutdown = -99; // AUTH_DEVICE absent  -> -KOS_EPERM
@@ -2920,23 +2837,19 @@ namespace
     {
         // The bit it HOLDS: past the gate, so pinmux answers for itself.
         g_auth_pinmux = kos_pinmux_set(99u, 0u, 0x10u);
-        // A bit it does NOT hold, at a different gate -- so this also proves the bits are
-        // independent rather than one lump. shutdown is the highest-stakes of the four and
-        // it stands for all of them; console_publish_priv and shutdown_priv already cover
-        // the privilege dimension of the same gates. Safe to call precisely BECAUSE the
-        // child lacks AUTH_DEVICE: a regression ends the run here with a clean status,
-        // which the harness sees as a truncated TAP stream.
+        // A bit it does NOT hold, at a different gate: proves the bits are independent
+        // rather than one lump. Safe to call only BECAUSE the child lacks AUTH_DEVICE;
+        // a regression ends the run here with a clean status, which the harness sees
+        // as a truncated TAP stream.
         g_auth_shutdown = kos_shutdown(0);
         // Three spawn probes off ONE params struct, all refused before a pool slot is
-        // claimed, so their codes are deterministic even on a full pool. One struct is not
-        // tidiness: a frame-local kos_thread_params costs an inline zero-init per site, and
-        // this suite links within ~100 bytes of the f302nucleo flash ceiling.
+        // claimed, so their codes are deterministic even on a full pool. One struct
+        // because a frame-local kos_thread_params costs an inline zero-init per site,
+        // and this suite links within ~100 bytes of the f302nucleo flash ceiling.
         //
-        // g_auth_kid and g_auth_two are globals on purpose, and that is this test's N15
-        // coverage: thread_spawn reads the params struct and the grant array through
-        // user_readable_ok, so a caller may keep either in static data. With the earlier raw
-        // user_range_ok the probes below answered -KOS_EFAULT on the sim and on every
-        // no-MPU board.
+        // g_auth_kid and g_auth_two are globals on purpose (the N15 coverage):
+        // thread_spawn reads the params struct and the grant array through
+        // user_readable_ok, so a caller may keep either in static data.
         kos_thread_params& kid = g_auth_kid;
         kid.entry = auth_noop;
         kid.prio = 9;
@@ -2956,11 +2869,11 @@ namespace
         kid.cap_count = 1;
         kid.authority = KOS_CAP_WAIT;
         g_auth_badbits = kos_thread_spawn(&kid);
-        // The three probes above are refused by an authority check that runs before the
-        // delegation loop, so none of them reads g_auth_two. The array is the second N15
-        // site and needs a probe that gets that far: an unresolvable source_cap is refused
-        // -KOS_EBADF from inside the loop, reachable only once the array is admitted. With
-        // the raw range check it answered -KOS_EFAULT. Refused before a slot is claimed.
+        // The three probes above are refused before the delegation loop, so none of
+        // them reads g_auth_two. The array is the second N15 site and needs a probe
+        // that gets that far: an unresolvable source_cap is refused -KOS_EBADF from
+        // inside the loop, reachable only once the array is admitted. Refused before a
+        // slot is claimed.
         g_auth_two[0] = {0x7fffffff, CH_FULL};
         kid.authority = 0;
         g_auth_capsarr = kos_thread_spawn(&kid);
@@ -2978,10 +2891,8 @@ namespace
             return;
         }
         wait_n(1);
-        // Grouped, because each TAP_CHECK carries __FILE__ and its stringified condition as
-        // rodata and this image is at the f302nucleo ceiling. Held bit accepted (pinmux
-        // returned its own answer: -KOS_ENOSYS on a weak seam, -KOS_EINVAL where a chip owns
-        // the block), unheld bit refused at another gate, and the three spawn refusals.
+        // Grouped: each TAP_CHECK carries __FILE__ and its stringified condition as
+        // rodata, and this image is at the f302nucleo ceiling.
         TAP_CHECK(g_auth_pinmux != -KOS_EPERM and g_auth_pinmux < 0);
         TAP_CHECK(g_auth_shutdown == -KOS_EPERM);
         TAP_CHECK(g_auth_regrant == -KOS_EPERM and g_auth_collide == -KOS_EINVAL
@@ -2989,22 +2900,17 @@ namespace
     }
 
     // --- Self-grant, and the region budget that bounds it ----------------------
-    // kos_ram_alloc reserves arena memory and grants nothing; kos_mem_self_grant is
-    // the ask that makes the block reachable. The half worth a test is the REFUSAL:
-    // a thread's descriptor file is finite, so the call must fail LOUDLY at the
-    // ceiling. Truncating the region set instead would fault the thread on memory
-    // the kernel had just told it it could reach.
+    // Exercises the REFUSAL at the region-budget ceiling: the call must fail LOUDLY
+    // (-KOS_ENOMEM), not truncate the region set.
     //
-    // Runs in an UNPRIVILEGED child in EVERY posture, not in root. A privileged
-    // caller already reaches the whole arena, so its self-grants are answered
-    // "already reachable" without spending a descriptor and the ceiling is
-    // unreachable -- from root in the default posture this test would be vacuous.
+    // Runs in an UNPRIVILEGED child in EVERY posture, not in root: a privileged
+    // caller's self-grants are answered "already reachable" without spending a
+    // descriptor, so from root the ceiling is unreachable.
     //
     // Each descriptor is bought with kos_ram_alloc(1), the SMALLEST region this
-    // backend can describe (the allocator rounds up to arch_ram_region_size), so the
-    // loop costs a page on the sim and 16-32 bytes on an MCU instead of assuming a
-    // granule. Those blocks are not reclaimed -- arch_ram_alloc is a bump allocator
-    // with no free -- so the bound below is also what keeps the leak small.
+    // backend can describe (the allocator rounds up to arch_ram_region_size). The
+    // blocks are not reclaimed (arch_ram_alloc is a bump allocator with no free), so
+    // the bound below is also what keeps the leak small.
     constexpr int SG_MAX = 12; // > KICKOS_MPU_MAX_REGIONS, so the loop must end refused
     volatile int g_sg_ok = 0;      // descriptors accepted before the ceiling
     volatile long g_sg_refusal = 0; // the code that ended the loop
@@ -3013,9 +2919,8 @@ namespace
 
     void selfgrant_worker(void*)
     {
-        // Free refusal: no arena, no descriptor, same answer on every board. The
-        // address is a valid stack local, so the refusal is about the SIZE and not
-        // about a pointer the predicate could have rejected for another reason.
+        // Size-0 refusal costs no arena and no descriptor. The address is a valid
+        // stack local, so the refusal is about the SIZE alone.
         int probe = 0;
         g_sg_badsize = kos_mem_self_grant(&probe, 0);
         for (int i = 0; i < SG_MAX; i++)
@@ -3032,9 +2937,8 @@ namespace
                 g_sg_refusal = rc;
                 break;
             }
-            // The grant is real, not bookkeeping: touch the page it just bought. An
-            // unprivileged thread writing a region it was never granted faults, so
-            // reaching the readback at all is the positive half of this test.
+            // Touch the page just granted: an ungranted write from an unprivileged
+            // thread faults, so reaching the readback is the positive half.
             *static_cast<volatile int*>(p) = 0x5A5A + i;
             g_sg_readback = *static_cast<volatile int*>(p) - i;
             g_sg_ok = g_sg_ok + 1; // not ++: -Werror=volatile rejects it from C++20
@@ -3059,10 +2963,7 @@ namespace
             return;
         }
         // Grouped: each TAP_CHECK carries __FILE__ plus its stringified condition as
-        // rodata, and this image sits near the f302nucleo ceiling. The ceiling was
-        // reached (at least one grant landed), it was reported as exhaustion rather
-        // than as a permission or shape error, a granted page was writable, and size 0
-        // is still rejected as malformed.
+        // rodata, and this image sits near the f302nucleo ceiling.
         TAP_CHECK(g_sg_ok > 0 and g_sg_refusal == -KOS_ENOMEM);
         TAP_CHECK(g_sg_readback == 0x5A5A and g_sg_badsize == -KOS_EINVAL);
     }
@@ -3072,9 +2973,9 @@ namespace
     // granular: 40 rounds to 48, not a power of two, so rsz - 1 is not an
     // alignment mask. A block kos_ram_alloc handed out must still self-grant.
     // Consecutive 48-byte bump allocations step through the 16-byte residues of
-    // 64, so within three blocks one base has bit 5 set -- exactly the base an
+    // 64, so within three blocks one base has bit 5 set, exactly the base an
     // ungated pow2 mask check refuses. On a pow2 backend every base is naturally
-    // aligned, bit 5 never fires, and this is one ordinary grant.
+    // aligned and this is one ordinary grant.
     //
     // Registered BEFORE domain_share, not with mem_self_grant: on microbit the
     // pool cannot host a worker by the time the budget test runs, and this probe
@@ -3212,9 +3113,8 @@ int main(int, char**)
 #endif
 #endif
     tap::add("confused_deputy", t_confused_deputy); // readable-buffer/name floor (accept rodata, reject bogus)
-    // Last, deliberately: it walks the caller's region budget to the ceiling and the
-    // blocks it buys are never returned (bump allocator), so running it earlier would
-    // spend arena the tests above still need on a small board.
+    // Last, deliberately: the blocks it buys are never returned (bump allocator), so
+    // running it earlier would spend arena the tests above still need on a small board.
     tap::add("mem_self_grant", t_selfgrant); // explicit grant + the loud budget ceiling
 
     // Every test joins its workers, so main returns as the last live thread:

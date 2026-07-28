@@ -3,18 +3,13 @@
 //
 // Publish-aware console write for freestanding diagnostic apps (no libc stdio, no heap).
 //
-// Sends through this thread's cap index 0, the stdout endpoint kos_console_publish seats
-// and cap_install_defaults copies into every child, and falls back to the kernel debug
-// console for the unsent remainder when index 0 is empty (-KOS_EBADF) or the driver died
-// (-KOS_EPIPE).
+// Sends through this thread's stdout cap at index 0 and falls back to the kernel debug
+// console for the unsent remainder when index 0 is empty (-KOS_EBADF) or the driver
+// died (-KOS_EPIPE). kos_print alone is not enough: console_emit drops every byte
+// handed to the kernel console once the UART is USER_OWNED (kernel/init/console.cc).
 //
-// kos_print alone is not enough on a board whose service list publishes the console:
-// console_emit drops every byte handed to the kernel console once the UART is USER_OWNED
-// (kernel/init/console.cc), so an app's own diagnostics never reach the wire there.
-//
-// Same policy as tests/tap/tap.cc emit() and libc's _write (user/src/newlib_stubs.cc).
-// Those two cannot use this header (one is the freestanding test harness, the other is
-// the libc seam), so the policy exists in three places and they must stay in step.
+// The same policy exists in tests/tap/tap.cc emit() and libc's _write
+// (user/src/newlib_stubs.cc); keep the three in step.
 
 #ifndef KICKOS_SYS_EMIT_H
 #define KICKOS_SYS_EMIT_H

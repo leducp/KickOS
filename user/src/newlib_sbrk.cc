@@ -3,12 +3,11 @@
 //
 // The userspace heap bottom edge: newlib's _sbrk over a bump arena.
 //
-// Its own translation unit on purpose. A board provisioning no heap defines neither bound
-// symbol, so an app pulling malloc fails at link with "undefined reference to
-// _kickos_heap_start" instead of returning NULL at runtime. That needs this object pulled
-// by a real allocator reference. While it shared a TU with _exit, the fleet-wide
-// -Wl,-u,_exit (CMakeLists.txt) force-linked that object into every image, so the strong
-// reference was always present and no linker script could withhold it.
+// Its own translation unit on purpose. A board provisioning no heap defines neither
+// bound symbol, so an app pulling malloc fails at link ("undefined reference to
+// _kickos_heap_start") instead of returning NULL at runtime. That needs this object
+// pulled only by a real allocator reference; the fleet-wide -Wl,-u,_exit force-links
+// newlib_stubs.o into every image, so _sbrk cannot live there.
 //
 // Do not add anything here that an image might want without a heap.
 

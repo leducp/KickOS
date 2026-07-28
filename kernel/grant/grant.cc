@@ -100,11 +100,7 @@ namespace kickos
         {
             // Choice 5A: an MMIO/device grant needs the caller's AUTH_MEMORY, and must
             // map to exactly one MPU descriptor with no rounding (a rounded window
-            // over-grants the neighbouring registers). This arm read the caller's raw
-            // privilege until the root flip: an unprivileged root holding AUTH_MEMORY
-            // clears the syscall-side gate and then died here, which made it the one
-            // authority check stage 1 missed and the one that blocks a console handover
-            // from an unprivileged root.
+            // over-grants the neighbouring registers).
             if (not caller_authorized)
             {
                 return false;

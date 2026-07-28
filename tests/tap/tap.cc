@@ -23,15 +23,12 @@ namespace tap
 
         Entry g_tests[MAX_TESTS];
         int g_count = 0;
-        // Registrations dropped past MAX_TESTS. add() runs from static registrars,
-        // possibly before main, so it can only record; run_all() turns a non-zero
-        // count into a failing TAP line -- a silently dropped test would otherwise
-        // be a gate that reports success without running.
+        // Registrations dropped past MAX_TESTS. add() may run before main, so it can
+        // only record; run_all() turns a non-zero count into a failing TAP line.
         int g_dropped = 0;
 
-        // Verdict of the test currently running. One slot for the failure diagnostic
-        // and the skip reason: they are mutually exclusive, and the buffer is real
-        // BSS on a 16 KiB-SRAM board.
+        // Verdict of the running test. One buffer for the failure diagnostic and the
+        // skip reason: mutually exclusive, and it is real BSS on a 16 KiB-SRAM board.
         enum class Verdict : unsigned char
         {
             PASS,
@@ -41,20 +38,13 @@ namespace tap
         Verdict g_verdict = Verdict::PASS;
         char g_msg[192];
 
-        // The one writer for the whole stream. Policy MIRRORS libc's _write
-        // (user/src/newlib_stubs.cc): try THIS thread's cap index 0 -- the stdout
-        // endpoint that kos_console_publish seats -- and fall back to the kernel debug
-        // console for the REMAINDER only, when index 0 is empty (pre-publish,
-        // -KOS_EBADF) or the driver died (-KOS_EPIPE). Both halves of that policy are
-        // load-bearing and documented in place; this is a copy, not a new mechanism,
-        // because the harness is freestanding (no libc stdio, no heap) -- keep the two
-        // in step.
-        //
-        // kos_print alone is NOT enough, which is the bug this replaces: once a board's
-        // service list publishes the console, console_emit DROPS every byte handed to
-        // the kernel console (kernel/init/console.cc, USER_OWNED), so the entire TAP
-        // stream -- verdicts and failure diagnostics alike -- went dark on precisely the
-        // configuration the service-list boards ship.
+        // The one writer for the whole stream. Same policy as libc's _write
+        // (user/src/newlib_stubs.cc) and <kickos/sys/emit.h>: try this thread's stdout
+        // cap at index 0, fall back to the kernel debug console for the remainder when
+        // index 0 is empty (-KOS_EBADF) or the driver died (-KOS_EPIPE). Keep the three
+        // copies in step. kos_print alone is not enough: once a service list publishes
+        // the console, console_emit drops every byte handed to the kernel console
+        // (kernel/init/console.cc, USER_OWNED).
         void emit(char const* s)
         {
             size_t const total = strlen(s);
@@ -70,8 +60,8 @@ namespace tap
                 // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
                 if (r <= 0)
                 {
-                    // Remainder only: resending from the start would duplicate on the
-                    // debug console the chunks the driver already took.
+                    // Remainder only: resending from the start would duplicate the
+                    // chunks the driver already took.
                     kos_kconsole_write(s + sent, total - sent);
                     return;
                 }
@@ -90,10 +80,8 @@ namespace tap
         }
 
         // Is this thread's stdout cap seated (a service list published the console)?
-        // Probed with a ZERO-length send: a valid zero-length signal per <kickos/sys.h>,
-        // so it discriminates the two postures while putting NO byte on the wire in
-        // either -- unlike a 1-byte probe, which would inject a stray character into
-        // the very stream we are about to emit.
+        // A zero-length send is a valid signal per <kickos/sys.h> and puts no byte on
+        // the wire in either posture, unlike a 1-byte probe.
         bool stdout_published()
         {
             return kos_send(0, "", 0) >= 0;
@@ -158,9 +146,6 @@ namespace tap
             plan++; // one extra slot for the overflow verdict below
         }
         emitf("1..%d\n", plan);
-        // Name the transport this run actually used. An operator staring at a silent
-        // VCOM needs to tell "the driver is carrying TAP" from "the kernel console is",
-        // and it is the one fact no individual test line reveals.
         if (stdout_published())
         {
             diag("tap route: stdout endpoint -> console driver (service list published)");
@@ -197,11 +182,9 @@ namespace tap
             emitf("not ok %d - tap_registry_overflow # %d registration(s) dropped past MAX_TESTS=%d\n",
                   g_count + 1, g_dropped, MAX_TESTS);
         }
-        // ALWAYS emitted, zero included: a gate keys its per-board skip budget off this
-        // line, so its ABSENCE has to mean "truncated run", never "no skips". The
-        // completion marker carries the count too, so a skip-padded green cannot read
-        // as a full pass to a human -- while still matching the `# all tests passed`
-        // substring every existing gate greps for.
+        // Always emitted, zero included: gates key their skip budget off this line, so
+        // its absence must mean "truncated run", never "no skips". The completion
+        // marker must keep the `# all tests passed` substring the gates grep for.
         emitf("# skipped: %d\n", skipped);
         if (failed == 0 and skipped == 0)
         {

@@ -64,19 +64,13 @@ SECTIONS
         __init_array_end = .;
     } > FLASH
 
-    /* Teardown mirror of the ctor split, and the SAME boundary. A global with a
-       non-trivial destructor emits a .fini_array entry on the DEFAULT (freestanding)
-       leaf: -fno-use-cxa-atexit makes GCC register through the array instead of
-       __cxa_atexit. Nothing in KickOS ever walks that array, and no script used to
-       PLACE it -- so the entry was either dropped by --gc-sections (the destructor
-       silently never runs, no diagnostic) or, as soon as anything references it,
-       ORPHANED by ld into the RAM hole between .data and .bss: outside both ctor
-       buckets AND outside [_sdata,_edata), so the startup copy never initialises the
-       pointers it holds. Place it on the APP side (never the privileged bucket) so a
-       future teardown lands unprivileged by construction; KEEP plus the ASSERT below
-       turn the silent drop into a loud link error until then. Placed BEFORE the app
-       ctor bucket: on rv32imac that bucket carries the _code_used_end marker, which
-       must trail all code. */
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. Under
+       -fno-use-cxa-atexit a non-trivial static destructor registers through
+       .fini_array, and an unplaced entry is either gc'd (the destructor silently
+       never runs) or orphaned by ld outside every copied/zeroed range. App side,
+       never the privileged bucket, so a future teardown lands unprivileged. Kept
+       BEFORE the app ctor bucket: on rv32imac that bucket carries _code_used_end,
+       which must trail all code. */
     .kickos_app_fini_array :
     {
         __kickos_app_fini_array_start = .;
@@ -242,9 +236,8 @@ SECTIONS
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
 
-/* Static destructors are unsupported: nothing walks .fini_array (see the section
-   comment), so a global with a non-trivial destructor is silently dropped rather than
-   run. Fail the link instead of shipping a destructor that never fires. */
+/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
+   rather than silently drop a destructor. */
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 

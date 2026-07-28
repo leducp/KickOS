@@ -1,28 +1,21 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The runnable QEMU MPS2 boards: ONE chip backend (mps2) behind four FPGA images --
+# The runnable QEMU MPS2 boards: ONE chip backend (mps2) behind four FPGA images:
 # an386/M4 (`qemu`), an505/M33 (`qemu-m33`, PMSAv8), an500/M7 (`qemu-m7`, 16 MPU
 # regions) and an385/M3 (`qemu-m3`, no FPU). They share a memory map, a console and a
-# clock, so the gates below are per-IMAGE facts rather than per-chip ones, and a gate
-# that holds on one image holds on all of them. Named once here rather than repeated as
-# a four-way OR at each of the eight call sites that used to read
-# `KICKOS_BOARD STREQUAL "qemu"`, so adding a fifth image is a one-line change.
-# Inherited by every add_subdirectory below.
-#
-# The one exception is an FPU: qemu-m3 is soft-float, so fp_switch is not built for it
-# (see its inclusion list further down) -- that is a core capability, not a gate.
+# clock, so a gate that holds on one image holds on all of them. Inherited by every
+# add_subdirectory below. Exception: qemu-m3 is soft-float, so fp_switch is not built
+# for it (see its inclusion list further down).
 set(KICKOS_QEMU_MPS2_BOARDS qemu qemu-m33 qemu-m7 qemu-m3)
-# The board name as a CTest-name prefix, so each image reports under its own name and
-# the an386 board keeps the names it has always had (qemu_hello, qemu_selftest, ...).
+# The board name as a CTest-name prefix, so each image reports under its own name
+# (qemu_hello, qemu_m33_selftest, ...).
 string(REPLACE "-" "_" KICKOS_QEMU_MPS2_TAG "${KICKOS_BOARD}")
 
 add_subdirectory(hello)
 add_subdirectory(hello_c)
 add_subdirectory(mpu_fault)
-# The ROOT half of the isolation story (stage 2). Separate from mpu_fault because the
-# two claims are independent: mpu_fault confines a spawned child, rootfault confines
-# the thread that ran the ctors and the bring-up. Diagnostic app, self-gated.
+# Root confinement (mpu_fault covers a spawned child). Diagnostic app, self-gated.
 add_subdirectory(rootfault)
 add_subdirectory(sched_exit)
 
@@ -72,13 +65,13 @@ add_subdirectory(clocksoak)
 # cxxtest ONLY under enforcement -- each chip .ld homes the toolchain EH tables (EHABI
 # .ARM.extab / DWARF .eh_frame+.gcc_except_table / RX SjLj .gcc_except_table) into the
 # app code+data grants and routes the runtime writable state into the .appdata window.
-# The QEMU mps2 images build it in BOTH postures, and that pairing is the point: the
-# non-enforcement build is the plain libstdc++ smoke, while the same gate under
-# KICKOS_HAVE_MPU runs the whole runtime -- throw/unwind, STL, RTTI -- as an
-# unprivileged thread, which on qemu-m33 is the only runtime coverage of full C++ under
-# PMSAv8 anywhere in the fleet (the other armv8-M enforcing ports are all silicon).
-# qemu-riscv likewise builds both: the full-C++ throw under PMP is the deterministic
-# gate for the gp-in-appdata layout (docs/design-riscv-gp-split.md), no silicon needed.
+# The QEMU mps2 images build it in BOTH postures: the non-enforcement build is the
+# plain libstdc++ smoke, and the same gate under KICKOS_HAVE_MPU runs the whole
+# runtime (throw/unwind, STL, RTTI) as an unprivileged thread; on qemu-m33 that is
+# the only runtime coverage of full C++ under PMSAv8 in the fleet (the other armv8-M
+# enforcing ports are all silicon). qemu-riscv likewise builds both: the full-C++
+# throw under PMP is the deterministic gate for the gp-in-appdata layout
+# (docs/design-riscv-gp-split.md), no silicon needed.
 if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
    OR KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS
@@ -110,10 +103,9 @@ if(KICKOS_TELEMETRY_ON AND KICKOS_ARCH STREQUAL "sim")
 endif()
 
 # FP context-switch torture test: builds for the M4F dev boards (and the QEMU
-# Cortex-M4F for the in-env gate). Uses vldmia/vstmia {s16-s31}, so armv7m+FPU only --
-# which is why the QEMU images are enumerated here instead of taken from
-# KICKOS_QEMU_MPS2_BOARDS: an FPU is a core capability, not a per-image gate, and
-# qemu-m3 (an385, Cortex-M3, soft-float) has no s16-s31 to preserve.
+# Cortex-M4F for the in-env gate). Uses vldmia/vstmia {s16-s31}, so armv7m+FPU only:
+# the QEMU images are enumerated instead of taken from KICKOS_QEMU_MPS2_BOARDS
+# because qemu-m3 (an385, Cortex-M3) is soft-float.
 if(KICKOS_BOARD STREQUAL "frdmk64f"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
    OR KICKOS_BOARD STREQUAL "qemu"

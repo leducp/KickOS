@@ -70,11 +70,8 @@ namespace kickos
         {
             // idle/root only (thread_spawn pre-resolves the domain). Neither requests
             // a data or MMIO grant, so domain_for short-circuits before the grant
-            // predicate: privileged idle takes the kernel domain, and an unprivileged
-            // root (KICKOS_ROOT_PRIVILEGED=0) takes the default-user domain. The
-            // short-circuit rests on "no grant requested", not on the caller being
-            // privileged, so caller_authorized=true here is inert, not a waiver.
-            // No failure arm here, so derr cannot be set.
+            // predicate and caller_authorized=true is inert, not a waiver. No failure
+            // arm here, so derr cannot be set.
             int derr = 0;
             t->domain = domain_for(attr.privileged, attr.mem_base, attr.mem_size,
                                    attr.mmio_base, attr.mmio_size, true, &derr);

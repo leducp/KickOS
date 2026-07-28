@@ -201,10 +201,9 @@ namespace kickos
         return d;
     }
 
-    // A mortal domain's refcount counts live threads and nothing else: thread_create takes
-    // the single reference, sched::exit_current drops it. The bound is the thread-handle
-    // index field, not KICKOS_MAX_THREADS, which a board sets as low as 2 and which an
-    // assert could therefore never fire on.
+    // A mortal domain's refcount counts live threads and nothing else: thread_create
+    // takes the single reference, sched::exit_current drops it. The bound is the
+    // thread-handle index field, not KICKOS_MAX_THREADS.
     static_assert((1ull << ThreadPool::INDEX_BITS) - 1ull <= UINT16_MAX,
                   "Domain::refcount is uint16_t and counts live threads: the thread pool "
                   "ceiling (1 << ThreadPool::INDEX_BITS) must fit it");
@@ -215,8 +214,7 @@ namespace kickos
         // so their refcount is meaningless (they never free); skip it to avoid a wrap.
         if (d != nullptr and not d->immortal)
         {
-            // The static_assert makes the wrap unreachable. This catches what would make
-            // it reachable again: a reference held by something other than a live thread.
+            // Catches a reference held by something other than a live thread.
             KICKOS_DEBUG_ASSERT(d->refcount < KICKOS_MAX_THREADS);
             d->refcount++;
         }

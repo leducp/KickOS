@@ -240,8 +240,8 @@ void arch_console_flush_sync(void)
 }
 
 // retune: reprogram the baud generator (FDR + BRG) for the new fPERIPH = SystemCoreClock/2,
-// selecting the precomputed point for the landed clock. The reprogram is live -- the
-// channel stays enabled -- but it is reached only with the channel idle and IRQs masked.
+// selecting the precomputed point for the landed clock. The reprogram is live (the
+// channel stays enabled) but is reached only with the channel idle and IRQs masked.
 // An unrecognized clock leaves the baud untouched (a P-state
 // whose fPERIPH has no in-tolerance divisor should be rejected at the seam -- ruling 2).
 void arch_console_retune(void)

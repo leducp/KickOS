@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Minimal out-of-tree BARE-METAL KickOS application. The sibling example
-// (examples/oot-app) proves the packaging surface on the host sim, where there
-// is no linker script, no reset vector and no flashable image -- so none of the
-// MCU-specific machinery is exercised. This one is built against an installed
-// MCU package with the shipped cross toolchain, and never runs on the host.
+// Minimal out-of-tree BARE-METAL KickOS application: built against an installed MCU
+// package with the shipped cross toolchain, never run on the host. The host-sim half
+// of the packaging surface is the sibling examples/oot-app.
 //
 // Nothing here is board-specific: the LED is the kernel's single diagnostic pin,
-// driven through a syscall, so this same source builds for any KickOS MCU
-// package. On a board with no known LED the toggle is a harmless no-op.
+// driven through a syscall. On a board with no known LED the toggle is a no-op.
 
 #include <kickos/kos.h>
 

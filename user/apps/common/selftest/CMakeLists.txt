@@ -35,21 +35,17 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # path) is caught as a truncated run, not a false pass. CTest checks FAIL
   # before PASS, so a "not ok" still fails.
   # `# skipped: [1-9]` is a FAILURE here: the sim's pools host the entire suite, so a
-  # skip means a test stopped running rather than that the board cannot host it. Until
-  # the harness had a real SKIP state such a test reported a plain `ok` and this gate
-  # could not see it at all.
+  # skip means a test stopped running, not that the board cannot host it.
   add_test(NAME selftest COMMAND "$<TARGET_FILE:selftest>")
   set_tests_properties(selftest PROPERTIES
     TIMEOUT 30
     PASS_REGULAR_EXPRESSION "# all tests passed"
     FAIL_REGULAR_EXPRESSION "not ok;# skipped: [1-9]")
 
-  # The OTHER console posture. This gate is the sim's only coverage of the published
-  # route (kos_send on stdout cap index 0 -> userspace driver): the test above, and
-  # every QEMU gate, run kickos_services_none, where the kernel owns the console and
-  # that route is never touched -- which is how M4.5's console handover silenced the
-  # whole TAP stream on xmc4800-relax and frdmk64f with CI fully green. One provider
-  # links per image, so it needs its own build tree; the script makes one.
+  # The OTHER console posture: the sim's only coverage of the published route
+  # (kos_send on stdout cap index 0 -> userspace driver). The test above, and every
+  # QEMU gate, run kickos_services_none, where that route is never touched. One
+  # provider links per image, so it needs its own build tree; the script makes one.
   add_test(
     NAME    sim_published_console
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_published.sh"
@@ -67,27 +63,18 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
 endif()
 
 # The expected-skip list every QEMU gate below carries (EXPECT_SKIPS, checked by name
-# in tests/check_qemu_selftest.sh). Empty means "no test may skip", which is the fleet
-# default and what every enforcing, privileged-root board meets.
+# in tests/check_qemu_selftest.sh). Empty means "no test may skip", the fleet default.
 #
-# POSTURE-DEPENDENT, because one test's SUBJECT is the privileged posture. Under
-# KICKOS_ROOT_PRIVILEGED=OFF no privileged caller can come into existence after boot,
-# so mpu_privileged_guard's property does not fail -- it does not exist, and its
-# complement (that root canNOT reach memory outside its regions) is apps/rootfault, a
-# separate binary because proving it ends the process. It is only registered under
-# enforcement, so the entry is conditioned on both.
-#
-# It is deliberately the ONLY posture-driven entry. irq_as_event used to skip here too
-# -- root plays the device, writing a page it allocated but was never granted -- and
-# that was a missing capability, not a board limit: kos_mem_self_grant now lets it ask
-# for the page, so it runs in both postures and is NOT on this list.
+# Posture-dependent: under KICKOS_ROOT_PRIVILEGED=OFF no privileged caller exists
+# after boot, so mpu_privileged_guard skips (its complement is apps/rootfault). The
+# guard test is only registered under enforcement, so the entry is conditioned on both.
 set(KICKOS_EXPECT_SKIPS "")
 if(KICKOS_HAVE_MPU AND NOT KICKOS_ROOT_PRIVILEGED)
   list(APPEND KICKOS_EXPECT_SKIPS mpu_privileged_guard)
 endif()
 # Comma-joined before it reaches an ENVIRONMENT property: that property is itself a
-# CMake list, so an embedded semicolon from a 2-element list would split the value into
-# a second bogus environment entry. The check script splits on commas.
+# CMake list, so an embedded semicolon would split the value into a second bogus
+# environment entry. The check script splits on commas.
 list(JOIN KICKOS_EXPECT_SKIPS "," KICKOS_EXPECT_SKIPS)
 
 # The SAME TAP suite on the runnable QEMU targets -- the identical binary rebuilt
@@ -108,16 +95,11 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
-  # The one board with legitimate skips: MAX_THREADS=2 / MAX_SEMAPHORES=4 means the
-  # multi-worker choreographies (the mutex PI suite, domain_share, the 3-and-4-thread
-  # call/reply cases) genuinely cannot run here, and two tests cannot spare the arena.
-  # Every OTHER board keeps the script's default of "nothing may skip".
-  #
-  # NAMED, not counted. This list used to be a comment beside `MAX_SKIPS=10`, which is
-  # the failure the number always had: 10 admitted ANY ten skips, so a test that
-  # silently stopped running would have taken a slot one of these vacated and CI would
-  # have stayed green. The comment was the real knowledge; now it IS the assertion, and
-  # a skip whose name is not here fails the gate and gets printed.
+  # The one board with legitimate skips: MAX_THREADS=2 / MAX_SEMAPHORES=4 cannot host
+  # the multi-worker choreographies, and two tests cannot spare the arena. Every other
+  # board keeps the script's default of "nothing may skip". Skips are checked by NAME:
+  # a skip not on this list fails the gate. Growing the list should mean a board
+  # capability changed.
   #
   # Measured, stable across repeated runs:
   #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_deadlock,
@@ -126,9 +108,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   #   domain_share, confused_deputy                         -- 2 concurrent workers
   #   irq_as_event          -- wants a 4 KiB MMIO page out of 16 KiB SRAM
   #   mem_self_grant        -- its worker is a second concurrent thread
-  # Growing this list should mean a board capability changed. caller_stack and
-  # mmio_grant additionally report PARTIAL -- they assert their invariant and say which
-  # half the arena/pool could not host, so they count as passes, not skips.
+  # caller_stack and mmio_grant report PARTIAL instead and count as passes, not skips.
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,domain_share,confused_deputy,irq_as_event,mem_self_grant")
 endif()

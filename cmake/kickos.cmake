@@ -9,11 +9,10 @@
 # link and emits the image (host ELF for sim; .bin/.hex/.uf2 for MCUs). Switching
 # sim<->MCU is a one-word BOARD change.
 #
-# The link recipe itself lives on the exported `kickos` / `kickos_cxx` usage targets,
-# NOT in these helpers, so the supported downstream shape is plain modern CMake --
-# add_executable + target_link_libraries(app PRIVATE kickos) -- on the sim and on
-# bare metal alike. Anything a consumer must have to link belongs on those targets;
-# what is left in this file is either in-tree-only policy or an explicit opt-in.
+# The link recipe lives on the exported `kickos` / `kickos_cxx` usage targets, NOT
+# in these helpers: the supported downstream shape is plain add_executable +
+# target_link_libraries(app PRIVATE kickos), on the sim and on bare metal alike.
+# What is left in this file is in-tree-only policy or an explicit opt-in.
 
 # ---------------------------------------------------------------------------
 # Board -> {arch, chip} resolution.
@@ -30,13 +29,9 @@
 # ---------------------------------------------------------------------------
 get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
 
-# Are we building the KickOS tree itself, or is this file the copy shipped inside an
-# installed package? The boards/ tree is the signal: it sits beside cmake/ in a source
-# tree, and an installed package ships kickos.cmake alone under <prefix>/lib/cmake/
-# KickOS with no boards/ sibling. Named once here because three separate decisions
-# turn on that same answer (the board-descriptor fallback below, the -Werror default,
-# and whether our warning policy is stamped on an application target) -- one signal
-# with one spelling, so they can never drift into disagreeing about who is building.
+# In-tree vs installed-package signal: a source tree has boards/ beside cmake/; an
+# installed package ships kickos.cmake with no boards/ sibling. Named once; every
+# in-tree-vs-consumer decision below reads this one variable.
 if(EXISTS "${KICKOS_BOARDS_DIR}")
   set(KICKOS_IN_TREE TRUE)
 else()
@@ -92,54 +87,19 @@ endfunction()
 # Applied per-target so a hosted arch TU and a freestanding kernel TU coexist
 # in one binary.
 #
-# WARNING FLAGS NEVER LEAVE THIS PROJECT. They are our hygiene policy, not part of
-# the interface: which diagnostics a downstream project wants is its own call, and
-# ours can contradict its policy or simply break its build for reasons that have
-# nothing to do with using KickOS correctly. So they are applied PRIVATE to targets
-# we own, and the exported `kickos`/`kickos_cxx` usage targets carry none of them.
-# The one place this could regress is an application target, which the in-tree fleet
-# and a consumer both create -- see the KICKOS_IN_TREE guard in
-# kickos_add_application().
+# WARNING FLAGS NEVER LEAVE THIS PROJECT: they are applied PRIVATE to targets we
+# own, and the exported `kickos`/`kickos_cxx` usage targets carry none of them.
+# Application targets are the one shape both the fleet and a consumer create --
+# see the KICKOS_IN_TREE guard in kickos_add_application().
 # ---------------------------------------------------------------------------
 set(KICKOS_WARN_FLAGS
   -Wall -Wextra -Wshadow -Wundef)
 
-# Warnings-as-errors -- a knob here, and DEFAULT-ON FOR THE WHOLE IN-TREE FLEET.
-#
-# A knob in this file rather than a -Werror pasted into the CI jobs, because it then
-# rides the same per-target path as the warning flags it belongs to: it lands only on
-# OUR compiles, never on CMake's own try_compile/ABI probes or on a toolchain-injected
-# command line, which a global CMAKE_C/CXX_FLAGS injection would also hit. And a
-# developer gets the identical gate from a plain `cmake --preset <anything>`, so the
-# desk and CI agree by construction -- nobody discovers a new warning only after
-# pushing. One knob also means the gate reaches the presets CI does NOT build (the
-# silicon-only boards, and non-default axes like KICKOS_CONSOLE=none), which is where
-# warnings would otherwise accumulate unseen.
-#
-# It adopted sim-only, because at that point a forced-ON sweep found exactly one dirty
-# spot in the fleet -- the KICKOS_BENCH build of user/apps/common/bench, whose 31
-# -Wformat (%u against a uint32_t that is `unsigned long` on newlib) plus one
-# -Wvolatile would have turned qemu-riscv red on debt nobody was working on. That app
-# is clean now, so the measurement that justified the narrow scope no longer holds:
-# all 33 configure presets (ARM, RISC-V, Xtensa, RX and the host sim, on the pinned
-# vendor toolchains) build warning-free with this default, as do all four
-# KICKOS_CONSOLE modes. Widening is therefore the same trade the sim took -- free
-# today, and more expensive every day it waits.
-#
-# Overridable BOTH ways (-DKICKOS_WERROR=OFF to unblock a bisect or a toolchain bump
-# that adds a new warning, -DKICKOS_WERROR=ON to sweep a port), using the same
-# `if(NOT DEFINED ...)` shape as the other derived defaults (KICKOS_HAVE_MPU,
-# KICKOS_MIN_STACK_SIZE). The OFF escape matters more now than it did at sim-only
-# scope: a compiler upgrade lands new diagnostics on five toolchains at once, and a
-# contributor must be able to keep building while they are cleared.
-#
-# KICKOS_IN_TREE (a boards/ tree exists) keeps the default OFF for a consumer, and it
-# is the reason this is not simply `set(KICKOS_WERROR ON)`: promoting somebody else's
-# warnings to hard errors is not our call to make. It is now a second line of defence
-# rather than the only one -- kickos_add_application() no longer stamps
-# KICKOS_WARN_FLAGS on a consumer's app at all, so out of tree there is nothing for
-# -Werror to ride on in the first place. Keep it: a future in-tree-only helper could
-# reintroduce a path, and OFF is the right default for a consumer regardless.
+# Warnings-as-errors: default ON in tree, OFF for a consumer (promoting somebody
+# else's warnings to hard errors is not our call). Riding KICKOS_WARN_FLAGS keeps it
+# per-target, so it never reaches CMake's try_compile/ABI probes, and the same gate
+# runs on the desk and in CI. -DKICKOS_WERROR=OFF is the escape hatch for a bisect
+# or a toolchain bump that lands new diagnostics.
 if(NOT DEFINED KICKOS_WERROR)
   set(KICKOS_WERROR ${KICKOS_IN_TREE})
 endif()
@@ -193,19 +153,11 @@ endfunction()
 #   MCU only: turn a linked ELF into flashable .bin and .hex, and print size.
 #   No-op on the sim (a runnable host ELF is the deliverable there).
 #
-#   PUBLIC and supported on the plain path -- this is the one thing a bare-metal
-#   consumer cannot get from linking `kickos`. Image emission is a POST_BUILD action
-#   on an existing target, and no usage requirement can carry an action, so unlike
-#   the -T flag and its relink edge it cannot ride the exported interface. Hence one
-#   extra opt-in line, not a wrapper around add_executable:
-#     add_executable(app main.cc)
-#     target_link_libraries(app PRIVATE kickos)
-#     kickos_emit_image(app)                 # .bin/.hex (+ the bootable Espressif
-#                                            # image where the ROM needs one)
-#   Worth shipping rather than telling consumers to write their own objcopy, because
-#   for some chips the correct invocation is not guessable: the esp32 family needs
-#   esptool elf2image with per-chip flags found on silicon (below), and getting them
-#   wrong yields an image that flashes cleanly and then reset-loops.
+#   PUBLIC: the one thing a bare-metal consumer cannot get from linking `kickos`,
+#   because a POST_BUILD action cannot ride a usage requirement. One opt-in line
+#   after target_link_libraries(app PRIVATE kickos). Shipped rather than left to
+#   consumer objcopy: the esp32 family needs esptool elf2image with per-chip flags
+#   (below), and getting them wrong flashes cleanly then reset-loops.
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
   # KICKOS_ARCH is the single source of truth for "is this the sim" (set by the
@@ -276,17 +228,10 @@ endfunction()
 #   For sim this is a runnable host ELF whose entry (host main) lives in the
 #   sim arch backend; the app must define kickos_app_main().
 #
-#   OPTIONAL SUGAR. The supported way to consume KickOS out of tree is plain modern
-#   CMake, on every target including MCUs:
-#     find_package(KickOS REQUIRED)
-#     add_executable(app main.cc)
-#     target_link_libraries(app PRIVATE kickos)   # or kickos_cxx
-#     kickos_emit_image(app)                      # MCU only, optional
-#   That path is complete: the exported target carries the link recipe, the linker
-#   script and its relink edge. This helper exists for the in-tree fleet, where one
-#   call per app beats repeating four lines ~19 times, and it is what lets
-#   kickos_add_diagnostic_app() gate a whole app on KICKOS_ENABLE_SELFTEST. A
-#   consumer may use it, but nothing needs it.
+#   OPTIONAL SUGAR. The supported out-of-tree path is plain CMake -- find_package
+#   (KickOS), add_executable, target_link_libraries(app PRIVATE kickos) [or
+#   kickos_cxx], kickos_emit_image on MCU -- and that path is complete. This helper
+#   exists for the in-tree fleet; a consumer may use it, but nothing needs it.
 #
 #   FULL_CXX (opt-in, docs/design-kickcat-k64f.md "Libc strategy"): compile this
 #   app's C++ TUs with -fexceptions/-frtti (NOT the freestanding clamp) and link
@@ -318,19 +263,12 @@ function(kickos_add_application name)
 
   # Optional sugar over the plain path:
   #   add_executable(${name} ...) ; target_link_libraries(${name} PRIVATE kickos)
-  # Everything needed to LINK -- the component group, the entry glue, the bare-metal
-  # link recipe, the -T linker script and (since the INTERFACE_LINK_DEPENDS fix) the
-  # relink edge for that script -- rides the exported `kickos` target, so the two
-  # paths produce the same image. What is left here is convenience, not capability:
-  # board validation, and the image emission that cannot ride a usage requirement.
+  # Everything needed to LINK rides the exported `kickos` target, so the two paths
+  # produce the same image; what is left here is board validation and the image
+  # emission that cannot ride a usage requirement.
   add_executable(${name} ${APP_SOURCES})
-  # Our warning policy, and ONLY on our own code. In tree, every app under user/apps
-  # is ours and gets the fleet posture. Out of tree the application target belongs to
-  # the consumer, and stamping -Wall/-Wextra/-Wshadow/-Wundef on it would impose our
-  # taste on their source -- which can contradict their own policy or simply break
-  # their build over something that is not a KickOS usage error. Nothing else here
-  # differs between the two, which is why this is the only KICKOS_IN_TREE branch in
-  # the function.
+  # Warning policy only on our own code: in tree every app under user/apps is ours;
+  # out of tree the application target belongs to the consumer.
   if(KICKOS_IN_TREE)
     target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
   endif()
@@ -418,10 +356,9 @@ endfunction()
 #     microbit   -> microbit    (armv6m Cortex-M0)
 #     qemu-riscv -> virt, plus QEMU=qemu-system-riscv32 QEMU_EXTRA=-bios none
 #                   (RV32IMAC bare-metal in M-mode, no OpenSBI).
-#   The run scripts each carry an mps2-an386 fallback of their own, but QEMU_MACHINE
-#   is always passed rather than left to it: four of the six boards would otherwise
-#   silently run on the wrong core, and check_fault_dump.sh reads an UNSET
-#   QEMU_MACHINE as "this is the sim, run natively".
+#   QEMU_MACHINE is always passed, never left to the scripts' mps2-an386 fallback:
+#   most boards would silently run on the wrong core, and check_fault_dump.sh reads
+#   an UNSET QEMU_MACHINE as "this is the sim, run natively".
 #   MACHINE overrides the board default, for a script that needs a specific image.
 #   ARGS are extra script arguments after the ELF (e.g. the expected fault-dump
 #   banner, or a decoder path). TIMEOUT defaults to 60s.

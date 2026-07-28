@@ -521,11 +521,9 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     (void)n;
 }
 
-// The deferred-commit counterpart, empty for the same reason apply is. LX6 has neither
-// an MPU nor a ring split, so it is the one arch with no switch-epilogue hook and it is
-// NOT in the rollout table of docs/design-mpu-commit-deferred.md. Defined because the
-// symbol is an arch-wide contract: the kernel's self-grant path calls it to make a
-// widened region set effective before returning to the running thread.
+// Empty for the same reason apply is: LX6 has neither an MPU nor a ring split (no
+// switch-epilogue hook here). Defined because the symbol is an arch-wide contract
+// (the self-grant path calls it).
 void kickos_arch_mpu_commit(void) {}
 
 // No per-task MPU on the classic ESP32 (no privilege split either): report 0 so

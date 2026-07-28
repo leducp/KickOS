@@ -5,12 +5,9 @@
 # Included by the board resolver (cmake/kickos.cmake) and by the ARM cross
 # toolchain file (pre-project, for -mcpu). Side-effect free: set only these.
 #
-# QEMU mps2-an500 (Cortex-M7): the runnable M7 target. The AN500 image shares the
-# AN386 memory map exactly, so this board needs no linker-script override -- the
-# `mps2` chip default serves it unchanged, and the whole board is this descriptor.
-# What it buys over `qemu` is the M7 pipeline and its 16 MPU regions (the M4 has 8),
-# so the enforcement posture exercises a descriptor count no other runnable board
-# reaches.
+# QEMU mps2-an500 (Cortex-M7): the runnable M7 target, with 16 MPU regions where
+# the M4 has 8. Shares the AN386 memory map, so the `mps2` chip linker script
+# serves it unchanged; the whole board is this descriptor.
 set(KICKOS_BOARD_ID "qemu-m7")
 set(KICKOS_ARCH "armv7m")
 set(KICKOS_CHIP "mps2")

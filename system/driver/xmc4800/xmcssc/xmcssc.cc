@@ -25,7 +25,7 @@
 //
 // Register split: the bring-up sets the kernel clock, baud profile (FDR/BRG), input
 // routing (INPR) and channel enable (CCR) once; the driver thread folds SCTR/TCSR/PCR
-// and runs the transfer. Everything sits inside the granted 0x200 window -- the split
+// and runs the transfer. Everything sits inside the granted 0x200 window: the split
 // is bring-up PLACEMENT (xmc_spi0_start runs in root), not a hardware privilege wall
 // (docs/design-unprivileged-root.md section 9). CPOL/CPHA (BRG.SCLKCFG) are fixed to
 // SPI mode 0 at bring-up; configure() folds only bit order + word size + the CS
@@ -275,10 +275,8 @@ extern "C"
         //    inside the grantable U0C1 window; what blocks a flipped (unprivileged)
         //    root is this placement, not the silicon (docs/design-unprivileged-root.md
         //    section 9). USIC0's module clock is already ungated by the console (U0C0)
-        //    bring-up; only U0C1's kernel clock, baud, SSC-master config and the
-        //    loopback input are set here. The SCU clock tree and the port IOCR pin-mux
-        //    stay out of the driver's window (the escalation surfaces the capability
-        //    keeps out).
+        //    bring-up. The SCU clock tree and the port IOCR pin-mux stay out of the
+        //    driver's window (the escalation surfaces the capability keeps out).
         r32(win_base + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
         // RM p.18-165: read KSCFG back before touching other USIC registers to flush
         // the control-block pipeline; keep the volatile read from being elided.

@@ -16,23 +16,25 @@ board/console readiness matrix is `docs/m2-readiness.md`.
 
 ## Session record -- 2026-07-27 integration (READ THIS FIRST IF RESUMING)
 
-Three lines of work were integrated onto `M4.5.1-ci-hardening` and a day of decisions was taken
-in conversation. This section exists because none of that was in the repository, and a decision
-that lives only in a chat log gets re-litigated. **Everything below is maintainer-confirmed.**
+Branch state and the decisions taken in conversation over the 2026-07-27 integration.
+**Everything below is maintainer-confirmed**; do not re-open a decision here without new
+information.
 
 ### Where the branch is
 
-`M4.5.1-ci-hardening`, **27 commits** on top of `13eab8f`
-(`refs/backup/integration-base-M4.5.1-ci-hardening`) as of this commit; re-derive with
-`git rev-list --count refs/backup/integration-base-M4.5.1-ci-hardening..HEAD` rather than
-trusting the figure, which goes stale on every commit. Linear, no merges. The two transport
-branches (`m4.5.1-book-syscall-privilege`, `m4.5.1-stage2-silicon`) were replayed and **deleted**;
-their pre-replay tips survive as `refs/backup/integration-book` (`a88ddef`) and
-`refs/backup/integration-silicon` (`6458d59`). Not pushed, and no upstream is configured.
+`M4.5.1-ci-hardening`, squashed to nine commits on top of `master` (`64410b7`). Linear, no merges.
+Re-derive the count with `git rev-list --count master..HEAD` rather than trusting a figure here.
+No upstream is configured, so `git push` needs the refspec named.
+
+Every commit hash and subject cited in this file and in `docs/audit/` resolves against
+`backup/m4.5.1-pre-squash`, the full pre-squash history, not against this branch. Older strata
+resolve against `backup/m4.5.1-pre-msg-trim` and the `refs/backup/integration-*` refs. **These refs
+are local-only**; pushing them is what makes the citations resolvable for anyone else.
 
 **One branch only.** Worktree branches are transport: replay them, delete the branch, remove the
-worktree with `git worktree remove`. The `.claude/worktrees/*` entries still listed belong to
-other efforts (m4.6, spi-bug, m4.5-squash) and were left alone.
+worktree with `git worktree remove`. The `.claude/worktrees/*` entries still listed (m4.6, spi-bug,
+cleanup-regs, three stale `agent-*`) belong to other efforts and are all based on the pre-M4.5.1
+master `64410b7` -- rebase before any work in them.
 
 ### Decisions taken (do not re-open without new information)
 
@@ -49,13 +51,14 @@ other efforts (m4.6, spi-bug, m4.5-squash) and were left alone.
 - **`KOS_CAP_SERVICE` is retired.** The ABI is not stable yet, so a superseded spelling is deleted
   rather than deprecated. **LANDED.**
 - **clang-format is decided against** as a gate -- see the CI-hygiene section.
-- **The canvas cites closing commits by SUBJECT, not by hash.** Hashes move under rebase; this
+- **The record cites closing commits by SUBJECT, not by hash.** Hashes move under rebase; this
   branch proved it (the A/B witness hash `a463ab9` had to be re-resolved to `22e1c5a`).
-- **The canvas is mirrored into the repo** so git carries its history. The Cursor path stays the
-  live file; the repo copy is a mirror. **LANDED** at `docs/audit/` (`m4.5.1: mirror the audit
-  canvas into the tree`, 675062d): the committed copy, a `docs/audit/README.md` carrying the mirror
-  rule, and a pointer from `docs/README.md`. `diff` between the two copies is the staleness check,
-  so a canvas edit refreshes the mirror in the same commit.
+  **SUPERSEDED** by the squash: subjects do not survive one either. The record names a single
+  resolution target instead, `backup/m4.5.1-pre-squash`.
+- **The canvas is mirrored into the repo** so git carries its history, the Cursor path staying the
+  live file. **SUPERSEDED**: the record is `docs/audit/kickos-codebase-audit.html`, edited in
+  place. No live copy outside the tree, no mirror. The `.canvas.tsx` survives only on
+  `backup/m4.5.1-pre-squash`.
 - **Non-goals are appended to the existing `## North star` section of
   `docs/reference/architecture.md`**, not given a new document, because that section already states
   all three goals. **LANDED** as `### Non-goals -- seL4 machinery deliberately NOT adopted`
@@ -115,7 +118,7 @@ would have gone to writing a real check.
 Ordered so each step's input exists when it starts. Items 1-2 are cheap and unblock judgement;
 the sweeps go last because they touch everything and would conflict with any of the above. Closed
 items keep their number and are struck through rather than removed, because they are cited by
-number: the canvas and the XMC entry under Blockers below both point at **item 5**.
+number: the record and the XMC entry under Blockers below both point at **item 5**.
 
 1. ~~**Measure `-Os` on the tight boards**~~ -- DONE above. Outcome: **tiering not needed.** What
    remains of N16 is only the narrower question of how `-Os` should be expressed.
@@ -138,9 +141,7 @@ number: the canvas and the XMC entry under Blockers below both point at **item 5
 8. **CI hygiene set, minus clang-format** (which is decided against).
 9. **Branch-wide comment sweep** -- last, because it touches everything.
 10. **Commit-message reword as a SEPARATE step after the sweep**, not folded into it.
-11. **Canvas subject-citation pass** -- after the canvas edits, so it runs over the final text. Now
-    that the mirror exists, this pass refreshes `docs/audit/` in the same commit, or `diff` stops
-    being the staleness check.
+11. **Record citation pass** -- after the record edits, so it runs over the final text.
 
 ## M4.5.1 -- kernel audit follow-ups (2026-07-26) -- COMPLETE except S4 (2026-07-27)
 
@@ -299,16 +300,17 @@ triggers `push` only on `master`).
       out-of-tree export gates pass -- but core is still in the export set, so the contract is
       now load-bearing where it used to be advice. Either state it in the exported package or
       make linking core alone a configure-time error.
-- [ ] **The record cites commit hashes a rebase has rewritten.** Found while re-resolving the
-      audit canvas: of the 56 hashes it cited, 37 named commits unreachable from `HEAD`, left
-      behind by the message-trim rebase of this branch. 32 were remappable (patch-id, or a unique
-      exact subject) and are fixed; the other 16 were squashed by that rebase and have no single
-      successor, so they now resolve only against `backup/m4.5.1-pre-msg-trim`. This file has the
-      same class of rot in six places (`5ab2575`, `638620d`, `700ec98`, `ade1879`, `c072712`,
-      `e2179da`), pointing into `backup/m3-pre-squash` from the M3 squash. A hash written into a
-      durable record before its branch is rewritten is a citation with a shelf life, and nothing
-      warns when it expires. Either cite by subject and date, or re-resolve after any rebase
-      (`git patch-id --stable` maps a reworded or rebased commit to its successor mechanically).
+- [x] **The record cites commit hashes a rebase has rewritten: CLOSED BY CONVENTION (2026-07-28).**
+      Found while re-resolving the audit record: of the 56 hashes it cited, 37 named commits
+      unreachable from `HEAD` after the message-trim rebase. 32 were remapped (patch-id, or a
+      unique exact subject); 16 squash casualties stayed flagged. The M4.5.1 squash to eight
+      theme commits then made per-citation conversion a losing game -- a subject survives a
+      reword but not a squash -- so the convention is a resolution TARGET instead: every hash
+      and subject this branch's records cite resolves against `backup/m4.5.1-pre-squash`
+      (tree-identical full history), stated once in the audit page's header. The standing
+      practice: create the backup ref BEFORE any history edit, and say in the record which ref
+      citations resolve against. This file's own six M3-era hashes resolve against
+      `backup/m3-pre-squash` the same way.
 - [ ] **Reclaim `arch_ram_alloc`'s alignment run-up** (M5 allocator work). The bytes skipped
       ahead of each allocation to satisfy its alignment are dropped on the floor -- which is why
       boot-stack allocation *order* is load-bearing today (idle must be allocated before root).
@@ -344,7 +346,7 @@ triggers `push` only on `master`).
       says `IndentExternBlock: NoIndent`, `user/src/syscall_stubs.cc` obeys it and
       `kernel/init/kmain.cc` does the opposite, so gating would have restyled every `extern "C"`
       block in the kernel as a side effect of a formatting decision nobody made deliberately.
-      Canvas finding **T9** closes with the same reasoning.
+      Record finding **T9** closes with the same reasoning.
 - [ ] **Add a licence-header gate.** The premise that it could wait -- "coverage is 100%, so this
       is cheap to hold" -- turned out to be false: re-measuring on 2026-07-27 found
       `docs/design-rp2350-mpu-armv8m.md` carrying no SPDX identifier while all 26 sibling design

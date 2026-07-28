@@ -175,21 +175,17 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 
 // Program the hardware from what arch_mpu_apply last recorded. On every arch whose
 // context switch is DEFERRED (ARM PendSV, RX/RISC-V software interrupt) arch_mpu_apply
-// only STASHES: the switch epilogue calls this after the physical swap, so `current`,
-// the running thread and the MPU become the incoming thread together. That seam is
-// docs/design-mpu-commit-deferred.md, and the eager apply it replaced was a real fault
-// on RP2040 silicon.
+// only STASHES; the switch epilogue calls this after the physical swap. See
+// docs/design-mpu-commit-deferred.md.
 //
 // The kernel calls this DIRECTLY in exactly one situation: the RUNNING thread's own
-// region set was just widened and it must be effective before the syscall returns
-// (KOS_SYS_MEM_SELF_GRANT). That is sound precisely because no switch is involved --
-// outgoing and incoming are the same thread, so the window the deferred seam exists to
-// close (a thread running under another thread's regions) cannot open. Do NOT call it
-// to make another thread's set live; that is the bug the seam fixed.
+// region set was just widened and must be effective before the syscall returns
+// (KOS_SYS_MEM_SELF_GRANT). Sound because outgoing and incoming are the same thread.
+// Do NOT call it to make another thread's set live.
 //
-// Always resolves, on every arch and both enforcement postures -- the switch assembly
-// calls it unconditionally -- and is an empty no-op where apply already programs the
-// hardware (the sim) or where there is no MPU.
+// Always resolves on every arch and both enforcement postures (the switch assembly
+// calls it unconditionally); an empty no-op where apply already programs the hardware
+// (the sim) or where there is no MPU.
 void kickos_arch_mpu_commit(void);
 
 // MMU-era NOTE (concepts, never mechanisms): a future VMSA/paging port introduces
@@ -308,17 +304,12 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len);
 // back here, exactly as user_readable_ok does.
 //   enforcing MPU backend: .appdata/.appbss IS a real region (see
 //     arch_domain_static_regions), so the region check already admits it and this
-//     returns false -- an address outside the set is genuinely unreachable.
-//   non-enforcing backend: there is no per-thread isolation to breach (the thread can
-//     already store anywhere with a plain instruction), so a range that does NOT touch
-//     the user-RAM arena is admitted. An arena range still falls through to the region
-//     check, so a later enforcing build of the same backend stays sound.
+//     returns false; an address outside the set is genuinely unreachable.
+//   non-enforcing backend: the thread can already store anywhere, so a range that does
+//     NOT touch the user-RAM arena is admitted. An arena range still falls through to
+//     the region check, so a later enforcing build of the same backend stays sound.
 //   host sim: app and kernel share one host image whose sections are not MPU regions,
 //     so a range wholly inside the image and clear of the arena is admitted.
-// Without this hook an unprivileged thread's writable set is its own STACK ALONE on
-// every backend that models no static-data region -- so a recv buffer or an out-pointer
-// that lives in a global is refused -KOS_EFAULT. That is latent while root is
-// privileged (privileged callers bypass the check) and a boot failure after the flip.
 bool arch_user_data_writable(uintptr_t ptr, size_t len);
 
 // An address that faults on unprivileged access (sim: a reserved arena page no

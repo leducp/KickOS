@@ -26,10 +26,9 @@ candidates_for() {
     case "$1" in
         esp32*)                        echo "esptool" ;;
         stm32f103|stm32f302|stm32f411) echo "stlink jlink" ;;
-        # Both Pi boards flash over BOOTSEL. picotool ONLY, deliberately: J-Link SWD
-        # of an RP2xxx is flaky (RP2040 gates the DAP once both cores WFI, and boot2
-        # isn't re-run on an SWD reset), and BOOTSEL always recovers the board. The
-        # flash-jlink.sh rows for picopi/pizero2350 stay for driving them by hand.
+        # picotool ONLY: J-Link SWD of an RP2xxx is flaky (RP2040 gates the DAP once
+        # both cores WFI; boot2 is not re-run on an SWD reset). BOOTSEL always
+        # recovers the board.
         rp2040|rp2350)                 echo "picotool" ;;
         nrf51)                         echo "pyocd jlink" ;;
         sam3x8e)                       echo "bossac" ;;

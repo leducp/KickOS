@@ -6,18 +6,14 @@
 //
 //     ns = base_ns + (raw_ticks - base_ticks) * mult_q32
 //
-// The anchor exists to make the read side PURE. The rate (mult_q32) is written ONLY
-// at a rate EDGE -- boot (init) and, on a retunable chip, the arch_cpu_clock_set
-// re-anchor (reprice) -- never derived inside a read. A read that re-derived the rate
-// from the current SystemCoreClock (the lazy `if (hz != cached_hz) recompute` form
-// this type replaces) would, when called after the SystemCoreClock write but before
-// the re-anchor, reprice the WHOLE elapsed history at the new rate and bake that
-// phantom jump into the epoch permanently.
+// The read side is PURE. The rate (mult_q32) is written ONLY at a rate edge: boot
+// (init) and, on a retunable chip, the arch_cpu_clock_set re-anchor (reprice). A read
+// that re-derived the rate from SystemCoreClock, called between the SystemCoreClock
+// write and the re-anchor, would reprice the WHOLE elapsed history at the new rate and
+// bake that phantom jump into the epoch permanently.
 //
-// Per-chip and deliberately NOT here: the raw tick source (which timer, how it is
-// software-extended to 64-bit) and which Hz the ticks run at (core clock, a bus
-// divide, a peripheral branch clock). Those differ on every chip; the arithmetic
-// above does not, which is why only the arithmetic is shared.
+// The raw tick source and the Hz the ticks run at stay per-chip; only the arithmetic
+// is shared.
 
 #ifndef KICKOS_ARCH_CLK_ANCHOR_H
 #define KICKOS_ARCH_CLK_ANCHOR_H
@@ -28,21 +24,14 @@
 
 namespace kickos
 {
-    // Every method is always_inline, which is LOAD-BEARING rather than a hint. At -Os
-    // (what the MCU presets use) GCC declines to inline a body this size even though an
-    // in-class definition is implicitly inline: it emits an out-of-line copy and calls
-    // it. On the read path that would put a call frame in arch_clock_now -- which the
-    // per-chip code this type replaces did not have, and which the tickless scheduler
-    // pays on every ktime_now(). Forcing the inline is what makes sharing the arithmetic
-    // cost nothing, so a chip gets the shared anchor and the straight-line code it had.
+    // always_inline is load-bearing, not a hint: at -Os GCC emits an out-of-line copy
+    // of a body this size, which would put a call frame in every arch_clock_now read.
 #define KICKOS_CLK_ANCHOR_INLINE inline __attribute__((always_inline))
 
     // No constructor and no member initializers ON PURPOSE: a namespace-scope
-    // arch_clk_anchor is zero-initialized at static-init time, so it lands in .bss and
-    // adds no __init_array entry. That matters because a chip's clock anchor must be
-    // readable (as all-zero) before arch_init runs -- a dynamic initializer would order
-    // against other static ctors, and a static ctor calling ktime_now() must see a
-    // defined anchor, not one whose ctor has not run yet.
+    // arch_clk_anchor is zero-initialized (.bss, no __init_array entry), so a static
+    // ctor calling ktime_now() before arch_init sees a defined all-zero anchor rather
+    // than one whose own ctor has not run yet.
     struct arch_clk_anchor
     {
         uint64_t base_ns;    // ns already elapsed at the epoch
@@ -50,9 +39,8 @@ namespace kickos
         uint64_t mult_q32;   // Q32.32 ns-per-tick; 0 until init()
 
         // Anchor at boot: rate only, epoch at the tick origin. `hz` is the rate the
-        // RAW TICKS advance at, which the chip derives (it is not always the core
-        // clock). hz == 0 leaves mult_q32 at 0, so ns_from returns 0 -- the same
-        // answer the lazy form gave via its explicit `if (hz == 0) return 0` guard.
+        // RAW TICKS advance at (not always the core clock; the chip derives it).
+        // hz == 0 leaves mult_q32 at 0, so ns_from returns 0.
         KICKOS_CLK_ANCHOR_INLINE void init(uint32_t hz)
         {
             if (hz == 0)
@@ -60,15 +48,12 @@ namespace kickos
                 return;
             }
             mult_q32 = arch_clk_recip_q32(hz);
-            // base 0/0 makes the first read exactly raw_ticks*mult -- byte-identical to
-            // what the lazy form computed on its first call.
             base_ticks = 0;
             base_ns = 0;
         }
 
-        // The read. Pure: loads the triple, no store, no divide, no rate derivation.
-        // `ticks - base_ticks` is deliberately unsigned-wrapping, so it stays correct
-        // across a 64-bit tick wrap.
+        // The pure read. `ticks - base_ticks` is deliberately unsigned-wrapping, so it
+        // stays correct across a 64-bit tick wrap.
         KICKOS_CLK_ANCHOR_INLINE uint64_t ns_from(uint64_t ticks) const
         {
             return base_ns + arch_clk_mul_q32(ticks - base_ticks, mult_q32);
@@ -84,7 +69,7 @@ namespace kickos
         //
         // so `now` is continuous across the edge: only the ticks inside the (masked,
         // brief) retune window are mispriced. Must be called with the clock's readers
-        // excluded -- the three stores are not atomic as a group. The trailing barrier
+        // excluded; the three stores are not atomic as a group. The trailing barrier
         // pins them ahead of any later read the compiler can see.
         KICKOS_CLK_ANCHOR_INLINE void reprice(uint64_t edge_ticks, uint64_t edge_ns, uint32_t hz)
         {

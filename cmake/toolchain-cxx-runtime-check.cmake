@@ -1,29 +1,20 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Shared capability gate for the ARM + RISC-V cross toolchain files: prove the
-# compiler find_program actually landed on can build KickOS, and refuse at
-# CONFIGURE time -- naming the fix -- if it cannot.
+# Shared capability gate for the ARM + RISC-V cross toolchain files: refuse at
+# configure time a resolved compiler that cannot build KickOS. find_program HINTS
+# fall through to PATH when the hinted directory is absent, and distro cross gccs
+# there (Debian's arm-none-eabi, riscv64-unknown-elf) are C-only/picolibc: without
+# this gate configure succeeds and the build dies much later on
+# `#include <exception>` or at the application link.
 #
-# Why this exists: those toolchain files resolve their compiler with
-# find_program(... HINTS "${KICKOS_<fam>_TOOLCHAIN_BIN}" REQUIRED), and HINTS
-# fall through to PATH when the hinted directory is absent (a fresh clone,
-# another dev box, CI). Where PATH carries a C-only / picolibc cross gcc --
-# Debian's arm-none-eabi and riscv64-unknown-elf are both exactly that -- the
-# fall-through silently resolves the very toolchain the pin exists to dodge:
-# configure succeeds, then the build dies dozens of steps later on
-# `#include <exception>`, or at the application link. This gate makes that one
-# refusal, at the point of resolution.
-#
-# It deliberately does NOT link-test. These are bare-metal targets whose final
-# link needs the board's linker script + startup object, supplied later at the
-# application-link step -- the reason the toolchain files set
-# CMAKE_TRY_COMPILE_TARGET_TYPE to STATIC_LIBRARY. So the gate is compiler
-# queries plus one compile-only probe; nothing is linked.
+# No link-test, deliberately: a bare-metal link needs the board's linker script +
+# startup, supplied only at the application-link step (why the toolchain files set
+# CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY). Compiler queries plus one
+# compile-only probe; nothing is linked.
 #
 # Installed MCU packages ship this file beside the toolchain file that includes
-# it (see the root CMakeLists install), so the include path is list-dir-relative
-# and works in-tree and out-of-tree alike.
+# it (see the root CMakeLists install); the include path is list-dir-relative.
 
 # kickos_require_usable_cross_cxx(<label> <cxx> <override-var> <tarball-url> <flags>...)
 #
@@ -33,19 +24,17 @@
 #   <override-var> the cache variable that repoints the search at a good install
 #   <tarball-url>  the official build KickOS CI pins (.github/workflows/ci.yml)
 #   <flags>...     the multilib-selecting flags THIS build compiles with
-#                  (-mcpu/-mfpu/-mfloat-abi/-mthumb; -march/-mabi). Passing them
-#                  is the whole point: a toolchain can ship libstdc++ for its
-#                  default multilib and not for the one this board selects, and
-#                  the default is what an unflagged query would answer about.
+#                  (-mcpu/-mfpu/-mfloat-abi/-mthumb; -march/-mabi). Required: a
+#                  toolchain can ship libstdc++ for its default multilib and not
+#                  for the one this board selects.
 function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
   set(_flags ${ARGN})
   string(REPLACE ";" " " _flags_text "${_flags}")
 
   # CMake reads a toolchain file several times per configure (and once more per
-  # try_compile), so stamp the verdict: the probes run, and the line below
-  # prints, once per build tree per (compiler, flags) pair. Swapping either
-  # re-probes; replacing a toolchain IN PLACE at the same path does not, which is
-  # the usual "wipe the build dir" caveat.
+  # try_compile), so the verdict is stamped once per (compiler, flags) pair.
+  # Swapping either re-probes; replacing a toolchain IN PLACE at the same path
+  # does not (the usual "wipe the build dir" caveat).
   set(_stamp "${_cxx}|${_flags_text}")
   if(DEFINED CACHE{KICKOS_CXX_RUNTIME_OK_${_label}}
      AND "$CACHE{KICKOS_CXX_RUNTIME_OK_${_label}}" STREQUAL "${_stamp}")
@@ -61,11 +50,10 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
     set(_multilib "<compiler would not say>")
   endif()
 
-  # gcc -print-file-name=<lib> answers with an absolute path when it can see the
-  # library among the search dirs these flags select, and echoes the bare name
-  # back when it cannot. libsupc++ is the EH/RTTI runtime, libstdc++ the rest;
-  # the full-C++ opt-in links both, and a toolchain lacking them lacks the C++
-  # headers too (Debian's dies on `#include <exception>` long before any link).
+  # gcc -print-file-name=<lib> answers an absolute path when the library exists in
+  # the search dirs these flags select, and echoes the bare name back when not.
+  # The full-C++ opt-in links both libs; a toolchain lacking them lacks the C++
+  # headers too.
   set(_absent "")
   foreach(_lib libstdc++.a libsupc++.a)
     execute_process(COMMAND "${_cxx}" ${_flags} "-print-file-name=${_lib}"
@@ -77,11 +65,10 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
   endforeach()
 
   # Which libc? KickOS wants newlib. Test __PICOLIBC__ POSITIVELY: picolibc also
-  # defines __NEWLIB__ for source compatibility (Debian's arm-none-eabi reports
-  # __NEWLIB__ 4 *and* __PICOLIBC__ 1.8.11), so "no picolibc macro" is the only
-  # honest reading of "newlib". Compile-only (-fsyntax-only): no object, no link,
-  # so it holds under CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY. A libc header
-  # is what carries the macro, hence the include.
+  # defines __NEWLIB__ for source compatibility, so "no picolibc macro" is the only
+  # honest reading of "newlib". -fsyntax-only: no object, no link, so it holds
+  # under CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY. A libc header carries the
+  # macro, hence the include.
   set(_probe "${CMAKE_BINARY_DIR}/CMakeFiles/kickos-libc-probe-${_label}.cc")
   file(WRITE "${_probe}"
     "/* KickOS libc probe: compiled, never linked. */\n"
@@ -98,15 +85,12 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
     if("${_probe_out}${_probe_err}" MATCHES "KICKOS_PROBE_SAW_PICOLIBC")
       set(_picolibc TRUE)
     else()
-      # Not picolibc -- the probe itself would not compile, which means this
-      # compiler cannot preprocess a plain libc header either way. Report it
-      # rather than guessing a libc.
+      # Not picolibc: the probe itself would not compile, so this compiler cannot
+      # preprocess a plain libc header. Report that rather than guess a libc.
       string(STRIP "${_probe_out}${_probe_err}" _probe_broken)
     endif()
   endif()
 
-  # One contributor per problem, so the verdict below has a single condition and
-  # any single rule can be dropped by deleting its block.
   set(_why "")
   if(_absent)
     string(REPLACE ";" " and " _absent_text "${_absent}")
@@ -115,8 +99,7 @@ function(kickos_require_usable_cross_cxx _label _cxx _override_var _tc_url)
       " (-print-file-name echoed the bare name back instead of a path)")
   endif()
   if(_picolibc)
-    # THE one place to relax if picolibc is ever adopted: delete this block (and,
-    # optionally, the probe above). Nothing else in this gate reads _picolibc.
+    # If picolibc is ever adopted, delete this block; nothing else reads _picolibc.
     string(APPEND _why
       "\n  * its libc is PICOLIBC (__PICOLIBC__ is defined); KickOS requires NEWLIB")
   endif()

@@ -100,29 +100,20 @@ if(KICKOS_ENABLE_SELFTEST)
   add_compile_definitions(KICKOS_ENABLE_SELFTEST=1)
 endif()
 
-# HOLDING MEASURE, pending the maintainer decision tracked as N16 in TODO.md.
-#
-# f302nucleo and bluepill-c8 have 64 KiB of flash and the fleet-uniform selftest no longer
-# fits at the fleet Debug default, which is `-g` with no -O. The same image is 48,848 bytes
-# at -Os against 65,720 at the default, so -Os sheds no coverage and returns 16.7 KiB.
-#
-# The cost: the -st image's kernel is no longer codegen-identical to the same board's
-# non-st build, which the selftest -Os block (user/apps/common/selftest/CMakeLists.txt)
-# preserved by optimising the app's own TUs only. Both boards are build-only for the
-# suite, so what they provide is a link check. -g is kept. Delete this block to revert;
-# widening it to the fleet is the maintainer's call.
+# HOLDING MEASURE (TODO.md N16): the fleet-uniform selftest no longer fits the
+# 64 KiB-flash boards at the plain-Debug default, so their whole selftest tree
+# builds -Os. Cost: the -st kernel is no longer codegen-identical to the same
+# board's non-st build. -g is kept. Delete this block to revert.
 if(KICKOS_ENABLE_SELFTEST AND (KICKOS_BOARD STREQUAL "f302nucleo"
                                OR KICKOS_BOARD STREQUAL "bluepill-c8"))
   add_compile_options(-Os)
   message(STATUS "KickOS: -Os across the ${KICKOS_BOARD} selftest tree (64 KiB flash; see N16)")
 endif()
 
-# Internal-consistency guards too expensive to carry in a shipped image: today the
-# intrusive-list membership checks in <kickos/list.h>. OFF by default, so a board image is
-# unchanged; the sim preset turns it ON, since a host build has no flash budget. Always
-# defined (0 or 1), never merely undefined, so `#if KICKOS_DEBUG` is -Wundef-clean.
-# Carried to consumers for the same ODR reason as KICKOS_HAVE_MPU: it changes the body of
-# an inline function in a shipped header.
+# Internal-consistency guards too expensive for a shipped image (the intrusive-list
+# membership checks in <kickos/list.h>). OFF by default; the sim preset turns it ON.
+# Always defined 0 or 1 so `#if KICKOS_DEBUG` is -Wundef-clean. Carried to consumers
+# for the same ODR reason as KICKOS_HAVE_MPU (it changes an inline in a shipped header).
 option(KICKOS_DEBUG "Build the internal-consistency guards (list membership, ...)" OFF)
 if(KICKOS_DEBUG)
   add_compile_definitions(KICKOS_DEBUG=1)
@@ -243,8 +234,8 @@ endif()
 # the linker plumbing: a chip ships arch/<family>/chip/<chip>/mpu.cmake
 # (KICKOS_CHIP_ENFORCES_MPU ON); a chip that merely has the .appdata block but ships
 # no such file is rejected here. The sim enforces via host mprotect (no chip,
-# no linker script) and is capable by arch. Which ports are proven on hardware is
-# NOT recorded here -- see docs/reference/boards.md.
+# no linker script) and is capable by arch. Hardware-proven status is recorded in
+# docs/reference/boards.md, not here.
 set(KICKOS_CHIP_ENFORCES_MPU OFF)
 if(KICKOS_ARCH STREQUAL "sim")
   set(KICKOS_CHIP_ENFORCES_MPU ON)
@@ -272,19 +263,12 @@ endif()
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
 
 # --- Root privilege posture (KICKOS_ROOT_PRIVILEGED) ------------------------
-# Whether kmain creates the root thread privileged. Default ON, which is the
-# posture every board shipped before this knob existed. OFF creates root
-# unprivileged, holding a CAP_AUTHORITY with every AUTH_* bit instead
-# (kernel/init/kmain.cc) -- see docs/design-unprivileged-root.md stage 2, and
-# docs/reference/boards.md for which boards are validated in which posture.
-#
-# A BUILD knob and NOT a weak symbol, deliberately. The rejected alternative was a
-# weak `bool kickos_root_privileged()` a board overrides strongly, which would let an
-# out-of-tree link silently opt out of the privilege boundary with no trace in the
-# board's build. Here the posture is a compile definition the whole tree sees, it is
-# printed at configure time, and it is carried to consumers as a usage requirement
-# below -- so opting out is visible in the build, not discoverable only by reading
-# the link map. Always defined 0 or 1 (never left undefined) so `#if` is -Wundef-clean.
+# Whether kmain creates the root thread privileged (default ON). OFF creates root
+# unprivileged, holding a CAP_AUTHORITY with every AUTH_* bit (kernel/init/kmain.cc).
+# See docs/design-unprivileged-root.md stage 2; per-board validation is in
+# docs/reference/boards.md. A BUILD knob, never a weak symbol: the posture must be
+# visible in the build, not only in the link map. Always defined 0 or 1 so `#if`
+# is -Wundef-clean.
 option(KICKOS_ROOT_PRIVILEGED "Create the root thread privileged (OFF: unprivileged, holding an authority cap)" ON)
 if(KICKOS_ROOT_PRIVILEGED)
   set(_root_priv 1)
@@ -343,12 +327,9 @@ if(NOT DEFINED KICKOS_SERVICE_LIST)
     if(KICKOS_ROOT_PRIVILEGED)
       set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax")
     else()
-      # Console only. The SPI entry's bring-up body configures USIC kernel clock, baud
-      # and protocol from ROOT, and a flipped root holds no MMIO grant for U0C1 -- so it
-      # is PLACEMENT that stops it, not the silicon: the registers it writes (KSCFG 0x00C,
-      # FDR 0x010, BRG 0x014, CCR 0x040) all sit INSIDE the 0x200 channel window the
-      # driver already grants to an unprivileged thread. Refuse until the bring-up moves
-      # into a holder of that grant -- see KICKOS_SERVICE_LIST_ROOT_MMIO below.
+      # Console only: the SPI entry's bring-up configures the USIC from root, and an
+      # unprivileged root holds no MMIO grant for U0C1. See
+      # KICKOS_SERVICE_LIST_ROOT_MMIO below.
       set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax_console")
     endif()
   elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)
@@ -375,15 +356,11 @@ if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
 endif()
 message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST} (libs: ${KICKOS_SERVICE_LIST_LIBS})")
 
-# Service lists whose bring-up bodies poke MMIO DIRECTLY from the calling (root)
-# thread, rather than only from the granted window of the driver thread they spawn.
-# Those cannot run under KICKOS_ROOT_PRIVILEGED=OFF: root faults on the first register
-# write, mid-bring-up, with the console already relinquished -- i.e. silently, on the
-# hardware, with no console left to say so. Refuse at CONFIGURE time instead. This is
-# what the build-enforced knob buys: the blocker is a message, not a dark board.
-# Retire an entry here when its bring-up body stops needing root MMIO (stage 3's
-# arch_periph_enable covers k64uart and half of k64dspi); the SoT for WHY each one is
-# listed is docs/design-unprivileged-root.md section 8.
+# Service lists whose bring-up bodies write MMIO directly from the root thread.
+# Under KICKOS_ROOT_PRIVILEGED=OFF root faults on that write mid-bring-up, after the
+# console handover, so the board goes dark with no diagnostic. Refuse at configure
+# time instead. Retire an entry when its bring-up stops needing root MMIO; the SoT
+# for each listing is docs/design-unprivileged-root.md section 8.
 set(KICKOS_SERVICE_LIST_ROOT_MMIO
   kickos_services_frdmk64f        # k64uart AIPS PACR + k64dspi clock/pin/GPIO/DSPI config
   kickos_services_xmc4800relax)   # xmcssc USIC kernel clock, baud, protocol from root
@@ -552,10 +529,9 @@ if(TARGET kickos_kernel)
   # start()s, and those back-reference kickos_user + a class leaf, so the whole closure
   # must be in-group to rescan-resolve (one item on the none default, three on a
   # migrated board).
-  # The archive list, named once. The group itself is built per posture leaf below,
-  # because its tail differs: an MCU link pulls the toolchain runtime into the same group,
-  # and which runtime that is IS the posture. CMake also forbids one target's closure from
-  # carrying a library in two groups, so the one group must be the leaf's.
+  # The archive list, named once; the group is built per posture leaf below, because
+  # the leaves differ in which toolchain runtime joins it and CMake forbids one
+  # target's closure from carrying a library in two groups.
   if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
     set(_kickos_group "kickos_user,kickos_kernel,${KICKOS_INIT_PROVIDER},${KICKOS_SERVICE_LIST_LIBS},${KICKOS_BOARD_PINMAP_LIBS},kickos_chip_${KICKOS_CHIP},kickos_arch_${KICKOS_ARCH},kickos_lib")
   else()
@@ -580,10 +556,8 @@ if(TARGET kickos_kernel)
   # (context.h); KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h). An OOT TU that
   # includes a kernel-internal header must see the same posture as the prebuilt libs
   # (ODR), so carry them as usage requirements.
-  # KICKOS_ROOT_PRIVILEGED is here for a different reason from the ODR ones above: an
-  # app TU may legitimately need to know whether it runs as a privileged root (it
-  # decides whether spawning a privileged child can succeed at all), and this is what
-  # makes the posture readable out of tree instead of guessable.
+  # KICKOS_ROOT_PRIVILEGED is not ODR-motivated: it makes the root posture readable
+  # from an app TU (e.g. whether spawning a privileged child can succeed).
   target_compile_definitions(kickos_core INTERFACE
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
@@ -625,15 +599,11 @@ if(TARGET kickos_kernel)
       # the KickOS source tree present.
       "$<BUILD_INTERFACE:SHELL:-T ${KICKOS_LINKER_SCRIPT}>"
       "$<INSTALL_INTERFACE:SHELL:-T $<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
-    # ...and the same script as a real link DEPENDENCY, not just a flag. -T reaches
-    # the linker as an opaque driver option, so nothing in it tells the build system
-    # that the image is a function of that file: edit the .ld and the link is not
-    # re-run, leaving a stale image to be flashed. INTERFACE_LINK_DEPENDS puts the
-    # file on the link edge, and being an INTERFACE property it rides the export --
-    # so a plain add_executable + target_link_libraries(app PRIVATE kickos) consumer
-    # gets the correct edge with no helper and no knowledge that the hazard exists.
-    # Paths mirror the -T above (build tree: the generated script; installed: the
-    # shipped copy), because the dependency must name the file actually linked.
+    # ...and the same script as a real link DEPENDENCY: -T is an opaque driver
+    # option, so without this an edited .ld does not relink and a stale image gets
+    # flashed. INTERFACE_LINK_DEPENDS rides the export, so consumers get the edge
+    # too. Paths mirror the -T above; the dependency must name the file actually
+    # linked.
     set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
       "$<BUILD_INTERFACE:${KICKOS_LINKER_SCRIPT}>"
       "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
@@ -646,13 +616,12 @@ if(TARGET kickos_kernel)
   target_link_libraries(kickos INTERFACE kickos_core)
   add_library(kickos_cxx INTERFACE)
   target_link_libraries(kickos_cxx INTERFACE kickos_core)
-  # The rescan group, per leaf. On MCU the toolchain runtime joins it: newlib's `_sbrk_r`
-  # references `_sbrk`, which libkickos_user.a provides on demand, and the g++ driver
-  # appends its libraries after everything CMake emits. Outside the group, the linker meets
-  # `_sbrk_r` past the point it could go back for the member. Naming them here adds no
-  # library the driver would not link anyway; it fixes where they are scanned. The
-  # freestanding leaf does not name libstdc++: it links -nostdlib++, and a stray operator
-  # new must stay a link error. Sim keeps the bare group and links host glibc.
+  # The rescan group, per leaf. On MCU the toolchain runtime must join it: newlib's
+  # `_sbrk_r` references `_sbrk` (provided on demand by libkickos_user.a), and the g++
+  # driver appends its libraries after everything CMake emits, so outside the group
+  # the linker meets `_sbrk_r` too late to go back for the member. Naming the runtime here
+  # only fixes where it is scanned. The freestanding leaf must NOT name libstdc++
+  # (it links -nostdlib++; a stray operator new stays a link error). Sim links host glibc.
   if(KICKOS_ARCH STREQUAL "sim")
     target_link_libraries(kickos INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
     target_link_libraries(kickos_cxx INTERFACE "$<LINK_GROUP:RESCAN,${_kickos_group}>")
@@ -677,11 +646,9 @@ if(TARGET kickos_kernel)
     # override -- the two flag sets never collide on one command line.
     target_compile_options(kickos_cxx INTERFACE
       "$<$<COMPILE_LANGUAGE:CXX>:-fexceptions;-frtti>")
-    # A second rescan group, one layer further out. On this leaf the allocator demand
-    # starts in libstdc++'s operator new, and the g++ driver appends libstdc++ after
-    # everything CMake emits, so the chain from operator new down to `_sbrk` must be
-    # closable in a group holding all three providers. Listed after kickos_core, so the
-    # core group resolves first.
+    # A second rescan group, one layer out: the driver-appended libstdc++'s operator
+    # new must be able to reach down to `_sbrk`, so the chain needs a group holding
+    # all three providers. Listed after kickos_core so the core group resolves first.
     target_link_libraries(kickos_cxx INTERFACE
       "$<LINK_GROUP:RESCAN,stdc++,supc++,c,kickos_user>")
 
@@ -696,9 +663,8 @@ if(TARGET kickos_kernel)
     add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
     target_compile_features(kickos_cxx_rt PRIVATE cxx_std_17)
     target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
-    # kickos_core no longer carries the archive group (it moved to the leaves above), so
-    # name the archives this object needs for their include dirs. An object library links
-    # nothing, so these are usage requirements only, and PRIVATE keeps them off consumers.
+    # An object library links nothing: kickos_user/kickos_kernel here are usage
+    # requirements (include dirs) only, and PRIVATE keeps them off consumers.
     target_link_libraries(kickos_cxx_rt PRIVATE kickos_core kickos_user kickos_kernel)
     target_link_libraries(kickos_cxx INTERFACE $<TARGET_OBJECTS:kickos_cxx_rt>)
   endif()
@@ -818,10 +784,8 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
                   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-cxx-runtime-check.cmake"
             DESTINATION "${KICKOS_CMAKE_DIR}")
   else()
-    # The compiler-capability gate is include()d by the ARM + RISC-V toolchain
-    # files from their own list dir, so it must land beside them in the package
-    # (the RX/Xtensa files do not use it -- no C-only same-name twin exists to
-    # fall through to).
+    # The compiler-capability gate is include()d list-dir-relative by the ARM +
+    # RISC-V toolchain files, so it must land beside them in the package.
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-arm-none-eabi.cmake"
                   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-cxx-runtime-check.cmake"
             DESTINATION "${KICKOS_CMAKE_DIR}")

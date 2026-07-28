@@ -139,10 +139,9 @@ void _exit(int code)
     }
 }
 
-// The heap bottom edge (_sbrk and its bump arena) lives in newlib_sbrk.cc, not here: this
-// TU is force-linked into every image by -Wl,-u,_exit, so a strong reference to
-// _kickos_heap_start from here would land in every link and defeat the fail-loud a heapless
-// board relies on.
+// _sbrk and its bump arena live in newlib_sbrk.cc, not here: this TU is force-linked
+// into every image by -Wl,-u,_exit, so a strong reference to _kickos_heap_start from
+// here would defeat the heapless-board link error.
 
 #ifdef __RX__
 // SjLj atexit/EH registration references __dso_handle; the RX libc may not
@@ -158,20 +157,17 @@ __attribute__((weak)) void* __dso_handle = nullptr;
 // port can override, and unreferenced (freestanding app) so it costs nothing.
 //
 // FOOTGUN: these stubs stay no-ops because a correct guard is not expressible from
-// userspace as the ABI stands. Three facts, all of which have to change:
-//
+// userspace as the ABI stands:
 //   1. Newlib takes this lock recursively: `_free_r` acquires it and calls
-//      `_malloc_trim_r`, which acquires it again (seen in the linked cxxtest image). A
-//      non-recursive lock self-deadlocks, and a re-entry detector fires on a valid free.
-//   2. A recursive lock needs an owner identity, and userspace has none. There is no self
-//      syscall, and a stack address is not a reliable key.
-//   3. Even given identity, there is no lock object two threads can name: capabilities
-//      are per-task, so a mutex handle indexes a different table in another thread, and
-//      sharing one needs spawn-time delegation to a reserved index. None are left.
-//
-// The fix is per-thread libc state (the M4.x TLS item) or a kernel-held lock behind a
-// syscall. Until then, a full-C++ app that heap-allocates from more than one thread
-// corrupts the arena silently. Keep such apps single-alloc-thread.
+//      `_malloc_trim_r`, which acquires it again (seen in the linked cxxtest image).
+//      A non-recursive lock self-deadlocks; a re-entry detector fires on a valid free.
+//   2. A recursive lock needs an owner identity, and userspace has none (no self
+//      syscall; a stack address is not a reliable key).
+//   3. There is no lock object two threads can name: capabilities are per-task, and
+//      sharing one needs spawn-time delegation to a reserved index; none are left.
+// Until per-thread libc state (the M4.x TLS item) or a kernel-held lock lands, a
+// full-C++ app that heap-allocates from more than one thread corrupts the arena
+// silently. Keep such apps single-alloc-thread.
 __attribute__((weak)) void __malloc_lock(void*)
 {
 }

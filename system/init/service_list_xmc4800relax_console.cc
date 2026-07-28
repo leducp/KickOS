@@ -3,17 +3,14 @@
 //
 // xmc4800-relax CONSOLE-ONLY service-list provider: one entry, KOS_SVC_CONSOLE ->
 // xmcuart_console_start (USIC0 CH0 handover). The combined list that also brings the
-// USIC0 CH1 SSC bus up is service_list_xmc4800relax.cc; this is the same console
-// entry with the SPI entry left out, and the two are alternatives, never both linked
-// (EXACTLY ONE kickos_board_services per image).
+// USIC0 CH1 SSC bus up is service_list_xmc4800relax.cc; the two are alternatives,
+// never both linked (EXACTLY ONE kickos_board_services per image).
 //
-// It exists because xmcuart's bring-up is PURE SYSCALL -- endpoint_create,
-// console_publish, spawn-with-MMIO-grant, handle_close -- and touches no register
-// itself, so it runs unchanged from an unprivileged root holding AUTH_MEMORY +
-// AUTH_DEVICE. xmcssc's bring-up instead writes the USIC kernel-clock, baud and
-// protocol registers from the CALLING thread, and a flipped root holds no MMIO grant
-// for U0C1: the blocker is that PLACEMENT, not the silicon -- the registers sit
-// inside the grantable 0x200 window (docs/design-unprivileged-root.md section 9).
+// xmcuart's bring-up is pure syscall and touches no register itself, so it runs
+// unchanged from an unprivileged root holding AUTH_MEMORY + AUTH_DEVICE. xmcssc's
+// bring-up writes USIC registers from the CALLING thread, and a flipped root holds no
+// MMIO grant for U0C1: the blocker is that PLACEMENT, not the silicon
+// (docs/design-unprivileged-root.md section 9).
 //
 // Selected automatically for xmc4800-relax + enforcement + KICKOS_ROOT_PRIVILEGED=OFF
 // (root CMakeLists.txt), which is also where a service list needing root MMIO is

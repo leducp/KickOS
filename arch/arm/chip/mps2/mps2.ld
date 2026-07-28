@@ -5,10 +5,9 @@
  * runnable armv7m CI/verification target. QEMU maps a code region at
  * 0x00000000 (vectors read at reset, VTOR=0) and SRAM at 0x20000000.
  *
- * The same map serves `qemu-m7` (mps2-an500, Cortex-M7) and `qemu-m3`
- * (mps2-an385, Cortex-M3): those FPGA images differ in core, not in memory map,
- * so they need no board override. `qemu-m33` (mps2-an505) does -- see
- * boards/qemu-m33/mps2.ld.
+ * The same map serves `qemu-m7` (mps2-an500) and `qemu-m3` (mps2-an385): those
+ * images differ in core, not memory map. `qemu-m33` (mps2-an505) needs the
+ * override in boards/qemu-m33/mps2.ld.
  *
  * Chip<->arch contract: define __kickos_ram_start/__kickos_ram_end (the
  * arch_ram_alloc pool) and _estack (initial MSP = vector[0]).
@@ -76,9 +75,7 @@ SECTIONS
         __init_array_end = .;
     } > FLASH
 
-    /* Teardown mirror of the ctor split: place .fini_array on the APP side (never the
-       privileged bucket) so an unplaced one cannot be ORPHANED outside every stated
-       boundary, and ASSERT it empty -- nothing walks it. Full rationale in
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
        arch/arm/chip/stm32f411/stm32f411.ld. */
     .kickos_app_fini_array :
     {
@@ -248,9 +245,8 @@ SECTIONS
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
 
-/* Static destructors are unsupported: nothing walks .fini_array (see the section
-   comment), so a global with a non-trivial destructor is silently dropped rather than
-   run. Fail the link instead of shipping a destructor that never fires. */
+/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
+   rather than silently drop a destructor. */
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 

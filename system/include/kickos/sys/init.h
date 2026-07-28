@@ -49,16 +49,14 @@ int kickos_init_entry(int argc, char** argv);
 // The kernel -> init argument handoff. kmain fills it; the root thread reads it
 // immediately before calling kickos_init_entry above.
 //
-// It lives HERE, app-side, because of where the reader will run. The object is
-// defined in libkickos_user.a, and every enforcement linker script captures only the
-// closed KickOS-owned set (kernel/arch/chip/lib) into kernel .data/.bss and routes
-// everything else into the .appdata/.appbss grant -- which is a region of every
-// unprivileged thread (arch_domain_static_regions). The handoff used to be a kmain
-// stack local instead, and the boot stack is OUTSIDE the arena: an unprivileged root
-// would fault reading it, on every enforcing board, before its first statement.
+// App-side on purpose: the object is defined in libkickos_user.a, so the enforcement
+// linker scripts route it into the .appdata/.appbss grant, a region of every
+// unprivileged thread (arch_domain_static_regions). Kernel-side storage (or a kmain
+// stack local, which sits outside the arena) would fault an unprivileged root before
+// its first statement on every enforcing board.
 //
 // argv is null (argc 0) on MCU. On the hosted sim it points into the host process's
-// own argv, which no grant covers -- the sim does not enforce non-arena regions, so
+// own argv, which no grant covers; the sim does not enforce non-arena regions, so
 // this is exactly the case its coverage misses.
 struct kos_init_args
 {

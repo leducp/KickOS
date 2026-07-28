@@ -143,8 +143,7 @@ void kos_exit(int code)
     __builtin_unreachable();
 }
 
-// NOT noreturn, unlike kos_exit: the privilege gate can refuse, and the caller has to
-// be able to see that rather than fall off the end of a noreturn function.
+// NOT noreturn, unlike kos_exit: the privilege gate can refuse.
 int kos_shutdown(int status)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_SHUTDOWN,

@@ -15,7 +15,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
 endif()
 
 # QEMU armv7m gate: this is where the bug lived (deferred PendSV under IrqLock).
-# Run on every MPS2 image -- the deferred switch is the same code on each, but the
+# Run on every MPS2 image: the deferred switch is the same code on each, but the
 # exception-return path it rides differs per core.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_sched_exit TARGET sched_exit BOARD ${KICKOS_BOARD}

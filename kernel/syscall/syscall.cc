@@ -350,15 +350,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_SHUTDOWN:
         {
-            // End the system: drain the buffered console, then hand over to the chip's
-            // shutdown. This is the init-return-is-shutdown path (root_entry) expressed
-            // as a syscall, because neither half is reachable from an unprivileged
-            // thread -- console_tx_flush_sync walks the kernel-side console ring, and
-            // arch_shutdown is a privileged chip operation.
-            //
-            // AUTH_DEVICE, the same authority as console_publish: both hand the machine's
-            // shared device state to someone. An ungated shutdown would be a kill switch
-            // in every worker thread, which is why this is never simply open.
+            // End the system: drain the buffered console, then arch_shutdown. A
+            // syscall because neither half is reachable from an unprivileged thread.
+            // AUTH_DEVICE (like console_publish): an ungated shutdown would be a kill
+            // switch in every worker thread.
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_DEVICE))
             {
@@ -615,22 +610,14 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_MEM_SELF_GRANT:
         {
-            // The explicit half of allocate-then-grant. KOS_SYS_RAM_ALLOC reserves
-            // arena memory and grants nothing, so an AUTH_MEMORY holder could allocate
-            // a page and then fault on it; the only way to make a region reachable was
-            // to hand it to a spawn. A privileged root never noticed, because it holds
-            // the whole arena.
-            //
-            // EXPLICIT, and not an implicit grant inside ram_alloc, because the budget
-            // is hardware: a thread already spends up to 5 of KICKOS_MPU_MAX_REGIONS on
-            // code, static data, its domain and its stack, so granting on every
-            // allocation would overrun the descriptor file on the fourth call and there
-            // is no honest way to refuse an allocation that already succeeded. Here the
-            // caller asks, and a full budget is a returned error.
+            // The explicit half of allocate-then-grant: KOS_SYS_RAM_ALLOC reserves
+            // arena memory and grants nothing. Explicit rather than implicit inside
+            // ram_alloc because the descriptor budget is hardware; here a full budget
+            // is a returned error, not a refused allocation that already succeeded.
             //
             // Added to the CALLER's own region set, not to its domain: a domain is
             // shared, and widening it would silently hand the same window to every
-            // sibling thread. Self-grant means self.
+            // sibling thread.
             IrqLock lock;
             Thread* const c = sched::current();
             if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
@@ -643,35 +630,26 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-KOS_EINVAL);
             }
-            // Already reachable costs no descriptor. This is what makes the call
-            // idempotent, and it is also the whole answer for a privileged caller
-            // (user_range_ok passes it wholesale): the kernel domain's whole-arena
-            // region already grants the range, so KICKOS_ROOT_PRIVILEGED=1 behaviour
-            // is unchanged by this syscall existing.
+            // Already reachable costs no descriptor: the call is idempotent, and a
+            // privileged caller (whole-arena region) always lands here.
             if (user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W))
             {
                 return 0;
             }
-            // Rule 7, the same admission a spawn-time data grant takes: inside the
-            // arena, clear of every reserved block, at the geometry that will actually
-            // be committed. Rounding BEFORE the check is what keeps the predicate
-            // honest -- a window rounded up after admission could cover a neighbour
-            // the unrounded extent did not.
+            // Rule 7, the same admission a spawn-time data grant takes, on the
+            // geometry that will actually be committed: a window rounded up AFTER
+            // admission could cover a neighbour the unrounded extent did not.
             size_t const rsz = arch_ram_region_size(size);
             if (rsz == 0)
             {
                 return static_cast<uintptr_t>(-KOS_EINVAL);
             }
             // Naturally aligned, the same admission the stack grant takes
-            // (syscall_thread.cc). NOT a formality: PMSAv7 MPU_RBAR MASKS the base down
-            // to the region size, so an unaligned base would be programmed as a window
-            // starting BELOW what the caller named -- covering a neighbour it was never
-            // admitted for. Refusing is the only safe answer, and arch_ram_alloc already
-            // returns naturally-aligned blocks, so a caller granting what it allocated
-            // never sees this. Where arch_mpu_min_region() == 0 there is no descriptor
-            // to snap AND rsz is 16-byte-granular, not a power of two, so rsz - 1 is
-            // not an alignment mask: skip the check, as the stack grant does behind
-            // its #if KICKOS_HAVE_MPU.
+            // (syscall_thread.cc): PMSAv7 MPU_RBAR MASKS the base down to the region
+            // size, so an unaligned base would be programmed as a window starting
+            // BELOW what the caller named. Where arch_mpu_min_region() == 0 there is
+            // no descriptor to snap and rsz is not a power of two (rsz - 1 is not an
+            // alignment mask), so the check is skipped.
             if (arch_mpu_min_region() != 0 and (base & (rsz - 1)) != 0)
             {
                 return static_cast<uintptr_t>(-KOS_EINVAL);
@@ -681,7 +659,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
-            // The budget, and the loud failure. Truncating the set instead would fault
+            // Full budget is a returned error; truncating the set instead would fault
             // the thread on memory it was told it had.
             if (c->region_count >= KICKOS_MPU_MAX_REGIONS)
             {
@@ -691,16 +669,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             c->regions[c->region_count].size = rsz;
             c->regions[c->region_count].attr = ARCH_MPU_R | ARCH_MPU_W;
             c->region_count++;
-            // Effective BEFORE the return, because the caller's next instruction may
-            // dereference the region. apply() alone is not enough: on every
-            // deferred-switch arch it only STASHES, and the hardware is programmed by
-            // the switch epilogue (docs/design-mpu-commit-deferred.md) -- so without the
-            // commit the grant would be pure bookkeeping until some unrelated context
-            // switch happened to flush it, and the caller would fault on memory the
-            // kernel had just told it it could reach. Sound here, unlike the eager apply
-            // that seam removed, because there is no switch: this thread is both the
-            // outgoing and the incoming set, so it can never run under another thread's
-            // regions. The sim's apply already programs, and its commit is a no-op.
+            // Must be effective BEFORE the return: the caller's next instruction may
+            // dereference the region, and on a deferred-switch arch apply() only
+            // STASHES; the commit is what programs the hardware
+            // (docs/design-mpu-commit-deferred.md). Sound because no switch is
+            // involved: outgoing and incoming are the same thread.
             arch_mpu_apply(c->regions, c->region_count);
             kickos_arch_mpu_commit();
             return 0;

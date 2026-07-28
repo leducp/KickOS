@@ -402,7 +402,9 @@ boundary (2026-07-27, **`22e1c5a`**, PMSAv7, 144 MHz, console-only service list)
 re-captured on the post-rebase tree; the earlier pre-rebase capture (`a463ab9`) is superseded and
 its hash no longer exists on this branch. **Re-witnessed at the M4.5.1 tip (2026-07-28,
 `75227d4`)**: both arms re-run, and the table below is the tip capture (captures under
-`.session/n33-rewitness/`, machine-local).
+`.session/n33-rewitness/`, machine-local). The hashes in this section are what the silicon
+banners stamped; after the M4.5.1 squash they resolve against `backup/m4.5.1-pre-squash`, not
+the live branch.
 
 | Evidence | Root privileged (control) | Root unprivileged |
 | --- | --- | --- |
