@@ -34,11 +34,27 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # full clean run, so a mid-run fault (which exits 0 via the reported-fault
   # path) is caught as a truncated run, not a false pass. CTest checks FAIL
   # before PASS, so a "not ok" still fails.
+  # `# skipped: [1-9]` is a FAILURE here: the sim's pools host the entire suite, so a
+  # skip means a test stopped running rather than that the board cannot host it. Until
+  # the harness had a real SKIP state such a test reported a plain `ok` and this gate
+  # could not see it at all.
   add_test(NAME selftest COMMAND "$<TARGET_FILE:selftest>")
   set_tests_properties(selftest PROPERTIES
     TIMEOUT 30
     PASS_REGULAR_EXPRESSION "# all tests passed"
-    FAIL_REGULAR_EXPRESSION "not ok")
+    FAIL_REGULAR_EXPRESSION "not ok;# skipped: [1-9]")
+
+  # The OTHER console posture. This gate is the sim's only coverage of the published
+  # route (kos_send on stdout cap index 0 -> userspace driver): the test above, and
+  # every QEMU gate, run kickos_services_none, where the kernel owns the console and
+  # that route is never touched -- which is how M4.5's console handover silenced the
+  # whole TAP stream on xmc4800-relax and frdmk64f with CI fully green. One provider
+  # links per image, so it needs its own build tree; the script makes one.
+  add_test(
+    NAME    sim_published_console
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_published.sh"
+            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+  set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
 
   # Dependency-inversion acceptance: an out-of-tree app builds against the
   # exported KickOS package (find_package + kickos_add_application) and runs.
@@ -55,8 +71,8 @@ endif()
 # rv32imac msip), not just the sim. Needs KICKOS_ENABLE_SELFTEST (the qemu* presets
 # enable it); rr_interleave sizes its RR quantum to the target's clock so it runs
 # even on the coarse QEMU semihosting clock.
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
-  kickos_add_qemu_test(NAME qemu_selftest TARGET selftest BOARD qemu
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
+  kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_selftest TARGET selftest BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
 endif()
 # microbit (nrf51) runs the SAME suite on armv6m. Its small pool (MAX_SEMAPHORES=4 /
@@ -66,6 +82,25 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
+  # The one board with a legitimate skip budget: MAX_THREADS=2 / MAX_SEMAPHORES=4 means
+  # the multi-worker choreographies (the mutex PI suite, domain_share, the 3-and-4-thread
+  # call/reply cases) genuinely cannot run here, and irq_as_event cannot spare a 4 KiB
+  # page out of 16 KiB SRAM. Every OTHER board keeps the script's default budget of 0.
+  #
+  # 10 is a MEASURED count, not a ceiling -- these ten and no others, stable across
+  # repeated runs:
+  #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_deadlock,
+  #   mutex_multi_held    -- 3-worker PI choreographies on a 2-slot pool
+  #   call_infoless_revert (4 workers), call_donation (3)  -- M4.4 call/reply
+  #   domain_share, confused_deputy                        -- 2 concurrent workers
+  #   irq_as_event                                         -- wants a 4 KiB MMIO page
+  # It replaces the loose 12 that stood in while the board could not reach its own
+  # summary line (the gate was red from 9ae301f/M4.4 to M4.5.1). Raising it again should
+  # mean a board capability changed; a test that merely stopped running must show up as
+  # a breach, which is why the slack is gone. caller_stack and mmio_grant additionally
+  # report PARTIAL -- they assert their invariant and say which half the arena/pool could
+  # not host, so they count as passes, not skips.
+  set_tests_properties(microbit_selftest PROPERTIES ENVIRONMENT "MAX_SKIPS=10")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv

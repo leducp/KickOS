@@ -212,10 +212,9 @@ endif()
 # build enforces nothing. Capability is an EXPLICIT per-port opt-in, not inferred from
 # the linker plumbing: a chip ships arch/<family>/chip/<chip>/mpu.cmake
 # (KICKOS_CHIP_ENFORCES_MPU ON); a chip that merely has the .appdata block but ships
-# no such file is rejected here. imxrt1062 (teensy41) ships one as BUILD-ONLY
-# scaffolding -- its enforcement path compiles but has never run on silicon (see the
-# chip mpu.cmake SILICON-PENDING note). The sim enforces via host mprotect (no chip,
-# no linker script) and is capable by arch.
+# no such file is rejected here. The sim enforces via host mprotect (no chip,
+# no linker script) and is capable by arch. Which ports are proven on hardware is
+# NOT recorded here -- see docs/reference/boards.md.
 set(KICKOS_CHIP_ENFORCES_MPU OFF)
 if(KICKOS_ARCH STREQUAL "sim")
   set(KICKOS_CHIP_ENFORCES_MPU ON)
@@ -528,6 +527,18 @@ if(TARGET kickos_kernel)
       # the KickOS source tree present.
       "$<BUILD_INTERFACE:SHELL:-T ${KICKOS_LINKER_SCRIPT}>"
       "$<INSTALL_INTERFACE:SHELL:-T $<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
+    # ...and the same script as a real link DEPENDENCY, not just a flag. -T reaches
+    # the linker as an opaque driver option, so nothing in it tells the build system
+    # that the image is a function of that file: edit the .ld and the link is not
+    # re-run, leaving a stale image to be flashed. INTERFACE_LINK_DEPENDS puts the
+    # file on the link edge, and being an INTERFACE property it rides the export --
+    # so a plain add_executable + target_link_libraries(app PRIVATE kickos) consumer
+    # gets the correct edge with no helper and no knowledge that the hazard exists.
+    # Paths mirror the -T above (build tree: the generated script; installed: the
+    # shipped copy), because the dependency must name the file actually linked.
+    set_property(TARGET kickos_core APPEND PROPERTY INTERFACE_LINK_DEPENDS
+      "$<BUILD_INTERFACE:${KICKOS_LINKER_SCRIPT}>"
+      "$<INSTALL_INTERFACE:$<INSTALL_PREFIX>/${CMAKE_INSTALL_LIBDIR}/kickos/${KICKOS_CHIP}.ld>")
   endif()
 
   # Two posture leaves over the neutral core. A pure-C / freestanding app links
@@ -681,9 +692,15 @@ if(NOT KICKOS_ARCH STREQUAL "sim")
             DESTINATION "${KICKOS_CMAKE_DIR}")
   elseif(KICKOS_ARCH_FAMILY STREQUAL "riscv")
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-riscv-none-elf.cmake"
+                  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-cxx-runtime-check.cmake"
             DESTINATION "${KICKOS_CMAKE_DIR}")
   else()
+    # The compiler-capability gate is include()d by the ARM + RISC-V toolchain
+    # files from their own list dir, so it must land beside them in the package
+    # (the RX/Xtensa files do not use it -- no C-only same-name twin exists to
+    # fall through to).
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-arm-none-eabi.cmake"
+                  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain-cxx-runtime-check.cmake"
             DESTINATION "${KICKOS_CMAKE_DIR}")
   endif()
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/board.cmake"

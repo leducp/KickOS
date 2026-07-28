@@ -1,13 +1,22 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design brief: K64F/DSPI unprivileged userspace SPI driver
 
+> **Status: LANDED** -- `k64dspi` shipped and is silicon-proven (2026-07-17): a 4-word
+> SOUT->SIN loopback with `tx == rx` over the AIPS-opened slot, blocking on the DSPI0 EOQ IRQ
+> with the auto-rearm API, and it reached OPERATIONAL against a real LAN9252. It is exported as
+> the `kickos_k64dspi` lib (`system/driver/mk64f/k64dspi`). Designed WITHIN the K64F ceiling: the
+> window grant is documentation, not enforcement, because AIPS opens the slot to all user code.
+> See `design/README.md` for the marker taxonomy.
+
+The scoping below was written before the code existed:
+
 Design only; no code. The SPI driver KickCAT actually needs: a DSPI master on the
 FRDM-K64F driving an EtherCAT Slave Controller (ESC) over its SPI PDI, feeding the
 KickCAT slave stack. Counterpart of `design-spi-driver.md` (XMC/USIC-SSC), deferred to
 this pass by that brief's TARGET CORRECTION note. Builds on the LANDED MMIO-grant seam
 (`design-task9-mmio-driver.md`; `kos_thread_params.mmio_base/mmio_size`), the tier-1 IRQ
 path (`kos_irq_register/wait/ack`), and the silicon-proven k64drv AIPS-open pattern
-(`user/apps/k64drv/main.cc`).
+(`user/apps/frdmk64f/k64drv/main.cc`).
 
 ## The hardware ceiling this brief designs WITHIN (read first)
 K64F peripheral isolation is **AIPS-PACR-based, NOT SYSMPU** -- silicon-proven via the

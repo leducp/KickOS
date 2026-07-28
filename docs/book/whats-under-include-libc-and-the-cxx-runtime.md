@@ -253,10 +253,13 @@ expects. Kernel/arch/chip/lib constructors -- the ones `kmain` itself needs -- s
 libstdc++/libsupc++'s, KickCAT's) is routed by the linker into a separate
 `.kickos_app_init_array` section and run later from `root_entry` -- the kernel's first
 thread, with the scheduler and clock fully live -- just before `kickos_app_main`. That
-restores the normal C++ contract: runtime up, then static init, then `main`. It is gated
-on a weak symbol, so unmigrated chips and the sim host (whose own runtime already
-sequences `.init_array` correctly) fall through unchanged, and the split was fanned out
-across every chip linker. See `../../kernel/init/kmain.cc` (`root_entry`),
+restores the normal C++ contract: runtime up, then static init, then `main`. The split is
+fanned out across every chip linker, and the bounds `root_entry` walks are a *strong*
+reference: every target has to state its window, so a chip whose script forgot to
+partition `.init_array` fails to link instead of quietly skipping the walk. The sim host
+-- whose own runtime already sequences `.init_array` before `main` -- states an
+explicitly empty one, which the walk steps over in zero iterations. See
+`../../kernel/init/kmain.cc` (`root_entry`), `../../arch/sim/start.cc`,
 `../../user/include/kickos/app.h`, and the `.init_array` / `.kickos_app_init_array` split
 in `../../arch/arm/chip/mk64f/mk64f.ld`.
 

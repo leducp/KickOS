@@ -13,7 +13,7 @@ Copyright (c) 2026 Philippe Leduc
 > once you have all that, *how do you know it actually protects anything* -- and how a
 > test can print "ALL PASS" while proving nothing. It binds to
 > [`../reference/architecture.md`](../reference/architecture.md) (the region-set model)
-> and the test sources under `user/apps/{cxxtest,mpu_fault,selftest}/`.
+> and the test sources under `user/apps/common/{cxxtest,mpu_fault,selftest}/`.
 
 ## The trap: "the MPU is on" is not "the MPU protects"
 
@@ -72,9 +72,9 @@ one separately. Passing one does not imply the other.
 The code under test must run in an **unprivileged** thread, so its every load and store is
 subject to the protection unit. In KickOS that is `kos::thread::spawn(..., privileged =
 false)` -- the default. `cxxtest` does exactly this: rather than run the body in `main()`,
-it spawns `cxx_worker` unprivileged (`user/apps/cxxtest/main.cc`) and the
+it spawns `cxx_worker` unprivileged (`user/apps/common/cxxtest/main.cc`) and the
 throw/catch/unwind/RTTI/STL all execute there, under the unit, reaching only the worker's
-granted regions. `selftest` (`user/apps/selftest/main.cc`) is built the same way:
+granted regions. `selftest` (`user/apps/common/selftest/main.cc`) is built the same way:
 its workers are spawned unprivileged, and `main()` is a pure orchestrator that spawns,
 joins on a semaphore, and asserts -- it never does the thing it is testing.
 
@@ -100,7 +100,7 @@ PASS` from a well-behaved confined worker tells you the runtime *fits inside* it
 It does not tell you the **boundary bites**. For that you must assert that an
 **out-of-grant** access **traps**.
 
-KickOS proves this with a dedicated binary, `mpu_fault` (`user/apps/mpu_fault/main.cc`).
+KickOS proves this with a dedicated binary, `mpu_fault` (`user/apps/common/mpu_fault/main.cc`).
 An unprivileged domain-A thread writes its own granted region (must succeed), then writes
 domain B's region (must fault). The kernel reports `MPU FAULT` and shuts down; the ctest
 asserts that the fault marker appeared -- and negatively asserts that the "cross-domain

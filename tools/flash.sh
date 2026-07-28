@@ -16,7 +16,7 @@
 #   tools/flash.sh <board> [app]     # app defaults to hello
 #   tools/flash.sh --list            # every board + the backend it would use
 # Env knobs (also honored by the backends):
-#   FLASH_TOOL=esptool|stlink|jlink|picotool|pyocd|bossac|rfp    force a backend
+#   FLASH_TOOL=esptool|stlink|jlink|picotool|pyocd|bossac|rfp|teensy  force a backend
 #   FLASH_PORT=/dev/ttyACM0     force the serial port     DRY_RUN=1  print, don't run
 set -euo pipefail
 FL_ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$FL_ROOT/tools/flash-common.sh"
@@ -26,10 +26,15 @@ candidates_for() {
     case "$1" in
         esp32*)                        echo "esptool" ;;
         stm32f103|stm32f302|stm32f411) echo "stlink jlink" ;;
-        rp2040)                        echo "picotool" ;;
+        # Both Pi boards flash over BOOTSEL. picotool ONLY, deliberately: J-Link SWD
+        # of an RP2xxx is flaky (RP2040 gates the DAP once both cores WFI, and boot2
+        # isn't re-run on an SWD reset), and BOOTSEL always recovers the board. The
+        # flash-jlink.sh rows for picopi/pizero2350 stay for driving them by hand.
+        rp2040|rp2350)                 echo "picotool" ;;
         nrf51)                         echo "pyocd jlink" ;;
         sam3x8e)                       echo "bossac" ;;
         mk64f)                         echo "jlink pyocd" ;;
+        imxrt1062)                     echo "teensy" ;;   # HalfKay: no SWD header
         xmc4800)                       echo "jlink" ;;
         rx72m)                         echo "rfp" ;;
         *)                             echo "" ;;
@@ -46,6 +51,7 @@ tool_bin() {
         pyocd)    have pyocd     && echo pyocd     || true ;;
         bossac)   have bossac    && echo bossac    || true ;;
         rfp)      have rfp-cli    && echo rfp-cli   || true ;;
+        teensy)   have teensy_loader_cli && echo teensy_loader_cli || true ;;
     esac
 }
 

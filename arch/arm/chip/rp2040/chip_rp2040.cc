@@ -201,7 +201,7 @@ namespace
     // --- Buffered console TX backend (console_tx.h). The ring drains via the PL011
     // transmit interrupt with the FIFO disabled (see LCR_H_8N1); the idle->busy
     // prime starts the transfer whether TXIM is level- or transition-triggered at
-    // rest (HW-unverified; build-only board). slot_free/push touch one data register;
+    // rest (HW-unverified). slot_free/push touch one data register;
     // irq_enable/disable use the RP2040 atomic set/clear aliases so no read-modify-
     // write on IMSC is needed. ---
     int rp_tx_slot_free(void) { return (r32(reg::uart::FR) & reg::uart::FR_TXFF) == 0; }

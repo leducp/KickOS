@@ -20,9 +20,11 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(fault_dump PROPERTIES TIMEOUT 15)
 endif()
 
-# qemu (armv7m): udf -> HardFault -> kickos_armv7m_fault_report -> exit 132.
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
-  kickos_add_qemu_test(NAME qemu_fault_dump TARGET fault BOARD qemu MACHINE mps2-an386
+# qemu (armv7m): udf -> HardFault -> kickos_armv7m_fault_report -> exit 132, on each
+# MPS2 image. check_fault_dump.sh runs NATIVELY unless QEMU_MACHINE is set, so the
+# board's machine name must reach it -- kickos_add_qemu_test names the image per board.
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
+  kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_fault_dump TARGET fault BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh" ARGS "HARD FAULT")
 endif()
 

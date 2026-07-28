@@ -1,6 +1,10 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # M4 driver-era -- adversarial design review
 
+> **Status: LANDED** -- the review happened (2026-07-20) and its findings were checked; the
+> VERIFICATION notes are the outcomes. Kept as the record of what was challenged and what
+> survived. See `design/README.md` for the marker taxonomy.
+
 An adversarial review of the M4 "driver era" design PRINCIPLES, run 2026-07-20 before
 M4 implementation starts. Sources reviewed: `docs/design-driver-era-scope.md`,
 `roadmap.md` (M4 + the "Later" init / power-manager / clock-tree prose + M5/M6),

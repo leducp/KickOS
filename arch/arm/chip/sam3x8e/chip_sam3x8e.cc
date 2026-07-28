@@ -13,12 +13,13 @@
 // Peripheral clocks are individually gated in the PMC. Console = the dedicated
 // UART on PA8/PA9 at a true 115200 once the crystal/PLLA clock is up.
 //
-// Build-only here; flash with bossac (the Due programming port). apps/blink
-// toggles the onboard "L" LED (PB27) for a no-UART smoke test.
+// Flashes with bossac over the Due programming port; apps/blink toggles the
+// onboard "L" LED (PB27) for a no-UART smoke test.
+// Validation status of this port: see docs/reference/boards.md.
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
-#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
+#include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
@@ -271,6 +272,13 @@ namespace
     volatile uint32_t g_clk_high = 0;
     volatile uint32_t g_clk_last = 0;
 
+    // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Its SOLE
+    // writer is the init() in arch_init -- this chip does not retune at runtime
+    // (arch_cpu_clock_set is the weak default returning 0), so there is no re-anchor.
+    // A fixed-set retune added later must call reprice() at the rate edge; the read
+    // must stay pure.
+    kickos::arch_clk_anchor g_clk;
+
     void tc_clock_init()
     {
         // Boot-order: nothing before arch_init may read the clock. A static ctor
@@ -343,32 +351,19 @@ void arch_init(void)
 {
     clock_init(); // crystal + PLLA -> 84 MHz (watchdog already disabled in Reset_Handler)
     tc_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
+    // Anchor the clock ONCE, from the FINAL rate: TC0 ch0 runs on TIMER_CLOCK1 = MCK/2
+    // and MCK == SystemCoreClock, so the ticks advance at half the core clock.
+    g_clk.init(SystemCoreClock / 2u);
     uart_init();
     kickos_armv7m_init();
 }
 
 // Monotonic clock override: free-running TC0 ch0 ticks -> ns, replacing the weak
-// DWT-backed arch_clock_now (unreliable on this silicon). TC0 ch0 runs on
-// TIMER_CLOCK1 = MCK/2, and MCK == SystemCoreClock, so the tick rate is
-// SystemCoreClock/2 at the PLL rate and at every clock-fallback state.
-// ns = ticks*1e9/hz via a cached reciprocal multiply (the one 64-bit divide runs
-// only at a clock change).
+// DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the anchor
+// holds the rate, so no divide and no rate derivation happens here.
 uint64_t arch_clock_now(void)
 {
-    uint32_t tc_hz = SystemCoreClock / 2u; // TIMER_CLOCK1 = MCK/2
-    static uint64_t cached_hz = 0;
-    static uint64_t mult = 0;
-    if (tc_hz != cached_hz)
-    {
-        if (tc_hz == 0)
-        {
-            return 0;
-        }
-        mult = kickos::arch_clk_recip_q32(tc_hz);
-        cached_hz = tc_hz;
-    }
-    uint64_t ticks = tc_ticks();
-    return kickos::arch_clk_mul_q32(ticks, mult);
+    return g_clk.ns_from(tc_ticks());
 }
 
 // TC0 ch0 overflow (COVFS) ISR, vectored at NVIC 27 in startup.S. Observes the

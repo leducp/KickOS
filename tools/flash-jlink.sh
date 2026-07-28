@@ -36,4 +36,6 @@ printf 'loadfile %s\nr\ng\nq\n' "$FL_HEX" > "$script"   # r=reset g=go q=quit
 sn_arg=""
 [ -n "${JLINK_SN:-}" ] && sn_arg="-SelectEmuBySN $JLINK_SN"
 say "$FL_BOARD [$dev]${JLINK_SN:+ SN=$JLINK_SN} <- $FL_HEX (loadfile; addresses embedded)"
-run JLinkExe -device "$dev" -if SWD -speed 4000 -autoconnect 1 ${sn_arg} -CommanderScript "$script"
+# -nogui 1 is NOT optional on a headless bench: V9.58 otherwise forks a
+# JLinkGUIServerExe and hangs there instead of running the CommanderScript.
+run JLinkExe -device "$dev" -if SWD -speed 4000 -autoconnect 1 -nogui 1 ${sn_arg} -CommanderScript "$script"

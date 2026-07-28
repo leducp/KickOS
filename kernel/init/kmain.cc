@@ -33,15 +33,24 @@ extern "C"
     // Per-app source compile time (weak; null when no app defines it). See app.h.
     char const* kickos_app_build_stamp(void) __attribute__((weak));
 
-    // Non-kernel (app / libstdc++ / newlib / library) global ctors. On a migrated MCU
-    // the chip linker routes them here, OUT of .init_array (which keeps only the kernel
-    // ctors that Reset_Handler must run before kmain constructs the instance). We run
-    // them from root_entry -- in a thread, kernel live -- because a ctor may issue a
-    // KickOS syscall (kos_clock_now) that needs ktime_init + a current thread. Weak:
-    // undefined on sim and not-yet-migrated chips -> null -> skipped (there the ctors
-    // still run via the host runtime / the chip's own full .init_array loop).
-    extern void (*__kickos_app_init_array_start[])() __attribute__((weak));
-    extern void (*__kickos_app_init_array_end[])() __attribute__((weak));
+    // Non-kernel (app / libstdc++ / newlib / library) global ctors. The linker script
+    // routes them here, OUT of .init_array (which keeps only the kernel ctors that
+    // Reset_Handler must run before kmain constructs the instance). We run them from
+    // root_entry -- in a thread, kernel live -- because a ctor may issue a KickOS
+    // syscall (kos_clock_now) that needs ktime_init + a current thread.
+    //
+    // STRONG on purpose: every target must STATE its window. The chip scripts define
+    // these bounds around the app-ctor bucket; a hosted target whose own runtime has
+    // already run the ctors states an explicitly EMPTY one (arch/sim/start.cc). That
+    // makes the two situations distinguishable at LINK time, which is the whole point:
+    //   present but empty -> start == end -> the walk below iterates zero times, silent
+    //   absent            -> undefined symbol -> the link FAILS, loudly
+    // These were once WEAK, which collapsed "absent" into a null the walk skipped. A
+    // script that forgot to partition .init_array then ran every app ctor privileged
+    // from Reset_Handler *and* skipped the late walk entirely, with no diagnostic --
+    // which is exactly how the bluepill-c8 regression stayed silent until d5e7f06.
+    extern void (*__kickos_app_init_array_start[])();
+    extern void (*__kickos_app_init_array_end[])();
 
     // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit).
     // Weak: the sim (host heap) and a malloc-free image define neither -> both null ->
@@ -68,13 +77,64 @@ namespace kickos
 {
     namespace
     {
-        // The bootstrap idle/root TCBs + stacks. Still file-static: the remaining
+        // The bootstrap idle/root TCBs. Still file-static: the remaining
         // instance-scoping residue (invariant #7) -- they move into Kernel with the
         // Later multi-instance work (alongside the sim altstack and the TLS pointer).
-        alignas(16) unsigned char g_idle_stack[KICKOS_IDLE_STACK_SIZE];
-        alignas(16) unsigned char g_root_stack[KICKOS_ROOT_STACK_SIZE];
+        // Their STACKS are deliberately NOT here -- see boot_stack_alloc below.
         Thread g_idle_tcb;
         Thread g_root_tcb;
+
+        // Take one bootstrap thread stack from the user-RAM arena, and prove at boot
+        // the two properties an MPU descriptor over it depends on.
+        //
+        // These stacks used to be .bss arrays, which is a latent isolation bug: the
+        // linker puts a .bss object wherever the preceding objects leave the cursor,
+        // on the measured frdmk64f link root's 8 KiB stack landed at 0x1fff2be0.
+        // A thread's own stack is one of its MPU regions, and PMSAv7/v8 and PMP/NAPOT
+        // can only name a power-of-two block whose base is naturally aligned to its
+        // size -- so PMSA would have snapped that base down to 0x1fff2000, covering
+        // kernel .bss the thread must not reach and missing the top of the stack it
+        // must, while NAPOT cannot encode the range at all and fails closed to no
+        // stack grant. Only the byte-granular backends (SYSMPU, the RX MPU, the sim's
+        // mprotect) would have encoded it as written, which made the failure silently
+        // board-dependent. Rule 7 says the same thing from the other side: a RAM grant
+        // is confined to the arena for EVERY caller, privileged included
+        // (grant_region_admissible), so a stack outside the arena is refusable by the
+        // kernel's own rule even where the hardware would have described it.
+        //
+        // arch_ram_alloc is the fix and the only source of a describable stack: it
+        // reserves arch_ram_region_size() bytes naturally aligned to that size, which
+        // is exactly one region. It is safe here -- every arch runs arch_init() before
+        // kmain, and the caller has already run domain_init() (which reads the same
+        // arena bounds) and grant_reserved_validate().
+        void* boot_stack_alloc(size_t size, char const* exhausted_msg)
+        {
+            void* const p = arch_ram_alloc(size);
+            if (p == nullptr)
+            {
+                // A board that carves no arena, or one too small to hold this stack.
+                // Limping on would start a thread on a null stack pointer.
+                kpanic(exhausted_msg);
+            }
+            uintptr_t const base = reinterpret_cast<uintptr_t>(p);
+            // Naturally aligned. On a pow2-descriptor arch this alignment IS the
+            // region size, so one descriptor names the block and nothing else; on a
+            // no-MPU arch there is no descriptor and the contract is just the 16-byte
+            // ABI floor. Asking the same seam the allocator asked checks what it
+            // returned rather than restating the request.
+            size_t const align = arch_ram_region_align(size);
+            KICKOS_ASSERT((base & (align - 1u)) == 0);
+            // In-arena across the whole ROUNDED block -- that is the span a descriptor
+            // would cover and the span Rule 7 would admit. Subtract-form bounds, so
+            // neither test can wrap.
+            size_t const rsz = arch_ram_region_size(size);
+            uintptr_t const arena = arch_ram_base();
+            size_t const arena_size = arch_ram_size();
+            KICKOS_ASSERT(base >= arena);
+            KICKOS_ASSERT(rsz <= arena_size);
+            KICKOS_ASSERT(base - arena <= arena_size - rsz);
+            return p;
+        }
 
         // Host argv forwarded to the app entry (argc=0/argv=nullptr on MCU).
         struct AppArgs
@@ -133,14 +193,12 @@ namespace kickos
         void root_entry(void* arg)
         {
             // App/library ctors run here (kernel live, in a thread), before main --
-            // the normal C++ order. Null on sim / unmigrated chips (see the decl).
-            if (__kickos_app_init_array_start != nullptr)
+            // the normal C++ order. No null guard: the bounds are strong, so an empty
+            // window is start == end and this loop simply does not run (see the decl).
+            for (void (**fn)() = __kickos_app_init_array_start;
+                 fn != __kickos_app_init_array_end; fn++)
             {
-                for (void (**fn)() = __kickos_app_init_array_start;
-                     fn != __kickos_app_init_array_end; fn++)
-                {
-                    (*fn)();
-                }
+                (*fn)();
             }
             AppArgs const* a = static_cast<AppArgs const*>(arg);
             int status = kickos_init_entry(a->argc, a->argv);
@@ -169,13 +227,27 @@ namespace kickos
         console_buffer_init(); // arm the buffered console TX drain (after irq_init)
         ktrace_init();       // measure probe overhead + emit the opening SESSION (no-op when off)
 
+        // Both stacks up front, idle (the smaller on every board) FIRST. Against a
+        // bump allocator the order decides how much arena the natural-alignment
+        // run-ups eat, and taking the small block first lets it sit INSIDE the large
+        // block's run-up instead of after it. That is load-bearing, not tidiness: the
+        // 16 KiB f302nucleo and 20 KiB bluepill-c8 carve barely 3 KiB of arena, and
+        // only this order lets the pair fit at all (it lands flush against the end).
+        // The trade is bounded and paid only where there is room: on a board whose
+        // arena base is ALREADY root-aligned this strands one root-sized gap, a few
+        // KiB out of the hundreds those boards have.
+        void* const idle_stack =
+            boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, "kmain: no arena for the idle stack");
+        void* const root_stack =
+            boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, "kmain: no arena for the root stack");
+
         ThreadAttr idle_attr;
         idle_attr.name = "idle";
         idle_attr.prio = KICKOS_PRIO_IDLE;
         idle_attr.policy = Policy::FIFO;
         idle_attr.privileged = true;
         thread_create(&g_idle_tcb, idle_entry, nullptr,
-                      g_idle_stack, sizeof(g_idle_stack), idle_attr);
+                      idle_stack, KICKOS_IDLE_STACK_SIZE, idle_attr);
         // Idle is created first, so it MUST be trace id 0 (the telemetry decoder
         // keys CPU% off tid 0 == idle). Assert the invariant, not just assume it.
         KICKOS_ASSERT(g_idle_tcb.id == KICKOS_TID_IDLE);
@@ -190,7 +262,7 @@ namespace kickos
         root_attr.policy = Policy::FIFO;
         root_attr.privileged = true;
         thread_create(&g_root_tcb, root_entry, &app_args,
-                      g_root_stack, sizeof(g_root_stack), root_attr);
+                      root_stack, KICKOS_ROOT_STACK_SIZE, root_attr);
 
         sched::start(); // returns only if the scheduler ever unwinds to boot
         return 0;

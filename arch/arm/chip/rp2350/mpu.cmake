@@ -15,7 +15,6 @@
 # by arch/CMakeLists.txt (inherited into the add_subdirectory child scope) and, when
 # KICKOS_HAVE_MPU is on, appended to the chip library sources.
 #
-# SILICON-PENDING: the Waveshare RP2350 Pi-Zero has never booted; enforcement here is
-# BUILD-ONLY, validated on hardware by the operator (mpu_fault -> clean MemManage).
+# Validation status of this port: see docs/reference/boards.md.
 set(KICKOS_CHIP_ENFORCES_MPU ON)
 set(KICKOS_ARM_PMSAV8_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../common/arch_arm_pmsav8.cc")

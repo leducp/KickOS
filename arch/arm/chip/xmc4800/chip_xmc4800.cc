@@ -15,7 +15,8 @@
 // (ttyACM0) at 115200; see usic_uart.cc. apps/blink toggles LED1 (P5.9). The
 // XMC4800 also carries an on-chip EtherCAT node, a natural future KickCAT target.
 //
-// Build-only here; flash via the on-board debugger.
+// Flashes via the on-board J-Link-OB debugger.
+// Validation status of this port: see docs/reference/boards.md.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"
@@ -25,7 +26,7 @@
 #include "regs/scu.h"
 
 #include <kickos/arch/arch.h>
-#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
+#include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
 #include <kickos/console_tx.h>
 
 #include <kickos/sys/abi.h> // kos_pstate_t / KOS_PSTATE_* (clock-select)
@@ -204,42 +205,10 @@ namespace
         }
     }
 
-    // --- arch_clock_now epoch anchor + clock-select re-anchor (B2/S2) -----------
-    // ns = base_ns + (raw_ticks - base_ticks)*mult. The SOLE writer of `mult` is
-    // clock_anchor_init (boot) and arch_cpu_clock_set (the re-anchor at the rate edge);
-    // arch_clock_now only READS. WHY sole-writer: the old lazy `if (hz != cached_hz)
-    // recompute` inside arch_clock_now, if it survived, would let any now() called
-    // between the SystemCoreClock write and the re-anchor recompute mult itself against
-    // the new Hz and bake the phantom forward jump (all history repriced 6x) into
-    // base_ns PERMANENTLY.
-    uint64_t g_clk_base_ns = 0;
-    uint64_t g_clk_base_ticks = 0;
-    uint64_t g_clk_mult = 0;
-
-    uint64_t clock_recip(uint32_t hz)
-    {
-        return kickos::arch_clk_recip_q32(hz);
-    }
-
-    // ns from a raw tick count under the CURRENT anchor (used by arch_clock_now AND to
-    // capture history at OLD pricing during a re-anchor). 64x64 split as before.
-    uint64_t clock_ns_from(uint64_t ticks)
-    {
-        uint64_t delta = ticks - g_clk_base_ticks;
-        return g_clk_base_ns + kickos::arch_clk_mul_q32(delta, g_clk_mult);
-    }
-
-    void clock_anchor_init()
-    {
-        uint32_t const hz = SystemCoreClock; // fCCU = fSYS = SystemCoreClock
-        if (hz == 0)
-        {
-            return;
-        }
-        g_clk_mult = clock_recip(hz);
-        g_clk_base_ticks = 0; // BOOT-IDENTICAL: now = raw_ticks*mult (the old first read)
-        g_clk_base_ns = 0;
-    }
+    // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Written ONLY
+    // at a rate edge: init() in arch_init and reprice() in arch_cpu_clock_set. The CCU40
+    // counter runs at fCCU = fSYS = SystemCoreClock, so that is the rate handed to it.
+    kickos::arch_clk_anchor g_clk;
 
     // FCON.WSPFLASH[3:0]: flash read wait-states in fCPU cycles. WHY set-before-rise:
     // a raw fCPU increase past the current wait-state's access window makes an
@@ -363,23 +332,19 @@ void arch_init(void)
     // MHz, and SysTick derives from fCPU. Then bring up the console; finally
     // kickos_armv7m_init installs the NVIC/SHPR priorities.
     clock_init();
-    ccu4_clock_init();   // monotonic time base (see ccu4_clock_init note; replaces DWT)
-    clock_anchor_init(); // set the arch_clock_now mult ONCE from the final clock (B2)
+    ccu4_clock_init(); // monotonic time base (see ccu4_clock_init note; replaces DWT)
+    g_clk.init(SystemCoreClock); // anchor ONCE from the final fCCU = fSYS (B2)
     kickos_xmc_usic_init();
     kickos_armv7m_init();
 }
 
 // Monotonic clock override: convert free-running CCU40 (64-bit hardware counter on
-// fCCU = fSYS) ticks to ns, replacing the weak DWT-backed arch_clock_now (unreliable
-// on this silicon). ns = ticks * 1e9 / ccu_hz via a cached reciprocal multiply
-// (mult = (1e9<<32)/hz, ns = (ticks*mult)>>32, split 64x64 to avoid overflow); the
-// one 64-bit divide runs only when SystemCoreClock changes at boot.
+// fCCU = fSYS) ticks to ns, replacing the weak DWT-backed arch_clock_now (unreliable on
+// this silicon). Pure epoch read: the anchor holds the rate, so a read in the window
+// around a retune cannot bake the phantom rate jump into the epoch.
 uint64_t arch_clock_now(void)
 {
-    // Pure epoch read (B2): the mult is written ONLY by clock_anchor_init (boot) and
-    // the arch_cpu_clock_set re-anchor -- never recomputed here -- so a read in the
-    // window around a retune can never bake the phantom rate jump into the anchor.
-    return clock_ns_from(ccu4_ticks());
+    return g_clk.ns_from(ccu4_ticks());
 }
 
 // Clock-select MECHANISM (arch.h): retune fSYS among the locked-PLL points via the
@@ -426,7 +391,7 @@ uint32_t arch_cpu_clock_set(uint32_t target)
 
     // Re-anchor capture AT the edge: history priced at the OLD mult before it moves.
     uint64_t const t0 = ccu4_ticks();
-    uint64_t const ns0 = clock_ns_from(t0);
+    uint64_t const ns0 = g_clk.ns_from(t0);
 
     if (want_hz > previous)
     {
@@ -446,13 +411,10 @@ uint32_t arch_cpu_clock_set(uint32_t target)
 
     SystemCoreClock = want_hz; // fCCU=fSYS and fPERIPH=fCPU/2 both track this now
 
-    // Commit the NEW pricing -- the SOLE writer of mult (B2). base_ns holds history at
-    // old pricing, base_ticks the tick at the edge, so `now` is continuous (no jump):
-    // ticks in the brief masked staircase are the only ones mispriced (frozen skew).
-    g_clk_base_ns = ns0;
-    g_clk_base_ticks = t0;
-    g_clk_mult = clock_recip(want_hz);
-    __asm volatile("" ::: "memory"); // pin the triple write order vs a later now() read
+    // Commit the NEW pricing (B2). base_ns holds history at old pricing, base_ticks the
+    // tick at the edge, so `now` is continuous (no jump): ticks in the brief masked
+    // staircase are the only ones mispriced (frozen skew).
+    g_clk.reprice(t0, ns0, want_hz);
     return want_hz;
 }
 

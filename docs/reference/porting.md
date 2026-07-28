@@ -76,29 +76,69 @@ dir; the build wires the multi-stage boot2 image automatically (keyed on
 `${KICKOS_CHIP}`). A chip on a non-ARM ISA additionally needs a new arch backend +
 toolchain file -- see `arch/xtensa/` (ESP32) or `arch/rx/` (RX72M) for worked examples.
 
-Status -- five arch backends (**armv7m** Cortex-M3/M4/M4F, **armv6m** Cortex-M0/M0+,
-**rxv3** Renesas RX72M, **lx6** Xtensa/ESP32, **rv32imac** RISC-V) across the chips below,
-by validation tier:
+Status -- five arch backends (**armv7m** Cortex-M3/M4/M4F/M7/M33, **armv6m** Cortex-M0/M0+,
+**rxv3** Renesas RX72M, **lx6** Xtensa/ESP32, **rv32imac** RISC-V) across the chips below.
+"MPU" is whether the chip ships an enforcement backend (`arch/<family>/chip/<chip>/mpu.cmake`);
+where it does, cross-domain trapping is silicon-proven unless the row says otherwise:
 
-| Chip | Board | Core | Validation |
-|------|-------|------|------------|
-| `mps2` | qemu | M4F | QEMU (runnable CI gate) |
-| `nrf51` | microbit | M0 | QEMU (runnable CI gate) |
-| `virt` | qemu-riscv | RV32IMAC | QEMU (runnable CI gate) |
-| `xmc4800` | xmc4800-relax | M4F | **hardware** (LED + USIC VCOM console over the buffered ring) |
-| `stm32f411` | f411disco / blackpill | M4F | **hardware** (LED + UART + ping-pong) |
-| `stm32f302` | f302nucleo | M4 | **hardware** (LED PB13 + console; RAM-limited selftest) |
-| `stm32f103` | bluepill-c8 | M3 | **hardware** (F103 port HW-proven on the now-retired 10 K clone, 2026-07-14; RAM-limited selftest, test 11 = 4 K alloc; c8 build-only) |
-| `rp2040` | picopi | M0+ | **hardware** (selftest over UART0/GP0) |
-| `mk64f` | frdmk64f | M4F | **hardware** (revalidated 2026-07-15: full selftest + buffered console ring on silicon); SYSMPU is the M2 enforcement backend |
-| `rx72m` | rx72m | RXv3 | **hardware** (selftest + SCI6 console; DPFPU switch) |
-| `esp32` | esp32-wroom | Xtensa LX6 | **hardware** (selftest + console, 240 MHz) |
-| `esp32c6` | esp32c6-wroom | RV32IMAC | **hardware** (selftest + buffered ring console; first real peripheral IRQ) |
-| `sam3x8e` | due | M3 | port proven on silicon (2026-07-09); test unit retired (peripheral-I/O fault) |
+| Chip | Board | Core | MPU | Validation |
+|------|-------|------|-----|------------|
+| `mps2` | qemu | M4F | -- | QEMU (runnable CI gate) |
+| `nrf51` | microbit | M0 | -- | QEMU (runnable CI gate) |
+| `virt` | qemu-riscv | RV32IMAC | PMP | QEMU (runnable CI gate, **plus a runtime enforcement gate**) |
+| `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
+| `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong); enforcement link-validated, MPU **HW pending** |
+| `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; RAM-limited selftest). Not an enforcement target: a 3712 B arena cannot host the app-data block |
+| `stm32f103` | bluepill-c8 | M3 | -- | **hardware** (F103 port HW-proven on the now-retired 10 K clone, 2026-07-14; RAM-limited selftest; c8 build-only). No MPU: the degraded privilege-only build |
+| `rp2040` | picopi | M0+ | PMSAv6-M | **hardware** (selftest over UART0/GP0; v6-M cross-domain fault silicon-proven 2026-07-19) |
+| `rp2350` | pizero2350 | M33 | **PMSAv8** | **hardware** (enforcement selftest + `mpu_fault` MemManage denial + bench/soak). Reuses the `armv7m` backend verbatim; only the MPU descriptor shape differs |
+| `mk64f` | frdmk64f | M4F | SYSMPU | **hardware** (revalidated 2026-07-15: full selftest + buffered console ring); SYSMPU enforces SRAM/domains but is bus-slave-side, so it cannot gate peripherals |
+| `imxrt1062` | teensy41 | **M7** | PMSAv7 + fixed | **hardware** (enforcement selftest + soak). The only speculating core: needs the fixed-region wrap (`../design-teensy-mpu-hang.md`) |
+| `rx72m` | rx72m | RXv3 | RX MPU | **hardware** (selftest + SCI6 console; DPFPU switch; enforcement + a granted peripheral window). **No CI gate** -- see below |
+| `esp32` | esp32-wroom | Xtensa LX6 | -- | **hardware** (selftest + console, 240 MHz). No per-task MPU and no privilege split |
+| `esp32c6` | esp32c6-wroom | RV32IMAC | PMP | **hardware** (selftest + buffered ring console; first real peripheral IRQ; enforcement + peripheral isolation). Peripheral access also needs a one-time APM/PMS open |
+| `sam3x8e` | due | M3 | -- | port proven on silicon (2026-07-09); test unit retired (peripheral-I/O fault) |
 
 Build-only chips are verified by construction (register review + image
 inspection); flash to a board to confirm. `apps/blink` is a no-UART LED smoke
 test available on every board with a known LED.
+
+**What CI does and does not re-check.** Not every row above is defended by a green CI run, and a
+porter needs to know which. Enforcement is gated at RUNTIME only on the sim (`mprotect`) and
+`virt` (PMP); on ARM it is a **build** gate, because QEMU models no enforcement-capable KickOS ARM
+chip and the one runnable armv7m target (`mps2`) ships no enforcement block. That build gate is
+still worth having -- it is the only job that compiles the enforcement-only link surface,
+including `arch_reserved_blocks`, which has **no weak default on purpose**, so an enforcing port
+that forgets to declare its reserved set fails to LINK rather than leaving a silent open hole --
+but it proves nothing about trapping. Xtensa is build-only (no upstream ESP32 machine model), and
+**Renesas RX has no CI gate at all**: RX72M needs `-misa=v3`/`-mdfpu`, which exist only in the
+registration-gated Renesas GNURX build. So a change to the arch seam is unverified for RX until
+you build it yourself. Per-ISA detail: `boards.md` ("CI coverage & cross toolchains").
+
+### Cross toolchains (before you configure anything)
+
+A cross build resolves its compiler through a per-family hint variable, seeded from the
+environment, overridable with `-D`, falling back to `PATH` when empty:
+`KICKOS_ARM_TOOLCHAIN_BIN`, `KICKOS_RISCV_TOOLCHAIN_BIN`, `KICKOS_RX_TOOLCHAIN_BIN`,
+`KICKOS_XTENSA_BIN`. No toolchain file carries a default compiler path, so **keep local pins in
+`.session/env.sh` (gitignored) and `source` it first**; CI sets the same variables and puts the
+pinned tarball's bin on `PATH`. Both routes matter: CMake's `try_compile` re-reads the toolchain
+file with a fresh cache, so it inherits the environment and `PATH` but never a `-D` cache entry --
+which is why each toolchain file re-exports the resolved value into the environment.
+
+**The hint is convenience; the capability check is the safety net.** `find_program` HINTS fall
+through to `PATH` when the hinted directory is absent, so a fresh clone on another host can
+silently resolve a distro cross-gcc -- and Debian's `arm-none-eabi-g++` is C-only picolibc with no
+`libstdc++`/`libsupc++` for any multilib, which used to surface ~40 build steps later as
+`fatal error: exception: No such file or directory`. The ARM and RISC-V toolchain files therefore
+probe the compiler they actually resolved (`cmake/toolchain-cxx-runtime-check.cmake`) and refuse
+it at configure time, naming the compiler, the multilib, what was missing, the override variable
+and the official tarball URL. The probes carry the board's own `-mcpu`/`-march`, because a
+toolchain can ship `libstdc++` for one multilib and not another and the default multilib would
+hide that; picolibc is tested *positively* (via `__PICOLIBC__`) because Debian's build also
+defines `__NEWLIB__`, so inferring it from newlib's absence would pass it. **A new ARM or RISC-V
+port inherits this for free.** RX and Xtensa deliberately skip it -- neither has a same-name
+C-only twin on `PATH` to fall through to, so `find_program(... REQUIRED)` is already loud enough.
 
 ### Pin-function config (`arch_pinmux_set`)
 
@@ -426,8 +466,15 @@ privileged and an unprivileged thread** -> SysTick one-shot driving `sleep` ->
 semaphore block/wake reschedule, all on a real Cortex-M4 core. The #1 M1 risk is
 retired.
 
-Since then the chip layer has been brought up on real hardware: `mk64f` (M1
-baseline + M2 SYSMPU + the first unprivileged MMIO drivers) and **`rp2040` --
-running on a real Raspberry Pi Pico** (see the RP2040 section).
-Remaining M1 chips (F411/F103) reuse the `mps2`/`mk64f`/`rp2040` patterns. Hardware
-MPU enforcement is M2.
+Since then the chip layer has been brought up on real hardware across the fleet -- `mk64f` (M1
+baseline + SYSMPU enforcement + the first unprivileged MMIO drivers), **`rp2040` running on a
+real Raspberry Pi Pico** (see the RP2040 section), and the rest of the table above. The
+STM32 chips reuse the `mps2`/`mk64f`/`rp2040` patterns.
+
+Hardware MPU enforcement is **done** (M2): the cross-domain trap is silicon-proven on SYSMPU,
+PMSAv6-M/v7/v8, RISC-V PMP and the RX MPU. For a new port that means enforcement is part of the
+seam you implement, not a later milestone -- `arch_mpu_apply` (stash at the switch decision),
+`kickos_arch_mpu_commit` (program from the switch epilogue, after the physical swap),
+`arch_mpu_region_encodable`, and `arch_reserved_blocks`, which has no weak default so omitting it
+is a link error. See `architecture.md` (Memory domains) and `invariants.md`
+(`mpu-apply-on-every-switch-in`, `grant-refuses-kernel-reserved-blocks`).

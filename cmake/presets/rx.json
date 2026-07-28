@@ -3,7 +3,7 @@
   "configurePresets": [
     {
       "name": "rx72m",
-      "displayName": "Renesas RX72M (RXv3) - build-only, HW validation deferred",
+      "displayName": "Renesas RX72M (RXv3)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rx72m",
       "toolchainFile": "${sourceDir}/cmake/toolchain-rx-elf.cmake",
@@ -15,7 +15,7 @@
     },
     {
       "name": "rx72m-st",
-      "displayName": "Renesas RX72M (RXv3) + selftest (full IRQ suite) - HW-validated 14/14",
+      "displayName": "Renesas RX72M (RXv3) + selftest (full IRQ suite)",
       "inherits": "rx72m",
       "binaryDir": "${sourceDir}/build/rx72m-st",
       "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" }

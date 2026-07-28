@@ -19,7 +19,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
-#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
+#include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
@@ -248,6 +248,13 @@ namespace
     volatile uint32_t g_clk_high = 0;
     volatile uint32_t g_clk_last = 0;
 
+    // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Its SOLE
+    // writer is the init() in arch_init -- this chip does not retune at runtime
+    // (arch_cpu_clock_set is the weak default returning 0), so there is no re-anchor.
+    // A fixed-set retune added later must call reprice() at the rate edge; the read
+    // must stay pure.
+    kickos::arch_clk_anchor g_clk;
+
     void timer_clock_init()
     {
         // Boot-order: nothing before arch_init may read the clock. A static ctor
@@ -365,32 +372,20 @@ void arch_init(void)
     // Clock first (HSE/PLL -> 72 MHz), then the console derives its BRR from PCLK2.
     clock_init();
     timer_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
+    // Anchor the clock ONCE, from the FINAL rate: the chained counter's LSB increments
+    // at TIM2's kernel clock and, with HPRE=/1 and PPRE1 in {/1,/2}, the STM32 APB
+    // timer-clock doubler makes that equal HCLK == SystemCoreClock.
+    g_clk.init(SystemCoreClock);
     usart1_init();
     kickos_armv7m_init();
 }
 
-// Monotonic clock override: free-running TIM2->TIM3 chain ticks -> ns, replacing
-// the weak DWT-backed arch_clock_now (unreliable on this silicon). The chained
-// counter's LSB increments at TIM2's kernel clock; with HPRE=/1 and PPRE1 in
-// {/1,/2} the STM32 APB timer-clock doubler makes that equal HCLK ==
-// SystemCoreClock across the PLL and the HSI-fallback states. ns = ticks*1e9/hz
-// via a cached reciprocal multiply (the one 64-bit divide runs only at a change).
+// Monotonic clock override: free-running TIM2->TIM3 chain ticks -> ns, replacing the
+// weak DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the
+// anchor holds the rate, so no divide and no rate derivation happens here.
 uint64_t arch_clock_now(void)
 {
-    uint32_t tim_hz = SystemCoreClock;
-    static uint64_t cached_hz = 0;
-    static uint64_t mult = 0;
-    if (tim_hz != cached_hz)
-    {
-        if (tim_hz == 0)
-        {
-            return 0;
-        }
-        mult = kickos::arch_clk_recip_q32(tim_hz);
-        cached_hz = tim_hz;
-    }
-    uint64_t ticks = timer_ticks();
-    return kickos::arch_clk_mul_q32(ticks, mult);
+    return g_clk.ns_from(timer_ticks());
 }
 
 // TIM3 (high-half) overflow ISR, vectored at NVIC 29 in startup.S. Observes the

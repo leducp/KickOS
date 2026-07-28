@@ -14,6 +14,214 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is `M1_state.md`; the
 board/console readiness matrix is `docs/m2-readiness.md`.
 
+## M4.5.1 -- kernel audit follow-ups (2026-07-26)
+
+Findings from a code audit of the kernel, all rated **Medium or below** -- none is a live
+escalation or a fleet blocker. They are bound-the-unbounded / be-honest-about-the-error
+hardening, roughly ordered by exposure.
+
+- [ ] **Bound the semaphore `count`** (`kernel/sync/sync.cc:114`). `count` is a signed `int`
+      incremented on every post, with no ceiling, and post is reachable from unprivileged code
+      -- enough posts overflow it, which is UB. Cap it at a documented maximum (saturate or
+      refuse) rather than trusting the caller.
+- [ ] **Read `console_chip_writers()` under `IrqLock`** (`kernel/init/console.cc:93-96`; consumer
+      `kernel/syscall/syscall.cc:307`). Writers mutate the count under the lock, but the handover
+      drain reads it unlocked -- so the drain can see a stale count, declare the console
+      quiescent, and hand over while a writer is still in flight.
+- [ ] **Split `domain_for`'s refusal** (`kernel/syscall/syscall_thread.cc:253-264`). A policy
+      rejection (Rule 7 reserved-block hit, out-of-arena data, malformed region) and genuine
+      domain-pool exhaustion both collapse into `-KOS_ENOMEM`, so a caller cannot tell "your
+      grant is inadmissible" from "the kernel is full". Give the policy arm its own errno.
+- [ ] **Debug asserts on the intrusive list** (`kernel/include/kickos/list.h:39-74`). Nothing
+      catches inserting a node twice or unlinking one that is not on the list; both corrupt the
+      list silently and surface far from the cause. `KICKOS_DEBUG`-gated guards, zero release cost.
+- [ ] **Bound the spin in `wq_confirm_resume`** (`kernel/sync/sync.cc:54-59`). It spins on
+      `switch_count` with no iteration cap -- the one poll in the tree that hangs instead of
+      failing loud. Every other poll caps at `KICKOS_POLL_SPIN_MAX` and panics; make this match.
+- [ ] **Implement `__malloc_lock`/`__malloc_unlock`** (`user/src/newlib_stubs.cc:196-201`). They
+      are weak no-op stubs, so two threads allocating concurrently corrupt the newlib arena with
+      no diagnostic at all. An IrqLock-equivalent is the minimum; the real answer is the
+      per-thread libc state / TLS item under "Later -- not M1".
+- [ ] **Guard the `uint16_t` domain refcount** (`kernel/domain/domain.cc:193-200`). `domain_ref`
+      increments with no ceiling check. Immortal domains are already skipped (deliberately), but
+      a mortal domain referenced 65536 times wraps to 0 and the next drop frees a live domain.
+
+## M4.5.1 -- found during the CI / out-of-tree hardening work (2026-07-26)
+
+- [ ] **Split `_sbrk` into its own TU.** It currently shares a TU with `_exit`/`_write`, and
+      `-Wl,-u,_exit` (`CMakeLists.txt:521`) force-links that object into every image -- so the
+      strong reference to `_kickos_heap_start` lands in every link and the documented link-time
+      fail-loud never fires. An allocating app on a heapless board therefore fails at *runtime*
+      with a NULL from `malloc` instead of failing at link. Give `_sbrk` its own TU so the
+      undefined symbol is pulled only by a real allocator user.
+- [ ] **Override `arch_mpu_min_region()` to 0 in `chip_stm32f103.cc`.** STM32F1 has no MPU, but
+      the chip inherits the v7-M pow2 minimum and pays its alignment tax anyway -- which is what
+      took `bluepill-c8`'s free arena to zero. A 0 override drops the tax on a part that has
+      nothing to enforce.
+- [ ] **Re-point `kernel_ctor_placement` at the `cxxtest` ELF.** The gate passes fleet-wide, but
+      vacuously: every app it inspects links an empty `.kickos_app_init_array` window, so the
+      script takes its early-out without ever dereferencing a pointer. `cxxtest` is the one image
+      with real app ctors -- point the gate at it so it actually asserts something.
+- [ ] **Console bytes lost on shutdown.** On a service-list board, root returning while the
+      userspace driver still holds queued bytes loses them: `console_tx_flush_sync()` is a no-op
+      (the ring was disarmed by `console_tx_deinit`) and `arch_shutdown` then spins forever.
+      Shutdown has to drain through the owning driver, not the retired kernel ring.
+- [ ] **Reclaim `arch_ram_alloc`'s alignment run-up** (M5 allocator work). The bytes skipped
+      ahead of each allocation to satisfy its alignment are dropped on the floor -- which is why
+      boot-stack allocation *order* is load-bearing today (idle must be allocated before root).
+      Folding the run-up back into the free space removes that ordering constraint. Subsumed by
+      the general freeing allocator under "Later -- not M1".
+
+## M4.5.1 -- CI hygiene (2026-07-26)
+
+- [ ] **Reduce `--repeat until-pass:4` to 2 on the four QEMU gates** -- or better, fix the timing
+      root cause that made 4 look necessary. Four attempts hides a gate that fails most runs.
+- [ ] **Tighten the sim `mpu_fault` failure regex** to match what `tests/check_qemu_mpu_fault.sh`
+      already asserts; the sim side accepts more than it should, so it can pass on the wrong fault.
+- [ ] **Pin a clang-format version, reformat, add a gate.** 142 of 285 tracked C++ files diverge
+      from the checked-in `.clang-format`, so the config is decorative. Pin the version first
+      (output moves between releases), reformat in one commit, then gate -- in that order.
+- [ ] **Add a licence-header gate** now, while SPDX coverage is 100%: cheap to hold from here,
+      expensive to re-establish once it slips.
+- [ ] **Pin GitHub Actions to commit SHAs**, not moving tags -- a tag is a supply-chain seam
+      controlled by someone else.
+- [ ] **Wire the telemetry runtime gates into CI.** The `sim-telem` / `qemu-telem` presets exist
+      and work, but no job runs them, so telemetry can rot without anything going red.
+- [ ] **Move `.claude/` from `.git/info/exclude` into `.gitignore`** -- `.git/info/exclude` is
+      per-clone, so every other clone sees the directory as untracked noise.
+
+## Designed, not built -- `kos_reboot` (reboot-to-bootloader)
+
+Fully designed, deliberately not implemented yet. Recorded at this fidelity so it can be *built*
+as specified rather than redesigned:
+- Syscall **36**, behind an `arch_reboot` seam with a **weak `-KOS_ENOSYS` default** -- a chip
+  that cannot do it declines honestly instead of pretending.
+- `CAP_REBOOT` resolved via `cap_lookup`, **not** `cap_resolve_e`: the latter cannot resolve a
+  cap with no backing pool object. Seated at `KOS_CAP_RESERVED3` with `rights = 0`, which makes
+  it non-delegable -- and, with `CAP_AUTHORITY` at `KOS_CAP_SERVICE` (section below), that
+  **exhausts the reserved index range**. Share the poolless-cap check via that section's
+  `cap_check_authority` rather than duplicating it here.
+- Compiled out entirely unless `KICKOS_ENABLE_SELFTEST`.
+- **RP2040:** bootrom `UB` -> `reset_usb_boot`.
+- **RP2350:** bootrom `RB` -> `reboot`, with
+  `REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL | NO_RETURN_ON_SUCCESS`. The bootrom lookup offset is
+  **silicon-revision dependent** -- read `*(uint8_t*)0x13` and branch on it; do NOT hardcode.
+- **imxrt1062:** declines with `ENOSYS`, so Teensy keeps its physical button press.
+
+## Unprivileged ctors and `main` -- start unprivileged, holding capabilities (2026-07-27)
+
+A design investigation superseded stages 2-8 of the old plan: root should **start unprivileged
+holding capabilities** rather than start privileged and demote, so there is no demotion to build.
+`thread_regions_recompose`, `KOS_SYS_DROP_PRIV`, its per-arch backends and Xtensa-last are
+**deleted, not deferred** -- the region set is composed once in `thread_create`
+(`kernel/thread/thread.cc:94-134`) from a privilege that never changes, and the rest existed only
+to manage a transition this design does not have. The reason, recorded once: **every ISA already
+encodes thread privilege in the fabricated first frame and restores it on the first switch-in** --
+armv7m `ctx.npriv` (`arch/arm/armv7m/arch_armv7m.cc:111-119`), armv6m (`arch_armv6m.cc:102-108`),
+rv32imac `MSTATUS_MPP` (`arch_rv32imac.cc:143-158`), rxv3 `PSW_THREAD_USER`
+(`arch_rxv3.cc:279-289`), xtensa has no ring split (`arch_xtensa.cc:271-273`), sim is mprotect
+posture (`sim.cc:758-761`). Starting root unprivileged therefore needs **zero new assembly on any
+port**, and Xtensa comes along free rather than last. `drop_priv` survives only as a **contingent,
+much smaller** item: it is the only mechanism giving "privileged bring-up then self-confinement for
+life", which is what the blocked bring-up bodies below want -- in scope only if the
+`arch_periph_enable` seam (stage 3) proves insufficient.
+
+The old stage 1 (arena-allocated boot stacks) LANDED on the M4.5.1 branch -- see
+`m4.5.1: take the root and idle stacks from the arena, not .bss`. The new stages, in dependency
+order:
+
+**Stage 0 -- independent prerequisites, no behaviour change.** All three are real bugs today.
+- [ ] **Move the argv handoff out of kernel-stack storage.** `root_entry` reads `argc`/`argv` from
+      `AppArgs`, a `kmain` stack local (`kernel/init/kmain.cc:203-204,218`) living on the boot stack
+      *outside* the arena -- so an unprivileged root faults on its first statement after the ctor
+      walk, on every enforcing board, and **the sim cannot reproduce it** (`kmain`'s frame is host
+      stack). Put the two-word struct in `kickos_system`, which the linker selector already places
+      app-side.
+- [ ] **Add `KOS_SYS_SHUTDOWN(status)`** = `console_tx_flush_sync(); arch_shutdown(status)`,
+      replacing the direct calls at `kmain.cc:208-209`. Preserves the init-return-is-shutdown
+      invariant, and is the natural home for the "console bytes lost on shutdown" item above.
+- [ ] **Add a `KICKOS_HAVE_MPU=0` writable arm to `user_writable_ok`**
+      (`kernel/syscall/syscall_mem.cc:84-93`). It has no fallback where `user_readable_ok` has
+      `arch_user_text_readable`, and stm32f103, stm32f302, nrf51, sam3x8e and esp32 define neither
+      `__kickos_code_start` nor `__kickos_appdata_start` -- so an unprivileged thread's writable set
+      there is its own stack and nothing else, and any syscall out-pointer in a global returns
+      `-EFAULT`. Latent today; the flip makes it a boot failure.
+
+**Stage 1 -- the authority capability, root still privileged.**
+- [ ] **Add `CapType::CAP_AUTHORITY`**, seated at `KOS_CAP_SERVICE` (index 2, already reserved) and
+      carrying the **five unused bits of `CapEntry.rights`** (a `uint8_t` with only
+      WAIT/SIGNAL/TRANSFER used, `kernel/include/kickos/cap.h:58-63`): `AUTH_MEMORY` (ram_alloc +
+      MMIO grant), `AUTH_PINMUX`, `AUTH_CLOCK`, `AUTH_IRQ`, `AUTH_DEVICE` (console publish,
+      shutdown, periph enable). Costs **zero dynamic slots on every board**, including the four
+      9-handle ones. Needs no-op arms in `obj_ref_inc`/`obj_ref_drop` (both `default:` assert),
+      resolution via `cap_lookup` **not** `cap_resolve_e` (the latter cannot resolve a poolless
+      cap), and one `cap_check_authority()` helper rather than open-coding at nine sites.
+- [ ] **Convert all eight gates to `privileged OR cap_check_authority(...)`**, so nothing changes
+      behaviourally and every site is exercised before the flip.
+
+**Stage 2 -- flip per board**, behind a build-enforced `KICKOS_ROOT_PRIVILEGED` knob (default ON,
+**NOT a weak symbol**: opting out of the boundary must be visible in the board's build, not
+silently satisfied by a link-time override).
+- [ ] **Flip in this order:** `xmc4800-relax` with a console-only service list first (its `xmcuart`
+      bring-up is pure syscall), then f411disco, frdmk64f, pizero2350, esp32c6-wroom, rx72m.
+- [ ] **Per-board gate:** selftest green under enforcement **plus** a clean cross-domain
+      `mpu_fault` proving root is confined. **The sim is the weakest witness, not the strongest** --
+      the first real witness must be an enforcing ARM board.
+
+**Stage 3 -- the blocked bring-up bodies.**
+- [ ] **Add `arch_periph_enable(base)`**, weak `-KOS_ENOSYS`, gated `AUTH_DEVICE`, covering "ungate
+      the clock and drop supervisor-protect for the block at this base". Implement for K64F
+      (`SIM_SCGC*` + `AIPS0_PACRN`) and ESP32-C6 (the APM/PMS one-time open recorded under Driver
+      era below). Retires `k64uart` and half of `k64dspi`.
+
+**Stage 4 -- the app story.**
+- [ ] **Add `kos_cap_narrow(cap, mask)`** (rights &= mask, never widen, ~10 lines) and drop or
+      narrow the authority cap in `kickos_default_init_run` (`system/init/default_init_entry.cc`)
+      before `kickos_app_main`. **This is the actual app-facing win** -- without it an unprivileged
+      `main` can still ask the kernel to do all eight things.
+- [ ] **Declare `selftest` and `stress` privileged-root**, since they spawn privileged children
+      (`user/apps/common/selftest/main.cc:400,403`, `user/apps/common/stress/main.cc:222,224,286`).
+
+Carried over from the old plan, untouched by this design:
+- [ ] **Move app bring-up into the service lists**, so an app is started the way a driver is.
+
+Blockers and limits:
+- **Three service bring-up bodies poke MMIO directly from root** --
+  `system/driver/mk64f/k64uart/k64uart.cc:191-193` (AIPS PACR),
+  `system/driver/mk64f/k64dspi/k64dspi.cc:298-327` (clock gates, pin mux, GPIO, DSPI config),
+  `system/driver/xmc4800/xmcssc/xmcssc.cc:281-324` (USIC kernel clock, baud, protocol) --
+  and `xmc4800-relax`, the enforcement flagship, links one. Stage 3 generalizes part of this; the
+  XMC's PV-write-**only** registers are privileged by hardware design and will not generalize, so
+  **for those boards the design does not work** without a chip bring-up seam or keeping privileged
+  root.
+- **`bluepill-c8` and `f302nucleo` will likely never flip** -- both carve barely 3 KiB of arena for
+  the two boot stacks, and both are 9-handle boards.
+- **`Thread::privileged` survives**, with narrowed meaning: it selects the memory posture (kernel
+  domain + permissive background), it is the confused-deputy bypass at `syscall_mem.cc:37`, and it
+  stays the home for "may spawn a privileged child" -- which should NOT be a capability, since
+  holding it is equivalent to holding everything forever. Consequence: on a root-unprivileged
+  board, **no privileged thread can come into existence after boot**.
+- **`idle` stays privileged and holds no capabilities** -- it runs no app code, and RXv3 `WAIT` is a
+  privileged instruction while RISC-V U-mode `WFI` is optional per spec.
+- **The reserved cap index range is full after this** (0 stdout, 1 clock, 2 authority, 3 promised to
+  `CAP_REBOOT`), and the five rights bits are the entire budget for the life of the type.
+- **Delegation packing collides with reserved names** -- spawn delegation puts cap *i* at child
+  index *i+1*, so a delegated authority cap lands at index 1 (`KOS_CAP_CLOCK`). Blocks the narrowed
+  hand-off to a driver manager until the deferred explicit-destination-index work lands.
+- **Cap-gen is a `uint16_t`** with no object generation behind a poolless cap, so 65536
+  close/re-seat cycles wrap it. Unreachable in-tree; same unbounded-counter class as the
+  domain-refcount item above.
+
+## Needs hardware (bench time, not code)
+
+- [ ] **v6-M MPU programming has zero coverage anywhere.** QEMU models no Cortex-M0+ and no
+      Cortex-M23 core, so neither the emulator gates nor the silicon fleet ever exercises the
+      armv6m MPU backend. Closing it needs an **RP2040 on the bench** -- there is no software
+      substitute for it.
+- [x] **M7 speculation class** -- already covered by validated Teensy silicon (the imxrt
+      MPU-enforce hang record, `docs/design-teensy-mpu-hang.md`); recorded here so the gap list
+      stays honest about what *is* already covered.
+
 ## M3 -- landed so far (2026-07-20)
 - [x] `sys_cpu_clock_hz()` read syscall; [x] per-task capability handle table (sem ABI) +
       authenticated-grant delegation; [x] priority-inheritance mutex (CAP_MUTEX). All on master,
@@ -36,7 +244,7 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
 - [x] **Console device handover** -- `ConsoleState{KERNEL_OWNED,USER_OWNED,RECLAIMED}` drop-routing,
       `console_tx_deinit` (USER_OWNED set last) + the B1 in-flight-writer drain, `kos_console_publish`
       (#29, privileged), stdout cap seated at index 0, `_write` probes `kos_send(0)` then falls back.
-      Userspace polled XMC UART driver (`user/driver/xmcuart` + `consoledemo`). SILICON PASS on XMC:
+      Userspace polled XMC UART driver (`system/driver/xmc4800/xmcuart` + `consoledemo`). SILICON PASS on XMC:
       end-to-end app printf -> IPC -> userspace driver -> wire, under enforcement.
 - [x] **Panic-path console reclaim** -- `arch_console_reclaim` per chip (XMC full in-window rewrite,
       KSCFG.MODEN-first; K64F uart0 + zero MODEM/C3/S2/IR/C7816), `kickos_isr_fault`->`kpanic_enter`
@@ -52,14 +260,22 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
 Silicon target for the handover: the CPU-side-MPU boards (XMC/RX/C6) where per-thread peripheral
 isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
 
-- [ ] **Teensy 4.1 (i.MX RT1062, M7) MPU-enforce hang -- SILICON-PENDING, fable-gated** -- the
-      `teensy41-st -DKICKOS_HAVE_MPU=1` build hangs deterministically at test 6 `rr_interleave`:
-      the switch INTO the first KOS_POLICY_RR worker never delivers control (no `# rrw enter`).
-      No-MPU Teensy is 41/41 and MPU preempt (test 3) passes, so it is {enforce}x{RR}x{M7} only.
-      NOT an M3 merge blocker -- enforcement is silicon-proven on 4 backends incl. an armv7m
-      PMSAv7 (XMC). Full diagnosis + ruled-out list + live hypotheses in
-      `docs/design-teensy-mpu-hang.md`. Next: bench CFSR/SHCSR/MMFAR + PendSV re-entry dump on
-      the first RR slice; fable review before any core change.
+- [x] **Teensy 4.1 (i.MX RT1062, M7) MPU-enforce hang -- ROOT-CAUSED AND FIXED @c072712.** The
+      deterministic `teensy41-st -DKICKOS_HAVE_MPU=1` hang at test 6 `rr_interleave` was never a
+      switch bug. A dropped (non-pow2) whole-arena grant left the worker on the PRIVDEFENA
+      background, which types the entire 1 GiB FlexSPI/SEMC aperture as Normal; the M7 -- the one
+      core in the fleet that speculates -- prefetched past the populated 8 MiB into an AHB slave
+      that never responds, and an in-order core cannot retire behind an access that never
+      completes, so it stalled forever with NO fault to report (NXP ERR011573 / Arm 1013783-B).
+      Fixed by a new shared seam, `kickos_arm_mpu_fixed` in `arch/arm/common/`: a chip declares
+      thread-invariant regions that are programmed once into the LOW descriptor slots (so
+      per-thread grants still override them), and imxrt wraps the unbacked apertures as
+      Device + XN + no-access *before* the I-cache is enabled -- ordering is load-bearing,
+      because the cache is what arms the speculation. Enforcement selftest went from a hang to a
+      full pass with a clean soak; the durable teaching is Book ch.7.6. Full record:
+      `docs/design-teensy-mpu-hang.md` (LANDED). Its residuals are tracked separately: D-cache
+      default-on is done (below), "Option B" is the fleet-wide post-M6 item, and the
+      reprogram-window / HFNMIENA bypasses are accepted in the design record.
 
 Book + exploratory (M3-adjacent, not milestone-gating):
 - [ ] **Book chapter: the syscall mechanism** (dedicated subagent) -- the user<->kernel boundary
@@ -263,7 +479,7 @@ below where they were previously mislabeled.
         silicon -- the fleet's one honest peripheral-isolation gap. `docs/design-spi-driver-stm32f411.md`.
   - [x] **K64F/DSPI driver (k64dspi, DSPI0 for the KickCAT ESC SPI PDI)** -- DONE on silicon:
         the polled-FIFO transport (~10 MHz) reached OPERATIONAL against a real LAN9252. Exported
-        as the `kickos_k64dspi` lib (`<kickos/driver/k64dspi.h>`, source `user/driver/k64dspi`)
+        as the `kickos_k64dspi` lib (`<kickos/driver/k64dspi.h>`, source `system/driver/mk64f/k64dspi`)
         so an out-of-tree consumer links it. Within the K64F coarse-peripheral ceiling (window
         grant is documentation, not enforcement); microkernel invariant kept (driver in userspace).
   - [x] **C6 PMP SRAM enforcement DONE on silicon** (18/18 selftest under enforcement +
@@ -321,7 +537,9 @@ below where they were previously mislabeled.
   single-size-class intrusive free list in `ThreadPool` (thread.h) -- the special case that needs
   no size metadata (one class == `KICKOS_USER_STACK_SIZE`, link stored in the dead block). A
   GENERAL multi-size-class freeing allocator for `arch_ram_alloc`/`kos_ram_alloc` at large is M5;
-  it would subsume this free list. Until then, only default stacks are reclaimable.
+  it would subsume this free list. Until then, only default stacks are reclaimable. M5 should also
+  reclaim the per-allocation ALIGNMENT RUN-UP, which is dropped on the floor today -- see the
+  M4.5.1 item above (it is why boot-stack allocation order is load-bearing).
 - **[anytime coherence -- NOT M2] user-pointer validation at the syscall boundary.** M2 is MPU
   *enforcement*; validating a user pointer is arch-neutral kernel logic that matters MORE at M1
   (no MPU to contain an OOB access -- see the `user-args-validated-at-boundary` invariant).
@@ -378,7 +596,8 @@ below where they were previously mislabeled.
 - **[M4.x] Per-thread libc state via real TLS (local-exec).** No per-thread userspace storage
   exists today (newlib `--disable-threads`, threads share one flat image, only the kernel TCB is
   per-thread) -- so `errno` is a shared global, libc `malloc` is not thread-safe (`__malloc_lock`
-  no-op), and `thread_local`/`__thread` silently break. "Fully usable" needs these, so real TLS is
+  is a no-op stub; tracked as its own item in the M4.5.1 kernel-audit section above), and
+  `thread_local`/`__thread` silently break. "Fully usable" needs these, so real TLS is
   the compliant mechanism (not a newlib `_REENT`-swap hack, which would still leave `thread_local`
   broken): a per-thread TLS block in the thread's data grant + a per-arch thread pointer set on the
   context switch (ARM `TPIDRURW`, RISC-V `tp`, Xtensa `THREADPTR`; RX has no TLS register -> sw-tp
@@ -446,7 +665,7 @@ below where they were previously mislabeled.
 
 ## Pre-M4 perf: caches / flash accelerators (fleet audit 2026-07-22)
 
-Per-chip audit (each vs its RM in `/home/leduc/sync/obsidian/docs/`): does the HW have a
+Per-chip audit (each vs its RM; see `CONTEXT.local.md` for the local RM set): does the HW have a
 software-controllable cache/accelerator, and do we use it? Binary, not "fast enough".
 
 - [x] **RX72M: enable the 8 KB ROM cache** (pre-M4) -- DONE (5ab2575). `rom_cache_enable()` in

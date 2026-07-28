@@ -86,10 +86,11 @@ a driver framework on top. Single-core throughout. Full gap list + sequencing in
   have NO usable debug probe, so bring-up there is print-debug only. The services must therefore
   be console-observable, or two of the four matrix boards cannot be brought up at all.
 - **Fleet userspace UART / console drivers + per-chip `arch_console_reclaim` + handover
-  validation** -- `user/driver/xmcuart` is the only console driver today; every other board is
-  still kernel-owned, and only XMC + K64F ship a reclaim body (the fault-funnel porting invariant:
-  no real reclaim => a driver-garbled UART silently eats the panic banner). One driver per chip
-  family, silicon-available first; isolation is real only where the MPU gates peripherals.
+  validation** -- two console drivers exist, `system/driver/xmc4800/xmcuart` and
+  `system/driver/mk64f/k64uart`; every other board is still kernel-owned, and those same two chips
+  are the only ones shipping a reclaim body (the fault-funnel porting invariant: no real reclaim
+  => a driver-garbled UART silently eats the panic banner). One driver per chip family,
+  silicon-available first; isolation is real only where the MPU gates peripherals.
 - **Clock-select fleet-wide** -- extend `arch_cpu_clock_set` per opt-in chip, or keep the weak
   default explicitly.
 - **The enabling services** -- **init** (separate init from the app; spawn drivers-with-caps in

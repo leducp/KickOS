@@ -211,8 +211,8 @@ namespace kickos::xmc::reg::usic
         uint8_t dctq;  // BRG.DCTQ; tq per bit = dctq+1
     };
 
-    // 115200 baud at the labelled fPERIPH. The 48/24 MHz points are formula-derived
-    // and silicon-pending (validated on the Relax Kit in the separate silicon pass).
+    // 115200 baud at the labelled fPERIPH. The 48/24 MHz points are formula-derived,
+    // not measured on a scope.
     constexpr Baud BAUD_115200_60MHZ = { 755u, 23u, 0u, 15u }; // +0.0033%
     constexpr Baud BAUD_115200_72MHZ = { 367u, 13u, 0u, 15u }; // -0.0004%
     constexpr Baud BAUD_115200_48MHZ = { 354u, 8u, 0u, 15u };  // +0.03%

@@ -70,6 +70,17 @@ elseif(KICKOS_CHIP STREQUAL "xmc4800")
   kickos_add_board_provider(services_xmc4800relax SOURCE init/service_list_xmc4800relax.cc
     LINK kickos_xmcuart kickos_xmcssc)
 endif()
+# The sim's publishing posture, so the console-handover route the silicon boards ship
+# is reachable in CI (see init/service_list_sim.cc). Its "driver" is a host write(2),
+# hence sim-only. NOT the sim default -- selected explicitly with
+# -DKICKOS_SERVICE_LIST=kickos_services_sim, so the ordinary sim gate keeps covering
+# the pre-publish route. Unlike the pure-data providers above it calls kos_* + the
+# shared driver bring-up tail, so it needs user/include.
+if(KICKOS_ARCH STREQUAL "sim")
+  kickos_add_board_provider(services_sim SOURCE init/service_list_sim.cc)
+  target_include_directories(kickos_services_sim PRIVATE
+    "${PROJECT_SOURCE_DIR}/user/include")
+endif()
 
 # The header home + the init framework lib are not board providers, so they keep an
 # explicit install here (kickos_system is INTERFACE: no archive, exported for headers).

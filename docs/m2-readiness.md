@@ -1,11 +1,19 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
-# KickOS pre-M2 readiness -- task list
+# KickOS enforcement ledger (opened as the pre-M2 readiness list)
 
-> The remaining work to put a **solid, cross-board-verified foundation** under M2
-> (MPU enforcement -- the design lives in `reference/architecture.md` / `reference/invariants.md`). M2
-> wires `arch_mpu_apply` into the context-switch hook and adds per-task memory
-> protection; it stacks directly on the scheduler / IRQ / timer paths, so those
-> must be trustworthy on real silicon first. Ordered by priority.
+> **What this file is now.** It opened as the pre-M2 readiness list -- the work needed to put a
+> **solid, cross-board-verified foundation** under M2 (MPU enforcement; the design lives in
+> `reference/architecture.md` / `reference/invariants.md`), since M2 wires `arch_mpu_apply` into
+> the context-switch hook and stacks directly on the scheduler / IRQ / timer paths, which had to
+> be trustworthy on real silicon first. That list is done, and the file kept growing with the
+> evidence rather than being closed: it now also carries the **per-chip MPU fan-out** and the
+> silicon proofs for **M2**, **M3** and the **M4.4** driver work. Read it as the answer to
+> "which chip is proven to enforce, and by what evidence" -- the title is historical, the content
+> is current. Sections 1-7 are the original readiness items, ordered by priority; everything from
+> *Then: M2 proper* onward is the enforcement record.
+>
+> Companion docs: `reference/boards.md` for per-board wiring and what CI re-checks per ISA,
+> `../M1_state.md` for the M1 per-app fleet pass, `../TODO.md` for the live task list.
 
 ## 1. Thread-slot reclamation (FIRST PRIORITY) -- [x] DONE
 
@@ -190,8 +198,9 @@ Goal: full selftest (17/17) under enforcement on every MPU-capable chip -- an
 M2 sync-point mirroring the M1 on-silicon validation pass.
 
 **M2 (MPU/memory-protection ENFORCEMENT) is COMPLETE.** The cross-domain fault trap is
-silicon-proven on all five MPU backends -- SYSMPU (K64F), PMSAv7 (XMC4800), PMSAv6/v6-M
-(rp2040), RISC-V PMP (esp32c6 + qemu-virt), RX-MPU (rx72m): an unprivileged cross-domain
+silicon-proven on every MPU flavour KickOS drives -- SYSMPU (K64F), PMSAv7 (XMC4800, and
+imxrt1062 on the M7), PMSAv6/v6-M (rp2040), PMSAv8 (rp2350), RISC-V PMP (esp32c6 +
+qemu-virt), RX-MPU (rx72m): an unprivileged cross-domain
 store faults and does NOT complete on real silicon. The security model (domains, per-thread
 grants, confused-deputy floor) is coherent and fail-closed, and full-C++ under enforcement is
 U-mode-proven on four silicon arches (K64F, XMC, rx72m, esp32c6) + qemu-riscv. Remaining items
@@ -215,6 +224,8 @@ shared app-data region: it grants per-thread (the stack now, TLS at M3).
 | RX72M | RX MPU (UM sec.17) | **DONE -- silicon 20/20** (enforcement selftest, 2026-07-17) **+ mpu_fault cross-domain trap** (a user write to another domain raises the access exception, vector 0x54, decoded via MPESTS/MPDEA -> "MPU FAULT: task 'domainA'"). The RX MPU backend (MPBAC=0 user background + 8 RSPAGEn/REPAGEn regions; RX checks user mode only, so no supervisor-field hazard) reprograms live on every preemptive switch, glitch-free (UAC R/W/X order, inclusive REPAGE end, supervisor-never-checked, MPEN-latch-on-RTE all confirmed); arch_mpu_apply stashes the set and kickos_arch_mpu_commit programs the slots from the switch epilogue (kickos_rx_restore, after the physical swap -- the deferred-commit seam). The test-4 wedge that blocked this was NOT an MPU bug: a hardcoded 8-byte alignment guard on the clock_now out-pointer (`kernel/syscall/syscall.cc`) rejected RX's 4-byte-aligned u64 stack local, so kos_clock_now returned 0 and the rr_interleave granule spin hung -- fixed with `alignof(uint64_t)` (a pre-enforcement regression from 9d7ffa6, untested on RX). |
 | STM32F302 (f302nucleo) | v7-M PMSA | **Links again (provisioned), enforcement deferred on RAM.** g_instance sized 12288->6080 B (KICKOS_STACK_POOL_ALIGN=16 + smaller sem/irq pools) so the 16 KiB part builds; arena is 3712 B. Not a viable enforcement target: even the conditional app-data block + a 4 KiB-alloc selftest test exceed that arena. Non-enforcement only for now. |
 | ESP32-C6 | RISC-V PMP/NAPOT | **DONE -- silicon 18/18 selftest under enforcement + mpu_fault cross-domain trap (2026-07-17). The earlier boot-loop was an elf2image RAM-only-header flag error, NOT a code bug.** (a),(b) RESOLVED: `esp32c6.ld` now carries the same `#if KICKOS_HAVE_MPU` block as `virt.ld` -- a pow2 NAPOT code region at ORIGIN (0x4080_0000 is 8 MiB-aligned, so 128K code + 32K appdata are naturally NAPOT-aligned) + the `.appdata`/`.appbss` block + the Reset_Handler appbss zeroing; `user/` objects build `-msmall-data-limit=0`, so `-DKICKOS_HAVE_MPU=1` links all apps clean with app globals confirmed landing in `.appdata`/`.appbss` (verified by nm/objdump). The full-C++ default `_appdata_size` is 32K (holds a 16K heap + libstdc++/unwind state, ~18K measured), so cxxtest links under enforcement with NO manual `-DKICKOS_APPDATA_SIZE`. (c) The single-code-region approach is architecturally sound: C6 TRM Table 1.4-1 puts HP SRAM in ONE unified Instruction/Data region (0x4000_0000..0x4FFF_FFFF -- one address for fetch AND load/store, unlike the classic-ESP32 split IRAM/DRAM), so one RX NAPOT region covers U-mode fetch. The U-mode PMP trap FIRES correctly from SRAM -- PROVEN on silicon (18/18 selftest under enforcement + mpu_fault: a U-mode cross-domain store faults mcause=7 and is reported). (d) **PERIPHERAL side (deferred, follow-on -- NOT needed for SRAM enforcement + the selftest): the C6 has a SECOND, bus-side permission unit -- APM/PMS (C6 TRM Ch.16 PMP-APM Management), Access Permission Management -- that defaults DENY-USER on peripheral targets, independent of PMP.** PMP discriminates peripheral access per-thread (CPU-side), but APM must be given a one-time global open before any unprivileged peripheral access succeeds; it is not per-thread. So a C6 userspace driver needs BOTH the PMP grant (per-thread) AND the APM open (global). The APM layer is currently undriven -- scoped in `docs/design-c6-driver.md` (GPIO-blink, an 8 B PMP window + a one-time APM REE0 open). |
+| imxrt1062 (teensy41) | v7-M PMSA (Cortex-M7) | **DONE -- silicon 43/43 under enforcement + clean soak (`design-teensy-mpu-hang.md`, LANDED).** Inherits the shared armv7m backend unchanged. The M7 is the one core here that speculates, and first silicon exposed that: a dropped non-pow2 whole-arena grant left a privileged thread on the PRIVDEFENA background, which types the whole 1 GiB FlexSPI/SEMC aperture as Normal, so the core prefetched past the populated 8 MiB into an AHB slave that never responds and stalled forever with **no fault** (NXP ERR011573). Fixed by the `kickos_arm_mpu_fixed()` seam -- a chip fixed-region table wrapping the unbacked apertures as Device + XN + no-access, programmed into the LOW slots before the I-cache is enabled so per-thread grants still override it. |
+| rp2350 (pizero2350) | v8-M PMSA (Cortex-M33, `base`+`limit` RBAR/RLAR + MAIR) | **DONE -- silicon-validated (`design-rp2350-mpu-armv8m.md`, LANDED):** enforcement selftest passes, `mpu_fault` takes a clean cross-domain MemManage denial, bench + soak fault-free. armv8-M is a superset for the switch/NVIC/SVC/PendSV path, so the M33 reuses the **armv7m** arch backend verbatim; only the MPU differs, and PMSAv8 is its own compile-gated backend (`arch_arm_pmsav8.cc`) whose strong `kickos_arch_mpu_commit` + `arch_mpu_region_encodable` override the weak v7-M ones -- so the v7-M/v6-M fleet stays byte-identical. |
 | microbit/nRF51, STM32F103, ESP32 LX6 | no per-task MPU | N/A -- `arch_mpu_probe_addr`/`arch_domain_static_regions` return 0; no app-data block. |
 
 Conditional-appdata infra: **DONE.** The chip linker scripts are cpp-preprocessed
@@ -231,7 +242,7 @@ app statics + libstdc++/unwind writable state + the RISC-V gp small-data window 
 measured on all three), with the remaining pad serving as the libc heap (there is no
 separate heap-size number; the window `KICKOS_APPDATA_SIZE` is the one knob). So `-DKICKOS_HAVE_MPU=1`
 links every app **including cxxtest** with NO manual `-DKICKOS_APPDATA_SIZE`; a tight
-freestanding demo can still override the size down. imxrt1062 (teensy, MPU deferred) keeps a
+freestanding demo can still override the size down. imxrt1062 (teensy41) keeps a
 128K default and fail-closes its base alignment (`ALIGN(_appdata_size)`).
 
 **Scope of the cxxtest evidence (honest):** the committed cxxtest spawns an UNPRIVILEGED worker
@@ -268,28 +279,28 @@ bring-up in `book/peripheral-isolation-and-the-hardware-ceiling.md`):
 |---|---|---|
 | XMC4800 -- ARM v7-M PMSA (CPU-side) | **YES** | silicon-proven (xmcspi, 2026-07-17): a granted USIC DEV window works + an ungranted SCU poke faults MemManage. (Some USIC config registers are PV-write-only at the bus -- a kernel-vs-user privilege split under the PMSA, not a per-thread gate.) |
 | RISC-V PMP (ESP32-C6) | **YES** by PMP (SRAM enforcement silicon-proven) | PMP discriminates per-thread -- SRAM enforcement DONE on silicon (18/18 + mpu_fault); a SEPARATE APM/PMS bus unit defaults deny-user (one-time global open), still needed for per-thread PERIPHERAL isolation (follow-on: `docs/design-c6-driver.md`) |
-| RX72M -- RXv3 MPU (CPU-side) | **YES** | SRAM/domain enforcement DONE on silicon (2026-07-17: selftest 20/20 + mpu_fault cross-domain trap); a real granted peripheral window not yet run on silicon (task #3) |
+| RX72M -- RXv3 MPU (CPU-side) | **YES** | SRAM/domain enforcement DONE on silicon (2026-07-17: selftest 20/20 + mpu_fault cross-domain trap), AND a real granted peripheral window -- `rxdrv`, same date (see the per-board driver list below) |
 | K64F -- SYSMPU (bus-slave-side) | **NO** | silicon-proven: SYSMPU does NOT gate the AIPS peripheral bridge; the AIPS PACR does (per privilege+master, per 4 KB slot, all-user once opened) -- no per-thread peripheral boundary |
 
 **Per-board driver status (truthful):**
 - **k64drv (K64F, PIT):** DONE on silicon -- the first unprivileged MMIO driver; it is what
   ANSWERED the SYSMPU-vs-AIPS question above (SYSMPU inert for peripherals; AIPS gates,
   coarse). Also added a weak `arch_fault_report_extra` hook (K64F decodes SYSMPU CESR/EARn/
-  EDRn + BusFault). `user/apps/k64drv/`.
+  EDRn + BusFault). `user/apps/frdmk64f/k64drv/`.
 - **xmcspi (XMC4800, USIC0-CH1 SSC loopback):** DONE on silicon (2026-07-17) -- the CANONICAL
   per-thread PMSA MMIO-isolation proof: a granted 512-byte USIC DEV window does an internal SSC
   loopback (4 words tx==rx) AND an ungranted SCU poke faults MemManage (CFSR=0x82,
   MMFAR=0x50004648), per thread. Internal loopback, no jumper. The USIC CCR/FDR/BRG are
   PV-write-only at the bus (RM Table 18-20) so interrupt-enable+config is privileged bring-up --
   a K64F-AIPS-like bus-privilege layer sitting UNDER the PMSA proof. `design-spi-driver.md`,
-  `user/apps/xmcspi/`.
+  `user/apps/xmc4800-relax/xmcspi/`.
 - **rxdrv (RX72M, PORT8/LED6 GPIO):** DONE on silicon (2026-07-17) -- per-thread peripheral
   isolation on the RX MPU: a granted 16-byte PODR window blinks LED6 AND an ungranted PORT8.PDR
   poke faults ("MPU FAULT: task 'rxdrv' attempted read at 0x8c008"). First real granted
-  peripheral window on RX. `user/apps/rxdrv/`.
+  peripheral window on RX. `user/apps/rx72m/rxdrv/`.
 - **f411spi (STM32F411, SPI1 loopback):** BUILT + fable-reviewed, silicon-validation PENDING a
   bench swap to the 32F411E-DISCO. Redundant with xmcspi for the PMSA proof (both ARM v7-M PMSA);
-  kept as the STM32-family reference. `design-spi-driver-stm32f411.md`, `user/apps/f411spi/`.
+  kept as the STM32-family reference. `design-spi-driver-stm32f411.md`, `user/apps/f411disco/f411spi/`.
 - **k64dspi (K64F, DSPI0 for the KickCAT ESC SPI PDI):** DONE on silicon (2026-07-17): 4-word
   SOUT->SIN loopback tx==rx over the AIPS-opened slot, blocking on the DSPI0 EOQ IRQ with the
   auto-rearm API (no explicit ack). Designed WITHIN the K64F ceiling: the DSPI window grant is

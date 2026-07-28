@@ -468,7 +468,7 @@ _WindowUnderflow12:
     l32e    a11, a11, -20
     rfwu
 
-/* --- Level 2-5 / Debug(6) / NMI(7): not handled build-only -> halt. ----------- */
+/* --- Level 2-5 / Debug(6) / NMI(7): not handled -> halt. ---------------------- */
     .org 0x180
 _Level2InterruptVector: j _kickos_lx6_halt
     .org 0x1C0

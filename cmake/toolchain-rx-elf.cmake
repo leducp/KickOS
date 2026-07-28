@@ -53,10 +53,25 @@ set(KICKOS_ARCH_FAMILY "${KICKOS_ARCH_FAMILY}" CACHE STRING "KickOS ISA family (
 # ISA baseline instead of hardcoding a value that could drift from here.
 set(KICKOS_MCPU_FLAGS "${_kos_cpu}" CACHE INTERNAL "Per-board RX ISA baseline")
 
-# The prebuilt GNU RX toolchain location. Overridable; also honours PATH.
+# The prebuilt GNU RX toolchain location, seeded from the environment rather than a
+# literal path so no contributor's home directory is baked into the repo: export
+# KICKOS_RX_TOOLCHAIN_BIN once (or pass -D) to pin an install. Left empty, HINTS
+# contributes nothing and PATH decides. RX72M needs the RENESAS GNURX build --
+# -misa=v3 and -mdfpu (boards/rx72m/board.cmake) do not exist in upstream GCC's
+# rx-elf, so an upstream build fails at configure. That is why RX has no CI gate.
 set(KICKOS_RX_TOOLCHAIN_BIN
-    "/home/leduc/Apps/toolchains/gcc_14.2.0.202511_rx_elf/bin"
-    CACHE PATH "Directory holding the rx-elf-* programs")
+    "$ENV{KICKOS_RX_TOOLCHAIN_BIN}"
+    CACHE PATH "Directory holding the rx-elf-* programs (empty => use PATH)")
+
+# Put the RESOLVED hint back into the environment, because CMake's compiler-ABI probe
+# re-reads this toolchain file in a SEPARATE cmake process with its own fresh cache: a
+# -D cache override never reaches that child, but the environment and PATH do. Without
+# this, `cmake -DKICKOS_RX_TOOLCHAIN_BIN=<good bin>` would configure the build with the
+# compiler you asked for while the ABI probe found none at all (no rx-elf-* on PATH),
+# so the configure died inside the probe, nowhere near the option you set. Re-exporting
+# makes -D, the environment and a reconfigure all agree. An empty value clears the
+# variable, leaving PATH to decide. Same in all four family toolchain files.
+set(ENV{KICKOS_RX_TOOLCHAIN_BIN} "${KICKOS_RX_TOOLCHAIN_BIN}")
 
 find_program(CMAKE_C_COMPILER   rx-elf-gcc     HINTS "${KICKOS_RX_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_CXX_COMPILER rx-elf-g++     HINTS "${KICKOS_RX_TOOLCHAIN_BIN}" REQUIRED)

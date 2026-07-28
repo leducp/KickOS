@@ -158,8 +158,8 @@ namespace usic
     constexpr Baud BAUD_115200_72MHZ = { 367u, 13u, 0u, 15u };
 
     // Clock-select low-power P-states (fPERIPH = fCPU/2 = fSYS/2). Same RM formula:
-    // baud = fPERIPH*STEP/1024 / ((PDIV+1)*(DCTQ+1)). SILICON-PENDING -- formula-derived
-    // like the two above, validated on the Relax Kit in the separate silicon pass.
+    // baud = fPERIPH*STEP/1024 / ((PDIV+1)*(DCTQ+1)). Formula-derived like the two
+    // above, not measured on a scope.
     //
     // 115200 baud from fPERIPH = 48 MHz (fCPU=96 MHz, KOS_PSTATE_MID):
     // STEP=354, PDIV+1=9, DCTQ+1=16 -> 48e6*354/1024/9/16 = 115237 baud (+0.03%).

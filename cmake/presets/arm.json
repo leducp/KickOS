@@ -19,6 +19,27 @@
       "cacheVariables": { "KICKOS_BOARD": "qemu", "KICKOS_ENABLE_SELFTEST": "ON" }
     },
     {
+      "name": "qemu-m33",
+      "displayName": "QEMU mps2-an505 (Cortex-M33, PMSAv8) - runnable",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/qemu-m33",
+      "cacheVariables": { "KICKOS_BOARD": "qemu-m33", "KICKOS_ENABLE_SELFTEST": "ON" }
+    },
+    {
+      "name": "qemu-m7",
+      "displayName": "QEMU mps2-an500 (Cortex-M7, 16 MPU regions) - runnable",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/qemu-m7",
+      "cacheVariables": { "KICKOS_BOARD": "qemu-m7", "KICKOS_ENABLE_SELFTEST": "ON" }
+    },
+    {
+      "name": "qemu-m3",
+      "displayName": "QEMU mps2-an385 (Cortex-M3, soft-float) - runnable",
+      "inherits": "arm-base",
+      "binaryDir": "${sourceDir}/build/qemu-m3",
+      "cacheVariables": { "KICKOS_BOARD": "qemu-m3", "KICKOS_ENABLE_SELFTEST": "ON" }
+    },
+    {
       "name": "frdmk64f",
       "displayName": "NXP FRDM-K64F (Cortex-M4F, armv7m)",
       "inherits": "arm-base",
@@ -83,7 +104,7 @@
     },
     {
       "name": "due",
-      "displayName": "Arduino Due (AT91SAM3X8E, Cortex-M3) [EXPERIMENTAL: clock/console]",
+      "displayName": "Arduino Due (AT91SAM3X8E, Cortex-M3)",
       "inherits": "arm-base",
       "binaryDir": "${sourceDir}/build/due",
       "cacheVariables": { "KICKOS_BOARD": "due" }
@@ -118,6 +139,9 @@
   ],
   "buildPresets": [
     { "name": "qemu",      "configurePreset": "qemu" },
+    { "name": "qemu-m33",  "configurePreset": "qemu-m33" },
+    { "name": "qemu-m7",   "configurePreset": "qemu-m7" },
+    { "name": "qemu-m3",   "configurePreset": "qemu-m3" },
     { "name": "qemu-telem", "configurePreset": "qemu-telem" },
     { "name": "frdmk64f",  "configurePreset": "frdmk64f" },
     { "name": "teensy41",  "configurePreset": "teensy41" },
@@ -143,6 +167,9 @@
   ],
   "testPresets": [
     { "name": "qemu",       "configurePreset": "qemu",       "output": { "outputOnFailure": true } },
+    { "name": "qemu-m33",   "configurePreset": "qemu-m33",   "output": { "outputOnFailure": true } },
+    { "name": "qemu-m7",    "configurePreset": "qemu-m7",    "output": { "outputOnFailure": true } },
+    { "name": "qemu-m3",    "configurePreset": "qemu-m3",    "output": { "outputOnFailure": true } },
     { "name": "qemu-telem", "configurePreset": "qemu-telem", "output": { "outputOnFailure": true } },
     { "name": "microbit",   "configurePreset": "microbit",   "output": { "outputOnFailure": true } }
   ]

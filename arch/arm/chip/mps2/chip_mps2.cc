@@ -30,8 +30,15 @@ extern "C"
     // From the armv7m arch layer: installs SHPR priorities + enables DWT.
     void kickos_armv7m_init(void);
 
+    // PMSAv8 MPU backend (arch/arm/common/arch_arm_pmsav8.cc): one-time MAIR +
+    // MemManage enable. Also the LINK ANCHOR that pulls the PMSAv8 archive member,
+    // so its strong commit/encodable override the weak v7-M ones. Only the M33
+    // board (mps2-an505) defines KICKOS_MPS2_PMSAV8 -- see the chip's mpu.cmake.
+#if KICKOS_HAVE_MPU && defined(KICKOS_MPS2_PMSAV8)
+    void kickos_arm_pmsav8_init(void);
+#endif
+
     // Linker-script symbols (mps2.ld).
-    extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
     extern void (*__init_array_end[])();
 
@@ -74,6 +81,13 @@ extern "C"
 void arch_init(void)
 {
     // FPU is enabled earlier (Reset_Handler, before C++ ctors) -- see there.
+#if KICKOS_HAVE_MPU && defined(KICKOS_MPS2_PMSAV8)
+    // MUST precede kickos_armv7m_init and MUST NOT be dropped: this call is what
+    // links the PMSAv8 backend in at all (see its definition). Without it the build
+    // still succeeds and the banner still says "mpu enforce", but the weak PMSAv7
+    // commit stands and writes RASR values into what is RLAR on v8-M.
+    kickos_arm_pmsav8_init(); // MAIR + MemManage; the first switch enables the MPU
+#endif
     kickos_armv7m_init();
 }
 
@@ -192,18 +206,25 @@ void kfault_terminate(void)
     arch_shutdown(132);
 }
 
+#if KICKOS_HAVE_MPU
+// Rule 7 reserved set: this chip owns NO MPU-governable MMIO. Its console and its
+// monotonic time base are both semihosting calls (arch_console_write /
+// arch_clock_now above), not device registers, and the only registers the port
+// touches -- SysTick, NVIC, SCB -- live in the Private Peripheral Bus (0xE000_0000),
+// which the MPU does not govern, so no region could ever grant it away. Same
+// posture as the sim (arch/sim/sim.cc): KICKOS_RESERVED_NONE is legal per arch.h.
+size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
+{
+    (void)out;
+    (void)max;
+    return KICKOS_RESERVED_NONE;
+}
+#endif
+
 void Reset_Handler(void)
 {
-    uint32_t* src = &_sidata;
-    uint32_t* dst = &_sdata;
-    while (dst < &_edata)
-    {
-        *dst++ = *src++;
-    }
-    for (uint32_t* b = &_sbss; b < &_ebss; b++)
-    {
-        *b = 0;
-    }
+    // init .data + (under enforcement) the pow2 app-data block; zero .bss + app-bss
+    kickos_ranges_init();
     // Enable the FPU BEFORE running static constructors: with the hard-float ABI
     // the compiler may emit FP instructions in a global initializer, which would
     // UsageFault (CP10/CP11 disabled at reset) -> HardFault before kmain.
