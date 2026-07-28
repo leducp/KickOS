@@ -1841,10 +1841,11 @@ namespace
 
     void ep_recv_worker(void*) // caps: done@1, E@2 (unpriv)
     {
-        // The recv buffer is a STACK local (in the thread's own granted stack region):
-        // an unprivileged caller's writable check has no text fallback, so a global here
-        // would be rejected on the sim / no-MPU backends. Copy the result into a global
-        // (a direct store, not a syscall) for main to inspect.
+        // The recv buffer is a STACK local, and the result reaches main through a global
+        // by a direct store rather than by the syscall. A global buffer would be accepted
+        // now that user_writable_ok has a static-data fallback (see writable_global), but
+        // keeping the buffer thread-private is what keeps this test about the rendezvous
+        // instead of about the writable check.
         char buf[64];
         struct kos_recv_info info = {0xdeadu, 0x55};
         long n = kos_recv(2, buf, static_cast<size_t>(g_ep_rcap), &info);
@@ -2765,6 +2766,130 @@ namespace
         wait_n(1);
         TAP_CHECK(g_pub_rc == -KOS_EPERM); // unprivileged console_publish refused
     }
+
+    // --- shutdown is privileged-only: an unprivileged thread cannot end the system ----
+    int g_shutdown_rc = -99;
+    void shutdown_denied_worker(void*) // caps: done@1
+    {
+        // Status 0 on purpose. If this gate ever regresses, the run ENDS HERE, mid-suite,
+        // with a clean exit status -- so passing 0 is what makes the regression look like
+        // a truncated TAP stream rather than a successful one.
+        g_shutdown_rc = kos_shutdown(0);
+        kos_sem_post(CH_DONE);
+    }
+    void t_shutdown_denied()
+    {
+        g_shutdown_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(shutdown_denied_worker, nullptr, "sdDen", 10, caps, 1);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        TAP_CHECK(g_shutdown_rc == -KOS_EPERM); // unprivileged shutdown refused
+    }
+
+    // --- a syscall buffer that lives in an app GLOBAL, from an unprivileged thread ----
+    // An unprivileged thread's writable set is [app static data] + its domain + its own
+    // stack. On any backend that does not model app static data as an MPU region -- every
+    // no-MPU chip, and the host sim, whose globals sit in the host image rather than the
+    // mprotect'd arena -- that collapses to the stack alone, so a syscall buffer in a
+    // global is refused EFAULT even though the thread can plainly store there itself.
+    //
+    // recv validates its buffer BEFORE resolving the cap, so a deliberately invalid cap
+    // separates the two answers with no rendezvous and no sender: EBADF means the buffer
+    // was admitted and we got as far as the cap, EFAULT means it was not.
+    char g_wrbuf[16];
+    long g_wrbuf_rc = -99;
+    void wrbuf_worker(void*) // caps: done@1
+    {
+        g_wrbuf_rc = kos_recv(0x7fffffff, g_wrbuf, sizeof(g_wrbuf), nullptr);
+        kos_sem_post(CH_DONE);
+    }
+    void t_writable_global()
+    {
+        g_wrbuf_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(wrbuf_worker, nullptr, "wrGlob", 10, caps, 1);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        TAP_CHECK(g_wrbuf_rc == -KOS_EBADF); // not -KOS_EFAULT: the global was writable
+    }
+
+    // --- The authority capability: the non-privileged arm of the eight gates ----------
+    // Each authority gate is `privileged OR holds this AUTH_* bit`. Root is privileged, so
+    // the whole suite already leans on the privileged arm; this covers the OTHER one, which
+    // would otherwise ship unexercised until stage 2 flips a board -- the same vacuity trap
+    // the ctor-placement gate fell into.
+    //
+    // The child is UNPRIVILEGED and holds AUTH_PINMUX and nothing else, so exactly one gate
+    // must accept it and the rest must refuse. Acceptance reads as "not -KOS_EPERM", because
+    // a gate that lets the call through returns its OWN answer instead -- -KOS_ENOSYS on a
+    // weak-seam target like the sim, -KOS_EINVAL where a chip owns the block -- and that
+    // distinction is exactly what a privilege refusal erases.
+    void auth_noop(void*) {}
+    volatile long g_auth_pinmux = -99;   // AUTH_PINMUX held    -> anything but -KOS_EPERM
+    volatile long g_auth_shutdown = -99; // AUTH_DEVICE absent  -> -KOS_EPERM
+    volatile long g_auth_regrant = -99;  // may not hand on a bit it does not hold
+    volatile long g_auth_collide = -99;  // delegation packing reaching the authority slot
+    volatile long g_auth_badbits = -99;  // object rights offered as an authority
+    void auth_worker(void*) // UNPRIVILEGED, authority = AUTH_PINMUX; caps: done@1
+    {
+        // The bit it HOLDS: past the gate, so pinmux answers for itself.
+        g_auth_pinmux = kos_pinmux_set(99u, 0u, 0x10u);
+        // A bit it does NOT hold, at a different gate -- so this also proves the bits are
+        // independent rather than one lump. shutdown is the highest-stakes of the four and
+        // it stands for all of them; console_publish_priv and shutdown_priv already cover
+        // the privilege dimension of the same gates. Safe to call precisely BECAUSE the
+        // child lacks AUTH_DEVICE: a regression ends the run here with a clean status,
+        // which the harness sees as a truncated TAP stream.
+        g_auth_shutdown = kos_shutdown(0);
+        // Three spawn probes off ONE params struct, all refused before a pool slot is
+        // claimed, so their codes are deterministic even on a full pool. One struct is not
+        // tidiness: a frame-local kos_thread_params costs an inline ~52-byte zero-init per
+        // site, and this suite links within ~100 bytes of the f302nucleo flash ceiling. It
+        // must be a frame local rather than a global, because thread_spawn reads the struct
+        // through user_range_ok with no static-data fallback, so a global would be
+        // -KOS_EFAULT on the sim and on every no-MPU board.
+        kos_thread_params kid{};
+        kid.entry = auth_noop;
+        kid.prio = 9;
+        // Narrow-only, the same rule a cap_grant mask obeys: holding AUTH_PINMUX does not
+        // let it seat AUTH_DEVICE on a child.
+        kid.authority = KOS_AUTH_DEVICE;
+        g_auth_regrant = kos_thread_spawn(&kid);
+        // Delegated cap i lands at child index i+1, so two delegated caps reach the
+        // authority slot. Refused, rather than one silently overwriting the other.
+        kos_cap_grant two[] = {{CH_DONE, CH_FULL}, {CH_DONE, CH_FULL}};
+        kid.caps = two;
+        kid.cap_count = 2;
+        kid.authority = KOS_AUTH_PINMUX;
+        g_auth_collide = kos_thread_spawn(&kid);
+        // Object rights mean nothing on this type, so they are refused, not masked off.
+        kid.cap_count = 1;
+        kid.authority = KOS_CAP_WAIT;
+        g_auth_badbits = kos_thread_spawn(&kid);
+        kos_sem_post(CH_DONE);
+    }
+    void t_authority_cap()
+    {
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(auth_worker, nullptr, "authW", 10, caps, 1,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                        nullptr, 0, /*authority=*/KOS_AUTH_PINMUX);
+        if (w < 0)
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        // Grouped, because each TAP_CHECK carries __FILE__ and its stringified condition as
+        // rodata and this image is at the f302nucleo ceiling. Held bit accepted (pinmux
+        // returned its own answer: -KOS_ENOSYS on a weak seam, -KOS_EINVAL where a chip owns
+        // the block), unheld bit refused at another gate, and the three spawn refusals.
+        TAP_CHECK(g_auth_pinmux != -KOS_EPERM and g_auth_pinmux < 0);
+        TAP_CHECK(g_auth_shutdown == -KOS_EPERM);
+        TAP_CHECK(g_auth_regrant == -KOS_EPERM and g_auth_collide == -KOS_EINVAL
+                  and g_auth_badbits == -KOS_EINVAL);
+    }
 }
 
 int main(int, char**)
@@ -2819,6 +2944,9 @@ int main(int, char**)
     // Console handover mechanism (M3 #4 stage ii-a): production syscalls, every board.
     tap::add("cap_index0", t_cap_index0);              // B3 index-0 reservation + FIRST_DYNAMIC floor
     tap::add("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
+    tap::add("shutdown_priv", t_shutdown_denied);        // KOS_SYS_SHUTDOWN privileged-only
+    tap::add("writable_global", t_writable_global);      // out-buffer in an app global
+    tap::add("authority_cap", t_authority_cap);          // CAP_AUTHORITY: both arms of the gates
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     tap::add("irq_thread_ctx", t_irq);

@@ -1025,6 +1025,23 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len)
     return not hits_arena;
 }
 
+// The write twin (arch.h). The sim needs its OWN arm even though it builds with
+// KICKOS_HAVE_MPU=1: its app globals live in the host image rather than the mprotect'd
+// arena, so arch_domain_static_regions models no static-data region here and an
+// unprivileged thread's writable set would otherwise be its own stack alone -- refusing
+// every syscall buffer that lives in a global. Admission is the SAME rule as the read
+// hook above: wholly inside the host image, clear of the arena.
+//
+// One asymmetry, stated rather than hidden: on hardware an out-pointer into code/rodata
+// is rejected, and this admits one, because the two image-bound symbols cannot separate
+// .text/.rodata from .data/.bss. The host's own page permissions are the backstop --
+// those pages are mapped r-x / r--, so a real write faults in the host instead of
+// silently landing. Same "the sim provably can't" limit the read hook carries.
+bool arch_user_data_writable(uintptr_t ptr, size_t len)
+{
+    return arch_user_text_readable(ptr, len);
+}
+
 uintptr_t arch_mpu_probe_addr(void)
 {
     return reinterpret_cast<uintptr_t>(sim().guard);

@@ -180,6 +180,10 @@ namespace kickos
             {
                 return; // names a thread by generational handle: holds no pool refcount
             }
+            case CapType::CAP_AUTHORITY:
+            {
+                return; // poolless: the cap IS its rights bits, there is nothing to free
+            }
             default:
             {
                 KICKOS_ASSERT(false);
@@ -260,6 +264,10 @@ namespace kickos
                     }
                 }
                 return 0; // endpoints NEVER refuse a close (unlike mutex R2)
+            }
+            case CapType::CAP_AUTHORITY:
+            {
+                return 0; // no object, no waiters, nothing to refuse a close over
             }
             case CapType::CAP_REPLY:
             {
@@ -344,6 +352,12 @@ namespace kickos
             (void)rights;
             return; // names a thread by generational handle: no pool refcount to bump
         }
+        case CapType::CAP_AUTHORITY:
+        {
+            (void)obj_handle;
+            (void)rights;
+            return; // poolless: no object behind it, so no refcount to bump
+        }
         default:
         {
             KICKOS_ASSERT(false); // unknown type must trap in debug
@@ -421,6 +435,51 @@ namespace kickos
     {
         int err = 0;
         return cap_resolve_e(c, cap_handle, want, need, &err);
+    }
+
+    bool cap_check_authority(Thread* c, uint8_t need)
+    {
+        if (c == nullptr)
+        {
+            return false; // no caller context: refuse rather than assume the kernel
+        }
+        if (c->privileged)
+        {
+            return true; // privileged implies every authority -- stated once, here
+        }
+        // Read the reserved slot by INDEX, not through cap_lookup: userspace never names
+        // this cap, the kernel seats it, so there is no handle to validate and no cap-gen
+        // to match. The type test is what makes reading a fixed index safe -- a second
+        // delegated cap also lands at index 2 under the i+1 packing, and it will not be a
+        // CAP_AUTHORITY.
+        CapEntry const& e = c->handles[KOS_CAP_AUTHORITY];
+        if (e.type != static_cast<uint8_t>(CapType::CAP_AUTHORITY))
+        {
+            return false;
+        }
+        return (e.rights & need) == need;
+    }
+
+    void cap_seat_authority(Thread* t, uint8_t rights)
+    {
+        CapEntry& e = t->handles[KOS_CAP_AUTHORITY];
+        // Only AUTH_* bits: masking here means a caller cannot smuggle CAP_TRANSFER in and
+        // make the cap delegable, nor CAP_WAIT/CAP_SIGNAL, which would mean nothing on this
+        // type but would read as rights to someone inspecting the table.
+        uint8_t const auth = static_cast<uint8_t>(rights & CAP_AUTH_ALL);
+        if (auth == 0)
+        {
+            // Clear rather than seat a cap that permits nothing: an empty slot and a
+            // zero-rights authority are the same permission, and only one of them can be
+            // mistaken for "this thread holds an authority cap".
+            e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+            e.obj = 0;
+            e.rights = 0;
+            return;
+        }
+        e.obj = 0; // poolless: no object handle to carry
+        e.type = static_cast<uint8_t>(CapType::CAP_AUTHORITY);
+        e.rights = auth;
     }
 
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)

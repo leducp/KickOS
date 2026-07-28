@@ -117,4 +117,36 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len)
 #endif
 }
 
+bool arch_user_data_writable(uintptr_t ptr, size_t len)
+{
+#if KICKOS_HAVE_MPU
+    // Enforcing backend: the thread's .appdata/.appbss window is a real MPU region, so
+    // the syscall's region check already admitted it; anything outside the set is
+    // genuinely unwritable and must be rejected.
+    (void)ptr;
+    (void)len;
+    return false;
+#else
+    // No MPU enforcement, so there is no isolation to breach: this thread can already
+    // store to any of these addresses with a plain instruction, and refusing the same
+    // bytes when they arrive as a syscall buffer buys nothing while breaking every
+    // out-pointer that lives in a global. Same shape and same arena carve-out as the
+    // read hook above -- an arena range falls through to the region check, so a later
+    // enforcing build of this backend stays sound.
+    if (len == 0)
+    {
+        return true;
+    }
+    uintptr_t const end = ptr + len;
+    if (end < ptr)
+    {
+        return false; // wrap
+    }
+    uintptr_t const astart = arch_ram_base();
+    uintptr_t const aend = astart + arch_ram_size();
+    bool const hits_arena = (ptr < aend and end > astart);
+    return not hits_arena;
+#endif
+}
+
 }
