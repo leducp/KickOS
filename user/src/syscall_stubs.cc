@@ -143,6 +143,13 @@ void kos_exit(int code)
     __builtin_unreachable();
 }
 
+// NOT noreturn, unlike kos_exit: the privilege gate can refuse.
+int kos_shutdown(int status)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_SHUTDOWN,
+                                         static_cast<uintptr_t>(status), 0, 0, 0));
+}
+
 // Thread epilogue for UNPRIVILEGED threads: the arch plants this as the return
 // address of a user thread's entry, so a worker that returns exits via the
 // syscall trap (running the kernel exit path privileged) rather than calling
@@ -245,6 +252,13 @@ void* kos_ram_alloc(size_t size)
 {
     return reinterpret_cast<void*>(
         arch_syscall(KOS_SYS_RAM_ALLOC, static_cast<uintptr_t>(size), 0, 0, 0));
+}
+
+int kos_mem_self_grant(void* base, size_t size)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_MEM_SELF_GRANT, reinterpret_cast<uintptr_t>(base),
+                     static_cast<uintptr_t>(size), 0, 0));
 }
 
 void kos_kernel_diag_led_set(int on)

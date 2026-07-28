@@ -173,6 +173,21 @@ struct arch_mpu_region
 // UNPRIVILEGED access (supervisor comes from the background region / SYSMPU RGD0).
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 
+// Program the hardware from what arch_mpu_apply last recorded. On every arch whose
+// context switch is DEFERRED (ARM PendSV, RX/RISC-V software interrupt) arch_mpu_apply
+// only STASHES; the switch epilogue calls this after the physical swap. See
+// docs/design-mpu-commit-deferred.md.
+//
+// The kernel calls this DIRECTLY in exactly one situation: the RUNNING thread's own
+// region set was just widened and must be effective before the syscall returns
+// (KOS_SYS_MEM_SELF_GRANT). Sound because outgoing and incoming are the same thread.
+// Do NOT call it to make another thread's set live.
+//
+// Always resolves on every arch and both enforcement postures (the switch assembly
+// calls it unconditionally); an empty no-op where apply already programs the hardware
+// (the sim) or where there is no MPU.
+void kickos_arch_mpu_commit(void);
+
 // MMU-era NOTE (concepts, never mechanisms): a future VMSA/paging port introduces
 // a PARALLEL arch_aspace_* family (build/switch/map a page-table root), NOT an
 // overload of arch_mpu_apply and NOT a reinterpretation of arch_mpu_region. The
@@ -282,6 +297,20 @@ size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max);
 //     outside both is rejected. It cannot separate app rodata from kernel statics --
 //     the security boundary it DOES enforce (cross-domain arena reads) stays closed.
 bool arch_user_text_readable(uintptr_t ptr, size_t len);
+
+// The WRITE twin of the hook above: true iff [ptr, ptr+len) is app static data the
+// backend recognizes as caller-writable but does NOT describe as one of the running
+// thread's MPU regions. user_writable_ok checks the granted regions first and falls
+// back here, exactly as user_readable_ok does.
+//   enforcing MPU backend: .appdata/.appbss IS a real region (see
+//     arch_domain_static_regions), so the region check already admits it and this
+//     returns false; an address outside the set is genuinely unreachable.
+//   non-enforcing backend: the thread can already store anywhere, so a range that does
+//     NOT touch the user-RAM arena is admitted. An arena range still falls through to
+//     the region check, so a later enforcing build of the same backend stays sound.
+//   host sim: app and kernel share one host image whose sections are not MPU regions,
+//     so a range wholly inside the image and clear of the arena is admitted.
+bool arch_user_data_writable(uintptr_t ptr, size_t len);
 
 // An address that faults on unprivileged access (sim: a reserved arena page no
 // domain owns). Used by the isolation self-test.

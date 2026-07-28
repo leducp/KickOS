@@ -920,6 +920,11 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     arena_raise_all();
 }
 
+// Empty: arch_mpu_apply above already programs mprotect as it records, and the host
+// switch is a synchronous longjmp, so there is nothing to commit afterwards. Defined
+// because the symbol is an arch-wide contract (the self-grant path calls it).
+void kickos_arch_mpu_commit(void) {}
+
 size_t arch_mpu_min_region(void)
 {
     return static_cast<size_t>(sim().pagesize); // mprotect granularity
@@ -1023,6 +1028,21 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len)
     uintptr_t const aend = astart + sim().arena_size;
     bool const hits_arena = (sim().arena != nullptr and ptr < aend and end > astart);
     return not hits_arena;
+}
+
+// The write twin (arch.h). Needed even with KICKOS_HAVE_MPU=1: sim app globals live in
+// the host image, not the arena, so arch_domain_static_regions models no static-data
+// region here. Admission is the same rule as the read hook above: wholly inside the
+// host image, clear of the arena.
+//
+// Two asymmetries vs hardware. An out-pointer into code/rodata is admitted (the two
+// image-bound symbols cannot separate .text/.rodata from .data/.bss); the host's r-x /
+// r-- page permissions backstop it. Kernel .data/.bss also sit inside the image on rw
+// pages, so an unprivileged out-pointer aimed at kernel state is admitted with NO
+// backstop; the sim enforces only the arena cross-domain boundary.
+bool arch_user_data_writable(uintptr_t ptr, size_t len)
+{
+    return arch_user_text_readable(ptr, len);
 }
 
 uintptr_t arch_mpu_probe_addr(void)

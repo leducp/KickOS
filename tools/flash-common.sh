@@ -36,6 +36,19 @@ _bf() {
     grep -oP "$2"'\s+"?\K[A-Za-z0-9_]+' "$FL_ROOT/boards/$1/board.cmake" 2>/dev/null | head -1 || true
 }
 
+# _app_base <builddir> <board> <app> -> emitted image base (no extension); nonzero if
+# the app is not built there. The build tree mirrors user/apps/: board-specific apps
+# under <board>/<app>/, fleet-wide ones under common/<app>/. Board-specific is
+# searched FIRST, so on a name collision the board's own app wins.
+_app_base() {
+    local d
+    for d in "$1/user/apps/$2/$3" "$1/user/apps/common/$3"; do
+        [ -e "$d/$3" ] || [ -e "$d/$3.hex" ] || continue
+        echo "$d/$3"; return 0
+    done
+    return 1
+}
+
 flash_resolve() {
     FL_BOARD=${1:?usage: <board> [app]}
     FL_APP=${2:-hello}
@@ -58,20 +71,25 @@ flash_resolve() {
     # which carries the diagnostic apps that the plain board build does not).
     local bd="${FLASH_BUILD:-$FL_ROOT/build/$FL_BOARD}"
     # kickos_emit_image outputs: ELF, .hex, .bin, and .app.bin for Espressif.
-    # In-tree apps emit under user/apps/<app>/. FLASH_IMAGE points the flasher
-    # directly at an image instead -- an out-of-tree find_package(KickOS) consumer
-    # emits outside that layout, so name its image explicitly rather than guessing a
-    # path. A trailing .hex/.bin/.elf is stripped to a base; the siblings derive from
-    # it (jlink loads .hex, st-flash the .bin, esptool the .app.bin).
+    # In-tree apps are looked up with _app_base (board-specific dir, then common/).
+    # FLASH_IMAGE points the flasher directly at an image instead -- an out-of-tree
+    # find_package(KickOS) consumer emits outside that layout, so name its image
+    # explicitly rather than guessing a path. A trailing .hex/.bin/.elf is stripped to
+    # a base; the siblings derive from it (jlink loads .hex, st-flash the .bin,
+    # esptool the .app.bin).
     local base
     if [ -n "${FLASH_IMAGE:-}" ]; then
         base=${FLASH_IMAGE%.hex}; base=${base%.bin}; base=${base%.elf}
-    else
-        base="$bd/user/apps/$FL_APP/$FL_APP"
+    elif ! base=$(_app_base "$bd" "$FL_BOARD" "$FL_APP"); then
+        die "not built: app '$FL_APP' for board '$FL_BOARD' -- no image under either
+       board-specific: $bd/user/apps/$FL_BOARD/$FL_APP/
+       fleet-wide:     $bd/user/apps/common/$FL_APP/
+       in-tree:     cmake --preset $FL_BOARD && cmake --build $bd --target $FL_APP
+       out-of-tree: FLASH_IMAGE=<path/to/$FL_APP.hex> tools/flash.sh $FL_BOARD $FL_APP
+       (selftest/diagnostic build: FLASH_BUILD=$FL_ROOT/build/$FL_BOARD-st)"
     fi
     FL_ELF="$base"; FL_BIN="$base.bin"; FL_HEX="$base.hex"; FL_APPBIN="$base.app.bin"
-    [ -e "$FL_ELF" ] || [ -e "$FL_HEX" ] || die "not built: ${FLASH_IMAGE:-$base}
-       in-tree:     cmake --preset $FL_BOARD && cmake --build $bd --target $FL_APP
-       out-of-tree: FLASH_IMAGE=<path/to/$FL_APP.hex> flash-jlink.sh $FL_BOARD $FL_APP
-       (selftest/diagnostic build: FLASH_BUILD=$FL_ROOT/build/$FL_BOARD-st)"
+    # Only reachable with FLASH_IMAGE: _app_base already proved the in-tree image.
+    [ -e "$FL_ELF" ] || [ -e "$FL_HEX" ] || die "not built: ${FLASH_IMAGE:-$FL_ELF}
+       (FLASH_IMAGE names neither an ELF nor a .hex -- pass the image your build emitted)"
 }

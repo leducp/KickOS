@@ -1,6 +1,13 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design note: M3 -- user-selectable CPU clock / low-power mode (WRITE side)
 
+> **Status: LANDED** -- the write side shipped: `arch_cpu_clock_set` plus the coherence tail
+> (epoch re-anchor as sole mult-writer, baud re-derive, timer re-arm, USER_OWNED refusal).
+> Silicon-proven on XMC (144/48 MHz) and K64F (120/20.97 MHz): monotonic `now` across a retune,
+> ratio-correct timing, no fault. XMC does a full retune, K64F a staged one; every other chip
+> keeps the explicit weak default. Fleet-wide rollout and the userspace power-manager/clock-tree
+> policy service stay open (`../roadmap.md`). See `design/README.md` for the marker taxonomy.
+
 **Status: fable review folded in. This is the corrected implementation spec.**
 Rulings from the review are load-bearing; the old open-questions section is now
 section 7 (resolved decisions).

@@ -46,6 +46,26 @@ extern "C"
 // The symbol the kernel boot path calls after kernel init.
 int kickos_init_entry(int argc, char** argv);
 
+// The kernel -> init argument handoff. kmain fills it; the root thread reads it
+// immediately before calling kickos_init_entry above.
+//
+// App-side on purpose: the object is defined in libkickos_user.a, so the enforcement
+// linker scripts route it into the .appdata/.appbss grant, a region of every
+// unprivileged thread (arch_domain_static_regions). Kernel-side storage (or a kmain
+// stack local, which sits outside the arena) would fault an unprivileged root before
+// its first statement on every enforcing board.
+//
+// argv is null (argc 0) on MCU. On the hosted sim it points into the host process's
+// own argv, which no grant covers; the sim does not enforce non-arena regions, so
+// this is exactly the case its coverage misses.
+struct kos_init_args
+{
+    int argc;
+    char** argv;
+};
+
+extern struct kos_init_args kickos_init_args;
+
 // The default init body (runs the app's kickos_app_main). Exposed so a custom init
 // provider can delegate to it. This is JUST the app-main step: it does NOT bring the
 // service list up (that is kickos_service_list_run below), so a custom init composes

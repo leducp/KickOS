@@ -27,7 +27,7 @@
     },
     {
       "name": "esp32c6-wroom",
-      "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC) - build-only, HW validation deferred",
+      "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC)",
       "inherits": "riscv-base",
       "binaryDir": "${sourceDir}/build/esp32c6-wroom",
       "cacheVariables": { "KICKOS_BOARD": "esp32c6-wroom" }

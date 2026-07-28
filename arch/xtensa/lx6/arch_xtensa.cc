@@ -9,7 +9,7 @@
 // interrupt entry) + linker script + SystemCoreClock. Clean-room: Xtensa special
 // registers per the Xtensa ISA reference; ESP32 interrupt numbers per the TRM.
 //
-// M1.x scope (build-only, HW deferred): the cooperative (thread-context) switch,
+// Arch scope: the cooperative (thread-context) switch,
 // the RSIL critical section, the CCOUNT/CCOMPARE0 timer, the plain-call syscall,
 // the level-1 interrupt dispatch (kickos_lx6_dispatch_l1 -> kickos_isr_timer /
 // kickos_isr_irq), AND the preemptive switch-on-ISR-exit are complete. A switch
@@ -19,6 +19,7 @@
 // path its resume_kind selects (retw for a cooperatively-blocked thread, rfe for
 // one previously preempted). There is no privilege split on this core, so MPU/
 // privilege are no-ops.
+// Validation status of the Xtensa port: see docs/reference/boards.md.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/xtensa_frame.h> // F_* interrupt-frame offsets, shared with startup.S
@@ -519,6 +520,11 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     (void)regions;
     (void)n;
 }
+
+// Empty for the same reason apply is: LX6 has neither an MPU nor a ring split (no
+// switch-epilogue hook here). Defined because the symbol is an arch-wide contract
+// (the self-grant path calls it).
+void kickos_arch_mpu_commit(void) {}
 
 // No per-task MPU on the classic ESP32 (no privilege split either): report 0 so
 // arch_ram_alloc stays byte-granular -- pow2 region shaping would only waste RAM

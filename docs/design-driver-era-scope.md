@@ -1,6 +1,11 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # The driver era -- scope / gap analysis
 
+> **Status: ACTIVE** -- this is the gap list for the milestone currently in flight (M4). Its
+> section 4 is also the record of the ordering DECISION that made the driver era M4, SMP M5 and
+> the MMU M6, so the "M4 = SMP" framing quoted there is the *old* numbering being argued
+> against, not a live claim. See `design/README.md` for the marker taxonomy.
+
 **EXPLORATORY -- NOT A CONTRACT.** A scoping lens over the work that turns the M3
 mechanisms (proven on XMC / K64F only) into a real, fleet-wide capability. Ordering is now
 DECIDED (Option A: driver era = **M4**, SMP = **M5**, MMU = **M6**; see section 4), but this
@@ -32,7 +37,7 @@ XMC-only (+ some K64F) testing hid. The console handover was never tried fleet-w
 | Mechanism | Kernel seam | Real backend bodies | Weak default | Silicon proof |
 |---|---|---|---|---|
 | Endpoint/IPC (CAP_ENDPOINT) | syscalls 26/27/28, `SlotPool<Endpoint>`, `wq_block`/`wq_pop_highest` | arch-independent | n/a | K64F + XMC 39/39 under enforcement; rest build-only |
-| Console handover | `ConsoleState`, `kos_console_publish` (#29), stdout cap @idx 0 | userspace driver = **XMC only** (`user/driver/xmcuart`) | drop chip path | XMC end-to-end app->IPC->driver->wire, under enforcement |
+| Console handover | `ConsoleState`, `kos_console_publish` (#29), stdout cap @idx 0 | userspace driver = **XMC only** at the time of writing (`system/driver/xmc4800/xmcuart`; `system/driver/mk64f/k64uart` has since landed) | drop chip path | XMC end-to-end app->IPC->driver->wire, under enforcement |
 | Panic reclaim | `arch_console_reclaim`, `kickos_isr_fault`->`kpanic_enter` funnel | **XMC (USIC) + K64F (UART0) only** | weak no-op (`console.cc:288`) -- SILENT reclaim failure | XMC scramble-then-panic PASS; K64F built, silicon-pending (no K64F console driver) |
 | Clock-select | `arch_cpu_clock_set` (#30) + re-anchor/baud/timer tail | **XMC full + K64F staged only** | weak return 0 (`clock_select.cc:77`) | XMC 144/48 + K64F 120/20.97 |
 | Retune console coherence | `arch_console_flush_sync`, `arch_console_retune` | XMC, K64F | weak no-op (`console.cc:296-297`) | folds into the above |
@@ -51,7 +56,8 @@ Effort scale: S = a day-ish, M = a few days, L = a week+ / needs a design gate.
 Silicon-gating: **HW** = needs the board on a bench; **NOW** = doable in-tree / QEMU.
 
 ### G1. Fleet-wide userspace UART / console drivers  (M3 did XMC ONLY)
-`user/driver/xmcuart` is the sole userspace console driver. Every other board's console is
+`system/driver/xmc4800/xmcuart` was the sole userspace console driver when this was written;
+`system/driver/mk64f/k64uart` has since joined it. Every other board's console is
 still kernel-owned; the handover mechanism exists but has no driver to hand to.
 
 Per board (see the fleet UART table in section 2.1). Each userspace UART driver =
@@ -130,8 +136,10 @@ NOTE: this is the mechanism seam only; POLICY is the power-manager service (G7 /
 Today's evidence of "real apps on KickOS" is thin: KickCAT is the only consumer, one board,
 a driver more demo than API (`kickcat_slave` is in the KickOS tree via
 `kickos_add_application`). The **driver-app inconsistency** is the smell:
-- `user/driver/xmcuart`, `user/driver/k64dspi` are LIBS (`add_library`) -- the right shape.
-- `user/apps/{xmcspi,f411spi,k64drv,rxdrv}` are monolithic DIAGNOSTIC apps
+- `system/driver/<chip>/{xmcuart,xmcssc,k64dspi,k64uart}` are LIBS (`add_library`) -- the right
+  shape. They live under `system/` because a chip driver lib is board support a consumer links
+  on top of the OS, not an app, even though it builds unprivileged.
+- `user/apps/<board>/{xmcspi,f411spi,k64drv,rxdrv}` are monolithic DIAGNOSTIC apps
   (`kickos_add_diagnostic_app`) -- driver + demo fused.
 Maturation = the driver-lib + demo split (tasks #17/#18): each driver a reusable lib with a
 typed contract; the demo an app that links it. What a real driver contract looks like is the
@@ -418,8 +426,8 @@ chip:
   held across a multi-byte transaction the engine cannot sustain (de-asserts per frame / breaks
   across FIFO refills -- the Stage-D DSPI bug where releasing HW PCS0 clocked a trailing dummy
   byte and corrupted a length-sensitive ESC mailbox write), or when the CS net has no HW-PCS pin.
-  This is the production KickCAT CS path on K64F today (`user/driver/k64dspi`, PTC4 by PSOR/PCOR
-  from the unprivileged driver thread).
+  This is the production KickCAT CS path on K64F today (`system/driver/mk64f/k64dspi`, PTC4 by
+  PSOR/PCOR from the unprivileged driver thread).
 
 **Per-chip isolation ceiling for a direct toggle window** -- can the atomic set/clear + input
 registers be granted as a narrow window that EXCLUDES the pin-mux and all shared authority?

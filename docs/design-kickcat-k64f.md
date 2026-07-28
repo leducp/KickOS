@@ -1,6 +1,11 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design brief: running the KickCAT slave on KickOS/K64F
 
+> **Status: ACTIVE** -- Stage A (the sim slave over `EmulatedESC`) has LANDED as a CI test; the
+> K64F hardware path below is still the plan, though the transport it needs
+> (`system/driver/mk64f/k64dspi`) has since landed and reached OPERATIONAL against a real
+> LAN9252. See `design/README.md` for the marker taxonomy.
+
 Scoping for the north-star integration (see `reference/architecture.md`, "Sim end-goal"):
 run KickCAT's `freedom-k64f` EtherCAT slave example on KickOS -- first on the sim over
 `EmulatedESC`, then on K64F over a real LAN9252 ESC via the unprivileged DSPI0 driver.
@@ -23,7 +28,7 @@ for our exact chip. The blockers below were the original KickOS gaps; all are no
 2. **The `k64dspi` driver is a real transport (RESOLVED).** It exposes callable
    `spi_transfer`/`spi_enable_cs`/`spi_disable_cs` (+ `spi_driver_start`), exported as the
    `kickos_k64dspi` lib with the public header `<kickos/driver/k64dspi.h>` (source at
-   `user/driver/k64dspi`). An out-of-tree consumer links it on top of the OS.
+   `system/driver/mk64f/k64dspi`). An out-of-tree consumer links it on top of the OS.
 3. **`k64dspi` silicon (RESOLVED).** The polled-FIFO transport (~10 MHz) reached `OPERATIONAL`
    against a real LAN9252. K64F peripheral isolation stays coarse (AIPS ceiling --
    driver-in-userspace holds, but no per-thread peripheral boundary): an accepted, documented

@@ -240,9 +240,9 @@ void arch_console_flush_sync(void)
 }
 
 // retune: reprogram the baud generator (FDR + BRG) for the new fPERIPH = SystemCoreClock/2,
-// selecting the precomputed point for the landed clock. SILICON-PENDING: the live baud
-// reprogram (channel enabled, but idle + IRQs masked here) is validated on the Relax Kit
-// in the separate silicon pass. An unrecognized clock leaves the baud untouched (a P-state
+// selecting the precomputed point for the landed clock. The reprogram is live (the
+// channel stays enabled) but is reached only with the channel idle and IRQs masked.
+// An unrecognized clock leaves the baud untouched (a P-state
 // whose fPERIPH has no in-tolerance divisor should be rejected at the seam -- ruling 2).
 void arch_console_retune(void)
 {

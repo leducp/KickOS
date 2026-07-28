@@ -36,11 +36,15 @@ void kos_sleep_ns(uint64_t ns);
 // NOT name the same object in another thread -- to share a sem with a child, delegate
 // it via kos_thread_params.caps (see kos_cap_grant). sem_create grants the creator a
 // full-rights (WAIT|SIGNAL|TRANSFER) cap.
-int kos_sem_create(int initial); // -> opaque cap handle, or -KOS_ENOMEM (pool/table full)
+// -> opaque cap handle; -KOS_ENOMEM (pool/table full); or -KOS_EINVAL when `initial` is
+// outside [0, KOS_SEM_COUNT_MAX] (abi.h).
+int kos_sem_create(int initial);
 // 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EPERM (cap lacks WAIT/SIGNAL). These now
 // SURFACE the error (they were void): a wait/post on a closed cap no longer silently no-ops
 // -- check the return where a stale cap must not be mistaken for a completed wait/post.
 int kos_sem_wait(int sem);
+// Also -KOS_EOVERFLOW with no waiter and the count at KOS_SEM_COUNT_MAX; the token is
+// not banked.
 int kos_sem_post(int sem);
 
 // Priority-inheritance mutex. Like a semaphore, the handle is an OPAQUE per-task
@@ -117,6 +121,13 @@ int kos_sem_destroy(int cap); // alias of kos_handle_close (source compatibility
 
 int kos_thread_spawn(struct kos_thread_params const* params);
 void kos_exit(int code) __attribute__((noreturn));
+
+// End the WHOLE system with `status`: drain the buffered console, then hand over to the
+// chip's shutdown. This is what a returning kickos_init_entry does (see
+// <kickos/sys/init.h>); an app that wants to stop only its own thread wants kos_exit.
+// Privileged-only, so it is NOT noreturn: it returns -KOS_EPERM to a caller that may
+// not end the system, and does not return at all on success.
+int kos_shutdown(int status);
 void kos_irq_inject(int irq);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -189,7 +200,37 @@ void kos_clock_set_realtime(uint64_t unix_ns);
 // Allocate a page-aligned block from the MPU-governed user-RAM pool, to hand to
 // a thread as its domain data region (see kos_thread_params.mem_base). NULL if
 // exhausted. On MCU this pool is a linker-defined region.
+//
+// Allocating does NOT make the block reachable by the caller: it reserves arena
+// memory and grants nothing. Hand it to a spawn, or ask for it explicitly with
+// kos_mem_self_grant below.
 void* kos_ram_alloc(size_t size);
+
+// Add [base, base+size) to the CALLING thread's own region set, so the caller may
+// dereference memory it allocated: kos_ram_alloc reserves, this grants, and nothing
+// grants implicitly.
+//
+// Requires AUTH_MEMORY, the same authority kos_ram_alloc takes. The region is run
+// through the same Rule 7 admission predicate as a spawn-time grant, so it must be
+// inside the user arena and clear of every kernel-reserved block; the committed
+// extent is rounded up to what the MPU can describe (arch_ram_region_size), exactly
+// as a domain data region is. The gate admits ANY reserved-clear in-arena range,
+// not only memory the caller itself allocated: AUTH_MEMORY is arena-wide authority.
+//
+// BOUNDED by the hardware region budget, and loud when it runs out. A thread already
+// spends up to 5 of KICKOS_MPU_MAX_REGIONS on code, static data, its domain and its
+// stack, so self-grants draw on a small remainder. Grant the regions a thread needs
+// for its lifetime at start-up; this is not a general mapping call.
+//
+// Returns 0 on success (including when the range is ALREADY reachable, which costs
+// no descriptor), or:
+//   -KOS_EPERM   no AUTH_MEMORY, or the range is inadmissible (outside the arena,
+//                or overlapping a reserved block)
+//   -KOS_EINVAL  size 0, the range wraps, or (under an MPU) the base is not
+//                naturally aligned to the rounded region size (a base from
+//                kos_ram_alloc never trips this)
+//   -KOS_ENOMEM  the caller's region budget is full
+int kos_mem_self_grant(void* base, size_t size);
 
 // Borrow the KERNEL'S single diagnostic LED (the kernel also drives it for
 // self-debug, e.g. solid on panic). Not an app-owned device: this is provisional

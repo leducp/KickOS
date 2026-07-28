@@ -1,13 +1,18 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design brief: STM32F411 SPI1 loopback driver -- the canonical PMSA per-thread MMIO isolation reference
 
+> **Status: LANDED** (silicon-pending) -- `f411spi` shipped as `user/apps/f411disco/f411spi/` and
+> is fable-reviewed, but it has never run on silicon: it needs a bench swap to the 32F411E-DISCO.
+> It is redundant with `xmcspi` for the PMSA proof, which IS silicon-proven, so this is kept as
+> the STM32-family reference rather than a gap. See `design/README.md` for the marker taxonomy.
+
 Design + build-only (F411 not on the bench; K64F is). The CANONICAL per-thread
 peripheral-MMIO isolation reference on ARMv7-M PMSA -- the result the fleet was missing.
 Counterpart of `design-spi-driver-k64f-dspi.md` (coarse AIPS ceiling) and the XMC/USIC
 brief. Builds on the landed MMIO-grant seam (`design-task9-mmio-driver.md`;
 `kos_thread_params.mmio_base/mmio_size`), the tier-1 IRQ path (`kos_irq_register/wait/
 ack`), and the k64drv privileged-shim -> unprivileged-driver structure
-(`user/apps/k64drv/main.cc`).
+(`user/apps/frdmk64f/k64drv/main.cc`).
 
 ## Why this exists -- the honest gap it closes (read first)
 On PMSA the MPU is CPU-side and covers ALL address space, peripherals included. A granted

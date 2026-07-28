@@ -352,13 +352,13 @@ live stream via `--follow` (stdin/fifo, e.g. `JLinkRTTLogger -RTTChannel 1`;
    --csv`, asserts the exact canonical text. Locks byte layout + endianness +
    framing. Host-only and config-independent: registered on the sim build even
    with telemetry off, so the plain `sim` CI job always runs it.
-2. **Ring wrap / full-drop** (`user/apps/tele_flood` + `check_flood.py`, ctest
+2. **Ring wrap / full-drop** (`user/apps/common/tele_flood` + `check_flood.py`, ctest
    `telemetry_ring_wrap`, `sim-telem` preset) -- overfills ch1; asserts
    record-atomic drop (no torn record), contiguous `seq` in the file (the sim
    drains only at shutdown, so drops form a clean tail), and that
    `decoded + dropped == attempted` against the `[ktrace]` counter line printed
    by `kickos_trace_report_counters` (no OVERFLOW record).
-3. **End-to-end sim run** (`user/apps/tele_pingpong` + `check_run.py`, ctest
+3. **End-to-end sim run** (`user/apps/common/tele_pingpong` + `check_run.py`, ctest
    `telemetry_structural`, `sim-telem` preset) -- real ping-pong with telemetry
    on, decoded by `kicktrace.py --assert-structural`: **timing-agnostic
    structural** assertions -- SWITCH `from==prev.to` chain intact, ENTER/EXIT

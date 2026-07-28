@@ -7,8 +7,10 @@
 
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/cap.h> // cap_seat_authority + CAP_AUTH_ALL (the unprivileged-root seat)
 #include <kickos/domain.h>
 #include <kickos/grant.h>
+#include <kickos/irqlock.h>
 #include <kickos/time.h>
 #include <kickos/irq.h>
 #include <kickos/app.h>
@@ -22,9 +24,11 @@ extern "C"
     // Buffered-console bring-up (console_tx.cc): binds the TX drain ISR + arms the
     // ring once the chip offers a backend. No-op on sim / polled-only chips.
     void console_buffer_init(void);
-    // Drain the buffered console before a clean shutdown so a single-shot app's
-    // trailing output is not stranded in the ring (kpanic/fault already flush).
-    void console_tx_flush_sync(void);
+    // End the system: drain the buffered console (kpanic/fault already flush), then
+    // chip shutdown. Reached through the syscall trap because root is not always
+    // privileged (see <kickos/sys.h>). Declared here rather than including the
+    // userspace header into a kernel TU.
+    int kos_shutdown(int status);
     // Generated per-build by CMake (cmake/build_stamp.cmake) so the banner reflects the
     // image actually linked, not the (stale-on-incremental) __DATE__/__TIME__ of a TU.
     // Local build time (with offset) + the commit (git describe --dirty --always).
@@ -33,15 +37,21 @@ extern "C"
     // Per-app source compile time (weak; null when no app defines it). See app.h.
     char const* kickos_app_build_stamp(void) __attribute__((weak));
 
-    // Non-kernel (app / libstdc++ / newlib / library) global ctors. On a migrated MCU
-    // the chip linker routes them here, OUT of .init_array (which keeps only the kernel
-    // ctors that Reset_Handler must run before kmain constructs the instance). We run
-    // them from root_entry -- in a thread, kernel live -- because a ctor may issue a
-    // KickOS syscall (kos_clock_now) that needs ktime_init + a current thread. Weak:
-    // undefined on sim and not-yet-migrated chips -> null -> skipped (there the ctors
-    // still run via the host runtime / the chip's own full .init_array loop).
-    extern void (*__kickos_app_init_array_start[])() __attribute__((weak));
-    extern void (*__kickos_app_init_array_end[])() __attribute__((weak));
+    // Non-kernel (app / libstdc++ / newlib / library) global ctors. The linker script
+    // routes them here, OUT of .init_array (which keeps only the kernel ctors that
+    // Reset_Handler must run before kmain constructs the instance). Run from
+    // root_entry, in a thread with the kernel live, because a ctor may issue a KickOS
+    // syscall (kos_clock_now) that needs ktime_init + a current thread.
+    //
+    // STRONG on purpose: every target must STATE its window (the sim states an
+    // explicitly EMPTY one, arch/sim/start.cc).
+    //   present but empty -> start == end -> the walk below iterates zero times, silent
+    //   absent            -> undefined symbol -> the link FAILS, loudly
+    // Weak bounds would collapse "absent" into a silent skip, leaving a script that
+    // forgot to partition .init_array running every app ctor privileged with no
+    // diagnostic.
+    extern void (*__kickos_app_init_array_start[])();
+    extern void (*__kickos_app_init_array_end[])();
 
     // Userspace heap window bounds (chip .ld): [_kickos_heap_start, _kickos_heap_limit).
     // Weak: the sim (host heap) and a malloc-free image define neither -> both null ->
@@ -68,20 +78,46 @@ namespace kickos
 {
     namespace
     {
-        // The bootstrap idle/root TCBs + stacks. Still file-static: the remaining
+        // The bootstrap idle/root TCBs. Still file-static: the remaining
         // instance-scoping residue (invariant #7) -- they move into Kernel with the
         // Later multi-instance work (alongside the sim altstack and the TLS pointer).
-        alignas(16) unsigned char g_idle_stack[KICKOS_IDLE_STACK_SIZE];
-        alignas(16) unsigned char g_root_stack[KICKOS_ROOT_STACK_SIZE];
+        // Their STACKS are deliberately NOT here; see boot_stack_alloc below.
         Thread g_idle_tcb;
         Thread g_root_tcb;
 
-        // Host argv forwarded to the app entry (argc=0/argv=nullptr on MCU).
-        struct AppArgs
+        // Take one bootstrap thread stack from the user-RAM arena, and assert at boot
+        // the two properties an MPU descriptor over it depends on. A thread's own
+        // stack is one of its MPU regions; PMSAv7/v8 and PMP/NAPOT can only name a
+        // pow2 block naturally aligned to its size, and Rule 7 confines a RAM grant to
+        // the arena for EVERY caller (a .bss array satisfies neither). arch_ram_alloc
+        // reserves arch_ram_region_size() bytes naturally aligned to that size, i.e.
+        // exactly one region. Safe here: every arch runs arch_init() before kmain, and
+        // the caller has already run domain_init() and grant_reserved_validate().
+        void* boot_stack_alloc(size_t size, char const* exhausted_msg)
         {
-            int argc;
-            char** argv;
-        };
+            void* const p = arch_ram_alloc(size);
+            if (p == nullptr)
+            {
+                // A board that carves no arena, or one too small to hold this stack.
+                // Limping on would start a thread on a null stack pointer.
+                kpanic(exhausted_msg);
+            }
+            uintptr_t const base = reinterpret_cast<uintptr_t>(p);
+            // Naturally aligned: on a pow2-descriptor arch the alignment IS the region
+            // size, so one descriptor names the block and nothing else; on a no-MPU
+            // arch the contract is just the 16-byte ABI floor.
+            size_t const align = arch_ram_region_align(size);
+            KICKOS_ASSERT((base & (align - 1u)) == 0);
+            // In-arena across the whole ROUNDED block (the span a descriptor would
+            // cover and Rule 7 would admit). Subtract-form bounds cannot wrap.
+            size_t const rsz = arch_ram_region_size(size);
+            uintptr_t const arena = arch_ram_base();
+            size_t const arena_size = arch_ram_size();
+            KICKOS_ASSERT(base >= arena);
+            KICKOS_ASSERT(rsz <= arena_size);
+            KICKOS_ASSERT(base - arena <= arena_size - rsz);
+            return p;
+        }
 
         void kbanner()
         {
@@ -89,9 +125,17 @@ namespace kickos
 #if defined(KICKOS_SCHED_PERIODIC_TICK)
             sched = "periodic tick";
 #endif
-            char const* mpu = "off";
+            // A concatenated literal: the suffix is empty TO THE BYTE in the default
+            // posture, which is load-bearing (f302nucleo-st links with 96 bytes of
+            // flash free and this banner reaches every board).
+#if KICKOS_ROOT_PRIVILEGED
+#define KICKOS_BANNER_ROOT ""
+#else
+#define KICKOS_BANNER_ROOT ", root unprivileged"
+#endif
+            char const* mpu = "off" KICKOS_BANNER_ROOT;
 #if KICKOS_HAVE_MPU
-            mpu = "enforce";
+            mpu = "enforce" KICKOS_BANNER_ROOT;
 #endif
             char const* rule = "  ==============================================\n";
             kputs("\n");
@@ -130,34 +174,35 @@ namespace kickos
             }
         }
 
-        void root_entry(void* arg)
+        void root_entry(void*)
         {
-            // App/library ctors run here (kernel live, in a thread), before main --
-            // the normal C++ order. Null on sim / unmigrated chips (see the decl).
-            if (__kickos_app_init_array_start != nullptr)
+            // App/library ctors run here (kernel live, in a thread), before main.
+            // No null guard: the bounds are strong, so an empty window is start == end
+            // and this loop simply does not run (see the decl).
+            for (void (**fn)() = __kickos_app_init_array_start;
+                 fn != __kickos_app_init_array_end; fn++)
             {
-                for (void (**fn)() = __kickos_app_init_array_start;
-                     fn != __kickos_app_init_array_end; fn++)
-                {
-                    (*fn)();
-                }
+                (*fn)();
             }
-            AppArgs const* a = static_cast<AppArgs const*>(arg);
-            int status = kickos_init_entry(a->argc, a->argv);
-            // A returning init is a single-shot system: exit with its status. A
-            // persistent init never returns here (it parks or loops). Flush the
-            // buffered console first, else trailing output stays stranded in the ring.
-            console_tx_flush_sync();
-            arch_shutdown(status);
+            // Read the handoff from app-side storage, not from a thread argument: this
+            // is the first thing root touches, and it must stay reachable when root is
+            // unprivileged (see <kickos/sys/init.h>).
+            int status = kickos_init_entry(kickos_init_args.argc, kickos_init_args.argv);
+            // A returning init is a single-shot system: end it with that status. A
+            // persistent init never returns here (it parks or loops). kos_shutdown
+            // returning means root was refused; report it rather than running on.
+            kos_shutdown(status);
+            KICKOS_UNREACHABLE("root: shutdown refused");
         }
     }
 
     int kmain(int argc, char** argv)
     {
-        // Local, not static: sched::start() below never unwinds back here (the
-        // scheduler exits via arch_shutdown), and root_entry reads these once at
-        // entry, so this frame outlives every read.
-        AppArgs app_args{argc, argv};
+        // Publish the handoff into app-side storage before anything can read it. Not a
+        // frame local: root_entry reads it as an unprivileged thread on an enforcing
+        // board, and the boot stack this frame sits on is outside the arena.
+        kickos_init_args.argc = argc;
+        kickos_init_args.argv = argv;
 
         kdiag_led_init(); // early: usable as a fault indicator from here on
         kbanner();
@@ -169,13 +214,22 @@ namespace kickos
         console_buffer_init(); // arm the buffered console TX drain (after irq_init)
         ktrace_init();       // measure probe overhead + emit the opening SESSION (no-op when off)
 
+        // Idle (the smaller stack on every board) FIRST: against the bump allocator
+        // the small block then sits inside the large block's natural-alignment run-up
+        // instead of after it. Load-bearing, not tidiness: the f302nucleo and
+        // bluepill-c8 arenas fit the pair in this order only.
+        void* const idle_stack =
+            boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, "kmain: no arena for the idle stack");
+        void* const root_stack =
+            boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, "kmain: no arena for the root stack");
+
         ThreadAttr idle_attr;
         idle_attr.name = "idle";
         idle_attr.prio = KICKOS_PRIO_IDLE;
         idle_attr.policy = Policy::FIFO;
         idle_attr.privileged = true;
         thread_create(&g_idle_tcb, idle_entry, nullptr,
-                      g_idle_stack, sizeof(g_idle_stack), idle_attr);
+                      idle_stack, KICKOS_IDLE_STACK_SIZE, idle_attr);
         // Idle is created first, so it MUST be trace id 0 (the telemetry decoder
         // keys CPU% off tid 0 == idle). Assert the invariant, not just assume it.
         KICKOS_ASSERT(g_idle_tcb.id == KICKOS_TID_IDLE);
@@ -188,9 +242,25 @@ namespace kickos
         root_attr.name = "root";
         root_attr.prio = KICKOS_PRIO_MIN + 1;
         root_attr.policy = Policy::FIFO;
-        root_attr.privileged = true;
-        thread_create(&g_root_tcb, root_entry, &app_args,
-                      g_root_stack, sizeof(g_root_stack), root_attr);
+        // The privilege boundary, decided ONCE here: privilege is a property of the
+        // fabricated first frame (arch_context_init) and of the region set
+        // thread_create composes from it, so there is no demotion instant. Build knob,
+        // not a weak symbol (see the KICKOS_ROOT_PRIVILEGED block in the root
+        // CMakeLists.txt).
+        root_attr.privileged = (KICKOS_ROOT_PRIVILEGED != 0);
+        thread_create(&g_root_tcb, root_entry, nullptr,
+                      root_stack, KICKOS_ROOT_STACK_SIZE, root_attr);
+#if !KICKOS_ROOT_PRIVILEGED
+        // Root is seated with every authority (the set a privileged root holds
+        // implicitly). Ordering matters twice: after thread_create, which zeroes the
+        // cap table and would wipe the seat; before sched::start(), so the seat is in
+        // place before root's first instruction. IrqLock is cap_seat_authority's
+        // documented precondition.
+        {
+            IrqLock lock;
+            cap_seat_authority(&g_root_tcb, CAP_AUTH_ALL);
+        }
+#endif
 
         sched::start(); // returns only if the scheduler ever unwinds to boot
         return 0;

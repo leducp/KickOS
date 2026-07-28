@@ -170,7 +170,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-err); // EBADF (bad/closed cap) or EPERM (no SIGNAL right)
             }
-            sem_post(s);
+            if (not sem_post(s))
+            {
+                return static_cast<uintptr_t>(-KOS_EOVERFLOW); // count already at the ceiling
+            }
             return 0;
         }
         case KOS_SYS_MUTEX_CREATE:
@@ -249,12 +252,12 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_CONSOLE_PUBLISH:
         {
             // Hand the console UART to a userspace driver named by an endpoint cap.
-            // Privileged-only (like ram_alloc / MMIO grant): it disables a live IRQ line
-            // and mutates global console routing. See the handover design (D3).
+            // AUTH_DEVICE (like shutdown): it disables a live IRQ line and mutates global
+            // console routing. See the handover design (D3).
             Thread* c = sched::current();
-            if (c == nullptr or not c->privileged)
+            if (not cap_check_authority(c, AUTH_DEVICE))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM); // privileged-only
+                return static_cast<uintptr_t>(-KOS_EPERM);
             }
             int handle = -1;
             {
@@ -325,10 +328,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // path so the caller needs only ONE error test. The coherence sequence
             // (mask / disarm / flush / retune / re-arm) lives in cpu_clock_set.
             // NOTE: this syscall stays OUT of the -KOS_E* scheme -- it returns a u32 Hz
-            // whose 0 sentinel already means cannot/unsupported/not-privileged, and the
+            // whose 0 sentinel already means cannot/unsupported/not-permitted, and the
             // console-owned refusal (an EBUSY-shaped condition) surfaces as "unchanged Hz".
             Thread* c = sched::current();
-            if (c == nullptr or not c->privileged)
+            if (not cap_check_authority(c, AUTH_CLOCK))
             {
                 return 0;
             }
@@ -343,6 +346,21 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_EXIT:
         {
             sched::exit_current(static_cast<int>(a0)); // noreturn
+            return 0;
+        }
+        case KOS_SYS_SHUTDOWN:
+        {
+            // End the system: drain the buffered console, then arch_shutdown. A
+            // syscall because neither half is reachable from an unprivileged thread.
+            // AUTH_DEVICE (like console_publish): an ungated shutdown would be a kill
+            // switch in every worker thread.
+            Thread* c = sched::current();
+            if (not cap_check_authority(c, AUTH_DEVICE))
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            console_tx_flush_sync();
+            arch_shutdown(static_cast<int>(a0)); // noreturn
             return 0;
         }
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -458,11 +476,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             // Test scaffolding: enable an UNBOUND line so an injected raise reaches
             // the default (spurious) handler on masked-by-default controllers (ARM
-            // NVIC, RX), which else drop it. Privileged-only (it arms a controller
-            // line), like irq_attach.
-            if (not sched::current()->privileged)
+            // NVIC, RX), which else drop it. AUTH_IRQ (it arms a controller line),
+            // like irq_attach.
+            if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
-                return static_cast<uintptr_t>(-KOS_EPERM); // arms a controller line: privileged-only
+                return static_cast<uintptr_t>(-KOS_EPERM); // arms a controller line
             }
             int irq = static_cast<int>(a0);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
@@ -475,9 +493,9 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
 #endif
         case KOS_SYS_IRQ_ATTACH:
         {
-            // Tier-2 installs a privileged in-kernel handler: privileged-only, so
-            // an unprivileged thread cannot bind (or steal) a line's dispatch.
-            if (not sched::current()->privileged)
+            // Tier-2 installs a privileged in-kernel handler, so AUTH_IRQ: a thread
+            // without it cannot bind (or steal) a line's dispatch.
+            if (not cap_check_authority(sched::current(), AUTH_IRQ))
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
@@ -561,11 +579,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_PINMUX_SET:
         {
             // One-shot init-time pin-function config (the clock->pinmux->gpio bring-up DAG
-            // middle). Privileged-only: the mux registers live in the shared SCU/PORT block
-            // the kernel keeps. a0=port, a1=pin, a2=func (all chip-opaque; neutrality is the
+            // middle). AUTH_PINMUX: the mux registers live in the shared SCU/PORT block the
+            // kernel keeps. a0=port, a1=pin, a2=func (all chip-opaque; neutrality is the
             // {port,pin,func} shape, not the encoding). Backend rejects kernel-owned pins.
             Thread* c = sched::current();
-            if (c == nullptr or not c->privileged)
+            if (not cap_check_authority(c, AUTH_PINMUX))
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
@@ -573,22 +591,92 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_RAM_ALLOC:
         {
-            // Privileged-only: domains are carved by the privileged setup path,
-            // not by arbitrary user threads (avoids a DoS on the shared pool and
-            // matches static-allocation-first). IrqLock: arch_ram_alloc does an
-            // unguarded read-modify-write of the bump pointer.
+            // AUTH_MEMORY: domains are carved by the setup path, not by arbitrary user
+            // threads (avoids a DoS on the shared pool and matches static-allocation-first).
+            // IrqLock: arch_ram_alloc does an unguarded read-modify-write of the bump
+            // pointer.
             // POINTER return -- OUT of the -KOS_E* scheme: a negative errno cast to
             // void* would be a non-NULL pointer. EVERY failure path returns 0 (NULL) so
-            // the documented `if (p == NULL)` check is correct: the not-privileged reject
+            // the documented `if (p == NULL)` check is correct: the not-permitted reject
             // and the arena-exhausted reject both yield NULL (arch_ram_alloc already
             // returns 0 when exhausted).
             IrqLock lock;
-            if (not sched::current()->privileged)
+            if (not cap_check_authority(sched::current(), AUTH_MEMORY))
             {
                 return 0; // NULL, not (uintptr_t)-1 -- the latent dual-sentinel bug fixed
             }
             return reinterpret_cast<uintptr_t>(
                 arch_ram_alloc(static_cast<size_t>(a0)));
+        }
+        case KOS_SYS_MEM_SELF_GRANT:
+        {
+            // The explicit half of allocate-then-grant: KOS_SYS_RAM_ALLOC reserves
+            // arena memory and grants nothing. Explicit rather than implicit inside
+            // ram_alloc because the descriptor budget is hardware; here a full budget
+            // is a returned error, not a refused allocation that already succeeded.
+            //
+            // Added to the CALLER's own region set, not to its domain: a domain is
+            // shared, and widening it would silently hand the same window to every
+            // sibling thread.
+            IrqLock lock;
+            Thread* const c = sched::current();
+            if (c == nullptr or not cap_check_authority(c, AUTH_MEMORY))
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            uintptr_t const base = a0;
+            size_t const size = static_cast<size_t>(a1);
+            if (size == 0 or (base + size) < base)
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            // Already reachable costs no descriptor: the call is idempotent, and a
+            // privileged caller (whole-arena region) always lands here.
+            if (user_range_ok(base, size, ARCH_MPU_R | ARCH_MPU_W))
+            {
+                return 0;
+            }
+            // Rule 7, the same admission a spawn-time data grant takes, on the
+            // geometry that will actually be committed: a window rounded up AFTER
+            // admission could cover a neighbour the unrounded extent did not.
+            size_t const rsz = arch_ram_region_size(size);
+            if (rsz == 0)
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            // Naturally aligned, the same admission the stack grant takes
+            // (syscall_thread.cc): PMSAv7 MPU_RBAR MASKS the base down to the region
+            // size, so an unaligned base would be programmed as a window starting
+            // BELOW what the caller named. Where arch_mpu_min_region() == 0 there is
+            // no descriptor to snap and rsz is not a power of two (rsz - 1 is not an
+            // alignment mask), so the check is skipped.
+            if (arch_mpu_min_region() != 0 and (base & (rsz - 1)) != 0)
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
+                                            cap_check_authority(c, AUTH_MEMORY)))
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            // Full budget is a returned error; truncating the set instead would fault
+            // the thread on memory it was told it had.
+            if (c->region_count >= KICKOS_MPU_MAX_REGIONS)
+            {
+                return static_cast<uintptr_t>(-KOS_ENOMEM);
+            }
+            c->regions[c->region_count].base = base;
+            c->regions[c->region_count].size = rsz;
+            c->regions[c->region_count].attr = ARCH_MPU_R | ARCH_MPU_W;
+            c->region_count++;
+            // Must be effective BEFORE the return: the caller's next instruction may
+            // dereference the region, and on a deferred-switch arch apply() only
+            // STASHES; the commit is what programs the hardware
+            // (docs/design-mpu-commit-deferred.md). Sound because no switch is
+            // involved: outgoing and incoming are the same thread.
+            arch_mpu_apply(c->regions, c->region_count);
+            kickos_arch_mpu_commit();
+            return 0;
         }
         case KOS_SYS_IRQ_REGISTER:
         {

@@ -3,7 +3,7 @@
   "configurePresets": [
     {
       "name": "esp32-wroom",
-      "displayName": "ESP32-WROOM-32 (Xtensa LX6, windowed ABI) - build-only [first non-ARM ISA]",
+      "displayName": "ESP32-WROOM-32 (Xtensa LX6, windowed ABI) [first non-ARM ISA]",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/esp32-wroom",
       "toolchainFile": "${sourceDir}/cmake/toolchain-xtensa-esp32-elf.cmake",
@@ -15,7 +15,7 @@
     },
     {
       "name": "esp32-wroom-st",
-      "displayName": "ESP32-WROOM-32 (Xtensa LX6) + selftest (full IRQ suite) - HW-validated 14/14",
+      "displayName": "ESP32-WROOM-32 (Xtensa LX6) + selftest (full IRQ suite)",
       "inherits": "esp32-wroom",
       "binaryDir": "${sourceDir}/build/esp32-wroom-st",
       "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" }

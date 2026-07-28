@@ -8,9 +8,8 @@
 // arch_shutdown -- and the linker script that defines the user-RAM region and the
 // CMTW input-clock frequency.
 //
-// BUILD-ONLY: there is no RX execution target (no QEMU model) in this
-// environment. This compiles clean for RXv3 and the switch/syscall paths are
-// validated by construction against the RXv3 ISA UM. NOT hardware-validated.
+// Upstream QEMU ships no RXv3 machine model, so nothing in CI executes this arch;
+// every RX run is on real silicon. Validation status: docs/reference/boards.md.
 
 #include <kickos/arch/arch.h>
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
@@ -100,11 +99,11 @@ namespace
     // coalesced). Redelivered through the SWINT2 doorbell at unmask.
     volatile uint32_t g_irq_pending = 0;
 
-    // Build-only MPU wedge localizer (DEFAULT OFF: -DKICKOS_RX_MPU_TRACE=1). Raw
+    // Opt-in MPU wedge localizer (DEFAULT OFF: -DKICKOS_RX_MPU_TRACE=1). Raw
     // polled SCI6 byte, bounded spin, touching no ring or global -- safe from ISR and
     // fault context. It interleaves with the buffered TAP output; the LAST byte before
-    // the console goes silent localizes the wedge that appears at rr_interleave (the
-    // first switch driven from the CMTW0 timer ISR under enforcement):
+    // the console goes silent localizes a wedge around the first switch driven from
+    // the CMTW0 timer ISR under enforcement:
     //   'T' then silence          -> hang in ktime_on_timer/tick_rr BEFORE apply
     //   'T' '[' then silence      -> hang INSIDE arch_mpu_apply's MPU register writes
     //   'T' '[' ']' then silence  -> hang AFTER apply (pendsw switch / re-arm / switched-in)
@@ -849,8 +848,7 @@ __attribute__((weak)) int kickos_rx_dev_pending_line(void) { return -1; }
 // IER (irq_event_isr / the null-object default), so the unprivileged driver
 // services it without a re-fire; no masking here. (A level source keeps IRn
 // asserted -- writing 0 is then a no-op -- but the IER mask still gates re-entry.)
-// BUILD-ONLY: with no chip override the hook returns -1 and this is inert, exactly
-// the prior stub; a real routed peripheral needs RX silicon to validate.
+// With no chip override the hook returns -1 and this is inert.
 __attribute__((interrupt)) void kickos_rx_default_irq(void)
 {
     g_in_isr++;

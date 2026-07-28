@@ -17,7 +17,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
-#include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
+#include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
@@ -220,6 +220,11 @@ namespace
     volatile uint32_t g_clk_high = 0;
     volatile uint32_t g_clk_last = 0;
 
+    // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Sole writer
+    // is init() in arch_init; this chip never retunes at runtime. A retune added later
+    // must call reprice() at the rate edge; the read must stay pure.
+    kickos::arch_clk_anchor g_clk;
+
     void tim2_clock_init()
     {
         // Boot-order: nothing before arch_init may read the clock. A static ctor
@@ -303,32 +308,20 @@ void arch_init(void)
     // then the console derives its BRR from the achieved PCLK1.
     clock_init();
     tim2_clock_init(); // monotonic time base (replaces the unreliable DWT clock)
+    // Anchor the clock ONCE, from the FINAL rate: TIM2 is on APB1 and, with HPRE=/1
+    // and PPRE1 in {/1,/2}, the STM32 APB timer-clock doubler makes the timer kernel
+    // clock equal HCLK == SystemCoreClock (retuning PPRE1 to /4+ would break that).
+    g_clk.init(SystemCoreClock);
     usart2_init();
     kickos_armv7m_init();
 }
 
 // Monotonic clock override: free-running TIM2 ticks -> ns, replacing the weak
-// DWT-backed arch_clock_now (unreliable on this silicon). TIM2 is on APB1; with
-// HPRE=/1 and PPRE1 in {/1,/2} the STM32 APB timer-clock doubler makes the timer
-// kernel clock equal HCLK == SystemCoreClock across the PLL and the HSI-fallback
-// states (retuning PPRE1 to /4+ would break this identity). ns = ticks*1e9/hz via
-// a cached reciprocal multiply (the one 64-bit divide runs only at a clock change).
+// DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the anchor
+// holds the rate, so no divide and no rate derivation happens here.
 uint64_t arch_clock_now(void)
 {
-    uint32_t tim_hz = SystemCoreClock;
-    static uint64_t cached_hz = 0;
-    static uint64_t mult = 0;
-    if (tim_hz != cached_hz)
-    {
-        if (tim_hz == 0)
-        {
-            return 0;
-        }
-        mult = kickos::arch_clk_recip_q32(tim_hz);
-        cached_hz = tim_hz;
-    }
-    uint64_t ticks = tim2_ticks();
-    return kickos::arch_clk_mul_q32(ticks, mult);
+    return g_clk.ns_from(tim2_ticks());
 }
 
 // TIM2 overflow (update) ISR, vectored at NVIC 28 in startup.S. Observes the 67 s

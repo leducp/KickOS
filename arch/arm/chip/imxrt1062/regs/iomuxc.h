@@ -5,7 +5,7 @@
 // are involved: the SW_MUX_CTL_PAD_* mux selects, and the *_SELECT_INPUT daisy-
 // chain registers that pick which pad drives a peripheral input (RM 11.3). Only a
 // PARTIAL set of pads is named here -- the LPUART6 console pads plus a handful of
-// common GPIO1/GPIO2 pads the build-only pinmux exercise needs. The full 124-pad
+// common GPIO1/GPIO2 pads the pinmux exercise needs. The full 124-pad
 // SW_MUX block and the SW_PAD_CTL / GPIO data blocks are intentionally NOT authored;
 // arch_pinmux_set hard-fails EINVAL on any pad not in its table, so a hole is loud.
 

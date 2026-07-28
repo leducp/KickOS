@@ -9,6 +9,14 @@ to `__global_pointer$`), which today links KERNEL-SIDE, outside the app grant --
 U-mode throw/catch faults under PMP. This doc is a feasibility study of the option space
 for splitting that window kernel-vs-app, with per-option cost/risk, and a recommendation.
 
+> **Status: LANDED** -- the split shipped and is CI-gated: `riscv_no_smalldata`,
+> `qemu_riscv_cxxtest` and `qemu_riscv_mpu_fault` run in the `qemu-riscv-mpu` job, so a U-mode
+> throw under PMP is a green gate rather than a hope. `user/` objects build
+> `-msmall-data-limit=0` and app globals land in `.appdata`/`.appbss`. The option analysis below
+> is kept as the why. See `design/README.md` for the marker taxonomy.
+
+The framing below was written while this was still open:
+
 FEASIBILITY STUDY, not landed. Sibling of `design-cxx-under-mpu.md` (the broader full-C++
 experiment, which independently reached the same recommended layout and calls it "proven
 on qemu-riscv"). This doc adds the rigorous per-option evaluation -- in particular it

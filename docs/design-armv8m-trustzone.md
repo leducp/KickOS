@@ -3,6 +3,9 @@
 
 # ARMv8-M TrustZone as the armv8-M kernel-confinement backend
 
+> **Status: EXPLORATORY** -- a spike, not a contract. Nothing here is implemented and nothing
+> here licenses a code change. See `design/README.md` for the marker taxonomy.
+
 Status: DESIGN SPIKE. Not implemented. Forward-looking. IMPLEMENT POST-M6 (after
 the M4 driver era and M5 SMP settle, since the secure-services angle needs the
 service model to exist first). Requires a fable design review before any merge.

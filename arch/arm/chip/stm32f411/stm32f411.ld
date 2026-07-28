@@ -64,6 +64,21 @@ SECTIONS
         __init_array_end = .;
     } > FLASH
 
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. Under
+       -fno-use-cxa-atexit a non-trivial static destructor registers through
+       .fini_array, and an unplaced entry is either gc'd (the destructor silently
+       never runs) or orphaned by ld outside every copied/zeroed range. App side,
+       never the privileged bucket, so a future teardown lands unprivileged. Kept
+       BEFORE the app ctor bucket: on rv32imac that bucket carries _code_used_end,
+       which must trail all code. */
+    .kickos_app_fini_array :
+    {
+        __kickos_app_fini_array_start = .;
+        KEEP(*(SORT(.fini_array.*)))
+        KEEP(*(.fini_array))
+        __kickos_app_fini_array_end = .;
+    } > FLASH
+
     .kickos_app_init_array :
     {
         __kickos_app_init_array_start = .;
@@ -220,6 +235,11 @@ SECTIONS
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
+
+/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
+   rather than silently drop a destructor. */
+ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
+       "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 /* App globals must fit the pow2 region. If this trips, raise _appdata_size to the
    next power of two (it is the app's MPU-granted .data/.bss window). */

@@ -61,9 +61,10 @@ namespace
 }
 
 // Console-ownership seam shared with console_tx.cc (disarm-fallback gate) and the
-// kos_console_publish syscall (handover). Declared in console_tx.h. The chip-writer
-// count RMW runs under IrqLock: console_emit can run in ISR/fault context, so a plain
-// volatile ++/-- could tear against a thread producer's ++/--.
+// kos_console_publish syscall (handover). Declared in console_tx.h. Every access to the
+// chip-writer count, mutators and reader alike, runs under IrqLock: console_emit can run
+// in ISR/fault context, so a plain volatile increment could tear against a thread
+// producer's, and an unlocked reader could observe the torn intermediate.
 extern "C" int console_owner_is_kernel(void)
 {
     return static_cast<int>(g_console_state == ConsoleState::KERNEL_OWNED);
@@ -86,18 +87,27 @@ extern "C" void console_chip_writer_leave(void)
     g_chip_writers = g_chip_writers - 1;
 }
 
+// Read under the same lock the mutators take: an unlocked reader can observe a count
+// between a writer's load and its store, and a stale zero in kos_console_publish's
+// handover drain hands the UART to a userspace driver while a kernel writer is still
+// using the device. The drain yields between polls, so there is no livelock.
 extern "C" int console_chip_writers(void)
 {
+    kickos::IrqLock lock;
     return g_chip_writers;
 }
 
 namespace kickos
 {
+#if KICKOS_CONSOLE_CHIP
     // Route one already-CRLF-expanded chunk to the chip. The buffered path is used
     // only in ordinary thread context with the ring armed; panic, any ISR/fault
     // context, and pre-arm boot fall back to the bounded polled writer. This is the
     // single choke point that keeps the ring a true single-producer (never entered
     // from ISR context).
+    //
+    // Guarded on the chip backend: with it compiled out this has no caller at all
+    // (KICKOS_CONSOLE=none / =rtt).
     static void console_emit(char const* buf, size_t n)
     {
         switch (g_console_state)
@@ -131,6 +141,7 @@ namespace kickos
         }
         }
     }
+#endif
 
     // Fan-out to every enabled backend (compile-time). Per-backend locking: the
     // RTT ring is a WrOff read-modify-write written from thread/ISR/fault contexts,
@@ -140,6 +151,13 @@ namespace kickos
     // transmission (a 256B write at 115200 would mask interrupts for ~22 ms).
     void kconsole_write(char const* buf, size_t n)
     {
+#if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
+        // KICKOS_CONSOLE=none: every backend is compiled out and this is deliberately
+        // a sink. The kernel still panics, faults and boots identically; it just says
+        // nothing.
+        (void)buf;
+        (void)n;
+#endif
 #if KICKOS_CONSOLE_RTT
         {
             IrqLock lock;

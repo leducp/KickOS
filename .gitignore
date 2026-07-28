@@ -33,3 +33,6 @@ compile_commands.json
 
 # local operational context (paths, rig, gotchas) -- personal, not for the public repo
 /CONTEXT.local.md
+
+# agent worktrees and assistant state -- machine-local, holds full stale checkouts
+**/.claude/

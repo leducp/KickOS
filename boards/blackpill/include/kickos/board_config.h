@@ -5,7 +5,8 @@
  * with the F411E-DISCO (boards/f411disco) -- the SECOND board on this chip, and
  * the concrete case the board/chip split was built for. Differs from the Disco
  * in HSE crystal (25 MHz vs 8) and LED (PC13 active-low vs PD12 active-high).
- * HW-UNTESTED: added build-only; flash to confirm (USB-DFU with BOOT0, or SWD).
+ * No on-board debugger: flashes over USB-DFU (hold BOOT0) or an external SWD probe.
+ * Validation status of this port: see docs/reference/boards.md.
  */
 #ifndef KICKOS_BOARD_CONFIG_H
 #define KICKOS_BOARD_CONFIG_H

@@ -1,13 +1,27 @@
 # SPDX-License-Identifier: CECILL-C
 # KickOS CI: the deterministic, host-runnable green gates (docs/m2-readiness.md #6).
-# Silicon boards and the RX/Xtensa vendor toolchains are NOT here -- they stay a
-# manual/self-hosted step per the HW-test deferral policy. Every job mirrors a
-# `--preset` invocation.
+# Every job mirrors a `--preset` invocation. Nothing here runs on silicon; a port's
+# hardware status has one home, docs/reference/boards.md.
+#
+# ISA coverage: sim (host), armv7m + armv6m + armv8m (QEMU run), rv32imac (QEMU run,
+# plain and under PMP), Xtensa LX6 (build-only). Renesas RX has no gate: RX72M needs
+# -misa=v3/-mdfpu, which exist only in the registration-gated Renesas GNURX build.
+#
+# MPU enforcement runs at RUNTIME on all three ISA families: sim (host mprotect),
+# rv32imac (PMP, qemu-riscv-mpu), ARM on both PMSA revisions (the enforcement step
+# in qemu-arm). build-boards-mpu is the only coverage of the chip-specific backends
+# QEMU has no model for (SYSMPU, the M7 anti-speculation wrap, PMSAv6): link surface
+# only, never the trap.
+#
+# Warnings-as-errors rides EVERY job with no flag (KICKOS_WERROR defaults ON for any
+# in-tree build; see cmake/kickos.cmake, incl. the -DKICKOS_WERROR=OFF escape).
+# UBSan is the sim alone: there is no bare-metal sanitizer runtime to link against.
 #
 # Toolchains are the SAME pinned vendor tarballs used locally (reproducibility): the
-# official Arm GNU Toolchain (arm-none-eabi, newlib) and the RISCstar toolchain
-# (riscv32-none-elf, newlib, rv32imac soft-float multilib). Both are downloaded +
-# cached; no apt gcc-arm-none-eabi / xPack. The sim job uses the host g++.
+# official Arm GNU Toolchain (arm-none-eabi, newlib), the RISCstar toolchain
+# (riscv32-none-elf, newlib, rv32imac soft-float multilib), and Espressif's
+# crosstool-NG Xtensa build. All downloaded + cached; no apt gcc-arm-none-eabi /
+# xPack. The sim job uses the host g++.
 
 name: CI
 
@@ -15,22 +29,33 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Manual per-branch run (`gh workflow run ci.yml --ref <branch>`): push is
+  # master-only and a feature branch fires nothing until a PR opens.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  # Keep these in lockstep with cmake/toolchain-arm-none-eabi.cmake /
-  # toolchain-riscv-none-elf.cmake defaults (the Apps/... paths locally).
-  # CI uses 15.2.rel1 (the newest arm-none-eabi that developer.arm.com serves anonymously;
-  # 15.3.rel1 is gitlab-only + login-gated). The dev/silicon toolchain is 15.3.rel1 -- the
-  # presets resolve arm-none-eabi-* via PATH (not a pinned path), so this CI-only minor skew
-  # is harmless for build-regression coverage.
+  # These name the vendor tarballs; only the KICKOS_*_TOOLCHAIN_BIN variable NAMES
+  # must agree with the toolchain files (which seed them from the environment).
+  # CI uses 15.2.rel1, the newest arm-none-eabi that developer.arm.com serves
+  # anonymously (15.3.rel1 is gitlab-only + login-gated); the desk toolchain is
+  # 15.3.rel1, a harmless minor skew for build-regression coverage.
   ARM_TC_DIR: arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi
   ARM_TC_URL: https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz
   RV_TC_DIR: riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf
   RV_TC_URL: https://releases.riscstar.com/toolchain/16.1-r1/riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf.tar.xz
+  # Espressif's Xtensa toolchain (a public GitHub release asset). The tarball is
+  # named xtensa-esp-elf but installs the per-chip xtensa-esp32-elf-* program names
+  # the toolchain file looks for, and unpacks to a version-less xtensa-esp-elf/ --
+  # hence the separate tag in the cache key. Do NOT downgrade to esp-12.2.0: its
+  # GCC 12.2 predates -nostdlib++, which the freestanding-C++ posture passes, so
+  # every compile dies on "unrecognized command-line option".
+  XT_TC_DIR: xtensa-esp-elf
+  XT_TC_TAG: esp-16.1.0_20260609
+  XT_TC_URL: https://github.com/espressif/crosstool-NG/releases/download/esp-16.1.0_20260609/xtensa-esp-elf-16.1.0_20260609-x86_64-linux-gnu.tar.xz
 
 jobs:
   # Authoritative deterministic gate: full ctest on the host sim -- selftest, the
@@ -45,6 +70,34 @@ jobs:
       - run: cmake --preset sim
       - run: cmake --build --preset sim
       - run: ctest --preset sim --output-on-failure
+
+  # The sim gate rebuilt under UndefinedBehaviorSanitizer. -fno-sanitize-recover=all
+  # is what makes it a GATE: UBSan's default is print-and-continue, exit status 0.
+  #
+  # UBSan only. Do NOT add -fsanitize=address: the sim switches threads with
+  # ucontext, and without __sanitizer_start/finish_switch_fiber annotations ASan
+  # treats each new stack as a wild region and the sim hangs. UBSan intercepts no
+  # stacks and needs nothing from the context switch.
+  #
+  # Flags via the CFLAGS/CXXFLAGS ENVIRONMENT, at JOB level, not -DCMAKE_C/CXX_FLAGS
+  # on the configure step: the oot_export test's child cmake (spawned by the CTEST
+  # step) inherits the environment but never a -D, and would otherwise link
+  # instrumented archives without the UBSan runtime (undefined __ubsan_handle_*).
+  #
+  # A separate binaryDir (-B) keeps the instrumented tree out of the plain `sim`
+  # preset's build/sim; ctest is driven by --test-dir (no sanitizer test preset).
+  sim-ubsan:
+    runs-on: ubuntu-latest
+    env:
+      CFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
+      CXXFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
+      - run: cmake --preset sim -B build/sim-ubsan
+      - run: cmake --build build/sim-ubsan
+      - run: ctest --test-dir build/sim-ubsan --output-on-failure
 
   # armv7m (mps2-an386) + armv6m (microbit) under QEMU, on the pinned Arm GNU toolchain.
   qemu-arm:
@@ -75,9 +128,9 @@ jobs:
           file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/arm.tar.xz
       - name: Put toolchain on PATH + bin
-        # PATH (not just -D) is REQUIRED: the KICKOS_*_TOOLCHAIN_BIN cache override does
-        # not propagate to CMake's try_compile ABI check, but PATH is inherited -- so the
-        # toolchain-file find_program resolves the cross compiler there via PATH.
+        # Env var and PATH; either alone is sufficient (the toolchain files seed
+        # KICKOS_*_TOOLCHAIN_BIN from the environment, and an empty hint falls back
+        # to PATH). Belt-and-braces is deliberate.
         run: |
           echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -90,6 +143,42 @@ jobs:
           cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
           ctest --preset qemu --output-on-failure --repeat until-pass:4
+      # The same chip backend on the three other MPS2 FPGA images (steps, not jobs:
+      # the toolchain and qemu-system-arm are already provisioned here). Each image
+      # buys coverage the an386 cannot: the M33 is armv8-M (PMSAv8), the M7 has 16
+      # MPU regions to the M4's 8, and the M3 has no FPU so the soft-float switch
+      # path actually runs.
+      - name: armv8-m mainline (mps2-an505, Cortex-M33)
+        run: |
+          cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-m33
+          ctest --preset qemu-m33 --output-on-failure --repeat until-pass:4
+      - name: armv7m (mps2-an500, Cortex-M7)
+        run: |
+          cmake --preset qemu-m7 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-m7
+          ctest --preset qemu-m7 --output-on-failure --repeat until-pass:4
+      - name: armv7m soft-float (mps2-an385, Cortex-M3)
+        run: |
+          cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-m3
+          ctest --preset qemu-m3 --output-on-failure --repeat until-pass:4
+      # ARM MPU enforcement at RUNTIME (the peer of qemu-riscv-mpu): the full TAP
+      # suite as unprivileged threads plus a real MemManage denial in mpu_fault,
+      # over both PMSA revisions: v7 on the M4/M7/M3, v8 on the M33 (a different
+      # register layout, not the same code path). Out-of-tree build dirs: the
+      # presets above own build/<preset> in the non-enforcement posture.
+      - name: ARM PMSA enforcement run gates (v7 + v8)
+        run: |
+          for b in qemu qemu-m33 qemu-m7 qemu-m3; do
+            cmake -S . -B "build/$b-mpu" -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm-none-eabi.cmake \
+              -DCMAKE_BUILD_TYPE=Debug -DKICKOS_BOARD="$b" \
+              -DKICKOS_ENABLE_SELFTEST=ON -DKICKOS_HAVE_MPU=1 \
+              -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+            cmake --build "build/$b-mpu"
+            ctest --test-dir "build/$b-mpu" --output-on-failure --repeat until-pass:4
+          done
       - name: armv6m (microbit)
         run: |
           cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
@@ -122,7 +211,7 @@ jobs:
           file /tmp/rv.tar.xz | grep -q XZ || { echo "rv toolchain: $RV_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/rv.tar.xz
       - name: Put toolchain on PATH + bin
-        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
         run: |
           echo "$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_RISCV_TOOLCHAIN_BIN=$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -164,7 +253,7 @@ jobs:
           file /tmp/rv.tar.xz | grep -q XZ || { echo "rv toolchain: $RV_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/rv.tar.xz
       - name: Put toolchain on PATH + bin
-        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
         run: |
           echo "$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_RISCV_TOOLCHAIN_BIN=$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_ENV"
@@ -174,9 +263,49 @@ jobs:
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
 
+  # Xtensa LX6 (esp32-wroom) build-only gate: upstream QEMU ships no ESP32 machine
+  # model, so this proves build/link/linker-script + windowed-ABI asm, never a run.
+  # The selftest config is built too (much more link surface). esptool is NOT
+  # installed: it only serves the bootable .app.bin post-step, which CI cannot boot
+  # anyway; CMake reports the skip without failing.
+  xtensa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils file
+      - name: Cache Xtensa toolchain
+        id: cache-xt
+        uses: actions/cache@v4
+        with:
+          path: ~/tc/${{ env.XT_TC_DIR }}
+          # Tag in the key: the extracted dir is version-less, so a tag bump must miss.
+          key: ${{ env.XT_TC_DIR }}-${{ env.XT_TC_TAG }}
+      - name: Download Xtensa toolchain
+        if: steps.cache-xt.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/tc
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/xt.tar.xz "$XT_TC_URL"
+          file /tmp/xt.tar.xz | grep -q XZ || { echo "xtensa toolchain: $XT_TC_URL served non-xz (gated/redirect?)"; exit 1; }
+          tar -C ~/tc -xf /tmp/xt.tar.xz
+      - name: Put toolchain on PATH + bin
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
+        run: |
+          echo "$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_PATH"
+          echo "KICKOS_XTENSA_BIN=$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - name: xtensa lx6 (esp32-wroom) build gate
+        run: |
+          cmake --preset esp32-wroom -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
+          cmake --build --preset esp32-wroom
+      - name: xtensa lx6 + selftest config
+        run: |
+          cmake --preset esp32-wroom-st -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
+          cmake --build --preset esp32-wroom-st
+
   # Build-only sweep of the remaining ARM boards (catches build/link/linker-script
   # regressions). No run step -- these need silicon or a machine model CI does not
-  # carry. RX/Xtensa omitted (vendor toolchains); RISC-V is the qemu-riscv job above.
+  # carry. RX omitted (no hosted-runner toolchain; see the header). Xtensa is the
+  # job above; RISC-V is the qemu-riscv job.
   build-boards:
     runs-on: ubuntu-latest
     strategy:
@@ -203,9 +332,64 @@ jobs:
           file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
           tar -C ~/tc -xf /tmp/arm.tar.xz
       - name: Put toolchain on PATH + bin
-        # PATH is REQUIRED (try_compile does not inherit the -D cache override; see qemu-arm).
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
         run: |
           echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
+
+  # ARM MPU-ENFORCEMENT build gate: the enforcement-capable ARM boards (those
+  # shipping arch/arm/chip/<chip>/mpu.cmake) with -DKICKOS_HAVE_MPU=1. The only job
+  # that builds the enforcement-only link surface of the silicon boards: the
+  # .appdata/.appbss window and its ASSERTs, the closed-set archive selectors, the
+  # grant symbols, and arch_reserved_blocks, which has NO weak default on purpose,
+  # so an enforcing port that forgets its reserved set is a LINK error here, not a
+  # silent open hole.
+  #
+  # BUILD-ONLY, necessarily: QEMU has no machine model for these chips, and what is
+  # unproven is chip-specific (SYSMPU is not PMSA, imxrt1062 needs the M7
+  # anti-speculation wrap, picopi is PMSAv6 with no MemManage). Trapping stays
+  # silicon-proven; see docs/reference/boards.md.
+  #
+  # The one ctest gate, kernel_ctor_placement, passes VACUOUSLY here: every app in
+  # this matrix links an empty .kickos_app_init_array window, so the check takes its
+  # "window empty -> PASS" early-out. It still proves the ctor-split section symbols
+  # EXIST, failing loudly when they do not.
+  #
+  # No `ctest --preset` (arm.json defines test presets only for qemu/qemu-telem/
+  # microbit): --test-dir on the preset's binaryDir. picopi links under enforcement
+  # but registers no ctor gate (armv7m-only check).
+  build-boards-mpu:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [frdmk64f, f411disco, blackpill, pizero2350, teensy41,
+                 xmc4800-relax, picopi]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils
+      - name: Cache Arm GNU toolchain
+        id: cache-arm
+        uses: actions/cache@v4
+        with:
+          path: ~/tc/${{ env.ARM_TC_DIR }}
+          key: ${{ env.ARM_TC_DIR }}
+      - name: Download Arm GNU toolchain
+        if: steps.cache-arm.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/tc
+          # developer.arm.com 302-redirects to an anonymous Azure blob; fail loud if not xz.
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/arm.tar.xz "$ARM_TC_URL"
+          file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
+          tar -C ~/tc -xf /tmp/arm.tar.xz
+      - name: Put toolchain on PATH + bin
+        # Env var and PATH; either alone is sufficient (see qemu-arm).
+        run: |
+          echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
+          echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - run: cmake --preset ${{ matrix.preset }} -DKICKOS_HAVE_MPU=1 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+      - run: cmake --build --preset ${{ matrix.preset }}
+      - run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure

@@ -18,11 +18,15 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 2K;
 
-/* Newlib heap: an explicit .userheap section carved from RAM before the thread arena
-   (no MPU .appdata window on this chip). Only 16 KiB RAM, so the heap is 4K (covers
-   printf's 4K stdio granule). 0 is legal for a board with no malloc app. */
+/* Newlib heap: EMPTY. 16 KiB RAM cannot pay for a heap and the thread arena; even a
+   4K heap starves the arena and kos::thread::spawn fails. A variant that needs a heap
+   passes -DKICKOS_USER_HEAP_SIZE=<n> and pays for it in stacks.
+   The section stays at zero length rather than being deleted: _sbrk is force-linked
+   into every image (-u,_exit shares its TU), so its strong reference to
+   _kickos_heap_start would break every link on this board. An allocating app
+   therefore fails at RUNTIME (malloc returns NULL), not at link. */
 #ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 4K
+#define KICKOS_USER_HEAP_SIZE 0
 #endif
 
 SECTIONS
@@ -49,6 +53,16 @@ SECTIONS
         KEEP(*libkickos_chip_nrf51.a:*(SORT(.init_array.*) .init_array))
         KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
         __init_array_end = .;
+    } > FLASH
+
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
+       arch/arm/chip/stm32f411/stm32f411.ld. */
+    .kickos_app_fini_array :
+    {
+        __kickos_app_fini_array_start = .;
+        KEEP(*(SORT(.fini_array.*)))
+        KEEP(*(.fini_array))
+        __kickos_app_fini_array_end = .;
     } > FLASH
 
     .kickos_app_init_array :
@@ -103,7 +117,13 @@ SECTIONS
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
 
-/* Opt-in link-time heap floor (undefined by default). */
+/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
+   rather than silently drop a destructor. */
+ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
+       "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
+
+/* Opt-in link-time heap floor (undefined by default). The default heap here is empty,
+   so any floor fails the link unless KICKOS_USER_HEAP_SIZE is raised to match. */
 #ifdef KICKOS_HEAP_MIN
 ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,
        "KickOS: heap below KICKOS_HEAP_MIN")

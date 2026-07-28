@@ -23,23 +23,40 @@ concept does not become a bug when the code is refactored.
 ### `reference/` -- The KickOS Reference (code-synced)
 The exact technical contract; **the code wins, drift is a bug.** Start at `reference/README.md`.
 Covers `architecture.md` (kernel design + arch/chip seam), `invariants.md`, `porting.md`
-(arch-seam contract), `console.md`, `telemetry.md` (wire-format), `boards.md` (per-board wiring).
+(arch-seam contract), `console.md`, `telemetry.md` (wire-format), `boards.md` (per-board wiring),
+`ipc-call-reply.md` (the synchronous call/reply transport), and `bus-service.md` (the SPI/I2C
+service wire contract carried over it).
 
 ### State & roadmap -- where we are / what's next
 Three altitudes, coarse to fine:
 - **`../roadmap.md`** -- the milestone-level plan: the general goals/ideas to tackle per
   milestone, no granular items. Milestones are keyed to **theme, not sequence**:
-  M2 = MPU/memory-protection enforcement; M3 = capabilities + user clock; M4 = SMP. Work with no
-  MPU/caps/SMP dependency is "anytime coherence".
+  M2 = MPU/memory-protection enforcement; M3 = capabilities + user clock; M4 = the driver era;
+  M5 = SMP; M6 = the MMU / new-platform horizon. Work with no MPU/caps/driver/SMP dependency is
+  "anytime coherence".
 - **`../TODO.md`** -- the detailed, actionable task items behind the roadmap (the granular list).
 - **`../M1_state.md`** -- the validated M1 end state (fleet, bench, fault dumps, scoping
   decisions), plus per-board HW-validation status.
 - **`../M1_raw_meas.md`** -- raw console captures behind M1_state.
-- **`m2-readiness.md`** -- the board/console readiness matrix + the M2 MPU-readiness notes.
+- **`m2-readiness.md`** -- opened as the pre-M2 readiness list and grew into the **enforcement
+  ledger**: the board/console readiness matrix, the per-chip MPU fan-out, and the silicon proofs
+  for M2, M3 and the M4.4 driver work. Read it for "which chip is proven, by what evidence".
+
+### `design-*.md` -- design records and spikes
+Roughly two dozen per-topic design documents in this directory, each tagged in its header with a
+status marker -- **LANDED** (shipped; kept as the why), **ACTIVE** (work in flight),
+**SUPERSEDED** (a later document or decision replaced it), **EXPLORATORY** (a spike; no
+commitment). `design/README.md` indexes them by status. A LANDED record is history plus
+rationale, not a contract: for the current contract go to `reference/`.
 
 ### How-to / ops
 - **`flashing.md`** -- flash-tool backends + the non-J-Link paths. (Per-target wiring is
   `reference/boards.md`; this box is the tooling.)
+
+### `audit/` -- the codebase-audit record
+`kickos-codebase-audit.html`, a self-contained finding ledger with status, severity and area
+filters; open it in any browser. Read as a finding ledger, not a contract: `reference/` is the
+contract. See `audit/README.md`.
 
 ## Conventions (how the docs are kept)
 

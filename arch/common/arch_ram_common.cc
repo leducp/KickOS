@@ -117,4 +117,32 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len)
 #endif
 }
 
+bool arch_user_data_writable(uintptr_t ptr, size_t len)
+{
+#if KICKOS_HAVE_MPU
+    // Enforcing backend: .appdata/.appbss is a real MPU region, already admitted by
+    // the syscall's region check; anything outside the set is genuinely unwritable.
+    (void)ptr;
+    (void)len;
+    return false;
+#else
+    // No enforcement: the thread can already store anywhere, so only the user-RAM
+    // arena is refused. An arena range falls through to the region check, keeping a
+    // later enforcing build of this backend sound.
+    if (len == 0)
+    {
+        return true;
+    }
+    uintptr_t const end = ptr + len;
+    if (end < ptr)
+    {
+        return false; // wrap
+    }
+    uintptr_t const astart = arch_ram_base();
+    uintptr_t const aend = astart + arch_ram_size();
+    bool const hits_arena = (ptr < aend and end > astart);
+    return not hits_arena;
+#endif
+}
+
 }

@@ -1,13 +1,18 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# KickOS build helpers: per-component flag posture and the dependency-inversion
-# application helper kickos_add_application().
+# KickOS build helpers: per-component flag posture, the optional application helper
+# kickos_add_application(), and the image emitter kickos_emit_image().
 #
 # Design (architecture.md, invariant #8): the application owns the final link.
-# KickOS ships static libraries + headers + startup; kickos_add_application()
-# performs the link and emits the image (host ELF for sim; .bin/.hex/.uf2 for
-# MCUs later). Switching sim<->MCU is a one-word BOARD change.
+# KickOS ships static libraries + headers + startup; the application performs the
+# link and emits the image (host ELF for sim; .bin/.hex/.uf2 for MCUs). Switching
+# sim<->MCU is a one-word BOARD change.
+#
+# The link recipe lives on the exported `kickos` / `kickos_cxx` usage targets, NOT
+# in these helpers: the supported downstream shape is plain add_executable +
+# target_link_libraries(app PRIVATE kickos), on the sim and on bare metal alike.
+# What is left in this file is in-tree-only policy or an explicit opt-in.
 
 # ---------------------------------------------------------------------------
 # Board -> {arch, chip} resolution.
@@ -23,6 +28,15 @@
 # installed package has no boards/ tree, so the fallback below applies there.
 # ---------------------------------------------------------------------------
 get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
+
+# In-tree vs installed-package signal: a source tree has boards/ beside cmake/; an
+# installed package ships kickos.cmake with no boards/ sibling. Named once; every
+# in-tree-vs-consumer decision below reads this one variable.
+if(EXISTS "${KICKOS_BOARDS_DIR}")
+  set(KICKOS_IN_TREE TRUE)
+else()
+  set(KICKOS_IN_TREE FALSE)
+endif()
 
 # The descriptor also carries KICKOS_ARCH_FAMILY (arm|rx|sim|...): the source-tree
 # family that routes arch/<family>/... and the family-specific cross toolchain. A
@@ -44,7 +58,7 @@ function(kickos_load_board_descriptor board out_arch out_chip out_family)
     include("${_desc}")
     set(${out_arch} "${KICKOS_ARCH}" PARENT_SCOPE)
     set(${out_chip} "${KICKOS_CHIP}" PARENT_SCOPE)
-  elseif(NOT EXISTS "${KICKOS_BOARDS_DIR}"
+  elseif(NOT KICKOS_IN_TREE
          AND DEFINED KICKOS_ARCH AND board STREQUAL "${KICKOS_BOARD}")
     # Installed package: no boards/ tree at all, so fall back to the arch/chip this
     # package recorded (KickOSConfig) for the single board it was built for. Gated
@@ -72,9 +86,26 @@ endfunction()
 #   arch/sim                  -> hosted (bridges to host libc), still no exc/rtti.
 # Applied per-target so a hosted arch TU and a freestanding kernel TU coexist
 # in one binary.
+#
+# WARNING FLAGS NEVER LEAVE THIS PROJECT: they are applied PRIVATE to targets we
+# own, and the exported `kickos`/`kickos_cxx` usage targets carry none of them.
+# Application targets are the one shape both the fleet and a consumer create --
+# see the KICKOS_IN_TREE guard in kickos_add_application().
 # ---------------------------------------------------------------------------
 set(KICKOS_WARN_FLAGS
   -Wall -Wextra -Wshadow -Wundef)
+
+# Warnings-as-errors: default ON in tree, OFF for a consumer (promoting somebody
+# else's warnings to hard errors is not our call). Riding KICKOS_WARN_FLAGS keeps it
+# per-target, so it never reaches CMake's try_compile/ABI probes, and the same gate
+# runs on the desk and in CI. -DKICKOS_WERROR=OFF is the escape hatch for a bisect
+# or a toolchain bump that lands new diagnostics.
+if(NOT DEFINED KICKOS_WERROR)
+  set(KICKOS_WERROR ${KICKOS_IN_TREE})
+endif()
+if(KICKOS_WERROR)
+  list(APPEND KICKOS_WARN_FLAGS -Werror)
+endif()
 
 # Flags valid for every language (C, C++, ASM); the C++-only ones are guarded
 # below so a target mixing .cc and .S (the ARM arch backends) stays warning-free.
@@ -121,6 +152,12 @@ endfunction()
 # kickos_emit_image(<target>)
 #   MCU only: turn a linked ELF into flashable .bin and .hex, and print size.
 #   No-op on the sim (a runnable host ELF is the deliverable there).
+#
+#   PUBLIC: the one thing a bare-metal consumer cannot get from linking `kickos`,
+#   because a POST_BUILD action cannot ride a usage requirement. One opt-in line
+#   after target_link_libraries(app PRIVATE kickos). Shipped rather than left to
+#   consumer objcopy: the esp32 family needs esptool elf2image with per-chip flags
+#   (below), and getting them wrong flashes cleanly then reset-loops.
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
   # KICKOS_ARCH is the single source of truth for "is this the sim" (set by the
@@ -191,6 +228,11 @@ endfunction()
 #   For sim this is a runnable host ELF whose entry (host main) lives in the
 #   sim arch backend; the app must define kickos_app_main().
 #
+#   OPTIONAL SUGAR. The supported out-of-tree path is plain CMake -- find_package
+#   (KickOS), add_executable, target_link_libraries(app PRIVATE kickos) [or
+#   kickos_cxx], kickos_emit_image on MCU -- and that path is complete. This helper
+#   exists for the in-tree fleet; a consumer may use it, but nothing needs it.
+#
 #   FULL_CXX (opt-in, docs/design-kickcat-k64f.md "Libc strategy"): compile this
 #   app's C++ TUs with -fexceptions/-frtti (NOT the freestanding clamp) and link
 #   the toolchain's libstdc++/libsupc++ over newlib, so exceptions + STL + RTTI
@@ -221,16 +263,15 @@ function(kickos_add_application name)
 
   # Optional sugar over the plain path:
   #   add_executable(${name} ...) ; target_link_libraries(${name} PRIVATE kickos)
-  # The `kickos` interface target carries the component link group (+ threads on
-  # sim). (MCU image emission -- objcopy .bin/.uf2 -- will hang off here at M1.)
+  # Everything needed to LINK rides the exported `kickos` target, so the two paths
+  # produce the same image; what is left here is board validation and the image
+  # emission that cannot ride a usage requirement.
   add_executable(${name} ${APP_SOURCES})
-  # The chip linker script is passed as a driver -T option (see the `kickos` target),
-  # which CMake does NOT treat as a link dependency -- so an edited .ld would silently
-  # not relink and a stale image would flash. Make it an explicit link dependency.
-  if(KICKOS_LINKER_SCRIPT AND NOT (KICKOS_ARCH STREQUAL "sim"))
-    set_target_properties(${name} PROPERTIES LINK_DEPENDS "${KICKOS_LINKER_SCRIPT}")
+  # Warning policy only on our own code: in tree every app under user/apps is ours;
+  # out of tree the application target belongs to the consumer.
+  if(KICKOS_IN_TREE)
+    target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
   endif()
-  target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
   # NB: the app is NOT built -msmall-data-limit=0 under RISC-V PMP. With the gp
   # window anchored inside the .appdata grant (chip .ld), the app's small globals
   # land in that granted window, and keeping small-data enabled is REQUIRED -- the
@@ -307,13 +348,18 @@ endfunction()
 #   as SKIP (a missing qemu-system is a skip, not a failure). The QEMU env prefix
 #   is keyed on the target board so the copy-pasted `-E env QEMU=... QEMU_MACHINE=
 #   ... QEMU_EXTRA=-bios none` string lives in exactly one place (a typo there
-#   silently mis-targets QEMU):
-#     qemu       -> no env (the armv7m mps2-an386 default lives in the scripts),
-#                   unless MACHINE is given (e.g. mps2-an386 for the generic
-#                   fault-dump script) -> QEMU_MACHINE=<MACHINE>.
-#     microbit   -> QEMU_MACHINE=microbit (armv6m Cortex-M0).
-#     qemu-riscv -> QEMU=qemu-system-riscv32 QEMU_MACHINE=virt QEMU_EXTRA=-bios none
+#   silently mis-targets QEMU). This is the ONE board -> machine map:
+#     qemu       -> mps2-an386  (Cortex-M4F)
+#     qemu-m33   -> mps2-an505  (Cortex-M33, PMSAv8)
+#     qemu-m7    -> mps2-an500  (Cortex-M7)
+#     qemu-m3    -> mps2-an385  (Cortex-M3, soft-float)
+#     microbit   -> microbit    (armv6m Cortex-M0)
+#     qemu-riscv -> virt, plus QEMU=qemu-system-riscv32 QEMU_EXTRA=-bios none
 #                   (RV32IMAC bare-metal in M-mode, no OpenSBI).
+#   QEMU_MACHINE is always passed, never left to the scripts' mps2-an386 fallback:
+#   most boards would silently run on the wrong core, and check_fault_dump.sh reads
+#   an UNSET QEMU_MACHINE as "this is the sim, run natively".
+#   MACHINE overrides the board default, for a script that needs a specific image.
 #   ARGS are extra script arguments after the ELF (e.g. the expected fault-dump
 #   banner, or a decoder path). TIMEOUT defaults to 60s.
 #   Keep the per-test `if(KICKOS_BUILD_TESTS AND ...)` guard AT THE CALL SITE: the
@@ -326,24 +372,28 @@ function(kickos_add_qemu_test)
   endif()
   set(_env "")
   if(QT_BOARD STREQUAL "qemu-riscv")
-    set(_env QEMU=qemu-system-riscv32 QEMU_MACHINE=virt "QEMU_EXTRA=-bios none")
+    set(_env QEMU=qemu-system-riscv32 "QEMU_EXTRA=-bios none")
+    set(_machine virt)
   elseif(QT_BOARD STREQUAL "microbit")
-    set(_env QEMU_MACHINE=microbit)
+    set(_machine microbit)
   elseif(QT_BOARD STREQUAL "qemu")
-    if(QT_MACHINE)
-      set(_env QEMU_MACHINE=${QT_MACHINE})
-    endif()
+    set(_machine mps2-an386)
+  elseif(QT_BOARD STREQUAL "qemu-m33")
+    set(_machine mps2-an505)
+  elseif(QT_BOARD STREQUAL "qemu-m7")
+    set(_machine mps2-an500)
+  elseif(QT_BOARD STREQUAL "qemu-m3")
+    set(_machine mps2-an385)
   else()
     message(FATAL_ERROR "kickos_add_qemu_test(${QT_NAME}): unknown BOARD '${QT_BOARD}'")
   endif()
-  if(_env)
-    add_test(NAME "${QT_NAME}"
-      COMMAND "${CMAKE_COMMAND}" -E env ${_env}
-              "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
-  else()
-    add_test(NAME "${QT_NAME}"
-      COMMAND "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
+  if(QT_MACHINE)
+    set(_machine "${QT_MACHINE}")
   endif()
+  list(APPEND _env QEMU_MACHINE=${_machine})
+  add_test(NAME "${QT_NAME}"
+    COMMAND "${CMAKE_COMMAND}" -E env ${_env}
+            "${QT_SCRIPT}" "$<TARGET_FILE:${QT_TARGET}>" ${QT_ARGS})
   if(NOT QT_TIMEOUT)
     set(QT_TIMEOUT 60)
   endif()

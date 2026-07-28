@@ -197,6 +197,47 @@ The `.bss`/`.appbss` pair mirrors this exactly (the closed set into kernel `.bss
 into `.appbss`), and the app window is padded to `_appdata_size` so the granted region has
 a fixed, grantable size.
 
+### The catch-all has a second customer: things the kernel writes and the app reads
+
+Everything above is about where an object *ends up*. There is a class of object for which the
+answer is not incidental but a correctness requirement, and it is easy to miss because the object
+is usually tiny.
+
+Consider the argument handoff from the kernel's bring-up to the first application thread: the
+kernel fills in `argc`/`argv`, and that thread reads them as very nearly its first act, before it
+runs `main`. Write that handoff as a **local variable** in the boot function and it lives on the
+kernel's boot stack -- which is outside the arena, outside the app window, and outside every region
+an unprivileged thread is granted. An unprivileged reader would then fault on the handoff before
+executing a single statement of its own, on every enforcing board. And the fix is not a bigger
+grant, because widening a grant to reach the kernel's boot stack would hand the app a window over
+kernel memory to solve a data-placement problem.
+
+The fix is placement. The handoff is a named object defined in the userspace library archive, which
+means the `.appdata`/`.appbss` catch-all sweeps it into the app window -- a region every
+unprivileged thread already has. Nothing about the object's type or its declaration changes; only
+where its bytes live.
+
+It also has to be in the *right* archive, and for a reason that has nothing to do with protection.
+The definition sits in the general userspace library rather than in the archive of whichever target
+supplies the init entry point, because a build may name its own init provider -- and then that
+archive leaves the link while the kernel's unconditional reference to the handoff stays, turning a
+supported customisation into an undefined symbol. So placement answers to two independent masters:
+**the linker script decides which side of the protection wall an object lands on, and the build
+graph decides whether the archive holding it can be substituted away.** A design that only thinks
+about the first one is one build option away from failing to link.
+
+The transferable rule is that an interface crossing the protection wall needs its *storage* placed,
+not merely its type declared. The declaration says what the bytes mean; the section and the archive
+decide who is allowed to read them and whether they will be there at all. Ask it at design time:
+which side writes this, which side reads it, and is the reader privileged?
+
+One honest caveat, since this chapter is about a real memory map: placing the handoff *struct*
+app-side does not place what it points *at*. On the hosted sim, `argv` points into the host
+process's own argument vector, which no grant covers -- and the sim does not enforce non-arena
+regions, so that is precisely the case its coverage misses. Chapter 7.1,
+*[Alignment across the syscall boundary](alignment-across-the-syscall-boundary.md)*, works through
+what the sim can and cannot witness about caller-supplied memory.
+
 ### The heap lives in the window's leftover pad
 
 The heap-is-the-remainder model of the previous section is authored right here, at the tail

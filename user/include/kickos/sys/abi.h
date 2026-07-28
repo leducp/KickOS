@@ -56,7 +56,9 @@ enum kos_syscall_nr
     KOS_SYS_PERIPH_CLOCK_HZ = 32, // (base) -> peripheral branch clock in Hz (u32), 0 if unknown (NO KOS_E*)
     KOS_SYS_PINMUX_SET = 33,  // (port, pin, func) -> 0, -KOS_EPERM (not priv), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
     KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EPERM/EPIPE/ENOMEM/ENOSYS)
-    KOS_SYS_REPLY = 35        // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
+    KOS_SYS_REPLY = 35,       // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
+    KOS_SYS_SHUTDOWN = 36,    // (status) -> does not return; -KOS_EPERM if refused
+    KOS_SYS_MEM_SELF_GRANT = 37 // (base, size) -> 0, or -KOS_E* (EPERM/EINVAL/ENOMEM)
 };
 
 // `op` selector for KOS_SYS_GRANT_PROBE (self-test only). Values are a frozen
@@ -105,6 +107,12 @@ typedef enum kos_pstate_e : uint32_t
 // Shared payload bound: send REJECTS a len above this; recv clamps its capacity to it.
 #define KOS_EP_MSG_MAX 256
 
+// Counting-semaphore ceiling. The kernel keeps the count in an `int`, so this is the
+// type's range rather than a policy number. sem_create refuses an initial outside
+// [0, KOS_SEM_COUNT_MAX] with -KOS_EINVAL; a post at the ceiling is refused with
+// -KOS_EOVERFLOW.
+#define KOS_SEM_COUNT_MAX 0x7FFFFFFF
+
 // The robust-mutex "owner died" case is now a NEGATIVE code in the fleet taxonomy:
 // mutex_lock returns -KOS_EOWNERDEAD (the lock IS held; the protected state may be
 // torn). See <kickos/sys/errno.h> and the kos_mutex_lock decl for the held-vs-not-held
@@ -136,11 +144,23 @@ enum kos_policy
 // Capability rights (must mirror kickos::CapRights). A delegation NARROWS only:
 // the child cap gets parent.rights & mask; a mask adding a bit the parent lacks is
 // rejected. Delegating requires the parent cap carry KOS_CAP_TRANSFER.
+//
+// The rights byte is SHARED between the two cap families; which bits mean anything
+// depends on the cap's TYPE. The low three below are the object rights (a semaphore,
+// mutex, endpoint or reply cap); the five KOS_AUTH_* bits are meaningful ONLY on the
+// authority cap at KOS_CAP_AUTHORITY. All eight bits are now spent: a sixth authority
+// has to merge two of these, not add one.
 enum kos_cap_rights
 {
     KOS_CAP_WAIT = 1 << 0,    // sem_wait; endpoint recv
     KOS_CAP_SIGNAL = 1 << 1,  // sem_post; endpoint send
-    KOS_CAP_TRANSFER = 1 << 2 // may be delegated onward
+    KOS_CAP_TRANSFER = 1 << 2, // may be delegated onward
+
+    KOS_AUTH_MEMORY = 1 << 3, // kos_ram_alloc + the spawn-time MMIO window grant
+    KOS_AUTH_PINMUX = 1 << 4, // kos_pinmux_set
+    KOS_AUTH_CLOCK = 1 << 5,  // kos_cpu_clock_set
+    KOS_AUTH_IRQ = 1 << 6,    // kos_irq_attach, kos_irq_unmask
+    KOS_AUTH_DEVICE = 1 << 7  // kos_console_publish, kos_shutdown, future periph enable
 };
 
 // One entry of a spawn delegation list: hand the child a narrowed copy of the
@@ -176,6 +196,15 @@ struct kos_thread_params
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
     struct kos_cap_grant const* caps; // optional caps to delegate to the child (0 => none)
     uint8_t cap_count;   // number of entries in caps[]; caps land at child indices 1..cap_count
+    // Authority bits (kos_cap_rights KOS_AUTH_*) to seat as the child's authority cap
+    // at KOS_CAP_AUTHORITY; 0 => none. Only a thread that already holds each bit may
+    // pass it: narrows, never widens, like a cap_grant mask. Fits in the padding after
+    // cap_count, so the struct does not grow.
+    //
+    // Rejected with -KOS_EINVAL together with cap_count >= KOS_CAP_AUTHORITY: delegated
+    // cap i lands at child index i+1, so a second delegated cap would land on the
+    // authority slot (until per-grant destination indices land; <kickos/sys/cap_index.h>).
+    uint8_t authority;
 };
 
 #endif

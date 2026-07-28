@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # EXPLORATORY: the MMU / new-platform horizon (post-M6)
 
+> **Status: EXPLORATORY** -- see `design/README.md` for the marker taxonomy.
+>
 > Status: EXPLORATION ONLY. This is a research + design-thinking spike, NOT a
 > contract and NOT a milestone plan. Nothing here is implemented; nothing here
 > licenses a code change. The only actionable output is section 5 (QUICK WINS),

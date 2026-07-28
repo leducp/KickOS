@@ -7,6 +7,7 @@
 
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
+#include <kickos/libc/string.h>
 
 namespace tap
 {
@@ -22,13 +23,50 @@ namespace tap
 
         Entry g_tests[MAX_TESTS];
         int g_count = 0;
+        // Registrations dropped past MAX_TESTS. add() may run before main, so it can
+        // only record; run_all() turns a non-zero count into a failing TAP line.
+        int g_dropped = 0;
 
-        bool g_failed = false;
-        char g_failmsg[192];
+        // Verdict of the running test. One buffer for the failure diagnostic and the
+        // skip reason: mutually exclusive, and it is real BSS on a 16 KiB-SRAM board.
+        enum class Verdict : unsigned char
+        {
+            PASS,
+            FAIL,
+            SKIP
+        };
+        Verdict g_verdict = Verdict::PASS;
+        char g_msg[192];
 
+        // The one writer for the whole stream. Same policy as libc's _write
+        // (user/src/newlib_stubs.cc) and <kickos/sys/emit.h>: try this thread's stdout
+        // cap at index 0, fall back to the kernel debug console for the remainder when
+        // index 0 is empty (-KOS_EBADF) or the driver died (-KOS_EPIPE). Keep the three
+        // copies in step. kos_print alone is not enough: once a service list publishes
+        // the console, console_emit drops every byte handed to the kernel console
+        // (kernel/init/console.cc, USER_OWNED).
         void emit(char const* s)
         {
-            kos_print(s);
+            size_t const total = strlen(s);
+            size_t sent = 0;
+            while (sent < total)
+            {
+                size_t chunk = total - sent;
+                if (chunk > KOS_EP_MSG_MAX)
+                {
+                    chunk = KOS_EP_MSG_MAX;
+                }
+                long const r = kos_send(0, s + sent, chunk); // index 0 == the stdout endpoint cap
+                // r == 0 (a receiver with no buffer) would spin forever: fall back, don't retry.
+                if (r <= 0)
+                {
+                    // Remainder only: resending from the start would duplicate the
+                    // chunks the driver already took.
+                    kos_kconsole_write(s + sent, total - sent);
+                    return;
+                }
+                sent += static_cast<size_t>(r);
+            }
         }
 
         void emitf(char const* fmt, ...)
@@ -40,6 +78,14 @@ namespace tap
             va_end(ap);
             emit(b);
         }
+
+        // Is this thread's stdout cap seated (a service list published the console)?
+        // A zero-length send is a valid signal per <kickos/sys.h> and puts no byte on
+        // the wire in either posture, unlike a 1-byte probe.
+        bool stdout_published()
+        {
+            return kos_send(0, "", 0) >= 0;
+        }
     }
 
     void add(char const* name, TestFn fn)
@@ -50,43 +96,103 @@ namespace tap
             g_tests[g_count].fn = fn;
             g_count++;
         }
+        else
+        {
+            g_dropped++;
+        }
     }
 
     void fail(char const* fmt, ...)
     {
-        if (g_failed) // first failure per test wins
+        if (g_verdict == Verdict::FAIL) // first failure per test wins
         {
             return;
         }
         va_list ap;
         va_start(ap, fmt);
-        kvsnprintf(g_failmsg, sizeof(g_failmsg), fmt, ap);
+        kvsnprintf(g_msg, sizeof(g_msg), fmt, ap);
         va_end(ap);
-        g_failed = true;
+        g_verdict = Verdict::FAIL; // outranks a skip recorded earlier
+    }
+
+    void skip(char const* fmt, ...)
+    {
+        if (g_verdict != Verdict::PASS) // never downgrade a recorded failure
+        {
+            return;
+        }
+        va_list ap;
+        va_start(ap, fmt);
+        kvsnprintf(g_msg, sizeof(g_msg), fmt, ap);
+        va_end(ap);
+        g_verdict = Verdict::SKIP;
+    }
+
+    void diag(char const* fmt, ...)
+    {
+        char b[200];
+        va_list ap;
+        va_start(ap, fmt);
+        kvsnprintf(b, sizeof(b), fmt, ap);
+        va_end(ap);
+        emitf("# %s\n", b);
     }
 
     int run_all()
     {
-        emitf("1..%d\n", g_count);
+        int plan = g_count;
+        if (g_dropped > 0)
+        {
+            plan++; // one extra slot for the overflow verdict below
+        }
+        emitf("1..%d\n", plan);
+        if (stdout_published())
+        {
+            diag("tap route: stdout endpoint -> console driver (service list published)");
+        }
+        else
+        {
+            diag("tap route: kernel debug console (stdout not published)");
+        }
         int failed = 0;
+        int skipped = 0;
         for (int i = 0; i < g_count; i++)
         {
-            g_failed = false;
-            g_failmsg[0] = 0;
+            g_verdict = Verdict::PASS;
+            g_msg[0] = 0;
             g_tests[i].fn();
-            if (g_failed)
+            if (g_verdict == Verdict::FAIL)
             {
                 failed++;
-                emitf("not ok %d - %s # %s\n", i + 1, g_tests[i].name, g_failmsg);
+                emitf("not ok %d - %s # %s\n", i + 1, g_tests[i].name, g_msg);
+            }
+            else if (g_verdict == Verdict::SKIP)
+            {
+                skipped++;
+                emitf("ok %d - %s # SKIP %s\n", i + 1, g_tests[i].name, g_msg);
             }
             else
             {
                 emitf("ok %d - %s\n", i + 1, g_tests[i].name);
             }
         }
-        if (failed == 0)
+        if (g_dropped > 0)
+        {
+            failed++;
+            emitf("not ok %d - tap_registry_overflow # %d registration(s) dropped past MAX_TESTS=%d\n",
+                  g_count + 1, g_dropped, MAX_TESTS);
+        }
+        // Always emitted, zero included: gates key their skip budget off this line, so
+        // its absence must mean "truncated run", never "no skips". The completion
+        // marker must keep the `# all tests passed` substring the gates grep for.
+        emitf("# skipped: %d\n", skipped);
+        if (failed == 0 and skipped == 0)
         {
             emit("# all tests passed\n");
+        }
+        else if (failed == 0)
+        {
+            emitf("# all tests passed (%d skipped)\n", skipped);
         }
         else
         {

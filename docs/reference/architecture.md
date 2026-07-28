@@ -71,15 +71,52 @@ layer**, never leaked into the core or the syscall ABI (the same arch-neutrality
 **RX72M** target exists to prove). "MPU-first per-task isolation" is the M0-M2 reality; "one
 address-space abstraction, MPU *or* MMU behind it" is the horizon.
 
+### Non-goals -- seL4 machinery deliberately NOT adopted
+
+"In the seL4 tradition" is a statement about the *shape* of the system, not a commitment to its
+mechanisms. Four are refused, and each is refused on **arithmetic**, not on taste -- which matters,
+because "we are seL4-like" otherwise reads as a promise that these are coming.
+
+- **No untyped memory and no `Retype`.** The kernel owns the arena and bump-allocates it, by
+  design. Accountability for who may obtain memory comes from Rule 7 grant admission plus the two
+  ways a region reaches a thread -- a spawn grant, and self-grant -- both gated on `AUTH_MEMORY`.
+  Untyped/Retype answers "which memory may this task obtain and from whose budget", and a
+  single-owner static arena answers it already, without a derivation object per allocation.
+- **No CNodes and no hierarchical CSpace.** A capability index is a flat **4-bit** field, which
+  caps the table at **16 entries** -- and **four boards ship 9**. Hierarchical CSpace exists to
+  address a space too large to index directly; at 16 slots the guard/radix machinery would cost
+  more than the space it organises.
+- **No derivation tree and no recursive revoke.** Refcounted last-close plus cap-generation
+  staling already gives the property that matters (a revoked capability stops working, and a stale
+  handle cannot be resurrected). A derivation tree buys *transitive* revoke, which needs
+  per-capability parentage the 16-slot table has nowhere to store.
+- **No per-instance (per-pin, per-clock, per-line) capabilities.** Roughly **100 muxable pins** on
+  the larger parts against that same **16-slot** ceiling. It does not fit and it does not nearly
+  fit, so authority is granted per *class* (`AUTH_PINMUX`, `AUTH_CLOCK`, `AUTH_DEVICE`,
+  `AUTH_MEMORY`, ...) rather than per instance. The consequence is honest and worth stating: a
+  holder of `AUTH_PINMUX` may mux **any** pin.
+
+The common thread is the 16-slot ceiling with 9-handle boards under it. If that ever changes, three
+of the four deserve revisiting -- but the ceiling is itself a deliberate consequence of the
+static-allocation ethos, so the honest expectation is that these stay refused.
+
 ## Targets
 
 KickOS runs on a host `sim` (x86-64) plus a fleet spanning five MCU ISAs. Each target earns its
 place by proving a distinct point about the arch/chip seam:
 
 - **FRDM-K64F** -- Cortex-M4F, NXP **SYSMPU** (byte-granular bus-master protection, `__MPU_PRESENT=0`
-  -- not the ARM core MPU).
-- **RP2040/Pico** -- Cortex-M0+, ARMv6-M PMSA core MPU.
+  -- not the ARM core MPU). It is also the chip that proved a protection unit on a *bus-slave*
+  port cannot gate peripherals at all (see *Memory domains*).
+- **XMC4800** -- Cortex-M4F, ARMv7-M PMSA: the M2 reference pair's ARM half, and the canonical
+  per-thread peripheral-isolation proof (a granted MMIO window works, an ungranted poke faults).
+- **RP2040/Pico** -- Cortex-M0+, ARMv6-M PMSA core MPU (8 regions).
+- **RP2350/pizero2350** -- Cortex-M33: ARMv8-M **PMSAv8**, a different descriptor shape
+  (`base`+`limit` with MAIR indirection, not pow2 sizes) reached through the same seam.
 - **STM32F411** -- Cortex-M4F, ARMv7-M PMSA core MPU.
+- **i.MX RT1062/Teensy 4.1** -- Cortex-M7: the one **speculating** core in the fleet, which is why
+  a chip may declare thread-invariant *fixed* MPU regions (`kickos_arm_mpu_fixed`) to wrap
+  unbacked external apertures as Device before the caches come up.
 - **STM32F103** -- Cortex-M3, *no MPU*: the degraded "privilege-only" build proving the arch
   layer degrades cleanly.
 - **Renesas RX72M** -- RXv3, *non-ARM*, has an MPU: the architecture-honesty check that `arch.h`
@@ -92,8 +129,11 @@ place by proving a distinct point about the arch/chip seam:
 **MPU hardware programming is target-specific (chip or arch), not one shared routine.** The
 switch-in `arch_mpu_apply()` only **stashes** the incoming region set (shared, weak);
 `kickos_arch_mpu_commit()` **programs the hardware** from the context-switch epilogue, after the
-physical swap, and is the per-target override -- K64F SYSMPU, ARM PMSAv7 (RP2040/F411, the shared
-weak default), RP2350 PMSAv8, C6/virt RISC-V PMP, RX72M MPU. (See `design-mpu-commit-deferred.md`.)
+physical swap, and is the per-target override -- K64F SYSMPU, ARM PMSAv7/v6-M (XMC4800, F411,
+i.MX RT1062, RP2040; the shared weak default), RP2350 PMSAv8, C6/virt RISC-V PMP, RX72M MPU.
+(See `design-mpu-commit-deferred.md`.) The set of enforcement-capable chips is not a list to
+maintain by hand: a chip opts in by shipping `arch/<family>/chip/<chip>/mpu.cmake`, and
+`KICKOS_HAVE_MPU=1` on a chip without one is a configure error rather than a silent no-op.
 
 ---
 
@@ -211,23 +251,25 @@ KickOS/
   CMakeLists.txt
   CMakePresets.json + cmake/presets/*.json   # per-arch/board presets (arm, host, riscv, rx, xtensa)
   cmake/
-    toolchain-arm-none-eabi.cmake
-    toolchain-host.cmake
+    toolchain-{arm-none-eabi,riscv-none-elf,rx-elf,xtensa-esp32-elf,host}.cmake
+    toolchain-cxx-runtime-check.cmake  # refuses a resolved cross compiler that lacks
+                                    #   newlib + libstdc++ for THIS board's multilib
     kickos.cmake                    # board -> arch/chip resolution + image (.bin/.uf2/.hex) helpers
   arch/
     include/kickos/arch/arch.h      # THE porting interface (extern "C" seam)
     sim/                            # host x86-64 backend
     arm/
-      common/                       # shared Cortex-M glue (arch_arm_common.cc)
+      common/                       # shared Cortex-M glue (arch_arm_common.cc), PMSA + the
+                                    #   fixed-region seam (kickos_arm_mpu_fixed)
       armv6m/                       # M0+: PRIMASK crit, sw-clz, ctx-switch asm
-      armv7m/                       # M3/M4/M4F: BASEPRI crit, CLZ, ctx-switch asm
-      chip/{mps2,nrf51,mk64f,rp2040,stm32f411,stm32f103,stm32f302,sam3x8e,xmc4800}/
+      armv7m/                       # M3/M4/M4F/M7/M33: BASEPRI crit, CLZ, ctx-switch asm, cache
+      chip/{mps2,nrf51,mk64f,rp2040,rp2350,imxrt1062,stm32f411,stm32f103,stm32f302,sam3x8e,xmc4800}/
     rx/    rxv3/  chip/rx72m/        # Renesas RXv3 (SWINT switch, INT syscall)
     xtensa/ lx6/  chip/esp32/        # Xtensa LX6 (windowed ABI, no privilege split)
     riscv/ rv32imac/ chip/{virt,esp32c6}/  # RV32IMAC (mtvec demux, CLINT/PLIC, PMP)
   kernel/
     include/kickos/                 # public kernel + syscall-number headers
-    sched/  thread/  sync/  time/  irq/  syscall/  init/  ktrace/  bench/
+    sched/  thread/  sync/  time/  irq/  syscall/  init/  ktrace/  bench/  domain/  grant/
   lib/
     libc/                           # freestanding: mem/str, small vsnprintf, heap, assert
     libcxx/                         # __cxa_* stubs, guards, operator new/delete
@@ -236,10 +278,16 @@ KickOS/
     include/kickos/sys/             # errno.h (KOS_E* taxonomy), cap_index.h (frozen
                                     #   well-known cap indices), init.h (the init seam)
     init/                           # kickos_default_init: default init provider (passthrough)
+    cxx/                            # verbose-terminate handler
+    driver/<chip>/<driver>/         # the driver LIBS, per chip: mk64f/{k64dspi,k64uart},
+                                    #   xmc4800/{xmcuart,xmcssc}. Unprivileged, linked by an app.
   user/
-    include/                        # userspace API + syscall stubs
-    apps/                           # hello, selftest (TAP gate), stress, sched_exit, mpu_fault,
-                                    #   fault, fp_switch, blink, bench, tele_*
+    include/                        # userspace API (kos.h, sys.h, app.h) + driver/ client headers
+    src/                            # syscall stubs + newlib stubs
+    lib/spi_client/                 # vendor-neutral bus-service client wrapper
+    apps/common/                    # fleet-wide: hello, selftest (TAP gate), stress, sched_exit,
+                                    #   mpu_fault, fault, fp_switch, blink, bench, cxxtest, tele_*
+    apps/<board>/                   # that board's own demos (xmcspi, k64drv, rxdrv, c6blink, ...)
   boards/<board>/                   # per-board descriptor: board.cmake (arch/chip/-mcpu)
                                     #   + optional board_config.h / <chip>.ld overrides
   docs/                             # README.md (map); book/ (how & why); reference/ (code-synced)
@@ -345,26 +393,31 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
   error as the **negated** code `-KOS_Exxx`; a success -- a handle, a count, a byte-count -- is
   **non-negative**, so `rc < 0` is unambiguously an error and never aliases a valid handle/count
   (handles are bounded well under `INT_MAX`, counts stay small). The code set mirrors POSIX
-  magnitudes -- `EPERM` `EBADF` `EINVAL` `EFAULT` `ENOMEM` `EPIPE` `EDEADLK` `EBUSY` -- plus
-  **`EOWNERDEAD`**, the robust-mutex case: a mutex *acquired* while its prior owner died holding it,
-  still returned negative (`-KOS_EOWNERDEAD`) for the caller to special-case as HELD. Two syscalls
+  magnitudes -- `EPERM` `ESRCH` `EBADF` `ENOMEM` `EFAULT` `EBUSY` `EINVAL` `EPIPE` `EDEADLK`
+  `ENOSYS` -- plus **`EOWNERDEAD`**, the robust-mutex case: a mutex *acquired* while its prior
+  owner died holding it, still returned negative (`-KOS_EOWNERDEAD`) for the caller to
+  special-case as HELD. Two of those name conditions with no POSIX analogue in this kernel:
+  **`ESRCH`** is a one-shot reply cap whose parked caller is gone (aborted or reused), and
+  **`ENOSYS`** is an arch backend that does not implement the call on this chip -- the
+  weak-seam default, so an unported syscall is a clean refusal rather than a silent no-op. Two syscalls
   stay OUT of this scheme by return type: `ram_alloc` returns a pointer (every failure is NULL -- a
   negated errno cast to a pointer would be non-NULL) and `cpu_clock_hz`/`cpu_clock_set` return a
   u32 Hz whose 0 already means unknown / no-silicon-clock.
 - **MPU per domain, first-class** (see *Memory domains* below): the running thread's domain
   region set is reloaded on every switch-in (`arch_mpu_apply` stashes it; `kickos_arch_mpu_commit`
   programs the hardware after the physical swap). A thread touching a domain
-  region not granted to it faults -> kernel reports. (M0 isolates granted **data** regions;
-  per-thread private *stacks* -- a sibling can't scribble another's stack -- arrive with the M2
-  `Domain` object, since M0 stacks still live in the kernel pool, not the arena.)
+  region not granted to it faults -> kernel reports. Granted **data** regions were isolated from
+  M0; **per-thread private stacks** -- so a sibling cannot scribble another's stack -- came with
+  the M2 `Domain` object, which moved a thread's stack out of the kernel pool and into the arena.
 - **Sim isolation**: back "physical RAM" with one `mmap` arena; on every switch-in the running
   thread's regions are `mprotect`-ed (grant its domain data region, everything else no-access) so
   a cross-domain pointer raises `SIGSEGV`, translated into the same fault path. **Per-domain data
-  isolation is enforced in the sim from M0**; grant *geometry* is validated (page-aligned arena
-  sub-range) but grant *ownership* is spawner-asserted until M2 (a domain trusting a bad grant is
-  the M2 credential model). The user<->kernel boundary can't be fully trapped in a Linux process
-  (no CPU privilege), so a reserved arena page stands in for it; real user<->kernel enforcement is
-  hardware (M2).
+  isolation has been enforced in the sim since M0.** Grant *geometry* is validated (page-aligned
+  arena sub-range), and grant *ownership* is no longer taken on the spawner's word: it is
+  authenticated (M3), and Rule 7 (`grant-refuses-kernel-reserved-blocks`) mechanically refuses an
+  inadmissible region for **every** granter, privileged ones included. What the sim still cannot
+  reproduce is the user<->kernel boundary itself -- a Linux process has no CPU privilege level --
+  so a reserved arena page stands in for it, and that one boundary is hardware-only.
 
 ---
 
@@ -417,7 +470,7 @@ per-thread. (Narrative + the worked K64F bring-up: `../book/peripheral-isolation
 |---|---|---|---|---|
 | XMC4800 -- ARM v7-M PMSA (CPU-side) | yes | none per-thread (some peripheral registers are PV-write-only at the bus -- a kernel/user split, not a per-master gate) | **yes** | silicon-proven: a granted USIC-SSC DEV window works + an ungranted peripheral poke faults MemManage (xmcspi loopback, 2026-07-17) |
 | RISC-V PMP (qemu-riscv; ESP32-C6) | yes | ESP32-C6 APM/PMS (per security-mode, default-deny user; needs a one-time global open) | **yes** (PMP discriminates per thread; APM opened once) | PMP path proven on qemu-riscv; **C6 SRAM enforcement + per-thread peripheral isolation PROVEN on silicon** (18/18 + mpu_fault; `c6blink` drives the APM open + an 8 B PMP window, ungranted poke PMP-faults) |
-| RX72M -- RXv3 MPU (CPU-side) | yes | none (PRCR is an unrelated write-latch, not a privilege gate) | **yes** | SRAM/domain enforcement silicon-proven (selftest 20/20 + mpu_fault cross-domain trap, 2026-07-17); a real granted peripheral window not yet run on silicon |
+| RX72M -- RXv3 MPU (CPU-side) | yes | none (PRCR is an unrelated write-latch, not a privilege gate) | **yes** | silicon-proven: SRAM/domain enforcement (selftest + mpu_fault cross-domain trap, 2026-07-17) AND a real granted peripheral window -- `rxdrv` blinks LED6 through a granted 16-byte PORT8 PODR window while an ungranted PORT8.PDR poke faults ("MPU FAULT: task 'rxdrv'") |
 | K64F -- SYSMPU (bus-slave-side) | **no** | **AIPS PACR** (by privilege+master, per 4 KB slot, NOT per-thread) | **no** | silicon-proven: an unprivileged PIT access faults via AIPS while SYSMPU latches no error; clearing the slot's PACR SP bit then admits ALL user code |
 
 Consequences: on a CPU-side-MPU chip an unprivileged userspace driver can be granted only its own
@@ -457,12 +510,14 @@ instances co-reside in one host process (invariant #7, instance-scoped state -- 
 kernel (one MCU).** The two compose: N simulated MCUs (kernel instances), each internally
 partitioned into domains. A slave is an *instance*, not a domain.
 
-Status: **per-domain isolation is enforced in the sim as of M0** -- `arch_mpu_apply` `mprotect`s
-the user-RAM arena to the running thread's granted region set on every switch-in, and a
-cross-domain write faults (CI-covered by the `selftest` domain stage). The current shape is a
-per-thread granted region (`ThreadAttr.mem_base` / `kos_thread_params.mem_base`, backed by
-`arch_ram_alloc`); the full `Domain` object (a shared region set several threads reference, +
-per-thread private stacks) and per-**chip** hardware backends land in **M2**.
+Status: **per-domain isolation is enforced everywhere it can be.** In the sim it has held since
+M0 -- `arch_mpu_apply` `mprotect`s the user-RAM arena to the running thread's granted region set
+on every switch-in, and a cross-domain write faults (CI-covered by the `selftest` domain stage).
+M2 completed the picture: the full `Domain` object (a shared region set several threads
+reference, plus per-thread private stacks) and the per-**chip** hardware backends are in, so the
+same cross-domain write is silicon-proven to fault on SYSMPU, PMSAv6-M/v7/v8, RISC-V PMP and the
+RX MPU. A single per-thread granted region (`ThreadAttr.mem_base` / `kos_thread_params.mem_base`,
+backed by `arch_ram_alloc`) remains the simple case a domain is built from.
 
 ---
 
@@ -574,11 +629,17 @@ feeds the slave app.
   ```
   The exported `kickos` INTERFACE target carries the component link group + flags (sim: host libc
   threads); a full-C++ app links `kickos_cxx` instead (both sit over a posture-neutral `kickos_core`).
-  `kickos_add_application(<name> SOURCES... BOARD...)` remains as **optional sugar** and is
-  where per-board image emission (`.bin`/`.hex`/`.uf2`) hangs on MCU targets. On the MCU side the
-  linker script / `crt0` / entry live in the exported ARM toolchain (mirroring NuttX), so the
-  same two lines yield a flashable image; switching sim<->MCU is a one-word `BOARD`/toolchain
-  change. First-class acceptance criterion.
+  Those two lines are the whole supported path **on MCU targets too**, not just the sim: the
+  bare-metal link recipe, the chip linker script and -- via `INTERFACE_LINK_DEPENDS` -- a real
+  build-system dependency on that script all ride the exported target, so an edited `.ld` relinks
+  instead of leaving a stale image to flash. Bare metal adds exactly one optional line,
+  `kickos_emit_image(<target>)`, because turning the ELF into `.bin`/`.hex`/`.uf2` is a `POST_BUILD`
+  action and no usage requirement can carry an action. `kickos_add_application(<name> SOURCES...
+  BOARD...)` remains **optional sugar** with no powers the plain path lacks; the in-tree fleet uses
+  it, downstream projects need not. Switching sim<->MCU is a one-word `BOARD`/toolchain change.
+  First-class acceptance criterion, gated both ways (`tests/check_oot_export{,_mcu}.sh`).
+  KickOS's own warning flags are **never** part of that interface -- they are this project's
+  hygiene policy, applied `PRIVATE` to targets we own, and a consumer's diagnostics stay theirs.
 - **Declaring a driver / QEMU test / board provider.** Three macros in `cmake/kickos.cmake` give
   each its single shape: `kickos_add_driver(<name> [SOURCES] [CLASS] [REGDIR])` -- a freestanding,
   exported driver-lib linking `kickos_user`, its `.data`/`.bss` landing app-side; `kickos_add_qemu_test(NAME
@@ -604,7 +665,11 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
 
 - **Per-task typed handle table, not global ids or fds.** A global object id every task can name
   is ambient authority -- the opposite of the isolation pillar. Each `Thread` embeds a fixed
-  `CapEntry handles[KICKOS_MAX_HANDLES]` (default 8, floor 6 on the tiny boards); a `CapEntry` is
+  `CapEntry handles[KICKOS_MAX_HANDLES]` (default **12**; the four tiny boards -- nRF51, F302,
+  and both F103s -- floor at **9**, which is `KICKOS_CAP_FIRST_DYNAMIC` + the selftest's 2
+  permanent caps + a 3-own-cap test peak, so 9 is the full-selftest prerequisite rather than an
+  arbitrary minimum: a board below it still runs KickOS, since real apps use 1-3 caps, but the
+  suite hard-fails there on cap exhaustion by design); a `CapEntry` is
   8 bytes = (global object handle, `CapType`, rights, cap-gen). Handles are **opaque** to
   userspace (never assume an array index). The table is a pure per-task naming+rights layer that
   WRAPs the unchanged global object pools (`slotpool.h`), it does not replace them: object
@@ -630,12 +695,15 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
   refs at 1), never strands -- unreachable today (every parked waiter pins its own cap).
 - **Well-known reserved cap indices (`system/include/kickos/sys/cap_index.h`, FROZEN).** Indices
   `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..4)`) are reserved well-known slots: index 0 =
-  `KOS_CAP_STDOUT` (the send-only console endpoint), 1..3 held for a future clock/service cap.
-  An **own-create** (`sem`/`mutex`/`endpoint` create) scans placement from
+  `KOS_CAP_STDOUT` (the send-only console endpoint), index 2 = `KOS_CAP_AUTHORITY` (the poolless
+  authority cap, seated by the kernel's `cap_seat_authority`), 1 = a future clock cap and 3 a
+  spare. An **own-create** (`sem`/`mutex`/`endpoint` create) scans placement from
   `KICKOS_CAP_FIRST_DYNAMIC`, so it can **never alias a reserved slot**; a reserved slot is seated
   ONLY by the kernel (`cap_install_defaults` seats stdout, and is the sole writer of index 0) or
-  by explicit spawn delegation (indices 1..3). Userspace only *names* a reserved slot by these
-  constants -- it never chooses the index. Frozen = never renumber; append by raising the last
+  by explicit spawn delegation (indices 1..3) -- and a spawn asking for BOTH an authority seat and
+  `cap_count >= 2` is refused `-KOS_EINVAL`, since the `i+1` packing would put a delegated cap on
+  index 2. Userspace only *names* a reserved slot by these constants -- it never chooses the
+  index. Frozen = never renumber; append by raising the last
   reserved index and `KICKOS_CAP_FIRST_DYNAMIC` together, keeping the range small (each reserved
   slot is one fewer dynamic slot, floored to >=1 by the `cap.h` static_assert).
 - **B1 wire contract (8 apps depend on it):** a fresh child table has cap-gen 0 in every slot, so
@@ -722,11 +790,20 @@ structs or a tiny IDL.
 - **Dependency inversion**: an out-of-tree app builds against the exported KickOS sim package
   (`find_package` + plain `add_executable` linked to the `kickos` target) and runs.
 
-**K64F / Pico / F411 (hardware):**
-- **M1**: flash; UART output matches the sim (minus enforced-MPU-fault). GDB confirms MSP/PSP
-  split, unprivileged `CONTROL`, SVC syscalls crossing the boundary.
-- **M2**: per-task MPU regions loaded on switch-in; wild user write traps (SYSMPU bus fault on
-  K64F; MemManage on ARM PMSA parts), matching the sim.
+**Silicon.** Both halves are done and the second is what M2 closed:
+
+- **Privilege boundary** -- flash; UART output matches the sim. GDB confirms the MSP/PSP split,
+  unprivileged `CONTROL`, and SVC syscalls crossing the boundary.
+- **Enforcement** -- per-task MPU regions are loaded on every switch-in, and a wild
+  cross-domain user write **traps**: MemManage on the ARM PMSA parts (XMC4800, i.MX RT1062,
+  RP2040 v6-M, RP2350 v8-M), a SYSMPU-reported bus fault on K64F, the access exception via
+  MPESTS/MPDEA on RX72M, and `mcause=7` under PMP on ESP32-C6. Proving the *negative* is the
+  point: `mpu_fault` is a dedicated binary whose deliberate cross-domain store must NOT
+  complete, because "the MPU is on" is not "the MPU protects" (Book ch.7.4).
+
+Per-chip evidence, dates and the remaining non-gating tails are in `../m2-readiness.md`;
+which of this CI re-checks on each push -- and which stays a bench step -- is in
+`boards.md` ("CI coverage & cross toolchains").
 
 ---
 

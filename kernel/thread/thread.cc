@@ -63,17 +63,18 @@ namespace kickos
         // before the thread runs; the core carries no slice sentinel.
 
         // The memory domain: pre-resolved by thread_spawn (so pool exhaustion fails
-        // the spawn), else resolved here (idle/root: privileged -> kernel domain,
-        // which never fails). A reference is held for the thread's lifetime and
-        // released at exit (sched::exit_current).
+        // the spawn), else resolved here (idle/root), where it never fails. A reference
+        // is held for the thread's lifetime and released at exit (sched::exit_current).
         t->domain = attr.domain;
         if (t->domain == nullptr)
         {
-            // idle/root only (thread_spawn pre-resolves the domain). Both are
-            // privileged, so this short-circuits to the kernel domain and the grant
-            // predicate never runs; pass caller_privileged=true for that trusted path.
+            // idle/root only (thread_spawn pre-resolves the domain). Neither requests
+            // a data or MMIO grant, so domain_for short-circuits before the grant
+            // predicate and caller_authorized=true is inert, not a waiver. No failure
+            // arm here, so derr cannot be set.
+            int derr = 0;
             t->domain = domain_for(attr.privileged, attr.mem_base, attr.mem_size,
-                                   attr.mmio_base, attr.mmio_size, true);
+                                   attr.mmio_base, attr.mmio_size, true, &derr);
         }
         domain_ref(t->domain);
 

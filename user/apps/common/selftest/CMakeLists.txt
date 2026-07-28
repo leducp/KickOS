@@ -34,11 +34,23 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # full clean run, so a mid-run fault (which exits 0 via the reported-fault
   # path) is caught as a truncated run, not a false pass. CTest checks FAIL
   # before PASS, so a "not ok" still fails.
+  # `# skipped: [1-9]` is a FAILURE here: the sim's pools host the entire suite, so a
+  # skip means a test stopped running, not that the board cannot host it.
   add_test(NAME selftest COMMAND "$<TARGET_FILE:selftest>")
   set_tests_properties(selftest PROPERTIES
     TIMEOUT 30
     PASS_REGULAR_EXPRESSION "# all tests passed"
-    FAIL_REGULAR_EXPRESSION "not ok")
+    FAIL_REGULAR_EXPRESSION "not ok;# skipped: [1-9]")
+
+  # The OTHER console posture: the sim's only coverage of the published route
+  # (kos_send on stdout cap index 0 -> userspace driver). The test above, and every
+  # QEMU gate, run kickos_services_none, where that route is never touched. One
+  # provider links per image, so it needs its own build tree; the script makes one.
+  add_test(
+    NAME    sim_published_console
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_published.sh"
+            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+  set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
 
   # Dependency-inversion acceptance: an out-of-tree app builds against the
   # exported KickOS package (find_package + kickos_add_application) and runs.
@@ -50,14 +62,31 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   set_tests_properties(oot_export PROPERTIES TIMEOUT 120)
 endif()
 
+# The expected-skip list every QEMU gate below carries (EXPECT_SKIPS, checked by name
+# in tests/check_qemu_selftest.sh). Empty means "no test may skip", the fleet default.
+#
+# Posture-dependent: under KICKOS_ROOT_PRIVILEGED=OFF no privileged caller exists
+# after boot, so mpu_privileged_guard skips (its complement is apps/rootfault). The
+# guard test is only registered under enforcement, so the entry is conditioned on both.
+set(KICKOS_EXPECT_SKIPS "")
+if(KICKOS_HAVE_MPU AND NOT KICKOS_ROOT_PRIVILEGED)
+  list(APPEND KICKOS_EXPECT_SKIPS mpu_privileged_guard)
+endif()
+# Comma-joined before it reaches an ENVIRONMENT property: that property is itself a
+# CMake list, so an embedded semicolon would split the value into a second bogus
+# environment entry. The check script splits on commas.
+list(JOIN KICKOS_EXPECT_SKIPS "," KICKOS_EXPECT_SKIPS)
+
 # The SAME TAP suite on the runnable QEMU targets -- the identical binary rebuilt
 # per target, exercising the real ISA switch mechanism (armv7m/armv6m PendSV,
 # rv32imac msip), not just the sim. Needs KICKOS_ENABLE_SELFTEST (the qemu* presets
 # enable it); rr_interleave sizes its RR quantum to the target's clock so it runs
 # even on the coarse QEMU semihosting clock.
-if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
-  kickos_add_qemu_test(NAME qemu_selftest TARGET selftest BOARD qemu
+if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
+  kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_selftest TARGET selftest BOARD ${KICKOS_BOARD}
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
+  set_property(TEST ${KICKOS_QEMU_MPS2_TAG}_selftest APPEND PROPERTY
+    ENVIRONMENT "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}")
 endif()
 # microbit (nrf51) runs the SAME suite on armv6m. Its small pool (MAX_SEMAPHORES=4 /
 # MAX_THREADS=2) is precisely why the suite is pool-honest -- every test reclaims its
@@ -66,10 +95,28 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
+  # The one board with legitimate skips: MAX_THREADS=2 / MAX_SEMAPHORES=4 cannot host
+  # the multi-worker choreographies, and two tests cannot spare the arena. Every other
+  # board keeps the script's default of "nothing may skip". Skips are checked by NAME:
+  # a skip not on this list fails the gate. Growing the list should mean a board
+  # capability changed.
+  #
+  # Measured, stable across repeated runs:
+  #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_deadlock,
+  #   mutex_multi_held      -- 3-worker PI choreographies on a 2-slot pool
+  #   call_infoless_revert (4 workers), call_donation (3)   -- M4.4 call/reply
+  #   domain_share, confused_deputy                         -- 2 concurrent workers
+  #   irq_as_event          -- wants a 4 KiB MMIO page out of 16 KiB SRAM
+  #   mem_self_grant        -- its worker is a second concurrent thread
+  # caller_stack and mmio_grant report PARTIAL instead and count as passes, not skips.
+  set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,domain_share,confused_deputy,irq_as_event,mem_self_grant")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
     SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
+  set_property(TEST qemu_riscv_selftest APPEND PROPERTY
+    ENVIRONMENT "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}")
 endif()
 
 # The same acceptance criterion for a bare-metal package: install the MCU

@@ -103,6 +103,16 @@ SECTIONS
         __init_array_end = .;
     } > RAM
 
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
+       arch/arm/chip/stm32f411/stm32f411.ld. */
+    .kickos_app_fini_array : ALIGN(4)
+    {
+        __kickos_app_fini_array_start = .;
+        KEEP(*(SORT(.fini_array.*)))
+        KEEP(*(.fini_array))
+        __kickos_app_fini_array_end = .;
+    } > RAM
+
     .kickos_app_init_array : ALIGN(4)
     {
         __kickos_app_init_array_start = .;
@@ -248,6 +258,11 @@ SECTIONS
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + boot stack)")
+
+/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
+   rather than silently drop a destructor. */
+ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
+       "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
 #if KICKOS_HAVE_MPU
 /* Real code+rodata must fit the pow2 code region (raise _code_size to the next pow2

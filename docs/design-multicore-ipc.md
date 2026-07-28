@@ -1,6 +1,9 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design: RP2040 AMP cross-core IPC
 
+> **Status: EXPLORATORY** -- a spike; no build or runtime code. Feeds M5 (SMP).
+> See `design/README.md` for the marker taxonomy.
+
 Scope: the concrete cross-core IPC that `docs/design-multicore.md` assumes but
 KickOS does NOT have. That doc's verdict is AMP-first on RP2040 (two core-private
 `Kernel` instances) then SMP-BKL on RP2350. AMP needs a channel between the two

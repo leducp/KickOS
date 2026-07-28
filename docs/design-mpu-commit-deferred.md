@@ -3,6 +3,12 @@
 
 # Deferred MPU commit -- enforcement-soundness seam
 
+> **Status: LANDED** -- the seam is fleet-wide and every enforcing backend uses it
+> (`arch_mpu_apply` stashes at the switch decision, `kickos_arch_mpu_commit` programs from the
+> switch epilogue after the physical swap). The contract is `reference/invariants.md`
+> (`mpu-apply-on-every-switch-in`, `arch-switch-may-defer`) and the teaching is Book ch.7.5.
+> See `design/README.md` for the marker taxonomy.
+
 Terse, invariant-first. This records the fleet-wide seam that fixes an
 enforcement-soundness race between the eager `arch_mpu_apply()` and the
 deferred (pended) context switch every KickOS arch uses.

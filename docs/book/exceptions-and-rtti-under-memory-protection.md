@@ -217,9 +217,9 @@ the same in all three:
 
 Same runtime, same four pieces of memory, three exception models, one invariant. The
 distinction that makes it a *proof* and not a hope -- running the throw in a confined
-unprivileged thread rather than inline in privileged `main()` -- is the subject of the
-companion chapter
-[*Proving memory protection*](proving-memory-protection-coexistence-vs-confinement.md).
+unprivileged thread rather than in a thread on the unit's bypass side -- is the subject
+of the companion chapter
+[*Privilege is three axes, not one bit*](privilege-is-three-axes-not-one-bit.md).
 
 ## Where to go next
 
@@ -227,8 +227,9 @@ companion chapter
   [`../reference/architecture.md`](../reference/architecture.md) ("Memory domains", "C++ decisions").
 - The RISC-V `gp` anchor contract:
   [`../reference/porting.md`](../reference/porting.md) (RISC-V arch).
-- How the claim is actually proven (confined vs coexistence):
-  [*Proving memory protection*](proving-memory-protection-coexistence-vs-confinement.md).
+- How the claim is actually proven (confined vs coexistence), and what "privileged"
+  means axis by axis:
+  [*Privilege is three axes, not one bit*](privilege-is-three-axes-not-one-bit.md).
 - What the C++ runtime *is* (the three stacked libraries) and the boot-order story:
   [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md).
 - Where the writable floor comes from and how the linker partitions one image:

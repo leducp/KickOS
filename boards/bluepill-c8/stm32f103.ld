@@ -5,7 +5,7 @@
  * density): 64 KiB flash / 20 KiB SRAM. Overrides the chip default
  * (arch/arm/chip/stm32f103/stm32f103.ld), which is sized to the 10 KiB
  * low-density floor for clones. Selected by CMake when KICKOS_BOARD=bluepill-c8.
- * HW-UNTESTED (only a low-density clone has been run on hardware).
+ * Validation status of this port: see docs/reference/boards.md.
  *   Flash : 64 KiB @ 0x0800_0000  (aliased to 0x0 at boot; vectors live here)
  *   SRAM  : 20 KiB @ 0x2000_0000
  */
@@ -40,12 +40,38 @@ SECTIONS
         . = ALIGN(4);
     } > FLASH
 
+    /* Global ctors SPLIT. This board override MUST mirror the chip default
+       (arch/arm/chip/stm32f103/stm32f103.ld): a monolithic .init_array runs app
+       ctors before kmain AND leaves the weak app-ctor bounds in kmain.cc at 0, so
+       the root_entry walk is skipped silently. Partition by input ARCHIVE, never by
+       section name: __attribute__((init_priority(N))) emits .init_array.0NNNN,
+       which no archive selector matches, so it falls through to the app bucket. */
     .init_array :
     {
         __init_array_start = .;
+        KEEP(*libkickos_kernel.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_arch_armv7m.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_chip_stm32f103.a:*(SORT(.init_array.*) .init_array))
+        KEEP(*libkickos_lib.a:*(SORT(.init_array.*) .init_array))
+        __init_array_end = .;
+    } > FLASH
+
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
+       arch/arm/chip/stm32f411/stm32f411.ld. */
+    .kickos_app_fini_array :
+    {
+        __kickos_app_fini_array_start = .;
+        KEEP(*(SORT(.fini_array.*)))
+        KEEP(*(.fini_array))
+        __kickos_app_fini_array_end = .;
+    } > FLASH
+
+    .kickos_app_init_array :
+    {
+        __kickos_app_init_array_start = .;
         KEEP(*(SORT(.init_array.*)))
         KEEP(*(.init_array))
-        __init_array_end = .;
+        __kickos_app_init_array_end = .;
     } > FLASH
 
     .ARM.exidx :
@@ -92,6 +118,10 @@ SECTIONS
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
 
+/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
+   rather than silently drop a destructor. */
+ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
+       "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 /* Opt-in link-time heap floor (undefined by default). */
 #ifdef KICKOS_HEAP_MIN
 ASSERT(_kickos_heap_limit - _kickos_heap_start >= KICKOS_HEAP_MIN,

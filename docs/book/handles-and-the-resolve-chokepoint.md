@@ -230,20 +230,33 @@ a probabilistic detector miss for a guaranteed resource leak. It is not on the t
 ## Lifecycle: refcount and destroy-on-last-close
 
 Because possession is per-task but the object is shared, the refcount is a **global**
-property of the object slot, not of any cap. Under M3 the userspace-facing lifecycle op
-shifts meaning:
+property of the object slot, not of any cap. That forces a choice about what the
+userspace-facing lifecycle call *means*, and the two readings are not compatible:
 
-- **Today:** `sem_destroy(handle)` means "destroy this semaphore now" (quiescent-only).
-- **M3:** close means "drop **my** handle" -- decrement the object's refcount and empty
-  this task's entry. The object frees only at the **last** close, when the refcount hits
-  zero. Closing your cap while another task still holds one relinquishes only your own
-  name; it does not destroy the object.
+- **Destroy** -- "tear this object down now." The caller speaks for the object. Whoever else
+  holds a name for it finds that name pointing at nothing, so destroy is only safe while the
+  object is quiescent, and "quiescent" is a property no single holder can check.
+- **Close** -- "drop **my** name for it." The caller speaks only for itself: decrement the
+  refcount, empty this task's entry, and free the object only at the **last** close, when the
+  count reaches zero. Closing while another task still holds a cap relinquishes your own name
+  and nothing more.
 
-This is Zircon's `zx_handle_close` semantics, and it makes close the single lifecycle op
-for every cap type (a cap knows its own type). It is a genuine behavioral shift, not just
-renamed plumbing -- see `../reference/architecture.md` ("Object model, capabilities & IPC")
-and `kernel/syscall/cap.cc` for the refcount, the leak-don't-strand rule for parked waiters,
-and the exit-teardown path.
+Close is the one that composes, and it is what a per-task table implies: if possession is
+per-task, then relinquishing possession must be per-task too. Destroy would let any holder
+invalidate every other holder's name -- ambient authority reintroduced through the lifecycle
+door, after the handle table was introduced to remove it. So `kos_handle_close` is the single
+lifecycle op for every cap type, which works because a cap knows its own type; this is
+Zircon's `zx_handle_close` semantics.
+
+The one wrinkle worth knowing is a naming one: `kos_sem_destroy` still exists as a
+source-compatibility **alias** of `kos_handle_close` (`user/include/kickos/sys.h`). The
+spelling survived; the semantics above are what it does. A reader who assumes the name
+means what it says will expect the object gone after the call, and it is not gone while
+another holder remains.
+
+See `../reference/architecture.md` ("Object model, capabilities & IPC") and
+`kernel/syscall/cap.cc` for the refcount, the leak-don't-strand rule for parked waiters, and
+the exit-teardown path.
 
 ## Low barrier: no capability manifest (the anti-CapDL discipline)
 

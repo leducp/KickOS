@@ -1,7 +1,17 @@
+<!-- SPDX-License-Identifier: CECILL-C -->
 # RP2350 (Cortex-M33) MPU: the ARMv8-M PMSAv8 backend
 
-Status: DESIGN / PLAN. Not implemented. SILICON-PENDING (the Waveshare RP2350
-Pi-Zero has never booted). Requires a fable design review before any merge.
+> **Status: LANDED** -- the PMSAv8 backend shipped (`e2179da`) and is silicon-validated on the
+> RP2350: the enforcement selftest passes, `mpu_fault` gets a clean cross-domain MemManage
+> denial, and bench + soak run without a fault. The plan below is kept as the reasoning; the
+> current contract is `reference/architecture.md` (Memory domains) and `reference/invariants.md`
+> (`mpu-apply-on-every-switch-in`). The four review advisories A-D remain open in `../TODO.md`.
+> See `design/README.md` for the marker taxonomy.
+
+The status line below is how this read while it was still a plan, retained for context:
+
+> Status: DESIGN / PLAN. Not implemented. SILICON-PENDING (the Waveshare RP2350
+> Pi-Zero has never booted). Requires a fable design review before any merge.
 
 This scopes the memory-protection backend for the RP2350's Cortex-M33. It is the
 register-level follow-on to `docs/design-rp2350.md` "DEFERRED (a)", written after

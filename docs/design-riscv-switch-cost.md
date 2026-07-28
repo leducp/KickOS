@@ -1,6 +1,9 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # RISC-V context-switch cost: Zcmp vs the cooperative fast-path
 
+> **Status: EXPLORATORY** -- an analysis spike; no `switch.S` or kernel change. Both levers are
+> post-M6 and unscheduled (`../roadmap.md`). See `design/README.md` for the marker taxonomy.
+
 Analysis spike (design only; no switch.S/kernel change here). Question from the
 maintainer: is closing the RISC-V context-switch gap worth supporting Zcmp
 (`cm.push`/`cm.pop`/`cm.popret`), and can it be compile-time-gated with a plain

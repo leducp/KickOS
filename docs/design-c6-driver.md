@@ -1,7 +1,10 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design brief: ESP32-C6 unprivileged GPIO driver -- the canonical PMP + APM per-thread peripheral-isolation reference
 
-IMPLEMENTED + PROVEN on silicon (2026-07-17): `user/apps/c6blink` blinks GPIO10 through
+> **Status: LANDED** -- see `design/README.md` for the marker taxonomy. The one follow-on still
+> open is the APM/PMS global peripheral open being driven for boards other than this demo.
+
+IMPLEMENTED + PROVEN on silicon (2026-07-17): `user/apps/esp32c6-wroom/c6blink` blinks GPIO10 through
 the granted 8 B PMP window (APM opened) then an ungranted `GPIO_ENABLE` poke PMP-faults
 (mcause=7). The earlier "boot-loop" was an elf2image RAM-only-header flag error, not a
 code bug. The RISC-V analog of the F411 canonical PMSA proof

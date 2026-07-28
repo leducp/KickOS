@@ -10,14 +10,12 @@
 # cross compiler and the per-chip -mcpu/-mfpu/-mfloat-abi baseline so the right
 # multilib is selected uniformly for compile AND link.
 #
-# This file prefers the pinned Apps Arm GNU Toolchain (the official Arm
-# arm-none-eabi build, newlib-based: --with-newlib, ships libstdc++/libsupc++,
-# nano.specs, rmprofile multilibs) over whatever arm-none-eabi-gcc happens to be
-# on PATH. Reasons: reproducibility (one pinned compiler across the fleet) and
-# newlib's full libstdc++ -- required for the eventual full-C++ opt-in, which
-# Debian's picolibc-based apt toolchain cannot provide. It still falls back to an
-# on-PATH arm-none-eabi-gcc (the finds keep PATH search) so a machine without the
-# Apps directory -- e.g. CI -- still resolves a toolchain.
+# The compiler this file wants is the official Arm GNU Toolchain (arm-none-eabi,
+# newlib-based, ships libstdc++/libsupc++): the full-C++ opt-in needs newlib's full
+# libstdc++, which Debian's picolibc-based apt toolchain cannot provide. The
+# capability check after the finds is what ENFORCES that -- whatever gets resolved
+# (hint, PATH, or -D) is refused at configure time unless it has newlib + libstdc++
+# for THIS board's multilib. The hint is convenience and reproducibility only.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
@@ -67,18 +65,34 @@ set(KICKOS_ARCH   "${KICKOS_ARCH}" CACHE STRING "KickOS arch backend selected by
 # exact same -mcpu/-mfpu instead of hardcoding a value that could drift from here.
 set(KICKOS_MCPU_FLAGS "${_kos_cpu}" CACHE INTERNAL "Per-chip -mcpu/-mfpu baseline")
 
-# The pinned prebuilt Arm GNU (newlib) toolchain location. Overridable; the finds
-# also honour PATH, so a host without this directory falls back to an on-PATH
-# arm-none-eabi-gcc (e.g. CI).
+# The prebuilt Arm GNU Toolchain location, seeded from the environment so no
+# contributor's home directory is baked into the repo (export KICKOS_ARM_TOOLCHAIN_BIN
+# once, or pass -D). Left empty, HINTS contributes nothing and PATH decides. A pinned
+# install SHADOWS an on-PATH toolchain.
 set(KICKOS_ARM_TOOLCHAIN_BIN
-    "/home/leduc/Apps/toolchains/arm-gnu-toolchain-15.3.rel1-x86_64-arm-none-eabi/bin"
-    CACHE PATH "Directory holding the arm-none-eabi-* programs")
+    "$ENV{KICKOS_ARM_TOOLCHAIN_BIN}"
+    CACHE PATH "Directory holding the arm-none-eabi-* programs (empty => use PATH)")
+
+# Re-export the resolved hint: CMake's compiler-ABI probe re-reads this file in a
+# SEPARATE cmake process with a fresh cache, which inherits the environment and PATH
+# but never a -D cache entry. Re-exporting makes -D, the environment and a
+# reconfigure agree. An empty value clears the variable, leaving PATH to decide.
+set(ENV{KICKOS_ARM_TOOLCHAIN_BIN} "${KICKOS_ARM_TOOLCHAIN_BIN}")
 
 find_program(CMAKE_C_COMPILER   arm-none-eabi-gcc     HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_CXX_COMPILER arm-none-eabi-g++     HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_ASM_COMPILER arm-none-eabi-gcc     HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_OBJCOPY      arm-none-eabi-objcopy HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}" REQUIRED)
 find_program(CMAKE_SIZE         arm-none-eabi-size    HINTS "${KICKOS_ARM_TOOLCHAIN_BIN}")
+
+# The finds prove a program NAMED arm-none-eabi-g++ exists, not that it can build
+# KickOS (Debian's on-PATH arm-none-eabi is a C-only picolibc build). ${_kos_cpu} +
+# -mthumb make the probe resolve THIS board's multilib, not the compiler's default.
+include("${CMAKE_CURRENT_LIST_DIR}/toolchain-cxx-runtime-check.cmake")
+kickos_require_usable_cross_cxx("arm" "${CMAKE_CXX_COMPILER}"
+  KICKOS_ARM_TOOLCHAIN_BIN
+  "https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz"
+  ${_kos_cpu} -mthumb)
 
 # The compiler cannot produce a runnable executable without the board's linker
 # script + startup, which are not present during CMake's compiler probe. Probe

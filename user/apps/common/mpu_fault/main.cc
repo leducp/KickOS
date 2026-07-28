@@ -6,13 +6,13 @@
 // then writes domain B's region -- which must fault. The kernel reports "MPU
 // FAULT" and shuts down. CTest asserts the marker appears (and no "did not fault").
 //
-// Static-data-free by construction: the worker takes the two region pointers
-// through its thread ARG (a struct placed in region A, which it is granted), NOT
-// through file-scope globals. Under REAL MPU enforcement an unprivileged thread
-// has no access to .data/.bss, so a globals-based test would fault reading its
-// own globals before it could exercise the cross-domain write. This way the only
-// memory the worker touches is its code (flash, granted RX), region A (granted),
-// and its own stack -- exactly the isolation the reference-pair backends enforce.
+// Static-data-free by construction: the worker takes its region base through its
+// thread ARG, by value, and derives both cells from it. The only memory it touches is
+// its code (flash, granted RX), region A (granted), and its own stack.
+//
+// The arg is a value, not a struct in region A: under KICKOS_ROOT_PRIVILEGED=0 root is
+// not granted A, so filling a struct there would fault in root during setup and prove
+// nothing about the child.
 //
 // Enforced in the sim (mprotect) and on HW where the MPU backend is active
 // (KICKOS_HAVE_MPU). Where the MPU is a no-op (privilege-only boards), the
@@ -21,49 +21,44 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/emit.h> // publish-aware write (kos_print is dropped once published)
+
+using kickos::emit;
 
 namespace
 {
-    // Placed at the base of region A (granted to the worker); the worker reads it
-    // from there, so no global is dereferenced.
-    struct DomainArg
-    {
-        volatile int* own;   // a cell inside region A  -> writable
-        volatile int* other; // a cell inside region B  -> NOT granted -> faults
-    };
+    constexpr uint32_t REGION = 4096; // granted to the worker
+    constexpr uint32_t BLOCK = REGION * 2;
 
     void domainA_worker(void* arg)
     {
-        DomainArg* d = static_cast<DomainArg*>(arg); // -> region A (granted)
-        kos_print("[domain] A: writing my own region\n");
-        *d->own = 0x1111; // granted -> ok
-        kos_print("[domain] A: my region ok; writing domain B (expect fault)\n");
-        *d->other = 0x2222; // not granted -> fault (sim / enforced HW)
+        char* base = static_cast<char*>(arg); // region A base, by value
+        emit("[domain] A: writing my own region\n");
+        *reinterpret_cast<volatile int*>(base + 64) = 0x1111; // granted -> ok
+        emit("[domain] A: my region ok; writing domain B (expect fault)\n");
+        *reinterpret_cast<volatile int*>(base + REGION) = 0x2222; // not granted -> fault
         // Reached only where the MPU is NOT enforced (privilege-only boards). NOT
         // the "did not fault" wording CTest negative-asserts.
-        kos_print("[domain] cross-domain write completed: OK where the MPU is a "
-                  "no-op; an enforced backend traps this\n");
+        emit("[domain] cross-domain write completed: OK where the MPU is a "
+             "no-op; an enforced backend traps this\n");
     }
 }
 
 int main(int, char**)
 {
-    void* rA = kos_ram_alloc(4096);
-    void* rB = kos_ram_alloc(4096);
-    if (rA == nullptr or rB == nullptr)
+    // One block, low half granted. kos_ram_alloc returns a base naturally aligned to the
+    // rounded 8 KiB block, so it is also 4 KiB-aligned and the grant encodes as one
+    // descriptor. base + REGION is outside it.
+    void* rA = kos_ram_alloc(BLOCK);
+    if (rA == nullptr)
     {
-        kos_print("[domain] ERROR: ram_alloc failed\n");
+        emit("[domain] ERROR: ram_alloc failed\n");
         return 1;
     }
-    // The arg struct lives at the base of region A; point `own` past it (still in
-    // A) and `other` into region B. main is the privileged root, so it may write A.
-    DomainArg* d = static_cast<DomainArg*>(rA);
-    d->own = reinterpret_cast<volatile int*>(static_cast<char*>(rA) + 64);
-    d->other = static_cast<volatile int*>(rB);
 
-    // Domain-A worker is unprivileged and granted only region A.
-    kos::thread::spawn(domainA_worker, d, "domainA", 10, KOS_POLICY_FIFO, 0,
-                       /*privileged=*/false, rA, 4096);
+    // Domain-A worker is unprivileged and granted only the low half.
+    kos::thread::spawn(domainA_worker, rA, "domainA", 10, KOS_POLICY_FIFO, 0,
+                       /*privileged=*/false, rA, REGION);
     // Park: the worker runs, writes A (ok), faults writing B, kernel shuts down.
     int idle = kos_sem_create(0);
     while (true)

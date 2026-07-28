@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-set(KICKOS_USER_SOURCES src/syscall_stubs.cc)
+set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/init_args.cc)
 
 # The newlib porting layer clashes with host libc on the sim; it is linked from
-# M1 when userspace rides the ARM toolchain libc.
+# M1 when userspace rides the ARM toolchain libc. newlib_sbrk.cc is a separate TU so
+# the archive pulls it only for an app that allocates; merging it into
+# newlib_stubs.cc disables the heapless-board link error (-Wl,-u,_exit force-links
+# that object everywhere).
 if(NOT KICKOS_ARCH STREQUAL "sim")
-  list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc)
+  list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc)
 endif()
 
 add_library(kickos_user STATIC ${KICKOS_USER_SOURCES})

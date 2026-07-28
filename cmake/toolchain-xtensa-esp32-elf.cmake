@@ -42,11 +42,20 @@ set(KICKOS_ARCH        "${KICKOS_ARCH}" CACHE STRING "KickOS arch backend select
 set(KICKOS_ARCH_FAMILY "xtensa"         CACHE STRING "KickOS arch family (arm|xtensa)")
 
 # The Espressif prebuilt toolchain is not on PATH by default (it lives under
-# ~/.espressif, unlike apt's gcc-arm-none-eabi). Allow an override and search the
-# known install location; a consumer on a different host sets KICKOS_XTENSA_BIN.
+# ~/.espressif), so the finds below take a HINT, seeded from the environment so no
+# contributor's home directory is baked into the repo (export KICKOS_XTENSA_BIN
+# once, or pass -D). Left empty, HINTS contributes nothing and PATH decides. A
+# pinned install SHADOWS an on-PATH toolchain.
 set(KICKOS_XTENSA_BIN
-    "/home/leduc/.espressif/tools/xtensa-esp-elf/esp-16.1.0_20260609/xtensa-esp-elf/bin"
-    CACHE PATH "Directory holding xtensa-esp32-elf-* programs")
+    "$ENV{KICKOS_XTENSA_BIN}"
+    CACHE PATH "Directory holding xtensa-esp32-elf-* programs (empty => use PATH)")
+
+# Re-export the resolved hint: CMake's compiler-ABI probe re-reads this file in a
+# SEPARATE cmake process with a fresh cache, which inherits the environment and PATH
+# but never a -D cache entry. Re-exporting makes -D, the environment and a
+# reconfigure agree. An empty value clears the variable, leaving PATH to decide.
+# Same in all four family toolchain files.
+set(ENV{KICKOS_XTENSA_BIN} "${KICKOS_XTENSA_BIN}")
 
 find_program(CMAKE_C_COMPILER   xtensa-esp32-elf-gcc     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)
 find_program(CMAKE_CXX_COMPILER xtensa-esp32-elf-g++     HINTS "${KICKOS_XTENSA_BIN}" REQUIRED)

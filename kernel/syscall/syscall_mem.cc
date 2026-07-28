@@ -83,13 +83,19 @@ namespace kickos
 
     // A user-supplied WRITE buffer / out-pointer the kernel stores into privileged
     // (an endpoint recv buffer, a clock_now result). It passes iff it lies within a
-    // region the caller is granted WRITE. No arch_user_text_readable twin: code/rodata
-    // is never a legitimate write target, so an out-pointer into it is rejected here
-    // even though it would read back fine. Privileged callers and len==0 pass via
-    // user_range_ok.
+    // region the caller is granted WRITE or, where the backend does not model app
+    // static data as a region (every no-MPU chip, and the host sim), within the app's
+    // writable data extent (arch_user_data_writable). Without that arm an unprivileged
+    // thread's writable set on those backends is its own stack alone, so an
+    // out-pointer that lives in a global is refused -KOS_EFAULT. Privileged callers
+    // and len==0 pass via user_range_ok.
     bool user_writable_ok(uintptr_t ptr, size_t len)
     {
-        return user_range_ok(ptr, len, ARCH_MPU_W);
+        if (user_range_ok(ptr, len, ARCH_MPU_W))
+        {
+            return true;
+        }
+        return arch_user_data_writable(ptr, len);
     }
 
     // The kernel<->user byte-access seam. IDENTITY today: a validated user

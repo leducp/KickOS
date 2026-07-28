@@ -255,14 +255,16 @@ namespace kos::thread
     // handle (index+generation, not the telemetry thread id), or a negative -KOS_E* code.
     // `stack`/`stack_size` are optional: pass a caller-owned buffer to size a thread's
     // stack to its need, or leave them 0 to get the kernel default (KICKOS_USER_STACK_SIZE).
-    // `mmio`/`mmio_size` grant a device register block (R|W|DEV); PRIVILEGED caller only.
+    // `mmio`/`mmio_size` grant a device register block (R|W|DEV); the caller needs
+    // AUTH_MEMORY (privilege implies every authority).
     inline int spawn(void (*entry)(void*), void* arg, char const* name,
                      uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
                      uint32_t quantum_ns = 0, bool privileged = false,
                      void* mem = nullptr, uint32_t mem_size = 0,
                      void* stack = nullptr, uint32_t stack_size = 0,
                      void* mmio = nullptr, uint32_t mmio_size = 0,
-                     kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0)
+                     kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
+                     uint8_t authority = 0)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -280,6 +282,7 @@ namespace kos::thread
         p.stack_size = stack_size;
         p.caps = caps;
         p.cap_count = cap_count;
+        p.authority = authority;
         return kos_thread_spawn(&p);
     }
 
@@ -290,10 +293,11 @@ namespace kos::thread
     inline int spawn_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
                           kos_cap_grant const* caps, uint8_t cap_count,
                           uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
-                          bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0)
+                          bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
+                          uint8_t authority = 0)
     {
         return spawn(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
-                     nullptr, 0, nullptr, 0, caps, cap_count);
+                     nullptr, 0, nullptr, 0, caps, cap_count, authority);
     }
 }
 

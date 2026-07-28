@@ -3,6 +3,10 @@
 
 # M4 driver model -- the class/service duality
 
+> **Status: ACTIVE** -- the packaging RULING is settled and the driver libs under
+> `system/driver/<chip>/` follow it; the framework it describes is the work in flight for M4.
+> See `design/README.md` for the marker taxonomy.
+
 Terse, invariant-first. Records the M4 decision on HOW a driver is packaged:
 as an in-process CLASS (driver-lib), as a shared SERVICE (a thread behind an
 endpoint), or -- the ruling -- as BOTH, with the service composed on top of the

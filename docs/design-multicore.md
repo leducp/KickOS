@@ -1,6 +1,10 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design: multicore (AMP / SMP) feasibility -- RP2040 + RP2350
 
+> **Status: EXPLORATORY** -- a feasibility spike; no build or runtime code. Note the "M4 = one
+> SMP kernel image" alignment below predates the renumbering: **SMP is M5**, M4 is the driver era
+> (`../roadmap.md`, `design-driver-era-scope.md` sec.4). See `design/README.md` for the taxonomy.
+
 Scope: a feasibility study + phased plan for running KickOS on more than one core,
 grounded in the two dual-core SoCs in hand -- RP2040 (2x Cortex-M0+, ARMv6-M) and
 RP2350 (2x Cortex-M33 ARMv8-M **or** 2x Hazard3 RV32IMAC(B), ISA-selectable). No

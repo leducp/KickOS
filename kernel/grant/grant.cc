@@ -78,7 +78,7 @@ namespace kickos
     }
 
     bool grant_region_admissible(uintptr_t base, size_t size, uint32_t attr,
-                                 bool caller_privileged)
+                                 bool caller_authorized)
     {
         // R6/minor: the size-0 and wrap refusals live HERE, not only in the overlap
         // helper (which treats size 0 as "touches nothing").
@@ -98,10 +98,10 @@ namespace kickos
         }
         if ((attr & ARCH_MPU_DEV) != 0)
         {
-            // Choice 5A: an MMIO/device grant is privileged-only and must map to
-            // exactly one MPU descriptor with no rounding (a rounded window over-
-            // grants the neighbouring registers).
-            if (not caller_privileged)
+            // Choice 5A: an MMIO/device grant needs the caller's AUTH_MEMORY, and must
+            // map to exactly one MPU descriptor with no rounding (a rounded window
+            // over-grants the neighbouring registers).
+            if (not caller_authorized)
             {
                 return false;
             }
@@ -132,7 +132,7 @@ namespace kickos
         }
         // Choice 10C: confine RAM to the user arena for EVERY caller (no privileged
         // waiver). Guard an absent arena (arch_ram_size() == 0 -> nothing admissible).
-        (void)caller_privileged;
+        (void)caller_authorized;
         size_t const ram_size = arch_ram_size();
         if (ram_size == 0)
         {
