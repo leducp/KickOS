@@ -666,12 +666,15 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
   refs at 1), never strands -- unreachable today (every parked waiter pins its own cap).
 - **Well-known reserved cap indices (`system/include/kickos/sys/cap_index.h`, FROZEN).** Indices
   `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..4)`) are reserved well-known slots: index 0 =
-  `KOS_CAP_STDOUT` (the send-only console endpoint), 1..3 held for a future clock/service cap.
-  An **own-create** (`sem`/`mutex`/`endpoint` create) scans placement from
+  `KOS_CAP_STDOUT` (the send-only console endpoint), index 2 = `KOS_CAP_AUTHORITY` (the poolless
+  authority cap, seated by the kernel's `cap_seat_authority`), 1 = a future clock cap and 3 a
+  spare. An **own-create** (`sem`/`mutex`/`endpoint` create) scans placement from
   `KICKOS_CAP_FIRST_DYNAMIC`, so it can **never alias a reserved slot**; a reserved slot is seated
   ONLY by the kernel (`cap_install_defaults` seats stdout, and is the sole writer of index 0) or
-  by explicit spawn delegation (indices 1..3). Userspace only *names* a reserved slot by these
-  constants -- it never chooses the index. Frozen = never renumber; append by raising the last
+  by explicit spawn delegation (indices 1..3) -- and a spawn asking for BOTH an authority seat and
+  `cap_count >= 2` is refused `-KOS_EINVAL`, since the `i+1` packing would put a delegated cap on
+  index 2. Userspace only *names* a reserved slot by these constants -- it never chooses the
+  index. Frozen = never renumber; append by raising the last
   reserved index and `KICKOS_CAP_FIRST_DYNAMIC` together, keeping the range small (each reserved
   slot is one fewer dynamic slot, floored to >=1 by the `cap.h` static_assert).
 - **B1 wire contract (8 apps depend on it):** a fresh child table has cap-gen 0 in every slot, so

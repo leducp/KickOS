@@ -21,38 +21,43 @@ escalation or a fleet blocker. They are bound-the-unbounded / be-honest-about-th
 hardening, roughly ordered by exposure. Six of seven landed; the seventh turned out not to
 be implementable where it was filed, and says so in code.
 
-Verified on the host sim and QEMU only, each with a gate checked to FAIL first. **Nothing
-here has been through CI** (`gh` unauthenticated, and `ci.yml` triggers `push` only on
-`master`), and local ARM builds use 15.3.rel1 against CI's pinned 15.2.rel1.
+Verified on the host sim and QEMU only, each with a gate checked to FAIL first. **These commits
+have not yet been through CI** -- but the branch under them has: the maintainer reports **CI green
+at `16d89a0`**, the tip before this batch, covering the branch's first 33 commits. Every commit
+that touches `.github/workflows/` is at or before it, so the fleet-wide `-Werror` and the rest of
+the pipeline are now observed on CI's pinned 15.2.rel1 rather than argued from a local 15.3.rel1.
+Uncovered: everything after `16d89a0` -- stage 0/1 of unprivileged-root, and this batch -- which
+is 21 commits as of 2026-07-27. That status is the maintainer's report, not checked from here
+(`gh` unauthenticated, and `ci.yml` triggers `push` only on `master`).
 
-- [x] **Bound the semaphore `count`** -- `m4.5.1: bound the semaphore count instead of letting
-      it wrap` (2fdbf2d). The hole was **sharper than filed**: `sem_create` validated nothing,
+- [x] **Bound the semaphore `count`** -- `m4.5.1: bound the semaphore count` (66280c1). The hole
+      was **sharper than filed**: `sem_create` validated nothing,
       so the overflow was not "enough posts" but *one* -- `kos_sem_create(INT_MAX)` then a
       single post. Now `sem_create` refuses an initial outside `[0, KOS_SEM_COUNT_MAX]`
       (-KOS_EINVAL) and `sem_post` refuses at the ceiling (-KOS_EOVERFLOW, a new code); the two
       ISR posters ignore the refusal, matching their coalescing contract. Gate: the two arms of
       `sem_destroy`, each checked to fail on its own.
 - [x] **Read `console_chip_writers()` under `IrqLock`** -- `m4.5.1: read the console writer
-      count under the lock its writers take` (e3a1f13). One load under the lock; no livelock,
+      count under IrqLock` (127dae2). One load under the lock; no livelock,
       since the drain yields between polls rather than spinning inside a critical section.
       NOT gated: reproducing a torn read needs a race the suite cannot schedule -- the change
       is an argument, not a demonstration, and that is worth saying.
-- [x] **Split `domain_for`'s refusal** -- `m4.5.1: tell an inadmissible grant apart from a full
-      domain pool` (e5c98d8). An out-parameter errno (EPERM inadmissible / EINVAL malformed /
+- [x] **Split `domain_for`'s refusal** -- `m4.5.1: split domain_for's refusal reasons`
+      (296e030). An out-parameter errno (EPERM inadmissible / EINVAL malformed /
       ENOMEM exhausted), forwarded verbatim by `thread_spawn`. The spawn-boundary pre-check
       that existed only to recover the errno the chokepoint could not express is gone, so the
       duplication went with the fix. Gate: `grant_reserved`, checked to fail on ENOMEM.
-- [x] **Debug asserts on the intrusive list** -- `m4.5.1: catch a double insert or a foreign
-      unlink on the intrusive list` (fa16732). New `KICKOS_DEBUG` knob, default OFF (board
+- [x] **Debug asserts on the intrusive list** -- `m4.5.1: assert list membership on push_back
+      and unlink` (0022c82). New `KICKOS_DEBUG` knob, default OFF (board
       images byte-identical); **the sim preset turns it ON**, so the guards run against the
       whole suite on every sim run instead of rotting unbuilt. Both checked to fire.
-- [x] **Bound the spin in `wq_confirm_resume`** -- `m4.5.1: bound the resume spin, like every
-      other poll in the tree` (15eed16). Measured while gating it: the loop takes **zero
+- [x] **Bound the spin in `wq_confirm_resume`** -- `m4.5.1: bound the resume spin` (6961989).
+      Measured while gating it: the loop takes **zero
       iterations on the sim AND on qemu armv7m**, so the barrier the comments describe at
       length has never been observed to spin even once -- see the new finding below. Proven by
       holding the epoch so the switch never lands: an infinite hang becomes a panic on both.
 - [ ] **Implement `__malloc_lock`/`__malloc_unlock`** -- **NOT DONE, and it cannot be done
-      here.** `m4.5.1: say why the malloc lock cannot be implemented in userspace` (1e136ce)
+      here.** `m4.5.1: document why the malloc lock stays a no-op` (291815c)
       replaces the vague FOOTGUN comment with three measured facts: newlib takes this lock
       RECURSIVELY (in the linked `cxxtest` image `_free_r` holds it and calls
       `_malloc_trim_r`, which takes it again), so a non-recursive lock self-deadlocks and a
@@ -63,7 +68,7 @@ here has been through CI** (`gh` unauthenticated, and `ci.yml` triggers `push` o
       milestone. Real fix: the per-thread libc state / TLS item under "Later -- not M1", or a
       kernel-held lock behind a syscall (a designed change).
 - [x] **Guard the `uint16_t` domain refcount** -- `m4.5.1: bound the domain refcount at the
-      thread pool, not at its width` (1bf2004). The count is live threads and nothing else, so
+      thread pool` (b72e9e5). The count is live threads and nothing else, so
       a `static_assert` proves the wrap unreachable, as the object-refcount arrays already do.
       Bound against the thread HANDLE INDEX ceiling, not `KICKOS_MAX_THREADS`: a board sets the
       latter to 2..16, so an assert on it could never fire. Checked live by widening
@@ -71,8 +76,8 @@ here has been through CI** (`gh` unauthenticated, and `ci.yml` triggers `push` o
 
 ## M4.5.1 -- found during the CI / out-of-tree hardening work (2026-07-26)
 
-- [x] **Split `_sbrk` into its own TU.** -- `m4.5.1: pull _sbrk out of the force-linked TU, and
-      let libc reach it` (572531b). **The split alone is necessary but not sufficient, which
+- [x] **Split `_sbrk` into its own TU.** -- `m4.5.1: move _sbrk out of the force-linked TU`
+      (c539d1c). **The split alone is necessary but not sufficient, which
       the plan did not anticipate**: the g++ driver appends libc and libstdc++ AFTER everything
       CMake emits, so an on-demand `_sbrk` member sits behind the linker by the time `_sbrk_r`
       asks -- measured as `undefined reference to _sbrk` on EVERY allocating image fleet-wide.
@@ -99,8 +104,8 @@ here has been through CI** (`gh` unauthenticated, and `ci.yml` triggers `push` o
       (the ring was disarmed by `console_tx_deinit`) and `arch_shutdown` then spins forever.
       Shutdown has to drain through the owning driver, not the retired kernel ring.
 - [x] **Give `thread_spawn`'s two READ checks the same static-data fallback the write side just
-      got.** -- `m4.5.1: give thread_spawn its two read checks the static-data fallback`
-      (8950923). One word at each site; byte-identical on an enforcing backend, where the
+      got.** -- `m4.5.1: use user_readable_ok for thread_spawn's two read checks`
+      (fe68c72). One word at each site; byte-identical on an enforcing backend, where the
       fallback arm returns false. Gate: the `authority_cap` worker's params struct and grant
       array became GLOBALS -- exactly the shape that failed -- and the comment recording the bug
       as a local workaround is gone with it. A **fourth** spawn probe was needed for the array:
@@ -118,8 +123,8 @@ here has been through CI** (`gh` unauthenticated, and `ci.yml` triggers `push` o
       Debug`, i.e. `-g` with **no `-O` at all**. So the ceiling is ~74% real code and ~26%
       unoptimised codegen, and the choice this item poses (shed coverage / accept build-only)
       has a third answer nobody had costed: 16.7 KiB comes back for free.
-      **Holding measure landed** (`m4.5.1: give the two 64 KiB boards -Os, so they can still
-      link the suite`, 361019c): `-Os` across the selftest tree for these two boards only, `-g`
+      **Holding measure landed** (`m4.5.1: build the two 64 KiB boards at -Os`, e946003): `-Os`
+      across the selftest tree for these two boards only, `-g`
       kept, no test dropped, one block to revert. What it costs, stated plainly: the `-st`
       image's kernel is no longer codegen-identical to the same board's non-st build, which the
       selftest `-Os` block deliberately preserved when it optimised the app's own TUs only. Both
@@ -134,7 +139,7 @@ here has been through CI** (`gh` unauthenticated, and `ci.yml` triggers `push` o
 ## M4.5.1 -- found during the kernel-audit batch (2026-07-27)
 
 - [ ] **The resume barrier has never been observed to spin.** Bounding
-      `wq_confirm_resume` (15eed16) needed a gate, and calibrating one measured that the loop
+      `wq_confirm_resume` (6961989) needed a gate, and calibrating one measured that the loop
       takes **zero iterations on the host sim AND on qemu armv7m** across the whole suite: a cap
       of one iteration does not fire. The sim is expected (its switch is synchronous inside
       `wq_block`), but ARM is not -- the long comment at `sync.h` explains that `arch_switch`
@@ -152,7 +157,7 @@ here has been through CI** (`gh` unauthenticated, and `ci.yml` triggers `push` o
       makes the published bench figures a measurement of unoptimised code. Deciding the fleet
       posture is a maintainer call with real trade-offs (debuggability, and `-O` changing what a
       gate proves), which is why it is filed rather than taken.
-- [ ] **`kickos_core` no longer carries the archive group.** 572531b moved the RESCAN group onto
+- [ ] **`kickos_core` no longer carries the archive group.** c539d1c moved the RESCAN group onto
       the `kickos` / `kickos_cxx` leaves, because the two postures need different toolchain
       runtimes in it and CMake forbids one target's closure carrying a library in two groups. A
       consumer linking `kickos_core` DIRECTLY now gets usage requirements but no archives. The
@@ -160,6 +165,16 @@ here has been through CI** (`gh` unauthenticated, and `ci.yml` triggers `push` o
       out-of-tree export gates pass -- but core is still in the export set, so the contract is
       now load-bearing where it used to be advice. Either state it in the exported package or
       make linking core alone a configure-time error.
+- [ ] **The record cites commit hashes a rebase has rewritten.** Found while re-resolving the
+      audit canvas: of the 56 hashes it cited, 37 named commits unreachable from `HEAD`, left
+      behind by the message-trim rebase of this branch. 32 were remappable (patch-id, or a unique
+      exact subject) and are fixed; the other 16 were squashed by that rebase and have no single
+      successor, so they now resolve only against `backup/m4.5.1-pre-msg-trim`. This file has the
+      same class of rot in six places (`5ab2575`, `638620d`, `700ec98`, `ade1879`, `c072712`,
+      `e2179da`), pointing into `backup/m3-pre-squash` from the M3 squash. A hash written into a
+      durable record before its branch is rewritten is a citation with a shelf life, and nothing
+      warns when it expires. Either cite by subject and date, or re-resolve after any rebase
+      (`git patch-id --stable` maps a reworded or rebased commit to its successor mechanically).
 - [ ] **Reclaim `arch_ram_alloc`'s alignment run-up** (M5 allocator work). The bytes skipped
       ahead of each allocation to satisfy its alignment are dropped on the floor -- which is why
       boot-stack allocation *order* is load-bearing today (idle must be allocated before root).
@@ -229,16 +244,19 @@ holding capabilities** rather than start privileged and demote, so there is no d
 `thread_regions_recompose`, `KOS_SYS_DROP_PRIV`, its per-arch backends and Xtensa-last are
 **deleted, not deferred** -- the region set is composed once in `thread_create`
 (`kernel/thread/thread.cc:94-134`) from a privilege that never changes, and the rest existed only
-to manage a transition this design does not have. The reason, recorded once: **every ISA already
-encodes thread privilege in the fabricated first frame and restores it on the first switch-in** --
-armv7m `ctx.npriv` (`arch/arm/armv7m/arch_armv7m.cc:111-119`), armv6m (`arch_armv6m.cc:102-108`),
-rv32imac `MSTATUS_MPP` (`arch_rv32imac.cc:143-158`), rxv3 `PSW_THREAD_USER`
-(`arch_rxv3.cc:279-289`), xtensa has no ring split (`arch_xtensa.cc:271-273`), sim is mprotect
-posture (`sim.cc:758-761`). Starting root unprivileged therefore needs **zero new assembly on any
-port**, and Xtensa comes along free rather than last. `drop_priv` survives only as a **contingent,
-much smaller** item: it is the only mechanism giving "privileged bring-up then self-confinement for
-life", which is what the blocked bring-up bodies below want -- in scope only if the
-`arch_periph_enable` seam (stage 3) proves insufficient.
+to manage a transition this design does not have. The reason, recorded once: **every ISA with a
+ring split already encodes thread privilege in the fabricated first frame and restores it on the
+first switch-in** -- armv7m `ctx.npriv` (`arch/arm/armv7m/arch_armv7m.cc:111-119`), armv6m
+(`arch_armv6m.cc:102-108`), rv32imac `MSTATUS_MPP` (`arch_rv32imac.cc:143-158`), rxv3
+`PSW_THREAD_USER` (`arch_rxv3.cc:279-289`). The two ports without a ring split store nothing:
+xtensa (`arch_xtensa.cc:271-273`) and the sim, whose `arch_context_init` takes `privileged` and
+**discards** it (`sim.cc:758-761`) -- privilege there is the thread's region set plus a
+per-context mid-syscall raise counter, so the sim has no CPU-mode axis at all. Starting root
+unprivileged therefore needs **zero new assembly on any port**, and Xtensa comes along free
+rather than last. `drop_priv` survives only as a **contingent, much smaller** item: it is the
+only mechanism giving "privileged bring-up then self-confinement for life", which is what the
+blocked bring-up bodies below want -- in scope only if the `arch_periph_enable` seam (stage 3)
+proves insufficient.
 
 The old stage 1 (arena-allocated boot stacks) LANDED on the M4.5.1 branch -- see
 `m4.5.1: take the root and idle stacks from the arena, not .bss`. The new stages, in dependency
@@ -282,12 +300,16 @@ on frdmk64f+blink, no `.bss`).
       **Seated WITHOUT `CAP_TRANSFER`**, which makes it non-delegable rather than merely
       undelegated -- so index 2 has exactly one writer, the kernel, and the delegation-packing
       collision below is unreachable instead of unlikely.
-- [x] **Converted all eight gates to `cap_check_authority(caller, AUTH_*)`**, which is true when
-      the caller is privileged OR holds the bit. Behaviour-neutral: root is privileged, so every
-      gate takes the same arm as before. `kos_thread_params` gained an `authority` byte (in the
-      padding after `cap_count`, so the struct does not grow) that narrows only -- refused
-      together with `cap_count >= 2`, since a second delegated cap would land on the authority
-      slot.
+- [x] **Converted the gates to `cap_check_authority(caller, AUTH_*)`** -- that call and nothing
+      else, with the privileged-implies-everything arm inside the function, so the rule is stated
+      once instead of at every site. Behaviour-neutral: root is privileged, so every
+      gate takes the same arm as before. **Eight sites converted, and there turned out to be
+      nine authority decisions**: `grant_region_admissible`'s DEV arm was missed here and found by
+      stage 2 below. Enumerate the decisions, not the call sites -- a count that is right the day
+      it is written is what lets the next one hide. `kos_thread_params` gained an `authority`
+      byte (in the padding after `cap_count`, so the struct does not grow) that narrows only --
+      refused together with `cap_count >= 2`, since a second delegated cap would land on the
+      authority slot.
 - [x] **Gate: selftest `authority_cap`.** An unprivileged child holding `AUTH_PINMUX` and nothing
       else gets PAST the pinmux gate (which then answers for itself) while being refused at a
       gate it holds no bit for -- so the bits are shown independent, not one lump. Confirmed to
@@ -313,7 +335,7 @@ silently satisfied by a link-time override).
 - [ ] **Add `kos_cap_narrow(cap, mask)`** (rights &= mask, never widen, ~10 lines) and drop or
       narrow the authority cap in `kickos_default_init_run` (`system/init/default_init_entry.cc`)
       before `kickos_app_main`. **This is the actual app-facing win** -- without it an unprivileged
-      `main` can still ask the kernel to do all eight things.
+      `main` can still ask the kernel to do every privileged thing there is.
 - [ ] **Declare `selftest` and `stress` privileged-root**, since they spawn privileged children
       (`user/apps/common/selftest/main.cc:400,403`, `user/apps/common/stress/main.cc:222,224,286`).
 
@@ -413,13 +435,15 @@ isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
       reprogram-window / HFNMIENA bypasses are accepted in the design record.
 
 Book + exploratory (M3-adjacent, not milestone-gating):
-- [ ] **Book chapter: the syscall mechanism** (dedicated subagent) -- the user<->kernel boundary
-      from the ground up: the trap trampoline per arch (ARM SVC / RISC-V ecall / RX INT / Xtensa /
-      sim mprotect-emulated), the syscall-number + arg-register ABI (KOS_SYS_*, value-in-reg vs
-      out-pointer), the privilege transition (nPRIV/MPP/PSW.PM), the return path, validate-then-use,
-      and the minimal-syscall-surface design (debug-console `write` the sole kernel exception;
-      read/open/socket = userspace stubs over IPC). Slot ch.2.x/3.x; timeless per Book conventions.
-      It is the current gap: taught only obliquely by 7.1 (boundary alignment) + 8.1 (resolve).
+- [x] **Book chapter: the syscall mechanism** -- landed as ch.3.9,
+      `book/the-syscall-path-trap-dispatch-return.md`. Slotted in part 3 (the trap/interrupt model)
+      rather than 2.x: it needs 3.5's saved-state + deferred-switch vocabulary to say why the
+      handler must not dispatch, and it is what part 4's per-ISA tour then instantiates. Chapter 0.2's
+      dangling "see 3.5 for the trampoline" forward reference now points here. One correction to the
+      brief: `read`/`open`/`socket` are not IPC clients, they are link-only libc bottom-edge stubs
+      (only `_write` routes over IPC, to the caller's stdout cap, with the kernel console as
+      fallback), so the chapter teaches the rule (a real one belongs to the server that owns the
+      device) rather than claiming an implementation.
 - [ ] **Exploratory spike: microkernel IPC performance** (M3 #4 -> M5). The Mach-era "IPC too slow"
       critique vs the L4/seL4 answer -- (a) fast SYNCHRONOUS IPC (direct switch to the woken
       receiver + register/bounded-copy; KickOS's sem_post already hands the token off and drives an

@@ -211,10 +211,58 @@ Two guardrails are worth writing down because they bite silently otherwise:
   receivers -- Chapter 8.3) reads the rights here; the delegation site already has them
   in hand, so it is a signature detail, not a new lookup.
 
+## The degenerate case: a capability with no object
+
+All four steps assume the type *has* an object. Two of KickOS's types do not, in
+different degrees, and what the recipe does with them says more about its shape than
+the ordinary cases do.
+
+**A type whose `obj` names something that is not a pool slot.** The reply capability
+(Chapter 8.5) packs a *parked caller* into its `obj` word as a generational thread
+handle. There is no reply pool and no reply refcount array, so steps 1, 2 and 4 do not
+apply -- but its close-time work is very real, because a reply capability that goes
+away without being used must wake the caller it named with a broken-pipe error. Its
+three arms are therefore: reference up, nothing; reference down, nothing; close
+protocol, the full stale-resolve-and-wake.
+
+**A type with no object at all.** The authority capability *is* its rights bits
+(Chapter 7.4,
+*[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*): `obj`
+is unused, there is nothing allocated, nothing to free, no waiters, and nothing a close
+could need to refuse. Steps 1, 2 and 4 vanish and all three of step 3's arms are a bare
+`return`.
+
+Two details make this a variant of the recipe rather than an exception to it.
+
+**An empty arm must be written out, not left to the `default`.** The `default` asserts,
+and that assertion is load-bearing: it is what catches a type somebody added to the enum
+and forgot to wire up. A poolless type falling through to it would trip a debug
+assertion on every close of a perfectly correct capability. So "there is nothing to do
+here" and "nobody wired this up" have to be *different* answers, even though they behave
+identically in release. That is the general rule for any trapping `default`: **a
+legitimately empty case has to state its emptiness, or the trap stops meaning
+anything.**
+
+**A poolless type must not go through the object-resolving chokepoint.** That chokepoint
+exists to turn a validated handle into a pool object; handed a capability with no pool
+behind it, it would look up `obj`, find nothing, and correctly return nothing -- so the
+type would be permanently unusable through the very path that makes every other type
+work. Both poolless types are looked up type-agnostically instead, with an **explicit
+type test** at the use site. For the authority capability that test is the whole safety
+argument for reading a fixed table index: the reserved slot can also be reached by the
+delegation packing, so what makes a direct read sound is not the index, it is the
+verification that what sits there is the type being asked for.
+
+So the recipe generalises by one word: *at most* one pool, one refcount array, and one
+resolve case. The three switches are the invariant; the pool is the common case.
+
 ## Where to go next
 
 - The naming side this completes -- the handle, resolve chokepoint, and boundary vs
   detector: Chapter 8.1, *Naming a kernel object*.
+- The poolless type that carries no object at all, and why its authority lives in a
+  rights word: Chapter 7.4,
+  *[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*.
 - The first two instances of the recipe: Chapter 2.3, *Priority inheritance* (the
   mutex's close protocol and force-unlock), and Chapter 8.3, *Endpoints* (the
   broken-pipe close protocol).

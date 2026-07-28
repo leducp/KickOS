@@ -48,9 +48,10 @@ frame*, decided once at `thread_create` and never revisited.
 
 ## 2. Why it needs no new assembly on any port
 
-Because every ISA already encodes thread privilege in the fabricated first frame and restores
-it on the first switch-in. Nothing new has to be written; `thread_create` already passes
-`privileged` down to `arch_context_init`, and each backend already honours it:
+Because every ISA with a ring split already encodes thread privilege in the fabricated first
+frame and restores it on the first switch-in. Nothing new has to be written; `thread_create`
+already passes `privileged` down to `arch_context_init`, and every backend that has a mode to
+set already honours it:
 
 | Port | Where privilege lives in the fabricated frame |
 |---|---|
@@ -59,9 +60,9 @@ it on the first switch-in. Nothing new has to be written; `thread_create` alread
 | rv32imac | `mstatus.MPP` in the fabricated frame -- M-mode for privileged, U (0) otherwise (`arch/riscv/rv32imac/arch_rv32imac.cc`) |
 | rxv3 | `PSW_THREAD_USER` in the fabricated PSW (`arch/rx/rxv3/arch_rxv3.cc`) |
 | lx6 (Xtensa) | nothing to set: the LX6 has no ring split, so the flip is a no-op here |
-| sim | the mprotect posture recorded for the context (`arch/sim/sim.cc`) |
+| sim | nothing set and nothing recorded: `arch_context_init` takes `privileged` and discards it (`arch/sim/sim.cc`) |
 
-Two consequences follow.
+Three consequences follow.
 
 **Xtensa comes along free instead of last.** Under the demotion design Xtensa was the hard
 case, because there is no privilege level to drop to. Under this design it is the trivial
@@ -73,6 +74,14 @@ without hardware enforcement -- the authority check is kernel logic, not an MPU 
 property of a thread that the syscall path temporarily leaves and returns to. A design that
 changes it mid-life has to update the resting value too, in asm, on every port. A design that
 sets it once does not.
+
+**The sim has no privilege axis to set.** A host `ucontext` has no ring, so the backend takes
+the flag and drops it on the floor. What stands in for privilege there is the *memory* posture:
+the thread's `mprotect`'d region set, plus a per-context `raised` counter that grants the whole
+arena for the duration of a syscall and re-grants it if the thread is resumed mid-syscall
+(`arch_syscall`, `guard_apply_current`). So the sim collapses CPU mode and memory posture into
+one thing and cannot tell a privileged thread from an unprivileged one holding a permissive
+region set. Section 10 is where that bill comes due.
 
 ## 3. Why the region set needs no recomposition
 
@@ -101,8 +110,11 @@ bring-up bodies in section 8 want. It is in scope only if the `arch_periph_enabl
 
 ## 5. The authority capability: shape, seat, and the arithmetic behind it
 
-The gates that were `privileged` are now `privileged OR holds this authority`. The authority is
-a capability, `CapType::CAP_AUTHORITY`.
+The gates that read `privileged` now call `cap_check_authority(caller, AUTH_*)` and nothing
+else. The privileged-implies-everything arm lives *inside* that function, so the rule is stated
+once rather than at every site -- which is the stronger property, and precisely what makes the
+stage-1 conversion behaviour-neutral: there is no call site left that could encode it
+differently. The authority is a capability, `CapType::CAP_AUTHORITY`.
 
 **It is poolless.** `CapEntry.obj` is unused and there is no refcount, because there is no
 object behind it -- the capability *is* its rights bits. That single fact drives two API
@@ -152,8 +164,8 @@ authority in a capability, root can drop `AUTH_PINMUX` after bring-up and before
 application code that has gone wrong.
 
 That is stage 4's `kos_cap_narrow`, and it is the app-facing point of the whole exercise.
-Without it an unprivileged `main` can still ask the kernel to do all eight privileged things,
-which would make the flip a memory-isolation change and nothing more.
+Without it an unprivileged `main` can still ask the kernel to do every privileged thing there
+is, which would make the flip a memory-isolation change and nothing more.
 
 ## 7. Stage plan, and what stages 0 and 1 landed
 
@@ -185,8 +197,19 @@ explaining that its recv buffer had to be a stack local because a global "would 
 the sim / no-MPU backends". The bug was known, routed around in test code, and never filed.
 
 **Stage 1 -- the authority capability, root still privileged. LANDED.** The type, the five
-bits, `cap_check_authority`, and all eight gates converted. Behaviour-neutral by construction:
+bits, `cap_check_authority`, and the gates converted. Behaviour-neutral by construction:
 root is privileged, so every gate takes its privileged arm exactly as before.
+
+**There are nine authority decisions in the kernel, and stage 1 converted eight of them.** The
+eight are seven cases in `kernel/syscall/syscall.cc` plus the MMIO grant in `thread_spawn`. The
+ninth was missed: `grant_region_admissible`'s DEV arm (`kernel/grant/grant.cc`, Choice 5A) went
+on reading raw `Thread::privileged`, and it is not in the list of surviving reads below because
+nobody knew it was there. It is invisible while root is privileged, and it sits directly on the
+console-handover path, so stage 2 found it the hard way: an unprivileged root holding
+`AUTH_MEMORY` clears the `thread_spawn` gate, is refused here, and the board goes dark. Fixed on
+the stage-2 branch, as `m4.5.1: gate the MMIO grant on AUTH_MEMORY, not on the caller's
+privilege`. The lesson is to enumerate the *decisions* rather than count the call sites: a count
+that is right on the day it is written is exactly what lets the next one hide.
 
 The reads of `Thread::privileged` that survive are exactly the set this design keeps:
 
@@ -280,8 +303,11 @@ acceptable *for a feature compiled out of production images*, and the `AUTH_PINM
 
 **The sim is the weakest witness for this work, not the strongest.** It is blind to
 kernel-stack faults -- `kmain`'s frame is host stack, so the argv bug could not have been
-reproduced there at all -- and it skips non-arena regions. Any claim about the privilege
-boundary that rests only on the sim is weaker than it looks.
+reproduced there at all -- and it skips non-arena regions. **It also has no privilege axis to
+witness at all** (section 2): its `arch_context_init` discards the flag, so "unprivileged" on
+the sim means a narrower region set and nothing more. A gate that fires there exercises the
+kernel's authority logic, never a CPU-mode boundary. Any claim about the privilege boundary that
+rests only on the sim is weaker than it looks.
 
 **Stage 0 and 1 are verified on sim + QEMU only, and each carries a gate that was checked to
 fail.** That last part is the discipline that matters: a gate proving a guard *exists* is worth
