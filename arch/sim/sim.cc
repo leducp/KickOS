@@ -63,6 +63,15 @@ namespace
         return reinterpret_cast<SimContext*>(c->opaque);
     }
 
+    // getcontext() is returns-twice, so values live across it in the function that calls
+    // it are -Wclobbered: fatal above -O0, and it fires or not depending on instrumentation
+    // (plain -Os is clean, -Os plus UBSan is not). noinline is load-bearing -- it keeps the
+    // call out of arch_context_init, whose stack parameters are live across it.
+    __attribute__((noinline)) void context_capture(ucontext_t* uc)
+    {
+        getcontext(uc);
+    }
+
     // Instance-scoped sim backend state (invariant #7, the arch half): several sim
     // backends (one per emulated MCU / KickCAT slave) co-reside in one host
     // process, mirroring the kernel() seam but staying arch-side (invariant #1).
@@ -726,18 +735,6 @@ void arch_context_init(struct arch_context* ctx,
                        int privileged)
 {
     SimContext* c = sc(ctx);
-    memset(c, 0, sizeof(*c));
-    getcontext(&c->uc);
-    // New threads always start with all interrupts enabled, independent of the
-    // creating thread's current mask (which may be inside a critical section).
-    sigemptyset(&c->uc.uc_sigmask);
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // ...except: start IRQ signals BLOCKED so no ISR can preempt between the
-    // physical swap into this new thread and the trampoline's switch-in emit. The
-    // trampoline unblocks them right after emitting (see trampoline()).
-    sigaddset(&c->uc.uc_sigmask, SIGALRM);
-    sigaddset(&c->uc.uc_sigmask, SIGUSR1);
-#endif
     // The sim runs threads on host ucontexts, which need a host-sized stack -- an MCU-tuned
     // small caller stack (KICKOS_MIN_STACK_SIZE is a few hundred bytes) would overflow the
     // host. Substitute a host stack when the caller's is below the host floor; real HW uses
@@ -750,6 +747,19 @@ void arch_context_init(struct arch_context* ctx,
         stack_base = malloc(SIM_HOST_MIN_STACK);
         stack_size = SIM_HOST_MIN_STACK;
     }
+    memset(c, 0, sizeof(*c));
+    context_capture(&c->uc);
+    // New threads always start with all interrupts enabled, independent of the
+    // creating thread's current mask (which may be inside a critical section).
+    sigemptyset(&c->uc.uc_sigmask);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // ...except: start IRQ signals BLOCKED so no ISR can preempt between the
+    // physical swap into this new thread and the trampoline's switch-in emit. The
+    // trampoline unblocks them right after emitting (see trampoline()).
+    sigaddset(&c->uc.uc_sigmask, SIGALRM);
+    sigaddset(&c->uc.uc_sigmask, SIGUSR1);
+#endif
+    // getcontext() filled uc_stack with the CALLER's stack; retarget it here.
     c->uc.uc_stack.ss_sp = stack_base;
     c->uc.uc_stack.ss_size = stack_size;
     c->uc.uc_link = nullptr;

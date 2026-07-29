@@ -104,8 +104,9 @@ namespace
         }
 
         // The receive interrupt enables (CCR.RIEN/AIEN) were armed by the privileged
-        // bring-up: CCR is a PV-write-only register at the bus (RM Table 18-20), so an
-        // unprivileged write here would AHB-error -> BusFault. NVIC 85 is masked until
+        // bring-up: CCR is a PV-write-only register at the bus (RM Table 18-20), and an
+        // unprivileged write here is SILENTLY DISCARDED -- no fault, read-back unchanged
+        // (measured by user/apps/xmc4800-relax/pvprobe). NVIC 85 is masked until
         // kos_irq_register above, so no event is lost by arming them at boot.
 
         // Announce before the first blocking wait: if SR1/NVIC 85 never fires

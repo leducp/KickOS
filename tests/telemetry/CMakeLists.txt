@@ -16,9 +16,10 @@ add_test(
           "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
 set_tests_properties(telemetry_golden PROPERTIES TIMEOUT 30)
 
-# CI gate 3: trace-metadata de-drift. A host program prints the AUTHORITATIVE arch/
-# syscall numbers straight from the C++ enums (record.h ArchId + abi.h kos_syscall_nr);
-# check_idmap.py asserts kicktrace.py's ARCH_NAME/SYSCALL_NAME cover exactly them.
+# CI gate 3: trace-metadata de-drift. A host program prints the arch/syscall numbers
+# the C++ side actually spells (record.h ArchId + abi.h kos_syscall_nr); check_idmap.py
+# takes abi.h as the syscall authority and asserts it, that list and kicktrace.py's
+# SYSCALL_NAME all agree.
 # Needs user/include (abi.h) + system/include (errno.h); include/ is already global.
 add_executable(kicktrace_gen_idmap gen_idmap.cc)
 target_include_directories(kicktrace_gen_idmap PRIVATE
@@ -31,5 +32,6 @@ add_test(
   COMMAND "${CMAKE_COMMAND}" -E env
           "${PROJECT_SOURCE_DIR}/tests/telemetry/check_idmap.py"
           "$<TARGET_FILE:kicktrace_gen_idmap>"
-          "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
+          "${PROJECT_SOURCE_DIR}/tools/kicktrace.py"
+          "${PROJECT_SOURCE_DIR}/user/include/kickos/sys/abi.h")
 set_tests_properties(telemetry_idmap PROPERTIES TIMEOUT 30)

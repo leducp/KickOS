@@ -3,16 +3,17 @@
 
 **M1 VALIDATION COMPLETE (2026-07-14)** -- 10 boards on silicon (5 ISAs) + 3 emulator gates
 green; every board boots, has a console, runs the selftest, panics visibly, and runs at its
-true (or safely-degraded) clock. Full record in `M1_state.md`. The items still open below are
-either optional perf, deferred to M2, or non-gating HW-unverified notes -- none block M1.
+true (or safely-degraded) clock. Full record in `docs/archive/M1_state.md`. The items still
+open below are either optional perf, deferred to M2, or non-gating HW-unverified notes --
+none block M1.
 
 Living checklist for **M1** (uniformity / bring-up). Check items off as they land -- this file,
 not memory, is the source of truth for "where are we". M2 (MPU enforcement) and M3
 (capabilities + clock-select) items are parked at the bottom so they aren't lost.
 
 This file is the **granular, actionable** status. The milestone-level plan (the general idea
-per milestone) is `roadmap.md`; validated end-state + per-board detail is `M1_state.md`; the
-board/console readiness matrix is `docs/m2-readiness.md`.
+per milestone) is `roadmap.md`; validated end-state + per-board detail is
+`docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
 ## Session record -- 2026-07-27 integration (READ THIS FIRST IF RESUMING)
 
@@ -41,8 +42,8 @@ master `64410b7` -- rebase before any work in them.
 - **`kos_reboot` folds into `AUTH_DEVICE`**, rather than taking a capability at a reserved index.
   `KOS_CAP_RESERVED3` therefore **stays free**, which is worth more than bit granularity: spending
   the last well-known index forces the next one to raise `KICKOS_CAP_FIRST_DYNAMIC` and costs a
-  dynamic slot on all four 9-handle boards. Recorded in full in the `kos_reboot` section below and
-  in `docs/design-unprivileged-root.md` section 9.
+  dynamic slot on all four 9-handle boards. **LANDED** as `KOS_SYS_REBOOT`; recorded in full in
+  the `kos_reboot` section below and in `docs/design-unprivileged-root.md` section 9.
 - **`kos_ram_alloc` gets an explicit self-grant**, not an implicit one at alloc: `AUTH_MEMORY`-gated,
   bounded by `KICKOS_MPU_MAX_REGIONS`, failing loud with `-KOS_ENOMEM`. **LANDED** as
   `KOS_SYS_MEM_SELF_GRANT`.
@@ -72,23 +73,39 @@ master `64410b7` -- rebase before any work in them.
 - **Selftest tiering (core tier + optional tiers) was to be considered for the two 64 KiB boards --
   but MEASURE FIRST, and the measurement says it is not needed today.** See below.
 
-### The tiering measurement, taken 2026-07-27 (this is the "measure first" result)
+### The tiering measurement (this is the "measure first" result)
 
 The premise was that the fleet defaults to `Debug` with no optimisation, inflating flash ~26%. It
-is **already handled**: `CMakeLists.txt:114-118` applies `-Os` across the selftest tree for exactly
+is **already handled**: `CMakeLists.txt:137-145` applies `-Os` across the whole tree for exactly
 `f302nucleo` and `bluepill-c8` when `KICKOS_ENABLE_SELFTEST` is on, described in-file as a holding
-measure pending N16. Measured on the current tip, **with** the new `mem_self_grant` test in the
-suite (`text + data`, against 64 KiB of flash):
+measure pending N16. At branch tip (`text + data`, against 64 KiB of flash):
 
 | Board | flash used | free | headroom |
 | --- | --- | --- | --- |
-| `f302nucleo-st` | 49,604 B | 15,932 B | 24.3% |
-| `bluepill-c8-st` | 49,436 B | 16,100 B | 24.6% |
+| `bluepill-c8-st` | 51,540 B | 13,996 B | 21.4% |
+| `f302nucleo-st` | 51,716 B | 13,820 B | 21.1% |
 
-**So size-aware presets have dissolved the problem and tiering is unnecessary for now.** Both
-boards carry the fleet-uniform suite with ~16 KiB spare. Revisit only if headroom actually erodes;
-the remaining N16 question is narrower than tiering -- whether to keep the two-board `-Os` block,
-widen it to the fleet, or replace it with per-preset build types.
+**Tiering is unnecessary: both boards carry the fleet-uniform suite with ~14 KiB spare.** The
+revisit trigger ("only if headroom actually erodes") has **partly fired** -- 1,636 bytes went on
+`bluepill-c8-st` and 1,644 on `f302nucleo-st` against the M4.5.1 merge baseline, attributed
+symbol-by-symbol in `design-flash-footprint.md` section 9: two new selftest cases
+(`t_bus_device_slots` + helpers, `t_reboot_denied`), a real +88 in `domain_for` from the
+one-holder-per-MMIO-window check, and `MAX_TESTS` 64->128, whose 512 bytes land on RAM rather than
+flash. 21% is still ample, so tiering stays unbuilt.
+
+**The narrower N16 question now has a measured answer: per-preset build types**
+(`design-flash-footprint.md` section 10). `CMAKE_BUILD_TYPE=MinSizeRel` is byte-identical in
+`.text` to an explicit `-Os`, and its `-DNDEBUG` is inert in this tree -- there is no `NDEBUG`
+reference anywhere and no `assert()` outside the `KICKOS_DEBUG` guards -- so its only cost is
+losing `-g`, recoverable with `-DCMAKE_C_FLAGS_MINSIZEREL="-Os -DNDEBUG -g"`. It also **inverts the
+block's stated cost**: `CMakeLists.txt:139-140` gives that cost as "the `-st` kernel is no longer
+codegen-identical to the same board's non-st build", and measured kernel-side on `bluepill-c8`
+`hello` the two differ by **13,505 bytes as shipped** and by **114 at `-Os`** (the flag's genuine
+content). The unoptimised default is what creates the divergence; widening `-Os` nearly closes it,
+which matters because silicon witnesses are taken on `-st` images. **LANDED**: the four MCU base
+presets and the sim preset build `MinSizeRel`, `-g` is re-added under that config, and the RP2040 /
+RP2350 optimised-build defect that blocked it is fixed. The consequence for the existing witnesses
+is the fleet re-witness pass under M4.5.5.
 
 ### One new finding: guards that exist but assert almost nothing
 
@@ -120,10 +137,12 @@ the sweeps go last because they touch everything and would conflict with any of 
 items keep their number and are struck through rather than removed, because they are cited by
 number: the record and the XMC entry under Blockers below both point at **item 5**.
 
-1. ~~**Measure `-Os` on the tight boards**~~ -- DONE above. Outcome: **tiering not needed.** What
-   remains of N16 is only the narrower question of how `-Os` should be expressed.
-2. **Selftest tiering** -- **do not build it** unless headroom erodes. Kept in the queue only so
-   the next reader sees it was considered and refuted by measurement, not forgotten.
+1. ~~**Measure `-Os` on the tight boards**~~ -- DONE above. Outcome: **tiering not needed.** The
+   narrower question of how `-Os` should be expressed is answered above too, and landed:
+   per-preset build types (`MinSizeRel`).
+2. **Selftest tiering** -- **do not build it.** Headroom has since eroded by ~1.6 KiB to 21.4%,
+   which is a partial fire of that trigger and still ample. Kept in the queue only so the next
+   reader sees it was considered and refuted by measurement, not forgotten.
 3. ~~**Non-goals into `docs/reference/architecture.md`, appended to the existing `## North star`
    section.**~~ -- DONE (79b7a37). All four landed with the arithmetic that refuted them (no untyped
    memory / `Retype`; no CNodes; no derivation tree; no per-instance capabilities), under
@@ -133,8 +152,10 @@ number: the record and the XMC entry under Blockers below both point at **item 5
    touched, and should not be by a later pass.
 4. ~~**Record the sequencing note** (M4 driver breadth and M5 SMP behind goal 1) in `roadmap.md`.~~
    -- DONE (a5fc422), as a block quote under `## Next`.
-5. **Move the XMC USIC bring-up into the granted driver thread.** The blocker is placement, not
-   silicon -- see the corrected entry under Blockers below. Unblocks `xmcssc` on a flipped board.
+5. **Move the XMC USIC bring-up into the granted driver thread, and add the privileged configure
+   seam it needs for FDR/BRG/CCR.** Both halves, not one: the placement move is necessary and the
+   three PV-write-only stores are a measured hardware refusal -- see the entry under Blockers
+   below. Unblocks `xmcssc` on a flipped board.
 6. **`stm32f103` `arch_mpu_min_region()` override.**
 7. **Re-point `kernel_ctor_placement` at the `cxxtest` ELF** (it is vacuous where it is now; see
    the finding above -- these two are the same problem and can land together).
@@ -226,10 +247,9 @@ triggers `push` only on `master`).
       impossible before -- the force-linked reference broke those too), and a real board is
       unaffected. Both out-of-tree export gates pass, so the exported package still links.
       Follow-on now unblocked: nrf51 can drop the zero-length `.userheap` it only kept for this.
-- [ ] **Override `arch_mpu_min_region()` to 0 in `chip_stm32f103.cc`.** STM32F1 has no MPU, but
-      the chip inherits the v7-M pow2 minimum and pays its alignment tax anyway -- which is what
-      took `bluepill-c8`'s free arena to zero. A 0 override drops the tax on a part that has
-      nothing to enforce.
+- [x] ~~**Override `arch_mpu_min_region()` to 0 in `chip_stm32f103.cc`.**~~ DONE (`6d49e14`),
+      and `chip_stm32f302.cc` with it: both parts have no MPU, so they were paying the v7-M pow2
+      alignment tax for regions nothing programs.
 - [ ] **Re-point `kernel_ctor_placement` at the `cxxtest` ELF.** The gate passes fleet-wide, but
       vacuously: every app it inspects links an empty `.kickos_app_init_array` window, so the
       script takes its early-out without ever dereferencing a pointer. `cxxtest` is the one image
@@ -284,14 +304,46 @@ triggers `push` only on `master`).
       Worth settling, because the barrier is on the mutex/endpoint wake path on every board and
       is currently justified by an argument nothing exercises. Silicon witness still owed --
       timing is exactly what an emulator does not reproduce.
-- [ ] **The whole fleet builds unoptimised.** Every preset sets `CMAKE_BUILD_TYPE=Debug`, whose
-      default flags are `-g` with no `-O`. Measured on f302nucleo's selftest image: 65,720 bytes
-      at the default against 48,848 at `-Os`, a 26% reduction with no source change. Only
-      `selftest`'s OWN TUs opt into `-Os` today. This is the root cause of the 64 KiB squeeze
-      (N16 above), it inflates every board's flash and every switch's I-cache footprint, and it
-      makes the published bench figures a measurement of unoptimised code. Deciding the fleet
-      posture is a maintainer call with real trade-offs (debuggability, and `-O` changing what a
-      gate proves), which is why it is filed rather than taken.
+- [x] **The whole fleet builds unoptimised: CLOSED.** The four MCU base presets and the sim preset
+      set `CMAKE_BUILD_TYPE=MinSizeRel` and every board inherits it; `-g` is re-added under that
+      config (`CMakeLists.txt:139`), because an image with no debug info cannot be witnessed on
+      silicon. The two-board `-Os` holding block is deleted, subsumed by the fleet default. The gap
+      it closed, measured on f302nucleo's selftest image: 64,408 bytes unoptimised against 47,120 at
+      `-Os`, a 26.8% reduction with no source change (`design-flash-footprint.md` section 3, which
+      measures all fourteen boards both ways). One caveat stands: the switch's I-cache footprint
+      plausibly moved too, but **no instruction-cache or cycle measurement was ever taken**, so that
+      is not to be cited as measured (`design-flash-footprint.md` section 10). Consequence: every
+      published bench figure measured unoptimised code, and every silicon witness except the
+      2026-07-29 `f302nucleo` captures, which are the first taken on `-Os` -- see the fleet
+      re-witness pass under M4.5.5 below. No bench has been run optimised.
+- [x] **`picopi` and `pizero2350` cannot build an optimised image: FIXED**, which is what unblocked
+      the fleet build type above.
+      `arch/arm/chip/rp2040/chip_rp2040.cc:80-81` and `arch/arm/chip/rp2350/chip_rp2350.cc:96-97`
+      -- the bootrom-header `r8`/`r16` accessors, `*reinterpret_cast<volatile uint8_t*>(addr)` --
+      fail `-Werror=array-bounds` ("array subscript 0 is outside array bounds of
+      `volatile uint8_t [0]`") at `-O2` and at `-Os`, and compile clean at `-O0` and `-O1`.
+      Reproduced both by compiling each TU directly and as a `pizero2350-st` build at
+      `-DCMAKE_BUILD_TYPE=MinSizeRel`; the diagnostic count varies with toolchain version, the
+      pass/fail split by optimisation level does not. The accessors exist only under
+      `KICKOS_ENABLE_SELFTEST` (they serve `arch_reboot`), which is why the default build and the
+      flag-off `-Os` build both pass -- flag-gated code is exactly the code no default build
+      compiles. **Cause, confirmed by flag bisection:** GCC treats the first
+      `--param=min-pagesize` bytes of the address space as unmapped, so a constant-address
+      dereference down there is an out-of-bounds access to it -- and on both chips the bootrom
+      the accessors read *is* at address 0. `--param=min-pagesize=0` silences all four
+      diagnostics on the rp2350 TU with nothing else changed. The remedy is a
+      `#pragma GCC diagnostic ignored "-Warray-bounds"` scoped to the two accessor bodies
+      (`chip_rp2040.cc:80-82`, `chip_rp2350.cc:96-98`), which compiles clean at `-Os` and `-O2` on
+      both TUs; a global `--param` would blind the whole tree to a real diagnostic class. The
+      optimised accessors are **disassembly-verified only, never executed** -- folded into the
+      M4.5.5 re-witness pass below.
+- [ ] **LTO does not link, on any board.** `-flto` fails every app with
+      `(.isr_vector+0x4): undefined reference to Reset_Handler`. The handler is defined in a C++ TU
+      and referenced **only** from the vector table in an assembly object, so the LTO plugin sees
+      no reason to keep the definition (measured on `bluepill-c8`, `design-flash-footprint.md`
+      section 12). So LTO is not an available footprint recovery today. It is not on the `-Os` path
+      N16 needs, so it gates nothing -- filed so it is not rediscovered. **Record only: no fix
+      attempted.**
 - [ ] **`kickos_core` no longer carries the archive group.** c539d1c moved the RESCAN group onto
       the `kickos` / `kickos_cxx` leaves, because the two postures need different toolchain
       runtimes in it and CMake forbids one target's closure carrying a library in two groups. A
@@ -327,10 +379,10 @@ triggers `push` only on `master`).
       2026-07-27). CI builds only the plain presets, so a selftest image that overflows 64 KiB of
       flash goes unnoticed until someone builds the `-st` preset by hand. These two boards are
       build-only for the suite anyway -- a link check is exactly and only what they provide, so a
-      link-only job is the whole value at none of the runtime cost. Both link today with ~16 KiB
-      spare (measured in the session record above), and the job is what keeps that true.
-      Note for whoever adds it: `-Os` is applied to precisely these two boards under
-      `KICKOS_ENABLE_SELFTEST` (`CMakeLists.txt:114`), so the job must configure with the selftest
+      link-only job is the whole value at none of the runtime cost. Both link today with ~14 KiB
+      spare (measured in the session record above, and shrinking), and the job is what keeps that
+      true. Note for whoever adds it: `-Os` is applied to precisely these two boards under
+      `KICKOS_ENABLE_SELFTEST` (`CMakeLists.txt:141`), so the job must configure with the selftest
       **on** or it will not measure the image that actually risks overflow. A local sweep of all
       thirteen `-st` presets found one real link break that the seven emulator gates could not
       (`esp32-wroom-st`, Xtensa, missing `kickos_arch_mpu_commit`), which is the argument for
@@ -360,34 +412,23 @@ triggers `push` only on `master`).
 - [ ] **Move `.claude/` from `.git/info/exclude` into `.gitignore`** -- `.git/info/exclude` is
       per-clone, so every other clone sees the directory as untracked noise.
 
-## Designed, not built -- `kos_reboot` (reboot-to-bootloader)
+## `kos_reboot` (reboot-to-bootloader) -- BUILT (2026-07-28)
 
-Fully designed, deliberately not implemented yet. Recorded at this fidelity so it can be *built*
-as specified rather than redesigned:
-- **No reserved number**, behind an `arch_reboot` seam with a **weak `-KOS_ENOSYS` default** -- a
-  chip that cannot do it declines honestly instead of pretending. This note has now named two
-  numbers that were taken before it was built: 36 went to `KOS_SYS_SHUTDOWN`, then 37 went to
-  `KOS_SYS_MEM_SELF_GRANT`. `user/include/kickos/sys/abi.h` is the authority, and the rule it
-  already stated is the right one -- **a number is allocated when a syscall is built, not when it
-  is designed** -- so stop reserving one here. It takes the next free value at build time
-  (38 as of this writing).
-- **Authorized by `AUTH_DEVICE` on the existing authority cap -- DECIDED 2026-07-27**, rather than
-  by a `CAP_REBOOT` at `KOS_CAP_RESERVED3`. So it needs no new cap type, no sixth rights bit (there
-  is none: five bits is the whole budget), and it **leaves index 3 free** -- worth more than bit
-  granularity, because spending the last well-known index would force the next one to raise
-  `KICKOS_CAP_FIRST_DYNAMIC` and cost a dynamic slot on all four 9-handle boards. Gate it with
-  `cap_check_authority(c, AUTH_DEVICE)`, the same call `arch_shutdown` uses.
-  Recorded counter-argument: shutdown only stops execution, while reboot-to-bootloader leaves the
-  board accepting new firmware over USB, so fusing them lets anything that may publish a console
-  also enter flashing mode. Accepted because the feature is compiled out of production images; if
-  a distinct `AUTH_REBOOT` is ever wanted, merge `AUTH_PINMUX` + `AUTH_CLOCK` to free the bit.
-  See `docs/design-unprivileged-root.md` section 9.
-- Compiled out entirely unless `KICKOS_ENABLE_SELFTEST`.
-- **RP2040:** bootrom `UB` -> `reset_usb_boot`.
-- **RP2350:** bootrom `RB` -> `reboot`, with
-  `REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL | NO_RETURN_ON_SUCCESS`. The bootrom lookup offset is
-  **silicon-revision dependent** -- read `*(uint8_t*)0x13` and branch on it; do NOT hardcode.
-- **imxrt1062:** declines with `ENOSYS`, so Teensy keeps its physical button press.
+`KOS_SYS_REBOOT = 38`, `AUTH_DEVICE`-gated, behind an `arch_reboot` seam whose weak default is
+`-KOS_ENOSYS`. Case, weak symbol, wrapper and app are all inside `KICKOS_ENABLE_SELFTEST`, so a
+production image carries none of it. The `AUTH_DEVICE` fusion decision and its counter-argument
+are recorded in `docs/design-unprivileged-root.md` section 9.
+
+Backends: rp2040 `'UB'` -> `_reset_to_usb_boot(0, 0)`; rp2350 `'RB'` -> `reboot` with
+`BOOTSEL | NO_RETURN_ON_SUCCESS`; imxrt1062 `bkpt #251` -> the MKL02 presents HalfKay. Every
+other chip declines through the weak seam. The earlier instruction to read `*(uint8_t*)0x13` and
+branch on it is **refuted**: both datasheets forbid using that ROM build byte to locate
+functions, and the three magic bytes at `0x10` are the whole validity test they give.
+
+Witnessed: the refusal path -- selftest `reboot_priv` (an unprivileged caller gets `-KOS_EPERM`)
+plus `sim_reboot_declined` / `qemu_reboot_declined` on `apps/rebootdemo`. The reboot itself is
+**witnessed on RP2350** (pizero2350, see `docs/reference/boards.md`); the RP2040 and imxrt1062
+backends are still bench debt (see the bench item below).
 
 ## Unprivileged ctors and `main` -- start unprivileged, holding capabilities (2026-07-27)
 
@@ -435,9 +476,12 @@ frdmk64f+blink -- the 8 B being the argv struct itself).
       selftest `shutdown_priv`, checked to FAIL (run truncates mid-suite) with the gate removed.
 - [x] **Add a writable arm to `user_writable_ok`** -- see `m4.5.1: give user_writable_ok the
       static-data arm its read twin has`. New `arch_user_data_writable` seam. **The hole was wider
-      than recorded here:** it is not just the five no-MPU chips (stm32f103, stm32f302, nrf51,
-      sam3x8e, esp32) -- **the host sim has it too**, despite building `KICKOS_HAVE_MPU=1`, because
-      its globals live in the host image rather than the mprotect'd arena. So the fix could not key
+      than recorded here:** it is not just the five chips with no MPU *backend* (stm32f103,
+      stm32f302, nrf51, sam3x8e, esp32 -- and `sam3x8e` **has** an MPU on silicon, a Cortex-M3
+      revision 2.0 unit; what is missing is the `mpu.cmake` port, and the `due` unit is retired so
+      it cannot be witnessed either way) -- **the host sim has it too**, despite building
+      `KICKOS_HAVE_MPU=1`, because its globals live in the host image rather than the mprotect'd
+      arena. So the fix could not key
       on `KICKOS_HAVE_MPU` alone and the sim carries its own arm. Gate: selftest `writable_global`,
       confirmed failing on both broken postures beforehand. Also note the suite had already
       *worked around* this bug in `ep_recv_worker`'s comment without it being filed.
@@ -504,8 +548,27 @@ silently satisfied by a link-time override).
       the alignment-gate repair are witnessed by `mem_self_grant` and `mem_self_grant_nonpow2`
       running `ok` under PMSAv7 in both postures and under SYSMPU. Updated boundary table in
       `docs/reference/boards.md`; captures under `.session/n33-rewitness/` (machine-local).
-- [ ] **Remaining boards, in this order:** f411disco, frdmk64f, pizero2350, esp32c6-wroom, rx72m.
-      frdmk64f stays blocked on stage 3 (`arch_periph_enable`).
+- [x] **`esp32c6-wroom`, `pizero2350` and `rx72m` FLIPPED and witnessed on silicon**, which puts
+      the flip across all four enforcement backends (PMSAv7, RISC-V PMP, PMSAv8, RXv3). Evidence
+      per board in `docs/reference/boards.md`. `rx72m` needed two prerequisites first: `rxdrv`
+      moved onto the fleet driver pattern, and an `arch_pinmux_set` backend covering `PmnPFS` plus
+      `PORTm.PMR`.
+- [x] **`f411disco` FLIPPED and witnessed on silicon 2026-07-29 at `6646c8e`**, which closes the
+      declared stage-2 set. What blocked it was a **pre-existing bench debt rather than flip work**:
+      PMSAv7 had never been witnessed on that board at all, so a flip would have had no enforcing
+      baseline to discriminate against. Done in two passes for that reason -- enforcement first in
+      the default posture (selftest 62/62 with 0 skips, plus an `mpu_fault` cross-domain MemManage
+      denial, `CFSR=0x82`, `MMFAR=0x2000b000`), then the A/B. The backend is the shared `stm32f411`
+      one, so this also closes the MPU HW debt for the chip and for `blackpill`; `docs/m2-readiness.md`
+      no longer carries an unwitnessed enforcement backend. Evidence in `docs/reference/boards.md`.
+      Found on the way, NOT fixed: `f411spi` does its SPI1 bring-up (RCC/GPIOA/GPIOE) from `main`,
+      so under the flip it faults MemManage on the first store (`RCC_AHB1ENR` @ `0x40023830`,
+      witnessed). It is a diagnostic app and not on the gate, so it is stage-3 follow-up
+      (`arch_periph_enable`), the same treatment `c6blink` and `rxdrv` needed.
+- [ ] **`frdmk64f` is NOT a stage-2 target and waits for stage 3.** Its `k64uart` and `k64dspi`
+      PACR writers (`AIPS0_PACRN` at `0x4000_0064`, `AIPS0_PACRF` at `0x4000_0044`) both fall
+      inside `arch_reserved_blocks`'s AIPS0 entry `[0x4000_0000, 0x4000_1000)`, so no grant can
+      ever reach them and `arch_periph_enable` is the only way in.
 - [x] **Per-board gate, and what it actually cost.** Both halves met on `xmc4800-relax` silicon
       under PMSAv7. But the gate as worded is not reachable by the *unmodified* suite, and the
       reasons are worth keeping:
@@ -538,8 +601,8 @@ silently satisfied by a link-time override).
 **Stage 3 -- the blocked bring-up bodies.**
 - [ ] **Add `arch_periph_enable(base)`**, weak `-KOS_ENOSYS`, gated `AUTH_DEVICE`, covering "ungate
       the clock and drop supervisor-protect for the block at this base". Implement for K64F
-      (`SIM_SCGC*` + `AIPS0_PACRN`) and ESP32-C6 (the APM/PMS one-time open recorded under Driver
-      era below). Retires `k64uart` and half of `k64dspi`.
+      (`SIM_SCGC*` + `AIPS0_PACRN`). Retires `k64uart` and half of `k64dspi`. The ESP32-C6 needs
+      nothing here: its APM open is a boot-time chip act in `arch_init`, not a per-block request.
 
 **Stage 4 -- the app story.**
 - [ ] **Add `kos_cap_narrow(cap, mask)`** (rights &= mask, never widen, ~10 lines) and drop or
@@ -564,21 +627,23 @@ Blockers and limits:
   `system/driver/mk64f/k64dspi/k64dspi.cc:298-327` (clock gates, pin mux, GPIO, DSPI config),
   `system/driver/xmc4800/xmcssc/xmcssc.cc:281-324` (USIC kernel clock, baud, protocol) --
   and `xmc4800-relax`, the enforcement flagship, links one. Stage 3 generalizes part of this. It
-  does **not** cover the XMC, which needs USIC-specific KSCFG/FDR/BRG/CCR programming rather than
-  "ungate a clock, drop supervisor-protect" -- but the reason recorded here was wrong and is worth
-  correcting, because it made a software problem look like a silicon one. **The blocker is where
-  the bring-up runs, not what the hardware permits.** `xmcssc` already hands the U0C1 window
-  (`0x4003_0200`) to an unprivileged driver thread via `spawn_unprivileged`, so the window is
-  demonstrably grantable; what fails under the flip is that `xmc_spi0_start` runs in *root*, and a
-  flipped root holds no MMIO grant for it. Moving that sequence to a holder of the grant removes
-  the obstacle. Separately, "FDR/BRG/CCR/INPR are PV-write-only" is an RM Table 18-20 reading
-  transcribed into the driver banner, and it is **contradicted, not untested**: `consoledemo`'s
-  scrambler is spawned `privileged=false` with the granted U0C0 window and writes exactly FDR, BRG,
-  SCTR, TCSR, PCR, CCR and `KSCFG` from inside it, and the recorded XMC silicon PASS is that the
-  panic banner survives a *driver-garbled* UART, which requires those unprivileged writes to have
-  landed. So the bring-up moves into the granted driver and there is no register-level blocker at
-  all. Still unread: **RM Table 18-20 itself** (the banner transcribes a reading of it), and the
-  `U`/`PV`/`BE` glossary is reference-manual knowledge, not citable from this tree. **Now enforced
+  does **not** cover the XMC, which needs USIC-specific FDR/BRG/CCR programming rather than
+  "ungate a clock, drop supervisor-protect". **The XMC blocker is hardware, measured on silicon
+  2026-07-28** by `user/apps/xmc4800-relax/pvprobe`: an unprivileged thread holding the MPU grant
+  for the U0C1 window (`0x4003_0200`) has its writes to FDR/BRG/CCR **silently discarded** (no
+  fault, read-back unchanged), while `SCTR` (`U,PV`) in the same window in the same run lands
+  exactly and an ungranted SCU poke MemManages. So the window is grantable and the *transfer* path
+  works unprivileged -- `xmcssc` already proves that -- but `xmc_spi0_start`'s three PV-write-only
+  stores need a privileged executor, and the flip needs a seam for them. Given that seam the
+  bring-up moves **wholesale** into the granted driver and must, because no path exists by which a
+  post-flip root holds a DEV region: `ARCH_MPU_DEV` is attached only in `domain_for`, reached with
+  MMIO only from `thread_spawn`, and `KOS_SYS_MEM_SELF_GRANT` hardcodes `ARCH_MPU_R | ARCH_MPU_W`.
+  So the driver is the only possible caller of the seam. The
+  earlier entry here said the opposite ("contradicted, not untested", from `consoledemo`'s scrambler
+  garbling the UART); that was **invalid inference** -- the scrambler also writes SCTR/TCSR/PCR (`U,PV`) and
+  gates `KSCFG`, any one of which garbles the UART on its own. Also corrected: Table 18-20 marks
+  exactly three registers `Write = PV` (FDR, BRG, CCR); `INPR` is `U,PV` and its earlier inclusion
+  was a transcription slip (untested here). **Now enforced
   at configure time** (`KICKOS_SERVICE_LIST_ROOT_MMIO`) rather than left to fail on the hardware:
   pairing such a list with `KICKOS_ROOT_PRIVILEGED=OFF` is a `FATAL_ERROR`, because the runtime
   failure is a fault mid-bring-up *after* the console has been relinquished, i.e. a silent dark
@@ -589,14 +654,24 @@ Blockers and limits:
   first `rootfault` capture held a fault dump with nothing to check it against, and `mpu_fault`'s
   captures had been marker-only on every service-list board. Fixed for both via
   `kickos::emit` (`user/include/kickos/sys/emit.h`), which is the **third** copy of the
-  try-index-0-then-fall-back policy (`tests/tap/tap.cc`, libc `_write`). Worth a look at whether the
-  other diagnostic apps that print from a worker have the same silent-on-published-boards problem.
+  try-index-0-then-fall-back policy (`tests/tap/tap.cc`, libc `_write`). The open question of which
+  other worker-printing diagnostics share the problem is **answered: `pvprobe` and `inprstorm` do**
+  -- filed below.
 - **The panic-path UART reclaim clips bytes in flight.** `kpanic_enter` takes the UART back from the
   userspace driver so the report always reaches the wire, which works, but on `xmc4800-relax` it
   reproducibly garbles roughly the last 8 bytes the driver had queued (the polled TX word pending in
   `TBUF0`). Cosmetic for a terminal report, but it eats the tail of the line preceding the dump.
-- **`bluepill-c8` and `f302nucleo` will likely never flip** -- both carve barely 3 KiB of arena for
-  the two boot stacks, and both are 9-handle boards.
+- **`bluepill-c8` and `f302nucleo` are held by the absence of a RING-ARM witness, not by RAM or
+  handles.** `f302nucleo` now has silicon: `hello` and `stress` both pass at 2 KiB of heap
+  (`docs/reference/boards.md`). What is unwitnessed is the ring arm, and no prober app exists.
+  Both are armv7m, so the flip's mechanism (`ctx.npriv` in the fabricated first frame) is present;
+  neither part has an MPU (`stm32f103` none, and `f302nucleo` is the R8 `x8` line, which has none
+  either), so stage 2's gate -- selftest green *under enforcement* plus a cross-domain `rootfault`
+  -- cannot be met on either. The 9-handle provisioning costs the flip nothing: the authority cap
+  sits at reserved index 2 and spends zero dynamic slots. The arena is heap policy, not the part:
+  measured 6,560 B (`bluepill-c8`, production image), 2,592 B (its selftest image), 14,752 B with
+  the heap carve at zero; 8,512 and 4,512 on `f302nucleo` since its carve went to 2 K
+  (`design-flash-footprint.md` section 7, `docs/reference/porting.md` minimum-requirement). The "barely 3 KiB" reading is a selftest-image figure.
 - **`Thread::privileged` survives**, with narrowed meaning: it selects the memory posture (kernel
   domain + permissive background), it is the confused-deputy bypass at `syscall_mem.cc:37`, and it
   stays the home for "may spawn a privileged child" -- which should NOT be a capability, since
@@ -604,14 +679,261 @@ Blockers and limits:
   board, **no privileged thread can come into existence after boot**.
 - **`idle` stays privileged and holds no capabilities** -- it runs no app code, and RXv3 `WAIT` is a
   privileged instruction while RISC-V U-mode `WFI` is optional per spec.
-- **The reserved cap index range is full after this** (0 stdout, 1 clock, 2 authority, 3 promised to
-  `CAP_REBOOT`), and the five rights bits are the entire budget for the life of the type.
+- **The reserved cap index range is full after this** (0 stdout, 1 clock, 2 authority, 3 spare --
+  reboot folded into `AUTH_DEVICE`, so index 3 stays free), and the five rights bits are the entire
+  budget for the life of the type.
 - **Delegation packing collides with reserved names** -- spawn delegation puts cap *i* at child
   index *i+1*, so a delegated authority cap lands at index 1 (`KOS_CAP_CLOCK`). Blocks the narrowed
   hand-off to a driver manager until the deferred explicit-destination-index work lands.
 - **Cap-gen is a `uint16_t`** with no object generation behind a poolless cap, so 65536
   close/re-seat cycles wrap it. Unreachable in-tree; same unbounded-counter class as the
   domain-refcount item above.
+
+## M4.5.5 -- MPU region-encoding classes
+
+Ordered after stage 4 (`kos_cap_narrow`) and before the `KICKOS_ROOT_PRIVILEGED` deletion, but
+**not a blocker for it** -- the knob goes away on the strength of the flip, not of region shaping.
+One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows it.
+
+- [ ] **Give the alloc/MPU seam a third region-encoding mode.** `arch_ram_region_size`
+      (`arch/include/kickos/arch/arch.h:234`) and `arch_ram_region_align` (`:262`) are `static
+      inline` and keyed SOLELY on `arch_mpu_min_region()`, so they offer exactly TWO modes:
+      `min == 0` gives 16-byte granularity, and any nonzero `min` gives a power-of-two size with
+      the base NATURALLY ALIGNED to that size. The hardware has THREE classes, so one of them has
+      no representation:
+      - **Power-of-two REQUIRED.** PMSAv7 (`stm32f411`, `xmc4800`, `mps2`), and RISC-V PMP NAPOT
+        (`arch/riscv/rv32imac/arch_rv32imac.cc:332` returns 8, "RISC-V PMP NAPOT minimum region
+        size"). NAPOT folds the size into the trailing address bits, so pow2 there is the
+        encoding itself, not a convention.
+      - **Granular at N, power-of-two NOT required.** NXP SYSMPU 32 B (`mk64f`), RX MPU 16 B
+        (`rx72m`), and ARM PMSAv8 32 B (`rp2350`, and `mps2-an505` via `qemu-m33`), which is
+        base/limit rather than base+size. **This is the unrepresentable class**, and it
+        over-aligns today on `frdmk64f`, `rx72m` and `pizero2350`.
+      - **No MPU.** `arch/arm/chip/nrf51/chip_nrf51.cc:110` overrides to 0. `stm32f103` and
+        `stm32f302` override to 0 as well (`6d49e14`), so this item covers only the class that
+        remains: a granule that is right while the MODE is wrong.
+      **For PMSAv8 the `min_region` VALUE of 32 is correct; the MODE is wrong.** 32 is the PMSAv8
+      granule, which is why `arch/arm/common/arch_arm_pmsav8.cc:156` deliberately keeps the weak
+      32 and overrides encodability alone. `mk64f` is the same shape: it overrides
+      `arch_mpu_region_encodable` (`arch/arm/chip/mk64f/chip_mk64f.cc:559`) and nothing on the
+      size/align path, so it still gets power-of-two shaping. That distinction is what makes this
+      ONE seam change rather than a set of per-chip patches.
+      **This is a known trade made explicit, not a newly found bug.**
+      `arch/rx/rxv3/arch_rxv3.cc:653` already records the pow2 shaping as "a describable superset,
+      not a requirement", and `arch_ram_region_size` already carries a `SEAM (MMU era)` marker
+      naming itself the SINGLE point that couples allocation size to MPU descriptor geometry. The
+      third mode belongs at that marker.
+      **Scope and risk.** The change alters the region descriptors actually programmed on
+      `frdmk64f`, `rx72m` and `pizero2350`. Two of those (`rx72m`, `pizero2350`) are flipped to
+      unprivileged root AND silicon-witnessed, so it requires a silicon re-witness. Review it
+      against `arch_mpu_region_encodable` and the real descriptor programming -- PMSAv8
+      `MPU_RBAR`/`MPU_RLAR`, SYSMPU `RGD`, RX `RSPAGEn`/`REPAGEn` -- not only the allocator.
+      `qemu-m33` (PMSAv8) is the one in-env gate the change moves.
+      **The motivation is not bytes.** All three affected boards have RAM to spare (262 K on
+      `frdmk64f`, 512 K on each of `rx72m` and `pizero2350`), so the expected recovery is small in
+      absolute terms. What it buys is correct hardware modelling, and the parts ahead --
+      Cortex-M23/M33/M55/M85 are all PMSAv8.
+- [ ] **One general fleet re-witness pass, and it closes the step.** Every silicon witness in
+      `docs/reference/boards.md` was captured from an UNOPTIMISED binary: the MCU presets built
+      `CMAKE_BUILD_TYPE=Debug`, which is `-g` with no `-O` flag at all, and the fleet now builds
+      `MinSizeRel` (`-Os -g`), which moves each image by roughly 17 to 23 KB. Per-board figures in
+      `docs/design-flash-footprint.md`.
+      **What does not transfer, and must be re-captured:** fault addresses, disassembly offsets,
+      symbol sizes, stack-depth observations, and every timing figure -- the bench numbers, and
+      `inprstorm`'s measured ~37,700 ISR invocations/second
+      (`user/apps/xmc4800-relax/inprstorm/main.cc:25`). Least transferable of all: `pvprobe`'s
+      privileged-write measurements, whose whole subject is whether an individual store lands.
+      **What stands:** `bluepill-c8-st` and `f302nucleo-st`. The deleted two-board holding measure
+      already built those two `-Os`, and their `.text` is byte-identical under `MinSizeRel`.
+      **What the move buys, which changes what a witness is worth:** a board's `-st` kernel and its
+      non-`-st` kernel differed by **13,505 bytes** as shipped, so an `-st` witness never
+      transferred to the shipped image at all. Both now build `-Os` and differ by under 200 bytes
+      -- the flag's genuine content (`arch_reboot`, `arch_irq_inject`, `arch_mpu_probe_addr`,
+      `irq_spurious_count`) -- so an `-st` witness finally does transfer.
+      **The same pass clears this milestone's silicon debt.** Each item is unwitnessed for its own
+      reason and none of them justifies a separate bench trip:
+        - The UART-FIFO drain on the reboot path (`arch_console_flush_sync` before `arch_reboot`,
+          `kernel/syscall/syscall.cc:389`). Only `mk64f` and `xmc4800` implement the seam and
+          neither has an emulator gate, so the sim and QEMU gates exercise only the weak no-op
+          (`kernel/init/console.cc:347`) -- the truncation fix itself has never run against a real
+          UART.
+        - `dev_window_exclusive` and `bus_device_slots`: both postdate every silicon capture, so no
+          chip has ever run them. Already recorded under the five-apps DEV-window item below.
+        - The optimised `arch_reboot` path on `picopi` and `pizero2350`: verified by disassembly
+          only, never executed, and neither RP part has an emulator gate. Distinct from the
+          never-run RP2040 and imxrt1062 reboot BACKENDS under *Needs hardware* below.
+        - `f302nucleo` joins the bench this round: it has an onboard ST-Link and a VCOM console,
+          and `tools/flash-stlink.sh:18` already defaults `--connect-under-reset` on for it. It is
+          the **only physically-present no-MPU ARM board**, which makes it the sole possible
+          silicon witness for the claim that unprivileged root is real on a part with no MPU --
+          root starting unprivileged, the ctors and `main` running, selftest green. That is a
+          declared objective of the pass, not a by-product. It is NOT the stage-2 enforcement gate,
+          which no MPU-less part can meet (see the `bluepill-c8` / `f302nucleo` bullet above).
+
+## Found during the M4.5.2 stage-2 flip work (2026-07-28/29)
+
+- [ ] **An IRQ line is never released, so a driver that exits cannot be respawned. Owner: M4.6**,
+      whose design gate already names reclaim/teardown on driver death. `irq_detach` has exactly
+      **one** caller in the whole tree (`kernel/init/console_tx.cc`, the console handover path), and
+      nothing in thread teardown touches IRQ bindings: `exit_current` runs `cap_teardown` plus
+      `domain_release` plus `on_remove` and no more, and `cap_teardown` walks the handle table only.
+      Two leaks follow from one omission. The line keeps the dead driver's handler, so
+      `irq_register` returns `-KOS_EBUSY` for it **forever** (one-driver-per-line is doing exactly
+      what it is meant to; nothing ever tells it the driver is gone). And the binding pool is
+      bump-allocated with no free path (`k.irq_binding_count++`), so the slot leaks too.
+      **This contradicts a documented path**: `user/include/kickos/sys/spi_service.h` says
+      `serve_loop` returns when the endpoint dies (`EPIPE`) so the driver thread can exit and "let
+      root respawn". The respawn cannot work -- the new driver thread fails at
+      `kos_irq_register`. The contract is written, the mechanism to honour it is not.
+- [ ] **`kos_bus_cfg.cs_index` is accepted and never interpreted.** `k64dspi` drives one hardwired
+      GPIO CS (`PTC4`) and `xmcssc` one fixed `SELO0`, so neither `fold()` reads the field, neither
+      bounds it, and neither refuses an out-of-range value. Harmless while every driver has one CS
+      line, and a trap the moment one has two: the M4.5.2 device slots let a client configure slot 0
+      and slot 1 with different `cs_index` values and get the same physical line. `bus-service.md`
+      and `bus.h` now say so; a multi-CS driver has to read and bound the field, and that is when
+      the `-KOS_EINVAL` refusal the contract wants becomes real.
+- [ ] **`irq_register` is completely ungated**, which is the sharper half of the same area. The
+      `KOS_SYS_IRQ_REGISTER` dispatch arm (`kernel/syscall/syscall.cc`) calls straight through with
+      no `cap_check_authority`, while its tier-2 neighbours `IRQ_ATTACH` and `IRQ_UNMASK` both check
+      `AUTH_IRQ`. Combined with the no-reclaim finding above, any unprivileged thread can
+      permanently squat any line on the chip -- one syscall, irreversible, no authority needed.
+      Gating it on `AUTH_IRQ` is the obvious move; whether tier-1 should instead take a narrower
+      per-line authority is the part that needs a decision.
+- [ ] **Five in-tree apps grant a DEV window a live board-service driver already holds, so the
+      M4.5.2 one-holder-per-window check (`domain_for` -> `-KOS_EBUSY`) now refuses their spawn.
+      Silicon-only: no in-env gate covers any of them** (all are `kickos_add_diagnostic_app` or a
+      hardware-observable demo, none has a CTest gate), so nothing goes red until the next bench run.
+      The same gap covers the suite itself: `dev_window_exclusive` and `bus_device_slots` postdate
+      every silicon capture, so the case totals stamped in `docs/reference/boards.md` are right for
+      their commits and neither new case has ever run on a chip.
+      Verified statically on `xmc4800-relax-st -DKICKOS_HAVE_MPU=1`, whose service list resolves to
+      `kickos_services_xmc4800relax` (`xmcuart` U0C0 + `xmcssc` U0C1) -- the `xmcspi` and
+      `consoledemo` ELFs both carry `kickos_board_services`, so both drivers are up before `main`.
+        - `xmcspi`, `xmccshold`, `pvprobe`, `inprstorm` each grant `U0C1_BASE`/`0x200` =
+          `[0x40030200,0x400303FF]`, the exact window the `xmcssc` bus service holds. This is a REAL
+          pre-existing conflict, not a false positive: two drivers configuring one USIC channel. The
+          four predate `xmcssc` joining the service list (M4.4) and silently became conflicting then.
+          Build them `-DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_console` (console only, an
+          existing provider) so U0C1 has no other holder.
+        - `consoledemo -DKICKOS_SCRAMBLE_TEST=ON` grants `0x40030000`/`0x200` = the exact window the
+          unprivileged `xmcuart` driver holds. Here the double grant is the POINT (garble a live
+          console, prove `arch_console_reclaim` recovers it), so the check structurally obsoletes the
+          way it was staged. Build it `-DKICKOS_SERVICE_LIST=kickos_services_none` (kernel-driven
+          console, no DEV holder anywhere) and the scrambler is the sole holder again.
+      `KICKOS_SERVICE_LIST` is one global cache variable per build tree, so this is a per-image build
+      discipline, not something an app's CMakeLists can set for itself. Decide whether to encode it
+      (a per-app configure-time refusal, or splitting the diagnostics into their own build trees).
+- [ ] **Respawn vs `-KOS_EBUSY` on the device window -- documented, cannot bite today, revisit with
+      SMP or a higher-priority supervisor.** `spi_service.h` says `serve_loop` returns on EPIPE so
+      root can respawn; a respawn issued while the dying driver still references its domain would now
+      earn `-KOS_EBUSY`. Two independent reasons it cannot happen now: (a) `sched::exit_current`
+      calls `cap_teardown` (which EPIPE-wakes the parked respawner) and `domain_release` in the SAME
+      `IrqLock` critical section, `cap_teardown` first, so a woken supervisor always observes the
+      window already free; (b) root runs at `KICKOS_PRIO_MIN + 1` = 2, below every service driver
+      (11-12), so on single-core it cannot preempt a driver between `serve_loop` returning and
+      `exit_current`. Opens if a supervisor ever outranks a driver, on SMP, or if death is detected
+      any other way (watchdog/timeout/a future join) -- then join before respawning, or retry on
+      `-KOS_EBUSY`. Note the respawn path is ALREADY broken for an unrelated reason (the IRQ-line
+      entry above), so no in-tree caller exercises this yet.
+- [ ] **`pvprobe` and `inprstorm` print via `kos::print`, not `kickos::emit`**, so their output is
+      silently dropped on any board whose console has been published to a userspace driver. Only
+      `rootfault`, `mpu_fault` and `rebootdemo` include `emit.h`. The fix is one include and a call
+      swap, and it matters out of proportion to its size: these two are the probes the
+      unprivileged-root design's evidence rests on, so a silent probe reads as a probe that found
+      nothing.
+- [ ] **`f411spi` cannot run under the flip: its bring-up shim writes MMIO from `main`. Owner:
+      stage 3 (`arch_periph_enable`).** Found 2026-07-29 while flipping `f411disco`, and witnessed
+      rather than inferred -- the app faults MemManage on the first store of `main`
+      (`RCC_AHB1ENR` @ `0x40023830`, `CFSR=0x82`, `MMFAR=0x40023830`), before it ever spawns the
+      unprivileged driver that holds the 32 B SPI1 grant. Same shape as `c6blink` and `rxdrv` before
+      their windows were reworked: the escalation surfaces (RCC clock-enable, GPIOA/GPIOE mux) are
+      deliberately kept out of the driver's window, which is exactly why they need kernel mediation
+      instead of a wider grant. NOT a flip blocker -- it is a `kickos_add_diagnostic_app`, never a
+      production image, and the stage-2 gate is `selftest` + `rootfault`, both green on that board.
+      Its loopback arm is also still unwitnessed in the default posture (needs the PA7->PA6 jumper),
+      so the chip's peripheral-window proof stays open either way.
+
+## Found during the M4.5.2 review (2026-07-29)
+
+- [ ] **A user-facing test suite does not exist.** The kernel selftest tests the KERNEL through the
+      syscall surface and deliberately does not test the user-facing surface, so nothing anywhere
+      checks that `printf`, `std::cout`, heap behaviour and libc integration work per board.
+      `hello` passing is the entire coverage, and on some boards `hello` has no gate at all: QEMU
+      models no `stm32f302`, so `f302nucleo` carries **no CI gate of any kind**
+      (`docs/reference/boards.md`). **The two suites cannot merge**, and the `-st` presets are why --
+      the kernel suite is provisioned FOR the kernel. `f302nucleo-st` (`cmake/presets/arm.json:137`)
+      now runs it with `KICKOS_USER_HEAP_SIZE=0` and `KICKOS_USER_STACK_SIZE=1024`, which is
+      precisely the opposite of what a user-API suite has to exercise. Sharp consequence of that
+      preset: with the heap carve at zero the `-st` gate on that board no longer exercises the heap
+      at all, so a heap regression on a 16 KiB part would go unseen.
+- [ ] **CI builds the enforcement gates unoptimised -- NEEDS A DECISION.** The "ARM PMSA enforcement
+      run gates (v7 + v8)" step (`.github/workflows/ci.yml:171`) passes `-DCMAKE_BUILD_TYPE=Debug`
+      explicitly (`:176`), which overrides the fleet's `MinSizeRel` default. So the four gates
+      covering the enforcement posture -- the posture that matters most -- still compile `-O0`, on
+      the one job that runs `qemu`, `qemu-m33`, `qemu-m7` and `qemu-m3` under `KICKOS_HAVE_MPU=1`.
+      Filed as a decision rather than a defect: dropping the pin makes those gates test what ships,
+      and it also changes what has been gated until now.
+- [ ] **`sam3x8e` over-alignment: PARKED on hardware absence, not open.** The chip HAS an MPU on
+      silicon (Atmel SAM3X/SAM3A datasheet, Cortex-M3 revision 2.0) but KickOS ships no `mpu.cmake`
+      backend for it, so it builds `KICKOS_HAVE_MPU=0` while still inheriting ARM's weak
+      `arch_mpu_min_region()` of 32 (`arch/arm/common/arch_arm_common.cc:348`) -- costing 3,808 bytes
+      of measured over-alignment on a part that enforces nothing. It is the third member of the class
+      `stm32f103` and `stm32f302` just left, both of which now override to 0 in
+      `arch/arm/chip/stm32f103/chip_stm32f103.cc` and `arch/arm/chip/stm32f302/chip_stm32f302.cc`.
+      **PARKED by the maintainer for a concrete
+      reason: the physical Arduino Due unit is dead** (`docs/reference/boards.md`), so nothing on this
+      chip can ever be witnessed -- do not pick it up expecting to validate it. The class itself is
+      handled by the region-encoding item under M4.5.5 above, which is where a third encoding mode
+      would land.
+- [ ] **Cut `bluepill-c8`'s 8 KiB heap carve: the board is predicted to fail `hello`'s second spawn
+      by 96 bytes.** This is a **MODEL PREDICTION, not a witness** -- the board has no physical unit
+      and can never be flashed. Arena 6,560, minus idle 512 and root 2,048, leaves 4,000 against the
+      4,096 that two 2,048-byte stacks need. The cause is the carve rather than the part: 8 K
+      `.userheap` (`arch/arm/chip/stm32f103/stm32f103.ld:27`) where `f302nucleo` now takes 2 K, plus the
+      board raising ROOT/USER to 2048 over the chip default of 1024
+      (`boards/bluepill-c8/include/kickos/board_config.h:31`, `:37`). Full arithmetic and its
+      provenance are already in `docs/reference/boards.md`; the fix is cutting the carve. The
+      prediction is worth acting on because the same model called all three `f302nucleo` silicon
+      outcomes correctly -- `hello` two threads, `stress` pass, `selftest` spawns refused.
+      **The boot-arena link assert cannot catch this**: `arch/common/boot_arena.ld.h` replays the
+      idle and root stacks only, never the N user stacks a spawning app needs.
+- [ ] **About 270 `path:N` doc citations cannot be verified by any gate, and two of two spot-checks
+      had drifted -- NEEDS A CONVENTION DECISION.** `tests/check_doc_names.sh` (landed, deliberately
+      not wired into CTest) says so itself at `:54-57`: it strips the `:N` and never checks it,
+      because nothing in the current spelling says WHAT should be at that line. Two confirmed live
+      instances, both in one document: `docs/design-m3-clock-select.md:16` cites
+      `user/include/kickos/sys/abi.h:36` for the cpu-clock syscall, where line 36 is now
+      `KOS_SYS_IRQ_REGISTER = 14` (the real line is 43); and `:17` cites
+      `arch/include/kickos/arch/arch.h:79` for `arch_cpu_clock_hz()`, where line 79 is
+      `arch_timer_arm()` (real line 84). This is the reused-identifier class the project already
+      knows is expensive -- a citation that resolves to a live but unrelated thing is worse than one
+      that dangles. **The decision is the spelling**: if a citation carries the expected symbol
+      (`arch.h:84 arch_cpu_clock_hz`), the gate can check it in about two lines; until then `:N` is
+      decoration. This item scopes that work only -- fixing the ~270 citations belongs to the doc
+      audit, and the two instances above are deliberately left as found.
+- [ ] **`arch_reboot` should take a MODE, and the compile knob should gate the MODE rather than the
+      seam. Owner: M4.6, after 4.5.4.** Decision recorded in full in
+      `docs/design-unprivileged-root.md` section 9, under `### The reboot capability`. Today
+      `int arch_reboot(void)` (`arch/include/kickos/arch/arch.h:44`) takes no argument and means
+      bootloader entry specifically, with two callers -- `kernel/init/console.cc:293` inside
+      `bootloader_handover`, and the `KOS_SYS_REBOOT` dispatch arm at
+      `kernel/syscall/syscall.cc:390` -- and the whole thing sits behind `KICKOS_ENABLE_SELFTEST`.
+      Four parts: a mode argument (at least a normal system reset and bootloader entry); a per-MODE
+      weak `-KOS_ENOSYS` decline instead of a per-function one; the knob narrowed to the bootloader
+      mode and renamed `KICKOS_ENABLE_REBOOT_TO_BOOTLOADER`, matching the sibling
+      `KICKOS_SHUTDOWN_TO_BOOTLOADER` (`CMakeLists.txt:117`) rather than spelling one destination two
+      ways; and an authority bit on top of the knob for the bootloader mode alone. What it buys: no
+      production in-kernel path can reset the chip today, which costs watchdog recovery, a
+      fault-handler reset and a bring-up retry for no security reason, since a normal reset carries
+      none of the bootloader risk. What it retires: `KICKOS_SHUTDOWN_TO_BOOTLOADER` becomes a policy
+      on one seam instead of a parallel mechanism, and syscall 38 becomes a real production syscall
+      taking a mode -- answering `-KOS_ENOSYS` for a mode the chip lacks and `-KOS_EPERM` without
+      authority, instead of `-KOS_EINVAL` from a dispatch default arm -- which takes the
+      configure-time `FATAL_ERROR` (`CMakeLists.txt:124`) and the `abi.h:62-64` compiled-out-arm
+      annotation with it. The symptom that exposed the conflation:
+      `arch/arm/chip/imxrt1062/chip_imxrt1062.cc:49` forward-declares `kpanic` inside a
+      `KICKOS_ENABLE_SELFTEST` block, only because that chip's `arch_reboot` is a `bkpt` that must
+      not resume -- a fundamental function's declaration behind a test flag.
 
 ## Needs hardware (bench time, not code)
 
@@ -622,6 +944,10 @@ Blockers and limits:
 - [x] **M7 speculation class** -- already covered by validated Teensy silicon (the imxrt
       MPU-enforce hang record, `docs/design-teensy-mpu-hang.md`); recorded here so the gap list
       stays honest about what *is* already covered.
+- [ ] **`arch_reboot` is witnessed on RP2350 only** (pizero2350, BOOTSEL). Two backends have never
+      run: `rebootdemo` on a picopi (RP2040 -> PICOBOOT/UF2) and on a Teensy 4.1 (`bkpt #251` ->
+      HalfKay). The Teensy path is the least certain: it is not vendor-documented, and on
+      non-Teensy RT1062 hardware the `bkpt` faults instead.
 
 ## M3 -- landed so far (2026-07-20)
 - [x] `sys_cpu_clock_hz()` read syscall; [x] per-task capability handle table (sem ABI) +
@@ -726,7 +1052,7 @@ Clock follow-ups (not blocking): arch_trace_now + KICKOS_BENCH still read raw DW
 may glitch on K64F/XMC -- tolerable, NOT the scheduler clock); ticks->ns epilogue duplicated ~7x
 (hoist an arch/arm/common helper).
 
-## M1 -- clocks (fleet audit 2026-07-09; detail in `M1_state.md`)
+## M1 -- clocks (fleet audit 2026-07-09; detail in `docs/archive/M1_state.md`)
 
 Every board's timing math is ACCURATE (no ESP32-C6-class constant bug survived the
 audit). Remaining work is boards that never raise their PLL, so they run far below
@@ -877,9 +1203,12 @@ below where they were previously mislabeled.
         RISC-V PMP, RX MPU). Hardware-ceiling docs DONE (`reference/architecture.md` matrix +
         `book/peripheral-isolation-and-the-hardware-ceiling.md`).
   - [~] **F411 canonical per-thread PMSA driver (f411spi, SPI1 loopback)** -- BUILT +
-        fable-reviewed; **silicon-validation PENDING** a bench swap to the 32F411E-DISCO. It
-        first-proves granted-SPI-works AND ungranted-peripheral-faults per thread on PMSA
-        silicon -- the fleet's one honest peripheral-isolation gap. `docs/design-spi-driver-stm32f411.md`.
+        fable-reviewed; **silicon-validation still PENDING** although the disco has been on the
+        bench (2026-07-29): the loopback arm needs the PA7->PA6 jumper fitted, and under the flip
+        the app faults in its bring-up shim (see the stage-2 findings section). Its PMSA claim is
+        no longer the only one -- `xmcspi` proved granted-works/ungranted-faults per thread on PMSA
+        silicon in 2026-07 -- so this is now the STM32-family reference rather than a fleet gap.
+        `docs/design-spi-driver-stm32f411.md`.
   - [x] **K64F/DSPI driver (k64dspi, DSPI0 for the KickCAT ESC SPI PDI)** -- DONE on silicon:
         the polled-FIFO transport (~10 MHz) reached OPERATIONAL against a real LAN9252. Exported
         as the `kickos_k64dspi` lib (`<kickos/driver/k64dspi.h>`, source `system/driver/mk64f/k64dspi`)
@@ -974,7 +1303,7 @@ below where they were previously mislabeled.
 - **[anytime perf -- NOT M2] worst-case ISR latency (shorten interrupt-masked critical
   sections).** Scheduler/switch-path timing, gated on a worst-case-latency probe -- no MPU
   dependency (was mislabeled "M2"). The uniform bench surfaced that under sustained syscall
-  load the kernel spends too long masked. Ranked plan (see `M1_state.md` section 3.1):
+  load the kernel spends too long masked. Ranked plan (see `docs/archive/M1_state.md` section 3.1):
   - [x] **R2** -- armv7m: skip the redundant BASEPRI raise + DSB/ISB on nested IrqLocks
         (only the outer raise needs them). Landed `5ba57fd`. Correct (ctests green) but
         **below the current bench's noise floor** -- see the measurement gap below.
@@ -1084,7 +1413,7 @@ software-controllable cache/accelerator, and do we use it? Binary, not "fast eno
       no DMA); the coherency obligation arrives with M4-era DMA (non-cacheable DMA pool or
       per-buffer clean/invalidate) -- carry this into the M4 driver work.
 
-Fleet re-validation follow-ups (from the 2026-07-22 M3-branch gate; see `M3_raw_meas.md`):
+Fleet re-validation follow-ups (from the 2026-07-22 M3-branch gate; see `docs/archive/M3_raw_meas.md`):
 - [x] **WROOM (Xtensa LX6) soak wedge -- FIXED (700ec98).** Was pre-existing (master), Xtensa-only.
       Root cause: `arch_context_init` started fresh threads via a fabricated `retw` into a trampoline
       with NO `entry` instruction (phantom window frame, garbage caller-linkage); a worker running

@@ -88,6 +88,16 @@ namespace
 #define KTRACE_SYSCALL_SCOPE(nr) do { } while (0)
 #endif
 
+#if defined(KICKOS_ENABLE_SELFTEST)
+// weak: a chip with no bootloader entry declines honestly. NOT in clock_select.cc with
+// the other weak seams -- that TU compiles unconditionally, and this symbol must be
+// absent from a production image.
+extern "C" int __attribute__((weak)) arch_reboot(void)
+{
+    return -KOS_ENOSYS;
+}
+#endif
+
 extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                                       uintptr_t a0, uintptr_t a1,
                                       uintptr_t a2, uintptr_t a3)
@@ -350,20 +360,35 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_SHUTDOWN:
         {
-            // End the system: drain the buffered console, then arch_shutdown. A
-            // syscall because neither half is reachable from an unprivileged thread.
-            // AUTH_DEVICE (like console_publish): an ungated shutdown would be a kill
-            // switch in every worker thread.
+            // End the system through the shared terminal path. A syscall because it
+            // is not reachable from an unprivileged thread. AUTH_DEVICE (like
+            // console_publish): an ungated shutdown would be a kill switch in every
+            // worker thread.
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_DEVICE))
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
-            console_tx_flush_sync();
-            arch_shutdown(static_cast<int>(a0)); // noreturn
+            kickos_terminate(static_cast<int>(a0)); // noreturn
             return 0;
         }
 #if defined(KICKOS_ENABLE_SELFTEST)
+        case KOS_SYS_REBOOT:
+        {
+            // AUTH_DEVICE, fused with shutdown (docs/design-unprivileged-root.md 9).
+            Thread* c = sched::current();
+            if (not cap_check_authority(c, AUTH_DEVICE))
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            // Flush synchronously: the buffered console would lose its tail, and the
+            // last lines are what tells a deliberate reboot apart from a hang.
+            console_tx_flush_sync(); // empties the ring only
+            // A byte still in the UART FIFO / shift register outruns the reset (the
+            // RP2350 bootrom reboots after ~10 ms), truncating the tail.
+            arch_console_flush_sync();
+            return static_cast<uintptr_t>(arch_reboot());
+        }
         case KOS_SYS_IRQ_INJECT:
         {
             // Test scaffolding only (real IRQs come from devices), so compiled out
@@ -582,6 +607,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // middle). AUTH_PINMUX: the mux registers live in the shared SCU/PORT block the
             // kernel keeps. a0=port, a1=pin, a2=func (all chip-opaque; neutrality is the
             // {port,pin,func} shape, not the encoding). Backend rejects kernel-owned pins.
+            // IrqLock: the backends read-modify-write shared mux state unguarded (RX PMR
+            // plus a chip-global PWPR unlock bracket, XMC IOCR, SAM ABSR), so a preempting
+            // second caller silently drops the loser's write. Bounded: register writes only,
+            // no backend waits.
+            IrqLock lock;
             Thread* c = sched::current();
             if (not cap_check_authority(c, AUTH_PINMUX))
             {

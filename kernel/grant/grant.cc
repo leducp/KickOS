@@ -24,16 +24,6 @@ namespace kickos
         constexpr uintptr_t BB_PERI_ALIAS_LAST = 0x43FFFFFFu; // [0x42000000,0x44000000)
         constexpr uintptr_t BB_SRAM_ALIAS_BASE = 0x22000000u;
         constexpr uintptr_t BB_SRAM_ALIAS_LAST = 0x23FFFFFFu; // [0x22000000,0x24000000)
-
-        // Closed-form last-byte overlap: [a_base,a_last] meets [b_base,b_last].
-        // Adjacency (a_last+1 == b_base) is NOT overlap; a grant may sit flush
-        // against a reserved block (the mk64f CH2 case, R4). Callers pass
-        // non-wrapping ranges (last >= base).
-        bool ranges_overlap(uintptr_t a_base, uintptr_t a_last,
-                            uintptr_t b_base, uintptr_t b_last)
-        {
-            return a_base <= b_last and b_base <= a_last;
-        }
     }
 
     bool grant_hits_reserved(uintptr_t base, size_t size)
@@ -54,7 +44,7 @@ namespace kickos
         {
             uintptr_t const b_base = blocks[i].base;
             uintptr_t const b_last = blocks[i].base + blocks[i].size - 1u;
-            if (ranges_overlap(base, last, b_base, b_last))
+            if (grant_ranges_overlap(base, last, b_base, b_last))
             {
                 return true;
             }
@@ -68,7 +58,7 @@ namespace kickos
                 uintptr_t const alias_base =
                     BB_PERI_ALIAS_BASE + (b_base - BB_PERI_BASE) * 32u;
                 uintptr_t const alias_last = alias_base + blocks[i].size * 32u - 1u;
-                if (ranges_overlap(base, last, alias_base, alias_last))
+                if (grant_ranges_overlap(base, last, alias_base, alias_last))
                 {
                     return true;
                 }
@@ -115,8 +105,8 @@ namespace kickos
             if (arch_bitband_present() != 0)
             {
                 uintptr_t const last = base + size - 1u;
-                if (ranges_overlap(base, last, BB_PERI_ALIAS_BASE, BB_PERI_ALIAS_LAST)
-                    or ranges_overlap(base, last, BB_SRAM_ALIAS_BASE, BB_SRAM_ALIAS_LAST))
+                if (grant_ranges_overlap(base, last, BB_PERI_ALIAS_BASE, BB_PERI_ALIAS_LAST)
+                    or grant_ranges_overlap(base, last, BB_SRAM_ALIAS_BASE, BB_SRAM_ALIAS_LAST))
                 {
                     return false;
                 }

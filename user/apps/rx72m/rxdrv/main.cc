@@ -9,14 +9,18 @@
 // granted MMIO window IS a genuine per-thread capability, unlike K64F where the
 // SYSMPU cannot gate peripherals (k64drv proved that grant inert).
 //
-// A privileged bring-up shim muxes P80/LED6 as a GPIO output (PMR=GPIO, PDR=out --
-// the escalation surfaces), then spawns the UNPRIVILEGED driver granted ONLY the
-// 16 B Port Output Data Register block (PODR, 0008_C020h..0008_C02Fh; UM sec.22.3.2)
-// -- the RX MPU 16-byte page, exact cover, encodable. The driver blinks LED6 by
-// writing PORT8.PODR (0008_C028h, in-window), then pokes UNGRANTED PORT8.PDR
-// (0008_C008h, the direction register -- an escalation surface outside the window)
-// -> RX access exception (fixed vector +0x54) with MPESTS.DMPER set, MPDEA holding
-// the faulting address -> the kernel names the task ("MPU FAULT: task 'rxdrv'").
+// main only prints and spawns (the fleet pattern -- see apps/common/gpioblink): the
+// mux goes through kos_pinmux_set, which the kernel mediates on both the MPC PmnPFS
+// function select and the PORTm.PMR peripheral-vs-GPIO switch, and EVERY port MMIO
+// access happens inside the spawned UNPRIVILEGED driver holding an 80 B window. So
+// this app runs unchanged with a privileged or an unprivileged root.
+//
+// The driver sets its own direction (PDR), blinks LED6 (PODR), reads the pad back
+// (PIDR), then pokes UNGRANTED PORT8.PMR (0008_C068h) -- the mux escalation surface
+// arch_pinmux_set now owns, OUTSIDE the window -> RX access exception (fixed vector
+// +0x54) with MPESTS.DMPER set and MPDEA holding the address -> the kernel names the
+// task ("MPU FAULT: task 'rxdrv'"). So the negative test proves the driver cannot
+// re-mux its own pin behind pinmux's back.
 //
 // LED6 (P80, active-low, board UM r12uz0098ej0110 Table 5-9) is the CPU Card's only
 // user LED; the console (SCI6, 115200 8N1) is the authoritative oracle either way.
@@ -26,6 +30,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/errno.h>
 #include <kickos/libc/fmt.h>
 
 #include <port_class.h> // Rule 6 class-driver leaf: shared PORT output-latch read
@@ -42,23 +47,44 @@
 namespace
 {
     // RX72M UM r01uh0804ej0120 sec.22 (I/O ports). Absolute SFR addresses, no vendor
-    // SDK -- consistent with the chip backend's clean-room register map.
-    // PODR block: one byte per port from PORT0 @0008_C020h (the block runs past PORTF
-    // to PORTQ, sec.22.3.2); the granted window below covers only the first 16 bytes.
-    // PDR  block: one byte per port, PORT0 @0008_C000h .. (sec.22.3.1).
-    constexpr uintptr_t PODR_BLOCK = 0x0008C020u; // PORT0.PODR (window base)
-    constexpr uintptr_t PORT8_PODR = 0x0008C028u; // LED6 output data
-    constexpr uintptr_t PORT8_PDR = 0x0008C008u;  // LED6 direction (ungranted; escalation)
-    constexpr uintptr_t PORT8_PMR = 0x0008C068u;  // LED6 mode (GPIO vs peripheral)
-    constexpr uint8_t LED6 = 1u << 0;             // P80, active-low (board Table 5-9)
+    // SDK -- consistent with the chip backend's clean-room register map. Each block is
+    // one byte per port, contiguous from PORT0: PDR @0008_C000h (sec.22.3.1), PODR
+    // @0008_C020h (22.3.2), PIDR @0008_C040h (22.3.3), PMR @0008_C060h (22.3.4).
+    constexpr uintptr_t PORT_BASE = 0x0008C000u;
+    constexpr uintptr_t PORT8_PMR = 0x0008C068u; // LED6 mode (ungranted; escalation)
+    constexpr uint32_t PORT8 = 8u;
+    constexpr uint32_t P80 = 0u;
+    constexpr uint8_t LED6 = 1u << P80; // P80, active-low (board Table 5-9)
 
-    // 16 B PODR window granted to the driver: base 0008_C020h (16-aligned), size 16
-    // == the RX MPU page (UM sec.17.1.2, RSPAGEn/REPAGEn address[31:4]) -> exact
-    // cover, encodable by arch_mpu_region_encodable. Covers PODR for PORT0..PORTF;
-    // PORT8.PODR sits at window+0x08.
-    constexpr uintptr_t PODR_WINDOW_BASE = PODR_BLOCK;
-    constexpr uint32_t PODR_WINDOW = 16u;
-    constexpr uint32_t PODR8_OFFSET = PORT8_PODR - PODR_BLOCK; // 0x08
+    // arch_pinmux_set `func` word, mirrored from arch/rx/chip/rx72m/regs/mpc.h
+    // (PINMUX_*); a cross-tree include from user/ does not resolve. [7:0] the PmnPFS
+    // byte, [8] the PORTm.PMR bit value, [9] arm the PFS write.
+    constexpr uint32_t PINMUX_PMR = 1u << 8;
+    constexpr uint32_t PINMUX_PFS_EN = 1u << 9;
+    constexpr uint32_t PFS_PSEL_HIZ = 0x00u; // PSEL=000000b, ISEL=ASEL=0: general I/O
+
+    // Console pin the kernel owns for life: PB1/TXD6 (PORTB = port index 0x0B). The
+    // refusal check below asks for PSEL=000000b with PMR=0, i.e. exactly the write
+    // that would dark the console if the backend let it through.
+    constexpr uint32_t PORTB = 0x0Bu;
+    constexpr uint32_t PB1 = 1u;
+
+    // 80 B window granted to the driver: base 0008_C000h (16-aligned), size 0x50
+    // (16-multiple) -> exact cover, encodable by arch_mpu_region_encodable (the RX MPU
+    // page is 16 B and needs no power-of-two size, UM sec.17.1.2). It spans PDR, PODR
+    // and PIDR up to PORTF, ending at 0008_C04Fh -- 16 B, one full register row, short
+    // of the PMR block at 0008_C060h, which is the point: direction and drive are in,
+    // the FUNCTION SELECTORS (PMR here, the MPC
+    // PFS file at 0008_C140h) stay out. Covering PDR/PODR for every port is an
+    // unavoidable over-grant -- the RX interleaves ports inside each register block
+    // instead of blocking per port -- but not an escalation: a pin at PMR=1 ignores
+    // PDR/PODR entirely (UM Table 23.47), so the console pins cannot be touched
+    // through this window.
+    constexpr uintptr_t PORT_WINDOW_BASE = PORT_BASE;
+    constexpr uint32_t PORT_WINDOW = 0x50u;
+    constexpr uint32_t PDR_OFFSET = 0x00u;
+    constexpr uint32_t PODR_OFFSET = 0x20u;
+    constexpr uint32_t PIDR_OFFSET = 0x40u;
 
     constexpr int DRIVER_BLINKS = 10;
     constexpr uint64_t HALF_PERIOD_NS = 250000000ull; // ~2 Hz blink
@@ -68,38 +94,71 @@ namespace
         return *reinterpret_cast<volatile uint8_t*>(a);
     }
 
-    // UNPRIVILEGED driver: granted app code+data (auto) + the 16 B PODR window (spawn
+    // UNPRIVILEGED driver: granted app code+data (auto) + the 80 B port window (spawn
     // MMIO grant). No file-scope mutable state under enforcement: the window base
     // arrives as the thread arg VALUE (never dereferenced as memory), buffers live on
     // the granted stack. IRQ-less (GPIO blink); a kos_sleep_ns toggle loop.
     void blink_driver(void* arg)
     {
-        uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // PODR window base
-        volatile uint8_t* podr8 = reinterpret_cast<volatile uint8_t*>(win + PODR8_OFFSET);
+        uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // port block base
+        uintptr_t const pdr = win + PDR_OFFSET + PORT8;
+        uintptr_t const podr = win + PODR_OFFSET + PORT8;
+        uintptr_t const pidr = win + PIDR_OFFSET + PORT8;
 
-        kos::print("[rxdrv] blinking LED6 (P80) via the 16 B PODR window\n");
+        // Direction, in-window: the pin is already muxed to general I/O, so this is the
+        // driver owning a pin it was granted, not an escalation. Set before the first
+        // drive, and drive high (LED off) first so the pin does not glitch on.
+        r8(podr) = static_cast<uint8_t>(r8(podr) | LED6);
+        r8(pdr) = static_cast<uint8_t>(r8(pdr) | LED6);
 
+        // Output-latch baseline through the shared class leaf (Rule 6). Pure read, and
+        // in-window: the PODR block is at win+0x20.
+        uint8_t const odr = kickos::rx::driver::port_odr_read(win + PODR_OFFSET, PORT8);
+        char rb[48];
+        ksnprintf(rb, sizeof(rb), "[rxdrv] PORT8 PODR readback 0x%x\n", odr);
+        kos::print(rb);
+        kos::print("[rxdrv] blinking LED6 (P80) via the 80 B port window\n");
+
+        // PIDR is the PAD, not the latch, and reads regardless of PDR/PMR (UM
+        // sec.22.3.3) -- the console-visible oracle that the pin really moved, and the
+        // only proof the mux landed if LED6 is not in the operator's line of sight.
+        bool ok = true;
         for (int i = 0; i < DRIVER_BLINKS; i++)
         {
-            *podr8 = static_cast<uint8_t>(*podr8 & ~LED6); // P80 low => LED on (active-low)
+            r8(podr) = static_cast<uint8_t>(r8(podr) & ~LED6); // P80 low => LED on
             kos_sleep_ns(HALF_PERIOD_NS);
-            *podr8 = static_cast<uint8_t>(*podr8 | LED6); // P80 high => LED off
+            int const lo = static_cast<int>((r8(pidr) >> P80) & 1u);
+            r8(podr) = static_cast<uint8_t>(r8(podr) | LED6); // P80 high => LED off
             kos_sleep_ns(HALF_PERIOD_NS);
+            int const hi = static_cast<int>((r8(pidr) >> P80) & 1u);
 
-            char s[48];
-            ksnprintf(s, sizeof(s), "[rxdrv] blink %d\n", i + 1);
+            char s[64];
+            ksnprintf(s, sizeof(s), "[rxdrv] blink %d pad=0/%d pad=1/%d\n", i + 1, lo, hi);
             kos::print(s);
+            if (lo != 0 or hi != 1)
+            {
+                ok = false;
+            }
+        }
+        if (ok)
+        {
+            kos::print("[rxdrv] PASS (pad tracked the drive on every cycle)\n");
+        }
+        else
+        {
+            kos::print("[rxdrv] FAIL (pad did not track the drive)\n");
         }
 
-        // Negative test (the per-thread isolation proof): poke UNGRANTED PORT8.PDR
-        // -- the pin-direction register, an escalation surface OUTSIDE the 16 B PODR
-        // window. The RX MPU is CPU-side and checked on every user access, so this
-        // operand write faults BEFORE the bus -> access exception (fixed vector +0x54),
-        // MPESTS.DMPER set, MPDEA=0008_C008h -> kickos_rx_fault_report routes it (cause
-        // 0x54 and PSW.PM set) to "MPU FAULT: task 'rxdrv'". Announce-before-poke;
-        // terminal, so it is LAST.
-        kos::print("[rxdrv] poking UNGRANTED PORT8.PDR @ 0x0008C008 (expect MPU FAULT)\n");
-        r8(PORT8_PDR) = static_cast<uint8_t>(r8(PORT8_PDR) | LED6);
+        // Negative test (the per-thread isolation proof): poke UNGRANTED PORT8.PMR --
+        // the pin-function switch, OUTSIDE the 80 B window. The RX MPU is CPU-side and
+        // checked on every user access, so this operand write faults BEFORE the bus ->
+        // access exception (fixed vector +0x54), MPESTS.DMPER set, MPDEA=0008_C068h ->
+        // kickos_rx_fault_report routes it (cause 0x54 and PSW.PM set) to "MPU FAULT:
+        // task 'rxdrv'". A plain store, not a read-modify-write: an RMW faults on its
+        // READ half and the report would name a read rather than the escalation.
+        // Announce-before-poke; terminal, so it is LAST.
+        kos::print("[rxdrv] poking UNGRANTED PORT8.PMR @ 0x0008C068 (expect MPU FAULT)\n");
+        r8(PORT8_PMR) = LED6;
 
         // Only reached if the MPU did NOT enforce -- an isolation failure, not a pass.
         kos::print("[rxdrv] UNGRANTED ACCESS DID NOT FAULT (MPU not enforcing)\n");
@@ -112,32 +171,36 @@ namespace
 
 int main(int, char**)
 {
-    // Privileged bring-up (this main runs privileged): the one-time unsafe setup the
-    // unprivileged driver must NOT be able to do -- put P80 in GPIO mode, drive it
-    // high (LED off), set it to output. PMR + PDR are the escalation surfaces and
-    // stay OUT of the driver's window; keeping them out is what makes the window a
-    // capability. (The kernel diag-LED init already owns P80, but configure it here
-    // too so the app is self-contained.)
-    r8(PORT8_PMR) = static_cast<uint8_t>(r8(PORT8_PMR) & ~LED6);  // GPIO (not peripheral)
-    r8(PORT8_PODR) = static_cast<uint8_t>(r8(PORT8_PODR) | LED6); // high => LED off
-    r8(PORT8_PDR) = static_cast<uint8_t>(r8(PORT8_PDR) | LED6);   // output
+    // P80 to general I/O, both mux stages in one mediated call: PmnPFS PSEL=000000b
+    // and PORT8.PMR bit 0 clear (UM sec.23.4.1 steps 1-6, PWPR unlock included). No
+    // raw MMIO is left here, so this runs identically with root privileged or not.
+    int const mux = kos_pinmux_set(PORT8, P80, PINMUX_PFS_EN | PFS_PSEL_HIZ);
+    char m[64];
+    ksnprintf(m, sizeof(m), "[rxdrv] pinmux P80 -> general I/O rc %d\n", mux);
+    kos::print(m);
 
-    // Read back PORT8's output latch through the shared class leaf (Rule 6):
-    // confirms the pin drove high (LED off) before the unprivileged driver takes
-    // over. PODR_BLOCK is the byte-per-port block base; index 8 == PORT8.
-    uint8_t const podr8 = kickos::rx::driver::port_odr_read(PODR_BLOCK, 8);
-    char rb[48];
-    ksnprintf(rb, sizeof(rb), "[rxdrv] PORT8 PODR readback 0x%x\n", podr8);
-    kos::print(rb);
+    // Mediation check: the same call aimed at the console's TXD6 pin must be REFUSED.
+    // If the refusal ever broke, this very write is the one that darks the console --
+    // so a silent run stopping right here is itself the failure signal.
+    int const owned = kos_pinmux_set(PORTB, PB1, PINMUX_PFS_EN | PFS_PSEL_HIZ);
+    if (owned == -KOS_EBUSY)
+    {
+        kos::print("[rxdrv] pinmux PB1/TXD6 refused (-KOS_EBUSY): console pin is kernel-owned\n");
+    }
+    else
+    {
+        ksnprintf(m, sizeof(m), "[rxdrv] ERROR: PB1/TXD6 not refused, rc %d\n", owned);
+        kos::print(m);
+    }
 
-    // Spawn the UNPRIVILEGED driver granted ONLY the 16 B PODR window. No IRQ.
+    // Spawn the UNPRIVILEGED driver granted ONLY the 80 B port window. No IRQ.
     int drv = kos::thread::spawn(blink_driver,
-                                 reinterpret_cast<void*>(PODR_WINDOW_BASE),
+                                 reinterpret_cast<void*>(PORT_WINDOW_BASE),
                                  "rxdrv", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                  /*mem=*/nullptr, /*mem_size=*/0,
                                  /*stack=*/nullptr, /*stack_size=*/0,
-                                 /*mmio=*/reinterpret_cast<void*>(PODR_WINDOW_BASE),
-                                 PODR_WINDOW);
+                                 /*mmio=*/reinterpret_cast<void*>(PORT_WINDOW_BASE),
+                                 PORT_WINDOW);
     if (drv < 0)
     {
         // Console is the only oracle at the bench: a silent dead board must not be

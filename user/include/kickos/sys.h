@@ -131,6 +131,11 @@ int kos_shutdown(int status);
 void kos_irq_inject(int irq);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
+// Reboot into the chip's bootloader (firmware-download mode), so a board can be
+// reflashed with no button press. Privileged-only, so like kos_shutdown it is NOT
+// noreturn: the gate can refuse with -KOS_EPERM, and a chip with no bootloader entry
+// returns -KOS_ENOSYS. Does not return on success.
+int kos_reboot(void);
 // Test-only: address of a page that faults on unprivileged access, for the MPU
 // privilege self-test. Not part of the production syscall ABI.
 void* kos_guard_addr(void);

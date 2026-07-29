@@ -31,7 +31,7 @@ kernel-copied within one machine and never crosses a link). Sizes are locked by
     {
         uint8_t  proto;           // enum kos_bus_proto: KOS_BUS_SPI=0 / KOS_BUS_I2C=1
         uint8_t  op;              // enum kos_bus_op:    KOS_BUS_OP_XFER=0 / KOS_BUS_OP_CONFIG=1
-        uint8_t  device;          // device slot on this bus (CS index / I2C address slot)
+        uint8_t  device;          // device slot, < KOS_BUS_DEV_MAX (4) (CS index / I2C addr slot)
         uint8_t  nseg;            // 1 .. KOS_BUS_SEG_MAX (8)
         int32_t  region_cap;      // -1 = inline payload follows; else granted region (DEFERRED)
         uint32_t offset;          // byte offset into the region (region path); 0 inline
@@ -61,7 +61,8 @@ kernel-copied within one machine and never crosses a link). Sizes are locked by
         uint8_t  rsv[2];
     };
 
-Enums (`bus.h`): `KOS_BUS_SEG_RD = 1<<0` / `KOS_BUS_SEG_STOP = 1<<1`;
+Enums (`bus.h`): `KOS_BUS_SEG_MAX = 8`; `KOS_BUS_DEV_MAX = 4`;
+`KOS_BUS_SEG_RD = 1<<0` / `KOS_BUS_SEG_STOP = 1<<1`;
 `KOS_BUS_CS_NONE=0` / `CS_HW=1` / `CS_GPIO=2`; mode bits `CPOL=1<<0` / `CPHA=1<<1` /
 `LSB_FIRST=1<<2` (SPI) and `ADDR_10BIT=1<<0` (I2C -- overlaps CPOL; distinct protos).
 `proto` is a sanity tag: a driver rejects a mismatch with `status = -KOS_EINVAL`.
@@ -138,14 +139,51 @@ picks a mechanism it can realise on its controller:
   unprivileged thread -- K64F GPIO is an ungated crossbar slave, so no grant is needed.
 - **`CS_NONE`** -- no chip-select managed.
 
+## Device slots
+
+`kos_bus_req.device` names one of `KOS_BUS_DEV_MAX` (4) slots on that bus -- the multi-drop
+case, a flash on slot 0 and a sensor on slot 1. A service keeps ONE folded profile per slot
+and re-applies the named slot's profile at the head of every transfer, because a controller
+has a single live profile register set (DSPI `CTAR0`/`MCR`; USIC `SCTR`/`PCR`): a slot table
+that were only written at CONFIG time would still let the last CONFIG win.
+
+Slots are indexed by the CALLER's own `device` byte, so the slot table trusts the client.
+That holds because **one client reaches a bus service**: the client's cap is `KOS_CAP_SIGNAL`
+only, and spawn-time delegation refuses a source cap without `CAP_TRANSFER`
+(`ipc-call-reply.md`), so a client cannot pass its copy on -- the reachable set is exactly
+what the bring-up delegated, and the bring-up hands the endpoint out ONCE
+(`xmc_spi0_take_endpoint` / `k64dspi_take_endpoint` are one-shot). Several devices behind one
+client is supported; several MUTUALLY-UNTRUSTING clients on one bus is NOT -- that needs
+badged endpoints (`badge` is `KOS_BADGE_NONE` today; see `roadmap.md`, service publication).
+
+Refusals: `device >= KOS_BUS_DEV_MAX` is `status = -KOS_EINVAL`, and so is a
+`KOS_BUS_OP_XFER` naming an in-range slot that has had no `KOS_BUS_OP_CONFIG` yet -- there is
+no profile to apply, and a service must never clock a device on another device's profile.
+
 ## The `KOS_BUS_OP_CONFIG` op
 
-Applied per device slot at bring-up (not per transfer). The driver folds `{hz, mode,
-word_bits}` into its controller registers (DSPI CTAR, USIC BRG/FDR + SCTR, ...), re-derives
-dividers from `KOS_SYS_PERIPH_CLOCK_HZ` (base-keyed, never a baked-in clock), rounds the
-bit clock DOWN, and replies the ACHIEVED hz truthfully. Wire shape of the reply: a
-`kos_bus_rsp` header (`status = 0`, `len = 4`) immediately followed by a 4-byte `uint32_t`
-achieved-hz value. Both reference services emit exactly this.
+Stores the profile for `kos_bus_req.device`; the service re-applies it before every transfer
+naming that slot. The driver folds `{hz, mode, word_bits}` into its controller registers
+(DSPI CTAR, USIC BRG/FDR + SCTR, ...), re-derives dividers from `KOS_SYS_PERIPH_CLOCK_HZ`
+(base-keyed, never a baked-in clock), rounds the bit clock DOWN, and replies the ACHIEVED hz
+truthfully. Wire shape of the reply: a `kos_bus_rsp` header (`status = 0`, `len = 4`)
+immediately followed by a 4-byte `uint32_t` achieved-hz value. Both reference services emit
+exactly this.
+
+What is actually per-device depends on where the controller keeps each field, because the
+driver thread is UNPRIVILEGED:
+
+- **K64F DSPI0** -- rate, CPOL/CPHA, word size and bit order are ALL in `CTAR0`, inside the
+  granted window once AIPS slot 44 is open, so all four are per-device.
+- **XMC4800 USIC0-CH1** -- word size, bit order and the CS framing are in `SCTR`/`PCR` and
+  are per-device. Rate (`FDR`, `BRG`) and CPOL/CPHA (`BRG.SCLKCFG`) are NOT: those registers
+  are write-privileged-only at the bus and an unprivileged store to them is silently
+  discarded (measured on silicon -- `../design-unprivileged-root.md` section 9,
+  `user/apps/xmc4800-relax/pvprobe`). The service fixes them at bring-up, `xmcssc`
+  deliberately discards `cfg.hz`, and every device on that bus shares one rate and mode 0.
+
+Re-applying costs 2 register writes on XMC and 3 on K64F per transfer -- orders of magnitude
+under one SPI byte time -- so no dirty-tracking of the live slot is worth its state.
 
 ## Service-side discipline (invariant)
 
@@ -163,16 +201,23 @@ A concrete SPI service supplies only its silicon; the recv / parse / reply chore
 shared and templated over the chip's `Bus` class. `kickos::spi::serve_loop<Bus>(bus)` blocks on
 the delegated WAIT recv cap (`KOS_SPAWN_DELEGATED_CAP0`), drops plain sends (no reply cap), and
 hands every call to `serve_one`, which parses the `kos_bus_req` / `seg` / `cfg` framing, enforces
-the inline budget, and ALWAYS consumes the reply cap (the invariant above) -- returning when the
-endpoint dies (`n < 0` -> `EPIPE`) so the driver thread can exit and let root respawn. The `Bus`
-supplies exactly the two members the template calls (the implicit interface):
+the inline budget, routes `req.device` to its slot, and ALWAYS consumes the reply cap (the
+invariant above) -- returning when the endpoint dies (`n < 0` -> `EPIPE`) so the driver thread can
+exit and let root respawn. The shared layer owns the slot store (`kickos::spi::SlotTable<Bus>`, a
+`serve_loop` local, so per-slot state costs driver STACK and no `.bss`); the `Bus` owns the
+silicon. The `Bus` supplies a nested profile type and exactly the two members the template calls
+(the implicit interface):
 
-    uint32_t configure(uint32_t hz, uint8_t mode, uint8_t word_bits, uint8_t cs_policy); // -> achieved hz
-    void     transfer(unsigned char* buf, size_t len);                                   // full-duplex, in place
+    struct Profile;                                                    // POD chip words
+    uint32_t fold(struct kos_bus_cfg const& cfg, Profile& out);        // -> achieved hz
+    void     transfer(Profile const& p, unsigned char* buf, size_t len); // apply, then clock in place
 
-`Bus` is defined in an anonymous namespace, so each instantiation is TU-local (internal linkage,
-no COMDAT). `k64dspi` and `xmcssc` are the two reference services; a new bus driver writes only
-its `Bus` and calls `serve_loop`.
+The profile is an ARGUMENT of `transfer`, not a separate `select(slot)` call: with one live
+profile register set, a transfer that did not name its profile would silently clock on the
+previous device's, which is exactly the bug the slots fix. `Bus` is defined in an anonymous
+namespace, so each instantiation is TU-local (internal linkage, no COMDAT). `k64dspi` and
+`xmcssc` are the two reference services; a new bus driver writes only its `Bus` and calls
+`serve_loop`.
 
 ## The spawn helper (`<kickos/sys/driver_bringup.h>`)
 
@@ -189,22 +234,28 @@ Chip-neutral -- no chip register, no CS knowledge, no MMIO; the same object link
 any SPI service. A client holds a `SIGNAL`-bearing cap on the service endpoint (so it must
 be a spawned pool thread -- see `ipc-call-reply.md`).
 
-    long spi_transfer(int ep, void const* tx, void* rx, size_t len);       // 1 segment
-    long spi_transact(int ep, void const* wr, size_t wlen,                 // write then read,
-                      void* rd, size_t rlen);                              //   one CS bracket
-    int  spi_config(int ep, struct kos_bus_cfg const* cfg, uint32_t* achieved_hz);
+    long spi_transfer(int ep, uint8_t device, void const* tx, void* rx, size_t len); // 1 segment
+    long spi_transact(int ep, uint8_t device, void const* wr, size_t wlen,           // write then read,
+                      void* rd, size_t rlen);                                        //   one CS bracket
+    int  spi_config(int ep, uint8_t device, struct kos_bus_cfg const* cfg, uint32_t* achieved_hz);
 
-`spi_transfer`/`spi_transact` return rx bytes (`>= 0`) or a negative `-KOS_E*` (a
-`kos_call` failure OR the service `status`). `spi_config` returns 0 or a negative code and
-writes the driver's rounded-down bit clock to `*achieved_hz` when non-NULL.
+`device` is the slot each call addresses; `spi_config` must run once per slot before any
+transfer to it. `spi_transfer`/`spi_transact` return rx bytes (`>= 0`) or a negative
+`-KOS_E*` (a `kos_call` failure OR the service `status`). `spi_config` returns 0 or a
+negative code and writes the driver's rounded-down bit clock to `*achieved_hz` when
+non-NULL.
 
 ## Neutrality
 
 Nothing in the wire names a FIFO depth, a CTAR, a PCS count, or a shift unit -- those are
 all class-internal. The one deliberate abstraction leak is `cs_index` (a small integer
-naming a controller CS line or a driver pin slot), bounded per driver and rejected with
-`status = -KOS_EINVAL` out of range. See `../design-driver-era-scope.md` (the neutrality
-matrix) for how the same contract lands on DSPI / USIC / PL022 / C6.
+naming a controller CS line or a driver pin slot). Both reference drivers **accept it and
+do not interpret it**: `k64dspi` drives one hardwired GPIO CS (`PTC4`) for every slot and
+`xmcssc` drives one fixed `SELO0`, so neither bounds-checks the field and neither refuses
+an out-of-range value. A driver with more than one CS line has to read and bound it; until
+one exists, two slots configured with different `cs_index` values share one physical CS.
+See `../design-driver-era-scope.md` (the neutrality matrix) for how the same contract lands
+on DSPI / USIC / PL022 / C6.
 
 ## Cross-references
 

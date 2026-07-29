@@ -26,7 +26,7 @@ enum kos_bus_proto
     KOS_BUS_I2C = 1
 };
 
-// op (kos_bus_req.op): a data transfer, or a per-device config applied at bring-up.
+// op (kos_bus_req.op): a data transfer, or a per-device config.
 enum kos_bus_op
 {
     KOS_BUS_OP_XFER = 0,
@@ -37,6 +37,14 @@ enum kos_bus_op
 enum
 {
     KOS_BUS_SEG_MAX = 8
+};
+
+// Device slots a bus service tracks: kos_bus_req.device names one of
+// 0 .. KOS_BUS_DEV_MAX-1. A service keeps one folded profile per slot; the ceiling
+// bounds that storage, it is not part of the wire format (the field stays 8-bit).
+enum
+{
+    KOS_BUS_DEV_MAX = 4
 };
 
 // kos_bus_seg.flags. SPI clocks full duplex both ways with CS spanning the whole
@@ -71,7 +79,7 @@ struct kos_bus_req
 {
     uint8_t proto;      // enum kos_bus_proto
     uint8_t op;         // enum kos_bus_op
-    uint8_t device;     // device slot on this bus (CS index / I2C address slot)
+    uint8_t device;     // device slot on this bus, < KOS_BUS_DEV_MAX (CS index / I2C address slot)
     uint8_t nseg;       // 1 .. KOS_BUS_SEG_MAX
     int32_t region_cap; // -1 = inline payload follows; else granted-region cap (DEFERRED)
     uint32_t offset;    // byte offset into the region (region path); 0 inline
@@ -93,7 +101,9 @@ struct kos_bus_rsp
     uint16_t len;   // rx bytes following
 };
 
-// Per-device config (op == KOS_BUS_OP_CONFIG), applied per device slot at bring-up.
+// Per-device config (op == KOS_BUS_OP_CONFIG): stored against req.device and
+// re-applied before every transfer naming that slot. A transfer naming a slot with
+// no config yet is refused.
 struct kos_bus_cfg
 {
     uint32_t hz;       // target clock; driver rounds down, replies achieved hz in rsp
@@ -101,7 +111,9 @@ struct kos_bus_cfg
     uint8_t mode;      // enum kos_bus_mode
     uint8_t word_bits; // SPI frame size (8 default)
     uint8_t cs_policy; // enum kos_bus_cs_policy
-    uint8_t cs_index;  // HW PCS/SELO line index, or the driver's GPIO pin slot
+    // HW PCS/SELO line index, or the driver's GPIO pin slot. Both in-tree drivers
+    // accept and ignore it -- each has exactly one CS line (bus-service.md).
+    uint8_t cs_index;
     uint8_t rsv[2];
 };
 

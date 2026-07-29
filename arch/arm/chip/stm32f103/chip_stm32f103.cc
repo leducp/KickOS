@@ -378,6 +378,13 @@ void arch_init(void)
     kickos_armv7m_init();
 }
 
+// ST omits the MPU from the STM32F1 Cortex-M3, where a reader expects one: 0 is the
+// seam's no-MPU granule (arch.h), not a tuning choice.
+size_t arch_mpu_min_region(void)
+{
+    return 0u;
+}
+
 // Monotonic clock override: free-running TIM2->TIM3 chain ticks -> ns, replacing the
 // weak DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the
 // anchor holds the rate, so no divide and no rate derivation happens here.

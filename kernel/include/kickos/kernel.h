@@ -62,7 +62,22 @@ extern "C" void kpanic_enter(void);
 // QEMU targets override it (sim.cc / chip_mps2 / chip_virt / chip_nrf51) to exit
 // with a fault status, so the test harness catches a fault instead of timing out
 // on a spin. extern "C": overridden across TUs and called from the arch handlers.
+// Under KICKOS_SHUTDOWN_TO_BOOTLOADER the weak default hands the chip to its
+// bootloader instead of reaching the blink -- an ARM MPU/hard fault terminates HERE
+// (kickos_armv7m_fault_report), not through kickos_terminate, so the images that
+// cost a BOOTSEL press need this arm and not only the one below.
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
+
+// The chokepoint every ORDERED terminal path goes through: the KOS_SYS_SHUTDOWN
+// syscall, last-thread-out (sched::exit_current) and the software fault reporter
+// (kickos_isr_fault, the RISC-V/chip-hook route). Drains the buffered console, then
+// ends the system via arch_shutdown. Sits here, upstream of the arch seam, because
+// arch_shutdown itself is per-chip (weak default plus four strong definitions) -- a
+// hook inside it would have to be duplicated per arch.
+// Under KICKOS_SHUTDOWN_TO_BOOTLOADER it tries arch_reboot before halting, so a
+// bench board returns to a flashable state on its own. A chip with no bootloader
+// entry declines with -KOS_ENOSYS and falls through to the halt.
+extern "C" void kickos_terminate(int status) __attribute__((noreturn));
 
 #define KICKOS_ASSERT(cond)                     \
     do                                          \

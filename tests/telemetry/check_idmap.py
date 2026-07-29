@@ -2,28 +2,58 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# CI gate 3: trace-metadata de-drift. Runs the gen_idmap host program (which prints
-# the AUTHORITATIVE arch/syscall numbers straight from the C++ enums) and asserts
-# tools/kicktrace.py's ARCH_NAME and SYSCALL_NAME dicts key EXACTLY those numbers --
-# no missing entry (a decoder that lags abi.h, e.g. stops at syscall 20 while the
-# ABI reaches 35) and no extra entry (a stale number the C side no longer defines).
-# The number is the wire/ABI contract; the string labels are a human mirror not
-# compared here (the C headers carry no strings). See the TODO in kicktrace.py.
+# CI gate 3: trace-metadata de-drift, three-way. user/include/kickos/sys/abi.h is the
+# AUTHORITY for the syscall set: every KOS_SYS_* enumerator it defines must appear, at
+# the same number, in BOTH the gen_idmap C++ list and tools/kicktrace.py's SYSCALL_NAME
+# (and neither side may carry a number abi.h no longer defines). Comparing only the two
+# mirrors against each other was vacuous: both stopped at 35 while abi.h reached 37, and
+# the gate stayed green. kicktrace's label must also be the enumerator suffix lowercased,
+# which is what makes the strings checkable at all.
+#
+# ARCH_NAME stays a two-way check: its authority is kickos::trace::ArchId (a C++ enum in
+# include/kickos/trace/record.h), reachable only through gen_idmap.
 
+import re
 import subprocess
 import sys
 import importlib.util
 
 sys.dont_write_bytecode = True  # don't drop a __pycache__ beside tools/kicktrace.py
 
-if len(sys.argv) < 3:
-    sys.stderr.write("usage: check_idmap.py <gen_idmap> <kicktrace.py>\n")
+if len(sys.argv) < 4:
+    sys.stderr.write("usage: check_idmap.py <gen_idmap> <kicktrace.py> <abi.h>\n")
     sys.exit(2)
 
 gen = sys.argv[1]
 kicktrace_path = sys.argv[2]
+abi_path = sys.argv[3]
 
-# Authoritative numbers from the C++ source of truth.
+problems = []
+
+# The authority: enum kos_syscall_nr in abi.h. Explicit `= N` values with trailing
+# `// ...` comments; the last enumerator carries no comma.
+abi_syscall = {}
+abi_text = open(abi_path, encoding="ascii").read()
+enum_match = re.search(r"enum\s+kos_syscall_nr\s*\{(.*?)\n\}", abi_text, re.S)
+if enum_match is None:
+    problems.append("%s: no `enum kos_syscall_nr { ... }` body found" % abi_path)
+else:
+    body = re.sub(r"//[^\n]*", "", enum_match.group(1))
+    for token in body.split(","):
+        token = " ".join(token.split())
+        if not token:
+            continue
+        m = re.fullmatch(r"(KOS_SYS_[A-Z0-9_]+)\s*=\s*(\d+)", token)
+        if m is None:
+            problems.append("abi.h: enumerator %r is not `KOS_SYS_NAME = <decimal>`"
+                            " (the parse needs an explicit number)" % token)
+            continue
+        abi_syscall[m.group(1)] = int(m.group(2))
+if not abi_syscall and enum_match is not None:
+    problems.append("abi.h: parsed 0 syscall enumerators")
+
+# Numbers as the C++ side actually spells them (gen_idmap names each enumerator, so a
+# renamed/removed one fails to compile there rather than drifting silently).
 out = subprocess.check_output([gen], text=True)
 c_arch = set()
 c_syscall = set()
@@ -45,24 +75,40 @@ spec.loader.exec_module(kt)
 py_arch = set(kt.ARCH_NAME.keys())
 py_syscall = set(kt.SYSCALL_NAME.keys())
 
-problems = []
 if not c_arch:
     problems.append("gen_idmap emitted no arch ids")
 if not c_syscall:
     problems.append("gen_idmap emitted no syscall numbers")
 
+for name in sorted(abi_syscall, key=lambda k: abi_syscall[k]):
+    nr = abi_syscall[name]
+    if nr not in c_syscall:
+        problems.append("%s = %d in abi.h is MISSING from the gen_idmap.cc list"
+                        " (tests/telemetry/gen_idmap.cc)" % (name, nr))
+    if nr not in py_syscall:
+        problems.append("%s = %d in abi.h is MISSING from kicktrace.py SYSCALL_NAME"
+                        % (name, nr))
+        continue
+    want = name[len("KOS_SYS_"):].lower()
+    got = kt.SYSCALL_NAME[nr]
+    if got != want:
+        problems.append("SYSCALL_NAME[%d] is %r, expected %r (from %s)"
+                        % (nr, got, want, name))
 
-def diff(label, c_set, py_set):
-    missing = sorted(c_set - py_set)   # in C source of truth, absent from kicktrace
-    extra = sorted(py_set - c_set)     # in kicktrace, no longer in the C source
-    if missing:
-        problems.append("%s: kicktrace MISSING %s" % (label, missing))
-    if extra:
-        problems.append("%s: kicktrace has EXTRA (stale) %s" % (label, extra))
+abi_numbers = set(abi_syscall.values())
+for nr in sorted(c_syscall - abi_numbers):
+    problems.append("syscall %d is STALE in the gen_idmap.cc list (no abi.h enumerator)"
+                    % nr)
+for nr in sorted(py_syscall - abi_numbers):
+    problems.append("SYSCALL_NAME[%d] = %r is STALE (no abi.h enumerator)"
+                    % (nr, kt.SYSCALL_NAME[nr]))
 
-
-diff("ARCH_NAME", c_arch, py_arch)
-diff("SYSCALL_NAME", c_syscall, py_syscall)
+missing_arch = sorted(c_arch - py_arch)
+extra_arch = sorted(py_arch - c_arch)
+if missing_arch:
+    problems.append("ARCH_NAME: kicktrace MISSING %s" % missing_arch)
+if extra_arch:
+    problems.append("ARCH_NAME: kicktrace has EXTRA (stale) %s" % extra_arch)
 
 # Every mapped label must be a non-empty string (a bare {} or None would decode
 # nothing useful).
@@ -79,6 +125,6 @@ if problems:
         print("  - " + p)
     sys.exit(1)
 
-print("IDMAP OK: %d arch ids + %d syscall numbers match kicktrace.py exactly"
-      % (len(c_arch), len(c_syscall)))
+print("IDMAP OK: %d syscalls from abi.h in gen_idmap.cc and kicktrace.py;"
+      " %d arch ids match" % (len(abi_syscall), len(c_arch)))
 sys.exit(0)

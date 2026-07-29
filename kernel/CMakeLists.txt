@@ -83,7 +83,7 @@ target_link_libraries(kickos_kernel PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib
 
 # Identity baked into the boot banner (kmain kbanner()).
 target_compile_definitions(kickos_kernel PRIVATE
-  KICKOS_VERSION="${PROJECT_VERSION}"
+  KICKOS_VERSION="${KICKOS_VERSION}"
   KICKOS_BOARD_NAME="${KICKOS_BOARD}"
   KICKOS_ARCH_NAME="${KICKOS_ARCH}")
 

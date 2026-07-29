@@ -272,6 +272,30 @@ namespace
         {
         }
     }
+
+#if KICKOS_SHUTDOWN_TO_BOOTLOADER
+    bool g_handover_tried = false;
+
+    void bootloader_handover(void)
+    {
+        // arch_reboot kpanics if the ROM call returns, and kpanic ends in
+        // kfault_terminate -- which lands back here. Try exactly once.
+        if (g_handover_tried)
+        {
+            return;
+        }
+        g_handover_tried = true;
+        console_tx_flush_sync();
+        // The bootrom reboots after a short delay (10 ms on RP2350), which a byte still
+        // sitting in the UART FIFO or shift register can outrun -- truncating the very
+        // dump the image was flashed to produce. flush_sync only empties the ring.
+        arch_console_flush_sync();
+        (void)arch_reboot(); // -KOS_ENOSYS on a chip with no bootloader entry: caller halts
+    }
+#define KICKOS_BOOTLOADER_HANDOVER() bootloader_handover()
+#else
+#define KICKOS_BOOTLOADER_HANDOVER() do { } while (0)
+#endif
 }
 
 // Weak: the real-hardware dead-end. A distinctive heartbeat -- three 0.2 s blinks
@@ -280,6 +304,9 @@ namespace
 extern "C" __attribute__((weak, noreturn)) void kfault_terminate(void)
 {
     kpanic_enter(); // idempotent; masks IRQs for any path reaching here directly
+    // The dump is already on the wire (the reporter printed it through the forced
+    // synchronous writer), so this is the last point before the dead-end.
+    KICKOS_BOOTLOADER_HANDOVER();
     while (true)
     {
         for (int b = 0; b < 3; b++)
@@ -320,6 +347,15 @@ extern "C" __attribute__((weak)) void arch_console_reclaim(void) {}
 extern "C" __attribute__((weak)) void arch_console_flush_sync(void) {}
 extern "C" __attribute__((weak)) void arch_console_retune(void) {}
 
+// See kernel.h. Every ordered terminal path funnels here so the drain-then-hand-over
+// order exists once, upstream of the per-chip arch_shutdown.
+extern "C" void kickos_terminate(int status)
+{
+    console_tx_flush_sync();
+    KICKOS_BOOTLOADER_HANDOVER();
+    arch_shutdown(status);
+}
+
 // Memory-protection violation caught by the arch backend (sim: SIGSEGV over
 // the guard page). Report the offending task + address through the console.
 // M0: the intended wild-write demo is the final act, so we shut down cleanly
@@ -344,5 +380,5 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
     }
     ::kickos::kprintf("\nMPU FAULT: task '%s' attempted %s at %p -- reported\n",
                       who, dir, reinterpret_cast<void*>(addr));
-    arch_shutdown(0);
+    kickos_terminate(0);
 }

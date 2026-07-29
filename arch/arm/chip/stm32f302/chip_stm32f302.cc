@@ -316,6 +316,13 @@ void arch_init(void)
     kickos_armv7m_init();
 }
 
+// The STM32F302x8 has no MPU, unlike the F302xB/xC line: 0 is the seam's no-MPU
+// granule (arch.h), not a tuning choice.
+size_t arch_mpu_min_region(void)
+{
+    return 0u;
+}
+
 // Monotonic clock override: free-running TIM2 ticks -> ns, replacing the weak
 // DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the anchor
 // holds the rate, so no divide and no rate derivation happens here.
