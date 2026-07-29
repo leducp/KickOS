@@ -167,6 +167,13 @@ void kos_irq_inject(int irq)
 }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
+// NOT noreturn, like kos_shutdown: the privilege gate can refuse, and a chip with no
+// bootloader entry declines.
+int kos_reboot(void)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_REBOOT, 0, 0, 0, 0));
+}
+
 void* kos_guard_addr(void)
 {
     return reinterpret_cast<void*>(arch_syscall(KOS_SYS_GUARD_ADDR, 0, 0, 0, 0));

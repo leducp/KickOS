@@ -12,6 +12,12 @@
 
 namespace kickos::mk64f::mmap
 {
+    // AIPS bridge control pages (RM ch.20): MPRA + PACRA..PACRP, the per-4-KB-slot
+    // supervisor/write/trusted gate for that bridge's 128 peripheral slots. AIPS0
+    // fronts 0x4000_0000..0x4007_FFFF, AIPS1 the next 512 KB.
+    constexpr uintptr_t AIPS0_BASE = 0x40000000u;
+    constexpr uintptr_t AIPS1_BASE = 0x40080000u;
+
     constexpr uintptr_t SYSMPU_BASE = 0x4000D000u; // bus-side MPU (RM ch.19)
     constexpr uintptr_t DSPI0_BASE = 0x4002C000u;  // SPI (RM ch.50); bus-clocked
     constexpr uintptr_t PIT_BASE = 0x40037000u;    // periodic timer (RM ch.44)

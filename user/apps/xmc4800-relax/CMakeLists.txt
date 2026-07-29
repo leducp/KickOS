@@ -10,6 +10,8 @@ if(KICKOS_HAVE_MPU)
   add_subdirectory(xmcspi)
   add_subdirectory(xmccshold)
   add_subdirectory(xmcssc)
+  add_subdirectory(pvprobe)
+  add_subdirectory(inprstorm)
 endif()
 
 # XMC4800 console handover demo -- self-gates on enforcement in its own CMakeLists.

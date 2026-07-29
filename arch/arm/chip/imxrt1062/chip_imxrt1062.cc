@@ -45,6 +45,9 @@ namespace kickos
 {
     int kmain(int argc, char** argv);
     void kprintf(char const* fmt, ...);
+#if defined(KICKOS_ENABLE_SELFTEST)
+    void kpanic(char const* msg) __attribute__((noreturn)); // arch_reboot: the halt must not resume
+#endif
 }
 
 extern "C"
@@ -599,6 +602,21 @@ void arch_idle_wait(void)
 {
     __asm volatile("nop");
 }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Reboot into HalfKay (Teensy firmware-download mode): the MKL02 companion owns this
+// chip's SWD port, catches the halt, reprograms the flash and presents HalfKay itself.
+// BENCH-UNWITNESSED, and not vendor-documented (evidence: PJRC's _reboot_Teensyduino_
+// plus a third-party bare-metal Rust port).
+// On non-Teensy RT1062 hardware (no MKL02, no armed debug host) the bkpt escalates to a
+// fault instead of rebooting.
+int arch_reboot(void)
+{
+    __asm volatile("cpsid i" ::: "memory"); // dispatch runs in thread mode with IRQs live
+    __asm volatile("bkpt #251");
+    kickos::kpanic("arch_reboot: imxrt1062 bkpt resumed (no MKL02?)");
+}
+#endif
 
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RT1060 RM). Owns-for-life: the GPT1 monotonic time base and

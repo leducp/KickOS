@@ -14,14 +14,14 @@
 
 namespace
 {
-    // Frame a 1- or 2-segment SPI XFER, kos_call, and copy the requested rx window
+    // Frame a 1- or 2-segment SPI XFER on slot `device`, kos_call, and copy the rx window
     // back. tx bytes for both segments are `wr` (wr_len bytes) followed by rd_len
     // dummy 0x00 (the read phase). The caller wants `rx_len` bytes starting at
     // `rx_skip` of the full-duplex reply (single segment: skip 0, len = wr_len; two
     // segments: skip the write phase, len = rd_len). Returns rx bytes (>= 0) or
     // -KOS_E*.
-    long frame_call(int ep, uint8_t nseg, size_t wr_len, void const* wr, size_t rd_len,
-                    void* rx, size_t rx_skip, size_t rx_len)
+    long frame_call(int ep, uint8_t device, uint8_t nseg, size_t wr_len, void const* wr,
+                    size_t rd_len, void* rx, size_t rx_skip, size_t rx_len)
     {
         size_t const total = wr_len + rd_len;
         if (total == 0)
@@ -40,7 +40,7 @@ namespace
         struct kos_bus_req* req = reinterpret_cast<struct kos_bus_req*>(buf);
         req->proto = KOS_BUS_SPI;
         req->op = KOS_BUS_OP_XFER;
-        req->device = 0;
+        req->device = device;
         req->nseg = nseg;
         req->region_cap = -1;
         req->offset = 0;
@@ -115,27 +115,29 @@ namespace
 
 extern "C"
 {
-    long spi_transfer(int ep, void const* tx, void* rx, size_t len)
+    long spi_transfer(int ep, uint8_t device, void const* tx, void* rx, size_t len)
     {
         // One segment: rx is the whole full-duplex result (skip 0, len bytes).
-        return frame_call(ep, /*nseg=*/1, /*wr_len=*/len, tx, /*rd_len=*/0, rx,
+        return frame_call(ep, device, /*nseg=*/1, /*wr_len=*/len, tx, /*rd_len=*/0, rx,
                           /*rx_skip=*/0, /*rx_len=*/len);
     }
 
-    long spi_transact(int ep, void const* wr, size_t wlen, void* rd, size_t rlen)
+    long spi_transact(int ep, uint8_t device, void const* wr, size_t wlen, void* rd,
+                      size_t rlen)
     {
         if (wlen == 0)
         {
             // No write phase: a single-segment read of rlen bytes.
-            return frame_call(ep, /*nseg=*/1, /*wr_len=*/rlen, nullptr, /*rd_len=*/0, rd,
-                              /*rx_skip=*/0, /*rx_len=*/rlen);
+            return frame_call(ep, device, /*nseg=*/1, /*wr_len=*/rlen, nullptr, /*rd_len=*/0,
+                              rd, /*rx_skip=*/0, /*rx_len=*/rlen);
         }
         // Two segments in one CS bracket: rd is the read phase (skip the write phase).
-        return frame_call(ep, /*nseg=*/2, /*wr_len=*/wlen, wr, /*rd_len=*/rlen, rd,
+        return frame_call(ep, device, /*nseg=*/2, /*wr_len=*/wlen, wr, /*rd_len=*/rlen, rd,
                           /*rx_skip=*/wlen, /*rx_len=*/rlen);
     }
 
-    int spi_config(int ep, struct kos_bus_cfg const* cfg, uint32_t* achieved_hz)
+    int spi_config(int ep, uint8_t device, struct kos_bus_cfg const* cfg,
+                   uint32_t* achieved_hz)
     {
         if (cfg == nullptr)
         {
@@ -146,7 +148,7 @@ extern "C"
         struct kos_bus_req* req = reinterpret_cast<struct kos_bus_req*>(buf);
         req->proto = KOS_BUS_SPI;
         req->op = KOS_BUS_OP_CONFIG;
-        req->device = 0;
+        req->device = device;
         req->nseg = 0; // CONFIG carries a kos_bus_cfg inline, no segments
         req->region_cap = -1;
         req->offset = 0;

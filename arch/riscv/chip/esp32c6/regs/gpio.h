@@ -41,6 +41,17 @@ namespace kickos::esp32c6::reg::gpio
 
     constexpr uint32_t OUT_SEL_SIMPLE = 128u;    // out-sel value: bit n of GPIO_OUT drives the pad
     constexpr uint32_t RMT_SIG_OUT0_IDX = 71u;   // GPIO matrix signal index: RMT ch-0 TX
+
+    // arch_pinmux_set `func` encoding for this chip: [15:0] the IO_MUX_GPIOn_REG word,
+    // [23] arm the matrix out-sel write, [31:24] the out-sel signal index. [22:16] must
+    // be zero -- reserved so FUNCn INV_SEL/OEN_SEL (TRM Reg 7.16 bits 8..10) can join
+    // the encoding later without a stale word being silently accepted.
+    constexpr uint32_t PINMUX_IO_MUX_MASK = 0x0000FFFFu; // Reg 7.20 defines up to FILTER_EN (bit 15)
+    constexpr uint32_t PINMUX_RESERVED = 0x007F0000u;
+    constexpr uint32_t PINMUX_MATRIX_EN = 1u << 23;
+    constexpr uint32_t PINMUX_OUT_SEL_S = 24;
+    constexpr uint32_t PINMUX_OUT_SEL_MASK = 0xFFu;
+    constexpr uint32_t PINMUX_OUT_SEL_MAX = OUT_SEL_SIMPLE; // 0..127 peripheral, 128 = plain GPIO
 }
 
 #endif

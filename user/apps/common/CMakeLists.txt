@@ -32,6 +32,9 @@ add_subdirectory(gpioblink)
 # illegal instruction; it is never built into a production image.
 add_subdirectory(fault)
 add_subdirectory(specfault)
+# kos_reboot plumbing witness + the unattended-reflash affordance. Board-agnostic;
+# its ctest arms are the weak-seam targets only (see its CMakeLists).
+add_subdirectory(rebootdemo)
 
 # Per-thread stdout classification regression (M4.3): a root pre-publish printf must
 # not poison a post-publish worker's route to the console endpoint. Software-only

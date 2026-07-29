@@ -8,13 +8,16 @@
 // that owns the DSPI register window + the PTC4 CS GPIO and serves the bus wire ABI
 // (<kickos/sys/bus.h>) over that endpoint via kos_recv -> transact -> kos_reply.
 //
-// Clients speak the neutral wrapper (<kickos/driver/spi_client.h>): spi_transfer /
-// spi_transact / spi_config over a SIGNAL-bearing cap on the endpoint. Because a
-// kos_call caller must be a spawned pool thread (the root/init thread is guarded),
-// the client is always a spawned thread that receives the endpoint's SIGNAL cap by
-// spawn-time delegation. The bring-up runs in the root/init thread and records the
-// endpoint's cap handle (k64dspi_endpoint) so the app -- same thread, same cap
-// table -- can delegate a SIGNAL-narrowed cap to each client it spawns.
+// The client speaks the neutral wrapper (<kickos/driver/spi_client.h>): spi_transfer /
+// spi_transact / spi_config over a SIGNAL-bearing cap on the endpoint, naming one of
+// KOS_BUS_DEV_MAX device slots per call. Because a kos_call caller must be a spawned
+// pool thread (the root/init thread is guarded), the client is always a spawned thread
+// that receives the endpoint's SIGNAL cap by spawn-time delegation. The bring-up runs
+// in the root/init thread and records the endpoint's cap handle so the app -- same
+// thread, same cap table -- can delegate a SIGNAL-narrowed cap to ONE client: the
+// service tracks device slots by the caller's own request byte, so several devices
+// behind one client are supported and several mutually-untrusting clients are not.
+// k64dspi_take_endpoint enforces that by handing the handle out once.
 //
 // Chip select is a SOFTWARE GPIO on PTC4 (Arduino D9 = LAN9252 SCS), NOT hardware
 // PCS0: the driver brackets the whole transaction by driving PTC4 low (assert) /
@@ -44,12 +47,12 @@ extern "C"
     // stdio (the service-list HARD RULE); diagnostics use kos::print.
     int k64dspi_spi_start(struct kos_service_cfg const* cfg);
 
-    // The DSPI0 service endpoint cap handle in the ROOT/init thread's table (set by
-    // k64dspi_spi_start, valid for the rest of that thread's life). The app -- which
-    // runs in the SAME root thread after the service walk -- delegates a
-    // SIGNAL-narrowed copy of this cap to each SPI client it spawns. Returns a
-    // negative value if the service did not come up.
-    int k64dspi_endpoint(void);
+    // TAKE the DSPI0 service endpoint cap handle out of the ROOT/init thread's table
+    // (set by k64dspi_spi_start). The app -- which runs in the SAME root thread after
+    // the service walk -- delegates a SIGNAL-narrowed copy of it to its ONE SPI client,
+    // then closes its own copy. Handing it out is one-shot: a second call returns a
+    // negative value, as does a service that did not come up.
+    int k64dspi_take_endpoint(void);
 
 #ifdef __cplusplus
 }
