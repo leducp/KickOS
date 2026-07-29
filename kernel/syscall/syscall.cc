@@ -708,6 +708,17 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             kickos_arch_mpu_commit();
             return 0;
         }
+        case KOS_SYS_PERIPH_ENABLE:
+        {
+            // Possession, not an authority bit: holding the window is the right to
+            // enable the device.
+            IrqLock lock;
+            if (not caller_holds_mmio_block(a0))
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            return static_cast<uintptr_t>(arch_periph_enable(a0));
+        }
         case KOS_SYS_IRQ_REGISTER:
         {
             return static_cast<uintptr_t>(irq_register(static_cast<int>(a0)));

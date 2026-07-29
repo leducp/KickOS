@@ -49,7 +49,7 @@ code wins, then this file.
 | `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] `hello` + `stress` on silicon 2026-07-29 (`stress` at the tip `9ba4e4b`) -- the fleet's first captures on optimised code; bench dates to 2026-07-14 and has not been re-run since. **The suite needs the `-st` provisioning here:** `59 ok / 0 not ok / 8 skipped` at it, `17 / 42 / 10` at the application profile, every failure a resource refusal. The older "selftest minus the 4 KiB-alloc test" record dates to 2026-07-14 and predates M4.5.2's static growth. Full captures: *`f302nucleo` on silicon* below. **Not an enforcement target -- the F302R8 (`x8` line) has no MPU** (the F302xB/xC line does). **A bench board** (onboard ST-Link, own VCOM, no external adapter), and the fleet's only physically-present **no-MPU ARM** board -- the sole possible silicon witness for the privilege-ring arm, and no such run has happened; see *Unprivileged root* below. **No CI gate of any kind** -- see *CI coverage* below |
 | `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + full selftest with `sched_exit` (2026-07-09, 125 MHz PLL); PMSAv6 cross-domain denial silicon-proven 2026-07-19 (M0+ has no MemManage -- it escalates to HardFault) -- the fleet's only armv6m enforcement proof; U-mode `cxxtest` still awaits a bench re-flash |
 | `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only, and **no unit exists** -- there is no genuine F103C8 on the bench, so nothing here can be silicon-witnessed at all (64 K/20 K linker; links the full app set incl selftest + stress) |
-| `frdmk64f` | MK64FN1M0 / M4F | -- (none) | UART0, PTB16/PTB17, 115200 -> OpenSDA VCOM | J-Link (OpenSDA) | [x] HW 2026-07-15 (full selftest over the buffered console ring, 120 MHz); SYSMPU enforcement + `mpu_fault` trap silicon-proven at M2 |
+| `frdmk64f` | MK64FN1M0 / M4F | PTB22 (RGB red, active-low) | UART0, PTB16/PTB17, 115200 -> OpenSDA VCOM | J-Link (OpenSDA) | [x] HW 2026-07-15 (full selftest over the buffered console ring, 120 MHz); SYSMPU enforcement + `mpu_fault` trap silicon-proven at M2. **Sixth board with an UNPRIVILEGED root, the only one on SYSMPU, and the only one flipped on its FULL service list** (2026-07-29) -- see *Unprivileged root* below |
 | `teensy41` | i.MX RT1062 / M7 @396 MHz | -- (none wired) | LPUART6 ("Serial1", pins 0/1), 115200 | `teensy_loader_cli` (HalfKay, `.hex`) | [x] full selftest + soak under PMSAv7 enforcement, after the M7 anti-speculation fix (ERR011573; `../design-teensy-mpu-hang.md`) |
 | `pizero2350` | RP2350 / M33 @150 MHz (armv7m backend) | -- (none on the Pi-Zero header) | UART1, GP4/GP5, 115200 | `picotool` (BOOTSEL) | [x] full selftest under PMSAv8 enforcement + `mpu_fault` cross-domain MemManage denial + bench/soak. **Third board with an UNPRIVILEGED root, and the first on PMSAv8** (2026-07-28) -- see *Unprivileged root* below. Also the first silicon witness for `kos_reboot` (BOOTSEL handover) and for `KICKOS_SHUTDOWN_TO_BOOTLOADER` on both terminal dead-ends -- see its flashing section |
 
@@ -112,8 +112,11 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   (UsageFault UNDEFINSTR escalated to HardFault, on PSP). Connect-under-reset was needed only
   once, to displace unknown prior firmware -- a KickOS-flashed board reflashes with a **plain
   connect** (KickOS leaves the SWD pins PTA0/PTA3 alone). Its distinguishing feature -- the
-  **SYSMPU** -- is the M2 enforcement backend, and it signed off there. No diagnostic
-  LED wired (FRDM RGB not mapped; `blink` isn't built for it).
+  **SYSMPU** -- is the M2 enforcement backend, and it signed off there. The kernel
+  diagnostic LED is the onboard RGB **red, PTB22, active-low**
+  (`arch_diag_led_init`/`_set`, `arch/arm/chip/mk64f/chip_mk64f.cc:760`), and
+  `arch_pinmux_set` refuses PTB22 along with the console pins PTB16/PTB17 so a board
+  map cannot steal it. The board pin map additionally muxes PTB21 (blue) as plain GPIO.
 - **`teensy41`** -- the fleet's only **Cortex-M7**, and the M7 is the one core here that
   speculates. Under enforcement a dropped (non-pow2) whole-arena grant leaves a privileged
   thread on the PRIVDEFENA background, which types the whole 1 GiB FlexSPI/SEMC aperture as
@@ -141,16 +144,24 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   same `console_emit` drop, and it is not visible in the TAP stream because the harness has its own
   writer. This is why `apps/mpu_fault`'s `[domain]` lines were absent from every service-list
   silicon capture, leaving the fault marker with nothing to check it against. Diagnostic apps should
-  use `kickos::emit` (`user/include/kickos/sys/emit.h`).
+  use `kickos::emit` (`user/include/kickos/sys/emit.h`); the `k64dspi` and `xmcssc` client apps use
+  `kos::print`, so everything they report is RTT-only.
+  **The bench rule that follows**: on a board whose console is published to a userspace driver, an
+  app's own output is invisible on the VCOM, so a service going quiet there after console-up is no
+  evidence that it stopped. Build `-DKICKOS_CONSOLE=both` and capture RTT, or halt the target and
+  read the peripheral's registers. `KICKOS_CONSOLE=both` is carried by no board preset, the `-st`
+  ones included -- only `host` and `qemu-telem` set it -- so it has to be passed on the configure
+  line, and a VCOM-only capture is the default a bench run falls into.
 - **`kpanic_enter`'s UART reclaim clips bytes the userspace driver had in flight.** Reproducible on
   `xmc4800-relax`: the report always reaches the wire (that is the point of the reclaim), but roughly
   the last 8 bytes queued by the polled TX writer are garbled, eating the tail of the line before the
   dump. Announce-before-poke lines should therefore not be the *only* record of an address.
 - **RTT backend** -- generic and wired on the XMC (`KICKOS_CONSOLE=both`); the
   UART VCOM path is the one confirmed on hardware.
-- The diagnostic LED is a kernel-owned facility (`kdiag_led_*`); a chip with no
-  known LED (`qemu`, `microbit`, `frdmk64f`, `teensy41`, `pizero2350`) links the weak
-  no-op and the LED silently does nothing -- not a failure.
+- The diagnostic LED is a kernel-owned facility (`kdiag_led_*`, over the chip's
+  `arch_diag_led_*`); a chip with no known LED (`qemu`, `microbit`, `teensy41`,
+  `pizero2350`) links the weak no-op and the LED silently does nothing -- not a failure.
+  `blink` is built for every board regardless, so on those it is a legitimate no-op.
 
 ### `f302nucleo` on silicon -- the suite passes at the selftest provisioning
 
@@ -608,9 +619,10 @@ session and should not be treated as a bench fact.
 ### Unprivileged root
 
 `KICKOS_ROOT_PRIVILEGED=OFF` creates root unprivileged, holding a `CAP_AUTHORITY` instead of the
-whole arena. Five boards are flipped: `xmc4800-relax` (PMSAv7), `esp32c6-wroom` (RISC-V PMP),
-`pizero2350` (PMSAv8), `rx72m` (RXv3 RX-MPU) and `f411disco` (PMSAv7), each with its own
-subsection below. That completes the declared stage-2 set; `frdmk64f` waits for stage 3.
+whole arena. Six boards are flipped: `xmc4800-relax` (PMSAv7), `esp32c6-wroom` (RISC-V PMP),
+`pizero2350` (PMSAv8), `rx72m` (RXv3 RX-MPU), `f411disco` (PMSAv7) and `frdmk64f` (SYSMPU), each
+with its own subsection below -- every enforcement backend in the fleet. `frdmk64f` is the only one
+flipped on its **full** service list; the other five run console-only or `kickos_services_none`.
 
 **The knob itself is decided for deletion, with no replacement** -- unprivileged root becomes the
 only posture on every board, and no board is marked as unable to enforce it
@@ -679,6 +691,30 @@ was not posture cost but a missing capability, and it now runs in both postures;
 `mpu_privileged_guard` is genuinely posture-driven. Re-measured on this board at `75227d4`: the
 flipped arm skips exactly `mpu_privileged_guard`, and `irq_as_event`, `mem_self_grant` and
 `mem_self_grant_nonpow2` all run `ok` under enforcement in both postures.
+
+**The `xmcssc` SPI service passes on silicon** (2026-07-29, `aa084a9`, default privileged-root
+posture -- banner `mpu enforce`; captures under `.session/logs/m453-spihalt/`, machine-local).
+This is not an arm of the A/B above and cannot be one: the flipped image drops `xmcssc` from the
+service list entirely, pending the USIC `FDR`/`BRG`/`CCR` write seam. All five arms pass, on RTT
+only, since the console belongs to `xmcuart`:
+
+```
+[xmcssc] config rc=0 achieved=57599 Hz
+[xmcssc] config: PASS
+[xmcssc] single-byte loopback: PASS
+[xmcssc] multi-byte loopback: PASS
+[xmcssc] null-tx (dummy 0x00) loopback: PASS
+[xmcssc] transact (cmd+read, one CS bracket): PASS
+[xmcssc] loopback PASS (call/reply SSC service echoes tx==rx)
+```
+
+The loopback is internal -- no device is fitted on that bus -- so what it witnesses is the channel
+clocking and echoing its own words, not a link to a peer. Register state on the halted target:
+`U0C1_KSCFG=0x00000005` (`MODEN` set, so the write landed), `CCR=0x0000C001` (`MODE`=SSC),
+`FDR=0x0288816F`, `BRG=0x000D3C00`, `SCTR=0x073F0101`, SCU `CGATSTAT0=0x00000000` (nothing gated)
+and CCU4 slice-0 `TIMER` advancing, with the core in `arch_idle_wait`. Bench note: those USIC
+registers all read `0xFFFFFFFF` on a target halted at reset, before the block is ungated -- so a
+dump taken too early says nothing about what the driver programmed.
 
 #### `esp32c6-wroom` -- RISC-V PMP
 
@@ -1068,12 +1104,20 @@ No fault, no register dump, and the banner reads `enforce` without `root unprivi
 address is `0x2000a000` in **both** arms, so the two runs put root's write at the same place and
 differ only in the knob.
 
-**What this does not cover.** Two things, both pre-existing and neither blocking the flip.
+**What this does not cover.** `f411spi` -- this board's own diagnostic app, the STM32-family
+peripheral-window reference -- writes no MMIO from root: `main` muxes `PE3` and `PA5`/`PA6`/`PA7`
+through `kos_pinmux_set`, and the unprivileged driver thread that holds the 32 B SPI1 grant calls
+`kos_periph_enable(win)` as its first act, then configures SPI1 inside that window
+(`design-spi-driver-stm32f411.md`; the seam's contract is `design-unprivileged-root.md` stage 3).
+What stays open is bench time rather than code: the app has not run on silicon in either posture
+since that rework -- f411disco was not on the bench for the stage-3 milestone -- and its loopback
+arm additionally needs the PA7->PA6 jumper fitted. So a granted SPI1 window driving a real loopback
+stays **unwitnessed on this board**, the chip's peripheral-window proof remains open, and the
+canonical PMSA peripheral proof stays `xmcspi` on the XMC. Nothing here witnesses a console handover
+under the flip either -- that arm stays XMC-only, since this board has no userspace console driver.
 
-`f411spi` -- this board's own diagnostic app, the STM32-family peripheral-window reference -- does
-its SPI1 bring-up (RCC clock-enable, GPIOA/GPIOE mux, SPI1 master config) from `main`, i.e. from
-root, before spawning the unprivileged driver that holds the 32 B SPI1 grant. Under the flip root
-has no MMIO authority, so the app faults on its very first bring-up store, at `RCC_AHB1ENR`:
+**The pre-stage-3 fault, measured.** With the bring-up still in `main`, i.e. in root, the app
+faulted under the flip on its very first bring-up store:
 
 ```
    mpu     enforce, root unprivileged
@@ -1085,18 +1129,124 @@ has no MMIO authority, so the app faults on its very first bring-up store, at `R
   MMFAR=0x40023830
 ```
 
-`0x40023830` is `RCC_AHB1ENR` (RCC base `0x40023800` + `0x30`), the first line of `main`. This is
-the same shape as `c6blink` and `rxdrv` before their windows were reworked, and it is a **known
-follow-up, not a flip blocker**: the stage-2 gate is `selftest` + `rootfault`, both of which are
-green above, and `f411spi` is a `kickos_add_diagnostic_app` that is never a production image.
-Restructuring it into a mediated bring-up plus a widened grant is stage-3 work
-(`arch_periph_enable`), tracked with the other board apps.
+`0x40023830` is `RCC_AHB1ENR` (RCC base `0x40023800` + `0x30`) -- the same shape `c6blink` and
+`rxdrv` showed before their windows were reworked, and the reason the STM32 apps got the same
+treatment.
 
-`f411spi`'s own subject -- a granted SPI1 window driving a real PA7->PA6 loopback -- stays
-**unwitnessed on this board in either posture**. It needs the loopback jumper fitted, and it was not
-run in the control posture here. The chip's peripheral-window proof therefore remains open; the
-canonical PMSA peripheral proof stays `xmcspi` on the XMC. Nothing here witnesses a console handover
-under the flip either -- that arm stays XMC-only, since this board has no userspace console driver.
+#### `frdmk64f` -- SYSMPU
+
+The sixth board, the last enforcement backend to be flipped, and the **only board flipped on its
+full service list** (2026-07-29, **`127efb5`**, 120 MHz, `KICKOS_SERVICE_LIST=kickos_services_frdmk64f`
+= console `k64uart` + SPI `k64dspi`, board pin map `kickos_pinmap_frdmk64f`). Captured over the
+OpenSDA J-Link VCOM; both banners stamp `commit 127efb5` (captures under
+`.session/logs/m453-witness/`, machine-local).
+
+What makes this a stage-3 witness rather than a sixth repeat of stage 2: **root writes no MMIO on
+this board at all.** The other five got flipped by taking the peripheral work out of the image
+(console-only, or `kickos_services_none`); this one keeps both drivers and moves the work across a
+seam instead. `k64uart` and `k64dspi` each call `kos_periph_enable(win)` as their own first act, so
+the `SIM_SCGC*` clock ungate and the `AIPS0` PACR unprotect happen inside the unprivileged window
+holder rather than in root, and the four DSPI pins moved into the board pin map, which root applies
+through `kos_pinmux_set` before any service starts. `kickos_services_frdmk64f` is therefore no
+longer listed in `KICKOS_SERVICE_LIST_ROOT_MMIO`, so the configure-time refusal that used to fire
+for this board no longer applies.
+
+| Evidence | Root unprivileged |
+| --- | --- |
+| Banner `mpu` line | `enforce, root unprivileged` |
+| Console handover to `k64uart` | up, TAP via driver |
+| SPI service `k64dspi` | up, in the same image |
+| `selftest` | 65 cases, 63 `ok`, 2 skips, 0 fail |
+| `periph_enable_unheld` | `ok 47` |
+| `rootfault` cross-domain write | **SYSMPU trap** |
+
+**There is no control column at this tip**, so read that table as one arm and not as an A/B. Only
+the flipped posture was captured at `127efb5`; this board's privileged-posture reference is the
+earlier SYSMPU regression at `75227d4` (61 cases / 60 `ok` / 1 skip / 0 fail, `mpu_fault` trapping
+at `0x2001b000`) -- a different tree and a different case count. What this run attributes is the
+seam, not a posture delta measured side by side on one tree.
+
+Both skips are named on the wire and neither is new:
+
+```
+ok 18 - mutex_deadlock # SKIP pool too small
+ok 56 - mpu_privileged_guard # SKIP root unprivileged: no privileged caller exists; the inverse claim is apps/rootfault
+# skipped: 2
+# all tests passed (2 skipped)
+```
+
+`mpu_privileged_guard` is the posture-driven skip every flipped board shows. `mutex_deadlock` is
+the pre-existing `KICKOS_MAX_THREADS` constraint of the full service list (recorded under
+*Per-board caveats* above, and shared with `xmc4800-relax`'s full-list runs), not a flip cost --
+which is why this board reports two skips where the console-only boards report one.
+
+The confinement fault, byte-for-byte from the wire:
+
+```
+[rootfault] child: wrote my own granted region
+[rootfault] root: writing the child's granted region at 0x2001a000 (expect fault)
+=== HARD FAULT ===
+  PC=0x49c LR=0x5a5 xPSR=0x61000000 (PSP)
+  R0=0x5524 R1=0x3 R2=0x1 R3=0x2222 R12=0x1fff03f0
+  CFSR=0x400 HFSR=0x40000000
+  (imprecise bus fault: PC/regs are post-fault, not the culprit)
+  SYSMPU ISOLATION FAULT: port=3 addr=0x2001a000 master=0 W EDR=0x80000003
+```
+
+The core label reads `HARD FAULT`, not `MPU FAULT`, because SYSMPU is bus-slave-side: the denial
+arrives as an imprecise bus fault (`CFSR=0x400` IMPRECISERR, `HFSR=0x40000000` FORCED), so the
+architectural registers are post-fault and `PC`/`LR` do not name the culprit. The attributable
+evidence is the chip hook's own line -- `addr` matches the address the app announced, `master=0` is
+the core, `W` is the direction, `port=3` is the SRAM slave port. Unlike the PMSAv7 boards there is
+no `MMFAR` to cross-check; unlike the XMC the report is not clipped.
+
+**What had to close first: the clock gate and the bus protect were root's.** Both drivers' bring-up
+wrote `SIM_SCGC4`/`SIM_SCGC6` and the `AIPS0` PACR directly, and no window grant can ever cover
+those -- they are chip-global registers, and SYSMPU cannot gate peripherals at all. That seam is
+`arch_periph_enable`, keyed on the exact register-block base and gated on possession of a live DEV
+window at that base rather than on an authority bit; the contract and the per-chip table are in
+`porting.md`. The **PIT is deliberately absent from that table**: `AIPS0` classifies per 4 KiB
+slot, so opening a granted channel-2 window would also expose the chained ch0+ch1 pair
+`arch_clock_now` runs on, so the PIT stays kernel-gated at boot instead.
+
+The board pin map is 5 rows (`system/init/pinmap_frdmk64f.cc`) -- the LED plus the four DSPI pins
+root muxes before any service starts:
+
+| Pin | `func` | Role |
+| --- | --- | --- |
+| PTB21 | `0x100` (ALT1) | blue LED, GPIO |
+| PTD1 | `0x200` (ALT2) | DSPI0 SCK |
+| PTD2 | `0x200` (ALT2) | DSPI0 SOUT |
+| PTD3 | `0x200` (ALT2) | DSPI0 SIN |
+| PTC4 | `0x100` (ALT1) | DSPI0 software CS, GPIO |
+
+All four DSPI rows read back their programmed mux on a halted target in the runs below --
+`PORTD_PCR1`/`PCR2`/`PCR3` = `0x200`, `PORTC_PCR4` = `0x100`.
+
+**`k64dspi` drives a real transfer, and this is the first silicon witness of one** (2026-07-29,
+`aa084a9`, an EasyCAT LAN9252 shield fitted on the CS above, default privileged-root posture --
+banner `mpu enforce`; captures under `.session/logs/m453-spihalt/`, machine-local). The service
+reads the ESC's `BYTE_TEST` signature and passes on the first attempt:
+
+```
+[k64dspi] SPI service up (DSPI0, polled FIFO, GPIO CS on PTC4)
+[k64dspi] config rc=0 achieved=10000000 Hz
+[k64dspi] BYTE_TEST attempt 1: 0x87654321 (xfer OK)
+[k64dspi] LAN9252 BYTE_TEST PASS: ESC SPI link OK (read 0x87654321 through the call/reply SPI service)
+```
+
+Those four lines are **RTT-only**: the console belongs to `k64uart`, so no app line reaches the
+VCOM (see *Per-board caveats* above). The plain `-st` image carries no RTT, and there the same
+outcome is read off the halted target instead -- `MCR=0x80000000` (master, out of reset),
+`CTAR0=0x38010000` (8-bit frame), `SR=0xC2020303` with TCF set and `TXNXTPTR`/`POPNXTPTR` both 3,
+which is the seven words the transfer moved taken modulo the 4-entry FIFO; `AIPS0 PACRF=0x44440444`,
+i.e. slot 44's `SP` cleared, which is `arch_periph_enable`'s unprotect standing; and
+`GPIOC_PDDR`/`PDOR` both `0x10`, PTC4 an output with CS idle high. The core sits in
+`arch_idle_wait` with `CycleCnt` advancing between halts, and does not fault.
+
+What this adds is the bus round trip, not a second stage-3 arm: it is the privileged posture, so
+the same transfer **under the flip is still owed**, and the canonical PMSA peripheral proof stays
+`xmcspi` on the XMC.
 
 #### Coverage boundary -- what this silicon witness covers
 
@@ -1120,6 +1270,10 @@ else -- no RXv3 emulator exists -- so for `arch/rx/**` the boundary IS this benc
 five flash-and-capture runs (control `selftest` + `mpu_fault`, flipped `selftest` + `rootfault`,
 control `rootfault`), zero reflashes, every signature matched. That run also closes the last
 never-witnessed enforcement backend in the fleet -- `stm32f411` PMSAv7, shared with `blackpill`.
+**Extended 2026-07-29 to `127efb5`** by the `frdmk64f` stage-3 witness: `selftest` and `rootfault`
+under the FULL service list, the first silicon run of `arch_periph_enable` and the first of a board
+whose root writes no MMIO. Two captures, one posture only -- no privileged arm at that tip -- and
+the first K64F captures taken on `-Os` code.
 
 | Commit | Touches the enforcement path? | Silicon |
 | --- | --- | --- |
@@ -1136,15 +1290,14 @@ caller faulted on memory the kernel had just granted it. The host sim was green 
 because its apply mprotects as it records. XMC4800 is PMSAv7, exactly the class that faulted, so
 this silicon run is the strongest witness the fix can have.
 
-**`frdmk64f` is deliberately NOT flipped** and stays privileged-root: its service list's bring-up
-writes peripheral registers directly from root, which needs stage 3's `arch_periph_enable`. Pairing
-that list with the flip is a configure-time error, not a runtime surprise. It was instead
-re-regressed under SYSMPU enforcement with a privileged root, first at `22e1c5a` and again at
-`75227d4` (2026-07-28): selftest 61 cases / 60 `ok` / 1 skip (`mutex_deadlock`, pool too small) /
-0 fail, and `mpu_fault` still traps a child's cross-domain write with
-`SYSMPU ISOLATION FAULT: port=3 addr=0x2001b000 master=0 W EDR=0x80000003` -- byte-identical to
-the prior witness (SYSMPU surfaces as an imprecise bus fault, so the core label reads
-`HARD FAULT` and the chip hook adds the real line).
+**`frdmk64f` is flipped**, on its full service list -- its own subsection above carries the witness.
+Its privileged-root SYSMPU regressions stay the control reference, and they are a different tree: at
+`22e1c5a` and again at `75227d4` (2026-07-28) selftest ran 61 cases / 60 `ok` / 1 skip
+(`mutex_deadlock`, pool too small) / 0 fail, and `mpu_fault` trapped a child's cross-domain write
+with `SYSMPU ISOLATION FAULT: port=3 addr=0x2001b000 master=0 W EDR=0x80000003` -- byte-identical to
+the prior witness (SYSMPU surfaces as an imprecise bus fault, so the core label reads `HARD FAULT`
+and the chip hook adds the real line). Nothing at `127efb5` was captured in the privileged posture,
+so this board has no single-tree A/B.
 
 **`esp32-wroom` is not a flip target at all** -- the LX6 has no MPU, so there is no privilege
 boundary to enforce and the banner reads `mpu off`. It is regressed instead: at `e5c651b`

@@ -12,14 +12,16 @@
 //   2. spi_service -- the unprivileged driver thread: kos_recv a kos_bus_req,
 //      validate it, run the class transaction over the concatenated segment bytes,
 //      kos_reply a kos_bus_rsp. The reply cap is consumed on EVERY loop path.
-//   3. k64dspi_spi_start -- the privileged one-time bring-up + endpoint + spawn.
+//   3. k64dspi_spi_start -- the endpoint + spawn shim. It touches no register: the
+//      block is brought up by the driver thread itself (kos_periph_enable), and the
+//      pin mux comes from the board pin map.
 //
 // Chip select is a SOFTWARE GPIO on PTC4, NOT hardware PCS0: DSPI's CONT/PCS model
 // has no zero-clock CS deassert, so releasing hardware PCS0 clocked a trailing dummy
 // byte that corrupted length-sensitive LAN9252 mailbox writes (the Stage-D bug). The
 // GPIO write path is ungated (K64 RM 3.10.1.1: GPIO is a direct crossbar slave with
-// no PACR and no SYSMPU coverage), so the unprivileged driver toggles PSOR/PCOR with
-// no grant; only the PTC4 pin-mux + direction are set privileged in the bring-up.
+// no PACR and no SYSMPU coverage), so the unprivileged driver sets PTC4's direction
+// and toggles PSOR/PCOR with no grant of its own.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -31,6 +33,7 @@
 #include <kickos/sys/bytes.h>          // mem_copy
 #include <kickos/sys/spi_service.h>    // kickos::spi::serve_loop (shared choreography)
 #include <kickos/sys/driver_bringup.h> // kickos::driver::spawn_unprivileged
+#include <kickos/sys/emit.h>           // publish-aware write (kos_print is dropped once published)
 #include <kickos/io/mmio.h>            // r32
 
 #include <dspi_class.h> // Rule 6 class-driver leaf: shared DSPI RX-FIFO fill-level read
@@ -40,28 +43,13 @@
 
 namespace
 {
-    // --- DSPI0 / SIM / PORT / GPIO register map (K64 RM ch.50, 12.2, 11.5, 55.2) ---
-    constexpr uintptr_t SIM_SCGC5 = 0x40048038u; // RM 12.2.12: PORTx clock gates
-    constexpr uintptr_t SIM_SCGC6 = 0x4004803Cu; // RM 12.2.13
-    constexpr uint32_t SCGC5_PORTD = 1u << 12;
-    constexpr uint32_t SCGC6_SPI0 = 1u << 12;
-    constexpr uint32_t SCGC5_PORTC = 1u << 11;
+    // --- DSPI0 / GPIO register map (K64 RM ch.50, 55.2) ---
 
-    constexpr uintptr_t PORTD_BASE = 0x4004C000u;
-    constexpr uintptr_t PORTD_PCR1 = PORTD_BASE + 0x04u;
-    constexpr uintptr_t PORTD_PCR2 = PORTD_BASE + 0x08u;
-    constexpr uintptr_t PORTD_PCR3 = PORTD_BASE + 0x0Cu;
-    constexpr uint32_t PCR_MUX_ALT1 = 0x1u << 8; // RM 11.5 PORTx_PCRn MUX=001 -> GPIO
-    constexpr uint32_t PCR_MUX_ALT2 = 0x2u << 8; // PTD1/2/3 -> SCK/SOUT/SIN
-
-    // LAN9252 shield: SCS is on Arduino D9 = PTC4. Software GPIO CS drives this pin
-    // (PTC4/ALT1 = GPIO), NOT hardware SPI0_PCS0 (PTC4/ALT2). PCR4 mux + direction
-    // are set privileged in the bring-up; per-transaction toggles run in the driver.
-    constexpr uintptr_t PORTC_BASE = 0x4004B000u;
-    constexpr uintptr_t PORTC_PCR4 = PORTC_BASE + 0x10u;
-
+    // LAN9252 shield: SCS is on Arduino D9 = PTC4, muxed to GPIO (PTC4/ALT1) by the
+    // board pin map, NOT to hardware SPI0_PCS0 (PTC4/ALT2).
+    //
     // GPIOC (K64 RM 55.2): direct crossbar slave at 0x400F_F080, system-clocked (RM
-    // 55.1.1), NOT AIPS/MPU-gated (RM 3.10.1.1) -- the unprivileged driver reaches it
+    // 55.1.1), NOT AIPS/MPU-gated (RM 3.10.1.1). The unprivileged driver reaches it
     // free (the SYSMPU MMIO grant is inert; GPIO bypasses the MPU entirely).
     constexpr uintptr_t GPIOC_BASE = 0x400FF080u;
     constexpr uintptr_t GPIOC_PSOR = GPIOC_BASE + 0x04u; // set   -> PTC4 high (CS idle)
@@ -286,6 +274,36 @@ extern "C"
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
 
+        // Software GPIO CS on PTC4: preload PDOR high, THEN switch the pin to output,
+        // so it drives high the instant it becomes one (CS idle high, no assert
+        // glitch). Always set up; cs_policy decides whether a transfer toggles it.
+        //
+        // BEFORE the periph_enable check: GPIO is a direct crossbar slave needing no PACR
+        // and no grant, so it does not depend on the seam, and the board pin map already
+        // muxed PTC4 to ALT1. Ordered after the check, a refusal would exit with the pin
+        // a floating input (PDDR resets to 0).
+        r32(GPIOC_PSOR) = CS_PIN;
+        r32(GPIOC_PDDR) |= CS_PIN;
+
+        // Ungate SPI0 and clear DSPI0's AIPS0 slot 44 SP bit (RM 20.2) through the grant
+        // this thread holds. Until it returns, the window reads supervisor-only and the
+        // block is unclocked. The diagnostic goes through emit, not kos_print: the console
+        // is already USER_OWNED here, so the kernel chip path drops every byte.
+        if (kos_periph_enable(win) != 0)
+        {
+            kickos::emit("[k64dspi] ERROR: periph_enable failed, DSPI0 unreachable\n");
+            kos_exit(-1);
+        }
+
+        // DSPI0 out of reset while HALTed. MCR resets 0x0000_4001 (MDIS=1, HALT=1):
+        // this write clears MDIS, flushes both FIFOs and sets master, then HALT is
+        // released. CTAR0 keeps its reset value (CPOL=0, so SCK idles low, matching the
+        // mode-0 pin idle); every transfer rewrites it from the named device's profile,
+        // and an XFER without a folded profile is refused, so no transfer ever runs on
+        // the reset CTAR.
+        r32(win + MCR_OFFSET) = MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT;
+        r32(win + MCR_OFFSET) = MCR_MSTR;
+
         DspiBus bus;
         bus.init(win);
 
@@ -308,54 +326,7 @@ extern "C"
         uint32_t const win_size = cfg->mmio_window;
         uint8_t const driver_prio = cfg->prio;
 
-        // 1. Privileged one-time bring-up (runs in the root/init thread): the unsafe
-        //    setup the unprivileged driver must NOT do. SIM (could ungate any
-        //    peripheral) and PORT (could re-mux SPI onto arbitrary pins) stay
-        //    privileged; the driver gets ONLY the DSPI window + the ungated GPIOC.
-        r32(SIM_SCGC5) |= SCGC5_PORTD | SCGC5_PORTC;
-        r32(SIM_SCGC6) |= SCGC6_SPI0;
-
-        // SCK/SOUT/SIN on PTD1/PTD2/PTD3 (Arduino D13/D11/D12) -> ALT2. Glitch-free
-        // before DSPI config only because mode 0 (CPOL=0) idle matches the pin idle
-        // at mux time; a CPOL=1 device MUST program CTAR before muxing.
-        r32(PORTD_PCR1) = PCR_MUX_ALT2; // SCK  (D13)
-        r32(PORTD_PCR2) = PCR_MUX_ALT2; // SOUT (D11)
-        r32(PORTD_PCR3) = PCR_MUX_ALT2; // SIN  (D12)
-
-        // Software GPIO CS on PTC4 (D9): preload PDOR high, set output, THEN mux ALT1
-        // (GPIO) so the pin drives high the instant it becomes an output -- CS idle
-        // high, no assert glitch. Always set up (harmless when a device needs no CS;
-        // the driver's cs_policy gates whether it actually toggles).
-        r32(GPIOC_PSOR) = CS_PIN;
-        r32(GPIOC_PDDR) |= CS_PIN;
-        r32(PORTC_PCR4) = PCR_MUX_ALT1;
-
-        // DSPI0 config while HALTed. MCR resets 0x0000_4001 (MDIS=1, HALT=1): this
-        // write clears MDIS, flushes both FIFOs, sets master, holds HALT during
-        // config. The initial CTAR comes from the service cfg's target Hz: it sets the
-        // SCK idle level the pin mux above is glitch-free against, and every transfer
-        // then rewrites CTAR0 from its own device's profile.
-        r32(win_base + MCR_OFFSET) = MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT;
-        uint32_t f = kos_periph_clock_hz(win_base);
-        if (f == 0u)
-        {
-            f = DSPI_CLK_FALLBACK;
-        }
-        uint32_t achieved = 0u;
-        uint32_t const ctar = derive_ctar(f, cfg->hz, /*mode=*/0u, /*word_bits=*/8u, &achieved);
-        r32(win_base + CTAR0_OFFSET) = ctar;
-
-        // Open DSPI0 slot 44 to user mode: clear PACR44 SP (bit 14 of AIPS0_PACRF).
-        // RM 20.2 -- the ACTUAL enabler on K64F (the SYSMPU grant below is inert for
-        // the peripheral). PACRF resets SP=1 (supervisor-only).
-        constexpr uintptr_t AIPS0_PACRF = 0x40000044u;
-        constexpr uint32_t PACR44_SP = 1u << 14;
-        r32(AIPS0_PACRF) &= ~PACR44_SP;
-
-        // Release HALT -> RUNNING; the first PUSHR starts the queue.
-        r32(win_base + MCR_OFFSET) = MCR_MSTR;
-
-        // 2. Create the request endpoint E (full rights: WAIT|SIGNAL|TRANSFER). Root
+        // 1. Create the request endpoint E (full rights: WAIT|SIGNAL|TRANSFER). Root
         //    KEEPS this cap so the app -- same thread, same table -- can delegate a
         //    SIGNAL-narrowed copy to each client. g_spi0_ep records the handle.
         int const ep = kos_endpoint_create();
@@ -365,10 +336,11 @@ extern "C"
             return -1;
         }
 
-        // 3. Spawn the UNPRIVILEGED driver: granted the DSPI0 window (R|W|DEV; inert
-        //    on coarse-AIPS but kept for spawn-signature portability with PMSA/PMP)
-        //    and a WAIT-only recv cap on E (child index 1). No SIGNAL/TRANSFER on the
-        //    child cap: the driver receives, it does not send or re-delegate.
+        // 2. Spawn the UNPRIVILEGED driver: granted the DSPI0 window (R|W|DEV; inert
+        //    on coarse-AIPS for the peripheral itself, but it is what authorises the
+        //    driver's kos_periph_enable, and it keeps the spawn signature portable with
+        //    PMSA/PMP) and a WAIT-only recv cap on E (child index 1). No SIGNAL/TRANSFER
+        //    on the child cap: the driver receives, it does not send or re-delegate.
         int const drv = kickos::driver::spawn_unprivileged(
             k64dspi_service, win_base, win_size, cfg->name, driver_prio, ep,
             "[k64dspi] ERROR: driver spawn failed\n");

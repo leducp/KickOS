@@ -399,7 +399,6 @@ message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST} (libs: ${KICKOS_SE
 # time instead. Retire an entry when its bring-up stops needing root MMIO; the SoT
 # for each listing is docs/design-unprivileged-root.md section 8.
 set(KICKOS_SERVICE_LIST_ROOT_MMIO
-  kickos_services_frdmk64f        # k64uart AIPS PACR + k64dspi clock/pin/GPIO/DSPI config
   kickos_services_xmc4800relax)   # xmcssc USIC kernel clock, baud, protocol from root
 if(NOT KICKOS_ROOT_PRIVILEGED AND KICKOS_SERVICE_LIST IN_LIST KICKOS_SERVICE_LIST_ROOT_MMIO)
   message(FATAL_ERROR
@@ -408,8 +407,9 @@ if(NOT KICKOS_ROOT_PRIVILEGED AND KICKOS_SERVICE_LIST IN_LIST KICKOS_SERVICE_LIS
     "faults on that write after the console has already been handed over, so the board "
     "goes dark with no diagnostic. Pick a service list whose bring-up is pure syscall "
     "(xmc4800-relax: kickos_services_xmc4800relax_console), or keep "
-    "KICKOS_ROOT_PRIVILEGED=ON for this image. See docs/design-unprivileged-root.md "
-    "section 8 and TODO.md stage 3.")
+    "KICKOS_ROOT_PRIVILEGED=ON for this image. The remaining listing needs the USIC "
+    "FDR/BRG/CCR seam, which arch_periph_enable does not cover. See "
+    "docs/design-unprivileged-root.md section 8.")
 endif()
 
 # Board pin-map provider selection (the default-init pin-mux step). The default init

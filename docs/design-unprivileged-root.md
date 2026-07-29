@@ -1,14 +1,14 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Unprivileged root -- start unprivileged holding capabilities
 
-> **Status: ACTIVE** -- stages 0 and 1 have landed, and **stage 2 is done**: the whole declared
-> set of five boards boots an unprivileged root and is witnessed on silicon, covering every
-> enforcement backend -- `xmc4800-relax` (PMSAv7), `esp32c6-wroom` (RISC-V PMP), `pizero2350`
-> (PMSAv8), `rx72m` (RXv3) and `f411disco` (PMSAv7, the last one, 2026-07-29). The per-board
-> captures are in `reference/boards.md`. `frdmk64f` waits for stage 3. Stages 3-5 are planned;
-> 3 and 4 are hardware-gated, and 5 -- the `KICKOS_ROOT_PRIVILEGED` deletion -- cannot precede 3.
-> See `design/README.md` for the marker taxonomy. The actionable checklist is
-> `TODO.md`; this record is the reasoning behind it, which `TODO.md` does not carry.
+> **Status: ACTIVE** -- stages 0 through **3** have landed. Six boards boot an unprivileged root
+> and are witnessed on silicon, covering every enforcement backend -- `xmc4800-relax` (PMSAv7),
+> `esp32c6-wroom` (RISC-V PMP), `pizero2350` (PMSAv8), `rx72m` (RXv3), `f411disco` (PMSAv7) and
+> `frdmk64f` (SYSMPU), which is the first board to run its **full** service list under the flip
+> (console `k64uart` + SPI `k64dspi`) rather than a console-only one. The per-board captures are in
+> `reference/boards.md`. Stages 4 and 5 remain; the `KICKOS_ROOT_PRIVILEGED` deletion is stage 5 and
+> is no longer order-blocked. See `design/README.md` for the marker taxonomy. The actionable
+> checklist is `TODO.md`; this record is the reasoning behind it, which `TODO.md` does not carry.
 
 Root is the kernel's first application thread: `kmain` creates it, it runs the app and
 library constructors, then calls `kickos_init_entry`. It **was** privileged for its entire
@@ -32,7 +32,7 @@ places where it does not work.
 4. What was deleted rather than deferred
 5. The authority capability: shape, seat, and the arithmetic behind it
 6. The actual win: revocation
-7. Stage plan, and what stages 0 and 1 landed
+7. Stage plan, and what stages 0 to 3 landed
 8. The three blockers
 9. Limits, including the boards where this does not work
 10. Verification: what witnesses what, and what nothing witnesses
@@ -147,15 +147,19 @@ the sites that exist, because the kernel builds exactly three `ThreadAttr`s: `id
 new default (`kernel/init/kmain.cc:250`), and the spawn syscall assigns the field from its caller's
 request either way (`kernel/syscall/syscall_thread.cc:334`).
 
-**The deletion cannot be scheduled before stage 3, and that is mechanical rather than a
-preference.** `frdmk64f` under `KICKOS_HAVE_MPU` defaults to the `kickos_services_frdmk64f` service
-list, which is listed in `KICKOS_SERVICE_LIST_ROOT_MMIO` and therefore refused by a configure-time
-`FATAL_ERROR` whenever root is unprivileged (`CMakeLists.txt:404`). With the knob gone that refusal
-has no posture left to be conditional on, so it fires unconditionally and the board's enforcement
-build **stops configuring** -- which is the `build-boards-mpu` CI job, not a bench inconvenience.
-Stage 3's `arch_periph_enable` is what retires the root MMIO writes that put that list on the
-refusal list in the first place. So the order is stage 3, then the deletion; section 7 has the two
-smaller build consequences that travel with it.
+**The deletion was order-blocked behind stage 3, and is not any more.** The block was mechanical:
+`frdmk64f` under `KICKOS_HAVE_MPU` defaults to the `kickos_services_frdmk64f` service list, and
+while that list's bring-up wrote MMIO from root it sat in `KICKOS_SERVICE_LIST_ROOT_MMIO`, whose
+configure-time `FATAL_ERROR` refuses an unprivileged root (`CMakeLists.txt`). With the knob gone
+that refusal has no posture left to be conditional on, so it would fire unconditionally and the
+board's enforcement build would **stop configuring** -- the `build-boards-mpu` CI job, not a bench
+inconvenience. Stage 3 moved those writes into the drivers and the list came off the refusal list.
+
+What remains on it is `kickos_services_xmc4800relax`, the combined XMC console+SPI list, because
+`xmcssc` still configures the USIC from root and needs a seam stage 3 does not provide (section 9).
+No board selects it in the unprivileged posture, so the deletion's job there is to make the
+console-only list that board's unconditional default rather than a posture-selected one; section 7
+carries that and the other build consequence.
 
 **The invariant that leaves is "exactly one privileged thread, and it is `idle`".** Idle has to
 stay privileged because the instruction it exists to execute is not portably available
@@ -182,16 +186,29 @@ consequences worth stating, because both are easy to get wrong:
   missing arm is a debug trap rather than a silent leak -- which is the behaviour you want, and
   the reason the arms are explicit rather than relying on the default.
 
-**Five rights bits, and that is the entire budget for the life of the type.** `CapEntry.rights`
-is a `uint8_t` with three bits used (`CAP_WAIT`, `CAP_SIGNAL`, `CAP_TRANSFER`). The five free
-bits become `AUTH_MEMORY`, `AUTH_PINMUX`, `AUTH_CLOCK`, `AUTH_IRQ`, `AUTH_DEVICE`.
+**Five rights bits, and the five-bit ceiling is an artifact of one byte rather than a budget for
+the type.** `CapEntry.rights` is a `uint8_t` with three bits used (`CAP_WAIT`, `CAP_SIGNAL`,
+`CAP_TRANSFER`). The five free bits are `AUTH_MEMORY`, `AUTH_PINMUX`, `AUTH_CLOCK`, `AUTH_IRQ`,
+`AUTH_DEVICE`.
 
 The split sits at bit 3 rather than overlapping the object rights, deliberately. `CAP_TRANSFER`
 in particular is read *type-agnostically* at the delegation site, so reusing bit 0 or 1 for an
 authority would give one bit two meanings depending on a field the reader has to remember to
-check. `CapEntry` is a frozen 8-byte ABI, so the field cannot grow: a sixth authority has to
-come from **merging two existing bits** (`AUTH_PINMUX` + `AUTH_CLOCK` into one chip-config bit
-is the natural pair -- both are one-shot bring-up configuration), never from adding one.
+check.
+
+**A sixth authority does not have to come from merging two existing bits.** `CapEntry` is a frozen
+8-byte ABI and the rights *byte* cannot grow, but a `CAP_AUTHORITY` entry is poolless and leaves
+`obj` unused, so the authority word moves into `obj` and the struct keeps its size. That is what
+funds the six-bit re-cut below, and it retires the "merge `AUTH_PINMUX` with `AUTH_CLOCK`" plan
+that the old ceiling forced.
+
+The move is safe by inspection of every `obj` read rather than by assumption: `obj` is never a
+sentinel, never range-checked, never `memcpy`'d, never exposed to userspace and never traced, and
+each read is dominated by an explicit type test or a `switch (type)` arm -- with **one exception**.
+The delegation copy in `thread_spawn` (`kernel/syscall/syscall_thread.cc`) copies `obj` with no
+type test at all, filtered only by `CAP_TRANSFER` in `rights`. So that byte is today the only thing
+preventing an authority cap being duplicated bits-and-all into a child table, and moving the
+authority word out of it requires giving that copy an explicit type guard **first**.
 
 **It is seated at `KOS_CAP_AUTHORITY` (index 2), which was already reserved.** So it costs
 **zero dynamic capability slots on every board**, including the four with only 9 handles. That
@@ -208,6 +225,36 @@ capability per muxable pin (or per clock, per line) instead of one bit per autho
 There are roughly 100 muxable pins on the larger parts against a 16-slot capability-table
 ceiling. It does not fit, and it does not nearly fit, so the class granularity is forced.
 
+### The authority set is re-cut, and stage 4 owns it
+
+**`AUTH_DEVICE` in its current shape is rejected.** It means "console publish, shutdown, reboot",
+which holds together only while root does all three. Once root is *only* a spawner, publishing a
+console and ending the system belong to **different** threads, so no single bit can carry both
+without handing the console driver the power to end the system.
+
+The cut is six bits:
+
+| Bit | Gates | Who holds it |
+|---|---|---|
+| `AUTH_MEMORY` | `ram_alloc`, the MMIO window grant, `mem_self_grant` | root, the spawner |
+| `AUTH_PINMUX` | `pinmux_set` | root's board pin map, plus an app muxing its own pins |
+| `AUTH_PSTATE` | `cpu_clock_set` | a CPU-governor service, and nothing else |
+| `AUTH_IRQ` | `irq_attach`, `irq_unmask` | drivers with lines |
+| `AUTH_SYSTEM` | `shutdown`, `reboot` | root / init |
+| `AUTH_CONSOLE` | `console_publish` | the console driver |
+
+`AUTH_DEVICE` and `AUTH_CLOCK` cease to exist as names. **`cpu_clock_set` keeps a bit of its own**
+precisely because a governor service needs clock-rate authority and nothing else: folding it into
+the lifecycle bit would hand the governor the power to end the system.
+
+**`AUTH_CONSOLE` has to be a bit, and specifically cannot be possession-gated** the way
+`arch_periph_enable` is (section 7). `KOS_SYS_ENDPOINT_CREATE` is completely ungated, so any thread
+can mint the endpoint it would publish; and `cap_console_publish` has no owner check and no
+once-only guard, so a publish drops the kernel's existing ref and re-points `g_stdout_target`,
+silently stealing a live console. `AUTH_DEVICE` is today the sole thing preventing that. The
+missing owner check and once-only guard are wanted regardless of which bit gates the call, and are
+filed separately in `TODO.md`.
+
 ## 6. The actual win: revocation
 
 Confining root's *memory* is worth something, but it is not the main prize. The prize is that
@@ -223,7 +270,7 @@ That is stage 4's `kos_cap_narrow`, and it is the app-facing point of the whole 
 Without it an unprivileged `main` can still ask the kernel to do every privileged thing there
 is, which would make the flip a memory-isolation change and nothing more.
 
-## 7. Stage plan, and what stages 0 and 1 landed
+## 7. Stage plan, and what stages 0 to 3 landed
 
 **Stage 0 -- three independent prerequisites. LANDED.** All three were real bugs, latent only
 because privileged callers bypass the checks:
@@ -295,31 +342,71 @@ its `xmcuart` bring-up is pure syscall), `esp32c6-wroom` (RISC-V PMP), `pizero23
 in `reference/boards.md`.
 
 With that set witnessed the per-board phase is over, so the knob has no remaining job and is
-deleted (section 4). Three consequences sit in the build rather than in the kernel. The binding one
-is the `frdmk64f` configure refusal, which orders the deletion after stage 3 -- section 4 states it,
-because whoever schedules the deletion needs it there rather than here. The other two are smaller:
-`xmc4800-relax` stops picking between two service lists by posture and always takes the console-only
-one, and the confinement gate stops being opt-in (section 10).
+deleted (section 4). Two consequences sit in the build rather than in the kernel: `xmc4800-relax`
+stops picking between two service lists by posture and always takes the console-only one, and the
+confinement gate stops being opt-in (section 10).
 
 `f411disco` came last because what stood in the way was a **pre-existing bench debt rather than
 flip work**: PMSAv7 enforcement had never been witnessed on that board at all, so a flip there
 would have had no enforcing baseline to be discriminating against.
 
-`frdmk64f` is **not** a stage-2 target and waits for stage 3. Its `k64uart` and `k64dspi` PACR
-writers (`AIPS0_PACRN` at `0x4000_0064`, `AIPS0_PACRF` at `0x4000_0044`) both fall inside
-`arch_reserved_blocks`'s AIPS0 entry (`[0x4000_0000, 0x4000_1000)`), so no grant can ever reach
-them and `arch_periph_enable` is the only way in.
+**Stage 3 -- `arch_periph_enable(base)`. LANDED.** `int arch_periph_enable(uintptr_t base)`
+(`arch/include/kickos/arch/arch.h`) ungates the block's clock and drops its bus-side
+supervisor-protect, with a weak `-KOS_ENOSYS` default in `kernel/time/clock_select.cc`. Syscall
+`KOS_SYS_PERIPH_ENABLE = 39`, wrapper `kos_periph_enable`. Backends: mk64f (UART0, DSPI0) and
+stm32f411 (SPI1, the clock gate alone -- that bus exposes no privilege-classification register in
+this tree). ESP32-C6 and RX72M deliberately have none: their windows need nothing from the seam, the
+C6's APM open being a boot-time chip act in `arch_init` rather than a per-block request.
 
-**Stage 3 -- `arch_periph_enable(base)`**, weak `-KOS_ENOSYS`, gated `AUTH_DEVICE`, covering
-"ungate the clock and drop supervisor-protect for the block at this base". Implemented for K64F
-(`SIM_SCGC*` + `AIPS0_PACRN`). Retires `k64uart` and half of `k64dspi`. The ESP32-C6 needs
-nothing here: its APM open is a boot-time chip act in `arch_init`, not a per-block request.
+This is what `frdmk64f` was waiting for, and why it could not be a stage-2 target: its `k64uart` and
+`k64dspi` PACR writers (`AIPS0_PACRN` at `0x4000_0064`, `AIPS0_PACRF` at `0x4000_0044`) both fall
+inside `arch_reserved_blocks`'s AIPS0 entry (`[0x4000_0000, 0x4000_1000)`), so no grant can ever
+reach them and the seam is the only way in.
+
+**Each backend is a hand-curated per-chip table keyed on the EXACT block base, never a range**, and
+both writes are *derived* from `base`, so a caller can never name a shared block's register or the
+bit inside it. Which bases earn an entry is a hardware question, and the K64F PIT is where the
+answer is no (section 9).
+
+**The gate is possession, and there is no authority bit.** `caller_holds_mmio_block(base)`
+(`kernel/syscall/syscall_mem.cc`) requires the caller to hold a live `ARCH_MPU_DEV` region whose
+base matches exactly; a privileged caller bypasses it, exactly as inside `cap_check_authority`.
+Deliberately **not** `user_range_ok`: that funnel's question is whether the kernel may dereference a
+user pointer, and it passes trivially at `len == 0`. Exact base rather than containment is what
+stops a sub-block window reaching a whole-block table entry.
+
+**Gating it on `AUTH_DEVICE` instead is the obvious-looking alternative, and it is wrong.** The
+seam's callers are the bus drivers, so that bit would hand `kos_shutdown` and reboot-to-bootloader to
+every unprivileged driver in the fleet; every other existing bit carries collateral just as unwanted,
+and there are no free bits (section 5). Possession is *sufficient* because a granted window already
+means "may enable, configure and disable this device" wherever the silicon permits it directly -- the
+XMC `KSCFG` case in section 9 is the precedent -- so the seam brings K64F and F411 to the parity that
+window granularity already grants there.
+
+**The call site is the driver, not root, and that is what makes the seam's bound real** rather than
+aspirational; the argument is in section 9 under *The privileged-write seam family*. On `frdmk64f`
+root writes **no MMIO at all**.
+
+Two supporting pieces landed with it. `arch/arm/chip/mk64f/regs/aips.h` gives the three formerly
+open-coded slot -> (`PACR` register, `SP` bit) derivations one home, with `static_assert`s pinning
+slots 106 (UART0), 44 (DSPI0) and 55 (PIT -- derivation coverage only, no entry). And `stm32f411`'s
+pinmux gained an encoding field: `func` bit 8 `PINMUX_OUT_HIGH` presets an output high, and a
+non-output mode carrying the bit is refused `-KOS_EINVAL`. `f411spi` needs it to hold the onboard
+gyro's `PE3` chip-select deasserted so the gyro's SDO stays tri-stated. **`BSRR` is written before
+`MODER`** (proven in the disassembly: the `str [r3,#24]` precedes the `str [r3,#0]`), because a
+`BSRR` set on a still-input pin is inert while the reverse order asserts the `ODR` reset level first.
+Known limitation: the encoding cannot reach `OSPEEDR` or `PUPDR`, so the old high-speed slew write
+for `PA5`/`PA6`/`PA7` is gone and those pins run at the reset-default low-speed slew. `BR=/64` puts
+SCK at ~1.3 MHz (84 MHz APB2 / 64, both from the tree); that the default slew carries that rate is
+**engineering judgement, pending a DS9716 check** -- unlike the electrical facts cited above it rests
+on no line in this tree.
 
 **Stage 4 -- the app story.** `kos_cap_narrow(cap, mask)` (rights &= mask, never widen), and
-drop or narrow the authority cap in `kickos_default_init_run` before `kickos_app_main`. Plus:
-declare **`stress`** privileged-root, since it spawns privileged children (three sites in
-`user/apps/common/stress/main.cc`) and a flipped board cannot create a privileged thread after
-boot.
+drop or narrow the authority cap in `kickos_default_init_run` before `kickos_app_main`. It also owns
+the **six-bit authority re-cut** (section 5), because narrowing is what makes the cut matter: a bit
+you cannot drop separately need not have been separate. Plus: declare **`stress`** privileged-root,
+since it spawns privileged children (three sites in `user/apps/common/stress/main.cc`) and a flipped
+board cannot create a privileged thread after boot.
 
 **Stage 5 -- delete `KICKOS_ROOT_PRIVILEGED`.** The knob goes with no replacement and no porting
 escape hatch; section 4 carries the decision and its reasons. Three things travel with the deletion:
@@ -327,12 +414,13 @@ escape hatch; section 4 carries the decision and its reasons. Three things trave
 leaves is **"exactly one privileged thread, and it is `idle`"**, and every remaining `#if
 KICKOS_ROOT_PRIVILEGED` site loses its condition rather than its body.
 
-**It cannot precede stage 3, and that is mechanical.** With the knob gone the root-MMIO service-list
-`FATAL_ERROR` (`CMakeLists.txt:404`) has no posture left to be conditional on, so it fires
-unconditionally and `frdmk64f`'s enforcement build stops configuring -- the `build-boards-mpu` CI
-job. Stage 3's `arch_periph_enable` is what retires the root MMIO writes that put that list on the
-refusal list. Section 4 states the same ordering, because whoever schedules the deletion needs it
-there.
+**Its one ordering constraint is discharged.** With the knob gone the root-MMIO service-list
+`FATAL_ERROR` has no posture left to be conditional on and fires unconditionally, which would have
+stopped `frdmk64f`'s enforcement build from configuring at all -- the `build-boards-mpu` CI job.
+Stage 3 retired that board's root MMIO writes and its service list came off the refusal list. The
+list still holds `kickos_services_xmc4800relax`, so the deletion has to make the console-only list
+`xmc4800-relax`'s unconditional default at the same time. Section 4 states the same, because whoever
+schedules the deletion needs it there.
 
 **The payoff is already established** (section 10): `user/apps/common/rootfault/CMakeLists.txt:18`
 registers the confinement gate under `KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND NOT
@@ -351,16 +439,19 @@ made the boundary untestable on exactly the boards that adopt it. It now runs in
 
 ## 8. The three blockers
 
-**Three service bring-up bodies poke MMIO directly from root.**
-`system/driver/mk64f/k64uart/k64uart.cc` (AIPS PACR),
-`system/driver/mk64f/k64dspi/k64dspi.cc` (clock gates, pin mux, GPIO, DSPI config), and
-`system/driver/xmc4800/xmcssc/xmcssc.cc` (USIC kernel clock, baud, protocol). `xmc4800-relax`,
-the enforcement flagship, links one of them.
+**One service bring-up body still pokes MMIO directly from root**, and it is
+`system/driver/xmc4800/xmcssc/xmcssc.cc` (USIC kernel clock, baud, protocol) on `xmc4800-relax`, the
+enforcement flagship. The two K64F bodies are retired:
+`system/driver/mk64f/k64uart/k64uart.cc` (AIPS PACR) and
+`system/driver/mk64f/k64dspi/k64dspi.cc` (clock gates, pin mux, GPIO, DSPI config) each call
+`arch_periph_enable` from the driver thread that holds the window, which is why `frdmk64f` runs its
+full service list with root writing no MMIO at all.
 
-**From root** is the operative phrase for two of them. On the XMC it is only most of the story:
+**From root** was the operative phrase for those two. On the XMC it is only most of the story:
 section 9 measures that three of the registers are refused to an unprivileged thread even inside
 the granted window, so that bring-up needs both a move into the driver thread and a kernel seam
-for those three.
+for those three -- a USIC-shaped seam that stage 3's "ungate a clock, drop supervisor-protect" does
+not provide. That is why `xmc4800-relax` stays console-only under the flip.
 
 **`root_entry` read argv from the kernel stack.** Fixed in stage 0. Recorded here because of
 *how* it would have failed: an unprivileged root faults on its first statement after the ctor
@@ -436,11 +527,47 @@ else".
   holder on an unflipped board -- and a property of window granularity, not a regression. A window
   that happens to span two peripherals hands over both.
 
+  **This is the precedent stage 3's possession gate rests on** (section 7). Where the silicon puts a
+  block's enable *inside* the window, holding the window already carries the authority to enable the
+  device, so a seam reaching only the caller's own block adds nothing the grant did not already
+  imply: it brings K64F and F411 to the parity the XMC gets for free from its register layout.
+
   The grant is an **upper bound**, not the whole window: where a bus enforces its own per-register
   privilege classification, the holder gets strictly less, and on this chip it learns so
   silently (the FDR/BRG/CCR measurement above). So the two limits compose -- window granularity
   sets what is reachable, the bus decides what is writable -- and neither is visible from the
   grant call.
+- **An `arch_periph_enable` entry exists only where the bus gate's granularity is contained by the
+  block the window covers, and the K64F PIT is where that fails.** One AIPS `PACR` slot governs a
+  whole 4 KiB block, so opening slot 55 for the legitimately granted PIT channel-2 window
+  (`0x4003_7120`) would equally expose the chained ch0+ch1 pair that carries `arch_clock_now` -- the
+  registers `arch_reserved_blocks` protects by address (`{PIT_BASE, 0x120}`). So there is no PIT
+  entry, and that base answers `-KOS_EINVAL`. **The refusal is the design working, not an
+  omission**, which is what separates its consequence from `f411spi`'s: `k64drv` cannot run under
+  the flip *by design*, where `f411spi` was merely waiting for a seam.
+
+  That a K64F slot's effect is system-wide once opened is the **already-recorded hardware ceiling**,
+  not a finding of this stage: `book/peripheral-isolation-and-the-hardware-ceiling.md`,
+  `reference/architecture.md` (*Peripheral (MMIO) isolation is hardware-bounded*) and the M3-era
+  instance in `design-m3-console-handover-stageii.md` (*Isolation reality by target*), which is about
+  this same PACR slot.
+
+  The slot arithmetic has one home, `arch/arm/chip/mk64f/regs/aips.h`, with `static_assert`s pinning
+  slots 106 (UART0), 44 (DSPI0) and 55 (PIT, derivation coverage only). Writing it down caught that
+  the `PACR` offsets are **not** contiguous -- groups 0..3 at `0x20`..`0x2C`, `0x30`..`0x3C`
+  reserved, groups 4..15 at `0x40`..`0x6C` -- so the obvious `0x20 + group * 4` names the wrong
+  register for slot 44.
+- **The CPU/peripheral clock coupling is over-generalised, and it should be a question asked of the
+  chip.** `cpu_clock_set` refuses outright while a userspace driver owns the console
+  (`kernel/time/clock_select.cc`), on the grounds that the kernel cannot re-derive a baud it no
+  longer owns. That veto generalises from a biased sample: exactly **two** chips implement
+  `arch_periph_clock_hz`, and both are coupled (`chip_xmc4800.cc`, fPERIPH = fCPU/2;
+  `chip_mk64f.cc`, `SystemCoreClock` or /BUS_DIV). A chip with an independent peripheral root has no
+  backend at all, so the decoupled case has never had to be stated -- and the assumption is baked
+  into the seam's own contract wording ("retune the core/bus clock"). On a chip with a dedicated CPU
+  PLL there is nothing to refuse. The right shape is a **notification to the affected services**
+  rather than a veto, and the console is not the only affected service: drivers size their divisors
+  off `kos_periph_clock_hz` too. M4.6 work, and a CPU governor depends on it.
 - **`arch_reserved_blocks` reasons about addresses, and interrupt routing is not an address.**
   A granted USIC channel can re-point its `INPR` at a service-request node the kernel owns. No
   address-based admissibility check can see that, because every store involved is inside the
@@ -454,19 +581,18 @@ else".
   set with the attacker idle, which took zero further ISR entries. The tax therefore lasts exactly
   as long as the attacker runs, and the probe pins the attacker below root's priority so a wedge
   could not have been mistaken for starvation.
-- **Two threads holding the same MMIO window is unbounded today, and the guard that looks like it
-  prevents that does not.** `kernel/domain/domain.cc` skips the domain *dedup* scan when a spawn
-  carries MMIO, so an MMIO grant always takes a fresh domain slot. That is a statement about
-  domain identity, not about exclusivity: nothing anywhere refuses a second grant of the same
-  window, so N threads can hold one peripheral. **Direction: refuse it at grant admission**, as a
-  live-DEV-range-overlap test returning `-KOS_EBUSY`, reusing `ranges_overlap`
-  (`kernel/grant/grant.cc`) with its existing semantics unchanged -- including
-  adjacency-is-not-overlap, which the `frdmk64f` PIT CH2 grant depends on (the chip's reserved PIT
-  entry stops at `0x4003_7120` precisely so that grant can sit flush against it). Deliberately
-  **not** a per-module count table: that would be hand-maintained and would drift. Sharp edge the
-  design has to answer for: a driver respawn issued before the dying driver's domain reference has
-  dropped still sees the window live and gets `-KOS_EBUSY`, so a respawner needs
-  join-before-respawn or a documented retry.
+- **One holder per MMIO window, enforced at grant admission -- and the respawn edge that follows
+  from it.** The domain *dedup* scan is skipped when a spawn carries MMIO
+  (`kernel/domain/domain.cc`), so an MMIO grant always takes a fresh domain slot; that is a
+  statement about domain identity, not about exclusivity. Exclusivity is its own test:
+  `dev_window_free` walks every live domain's DEV regions and a request overlapping one already held
+  is refused `KOS_EBUSY`. Matched on RANGES, not slots, via `grant_ranges_overlap` shared with Rule 7
+  -- so an equal, containing or straddling window all refuse while an **adjacent** one stays
+  admissible, which the `frdmk64f` PIT CH2 grant depends on (the chip's reserved PIT entry stops at
+  `0x4003_7120` precisely so that grant can sit flush against it). Deliberately **not** a per-module
+  count table: that would be hand-maintained and would drift. Sharp edge: a driver respawn issued
+  before the dying driver's domain reference has dropped still sees the window live and gets
+  `-KOS_EBUSY`, so a respawner needs join-before-respawn or a documented retry.
 - **`bluepill-c8` cannot be witnessed on silicon because no unit exists. `f302nucleo` can.** That
   is the binding difference between the two, and it is hardware absence rather than a technical
   verdict. There is no genuine STM32F103C8 on the bench -- the F103 port was physically run only on
@@ -563,6 +689,14 @@ and it is chip-dependent. What bounds it is not elegance but reach -- the seam's
 space is exactly the peripherals its caller has been granted, so a holder of one window can only
 ever ask the kernel to configure that window's device.
 
+**That bound holds because the call site is the driver rather than root.** It is a fact about the
+code, not an aspiration: root holds no DEV region on any board -- `ARCH_MPU_DEV` is attached to a
+live region in `domain_for` alone, whose only MMIO-carrying caller is `thread_spawn`, and
+`KOS_SYS_MEM_SELF_GRANT` hardcodes `ARCH_MPU_R | ARCH_MPU_W` -- so root could not be the seam's
+caller even if the design wanted it to be, and the thread holding the window is the only candidate.
+A seam gated on an authority *bit* instead would carry no such bound at all: any holder of the bit
+could name any base in the chip's table.
+
 ### The reboot capability
 
 `kos_reboot` is built, as `KOS_SYS_REBOOT` behind the `arch_reboot` seam. It is specifically
@@ -573,17 +707,18 @@ reflashing without touching the board, not a general system reset. A general res
 anywhere today; the mode decision below settles that it should be, and how. A chip with no
 bootloader entry declines through the seam's weak `-KOS_ENOSYS` default rather than pretending.
 
-**Decision: it folds into `AUTH_DEVICE`**, rather than taking a `CAP_REBOOT` at index 3 or a
-sixth rights bit. Three reasons: `arch_shutdown` already sits under `AUTH_DEVICE` and
-reboot-to-bootloader is the same class of act (end this system, hand the chip to something
-else); there is no sixth bit without merging two existing ones; and index 3 is the last free
-well-known index, worth more than bit granularity here.
+**Decision: it shares `arch_shutdown`'s authority**, rather than taking a `CAP_REBOOT` at index 3
+or a rights bit of its own. Two reasons: reboot-to-bootloader is the same class of act as shutdown
+(end this system, hand the chip to something else); and index 3 is the last free well-known index,
+worth more than bit granularity here. Today that shared bit is `AUTH_DEVICE`; under the re-cut
+(section 5) it is `AUTH_SYSTEM`.
 
 The counter-argument, recorded because it is real: shutdown merely stops execution, whereas
-reboot-to-bootloader leaves the board accepting new firmware over USB. Fusing them means
-anything permitted to publish a console can also put the board into flashing mode. That is
-acceptable *for a feature compiled out of production images*, and the `AUTH_PINMUX` +
-`AUTH_CLOCK` merge stays available if a distinct `AUTH_REBOOT` is ever wanted.
+reboot-to-bootloader leaves the board accepting new firmware over USB. Fusing them means anything
+permitted to end the system can also put the board into flashing mode -- acceptable *for a feature
+compiled out of production images*. The sharper half of the objection, that a **console publisher**
+inherits flashing mode, is answered by the re-cut rather than by a merge: `AUTH_CONSOLE` and
+`AUTH_SYSTEM` are different bits.
 
 **Decided, not yet applied: `arch_reboot` takes a MODE, and the compile knob gates the mode rather
 than the seam.** Post-4.5.4 work, owned by M4.6. Four parts:
@@ -608,8 +743,8 @@ than the seam.** Post-4.5.4 work, owned by M4.6. Four parts:
 4. **Bootloader mode wants the knob AND an authority bit.** A normal reset is lifecycle, the same
    class as shutdown; bootloader mode leaves the board accepting firmware over USB, so
    belt-and-braces is proportionate for that one act and not for the other. With the modes split,
-   the lifecycle bit that the `AUTH_PINMUX` + `AUTH_CLOCK` merge frees (section 5) covers normal
-   reset without granting firmware-accept -- which is what the counter-argument above asks for.
+   `AUTH_SYSTEM` (section 5) covers normal reset without granting firmware-accept, and the knob is
+   what the bootloader mode needs on top -- which is what the counter-argument above asks for.
 
 Two pieces of existing debt retire with it. `KICKOS_SHUTDOWN_TO_BOOTLOADER` stops being a parallel
 mechanism reaching `arch_reboot` through `bootloader_handover` (`kernel/init/console.cc:293`) and
@@ -649,6 +784,23 @@ much less than one shown to fire.
   gate and the assertion fails. This is the one that covers the *non-privileged* arm of the
   gates, which would otherwise ship unexercised until a board flips -- the same vacuity trap
   `kernel_ctor_placement` fell into.
+
+**Stage 3's possession gate has a negative arm in the suite and a positive arm only on hardware.**
+`selftest`'s `periph_enable_unheld` asserts the refusal of a caller holding no window, and that runs
+everywhere. The positive arm has **no in-env carrier at all**, because the host sim can never hold a
+DEV region: `arch_mpu_region_encodable` returns false unconditionally (`arch/sim/sim.cc`), so the
+grant that would carry the window cannot exist there. Driver bring-up on silicon is what witnesses
+it instead. On `frdmk64f`, an unprivileged root with the **full** service list (`k64uart` +
+`k64dspi`) runs `selftest` `1..65` `# all tests passed (2 skipped)` -- the skips being
+`mpu_privileged_guard`, whose subject is the privileged posture, and the pre-existing
+`mutex_deadlock # SKIP pool too small` -- and `rootfault` denies root's cross-domain write with
+`SYSMPU ISOLATION FAULT: port=3 addr=0x2001a000 master=0 W EDR=0x80000003`, `CFSR=0x400`,
+`HFSR=0x40000000`. The captures are in `reference/boards.md`.
+
+For the same reason `c6blink` (ESP32-C6, RISC-V PMP NAPOT) and `rxdrv` (RX72M, RXv3 MPU) each carry
+a two-arm possession probe -- negative in `main`, positive as the driver's first act, both printing
+rc and the wanted value -- since the positive arm needs a real DEV holder and therefore needs a chip.
+Neither has been run on silicon yet.
 
 ### The gate has arms, and each arm needs the hardware that makes it mean something
 

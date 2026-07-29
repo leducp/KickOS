@@ -384,13 +384,25 @@ static bool f411_pin_kernel_owned(uint32_t port, uint32_t pin)
     return false;
 }
 
-// One-shot pin-function config (KOS_SYS_PINMUX_SET). func bits[1:0] are the MODER
-// 2-bit field written verbatim (00=in, 01=out, 10=AF, 11=analog); bits[7:4] are the
-// AF number (AFRL for pin<8, AFRH for pin>=8). Gates the port's AHB1ENR bit (=port)
-// first (an unclocked GPIO register access faults). PUPDR/OSPEEDR stay at reset.
+// Preset an output pin high as part of the same call. Refused with -KOS_EINVAL when the
+// MODER field is not output, so a stray bit cannot pass for a working request.
+constexpr uint32_t PINMUX_OUT_HIGH = 1u << 8;
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET). func layout, three fields:
+//   [1:0] MODER field written verbatim (00=in, 01=out, 10=AF, 11=analog)
+//   [7:4] AF number (AFRL for pin<8, AFRH for pin>=8)
+//   [8]   PINMUX_OUT_HIGH, output-only: drive the pin high (see the ordering note below)
+// Gates the port's AHB1ENR bit (=port) first (an unclocked GPIO register access faults).
+// PUPDR/OSPEEDR stay at reset, so slew and pulls are not reachable through this seam.
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     if (port > 7u or pin > 15u)
+    {
+        return -KOS_EINVAL;
+    }
+    uint32_t const mode = func & 0x3u;
+    bool const preset_high = (func & PINMUX_OUT_HIGH) != 0u;
+    if (preset_high and mode != gpio::MODER_OUTPUT)
     {
         return -KOS_EINVAL;
     }
@@ -399,10 +411,21 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
         return -KOS_EBUSY;
     }
     r32(rcc::AHB1ENR) |= (1u << port); // gate this port's clock (idempotent)
+    // The gate needs an intervening bus transaction before the BSRR store or that store
+    // is dropped and the pin takes the ODR reset level (low) when MODER switches
+    // (mechanism: pit_clock_init in arch/arm/chip/mk64f/chip_mk64f.cc).
+    uint32_t const gate = r32(rcc::AHB1ENR);
+    __asm volatile("" ::"r"(gate) : "memory");
     uintptr_t const base = mmap::GPIOA_BASE + port * mmap::GPIO_STRIDE;
+    // Level BEFORE MODER: a BSRR set on a still-input pin is inert and the MODER switch
+    // then drives high directly. Reversed, the pin asserts the ODR reset level (low) first.
+    if (preset_high)
+    {
+        r32(base + gpio::BSRR) = 1u << pin; // atomic set, no ODR readback
+    }
     uint32_t moder = r32(base + gpio::MODER);
     moder &= ~(0x3u << (pin * 2u));
-    moder |= (func & 0x3u) << (pin * 2u);
+    moder |= mode << (pin * 2u);
     r32(base + gpio::MODER) = moder;
 
     uint32_t const af = (func >> 4u) & 0xFu;
@@ -418,6 +441,19 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     v |= af << shift;
     r32(afr) = v;
     return 0;
+}
+
+// Per-block enable table (KOS_SYS_PERIPH_ENABLE), keyed on the EXACT block base.
+// Clock gate only: no privilege-classification register exists for this bus in this tree.
+// GPIO port clocks are absent here; arch_pinmux_set owns those AHB1ENR bits.
+int arch_periph_enable(uintptr_t base)
+{
+    if (base == mmap::SPI1_BASE)
+    {
+        r32(rcc::APB2ENR) |= rcc::APB2ENR_SPI1EN; // idempotent
+        return 0;
+    }
+    return -KOS_EINVAL;
 }
 
 #if KICKOS_HAVE_MPU

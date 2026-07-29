@@ -7,31 +7,36 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-On `master`. M4.5.2 is merged; nothing is in flight.
+On `master`. M4.5.3 is merged; nothing is in flight.
 
-M4.5.2 **stage 2 of the unprivileged root is COMPLETE**: five boards run root with
-`privileged=false` plus a `CAP_AUTHORITY`, silicon-witnessed across all **four** enforcement
-backends -- `xmc4800-relax` and `f411disco` (PMSAv7), `esp32c6-wroom` (RISC-V PMP),
-`pizero2350` (PMSAv8), `rx72m` (RXv3 MPU). `frdmk64f` waits for stage 3.
+**Stage 3 of the unprivileged root is COMPLETE**: `arch_periph_enable` mediates the clock-ungate
+plus the bus-side unprotect for one register block, keyed on that block's exact base and gated on
+**possession** of a live DEV window, not on an authority bit. Six boards run root with
+`privileged=false` plus a `CAP_AUTHORITY`, silicon-witnessed across all **five** enforcement
+backends -- `xmc4800-relax` and `f411disco` (PMSAv7), `esp32c6-wroom` (PMP), `pizero2350` (PMSAv8),
+`rx72m` (RXv3 MPU), `frdmk64f` (SYSMPU). `frdmk64f` is the first flipped on its **full** service
+list (`k64uart` + `k64dspi`) and writes no MMIO from root; `xmc4800-relax` stays console-only,
+because `xmcssc` needs the USIC `FDR`/`BRG`/`CCR` seam that stage 3 does not cover.
 
 ## What is next (locked order)
 
-1. **4.5.3 -- stage 3**: `arch_periph_enable` (K64F `SIM_SCGC*` + `AIPS0_PACRN`), then flip
-   `frdmk64f`.
-2. **4.5.4 -- stage 4**: `kos_cap_narrow`, and narrow root's authority cap before
-   `kickos_app_main`.
-3. **4.5.5**: MPU region-encoding classes, plus a fleet re-witness pass.
-4. Delete `KICKOS_ROOT_PRIVILEGED` outright.
-5. **M4.6**: consoles / UART.
+1. **4.5.4 -- stage 4**: `kos_cap_narrow`, narrow root's authority cap before
+   `kickos_app_main`, and the authority re-cut (six bits, funded from `CapEntry.obj`;
+   `docs/design-unprivileged-root.md` section 5). One ABI change, not two: the re-cut
+   decides `kos_cap_narrow`'s mask width.
+2. **4.5.5**: MPU region-encoding classes, plus a fleet re-witness pass.
+3. Delete `KICKOS_ROOT_PRIVILEGED` outright.
+4. **M4.6**: consoles / UART.
 
 ## Build posture
 
 The whole fleet including the sim builds `MinSizeRel` (`-Os`, with `-g` re-added in
-`CMakeLists.txt`). It shipped `-O0` until this milestone, roughly 2x the footprint, so
-**every silicon witness taken before it needs re-running** -- the fleet pass under 4.5.5.
+`CMakeLists.txt`). It shipped `-O0` until M4.5.2, roughly 2x the footprint, so **every silicon
+witness taken before it needs re-running** -- the fleet pass under 4.5.5, and not a formality: on
+the K64F `-Os` dropped a PIT clock-gate-race write that `-O0` had masked.
 Two exceptions: the `bluepill-c8-st` and `f302nucleo-st` images were already `-Os` under the
-superseded two-board holding block, `.text` byte-identical. The `f302nucleo` captures are the
-only ones taken on optimised code. `-Os` is a preset default, so it is invisible through
+superseded two-board holding block, `.text` byte-identical. The `f302nucleo` and `frdmk64f` captures
+are the only ones taken on optimised code. `-Os` is a preset default, so it is invisible through
 `find_package(KickOS)`: an out-of-tree consumer picks its own build type, and the floors in
 `reference/porting.md` assume `-Os`.
 
@@ -60,7 +65,7 @@ Three classes, which fix what a board can witness:
 | `esp32c6-wroom` | ESP32-C6 / RV32IMAC | enforcing | RISC-V PMP (NAPOT); FLIPPED |
 | `pizero2350` | RP2350 / M33 | enforcing | PMSAv8; FLIPPED |
 | `rx72m` | RX72M / RXv3 | enforcing | RX MPU; FLIPPED; no CI gate (vendor toolchain) |
-| `frdmk64f` | MK64FN1M0 / M4F | enforcing | SYSMPU; NOT flipped -- its service list writes MMIO from root (stage 3) |
+| `frdmk64f` | MK64FN1M0 / M4F | enforcing | SYSMPU; FLIPPED, the only board flipped on its full service list |
 | `blackpill` | STM32F411 / M4F | enforcing | shares the `stm32f411` backend; witnessed on `f411disco`, not re-run here |
 | `teensy41` | i.MX RT1062 / M7 | enforcing | PMSAv7 + the M7 anti-speculation fix (ERR011573) |
 | `picopi` | RP2040 / M0+ | enforcing | PMSAv6; the M0+ does implement `CONTROL.nPRIV` -- the fleet's only armv6m enforcement proof |
@@ -78,10 +83,15 @@ Three classes, which fix what a board can witness:
 
 ## Open blockers
 
-- **SPI-service silicon halt**: `k64dspi` and `xmcssc` halt right after console-up.
-  Pre-existing, M4.6-era.
+- **A published console makes an app's own diagnostics invisible**: `console_emit` drops every
+  `kos::print` line once the console is `USER_OWNED`, so app output survives only on RTT
+  (`KICKOS_CONSOLE=both`, which no board preset carries). Neither SPI service halts -- `k64dspi`
+  and `xmcssc` are both witnessed doing their work on silicon (`docs/reference/boards.md`); the
+  handover ordering that would restore visibility is a `TODO.md` item, M4.6-era.
 - **The XMC privileged-write seam**: `xmc_spi0_start`'s `FDR`/`BRG`/`CCR` stores are silently
-  dropped for an unprivileged window holder (measured). The seam is designed and unbuilt --
+  dropped for an unprivileged window holder (measured). `arch_periph_enable` covers the
+  clock-gate/bus-protect member of the seam family only, so this one is still unbuilt and
+  `xmc4800-relax` runs console-only under the flip --
   `docs/design-unprivileged-root.md`, *The privileged-write seam family*.
 - **IRQ non-reclaim**: `irq_detach` has exactly one caller, nothing in thread teardown releases
   a binding, and `irq_register` is ungated -- so any thread can squat any line, permanently.

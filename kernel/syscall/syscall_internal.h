@@ -40,6 +40,13 @@ namespace kickos
     // static-data region -- no-MPU chips and the host sim.
     bool user_writable_ok(uintptr_t ptr, size_t len);
 
+    // --- MMIO possession (syscall_mem.cc) --------------------------------------
+    // The current thread holds a live DEV region whose base is exactly `base`. The
+    // whole authorisation for arch_periph_enable; no authority bit gates it. Exact
+    // base, not containment, so a sub-block window cannot reach a whole-block table
+    // entry.
+    bool caller_holds_mmio_block(uintptr_t base);
+
     // The kernel<->user byte-access seam (identity today; one physical space).
     void kaccess_from_user(void* kdst, uintptr_t usrc, size_t n);
     void kaccess_to_user(uintptr_t udst, void const* ksrc, size_t n);

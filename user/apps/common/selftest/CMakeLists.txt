@@ -131,7 +131,11 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_oot_export_mcu.sh"
             "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
             "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
-  set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 120)
+  # Registered with a bare add_test rather than through the wrapper, so it needs the
+  # build fixture named here: without it ctest -j runs cmake --install on the build
+  # dir concurrently with kickos_build and fails about one run in ten.
+  set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 120
+                       FIXTURES_REQUIRED kickos_build)
 endif()
 
 # Boot-ctor-split guard: on an enforced armv7m link (.kickos_app_init_array exists),

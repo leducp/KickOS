@@ -59,9 +59,12 @@ enum kos_syscall_nr
     KOS_SYS_REPLY = 35,       // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
     KOS_SYS_SHUTDOWN = 36,    // (status) -> does not return; -KOS_EPERM if refused
     KOS_SYS_MEM_SELF_GRANT = 37, // (base, size) -> 0, or -KOS_E* (EPERM/EINVAL/ENOMEM)
-    KOS_SYS_REBOOT = 38       // () -> does not return; -KOS_EPERM if refused, -KOS_ENOSYS (no backend)
+    KOS_SYS_REBOOT = 38,      // () -> does not return; -KOS_EPERM if refused, -KOS_ENOSYS (no backend)
                               //   (self-test only: the dispatch arm is compiled out unless
                               //   KICKOS_ENABLE_SELFTEST, so a production image returns -KOS_EINVAL)
+    KOS_SYS_PERIPH_ENABLE = 39 // (base) -> 0, -KOS_EPERM (caller holds no window at that base),
+                               //   -KOS_EINVAL (no table entry), -KOS_ENOSYS (no backend).
+                               //   Gated on possession, not on an authority bit.
 };
 
 // `op` selector for KOS_SYS_GRANT_PROBE (self-test only). Values are a frozen
@@ -151,8 +154,9 @@ enum kos_policy
 // The rights byte is SHARED between the two cap families; which bits mean anything
 // depends on the cap's TYPE. The low three below are the object rights (a semaphore,
 // mutex, endpoint or reply cap); the five KOS_AUTH_* bits are meaningful ONLY on the
-// authority cap at KOS_CAP_AUTHORITY. All eight bits are now spent: a sixth authority
-// has to merge two of these, not add one.
+// authority cap at KOS_CAP_AUTHORITY. Five is a property of this byte, not of the
+// authority set: an authority cap leaves CapEntry.obj unused, so a wider authority
+// word moves there with CapEntry still 8 bytes.
 enum kos_cap_rights
 {
     KOS_CAP_WAIT = 1 << 0,    // sem_wait; endpoint recv
@@ -163,8 +167,12 @@ enum kos_cap_rights
     KOS_AUTH_PINMUX = 1 << 4, // kos_pinmux_set
     KOS_AUTH_CLOCK = 1 << 5,  // kos_cpu_clock_set
     KOS_AUTH_IRQ = 1 << 6,    // kos_irq_attach, kos_irq_unmask
-    KOS_AUTH_DEVICE = 1 << 7  // kos_console_publish, kos_shutdown, future periph enable
+    KOS_AUTH_DEVICE = 1 << 7  // kos_console_publish, kos_shutdown, kos_reboot
 };
+
+// kos_periph_enable carries no authority bit. It is gated on possession of the window
+// it names, because its callers are the drivers: an authority bit would hand every
+// unprivileged driver whatever else that bit covers.
 
 // One entry of a spawn delegation list: hand the child a narrowed copy of the
 // parent cap `source_cap`. Deterministic placement (B1): delegated cap i lands at

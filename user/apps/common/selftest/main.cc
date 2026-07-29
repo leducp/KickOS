@@ -3192,6 +3192,63 @@ namespace
                   and g_auth_badbits == -KOS_EINVAL and g_auth_capsarr == -KOS_EBADF);
     }
 
+    // --- Peripheral enable: possession is the whole gate ------------------------
+    // kos_periph_enable is authorised by holding a live ARCH_MPU_DEV region whose base
+    // is EXACTLY the argument. No authority bit gates it. The possession check runs
+    // before the chip backend, so both arms below stop in kernel code on every target
+    // and never reach silicon.
+    //
+    // Runs in an UNPRIVILEGED child in every posture: a privileged caller bypasses
+    // possession, so from root the gate is unreachable.
+    //
+    // Arm 1 holds no DEV region at all. Arm 2 holds an R|W region whose base matches
+    // the argument exactly and must STILL be refused, which is what pins the
+    // ARCH_MPU_DEV attribute filter rather than the base match alone.
+    //
+    // Both arms discriminate: with the possession check removed the sim answers
+    // -KOS_ENOSYS (weak arch_periph_enable), and a chip with a table answers 0 or
+    // -KOS_EINVAL. None of those is -KOS_EPERM.
+    //
+    // The complementary PASS arm (a holder reaching the backend) needs a DEV grant,
+    // which the sim cannot mint: arch_mpu_region_encodable is fail-closed there. It
+    // belongs to an enforcing board, same constraint as t_dev_window_exclusive.
+    constexpr uintptr_t PE_BASE = 0x40000000u; // peripheral space, never a code/data/stack base
+    volatile long g_pe_unheld = 1; // sentinel: the contract returns 0 or a negative code
+    volatile long g_pe_ram = 1;
+    volatile int g_pe_ram_ran = 0;
+    void periph_enable_worker(void*) // caps: g_done@1 (CH_DONE)
+    {
+        g_pe_unheld = kos_periph_enable(PE_BASE);
+        // Smallest region this backend can describe, so the arena spend is one block
+        // (kos_ram_alloc is a bump allocator with no free).
+        void* p = kos_ram_alloc(1);
+        if (p != nullptr and kos_mem_self_grant(p, 1) == 0)
+        {
+            g_pe_ram = kos_periph_enable(reinterpret_cast<uintptr_t>(p));
+            g_pe_ram_ran = 1;
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void t_periph_enable_unheld()
+    {
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(periph_enable_worker, nullptr, "peW", 10, caps, 1,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                        nullptr, 0, /*authority=*/KOS_AUTH_MEMORY);
+        if (w < 0)
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        TAP_CHECK(g_pe_unheld == -KOS_EPERM);
+        // Arm 2's setup is one smallest-block kos_ram_alloc plus one self-grant in a fresh
+        // thread, and every arena-draining test is registered after this one, so a
+        // non-run is a regression in the arena floor or in self-grant, not a board limit.
+        TAP_CHECK(g_pe_ram_ran == 1);
+        TAP_CHECK(g_pe_ram == -KOS_EPERM);
+    }
+
     // --- Self-grant, and the region budget that bounds it ----------------------
     // Exercises the REFUSAL at the region-budget ceiling: the call must fail LOUDLY
     // (-KOS_ENOMEM), not truncate the region set.
@@ -3386,6 +3443,7 @@ int main(int, char**)
 #endif
     tap::add("writable_global", t_writable_global);      // out-buffer in an app global
     tap::add("authority_cap", t_authority_cap);          // CAP_AUTHORITY: both arms of the gates
+    tap::add("periph_enable_unheld", t_periph_enable_unheld); // possession is the whole periph-enable gate
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     tap::add("irq_thread_ctx", t_irq);

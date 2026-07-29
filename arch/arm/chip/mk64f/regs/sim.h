@@ -19,6 +19,7 @@ namespace kickos::mk64f::reg::sim
 
     constexpr uint32_t SCGC4_UART0 = 1u << 10;
     constexpr uint32_t SCGC5_PORTB = 1u << 10;
+    constexpr uint32_t SCGC6_SPI0 = 1u << 12;
     constexpr uint32_t SCGC6_PIT = 1u << 23;
 
     // SCGC5 per-PORT clock-gate bit: PORTx = bit (9 + port), A=0..E=4.

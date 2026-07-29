@@ -182,9 +182,18 @@ uint32_t kos_cpu_clock_hz(void);
 // driver then keeps its explicit fallback. Cascade-free (no rate-change notify).
 uint32_t kos_periph_clock_hz(uintptr_t base);
 
+// Ungate the clock and drop the bus-side supervisor-protect for the register block at
+// `base`, both derived by the kernel from `base`. Call it as the driver's first act:
+// where the bus gates the block, earlier reads BusFault or return stale values and
+// earlier writes are silently discarded. Authorised by possession, not a capability:
+// the caller must hold a live MMIO grant whose base is exactly `base`. Idempotent.
+// Returns 0, -KOS_EPERM (caller does not hold that window), -KOS_EINVAL (no entry for
+// that base, including bases the chip refuses), or -KOS_ENOSYS (no chip backend).
+int kos_periph_enable(uintptr_t base);
+
 // One-shot init-time pin-function config: point pin `pin` of port `port` at raw
-// chip function code `func` (the PC/PCR encoding, opaque here). Privileged-only.
-// Returns 0, -KOS_EPERM (unprivileged), -KOS_EINVAL (out of range), -KOS_EBUSY
+// chip function code `func` (the PC/PCR encoding, opaque here). Needs AUTH_PINMUX.
+// Returns 0, -KOS_EPERM (no authority), -KOS_EINVAL (out of range), -KOS_EBUSY
 // (kernel-owned pin, e.g. the console/diag-LED), or -KOS_ENOSYS (no chip backend).
 int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 

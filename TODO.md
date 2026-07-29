@@ -43,7 +43,9 @@ master `64410b7` -- rebase before any work in them.
   `KOS_CAP_RESERVED3` therefore **stays free**, which is worth more than bit granularity: spending
   the last well-known index forces the next one to raise `KICKOS_CAP_FIRST_DYNAMIC` and costs a
   dynamic slot on all four 9-handle boards. **LANDED** as `KOS_SYS_REBOOT`; recorded in full in
-  the `kos_reboot` section below and in `docs/design-unprivileged-root.md` section 9.
+  the `kos_reboot` section below and in `docs/design-unprivileged-root.md` section 9. Still holds
+  after the stage-4 authority re-cut, which renames that shared bit `AUTH_SYSTEM` without splitting
+  reboot from shutdown.
 - **`kos_ram_alloc` gets an explicit self-grant**, not an implicit one at alloc: `AUTH_MEMORY`-gated,
   bounded by `KICKOS_MPU_MAX_REGIONS`, failing loud with `-KOS_ENOMEM`. **LANDED** as
   `KOS_SYS_MEM_SELF_GRANT`.
@@ -492,7 +494,8 @@ on frdmk64f+blink, no `.bss`).
 - [x] **Added `CapType::CAP_AUTHORITY`**, seated at `KOS_CAP_AUTHORITY` (index 2, already
       reserved, and now spelled for what it holds) carrying the **five unused bits of
       `CapEntry.rights`**: `AUTH_MEMORY` (ram_alloc + MMIO grant), `AUTH_PINMUX`, `AUTH_CLOCK`,
-      `AUTH_IRQ`, `AUTH_DEVICE` (console publish, shutdown, periph enable). Zero dynamic slots on
+      `AUTH_IRQ`, `AUTH_DEVICE` (console publish, shutdown, and later reboot -- **not** periph
+      enable, which is possession-gated; see stage 3). Zero dynamic slots on
       every board. Poolless, so it resolves by reading the reserved slot and never via
       `cap_resolve_e`; `obj_ref_inc`/`obj_ref_drop`/`obj_close_protocol` each gained an explicit
       no-op arm rather than relying on a `default:` that asserts.
@@ -565,10 +568,17 @@ silently satisfied by a link-time override).
       so under the flip it faults MemManage on the first store (`RCC_AHB1ENR` @ `0x40023830`,
       witnessed). It is a diagnostic app and not on the gate, so it is stage-3 follow-up
       (`arch_periph_enable`), the same treatment `c6blink` and `rxdrv` needed.
-- [ ] **`frdmk64f` is NOT a stage-2 target and waits for stage 3.** Its `k64uart` and `k64dspi`
-      PACR writers (`AIPS0_PACRN` at `0x4000_0064`, `AIPS0_PACRF` at `0x4000_0044`) both fall
-      inside `arch_reserved_blocks`'s AIPS0 entry `[0x4000_0000, 0x4000_1000)`, so no grant can
-      ever reach them and `arch_periph_enable` is the only way in.
+- [x] **`frdmk64f` FLIPPED and witnessed on silicon at `127efb5`, on stage 3 rather than stage 2.**
+      Its `k64uart` and `k64dspi` PACR writers (`AIPS0_PACRN` at `0x4000_0064`, `AIPS0_PACRF` at
+      `0x4000_0044`) both fall inside `arch_reserved_blocks`'s AIPS0 entry
+      `[0x4000_0000, 0x4000_1000)`, so no grant can ever reach them and `arch_periph_enable` was the
+      only way in. **The first board to run its FULL service list under the flip** (console
+      `k64uart` + SPI `k64dspi`), where every other flipped board is console-only or serviceless:
+      `selftest` `1..65` `# all tests passed (2 skipped)`, and `rootfault` denies root's cross-domain
+      write (`SYSMPU ISOLATION FAULT: port=3 addr=0x2001a000 master=0 W EDR=0x80000003`,
+      `CFSR=0x400`, `HFSR=0x40000000`). Skips are `mpu_privileged_guard` (posture) and
+      `mutex_deadlock # SKIP pool too small` (pre-existing, `docs/reference/boards.md`). Root writes
+      no MMIO at all on this board now. Evidence in `docs/reference/boards.md`.
 - [x] **Per-board gate, and what it actually cost.** Both halves met on `xmc4800-relax` silicon
       under PMSAv7. But the gate as worded is not reachable by the *unmodified* suite, and the
       reasons are worth keeping:
@@ -598,13 +608,87 @@ silently satisfied by a link-time override).
       fails loudly with `-KOS_ENOMEM` rather than silently not enforcing -- proved both ways in
       `t_selfgrant` (returning `-KOS_EPERM` fails the test; accepting silently faults the worker).
 
-**Stage 3 -- the blocked bring-up bodies.**
-- [ ] **Add `arch_periph_enable(base)`**, weak `-KOS_ENOSYS`, gated `AUTH_DEVICE`, covering "ungate
-      the clock and drop supervisor-protect for the block at this base". Implement for K64F
-      (`SIM_SCGC*` + `AIPS0_PACRN`). Retires `k64uart` and half of `k64dspi`. The ESP32-C6 needs
-      nothing here: its APM open is a boot-time chip act in `arch_init`, not a per-block request.
+**Stage 3 -- the blocked bring-up bodies. COMPLETE** (2026-07-29, `127efb5`).
+- [x] **Added `arch_periph_enable(uintptr_t base)`**, weak `-KOS_ENOSYS` in
+      `kernel/time/clock_select.cc`, covering "ungate the clock and drop the bus-side
+      supervisor-protect for the block at this base". Syscall `KOS_SYS_PERIPH_ENABLE = 39`, wrapper
+      `kos_periph_enable`. Backends: mk64f (UART0, DSPI0) and stm32f411 (SPI1, clock gate only --
+      that bus exposes no privilege-classification register in this tree). ESP32-C6 and RX72M
+      deliberately have none: their windows need nothing from the seam, the C6's APM open being a
+      boot-time act in `arch_init`. Each backend is a hand-curated table keyed on the **exact** block
+      base, never a range, and both writes are DERIVED from `base`, so no caller can name a shared
+      block's register or the bit inside it. Retires `k64uart` and `k64dspi`'s root MMIO entirely, so
+      `kickos_services_frdmk64f` came off `KICKOS_SERVICE_LIST_ROOT_MMIO`.
+- [x] **NOT gated `AUTH_DEVICE`, which is what this checklist previously said. The gate is
+      possession.** `caller_holds_mmio_block(base)` (`kernel/syscall/syscall_mem.cc`) requires a live
+      `ARCH_MPU_DEV` region whose base matches exactly; privileged callers bypass, as in
+      `cap_check_authority`. Deliberately not `user_range_ok` (that funnel asks whether the kernel
+      may dereference a user pointer, and passes trivially at `len == 0`); exact base rather than
+      containment is what stops a sub-block window reaching a whole-block entry. `AUTH_DEVICE` would
+      have handed `kos_shutdown` and reboot-to-bootloader to every unprivileged bus driver in the
+      fleet, since the seam's callers ARE the drivers, and every other existing bit carries
+      collateral just as unwanted with no free bits left. Possession is sufficient because a granted
+      window already means "may enable, configure and disable this device" wherever the silicon
+      permits it directly -- the XMC `KSCFG` case is the precedent, and the seam brings K64F and F411
+      to that parity. Rationale in full: `docs/design-unprivileged-root.md` sections 7 and 9.
+- [x] **The call site is the DRIVER, not root**, which is what makes the seam's bound a fact rather
+      than an aspiration: root holds no DEV region on any board (`ARCH_MPU_DEV` is attached only in
+      `domain_for`, reached with MMIO only from `thread_spawn`, and `KOS_SYS_MEM_SELF_GRANT`
+      hardcodes `R|W`), so a holder of one window can only ever ask the kernel to configure that
+      window's device.
+- [x] **No PIT entry on K64F, refused by design.** One AIPS `PACR` slot covers a whole 4 KiB block,
+      so opening slot 55 for the legitimately granted PIT ch2 window (`0x40037120`) would also expose
+      the chained ch0+ch1 pair carrying `arch_clock_now` -- the registers `arch_reserved_blocks`
+      protects by address (`{PIT_BASE, 0x120}`). That base answers `-KOS_EINVAL`. An entry exists
+      only where the bus gate's granularity is CONTAINED by the block the window covers. The
+      system-wide reach of an opened slot is the already-documented hardware ceiling
+      (`docs/book/peripheral-isolation-and-the-hardware-ceiling.md`,
+      `docs/reference/architecture.md`, `docs/design-m3-console-handover-stageii.md`), not new.
+- [x] **New `arch/arm/chip/mk64f/regs/aips.h`** gives the three formerly open-coded slot -> (`PACR`
+      register, `SP` bit) derivations one home, with `static_assert`s pinning slots 106 (UART0), 44
+      (DSPI0) and 55 (PIT, derivation coverage only, no entry). It caught that `PACR` offsets are
+      **not** contiguous: groups 0..3 at `0x20`..`0x2C`, `0x30`..`0x3C` reserved, groups 4..15 at
+      `0x40`..`0x6C`, so a naive `0x20 + group * 4` names the wrong register for slot 44.
+- [x] **`stm32f411` pinmux gained an encoding field.** `func` bit 8 `PINMUX_OUT_HIGH` presets an
+      output high; a non-output mode carrying the bit is refused `-KOS_EINVAL`. `BSRR` is written
+      BEFORE `MODER` (proven in disassembly: `str [r3,#24]` precedes `str [r3,#0]`), because a `BSRR`
+      set on a still-input pin is inert while the reverse order asserts the `ODR` reset level first.
+      `f411spi` needs it to hold the onboard gyro's `PE3` chip-select deasserted so the gyro's SDO
+      stays tri-stated.
+- [x] **Gate: selftest `periph_enable_unheld`** (`ok 47`), the negative arm. The POSITIVE arm has no
+      in-env carrier at all -- the host sim can never hold a DEV region, `arch_mpu_region_encodable`
+      returning false unconditionally (`arch/sim/sim.cc`) -- so it is witnessed by driver bring-up on
+      silicon instead, and by the two-arm possession probes in `c6blink` (ESP32-C6, PMP NAPOT) and
+      `rxdrv` (RX72M, RXv3), each negative in `main` and positive as the driver's first act, both
+      printing rc and want. Those two are **not yet run on silicon**.
 
 **Stage 4 -- the app story.**
+- [ ] **Re-cut the authority set into SIX bits, and delete `AUTH_DEVICE` and `AUTH_CLOCK` as names.**
+      `AUTH_DEVICE` in its current shape ("console publish, shutdown, reboot") holds together only
+      while root does all three: once root is only a spawner, `console_publish` and `shutdown` go to
+      DIFFERENT threads and no single bit can carry both. The cut: `AUTH_MEMORY` (`ram_alloc`, MMIO
+      grant, `mem_self_grant`; root the spawner), `AUTH_PINMUX` (`pinmux_set`; root's board pin map
+      plus apps muxing their own pins), `AUTH_PSTATE` (`cpu_clock_set`; a governor service and nobody
+      else), `AUTH_IRQ` (drivers with lines), `AUTH_SYSTEM` (`shutdown`, `reboot`; root/init),
+      `AUTH_CONSOLE` (`console_publish`; the console driver). `cpu_clock_set` keeps its own bit
+      specifically because a CPU governor needs clock-rate authority and nothing else -- folding it
+      with shutdown would hand the governor the power to end the system. `AUTH_CONSOLE` must be a bit
+      and **cannot** be possession-gated the way `arch_periph_enable` is: `KOS_SYS_ENDPOINT_CREATE` is
+      completely ungated, so any thread can mint the endpoint it would publish, and
+      `cap_console_publish` has no owner check either (filed below under the M4.5.3 findings). Full
+      reasoning in `docs/design-unprivileged-root.md` section 5.
+- [ ] **Fund the sixth bit by moving the authority word out of `CapEntry.rights` into the poolless
+      `obj` field**, which `CAP_AUTHORITY` does not use. `CapEntry` stays 8 bytes. Verified safe
+      rather than assumed: 15 `obj` reads in the tree, 14 dominated by an explicit type test or a
+      `switch (type)` arm; `obj` is never a sentinel, never range-checked, never `memcpy`'d, never
+      exposed to userspace, never traced; all three type-switched helpers already have written-out
+      `CAP_AUTHORITY` arms. **One site needs a type guard FIRST**:
+      `kernel/syscall/syscall_thread.cc:254` (`deleg_obj[ci] = se->obj`) copies `obj` with no type
+      test, filtered only by `CAP_TRANSFER` in `rights` -- so that byte is today the only thing
+      preventing an authority cap being duplicated bits-and-all into a child table. The three places
+      that stated the retired ceiling are **all corrected** -- `kernel/include/kickos/cap.h`,
+      `docs/design-unprivileged-root.md` section 5, and `user/include/kickos/sys/abi.h`, which now
+      says five is a property of the rights byte rather than of the authority set.
 - [ ] **Add `kos_cap_narrow(cap, mask)`** (rights &= mask, never widen, ~10 lines) and drop or
       narrow the authority cap in `kickos_default_init_run` (`system/init/default_init_entry.cc`)
       before `kickos_app_main`. **This is the actual app-facing win** -- without it an unprivileged
@@ -622,13 +706,15 @@ Carried over from the old plan, untouched by this design:
 - [ ] **Move app bring-up into the service lists**, so an app is started the way a driver is.
 
 Blockers and limits:
-- **Three service bring-up bodies poke MMIO directly from root** --
-  `system/driver/mk64f/k64uart/k64uart.cc:191-193` (AIPS PACR),
-  `system/driver/mk64f/k64dspi/k64dspi.cc:298-327` (clock gates, pin mux, GPIO, DSPI config),
-  `system/driver/xmc4800/xmcssc/xmcssc.cc:281-324` (USIC kernel clock, baud, protocol) --
-  and `xmc4800-relax`, the enforcement flagship, links one. Stage 3 generalizes part of this. It
-  does **not** cover the XMC, which needs USIC-specific FDR/BRG/CCR programming rather than
-  "ungate a clock, drop supervisor-protect". **The XMC blocker is hardware, measured on silicon
+- **One service bring-up body still pokes MMIO directly from root** --
+  `system/driver/xmc4800/xmcssc/xmcssc.cc:281-324` (USIC kernel clock, baud, protocol) -- on
+  `xmc4800-relax`, the enforcement flagship. The two K64F bodies are **retired by stage 3**:
+  `system/driver/mk64f/k64uart/k64uart.cc` (AIPS PACR) and
+  `system/driver/mk64f/k64dspi/k64dspi.cc` (clock gates, pin mux, GPIO, DSPI config) each call
+  `arch_periph_enable` from the driver thread that holds the window. Stage 3 does **not** cover the
+  XMC, which needs USIC-specific FDR/BRG/CCR programming rather than
+  "ungate a clock, drop supervisor-protect", so `xmc4800-relax` stays console-only under the flip.
+  **The XMC blocker is hardware, measured on silicon
   2026-07-28** by `user/apps/xmc4800-relax/pvprobe`: an unprivileged thread holding the MPU grant
   for the U0C1 window (`0x4003_0200`) has its writes to FDR/BRG/CCR **silently discarded** (no
   fault, read-back unchanged), while `SCTR` (`U,PV`) in the same window in the same run lands
@@ -680,8 +766,10 @@ Blockers and limits:
 - **`idle` stays privileged and holds no capabilities** -- it runs no app code, and RXv3 `WAIT` is a
   privileged instruction while RISC-V U-mode `WFI` is optional per spec.
 - **The reserved cap index range is full after this** (0 stdout, 1 clock, 2 authority, 3 spare --
-  reboot folded into `AUTH_DEVICE`, so index 3 stays free), and the five rights bits are the entire
-  budget for the life of the type.
+  reboot shares shutdown's bit, so index 3 stays free). **The five-bit authority ceiling is
+  retired**: it was an artifact of `CapEntry.rights` being one byte, and a `CAP_AUTHORITY` entry
+  leaves the poolless `obj` field unused, so a wider authority word moves there and `CapEntry` stays
+  8 bytes. See the six-bit re-cut under stage 4.
 - **Delegation packing collides with reserved names** -- spawn delegation puts cap *i* at child
   index *i+1*, so a delegated authority cap lands at index 1 (`KOS_CAP_CLOCK`). Blocks the narrowed
   hand-off to a driver manager until the deferred explicit-destination-index work lands.
@@ -841,8 +929,10 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
       swap, and it matters out of proportion to its size: these two are the probes the
       unprivileged-root design's evidence rests on, so a silent probe reads as a probe that found
       nothing.
-- [ ] **`f411spi` cannot run under the flip: its bring-up shim writes MMIO from `main`. Owner:
-      stage 3 (`arch_periph_enable`).** Found 2026-07-29 while flipping `f411disco`, and witnessed
+- [~] **`f411spi` cannot run under the flip: its bring-up shim writes MMIO from `main`. ADDRESSED by
+      stage 3, silicon-unwitnessed.** The `stm32f411` `arch_periph_enable` backend covers the SPI1
+      clock gate and the pinmux encoding covers `PE3`, but `frdmk64f` was the only board on the bench
+      for stage 3, so the `f411disco` run is bench debt. Found 2026-07-29 while flipping `f411disco`, and witnessed
       rather than inferred -- the app faults MemManage on the first store of `main`
       (`RCC_AHB1ENR` @ `0x40023830`, `CFSR=0x82`, `MMFAR=0x40023830`), before it ever spawns the
       unprivileged driver that holds the 32 B SPI1 grant. Same shape as `c6blink` and `rxdrv` before
@@ -866,13 +956,34 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
       precisely the opposite of what a user-API suite has to exercise. Sharp consequence of that
       preset: with the heap carve at zero the `-st` gate on that board no longer exercises the heap
       at all, so a heap regression on a 16 KiB part would go unseen.
+- [ ] **No CI job exercises an unprivileged root, on any target.** `KICKOS_ROOT_PRIVILEGED` appears
+      zero times in `.github/workflows/ci.yml`: every gate builds and runs the privileged posture.
+      Six boards are witnessed flipped by hand on silicon, so the posture M4.5 exists to deliver has
+      no automated coverage at all, which is the same unexercised-arm shape as the
+      `kernel_ctor_placement` vacuity trap. Cheapest real arm is **qemu with `KICKOS_HAVE_MPU=1`
+      plus the flip** -- a genuine armv7m `npriv` boundary and a real MPU, and that configuration
+      already builds and its gate runs green. A flipped **sim** arm is cheaper still and the
+      `EXPECT_SKIPS` plumbing already handles it (flipped sim runs 59/60, skipping exactly
+      `mpu_privileged_guard`), but the sim discards the privilege flag, so it witnesses the
+      authority logic and region composition, never a CPU-mode boundary. Owned by 4.5.5, whose
+      re-witness pass is the natural home.
+      Deliberately NOT done instead: flipping `frdmk64f`'s preset default. It would break the locked
+      order (the knob's deletion is step 4, after the 4.5.5 re-witness), give the fleet a third
+      posture alongside XMC's console-only special case, and silently break `k64drv`, which cannot
+      run flipped by design. It would also change only what is BUILT, not what is TESTED, since no
+      CI job runs frdmk64f with MPU non-vacuously.
+
 - [ ] **CI builds the enforcement gates unoptimised -- NEEDS A DECISION.** The "ARM PMSA enforcement
       run gates (v7 + v8)" step (`.github/workflows/ci.yml:171`) passes `-DCMAKE_BUILD_TYPE=Debug`
       explicitly (`:176`), which overrides the fleet's `MinSizeRel` default. So the four gates
       covering the enforcement posture -- the posture that matters most -- still compile `-O0`, on
       the one job that runs `qemu`, `qemu-m33`, `qemu-m7` and `qemu-m3` under `KICKOS_HAVE_MPU=1`.
       Filed as a decision rather than a defect: dropping the pin makes those gates test what ships,
-      and it also changes what has been gated until now.
+      and it also changes what has been gated until now. **The same pin is why CI cannot catch the
+      `-Os` gate-then-configure bug class.** `build-boards-mpu` does build `MinSizeRel`, but its only
+      ctest, `kernel_ctor_placement`, is documented as passing vacuously for that matrix. So no CI job
+      exercises `KICKOS_HAVE_MPU=1` at `MinSizeRel` with real driver code paths -- exactly the
+      configuration the K64F PIT lost write was found in.
 - [ ] **`sam3x8e` over-alignment: PARKED on hardware absence, not open.** The chip HAS an MPU on
       silicon (Atmel SAM3X/SAM3A datasheet, Cortex-M3 revision 2.0) but KickOS ships no `mpu.cmake`
       backend for it, so it builds `KICKOS_HAVE_MPU=0` while still inheriting ARM's weak
@@ -934,6 +1045,123 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
       `arch/arm/chip/imxrt1062/chip_imxrt1062.cc:49` forward-declares `kpanic` inside a
       `KICKOS_ENABLE_SELFTEST` block, only because that chip's `arch_reboot` is a `bkpt` that must
       not resume -- a fundamental function's declaration behind a test flag.
+
+## Found during the M4.5.3 stage-3 work (2026-07-29)
+
+- [ ] **The console driver cannot report its own bring-up failure, by any available means.**
+      `k64uart_console_start` publishes the console before spawning the driver, so the driver runs
+      with `ConsoleState::USER_OWNED`, where `console_emit` is `return; // DROP`
+      (`kernel/init/console.cc:133`) and RTT is compiled out on this board. `kickos::emit` is worse
+      than dropped: the driver's stdout cap index 0 IS the endpoint it was spawned to serve, and
+      `endpoint_send` parks on `wq_block(e->send_waiters)` when no receiver is waiting
+      (`kernel/syscall/syscall_ipc.cc:137`), with no `-KOS_EPIPE` escape because `recv_holders` is
+      >= 1 for its own WAIT cap. So the driver would park forever instead of exiting. Measured on
+      the code, not inferred. `spawn_unprivileged` also cannot observe a failure inside the child's
+      first instructions, so root reports bring-up success either way: the board goes dark with no
+      evidence. This is why `kos_periph_enable`'s failure arm there is a comment rather than a
+      report. The remedy is ordering, not a call-site swap -- publish only once the driver has
+      proved reachability, or have root verify before publishing -- so it is a handover redesign
+      owned by M4.6. Note the same drop applies to that driver's success line and to root's own
+      `k64dspi_spi_start` error prints.
+      **This item is what the standing "SPI-service silicon halt" blocker actually was, and the halt
+      itself is refuted on both boards** (2026-07-29, `aa084a9`, captures under
+      `.session/logs/m453-spihalt/`). Neither service halts: `k64dspi` reads the LAN9252 `BYTE_TEST`
+      signature `0x87654321` on attempt 1 against a fitted EasyCAT shield, and `xmcssc` passes
+      config, single-byte, multi-byte, null-tx and transact. The plain no-RTT builds corroborate it
+      off the halted target -- DSPI0 `SR=0xC2020303` with TCF set, `U0C1_CCR=0x0000C001` (MODE=SSC),
+      both cores idling in `arch_idle_wait`, neither faulted. Per-board detail is in
+      `docs/reference/boards.md`. The original record is best explained as a mis-summary of
+      VCOM-only captures: the paired RTT captures of those same 2026-07-25 runs already show both
+      services passing, and the register state above shows the work completing in an image carrying
+      no RTT at all. What remains open is therefore visibility and ordering, not a halt.
+
+- [ ] **Consider a diagnosis preset carrying `KICKOS_CONSOLE=both`** -- no board preset sets it,
+      `-st` included (only `host` and `qemu-telem` do), so a bench run has exactly one transport and
+      a published console takes that one away from the app. That is how the phantom SPI halt above
+      survived, and any future "the service goes quiet" diagnosis over VCOM alone will re-derive the
+      same false conclusion. RTT is generic in the kernel, so `both` builds anywhere, but it is only
+      readable where a probe can read target RAM -- the J-Link boards (`xmc4800-relax`, `frdmk64f`)
+      are where it pays. Against it: flash, and the two 64 KiB boards have the least of it. The
+      bench rule that holds regardless is recorded under *Per-board caveats* in
+      `docs/reference/boards.md`.
+
+- [ ] **Audit the whole fleet for the `-Os` clock-gate-then-configure lost write.** On K64F a
+      `PIT_MCR = 0` store raced the `SIM_SCGC6` gate write and was **dropped** at `-Os`, fixed by a
+      consumed read-back of the gate register (`127efb5`). The same lost-write pattern plausibly
+      affects other chips' gate-then-configure sequences now the whole fleet builds `MinSizeRel`.
+      Record while auditing that `(void)r32(...)` does **not** serve as a read-back and that
+      `-Werror` correctly rejects it: a `(void)` cast of a volatile lvalue performs no access.
+      Ranked inventory from a review, unguarded first: **`mk64f arch_pinmux_set`** -- gates a PORT
+      then writes that PORT's `PCR` in the same function, write-once with no self-heal, and PORTD's
+      `SCGC5` bit was never set on this chip before this milestone; **guarded since `aa084a9`**, and
+      the A/B below measures the store landing either way, so treat it as closed rather than as the
+      inventory's leading example; **`xmc4800 ccu4_clock_init`** --
+      `CGATCLR0`/`PRCLR0` then `GIDLC`, write-once, and `GIDLC` is the monotonic clock's slice
+      enable; **`xmc4800 usic.cc kernel_clock_enable`** -- it has the write/read-back/barrier idiom,
+      but placed AFTER the first `KSCFG` write and protecting a different documented pipeline effect,
+      so the first write into the newly ungated block is itself unprotected; **`imxrt1062
+      gpt_clock_init`** -- `CCGR1` then `GPT1_CR`, partially self-healing, but its `SWR`
+      software-reset step could silently no-op; the **STM32 family**
+      `tim2_clock_init`/`usart2_init`/`arch_diag_led_init`/`arch_pinmux_set`; **`sam3x8e`** (unit
+      retired); **`esp32c6 arch_diag_led_init`** (diag only, and that same file already uses an
+      explicit `fence` for its `INTMTX` writes). Two are **SAFE for a reason, not by luck**:
+      `rp2040`/`rp2350` `unreset()` polls `RESET_DONE`, a real hardware completion flag and a
+      stronger pattern than a read-back; `rx72m` `MSTPCR` has substantial intervening work and uses
+      the read-back idiom where its UM requires it. **Second hazard variant, unflagged so far:** a
+      read-modify-write on a just-gated block can write back a **corrupted** register if the read
+      returns stale data -- worse than a dropped store, which at least leaves the reset value.
+      `usart2_init` and `arch_diag_led_init` do `MODER` RMWs. **The `k64dspi`/`xmcssc` dropped-mux
+      lead is REFUTED -- do not re-run it.** The hypothesis was that a dropped `PCR` write on PTD1
+      (SCK) left the pin at its reset mux while the service still reported "up", since nothing checks
+      pin state. Measured 2026-07-29 as an A/B one commit wide across `aa084a9`'s read-back: the four
+      pin-map rows read their programmed mux **in both arms** -- `PORTD_PCR1`/`PCR2`/`PCR3 = 0x200`
+      (ALT2), `PORTC_PCR4 = 0x100` (ALT1) -- and `k64dspi` completes its LAN9252 `BYTE_TEST` round
+      trip in both. So the naked store here is not being dropped in practice. **The barrier stays**
+      and is not credited with fixing this: it closes a measured hazard for 6 bytes of flash, and the
+      window it closes is the tightest instance of the class in the tree -- the disassembly shows
+      exactly 1 instruction and 0 intervening bus transactions between the `SCGC5` gate store and the
+      `PCR` store, tighter than the PIT failure that proved the class. **The rest of the inventory
+      above is untouched** -- those sites are still unaudited; only this one hypothesis died. The
+      halt it was chasing does not exist either (see the console-visibility item above).
+- [ ] **`k64drv` cannot run under the flip, and is refused BY DESIGN rather than pending a seam.**
+      Its PIT window is legitimately granted, but the AIPS `PACR` slot that would have to open for it
+      (slot 55) spans the whole 4 KiB block, including the chained ch0+ch1 pair that carries
+      `arch_clock_now`, so there is no table entry and `arch_periph_enable` answers `-KOS_EINVAL`.
+      This is the opposite case from `f411spi`, which a seam did fix. `k64drv` is a diagnostic app
+      (`KICKOS_ENABLE_SELFTEST` only, no CTest gate), so nothing goes red; decide whether it is
+      retired, reworked onto a block whose slot is containable, or kept as a privileged-root
+      diagnostic.
+- [ ] **`f411spi` lost its high-speed slew configuration on `PA5`/`PA6`/`PA7`**, because the pinmux
+      encoding field reaches `MODER`/`AFR`/`BSRR` but not `OSPEEDR` or `PUPDR`, so those pins run at
+      the reset-default low-speed slew. `BR=/64` is ~1.3 MHz (84 MHz APB2 / 64, arithmetic from the
+      tree); that the default slew carries that rate is **engineering judgement, pending a DS9716
+      check** -- no line in this tree supports it, unlike the other electrical claims here. Worth
+      reopening if a faster `BR` is ever wanted on that bus, which is what would need `OSPEEDR` back
+      -- via the encoding, not a root MMIO write.
+- [ ] **`cap_console_publish` has no owner check and no once-only guard.** It drops the kernel's
+      existing stdout ref and re-points `g_stdout_target` unconditionally, so any caller that clears
+      the authority gate silently steals a live console -- and `KOS_SYS_ENDPOINT_CREATE` being
+      completely ungated means any thread can mint the endpoint to publish. Today `AUTH_DEVICE` is the
+      sole thing preventing it, which is why the guard is wanted independently of the stage-4 re-cut
+      that gives the call its own `AUTH_CONSOLE` bit.
+- [ ] **The CPU/peripheral clock coupling is over-generalised, and the veto should be a notification.
+      Owner: M4.6**, and a CPU governor depends on it. `cpu_clock_set` refuses outright while a
+      userspace driver owns the console (`kernel/time/clock_select.cc`), because the kernel cannot
+      re-derive a baud it no longer owns. That generalises from a biased sample: exactly **two** chips
+      implement `arch_periph_clock_hz` and both are coupled (`chip_xmc4800.cc` fPERIPH = fCPU/2;
+      `chip_mk64f.cc` `SystemCoreClock` or /BUS_DIV). A chip with an independent peripheral root has
+      no backend at all, so the decoupled case has never had to be stated, and the assumption is baked
+      into the seam's own contract wording ("retune the core/bus clock") -- on a chip with a dedicated
+      CPU PLL there is nothing to refuse. Make the coupling a question asked of the chip, and notify
+      affected services instead of vetoing. The console is not the only one: drivers size their
+      divisors off `kos_periph_clock_hz` too.
+- [ ] **The possession gate has no test distinguishing exact-base from containment.**
+      `caller_holds_mmio_block` matches `r.base == base` exactly. Widening it to a containment test
+      would pass both mutations `periph_enable_unheld` was checked against, so that regression would
+      ship silently. Untestable in-env: the sim's `arch_mpu_region_encodable` is unconditionally
+      false, so no DEV region can exist there. The only route is a hosted unit test that fabricates a
+      `Thread` plus an `arch_mpu_region` array and calls the predicate directly, and no such harness
+      exists.
 
 ## Needs hardware (bench time, not code)
 

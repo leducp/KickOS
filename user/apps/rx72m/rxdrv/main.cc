@@ -105,6 +105,24 @@ namespace
         uintptr_t const podr = win + PODR_OFFSET + PORT8;
         uintptr_t const pidr = win + PIDR_OFFSET + PORT8;
 
+        // Possession probe, positive arm. This thread holds `win` as a live ARCH_MPU_DEV
+        // region whose base is EXACTLY `win`, so caller_holds_mmio_block passes and the
+        // call reaches arch_periph_enable. No rx72m backend defines that symbol, so the
+        // weak default (kernel/time/clock_select.cc) answers -KOS_ENOSYS, which means the
+        // kernel touched no register: the window state below is untouched either way.
+        // First act, so the capture shows it ahead of any MMIO.
+        int const pe = kos_periph_enable(win);
+        int const pe_want = -KOS_ENOSYS;
+        char const* pe_verdict = "FAIL";
+        if (pe == pe_want)
+        {
+            pe_verdict = "PASS";
+        }
+        char pe_msg[64];
+        ksnprintf(pe_msg, sizeof(pe_msg), "[rxdrv] %s periph_enable holder rc %d (want %d)\n",
+                  pe_verdict, pe, pe_want);
+        kos::print(pe_msg);
+
         // Direction, in-window: the pin is already muxed to general I/O, so this is the
         // driver owning a pin it was granted, not an escalation. Set before the first
         // drive, and drive high (LED off) first so the pin does not glitch on.
@@ -171,6 +189,28 @@ namespace
 
 int main(int, char**)
 {
+    // Possession probe from root. The call runs in both postures and what it exercises
+    // follows the posture, not the other way round: unprivileged root holds no
+    // ARCH_MPU_DEV region, so this is the REFUSAL contract (caller_holds_mmio_block
+    // refuses, the chip backend is never consulted); privileged root BYPASSES the
+    // possession gate and this instead shows that bypass reaching the backend. Both codes
+    // prove the kernel wrote nothing, so it runs safely before the mux.
+#if KICKOS_ROOT_PRIVILEGED
+    int const pe_want = -KOS_ENOSYS;
+#else
+    int const pe_want = -KOS_EPERM;
+#endif
+    int const pe = kos_periph_enable(PORT_WINDOW_BASE);
+    char const* pe_verdict = "FAIL";
+    if (pe == pe_want)
+    {
+        pe_verdict = "PASS";
+    }
+    char pe_msg[64];
+    ksnprintf(pe_msg, sizeof(pe_msg), "[rxdrv] %s periph_enable root rc %d (want %d)\n",
+              pe_verdict, pe, pe_want);
+    kos::print(pe_msg);
+
     // P80 to general I/O, both mux stages in one mediated call: PmnPFS PSEL=000000b
     // and PORT8.PMR bit 0 clear (UM sec.23.4.1 steps 1-6, PWPR unlock included). No
     // raw MMIO is left here, so this runs identically with root privileged or not.

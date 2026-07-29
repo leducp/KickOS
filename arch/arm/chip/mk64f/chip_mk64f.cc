@@ -29,6 +29,7 @@
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"
 #include "irq.h"
+#include "regs/aips.h"
 #include "regs/gpio.h"
 #include "regs/mcg.h"
 #include "regs/osc.h"
@@ -134,6 +135,13 @@ namespace
         // clock-gated out of reset and an ungated AIPS read BusFaults; ktime/clock
         // reads only start after arch_init calls this.
         r32(reg::sim::SCGC6) |= reg::sim::SCGC6_PIT; // clock the PIT module
+        // The gate opens some bus cycles after the SCGC6 store issues, and a PIT store
+        // that beats it is dropped. Read SCGC6 back so the write commits first. Without
+        // this the MCR write below is lost at -Os, MCR keeps its MDIS=1 reset value, and
+        // the counter never runs while the later LDVAL/TCTRL writes still land. A
+        // (void) cast will not do: it performs no access on a volatile lvalue.
+        uint32_t const gate = r32(reg::sim::SCGC6);
+        __asm volatile("" ::"r"(gate) : "memory");
         r32(reg::pit::MCR) = 0;                      // MDIS=0 (enable), FRZ=0
         // Free-running: both channels reload from all-ones; ch1 (MSW) decrements
         // when ch0 (LSW) rolls under. Program reloads, chain ch1 to ch0, then
@@ -483,6 +491,43 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     return 0;
 }
 
+// Peripheral-enable table (arch.h): ungate the block's SIM clock, clear its AIPS0
+// Supervisor-Protect bit. Exact-base match, never a range; the SIM bit and the PACR
+// register + SP bit are both derived from `base`.
+//
+// No PIT entry: PACR slot 55 covers the whole 4 KB block (RM 4.5.2 + 20.2.3), so
+// clearing SP for a granted ch2 window (0x4003_7120) would expose the chained ch0+ch1
+// pair arch_clock_now uses (RM ch.44), which arch_reserved_blocks protects by address.
+// pit_clock_init already gates SCGC6_PIT at boot.
+int arch_periph_enable(uintptr_t base)
+{
+    uint32_t scgc_bit;
+    uintptr_t scgc;
+    if (base == mmap::UART0_BASE)
+    {
+        scgc = reg::sim::SCGC4;
+        scgc_bit = reg::sim::SCGC4_UART0; // RM 12.2.13
+    }
+    else if (base == mmap::DSPI0_BASE)
+    {
+        scgc = reg::sim::SCGC6;
+        scgc_bit = reg::sim::SCGC6_SPI0; // RM 12.2.15
+    }
+    else
+    {
+        return -KOS_EINVAL;
+    }
+    uint32_t const slot = reg::aips::slot_of(base);
+    if (slot == reg::aips::SLOT_NONE)
+    {
+        return -KOS_EINVAL; // outside AIPS0: no PACR field here, refuse rather than derive one
+    }
+    // Clock FIRST: a PACR-open but ungated block BusFaults on the holder's first access.
+    r32(scgc) |= scgc_bit;
+    r32(reg::aips::pacr_of(slot)) &= ~reg::aips::pacr_sp_bit(slot);
+    return 0;
+}
+
 #if KICKOS_HAVE_MPU
 // Shared pending-region stash written by the ARM-common weak arch_mpu_apply (stash-
 // only). K64F does NOT override arch_mpu_apply -- it uses that shared stash and
@@ -719,6 +764,8 @@ void arch_console_reclaim(void)
 void arch_diag_led_init(void)
 {
     r32(reg::sim::SCGC5) |= reg::sim::SCGC5_PORTB; // clock PORTB (idempotent; uart0_init also sets it)
+    // No gate read-back here only because uart0_init already opened PORTB earlier in
+    // arch_init; with that ordering changed the PCR store below would be dropped.
     r32(PORTB_PCR22) = reg::port::PCR_MUX_GPIO;
     r32(GPIOB_PDDR) |= LED_RED_BIT; // PTB22 output
     r32(GPIOB_PSOR) = LED_RED_BIT;  // start OFF: drive high (active-low)
@@ -758,6 +805,11 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
         return -KOS_EBUSY;
     }
     r32(reg::sim::SCGC5) |= (1u << (reg::sim::SCGC5_PORT_SHIFT + port)); // gate this PORT's clock (idempotent)
+    // The gate needs an intervening bus transaction before the PCR store or that store is
+    // dropped (same mechanism as pit_clock_init above). The PCR store is the only write
+    // here, and the PORTC/PORTD pin-map rows are the first traffic through a cold gate.
+    uint32_t const gate = r32(reg::sim::SCGC5);
+    __asm volatile("" ::"r"(gate) : "memory");
     uintptr_t const pcr = mmap::PORTA_BASE + port * mmap::PORT_STRIDE + pin * reg::port::PCR_STRIDE;
     r32(pcr) = func;
     return 0;
