@@ -466,8 +466,12 @@ them:
 | Image | Opt | Heap | `__kickos_ram_start` | Arena |
 | --- | --- | --- | --- | --- |
 | `hello` | `-Os` | 4K | `0x2000_1ec0` | 6,464 |
-| `selftest` ON | `-Os` | 4K | `0x2000_2e00` | 2,560 |
+| `selftest` ON | `-Os` | 4K | `0x2000_2e00` | 2,560 (at `ae7996e`) |
 | `selftest` ON | `-Os` | 2K | `0x2000_2e60` | **4,512** |
+
+The 4K selftest arena moved with the image: 3,008 B at `181540e`, 2,560 B at `ae7996e`, 2,464 B
+once the branch's static growth landed -- which is the value the boot-arena shortfall was derived
+from (`docs/reference/boards.md`). Each figure is right for its ref; the arena is per-image.
 
 At 4K the two boards were **not** the same case -- 20 KiB against 16 KiB of SRAM -- yet landed
 within 128 bytes of each other, because `f302nucleo`'s smaller SRAM was matched by a smaller heap

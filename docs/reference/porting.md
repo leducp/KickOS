@@ -174,6 +174,268 @@ service list; the init DAG is pinmux -> service list -> app.
 
 ---
 
+## Minimum hardware requirement
+
+KickOS has **two** floors and they are far apart. Conflating them is the trap this
+section exists to prevent:
+
+- the **run** floor -- kernel, console and a small app with a couple of threads:
+  **32 KiB program memory + 16 KiB SRAM**, and at 16 KiB only with a heap carve of
+  2 KiB or less (see below -- the carve, not the part, is what usually decides);
+- the **suite** floor -- additionally host the fleet-uniform validation image
+  (`selftest`, the TAP suite every board is witnessed with) with **no** skips:
+  **64 KiB program memory + 32 KiB SRAM**.
+
+Parts sit between them, and several in the fleet do. `f302nucleo` (STM32F302R8,
+64 KiB flash / 16 KiB SRAM) is the worked case: it runs `hello`'s two-thread ping-pong
+on silicon, and it cannot host the suite -- every spawning case fails. So "KickOS runs
+here" and "KickOS is validated here" are different claims about one board.
+
+Between the floors is a band where a **named** reduced suite runs: `microbit` (nRF51,
+16 KiB SRAM) declares the eleven cases it cannot host as an expected-skip list
+(`../../user/apps/common/selftest/CMakeLists.txt:104-113`, rationale at
+`boards.md:222-230`). That is a supported posture, not a degraded one, but it is not
+the fleet-uniform gate.
+
+Every figure below is `MinSizeRel` (`-Os`, `cmake/presets/arm.json:10`) and names its
+board and app. Flash figures are reused from `../design-flash-footprint.md` section 3;
+RAM figures are read out of ELFs linked at this branch tip.
+
+### The program-memory floor
+
+`hello` -- kernel, arch, chip, console, UART driver, libgcc, minimal app -- across the
+fourteen real boards (`../design-flash-footprint.md` s.3):
+
+| | Board | `hello` flash, `-Os` |
+| --- | --- | --- |
+| minimum | `microbit` (nRF51, armv6m) | 18,708 |
+| ARM maximum | `teensy41` (imxrt1062, M7) | 20,692 |
+| RX | `rx72m` | 21,732 |
+| Xtensa | `esp32-wroom` | 22,996 |
+
+So the kernel plus a small app costs **18.7 to 23.0 KiB**, of which the kernel core is
+a flat ~12.5 KiB across boards (`../design-flash-footprint.md` s.4). A 32 KiB part
+holds that with room for an app; `arch/arm/chip/stm32f103/stm32f103.ld:22-23` still
+declares a 32K FLASH region for that class, though no board now reaches it
+(`../design-flash-footprint.md` s.8).
+
+The two non-ARM ISAs cost 1.0 to 2.3 KiB more than the ARM maximum. `esp32c6-wroom`
+looks far larger -- 49,112 bytes in `../design-flash-footprint.md` s.3 -- but that is
+**region accounting, not code**: its linker script carves no flash region, so code and
+data share the 512 KiB RAM and the figure is whole-RAM occupancy. Measured at tip, its
+`hello` code is ordinary: `.text` 22,840 + `.data` 48 + `.init_array` 8 = 22,896, and
+the rest of the 49,072-byte total is `.bss` 9,792 plus a 16,384-byte `.userheap`
+(`arch/riscv/chip/esp32c6/esp32c6.ld:61`). Per-ISA code density accounts for the
+remaining ARM/non-ARM gap; that attribution is **inferred, not measured**.
+
+The suite spans 46,932 to 57,568 bytes across the fleet and both
+`KICKOS_ENABLE_SELFTEST` settings (`../design-flash-footprint.md` s.3), so it needs a
+**64 KiB** part; the tightest shipped configuration keeps 13,820 bytes free.
+
+### The SRAM model
+
+SRAM divides into four spans and a porter must budget all four. Every boundary is a
+linker-script symbol, so the split is readable out of any linked ELF:
+
+    SRAM = static + .userheap + arena + _kernel_stack_size
+
+- **static** -- `.data` plus real `.bss`, dominated by `kickos::detail::g_instance`,
+  the kernel singleton holding every object pool
+  (`kernel/include/kickos/instance.h:65-99`).
+- **`.userheap`** -- `KICKOS_USER_HEAP_SIZE`, carved *below* `__kickos_ram_start`
+  (`arch/arm/chip/stm32f302/stm32f302.ld:105`), so it trades against the arena 1:1.
+  Per-chip default, `-D`-overridable (`arch/CMakeLists.txt:312-314`).
+- **arena** -- `[__kickos_ram_start, __kickos_ram_end)`
+  (`arch/arm/chip/stm32f302/stm32f302.ld:110-111`), the MPU-governed user-RAM pool.
+  **Every thread stack comes from here**, as does every `kos_ram_alloc`.
+- **`_kernel_stack_size`** -- the MSP/boot stack, taken off the top
+  (`arch/arm/chip/stm32f302/stm32f302.ld:18`, 2K there; `__kickos_ram_end = _estack -
+  _kernel_stack_size`).
+
+`arm-none-eabi-size` reports `.userheap` inside its `bss` column (the section is
+`ALLOC`/`NOBITS`), so that column is **not** the static footprint.
+
+The arena must hold, allocated in this order (`kernel/init/kmain.cc:222`, `:224`):
+
+    arena >= align(KICKOS_IDLE_STACK_SIZE)
+           + align(KICKOS_ROOT_STACK_SIZE)
+           + N * align(KICKOS_USER_STACK_SIZE)
+           + whatever the app kos_ram_alloc's
+
+for N **concurrently live** spawned threads taking a kernel-default stack
+(`kernel/syscall/syscall_thread.cc:354`). `align()` is `arch_ram_region_size` /
+`arch_ram_region_align` (`arch/include/kickos/arch/arch.h:234`, `:262`): a power of two
+naturally aligned to itself when `arch_mpu_min_region()` is nonzero (32 on ARM PMSA,
+`arch/arm/common/arch_arm_common.cc:348`), else plain 16-byte granular -- which the
+three no-MPU chips override to (`arch/arm/chip/stm32f302/chip_stm32f302.cc:322`,
+`stm32f103/chip_stm32f103.cc:384`, `nrf51/chip_nrf51.cc:112`). On a pow2 granule the
+natural-alignment run-up can cost as much again as the request, so compute it, do not
+assume the sum of the sizes.
+
+The arena is a pure bump allocator (`arch/common/arch_ram_common.cc:42`) and **never
+takes a block back**. An exited thread's default stack returns to a single-size-class
+free list on the thread pool instead (`kernel/include/kickos/thread.h:203-207`), which
+is why N is a peak-concurrency figure while every `kos_ram_alloc` is permanent.
+
+**Only the idle + root terms are checked at link time** -- `KICKOS_BOOT_ARENA_ASSERT`
+(`arch/common/boot_arena.ld.h:30-32`, emitted from `arch/CMakeLists.txt:321-328`),
+which replays those two allocations including alignment padding. The `N * user stack`
+term is **not** checked. An image whose arena cannot host a single user stack links
+clean and fails per-spawn at runtime with `-KOS_ENOMEM`. That asymmetry is why the two
+floors are indistinguishable from the build system and obvious on silicon.
+
+### Worked arithmetic
+
+Measured at tip, `-Os`. The four spans sum to the part's SRAM exactly; that identity is
+the first check a porter should run.
+
+| Board | SRAM | App | static | `.userheap` | arena | boot stack |
+| --- | --- | --- | --- | --- | --- | --- |
+| `f302nucleo` | 16,384 | `hello` | 3,776 | 2,048 | **8,512** | 2,048 |
+| `f302nucleo` | 16,384 | `selftest` | 7,760 | 2,064 | **4,512** | 2,048 |
+| `bluepill-c8` | 20,480 | `hello` | 3,656 | 8,216 | **6,560** | 2,048 |
+| `bluepill-c8` | 20,480 | `selftest` | 7,640 | 8,200 | **2,592** | 2,048 |
+| `microbit` | 16,384 | `hello` | 2,840 | 8 | **11,488** | 2,048 |
+| `microbit` | 16,384 | `selftest` | 6,824 | 24 | **7,488** | 2,048 |
+| `f411disco` | 131,072 | `hello` | 6,872 | 8,200 | **107,808** | 8,192 |
+| `f411disco` | 131,072 | `selftest` | 10,760 | 8,216 | **103,904** | 8,192 |
+
+Thread capacity that follows, each board with its own stack sizes:
+
+| Board / app | idle | root | user | arena less boot stacks | N by arena | `MAX_THREADS` | N |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `f302nucleo` `hello` | 512 | 2,048 | 2,048 | 5,952 | 2 | 2 | **2** |
+| `f302nucleo` `selftest` | 512 | 2,048 | 2,048 | 1,952 | **0** | 2 | **0** |
+| `bluepill-c8` `hello` | 512 | 2,048 | 2,048 | 4,000 | **1** | 2 | **1** |
+| `bluepill-c8` `selftest` | 512 | 2,048 | 2,048 | 32 | **0** | 2 | **0** |
+| `microbit` `hello` | 512 | 2,048 | 2,048 | 8,928 | 4 | 2 | **2** |
+| `f411disco` `hello` | 2,048 | 4,096 | 4,096 | 101,664 | 24 | 8 | **8** |
+
+Four readings, and they are the point of the section:
+
+- **`f302nucleo` `hello` fits with nothing spare.** It needs exactly two threads
+  (`../../user/apps/common/hello/main.cc:74-75`) and gets exactly two, from both
+  constraints at once. Silicon-witnessed.
+- **`f302nucleo` `selftest` gets zero threads**, and on silicon the suite fails every
+  spawning case (17 ok / 42 not ok / 10 skipped) on `w >= 0` / `drv >= 0` assertions --
+  a negative spawn return, which is what N=0 predicts. Raising `KICKOS_MAX_THREADS` to
+  4 moved the tally not at all: the arena bound, not the pool.
+- **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than
+  `f302nucleo` and hosts *fewer* threads, missing `hello`'s second stack by 96 bytes,
+  because its heap carve is 8K against f302's 2K
+  (`../../boards/bluepill-c8/stm32f103.ld:27`,
+  `arch/arm/chip/stm32f302/stm32f302.ld:28`). `microbit`, the same 16 KiB part class,
+  carves heap 0 (`arch/arm/chip/nrf51/nrf51.ld:29`) and has the roomiest small-board
+  arena in the fleet. **The heap carve, not the part's SRAM, is usually what binds.**
+  (`bluepill-c8` is build-only, so its N=1 is a model prediction, not a witness.)
+- On a comfortable board the constraint **inverts**: `f411disco`'s arena would hold 24
+  user stacks and `KICKOS_MAX_THREADS 8` is what caps it
+  (`../../boards/f411disco/include/kickos/board_config.h:17`). Above roughly 32 KiB of
+  SRAM, provisioning is the knob and the part is not the limit.
+
+### What binds beyond memory
+
+The arena is one of two independent constraints on a spawn; the other is object-pool
+capacity, all of it inside `g_instance`, all `-D`-overridable, and none of it checked
+at link time. The suite's own requirement, for a zero-skip run:
+
+| Knob | Default | Pool | Suite needs | Tight-board value |
+| --- | --- | --- | --- | --- |
+| `KICKOS_MAX_THREADS` | 16 (`config/system.h:42`) | `thread.h:199` | **>= 4** | 2 |
+| `KICKOS_MAX_SEMAPHORES` | 16 (`system.h:24`) | `instance.h:65` | **>= 6** | 4 (f302) |
+| `KICKOS_MAX_HANDLES` | 12 (`system.h:55`) | per-thread cap table | **>= 9** | 9 |
+| `KICKOS_MAX_MUTEXES` | 8 (`system.h:30`) | `instance.h:75` | >= 2 | 4 (c8) |
+| `KICKOS_MAX_ENDPOINTS` | 4 (`system.h:37`) | `instance.h:83` | >= 1 | 4 |
+| `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h:99`) | `instance.h:99` | >= 1 | 4 (f302) |
+| `KICKOS_MAX_DOMAINS` | `MAX_THREADS + 2` (`system.h:61`) | `instance.h:95` | derived | 4 |
+
+Only `KICKOS_MAX_HANDLES >= 9` is asserted in-tree (`system.h:49-53`); the rest are
+measured off the suite's own call sites. The 4-thread peak is
+`call_infoless_revert`, four mutually-dependent workers spawned before any join
+(`../../user/apps/common/selftest/main.cc:2212-2215`), guarded by `pool_can_host(4)` at
+`:2199`. The 6-semaphore peak is `mutex_deadlock`: two permanent plus four live
+(`main.cc:1126-1129`, rationale `:1133-1136`). This is exactly the pool that bit
+`f302nucleo`: at `KICKOS_MAX_THREADS=4` plus `KICKOS_USER_STACK_SIZE=1024`, which buys
+one more case (18 ok / 41 not ok), `sem_destroy` then failed on a semaphore **handle**
+against `KICKOS_MAX_SEMAPHORES 4`. **A spawn failure is not evidence that the thread
+pool is the limit; check the arena first, and expect the next pool behind it.**
+
+`KICKOS_MAX_THREADS` counts **spawnable** threads only. Idle and root run on
+file-static TCBs (`kernel/init/kmain.cc:85-86`) handed to `thread_create` by pointer,
+so they take no pool slot -- which is why `f302nucleo` runs a two-thread app at
+`KICKOS_MAX_THREADS 2`. The knob dominates static RAM: on `f302nucleo` `selftest` at
+`KICKOS_MAX_HANDLES=9` and heap 0, `g_instance` measures 2,448 bytes at 2 threads,
+3,296 at 4, 4,152 at 6 and 5,000 at 8 -- **about 424 bytes per slot**, because each slot
+buys a `Domain` too (`system.h:61`).
+
+The suite also allocates from the arena and never returns it: one 4 KiB page
+(`main.cc:504`) and three 256-byte domain regions (`:1503`, `:2898-2899`), 4,864 bytes
+in all. Each has a real `tap::skip` when the arena cannot spare it, so these cost
+coverage rather than a failure.
+
+### Deriving the suite's SRAM floor
+
+Measured, not assumed. `f302nucleo` `selftest` rebuilt at the tightest provisioning
+that satisfies the table above (`KICKOS_MAX_THREADS=4`, `KICKOS_MAX_SEMAPHORES=6`,
+`KICKOS_MAX_HANDLES=9`, `KICKOS_USER_HEAP_SIZE=0`): `g_instance` 3,336, static 8,648.
+Substituting, with the tight-board stack sizes and the no-MPU 16-byte granule:
+
+    static                       8,648
+    .userheap                        0
+    arena  idle 512 + root 2,048  2,560
+           4 x user stack         8,192
+           kos_ram_alloc          4,864
+    _kernel_stack_size            2,048
+    ----------------------------------
+    SRAM                         26,312
+
+So the suite floor is **26,312 bytes of SRAM -- a 32 KiB part** -- and only with the
+heap surrendered and 2 KiB user stacks. An enforcing chip pays power-of-two natural
+alignment on every block and needs an app-data window besides, so budget more. The same
+part must clear 64 KiB of program memory.
+
+Two independent checks that 32 KiB is the right step. Raising only the thread pool on
+the 16 KiB part fails the **link** at `KICKOS_MAX_THREADS=12`, with
+`KICKOS_BOOT_ARENA_ASSERT` reporting that the arena can no longer hold idle + root. And
+`f411disco`, which hosts the suite 62/62, provisions `KICKOS_MAX_THREADS 8` -- above the
+measured 4-thread peak, so 4 is a floor and not a fitted value.
+
+### Porter's checklist
+
+Given a new part's flash and SRAM, in order:
+
+1. **Program memory.** Below ~24 KiB, stop: the kernel plus a minimal app does not fit.
+   Below 64 KiB the part runs KickOS but cannot host the validation suite -- plan to
+   witness it with `apps/blink` and `hello`, or with a named expected-skip list as
+   `microbit` does.
+2. **Write the board's stack and pool knobs explicitly** in `board_config.h`. There is
+   no useful default on a small part: the `config/system.h` fallbacks are 64 KiB stacks
+   and 16 threads, sized for the host sim.
+3. **Decide the heap carve first, not last.** `KICKOS_USER_HEAP_SIZE` comes out of the
+   arena 1:1. Zero costs the `printf`/`std::cout` guarantee user-facing apps are
+   written against (`../design-flash-footprint.md` s.11 R4); on a 16-20 KiB part it is
+   routinely the difference between one thread and four.
+4. **Read `arch_mpu_min_region()` for your chip** before computing anything. Nonzero
+   makes every arena block power-of-two and naturally aligned, which can double the
+   cost of a stack.
+5. **Link `hello` and read the four spans** out of the ELF -- `_estack`,
+   `_kernel_stack_size`, `_kickos_heap_start`, `__kickos_ram_start`,
+   `__kickos_ram_end`. They must sum to the part's SRAM. This is the measurement, and it
+   costs one build.
+6. **Compute N** = `floor((arena - align(idle) - align(root)) / align(user))`, then
+   `N = min(N, KICKOS_MAX_THREADS)`. That is how many threads the board will host.
+   Subtract any `kos_ram_alloc` the app makes first.
+7. **If N is short**, in decreasing order of yield: cut `KICKOS_USER_HEAP_SIZE`, cut
+   `KICKOS_USER_STACK_SIZE`, cut `KICKOS_MAX_THREADS` (~424 bytes of static RAM each),
+   then the other pools. Do **not** raise `KICKOS_MAX_THREADS` to fix a spawn failure
+   without checking the arena: on a tight part the arena is usually the binding term,
+   and the raise spends static RAM to make the arena smaller.
+8. **A clean link proves only that the boot stacks fit.** Nothing checks user stacks or
+   pool capacity at build time; a spawn returning `-KOS_ENOMEM`, or an object create
+   returning a negative handle, is the first sign on hardware.
+
+---
+
 ## The ARMv7-M syscall spike (the M1 de-risk)
 
 ### The problem

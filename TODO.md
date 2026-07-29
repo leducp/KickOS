@@ -314,8 +314,9 @@ triggers `push` only on `master`).
       measures all fourteen boards both ways). One caveat stands: the switch's I-cache footprint
       plausibly moved too, but **no instruction-cache or cycle measurement was ever taken**, so that
       is not to be cited as measured (`design-flash-footprint.md` section 10). Consequence: every
-      published bench figure and every silicon witness measured unoptimised code -- see the fleet
-      re-witness pass under M4.5.5 below.
+      published bench figure measured unoptimised code, and every silicon witness except the
+      2026-07-29 `f302nucleo` captures, which are the first taken on `-Os` -- see the fleet
+      re-witness pass under M4.5.5 below. No bench has been run optimised.
 - [x] **`picopi` and `pizero2350` cannot build an optimised image: FIXED**, which is what unblocked
       the fleet build type above.
       `arch/arm/chip/rp2040/chip_rp2040.cc:80-81` and `arch/arm/chip/rp2350/chip_rp2350.cc:96-97`
@@ -661,15 +662,17 @@ Blockers and limits:
   userspace driver so the report always reaches the wire, which works, but on `xmc4800-relax` it
   reproducibly garbles roughly the last 8 bytes the driver had queued (the polled TX word pending in
   `TBUF0`). Cosmetic for a terminal report, but it eats the tail of the line preceding the dump.
-- **`bluepill-c8` and `f302nucleo` are held by the absence of a witness, not by RAM or handles.**
+- **`bluepill-c8` and `f302nucleo` are held by the absence of a RING-ARM witness, not by RAM or
+  handles.** `f302nucleo` now has silicon: `hello` and `stress` both pass at 2 KiB of heap
+  (`docs/reference/boards.md`). What is unwitnessed is the ring arm, and no prober app exists.
   Both are armv7m, so the flip's mechanism (`ctx.npriv` in the fabricated first frame) is present;
   neither part has an MPU (`stm32f103` none, and `f302nucleo` is the R8 `x8` line, which has none
   either), so stage 2's gate -- selftest green *under enforcement* plus a cross-domain `rootfault`
   -- cannot be met on either. The 9-handle provisioning costs the flip nothing: the authority cap
   sits at reserved index 2 and spends zero dynamic slots. The arena is heap policy, not the part:
   measured 6,560 B (`bluepill-c8`, production image), 2,592 B (its selftest image), 14,752 B with
-  the heap carve at zero; 6,464 and 2,560 on `f302nucleo` with its 4 K carve
-  (`design-flash-footprint.md` section 7). The "barely 3 KiB" reading is a selftest-image figure.
+  the heap carve at zero; 8,512 and 4,512 on `f302nucleo` since its carve went to 2 K
+  (`design-flash-footprint.md` section 7, `docs/reference/porting.md` minimum-requirement). The "barely 3 KiB" reading is a selftest-image figure.
 - **`Thread::privileged` survives**, with narrowed meaning: it selects the memory posture (kernel
   domain + permissive background), it is the confused-deputy bypass at `syscall_mem.cc:37`, and it
   stays the home for "may spawn a privileged child" -- which should NOT be a capability, since
