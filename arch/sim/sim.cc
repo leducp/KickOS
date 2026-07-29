@@ -726,6 +726,20 @@ void arch_context_init(struct arch_context* ctx,
                        int privileged)
 {
     SimContext* c = sc(ctx);
+    // The sim runs threads on host ucontexts, which need a host-sized stack -- an MCU-tuned
+    // small caller stack (KICKOS_MIN_STACK_SIZE is a few hundred bytes) would overflow the
+    // host. Substitute a host stack when the caller's is below the host floor; real HW uses
+    // the caller's buffer directly (verified on silicon). Rare: the default spawn path hands
+    // over the >=64K pool stack, so this malloc fires only for genuinely small caller stacks
+    // (not freed -- the sim is a dev vehicle, not a small-caller-stack stress target).
+    // Must stay AHEAD of getcontext(): getcontext is a returns-twice call, so assigning to
+    // these parameters after it is -Wclobbered (an error at every level above -O0).
+    constexpr size_t SIM_HOST_MIN_STACK = 64 * 1024;
+    if (stack_size < SIM_HOST_MIN_STACK)
+    {
+        stack_base = malloc(SIM_HOST_MIN_STACK);
+        stack_size = SIM_HOST_MIN_STACK;
+    }
     memset(c, 0, sizeof(*c));
     getcontext(&c->uc);
     // New threads always start with all interrupts enabled, independent of the
@@ -738,18 +752,7 @@ void arch_context_init(struct arch_context* ctx,
     sigaddset(&c->uc.uc_sigmask, SIGALRM);
     sigaddset(&c->uc.uc_sigmask, SIGUSR1);
 #endif
-    // The sim runs threads on host ucontexts, which need a host-sized stack -- an MCU-tuned
-    // small caller stack (KICKOS_MIN_STACK_SIZE is a few hundred bytes) would overflow the
-    // host. Substitute a host stack when the caller's is below the host floor; real HW uses
-    // the caller's buffer directly (verified on silicon). Rare: the default spawn path hands
-    // over the >=64K pool stack, so this malloc fires only for genuinely small caller stacks
-    // (not freed -- the sim is a dev vehicle, not a small-caller-stack stress target).
-    constexpr size_t SIM_HOST_MIN_STACK = 64 * 1024;
-    if (stack_size < SIM_HOST_MIN_STACK)
-    {
-        stack_base = malloc(SIM_HOST_MIN_STACK);
-        stack_size = SIM_HOST_MIN_STACK;
-    }
+    // getcontext() filled uc_stack with the CALLER's stack; retarget it here.
     c->uc.uc_stack.ss_sp = stack_base;
     c->uc.uc_stack.ss_size = stack_size;
     c->uc.uc_link = nullptr;
