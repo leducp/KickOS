@@ -13,7 +13,6 @@
 #include <kickos/instance.h>
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
-#include <kickos/console_tx.h>
 
 namespace kickos
 {
@@ -200,10 +199,7 @@ namespace kickos
                 if (k.live == 0)
                 {
                     // Last non-idle thread out: end the process with its exit code.
-                    // Flush the buffered console first so trailing output is not
-                    // stranded in the ring (kpanic/fault already flush).
-                    console_tx_flush_sync();
-                    arch_shutdown(code);
+                    kickos_terminate(code);
                 }
                 reschedule(); // pick the successor + pend the switch away
             }

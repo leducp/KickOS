@@ -1,12 +1,13 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Unprivileged root -- start unprivileged holding capabilities
 
-> **Status: ACTIVE** -- stages 0 and 1 have landed on the M4.5.1 branch, and **stage 2 has landed
-> for its first board**: `xmc4800-relax` boots an unprivileged root and is witnessed on silicon
-> (selftest green under PMSAv7 enforcement plus a clean cross-domain `apps/rootfault`; see
-> `reference/boards.md`). The remaining boards in the flip order, and stages 3-4, are still
-> planned and hardware-gated. See `design/README.md` for the marker taxonomy. The actionable
-> checklist is `TODO.md`; this record is the reasoning behind it, which `TODO.md` does not carry.
+> **Status: ACTIVE** -- stages 0 and 1 have landed, and **stage 2 is done**: the whole declared
+> set of five boards boots an unprivileged root and is witnessed on silicon, covering every
+> enforcement backend -- `xmc4800-relax` (PMSAv7), `esp32c6-wroom` (RISC-V PMP), `pizero2350`
+> (PMSAv8), `rx72m` (RXv3) and `f411disco` (PMSAv7, the last one, 2026-07-29). The per-board
+> captures are in `reference/boards.md`. `frdmk64f` waits for stage 3. Stages 3-4 are planned and
+> hardware-gated. See `design/README.md` for the marker taxonomy. The actionable checklist is
+> `TODO.md`; this record is the reasoning behind it, which `TODO.md` does not carry.
 
 Root is the kernel's first application thread: `kmain` creates it, it runs the app and
 library constructors, then calls `kickos_init_entry`. It **was** privileged for its entire
@@ -110,8 +111,8 @@ design does not have; carrying them as "later" would imply they are still wanted
 
 `drop_priv` survives only as a **contingent, much smaller** item. It is the one mechanism that
 gives "privileged bring-up, then self-confinement for life", which is exactly what the blocked
-bring-up bodies in section 8 want. It is in scope only if the `arch_periph_enable` seam (stage
-3) proves insufficient for them.
+bring-up bodies in section 8 want. It is in scope only if the privileged-write seam family
+(section 9) proves insufficient for them.
 
 ## 5. The authority capability: shape, seat, and the arithmetic behind it
 
@@ -230,14 +231,25 @@ The reads of `Thread::privileged` that survive are exactly the set this design k
 
 **Stage 2 -- flip per board**, behind a build-enforced `KICKOS_ROOT_PRIVILEGED` knob, default
 ON. **Not a weak symbol**: opting out of the boundary must be visible in the board's build, not
-silently satisfied by a link-time override. Order: `xmc4800-relax` with a console-only service
-list first (its `xmcuart` bring-up is pure syscall), then f411disco, frdmk64f, pizero2350,
-esp32c6-wroom, rx72m.
+silently satisfied by a link-time override. Five boards are flipped and silicon-witnessed,
+covering every enforcement backend: `xmc4800-relax` (PMSAv7, with a console-only service list --
+its `xmcuart` bring-up is pure syscall), `esp32c6-wroom` (RISC-V PMP), `pizero2350` (PMSAv8),
+`rx72m` (RXv3) and `f411disco` (PMSAv7). That is the whole declared stage-2 set. The captures are
+in `reference/boards.md`.
+
+`f411disco` came last because what stood in the way was a **pre-existing bench debt rather than
+flip work**: PMSAv7 enforcement had never been witnessed on that board at all, so a flip there
+would have had no enforcing baseline to be discriminating against.
+
+`frdmk64f` is **not** a stage-2 target and waits for stage 3. Its `k64uart` and `k64dspi` PACR
+writers (`AIPS0_PACRN` at `0x4000_0064`, `AIPS0_PACRF` at `0x4000_0044`) both fall inside
+`arch_reserved_blocks`'s AIPS0 entry (`[0x4000_0000, 0x4000_1000)`), so no grant can ever reach
+them and `arch_periph_enable` is the only way in.
 
 **Stage 3 -- `arch_periph_enable(base)`**, weak `-KOS_ENOSYS`, gated `AUTH_DEVICE`, covering
 "ungate the clock and drop supervisor-protect for the block at this base". Implemented for K64F
-(`SIM_SCGC*` + `AIPS0_PACRN`) and ESP32-C6 (the APM/PMS one-time open). Retires `k64uart` and
-half of `k64dspi`.
+(`SIM_SCGC*` + `AIPS0_PACRN`). Retires `k64uart` and half of `k64dspi`. The ESP32-C6 needs
+nothing here: its APM open is a boot-time chip act in `arch_init`, not a per-block request.
 
 **Stage 4 -- the app story.** `kos_cap_narrow(cap, mask)` (rights &= mask, never widen), and
 drop or narrow the authority cap in `kickos_default_init_run` before `kickos_app_main`. Plus:
@@ -259,11 +271,12 @@ made the boundary untestable on exactly the boards that adopt it. It now runs in
 `system/driver/mk64f/k64uart/k64uart.cc` (AIPS PACR),
 `system/driver/mk64f/k64dspi/k64dspi.cc` (clock gates, pin mux, GPIO, DSPI config), and
 `system/driver/xmc4800/xmcssc/xmcssc.cc` (USIC kernel clock, baud, protocol). `xmc4800-relax`,
-the enforcement flagship and the first board in the flip order, links one of them.
+the enforcement flagship, links one of them.
 
-**From root** is the operative phrase, and section 9 revises what that costs on the XMC: the
-registers sit in a window the driver already grants to an unprivileged thread, so the blocker is
-where the bring-up runs, not what the silicon permits.
+**From root** is the operative phrase for two of them. On the XMC it is only most of the story:
+section 9 measures that three of the registers are refused to an unprivileged thread even inside
+the granted window, so that bring-up needs both a move into the driver thread and a kernel seam
+for those three.
 
 **`root_entry` read argv from the kernel stack.** Fixed in stage 0. Recorded here because of
 *how* it would have failed: an unprivileged root faults on its first statement after the ctor
@@ -274,45 +287,101 @@ five chips would have been "its own stack and nothing else".
 
 ## 9. Limits, including the boards where this does not work
 
-- **The XMC SPI blocker is software PLACEMENT, not hardware.** This bullet used to say the
-  PV-write-only registers were "privileged by hardware design", which framed the blocker as a
-  property of the silicon. Checked against the driver, that is not what stops the flip.
+- **The XMC SPI blocker IS hardware, measured.**
+  Settled on silicon 2026-07-28 by `user/apps/xmc4800-relax/pvprobe` (XMC4800 Relax,
+  `KICKOS_HAVE_MPU=1`, probe target U0C1 `0x4003_0200` so the console channel U0C0 stays intact):
+  an unprivileged thread holding the MPU grant for the channel window has its writes to `FDR`
+  (`0x010`), `BRG` (`0x014`) and `CCR` (`0x040`) **silently discarded** -- read-back returns the
+  pre-write value, with no BusFault and no MemManage. In the same thread, same window, same run, a
+  write to `SCTR` (`0x034`, `U,PV`) lands exactly, and the run ends on an ungranted SCU poke that
+  does MemManage (`CFSR=0x82`, `MMFAR=0x5000_4648`), so both the grant and enforcement are
+  witnessed rather than assumed. Root had written all four registers exactly, in the same channel
+  state, moments earlier. The discard therefore tracks the CPU privilege level and RM Table
+  18-20's `Write = PV` column, and nothing else.
 
-  `xmcssc` already splits itself: `xmc_spi0_start` does a privileged one-time bring-up, then
-  `spawn_unprivileged(xmcssc_service, win_base, win_size, ...)` hands the U0C1 window
-  (`0x4003_0200`) to an **unprivileged** driver thread which does every transfer inside it. So
-  the window is not ungrantable -- **this driver already grants it.** What breaks under the flip
-  is that the bring-up runs in *root*, and a flipped root holds no MMIO grant for U0C1. Move
-  that sequence to something that holds the grant and the obstacle goes with it. Stage 3's
-  `arch_periph_enable` genuinely does not cover this -- it is "ungate a clock, drop
-  supervisor-protect", the K64F/C6 shape, whereas the XMC needs USIC-specific KSCFG/FDR/BRG/CCR
-  programming -- but "stage 3 does not cover it" is a different claim from "the hardware
-  forbids it", and only the first one is supported.
+  Consequences. `xmc_spi0_start`'s FDR/BRG/CCR stores need a privileged executor, so the flip
+  needs a kernel configure seam for those three; the KSCFG/SCTR/TCSR/PCR/PSCR/DX0CR/INPR rest of
+  the sequence is grant-reachable and needs nothing. Given that seam the `xmcssc` bring-up
+  **moves wholesale** into the granted unprivileged driver, and has to, because **a post-flip root
+  cannot hold a DEV region at all.** `ARCH_MPU_DEV` is attached to a live region in exactly one
+  place, `domain_for` (`kernel/domain/domain.cc`), whose only MMIO-carrying caller is
+  `thread_spawn` -- `thread_create`'s in-kernel callers pass `mmio_base == nullptr` -- and
+  `KOS_SYS_MEM_SELF_GRANT` hardcodes `ARCH_MPU_R | ARCH_MPU_W`. So root cannot be the seam's
+  caller: the driver is the only thread that can hold the window, and a split sequence would leave
+  a privileged half configuring a channel its own caller cannot address. Stage 3's
+  `arch_periph_enable` does not cover it: that seam is "ungate a clock, drop supervisor-protect",
+  the K64F/C6 shape, whereas this is USIC-specific FDR/BRG/CCR programming.
+  The failure mode with no seam is the bad kind -- a flipped root would program the baud
+  generator, take no fault, and leave the channel clocking at whatever the previous value
+  implies.
 
-  **The PV-write-only reading is contradicted, not untested.** That FDR/BRG/CCR/INPR reject an
-  unprivileged write comes from RM Table 18-20 as transcribed into the driver banner. This repo's
-  own silicon record refutes it, and the two were never put side by side:
-  `user/apps/xmc4800-relax/consoledemo/main.cc` spawns its scrambler `privileged=false` holding
-  the granted U0C0 window and writes exactly FDR, BRG, SCTR, TCSR, PCR, CCR and `KSCFG` from
-  inside it, and the recorded XMC silicon PASS is that the panic banner survives a
-  *driver-garbled* UART -- which it can only be if those unprivileged writes landed. So the
-  bring-up can move wholesale into the granted unprivileged driver, and needs no seam: the
-  register-level obstacle the reading described is not there.
+  This record previously read the measurement as "the bring-up cannot move wholesale". It is the
+  opposite, and the correction is worth keeping because it is what settles who calls the seam:
+  with no path by which root holds a DEV region, there is exactly one candidate.
 
-  What remains genuinely unread is **RM Table 18-20 itself** -- the banner transcribes a reading
-  of it and nobody has gone back to the table -- and the `U`/`PV`/`BE` privilege glossary is
-  reference-manual knowledge, not citable from anything in this tree.
+  The earlier "contradicted by this repo's own silicon" reading was **invalid inference, not a
+  measurement**. It rested on `consoledemo`'s scrambler writing FDR/BRG/CCR from
+  `privileged=false` and the UART coming out garbled. But the scrambler also writes `SCTR`,
+  `TCSR` and `PCR` (all `U,PV`) and gates the channel clock via `KSCFG`, and any one of those
+  alone garbles the UART -- so the garbling never required FDR/BRG/CCR to land. It is now known
+  they did not.
 
-  The flip order still starts with `xmc4800-relax` because its *console* bring-up is pure
-  syscall -- that part was right.
-- **Granting a peripheral window grants the peripheral, including its own clock.** `KSCFG`
-  (`MODEN`, the USIC channel's module clock enable) lives at `win_base + off::KSCFG`, i.e.
-  *inside* the window handed to the unprivileged driver. So an MMIO grant is not "may use this
-  device": it is "may enable, configure and disable this device". This is **orthogonal to root's
-  privilege** -- it is equally true of any unprivileged holder on an unflipped board -- and it is
-  a property of window granularity, not a regression. Recorded because the natural reading of
-  "unprivileged driver" is more confined than what is actually handed over, and because a window
-  that happens to span two peripherals would hand over both.
+  Two details of the old transcription: Table 18-20 marks exactly **three** channel registers
+  `Write = PV` with no `U` (FDR, BRG, CCR), so `INPR`'s appearance in the earlier
+  FDR/BRG/CCR/INPR list was a slip -- INPR is `U,PV` in the table, and the probe did not test it.
+  And the additive legend is the manual's front-matter Table 2 (`U` = unprivileged permitted, `PV`
+  = privileged permitted), reference-manual knowledge not citable from anything in this tree.
+
+- **The K64F and C6 exemptions from the privileged-write seam family (below) are readings, not
+  measurements.**
+  `system/driver/mk64f/k64uart/k64uart.cc` writes `BDH`/`BDL`/`C4` from the unprivileged driver
+  and its comment claims that "the write proves the driver can own the divisor". It proves nothing
+  of the kind, and says why in the sentence before: the re-derived value equals what the kernel
+  already programmed, so a silently-dropped store and a landed one leave the same register
+  contents and the same legible wire. This is the same invalid-inference shape retracted just
+  above for the XMC scrambler -- an outcome consistent with the write landing is not evidence that
+  it landed. Neither K64F nor C6 has been probed with a value that *differs*, so their exemption
+  from the privileged-write seam family is a plausible reading of the bus documentation and
+  nothing more.
+- **Granting a peripheral window grants the peripheral, including its own clock -- but only the
+  bus-unprivileged subset of it.** `KSCFG` (`MODEN`, the USIC channel's module clock enable) lives
+  at `win_base + off::KSCFG`, i.e. *inside* the window handed to the unprivileged driver, and is
+  `U,PV`. So an MMIO grant is not "may use this device": it is "may enable, configure and disable
+  this device". This is **orthogonal to root's privilege** -- equally true of any unprivileged
+  holder on an unflipped board -- and a property of window granularity, not a regression. A window
+  that happens to span two peripherals hands over both.
+
+  The grant is an **upper bound**, not the whole window: where a bus enforces its own per-register
+  privilege classification, the holder gets strictly less, and on this chip it learns so
+  silently (the FDR/BRG/CCR measurement above). So the two limits compose -- window granularity
+  sets what is reachable, the bus decides what is writable -- and neither is visible from the
+  grant call.
+- **`arch_reserved_blocks` reasons about addresses, and interrupt routing is not an address.**
+  A granted USIC channel can re-point its `INPR` at a service-request node the kernel owns. No
+  address-based admissibility check can see that, because every store involved is inside the
+  window the grant legitimately handed over. Measured on silicon by
+  `user/apps/xmc4800-relax/inprstorm`: an unprivileged holder of the U0C1 window reroutes
+  `INPR`'s RINP/AINP onto SR0, the kernel console's node, and drives the in-kernel
+  `console_tx_isr` at **~37,700 invocations/second**. The honest severity is a **bounded parasitic
+  CPU tax, not a denial of service** -- the console kept beating and the board did not wedge. The
+  reason is that the USIC receive service request is **edge** (one pulse per received word), so a
+  held, uncleared flag does not re-assert the node; the same probe confirmed it by leaving RIF/AIF
+  set with the attacker idle, which took zero further ISR entries. The tax therefore lasts exactly
+  as long as the attacker runs, and the probe pins the attacker below root's priority so a wedge
+  could not have been mistaken for starvation.
+- **Two threads holding the same MMIO window is unbounded today, and the guard that looks like it
+  prevents that does not.** `kernel/domain/domain.cc` skips the domain *dedup* scan when a spawn
+  carries MMIO, so an MMIO grant always takes a fresh domain slot. That is a statement about
+  domain identity, not about exclusivity: nothing anywhere refuses a second grant of the same
+  window, so N threads can hold one peripheral. **Direction: refuse it at grant admission**, as a
+  live-DEV-range-overlap test returning `-KOS_EBUSY`, reusing `ranges_overlap`
+  (`kernel/grant/grant.cc`) with its existing semantics unchanged -- including
+  adjacency-is-not-overlap, which the `frdmk64f` PIT CH2 grant depends on (the chip's reserved PIT
+  entry stops at `0x4003_7120` precisely so that grant can sit flush against it). Deliberately
+  **not** a per-module count table: that would be hand-maintained and would drift. Sharp edge the
+  design has to answer for: a driver respawn issued before the dying driver's domain reference has
+  dropped still sees the window live and gets `-KOS_EBUSY`, so a respawner needs
+  join-before-respawn or a documented retry.
 - **`bluepill-c8` and `f302nucleo` will likely never flip.** Both carve barely 3 KiB of arena
   for the two boot stacks, and both are 9-handle boards.
 - **On a flipped board, no privileged thread can come into existence after boot.** Spawning a
@@ -339,13 +408,49 @@ five chips would have been "its own stack and nothing else".
   close/re-seat cycles wrap it. Unreachable in-tree, and the same unbounded-counter class as the
   domain-refcount item in `TODO.md`.
 
+### The privileged-write seam family
+
+The shape the design settles on: **as much of a driver in userspace as possible, with a kernel
+seam carrying only what the silicon refuses.** The seam is not a convenience layer and does not
+grow by argument. Two properties come with that, and they are what the shape buys. The seam's
+*size* on a given chip measures that chip's hostility to unprivileged driving, which is a number
+rather than an opinion. And the per-chip escalation surface is **enumerable** -- the registers
+only the kernel will touch are a list, so they can be read, counted and argued with.
+
+**Two distinct reasons a register lands in the kernel, kept as separate concerns.** They have
+different remedies and conflating them loses that:
+
+1. **It is outside any grantable window.** Shared blocks -- SCU, SIM, RCC, AIPS, APM -- carry
+   authority over peripherals the caller was never granted, so no window drawn around them is
+   admissible at any granularity. `arch_periph_enable` (stage 3) is the seam for this class, and
+   the K64F PACR case is its type specimen.
+2. **It is inside the window but the bus privilege-gates it.** The grant is admissible, the
+   holder can address the register, and the store is still dropped. The measured XMC
+   `FDR`/`BRG`/`CCR` case is the only confirmed member.
+
+**Membership requires a measured hardware refusal, never a plausible reading of a manual.**
+`user/apps/xmc4800-relax/pvprobe` is the artifact template, and what makes it evidence rather
+than a symptom is that it carries **both controls in the same run**: a positive one (`SCTR`, in
+the same window from the same thread, lands exactly) and a negative one (an ungranted SCU poke
+MemManages). Without the positive control a dropped write is indistinguishable from a broken
+grant; without the negative, from unenforced memory. A register with no such measurement behind
+it is not in the family, however confident the reading -- which is why the K64F and C6 exemptions
+above are recorded as unsettled rather than as findings.
+
+Stated plainly, because pretending otherwise would be worse: this is an **ioctl-shaped** family,
+and it is chip-dependent. What bounds it is not elegance but reach -- the seam's reachable command
+space is exactly the peripherals its caller has been granted, so a holder of one window can only
+ever ask the kernel to configure that window's device.
+
 ### The reboot capability
 
-`kos_reboot` is designed but unbuilt. It is specifically **reboot into the chip's bootloader**
--- flashing mode (RP2040 `reset_usb_boot`; RP2350 bootrom `reboot` with
-`REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL`) -- which is why it sits behind `KICKOS_ENABLE_SELFTEST`: it
-is a developer affordance for reflashing without touching the board, not a general system reset.
-A general reset is not designed anywhere today and would need its own argument.
+`kos_reboot` is built, as `KOS_SYS_REBOOT` behind the `arch_reboot` seam. It is specifically
+**reboot into the chip's bootloader** -- flashing mode (RP2040 `_reset_to_usb_boot`; RP2350
+bootrom `reboot` with `REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL`; imxrt1062 the `bkpt` the Teensy's MKL02
+catches) -- which is why it sits behind `KICKOS_ENABLE_SELFTEST`: it is a developer affordance for
+reflashing without touching the board, not a general system reset. A general reset is not designed
+anywhere today and would need its own argument. A chip with no bootloader entry declines through
+the seam's weak `-KOS_ENOSYS` default rather than pretending.
 
 **Decision: it folds into `AUTH_DEVICE`**, rather than taking a `CAP_REBOOT` at index 3 or a
 sixth rights bit. Three reasons: `arch_shutdown` already sits under `AUTH_DEVICE` and
@@ -383,8 +488,12 @@ much less than one shown to fire.
   `kernel_ctor_placement` fell into.
 
 **Stage 2's per-board gate** is selftest green under enforcement **plus** a clean cross-domain
-`mpu_fault` proving root is confined. The first witness must be an **enforcing ARM board**, not
-the sim.
+`rootfault` proving root is confined -- and it is satisfiable only on an enforcing board, never on
+the sim, which has no privilege axis to witness. That ordering is why `f411disco` was witnessed in
+two separate passes: its PMSAv7 enforcement had only ever been build-and-link validated, and the
+gate has no meaning on a board where the enforcing arm has never been seen to work, so the
+enforcement witness (selftest 62/62 + `mpu_fault`, default posture) came first and the flip second.
+Both are in `reference/boards.md`.
 
 **What nothing witnesses.** Two coverage gaps here are structurally unfillable by emulation:
 v6-M MPU programming (QEMU models no Cortex-M0+ and no Cortex-M23 core) and the M7 speculation

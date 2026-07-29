@@ -38,6 +38,38 @@ namespace kickos
             }
             return nullptr;
         }
+
+        // True iff NO live domain holds a DEV region overlapping [base, base+size).
+        // Callers pass a non-wrapping window (grant_region_admissible rejects a wrap
+        // before this runs, and the spawn boundary rejects one too).
+        bool dev_window_free(uintptr_t base, size_t size)
+        {
+            uintptr_t const last = base + size - 1u;
+            Kernel& k = kernel();
+            for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
+            {
+                Domain const& d = k.domains[i];
+                if (not d.immortal and d.refcount == 0)
+                {
+                    continue; // free slot / rollback debris
+                }
+                size_t const n = domain_region_count(&d);
+                for (size_t r = 0; r < n; r++)
+                {
+                    arch_mpu_region const* reg = domain_region_at(&d, r);
+                    if ((reg->attr & ARCH_MPU_DEV) == 0)
+                    {
+                        continue;
+                    }
+                    if (grant_ranges_overlap(base, last, reg->base,
+                                             reg->base + reg->size - 1u))
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
     }
 
     void domain_init(void)
@@ -144,6 +176,20 @@ namespace kickos
                 *err = KOS_EPERM; // reserved block / bit-band alias / unauthorized DEV
                 return nullptr;
             }
+            // ONE HOLDER PER DEVICE WINDOW. Refuse a DEV window overlapping one a live
+            // domain already holds. Matched on RANGES, not slots: an encodable window
+            // can span several peripheral sub-units, or cover part of one, so an
+            // equal/containing/straddling request must all refuse while an ADJACENT
+            // window stays admissible (grant_ranges_overlap, shared with Rule 7).
+            // Live = the inverse of free_slot: an immortal domain's refcount is not
+            // tracked, so it must not be read as free (neither carries DEV today).
+            // A refcount-0 mortal domain is rollback debris from a spawn that failed
+            // AFTER domain_for -- never a holder, so a retry is not self-blocked.
+            if (not dev_window_free(mb, mmio_size))
+            {
+                *err = KOS_EBUSY; // window already held -- no stealing (irq_register precedent)
+                return nullptr;
+            }
         }
         Kernel& k = kernel();
         uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
@@ -153,7 +199,9 @@ namespace kickos
         // a domain"). Match the rounded size so a re-grant of the same block dedups.
         // An MMIO grant is a capability -- never shared -- so an MMIO-carrying spawn
         // skips this and always takes a fresh slot; the attr guard also stops a
-        // data-only spawn from ever landing on an existing MMIO (DEV) domain.
+        // data-only spawn from ever landing on an existing MMIO (DEV) domain. Fresh
+        // slot, not shared, is what makes one grant == one domain == one thread, so
+        // the dev_window_free scan above is exact.
         if (not has_mmio)
         {
             for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)

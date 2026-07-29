@@ -9,7 +9,8 @@
 // guarded -> -KOS_EPERM), the client is a SPAWNED thread that receives the service
 // endpoint's SIGNAL cap by spawn-time delegation (positional: child index 1). main
 // (running in the root/init thread, sharing its cap table) reads the endpoint handle
-// the service recorded (k64dspi_endpoint) and delegates a SIGNAL-narrowed copy, then
+// the service recorded (k64dspi_take_endpoint, a one-shot handout) and delegates a
+// SIGNAL-narrowed copy, then
 // closes its own retained cap so the driver is the sole recv holder (driver death
 // then EPIPE-wakes any parked client). The client speaks the neutral wrapper
 // (spi_transfer / spi_transact / spi_config over the bus call/reply ABI); it touches
@@ -28,7 +29,7 @@
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
-#include <kickos/driver/k64dspi.h>    // k64dspi_endpoint()
+#include <kickos/driver/k64dspi.h>    // k64dspi_take_endpoint()
 #include <kickos/driver/spi_client.h> // spi_transfer / spi_transact / spi_config
 
 #include <stdint.h>
@@ -44,6 +45,10 @@ namespace
     // The delegated SPI service endpoint SIGNAL cap lands at the client's child
     // table index 1 (positional spawn delegation).
     constexpr int SPI_EP = 1;
+
+    // The single device on the bench's bus. A client with several devices gives each
+    // its own slot (< KOS_BUS_DEV_MAX) and configures each once.
+    constexpr uint8_t SPI_DEV = 0;
 
 #if defined(K64DSPI_LOOPBACK)
 
@@ -96,7 +101,7 @@ namespace
         cfg.word_bits = 8u;
         cfg.cs_policy = KOS_BUS_CS_NONE;
         uint32_t achieved = 0u;
-        int const crc = spi_config(SPI_EP, &cfg, &achieved);
+        int const crc = spi_config(SPI_EP, SPI_DEV, &cfg, &achieved);
         {
             char s[80];
             ksnprintf(s, sizeof(s), "[k64dspi] config rc=%d achieved=%lu Hz\n", crc,
@@ -113,7 +118,7 @@ namespace
             {
                 unsigned char tx = pattern[i];
                 unsigned char rx = 0;
-                long n = spi_transfer(SPI_EP, &tx, &rx, 1);
+                long n = spi_transfer(SPI_EP, SPI_DEV, &tx, &rx, 1);
                 if (n != 1 or rx != tx)
                 {
                     ok = false;
@@ -126,7 +131,7 @@ namespace
         {
             unsigned char tx[5] = {0x11u, 0x22u, 0x33u, 0x44u, 0x55u};
             unsigned char rx[5] = {0};
-            long n = spi_transfer(SPI_EP, tx, rx, sizeof(tx));
+            long n = spi_transfer(SPI_EP, SPI_DEV, tx, rx, sizeof(tx));
             report("multi-byte (>FIFO) loopback",
                    n == static_cast<long>(sizeof(tx)) and buffers_equal(tx, rx, sizeof(tx)));
         }
@@ -134,7 +139,7 @@ namespace
         // 3) Null tx: the driver shifts dummy 0x00, so the loopback returns 0x00.
         {
             unsigned char rx[4] = {0xAAu, 0xAAu, 0xAAu, 0xAAu};
-            long n = spi_transfer(SPI_EP, nullptr, rx, sizeof(rx));
+            long n = spi_transfer(SPI_EP, SPI_DEV, nullptr, rx, sizeof(rx));
             report("null-tx (dummy 0x00) loopback",
                    n == static_cast<long>(sizeof(rx)) and buffer_is(rx, 0x00u, sizeof(rx)));
         }
@@ -144,7 +149,7 @@ namespace
         {
             unsigned char cmd[3] = {0x03u, 0x00u, 0x64u};
             unsigned char rd[4] = {0};
-            long n = spi_transact(SPI_EP, cmd, sizeof(cmd), rd, sizeof(rd));
+            long n = spi_transact(SPI_EP, SPI_DEV, cmd, sizeof(cmd), rd, sizeof(rd));
             // Read phase shifts dummy 0x00 out over the loopback -> reads back 0x00.
             report("transact (cmd+read, one CS bracket)",
                    n == static_cast<long>(sizeof(rd)) and buffer_is(rd, 0x00u, sizeof(rd)));
@@ -184,7 +189,7 @@ namespace
         cmd[2] = static_cast<unsigned char>(BYTE_TEST_ADDR & 0xFFu);
 
         unsigned char rx[4] = {0, 0, 0, 0};
-        long n = spi_transact(SPI_EP, cmd, sizeof(cmd), rx, sizeof(rx));
+        long n = spi_transact(SPI_EP, SPI_DEV, cmd, sizeof(cmd), rx, sizeof(rx));
         *ok = (n == static_cast<long>(sizeof(rx)));
 
         uint32_t val = static_cast<uint32_t>(rx[0]);
@@ -202,9 +207,9 @@ namespace
         cfg.mode = 0u;
         cfg.word_bits = 8u;
         cfg.cs_policy = KOS_BUS_CS_GPIO;
-        cfg.cs_index = 4u; // PTC4
+        cfg.cs_index = 4u; // PTC4 by intent; the driver ignores it and always drives PTC4
         uint32_t achieved = 0u;
-        int const crc = spi_config(SPI_EP, &cfg, &achieved);
+        int const crc = spi_config(SPI_EP, SPI_DEV, &cfg, &achieved);
         {
             char s[80];
             ksnprintf(s, sizeof(s), "[k64dspi] config rc=%d achieved=%lu Hz\n", crc,
@@ -261,8 +266,8 @@ namespace
 int main(int, char**)
 {
     // The board service list already brought DSPI0 up (privileged config + endpoint
-    // + unprivileged driver) before this main. Grab the endpoint the service recorded.
-    int const ep = k64dspi_endpoint();
+    // + unprivileged driver) before this main. Take the endpoint it recorded.
+    int const ep = k64dspi_take_endpoint();
     if (ep < 0)
     {
         kos::print("[k64dspi] ERROR: SPI service not up (endpoint unavailable)\n");

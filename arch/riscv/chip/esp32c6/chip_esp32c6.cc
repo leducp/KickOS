@@ -29,10 +29,11 @@
 
 // Hand-rolled register map for this chip (clean-room, no ESP-IDF/HAL sources).
 // Bases in mmap.h, CPU-int/kernel IRQ lines in irq.h, per-peripheral offsets/fields
-// in regs/. (regs/usb_serial_jtag.h + regs/apm.h exist but are not consumed here:
-// the USB console is unused and APM is programmed by the enforcement backend.)
+// in regs/. (regs/usb_serial_jtag.h exists but is not consumed here: the USB console
+// is unused.)
 #include "mmap.h"
 #include "irq.h"
+#include "regs/apm.h"
 #include "regs/clint.h"
 #include "regs/uart.h"
 #include "regs/wdt.h"
@@ -488,13 +489,24 @@ static bool c6_pin_kernel_owned(uint32_t pin)
     return pin == 8u or pin == 16u or pin == 17u;
 }
 
-// One-shot pin-function config (KOS_SYS_PINMUX_SET). func is the raw IO_MUX_GPIOn_REG
-// word (MCU_SEL | drive | IE), written verbatim via io_mux::gpio(pin). This is the
-// IO_MUX layer only: routing a peripheral output through the GPIO matrix (the second
-// signal-index write) is deferred.
+// One-shot pin-function config (KOS_SYS_PINMUX_SET), covering BOTH permission stages a
+// pad passes on this family: the IO_MUX pad function and the GPIO matrix out-sel that
+// picks which internal signal drives it. Leaving the matrix out would leave the
+// kernel-owned refusal below bypassable -- a caller could aim a peripheral signal at
+// GPIO16/17 or GPIO8 without ever touching their IO_MUX word. func packs both stages;
+// the encoding is chip-local (reg::gpio::PINMUX_*).
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     if (port != 0u or pin > 30u)
+    {
+        return -KOS_EINVAL;
+    }
+    if ((func & reg::gpio::PINMUX_RESERVED) != 0u)
+    {
+        return -KOS_EINVAL;
+    }
+    uint32_t const out_sel = (func >> reg::gpio::PINMUX_OUT_SEL_S) & reg::gpio::PINMUX_OUT_SEL_MASK;
+    if (out_sel > reg::gpio::PINMUX_OUT_SEL_MAX)
     {
         return -KOS_EINVAL;
     }
@@ -502,8 +514,49 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     {
         return -KOS_EBUSY;
     }
-    r32(reg::io_mux::gpio(pin)) = func;
+    // Signal first, pad last: the pad must not be driven by whatever signal the ROM
+    // left selected, even for the few cycles between the two writes.
+    if ((func & reg::gpio::PINMUX_MATRIX_EN) != 0u)
+    {
+        r32(reg::gpio::func_out_sel_cfg(pin)) = out_sel;
+    }
+    r32(reg::io_mux::gpio(pin)) = func & reg::gpio::PINMUX_IO_MUX_MASK;
     return 0;
+}
+
+// HP_APM background permit for security mode REE0, which is what U-mode is by reset
+// (HP_TEE_M0_MODE_CTRL = 0), so no HP_TEE write is needed. The reset posture DENIES
+// every REE access to every HP peripheral (region 0 catch-all: START=0, END=0xFFFFFFFF,
+// ATTR=0), which would make even a granted MMIO window unreachable from an
+// unprivileged thread. Region 0 stays, and regions 1..3 re-permit its complement
+// outside the HP-bus blocks of the Rule 7 set (INTMTX, then the contiguous
+// PCR..HP_APM span); an overlap resolves to the permit (TRM 16.3.2.3). PMP is the
+// per-thread authority -- APM cannot be, it is per security mode and its denial does
+// not trap (regs/apm.h).
+static void apm_open_ree0(void)
+{
+    constexpr uint32_t BLOCK = 0x1000u;
+    struct permit
+    {
+        uint32_t start;
+        uint32_t end;
+    };
+    static permit const permits[] = {
+        {0x00000000u, mmap::INTMTX_BASE - 1u},
+        {mmap::INTMTX_BASE + BLOCK, mmap::PCR_BASE - 1u},
+        {mmap::HP_APM_BASE + BLOCK, 0xFFFFFFFFu},
+    };
+    uint32_t en = r32(reg::apm::FILTER_EN);
+    for (uint32_t i = 0; i < sizeof(permits) / sizeof(permits[0]); i++)
+    {
+        uint32_t const n = i + 1u;
+        r32(reg::apm::region_addr_start(n)) = permits[i].start;
+        r32(reg::apm::region_addr_end(n)) = permits[i].end;
+        r32(reg::apm::region_attr(n)) = reg::apm::R0_R | reg::apm::R0_W;
+        en |= reg::apm::region_en(n);
+    }
+    r32(reg::apm::FILTER_EN) = en;
+    __asm volatile("fence" ::: "memory");
 }
 
 void arch_init(void)
@@ -522,6 +575,7 @@ void arch_init(void)
     r32(reg::clint::MTIMECTL) = reg::clint::MTIMECTL_MTCE | reg::clint::MTIMECTL_MTIE; // start the counter + enable
 
     kickos_rv32_init();  // vectored mtvec + mie(MSIE|MTIE|SSIE) + mcounteren + PMP
+    apm_open_ree0();     // bus-side gate: REE0 permit outside the Rule 7 HP blocks
     c6_early_mark('F');  // mtvec + mie + permissive bootstrap PMP installed
     inject_doorbell_init(); // wire the interrupt matrix FROM_CPU doorbell (device IRQs)
     c6_early_mark('G');  // inject doorbell wired -- arch_init complete
@@ -534,13 +588,18 @@ void arch_init(void)
 // inside one 4 KB page, so a single entry covers the whole timebase + IRQ controller.
 // INTMTX (interrupt matrix routing) and PCR (the system clock/reset gate controller --
 // the C6's clock-gate block, which the chip programs and on which the MTIME rate
-// depends) are the other two owns-for-life blocks.
+// depends) are owns-for-life too, as are the two bus-side permission controllers:
+// HP_TEE (per-master security mode) and HP_APM (the REE permission regions the chip
+// programs once in arch_init). Granting HP_APM is total escalation, and its region
+// registers sit on a 0xC stride, so even a minimal window reaches several regions.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {
         {0x20001000u, 0x1000u}, // PLIC (@+0x000) + CLINT MSIP/MTIME/MTIMECMP (@+0x800..) (TRM ch.1.7)
         {0x60010000u, 0x1000u}, // INTMTX: interrupt matrix (TRM, memory map Table 5.3-2)
         {0x60096000u, 0x1000u}, // PCR: clock + reset gate controller (TRM PCR ch.; regs @+0x2c/+0x30)
+        {0x60098000u, 0x1000u}, // HP_TEE: per-master security mode (TRM ch.16)
+        {0x60099000u, 0x1000u}, // HP_APM: bus-side access-permission regions (TRM ch.16)
     };
     size_t n = sizeof(blocks) / sizeof(blocks[0]);
     if (n > max)

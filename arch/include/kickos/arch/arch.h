@@ -38,6 +38,11 @@ void kickos_ranges_init(void);
 // this ends the host process; on MCUs it halts.
 void arch_shutdown(int status) __attribute__((noreturn));
 
+// Reboot into the chip's bootloader (firmware-download mode). NOT noreturn: a chip
+// with no such entry declines with -KOS_ENOSYS instead. Success never returns. The
+// backend masks interrupts itself before handing over.
+int arch_reboot(void);
+
 // --- Context / switching ---------------------------------------------------
 // Build an initial frame in `ctx` so the first switch-in "returns" into
 // entry(arg) on [stack_base, stack_base+stack_size). `privileged` selects the
@@ -318,8 +323,10 @@ uintptr_t arch_mpu_probe_addr(void);
 
 // --- Rule 7: kernel-reserved MMIO blocks (docs/design-m4-driver-model.md sec.7) --
 // The owns-for-life peripherals a grant must NEVER hand to userspace: the timebase
-// block, the IRQ controller, the (bus-side) MPU, and the clock/reset gate registers.
-// The grant path (kernel/grant) refuses any region overlapping one of these.
+// block, the IRQ controller, every access-permission controller (the MPU/PMP twin
+// AND any bus-side gate such as the K64F AIPS bridge PACRs or the ESP32-C6
+// HP_APM/HP_TEE), and the clock/reset gate registers. The grant path (kernel/grant)
+// refuses any region overlapping one of these.
 struct arch_reserved_block
 {
     uintptr_t base;

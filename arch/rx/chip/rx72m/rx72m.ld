@@ -283,6 +283,9 @@ SECTIONS
 ASSERT(___kickos_ram_start <= ___kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + ISP stack)")
 
+#include <boot_arena.ld.h>
+KICKOS_BOOT_ARENA_ASSERT(___kickos_ram_start, ___kickos_ram_end)
+
 /* Static destructors are unsupported: nothing walks .fini_array. Fail the link
    rather than silently drop a destructor. */
 ASSERT(___kickos_app_fini_array_end == ___kickos_app_fini_array_start,

@@ -54,6 +54,9 @@ namespace irq = kickos::rp2040::irq;
 namespace kickos
 {
     int kmain(int argc, char** argv);
+#if defined(KICKOS_ENABLE_SELFTEST)
+    void kpanic(char const* msg) __attribute__((noreturn)); // arch_reboot: the ROM call must not return
+#endif
 }
 
 extern "C"
@@ -71,6 +74,12 @@ extern "C"
 namespace
 {
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // Bootrom header accessors (arch_reboot): its magic is bytes and its pointers are
+    // halfwords, so neither is reachable through r32.
+    inline uint8_t r8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
+    inline uint16_t r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
+#endif
 
     // Chosen by clocks_init (which source clk_peri lands on), consumed by
     // uart0_init. Boot is single-threaded and sequential, so no guard is needed.
@@ -347,6 +356,41 @@ uint32_t arch_trace_now(void)
 {
     return r32(reg::timer::TIMERAWL);
 }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Reboot into the bootrom's USB download mode via _reset_to_usb_boot (DS 2.8.3).
+// The three magic bytes at 0x10 are the whole validity test the datasheet gives: once
+// they match, the halfword pointers at 0x14+ are valid. The byte at 0x13 is a ROM build
+// number the datasheet forbids using to locate functions, so it is never read.
+int arch_reboot(void)
+{
+    __asm volatile("cpsid i" ::: "memory"); // dispatch runs in thread mode with IRQs live
+
+    if (r8(0x10u) != 'M' or r8(0x11u) != 'u' or r8(0x12u) != 0x01u)
+    {
+        return -KOS_ENOSYS;
+    }
+    // Zero-extend the stored halfwords: they already carry the Thumb bit.
+    uint16_t* const table = reinterpret_cast<uint16_t*>(static_cast<uintptr_t>(r16(0x14u)));
+    using lookup_fn = void* (*)(uint16_t*, uint32_t);
+    lookup_fn const lookup =
+        reinterpret_cast<lookup_fn>(static_cast<uintptr_t>(r16(0x18u)));
+
+    // Function code 'UB' packs as (c2 << 8) | c1.
+    using usb_boot_fn = void (*)(uint32_t, uint32_t);
+    usb_boot_fn const usb_boot =
+        reinterpret_cast<usb_boot_fn>(lookup(table, ('B' << 8) | 'U'));
+    if (usb_boot == nullptr)
+    {
+        return -KOS_ENOSYS; // magic matched, but this ROM's table has no 'UB'
+    }
+
+    // (0, 0): no activity-LED pin, and neither USB interface disabled, so both
+    // PICOBOOT (picotool) and UF2 mass storage answer.
+    usb_boot(0u, 0u);
+    kickos::kpanic("arch_reboot: rp2040 _reset_to_usb_boot returned");
+}
+#endif
 
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RP2040 datasheet). Owns-for-life: the 64-bit TIMER (monotonic

@@ -271,7 +271,8 @@ namespace kickos
         if (dom == nullptr)
         {
             // domain_for says which refusal this is, so forward it: EPERM for an
-            // inadmissible grant, ENOMEM for a full domain pool.
+            // inadmissible grant, EBUSY for a DEV window a live domain already holds,
+            // ENOMEM for a full domain pool.
             return -derr;
         }
         // Reclaim an EXITED slot or bump-allocate (ThreadPool::alloc). Single-core: an
