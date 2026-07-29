@@ -46,9 +46,9 @@ code wins, then this file.
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | [x] full selftest + all apps + fault dump + bench + LED; **PMSAv7 enforcement silicon-witnessed 2026-07-29** -- enforcement selftest 62/62 + `mpu_fault` cross-domain MemManage denial, closing the `stm32f411` MPU HW debt for the chip. **Fifth board with an UNPRIVILEGED root, and the second on PMSAv7** (2026-07-29) -- see *Unprivileged root* below |
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | [x] full selftest + bench (2nd F411; 25 MHz HSE); MPU backend is the shared `stm32f411` one, silicon-witnessed on `f411disco` 2026-07-29 (not re-run on this board) |
-| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] selftest minus the 4 KiB-alloc test (16 K RAM) + bench; not an enforcement target (3712 B arena) |
+| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] selftest minus the 4 KiB-alloc test (16 K RAM) + bench; **not an enforcement target -- the F302R8 (`x8` line) has no MPU** (the F302xB/xC line does). **A bench board** (onboard ST-Link, own VCOM, no external adapter), and the fleet's only physically-present **no-MPU ARM** board -- the sole possible silicon witness for the privilege-ring arm, and no such run has happened; see *Unprivileged root* below. The `[x]` above dates to 2026-07-14: **the `-st` image is computed not to boot at this branch tip** (arena 96 B short of root's stack), an M4.5.2 regression found by arithmetic and not by any gate, because this board has **none** -- see *CI coverage* below |
 | `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + full selftest with `sched_exit` (2026-07-09, 125 MHz PLL); PMSAv6 cross-domain denial silicon-proven 2026-07-19 (M0+ has no MemManage -- it escalates to HardFault) -- the fleet's only armv6m enforcement proof; U-mode `cxxtest` still awaits a bench re-flash |
-| `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only (64 K/20 K linker; links the full app set incl selftest + stress) |
+| `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only, and **no unit exists** -- there is no genuine F103C8 on the bench, so nothing here can be silicon-witnessed at all (64 K/20 K linker; links the full app set incl selftest + stress) |
 | `frdmk64f` | MK64FN1M0 / M4F | -- (none) | UART0, PTB16/PTB17, 115200 -> OpenSDA VCOM | J-Link (OpenSDA) | [x] HW 2026-07-15 (full selftest over the buffered console ring, 120 MHz); SYSMPU enforcement + `mpu_fault` trap silicon-proven at M2 |
 | `teensy41` | i.MX RT1062 / M7 @396 MHz | -- (none wired) | LPUART6 ("Serial1", pins 0/1), 115200 | `teensy_loader_cli` (HalfKay, `.hex`) | [x] full selftest + soak under PMSAv7 enforcement, after the M7 anti-speculation fix (ERR011573; `../design-teensy-mpu-hang.md`) |
 | `pizero2350` | RP2350 / M33 @150 MHz (armv7m backend) | -- (none on the Pi-Zero header) | UART1, GP4/GP5, 115200 | `picotool` (BOOTSEL) | [x] full selftest under PMSAv8 enforcement + `mpu_fault` cross-domain MemManage denial + bench/soak. **Third board with an UNPRIVILEGED root, and the first on PMSAv8** (2026-07-28) -- see *Unprivileged root* below. Also the first silicon witness for `kos_reboot` (BOOTSEL handover) and for `KICKOS_SHUTDOWN_TO_BOOTLOADER` on both terminal dead-ends -- see its flashing section |
@@ -88,8 +88,11 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   with no test value. Use the genuine 64 KiB/20 KiB `bluepill-c8` for STM32F103 coverage
   (same `stm32f103` chip backend; links the full app set incl `selftest`/`stress`). The
   F103 port was HW-proven on the clone silicon (2026-07-14, selftest 13/14) before retirement.
-- **`bluepill-c8`** -- build-only (genuine 64 KiB/20 KiB F103C8; the F103 port was
-  physically run only on the now-retired 10 K clone). Links the full app set.
+- **`bluepill-c8`** -- build-only **because no unit exists**: there is no genuine 64 KiB/20 KiB
+  F103C8 here, and the F103 port was physically run only on the now-retired 10 K clone. So its
+  unwitnessability is hardware absence, not a verdict about the part -- and it costs no coverage,
+  since `f302nucleo` is the same class (64 KiB-flash armv7m, no MPU, real privilege ring) and is on
+  the bench. Links the full app set.
 - **`due`** -- **retired** (see the table note above): SAM3X port proven 2026-07-09, but
   this unit now has a peripheral-I/O fault.
 - **`frdmk64f`** -- **HW-revalidated 2026-07-15** (OpenSDA J-Link): full selftest streamed
@@ -179,6 +182,43 @@ the board".
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a
   hosted runner, so RX is bench-validated only. A change that touches the arch seam is *not*
   covered for RX by a green CI run; build it locally.
+- **`f302nucleo` has no gate of any kind.** It is in the `build-boards` sweep and nothing else: no
+  CTest, and no QEMU run gate because **no emulator models the part**. So the only thing CI says
+  about this board is that it links, and a regression that stops it booting is invisible until
+  somebody flashes it. That matters more now than it did, because it is a bench board and the
+  fleet's only physically-present no-MPU ARM part (see *Unprivileged root* below).
+
+  **That gap has a concrete instance: the `f302nucleo-st` `selftest` image no longer leaves enough
+  arena for root's stack.** `__kickos_ram_end - __kickos_ram_start`, read with `arm-none-eabi-nm` on
+  the built ELF, same toolchain and same command on both refs:
+
+  | Ref | `__kickos_ram_start` | `__kickos_ram_end` | Arena |
+  | --- | --- | --- | --- |
+  | `181540e` (master) | `0x20002c40` | `0x20003800` | 3,008 B |
+  | `176109e` (this branch) | `0x20002e60` | `0x20003800` | 2,464 B |
+
+  `kmain` takes both bootstrap stacks from that arena through `boot_stack_alloc` --
+  `KICKOS_IDLE_STACK_SIZE` then `KICKOS_ROOT_STACK_SIZE`, 512 and 2048 on this chip at those refs --
+  so it needs **2,560 B**. Master had 448 B of headroom; the branch is **96 B short**, which means
+  the second allocation cannot be satisfied, and an unsatisfied one is
+  `kpanic("kmain: no arena for the root stack")` (`kernel/init/kmain.cc:224`) rather than a degraded
+  boot. M4.5.2's static growth consumed 544 B of arena and crossed the line,
+  which makes this a **regression introduced on this branch**, not a pre-existing condition --
+  consistent with the board's genuine 2026-07-14 silicon pass at 13/14 (`../m2-readiness.md`) and
+  with nothing having flashed it since.
+
+  **This is arithmetic over the allocator, not an executed panic.** No emulator models the
+  stm32f302 and the boards are physically disconnected, so nobody has run it: the evidence is the
+  two arena figures against the 2,560 B requirement and nothing else. It is exactly the shape the
+  missing gate cannot catch -- the image links cleanly, and the linker script's own arena `ASSERT`
+  passes because it only checks that the arena is non-negative, not that it can hold what `kmain`
+  will ask for.
+- **microbit has no privilege axis at all, so it witnesses nothing about the user/kernel ring.**
+  The nRF51822 is a Cortex-M0, and ARMv6-M's Unprivileged/Privileged Extension is optional and
+  separate from the MPU extension: the M0 does not implement it (Cortex-M0 TRM DDI0432C), so
+  `switch.S`'s `msr control` is discarded and **a thread the kernel marks unprivileged runs
+  privileged here.** `picopi` is a Cortex-M0+ and does implement it; one arch backend spans both
+  cores and nothing in the tree distinguishes them. See `design-unprivileged-root.md` section 2.
 - **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
   16 KiB SRAM and a 2-slot pool mean part of the suite genuinely cannot run here, so
   `microbit_selftest` sets `EXPECT_SKIPS` to the eleven test **names** it cannot host; every other
@@ -475,6 +515,20 @@ session and should not be treated as a bench fact.
 whole arena. Five boards are flipped: `xmc4800-relax` (PMSAv7), `esp32c6-wroom` (RISC-V PMP),
 `pizero2350` (PMSAv8), `rx72m` (RXv3 RX-MPU) and `f411disco` (PMSAv7), each with its own
 subsection below. That completes the declared stage-2 set; `frdmk64f` waits for stage 3.
+
+**The knob itself is decided for deletion, with no replacement** -- unprivileged root becomes the
+only posture on every board, and no board is marked as unable to enforce it
+(`design-unprivileged-root.md` sections 4 and 10). The captures below are what they always were;
+what changes is that "flipped" stops being a per-board property. The witness a board can carry
+still depends on its hardware, in three arms: **authority** (a capability gate refusing a thread
+that lacks the bit -- pure kernel logic, so every target), **confinement** (a cross-domain fault --
+needs an MPU), and **ring** (an unprivileged thread refused a privileged-only register -- needs a
+privilege ring and no MPU). Every subsection below is a confinement witness. **No board has yet
+witnessed the ring arm on silicon**, and `f302nucleo` is the only one that could.
+
+The honest asymmetry, because it is easy to over-read a green run: on a board with no ring the
+authority arm still passes, and it never implies confinement. Nothing there stops a thread walking
+past the syscall and touching the peripheral directly.
 
 #### `xmc4800-relax` -- PMSAv7
 
@@ -1000,3 +1054,25 @@ the prior witness (SYSMPU surfaces as an imprecise bus fault, so the core label 
 boundary to enforce and the banner reads `mpu off`. It is regressed instead: at `e5c651b`
 (2026-07-28) its selftest ran 58 cases / 58 `ok` / 0 skips / 0 fail on silicon, unchanged by the
 C6 work, which is what the run is for (the two Espressif ports share nothing but the flasher).
+
+**`microbit` witnesses no arm on silicon, for two independent reasons.** There is **no physical
+unit** -- it is a QEMU armv6m vehicle, not a bench board (`../m2-readiness.md`) -- and the
+nRF51822's Cortex-M0 implements no privilege axis anyway, so the kernel's `unprivileged` marking is
+discarded by the hardware and such a thread runs privileged (see the caveat under *Per-board
+caveats*). Even a unit would therefore witness the authority arm and nothing about the ring. The
+armv6m privilege boundary is `picopi`'s alone -- an M0+, which does implement the extension.
+
+**`bluepill-c8` carries no witness because no unit exists.** That is the binding reason, not RAM
+(heap policy, `design-flash-footprint.md` section 7), not the 9-handle provisioning (the authority
+cap costs zero dynamic slots), and not the missing MPU. It costs nothing either: `f302nucleo` is the
+same class -- a 64 KiB-flash armv7m part with no MPU and a real privilege ring -- and is on the
+bench, so it carries the hardware coverage for both.
+
+**`f302nucleo` is the fleet's only physically-present no-MPU ARM board, so it is the sole possible
+silicon witness for the ring arm.** Having no MPU rules out the confinement arm and nothing else;
+the ring arm wants exactly a ring with no MPU, which the F302R8's M4 has. **Nothing has been run on
+it under an unprivileged root** -- no flash, no capture, no result of any kind. This is future work,
+and it needs a gate built for it too, since the board has none (see *CI coverage* above) -- which is
+also where the arena regression that its `-st` image is computed to hit at this branch tip is
+recorded, and that has to clear before any capture here means anything.
+`design-unprivileged-root.md` sections 9 and 10 carry the arms and the arithmetic.

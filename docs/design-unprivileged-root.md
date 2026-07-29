@@ -12,8 +12,10 @@
 Root is the kernel's first application thread: `kmain` creates it, it runs the app and
 library constructors, then calls `kickos_init_entry`. It **was** privileged for its entire
 life, holding every authority the kernel can grant for that whole time -- and on a board that
-has not flipped (`KICKOS_ROOT_PRIVILEGED` defaults ON) it still is. That default is what this
-record argues should end, board by board.
+has not flipped it still is, because `KICKOS_ROOT_PRIVILEGED` is in the tree and defaults ON.
+That knob is **decided for deletion, with no replacement**: unprivileged root becomes the only
+posture, on every board, and there is nothing left to configure. Section 4 carries that decision
+and what it costs; the code still has the knob.
 
 This record is why the fix is **start unprivileged holding capabilities** rather than **start
 privileged and demote**, what that costs, and -- the part worth writing down -- the specific
@@ -62,13 +64,24 @@ set already honours it:
 | Port | Where privilege lives in the fabricated frame |
 |---|---|
 | armv7m | `ctx.npriv` **and** `ctx.resting_npriv` (`arch/arm/armv7m/arch_armv7m.cc`, `arch_context_init`) |
-| armv6m | the same two fields (`arch/arm/armv6m/arch_armv6m.cc`), read by `switch.S` at fixed offsets 4 and 8 |
+| armv6m, Cortex-M0+ (`picopi`) | the same two fields (`arch/arm/armv6m/arch_armv6m.cc`), read by `switch.S` at fixed offsets 4 and 8 |
+| armv6m, Cortex-M0 (`microbit`) | the same two fields are written, and the hardware discards them: ARMv6-M's Unprivileged/Privileged Extension is optional, separate from the MPU extension, and the Cortex-M0 does not implement it (Cortex-M0 TRM DDI0432C, *Modes of operation and execution*: this processor does not support different privilege levels, software execution is always privileged) |
 | rv32imac | `mstatus.MPP` in the fabricated frame -- M-mode for privileged, U (0) otherwise (`arch/riscv/rv32imac/arch_rv32imac.cc`) |
 | rxv3 | `PSW_THREAD_USER` in the fabricated PSW (`arch/rx/rxv3/arch_rxv3.cc`) |
 | lx6 (Xtensa) | nothing to set: the LX6 has no ring split, so the flip is a no-op here |
 | sim | nothing set and nothing recorded: `arch_context_init` takes `privileged` and discards it (`arch/sim/sim.cc`) |
 
-Three consequences follow.
+Four consequences follow.
+
+**On `microbit` the kernel's privilege bit is a fiction.** The nRF51822 is a Cortex-M0
+(`boards/microbit/board.cmake:12`, `-mcpu=cortex-m0`), so `arch_context_init` seeds `npriv = 1`
+(`arch/arm/armv6m/arch_armv6m.cc:98-104`), `switch.S` writes it into `CONTROL`
+(`mrs`/`bics`/`orrs`/`msr`, lines 66-71), and the `msr` is architecturally discarded: **a thread
+the kernel believes is unprivileged runs privileged.** The fleet's other armv6m board, `picopi`,
+is a Cortex-M0+ (`boards/picopi/board.cmake:12`, `-mcpu=cortex-m0plus`) and does implement the
+extension, so one arch backend spans a core with a privilege ring and a core without one, and
+nothing in the tree distinguishes them. `microbit` therefore witnesses the capability gates and
+nothing about the CPU ring.
 
 **Xtensa comes along free instead of last.** Under the demotion design Xtensa was the hard
 case, because there is no privilege level to drop to. Under this design it is the trivial
@@ -113,6 +126,42 @@ design does not have; carrying them as "later" would imply they are still wanted
 gives "privileged bring-up, then self-confinement for life", which is exactly what the blocked
 bring-up bodies in section 8 want. It is in scope only if the privileged-write seam family
 (section 9) proves insufficient for them.
+
+### `KICKOS_ROOT_PRIVILEGED` goes too, with no replacement
+
+**Decided, not yet applied: the knob is deleted outright.** No bypass, no porting helper, no
+tier. Where the CPU has a privilege ring KickOS uses it from the first frame; where it has none
+the kernel's authority checks still hold and there is nothing to configure either way. A porter
+bringing a board up may flip a thread's `privileged` attribute locally while working, and that
+must never land in master. The reason is that this is a kernel and not an application: a knob is a
+posture someone can ship by accident, and the posture this one permits is "root holds every
+authority for the life of the system". Fewer knobs, fewer misconfigurations.
+
+**The safe default flips with it.** `ThreadAttr::privileged` is `true` today
+(`kernel/include/kickos/thread.h:164`), so an attribute struct that forgets the field mints a
+fully-authorized thread. It becomes `false`, with privileged spelled out at the one site that
+needs it, and a forgotten field can then no longer silently mint privilege. That costs nothing at
+the sites that exist, because the kernel builds exactly three `ThreadAttr`s: `idle` already spells
+`privileged = true` out (`kernel/init/kmain.cc:230`), root drops its knob derivation and takes the
+new default (`kernel/init/kmain.cc:250`), and the spawn syscall assigns the field from its caller's
+request either way (`kernel/syscall/syscall_thread.cc:334`).
+
+**The deletion cannot be scheduled before stage 3, and that is mechanical rather than a
+preference.** `frdmk64f` under `KICKOS_HAVE_MPU` defaults to the `kickos_services_frdmk64f` service
+list, which is listed in `KICKOS_SERVICE_LIST_ROOT_MMIO` and therefore refused by a configure-time
+`FATAL_ERROR` whenever root is unprivileged (`CMakeLists.txt:404`). With the knob gone that refusal
+has no posture left to be conditional on, so it fires unconditionally and the board's enforcement
+build **stops configuring** -- which is the `build-boards-mpu` CI job, not a bench inconvenience.
+Stage 3's `arch_periph_enable` is what retires the root MMIO writes that put that list on the
+refusal list in the first place. So the order is stage 3, then the deletion; section 7 has the two
+smaller build consequences that travel with it.
+
+**The invariant that leaves is "exactly one privileged thread, and it is `idle`".** Idle has to
+stay privileged because the instruction it exists to execute is not portably available
+unprivileged: RXv3 `WAIT` is privileged (RXv3 ISA UM section 1.4.3) and RISC-V only optionally
+permits U-mode `WFI`. Section 9 carries that argument. Anything else privileged after boot is a
+bug, and section 9 is also why none can appear -- spawning a privileged child needs a privileged
+caller, and idle runs no app code.
 
 ## 5. The authority capability: shape, seat, and the arithmetic behind it
 
@@ -194,9 +243,16 @@ because privileged callers bypass the checks:
   unprivileged thread's writable set was its own stack alone. Fixed with
   `arch_user_data_writable`.
 
-Measuring that last one changed the plan: the hole is **not** confined to the five no-MPU chips
-(stm32f103, stm32f302, nrf51, sam3x8e, esp32). **The host sim has it too**, despite building
-`KICKOS_HAVE_MPU=1`, because its globals live in the host image rather than the mprotect'd
+Measuring that last one changed the plan: the hole is **not** confined to the five chips with no
+MPU *backend* (stm32f103, stm32f302, nrf51, sam3x8e, esp32) -- and only four of those five lack an
+MPU on silicon. The AT91SAM3X8E **has** one (SAM3X/SAM3A datasheet features: Cortex-M3 revision 2.0
+up to 84 MHz, a Memory Protection Unit, and Thumb-2); what KickOS lacks is an `mpu.cmake` backend
+for it, an unwritten port rather than a hardware limit -- and the `due` unit is retired from the
+bench, so the backend is both unwritten and unwitnessable in practice. Of the other four,
+`stm32f302` names the R8's `x8` line, which has no MPU (the F302xB/xC line does have one),
+`stm32f103` and `nrf51` have none, and the LX6 `esp32` has no unit KickOS drives.
+**The host sim has it too**, despite building `KICKOS_HAVE_MPU=1`, because its globals live in the
+host image rather than the mprotect'd
 arena. So the fix could not key on `KICKOS_HAVE_MPU` alone and the sim carries its own arm.
 Worse, the selftest had already *worked around* the bug -- `ep_recv_worker` carried a comment
 explaining that its recv buffer had to be a stack local because a global "would be rejected on
@@ -236,6 +292,13 @@ covering every enforcement backend: `xmc4800-relax` (PMSAv7, with a console-only
 its `xmcuart` bring-up is pure syscall), `esp32c6-wroom` (RISC-V PMP), `pizero2350` (PMSAv8),
 `rx72m` (RXv3) and `f411disco` (PMSAv7). That is the whole declared stage-2 set. The captures are
 in `reference/boards.md`.
+
+With that set witnessed the per-board phase is over, so the knob has no remaining job and is
+deleted (section 4). Three consequences sit in the build rather than in the kernel. The binding one
+is the `frdmk64f` configure refusal, which orders the deletion after stage 3 -- section 4 states it,
+because whoever schedules the deletion needs it there rather than here. The other two are smaller:
+`xmc4800-relax` stops picking between two service lists by posture and always takes the console-only
+one, and the confinement gate stops being opt-in (section 10).
 
 `f411disco` came last because what stood in the way was a **pre-existing bench debt rather than
 flip work**: PMSAv7 enforcement had never been witnessed on that board at all, so a flip there
@@ -282,8 +345,9 @@ for those three.
 *how* it would have failed: an unprivileged root faults on its first statement after the ctor
 walk, on every enforcing board, and the sim reproduces none of it.
 
-**`user_writable_ok` had no no-MPU arm.** Fixed in stage 0. Without it, root's writable set on
-five chips would have been "its own stack and nothing else".
+**`user_writable_ok` had no static-data arm.** Fixed in stage 0. Without it, root's writable set on
+the five chips with no MPU backend, and on the sim, would have been "its own stack and nothing
+else".
 
 ## 9. Limits, including the boards where this does not work
 
@@ -382,11 +446,47 @@ five chips would have been "its own stack and nothing else".
   design has to answer for: a driver respawn issued before the dying driver's domain reference has
   dropped still sees the window live and gets `-KOS_EBUSY`, so a respawner needs
   join-before-respawn or a documented retry.
-- **`bluepill-c8` and `f302nucleo` will likely never flip.** Both carve barely 3 KiB of arena
-  for the two boot stacks, and both are 9-handle boards.
-- **On a flipped board, no privileged thread can come into existence after boot.** Spawning a
-  privileged child requires the caller be privileged, and that is deliberately not a
-  capability. So the flip is one-way for the lifetime of the system.
+- **`bluepill-c8` cannot be witnessed on silicon because no unit exists. `f302nucleo` can.** That
+  is the binding difference between the two, and it is hardware absence rather than a technical
+  verdict. There is no genuine STM32F103C8 on the bench -- the F103 port was physically run only on
+  the now-retired 10 K clone (`reference/boards.md`) -- so `bluepill-c8` is a **build-only** target
+  and stays one. `microbit` is the same category: the tree records it as **not a physical target**
+  at all, a QEMU armv6m vehicle (`m2-readiness.md`), with the additional property that even a unit
+  would witness no ring, its Cortex-M0 implementing no privilege axis (section 2). `f302nucleo` has
+  a unit, silicon-validated 2026-07-14, and was unwitnessed only for want of being plugged in; it
+  is now a bench board (`reference/boards.md`).
+
+  A prior pass re-derived all of this from "neither part has an MPU". That is true and is not the
+  binding reason. No MPU rules out the **confinement** arm and nothing else: the **ring** arm
+  (section 10) needs a ring and specifically no MPU, and both parts have a real ring -- privilege is
+  the fabricated first frame's `ctx.npriv`/`resting_npriv` (section 2), present whether or not an
+  MPU is fitted. So `f302nucleo` is the fleet's only physically-present no-MPU ARM board and hence
+  the sole possible silicon witness for the ring arm. Nothing has been run on it under an
+  unprivileged root: that is future work.
+
+  **`bluepill-c8` costs no coverage.** It is not materially different from `f302nucleo` -- both are
+  64 KiB-flash armv7m parts with no MPU and a real privilege ring -- so the Nucleo carries the
+  hardware coverage for that whole class, and a second unit would witness the same arm twice.
+
+  The **9-handle provisioning costs the flip nothing**: the authority cap is seated at reserved
+  index 2 and spends zero dynamic slots (section 5). Both boards already sit at the suite's floor,
+  `MAX_HANDLES 9` and `MAX_THREADS 2` -- root and idle need one slot each -- and per-board table
+  sizing recovers zero further bytes on either (`design-flash-footprint.md` section 7), so the
+  handle count is a floor rather than a lever.
+  The arena is **heap policy, not a property of the part**, measured per board in
+  `design-flash-footprint.md` section 7. `bluepill-c8` (20,480 B SRAM, 2 K kernel stack, 8 K
+  `.userheap`): **6,560 B** for a production image, **2,592 B** for the selftest image, **14,752 B**
+  with the heap carve at zero. `f302nucleo` (16,384 B SRAM, 4 K `.userheap`): **6,464 B** and
+  **2,560 B**. The 20 KiB and 16 KiB parts land within 128 bytes of each other because the smaller
+  part carries the smaller heap, which is what shows the figure tracks `KICKOS_USER_HEAP_SIZE`.
+  The "barely 3 KiB" reading is the selftest-image figure and applies to no production image.
+  The two boards are otherwise not one case: `bluepill-c8` carries its own linker script and its
+  own `board_config.h` (`boards/bluepill-c8/`), `f302nucleo` has no board directory at all and
+  takes the chip's script and the chip's `board_config.h`.
+- **No privileged thread can come into existence after boot.** Spawning a privileged child requires
+  the caller be privileged, and that is deliberately not a capability. Root is unprivileged and
+  `idle` runs no app code, so the posture is one-way for the lifetime of the system. With the knob
+  deleted (section 4) this holds on every board rather than on the flipped ones.
 - **`idle` stays privileged and holds no capabilities.** It runs no app code, and the
   instruction it exists to execute is not portably available unprivileged. RXv3 is categorical:
   `WAIT` is a privileged instruction and executing it in user mode raises a privileged
@@ -472,7 +572,9 @@ reproduced there at all -- and it skips non-arena regions. **It also has no priv
 witness at all** (section 2): its `arch_context_init` discards the flag, so "unprivileged" on
 the sim means a narrower region set and nothing more. A gate that fires there exercises the
 kernel's authority logic, never a CPU-mode boundary. Any claim about the privilege boundary that
-rests only on the sim is weaker than it looks.
+rests only on the sim is weaker than it looks. **`microbit` is in the same position for a different
+reason** (section 2): its Cortex-M0 implements no privilege axis, so a thread the kernel marks
+unprivileged runs privileged there and the armv6m run gate witnesses no CPU-mode boundary either.
 
 **Stage 0 and 1 are verified on sim + QEMU only, and each carries a gate that was checked to
 fail.** That last part is the discipline that matters: a gate proving a guard *exists* is worth
@@ -487,13 +589,62 @@ much less than one shown to fire.
   gates, which would otherwise ship unexercised until a board flips -- the same vacuity trap
   `kernel_ctor_placement` fell into.
 
-**Stage 2's per-board gate** is selftest green under enforcement **plus** a clean cross-domain
-`rootfault` proving root is confined -- and it is satisfiable only on an enforcing board, never on
-the sim, which has no privilege axis to witness. That ordering is why `f411disco` was witnessed in
-two separate passes: its PMSAv7 enforcement had only ever been build-and-link validated, and the
-gate has no meaning on a board where the enforcing arm has never been seen to work, so the
-enforcement witness (selftest 62/62 + `mpu_fault`, default posture) came first and the flip second.
-Both are in `reference/boards.md`.
+### The gate has arms, and each arm needs the hardware that makes it mean something
+
+**Capability tracks hardware, exactly as it already does for the MPU.** `KICKOS_HAVE_MPU=1` on a
+chip that ships no `mpu.cmake` is a configure `FATAL_ERROR` saying enforcement would be a silent
+no-op (the `KICKOS_HAVE_MPU AND NOT KICKOS_CHIP_ENFORCES_MPU` guard, `CMakeLists.txt:285`).
+Privilege takes the same treatment: no ring means no privilege enforcement, the kernel's authority
+checks still apply, this record states per board what the hardware does, and **nothing marks the
+boards that cannot enforce** -- no tier, no status field, no knob.
+
+| Arm | What it witnesses | Hardware it needs |
+|---|---|---|
+| authority | a capability gate refusing a thread that lacks the bit | none -- pure kernel logic, so the sim and the LX6 included |
+| confinement | a cross-domain fault proving memory confinement | an MPU |
+| ring | an unprivileged thread refused a privileged-only register | a privilege ring, and no MPU |
+
+The authority arm is what `authority_cap` above witnesses. The confinement arm is selftest green
+under enforcement plus a clean cross-domain `rootfault`, which is what the five stage-2 boards
+captured and what the sim can never satisfy. The ring arm is the one this record had no instrument
+for at all.
+
+**The authority arm never implies confinement, and must not be written as if it did.** On a board
+with no ring, an unprivileged root is real in the kernel's authority checks and absent in the
+hardware. Nothing there stops a thread walking past the syscall and touching the peripheral
+directly. So an authority-arm pass says the kernel refused to act on the machine on that thread's
+behalf, and says nothing about what the thread can reach by itself.
+
+**The confinement arm's ordering is why `f411disco` was witnessed in two separate passes**: its
+PMSAv7 enforcement had only ever been build-and-link validated, and the arm has no meaning on a
+board where enforcement has never been seen to work, so the enforcement witness (selftest 62/62 +
+`mpu_fault`, default posture) came first and the flip second. Both are in `reference/boards.md`.
+
+**The ring arm is witnessable and cheap, and it is measured under emulation.** On a synthetic
+no-MPU unprivileged-root build under QEMU, an unprivileged access to the System Control Space took
+`CFSR=0x8200` -- BFSR byte `0x82`, with the **MMFSR byte `0x00`**, so provably not an MPU fault --
+and `BFAR=0xE000E280`, which is `NVIC_ICPR0`, inside the SCS. It escalates to HardFault because
+nothing in this tree ever sets `SHCSR.BUSFAULTENA`; only `MEMFAULTENA` is ever written
+(`arch/arm/common/arch_arm_common.cc:203` and `:268`, `arch/arm/common/arch_arm_pmsav8.cc:99`).
+
+A prober for it reuses `mpu_fault`'s shape -- root spawns an unprivileged child that pokes the
+register, so the app is posture-independent the same way `mpu_fault` is -- with
+`tests/check_fault_dump.sh` used **verbatim**: it already asserts the reporter's marker exactly
+once plus exit 132, which is how `fault` is wired on every MPS2 image with the `HARD FAULT` marker
+(`user/apps/common/fault/CMakeLists.txt:26-29`). The register must be `SHCSR`, `ICSR` or `VTOR`
+and **not `STIR`**, because `CCR.USERSETMPEND` can legitimately make `STIR` unprivileged-writable,
+and this tree writes `STIR` from the kernel already (`kernel/bench/bench.cc:83`) -- a `STIR` store
+that lands would prove nothing about the ring.
+
+**Deleting the knob turns a never-built gate into an always-built one, which argues for the
+deletion on its own.** `user/apps/common/rootfault/CMakeLists.txt:18` registers the confinement
+gate under `KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND NOT KICKOS_ROOT_PRIVILEGED`, and **no
+preset and no CI job in the tree configures that posture** -- every enforcement build passes
+`-DKICKOS_HAVE_MPU=1` and leaves the knob at its default ON. That is exactly why the confinement
+arm has only ever been witnessed by hand on silicon. With the flag gone the third condition is
+vacuous and the gate becomes unconditional wherever enforcement exists: the four MPS2 images
+(`qemu`, `qemu-m3` and `qemu-m7` on PMSAv7 -- the M7 image with 16 regions -- and `qemu-m33` on
+PMSAv8) plus `qemu-riscv` on RISC-V PMP.
 
 **What nothing witnesses.** Two coverage gaps here are structurally unfillable by emulation:
 v6-M MPU programming (QEMU models no Cortex-M0+ and no Cortex-M23 core) and the M7 speculation
