@@ -666,8 +666,10 @@ Measured with `-DKICKOS_USER_HEAP_SIZE=0`: RAM used falls from 11,844 to 3,652 o
 arena rises from 6,560 to 14,752 (from 2,592 to 10,784 on the selftest image). No app on the
 freestanding leaf references it -- `hello`, `hello_c`, `blink` and `selftest` contain zero
 `malloc`/`_sbrk` symbols, and only `cxxtest` on the `kickos_cxx` leaf does. This is a **policy cost,
-not waste**: user-facing apps are expected to be able to use `printf`/`std::cout`, which needs a
-heap. It is recoverable per board through the existing `KICKOS_USER_HEAP_SIZE` knob, at the price of
+not waste**: it buys stdio BUFFERING and `malloc`. It is not required for
+`printf`/`std::cout` -- newlib falls back to unbuffered stdio when the buffer malloc fails
+(`arch/arm/chip/stm32f302/stm32f302.ld:24-26`), which is why `nrf51` ships 0 and prints. So the
+standard-API rule survives a heapless profile; see `reference/porting.md`. It is recoverable per board through the existing `KICKOS_USER_HEAP_SIZE` knob, at the price of
 that guarantee.
 
 ### Inherent
@@ -704,7 +706,7 @@ by that board's own provisioning; see the 6,344-byte measurement in section 7.
 **Very little, and it should be said plainly.** The build-type recovery is taken. What remains
 recoverable on the tightest board is **800 bytes of flash** (R3, the 64-bit division helper, needing a
 code change in three call sites) and **8,192 bytes of SRAM** (R4, the heap carve, whose surrender
-costs the `printf`/`std::cout` guarantee that user-facing apps are written against). Everything else
+costs stdio buffering and `malloc`, not the `printf`/`std::cout` surface itself). Everything else
 enumerated above is either already taken -- the build type, per-board table sizing, section GC, the
 freestanding clamp -- or is the kernel itself.
 
