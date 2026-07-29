@@ -46,7 +46,7 @@ code wins, then this file.
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | [x] full selftest + all apps + fault dump + bench + LED; **PMSAv7 enforcement silicon-witnessed 2026-07-29** -- enforcement selftest 62/62 + `mpu_fault` cross-domain MemManage denial, closing the `stm32f411` MPU HW debt for the chip. **Fifth board with an UNPRIVILEGED root, and the second on PMSAv7** (2026-07-29) -- see *Unprivileged root* below |
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | [x] full selftest + bench (2nd F411; 25 MHz HSE); MPU backend is the shared `stm32f411` one, silicon-witnessed on `f411disco` 2026-07-29 (not re-run on this board) |
-| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] selftest minus the 4 KiB-alloc test (16 K RAM) + bench; **not an enforcement target -- the F302R8 (`x8` line) has no MPU** (the F302xB/xC line does). **A bench board** (onboard ST-Link, own VCOM, no external adapter), and the fleet's only physically-present **no-MPU ARM** board -- the sole possible silicon witness for the privilege-ring arm, and no such run has happened; see *Unprivileged root* below. The `[x]` above dates to 2026-07-14: **the `-st` image is computed not to boot at this branch tip** (arena 96 B short of root's stack), an M4.5.2 regression found by arithmetic and not by any gate, because this board has **none** -- see *CI coverage* below |
+| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] `hello` + `stress` on silicon 2026-07-29 (`stress` at the tip `9ba4e4b`) -- the fleet's first captures on optimised code; bench dates to 2026-07-14 and has not been re-run since. **The suite needs the `-st` provisioning here:** `59 ok / 0 not ok / 8 skipped` at it, `17 / 42 / 10` at the application profile, every failure a resource refusal. The older "selftest minus the 4 KiB-alloc test" record dates to 2026-07-14 and predates M4.5.2's static growth. Full captures: *`f302nucleo` on silicon* below. **Not an enforcement target -- the F302R8 (`x8` line) has no MPU** (the F302xB/xC line does). **A bench board** (onboard ST-Link, own VCOM, no external adapter), and the fleet's only physically-present **no-MPU ARM** board -- the sole possible silicon witness for the privilege-ring arm, and no such run has happened; see *Unprivileged root* below. **No CI gate of any kind** -- see *CI coverage* below |
 | `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + full selftest with `sched_exit` (2026-07-09, 125 MHz PLL); PMSAv6 cross-domain denial silicon-proven 2026-07-19 (M0+ has no MemManage -- it escalates to HardFault) -- the fleet's only armv6m enforcement proof; U-mode `cxxtest` still awaits a bench re-flash |
 | `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only, and **no unit exists** -- there is no genuine F103C8 on the bench, so nothing here can be silicon-witnessed at all (64 K/20 K linker; links the full app set incl selftest + stress) |
 | `frdmk64f` | MK64FN1M0 / M4F | -- (none) | UART0, PTB16/PTB17, 115200 -> OpenSDA VCOM | J-Link (OpenSDA) | [x] HW 2026-07-15 (full selftest over the buffered console ring, 120 MHz); SYSMPU enforcement + `mpu_fault` trap silicon-proven at M2 |
@@ -93,6 +93,17 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   unwitnessability is hardware absence, not a verdict about the part -- and it costs no coverage,
   since `f302nucleo` is the same class (64 KiB-flash armv7m, no MPU, real privilege ring) and is on
   the bench. Links the full app set.
+
+  **MODEL PREDICTION, not a witness: `bluepill-c8` fails `hello`'s second spawn by 96 bytes.** The
+  board can never be flashed, so this is arithmetic and stays arithmetic. Arena 6,560 B, read with
+  `arm-none-eabi-nm` on the `hello` ELF at `9ba4e4b`; idle 512 and root 2,048 leave **4,000** against
+  the **4,096** two 2,048-byte stacks need (`boards/bluepill-c8/include/kickos/board_config.h:31`,
+  `:34`, `:37`; every figure is a multiple of the 32-byte no-MPU granule, so alignment costs nothing
+  here). The cause is the **heap carve**, not the part: 8 KiB `.userheap`
+  (`arch/arm/chip/stm32f103/stm32f103.ld`) where `f302nucleo` now takes 2K, and the C8 has 4 KiB *more*
+  SRAM. The model is the one in `porting.md`'s `## Minimum hardware requirement` section; it
+  predicted all three `f302nucleo` silicon outcomes correctly (see *`f302nucleo` on silicon* below),
+  which is the whole basis for quoting a number for a board nobody can run.
 - **`due`** -- **retired** (see the table note above): SAM3X port proven 2026-07-09, but
   this unit now has a peripheral-I/O fault.
 - **`frdmk64f`** -- **HW-revalidated 2026-07-15** (OpenSDA J-Link): full selftest streamed
@@ -141,6 +152,87 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   known LED (`qemu`, `microbit`, `frdmk64f`, `teensy41`, `pizero2350`) links the weak
   no-op and the LED silently does nothing -- not a failure.
 
+### `f302nucleo` on silicon -- the suite passes at the selftest provisioning
+
+Four captures, 2026-07-29, over the ST-Link VCP on `/dev/ttyACM0`. They are the fleet's
+first silicon witnesses on **optimised** code (`MinSizeRel`, `cmake/presets/arm.json:10`)
+and the first on this board since 2026-07-14. Every banner reads `board f302nucleo /
+arch armv7m / mpu off / sched tickless`; the three at the board's application profile add
+`heap 2 KiB available`, and the `-st` capture reads `heap none`, since that preset carves no
+heap (`KICKOS_USER_HEAP_SIZE=0`).
+
+| App | Commit in the banner | Result |
+| --- | --- | --- |
+| `hello` | `176109e-dirty` | **PASS** -- both spawned threads run; ran past `ping 504` / `pong 504` before the capture was cut |
+| `stress` | `9ba4e4b` | **PASS** |
+| `selftest` (board app profile) | `9ba4e4b` | 17 `ok` / 42 `not ok` / 10 skipped, plan `1..59` |
+| `selftest` (`-st` provisioning) | `2af3aee`+ | **59 `ok` / 0 `not ok` / 8 skipped -- `# all tests passed`** |
+
+`hello`'s banner stamps `176109e-dirty`, not the tip. That image predates the branch
+reorder and is one commit -- `arena: no-MPU region granule on f103/f302, boot-arena link
+assert` -- behind the tip; its tree already carried the halved heap carve, which the
+banner's `heap 2 KiB` witnesses (`176109e` itself still declared 4K).
+
+**`hello` PASS is the run-floor witness.** Two threads
+(`user/apps/common/hello/main.cc:74-75`), both spawned, `printf` alive, at
+`KICKOS_USER_HEAP_SIZE 2K` (`arch/arm/chip/stm32f302/stm32f302.ld:28`) -- the halved carve
+neither starves stdio nor costs a thread stack.
+
+**`stress` PASS**, verbatim:
+
+    naps 0/0  handoffs 6000/6000  churn 340/340
+    STRESS PASS
+
+`stress` probes the live thread budget before it sizes anything -- it spawns parked threads
+until one is refused (`user/apps/common/stress/main.cc:14-20`) -- so those counts are a
+measurement of this board, not a fixed workload: budget 2, one ping-pong pair, 6,000
+handoffs, no sleepers. `churn 340/340` is 340 spawn/exit cycles through those two slots and
+is the **thread-slot reclaim** witness: a broken reclaim exhausts the pool and a spawn
+returns -1 (`:22-25`). `naps 0/0` is what the small budget costs -- with zero sleepers the
+tickless-timer conservation arm did not run here.
+
+**`selftest` fails 42 of 59, and every failure is a resource refusal, not a logic fault.**
+Two independent causes, both measured on the ELF at the tip:
+
+- **Arena.** The suite's static footprint is 7,760 B and its heap carve 2,064 B, leaving an
+  arena of 4,512 B (`arch/arm/chip/stm32f302/stm32f302.ld:110-111`). The idle and root boot
+  stacks take 512 + 2,048, so **1,952 B remain** -- below the 2,048 one spawned thread's
+  stack needs (`arch/arm/chip/stm32f302/include/kickos/board_config.h:33`). Every spawning
+  case therefore fails on `w >= 0` / `drv >= 0` / `a >= 0 and b >= 0`.
+- **Object pools.** A zero-skip run needs `KICKOS_MAX_SEMAPHORES >= 6` (peak is
+  `mutex_deadlock`: two permanent plus four live); this chip provisions 4
+  (`arch/arm/chip/stm32f302/include/kickos/board_config.h:21`). That is the `sem_destroy`
+  failure on `h >= 0`.
+
+Two further provisionings were flashed, which is the evidence that **no single knob fixes
+it**:
+
+| Configuration | Result |
+| --- | --- |
+| board defaults | 17 `ok` / 42 `not ok` / 10 skipped |
+| `-DKICKOS_MAX_THREADS=4` | 17 `ok` / 42 `not ok` / 10 skipped -- identical; the arena binds, not the pool |
+| `-DKICKOS_MAX_THREADS=4 -DKICKOS_USER_STACK_SIZE=1024` | 18 `ok` / 41 `not ok` / 11 skipped -- one case bought, then `sem_destroy` refuses on the semaphore pool |
+
+In that last configuration one failure is **not** a resource refusal: `console_publish_priv`
+gets its worker spawned and then fails on `g_pub_rc == -KOS_EPERM`. Do not read that as an
+authority-gate defect -- a 1 KiB stack is below what the rest of the fleet gives a worker,
+and nothing here separates "the gate returned the wrong code" from "the worker did not get
+far enough to call it". The configuration is a sizing probe, not a posture to ship.
+
+So "KickOS runs on this part" and "KickOS is validated on this part" are different claims
+about one board. `porting.md`'s `## Minimum hardware requirement` section carries the
+model, the four-span SRAM arithmetic and the per-board thread-capacity table these captures
+were checked against.
+
+**What these captures do NOT witness.** The **ring arm** of the unprivileged-root boundary
+(an unprivileged thread refused a privileged-only register) -- no prober exists, so nothing
+was run for it; see *Unprivileged root* below. And **no benchmark**: no bench run was taken
+under controlled conditions on this board at these commits, so there is no switch or IRQ
+figure to quote at `MinSizeRel`. A caution for whoever takes one: the VCP is not drained on
+reset, so a fresh capture opens with **residue from the previous image** -- a stale
+`switch:`/`irq:` block or a stale `ping`/`pong` run above the banner is the old image, not
+this one. Read only what follows the banner.
+
 ## CI coverage & cross toolchains
 
 **What CI gates is not uniform across the fleet, and the gaps are structural.** The authoritative
@@ -188,31 +280,35 @@ the board".
   somebody flashes it. That matters more now than it did, because it is a bench board and the
   fleet's only physically-present no-MPU ARM part (see *Unprivileged root* below).
 
-  **That gap has a concrete instance: the `f302nucleo-st` `selftest` image no longer leaves enough
-  arena for root's stack.** `__kickos_ram_end - __kickos_ram_start`, read with `arm-none-eabi-nm` on
-  the built ELF, same toolchain and same command on both refs:
+  **The gap's one concrete instance is fixed, and it is why the boot-arena link assert now exists.**
+  M4.5.2's static growth took the `f302nucleo-st` arena below what `kmain`'s two boot stacks need.
+  `__kickos_ram_end - __kickos_ram_start`, read with `arm-none-eabi-nm` on the built ELF:
 
-  | Ref | `__kickos_ram_start` | `__kickos_ram_end` | Arena |
+  | Ref | Heap carve | Arena | Against the 2,560 B the boot stacks need |
   | --- | --- | --- | --- |
-  | `181540e` (master) | `0x20002c40` | `0x20003800` | 3,008 B |
-  | `176109e` (this branch) | `0x20002e60` | `0x20003800` | 2,464 B |
+  | `181540e` (master) | 4K | 3,008 B | 448 B of headroom |
+  | `176109e` (mid-branch) | 4K | 2,464 B | **96 B short** |
+  | `9ba4e4b` (tip) | 2K | **4,512 B** | 1,952 B of headroom |
 
-  `kmain` takes both bootstrap stacks from that arena through `boot_stack_alloc` --
-  `KICKOS_IDLE_STACK_SIZE` then `KICKOS_ROOT_STACK_SIZE`, 512 and 2048 on this chip at those refs --
-  so it needs **2,560 B**. Master had 448 B of headroom; the branch is **96 B short**, which means
-  the second allocation cannot be satisfied, and an unsatisfied one is
-  `kpanic("kmain: no arena for the root stack")` (`kernel/init/kmain.cc:224`) rather than a degraded
-  boot. M4.5.2's static growth consumed 544 B of arena and crossed the line,
-  which makes this a **regression introduced on this branch**, not a pre-existing condition --
-  consistent with the board's genuine 2026-07-14 silicon pass at 13/14 (`../m2-readiness.md`) and
-  with nothing having flashed it since.
+  `kmain` takes both bootstrap stacks from the arena through `boot_stack_alloc` --
+  `KICKOS_IDLE_STACK_SIZE` then `KICKOS_ROOT_STACK_SIZE`, 512 and 2,048 on this chip
+  (`arch/arm/chip/stm32f302/include/kickos/board_config.h:38`, `:41`) -- so it needs **2,560 B**, and
+  an unsatisfied second allocation is `kpanic("kmain: no arena for the root stack")`
+  (`kernel/init/kmain.cc:224`) rather than a degraded boot. The fix was the heap carve: `6d49e14`
+  halved `KICKOS_USER_HEAP_SIZE` to 2K (`arch/arm/chip/stm32f302/stm32f302.ld:28`), which returns
+  1:1 to the arena because the heap is carved below `__kickos_ram_start`. **Boot at the tip is now
+  witnessed rather than computed** -- see *`f302nucleo` on silicon* above. `176109e` was superseded
+  by the branch reorder and resolves against `backup/m4.5.2-pre-reorder`, not the live branch.
 
-  **This is arithmetic over the allocator, not an executed panic.** No emulator models the
-  stm32f302 and the boards are physically disconnected, so nobody has run it: the evidence is the
-  two arena figures against the 2,560 B requirement and nothing else. It is exactly the shape the
-  missing gate cannot catch -- the image links cleanly, and the linker script's own arena `ASSERT`
-  passes because it only checks that the arena is non-negative, not that it can hold what `kmain`
-  will ask for.
+  The regression is kept on record because of what it changed. It was found by arithmetic, not by a
+  gate: the image linked cleanly, since the linker script's arena `ASSERT` only checked that the
+  arena was non-negative. `KICKOS_BOOT_ARENA_ASSERT` (`arch/common/boot_arena.ld.h:30-32`, same
+  commit as the carve fix) now
+  replays those two allocations, alignment padding included, so an arena that cannot hold them fails
+  the **build** on every chip. It still does not check user stacks or pool capacity, which is why
+  `f302nucleo-st` at the board's application profile linked clean and then refused every spawn on
+  hardware. The `-st` preset now provisions for the suite and passes (see *on silicon* above), but
+  the assert's blind spot is unchanged: nothing catches a user-stack or pool shortfall at build time.
 - **microbit has no privilege axis at all, so it witnesses nothing about the user/kernel ring.**
   The nRF51822 is a Cortex-M0, and ARMv6-M's Unprivileged/Privileged Extension is optional and
   separate from the MPU extension: the M0 does not implement it (Cortex-M0 TRM DDI0432C), so
@@ -1071,8 +1167,8 @@ bench, so it carries the hardware coverage for both.
 **`f302nucleo` is the fleet's only physically-present no-MPU ARM board, so it is the sole possible
 silicon witness for the ring arm.** Having no MPU rules out the confinement arm and nothing else;
 the ring arm wants exactly a ring with no MPU, which the F302R8's M4 has. **Nothing has been run on
-it under an unprivileged root** -- no flash, no capture, no result of any kind. This is future work,
-and it needs a gate built for it too, since the board has none (see *CI coverage* above) -- which is
-also where the arena regression that its `-st` image is computed to hit at this branch tip is
-recorded, and that has to clear before any capture here means anything.
-`design-unprivileged-root.md` sections 9 and 10 carry the arms and the arithmetic.
+it under an unprivileged root** -- no flash, no capture, no result of any kind, and no prober app
+exists to take one. The board does now boot and run apps at the tip (*`f302nucleo` on silicon*
+above), so the arena blocker is gone; what is left is the prober and a gate to hold it, since the
+board has neither (see *CI coverage* above). `design-unprivileged-root.md` sections 9 and 10 carry
+the arms and the arithmetic.

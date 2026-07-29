@@ -500,7 +500,7 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 <td class="c-status"><span class="st st-fixed">Fixed</span><div class="commits">9c057a6 &middot; 1526cae &middot; 89549af</div></td>
 <td class="c-sev">High</td>
 <td class="c-area">Arch coherency</td>
-<td class="c-body"><code class="loc">boards/bluepill-c8/stm32f103.ld and all 16 linker scripts</code>
+<td class="c-body"><code class="loc">arch/arm/chip/stm32f103/stm32f103.ld and all 16 linker scripts</code>
 <p class="problem">One board override used a monolithic .init_array, silently opting out of the ctor split its own chip script implements. Two bugs at once: every app ctor ran from Reset_Handler ahead of the kernel, and because the window bounds were weak the late walk covered an empty range and did nothing. The image booted and nothing said the split had not happened.</p>
 <p class="fix"><span class="fixlabel">What landed: </span>Auditing the boundary turned up more than the one script. .fini_array was placed by no script at all &#8212; an orphan ld sites at its own discretion, reachable because the freestanding leaf builds -fno-use-cxa-atexit; on mk64f it lands at exactly _edata, a function pointer in RAM that is neither initialised nor cleared. All 16 scripts now place it app-side with KEEP and an emptiness ASSERT. 89549af then made the bounds a strong reference, so absent is a link error where it used to resolve to null: present-but-empty stays quiet (the common case), absent cannot happen quietly on any target.</p></td>
 </tr>

@@ -447,7 +447,7 @@ board.** What is left is the heap carve (R4 in section 11), which is the larger 
 the span `[__kickos_ram_start, __kickos_ram_end)`. Both symbols read out of the ELF.
 
 **`bluepill-c8`** -- 20,480 SRAM (`_estack = 0x2000_5000`, exactly 20 KiB), `_kernel_stack_size = 2K`,
-`.userheap` default 8K (`boards/bluepill-c8/stm32f103.ld:27`), `__kickos_ram_end = 0x2000_4800`:
+`.userheap` default 8K (`arch/arm/chip/stm32f103/stm32f103.ld`), `__kickos_ram_end = 0x2000_4800`:
 
 | Image | Opt | Heap | `__kickos_ram_start` | Arena |
 | --- | --- | --- | --- | --- |
@@ -466,8 +466,12 @@ them:
 | Image | Opt | Heap | `__kickos_ram_start` | Arena |
 | --- | --- | --- | --- | --- |
 | `hello` | `-Os` | 4K | `0x2000_1ec0` | 6,464 |
-| `selftest` ON | `-Os` | 4K | `0x2000_2e00` | 2,560 |
+| `selftest` ON | `-Os` | 4K | `0x2000_2e00` | 2,560 (at `ae7996e`) |
 | `selftest` ON | `-Os` | 2K | `0x2000_2e60` | **4,512** |
+
+The 4K selftest arena moved with the image: 3,008 B at `181540e`, 2,560 B at `ae7996e`, 2,464 B
+once the branch's static growth landed -- which is the value the boot-arena shortfall was derived
+from (`docs/reference/boards.md`). Each figure is right for its ref; the arena is per-image.
 
 At 4K the two boards were **not** the same case -- 20 KiB against 16 KiB of SRAM -- yet landed
 within 128 bytes of each other, because `f302nucleo`'s smaller SRAM was matched by a smaller heap
@@ -481,23 +485,28 @@ the 17,888 bytes the arena does not get, `.userheap` takes 8,192 (46%), the self
 harness take 3,905 (22%), the kernel stack takes 2,048 (11%), and the kernel's own static state
 takes 3,019 (17%).
 
-## 8. The `stm32f103.ld` floor: a correction
+## 8. The `stm32f103.ld` floor: removed
 
-The floor is real: `arch/arm/chip/stm32f103/stm32f103.ld:22-23` declares `FLASH 32K` / `RAM 10K`,
-sized down for the low-density Blue Pill clones.
+The chip default declared `FLASH 32K` / `RAM 10K`, sized down for low-density Blue Pill clones,
+while `bluepill-c8` overrode it with the genuine part's `FLASH 64K` / `RAM 20K`. Two consequences,
+and the second is why the floor is gone rather than merely documented.
 
-**It penalises nothing, because no board reaches it.** `arch/CMakeLists.txt:291-293` prefers
-`boards/<board>/<chip>.ld` when that file exists, and `boards/bluepill-c8/stm32f103.ld:17-18`
-declares the honest `FLASH 64K` / `RAM 20K`. `bluepill-c8` is the only board in the tree with
-`KICKOS_CHIP "stm32f103"` (checked across all of `boards/*/board.cmake`), and it has that override.
-Confirmed in the linked artefact rather than from the sources: the generated script the link
-actually consumes (`<build>/arch/stm32f103.ld`) carries `LENGTH = 64K` / `LENGTH = 20K`, and the ELF
-places `_estack` at `0x2000_5000`, which is `0x2000_0000 + 20480`.
+**It penalised nothing, because no board reached it.** `arch/CMakeLists.txt:291-293` prefers
+`boards/<board>/<chip>.ld` when that file exists, and `bluepill-c8` is the only board in the tree
+with `KICKOS_CHIP "stm32f103"` (checked across all of `boards/*/board.cmake`). So the floor was
+unused defensive code left behind by the clone's retirement (`e562eef`), and removing it recovered
+zero bytes on any board that exists.
 
-So the chip default is currently reachable by no board: it is unused defensive code left behind by
-the clone's retirement (`e562eef`, "board cleanups"). **Removing the floor recovers zero bytes on
-any board that exists.** No test, CI job or script consumes it either -- the only in-tree reference
-to it is the explanatory comment at `boards/bluepill-c8/board.cmake:9`.
+**The layering was inverted, and the duplicate had a silent failure mode.** The chip file described
+a part present nowhere in the tree while the board file described the real one, and the board copy
+carried its own note that it MUST mirror the chip default's global-ctor partitioning -- where
+divergence runs app ctors before `kmain` and leaves the weak app-ctor bounds at 0, so the
+`root_entry` walk is skipped with no diagnostic. The two scripts are now one:
+`arch/arm/chip/stm32f103/stm32f103.ld` carries the genuine `FLASH 64K` / `RAM 20K`, the board-level
+override is deleted, and a low-density clone would need its own chip entry rather than a floor
+smuggled into the honest part. Verified behaviour-neutral: every symbol address and every section
+size of `bluepill-c8-st` is unchanged across the consolidation (`text 51180 / data 388 / bss 15448`,
+`_estack 0x2000_5000`, arena `0x2000_3de0 .. 0x2000_4800`).
 
 The corollary matters more than the floor: the small `bluepill-c8` arena is **not** a floor artefact.
 The linker sees the full 20 KiB. The arena is small because of the 8 KiB heap carve and the static
@@ -657,8 +666,10 @@ Measured with `-DKICKOS_USER_HEAP_SIZE=0`: RAM used falls from 11,844 to 3,652 o
 arena rises from 6,560 to 14,752 (from 2,592 to 10,784 on the selftest image). No app on the
 freestanding leaf references it -- `hello`, `hello_c`, `blink` and `selftest` contain zero
 `malloc`/`_sbrk` symbols, and only `cxxtest` on the `kickos_cxx` leaf does. This is a **policy cost,
-not waste**: user-facing apps are expected to be able to use `printf`/`std::cout`, which needs a
-heap. It is recoverable per board through the existing `KICKOS_USER_HEAP_SIZE` knob, at the price of
+not waste**: it buys stdio BUFFERING and `malloc`. It is not required for
+`printf`/`std::cout` -- newlib falls back to unbuffered stdio when the buffer malloc fails
+(`arch/arm/chip/stm32f302/stm32f302.ld:24-26`), which is why `nrf51` ships 0 and prints. So the
+standard-API rule survives a heapless profile; see `reference/porting.md`. It is recoverable per board through the existing `KICKOS_USER_HEAP_SIZE` knob, at the price of
 that guarantee.
 
 ### Inherent
@@ -695,7 +706,7 @@ by that board's own provisioning; see the 6,344-byte measurement in section 7.
 **Very little, and it should be said plainly.** The build-type recovery is taken. What remains
 recoverable on the tightest board is **800 bytes of flash** (R3, the 64-bit division helper, needing a
 code change in three call sites) and **8,192 bytes of SRAM** (R4, the heap carve, whose surrender
-costs the `printf`/`std::cout` guarantee that user-facing apps are written against). Everything else
+costs stdio buffering and `malloc`, not the `printf`/`std::cout` surface itself). Everything else
 enumerated above is either already taken -- the build type, per-board table sizing, section GC, the
 freestanding clamp -- or is the kernel itself.
 

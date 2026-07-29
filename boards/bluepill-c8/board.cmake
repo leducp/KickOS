@@ -6,7 +6,7 @@
 # toolchain file (pre-project, for -mcpu). Side-effect free: set only these.
 #
 # Genuine STM32F103C8 "Blue Pill", 20 KiB SRAM (Cortex-M3, no FPU). Same chip
-# backend as bluepill; overrides the linker with boards/bluepill-c8/stm32f103.ld.
+# backend and linker script as the chip default (arch/arm/chip/stm32f103/stm32f103.ld).
 set(KICKOS_BOARD_ID "bluepill-c8")
 set(KICKOS_ARCH "armv7m")
 set(KICKOS_CHIP "stm32f103")

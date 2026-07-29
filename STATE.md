@@ -7,7 +7,7 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-Branch `M4.5.2-unpriv-root-stage2`, 5 commits ahead of master `181540e`.
+On `master`. M4.5.2 is merged; nothing is in flight.
 
 M4.5.2 **stage 2 of the unprivileged root is COMPLETE**: five boards run root with
 `privileged=false` plus a `CAP_AUTHORITY`, silicon-witnessed across all **four** enforcement
@@ -27,9 +27,16 @@ backends -- `xmc4800-relax` and `f411disco` (PMSAv7), `esp32c6-wroom` (RISC-V PM
 ## Build posture
 
 The whole fleet including the sim builds `MinSizeRel` (`-Os`, with `-g` re-added in
-`CMakeLists.txt`). Every silicon witness predates that and needs re-running; the
-`bluepill-c8-st` and `f302nucleo-st` images are the exception (already `-Os` under the
-superseded two-board holding block, `.text` byte-identical).
+`CMakeLists.txt`). It shipped `-O0` until this milestone, roughly 2x the footprint, so
+**every silicon witness taken before it needs re-running** -- the fleet pass under 4.5.5.
+Two exceptions: the `bluepill-c8-st` and `f302nucleo-st` images were already `-Os` under the
+superseded two-board holding block, `.text` byte-identical. The `f302nucleo` captures are the
+only ones taken on optimised code. `-Os` is a preset default, so it is invisible through
+`find_package(KickOS)`: an out-of-tree consumer picks its own build type, and the floors in
+`reference/porting.md` assume `-Os`.
+
+The single commit to revert when bisecting a footprint or timing regression at the bench is
+`build: optimise the fleet (MinSizeRel)`; it is deliberately alone.
 
 ## Gates (ctest, all green)
 
