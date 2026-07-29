@@ -247,10 +247,9 @@ triggers `push` only on `master`).
       impossible before -- the force-linked reference broke those too), and a real board is
       unaffected. Both out-of-tree export gates pass, so the exported package still links.
       Follow-on now unblocked: nrf51 can drop the zero-length `.userheap` it only kept for this.
-- [ ] **Override `arch_mpu_min_region()` to 0 in `chip_stm32f103.cc`.** STM32F1 has no MPU, but
-      the chip inherits the v7-M pow2 minimum and pays its alignment tax anyway -- which is what
-      took `bluepill-c8`'s free arena to zero. A 0 override drops the tax on a part that has
-      nothing to enforce.
+- [x] ~~**Override `arch_mpu_min_region()` to 0 in `chip_stm32f103.cc`.**~~ DONE (`6d49e14`),
+      and `chip_stm32f302.cc` with it: both parts have no MPU, so they were paying the v7-M pow2
+      alignment tax for regions nothing programs.
 - [ ] **Re-point `kernel_ctor_placement` at the `cxxtest` ELF.** The gate passes fleet-wide, but
       vacuously: every app it inspects links an empty `.kickos_app_init_array` window, so the
       script takes its early-out without ever dereferencing a pointer. `cxxtest` is the one image
@@ -314,8 +313,9 @@ triggers `push` only on `master`).
       measures all fourteen boards both ways). One caveat stands: the switch's I-cache footprint
       plausibly moved too, but **no instruction-cache or cycle measurement was ever taken**, so that
       is not to be cited as measured (`design-flash-footprint.md` section 10). Consequence: every
-      published bench figure and every silicon witness measured unoptimised code -- see the fleet
-      re-witness pass under M4.5.5 below.
+      published bench figure measured unoptimised code, and every silicon witness except the
+      2026-07-29 `f302nucleo` captures, which are the first taken on `-Os` -- see the fleet
+      re-witness pass under M4.5.5 below. No bench has been run optimised.
 - [x] **`picopi` and `pizero2350` cannot build an optimised image: FIXED**, which is what unblocked
       the fleet build type above.
       `arch/arm/chip/rp2040/chip_rp2040.cc:80-81` and `arch/arm/chip/rp2350/chip_rp2350.cc:96-97`
@@ -661,15 +661,17 @@ Blockers and limits:
   userspace driver so the report always reaches the wire, which works, but on `xmc4800-relax` it
   reproducibly garbles roughly the last 8 bytes the driver had queued (the polled TX word pending in
   `TBUF0`). Cosmetic for a terminal report, but it eats the tail of the line preceding the dump.
-- **`bluepill-c8` and `f302nucleo` are held by the absence of a witness, not by RAM or handles.**
+- **`bluepill-c8` and `f302nucleo` are held by the absence of a RING-ARM witness, not by RAM or
+  handles.** `f302nucleo` now has silicon: `hello` and `stress` both pass at 2 KiB of heap
+  (`docs/reference/boards.md`). What is unwitnessed is the ring arm, and no prober app exists.
   Both are armv7m, so the flip's mechanism (`ctx.npriv` in the fabricated first frame) is present;
   neither part has an MPU (`stm32f103` none, and `f302nucleo` is the R8 `x8` line, which has none
   either), so stage 2's gate -- selftest green *under enforcement* plus a cross-domain `rootfault`
   -- cannot be met on either. The 9-handle provisioning costs the flip nothing: the authority cap
   sits at reserved index 2 and spends zero dynamic slots. The arena is heap policy, not the part:
   measured 6,560 B (`bluepill-c8`, production image), 2,592 B (its selftest image), 14,752 B with
-  the heap carve at zero; 6,464 and 2,560 on `f302nucleo` with its 4 K carve
-  (`design-flash-footprint.md` section 7). The "barely 3 KiB" reading is a selftest-image figure.
+  the heap carve at zero; 8,512 and 4,512 on `f302nucleo` since its carve went to 2 K
+  (`design-flash-footprint.md` section 7, `docs/reference/porting.md` minimum-requirement). The "barely 3 KiB" reading is a selftest-image figure.
 - **`Thread::privileged` survives**, with narrowed meaning: it selects the memory posture (kernel
   domain + permissive background), it is the confused-deputy bypass at `syscall_mem.cc:37`, and it
   stays the home for "may spawn a privileged child" -- which should NOT be a capability, since
@@ -707,9 +709,9 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
         (`rx72m`), and ARM PMSAv8 32 B (`rp2350`, and `mps2-an505` via `qemu-m33`), which is
         base/limit rather than base+size. **This is the unrepresentable class**, and it
         over-aligns today on `frdmk64f`, `rx72m` and `pizero2350`.
-      - **No MPU.** `arch/arm/chip/nrf51/chip_nrf51.cc:112` overrides to 0. `stm32f103` and
-        `stm32f302` belong here too, and their `arch_mpu_min_region()` overrides are a separate
-        change with its own item above -- not part of this one.
+      - **No MPU.** `arch/arm/chip/nrf51/chip_nrf51.cc:110` overrides to 0. `stm32f103` and
+        `stm32f302` override to 0 as well (`6d49e14`), so this item covers only the class that
+        remains: a granule that is right while the MODE is wrong.
       **For PMSAv8 the `min_region` VALUE of 32 is correct; the MODE is wrong.** 32 is the PMSAv8
       granule, which is why `arch/arm/common/arch_arm_pmsav8.cc:156` deliberately keeps the weak
       32 and overrides encodability alone. `mk64f` is the same shape: it overrides
@@ -850,6 +852,88 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
       production image, and the stage-2 gate is `selftest` + `rootfault`, both green on that board.
       Its loopback arm is also still unwitnessed in the default posture (needs the PA7->PA6 jumper),
       so the chip's peripheral-window proof stays open either way.
+
+## Found during the M4.5.2 review (2026-07-29)
+
+- [ ] **A user-facing test suite does not exist.** The kernel selftest tests the KERNEL through the
+      syscall surface and deliberately does not test the user-facing surface, so nothing anywhere
+      checks that `printf`, `std::cout`, heap behaviour and libc integration work per board.
+      `hello` passing is the entire coverage, and on some boards `hello` has no gate at all: QEMU
+      models no `stm32f302`, so `f302nucleo` carries **no CI gate of any kind**
+      (`docs/reference/boards.md`). **The two suites cannot merge**, and the `-st` presets are why --
+      the kernel suite is provisioned FOR the kernel. `f302nucleo-st` (`cmake/presets/arm.json:137`)
+      now runs it with `KICKOS_USER_HEAP_SIZE=0` and `KICKOS_USER_STACK_SIZE=1024`, which is
+      precisely the opposite of what a user-API suite has to exercise. Sharp consequence of that
+      preset: with the heap carve at zero the `-st` gate on that board no longer exercises the heap
+      at all, so a heap regression on a 16 KiB part would go unseen.
+- [ ] **CI builds the enforcement gates unoptimised -- NEEDS A DECISION.** The "ARM PMSA enforcement
+      run gates (v7 + v8)" step (`.github/workflows/ci.yml:171`) passes `-DCMAKE_BUILD_TYPE=Debug`
+      explicitly (`:176`), which overrides the fleet's `MinSizeRel` default. So the four gates
+      covering the enforcement posture -- the posture that matters most -- still compile `-O0`, on
+      the one job that runs `qemu`, `qemu-m33`, `qemu-m7` and `qemu-m3` under `KICKOS_HAVE_MPU=1`.
+      Filed as a decision rather than a defect: dropping the pin makes those gates test what ships,
+      and it also changes what has been gated until now.
+- [ ] **`sam3x8e` over-alignment: PARKED on hardware absence, not open.** The chip HAS an MPU on
+      silicon (Atmel SAM3X/SAM3A datasheet, Cortex-M3 revision 2.0) but KickOS ships no `mpu.cmake`
+      backend for it, so it builds `KICKOS_HAVE_MPU=0` while still inheriting ARM's weak
+      `arch_mpu_min_region()` of 32 (`arch/arm/common/arch_arm_common.cc:348`) -- costing 3,808 bytes
+      of measured over-alignment on a part that enforces nothing. It is the third member of the class
+      `stm32f103` and `stm32f302` just left, both of which now override to 0 in
+      `arch/arm/chip/stm32f103/chip_stm32f103.cc` and `arch/arm/chip/stm32f302/chip_stm32f302.cc`.
+      **PARKED by the maintainer for a concrete
+      reason: the physical Arduino Due unit is dead** (`docs/reference/boards.md`), so nothing on this
+      chip can ever be witnessed -- do not pick it up expecting to validate it. The class itself is
+      handled by the region-encoding item under M4.5.5 above, which is where a third encoding mode
+      would land.
+- [ ] **Cut `bluepill-c8`'s 8 KiB heap carve: the board is predicted to fail `hello`'s second spawn
+      by 96 bytes.** This is a **MODEL PREDICTION, not a witness** -- the board has no physical unit
+      and can never be flashed. Arena 6,560, minus idle 512 and root 2,048, leaves 4,000 against the
+      4,096 that two 2,048-byte stacks need. The cause is the carve rather than the part: 8 K
+      `.userheap` (`arch/arm/chip/stm32f103/stm32f103.ld:27`) where `f302nucleo` now takes 2 K, plus the
+      board raising ROOT/USER to 2048 over the chip default of 1024
+      (`boards/bluepill-c8/include/kickos/board_config.h:31`, `:37`). Full arithmetic and its
+      provenance are already in `docs/reference/boards.md`; the fix is cutting the carve. The
+      prediction is worth acting on because the same model called all three `f302nucleo` silicon
+      outcomes correctly -- `hello` two threads, `stress` pass, `selftest` spawns refused.
+      **The boot-arena link assert cannot catch this**: `arch/common/boot_arena.ld.h` replays the
+      idle and root stacks only, never the N user stacks a spawning app needs.
+- [ ] **About 270 `path:N` doc citations cannot be verified by any gate, and two of two spot-checks
+      had drifted -- NEEDS A CONVENTION DECISION.** `tests/check_doc_names.sh` (landed, deliberately
+      not wired into CTest) says so itself at `:54-57`: it strips the `:N` and never checks it,
+      because nothing in the current spelling says WHAT should be at that line. Two confirmed live
+      instances, both in one document: `docs/design-m3-clock-select.md:16` cites
+      `user/include/kickos/sys/abi.h:36` for the cpu-clock syscall, where line 36 is now
+      `KOS_SYS_IRQ_REGISTER = 14` (the real line is 43); and `:17` cites
+      `arch/include/kickos/arch/arch.h:79` for `arch_cpu_clock_hz()`, where line 79 is
+      `arch_timer_arm()` (real line 84). This is the reused-identifier class the project already
+      knows is expensive -- a citation that resolves to a live but unrelated thing is worse than one
+      that dangles. **The decision is the spelling**: if a citation carries the expected symbol
+      (`arch.h:84 arch_cpu_clock_hz`), the gate can check it in about two lines; until then `:N` is
+      decoration. This item scopes that work only -- fixing the ~270 citations belongs to the doc
+      audit, and the two instances above are deliberately left as found.
+- [ ] **`arch_reboot` should take a MODE, and the compile knob should gate the MODE rather than the
+      seam. Owner: M4.6, after 4.5.4.** Decision recorded in full in
+      `docs/design-unprivileged-root.md` section 9, under `### The reboot capability`. Today
+      `int arch_reboot(void)` (`arch/include/kickos/arch/arch.h:44`) takes no argument and means
+      bootloader entry specifically, with two callers -- `kernel/init/console.cc:293` inside
+      `bootloader_handover`, and the `KOS_SYS_REBOOT` dispatch arm at
+      `kernel/syscall/syscall.cc:390` -- and the whole thing sits behind `KICKOS_ENABLE_SELFTEST`.
+      Four parts: a mode argument (at least a normal system reset and bootloader entry); a per-MODE
+      weak `-KOS_ENOSYS` decline instead of a per-function one; the knob narrowed to the bootloader
+      mode and renamed `KICKOS_ENABLE_REBOOT_TO_BOOTLOADER`, matching the sibling
+      `KICKOS_SHUTDOWN_TO_BOOTLOADER` (`CMakeLists.txt:117`) rather than spelling one destination two
+      ways; and an authority bit on top of the knob for the bootloader mode alone. What it buys: no
+      production in-kernel path can reset the chip today, which costs watchdog recovery, a
+      fault-handler reset and a bring-up retry for no security reason, since a normal reset carries
+      none of the bootloader risk. What it retires: `KICKOS_SHUTDOWN_TO_BOOTLOADER` becomes a policy
+      on one seam instead of a parallel mechanism, and syscall 38 becomes a real production syscall
+      taking a mode -- answering `-KOS_ENOSYS` for a mode the chip lacks and `-KOS_EPERM` without
+      authority, instead of `-KOS_EINVAL` from a dispatch default arm -- which takes the
+      configure-time `FATAL_ERROR` (`CMakeLists.txt:124`) and the `abi.h:62-64` compiled-out-arm
+      annotation with it. The symptom that exposed the conflation:
+      `arch/arm/chip/imxrt1062/chip_imxrt1062.cc:49` forward-declares `kpanic` inside a
+      `KICKOS_ENABLE_SELFTEST` block, only because that chip's `arch_reboot` is a `bkpt` that must
+      not resume -- a fundamental function's declaration behind a test flag.
 
 ## Needs hardware (bench time, not code)
 
