@@ -63,6 +63,15 @@ namespace
         return reinterpret_cast<SimContext*>(c->opaque);
     }
 
+    // getcontext() is returns-twice, so values live across it in the function that calls
+    // it are -Wclobbered: fatal above -O0, and it fires or not depending on instrumentation
+    // (plain -Os is clean, -Os plus UBSan is not). noinline is load-bearing -- it keeps the
+    // call out of arch_context_init, whose stack parameters are live across it.
+    __attribute__((noinline)) void context_capture(ucontext_t* uc)
+    {
+        getcontext(uc);
+    }
+
     // Instance-scoped sim backend state (invariant #7, the arch half): several sim
     // backends (one per emulated MCU / KickCAT slave) co-reside in one host
     // process, mirroring the kernel() seam but staying arch-side (invariant #1).
@@ -732,8 +741,6 @@ void arch_context_init(struct arch_context* ctx,
     // the caller's buffer directly (verified on silicon). Rare: the default spawn path hands
     // over the >=64K pool stack, so this malloc fires only for genuinely small caller stacks
     // (not freed -- the sim is a dev vehicle, not a small-caller-stack stress target).
-    // Must stay AHEAD of getcontext(): getcontext is a returns-twice call, so assigning to
-    // these parameters after it is -Wclobbered (an error at every level above -O0).
     constexpr size_t SIM_HOST_MIN_STACK = 64 * 1024;
     if (stack_size < SIM_HOST_MIN_STACK)
     {
@@ -741,7 +748,7 @@ void arch_context_init(struct arch_context* ctx,
         stack_size = SIM_HOST_MIN_STACK;
     }
     memset(c, 0, sizeof(*c));
-    getcontext(&c->uc);
+    context_capture(&c->uc);
     // New threads always start with all interrupts enabled, independent of the
     // creating thread's current mask (which may be inside a critical section).
     sigemptyset(&c->uc.uc_sigmask);
