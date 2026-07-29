@@ -13,6 +13,11 @@ into the Reference for detail; the Reference links back for context and cites th
 
 ## Where things live
 
+### `../STATE.md` -- current state (start here)
+One screen: where the milestone stands, what is next in locked order, the board matrix, the open
+blockers. **The only file that changes every milestone**, which is what lets the rest of the docs
+be read once. It carries no history, no rationale and no task list -- it links out instead.
+
 ### `book/` -- The KickOS Book (how & why + teaching)
 The durable narrative: what KickOS is, why it is built this way, and a teach-how-a-microkernel-
 works text (prereq: minimal C/C++ + compile/link/flash; Tanenbaum as the further-reading spine).
@@ -28,19 +33,19 @@ Covers `architecture.md` (kernel design + arch/chip seam), `invariants.md`, `por
 service wire contract carried over it).
 
 ### State & roadmap -- where we are / what's next
-Three altitudes, coarse to fine:
-- **`../roadmap.md`** -- the milestone-level plan: the general goals/ideas to tackle per
-  milestone, no granular items. Milestones are keyed to **theme, not sequence**:
-  M2 = MPU/memory-protection enforcement; M3 = capabilities + user clock; M4 = the driver era;
-  M5 = SMP; M6 = the MMU / new-platform horizon. Work with no MPU/caps/driver/SMP dependency is
-  "anytime coherence".
-- **`../TODO.md`** -- the detailed, actionable task items behind the roadmap (the granular list).
-- **`../M1_state.md`** -- the validated M1 end state (fleet, bench, fault dumps, scoping
-  decisions), plus per-board HW-validation status.
-- **`../M1_raw_meas.md`** -- raw console captures behind M1_state.
-- **`m2-readiness.md`** -- opened as the pre-M2 readiness list and grew into the **enforcement
-  ledger**: the board/console readiness matrix, the per-chip MPU fan-out, and the silicon proofs
-  for M2, M3 and the M4.4 driver work. Read it for "which chip is proven, by what evidence".
+**The re-grounding path is four files, in this order.** Stop as soon as you have what you came
+for; nothing below is a prerequisite for reading the Reference.
+1. **`../STATE.md`** -- current state (above). Usually enough on its own.
+2. **`../TODO.md`** -- the detailed, actionable task items, and every open blocker in full.
+3. **`m2-readiness.md`** -- the **enforcement ledger**: the board/console readiness matrix, the
+   per-chip MPU fan-out, and the per-chip silicon evidence. Read it for "which chip is proven, by
+   what evidence".
+4. **`../roadmap.md`** -- the milestone-level plan: goals per milestone, no granular items.
+   Milestones are keyed to **theme, not sequence**: M2 = MPU/memory-protection enforcement;
+   M3 = capabilities + user clock; M4 = the driver era; M5 = SMP; M6 = the MMU / new-platform
+   horizon. Work with no MPU/caps/driver/SMP dependency is "anytime coherence".
+
+Per-board wiring and validation status is `reference/boards.md`, not any of the above.
 
 ### `design-*.md` -- design records and spikes
 Roughly two dozen per-topic design documents in this directory, each tagged in its header with a
@@ -52,6 +57,12 @@ rationale, not a contract: for the current contract go to `reference/`.
 ### How-to / ops
 - **`flashing.md`** -- flash-tool backends + the non-J-Link paths. (Per-target wiring is
   `reference/boards.md`; this box is the tooling.)
+
+### `archive/` -- measurement captures kept as evidence
+Closed-milestone measurement records: raw console captures and the bench numbers behind them, kept
+because they cost bench time and some can no longer be reproduced, and because they are future Book
+material. **Never in the re-grounding path** -- do not read it to find out where the project is.
+See *Prose is regenerable, a measurement is not* under Conventions.
 
 ### `audit/` -- the codebase-audit record
 `kickos-codebase-audit.html`, a self-contained finding ledger with status, severity and area
@@ -65,6 +76,11 @@ contract. See `audit/README.md`.
   A milestone/task ledger is roadmap, not architecture -- it belongs in `../TODO.md`.
 - **Terse, invariant-first comments** (same rule in code): explain hidden constraints/contracts,
   not what the code plainly says.
+- **Prose is regenerable, a measurement is not.** A stale prose record is **deleted** -- anyone
+  reading the code can regenerate it, and git holds the old text. A **measurement** cost bench time
+  and some are permanently unreproducible (the Due unit is retired, no real STM32F103C8 exists, no
+  micro:bit unit is recorded), so measurement captures are **archived to `archive/`**, never
+  deleted. The test: could this be regenerated from the tree, or did it cost bench time?
 - **Spikes are ephemeral.** A design *spike* is scratch that lets one pass explore a path for the
   next to implement. When the code lands, the spike is **deleted + squashed out of history**, and
   its durable teaching is rewritten as a **Book chapter** (spike -> Book, never a lingering doc).

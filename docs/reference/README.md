@@ -28,6 +28,6 @@ and, for hardware facts, the TRM section.)
 - **`boards.md`** -- per-board reference: pins, console, LED, flash backend, and per-target
   quirks. The source of truth for "how board X is wired", with a summary HW-validated indicator
   per board, plus what CI gates per ISA and the cross-toolchain convention. The authoritative
-  validation *matrices* are `../../M1_state.md` (the M1 per-app fleet pass) and
+  validation *matrices* are `../archive/M1_state.md` (the M1 per-app fleet pass) and
   `../m2-readiness.md` (the enforcement ledger: per-chip MPU proofs, M2/M3/M4.4 silicon
   evidence); flashing *how-to* is in `../flashing.md`.

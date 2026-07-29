@@ -315,14 +315,14 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 <p class="problem">The index oversells completeness, and there is still no build-and-run walkthrough chapter &#8212; which is exactly where a newcomer's trail goes cold.</p>
 <p class="fix"><span class="fixlabel">Fix: </span>Both numbers re-counted rather than carried forward. There are 24 chapter files: the book work replaced 7.4 and added 3.9. The index carries SIX draft-me markers, not the nine claimed here &#8212; rows 0.3, 0.4, 0.5, 1, 7 and 8 &#8212; and it carried six before the book work too, so that figure was stale when it was written rather than overtaken. Note that 3.9 added an index row rather than filling a stub, so closing a real teaching gap left the stub count untouched. The finding itself is untouched: mark the stubs explicitly, and write the build/flash/selftest chapter.</p></td>
 </tr>
-<tr class="tone-info" data-status="Open" data-sev="Low" data-area="Docs &amp; book">
+<tr class="tone-info" data-status="Fixed" data-sev="Low" data-area="Docs &amp; book">
 <td class="c-id"><span class="fid">D15</span></td>
-<td class="c-status"><span class="st st-open">Open</span></td>
+<td class="c-status"><span class="st st-fixed">Fixed</span></td>
 <td class="c-sev">Low</td>
 <td class="c-area">Docs &amp; book</td>
-<td class="c-body"><code class="loc">M1_raw_meas.md, M3_raw_meas.md (repo root)</code>
-<p class="problem">Raw measurement captures still sit at the repo root beside README and roadmap, competing for attention with entry-point documents.</p>
-<p class="fix"><span class="fixlabel">Fix: </span>Move to docs/validation/ and link from roadmap.md. d8c2d63 settled a neighbouring question &#8212; the absolute paths inside them are verbatim capture and must not be edited &#8212; but that is about content, not location.</p></td>
+<td class="c-body"><code class="loc">docs/archive/M1_raw_meas.md, docs/archive/M3_raw_meas.md</code>
+<p class="problem">Raw measurement captures sat at the repo root beside README and roadmap, competing for attention with entry-point documents.</p>
+<p class="fix"><span class="fixlabel">Fix: </span>Moved to docs/archive/ (not the proposed docs/validation/), which docs/README.md declares is never in the re-grounding path; measurement captures are archived rather than deleted because they cost bench time and some are now unreproducible. d8c2d63 settled a neighbouring question &#8212; the absolute paths inside them are verbatim capture and must not be edited &#8212; but that is about content, not location.</p></td>
 </tr>
 <tr class="tone-info" data-status="Open" data-sev="Low" data-area="Arch coherency">
 <td class="c-id"><span class="fid">N11</span><span class="fresh">new</span></td>
