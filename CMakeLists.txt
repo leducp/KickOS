@@ -134,15 +134,9 @@ else()
   add_compile_definitions(KICKOS_SHUTDOWN_TO_BOOTLOADER=0)
 endif()
 
-# HOLDING MEASURE (TODO.md N16): the fleet-uniform selftest no longer fits the
-# 64 KiB-flash boards at the plain-Debug default, so their whole selftest tree
-# builds -Os. Cost: the -st kernel is no longer codegen-identical to the same
-# board's non-st build. -g is kept. Delete this block to revert.
-if(KICKOS_ENABLE_SELFTEST AND (KICKOS_BOARD STREQUAL "f302nucleo"
-                               OR KICKOS_BOARD STREQUAL "bluepill-c8"))
-  add_compile_options(-Os)
-  message(STATUS "KickOS: -Os across the ${KICKOS_BOARD} selftest tree (64 KiB flash; see N16)")
-endif()
+# CMake's stock MinSizeRel flags drop -g, and an image with no debug info cannot be
+# witnessed on silicon.
+add_compile_options($<$<CONFIG:MinSizeRel>:-g>)
 
 # Internal-consistency guards too expensive for a shipped image (the intrusive-list
 # membership checks in <kickos/list.h>). OFF by default; the sim preset turns it ON.

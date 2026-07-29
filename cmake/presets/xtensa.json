@@ -9,7 +9,7 @@
       "toolchainFile": "${sourceDir}/cmake/toolchain-xtensa-esp32-elf.cmake",
       "cacheVariables": {
         "KICKOS_BOARD": "esp32-wroom",
-        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_BUILD_TYPE": "MinSizeRel",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },

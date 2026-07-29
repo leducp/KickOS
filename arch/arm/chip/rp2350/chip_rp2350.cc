@@ -93,8 +93,12 @@ namespace
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Bootrom header accessors (arch_reboot): its magic is bytes and its pointers are
     // halfwords, so neither is reachable through r32.
+    // GCC assumes the first min-pagesize bytes are unmapped; 0x0 is the bootrom.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
     inline uint8_t r8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
     inline uint16_t r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
+#pragma GCC diagnostic pop
 #endif
 
     // Chosen by clocks_init (which source clk_peri lands on), consumed by uart1_init.
