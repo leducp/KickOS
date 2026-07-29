@@ -3,16 +3,17 @@
 
 **M1 VALIDATION COMPLETE (2026-07-14)** -- 10 boards on silicon (5 ISAs) + 3 emulator gates
 green; every board boots, has a console, runs the selftest, panics visibly, and runs at its
-true (or safely-degraded) clock. Full record in `M1_state.md`. The items still open below are
-either optional perf, deferred to M2, or non-gating HW-unverified notes -- none block M1.
+true (or safely-degraded) clock. Full record in `docs/archive/M1_state.md`. The items still
+open below are either optional perf, deferred to M2, or non-gating HW-unverified notes --
+none block M1.
 
 Living checklist for **M1** (uniformity / bring-up). Check items off as they land -- this file,
 not memory, is the source of truth for "where are we". M2 (MPU enforcement) and M3
 (capabilities + clock-select) items are parked at the bottom so they aren't lost.
 
 This file is the **granular, actionable** status. The milestone-level plan (the general idea
-per milestone) is `roadmap.md`; validated end-state + per-board detail is `M1_state.md`; the
-board/console readiness matrix is `docs/m2-readiness.md`.
+per milestone) is `roadmap.md`; validated end-state + per-board detail is
+`docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
 ## Session record -- 2026-07-27 integration (READ THIS FIRST IF RESUMING)
 
@@ -101,8 +102,10 @@ block's stated cost**: `CMakeLists.txt:139-140` gives that cost as "the `-st` ke
 codegen-identical to the same board's non-st build", and measured kernel-side on `bluepill-c8`
 `hello` the two differ by **13,505 bytes as shipped** and by **114 at `-Os`** (the flag's genuine
 content). The unoptimised default is what creates the divergence; widening `-Os` nearly closes it,
-which matters because silicon witnesses are taken on `-st` images. **GATED** on the RP2040/RP2350
-optimised-build defect -- see *`picopi` and `pizero2350` cannot build an optimised image* below.
+which matters because silicon witnesses are taken on `-st` images. **LANDED**: the four MCU base
+presets and the sim preset build `MinSizeRel`, `-g` is re-added under that config, and the RP2040 /
+RP2350 optimised-build defect that blocked it is fixed. The consequence for the existing witnesses
+is the fleet re-witness pass under M4.5.5.
 
 ### One new finding: guards that exist but assert almost nothing
 
@@ -135,8 +138,8 @@ items keep their number and are struck through rather than removed, because they
 number: the record and the XMC entry under Blockers below both point at **item 5**.
 
 1. ~~**Measure `-Os` on the tight boards**~~ -- DONE above. Outcome: **tiering not needed.** The
-   narrower question of how `-Os` should be expressed is answered above too -- per-preset build
-   types, gated on the RP2040/RP2350 optimised-build defect.
+   narrower question of how `-Os` should be expressed is answered above too, and landed:
+   per-preset build types (`MinSizeRel`).
 2. **Selftest tiering** -- **do not build it.** Headroom has since eroded by ~1.6 KiB to 21.4%,
    which is a partial fire of that trigger and still ample. Kept in the queue only so the next
    reader sees it was considered and refuted by measurement, not forgotten.
@@ -302,20 +305,19 @@ triggers `push` only on `master`).
       Worth settling, because the barrier is on the mutex/endpoint wake path on every board and
       is currently justified by an argument nothing exercises. Silicon witness still owed --
       timing is exactly what an emulator does not reproduce.
-- [ ] **The whole fleet builds unoptimised.** Every preset sets `CMAKE_BUILD_TYPE=Debug`, whose
-      default flags are `-g` with no `-O`. Measured on f302nucleo's selftest image at branch tip:
-      64,408 bytes at the default against 47,120 at `-Os`, a 26.8% reduction with no source change
-      (`design-flash-footprint.md` section 3, which measures all fourteen boards both ways). Only
-      `selftest`'s OWN TUs opt into `-Os` today. This is the root cause of the 64 KiB squeeze
-      (N16 above), it inflates every board's flash, and it makes the published bench figures a
-      measurement of unoptimised code. (It plausibly also inflates every switch's I-cache
-      footprint; **no instruction-cache or cycle measurement was ever taken**, so that one is not
-      to be cited as measured -- `design-flash-footprint.md` section 10.) Deciding the fleet
-      posture is a maintainer call with real trade-offs (debuggability, and `-O` changing what a
-      gate proves), which is why it is filed rather than taken. Two defects block taking it
-      fleet-wide either way -- the two items directly below.
-- [ ] **`picopi` and `pizero2350` cannot build an optimised image.** A **prerequisite** for any
-      fleet-wide `-Os` or per-preset build type (N16 above), not an afterthought.
+- [x] **The whole fleet builds unoptimised: CLOSED.** The four MCU base presets and the sim preset
+      set `CMAKE_BUILD_TYPE=MinSizeRel` and every board inherits it; `-g` is re-added under that
+      config (`CMakeLists.txt:139`), because an image with no debug info cannot be witnessed on
+      silicon. The two-board `-Os` holding block is deleted, subsumed by the fleet default. The gap
+      it closed, measured on f302nucleo's selftest image: 64,408 bytes unoptimised against 47,120 at
+      `-Os`, a 26.8% reduction with no source change (`design-flash-footprint.md` section 3, which
+      measures all fourteen boards both ways). One caveat stands: the switch's I-cache footprint
+      plausibly moved too, but **no instruction-cache or cycle measurement was ever taken**, so that
+      is not to be cited as measured (`design-flash-footprint.md` section 10). Consequence: every
+      published bench figure and every silicon witness measured unoptimised code -- see the fleet
+      re-witness pass under M4.5.5 below.
+- [x] **`picopi` and `pizero2350` cannot build an optimised image: FIXED**, which is what unblocked
+      the fleet build type above.
       `arch/arm/chip/rp2040/chip_rp2040.cc:80-81` and `arch/arm/chip/rp2350/chip_rp2350.cc:96-97`
       -- the bootrom-header `r8`/`r16` accessors, `*reinterpret_cast<volatile uint8_t*>(addr)` --
       fail `-Werror=array-bounds` ("array subscript 0 is outside array bounds of
@@ -329,10 +331,12 @@ triggers `push` only on `master`).
       `--param=min-pagesize` bytes of the address space as unmapped, so a constant-address
       dereference down there is an out-of-bounds access to it -- and on both chips the bootrom
       the accessors read *is* at address 0. `--param=min-pagesize=0` silences all four
-      diagnostics on the rp2350 TU with nothing else changed. The narrow remedy is therefore a
-      `#pragma GCC diagnostic ignored "-Warray-bounds"` around the two accessors, verified to
-      compile clean at `-Os` and `-O2` on both TUs; a global `--param` would blind the whole tree
-      to a real diagnostic class.
+      diagnostics on the rp2350 TU with nothing else changed. The remedy is a
+      `#pragma GCC diagnostic ignored "-Warray-bounds"` scoped to the two accessor bodies
+      (`chip_rp2040.cc:80-82`, `chip_rp2350.cc:96-98`), which compiles clean at `-Os` and `-O2` on
+      both TUs; a global `--param` would blind the whole tree to a real diagnostic class. The
+      optimised accessors are **disassembly-verified only, never executed** -- folded into the
+      M4.5.5 re-witness pass below.
 - [ ] **LTO does not link, on any board.** `-flto` fails every app with
       `(.isr_vector+0x4): undefined reference to Reset_Handler`. The handler is defined in a C++ TU
       and referenced **only** from the vector table in an assembly object, so the LTO plugin sees
@@ -683,6 +687,87 @@ Blockers and limits:
   close/re-seat cycles wrap it. Unreachable in-tree; same unbounded-counter class as the
   domain-refcount item above.
 
+## M4.5.5 -- MPU region-encoding classes
+
+Ordered after stage 4 (`kos_cap_narrow`) and before the `KICKOS_ROOT_PRIVILEGED` deletion, but
+**not a blocker for it** -- the knob goes away on the strength of the flip, not of region shaping.
+One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows it.
+
+- [ ] **Give the alloc/MPU seam a third region-encoding mode.** `arch_ram_region_size`
+      (`arch/include/kickos/arch/arch.h:234`) and `arch_ram_region_align` (`:262`) are `static
+      inline` and keyed SOLELY on `arch_mpu_min_region()`, so they offer exactly TWO modes:
+      `min == 0` gives 16-byte granularity, and any nonzero `min` gives a power-of-two size with
+      the base NATURALLY ALIGNED to that size. The hardware has THREE classes, so one of them has
+      no representation:
+      - **Power-of-two REQUIRED.** PMSAv7 (`stm32f411`, `xmc4800`, `mps2`), and RISC-V PMP NAPOT
+        (`arch/riscv/rv32imac/arch_rv32imac.cc:332` returns 8, "RISC-V PMP NAPOT minimum region
+        size"). NAPOT folds the size into the trailing address bits, so pow2 there is the
+        encoding itself, not a convention.
+      - **Granular at N, power-of-two NOT required.** NXP SYSMPU 32 B (`mk64f`), RX MPU 16 B
+        (`rx72m`), and ARM PMSAv8 32 B (`rp2350`, and `mps2-an505` via `qemu-m33`), which is
+        base/limit rather than base+size. **This is the unrepresentable class**, and it
+        over-aligns today on `frdmk64f`, `rx72m` and `pizero2350`.
+      - **No MPU.** `arch/arm/chip/nrf51/chip_nrf51.cc:112` overrides to 0. `stm32f103` and
+        `stm32f302` belong here too, and their `arch_mpu_min_region()` overrides are a separate
+        change with its own item above -- not part of this one.
+      **For PMSAv8 the `min_region` VALUE of 32 is correct; the MODE is wrong.** 32 is the PMSAv8
+      granule, which is why `arch/arm/common/arch_arm_pmsav8.cc:156` deliberately keeps the weak
+      32 and overrides encodability alone. `mk64f` is the same shape: it overrides
+      `arch_mpu_region_encodable` (`arch/arm/chip/mk64f/chip_mk64f.cc:559`) and nothing on the
+      size/align path, so it still gets power-of-two shaping. That distinction is what makes this
+      ONE seam change rather than a set of per-chip patches.
+      **This is a known trade made explicit, not a newly found bug.**
+      `arch/rx/rxv3/arch_rxv3.cc:653` already records the pow2 shaping as "a describable superset,
+      not a requirement", and `arch_ram_region_size` already carries a `SEAM (MMU era)` marker
+      naming itself the SINGLE point that couples allocation size to MPU descriptor geometry. The
+      third mode belongs at that marker.
+      **Scope and risk.** The change alters the region descriptors actually programmed on
+      `frdmk64f`, `rx72m` and `pizero2350`. Two of those (`rx72m`, `pizero2350`) are flipped to
+      unprivileged root AND silicon-witnessed, so it requires a silicon re-witness. Review it
+      against `arch_mpu_region_encodable` and the real descriptor programming -- PMSAv8
+      `MPU_RBAR`/`MPU_RLAR`, SYSMPU `RGD`, RX `RSPAGEn`/`REPAGEn` -- not only the allocator.
+      `qemu-m33` (PMSAv8) is the one in-env gate the change moves.
+      **The motivation is not bytes.** All three affected boards have RAM to spare (262 K on
+      `frdmk64f`, 512 K on each of `rx72m` and `pizero2350`), so the expected recovery is small in
+      absolute terms. What it buys is correct hardware modelling, and the parts ahead --
+      Cortex-M23/M33/M55/M85 are all PMSAv8.
+- [ ] **One general fleet re-witness pass, and it closes the step.** Every silicon witness in
+      `docs/reference/boards.md` was captured from an UNOPTIMISED binary: the MCU presets built
+      `CMAKE_BUILD_TYPE=Debug`, which is `-g` with no `-O` flag at all, and the fleet now builds
+      `MinSizeRel` (`-Os -g`), which moves each image by roughly 17 to 23 KB. Per-board figures in
+      `docs/design-flash-footprint.md`.
+      **What does not transfer, and must be re-captured:** fault addresses, disassembly offsets,
+      symbol sizes, stack-depth observations, and every timing figure -- the bench numbers, and
+      `inprstorm`'s measured ~37,700 ISR invocations/second
+      (`user/apps/xmc4800-relax/inprstorm/main.cc:25`). Least transferable of all: `pvprobe`'s
+      privileged-write measurements, whose whole subject is whether an individual store lands.
+      **What stands:** `bluepill-c8-st` and `f302nucleo-st`. The deleted two-board holding measure
+      already built those two `-Os`, and their `.text` is byte-identical under `MinSizeRel`.
+      **What the move buys, which changes what a witness is worth:** a board's `-st` kernel and its
+      non-`-st` kernel differed by **13,505 bytes** as shipped, so an `-st` witness never
+      transferred to the shipped image at all. Both now build `-Os` and differ by under 200 bytes
+      -- the flag's genuine content (`arch_reboot`, `arch_irq_inject`, `arch_mpu_probe_addr`,
+      `irq_spurious_count`) -- so an `-st` witness finally does transfer.
+      **The same pass clears this milestone's silicon debt.** Each item is unwitnessed for its own
+      reason and none of them justifies a separate bench trip:
+        - The UART-FIFO drain on the reboot path (`arch_console_flush_sync` before `arch_reboot`,
+          `kernel/syscall/syscall.cc:389`). Only `mk64f` and `xmc4800` implement the seam and
+          neither has an emulator gate, so the sim and QEMU gates exercise only the weak no-op
+          (`kernel/init/console.cc:347`) -- the truncation fix itself has never run against a real
+          UART.
+        - `dev_window_exclusive` and `bus_device_slots`: both postdate every silicon capture, so no
+          chip has ever run them. Already recorded under the five-apps DEV-window item below.
+        - The optimised `arch_reboot` path on `picopi` and `pizero2350`: verified by disassembly
+          only, never executed, and neither RP part has an emulator gate. Distinct from the
+          never-run RP2040 and imxrt1062 reboot BACKENDS under *Needs hardware* below.
+        - `f302nucleo` joins the bench this round: it has an onboard ST-Link and a VCOM console,
+          and `tools/flash-stlink.sh:18` already defaults `--connect-under-reset` on for it. It is
+          the **only physically-present no-MPU ARM board**, which makes it the sole possible
+          silicon witness for the claim that unprivileged root is real on a part with no MPU --
+          root starting unprivileged, the ctors and `main` running, selftest green. That is a
+          declared objective of the pass, not a by-product. It is NOT the stage-2 enforcement gate,
+          which no MPU-less part can meet (see the `bluepill-c8` / `f302nucleo` bullet above).
+
 ## Found during the M4.5.2 stage-2 flip work (2026-07-28/29)
 
 - [ ] **An IRQ line is never released, so a driver that exits cannot be respawned. Owner: M4.6**,
@@ -883,7 +968,7 @@ Clock follow-ups (not blocking): arch_trace_now + KICKOS_BENCH still read raw DW
 may glitch on K64F/XMC -- tolerable, NOT the scheduler clock); ticks->ns epilogue duplicated ~7x
 (hoist an arch/arm/common helper).
 
-## M1 -- clocks (fleet audit 2026-07-09; detail in `M1_state.md`)
+## M1 -- clocks (fleet audit 2026-07-09; detail in `docs/archive/M1_state.md`)
 
 Every board's timing math is ACCURATE (no ESP32-C6-class constant bug survived the
 audit). Remaining work is boards that never raise their PLL, so they run far below
@@ -1134,7 +1219,7 @@ below where they were previously mislabeled.
 - **[anytime perf -- NOT M2] worst-case ISR latency (shorten interrupt-masked critical
   sections).** Scheduler/switch-path timing, gated on a worst-case-latency probe -- no MPU
   dependency (was mislabeled "M2"). The uniform bench surfaced that under sustained syscall
-  load the kernel spends too long masked. Ranked plan (see `M1_state.md` section 3.1):
+  load the kernel spends too long masked. Ranked plan (see `docs/archive/M1_state.md` section 3.1):
   - [x] **R2** -- armv7m: skip the redundant BASEPRI raise + DSB/ISB on nested IrqLocks
         (only the outer raise needs them). Landed `5ba57fd`. Correct (ctests green) but
         **below the current bench's noise floor** -- see the measurement gap below.
@@ -1244,7 +1329,7 @@ software-controllable cache/accelerator, and do we use it? Binary, not "fast eno
       no DMA); the coherency obligation arrives with M4-era DMA (non-cacheable DMA pool or
       per-buffer clean/invalidate) -- carry this into the M4 driver work.
 
-Fleet re-validation follow-ups (from the 2026-07-22 M3-branch gate; see `M3_raw_meas.md`):
+Fleet re-validation follow-ups (from the 2026-07-22 M3-branch gate; see `docs/archive/M3_raw_meas.md`):
 - [x] **WROOM (Xtensa LX6) soak wedge -- FIXED (700ec98).** Was pre-existing (master), Xtensa-only.
       Root cause: `arch_context_init` started fresh threads via a fabricated `retw` into a trampoline
       with NO `entry` instruction (phantom window frame, garbage caller-linkage); a worker running
