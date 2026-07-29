@@ -5,8 +5,9 @@
 > set of five boards boots an unprivileged root and is witnessed on silicon, covering every
 > enforcement backend -- `xmc4800-relax` (PMSAv7), `esp32c6-wroom` (RISC-V PMP), `pizero2350`
 > (PMSAv8), `rx72m` (RXv3) and `f411disco` (PMSAv7, the last one, 2026-07-29). The per-board
-> captures are in `reference/boards.md`. `frdmk64f` waits for stage 3. Stages 3-4 are planned and
-> hardware-gated. See `design/README.md` for the marker taxonomy. The actionable checklist is
+> captures are in `reference/boards.md`. `frdmk64f` waits for stage 3. Stages 3-5 are planned;
+> 3 and 4 are hardware-gated, and 5 -- the `KICKOS_ROOT_PRIVILEGED` deletion -- cannot precede 3.
+> See `design/README.md` for the marker taxonomy. The actionable checklist is
 > `TODO.md`; this record is the reasoning behind it, which `TODO.md` does not carry.
 
 Root is the kernel's first application thread: `kmain` creates it, it runs the app and
@@ -320,6 +321,26 @@ declare **`stress`** privileged-root, since it spawns privileged children (three
 `user/apps/common/stress/main.cc`) and a flipped board cannot create a privileged thread after
 boot.
 
+**Stage 5 -- delete `KICKOS_ROOT_PRIVILEGED`.** The knob goes with no replacement and no porting
+escape hatch; section 4 carries the decision and its reasons. Three things travel with the deletion:
+`ThreadAttr::privileged` becomes `false` (`kernel/include/kickos/thread.h:164`), the invariant that
+leaves is **"exactly one privileged thread, and it is `idle`"**, and every remaining `#if
+KICKOS_ROOT_PRIVILEGED` site loses its condition rather than its body.
+
+**It cannot precede stage 3, and that is mechanical.** With the knob gone the root-MMIO service-list
+`FATAL_ERROR` (`CMakeLists.txt:404`) has no posture left to be conditional on, so it fires
+unconditionally and `frdmk64f`'s enforcement build stops configuring -- the `build-boards-mpu` CI
+job. Stage 3's `arch_periph_enable` is what retires the root MMIO writes that put that list on the
+refusal list. Section 4 states the same ordering, because whoever schedules the deletion needs it
+there.
+
+**The payoff is already established** (section 10): `user/apps/common/rootfault/CMakeLists.txt:18`
+registers the confinement gate under `KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND NOT
+KICKOS_ROOT_PRIVILEGED`, and nothing in the tree configures that posture. With the third term gone
+the gate is unconditional wherever `KICKOS_HAVE_MPU`, which turns a never-built gate into an
+always-built one on five runnable QEMU images: `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3` and
+`qemu-riscv`.
+
 `selftest` was on that list and **came off it**. Its only two privileged spawns were in
 `rr_interleave`, and they turned out not to be a requirement at all -- the test wants two
 threads interleaving under round-robin, which privilege has nothing to do with -- so they were
@@ -480,9 +501,9 @@ else".
   **2,560 B**. The 20 KiB and 16 KiB parts land within 128 bytes of each other because the smaller
   part carries the smaller heap, which is what shows the figure tracks `KICKOS_USER_HEAP_SIZE`.
   The "barely 3 KiB" reading is the selftest-image figure and applies to no production image.
-  The two boards are otherwise not one case: `bluepill-c8` carries its own linker script and its
-  own `board_config.h` (`boards/bluepill-c8/`), `f302nucleo` has no board directory at all and
-  takes the chip's script and the chip's `board_config.h`.
+  The two boards are otherwise not one case: `bluepill-c8` carries its own `board_config.h`
+  (`boards/bluepill-c8/`), while `f302nucleo` has no board directory at all and takes the chip's.
+  Both take their chip's linker script.
 - **No privileged thread can come into existence after boot.** Spawning a privileged child requires
   the caller be privileged, and that is deliberately not a capability. Root is unprivileged and
   `idle` runs no app code, so the posture is one-way for the lifetime of the system. With the knob
@@ -549,8 +570,8 @@ ever ask the kernel to configure that window's device.
 bootrom `reboot` with `REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL`; imxrt1062 the `bkpt` the Teensy's MKL02
 catches) -- which is why it sits behind `KICKOS_ENABLE_SELFTEST`: it is a developer affordance for
 reflashing without touching the board, not a general system reset. A general reset is not designed
-anywhere today and would need its own argument. A chip with no bootloader entry declines through
-the seam's weak `-KOS_ENOSYS` default rather than pretending.
+anywhere today; the mode decision below settles that it should be, and how. A chip with no
+bootloader entry declines through the seam's weak `-KOS_ENOSYS` default rather than pretending.
 
 **Decision: it folds into `AUTH_DEVICE`**, rather than taking a `CAP_REBOOT` at index 3 or a
 sixth rights bit. Three reasons: `arch_shutdown` already sits under `AUTH_DEVICE` and
@@ -563,6 +584,46 @@ reboot-to-bootloader leaves the board accepting new firmware over USB. Fusing th
 anything permitted to publish a console can also put the board into flashing mode. That is
 acceptable *for a feature compiled out of production images*, and the `AUTH_PINMUX` +
 `AUTH_CLOCK` merge stays available if a distinct `AUTH_REBOOT` is ever wanted.
+
+**Decided, not yet applied: `arch_reboot` takes a MODE, and the compile knob gates the mode rather
+than the seam.** Post-4.5.4 work, owned by M4.6. Four parts:
+
+1. **The seam gains a mode argument**, at least a normal system reset and reboot-into-bootloader.
+   `int arch_reboot(void)` (`arch/include/kickos/arch/arch.h:44`) takes no argument and means
+   bootloader entry specifically, which is exactly what leaves a general reset with nowhere to live.
+2. **The weak `-KOS_ENOSYS` decline becomes per-MODE, not per-function.** A chip that can reset but
+   has no documented bootloader entry declines both today. The asymmetry that motivates the split is
+   **ARM-specific, and architectural rather than measured**: `SCB->AIRCR` `SYSRESETREQ` is available
+   on armv6m/v7m/v8m with no chip-specific code, so a normal reset could sit in `arch/arm/common`,
+   whereas bootloader entry is per-chip and only three backends have one (rp2040, rp2350,
+   imxrt1062). RISC-V has no architectural reset, and RX and Xtensa each have their own mechanism.
+3. **The knob gates only the bootloader mode, and is renamed
+   `KICKOS_ENABLE_REBOOT_TO_BOOTLOADER`.** `KICKOS_ENABLE_SELFTEST` conflates "test-only syscall
+   surface" with "may this image put the board into firmware-accept mode", and the conflation costs
+   a real capability for no security gain: no production in-kernel path can reset the chip at all,
+   while a privileged thread may need to sequence one -- watchdog recovery, a fault-handler reset, a
+   bring-up retry -- none of which carries the bootloader's risk. **Not `..._IN_FLASH_MODE`**: the
+   existing sibling knob is `KICKOS_SHUTDOWN_TO_BOOTLOADER` (`CMakeLists.txt:117`), and two knobs
+   naming one destination differently is drift.
+4. **Bootloader mode wants the knob AND an authority bit.** A normal reset is lifecycle, the same
+   class as shutdown; bootloader mode leaves the board accepting firmware over USB, so
+   belt-and-braces is proportionate for that one act and not for the other. With the modes split,
+   the lifecycle bit that the `AUTH_PINMUX` + `AUTH_CLOCK` merge frees (section 5) covers normal
+   reset without granting firmware-accept -- which is what the counter-argument above asks for.
+
+Two pieces of existing debt retire with it. `KICKOS_SHUTDOWN_TO_BOOTLOADER` stops being a parallel
+mechanism reaching `arch_reboot` through `bootloader_handover` (`kernel/init/console.cc:293`) and
+becomes a POLICY on one seam: on shutdown, use mode BOOTLOADER. And the production ABI improves --
+syscall 38 becomes a real production syscall taking a mode, answering `-KOS_ENOSYS` for a mode the
+chip lacks and `-KOS_EPERM` without authority, instead of `-KOS_EINVAL` from the dispatch default
+arm. That retires both the configure-time `FATAL_ERROR` (`CMakeLists.txt:124`) and the `abi.h:62-64`
+annotation that exists only to document the compiled-out arm.
+
+The symptom that made the conflation visible:
+`arch/arm/chip/imxrt1062/chip_imxrt1062.cc:49` carries a local forward declaration of `kpanic`
+inside a `KICKOS_ENABLE_SELFTEST` block, only because that chip's `arch_reboot` is a `bkpt` that
+must not resume. A fundamental function's declaration sitting behind a test flag is the conflation
+in one line.
 
 ## 10. Verification: what witnesses what, and what nothing witnesses
 

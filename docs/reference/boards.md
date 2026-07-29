@@ -100,7 +100,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   the **4,096** two 2,048-byte stacks need (`boards/bluepill-c8/include/kickos/board_config.h:31`,
   `:34`, `:37`; every figure is a multiple of the 32-byte no-MPU granule, so alignment costs nothing
   here). The cause is the **heap carve**, not the part: 8 KiB `.userheap`
-  (`boards/bluepill-c8/stm32f103.ld:27`) where `f302nucleo` now takes 2K, and the C8 has 4 KiB *more*
+  (`arch/arm/chip/stm32f103/stm32f103.ld`) where `f302nucleo` now takes 2K, and the C8 has 4 KiB *more*
   SRAM. The model is the one in `porting.md`'s `## Minimum hardware requirement` section; it
   predicted all three `f302nucleo` silicon outcomes correctly (see *`f302nucleo` on silicon* below),
   which is the whole basis for quoting a number for a board nobody can run.
@@ -154,10 +154,12 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
 
 ### `f302nucleo` on silicon -- the suite passes at the selftest provisioning
 
-Three captures, 2026-07-29, over the ST-Link VCP on `/dev/ttyACM0`. They are the fleet's
+Four captures, 2026-07-29, over the ST-Link VCP on `/dev/ttyACM0`. They are the fleet's
 first silicon witnesses on **optimised** code (`MinSizeRel`, `cmake/presets/arm.json:10`)
 and the first on this board since 2026-07-14. Every banner reads `board f302nucleo /
-arch armv7m / mpu off / sched tickless / heap 2 KiB available`.
+arch armv7m / mpu off / sched tickless`; the three at the board's application profile add
+`heap 2 KiB available`, and the `-st` capture reads `heap none`, since that preset carves no
+heap (`KICKOS_USER_HEAP_SIZE=0`).
 
 | App | Commit in the banner | Result |
 | --- | --- | --- |
@@ -304,7 +306,9 @@ the board".
   commit as the carve fix) now
   replays those two allocations, alignment padding included, so an arena that cannot hold them fails
   the **build** on every chip. It still does not check user stacks or pool capacity, which is why
-  `f302nucleo-st` links clean and refuses every spawn on hardware.
+  `f302nucleo-st` at the board's application profile linked clean and then refused every spawn on
+  hardware. The `-st` preset now provisions for the suite and passes (see *on silicon* above), but
+  the assert's blind spot is unchanged: nothing catches a user-stack or pool shortfall at build time.
 - **microbit has no privilege axis at all, so it witnesses nothing about the user/kernel ring.**
   The nRF51822 is a Cortex-M0, and ARMv6-M's Unprivileged/Privileged Extension is optional and
   separate from the MPU extension: the M0 does not implement it (Cortex-M0 TRM DDI0432C), so
