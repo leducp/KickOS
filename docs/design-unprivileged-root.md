@@ -62,13 +62,24 @@ set already honours it:
 | Port | Where privilege lives in the fabricated frame |
 |---|---|
 | armv7m | `ctx.npriv` **and** `ctx.resting_npriv` (`arch/arm/armv7m/arch_armv7m.cc`, `arch_context_init`) |
-| armv6m | the same two fields (`arch/arm/armv6m/arch_armv6m.cc`), read by `switch.S` at fixed offsets 4 and 8 |
+| armv6m, Cortex-M0+ (`picopi`) | the same two fields (`arch/arm/armv6m/arch_armv6m.cc`), read by `switch.S` at fixed offsets 4 and 8 |
+| armv6m, Cortex-M0 (`microbit`) | the same two fields are written, and the hardware discards them: ARMv6-M's Unprivileged/Privileged Extension is optional, separate from the MPU extension, and the Cortex-M0 does not implement it (Cortex-M0 TRM DDI0432C, *Modes of operation and execution*: this processor does not support different privilege levels, software execution is always privileged) |
 | rv32imac | `mstatus.MPP` in the fabricated frame -- M-mode for privileged, U (0) otherwise (`arch/riscv/rv32imac/arch_rv32imac.cc`) |
 | rxv3 | `PSW_THREAD_USER` in the fabricated PSW (`arch/rx/rxv3/arch_rxv3.cc`) |
 | lx6 (Xtensa) | nothing to set: the LX6 has no ring split, so the flip is a no-op here |
 | sim | nothing set and nothing recorded: `arch_context_init` takes `privileged` and discards it (`arch/sim/sim.cc`) |
 
-Three consequences follow.
+Four consequences follow.
+
+**On `microbit` the kernel's privilege bit is a fiction.** The nRF51822 is a Cortex-M0
+(`boards/microbit/board.cmake:12`, `-mcpu=cortex-m0`), so `arch_context_init` seeds `npriv = 1`
+(`arch/arm/armv6m/arch_armv6m.cc:98-104`), `switch.S` writes it into `CONTROL`
+(`mrs`/`bics`/`orrs`/`msr`, lines 66-71), and the `msr` is architecturally discarded: **a thread
+the kernel believes is unprivileged runs privileged.** The fleet's other armv6m board, `picopi`,
+is a Cortex-M0+ (`boards/picopi/board.cmake:12`, `-mcpu=cortex-m0plus`) and does implement the
+extension, so one arch backend spans a core with a privilege ring and a core without one, and
+nothing in the tree distinguishes them. `microbit` therefore witnesses the capability gates and
+nothing about the CPU ring.
 
 **Xtensa comes along free instead of last.** Under the demotion design Xtensa was the hard
 case, because there is no privilege level to drop to. Under this design it is the trivial
@@ -194,9 +205,16 @@ because privileged callers bypass the checks:
   unprivileged thread's writable set was its own stack alone. Fixed with
   `arch_user_data_writable`.
 
-Measuring that last one changed the plan: the hole is **not** confined to the five no-MPU chips
-(stm32f103, stm32f302, nrf51, sam3x8e, esp32). **The host sim has it too**, despite building
-`KICKOS_HAVE_MPU=1`, because its globals live in the host image rather than the mprotect'd
+Measuring that last one changed the plan: the hole is **not** confined to the five chips with no
+MPU *backend* (stm32f103, stm32f302, nrf51, sam3x8e, esp32) -- and only four of those five lack an
+MPU on silicon. The AT91SAM3X8E **has** one (SAM3X/SAM3A datasheet features: Cortex-M3 revision 2.0
+up to 84 MHz, a Memory Protection Unit, and Thumb-2); what KickOS lacks is an `mpu.cmake` backend
+for it, an unwritten port rather than a hardware limit -- and the `due` unit is retired from the
+bench, so the backend is both unwritten and unwitnessable in practice. Of the other four,
+`stm32f302` names the R8's `x8` line, which has no MPU (the F302xB/xC line does have one),
+`stm32f103` and `nrf51` have none, and the LX6 `esp32` has no unit KickOS drives.
+**The host sim has it too**, despite building `KICKOS_HAVE_MPU=1`, because its globals live in the
+host image rather than the mprotect'd
 arena. So the fix could not key on `KICKOS_HAVE_MPU` alone and the sim carries its own arm.
 Worse, the selftest had already *worked around* the bug -- `ep_recv_worker` carried a comment
 explaining that its recv buffer had to be a stack local because a global "would be rejected on
@@ -282,8 +300,9 @@ for those three.
 *how* it would have failed: an unprivileged root faults on its first statement after the ctor
 walk, on every enforcing board, and the sim reproduces none of it.
 
-**`user_writable_ok` had no no-MPU arm.** Fixed in stage 0. Without it, root's writable set on
-five chips would have been "its own stack and nothing else".
+**`user_writable_ok` had no static-data arm.** Fixed in stage 0. Without it, root's writable set on
+the five chips with no MPU backend, and on the sim, would have been "its own stack and nothing
+else".
 
 ## 9. Limits, including the boards where this does not work
 
@@ -382,8 +401,29 @@ five chips would have been "its own stack and nothing else".
   design has to answer for: a driver respawn issued before the dying driver's domain reference has
   dropped still sees the window live and gets `-KOS_EBUSY`, so a respawner needs
   join-before-respawn or a documented retry.
-- **`bluepill-c8` and `f302nucleo` will likely never flip.** Both carve barely 3 KiB of arena
-  for the two boot stacks, and both are 9-handle boards.
+- **`bluepill-c8` and `f302nucleo` are held by the absence of a witness, not by RAM and not by
+  their handle count.** Both are armv7m, so privilege is the fabricated first frame's
+  `ctx.npriv`/`resting_npriv` (section 2), which the core has whether or not an MPU is fitted --
+  the flip's mechanism is present on both. What neither part has is an MPU: `stm32f103` has none,
+  and `f302nucleo` is the R8, i.e. the `x8` line, which has none either (section 7). So
+  stage 2's per-board gate -- selftest green *under enforcement* plus a cross-domain `rootfault`
+  (section 10) -- cannot be met on either, and a flip there would witness the authority gates and
+  the CPU ring, never confinement. `bluepill-c8` is additionally build-only.
+  The **9-handle provisioning costs the flip nothing**: the authority cap is seated at reserved
+  index 2 and spends zero dynamic slots (section 5). Both boards already sit at the suite's floor,
+  `MAX_HANDLES 9` and `MAX_THREADS 2` -- root and idle need one slot each -- and per-board table
+  sizing recovers zero further bytes on either (`design-flash-footprint.md` section 7), so the
+  handle count is a floor rather than a lever.
+  The arena is **heap policy, not a property of the part**, measured per board in
+  `design-flash-footprint.md` section 7. `bluepill-c8` (20,480 B SRAM, 2 K kernel stack, 8 K
+  `.userheap`): **6,560 B** for a production image, **2,592 B** for the selftest image, **14,752 B**
+  with the heap carve at zero. `f302nucleo` (16,384 B SRAM, 4 K `.userheap`): **6,464 B** and
+  **2,560 B**. The 20 KiB and 16 KiB parts land within 128 bytes of each other because the smaller
+  part carries the smaller heap, which is what shows the figure tracks `KICKOS_USER_HEAP_SIZE`.
+  The "barely 3 KiB" reading is the selftest-image figure and applies to no production image.
+  The two boards are otherwise not one case: `bluepill-c8` carries its own linker script and its
+  own `board_config.h` (`boards/bluepill-c8/`), `f302nucleo` has no board directory at all and
+  takes the chip's script and the chip's `board_config.h`.
 - **On a flipped board, no privileged thread can come into existence after boot.** Spawning a
   privileged child requires the caller be privileged, and that is deliberately not a
   capability. So the flip is one-way for the lifetime of the system.
@@ -472,7 +512,9 @@ reproduced there at all -- and it skips non-arena regions. **It also has no priv
 witness at all** (section 2): its `arch_context_init` discards the flag, so "unprivileged" on
 the sim means a narrower region set and nothing more. A gate that fires there exercises the
 kernel's authority logic, never a CPU-mode boundary. Any claim about the privilege boundary that
-rests only on the sim is weaker than it looks.
+rests only on the sim is weaker than it looks. **`microbit` is in the same position for a different
+reason** (section 2): its Cortex-M0 implements no privilege axis, so a thread the kernel marks
+unprivileged runs privileged there and the armv6m run gate witnesses no CPU-mode boundary either.
 
 **Stage 0 and 1 are verified on sim + QEMU only, and each carries a gate that was checked to
 fail.** That last part is the discipline that matters: a gate proving a guard *exists* is worth

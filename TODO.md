@@ -72,23 +72,37 @@ master `64410b7` -- rebase before any work in them.
 - **Selftest tiering (core tier + optional tiers) was to be considered for the two 64 KiB boards --
   but MEASURE FIRST, and the measurement says it is not needed today.** See below.
 
-### The tiering measurement, taken 2026-07-27 (this is the "measure first" result)
+### The tiering measurement (this is the "measure first" result)
 
 The premise was that the fleet defaults to `Debug` with no optimisation, inflating flash ~26%. It
-is **already handled**: `CMakeLists.txt:114-118` applies `-Os` across the selftest tree for exactly
+is **already handled**: `CMakeLists.txt:137-145` applies `-Os` across the whole tree for exactly
 `f302nucleo` and `bluepill-c8` when `KICKOS_ENABLE_SELFTEST` is on, described in-file as a holding
-measure pending N16. Measured on the current tip, **with** the new `mem_self_grant` test in the
-suite (`text + data`, against 64 KiB of flash):
+measure pending N16. At branch tip (`text + data`, against 64 KiB of flash):
 
 | Board | flash used | free | headroom |
 | --- | --- | --- | --- |
-| `f302nucleo-st` | 49,604 B | 15,932 B | 24.3% |
-| `bluepill-c8-st` | 49,436 B | 16,100 B | 24.6% |
+| `bluepill-c8-st` | 51,540 B | 13,996 B | 21.4% |
+| `f302nucleo-st` | 51,716 B | 13,820 B | 21.1% |
 
-**So size-aware presets have dissolved the problem and tiering is unnecessary for now.** Both
-boards carry the fleet-uniform suite with ~16 KiB spare. Revisit only if headroom actually erodes;
-the remaining N16 question is narrower than tiering -- whether to keep the two-board `-Os` block,
-widen it to the fleet, or replace it with per-preset build types.
+**Tiering is unnecessary: both boards carry the fleet-uniform suite with ~14 KiB spare.** The
+revisit trigger ("only if headroom actually erodes") has **partly fired** -- 1,636 bytes went on
+`bluepill-c8-st` and 1,644 on `f302nucleo-st` against the M4.5.1 merge baseline, attributed
+symbol-by-symbol in `design-flash-footprint.md` section 9: two new selftest cases
+(`t_bus_device_slots` + helpers, `t_reboot_denied`), a real +88 in `domain_for` from the
+one-holder-per-MMIO-window check, and `MAX_TESTS` 64->128, whose 512 bytes land on RAM rather than
+flash. 21% is still ample, so tiering stays unbuilt.
+
+**The narrower N16 question now has a measured answer: per-preset build types**
+(`design-flash-footprint.md` section 10). `CMAKE_BUILD_TYPE=MinSizeRel` is byte-identical in
+`.text` to an explicit `-Os`, and its `-DNDEBUG` is inert in this tree -- there is no `NDEBUG`
+reference anywhere and no `assert()` outside the `KICKOS_DEBUG` guards -- so its only cost is
+losing `-g`, recoverable with `-DCMAKE_C_FLAGS_MINSIZEREL="-Os -DNDEBUG -g"`. It also **inverts the
+block's stated cost**: `CMakeLists.txt:139-140` gives that cost as "the `-st` kernel is no longer
+codegen-identical to the same board's non-st build", and measured kernel-side on `bluepill-c8`
+`hello` the two differ by **13,505 bytes as shipped** and by **114 at `-Os`** (the flag's genuine
+content). The unoptimised default is what creates the divergence; widening `-Os` nearly closes it,
+which matters because silicon witnesses are taken on `-st` images. **GATED** on the RP2040/RP2350
+optimised-build defect -- see *`picopi` and `pizero2350` cannot build an optimised image* below.
 
 ### One new finding: guards that exist but assert almost nothing
 
@@ -120,10 +134,12 @@ the sweeps go last because they touch everything and would conflict with any of 
 items keep their number and are struck through rather than removed, because they are cited by
 number: the record and the XMC entry under Blockers below both point at **item 5**.
 
-1. ~~**Measure `-Os` on the tight boards**~~ -- DONE above. Outcome: **tiering not needed.** What
-   remains of N16 is only the narrower question of how `-Os` should be expressed.
-2. **Selftest tiering** -- **do not build it** unless headroom erodes. Kept in the queue only so
-   the next reader sees it was considered and refuted by measurement, not forgotten.
+1. ~~**Measure `-Os` on the tight boards**~~ -- DONE above. Outcome: **tiering not needed.** The
+   narrower question of how `-Os` should be expressed is answered above too -- per-preset build
+   types, gated on the RP2040/RP2350 optimised-build defect.
+2. **Selftest tiering** -- **do not build it.** Headroom has since eroded by ~1.6 KiB to 21.4%,
+   which is a partial fire of that trigger and still ample. Kept in the queue only so the next
+   reader sees it was considered and refuted by measurement, not forgotten.
 3. ~~**Non-goals into `docs/reference/architecture.md`, appended to the existing `## North star`
    section.**~~ -- DONE (79b7a37). All four landed with the arithmetic that refuted them (no untyped
    memory / `Retype`; no CNodes; no derivation tree; no per-instance capabilities), under
@@ -287,13 +303,43 @@ triggers `push` only on `master`).
       is currently justified by an argument nothing exercises. Silicon witness still owed --
       timing is exactly what an emulator does not reproduce.
 - [ ] **The whole fleet builds unoptimised.** Every preset sets `CMAKE_BUILD_TYPE=Debug`, whose
-      default flags are `-g` with no `-O`. Measured on f302nucleo's selftest image: 65,720 bytes
-      at the default against 48,848 at `-Os`, a 26% reduction with no source change. Only
+      default flags are `-g` with no `-O`. Measured on f302nucleo's selftest image at branch tip:
+      64,408 bytes at the default against 47,120 at `-Os`, a 26.8% reduction with no source change
+      (`design-flash-footprint.md` section 3, which measures all fourteen boards both ways). Only
       `selftest`'s OWN TUs opt into `-Os` today. This is the root cause of the 64 KiB squeeze
-      (N16 above), it inflates every board's flash and every switch's I-cache footprint, and it
-      makes the published bench figures a measurement of unoptimised code. Deciding the fleet
+      (N16 above), it inflates every board's flash, and it makes the published bench figures a
+      measurement of unoptimised code. (It plausibly also inflates every switch's I-cache
+      footprint; **no instruction-cache or cycle measurement was ever taken**, so that one is not
+      to be cited as measured -- `design-flash-footprint.md` section 10.) Deciding the fleet
       posture is a maintainer call with real trade-offs (debuggability, and `-O` changing what a
-      gate proves), which is why it is filed rather than taken.
+      gate proves), which is why it is filed rather than taken. Two defects block taking it
+      fleet-wide either way -- the two items directly below.
+- [ ] **`picopi` and `pizero2350` cannot build an optimised image.** A **prerequisite** for any
+      fleet-wide `-Os` or per-preset build type (N16 above), not an afterthought.
+      `arch/arm/chip/rp2040/chip_rp2040.cc:80-81` and `arch/arm/chip/rp2350/chip_rp2350.cc:96-97`
+      -- the bootrom-header `r8`/`r16` accessors, `*reinterpret_cast<volatile uint8_t*>(addr)` --
+      fail `-Werror=array-bounds` ("array subscript 0 is outside array bounds of
+      `volatile uint8_t [0]`") at `-O2` and at `-Os`, and compile clean at `-O0` and `-O1`.
+      Reproduced both by compiling each TU directly and as a `pizero2350-st` build at
+      `-DCMAKE_BUILD_TYPE=MinSizeRel`; the diagnostic count varies with toolchain version, the
+      pass/fail split by optimisation level does not. The accessors exist only under
+      `KICKOS_ENABLE_SELFTEST` (they serve `arch_reboot`), which is why the default build and the
+      flag-off `-Os` build both pass -- flag-gated code is exactly the code no default build
+      compiles. **Cause, confirmed by flag bisection:** GCC treats the first
+      `--param=min-pagesize` bytes of the address space as unmapped, so a constant-address
+      dereference down there is an out-of-bounds access to it -- and on both chips the bootrom
+      the accessors read *is* at address 0. `--param=min-pagesize=0` silences all four
+      diagnostics on the rp2350 TU with nothing else changed. The narrow remedy is therefore a
+      `#pragma GCC diagnostic ignored "-Warray-bounds"` around the two accessors, verified to
+      compile clean at `-Os` and `-O2` on both TUs; a global `--param` would blind the whole tree
+      to a real diagnostic class.
+- [ ] **LTO does not link, on any board.** `-flto` fails every app with
+      `(.isr_vector+0x4): undefined reference to Reset_Handler`. The handler is defined in a C++ TU
+      and referenced **only** from the vector table in an assembly object, so the LTO plugin sees
+      no reason to keep the definition (measured on `bluepill-c8`, `design-flash-footprint.md`
+      section 12). So LTO is not an available footprint recovery today. It is not on the `-Os` path
+      N16 needs, so it gates nothing -- filed so it is not rediscovered. **Record only: no fix
+      attempted.**
 - [ ] **`kickos_core` no longer carries the archive group.** c539d1c moved the RESCAN group onto
       the `kickos` / `kickos_cxx` leaves, because the two postures need different toolchain
       runtimes in it and CMake forbids one target's closure carrying a library in two groups. A
@@ -329,10 +375,10 @@ triggers `push` only on `master`).
       2026-07-27). CI builds only the plain presets, so a selftest image that overflows 64 KiB of
       flash goes unnoticed until someone builds the `-st` preset by hand. These two boards are
       build-only for the suite anyway -- a link check is exactly and only what they provide, so a
-      link-only job is the whole value at none of the runtime cost. Both link today with ~16 KiB
-      spare (measured in the session record above), and the job is what keeps that true.
-      Note for whoever adds it: `-Os` is applied to precisely these two boards under
-      `KICKOS_ENABLE_SELFTEST` (`CMakeLists.txt:114`), so the job must configure with the selftest
+      link-only job is the whole value at none of the runtime cost. Both link today with ~14 KiB
+      spare (measured in the session record above, and shrinking), and the job is what keeps that
+      true. Note for whoever adds it: `-Os` is applied to precisely these two boards under
+      `KICKOS_ENABLE_SELFTEST` (`CMakeLists.txt:141`), so the job must configure with the selftest
       **on** or it will not measure the image that actually risks overflow. A local sweep of all
       thirteen `-st` presets found one real link break that the seven emulator gates could not
       (`esp32-wroom-st`, Xtensa, missing `kickos_arch_mpu_commit`), which is the argument for
@@ -426,9 +472,12 @@ frdmk64f+blink -- the 8 B being the argv struct itself).
       selftest `shutdown_priv`, checked to FAIL (run truncates mid-suite) with the gate removed.
 - [x] **Add a writable arm to `user_writable_ok`** -- see `m4.5.1: give user_writable_ok the
       static-data arm its read twin has`. New `arch_user_data_writable` seam. **The hole was wider
-      than recorded here:** it is not just the five no-MPU chips (stm32f103, stm32f302, nrf51,
-      sam3x8e, esp32) -- **the host sim has it too**, despite building `KICKOS_HAVE_MPU=1`, because
-      its globals live in the host image rather than the mprotect'd arena. So the fix could not key
+      than recorded here:** it is not just the five chips with no MPU *backend* (stm32f103,
+      stm32f302, nrf51, sam3x8e, esp32 -- and `sam3x8e` **has** an MPU on silicon, a Cortex-M3
+      revision 2.0 unit; what is missing is the `mpu.cmake` port, and the `due` unit is retired so
+      it cannot be witnessed either way) -- **the host sim has it too**, despite building
+      `KICKOS_HAVE_MPU=1`, because its globals live in the host image rather than the mprotect'd
+      arena. So the fix could not key
       on `KICKOS_HAVE_MPU` alone and the sim carries its own arm. Gate: selftest `writable_global`,
       confirmed failing on both broken postures beforehand. Also note the suite had already
       *worked around* this bug in `ep_recv_worker`'s comment without it being filed.
@@ -608,8 +657,15 @@ Blockers and limits:
   userspace driver so the report always reaches the wire, which works, but on `xmc4800-relax` it
   reproducibly garbles roughly the last 8 bytes the driver had queued (the polled TX word pending in
   `TBUF0`). Cosmetic for a terminal report, but it eats the tail of the line preceding the dump.
-- **`bluepill-c8` and `f302nucleo` will likely never flip** -- both carve barely 3 KiB of arena for
-  the two boot stacks, and both are 9-handle boards.
+- **`bluepill-c8` and `f302nucleo` are held by the absence of a witness, not by RAM or handles.**
+  Both are armv7m, so the flip's mechanism (`ctx.npriv` in the fabricated first frame) is present;
+  neither part has an MPU (`stm32f103` none, and `f302nucleo` is the R8 `x8` line, which has none
+  either), so stage 2's gate -- selftest green *under enforcement* plus a cross-domain `rootfault`
+  -- cannot be met on either. The 9-handle provisioning costs the flip nothing: the authority cap
+  sits at reserved index 2 and spends zero dynamic slots. The arena is heap policy, not the part:
+  measured 6,560 B (`bluepill-c8`, production image), 2,592 B (its selftest image), 14,752 B with
+  the heap carve at zero; 6,464 and 2,560 on `f302nucleo` with its 4 K carve
+  (`design-flash-footprint.md` section 7). The "barely 3 KiB" reading is a selftest-image figure.
 - **`Thread::privileged` survives**, with narrowed meaning: it selects the memory posture (kernel
   domain + permissive background), it is the confused-deputy bypass at `syscall_mem.cc:37`, and it
   stays the home for "may spawn a privileged child" -- which should NOT be a capability, since

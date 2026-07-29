@@ -46,7 +46,7 @@ code wins, then this file.
 | `xmc4800-relax` | XMC4800 / M4F | P5.9 (LED1) | USIC0 ASC, P1.5/P1.4, 115200 -> VCOM; + RTT | onboard J-Link | [x] full selftest + stress + `HARD FAULT` dump (2026-07-09, 144 MHz); PMSAv7 enforcement selftest + `mpu_fault` cross-domain trap + the `xmcspi` granted-USIC window (2026-07-17) -- the canonical per-thread PMSA proof; console handover to a userspace driver, panic-path reclaim and clock retune all silicon-passed. **First board with an UNPRIVILEGED root** (2026-07-27) -- see *Unprivileged root* below |
 | `f411disco` | STM32F411 / M4F | PD12 (LD4 grn) | USART2, PA2/PA3, 115200 (ext adapter) | onboard ST-Link (`st-flash`) | [x] full selftest + all apps + fault dump + bench + LED; **PMSAv7 enforcement silicon-witnessed 2026-07-29** -- enforcement selftest 62/62 + `mpu_fault` cross-domain MemManage denial, closing the `stm32f411` MPU HW debt for the chip. **Fifth board with an UNPRIVILEGED root, and the second on PMSAv7** (2026-07-29) -- see *Unprivileged root* below |
 | `blackpill` | STM32F411 / M4F | PC13 (active-low) | USART2, PA2/PA3, 115200 (ext adapter) | USB-DFU / SWD | [x] full selftest + bench (2nd F411; 25 MHz HSE); MPU backend is the shared `stm32f411` one, silicon-witnessed on `f411disco` 2026-07-29 (not re-run on this board) |
-| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] selftest minus the 4 KiB-alloc test (16 K RAM) + bench; not an enforcement target (3712 B arena) |
+| `f302nucleo` | STM32F302R8 / M4 | PB13 (LD2 grn) | USART2, PA2/PA3, 115200 -> ST-Link VCP | onboard ST-Link (`st-flash`) | [x] selftest minus the 4 KiB-alloc test (16 K RAM) + bench; **not an enforcement target -- the F302R8 (`x8` line) has no MPU** (the F302xB/xC line does) |
 | `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + full selftest with `sched_exit` (2026-07-09, 125 MHz PLL); PMSAv6 cross-domain denial silicon-proven 2026-07-19 (M0+ has no MemManage -- it escalates to HardFault) -- the fleet's only armv6m enforcement proof; U-mode `cxxtest` still awaits a bench re-flash |
 | `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only (64 K/20 K linker; links the full app set incl selftest + stress) |
 | `frdmk64f` | MK64FN1M0 / M4F | -- (none) | UART0, PTB16/PTB17, 115200 -> OpenSDA VCOM | J-Link (OpenSDA) | [x] HW 2026-07-15 (full selftest over the buffered console ring, 120 MHz); SYSMPU enforcement + `mpu_fault` trap silicon-proven at M2 |
@@ -179,6 +179,12 @@ the board".
   build -- upstream `rx-elf` GCC rejects them. That toolchain cannot be fetched anonymously on a
   hosted runner, so RX is bench-validated only. A change that touches the arch seam is *not*
   covered for RX by a green CI run; build it locally.
+- **microbit has no privilege axis at all, so it witnesses nothing about the user/kernel ring.**
+  The nRF51822 is a Cortex-M0, and ARMv6-M's Unprivileged/Privileged Extension is optional and
+  separate from the MPU extension: the M0 does not implement it (Cortex-M0 TRM DDI0432C), so
+  `switch.S`'s `msr control` is discarded and **a thread the kernel marks unprivileged runs
+  privileged here.** `picopi` is a Cortex-M0+ and does implement it; one arch backend spans both
+  cores and nothing in the tree distinguishes them. See `design-unprivileged-root.md` section 2.
 - **microbit is the armv6m run gate, and the fleet's only board that is allowed to skip anything.**
   16 KiB SRAM and a 2-slot pool mean part of the suite genuinely cannot run here, so
   `microbit_selftest` sets `EXPECT_SKIPS` to the eleven test **names** it cannot host; every other
@@ -1000,3 +1006,14 @@ the prior witness (SYSMPU surfaces as an imprecise bus fault, so the core label 
 boundary to enforce and the banner reads `mpu off`. It is regressed instead: at `e5c651b`
 (2026-07-28) its selftest ran 58 cases / 58 `ok` / 0 skips / 0 fail on silicon, unchanged by the
 C6 work, which is what the run is for (the two Espressif ports share nothing but the flasher).
+
+**`microbit` is not a flip target either, and for a sharper reason than "no MPU":** the nRF51822's
+Cortex-M0 implements no privilege axis, so the kernel's `unprivileged` marking is discarded by the
+hardware and such a thread runs privileged (see the caveat under *Per-board caveats*). The armv6m
+privilege boundary is `picopi`'s alone -- an M0+, which does implement the extension.
+
+**`bluepill-c8` and `f302nucleo` are not flip targets today** -- not for RAM and not for their
+9-handle provisioning, both of which are cheaper than they read (`design-flash-footprint.md`
+section 7; the authority cap costs zero dynamic slots). Neither part has an MPU, so the stage-2
+gate -- selftest green *under enforcement* plus a cross-domain `rootfault` -- has nothing to be
+discriminating against. `design-unprivileged-root.md` section 9 carries the arithmetic.
