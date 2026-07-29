@@ -20,9 +20,9 @@
 //
 // The reporter is woken by the workload itself (player_b posts a gate every N rounds),
 // NOT by a timer -- so it cannot be starved by the players saturating the CPU (a real
-// tickless-timer starvation under 100%-CPU zero-idle load; see M1_state.md). Numbers
-// are comparable across arches and to ourselves once M2 adds an MPU reprogram to the
-// switch. Run telemetry OFF for clean numbers.
+// tickless-timer starvation under 100%-CPU zero-idle load; see
+// docs/archive/M1_state.md). Numbers are comparable across arches and to ourselves once
+// M2 adds an MPU reprogram to the switch. Run telemetry OFF for clean numbers.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

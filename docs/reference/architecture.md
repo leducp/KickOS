@@ -291,7 +291,7 @@ KickOS/
   boards/<board>/                   # per-board descriptor: board.cmake (arch/chip/-mcpu)
                                     #   + optional board_config.h / <chip>.ld overrides
   docs/                             # README.md (map); book/ (how & why); reference/ (code-synced)
-  README.md  roadmap.md  TODO.md  M1_state.md
+  README.md  roadmap.md  TODO.md  STATE.md
 ```
 
 ---

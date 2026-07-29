@@ -7,7 +7,7 @@ to be read by someone evaluating, learning from, or porting KickOS. It is **not*
 technical contract: that is the *Reference* (`../reference/`), which is code-synced and wins on
 any disagreement with the code. The Book *explains* and links into the Reference for the precise
 contract; a concept here does not become a bug when the code is refactored. (Roadmap/task status
-lives in `../../roadmap.md` + `../../TODO.md`; validated state in `../../M1_state.md`. The Book
+lives in `../../roadmap.md` + `../../TODO.md`; validated state in `../archive/M1_state.md`. The Book
 does not narrate how we got here.)
 
 **What KickOS is.** A minimal, seL4-principled microkernel RTOS: a small trusted kernel

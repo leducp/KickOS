@@ -9,8 +9,8 @@ A small **microkernel** RTOS with a clear userspace/kernel separation, MPU-first
 per-task isolation, an event-driven **tickless** scheduler, and a **first-class x86
 host "sim"** that runs the real kernel + userspace as one Linux process.
 
-Documentation map: [`docs/README.md`](docs/README.md). Full design:
-[`docs/reference/architecture.md`](docs/reference/architecture.md).
+Current state: [`STATE.md`](STATE.md). Documentation map: [`docs/README.md`](docs/README.md).
+Full design: [`docs/reference/architecture.md`](docs/reference/architecture.md).
 
 ## Status
 
@@ -33,9 +33,9 @@ Shipped since M1:
 
 Silicon boards include the XMC4800, FRDM-K64F, STM32F411 (f411disco / blackpill), STM32F302,
 RP2040 (Pico), RP2350 (pizero2350), i.MX RT1062 (Teensy 4.1), Renesas RX72M, ESP32-WROOM and
-ESP32-C6. See [`M1_state.md`](M1_state.md) and [`docs/m2-readiness.md`](docs/m2-readiness.md) for
-the validated per-board matrices, [`docs/reference/boards.md`](docs/reference/boards.md) for
-per-board wiring, [`roadmap.md`](roadmap.md) for the milestone plan (**M4 = the driver era,
+ESP32-C6. See [`docs/m2-readiness.md`](docs/m2-readiness.md) for the validated per-board
+matrices, [`docs/reference/boards.md`](docs/reference/boards.md) for per-board wiring,
+[`roadmap.md`](roadmap.md) for the milestone plan (**M4 = the driver era,
 M5 = SMP**), and [`docs/reference/porting.md`](docs/reference/porting.md) for how to add a target.
 
 ### What CI actually gates, per ISA
