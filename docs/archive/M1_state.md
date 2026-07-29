@@ -4,7 +4,7 @@
 M1 is the uniformity / bring-up milestone: **every board boots, has a console, runs the
 selftest, panics visibly, and runs at its true (or safely-degraded) clock.** This file records
 the validated end state. Raw console captures are in `M1_raw_meas.md`; per-board pin/flash
-details in `docs/reference/boards.md`.
+details in `../reference/boards.md`.
 
 **Result: M1 complete -- 10 boards validated on silicon (5 ISAs) + 3 emulator gates green.**
 No open hardware dependency: nothing gating M1 waits on a board that isn't in hand.

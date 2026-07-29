@@ -13,7 +13,7 @@
 > *Then: M2 proper* onward is the enforcement record.
 >
 > Companion docs: `reference/boards.md` for per-board wiring and what CI re-checks per ISA,
-> `../M1_state.md` for the M1 per-app fleet pass, `../TODO.md` for the live task list.
+> `archive/M1_state.md` for the M1 per-app fleet pass, `../TODO.md` for the live task list.
 
 ## 1. Thread-slot reclamation (FIRST PRIORITY) -- [x] DONE
 
@@ -31,12 +31,12 @@ This was the single batched HW-validation pass (per the HW-test deferral policy:
 per-board silicon re-validation until after telemetry lands, item 3). The full suite
 (`-DKICKOS_ENABLE_SELFTEST=ON`: selftest + stress + `sched_exit`) ran on every board we
 can physically flash, captured over each board's console, pass/fail recorded. Result:
-**10 boards on silicon across 5 ISAs** -- see section 7 and `M1_state.md`.
+**10 boards on silicon across 5 ISAs** -- see section 7 and `archive/M1_state.md`.
 
 | Board | Arch | Status |
 |-------|------|--------|
 | frdmk64f | armv7m | [x] prior silicon baseline (14/14 + stress soak, 120k handoffs); formal re-confirm folds into M2 SYSMPU (not an M1 gate) |
-| rx72m | rxv3 | [x] selftest 14/14 + stress on silicon (2026-07-09); tickless re-arm bug fixed generically; bench recorded (`M1_state.md` section 3). Closed. |
+| rx72m | rxv3 | [x] selftest 14/14 + stress on silicon (2026-07-09); tickless re-arm bug fixed generically; bench recorded (`archive/M1_state.md` section 3). Closed. |
 | xmc4800-relax | armv7m | [x] selftest 14/14 + stress + fault dump on silicon (2026-07-09); the `multi_wait` deadlock is resolved (item 5) |
 | f411disco / f302nucleo | armv7m/M4 | [x] on silicon (2026-07-14): f411disco 14/14, f302nucleo 13/14 (test 11 = RAM cap) + stress + bench |
 | picopi (RP2040) | armv6m | [x] selftest 14/14 + `sched_exit` on silicon (2026-07-09) |
@@ -55,7 +55,7 @@ measure the M2 `arch_mpu_apply` switch-hook cost against.
 ## 4. Context-switch + IRQ-entry bench baselines -- [x] DONE
 
 The per-board bench table (bench app, `KICKOS_BENCH=ON`) is filled -- the full fleet is
-recorded in `M1_state.md` section 3 (throughput on every target; per-switch cost +
+recorded in `archive/M1_state.md` section 3 (throughput on every target; per-switch cost +
 IRQ-entry latency on every board with a cycle counter). Only K64F re-confirms under M2
 SYSMPU (prior baseline 77 cyc / 641 ns on record). These are the M2 regression baseline.
 
@@ -328,7 +328,7 @@ now, but the app itself is unwitnessed in either posture (see its entry above).
 
 Capabilities + authenticated grants (the seL4-principled object model). **Also M3:
 user-selectable CPU clock / low-power mode** -- once the fleet-wide "max frequency by
-default" baseline is confirmed (the M1 clock audit: `M1_state.md` + the clocks section
+default" baseline is confirmed (the M1 clock audit: `archive/M1_state.md` + the clocks section
 of `TODO.md`), expose a per-chip clock
 select so an app can trade speed for power. Depends on each chip having an explicit
 clock bring-up (not just inheriting the ROM/reset default) and a truthful CPU/timer
