@@ -19,7 +19,15 @@ namespace kickos::rx::reg::port
     // Register blocks (one byte per port): PORTn.<reg> = block + n (UM sec.22.3).
     constexpr uintptr_t PDR_BASE = mmap::PORT + 0x00;  // direction
     constexpr uintptr_t PODR_BASE = mmap::PORT + 0x20; // output data
+    constexpr uintptr_t PIDR_BASE = mmap::PORT + 0x40; // pin state (readable whatever PDR/PMR hold)
     constexpr uintptr_t PMR_BASE = mmap::PORT + 0x60;  // mode (peripheral vs GPIO)
+
+    // Port index runs 0..9, A..H, J..N, Q as a DENSE 0..0x17 (PORTG is 0x10, PORTQ is
+    // 0x17) -- the letters skip I, O and P, the addresses do not (UM sec.22.3 lists).
+    constexpr uint32_t PORT_INDEX_MAX = 0x17;
+    constexpr uint32_t PIN_MAX = 7;
+
+    constexpr uintptr_t pmr(uint32_t p) { return PMR_BASE + p; }
 
     // Console pins on PORTB (port index 0x0B): PB1/TXD6, PB0/RXD6.
     constexpr uintptr_t PORTB_PMR = PMR_BASE + 0x0B;

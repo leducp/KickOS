@@ -6,10 +6,15 @@
 // error reply, and the recv/dispatch loop. Every SPI driver defines its own
 // Bus (the register access + CS framing -- the silicon), then runs
 // spi_serve_loop() on it. No MMIO and no chip knowledge live here; only the
-// wire-ABI framing over <kickos/sys/bus.h>. The Bus supplies the two members
-// the shared code calls (the implicit interface):
-//     uint32_t configure(uint32_t hz, uint8_t mode, uint8_t word_bits, uint8_t cs_policy);
-//     void     transfer(unsigned char* buf, size_t len);
+// wire-ABI framing over <kickos/sys/bus.h> plus the per-device slot store. The
+// Bus supplies a nested profile type and the two members the shared code calls
+// (the implicit interface):
+//     struct Profile;  // POD: the chip words one device's config folds down to
+//     uint32_t fold(struct kos_bus_cfg const& cfg, Profile& out);   // -> achieved hz
+//     void     transfer(Profile const& p, unsigned char* buf, size_t len);
+// A controller has ONE live profile register set, so a transfer cannot be issued
+// without naming the profile it must (re-)apply first -- hence the profile is an
+// argument of transfer(), not a separate select() a future path could forget.
 // Instantiated only on an anonymous-namespace Bus, so each instantiation is
 // TU-local (internal linkage, no COMDAT).
 
@@ -40,10 +45,34 @@ inline void reply_error(int reply_cap, int16_t status)
     kos_reply(reply_cap, &rsp, sizeof(rsp));
 }
 
+// The per-device profile store: one folded Bus::Profile per kos_bus_req.device.
+// Slots are indexed by the CALLER's own device byte, which is sound only while a
+// single client can reach the endpoint: a client holds a SIGNAL-only cap, and
+// spawn-time delegation refuses a source cap without CAP_TRANSFER, so a client
+// cannot pass its copy on -- the reachable set is exactly what the bring-up handed
+// out. That is the one-client-several-devices case (a flash and a sensor on one
+// bus). Mutually-untrusting clients sharing a bus would need badged endpoints and
+// are NOT supported here.
+template <typename Bus>
+struct SlotTable
+{
+    typename Bus::Profile profile[KOS_BUS_DEV_MAX];
+    bool folded[KOS_BUS_DEV_MAX];
+
+    SlotTable()
+    {
+        for (unsigned d = 0; d < KOS_BUS_DEV_MAX; d++)
+        {
+            folded[d] = false;
+        }
+    }
+};
+
 // Parse + run one request; ALWAYS completes the call (consumes reply_cap on every
 // path, success or error -- a leaked reply cap parks the client forever).
 template <typename Bus>
-void serve_one(Bus& bus, unsigned char const* msg, size_t n, int reply_cap)
+void serve_one(Bus& bus, SlotTable<Bus>& slots, unsigned char const* msg, size_t n,
+               int reply_cap)
 {
     if (n < sizeof(struct kos_bus_req))
     {
@@ -63,6 +92,11 @@ void serve_one(Bus& bus, unsigned char const* msg, size_t n, int reply_cap)
         reply_error(reply_cap, -KOS_ENOSYS); // region path is DEFERRED (inline only)
         return;
     }
+    if (req.device >= KOS_BUS_DEV_MAX)
+    {
+        reply_error(reply_cap, -KOS_EINVAL);
+        return;
+    }
 
     if (req.op == KOS_BUS_OP_CONFIG)
     {
@@ -74,7 +108,8 @@ void serve_one(Bus& bus, unsigned char const* msg, size_t n, int reply_cap)
         }
         struct kos_bus_cfg cfg;
         mem_copy(&cfg, msg + sizeof(struct kos_bus_req), sizeof(cfg));
-        uint32_t const achieved = bus.configure(cfg.hz, cfg.mode, cfg.word_bits, cfg.cs_policy);
+        uint32_t const achieved = bus.fold(cfg, slots.profile[req.device]);
+        slots.folded[req.device] = true;
 
         unsigned char rbuf[sizeof(struct kos_bus_rsp) + sizeof(uint32_t)];
         struct kos_bus_rsp* rsp = reinterpret_cast<struct kos_bus_rsp*>(rbuf);
@@ -94,6 +129,11 @@ void serve_one(Bus& bus, unsigned char const* msg, size_t n, int reply_cap)
     if (req.nseg < 1u or req.nseg > KOS_BUS_SEG_MAX)
     {
         reply_error(reply_cap, -KOS_EINVAL);
+        return;
+    }
+    if (not slots.folded[req.device])
+    {
+        reply_error(reply_cap, -KOS_EINVAL); // no profile for this slot: nothing to apply
         return;
     }
     size_t const framing =
@@ -131,7 +171,7 @@ void serve_one(Bus& bus, unsigned char const* msg, size_t n, int reply_cap)
     struct kos_bus_rsp* rsp = reinterpret_cast<struct kos_bus_rsp*>(rbuf);
     unsigned char* work = rbuf + sizeof(struct kos_bus_rsp);
     mem_copy(work, msg + framing, total);
-    bus.transfer(work, total);
+    bus.transfer(slots.profile[req.device], work, total);
     rsp->status = 0;
     rsp->len = static_cast<uint16_t>(total);
     kos_reply(reply_cap, rbuf, sizeof(struct kos_bus_rsp) + total);
@@ -145,6 +185,7 @@ template <typename Bus>
 void serve_loop(Bus& bus)
 {
     int const ep = KOS_SPAWN_DELEGATED_CAP0; // delegated {E | WAIT} recv cap
+    SlotTable<Bus> slots;
     unsigned char msg[KOS_EP_MSG_MAX];
     while (true)
     {
@@ -158,7 +199,7 @@ void serve_loop(Bus& bus)
         {
             continue; // plain send: not part of the bus call/reply protocol
         }
-        serve_one(bus, msg, static_cast<size_t>(n), info.reply_cap);
+        serve_one(bus, slots, msg, static_cast<size_t>(n), info.reply_cap);
     }
 }
 

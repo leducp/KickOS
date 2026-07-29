@@ -378,11 +378,16 @@ live stream via `--follow` (stdin/fifo, e.g. `JLinkRTTLogger -RTTChannel 1`;
    (EXC_RETURN save, MSP alignment, `-mgeneral-regs-only`); without it that asm
    is validated only by the manual XMC step.
 5. **Trace-metadata drift guard** (`tests/telemetry/gen_idmap.cc` + `check_idmap.py`,
-   ctest `telemetry_idmap`) -- emits the C++ source of truth (the `ArchId` enum plus
-   the syscall-number set 1..35) and asserts that `kicktrace.py`'s `ARCH_NAME` /
-   `SYSCALL_NAME` dicts key EXACTLY those numbers (none missing, none extra), so a new
-   syscall or arch id the decoder was never taught trips CI instead of silently
-   mislabelling a trace. Complements the in-source `static_assert` in
+   ctest `telemetry_idmap`) -- a THREE-way check whose authority is
+   `user/include/kickos/sys/abi.h`: `check_idmap.py` parses `enum kos_syscall_nr` and
+   requires every enumerator to appear, at the same number, in both the `gen_idmap.cc`
+   list and `kicktrace.py`'s `SYSCALL_NAME` (none missing, none stale), with the label
+   being the enumerator suffix lowercased. Comparing only the two mirrors against each
+   other was vacuous -- both stopped at 35 while the ABI reached 37, and the gate stayed
+   green while traces printed `nr36`/`nr37`. `ARCH_NAME` stays a two-way check against
+   the `ArchId` enum, which only `gen_idmap` can reach. So a new syscall or arch id the
+   decoder was never taught trips CI instead of silently mislabelling a trace.
+   Complements the in-source `static_assert` in
    `include/kickos/trace/record.h`, which pins every `ArchId` value so a reorder trips
    the *build* (`KICKOS_TRACE_ARCH` in CMake must match the enum). **Durable fix (TODO):**
    generate both decoder tables from the C++ source, so there is one source of truth

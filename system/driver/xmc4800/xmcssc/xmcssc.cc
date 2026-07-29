@@ -5,8 +5,9 @@
 // sibling of user/driver/k64dspi; three parts, part-for-part the same shape:
 //
 //   1. UsicSscBus -- the transaction ENGINE (a class, no globals, no IPC). Given the
-//      granted U0C1 window it folds a per-device config into SCTR (word/bit-order) +
-//      PCR (the SSC-master CS framing), and clocks N bytes one word at a time,
+//      granted U0C1 window it folds each device's config into SCTR (word/bit-order) +
+//      PCR (the SSC-master CS framing) words, rewrites them from the named device's
+//      profile at the head of every transfer, and clocks N bytes one word at a time,
 //      blocking on the USIC0 SR1 RX-complete IRQ per word (rx overwrites tx in
 //      place). For KOS_BUS_CS_HW the hardware MSLS/SELO0 line brackets the WHOLE
 //      transfer: PCR.FEM=1 holds MSLS asserted across the software gaps between
@@ -25,11 +26,14 @@
 //
 // Register split: the bring-up sets the kernel clock, baud profile (FDR/BRG), input
 // routing (INPR) and channel enable (CCR) once; the driver thread folds SCTR/TCSR/PCR
-// and runs the transfer. Everything sits inside the granted 0x200 window: the split
-// is bring-up PLACEMENT (xmc_spi0_start runs in root), not a hardware privilege wall
-// (docs/design-unprivileged-root.md section 9). CPOL/CPHA (BRG.SCLKCFG) are fixed to
-// SPI mode 0 at bring-up; configure() folds only bit order + word size + the CS
-// framing (the internal loopback is phase-agnostic).
+// and runs the transfer. Everything sits inside the granted 0x200 window, but the split
+// is NOT merely placement: FDR/BRG/CCR are write-PV-only at the bus, and an
+// unprivileged write to them is silently discarded (no fault) -- measured on silicon by
+// user/apps/xmc4800-relax/pvprobe, docs/design-unprivileged-root.md section 9. So this
+// bring-up needs a privileged executor. CPOL/CPHA (BRG.SCLKCFG) are fixed to
+// SPI mode 0 at bring-up; a device profile therefore carries only bit order + word
+// size + the CS framing -- no per-device rate and no per-device CPOL/CPHA on this
+// chip (the internal loopback is phase-agnostic).
 //
 // Register addresses / bit fields are clean-room from the XMC4700/XMC4800 Reference
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source.
@@ -107,29 +111,37 @@ namespace
     class UsicSscBus
     {
     public:
+        // The SCTR/PCR words one device's config folds down to. SCTR/PCR are the
+        // channel's single live profile register set, so these are rewritten inside
+        // every transfer rather than once at CONFIG time.
+        struct Profile
+        {
+            uint32_t sctr;
+            uint32_t pcr;
+            bool cs_hw;
+        };
+
         void init(uintptr_t win, int irq)
         {
             win_ = win;
             irq_ = irq;
-            cs_hw_ = false;
         }
 
-        // Fold a per-device config into SCTR (word size + bit order) and PCR (the SSC
-        // CS framing), and adopt the CS policy. The baud is fixed by the bring-up
-        // (never refolded here); returns its nominal bit clock. CPOL/CPHA
-        // (BRG.SCLKCFG) are fixed to mode 0 at bring-up.
-        uint32_t configure(uint32_t hz, uint8_t mode, uint8_t word_bits, uint8_t cs_policy)
+        // Fold a per-device config into the SCTR (word size + bit order) and PCR (the
+        // SSC CS framing) words; returns the channel's nominal bit clock. cfg.hz is
+        // DISCARDED -- FDR/BRG are write-PV-only, the bus drops the store here -- and
+        // CPOL/CPHA (BRG.SCLKCFG) are fixed to mode 0 at bring-up for the same reason.
+        uint32_t fold(struct kos_bus_cfg const& cfg, Profile& out)
         {
-            static_cast<void>(hz); // baud is the fixed bring-up profile, not retunable
-            cs_hw_ = (cs_policy == KOS_BUS_CS_HW);
+            out.cs_hw = (cfg.cs_policy == KOS_BUS_CS_HW);
 
-            uint8_t bits = word_bits;
+            uint8_t bits = cfg.word_bits;
             if (bits < 4u)
             {
                 bits = 8u; // 0 (unset) or nonsense -> the 8-bit default
             }
             uint32_t sctr = SCTR_TRM_ACTIVE | ((static_cast<uint32_t>(bits - 1u) & 0xFu) << SCTR_WLE_SHIFT);
-            if (cs_hw_)
+            if (out.cs_hw)
             {
                 // FLE=63: the frame is NOT terminated by a bit count; the software
                 // TCSR.SOF/EOF markers govern the frame end (RM 18.4.3.6), so MSLS
@@ -140,18 +152,17 @@ namespace
             {
                 sctr |= (static_cast<uint32_t>(bits - 1u) & 0x3Fu) << SCTR_FLE_SHIFT; // one word per frame
             }
-            if ((mode & KOS_BUS_MODE_LSB_FIRST) == 0u)
+            if ((cfg.mode & KOS_BUS_MODE_LSB_FIRST) == 0u)
             {
                 sctr |= SCTR_SDIR_MSB;
             }
-            r32(win_ + off::SCTR) = sctr;
+            out.sctr = sctr;
 
-            uint32_t pcr = PCR_MSLSEN;
-            if (cs_hw_)
+            out.pcr = PCR_MSLSEN;
+            if (out.cs_hw)
             {
-                pcr = PCR_CS_HW; // MSLSEN|SELCTR|SELINV|SELO0|FEM (the CS-hold recipe)
+                out.pcr = PCR_CS_HW; // MSLSEN|SELCTR|SELINV|SELO0|FEM (the CS-hold recipe)
             }
-            r32(win_ + off::PCR) = pcr;
 
             uint32_t f = kos_periph_clock_hz(win_);
             if (f == 0u)
@@ -161,18 +172,22 @@ namespace
             return profile_bitclock(f);
         }
 
-        // Clock `len` bytes one word at a time; tx bytes in `buf` go out, rx overwrites
-        // them in place. Each word: set SOF/EOF (CS_HW), load TBUF0 (starts one frame),
-        // block on the SR1 RX-complete IRQ, drain RBUF, clear the flags. For CS_HW the
-        // MSLS/SELO0 line asserts on word 0 (SOF) and, held by FEM across the software
-        // gaps, releases only after the last word (EOF) -- one coherent transaction
-        // spanning ALL segments of the message.
-        void transfer(unsigned char* buf, size_t len)
+        // Apply device `p`'s profile to the live SCTR/PCR, then clock `len` bytes one
+        // word at a time; tx bytes in `buf` go out, rx overwrites them in place. Each
+        // word: set SOF/EOF (CS_HW), load TBUF0 (starts one frame), block on the SR1
+        // RX-complete IRQ, drain RBUF, clear the flags. For CS_HW the MSLS/SELO0 line
+        // asserts on word 0 (SOF) and, held by FEM across the software gaps, releases
+        // only after the last word (EOF) -- one coherent transaction spanning ALL
+        // segments of the message.
+        void transfer(Profile const& p, unsigned char* buf, size_t len)
         {
             if (len == 0)
             {
                 return;
             }
+            r32(win_ + off::SCTR) = p.sctr;
+            r32(win_ + off::PCR) = p.pcr;
+
             volatile uint32_t* tcsr = reinterpret_cast<volatile uint32_t*>(win_ + off::TCSR);
             volatile uint32_t* pscr = reinterpret_cast<volatile uint32_t*>(win_ + off::PSCR);
             volatile uint32_t* rbuf = reinterpret_cast<volatile uint32_t*>(win_ + off::RBUF);
@@ -183,7 +198,7 @@ namespace
                 // Frame markers must be set BEFORE the TBUF write (sampled when TDV
                 // goes valid). Only meaningful for CS_HW (FLE=63); harmless otherwise.
                 uint32_t tcsr_val = TCSR_BASE;
-                if (cs_hw_)
+                if (p.cs_hw)
                 {
                     if (i == 0)
                     {
@@ -206,7 +221,7 @@ namespace
                 kos_irq_ack(irq_);     // unmask NVIC 85 (flag already clear -> no storm)
             }
 
-            if (cs_hw_)
+            if (p.cs_hw)
             {
                 *pscr = PSCR_MSLS; // defensively force MSLS inactive after the EOF word
             }
@@ -215,19 +230,21 @@ namespace
     private:
         uintptr_t win_ = 0;
         int irq_ = -1;
-        bool cs_hw_ = false;
     };
 
     // The SSC service endpoint cap in the ROOT/init thread's table (set by the
-    // bring-up, read by the app to delegate SIGNAL to its clients). -1 = not up.
+    // bring-up, taken ONCE by the app to delegate SIGNAL to its single client).
+    // -1 = not up, or already taken.
     int g_spi0_ep = -1;
 }
 
 extern "C"
 {
-    int xmc_spi0_endpoint(void)
+    int xmc_spi0_take_endpoint(void)
     {
-        return g_spi0_ep;
+        int const ep = g_spi0_ep;
+        g_spi0_ep = -1; // one-shot: device slots are caller-named, so ONE client only
+        return ep;
     }
 
     // UNPRIVILEGED driver thread: owns the U0C1 window (spawn MMIO grant) + the USIC0
@@ -271,10 +288,10 @@ extern "C"
         bool const cs_hw = (cfg->cs_policy == KOS_SVC_CS_HW);
 
         // 1. One-time bring-up, run from the root/init thread: kernel clock gate,
-        //    baud (FDR/BRG), INPR routing, CCR enable. Everything written here sits
-        //    inside the grantable U0C1 window; what blocks a flipped (unprivileged)
-        //    root is this placement, not the silicon (docs/design-unprivileged-root.md
-        //    section 9). USIC0's module clock is already ungated by the console (U0C0)
+        //    baud (FDR/BRG), INPR routing, CCR enable. FDR/BRG/CCR are write-PV-only
+        //    at the bus, so this must run privileged: an unprivileged store to them is
+        //    silently discarded (docs/design-unprivileged-root.md section 9).
+        //    USIC0's module clock is already ungated by the console (U0C0)
         //    bring-up. The SCU clock tree and the port IOCR pin-mux stay out of the
         //    driver's window (the escalation surfaces the capability keeps out).
         r32(win_base + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
@@ -289,9 +306,10 @@ extern "C"
         r32(win_base + off::BRG) = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
 
         // Initial shift + transmit + protocol config while the channel is disabled
-        // (CCR.MODE=0). The driver re-folds SCTR/PCR from the client's CONFIG, but seed
-        // a coherent default matching the service cfg's CS policy so a first XFER before
-        // any CONFIG still frames correctly.
+        // (CCR.MODE=0): the channel must be coherently configured before CCR enables it.
+        // The driver rewrites SCTR/PCR from the named device's profile inside every
+        // transfer, and refuses an XFER on a slot that has had no CONFIG, so this seed
+        // is never what a transfer runs on.
         uint32_t sctr = SCTR_TRM_ACTIVE | (7u << SCTR_WLE_SHIFT) | SCTR_SDIR_MSB; // 8-bit MSB
         uint32_t pcr = PCR_MSLSEN;
         if (cs_hw)

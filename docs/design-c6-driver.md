@@ -1,8 +1,10 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design brief: ESP32-C6 unprivileged GPIO driver -- the canonical PMP + APM per-thread peripheral-isolation reference
 
-> **Status: LANDED** -- see `design/README.md` for the marker taxonomy. The one follow-on still
-> open is the APM/PMS global peripheral open being driven for boards other than this demo.
+> **Status: LANDED** -- see `design/README.md` for the marker taxonomy. The APM open no longer
+> lives in this app: `arch_init` (`chip_esp32c6.cc`) programs the REE0 background permit at boot
+> for every board, so it now covers apps other than this demo. Section "APM open" below describes
+> the mechanism; only its location has moved.
 
 IMPLEMENTED + PROVEN on silicon (2026-07-17): `user/apps/esp32c6-wroom/c6blink` blinks GPIO10 through
 the granted 8 B PMP window (APM opened) then an ungranted `GPIO_ENABLE` poke PMP-faults
@@ -120,10 +122,13 @@ actually drive a pad, and no other peripheral is reachable. PMP draws the per-th
 the **GPIO-block/register** level; single-pin isolation would need per-pin ETM/dedicated-GPIO
 features (out of scope). This is the C6 twin of the F411 32 B window folding in I2SCFGR.
 
-## APM open (the one-time background permit -- the piece the fleet has never driven)
+## APM open (the one-time background permit)
 APM registers are writable only in **TEE mode** (= M-mode), so this is a privileged/kernel
 action, done ONCE before any U-mode driver runs. It is per-security-mode, NOT per-thread:
-all REE0 U-threads share it. The minimal open, following 16.4:
+all REE0 U-threads share it. As landed it is `apm_open_ree0()` in `arch_init`, and the permit
+extent is wider than the GPIO block this brief scoped: regions 1..3 cover the complement of
+the HP-bus Rule 7 reserved blocks (INTMTX, and the contiguous PCR..HP_APM span), so those stay
+APM-closed to REE on top of the grant-path refusal. The mechanism per 16.4:
 
 1. U-mode security mode = **REE0**: `TEE_M0_MODE_CTRL_REG` (`0x6009_8000`) field `TEE_M0_MODE`
    -- reset 0 already selects REE0 for HP-CPU user mode, so confirm-only (no write needed if
@@ -174,7 +179,7 @@ Privileged bring-up shim (once):
    `IO_MUX` pad = GPIO function (`MCU_SEL=1`) + a drive strength; route a simple GPIO output
    (or a constant) so the pad is driven by the output latch, not a peripheral signal. Program
    direction BEFORE the driver can touch the latch.
-3. **APM open** (above) -- REE0 R/W over the GPIO block, no execute.
+3. Nothing for APM: `arch_init` already opened the REE0 background permit.
 4. Spawn the UNPRIVILEGED driver: `mmio_base = 0x6009_1008`, `mmio_size = 8`,
    `privileged = false`, pow2-defined stack (`KOS_STACK_DEFINE`). No IRQ line.
 
@@ -218,8 +223,8 @@ background permit K64F does not need.
 
 ## Region / slot budget
 Unprivileged driver PMP entries (`kickos_arch_mpu_commit` builds 8): app code (RX NAPOT) + app data
-(RW) + private stack (RW) + GPIO MMIO (RW-NX, 8 B) = **4 of 8**. Comfortable. APM cost: one
-region of 16 (region 0 reserved as the deny catch-all; region 1 = the GPIO block permit).
+(RW) + private stack (RW) + GPIO MMIO (RW-NX, 8 B) = **4 of 8**. Comfortable. APM cost: three
+regions of 16 (region 0 stays the deny catch-all; regions 1..3 are the chip-layer permit).
 
 ## Dependencies (state honestly) + sequencing
 Gated, in order:

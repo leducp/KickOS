@@ -58,7 +58,10 @@ enum kos_syscall_nr
     KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EPERM/EPIPE/ENOMEM/ENOSYS)
     KOS_SYS_REPLY = 35,       // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
     KOS_SYS_SHUTDOWN = 36,    // (status) -> does not return; -KOS_EPERM if refused
-    KOS_SYS_MEM_SELF_GRANT = 37 // (base, size) -> 0, or -KOS_E* (EPERM/EINVAL/ENOMEM)
+    KOS_SYS_MEM_SELF_GRANT = 37, // (base, size) -> 0, or -KOS_E* (EPERM/EINVAL/ENOMEM)
+    KOS_SYS_REBOOT = 38       // () -> does not return; -KOS_EPERM if refused, -KOS_ENOSYS (no backend)
+                              //   (self-test only: the dispatch arm is compiled out unless
+                              //   KICKOS_ENABLE_SELFTEST, so a production image returns -KOS_EINVAL)
 };
 
 // `op` selector for KOS_SYS_GRANT_PROBE (self-test only). Values are a frozen
@@ -191,6 +194,7 @@ struct kos_thread_params
     void* mem_base;      // domain data region granted to the thread (0 => none)
     uint32_t mem_size;   // size of that region (bytes)
     void* mmio_base;     // device/MMIO region granted to the thread (0 => none); attr implied R|W|DEV
+                         // EXCLUSIVE: overlapping a window a live thread holds -> -KOS_EBUSY
     uint32_t mmio_size;  // size of that region (bytes)
     void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE)
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
