@@ -79,6 +79,7 @@ SYSCALL_NAME = {
     27: "send", 28: "recv", 29: "console_publish", 30: "cpu_clock_set",
     31: "grant_probe", 32: "periph_clock_hz", 33: "pinmux_set", 34: "call",
     35: "reply", 36: "shutdown", 37: "mem_self_grant", 38: "reboot",
+    39: "periph_enable",
 }
 
 TRACE_MAGIC = 0x4B545243

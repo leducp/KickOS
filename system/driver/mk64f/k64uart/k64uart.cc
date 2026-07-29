@@ -9,15 +9,14 @@
 // the data register still holds a byte the shifter has not taken; wait for it to set
 // before loading the next byte, or a byte is dropped on the wire.
 //
-// The driver does NOT touch clock/pins/baud: the kernel's uart0_init() configured
-// them at boot and left the UART TX-capable in a polled state. Only UART0 data-path
-// registers INSIDE the granted window (S1 0x04, D 0x07) are touched. SIM clock gates
-// and PORTB pin mux live in separate privileged peripherals outside the window.
+// The driver touches no SIM or PORT register itself: the kernel's uart0_init()
+// configured clock and pins at boot and left the UART TX-capable in a polled state,
+// and kos_periph_enable() covers the clock gate plus the bus-side supervisor-protect.
+// Every other access is INSIDE the granted window (S1 0x04, D 0x07, and BDH/BDL/C4
+// for the driver-owned divisor).
 //
 // K64F is BYTE-mapped for the UART: every UART access below is an 8-bit load/store
-// (a 32-bit access at base+4 spans S1/S2/C3/D and reading D pops the RX FIFO). The
-// one exception is the AIPS PACR open in the start shim, which is a genuine 32-bit
-// register.
+// (a 32-bit access at base+4 spans S1/S2/C3/D and reading D pops the RX FIFO).
 //
 // HARD RULE (design D7): NO libc stdio. printf/puts route through _write ->
 // kos_send(0, ..) -> this driver's own endpoint (a self-send that deadlocks, since
@@ -45,10 +44,11 @@ namespace
 {
     // UART0 window base/size now travel in kos_service_cfg (mmio_base/mmio_window),
     // not literals here: the driver takes its register base from the spawn grant.
-    // NOTE (coarse-AIPS): the DEV window grant is INERT for the peripheral -- AIPS
+    // NOTE (coarse-AIPS): the DEV window grant is INERT for the peripheral. AIPS
     // bridges are not SYSMPU slave ports (RM 3.3.6.2), so UART0 is reachable by any
-    // unprivileged thread once the AIPS PACR is open (the start shim below). The
-    // window is kept only for spawn-signature portability with the PMSA/PMP template.
+    // unprivileged thread once the AIPS PACR is open (kos_periph_enable below). The
+    // grant is still what AUTHORISES that call (possession of the exact base), and it
+    // keeps the spawn signature portable with the PMSA/PMP template.
 
     // Byte offsets within the UART0 block (RM ch.52 register map). Only the TX data
     // path is used here; S1 comes from the class leaf.
@@ -122,6 +122,24 @@ void k64uart_console_driver(void* arg)
 {
     uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // UART0 window base
 
+    // First act: open UART0's AIPS0 slot 106 SP bit (RM 20.2.3) through the grant this
+    // thread holds. Until it returns, every register access below is supervisor-only
+    // and faults. SCGC4_UART0 is already set by uart0_init, so the clock half is a
+    // no-op here.
+    //
+    // NO TRANSPORT SURVIVES THIS FAILURE on the chip backend. k64uart_console_start
+    // published before spawning, so console_emit's USER_OWNED arm drops the line below
+    // (kernel/init/console.cc); it reaches the wire only on a build that also carries
+    // RTT. kickos::emit is NOT the remedy here that it is for every other driver: this
+    // thread's stdout cap (index 0) is the console endpoint it was spawned to SERVE, so
+    // its send parks on an endpoint with no receiver and never returns. The window
+    // itself is supervisor-only at this point, so win_puts cannot report either.
+    if (kos_periph_enable(win) != 0)
+    {
+        kos::print("[k64uart] ERROR: periph_enable failed, UART0 unreachable\n");
+        kos_exit(-1);
+    }
+
     // Re-derive the baud from the queried branch clock BEFORE first light, so the
     // banner already rides the driver-owned divisor.
     rederive_baud(win);
@@ -178,25 +196,11 @@ int k64uart_console_start(struct kos_service_cfg const* cfg)
         return -1;
     }
 
-    // 3. Open UART0's AIPS slot to user mode BEFORE the spawn. UART0 @0x4006_A000 is
-    //    AIPS0 slot 106 (0x6A); its Supervisor-Protect bit is PACRN[SP2]. RM 4.5.2
-    //    peripheral-bridge map (0x4006_A000 -> slot 106) + RM 20.2.3 (PACRN @0x4000_0064
-    //    holds PACR104..111; SP0=bit30, SP1=bit26, SP2=bit22, step -4 => slot%8==2 =>
-    //    SP2 => bit 22). Clearing it drops UART0 to no-supervisor-required, the ACTUAL
-    //    enabler on K64F (the SYSMPU window grant below is inert for the peripheral).
-    //    This is a genuine 32-bit register (unlike the byte-wide UART regs), so a single
-    //    32-bit RMW inline, NOT the byte helper. ORDER: this must precede the spawn,
-    //    because driver_prio >= root and the spawn can preempt straight into the driver's
-    //    first-light UART0_D write, which would fault if the slot were still supervisor-only.
-    constexpr uintptr_t AIPS0_PACRN = 0x40000064u;
-    constexpr uint32_t PACR106_SP = 1u << 22;
-    *reinterpret_cast<volatile uint32_t*>(AIPS0_PACRN) &= ~PACR106_SP;
-
     // No PFIFO poke here: PFIFO resets to 0 (FIFOs off, single-datum mode), uart0_init
     // never sets it, and the reclaim path re-forces it. It is also unwritable while C2
     // TE/RE are set anyway. So there is nothing to disable for the polled path.
 
-    // 4. Spawn the UNPRIVILEGED driver: granted the UART0 window (R|W|DEV, inert on
+    // 3. Spawn the UNPRIVILEGED driver: granted the UART0 window (R|W|DEV, inert on
     //    coarse-AIPS but kept for spawn-signature portability) and a narrowed {E | WAIT}
     //    recv cap (lands at the child's table index 1). No SIGNAL/TRANSFER on the child
     //    cap: the driver receives, it does not send or re-delegate. driver_prio must be
@@ -212,7 +216,7 @@ int k64uart_console_start(struct kos_service_cfg const* cfg)
         return -1;
     }
 
-    // 5. Close root's OWN WAIT-bearing cap on E immediately (S4). At spawn recv_holders
+    // 4. Close root's OWN WAIT-bearing cap on E immediately (S4). At spawn recv_holders
     //    == 2 (root + driver); dropping root's copy leaves the driver as the sole
     //    receiver, so the driver's eventual death drops recv_holders to 0 and EPIPE-wakes
     //    parked senders. g_stdout_target survives on the kernel's own ref (S3).

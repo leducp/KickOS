@@ -30,6 +30,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/errno.h>
 #include <kickos/libc/fmt.h>
 
 #include <gpio_class.h> // Rule 6 class-driver leaf: shared GPIO output-latch read
@@ -96,6 +97,24 @@ namespace
         volatile uint32_t* w1tc = reinterpret_cast<volatile uint32_t*>(win + W1TC_OFFSET);
         uint32_t const bit = 1u << BLINK_PIN;
 
+        // Possession probe, positive arm. This thread holds `win` as a live ARCH_MPU_DEV
+        // region whose base is EXACTLY `win`, so caller_holds_mmio_block passes and the
+        // call reaches arch_periph_enable. No esp32c6 backend defines that symbol, so the
+        // weak default (kernel/time/clock_select.cc) answers -KOS_ENOSYS, which means the
+        // kernel touched no register: the window state below is untouched either way.
+        // First act, so the capture shows it ahead of any MMIO.
+        int const pe = kos_periph_enable(win);
+        int const pe_want = -KOS_ENOSYS;
+        char const* pe_verdict = "FAIL";
+        if (pe == pe_want)
+        {
+            pe_verdict = "PASS";
+        }
+        char pe_msg[64];
+        ksnprintf(pe_msg, sizeof(pe_msg), "[c6blink] %s periph_enable holder rc %d (want %d)\n",
+                  pe_verdict, pe, pe_want);
+        kos::print(pe_msg);
+
         // Direction, in-window: the pad is already muxed to the matrix and the matrix to
         // the output latch, so this is the driver owning a pin it was granted, not an
         // escalation. Set before the first drive.
@@ -159,6 +178,28 @@ namespace
 
 int main(int, char**)
 {
+    // Possession probe from root. The call runs in both postures and what it exercises
+    // follows the posture, not the other way round: unprivileged root holds no
+    // ARCH_MPU_DEV region, so this is the REFUSAL contract (caller_holds_mmio_block
+    // refuses, the chip backend is never consulted); privileged root BYPASSES the
+    // possession gate and this instead shows that bypass reaching the backend. Both codes
+    // prove the kernel wrote nothing, so it runs safely before the mux.
+#if KICKOS_ROOT_PRIVILEGED
+    int const pe_want = -KOS_ENOSYS;
+#else
+    int const pe_want = -KOS_EPERM;
+#endif
+    int const pe = kos_periph_enable(GPIO_MMIO_WINDOW_BASE);
+    char const* pe_verdict = "FAIL";
+    if (pe == pe_want)
+    {
+        pe_verdict = "PASS";
+    }
+    char pe_msg[64];
+    ksnprintf(pe_msg, sizeof(pe_msg), "[c6blink] %s periph_enable root rc %d (want %d)\n",
+              pe_verdict, pe, pe_want);
+    kos::print(pe_msg);
+
     // GPIO10 push-pull output, both mux stages in one mediated call: IO_MUX pad on the
     // GPIO matrix function with a driver, and the matrix out-sel = 128 so bit n of
     // GPIO_OUT/GPIO_ENABLE drives the pad (TRM 7.4.1 "simple GPIO output"). The kernel

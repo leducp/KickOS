@@ -94,6 +94,16 @@ uint32_t arch_cpu_clock_hz(void);
 // and cascade-free; the DVFS rate-change notify is deferred.
 uint32_t arch_periph_clock_hz(uintptr_t base);
 
+// Ungate the clock and drop the bus-side supervisor-protect for the register block
+// at `base`. `base` is the peripheral register-BLOCK base and must match a per-chip
+// table EXACTLY; backends never range-match. Both bits are derived from `base`, so a
+// caller cannot name a shared block's register or bit. Idempotent. Returns 0,
+// -KOS_EINVAL (no entry for that base), or -KOS_ENOSYS (weak default, no backend).
+// A base has an entry only where the bus gate's granularity is contained by the
+// block; where a coarser gate would also open kernel-reserved registers, the base is
+// refused instead (K64F PIT).
+int arch_periph_enable(uintptr_t base);
+
 // One-shot init-time pin-function config: point (port, pin) at the raw chip
 // function code `func` (the PC/PCR encoding, opaque to the caller). Returns 0,
 // -KOS_EINVAL (out of range), or -KOS_EBUSY (a kernel-owned pin the backend

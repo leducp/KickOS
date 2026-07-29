@@ -8,14 +8,16 @@
 // covers peripheral space, so a granted DEV window IS a genuine per-thread
 // capability (reprogrammed every switch-in by arch_mpu_apply).
 //
-// A privileged bring-up shim clock-enables + AF5-muxes PA5/6/7 (SCK/MISO/MOSI) and
-// configures SPI1 as a software-NSS master; it then spawns the UNPRIVILEGED driver
-// granted ONLY the 32 B SPI1 register window (0x4001_3000, DEV R|W no-X) + the SPI1
-// IRQ (35, tier-1). The clock-enable (RCC) and pin-mux (GPIOA) registers are the
-// escalation surfaces and stay OUT of the window -- keeping them out is what makes
-// the window a real capability. The driver runs a physical PA7->PA6 loopback
-// (rx == tx per word), then pokes an UNGRANTED peripheral (GPIOB) which on PMSA
-// MUST fault MemManage -- the per-thread isolation result the fleet was missing.
+// main muxes PA5/6/7 (SCK/MISO/MOSI) to AF5 and holds PE3 high through kos_pinmux_set,
+// its only hardware access and no direct MMIO at all, then spawns the
+// UNPRIVILEGED driver granted ONLY the 32 B SPI1 register window (0x4001_3000, DEV
+// R|W no-X) + the SPI1 IRQ (35, tier-1). The driver's first act is
+// kos_periph_enable(SPI1), authorised by possession of that window, and it configures
+// SPI1 as a software-NSS master itself. The clock-enable (RCC) and pin-mux (GPIOA)
+// registers are the escalation surfaces and stay OUT of the window: keeping them out
+// is what makes the window a real capability. The driver runs a physical PA7->PA6
+// loopback (rx == tx per word), then pokes an UNGRANTED peripheral (GPIOB) which on
+// PMSA MUST fault MemManage, the per-thread isolation result the fleet was missing.
 //
 // PMSA peripheral enforcement is only build/link-validated to date; this driver
 // ALSO first-proves it on F411 silicon. Diagnostic app (kickos_add_diagnostic_app):
@@ -37,27 +39,26 @@
 
 namespace
 {
-    // RM0383: RCC (6.3), GPIOA (8.4), SPI1 (20.5). Absolute addresses, no CMSIS.
-    constexpr uintptr_t RCC_BASE = 0x40023800u;
-    constexpr uintptr_t RCC_AHB1ENR = RCC_BASE + 0x30u;
-    constexpr uintptr_t RCC_APB2ENR = RCC_BASE + 0x44u; // 6.3.11, off 0x44
-    constexpr uint32_t AHB1ENR_GPIOAEN = 1u << 0;
-    constexpr uint32_t APB2ENR_SPI1EN = 1u << 12; // 6.3.11: bit 12 SPI1EN
+    // RM0383: GPIO (8.4), SPI1 (20.5). Absolute addresses, no CMSIS.
 
-    constexpr uint32_t AHB1ENR_GPIOEEN = 1u << 4;
+    // kos_pinmux_set port index on stm32f411: (port base - GPIOA_BASE) / 0x400.
+    constexpr uint32_t PORT_A = 0u;
+    constexpr uint32_t PORT_E = 4u;
+    constexpr uint32_t PIN_SCK = 5u;
+    constexpr uint32_t PIN_MISO = 6u;
+    constexpr uint32_t PIN_MOSI = 7u;
 
-    constexpr uintptr_t GPIOA_BASE = 0x40020000u;
-    constexpr uintptr_t GPIOA_MODER = GPIOA_BASE + 0x00u;
-    constexpr uintptr_t GPIOA_OSPEEDR = GPIOA_BASE + 0x08u;
-    constexpr uintptr_t GPIOA_AFRL = GPIOA_BASE + 0x20u; // pins 0..7, 4 bits/pin
+    // The F411E-DISCO onboard gyro (L3GD20/I3G4250D) chip-select is PE3 ("CS_I2C/SPI",
+    // UM1842 pin table). It shares SPI1 with PA5/6/7 and its SDO drives PA6/MISO, so it
+    // MUST be held deselected (PE3 high) or it fights the PA7->PA6 loopback jumper.
+    constexpr uint32_t PIN_GYRO_CS = 3u;
 
-    // GPIOE: the F411E-DISCO onboard gyro (L3GD20/I3G4250D) chip-select is PE3
-    // ("CS_I2C/SPI", UM1842 pin table). It shares SPI1 with PA5/6/7 and its SDO
-    // drives PA6/MISO, so it MUST be held deselected (PE3 high) or it fights the
-    // PA7->PA6 loopback jumper for MISO.
-    constexpr uintptr_t GPIOE_BASE = 0x40021000u;
-    constexpr uintptr_t GPIOE_MODER = GPIOE_BASE + 0x00u;
-    constexpr uintptr_t GPIOE_BSRR = GPIOE_BASE + 0x18u;
+    // stm32f411 func encoding: bits[1:0] are the MODER field (00 in, 01 out, 10 AF,
+    // 11 analog), bits[7:4] the AF number, bit 8 presets an output high. OSPEEDR/PUPDR
+    // are not reachable and stay at reset; at /64 (~1.3 MHz) the reset slew carries SCK.
+    constexpr uint32_t MUX_OUTPUT = 0x01u;
+    constexpr uint32_t MUX_OUT_HIGH = 0x100u;
+    constexpr uint32_t MUX_AF5 = 0x52u; // AF5 = SPI1
 
     // SPI1 register window granted to the driver (RM0383 memory map: SPI1 @
     // 0x4001_3000). 32 B is the minimal PMSA-encodable window (pow2 >= 32, base
@@ -93,6 +94,19 @@ namespace
         return *reinterpret_cast<volatile uint32_t*>(a);
     }
 
+    void mux_pin(char const* what, uint32_t port, uint32_t pin, uint32_t func)
+    {
+        int rc = kos_pinmux_set(port, pin, func);
+        if (rc != 0)
+        {
+            // Name the pin: a refused mux leaves that signal on the wrong function and
+            // the loopback verdict below becomes meaningless rather than absent.
+            char m[64];
+            ksnprintf(m, sizeof(m), "[f411spi] ERROR: pinmux %s failed rc %d\n", what, rc);
+            kos::print(m);
+        }
+    }
+
     // UNPRIVILEGED driver: granted app code+data (auto), the SPI1 window (spawn MMIO
     // grant) and the SPI1 IRQ (tier-1). No file-scope mutable state under enforcement:
     // the window base arrives as the thread arg VALUE (never dereferenced as memory),
@@ -100,9 +114,24 @@ namespace
     void spi_driver(void* arg)
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // SPI1 window base
+        volatile uint32_t* cr1 = reinterpret_cast<volatile uint32_t*>(win + CR1_OFFSET);
         volatile uint32_t* cr2 = reinterpret_cast<volatile uint32_t*>(win + CR2_OFFSET);
         volatile uint32_t* sr = reinterpret_cast<volatile uint32_t*>(win + SR_OFFSET);
         volatile uint32_t* dr = reinterpret_cast<volatile uint32_t*>(win + DR_OFFSET);
+
+        // First act: authorised by POSSESSION of this exact window, which only this
+        // thread holds. While SPI1 is gated every register write below is discarded.
+        int rc = kos_periph_enable(win);
+        if (rc != 0)
+        {
+            char m[64];
+            ksnprintf(m, sizeof(m), "[f411spi] ERROR: periph_enable(SPI1) rc %d\n", rc);
+            kos::print(m);
+            while (true)
+            {
+                kos_sleep_ns(1000000000ull);
+            }
+        }
 
         int h = kos_irq_register(SPI1_IRQ);
         if (h < 0)
@@ -114,7 +143,11 @@ namespace
             }
         }
 
-        *cr2 = CR2_RXNEIE; // arm RX interrupt (in-window; only source that wakes line 35)
+        // SPI1 master, software NSS (SSM|SSI hold internal NSS high, else MODF), mode 0,
+        // 8-bit, MSB-first, /64. Configure with SPE=0, then enable.
+        *cr1 = CR1_MSTR | CR1_SSM | CR1_SSI | CR1_BR_DIV64;
+        *cr2 = CR2_RXNEIE; // arm RX interrupt (only source that wakes line 35)
+        *cr1 |= CR1_SPE;
 
         // Announce before the first blocking wait: if IRQ 35 never fires (misrouted
         // line / NVIC), the driver hangs in kos_irq_wait -- this line disambiguates a
@@ -196,40 +229,17 @@ namespace
 
 int main(int, char**)
 {
-    // Privileged bring-up (this main runs privileged): clock-enable + pin-mux + SPI
-    // master config -- the one-time unsafe setup the unprivileged driver must NOT be
-    // able to do. RCC + GPIOA stay privileged (out of the driver's window).
-    r32(RCC_AHB1ENR) |= AHB1ENR_GPIOAEN | AHB1ENR_GPIOEEN; // clock GPIOA + GPIOE
-    r32(RCC_APB2ENR) |= APB2ENR_SPI1EN;                    // clock SPI1
+    // Deselect the onboard gyro FIRST, before any SCK activity, so its SDO stays
+    // tri-stated and the PA7->PA6 jumper owns MISO. One call: the seam gates the GPIOE
+    // clock, presets PE3 high, then switches it to output, so it never drives low.
+    mux_pin("PE3", PORT_E, PIN_GYRO_CS, MUX_OUTPUT | MUX_OUT_HIGH);
 
-    // Hold the onboard gyro deselected FIRST (PE3 output, driven high), before any
-    // SCK activity, so its SDO stays tri-stated and the PA7->PA6 jumper owns MISO.
-    uint32_t emoder = r32(GPIOE_MODER);
-    emoder &= ~(0x3u << 6); // clear MODER3 (bits 6..7)
-    emoder |= (0x1u << 6);  // PE3 general-purpose output
-    r32(GPIOE_MODER) = emoder;
-    r32(GPIOE_BSRR) = 1u << 3; // drive PE3 high => gyro CS deasserted
-
-    // PA5/PA6/PA7 -> AF mode, AF5 (SPI1), high output speed. Muxing SCK before CR1 is
-    // glitch-free ONLY because CPOL=0 is the CR1 reset value, so SCK's idle level is
-    // already correct at mux time; a CPOL=1 variant MUST write CR1 before muxing.
-    uint32_t moder = r32(GPIOA_MODER);
-    moder &= ~(0x3Fu << 10);                             // clear MODER5/6/7 (bits 10..15)
-    moder |= (0x2u << 10) | (0x2u << 12) | (0x2u << 14); // AF mode
-    r32(GPIOA_MODER) = moder;
-    uint32_t osp = r32(GPIOA_OSPEEDR);
-    osp |= (0x3u << 10) | (0x3u << 12) | (0x3u << 14); // high speed PA5/6/7
-    r32(GPIOA_OSPEEDR) = osp;
-    uint32_t afrl = r32(GPIOA_AFRL);
-    afrl &= ~(0xFFFu << 20);                      // clear AFRL5/6/7 (bits 20..31)
-    afrl |= (5u << 20) | (5u << 24) | (5u << 28); // AF5 for PA5/6/7
-    r32(GPIOA_AFRL) = afrl;
-
-    // SPI1 master, software NSS (SSM|SSI hold internal NSS high, else MODF), mode 0,
-    // 8-bit, MSB-first, /64. Configure with SPE=0, then enable.
-    r32(SPI1_BASE + CR2_OFFSET) = 0u; // RXNEIE off; the driver arms it in-window
-    r32(SPI1_BASE + CR1_OFFSET) = CR1_MSTR | CR1_SSM | CR1_SSI | CR1_BR_DIV64;
-    r32(SPI1_BASE + CR1_OFFSET) |= CR1_SPE;
+    // PA5/PA6/PA7 -> AF5 (SPI1). Muxing SCK before CR1 is glitch-free ONLY because
+    // CPOL=0 is the CR1 reset value, so SCK's idle level is already correct at mux
+    // time; a CPOL=1 variant MUST write CR1 before muxing.
+    mux_pin("PA5/SCK", PORT_A, PIN_SCK, MUX_AF5);
+    mux_pin("PA6/MISO", PORT_A, PIN_MISO, MUX_AF5);
+    mux_pin("PA7/MOSI", PORT_A, PIN_MOSI, MUX_AF5);
 
     int drv = kos::thread::spawn(spi_driver, reinterpret_cast<void*>(SPI1_BASE),
                                  "f411spi", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,

@@ -14,6 +14,7 @@ namespace kickos::stm32f411::mmap
 {
     constexpr uintptr_t TIM2_BASE = 0x40000000u;   // monotonic time base (RM sec.13)
     constexpr uintptr_t USART2_BASE = 0x40004400u; // console, APB1 (RM sec.19)
+    constexpr uintptr_t SPI1_BASE = 0x40013000u;   // APB2 (RM sec.20)
 
     // GPIO port controllers: GPIOA + port*0x400 (A=0..H). AHB1.
     constexpr uintptr_t GPIOA_BASE = 0x40020000u;

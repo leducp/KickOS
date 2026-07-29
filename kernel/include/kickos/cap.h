@@ -64,9 +64,12 @@ namespace kickos
     // are OBJECT rights, the high five AUTHORITY rights. They must not overlap:
     // CAP_TRANSFER is read type-agnostically at the delegation site.
     //
-    // Five bits is the WHOLE authority budget for the life of the type: CapEntry is a
-    // frozen 8-byte ABI, so a sixth authority must come from merging two of these,
-    // never from growing the field. Mirrored in <kickos/sys/abi.h> as KOS_AUTH_*.
+    // Five authority bits fit here, which is a property of this byte and not a budget for
+    // the type: a CAP_AUTHORITY entry leaves `obj` unused, so a wider authority word moves
+    // there and CapEntry stays 8 bytes. CAP_TRANSFER living in this byte is also the only
+    // thing stopping an authority cap being copied wholesale into a child table, so such a
+    // move needs an explicit type test at the delegation site first.
+    // Mirrored in <kickos/sys/abi.h> as KOS_AUTH_*.
     enum CapRights : uint8_t
     {
         CAP_WAIT = 1 << 0,    // sem_wait / sem_trywait; endpoint recv
@@ -77,8 +80,13 @@ namespace kickos
         AUTH_PINMUX = 1 << 4, // pinmux_set
         AUTH_CLOCK = 1 << 5,  // cpu_clock_set
         AUTH_IRQ = 1 << 6,    // irq_attach, irq_unmask
-        AUTH_DEVICE = 1 << 7  // console_publish, shutdown, future arch_periph_enable
+        AUTH_DEVICE = 1 << 7  // console_publish, shutdown, reboot
     };
+
+    // arch_periph_enable carries NO authority bit: it is gated on the caller holding a live
+    // ARCH_MPU_DEV region whose base matches the block exactly (caller_holds_mmio_block,
+    // syscall_mem.cc). Its callers are the bus drivers, so AUTH_DEVICE would have handed
+    // shutdown and reboot to every unprivileged driver in the fleet.
 
     // Every AUTH_* bit: what a privileged thread is implicitly allowed.
     static constexpr uint8_t CAP_AUTH_ALL = static_cast<uint8_t>(

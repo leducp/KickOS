@@ -249,6 +249,11 @@ uint32_t kos_periph_clock_hz(uintptr_t base)
         arch_syscall(KOS_SYS_PERIPH_CLOCK_HZ, base, 0, 0, 0));
 }
 
+int kos_periph_enable(uintptr_t base)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_ENABLE, base, 0, 0, 0));
+}
+
 uint32_t kos_cpu_clock_set(kos_pstate_t pstate)
 {
     return static_cast<uint32_t>(

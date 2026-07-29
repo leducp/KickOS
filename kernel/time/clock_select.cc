@@ -93,6 +93,15 @@ extern "C" uint32_t __attribute__((weak)) arch_periph_clock_hz(uintptr_t base)
     return 0;
 }
 
+// Weak default: this chip has no peripheral-enable backend. -KOS_ENOSYS, not 0, so a
+// driver whose block really is gated fails loud instead of reading a block whose
+// ungated registers BusFault. See arch.h for the contract.
+extern "C" int __attribute__((weak)) arch_periph_enable(uintptr_t base)
+{
+    (void)base;
+    return -KOS_ENOSYS;
+}
+
 // Weak default: this chip has no pin-mux backend. Return -KOS_ENOSYS so a non-empty
 // board pin-map fails LOUD (a bare "apply" would be a silent no-op success). A chip
 // that owns its PORT/IOCR block strong-overrides this.

@@ -63,6 +63,38 @@ namespace kickos
         return false;
     }
 
+    // MMIO possession, the sole authorisation for arch_periph_enable. NOT
+    // user_range_ok: that funnel asks whether the kernel may dereference a user
+    // pointer and passes trivially on len==0. This asks whether the caller owns the
+    // whole block, so it matches the region base exactly. A sub-block window cannot
+    // reach a whole-block table entry (K64F PIT ch2 base 0x40037120, block
+    // 0x40037000). Privileged callers pass, as in cap_check_authority.
+    bool caller_holds_mmio_block(uintptr_t base)
+    {
+        Thread* c = sched::current();
+        if (c == nullptr)
+        {
+            return false;
+        }
+        if (c->privileged)
+        {
+            return true;
+        }
+        for (size_t i = 0; i < c->region_count; i++)
+        {
+            arch_mpu_region const& r = c->regions[i];
+            if ((r.attr & ARCH_MPU_DEV) != ARCH_MPU_DEV)
+            {
+                continue;
+            }
+            if (r.base == base)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // A user-supplied READ buffer (console output, a name string) the kernel
     // dereferences privileged. It passes iff it lies within a region the caller is
     // granted (app code/rodata/.data + domain data + stack) OR, where the backend
