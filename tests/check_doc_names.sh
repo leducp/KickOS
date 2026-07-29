@@ -131,8 +131,14 @@ sed -n 's/^ *\(KOS_SYS_[A-Z0-9_]*\) *= *\([0-9][0-9]*\).*/\1 \2/p' "$ABI" > "$TM
 # One pass over the corpus. Output is file-ordered then line-ordered, so the
 # report is byte-identical across runs given the same tree.
 # =============================================================================
-tr '\n' '\0' < "$TMP/docs.txt" | xargs -0 grep -an '' /dev/null 2>/dev/null \
-  | awk -v T="$TMP" -v ABIH="$ABI" -F: '
+# Two stages, not one pipe: under /bin/sh there is no pipefail, so `RC=$?` after a
+# pipeline sees only awk. A grep that cannot read a file would then feed awk short
+# input and the gate would report PASS on a corpus it never read.
+tr '\n' '\0' < "$TMP/docs.txt" | xargs -0 grep -an '' /dev/null > "$TMP/corpus.txt" 2>/dev/null
+[ -s "$TMP/corpus.txt" ] || fail "read zero lines out of $DOCS doc file(s) -- extraction is broken"
+CORPUS_FILES=$(cut -d: -f1 < "$TMP/corpus.txt" | sort -u | wc -l | tr -d ' ')
+
+awk -v T="$TMP" -v ABIH="$ABI" -F: '
 function load(f, arr,   l) { while ((getline l < f) > 0) { arr[l] = 1 } close(f) }
 
 # Collapse "a/b/../c" and "a/./b". Leading ".." that escapes the root is left in
@@ -293,7 +299,7 @@ BEGIN {
 END {
   if (prevfile != "" && infence) { report(prevfile, fenceline, "unbalanced ``` fence opened here and never closed -- extraction cannot trust this file") }
   exit (findings > 0)
-}' > "$TMP/findings.txt"
+}' < "$TMP/corpus.txt" > "$TMP/findings.txt"
 RC=$?
 
 echo "== checked $DOCS doc file(s) against $IDS tree identifier(s) and $(wc -l < "$TMP/valid_paths.txt" | tr -d ' ') tracked path(s) =="
