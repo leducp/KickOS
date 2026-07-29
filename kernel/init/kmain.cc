@@ -216,8 +216,8 @@ namespace kickos
 
         // Idle (the smaller stack on every board) FIRST: against the bump allocator
         // the small block then sits inside the large block's natural-alignment run-up
-        // instead of after it. Load-bearing, not tidiness: the f302nucleo and
-        // bluepill-c8 arenas fit the pair in this order only.
+        // instead of after it. Worth up to one root-stack's width of arena on every
+        // pow2-descriptor board, so KICKOS_BOOT_ARENA_ASSERT models this exact order.
         void* const idle_stack =
             boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, "kmain: no arena for the idle stack");
         void* const root_stack =

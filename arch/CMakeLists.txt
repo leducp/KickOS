@@ -318,11 +318,21 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   if(DEFINED KICKOS_HEAP_MIN)
     list(APPEND _ld_defs -DKICKOS_HEAP_MIN=${KICKOS_HEAP_MIN})
   endif()
+  # Boot-stack geometry for the KICKOS_BOOT_ARENA_ASSERT every chip .ld carries: the
+  # arena must hold kmain's idle + root stacks INCLUDING the natural-alignment padding
+  # the bump allocator pays, and only the linker knows where the arena starts. Not
+  # optional and not per-board -- a .ld without the assert fails the configure.
+  include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
+  kickos_boot_arena_defs("${CMAKE_CURRENT_SOURCE_DIR}" "${KICKOS_ARCH_FAMILY}"
+                         "${KICKOS_CHIP}" "${KICKOS_BOARD_INCLUDE_DIR}" "${_ld}"
+                         "${KICKOS_PROVISION_OVERRIDES}" _boot_defs)
+  list(APPEND _ld_defs ${_boot_defs})
   add_custom_command(
     OUTPUT "${_ld_gen}"
     COMMAND ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs}
+            "-I${CMAKE_CURRENT_SOURCE_DIR}/common"
             "${_ld}" -o "${_ld_gen}"
-    DEPENDS "${_ld}"
+    DEPENDS "${_ld}" "${CMAKE_CURRENT_SOURCE_DIR}/common/boot_arena.ld.h"
     COMMENT "linker: preprocess ${KICKOS_CHIP}.ld (KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})"
     VERBATIM)
   add_custom_target(kickos_ldscript_${KICKOS_CHIP} ALL DEPENDS "${_ld_gen}")
