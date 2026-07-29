@@ -262,10 +262,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_CONSOLE_PUBLISH:
         {
             // Hand the console UART to a userspace driver named by an endpoint cap.
-            // AUTH_DEVICE (like shutdown): it disables a live IRQ line and mutates global
-            // console routing. See the handover design (D3).
+            // AUTH_CONSOLE, its own bit: the driver that publishes and the thread that
+            // ends the system are different threads once root is only a spawner, so this
+            // cannot share shutdown's bit. See the handover design (D3).
             Thread* c = sched::current();
-            if (not cap_check_authority(c, AUTH_DEVICE))
+            if (not cap_check_authority(c, AUTH_CONSOLE))
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
@@ -341,7 +342,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // whose 0 sentinel already means cannot/unsupported/not-permitted, and the
             // console-owned refusal (an EBUSY-shaped condition) surfaces as "unchanged Hz".
             Thread* c = sched::current();
-            if (not cap_check_authority(c, AUTH_CLOCK))
+            if (not cap_check_authority(c, AUTH_PSTATE))
             {
                 return 0;
             }
@@ -361,11 +362,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_SHUTDOWN:
         {
             // End the system through the shared terminal path. A syscall because it
-            // is not reachable from an unprivileged thread. AUTH_DEVICE (like
-            // console_publish): an ungated shutdown would be a kill switch in every
-            // worker thread.
+            // is not reachable from an unprivileged thread. AUTH_SYSTEM: an ungated
+            // shutdown would be a kill switch in every worker thread.
             Thread* c = sched::current();
-            if (not cap_check_authority(c, AUTH_DEVICE))
+            if (not cap_check_authority(c, AUTH_SYSTEM))
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
@@ -375,9 +375,9 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
 #if defined(KICKOS_ENABLE_SELFTEST)
         case KOS_SYS_REBOOT:
         {
-            // AUTH_DEVICE, fused with shutdown (docs/design-unprivileged-root.md 9).
+            // AUTH_SYSTEM, fused with shutdown (docs/design-unprivileged-root.md 9).
             Thread* c = sched::current();
-            if (not cap_check_authority(c, AUTH_DEVICE))
+            if (not cap_check_authority(c, AUTH_SYSTEM))
             {
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
@@ -718,6 +718,16 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
             return static_cast<uintptr_t>(arch_periph_enable(a0));
+        }
+        case KOS_SYS_CAP_NARROW:
+        {
+            // UNGATED, and it has to be: giving up authority you hold needs no authority,
+            // and a gate would be a bit a thread must keep in order to drop the others.
+            // It can only clear bits in the CALLER's own table.
+            IrqLock lock;
+            return static_cast<uintptr_t>(
+                cap_narrow_authority(sched::current(), static_cast<int>(a0),
+                                     static_cast<uint8_t>(a1)));
         }
         case KOS_SYS_IRQ_REGISTER:
         {

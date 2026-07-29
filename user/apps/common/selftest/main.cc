@@ -48,9 +48,7 @@ namespace
     // its allocation asks with kos_mem_self_grant, as t_irqdrv does).
     //
     // Zero bytes in the default posture: a runtime `if` would keep the skip strings in
-    // .rodata on every board (the fleet Debug default is -g with no -O), and
-    // f302nucleo-st links with 96 bytes free. NOTE: the macro RETURNS from the
-    // enclosing test.
+    // .rodata on every board. NOTE: the macro RETURNS from the enclosing test.
 #if KICKOS_ROOT_PRIVILEGED
 #define SKIP_TEST_IF_ROOT_UNPRIVILEGED(why) do { } while (0)
 #else
@@ -264,12 +262,18 @@ namespace
     // Pin-mux syscall (M4.3): kos_pinmux_set. An out-of-range port/pin is REJECTED
     // (rc < 0) on every target -- -KOS_EINVAL where a chip owns its PORT/IOCR block,
     // -KOS_ENOSYS on the weak-seam targets (host sim) -- so garbage is never silently
-    // accepted and the dispatch -> arch-seam plumbing is proven. This runs from the
-    // privileged root, but touches no hardware: both rejects return BEFORE any write.
+    // accepted and the dispatch -> arch-seam plumbing is proven. Touches no hardware:
+    // both rejects return BEFORE any write.
+    //
+    // Excluding -KOS_EPERM is what keeps this honest: the AUTH_PINMUX gate runs BEFORE
+    // the range check, so a bare `rc < 0` would pass just as happily on a root that had
+    // silently lost the bit, and this test would then witness nothing.
     void t_pinmux_set()
     {
-        TAP_CHECK(kos_pinmux_set(99u, 0u, 0x10u) < 0);  // port out of range
-        TAP_CHECK(kos_pinmux_set(0u, 99u, 0x10u) < 0);  // pin out of range
+        long const bad_port = kos_pinmux_set(99u, 0u, 0x10u);
+        long const bad_pin = kos_pinmux_set(0u, 99u, 0x10u);
+        TAP_CHECK(bad_port < 0 and bad_port != -KOS_EPERM); // port out of range
+        TAP_CHECK(bad_pin < 0 and bad_pin != -KOS_EPERM);   // pin out of range
     }
 
     // Clock-select seam (M3): kos_cpu_clock_set is PRIVILEGED (syscall gate returns
@@ -3015,7 +3019,7 @@ namespace
         TAP_CHECK(kos_handle_close(again) == 0);
     }
 
-    // --- console_publish is privileged-only; a bad cap is rejected with no side effect --
+    // --- console_publish needs AUTH_CONSOLE; a bad cap is rejected with no side effect --
     int g_pub_rc = -99;
     void pub_denied_worker(void*) // caps: done@1
     {
@@ -3026,10 +3030,14 @@ namespace
     }
     void t_console_publish()
     {
-        // Privileged MAIN: a bad/stale cap is rejected before the deinit/flip, so
-        // console ownership stays as the board's service list set it. This test never
-        // publishes anything itself: both caps below are invalid, and the unprivileged
-        // child is refused by the privilege gate.
+        // From root, which holds AUTH_CONSOLE (this suite declares it): a bad/stale cap
+        // is rejected before the deinit/flip, so console ownership stays as the board's
+        // service list set it. This test never publishes anything itself: both caps below
+        // are invalid, and the child holding no authority is refused by the gate.
+        //
+        // The -KOS_EBADF assertions are exact for a reason -- the AUTH_CONSOLE gate runs
+        // before the cap resolve, so a root that lost the bit answers -KOS_EPERM and this
+        // test fails rather than passing on the wrong code.
         TAP_CHECK(kos_console_publish(-1) == -KOS_EBADF);
         TAP_CHECK(kos_console_publish(0x7fffffff) == -KOS_EBADF);
         // Unprivileged child: the privileged-only gate rejects it.
@@ -3119,11 +3127,16 @@ namespace
     // the block).
     void auth_noop(void*) {}
     volatile long g_auth_pinmux = -99;   // AUTH_PINMUX held    -> anything but -KOS_EPERM
-    volatile long g_auth_shutdown = -99; // AUTH_DEVICE absent  -> -KOS_EPERM
+    volatile long g_auth_shutdown = -99; // AUTH_SYSTEM absent  -> -KOS_EPERM
     volatile long g_auth_regrant = -99;  // may not hand on a bit it does not hold
     volatile long g_auth_collide = -99;  // delegation packing reaching the authority slot
-    volatile long g_auth_badbits = -99;  // object rights offered as an authority
+    volatile long g_auth_badbits = -99;  // a bit that is no authority at all
     volatile long g_auth_capsarr = -99;  // the grant ARRAY read, reached past the early refusals
+    volatile long g_auth_narrowbad = -99; // kos_cap_narrow on a cap that is not the authority
+    volatile long g_auth_narrowup = -99;  // a mask naming an unheld bit intersects, never grants
+    volatile long g_auth_notgained = -99; // so the gate for that bit still refuses
+    volatile long g_auth_narrow = -99;   // giving up the held bit succeeds, needing no authority
+    volatile long g_auth_dropped = -99;  // and the gate that accepted it now refuses
     kos_thread_params g_auth_kid;  // deliberately static: see auth_worker (N15)
     kos_cap_grant g_auth_two[2];   // ditto; the other read thread_spawn validates
     void auth_worker(void*) // UNPRIVILEGED, authority = AUTH_PINMUX; caps: done@1
@@ -3131,14 +3144,13 @@ namespace
         // The bit it HOLDS: past the gate, so pinmux answers for itself.
         g_auth_pinmux = kos_pinmux_set(99u, 0u, 0x10u);
         // A bit it does NOT hold, at a different gate: proves the bits are independent
-        // rather than one lump. Safe to call only BECAUSE the child lacks AUTH_DEVICE;
+        // rather than one lump. Safe to call only BECAUSE the child lacks AUTH_SYSTEM;
         // a regression ends the run here with a clean status, which the harness sees
         // as a truncated TAP stream.
         g_auth_shutdown = kos_shutdown(0);
         // Three spawn probes off ONE params struct, all refused before a pool slot is
         // claimed, so their codes are deterministic even on a full pool. One struct
-        // because a frame-local kos_thread_params costs an inline zero-init per site,
-        // and this suite links within ~100 bytes of the f302nucleo flash ceiling.
+        // because a frame-local kos_thread_params costs an inline zero-init per site.
         //
         // g_auth_kid and g_auth_two are globals on purpose (the N15 coverage):
         // thread_spawn reads the params struct and the grant array through
@@ -3147,8 +3159,8 @@ namespace
         kid.entry = auth_noop;
         kid.prio = 9;
         // Narrow-only, the same rule a cap_grant mask obeys: holding AUTH_PINMUX does not
-        // let it seat AUTH_DEVICE on a child.
-        kid.authority = KOS_AUTH_DEVICE;
+        // let it seat AUTH_SYSTEM on a child.
+        kid.authority = KOS_AUTH_SYSTEM;
         g_auth_regrant = kos_thread_spawn(&kid);
         // Delegated cap i lands at child index i+1, so two delegated caps reach the
         // authority slot. Refused, rather than one silently overwriting the other.
@@ -3158,9 +3170,12 @@ namespace
         kid.cap_count = 2;
         kid.authority = KOS_AUTH_PINMUX;
         g_auth_collide = kos_thread_spawn(&kid);
-        // Object rights mean nothing on this type, so they are refused, not masked off.
+        // A bit no gate reads is refused, not masked off. It has to come from ABOVE the
+        // six defined authorities: since the authority word moved out of the shared
+        // rights byte it has its own numbering, so bits 0..5 are all real authorities and
+        // an object right like KOS_CAP_WAIT is no longer a distinguishable wrong value.
         kid.cap_count = 1;
-        kid.authority = KOS_CAP_WAIT;
+        kid.authority = 1u << 6;
         g_auth_badbits = kos_thread_spawn(&kid);
         // The three probes above are refused before the delegation loop, so none of
         // them reads g_auth_two. The array is the second N15 site and needs a probe
@@ -3170,6 +3185,20 @@ namespace
         g_auth_two[0] = {0x7fffffff, CH_FULL};
         kid.authority = 0;
         g_auth_capsarr = kos_thread_spawn(&kid);
+        // Stage 4, and the only in-env witness of it: giving up an authority. Narrowing
+        // an object cap is refused, so the sem cap at CH_DONE is the negative arm -- and
+        // it must run BEFORE the drop, since it is the last thing here that still needs
+        // a live authority cap to be meaningful.
+        g_auth_narrowbad = kos_cap_narrow(CH_DONE, 0);
+        // A NONZERO mask naming a bit this worker does not hold. The mask is not the new
+        // word: narrowing intersects, so asking for AUTH_SYSTEM here must not grant it.
+        // A verbatim-seat bug (word = mask) passes a mask-0 test and fails this one.
+        g_auth_narrowup = kos_cap_narrow(KOS_CAP_AUTHORITY, KOS_AUTH_PINMUX | KOS_AUTH_SYSTEM);
+        g_auth_notgained = kos_shutdown(0); // still refused: AUTH_SYSTEM was never held
+        // Needs no authority of its own, and cannot widen: mask 0 gives up everything.
+        g_auth_narrow = kos_cap_narrow(KOS_CAP_AUTHORITY, 0);
+        // The SAME gate that answered for itself at the top of this worker now refuses.
+        g_auth_dropped = kos_pinmux_set(99u, 0u, 0x10u);
         kos_sem_post(CH_DONE);
     }
     void t_authority_cap()
@@ -3185,11 +3214,14 @@ namespace
         }
         wait_n(1);
         // Grouped: each TAP_CHECK carries __FILE__ and its stringified condition as
-        // rodata, and this image is at the f302nucleo ceiling.
+        // rodata.
         TAP_CHECK(g_auth_pinmux != -KOS_EPERM and g_auth_pinmux < 0);
         TAP_CHECK(g_auth_shutdown == -KOS_EPERM);
         TAP_CHECK(g_auth_regrant == -KOS_EPERM and g_auth_collide == -KOS_EINVAL
                   and g_auth_badbits == -KOS_EINVAL and g_auth_capsarr == -KOS_EBADF);
+        TAP_CHECK(g_auth_narrowbad == -KOS_EINVAL and g_auth_narrow == 0
+                  and g_auth_dropped == -KOS_EPERM);
+        TAP_CHECK(g_auth_narrowup == 0 and g_auth_notgained == -KOS_EPERM);
     }
 
     // --- Peripheral enable: possession is the whole gate ------------------------
@@ -3313,7 +3345,7 @@ namespace
             return;
         }
         // Grouped: each TAP_CHECK carries __FILE__ plus its stringified condition as
-        // rodata, and this image sits near the f302nucleo ceiling.
+        // rodata.
         TAP_CHECK(g_sg_ok > 0 and g_sg_refusal == -KOS_ENOMEM);
         TAP_CHECK(g_sg_readback == 0x5A5A and g_sg_badsize == -KOS_EINVAL);
     }
@@ -3381,6 +3413,12 @@ namespace
         TAP_CHECK(g_sgnp_rc == 0);
     }
 }
+
+// The suite drives the authority gates from root, so it keeps five of the six. Not
+// KOS_AUTH_PSTATE: retuning the core clock from root would retime every deadline the
+// timing tests assert (see t_cpu_clock_set), so that arm runs in a worker instead.
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX
+                     | KOS_AUTH_IRQ | KOS_AUTH_CONSOLE);
 
 int main(int, char**)
 {

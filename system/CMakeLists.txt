@@ -18,17 +18,23 @@ target_include_directories(kickos_system INTERFACE
 # service-list providers below, which link this build's driver targets.
 add_subdirectory(driver)
 
-# The default init provider. Four TUs: the entry (kickos_init_entry), the app-main
+# The default init provider. Five TUs: the entry (kickos_init_entry), the app-main
 # run body (kickos_default_init_run), the service-list walk (kickos_service_list_run,
 # which references the CMake-selected kickos_board_services resolved across the rescan
-# link group), and the pin-mux step. A delegating override references only the run body,
-# so keeping the entry in its own TU stops it dragging in a second definition of
-# kickos_init_entry.
+# link group), the pin-mux step, and the fallback kickos_app_authority. A delegating
+# override references only the run body, so keeping the entry in its own TU stops it
+# dragging in a second definition of kickos_init_entry.
+#
+# app_authority_default.cc must stay a ONE-SYMBOL member: an app defining
+# kickos_app_authority resolves it locally so this member is never extracted, which is
+# what lets both definitions be strong. Give it a second symbol and any app that declares
+# its own mask fails to link with a duplicate definition.
 add_library(kickos_default_init STATIC
   init/default_init_entry.cc
   init/default_init_run.cc
   init/service_list_run.cc
-  init/pinmux_run.cc)
+  init/pinmux_run.cc
+  init/app_authority_default.cc)
 kickos_apply_freestanding(kickos_default_init)
 # It must NOT link kickos_core (that would force-include app.h with -Dmain and fire
 # app.h's weak-stamp block here). Give it just the include paths it needs: its own

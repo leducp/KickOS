@@ -227,6 +227,10 @@ namespace
     }
 }
 
+// mux_pin runs from root for the CS and the three SPI1 pins, then the SPI1 window is
+// granted to a worker. Never returns, so it needs no KOS_AUTH_SYSTEM.
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX);
+
 int main(int, char**)
 {
     // Deselect the onboard gyro FIRST, before any SCK activity, so its SDO stays

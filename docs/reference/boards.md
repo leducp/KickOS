@@ -1248,6 +1248,55 @@ What this adds is the bus round trip, not a second stage-3 arm: it is the privil
 the same transfer **under the flip is still owed**, and the canonical PMSA peripheral proof stays
 `xmcspi` on the XMC.
 
+#### Stage 4 -- root narrows its own authority (2026-07-30)
+
+Stage 4 makes root hand the app only the authority the app declared: the default init calls
+`kos_cap_narrow` after the pin map and the service list, with a mask from the per-app
+`KICKOS_APP_AUTHORITY`. Witnessed on **two of the six** flipped boards, the two J-Link ones, each
+captured over its own VCOM from a clean worktree.
+
+| | `xmc4800-relax` (PMSAv7) | `frdmk64f` (SYSMPU) |
+| --- | --- | --- |
+| Banner `mpu` line | `enforce, root unprivileged` | `enforce, root unprivileged` |
+| Console driver | `[xmcuart] driver up (polled TX)` | `[k64uart] driver up (polled TX)` |
+| TAP route | `stdout endpoint -> console driver (service list published)` | same |
+| `selftest` | 65 cases, 64 `ok`, 1 skip, 0 fail | 65 cases, 63 `ok`, 2 skips, 0 fail |
+| `authority_cap` | `ok 46` | `ok 46` |
+| Service list | console-only | **full** (`k64uart` + `k64dspi`) |
+
+The skips are named on the wire and neither is new: `mpu_privileged_guard # SKIP root unprivileged:
+no privileged caller exists` on both, plus `mutex_deadlock # SKIP pool too small` on the K64F only
+(the XMC's pool is large enough, which is why its count is one higher).
+
+**Read the selftest rows for what they actually prove, which is not the narrow.** `selftest`
+declares five of the six bits (`KICKOS_APP_AUTHORITY`, everything but `AUTH_PSTATE`), because the
+suite drives the authority gates from root. So on these two runs root gave up **`AUTH_PSTATE` and
+nothing else**: `AUTH_PINMUX` and `AUTH_CONSOLE` were kept, and the TAP route line shows the console
+path surviving bring-up, not surviving a narrow. What the selftest rows do witness is that the
+re-cut, the delegation refusal and `kos_cap_narrow` are all correct on two MPU families --
+`ok 46 - authority_cap` carries the narrow arms, where a worker drops its only authority and the
+gate that had just answered for it returns `-KOS_EPERM` -- plus the fact that a real per-app mask
+takes effect at all, since root demonstrably still held `AUTH_PINMUX` (it hands that bit to
+`auth_worker`, which `thread_spawn` refuses for a caller that lacks it) and `AUTH_CONSOLE`
+(`console_publish_priv` asserts `-KOS_EBADF`, which becomes `-KOS_EPERM` without the bit).
+
+**`consoledemo` on the XMC is the run where root does give the bits up**, and it is the only capture
+here that witnesses the narrow end to end: it declares no mask, so it takes the default
+`AUTH_MEMORY | AUTH_SYSTEM`, and root loses `AUTH_PINMUX` and `AUTH_CONSOLE` after using both.
+`[init] pre-publish ctor line` on the kernel console, then `[xmcuart] driver up`, then
+`[root] post-publish line via the userspace driver` and five worker lines -- root printing through
+the driver it just handed off, with the console and pinmux authorities already gone.
+
+**What this does NOT cover.** Four flipped boards were not re-witnessed at this tip
+(`esp32c6-wroom`, `rx72m`, `pizero2350`, `f411disco`), so for them stage 4 rests on emulation. The
+three apps that declare a wider mask and mux their own pins from root -- `c6blink`, `rxdrv`,
+`f411spi` -- are the direct hardware witness that the per-app declaration works, and **none of them
+has been run**: the C6 attempt reached `entry 0x40800000` and no further, the RX72M was not reached,
+and the `f411disco` was not plugged. Their two-arm `kos_periph_enable` possession probes remain
+unrun on silicon, as `TODO.md` already records. Stage 4's own confinement claim is also narrower
+than it looks: a missed declaration is a runtime `-KOS_EPERM`, and no capture here exercises that
+path on hardware -- it was witnessed on `qemu` only, by removing `AUTH_CONSOLE` from `initdemo`.
+
 #### Coverage boundary -- what this silicon witness covers
 
 **Re-established 2026-07-28 at the tip, `75227d4`**: the XMC A/B re-run plus the `frdmk64f`

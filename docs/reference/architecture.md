@@ -92,9 +92,9 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   per-capability parentage the 16-slot table has nowhere to store.
 - **No per-instance (per-pin, per-clock, per-line) capabilities.** Roughly **100 muxable pins** on
   the larger parts against that same **16-slot** ceiling. It does not fit and it does not nearly
-  fit, so authority is granted per *class* (`AUTH_PINMUX`, `AUTH_CLOCK`, `AUTH_DEVICE`,
-  `AUTH_MEMORY`, ...) rather than per instance. The consequence is honest and worth stating: a
-  holder of `AUTH_PINMUX` may mux **any** pin.
+  fit, so authority is granted per *class* -- the six bits `AUTH_MEMORY`, `AUTH_PINMUX`,
+  `AUTH_PSTATE`, `AUTH_IRQ`, `AUTH_SYSTEM`, `AUTH_CONSOLE` -- rather than per instance. The
+  consequence is honest and worth stating: a holder of `AUTH_PINMUX` may mux **any** pin.
 
 The common thread is the 16-slot ceiling with 9-handle boards under it. If that ever changes, three
 of the four deserve revisiting -- but the ceiling is itself a deliberate consequence of the
@@ -184,9 +184,12 @@ maintain by hand: a chip opts in by shipping `arch/<family>/chip/<chip>/mpu.cmak
    the target that supplies it (default `kickos_default_init`, a thin passthrough
    `kickos_init_entry -> kickos_default_init_run -> kickos_app_main`), so a plain app still writes
    only `int main` and no manifest. App/libstdc++ global ctors run in the root thread BEFORE the
-   seam; RETURNING from the seam is a single-shot shutdown with that status, a persistent init
-   never returns (parks/loops). A bad/missing provider is a build-time FATAL_ERROR, never a silent
-   fallback (not weak symbols).
+   seam; RETURNING from the seam is a single-shot shutdown with that status -- through the
+   `kos_shutdown` syscall, so it needs `AUTH_SYSTEM` and panics `"root: shutdown refused"` if root
+   narrowed that bit away -- and a persistent init never returns (parks/loops). `kickos_default_init_run`
+   narrows root's authority to `kickos_app_authority()` before the app main, so a custom provider that
+   delegates to it inherits the confinement. A bad/missing provider is a build-time FATAL_ERROR, never
+   a silent fallback (not weak symbols).
 9. **Conventions.** Traditional include guards `KICKOS_<PATH>_H` (no `#pragma once`); no ternary
    operators; comments only for hidden constraints/invariants. **Allman brace style**, enforced by
    the checked-in `.clang-format`, matched to the sibling projects `../KickCAT` / `../kickmsg`
@@ -698,7 +701,12 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
   `[0 .. KICKOS_CAP_FIRST_DYNAMIC)` (today `[0..4)`) are reserved well-known slots: index 0 =
   `KOS_CAP_STDOUT` (the send-only console endpoint), index 2 = `KOS_CAP_AUTHORITY` (the poolless
   authority cap, seated by the kernel's `cap_seat_authority`), 1 = a future clock cap and 3 a
-  spare. An **own-create** (`sem`/`mutex`/`endpoint` create) scans placement from
+  spare. The authority cap carries its `CapAuthority` word in `CapEntry.obj` -- the field a
+  poolless type leaves free -- with `rights` 0; the two families are separate enums over separate
+  fields, so neither constrains the other's numbering. **The seatable width is 8 bits**, bounded by
+  `kos_thread_params::authority` rather than by `CapEntry` (`obj` has room for 32): six are defined,
+  so a seventh and eighth cost nothing and a ninth needs that params field widened. An
+  **own-create** (`sem`/`mutex`/`endpoint` create) scans placement from
   `KICKOS_CAP_FIRST_DYNAMIC`, so it can **never alias a reserved slot**; a reserved slot is seated
   ONLY by the kernel (`cap_install_defaults` seats stdout, and is the sole writer of index 0) or
   by explicit spawn delegation (indices 1..3) -- and a spawn asking for BOTH an authority seat and

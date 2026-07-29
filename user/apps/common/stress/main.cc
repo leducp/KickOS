@@ -219,9 +219,9 @@ int run_stress_round(int pairs, int sleepers, int live)
         kos_cap_grant pcaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL},
                                  {g_pair_a[i], CH_FULL}, {g_pair_b[i], CH_FULL}};
         int a = kos::thread::spawn_caps(ping, reinterpret_cast<void*>(uintptr_t(i)), "ping",
-                                        prio, pcaps, 4, policy, quantum, /*privileged=*/true);
+                                        prio, pcaps, 4, policy, quantum);
         int b = kos::thread::spawn_caps(pong, reinterpret_cast<void*>(uintptr_t(i)), "pong",
-                                        prio, pcaps, 4, policy, quantum, /*privileged=*/true);
+                                        prio, pcaps, 4, policy, quantum);
         if (a < 0 or b < 0)
         {
             ok = false;
@@ -282,8 +282,7 @@ int run_stress_round(int pairs, int sleepers, int live)
         for (int b = 0; b < live; b++)
         {
             kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_mtx, CH_FULL}}; // done@1, mtx@2
-            int t = kos::thread::spawn_caps(churner, nullptr, "churn", 10, ccaps, 2,
-                                            KOS_POLICY_FIFO, 0, /*privileged=*/true);
+            int t = kos::thread::spawn_caps(churner, nullptr, "churn", 10, ccaps, 2);
             if (t < 0)
             {
                 break;

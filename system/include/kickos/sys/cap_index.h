@@ -27,10 +27,11 @@ enum kos_cap_index
     // Reserved range 1..3 is kernel-seated-only by convention today; the delegation-packing
     // enforcement that seats these lands with the clock-service step.
     KOS_CAP_CLOCK = 1,     // reserved: a board's well-known clock/time service cap
-    // The authority cap (CAP_AUTHORITY). Names no pool object; its whole content is
-    // the five KOS_AUTH_* rights bits, so it costs no dynamic slot on any board. Only
-    // the kernel seats it, WITHOUT KOS_CAP_TRANSFER, which is what keeps the
-    // delegation-packing collision on this slot unreachable.
+    // The authority cap (CAP_AUTHORITY). Names no pool object, so it carries its
+    // KOS_AUTH_* word in the entry's obj field and costs no dynamic slot on any board.
+    // Only the kernel seats it. The delegation site refuses the TYPE, which is what
+    // keeps the delegation-packing collision on this slot unreachable; the empty rights
+    // byte (no KOS_CAP_TRANSFER) is the second, weaker line.
     KOS_CAP_AUTHORITY = 2,
     KOS_CAP_RESERVED3 = 3, // reserved spare; hold the range, do not repurpose ad hoc
     KOS_CAP_FIRST_DYNAMIC = KICKOS_CAP_FIRST_DYNAMIC // first index an own-create may take

@@ -26,5 +26,8 @@ extern "C" int kickos_init_entry(int argc, char** argv)
     {
         return svc_rc;
     }
+    // Runs AFTER bring-up on purpose: the run body narrows root's authority to what the
+    // app declared, and the pin map and the console publish above need bits the app does
+    // not get.
     return kickos_default_init_run(argc, argv);
 }
