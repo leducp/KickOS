@@ -4,9 +4,10 @@
 // K64F/DSPI0 SPI bus SERVICE (see <kickos/driver/k64dspi.h>). Three parts:
 //
 //   1. DspiBus -- the transaction ENGINE (a class, no globals, no IPC). Given the
-//      granted DSPI0 window base it derives a CTAR from a target Hz/mode/word, and
-//      clocks N bytes full-duplex through the polled 4-deep FIFO with the PTC4 GPIO
-//      CS bracketing the WHOLE transfer (assert before the first clock, release
+//      granted DSPI0 window base it derives a CTAR from each device's Hz/mode/word,
+//      rewrites CTAR0 from the named device's profile at the head of every transfer,
+//      and clocks N bytes full-duplex through the polled 4-deep FIFO with the PTC4
+//      GPIO CS bracketing the WHOLE transfer (assert before the first clock, release
 //      after the last RX drain -- the Stage-D coherent-transaction fix).
 //   2. spi_service -- the unprivileged driver thread: kos_recv a kos_bus_req,
 //      validate it, run the class transaction over the concatenated segment bytes,
@@ -160,47 +161,61 @@ namespace
     class DspiBus
     {
     public:
+        // The CTAR word one device's config folds down to. CTAR0 is the controller's
+        // single live profile register, so it is rewritten inside every transfer
+        // rather than once at CONFIG time.
+        struct Profile
+        {
+            uint32_t ctar;
+            bool cs_gpio;
+        };
+
         void init(uintptr_t win)
         {
             win_ = win;
-            cs_gpio_ = true; // the bring-up always sets PTC4 up as a GPIO CS output
         }
 
-        // Reprogram the CTAR from a per-device config while HALTed, and adopt the CS
-        // policy. Returns the achieved bit clock. Only DSPI window registers touched,
-        // so the UNPRIVILEGED driver may call this (AIPS slot 44 is open).
-        uint32_t configure(uint32_t hz, uint8_t mode, uint8_t word_bits, uint8_t cs_policy)
+        // Fold a per-device config into a CTAR word; returns the achieved bit clock.
+        // Rate, CPOL/CPHA, word size and bit order all land in CTAR0, which is inside
+        // the granted window, so every one of them is per-device on this chip.
+        uint32_t fold(struct kos_bus_cfg const& cfg, Profile& out)
         {
-            cs_gpio_ = (cs_policy == KOS_BUS_CS_GPIO);
+            out.cs_gpio = (cfg.cs_policy == KOS_BUS_CS_GPIO);
             uint32_t f = kos_periph_clock_hz(win_);
             if (f == 0u)
             {
                 f = DSPI_CLK_FALLBACK;
             }
             uint32_t achieved = 0u;
-            uint32_t const ctar = derive_ctar(f, hz, mode, word_bits, &achieved);
-
-            r32(win_ + MCR_OFFSET) = MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT;
-            r32(win_ + CTAR0_OFFSET) = ctar;
-            r32(win_ + MCR_OFFSET) = MCR_MSTR; // release HALT -> RUNNING
+            out.ctar = derive_ctar(f, cfg.hz, cfg.mode, cfg.word_bits, &achieved);
             return achieved;
         }
 
-        // Clock `len` bytes full-duplex: tx bytes in `buf` go out, rx overwrites
-        // them in place. The CS is asserted before the first clock and released after
-        // the last RX drain (Stage-D: no trailing clocked byte on release), spanning
-        // ALL segments of the message -- one coherent transaction.
-        void transfer(unsigned char* buf, size_t len)
+        // Apply device `p`'s CTAR, then clock `len` bytes full-duplex: tx bytes in
+        // `buf` go out, rx overwrites them in place. The CS is asserted before the
+        // first clock and released after the last RX drain (Stage-D: no trailing
+        // clocked byte on release), spanning ALL segments of the message -- one
+        // coherent transaction. Only DSPI window registers are touched, so the
+        // UNPRIVILEGED driver may do this (AIPS slot 44 is open).
+        void transfer(Profile const& p, unsigned char* buf, size_t len)
         {
             if (len == 0)
             {
                 return;
             }
+            // CTAR0 is writable only while HALTed; the same write flushes both FIFOs,
+            // which must already be drained here (the pump below pops all it pushes).
+            // SCK idles at the PREVIOUS profile's CPOL, so a CPOL=1 device sees one
+            // idle-level change here, before its own CS asserts.
+            r32(win_ + MCR_OFFSET) = MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT;
+            r32(win_ + CTAR0_OFFSET) = p.ctar;
+            r32(win_ + MCR_OFFSET) = MCR_MSTR; // release HALT -> RUNNING
+
             volatile uint32_t* sr = reinterpret_cast<volatile uint32_t*>(win_ + SR_OFFSET);
             volatile uint32_t* pushr = reinterpret_cast<volatile uint32_t*>(win_ + PUSHR_OFFSET);
             volatile uint32_t* popr = reinterpret_cast<volatile uint32_t*>(win_ + POPR_OFFSET);
 
-            cs_low();
+            cs_low(p.cs_gpio);
 
             // Polled full-duplex. Drain first: the 4-deep RX FIFO must never overflow
             // (a dropped byte hangs the loop). Push only while fewer than
@@ -224,42 +239,44 @@ namespace
                 }
             }
 
-            cs_high();
+            cs_high(p.cs_gpio);
         }
 
     private:
         // PSOR/PCOR are write-only atomic set/clear (no RMW, no race with other PTC
         // bits). Both are Device memory, ordered with the PUSHR stores on Cortex-M4,
         // so CS-low is observed before the first SCK and CS-high after the last POPR.
-        void cs_low()
+        void cs_low(bool on)
         {
-            if (cs_gpio_)
+            if (on)
             {
                 r32(GPIOC_PCOR) = CS_PIN;
             }
         }
-        void cs_high()
+        void cs_high(bool on)
         {
-            if (cs_gpio_)
+            if (on)
             {
                 r32(GPIOC_PSOR) = CS_PIN;
             }
         }
 
         uintptr_t win_ = 0;
-        bool cs_gpio_ = true;
     };
 
     // The DSPI0 service endpoint cap in the ROOT/init thread's table (set by the
-    // bring-up, read by the app to delegate SIGNAL to its clients). -1 = not up.
+    // bring-up, taken ONCE by the app to delegate SIGNAL to its single client).
+    // -1 = not up, or already taken.
     int g_spi0_ep = -1;
 }
 
 extern "C"
 {
-    int k64dspi_endpoint(void)
+    int k64dspi_take_endpoint(void)
     {
-        return g_spi0_ep;
+        int const ep = g_spi0_ep;
+        g_spi0_ep = -1; // one-shot: device slots are caller-named, so ONE client only
+        return ep;
     }
 
     // UNPRIVILEGED driver thread: owns the DSPI0 window (spawn MMIO grant) + the PTC4
@@ -315,7 +332,9 @@ extern "C"
 
         // DSPI0 config while HALTed. MCR resets 0x0000_4001 (MDIS=1, HALT=1): this
         // write clears MDIS, flushes both FIFOs, sets master, holds HALT during
-        // config. Then program the initial CTAR from the service cfg's target Hz.
+        // config. The initial CTAR comes from the service cfg's target Hz: it sets the
+        // SCK idle level the pin mux above is glitch-free against, and every transfer
+        // then rewrites CTAR0 from its own device's profile.
         r32(win_base + MCR_OFFSET) = MCR_MSTR | MCR_CLR_TXF | MCR_CLR_RXF | MCR_HALT;
         uint32_t f = kos_periph_clock_hz(win_base);
         if (f == 0u)

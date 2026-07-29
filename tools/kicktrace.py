@@ -64,11 +64,11 @@ ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv
 # *sem_wait* are BLOCKING: their ENTER..EXIT span includes intended block time, so
 # judge them by on-CPU overhead.
 #
-# TODO(de-drift): this is a hand-maintained mirror of the C++ source of truth (enum
-# kos_syscall_nr in user/include/kickos/sys/abi.h). The number is the ABI contract;
-# the string here is a human label. The tests/telemetry idmap cross-check fails the
-# build if the number set drifts from abi.h. The durable fix is to GENERATE this from
-# the C++ enum (nanobind / a codegen step); that is future-milestone work.
+# TODO(de-drift): this is a hand-maintained mirror of enum kos_syscall_nr
+# (user/include/kickos/sys/abi.h). The tests/telemetry idmap gate parses abi.h and
+# fails if a number is missing or stale here, or if a label is not the enumerator
+# suffix lowercased -- so keep the names mechanical. The durable fix is to GENERATE
+# this from the C++ enum (nanobind / a codegen step); that is future-milestone work.
 SYSCALL_NAME = {
     1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
     6: "sem_post", 7: "thread_spawn", 8: "exit", 9: "irq_inject", 10: "guard_addr",
@@ -78,7 +78,7 @@ SYSCALL_NAME = {
     23: "mutex_create", 24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
     27: "send", 28: "recv", 29: "console_publish", 30: "cpu_clock_set",
     31: "grant_probe", 32: "periph_clock_hz", 33: "pinmux_set", 34: "call",
-    35: "reply",
+    35: "reply", 36: "shutdown", 37: "mem_self_grant", 38: "reboot",
 }
 
 TRACE_MAGIC = 0x4B545243

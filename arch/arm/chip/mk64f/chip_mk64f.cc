@@ -567,9 +567,12 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (K64 RM). Owns-for-life: the PIT time base, the clock/reset
-// gate blocks, and the bus-side SYSMPU (granting it would be total escalation --
-// userspace could rewrite the isolation regions). The watchdog INSTANCE is excluded
-// (neutralize-then-grant). Bases from mmap.h; sizes hand-typed per RM.
+// gate blocks, and the two bus-side permission controllers -- SYSMPU and the AIPS
+// bridge control pages (granting either would be total escalation: SYSMPU holds the
+// isolation regions, and one PACR SP bit opens a whole 4 KB peripheral slot to EVERY
+// unprivileged thread, which SYSMPU cannot gate, see arch_fault_report_extra). The
+// watchdog INSTANCE is excluded (neutralize-then-grant). Bases from mmap.h; sizes
+// hand-typed per RM.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {
@@ -579,6 +582,8 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
         {mmap::SIM_BASE, 0x1000u},    // SIM: SCGC clock-gate registers (RM ch.12)
         {mmap::MCG_BASE, 0x1000u},    // MCG: PLL / clock source (RM ch.25)
         {mmap::SYSMPU_BASE, 0x1000u}, // SYSMPU: the bus-side MPU itself (RM ch.19)
+        {mmap::AIPS0_BASE, 0x1000u},  // AIPS0: MPRA + PACRA..PACRP, slots 0..127 (RM ch.20)
+        {mmap::AIPS1_BASE, 0x1000u},  // AIPS1: MPRA + PACRA..PACRP, slots 128..255 (RM ch.20)
     };
     size_t n = sizeof(blocks) / sizeof(blocks[0]);
     if (n > max)

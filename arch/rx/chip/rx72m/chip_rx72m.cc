@@ -20,6 +20,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
+#include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
 #include <stdint.h>
 
@@ -85,6 +86,22 @@ namespace
         else
         {
             r16(cgc::PRCR) = cgc::PRCR_LOCK;
+        }
+    }
+
+    // A PmnPFS write lands ONLY inside this bracket (UM sec.23.2.1): B0WI must be
+    // cleared before PFSWE is writable, so the unlock is two writes, not one. Without
+    // it the PFS write is dropped silently.
+    void mpc_pfs_unlock(bool on)
+    {
+        if (on)
+        {
+            r8(mpc::PWPR) = 0x00;
+            r8(mpc::PWPR) = mpc::PWPR_PFSWE;
+        }
+        else
+        {
+            r8(mpc::PWPR) = mpc::PWPR_B0WI;
         }
     }
 
@@ -154,14 +171,13 @@ namespace
 
     void sci6_console_init()
     {
-        // Pin mux: route PB1->TXD6, PB0->RXD6 (UM sec.23). Unlock the MPC (clear
-        // B0WI, then set PFSWE), write PSEL, relock, then hand the pins to the
-        // peripheral via PORTB.PMR. Without the PMR step the pins stay GPIO.
-        r8(mpc::PWPR) = 0x00;             // B0WI=0
-        r8(mpc::PWPR) = mpc::PWPR_PFSWE;  // PFSWE=1
+        // Pin mux: route PB1->TXD6, PB0->RXD6 (UM sec.23.4.1 procedure). PSEL is only
+        // writable while the pin's PMR bit is 0, which it is at reset. Without the PMR
+        // step the pins stay GPIO.
+        mpc_pfs_unlock(true);
         r8(mpc::PB1PFS) = mpc::PFS_PSEL_SCI6; // TXD6
         r8(mpc::PB0PFS) = mpc::PFS_PSEL_SCI6; // RXD6
-        r8(mpc::PWPR) = mpc::PWPR_B0WI;   // relock (PFSWE=0, B0WI=1)
+        mpc_pfs_unlock(false);
         r8(port::PORTB_PMR) |= port::PB1 | port::PB0; // PB1,PB0 -> peripheral function
 
         r8(sci::SCR) = 0;                 // TE/RE off while configuring
@@ -272,6 +288,55 @@ void arch_diag_led_set(int on)
     {
         r8(port::PORT8_PODR) |= port::LED6;  // high => LED off
     }
+}
+
+// Kernel-owned pins arch_pinmux_set refuses so a board map or an app cannot dark the
+// console: PB1/TXD6 + PB0/RXD6, muxed for life by sci6_console_init.
+static bool rx72m_pin_kernel_owned(uint32_t p, uint32_t pin)
+{
+    return p == 0x0Bu and pin <= 1u;
+}
+
+// One-shot pin-function config (KOS_SYS_PINMUX_SET), covering BOTH mux stages an RX
+// pin passes: the MPC PmnPFS peripheral-function select and the PORTm.PMR general-I/O
+// vs peripheral switch. Mediating PMR alone would leave the refusal above bypassable
+// -- PSEL can re-point a pin already at PMR=1 (the console pins are) at a different
+// module without PMR ever being written. func packs both stages; the encoding is
+// chip-local (reg::mpc::PINMUX_*).
+int arch_pinmux_set(uint32_t p, uint32_t pin, uint32_t func)
+{
+    if (p > port::PORT_INDEX_MAX or pin > port::PIN_MAX)
+    {
+        return -KOS_EINVAL;
+    }
+    if ((func & mpc::PINMUX_RESERVED) != 0u)
+    {
+        return -KOS_EINVAL;
+    }
+    if (rx72m_pin_kernel_owned(p, pin))
+    {
+        return -KOS_EBUSY;
+    }
+    uintptr_t const pmr = port::pmr(p);
+    uint8_t const bit = static_cast<uint8_t>(1u << pin);
+    if ((func & mpc::PINMUX_PFS_EN) != 0u)
+    {
+        // PSEL may only change while this pin's PMR bit is 0, else the pin emits an
+        // unexpected edge (UM sec.23.4.2 (1)). Clearing it first is step 1 of sec.23.4.1.
+        r8(pmr) = static_cast<uint8_t>(r8(pmr) & ~bit);
+        mpc_pfs_unlock(true);
+        r8(mpc::pfs(p, pin)) = static_cast<uint8_t>(func & mpc::PINMUX_PFS_MASK);
+        mpc_pfs_unlock(false);
+    }
+    if ((func & mpc::PINMUX_PMR) != 0u)
+    {
+        r8(pmr) = static_cast<uint8_t>(r8(pmr) | bit);
+    }
+    else
+    {
+        r8(pmr) = static_cast<uint8_t>(r8(pmr) & ~bit);
+    }
+    return 0;
 }
 
 void arch_shutdown(int status)

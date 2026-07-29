@@ -18,11 +18,14 @@ _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 2K;
 
 /* Newlib heap: an explicit .userheap section carved from RAM before the thread arena
-   (no MPU .appdata window on this chip). Only 16 KiB RAM, and the static footprint +
-   thread arena leave little room, so the heap is 4K (covers printf's 4K stdio granule).
-   0 is legal for a board with no malloc app. */
+   (no MPU .appdata window on this chip). Every byte here is a byte the arena does not
+   get, and on 16 KiB the selftest image's static footprint leaves the arena little room
+   for the two boot stacks -- hence 2K, in line with the other 16-20 KiB parts. A small
+   heap does not stop printf: newlib falls back to unbuffered stdio when the buffer
+   malloc fails (the nRF51 ships 0 and prints). 0 is legal for a board with no malloc
+   app. */
 #ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 4K
+#define KICKOS_USER_HEAP_SIZE 2K
 #endif
 
 SECTIONS
@@ -112,6 +115,9 @@ SECTIONS
 
 ASSERT(__kickos_ram_start <= __kickos_ram_end,
        "KickOS: static data overflows RAM (no room for the user-RAM pool + stack)")
+
+#include <boot_arena.ld.h>
+KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
 /* Static destructors are unsupported: nothing walks .fini_array. Fail the link
    rather than silently drop a destructor. */

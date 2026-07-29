@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// CI gate 3: trace-metadata de-drift. Emits the AUTHORITATIVE id->number maps from
-// the C++ source of truth -- kickos::trace::ArchId (include/kickos/trace/record.h)
-// and enum kos_syscall_nr (user/include/kickos/sys/abi.h) -- one "arch <n>" /
-// "syscall <n>" line each. check_idmap.py then asserts tools/kicktrace.py's
-// ARCH_NAME and SYSCALL_NAME cover exactly these numbers (no missing, no extra).
+// CI gate 3: trace-metadata de-drift. Emits the id->number maps from the C++ enums --
+// kickos::trace::ArchId (include/kickos/trace/record.h) and enum kos_syscall_nr
+// (user/include/kickos/sys/abi.h) -- one "arch <n>" / "syscall <n>" line each.
+// check_idmap.py cross-checks these against abi.h and tools/kicktrace.py.
 //
 // The lists below reference each enumerator BY NAME, so a removed/renamed enum
-// value fails to compile here. The number is the wire/ABI contract; kicktrace's
-// string labels are a human mirror the cross-check does not (cannot) compare
-// against -- abi.h/record.h carry no strings. Durable fix: generate both sides
-// from the C++ enums (see the TODO in kicktrace.py); future-milestone work.
+// value fails to compile here. An enumerator MISSING from the syscall list below
+// is caught by check_idmap.py, which parses abi.h itself.
 
 #include <kickos/sys/abi.h>
 #include <kickos/trace/record.h>
@@ -40,7 +37,8 @@ int main()
         KOS_SYS_MUTEX_CREATE, KOS_SYS_MUTEX_LOCK, KOS_SYS_MUTEX_UNLOCK,
         KOS_SYS_ENDPOINT_CREATE, KOS_SYS_SEND, KOS_SYS_RECV, KOS_SYS_CONSOLE_PUBLISH,
         KOS_SYS_CPU_CLOCK_SET, KOS_SYS_GRANT_PROBE, KOS_SYS_PERIPH_CLOCK_HZ,
-        KOS_SYS_PINMUX_SET, KOS_SYS_CALL, KOS_SYS_REPLY,
+        KOS_SYS_PINMUX_SET, KOS_SYS_CALL, KOS_SYS_REPLY, KOS_SYS_SHUTDOWN,
+        KOS_SYS_MEM_SELF_GRANT, KOS_SYS_REBOOT,
     };
     for (kos_syscall_nr s : calls)
     {

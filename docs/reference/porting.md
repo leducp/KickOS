@@ -87,7 +87,7 @@ where it does, cross-domain trapping is silicon-proven unless the row says other
 | `nrf51` | microbit | M0 | -- | QEMU (runnable CI gate) |
 | `virt` | qemu-riscv | RV32IMAC | PMP | QEMU (runnable CI gate, **plus a runtime enforcement gate**) |
 | `xmc4800` | xmc4800-relax | M4F | PMSAv7 | **hardware** (LED + USIC VCOM console over the buffered ring; enforcement + the canonical per-thread peripheral-isolation proof) |
-| `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong); enforcement link-validated, MPU **HW pending** |
+| `stm32f411` | f411disco / blackpill | M4F | PMSAv7 | **hardware** (LED + UART + ping-pong; enforcement selftest + `mpu_fault` MemManage denial + an unprivileged root, all on `f411disco` 2026-07-29). Witnessed on one of the two boards; `blackpill` shares this backend and was not re-run |
 | `stm32f302` | f302nucleo | M4 | -- | **hardware** (LED PB13 + console; RAM-limited selftest). Not an enforcement target: a 3712 B arena cannot host the app-data block |
 | `stm32f103` | bluepill-c8 | M3 | -- | **hardware** (F103 port HW-proven on the now-retired 10 K clone, 2026-07-14; RAM-limited selftest; c8 build-only). No MPU: the degraded privilege-only build |
 | `rp2040` | picopi | M0+ | PMSAv6-M | **hardware** (selftest over UART0/GP0; v6-M cross-domain fault silicon-proven 2026-07-19) |
@@ -96,7 +96,7 @@ where it does, cross-domain trapping is silicon-proven unless the row says other
 | `imxrt1062` | teensy41 | **M7** | PMSAv7 + fixed | **hardware** (enforcement selftest + soak). The only speculating core: needs the fixed-region wrap (`../design-teensy-mpu-hang.md`) |
 | `rx72m` | rx72m | RXv3 | RX MPU | **hardware** (selftest + SCI6 console; DPFPU switch; enforcement + a granted peripheral window). **No CI gate** -- see below |
 | `esp32` | esp32-wroom | Xtensa LX6 | -- | **hardware** (selftest + console, 240 MHz). No per-task MPU and no privilege split |
-| `esp32c6` | esp32c6-wroom | RV32IMAC | PMP | **hardware** (selftest + buffered ring console; first real peripheral IRQ; enforcement + peripheral isolation). Peripheral access also needs a one-time APM/PMS open |
+| `esp32c6` | esp32c6-wroom | RV32IMAC | PMP | **hardware** (selftest + buffered ring console; first real peripheral IRQ; enforcement + peripheral isolation). Peripheral access also needs the one-time bus-side APM open, which `arch_init` programs at boot |
 | `sam3x8e` | due | M3 | -- | port proven on silicon (2026-07-09); test unit retired (peripheral-I/O fault) |
 
 Build-only chips are verified by construction (register review + image
@@ -153,12 +153,22 @@ kernel-owned pin the backend refuses). The **WEAK default returns `-KOS_ENOSYS`*
 a non-empty board pin-map fails LOUD on a chip with no backend rather than silently
 mis-muxing.
 
-Backends exist for `mk64f`, `xmc4800`, `rp2040`, `rp2350`, `esp32c6`, `stm32f411`,
-`stm32f103`, `stm32f302`, `sam3x8e`, `imxrt1062`, `esp32`. `nrf51`, `mps2`, and
-`virt` keep the weak `-KOS_ENOSYS` (no central mux block -- per-peripheral PSEL,
-emulated, or virtual). Per-backend caveats: `stm32f103` covers default-mapped
+Backends exist for `mk64f`, `xmc4800`, `rp2040`, `rp2350`, `esp32c6`, `rx72m`,
+`stm32f411`, `stm32f103`, `stm32f302`, `sam3x8e`, `imxrt1062`, `esp32`. `nrf51`,
+`mps2`, and `virt` keep the weak `-KOS_ENOSYS` (no central mux block -- per-peripheral
+PSEL, emulated, or virtual). Per-backend caveats: `stm32f103` covers default-mapped
 peripherals only (AFIO_MAPR remap out of scope); `imxrt1062` keys `port`=GPIO-bank /
-`pin`=bit against a PARTIAL pad table (a hole returns `-KOS_EINVAL`). The board
+`pin`=bit against a PARTIAL pad table (a hole returns `-KOS_EINVAL`); `esp32c6` packs
+BOTH of that family's mux stages into `func` -- the IO_MUX pad word in bits `[15:0]`,
+the GPIO-matrix out-sel signal index in `[31:24]` behind an arm bit `[23]` -- so the
+kernel-owned-pin refusal covers the matrix and not just the pad (`esp32` still muxes
+the pad only); `rx72m` likewise packs both RX stages -- the MPC `PmnPFS` byte
+(`PSEL[5:0]` | `ISEL` | `ASEL`) in `[7:0]`, the `PORTm.PMR` bit value in `[8]`, an arm
+bit for the `PFS` write in `[9]` -- and does the MPC `PWPR` unlock plus the mandated
+"clear `PMR`, write `PSEL`, restore `PMR`" order itself, since a `PFS` write outside
+that bracket is silently dropped. `port` there is the DENSE register index 0..0x17
+(PORT0..PORTQ; `PORTG` is 0x10), and package pin holes are not modelled -- a pin absent
+from the package is accepted and writes a reserved bit. The board
 supplies the routing as a `kos_board_pinmap` table the init service walks before the
 service list; the init DAG is pinmux -> service list -> app.
 
@@ -299,7 +309,9 @@ abandoned (the system never returns to boot).
   `arch_mpu_apply` (K64F SYSMPU, RP2350 PMSAv8). `arch_mpu_region_encodable` bounds a grant to
   what the backend can describe.
 - **Rule 7 reserved blocks (M4)** -- an enforcing chip MUST define `arch_reserved_blocks`
-  (its owns-for-life peripherals: timebase, IRQ controller, MPU, clock/reset gates); there
+  (its owns-for-life peripherals: timebase, IRQ controller, every access-permission controller
+  -- the MPU/PMP twin AND any bus-side gate, e.g. the K64F AIPS PACR pages or the ESP32-C6
+  HP_APM/HP_TEE -- and the clock/reset gates); there
   is no weak default, so a missing one is a link error. A new **ARMv7-M chip with the
   Cortex-M bit-band alias (any M3/M4)** must also override `arch_bitband_present()` to return
   **1** -- the weak default is 0, which is fail-OPEN for the bit-band alias refusal (a device

@@ -2,8 +2,13 @@
 # Copyright (c) 2026 Philippe Leduc
 
 cmake_minimum_required(VERSION 3.24)
-# Version scheme: 0.<milestone>.<submilestone> (drives KICKOS_VERSION -> the boot banner).
+# Two versions, deliberately not the same thing. The project version is numeric because
+# write_basic_package_version_file demands it, and tracks the milestone only: it is what an
+# out-of-tree consumer's find_package(KickOS) matches against.
 project(KickOS VERSION 0.4.5 LANGUAGES C CXX ASM)
+# KICKOS_VERSION is the build identity in the boot banner, and takes a point-release suffix
+# CMake would reject above. Scheme: 0.<milestone>.<submilestone>[-<point>].
+set(KICKOS_VERSION "0.4.5-2")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
@@ -100,6 +105,35 @@ if(KICKOS_ENABLE_SELFTEST)
   add_compile_definitions(KICKOS_ENABLE_SELFTEST=1)
 endif()
 
+# --- Terminating images hand the chip back to its bootloader ----------------
+# OFF: a terminating image halts, and reflashing an RP2040/RP2350 needs a physical
+# BOOTSEL press. ON: both terminal dead-ends in kernel/init/console.cc call
+# arch_reboot first -- kickos_terminate (shutdown syscall, last-thread-out, the
+# software fault reporter) and the weak kfault_terminate (kpanic, and every ARM
+# MPU/hard fault) -- so a fault-terminating bench image leaves the board in its
+# download mode and an unattended flash/test loop becomes possible. Bench/CI knob
+# only: a board that always jumps to its bootloader can never hold a soak image.
+# Always defined 0 or 1 so `#if KICKOS_SHUTDOWN_TO_BOOTLOADER` is -Wundef-clean.
+option(KICKOS_SHUTDOWN_TO_BOOTLOADER
+       "Terminating images reboot into the chip bootloader instead of halting" OFF)
+if(KICKOS_SHUTDOWN_TO_BOOTLOADER)
+  # arch_reboot's weak decline AND every strong backend are compiled out of a
+  # non-selftest image, so the knob would not even link there. Refuse at configure
+  # rather than emit an undefined reference from kickos_terminate.
+  if(NOT KICKOS_ENABLE_SELFTEST)
+    message(FATAL_ERROR
+      "KICKOS_SHUTDOWN_TO_BOOTLOADER=ON requires KICKOS_ENABLE_SELFTEST=ON: "
+      "arch_reboot (the weak decline in kernel/syscall/syscall.cc and every strong "
+      "chip backend) is compiled out of a production image, so nothing would define "
+      "the symbol. Use an -st preset, or leave this knob OFF.")
+  endif()
+  add_compile_definitions(KICKOS_SHUTDOWN_TO_BOOTLOADER=1)
+  message(STATUS "KickOS: terminating images REBOOT TO BOOTLOADER (no BOOTSEL press; "
+                 "a chip with no arch_reboot backend still halts)")
+else()
+  add_compile_definitions(KICKOS_SHUTDOWN_TO_BOOTLOADER=0)
+endif()
+
 # HOLDING MEASURE (TODO.md N16): the fleet-uniform selftest no longer fits the
 # 64 KiB-flash boards at the plain-Debug default, so their whole selftest tree
 # builds -Os. Cost: the -st kernel is no longer codegen-identical to the same
@@ -160,6 +194,15 @@ else()
 endif()
 add_compile_definitions(KICKOS_CONSOLE_CHIP=${_con_chip} KICKOS_CONSOLE_RTT=${_con_rtt} KICKOS_CONSOLE_CRLF=${_con_crlf})
 message(STATUS "KickOS: console=${KICKOS_CONSOLE} (chip=${_con_chip} rtt=${_con_rtt} crlf=${_con_crlf})")
+
+# The sim arch, readable from the preprocessor. Positive identification only: a new
+# arch must land in the 0 branch of every `#if KICKOS_ARCH_SIM`.
+if(KICKOS_ARCH STREQUAL "sim")
+  set(_arch_sim 1)
+else()
+  set(_arch_sim 0)
+endif()
+add_compile_definitions(KICKOS_ARCH_SIM=${_arch_sim})
 
 # --- Telemetry backend selection (docs/reference/telemetry.md) -----------------
 # KICKOS_TELEMETRY = off | rtt. Kernel-observability records (context switch,

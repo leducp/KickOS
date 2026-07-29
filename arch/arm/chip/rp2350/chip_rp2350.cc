@@ -61,6 +61,9 @@ namespace irq = kickos::rp2350::irq;
 namespace kickos
 {
     int kmain(int argc, char** argv);
+#if defined(KICKOS_ENABLE_SELFTEST)
+    void kpanic(char const* msg) __attribute__((noreturn)); // arch_reboot: the ROM call must not return
+#endif
 }
 
 extern "C"
@@ -87,6 +90,12 @@ namespace
     {
         return *reinterpret_cast<volatile uint32_t*>(a);
     }
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // Bootrom header accessors (arch_reboot): its magic is bytes and its pointers are
+    // halfwords, so neither is reachable through r32.
+    inline uint8_t r8(uintptr_t a) { return *reinterpret_cast<volatile uint8_t*>(a); }
+    inline uint16_t r16(uintptr_t a) { return *reinterpret_cast<volatile uint16_t*>(a); }
+#endif
 
     // Chosen by clocks_init (which source clk_peri lands on), consumed by uart1_init.
     // Boot is single-threaded and sequential, so no guard is needed.
@@ -369,6 +378,46 @@ uint32_t arch_trace_now(void)
 {
     return r32(reg::timer::TIMERAWL);
 }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+// Reboot into BOOTSEL (firmware-download) mode via the bootrom `reboot` entry. The
+// header differs from the RP2040's: the magic third byte is 0x02, and the Arm lookup
+// helper (rom_table_lookup_val, no table argument) is the halfword at 0x16 -- 0x18 is a
+// different entry here. Once the magic matches, those pointers are valid; the byte at
+// 0x13 is a ROM build number the datasheet forbids using to locate functions.
+int arch_reboot(void)
+{
+    __asm volatile("cpsid i" ::: "memory"); // dispatch runs in thread mode with IRQs live
+
+    if (r8(0x10u) != 'M' or r8(0x11u) != 'u' or r8(0x12u) != 0x02u)
+    {
+        return -KOS_ENOSYS;
+    }
+    // Zero-extend the stored halfword: it already carries the Thumb bit.
+    using lookup_fn = void* (*)(uint32_t, uint32_t);
+    lookup_fn const lookup =
+        reinterpret_cast<lookup_fn>(static_cast<uintptr_t>(r16(0x16u)));
+
+    // Function code 'RB' packs as (c2 << 8) | c1; RT_FLAG_FUNC_ARM_SEC picks the
+    // Secure Arm variant (KickOS runs M33 Secure, its IMAGE_DEF marks Security=S).
+    constexpr uint32_t RT_FLAG_FUNC_ARM_SEC = 0x0004u;
+    using reboot_fn = int (*)(uint32_t, uint32_t, uint32_t, uint32_t);
+    reboot_fn const rom_reboot = reinterpret_cast<reboot_fn>(
+        lookup(('B' << 8) | 'R', RT_FLAG_FUNC_ARM_SEC));
+    if (rom_reboot == nullptr)
+    {
+        return -KOS_ENOSYS; // magic matched, but this ROM's table has no 'RB'
+    }
+
+    constexpr uint32_t REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL = 0x0002u;
+    constexpr uint32_t REBOOT2_FLAG_NO_RETURN_ON_SUCCESS = 0x0100u;
+    // delay_ms must never be 0: the bootrom mishandles a zero timeout, which pico-sdk
+    // works around by forcing 1. Not in the datasheet errata.
+    rom_reboot(REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
+               10u, 0u, 0u);
+    kickos::kpanic("arch_reboot: rp2350 bootrom reboot returned");
+}
+#endif
 
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RP2350 datasheet). Owns-for-life: the 64-bit TIMER0 (monotonic

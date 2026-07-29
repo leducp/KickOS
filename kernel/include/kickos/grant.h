@@ -4,7 +4,8 @@
 // Rule 7 (docs/design-m4-driver-model.md sec.7): the grant path REFUSES a region
 // that overlaps a kernel-reserved block, turning single-ownership from "trust the
 // granter" into "the kernel refuses". The reserved set is the arch's owns-for-life
-// peripherals (timebase, IRQ controller, MPU, clock/reset gates); each enforcing
+// peripherals (timebase, IRQ controller, every access-permission controller -- the
+// MPU/PMP twin and any bus-side gate -- and the clock/reset gates); each enforcing
 // chip declares it via arch_reserved_blocks (arch.h).
 //
 // Body compiled only under KICKOS_HAVE_MPU (grant.cc); with no enforcement the
@@ -20,11 +21,22 @@
 #include <kickos/config.h> // KICKOS_HAVE_MPU
 
 // Fill target for arch_reserved_blocks: the most blocks any chip declares (mk64f
-// = 4 today). A fixed stack buffer, so no allocation on the grant hot path.
+// = 6 today). A fixed stack buffer, so no allocation on the grant hot path.
 #define KICKOS_MAX_RESERVED 8u
 
 namespace kickos
 {
+    // Closed-form last-byte overlap: [a_base,a_last] meets [b_base,b_last].
+    // Adjacency (a_last+1 == b_base) is NOT overlap; a grant may sit flush against a
+    // reserved block (the mk64f PIT CH2 case, R4). Callers pass non-wrapping ranges
+    // (last >= base). Defined in BOTH postures: the DEV one-holder scan in domain_for
+    // is policy, not enforcement, so it runs with KICKOS_HAVE_MPU=0 too.
+    inline bool grant_ranges_overlap(uintptr_t a_base, uintptr_t a_last,
+                                     uintptr_t b_base, uintptr_t b_last)
+    {
+        return a_base <= b_last and b_base <= a_last;
+    }
+
 #if KICKOS_HAVE_MPU
     // True iff [base, base+size) touches any reserved block -- or, on a bit-band
     // chip, the alias image of a reserved block that lies in the aliasable 1 MB

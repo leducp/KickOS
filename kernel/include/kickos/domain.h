@@ -67,10 +67,27 @@ namespace kickos
     // before dedup). caller_authorized is the SPAWNER's AUTH_MEMORY answer, resolved
     // by the caller (never read from sched::current() here; R8), gating the MMIO rule.
     //
+    // An MMIO grant is additionally EXCLUSIVE: a DEV window overlapping one a LIVE
+    // domain already holds is refused -KOS_EBUSY (one owner, no stealing -- the
+    // irq_register precedent). Matched on range overlap with adjacency-is-not-overlap,
+    // so two flush-but-disjoint windows (mk64f PIT CH2 above the reserved block) both
+    // admit. The holder count needs no table: disjoint encodable windows run out on
+    // their own. The check and the commit (domain_ref, in thread_create) are both
+    // inside thread_spawn's function-scope IrqLock, so they are atomic together.
+    //
+    // A respawn issued while the dying holder still references its domain therefore
+    // earns -KOS_EBUSY. That cannot bite today: sched::exit_current drops the reference
+    // (domain_release) in the SAME critical section as, and immediately after,
+    // cap_teardown -- the call that EPIPE-wakes the respawner -- so a woken supervisor
+    // always observes the window already free. A supervisor that learns of the death
+    // some OTHER way (watchdog, timeout, a future join) MUST join before respawning or
+    // retry on -KOS_EBUSY; see TODO.md.
+    //
     // Returns null on refusal and writes the reason to *err (never null; 0 on success):
     //   KOS_EPERM   the grant is inadmissible (reserved-block hit, out-of-arena data,
     //               unauthorized DEV). Fix the grant.
     //   KOS_EINVAL  malformed geometry (an MMIO base with a zero extent).
+    //   KOS_EBUSY   a live domain already holds an overlapping DEV window.
     //   KOS_ENOMEM  the domain pool is full. Retry later.
     // This is the authoritative admission; the spawn boundary forwards *err instead of
     // pre-checking the same predicate.

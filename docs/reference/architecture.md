@@ -496,7 +496,8 @@ prospective committed geometry before it allocates a domain slot; the caller-own
 assert. Each enforcing chip declares its owns-for-life set via `arch_reserved_blocks` (`arch.h`) --
 there is **no weak default**, so an enforcing port that forgets one fails to *link* (affirmative
 fail-closed); the set is owns-for-life only (a neutralize-then-grant watchdog is excluded unless
-its tick feeds the timebase). On a **bit-band core** (`arch_bitband_present()` != 0) the overlap
+its tick feeds the timebase) and includes every access-permission controller, bus-side ones
+included -- the K64F AIPS bridge PACR pages, the ESP32-C6 HP_APM/HP_TEE. On a **bit-band core** (`arch_bitband_present()` != 0) the overlap
 test also covers each reserved block's word-per-bit alias image, and a device grant reaching
 either alias window is refused. `grant_reserved_validate` asserts once at boot (`kmain`) that the
 arena + app extents are reserved-disjoint. Under no enforcement (`KICKOS_HAVE_MPU=0`) the whole

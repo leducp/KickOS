@@ -18,6 +18,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/bus.h> // M4.4 wire ABI: compile-checks the struct-size static_asserts here
+#include <kickos/sys/spi_service.h> // kickos::spi::serve_one + SlotTable (driven on a mock bus)
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/string.h>
@@ -1730,6 +1731,120 @@ namespace
                                           static_cast<uint32_t>(rs));
         TAP_CHECK(rc < 0); // reserved-block MMIO grant refused (domain_for, or non-encodable at the boundary)
     }
+
+    // --- One holder per device window (-KOS_EBUSY) --------------------------------
+    // A DEV window overlapping one a LIVE domain already holds is refused. Matched on
+    // RANGES, so this covers all three shapes in one case: exact duplicate and partial
+    // overlap refuse, adjacent-but-disjoint admits.
+    //
+    // The holders never run while this test body does: root sits at KICKOS_PRIO_MIN+1
+    // and a spawn does not itself reschedule, so a prio-10 child is READY (refcount
+    // already taken by thread_create) but off-CPU until root blocks. They are drained
+    // with a sleep at the end so their slots and windows return to the pool.
+    //
+    // The window is DISCOVERED, not hardcoded: kos_grant_probe says which bases the DEV
+    // predicate admits on this board (reserved blocks and bit-band aliases differ per
+    // chip), and the holder spawn itself rejects a base a board service already owns.
+    // The sim mints no DEV region at all (arch_mpu_region_encodable is fail-closed), so
+    // the search finds nothing there and the case reports PARTIAL -- on any other
+    // enforcing board, including qemu built -DKICKOS_HAVE_MPU=1, an empty search FAILS.
+    void devexcl_noop(void*) {}
+    void t_dev_window_exclusive()
+    {
+        constexpr uint32_t WIN = 0x100u; // pow2 >= 32: encodable on PMSAv7/v8 and byte-granular SYSMPU
+        // Step 2*WIN so both `base` and its adjacent sibling `base + WIN` stay
+        // WIN-aligned (PMSA needs natural alignment, so an unaligned base is not
+        // merely refused-as-held but refused-as-unencodable).
+        uintptr_t win = 0;
+        int holder = -1;
+        bool any_admissible = false;
+        for (uintptr_t b = 0x40000000u; b < 0x40100000u; b += 2u * WIN)
+        {
+            if (kos_grant_probe(KOS_GRANT_OP_DEV_PRIVILEGED, b, WIN) != 1
+                or kos_grant_probe(KOS_GRANT_OP_DEV_PRIVILEGED, b + WIN, WIN) != 1)
+            {
+                continue; // reserved / alias / non-encodable on this chip
+            }
+            any_admissible = true;
+            holder = kos::thread::spawn(devexcl_noop, nullptr, "devheld", 10, KOS_POLICY_FIFO,
+                                        0, /*privileged=*/false, nullptr, 0, nullptr, 0,
+                                        reinterpret_cast<void*>(b), WIN);
+            if (holder >= 0)
+            {
+                win = b;
+                break;
+            }
+            if (holder != -KOS_EBUSY)
+            {
+                break; // not "a board service owns this window" -- a real refusal, report it
+            }
+        }
+        if (not any_admissible)
+        {
+            // Positively the sim, so a new arch with no DEV encoder fails loudly here
+            // instead of inheriting this escape.
+#if KICKOS_ARCH_SIM
+            // The sim mints no DEV window at all -- arch_mpu_region_encodable is
+            // fail-closed. Assert THAT premise end-to-end rather than skipping: the sim
+            // gate reads a skip as "a test stopped running"
+            // (FAIL_REGULAR_EXPRESSION "# skipped: [1-9]"), and it is right to.
+            TAP_CHECK(kos::thread::spawn(devexcl_noop, nullptr, "devnone", 10, KOS_POLICY_FIFO,
+                                         0, false, nullptr, 0, nullptr, 0,
+                                         reinterpret_cast<void*>(0x40000000u), WIN) < 0);
+            tap::diag("dev_window_exclusive: PARTIAL -- board mints no DEV window; "
+                      "exclusivity runs on enforcing boards (e.g. qemu -DKICKOS_HAVE_MPU=1)");
+#else
+            // An enforcing board with no admissible DEV base means kos_grant_probe or the
+            // discovery loop regressed. Passing here would silently drop every -KOS_EBUSY
+            // assertion below while the gate stayed green.
+            tap::fail("no DEV-admissible window in [0x40000000, 0x40100000) -- "
+                      "kos_grant_probe or window discovery regressed");
+#endif
+            return;
+        }
+        if (win == 0)
+        {
+            if (holder != -KOS_EBUSY)
+            {
+                // A refusal that is not "a board service owns this window": EPERM/EINVAL
+                // here is a boundary regression, not an unrunnable case.
+                tap::fail("DEV holder spawn refused rc %d, expected >= 0 or -KOS_EBUSY", holder);
+                return;
+            }
+            tap::skip("every DEV-admissible window is already held (holder rc %d)", holder);
+            return;
+        }
+        // 1. EXACT DUPLICATE of the live holder's window: refused, and specifically
+        //    EBUSY -- not EPERM (the window is admissible) and not ENOMEM (the pool has
+        //    room; the refusal lands before a slot is claimed).
+        TAP_CHECK(kos::thread::spawn(devexcl_noop, nullptr, "devdup", 10, KOS_POLICY_FIFO,
+                                     0, false, nullptr, 0, nullptr, 0,
+                                     reinterpret_cast<void*>(win), WIN) == -KOS_EBUSY);
+        // 2. PARTIAL overlap: the upper half of the held window. Its own base/size are
+        //    independently admissible, so only the overlap scan can refuse it.
+        TAP_CHECK(kos::thread::spawn(devexcl_noop, nullptr, "devpart", 10, KOS_POLICY_FIFO,
+                                     0, false, nullptr, 0, nullptr, 0,
+                                     reinterpret_cast<void*>(win + WIN / 2u), WIN / 2u)
+                  == -KOS_EBUSY);
+        // 3. ADJACENT but disjoint (base == held last + 1): ADMITTED. This is the mk64f
+        //    PIT CH2 shape -- a grant flush against a block it must not be read as
+        //    overlapping -- so it proves the scan did not widen adjacency into overlap.
+        int const adj = kos::thread::spawn(devexcl_noop, nullptr, "devadj", 10, KOS_POLICY_FIFO,
+                                           0, false, nullptr, 0, nullptr, 0,
+                                           reinterpret_cast<void*>(win + WIN), WIN);
+        TAP_CHECK(adj >= 0); // adjacency is not overlap
+        // Drain both holders: they are higher priority, so one sleep lets each run to
+        // its return (-> exit_current -> domain_release) and free its window.
+        kos_sleep_ns(20000000ull); // 20 ms
+        // The window is free again once the holder is gone, so the SAME grant that was
+        // refused above now succeeds -- proving the refusal tracked live holders, not the
+        // address.
+        int const again = kos::thread::spawn(devexcl_noop, nullptr, "devagain", 10, KOS_POLICY_FIFO,
+                                             0, false, nullptr, 0, nullptr, 0,
+                                             reinterpret_cast<void*>(win), WIN);
+        TAP_CHECK(again >= 0); // holder exited -> window released
+        kos_sleep_ns(20000000ull); // drain it too, so later tests get the slot back
+    }
 #endif // KICKOS_ENABLE_SELFTEST
 #endif // KICKOS_HAVE_MPU
 
@@ -2552,6 +2667,162 @@ namespace
         TAP_CHECK(nth('c', 1) < nth('m', 1)); // DONATION: the reply reached the caller before the spoiler ran
     }
 
+    // --- Bus service (M4.5.2): per-device slot profiles ---------------------------
+    // Gated on KICKOS_ENABLE_SELFTEST for FLASH, not for a syscall: the mock bus plus
+    // the serve_one instantiation cost ~1.3 KiB, and the non-selftest bluepill-c8
+    // image links with ~1.3 KiB of its 64 KiB left. Every CI gate sets the flag.
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // kickos::spi::serve_one keeps one folded profile per kos_bus_req.device and
+    // re-applies the named one inside every transfer, because a controller has a
+    // single live profile register set. Driven over a real endpoint with a MOCK bus
+    // (no chip, so this runs on every board): the mock's transfer fills the buffer
+    // with the word_bits of the profile it was handed, so a transfer on slot 0 must
+    // read back slot 0's word size even after slot 1 was configured. With one global
+    // profile the second CONFIG wins and slot 0 reads back slot 1's value.
+    //
+    // MAIN is the server here (a spawned server plus a spawned client would be two
+    // workers, which a 2-slot pool cannot host); the client must be spawned because
+    // the root thread cannot kos_call.
+    struct MockBus
+    {
+        struct Profile
+        {
+            uint8_t word_bits;
+        };
+        uint32_t fold(struct kos_bus_cfg const& cfg, Profile& out)
+        {
+            out.word_bits = cfg.word_bits;
+            return cfg.hz;
+        }
+        void transfer(Profile const& p, unsigned char* buf, size_t len)
+        {
+            for (size_t i = 0; i < len; i++)
+            {
+                buf[i] = p.word_bits;
+            }
+        }
+    };
+
+    // What the client observed, in call order.
+    volatile int g_slot_cfg0 = -99;
+    volatile int g_slot_cfg1 = -99;
+    volatile long g_slot_rx0 = -99;
+    volatile long g_slot_rx1 = -99;
+    volatile long g_slot_unconf = -99;
+    volatile long g_slot_oor = -99;
+    unsigned char g_slot_b0[2] = {0, 0};
+    unsigned char g_slot_b1[2] = {0, 0};
+
+    // Frame + kos_call one XFER of `len` dummy bytes on slot `dev`; copies the reply's
+    // rx bytes into `rx`. Returns the service's rx length, or a negative -KOS_E*.
+    long slot_xfer(uint8_t dev, size_t len, unsigned char* rx)
+    {
+        unsigned char buf[32];
+        size_t const framing = sizeof(struct kos_bus_req) + sizeof(struct kos_bus_seg);
+        struct kos_bus_req* req = reinterpret_cast<struct kos_bus_req*>(buf);
+        req->proto = KOS_BUS_SPI;
+        req->op = KOS_BUS_OP_XFER;
+        req->device = dev;
+        req->nseg = 1;
+        req->region_cap = -1;
+        req->offset = 0;
+        struct kos_bus_seg* seg =
+            reinterpret_cast<struct kos_bus_seg*>(buf + sizeof(struct kos_bus_req));
+        seg->len = static_cast<uint16_t>(len);
+        seg->flags = 0;
+        seg->rsv = 0;
+        memset(buf + framing, 0, len);
+
+        long const rc = kos_call(2, buf, framing + len, sizeof(buf));
+        if (rc < 0)
+        {
+            return rc;
+        }
+        struct kos_bus_rsp const* rsp = reinterpret_cast<struct kos_bus_rsp const*>(buf);
+        if (rsp->status < 0)
+        {
+            return rsp->status;
+        }
+        memcpy(rx, buf + sizeof(struct kos_bus_rsp), len);
+        return rsp->len;
+    }
+
+    // Frame + kos_call one CONFIG on slot `dev` with `word_bits`.
+    int slot_config(uint8_t dev, uint8_t word_bits)
+    {
+        unsigned char buf[32];
+        struct kos_bus_req* req = reinterpret_cast<struct kos_bus_req*>(buf);
+        req->proto = KOS_BUS_SPI;
+        req->op = KOS_BUS_OP_CONFIG;
+        req->device = dev;
+        req->nseg = 0;
+        req->region_cap = -1;
+        req->offset = 0;
+        struct kos_bus_cfg cfg;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.hz = 1000000u;
+        cfg.word_bits = word_bits;
+        cfg.cs_policy = KOS_BUS_CS_NONE;
+        memcpy(buf + sizeof(struct kos_bus_req), &cfg, sizeof(cfg));
+
+        long const rc = kos_call(2, buf, sizeof(struct kos_bus_req) + sizeof(cfg), sizeof(buf));
+        if (rc < 0)
+        {
+            return static_cast<int>(rc);
+        }
+        struct kos_bus_rsp const* rsp = reinterpret_cast<struct kos_bus_rsp const*>(buf);
+        return rsp->status;
+    }
+
+    void slot_client(void*) // caps: done@1, E(SIGNAL)@2
+    {
+        g_slot_cfg0 = slot_config(0, 8);
+        g_slot_cfg1 = slot_config(1, 16);
+        g_slot_rx0 = slot_xfer(0, sizeof(g_slot_b0), g_slot_b0);
+        g_slot_rx1 = slot_xfer(1, sizeof(g_slot_b1), g_slot_b1);
+        unsigned char sink[2];
+        g_slot_unconf = slot_xfer(2, sizeof(sink), sink);               // in range, never configured
+        g_slot_oor = slot_xfer(KOS_BUS_DEV_MAX, sizeof(sink), sink);    // out of range
+        kos_sem_post(CH_DONE);
+    }
+    void t_bus_device_slots()
+    {
+        g_ep = kos_endpoint_create();
+        TAP_CHECK(g_ep >= 0);
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        int cl = kos::thread::spawn_caps(slot_client, nullptr, "slot", 12, ccaps, 2,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        if (cl < 0)
+        {
+            kos_handle_close(g_ep);
+            tap::skip("pool too small");
+            return;
+        }
+
+        MockBus bus;
+        kickos::spi::SlotTable<MockBus> slots;
+        unsigned char msg[64]; // the six requests below are 24 bytes at most
+        for (int i = 0; i < 6; i++)
+        {
+            struct kos_recv_info info = {0u, -1};
+            long const n = kos_recv(g_ep, msg, sizeof(msg), &info);
+            if (n < 0 or info.reply_cap < 0)
+            {
+                break;
+            }
+            kickos::spi::serve_one(bus, slots, msg, static_cast<size_t>(n), info.reply_cap);
+        }
+        wait_n(1);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+
+        TAP_CHECK(g_slot_cfg0 == 0 and g_slot_cfg1 == 0);
+        TAP_CHECK(g_slot_rx0 == 2 and g_slot_b0[0] == 8 and g_slot_b0[1] == 8);   // slot 0 kept its own
+        TAP_CHECK(g_slot_rx1 == 2 and g_slot_b1[0] == 16 and g_slot_b1[1] == 16); // slot 1 too
+        TAP_CHECK(g_slot_unconf == -KOS_EINVAL); // no CONFIG for that slot: refused
+        TAP_CHECK(g_slot_oor == -KOS_EINVAL);    // slot >= KOS_BUS_DEV_MAX: refused
+    }
+#endif
+
 #if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
     // --- Bound-check: a recv/send pointer outside the caller's regions -> -1 ------
     // The write-oracle / cross-domain-read is closed the same way as the console
@@ -2764,7 +3035,7 @@ namespace
         // Unprivileged child: the privileged-only gate rejects it.
         g_pub_rc = -99;
         kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
-        int w = kos::thread::spawn_caps(pub_denied_worker, nullptr, "pubDen", 10, caps, 1);
+        int w = kos::thread::spawn_caps(pub_denied_worker, nullptr, "pubden", 10, caps, 1);
         TAP_CHECK(w >= 0);
         wait_n(1);
         TAP_CHECK(g_pub_rc == -KOS_EPERM); // unprivileged console_publish refused
@@ -2783,11 +3054,33 @@ namespace
     {
         g_shutdown_rc = -99;
         kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
-        int w = kos::thread::spawn_caps(shutdown_denied_worker, nullptr, "sdDen", 10, caps, 1);
+        int w = kos::thread::spawn_caps(shutdown_denied_worker, nullptr, "sdden", 10, caps, 1);
         TAP_CHECK(w >= 0);
         wait_n(1);
         TAP_CHECK(g_shutdown_rc == -KOS_EPERM); // unprivileged shutdown refused
     }
+
+#if defined(KICKOS_ENABLE_SELFTEST)
+    // --- reboot-to-bootloader is privileged-only: the REFUSAL arm only -------------
+    // The privileged arm stays out of this suite deliberately: root calling kos_reboot
+    // returns harmlessly on a weak-seam chip, but on picopi/pizero2350/teensy41 it
+    // reboots the board mid-run and truncates the TAP stream. apps/rebootdemo owns it.
+    int g_reboot_rc = -99;
+    void reboot_denied_worker(void*) // caps: done@1
+    {
+        g_reboot_rc = kos_reboot();
+        kos_sem_post(CH_DONE);
+    }
+    void t_reboot_denied()
+    {
+        g_reboot_rc = -99;
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(reboot_denied_worker, nullptr, "rbden", 10, caps, 1);
+        TAP_CHECK(w >= 0);
+        wait_n(1);
+        TAP_CHECK(g_reboot_rc == -KOS_EPERM); // unprivileged reboot refused
+    }
+#endif // KICKOS_ENABLE_SELFTEST (reboot refusal)
 
     // --- a syscall buffer that lives in an app GLOBAL, from an unprivileged thread ----
     // On a backend that does not model app static data as an MPU region (every no-MPU
@@ -3077,6 +3370,9 @@ int main(int, char**)
     tap::add("call_server_death", t_call_server_death);       // M4.4: die mid-xact -> caller EPIPE (teardown arm)
     tap::add("call_prepop_death", t_call_prepop_death);       // M4.4: die pre-pop -> caller EPIPE (recv_holders 0)
     tap::add("call_donation", t_call_donation);               // M4.4: D1 donation keeps the spoiler off the xact
+#if defined(KICKOS_ENABLE_SELFTEST)
+    tap::add("bus_device_slots", t_bus_device_slots);         // M4.5.2: per-device profiles do not clobber
+#endif
     tap::add("endpoint_crossdomain", t_endpoint_crossdomain); // F5 cross-domain copy + delegation
 #if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
     tap::add("endpoint_bound", t_endpoint_bound); // bound-check: bad recv/send buffer refused
@@ -3085,6 +3381,9 @@ int main(int, char**)
     tap::add("cap_index0", t_cap_index0);              // B3 index-0 reservation + FIRST_DYNAMIC floor
     tap::add("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
     tap::add("shutdown_priv", t_shutdown_denied);        // KOS_SYS_SHUTDOWN privileged-only
+#if defined(KICKOS_ENABLE_SELFTEST)
+    tap::add("reboot_priv", t_reboot_denied);            // KOS_SYS_REBOOT: refusal arm only
+#endif
     tap::add("writable_global", t_writable_global);      // out-buffer in an app global
     tap::add("authority_cap", t_authority_cap);          // CAP_AUTHORITY: both arms of the gates
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -3110,6 +3409,7 @@ int main(int, char**)
     tap::add("stackbase_arena", t_stackbase_arena); // unprivileged out-of-arena stack_base refused
 #if defined(KICKOS_ENABLE_SELFTEST)
     tap::add("grant_reserved", t_grant_reserved);   // Rule 7: overlap matrix + RAM/DEV admission (probe syscall)
+    tap::add("dev_window_exclusive", t_dev_window_exclusive); // one holder per DEV window (-KOS_EBUSY)
 #endif
 #endif
     tap::add("confused_deputy", t_confused_deputy); // readable-buffer/name floor (accept rodata, reject bogus)
