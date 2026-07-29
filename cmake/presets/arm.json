@@ -7,7 +7,7 @@
       "generator": "Ninja",
       "toolchainFile": "${sourceDir}/cmake/toolchain-arm-none-eabi.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_BUILD_TYPE": "MinSizeRel",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
