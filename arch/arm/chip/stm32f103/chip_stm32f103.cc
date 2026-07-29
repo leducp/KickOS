@@ -378,9 +378,8 @@ void arch_init(void)
     kickos_armv7m_init();
 }
 
-// ST omits the MPU from the STM32F1 Cortex-M3, so override the weak ARM PMSA default:
-// pow2 region shaping and its natural-alignment gap would eat this 20 KiB part's
-// arena for no isolation benefit (arch_mpu_apply is a no-op here).
+// ST omits the MPU from the STM32F1 Cortex-M3, where a reader expects one: 0 is the
+// seam's no-MPU granule (arch.h), not a tuning choice.
 size_t arch_mpu_min_region(void)
 {
     return 0u;
