@@ -207,8 +207,10 @@ was witnessed on `f411disco` silicon 2026-07-29. The security model (domains, pe
 grants, confused-deputy floor) is coherent and fail-closed, and full-C++ under enforcement is
 U-mode-proven on four silicon arches (K64F, XMC, rx72m, esp32c6) + qemu-riscv. Remaining items
 are NON-gating: rp2040 U-mode-cxxtest re-flash (a full-C++ nicety, not an enforcement gate) and
-the f411 **peripheral**-window proof (f411spi -- distinct from the RAM enforcement above, and now
-also blocked under an unprivileged root by its privileged bring-up shim).
+the f411 **peripheral**-window proof (f411spi -- distinct from the RAM enforcement above). Its
+privileged bring-up shim is gone: the app reaches its clock gate through `arch_periph_enable` and
+its pins through `arch_pinmux_set`, so what remains open is the unrun silicon witness, plus the
+loopback arm's PA7->PA6 jumper.
 
 Shared mechanism (done): the arch-independent pieces are `arch_domain_static_regions`
 (kernel/domain), `kickos_ranges_init` + the linker copy/zero tables
@@ -219,7 +221,7 @@ shared app-data region: it grants per-thread (the stack now, TLS at M3).
 
 | Chip | MPU flavour | State |
 |------|-------------|-------|
-| K64F (frdmk64f) | SYSMPU (bus, byte-granular) | **DONE -- silicon 17/17** (SRAM/domain isolation). Two HW-only bugs fixed: RGD0 supervisor SM (`=same-as-user`) and SRAM_L-via-code-bus (M0) master. **Peripheral gating resolved on silicon (k64drv, Stage 2): SYSMPU does NOT gate peripherals; the AIPS bridge does (per privilege+master, per 4 KB slot, NOT per-thread). So per-thread peripheral isolation is not achievable on K64F -- see `reference/architecture.md` Memory domains.** |
+| K64F (frdmk64f) | SYSMPU (bus, byte-granular) | **DONE -- silicon 17/17** (SRAM/domain isolation). Two HW-only bugs fixed: RGD0 supervisor SM (`=same-as-user`) and SRAM_L-via-code-bus (M0) master. **Peripheral gating resolved on silicon (k64drv, Stage 2): SYSMPU does NOT gate peripherals; the AIPS bridge does (per privilege+master, per 4 KB slot, NOT per-thread). So per-thread peripheral isolation is not achievable on K64F -- see `reference/architecture.md` Memory domains.** The PACR open is now the kernel's, through `arch_periph_enable` keyed on the window the caller holds; the slot's coarseness is unchanged. A slot spanning kernel-reserved registers is refused rather than opened, which is why the PIT has no entry and `k64drv` cannot run under an unprivileged root. |
 | XMC4800 | v7-M PMSA | **DONE -- silicon 17/17.** |
 | rp2040 (picopi) | v6-M PMSA (M0+, 8 regions) | **DONE -- v6-M PMSA cross-domain fault SILICON-PROVEN (2026-07-19):** under enforcement the unprivileged `domainA_worker`'s deliberate cross-domain store (`str r2,[r3,#0]` at PC 0x1000028E) FAULTED -- HardFault count=1, read over SWD -- it did NOT complete. So v6-M PMSA fires the trap on real silicon. Reuses the XMC PMSA backend. (U-mode cxxtest re-flash still pending -- a full-C++ nicety, not an enforcement gate.) |
 | STM32F411 (f411disco/blackpill) | v7-M PMSA | **DONE -- silicon-witnessed 2026-07-29 on f411disco** (`6646c8e`, ST-Link + USART2/PA2): enforcement selftest 62/62 with 0 skips, **+ mpu_fault cross-domain MemManage trap** (`CFSR=0x82` = DACCVIOL|MMARVALID, `MMFAR=0x2000b000`, one region past domain A's 4 KiB grant, `(PSP)` so thread mode). The backend is the shared `stm32f411` one, so this closes the debt for the chip, **blackpill included** (not separately re-run). Reuses the XMC PMSA backend unchanged. Captures + the A/B under an unprivileged root: `reference/boards.md`, *Unprivileged root* -> `f411disco`. The chip's **peripheral**-window proof (f411spi) stays open -- see below. |
@@ -303,11 +305,12 @@ bring-up in `book/peripheral-isolation-and-the-hardware-ceiling.md`):
   peripheral window on RX. `user/apps/rx72m/rxdrv/`.
 - **f411spi (STM32F411, SPI1 loopback):** BUILT + fable-reviewed, silicon-validation still PENDING.
   The 32F411E-DISCO was on the bench 2026-07-29 and the chip's RAM enforcement was witnessed there,
-  but this app was not: its loopback arm needs the PA7->PA6 jumper fitted, and under
-  `KICKOS_ROOT_PRIVILEGED=OFF` it faults MemManage on the first store of its privileged bring-up
-  shim (`RCC_AHB1ENR` @ `0x40023830`, witnessed) because that shim runs from `main`, i.e. from root.
-  Reworking it into a mediated bring-up plus a widened grant -- the `c6blink`/`rxdrv` treatment -- is
-  stage-3 (`arch_periph_enable`) work. Redundant with xmcspi for the PMSA proof (both ARM v7-M PMSA);
+  but this app was not. Its privileged bring-up shim is gone -- the `c6blink`/`rxdrv` treatment: root
+  muxes the pins through `arch_pinmux_set` and the unprivileged driver reaches its clock gate through
+  `arch_periph_enable` as its first act. (Measured before that rework, under
+  `KICKOS_ROOT_PRIVILEGED=OFF`: the shim ran from `main`, i.e. from root, and faulted MemManage on
+  its first store, `RCC_AHB1ENR` @ `0x40023830`.) What remains open is the silicon witness plus the
+  loopback arm's PA7->PA6 jumper. Redundant with xmcspi for the PMSA proof (both ARM v7-M PMSA);
   kept as the STM32-family reference. `design-spi-driver-stm32f411.md`, `user/apps/f411disco/f411spi/`.
 - **k64dspi (K64F, DSPI0 for the KickCAT ESC SPI PDI):** DONE on silicon (2026-07-17): 4-word
   SOUT->SIN loopback tx==rx over the AIPS-opened slot, blocking on the DSPI0 EOQ IRQ with the

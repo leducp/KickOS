@@ -60,23 +60,30 @@ CR1/CR2/SR/DR; the 32 B min forces CRCPR/RXCRCR/TXCRCR/I2SCFGR (`0x10..0x1C`) to
 That is self-DoS-only (the driver could flip SPI1 into I2S mode) -- no cross-peripheral
 over-grant, no escalation (`arch_arm_common.cc` mpu_rasr -> AP_RW | XN | MEM_DEVICE).
 
-## Privilege split (mirror kickos_xmc_usic_init / k64drv; the shim `main` runs privileged)
+## Privilege split (both privileged writes go through a kernel seam; root writes no MMIO)
 The unsafe one-time setup the unprivileged driver must NOT be able to do -- CLOCK-ENABLE
-and PIN-MUX -- stays privileged and OUT of the granted window (RCC `0x4002_3800`, GPIOA
-`0x4002_0000`). Those are the escalation surfaces; keeping them out of the 32 B SPI1 window
-is what makes the window a real capability.
+and PIN-MUX -- stays OUT of the granted window (RCC `0x4002_3800`, GPIOA `0x4002_0000`,
+GPIOE `0x4002_1000`). Those are the escalation surfaces; keeping them out of the 32 B SPI1
+window is what makes the window a real capability. Neither is reached by a privileged store
+from `main` either: each goes through a mediated syscall whose admissibility contract is
+`docs/design-unprivileged-root.md` stage 3.
 
-Privileged bring-up shim (once):
-1. `RCC_AHB1ENR |= GPIOAEN` (clock GPIOA), `RCC_APB2ENR |= SPI1EN` (bit 12).
-2. GPIOA mux: PA5/6/7 MODER=AF(0b10), OSPEEDR=high, AFRL nibble = 5 (AF5). PA4/NSS left
-   as-is (software NSS). Muxing SCK before CR1 is glitch-free ONLY because CPOL=0 is the
-   CR1 reset value (SCK idle level already correct); a CPOL=1 variant must write CR1 first.
-3. SPI1 config while SPE=0: `CR1 = MSTR | SSM | SSI | BR(/64) | CPOL0 CPHA0 | DFF0 LSBFIRST0`,
-   then set SPE. SSM=1 + SSI=1 hold the internal NSS high so the master is not deselected
-   (else MODF). CR2 left 0 (RXNEIE off; the driver arms it in-window).
-4. Spawn the UNPRIVILEGED driver: `mmio_base=0x4001_3000, mmio_size=0x20`, privileged=false.
-   The driver registers SPI1 IRQ 35 via the tier-1 path. Everything after boot is in-window
-   MMIO + IRQ wait.
+1. Root, in `main`: `kos_pinmux_set` four times -- PE3 as an output preset high (bit 8 of the
+   `func` encoding), holding the onboard gyro's chip-select deasserted so its SDO stays
+   tri-stated off PA6, and PA5/6/7 to AF5. PA4/NSS is left as-is (software NSS). The seam
+   owns the port's `RCC_AHB1ENR` bit, so no app touches RCC. Muxing SCK before CR1 is
+   glitch-free ONLY because CPOL=0 is the CR1 reset value (SCK idle level already correct);
+   a CPOL=1 variant must write CR1 first.
+2. Root spawns the UNPRIVILEGED driver: `mmio_base=0x4001_3000, mmio_size=0x20`,
+   privileged=false.
+3. The driver's first act is `kos_periph_enable(0x4001_3000)`, authorised by its possession of
+   that exact window: the kernel sets `SPI1EN` (`RCC_APB2ENR` bit 12). Ordered first because
+   while SPI1 is gated every register write below is discarded.
+4. The driver then configures SPI1 in-window, while SPE=0:
+   `CR1 = MSTR | SSM | SSI | BR(/64) | CPOL0 CPHA0 | DFF0 LSBFIRST0`, then sets SPE. SSM=1 +
+   SSI=1 hold the internal NSS high so the master is not deselected (else MODF). CR2 starts 0
+   and the driver arms RXNEIE itself. It registers SPI1 IRQ 35 via the tier-1 path; everything
+   after that is in-window MMIO + IRQ wait.
 
 ## Transfer model: IRQ-driven (tier-1, reused unchanged)
 `int spi_transfer(void* tx, void* rx, size_t len)` -- blocking, single-word full-duplex
@@ -119,8 +126,8 @@ Unprivileged driver: app code (RX) + app static-data (RW-NX) + private stack + S
    background/PRIVDEFENA map only exempts PRIVILEGED code, and the driver is unprivileged).
 2. **F411E-DISCO shares PA5/6/7 with the onboard gyro (L3GD20 / I3G4250D) on SPI1; its SDO
    drives PA6/MISO.** Confirmed against UM1842 pin table: PA5=SPI1_SCK, PA6=SPI1_MISO(+gyro
-   SDO), PA7=SPI1_MOSI, and the gyro CS = **PE3** ("CS_I2C/SPI"). The shim therefore drives
-   PE3 HIGH (GPIOE output) before any SCK activity so the gyro stays deselected / SDO
+   SDO), PA7=SPI1_MOSI, and the gyro CS = **PE3** ("CS_I2C/SPI"). Root therefore presets PE3
+   HIGH (GPIOE output, via the pinmux seam) before any SCK activity so the gyro stays deselected / SDO
    tri-stated and the PA7->PA6 jumper owns MISO. If a scope still shows the gyro fighting
    MISO, the fallback is **SPI2 on PB13/14/15** (no onboard SPI device) -- but that changes
    the base (SPI2 `0x4000_3800`), the clock (APB1 not APB2), and the pins/AF; verify against
@@ -128,13 +135,16 @@ Unprivileged driver: app code (RX) + app static-data (RW-NX) + private stack + S
    on PA5/6/7 -- cleaner -- but the board target is the Disco.)
 3. **Fault decode:** an ungranted MMIO access on PMSA is a clean MemManage (not the K64F
    BusFault path); the reporter's MMFAR print is the oracle. Confirmed by construction.
-4. **Baud is not critical** for a short jumper (no real device timing); /64 (~1.3 MHz on the
-   84 MHz APB2) is a conservative default and default GPIO high-speed covers it.
+4. **Baud is not critical** for a short jumper (no real device timing); /64 is a conservative
+   default, ~1.3 MHz off the 84 MHz APB2 (arithmetic from the tree). The pinmux seam cannot
+   reach `OSPEEDR`, so the pins run at the reset-default low-speed slew; that this carries
+   1.3 MHz SCK is **engineering judgement, pending a DS9716 check** -- no line in this tree
+   supports it, unlike the cited facts above.
 
 ## Sequencing
 Pure addition, no kernel change: transfer path = in-window MMIO + the existing tier-1 IRQ
 event path; the only device-specific step is the RXNE quiesce before the next wait. Order: (1)
-privileged shim (clock/mux/config), (2) unprivileged driver + `spi_transfer`, (3) loopback
+root's mediated pinmux, (2) unprivileged driver -- `kos_periph_enable`, SPI1 config, `spi_transfer`, (3) loopback
 words, (4) the ungranted-poke MemManage proof. Build with `-DKICKOS_HAVE_MPU=1` (the app
 `#error`s otherwise -- it exists to prove enforcement). Build-only; the operator swaps in the
 F411, wires PA7->PA6, and validates.

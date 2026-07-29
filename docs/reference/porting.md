@@ -92,7 +92,7 @@ where it does, cross-domain trapping is silicon-proven unless the row says other
 | `stm32f103` | bluepill-c8 | M3 | -- | **hardware** (F103 port HW-proven on the now-retired 10 K clone, 2026-07-14; RAM-limited selftest; c8 build-only). No MPU: the degraded privilege-only build |
 | `rp2040` | picopi | M0+ | PMSAv6-M | **hardware** (selftest over UART0/GP0; v6-M cross-domain fault silicon-proven 2026-07-19) |
 | `rp2350` | pizero2350 | M33 | **PMSAv8** | **hardware** (enforcement selftest + `mpu_fault` MemManage denial + bench/soak). Reuses the `armv7m` backend verbatim; only the MPU descriptor shape differs |
-| `mk64f` | frdmk64f | M4F | SYSMPU | **hardware** (revalidated 2026-07-15: full selftest + buffered console ring); SYSMPU enforces SRAM/domains but is bus-slave-side, so it cannot gate peripherals |
+| `mk64f` | frdmk64f | M4F | SYSMPU | **hardware** (revalidated 2026-07-15: full selftest + buffered console ring; **unprivileged root on the FULL service list**, 2026-07-29). SYSMPU enforces SRAM/domains but is bus-slave-side, so it cannot gate peripherals; the `AIPS0` PACR half of that is `arch_periph_enable`'s, below |
 | `imxrt1062` | teensy41 | **M7** | PMSAv7 + fixed | **hardware** (enforcement selftest + soak). The only speculating core: needs the fixed-region wrap (`../design-teensy-mpu-hang.md`) |
 | `rx72m` | rx72m | RXv3 | RX MPU | **hardware** (selftest + SCI6 console; DPFPU switch; enforcement + a granted peripheral window). **No CI gate** -- see below |
 | `esp32` | esp32-wroom | Xtensa LX6 | -- | **hardware** (selftest + console, 240 MHz). No per-task MPU and no privilege split |
@@ -171,6 +171,79 @@ that bracket is silently dropped. `port` there is the DENSE register index 0..0x
 from the package is accepted and writes a reserved bit. The board
 supplies the routing as a `kos_board_pinmap` table the init service walks before the
 service list; the init DAG is pinmux -> service list -> app.
+
+`stm32f411` encodes MODER verbatim in `[1:0]`, the AF number in `[7:4]`, and an
+output-preset-high arm in `[8]` (`PINMUX_OUT_HIGH`, chip-local at
+`arch/arm/chip/stm32f411/chip_stm32f411.cc:389`): the preset writes `BSRR` **before**
+`MODER`, so a pin never drives the `ODR` reset level for even one cycle on its way to
+its idle level -- which is what an active-low chip select needs. The bit is refused
+`-KOS_EINVAL` on any non-output mode. `OSPEEDR` and `PUPDR` stay unreachable through
+this seam. `stm32f302` shares the first two fields and has no third, which is the point
+of `func` being chip-opaque: a new field is a per-chip encoding change, not an ABI one.
+
+### Peripheral enable (`arch_periph_enable`)
+
+Owning a peripheral window is not enough to reach it: the block must be clocked, and
+the bus must stop classifying the access as supervisor-only. Both live in chip-global
+registers that no per-thread MPU grant can ever cover, so they are a seam of their own
+-- `int arch_periph_enable(uintptr_t base)` (`arch/include/kickos/arch/arch.h:105`),
+reached from userspace as syscall `KOS_SYS_PERIPH_ENABLE` (39) via
+`kos_periph_enable`. It ungates the clock and drops the bus-side supervisor-protect for
+the register block at `base`, and it is **idempotent**, so a driver calls it as its
+first act without knowing whether the board already did.
+
+`base` is the register-**BLOCK** base and must match a per-chip table **EXACTLY**; a
+backend never range-matches. Both the register and the bit are derived from `base`, so
+the ABI carries no register address and no bit number, and a caller cannot name a
+shared block's register or bit. The seam returns 0, `-KOS_EINVAL` (no entry for that
+base) or `-KOS_ENOSYS`. The **WEAK default returns `-KOS_ENOSYS`**
+(`kernel/time/clock_select.cc:96`) rather than 0, so a driver whose block really is
+gated fails LOUD on a chip with no backend instead of reading registers that BusFault.
+
+**The gate is possession, not authority.** The syscall refuses `-KOS_EPERM` unless the
+caller holds a live region whose `attr` carries `ARCH_MPU_DEV` and whose `base` equals
+the requested base exactly -- containment does not count, so a window covering the
+block is not a licence to enable a different one
+(`kernel/syscall/syscall_mem.cc:66`, dispatch at `kernel/syscall/syscall.cc:711`). No
+capability bit grants this; **holding the window IS the credential**, which is why an
+unprivileged driver can enable its own block while root cannot enable one it does not
+hold. A **privileged** caller short-circuits the check and is always allowed, so on a
+privileged-root board the possession arm is untested by construction.
+
+**The containment rule decides whether a base gets an entry at all.** A base is tabled
+only where the bus gate's granularity is *contained by* the block the window covers.
+Where the coarsest available gate would also open kernel-reserved registers, the base
+is **refused** instead -- an absent entry is a decision, not an omission, and a porter
+adding one must check this before the datasheet. The K64F PIT is the worked case:
+`AIPS0` classifies per 4 KiB slot, so clearing SP for a granted channel-2 window
+(`0x40037120`) would also expose the chained ch0+ch1 pair `arch_clock_now` runs on --
+which `arch_reserved_blocks` protects by address. So the PIT gets no entry and
+`pit_clock_init` gates it at boot instead (`arch/arm/chip/mk64f/chip_mk64f.cc:498`).
+
+Backends exist for **two** chips; every other chip keeps the weak default, deliberately
+including `esp32c6` (its one-time bus-side APM open is programmed by `arch_init`, not
+per block) and `rx72m`:
+
+| Chip | Block | Clock gate | Bus protect |
+|------|-------|------------|-------------|
+| `mk64f` | UART0 `0x4006A000` | `SIM_SCGC4` bit 10 | `AIPS0` slot 106, PACR `0x40000064` bit 22 |
+| `mk64f` | DSPI0 `0x4002C000` | `SIM_SCGC6` bit 12 | `AIPS0` slot 44, PACR `0x40000044` bit 14 |
+| `stm32f411` | SPI1 `0x40013000` | `RCC_APB2ENR` bit 12 | -- none exists for this bus |
+
+The `mk64f` PACR register and bit are **computed** from `base` (`slot_of` / `pacr_of` /
+`pacr_sp_bit`, `arch/arm/chip/mk64f/regs/aips.h`) rather than tabled, and the clock is
+ungated before the protect is dropped. `stm32f411` is clock-only: no
+privilege-classification register exists for that bus in this tree. That is a
+legitimate backend shape -- the seam does not promise both halves, only that whatever
+the chip has for that block is done.
+
+A porter's in-env check is `periph_enable_unheld` (`selftest`, unguarded so it runs on
+every board): it spawns an unprivileged worker holding no DEV window and requires
+`-KOS_EPERM`, then self-grants a non-DEV region at the exact base and requires
+`-KOS_EPERM` again, pinning the `ARCH_MPU_DEV` filter. The **positive** arm has no
+in-env carrier at all -- `arch_mpu_region_encodable` on the host sim returns false
+unconditionally (`arch/sim/sim.cc:946`), so no sim thread can ever hold a DEV region.
+That arm is silicon-only, and `c6blink` and `rxdrv` carry probes for it.
 
 ---
 
