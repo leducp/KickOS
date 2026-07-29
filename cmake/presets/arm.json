@@ -134,7 +134,7 @@
     { "name": "bluepill-c8-st", "displayName": "STM32F103C8 Blue Pill + selftest", "inherits": "bluepill-c8", "binaryDir": "${sourceDir}/build/bluepill-c8-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
     { "name": "picopi-st", "displayName": "RP2040 Pico + selftest", "inherits": "picopi", "binaryDir": "${sourceDir}/build/picopi-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
     { "name": "pizero2350-st", "displayName": "RP2350 Pi-Zero + selftest", "inherits": "pizero2350", "binaryDir": "${sourceDir}/build/pizero2350-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
-    { "name": "f302nucleo-st", "displayName": "Nucleo-F302R8 + selftest", "inherits": "f302nucleo", "binaryDir": "${sourceDir}/build/f302nucleo-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } },
+    { "name": "f302nucleo-st", "displayName": "Nucleo-F302R8 + selftest", "inherits": "f302nucleo", "binaryDir": "${sourceDir}/build/f302nucleo-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON", "KICKOS_USER_HEAP_SIZE": "0", "KICKOS_USER_STACK_SIZE": "1024", "KICKOS_MAX_SEMAPHORES": "6", "KICKOS_MAX_THREADS": "4" } },
     { "name": "due-st", "displayName": "Arduino Due + selftest", "inherits": "due", "binaryDir": "${sourceDir}/build/due-st", "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" } }
   ],
   "buildPresets": [

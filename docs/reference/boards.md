@@ -152,7 +152,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   known LED (`qemu`, `microbit`, `frdmk64f`, `teensy41`, `pizero2350`) links the weak
   no-op and the LED silently does nothing -- not a failure.
 
-### `f302nucleo` on silicon -- KickOS runs here, the suite does not
+### `f302nucleo` on silicon -- the suite passes at the selftest provisioning
 
 Three captures, 2026-07-29, over the ST-Link VCP on `/dev/ttyACM0`. They are the fleet's
 first silicon witnesses on **optimised** code (`MinSizeRel`, `cmake/presets/arm.json:10`)
@@ -163,7 +163,8 @@ arch armv7m / mpu off / sched tickless / heap 2 KiB available`.
 | --- | --- | --- |
 | `hello` | `176109e-dirty` | **PASS** -- both spawned threads run; ran past `ping 504` / `pong 504` before the capture was cut |
 | `stress` | `9ba4e4b` | **PASS** |
-| `selftest` | `9ba4e4b` | 17 `ok` / 42 `not ok` / 10 skipped, plan `1..59` |
+| `selftest` (board app profile) | `9ba4e4b` | 17 `ok` / 42 `not ok` / 10 skipped, plan `1..59` |
+| `selftest` (`-st` provisioning) | `2af3aee`+ | **59 `ok` / 0 `not ok` / 8 skipped -- `# all tests passed`** |
 
 `hello`'s banner stamps `176109e-dirty`, not the tip. That image predates the branch
 reorder and is one commit -- `arena: no-MPU region granule on f103/f302, boot-arena link
