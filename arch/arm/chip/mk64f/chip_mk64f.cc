@@ -134,6 +134,13 @@ namespace
         // clock-gated out of reset and an ungated AIPS read BusFaults; ktime/clock
         // reads only start after arch_init calls this.
         r32(reg::sim::SCGC6) |= reg::sim::SCGC6_PIT; // clock the PIT module
+        // The gate opens some bus cycles after the SCGC6 store issues, and a PIT store
+        // that beats it is dropped. Read SCGC6 back so the write commits first. Without
+        // this the MCR write below is lost at -Os, MCR keeps its MDIS=1 reset value, and
+        // the counter never runs while the later LDVAL/TCTRL writes still land. A
+        // (void) cast will not do: it performs no access on a volatile lvalue.
+        uint32_t const gate = r32(reg::sim::SCGC6);
+        __asm volatile("" ::"r"(gate) : "memory");
         r32(reg::pit::MCR) = 0;                      // MDIS=0 (enable), FRZ=0
         // Free-running: both channels reload from all-ones; ch1 (MSW) decrements
         // when ch0 (LSW) rolls under. Program reloads, chain ch1 to ch0, then
