@@ -300,6 +300,13 @@ at `-O0`. Quote the optimisation level with the number. The installed package do
 **not** override a consumer's build type -- that is the consumer's decision -- so the
 condition travels as documentation and nothing else.
 
+**`Debug` is not a supported configuration on a 64 KiB part.** The suite floor is an
+`-Os` floor and the `-O0` image does not fit: `f302nucleo-st` overflows FLASH by 5,120
+bytes and `bluepill-c8-st` by 4,884, while the same `f302nucleo-st` image at `-Os` keeps
+12.9 KiB free. This costs no debuggability -- `MinSizeRel` carries `-g`, so the symbols
+are all there and only `-O0` is unavailable. No gate builds these boards in `Debug`,
+deliberately: the link failure already names the overflow in bytes.
+
 ### The program-memory floor
 
 `hello` -- kernel, arch, chip, console, UART driver, libgcc, minimal app -- across the

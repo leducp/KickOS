@@ -727,15 +727,16 @@ silently satisfied by a link-time override).
       That pair is also what proves the per-app override actually overrides.
 
 Opened by stage 4:
-- [ ] **The ROOT narrow has no automated test, in any environment.** `authority_cap` witnesses a
-      CHILD narrowing its own cap; nothing exercises the path the default init actually takes. It
-      cannot be witnessed under the default posture either: `KICKOS_ROOT_PRIVILEGED=ON` leaves the
-      slot unseated, so `kos_cap_narrow` returns the tolerated `-KOS_EBADF` whatever the app declared,
-      which also means **a silently-ignored `KICKOS_APP_AUTHORITY` override is unobservable on every
-      standing gate**. It was witnessed once by hand, by deleting `AUTH_CONSOLE` from `initdemo` and
-      watching its publish fail at `KICKOS_ROOT_PRIVILEGED=OFF`. Turning that into a gate is the same
-      work as CI item (a) below: a preset that builds the flipped posture and asserts a declared-mask
-      app fails when its bit is removed.
+- [x] **The ROOT narrow has an automated test: `user/apps/common/rootauth`** (M4.5.5). A diagnostic
+      app declaring `AUTH_MEMORY | AUTH_SYSTEM | AUTH_PINMUX`, registered in BOTH postures and
+      discriminating on identical source via `#if KICKOS_ROOT_PRIVILEGED`: four arms flipped, three
+      privileged. The arm that matters is the first -- it asserts `pinmux_set` is NOT `-KOS_EPERM`,
+      and `AUTH_PINMUX` is a bit the fallback mask does **not** carry, so **a silently-ignored
+      `KICKOS_APP_AUTHORITY` override now fails a gate**. Asserting some MISSING bit is refused would
+      not have done it: the fallback lacks those too, so that arm passes with the declaration
+      ignored. Verified by mutation -- neutralising the declaration turns arm 1 red while the other
+      three stay green. Gated on sim (both postures), `qemu`/`qemu-m33` flipped, and the standing
+      privileged qemu/qemu-riscv runs.
 - [ ] **The `CAP_AUTHORITY` delegation refusal has zero test coverage, and cannot easily get any.**
       `syscall_thread.cc` refuses the type ahead of the `CAP_TRANSFER` check, but an authority cap
       always carries `rights == 0`, so the older check refuses the same delegation with the same
@@ -743,23 +744,26 @@ Opened by stage 4:
       defense-in-depth rather than a behaviour change -- and why no black-box test can pin it. A
       kernel-side unit hook, or an assertion that the refusal fires for the type reason, is the only
       way to keep it from being silently deleted as redundant.
-- [ ] **The sim selftest gate cannot run an unprivileged root**, which is part of CI item (a) below.
-      `ctest` matches `# skipped: [1-9]` as a failure regex, but under `KICKOS_ROOT_PRIVILEGED=OFF`
-      `mpu_privileged_guard` reports a legitimate named SKIP ("no privileged caller exists"), so the
-      gate goes red for the right behaviour. `tests/check_qemu_selftest.sh` already solved this with
-      its `EXPECT_SKIPS` permission-list; the sim registration has no equivalent. Measured on the
-      branch: `sim` at `ROOT_PRIVILEGED=OFF` is 12/13 with that as the only failure (master is 11/13
-      there, the second being `sim_stress`, now fixed).
-- [ ] **`f302nucleo-st` does not link in Debug, and has not for a while.** `.text` overflows FLASH by
-      4,548 B on `ba38b22` and 4,988 B with stage 4 -- so it is pre-existing, not stage 4's, but
-      nothing catches it because no gate builds that board in Debug. At `-Os` the same image has
-      **12.7 KiB free** (52,512 B of 65,536), which is why three comments in
-      `user/apps/common/selftest/main.cc` claiming "96 bytes free" / "at the f302nucleo ceiling" were
-      removed rather than updated -- four in total, the fourth found by the review pass after the
-      first three were called complete: they were measured under the superseded `-O0` default and
-      were being used to justify keeping `.rodata` down in a configuration that has ample room. Decide
-      whether Debug is a supported configuration for the 64 KiB boards; if it is, this is a real
-      regression to size down.
+- [x] **The sim selftest gate runs an unprivileged root** (M4.5.5). The TAP verdict logic moved out
+      of `tests/check_qemu_selftest.sh` into `tests/check_tap_stream.sh` (stdin), with
+      `check_sim_selftest.sh` as the sim runner, so the sim permits a skip BY NAME through the same
+      `EXPECT_SKIPS` list rather than by a count regex. `KICKOS_HAVE_MPU` is 1 by arch on the sim, so
+      the existing `KICKOS_EXPECT_SKIPS` condition already covered the flipped sim -- only the
+      plumbing was missing. Measured: `sim` at `ROOT_PRIVILEGED=OFF` was 12/13, now 14/14
+      (`rootauth` and `rootfault` both register there). The checker's arms were verified individually
+      against crafted streams, including the anti-vacuity count/name cross-check.
+- [x] **DECIDED: `Debug` is not a supported configuration on the 64 KiB boards** (M4.5.5). It is not
+      an `f302nucleo` regression and not stage 4's -- it is the whole 64 KiB class, measured on this
+      branch: `f302nucleo-st` overflows FLASH by **5,120 B** and `bluepill-c8-st` by **4,884 B**,
+      while the same `f302nucleo-st` image at `-Os` has **12.9 KiB free** (52,660 B of 65,536).
+      Debuggability is not what is being given up: `MinSizeRel` carries `-g` (`CMakeLists.txt`), so
+      those boards keep full symbols and lose only `-O0`. **No gate is added** -- a gate for an
+      unsupported configuration is noise, and the existing failure is already loud and names the
+      overflow in bytes at link. Recorded in `docs/reference/porting.md`.
+      This is also why four comments in `user/apps/common/selftest/main.cc` claiming "96 bytes free" /
+      "at the f302nucleo ceiling" were removed rather than updated in 4.5.4: they were measured under
+      the superseded `-O0` default and justified keeping `.rodata` down in a configuration with ample
+      room.
 - [ ] **A per-service authority declaration in `kos_service_cfg`.** The struct has `rsv[2]`, so a
       byte fits with no layout change, and the runner could then narrow *between* entries -- hold
       `AUTH_CONSOLE` only while the `KOS_SVC_CONSOLE` entry runs. Deliberately NOT done in stage 4:
@@ -851,9 +855,55 @@ Ordered after stage 4 (`kos_cap_narrow`) and before the `KICKOS_ROOT_PRIVILEGED`
 **not a blocker for it** -- the knob goes away on the strength of the flip, not of region shaping.
 One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows it.
 
-- [ ] **Give the alloc/MPU seam a third region-encoding mode.** `arch_ram_region_size`
-      (`arch/include/kickos/arch/arch.h:234`) and `arch_ram_region_align` (`:262`) are `static
-      inline` and keyed SOLELY on `arch_mpu_min_region()`, so they offer exactly TWO modes:
+- [x] **DONE: the alloc/MPU seam has a third region-encoding mode.** `arch_ram_region_size`
+      (`arch/include/kickos/arch/arch.h:263`) and `arch_ram_region_align` (`:302`) now branch on a
+      new `arch_mpu_region_pow2()` seam (1 = pow2 size + natural alignment, 2 = any granule
+      multiple), with the `arch_mpu_min_region()` floor applied BEFORE the mode branch so a
+      pow2 backend is bit-for-bit what it was. `pow2()` is 0 on PMSAv8, SYSMPU and RX RXv3;
+      1 on PMSAv7 and PMP NAPOT; unread where the granule is 0.
+      **Sizes do not move fleet-wide** -- every board's boot stacks are already powers of two, so
+      the entire recovery is alignment run-up: `idle 2048/2048 -> 2048/32` and
+      `root 8192/8192 -> 8192/32` on `frdmk64f`, `pizero2350` and `qemu-m33`, `/16` on `rx72m`.
+      Two things the original plan below got wrong, both worth keeping:
+      **(a) the kernel could NOT just call `arch_mpu_region_encodable`.** That is the MMIO test and
+      the sim returns false unconditionally (mprotect governs only the arena), so pointing it at RAM
+      refuses every RAM grant, stack grant and self-grant there -- measured, 3 sim tests red. RAM got
+      its own `arch_ram_region_admissible` derived from the two seam values; it reproduces every
+      backend's `encodable` except the sim, where it is the one that is right for RAM.
+      **(b) the RAM path never checked `size >= granule`**, only alignment, while the DEV path did via
+      `encodable`. All three production callers pass a pre-rounded size so no production caller could
+      reach it, but the predicate now closes it.
+      Also: `cmake/boot_arena.cmake` mirrors the seam in CMake by SCRAPING the `return <int>;`
+      literal, and its `GLOB` attributed `arch/arm/common/arch_arm_pmsav8.cc` to the arch family
+      though the build compiles it into the CHIP library -- which is why that file's deliberate
+      non-override of `arch_mpu_min_region` was load-bearing. It now reads the `SOURCES` property of
+      `kickos_arch_*`/`kickos_chip_*`. The old regex also read `return 32 + 0;` as `32`; a trailing
+      `;` is now required, and the match is anchored on a non-identifier boundary.
+      Witness: selftest `region_mode` reports the observed shaping per board (96 B reserved for a
+      3-granule request on PMSAv8, 12288 on the sim, 32 on PMP NAPOT). Gates: sim 13/13, sim flipped
+      14/14, `qemu` 11/11, `qemu-m3` 9/9, `qemu-m7` 10/10, `qemu-m33` 10/10 (12/12 under enforce),
+      `qemu-riscv` 8/8, microbit 5/5, plus the flipped arms `qemu` 14/14 and `qemu-m33` 13/13.
+      **What `region_mode` does and does NOT pin.** Its first shape asserted only
+      `step == 3g or step == 4g`, with both the allocator and the expectation derived from the same
+      `arch_mpu_region_pow2()` call -- a tautology that passed under either shaping. It now compares
+      the observed step against `KICKOS_MPU_MIN_REGION_CFG` / `KICKOS_MPU_REGION_POW2_CFG`, the two
+      literals `cmake/boot_arena.cmake` scraped at configure time, so it catches the allocator's
+      shaping diverging from the declared mode, and scrape-vs-link resolution divergence (weak/strong
+      precedence, or a definition behind an `#if` the textual scrape cannot see). Demonstrated to
+      bite: disabling the granular branch turns it `not ok`, where the disjunction stayed green.
+      It **cannot** catch a wrong literal in a backend: CMake scrapes the same `.cc` the link
+      resolves, so flipping `chip_mk64f.cc`'s `return 0;` moves the macro and the runtime together.
+      Nothing in-tree can catch that class -- only silicon can. The macros are unset on the sim (no
+      `KICKOS_CHIP`, no linker script), where the weaker self-consistency check remains.
+      **SILICON: two of the three moved boards, 2026-07-30.** `frdmk64f` (SYSMPU) and `pizero2350`
+      (PMSAv8) both report `GRANULE-MULTIPLE (granule 32, ... reserved 96)` with `selftest` 66/66,
+      against `xmc4800-relax` as the PMSAv7 control still at `POWER-OF-TWO ... 128`. The fault pairs
+      are the part emulation cannot give: a granular base is only granule-aligned, so the enforced
+      boundary lands off a non-round address, and both hit it exactly -- SYSMPU
+      `addr=0x2001a140`, PMSAv8 a PRECISE `CFSR=0x82` / `MMFAR=0x20026020`. Full record in
+      `docs/reference/boards.md`, *M4.5.5*. **`rx72m` (RX MPU, 16-byte granule) is the third moved
+      board and was not available** -- it owes ONE visit covering this and the stage-4 witness.
+      The original analysis, kept because it names the three hardware classes:
       `min == 0` gives 16-byte granularity, and any nonzero `min` gives a power-of-two size with
       the base NATURALLY ALIGNED to that size. The hardware has THREE classes, so one of them has
       no representation:
@@ -925,6 +975,70 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
           root starting unprivileged, the ctors and `main` running, selftest green. That is a
           declared objective of the pass, not a by-product. It is NOT the stage-2 enforcement gate,
           which no MPU-less part can meet (see the `bluepill-c8` / `f302nucleo` bullet above).
+
+## M4.5.6 -- remove the weak-symbol seam mechanism
+
+**Decision (2026-07-30): remove weak symbols from the arch/kernel seams entirely**, keeping only the
+libc-interop exceptions. Two reasons, and the second is the deciding one:
+
+- **Maintainability.** Resolution depends on archive member extraction and link order, neither of
+  which is visible at the call site. `cmake/boot_arena.cmake` has to *reimplement* weak/strong
+  precedence in CMake to model the boot arena, and that logic carried a latent bug: a `GLOB`
+  attributed `arch/arm/common/arch_arm_pmsav8.cc` to the arch family though the build compiles it
+  into the CHIP library, which was load-bearing on that file happening to decline the
+  `arch_mpu_min_region` override.
+- **`__attribute__((weak))` is a GNU extension**, and its interaction with archive extraction is
+  implementation-defined. Requiring GCC for a kernel whose whole seam story is portability is the
+  wrong trade. This already bit once, in-tree: GCC carries a weak attribute from a declaration onto
+  a definition in the same TU, so every `KICKOS_APP_AUTHORITY` override compiled `W` and link order
+  picked the winner (`nm` was the check; reasoning was not).
+
+**Inventory: 48 definitions across 16 files.** Three are the exception class --
+`__dso_handle`, `__malloc_lock`, `__malloc_unlock` (`user/src/newlib_stubs.cc:149,171,174`) -- weak
+so a libc that *does* provide them wins. Those get a toolchain-conditional or an explicit
+allowlist, not this treatment. The other ~45 are our own seams.
+
+**Replacement: the lone-TU pattern, which this repo has already proven** in
+`system/init/app_authority_default.cc`: the fallback sits alone in its own TU, so a chip defining
+the symbol resolves it locally and the member is never extracted. Standard archive semantics, no
+compiler extension, no weak attribute anywhere. The constraint is real and must be documented per
+file: **such a TU must define exactly one symbol**, or it gets extracted anyway and collides.
+Group two fallbacks in one TU only where they are genuinely all-or-nothing (`arch_diag_led_init`
+plus `arch_diag_led_set`).
+The two other proven alternatives stay available where they fit better: a CMake-selected provider
+spliced into the link group (`KICKOS_INIT_PROVIDER`), and no default at all where a missing
+override should fail the link (`arch_reserved_blocks`).
+
+**Payoff beyond the removal**: `cmake/boot_arena.cmake` loses its precedence logic entirely -- one
+definition per link, found on the chip target.
+
+**Honest about what this trades, not a lateral move.** The lone-TU pattern still rests on LINKER
+behaviour rather than language semantics -- a member is extracted only to resolve an undefined
+symbol. That rule is standard across every Unix-like linker and MSVC's `.lib` handling, whereas
+`__attribute__((weak))` is a GNU extension whose archive interaction is implementation-defined. So
+it is a real portability gain, but the seam is still not expressible in pure C.
+
+**Make it non-regressible, and check BOTH halves**: a CI check asserting zero
+`__attribute__((weak))` outside the libc-interop allowlist, plus -- this is the one that matters --
+that every fallback TU defines exactly ONE symbol. The second is the replacement's own silent
+failure mode: a fallback TU that accidentally gains a second symbol is extracted even when the chip
+provided its own definition, and then collides. `nm` per object is the check. Shape it like
+`tests/check_riscv_no_smalldata.sh` and `tests/check_kernel_ctor_placement.sh`.
+
+**NOT in M4.5.5.** It touches every arch seam, so it would invalidate the silicon captures just
+taken and blow the milestone's scope.
+
+**Slot: its own milestone, M4.5.6, BEFORE M4.6.** Foundation before the driver era, like the rest of
+M4.5.x. It runs AFTER the `KICKOS_ROOT_PRIVILEGED` deletion: that removes a posture and a set of
+`#if` branches, so the seam pass then edits a one-posture tree. The ordering against M4.6 is the CI
+gate: once zero-weak is enforced, every new seam is forced into the pattern on first write. Placed
+after M4.6 (consoles/UART) and M4.6.1 (USB CDC), the two milestones that add the most new arch
+seams, those seams get written weak because nothing stops them and are then rewritten -- the same
+work twice, plus a window where the tree drifts back.
+It also overlaps the M6 seam rework -- `arch_ram_region_size` already carries a `SEAM (MMU era)`
+marker -- so the three MPU-geometry seams (`arch_mpu_min_region`, `arch_mpu_region_pow2`,
+`arch_mpu_region_encodable`) may be cheaper to convert there, in one pass with the redesign. The
+other ~42 do not need to wait for it.
 
 ## M4.6.1 -- USB CDC console (picopi, pizero2350, teensy41)
 
@@ -1087,34 +1201,27 @@ the port the board already flashes over, so the board can BE the serial adapter.
       precisely the opposite of what a user-API suite has to exercise. Sharp consequence of that
       preset: with the heap carve at zero the `-st` gate on that board no longer exercises the heap
       at all, so a heap regression on a 16 KiB part would go unseen.
-- [ ] **No CI job exercises an unprivileged root, on any target.** `KICKOS_ROOT_PRIVILEGED` appears
-      zero times in `.github/workflows/ci.yml`: every gate builds and runs the privileged posture.
-      Six boards are witnessed flipped by hand on silicon, so the posture M4.5 exists to deliver has
-      no automated coverage at all, which is the same unexercised-arm shape as the
-      `kernel_ctor_placement` vacuity trap. Cheapest real arm is **qemu with `KICKOS_HAVE_MPU=1`
-      plus the flip** -- a genuine armv7m `npriv` boundary and a real MPU, and that configuration
-      already builds and its gate runs green. A flipped **sim** arm is cheaper still and the
-      `EXPECT_SKIPS` plumbing already handles it (flipped sim runs 59/60, skipping exactly
-      `mpu_privileged_guard`), but the sim discards the privilege flag, so it witnesses the
-      authority logic and region composition, never a CPU-mode boundary. Owned by 4.5.5, whose
-      re-witness pass is the natural home.
+- [x] **CI exercises an unprivileged root** (M4.5.5). Three new arms: `qemu` and `qemu-m33` at
+      `KICKOS_HAVE_MPU=1 -DKICKOS_ROOT_PRIVILEGED=OFF` (a real armv7m/v8m `npriv` boundary over both
+      PMSA revisions), plus a flipped **sim** arm which witnesses the authority logic and region
+      composition but never a CPU-mode boundary. The flipped ARM arm registers two gates the
+      privileged posture cannot host -- `rootfault` and `rootauth`'s flipped arm -- and a `selftest`
+      whose `mpu_privileged_guard` skip is permitted by name.
+      `qemu-m7`/`qemu-m3` are deliberately NOT flipped in CI: both re-run the same PMSAv7 path as
+      `qemu` for two more toolchain builds. Verified green flipped by hand at this gate (13/13 and
+      12/12), as was `qemu-m33` (13/13) and `qemu` (14/14).
       Deliberately NOT done instead: flipping `frdmk64f`'s preset default. It would break the locked
       order (the knob's deletion is step 4, after the 4.5.5 re-witness), give the fleet a third
       posture alongside XMC's console-only special case, and silently break `k64drv`, which cannot
       run flipped by design. It would also change only what is BUILT, not what is TESTED, since no
       CI job runs frdmk64f with MPU non-vacuously.
 
-- [ ] **CI builds the enforcement gates unoptimised -- NEEDS A DECISION.** The "ARM PMSA enforcement
-      run gates (v7 + v8)" step (`.github/workflows/ci.yml:171`) passes `-DCMAKE_BUILD_TYPE=Debug`
-      explicitly (`:176`), which overrides the fleet's `MinSizeRel` default. So the four gates
-      covering the enforcement posture -- the posture that matters most -- still compile `-O0`, on
-      the one job that runs `qemu`, `qemu-m33`, `qemu-m7` and `qemu-m3` under `KICKOS_HAVE_MPU=1`.
-      Filed as a decision rather than a defect: dropping the pin makes those gates test what ships,
-      and it also changes what has been gated until now. **The same pin is why CI cannot catch the
-      `-Os` gate-then-configure bug class.** `build-boards-mpu` does build `MinSizeRel`, but its only
-      ctest, `kernel_ctor_placement`, is documented as passing vacuously for that matrix. So no CI job
-      exercises `KICKOS_HAVE_MPU=1` at `MinSizeRel` with real driver code paths -- exactly the
-      configuration the K64F PIT lost write was found in.
+- [x] **CI builds the enforcement gates optimised -- DECIDED: the pin is gone** (M4.5.5). The "ARM
+      PMSA enforcement run gates (v7 + v8)" step passed `-DCMAKE_BUILD_TYPE=Debug` explicitly,
+      overriding the fleet's `MinSizeRel` default, so the four gates covering the enforcement posture
+      compiled `-O0`. Dropping it was measured first: all four are green at `MinSizeRel`
+      (`qemu` 12/12, `qemu-m33` 11/11, `qemu-m7` 11/11, `qemu-m3` 10/10). Those gates now test what
+      ships, and CI can reach the `-Os`-only class the K64F PIT lost write fell into.
 - [ ] **`sam3x8e` over-alignment: PARKED on hardware absence, not open.** The chip HAS an MPU on
       silicon (Atmel SAM3X/SAM3A datasheet, Cortex-M3 revision 2.0) but KickOS ships no `mpu.cmake`
       backend for it, so it builds `KICKOS_HAVE_MPU=0` while still inheriting ARM's weak
@@ -1307,6 +1414,19 @@ the port the board already flashes over, so the board can BE the serial adapter.
       run: `rebootdemo` on a picopi (RP2040 -> PICOBOOT/UF2) and on a Teensy 4.1 (`bkpt #251` ->
       HalfKay). The Teensy path is the least certain: it is not vendor-documented, and on
       non-Teensy RT1062 hardware the `bkpt` faults instead.
+- [ ] **The stage-4 per-app authority witness is BLOCKED on board access, not on work.** `c6blink`
+      (ESP32-C6, PMP NAPOT), `rxdrv` (RX72M, RXv3) and `f411spi` (F411-disco, PMSAv7) are the three
+      apps whose own `KICKOS_APP_AUTHORITY` mask is what makes them work, plus the two never-run
+      `kos_periph_enable` possession probes in the first two. **None of the three boards is
+      available** as of 2026-07-30 -- the accessible set is `xmc4800-relax`, `frdmk64f`, `pizero2350`,
+      `picopi` and `teensy41`. Nothing substitutes: the claim is that a per-app declaration carries a
+      board's OWN pin muxing on real silicon, and the sim can never hold a DEV region
+      (`arch_mpu_region_encodable` is unconditionally false there).
+      Note the coupling when these boards do come back: **`rx72m` is also one of the boards M4.5.5's
+      region re-encoding moves**, so it owes ONE visit covering both, not two. `esp32c6-wroom` and
+      `f411disco` are pow2-required backends that M4.5.5 does not move, so their captures are durable
+      whenever taken.
+      Since M4.5.4 merged without them, this is debt against `master`, not a merge gate.
 
 ## M3 -- landed so far (2026-07-20)
 - [x] `sys_cpu_clock_hz()` read syscall; [x] per-task capability handle table (sem ABI) +

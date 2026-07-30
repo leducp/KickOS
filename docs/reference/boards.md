@@ -1297,6 +1297,49 @@ unrun on silicon, as `TODO.md` already records. Stage 4's own confinement claim 
 than it looks: a missed declaration is a runtime `-KOS_EPERM`, and no capture here exercises that
 path on hardware -- it was witnessed on `qemu` only, by removing `AUTH_CONSOLE` from `initdemo`.
 
+#### M4.5.5 -- the third region-encoding mode (2026-07-30)
+
+`arch_mpu_region_pow2()` splits the enforcing backends into two shaping modes, so the boards whose
+descriptors actually change are the base+limit ones. Two of the three were witnessed; `rx72m` (RX
+MPU, 16-byte granule) was not available and is the one still owed.
+
+| Board | Backend | `pow2` | `selftest` | `region_mode` reports |
+|---|---|---|---|---|
+| `xmc4800-relax` | PMSAv7 | 1 | 66 / 65 `ok` / 1 skip | `POWER-OF-TWO (granule 32, 3-granule request reserved 128)` |
+| `frdmk64f` | SYSMPU | 0 | 66 / 65 `ok` / 1 skip | `GRANULE-MULTIPLE (granule 32, 3-granule request reserved 96)` |
+| `pizero2350` | PMSAv8 | 0 | 66 / 66 `ok` / 0 skip | `GRANULE-MULTIPLE (granule 32, 3-granule request reserved 96)` |
+
+`xmc4800-relax` is the CONTROL: PMSAv7 genuinely requires a power of two, and it must not move.
+Its one skip is `mutex_deadlock # SKIP pool too small`, the same skip the stage-4 capture carried.
+Both boards run the full service list, so TAP routes through the userspace console driver.
+
+**The fault captures are the part emulation cannot give.** Under granular shaping a granted base is
+only granule-aligned, so the enforced boundary lands on an address that is NOT a round power of two
+-- which is exactly what makes a mis-programmed base+limit descriptor visible:
+
+- `frdmk64f` `mpu_fault`: `SYSMPU ISOLATION FAULT: port=3 addr=0x2001a140 master=0 W EDR=0x80000003`.
+  The worker wrote its own granted region first, then faulted at `base + 4096` with
+  `base = 0x20019140` -- 32-aligned, not 4096-aligned. Imprecise bus fault, so the SYSMPU `EDR`
+  line rather than `MMFAR` is the authoritative address.
+- `pizero2350` `mpu_fault`: `CFSR=0x82` (`DACCVIOL | MMARVALID`, a PRECISE fault) with
+  `MMFAR=0x20026020`, again `base + 4096` off a 32-aligned base. This is the only capture in the
+  fleet that pins PMSAv8 `RBAR`/`RLAR` bounds for a non-power-of-two-aligned region, and QEMU is a
+  weak witness for it.
+
+**`rootauth` on `frdmk64f` at `KICKOS_ROOT_PRIVILEGED=OFF`** -- the first silicon run of the
+ROOT-narrow gate, in the posture where it bites: `PASS`, five arms, banner `mpu enforce, root
+unprivileged`. Its declared-bit arm answered `rc=-22` (`-KOS_EINVAL`) from the REAL mk64f
+`arch_pinmux_set`, where `qemu`/`sim` see `-38` (`-KOS_ENOSYS`) from the weak seam -- so that arm is
+not an artefact of the stub. It does NOT witness a real mux WRITE: the probe uses an out-of-range
+port that the backend rejects before touching a register, which is why `c6blink` / `rxdrv` /
+`f411spi` are still owed.
+
+**What this does NOT cover.** No `rx72m` (the third moved board), and the boot-arena recovery is not
+directly observable in a capture -- it is the configure-time `boot stacks ... pow2=N` line, and it
+moves alignment only, never a size. A wrong `arch_mpu_region_pow2()` literal in a backend cannot be
+caught in-tree at all (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so these
+captures are the only check on that class.
+
 #### Coverage boundary -- what this silicon witness covers
 
 **Re-established 2026-07-28 at the tip, `75227d4`**: the XMC A/B re-run plus the `frdmk64f`
