@@ -931,8 +931,8 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 }
 
 // Empty: arch_mpu_apply above already programs mprotect as it records, and the host
-// switch is a synchronous longjmp, so there is nothing to commit afterwards. Defined
-// because the symbol is an arch-wide contract (the self-grant path calls it).
+// switch is a synchronous longjmp. The symbol must still resolve, as the self-grant
+// path calls it.
 void kickos_arch_mpu_commit(void) {}
 
 size_t arch_mpu_min_region(void)
@@ -950,9 +950,15 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return false;
 }
 
+// mprotect takes an arbitrary page-aligned range, so no power-of-two size is needed.
+int arch_mpu_region_pow2(void)
+{
+    return 0;
+}
+
 // Rule 7: the sim owns no MPU-governable peripheral (its "devices" are arena-backed
-// fakes reached via a data grant), so it reserves nothing. The grant path then never
-// refuses on a reserved-block hit here -- only the arena / encodability rules apply.
+// fakes reached via a data grant), so it reserves nothing and only the arena /
+// encodability rules apply.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     (void)out;
@@ -982,8 +988,8 @@ void* arch_ram_alloc(size_t size)
     {
         return nullptr;
     }
-    size_t const rsz = arch_ram_region_size(size);      // pow2, >= one page
-    size_t const ralign = arch_ram_region_align(size);  // == rsz on the sim (min > 0)
+    size_t const rsz = arch_ram_region_size(size);      // page multiple, >= one page
+    size_t const ralign = arch_ram_region_align(size);  // one page here
     uintptr_t const base = reinterpret_cast<uintptr_t>(sim().arena);
     uintptr_t const cur = base + sim().arena_used;
     // Natural (absolute) alignment so one mprotect'd region covers the block;

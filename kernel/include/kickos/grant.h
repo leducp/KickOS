@@ -4,9 +4,9 @@
 // Rule 7 (docs/design-m4-driver-model.md sec.7): the grant path REFUSES a region
 // that overlaps a kernel-reserved block, turning single-ownership from "trust the
 // granter" into "the kernel refuses". The reserved set is the arch's owns-for-life
-// peripherals (timebase, IRQ controller, every access-permission controller -- the
-// MPU/PMP twin and any bus-side gate -- and the clock/reset gates); each enforcing
-// chip declares it via arch_reserved_blocks (arch.h).
+// peripherals: the timebase, the IRQ controller, every access-permission controller (the
+// MPU/PMP twin and any bus-side gate) and the clock/reset gates. Each enforcing chip
+// declares it via arch_reserved_blocks (arch.h).
 //
 // Body compiled only under KICKOS_HAVE_MPU (grant.cc); with no enforcement the
 // inline stubs below make every call a zero-flash no-op, so the call sites stay
@@ -38,10 +38,10 @@ namespace kickos
     }
 
 #if KICKOS_HAVE_MPU
-    // True iff [base, base+size) touches any reserved block -- or, on a bit-band
-    // chip, the alias image of a reserved block that lies in the aliasable 1 MB
-    // peripheral region. Pure. size 0 touches nothing (shape checks live in
-    // grant_region_admissible); a wrapping window fails closed (returns true).
+    // True iff [base, base+size) touches any reserved block, or on a bit-band chip the
+    // alias image of a reserved block lying in the aliasable 1 MB peripheral region.
+    // Pure. size 0 touches nothing (shape checks live in grant_region_admissible); a
+    // wrapping window fails closed (returns true).
     bool grant_hits_reserved(uintptr_t base, size_t size);
 
     // Full admission policy for ONE prospective committed region (data or MMIO).
@@ -49,7 +49,7 @@ namespace kickos
     //   size 0 / wrap                              -> refuse
     //   hits a reserved block (authorized too)     -> refuse   [Rule 7 core]
     //   DEV : authorized caller + exactly-encodable + not a bit-band alias
-    //   RAM : naturally aligned + confined to the user arena (every caller)
+    //   RAM : exactly encodable + confined to the user arena (every caller)
     //
     // `caller_authorized` answers "may this caller be handed a device window at all":
     // AUTH_MEMORY on the caller's authority cap, NOT `Thread::privileged`. Only the

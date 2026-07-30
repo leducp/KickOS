@@ -598,9 +598,9 @@ extern "C" void kickos_arch_mpu_commit(void)
 }
 #endif
 
-// SYSMPU is byte-granular on a 32-byte page (SRTADDR/ENDADDR are addr[31:5]); a
-// window is exact iff base and base+size both land on a 32-byte boundary. Overrides
-// the weak PMSA (pow2) encodability -- SYSMPU needs NO power-of-two size.
+// SYSMPU is byte-granular on a 32-byte page (SRTADDR/ENDADDR are addr[31:5]): a window
+// is exact iff base and base+size both land on a 32-byte boundary. No power-of-two size
+// is needed, unlike the weak PMSA default this overrides.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size < 32u)
@@ -610,20 +610,25 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 31u) == 0 and (size & 31u) == 0;
 }
 
+// Outside KICKOS_HAVE_MPU on purpose: arch_ram_region_size calls this in a
+// no-enforcement build too.
+int arch_mpu_region_pow2(void)
+{
+    return 0;
+}
+
 #if KICKOS_HAVE_MPU
-// Rule 7 reserved set (K64 RM). Owns-for-life: the PIT time base, the clock/reset
-// gate blocks, and the two bus-side permission controllers -- SYSMPU and the AIPS
-// bridge control pages (granting either would be total escalation: SYSMPU holds the
-// isolation regions, and one PACR SP bit opens a whole 4 KB peripheral slot to EVERY
-// unprivileged thread, which SYSMPU cannot gate, see arch_fault_report_extra). The
-// watchdog INSTANCE is excluded (neutralize-then-grant). Bases from mmap.h; sizes
-// hand-typed per RM.
+// Rule 7 reserved set (K64 RM). Granting SYSMPU or an AIPS bridge control page would be
+// total escalation: SYSMPU holds the isolation regions, and one PACR SP bit opens a whole
+// 4 KB peripheral slot to EVERY unprivileged thread, which SYSMPU cannot gate (see
+// arch_fault_report_extra). The watchdog INSTANCE is excluded (neutralize-then-grant).
+// Sizes hand-typed per RM.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {
-        {mmap::PIT_BASE, 0x120u}, // PIT: MCR + ch0 + ch1 (RM ch.44). NOT ch2 @0x40037120 --
-                                //   k64drv legitimately grants CH2; the adjacency-allowed
-                                //   overlap predicate lets that grant sit at reserved_last+1.
+        // PIT ch2 @0x40037120 is deliberately outside the block: k64drv grants CH2, and
+        // the adjacency-allowed overlap predicate lets it sit at reserved_last+1.
+        {mmap::PIT_BASE, 0x120u},     // PIT: MCR + ch0 + ch1 (RM ch.44)
         {mmap::SIM_BASE, 0x1000u},    // SIM: SCGC clock-gate registers (RM ch.12)
         {mmap::MCG_BASE, 0x1000u},    // MCG: PLL / clock source (RM ch.25)
         {mmap::SYSMPU_BASE, 0x1000u}, // SYSMPU: the bus-side MPU itself (RM ch.19)
@@ -649,14 +654,12 @@ int arch_bitband_present(void)
     return 1;
 }
 
-// Chip fault-decode hook (arch.h): a SYSMPU protection error reaches the core as a
-// BUS error (escalates to HardFault; the CFSR MMFSR is 0, so the shared reporter
-// cannot name it). Read the SYSMPU error capture and print the faulting address +
-// master + access type for whichever slave port latched. IMPORTANT (K64 RM 3.3.6.2
-// / 3.3.7.1): the MPU slave ports cover flash, SRAM_L/U and FlexBus ONLY -- the AIPS
-// peripheral bridges and the GPIO controller are NOT MPU slave ports ("protection
-// built into the bridge"), so a peripheral-window violation does NOT set SPERR here;
-// that no-SPERR case is itself the diagnostic (peripheral MMIO is not SYSMPU-gated).
+// Chip fault-decode hook (arch.h): a SYSMPU protection error reaches the core as a BUS
+// error (escalates to HardFault; the CFSR MMFSR is 0, so the shared reporter cannot name
+// it). IMPORTANT (K64 RM 3.3.6.2 / 3.3.7.1): the MPU slave ports cover flash, SRAM_L/U
+// and FlexBus ONLY. The AIPS peripheral bridges and the GPIO controller are NOT slave
+// ports ("protection built into the bridge"), so a peripheral-window violation does NOT
+// set SPERR, and that no-SPERR case is itself the diagnostic.
 // Runs privileged (RGD0 full access), so it cannot itself fault.
 void arch_fault_report_extra(void)
 {

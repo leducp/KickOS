@@ -132,6 +132,35 @@ namespace
         return static_cast<char>(reinterpret_cast<uintptr_t>(arg));
     }
 
+    // The arena's allocation granule: in every region-encoding mode
+    // arch_ram_region_size rounds 1 up to exactly one granule, so two consecutive
+    // one-byte blocks sit one granule apart. Returns 0 when the arena cannot host both.
+    // Memoised because kos_ram_alloc never frees, and on a 16 KiB part mem_self_grant
+    // needs that arena to reach the region-descriptor ceiling.
+    size_t g_granule = 0;
+
+    size_t discover_granule()
+    {
+        if (g_granule != 0)
+        {
+            return g_granule;
+        }
+        void* p = kos_ram_alloc(1);
+        void* q = kos_ram_alloc(1);
+        if (p == nullptr or q == nullptr)
+        {
+            return 0;
+        }
+        uintptr_t const a = reinterpret_cast<uintptr_t>(p);
+        uintptr_t const b = reinterpret_cast<uintptr_t>(q);
+        if (b <= a)
+        {
+            return 0;
+        }
+        g_granule = static_cast<size_t>(b - a);
+        return g_granule;
+    }
+
     // Self-contained probe worker: takes a slot and a stack, posts, exits. Nothing
     // waits on it, so any subset of a probe batch always drains.
     void pool_probe_worker(void*)
@@ -1638,19 +1667,27 @@ namespace
     void t_grant_reserved()
     {
         // --- RAM-path admission (arena-relative; runs on sim). ---
-        // kos_ram_alloc hands back a block naturally aligned to its rounded region
-        // size, so it is admissible R|W for EVERY caller posture (10C, no waiver).
-        void* raw = kos_ram_alloc(2048);
+        // kos_ram_alloc hands back a block the arch can name with one descriptor, so it
+        // is admissible R|W for EVERY caller posture (10C, no waiver). The probed size
+        // must be a granule multiple: the sim's granule is a 4 KiB host page.
+        size_t const g = discover_granule();
+        void* raw = nullptr;
+        if (g != 0)
+        {
+            raw = kos_ram_alloc(g);
+        }
         if (raw != nullptr)
         {
             uintptr_t const a = reinterpret_cast<uintptr_t>(raw);
-            TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, a, 2048) == 1);       // in-arena, aligned, privileged
-            TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_UNPRIVILEGED, a, 2048) == 1);     // in-arena, aligned, unprivileged
-            TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, a + 16, 2048) == 0);  // R1: base not aligned to the region size
+            TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, a, g) == 1);      // in-arena, encodable, privileged
+            TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_UNPRIVILEGED, a, g) == 1);    // in-arena, encodable, unprivileged
+            // a + 1 is sub-granule on every backend: the smallest granule in the tree
+            // is PMP's 8.
+            TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, a + 1, g) == 0);  // R1: base below the arch's region granule
         }
         else
         {
-            tap::diag("grant_reserved: PARTIAL -- arena-relative RAM cases not run (2 KiB alloc failed)");
+            tap::diag("grant_reserved: PARTIAL -- arena-relative RAM cases not run (granule alloc failed)");
         }
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, 0x1000u, 0x1000u) == 0);      // out-of-arena RAM refused
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, 0xFFFFFFF0u, 0x20u) == 0);    // wrap (32-bit) / out-of-arena (64-bit) refused
@@ -3344,11 +3381,13 @@ namespace
     }
 
     // --- Self-grant of a non-power-of-two region ------------------------------
-    // On a min-region-0 backend (nRF51, LX6) arch_ram_region_size is 16-byte-
-    // granular: 40 rounds to 48, not a power of two, so rsz - 1 is not an
-    // alignment mask. A block kos_ram_alloc handed out must still self-grant.
-    // Consecutive 48-byte bump allocations step through the 16-byte residues of
-    // 64, so within three blocks one base has bit 5 set, exactly the base an
+    // Wherever arch_ram_region_size is granular rather than pow2 (a min-region-0
+    // backend like nRF51/LX6, and every base+limit MPU), three granules round to three
+    // granules, so rsz - 1 is not an alignment mask, and a block kos_ram_alloc handed
+    // out must still self-grant. The sizes must be granule-derived: a constant only
+    // discriminates at one granule.
+    // Consecutive 3-granule blocks step through the granule residues of 4 granules, so
+    // within three blocks one base is not 4-granule aligned, exactly the base an
     // ungated pow2 mask check refuses. On a pow2 backend every base is naturally
     // aligned and this is one ordinary grant.
     //
@@ -3359,10 +3398,17 @@ namespace
     volatile int g_sgnp_ran = 0;
     void sgnp_worker(void*)
     {
+        size_t const g = discover_granule();
+        if (g == 0)
+        {
+            kos_sem_post(CH_DONE);
+            return;
+        }
+        size_t const want = 3u * g;
         void* pick = nullptr;
         for (int i = 0; i < 3; i++)
         {
-            void* p = kos_ram_alloc(40);
+            void* p = kos_ram_alloc(want);
             if (p == nullptr)
             {
                 break;
@@ -3371,7 +3417,7 @@ namespace
             {
                 pick = p;
             }
-            if ((reinterpret_cast<uintptr_t>(p) & 32u) != 0)
+            if ((reinterpret_cast<uintptr_t>(p) & (4u * g - 1u)) != 0)
             {
                 pick = p;
                 break;
@@ -3379,11 +3425,69 @@ namespace
         }
         if (pick != nullptr)
         {
-            g_sgnp_rc = kos_mem_self_grant(pick, 40);
+            g_sgnp_rc = kos_mem_self_grant(pick, want);
             g_sgnp_ran = 1;
         }
         kos_sem_post(CH_DONE);
     }
+    // --- Which region-encoding mode is live on this board ----------------------
+    // The bump allocator's step for a 3-granule request IS the mode: a base+limit
+    // backend reserves 3 granules, a pow2 backend rounds to 4.
+    void t_region_mode()
+    {
+        size_t const g = discover_granule();
+        if (g == 0)
+        {
+            tap::skip("arena too small to discover the granule");
+            return;
+        }
+        void* p = kos_ram_alloc(3u * g);
+        void* q = kos_ram_alloc(g);
+        if (p == nullptr or q == nullptr)
+        {
+            tap::skip("arena too small for the mode probe blocks");
+            return;
+        }
+        uintptr_t const a = reinterpret_cast<uintptr_t>(p);
+        uintptr_t const b = reinterpret_cast<uintptr_t>(q);
+        size_t const step = static_cast<size_t>(b - a);
+        // Userspace cannot separate the granular enforcing mode from the no-MPU mode:
+        // both allocate granule multiples. The report names the observed shaping only.
+        if (step == 3u * g)
+        {
+            tap::diag("region shaping: GRANULE-MULTIPLE (granule %lu, 3-granule request reserved %lu)",
+                      static_cast<unsigned long>(g), static_cast<unsigned long>(step));
+        }
+        else if (step == 4u * g)
+        {
+            tap::diag("region shaping: POWER-OF-TWO (granule %lu, 3-granule request reserved %lu)",
+                      static_cast<unsigned long>(g), static_cast<unsigned long>(step));
+        }
+#if defined(KICKOS_MPU_MIN_REGION_CFG) and defined(KICKOS_MPU_REGION_POW2_CFG)
+        // Independent oracle: cmake scraped these two literals textually out of the
+        // backend .cc this image links, so the expectation shares no source with the
+        // arch_mpu_region_pow2() call the allocator made.
+        // Undefined on the sim, which never reaches that scrape; the #else branch is
+        // the weaker self-consistency check.
+        size_t expect = 4u * g;
+        if (KICKOS_MPU_MIN_REGION_CFG == 0)
+        {
+            expect = 3u * g; // no MPU: granule multiples
+        }
+        else if (KICKOS_MPU_REGION_POW2_CFG == 0)
+        {
+            expect = 3u * g;
+        }
+        TAP_CHECK(step == expect);
+        if (KICKOS_MPU_MIN_REGION_CFG != 0)
+        {
+            TAP_CHECK(g == static_cast<size_t>(KICKOS_MPU_MIN_REGION_CFG));
+        }
+#else
+        TAP_CHECK(step == 3u * g or step == 4u * g);
+#endif
+    }
+
     void t_selfgrant_nonpow2()
     {
         // Unprivileged + AUTH_MEMORY, like t_selfgrant: a privileged caller is
@@ -3492,6 +3596,7 @@ int main(int, char**)
     tap::add("caller_stack", t_caller_stack); // caller-owned stack API (no test-only syscalls)
     // Here, not beside mem_self_grant: see the run-order note at t_selfgrant_nonpow2.
     tap::add("mem_self_grant_nonpow2", t_selfgrant_nonpow2); // non-pow2 region self-grants
+    tap::add("region_mode", t_region_mode);                  // which region-encoding mode is live
     tap::add("domain_share", t_domain_share); // two threads share one memory domain
     tap::add("mmio_grant", t_mmio_grant);     // MMIO-grant boundary: privileged-only + encodable-only
 #if KICKOS_HAVE_MPU

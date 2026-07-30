@@ -92,25 +92,20 @@ namespace kickos
             {
                 return -KOS_EINVAL; // bad caller stack: size / alignment / wrap
             }
-            // An unprivileged thread's stack is granted as one MPU region, so its
-            // base must be naturally aligned to the (pow2) region size, else the
-            // descriptor is invalid (PMSA/NAPOT snap the base and the enforced
-            // window covers the wrong span). kos_ram_alloc hands out exactly such
-            // naturally-aligned blocks. (Privileged threads get the whole arena +
-            // the background region, so their stack needs no separate descriptor.)
-            // Without MPU there is no region descriptor to form, so this does not
-            // apply, matching KOS_STACK_DEFINE, which only natural-aligns a caller
-            // stack under enforcement (16-byte ABI alignment otherwise).
+            // An unprivileged thread's stack is committed as one R|W MPU region
+            // (thread.cc), so the block must be nameable by one descriptor on this arch,
+            // else PMSA/NAPOT snap the base and the enforced window covers the wrong span.
+            // Without MPU there is no descriptor to form, matching KOS_STACK_DEFINE, which
+            // only natural-aligns a caller stack under enforcement.
 #if KICKOS_HAVE_MPU
-            // The stack is committed as one R|W MPU region (thread.cc), so [R10]
-            // this keys on the CHILD's privilege: a privileged child gets the whole
-            // arena + background and needs no stack descriptor.
+            // [R10] Keys on the CHILD's privilege: a privileged child gets the whole arena
+            // plus the background region and needs no stack descriptor.
             if (p->privileged == 0)
             {
                 size_t const rsz = arch_ram_region_size(p->stack_size);
-                if ((base & (rsz - 1)) != 0)
+                if (not arch_ram_region_admissible(base, rsz))
                 {
-                    return -KOS_EINVAL; // stack base not naturally aligned to its region size
+                    return -KOS_EINVAL; // stack block not nameable by one descriptor
                 }
                 // Rule 7: admit the stack region through the same predicate as any
                 // grant: arena-confined for EVERY caller (10C, no privileged waiver)

@@ -521,14 +521,12 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
     (void)n;
 }
 
-// Empty for the same reason apply is: LX6 has neither an MPU nor a ring split (no
-// switch-epilogue hook here). Defined because the symbol is an arch-wide contract
-// (the self-grant path calls it).
+// LX6 has neither an MPU nor a ring split. The symbol must still resolve, as the
+// self-grant path calls it.
 void kickos_arch_mpu_commit(void) {}
 
-// No per-task MPU on the classic ESP32 (no privilege split either): report 0 so
-// arch_ram_alloc stays byte-granular -- pow2 region shaping would only waste RAM
-// with no isolation to gain (arch_mpu_apply is a permanent no-op here).
+// No per-task MPU on the classic ESP32 and no privilege split: 0 keeps arch_ram_alloc
+// byte-granular, since region shaping would waste RAM with nothing to enforce.
 size_t arch_mpu_min_region(void)
 {
     return 0u;
@@ -545,14 +543,20 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 15u) == 0 and (size & 15u) == 0;
 }
 
+// Never read: arch_mpu_min_region() is 0 here, which short-circuits both inlines before
+// the mode is reached. Defined only so the symbol resolves in an LX6 link.
+int arch_mpu_region_pow2(void)
+{
+    return 1;
+}
 
 
-// --- Interrupt controller: a SOFTWARE controller over the logical device lines --
-// Xtensa INTSET latches only the software-type interrupts (int 7/29), so a logical
-// line cannot be a physical INTENABLE bit (the old code assumed it could -- lines
-// 5/9/11 were silent no-ops, and line 6 collided with the timer). Instead mask is a
-// software bitmask and inject records the line + rings the ONE real software int 7
-// (dispatched in kickos_lx6_dispatch_l1). Mirrors the RISC-V SSIP / host-sim model.
+
+// --- Interrupt controller: a SOFTWARE controller over the logical device lines ---
+// Xtensa INTSET latches only the software-type interrupts (int 7/29), so a logical line
+// cannot be a physical INTENABLE bit: lines 5/9/11 would be silent no-ops and line 6
+// collides with the timer. Mask is a software bitmask and inject records the line then
+// rings the ONE real software int 7 (dispatched in kickos_lx6_dispatch_l1).
 void arch_irq_mask(int line)
 {
     if (line < 0)

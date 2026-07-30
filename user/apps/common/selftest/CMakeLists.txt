@@ -12,6 +12,21 @@ kickos_add_application(selftest
   BOARD   ${KICKOS_BOARD})
 target_include_directories(selftest PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
 
+# The configure-time region-encoding seam: the two `return <int>;` literals
+# cmake/boot_arena.cmake scraped out of the backend .cc this link resolves.
+# Unset on the sim, which never reaches the scrape without a KICKOS_CHIP and a linker
+# script; region_mode then falls back to a weaker self-consistency check.
+# Both derefs MUST stay quoted: get_property leaves the variable UNSET for a property
+# that was never set, and an unquoted unset name compares as its own literal, so the
+# guard would pass and define both macros EMPTY, which still satisfies `#if defined`.
+get_property(_mpu_min_region_cfg GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG)
+get_property(_mpu_region_pow2_cfg GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG)
+if(NOT "${_mpu_min_region_cfg}" STREQUAL "" AND NOT "${_mpu_region_pow2_cfg}" STREQUAL "")
+  target_compile_definitions(selftest PRIVATE
+    KICKOS_MPU_MIN_REGION_CFG=${_mpu_min_region_cfg}
+    KICKOS_MPU_REGION_POW2_CFG=${_mpu_region_pow2_cfg})
+endif()
+
 # Size-optimise selftest's OWN TUs: at the fleet Debug default its .text overflows the
 # 64K-flash parts (stm32f103 bluepill-c8, stm32f302). Only this app's TUs are affected,
 # so the kernel/arch/lib archives stay at the board build type.

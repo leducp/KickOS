@@ -345,9 +345,13 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & (size - 1)) == 0;
 }
 
-// Rule 7 (arch.h): RISC-V has no Cortex-M bit-band alias, so the grant path never
-// tests an alias image here. Concrete 0 (not weak): the ARM-common weak default is
-// not in a RISC-V link, so the grant module resolves this symbol from the arch layer.
+int arch_mpu_region_pow2(void)
+{
+    return 1;
+}
+
+// Rule 7 (arch.h): RISC-V has no Cortex-M bit-band alias, so the grant path never tests
+// an alias image here. Not weak: no ARM-common weak default exists in a RISC-V link.
 int arch_bitband_present(void)
 {
     return 0;

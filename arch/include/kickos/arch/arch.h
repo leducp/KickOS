@@ -209,38 +209,34 @@ void kickos_arch_mpu_commit(void);
 // MPU seam stays a flat, non-translating protection-region set; do not try to
 // cram "load a page table" into it. See docs/design-mmu-era-exploration.md.
 
-// The smallest region this arch's MPU can enforce -- a global hardware property,
-// NOT a per-region field (which would break the frozen arch_mpu_region seam):
-// ARM PMSA 32 bytes, RISC-V PMP NAPOT 8, one host page on the sim (mprotect
-// granularity). Region sizes floor to this so every descriptor is representable.
-// A return of 0 means this arch has NO enforceable MPU (classic ESP32 LX6, the
-// nRF51 M0): allocations then stay byte-granular -- no power-of-two region shaping
-// and no natural-alignment gap (which would waste the arena on tiny parts for no
-// isolation benefit, since arch_mpu_apply is a permanent no-op there).
+// The smallest region this arch's MPU can enforce: ARM PMSA 32 bytes, RISC-V PMP
+// NAPOT 8, one host page on the sim. A return of 0 means this arch has NO enforceable
+// MPU (classic ESP32 LX6, nRF51 M0) and allocations stay byte-granular.
+// MUST return 0 or a power of two: arch_ram_region_size masks with min - 1.
 size_t arch_mpu_min_region(void);
 
-// True iff (base,size) is coverable EXACTLY by ONE MPU descriptor on this arch with
-// NO rounding -- the encodability test for an MMIO grant, which must never round (a
-// rounded MMIO window over-grants the neighbouring registers = an isolation leak, so
-// unlike arch_ram_region_size this rejects rather than snaps). pow2 archs (PMSA/PMP):
-// size a power of two >= arch_mpu_min_region() AND base naturally aligned to size.
-// byte-granular archs (SYSMPU 32B / RX 16B): size >= the page granule AND base and
-// base+size aligned to it. no-MPU arch (min 0): a nonzero 16-byte-aligned window.
-// The sim (mprotect cannot map real MMIO) returns false: fail-closed.
+// Which of the two enforcing region-encoding modes this backend uses. Read only where
+// arch_mpu_min_region() != 0.
+// 1: size a power of two, base naturally aligned to it. PMSAv7 RASR carries
+//    __builtin_ctz(size) - 1 and PMP NAPOT folds the size into the trailing address
+//    bits, so no other size is expressible.
+// 0: base+limit descriptors (PMSAv8 RBAR/RLAR, SYSMPU SRTADDR/ENDADDR, RX
+//    RSPAGEn/REPAGEn), so every arch_mpu_min_region() multiple is nameable.
+// cmake/boot_arena.cmake scrapes this definition textually, so the body must stay a
+// plain `return <integer>;` with no closing brace in any comment inside it.
+int arch_mpu_region_pow2(void);
+
+// True iff (base,size) is coverable exactly by ONE MPU descriptor with NO rounding.
+// The MMIO grant test: a rounded MMIO window over-grants the neighbouring registers,
+// so unlike arch_ram_region_size this rejects rather than snaps.
+// The sim returns false: mprotect cannot map real MMIO, so it fail-closes.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size);
 
-// Round `want` up to the region SIZE a backend can describe with one descriptor:
-// a power of two, at least arch_mpu_min_region() -- or just 16-byte-granular on a
-// no-MPU arch (min 0). arch_ram_alloc reserves this many bytes; the kernel sizes
-// each thread/domain region descriptor with the SAME call, so the descriptor
-// matches the backing block exactly.
-// SEAM (MMU era): this is the SINGLE point that couples allocation size to MPU
-// descriptor geometry. Its callers use it for exactly two things -- the bump
-// allocator's reservation (arch_ram_common) and forming MPU descriptors
-// (thread.cc, domain_for, the spawn-time grant checks); none treats the rounded
-// value as usable capacity beyond the block it describes. A future frame/page
-// allocator selects BESIDE this behind the same arch family, so the pow2 shaping
-// stays contained here -- do NOT add a caller that assumes alloc size == this.
+// Round `want` up to the region SIZE a backend can describe with one descriptor.
+// arch_ram_alloc reserves this many bytes and the kernel sizes each thread/domain
+// descriptor with the SAME call, so the descriptor matches the backing block exactly.
+// This is the single point coupling allocation size to descriptor geometry; do NOT add
+// a caller that treats the rounded value as usable capacity.
 static inline size_t arch_ram_region_size(size_t want)
 {
     size_t min = arch_mpu_min_region();
@@ -251,6 +247,15 @@ static inline size_t arch_ram_region_size(size_t want)
     if (want < min)
     {
         want = min;
+    }
+    if (arch_mpu_region_pow2() == 0)
+    {
+        size_t const rounded = (want + (min - 1u)) & ~(min - 1u);
+        if (rounded < want) // size_t overflow: unroundable, hand back the raw request
+        {
+            return want;
+        }
+        return rounded;
     }
     size_t p = 1;
     while (p < want)
@@ -265,23 +270,55 @@ static inline size_t arch_ram_region_size(size_t want)
     return p;
 }
 
-// Natural ALIGNMENT the block must sit on. For an MPU-shaped region this equals
-// its (power-of-two) size -- PMSA/NAPOT need base aligned to size. A no-MPU arch
-// only needs a plain 16-byte alignment (no descriptor to satisfy), which avoids
-// the pow2 alignment gap eating a tiny arena.
+// Natural ALIGNMENT the block must sit on. In pow2 mode this is the region size itself,
+// since PMSA/NAPOT snap the base to it; only that mode pays an alignment gap.
 static inline size_t arch_ram_region_align(size_t want)
 {
-    if (arch_mpu_min_region() == 0)
+    size_t const min = arch_mpu_min_region();
+    if (min == 0)
     {
         return 16u;
     }
+    if (arch_mpu_region_pow2() == 0)
+    {
+        return min;
+    }
     return arch_ram_region_size(want);
+}
+
+// True iff a RAM block at (base,size) is nameable by ONE descriptor. The RAM test;
+// arch_mpu_region_encodable is the MMIO one. They diverge on the sim, where mprotect
+// can describe any page-granular range in the arena but no peripheral window at all.
+static inline bool arch_ram_region_admissible(uintptr_t base, size_t size)
+{
+    if (size == 0)
+    {
+        return false;
+    }
+    size_t const min = arch_mpu_min_region();
+    if (min == 0)
+    {
+        return (base & 15u) == 0 and (size & 15u) == 0;
+    }
+    if (size < min)
+    {
+        return false;
+    }
+    if (arch_mpu_region_pow2() == 0)
+    {
+        return (base & (min - 1u)) == 0 and (size & (min - 1u)) == 0;
+    }
+    if ((size & (size - 1u)) != 0)
+    {
+        return false;
+    }
+    return (base & (size - 1u)) == 0;
 }
 
 // The MPU-governed user-RAM pool. Domain data + unprivileged-thread stacks are
 // placed here so per-domain isolation is enforceable. sim: an mmap arena; MCU: a
 // linker-defined region. arch_ram_alloc reserves a block sized by
-// arch_ram_region_size() and NATURALLY ALIGNED to that size, so exactly one MPU
+// arch_ram_region_size() and aligned to arch_ram_region_align(), so exactly one MPU
 // region covers it. Returns null on exhaustion or size 0.
 uintptr_t arch_ram_base(void);
 size_t arch_ram_size(void);

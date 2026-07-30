@@ -364,13 +364,22 @@ The arena must hold, allocated in this order (`kernel/init/kmain.cc:222`, `:224`
 
 for N **concurrently live** spawned threads taking a kernel-default stack
 (`kernel/syscall/syscall_thread.cc:354`). `align()` is `arch_ram_region_size` /
-`arch_ram_region_align` (`arch/include/kickos/arch/arch.h:234`, `:262`): a power of two
-naturally aligned to itself when `arch_mpu_min_region()` is nonzero (32 on ARM PMSA,
-`arch/arm/common/arch_arm_common.cc:348`), else plain 16-byte granular -- which the
-three no-MPU chips override to (`arch/arm/chip/stm32f302/chip_stm32f302.cc:321`,
-`stm32f103/chip_stm32f103.cc:383`, `nrf51/chip_nrf51.cc:110`). On a pow2 granule the
-natural-alignment run-up can cost as much again as the request, so compute it, do not
-assume the sum of the sizes.
+`arch_ram_region_align` (`arch/include/kickos/arch/arch.h`), which have **three** modes,
+keyed on `arch_mpu_min_region()` and `arch_mpu_region_pow2()`:
+
+| `min` | `pow2()` | size | align | backends |
+|---|---|---|---|---|
+| 0 | n/a | 16-byte granular | 16 | the three no-MPU chips (`nrf51/chip_nrf51.cc:110`, `stm32f103/chip_stm32f103.cc:383`, `stm32f302/chip_stm32f302.cc:321`) and LX6 |
+| != 0 | 1 | power of two, >= `min` | the size | ARM PMSAv7 (32), RISC-V PMP NAPOT (8) |
+| != 0 | 0 | multiple of `min` | `min` | ARM PMSAv8 (32), NXP SYSMPU (32), RX (16) |
+
+Only the pow2 mode pays a natural-alignment run-up, and there it can cost as much again
+as the request, so compute it rather than assuming the sum of the sizes. A base+limit
+backend pays at most one granule per block.
+
+On a v8-M chip the mode is **posture-dependent**: `arch_arm_pmsav8.cc` (the strong
+`pow2() == 0`) enters the link only at `KICKOS_HAVE_MPU=1`, so a non-enforcement build
+of the same chip shapes regions with the weak v7-M pow2 rule.
 
 The arena is a pure bump allocator (`arch/common/arch_ram_common.cc:42`) and **never
 takes a block back**. An exited thread's default stack returns to a single-size-class
@@ -545,8 +554,9 @@ A **zero-skip** run is what needs a bigger part. On top of the 16,384 above it w
 user stack (1,024) and the permanent arena allocations the skips currently decline -- the
 4 KiB MMIO page, the shared domain region and the two cross-domain buffers, 4,864 in all
 -- plus the two self-grant probe ladders, which are not sized here. That is **at least
-22,272 bytes of SRAM, so a 32 KiB part**, and an enforcing chip pays power-of-two natural
-alignment on every block and an `.appdata` window besides. One of the eight is not a RAM
+22,272 bytes of SRAM, so a 32 KiB part**, and an enforcing chip pays an `.appdata` window
+besides, plus power-of-two natural alignment on every block where
+`arch_mpu_region_pow2()` is 1 (a base+limit backend pays only one granule per block). One of the eight is not a RAM
 question at all: `mutex_deadlock` wants `KICKOS_MAX_HANDLES` above 9. `f411disco` is the zero-skip
 witness -- 128 KiB SRAM, plan `1..62`, 0 skips -- and it provisions `KICKOS_MAX_THREADS 8`
 (`../../boards/f411disco/include/kickos/board_config.h:17`), above the measured 4-thread
@@ -570,7 +580,7 @@ Five are arena capacity, two are the 4th concurrent worker, one is the cap table
 | `endpoint_crossdomain` | arena cannot spare two domain regions | 2 x 256 B (`:2901-2902`) | `main.cc:2905` |
 | `irq_as_event` | 4 KiB MMIO-page alloc failed -- board too small | 4,096 B (`:504`) | `main.cc:509` |
 | `mem_self_grant` | arena too small to reach the region ceiling | the `kos_ram_alloc(1)` ladder (`:3221`) | `main.cc:3255` |
-| `mem_self_grant_nonpow2` | arena too small for the probe blocks | 3 x 40 B (`:3283`) | `main.cc:3321` |
+| `mem_self_grant_nonpow2` | arena too small for the probe blocks | 3 x 3 granules (`:3403`) | `main.cc:3419` |
 
 `caller_stack` additionally reports `PARTIAL` as a `tap::diag` (`main.cc:1446`, the accept
 half needs a stack the arena cannot spare) and counts as a pass, not a skip.
@@ -594,9 +604,10 @@ Given a new part's flash and SRAM, in order:
    arena 1:1, and on a 16-20 KiB part it is routinely the difference between one thread
    and four. Zero is a supported profile: it costs stdio buffering and `malloc`, not
    `printf`/`std::cout` -- see *The heap is a per-board profile* above.
-4. **Read `arch_mpu_min_region()` for your chip** before computing anything. Nonzero
-   makes every arena block power-of-two and naturally aligned, which can double the
-   cost of a stack.
+4. **Read `arch_mpu_min_region()` AND `arch_mpu_region_pow2()` for your chip** before
+   computing anything. Only a nonzero granule with `pow2() == 1` makes every arena block
+   power-of-two and naturally aligned, which can double the cost of a stack; a base+limit
+   backend rounds to the granule instead. See the table above.
 5. **Link `hello` and read the four spans** out of the ELF -- `_estack`,
    `_kernel_stack_size`, `_kickos_heap_start`, `__kickos_ram_start`,
    `__kickos_ram_end`. They must sum to the part's SRAM. This is the measurement, and it
