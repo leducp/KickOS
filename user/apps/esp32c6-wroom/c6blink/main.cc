@@ -4,20 +4,20 @@
 // ESP32-C6 GPIO10 blink: the CANONICAL per-thread peripheral-MMIO isolation
 // reference on RISC-V PMP. The C6 twin of the F411 PMSA proof (f411spi), plus the
 // one extra gate the C6 forces: on this core a U-mode (REE) access to an HP
-// peripheral passes TWO permission units in series (TRM 16.1) -- PMP (CPU-side,
+// peripheral passes TWO permission units in series (TRM 16.1): PMP (CPU-side,
 // per-hart, checked FIRST) then APM (bus-side, per security mode, checked only if
 // PMP passes). The chip layer opens APM for REE0 once at boot (arch_init), so the
 // background permit is already in place here; PMP draws the genuine per-thread line
-// ON TOP of it -- which is exactly what K64F (coarse AIPS-only) structurally cannot do.
+// ON TOP of it, which is exactly what K64F (coarse AIPS-only) structurally cannot do.
 //
-// main only prints and spawns (the fleet pattern -- see apps/common/gpioblink): the
+// main only prints and spawns (the fleet pattern, see apps/common/gpioblink): the
 // mux goes through kos_pinmux_set, which the kernel mediates on both the IO_MUX pad
 // and the GPIO matrix out-sel, and EVERY GPIO MMIO write happens inside the spawned
 // UNPRIVILEGED driver holding the pin bank as a 64 B PMP window. So this app runs
 // unchanged with a privileged or an unprivileged root.
 //
 // The driver sets its own direction, blinks, then pokes UNGRANTED
-// GPIO_FUNC10_OUT_SEL_CFG (0x6009_157C) -- same GPIO block, APM-permitted, but
+// GPIO_FUNC10_OUT_SEL_CFG (0x6009_157C): same GPIO block, APM-permitted, but
 // OUTSIDE the 64 B PMP window -> PMP store fault (mcause=7) -> the kernel names the
 // task ("MPU FAULT: task 'c6blink'"). That register is the matrix escalation surface
 // arch_pinmux_set now owns, so the negative test proves the driver cannot re-route
@@ -38,7 +38,7 @@
 #include <stdint.h>
 
 // This app EXISTS to prove PMP per-thread peripheral enforcement. Without it the
-// ungranted poke below succeeds and the console prints the isolation-FAILURE line --
+// ungranted poke below succeeds and the console prints the isolation-FAILURE line:
 // a false verdict. Refuse to build a misleading oracle. (CMake gates it too.)
 #if !KICKOS_HAVE_MPU
 #error "c6blink requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
@@ -66,8 +66,8 @@ namespace
     // (strapping: 8/9/15; USB-JTAG: 12/13; console UART: 16/17). 64 B PMP NAPOT at the
     // block base: pow2, base 64-aligned -> encodable as one entry
     // (arch_mpu_region_encodable). RW-NX; PMP has no device-memory type. The window is
-    // the pin BANK -- output latch (OUT/W1TS/W1TC), direction (ENABLE/ENABLE_W1TS),
-    // input and strap -- and nothing else: the matrix out-sel (+0x554) and the per-pin
+    // the pin BANK: output latch (OUT/W1TS/W1TC), direction (ENABLE/ENABLE_W1TS),
+    // input and strap, and nothing else. The matrix out-sel (+0x554) and the per-pin
     // config/interrupt registers (+0x74..) stay outside, which is what makes it a
     // capability rather than the whole block.
     constexpr int BLINK_PIN = 10;
@@ -159,7 +159,7 @@ namespace
         }
 
         // Negative test (the per-thread isolation proof): poke UNGRANTED
-        // GPIO_FUNC10_OUT_SEL_CFG -- same GPIO block, APM-permitted for REE0, but
+        // GPIO_FUNC10_OUT_SEL_CFG: same GPIO block, APM-permitted for REE0, but
         // OUTSIDE the 64 B window. PMP is checked FIRST and is fail-closed -> store
         // access fault, mcause=7, mtval=0x6009_157C -> kickos_rv_fault_report routes it
         // (from_user and mcause 7) to "MPU FAULT: task 'c6blink'". Announce-before-poke;
@@ -167,7 +167,7 @@ namespace
         kos::print("[c6blink] poking UNGRANTED out-sel @ 0x6009157c (expect MPU FAULT)\n");
         r32(GPIO_FUNC_OUT_SEL_CFG + 0x4u * BLINK_PIN) = OUT_SEL_SIMPLE;
 
-        // Only reached if PMP did NOT enforce -- an isolation failure, not a pass.
+        // Only reached if PMP did NOT enforce: an isolation failure, not a pass.
         kos::print("[c6blink] UNGRANTED ACCESS DID NOT FAULT (PMP not enforcing)\n");
         while (true)
         {
@@ -209,7 +209,7 @@ int main(int, char**)
     // GPIO_OUT/GPIO_ENABLE drives the pad (TRM 7.4.1 "simple GPIO output"). The kernel
     // refuses a kernel-owned pin on BOTH stages, which is why no raw MMIO is left here.
     // The ROM leaves the GPIO Matrix clocked (its own boot log muxes pads), so no PCR
-    // gating -- and PCR (0x6009_6000) is a reserved block anyway.
+    // gating is needed. PCR (0x6009_6000) is a reserved block anyway.
     int const mux = kos_pinmux_set(0, BLINK_PIN,
                                    IO_MUX_MCU_SEL_GPIO | IO_MUX_FUN_DRV_2 | IO_MUX_FUN_IE |
                                        PINMUX_MATRIX_EN | (OUT_SEL_SIMPLE << PINMUX_OUT_SEL_S));

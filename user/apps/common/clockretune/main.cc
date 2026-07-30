@@ -13,7 +13,7 @@
 // KICKOS_ROOT_PRIVILEGED is on (the fleet default), and explicitly through this app's
 // KICKOS_APP_AUTHORITY below, which is what carries it on a flipped board. It returns 0
 // rather than an errno when refused. The app is single-shot: it returns, so the terminal
-// path flushes the console synchronously -- every printed byte reaches the wire.
+// path flushes the console synchronously: every printed byte reaches the wire.
 //
 // It does NOT hand the console to a userspace driver: a retune is REFUSED while the
 // console is USER_OWNED (S4), so the console must stay KERNEL_OWNED throughout.
@@ -26,7 +26,7 @@
 
 namespace
 {
-    // A few million loop iterations of a non-elidable nop -- asm volatile has a side
+    // A few million loop iterations of a non-elidable nop: asm volatile has a side
     // effect, so the compiler keeps the loop. Same fixed count at MAX and at LOW: the
     // measured wall time must scale with the clock ratio.
     constexpr uint32_t SPIN_ITERS = 8000000u;
@@ -129,7 +129,7 @@ int main(int, char**)
         emit("[clockretune] MONOTONIC OK: no backward step, no phantom jump\n");
     }
 
-    // 5. fixed spin AT LOW: same work, must read ~(MAX/LOW ratio) LONGER -- proving both
+    // 5. fixed spin AT LOW: same work, must read ~(MAX/LOW ratio) LONGER, proving both
     //    that the clock actually changed AND that now() stayed coherent (same physical
     //    work priced at the new rate).
     uint64_t const spin_low = timed_spin("LOW");

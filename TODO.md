@@ -926,6 +926,69 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
           declared objective of the pass, not a by-product. It is NOT the stage-2 enforcement gate,
           which no MPU-less part can meet (see the `bluepill-c8` / `f302nucleo` bullet above).
 
+## M4.6.1 -- USB CDC console (picopi, pizero2350, teensy41)
+
+Ordered after M4.6, which is the dependency and not a preference: enumeration is
+interrupt-driven with a deadline on answering `SETUP`, and a console driver that dies must be
+respawnable, so this needs M4.6's IRQ-driven driver work and its IRQ-reclaim fix first.
+Building the stack and the foundation it stands on at the same time is the thing to avoid.
+
+**The motivation is that three boards are not self-contained.** `picopi` (GP0), `pizero2350`
+(UART1 on GP4/GP5) and `teensy41` (LPUART6, pins 0/1) are the boards whose console needs an
+external USB-serial adapter wired to header pins, and `pizero2350` and `teensy41` have no diag
+LED wired either. All three parts carry a device-side USB controller, and on `teensy41` it is
+the port the board already flashes over, so the board can BE the serial adapter.
+
+- [ ] **A CDC-ACM class layer, shared, over TWO device-controller backends.** The class half is
+      one implementation: device / config / interface descriptors, the control transfers CDC
+      needs (`SET_LINE_CODING`, `SET_CONTROL_LINE_STATE`), two bulk endpoints and one interrupt
+      endpoint. The controller half is not shareable across the two families, and that is the
+      real cost of adding `teensy41`:
+        - **RP2040 / RP2350**: a DPRAM-based USB 1.1 device block. These two appear to be the
+          same IP, which would make them the `stm32f411` shape (one backend, two boards).
+        - **i.MX RT1062**: a ChipIdea/EHCI-style OTG controller driven by queue heads and
+          transfer descriptors, which is a different programming model entirely, not a variant.
+      So this is +1 backend for `teensy41`, not +1 stack. **Both claims about the controllers
+      are unverified here** and the datasheets are in the local reference set; confirm the RP
+      pair really is one block before planning on it.
+- [ ] **It is a service, not a port.** A `KOS_SVC_CONSOLE` entry that publishes an endpoint,
+      exactly like `k64uart`. The handover machinery is transport-agnostic and already carries
+      the choreography (create endpoint, publish, grant the window, spawn the unprivileged
+      driver, drop root's cap), so nothing in `system/init/` should need to learn about USB.
+- [ ] **The panic path reclaims and polls, and this is the part to design rather than discover.**
+      `kpanic_enter` already takes the console back from a userspace driver; the USB analogue
+      writes into the bulk IN endpoint's DPRAM buffer, marks it available with a length, and
+      polls until the controller returns it. **No device-side interrupt is needed, because the
+      HOST issues the IN tokens**, so a fault handler can transmit on an already-configured
+      device without re-enumerating. That is the DPRAM shape; on the RT1062 the same idea means
+      priming a transfer descriptor and polling its status, so the poll is per-backend work and
+      needs confirming separately for each. Three constraints follow, and they hold for both:
+        - **The spin must be BOUNDED.** With no host holding the port open there are no IN
+          tokens and the buffer never comes back, so an unbounded poll hangs a panic on an
+          unplugged board instead of reporting and resetting. `KICKOS_POLL_SPIN_MAX` is the
+          existing precedent.
+        - **A fault before the host finishes configuring has no console at all.** Narrow, and
+          no worse than any console needing bring-up, but it means RTT or a pin UART stays
+          worthwhile as the early-boot path rather than being redundant.
+        - **A suspended device needs resume signalling before it can transmit**, which is the
+          one place the fault handler would have to do protocol work rather than a buffer write.
+      Expect the same tail loss the UART reclaim already has: `xmc4800-relax` reproducibly
+      clips roughly the last 8 bytes the driver had queued (the word pending in `TBUF0`), and
+      the USB analogue is a buffer the driver had filled but not yet marked available.
+- [ ] **Reboot-to-bootloader takes the USB device away, on all three.** `arch_reboot` hands the
+      chip to a bootloader that owns the same port: the RP bootrom re-enumerates as its own USB
+      boot device (`2e8a:000f` for the RP2350, witnessed under *`pizero2350`* in
+      `docs/reference/boards.md`), and `imxrt1062`'s `bkpt #251` has the MKL02 present HalfKay.
+      A USB console goes dark at that call by construction. Correct, and worth stating where the
+      reboot seam is documented rather than discovering it on the bench. Note the flip side on
+      `teensy41`: that handover is how the board is flashed, so a USB console and the flashing
+      path share one connector by design.
+- [ ] **Check the idle path against USB liveness before committing to the design.** The RP2040
+      sleeps when both cores are idle, which is already known to gate its debug bus, and a
+      device that stops answering the host drops off the bus. Whether the tickless idle path
+      keeps the USB controller clocked is a datasheet question to answer early on each part,
+      since the answer could constrain `arch_idle_wait` there.
+
 ## Found during the M4.5.2 stage-2 flip work (2026-07-28/29)
 
 - [ ] **An IRQ line is never released, so a driver that exits cannot be respawned. Owner: M4.6**,

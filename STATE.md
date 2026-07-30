@@ -48,6 +48,10 @@ because `xmcssc` needs the USIC `FDR`/`BRG`/`CCR` seam that stage 3 does not cov
 2. **4.5.5**: MPU region-encoding classes, plus a fleet re-witness pass.
 3. Delete `KICKOS_ROOT_PRIVILEGED` outright.
 4. **M4.6**: consoles / UART.
+5. **M4.6.1**: USB CDC console on `picopi`, `pizero2350` and `teensy41`, the boards whose console
+   needs an external adapter today. One shared CDC class over two controller backends (the RP
+   DPRAM block, the RT1062 ChipIdea OTG). After M4.6 because it needs the IRQ-driven driver work
+   and the IRQ-reclaim fix.
 
 ## Build posture
 

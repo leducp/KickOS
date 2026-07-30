@@ -3,7 +3,7 @@
 //
 // Capability-table manager (see cap.h): the per-task naming+rights layer over the
 // global object pools, plus the object-side refcount (kernel().sem_refs) that owns
-// destroy-on-last-close. slotpool.h stays generic -- refs[] lives here.
+// destroy-on-last-close. slotpool.h stays generic: refs[] lives here.
 
 #include <kickos/cap.h>
 #include <kickos/instance.h>
@@ -25,7 +25,7 @@ namespace kickos
 
         // The CapAuthority word of an entry already TYPE-TESTED as CAP_AUTHORITY: that
         // type names no pool object, so `obj` carries the authority instead. Both callers
-        // check the type first -- reading it off any other type is a bug.
+        // check the type first: reading it off any other type is a bug.
         uint8_t authority_word(CapEntry const& e)
         {
             return static_cast<uint8_t>(e.obj);
@@ -53,7 +53,7 @@ namespace kickos
             int const idx = sem_index_of(obj_handle);
             if (idx < 0)
             {
-                return; // already gone -- cannot happen under correct refcounting
+                return; // already gone: cannot happen under correct refcounting
             }
             uint8_t& r = kernel().sem_refs[idx];
             if (r > 0)
@@ -91,7 +91,7 @@ namespace kickos
         // handle_close, so its own cap pins refs >= 1), so it asserts teardown and
         // leaks rather than stranding. R4: refs -> 0 also implies owner == nullptr (an
         // owner's own cap pins a ref via the R2 close guard, and R3 force-unlocked
-        // before this drop on the exit path) -- assert it.
+        // before this drop on the exit path). Assert it.
         void mutex_ref_drop(int obj_handle, bool teardown)
         {
             int const idx = mutex_index_of(obj_handle);
@@ -163,7 +163,7 @@ namespace kickos
 
         // Drop one reference to the object a (now-detached) cap entry named; dispatch to
         // the per-type accounting arm. A future type reaching the default without its own
-        // arm traps in debug -- a silent skip would leak its reference with no diagnostic
+        // arm traps in debug: a silent skip would leak its reference with no diagnostic
         // (release builds still avoid treating a foreign handle as a sem index: safe leak).
         void obj_ref_drop(CapEntry const& e, bool teardown)
         {
@@ -202,7 +202,7 @@ namespace kickos
 
         // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
         // Returns 0, or a negative -KOS_E* to refuse a voluntary (non-teardown) close.
-        // CAP_SEM has no protocol -- this is why semaphores never needed the hook. The
+        // CAP_SEM has no protocol: semaphores never needed the hook. The
         // seam #3 (refuse-owned / force-unlock) and #4 (EPIPE-wake) fill their arms here.
         int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown)
         {
@@ -223,20 +223,20 @@ namespace kickos
                 {
                     return -KOS_EBUSY; // R2: refuse a voluntary close of a mutex you OWN (unlock first)
                 }
-                // R3: the owner is exiting -- force-unlock BEFORE the ref drop so a
+                // R3: the owner is exiting. Force-unlock BEFORE the ref drop so a
                 // waiter is never stranded; the woken lock() caller gets OWNER_DIED.
                 mutex_force_unlock(m, closer);
                 return 0;
             }
             case CapType::CAP_ENDPOINT:
             {
-                // #4: dropping the LAST WAIT-bearing cap makes the endpoint dead -- no
-                // receiver can ever exist -- so EPIPE every parked sender. Fired exactly
+                // #4: dropping the LAST WAIT-bearing cap makes the endpoint dead (no
+                // receiver can ever exist), so EPIPE every parked sender. Fired exactly
                 // once (recv_holders -> 0), on BOTH voluntary close and exit teardown.
                 Endpoint* ep = kernel().endpoints.resolve(e.obj);
                 if (ep != nullptr and (e.rights & CAP_WAIT) != 0)
                 {
-                    // B2: this closer was the conventional server -- drop the dangling
+                    // B2: this closer was the conventional server: drop the dangling
                     // pointer (else a later D2 boost writes a reused TCB) and kill any
                     // lingering D2 donation. A dying closer is never rescheduled, so it
                     // skips its own recompute (mirrors mutex_force_unlock).
@@ -391,7 +391,7 @@ namespace kickos
             return nullptr;
         }
         // Full high bits (not truncated): a handle carrying junk above the cap-gen field
-        // must fail to resolve, not alias -- mirrors slotpool.h's resolve().
+        // must fail to resolve, not alias (mirrors slotpool.h's resolve()).
         uint32_t const cgen = static_cast<uint32_t>(cap_handle) >> KCAP_INDEX_BITS;
         if (static_cast<uint32_t>(e.gen) != cgen)
         {
@@ -518,7 +518,7 @@ namespace kickos
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
     {
         // Bounds + reserved-slot guard (defense-in-depth; every caller already validates its
-        // index). Index 0 is the kernel stdout slot -- ONLY cap_install_defaults seats it,
+        // index). Index 0 is the kernel stdout slot. ONLY cap_install_defaults seats it,
         // writing the slot directly, so cap_install_at rejects 0 outright: no delegation or
         // own-create may alias stdout. An out-of-range index is a kernel bug: trap in debug,
         // no-op in release rather than scribble another thread's slot.
@@ -537,7 +537,7 @@ namespace kickos
     {
         // Own-create placement: scan from KICKOS_CAP_FIRST_DYNAMIC so an own create can NEVER
         // land on a reserved well-known index (0 .. FIRST_DYNAMIC-1). Reserved slots are
-        // seated only by the kernel (stdout) or by explicit spawn delegation -- frozen
+        // seated only by the kernel (stdout) or by explicit spawn delegation: frozen
         // policy, see <kickos/sys/cap_index.h>. Costs FIRST_DYNAMIC slots per table; own
         // caps live in [FIRST_DYNAMIC .. MAX-1].
         for (int i = KICKOS_CAP_FIRST_DYNAMIC; i < KICKOS_MAX_HANDLES; i++)
@@ -581,7 +581,7 @@ namespace kickos
         }
         if (static_cast<uint32_t>(tp.gen[index]) != gen)
         {
-            return nullptr; // slot reclaimed under the cap -- stale
+            return nullptr; // slot reclaimed under the cap: stale
         }
         Thread* t = &tp.slots[index];
         if (t->state != ThreadState::BLOCKED or t->call_state != CALL_REPLY_WAIT)

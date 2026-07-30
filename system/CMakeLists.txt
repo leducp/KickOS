@@ -48,7 +48,7 @@ target_include_directories(kickos_default_init PRIVATE
 # on every board that ships no service list. Its own TU so a board that DOES select a
 # list never also drags this in (one definition of kickos_board_services per image).
 # All the board providers (this + the pinmaps + the per-board service lists below) go
-# through kickos_add_board_provider, which self-installs to KickOSTargets -- so there
+# through kickos_add_board_provider, which self-installs to KickOSTargets, so there
 # is no separate hand-maintained install(TARGETS ...) list to drift out of sync.
 kickos_add_board_provider(services_none SOURCE init/services_none.cc)
 
@@ -76,7 +76,7 @@ elseif(KICKOS_CHIP STREQUAL "xmc4800")
   kickos_add_board_provider(services_xmc4800relax SOURCE init/service_list_xmc4800relax.cc
     LINK kickos_xmcuart kickos_xmcssc)
   # Console-only alternative: the same KOS_SVC_CONSOLE entry with the SPI one left out,
-  # so it links kickos_xmcuart ALONE. That is the point of it -- the SSC driver's
+  # so it links kickos_xmcuart ALONE. That is the point of it: the SSC driver's
   # bring-up needs a privileged root, so an image for an unprivileged root must not
   # link it at all rather than link it and not call it.
   kickos_add_board_provider(services_xmc4800relax_console
@@ -85,7 +85,7 @@ elseif(KICKOS_CHIP STREQUAL "xmc4800")
 endif()
 # The sim's publishing posture, so the console-handover route the silicon boards ship
 # is reachable in CI (see init/service_list_sim.cc). Its "driver" is a host write(2),
-# hence sim-only. NOT the sim default -- selected explicitly with
+# hence sim-only. NOT the sim default: selected explicitly with
 # -DKICKOS_SERVICE_LIST=kickos_services_sim, so the ordinary sim gate keeps covering
 # the pre-publish route. Unlike the pure-data providers above it calls kos_* + the
 # shared driver bring-up tail, so it needs user/include.

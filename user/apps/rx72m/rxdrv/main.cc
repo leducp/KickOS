@@ -4,19 +4,19 @@
 // RX72M (RXv3) GPIO blink: the per-thread peripheral-MMIO isolation reference on
 // the RX MPU. The RX twin of the F411 PMSA proof (f411spi) and the C6 PMP proof
 // (c6blink). The RX MPU is CPU-side and checks EVERY access to the whole address
-// space 0000_0000h-FFFF_FFFFh in user mode -- including the peripheral/SFR aperture
+// space 0000_0000h-FFFF_FFFFh in user mode, including the peripheral/SFR aperture
 // (UM r01uh0804ej0120 sec.17.1 + Table 17.1); supervisor is never checked. So a
 // granted MMIO window IS a genuine per-thread capability, unlike K64F where the
 // SYSMPU cannot gate peripherals (k64drv proved that grant inert).
 //
-// main only prints and spawns (the fleet pattern -- see apps/common/gpioblink): the
+// main only prints and spawns (the fleet pattern, see apps/common/gpioblink): the
 // mux goes through kos_pinmux_set, which the kernel mediates on both the MPC PmnPFS
 // function select and the PORTm.PMR peripheral-vs-GPIO switch, and EVERY port MMIO
 // access happens inside the spawned UNPRIVILEGED driver holding an 80 B window. So
 // this app runs unchanged with a privileged or an unprivileged root.
 //
 // The driver sets its own direction (PDR), blinks LED6 (PODR), reads the pad back
-// (PIDR), then pokes UNGRANTED PORT8.PMR (0008_C068h) -- the mux escalation surface
+// (PIDR), then pokes UNGRANTED PORT8.PMR (0008_C068h): the mux escalation surface
 // arch_pinmux_set now owns, OUTSIDE the window -> RX access exception (fixed vector
 // +0x54) with MPESTS.DMPER set and MPDEA holding the address -> the kernel names the
 // task ("MPU FAULT: task 'rxdrv'"). So the negative test proves the driver cannot
@@ -38,7 +38,7 @@
 #include <stdint.h>
 
 // This app EXISTS to prove RX MPU per-thread peripheral enforcement. Without it the
-// ungranted poke below succeeds and the console prints the isolation-FAILURE line --
+// ungranted poke below succeeds and the console prints the isolation-FAILURE line:
 // a false verdict. Refuse to build a misleading oracle. (CMake gates it too.)
 #if !KICKOS_HAVE_MPU
 #error "rxdrv requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
@@ -47,7 +47,7 @@
 namespace
 {
     // RX72M UM r01uh0804ej0120 sec.22 (I/O ports). Absolute SFR addresses, no vendor
-    // SDK -- consistent with the chip backend's clean-room register map. Each block is
+    // SDK, consistent with the chip backend's clean-room register map. Each block is
     // one byte per port, contiguous from PORT0: PDR @0008_C000h (sec.22.3.1), PODR
     // @0008_C020h (22.3.2), PIDR @0008_C040h (22.3.3), PMR @0008_C060h (22.3.4).
     constexpr uintptr_t PORT_BASE = 0x0008C000u;
@@ -72,12 +72,12 @@ namespace
     // 80 B window granted to the driver: base 0008_C000h (16-aligned), size 0x50
     // (16-multiple) -> exact cover, encodable by arch_mpu_region_encodable (the RX MPU
     // page is 16 B and needs no power-of-two size, UM sec.17.1.2). It spans PDR, PODR
-    // and PIDR up to PORTF, ending at 0008_C04Fh -- 16 B, one full register row, short
+    // and PIDR up to PORTF, ending at 0008_C04Fh: 16 B, one full register row, short
     // of the PMR block at 0008_C060h, which is the point: direction and drive are in,
     // the FUNCTION SELECTORS (PMR here, the MPC
     // PFS file at 0008_C140h) stay out. Covering PDR/PODR for every port is an
-    // unavoidable over-grant -- the RX interleaves ports inside each register block
-    // instead of blocking per port -- but not an escalation: a pin at PMR=1 ignores
+    // unavoidable over-grant (the RX interleaves ports inside each register block
+    // instead of blocking per port) but not an escalation: a pin at PMR=1 ignores
     // PDR/PODR entirely (UM Table 23.47), so the console pins cannot be touched
     // through this window.
     constexpr uintptr_t PORT_WINDOW_BASE = PORT_BASE;
@@ -138,7 +138,7 @@ namespace
         kos::print("[rxdrv] blinking LED6 (P80) via the 80 B port window\n");
 
         // PIDR is the PAD, not the latch, and reads regardless of PDR/PMR (UM
-        // sec.22.3.3) -- the console-visible oracle that the pin really moved, and the
+        // sec.22.3.3): the console-visible oracle that the pin really moved, and the
         // only proof the mux landed if LED6 is not in the operator's line of sight.
         bool ok = true;
         for (int i = 0; i < DRIVER_BLINKS; i++)
@@ -167,7 +167,7 @@ namespace
             kos::print("[rxdrv] FAIL (pad did not track the drive)\n");
         }
 
-        // Negative test (the per-thread isolation proof): poke UNGRANTED PORT8.PMR --
+        // Negative test (the per-thread isolation proof): poke UNGRANTED PORT8.PMR:
         // the pin-function switch, OUTSIDE the 80 B window. The RX MPU is CPU-side and
         // checked on every user access, so this operand write faults BEFORE the bus ->
         // access exception (fixed vector +0x54), MPESTS.DMPER set, MPDEA=0008_C068h ->
@@ -178,7 +178,7 @@ namespace
         kos::print("[rxdrv] poking UNGRANTED PORT8.PMR @ 0x0008C068 (expect MPU FAULT)\n");
         r8(PORT8_PMR) = LED6;
 
-        // Only reached if the MPU did NOT enforce -- an isolation failure, not a pass.
+        // Only reached if the MPU did NOT enforce: an isolation failure, not a pass.
         kos::print("[rxdrv] UNGRANTED ACCESS DID NOT FAULT (MPU not enforcing)\n");
         while (true)
         {
@@ -224,7 +224,7 @@ int main(int, char**)
     kos::print(m);
 
     // Mediation check: the same call aimed at the console's TXD6 pin must be REFUSED.
-    // If the refusal ever broke, this very write is the one that darks the console --
+    // If the refusal ever broke, this very write is the one that darks the console,
     // so a silent run stopping right here is itself the failure signal.
     int const owned = kos_pinmux_set(PORTB, PB1, PINMUX_PFS_EN | PFS_PSEL_HIZ);
     if (owned == -KOS_EBUSY)

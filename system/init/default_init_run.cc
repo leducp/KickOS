@@ -15,14 +15,11 @@
 
 extern "C" int kickos_default_init_run(int argc, char** argv)
 {
-    // The narrow lives HERE rather than in the default kickos_init_entry so that a
-    // custom provider delegating to this body cannot end up running the app with root's
-    // full authority. Getting the composition wrong now costs a loud -KOS_EPERM from
-    // whatever bring-up runs after this, instead of an unconfined app and no diagnostic.
+    // In the run body, not the entry, so a custom provider delegating here cannot run the
+    // app with root's full authority.
     int const narrow_rc = kos_cap_narrow(KOS_CAP_AUTHORITY, kickos_app_authority());
-    // -KOS_EBADF is the privileged-root answer -- kmain seats no authority cap there,
-    // so the slot is empty and there is nothing to narrow. Any other refusal is a
-    // kernel-side bug and aborts the app rather than running it unconfined.
+    // A privileged root has no authority cap seated, so the empty slot answers
+    // -KOS_EBADF. Any other refusal is a kernel-side bug and aborts the app.
     if (narrow_rc != 0 and narrow_rc != -KOS_EBADF)
     {
         return narrow_rc;

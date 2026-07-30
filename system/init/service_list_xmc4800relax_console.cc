@@ -23,7 +23,7 @@
 
 extern "C"
 {
-    // USIC0 CH0 @ 0x4003_0000, 0x200 B (RM Table 18-21) -- the 0x200-aligned pow2
+    // USIC0 CH0 @ 0x4003_0000, 0x200 B (RM Table 18-21): the 0x200-aligned pow2
     // window that encodes on PMSA as one exact-cover descriptor, leaving the sibling
     // channel U0C1 (base + 0x200) and the SCU / IOCR peripherals outside it. prio 12
     // must be >= every stdout client's priority (D9: no PI on the console rendezvous),

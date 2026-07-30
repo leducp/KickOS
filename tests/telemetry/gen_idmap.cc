@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// CI gate 3: trace-metadata de-drift. Emits the id->number maps from the C++ enums --
+// CI gate 3: trace-metadata de-drift. Emits the id->number maps from the C++ enums
 // kickos::trace::ArchId (include/kickos/trace/record.h) and enum kos_syscall_nr
-// (user/include/kickos/sys/abi.h) -- one "arch <n>" / "syscall <n>" line each.
+// (user/include/kickos/sys/abi.h): one "arch <n>" / "syscall <n>" line each.
 // check_idmap.py cross-checks these against abi.h and tools/kicktrace.py.
 //
 // The lists below reference each enumerator BY NAME, so a removed/renamed enum

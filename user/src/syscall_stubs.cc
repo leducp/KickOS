@@ -234,7 +234,7 @@ uint64_t kos_clock_now(void)
 {
     uint64_t out = 0;
     // Surface the syscall status instead of discarding it: on a reject (bad/misaligned
-    // out-ptr -- impossible for this well-formed stack local, so purely defensive) the
+    // out-ptr, impossible for this well-formed stack local, so purely defensive) the
     // out value is never written, so report 0 rather than an uninitialized time.
     long const rc = static_cast<long>(
         arch_syscall(KOS_SYS_CLOCK_NOW, reinterpret_cast<uintptr_t>(&out), 0, 0, 0));

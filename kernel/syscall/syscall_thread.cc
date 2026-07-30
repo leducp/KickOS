@@ -30,7 +30,7 @@ namespace kickos
     // context from scratch, so a reclaimed slot's privilege posture is a clean reset
     // (the sim's mid-syscall `raised`, the ARM CONTROL.nPRIV, the RX PSW). No syscall
     // resolves a thread by handle yet; when join/kill-by-id adds one it must also
-    // reject state==EXITED (the generation bumps at reclaim, not exit -- see ThreadPool).
+    // reject state==EXITED (the generation bumps at reclaim, not exit: see ThreadPool).
     int thread_spawn(kos_thread_params const* p)
     {
         IrqLock lock;
@@ -50,7 +50,7 @@ namespace kickos
         // that recognises it.
         // Reject a misaligned struct pointer BEFORE the typed copy below: the kernel
         // does that load privileged, and a misaligned word load traps in the kernel on
-        // a strict-align arch (rv32imac) -- a user-triggerable kernel fault. alignof is
+        // a strict-align arch (rv32imac): a user-triggerable kernel fault. alignof is
         // the arch-correct requirement, same rationale as the clock_now out-pointer.
         uintptr_t const pu = reinterpret_cast<uintptr_t>(p);
         if ((pu & (alignof(kos_thread_params) - 1)) != 0)
@@ -99,7 +99,7 @@ namespace kickos
             // naturally-aligned blocks. (Privileged threads get the whole arena +
             // the background region, so their stack needs no separate descriptor.)
             // Without MPU there is no region descriptor to form, so this does not
-            // apply -- matching KOS_STACK_DEFINE, which only natural-aligns a caller
+            // apply, matching KOS_STACK_DEFINE, which only natural-aligns a caller
             // stack under enforcement (16-byte ABI alignment otherwise).
 #if KICKOS_HAVE_MPU
             // The stack is committed as one R|W MPU region (thread.cc), so [R10]
@@ -113,7 +113,7 @@ namespace kickos
                     return -KOS_EINVAL; // stack base not naturally aligned to its region size
                 }
                 // Rule 7: admit the stack region through the same predicate as any
-                // grant -- arena-confined for EVERY caller (10C, no privileged waiver)
+                // grant: arena-confined for EVERY caller (10C, no privileged waiver)
                 // and reserved-block-clear. Refusal is -KOS_EPERM (the code the
                 // out-of-arena selftest asserts). Without this an out-of-arena
                 // stack_base grants an R|W window over peripheral / kernel SRAM.
@@ -132,8 +132,7 @@ namespace kickos
         // R|W geometry, 10C), which reports -KOS_EPERM directly, so nothing here pre-checks
         // it to recover an errno. [R11] Keep only a trivial UNGATED wrap check, so a
         // wrapping mem_base is a clean -KOS_EINVAL on every board, including no-MPU parts
-        // where domain_for's predicate is a no-op stub. (No-MPU boundary change: the old
-        // ungated arena bound there is dropped; there is no MPU region to escalate through.)
+        // where domain_for's predicate is a no-op stub.
         if (p->mem_base != nullptr and p->mem_size != 0)
         {
             uintptr_t const dbase = reinterpret_cast<uintptr_t>(p->mem_base);
@@ -143,7 +142,7 @@ namespace kickos
             }
         }
         // MMIO grant (optional): a device register window handed to an unprivileged
-        // driver. This is the PRECISE-ERROR boundary -- privileged-only (EPERM) and
+        // driver. This is the PRECISE-ERROR boundary: privileged-only (EPERM) and
         // exact-shape (EINVAL: zero-size, wrap, non-encodable), the codes the selftest
         // asserts. The AUTHORITATIVE Rule 7 admission (reserved-block overlap, bit-band
         // alias) is domain_for's grant_region_admissible on the same window; keeping
@@ -153,7 +152,7 @@ namespace kickos
         {
             if (not cap_check_authority(sched::current(), AUTH_MEMORY))
             {
-                return -KOS_EPERM; // MMIO needs AUTH_MEMORY -- never self-grantable
+                return -KOS_EPERM; // MMIO needs AUTH_MEMORY: never self-grantable
             }
             uintptr_t const mbase = reinterpret_cast<uintptr_t>(p->mmio_base);
             if (p->mmio_size == 0 or mbase + p->mmio_size < mbase)
@@ -174,7 +173,7 @@ namespace kickos
             {
                 // A bit no gate reads: refuse rather than silently mask it off. The
                 // authority word has its own numbering, so this catches only bits above
-                // the defined authorities -- an object right is not a distinguishable
+                // the defined authorities: an object right is not a distinguishable
                 // wrong value here.
                 return -KOS_EINVAL; // non-authority bits in the authority mask
             }
@@ -197,7 +196,7 @@ namespace kickos
         // CALLER's table, carry CAP_TRANSFER, and the mask must be a subset (narrow
         // only, never widen); cap_count + 1 must fit the child table (index 0
         // reserved). Only after every check passes do we install + bump refs, so a
-        // mid-install failure -- which validation makes impossible -- cannot leave a
+        // mid-install failure (which validation makes impossible) cannot leave a
         // half-populated child with dangling ref bumps.
         int deleg_obj[KICKOS_MAX_HANDLES];
         uint8_t deleg_type[KICKOS_MAX_HANDLES];
@@ -225,7 +224,7 @@ namespace kickos
                 return -KOS_EFAULT; // grant array not readable by the caller
             }
             // Snapshot the whole grant array into kernel memory in one pass right after
-            // the range check, then validate from the copy -- so a future SMP kernel
+            // the range check, then validate from the copy, so a future SMP kernel
             // cannot let a peer core rewrite p->caps[ci] between check and read
             // (the classic double-fetch seam; single-core IrqLock closes it today).
             kos_cap_grant gbuf[KICKOS_MAX_HANDLES];
@@ -247,7 +246,7 @@ namespace kickos
                 // An authority cap is never delegable, by TYPE and not merely by an
                 // absent CAP_TRANSFER. This copy takes `obj` and `type` verbatim, so
                 // once the authority word lives in `obj` a delegable authority cap
-                // would be a full forgery at child index ci+1 -- and index 2 is
+                // would be a full forgery at child index ci+1, and index 2 is
                 // reachable whenever cap_count >= 2. The child's seat has exactly one
                 // writer, cap_seat_authority (kos_thread_params::authority).
                 if (se->type == static_cast<uint8_t>(CapType::CAP_AUTHORITY))
@@ -259,7 +258,7 @@ namespace kickos
                     return -KOS_EPERM; // source cap is not delegable (no TRANSFER right)
                 }
                 uint8_t const mask = g.rights_mask;
-                if ((mask & se->rights) != mask) // mask must be a subset -- no widening
+                if ((mask & se->rights) != mask) // mask must be a subset: no widening
                 {
                     return -KOS_EINVAL; // grant mask widens beyond the source rights
                 }
@@ -289,7 +288,7 @@ namespace kickos
         }
         // Reclaim an EXITED slot or bump-allocate (ThreadPool::alloc). Single-core: an
         // EXITED thread is guaranteed off-CPU by the time any other thread reaches here
-        // -- it parked in exit_current until its switch-away committed -- and is off
+        // (it parked in exit_current until its switch-away committed) and is off
         // every ready/wait/timer list, so reinit is safe. current() is RUNNING, never
         // EXITED, so it is never picked.
         int const i = k.threads.alloc();
@@ -301,7 +300,7 @@ namespace kickos
         ThreadAttr attr;
         attr.name = "user";
         // Copy the caller's name into kernel memory, checking EACH source byte is
-        // caller-readable before the privileged copy dereferences it -- the kernel
+        // caller-readable before the privileged copy dereferences it: the kernel
         // must not fault (DoS) on, or leak another domain's page through, a bad name
         // pointer. This BOUNDS the walk: a string not NUL-terminated within a
         // granted region stops at the first unreachable byte. If the very first byte
@@ -317,7 +316,7 @@ namespace kickos
             {
                 if (not user_readable_ok(np + ni, 1))
                 {
-                    break; // unreachable byte -- bound the walk here
+                    break; // unreachable byte: bound the walk here
                 }
                 kaccess_from_user(&namebuf[ni], np + ni, 1);
                 if (namebuf[ni] == '\0')
@@ -353,8 +352,8 @@ namespace kickos
         // Caller's stack if given (a thread's stack is a userspace concern), else a
         // kernel-default stack, demand-allocated: reuse a reclaimed block from the
         // free list, else bump a fresh one from the arena (naturally aligned into a
-        // valid MPU region). BOTH failing (arena exhausted) is a clean spawn failure
-        // -- release the slot we just claimed so we neither leak a TCB nor burn the
+        // valid MPU region). BOTH failing (arena exhausted) is a clean spawn failure:
+        // release the slot we just claimed so we neither leak a TCB nor burn the
         // prior occupant's join handle.
         void* stack = p->stack_base;
         size_t stack_size = p->stack_size;

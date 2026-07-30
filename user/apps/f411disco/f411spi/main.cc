@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // STM32F411 SPI1 loopback driver: the CANONICAL per-thread peripheral-MMIO
-// isolation reference on ARMv7-M PMSA (task #9 Stage 5). Unlike K64F -- where the
+// isolation reference on ARMv7-M PMSA (task #9 Stage 5). Unlike K64F, where the
 // SYSMPU is bus-slave-side and peripherals are gated coarsely by the AIPS bridge
-// (k64drv proved a peripheral window grant is INERT) -- the PMSA MPU is CPU-side and
+// (k64drv proved a peripheral window grant is INERT), the PMSA MPU is CPU-side and
 // covers peripheral space, so a granted DEV window IS a genuine per-thread
 // capability (reprogrammed every switch-in by arch_mpu_apply).
 //
@@ -31,7 +31,7 @@
 
 // This app EXISTS to prove PMSA per-thread peripheral enforcement. Without it the
 // MPU is a no-op, the ungranted poke below succeeds, and the console prints the
-// isolation-FAILURE line -- a false "PMSA does not gate peripherals" verdict. Refuse
+// isolation-FAILURE line: a false "PMSA does not gate peripherals" verdict. Refuse
 // to build a misleading oracle. (CMake also gates the app to enforcement builds.)
 #if !KICKOS_HAVE_MPU
 #error "f411spi requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
@@ -150,7 +150,7 @@ namespace
         *cr1 |= CR1_SPE;
 
         // Announce before the first blocking wait: if IRQ 35 never fires (misrouted
-        // line / NVIC), the driver hangs in kos_irq_wait -- this line disambiguates a
+        // line / NVIC), the driver hangs in kos_irq_wait: this line disambiguates a
         // hung-waiting-for-IRQ board from a dead one / a missing console adapter.
         kos::print("[f411spi] starting loopback (blocking on SPI1 IRQ 35)\n");
 
@@ -184,7 +184,7 @@ namespace
                                        // the line (no explicit kernel ack)
             uint32_t rx = *dr & 0xFFu; // read RX: CLEARS RXNE, de-asserts the line so it
                                        // does not storm when the next wait re-arms (SPI has
-                                       // no W1C flag -- the DR read is the mandatory quiesce)
+                                       // no W1C flag, so the DR read is the mandatory quiesce)
 
             char s[64];
             char const* verdict = "PASS";
@@ -214,7 +214,7 @@ namespace
         kos::print("[f411spi] poking UNGRANTED GPIOB @ 0x40020400 (expect MPU FAULT)\n");
         uint32_t leaked = r32(GPIOB_BASE);
 
-        // Only reached if PMSA did NOT enforce -- an isolation failure, not a pass.
+        // Only reached if PMSA did NOT enforce: an isolation failure, not a pass.
         char s[72];
         ksnprintf(s, sizeof(s),
                   "[f411spi] UNGRANTED ACCESS DID NOT FAULT (GPIOB=0x%x)\n",

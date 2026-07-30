@@ -5,7 +5,7 @@
 // a global generational object (semaphore, PI mutex, or IPC endpoint). The
 // cap table is a pure per-task naming+rights layer that WRAPS the unchanged global
 // object pools (slotpool.h): a CapEntry stores (global-object-handle, type, rights)
-// and cap_resolve is two-level -- the per-task cap-gen guard here, then the object
+// and cap_resolve is two-level: the per-task cap-gen guard here, then the object
 // pool's own object-gen guard. Object liveness is a global property (the pool +
 // its parallel refs[]); capability possession is a per-task property (this table).
 //
@@ -31,7 +31,7 @@ static_assert(KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC,
 
 namespace kickos
 {
-    struct Thread; // kickos/thread.h -- embeds CapEntry handles[]; cap fns take Thread*
+    struct Thread; // kickos/thread.h: embeds CapEntry handles[]; cap fns take Thread*
 
     // Handle-word index field width: 4 bits => <= 16 table slots (KICKOS_MAX_HANDLES
     // is 6/8 at these sizes); the rest of the word is the cap generation.
@@ -45,7 +45,7 @@ namespace kickos
 
     enum class CapType : uint8_t
     {
-        CAP_EMPTY = 0, // an unused slot -- must be 0 so a zeroed TCB is an empty table
+        CAP_EMPTY = 0, // an unused slot: must be 0 so a zeroed TCB is an empty table
         CAP_SEM,
         CAP_MUTEX,    // PI mutex object pool
         CAP_ENDPOINT, // synchronous IPC endpoint object pool
@@ -58,7 +58,7 @@ namespace kickos
     };
 
     // Rights bits enforced at cap_resolve ((rights & need) == need); CAP_TRANSFER is
-    // enforced at the delegate site. Every bit maps to a real check -- no dead field.
+    // enforced at the delegate site. Every bit maps to a real check: no dead field.
     // OBJECT rights only: a CAP_AUTHORITY entry carries `rights` 0.
     enum CapRights : uint8_t
     {
@@ -67,14 +67,11 @@ namespace kickos
         CAP_TRANSFER = 1 << 2 // may be delegated into a child table (section 6)
     };
 
-    // The authority word of a CAP_AUTHORITY entry. It lives in `obj`, which the type
-    // leaves unused, and NOT in `rights`, whose three object bits left room for only
-    // five -- that is what funds the sixth here. Its own field, so these bits share no
-    // numbering with CapRights and nothing has to keep the two families disjoint.
-    // Mirrored in <kickos/sys/abi.h> as KOS_AUTH_*.
+    // The authority word of a CAP_AUTHORITY entry, held in `obj` (unused by that type)
+    // and not in `rights`. Its own field, so these bits share no numbering with
+    // CapRights. Mirrored in <kickos/sys/abi.h> as KOS_AUTH_*.
     //
-    // The seatable width is bounded by kos_thread_params::authority (a uint8_t in the
-    // struct's padding), not by `obj`, which has room for 32.
+    // Seatable width is bounded by kos_thread_params::authority, a uint8_t, not by `obj`.
     enum CapAuthority : uint8_t
     {
         AUTH_MEMORY = 1 << 0,  // ram_alloc, the spawn-time MMIO window grant, mem_self_grant
@@ -85,16 +82,11 @@ namespace kickos
         AUTH_CONSOLE = 1 << 5  // console_publish
     };
 
-    // AUTH_PSTATE is separate from AUTH_SYSTEM because a CPU-governor service needs
-    // clock-rate authority and nothing else: folding the two would hand the governor the
-    // power to end the system. AUTH_CONSOLE is separate for the mirror-image reason --
-    // once root is only a spawner, the console driver and the thread that ends the system
-    // are different threads.
+    // Why the cut falls where it does: docs/design-unprivileged-root.md section 5.1.
 
-    // arch_periph_enable carries NO authority bit: it is gated on the caller holding a live
-    // ARCH_MPU_DEV region whose base matches the block exactly (caller_holds_mmio_block,
-    // syscall_mem.cc). Its callers are the bus drivers, so any bit here would have handed
-    // whatever else that bit covers to every unprivileged driver in the fleet.
+    // arch_periph_enable carries NO authority bit, and must not be given one: it is gated
+    // on the caller holding a live ARCH_MPU_DEV region whose base matches the block exactly
+    // (caller_holds_mmio_block, syscall_mem.cc). See design-unprivileged-root.md section 7.
 
     // Every AUTH_* bit: what a privileged thread is implicitly allowed.
     static constexpr uint8_t CAP_AUTH_ALL = static_cast<uint8_t>(
@@ -104,14 +96,14 @@ namespace kickos
     // re-encoding). gen is the per-slot cap generation, bumped on close (the
     // per-task use-after-close ABA guard, at parity with the object pool's u16 gen).
     // INVARIANT (address-space-agnostic; MMU-era load-bearing): a cap names its
-    // object ONLY by generational handle -- never by a physical address or a region
+    // object ONLY by generational handle: never by a physical address or a region
     // base. No physaddr is ever stored here or delivered as a badge/payload, so the
     // cap layer carries no single-physical-space assumption for the MMU era to undo.
     struct CapEntry
     {
         int32_t obj;    // global generational object handle (WRAP target); ignored if EMPTY.
-                        // On a CAP_AUTHORITY entry it is the CapAuthority word instead --
-                        // that type names no pool object.
+                        // On a CAP_AUTHORITY entry it is the CapAuthority word instead,
+                        // since that type names no pool object.
         uint8_t type;   // CapType
         uint8_t rights; // CapRights bits; 0 on a CAP_AUTHORITY entry
         uint16_t gen;   // per-slot cap generation
@@ -136,13 +128,13 @@ namespace kickos
 
     // Install a cap naming `obj_handle` into the first free slot of c's table. Returns
     // the cap handle (cap-gen << KCAP_INDEX_BITS | index), or -1 if the table is full.
-    // Does NOT touch the object refcount -- the caller owns that (sem_create sets refs=1
+    // Does NOT touch the object refcount: the caller owns that (sem_create sets refs=1
     // at alloc). Indices 0 .. KICKOS_CAP_FIRST_DYNAMIC-1 are the frozen reserved range
     // (0 = kernel stdout, B3): the scan starts at KICKOS_CAP_FIRST_DYNAMIC (4), so an own
     // create never lands in the reserved range (own caps live in [FIRST_DYNAMIC .. MAX-1]).
     int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights);
 
-    // Install a cap at a SPECIFIC (assumed-free) index -- delegation's deterministic
+    // Install a cap at a SPECIFIC (assumed-free) index: delegation's deterministic
     // placement (B1: delegated cap i -> child index i+1). Does NOT touch the refcount.
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights);
 
@@ -154,7 +146,7 @@ namespace kickos
     // Exit teardown: close every non-EMPTY handle before the TCB slot is reclaimable
     // (else the thread leaks its object references). Noreturn-path safe: a close that
     // would drop refs to 0 with a waiter still parked LEAKS (floors refs at 1), never
-    // strands -- but that branch is unreachable today (every parked waiter pins its
+    // strands, but that branch is unreachable today (every parked waiter pins its
     // own cap, so refs >= 1). Caller holds IrqLock.
     void cap_teardown(Thread* c);
 
@@ -215,7 +207,7 @@ namespace kickos
     // Callers pass the bare index KOS_CAP_AUTHORITY as the handle, which resolves only
     // because this slot's cap-gen stays 0: neither seat nor narrow bumps it, and nothing
     // routes it through handle_close or cap_teardown. Bumping it would strand every
-    // caller on -KOS_EBADF -- fail-closed, but silently on a privileged board, where that
+    // caller on -KOS_EBADF: fail-closed, but silently on a privileged board, where that
     // code is the tolerated answer.
     int cap_narrow_authority(Thread* c, int cap_handle, uint8_t mask);
 
@@ -224,7 +216,7 @@ namespace kickos
     // match, state == BLOCKED, call_state == REPLY_WAIT, and the packed seq8 matches
     // the caller's live call_seq. Used by kos_reply, the reply-cap death arm, and the
     // effective-priority funnel. Caller holds IrqLock. Decodes with MASKED shifts (the
-    // seq8 top bit makes obj negative -- an arithmetic shift would corrupt the handle).
+    // seq8 top bit makes obj negative: an arithmetic shift would corrupt the handle).
     Thread* cap_reply_caller(int32_t obj);
 }
 

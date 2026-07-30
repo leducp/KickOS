@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Concurrency stress test (bounded, self-verifying). Hammers the three subsystems
-// that carry the subtle races -- the scheduler, the counting semaphores, and the
-// tickless timer -- with many threads interleaving at mixed priorities, then
+// that carry the subtle races (the scheduler, the counting semaphores, and the
+// tickless timer) with many threads interleaving at mixed priorities, then
 // asserts exact conservation counts. A lost wakeup, a dropped timer deadline, or a
 // wait-queue corruption shows up as either a hang (the join never completes -> the
 // harness times out) or a final count mismatch (STRESS FAIL). Terminates cleanly
@@ -13,7 +13,7 @@
 //
 // Pool use scales to the board: the soak first PROBES the concurrent thread budget
 // (spawn parked threads until one is refused), then sizes the ping-pong pairs and
-// sleepers to fit it -- so it runs a real soak on ANY pool (sim 16, XMC 8, ...)
+// sleepers to fit it, so it runs a real soak on ANY pool (sim 16, XMC 8, ...)
 // instead of SKIPping the small boards. idle/root are separate static TCBs, not
 // pool-allocated. The sim keeps its historical 3 pairs + 6 sleepers footprint (the
 // budget only ever shrinks it), so the CI gate is unchanged. Every create/spawn is
@@ -39,11 +39,11 @@ namespace
     constexpr uint64_t NAP_MIN_NS = 80000ull;    // 80 us
     constexpr uint64_t NAP_SPAN_NS = 400000ull;  // + up to 400 us
 
-    int g_done = -1; // completion counter (each worker posts once at exit) -- MAIN's cap
-    int g_mtx = -1;  // binary sem guarding the shared counters -- MAIN's cap
-    int g_gate = -1; // budget-probe gate (probers park here until released) -- MAIN's cap
+    int g_done = -1; // completion counter (each worker posts once at exit), MAIN's cap
+    int g_mtx = -1;  // binary sem guarding the shared counters, MAIN's cap
+    int g_gate = -1; // budget-probe gate (probers park here until released), MAIN's cap
 
-    int g_pair_a[MAX_PAIRS];   // "ping waits A, posts B" -- MAIN's caps
+    int g_pair_a[MAX_PAIRS];   // "ping waits A, posts B", MAIN's caps
     int g_pair_b[MAX_PAIRS];
 
     // B1 well-known child cap indices (fresh child table => handle == index; delegated
@@ -193,7 +193,7 @@ int run_stress_round(int pairs, int sleepers, int live)
     g_churn_runs = 0;
 
     bool ok = true;
-    int made_pairs = 0; // pairs whose BOTH sems were created -- destroy exactly these
+    int made_pairs = 0; // pairs whose BOTH sems were created: destroy exactly these
     int spawned = 0;
 
     // Mixed priorities straddling the sleepers' band; the last pair is RR.
@@ -244,7 +244,7 @@ int run_stress_round(int pairs, int sleepers, int live)
     }
 
     // A mid-round create/spawn failure means the pool did not return to its start
-    // state (a leak): a hard FAIL, not a SKIP -- main already proved the budget fits
+    // state (a leak): a hard FAIL, not a SKIP: main already proved the budget fits
     // on entry. Do NOT join a half-spawned set (a lone ping would hang the join);
     // reclaim the sems we created and report the failure so the soak halts on it.
     if (not ok or spawned != live)
@@ -271,7 +271,7 @@ int run_stress_round(int pairs, int sleepers, int live)
     }
 
     // Churn phase: the conservation workers above are all EXITED now, so their pool
-    // slots must be reclaimed here -- live*CHURN_GENERATIONS >> the pool. A spawn
+    // slots must be reclaimed here: live*CHURN_GENERATIONS >> the pool. A spawn
     // returning -1 means reclamation failed (pool exhausted): a real FAIL, not a
     // SKIP. Each batch is joined before the next spawns, so at most `live` are ever
     // concurrent and the join never waits on a thread that was not created.

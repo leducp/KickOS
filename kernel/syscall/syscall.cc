@@ -5,7 +5,7 @@
 // trampoline / ARM SVC handler) reads the number + args and calls
 // syscall_dispatch(); the result is delivered back to the caller frame.
 // Kernel objects addressable from userspace (semaphores, threads) live in
-// static pools referenced by small integer handles -- no pointers cross the
+// static pools referenced by small integer handles: no pointers cross the
 // boundary.
 
 #include <kickos/arch/arch.h>
@@ -66,7 +66,7 @@ namespace
     }
 
     // RAII SYSCALL_ENTER/EXIT bracket. The EXIT fires in the destructor on EVERY
-    // ordinary return path -- but KOS_SYS_EXIT switches away permanently inside the
+    // ordinary return path. But KOS_SYS_EXIT switches away permanently inside the
     // dispatch (never returns to this frame), so its destructor never runs and it
     // is recorded as ENTER-only (the decoder handles the missing EXIT).
     struct SyscallTrace
@@ -90,7 +90,7 @@ namespace
 
 #if defined(KICKOS_ENABLE_SELFTEST)
 // weak: a chip with no bootloader entry declines honestly. NOT in clock_select.cc with
-// the other weak seams -- that TU compiles unconditionally, and this symbol must be
+// the other weak seams: that TU compiles unconditionally, and this symbol must be
 // absent from a production image.
 extern "C" int __attribute__((weak)) arch_reboot(void)
 {
@@ -114,10 +114,8 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // (the kernel reads buf privileged). Reject => wrote nothing.
             constexpr size_t MAX_CONSOLE_WRITE = 4096;
             // MMU-era NOTE: this hands a user pointer straight to kconsole_write, which
-            // streams it privileged -- the one kernel-side user read NOT funnelled
-            // through kaccess_from_user. Funnelling it needs a bounce buffer + chunk
-            // loop (a real design choice: buffer size vs kernel-stack budget), not an
-            // identity refactor, so it is deferred to the copy_from_user work.
+            // streams it privileged. It is the one kernel-side user read NOT funnelled
+            // through kaccess_from_user.
             char const* buf = reinterpret_cast<char const*>(a0);
             size_t len = static_cast<size_t>(a1);
             if (len > MAX_CONSOLE_WRITE)
@@ -126,7 +124,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             }
             if (not user_readable_ok(a0, len))
             {
-                // Cross-domain / bad buffer -- write nothing. Negative code, NOT 0: a
+                // Cross-domain / bad buffer: write nothing. Negative code, NOT 0: a
                 // len-0 write legitimately returns 0, so 0 must not double as reject.
                 return static_cast<uintptr_t>(-KOS_EFAULT);
             }
@@ -151,7 +149,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_HANDLE_CLOSE:
         {
             // Type-agnostic close: drop THIS task's cap (a cap knows its own type).
-            // Refcounted -- the object is freed only at the last close.
+            // Refcounted: the object is freed only at the last close.
             IrqLock lock;
             return static_cast<uintptr_t>(handle_close(sched::current(), static_cast<int>(a0)));
         }
@@ -212,7 +210,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 return static_cast<uintptr_t>(-err); // -KOS_EBADF (need == 0, so never EPERM here)
             }
             // 0 / -KOS_EOWNERDEAD (HELD, owner died) / -KOS_EDEADLK (NOT held). EOWNERDEAD is
-            // negative but still an ACQUIRE -- the wrapper decl documents the held-vs-not caveat.
+            // negative but still an ACQUIRE: the wrapper decl documents the held-vs-not caveat.
             return static_cast<uintptr_t>(mutex_lock(m));
         }
         case KOS_SYS_MUTEX_UNLOCK:
@@ -234,7 +232,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_SEND:
         {
             // FULLY LOCKLESS (no dispatch IrqLock): endpoint_send takes its own lock for
-            // the resolve/deliver/park, then releases it before the resume barrier -- a
+            // the resolve/deliver/park, then releases it before the resume barrier: a
             // spanning caller lock would livelock ARM (design section 3).
             return static_cast<uintptr_t>(
                 endpoint_send(static_cast<int>(a0), a1, static_cast<size_t>(a2)));
@@ -273,7 +271,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             int handle = -1;
             {
                 IrqLock lock;
-                // Resolve the endpoint cap to its GLOBAL gen-encoded handle -- NOT the pool
+                // Resolve the endpoint cap to its GLOBAL gen-encoded handle, NOT the pool
                 // index (S3). cap_lookup validates the cap-gen; re-check type + object
                 // liveness (mirrors irq_attach's resolve-once pattern). Any rights: the
                 // publish is identity-only.
@@ -296,7 +294,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 // back to the now-dark kernel path. Children spawned after this still get it
                 // via cap_install_defaults. On re-publish this re-points the caller's slot 0.
                 cap_seat_stdout(c, handle);
-                console_owner_set_user();    // flip to USER_OWNED -- LAST
+                console_owner_set_user();    // flip to USER_OWNED (LAST)
             }
             // B1: drain any stale chip writer that raced past the pre-flip state read, with
             // the lock RELEASED, before returning. After the flip no path increments the
@@ -334,11 +332,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             // Privileged-only (like console_publish / ram_alloc): it mutates
             // SystemCoreClock, retimes every thread's SysTick basis, and moves the
-            // shared console baud -- an unprivileged retune could DoS every task's
+            // shared console baud: an unprivileged retune could DoS every task's
             // timing. Return 0 (== the cannot-change sentinel) on the unprivileged
             // path so the caller needs only ONE error test. The coherence sequence
             // (mask / disarm / flush / retune / re-arm) lives in cpu_clock_set.
-            // NOTE: this syscall stays OUT of the -KOS_E* scheme -- it returns a u32 Hz
+            // NOTE: this syscall stays OUT of the -KOS_E* scheme: it returns a u32 Hz
             // whose 0 sentinel already means cannot/unsupported/not-permitted, and the
             // console-owned refusal (an EBUSY-shaped condition) surfaces as "unchanged Hz".
             Thread* c = sched::current();
@@ -392,10 +390,10 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         case KOS_SYS_IRQ_INJECT:
         {
             // Test scaffolding only (real IRQs come from devices), so compiled out
-            // of the production ABI -- like guard_addr below. The line is
+            // of the production ABI (like guard_addr below). The line is
             // unprivileged-user-reachable: validate it at the boundary and reject a
             // bad value with -KOS_EINVAL rather than passing it to the controller. (Never
-            // KICKOS_UNREACHABLE a user-supplied number -- that would let a user
+            // KICKOS_UNREACHABLE a user-supplied number: that would let a user
             // halt the kernel.)
             // Deliberately NOT privilege-gated (unlike irq_unmask/irq_attach): this
             // simulates a DEVICE firing, not an arm of the controller, and the tier-1
@@ -534,9 +532,9 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-KOS_EINVAL); // bad irq line
             }
-            // Resolve the CAP once, HERE (requires CAP_SIGNAL -- an ISR posts), and store
+            // Resolve the CAP once, HERE (requires CAP_SIGNAL: an ISR posts), and store
             // the GLOBAL sem handle in the binding: irq_sem_post re-resolves that global
-            // via the pool per fire (an ISR must NEVER resolve a cap -- current() is a
+            // via the pool per fire (an ISR must NEVER resolve a cap: current() is a
             // random interrupted thread's table). The binding holds no ref, so a
             // last-close (now reachable via a thread exit) makes it a dead binding that
             // fails safe, not a wrong post.
@@ -551,7 +549,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 return static_cast<uintptr_t>(-KOS_EPERM); // cap lacks SIGNAL (an ISR posts)
             }
             int const sem_handle = e->obj;
-            // irq_attach fails if the line is already owned -- no stealing (EBUSY).
+            // irq_attach fails if the line is already owned: no stealing (EBUSY).
             if (not irq_attach(irq, irq_sem_post,
                                reinterpret_cast<void*>(static_cast<intptr_t>(sem_handle))))
             {
@@ -561,18 +559,18 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // syscall (tier-1 unmasks via register/irq_ack), so attach must arm it.
             // Required on default-masked controllers (ARM NVIC, RX); sim/riscv were
             // unmasked-by-default and only worked by that leniency. In-kernel
-            // irq_attach (console) still unmasks on its own schedule -- untouched.
+            // irq_attach (console) still unmasks on its own schedule, untouched.
             arch_irq_unmask(irq);
             return 0;
         }
         case KOS_SYS_CLOCK_NOW:
         {
             // Out-pointer for a 64-bit store: reject null and misalignment, then bound it
-            // against the caller's writable regions -- the kernel writes it privileged, so an
+            // against the caller's writable regions: the kernel writes it privileged, so an
             // unprivileged caller must own it. The stub passes a stack local (in its stack
             // region); privileged callers bypass the ownership check. Closes the privileged-
-            // kernel-writes-a-user-pointer hole. Alignment is alignof(uint64_t) -- arch-specific
-            // (4 on RX, 8 on ARM/RISC-V) and exactly what makes the typed store below well-defined.
+            // kernel-writes-a-user-pointer hole. Alignment is alignof(uint64_t), arch-specific
+            // (4 on RX, 8 on ARM/RISC-V) and what makes the typed store below well-defined.
             if (a0 == 0 or (a0 & (alignof(uint64_t) - 1)) != 0)
             {
                 return static_cast<uintptr_t>(-KOS_EINVAL); // null or misaligned out-ptr
@@ -625,7 +623,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // threads (avoids a DoS on the shared pool and matches static-allocation-first).
             // IrqLock: arch_ram_alloc does an unguarded read-modify-write of the bump
             // pointer.
-            // POINTER return -- OUT of the -KOS_E* scheme: a negative errno cast to
+            // POINTER return: OUT of the -KOS_E* scheme. A negative errno cast to
             // void* would be a non-NULL pointer. EVERY failure path returns 0 (NULL) so
             // the documented `if (p == NULL)` check is correct: the not-permitted reject
             // and the arena-exhausted reject both yield NULL (arch_ram_alloc already
@@ -633,7 +631,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             IrqLock lock;
             if (not cap_check_authority(sched::current(), AUTH_MEMORY))
             {
-                return 0; // NULL, not (uintptr_t)-1 -- the latent dual-sentinel bug fixed
+                return 0; // NULL, not (uintptr_t)-1
             }
             return reinterpret_cast<uintptr_t>(
                 arch_ram_alloc(static_cast<size_t>(a0)));

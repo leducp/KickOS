@@ -103,7 +103,7 @@ _Static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 byt
 // P-state selector for KOS_SYS_CPU_CLOCK_SET. A fixed-width u32 enum (NOT a raw Hz):
 // the achievable set is small and chip-specific, and the truthful landed Hz is the
 // syscall's return value. Carried as a plain u32 in the syscall register, so the width
-// is the stable ABI -- append new states, never reorder. New deep-sleep states (STOP/
+// is the stable ABI: append new states, never reorder. New deep-sleep states (STOP/
 // STANDBY, tickless deep-sleep) append here later without an ABI break.
 typedef enum kos_pstate_e : uint32_t
 {
@@ -121,10 +121,9 @@ typedef enum kos_pstate_e : uint32_t
 // -KOS_EOVERFLOW.
 #define KOS_SEM_COUNT_MAX 0x7FFFFFFF
 
-// The robust-mutex "owner died" case is now a NEGATIVE code in the fleet taxonomy:
-// mutex_lock returns -KOS_EOWNERDEAD (the lock IS held; the protected state may be
-// torn). See <kickos/sys/errno.h> and the kos_mutex_lock decl for the held-vs-not-held
-// caveat. (The old +1 KOS_MUTEX_OWNER_DIED sentinel is retired -- use -KOS_EOWNERDEAD.)
+// The robust-mutex "owner died" case is a NEGATIVE code: mutex_lock returns
+// -KOS_EOWNERDEAD (the lock IS held; the protected state may be torn). See
+// <kickos/sys/errno.h> and the kos_mutex_lock decl for the held-vs-not-held caveat.
 
 // 64-bit values are passed/returned as two uintptr_t halves so the ABI is
 // identical on 32-bit (ARM M-class) and 64-bit (sim) targets: never rely on
@@ -161,7 +160,7 @@ enum kos_cap_rights
 };
 
 // The authority word of the authority cap at KOS_CAP_AUTHORITY (must mirror
-// kickos::CapAuthority) -- its own field, sharing no numbering with kos_cap_rights.
+// kickos::CapAuthority): its own field, sharing no numbering with kos_cap_rights.
 // A thread may pass a bit to a child (kos_thread_params::authority) only if it holds
 // that bit, and may drop bits with kos_cap_narrow. Nothing widens.
 enum kos_cap_authority
@@ -174,10 +173,9 @@ enum kos_cap_authority
     KOS_AUTH_CONSOLE = 1 << 5  // kos_console_publish
 };
 
-// KOS_AUTH_PSTATE is not folded into KOS_AUTH_SYSTEM because a CPU-governor service
-// needs clock-rate authority and nothing else; KOS_AUTH_CONSOLE is separate for the
-// mirror-image reason -- the console driver and the thread that ends the system are
-// different threads.
+// KOS_AUTH_PSTATE and KOS_AUTH_CONSOLE are each separate bits: a CPU-governor service
+// and a console driver thread are distinct from the thread that ends the system, and
+// each holds only the authority it needs.
 
 // kos_periph_enable carries no authority bit. It is gated on possession of the window
 // it names, because its callers are the drivers: an authority bit would hand every
@@ -186,7 +184,7 @@ enum kos_cap_authority
 // One entry of a spawn delegation list: hand the child a narrowed copy of the
 // parent cap `source_cap`. Deterministic placement (B1): delegated cap i lands at
 // the child's table index i+1 (index 0 reserved), and a fresh child table has
-// cap-gen 0 so the child's handle value == its index -- known a priori, no handoff.
+// cap-gen 0 so the child's handle value == its index: known a priori, no handoff.
 //
 // Table index of the FIRST delegated cap (i == 0). A driver spawned with one
 // delegated recv cap reads it here with no handoff; delegated cap i is at
@@ -220,7 +218,7 @@ struct kos_thread_params
     // Authority bits (kos_cap_authority KOS_AUTH_*) to seat as the child's authority cap
     // at KOS_CAP_AUTHORITY; 0 => none. Only a thread that already holds each bit may
     // pass it: narrows, never widens, like a cap_grant mask. Fits in the padding after
-    // cap_count, so the struct does not grow -- and it, not CapEntry, is what bounds the
+    // cap_count, so the struct does not grow. It, not CapEntry, is what bounds the
     // authority word to 8 bits.
     //
     // Rejected with -KOS_EINVAL together with cap_count >= KOS_CAP_AUTHORITY: delegated

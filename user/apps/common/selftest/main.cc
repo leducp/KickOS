@@ -47,8 +47,7 @@ namespace
     // child, and kos_ram_alloc grants the caller nothing (a test that needs to touch
     // its allocation asks with kos_mem_self_grant, as t_irqdrv does).
     //
-    // Zero bytes in the default posture: a runtime `if` would keep the skip strings in
-    // .rodata on every board. NOTE: the macro RETURNS from the enclosing test.
+    // NOTE: the macro RETURNS from the enclosing test.
 #if KICKOS_ROOT_PRIVILEGED
 #define SKIP_TEST_IF_ROOT_UNPRIVILEGED(why) do { } while (0)
 #else
@@ -260,8 +259,8 @@ namespace
     }
 
     // Pin-mux syscall (M4.3): kos_pinmux_set. An out-of-range port/pin is REJECTED
-    // (rc < 0) on every target -- -KOS_EINVAL where a chip owns its PORT/IOCR block,
-    // -KOS_ENOSYS on the weak-seam targets (host sim) -- so garbage is never silently
+    // (rc < 0) on every target: -KOS_EINVAL where a chip owns its PORT/IOCR block,
+    // -KOS_ENOSYS on the weak-seam targets (host sim). So garbage is never silently
     // accepted and the dispatch -> arch-seam plumbing is proven. Touches no hardware:
     // both rejects return BEFORE any write.
     //
@@ -325,7 +324,7 @@ namespace
 #if defined(KICKOS_ENABLE_SELFTEST)
     // The IRQ tests below drive kos_irq_inject, a KICKOS_ENABLE_SELFTEST-only
     // syscall. Without the flag inject is a kernel no-op, so registering these would
-    // deadlock on a handler that never fires -- gate the definitions with the
+    // deadlock on a handler that never fires. Gate the definitions with the
     // registrations (main) so a plain build simply omits them.
     // --- IRQ-context post (tier 2) ---------------------------------------------
     int g_irq = -1;
@@ -383,8 +382,8 @@ namespace
         // The RR quantum must be resolvable by the monotonic clock, or the slice
         // can't preempt mid-burn and the interleave never happens. Don't assume a
         // fine clock: scale the quantum to the target's clock granule so RR is
-        // exercised on EVERY board (the coarse QEMU semihosting clock included) --
-        // a quantum below the clock's resolution is neither testable nor shippable.
+        // exercised on EVERY board (the coarse QEMU semihosting clock included).
+        // A quantum below the clock's resolution is neither testable nor shippable.
         // Measure one full granule (two consecutive edges, phase-independent; the
         // probe spins so the clock advances, no WFI).
         uint64_t e0 = kos_clock_now();
@@ -466,8 +465,8 @@ namespace
         int b = kos::thread::spawn_caps(multi_worker, reinterpret_cast<void*>('B'), "multiB", 10,
                                         caps, 3);
         // A silently-dropped spawn (e.g. an exhausted thread pool) leaves the
-        // workers non-existent, so main would post to nobody and hang in wait_n --
-        // fail loud here instead. (This is the XMC MAX_THREADS=8 pool-exhaustion
+        // workers non-existent, so main would post to nobody and hang in wait_n.
+        // Fail loud here instead. (This is the XMC MAX_THREADS=8 pool-exhaustion
         // deadlock that hid behind an ignored spawn return.)
         TAP_CHECK(a >= 0 and b >= 0);
         kos_sleep_ns(5000000ull); // let both block on g_multi
@@ -541,11 +540,10 @@ namespace
     }
 
     // --- IRQ mask latches-and-coalesces a masked raise -------------------------
-    // The driver runs BELOW root's priority, so posting its notification does not
-    // preempt root: root can fire three back-to-back. The first fire delivers and
-    // masks the line; the second and third land on the masked line and COALESCE
-    // one-deep -- so the driver services EXACTLY twice (never a phantom third), the
-    // single latch redelivered when ack unmasks the line.
+    // Driver runs BELOW root, so root fires three raises back-to-back. First fire
+    // delivers and masks the line; second and third land on the masked line and
+    // COALESCE one-deep: the driver services EXACTLY twice (never a phantom third),
+    // the single latch redelivered when ack unmasks the line.
     int g_mask_ready = -1;
     int g_mask_serviced = 0;
     constexpr int MASK_LINE = 6;
@@ -577,7 +575,7 @@ namespace
         kos_irq_inject(MASK_LINE);
         kos_irq_inject(MASK_LINE);
         // Deterministic: block until the two services (the delivery + the single
-        // coalesced redelivery) have both landed -- no sleep-based ordering here.
+        // coalesced redelivery) have both landed, with no sleep-based ordering.
         wait_n(2);
         // Bounded settle: a spurious third wake (a dropped-then-phantom regression)
         // would bump serviced past 2 while the driver is parked in its third wait.
@@ -592,8 +590,8 @@ namespace
     // --- Auto-rearm: wait; service with NO explicit ack ------------------------
     // irq_wait re-arms the previously-consumed line itself, so a driver that never
     // acks still receives every subsequent IRQ. Driver runs ABOVE root (like
-    // t_irqdrv) so it re-arms (reaches its next wait) before root injects again --
-    // a raise onto a still-masked line would latch-and-coalesce, not be lost.
+    // t_irqdrv) so it re-arms (reaches its next wait) before root injects again.
+    // A raise onto a still-masked line would latch-and-coalesce, not be lost.
     int g_autorearm_ready = -1;
     int g_autorearm_seen = 0;
     constexpr int AUTO_REARM_LINE = 8;
@@ -709,8 +707,8 @@ namespace
     }
 
     // --- Refcounted close of a DELEGATED sem: object survives while a co-holder is
-    // parked; the last close frees it. (Replaces the old quiescent-only destroy: under
-    // per-task caps, closing MY cap never destroys an object another task still holds.)
+    // parked; the last close frees it. Under per-task caps, closing MY cap never
+    // destroys an object another task still holds.
     int g_dsem = -1;
     void destroy_waiter(void*) // caps: done@1, g_dsem@2 (CH_READY)
     {
@@ -719,7 +717,7 @@ namespace
     }
     void destroy_poster(void*) // caps: done@1, g_dsem@2 (CH_READY)
     {
-        // Sleep past MAIN's close below, THEN post -- so the wake of the parked waiter
+        // Sleep past MAIN's close below, THEN post: the wake of the parked waiter
         // happens strictly AFTER MAIN has dropped its own (shared) cap on g_dsem.
         kos_sleep_ns(10000000ull);
         kos_sem_post(CH_READY); // wakes destroy_waiter
@@ -734,10 +732,9 @@ namespace
         TAP_CHECK(w >= 0 and p >= 0); // spawn failure would hang wait_n(2) below
         kos_sleep_ns(2000000ull);     // let the waiter park on g_dsem; refs = main+waiter+poster = 3
         // Close MAIN's cap WHILE the waiter is parked and the poster has not yet posted:
-        // refs 3->2, so the object MUST survive (co-holders still name it) -- the headline
-        // destroy-on-last-close semantics in its load-bearing case. If this freed or
-        // corrupted the object or its wait queue, the poster's later post would not wake
-        // the parked waiter and wait_n(2) would hang.
+        // refs 3->2, so the object MUST survive (co-holders still name it). If this freed
+        // or corrupted the object or its wait queue, the poster's later post would not
+        // wake the parked waiter and wait_n(2) would hang.
         TAP_CHECK(kos_handle_close(g_dsem) == 0);
         wait_n(2); // poster woke (post-sleep), posted g_dsem waking the parked waiter; both
                    // reported => object + wait queue intact after MAIN closed a shared cap.
@@ -754,8 +751,7 @@ namespace
     // --- Owning kos::Semaphore RAII --------------------------------------------
     void t_sem_raii()
     {
-        // Scoped create/destroy far exceeding the pool size must not exhaust it:
-        // the old non-owning dtor leaked, so this would fail after ~16.
+        // Scoped create/destroy, well past the ~16-slot pool, must not exhaust it.
         for (int i = 0; i < 100; i++)
         {
             kos::Semaphore s;
@@ -788,7 +784,7 @@ namespace
     constexpr int MTX_ITERS = 20;
     int g_mtx_shared = 0;
     // A mutex cap carries CAP_TRANSFER only (possession IS the lock/unlock authority,
-    // no WAIT/SIGNAL split), so it must be delegated with a TRANSFER-only mask -- a
+    // no WAIT/SIGNAL split), so it must be delegated with a TRANSFER-only mask: a
     // CH_FULL mask is not a subset and delegation would reject it.
     constexpr uint8_t CH_MTX = KOS_CAP_TRANSFER;
     void mtx_basic_worker(void*) // caps: done@1, mutex@2
@@ -816,8 +812,8 @@ namespace
         {
             // Tiny thread pool (microbit MAX_THREADS=2) can't host 3 workers. Drain the
             // ones that DID spawn (they post the shared g_done) so no stale post desyncs a
-            // later wait_n, close the mutex so nothing leaks (stops the cap-table cascade),
-            // then skip -- boards with a big enough pool run the full test.
+            // later wait_n, then close the mutex so nothing leaks (stops the cap-table
+            // cascade), then skip.
             int n = 0;
             if (a >= 0) { n++; }
             if (b >= 0) { n++; }
@@ -837,12 +833,10 @@ namespace
     // clocks (QEMU semihosting) as well as the fine sim clock.
     // Size the unit from the MEASURED reschedule cost, not the clock granule: the PI
     // choreography holds only if the lock/block/boost chain forms within the slack
-    // between scheduled wakes, and that slack must dominate a reschedule round-trip --
-    // which on a slow core (armv6m M0+: software 64-bit divides in the tickless math) is
-    // far larger than the clock resolution the old 1 ms constant keyed on (the M0+
-    // soft-failed the chain test at 1 ms; ~10-30 ms is enough). Floored at 1 ms so no
-    // faster board that passed shrinks; capped so a pathological reading cannot stretch
-    // the run.
+    // between scheduled wakes, and that slack must dominate a reschedule round-trip.
+    // On a slow core (armv6m M0+: software 64-bit divides in the tickless math) that
+    // round-trip needs ~10-30 ms, far above a 1 ms unit. Floored at 1 ms so no faster
+    // board shrinks; capped so a pathological reading cannot stretch the run.
     uint64_t mtx_time_unit()
     {
         // Clock resolution: a lower bound (a unit below a few granules is unmeasurable).
@@ -854,7 +848,7 @@ namespace
         uint64_t granule = g2 - g1;
 
         // Reschedule cost: per-sleep OVERHEAD above a small real sleep (arm + idle +
-        // wake + switch) -- the scheduling jitter a 1-unit gap must out-scale.
+        // wake + switch), the scheduling jitter a 1-unit gap must out-scale.
         constexpr uint32_t N = 8;
         constexpr uint64_t probe = 200000ull; // 200 us
         uint64_t t0 = kos_clock_now();
@@ -896,9 +890,9 @@ namespace
     // --- PI donation: boost-on-contention + revert-by-recompute (H2, H4, H8) ----
     // low(8) holds the mutex and busy-spins. high(20) wakes mid-spin and blocks on
     // the mutex, boosting low to 20. med(12) then wakes but must NOT preempt the
-    // boosted low. So low finishes its critical section ('u') BEFORE med runs ('m')
-    // -- the observable inversion-avoidance. After low unlocks it reverts to base 8,
-    // so med (12) runs before low resumes ('z') -- the observable revert. high runs
+    // boosted low: low finishes its critical section ('u') BEFORE med runs ('m'),
+    // the observable inversion-avoidance. After low unlocks it reverts to base 8,
+    // so med (12) runs before low resumes ('z'), the observable revert. high runs
     // the instant low hands off ('H' right after 'u').
     uint64_t g_mtx_unit = 1000000ull;
     void pi_low(void*) // caps: done@1, lock@2, mutex@3
@@ -1057,8 +1051,8 @@ namespace
         kos_sleep_ns(g_mtx_unit * 1);    // wake while the owner still holds it
         g_od_result = kos_mutex_lock(2); // block; woken by the dying owner with -KOS_EOWNERDEAD
         // -KOS_EOWNERDEAD is a HELD acquire (owner died): unlock it too, or the robust
-        // mutex would be stranded. A plain `>= 0` test would wrongly skip this now that
-        // owner-died is a NEGATIVE code -- special-case it as held.
+        // mutex would be stranded. A plain `>= 0` test would wrongly skip this, since
+        // owner-died is a NEGATIVE code: special-case it as held.
         if (g_od_result == 0 or g_od_result == -KOS_EOWNERDEAD)
         {
             kos_mutex_unlock(2);
@@ -1136,7 +1130,7 @@ namespace
             // The cross-thread cycle needs 2 mutexes + 4 sems live at once; microbit's
             // cap table (MAX_HANDLES=9, 3 free) / sem pool (MAX_SEMAPHORES=4, 2 free) can't
             // hold them. No worker has spawned yet, so just reclaim what was created (in
-            // any order -- close/destroy ignores a <0 handle) and skip.
+            // any order: close/destroy ignores a <0 handle) and skip.
             if (m1 >= 0) { kos_handle_close(m1); }
             if (m2 >= 0) { kos_handle_close(m2); }
             if (have1 >= 0) { kos_sem_destroy(have1); }
@@ -1246,8 +1240,8 @@ namespace
     }
 
     // --- unlock by a non-owner / of an unlocked mutex both return -1 ------------
-    // The runtime owner check that became user-reachable (the old KICKOS_ASSERT must
-    // never panic once exposed).
+    // The owner check is reachable from an untrusted caller, so it must return an
+    // error code here, never panic.
     int g_nonowner_rc = -99;
     void nonowner_unlock(void*) // caps: done@1, mutex@2
     {
@@ -1373,7 +1367,7 @@ namespace
     // --- First-arm discards pre-registration garbage ---------------------------
     // A raise that lands before a driver owns the line is latched (the coalesce
     // contract). irq_register must DISCARD that stale latch at first-arm (arch_irq_
-    // clear_pending) -- else the very first irq.wait() would phantom-wake on garbage
+    // clear_pending), or the very first irq.wait() would phantom-wake on garbage
     // the driver never asked for. Root leaves a latch on an unbound line, then a
     // lower-prio driver registers + waits: that first wait MUST block.
     int g_stale_ready = -1;
@@ -1394,7 +1388,7 @@ namespace
         g_stale_seen = 0;
         // Pre-registration garbage on the unbound line: unmask so the default handler
         // runs (mask + count) on the first raise, then a second raise latches on the
-        // now-masked line -- the stale pending that first-arm must discard.
+        // now-masked line: the stale pending that first-arm must discard.
         kos_irq_unmask(STALE_LINE);
         uint32_t before = kos_irq_spurious_count();
         kos_irq_inject(STALE_LINE); // default handler: mask + count
@@ -1416,16 +1410,15 @@ namespace
 #endif
 
     // --- Caller-owned thread stack: spawn takes a caller-provided stack (and rejects an
-    // undersized/misaligned one) -- a thread's stack is a userspace concern (M1). ---------
+    // undersized/misaligned one): a thread's stack is a userspace concern (M1). ---------
     int g_cstk_sem = -1;
     void caller_stack_worker(void*) { kos_sem_post(CH_DONE); } // g_cstk_sem; ran on the caller's stack
     // Statically-defined caller-owned stack (the KOS_STACK_DEFINE shape), exercised on
-    // no-MPU builds only -- this is the path that regressed: KOS_STACK_DEFINE aligns to 16
-    // without an MPU, which the kernel's (formerly ungated) stack natural-alignment check
-    // then rejected. Under MPU the macro naturally-aligns to a full region (a page on the
-    // sim backend), so the static buffer would not fit a small-appdata enforcement chip's
-    // fixed .appdata window (e.g. C6 = 4K); the MPU caller-owned-stack path is covered by
-    // the dynamic alloc'd stack above.
+    // no-MPU builds only: KOS_STACK_DEFINE aligns to only 16 bytes without an MPU, so the
+    // stack natural-alignment check must not apply there. Under MPU the macro naturally
+    // aligns to a full region (a page on the sim backend), so the static buffer would not
+    // fit a small-appdata enforcement chip's fixed .appdata window (e.g. C6 = 4K); the MPU
+    // caller-owned-stack path is covered by the dynamic alloc'd stack above.
 #if !KICKOS_HAVE_MPU
     // 2048, generously above the per-arch KICKOS_MIN_STACK_SIZE floor: the worker runs the
     // whole deepest kernel dispatch (syscall trap frame + thread-exit teardown) on THIS
@@ -1451,10 +1444,10 @@ namespace
             return;
         }
         void* stk = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(raw) + 15u) & ~uintptr_t{15});
-        // Reject a PROPERLY-ALIGNED but sub-floor caller stack -- the exact bug the per-arch
-        // floor fixes: an aligned 512 B stack once passed the check, then overflowed the
-        // RISC-V exit dispatch (~624 B). One alignment unit below the floor, aligned base:
-        // the size check must reject it BEFORE any slot / region work. (16 = KICKOS_STACK_ALIGN.)
+        // Reject a PROPERLY-ALIGNED but sub-floor caller stack: without the per-arch
+        // floor, an aligned 512 B stack passes alignment yet overflows the RISC-V exit
+        // dispatch (~624 B). One alignment unit below the floor, aligned base: the size
+        // check must reject it BEFORE any slot / region work. (16 = KICKOS_STACK_ALIGN.)
         TAP_CHECK(kos::thread::spawn(caller_stack_worker, nullptr, "undf", 10, KOS_POLICY_FIFO,
                                      0, false, nullptr, 0, stk, KICKOS_MIN_STACK_SIZE - 16u,
                                      nullptr, 0, nullptr, 0)
@@ -1468,9 +1461,8 @@ namespace
         kos_sem_destroy(g_cstk_sem);
 #if !KICKOS_HAVE_MPU
         // Same shape via a statically-defined KOS_STACK_DEFINE buffer, unprivileged. This
-        // buffer is only 16-byte aligned (no MPU); spawn must still accept + run it -- the
-        // path that regressed, since with no region descriptor the natural-alignment check
-        // must not apply.
+        // buffer is only 16-byte aligned (no MPU); spawn must still accept + run it: with
+        // no region descriptor, the natural-alignment check must not apply.
         g_cstk_sem = kos_sem_create(0);
         kos_cap_grant scaps[] = {{g_cstk_sem, CH_FULL}}; // -> g_cstk_sem @1 (CH_DONE)
         int const ts = kos::thread::spawn(caller_stack_worker, nullptr, "cstkS", 10, KOS_POLICY_FIFO,
@@ -1484,7 +1476,7 @@ namespace
     }
 
     // --- Memory domains: two unprivileged threads granted the SAME region share one
-    // domain -- each reads/writes it -- while each keeps its own private stack. The
+    // domain, each reading/writing it, while each keeps its own private stack. The
     // negative half (a cross-domain write faults) is the standalone mpu_fault app. ---
     volatile int* g_dshared = nullptr;
     int g_dwrote = -1;      // writer -> reader handoff (through the shared domain)
@@ -1544,7 +1536,7 @@ namespace
 
     // --- MMIO grant boundary (task #9): privileged-only + encodable-only ---------
     // An MMIO grant is a capability, so the boundary REJECTS two ways (no real device
-    // is mapped here -- the positive grant is HW-only, Stage 2):
+    // is mapped here, since the positive grant is HW-only, Stage 2):
     //   * a window one MPU descriptor cannot cover exactly (rounding would over-grant
     //     the neighbouring registers), and
     //   * any grant attempted by an UNPRIVILEGED caller (else a user thread maps
@@ -1575,7 +1567,7 @@ namespace
                                      0, false, nullptr, 0, nullptr, 0,
                                      reinterpret_cast<void*>(0x2000u), 0) == -KOS_EINVAL);
         // A window whose base+size wraps the address space is rejected -KOS_EINVAL (32-bit
-        // MCU; on the 64-bit sim the fail-closed encoder rejects it first -- either way EINVAL).
+        // MCU; on the 64-bit sim the fail-closed encoder rejects it first, either way EINVAL).
         TAP_CHECK(kos::thread::spawn(mmio_noop, nullptr, "mmioW2", 10, KOS_POLICY_FIFO,
                                      0, false, nullptr, 0, nullptr, 0,
                                      reinterpret_cast<void*>(0xFFFFFFF0u), 0x20) == -KOS_EINVAL);
@@ -1600,7 +1592,7 @@ namespace
     // The stack_base grant is the ONE unprivileged path that reaches an MPU region:
     // thread.cc commits a caller-owned stack as one R|W region. Without an arena bound
     // an unprivileged thread spawns a child with stack_base in peripheral space or
-    // kernel SRAM -- an R|W window the MMIO gate would refuse. Enforcing backends only
+    // kernel SRAM: an R|W window the MMIO gate would refuse. Enforcing backends only
     // (the check is MPU-gated; with no region descriptor there is no escalation).
 #if KICKOS_HAVE_MPU
     int g_stkarena_rc = -2;
@@ -1667,11 +1659,12 @@ namespace
 
         // --- End-to-end errno coherence (MAJOR 2): an unprivileged child whose mem_base
         // lies OUTSIDE the arena is refused with -KOS_EPERM (policy refusal), NOT
-        // -KOS_ENOMEM (pool exhaustion) -- coherent with the stack_base path
+        // -KOS_ENOMEM (pool exhaustion), coherent with the stack_base path
         // (t_stackbase_arena). The code comes from domain_for, the authoritative
-        // chokepoint, not from a pre-check at the spawn boundary. Caller is privileged (main); the CHILD is
-        // unprivileged, so domain_for evaluates the grant (0xE0000000 is 2048-aligned, so
-        // ONLY arena containment can reject it). Fails before any slot is claimed.
+        // chokepoint, not a pre-check at the spawn boundary. Caller is privileged
+        // (main); the CHILD is unprivileged, so domain_for evaluates the grant
+        // (0xE0000000 is 2048-aligned, so ONLY arena containment can reject it).
+        // Fails before any slot is claimed.
         int const mrc = kos::thread::spawn(grant_noop, nullptr, "membad", 10, KOS_POLICY_FIFO,
                                            0, /*privileged=*/false,
                                            reinterpret_cast<void*>(0xE0000000u), 2048);
@@ -1682,7 +1675,7 @@ namespace
         // overlaps block[0] hits regardless of neighbours). The NON-overlap cases must
         // land in a GAP, so they anchor on scanned edges: the lowest reserved base has
         // nothing flush below it, and the highest reserved end has nothing at-or-above
-        // it -- guaranteed by min/max, even when blocks are flush (rp2040 TIMER abuts
+        // it, guaranteed by min/max even when blocks are flush (rp2040 TIMER abuts
         // WATCHDOG). Testing block[0]-relative "above" would false-hit on such a board.
         uintptr_t const n = kos_grant_probe(KOS_GRANT_OP_RESERVED_COUNT, 0, 0);
         if (n == 0)
@@ -1709,8 +1702,8 @@ namespace
                 hi_end = b + s;
             }
         }
-        // Refuse (overlap): equal, contained, partial straddle, both one-byte edges --
-        // all overlap block[0], so hit regardless of layout.
+        // Refuse (overlap): equal, contained, partial straddle, both one-byte edges.
+        // All overlap block[0], so hit regardless of layout.
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_HITS_RESERVED, rb, rs) == 1);            // equal
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_HITS_RESERVED, rb + 4u, 8u) == 1);       // contained
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_HITS_RESERVED, rb - 4u, 8u) == 1);       // partial straddle (low edge)
@@ -1750,7 +1743,7 @@ namespace
     // predicate admits on this board (reserved blocks and bit-band aliases differ per
     // chip), and the holder spawn itself rejects a base a board service already owns.
     // The sim mints no DEV region at all (arch_mpu_region_encodable is fail-closed), so
-    // the search finds nothing there and the case reports PARTIAL -- on any other
+    // the search finds nothing there and the case reports PARTIAL. On any other
     // enforcing board, including qemu built -DKICKOS_HAVE_MPU=1, an empty search FAILS.
     void devexcl_noop(void*) {}
     void t_dev_window_exclusive()
@@ -1780,7 +1773,7 @@ namespace
             }
             if (holder != -KOS_EBUSY)
             {
-                break; // not "a board service owns this window" -- a real refusal, report it
+                break; // not "a board service owns this window": a real refusal, report it
             }
         }
         if (not any_admissible)
@@ -1788,10 +1781,10 @@ namespace
             // Positively the sim, so a new arch with no DEV encoder fails loudly here
             // instead of inheriting this escape.
 #if KICKOS_ARCH_SIM
-            // The sim mints no DEV window at all -- arch_mpu_region_encodable is
-            // fail-closed. Assert THAT premise end-to-end rather than skipping: the sim
+            // The sim mints no DEV window at all: arch_mpu_region_encodable is
+            // fail-closed. Assert THAT premise end-to-end rather than skip: the sim
             // gate reads a skip as "a test stopped running"
-            // (FAIL_REGULAR_EXPRESSION "# skipped: [1-9]"), and it is right to.
+            // (FAIL_REGULAR_EXPRESSION "# skipped: [1-9]").
             TAP_CHECK(kos::thread::spawn(devexcl_noop, nullptr, "devnone", 10, KOS_POLICY_FIFO,
                                          0, false, nullptr, 0, nullptr, 0,
                                          reinterpret_cast<void*>(0x40000000u), WIN) < 0);
@@ -1819,7 +1812,7 @@ namespace
             return;
         }
         // 1. EXACT DUPLICATE of the live holder's window: refused, and specifically
-        //    EBUSY -- not EPERM (the window is admissible) and not ENOMEM (the pool has
+        //    EBUSY, not EPERM (the window is admissible) and not ENOMEM (the pool has
         //    room; the refusal lands before a slot is claimed).
         TAP_CHECK(kos::thread::spawn(devexcl_noop, nullptr, "devdup", 10, KOS_POLICY_FIFO,
                                      0, false, nullptr, 0, nullptr, 0,
@@ -1831,8 +1824,8 @@ namespace
                                      reinterpret_cast<void*>(win + WIN / 2u), WIN / 2u)
                   == -KOS_EBUSY);
         // 3. ADJACENT but disjoint (base == held last + 1): ADMITTED. This is the mk64f
-        //    PIT CH2 shape -- a grant flush against a block it must not be read as
-        //    overlapping -- so it proves the scan did not widen adjacency into overlap.
+        //    PIT CH2 shape: a grant flush against a block, which must not be read as
+        //    overlapping. It proves the scan did not widen adjacency into overlap.
         int const adj = kos::thread::spawn(devexcl_noop, nullptr, "devadj", 10, KOS_POLICY_FIFO,
                                            0, false, nullptr, 0, nullptr, 0,
                                            reinterpret_cast<void*>(win + WIN), WIN);
@@ -1841,7 +1834,7 @@ namespace
         // its return (-> exit_current -> domain_release) and free its window.
         kos_sleep_ns(20000000ull); // 20 ms
         // The window is free again once the holder is gone, so the SAME grant that was
-        // refused above now succeeds -- proving the refusal tracked live holders, not the
+        // refused above now succeeds: proving the refusal tracked live holders, not the
         // address.
         int const again = kos::thread::spawn(devexcl_noop, nullptr, "devagain", 10, KOS_POLICY_FIFO,
                                              0, false, nullptr, 0, nullptr, 0,
@@ -1887,7 +1880,7 @@ namespace
         g_cd_lit_rc = kos_kconsole_write(CD_LIT, strlen(CD_LIT)); // rodata: accepted
 
         // cd_worker creates its OWN sem (unprivileged create is allowed) and RE-delegates
-        // it to a grandchild -- nested delegation requires the source cap carry TRANSFER,
+        // it to a grandchild: nested delegation requires the source cap carry TRANSFER,
         // which sem_create grants. g_cd_kidsem is cd_worker's cap value (its table).
         g_cd_kidsem = kos_sem_create(0);
         kos_cap_grant kidcaps[] = {{g_cd_kidsem, CH_FULL}}; // -> grandchild's index 1
@@ -1940,7 +1933,7 @@ namespace
         // Positive: a child named from .rodata spawned and ran (the name-copy path works).
         // The grandchild needs its own stack; on a tiny arena (microbit: 16 KiB SRAM, which
         // already cannot spare irq_as_event's 4 KiB page) that alloc can fail. Skip the
-        // grandchild-name half there rather than fail -- the rodata-literal positive above
+        // grandchild-name half there rather than fail: the rodata-literal positive above
         // already exercised the confused-deputy read path; the name-copy path stays covered
         // on the roomier sim/qemu backends.
         if (g_cd_goodspawn < 0)
@@ -2234,7 +2227,7 @@ namespace
     // A low server takes a high caller's call (D1-boosted to the caller's prio), then closes
     // the reply cap instead of replying. The close arm must (a) wake the caller -KOS_EPIPE
     // and (b) deflate the server BEFORE waking, so the higher caller runs before the server
-    // proceeds -- 'c' strictly before 's'.
+    // proceeds: 'c' strictly before 's'.
     volatile long g_cc_rc = -99;
     void cc_server(void*) // caps: done@1, lock@2, E(WAIT)@3
     {
@@ -2242,7 +2235,7 @@ namespace
         struct kos_recv_info info = {0, -1};
         kos_recv(3, buf, sizeof(buf), &info); // info-bearing: hosts the call, D1-boosts us, mints a reply cap
         kos_handle_close(info.reply_cap);     // close instead of reply: EPIPE the caller + deflate us
-        log_put('s');                         // server proceeds -- must be AFTER the caller ran
+        log_put('s');                         // server proceeds: must be AFTER the caller ran
         kos_sem_post(CH_DONE);
     }
     void cc_caller(void*) // caps: done@1, lock@2, E(SIGNAL)@3
@@ -2294,7 +2287,7 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
-    // --- Call/reply (M4.4): happy path -- request delivered, reply returned in-place ---
+    // --- Call/reply (M4.4): happy path: request delivered, reply returned in-place ---
     // A server recvs the request (info-bearing), records it, and replies a known payload;
     // the caller's kos_call returns the reply byte count and the reply OVERWRITES its send
     // buffer (in-place). Both paths are covered: (A) server parked in recv first (fastpath),
@@ -2403,7 +2396,7 @@ namespace
     // --- Call/reply (M4.4): reply + request truncation (datagram clamp, not an error) ---
     // One call exercises BOTH clamps: the caller sends 8 bytes into a server recv buffer of
     // 3 (request truncated to 3), and the server replies 8 bytes into a caller recv_cap of 3
-    // (reply truncated to 3). Neither is an error -- the byte counts just clamp.
+    // (reply truncated to 3). Neither is an error: the byte counts just clamp.
     volatile long g_trunc_reqn = -99; // request bytes the server saw (its buffer < send_len)
     char g_trunc_reqbuf[4];
     volatile long g_trunc_rc = -99; // caller's kos_call return (clamped to recv_cap)
@@ -2567,7 +2560,7 @@ namespace
     // --- Call/reply (M4.4): server dies pre-pop -> caller EPIPE (recv_holders -> 0) ------
     // The caller parks in SEND_WAIT (no receiver has popped it yet). MAIN holds the sole
     // WAIT cap; closing it drives recv_holders to 0, which drains send_waiters and EPIPEs
-    // the parked call -- the pre-pop counterpart to the mid-transaction teardown above.
+    // the parked call: the pre-pop counterpart to the mid-transaction teardown above.
     volatile long g_pp_callrc = -99;
     void pp_caller(void*) // caps: done@1, E(SIGNAL)@2
     {
@@ -2592,8 +2585,8 @@ namespace
 
     // --- Call/reply (M4.4): donation ordering (positive) --------------------------------
     // low(8) server, high(20) caller, medium(12) spoiler. On the fastpath call the server is
-    // D1-boosted to the caller's prio, so the spoiler -- which wakes WHILE the server holds
-    // the transaction -- cannot preempt: the reply reaches the caller ('c') before the
+    // D1-boosted to the caller's prio, so the spoiler (which wakes WHILE the server holds
+    // the transaction) cannot preempt: the reply reaches the caller ('c') before the
     // spoiler runs ('m'). The positive counterpart to call_infoless_revert. Without donation
     // the medium spoiler would preempt the low server mid-transaction and 'm' would precede 'c'.
     uint64_t g_don_unit = 1000000ull;
@@ -2946,7 +2939,7 @@ namespace
         // The low KCAP_INDEX_BITS bits of a cap handle are its table slot (cap.h:
         // KCAP_INDEX_BITS == 4). cap_install scans from KOS_CAP_FIRST_DYNAMIC, so an own
         // sem/endpoint/mutex create never returns a reserved well-known slot (0 = console
-        // default; 1..FIRST_DYNAMIC-1 = board/service delegation) -- it lands at
+        // default; 1..FIRST_DYNAMIC-1 = board/service delegation): it lands at
         // >= FIRST_DYNAMIC. This is the FROZEN cap-index convention (cap_index.h) enforced
         // kernel-side, so a board that delegates no well-known cap cannot let the app's
         // first create alias a reserved index.
@@ -2954,7 +2947,7 @@ namespace
         // FIRST_DYNAMIC-floor TRIPWIRE: the `>= KOS_CAP_FIRST_DYNAMIC` checks below fail
         // LOUDLY if cap_install ever regresses to scanning from 1 (own creates would then
         // land at index 1..3, aliasing the reserved range). Delegation uses explicit
-        // indices, so it is blind to the scan floor -- only an OWN create catches it.
+        // indices, so it is blind to the scan floor: only an OWN create catches it.
         constexpr int IDX_MASK = 0xF;
         int s = kos_sem_create(0);
         TAP_CHECK(s >= 0 and (s & IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
@@ -2987,9 +2980,9 @@ namespace
         }
 
         // Exhaustion: own-creates fill the remaining slots [FIRST_DYNAMIC .. MAX_HANDLES-1]
-        // and then fail cleanly with -KOS_ENOMEM -- the reserved range stays off-limits even at the
-        // LAST free slot, and a full table never crashes or returns a reserved index. (Index
-        // field is 4 bits: MAX_HANDLES <= 16.)
+        // and then fail cleanly with -KOS_ENOMEM: the reserved range stays off-limits even
+        // at the LAST free slot, and a full table never crashes or returns a reserved
+        // index. (Index field is 4 bits: MAX_HANDLES <= 16.)
         int held[16];
         int n = 0;
         while (true)
@@ -3024,7 +3017,7 @@ namespace
     void pub_denied_worker(void*) // caps: done@1
     {
         // Unprivileged caller: rejected before any console state change, so this never
-        // actually hands over the console -- the rest of the suite keeps printing.
+        // actually hands over the console. The rest of the suite keeps printing.
         g_pub_rc = kos_console_publish(1); // unprivileged -> -KOS_EPERM
         kos_sem_post(CH_DONE);
     }
@@ -3035,7 +3028,7 @@ namespace
         // service list set it. This test never publishes anything itself: both caps below
         // are invalid, and the child holding no authority is refused by the gate.
         //
-        // The -KOS_EBADF assertions are exact for a reason -- the AUTH_CONSOLE gate runs
+        // The -KOS_EBADF assertions are exact for a reason: the AUTH_CONSOLE gate runs
         // before the cap resolve, so a root that lost the bit answers -KOS_EPERM and this
         // test fails rather than passing on the wrong code.
         TAP_CHECK(kos_console_publish(-1) == -KOS_EBADF);
@@ -3171,9 +3164,9 @@ namespace
         kid.authority = KOS_AUTH_PINMUX;
         g_auth_collide = kos_thread_spawn(&kid);
         // A bit no gate reads is refused, not masked off. It has to come from ABOVE the
-        // six defined authorities: since the authority word moved out of the shared
-        // rights byte it has its own numbering, so bits 0..5 are all real authorities and
-        // an object right like KOS_CAP_WAIT is no longer a distinguishable wrong value.
+        // six defined authorities: the authority word has its own numbering, separate
+        // from the shared rights byte, so bits 0..5 are all real authorities and an
+        // object right like KOS_CAP_WAIT is not a distinguishable wrong value here.
         kid.cap_count = 1;
         kid.authority = 1u << 6;
         g_auth_badbits = kos_thread_spawn(&kid);
@@ -3186,7 +3179,7 @@ namespace
         kid.authority = 0;
         g_auth_capsarr = kos_thread_spawn(&kid);
         // Stage 4, and the only in-env witness of it: giving up an authority. Narrowing
-        // an object cap is refused, so the sem cap at CH_DONE is the negative arm -- and
+        // an object cap is refused, so the sem cap at CH_DONE is the negative arm, and
         // it must run BEFORE the drop, since it is the last thing here that still needs
         // a live authority cap to be meaningful.
         g_auth_narrowbad = kos_cap_narrow(CH_DONE, 0);
@@ -3425,7 +3418,7 @@ int main(int, char**)
     g_lock = kos_sem_create(1);
     g_done = kos_sem_create(0);
 
-    // Core scheduler / sync / time -- no test-only syscalls, runs on every board.
+    // Core scheduler / sync / time: no test-only syscalls, runs on every board.
     tap::add("svc_roundtrip", t_svc);
     tap::add("fifo_order", t_fifo);
     tap::add("preempt_on_ready", t_preempt);

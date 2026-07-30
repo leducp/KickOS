@@ -67,7 +67,7 @@ ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv
 # TODO(de-drift): this is a hand-maintained mirror of enum kos_syscall_nr
 # (user/include/kickos/sys/abi.h). The tests/telemetry idmap gate parses abi.h and
 # fails if a number is missing or stale here, or if a label is not the enumerator
-# suffix lowercased -- so keep the names mechanical. The durable fix is to GENERATE
+# suffix lowercased, so keep the names mechanical. The durable fix is to GENERATE
 # this from the C++ enum (nanobind / a codegen step); that is future-milestone work.
 SYSCALL_NAME = {
     1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
@@ -222,7 +222,7 @@ def clock_model(records):
     if len(sess) == 1:
         # Single anchor: arch_trace_now (the tick counter) and arch_clock_now (the
         # t_anchor ns) read the SAME clock zeroed at the same origin, so the anchor's
-        # ns/tick = t_anchor / abs_t -- a real rate from one SESSION (no delta needed).
+        # ns/tick = t_anchor / abs_t: a real rate from one SESSION (no delta needed).
         a = sess[0]
         if a.abs_t > 0:
             return (a.fields["t_anchor"] / a.abs_t, a.abs_t, a.fields["t_anchor"])
@@ -268,7 +268,7 @@ def syscall_overheads(records, slices, ns, gaps, probe_ns=0.0):
     """True on-CPU cost of each syscall: the issuing thread's RUNNING time within
     its SYSCALL_ENTER..EXIT window. A blocking syscall (sleep_ns, sem_wait) yields
     the CPU to idle/others and resumes later, so its raw enter->exit SPAN includes
-    that block -- NOT a cost. Intersecting the window with the thread's run slices
+    that block, not a cost. Intersecting the window with the thread's run slices
     (the SWITCH-derived on-CPU intervals) subtracts the blocked-away time, leaving
     the real overhead. Returns [(nr, overhead_ns)] (ENTER/EXIT matched per tid, FIFO;
     pairs straddling a seq gap dropped)."""
@@ -326,8 +326,8 @@ def analyze(records, model, gaps):
             switches.append((idx, r))
     run_ns = {}          # tid -> ns run
     slices = []          # (tid, start_ns, end_ns) for chrome/cpu
-    # rule (f): a run slice whose index range crosses a seq gap is poisoned --
-    # drop it from BOTH the numerator (run_ns) AND the denominator (excluded).
+    # rule (f): a run slice whose index range crosses a seq gap is poisoned. Drop it
+    # from BOTH the numerator (run_ns) AND the denominator (excluded).
     excluded = 0.0
     for (ia, a), (ib, b) in zip(switches, switches[1:]):
         start, end = ns(a), ns(b)
@@ -348,7 +348,7 @@ def analyze(records, model, gaps):
 
     # ISR-during-idle: IRQ enter/exit while idle (tid 0) was current -> not idle.
     # Union the spans (an IRQ pair nesting inside another must be counted once,
-    # not summed twice -- summing overstates ISR time and thus CPU%).
+    # not summed twice: summing overstates ISR time and thus CPU%).
     idle_isr_spans = []
     for line, dur, start, tid_at in irq_pairs(records, switches, ns, gaps, probe_ns):
         if tid_at == 0:
@@ -365,7 +365,7 @@ def analyze(records, model, gaps):
     # true on-CPU cost (block time subtracted), overall + per syscall number. The
     # CPU% `slices` cover only switch-to-switch runs; add the leading + trailing
     # runs (before the first / after the last SWITCH) so a syscall in the boundary
-    # run is still counted -- these are local to the overhead calc, not CPU%.
+    # run is still counted. These are local to the overhead calc, not CPU%.
     over_slices = list(slices)
     if switches and len(records) >= 2:
         _, first_sw = switches[0]
@@ -489,7 +489,7 @@ def _current_tid_at(switches, ns, when_ns):
 
 def _syscall_open_at(records, tid, upto):
     """True if `tid`'s most recent SYSCALL_ENTER before record index `upto` has no
-    matching SYSCALL_EXIT since -- i.e. a syscall is mid-flight on that thread, so a
+    matching SYSCALL_EXIT after it. A syscall is mid-flight on that thread, so a
     switch here is cooperative/blocking rather than an ISR-caused wake."""
     depth = 0
     for r in records[:upto]:
@@ -511,11 +511,10 @@ def wake_latencies(records, ns, gaps, probe_ns=0.0):
     driven, not a wake); then walk back through the possibly-nested ISR group to its
     outermost IRQ_ENTER and measure from there.
 
-    Anchoring on the switch -- rather than scanning forward from each IRQ_ENTER -- is
+    Anchoring on the switch (rather than scanning forward from each IRQ_ENTER) is
     what keeps a non-waking IRQ (an idle timer tick, or a console TX-drain IRQ) from
     being paired with a far-later switch: such an IRQ's EXIT is NOT immediately
-    before a SWITCH, so it is simply never counted. (Forward-scanning produced
-    sleep-beat/multi-second outliers because it skipped past intervening IRQs.)
+    before a SWITCH, so it is simply never counted.
     Gap-guarded, probe-overhead-corrected."""
     lat = []
     for j, r in enumerate(records):
@@ -583,7 +582,7 @@ def cmd_summary(records, model, lost, gaps, errors):
               % (ARCH_NAME.get(s0["arch"], "?"), s0["arch"], s0["ver"], s0["ts_bits"]))
         print("probe overhead  : %d ticks" % s0["probe_overhead"])
         # The cross-check reconciles decoded+lost against the CLOSING SESSION's final
-        # records_attempted -- only meaningful with a clean shutdown (>=2 SESSIONs).
+        # records_attempted. Only meaningful with a clean shutdown (>=2 SESSIONs).
         # A running capture has just the opening SESSION (attempted=1, stale), so
         # skip it there rather than always report a false MISMATCH.
         if len(sess) >= 2:
@@ -704,8 +703,8 @@ def cmd_assert(records, model, lost, gaps, errors):
             problems.append("cross-check: decoded+lost=%d != attempted=%d"
                             % (len(records) + lost, attempted))
     # 4. pairing: no ORPHAN EXIT (an EXIT with no prior matching ENTER == stream
-    # corruption). Unmatched ENTERs are legitimate -- a no-return exit() syscall,
-    # or a thread blocked mid-syscall when the system shut down -- so they are not
+    # corruption). Unmatched ENTERs are legitimate (a no-return exit() syscall,
+    # or a thread blocked mid-syscall when the system shut down), so they are not
     # errors. Orphan exits are.
     orphan_sys = _orphan_exits(records, EV_SYSCALL_ENTER, EV_SYSCALL_EXIT, ("tid", "nr"))
     if orphan_sys != 0:
@@ -729,7 +728,7 @@ def cmd_assert(records, model, lost, gaps, errors):
 
 def cmd_assert_atomic(records, data, lost, errors):
     """CI gate 2: the file is a clean sequence of WHOLE records (record-atomic),
-    with contiguous sequence numbers (drops, if any, are a clean tail -- never a
+    with contiguous sequence numbers (drops, if any, are a clean tail: never a
     torn record or an internal corruption). Prints 'decoded=N' for the caller's
     drop-accounting cross-check."""
     problems = []
@@ -790,7 +789,7 @@ def _lock_offset(buf):
     """Find the smallest offset where a run of _LOCK_RUN self-delimiting, seq-
     contiguous records begins. This aligns a live stream WITHOUT needing a SESSION
     record: SESSION is emitted only at boot/shutdown, so a capture that starts (or
-    resyncs) mid-stream must lock onto the record grid itself -- valid type bytes +
+    resyncs) mid-stream must lock onto the record grid itself: valid type bytes +
     a u16 seq that increments by 1. Returns the offset, or None if no run is
     confirmable in the current buffer (wait for more bytes)."""
     n = len(buf)
@@ -821,9 +820,9 @@ def follow(src):
     self-delimiting, so each is decoded + printed (canonical form, same as --csv) as
     its bytes arrive; a partial record at the tail waits for more. Alignment is by
     seq-contiguity (see _lock_offset), so it locks onto a mid-stream capture and
-    re-locks after any desync -- it does NOT depend on a SESSION marker. A seq GAP
+    re-locks after any desync. It does NOT depend on a SESSION marker. A seq GAP
     after locking is fine (dropped records under ring overflow leave the byte grid
-    intact -- emit is whole-record-atomic); only an invalid type byte forces a
+    intact: emit is whole-record-atomic); only an invalid type byte forces a
     re-lock. Time stays in raw ticks (the ns model needs both SESSION anchors, the
     last only at shutdown); aggregate views (--summary/--chrome/--assert) are
     batch-only. Ctrl-C or stream close ends it."""

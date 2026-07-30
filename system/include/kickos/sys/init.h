@@ -24,10 +24,9 @@
 //
 // Privilege posture: root's CPU mode is the build knob KICKOS_ROOT_PRIVILEGED, decided
 // once in kmain before any app code runs. Under OFF the app main / init body runs in an
-// UNPRIVILEGED root holding a CAP_AUTHORITY, which is the posture every enforcement
-// board is validated in. So an app must not assume ambient privilege: the acts that used
-// to need it are gated on authority bits (kos_console_publish on AUTH_CONSOLE, and so
-// on), and what root still holds when main is entered is what kickos_app_authority()
+// UNPRIVILEGED root holding a CAP_AUTHORITY. An app must not assume ambient privilege:
+// the privileged acts are gated on authority bits (kos_console_publish on AUTH_CONSOLE,
+// and so on), and what root holds when main is entered is what kickos_app_authority()
 // below declares.
 //
 // Ordering: app and libstdc++ global constructors run in the kernel root thread
@@ -73,10 +72,8 @@ extern struct kos_init_args kickos_init_args;
 // The default init body: narrow root's authority to kickos_app_authority() below, then
 // run the app's kickos_app_main. Exposed so a custom init provider can delegate to it.
 // It does NOT bring the service list up (that is kickos_service_list_run below), so a
-// custom init composes the two in whatever order it needs -- but the narrowing rides
-// HERE rather than in the default kickos_init_entry precisely so that delegating cannot
-// silently hand the app root's full authority. Call it LAST: any bring-up sequenced
-// after it runs with the app's narrowed set and earns -KOS_EPERM.
+// custom init composes the two in whatever order it needs. CALL IT LAST: any bring-up
+// sequenced after it runs with the app's narrowed set and earns -KOS_EPERM.
 int kickos_default_init_run(int argc, char** argv);
 
 // Run the selected board's service list (see <kickos/sys/service.h>): walk each
@@ -96,42 +93,34 @@ int kickos_service_list_run(void);
 int kickos_pinmux_run(void);
 
 // The authority the app's main needs: a mask of kos_cap_authority KOS_AUTH_* bits
-// (<kickos/sys/abi.h>). The default kickos_init_entry narrows root's authority cap to
-// this AFTER the pin map and the service list and BEFORE kickos_app_main, so bring-up
-// keeps the pinmux / console / spawn authority it needs while the app runs with only
-// what it asked for. It can only CLEAR bits: root cannot gain authority here.
+// (<kickos/sys/abi.h>). kickos_default_init_run narrows root's authority cap to this
+// before kickos_app_main. It can only CLEAR bits.
 //
-// The weak default is KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM -- spawn worker threads, and end
-// the system when main returns. An app needing more declares it in its OWN TU, at file
-// scope next to main (the macro supplies the C linkage the override needs):
+// The fallback is KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM. An app needing more declares it in
+// its OWN TU, at file scope next to main:
 //
 //     KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX);
 //
 // An app whose main RETURNS must keep KOS_AUTH_SYSTEM: root_entry ends the system with
-// kos_shutdown, and a refused shutdown panics "root: shutdown refused"
-// (kernel/init/kmain.cc). A never-returning app may declare 0 and hold nothing.
+// kos_shutdown, and a refusal panics "root: shutdown refused" (kernel/init/kmain.cc). A
+// never-returning app may declare 0.
 //
-// This bites only where root is UNPRIVILEGED. cap_check_authority short-circuits on
-// Thread::privileged, and kmain seats root an authority cap only under
-// KICKOS_ROOT_PRIVILEGED=OFF -- so on a privileged-root board the narrow finds an empty
-// slot, answers -KOS_EBADF, and changes nothing.
+// Has no effect where root is privileged: cap_check_authority short-circuits on
+// Thread::privileged, and kmain seats the cap only under KICKOS_ROOT_PRIVILEGED=OFF, so
+// the narrow finds an empty slot and answers -KOS_EBADF.
 //
-// NO weak symbol is involved, deliberately. Both this and the fallback are STRONG, and
-// the override works by archive-member-on-demand: the fallback is alone in
-// system/init/app_authority_default.cc, so an app that defines the symbol resolves it
-// locally and that member is never extracted, while an app that declares nothing leaves
-// the reference undefined and pulls it in. Weak was tried and rejected -- GCC carries a
-// weak attribute from a declaration onto the definition in the same TU, which made every
-// app's override weak too and left link order deciding it.
+// Not a weak symbol. This and the fallback are both strong, and an app's definition
+// beats the fallback by keeping system/init/app_authority_default.cc from being
+// extracted at all. A weak attribute on this declaration would propagate to the app's
+// definition and leave link order deciding which one wins.
 uint8_t kickos_app_authority(void);
 
 #ifdef __cplusplus
 }
 #endif
 
-// Defines the override, with the C language linkage that makes it win over the weak
-// default. A bare definition in a C++ app TU would mangle and be silently ignored,
-// leaving the app running on the default mask.
+// A bare definition in a C++ app TU would mangle and be silently ignored, leaving the
+// app on the fallback mask; the macro supplies the C linkage.
 #ifdef __cplusplus
 #define KICKOS_APP_AUTHORITY(mask)                 \
     extern "C" uint8_t kickos_app_authority(void); \
