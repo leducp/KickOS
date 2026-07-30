@@ -652,10 +652,9 @@ void kickos_arch_mpu_commit(void) {}
 
 size_t arch_mpu_min_region(void)
 {
-    // RX MPU page = 16 bytes (RSPAGEn/REPAGEn address[31:4], UM sec.17.1.2). Like
-    // SYSMPU the hardware takes arbitrary page-granular bounds, so the pow2 shaping
-    // the shared alloc/linker path applies is a describable superset, not a
-    // requirement -- returning the page size keeps every descriptor representable.
+    // RX MPU page = 16 bytes (RSPAGEn/REPAGEn address[31:4], UM sec.17.1.2). The
+    // hardware takes arbitrary page-granular bounds, so this page size is also the
+    // alloc/linker rounding granule.
     return 16u;
 }
 
@@ -671,9 +670,13 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 15u) == 0 and (size & 15u) == 0;
 }
 
-// Rule 7 (arch.h): RX has no Cortex-M bit-band alias. Concrete 0 (not weak): the
-// ARM-common weak default is not in an RX link, so the grant module resolves this
-// symbol from the arch layer.
+int arch_mpu_region_pow2(void)
+{
+    return 0;
+}
+
+// Rule 7 (arch.h): RX has no Cortex-M bit-band alias. Not weak: no ARM-common weak
+// default exists in an RX link.
 int arch_bitband_present(void)
 {
     return 0;

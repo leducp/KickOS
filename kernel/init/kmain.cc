@@ -78,21 +78,18 @@ namespace kickos
 {
     namespace
     {
-        // The bootstrap idle/root TCBs. Still file-static: the remaining
-        // instance-scoping residue (invariant #7) -- they move into Kernel with the
-        // Later multi-instance work (alongside the sim altstack and the TLS pointer).
-        // Their STACKS are deliberately NOT here; see boot_stack_alloc below.
+        // The bootstrap idle/root TCBs. Still file-static: instance-scoping residue
+        // (invariant #7). Their STACKS are deliberately NOT here; see boot_stack_alloc.
         Thread g_idle_tcb;
         Thread g_root_tcb;
 
-        // Take one bootstrap thread stack from the user-RAM arena, and assert at boot
-        // the two properties an MPU descriptor over it depends on. A thread's own
-        // stack is one of its MPU regions; PMSAv7/v8 and PMP/NAPOT can only name a
-        // pow2 block naturally aligned to its size, and Rule 7 confines a RAM grant to
-        // the arena for EVERY caller (a .bss array satisfies neither). arch_ram_alloc
-        // reserves arch_ram_region_size() bytes naturally aligned to that size, i.e.
-        // exactly one region. Safe here: every arch runs arch_init() before kmain, and
-        // the caller has already run domain_init() and grant_reserved_validate().
+        // Take one bootstrap thread stack from the user-RAM arena, and assert at boot the
+        // two properties an MPU descriptor over it depends on. A .bss array satisfies
+        // neither: PMSAv7 and PMP/NAPOT can only name a pow2 block naturally aligned to
+        // its size (PMSAv8/SYSMPU/RX name any granule multiple, arch_mpu_region_pow2),
+        // and Rule 7 confines a RAM grant to the arena for EVERY caller. Safe here: every
+        // arch runs arch_init() before kmain, and the caller has already run domain_init()
+        // and grant_reserved_validate().
         void* boot_stack_alloc(size_t size, char const* exhausted_msg)
         {
             void* const p = arch_ram_alloc(size);

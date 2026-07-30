@@ -638,10 +638,8 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_MEM_SELF_GRANT:
         {
-            // The explicit half of allocate-then-grant: KOS_SYS_RAM_ALLOC reserves
-            // arena memory and grants nothing. Explicit rather than implicit inside
-            // ram_alloc because the descriptor budget is hardware; here a full budget
-            // is a returned error, not a refused allocation that already succeeded.
+            // The explicit half of allocate-then-grant: KOS_SYS_RAM_ALLOC reserves arena
+            // memory and grants nothing.
             //
             // Added to the CALLER's own region set, not to its domain: a domain is
             // shared, and widening it would silently hand the same window to every
@@ -672,13 +670,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-KOS_EINVAL);
             }
-            // Naturally aligned, the same admission the stack grant takes
-            // (syscall_thread.cc): PMSAv7 MPU_RBAR MASKS the base down to the region
-            // size, so an unaligned base would be programmed as a window starting
-            // BELOW what the caller named. Where arch_mpu_min_region() == 0 there is
-            // no descriptor to snap and rsz is not a power of two (rsz - 1 is not an
-            // alignment mask), so the check is skipped.
-            if (arch_mpu_min_region() != 0 and (base & (rsz - 1)) != 0)
+            // Nameable by one descriptor, the same admission the stack grant takes
+            // (syscall_thread.cc): PMSAv7 MPU_RBAR MASKS the base down to the region size,
+            // so an unaligned base would be programmed as a window starting BELOW what the
+            // caller named. On a no-MPU arch it still demands a 16-aligned base.
+            if (not arch_ram_region_admissible(base, rsz))
             {
                 return static_cast<uintptr_t>(-KOS_EINVAL);
             }

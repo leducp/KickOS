@@ -292,41 +292,42 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   if(EXISTS "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
     set(_ld "${CMAKE_SOURCE_DIR}/boards/${KICKOS_BOARD}/${KICKOS_CHIP}.ld")
   endif()
-  # Preprocess the linker script through cpp so KICKOS_HAVE_MPU gates sections
-  # (zero-overhead: a non-enforcement build reserves no app-data block/region -- the
-  # #if guards vanish). cpp strips comments and passes MEMORY/SECTIONS/LONG/wildcard
-  # tokens through unchanged. The GENERATED script (named <chip>.ld) is what the link
-  # and the installed package use, so the INSTALL_INTERFACE -T path is unchanged.
+  # Preprocess the linker script through cpp so KICKOS_HAVE_MPU gates sections: a
+  # non-enforcement build reserves no app-data block/region. cpp strips comments and passes
+  # MEMORY/SECTIONS/LONG/wildcard tokens through unchanged. The GENERATED script is named
+  # <chip>.ld too, so the INSTALL_INTERFACE -T path is unchanged.
   set(_ld_gen "${CMAKE_CURRENT_BINARY_DIR}/${KICKOS_CHIP}.ld")
-  # Per-build app-data window size. Each chip .ld carries its own freestanding default
-  # (a small window, tightest isolation); a full-C++ build overrides it here with the
-  # larger writable window the toolchain runtime needs (heap + libstdc++/unwind state).
-  # Forwarded only when set, so a plain build keeps the chip default.
+  # Per-build app-data window size. Each chip .ld carries its own freestanding default; a
+  # full-C++ build needs the larger writable window for the heap and libstdc++/unwind state.
   set(_ld_defs -DKICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
   if(DEFINED KICKOS_APPDATA_SIZE)
     list(APPEND _ld_defs -DKICKOS_APPDATA_SIZE=${KICKOS_APPDATA_SIZE})
   endif()
-  # Non-MPU heap: the .userheap section carved before the thread arena. Forwarded only
-  # when set, so a plain build keeps the chip default. (On an MPU chip the heap is the
-  # .appdata window pad instead, so this is inert there.)
+  # Non-MPU heap: the .userheap section carved before the thread arena. On an MPU chip
+  # the heap is the .appdata window pad instead, so this is inert there.
   if(DEFINED KICKOS_USER_HEAP_SIZE)
     list(APPEND _ld_defs -DKICKOS_USER_HEAP_SIZE=${KICKOS_USER_HEAP_SIZE})
   endif()
-  # Opt-in link-time heap floor: when set, the .ld ASSERTs the available heap is at
-  # least this many bytes. Undefined by default (a too-small heap is a runtime bump
-  # failure, not a link error, unless a board opts into this determinism).
+  # Opt-in link-time heap floor: the .ld ASSERTs at least this many bytes are available.
+  # Undefined by default, so a too-small heap is a runtime bump failure, not a link error.
   if(DEFINED KICKOS_HEAP_MIN)
     list(APPEND _ld_defs -DKICKOS_HEAP_MIN=${KICKOS_HEAP_MIN})
   endif()
   # Boot-stack geometry for the KICKOS_BOOT_ARENA_ASSERT every chip .ld carries: the
   # arena must hold kmain's idle + root stacks INCLUDING the natural-alignment padding
-  # the bump allocator pays, and only the linker knows where the arena starts. Not
-  # optional and not per-board -- a .ld without the assert fails the configure.
+  # the bump allocator pays, and only the linker knows where the arena starts. A .ld
+  # without the assert fails the configure.
   include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
-  kickos_boot_arena_defs("${CMAKE_CURRENT_SOURCE_DIR}" "${KICKOS_ARCH_FAMILY}"
-                         "${KICKOS_CHIP}" "${KICKOS_BOARD_INCLUDE_DIR}" "${_ld}"
-                         "${KICKOS_PROVISION_OVERRIDES}" _boot_defs)
+  kickos_boot_arena_defs("${CMAKE_CURRENT_SOURCE_DIR}"
+                         "kickos_arch_${KICKOS_ARCH}" "kickos_chip_${KICKOS_CHIP}"
+                         "${KICKOS_BOARD_INCLUDE_DIR}" "${_ld}"
+                         "${KICKOS_PROVISION_OVERRIDES}" _boot_defs
+                         _mpu_min_region_cfg _mpu_region_pow2_cfg)
   list(APPEND _ld_defs ${_boot_defs})
+  # The scraped region-encoding seam, read by the one app TU that checks the runtime seam
+  # against it. Unset on the sim, which has no KICKOS_CHIP and never enters this block.
+  set_property(GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG "${_mpu_min_region_cfg}")
+  set_property(GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG "${_mpu_region_pow2_cfg}")
   add_custom_command(
     OUTPUT "${_ld_gen}"
     COMMAND ${CMAKE_C_COMPILER} -E -P -x c ${_ld_defs}

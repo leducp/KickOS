@@ -1,23 +1,21 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Memory-domain isolation gate, isolated in its own binary because it ends the
-// process: an unprivileged domain-A thread writes its own granted region (OK),
-// then writes domain B's region -- which must fault. The kernel reports "MPU
-// FAULT" and shuts down. CTest asserts the marker appears (and no "did not fault").
+// Memory-domain isolation gate. Its own binary because it ends the process: an
+// unprivileged domain-A thread writes its own granted region (OK), then writes domain B's
+// region, which must fault. The kernel reports "MPU FAULT" and shuts down. CTest asserts
+// the marker appears (and no "did not fault").
 //
-// Static-data-free by construction: the worker takes its region base through its
-// thread ARG, by value, and derives both cells from it. The only memory it touches is
-// its code (flash, granted RX), region A (granted), and its own stack.
+// Static-data-free by construction: the worker takes its region base through its thread
+// ARG, by value, and derives both cells from it. The only memory it touches is its code
+// (flash, granted RX), region A (granted), and its own stack.
 //
 // The arg is a value, not a struct in region A: under KICKOS_ROOT_PRIVILEGED=0 root is
 // not granted A, so filling a struct there would fault in root during setup and prove
 // nothing about the child.
 //
-// Enforced in the sim (mprotect) and on HW where the MPU backend is active
-// (KICKOS_HAVE_MPU). Where the MPU is a no-op (privilege-only boards), the
-// cross-domain write COMPLETES and the app ends via the "no enforcement" path --
-// expected there, not a failure.
+// Where the MPU is a no-op (privilege-only boards) the cross-domain write COMPLETES and
+// the app ends via the "no enforcement" path, which is expected, not a failure.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -46,9 +44,9 @@ namespace
 
 int main(int, char**)
 {
-    // One block, low half granted. kos_ram_alloc returns a base naturally aligned to the
-    // rounded 8 KiB block, so it is also 4 KiB-aligned and the grant encodes as one
-    // descriptor. base + REGION is outside it.
+    // One block, low half granted. REGION is a multiple of every granule in the tree, so
+    // the grant of (base, REGION) encodes as one descriptor on a pow2 and on a granular
+    // backend alike. base + REGION is outside it.
     void* rA = kos_ram_alloc(BLOCK);
     if (rA == nullptr)
     {
@@ -56,10 +54,8 @@ int main(int, char**)
         return 1;
     }
 
-    // Domain-A worker is unprivileged and granted only the low half.
     kos::thread::spawn(domainA_worker, rA, "domainA", 10, KOS_POLICY_FIFO, 0,
                        /*privileged=*/false, rA, REGION);
-    // Park: the worker runs, writes A (ok), faults writing B, kernel shuts down.
     int idle = kos_sem_create(0);
     while (true)
     {

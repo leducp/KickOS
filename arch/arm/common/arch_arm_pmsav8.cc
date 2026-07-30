@@ -151,10 +151,9 @@ void kickos_arch_mpu_commit(void)
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
 }
 
-// PMSAv8 is byte-granular on a 32-byte page: a window is encodable EXACTLY iff base
-// and base+size both land on a 32-byte boundary (no power-of-two rule, unlike the weak
-// v7-M PMSA). Overrides the weak arch_mpu_region_encodable. arch_mpu_min_region stays
-// the weak 32 (PMSAv8 granule == v7-M granule), so no override for it.
+// PMSAv8 is byte-granular on a 32-byte page: a window is encodable EXACTLY iff base and
+// base+size both land on a 32-byte boundary, with no power-of-two rule unlike the weak
+// v7-M PMSA. arch_mpu_min_region needs no override, the granule matching v7-M's 32.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size < 32u)
@@ -162,6 +161,13 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
         return false;
     }
     return (base & 31u) == 0 and (size & 31u) == 0;
+}
+
+// Overrides the weak v7-M 1, but only in an enforcement build: this TU is inside
+// KICKOS_HAVE_MPU.
+int arch_mpu_region_pow2(void)
+{
+    return 0;
 }
 
 }

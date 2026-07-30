@@ -230,12 +230,14 @@ namespace kos
     };
 }
 
-// Define a caller-owned thread stack buffer for kos::thread::spawn's `stack`
-// argument -- the OPTIONAL way to own a thread's stack (leave it off and the kernel
-// demand-allocates a KICKOS_USER_STACK_SIZE default). Under MPU enforcement the
-// stack is granted as ONE region, so the size must be a power of two and the buffer
-// naturally aligned to it (a valid PMSA/NAPOT base). Without enforcement the stack is
-// never a region: a 16-byte ABI alignment suffices and avoids wasting a large gap.
+// Define a caller-owned thread stack buffer for kos::thread::spawn's `stack` argument.
+// Leave it off and the kernel demand-allocates a KICKOS_USER_STACK_SIZE default.
+// Under MPU enforcement the stack is granted as ONE region. Power-of-two size and
+// natural alignment is a conservative compile-time superset: PMSAv7/NAPOT require it,
+// while the base+limit backends (PMSAv8, SYSMPU, RX) would accept any
+// arch_mpu_min_region() multiple. The granule is a runtime seam value, so that looser
+// rule is not expressible here and those parts pay a padding gap.
+// Without enforcement the stack is never a region: a 16-byte ABI alignment suffices.
 #if KICKOS_HAVE_MPU
 #define KOS_STACK_DEFINE(name, size)                                              \
     static_assert(((size) & ((size) - 1)) == 0,                                   \

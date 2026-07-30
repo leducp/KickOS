@@ -113,10 +113,12 @@ namespace kickos
             }
             return true;
         }
-        // RAM data grant. R1 (CRITICAL): require natural alignment of the base to the
-        // (pow2) region size -- mirrors the stack rule. Without it a PMSA/NAPOT
-        // descriptor snaps the base and the enforced window covers the wrong span.
-        if ((base & (size - 1u)) != 0)
+        // RAM data grant. R1 (CRITICAL): the block must be nameable by ONE descriptor,
+        // else the programmed window covers a span the caller did not ask for (a PMSA/
+        // NAPOT descriptor snaps an unaligned base downwards). The mask this replaced
+        // was only an alignment test, sound while every size was a power of two.
+        // Geometry only: arena confinement is the check below.
+        if (not arch_ram_region_admissible(base, size))
         {
             return false;
         }
@@ -141,6 +143,9 @@ namespace kickos
         // grant_hits_reserved read past the buffer; catch it at boot. A zero count
         // (KICKOS_RESERVED_NONE, the sim) is legal, so there is NO count > 0 assert.
         KICKOS_ASSERT(n <= KICKOS_MAX_RESERVED);
+        // arch_ram_region_size and arch_ram_region_admissible mask with min - 1.
+        size_t const min = arch_mpu_min_region();
+        KICKOS_ASSERT(min == 0 or (min & (min - 1u)) == 0);
         // Each declared block must be well-formed.
         for (size_t i = 0; i < n; i++)
         {

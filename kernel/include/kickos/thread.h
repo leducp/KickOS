@@ -209,9 +209,10 @@ namespace kickos
         // default thread stacks only.
         void* stack_free_list = nullptr;
 #if KICKOS_HAVE_MPU
-        // A demand-allocated stack is granted as ONE MPU region, so its size must be a
-        // power of two the descriptor can name (PMSA/NAPOT); arch_ram_alloc then hands
-        // out a naturally-aligned block, a valid region base.
+        // A demand-allocated stack is granted as ONE MPU region. Power of two is a
+        // conservative compile-time superset: PMSAv7/NAPOT require it, the base+limit
+        // backends would accept any granule multiple. The granule is a runtime seam
+        // value, so the looser rule cannot be asserted here.
         static_assert((KICKOS_USER_STACK_SIZE & (KICKOS_USER_STACK_SIZE - 1)) == 0,
                       "KICKOS_USER_STACK_SIZE must be a power of two under MPU enforcement");
 #endif

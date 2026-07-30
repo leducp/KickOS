@@ -203,13 +203,22 @@ below reads the same with that substitution.
   -- PMSAv8 is exactly that shape at a 32-byte granule. So an MMIO grant no longer
   needs pow2 padding (which on v7-M over-granted neighbours or forced fail-closed).
 
-Note the shared `arch_ram_region_size()` (`arch.h`) still pow2-shapes RAM regions
-whenever `arch_mpu_min_region() != 0`. That remains **correct** on PMSAv8 (a pow2
-range is a valid arbitrary range), just not minimal -- the allocator wastes the
-same padding the v7-M chips do. Relaxing `arch_ram_region_size` to 32-byte-granular
-for PMSAv8 is a **follow-on optimization**, out of scope for first enforcement; get
-it correct first, then reclaim the padding. This is the payoff `design-rp2350.md`
-flags ("deletes the pow2 `.appdata` window machinery") -- realizable, but stage it.
+Note the shared `arch_ram_region_size()` (`arch.h`) originally pow2-shaped RAM regions
+whenever `arch_mpu_min_region() != 0`. That was **correct** on PMSAv8 (a pow2 range is a
+valid arbitrary range), just not minimal -- the allocator wasted the same padding the
+v7-M chips do. Relaxing it to 32-byte-granular for PMSAv8 was staged as a follow-on
+rather than bundled into first enforcement, on the reasoning that correctness comes
+first and the padding can be reclaimed afterwards. This is the payoff `design-rp2350.md`
+flags ("deletes the pow2 `.appdata` window machinery").
+
+**Resolved (M4.5.5).** That follow-on landed. `arch_mpu_region_pow2()` splits the
+enforcing case into pow2-required (PMSAv7 RASR, PMP NAPOT) and granular-at-N (PMSAv8,
+SYSMPU, RX), and `arch_ram_region_size`/`_align` round to the granule in the second.
+The staging judgement held: first enforcement shipped on the pow2 shaping, and the
+relaxation was a seam change rather than a per-chip patch. On RP2350 the boot stacks now
+align to 32 instead of to 2048/8192. Note the mode is posture-dependent -- this file's
+`arch_arm_pmsav8.cc` is linked only at `KICKOS_HAVE_MPU=1`, so a non-enforcement build
+of the same chip still takes the weak v7-M pow2 rule.
 
 ## Region budget
 

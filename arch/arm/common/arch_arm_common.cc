@@ -334,9 +334,9 @@ void __attribute__((weak)) kickos_arch_mpu_commit(void)
     __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
 }
 #else
-// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only. apply is a
-// no-op; the commit is an empty weak default (each deferred arch's PendSV epilogue
-// calls the commit symbol unconditionally, so it must always resolve).
+// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only. The commit
+// symbol must still resolve, as every deferred arch's PendSV epilogue calls it
+// unconditionally.
 void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     (void)regions;
@@ -350,10 +350,15 @@ size_t __attribute__((weak)) arch_mpu_min_region(void)
     return 32u; // ARMv6-M / v7-M PMSA min region; a no-MPU chip (nRF51) overrides to 0
 }
 
-// PMSA needs a power-of-two size >= 32 with the base naturally aligned to it (the
-// RBAR base masking in arch_mpu_apply assumes exactly that). K64F (SYSMPU, byte-
-// granular) overrides this strongly; a no-MPU ARM chip (min 0) falls to the
-// 16-byte-granular branch.
+// v7-M RASR encodes the size as __builtin_ctz(size) - 1, so only a power of two is
+// expressible. PMSAv8 (base+limit) and SYSMPU override this to 0.
+int __attribute__((weak)) arch_mpu_region_pow2(void)
+{
+    return 1;
+}
+
+// PMSA needs a power-of-two size >= 32 with the base naturally aligned to it: the RBAR
+// base masking in arch_mpu_apply assumes exactly that.
 bool __attribute__((weak)) arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size == 0)
@@ -372,10 +377,9 @@ bool __attribute__((weak)) arch_mpu_region_encodable(uintptr_t base, size_t size
     return (base & (size - 1)) == 0;
 }
 
-// Rule 7 bit-band flag (arch.h): 0 by default -- M0+/M7 have no bit-band alias. The
-// bit-band M4 chips (mk64f, stm32f411, xmc4800) strong-override to 1 so the grant
-// path also refuses a reserved block's alias image. Defined unconditionally (unused
-// where the grant module is not linked, i.e. KICKOS_HAVE_MPU=0).
+// Rule 7 bit-band flag (arch.h). The bit-band M4 chips (mk64f, stm32f411, xmc4800)
+// override to 1 so the grant path also refuses a reserved block's alias image. Defined
+// unconditionally: unused where the grant module is not linked (KICKOS_HAVE_MPU=0).
 int __attribute__((weak)) arch_bitband_present(void)
 {
     return 0;

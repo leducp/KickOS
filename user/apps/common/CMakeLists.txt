@@ -17,6 +17,8 @@ add_subdirectory(hello_c)
 add_subdirectory(mpu_fault)
 # Root confinement (mpu_fault covers a spawned child). Diagnostic app, self-gated.
 add_subdirectory(rootfault)
+# Root's AUTHORITY narrow (rootfault covers its memory confinement). Self-gated.
+add_subdirectory(rootauth)
 add_subdirectory(sched_exit)
 
 add_subdirectory(selftest)

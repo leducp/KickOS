@@ -7,18 +7,43 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-On branch `M4.5.4-unpriv-root-stage4`, off `master`. **Silicon-witnessed on two of the six flipped
-boards** (2026-07-30): `xmc4800-relax` (PMSAv7, 65 cases / 64 `ok` / 1 skip) and
-`frdmk64f` (SYSMPU, full service list, 65 / 63 / 2), each with `ok 46 - authority_cap` and TAP
-routed through its userspace console driver. Read those two rows precisely: `selftest` declares five
-of the six bits, so root gave up only `AUTH_PSTATE` there. The capture where root actually drops
-`AUTH_PINMUX` and `AUTH_CONSOLE` is XMC `consoledemo`, which declares no mask and still prints
-through the driver it handed off. `docs/reference/boards.md`, *Stage 4*. The other four flipped
-boards rest on emulation, and the three apps that declare a wider mask (`c6blink`, `rxdrv`,
-`f411spi`) are **still unrun** -- they are the direct witness that a per-app declaration carries a
-board's own pin muxing on hardware.
+On branch `M4.5.5-region-encoding`, off `master`. **M4.5.4 is MERGED** (squashed, PR #4).
 
-**Stage 4 of the unprivileged root is COMPLETE in-tree**: root now hands the app only the authority
+**M4.5.5 is complete and silicon-witnessed on two of the three boards it moves** (2026-07-30):
+`frdmk64f` (SYSMPU) and `pizero2350` (PMSAv8) both report
+`GRANULE-MULTIPLE (granule 32, 3-granule request reserved 96)` and pass `selftest` 66/66, against
+`xmc4800-relax` as the PMSAv7 control still reporting `POWER-OF-TWO ... reserved 128`. The captures
+that matter are the fault pairs: under granular shaping the enforced boundary lands off a merely
+32-aligned base, and both hit it exactly -- SYSMPU `addr=0x2001a140`, PMSAv8 a PRECISE
+`MMFAR=0x20026020`. `rx72m` (RX MPU, 16-byte granule) is the third moved board and was not
+available. `docs/reference/boards.md`, *M4.5.5*. Three pieces:
+
+1. **The alloc/MPU seam has a third region-encoding mode.** A new `arch_mpu_region_pow2()` sits
+   beside `arch_mpu_min_region()`, and `arch_ram_region_size`/`_align` branch on it: pow2 size plus
+   natural alignment where it is 1 (PMSAv7, PMP NAPOT), any granule multiple where it is 0 (PMSAv8,
+   SYSMPU, RX RXv3). The min floor is applied BEFORE the mode branch, so a pow2 backend is
+   bit-for-bit unchanged. **Sizes do not move fleet-wide** -- every board's boot stacks are already
+   powers of two, so the whole recovery is alignment run-up: `root 8192/8192 -> 8192/32` on
+   `frdmk64f`, `pizero2350` and `qemu-m33`, `/16` on `rx72m`. The kernel's three hand-rolled
+   `base & (size-1)` masks became one `arch_ram_region_admissible`; it is deliberately NOT
+   `arch_mpu_region_encodable`, which is the MMIO test and fail-closes on the sim.
+2. **CI exercises an unprivileged root** for the first time -- `qemu` and `qemu-m33` at
+   `KICKOS_HAVE_MPU=1 -DKICKOS_ROOT_PRIVILEGED=OFF`, plus a flipped sim arm -- and the ARM
+   enforcement gates no longer pin `CMAKE_BUILD_TYPE=Debug`, so they test what ships.
+3. **`rootauth`** is the ROOT-narrow gate that did not exist: it asserts root holds exactly the
+   app's declared `KICKOS_APP_AUTHORITY`, and because it declares a bit the fallback mask lacks, a
+   silently-ignored per-app override now fails a gate.
+
+**Still owed by 4.5.4, and BLOCKED on board access, not on work**: `c6blink`, `rxdrv` and `f411spi`
+are the apps whose own mask is what makes them work, and `esp32c6-wroom`, `rx72m` and `f411disco` are
+all unavailable. Debt against `master`, not a merge gate. `rx72m` owes ONE visit covering both that
+and the 4.5.5 re-witness. `docs/reference/boards.md`, *Stage 4*, for what stage 4 did witness:
+`xmc4800-relax` (PMSAv7) and `frdmk64f` (SYSMPU, full service list). Read those rows precisely --
+`selftest` declares five of the six bits, so root gave up only `AUTH_PSTATE`; the capture where root
+actually drops `AUTH_PINMUX` and `AUTH_CONSOLE` is XMC `consoledemo`, which declares no mask and
+still prints through the driver it handed off.
+
+**Stage 4 of the unprivileged root is COMPLETE**: root hands the app only the authority
 the app declared. The authority set is re-cut into **six** bits -- `AUTH_MEMORY`, `AUTH_PINMUX`,
 `AUTH_PSTATE`, `AUTH_IRQ`, `AUTH_SYSTEM`, `AUTH_CONSOLE`; `AUTH_DEVICE` and `AUTH_CLOCK` are gone --
 funded by moving the authority word out of `CapEntry.rights` into the poolless `CapEntry.obj`, which
@@ -42,12 +67,19 @@ because `xmcssc` needs the USIC `FDR`/`BRG`/`CCR` seam that stage 3 does not cov
 
 ## What is next (locked order)
 
-1. **Finish witnessing 4.5.4**, then merge it. Two enforcement backends are done; what is owed is
-   `c6blink` / `rxdrv` / `f411spi`, the apps whose own `KICKOS_APP_AUTHORITY` mask is what makes them
-   work, plus their never-run `kos_periph_enable` possession probes.
-2. **4.5.5**: MPU region-encoding classes, plus a fleet re-witness pass.
-3. Delete `KICKOS_ROOT_PRIVILEGED` outright.
-4. **M4.6**: consoles / UART.
+1. **Delete `KICKOS_ROOT_PRIVILEGED` outright.** The first UNBLOCKED item: the knob goes away on the
+   strength of the flip, not of region shaping, so it does not wait on any bench visit.
+2. **M4.5.6**: remove the weak-symbol seam mechanism (`TODO.md`). After the knob deletion, so it
+   edits a one-posture tree; before M4.6, so its zero-weak CI gate forces every new console/UART
+   seam into the pattern on first write instead of rewriting them later.
+3. **The 4.5.4 witness plus the `rx72m` region re-witness -- ONE visit**, whenever `esp32c6-wroom` /
+   `rx72m` / `f411disco` return. **Non-blocking**: record it and keep moving. `rootauth` on
+   `frdmk64f` covered the authority half on silicon; what `c6blink` / `rxdrv` / `f411spi` still owe is
+   a real mux WRITE from a declared bit. Note that **nothing in-tree can catch a wrong
+   `arch_mpu_region_pow2()` literal in a backend** (`cmake/boot_arena.cmake` scrapes the same file
+   the link resolves), so `rx72m` silicon is the only check on that class for the RX MPU.
+4. **The general fleet re-witness pass**: every capture before M4.5.2 was taken at `-O0`.
+5. **M4.6**: consoles / UART.
 5. **M4.6.1**: USB CDC console on `picopi`, `pizero2350` and `teensy41`, the boards whose console
    needs an external adapter today. One shared CDC class over two controller backends (the RP
    DPRAM block, the RT1062 ChipIdea OTG). After M4.6 because it needs the IRQ-driven driver work
@@ -70,14 +102,18 @@ The single commit to revert when bisecting a footprint or timing regression at t
 
 ## Gates (ctest, all green)
 
-sim 12/12, sim-telem 14/14, qemu 10/10, qemu-m33 9/9, qemu-m7 9/9, qemu-m3 8/8,
-qemu-riscv 7/7, microbit 5/5. The selftest is 65 tests, 0 skipped.
+sim 13/13, qemu 11/11, qemu-m7 10/10, qemu-m33 10/10, qemu-m3 9/9, qemu-riscv 8/8,
+microbit 5/5. The selftest is 66 tests, 0 skipped (microbit skips 9, permitted by name).
 
-Off-preset, run by hand for stage 4: `qemu` at `-DKICKOS_ROOT_PRIVILEGED=OFF` is 10/10. `sim` at
-`OFF` is 12/13 -- the one failure is the gate's own limitation, not the kernel's: `ctest` treats any
-`# skipped:` as failure while `mpu_privileged_guard` correctly skips in that posture, and the sim
-registration has no `EXPECT_SKIPS` list like `check_qemu_selftest.sh`. Filed in `TODO.md` with the
-CI items.
+**The unprivileged-root posture is now gated, not hand-run**: `sim` at `KICKOS_ROOT_PRIVILEGED=OFF`
+is 14/14, and `qemu` / `qemu-m33` at `KICKOS_HAVE_MPU=1` plus the flip are 14/14 and 13/13. The
+flipped arms carry two gates the privileged posture cannot host, `rootfault` and `rootauth`'s flipped
+arm. The sim's own selftest registration went from a `# skipped:` failure regex to the same by-name
+`EXPECT_SKIPS` permission set every QEMU gate uses (`tests/check_tap_stream.sh`), which is what let
+`mpu_privileged_guard` skip legitimately in that posture instead of turning the gate red.
+
+Under enforcement, run by hand: `qemu` 12/12, `qemu-m33` 12/12, `qemu-m7` 11/11, `qemu-m3` 10/10 --
+all at `MinSizeRel`, which is what those gates now build in CI.
 
 ## Board matrix
 
@@ -133,9 +169,12 @@ Three classes, which fix what a board can witness:
   root-MMIO `FATAL_ERROR`. The failure is a checked `-KOS_EPERM` rather than a fault, but on a board
   with a published console the diagnostic is invisible (first blocker above). The nastiest shape is
   an app that ignores a failed `pinmux_set` and then drives an unmuxed pin.
-- **`f302nucleo-st` has not linked in Debug for some time** -- `.text` overflows FLASH by 4,548 B on
-  `master`, pre-dating stage 4, and no gate builds that board in Debug so nothing caught it. Ample
-  room at `-Os` (12.7 KiB free).
+- **`Debug` is not a supported configuration on the 64 KiB boards** (decided in 4.5.5, not a
+  blocker). It is the whole class, not one board: `f302nucleo-st` overflows FLASH by 5,120 B and
+  `bluepill-c8-st` by 4,884, while the same `f302nucleo-st` image at `-Os` keeps 12.9 KiB free.
+  `MinSizeRel` carries `-g`, so those parts keep full symbols and lose only `-O0`. No gate builds
+  them in `Debug` deliberately -- the link failure already names the overflow in bytes.
+  `docs/reference/porting.md`.
 
 ## Where to go next
 

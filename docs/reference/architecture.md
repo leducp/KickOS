@@ -457,7 +457,8 @@ and PMSA. The seam signature does not change (RX72M litmus preserved).
 **Region budget** (only **8** regions on ARMv6-M/v7-M; ~12 on K64F SYSMPU): kernel needs ~0
 explicit regions (background map); a domain is ~3 (code, data/heap, optional MMIO) + 1 per-thread
 stack + the fault guard -- comfortably within 8. Data/heap placement uses linker sections so a
-domain's RAM is one power-of-two-aligned PMSA region.
+domain's RAM is one region: power-of-two-aligned on a pow2-mode backend, granule-aligned on a
+base+limit one such as the K64F's SYSMPU (`arch_mpu_region_pow2`).
 
 **Peripheral (MMIO) isolation is hardware-bounded.** Per-thread *memory* (SRAM) isolation is
 uniform across the fleet, but per-thread *peripheral* isolation is only as strong as the silicon
@@ -491,9 +492,10 @@ controller, MPU, clock/reset gates). The refusal is **mechanical and binds every
 privileged ones included** -- it is not "trust the granter". `grant_region_admissible(base, size,
 attr, caller_privileged)` (`kernel/grant`) is the single-region policy: refuse size-0/wrap, refuse
 ANY reserved-block overlap, then for a **device** grant require privileged + exactly one MPU
-descriptor (no rounding) + not a bit-band alias, or for a **RAM** grant require natural
-power-of-two alignment AND confinement to the user arena **for every caller** (no privileged
-waiver). `domain_for` (`kernel/domain`) runs it at the **region-commit chokepoint** on the
+descriptor (no rounding) + not a bit-band alias, or for a **RAM** grant require
+`arch_ram_region_admissible` AND confinement to the user arena **for every caller** (no
+privileged waiver) -- power-of-two size plus natural alignment on a pow2-mode backend
+(PMSAv7, PMP NAPOT), a granule multiple on a base+limit one (PMSAv8, SYSMPU, RX). `domain_for` (`kernel/domain`) runs it at the **region-commit chokepoint** on the
 prospective committed geometry before it allocates a domain slot; the caller-owned-stack path in
 `thread_spawn` runs the same predicate on the stack region, and `thread_create` carries a backstop
 assert. Each enforcing chip declares its owns-for-life set via `arch_reserved_blocks` (`arch.h`) --
