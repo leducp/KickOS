@@ -176,58 +176,70 @@ once rather than at every site -- which is the stronger property, and precisely 
 stage-1 conversion behaviour-neutral: there is no call site left that could encode it
 differently. The authority is a capability, `CapType::CAP_AUTHORITY`.
 
-**It is poolless.** `CapEntry.obj` is unused and there is no refcount, because there is no
-object behind it -- the capability *is* its rights bits. That single fact drives two API
-consequences worth stating, because both are easy to get wrong:
+**It is poolless.** There is no refcount and no object behind it -- the capability *is* its
+authority bits, which is why `obj` is free to carry them rather than naming a pool entry. That
+single fact drives two API consequences worth stating, because both are easy to get wrong:
 
 - It resolves by reading its reserved slot, and **never** through `cap_resolve_e`, which would
-  try to resolve `obj` in an object pool and correctly hand back `nullptr`.
+  treat `obj` as a pool handle: at best `nullptr`, and with the authority word living there it
+  would be interpreting the authority as an index.
 - `obj_ref_inc` and `obj_ref_drop` need explicit no-op arms. Both `default:` cases assert, so a
   missing arm is a debug trap rather than a silent leak -- which is the behaviour you want, and
   the reason the arms are explicit rather than relying on the default.
 
-**Five rights bits, and the five-bit ceiling is an artifact of one byte rather than a budget for
-the type.** `CapEntry.rights` is a `uint8_t` with three bits used (`CAP_WAIT`, `CAP_SIGNAL`,
-`CAP_TRANSFER`). The five free bits are `AUTH_MEMORY`, `AUTH_PINMUX`, `AUTH_CLOCK`, `AUTH_IRQ`,
-`AUTH_DEVICE`.
+**The authority word lives in `obj`, and the six-bit set is what that funds.** `CapEntry.rights`
+is a `uint8_t` with three bits already spoken for (`CAP_WAIT`, `CAP_SIGNAL`, `CAP_TRANSFER`),
+leaving five -- one short of the set section 5.1 arrives at. `CapEntry` is a frozen 8-byte ABI and
+the rights *byte* cannot grow, but a `CAP_AUTHORITY` entry is poolless and leaves `obj` unused, so
+the authority word moves there and the struct keeps its size. This retires the "merge
+`AUTH_PINMUX` with `AUTH_CLOCK`" plan the old ceiling forced.
 
-The split sits at bit 3 rather than overlapping the object rights, deliberately. `CAP_TRANSFER`
-in particular is read *type-agnostically* at the delegation site, so reusing bit 0 or 1 for an
-authority would give one bit two meanings depending on a field the reader has to remember to
-check.
+Two consequences follow, and both are improvements rather than costs:
 
-**A sixth authority does not have to come from merging two existing bits.** `CapEntry` is a frozen
-8-byte ABI and the rights *byte* cannot grow, but a `CAP_AUTHORITY` entry is poolless and leaves
-`obj` unused, so the authority word moves into `obj` and the struct keeps its size. That is what
-funds the six-bit re-cut below, and it retires the "merge `AUTH_PINMUX` with `AUTH_CLOCK`" plan
-that the old ceiling forced.
+- **The two families stop sharing a numbering.** They are separate enums now -- `CapRights` over
+  bits 0..2, `CapAuthority` over bits 0..5 -- so nothing has to keep them disjoint, and the old
+  reason for splitting at bit 3 (`CAP_TRANSFER` is read *type-agnostically* at the delegation site,
+  so an authority reusing bit 0 would give one bit two meanings) simply stops applying. The price
+  is that an object right is no longer a *distinguishable* wrong value in an authority mask: bits
+  0..5 are all real authorities, so the "non-authority bits" spawn refusal now catches only bits
+  above the six.
+- **`rights` is 0 on an authority entry**, which is also what keeps it free of `CAP_TRANSFER`.
+
+The width is now bounded by `kos_thread_params::authority`, a `uint8_t` in the struct's padding,
+rather than by `CapEntry` -- `obj` has room for 32. A seventh and eighth authority cost nothing;
+a ninth needs that params field widened.
 
 The move is safe by inspection of every `obj` read rather than by assumption: `obj` is never a
 sentinel, never range-checked, never `memcpy`'d, never exposed to userspace and never traced, and
 each read is dominated by an explicit type test or a `switch (type)` arm -- with **one exception**.
-The delegation copy in `thread_spawn` (`kernel/syscall/syscall_thread.cc`) copies `obj` with no
-type test at all, filtered only by `CAP_TRANSFER` in `rights`. So that byte is today the only thing
-preventing an authority cap being duplicated bits-and-all into a child table, and moving the
-authority word out of it requires giving that copy an explicit type guard **first**.
+The delegation copy in `thread_spawn` (`kernel/syscall/syscall_thread.cc`) copies `obj` *and*
+`type` with no type test at all, filtered only by `CAP_TRANSFER` in `rights`. So that byte was the
+only thing preventing an authority cap being duplicated bits-and-all into a child table, and with
+the word in `obj` a delegable authority cap would be a full forgery at child index `ci+1` -- an
+index the authority slot is reachable at whenever `cap_count >= 2`. That copy therefore takes an
+explicit `CAP_AUTHORITY` refusal **first**, and it is by type rather than by rights precisely so
+that it does not depend on a byte this change repurposes. The refusal is behaviour-neutral on
+landing: `cap_seat_authority` masks to the authority bits, so such a cap never carried
+`CAP_TRANSFER` and already earned `-KOS_EPERM`.
 
 **It is seated at `KOS_CAP_AUTHORITY` (index 2), which was already reserved.** So it costs
 **zero dynamic capability slots on every board**, including the four with only 9 handles. That
 is the whole reason it is a rights-bearing cap at a reserved index rather than a new object.
 
-**It is seated without `CAP_TRANSFER`, which makes it non-delegable.** Not merely
-undelegated -- the delegation site requires `CAP_TRANSFER` on the source cap, so an authority
-cap can never be copied into a child table, and index 2 therefore has exactly one writer: the
-kernel. This closes the forgery question completely and defers the delegation-packing collision
-in section 9 rather than walking into it.
+**It is non-delegable twice over.** The delegation site refuses the `CAP_AUTHORITY` *type*
+outright, and the cap carries no `CAP_TRANSFER` for the rights check to admit either. Index 2
+therefore has exactly one writer, `cap_seat_authority`, reached only from `kmain` and from a
+parent's `kos_thread_params::authority`. This closes the forgery question completely and defers
+the delegation-packing collision in section 9 rather than walking into it.
 
 **Per-instance capabilities were refuted on arithmetic, not on taste.** The alternative was a
 capability per muxable pin (or per clock, per line) instead of one bit per authority *class*.
 There are roughly 100 muxable pins on the larger parts against a 16-slot capability-table
 ceiling. It does not fit, and it does not nearly fit, so the class granularity is forced.
 
-### The authority set is re-cut, and stage 4 owns it
+### 5.1 The authority set, re-cut into six
 
-**`AUTH_DEVICE` in its current shape is rejected.** It means "console publish, shutdown, reboot",
+**`AUTH_DEVICE` in its old shape is rejected.** It meant "console publish, shutdown, reboot",
 which holds together only while root does all three. Once root is *only* a spawner, publishing a
 console and ending the system belong to **different** threads, so no single bit can carry both
 without handing the console driver the power to end the system.
@@ -237,23 +249,69 @@ The cut is six bits:
 | Bit | Gates | Who holds it |
 |---|---|---|
 | `AUTH_MEMORY` | `ram_alloc`, the MMIO window grant, `mem_self_grant` | root, the spawner |
-| `AUTH_PINMUX` | `pinmux_set` | root's board pin map, plus an app muxing its own pins |
+| `AUTH_PINMUX` | `pinmux_set` | root, for the board pin map; plus an app muxing its own pins |
 | `AUTH_PSTATE` | `cpu_clock_set` | a CPU-governor service, and nothing else |
 | `AUTH_IRQ` | `irq_attach`, `irq_unmask` | drivers with lines |
 | `AUTH_SYSTEM` | `shutdown`, `reboot` | root / init |
-| `AUTH_CONSOLE` | `console_publish` | the console driver |
+| `AUTH_CONSOLE` | `console_publish` | root, during service bring-up |
 
 `AUTH_DEVICE` and `AUTH_CLOCK` cease to exist as names. **`cpu_clock_set` keeps a bit of its own**
 precisely because a governor service needs clock-rate authority and nothing else: folding it into
 the lifecycle bit would hand the governor the power to end the system.
 
+**The console driver does not hold `AUTH_CONSOLE`, and that is not a future correction to make.**
+`kos_console_publish` is called by **root**, inside the service list's `start()` body
+(`xmcuart.cc`, `k64uart.cc`, `service_list_sim.cc`); the unprivileged child it then spawns only
+*receives* on the endpoint. So the split earns its keep immediately rather than in anticipation:
+root needs `AUTH_CONSOLE` for the length of bring-up and drops it before `main`, while keeping
+`AUTH_SYSTEM` for the shutdown that ends a returning app. One bit could not express that.
+
 **`AUTH_CONSOLE` has to be a bit, and specifically cannot be possession-gated** the way
 `arch_periph_enable` is (section 7). `KOS_SYS_ENDPOINT_CREATE` is completely ungated, so any thread
 can mint the endpoint it would publish; and `cap_console_publish` has no owner check and no
 once-only guard, so a publish drops the kernel's existing ref and re-points `g_stdout_target`,
-silently stealing a live console. `AUTH_DEVICE` is today the sole thing preventing that. The
+silently stealing a live console. `AUTH_CONSOLE` is the sole thing preventing that. The
 missing owner check and once-only guard are wanted regardless of which bit gates the call, and are
 filed separately in `TODO.md`.
+
+### 5.2 Dropping an authority: `kos_cap_narrow`
+
+`kos_cap_narrow(cap, mask)` ANDs an authority cap's word with `mask`. It can only clear bits, so
+it needs no subset check the way a delegation mask does -- widening is not expressible. Narrowing
+to 0 empties the slot rather than leaving a zero-word entry, because `cap_check_authority` reads
+the word only after a type test, and an entry that still claimed the type would answer for a
+capability nobody holds.
+
+**It is ungated, and it has to be.** An authority required in order to *drop* authorities would be
+one no thread could ever give up, which is the opposite of the property being built. It can only
+clear bits in the caller's own table, so there is nothing for a gate to protect.
+
+**It refuses any cap that is not the authority cap** (`-KOS_EINVAL`). Narrowing an object cap is
+not merely unimplemented: dropping `CAP_WAIT` from an endpoint cap has to run the `recv_holders`
+accounting that `obj_close_protocol` performs on close, or the last-receiver `EPIPE` wake goes
+wrong. Nothing asks for it yet. The `cap` argument is kept in the signature so that generalisation
+costs no ABI change.
+
+**Where the narrowing happens.** The default `kickos_init_entry` narrows root *after* the pin map
+and the service list -- so bring-up still holds `AUTH_PINMUX` and `AUTH_CONSOLE` when it needs
+them -- and before `kickos_app_main`. The mask is whatever the app declared through
+`kickos_app_authority()`, whose weak default is `AUTH_MEMORY | AUTH_SYSTEM`: spawn worker threads,
+and end the system when `main` returns. An app needing more states it in its own translation unit
+with `KICKOS_APP_AUTHORITY`, which is per-*executable* -- the alternative, a CMake variable, is one
+value per build tree, and a single tree links `selftest` and `stress` against the same kernel.
+
+An app whose `main` returns must keep `AUTH_SYSTEM`: `root_entry` ends the system with
+`kos_shutdown`, and a refused shutdown reaches `KICKOS_UNREACHABLE("root: shutdown refused")`,
+which panics with that text on the reclaimed UART. The bit is therefore *not* forced back on --
+the failure is already legible, and forcing it would deny a never-returning app the ability to
+declare 0 and hold nothing at all.
+
+**None of this has any effect where root is privileged**, because `cap_check_authority` returns
+true on `Thread::privileged` before it reads the cap at all, and `kmain` seats root a cap only
+under `KICKOS_ROOT_PRIVILEGED=OFF`. On a privileged-root board the narrow finds an empty slot and
+answers `-KOS_EBADF`, which the init tolerates by design. The consequence worth stating plainly:
+**this confines an app only on the boards that have flipped**, and it is silently inert everywhere
+else until the knob is deleted.
 
 ## 6. The actual win: revocation
 
@@ -266,7 +324,7 @@ authority in a capability, root can drop `AUTH_PINMUX` after bring-up and before
 `main`, and the kernel will then refuse a pinmux request from it -- including one made by
 application code that has gone wrong.
 
-That is stage 4's `kos_cap_narrow`, and it is the app-facing point of the whole exercise.
+That is `kos_cap_narrow` (section 5.2), and it is the app-facing point of the whole exercise.
 Without it an unprivileged `main` can still ask the kernel to do every privileged thing there
 is, which would make the flip a memory-isolation change and nothing more.
 
@@ -375,10 +433,12 @@ Deliberately **not** `user_range_ok`: that funnel's question is whether the kern
 user pointer, and it passes trivially at `len == 0`. Exact base rather than containment is what
 stops a sub-block window reaching a whole-block table entry.
 
-**Gating it on `AUTH_DEVICE` instead is the obvious-looking alternative, and it is wrong.** The
-seam's callers are the bus drivers, so that bit would hand `kos_shutdown` and reboot-to-bootloader to
-every unprivileged driver in the fleet; every other existing bit carries collateral just as unwanted,
-and there are no free bits (section 5). Possession is *sufficient* because a granted window already
+**Gating it on an authority bit instead is the obvious-looking alternative, and it is wrong.** The
+seam's callers are the bus drivers, so the lifecycle bit -- `AUTH_SYSTEM` under the cut in 5.1, and
+the old `AUTH_DEVICE` before it -- would hand `kos_shutdown` and reboot-to-bootloader to every
+unprivileged driver in the fleet; every other bit carries collateral just as unwanted, and a bit of
+its own would have to be justified against the same possession argument that removes the need for
+one. Possession is *sufficient* because a granted window already
 means "may enable, configure and disable this device" wherever the silicon permits it directly -- the
 XMC `KSCFG` case in section 9 is the precedent -- so the seam brings K64F and F411 to the parity that
 window granularity already grants there.
@@ -401,12 +461,28 @@ SCK at ~1.3 MHz (84 MHz APB2 / 64, both from the tree); that the default slew ca
 **engineering judgement, pending a DS9716 check** -- unlike the electrical facts cited above it rests
 on no line in this tree.
 
-**Stage 4 -- the app story.** `kos_cap_narrow(cap, mask)` (rights &= mask, never widen), and
-drop or narrow the authority cap in `kickos_default_init_run` before `kickos_app_main`. It also owns
-the **six-bit authority re-cut** (section 5), because narrowing is what makes the cut matter: a bit
-you cannot drop separately need not have been separate. Plus: declare **`stress`** privileged-root,
-since it spawns privileged children (three sites in `user/apps/common/stress/main.cc`) and a flipped
-board cannot create a privileged thread after boot.
+**Stage 4 -- the app story. COMPLETE.** `kos_cap_narrow` (`KOS_SYS_CAP_NARROW = 40`), the
+**six-bit authority re-cut** and the authority word's move into `CapEntry.obj` all landed together,
+because they are one ABI change and not three: the cut decides the mask width, and the move is what
+funds the cut. Section 5 carries the shape and 5.2 the narrowing. What the stage settled beyond the
+plan:
+
+- **The delegation copy took a type refusal first**, before the word moved. Without that ordering
+  there is a window in which an authority cap is forgeable into a child table.
+- **The narrow mask is declared per app, not per build tree.** `KICKOS_APP_AUTHORITY` in the app's
+  own TU, defaulting to `AUTH_MEMORY | AUTH_SYSTEM`. A CMake variable cannot express it: one build
+  tree links every app against one kernel.
+- **`stress` is NOT declared privileged-root.** Its three privileged spawns were the same incidental
+  leftover `selftest`'s two were, from the same original TAP-harness commit. Nothing in
+  `ping`/`pong`/`churner` touches a privileged or authority-gated path, and `sleeper` -- unprivileged
+  in that same app, in the same round -- already does a superset of what `churner` does. They are now
+  unprivileged, which turns `sim_stress` from FAIL to PASS under `KICKOS_ROOT_PRIVILEGED=OFF`; the
+  old flags were refused `-KOS_EPERM` there.
+- **The in-env witness is the selftest's `authority_cap`**, whose worker drops its only authority and
+  is then refused by the gate that had just answered for it. The *root* narrow has no in-env carrier
+  for the same reason section 10 gives elsewhere, so it was witnessed by removing `AUTH_CONSOLE`
+  from `initdemo`'s declaration: `console_publish` then fails from root on `qemu` at
+  `KICKOS_ROOT_PRIVILEGED=OFF`, and the identical source passes at `ON`.
 
 **Stage 5 -- delete `KICKOS_ROOT_PRIVILEGED`.** The knob goes with no replacement and no porting
 escape hatch; section 4 carries the decision and its reasons. Three things travel with the deletion:
@@ -710,8 +786,7 @@ bootloader entry declines through the seam's weak `-KOS_ENOSYS` default rather t
 **Decision: it shares `arch_shutdown`'s authority**, rather than taking a `CAP_REBOOT` at index 3
 or a rights bit of its own. Two reasons: reboot-to-bootloader is the same class of act as shutdown
 (end this system, hand the chip to something else); and index 3 is the last free well-known index,
-worth more than bit granularity here. Today that shared bit is `AUTH_DEVICE`; under the re-cut
-(section 5) it is `AUTH_SYSTEM`.
+worth more than bit granularity here. That shared bit is `AUTH_SYSTEM` (section 5.1).
 
 The counter-argument, recorded because it is real: shutdown merely stops execution, whereas
 reboot-to-bootloader leaves the board accepting new firmware over USB. Fusing them means anything

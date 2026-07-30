@@ -9,10 +9,11 @@
 // shift-idle/re-anchor/baud/re-arm sequence (kernel/time/clock_select.cc, section 2.3
 // of docs/design-m3-clock-select.md).
 //
-// It runs PRIVILEGED because kickos_app_main runs on the kernel's root thread
-// (root_attr.privileged = true, kmain.cc) and kos_cpu_clock_set is privileged-only
-// (returns 0 otherwise). The app is single-shot: it returns, so root_entry runs
-// console_tx_flush_sync() before arch_shutdown -- every printed byte reaches the wire.
+// kos_cpu_clock_set needs AUTH_PSTATE, which root holds here two ways: implicitly while
+// KICKOS_ROOT_PRIVILEGED is on (the fleet default), and explicitly through this app's
+// KICKOS_APP_AUTHORITY below, which is what carries it on a flipped board. It returns 0
+// rather than an errno when refused. The app is single-shot: it returns, so the terminal
+// path flushes the console synchronously -- every printed byte reaches the wire.
 //
 // It does NOT hand the console to a userspace driver: a retune is REFUSED while the
 // console is USER_OWNED (S4), so the console must stay KERNEL_OWNED throughout.
@@ -70,6 +71,9 @@ namespace
         emit(s);
     }
 }
+
+// Retunes the core clock from root, and returns.
+KICKOS_APP_AUTHORITY(KOS_AUTH_SYSTEM | KOS_AUTH_PSTATE);
 
 int main(int, char**)
 {

@@ -23,6 +23,14 @@ namespace kickos
         // of every child. See docs/design-m3-console-handover-stageii.md (D3/D4/S3).
         int g_stdout_target = -1;
 
+        // The CapAuthority word of an entry already TYPE-TESTED as CAP_AUTHORITY: that
+        // type names no pool object, so `obj` carries the authority instead. Both callers
+        // check the type first -- reading it off any other type is a bug.
+        uint8_t authority_word(CapEntry const& e)
+        {
+            return static_cast<uint8_t>(e.obj);
+        }
+
         // Slot index of the semaphore a global handle names (via the live object, so
         // the SlotPool handle codec is never assumed here). -1 if it does not resolve.
         int sem_index_of(int obj_handle)
@@ -456,27 +464,55 @@ namespace kickos
         {
             return false;
         }
-        return (e.rights & need) == need;
+        return (authority_word(e) & need) == need;
     }
 
-    void cap_seat_authority(Thread* t, uint8_t rights)
+    void cap_seat_authority(Thread* t, uint8_t auth)
     {
         CapEntry& e = t->handles[KOS_CAP_AUTHORITY];
-        // Mask to AUTH_* bits: a caller cannot smuggle in CAP_TRANSFER and make the
-        // cap delegable.
-        uint8_t const auth = static_cast<uint8_t>(rights & CAP_AUTH_ALL);
-        if (auth == 0)
+        // Mask to AUTH_* bits, so a caller cannot seat a bit no gate reads.
+        uint8_t const w = static_cast<uint8_t>(auth & CAP_AUTH_ALL);
+        if (w == 0)
         {
-            // Clear rather than seat a zero-rights authority: same permission, and an
+            // Clear rather than seat a zero-authority cap: same permission, and an
             // empty slot cannot be mistaken for a held authority.
             e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
             e.obj = 0;
             e.rights = 0;
             return;
         }
-        e.obj = 0; // poolless: no object handle to carry
+        e.obj = static_cast<int32_t>(w); // the authority word; this type names no object
         e.type = static_cast<uint8_t>(CapType::CAP_AUTHORITY);
-        e.rights = auth;
+        e.rights = 0; // no object right means anything here, and 0 excludes CAP_TRANSFER
+    }
+
+    int cap_narrow_authority(Thread* c, int cap_handle, uint8_t mask)
+    {
+        CapEntry* e = cap_lookup(c, cap_handle);
+        if (e == nullptr)
+        {
+            return -KOS_EBADF;
+        }
+        if (e->type != static_cast<uint8_t>(CapType::CAP_AUTHORITY))
+        {
+            // Object caps are out of scope: dropping CAP_WAIT from an endpoint cap has to
+            // run the recv_holders accounting obj_close_protocol does, and nothing asks
+            // for it yet. The handle argument keeps that generalisation ABI-free.
+            return -KOS_EINVAL;
+        }
+        uint8_t const w = static_cast<uint8_t>(authority_word(*e) & mask);
+        if (w == 0)
+        {
+            // Same clear-not-seat rule as cap_seat_authority, and it is why this goes
+            // through the slot rather than writing `obj`: an emptied slot must also lose
+            // its type, or cap_check_authority would read a zero word off a live entry.
+            e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+            e->obj = 0;
+            e->rights = 0;
+            return 0;
+        }
+        e->obj = static_cast<int32_t>(w); // narrowed: & can only clear bits
+        return 0;
     }
 
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)

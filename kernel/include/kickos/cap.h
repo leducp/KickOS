@@ -52,45 +52,53 @@ namespace kickos
         CAP_REPLY,    // one-shot L4-style reply cap; obj NAMES the parked caller by
                       // generational thread handle (no object pool, no refcount)
         CAP_AUTHORITY // the right to ask the kernel to act on the machine; its entire
-                      // content is the AUTH_* rights bits below. POOLLESS (`obj`
-                      // unused, no refcount): resolves via cap_lookup, NEVER via
-                      // cap_resolve_e (which would chase `obj` in a pool)
+                      // content is the AUTH_* word in `obj`. POOLLESS (no refcount):
+                      // resolves via cap_lookup, NEVER via cap_resolve_e (which would
+                      // chase `obj` in a pool)
     };
 
     // Rights bits enforced at cap_resolve ((rights & need) == need); CAP_TRANSFER is
     // enforced at the delegate site. Every bit maps to a real check -- no dead field.
-    //
-    // ONE byte serves two families, disambiguated by the entry's TYPE: the low three
-    // are OBJECT rights, the high five AUTHORITY rights. They must not overlap:
-    // CAP_TRANSFER is read type-agnostically at the delegation site.
-    //
-    // Five authority bits fit here, which is a property of this byte and not a budget for
-    // the type: a CAP_AUTHORITY entry leaves `obj` unused, so a wider authority word moves
-    // there and CapEntry stays 8 bytes. CAP_TRANSFER living in this byte is also the only
-    // thing stopping an authority cap being copied wholesale into a child table, so such a
-    // move needs an explicit type test at the delegation site first.
-    // Mirrored in <kickos/sys/abi.h> as KOS_AUTH_*.
+    // OBJECT rights only: a CAP_AUTHORITY entry carries `rights` 0.
     enum CapRights : uint8_t
     {
         CAP_WAIT = 1 << 0,    // sem_wait / sem_trywait; endpoint recv
         CAP_SIGNAL = 1 << 1,  // sem_post; endpoint send
-        CAP_TRANSFER = 1 << 2, // may be delegated into a child table (section 6)
-
-        AUTH_MEMORY = 1 << 3, // ram_alloc + the spawn-time MMIO window grant
-        AUTH_PINMUX = 1 << 4, // pinmux_set
-        AUTH_CLOCK = 1 << 5,  // cpu_clock_set
-        AUTH_IRQ = 1 << 6,    // irq_attach, irq_unmask
-        AUTH_DEVICE = 1 << 7  // console_publish, shutdown, reboot
+        CAP_TRANSFER = 1 << 2 // may be delegated into a child table (section 6)
     };
+
+    // The authority word of a CAP_AUTHORITY entry. It lives in `obj`, which the type
+    // leaves unused, and NOT in `rights`, whose three object bits left room for only
+    // five -- that is what funds the sixth here. Its own field, so these bits share no
+    // numbering with CapRights and nothing has to keep the two families disjoint.
+    // Mirrored in <kickos/sys/abi.h> as KOS_AUTH_*.
+    //
+    // The seatable width is bounded by kos_thread_params::authority (a uint8_t in the
+    // struct's padding), not by `obj`, which has room for 32.
+    enum CapAuthority : uint8_t
+    {
+        AUTH_MEMORY = 1 << 0,  // ram_alloc, the spawn-time MMIO window grant, mem_self_grant
+        AUTH_PINMUX = 1 << 1,  // pinmux_set
+        AUTH_PSTATE = 1 << 2,  // cpu_clock_set
+        AUTH_IRQ = 1 << 3,     // irq_attach, irq_unmask
+        AUTH_SYSTEM = 1 << 4,  // shutdown, reboot
+        AUTH_CONSOLE = 1 << 5  // console_publish
+    };
+
+    // AUTH_PSTATE is separate from AUTH_SYSTEM because a CPU-governor service needs
+    // clock-rate authority and nothing else: folding the two would hand the governor the
+    // power to end the system. AUTH_CONSOLE is separate for the mirror-image reason --
+    // once root is only a spawner, the console driver and the thread that ends the system
+    // are different threads.
 
     // arch_periph_enable carries NO authority bit: it is gated on the caller holding a live
     // ARCH_MPU_DEV region whose base matches the block exactly (caller_holds_mmio_block,
-    // syscall_mem.cc). Its callers are the bus drivers, so AUTH_DEVICE would have handed
-    // shutdown and reboot to every unprivileged driver in the fleet.
+    // syscall_mem.cc). Its callers are the bus drivers, so any bit here would have handed
+    // whatever else that bit covers to every unprivileged driver in the fleet.
 
     // Every AUTH_* bit: what a privileged thread is implicitly allowed.
     static constexpr uint8_t CAP_AUTH_ALL = static_cast<uint8_t>(
-        AUTH_MEMORY | AUTH_PINMUX | AUTH_CLOCK | AUTH_IRQ | AUTH_DEVICE);
+        AUTH_MEMORY | AUTH_PINMUX | AUTH_PSTATE | AUTH_IRQ | AUTH_SYSTEM | AUTH_CONSOLE);
 
     // 8 bytes, 4-aligned; carries the object pool's handle codec verbatim (no
     // re-encoding). gen is the per-slot cap generation, bumped on close (the
@@ -101,9 +109,11 @@ namespace kickos
     // cap layer carries no single-physical-space assumption for the MMU era to undo.
     struct CapEntry
     {
-        int32_t obj;    // global generational object handle (WRAP target); ignored if EMPTY
+        int32_t obj;    // global generational object handle (WRAP target); ignored if EMPTY.
+                        // On a CAP_AUTHORITY entry it is the CapAuthority word instead --
+                        // that type names no pool object.
         uint8_t type;   // CapType
-        uint8_t rights; // CapRights bits
+        uint8_t rights; // CapRights bits; 0 on a CAP_AUTHORITY entry
         uint16_t gen;   // per-slot cap generation
     };
     static_assert(sizeof(CapEntry) == 8, "CapEntry must stay 8 bytes (frozen ABI, section 5)");
@@ -189,11 +199,25 @@ namespace kickos
     // revisit this alongside the rest of the IrqLock-as-mutual-exclusion contract.
     bool cap_check_authority(Thread* c, uint8_t need);
 
-    // Seat (or re-seat) thread t's authority cap at KOS_CAP_AUTHORITY with `rights`
-    // (AUTH_* bits). Seated WITHOUT CAP_TRANSFER, so it can never be delegated into a
-    // child table; index 2 has exactly one writer, the kernel. rights == 0 clears the
-    // slot. Holds no pool reference. Caller holds IrqLock.
-    void cap_seat_authority(Thread* t, uint8_t rights);
+    // Seat (or re-seat) thread t's authority cap at KOS_CAP_AUTHORITY with the AUTH_*
+    // word `auth`. Non-delegable twice over: `rights` is 0 so it carries no CAP_TRANSFER,
+    // and the delegation site refuses the TYPE outright. Index 2 has exactly one writer,
+    // the kernel. auth == 0 clears the slot. Holds no pool reference. Caller holds IrqLock.
+    void cap_seat_authority(Thread* t, uint8_t auth);
+
+    // Narrow thread c's authority cap in place: auth &= mask, never widening (the same
+    // rule a cap_grant mask and kos_thread_params::authority obey). `cap_handle` must
+    // name the authority cap, so an app drops an authority by handle rather than by
+    // reaching into a reserved index. Returns 0, -KOS_EBADF (does not resolve),
+    // -KOS_EINVAL (not a CAP_AUTHORITY). Narrowing to 0 clears the slot.
+    // Caller holds IrqLock.
+    //
+    // Callers pass the bare index KOS_CAP_AUTHORITY as the handle, which resolves only
+    // because this slot's cap-gen stays 0: neither seat nor narrow bumps it, and nothing
+    // routes it through handle_close or cap_teardown. Bumping it would strand every
+    // caller on -KOS_EBADF -- fail-closed, but silently on a privileged board, where that
+    // code is the tolerated answer.
+    int cap_narrow_authority(Thread* c, int cap_handle, uint8_t mask);
 
     // Resolve a CAP_REPLY entry's packed obj word to the parked caller thread, or
     // nullptr if it is stale. The full one-shot guard: index in range, thread-gen

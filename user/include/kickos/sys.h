@@ -191,6 +191,21 @@ uint32_t kos_periph_clock_hz(uintptr_t base);
 // that base, including bases the chip refuses), or -KOS_ENOSYS (no chip backend).
 int kos_periph_enable(uintptr_t base);
 
+// Drop authority: narrow the capability `cap` to `mask` (kos_cap_authority bits), which
+// can only CLEAR bits -- a mask naming a bit the cap lacks does not add it. `cap` must be
+// the authority cap, whose well-known handle is KOS_CAP_AUTHORITY (a fresh table has
+// cap-gen 0, so the handle equals the index). Narrowing to 0 gives up every authority.
+//
+// Irreversible for the caller: nothing widens an authority cap, and only a spawning
+// parent can seat one. That is the point -- bring-up code drops what it needed to bring
+// the board up, and the kernel then refuses those calls from the same thread, including
+// from application code that has gone wrong.
+//
+// Needs no authority itself: a bit required to drop bits would be one a thread could
+// never give up. Returns 0, -KOS_EBADF (cap does not resolve), or -KOS_EINVAL (cap is
+// not an authority cap -- narrowing object rights is not supported).
+int kos_cap_narrow(int cap, uint8_t mask);
+
 // One-shot init-time pin-function config: point pin `pin` of port `port` at raw
 // chip function code `func` (the PC/PCR encoding, opaque here). Needs AUTH_PINMUX.
 // Returns 0, -KOS_EPERM (no authority), -KOS_EINVAL (out of range), -KOS_EBUSY

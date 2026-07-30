@@ -39,13 +39,13 @@ master `64410b7` -- rebase before any work in them.
 
 ### Decisions taken (do not re-open without new information)
 
-- **`kos_reboot` folds into `AUTH_DEVICE`**, rather than taking a capability at a reserved index.
-  `KOS_CAP_RESERVED3` therefore **stays free**, which is worth more than bit granularity: spending
-  the last well-known index forces the next one to raise `KICKOS_CAP_FIRST_DYNAMIC` and costs a
-  dynamic slot on all four 9-handle boards. **LANDED** as `KOS_SYS_REBOOT`; recorded in full in
-  the `kos_reboot` section below and in `docs/design-unprivileged-root.md` section 9. Still holds
-  after the stage-4 authority re-cut, which renames that shared bit `AUTH_SYSTEM` without splitting
-  reboot from shutdown.
+- **`kos_reboot` shares `kos_shutdown`'s authority** (`AUTH_SYSTEM`), rather than taking a capability
+  at a reserved index. `KOS_CAP_RESERVED3` therefore **stays free**, which is worth more than bit
+  granularity: spending the last well-known index forces the next one to raise
+  `KICKOS_CAP_FIRST_DYNAMIC` and costs a dynamic slot on all four 9-handle boards. **LANDED** as
+  `KOS_SYS_REBOOT`; recorded in full in the `kos_reboot` section below and in
+  `docs/design-unprivileged-root.md` section 9. The stage-4 re-cut renamed that shared bit from
+  `AUTH_DEVICE` without splitting reboot from shutdown.
 - **`kos_ram_alloc` gets an explicit self-grant**, not an implicit one at alloc: `AUTH_MEMORY`-gated,
   bounded by `KICKOS_MPU_MAX_REGIONS`, failing loud with `-KOS_ENOMEM`. **LANDED** as
   `KOS_SYS_MEM_SELF_GRANT`.
@@ -416,9 +416,9 @@ triggers `push` only on `master`).
 
 ## `kos_reboot` (reboot-to-bootloader) -- BUILT (2026-07-28)
 
-`KOS_SYS_REBOOT = 38`, `AUTH_DEVICE`-gated, behind an `arch_reboot` seam whose weak default is
+`KOS_SYS_REBOOT = 38`, `AUTH_SYSTEM`-gated, behind an `arch_reboot` seam whose weak default is
 `-KOS_ENOSYS`. Case, weak symbol, wrapper and app are all inside `KICKOS_ENABLE_SELFTEST`, so a
-production image carries none of it. The `AUTH_DEVICE` fusion decision and its counter-argument
+production image carries none of it. The decision to share shutdown's bit, and its counter-argument,
 are recorded in `docs/design-unprivileged-root.md` section 9.
 
 Backends: rp2040 `'UB'` -> `_reset_to_usb_boot(0, 0)`; rp2350 `'RB'` -> `reboot` with
@@ -662,9 +662,10 @@ silently satisfied by a link-time override).
       `rxdrv` (RX72M, RXv3), each negative in `main` and positive as the driver's first act, both
       printing rc and want. Those two are **not yet run on silicon**.
 
-**Stage 4 -- the app story.**
-- [ ] **Re-cut the authority set into SIX bits, and delete `AUTH_DEVICE` and `AUTH_CLOCK` as names.**
-      `AUTH_DEVICE` in its current shape ("console publish, shutdown, reboot") holds together only
+**Stage 4 -- the app story. COMPLETE** (three commits: the delegation type guard, the re-cut plus
+`kos_cap_narrow`, then the narrow site plus the per-app declarations).
+- [x] **Re-cut the authority set into SIX bits, and delete `AUTH_DEVICE` and `AUTH_CLOCK` as names.**
+      `AUTH_DEVICE` in its old shape ("console publish, shutdown, reboot") held together only
       while root does all three: once root is only a spawner, `console_publish` and `shutdown` go to
       DIFFERENT threads and no single bit can carry both. The cut: `AUTH_MEMORY` (`ram_alloc`, MMIO
       grant, `mem_self_grant`; root the spawner), `AUTH_PINMUX` (`pinmux_set`; root's board pin map
@@ -677,30 +678,95 @@ silently satisfied by a link-time override).
       completely ungated, so any thread can mint the endpoint it would publish, and
       `cap_console_publish` has no owner check either (filed below under the M4.5.3 findings). Full
       reasoning in `docs/design-unprivileged-root.md` section 5.
-- [ ] **Fund the sixth bit by moving the authority word out of `CapEntry.rights` into the poolless
-      `obj` field**, which `CAP_AUTHORITY` does not use. `CapEntry` stays 8 bytes. Verified safe
-      rather than assumed: 15 `obj` reads in the tree, 14 dominated by an explicit type test or a
-      `switch (type)` arm; `obj` is never a sentinel, never range-checked, never `memcpy`'d, never
-      exposed to userspace, never traced; all three type-switched helpers already have written-out
-      `CAP_AUTHORITY` arms. **One site needs a type guard FIRST**:
-      `kernel/syscall/syscall_thread.cc:254` (`deleg_obj[ci] = se->obj`) copies `obj` with no type
-      test, filtered only by `CAP_TRANSFER` in `rights` -- so that byte is today the only thing
-      preventing an authority cap being duplicated bits-and-all into a child table. The three places
-      that stated the retired ceiling are **all corrected** -- `kernel/include/kickos/cap.h`,
-      `docs/design-unprivileged-root.md` section 5, and `user/include/kickos/sys/abi.h`, which now
-      says five is a property of the rights byte rather than of the authority set.
-- [ ] **Add `kos_cap_narrow(cap, mask)`** (rights &= mask, never widen, ~10 lines) and drop or
-      narrow the authority cap in `kickos_default_init_run` (`system/init/default_init_entry.cc`)
-      before `kickos_app_main`. **This is the actual app-facing win** -- without it an unprivileged
-      `main` can still ask the kernel to do every privileged thing there is.
-- [ ] **Declare `stress` privileged-root**, since it spawns privileged children
-      (`user/apps/common/stress/main.cc:222,224,286`). **`selftest` no longer needs this** -- see
-      `m4.5.1: let the selftest run under an unprivileged root`. Its two privileged spawns
-      (`rr_interleave`) were incidental: nothing `rr_worker` touches needs privilege, no assertion is
-      about privilege, and the flag dated to the original TAP-harness commit, before a thread's
-      region set was composed from its privilege at all. Now unprivileged, verified green on all
-      seven emulator gates and on both silicon boards. Worth checking whether `stress`'s three are
-      the same kind of leftover before declaring it.
+- [x] **Funded the sixth bit by moving the authority word out of `CapEntry.rights` into the poolless
+      `obj` field.** `CapEntry` stays 8 bytes; `rights` is 0 on such an entry. The two families now
+      have separate enums (`CapRights` bits 0..2, `CapAuthority` bits 0..5) and separate numbering,
+      which costs one thing worth recording: an object right is no longer a *distinguishable* wrong
+      value in an authority mask, so the "non-authority bits" spawn refusal catches only bits above
+      the six, and the selftest's bad-bits probe moved to `1 << 6`.
+- [x] **The delegation type guard landed FIRST, as its own commit.**
+      `kernel/syscall/syscall_thread.cc` copies `se->obj` *and* `se->type` verbatim, so with the word
+      in `obj` a delegable authority cap would forge a seat at child index `ci+1` -- index 2 whenever
+      `cap_count >= 2`. Refused by TYPE, deliberately not by rights, so it does not rest on the byte
+      the same change repurposes. Behaviour-neutral on landing (`cap_seat_authority` masks to the
+      authority bits, so such a cap never carried `CAP_TRANSFER`).
+- [x] **Added `kos_cap_narrow(cap, mask)`** -- `KOS_SYS_CAP_NARROW = 40`, ungated (an authority
+      needed to drop authorities could never be given up), refuses any non-`CAP_AUTHORITY` cap with
+      `-KOS_EINVAL` because narrowing an endpoint cap's `CAP_WAIT` needs `obj_close_protocol`'s
+      `recv_holders` accounting. Narrowing to 0 empties the slot, type included.
+- [x] **`kickos_default_init_run` narrows root after bring-up**, so the pin map and the console
+      publish still have their bits. It lives in the RUN BODY, not the entry, because `init.h`
+      advertises that body as the delegation reuse point: a custom `KICKOS_INIT_PROVIDER` composing
+      pinmux + service list + run body would otherwise have run the app with root's full authority,
+      silently. Found by the review pass, not by a test. The mask comes from
+      `kickos_app_authority()` (default `AUTH_MEMORY | AUTH_SYSTEM`), overridden per app by
+      `KICKOS_APP_AUTHORITY` in the app's own TU. **Per app, not per build tree**: one tree links
+      every app against one kernel, so no CMake variable can express it. **NO weak symbol** -- the
+      fallback is alone in `system/init/app_authority_default.cc`, so an app that defines the symbol
+      resolves it locally and that member is never extracted. Weak was tried first and rejected: GCC
+      carries a weak attribute from a declaration onto the definition in the same TU, so every app's
+      override compiled `W` and link order decided it (`nm` confirmed). The macro emits the
+      `extern "C"` itself, because a bare definition in a C++ app TU would mangle and leave the app
+      silently on the default mask. Declared: `selftest` (five bits, not `AUTH_PSTATE`),
+      `initdemo` (`CONSOLE`), `clockretune` (`PSTATE`), `c6blink`/`rxdrv`/`f411spi` (`PINMUX`).
+      `AUTH_SYSTEM` is **not** forced back on: `kmain`'s refused shutdown panics
+      `"root: shutdown refused"`, so the mistake is already legible, and forcing it would deny a
+      never-returning app the ability to hold nothing.
+- [x] **`stress` is NOT privileged-root: its three spawns were the same leftover.** Nothing in
+      `ping`/`pong`/`churner` touches a privileged or authority-gated path (semaphore ops and
+      `kos_sleep_ns` are ungated; the globals are ordinary `.appdata`), none of them spawns anything,
+      and `sleeper` -- unprivileged in that same app, same round -- already does a superset of
+      `churner`. Same origin commit as `selftest`'s two. Now unprivileged, and this **fixed a real
+      failure**: under `KICKOS_ROOT_PRIVILEGED=OFF` the old flags were refused `-KOS_EPERM`, so
+      `sim_stress` FAILED there on master and passes now.
+- [x] **Gate: the selftest `authority_cap` narrow arms** -- the worker drops its only authority and
+      the gate that had just answered for it returns `-KOS_EPERM`, plus the non-authority-cap
+      refusal. In-env on every target, sim included. The ROOT narrow has no in-env carrier, so it was
+      witnessed by deleting `AUTH_CONSOLE` from `initdemo`'s declaration: `console_publish` then fails
+      from root on `qemu` at `KICKOS_ROOT_PRIVILEGED=OFF`, and the identical source passes at `ON`.
+      That pair is also what proves the per-app override actually overrides.
+
+Opened by stage 4:
+- [ ] **The ROOT narrow has no automated test, in any environment.** `authority_cap` witnesses a
+      CHILD narrowing its own cap; nothing exercises the path the default init actually takes. It
+      cannot be witnessed under the default posture either: `KICKOS_ROOT_PRIVILEGED=ON` leaves the
+      slot unseated, so `kos_cap_narrow` returns the tolerated `-KOS_EBADF` whatever the app declared,
+      which also means **a silently-ignored `KICKOS_APP_AUTHORITY` override is unobservable on every
+      standing gate**. It was witnessed once by hand, by deleting `AUTH_CONSOLE` from `initdemo` and
+      watching its publish fail at `KICKOS_ROOT_PRIVILEGED=OFF`. Turning that into a gate is the same
+      work as CI item (a) below: a preset that builds the flipped posture and asserts a declared-mask
+      app fails when its bit is removed.
+- [ ] **The `CAP_AUTHORITY` delegation refusal has zero test coverage, and cannot easily get any.**
+      `syscall_thread.cc` refuses the type ahead of the `CAP_TRANSFER` check, but an authority cap
+      always carries `rights == 0`, so the older check refuses the same delegation with the same
+      `-KOS_EPERM`. The two are indistinguishable from userspace, which is why the guard is
+      defense-in-depth rather than a behaviour change -- and why no black-box test can pin it. A
+      kernel-side unit hook, or an assertion that the refusal fires for the type reason, is the only
+      way to keep it from being silently deleted as redundant.
+- [ ] **The sim selftest gate cannot run an unprivileged root**, which is part of CI item (a) below.
+      `ctest` matches `# skipped: [1-9]` as a failure regex, but under `KICKOS_ROOT_PRIVILEGED=OFF`
+      `mpu_privileged_guard` reports a legitimate named SKIP ("no privileged caller exists"), so the
+      gate goes red for the right behaviour. `tests/check_qemu_selftest.sh` already solved this with
+      its `EXPECT_SKIPS` permission-list; the sim registration has no equivalent. Measured on the
+      branch: `sim` at `ROOT_PRIVILEGED=OFF` is 12/13 with that as the only failure (master is 11/13
+      there, the second being `sim_stress`, now fixed).
+- [ ] **`f302nucleo-st` does not link in Debug, and has not for a while.** `.text` overflows FLASH by
+      4,548 B on `ba38b22` and 4,988 B with stage 4 -- so it is pre-existing, not stage 4's, but
+      nothing catches it because no gate builds that board in Debug. At `-Os` the same image has
+      **12.7 KiB free** (52,512 B of 65,536), which is why three comments in
+      `user/apps/common/selftest/main.cc` claiming "96 bytes free" / "at the f302nucleo ceiling" were
+      removed rather than updated -- four in total, the fourth found by the review pass after the
+      first three were called complete: they were measured under the superseded `-O0` default and
+      were being used to justify keeping `.rodata` down in a configuration that has ample room. Decide
+      whether Debug is a supported configuration for the 64 KiB boards; if it is, this is a real
+      regression to size down.
+- [ ] **A per-service authority declaration in `kos_service_cfg`.** The struct has `rsv[2]`, so a
+      byte fits with no layout change, and the runner could then narrow *between* entries -- hold
+      `AUTH_CONSOLE` only while the `KOS_SVC_CONSOLE` entry runs. Deliberately NOT done in stage 4:
+      root holds `CAP_AUTH_ALL` for the whole list run either way, so the only window it closes is
+      between one bring-up entry and the next, with no app code running, and the app-level narrow
+      already strips the bit before `main`. It becomes worth doing when service bring-up moves off
+      the root thread -- i.e. with the item directly below.
 
 Carried over from the old plan, untouched by this design:
 - [ ] **Move app bring-up into the service lists**, so an app is started the way a driver is.
@@ -766,13 +832,15 @@ Blockers and limits:
 - **`idle` stays privileged and holds no capabilities** -- it runs no app code, and RXv3 `WAIT` is a
   privileged instruction while RISC-V U-mode `WFI` is optional per spec.
 - **The reserved cap index range is full after this** (0 stdout, 1 clock, 2 authority, 3 spare --
-  reboot shares shutdown's bit, so index 3 stays free). **The five-bit authority ceiling is
-  retired**: it was an artifact of `CapEntry.rights` being one byte, and a `CAP_AUTHORITY` entry
-  leaves the poolless `obj` field unused, so a wider authority word moves there and `CapEntry` stays
-  8 bytes. See the six-bit re-cut under stage 4.
+  reboot shares shutdown's bit, so index 3 stays free). **The five-bit authority ceiling is gone**:
+  the word now lives in the poolless `CapEntry.obj`, `CapEntry` is still 8 bytes, and the width is
+  bounded by `kos_thread_params::authority` (a `uint8_t` in padding) rather than by the entry. Two
+  more authorities cost nothing; a ninth needs that params field widened.
 - **Delegation packing collides with reserved names** -- spawn delegation puts cap *i* at child
-  index *i+1*, so a delegated authority cap lands at index 1 (`KOS_CAP_CLOCK`). Blocks the narrowed
-  hand-off to a driver manager until the deferred explicit-destination-index work lands.
+  index *i+1*, so a delegated cap lands at index 1 (`KOS_CAP_CLOCK`) and a second at index 2. The
+  authority cap can no longer be the one that collides (refused by type at the delegation site), but
+  the `KOS_CAP_CLOCK` aliasing still blocks the narrowed hand-off to a driver manager until the
+  deferred explicit-destination-index work lands.
 - **Cap-gen is a `uint16_t`** with no object generation behind a poolless cap, so 65536
   close/re-seat cycles wrap it. Unreachable in-tree; same unbounded-counter class as the
   domain-refcount item above.
@@ -1141,9 +1209,9 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
 - [ ] **`cap_console_publish` has no owner check and no once-only guard.** It drops the kernel's
       existing stdout ref and re-points `g_stdout_target` unconditionally, so any caller that clears
       the authority gate silently steals a live console -- and `KOS_SYS_ENDPOINT_CREATE` being
-      completely ungated means any thread can mint the endpoint to publish. Today `AUTH_DEVICE` is the
-      sole thing preventing it, which is why the guard is wanted independently of the stage-4 re-cut
-      that gives the call its own `AUTH_CONSOLE` bit.
+      completely ungated means any thread can mint the endpoint to publish. `AUTH_CONSOLE` is the
+      sole thing preventing it, and the guard is wanted independently of that bit: root itself holds
+      it for the length of service bring-up.
 - [ ] **The CPU/peripheral clock coupling is over-generalised, and the veto should be a notification.
       Owner: M4.6**, and a CPU governor depends on it. `cpu_clock_set` refuses outright while a
       userspace driver owns the console (`kernel/time/clock_select.cc`), because the kernel cannot

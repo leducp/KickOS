@@ -7,9 +7,31 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-On `master`. M4.5.3 is merged; nothing is in flight.
+On branch `M4.5.4-unpriv-root-stage4`, off `master`. **Silicon-witnessed on two of the six flipped
+boards** (2026-07-30): `xmc4800-relax` (PMSAv7, 65 cases / 64 `ok` / 1 skip) and
+`frdmk64f` (SYSMPU, full service list, 65 / 63 / 2), each with `ok 46 - authority_cap` and TAP
+routed through its userspace console driver. Read those two rows precisely: `selftest` declares five
+of the six bits, so root gave up only `AUTH_PSTATE` there. The capture where root actually drops
+`AUTH_PINMUX` and `AUTH_CONSOLE` is XMC `consoledemo`, which declares no mask and still prints
+through the driver it handed off. `docs/reference/boards.md`, *Stage 4*. The other four flipped
+boards rest on emulation, and the three apps that declare a wider mask (`c6blink`, `rxdrv`,
+`f411spi`) are **still unrun** -- they are the direct witness that a per-app declaration carries a
+board's own pin muxing on hardware.
 
-**Stage 3 of the unprivileged root is COMPLETE**: `arch_periph_enable` mediates the clock-ungate
+**Stage 4 of the unprivileged root is COMPLETE in-tree**: root now hands the app only the authority
+the app declared. The authority set is re-cut into **six** bits -- `AUTH_MEMORY`, `AUTH_PINMUX`,
+`AUTH_PSTATE`, `AUTH_IRQ`, `AUTH_SYSTEM`, `AUTH_CONSOLE`; `AUTH_DEVICE` and `AUTH_CLOCK` are gone --
+funded by moving the authority word out of `CapEntry.rights` into the poolless `CapEntry.obj`, which
+took an explicit type refusal at the delegation site first. `kos_cap_narrow`
+(`KOS_SYS_CAP_NARROW = 40`) is ungated and can only clear bits; the default init calls it after the
+pin map and the service list, with the mask from a per-app `KICKOS_APP_AUTHORITY` whose default is
+`AUTH_MEMORY | AUTH_SYSTEM`. **It bites only where root is unprivileged** --
+`cap_check_authority` short-circuits on `Thread::privileged` -- so on a privileged-root board it is
+inert and answers `-KOS_EBADF`. `stress`'s three privileged spawns turned out to be the same
+leftover `selftest`'s were, and flipping them fixed a real `sim_stress` failure under
+`KICKOS_ROOT_PRIVILEGED=OFF`.
+
+**Stage 3 is COMPLETE**: `arch_periph_enable` mediates the clock-ungate
 plus the bus-side unprotect for one register block, keyed on that block's exact base and gated on
 **possession** of a live DEV window, not on an authority bit. Six boards run root with
 `privileged=false` plus a `CAP_AUTHORITY`, silicon-witnessed across all **five** enforcement
@@ -20,10 +42,9 @@ because `xmcssc` needs the USIC `FDR`/`BRG`/`CCR` seam that stage 3 does not cov
 
 ## What is next (locked order)
 
-1. **4.5.4 -- stage 4**: `kos_cap_narrow`, narrow root's authority cap before
-   `kickos_app_main`, and the authority re-cut (six bits, funded from `CapEntry.obj`;
-   `docs/design-unprivileged-root.md` section 5). One ABI change, not two: the re-cut
-   decides `kos_cap_narrow`'s mask width.
+1. **Finish witnessing 4.5.4**, then merge it. Two enforcement backends are done; what is owed is
+   `c6blink` / `rxdrv` / `f411spi`, the apps whose own `KICKOS_APP_AUTHORITY` mask is what makes them
+   work, plus their never-run `kos_periph_enable` possession probes.
 2. **4.5.5**: MPU region-encoding classes, plus a fleet re-witness pass.
 3. Delete `KICKOS_ROOT_PRIVILEGED` outright.
 4. **M4.6**: consoles / UART.
@@ -46,7 +67,13 @@ The single commit to revert when bisecting a footprint or timing regression at t
 ## Gates (ctest, all green)
 
 sim 12/12, sim-telem 14/14, qemu 10/10, qemu-m33 9/9, qemu-m7 9/9, qemu-m3 8/8,
-qemu-riscv 7/7, microbit 5/5.
+qemu-riscv 7/7, microbit 5/5. The selftest is 65 tests, 0 skipped.
+
+Off-preset, run by hand for stage 4: `qemu` at `-DKICKOS_ROOT_PRIVILEGED=OFF` is 10/10. `sim` at
+`OFF` is 12/13 -- the one failure is the gate's own limitation, not the kernel's: `ctest` treats any
+`# skipped:` as failure while `mpu_privileged_guard` correctly skips in that posture, and the sim
+registration has no `EXPECT_SKIPS` list like `check_qemu_selftest.sh`. Filed in `TODO.md` with the
+CI items.
 
 ## Board matrix
 
@@ -97,6 +124,14 @@ Three classes, which fix what a board can witness:
   a binding, and `irq_register` is ungated -- so any thread can squat any line, permanently.
 - **Five in-tree apps grant a DEV window a live board-service driver already holds**, which the
   one-holder-per-window check now refuses. Silicon-only: no in-env gate covers any of them.
+- **A missed `KICKOS_APP_AUTHORITY` declaration surfaces only at runtime, on a flipped board.** The
+  kernel cannot know what an app will call, so there is no configure-time equivalent of the
+  root-MMIO `FATAL_ERROR`. The failure is a checked `-KOS_EPERM` rather than a fault, but on a board
+  with a published console the diagnostic is invisible (first blocker above). The nastiest shape is
+  an app that ignores a failed `pinmux_set` and then drives an unmuxed pin.
+- **`f302nucleo-st` has not linked in Debug for some time** -- `.text` overflows FLASH by 4,548 B on
+  `master`, pre-dating stage 4, and no gate builds that board in Debug so nothing caught it. Ample
+  room at `-Os` (12.7 KiB free).
 
 ## Where to go next
 

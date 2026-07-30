@@ -112,6 +112,13 @@ int kos_console_publish(int ep)
                                          static_cast<uintptr_t>(ep), 0, 0, 0));
 }
 
+int kos_cap_narrow(int cap, uint8_t mask)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_CAP_NARROW,
+                                         static_cast<uintptr_t>(cap),
+                                         static_cast<uintptr_t>(mask), 0, 0));
+}
+
 int kos_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_PINMUX_SET,

@@ -7,7 +7,7 @@
 // never both linked (EXACTLY ONE kickos_board_services per image).
 //
 // xmcuart's bring-up is pure syscall and touches no register itself, so it runs
-// unchanged from an unprivileged root holding AUTH_MEMORY + AUTH_DEVICE. xmcssc's
+// unchanged from an unprivileged root holding AUTH_MEMORY + AUTH_CONSOLE. xmcssc's
 // bring-up writes USIC registers from the CALLING thread, and a flipped root holds no
 // MMIO grant for U0C1: the blocker is that PLACEMENT, not the silicon
 // (docs/design-unprivileged-root.md section 9).

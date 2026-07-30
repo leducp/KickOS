@@ -176,6 +176,10 @@ namespace
     }
 }
 
+// Muxes its own LED pin from root, then grants the GPIO window to a worker. Never
+// returns, so it needs no KOS_AUTH_SYSTEM.
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX);
+
 int main(int, char**)
 {
     // Possession probe from root. The call runs in both postures and what it exercises

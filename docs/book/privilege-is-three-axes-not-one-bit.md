@@ -136,9 +136,22 @@ of gates in the syscall surface, each guarding an act with fleet-wide consequenc
 |---|---|
 | `AUTH_MEMORY` | carving RAM from the shared arena; granting an MMIO window at spawn; self-granting a carved range into the caller's own region set |
 | `AUTH_PINMUX` | configuring a pin's function in the shared mux block |
-| `AUTH_CLOCK` | retuning the core clock, which retimes every thread's deadlines |
+| `AUTH_PSTATE` | retuning the core clock, which retimes every thread's deadlines |
 | `AUTH_IRQ` | binding an interrupt line's dispatch, and arming a controller line |
-| `AUTH_DEVICE` | taking over the console; ending the system |
+| `AUTH_SYSTEM` | ending the system: shutdown and reboot |
+| `AUTH_CONSOLE` | taking over the console from the kernel |
+
+Where the cut falls between those rows is a design decision and not a listing
+order. Two of them look mergeable and are not. Retuning the clock and ending the
+system are both "acts on the whole machine", but a CPU-governor service needs the
+first and must never have the second, so folding them would hand a thread whose
+whole job is a frequency table the power to halt the board. Publishing the console
+is separate for the mirror-image reason: the thread that hands the UART to a
+userspace driver is, in a system that boots from one bring-up body, the same thread
+that will later end the system when it returns -- and it should be able to give up
+the console the moment the driver exists while keeping the one authority its own
+exit path needs. A bit that cannot be dropped independently of another is a bit
+whose holder keeps a power it stopped needing.
 
 Nothing in that list needs a CPU mode. A gate is an `if` in the kernel, and the
 kernel is already the thing being asked. So how should the answer be stored?
@@ -149,7 +162,8 @@ thread that needs to mux one pin at boot gets clock retuning and the console too
 it lasts exactly as long as the thread does; it cannot be narrowed, handed on in
 part, or inspected as anything other than "yes to everything".
 
-**A flag word on the thread.** Five bits on the TCB instead of one, checked per gate.
+**A flag word on the thread.** One bit per authority on the TCB instead of one bit
+for all of them, checked per gate.
 This buys narrowing, and it is genuinely most of the win. What it does not buy is a
 *name*: the bits are ambient properties of a thread, so there is no way to hand a
 subset to somebody else, no place for the narrow-only rule to be enforced uniformly,
@@ -158,7 +172,7 @@ already exists for objects.
 
 **A capability.** The system already names authority-bearing things per task, with a
 rights field, a narrow-only delegation rule, and one resolve chokepoint (Chapter 8.1,
-*[Naming a kernel object](handles-and-the-resolve-chokepoint.md)*). Putting the five
+*[Naming a kernel object](handles-and-the-resolve-chokepoint.md)*). Putting the
 authorities in that machinery makes them values the kernel can read, narrow, and
 refuse to copy, under rules that are already written and already audited.
 
@@ -171,7 +185,7 @@ happens to the flag.
 |---|---|---|---|
 | CPU mode | the fabricated first frame (per ISA) | once, at thread creation | no |
 | Memory posture | the thread's composed MPU region set | once, at thread creation | no |
-| Authority | rights bits in a capability | at creation, narrowable | yes |
+| Authority | an authority word in a capability | at creation, narrowable | yes |
 
 `Thread::privileged` survives the split with a narrowed meaning. It still selects the
 memory posture, it is still the confused-deputy bypass, and it stays the home for one
@@ -293,21 +307,44 @@ a *reserved* well-known capability index (`KOS_CAP_AUTHORITY`,
 `system/include/kickos/sys/cap_index.h`), which was already held back for a
 well-known service cap. Seating it there is what makes it cost **zero dynamic handle
 slots on every board**, including the four whose tables hold only nine handles. That
-arithmetic is the reason it is a rights-bearing capability at a reserved index rather
-than a new object type with a pool: a board that cannot spare one dynamic slot can
-still carry the whole authority model.
+arithmetic is the reason it is an authority-bearing capability at a reserved index
+rather than a new object type with a pool: a board that cannot spare one dynamic slot
+can still carry the whole authority model.
 
-**Five rights bits, in space the rights byte already had.** `CapEntry.rights` is one
-byte with three bits spent on object rights (`CAP_WAIT`, `CAP_SIGNAL`,
-`CAP_TRANSFER`). The five free bits become `AUTH_MEMORY`, `AUTH_PINMUX`,
-`AUTH_CLOCK`, `AUTH_IRQ`, `AUTH_DEVICE`. The split sits at bit 3 rather than
-overlapping the object rights, deliberately: `CAP_TRANSFER` in particular is read
-*type-agnostically* at the delegation site, so reusing a low bit for an authority
-would give one bit two meanings depending on a field the reader has to remember to
-check. `CapEntry` is a frozen eight bytes, so five is the entire authority budget for
-the life of the type -- a sixth authority has to come from **merging two existing
-bits**, never from adding one. (`AUTH_PINMUX` and `AUTH_CLOCK` are the natural pair:
-both are one-shot bring-up configuration.)
+**Poolless.** There is no object behind this capability and no refcount, because the
+capability *is* its authority word. It therefore resolves by reading its reserved slot
+and type-checking the entry, never through the object-resolving path (which would take
+that word for a pool handle and correctly hand back nothing). What a type with no
+object side does to the object-side lifecycle recipe is Chapter 8.2's fact, not this
+chapter's:
+*[Adding a kernel object type](adding-a-kernel-object-type-the-additive-recipe.md)*.
+
+**The authority word lives where an object handle would.** `CapEntry` is a frozen
+eight bytes: an object handle, a type, a rights byte, a generation. The rights byte is
+the tempting home for authority bits and the wrong one. Three of its bits are already
+spent on object rights (`CAP_WAIT`, `CAP_SIGNAL`, `CAP_TRANSFER`), so it could hold at
+most five authorities for the life of the type, and a sixth would have to come from
+merging two -- fusing precisely the powers that were worth separating. The way out is
+a property of the type rather than of the byte: a poolless capability names no object,
+so its handle field means nothing, and an unused field in a frozen struct is free
+width. The authority word goes there, and the rights byte of such an entry is empty.
+The struct does not grow, the authority set is not capped at five, and the two
+families end up in separate fields with separate numbering -- so nothing has to keep
+an object right and an authority from colliding, a rule that would otherwise have to
+be remembered at every future addition. What bounds the width instead is the spawn
+parameter that carries an authority mask to a child; the exact width is
+[`../reference/architecture.md`](../reference/architecture.md).
+
+**The price of a field that means two things.** Reading a field whose meaning depends
+on the type is safe everywhere the reader dispatches on the type first. There is one
+place that does not, and it is the whole cost of the arrangement: the delegation site
+copies a source entry's handle and type *verbatim*, filtered only by a rights bit. A
+capability whose authority lives in the rights byte survives that copy inert, because
+the copy carries none of it; a capability whose authority lives in the handle field
+arrives in the child's table as a forged seat, word and all. So that one site refuses
+the *type* outright, ahead of any rights test. The transferable form of this: the
+price of overloading a field is not paid where the field is read, it is paid where
+something copies the field without reading it.
 
 **Class granularity, forced by arithmetic rather than taste.** The alternative was a
 capability per muxable pin, per clock, per line. The larger parts in the fleet have on
@@ -315,19 +352,14 @@ the order of a hundred muxable pins against a sixteen-slot table ceiling. It doe
 fit, and it does not nearly fit, so one bit per authority *class* is not a
 simplification anyone chose for elegance.
 
-**Poolless.** There is no object behind this capability: `obj` is unused and there is
-no refcount, because the capability *is* its rights bits. It therefore resolves by
-reading its reserved slot and type-checking the entry, never through the
-object-resolving path (which would try to find `obj` in a pool and correctly hand back
-nothing). What a type with no object side does to the object-side lifecycle recipe is
-Chapter 8.2's fact, not this chapter's:
-*[Adding a kernel object type](adding-a-kernel-object-type-the-additive-recipe.md)*.
-
-**Non-delegable, because it is seated without `CAP_TRANSFER`.** That is stronger than
-merely being undelegated: the delegation site requires `CAP_TRANSFER` on the source
-capability, so an authority capability can never be copied into a child's table by any
-path. The reserved index has exactly one writer, the kernel, which closes the forgery
-question completely rather than arguing about it.
+**Non-delegable, by the type and not merely by a missing bit.** The delegation site
+refuses a `CAP_AUTHORITY` source outright, so an authority capability cannot be copied
+into a child's table by any path. It is *also* seated with an empty rights byte, so it
+carries no `CAP_TRANSFER` and would fail that site's other test as well -- but the
+type refusal is the one that does not depend on the contents of a field. The reserved
+index has exactly one writer, the kernel, which closes the forgery question completely
+rather than arguing about it. Authority reaches a child only as a mask on the spawn
+that creates it.
 
 **One question at every gate.** Every gate asks
 `cap_check_authority(caller, AUTH_x)`, which is true when the caller is privileged
@@ -350,15 +382,23 @@ the entire run of the application, including every path through application code
 has since gone wrong. There is no operation that takes it away, because there is
 nothing to take away: the bit *is* the thread's identity.
 
-An authority carried in a rights word is a value. Dropping one is a rights-mask
-update on a single table entry, which is a small operation precisely *because* the
-authority was made into data. The kernel refuses the corresponding gate afterwards,
-and it refuses it uniformly, because the gate was already asking the capability rather
-than the thread.
+An authority carried in a capability's authority word is a value. Dropping one is a
+mask applied to a single table entry, which is a small operation precisely *because*
+the authority was made into data. The holder names its own capability and hands in a
+mask; the mask can only clear bits, and a mask that clears the last one empties the
+slot. The kernel refuses the corresponding gate afterwards, and it refuses it
+uniformly, because the gate was already asking the capability rather than the thread.
 
-The narrow-only rule that makes this safe is not new machinery either -- it is the
-same monotone rule the object capabilities already use. A spawn may seat an authority
-word on the child, and the kernel refuses any bit the parent does not itself hold:
+That narrowing call is itself **ungated**, which looks like a hole and is the only
+coherent choice: an authority required in order to drop authorities could never be
+given up, since spending it would be the one thing it exists to permit. A gate is
+there to stop a thread doing something it should not have the power to do, and no
+threat model objects to a thread holding *less*. Monotone-downward operations do not
+need permission.
+
+The narrow-only rule that makes this safe is not machinery of its own either -- it is
+the same monotone rule the object capabilities use. A spawn may seat an authority word
+on the child, and the kernel refuses any bit the parent does not itself hold:
 authority narrows on the way down and never widens, exactly like a delegated rights
 mask. One rule, both capability families, checked in one place.
 

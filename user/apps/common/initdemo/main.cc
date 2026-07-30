@@ -80,6 +80,10 @@ namespace
     }
 }
 
+// Publishes a console from root (this app IS the handover demo), spawns a worker, and
+// returns.
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_CONSOLE);
+
 int main(int, char**)
 {
     // The poison write: root's cap 0 is EMPTY (root predates any publish), so this

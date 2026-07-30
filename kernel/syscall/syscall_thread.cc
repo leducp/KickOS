@@ -172,8 +172,10 @@ namespace kickos
         {
             if ((p->authority & ~CAP_AUTH_ALL) != 0)
             {
-                // Object rights (WAIT/SIGNAL/TRANSFER) mean nothing on this type;
-                // refuse rather than silently mask them off.
+                // A bit no gate reads: refuse rather than silently mask it off. The
+                // authority word has its own numbering, so this catches only bits above
+                // the defined authorities -- an object right is not a distinguishable
+                // wrong value here.
                 return -KOS_EINVAL; // non-authority bits in the authority mask
             }
             // Narrow-only, exactly like a cap_grant mask: the caller must already hold
@@ -241,6 +243,16 @@ namespace kickos
                 if (se == nullptr)
                 {
                     return -KOS_EBADF; // source cap names nothing valid
+                }
+                // An authority cap is never delegable, by TYPE and not merely by an
+                // absent CAP_TRANSFER. This copy takes `obj` and `type` verbatim, so
+                // once the authority word lives in `obj` a delegable authority cap
+                // would be a full forgery at child index ci+1 -- and index 2 is
+                // reachable whenever cap_count >= 2. The child's seat has exactly one
+                // writer, cap_seat_authority (kos_thread_params::authority).
+                if (se->type == static_cast<uint8_t>(CapType::CAP_AUTHORITY))
+                {
+                    return -KOS_EPERM; // authority caps are not delegable
                 }
                 if ((se->rights & CAP_TRANSFER) != CAP_TRANSFER)
                 {
