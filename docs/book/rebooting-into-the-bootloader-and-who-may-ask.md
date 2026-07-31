@@ -20,7 +20,7 @@ Copyright (c) 2026 Philippe Leduc
 > one place. Binds to [`../reference/architecture.md`](../reference/architecture.md)
 > ("User/kernel separation", "Object model, capabilities & IPC"),
 > [`../reference/invariants.md`](../reference/invariants.md), and
-> [`../reference/porting.md`](../reference/porting.md) (the arch-seam weak-default
+> [`../reference/porting.md`](../reference/porting.md) (the arch-seam fallback
 > convention).
 
 ## The problem: "reboot" names at least three acts
@@ -158,10 +158,14 @@ So the seam over this has to be able to decline, and declining has to be an ordi
 documented answer rather than an embarrassment.
 
 The habit that gets this right is the one the arch layer already uses for facilities that
-exist on some parts and not others: a **weak default that returns "not implemented"**,
-which a chip may override and most will not. A pin-mux seam is the familiar case -- parts
-with a central mux block implement it, parts whose pin function lives per-peripheral keep
-the weak refusal, and no fake backend is written to make the fleet look uniform
+exist on some parts and not others: a **fallback that returns "not implemented"**, alone
+in a translation unit of its own, which a chip may displace and most will not. A chip that
+defines the symbol satisfies the reference from its own archive member, so the fallback
+member is never extracted -- linker behaviour rather than a language rule, but behaviour
+every Unix-like linker and MSVC `.lib` share, unlike a weak attribute whose interaction
+with archives is implementation-defined. A pin-mux seam is the familiar case -- parts with
+a central mux block define it, parts whose pin function lives per-peripheral keep the
+declining fallback, and no fake backend is written to make the fleet look uniform
 (`../reference/porting.md` carries the exact convention). Bootloader entry belongs in
 exactly that family, and more urgently than most, because three of the four shapes above
 are unimplementable on a part that is not that shape.
@@ -490,7 +494,7 @@ generally available has to revisit the authority split first, not afterwards.
 - **Name the act, not the word.** "Reboot" is three operations. Decide which one a caller
   needs by asking what must survive and what the host must do next, and never substitute a
   neighbouring act because it is the one the chip can perform.
-- **Let a seam refuse.** A weak default that returns not-implemented is a better port than
+- **Let a seam refuse.** A fallback that returns not-implemented is a better port than
   a stub that returns success, and far better than one that performs a different act. The
   contract of a hardware-facing seam includes the answer "this part cannot".
 - **Use the names a vendor made stable; check layouts, not builds.** An indirection you
@@ -530,5 +534,5 @@ generally available has to revisit the authority split first, not afterwards.
 - The exact contracts: [`../reference/architecture.md`](../reference/architecture.md)
   ("User/kernel separation", "Object model, capabilities & IPC"),
   [`../reference/invariants.md`](../reference/invariants.md), and
-  [`../reference/porting.md`](../reference/porting.md) (arch seams and their weak
-  defaults).
+  [`../reference/porting.md`](../reference/porting.md) (arch seams and their fallback
+  translation units).

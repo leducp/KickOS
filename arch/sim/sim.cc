@@ -21,6 +21,13 @@
 #include <stdlib.h>
 #include <fcntl.h>
 
+#include <kickos/sys/errno.h> // arch_periph_reg_write's refusal taxonomy
+
+// Pre-4.17 headers: the returned-address check at the mmap call site is the guard.
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0
+#endif
+
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #include <kickos/rtt.h>
@@ -94,6 +101,10 @@ namespace
         size_t arena_size = 0;
         size_t arena_used = 0;          // bump allocator (arch_ram_alloc)
         unsigned char* guard = nullptr; // a reserved arena page no domain owns
+        // SIM_PVREG_SPAN bytes at SIM_PVREG_BASE, outside the arena. null => this host
+        // refused the fixed mapping, so no DEV window is encodable and the
+        // privileged-write seam declines.
+        unsigned char* pvreg = nullptr;
 
         // The running thread's resting region set, remembered so the syscall raise
         // can be lowered back to exactly it. We keep the caller's pointer (its TCB
@@ -178,6 +189,63 @@ namespace
         kickos_trace_switch_done(from, to);
     }
 #endif
+
+    // --- Fake write-PV-only register block (arch_periph_reg_write's sim backend) ---
+    // A DEV grant needs a base the app names at spawn time, so it must be known to both
+    // sides at compile time. ONE fixed address would make the premise a bet on this
+    // process's address space, so the first candidate that maps is published as
+    // sim().pvreg and is the only base the seam and the encoder answer for.
+    // user/apps/common/selftest walks the SAME list in the SAME order. Keep them identical.
+    constexpr uintptr_t SIM_PVREG_BASES[] = {
+        0x40000000u,          // 1 GiB
+        0x100000000ull,       // 4 GiB
+        0x400000000ull,       // 16 GiB
+        0x10000000000ull,     // 1 TiB
+        0x100000000000ull,    // 16 TiB
+    };
+    // 64 KiB: every host page size in practice (4/16/64 KiB) divides it, so the
+    // "mprotect can describe this exactly" precondition below is satisfied by
+    // construction rather than by the host happening to use 4 KiB pages.
+    constexpr size_t SIM_PVREG_WINDOW = 0x10000u;
+    // Twice the window, so an allowlist entry can sit OUTSIDE the grantable window with
+    // host pages still behind it: a store there must be refused by the kernel's
+    // containment check, never faulted on.
+    constexpr size_t SIM_PVREG_SPAN = 2u * SIM_PVREG_WINDOW;
+
+    struct SimPrivWriteReg
+    {
+        uintptr_t offset; // from the published base; there is only ever one block
+        uint32_t mask;    // the only bits this entry may set
+    };
+
+    // Withholds whole bytes at both ends of the word, so no off-mask value can be
+    // confused with an in-mask one: widening the column shows up as a store that lands.
+    constexpr uint32_t PVREG_MASKED_GRANT = 0x0000C3FFu;
+    // Reachable only by a holder of a window wider than SIM_PVREG_WINDOW, which this
+    // backend never admits.
+    constexpr uint32_t PVREG_BEYOND_GRANT = 0x00000001u;
+
+    constexpr SimPrivWriteReg SIM_PRIV_WRITE_REGS[] = {
+        { 0x010u, PVREG_MASKED_GRANT },
+        { SIM_PVREG_WINDOW, PVREG_BEYOND_GRANT },
+    };
+
+    // An entry outside the mapping would fault INSIDE the privileged store, which ends
+    // the whole system (kfault_terminate), so the span must cover every entry's word.
+    static_assert(SIM_PRIV_WRITE_REGS[0].offset + sizeof(uint32_t) <= SIM_PVREG_SPAN
+                      and SIM_PRIV_WRITE_REGS[1].offset + sizeof(uint32_t) <= SIM_PVREG_SPAN,
+                  "a sim allowlist entry lies outside the mapped fake register block");
+    // The second entry must NOT be reachable from the only grantable window.
+    static_assert(SIM_PRIV_WRITE_REGS[1].offset >= SIM_PVREG_WINDOW,
+                  "the containment entry must sit beyond the grantable window");
+    // A base the window does not divide would hand the app an unnaturally-aligned DEV
+    // window, which no enforcing backend would admit.
+    static_assert(SIM_PVREG_BASES[0] % SIM_PVREG_WINDOW == 0
+                      and SIM_PVREG_BASES[1] % SIM_PVREG_WINDOW == 0
+                      and SIM_PVREG_BASES[2] % SIM_PVREG_WINDOW == 0
+                      and SIM_PVREG_BASES[3] % SIM_PVREG_WINDOW == 0
+                      and SIM_PVREG_BASES[4] % SIM_PVREG_WINDOW == 0,
+                  "every candidate base must be window-aligned");
 
     void arena_lower_to_applied(); // defined below; used by the trampoline
 
@@ -566,6 +634,33 @@ void arch_init(void)
     // Reserve one page no domain is ever granted: the isolation-probe address.
     sim().guard = static_cast<unsigned char*>(arch_ram_alloc(sim().pagesize));
 
+    // The fake write-PV-only register block, OUTSIDE the arena: it must not be
+    // reachable as a RAM grant, and arena_lower_to_applied must skip it. The store the
+    // seam performs runs privileged in the kernel's own frame, so the pages must exist
+    // before any allowlist entry is reachable. MAP_FIXED_NOREPLACE never evicts an
+    // existing mapping, so a candidate this process already uses is skipped rather than
+    // stolen. Kept if already mapped: a second arch_init must not drop the block that
+    // the published base and every live DEV grant still refer to.
+    if (sim().pvreg == nullptr)
+    {
+        for (uintptr_t cand : SIM_PVREG_BASES)
+        {
+            void* pv = mmap(reinterpret_cast<void*>(cand), SIM_PVREG_SPAN,
+                            PROT_READ | PROT_WRITE,
+                            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+            if (pv == MAP_FAILED)
+            {
+                continue;
+            }
+            if (reinterpret_cast<uintptr_t>(pv) == cand)
+            {
+                sim().pvreg = static_cast<unsigned char*>(pv);
+                break;
+            }
+            munmap(pv, SIM_PVREG_SPAN); // pre-4.17 kernels ignore the flag and relocate
+        }
+    }
+
     sigemptyset(&sim().irq_signals);
     sigaddset(&sim().irq_signals, SIGALRM);
     sigaddset(&sim().irq_signals, SIGUSR1);
@@ -622,7 +717,7 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 #endif
 
 // The host sim must EXIT on a fault/panic so CTest sees the status -- there is no
-// LED and the weak blink terminal (kernel.h) would spin forever. Override it.
+// LED and the blink terminal fallback (kernel.h) would spin forever. Replace it.
 void kfault_terminate(void)
 {
     arch_shutdown(132);
@@ -940,14 +1035,68 @@ size_t arch_mpu_min_region(void)
     return static_cast<size_t>(sim().pagesize); // mprotect granularity
 }
 
-// mprotect governs only the mmap'd arena, so no real peripheral window is
-// encodable here: fail closed. A sim driver test drives an arena-backed fake
-// device (a data grant), never a real MMIO grant.
+// mprotect governs only the mmap'd arena, so no real peripheral window is encodable
+// here: fail closed. A sim driver test drives an arena-backed fake device (a data
+// grant), never a real MMIO grant.
+//
+// The ONE admitted window is the sim's own fake register block, which is host pages
+// mprotect describes exactly. It is what gives arch_periph_reg_write a DEV holder on
+// the host; every other address, and every other shape of this one, still fails closed.
+// The base is the one PUBLISHED at init, not a literal: nothing here depends on which
+// candidate the host left free.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
-    (void)base;
-    (void)size;
-    return false;
+    if (sim().pvreg == nullptr or sim().pagesize <= 0)
+    {
+        return false;
+    }
+    // Exact window, never a sub-range: the allowlist entry at SIM_PVREG_WINDOW is
+    // refused by containment only while no wider window is grantable.
+    if (base != reinterpret_cast<uintptr_t>(sim().pvreg) or size != SIM_PVREG_WINDOW)
+    {
+        return false;
+    }
+    // A host page coarser than the window leaves it undescribable by mprotect. Every
+    // page size in practice divides SIM_PVREG_WINDOW, so this is a fail-closed floor
+    // rather than a live condition.
+    return SIM_PVREG_WINDOW % static_cast<size_t>(sim().pagesize) == 0;
+}
+
+// Privileged single-register write (arch.h). The caller's possession of the block at
+// `base` and its containment of `[base + offset, +4)` are already checked in the
+// syscall layer; this decides whether that exact register is on the allowlist above AND
+// whether the value stays inside the entry's mask. The value is never trimmed and never
+// read-modify-written: a silently dropped configuration bit is what a consumer's
+// read-back exists to catch.
+//
+// This definition MUST stay in this TU. sim.cc is always extracted (it carries
+// arch_init and the context switch) and is the FIRST member of kickos_arch_sim, so it
+// resolves the symbol before common/arch_periph_reg_write_default.cc (in the same
+// archive) can be pulled in. Moving it to a dedicated TU nothing else references would
+// resolve the declining default instead, with no link error.
+int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
+{
+    if (sim().pvreg == nullptr)
+    {
+        return -KOS_ENOSYS; // no fake block on this host: nothing to write
+    }
+    if (base != reinterpret_cast<uintptr_t>(sim().pvreg))
+    {
+        return -KOS_EINVAL; // the published base is the only one this backend tables
+    }
+    for (SimPrivWriteReg const& e : SIM_PRIV_WRITE_REGS)
+    {
+        if (e.offset == offset)
+        {
+            if ((value & ~e.mask) != 0)
+            {
+                return -KOS_EINVAL;
+            }
+            *reinterpret_cast<volatile uint32_t*>(base + offset) = value;
+            return 0;
+        }
+    }
+    return -KOS_EINVAL;
 }
 
 // mprotect takes an arbitrary page-aligned range, so no power-of-two size is needed.

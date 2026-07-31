@@ -27,7 +27,7 @@ static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_ARMV6M,
 // flushes the ring -- so the dump is safe from fault context whether or not the
 // chip armed the buffered console (rp2040 does, nrf51 does not). kfault_terminate
 // is the shared panic/fault dead-end (kernel.h; nrf51 overrides it to exit under
-// QEMU, rp2040 uses the weak blink).
+// QEMU, rp2040 uses the blink fallback).
 namespace kickos
 {
     void kprintf(char const* fmt, ...);

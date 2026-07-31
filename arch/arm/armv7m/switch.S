@@ -115,8 +115,8 @@ PendSV_Handler:
        PendSV fires -> a fault on its own stack. Callee regs (r4-r11) survive the call
        (AAPCS); r0-r3/r12 are reloaded from the HW frame on exception return; lr holds
        EXC_RETURN and must be preserved across the bl (r0 pad keeps MSP 8-byte aligned).
-       Resolves to the weak PMSAv7 commit (F411/XMC) or a chip's strong override (K64F
-       SYSMPU); a no-MPU board gets the empty weak commit. */
+       Resolves to the PMSAv7 commit fallback (F411/XMC) or a chip's own (K64F
+       SYSMPU); a no-MPU board gets the empty commit fallback. */
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
     pop     {r0, lr}

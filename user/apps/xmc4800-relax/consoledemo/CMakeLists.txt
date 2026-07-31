@@ -7,29 +7,26 @@
 # user-facing app (kickos_add_application, built on the plain xmc4800-relax config),
 # not a diagnostic. Registered only for the xmc4800-relax board (chip-specific USIC
 # window) AND enforcement builds (the isolation and the U0C0 grant are M2 constructs).
-# On this board the console is a KOS_SVC_CONSOLE entry in the default service list
-# (KICKOS_SERVICE_LIST=kickos_services_xmc4800relax), so the driver is linked through
-# kickos_core; the app links no driver lib itself.
+# The driver comes from the selected service list's KOS_SVC_CONSOLE entry through
+# kickos_core; the app links no driver lib itself. Without such an entry there is no
+# handover to demonstrate and every printf below would take the kernel path, so the
+# selected list is a precondition, not a preference.
 if(NOT (KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU))
+  return()
+endif()
+set(_consoledemo_lists
+  kickos_services_xmc4800relax
+  kickos_services_xmc4800relax_console)
+if(NOT KICKOS_SERVICE_LIST IN_LIST _consoledemo_lists)
+  message(STATUS
+    "KickOS: consoledemo skipped: KICKOS_SERVICE_LIST=${KICKOS_SERVICE_LIST} publishes no "
+    "userspace console. Build it with -DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_console.")
   return()
 endif()
 
 kickos_add_application(consoledemo
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
-
-# Scramble-then-panic reclaim test mode (design D-test 3). OFF by default: this is a
-# deliberate HARDWARE test, not the normal handover demo. When ON, consoledemo spawns
-# an unprivileged scrambler that garbles the granted U0C0 window to the true silent-
-# loss state (KSCFG.MODEN=0, gated clock) and then forces an MPU fault, so an operator
-# can confirm the "KERNEL PANIC" banner STILL reaches the wire (arch_console_reclaim
-# recovered the UART). Enable with -DKICKOS_SCRAMBLE_TEST=ON. PASS is silicon-observable.
-option(KICKOS_SCRAMBLE_TEST "consoledemo: scramble-then-panic console-reclaim test mode" OFF)
-if(KICKOS_SCRAMBLE_TEST)
-  target_compile_definitions(consoledemo PRIVATE CONSOLEDEMO_SCRAMBLE_TEST=1)
-else()
-  target_compile_definitions(consoledemo PRIVATE CONSOLEDEMO_SCRAMBLE_TEST=0)
-endif()
 
 # No CTest gate: this app answers a HARDWARE question (userspace UART ownership +
 # the client->driver->wire path) and is validated by the operator on silicon (XMC

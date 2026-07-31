@@ -157,6 +157,12 @@ int kos_shutdown(int status)
                                          static_cast<uintptr_t>(status), 0, 0, 0));
 }
 
+void kos_panic(char const* msg)
+{
+    arch_syscall(KOS_SYS_PANIC, reinterpret_cast<uintptr_t>(msg), 0, 0, 0);
+    __builtin_unreachable();
+}
+
 // Thread epilogue for UNPRIVILEGED threads: the arch plants this as the return
 // address of a user thread's entry, so a worker that returns exits via the
 // syscall trap (running the kernel exit path privileged) rather than calling
@@ -259,6 +265,12 @@ uint32_t kos_periph_clock_hz(uintptr_t base)
 int kos_periph_enable(uintptr_t base)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_ENABLE, base, 0, 0, 0));
+}
+
+int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_PERIPH_REG_WRITE, base, offset,
+                                         static_cast<uintptr_t>(value), 0));
 }
 
 uint32_t kos_cpu_clock_set(kos_pstate_t pstate)

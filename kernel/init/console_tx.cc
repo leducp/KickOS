@@ -212,12 +212,6 @@ void console_tx_flush_sync(void)
     drain_sync();
 }
 
-// Weak default: chips without a buffered console leave the console synchronous.
-__attribute__((weak)) console_tx_backend const* arch_console_tx_backend(char**, uint32_t*, int*)
-{
-    return nullptr;
-}
-
 // Called once from kmain after irq_init(). If the chip offers a backend, bind the
 // drain ISR, unmask the line (priority lands in the IrqLock-maskable band), and
 // arm the ring. No-op on sim / polled-only chips.

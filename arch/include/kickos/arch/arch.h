@@ -88,7 +88,7 @@ uint32_t arch_cpu_clock_hz(void);
 // baud/prescaler. `base` is the peripheral register-BLOCK base (e.g. a K64F UART
 // at 0x4006A000); a backend MAY range-match within a block, but the contract only
 // promises correctness for the block base itself. Returns 0 when this chip does
-// not know the block's clock. The WEAK default returns 0 for every block, and a
+// not know the block's clock. The fallback TU returns 0 for every block, and a
 // wrong branch clock silently garbles the wire, so 0 (not the core clock) is the
 // safe unknown: the driver then falls back to its own explicit constant. Read-only
 // and cascade-free; the DVFS rate-change notify is deferred.
@@ -98,16 +98,33 @@ uint32_t arch_periph_clock_hz(uintptr_t base);
 // at `base`. `base` is the peripheral register-BLOCK base and must match a per-chip
 // table EXACTLY; backends never range-match. Both bits are derived from `base`, so a
 // caller cannot name a shared block's register or bit. Idempotent. Returns 0,
-// -KOS_EINVAL (no entry for that base), or -KOS_ENOSYS (weak default, no backend).
+// -KOS_EINVAL (no entry for that base), or -KOS_ENOSYS (the fallback TU, no backend).
 // A base has an entry only where the bus gate's granularity is contained by the
 // block; where a coarser gate would also open kernel-reserved registers, the base is
 // refused instead (K64F PIT).
 int arch_periph_enable(uintptr_t base);
 
+// Write `value` to the register at `base + offset` on the caller's behalf, PRIVILEGED.
+// Some buses classify a block's WRITE side supervisor-only per REGISTER, so a granted
+// window silently discards an unprivileged store to those (XMC4800 USIC FDR/BRG/CCR,
+// RM Table 18-20 Write = PV).
+//
+// `base` must match a per-chip ALLOWLIST entry EXACTLY and `offset` must be one that
+// entry names. A backend never range-matches and never admits a whole block.
+//
+// An entry's block MUST be CLOCKED whenever the syscall can reach it: the store runs in
+// the kernel's frame, so a fault on a gated block reaches kfault_terminate and ends the
+// system. XMC4800's USIC0 qualifies only because kickos_xmc_usic_init() ungates it from
+// arch_init; a U1C0/U2C0 entry behind CGATCLR1 would not.
+//
+// Returns 0, -KOS_EINVAL (not on the allowlist) or -KOS_ENOSYS (no backend). The default
+// declines and lives alone in arch/common/arch_periph_reg_write_default.cc.
+int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
+
 // One-shot init-time pin-function config: point (port, pin) at the raw chip
 // function code `func` (the PC/PCR encoding, opaque to the caller). Returns 0,
 // -KOS_EINVAL (out of range), or -KOS_EBUSY (a kernel-owned pin the backend
-// refuses). The WEAK default returns -KOS_ENOSYS so a non-empty board pin-map
+// refuses). The fallback TU returns -KOS_ENOSYS so a non-empty board pin-map
 // fails LOUD on a chip with no PORT/IOCR backend; a chip that owns its mux block
 // (XMC4800, K64F) strong-overrides this.
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
@@ -118,7 +135,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 //   - a retune that FAILS and parks on a safe fallback (e.g. K64F fail_to_fei ->
 //     ~20.97 MHz) returns THAT fallback Hz -- non-zero, the clock DID move, so the
 //     caller MUST run the coherence tail;
-//   - 0 is returned ONLY when this chip cannot change its clock at all (weak default
+//   - 0 is returned ONLY when this chip cannot change its clock at all (the fallback TU
 //     / unsupported backend). 0 NEVER means "failed but moved".
 // The backend performs the flash-wait-state / voltage step and the arch_clock_now
 // re-anchor INTERNALLY, bracketing the exact PLL/divider write (the re-anchor is the
@@ -133,7 +150,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 // and chip-specific; the truthful landed Hz is the RETURN value, not this selector.
 uint32_t arch_cpu_clock_set(uint32_t target);
 
-// Console coherence hooks for a clock retune (both WEAK no-op by default; only a chip
+// Console coherence hooks for a clock retune (both no-op fallbacks; only a chip
 // whose console peripheral clock moves with the core clock overrides them):
 //   arch_console_flush_sync -- block until the TX shift register is fully idle
 //     (transmission-complete, NOT merely buffer-empty), so no in-flight byte is still
@@ -342,8 +359,10 @@ size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max);
 //   enforcing MPU backend: code/rodata/.data ARE real regions (see
 //     arch_domain_static_regions), so the region check already admits them and this
 //     returns false -- any address outside the set is genuinely unreachable.
-//   non-enforcing backend: no per-domain isolation exists to breach, so a range that
-//     does NOT touch the user-RAM arena (app code/rodata in flash/ROM) is admitted.
+//   non-enforcing backend: no per-domain isolation exists to breach, but the kernel
+//     dereferences the range PRIVILEGED, so it must be MAPPED: only the chip's
+//     linker-defined memories are admitted (code/rodata extent, and static RAM up to
+//     the arena base). An arena range falls through to the region check.
 //   host sim: app + kernel share one binary, sections are not MPU regions, so a range
 //     wholly inside the host image (and not the arena) is admitted; a wild pointer
 //     outside both is rejected. It cannot separate app rodata from kernel statics --
@@ -357,9 +376,10 @@ bool arch_user_text_readable(uintptr_t ptr, size_t len);
 //   enforcing MPU backend: .appdata/.appbss IS a real region (see
 //     arch_domain_static_regions), so the region check already admits it and this
 //     returns false; an address outside the set is genuinely unreachable.
-//   non-enforcing backend: the thread can already store anywhere, so a range that does
-//     NOT touch the user-RAM arena is admitted. An arena range still falls through to
-//     the region check, so a later enforcing build of the same backend stays sound.
+//   non-enforcing backend: the kernel stores privileged, so only the chip's static-RAM
+//     extent (RAM origin up to the arena base) is admitted. An arena range still falls
+//     through to the region check, so a later enforcing build of the same backend stays
+//     sound.
 //   host sim: app and kernel share one host image whose sections are not MPU regions,
 //     so a range wholly inside the image and clear of the arena is admitted.
 bool arch_user_data_writable(uintptr_t ptr, size_t len);
@@ -382,7 +402,7 @@ struct arch_reserved_block
 
 // Fill `out` (capacity `max`, the kernel passes KICKOS_MAX_RESERVED) with this
 // chip's reserved blocks and return the count. KICKOS_RESERVED_NONE (0) is legal
-// (the sim owns nothing MPU-governable). NO weak default on purpose: an enforcing
+// (the sim owns nothing MPU-governable). NO fallback TU on purpose: an enforcing
 // port that forgets to declare its set is a LINK error, not a silent open hole
 // (affirmative fail-closed). Defined per enforcing chip under #if KICKOS_HAVE_MPU.
 #define KICKOS_RESERVED_NONE 0u
@@ -391,7 +411,7 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max);
 // Nonzero on a core with the Cortex-M bit-band peripheral/SRAM alias (M3/M4): a
 // reserved peripheral block is then ALSO reachable through its word-per-bit alias
 // image, and a device grant touching either alias window is refused (kernel/grant).
-// WEAK 0 default (no alias -- M0+/M7/RISC-V/RX); the bit-band M4 chips
+// Fallback TU answers 0 (no alias -- M0+/M7/RISC-V/RX); the bit-band M4 chips
 // (mk64f, stm32f411, xmc4800) strong-override to 1.
 int arch_bitband_present(void);
 
@@ -477,7 +497,7 @@ void arch_console_write_sync(char const* buf, size_t n);
 
 // Force the UART back to a known polled-ready channel on the panic path after a
 // userspace console driver may have left its granted register window garbled (D6).
-// WEAK no-op default in console.cc (boards that never hand over need nothing); a chip
+// No-op fallback TU (boards that never hand over need nothing); a chip
 // that supports handover overrides it with an idempotent full-window register rewrite.
 void arch_console_reclaim(void);
 
@@ -487,7 +507,7 @@ void arch_console_reclaim(void);
 // that works UART-less, in a fault, before drivers exist. NOT a general device
 // driver (the userspace path is provisional; the capability model re-homes it as
 // a userspace GPIO driver later). arch_diag_led_init() configures the pin once
-// at boot; arch_diag_led_set() drives it (on != 0). Both have a WEAK no-op
+// at boot; arch_diag_led_set() drives it (on != 0). Both have a no-op fallback-TU
 // default (kernel/init/led.cc): a board with no known LED -- or the sim -- does
 // nothing; a chip backend with one provides strong overrides. Raw set (no
 // toggle): the kernel side tracks state, so a toggle is one XOR there, not a
@@ -498,7 +518,7 @@ void arch_diag_led_set(int on);
 // --- Chip-specific fault decode (optional) ----------------------------------
 // Called by the core fault reporter after it dumps the CPU frame + fault-status
 // registers, so a chip whose isolation trap does NOT surface in the core CFSR
-// (K64F SYSMPU -> a bus error, not a MemManage) can add its own capture. WEAK
+// (K64F SYSMPU -> a bus error, not a MemManage) can add its own capture. Fallback-TU
 // no-op default (per-arch); a chip backend with an external MPU strong-overrides.
 void arch_fault_report_extra(void);
 

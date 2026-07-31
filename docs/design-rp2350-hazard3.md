@@ -66,7 +66,7 @@ custom Hazard3 CSRs, and the RP2350 supplies a platform timer + software-interru
 of its own shape (SIO / a RISC-V platform-timer block). Whether (a)/(b)/(c) map onto
 Hazard3 as cleanly as the C6's CLINT+PLIC is the single largest unknown and the thing to
 pin against the datasheet first. It is de-riskable: the arch layer already isolates all
-three behind a pointer (`g_clint_msip`) and weak chip hooks, so the port is a
+three behind a pointer (`g_clint_msip`) and chip hooks with fallback TUs, so the port is a
 chip-backend fill, not an arch-layer surgery -- **unless** Hazard3's software-interrupt or
 timer semantics differ enough to force a small arch seam change (e.g. a `g_msip`-style
 indirection that is a function rather than a single MMIO word).
@@ -233,8 +233,8 @@ the Hazard3 unknown.
   (ii) Hazard3 exposes software-interrupt assertion via a custom CSR / a SIO doorbell
   rather than a writable MMIO word -- then the arch's "write a word through a pointer"
   contract must widen to "call a chip hook" (a small, mechanical arch seam change:
-  `arch_switch` calls `arch_rv_pend_switch()` weak-overridable, default = the MMIO-word
-  write for C6/virt). **This is the most likely place the arch layer needs a touch.**
+  `arch_switch` calls `arch_rv_pend_switch()` with a fallback TU whose body is the
+  MMIO-word write for C6/virt). **This is the most likely place the arch layer needs a touch.**
 
 ### 4.2 The machine timer (tickless clock) -- `mtime`/`mtimecmp`
 
@@ -260,9 +260,10 @@ the Hazard3 unknown.
 ### 4.3 The external-interrupt path (device IRQs) -- THE crux
 
 - **Arch assumption:** device IRQs arrive as a machine external interrupt demuxed in
-  `switch.S`; the arch provides a software-inject test channel (SSIP) plus weak chip hooks
-  (`arch_rv_hw_unmask/mask`, `arch_rv_ext_eoi`, `kickos_rv_ext_dispatch_dev`) for a real
-  controller (`arch_rv32imac.cc:308-438`).
+  `switch.S`; the arch provides a software-inject test channel (SSIP) plus chip hooks with
+  fallback TUs (`arch_rv_hw_unmask/mask`, `arch_rv_ext_eoi`, `kickos_rv_ext_dispatch_dev`)
+  for a real controller (`arch_rv32imac.cc:361-500`, fallbacks in
+  `arch/riscv/rv32imac/<symbol>_default.cc`).
 - **C6:** it does NOT use a standard PLIC-only model -- it routes device sources through
   an **interrupt matrix (INTMTX)** to per-CPU interrupt IDs, configured via a
   PLIC-at-`0x2000_1000` window, with the M/U-only core having no SSIP so the inject
@@ -273,7 +274,7 @@ the Hazard3 unknown.
   `meifa`/`meie`-family and a `meinext`-style claim -- **exact CSR names/encodings
   to-verify**). It is **NOT a memory-mapped standard PLIC.** This is the crux:
   - **Good news:** the arch layer already assumes a non-standard controller reached
-    through the weak hooks (that is exactly why the C6 fit without arch surgery). A
+    through those hooks (that is exactly why the C6 fit without arch surgery). A
     Hazard3 backend implements `arch_rv_hw_unmask/mask` to program the Hazard3 IRQ CSRs,
     `kickos_rv_ext_dispatch_dev` to claim/EOI, and `arch_rv_inject_deliver` for the test
     channel. The demux in `switch.S` keys on `mcause`; Hazard3's external interrupt is the
@@ -483,7 +484,7 @@ on reading the RP2350/Hazard3 interrupt-controller chapter.** In-tree (buildable
 the shared-SoC-header refactor, the board descriptor + preset, the chip backend skeleton,
 the linker script, Stage-1 image inspection. Silicon-gated: Stages 2-4, dominated by
 unknown #1 (the interrupt fabric). If the Hazard3 IRQ controller maps cleanly onto the
-existing weak-hook seam (as the C6's INTMTX+PLIC did), the tail is short; if it needs a
+existing chip-hook seam (as the C6's INTMTX+PLIC did), the tail is short; if it needs a
 `switch.S` demux edit or an `arch_switch` pend-hook, add a few days for the arch touch plus
 re-validating every existing RISC-V board (C6, virt) against the widened seam.
 

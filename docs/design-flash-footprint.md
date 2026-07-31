@@ -500,7 +500,8 @@ zero bytes on any board that exists.
 **The layering was inverted, and the duplicate had a silent failure mode.** The chip file described
 a part present nowhere in the tree while the board file described the real one, and the board copy
 carried its own note that it MUST mirror the chip default's global-ctor partitioning -- where
-divergence runs app ctors before `kmain` and leaves the weak app-ctor bounds at 0, so the
+divergence runs app ctors before `kmain` and leaves the app-ctor window empty (`start == end`,
+the bounds themselves being strong on purpose), so the
 `root_entry` walk is skipped with no diagnostic. The two scripts are now one:
 `arch/arm/chip/stm32f103/stm32f103.ld` carries the genuine `FLASH 64K` / `RAM 20K`, the board-level
 override is deleted, and a low-density clone would need its own chip entry rather than a floor

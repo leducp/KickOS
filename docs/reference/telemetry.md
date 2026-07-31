@@ -79,8 +79,8 @@ fractured along this line at M1. The implementations:
 
 | arch / chip | source | width | rate | notes |
 |---|---|---|---|---|
-| armv7m (silicon) | DWT `CYCCNT` (enabled by `kickos_armv7m_init`) | 32 | core clk | **weak, uniform arch-layer impl** (`arch/arm/armv7m/arch_armv7m.cc`). Cycle-accurate. |
-| armv7m / mps2 (QEMU, board `qemu`) | semihosting `SYS_CLOCK` scaled to us (`chip_mps2.cc` overrides -- DWT is frozen on QEMU) | 32 | 1 MHz nominal, ~10 ms resolution | coarse, monotonic; drives the QEMU **structural** CI gate 4 (section 8) so the fragile PendSV-tail asm gets automated coverage. |
+| armv7m (silicon) | DWT `CYCCNT` (enabled by `kickos_armv7m_init`) | 32 | core clk | **uniform arch-layer fallback TU** (`arch/arm/armv7m/arch_trace_now_default.cc`). Cycle-accurate. |
+| armv7m / mps2 (QEMU, board `qemu`) | semihosting `SYS_CLOCK` scaled to us (`chip_mps2.cc` defines its own -- DWT is frozen on QEMU) | 32 | 1 MHz nominal, ~10 ms resolution | coarse, monotonic; drives the QEMU **structural** CI gate 4 (section 8) so the fragile PendSV-tail asm gets automated coverage. |
 | armv6m / RP2040 (`picopi`) | free-running **1 us TIMER** (one `TIMERAWL` read; same source as `arch_clock_now`) | 32 | 1 MHz | **chip-provided capability** (`chip_rp2040.cc`), no ALARM spent, SysTick untouched. Coarse (below). |
 | armv6m / nRF51 (`microbit`, a QEMU vehicle) | semihosting `SYS_CLOCK` scaled to us (`chip_nrf51.cc`) | 32 | 1 MHz nominal, ~10 ms resolution | structural coverage only, like mps2. |
 | sim | `arch_clock_now` -> **us** as u32 (ns/1000) | 32 | 1 MHz | us not ns, so it wraps at ~71 min not 4.29 s (CI runs never alias). Logic/structural only, not a timing benchmark. |
@@ -103,14 +103,14 @@ error, and it likely cannot resolve the M2 MPU-reprogram cost on an M0+ (may be
 sub-us). RP2040 gives coarse-but-real operational numbers; **the M2-gating
 baseline is defended on XMC/DWT** (cycle-accurate), where the MPU delta is visible.
 
-**Gate mechanism (not a weak symbol):** the CMake capability var
+**Gate mechanism -- the capability var, not the seam:** the CMake capability var
 `KICKOS_HAVE_TRACE_CLOCK` (root `CMakeLists.txt`; defaulted per arch/chip,
 overridable by a board/chip/preset) is checked at configure ->
 `FATAL_ERROR` if `KICKOS_TELEMETRY=rtt` without it; an unresolved strong reference
-is the link-time backstop. `arch_trace_now` is **weak in the armv7m layer (DWT)**;
-a chip whose DWT is unusable overrides it -- **mps2 overrides with semihosting
-`SYS_CLOCK`** (the same override it already does for `arch_clock_now`, because
-QEMU's DWT is frozen). So QEMU telemetry is *coarse but real* and drives the
+is the link-time backstop. `arch_trace_now` has an **armv7m-layer fallback TU (DWT)**
+(`arch_trace_now_default.cc`); a chip whose DWT is unusable defines its own --
+**mps2 defines a semihosting `SYS_CLOCK`** one (the same source it already uses for
+`arch_clock_now`, because QEMU's DWT is frozen). So QEMU telemetry is *coarse but real* and drives the
 structural CI gate 4 (section 8) -- the capability var stays honest per chip.
 
 ## 2. Record format

@@ -4,6 +4,13 @@
 > **Status: LANDED** -- the review happened (2026-07-20) and its findings were checked; the
 > VERIFICATION notes are the outcomes. Kept as the record of what was challenged and what
 > survived. See `design/README.md` for the marker taxonomy.
+>
+> **It is also the driver era's risk register, so each finding events have since tested carries an
+> OUTCOME line** (added 2026-07-30, at the M4.5.6 boundary). Findings **5** and **12** have
+> MATERIALISED as real defects. Findings **4**, **6** and **8** are OPEN and are squarely M4.6.1
+> (IRQ) work -- **re-read this document at the top of that milestone** rather than shelving it.
+> Finding **10** stays OPEN as the M6 landmine. A finding with no OUTCOME line is untested by
+> events, not dismissed.
 
 An adversarial review of the M4 "driver era" design PRINCIPLES, run 2026-07-20 before
 M4 implementation starts. Sources reviewed: `docs/design-driver-era-scope.md`,
@@ -73,7 +80,7 @@ presupposes the crash/reclaim machinery that does not exist (finding 5).
 accounting at mint, interaction with `arch_mpu_region_encodable` fail-closed) before M4 commits the
 GPIO shape. Finding 9 argues the first consumer may not exist yet.
 
-### 4. Call/reply with no priority donation = unbounded priority inversion per transaction
+### 4. Call/reply with no priority donation = unbounded priority inversion per transaction  -- OPEN, M4.6.1
 **Principle:** synchronous call/reply on CAP_ENDPOINT. **Severity: MAJOR.**
 A high-priority client calls `spi_transfer`; it is served at the DRIVER's static priority; any
 medium-priority thread preempts the driver indefinitely -> the client's deadline blows on an
@@ -85,8 +92,12 @@ cyclic exchange over the K64F DSPI driver.
 **Recommendation:** the reply-cap design gate must include the scheduling contract (direct handoff on
 call -- client donates priority or the switch goes straight to the driver, as `sem_post`'s token
 handoff already does -- and back on reply). Without it, "synchronous driver API" is not an RTOS API.
+**OUTCOME (2026-07-30): OPEN, and it is M4.6.1's problem.** Nothing has donated priority yet; the
+call/reply drivers that shipped in M4.5.x are all served at the driver thread's static priority. The
+scheduling contract this finding asks for is the same contract findings 6 and 8 need, so all three
+are one milestone's work -- re-read them together at the top of M4.6.1.
 
-### 5. No death story on the call path: a crashed driver parks its clients forever
+### 5. No death story on the call path: a crashed driver parks its clients forever  -- MATERIALISED
 **Principle:** call/reply + the missing-entirely list. **Severity: MAJOR.**
 Client blocks on the reply; the driver faults (the event the fault-funnel celebrates catching). The
 client is parked with no timed send/recv (explicitly OPEN), no endpoint-death wakeup for parked
@@ -98,8 +109,26 @@ refcounts, AIPS slot, endpoint slots. The only reclaim that exists is the panic-
 parked waiters with -1" + a stated position on whether driver death is system-fatal in M4 (honest if
 chosen) -- but then say so, because scope 3.5 promises "on driver-death the cap is revoked and the pin
 freed", machinery that does not exist.
+**OUTCOME (2026-07-30): MATERIALISED in M4.5.6 as a real defect, exactly the shape described.**
+`xmcssc`'s channel bring-up became fallible when it moved onto the privileged-write seam (either a
+seam refusal or a read-back mismatch), and its failure path called `kos_exit(-1)`. The endpoint-death
+wake the kernel does have -- last-receiver-gone raises `-KOS_EPIPE` on parked waiters -- never fired,
+because **root keeps a WAIT-bearing cap on that endpoint** (it holds it to hand SIGNAL to the client),
+so `recv_holders >= 1` no matter how the server dies. A client parked in `kos_call` would have blocked
+forever, with the system otherwise healthy. Fixed by making the failure path **panic** instead: a
+bring-up refusal is a port/silicon fault, not a runtime condition
+(`system/driver/xmc4800/xmcssc/xmcssc.cc:334-354`, which carries the rule as a comment so the next
+driver does not re-derive it). Two things this cost is worth noting for the M4.6 death story:
+- **A retained keeper cap defeats the only wake we have.** "Last receiver gone" is not "server gone"
+  whenever the spawner keeps a recv-bearing cap, which is the normal shape for a service whose
+  endpoint root must delegate from.
+- **The API gap the finding predicted is real and still open.** `kos_cap_narrow` is
+  `cap_narrow_authority` -- it narrows the authority word only (`kernel/syscall/cap.cc:489`). There
+  is no endpoint-rights narrow, so "hold the cap but drop WAIT" was not an option, and panicking was
+  the only correct move available. An endpoint-rights narrow is the cheap enabler for a real
+  driver-death story.
 
-### 6. The clock-tree service contradicts its own bring-up DAG; the notifier cascade is unsafe
+### 6. The clock-tree service contradicts its own bring-up DAG; the notifier cascade is unsafe  -- OPEN, M4.6.1
 **Principle:** clock-tree / power-manager. **Severity: MAJOR.**
 Internal contradiction: scope 3.1's DAG makes CLOCK-TREE a foundational service init brings up
 BEFORE gpio and drivers; scope G7's verdict says it comes AFTER the clock MECHANISM (G4) and the
@@ -115,6 +144,11 @@ service parked mid-cascade.
 one-shot gating (satisfies the DAG), (ii) the G4 kernel mechanism with the finding-1 console handshake
 as the FIRST forced instance of the notify protocol. Design the full service against that proven
 instance, late-M4 at the earliest.
+**OUTCOME (2026-07-30): OPEN, and it is M4.6.1's problem.** No standing clock-tree service was built,
+which is the recommendation being followed rather than the finding being closed: the notifier cascade,
+its PRE-quiesce phase and the "one slow driver stalls DVFS forever" hole are all still unaddressed,
+and the finding-5 materialisation above is direct evidence that the no-timeout half of that hole is
+not theoretical. Re-read with findings 4 and 8.
 
 ### 7. The "delegatable clock-control capability" is undefined, and its MMIO reading is an escalation surface
 **Principle:** clock-tree / power-manager. **Severity: MAJOR.**
@@ -131,7 +165,7 @@ MMIO window; the kernel owns every register in the shared clock block; the servi
 authority only (which subtree / which P-states -- a rights-bearing kernel-object cap, a design gate).
 Fold into the finding-6 spike.
 
-### 8. Shared-IRQ GPIO demux over rendezvous IPC is a cross-driver DoS and a priority launderer
+### 8. Shared-IRQ GPIO demux over rendezvous IPC is a cross-driver DoS and a priority launderer  -- OPEN, M4.6.1
 **Principle:** GPIO (the IRQ-demux half). **Severity: MAJOR.**
 The GPIO service owns the shared PORTx line, reads ISFR, delivers the per-pin event via IPC, acks
 after delivering. With the landed rendezvous endpoint, "deliver" = `kos_send`, which PARKS the service
@@ -143,6 +177,11 @@ subscribers' edge handling runs at the service's single priority (inversion eith
 **Recommendation:** delivery must be non-blocking per subscriber (a per-subscription
 semaphore/notification with a sticky-pending / overflow-counter policy, never a parked send), and the
 service acks ISFR immediately after latching, before delivery. State the latency class honestly.
+**OUTCOME (2026-07-30): OPEN, and it is the core of M4.6.1.** No shared-IRQ demux service exists yet;
+the drivers that shipped own their line outright (`xmcssc` registers USIC0 SR1 as a tier-1 handler and
+is the only holder), so the cross-driver DoS has had no chance to bite. It bites the moment a port's
+line is shared, which is what M4.6.1 introduces. Re-read with findings 4 and 6 -- the
+priority-laundering half of this finding and finding 4's donation half are one scheduling contract.
 
 ### 9. YAGNI: the motivating consumer for minted pin caps (SPI chip-select) was already rejected
 **Principle:** GPIO; scope internal consistency. **Severity: MAJOR (over-reach signal), cheap to fix.**
@@ -156,7 +195,7 @@ button) that a validated kernel set/clear syscall covers with zero new kernel ob
 M4 as allocator-bookkeeping + syscall-mediated toggle + the (fixed, per finding 8) demux; revisit minted
 caps when a real MHz-rate GPIO consumer appears (a bit-banged bus). Fix the 3.1 DAG annotation.
 
-### 10. The large-transfer shared-buffer ABI is M4 work carrying an M5 label -- the one M6 landmine
+### 10. The large-transfer shared-buffer ABI is M4 work carrying an M5 label -- the one M6 landmine  -- OPEN
 **Principle:** call/reply + ordering. **Severity: MAJOR (one-paragraph fix now, driver-ABI break later).**
 `KOS_EP_MSG_MAX` bounds the inline payload; scope 3.2 says larger SPI transfers "want a granted shared
 buffer" and notes this is "the same physical-addressing discipline QW-3 flags" -- but scope 4.1 parks
@@ -165,6 +204,10 @@ virtual==physical), every driver contract breaks at M6 when a domain becomes a p
 client's pointer means nothing in the driver's address space.
 **Recommendation:** pull the QW-3 DISCIPLINE (not the ring implementation) into the M4 call/reply gate:
 the wire format of a transfer request is {region-cap, offset, len}, never a raw address, from day one.
+**OUTCOME (2026-07-30): still OPEN, and still the M6 landmine.** Every transfer that has shipped fits
+the inline `KOS_EP_MSG_MAX` payload, so no driver ABI has committed to a shared-buffer shape yet --
+which means the one-paragraph fix is still one paragraph. That window closes the first time a
+large-transfer path lands.
 
 ### 11. The default init's cap set is a silent ABI, and init's lifecycle is unspecified
 **Principle:** init service. **Severity: MINOR.**
@@ -173,12 +216,12 @@ index i+1). "A default init that wires a sane cap set" means every addition SHIF
 index -- an app that learned "SPI endpoint is handle 2" breaks silently when a clock cap is inserted at
 2. The doc flags the entry RENAME as the consumer break (correct) but misses that the cap-set LAYOUT is
 the recurring one. Also unspecified: does init exit after bring-up (then nobody serves dynamic pin
-re-config or driver restart) or persist (a permanently-live privileged root, the largest trusted body
-in the system)? LOW-BARRIER itself survives: a per-BOARD in-tree pin map is not a per-APP manifest.
+re-config or driver restart) or persist (a permanently-live root holding the full authority seat --
+unprivileged, but still the largest trusted body in the system)? LOW-BARRIER itself survives: a per-BOARD in-tree pin map is not a per-APP manifest.
 **Recommendation:** freeze a well-known-index convention (or a get-cap-by-name query) in the same gate as
 the rename; decide init's persist-vs-exit posture explicitly.
 
-### 12. RAM/slot budget math is absent for the service + thread-per-instance shape on small parts
+### 12. RAM/slot budget math is absent for the service + thread-per-instance shape on small parts  -- MATERIALISED
 **Principle:** call/reply + GPIO. **Severity: MINOR.**
 `KICKOS_MAX_ENDPOINTS` defaults to 4; badging burns a pool slot per badged client, plus (future) one
 per in-flight reply. Init + clock + GPIO + one UART + one SPI driver is already 5+ endpoints and 4-6
@@ -186,6 +229,23 @@ thread stacks before the app runs -- on F302 the scope's own table says "RAM-tig
 (F103, LX6) the thread+IPC shape buys zero isolation over a library call while paying full freight.
 **Recommendation:** add a worst-case RAM/slot budget per board class to the framework gate, and explicitly
 permit the degenerate "driver as a linked library, no service thread" configuration on no-MPU parts.
+**OUTCOME (2026-07-30): MATERIALISED TWICE in M4.5.6, on the two smallest parts, and the reviewer's
+"RAM-tight" instinct was right about the class if not the exact board.** Neither was fixed by raising
+a limit; both were root-caused at the source.
+- **`microbit` (nRF51, 16 KiB SRAM): selftest arena starvation.** The thread-stack pool, not
+  registration order, is the dominant arena consumer on this part, so a suite that grew its worker
+  count starved the arena rather than any single allocation being too big.
+- **`bluepill-c8-st`: a broken LINK, from a shared test growing static RAM by 12 bytes.** That board
+  has **exactly ZERO** boot-arena slack -- 2,560 B available against the 2,560 B `kmain`'s two boot
+  stacks need -- so any `.data`/`.bss` growth in a test shared across the fleet breaks it. Worse, it
+  has no ctest gate **and** no physical unit, so only a full-fleet build catches it: the budget math
+  this finding asked for is the only thing that can see the problem coming here.
+
+The general lesson is the finding's own recommendation restated with a mechanism: a boot-arena
+**link-time** assert (`KICKOS_BOOT_ARENA_ASSERT`) now replays the two boot-stack allocations on every
+chip, so the boot-stack half of the budget is checked by the build. What is still unchecked at build
+time is user-stack and object-pool capacity -- the `f302nucleo` shape, where the image links clean and
+then refuses every spawn on hardware. See `reference/boards.md`, *CI coverage & cross toolchains*.
 
 ---
 

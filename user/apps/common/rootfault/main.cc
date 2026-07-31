@@ -4,13 +4,10 @@
 // ROOT-confinement gate, in its own binary because it ends the process. The
 // complement of apps/mpu_fault (which confines a spawned CHILD): here the child's
 // write is the control that must succeed, and ROOT's write is the one that must
-// fault. Discriminating in both postures:
-//   KICKOS_ROOT_PRIVILEGED=1 -> the cross-domain write COMPLETES; the run ends with
-//                               the "not confined" line and a clean exit.
-//   KICKOS_ROOT_PRIVILEGED=0 -> root holds only [app code RX, app static data RW,
-//     + enforcement            its own stack]; region A is in no region of root's,
-//                               so the write traps and the kernel reports
-//                               "MPU FAULT: task 'root' attempted write at <A>".
+// fault. Root holds only [app code RX, app static data RW, its own stack], so region A
+// is in no region of root's: under enforcement the write traps and the kernel reports
+// "MPU FAULT: task 'root' attempted write at <A>". Without enforcement it completes,
+// and the run ends with the "not confined" line and a clean exit.
 //
 // Region A is genuinely another DOMAIN's, not merely unmapped: the child is still
 // alive and parked when root writes it, so its region descriptor is live.
@@ -45,9 +42,8 @@ namespace
 
 int main(int, char**)
 {
-    // AUTH_MEMORY holds in both postures: implicit for a privileged root, seated by
-    // kmain on the authority cap when the knob is OFF. A refusal here means the
-    // authority seat is missing, a different bug, so it is reported distinctly.
+    // A refusal here means root's AUTH_MEMORY seat is missing, a different bug, so it
+    // is reported distinctly.
     void* rA = kos_ram_alloc(4096);
     int done = kos_sem_create(0);
     if (rA == nullptr or done < 0)
@@ -82,9 +78,9 @@ int main(int, char**)
     emit(msg);
     *static_cast<volatile int*>(rA) = 0x2222;
 
-    // Reached ONLY where root is privileged or nothing is enforced. Deliberately not
-    // worded as a failure: it is the correct outcome for KICKOS_ROOT_PRIVILEGED=1.
+    // Reached ONLY where nothing is enforced. The "NOT confined" substring is the FAIL
+    // marker in tests/check_qemu_rootfault.sh and in this app's CMakeLists.
     emit("[rootfault] cross-domain write completed: root is NOT confined "
-         "(expected with KICKOS_ROOT_PRIVILEGED=1 or no enforcement)\n");
+         "(no enforcement)\n");
     return 0;
 }

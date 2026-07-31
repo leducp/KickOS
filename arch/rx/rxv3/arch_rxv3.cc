@@ -675,7 +675,7 @@ int arch_mpu_region_pow2(void)
     return 0;
 }
 
-// Rule 7 (arch.h): RX has no Cortex-M bit-band alias. Not weak: no ARM-common weak
+// Rule 7 (arch.h): RX has no Cortex-M bit-band alias. No ARM-common fallback
 // default exists in an RX link.
 int arch_bitband_present(void)
 {
@@ -833,15 +833,11 @@ __attribute__((interrupt)) void kickos_rx_swint2(void)
     g_in_isr--;
 }
 
-// Chip hook: name the pending real-device line for the shared default ISR. The
-// INTB routes EVERY device source to kickos_rx_default_irq and the RXv3 core has
-// no cheap current-vector read, so the first-level ISR cannot identify the line on
-// its own -- a chip that wires a real peripheral overrides this to read its
-// source's IR/status flag and return the vector (>= 0), or -1 for "none pending".
-// Weak no-op default returns -1: the M1.x posture wires no real device (only
-// injected logical lines, delivered over SWINT2). Mirrors the riscv
-// kickos_rv_ext_dispatch_dev weak chip hook.
-__attribute__((weak)) int kickos_rx_dev_pending_line(void) { return -1; }
+// Chip hook: name the pending real-device line for the shared default ISR. The INTB
+// routes EVERY device source to kickos_rx_default_irq and the RXv3 core has no cheap
+// current-vector read, so the first-level ISR cannot identify the line on its own. The
+// fallback body is in kickos_rx_dev_pending_line_default.cc.
+int kickos_rx_dev_pending_line(void);
 
 // Device-line default entry: the real first-level ISR for every INTB device slot.
 // The chip hook names the fired line (the one fact RX cannot derive); the rest is

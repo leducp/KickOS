@@ -5,7 +5,7 @@
 > (epoch re-anchor as sole mult-writer, baud re-derive, timer re-arm, USER_OWNED refusal).
 > Silicon-proven on XMC (144/48 MHz) and K64F (120/20.97 MHz): monotonic `now` across a retune,
 > ratio-correct timing, no fault. XMC does a full retune, K64F a staged one; every other chip
-> keeps the explicit weak default. Fleet-wide rollout and the userspace power-manager/clock-tree
+> keeps the explicit fallback. Fleet-wide rollout and the userspace power-manager/clock-tree
 > policy service stay open (`../roadmap.md`). See `design/README.md` for the marker taxonomy.
 
 **Status: fable review folded in. This is the corrected implementation spec.**
@@ -39,9 +39,10 @@ domain the clock-select changes:
 - K64F: PIT runs on `bus = SystemCoreClock / BUS_DIV` (`chip_mk64f.cc:413`).
 
 (STM32F411's TIM2 is likewise APB1 == HCLK == `SystemCoreClock`, but F411 does NOT
-implement runtime clock-select -- `arch_cpu_clock_set` is the weak default returning
-0 -- so it has no jump hazard. It received only the B2 `arch_clock_now` cleanup below,
-applied as uniform sole-writer hygiene.)
+implement runtime clock-select -- `arch_cpu_clock_set` resolves to the fallback
+(`arch/common/arch_cpu_clock_set_default.cc`) returning 0 -- so it has no jump hazard.
+It received only the B2 `arch_clock_now` cleanup below, applied as uniform sole-writer
+hygiene.)
 
 Each `arch_clock_now` today converts raw ticks to ns with a cached reciprocal
 `mult` recomputed lazily `if (hz != cached_hz)` -- an explicit "changes once at
@@ -67,7 +68,7 @@ After this change `mult` has a SINGLE writer -- `clock_anchor_init` at boot plus
 a retune backend, the re-anchor step (section 2.1); `arch_clock_now` only ever READS
 the anchor triple, never recomputes it. This is a concrete edit to `arch_clock_now`
 in `chip_xmc4800.cc`, `chip_mk64f.cc`, and `chip_stm32f411.cc` -- the last purely as
-sole-writer hygiene, since F411 does not retune (weak-default `arch_cpu_clock_set`)
+sole-writer hygiene, since F411 does not retune (fallback `arch_cpu_clock_set`)
 and so has no re-anchor.
 
 rp2040's monotonic TIMER (on clk_ref) and the sim are structurally immune to the
@@ -78,7 +79,7 @@ tracks clk_sys (section 1, section 5).
 
 ## 1. The arch seam
 
-Add one hook (weak default = unsupported):
+Add one hook (fallback TU = unsupported):
 
 ```
 // Retune the core/bus clock. target = a P-state selector, NOT a raw Hz (the
@@ -89,7 +90,7 @@ Add one hook (weak default = unsupported):
 //     fail_to_fei -> ~20.97 MHz) returns THAT fallback Hz -- non-zero, because
 //     the clock DID move. The caller MUST then run the full coherence tail.
 //   - 0 is returned ONLY for "this chip cannot change its clock at all"
-//     (unsupported backend / weak default). 0 never means "failed but moved".
+//     (unsupported backend / fallback TU). 0 never means "failed but moved".
 // The backend also performs the re-anchor and any flash-wait-state / voltage
 // step INTERNALLY, bracketing the exact PLL/divider write (review S2, S3).
 // MUST be called from privileged thread context with interrupts already masked
@@ -109,10 +110,11 @@ typedef enum kos_pstate_e : uint32_t {   // fixed u32 width -> stable syscall AB
 } kos_pstate_t;
 ```
 
-The weak default lives in `arch_arm_common.cc` (or a neutral TU) and returns 0
+The fallback lives alone in `arch/common/arch_cpu_clock_set_default.cc` and returns 0
 (the "cannot change clock at all" value). The sim also returns 0
-(`arch_cpu_clock_hz` there already returns 0). A backend opts in by overriding the
-symbol.
+(`arch_cpu_clock_hz` there already returns 0). A backend opts in by defining the
+symbol in an always-anchored member of its own, which keeps that fallback member
+unextracted (`arch/CMakeLists.txt` states the rule).
 
 Per-chip feasibility:
 
@@ -127,8 +129,8 @@ Per-chip feasibility:
   lower the frequency first, then relax flash wait states. General rule for ANY
   chip: flash-WS (and voltage) go UP before frequency goes up, DOWN after
   frequency goes down.
-- **STM32F411 -- DEFERRED, retune NOT implemented for M3.** F411 ships the weak
-  default (`arch_cpu_clock_set` returns 0); it got only the B2 `arch_clock_now`
+- **STM32F411 -- DEFERRED, retune NOT implemented for M3.** F411 ships the fallback
+  (`arch_cpu_clock_set` returns 0); it got only the B2 `arch_clock_now`
   cleanup. A future retune is feasible as a FIXED SET: `PLLCFGR` is writable only
   while the PLL is OFF (`chip_stm32f411.cc:179-180`), so it would switch SYSCLK to
   HSI, stop the PLL, rewrite N/P, restart, wait `PLLRDY`, switch back -- briefly
@@ -146,7 +148,7 @@ Per-chip feasibility:
   on retune (section 2.2). It is the reference model ONLY for the timer, not for
   the console.
 - **Everything else (sam3x8e, nrf51, stm32f103/f302, mps2, esp32, rx72m,
-  riscv) -- returns 0 for M3.** They keep the weak default until someone needs it.
+  riscv) -- returns 0 for M3.** They keep the fallback TU until someone needs it.
 
 ---
 
@@ -381,7 +383,7 @@ per chip:
   backends shipping `arch_cpu_clock_set`, so they are also the only two whose
   backend performs the re-anchor at the rate edge for M3; the sets coincide.
   (STM32F411's TIM2 is same-domain and WOULD jump under a retune, but F411 does not
-  retune -- weak-default `arch_cpu_clock_set` -- so it never re-anchors; it carries
+  retune -- fallback `arch_cpu_clock_set` -- so it never re-anchors; it carries
   only the B2 sole-writer cleanup.)
 
 No chip's `now` runs BACKWARD across the change under the re-anchor (base_ns is

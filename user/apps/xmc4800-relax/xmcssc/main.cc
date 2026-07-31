@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // XMC4800/USIC0-CH1 SSC bus-SERVICE silicon validation (M4.4 call/reply). The SSC
-// service is brought up by the board service list BEFORE main (xmc_spi0_start:
-// privileged USIC config + endpoint + unprivileged driver). This app only drives it
+// service is brought up by the board service list BEFORE main (xmc_spi0_start: endpoint
+// + unprivileged driver, which configures the channel itself). This app only drives it
 // as a CLIENT -- the XMC sibling of user/apps/k64dspi.
 //
 // Because a kos_call caller must be a spawned pool thread (the root/init thread is

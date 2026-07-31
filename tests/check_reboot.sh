@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Plumbing gate for kos_reboot: boot rebootdemo on a weak-seam target (no QEMU
+# Plumbing gate for kos_reboot: boot rebootdemo on a declining-fallback target (no QEMU
 # machine models a bootrom download mode), so the whole path (root's kos_reboot,
-# the AUTH_SYSTEM gate, the synchronous console flush, the weak arch_reboot) must
+# the AUTH_SYSTEM gate, the synchronous console flush, the arch_reboot fallback) must
 # come back with -KOS_ENOSYS and the app must then shut down cleanly. arch_shutdown
 # forwards the status over semihosting, so QEMU's exit code IS the clean-exit half.
 # Native run for the sim; QEMU (semihosting) when QEMU_MACHINE is set.

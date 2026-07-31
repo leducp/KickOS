@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# QEMU ROOT-narrow gate: boot the `rootauth` image and assert its verdict. The posture
-# lives in the image, so this script runs unchanged in both.
+# QEMU ROOT-narrow gate: boot the `rootauth` image and assert its verdict.
 #
 # A grep for the absence of ERROR cannot tell a truncated run from a clean one, so each
 # arm must be seen. rootauth self-terminates, so QEMU_TIMEOUT is only a hang backstop.
@@ -33,16 +32,19 @@ if ! echo "$out" | grep -q "\[rootauth\] PASS"; then
     exit 1
 fi
 # The verdict prints before main returns, and the return calls kos_shutdown (gated on
-# KOS_AUTH_SYSTEM), so losing only that bit prints PASS and then panics. Text from
-# KICKOS_UNREACHABLE in kernel/init/kmain.cc.
-if echo "$out" | grep -q "unreachable: root: shutdown refused"; then
+# KOS_AUTH_SYSTEM), so losing only that bit prints PASS and then panics. Text from the
+# kos_panic call in kernel/init/kmain.cc.
+if echo "$out" | grep -q "root: shutdown refused"; then
     echo "FAIL: rootauth panicked after its verdict (KOS_AUTH_SYSTEM lost?)"
     exit 1
 fi
 
-# Four is the floor: the privileged image runs exactly four arms, the flipped one five.
+# EXACTLY five arms, all unconditional (rootauth main.cc). The floor must equal that
+# count: any slack lets an arm be deleted with every gate still green, and the arm most
+# worth deleting is the post-narrow refusal, the only one separating a narrow that took
+# effect from one that returned 0 and changed nothing. Raise this with the arm count.
 arms="$(echo "$out" | grep -c "\[rootauth\] ok - ")"
-if [ "$arms" -lt 4 ]; then
+if [ "$arms" -lt 5 ]; then
     echo "FAIL: only $arms rootauth arm(s) reported; the verdict is vacuous"
     exit 1
 fi

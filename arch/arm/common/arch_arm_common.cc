@@ -69,8 +69,8 @@ uint32_t arch_cpu_clock_hz(void)
     return SystemCoreClock;
 }
 
-// --- One-shot timer (SysTick). Clock (arch_clock_now) is per-arch: chip-
-// provided on v6-M (no DWT), a weak DWT default on v7-M. -----------------------
+// --- One-shot timer (SysTick). Clock (arch_clock_now) is a per-CHIP contract on
+// every ARM arch; there is no arch-level fallback. --------------------------
 // Absolute deadline the running SysTick was last programmed for (UINT64_MAX ==
 // disarmed / fired). ktime_rearm() calls arch_timer_arm on EVERY reschedule with
 // the same pending deadline; blindly reloading SYST_CVR each time resets the
@@ -239,13 +239,6 @@ extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, si
     __asm volatile("isb" ::: "memory");
 }
 
-// Weak default: no chip fixed regions. A chip (i.MX RT1062) strong-overrides this.
-size_t __attribute__((weak)) kickos_arm_mpu_fixed(struct kickos_arm_mpu_fixed_region const** out)
-{
-    (void)out;
-    return 0;
-}
-
 // One-time: program the chip's fixed regions into the LOW slots [0, k), cache k, and
 // enable the MPU (with the PRIVDEFENA background). Call from the chip arch_init BEFORE
 // enabling caches and before the scheduler starts. Idempotent-safe to call once.
@@ -297,17 +290,17 @@ namespace
 }
 
 // Read the pending stash. Lets a chip whose MPU is NOT PMSAv7 (K64F SYSMPU) program
-// its own hardware from the SAME stash by strong-overriding only the commit below.
+// its own hardware from the SAME stash by defining only the commit.
 size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out)
 {
     *out = g_pend_regions;
     return g_pend_count;
 }
 
-// STASH-ONLY apply (weak): record the incoming set, no hardware write. Shared by
-// every ARM backend -- PMSAv7 (v6-M/v7-M) and K64F SYSMPU alike; a chip overrides
-// only the commit, never this.
-void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+// STASH-ONLY apply: record the incoming set, no hardware write. Shared by every ARM
+// backend, PMSAv7 (v6-M/v7-M) and K64F SYSMPU and PMSAv8 alike; a chip replaces only the
+// commit, never this, so this definition is not overridable.
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     if (n > MAX_PEND_REGIONS)
     {
@@ -320,71 +313,15 @@ void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions,
     g_pend_count = n;
 }
 
-// Commit the stash to the PMSAv7 hardware (weak default: F411/XMC on v7-M, RP2040/
-// microbit on v6-M). cpsid brackets the disable/reprogram/re-enable so a preempting
-// IRQ cannot observe a half-programmed MPU -- valid asm on both v6-M and v7-M. A chip
-// with a different MPU (K64F SYSMPU) strong-overrides this; the arch's switch.S calls
-// it by this fixed name after the physical swap.
-void __attribute__((weak)) kickos_arch_mpu_commit(void)
-{
-    uint32_t primask;
-    __asm volatile("mrs %0, primask" : "=r"(primask));
-    __asm volatile("cpsid i" ::: "memory");
-    kickos_arm_mpu_program(g_pend_regions, g_pend_count);
-    __asm volatile("msr primask, %0" ::"r"(primask) : "memory");
-}
 #else
-// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only. The commit
-// symbol must still resolve, as every deferred arch's PendSV epilogue calls it
-// unconditionally.
-void __attribute__((weak)) arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
+// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + SVC only. The stash has
+// no reader, but the apply symbol must still resolve.
+void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     (void)regions;
     (void)n;
 }
-void __attribute__((weak)) kickos_arch_mpu_commit(void) {}
 #endif
-
-size_t __attribute__((weak)) arch_mpu_min_region(void)
-{
-    return 32u; // ARMv6-M / v7-M PMSA min region; a no-MPU chip (nRF51) overrides to 0
-}
-
-// v7-M RASR encodes the size as __builtin_ctz(size) - 1, so only a power of two is
-// expressible. PMSAv8 (base+limit) and SYSMPU override this to 0.
-int __attribute__((weak)) arch_mpu_region_pow2(void)
-{
-    return 1;
-}
-
-// PMSA needs a power-of-two size >= 32 with the base naturally aligned to it: the RBAR
-// base masking in arch_mpu_apply assumes exactly that.
-bool __attribute__((weak)) arch_mpu_region_encodable(uintptr_t base, size_t size)
-{
-    if (size == 0)
-    {
-        return false;
-    }
-    size_t const min = arch_mpu_min_region();
-    if (min == 0)
-    {
-        return (base & 15u) == 0 and (size & 15u) == 0;
-    }
-    if (size < min or (size & (size - 1)) != 0)
-    {
-        return false;
-    }
-    return (base & (size - 1)) == 0;
-}
-
-// Rule 7 bit-band flag (arch.h). The bit-band M4 chips (mk64f, stm32f411, xmc4800)
-// override to 1 so the grant path also refuses a reserved block's alias image. Defined
-// unconditionally: unused where the grant module is not linked (KICKOS_HAVE_MPU=0).
-int __attribute__((weak)) arch_bitband_present(void)
-{
-    return 0;
-}
-
 
 // --- Interrupt controller (NVIC) --------------------------------------------
 void arch_irq_mask(int line)
@@ -408,29 +345,6 @@ void arch_irq_inject(int irq)
     // raise on a masked (disabled) line latches and fires the instant the line is
     // enabled -- write ISPR unconditionally, do not drop.
     reg32(NVIC_ISPR0 + (l >> 5) * 4) = 1u << (l & 31);
-}
-
-// --- Idle / halt ------------------------------------------------------------
-// weak: real silicon halts (WFI) to save power. A QEMU semihosting-clock chip
-// (mps2, nrf51) overrides this to SPIN: QEMU <= 10 freezes the semihosting
-// SYS_CLOCK -- our monotonic clock there -- while the core is in WFI, so a timed
-// sleep with every thread idle would never wake (the clock stops). QEMU 11 fixed
-// it; spinning keeps the clock advancing on the older QEMU the CI runner ships.
-void __attribute__((weak)) arch_idle_wait(void)
-{
-    __asm volatile("wfi");
-}
-
-// weak: mask interrupts and halt. A chip that terminates through a debug channel
-// (mps2/nrf51 semihosting exit) strong-overrides this; bare-metal chips fall through.
-void __attribute__((weak)) arch_shutdown(int status)
-{
-    (void)status;
-    __asm volatile("cpsid i" ::: "memory");
-    while (true)
-    {
-        __asm volatile("wfi");
-    }
 }
 
 // --- Kernel-facing ISR entries ----------------------------------------------

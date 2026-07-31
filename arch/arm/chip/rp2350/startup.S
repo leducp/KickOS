@@ -60,7 +60,8 @@ g_image_def:
 
     .text
     .thumb_func
-    .weak NMI_Handler
+    /* File-local: the vector word above is the only reference, and a chip that wants a
+     * real NMI handler edits this startup.S. */
 NMI_Handler:
     b       .
 

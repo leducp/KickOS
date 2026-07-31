@@ -19,6 +19,11 @@ add_subdirectory(mpu_fault)
 add_subdirectory(rootfault)
 # Root's AUTHORITY narrow (rootfault covers its memory confinement). Self-gated.
 add_subdirectory(rootauth)
+# The CPU privilege RING, the one confinement axis an MPU trap cannot reach (so the only
+# one a no-MPU board can witness). ARM-only and self-gated; see its CMakeLists.
+add_subdirectory(ringpriv)
+# kos_panic on the wire: three images, one per message-pointer class. Self-gated.
+add_subdirectory(panicgate)
 add_subdirectory(sched_exit)
 
 add_subdirectory(selftest)
@@ -35,7 +40,7 @@ add_subdirectory(gpioblink)
 add_subdirectory(fault)
 add_subdirectory(specfault)
 # kos_reboot plumbing witness + the unattended-reflash affordance. Board-agnostic;
-# its ctest arms are the weak-seam targets only (see its CMakeLists).
+# its ctest arms are the declining-fallback targets only (see its CMakeLists).
 add_subdirectory(rebootdemo)
 
 # Per-thread stdout classification regression (M4.3): a root pre-publish printf must

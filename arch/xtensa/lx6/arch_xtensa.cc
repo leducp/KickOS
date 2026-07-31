@@ -448,9 +448,10 @@ void kickos_lx6_fault_report(uint32_t exccause, uint32_t excvaddr,
 }
 
 // --- Tickless clock (CCOUNT) + one-shot timer (CCOMPARE0) --------------------
-// weak: the monotonic clock SOURCE may be overridden by a chip that prefers a
-// 64-bit TIMG timer (avoids the CCOUNT 32-bit wrap); CCOUNT is the default.
-uint64_t __attribute__((weak)) arch_clock_now(void)
+// The CCOUNT read behind the arch_clock_now fallback TU (arch_clock_now_default.cc).
+// The wrap-extend state lives here because kickos_lx6_init resets it, so the fallback
+// cannot own it.
+uint64_t kickos_lx6_ccount_ns(void)
 {
     return cycles_to_ns(now_cycles());
 }

@@ -195,7 +195,7 @@ trap_entry:
 
 /* --- Real device external IRQ (C6: UART0 TX-empty, routed via the interrupt matrix to */
 /* KICKOS_RV_DEV_CPU_INT). Same ISR-context discipline as .Lext; kickos_rv_ext_dispatch_ */
-/* dev acks the level source + runs the device line's ISR (weak no-op off the C6).      */
+/* dev acks the level source + runs the device line's ISR (no-op fallback off the C6).  */
 .Lextdev:
     la      t0, g_isr_depth
     lw      t1, 0(t0)

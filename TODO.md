@@ -69,9 +69,11 @@ master `64410b7` -- rebase before any work in them.
   79b7a37): all four, each with its arithmetic.
 - **Sequencing: M4 driver breadth and M5 SMP wait behind goal 1** (fleet flip,
   `arch_periph_enable`, `kos_cap_narrow`). Both multiply capability and memory complexity on a
-  fleet that still defaults to privileged root, so doing them first widens the surface that goal 1
-  then has to confine. **LANDED** in `roadmap.md` under `## Next` (`m4.5.1: put M4 driver breadth
-  and M5 SMP behind goal 1`, a5fc422).
+  fleet that at the time still defaulted to privileged root, so doing them first would have widened
+  the surface that goal 1 then has to confine. **LANDED** in `roadmap.md` under `## Next`
+  (`m4.5.1: put M4 driver breadth and M5 SMP behind goal 1`, a5fc422). The premise is now DISCHARGED
+  rather than pending: M4.5.6 deleted `KICKOS_ROOT_PRIVILEGED`, so goal 1 holds unconditionally and
+  M4.6's driver work is what comes next.
 - **Selftest tiering (core tier + optional tiers) was to be considered for the two 64 KiB boards --
   but MEASURE FIRST, and the measurement says it is not needed today.** See below.
 
@@ -154,10 +156,14 @@ number: the record and the XMC entry under Blockers below both point at **item 5
    touched, and should not be by a later pass.
 4. ~~**Record the sequencing note** (M4 driver breadth and M5 SMP behind goal 1) in `roadmap.md`.~~
    -- DONE (a5fc422), as a block quote under `## Next`.
-5. **Move the XMC USIC bring-up into the granted driver thread, and add the privileged configure
-   seam it needs for FDR/BRG/CCR.** Both halves, not one: the placement move is necessary and the
-   three PV-write-only stores are a measured hardware refusal -- see the entry under Blockers
-   below. Unblocks `xmcssc` on a flipped board.
+5. ~~**Move the XMC USIC bring-up into the granted driver thread, and add the privileged configure
+   seam it needs for FDR/BRG/CCR.**~~ -- DONE in M4.5.6 (`KOS_SYS_PERIPH_REG_WRITE = 42` /
+   `arch_periph_reg_write`, an exact `(base, offset)` allowlist, possession-gated), both parts:
+   `xmc_spi0_start` now contains zero register access. The three PV-write-only stores were a measured
+   hardware refusal and the seam is witnessed discriminating against them on silicon -- see the entry
+   under Blockers below. It closes the consequence too: `xmcssc` AS A SERVICE is witnessed at
+   `commit 270b6fa` and `kickos_services_xmc4800relax` came off `KICKOS_SERVICE_LIST_ROOT_MMIO`, which
+   is now empty.
 6. **`stm32f103` `arch_mpu_min_region()` override.**
 7. **Re-point `kernel_ctor_placement` at the `cxxtest` ELF** (it is vacuous where it is now; see
    the finding above -- these two are the same problem and can land together).
@@ -416,14 +422,15 @@ triggers `push` only on `master`).
 
 ## `kos_reboot` (reboot-to-bootloader) -- BUILT (2026-07-28)
 
-`KOS_SYS_REBOOT = 38`, `AUTH_SYSTEM`-gated, behind an `arch_reboot` seam whose weak default is
-`-KOS_ENOSYS`. Case, weak symbol, wrapper and app are all inside `KICKOS_ENABLE_SELFTEST`, so a
+`KOS_SYS_REBOOT = 38`, `AUTH_SYSTEM`-gated, behind an `arch_reboot` seam whose fallback
+(`arch/common/arch_reboot_default.cc`) answers `-KOS_ENOSYS`. Case, fallback TU, wrapper and app are
+all inside `KICKOS_ENABLE_SELFTEST`, so a
 production image carries none of it. The decision to share shutdown's bit, and its counter-argument,
 are recorded in `docs/design-unprivileged-root.md` section 9.
 
 Backends: rp2040 `'UB'` -> `_reset_to_usb_boot(0, 0)`; rp2350 `'RB'` -> `reboot` with
 `BOOTSEL | NO_RETURN_ON_SUCCESS`; imxrt1062 `bkpt #251` -> the MKL02 presents HalfKay. Every
-other chip declines through the weak seam. The earlier instruction to read `*(uint8_t*)0x13` and
+other chip declines through the fallback. The earlier instruction to read `*(uint8_t*)0x13` and
 branch on it is **refuted**: both datasheets forbid using that ROM build byte to locate
 functions, and the three magic bytes at `0x10` are the whole validity test they give.
 
@@ -519,15 +526,20 @@ on frdmk64f+blink, no `.bss`).
       unexercised until stage 2 (the `kernel_ctor_placement` vacuity trap).
 
 **Stage 2 -- flip per board**, behind a build-enforced `KICKOS_ROOT_PRIVILEGED` knob (default ON,
-**NOT a weak symbol**: opting out of the boundary must be visible in the board's build, not
+**NOT a weak symbol**: opting out of the boundary had to be visible in the board's build, not
 silently satisfied by a link-time override).
+**The knob NO LONGER EXISTS -- M4.5.6 deleted it and root is now unconditionally
+unprivileged.** Everything in this stage record is dated history: it keeps the name because the name
+is what the stage built, and no item under it describes a posture that is still selectable.
 - [x] **The knob** -- see `m4.5.1: add KICKOS_ROOT_PRIVILEGED, and seat root's authority cap when it
-      is off`. CMake option, always emitted as `0`/`1` (so `#if` is `-Wundef`-clean), printed at
+      is off`. **SUPERSEDED by M4.5.6, which deleted all of it**; recorded as built.
+      CMake option, always emitted as `0`/`1` (so `#if` was `-Wundef`-clean), printed at
       configure time and carried to out-of-tree consumers as a usage requirement of `kickos_core`.
-      OFF creates root unprivileged and seats `CAP_AUTH_ALL` at `KOS_CAP_AUTHORITY` after
-      `thread_create` (which zeroes the TCB) and before `sched::start`. The banner reports the
-      posture on the `mpu` line as a *concatenated literal*, so the default posture adds no string
-      and no runtime branch there. Cost to the no-MPU tight boards, measured against `ed78926`
+      OFF created root unprivileged and seated `CAP_AUTH_ALL` at `KOS_CAP_AUTHORITY` after
+      `thread_create` (which zeroes the TCB) and before `sched::start` -- that seat is unconditional
+      now. The banner reported the posture on the `mpu` line as a *concatenated literal*, so the
+      default posture added no string and no runtime branch there; with one posture the literal
+      became a constant and M4.5.6 removed it. Cost to the no-MPU tight boards, measured against `ed78926`
       rather than assumed: f302nucleo+selftest **-4 B** of text, bluepill-c8+selftest **+8 B**. Not
       byte-identical, as first claimed here: the `+8` is `syscall_thread.cc` calling
       `cap_check_authority` where it read `Thread::privileged`, and the `-4` is one store dropped
@@ -542,7 +554,9 @@ silently satisfied by a link-time override).
 - [x] **`xmc4800-relax` FLIPPED and witnessed on silicon.** Console-only service list added
       (`kickos_services_xmc4800relax_console`), selected automatically for the flipped posture;
       `KICKOS_SERVICE_LIST_ROOT_MMIO` makes the combined list a **configure-time `FATAL_ERROR`** in
-      that posture rather than a dark board. Evidence in `docs/reference/boards.md`. The A/B was
+      that posture rather than a dark board. (M4.5.6 lifted that listing: the combined list is the
+      default again and the board is witnessed running it. The list itself stays, empty.)
+      Evidence in `docs/reference/boards.md`. The A/B was
       **re-captured post-rebase at `22e1c5a`**, so it witnesses the rebased combination of stage 2
       with the kernel-audit batch, not just the pre-rebase branch.
 - [x] **Re-witness the tip on silicon: DONE 2026-07-28 at `75227d4`.** The XMC A/B re-run plus
@@ -576,26 +590,33 @@ silently satisfied by a link-time override).
       `k64uart` + SPI `k64dspi`), where every other flipped board is console-only or serviceless:
       `selftest` `1..65` `# all tests passed (2 skipped)`, and `rootfault` denies root's cross-domain
       write (`SYSMPU ISOLATION FAULT: port=3 addr=0x2001a000 master=0 W EDR=0x80000003`,
-      `CFSR=0x400`, `HFSR=0x40000000`). Skips are `mpu_privileged_guard` (posture) and
+      `CFSR=0x400`, `HFSR=0x40000000`). Skips were `mpu_privileged_guard` (posture) and
       `mutex_deadlock # SKIP pool too small` (pre-existing, `docs/reference/boards.md`). Root writes
       no MMIO at all on this board now. Evidence in `docs/reference/boards.md`.
+      **The skip count is now 1, not 2**: M4.5.6 retired `mpu_privileged_guard`, re-witnessed on this
+      same board and same full service list on 2026-07-30 (`# skipped: 1`).
 - [x] **Per-board gate, and what it actually cost.** Both halves met on `xmc4800-relax` silicon
       under PMSAv7. But the gate as worded is not reachable by the *unmodified* suite, and the
       reasons are worth keeping:
       - The cross-domain half needed a **new** app. `apps/mpu_fault` confines a spawned CHILD and
         says nothing about root; nothing covered root, the thread that runs the ctors, the bring-up
-        and `main`. `apps/rootfault` does, and is discriminating in both postures (privileged root
-        completes the write and says so), so the fault is evidence rather than a symptom.
+        and `main`. `apps/rootfault` does, and it was discriminating in both postures (privileged root
+        completed the write and said so), so the fault is evidence rather than a symptom. With one
+        posture left the discriminating pair is gone, but the app is now stronger where it counts: it
+        is an ALWAYS-BUILT gate on six images as of M4.5.6, having previously registered in none.
       - The selftest half cost **2 skips** when this was written, named on the wire
         (`irq_as_event`, `mpu_privileged_guard`), so a flipped image did **not** satisfy the
         selftest gate. Both halves are now closed, and the split is worth keeping because the two
         skips had different causes. `irq_as_event` was a missing capability, not a posture cost:
         `kos_mem_self_grant` lets root ask for the page it allocated, so it **runs** in both
-        postures. Only `mpu_privileged_guard` is genuinely posture-driven -- its subject is the
+        postures. Only `mpu_privileged_guard` was genuinely posture-driven -- its subject was the
         privileged posture. The gate now takes an expected-skip list **by name**
         (`EXPECT_SKIPS`) instead of a count, since a budget of 2 would have admitted any 2 skips
-        rather than these 2. Measured after both: flipped `sim` skips exactly
+        rather than these 2. Measured after both: flipped `sim` skipped exactly
         `mpu_privileged_guard`, 59/60 run.
+        **`mpu_privileged_guard` is RETIRED as of M4.5.6**, so neither skip is posture-driven any
+        more and the `EXPECT_SKIPS` list has no posture-dependent entry left. Nothing above changes
+        as a record; it just no longer describes a live cost.
 - [x] **`kos_ram_alloc` grants its caller nothing, which left it near-useless to an unprivileged
       root.** Allocation and grant are separate acts: a region becomes reachable by being handed to
       a spawn, so an `AUTH_MEMORY` holder could allocate a page and then not touch it. A privileged
@@ -609,8 +630,8 @@ silently satisfied by a link-time override).
       `t_selfgrant` (returning `-KOS_EPERM` fails the test; accepting silently faults the worker).
 
 **Stage 3 -- the blocked bring-up bodies. COMPLETE** (2026-07-29, `127efb5`).
-- [x] **Added `arch_periph_enable(uintptr_t base)`**, weak `-KOS_ENOSYS` in
-      `kernel/time/clock_select.cc`, covering "ungate the clock and drop the bus-side
+- [x] **Added `arch_periph_enable(uintptr_t base)`**, `-KOS_ENOSYS` fallback (then in
+      `kernel/time/clock_select.cc`, now `arch/common/arch_periph_enable_default.cc`), covering "ungate the clock and drop the bus-side
       supervisor-protect for the block at this base". Syscall `KOS_SYS_PERIPH_ENABLE = 39`, wrapper
       `kos_periph_enable`. Backends: mk64f (UART0, DSPI0) and stm32f411 (SPI1, clock gate only --
       that bus exposes no privilege-classification register in this tree). ESP32-C6 and RX72M
@@ -722,21 +743,26 @@ silently satisfied by a link-time override).
 - [x] **Gate: the selftest `authority_cap` narrow arms** -- the worker drops its only authority and
       the gate that had just answered for it returns `-KOS_EPERM`, plus the non-authority-cap
       refusal. In-env on every target, sim included. The ROOT narrow has no in-env carrier, so it was
-      witnessed by deleting `AUTH_CONSOLE` from `initdemo`'s declaration: `console_publish` then fails
-      from root on `qemu` at `KICKOS_ROOT_PRIVILEGED=OFF`, and the identical source passes at `ON`.
-      That pair is also what proves the per-app override actually overrides.
+      witnessed by deleting `AUTH_CONSOLE` from `initdemo`'s declaration: `console_publish` then failed
+      from root on `qemu` at `KICKOS_ROOT_PRIVILEGED=OFF`, and the identical source passed at `ON`.
+      That pair is also what proves the per-app override actually overrides. **Not re-runnable as
+      described**: M4.5.6 deleted the knob, so the `ON` half of that A/B no longer builds; `rootauth`
+      below is the carrier that replaced it.
 
 Opened by stage 4:
 - [x] **The ROOT narrow has an automated test: `user/apps/common/rootauth`** (M4.5.5). A diagnostic
-      app declaring `AUTH_MEMORY | AUTH_SYSTEM | AUTH_PINMUX`, registered in BOTH postures and
-      discriminating on identical source via `#if KICKOS_ROOT_PRIVILEGED`: four arms flipped, three
-      privileged. The arm that matters is the first -- it asserts `pinmux_set` is NOT `-KOS_EPERM`,
+      app declaring `AUTH_MEMORY | AUTH_SYSTEM | AUTH_PINMUX`. As written for M4.5.5 it registered in
+      BOTH postures and discriminated on identical source via `#if KICKOS_ROOT_PRIVILEGED` -- four arms
+      flipped, three privileged. **M4.5.6 deleted that condition with the knob**: there is one posture,
+      so the app is now five arms on one path, and it gained a `microbit` gate.
+      The arm that matters is still the first -- it asserts `pinmux_set` is NOT `-KOS_EPERM`,
       and `AUTH_PINMUX` is a bit the fallback mask does **not** carry, so **a silently-ignored
       `KICKOS_APP_AUTHORITY` override now fails a gate**. Asserting some MISSING bit is refused would
       not have done it: the fallback lacks those too, so that arm passes with the declaration
       ignored. Verified by mutation -- neutralising the declaration turns arm 1 red while the other
-      three stay green. Gated on sim (both postures), `qemu`/`qemu-m33` flipped, and the standing
-      privileged qemu/qemu-riscv runs.
+      arms stay green. Gate set as of M4.5.6, with the posture condition gone: the sim, the QEMU MPS2
+      boards, `qemu-riscv`, and the new `microbit_rootauth`, which is the first no-ring carrier.
+      `PASS` on `frdmk64f` silicon 2026-07-30.
 - [ ] **The `CAP_AUTHORITY` delegation refusal has zero test coverage, and cannot easily get any.**
       `syscall_thread.cc` refuses the type ahead of the `CAP_TRANSFER` check, but an authority cap
       always carries `rights == 0`, so the older check refuses the same delegation with the same
@@ -753,9 +779,12 @@ Opened by stage 4:
       (`rootauth` and `rootfault` both register there). The checker's arms were verified individually
       against crafted streams, including the anti-vacuity count/name cross-check.
 - [x] **DECIDED: `Debug` is not a supported configuration on the 64 KiB boards** (M4.5.5). It is not
-      an `f302nucleo` regression and not stage 4's -- it is the whole 64 KiB class, measured on this
-      branch: `f302nucleo-st` overflows FLASH by **5,120 B** and `bluepill-c8-st` by **4,884 B**,
-      while the same `f302nucleo-st` image at `-Os` has **12.9 KiB free** (52,660 B of 65,536).
+      an `f302nucleo` regression and not stage 4's -- it is the whole 64 KiB class. Re-measured at
+      `c5d9b0d`: `f302nucleo-st` overflows FLASH by **7,920 B** and `bluepill-c8-st` by **7,692 B**,
+      `selftest` being the ONLY image that fails to link on either board, while the same
+      `f302nucleo-st` image at `-Os` has **10,592 B free** (54,944 B of 65,536). Those figures read
+      5,120 / 4,884 / 12.9 KiB in M4.5.5 and move with every milestone that grows the suite, so
+      re-measure rather than quoting them.
       Debuggability is not what is being given up: `MinSizeRel` carries `-g` (`CMakeLists.txt`), so
       those boards keep full symbols and lose only `-O0`. **No gate is added** -- a gate for an
       unsupported configuration is noise, and the existing failure is already loud and names the
@@ -776,9 +805,15 @@ Carried over from the old plan, untouched by this design:
 - [ ] **Move app bring-up into the service lists**, so an app is started the way a driver is.
 
 Blockers and limits:
-- **One service bring-up body still pokes MMIO directly from root** --
+- **One service bring-up body used to poke MMIO directly from root -- CLOSED by M4.5.6's
+  `arch_periph_reg_write` seam, and `xmc_spi0_start` now contains zero register access.** The
+  consequence is discharged too: `kickos_services_xmc4800relax` came OFF
+  `KICKOS_SERVICE_LIST_ROOT_MMIO` (which is now empty), `xmc4800-relax` defaults to its full service
+  list under enforcement, and `xmcssc` AS A SERVICE is WITNESSED -- both driver banners on the wire
+  at `commit 270b6fa`, no dark board. Recorded in full under M4.5.6. The analysis below is kept
+  because it is what the seam had to satisfy.
   `system/driver/xmc4800/xmcssc/xmcssc.cc:281-324` (USIC kernel clock, baud, protocol) -- on
-  `xmc4800-relax`, the enforcement flagship. The two K64F bodies are **retired by stage 3**:
+  `xmc4800-relax`, the enforcement flagship. The two K64F bodies were **retired by stage 3**:
   `system/driver/mk64f/k64uart/k64uart.cc` (AIPS PACR) and
   `system/driver/mk64f/k64dspi/k64dspi.cc` (clock gates, pin mux, GPIO, DSPI config) each call
   `arch_periph_enable` from the driver thread that holds the window. Stage 3 does **not** cover the
@@ -799,27 +834,42 @@ Blockers and limits:
   garbling the UART); that was **invalid inference** -- the scrambler also writes SCTR/TCSR/PCR (`U,PV`) and
   gates `KSCFG`, any one of which garbles the UART on its own. Also corrected: Table 18-20 marks
   exactly three registers `Write = PV` (FDR, BRG, CCR); `INPR` is `U,PV` and its earlier inclusion
-  was a transcription slip (untested here). **Now enforced
-  at configure time** (`KICKOS_SERVICE_LIST_ROOT_MMIO`) rather than left to fail on the hardware:
-  pairing such a list with `KICKOS_ROOT_PRIVILEGED=OFF` is a `FATAL_ERROR`, because the runtime
-  failure is a fault mid-bring-up *after* the console has been relinquished, i.e. a silent dark
-  board. The XMC flip drops `xmcssc` from the image entirely instead of linking it and not calling
-  it.
-- **A published console silences an app's own diagnostics** -- `kos_print` hands bytes to the kernel
-  console, and `console_emit` drops all of them once the UART is `USER_OWNED`. Found on silicon: the
-  first `rootfault` capture held a fault dump with nothing to check it against, and `mpu_fault`'s
-  captures had been marker-only on every service-list board. Fixed for both via
-  `kickos::emit` (`user/include/kickos/sys/emit.h`), which is the **third** copy of the
-  try-index-0-then-fall-back policy (`tests/tap/tap.cc`, libc `_write`). The open question of which
-  other worker-printing diagnostics share the problem is **answered: `pvprobe` and `inprstorm` do**
-  -- filed below.
+  was a transcription slip (untested here). It was **enforced
+  at configure time** (`KICKOS_SERVICE_LIST_ROOT_MMIO`) rather than left to fail on the hardware,
+  because the runtime failure is a fault mid-bring-up *after* the console has been relinquished, i.e.
+  a silent dark board. **The condition is now `KICKOS_HAVE_MPU`, not the posture** -- M4.5.6 deleted
+  the posture, and the substitution is the right one on its own merits: with the MPU off an
+  unprivileged root DOES reach MMIO (measured), so the gate's subject is enforcement. The XMC listing
+  is lifted, so the enforcement image links AND calls `xmcssc`; the empty list and its gate remain for
+  the next board whose bring-up writes MMIO from root.
+- **A published console drops `kos_print`, and there is a real dark window** -- narrower than this
+  entry used to claim, and the narrowing is the point. What drops is the KERNEL bring-up path:
+  `kos_print` / `kos_kconsole_write` hand bytes to the kernel console, and `console_emit` drops all of
+  them once the UART is `USER_OWNED` (RTT still carries them where it is built in). **`printf` and
+  `std::cout` do NOT drop.** THREE publish-aware writers exist and are kept in step
+  (`user/include/kickos/sys/emit.h:11-12`): `kickos::emit()`, `tests/tap/tap.cc`'s `emit()`, and libc
+  `_write` (`user/src/newlib_stubs.cc:19-59`, which tries `kos_send` on cap 0 and falls back for the
+  remainder). So a user app on the standard APIs reaches a published console driver, and this is NOT a
+  reason to hold USB CDC or anything else. Corroborated on silicon 2026-07-30: `frdmk64f` on its
+  published full service list carries `# tap route: stdout endpoint -> console driver (service list
+  published)` and still delivers its whole selftest, against `pizero2350`'s
+  `# tap route: kernel debug console (stdout not published)`.
+  Two real things remain. A freestanding app that uses `kos_print` instead of the publish-aware writer
+  loses its output -- found on silicon: the first `rootfault` capture held a fault dump with nothing to
+  check it against, and `mpu_fault`'s captures had been marker-only on every service-list board, both
+  fixed via `kickos::emit`. The open question of which other worker-printing diagnostics share it is
+  **answered: `pvprobe` and `inprstorm` do** -- filed below. And there is a genuine DARK WINDOW between
+  the publish and the driver actually serving cap 0 (`k64uart.cc:209`, `xmcuart.cc:179`), which is
+  ordering rather than a writer choice and is owned by M4.6.1.
 - **The panic-path UART reclaim clips bytes in flight.** `kpanic_enter` takes the UART back from the
   userspace driver so the report always reaches the wire, which works, but on `xmc4800-relax` it
   reproducibly garbles roughly the last 8 bytes the driver had queued (the polled TX word pending in
   `TBUF0`). Cosmetic for a terminal report, but it eats the tail of the line preceding the dump.
-- **`bluepill-c8` and `f302nucleo` are held by the absence of a RING-ARM witness, not by RAM or
-  handles.** `f302nucleo` now has silicon: `hello` and `stress` both pass at 2 KiB of heap
-  (`docs/reference/boards.md`). What is unwitnessed is the ring arm, and no prober app exists.
+- **`bluepill-c8` and `f302nucleo` were held by the absence of a RING-ARM witness, not by RAM or
+  handles -- and `f302nucleo` has now TAKEN it.** `ringpriv` reports `PASS (5 arms)` there on real
+  no-MPU armv7m silicon (M4.5.6, `commit 270b6fa-dirty`); `hello` and `stress` also pass at 2 KiB of
+  heap (`docs/reference/boards.md`). `bluepill-c8` remains unwitnessed on the ring arm, but the prober
+  now exists, so what it needs is a board and not code.
   Both are armv7m, so the flip's mechanism (`ctx.npriv` in the fabricated first frame) is present;
   neither part has an MPU (`stm32f103` none, and `f302nucleo` is the R8 `x8` line, which has none
   either), so stage 2's gate -- selftest green *under enforcement* plus a cross-domain `rootfault`
@@ -852,8 +902,9 @@ Blockers and limits:
 ## M4.5.5 -- MPU region-encoding classes
 
 Ordered after stage 4 (`kos_cap_narrow`) and before the `KICKOS_ROOT_PRIVILEGED` deletion, but
-**not a blocker for it** -- the knob goes away on the strength of the flip, not of region shaping.
-One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows it.
+**not a blocker for it** -- the knob went away on the strength of the flip, not of region shaping,
+and it is gone as of M4.5.6. One general fleet re-witness pass closes the step; it comes due with
+the rest of the bench debt under M4.6.3..N.
 
 - [x] **DONE: the alloc/MPU seam has a third region-encoding mode.** `arch_ram_region_size`
       (`arch/include/kickos/arch/arch.h:263`) and `arch_ram_region_align` (`:302`) now branch on a
@@ -880,16 +931,19 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
       `kickos_arch_*`/`kickos_chip_*`. The old regex also read `return 32 + 0;` as `32`; a trailing
       `;` is now required, and the match is anchored on a non-identifier boundary.
       Witness: selftest `region_mode` reports the observed shaping per board (96 B reserved for a
-      3-granule request on PMSAv8, 12288 on the sim, 32 on PMP NAPOT). Gates: sim 13/13, sim flipped
-      14/14, `qemu` 11/11, `qemu-m3` 9/9, `qemu-m7` 10/10, `qemu-m33` 10/10 (12/12 under enforce),
-      `qemu-riscv` 8/8, microbit 5/5, plus the flipped arms `qemu` 14/14 and `qemu-m33` 13/13.
+      3-granule request on PMSAv8, 12288 on the sim, 32 on PMP NAPOT). Gates as counted at the time:
+      sim 13/13, sim flipped 14/14, `qemu` 11/11, `qemu-m3` 9/9, `qemu-m7` 10/10, `qemu-m33` 10/10
+      (12/12 under enforce), `qemu-riscv` 8/8, `microbit` 5/5, plus the flipped arms `qemu` 14/14 and
+      `qemu-m33` 13/13. Those flipped arms no longer exist (M4.5.6 deleted them); for the current
+      fleet tally see the M4.5.6 gate count below.
       **What `region_mode` does and does NOT pin.** Its first shape asserted only
       `step == 3g or step == 4g`, with both the allocator and the expectation derived from the same
       `arch_mpu_region_pow2()` call -- a tautology that passed under either shaping. It now compares
       the observed step against `KICKOS_MPU_MIN_REGION_CFG` / `KICKOS_MPU_REGION_POW2_CFG`, the two
       literals `cmake/boot_arena.cmake` scraped at configure time, so it catches the allocator's
-      shaping diverging from the declared mode, and scrape-vs-link resolution divergence (weak/strong
-      precedence, or a definition behind an `#if` the textual scrape cannot see). Demonstrated to
+      shaping diverging from the declared mode, and scrape-vs-link resolution divergence (a
+      definition behind an `#if` the textual scrape cannot see; the weak/strong precedence the scrape
+      used to reimplement is gone with M4.5.7). Demonstrated to
       bite: disabling the granular branch turns it `not ok`, where the disjunction stayed green.
       It **cannot** catch a wrong literal in a backend: CMake scrapes the same `.cc` the link
       resolves, so flipping `chip_mk64f.cc`'s `return 0;` moves the macro and the runtime together.
@@ -919,8 +973,10 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
         `stm32f302` override to 0 as well (`6d49e14`), so this item covers only the class that
         remains: a granule that is right while the MODE is wrong.
       **For PMSAv8 the `min_region` VALUE of 32 is correct; the MODE is wrong.** 32 is the PMSAv8
-      granule, which is why `arch/arm/common/arch_arm_pmsav8.cc:156` deliberately keeps the weak
-      32 and overrides encodability alone. `mk64f` is the same shape: it overrides
+      granule, which is why `arch/arm/common/arch_arm_pmsav8.cc` deliberately leaves
+      `arch_mpu_min_region` to its fallback's 32 and defines encodability alone -- that member being
+      anchored by the `kickos_arm_pmsav8_init` call from `chip_rp2350.cc`. `mk64f` is the same shape:
+      it defines
       `arch_mpu_region_encodable` (`arch/arm/chip/mk64f/chip_mk64f.cc:559`) and nothing on the
       size/align path, so it still gets power-of-two shaping. That distinction is what makes this
       ONE seam change rather than a set of per-chip patches.
@@ -947,7 +1003,12 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
       **What does not transfer, and must be re-captured:** fault addresses, disassembly offsets,
       symbol sizes, stack-depth observations, and every timing figure -- the bench numbers, and
       `inprstorm`'s measured ~37,700 ISR invocations/second
-      (`user/apps/xmc4800-relax/inprstorm/main.cc:25`). Least transferable of all: `pvprobe`'s
+      (`user/apps/xmc4800-relax/inprstorm/main.cc:25`). **That figure is distrusted for a SECOND,
+      independent reason**, recorded under M4.5.6's `inprstorm` item: it was one operating point, and
+      the FIFO-storm profiles replaced it with a structural bound (`min(fill, drain)`), which no
+      re-measurement can move. So the toolchain caveat here and the operating-point caveat there are
+      separate; the M4.5.6 captures were already taken `MinSizeRel`, which settles this one for that
+      app but not for the rest of the list. Least transferable of all: `pvprobe`'s
       privileged-write measurements, whose whole subject is whether an individual store lands.
       **What stands:** `bluepill-c8-st` and `f302nucleo-st`. The deleted two-board holding measure
       already built those two `-Os`, and their `.text` is byte-identical under `MinSizeRel`.
@@ -960,8 +1021,9 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
       reason and none of them justifies a separate bench trip:
         - The UART-FIFO drain on the reboot path (`arch_console_flush_sync` before `arch_reboot`,
           `kernel/syscall/syscall.cc:389`). Only `mk64f` and `xmc4800` implement the seam and
-          neither has an emulator gate, so the sim and QEMU gates exercise only the weak no-op
-          (`kernel/init/console.cc:347`) -- the truncation fix itself has never run against a real
+          neither has an emulator gate, so the sim and QEMU gates exercise only the no-op fallback
+          (`arch/common/arch_console_flush_sync_default.cc`) -- the truncation fix itself has never
+          run against a real
           UART.
         - `dev_window_exclusive` and `bus_device_slots`: both postdate every silicon capture, so no
           chip has ever run them. Already recorded under the five-apps DEV-window item below.
@@ -975,8 +1037,359 @@ One general fleet re-witness pass closes the step; M4.6 (consoles/UART) follows 
           root starting unprivileged, the ctors and `main` running, selftest green. That is a
           declared objective of the pass, not a by-product. It is NOT the stage-2 enforcement gate,
           which no MPU-less part can meet (see the `bluepill-c8` / `f302nucleo` bullet above).
+          **Taken early, in M4.5.6**: `f302nucleo` witnessed the no-MPU claim (`selftest` `1..63` all
+          passing) and the RING arm besides. What it still owes this pass is its fault-reporter root
+          cause, which is a separate open item and blocked on a replug.
 
-## M4.5.6 -- remove the weak-symbol seam mechanism
+## M4.5.6 -- delete `KICKOS_ROOT_PRIVILEGED` -- and M4.5.7 -- remove the weak-symbol seam mechanism -- BOTH COMPLETE (2026-07-31)
+
+**TWO cleanup sub-milestones, in this order. BOTH ARE DONE**, six commits on
+`unpriv-root-stage5`, not yet merged and shipping as one PR. M4.5.6 -- deleting the
+`KICKOS_ROOT_PRIVILEGED` posture knob -- is four commits; M4.5.7 -- removing the weak-symbol seam
+mechanism -- is the two at the tip. The order was
+not a preference: the knob deletion removes a posture and every `#if` branch behind it, so the seam
+pass edited a one-posture tree instead of two. Both are foundation work ahead of M4.6 and
+neither is a driver feature. Next is **M4.6.1 -- IRQ + console visibility**.
+
+**Half one -- delete the `KICKOS_ROOT_PRIVILEGED` knob. COMPLETE** (2026-07-30/31, MinSizeRel, three
+commits on `unpriv-root-stage5`: `c5d9b0d` -> `270b6fa` -> `124b68c`, NOT merged). The first
+inventory below was written at `c5d9b0d` and has been corrected against the two later commits.
+**Capture hygiene, recorded because this milestone broke its own rule.** It wrote down "commit before
+a witness pass" and then took most of the later captures at `270b6fa-dirty` or `2fc7799-dirty`
+instead of at a committed tip. Only `b4-fault.log` and `b4-ringppb.log` stamp `124b68c`; the `b2-*`
+set stamps a clean `270b6fa`. A `-dirty` stamp names the tree it was taken from, not a reproducible
+one, so those captures cannot be re-derived from history.
+
+- [x] **`KICKOS_ROOT_PRIVILEGED` is DELETED, not defaulted OFF.** Root is unconditionally
+      unprivileged on every board: `ThreadAttr::privileged` now defaults `false`, and the
+      `cap_seat_authority(&g_root_tcb, CAP_AUTH_ALL)` seat in `kmain` is UNCONDITIONAL rather than
+      sitting behind an `#if` -- with no ring to short-circuit `cap_check_authority`, an unseated
+      root would fail every authority gate including its own shutdown. The banner's
+      `", root unprivileged"` suffix went with it: under one posture that suffix is a constant, so
+      it carried zero information. The suffix-free banner is **observed** on `xmc4800-relax`,
+      `frdmk64f` and `pizero2350`, but that is evidence about the IMAGE, not the POSTURE -- it proves
+      only that those boards ran the new banner code, and since the whole argument for deleting the
+      suffix is that it conveyed nothing about posture, its absence conveys nothing either. Calling
+      that "witnessed on three boards" was circular. **The posture witnesses are two `rootfault`
+      captures**, both at `c5d9b0d`: `frdmk64f`, where `chip_mk64f.cc` keeps SYSMPU `RGD0` at
+      supervisor `rwx` so the isolation fault is unreachable from a privileged root, and
+      `pizero2350` (precise MemManage, `MMFAR=0x20025020 CFSR=0x82`). Plus the named-skip delta
+      below.
+
+      **The name appears in NO code or build file at all.** `270b6fa` deleted the removed-knob
+      configure guards along with `KICKOS_SCRAMBLE_TEST`'s, so a `grep` over
+      `*.txt *.cmake *.h *.cc *.json *.in *.sh` returns zero hits. Consequence, and it is a
+      deliberate trade rather than an oversight: a stale `-DKICKOS_ROOT_PRIVILEGED=...` is
+      **silently ignored** on an in-tree configure AND on an out-of-tree consumer configure, with
+      nothing but CMake's generic unused-variable warning to show for it. There is no recovery
+      incantation to run, because there is no guard left to clear. The docs still discuss the name
+      historically, so "anywhere in the tree" would be false. `master` still defaults the knob `ON`,
+      which is why every record taken there says so.
+- [x] **The deletion exposed a REAL defect on the panic path, fixed by a new ungated syscall:
+      `KOS_SYS_PANIC = 41` / `kos_panic`.** `kmain`'s `kos_shutdown(status);
+      KICKOS_UNREACHABLE(...)` tail called `kpanic` DIRECTLY, and after the flip that call runs in
+      root's UNPRIVILEGED frame. It is reachable, not theoretical: an app declaring a
+      `KICKOS_APP_AUTHORITY` without `KOS_AUTH_SYSTEM` has its `kos_shutdown` refused, and if it
+      then returns from `main` the unreachable arm runs. **Measured faulting three ways, with the
+      diagnostic LOST every time** -- the worst possible shape for a path whose only job is to
+      report. The kernel now panics kernel-side with the caller's message, so the report survives.
+      Two implementation constraints, kept because neither is visible at the call site:
+        - **Userspace pointer validation reuses the existing `thread_spawn` name-copy pattern**
+          rather than inventing a second one: a panic message is the same untrusted-pointer problem
+          as a thread name.
+        - **The 64-byte message buffer lives in a `noinline` helper.** A syscall runs on the
+          CALLER'S stack, and GCC allocates the union of ALL dispatch arms' locals at function
+          entry, so a buffer written inline in one arm charges every syscall on every thread for it.
+- [x] **`mpu_privileged_guard` / `t_mpu_guard` and the `SKIP_TEST_IF_ROOT_UNPRIVILEGED` macro are
+      RETIRED.** Post-deletion its registration condition and its skip condition were both exactly
+      `KICKOS_HAVE_MPU`, so **it skipped in 100% of the builds where it existed** -- the
+      guard-that-asserts-nothing class this file already tracks, in its terminal form. The premise
+      is unreachable as well: the test needs a PRIVILEGED thread to run it, and the only privileged
+      thread left is `idle`, which runs no tests. `rootfault` makes the stronger claim on the same
+      subject and runs for real. **Confirmed on silicon rather than only by reading**: `frdmk64f` on
+      its full service list (`k64uart` + `k64dspi`) went `# skipped: 2` (`mutex_deadlock` +
+      `mpu_privileged_guard`) to `# skipped: 1`, 66 cases and 65 ok, the surviving skip being
+      `ok 18 - mutex_deadlock # SKIP pool too small` -- the pre-existing `KICKOS_MAX_THREADS`
+      constraint already recorded in `docs/reference/boards.md`. **What carries that inference is
+      that both runs NAME their skips on the wire, not the totals**: the plan count held at 66 for an
+      unrelated reason (a case was added in the same milestone) and has since moved to 67, so compare
+      the named transcripts and never the numbers. This also resolves the M4.5.5 open question --
+      `master` defaults `KICKOS_ROOT_PRIVILEGED=ON`, so those rows ran PRIVILEGED and the guard RAN
+      rather than skipping, which reconciles all three counts. The `EXPECT_SKIPS` list loses its
+      posture-dependent entry too.
+- [x] **`rootfault` is now an always-built gate on SIX in-env images** -- `sim`, `qemu`, `qemu-m3`,
+      `qemu-m7`, `qemu-m33`, `qemu-riscv`. It previously registered in **no default build at all**:
+      it needed the flipped posture, which only hand-runs and the duplicate CI arms provided. The
+      count is SIX and not five because `KICKOS_HAVE_MPU` is 1 by arch on the sim, so the sim
+      registers it as well.
+      Re-witnessed on `frdmk64f` post-deletion:
+      `SYSMPU ISOLATION FAULT: port=3 addr=0x20015140 master=0 W EDR=0x80000003`, reported via an
+      IMPRECISE bus fault (`CFSR=0x400 HFSR=0x40000000`), which is how SYSMPU reports.
+- [x] **`rootauth` is newly gated on `microbit` (`microbit_rootauth`), which closes the no-ring
+      authority gap.** `Thread::privileged` is a software field, so `cap_check_authority` stops
+      short-circuiting on a part with no ring split -- the authority logic is testable there even
+      though the CPU-mode boundary is inert. With the knob gone the app also loses its
+      `#if KICKOS_ROOT_PRIVILEGED` discrimination and is one posture's five arms on identical
+      source; it reports `PASS` on `frdmk64f` silicon.
+      **REMAINING GAP, recorded rather than papered over: `esp32-wroom` could NOT get a run gate.**
+      Upstream QEMU models no ESP32 machine, so no board-to-machine mapping is constructible and the
+      Xtensa no-ring case has no in-env carrier at all.
+- [x] **The two duplicate CI arms are deleted** -- `ci.yml`'s `build/sim-flip` and the
+      `build/$b-flip` loop. Measured before deleting rather than after: `rootfault` was the only
+      test they carried that the base arms lacked, and the base `KICKOS_HAVE_MPU=1` arms now
+      register it themselves, so the arms were paying two extra toolchain builds for nothing. The
+      same pass gives `qemu-riscv-mpu` a `qemu_riscv_rootfault` -- **a gate CI had never run.**
+- [x] **`KICKOS_SERVICE_LIST_ROOT_MMIO`'s `FATAL_ERROR` is re-conditioned on `KICKOS_HAVE_MPU`, not
+      on the posture.** With the knob gone the posture is no longer a variable, but the substitution
+      is deliberate and not mechanical: **with the MPU off, an unprivileged root DOES reach MMIO** --
+      a cross-domain write completed on a non-MPU qemu image, measured -- so the gate's real subject
+      was always ENFORCEMENT and the condition now says so. **The list is then EMPTIED in `270b6fa`**
+      once `xmcssc` as a service was witnessed, so no service list is refused today. The variable and
+      its gate stay for the next board whose bring-up writes MMIO from root, because that failure is
+      silent and total.
+- [x] **`consoledemo -DKICKOS_SCRAMBLE_TEST=ON` is restaged as a standalone app, `conreclaim`,
+      registered only when `KICKOS_SERVICE_LIST=kickos_services_none`. THE `KICKOS_SCRAMBLE_TEST`
+      OPTION NO LONGER EXISTS** -- any doc still naming it is stale. The split was forced by a
+      premise conflict rather than chosen: U0C0 admits exactly ONE holder, the scrambler has to be
+      it, and `consoledemo` exists to demonstrate the `xmcuart` handover, which needs `xmcuart` to
+      be that holder. Two mutually exclusive premises behind one option in one ELF. Separating them
+      costs nothing, because the property under test -- `arch_console_reclaim` repairs a garbled
+      UART from the panic path -- does not depend on WHO garbled the UART. The remedy this replaces
+      is corrected in place under the five-apps DEV-window item below. It carries **no CTest gate**,
+      and cannot: the verdict is an operator reading the panic banner on silicon, XMC has no QEMU
+      model, and the sim cannot reproduce the fault.
+- [x] **A second privileged-write seam: `KOS_SYS_PERIPH_REG_WRITE = 42` / `arch_periph_reg_write`,
+      class 2 of the family `arch_periph_enable` opened.** This is what unblocks the XMC bring-up
+      body recorded under *Blockers and limits* above. Every part of its shape is a decision:
+        - **POSSESSION-gated, NOT authority-gated**, the same shape as `arch_periph_enable`: the
+          caller must hold a live DEV window based EXACTLY at the block base.
+        - **Granularity is an exact `(base, offset)` ALLOWLIST per chip**, never per block. A
+          per-block entry would hand back precisely what the silicon withholds, which turns the seam
+          into a privilege-escalation primitive keyed on a grant.
+        - **Refusals**: `-KOS_EPERM` for possession, `-KOS_EINVAL` off-allowlist, `-KOS_ENOSYS`
+          where the chip has no backend.
+        - **The default decline uses the LONE-TU pattern**
+          (`arch/common/arch_periph_reg_write_default.cc`, exactly one symbol), **not** a weak
+          symbol -- which M4.5.7 then made the mechanism for EVERY seam in the tree. The XMC
+          definition deliberately sits in the always-anchored `chip_xmc4800.cc`. That anchoring, not
+          any duplicate-definition error, is the guarantee: reversing the rescan group was MEASURED
+          to resolve correctly anyway, and a definition in an unreferenced TU silently DECLINES with
+          zero diagnostics. Leg 2 of `seam_defaults` is what enforces it.
+        - **XMC allowlist**: U0C1 `FDR` `0x010`, `BRG` `0x014`, `CCR` `0x040` -- the three registers
+          the XMC4800 reference manual marks `Write = PV` (RM V1.3, Table 18-20). U0C0 has NO entry:
+          the kernel owns the console channel's baud and enable, and an absent entry is a refusal.
+        - **A PER-ENTRY VALUE MASK, added in `270b6fa`.** An address-only allowlist hands back every
+          bit of a register the bus withholds whole, so each entry carries the only bits it may set:
+          `(value & ~mask) != 0` is refused `-KOS_EINVAL` before the store. The value is REFUSED
+          WHOLE and never trimmed -- the seam does no masking and no read-modify-write, because a
+          silently dropped configuration bit is exactly what the consumers' read-back exists to
+          catch. On `xmc4800` (`arch/arm/chip/xmc4800/chip_xmc4800.cc:362-381`): `CCR` grants
+          `MODE[3:0] | RIEN | AIEN`, 6 bits of 32, with `RIEN`/`AIEN` deliberate because `xmcssc`
+          arms them last, and WITHHOLDS `TBIEN`, `HPCEN`, `PM`, `RSIEN`, `DLIEN`, `TSIEN`, `BRGIEN`;
+          `FDR` grants `STEP | DM`; `BRG` grants every writable field, which makes that one mask
+          near-meaningless as a bound and is stated so in place. A `static_assert` pins each composed
+          grant against a literal word, so a field-mask edit in the register header cannot widen a
+          grant silently.
+          **Silicon witness** (`.session/m456-silicon/b2-pvprobe.log`, `commit 270b6fa`, on a SECOND
+          physical XMC unit): `[pvprobe] mask refusal: CCR|TBIEN rc=-22 (want -22), pre=0xc001
+          post=0xc001 unchanged`. `pre == post` is the load-bearing part -- it is what separates a
+          refusal from a partial store.
+      **Gate: selftest `periph_reg_write_unheld`**, the negative arm, in-env on every target.
+- [x] **`xmcssc` and the four U0C1 apps converted onto the seam.** `xmc_spi0_start` now contains
+      ZERO register access, and `xmcspi` / `xmccshold` / `pvprobe` / `inprstorm` no longer write
+      FDR/BRG/CCR directly.
+      **SILICON 2026-07-30, and `pvprobe` is the DISCRIMINATING witness** -- one run, same
+      unprivileged thread, same held window: the seam's writes to FDR/BRG/CCR land `exact`, while
+      DIRECT unprivileged stores to those same three registers report `DROPPED (post == pre)`, with
+      `SCTR[U,PV control]` LANDED as the positive control and an ungranted SCU poke faulting
+      (`CFSR=0x82`, `MMFAR=0x50004648`) as the negative one. Both refusals were taken on hardware
+      too: off-allowlist `rc=-22`, unheld window `rc=-1`. That pair of columns is what proves the
+      seam is not a no-op, and no emulator can produce it.
+      `xmcspi` exercises the sequence in anger -- real SSC loopback, four words echoed,
+      `loopback PASS` -- and it validated the implementer's ONLY self-flagged unconfirmed literal:
+      `seam FDR: rc=0 wrote=0x816f read=0x39b816f LANDED` is the `RESULT[25:16]` field drifting
+      under the read-back, and the new `FDR_RESULT_MASK` correctly returned LANDED instead of a
+      false DISCARDED.
+      `xmccshold` reports `VERDICT: hardware CS-hold USABLE` (FEM=1 -> 2 MSLS edges, FEM=0 -> 8).
+      `inprstorm`'s finding is STRENGTHENED rather than merely re-taken: the attack now runs
+      entirely from the unprivileged holder with root arming nothing (`INPR before=0x1100`,
+      `after =0x0`, `CCR =0xc001`), and the console still survives past the storm line, so it stays
+      a BOUNDED CPU TAX and not a DoS.
+      **The TX-FIFO escalation vector is CLOSED, and the verdict is now STRUCTURAL rather than one
+      operating point.** Per XMC4700/XMC4800 RM V1.3 Table 18-20 only `FDR`, `BRG` and `CCR` are
+      `Write = PV`, so `TBCTR` (`108H`), the `INx` push aperture (`180H + x*4`), `TRBSR` (`114H`) and
+      `CCFG` (`004H`) are all `U,PV` -- the vector needed NO allowlist widening to test. RM subtlety
+      worth keeping: writing `TBUF0` (`080H`) is the STANDARD buffer and silently BYPASSES the FIFO,
+      so the original `inprstorm` never exercised the FIFO at all. Autonomy was proven first:
+      `TBCTR=0x6000000 SIZE=64 LANDED (FIFO armed, no seam)`, then `slow-divider preload TBFLVL=64,
+      after 10ms no-fill=0`. Three profiles on silicon (`.session/m456-silicon/c3-inprstorm.log`,
+      `c3-inprstormmax.log`, `c3-inprstormfifo.log`, all `commit 270b6fa-dirty`) are IDENTICAL:
+      heartbeats 0 through 142, **143 distinct beats** -- the files hold 150 heartbeat LINES because
+      the reader duplicated seven ahead of the banner, so write 143 and never 150 -- every
+      `dt=300ms` bar beat 0, last beat `t=42608ms`.
+      **Why it cannot be made worse by tuning:** a backlog only builds while drain < fill, so the
+      sustained rate is `min(fill, drain)`, and fill is capped by the attacker's sub-root CPU share
+      refilling a FINITE 64-deep FIFO. FIFO depth and clock rate TRADE OFF; they do not multiply.
+      Verdict unchanged (bounded CPU tax, not a DoS), now on a structural argument.
+      Distrust of the older ~37,700 ISR/second figure has a SECOND, unrelated reason recorded under
+      M4.5.5's `MinSizeRel` re-witness item above (the `Debug` -> `MinSizeRel` move invalidates every
+      timing figure); these captures were taken `MinSizeRel`, so what they replace is the operating
+      point, not the toolchain caveat.
+      **`xmcssc` AS A SERVICE is now WITNESSED and the decision is MADE.**
+      `KICKOS_SERVICE_LIST_ROOT_MMIO` is EMPTY (`CMakeLists.txt:380`) -- the list and its
+      `FATAL_ERROR` stay for the next board whose bring-up writes MMIO from root -- and
+      `xmc4800-relax` defaults to its FULL service list under enforcement. The wire at
+      `commit 270b6fa` (`.session/m456-silicon/b2-xmcssc-vcom.log`) is
+      `[xmcuart] driver up (polled TX)` followed by
+      `[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)`: the board did NOT go
+      dark, which is precisely what the refusal guarded against.
+- [x] **`pizero2350` `rootfault` and `rootauth` are TAKEN.** Both at `c5d9b0d`: `rootfault` a PRECISE
+      MemManage (`MMFAR=0x20025020 CFSR=0x82`) and `rootauth` `PASS` with five arms. Captures
+      `.session/m456-silicon/c2-pz-rootfault.log` and `c2-pz-rootauth.log`, both non-empty; recorded
+      in `docs/reference/boards.md`. Its `selftest` came from the same visit (`1..66`, 66 ok,
+      `# skipped: 0`, `region_mode` GRANULE-MULTIPLE granule 32 / 96 B). The board did leave the USB
+      bus later in that session -- KickOS has no USB device stack, so recovering it needs a physical
+      BOOTSEL press -- but it left after these three captures, not before. An earlier revision of this
+      item recorded both capture files as zero bytes and marked the pair OWED; that was wrong.
+
+Landed in `124b68c` (a few captures stamp the `270b6fa` working tree that became it), after the first
+inventory above was written. Wire values live in `docs/reference/boards.md`; these are cited, not
+duplicated.
+
+- [x] **The `esp32c6` `.data` LMA bug, FIXED, and it invalidates a prior witness.** `esp32c6.ld`
+      linked `.data` with an `AT` clause while the load counter kept counting from `.text`, so
+      `_sidata` sat outside every loaded segment and `Reset_Handler` copied uninitialised SRAM over
+      the `.data` the ROM had already placed correctly. `KICKOS_HAVE_MPU=1` only. Fixed by dropping
+      the `AT` plus an `ASSERT(_sidata == _sdata)` (`arch/riscv/chip/esp32c6/esp32c6.ld:280`);
+      `esp32.ld` carried the same latent construct and was cleaned image-neutrally. **`virt.ld`
+      KEEPS its `AT` and must NOT gain the assert** -- QEMU honours PhysAddr there, so the LMA is
+      real.
+      **The 2026-07-28 `esp32c6` witness therefore passed BY LUCK.** The corrupting bytes are
+      uninitialised SRAM, so the outcome varied with the die and the power-on history. That is why
+      bisecting found nothing: there was no bad commit to find.
+- [x] **`c6blink` CLOSED** (`esp32c6-wroom`, `commit 270b6fa-dirty`): 10x `pad=1/1 pad=0/0`,
+      `PASS (pad tracked the drive on every cycle)`, the control `MPU FAULT ... at 0x6009157c`, and
+      `selftest` `1..67` with `# skipped: 0`.
+- [x] **`rx72m` closed ALL THREE owed items in ONE visit** (`commit 270b6fa`, a CLEAN tip -- the only
+      board this round witnessed from one). `selftest` `1..67` `# skipped: 0` with
+      `# region shaping: GRANULE-MULTIPLE (granule 16, 3-granule request reserved 48)`, closing
+      M4.5.5's region re-encoding on the third moved board. `rootauth` `PASS` with five arms.
+      `rxdrv`: `pinmux P80 -> general I/O rc 0`, 10x `pad=0/0 pad=1/1`,
+      `PASS (pad tracked the drive on every cycle)`, plus both controls --
+      `pinmux PB1/TXD6 refused (-KOS_EBUSY)` and
+      `MPU FAULT: task 'rxdrv' attempted write at 0x8c068`. The `periph_enable` probe splits by
+      caller as designed: root `-1` (`EPERM`, it holds no window) and holder `-38` (`ENOSYS`,
+      possession passes and there is no RX backend).
+- [x] **The RING arm is WITNESSED -- a first for the project.** `f302nucleo`, `mpu off`, a real
+      no-MPU armv7m: `ringpriv` `PASS (5 arms)` with `CONTROL=0x3`,
+      `APSR after writing 0xF8000000=0xf8000000`, and
+      `CONTROL after attempting to clear nPRIV=0x3` UNCHANGED. The prober is
+      `user/apps/common/ringpriv` and it is PERMANENT CI, not a one-off: `cmake --preset qemu` IS the
+      ring-only posture, so `qemu`, `qemu-m3`, `qemu-m7` and `qemu-m33` all carry `ringpriv` and
+      `ringppb`. `microbit` asserts the OPPOSITE outcome with one arm rather than skipping, and does
+      not build `ringppb` (`user/apps/common/ringpriv/CMakeLists.txt:61-80`) -- a no-ring core cannot
+      have the PPB read refused.
+- [x] **`f302nucleo` thread-pool provisioning, and the fleet arena model it forced.** The `-st`
+      preset advertised `KICKOS_MAX_THREADS=4` on an arena backing three 1024 B stacks, so
+      `kos_ram_alloc(1)` returned NULL and `periph_enable_unheld` failed. NOT a regression -- `master`
+      fails identically. `board_config.h` takes `KICKOS_USER_STACK_SIZE` 2048 -> 1024 and
+      `KICKOS_ROOT_STACK_SIZE` 2048 -> 1536; the preset takes `KICKOS_MAX_THREADS` 4 -> 3. Both
+      chosen against MEASURED watermarks, not guessed: deepest pool worker 592 B, root 1048 B, idle
+      76 B, leaving a 488 B / 31.8% margin.
+      Silicon result: `ok 46`, `1..63` all passing, `# skipped: 5` -- skips **9 -> 5**, which
+      un-skips FOUR real arms (`endpoint_crossdomain`, `mem_self_grant_nonpow2`, `region_mode`,
+      `domain_share`).
+      `cmake/boot_arena.cmake` plus `arch/common/boot_arena.ld.h` now model the thread-stack pool, so
+      an overcommit of this shape is a LINK error instead of a runtime NULL.
+- [x] **The sim gained an `arch_periph_reg_write` backend**, so the mask compare, containment,
+      alignment and wrap checks are gated on the host rather than only on XMC silicon: a 64 KiB
+      window taken from the first of five candidate bases that `MAP_FIXED_NOREPLACE` accepts,
+      published at init, with one allowlist entry deliberately placed BEYOND the grantable window so
+      the containment check has something to refuse. Six mutations were each proved red on a distinct
+      check.
+- [x] **The in-env gate count, re-measured at `124b68c`.** Eight configurations, zero failures: sim
+      19/19, `qemu` 18/18, `qemu +MPU` 21/21, `qemu-m3 +MPU` 19/19, `qemu-m7 +MPU` 20/20,
+      `qemu-m33 +MPU` 20/20, `qemu-riscv +MPU` 15/15, `microbit` 12/12. `selftest` plans `1..68` on
+      the sim -- the sim ALONE answers the new seam-backend arm -- `1..67` under enforcement and
+      `1..63` without; skips are 0 everywhere except `microbit`'s 9. `panicgate` is FIVE cases (five
+      images, one case each, registered on all eight configurations;
+      `user/apps/common/panicgate/CMakeLists.txt`). Compare named transcripts and not totals: plan
+      counts move for reasons unrelated to any one change.
+
+- [ ] **`kos_thread_spawn` returns `-KOS_ENOMEM` for two different failures**, so arena starvation is
+      indistinguishable from a legitimate pool limit at runtime:
+      `kernel/syscall/syscall_thread.cc:292` is "thread pool exhausted" and `:365` is "stack arena
+      exhausted". That ambiguity mislabelled
+      **8 of `f302nucleo`'s 9 skips** as `SKIP pool too small` when every one of them was arena
+      starvation, and it is what made the investigation above cost a session. Two distinguishable
+      codes, or one diagnostic line naming which limit was hit, would have ended it immediately.
+- [ ] **`selftest`'s `mutex_deadlock` skip is mislabelled DIFFERENTLY, and the shared label hides
+      that.** Its guard is `KICKOS_MAX_HANDLES = 9` / semaphore exhaustion, not stack arena and not
+      thread count, so no amount of arena work will EVER un-skip it -- yet it reads as a pool-size
+      skip, identical in wording to the eight that were real. Give it its own reason string.
+- [ ] **Two boards block the fleet-wide boot-arena assert.** `KICKOS_POOL_ARENA_ASSERT`
+      (`arch/common/boot_arena.ld.h:57`) is opt-in and only `arch/arm/chip/stm32f302/stm32f302.ld:127`
+      invokes it, because `frdmk64f` and `bluepill-c8` still advertise slots their arena cannot back.
+      Worst image per config, measured at `124b68c`: `frdmk64f-st +MPU` **-28,992 B**,
+      `frdmk64f +MPU` **-28,960 B**, `bluepill-c8-st` **-4,096 B**, `bluepill-c8` **-4,000 B**.
+      Headroom is per-IMAGE, not per-preset, so right-sizing has to be checked against each.
+      **Mechanism for the K64F, which is why it is not a small trim:** without the MPU it has
+      **+81,856 B**; `KICKOS_HAVE_MPU=1` moves `__kickos_ram_start` from `0x1fff78a0` to `0x20012940`
+      and the `.appdata` enforcement window eats 110,748 B.
+      `bluepill-c8-st` has EXACTLY zero boot-arena slack besides (2,560 needed, 2,560 available) --
+      the only image in the 921-image fleet at or below zero.
+- [ ] **`f302nucleo`'s fault reporter produces NO dump, root cause OPEN.** Not the new probers' bug:
+      the pre-existing `fault` app truncates at `[f` (338 bytes, `.session/m456-silicon/b4-fault.log`)
+      exactly as `ringppb` does.
+      **The hardware faults correctly** -- debugger attach confirms what ARM ARM B3.1.1 requires:
+      `CFSR=0x00008200` (BFSR `0x82` = `PRECISERR|BFARVALID`), `BFAR=0xe000ed00` (the exact probed
+      address), `HFSR=0x40000000` (`FORCED`, because `BUSFAULTENA` is never set in-tree). The reporter
+      IS entered and runs at least 120 instructions, MSP peaks at least 376 B of 2 KiB with no
+      overflow, `DHCSR` bit 19 is clear so there is no lockup, and the UART is ready
+      (`CR1=0x0d`, `ISR=0x006000d0`, `TXE` and `TC` both set).
+      **Hypotheses KILLED, so they are not worth re-running:** hardware-does-not-fault, vector
+      unwired, null backend pointer, output-stuck-in-the-ring, `KICKOS_POLL_SPIN_MAX` (it is
+      1,000,000), and "buffered ring plus a missing `arch_console_reclaim`" -- `stm32f411` is ALSO
+      buffered and ALSO lacks one, and it dumps.
+      Unresolved span: between "reporter running inside `kpanic_enter`" and "a byte reaching
+      `USART2_TDR` (`0x40004428`)". BLOCKED on a physical ST-Link replug.
+- [ ] **The structural coverage hole behind it: no emulated gate can exercise a buffered-ring panic
+      flush.** Every fault-dump gate in the fleet runs on an UNBUFFERED-console board -- mps2
+      semihosting, `microbit`, `virt` -- so the whole class of "the panic path has to drain a ring it
+      just reclaimed" has zero in-env coverage. That is why the item above survived to silicon, and it
+      will keep hiding the next one until some gate carries a buffered console.
+
+**Half two -- remove the weak-symbol seam mechanism. COMPLETE** (2026-07-31, an isolated tip commit
+on `unpriv-root-stage5`, NOT merged). Outcome first, then the reasoning that chose it:
+
+- **33 `__attribute__((weak))` definitions removed.** 32 were visible to a plain-fleet `nm` sweep;
+  the 33rd, `SystemCoreClock`, is weak only under `KICKOS_BENCH=ON`, which is why the sweep missed
+  it. 32 became one-symbol fallback TUs; `arch_mpu_apply` became a PLAIN, non-overridable definition
+  because nothing ever overrode it -- `chip_mk64f.cc`'s claim that K64F overrode it was FALSE and
+  has been corrected in the code. `.weak NMI_Handler` in 11 `startup.S` files became a file-local
+  label. `SystemCoreClock`'s 0 now lives in the SIM arch library only, so an MCU chip that forgets
+  it fails the LINK.
+- **The placement rule is load-bearing.** Fallbacks live in `kickos_arch_<arch>` and NEVER in
+  `kickos_kernel`: the rescan group scans the kernel archive BEFORE the chip archive, so a
+  kernel-resident fallback is extracted in the same pass that first makes the symbol undefined and
+  then collides with the chip. Seams the kernel declared moved out of `kernel/` into `arch/common/`.
+  Canonical statement, stated once: `arch/CMakeLists.txt:11-71`.
+- **The real invariant is ANCHORING, not a duplicate-definition error.** Reversing the rescan group
+  still resolves correctly (the chip member is force-loaded in pass 1 via `-u g_isr_vector`), so the
+  scan-order backstop was measured NEVER to fire. Proof it is insufficient: reversing the group AND
+  moving `arch_idle_wait` into an unreferenced TU made the link succeed with ZERO diagnostics while
+  `objdump` showed the fallback's `wfi` instead of the chip's `nop`. A silent decline.
+- **Payoff realised**: `cmake/boot_arena.cmake` lost its weak/strong precedence logic entirely, and
+  two backend definitions of one seam are now a `FATAL_ERROR` naming both files. The thread-stack
+  pool modelling (`KICKOS_POOL_ARENA_ASSERT`) is untouched and scraped geometry is byte-identical on
+  every board.
+- **Two facts for the next porter**: ld's map headings are LOCALE-TRANSLATED (this host emits
+  "Membre d'archive inclu..."), so the gate parses the map structurally; and `.text.<symbol>`
+  sections do not exist in the hosted build or under the RX toolchain, which also prints map symbols
+  without the psABI underscore -- hence the two spellings in the allowlist.
+- **Gates**: +1 (`seam_defaults`) on every arm. sim 20, `qemu` 19, `qemu`+MPU 22, `qemu-m3`+MPU 20,
+  `qemu-m7`+MPU 21, `qemu-m33`+MPU 21, `qemu-riscv`+MPU 16, `microbit` 13. Fleet links 33/33, MPU
+  variants 14/14, zero `.data`/`.bss` change on `bluepill-c8-st` and `microbit`.
 
 **Decision (2026-07-30): remove weak symbols from the arch/kernel seams entirely**, keeping only the
 libc-interop exceptions. Two reasons, and the second is the deciding one:
@@ -993,10 +1406,23 @@ libc-interop exceptions. Two reasons, and the second is the deciding one:
   a definition in the same TU, so every `KICKOS_APP_AUTHORITY` override compiled `W` and link order
   picked the winner (`nm` was the check; reasoning was not).
 
-**Inventory: 48 definitions across 16 files.** Three are the exception class --
-`__dso_handle`, `__malloc_lock`, `__malloc_unlock` (`user/src/newlib_stubs.cc:149,171,174`) -- weak
-so a libc that *does* provide them wins. Those get a toolchain-conditional or an explicit
-allowlist, not this treatment. The other ~45 are our own seams.
+**Inventory -- and the planning figure was WRONG, so do not repeat it.** The sweep counted 48
+`nm`-visible weak symbols and inferred "45 of 48 go, 3 stay". Only 33 were ever convertible. The
+true split:
+
+- **32 `__attribute__((weak))` backend seams** -- converted (plus `SystemCoreClock`, bench-only and
+  invisible to the sweep, and `.weak NMI_Handler` in 11 `startup.S` files).
+- **3 libc-interop DEFINITIONS** -- `__dso_handle`, `__malloc_lock`, `__malloc_unlock`
+  (`user/src/newlib_stubs.cc`), weak so a libc that *does* provide them wins. Allowlisted.
+- **12 C++ vague-linkage COMDAT symbols** -- `kickos::List::push_back`, `SlotPool<T,N>::resolve`,
+  `kickos::Kernel::Kernel()`, `kickos::emit`, ... They report `W` in `nm` but are LANGUAGE-MANDATED,
+  not a seam mechanism, and are not removable. This is the whole of the counting error.
+- **`kickos_app_build_stamp`** -- hand-rolled C vague linkage, not a seam: `user/include/kickos/app.h`
+  defines it inline and the build force-includes that header into every app TU, so a lone TU cannot
+  replace it.
+- **7 weak UNDEFINED references** -- `__kickos_code_start/_end`, `__kickos_appdata_start/_end`,
+  `_kickos_heap_start/_limit`, `__register_frame`. A fallback cannot supply an address for a symbol
+  whose whole point is that it may be absent.
 
 **Replacement: the lone-TU pattern, which this repo has already proven** in
 `system/init/app_authority_default.cc`: the fallback sits alone in its own TU, so a chip defining
@@ -1018,40 +1444,82 @@ symbol. That rule is standard across every Unix-like linker and MSVC's `.lib` ha
 `__attribute__((weak))` is a GNU extension whose archive interaction is implementation-defined. So
 it is a real portability gain, but the seam is still not expressible in pure C.
 
-**Make it non-regressible, and check BOTH halves**: a CI check asserting zero
-`__attribute__((weak))` outside the libc-interop allowlist, plus -- this is the one that matters --
-that every fallback TU defines exactly ONE symbol. The second is the replacement's own silent
-failure mode: a fallback TU that accidentally gains a second symbol is extracted even when the chip
-provided its own definition, and then collides. `nm` per object is the check. Shape it like
-`tests/check_riscv_no_smalldata.sh` and `tests/check_kernel_ctor_placement.sh`.
+**Non-regressible: the gate LANDED** as `tests/check_seam_defaults.sh`, ctest name `seam_defaults`,
+registered in `user/apps/common/selftest/CMakeLists.txt` and running on EVERY board. It reads the
+selftest ELF, that target's `-Wl,-Map` link map, `tests/weak_allowlist.txt`, every archive of the
+rescan group and the app's own objects. Four legs, all four mutation-proved:
+
+1. Each `*_default.cc` member defines EXACTLY ONE global symbol, no other member of the same archive
+   defines it, and no fallback sits in `kickos_kernel`.
+2. Where a backend defines the seam, the fallback member is ABSENT from the link map entirely. This
+   is what makes the ANCHORING rule enforceable rather than commented.
+3. Where none does, the fallback IS in the map's inclusion list, pulled by that exact symbol -- plus
+   a non-vacuity check, so the gate cannot go quiet if a board resolves no seam from a fallback.
+4. Zero weak symbols outside the allowlist, per archive AND in the final ELF; a `_Z`-mangled weak
+   symbol in an archive must ADDITIONALLY be COMDAT (proved via `readelf` section-group `G` flags),
+   so mangling is not a blanket exemption. Honest limit: section groups are resolved away in the
+   final ELF, so mangled names are taken on trust there; the per-archive leg covers KickOS code.
 
 **NOT in M4.5.5.** It touches every arch seam, so it would invalidate the silicon captures just
 taken and blow the milestone's scope.
 
-**Slot: its own milestone, M4.5.6, BEFORE M4.6.** Foundation before the driver era, like the rest of
-M4.5.x. It runs AFTER the `KICKOS_ROOT_PRIVILEGED` deletion: that removes a posture and a set of
-`#if` branches, so the seam pass then edits a one-posture tree. The ordering against M4.6 is the CI
-gate: once zero-weak is enforced, every new seam is forced into the pattern on first write. Placed
-after M4.6 (consoles/UART) and M4.6.1 (USB CDC), the two milestones that add the most new arch
-seams, those seams get written weak because nothing stops them and are then rewritten -- the same
-work twice, plus a window where the tree drifts back.
-It also overlaps the M6 seam rework -- `arch_ram_region_size` already carries a `SEAM (MMU era)`
-marker -- so the three MPU-geometry seams (`arch_mpu_min_region`, `arch_mpu_region_pow2`,
-`arch_mpu_region_encodable`) may be cheaper to convert there, in one pass with the redesign. The
-other ~42 do not need to wait for it.
+**Slot: M4.5.7, after M4.5.6, and BEFORE M4.6.** Foundation before the driver era, like the
+rest of M4.5.x. Half one is the reason for the internal order (see the intro above). The ordering
+against M4.6 is the CI gate: once zero-weak is enforced, every new seam is forced into the pattern on
+first write. Were it placed after M4.6's driver work instead -- M4.6.1's IRQ substrate and M4.6.2's
+USB CDC, the two sub-milestones that add the most new arch seams -- those seams would get written
+weak because nothing stops them, and then be rewritten: the same work twice, plus a window where the
+tree drifts back. `arch_periph_reg_write` under M4.5.6 is the pattern already being honoured ahead
+of the gate.
+It also overlaps the M6 seam rework -- `arch_ram_region_size` still carries its `SEAM (MMU era)`
+marker -- but the three MPU-geometry seams (`arch_mpu_min_region`, `arch_mpu_region_pow2`,
+`arch_mpu_region_encodable`) were converted here rather than deferred into that redesign: they are
+fallback TUs now, so M6 rewrites bodies and not the resolution mechanism.
 
-## M4.6.1 -- USB CDC console (picopi, pizero2350, teensy41)
+## M4.6.1 -- IRQ reclaim, the `irq_register` gate, and console visibility
 
-Ordered after M4.6, which is the dependency and not a preference: enumeration is
-interrupt-driven with a deadline on answering `SETUP`, and a console driver that dies must be
-respawnable, so this needs M4.6's IRQ-driven driver work and its IRQ-reclaim fix first.
-Building the stack and the foundation it stands on at the same time is the thing to avoid.
+**First of the M4.6 sub-milestones, and the substrate the other two stand on.** All three items are
+already filed in detail further down this file; this section is the ownership statement, so the
+detail is not duplicated here. It goes first for two reasons: an interrupt-driven, respawnable
+console driver cannot be built until all three are fixed, and none of the three needs a board on the
+bench.
+
+- [ ] **Reclaim IRQ bindings on thread teardown.** Filed under *Found during the M4.5.2 stage-2 flip
+      work* below: `irq_detach` has exactly one caller in the tree, nothing in `exit_current` touches
+      IRQ bindings, so a dead driver keeps its line forever and its binding slot leaks too.
+      `spi_service.h` already promises the respawn this breaks.
+- [ ] **Gate `irq_register` on the existing `AUTH_IRQ` bit.** Filed under the same section: it is
+      completely ungated today while its tier-2 neighbours `IRQ_ATTACH` and `IRQ_UNMASK` both check
+      `AUTH_IRQ`, so combined with the reclaim gap **any thread can squat any line on the chip
+      permanently -- one syscall, irreversible, no authority needed.** The bit exists, so this costs
+      no new authority. Whether tier-1 should instead take a NARROWER per-line authority is the part
+      that needs a decision rather than work.
+- [ ] **Console visibility and handover ordering.** Filed under *Found during the M4.5.3 stage-3
+      work* below: the console driver cannot report its own bring-up failure, and there is a real
+      DARK WINDOW between the publish and the driver actually serving cap 0 (`k64uart.cc:209`,
+      `xmcuart.cc:179`). The remedy is ordering -- publish only once the driver has proved
+      reachability, or have root verify before publishing -- so it is a handover redesign, and it has
+      to land before a console driver whose bring-up is an enumeration handshake.
+
+## M4.6.2 -- USB CDC console (picopi, pizero2350, teensy41)
+
+**Renumbered from M4.6.1**; the IRQ substrate above took that number, and every reference to
+"M4.6.1 (USB CDC)" elsewhere in this file has been repointed here. The dependency is unchanged and
+it is not a preference: enumeration is interrupt-driven with a deadline on answering `SETUP`, and a
+console driver that dies must be respawnable, so this needs M4.6.1's IRQ-driven driver substrate and
+its reclaim fix first. Building the stack and the foundation it stands on at the same time is the
+thing to avoid.
 
 **The motivation is that three boards are not self-contained.** `picopi` (GP0), `pizero2350`
 (UART1 on GP4/GP5) and `teensy41` (LPUART6, pins 0/1) are the boards whose console needs an
 external USB-serial adapter wired to header pins, and `pizero2350` and `teensy41` have no diag
 LED wired either. All three parts carry a device-side USB controller, and on `teensy41` it is
 the port the board already flashes over, so the board can BE the serial adapter.
+**It cost bench time on 2026-07-30, which is the concrete case for it**: `pizero2350` left the USB bus
+mid-session -- KickOS has no USB device stack, so nothing on the target answers the host -- and
+recovering it needs a physical BOOTSEL press. It cost the rest of that board's session; its
+`rootfault` and `rootauth` had already been captured by then, so the debt it created was time, not
+witnesses.
 
 - [ ] **A CDC-ACM class layer, shared, over TWO device-controller backends.** The class half is
       one implementation: device / config / interface descriptors, the control transfers CDC
@@ -1103,9 +1571,38 @@ the port the board already flashes over, so the board can BE the serial adapter.
       keeps the USB controller clocked is a datasheet question to answer early on each part,
       since the answer could constrain `arch_idle_wait` there.
 
+## M4.6.3..N -- the fleet-wide witness pass, and whatever it turns up
+
+**Last, because it is the only step that needs boards.** It is where every bench-gated item this file
+records comes due at once, and each of them is already written down where it was found. **M4.5.6's
+bench sessions closed most of what this list used to hold**; what remains is:
+
+- `f411disco`'s `f411spi` stage-4 per-app authority witness -- the LAST of the three, and the only
+  board of that set still unavailable.
+- M4.5.5's general `MinSizeRel` re-witness pass, for the fault addresses, disassembly offsets, symbol
+  sizes, stack-depth observations and timing figures that a `Debug` capture cannot carry forward.
+- `f302nucleo`'s fault-reporter root cause, blocked on a physical ST-Link replug rather than on the
+  pass itself -- so it may close earlier and independently.
+- Right-sizing `frdmk64f` and `bluepill-c8` so `KICKOS_POOL_ARENA_ASSERT` can go fleet-wide.
+
+**CLOSED by M4.5.6, listed so the ledger is not re-opened by habit:** `rx72m`'s one visit (all three
+items, `commit 270b6fa`), `esp32c6-wroom`'s `c6blink`, `pizero2350`'s `rootfault` and `rootauth`,
+`xmcssc` as a service (the decision is made and `KICKOS_SERVICE_LIST_ROOT_MMIO` is empty), and the
+RING-ARM witness -- the prober now exists (`user/apps/common/ringpriv`) and `f302nucleo` took it.
+Numbered `..N` because a witness pass is expected to OPEN items as well as close them, and M4.5.6's
+sessions did exactly that.
+
+**Why the queue is arranged this way.** M4.6.1 and M4.6.2 are both pure code, so **nothing waits on
+bench access**: the sub-milestones that can be finished at a desk go first and the one that cannot
+goes last. Bench-gated debt stays recorded and explicitly **NON-BLOCKING** -- the precedent is
+M4.5.5, whose `rx72m` visit was booked as debt rather than allowed to hold the region-encoding work
+open, and which M4.5.6 then paid. `f411spi` is already WITNESS-READY (it builds from this tree,
+declares its mask, parks rather than returns, prints an explicit PASS/FAIL, and its flash tooling is
+installed), so the pass needs no preparation beyond the board itself.
+
 ## Found during the M4.5.2 stage-2 flip work (2026-07-28/29)
 
-- [ ] **An IRQ line is never released, so a driver that exits cannot be respawned. Owner: M4.6**,
+- [ ] **An IRQ line is never released, so a driver that exits cannot be respawned. Owner: M4.6.1**,
       whose design gate already names reclaim/teardown on driver death. `irq_detach` has exactly
       **one** caller in the whole tree (`kernel/init/console_tx.cc`, the console handover path), and
       nothing in thread teardown touches IRQ bindings: `exit_current` runs `cap_teardown` plus
@@ -1125,7 +1622,9 @@ the port the board already flashes over, so the board can BE the serial adapter.
       and slot 1 with different `cs_index` values and get the same physical line. `bus-service.md`
       and `bus.h` now say so; a multi-CS driver has to read and bound the field, and that is when
       the `-KOS_EINVAL` refusal the contract wants becomes real.
-- [ ] **`irq_register` is completely ungated**, which is the sharper half of the same area. The
+- [ ] **`irq_register` is completely ungated**, which is the sharper half of the same area.
+      **Owner: M4.6.1**, together with the reclaim item above -- one line's authority and one line's
+      release are the same subject. The
       `KOS_SYS_IRQ_REGISTER` dispatch arm (`kernel/syscall/syscall.cc`) calls straight through with
       no `cap_check_authority`, while its tier-2 neighbours `IRQ_ATTACH` and `IRQ_UNMASK` both check
       `AUTH_IRQ`. Combined with the no-reclaim finding above, any unprivileged thread can
@@ -1146,16 +1645,28 @@ the port the board already flashes over, so the board can BE the serial adapter.
           `[0x40030200,0x400303FF]`, the exact window the `xmcssc` bus service holds. This is a REAL
           pre-existing conflict, not a false positive: two drivers configuring one USIC channel. The
           four predate `xmcssc` joining the service list (M4.4) and silently became conflicting then.
-          Build them `-DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_console` (console only, an
-          existing provider) so U0C1 has no other holder.
-        - `consoledemo -DKICKOS_SCRAMBLE_TEST=ON` grants `0x40030000`/`0x200` = the exact window the
-          unprivileged `xmcuart` driver holds. Here the double grant is the POINT (garble a live
-          console, prove `arch_console_reclaim` recovers it), so the check structurally obsoletes the
-          way it was staged. Build it `-DKICKOS_SERVICE_LIST=kickos_services_none` (kernel-driven
-          console, no DEV holder anywhere) and the scrambler is the sole holder again.
-      `KICKOS_SERVICE_LIST` is one global cache variable per build tree, so this is a per-image build
-      discipline, not something an app's CMakeLists can set for itself. Decide whether to encode it
-      (a per-app configure-time refusal, or splitting the diagnostics into their own build trees).
+          Run them against a console-only service list
+          (`-DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_console`, an existing provider) so U0C1
+          has no other holder. Note M4.5.6 changed what these four DO without changing this conflict:
+          they now reach FDR/BRG/CCR through `arch_periph_reg_write` instead of writing them directly,
+          but they still grant the same U0C1 window, and the one-holder check is about the window.
+        - `consoledemo`'s scrambler grants `0x40030000`/`0x200` = the exact window the unprivileged
+          `xmcuart` driver holds. Here the double grant is the POINT (garble a live console, prove
+          `arch_console_reclaim` recovers it), so the check structurally obsoleted the way it was
+          staged. **RESOLVED in M4.5.6, and not the way this entry first proposed**: the scrambler is
+          now its own app, `conreclaim`, REGISTERED only when `KICKOS_SERVICE_LIST` already resolves
+          to `kickos_services_none` -- a kernel-driven console with no DEV holder anywhere, so the
+          scrambler is the sole holder. `KICKOS_SCRAMBLE_TEST` no longer exists.
+      **The remedy shape is the part worth keeping, because the obvious one is unbuildable.**
+      `KICKOS_SERVICE_LIST` is ONE global cache variable, resolved in the root `CMakeLists.txt` before
+      any subdirectory is added, so an app's own `CMakeLists` can never set the list it needs -- it can
+      only observe the one already chosen. So the encodable form is a REGISTRATION GATE, not an
+      override: register the app when the resolved list is compatible, and otherwise say at configure
+      time which list is holding the window and stand down. That is exactly what `conreclaim` does (a
+      `message(STATUS ...)` naming the resolved list, then `return()`), which is louder than a silent
+      skip and cheaper than a `FATAL_ERROR` that would break every unrelated build of the tree. The
+      four U0C1 apps remain a per-image build discipline -- the caller passes the console-only list at
+      configure time -- and giving them the same registration gate is the open half of this item.
 - [ ] **Respawn vs `-KOS_EBUSY` on the device window -- documented, cannot bite today, revisit with
       SMP or a higher-priority supervisor.** `spi_service.h` says `serve_loop` returns on EPIPE so
       root can respawn; a respawn issued while the dying driver still references its domain would now
@@ -1203,18 +1714,23 @@ the port the board already flashes over, so the board can BE the serial adapter.
       at all, so a heap regression on a 16 KiB part would go unseen.
 - [x] **CI exercises an unprivileged root** (M4.5.5). Three new arms: `qemu` and `qemu-m33` at
       `KICKOS_HAVE_MPU=1 -DKICKOS_ROOT_PRIVILEGED=OFF` (a real armv7m/v8m `npriv` boundary over both
-      PMSA revisions), plus a flipped **sim** arm which witnesses the authority logic and region
-      composition but never a CPU-mode boundary. The flipped ARM arm registers two gates the
-      privileged posture cannot host -- `rootfault` and `rootauth`'s flipped arm -- and a `selftest`
-      whose `mpu_privileged_guard` skip is permitted by name.
-      `qemu-m7`/`qemu-m3` are deliberately NOT flipped in CI: both re-run the same PMSAv7 path as
+      PMSA revisions), plus a flipped **sim** arm which witnessed the authority logic and region
+      composition but never a CPU-mode boundary. The flipped ARM arm registered two gates the
+      privileged posture could not host -- `rootfault` and `rootauth`'s flipped arm -- and a `selftest`
+      whose `mpu_privileged_guard` skip was permitted by name.
+      `qemu-m7`/`qemu-m3` were deliberately NOT flipped in CI: both re-run the same PMSAv7 path as
       `qemu` for two more toolchain builds. Verified green flipped by hand at this gate (13/13 and
       12/12), as was `qemu-m33` (13/13) and `qemu` (14/14).
-      Deliberately NOT done instead: flipping `frdmk64f`'s preset default. It would break the locked
-      order (the knob's deletion is step 4, after the 4.5.5 re-witness), give the fleet a third
-      posture alongside XMC's console-only special case, and silently break `k64drv`, which cannot
-      run flipped by design. It would also change only what is BUILT, not what is TESTED, since no
-      CI job runs frdmk64f with MPU non-vacuously.
+      **SUPERSEDED by M4.5.6, and this is the arms' whole point being absorbed rather than lost**:
+      with one posture there is nothing to flip, so the duplicate `build/sim-flip` and `build/$b-flip`
+      arms are deleted and the BASE `KICKOS_HAVE_MPU=1` arms register `rootfault` themselves -- on six
+      images, none of which registered it in a default build before. `mpu_privileged_guard` is
+      retired, so no posture-dependent skip is permitted by name any more.
+      Deliberately NOT done at the time: flipping `frdmk64f`'s preset default. It would have broken the
+      locked order (the knob's deletion was step 4, after the 4.5.5 re-witness), given the fleet a
+      third posture alongside XMC's console-only special case, and silently broken `k64drv`, which
+      cannot run flipped by design. It would also have changed only what is BUILT, not what is TESTED,
+      since no CI job runs frdmk64f with MPU non-vacuously. Moot now: every board is flipped.
 
 - [x] **CI builds the enforcement gates optimised -- DECIDED: the pin is gone** (M4.5.5). The "ARM
       PMSA enforcement run gates (v7 + v8)" step passed `-DCMAKE_BUILD_TYPE=Debug` explicitly,
@@ -1224,8 +1740,8 @@ the port the board already flashes over, so the board can BE the serial adapter.
       ships, and CI can reach the `-Os`-only class the K64F PIT lost write fell into.
 - [ ] **`sam3x8e` over-alignment: PARKED on hardware absence, not open.** The chip HAS an MPU on
       silicon (Atmel SAM3X/SAM3A datasheet, Cortex-M3 revision 2.0) but KickOS ships no `mpu.cmake`
-      backend for it, so it builds `KICKOS_HAVE_MPU=0` while still inheriting ARM's weak
-      `arch_mpu_min_region()` of 32 (`arch/arm/common/arch_arm_common.cc:348`) -- costing 3,808 bytes
+      backend for it, so it builds `KICKOS_HAVE_MPU=0` while still inheriting ARM's fallback
+      `arch_mpu_min_region()` of 32 (`arch/arm/common/arch_mpu_min_region_default.cc`) -- costing 3,808 bytes
       of measured over-alignment on a part that enforces nothing. It is the third member of the class
       `stm32f103` and `stm32f302` just left, both of which now override to 0 in
       `arch/arm/chip/stm32f103/chip_stm32f103.cc` and `arch/arm/chip/stm32f302/chip_stm32f302.cc`.
@@ -1268,7 +1784,7 @@ the port the board already flashes over, so the board can BE the serial adapter.
       `bootloader_handover`, and the `KOS_SYS_REBOOT` dispatch arm at
       `kernel/syscall/syscall.cc:390` -- and the whole thing sits behind `KICKOS_ENABLE_SELFTEST`.
       Four parts: a mode argument (at least a normal system reset and bootloader entry); a per-MODE
-      weak `-KOS_ENOSYS` decline instead of a per-function one; the knob narrowed to the bootloader
+      `-KOS_ENOSYS` decline instead of a per-function one; the knob narrowed to the bootloader
       mode and renamed `KICKOS_ENABLE_REBOOT_TO_BOOTLOADER`, matching the sibling
       `KICKOS_SHUTDOWN_TO_BOOTLOADER` (`CMakeLists.txt:117`) rather than spelling one destination two
       ways; and an authority bit on top of the knob for the bootloader mode alone. What it buys: no
@@ -1299,8 +1815,13 @@ the port the board already flashes over, so the board can BE the serial adapter.
       evidence. This is why `kos_periph_enable`'s failure arm there is a comment rather than a
       report. The remedy is ordering, not a call-site swap -- publish only once the driver has
       proved reachability, or have root verify before publishing -- so it is a handover redesign
-      owned by M4.6. Note the same drop applies to that driver's success line and to root's own
+      **owned by M4.6.1**. Note the same drop applies to that driver's success line and to root's own
       `k64dspi_spi_start` error prints.
+      **This is the DARK WINDOW, and it is narrower than "a published console hides diagnostics".**
+      The window is between the publish and the driver actually serving cap 0 (`k64uart.cc:209`,
+      `xmcuart.cc:179`); it is a property of the ordering and of this driver's own cap 0, not of the
+      published state as such. An ordinary app on `printf` / `std::cout` reaches a published driver
+      fine (see the Blockers list above), so nothing here is an argument against publishing a console.
       **This item is what the standing "SPI-service silicon halt" blocker actually was, and the halt
       itself is refuted on both boards** (2026-07-29, `aa084a9`, captures under
       `.session/logs/m453-spihalt/`). Neither service halts: `k64dspi` reads the LAN9252 `BYTE_TEST`
@@ -1367,8 +1888,11 @@ the port the board already flashes over, so the board can BE the serial adapter.
       `arch_clock_now`, so there is no table entry and `arch_periph_enable` answers `-KOS_EINVAL`.
       This is the opposite case from `f411spi`, which a seam did fix. `k64drv` is a diagnostic app
       (`KICKOS_ENABLE_SELFTEST` only, no CTest gate), so nothing goes red; decide whether it is
-      retired, reworked onto a block whose slot is containable, or kept as a privileged-root
-      diagnostic.
+      retired or reworked onto a block whose slot is containable. **The third option is gone**: with
+      `KICKOS_ROOT_PRIVILEGED` deleted in M4.5.6 there is no privileged-root posture to keep it as a
+      diagnostic in, so this is now a two-way decision. `arch_periph_reg_write` does not help either
+      -- an allowlisted `(base, offset)` still has to sit inside a window the caller holds, and the
+      obstacle here is the bus gate's granularity, not the register's.
 - [ ] **`f411spi` lost its high-speed slew configuration on `PA5`/`PA6`/`PA7`**, because the pinmux
       encoding field reaches `MODER`/`AFR`/`BSRR` but not `OSPEEDR` or `PUPDR`, so those pins run at
       the reset-default low-speed slew. `BR=/64` is ~1.3 MHz (84 MHz APB2 / 64, arithmetic from the
@@ -1403,6 +1927,9 @@ the port the board already flashes over, so the board can BE the serial adapter.
 
 ## Needs hardware (bench time, not code)
 
+Every item here is scheduled: it comes due in the M4.6.3..N witness pass, which is deliberately last
+so that nothing before it waits on bench access.
+
 - [ ] **v6-M MPU programming has zero coverage anywhere.** QEMU models no Cortex-M0+ and no
       Cortex-M23 core, so neither the emulator gates nor the silicon fleet ever exercises the
       armv6m MPU backend. Closing it needs an **RP2040 on the bench** -- there is no software
@@ -1414,17 +1941,18 @@ the port the board already flashes over, so the board can BE the serial adapter.
       run: `rebootdemo` on a picopi (RP2040 -> PICOBOOT/UF2) and on a Teensy 4.1 (`bkpt #251` ->
       HalfKay). The Teensy path is the least certain: it is not vendor-documented, and on
       non-Teensy RT1062 hardware the `bkpt` faults instead.
-- [ ] **The stage-4 per-app authority witness is BLOCKED on board access, not on work.** `c6blink`
-      (ESP32-C6, PMP NAPOT), `rxdrv` (RX72M, RXv3) and `f411spi` (F411-disco, PMSAv7) are the three
-      apps whose own `KICKOS_APP_AUTHORITY` mask is what makes them work, plus the two never-run
-      `kos_periph_enable` possession probes in the first two. **None of the three boards is
-      available** as of 2026-07-30 -- the accessible set is `xmc4800-relax`, `frdmk64f`, `pizero2350`,
-      `picopi` and `teensy41`. Nothing substitutes: the claim is that a per-app declaration carries a
-      board's OWN pin muxing on real silicon, and the sim can never hold a DEV region
-      (`arch_mpu_region_encodable` is unconditionally false there).
-      Note the coupling when these boards do come back: **`rx72m` is also one of the boards M4.5.5's
-      region re-encoding moves**, so it owes ONE visit covering both, not two. `esp32c6-wroom` and
-      `f411disco` are pow2-required backends that M4.5.5 does not move, so their captures are durable
+- [ ] **ONE stage-4 per-app authority witness is left, and it is BLOCKED on board access, not on
+      work: `f411spi` (F411-disco, PMSAv7).** Three apps were owed -- the others, `c6blink`
+      (ESP32-C6, PMP NAPOT) and `rxdrv` (RX72M, RXv3), **were both taken in M4.5.6** at
+      `270b6fa`/`270b6fa-dirty`, and `rxdrv` also ran the `kos_periph_enable` possession probe. The
+      claim in each case is that a per-app `KICKOS_APP_AUTHORITY` declaration carries a board's OWN
+      pin muxing on real silicon, and nothing substitutes for the board: the sim can never hold a DEV
+      region (`arch_mpu_region_encodable` is unconditionally false there).
+      This is the SAME debt the M4.6.3..N ledger carries, not a second one. Both places now use the
+      stage-4-authority framing rather than the older "`f411spi` mux write": the mux write is the
+      mechanism, the authority declaration is the claim.
+      `rx72m`'s coupling to M4.5.5's region re-encoding is discharged: the one visit covered both.
+      `f411disco` is a pow2-required backend that M4.5.5 does not move, so its capture is durable
       whenever taken.
       Since M4.5.4 merged without them, this is debt against `master`, not a merge gate.
 
@@ -1461,7 +1989,7 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
 - [x] **User-selectable CPU clock / low-power mode** -- `arch_cpu_clock_set` mechanism seam + syscall
       30 (privileged) + coherence tail (epoch re-anchor sole mult-writer, baud re-derive, timer re-arm,
       USER_OWNED refusal). SILICON PASS on XMC (144/48) + K64F (120/20.97): monotonic `now` across
-      retune, ratio-correct timing, no fault. XMC full retune, K64F staged; other chips weak-default-0.
+      retune, ratio-correct timing, no fault. XMC full retune, K64F staged; other chips fallback-0.
       Policy -> future userspace power-manager/clock-tree service (roadmap). Read side already landed.
 Silicon target for the handover: the CPU-side-MPU boards (XMC/RX/C6) where per-thread peripheral
 isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
@@ -1674,7 +2202,7 @@ below where they were previously mislabeled.
         PLUS a Critical fix: an unprivileged `mem_base` grant is now arena-bounds-checked
         (closed a peripheral/kernel-SRAM self-grant escalation). See `docs/design-task9-mmio-driver.md`.
   - [x] **K64F first unprivileged driver (k64drv, PIT)** -- DONE on silicon 2026-07-16;
-        added the weak `arch_fault_report_extra` hook (K64F decodes SYSMPU CESR/EARn/EDRn).
+        added the `arch_fault_report_extra` hook (K64F decodes SYSMPU CESR/EARn/EDRn).
   - [x] **SYSMPU peripheral-gating question -- ANSWERED on silicon 2026-07-16:** SYSMPU does
         NOT gate AIPS peripheral-bridge accesses under user mode; the AIPS bridge PACR does
         (per privilege+master, per 4 KB slot, NOT per-thread). So **per-thread peripheral

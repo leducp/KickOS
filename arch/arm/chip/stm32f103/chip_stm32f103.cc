@@ -386,7 +386,7 @@ size_t arch_mpu_min_region(void)
 }
 
 // Monotonic clock override: free-running TIM2->TIM3 chain ticks -> ns, replacing the
-// weak DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the
+// required per-chip arch_clock_now (the DWT is unreliable on this silicon). Pure epoch read: the
 // anchor holds the rate, so no divide and no rate derivation happens here.
 uint64_t arch_clock_now(void)
 {

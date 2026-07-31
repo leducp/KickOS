@@ -34,17 +34,17 @@ XMC-only (+ some K64F) testing hid. The console handover was never tried fleet-w
 
 ## 1. What M3 actually landed (the POC surface)
 
-| Mechanism | Kernel seam | Real backend bodies | Weak default | Silicon proof |
+| Mechanism | Kernel seam | Real backend bodies | Fallback TU | Silicon proof |
 |---|---|---|---|---|
 | Endpoint/IPC (CAP_ENDPOINT) | syscalls 26/27/28, `SlotPool<Endpoint>`, `wq_block`/`wq_pop_highest` | arch-independent | n/a | K64F + XMC 39/39 under enforcement; rest build-only |
 | Console handover | `ConsoleState`, `kos_console_publish` (#29), stdout cap @idx 0 | userspace driver = **XMC only** at the time of writing (`system/driver/xmc4800/xmcuart`; `system/driver/mk64f/k64uart` has since landed) | drop chip path | XMC end-to-end app->IPC->driver->wire, under enforcement |
-| Panic reclaim | `arch_console_reclaim`, `kickos_isr_fault`->`kpanic_enter` funnel | **XMC (USIC) + K64F (UART0) only** | weak no-op (`console.cc:288`) -- SILENT reclaim failure | XMC scramble-then-panic PASS; K64F built, silicon-pending (no K64F console driver) |
-| Clock-select | `arch_cpu_clock_set` (#30) + re-anchor/baud/timer tail | **XMC full + K64F staged only** | weak return 0 (`clock_select.cc:77`) | XMC 144/48 + K64F 120/20.97 |
-| Retune console coherence | `arch_console_flush_sync`, `arch_console_retune` | XMC, K64F | weak no-op (`console.cc:296-297`) | folds into the above |
+| Panic reclaim | `arch_console_reclaim`, `kickos_isr_fault`->`kpanic_enter` funnel | **XMC (USIC) + K64F (UART0) only** | no-op (`arch/common/arch_console_reclaim_default.cc`) -- SILENT reclaim failure | XMC scramble-then-panic PASS (the test now ships as the standalone `conreclaim` app); K64F body written, still unwitnessed on silicon |
+| Clock-select | `arch_cpu_clock_set` (#30) + re-anchor/baud/timer tail | **XMC full + K64F staged only** | return 0 (`arch/common/arch_cpu_clock_set_default.cc`) | XMC 144/48 + K64F 120/20.97 |
+| Retune console coherence | `arch_console_flush_sync`, `arch_console_retune` | XMC, K64F | no-ops (`arch/common/arch_console_flush_sync_default.cc`, `arch_console_retune_default.cc`) | folds into the above |
 
 The **fault-funnel porting invariant** (`docs/reference/porting.md`, `invariants.md`
 `panic-console-probe-independent`): any board that hands its console to a userspace driver
-MUST ship a real `arch_console_reclaim` body -- the weak no-op is a silent reclaim failure
+MUST ship a real `arch_console_reclaim` body -- the no-op fallback is a silent reclaim failure
 (a driver-garbled UART then eats the panic banner). This invariant is the spine of the
 fleet-wide reclaim gap below.
 
@@ -102,24 +102,34 @@ Functional handover everywhere a driver exists; ISOLATION only where the MPU per
   xmcspi), RX72M, ESP32-C6 (needs the APM open, G5). Here the handover is enforced.
 - **Coarse-AIPS (K64F)**: SYSMPU does NOT gate peripherals; the AIPS bridge does (per
   privilege+master, per 4 KB slot, all-user once opened). So the K64F grant is
-  DOCUMENTATION, not enforcement. Validate FUNCTIONAL handover + the reclaim body (already
-  written, silicon-pending). K64F end-to-end was never run because there is no K64F console
-  driver yet (G1).
+  DOCUMENTATION, not enforcement. Validate FUNCTIONAL handover + the reclaim body. The
+  FUNCTIONAL half has since been taken: `k64uart` landed, and on frdmk64f 2026-07-30 the full
+  service list (`k64uart` + `k64dspi`) reported `[k64uart] driver up (polled TX)` and ran the
+  whole 66-case TAP suite through the driver (`# tap route: stdout endpoint -> console driver
+  (service list published)`). The reclaim body is written and still unwitnessed there.
 - **No-MPU (STM32F103, ESP32-LX6, nRF51)**: handover is functional only; document it.
 - QEMU-only (mps2/virt/microbit): semihosting console, no real peripheral -- N/A / skip.
-Effort **S per board** (a scramble-then-panic test like the XMC one). Mostly **HW**.
+Effort **S per board** (a scramble-then-panic test like XMC's `conreclaim`). Mostly **HW**.
 
-### G4. Clock-select fleet-wide  (XMC full + K64F staged only; rest weak-0)
-Extend `arch_cpu_clock_set` per chip, or explicitly keep the weak default. Discipline (from
+`conreclaim` is a standalone app gated on `KICKOS_SERVICE_LIST=kickos_services_none`, not a
+build option on the console demo, and the premise conflict is why: U0C0 admits exactly ONE
+holder, the scrambler has to be it, but `consoledemo` exists to demonstrate the `xmcuart`
+handover, which needs `xmcuart` to be that holder. The two cannot share an image. Nothing is
+lost by splitting them, because the property under test -- `arch_console_reclaim` repairs a
+garbled UART from the panic path -- does not depend on WHO garbled it.
+
+### G4. Clock-select fleet-wide  (XMC full + K64F staged only; rest fallback-0)
+Extend `arch_cpu_clock_set` per chip, or explicitly keep the fallback
+(`arch/common/arch_cpu_clock_set_default.cc`). Discipline (from
 `design-m3-clock-select.md`): flash wait-states + voltage go UP *before* frequency rises,
 DOWN *after* it falls; bracket the exact PLL/divider write; re-anchor the monotonic clock;
 re-derive baud; re-arm the timer. Per-chip feasibility already scoped:
 - STM32F411 -- DEFERRED (feasible as a fixed set: park on HSI, PLL off, rewrite N/P, relock).
 - RP2040 -- feasible for clk_sys; the TIMER (clk_ref) is immune but the CONSOLE (clk_peri
   tracks clk_sys) is NOT -- must re-derive baud.
-- Everything else (sam3x8e, nrf51, f103/f302, mps2, esp32, C6, riscv) -- keep weak-0 until
-  someone needs it. This is a legitimate "explicitly weak" outcome, not a gap to force.
-Effort **M per chip that opts in**; **S** to leave weak-default + document. Mostly **HW**.
+- Everything else (sam3x8e, nrf51, f103/f302, mps2, esp32, C6, riscv) -- keep fallback-0 until
+  someone needs it. This is a legitimate "explicitly declining" outcome, not a gap to force.
+Effort **M per chip that opts in**; **S** to leave the fallback + document. Mostly **HW**.
 NOTE: this is the mechanism seam only; POLICY is the power-manager service (G7 / section 3).
 
 ### G5. Peripheral-isolation prereqs  (unblock userspace peripheral drivers per chip)
@@ -221,7 +231,7 @@ be up first. The INIT service (G7) brings them up in this order:
 
 ```
         +---------------------------------------------+
-        |  INIT service (privileged root)             |
+        |  INIT service (root, all authority)         |
         |  ONE-SHOT at bring-up, from a board pin-map: |
         |   * PINMUX -- privileged pin-function config |
         |     (NO runtime service; folds into init)    |
@@ -240,7 +250,7 @@ be up first. The INIT service (G7) brings them up in this order:
          +----------------+
                   |
                   v
-         +----------------+   ONE-SHOT PINMUX (init does it, privileged): assign
+         +----------------+   ONE-SHOT PINMUX (init calls the kernel seam): assign
          |  PINMUX step   |   each driver's pin functions from the board pin-map,
          | (in init, not  |   THEN grant the pin's register window at spawn. No
          |  a service)    |   GPIO service on the path -- the driver toggles the
@@ -271,11 +281,14 @@ often each CHANGES at runtime:
 - **PINMUX -- ONE-SHOT init-time config, NOT a service.** Pin-function assignment is set once at
   bring-up and does not change at runtime (unlike a hot GPIO CS, or the clock tree under DVFS),
   so it needs no persistent service: it COLLAPSES into the init service's bring-up sequence.
-  Init muxes a driver's pins (privileged -- the mux registers live in the shared SCU/PORT block
-  alongside the clock gates, natural since init is the privileged root that grants caps + spawns
-  anyway), THEN spawns the driver, which never touches pinmux at runtime. Driven by a board
+  Init muxes a driver's pins through `arch_pinmux_set` -- the mux registers live in the shared
+  SCU/PORT block alongside the clock gates, so the write lands privileged inside the kernel while
+  init itself stays unprivileged, gated on `AUTH_PINMUX`; natural since init is the root that
+  grants caps + spawns anyway -- THEN spawns the driver, which never touches pinmux at runtime.
+  Driven by a board
   pin-map. Caveat: rare dynamic pin RE-config (runtime repurpose, or reconfiguring pins for
-  low-power sleep) would be a COLD privileged call if ever needed -- not the common path.
+  low-power sleep) would be a COLD call back through the same seam if ever needed -- not the
+  common path.
 
 Consequence: the init service is a topological bring-up (clock -> mux the pins -> grant each
 driver its pin windows at spawn -> the byte/transfer drivers -> apps), doing the one-shot pinmux
@@ -299,7 +312,8 @@ service-list rollout is future work.
 
 **Pinmux backends now cover 11 fleet chips** (M4.5): the original mk64f + xmc4800 plus rp2040,
 rp2350, esp32c6, stm32f411, stm32f103, stm32f302, sam3x8e, imxrt1062, esp32. `nrf51`, `mps2`, and
-`virt` keep the weak `-KOS_ENOSYS` default -- they have no central pinmux block (per-peripheral
+`virt` keep the declining `-KOS_ENOSYS` fallback (`arch/common/arch_pinmux_set_default.cc`) --
+they have no central pinmux block (per-peripheral
 PSEL, emulated, or virtual), so a non-empty board pin-map is what fails loud there. The ABI is
 unchanged `{u16 port, u16 pin, u32 func}` with `func` a chip-OPAQUE per-chip encoding, so the wire
 stays neutral while each backend owns its encoding; stm32f103 covers default-mapped peripherals

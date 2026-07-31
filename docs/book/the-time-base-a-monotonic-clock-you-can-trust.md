@@ -266,11 +266,17 @@ the port.
 
 `arch_clock_now()` (monotonic nanoseconds) and `arch_timer_arm()` /
 `arch_timer_disarm()` are the entire kernel-facing time seam, declared in
-`arch/include/kickos/arch/arch.h`. The arch layer supplies a **weak** default;
-a chip supplies a **strong** definition that overrides it when the arch default
-is wrong for that silicon. This is the same weak-override seam the rest of the
-arch layer uses (idle, MPU, blink), and it is what lets one chip swap the clock
-source without disturbing the arch or the kernel above it.
+`arch/include/kickos/arch/arch.h`. The optional seams around it (idle, MPU,
+blink) each carry a fallback body in a translation unit of its own, which a
+chip's own definition displaces. Whether the clock gets one is decided by the
+checklist above, per ISA: where the core offers a counter that passes it, the
+arch may supply a fallback (Xtensa LX6's `CCOUNT` plus a software wrap); where
+the only core-local candidate fails it -- ARMv7-M, whose only wide-enough counter
+sits in the debug domain -- there is deliberately none, and a chip that forgets
+`arch_clock_now()` fails to link. That is the point of leaving it out: a porter
+cannot skip the vetting silently, or inherit a clock nobody vetted. Either way
+the seam is what lets one chip swap the clock source without disturbing the arch
+or the kernel above it.
 
 ### The worked example: a cycle counter is the wrong authority
 
@@ -285,11 +291,12 @@ forcing the software extension of failure modes (a)/(b)). A debug-domain read
 that aliases a neighbour delivers exactly the one-bad-high-reading that failure
 (a) turns into a permanent 2^32 jump; that jump strands every timed wait per the
 "Why" section. The fix is not to harden the extension -- it is to change the
-authority: a chip that has a reliable free-running peripheral defines a strong
-`arch_clock_now()` over it and leaves the weak DWT default unused. (QEMU targets
-do the same for a different reason -- the model freezes or omits `CYCCNT` -- which
-is the same lesson from the emulator side: the cycle counter is not a dependable
-authority.)
+authority: every chip defines `arch_clock_now()` over a reliable free-running
+peripheral, and the `CYCCNT` read is demoted to the telemetry timestamp seam
+(`arch_trace_now`), where a wrap costs a mislabelled trace rather than a
+stranded thread. (An emulated target goes one step further and displaces even
+that telemetry read, because the model freezes or omits `CYCCNT` -- the same
+lesson from the emulator side: the cycle counter is not a dependable authority.)
 
 ### Per-arch realisations
 

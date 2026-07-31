@@ -8,7 +8,7 @@
 // the K64F chip layer (item 10) swaps semihosting for real MCG clocks + UART0.
 //
 // The emulated CMSDK has no pin-function mux; arch_pinmux_set is intentionally
-// left as the weak ENOSYS seam.
+// left to the declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
 
@@ -32,7 +32,7 @@ extern "C"
 
     // PMSAv8 MPU backend (arch/arm/common/arch_arm_pmsav8.cc): one-time MAIR +
     // MemManage enable. Also the LINK ANCHOR that pulls the PMSAv8 archive member,
-    // so its strong commit/encodable override the weak v7-M ones. Only the M33
+    // so its commit/encodable replace the v7-M fallback TUs. Only the M33
     // board (mps2-an505) defines KICKOS_MPS2_PMSAV8 -- see the chip's mpu.cmake.
 #if KICKOS_HAVE_MPU && defined(KICKOS_MPS2_PMSAV8)
     void kickos_arm_pmsav8_init(void);
@@ -84,13 +84,13 @@ void arch_init(void)
 #if KICKOS_HAVE_MPU && defined(KICKOS_MPS2_PMSAV8)
     // MUST precede kickos_armv7m_init and MUST NOT be dropped: this reference pulls
     // the PMSAv8 backend into the link. Without it the build still succeeds, but the
-    // weak PMSAv7 commit stands and writes RASR values into what is RLAR on v8-M.
+    // PMSAv7 commit fallback stands and writes RASR values into what is RLAR on v8-M.
     kickos_arm_pmsav8_init(); // MAIR + MemManage; the first switch enables the MPU
 #endif
     kickos_armv7m_init();
 }
 
-// Override the arch layer's weak DWT clock: QEMU does not implement the DWT
+// The required per-chip clock. QEMU does not implement the DWT
 // cycle counter (it reads frozen), so derive the monotonic clock from the
 // semihosting SYS_CLOCK (centiseconds since start). Coarse (10 ms) -- fine for
 // the QEMU functional gate; real silicon uses the DWT default.
@@ -117,7 +117,7 @@ uint64_t arch_clock_now(void)
     return ns;
 }
 
-// Override the arch layer's weak DWT trace clock: QEMU's DWT CYCCNT reads frozen
+// Replaces the arch layer's DWT trace-clock fallback: QEMU's DWT CYCCNT reads frozen
 // (same reason as arch_clock_now above), so derive the telemetry timestamp from
 // the same monotonic semihosting clock. Coarse (10 ms), but the QEMU telemetry
 // gate is STRUCTURAL (chain/pairs/no-gaps), not latency-accurate; real silicon
@@ -127,7 +127,7 @@ uint32_t arch_trace_now(void)
     return static_cast<uint32_t>(arch_clock_now() / 1000ull); // us
 }
 
-// Override the arch layer's weak WFI idle: this target's clock is the semihosting
+// Replaces the arch layer's WFI idle fallback: this target's clock is the semihosting
 // SYS_CLOCK (arch_clock_now above), and QEMU <= 10 stops it while the core halts
 // in WFI -- so a sleep with every thread idle never wakes. Spin instead. QEMU-only
 // board, so the wasted cycles cost nothing real.
@@ -198,7 +198,7 @@ void arch_shutdown(int status)
 // C-runtime bring-up (the reset vector). Runs on MSP; touches only linker
 // symbols until .data/.bss are live.
 // A fault/panic on this QEMU target must EXIT with a status so a CTest run
-// catches it -- there is no LED, and the weak blink terminal (kernel.h) would
+// catches it -- there is no LED, and the blink terminal fallback (kernel.h) would
 // just spin until the harness times out. Override it to exit.
 void kfault_terminate(void)
 {

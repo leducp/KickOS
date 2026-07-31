@@ -8,8 +8,82 @@ if(NOT KICKOS_ARCH_FAMILY)
   set(KICKOS_ARCH_FAMILY "arm")
 endif()
 
+# --- Seam fallbacks: the lone-TU rule ----------------------------------------
+# A seam whose backend is optional gets its fallback body in a translation unit of its
+# OWN, named <symbol>_default.cc, that defines EXACTLY ONE symbol. A backend that
+# defines the symbol satisfies the reference from its own member, so the fallback member
+# is never extracted; a second symbol in a fallback TU would drag the member in anyway
+# and collide with that backend. tests/check_seam_defaults.sh asserts both the
+# one-symbol rule and the per-board resolution.
+#
+# This is LINKER behaviour, not language semantics. It is behaviour every Unix-like
+# linker and MSVC `.lib` share, unlike __attribute__((weak)), whose archive interaction
+# is implementation-defined.
+#
+# THE LOAD-BEARING INVARIANT IS ON THE BACKEND SIDE: a backend's definition must live in
+# an archive member that is ALWAYS ANCHORED, i.e. one the link pulls for some other
+# reason (chip_<chip>.cc, force-loaded via -u g_isr_vector -> startup.S ->
+# Reset_Handler; usic_uart.cc, pulled for arch_console_tx_backend). A backend that puts
+# its definition in a dedicated TU nothing else references is NOT protected by scan
+# order: the fallback resolves the reference first and the board SILENTLY DECLINES at
+# runtime. Scan order (fallbacks live in kickos_arch_*, which the rescan group scans
+# AFTER kickos_chip_*) is a backstop only. Leg 2 of the gate is what enforces the
+# anchoring rule.
+#
+# Arch-neutral fallbacks for seams the KERNEL declares. They must NOT sit in
+# kickos_kernel: the group scans the kernel archive before the chip archive, so a
+# fallback there would be extracted in the same pass that makes the symbol undefined and
+# then collide with the chip's definition. Each list below drops the members that the
+# arch backend itself defines: two definitions of one symbol in ONE archive resolve by
+# member order, which is exactly the implementation-defined behaviour this replaces.
+set(KICKOS_SEAM_DEFAULTS_COMMON
+  common/arch_console_flush_sync_default.cc
+  common/arch_console_reclaim_default.cc
+  common/arch_console_retune_default.cc
+  common/arch_console_tx_backend_default.cc
+  common/arch_console_write_sync_default.cc
+  common/arch_cpu_clock_set_default.cc
+  common/arch_diag_led_init_default.cc
+  common/arch_diag_led_set_default.cc
+  common/arch_periph_clock_hz_default.cc
+  common/arch_periph_enable_default.cc
+  common/arch_periph_reg_write_default.cc
+  common/arch_pinmux_set_default.cc
+  common/kfault_terminate_default.cc)
+# arch_reboot must be ABSENT from a production image, so its fallback follows the same
+# gate as its callers and its chip backends.
+if(KICKOS_ENABLE_SELFTEST)
+  list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reboot_default.cc)
+endif()
+
+# ARM PMSA + core fallbacks, shared by armv6m and armv7m.
+set(KICKOS_SEAM_DEFAULTS_ARM
+  arm/common/arch_bitband_present_default.cc
+  arm/common/arch_idle_wait_default.cc
+  arm/common/arch_mpu_min_region_default.cc
+  arm/common/arch_mpu_region_encodable_default.cc
+  arm/common/arch_mpu_region_pow2_default.cc
+  arm/common/arch_shutdown_default.cc
+  arm/common/kickos_arch_mpu_commit_default.cc)
+# The fixed-region hook exists only where the region type and its caller do.
+if(KICKOS_HAVE_MPU)
+  list(APPEND KICKOS_SEAM_DEFAULTS_ARM arm/common/kickos_arm_mpu_fixed_default.cc)
+endif()
+
 if(KICKOS_ARCH STREQUAL "sim")
-  add_library(kickos_arch_sim STATIC sim/sim.cc sim/start.cc)
+  # sim.cc IS the backend for arch_console_write_sync, arch_console_tx_backend,
+  # kfault_terminate and arch_periph_reg_write, so those fallbacks are dropped: the
+  # sim has no chip archive, and a fallback beside a backend in ONE archive resolves
+  # by member order. SystemCoreClock has no chip to define it here.
+  set(_sim_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
+  list(REMOVE_ITEM _sim_defaults
+    common/arch_console_tx_backend_default.cc
+    common/arch_console_write_sync_default.cc
+    common/arch_periph_reg_write_default.cc
+    common/kfault_terminate_default.cc)
+  add_library(kickos_arch_sim STATIC sim/sim.cc sim/start.cc
+    sim/system_core_clock_default.cc
+    ${_sim_defaults})
   kickos_apply_hosted(kickos_arch_sim)
   target_include_directories(kickos_arch_sim PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
@@ -34,13 +108,18 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
     arm/common/arch_arm_common.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
+    ${KICKOS_SEAM_DEFAULTS_COMMON}
+    ${KICKOS_SEAM_DEFAULTS_ARM}
+    arm/armv7m/arch_fault_report_extra_default.cc
+    arm/armv7m/arch_trace_now_default.cc
     arm/armv7m/switch.S)
   kickos_apply_freestanding(kickos_arch_armv7m)
-  # arch_trace_now (weak DWT read) lives here and runs on the PendSV-tail emit
-  # path, so it too must be FP-register-free (v7-M has an FPU). Whole TU is
-  # integer-only, so -mgeneral-regs-only is safe.
+  # The DWT arch_trace_now fallback runs on the PendSV-tail emit path, so its TU (and
+  # arch_armv7m.cc, which carries the rest of that path) must be FP-register-free
+  # (v7-M has an FPU). Both TUs are integer-only, so -mgeneral-regs-only is safe.
   if(KICKOS_TELEMETRY_ON)
     set_source_files_properties(arm/armv7m/arch_armv7m.cc
+                                arm/armv7m/arch_trace_now_default.cc
       PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
   endif()
   target_include_directories(kickos_arch_armv7m PUBLIC
@@ -53,11 +132,14 @@ elseif(KICKOS_ARCH STREQUAL "armv7m")
 elseif(KICKOS_ARCH STREQUAL "armv6m")
   # Cortex-M0/M0+ (RP2040). PRIMASK crit + v6-M-subset switch.S; the
   # chip supplies arch_clock_now (no DWT) + arch_init/console + linker script.
+  # No arch_trace_now fallback: v6-M has no DWT, so the trace clock is a chip contract.
   add_library(kickos_arch_armv6m STATIC
     arm/armv6m/arch_armv6m.cc
     arm/common/arch_arm_common.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
+    ${KICKOS_SEAM_DEFAULTS_COMMON}
+    ${KICKOS_SEAM_DEFAULTS_ARM}
     arm/armv6m/switch.S)
   kickos_apply_freestanding(kickos_arch_armv6m)
   target_include_directories(kickos_arch_armv6m PUBLIC
@@ -77,6 +159,8 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
     rx/rxv3/arch_rxv3.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
+    ${KICKOS_SEAM_DEFAULTS_COMMON}
+    rx/rxv3/kickos_rx_dev_pending_line_default.cc
     rx/rxv3/switch.S)
   kickos_apply_freestanding(kickos_arch_rxv3)
   target_include_directories(kickos_arch_rxv3 PUBLIC
@@ -99,6 +183,8 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
     xtensa/lx6/arch_xtensa.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
+    ${KICKOS_SEAM_DEFAULTS_COMMON}
+    xtensa/lx6/arch_clock_now_default.cc
     xtensa/lx6/switch.S)
   kickos_apply_freestanding(kickos_arch_lx6)
   target_include_directories(kickos_arch_lx6 PUBLIC
@@ -120,6 +206,13 @@ elseif(KICKOS_ARCH STREQUAL "rv32imac")
     riscv/rv32imac/arch_rv32imac.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc
+    ${KICKOS_SEAM_DEFAULTS_COMMON}
+    riscv/rv32imac/arch_rv_ext_eoi_default.cc
+    riscv/rv32imac/arch_rv_has_mcounteren_default.cc
+    riscv/rv32imac/arch_rv_hw_mask_default.cc
+    riscv/rv32imac/arch_rv_hw_unmask_default.cc
+    riscv/rv32imac/arch_rv_inject_deliver_default.cc
+    riscv/rv32imac/kickos_rv_ext_dispatch_dev_default.cc
     riscv/rv32imac/switch.S)
   kickos_apply_freestanding(kickos_arch_rv32imac)
   target_include_directories(kickos_arch_rv32imac PUBLIC
@@ -132,6 +225,11 @@ elseif(KICKOS_ARCH STREQUAL "rv32imac")
 else()
   message(FATAL_ERROR "KickOS: arch backend '${KICKOS_ARCH}' not available")
 endif()
+
+# The declining fallbacks name the KOS_E* taxonomy, which lives in kickos_system's
+# headers; no other arch-layer TU needs them.
+target_include_directories(kickos_arch_${KICKOS_ARCH} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../system/include")
 
 # --- Chip backend (startup + linker script + clocks + console) --------------
 # Built when the selected board resolves to a chip that is brought up. Sources:
@@ -155,7 +253,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # KICKOS_ARM_PMSAV8_SOURCE to arm/common/arch_arm_pmsav8.cc. It is NOT in the
   # always-compiled armv7m arch list (the v6-M/v7-M fleet must never link it); it is
   # pulled into the CHIP library only for an enforcement build so its strong
-  # kickos_arch_mpu_commit + arch_mpu_region_encodable override the weak v7-M defs.
+  # kickos_arch_mpu_commit + arch_mpu_region_encodable replace the v7-M fallback TUs.
   # Gated on KICKOS_HAVE_MPU so a non-enforcement build of the same chip stays
   # byte-identical to the plain armv7m fleet.
   if(KICKOS_HAVE_MPU AND KICKOS_ARM_PMSAV8_SOURCE)

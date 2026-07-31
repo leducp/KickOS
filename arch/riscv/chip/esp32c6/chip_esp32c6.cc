@@ -295,7 +295,7 @@ void arch_console_write(char const* buf, size_t n)
 }
 
 // Synchronous polled writer -- the panic / fault / pre-arm path (console.cc picks it when the
-// ring is unarmed or in ISR/panic context). Overrides the weak default that would otherwise
+// ring is unarmed or in ISR/panic context). Replaces the fallback TU that would otherwise
 // re-enter the buffered arch_console_write. Bounded so a wedged UART cannot hang the panic path.
 void arch_console_write_sync(char const* buf, size_t n)
 {
@@ -347,11 +347,11 @@ void arch_timer_disarm(void)
 }
 
 // The ESP32-C6 HP core traps (illegal instruction) on `csrw mcounteren`, so the
-// generic rv32 bring-up must not write it. Overrides the weak default in
+// generic rv32 bring-up must not write it. Replaces the fallback TU in
 // arch_rv32imac.cc. U-mode counter reads (rdcycle/rdtime) are not needed at M1.
 int arch_rv_has_mcounteren(void) { return 0; }
 
-// Inject-delivery override (weak default in arch_rv32imac.cc raises SSIP, which is a
+// Inject-delivery backend (the arch fallback TU raises SSIP, which is a
 // no-op on this M/U-only core). Assert the FROM_CPU_0 level source -> CPU int 31
 // fires (mcause=31 -> switch.S .Lext). The logical line is already in g_inject_line.
 void arch_rv_inject_deliver(int line)

@@ -29,12 +29,17 @@ extern "C"
     // privileged (see <kickos/sys.h>). Declared here rather than including the
     // userspace header into a kernel TU.
     int kos_shutdown(int status);
+    // Panic THROUGH the syscall trap, never kpanic directly: root is unprivileged, and
+    // kpanic masks IRQs and reads kernel .bss, so a call from root's frame faults there
+    // and the message is lost.
+    void kos_panic(char const* msg) __attribute__((noreturn));
     // Generated per-build by CMake (cmake/build_stamp.cmake) so the banner reflects the
     // image actually linked, not the (stale-on-incremental) __DATE__/__TIME__ of a TU.
     // Local build time (with offset) + the commit (git describe --dirty --always).
     extern char const kickos_build_time[];
     extern char const kickos_build_commit[];
-    // Per-app source compile time (weak; null when no app defines it). See app.h.
+    // Per-app source compile time. Weak REFERENCE: null when no app TU defines it.
+    // See app.h and tests/weak_allowlist.txt.
     char const* kickos_app_build_stamp(void) __attribute__((weak));
 
     // Non-kernel (app / libstdc++ / newlib / library) global ctors. The linker script
@@ -122,17 +127,9 @@ namespace kickos
 #if defined(KICKOS_SCHED_PERIODIC_TICK)
             sched = "periodic tick";
 #endif
-            // A concatenated literal: the suffix is empty TO THE BYTE in the default
-            // posture, which is load-bearing (f302nucleo-st links with 96 bytes of
-            // flash free and this banner reaches every board).
-#if KICKOS_ROOT_PRIVILEGED
-#define KICKOS_BANNER_ROOT ""
-#else
-#define KICKOS_BANNER_ROOT ", root unprivileged"
-#endif
-            char const* mpu = "off" KICKOS_BANNER_ROOT;
+            char const* mpu = "off";
 #if KICKOS_HAVE_MPU
-            mpu = "enforce" KICKOS_BANNER_ROOT;
+            mpu = "enforce";
 #endif
             char const* rule = "  ==============================================\n";
             kputs("\n");
@@ -189,7 +186,7 @@ namespace kickos
             // persistent init never returns here (it parks or loops). kos_shutdown
             // returning means root was refused; report it rather than running on.
             kos_shutdown(status);
-            KICKOS_UNREACHABLE("root: shutdown refused");
+            kos_panic("root: shutdown refused");
         }
     }
 
@@ -239,25 +236,21 @@ namespace kickos
         root_attr.name = "root";
         root_attr.prio = KICKOS_PRIO_MIN + 1;
         root_attr.policy = Policy::FIFO;
-        // The privilege boundary, decided ONCE here: privilege is a property of the
-        // fabricated first frame (arch_context_init) and of the region set
-        // thread_create composes from it, so there is no demotion instant. Build knob,
-        // not a weak symbol (see the KICKOS_ROOT_PRIVILEGED block in the root
-        // CMakeLists.txt).
-        root_attr.privileged = (KICKOS_ROOT_PRIVILEGED != 0);
+        // Privilege is a property of the fabricated first frame (arch_context_init) and
+        // of the region set thread_create composes from it, so there is no demotion
+        // instant: root is unprivileged from its first instruction. idle above is the
+        // only privileged thread in the system.
+        root_attr.privileged = false;
         thread_create(&g_root_tcb, root_entry, nullptr,
                       root_stack, KICKOS_ROOT_STACK_SIZE, root_attr);
-#if !KICKOS_ROOT_PRIVILEGED
-        // Root is seated with every authority (the set a privileged root holds
-        // implicitly). Ordering matters twice: after thread_create, which zeroes the
-        // cap table and would wipe the seat; before sched::start(), so the seat is in
-        // place before root's first instruction. IrqLock is cap_seat_authority's
-        // documented precondition.
+        // Root is seated with every authority. Ordering matters twice: after
+        // thread_create, which zeroes the cap table and would wipe the seat; before
+        // sched::start(), so the seat is in place before root's first instruction.
+        // IrqLock is cap_seat_authority's documented precondition.
         {
             IrqLock lock;
             cap_seat_authority(&g_root_tcb, CAP_AUTH_ALL);
         }
-#endif
 
         sched::start(); // returns only if the scheduler ever unwinds to boot
         return 0;

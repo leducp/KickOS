@@ -6,6 +6,7 @@
   linked-image weight tables, the next-steps ranking, and the silicon coverage boundary.
   Self-contained (inline CSS/JS, no external requests), with status, severity and area filters;
   open it in any browser.
+- The ledger is point-in-time: scored at M4.5.1, it predates M4.5.6, so the tree is the newer truth.
 
 ## Conventions
 

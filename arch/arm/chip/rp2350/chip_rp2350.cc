@@ -72,7 +72,7 @@ void kickos_armv7m_init(void);
 #if KICKOS_HAVE_MPU
 // PMSAv8 MPU backend (arch/arm/common/arch_arm_pmsav8.cc): one-time MAIR + MemManage
 // enable. This reference is also the LINK ANCHOR that pulls the PMSAv8 member so its
-// strong kickos_arch_mpu_commit / arch_mpu_region_encodable win over the weak v7-M defs.
+// kickos_arch_mpu_commit / arch_mpu_region_encodable replace the v7-M fallback TUs.
 void kickos_arm_pmsav8_init(void);
 #endif
 
@@ -357,7 +357,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 // Monotonic clock from the 64-bit system TIMER0 (microseconds -> ns). Uses the
 // non-latching RAW halves with a hi/lo/hi re-read to tolerate a 32-bit rollover
 // between the reads (core-safe, unlike the latching TIMELR/TIMEHR pair). Overrides
-// the arch's weak DWT default: TIMER0 is a true 64-bit source (no 32-bit wrap).
+// the required per-chip clock: TIMER0 is a true 64-bit source (no 32-bit wrap).
 uint64_t arch_clock_now(void)
 {
     uint32_t hi = r32(reg::timer::TIMERAWH);
@@ -428,7 +428,7 @@ int arch_reboot(void)
 // base), the TICKS block (its TIMER0 generator is the 1 MHz source -- the RP2040
 // watchdog role moved here), and the RESETS + CLOCKS control blocks. Full 16 KB
 // windows each so the SET/CLR/XOR atomic aliases are covered. M33 (Arm) has no
-// bit-band -> weak arch_bitband_present 0.
+// bit-band -> the arch_bitband_present fallback 0 stands.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {

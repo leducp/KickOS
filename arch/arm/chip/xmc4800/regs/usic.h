@@ -61,11 +61,16 @@ namespace kickos::xmc::reg::usic
     // FDR (RM p.18-178): DM[15:14]=10B fractional mode -> fFD = fPERIPH*STEP/1024.
     constexpr uint32_t FDR_DM_FRACTIONAL = 0x2u << 14;
     constexpr uint32_t FDR_STEP_MASK = 0x3FFu; // STEP[9:0]
+    constexpr uint32_t FDR_DM_MASK = 0x3u << 14; // DM[15:14]
 
     // BRG (RM p.18-179) field positions.
     constexpr uint32_t BRG_PCTQ_SHIFT = 8;  // [9:8]
     constexpr uint32_t BRG_DCTQ_SHIFT = 10; // [14:10]
     constexpr uint32_t BRG_PDIV_SHIFT = 16; // [25:16]
+    // BRG bits 2, 5, 15 and [27:26] are the register's only reserved bits
+    // (RM p.18-181, type r, "Read as 0; should be written with 0"). Every other bit
+    // belongs to a writable field.
+    constexpr uint32_t BRG_RESERVED_MASK = (1u << 2) | (1u << 5) | (1u << 15) | (0x3u << 26);
 
     // DXnCR (RM p.18-173): DSEL[2:0] selects the input line DXnA..DXnG.
     constexpr uint32_t DX_DSEL_MASK = 0x7u;
@@ -184,6 +189,7 @@ namespace kickos::xmc::reg::usic
     constexpr uint32_t CCR_MODE_SSC = 0x1u;
     constexpr uint32_t CCR_RIEN = 1u << 14;
     constexpr uint32_t CCR_AIEN = 1u << 15;
+    constexpr uint32_t CCR_MODE_MASK = 0xFu; // MODE[3:0]
 
     // PSR [SSC Mode] (RM p.18-170 / p.18-102): MSLS(0) current MSLS level; MSLSEV(2)
     // MSLS-changed event (sticky); RIF(14)/AIF(15) receive / alternative-receive

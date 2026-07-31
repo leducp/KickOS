@@ -4,7 +4,7 @@
 # Reboot-to-bootloader witness, and the unattended-reflash affordance (flash without a
 # button press). Diagnostic app: kos_reboot is compiled out of the production ABI.
 # Board-agnostic -- on a chip with an arch_reboot backend it hands the board over, and
-# everywhere else the weak seam declines, which is what the gates below assert.
+# everywhere else the fallback declines, which is what the gates below assert.
 kickos_add_diagnostic_app(rebootdemo
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
@@ -17,7 +17,7 @@ if(NOT KICKOS_BUILD_TESTS)
 endif()
 
 # rc=-38 is -KOS_ENOSYS (system/include/kickos/sys/errno.h). Registered only where the
-# seam is weak: a board with a real backend reboots instead of printing anything.
+# seam declines: a board with a real backend reboots instead of printing anything.
 if(KICKOS_ARCH STREQUAL "sim")
   # The script, not PASS_REGULAR_EXPRESSION: a regex property makes CTest ignore the
   # exit status, so the refusal line plus a dirty exit would still pass. It runs

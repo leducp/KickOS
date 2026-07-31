@@ -34,20 +34,17 @@ if(NOT (KICKOS_ARCH STREQUAL "sim"))
   target_compile_options(selftest PRIVATE -Os)
 endif()
 
+# Link map for the seam-fallback gate below: only the map names the archive MEMBER each
+# symbol was resolved from, which is what proves a backend's definition beat its
+# fallback. Byproduct, so a clean removes it.
+set(_selftest_map "$<TARGET_FILE:selftest>.map")
+target_link_options(selftest PRIVATE "-Wl,-Map=${_selftest_map}")
+set_property(TARGET selftest APPEND PROPERTY ADDITIONAL_CLEAN_FILES "${_selftest_map}")
+
 # The expected-skip list every gate below carries (EXPECT_SKIPS, checked by name in
-# tests/check_tap_stream.sh). Empty means "no test may skip", the fleet default.
-#
-# Under KICKOS_ROOT_PRIVILEGED=OFF no privileged caller exists after boot, so
-# mpu_privileged_guard skips; it is registered only under enforcement, hence both
-# conditions. KICKOS_HAVE_MPU is 1 by arch on the sim, so this covers the flipped sim.
+# tests/check_tap_stream.sh). Empty means "no test may skip", which is every board here
+# except microbit (its own hardcoded list further down).
 set(KICKOS_EXPECT_SKIPS "")
-if(KICKOS_HAVE_MPU AND NOT KICKOS_ROOT_PRIVILEGED)
-  list(APPEND KICKOS_EXPECT_SKIPS mpu_privileged_guard)
-endif()
-# Comma-joined before it reaches an ENVIRONMENT property: that property is itself a
-# CMake list, so an embedded semicolon would split the value into a second bogus
-# environment entry. The check script splits on commas.
-list(JOIN KICKOS_EXPECT_SKIPS "," KICKOS_EXPECT_SKIPS)
 
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # The guard-probe case is registered only under KICKOS_ENABLE_SELFTEST (the sim
@@ -99,6 +96,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   #   domain_share: arena cannot spare the shared region
   #   irq_as_event: wants a 4 KiB MMIO page out of 16 KiB SRAM
   # caller_stack and mmio_grant report PARTIAL instead and count as passes, not skips.
+  # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a semicolon
+  # would split the value into a second bogus environment entry.
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,domain_share,irq_as_event")
 endif()
@@ -142,6 +141,40 @@ if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             "$<TARGET_FILE:kickos_lib>")
   set_tests_properties(kernel_ctor_placement PROPERTIES TIMEOUT 60)
+endif()
+
+# Seam-fallback gate: every optional arch/chip seam resolves by archive-member
+# extraction, not by __attribute__((weak)). Runs on every board, because the resolution it
+# checks is per-link and a board is only covered by its OWN build tree. Reads this
+# selftest ELF plus its link map (only the map names the member each symbol came from).
+if(KICKOS_BUILD_TESTS AND TARGET selftest)
+  # Every archive of the rescan group, so the gate sees the WHOLE set of definitions the
+  # link had to choose from; a partial list would read a backend as absent. The app's own
+  # objects come too: they are on the link command line (always in the image) and an app
+  # may define a seam itself, KICKOS_APP_AUTHORITY being the one that does.
+  set(_seam_archives "$<TARGET_FILE:kickos_kernel>" "$<TARGET_FILE:kickos_lib>"
+                     "$<TARGET_FILE:kickos_user>"
+                     "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>")
+  if(KICKOS_CHIP AND TARGET kickos_chip_${KICKOS_CHIP})
+    list(APPEND _seam_archives "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>")
+  endif()
+  foreach(_lib ${KICKOS_INIT_PROVIDER} ${KICKOS_SERVICE_LIST_LIBS} ${KICKOS_BOARD_PINMAP_LIBS})
+    if(TARGET ${_lib})
+      get_target_property(_lib_type ${_lib} TYPE)
+      if(_lib_type STREQUAL "STATIC_LIBRARY")
+        list(APPEND _seam_archives "$<TARGET_FILE:${_lib}>")
+      endif()
+    endif()
+  endforeach()
+  list(APPEND _seam_archives "$<TARGET_OBJECTS:selftest>")
+  add_test(
+    NAME    seam_defaults
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_seam_defaults.sh"
+            "${CMAKE_NM}" "${CMAKE_READELF}"
+            "$<TARGET_FILE:selftest>" "${_selftest_map}"
+            "${PROJECT_SOURCE_DIR}/tests/weak_allowlist.txt"
+            ${_seam_archives})
+  set_tests_properties(seam_defaults PROPERTIES TIMEOUT 120)
 endif()
 
 # RISC-V-under-PMP small-data guard: the gp window sits inside the app grant, so the

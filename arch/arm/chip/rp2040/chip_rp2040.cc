@@ -401,7 +401,7 @@ int arch_reboot(void)
 // base), the WATCHDOG (its /12 TICK feeds the 1 MHz TIMER -- reserved despite the
 // general watchdog-exclusion, R3), and the RESETS + CLOCKS control blocks. Each is a
 // full 16 KB window so the SET/CLR/XOR atomic aliases (+0x1000/+0x2000/+0x3000) are
-// covered too (R2). M0+ has no bit-band -> weak arch_bitband_present 0.
+// covered too (R2). M0+ has no bit-band -> the arch_bitband_present fallback 0 stands.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {

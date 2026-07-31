@@ -100,7 +100,7 @@ namespace
         // Possession probe, positive arm. This thread holds `win` as a live ARCH_MPU_DEV
         // region whose base is EXACTLY `win`, so caller_holds_mmio_block passes and the
         // call reaches arch_periph_enable. No esp32c6 backend defines that symbol, so the
-        // weak default (kernel/time/clock_select.cc) answers -KOS_ENOSYS, which means the
+        // fallback TU (arch/common) answers -KOS_ENOSYS, which means the
         // kernel touched no register: the window state below is untouched either way.
         // First act, so the capture shows it ahead of any MMIO.
         int const pe = kos_periph_enable(win);
@@ -182,17 +182,10 @@ KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_PINMUX);
 
 int main(int, char**)
 {
-    // Possession probe from root. The call runs in both postures and what it exercises
-    // follows the posture, not the other way round: unprivileged root holds no
-    // ARCH_MPU_DEV region, so this is the REFUSAL contract (caller_holds_mmio_block
-    // refuses, the chip backend is never consulted); privileged root BYPASSES the
-    // possession gate and this instead shows that bypass reaching the backend. Both codes
-    // prove the kernel wrote nothing, so it runs safely before the mux.
-#if KICKOS_ROOT_PRIVILEGED
-    int const pe_want = -KOS_ENOSYS;
-#else
+    // Possession probe from root: root holds no ARCH_MPU_DEV region, so this is the
+    // REFUSAL contract (caller_holds_mmio_block refuses, the chip backend is never
+    // consulted). The kernel wrote nothing, so it runs safely before the mux.
     int const pe_want = -KOS_EPERM;
-#endif
     int const pe = kos_periph_enable(GPIO_MMIO_WINDOW_BASE);
     char const* pe_verdict = "FAIL";
     if (pe == pe_want)

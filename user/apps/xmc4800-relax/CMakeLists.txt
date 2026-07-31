@@ -14,5 +14,8 @@ if(KICKOS_HAVE_MPU)
   add_subdirectory(inprstorm)
 endif()
 
-# XMC4800 console handover demo -- self-gates on enforcement in its own CMakeLists.
+# XMC4800 console apps. Each self-gates on enforcement AND on the selected service list
+# in its own CMakeLists: the handover demo needs a published console, the reclaim test
+# needs the U0C0 window free.
 add_subdirectory(consoledemo)
+add_subdirectory(conreclaim)

@@ -150,19 +150,11 @@ void arch_irq_restore(arch_irq_state_t state)
 
 // --- Monotonic clock: NO armv7m default -------------------------------------
 // arch_clock_now is a REQUIRED chip contract (a strong per-chip definition over a
-// dedicated peripheral timer). There is deliberately no weak DWT fallback here: the
+// dedicated peripheral timer). There is deliberately no DWT fallback TU here: the
 // DWT is debug-domain (gated by DEMCR.TRCENA, lockable on Cortex-M7, absent under
 // QEMU) and every chip that ever relied on the old fallback hit a broken clock, so a
 // board that forgets to provide one must fail LOUD at link time, not hang on its
 // first sleep. The one-shot SysTick timer is core-generic (arch_arm_common).
-
-// weak: telemetry trace clock = the raw DWT cycle counter (32-bit, wraps). Cycle-
-// accurate on real silicon and already running (kickos_armv7m_init enabled it).
-// A part whose DWT is frozen/absent (QEMU mps2) overrides this, like arch_clock_now.
-uint32_t __attribute__((weak)) arch_trace_now(void)
-{
-    return reg32(DWT_CYCCNT);
-}
 
 // --- Interrupt controller (NVIC). mask/inject are core-generic (arm/common);
 // only unmask is arch-specific: it programs the BASEPRI-maskable priority band
@@ -200,7 +192,7 @@ void arch_irq_clear_pending(int line)
     reg32(NVIC_ICPR0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 
-// arch_shutdown has a weak default in arch_arm_common (mask + halt); a chip that
+// arch_shutdown has a fallback TU in arch/arm/common (mask + halt); a chip that
 // exits through a debug channel (QEMU semihosting) strong-overrides it there.
 
 // --- Kernel-facing ISR entries ----------------------------------------------
@@ -284,12 +276,6 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     ::kickos::kprintf("\n=== HARD FAULT ===\n");
 #endif
     kfault_terminate();
-}
-
-// WEAK no-op: a chip whose isolation trap does not surface in the core CFSR
-// (K64F SYSMPU) strong-overrides this to add its own capture (arch.h).
-void __attribute__((weak)) arch_fault_report_extra(void)
-{
 }
 
 // Naked entry: choose the stacked frame (MSP vs PSP per EXC_RETURN bit 2) and pass

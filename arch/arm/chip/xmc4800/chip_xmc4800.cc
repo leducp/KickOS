@@ -24,6 +24,7 @@
 #include "regs/flash.h"
 #include "regs/port.h"
 #include "regs/scu.h"
+#include "regs/usic.h"
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
@@ -320,6 +321,60 @@ namespace
         // rescale the USIC baud mid-shift (see scu::SLEEPCR_SYSSEL_PLL).
         r32(scu::SLEEPCR) |= scu::SLEEPCR_SYSSEL_PLL;
     }
+
+    // Privileged-write allowlist for KOS_SYS_PERIPH_REG_WRITE, keyed on the EXACT
+    // register address (block base + offset), never on a block or a range.
+    //
+    // FDR (0x010), BRG (0x014) and CCR (0x040) are Write = PV with no U (RM Table
+    // 18-20): an unprivileged store inside a granted channel window is discarded with
+    // no fault (measured, user/apps/xmc4800-relax/pvprobe).
+    //
+    // U0C0 has no entry: the kernel owns that channel's baud and enable
+    // (usic_uart.cc). An absent entry is a refusal.
+    struct PrivWriteReg
+    {
+        uintptr_t base;
+        uintptr_t offset;
+        uint32_t mask; // the only bits this entry may set; see the grants below
+    };
+
+    namespace ru = kickos::xmc::reg::usic;
+
+    static_assert(ru::U0C1_BASE == mmap::USIC0_CH0_BASE + mmap::USIC_CHANNEL_STRIDE,
+                  "U0C1 is USIC0's second channel");
+
+    // Per-entry value masks. The store is one whole 32-bit word, so without a mask an
+    // entry hands back every bit of a register the bus withholds entirely. For CCR that
+    // is the channel's whole interrupt block, not the MODE field the driver wants.
+    // A value with a bit set outside its entry's mask is REFUSED (-KOS_EINVAL); the
+    // seam never masks the value and never read-modify-writes, because a silently
+    // dropped configuration bit is what the consumers' read-back exists to catch.
+    //
+    // CCR (RM V1.3 p.18-160..162): MODE[3:0] selects the protocol, RIEN(14)/AIEN(15)
+    // are the receive interrupt enables xmcssc arms last. WITHHELD: HPCEN[7:6],
+    // PM[9:8], RSIEN(10), DLIEN(11), TSIEN(12), TBIEN(13), BRGIEN(16), and the
+    // read-only [5:4]/[31:17].
+    constexpr uint32_t CCR_GRANT = ru::CCR_MODE_MASK | ru::CCR_RIEN | ru::CCR_AIEN;
+    // FDR (RM V1.3 p.18-178): STEP[9:0] and DM[15:14] are the whole divider setting.
+    // WITHHELD: RESULT[25:16] (type rh, driven by the divider), the read-only [13:10]
+    // and [29:26], and [31:30], which the RM requires be written 0.
+    constexpr uint32_t FDR_GRANT = ru::FDR_STEP_MASK | ru::FDR_DM_MASK;
+    // BRG (RM V1.3 p.18-179..181): every writable field. Only the reserved read-only
+    // bits are withheld, so this mask is near-meaningless as an isolation bound; it is
+    // here so no entry carries a blanket word.
+    constexpr uint32_t BRG_GRANT = ~ru::BRG_RESERVED_MASK;
+
+    // The composed grants against the words they must equal: a field-mask edit in
+    // regs/usic.h cannot silently widen what the seam hands an unprivileged caller.
+    static_assert(CCR_GRANT == 0x0000C00Fu, "CCR grant is MODE[3:0]|RIEN|AIEN");
+    static_assert(FDR_GRANT == 0x0000C3FFu, "FDR grant is STEP[9:0]|DM[15:14]");
+    static_assert(BRG_GRANT == 0xF3FF7FDBu, "BRG grant is every writable BRG field");
+
+    constexpr PrivWriteReg PRIV_WRITE_REGS[] = {
+        { ru::U0C1_BASE, ru::off::FDR, FDR_GRANT },
+        { ru::U0C1_BASE, ru::off::BRG, BRG_GRANT },
+        { ru::U0C1_BASE, ru::off::CCR, CCR_GRANT },
+    };
 }
 
 extern "C"
@@ -339,7 +394,7 @@ void arch_init(void)
 }
 
 // Monotonic clock override: convert free-running CCU40 (64-bit hardware counter on
-// fCCU = fSYS) ticks to ns, replacing the weak DWT-backed arch_clock_now (unreliable on
+// fCCU = fSYS) ticks to ns: the required per-chip arch_clock_now (the DWT is unreliable on
 // this silicon). Pure epoch read: the anchor holds the rate, so a read in the window
 // around a retune cannot bake the phantom rate jump into the epoch.
 uint64_t arch_clock_now(void)
@@ -443,11 +498,39 @@ uint32_t arch_periph_clock_hz(uintptr_t base)
     return 0;
 }
 
+// Privileged single-register write (arch.h). The caller's possession of the block at
+// `base` is already checked in the syscall layer; this decides whether that exact
+// register is on the allowlist above AND whether the value stays inside the entry's
+// mask. Nothing here is derived from a range, so a holder of one channel window can
+// never name the sibling channel's registers.
+//
+// This definition MUST stay in this TU because this member is ALWAYS ANCHORED
+// (-u g_isr_vector reaches it through startup.S). Moving it to a dedicated TU that
+// nothing else references would leave the declining fallback in arch/common to answer
+// the reference, with NO link error and a silent decline at runtime. The
+// seam_defaults ctest gate (leg 2) is what catches that.
+int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
+{
+    for (PrivWriteReg const& e : PRIV_WRITE_REGS)
+    {
+        if (e.base == base and e.offset == offset)
+        {
+            if ((value & ~e.mask) != 0)
+            {
+                return -KOS_EINVAL;
+            }
+            r32(base + offset) = value;
+            return 0;
+        }
+    }
+    return -KOS_EINVAL;
+}
+
 // Native transport = USIC0 ASC on P1.5/P1.4 (the Relax Kit VCOM -> ttyACM0). RTT
 // (if KICKOS_CONSOLE=both) is teed by the kernel console core, not here.
 //   arch_console_write      -- buffered (console ring drains via the TB interrupt).
 //   arch_console_write_sync -- the bounded polled writer; panic/fault/pre-arm use
-//                              it (overrides the weak default in console.cc).
+//                              it (replaces the declining fallback TU).
 void arch_console_write(char const* buf, size_t n)
 {
     console_tx_write(buf, n);

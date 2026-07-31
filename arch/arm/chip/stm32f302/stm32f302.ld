@@ -110,6 +110,12 @@ SECTIONS
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
 
+    /* Chip memory extents read by the non-enforcing user-pointer admission
+       (arch_ram_common.cc). Symbols only, no layout effect. */
+    __kickos_rom_start = ORIGIN(FLASH);
+    __kickos_rom_end = ORIGIN(FLASH) + LENGTH(FLASH);
+    __kickos_sram_start = ORIGIN(RAM);
+
     /DISCARD/ : { *(.ARM.attributes) }
 }
 
@@ -118,6 +124,7 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 
 #include <boot_arena.ld.h>
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
+KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
 /* Static destructors are unsupported: nothing walks .fini_array. Fail the link
    rather than silently drop a destructor. */

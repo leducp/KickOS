@@ -47,6 +47,70 @@ namespace kickos
                 sem_post(s);
             }
         }
+
+        // KOS_SYS_PANIC's body. noinline is load-bearing: the message buffer must not
+        // widen syscall_dispatch's frame, which sits on the CALLING thread's stack and
+        // is sized by KICKOS_MIN_STACK_SIZE against the deepest ordinary dispatch.
+        // Depth past kpanic does not matter (it never returns).
+        __attribute__((noinline, noreturn)) void user_panic(uintptr_t msg)
+        {
+            char buf[64];
+            buf[0] = '\0';
+            // A privileged caller passes user_readable_ok wholesale, so null is
+            // rejected here rather than by the per-byte check.
+            if (msg != 0)
+            {
+                // Check EACH source byte before the privileged copy dereferences it:
+                // the kernel must not fault on, or leak another domain's page through,
+                // a bad message pointer. This BOUNDS the walk at the first unreachable
+                // byte, so a string with no NUL in a granted region stops there.
+                size_t i = 0;
+                for (; i + 1 < sizeof(buf); i++)
+                {
+                    if (not user_readable_ok(msg + i, 1))
+                    {
+                        break;
+                    }
+                    kaccess_from_user(&buf[i], msg + i, 1);
+                    if (buf[i] == '\0')
+                    {
+                        break;
+                    }
+                    // This message prints after the kernel's trusted "KERNEL PANIC: "
+                    // prefix, so no control byte may reach the console: a newline lets
+                    // the caller continue on fresh lines that read as kernel output
+                    // (measured: an embedded "\n=== MPU FAULT ===" renders as a
+                    // convincing fault banner). Every such byte is REPLACED, so the
+                    // message is not cut short at the first one.
+                    unsigned char const c = static_cast<unsigned char>(buf[i]);
+                    if (c < 0x20u or c == 0x7Fu)
+                    {
+                        buf[i] = '?';
+                    }
+                }
+                buf[i] = '\0';
+                // A truncation must be visible, because <kickos/sys.h> promises one.
+                // The marker OVERWRITES kept bytes, so buf's size is unchanged. The
+                // probe byte is the first one dropped: unreadable there means nothing
+                // was dropped that the kernel could have copied.
+                if (i + 1 == sizeof(buf) and user_readable_ok(msg + i, 1))
+                {
+                    char probe = '\0';
+                    kaccess_from_user(&probe, msg + i, 1);
+                    if (probe != '\0')
+                    {
+                        buf[i - 3] = '.';
+                        buf[i - 2] = '.';
+                        buf[i - 1] = '.';
+                    }
+                }
+            }
+            if (buf[0] == '\0')
+            {
+                kpanic("user panic (no readable message)");
+            }
+            kpanic(buf);
+        }
     }
 }
 
@@ -86,16 +150,6 @@ namespace
 #define KTRACE_SYSCALL_SCOPE(nr) SyscallTrace _kt_syscall(syscall_tid(), static_cast<uint16_t>(nr))
 #else
 #define KTRACE_SYSCALL_SCOPE(nr) do { } while (0)
-#endif
-
-#if defined(KICKOS_ENABLE_SELFTEST)
-// weak: a chip with no bootloader entry declines honestly. NOT in clock_select.cc with
-// the other weak seams: that TU compiles unconditionally, and this symbol must be
-// absent from a production image.
-extern "C" int __attribute__((weak)) arch_reboot(void)
-{
-    return -KOS_ENOSYS;
-}
 #endif
 
 extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
@@ -713,6 +767,31 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             }
             return static_cast<uintptr_t>(arch_periph_enable(a0));
         }
+        case KOS_SYS_PERIPH_REG_WRITE:
+        {
+            // Malformed request before possession: the store is one 32-bit word, so an
+            // unaligned or wrapping target is -KOS_EINVAL whatever the caller holds.
+            if ((a1 & (sizeof(uint32_t) - 1u)) != 0)
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            uintptr_t const top = ~static_cast<uintptr_t>(0);
+            if (a1 > top - a0 or (a0 + a1) > top - (sizeof(uint32_t) - 1u))
+            {
+                return static_cast<uintptr_t>(-KOS_EINVAL);
+            }
+            // Possession of the block at a0 AND of the word at a0+a1 inside it. The
+            // allowlist bounds which registers of a held block are writable; it is not a
+            // bound on the ADDRESS, so without containment a 32-byte window would reach
+            // any register the table names anywhere in the block.
+            IrqLock lock;
+            if (not caller_holds_mmio_reg(a0, a1))
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM);
+            }
+            return static_cast<uintptr_t>(
+                arch_periph_reg_write(a0, a1, static_cast<uint32_t>(a2)));
+        }
         case KOS_SYS_CAP_NARROW:
         {
             // UNGATED, and it has to be: giving up authority you hold needs no authority,
@@ -722,6 +801,15 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return static_cast<uintptr_t>(
                 cap_narrow_authority(sched::current(), static_cast<int>(a0),
                                      static_cast<uint8_t>(a1)));
+        }
+        case KOS_SYS_PANIC:
+        {
+            // UNGATED, and it has to be: kpanic masks IRQs and reads kernel .bss, so a
+            // thread that called it from its own unprivileged frame would fault there
+            // and lose the diagnostic. An authority bit would make that the default for
+            // any thread that had dropped it.
+            user_panic(a0); // noreturn
+            return 0;
         }
         case KOS_SYS_IRQ_REGISTER:
         {

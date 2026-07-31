@@ -9,11 +9,10 @@
 // shift-idle/re-anchor/baud/re-arm sequence (kernel/time/clock_select.cc, section 2.3
 // of docs/design-m3-clock-select.md).
 //
-// kos_cpu_clock_set needs AUTH_PSTATE, which root holds here two ways: implicitly while
-// KICKOS_ROOT_PRIVILEGED is on (the fleet default), and explicitly through this app's
-// KICKOS_APP_AUTHORITY below, which is what carries it on a flipped board. It returns 0
-// rather than an errno when refused. The app is single-shot: it returns, so the terminal
-// path flushes the console synchronously: every printed byte reaches the wire.
+// kos_cpu_clock_set needs AUTH_PSTATE, carried only by this app's KICKOS_APP_AUTHORITY
+// below. It returns 0 rather than an errno when refused. The app is single-shot: it
+// returns, so the terminal path flushes the console synchronously: every printed byte
+// reaches the wire.
 //
 // It does NOT hand the console to a userspace driver: a retune is REFUSED while the
 // console is USER_OWNED (S4), so the console must stay KERNEL_OWNED throughout.

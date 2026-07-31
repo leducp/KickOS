@@ -146,7 +146,12 @@ SECTIONS
        app + C++-runtime small-data and moves into .appdata (below). Kernel .data is
        pinned at __kickos_code_end; the app window is a pow2 NAPOT region aligned above
        the kernel data by a top-level ALIGN (kernel .data/.bss are non-empty and advance
-       the region pointer, so no explicit-VMA empty-section fold-back). */
+       the region pointer, so no explicit-VMA empty-section fold-back).
+
+       NO `AT` clause on ANY loadable section here: the ROM first-stage loader places
+       each segment at its VMA, so a load address that differs from the VMA is never
+       written by anything and the Reset_Handler copy would read uninitialized SRAM.
+       LMA == VMA is pinned by an ASSERT at the end of this file. */
     .data __kickos_code_end : ALIGN(8)
     {
         _sdata = .;
@@ -156,7 +161,7 @@ SECTIONS
         *libkickos_lib.a:*(.data .data.*)
         . = ALIGN(4);
         _edata = .;
-    } > RAM AT > RAM
+    } > RAM
 
     .bss (NOLOAD) : ALIGN(4)
     {
@@ -179,10 +184,8 @@ SECTIONS
        ALIGN puts the base at a natural pow2 boundary (NAPOT). .appbss is pinned right
        after .appdata via SIZEOF, so __kickos_appbss_start == the .appdata VMA end and
        the Reset_Handler's [__kickos_appbss_start, __kickos_appdata_end) zero covers the
-       whole grant with no external gap. .appdata's VMA jumps to the pow2 window base
-       above the NOLOAD kernel .bss, so LMA != VMA -- Reset_Handler copies it LMA->VMA
-       via _appdata_lma before zeroing .appbss. The gp small-data window (anchor +
-       .sdata/.sbss catch-all) lives inside this granted region. */
+       whole grant with no external gap. The gp small-data window (anchor + .sdata/.sbss
+       catch-all) lives inside this granted region. */
     .appdata : ALIGN(_appdata_size)
     {
         __kickos_appdata_start = .;
@@ -193,8 +196,8 @@ SECTIONS
         *(.sdata .sdata.* .sdata2.*)             /* ONLY runtime small-data reaches here */
         . = ALIGN(4);
         __sdata_end = .;
-    } > RAM AT > RAM
-    _appdata_lma = LOADADDR(.appdata);           /* Reset_Handler copies .appdata LMA->VMA */
+    } > RAM
+    _appdata_lma = LOADADDR(.appdata);
 
     .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
     {
@@ -223,7 +226,7 @@ SECTIONS
         *(.sdata .sdata.* .sdata2.*)
         . = ALIGN(4);
         _edata = .;
-    } > RAM AT > RAM
+    } > RAM
 
     .bss (NOLOAD) : ALIGN(4)
     {
@@ -252,6 +255,13 @@ SECTIONS
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
 
+    /* Chip memory extents read by the non-enforcing user-pointer admission
+       (arch_ram_common.cc). Symbols only, no layout effect. This chip executes FROM
+       RAM, so the rom range is empty and the sram range covers .text/.rodata. */
+    __kickos_rom_start = 0;
+    __kickos_rom_end = 0;
+    __kickos_sram_start = ORIGIN(RAM);
+
     /DISCARD/ : { *(.comment) *(.riscv.attributes) }
 }
 
@@ -260,6 +270,15 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 
 #include <boot_arena.ld.h>
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
+
+/* The bootable image is built from section VMAs (esptool elf2image) and the ROM
+   first-stage loader places every segment at its VMA, so a load address that differs
+   from the VMA is never written by anything. Reset_Handler's LMA->VMA copies would then
+   read uninitialized SRAM and overwrite the correctly loaded initialized data -- silent,
+   unit-dependent corruption of whatever global lands there. Any `AT` clause added to a
+   loadable section trips this. */
+ASSERT(_sidata == _sdata,
+       "KickOS: .data LMA != VMA -- the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 
 /* Static destructors are unsupported: nothing walks .fini_array. Fail the link
    rather than silently drop a destructor. */
@@ -289,6 +308,9 @@ ASSERT(__sdata_end <= __global_pointer$ + 0x800,
        "KickOS: runtime small-data overflows the gp + 0x800 reach")
 ASSERT(__sdata_start >= __global_pointer$ - 0x800,
        "KickOS: runtime small-data underflows the gp - 0x800 reach")
+/* Same VMA-only load rule as the .data ASSERT above. */
+ASSERT(_appdata_lma == __kickos_appdata_start,
+       "KickOS: .appdata LMA != VMA -- the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 #endif
 
 /* Opt-in link-time heap floor (undefined by default). */

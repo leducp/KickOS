@@ -226,7 +226,7 @@ namespace
     }
 
     // --- Monotonic clock: TIMG0 timer T0, a 64-bit free-running up-counter -------
-    // Replaces the weak CCOUNT-backed arch_clock_now (arch/xtensa/lx6). CCOUNT is a
+    // Replaces the CCOUNT-backed arch_clock_now fallback (arch/xtensa/lx6). CCOUNT is a
     // 32-bit core cycle counter software-extended to 64 bits: a wrap not observed
     // within one 2^32-cycle window (~17.9 s at 240 MHz) is lost -- the same narrow-
     // counter + software-wrap-word class just moved off DWT on K64F (PIT) and off
@@ -418,7 +418,7 @@ void arch_init(void)
 
 // Monotonic clock override: convert the free-running TIMG0 T0 64-bit count (40 MHz,
 // off the fixed 80 MHz APB) to ns via the cached reciprocal multiply, replacing the
-// weak CCOUNT-backed arch_clock_now (arch/xtensa/lx6) whose 32-bit + software-wrap
+// CCOUNT-backed arch_clock_now fallback (arch/xtensa/lx6) whose 32-bit + software-wrap
 // source loses a wrap unobserved within ~17.9 s and stalls under WAITI. Only the
 // scheduler's monotonic clock moves: arch_trace_now + the KICKOS_BENCH switch.S
 // timestamps intentionally stay on raw CCOUNT (a cycle-accurate trace source; an
@@ -435,7 +435,7 @@ void arch_console_write(char const* buf, size_t n)
 }
 
 // Synchronous polled writer -- the panic / fault / pre-arm path (console.cc selects
-// it when the ring is unarmed or in ISR/panic context). Overrides the weak default
+// it when the ring is unarmed or in ISR/panic context). Replaces the fallback
 // that would otherwise re-enter the buffered arch_console_write.
 void arch_console_write_sync(char const* buf, size_t n)
 {

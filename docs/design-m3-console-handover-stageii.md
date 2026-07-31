@@ -168,15 +168,15 @@ the kernel's -- fine. Flipping the state LAST is the whole trick: a fault before
 panics on a kernel-owned UART; a fault after it takes the reclaim branch (D6), which is
 harmless-idempotent even though no driver ever touched the device.
 
-### D3 -- `kos_console_publish(cap)`: new privileged syscall 29
+### D3 -- `kos_console_publish(cap)`: new syscall 29
 
 ```
-KOS_SYS_console_publish = 29,   // (endpoint_cap) -> 0, or -1 (bad cap / not privileged)
+KOS_SYS_console_publish = 29,   // (endpoint_cap) -> 0, -KOS_EPERM (no AUTH_CONSOLE), -KOS_EBADF
 ```
 
 ```
 kos_console_publish(cap):
-    if not current->privileged:                       return -1   // privileged-only
+    if not cap_check_authority(current, AUTH_CONSOLE): return -KOS_EPERM   // AUTH_CONSOLE
     e = cap_resolve(current, cap, CAP_ENDPOINT, 0)                // any rights; identity only
     if e == nullptr:                                  return -1
     handle = e->obj                                               // GLOBAL gen-encoded endpoint handle
@@ -212,9 +212,12 @@ is already `USER_OWNED`, so `console_tx_deinit` is skipped (steps b/c/d already 
 ring already disarmed). It just restashes the new endpoint and re-points `g_stdout_target`.
 This is the mechanism D8 relies on.
 
-Privileged-only because it disables a live IRQ line and mutates global console routing --
-a capability a random unprivileged task must not hold. Only root (or a delegated privileged
-supervisor) publishes.
+Gated because it disables a live IRQ line and mutates global console routing -- an ability a
+random task must not hold. The gate written in this brief was `current->privileged`; the gate
+that stands is the `AUTH_CONSOLE` authority bit (`kernel/syscall/syscall.cc`), its own bit
+rather than shutdown's, since the thread that publishes and the thread that ends the system
+are different once root is only a spawner. A privilege check would gate nothing now: root is
+unprivileged on every board, so only a seated authority can distinguish the publisher.
 
 ### D4 -- `cap_install_defaults`: index 0 becomes the stdout cap
 
@@ -298,6 +301,20 @@ _write(fd, buf, len):
   `buf` -- otherwise the chunks already delivered to the driver are duplicated on RTT when a
   mid-stream `-1` hits.
 
+**What a published console does and does not take away.** This policy is not the libc stub's
+alone: it lives in THREE writers that are deliberately kept in step
+(`user/include/kickos/sys/emit.h:11-12`) -- `kickos::emit()` for freestanding apps,
+`tests/tap/tap.cc`'s `emit()` for the suite, and this `_write`
+(`user/src/newlib_stubs.cc:19-59`). So `printf` and `std::cout` DO reach a published console
+driver; the frdmk64f full-service-list run shows the whole TAP suite arriving that way
+(`# tap route: stdout endpoint -> console driver (service list published)`, 2026-07-30). What
+DROPS is `kos_print` / `kos_kconsole_write` -- the kernel bring-up path -- and even that is
+still carried by RTT. Two real losses remain, and only these two: an app that calls `kos_print`
+instead of the publish-aware writer loses its output, and there is a genuine DARK WINDOW
+between the publish flip and the driver actually serving cap 0, which is why a spawn failure
+there forbids spawning console-dependent apps at all (S6; `k64uart.cc:209`,
+`xmcuart.cc:179`).
+
 ### D6 -- `arch_console_reclaim()`: new arch seam + `kpanic_enter` growth
 
 ```
@@ -306,8 +323,9 @@ void arch_console_reclaim(void);
 ```
 
 ```
-// kernel/init/console.cc -- weak no-op default (boards that never hand over)
-extern "C" __attribute__((weak)) void arch_console_reclaim(void) {}
+// arch/common/arch_console_reclaim_default.cc -- lone-TU no-op fallback
+// (boards that never hand over; a chip definition keeps this member unextracted)
+extern "C" void arch_console_reclaim(void) {}
 ```
 
 ```
@@ -405,9 +423,9 @@ OUTSIDE the granted window, so the driver could never arm a descriptor against t
 the peripheral's own DMA-request enable (`C5` / `TCSR`) inside the window is sufficient.
 
 A wrong reclaim looks EXACTLY like silent panic loss -- the worst failure this system has --
-so reclaim depth is a per-chip HW-confirm item, tested by D-test 3 (scramble-then-panic).
-That test MUST include the two writes that reproduce TRUE silent loss: XMC `KSCFG.MODEN = 0`
-and K64F `MODEM.TXCTSE = 1`.
+so reclaim depth is a per-chip HW-confirm item, tested by D-test 3 (scramble-then-panic --
+the `conreclaim` app on XMC). That test MUST include the two writes that reproduce TRUE
+silent loss: XMC `KSCFG.MODEN = 0` and K64F `MODEM.TXCTSE = 1`.
 
 ### D7 -- the userspace console driver (new deliverable)
 
@@ -601,15 +619,22 @@ Silicon-only (XMC4800 first; the reclaim/UART behavior cannot be faithfully emul
   driver, and assert senders HANG (recv_holders stays 1, no EPIPE) -- this is the failure the
   S4 rule forbids; it documents why the rule is load-bearing. The pass case is the same test
   with root correctly dropping its WAIT cap and senders getting `-1`.
-- **D-test 3 (scramble-then-panic reclaim -- the critical one).** The driver deliberately
-  garbles its in-window UART registers, then root forces a panic; assert the panic banner
-  still arrives, polled, intact. This is the ONLY test that validates reclaim depth (D6); a
+- **D-test 3 (scramble-then-panic reclaim -- the critical one).** An unprivileged holder of
+  the console window deliberately garbles its in-window UART registers and faults; assert the
+  panic banner still arrives, polled, intact. This is the ONLY test that validates reclaim
+  depth (D6); a
   wrong reclaim is indistinguishable from silent panic loss, so this gates the feature. The
   scramble MUST include the two writes that reproduce TRUE silent loss -- XMC `KSCFG.MODEN = 0`
   (gated module clock) and K64F `MODEM.TXCTSE = 1` (CTS flow control stall) -- in addition to
   baud, mode, FIFO. Also exercise the B2 path: trigger the panic via an MPU FAULT in the
   driver (the likely real-world faulter) and assert `kickos_isr_fault` funnels through
   `kpanic_enter`, reclaims, and prints. Re-run functionally on K64F once that port lands.
+
+  On XMC this test is the standalone `conreclaim` app, gated on
+  `KICKOS_SERVICE_LIST=kickos_services_none`, and NOT a build option on `consoledemo`: U0C0
+  admits exactly ONE holder, so the scrambler and `xmcuart` cannot both be it in one image
+  (`design-driver-era-scope.md` G3 records the split). The property under test does not depend
+  on WHO garbled the UART, so nothing is lost.
 
 Staging split (recommended):
 - **ii-a: kernel mechanism + minimal polled XMC driver.** D1-D5, D7 (polled), D8, D9, minus
@@ -649,8 +674,10 @@ design sections above already reflect them.
    the publish-to-first-spawn zero-ref window that relying on `recv_holders` + client send
    refs would leave open. It is held via `obj_ref_inc` / `endpoint_ref_drop` on the global
    gen-encoded handle, never raw `endpoint_refs[]` arithmetic. See D3.
-5. **Privileged-only publish = confirmed (Q5).** Syscall 29 is gated on `current->privileged`.
-   A distinct delegable capability is not warranted for M3.
+5. **Gated publish = confirmed (Q5).** A distinct delegable capability was not warranted for
+   M3. The ruling was taken as `current->privileged`; the gate has since become the
+   `AUTH_CONSOLE` authority bit, which is what carries the ruling now that root is unprivileged
+   everywhere and a privilege check would gate nothing (D3).
 6. **Driver TX tier = ii-a polled confirmed (Q6).** Land polled TX first (D7); IRQ-as-event
    TX is the ii-b/later refinement justified by the high-baud CPU cost quantified in D9.
 7. **M4/SMP reclaim fence = record only (Q7).** No hook reserved now. The single-core reclaim

@@ -143,7 +143,7 @@ This is the blocker the other docs did not name, and the one that cost the most:
 1. **`-msmall-data-limit=0` breaks DWARF unwinding.** KickOS compiles unprivileged RISC-V apps
    `-msmall-data-limit=0` to route their globals out of the `gp` window (which lives kernel-side)
    into `.appdata`. But that flag on a `-fexceptions` TU makes `__cxa_throw` **hang in an
-   unbounded FDE walk** (reproduced: privileged root, PMP bypassed, tables byte-identical to the
+   unbounded FDE walk** (reproduced at the time with a privileged root, PMP bypassed, tables byte-identical to the
    working non-MPU image -- so not an isolation fault). Removing the flag fixes the throw. Cause:
    the app's DWARF EH refs (`DW.ref.*`, LSDA datarel encodings) resolve `gp`-relative; moving them
    away from `gp` corrupts the lookup. **The very mechanism used to place app globals in the
@@ -208,7 +208,7 @@ an RX-mangled `sbrk` sufficed.
 ## Experiment (the original evidence anchor -- now folded into the committed cxxtest)
 
 qemu-riscv `virt`, `-DKICKOS_HAVE_MPU=1`, RISCStar newlib toolchain. The original throwaway app
-`cxxumpu` -- privileged root spawns an **unprivileged** worker
+`cxxumpu` -- root, privileged as it still was then, spawns an **unprivileged** worker
 (`kos::thread::spawn(..., privileged=false)`) that runs full C++ -- has since been folded into the
 committed `cxxtest` (same spawn shape, now the standing `qemu_riscv_cxxtest` gate), so the
 U-mode-confined claim now rests on a running in-tree test, not this record. The changes below are

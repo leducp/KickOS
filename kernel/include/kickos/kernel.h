@@ -57,12 +57,12 @@ namespace kickos
 extern "C" void kpanic_enter(void);
 
 // Terminal for the panic / fault dead-end, shared by kpanic and the arch fault
-// handlers. The weak default (console.cc) blinks the diag LED in a distinctive
+// handlers. The fallback (arch/common/kfault_terminate_default.cc) blinks the diag LED in a distinctive
 // pattern forever -- the right signal on real, headless hardware. The host and
 // QEMU targets override it (sim.cc / chip_mps2 / chip_virt / chip_nrf51) to exit
 // with a fault status, so the test harness catches a fault instead of timing out
 // on a spin. extern "C": overridden across TUs and called from the arch handlers.
-// Under KICKOS_SHUTDOWN_TO_BOOTLOADER the weak default hands the chip to its
+// Under KICKOS_SHUTDOWN_TO_BOOTLOADER the fallback hands the chip to its
 // bootloader instead of reaching the blink -- an ARM MPU/hard fault terminates HERE
 // (kickos_armv7m_fault_report), not through kickos_terminate, so the images that
 // cost a BOOTSEL press need this arm and not only the one below.
@@ -72,7 +72,7 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 // syscall, last-thread-out (sched::exit_current) and the software fault reporter
 // (kickos_isr_fault, the RISC-V/chip-hook route). Drains the buffered console, then
 // ends the system via arch_shutdown. Sits here, upstream of the arch seam, because
-// arch_shutdown itself is per-chip (weak default plus four strong definitions) -- a
+// arch_shutdown itself is per-chip (one fallback TU plus four chip backends); a
 // hook inside it would have to be duplicated per arch.
 // Under KICKOS_SHUTDOWN_TO_BOOTLOADER it tries arch_reboot before halting, so a
 // bench board returns to a flashable state on its own. A chip with no bootloader

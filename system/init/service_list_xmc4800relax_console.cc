@@ -6,16 +6,15 @@
 // USIC0 CH1 SSC bus up is service_list_xmc4800relax.cc; the two are alternatives,
 // never both linked (EXACTLY ONE kickos_board_services per image).
 //
-// xmcuart's bring-up is pure syscall and touches no register itself, so it runs
-// unchanged from an unprivileged root holding AUTH_MEMORY + AUTH_CONSOLE. xmcssc's
-// bring-up writes USIC registers from the CALLING thread, and a flipped root holds no
-// MMIO grant for U0C1: the blocker is that PLACEMENT, not the silicon
+// Both bring-ups are pure syscall and touch no register from the calling thread, so both
+// run from an unprivileged root holding AUTH_MEMORY + AUTH_CONSOLE. The combined list
+// stays refused at enforcement until the xmcssc-as-a-service posture is witnessed on
+// silicon, which is why this list is the board default
 // (docs/design-unprivileged-root.md section 9).
 //
-// Selected automatically for xmc4800-relax + enforcement + KICKOS_ROOT_PRIVILEGED=OFF
-// (root CMakeLists.txt), which is also where a service list needing root MMIO is
-// refused outright. Per-instance config travels as DATA (kos_service_cfg), never as
-// literals in a driver TU.
+// Selected automatically for xmc4800-relax + enforcement (root CMakeLists.txt), which is
+// also where the combined list is refused. Per-instance config travels as DATA
+// (kos_service_cfg), never as literals in a driver TU.
 
 #include <kickos/sys/service.h>
 

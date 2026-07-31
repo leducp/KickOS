@@ -31,7 +31,7 @@ regions that fail closed on the first unprivileged access. Evidence below.
 
 ## Where enforcement lives today, and why it is wrong on the M33
 
-The enforcement backend is the weak `arch_mpu_apply` in
+The enforcement backend is `arch_mpu_apply` in
 `arch/arm/common/arch_arm_common.cc` (guarded `#if KICKOS_HAVE_MPU`). It is
 compiled into `kickos_arch_armv7m` (`arch/CMakeLists.txt`: the armv7m library
 lists `arm/common/arch_arm_common.cc`). The RP2350 chip reuses the `armv7m` arch
@@ -137,11 +137,11 @@ why `chip_rp2350.cc` reuses `armv7m` verbatim and why the port already runs the
 console path). **Only the MPU differs.** So a whole `armv8m` arch directory would
 duplicate a large, identical arch to swap one file -- rejected.
 
-The established pattern is that the MPU backend is a **weak symbol overridden per
-chip** (architecture.md: "MPU is chip-specific, not arch-specific"). K64F already
-does this: `chip_mk64f.cc` provides a strong `arch_mpu_apply` (SYSMPU) that wins
-over the weak v7-M one in the same link (`arch/arm/chip/mk64f/`). The strong
-definition in the chip library overrides the weak one in `kickos_arch_armv7m`.
+The established pattern is that the MPU backend is **a fallback TU that a chip's own
+definition displaces** (architecture.md: "MPU is chip-specific, not arch-specific"). K64F
+already does this: `chip_mk64f.cc` defines the SYSMPU backend in its always-anchored
+member (`arch/arm/chip/mk64f/`), so the link never extracts the shared PMSAv7 fallback
+from `kickos_arch_armv7m`. (The symbol is `kickos_arch_mpu_commit`; see the addendum.)
 
 Recommended shape (avoids per-chip copy-paste, since PMSAv8 is shared by *every*
 ARMv8-M chip -- RP2350, and future nRF5340 / STM32U5 / STM32H5 M33 parts):
@@ -154,11 +154,11 @@ ARMv8-M chip -- RP2350, and future nRF5340 / STM32U5 / STM32H5 M33 parts):
 - The chip opts in through its `mpu.cmake` (the existing per-chip enforcement
   opt-in): `arch/arm/chip/rp2350/mpu.cmake` sets `KICKOS_CHIP_ENFORCES_MPU ON`
   **and** `target_sources(<chip lib> PRIVATE .../arch_arm_pmsav8.cc)` (path via a
-  cached arch-source var), so the strong PMSAv8 symbols are pulled into the RP2350
-  link and override the weak v7-M ones. A v7-M chip's `mpu.cmake` never adds it, so
-  its v7-M weak backend stands.
+  cached arch-source var), so the PMSAv8 definitions are pulled into the RP2350
+  link and the v7-M fallback TUs are never extracted. A v7-M chip's `mpu.cmake` never
+  adds it, so its v7-M fallback stands.
 
-This keeps: (a) the armv7m arch reused for everything non-MPU; (b) the v7-M weak
+This keeps: (a) the armv7m arch reused for everything non-MPU; (b) the v7-M fallback
 backend untouched and still correct for M0+/M3/M4/M7; (c) the two backends
 side-by-side selected by presence-in-link, not by an `#ifdef` fork inside one
 function; (d) zero per-arch field in `arch_mpu_region`. An alternative -- a single
@@ -176,15 +176,16 @@ written before the deferred-MPU-commit seam landed fleet-wide
 precedent exactly:
 
 - `arch_mpu_apply` is now STASH-ONLY and SHARED unchanged from
-  `arch_arm_common.cc` -- it only records the incoming region set (weak). The
-  PMSAv8 backend does NOT redefine it, so there is no duplicate symbol.
-- The strong override is **`kickos_arch_mpu_commit`**, which reads the shared
-  stash via `kickos_arm_mpu_pending()` and programs the running thread's regions
-  into MPU_S/RBAR/RLAR in the switch epilogue (the deferred commit point). This is
-  the symbol the chip link overrides -- everywhere this doc says "strong
-  `arch_mpu_apply`", read "strong `kickos_arch_mpu_commit`".
+  `arch_arm_common.cc` -- it only records the incoming region set, as a plain
+  non-overridable definition. The PMSAv8 backend does NOT redefine it.
+- **`kickos_arch_mpu_commit`** is what the PMSAv8 backend defines: it reads the shared
+  stash via `kickos_arm_mpu_pending()` and programs the running thread's regions into
+  MPU_S/RBAR/RLAR in the switch epilogue (the deferred commit point). Its member is
+  anchored by `chip_rp2350.cc`'s `kickos_arm_pmsav8_init` call, so the fallback TU
+  (`arch/arm/common/kickos_arch_mpu_commit_default.cc`) is never extracted -- for
+  "strong `arch_mpu_apply`" above, read this symbol.
 - `arch_mpu_region_encodable` (32-byte-granular) and `arch_mpu_min_region` (32)
-  override the weak v7-M defs as described above -- those names are unchanged.
+  displace the v7-M fallback TUs as described above -- those names are unchanged.
 - One-time MAIR + enable live in `kickos_arm_pmsav8_init`, pulled in via
   `arch/arm/chip/rp2350/mpu.cmake` (the `KICKOS_ARM_PMSAV8_SOURCE` seam).
 
@@ -218,7 +219,8 @@ The staging judgement held: first enforcement shipped on the pow2 shaping, and t
 relaxation was a seam change rather than a per-chip patch. On RP2350 the boot stacks now
 align to 32 instead of to 2048/8192. Note the mode is posture-dependent -- this file's
 `arch_arm_pmsav8.cc` is linked only at `KICKOS_HAVE_MPU=1`, so a non-enforcement build
-of the same chip still takes the weak v7-M pow2 rule.
+of the same chip still takes the v7-M pow2 fallback
+(`arch/arm/common/arch_mpu_region_pow2_default.cc`).
 
 ## Region budget
 

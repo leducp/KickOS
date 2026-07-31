@@ -54,15 +54,15 @@ Split the one eager call into **stash** (eager, harmless) + **commit**
 
 2. **Per-backend commit.** `kickos_arch_mpu_commit(void)` programs the hardware
    from the stash. It is the single symbol each arch's switch epilogue calls by a
-   fixed name. It resolves per link with weak/strong linkage -- exactly one
-   definition wins, so there is no duplicate-symbol collision across backends:
-   - `arch_arm_common.cc` provides the **weak** default: for `KICKOS_HAVE_MPU`
-     it is the **PMSAv7** commit (`kickos_arm_mpu_program` from the stash), and
-     for a no-MPU board it is an **empty** commit.
-   - A chip whose MPU is not PMSAv7 provides a **strong** override that reads the
-     *same* stash (`kickos_arm_mpu_pending`) and programs its own hardware. K64F
-     (SYSMPU) does this; it therefore does **not** override `arch_mpu_apply`, so
-     `arch_mpu_apply` has exactly one (weak, shared) definition per link.
+   fixed name. It resolves per link to exactly one definition, so there is no
+   duplicate-symbol collision across backends:
+   - `arch/arm/common/kickos_arch_mpu_commit_default.cc` is the lone-TU fallback: for
+     `KICKOS_HAVE_MPU` it is the **PMSAv7** commit (`kickos_arm_mpu_program` from the
+     stash), and for a no-MPU board it is an **empty** commit.
+   - A chip whose MPU is not PMSAv7 defines the symbol itself, in an always-anchored
+     member, reading the *same* stash (`kickos_arm_mpu_pending`) and programming its
+     own hardware -- which keeps the fallback member unextracted. K64F (SYSMPU) does
+     this. `arch_mpu_apply` is not customisable: it has one plain shared definition.
    - The commit brackets its disable/reprogram/re-enable with `cpsid i`
      (PRIMASK). Eager apply ran under the caller's BASEPRI/PRIMASK lock; the
      commit runs in the lowest-priority switch exception, where a device IRQ
@@ -84,11 +84,11 @@ under its own regions.
 
 | Arch / backend | Boards | apply (stash) | commit | epilogue hook | Status |
 |---|---|---|---|---|---|
-| armv6-m PMSAv7 | RP2040 (picopi), microbit | shared weak | shared weak PMSAv7 | `armv6m/switch.S` | DONE -- silicon-validated (RP2040 test 14, 42/42) |
-| armv7-m PMSAv7 | XMC4800, F411 | shared weak | shared weak PMSAv7 | `armv7m/switch.S` | REFERENCE here -- build-only, silicon-pending |
-| armv7-m SYSMPU | FRDM-K64F | shared weak | strong (chip) | `armv7m/switch.S` | build-only, silicon-pending |
-| armv7-m no-MPU | qemu (mps2) | shared weak no-op | shared weak empty | `armv7m/switch.S` | build-only |
-| armv8-m PMSAv8 | RP2350 (pizero2350) | shared weak | strong (RLAR/MAIR, `arch_arm_pmsav8.cc`) | `armv7m/switch.S` reuse | DONE -- silicon-validated (RP2350: selftest 43/43 enforce, clean cross-domain `mpu_fault`, bench + soak; authority: `docs/design-rp2350-mpu-armv8m.md`) |
+| armv6-m PMSAv7 | RP2040 (picopi), microbit | shared (arch) | PMSAv7 fallback TU | `armv6m/switch.S` | DONE -- silicon-validated (RP2040 test 14, 42/42) |
+| armv7-m PMSAv7 | XMC4800, F411 | shared (arch) | PMSAv7 fallback TU | `armv7m/switch.S` | REFERENCE here -- build-only, silicon-pending |
+| armv7-m SYSMPU | FRDM-K64F | shared (arch) | chip definition (`chip_mk64f.cc`) | `armv7m/switch.S` | build-only, silicon-pending |
+| armv7-m no-MPU | qemu (mps2) | shared no-op (arch) | empty fallback TU | `armv7m/switch.S` | build-only |
+| armv8-m PMSAv8 | RP2350 (pizero2350) | shared (arch) | `arch_arm_pmsav8.cc` (RLAR/MAIR) | `armv7m/switch.S` reuse | DONE -- silicon-validated (RP2350: selftest 43/43 enforce, clean cross-domain `mpu_fault`, bench + soak; authority: `docs/design-rp2350-mpu-armv8m.md`) |
 | RX MPU | RX72M | local stash | `kickos_arch_mpu_commit` (RSPAGEn/REPAGEn) | `rxv3/switch.S` (`kickos_rx_restore`) | DONE (build-only) -- silicon-pending |
 | rv32imac PMP | qemu-virt, ESP32-C6 | local stash | `kickos_arch_mpu_commit` (pmpaddr/pmpcfg CSRs) | `rv32imac/switch.S` (`.Lswitch` + `arch_start`) | DONE (build-only) -- silicon-pending |
 

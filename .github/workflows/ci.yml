@@ -68,13 +68,6 @@ jobs:
       - run: cmake --preset sim
       - run: cmake --build --preset sim
       - run: ctest --preset sim --output-on-failure
-      # The sim discards the privilege flag, so this covers the authority logic and
-      # region composition, never a CPU-mode boundary. The qemu-arm npriv arm does that.
-      - name: sim, unprivileged root
-        run: |
-          cmake --preset sim -B build/sim-flip -DKICKOS_ROOT_PRIVILEGED=OFF
-          cmake --build build/sim-flip
-          ctest --test-dir build/sim-flip --output-on-failure
 
   # The sim gate rebuilt under UndefinedBehaviorSanitizer. -fno-sanitize-recover=all
   # is what makes it a GATE: UBSan's default is print-and-continue, exit status 0.
@@ -169,34 +162,19 @@ jobs:
       # a real MemManage denial in mpu_fault, over both PMSA revisions: v7 on the
       # M4/M7/M3, v8 on the M33 (a different register layout, not the same code path).
       # Separate build dirs; the presets above own build/<preset>.
-      # No -DCMAKE_BUILD_TYPE pin: the MinSizeRel default is what reaches the -Os-only
-      # fault class (the K64F PIT clock-gate race).
+      # Configured without a preset, so MinSizeRel is not inherited: the build type must be
+      # pinned here or no -O reaches the compiler.
       - name: ARM PMSA enforcement run gates (v7 + v8)
         run: |
           for b in qemu qemu-m33 qemu-m7 qemu-m3; do
             cmake -S . -B "build/$b-mpu" -G Ninja \
               -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm-none-eabi.cmake \
+              -DCMAKE_BUILD_TYPE=MinSizeRel \
               -DKICKOS_BOARD="$b" \
               -DKICKOS_ENABLE_SELFTEST=ON -DKICKOS_HAVE_MPU=1 \
               -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
             cmake --build "build/$b-mpu"
             ctest --test-dir "build/$b-mpu" --output-on-failure --repeat until-pass:4
-          done
-
-      # Only this posture registers rootfault and rootauth's flipped arm; selftest skips
-      # mpu_privileged_guard here (permitted by name via EXPECT_SKIPS). qemu-m7 and
-      # qemu-m3 are omitted as the same PMSAv7 path as qemu; qemu-m33 is PMSAv8.
-      - name: ARM unprivileged-root run gates (PMSAv7 + v8)
-        run: |
-          for b in qemu qemu-m33; do
-            cmake -S . -B "build/$b-flip" -G Ninja \
-              -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm-none-eabi.cmake \
-              -DKICKOS_BOARD="$b" \
-              -DKICKOS_ENABLE_SELFTEST=ON -DKICKOS_HAVE_MPU=1 \
-              -DKICKOS_ROOT_PRIVILEGED=OFF \
-              -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
-            cmake --build "build/$b-flip"
-            ctest --test-dir "build/$b-flip" --output-on-failure --repeat until-pass:4
           done
       - name: armv6m (microbit)
         run: |
