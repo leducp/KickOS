@@ -41,6 +41,36 @@ too. Additionally, before a board turns on handover it must supply a real
 `arch/common/arch_console_reclaim_default.cc`, is a no-op -- a silent
 reclaim failure otherwise); today only XMC (USIC) and K64F (UART0) have one.
 
+**Reclaim depth is a full in-window REWRITE, not a re-run of `*_init`.** A body must drive
+EVERY writable register inside the driver's granted window to a known polled-ready value,
+including the ones `*_init` never writes because it relies on their reset defaults -- which is
+exactly the set a buggy or hostile driver reaches, and therefore the true silent-loss source.
+On `mk64f` those are `MODEM.TXCTSE` (a bounded polled writer waits forever on an absent CTS
+and drops every byte), `C3.TXINV`, `C5` (the peripheral DMA request enables), `S2`, `IR`,
+`C7816` and the FIFO pair; on `xmc4800` it is `KSCFG.MODEN` (a gated channel clock). Write the
+body as straight-line ABSOLUTE stores with no read-modify-write: the reclaim is re-entrant from
+a nested fault, absolute writes are safe to repeat and an RMW on a garbled value is not
+(`arch/arm/chip/mk64f/chip_mk64f.cc`, `arch/arm/chip/xmc4800/usic_uart.cc`). A body MAY trust
+everything OUTSIDE the window -- pin mux, SCU/SIM clock gates, the clock tree -- because the
+MMIO grant is exact-window and those live in privileged-only peripherals the driver could never
+reach. The idempotence is load-bearing rather than incidental: the panic gate is
+`state != RECLAIMED`, so the body runs on devices no driver ever touched
+(`invariants.md`, `panic-console-probe-independent`).
+
+**Decode BOTH fault banks, and print the address.** An ungranted device access does not
+reliably surface as the MPU's own fault: on some Cortex-M a peripheral-bridge error response
+arrives as a **BusFault** rather than MemManage, and on SYSMPU it arrives as an imprecise bus
+error with the MPU's own registers carrying the real story. A port's reporter must therefore
+decode both and name the faulting address. The shared ARMv7-M reporter is the worked example
+(`arch/arm/armv7m/arch_armv7m.cc`, `kickos_armv7m_fault_report`): a set MMFSR byte
+(`CFSR[7:0]`) selects the `MPU FAULT` label, `MMFAR` is printed only when `MMARVALID`
+(`CFSR` bit 7) is set and `BFAR` only when `BFARVALID` (bit 15) is set -- both hold stale
+contents otherwise -- `BFSR.IMPRECISERR` (bit 10) is called out so a reader does not read the
+stacked PC as the culprit, and then the `arch_fault_report_extra()` chip hook runs. That hook
+is where a bus-side unit reports: `mk64f` reads SYSMPU `CESR`, decodes the per-slave-port
+`SPERR` nibble, and says so explicitly when NO protection error is latched -- which is the tell
+for a peripheral-bridge fault rather than an MPU one.
+
 ### Adding a board/chip (the three edit points)
 
 1. `boards/<board>/board.cmake` -- the board descriptor: one file setting
@@ -111,6 +141,23 @@ real work. The `qemu-riscv` `+MPU` 15/15 gate is the proof. **Do NOT add the
 
 So: decide which side your loader is on BEFORE writing an `AT` clause, and pin the decision
 with an `ASSERT` either way. `docs/reference/boards.md`, *M4.5.6*, holds the wire evidence.
+
+**A `*pattern*` in an input-section spec matches the archive MEMBER name, never the archive
+path.** GNU `ld` tests such a pattern against each input's own filename: for an object named on
+the link line that is its path, but for an archive member it is the MEMBER name, and the
+enclosing archive's name is not part of the candidate string. That is the mechanism behind the
+selector inversion
+every enforcement `<chip>.ld` now carries: `*user*(.data)` matched member basenames only, so it
+silently missed `libkickos_user.a(newlib_stubs.o)` -- and with it the heap arena and the whole
+toolchain runtime, none of whose members happen to be spelled "user". Naming an archive needs
+the `archive:member` COLON form (`*libkickos_kernel.a:*(.data .data.*)`), and this binutils does
+not match archive members inside `EXCLUDE_FILE` at all, so a bare `*libkickos_kernel.a` there
+matches nothing (verified with `nm`). Both facts are why the enforcement layout is written
+INVERTED: capture the CLOSED KickOS-owned set first, by colon selector, then let the app
+catch-alls take everything else, so an unmatched or newly added archive lands app-side
+(reachable) rather than kernel-side (faults). A path-substring selector is also
+build-path-sensitive -- a checkout under `/home/user/` makes foreign object paths candidates --
+which the colon form removes.
 
 A chip whose flash boot needs a checksummed second stage (RP2040 boot2) adds a
 fifth point: `cmake/<chip>_checksum.py` plus a `boot2.S`/`boot2.ld` in the chip
@@ -301,6 +348,34 @@ fault, read-back unchanged. `int arch_periph_reg_write(uintptr_t base, uintptr_t
 uint32_t value)` (`arch/include/kickos/arch/arch.h`) performs that one store privileged,
 reached from userspace as syscall `KOS_SYS_PERIPH_REG_WRITE` (42) via
 `kos_periph_reg_write`.
+
+**The `U` / `PV` notation this page uses is the XMC reference manual's, and it is ADDITIVE.**
+XMC4700/XMC4800 RM V1.3 front matter, Table 2: `U` = unprivileged mode permitted, `PV` =
+privileged mode permitted, and a cell lists every mode that is permitted. So `U,PV` on a
+register's `Write` column means an unprivileged store lands, and `Write = PV` with no `U` means
+it does not. This is reference-manual knowledge citable from nothing in this tree, which is why
+it is stated here: a porter cannot read the seam table below, or `boards.md`'s USIC records,
+without it. On the XMC USIC channel, RM Table 18-20 marks **exactly three** registers
+`Write = PV`: `FDR`, `BRG` and `CCR`. Every other channel register the drivers touch --
+`KSCFG`, `SCTR`, `TCSR`, `PCR`, `PSCR`, `DX0CR`, `INPR`, `CCFG`, `TBCTR`, `TRBSR` and the `INx`
+push aperture -- is `U,PV`, so an in-window holder reaches it with a plain store. `INPR` in
+particular is `U,PV`: an older transcription listed it as a fourth `PV` register and that was a
+slip, never measured.
+
+**The two seams differ in what the ABI carries, and that follows from the two reasons a register
+lands in the kernel at all.** For `arch_periph_enable` (class 1) the register is OUTSIDE any
+grantable window -- SCU, SIM, RCC, AIPS, APM carry authority over peripherals the caller was
+never granted -- so the caller names only the BLOCK and the register plus bit are DERIVED from
+it: naming them would be naming something the caller has no claim to. For
+`arch_periph_reg_write` (class 2) the register is INSIDE the caller's own window and it already
+reads that address freely, so withholding the name buys nothing while making the seam a
+per-register function on every chip; the caller therefore names `(base, offset)`. What replaces
+the derivation as the bound is the **per-chip allowlist of exact register addresses**, so the
+reachable command space is not "the block I hold" but "the specific registers this chip's porter
+enumerated inside the block I hold" -- strictly narrower than what a class-1 entry already
+grants. That is the rule a new chip's entry is judged against, and the premise it rests on
+("already reads that address freely") is only true because the possession predicate CHECKS it;
+see the containment paragraph below.
 
 Two backends exist in-tree. `xmc4800` is the real one. The **sim** is the second, and its
 purpose is a CI gate (`arch/sim/sim.cc`: `SIM_PVREG_BASES`, `SIM_PVREG_WINDOW`,
@@ -512,7 +587,7 @@ rationale in `boards.md` under *Per-board caveats*): a skip not on that list fai
 `f302nucleo` has no gate of any kind, so its 5 skips are enumerated below instead.
 
 Every figure below names its board, its app and its optimisation level. Flash figures are
-reused from `../design-flash-footprint.md` section 3; RAM figures are read out of ELFs
+reused from `../archive/M4.5_footprint_meas.md` section 3; RAM figures are read out of ELFs
 linked at this branch tip.
 
 ### The optimisation level is part of every floor
@@ -579,7 +654,7 @@ arena starvation fixed at the source rather than by raising a limit.
 ### The program-memory floor
 
 `hello` -- kernel, arch, chip, console, UART driver, libgcc, minimal app -- across the
-fourteen real boards (`../design-flash-footprint.md` s.3):
+fourteen real boards (`../archive/M4.5_footprint_meas.md` s.3):
 
 | | Board | `hello` flash, `-Os` |
 | --- | --- | --- |
@@ -589,14 +664,14 @@ fourteen real boards (`../design-flash-footprint.md` s.3):
 | Xtensa | `esp32-wroom` | 22,996 |
 
 So the kernel plus a small app costs **18.7 to 23.0 KiB at `-Os`**, of which the kernel core is
-a flat ~12.5 KiB across boards (`../design-flash-footprint.md` s.4). A 32 KiB part holds
+a flat ~12.5 KiB across boards (`../archive/M4.5_footprint_meas.md` s.4). A 32 KiB part holds
 that with room for an app, but **no chip in the tree declares one**: the smallest FLASH
 regions are 64K, on `stm32f302` (`arch/arm/chip/stm32f302/stm32f302.ld:13`) and
 `stm32f103` (`arch/arm/chip/stm32f103/stm32f103.ld:17`). The 32 KiB run floor is derived
 from the measured `hello` sizes, not witnessed on a part.
 
 The two non-ARM ISAs cost 1.0 to 2.3 KiB more than the ARM maximum. `esp32c6-wroom`
-looks far larger -- 49,112 bytes in `../design-flash-footprint.md` s.3 -- but that is
+looks far larger -- 49,112 bytes in `../archive/M4.5_footprint_meas.md` s.3 -- but that is
 **region accounting, not code**: its linker script carves no flash region, so code and
 data share the 512 KiB RAM and the figure is whole-RAM occupancy. Measured at tip, its
 `hello` code is ordinary: `.text` 22,840 + `.data` 48 + `.init_array` 8 = 22,896, and
@@ -605,7 +680,7 @@ the rest of the 49,072-byte total is `.bss` 9,792 plus a 16,384-byte `.userheap`
 remaining ARM/non-ARM gap; that attribution is **inferred, not measured**.
 
 The suite spans 46,932 to 57,568 bytes at `-Os` across the fleet and both
-`KICKOS_ENABLE_SELFTEST` settings (`../design-flash-footprint.md` s.3), so it needs a
+`KICKOS_ENABLE_SELFTEST` settings (`../archive/M4.5_footprint_meas.md` s.3), so it needs a
 **64 KiB** part; the tightest shipped configuration keeps 13,820 bytes free.
 
 ### The SRAM model
@@ -1193,6 +1268,161 @@ abandoned (the system never returns to boot).
 
 ---
 
+## MPU descriptor encodings, per backend
+
+The seam is the same on every chip (`{base, size, attr}`, `attr` = unprivileged rights); the
+register encoding is not. These are the two encodings the Reference otherwise names only by
+symbol, and both are the fastest path to a correct backend for the next part in their family.
+
+### ARMv8-M PMSAv8 (Cortex-M33: `rp2350`, and the next nRF5340 / STM32U5 / STM32H5)
+
+`MPU_TYPE` (`0xE000ED90`), `MPU_CTRL` (`0xE000ED94`) and `MPU_RNR` (`0xE000ED98`) are
+LAYOUT-COMPATIBLE with v7-M, so `MPU_CTRL = ENABLE | PRIVDEFENA` still turns the unit on and the
+kernel stays the degenerate privileged domain on the background region. **The region descriptors
+are not compatible, and they REUSE the same two addresses**, which is why pointing the v7-M
+backend at an ARMv8-M MPU fails closed rather than under-programming:
+
+| Address | v7-M | ARMv8-M |
+|---|---|---|
+| `0xE000ED9C` | `MPU_RBAR` = base[31:5], low 5 bits reserved | `MPU_RBAR` = base[31:5] + `SH[4:3]` + `AP[2:1]` + `XN[0]` |
+| `0xE000EDA0` | `MPU_RASR` = ENABLE[0] + SIZE[5:1] + AP[26:24] + TEX/S/C/B + XN[28] | **`MPU_RLAR`** = limit[31:5] + `AttrIndx[3:1]` + `EN[0]` |
+| `0xE000EDC0` / `0xE000EDC4` | -- | `MPU_MAIR0` / `MPU_MAIR1`, 8 attribute bytes selected by `AttrIndx` |
+
+The v7-M path writes `base & ~0x1F`, which on ARMv8-M clears `AP` to `0b00` (privileged-only) and
+so denies a thread its OWN stack on the first unprivileged access; and it writes its RASR word to
+what is now `RLAR`, where bit 0 happens to be `EN` (the region enables) while limit[31:5] comes
+out of the AP/TEX/S/C/B bits, i.e. a limit unrelated to base+size, with `AttrIndx` pointing into
+an unprogrammed MAIR (reset MAIR = 0 = Device-nGnRnE everywhere).
+
+Encoding actually used (`arch/arm/common/arch_arm_pmsav8.cc`, field defs in
+`arch/arm/common/regs_v8m.h`):
+
+- **base** -> `RBAR.BASE[31:5]` (`base & ~0x1F`); **base+size** -> `RLAR.LIMIT[31:5]` as an
+  INCLUSIVE top, `(base + size - 1) & ~0x1F`. Because the limit is stated directly there is no
+  power-of-two size and no natural-alignment gap: `arch_mpu_region_pow2()` is 0 and
+  `arch_mpu_region_encodable` is the byte-granular form at a 32-byte granule
+  (`size >= 32 and (base & 31) == 0 and ((base + size) & 31) == 0`).
+- **`AP[2:1]`**, ARMv8-M ARM encoding: `00` = RW privileged-only, `01` = RW any, `10` = RO
+  privileged-only, `11` = RO any ("any" = unprivileged permitted; the kernel reaches everything
+  through PRIVDEFENA regardless). The encoder keys off X and W exactly as `mpu_rasr` does on
+  v7-M: `ARCH_MPU_X` (code) gives `AP = 11` with `XN` CLEAR; everything else sets `XN` and takes
+  `AP = 01` when `ARCH_MPU_W` is present, `AP = 11` when it is not. So a data or stack region is
+  `01` + `XN`, read-only data is `11` + `XN`, and an MMIO grant (`ARCH_MPU_DEV`, issued `R|W`) is
+  `01` + `XN` with the Device MAIR slot instead of the Normal one. `SH` is left 0 throughout.
+- **MAIR is ONE-TIME, not per region**: two slots programmed once (index 0 = Normal
+  write-back/write-allocate `0xFF`, index 1 = Device-nGnRE `0x04`) with `RLAR.AttrIndx`
+  selecting between them. It consumes no region slots. Under SMP it must run once PER CORE
+  (`0xE000EDxx` is core-local and the MPU register file is banked), not once globally.
+- **Region count** comes from `MPU_TYPE.DREGION` -- read it, do not hard-code; the M33 on
+  RP2350 implements 8, the same budget as the rest of the fleet.
+- Violations raise **MemManage** with `MMFSR`/`MMFAR` exactly as v7-M, so the shared ARMv7-M
+  reporter needs no change.
+
+**A whole separate `armv8m` arch directory was rejected**, and the reason generalises to the next
+ARMv8-M part: Mainline is a superset of v7-M for everything the arch layer touches -- BASEPRI
+critical section, DWT, SysTick, NVIC, PendSV/SVCall -- so a new arch would duplicate a large,
+identical backend to swap one file. The chip reuses `armv7m` verbatim and opts into PMSAv8
+through its own `mpu.cmake` (`KICKOS_ARM_PMSAV8_SOURCE`), which pulls the PMSAv8 TU into the chip
+library so the v7-M fallback TUs are never extracted. A v7-M chip's `mpu.cmake` never adds it and
+its fallback stands. Selection is by presence-in-link, not by an `#ifdef` fork inside one
+function -- and the overridden symbol is `kickos_arch_mpu_commit` (the deferred-commit seam),
+never `arch_mpu_apply`, which stays the shared stash. The posture matters: the PMSAv8 TU enters
+the link only at `KICKOS_HAVE_MPU=1`, so a non-enforcement build of the SAME chip still takes the
+v7-M pow2 fallback (`arch/arm/common/arch_mpu_region_pow2_default.cc`).
+
+### RXv3 RX MPU (`rx72m`)
+
+Eight access-control regions plus one background region, base `0x0008_6400` (HW UM section 17),
+page granularity **16 bytes** -- the page number is address[31:4]:
+
+| Register | Address | Contents |
+|---|---|---|
+| `RSPAGEn` | `0x00086400 + n*8` | `RSPN[27:0]` = START page = `base & 0xFFFFFFF0` |
+| `REPAGEn` | `0x00086404 + n*8` | `REPN[27:0]` = END page, **INCLUSIVE**, plus `UAC[2:0]` and `V[0]` |
+| `MPEN` | `0x00086500` | bit 0 global enable; checking begins on the `RTE`/`RTFI` that next shifts to user mode (UM 17.2.3) |
+| `MPBAC` | `0x00086504` | background (whole 4 GiB) user access in `UBAC[2:0]`, same field layout as `UAC` |
+| `MPOPI` | `0x00086526` (16-bit) | writing 1 to bit 0 clears `V` on every region (UM 17.2.10) |
+
+`UAC` bit order is **R = bit 3, W = bit 2, X = bit 1** -- read is the HIGH bit and execute the
+low, NOT `r/w/x` LSB-first, and `V` is bit 0 of the same `REPAGEn` word. Write `RSPAGEn` before
+`REPAGEn` and put `V` in the `REPAGEn` write, so a slot is never briefly valid with a stale
+end/attr.
+
+**`MPBAC` must stay 0.** Overlapping regions OR their permission bits with the background
+(UM 17.1.4), so any nonzero `MPBAC` silently grants every user thread everywhere -- it is the one
+value that turns enforcement into a no-op with no other symptom. The RX MPU also checks USER mode
+only, so there is no supervisor-field hazard and no privileged region to spend. Its registers are
+supervisor-only and are NOT `PRCR`-gated (UM Table 13.1 omits them), so no unlock bracket.
+
+**`UM section 17.4.3` requires a READBACK barrier**: read any MPU register after programming so
+the writes are in effect before the scheduler's `RTE` drops into user mode. It is the RX analog
+of ARM's `DSB`/`ISB`, and the read must be consumed (`arch/rx/rxv3/arch_rxv3.cc` feeds it to an
+empty `asm` with a `"memory"` clobber) or the volatile load can be dropped or reordered past the
+`RTE`. A region the 16-byte pages cannot represent EXACTLY is fail-closed (slot left `V = 0`),
+never masked wider, matching the ARM PMSA and PMP skip: rounding to page bounds would grant up to
+15 bytes past the region on each side.
+
+## Clock retune: timer-clock domains and the wait-state ordering
+
+**Widen flash wait-states and raise voltage BEFORE the frequency rises; relax them AFTER it
+falls.** A raw core-clock increase past the current wait-state's access window makes an
+instruction fetch return before the data is valid -- a fetch FAULT, not merely wrong timing --
+and on the way down the old, higher wait-state count is safe across the whole descent, so
+relaxing early is the only unsafe half. Four chips set flash wait-states on this rule at boot
+(`xmc4800` `FCON.WSPFLASH`, `stm32f103` and `stm32f411` `FLASH_ACR.LATENCY`, `sam3x8e`
+`EEFCn_FMR.FWS`), and `xmc4800`'s runtime retune is the only backend that walks BOTH directions:
+widen then staircase `K2DIV` down on a rise, staircase up then relax on a fall. `mk64f` applies
+the identical discipline to the divider it has instead -- `SIM_CLKDIV1` widened before the MCG
+walks `FEI -> FBE -> PBE -> PEE`, dropped after `PEE -> FEI`. Over-provisioning is always the
+safe side: `sam3x8e` sets `FWS = 4` unconditionally because it also covers the RC and
+crystal-less fallbacks. The voltage half has no in-tree implementation yet -- the RT1062's DCDC
+higher-OPP step is part of its deferred 600 MHz tree -- so a port that raises voltage owes the
+same ordering with nothing to copy from.
+
+**Whether the monotonic clock survives a retune is a per-chip fact, and the console is a SECOND,
+independent fact.** `arch_clock_now` is only immune where its counter sits in a clock domain the
+retune does not move; where it is not immune the backend must RE-ANCHOR at the rate edge, inside
+the chip code at the exact instruction that changes the divider, because every raw tick that
+elapses between the `SystemCoreClock` update and the anchor is priced wrong and frozen into the
+epoch permanently. Without the anchor, applying the new reciprocal to the whole accumulated tick
+count reprices ALL of history: at 144 -> 24 MHz the multiplier is 6x larger and `now` jumps
+forward by roughly `elapsed_since_boot * (ratio - 1)`.
+
+| Chip | Monotonic counter | Its clock domain | Immune to a retune? |
+|---|---|---|---|
+| `xmc4800` | CCU40 (64-bit, linked slices) | `fCCU = fSYS = SystemCoreClock` | **no** -- re-anchors at the rate edge |
+| `mk64f` | PIT ch0+ch1 chained | bus = `SystemCoreClock / BUS_DIV` (`BUS_DIV` = 2) | **no** -- re-anchors at the rate edge |
+| `stm32f411` | TIM2 (32-bit + software high word) | timer kernel clock = HCLK = `SystemCoreClock` | **no**, but LATENT -- see below |
+| `rp2040` | 64-bit TIMER via the watchdog tick | `clk_ref` (stays on the 12 MHz XOSC) | yes for the CLOCK; **no for the CONSOLE** |
+| `rp2350` | 64-bit TIMER0 via the TICKS generator | `clk_ref` | yes for the CLOCK, same console caveat |
+| `nrf51` | semihosting `SYS_CLOCK` | host, not core-derived | yes |
+| `sim` | host `CLOCK_MONOTONIC` | host | yes |
+
+`xmc4800` and `mk64f` are also the only two chips that ship an `arch_cpu_clock_set` at all, so
+today the not-immune set and the re-anchoring set coincide.
+
+**`stm32f411` is the latent hazard, and a porter adding a retune there must not read its silence
+as immunity.** TIM2 is same-domain -- with `HPRE = /1` and `PPRE1` in `{/1, /2}` the APB
+timer-clock doubler makes the timer kernel clock equal HCLK, which is why the anchor is seeded
+from `SystemCoreClock` and not from `PCLK1` (`PCLK1` is 42 MHz against an 84 MHz HCLK). So its
+`now` WOULD jump under a retune. It does not today only because F411 implements no
+`arch_cpu_clock_set` and takes the fallback: it carries the sole-writer cleanup (`mult` written
+only by the boot anchor, never lazily recomputed inside `arch_clock_now`) but never re-anchors,
+because there is no rate edge to re-anchor at. Adding a retune to this chip means adding the
+re-anchor in the same commit. Note also that retuning `PPRE1` to `/4` or worse breaks the
+doubler identity the anchor assumes.
+
+**The RP2040/RP2350 console is the other half of the same trap.** Their TIMER is on `clk_ref` and
+is genuinely immune, but `clk_peri` TRACKS `clk_sys`, so a `clk_sys` retune moves the UART baud
+divisor and the console garbles unless the coherence tail re-derives it -- exactly like the three
+not-immune chips. They are the reference model for the TIMER only, never for the console. The
+general rule for the baud half: re-derive only after the TX shift register is SHIFT-IDLE
+(transmission complete), not merely after the TX buffer is empty, or the byte still clocking out
+is garbled; and a target rate whose clock cannot produce the console baud within tolerance is
+REFUSED at the seam rather than landed with a silently lowered baud.
+
+---
+
 ## The QEMU verification target (`boards`: `qemu`, chip `mps2`)
 
 A runnable armv7m target validates the arch layer on real Cortex-M4:
@@ -1312,7 +1542,9 @@ save-frame, deferred switch.
   KickOS libs `-msmall-data-limit=0` so they emit no small-data and vacate the window
   (else granting it would hand a U-thread the kernel's own scheduler small-data). App
   TUs stay compiled *with* small-data so unwinding works. Folds into the app-data grant
-  at +0 regions; `switch.S` is untouched (`gp` stays one link-time constant). ARM and RX
+  at +0 regions. `switch.S`'s restore epilogue reloads `gp` from `__global_pointer$` under
+  `.option norelax` on every dispatch: the anchor sits in a window U-mode can write, so a
+  thread-set `gp` would otherwise corrupt the next thread's small-data addressing. ARM and RX
   have no small-data model and skip this.
 - **`arch_irq_inject`** (fake-a-device-firing test/bench scaffolding) uses the
   **supervisor software interrupt** (`mip.SSIP`, `mcause`=1) as a private channel --

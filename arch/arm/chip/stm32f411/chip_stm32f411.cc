@@ -4,7 +4,7 @@
 // STM32F411 (STM32F411E-DISCO, Cortex-M4F) chip backend. Registers are clean-room
 // from RM0383; hand-rolled, no vendor HAL/CMSIS, consistent with the arch layer.
 //
-// M1 scope: privilege + SVC, no hardware MPU. Clocking: HSE crystal (8 MHz on the
+// Clocking: HSE crystal (8 MHz on the
 // F411E-DISCO) -> main PLL -> 84 MHz SYSCLK for an accurate, full-speed core (the
 // HSI RC is too imprecise for reliable 115200 UART). clock_init() runs first in
 // arch_init and bounded-polls every ready flag, so a dead/missing crystal degrades
@@ -13,10 +13,6 @@
 // polled TX. STM32 keeps peripheral clocks running in WFI, so no TX drain is needed
 // (unlike the XMC). STM32 has no watchdog running at reset (unlike the K64F), so
 // the reset path is FPU + C-runtime + clocks.
-//
-// NOT run in this environment (no F411 model here); verified by build + image
-// inspection. Flash (ST-LINK/openocd) to confirm; apps/blink toggles an onboard
-// LED (PD12) for a no-UART smoke test.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"

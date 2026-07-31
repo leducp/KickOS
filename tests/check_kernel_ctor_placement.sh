@@ -40,9 +40,27 @@ shift 3
 
 scratch_dir
 
+# Every address below is compared as a STRING, so every producer of one goes through
+# here: an nm address, an init_array pointer word and a masked ctor address must come out
+# in the same format or an assertion compares two spellings and passes vacuously.
+even_hex() { # <hex digits>
+  printf '%x\n' $((0x$1 & ~1))
+}
+
+# The symbol nm reports at an address, in even_hex form. nm zero-pads its address column,
+# which even_hex does not, so the padding is stripped here rather than at each caller.
+name_at() { # <even-hex address>
+  awk -v t="$1" '{ a = tolower($1); sub(/^0+/, "", a); if (a == t) { print $3 } }' \
+    "$TMP/nm_elf" | head -1
+}
+
+# One nm read of the ELF, status-checked once: a pipeline would hand back awk's status and
+# every absence-assertion below would read a dead tool as a clean image.
+tool_out "$TMP/nm_elf" '^[0-9a-fA-F]+ [A-Za-z] ' "$NM" "$ELF"
+
 # --- app-ctor window bounds (the section symbols the split defines) -----------
-START="$("$NM" "$ELF" | awk '$3=="__kickos_app_init_array_start"{print $1}')"
-END="$(  "$NM" "$ELF" | awk '$3=="__kickos_app_init_array_end"  {print $1}')"
+START="$(awk '$3=="__kickos_app_init_array_start"{print $1}' "$TMP/nm_elf")"
+END="$(  awk '$3=="__kickos_app_init_array_end"  {print $1}' "$TMP/nm_elf")"
 if [ -z "$START" ] || [ -z "$END" ]; then
   fail "ELF has no __kickos_app_init_array_{start,end} -- not an enforced ELF with the ctor split (wrong target?)"
 fi
@@ -67,7 +85,7 @@ ctor_targets() { # <section> <entries> <outfile>
   [ "$NREAD" -eq "$2" ] \
     || fail "$1: the window symbols span $2 entr(y/ies) but objcopy read $NREAD -- output section renamed or NOBITS"
   od -An -tx4 "$TMP/sect.bin" | tr ' ' '\n' | grep -E '^[0-9a-fA-F]{8}$' | while read -r W; do
-    printf '%x\n' $((0x$W & ~1))
+    even_hex "$W"
   done | sort -u > "$3"
 }
 
@@ -75,8 +93,9 @@ ctor_targets() { # <section> <entries> <outfile>
 : > "$TMP/kctors.txt"
 for A in "$@"; do
   [ -f "$A" ] || fail "kernel archive not found: $A"
-  "$NM" --defined-only "$A" 2>/dev/null \
-    | awk '$3 ~ /^_GLOBAL__sub_[ID]/ {print $3}' >> "$TMP/kctors.txt"
+  # Per-archive, so a tool failure on one archive cannot hide behind the aggregate count.
+  tool_out "$TMP/karch" '^[0-9a-fA-F]* *[A-Za-z] ' "$NM" --defined-only "$A"
+  awk '$3 ~ /^_GLOBAL__sub_[ID]/ {print $3}' "$TMP/karch" >> "$TMP/kctors.txt"
 done
 sort -u "$TMP/kctors.txt" -o "$TMP/kctors.txt"
 require_nonempty "$TMP/kctors.txt" \
@@ -86,14 +105,17 @@ echo "== $KCOUNT kernel-owned global-ctor name(s) across the closed archive set 
 
 # --- kernel-owned ctor addresses as they landed in the final ELF --------------
 # (only those still present after --gc-sections matter; mask the thumb bit).
-"$NM" "$ELF" | awk '$3 ~ /^_GLOBAL__sub_[ID]/ {print $1, $3}' > "$TMP/elf_ctors.txt"
+awk '$3 ~ /^_GLOBAL__sub_[ID]/ {print $1, $3}' "$TMP/nm_elf" > "$TMP/elf_ctors.txt"
 require_nonempty "$TMP/elf_ctors.txt" \
   "the ELF carries no _GLOBAL__sub_I ctor at all: both windows below would be vacuous"
 while read -r ADDR NAME; do
+  printf '%s %s\n' "$(even_hex "$ADDR")" "$NAME"
+done < "$TMP/elf_ctors.txt" > "$TMP/ctor_even.txt"
+while read -r EVEN NAME; do
   if grep -qxF "$NAME" "$TMP/kctors.txt"; then
-    printf '%x %s\n' $((0x$ADDR & ~1)) "$NAME"
+    printf '%s %s\n' "$EVEN" "$NAME"
   fi
-done < "$TMP/elf_ctors.txt" > "$TMP/kernel_ctor_addrs.txt"
+done < "$TMP/ctor_even.txt" > "$TMP/kernel_ctor_addrs.txt"
 
 # =============================================================================
 # Assertion 1 (PRIVILEGE BOUNDARY): nothing FOREIGN in the privileged window.
@@ -106,8 +128,8 @@ done < "$TMP/elf_ctors.txt" > "$TMP/kernel_ctor_addrs.txt"
 # script that regresses to a monolithic `KEEP(*(.init_array))`, or that grows a
 # fifth selector, would silently pull app ctors privileged. Assert the privileged
 # window contains ONLY ctors from the closed archive set.
-PSTART="$("$NM" "$ELF" | awk '$3=="__init_array_start"{print $1}')"
-PEND="$(  "$NM" "$ELF" | awk '$3=="__init_array_end"  {print $1}')"
+PSTART="$(awk '$3=="__init_array_start"{print $1}' "$TMP/nm_elf")"
+PEND="$(  awk '$3=="__init_array_end"  {print $1}' "$TMP/nm_elf")"
 if [ -z "$PSTART" ] || [ -z "$PEND" ]; then
   fail "ELF has no __init_array_{start,end} -- cannot verify the privileged ctor window"
 fi
@@ -134,9 +156,10 @@ require_nonempty "$TMP/priv_targets.txt" \
 FOREIGN=""
 while read -r TGT; do
   if ! awk -v t="$TGT" '$1==t{found=1} END{exit !found}' "$TMP/kernel_ctor_addrs.txt"; then
-    # Name it if we can, so the failure is actionable rather than a bare address.
-    NAME="$(awk -v t="$TGT" '{a=strtonum("0x" $1); if (and(a, compl(1))==strtonum("0x" t)) print $2}' "$TMP/elf_ctors.txt" | head -1)"
-    [ -n "$NAME" ] || NAME="$("$NM" "$ELF" | awk -v t="$TGT" 'tolower($1)==t{print $3}' | head -1)"
+    # Name it if we can, so the failure is actionable rather than a bare address. POSIX awk
+    # only: strtonum/and/compl are gawk, and a green run never executes this line.
+    NAME="$(awk -v t="$TGT" '$1==t{print $2}' "$TMP/ctor_even.txt" | head -1)"
+    [ -n "$NAME" ] || NAME="$(name_at "$TGT")"
     [ -n "$NAME" ] || NAME="<unresolved>"
     FOREIGN="$FOREIGN
   $NAME (0x$TGT)"
@@ -194,7 +217,7 @@ echo "PASS: no kernel-owned ctor is in the app-ctor window ($APP_ENTRIES entr(y/
 # script grew a third bucket, or dropped the entry and kept the code.
 ORPHAN=""
 while read -r ADDR NAME; do
-  EVEN="$(printf '%x\n' $((0x$ADDR & ~1)))"
+  EVEN="$(even_hex "$ADDR")"
   if grep -qxF "$EVEN" "$TMP/priv_targets.txt"; then
     continue
   fi

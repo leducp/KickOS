@@ -4,125 +4,85 @@
 > **Status: LANDED** -- `xmcspi` shipped as `user/apps/xmc4800-relax/xmcspi/` and is
 > silicon-proven (2026-07-17): the canonical per-thread PMSA MMIO-isolation result, where a
 > granted 512-byte USIC DEV window does an internal SSC loopback (4 words, `tx == rx`) AND an
-> ungranted SCU poke faults MemManage (`CFSR=0x82`). The "pending silicon" note further down
-> predates that run. Note the milestone numbers in the correction below predate the M4/M5/M6
-> renumbering (`design-driver-era-scope.md` sec.4). See `design/README.md` for the taxonomy.
+> ungranted SCU poke faults MemManage (`CFSR=0x82`). Note the milestone numbers in this brief
+> predate the M4/M5/M6 renumbering (`design-driver-era-scope.md` sec.4). See `design/README.md`
+> for the taxonomy.
 
-> **TARGET CORRECTION (read first).** The SPI driver KickCAT actually needs is on the
-> **K64F (DSPI)** -- the goal is a REAL driver with REAL usage *before* M3, feeding the
-> KickCAT slave stack. So the implementation target is **K64F/DSPI**, and resolving
-> **SYSMPU peripheral-bridge gating under user mode** (unproven -- commit 033b570; see
-> below) is now **critical-path, not optional**: the K64F GPIO/timer first-driver
-> bring-up MUST confirm SYSMPU actually isolates peripherals, or K64F MMIO isolation is
-> illusory. The XMC/USIC-SSC design below stays valuable as the **M5** board-support /
-> userspace-library ("piles") reference and as the PMSA-proven fallback, but a future
-> subagent (post-context-clear) should produce the **K64F/DSPI** counterpart of this
-> brief (privilege split, the DSPI register window as the granted MMIO region, hardware
-> PCS vs a GPIO CS, the DSPI EOQ/TCF completion IRQ) reusing the same MMIO-grant model.
->
-> **DONE (2026-07-16):** that counterpart is now `design-spi-driver-k64f-dspi.md` --
-> SPI0/DSPI0 on the FRDM-K64F Arduino header (PTD0-3), HW PCS, EOQ completion,
-> single-word-first. It also records the silicon-established ceiling the SYSMPU note
-> below was blocked on: K64F peripheral isolation is **AIPS-PACR-based, not SYSMPU**, so
-> the DSPI window grant is a genuine per-thread capability only on the CPU-side-MPU
-> flavors (XMC PMSA / RISC-V PMP), NOT on K64F (kernel-vs-user, per-4-KB-slot).
+Decision record. The board-level account, the console captures and the seam allowlist are
+`reference/boards.md`; the SPI service wire contract is `reference/bus-service.md`. The open
+questions this brief carried were all answered by the 2026-07-17 silicon run.
 
-**IMPLEMENTED (build-only, pending silicon) 2026-07-17:** landed as
-`user/apps/xmc4800-relax/xmcspi/` on **U0C1** (USIC0 channel 1, 0x4003_0200) -- the console
-keeps U0C0. Loopback is INTERNAL (RM 18.2.3.5 Loop Back Mode: DX0 input stage selects
-on-chip input "G" = the channel's own transmitter), so **no port pins are muxed and no
-MISO<->MOSI jumper is needed**. Granted window = 512 B `R|W|DEV` no-X (pow2, 0x200-aligned
--> encodable).
-Receive-complete IRQ = USIC0 **SR1 -> NVIC 85** (SR0 is the console TX); a single-word
-frame is SOF=1 so the completion flag is **AIF** (alternative receive), not RIF (RM
-18.4.2.7) -- the driver arms + W1Cs both. Negative test pokes the UNGRANTED **SCU**
-clock-gate register (0x5000_4648) -> MemManage. Builds clean under
-`-DKICKOS_HAVE_MPU=1` (preset `xmc4800-relax-st`). Open questions 1-5 below to be
-answered on silicon by the operator.
+TARGET NOTE: the SPI driver KickCAT needs is K64F/DSPI, and that counterpart is
+`design-spi-driver-k64f-dspi.md`. It records the silicon-established ceiling this brief was
+blocked on: K64F peripheral isolation is AIPS-PACR-based, not SYSMPU, so a DSPI window grant is a
+genuine per-thread capability only on the CPU-side-MPU flavors (XMC PMSA, RISC-V PMP), not on K64F.
 
-Extends `design-task9-mmio-driver.md`
-(privileged-only MMIO grant; MMIO = a Domain region `R|W|DEV` no-X; Option-A
-grant-at-spawn via `kos_thread_params`; `KICKOS_MPU_MAX_REGIONS = 8`) and reuses the
-two-tier IRQ path (`irq_register`/`irq_wait`/`irq_ack`) unchanged.
+Builds on `design-task9-mmio-driver.md` (privileged-only MMIO grant; MMIO as a Domain region
+`R|W|DEV` no-X; Option-A grant-at-spawn) and reuses the two-tier IRQ path unchanged.
 
 ## Chip: XMC4800, USIC in SSC (SPI) mode
-PMSA `DEV` attr is enforcement-proven on this silicon, and the USIC block is already
-modeled clean-room (`arch/arm/chip/xmc4800/usic.h` + `usic_uart.cc` -- SSC is a
-protocol layer mirroring the ASC/UART layer, reusing clock/baud/mux/FIFO/IRQ ops).
-K64F/DSPI deferred: SYSMPU peripheral-bridge gating under user mode is unproven
-(commit 033b570 flags it) -- do not lead SPI on an unproven isolation backend.
+DECIDED: lead on XMC/USIC-SSC. PMSA `DEV` attr is enforcement-proven on this silicon and the USIC
+block is already modeled clean-room (SSC is a protocol layer mirroring the ASC/UART layer, reusing
+the clock/baud/mux/FIFO/IRQ ops). REJECTED at the time: leading on K64F/DSPI, whose SYSMPU
+peripheral-bridge gating under user mode was then unproven. Do not lead a driver on an unproven
+isolation backend.
 
 ## Organizing principle
-The granted USIC-channel MMIO window IS the security boundary, not the semantics of
-the registers inside it. Everything in-window only affects THIS channel on its
-ALREADY-assigned pins (baud, frame, mode, CS) -- contained, not an escalation. The
-operations that reach OTHER pins/peripherals stay privileged and OUT of the window:
-the port pin-mux (IOCR) and the SCU clock gate.
+The granted USIC-channel MMIO window IS the security boundary, not the semantics of the registers
+inside it. Everything in-window affects only THIS channel on its ALREADY-assigned pins (baud,
+frame, mode, CS), which is contained, not an escalation. The operations that reach OTHER pins or
+peripherals stay privileged and OUT of the window: the port pin-mux (IOCR) and the SCU clock gate.
 
 ## Privilege split
-- Privileged boot (once): SCU clock ungate+de-reset; baud/prescaler; controller
-  mode/frame (`CCFG.SSC`, `CCR.MODE=SSC`, `SCTR`, `PCR` master + CS policy); pin-mux
-  (IOCR for SCLK/MOSI/MISO/CS + `DXnCR` input select) -- programmed LAST to avoid an
-  idle-level glitch. Mirrors `kickos_xmc_usic_init()` order, then hands the channel
-  window to the driver via the grant.
-- Unprivileged driver (per transfer): load TX (`TBUF`/FIFO), read RX (`RBUF`), start,
-  wait completion, W1C the SSC flag (`PSCR`), assert/deassert hardware CS (`PCR`
-  SELO) -- all in-window.
+- Privileged boot (once): SCU clock ungate and de-reset; baud/prescaler; controller mode and frame
+  (`CCFG.SSC`, `CCR.MODE=SSC`, `SCTR`, `PCR` master + CS policy); pin-mux (IOCR for
+  SCLK/MOSI/MISO/CS plus `DXnCR` input select). The pin-mux is programmed LAST, to avoid an
+  idle-level glitch. Then the channel window is handed to the driver via the grant.
+- Unprivileged driver (per transfer): load TX (`TBUF`/FIFO), read RX (`RBUF`), start, wait
+  completion, W1C the SSC flag (`PSCR`), assert and deassert hardware CS (`PCR` SELO). All
+  in-window.
 
-Escalation surfaces kept privileged + out-of-window: **SCU** (system clock tree --
-could ungate any peripheral) and **port IOCR** (pin-mux -- could steer SPI onto
-arbitrary pins / capture others' pins).
+Escalation surfaces kept privileged and out-of-window: SCU (the system clock tree, which could
+ungate any peripheral) and port IOCR (pin-mux, which could steer SPI onto arbitrary pins or capture
+another owner's pins).
 
 ## The MMIO grant: ONE channel window
-- USIC channels are 0x200 apart (U0C0=0x40030000, U0C1=0x40030200, U1C0=0x48020000,
-  U2C0=0x48024000). Grant = base=channel base, size=**0x200 (512 B)**, `R|W|DEV` no-X.
-- PMSA-clean (reject-not-round): 512 is pow2 >= 32 B min, and every channel base is
-  0x200-aligned -> one descriptor, no pad/split. Minimal window: NOT the whole USIC,
-  NOT the peripheral bridge, NOT IOCR/SCU.
-- Console owns U0C0; SPI uses a different channel (e.g. U0C1) -- exact channel/pins
-  are a board-header detail (pin against the Relax Kit board manual, like the console
-  P1.4/P1.5, not guessed).
+- Grant = one USIC channel base, size **0x200 (512 B)**, `R|W|DEV` no-X. PMSA-clean under
+  reject-not-round: 512 is pow2 and over the 32 B minimum, and every channel base is 0x200-aligned,
+  so it is one descriptor with no pad and no split.
+- Minimal window: NOT the whole USIC, NOT the peripheral bridge, NOT IOCR or SCU.
+- The console owns U0C0, so SPI takes a different channel (U0C1). The exact channel and pins are a
+  board-header detail, pinned against the Relax Kit board manual rather than guessed.
 
 ### Chip-select is the key SPI-specific choice
-- **Hardware CS (SELOx) recommended** -- CS enable/timing is in-window (`PCR.MSLSEN`/
-  `SELO`/`SELINV`); zero extra regions.
-- **GPIO CS rejected on XMC:** it needs the port data reg (port+0x00/0x04) but IOCR
-  sits at port+0x10; PMSA's 32-byte minimum region from the port base spans 0x00-0x1F
-  and so exposes IOCR -> pin-remux escalation. Cannot split data from mux at 32 B
-  granularity here. Hardware CS sidesteps it.
+- **Hardware CS (SELOx) recommended.** CS enable and timing are in-window
+  (`PCR.MSLSEN`/`SELO`/`SELINV`), so it costs zero extra regions.
+- **GPIO CS rejected on XMC:** it needs the port data register (port+0x00/0x04) but IOCR sits at
+  port+0x10, and PMSA's 32-byte minimum region from the port base spans 0x00-0x1F, so the window
+  would expose IOCR and hand over pin-remux escalation. A data-register window cannot be split from
+  the mux at 32 B granularity here. Hardware CS sidesteps it.
 
-Region budget (ARMv7-M PMSA, 8 max): code 1 + appdata 1 + stack 1 + SPI window 1 =
-**4/8** (CS folded in). Cheaper than the task #9 GPIO+timer example (5).
+Region budget (ARMv7-M PMSA, 8 max): code 1 + appdata 1 + stack 1 + SPI window 1 = **4/8**, with CS
+folded in. Cheaper than the task #9 GPIO+timer example (5).
 
 ## Transfer model: IRQ-driven, tier-1 reused unchanged
-Park the driver on a semaphore via the existing `irq_event_isr`->`sem_post` pattern
-(polling would burn the unprivileged thread's quantum). NO kernel change. Wait on RX
-complete (`PSR.RSIF`) -- RX-done implies TX shifted, so one wait covers full-duplex.
-The only device-specific need is W1C the SSC flag (`PSCR`) before the re-arm (auto on the
-next `irq_wait`; `irq_ack` is now an optional early re-arm), else the line re-asserts on
-unmask and storms (same hazard as the timer flag). Confirm the
-SR-line->NVIC number against the interrupt-node table (as the console did for
-USIC0_SR0_IRQ=84). FIFO/LIMIT burst mode is a later optimization; start single-word.
+DECIDED: park the driver on a semaphore via the existing `irq_event_isr` -> `sem_post` pattern, with
+no kernel change. REJECTED: polling, which burns the unprivileged thread's quantum.
+
+Wait on RX complete: RX-done implies TX shifted, so one wait covers full-duplex. The one
+device-specific need is W1C of the SSC flag (`PSCR`) before the re-arm, else the line re-asserts on
+unmask and storms (the same hazard as the timer flag). Two RM facts the driver depends on:
+
+- A single-word frame is SOF=1, so the completion flag is **AIF** (alternative receive), NOT RIF
+  (XMC4800 RM 18.4.2.7). The driver arms and W1Cs both.
+- Loopback is INTERNAL (RM 18.2.3.5 Loop Back Mode: the DX0 input stage selects on-chip input "G",
+  the channel's own transmitter), so no port pins are muxed and no MISO/MOSI jumper is needed.
+
+FIFO/LIMIT burst mode is a later optimization; start single-word.
 
 ## API (faithful to "write a main, that's it")
-- App-facing blocking: `int spi_transfer(void* tx, void* rx, size_t len)` -- enqueues
-  to the driver thread, blocks on a semaphore. The app never touches MMIO/grants/IRQ.
-- Driver thread: the spawned unprivileged owner of the MMIO grant + IRQ handle,
-  started by a small privileged bring-up shim (does the boot config + issues the
-  grant). Stack via `KOS_STACK_DEFINE` (pow2-aligned for PMSA).
-
-## Open questions -- gated on the GPIO/timer first driver
-1. Fault-vs-grant + decode: an ungranted MMIO access must be reported not escalated;
-   a device-region violation may be a BusFault (not MemManage) -- confirm the reporter
-   decodes both + prints the address.
-2. DEV attr on the real transfer path (back-to-back TBUF/RBUF/PSR), not just an LED
-   toggle, under enforcement on silicon.
-3. Hardware CS needs nothing beyond the channel window (assumed yes).
-4. SR-line -> NVIC number for the SSC indication interrupt.
-5. Grant-time encodability rejection actually fires for a bad window on PMSA.
-
-## Sequencing
-stack-ownership refactor -> MMIO-grant mechanism (task #9) -> GPIO/timer driver on
-XMC PMSA (validates the DEV path + fault-vs-grant + IRQ/W1C, answers the open
-questions) -> THIS SPI driver. SPI is a pure addition: no kernel code, one pow2
-region, CS folded in.
+- App-facing blocking call: `int spi_transfer(void* tx, void* rx, size_t len)`, which enqueues to
+  the driver thread and blocks on a semaphore. The app never touches MMIO, grants or IRQs.
+- The driver thread is the spawned unprivileged owner of the MMIO grant and the IRQ handle, started
+  by a small privileged bring-up shim that does the boot config and issues the grant. Its stack
+  comes from `KOS_STACK_DEFINE` (pow2-aligned for PMSA).

@@ -8,19 +8,6 @@
 // (arch_clock_now / arch_timer_arm / arch_timer_disarm), the CLINT base
 // (g_clint_msip, for the deferred-switch software interrupt), and the linker
 // script + startup vectors.
-//
-// Model (matches the RX72M single-frame SWINT port, adapted to RISC-V):
-//   * ONE deferred switcher. arch_switch records g_arch_next and pends the machine
-//     software interrupt (CLINT msip); the physical swap always happens in the
-//     msip trap (switch.S), so there is ONE saved-frame format for both a voluntary
-//     block (thread context) and a preemptive wake (ISR context). Held off while an
-//     IrqLock masks mstatus.MIE -- the PendSV/SWINT deferral.
-//   * ecall syscall trap -> a trampoline running M-mode (privileged) on the calling
-//     thread's own stack (switch.S svc_trampoline), so a blocking syscall blocks by
-//     an ordinary arch_switch whose continuation is per-thread (arch.h contract).
-//   * mstatus.MIE critical section; g_isr_depth the IPSR!=0 analog; wfi idle.
-//   * PMP is real on this core but MPU enforcement is M2 (like the ARM ports); no-op
-//     here. RV32IMAC has no F/D extension -> soft-float, so the switch banks no FP.
 
 #include <kickos/arch/arch.h>
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend

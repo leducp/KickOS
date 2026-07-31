@@ -13,8 +13,6 @@ set(KICKOS_VERSION "0.4.5-2")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
 
-# Consumer-detection signals, styled like the built-in platform vars (LINUX/WIN32)
-# and the reserved platform macros (__linux__/__APPLE__). KickOS IS the platform.
 # KICKOS: a plain boolean an add_subdirectory(KickOS) consumer tests with if(KICKOS),
 # exactly like if(LINUX). __KickOS__: defined for every in-tree TU here, and carried
 # to downstream consumers as a usage requirement of the kickos/kickos_cxx leaves.

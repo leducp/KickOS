@@ -127,8 +127,8 @@ byte-identical on single-core builds), then per-core run-queues + finer locks as
 where real atomics exist. Fits the seL4 big-lock lineage. Candidate ranking by the real gate
 (inter-core atomic + arch-switch maturity: RP2350 M33/Hazard3 best -> RP2040 big-lock-only ->
 ESP32 LX6 last), the staged model, and the SMP-is-per-chip-capability constraint are spiked in
-`docs/design-m5-smp.md` (with the AMP-vs-SMP feasibility in `docs/design-multicore.md` and the
-cross-core IPC in `docs/design-multicore-ipc.md`).
+`docs/design-m5-smp.md`, which also carries the AMP-vs-SMP feasibility and the cross-core IPC
+invariants.
 
 ## Later
 Multi-domain isolation + cross-domain shared-memory IPC; message-passing IPC + userspace drivers;
@@ -159,8 +159,9 @@ the parked "confine the kernel / drop PRIVDEFENA" goal (Option B), layered on to
 than replacing it; chips without the extension use Option B alone. Buys a hardware TCB boundary
 (NS-privileged still cannot touch Secure memory) + a PSA-style secure-services partition that fits
 the capability-gated-services model. A security/assurance play, not a performance one. Post-M6
-(needs the M4 service model + M5 SMP settled); per-chip capability (M23/M33/M55/M85 MAY have it,
-detect + fall back); RP2350's M33 is a concrete target. Spike: `docs/design-armv8m-trustzone.md`.
+(needs the M4 service model + M5 SMP settled, since the MPUs and the SAU are banked per core);
+per-chip capability (M23/M33/M55/M85 MAY have it, detect + fall back); RP2350's M33 is a concrete
+target. Detail in `TODO.md` under "Post-M6 optimizations".
 
 ### Userspace init service (driver-era; not hardware-gated -- anytime-coherence)
 Today the user's `main` doubles as pid-1: it IS the init entry, holds full userspace

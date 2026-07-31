@@ -122,7 +122,7 @@ SECTIONS
         __kickos_zero_table_end = .;
     } > FLASH
 
-    _sidata = LOADADDR(.data);           /* .data init image lives in flash */
+    _sidata = LOADADDR(.data);
 
 #if KICKOS_HAVE_MPU
     /* Enforcement layout (mirrors stm32f411.ld / mk64f.ld). Writable state is SPLIT
@@ -254,8 +254,6 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 #include <boot_arena.ld.h>
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
-/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
-   rather than silently drop a destructor. */
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 

@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// QEMU `virt` (RISC-V RV32IMAC, M-mode bare metal) chip backend -- the runnable
-// rv32imac verification target, the RISC-V analog of arch/arm/chip/mps2. The
-// hardware edges the rv32imac arch layer leaves to the chip: reset/C-runtime
-// bring-up, arch_init (CLINT base + trap/mie install), the debug console + exit,
-// and the tickless clock/timer. Like mps2, RISC-V semihosting stands in for a UART
-// (console + exit code), so this target needs no peripheral driver; the ESP32-C6
-// chip swaps semihosting for a real UART + SYSTIMER.
-//
 // Standard-RISC-V facts (Privileged ISA v1.10 + the QEMU `virt` memory map): CLINT
 // at 0x0200_0000 -- msip (hart 0) @+0x0000, mtimecmp @+0x4000, mtime @+0xBFF8; the
 // `virt` mtime runs at 10 MHz. Run with: qemu-system-riscv32 -M virt -bios none

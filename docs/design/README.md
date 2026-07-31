@@ -10,6 +10,10 @@ not tell whether a document described the current system, a plan, or a road not 
 separate call for the maintainer to make; this index exists so they can be found by status without
 moving anything.
 
+The 2026-07-29 footprint capture the R2/R3/R4 rulings rest on is
+[`archive/M4.5_footprint_meas.md`](../archive/M4.5_footprint_meas.md): a dated measurement record,
+not a current footprint, and never in the re-grounding path.
+
 ## The markers
 
 Every `design-*.md` now carries one status marker in its header:
@@ -49,7 +53,9 @@ Two things follow from this that are easy to get wrong:
 | [`design-rp2350-mpu-armv8m.md`](../design-rp2350-mpu-armv8m.md) | The ARMv8-M PMSAv8 MPU backend (`base`+`limit` + MAIR) behind the same seam |
 | [`design-teensy-rt1062.md`](../design-teensy-rt1062.md) | Teensy 4.1 / i.MX RT1062 bring-up (first M7) |
 | [`design-teensy-mpu-hang.md`](../design-teensy-mpu-hang.md) | Why an M7 stalled forever with no fault under enforcement, and the fixed-region wrap that fixed it |
-| [`design-m4-fable-review.md`](../design-m4-fable-review.md) | The adversarial review of the M4 design principles, with the verification outcomes. Doubles as the driver era's **risk register**: each finding events have tested carries an OUTCOME line (5 and 12 MATERIALISED as real defects; 4, 6 and 8 are OPEN and are M4.6.1 work, so re-read it at the top of that milestone) |
+| [`design-unprivileged-root.md`](../design-unprivileged-root.md) | Root starts unprivileged holding capabilities instead of starting privileged and demoting -- and the boards where that does not work. All five stages merged (`dde73ca`) |
+| [`design-m4-fable-review.md`](../design-m4-fable-review.md) | The adversarial review of the M4 design principles, with the verification outcomes. Doubles as the driver era's **risk register**: each finding that events have tested carries an OUTCOME line (5 and 12 MATERIALISED as real defects; 4 is CLOSED; 6 and 8 are OPEN and are M4.6.1 work, so re-read it at the top of that milestone) |
+| [`design-flash-footprint.md`](../design-flash-footprint.md) | The footprint decision list: `-Os` rather than `-O1`/`-O2` (R2), the open 64-bit division helper (R3), the `.userheap` carve as policy rather than waste (R4), the `-Warray-bounds` pragma rather than `--param=min-pagesize=0`, and the standing LTO link defect. The numbers are a dated capture in [`archive/M4.5_footprint_meas.md`](../archive/M4.5_footprint_meas.md) |
 
 ## ACTIVE
 
@@ -58,20 +64,18 @@ Two things follow from this that are easy to get wrong:
 | [`design-driver-era-scope.md`](../design-driver-era-scope.md) | The M4 gap list: what turns the M3 mechanisms into a fleet-wide capability. Section 4 records the milestone-ordering decision |
 | [`design-m4-driver-matrix.md`](../design-m4-driver-matrix.md) | The per-board peripheral survey and the complexity-vs-gain backlog that bounds M4's scope |
 | [`design-m4-driver-model.md`](../design-m4-driver-model.md) | How a driver is packaged: driver-lib class, service thread, or both (the ruling: both, service composed on the class) |
-| [`design-m4.6-irq-driver.md`](../design-m4.6-irq-driver.md) | DESIGN GATE for M4.6.1: an unprivileged driver owning an interrupt line -- the proposed IRQ capability, handover at spawn, reclaim on driver death, shared/grouped lines, and the buffered userspace UART on top |
+| [`design-m4.6-irq-driver.md`](../design-m4.6-irq-driver.md) | The M4.6.1 design gate: an unprivileged driver owning an interrupt line -- the proposed IRQ capability, handover at spawn, reclaim on driver death, shared/grouped lines, and the buffered userspace UART on top |
 | [`design-kickcat-k64f.md`](../design-kickcat-k64f.md) | Running the KickCAT EtherCAT slave on KickOS. Sim stage landed; the K64F hardware path is still the plan |
-| [`design-unprivileged-root.md`](../design-unprivileged-root.md) | Root starts unprivileged holding capabilities instead of starting privileged and demoting -- and the boards where that does not work |
+
+| [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose |
 
 ## EXPLORATORY
 
 | Document | Subject |
 |---|---|
-| [`design-multicore.md`](../design-multicore.md) | AMP-vs-SMP feasibility on RP2040 + RP2350 |
-| [`design-multicore-ipc.md`](../design-multicore-ipc.md) | The cross-core IPC transport AMP needs and the kernel does not have |
-| [`design-m5-smp.md`](../design-m5-smp.md) | SMP candidate ranking by the one gate that decides it, and the big-kernel-lock-first staged model |
+| [`design-m5-smp.md`](../design-m5-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
 | [`design-rp2350-hazard3.md`](../design-rp2350-hazard3.md) | Porting to the RP2350's RISC-V Hazard3 cores as a sibling of the M33 port |
 | [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp |
-| [`design-armv8m-trustzone.md`](../design-armv8m-trustzone.md) | TrustZone as the strongest armv8-M realization of kernel confinement -- not an MPU replacement |
 | [`design-mmu-era-exploration.md`](../design-mmu-era-exploration.md) | Growing from an MPU RTOS to real virtual address spaces (x86_64, i.MX8MP heterogeneous AMP) |
 
 ## SUPERSEDED

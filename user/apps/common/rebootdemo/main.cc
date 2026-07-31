@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Reboot-to-bootloader witness, and the unattended-reflash affordance: boot, announce,
-// wait out a timeout, then hand the chip to its firmware-download mode.
-//
 // The handover fires on a TIMEOUT rather than at the end of the run: a board whose image
 // is otherwise misbehaving still comes back for a reflash without a button press.
 //

@@ -4,19 +4,11 @@
 // Infineon XMC4800 (XMC4800 Relax Kit, Cortex-M4F) chip backend. Registers
 // clean-room from the XMC4700/XMC4800 Reference Manual; hand-rolled, no XMCLib.
 //
-// M1 scope: privilege + SVC, no MPU. The watchdog is OFF at reset (WDT_CTR.ENB
+// The watchdog is OFF at reset (WDT_CTR.ENB
 // = 0), so the reset path is just FPU + C-runtime + VTOR. arch_init then runs
 // clock_init() to bring the SCU up from the 12 MHz crystal PLL to fCPU=144 MHz
 // (fPERIPH=72 MHz) -- the uncalibrated fOFI (~24 MHz) is too inaccurate for a
-// stable UART baud. Code/vectors are linked at the cached flash alias
-// 0x0800_0000.
-//
-// Console: USIC0 in ASC (UART) mode on P1.5/P1.4 -> the on-board J-Link VCOM
-// (ttyACM0) at 115200; see usic_uart.cc. apps/blink toggles LED1 (P5.9). The
-// XMC4800 also carries an on-chip EtherCAT node, a natural future KickCAT target.
-//
-// Flashes via the on-board J-Link-OB debugger.
-// Validation status of this port: see docs/reference/boards.md.
+// stable UART baud.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"

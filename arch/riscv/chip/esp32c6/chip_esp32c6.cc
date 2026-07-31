@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6-WROOM-1 (ESP-RISC-V "HP CPU", RV32IMAC) chip backend. Shares the
-// rv32imac arch with the qemu-virt board; this layer supplies the hardware edges:
-// reset/C-runtime bring-up, watchdog disable, the console, arch_shutdown, and the
-// tickless clock/one-shot timer.
-//
 // The C6 has a memory-mapped core-local CLINT (TRM ch.1.7) that provides the exact
 // same seam as the qemu-virt SiFive CLINT: MSIP (machine software interrupt =
 // deferred switch, mcause 3) + MTIME/MTIMECMP (machine timer = tickless tick,
@@ -27,10 +22,6 @@
 
 #include <stdint.h>
 
-// Hand-rolled register map for this chip (clean-room, no ESP-IDF/HAL sources).
-// Bases in mmap.h, CPU-int/kernel IRQ lines in irq.h, per-peripheral offsets/fields
-// in regs/. (regs/usb_serial_jtag.h exists but is not consumed here: the USB console
-// is unused.)
 #include "mmap.h"
 #include "irq.h"
 #include "regs/apm.h"
@@ -108,10 +99,6 @@ namespace
         return ns * 4ull / 25ull;
     }
 
-    // --- USB Serial/JTAG console (regs/usb_serial_jtag.h; TRM ch.32; base 0x6000_F000).
-    //     NOT the KickOS console: the host CDC drain gates output and it re-enumerates on
-    //     reset, so boot output is dropped. UART0 (below) is the real console.
-
     // --- UART0 console (regs/uart.h; TRM ch.26; base 0x6000_0000). The real console on
     //     this board: UART0 (GPIO16/17) is bridged to the host by the CH343P (U4) as a
     //     plain COM port -- unlike the native USB-Serial-JTAG it does NOT re-enumerate on
@@ -177,9 +164,9 @@ namespace
 
     void timg_mwdt_disable(uintptr_t base)
     {
-        r32(base + reg::wdt::TIMG_WDTWPROTECT) = reg::wdt::WKEY;       // unlock
+        r32(base + reg::wdt::TIMG_WDTWPROTECT) = reg::wdt::WKEY;
         r32(base + reg::wdt::TIMG_WDTCONFIG0) &= ~(reg::wdt::TIMG_WDT_EN | reg::wdt::TIMG_WDT_FLASHBOOT);
-        r32(base + reg::wdt::TIMG_WDTWPROTECT) = 0;                    // re-lock
+        r32(base + reg::wdt::TIMG_WDTWPROTECT) = 0;
     }
 
     void wdt_disable_all()
@@ -217,8 +204,8 @@ namespace
     //     no enable pin). GPIO bit-bang FAILS here: the register-write latency exceeds
     //     the WS2812B ~400 ns bit high-time even at 160 MHz, so software cannot form
     //     valid bits (LED latched solid white). The RMT peripheral (regs/rmt.h) clocks
-    //     the pulse train in hardware, so timing is exact. GRB order, 24 bits MSB
-    //     first. Panic path: single frame, polled, no interrupts/DMA.
+    //     the pulse train in hardware, so timing is exact. Panic path: single frame,
+    //     polled, no interrupts/DMA.
 
     // WS2812B pulse widths in RMT ticks. Clock: XTAL 40 MHz / group 1 / div_cnt 2 =
     // 20 MHz -> 50 ns/tick. Each 32-bit RAM word holds two {duration:15, level:1}

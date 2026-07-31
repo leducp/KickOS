@@ -39,6 +39,9 @@
 #      mangled names are taken on trust and the archive leg is what covers our code.
 
 set -u
+# Every path arrives as an argument and is re-split unquoted below; a glob character in a
+# build path must not expand against the cwd and inventory a different file.
+set -f
 . "$(dirname "$0")/lib/gate.sh"
 
 # Locale-independent sort/grep collation; the map and the tool output are both parsed
@@ -63,14 +66,29 @@ ALLOWLIST="$1"; shift
 # Split on ';' as well as on argument boundaries: add_test does NOT split a
 # $<TARGET_OBJECTS:> expansion, so the app's whole object list arrives as ONE
 # semicolon-joined argument (verified in the generated CTestTestfile.cmake).
+#
+# A path that does not exist is not the same thing as a source with no definitions, and
+# downstream the two are the same empty result, so it is a hard failure here.
 ARCHIVES=""
 OBJECTS=""
-for _in in $(printf '%s\n' "$@" | tr ';' '\n'); do
-    case "$_in" in
-        *.a) ARCHIVES="$ARCHIVES $_in" ;;
-        *)   OBJECTS="$OBJECTS $_in" ;;
-    esac
+_oldifs=$IFS
+IFS=';'
+for _arg in "$@"; do
+    for _in in $_arg; do
+        [ -n "$_in" ] || continue
+        [ -e "$_in" ] || fail "definition source does not exist: $_in"
+        # ARCHIVES/OBJECTS below are space-joined lists that every inventory loop re-splits,
+        # so a path with whitespace is refused here instead of being read as two paths.
+        case "$_in" in
+            *[[:space:]]*) fail "definition source path contains whitespace: $_in" ;;
+        esac
+        case "$_in" in
+            *.a) ARCHIVES="$ARCHIVES $_in" ;;
+            *)   OBJECTS="$OBJECTS $_in" ;;
+        esac
+    done
 done
+IFS=$_oldifs
 
 for f in "$ELF" "$MAP" "$ALLOWLIST"; do
     if [ ! -r "$f" ]; then
@@ -83,6 +101,16 @@ rc=0
 # A seam violation is accumulated, so one run names every one of them; a BROKEN TOOL is
 # not, and takes gate.sh's fail()/tool_out() hard exit instead.
 bad() { echo "FAIL: $*" >&2; rc=1; }
+
+# `grep -c .` exits 1 on zero matches, so counting that way makes the count depend on this
+# script never using `set -e` and dies before the diagnostic it feeds.
+nlines() { # <newline-joined list>
+    if [ -z "$1" ]; then
+        echo 0
+        return
+    fi
+    printf '%s\n' "$1" | wc -l | tr -d ' '
+}
 
 # nm prints "<addr> <type> <symbol>", prefixed "<archive>:<member>:" with -A. A source
 # of definitions with no GLOBAL definition at all is not one of ours, so requiring one
@@ -223,7 +251,7 @@ while IFS=$'\t' read -r arch member; do
             ;;
     esac
     syms=$(awk -F'\t' -v a="$arch" -v m="$member" '$1 == a && $2 == m { print $4 }' "$TMP/fb_defs" | sort -u)
-    n=$(printf '%s\n' "$syms" | grep -c .)
+    n=$(nlines "$syms")
     if [ "$n" -ne 1 ]; then
         bad "leg 1: $member defines $n global symbols, expected exactly 1: $(echo $syms)"
         continue
@@ -267,7 +295,7 @@ while read -r sym; do
     [ -n "$sym" ] || continue
     fbmember=$(awk -F'\t' -v s="$sym" '$4 == s { print $2 }' "$TMP/fb_defs" | sort -u)
     backends=$(awk -F'\t' -v s="$sym" '$4 == s { print $2 }' "$TMP/be_defs" | sort -u)
-    nbackends=$(printf '%s\n' "$backends" | grep -c .)
+    nbackends=$(nlines "$backends")
     if [ "$nbackends" -gt 1 ]; then
         bad "leg 2: $sym has $nbackends backend definitions ($(echo $backends)); which one this link resolves to is member order"
         continue
@@ -336,11 +364,22 @@ for a in $ARCHIVES; do
         fi
         case "$sym" in
             _Z*|__Z*)
-                if [ "$ndx" = "UND" ]; then
-                    bad "leg 4: weak undefined C++ reference $sym in $member ($arch)"
-                elif ! comdat_ok "$arch" "$member" "$ndx"; then
-                    bad "leg 4: weak $sym in $member ($arch) is NOT COMDAT, so it is a weak attribute and not C++ vague linkage"
-                fi
+                # A non-numeric index (UND, ABS, COM) never reaches comdat_ok: readelf's
+                # spelling is not an integer, and the arithmetic there would read it as a
+                # variable name and compare against section 0.
+                case "$ndx" in
+                    UND)
+                        bad "leg 4: weak undefined C++ reference $sym in $member ($arch)"
+                        ;;
+                    ''|*[!0-9]*)
+                        bad "leg 4: weak $sym in $member ($arch) has section index $ndx, which cannot be a COMDAT group"
+                        ;;
+                    *)
+                        if ! comdat_ok "$arch" "$member" "$ndx"; then
+                            bad "leg 4: weak $sym in $member ($arch) is NOT COMDAT, so it is a weak attribute and not C++ vague linkage"
+                        fi
+                        ;;
+                esac
                 continue
                 ;;
         esac

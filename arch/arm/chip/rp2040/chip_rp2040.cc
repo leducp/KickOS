@@ -14,11 +14,6 @@
 // UART baud divisors are recomputed for 125 MHz (uart0_init). If the crystal or the
 // PLL never comes up the board degrades to XOSC/ROSC timing instead of hanging.
 //
-// NOT run in this environment (no RP2040 model in mainline QEMU); verified by
-// build + image inspection. Flash to a Pico (drag the UF2/.bin via BOOTSEL, or
-// SWD) to confirm UART0 output on GP0 (pin 1). The board can always be recovered
-// via BOOTSEL, so a wrong boot2/clock config cannot permanently brick it.
-//
 // The second-stage bootloader (boot2.S) and its CRC wrapper run BEFORE this file;
 // by the time Reset_Handler executes, code is already executing in place from
 // flash. See boot2.S and cmake/rp2040_checksum.py.
@@ -30,9 +25,6 @@
 
 #include <stdint.h>
 
-// Hand-rolled register map for this chip (clean-room, no vendor SDK). Bases in
-// mmap.h, NVIC lines in irq.h, per-peripheral offsets/fields in regs/; the atomic
-// SET/CLR/XOR alias helpers in regs/atomic.h.
 #include "mmap.h"
 #include "irq.h"
 #include "regs/atomic.h"

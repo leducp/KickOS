@@ -6,17 +6,8 @@
 // context switch -- the half the hardware does NOT auto-stack on exception entry
 // (it lazily stacks only s0-s15 + FPSCR; s16-s31 are the PendSV switch's job).
 //
-// A high-priority CHECKER loads a known sentinel pattern into s16-s31, sleeps
-// (yielding the CPU), then reads s16-s31 back and verifies the pattern survived.
-// A low-priority TRASHER runs only while the checker sleeps and continuously
-// loads a DIFFERENT pattern into s16-s31. If the switch does not bank s16-s31,
-// the checker wakes to the trasher's values and prints "FP FAIL" loudly.
-//
 // M4F FPU is single-precision, so this uses `float` (s-registers), not `double`
 // (which is soft-float on this part and would not touch the FPU registers).
-//
-// Watch the console: repeated "FP OK ... s16-s31 preserved" = pass; any
-// "FP FAIL" = the FP-switch path is broken on this target.
 
 #include <kickos/kos.h>
 #include <kickos/libc/fmt.h>

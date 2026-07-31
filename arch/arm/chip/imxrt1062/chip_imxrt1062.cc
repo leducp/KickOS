@@ -6,17 +6,10 @@
 // hand-rolled (no vendor CMSIS/SDK), consistent with the arch layer's clean-room
 // regs.h.
 //
-// FIRST-BRING-UP SCOPE (docs/design-teensy-rt1062.md): privilege + SVC only, no
-// hardware MPU, no L1 cache, no PLL bring-up. Boots as a FlexSPI serial-NOR XIP
-// image (RM 9.6/9.7): a 512-byte FlexSPI config block at flash offset 0, the IVT
-// at 0x1000, code executing in place from 0x6000_0000, writable state in OCRAM2.
-// clock_init() leaves whatever clock the boot ROM configured and reports a
-// conservative SystemCoreClock; the 600 MHz CCM/PLL tree is a follow-up. The
-// LPUART6 console (Teensy "Serial1", pins 0/1) baud assumes the reset UART clock
-// root. NOT run in this environment (no board/QEMU model); verified by build +
-// image inspection. Flash via HalfKay to confirm. Points to validate on bench if
-// bring-up misbehaves: the FCB read LUT/speed (flash-specific), the UART clock
-// root (baud), and the actual post-ROM core frequency (SystemCoreClock).
+// Boots as a FlexSPI serial-NOR XIP image (RM 9.6/9.7): a 512-byte FlexSPI config
+// block at flash offset 0, the IVT at 0x1000, code executing in place from
+// 0x6000_0000, writable state in OCRAM2. The LPUART6 console (Teensy "Serial1",
+// pins 0/1) baud assumes the reset UART clock root.
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
@@ -24,7 +17,6 @@
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
-// Bases in mmap.h, NVIC lines in irq.h, per-peripheral offsets/fields in regs/.
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"
 #include "irq.h"
@@ -425,9 +417,9 @@ void arch_init(void)
     // the M7 cannot speculatively prefetch into an AHB slave that never responds -- must
     // be LIVE BEFORE the cache is enabled, because a cache is what arms that speculation.
     kickos_arm_mpu_fixed_init();
-    // I-cache is the config the fix was silicon-proven with. The D-cache is a PRE-M4 step,
-    // opt-in via -DKICKOS_IMXRT_DCACHE=1 until silicon-validated as the default (safe today:
-    // single-core, no DMA; the only coherency obligation arrives with M4-era DMA). TODO.md.
+    // I-cache is the config the fix was silicon-proven with. The D-cache defaults ON
+    // (KICKOS_IMXRT_DCACHE, arch/CMakeLists.txt); the coherency obligation arrives with
+    // M4-era DMA.
     kickos_armv7m_icache_enable();
 #if defined(KICKOS_IMXRT_DCACHE) && KICKOS_IMXRT_DCACHE
     kickos_armv7m_dcache_enable();

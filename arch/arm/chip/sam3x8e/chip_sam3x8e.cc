@@ -4,18 +4,9 @@
 // Atmel/Microchip AT91SAM3X8E (Arduino Due, Cortex-M3) chip backend. Registers
 // clean-room from the SAM3X/SAM3A datasheet (Atmel-11057); hand-rolled, no ASF.
 //
-// M1 scope: privilege + SVC, no MPU. clock_init() brings the part up on the
+// clock_init() brings the part up on the
 // 12 MHz crystal + PLLA to MCK = 84 MHz (SAM3X max); the core boots on the
-// imprecise 4 MHz fast RC, at which 115200 is unreachable. Two SAM3X specifics
-// that bite: (1) the WATCHDOG runs at reset and WDT_MR is WRITE-ONCE -- it must
-// be disabled first thing or the part resets itself; (2) flash is at 0x0008_0000
-// (aliased to 0x0 at boot), so the reset path points VTOR at the real table.
-// Peripheral clocks are individually gated in the PMC. Console = the dedicated
-// UART on PA8/PA9 at a true 115200 once the crystal/PLLA clock is up.
-//
-// Flashes with bossac over the Due programming port; apps/blink toggles the
-// onboard "L" LED (PB27) for a no-UART smoke test.
-// Validation status of this port: see docs/reference/boards.md.
+// imprecise 4 MHz fast RC, at which 115200 is unreachable.
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>

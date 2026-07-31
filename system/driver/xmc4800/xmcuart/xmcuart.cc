@@ -44,9 +44,7 @@
 
 namespace
 {
-    // The U0C0 window base/size now travel in kos_service_cfg (mmio_base/mmio_window),
-    // not literals here: the driver takes its register base from the spawn grant. On
-    // ARMv7-M PMSA the granted DEV window IS a genuine per-thread capability, so a 512 B
+    // On ARMv7-M PMSA the granted DEV window IS a genuine per-thread capability, so a 512 B
     // (0x200) window at the 0x200-aligned channel base is one exact-cover descriptor;
     // the sibling channel U0C1 (base + 0x200) and the SCU/IOCR peripherals stay outside.
 
@@ -60,8 +58,6 @@ namespace
     // and the loop continues (mirrors the kernel writer's give-up-don't-hang policy).
     constexpr uint32_t TX_POLL_TIMEOUT = 1000000u;
 
-    // Poll TCSR.TDV clear, then write one byte to TBUF0. Returns false on timeout
-    // (byte dropped) so the caller keeps making progress rather than hanging.
     bool poll_put(uintptr_t win, uint8_t v)
     {
         for (uint32_t i = 0; i < TX_POLL_TIMEOUT; i++)
@@ -115,12 +111,8 @@ void xmcuart_console_driver(void* arg)
 {
     uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // U0C0 window base
 
-    // Report the queried branch clock (expect 72 MHz) on the RTT/kernel path before
-    // touching the wire. Read-only proof: the driver keeps the kernel's baud.
     print_periph_clock(win);
 
-    // First-light banner straight to the granted window (proves the window map +
-    // poll/TBUF path independent of the endpoint). NOT libc stdio.
     win_puts(win, "[xmcuart] driver up (polled TX)\n");
 
     int const ep = KOS_SPAWN_DELEGATED_CAP0; // delegated recv cap
@@ -148,12 +140,10 @@ void xmcuart_console_driver(void* arg)
 
 int xmcuart_console_start(struct kos_service_cfg const* cfg)
 {
-    // Base/window/priority come from the service cfg (data), not literals here.
     uintptr_t const win_base = cfg->mmio_base;
     uint32_t const win_size = cfg->mmio_window;
     uint8_t const driver_prio = cfg->prio;
 
-    // 1. Create the console endpoint E (full rights: WAIT|SIGNAL|TRANSFER).
     int const ep = kos_endpoint_create();
     if (ep < 0)
     {

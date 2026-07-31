@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Xtensa LX6 arch backend: the ISA-generic half of the arch.h seam for the
-// classic ESP32 (WINDOWED ABI). The context switch + first-thread entry + fresh-
-// thread trampoline assembly is in switch.S; the chip layer (arch/xtensa/chip/
-// esp32) supplies arch_init / arch_console_write / arch_shutdown + the startup
-// vectors (incl. the mandatory window over/underflow handlers + the level-1
-// interrupt entry) + linker script + SystemCoreClock. Clean-room: Xtensa special
-// registers per the Xtensa ISA reference; ESP32 interrupt numbers per the TRM.
-//
-// Arch scope: the cooperative (thread-context) switch,
-// the RSIL critical section, the CCOUNT/CCOMPARE0 timer, the plain-call syscall,
-// the level-1 interrupt dispatch (kickos_lx6_dispatch_l1 -> kickos_isr_timer /
-// kickos_isr_irq), AND the preemptive switch-on-ISR-exit are complete. A switch
-// requested from ISR context sets g_arch_switch_pending; the level-1 interrupt
-// exit (startup.S _kickos_int_level1) completes the physical swap, saving the
-// preempted thread in the interrupt-frame format and resuming the target by the
-// path its resume_kind selects (retw for a cooperatively-blocked thread, rfe for
-// one previously preempted). There is no privilege split on this core, so MPU/
-// privilege are no-ops.
-// Validation status of the Xtensa port: see docs/reference/boards.md.
-
 #include <kickos/arch/arch.h>
 #include <kickos/arch/xtensa_frame.h> // F_* interrupt-frame offsets, shared with startup.S
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions

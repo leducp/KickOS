@@ -8,7 +8,7 @@
 //      rewrites CTAR0 from the named device's profile at the head of every transfer,
 //      and clocks N bytes full-duplex through the polled 4-deep FIFO with the PTC4
 //      GPIO CS bracketing the WHOLE transfer (assert before the first clock, release
-//      after the last RX drain -- the Stage-D coherent-transaction fix).
+//      after the last RX drain).
 //   2. spi_service -- the unprivileged driver thread: kos_recv a kos_bus_req,
 //      validate it, run the class transaction over the concatenated segment bytes,
 //      kos_reply a kos_bus_rsp. The reply cap is consumed on EVERY loop path.
@@ -77,7 +77,6 @@ namespace
 
     // PUSHR (RM 50.3.7, master): TXDATA[15:0], CTAS=0, no PCS/CONT -- the GPIO CS
     // frames the transaction, so no hardware chip select and no EOQ (the pump polls).
-    // (offset PUSHR_OFFSET above.)
 
     // Fallback bus clock if the branch-clock oracle does not know DSPI0 (0 return):
     // K64F bus clock at the default 120 MHz core / BUS_DIV = 60 MHz. The oracle is

@@ -480,6 +480,80 @@ per-thread. (Narrative + the worked K64F bring-up: `../book/peripheral-isolation
 | RX72M -- RXv3 MPU (CPU-side) | yes | none (PRCR is an unrelated write-latch, not a privilege gate) | **yes** | silicon-proven: SRAM/domain enforcement (selftest + mpu_fault cross-domain trap, 2026-07-17) AND a real granted peripheral window -- `rxdrv` blinks LED6 through a granted 16-byte PORT8 PODR window while an ungranted PORT8.PDR poke faults ("MPU FAULT: task 'rxdrv'") |
 | K64F -- SYSMPU (bus-slave-side) | **no** | **AIPS PACR** (by privilege+master, per 4 KB slot, NOT per-thread) | **no** | silicon-proven: an unprivileged PIT access faults via AIPS while SYSMPU latches no error; clearing the slot's PACR SP bit then admits ALL user code |
 
+**The K64F AIPS `PACR` bit is DERIVED from the block base, not tabled** (`slot_of` / `pacr_of` /
+`pacr_sp_bit`, `arch/arm/chip/mk64f/regs/aips.h`, each pinned by `static_assert`), because a table
+of 128 slots would be a table of transcription errors. The derivation, from K64 RM 20.2.2-20.2.3:
+a slot is one 4 KiB step of the bridge aperture, so `slot = (base - AIPS0_BASE) / 0x1000`; eight
+slots share one 32-bit `PACR`, `PACRA..PACRD` at `+0x20` covering slots 0-31 and `PACRE..PACRP`
+at `+0x40` covering 32-127; each slot owns a NIBBLE, field 0 at bits `[31:28]` down to field 7 at
+`[3:0]`, laid out `reserved[3] / SP[2] / WP[1] / TP[0]`. So the supervisor-protect bit is
+`1 << (30 - 4 * (slot % 8))`. Worked: DSPI0 at `0x4002_C000` is slot **44** -> `AIPS0_PACRF`
+`0x4000_0044`, field 4 = bits `[15:12]`, `SP` = bit **14**. UART0 at `0x4006_A000` is slot 106 ->
+`PACRN` `0x4000_0064` bit 22; the PIT at `0x4003_7000` is slot 55 -> `PACRG` `0x4000_0048` bit 2.
+Every `PACR` resets to `0x4444_4444` on this part -- every nibble `SP = 1` -- so **every**
+peripheral slot is supervisor-only until something clears it, and the coarse granularity is the
+whole 4 KiB slot: `arch_periph_enable` therefore has no PIT entry, because clearing slot 55's `SP`
+for a granted channel-2 window would equally expose the chained ch0+ch1 pair the timebase runs on.
+The full DSPI0 register map is in `bus-service.md`.
+
+**The ESP32-C6 has TWO units in series, and only the CPU-side one faults.** An HP-CPU access to an
+HP peripheral in user (REE) mode passes PMP first and APM second, and APM is consulted only if PMP
+passed (TRM 16.1, Table 16.1-1) -- over the whole HP peripheral aperture
+`0x6000_0000 .. 0x600A_FFFF` (Table 16.1-1 note 2), and TEE is always R/W/X while every drop to
+user mode is REE (16.3.1). PMP is the per-thread line the MMIO grant programs; **APM
+(Access Permission Management, TRM chapter 16) is per SECURITY MODE** -- TEE / REE0 / REE1 / REE2 --
+never per thread, and its default posture DENIES every REE mode access to every peripheral
+(16.3.2 Note). So without a one-time APM open a U-mode driver reaches nothing even with a correct
+PMP grant. `apm_open_ree0()` runs in `arch_init` (`arch/riscv/chip/esp32c6/chip_esp32c6.cc`) on
+every C6 board, so this is boot-time state on all of them, not a per-app step. Registers
+(`arch/riscv/chip/esp32c6/regs/apm.h`; TRM Reg 16.1-16.5 and 16.53):
+
+| Register | Address / offset | Reset | Contents |
+|---|---|---|---|
+| `HP_TEE_M0_MODE_CTRL_REG` | `0x6009_8000` (`+0x00 + 0x4*n`) | 0 | per-master security mode; the HP CPU is master **M0**, and reset 0 already maps its U-mode to **REE0**, so KickOS writes nothing here |
+| `HP_APM_REGION_FILTER_EN_REG` | `HP_APM` `+0x0000` | `0x01` | bit n enables region n; region 0 on at reset |
+| `HP_APM_REGIONn_ADDR_START_REG` | `+0x0004 + 0xC*n` | 0 | region start |
+| `HP_APM_REGIONn_ADDR_END_REG` | `+0x0008 + 0xC*n` | `0xFFFFFFFF` | region end |
+| `HP_APM_REGIONn_ATTR_REG` | `+0x000C + 0xC*n` | 0 | `R0_X` b0, `R0_W` b1, `R0_R` b2, then `R1_X` b3 .. `R2_R` b8 |
+| `HP_APM_FUNC_CTRL_REG` | `+0x00C4` | `0xF` | `M0..M3_FUNC_EN`; all four enforcing at reset, so KickOS writes nothing here either |
+
+`HP_APM` is at `0x6009_9000`. Region 0 is LEFT at its reset values -- start 0, end `0xFFFFFFFF`,
+attr 0 -- which is the catch-all that denies every REE mode everywhere; overlaps are a permit
+UNION (16.3.2.3), so a later region granting `R0_R | R0_W` beats it on the overlap. `arch_init`
+programs regions **1..3** to the complement of the HP-bus Rule 7 reserved blocks -- INTMTX, and
+the contiguous PCR..HP_APM span -- so those stay APM-closed to REE on top of the grant path's
+refusal, and everything else is REE0 read/write. The APM registers are writable only in TEE mode
+(= M-mode), so a REE thread cannot reprogram them even if it somehow held a PMP window over
+`0x6009_9000`; the grant path refuses that window anyway (Rule 7 lists HP_APM and HP_TEE).
+
+**An APM denial does NOT trap.** Per TRM 16.5 a blocked read returns 0, a blocked write is
+DROPPED, and a separate `HP_APM_M0_INTR` fires -- there is no `mcause` 5/7. So per-thread
+isolation on this chip is proven on the **PMP** fault and never on APM, and a "no fault" result
+from an APM-scope test is not evidence that enforcement is broken. An APM-only denial is
+observable solely through the `HP_APM_M0_EXCEPTION_*` registers.
+
+**The C6 GPIO window's granularity is a REGISTER limit, not a PMP limit, and it is a real
+boundary caveat.** The GPIO matrix block is at `0x6009_1000` and the granted window (`c6blink`) is
+its first **64 bytes** -- pow2 and 64-aligned, so one PMP NAPOT entry -- covering the pin BANK:
+the output latch `GPIO_OUT` (`+0x0004`) with its atomic `W1TS` (`+0x0008`) / `W1TC` (`+0x000C`),
+the direction `GPIO_ENABLE` (`+0x0020`) with `ENABLE_W1TS` (`+0x0024`) / `ENABLE_W1TC` (`+0x0028`),
+and `GPIO_IN` (`+0x003C`).
+The matrix out-sel `GPIO_FUNCn_OUT_SEL_CFG` (`+0x0554 + 0x4*n`) and the per-pin config and
+interrupt registers (`+0x0074` up) stay OUTSIDE it, which is what makes it a capability rather
+than the block: the holder drives and reads its bank but cannot ROUTE a peripheral signal onto a
+pad. Re-muxing is out of reach on the other stage too -- IO MUX (`0x6009_0000`) and PCR
+(`0x6009_6000`) are never granted, and the pad plus out-sel are reached only through the mediated
+`arch_pinmux_set` seam, which refuses a kernel-owned pin on BOTH stages.
+
+The caveat is what the window's own registers are: `W1TS`/`W1TC` and `ENABLE`/`ENABLE_W1TS` are
+WHOLE-PORT -- bit p addresses pin p -- so a thread holding the bank can toggle the output latch,
+and set the direction, of ANY pin in the port, not only its own. PMP draws the per-thread line at
+the register level and cannot draw it per pin; single-pin isolation would need per-pin ETM or
+dedicated-GPIO features, which is out of scope. What bounds it is that only pins something muxed
+onto the matrix actually drive a pad, and that no other peripheral is reachable from the window at
+all. State this plainly when reasoning about the C6 boundary: the per-thread line is genuine and
+PMP-enforced, but its unit is a register bank, not a pin.
+
 Consequences: on a CPU-side-MPU chip an unprivileged userspace driver can be granted only its own
 peripheral window (the MMIO-grant model, `design-task9-mmio-driver.md`). On **K64F** that model is
 unavailable: the kernel can open a peripheral slot to user mode (clear the AIPS `PACR` `SP` bit) or
@@ -560,6 +634,67 @@ sim = signal-driven injection). Userspace never *injects* -- reacting is `regist
 raw in-handler-mode callbacks are the privileged `irq_attach` (TCB, not defended). `irq_inject`
 is only the sim's fake-a-device-firing mechanism (test scaffolding, gated/privileged),
 never a userspace primitive.
+
+### Driver packaging: class versus service
+
+**The ruling: the class is the primitive, the service is a thin thread composed on top of it,
+never the reverse.** A driver is packaged as an in-process CLASS, as a shared SERVICE, or as BOTH
+-- and when it is both, the service is composed over the class.
+
+- **Class (driver-lib).** A hardware-agnostic object linked directly into the consumer thread. No
+  IPC, no thread of its own, no endpoint; the transaction runs inline, in the caller's thread. A
+  tight-coupling consumer -- a KickCAT ESC in its cyclic fieldbus loop -- uses this and pays
+  nothing beyond the register work.
+- **Service.** A thread that owns exactly ONE class instance plus the peripheral capability, and
+  multiplexes clients over a `CAP_ENDPOINT` (call/reply, reply-cap). Sharing and arbitration live
+  here and ONLY here. The badge that would let it authenticate MUTUALLY-UNTRUSTING clients is not
+  in effect yet (`badge` is `KOS_BADGE_NONE`, see *Service publication* below), so a shipped
+  service today fronts one client's several devices, not several clients.
+
+The class is written first and DEFINES the API; the service is a transport over that same API and
+is not allowed to invent its own.
+
+**The 1:1 rule is what stops it rotting.** The service request protocol MUST be a 1:1
+serialisation of the class methods -- the endpoint is literally "the class API, over the wire". If
+the two drift, two APIs must be maintained and the hardware-agnostic contract erodes. A new
+capability on the class is a new message on the service, mechanically. The wire form of that rule
+for SPI/I2C is `bus-service.md`.
+
+The class API must therefore assume none of the things a service has: it does not own a thread (it
+runs in the caller's thread inline, or in the service's thread when shared, and must work either
+way), it does not own an endpoint (it is a synchronous transaction primitive, and any blocking is
+the caller's wait rather than an IPC it initiates), and it assumes no exclusivity beyond the
+peripheral capability it was handed.
+
+**Two capability shapes, both first-class.** In the class model the cap IS the hardware -- the
+MMIO region granted at spawn, "you hold the device", and holding the region is the authority, so
+single-writer is free. In the service model the cap is an endpoint cap -- "you may ASK the holder"
+-- and the client never touches the MMIO, holding only the right to send requests. Neither is the
+"real" one, and the same driver may be reached both ways in different images.
+
+**This is the microkernel dividend, stated concretely.** Because drivers live in userspace, the
+CONSUMER chooses the coupling and pays only for what it uses: link the class and call it inline
+for lowest latency and zero kernel tax, or talk to the service and pay the round-trip deliberately
+in exchange for arbitration and isolation from the device. The kernel levies no driver tax at all
+-- it only routes capabilities -- so the same peripheral is a private inline class in one image
+and a shared service in another with NO kernel change. A kernel-resident driver cannot offer that
+choice.
+
+**Bus versus device (the SPI shape).** A shared bus needs a second split INSIDE the class layer: a
+**bus class** owns the peripheral, its cap and the transaction engine, and a **device handle**
+carries chip-select plus per-device config and is issued against a bus. A sole user of a bus holds
+its own bus instance fully inline with no arbitration; when unrelated clients share it, a bus
+SERVICE owns the bus class and arbitrates device-handle traffic. The one-block-many-modes parts
+(XMC USIC, RX SCI = UART/SPI/I2C by mode) resolve the mode-select seam IN THE CLASS, not the
+service. Multi-instance is thread-per-instance: one service thread per bus or device it fronts.
+
+A **watchdog is a class by default**, and the exception proves the rule: it is single-owner
+liveness proof, so it is instantiated in the thread that must prove it is alive and the kick
+authority is the cap on its MMIO region. Routing the kick through a service would INVERT its
+purpose -- if the service thread wedged, every client would fail to kick, which is the exact
+failure a watchdog exists to catch. The one service case is a software-watchdog SUPERVISOR: N
+threads check in, the supervisor owns the watchdog class instance and kicks the hardware only if
+all checked in. Still built on the class. (Design: `../design-m4-driver-model.md`.)
 
 **Class-driver leaf (shared register logic across the trust boundary).** Where the kernel and a
 userspace driver run the same device register sequence, that logic is factored into a
@@ -775,10 +910,12 @@ flips the state to USER_OWNED last; a stale chip writer that raced the flip is d
 writer can finish) before publish returns. The **field panic path reclaims** the UART:
 `kpanic_enter` calls `arch_console_reclaim` and flips to RECLAIMED, and `kickos_isr_fault`
 funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
-the diag LED stays the always-present 1-bit last resort. Still to build: the per-chip
-`arch_console_reclaim` bodies (force-retake the peripheral and rewrite every in-window register
-to a known baud/state, since userspace config is untrusted -- a no-op fallback TU today) and the userspace
-UART driver itself. Routing userspace output through a kernel syscall to "share" the device is
+the diag LED stays the always-present 1-bit last resort. A chip `arch_console_reclaim` body
+force-retakes the peripheral and rewrites every in-window register to a known baud/state, since
+userspace config is untrusted; two exist (`arch/arm/chip/xmc4800/usic_uart.cc`,
+`arch/arm/chip/mk64f/chip_mk64f.cc`, the first silicon-witnessed) and every other chip keeps the
+no-op fallback TU, so on those the reclaim is wiring with nothing behind it (see
+[console.md](console.md)). Routing userspace output through a kernel syscall to "share" the device is
 rejected -- an ambient-authority console service contradicts the microkernel split.
 
 **Service publication.** A published userspace driver = **endpoint capability (control) +

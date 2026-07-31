@@ -1,52 +1,36 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # The driver era -- scope / gap analysis
 
-> **Status: ACTIVE** -- this is the gap list for the milestone currently in flight (M4). Its
-> section 4 is also the record of the ordering DECISION that made the driver era M4, SMP M5 and
-> the MMU M6, so the "M4 = SMP" framing quoted there is the *old* numbering being argued
-> against, not a live claim. See `design/README.md` for the marker taxonomy.
+> **Status: ACTIVE.** The M4 gap list, reduced to the gaps still OPEN and the decisions that bound
+> them. Section 4 records the ORDERING decision (driver era = M4, SMP = M5, MMU = M6), so any
+> "M4 = SMP" framing inside it is the old numbering being argued against, not a live claim.
+> `design/README.md` cites section 4 by number and eight design documents cite the `G<n>` labels, so
+> neither is renumbered. For an exact contract go to `docs/reference/`; what is recorded here is what
+> is not yet settled.
 
-**EXPLORATORY -- NOT A CONTRACT.** A scoping lens over the work that turns the M3
-mechanisms (proven on XMC / K64F only) into a real, fleet-wide capability. Ordering is now
-DECIDED (Option A: driver era = **M4**, SMP = **M5**, MMU = **M6**; see section 4), but this
-doc still names work by THEME -- "the driver era" -- where the number is not load-bearing. No
-implementation here; a checklist lands in `TODO.md` and the design in `docs/reference/` only
-after the per-item gate.
-
-Framing (user's words): **M3 = POC** -- endpoints/IPC, console handover, clock-select, the
-fault-funnel reclaim all PROVEN, but each on ONE or TWO chips. **The driver era = the real
-deal** -- reuse the M3 mechanisms and make them real ACROSS THE FLEET, fixing whatever gaps
-XMC-only (+ some K64F) testing hid. The console handover was never tried fleet-wide.
+Framing (user's words). **M3 = POC**: endpoints/IPC, console handover, clock-select and the
+fault-funnel reclaim are PROVEN, but each on ONE or TWO chips. **The driver era = the real deal**:
+reuse those mechanisms across the FLEET and fix whatever gaps XMC-only (plus some K64F) testing hid.
 
 ---
 
-## 0. Outline
+## 1. What M3 landed, and where it is still a fallback
 
-1. State of the M3 mechanisms (what landed, on which silicon)
-2. Gap list -- the driver-era work, per item, effort + dependency + silicon-gating
-3. Driver-framework depth -- the bring-up DAG, the API taxonomy, multi-instance, DMA, GPIO
-4. The milestone-numbering question -- driver-era vs SMP vs MMU, ordering options + rec
-5. Priority / sequencing -- what unblocks what; silicon-gated vs doable-now
-6. M4 design decisions (fable review)
-7. API-conformance objective -- the four-board neutrality matrix + the driver->board mapping
+Each mechanism's exact contract is `reference/architecture.md`, `console.md`, `invariants.md` and
+`porting.md`. All the gap list needs from that surface is the per-chip fan-out.
 
----
-
-## 1. What M3 actually landed (the POC surface)
-
-| Mechanism | Kernel seam | Real backend bodies | Fallback TU | Silicon proof |
-|---|---|---|---|---|
-| Endpoint/IPC (CAP_ENDPOINT) | syscalls 26/27/28, `SlotPool<Endpoint>`, `wq_block`/`wq_pop_highest` | arch-independent | n/a | K64F + XMC 39/39 under enforcement; rest build-only |
-| Console handover | `ConsoleState`, `kos_console_publish` (#29), stdout cap @idx 0 | userspace driver = **XMC only** at the time of writing (`system/driver/xmc4800/xmcuart`; `system/driver/mk64f/k64uart` has since landed) | drop chip path | XMC end-to-end app->IPC->driver->wire, under enforcement |
-| Panic reclaim | `arch_console_reclaim`, `kickos_isr_fault`->`kpanic_enter` funnel | **XMC (USIC) + K64F (UART0) only** | no-op (`arch/common/arch_console_reclaim_default.cc`) -- SILENT reclaim failure | XMC scramble-then-panic PASS (the test now ships as the standalone `conreclaim` app); K64F body written, still unwitnessed on silicon |
-| Clock-select | `arch_cpu_clock_set` (#30) + re-anchor/baud/timer tail | **XMC full + K64F staged only** | return 0 (`arch/common/arch_cpu_clock_set_default.cc`) | XMC 144/48 + K64F 120/20.97 |
-| Retune console coherence | `arch_console_flush_sync`, `arch_console_retune` | XMC, K64F | no-ops (`arch/common/arch_console_flush_sync_default.cc`, `arch_console_retune_default.cc`) | folds into the above |
-
-The **fault-funnel porting invariant** (`docs/reference/porting.md`, `invariants.md`
-`panic-console-probe-independent`): any board that hands its console to a userspace driver
-MUST ship a real `arch_console_reclaim` body -- the no-op fallback is a silent reclaim failure
-(a driver-garbled UART then eats the panic banner). This invariant is the spine of the
-fleet-wide reclaim gap below.
+- **Endpoint/IPC** (syscalls 26/27/28): arch-independent, no per-chip gap. K64F + XMC 39/39 under
+  enforcement, rest build-only.
+- **Console handover**: userspace drivers on two chips (`system/driver/xmc4800/xmcuart`,
+  `system/driver/mk64f/k64uart`), so on every other board the mechanism exists with no driver to hand
+  to (G1).
+- **Panic reclaim**: real bodies on XMC (USIC) and K64F (UART0) only. Elsewhere
+  `arch/common/arch_console_reclaim_default.cc` is a SILENT reclaim failure and a driver-garbled UART
+  eats the panic banner (G2). The porting invariant forbidding that is `invariants.md`,
+  `panic-console-probe-independent`, the spine of the fleet-wide reclaim gap.
+- **Clock-select** (`arch_cpu_clock_set`, #30): XMC full (144/48), K64F staged (120/20.97), every
+  other chip returns 0 from the fallback TU (G4). **Retune coherence**
+  (`arch_console_flush_sync`, `arch_console_retune`) matches it: XMC and K64F, no-ops elsewhere.
 
 ---
 
@@ -55,275 +39,241 @@ fleet-wide reclaim gap below.
 Effort scale: S = a day-ish, M = a few days, L = a week+ / needs a design gate.
 Silicon-gating: **HW** = needs the board on a bench; **NOW** = doable in-tree / QEMU.
 
-### G1. Fleet-wide userspace UART / console drivers  (M3 did XMC ONLY)
-`system/driver/xmc4800/xmcuart` was the sole userspace console driver when this was written;
-`system/driver/mk64f/k64uart` has since joined it. Every other board's console is
-still kernel-owned; the handover mechanism exists but has no driver to hand to.
+### G1. Fleet-wide userspace UART / console drivers (OPEN)
+Two chips have one; section 2.1 lists every other board as GAP. Each driver = {claim the DEV window
+via the MMIO grant, poll TX-ready, drive the ASC/UART, answer the stdout endpoint}, and `xmcuart` is
+the template. Effort **M per chip family**, less within a family (the 3-4 STM32 USART parts share one
+driver).
 
-Per board (see the fleet UART table in section 2.1). Each userspace UART driver =
-{claim the DEV window via MMIO grant, poll TX-ready, drive the ASC/UART, answer the stdout
-endpoint}. `xmcuart` is the template. Effort **M per chip family**, less within a family
-(the 3-4 STM32 USART parts share a driver).
+Order DECIDED by where the handover is a real security boundary, since that is what the grant model
+is for: the CPU-side-MPU boards first (RX72M, ESP32-C6, each gated on its G5 prereq), then the coarse
+and no-isolation parts (STM32 family, RP2040) where the driver still buys functional handover and the
+polled-family reference. Rejected: easiest-first, which spends the era re-proving the mechanism on
+boards that cannot enforce it.
 
-Priority = do the chips where the handover is *interesting* first: the CPU-side-MPU boards
-(XMC done, RX72M, ESP32-C6) where the grant is REAL per-thread isolation. K64F next (proves
-the reclaim body already written). STM32/RP2040 are coarse/none-isolation -- driver still
-worth it for functional handover + as the polled-family reference.
+### G2. Per-chip `arch_console_reclaim` (OPEN; only XMC + K64F have a body)
+Every board that ENABLES the handover needs a body or it violates the porting invariant. The contract
+is `invariants.md` (`panic-console-probe-independent`) and `console.md`; the two shipped bodies are
+the worked examples (`arch/arm/chip/xmc4800/usic_uart.cc`, `arch/arm/chip/mk64f/chip_mk64f.cc`).
 
-### G2. Per-chip `arch_console_reclaim`  (only XMC + K64F have a body)
-Every board that ENABLES the handover needs a reclaim body, or it violates the porting
-invariant. The contract (from the two existing bodies): **straight-line ABSOLUTE stores
-only** (idempotent + re-entrant from a nested fault -- NO read-modify-write on a
-driver-garbled value), rewrite every in-window writable register init sets, PLUS the
-reset-default registers a hostile/buggy driver can set to cause **true silent loss**:
+**The unfinished work is per-chip register homework**: enumerate the registers a hostile or buggy
+driver can set to cause TRUE SILENT LOSS, i.e. those whose reset default is benign, so rewriting the
+registers init sets does not cover them. A module clock gate left off (XMC `KSCFG.MODEN`) silently
+drops every later store; a flow-control enable with no wired counterpart (K64F `MODEM.TXCTSE`) parks
+the polled writer forever. Every chip has that pair in its own spelling, and these are the registers
+a porter needs:
 
-- XMC: `KSCFG.MODEN` FIRST (module clock gate -- off => every later store silently dropped),
-  then CCR/TBCTR/RBCTR/baud/SCTR/TCSR/PCR/FMR(TDV clear)/PSCR/CCR-reenable-LAST.
-- K64F: `MODEM.TXCTSE=0` (else the polled writer waits forever on an absent CTS -- the true
-  silent-loss case), `C3.TXINV`, `S2`, `IR.IREN`, `C7816`, `PFIFO`, `CFIFO` flush, re-derive
-  baud from live `SystemCoreClock`, `C2=TE` last.
+- **RX72M SCI**: `SCR` (TE/RE/clock-src), `SMR`, `BRR` re-derive, `SPMR` (CTS/RTS enable; SS/CTSE is
+  the silent-loss twin of K64F `TXCTSE`), `SEMR` (baud-rate-generator mode / MDDR), `FCR` if the FIFO
+  SCI.
+- **ESP32-C6 UART**: `CONF0` (tx flow-control / loopback / txd_inv), `CLKDIV` re-derive, `CLK_CONF`
+  gate, RS485 and AT-command modes off, TXFIFO reset.
+- **ESP32 LX6 UART**: same UART IP family as the C6, so `CONF0`/`CLKDIV`/txd_inv plus FIFO reset.
+- **STM32 USART**: `CR1` (UE/TE, and LOOP), `CR3` (CTSE the silent-loss twin, HDSEL half-duplex),
+  `BRR` re-derive from PCLK, `CR2` (LINEN/CLKEN synchronous).
+- **RP2040 PL011**: `UARTCR` (CTSEN/RTSEN/LBE loopback), `UARTLCR_H` (line control / FIFO enable),
+  `UARTIBRD`/`UARTFBRD` re-derive, `UARTDMACR` off.
 
-The per-chip homework = enumerate that chip's silent-loss registers. Gaps + watch-registers:
-- RX72M SCI: SCR (TE/RE/clock-src), SMR, BRR re-derive, SPMR (CTS/RTS enable -- SS/CTSE the
-  silent-loss twin of K64F TXCTSE), SEMR (baud-rate-gen mode/MDDR), FCR if the FIFO SCI.
-- ESP32-C6 UART: CONF0 (tx flow-ctrl / loopback / txd_inv), CLKDIV re-derive, CLK_CONF gate,
-  RS485/AT-cmd modes off, TXFIFO reset.
-- ESP32 LX6 UART: same UART IP family as C6 -- CONF0/CLKDIV/txd_inv, FIFO reset.
-- STM32 USART: CR1 (UE/TE), CR3 (CTSE -- silent-loss twin, HDSEL half-duplex, LOOP via CR1),
-  BRR re-derive from PCLK, CR2 (LINEN/CLKEN synchronous).
-- RP2040 PL011: UARTCR (CTSEN/RTSEN/LBE loopback), UARTLCR_H (line ctrl / FIFO enable),
-  UARTIBRD/UARTFBRD re-derive, UARTDMACR off.
-- SAM3X UART/USART: retired unit -- skip unless a working board returns.
-Effort **S-M per chip** once the driver exists (the register list is the work).
+Effort **S-M per chip** once that chip's driver exists; the register list is the work.
 
-### G3. Handover validation per board  (K64F end-to-end NEVER run)
-Functional handover everywhere a driver exists; ISOLATION only where the MPU permits.
-- **Real per-thread peripheral isolation** (grant = a security boundary): XMC (proven,
-  xmcspi), RX72M, ESP32-C6 (needs the APM open, G5). Here the handover is enforced.
-- **Coarse-AIPS (K64F)**: SYSMPU does NOT gate peripherals; the AIPS bridge does (per
-  privilege+master, per 4 KB slot, all-user once opened). So the K64F grant is
-  DOCUMENTATION, not enforcement. Validate FUNCTIONAL handover + the reclaim body. The
-  FUNCTIONAL half has since been taken: `k64uart` landed, and on frdmk64f 2026-07-30 the full
-  service list (`k64uart` + `k64dspi`) reported `[k64uart] driver up (polled TX)` and ran the
-  whole 66-case TAP suite through the driver (`# tap route: stdout endpoint -> console driver
-  (service list published)`). The reclaim body is written and still unwitnessed there.
-- **No-MPU (STM32F103, ESP32-LX6, nRF51)**: handover is functional only; document it.
-- QEMU-only (mps2/virt/microbit): semihosting console, no real peripheral -- N/A / skip.
-Effort **S per board** (a scramble-then-panic test like XMC's `conreclaim`). Mostly **HW**.
+### G3. Handover validation per board (PARTLY CLOSED)
+Functional handover wherever a driver exists; ISOLATION only where the MPU permits.
+- **K64F functional half CLOSED** (frdmk64f, 2026-07-30): the full service list (`k64uart` +
+  `k64dspi`) reported `[k64uart] driver up (polled TX)` and ran the whole 66-case TAP suite through
+  the driver. Its reclaim body is written and still UNWITNESSED, the open remainder here.
+- **Real per-thread peripheral isolation** (grant = a security boundary), OPEN on RX72M and ESP32-C6
+  (needing the G5 IRQ-demux body and the APM open respectively). XMC is proven (xmcspi).
+- **Coarse-AIPS (K64F)**: the grant is DOCUMENTATION, not enforcement, because SYSMPU does not gate
+  peripherals and the AIPS bridge is all-user once a slot is opened (`reference/architecture.md`, the
+  peripheral-MMIO matrix). **No-MPU (STM32F103, ESP32-LX6, nRF51)**: functional handover only;
+  document it. QEMU-only (mps2/virt/microbit) is semihosting with no peripheral, so N/A.
 
-`conreclaim` is a standalone app gated on `KICKOS_SERVICE_LIST=kickos_services_none`, not a
-build option on the console demo, and the premise conflict is why: U0C0 admits exactly ONE
-holder, the scrambler has to be it, but `consoledemo` exists to demonstrate the `xmcuart`
-handover, which needs `xmcuart` to be that holder. The two cannot share an image. Nothing is
-lost by splitting them, because the property under test -- `arch_console_reclaim` repairs a
-garbled UART from the panic path -- does not depend on WHO garbled it.
+Effort **S per board** (a scramble-then-panic test like XMC's `conreclaim`), mostly **HW**. Why
+`conreclaim` is a standalone app rather than an option on the console demo is in
+`design-m3-console-handover-stageii.md`.
 
-### G4. Clock-select fleet-wide  (XMC full + K64F staged only; rest fallback-0)
-Extend `arch_cpu_clock_set` per chip, or explicitly keep the fallback
-(`arch/common/arch_cpu_clock_set_default.cc`). Discipline (from
-`design-m3-clock-select.md`): flash wait-states + voltage go UP *before* frequency rises,
-DOWN *after* it falls; bracket the exact PLL/divider write; re-anchor the monotonic clock;
-re-derive baud; re-arm the timer. Per-chip feasibility already scoped:
-- STM32F411 -- DEFERRED (feasible as a fixed set: park on HSI, PLL off, rewrite N/P, relock).
-- RP2040 -- feasible for clk_sys; the TIMER (clk_ref) is immune but the CONSOLE (clk_peri
-  tracks clk_sys) is NOT -- must re-derive baud.
-- Everything else (sam3x8e, nrf51, f103/f302, mps2, esp32, C6, riscv) -- keep fallback-0 until
-  someone needs it. This is a legitimate "explicitly declining" outcome, not a gap to force.
-Effort **M per chip that opts in**; **S** to leave the fallback + document. Mostly **HW**.
-NOTE: this is the mechanism seam only; POLICY is the power-manager service (G7 / section 3).
+### G4. Clock-select fleet-wide (OPEN; XMC full + K64F staged only, rest fallback-0)
+Extend `arch_cpu_clock_set` per chip, or explicitly keep the fallback. Discipline (from
+`design-m3-clock-select.md`): flash wait-states and voltage go UP *before* frequency rises and DOWN
+*after* it falls; bracket the exact PLL/divider write; re-anchor the monotonic clock; re-derive baud;
+re-arm the timer.
 
-### G5. Peripheral-isolation prereqs  (unblock userspace peripheral drivers per chip)
-- **ESP32-C6 APM/PMS global open** -- a SECOND bus-side unit, independent of PMP, defaults
-  DENY-USER on peripheral targets. A C6 userspace peripheral (UART/GPIO) driver needs BOTH
-  the per-thread PMP grant AND a one-time global APM open. Scoped in `design-c6-driver.md`.
-  **Blocks the C6 console driver + any C6 peripheral driver.** Effort **M**, **HW**.
-- **RX real-peripheral-IRQ demux** -- `kickos_rx_default_irq` is still a stub; a real
-  IRQ-driven RX driver (or the ring console generalisation) needs it. Effort **M**, **HW**.
-- **m2-review-followups** -- sweep `docs/m2-review-followups.md` for residual gaps before
-  building drivers on top. Effort **S**, **NOW** (read).
+DECISION: opt-in per chip, and **declining is a legitimate outcome, not a gap to force**. Per-chip
+feasibility already scoped. STM32F411, DEFERRED but feasible as a fixed set (park on HSI, PLL off,
+rewrite N/P, relock). RP2040, feasible for `clk_sys`; the TIMER (`clk_ref`) is immune but the CONSOLE
+is not, since `clk_peri` tracks `clk_sys`, so baud must be re-derived. Everything else (sam3x8e,
+nrf51, f103/f302, mps2, esp32, C6, riscv) keeps fallback-0 until someone needs it.
 
-### G6. Driver-API maturation  (KickCAT POC -> a real reusable contract)
-Today's evidence of "real apps on KickOS" is thin: KickCAT is the only consumer, one board,
-a driver more demo than API (`kickcat_slave` is in the KickOS tree via
-`kickos_add_application`). The **driver-app inconsistency** is the smell:
-- `system/driver/<chip>/{xmcuart,xmcssc,k64dspi,k64uart}` are LIBS (`add_library`) -- the right
-  shape. They live under `system/` because a chip driver lib is board support a consumer links
-  on top of the OS, not an app, even though it builds unprivileged.
-- `user/apps/<board>/{xmcspi,f411spi,k64drv,rxdrv}` are monolithic DIAGNOSTIC apps
-  (`kickos_add_diagnostic_app`) -- driver + demo fused.
-Maturation = the driver-lib + demo split (tasks #17/#18): each driver a reusable lib with a
-typed contract; the demo an app that links it. What a real driver contract looks like is the
-subject of section 3 (the API taxonomy). Effort **L** (design gate first). How a driver is
-PACKAGED -- the class/service duality (driver-lib class as the primitive, the shared service
-composed on top of it 1:1, the two capability shapes, the bus/device split, watchdog + sensor
-cases) -- is decided in `design-m4-driver-model.md`.
+Rejected: forcing a body onto every chip, which buys nothing on a board with one operating point and
+adds an untestable privileged sequence per port. Effort **M per chip that opts in**, **S** to leave
+the fallback and document it. Mostly **HW**. This is the MECHANISM seam only; POLICY is the
+power-manager service (G7, sections 3 and 6).
 
-### G7. Driver-era enabler services  (init + power-manager/clock-tree)  -- M4 or later?
-From the roadmap notes. Assessment:
-- **Init service** -- rename the entry (`kos_init_entry`) to separate init from the app +
-  ship a default init that does configurable bring-up then calls user `main` with a cap set.
-  The entry RENAME is a consumer-facing breaking change -- **settle it EARLY** (cheap now,
-  breaks consumers later). VERDICT: **in the driver era, and early** -- it is the thing that
-  spawns drivers-with-caps in dependency order (section 3.1), so it is a GATING enabler, not
-  a nicety. Effort **M** for the seam, **L** for the full default service.
-- **Power-manager / clock-tree service** -- the userspace owner of the whole clock tree
-  (PLL, dividers, central refcounted tree-gates, a rate-change-notifier fan-out; kernel keeps
-  only the re-anchor + privileged-step residue). VERDICT: **driver era but AFTER the clock
-  MECHANISM (G4) and the first drivers** -- it is the policy layer over G4, and it needs the
-  rate-change fan-out that only matters once multiple derived-clock consumers (drivers)
-  exist. So: mechanism first, service later-in-era. Effort **L**, design gate.
+### G5. Peripheral-isolation prereqs (PARTLY CLOSED)
+- **ESP32-C6 APM/PMS global open: CLOSED.** `arch_init` (`chip_esp32c6.cc`, `apm_open_ree0`) programs
+  the REE0 background permit at boot on every board, so it is no longer per-app. That bus-side unit
+  is independent of PMP and defaults DENY-USER on peripheral targets, so a C6 userspace peripheral
+  driver needs BOTH the per-thread PMP grant and the one-time global open; the register-level model
+  is `reference/architecture.md` (the peripheral-MMIO matrix). An APM denial does NOT trap the way a
+  PMP violation does, so a bad region hangs instead of faulting.
+- **RX real-peripheral-IRQ demux: OPEN.** The generic first-level path landed
+  (`kickos_rx_default_irq` plus the `kickos_rx_dev_pending_line` chip hook), but NO chip defines the
+  hook, so the fallback returns -1 and the path is inert. A real IRQ-driven RX driver, or the ring
+  console generalisation, needs an rx72m body: the INTB routes every device source to one vector and
+  RXv3 has no cheap current-vector read, so the line can only be named by a chip-side status read,
+  never derived. Effort **M**, **HW**. IRQ ownership by an unprivileged driver is designed in
+  `design-m4.6-irq-driver.md`.
+- **m2-review-followups: OPEN (read).** Sweep `docs/m2-review-followups.md` for residual gaps before
+  building drivers on top. Effort **S**, **NOW**.
 
-### G8. Gaps XMC-only testing HID
-Things the fleet rollout will surface that one-chip testing could not:
-- **Flush-to-shift-idle differs per UART**: reclaim/deinit must wait for the shift register
-  to drain, not just the holding register. XMC USIC vs K64F single-reg vs PL011 FIFO vs
-  ESP32 FIFO all differ. A driver that returns before the last bit clocks out truncates.
-- **Baud re-derivation**: XMC uses a fixed 72 MHz constant; K64F re-derives from live
-  `SystemCoreClock`. Under clock-select (G4) EVERY chip's driver must re-derive, not bake a
-  constant -- an XMC-only test never exercised the re-derive path on other chips.
-- **Reclaim depth varies**: the silent-loss register set is per-chip (G2). CTS/CTSE is the
-  recurring trap (K64F MODEM.TXCTSE, STM32 CR3.CTSE, RX SPMR, PL011 UARTCR.CTSEN).
-- **RX / ESP TX paths untested for handover**: RX SCI and ESP UART TX-idle + FIFO semantics
-  under a userspace driver are unproven; RX's IRQ demux is still a stub (G5).
-- **FIFO vs single-datum**: FIFO UARTs (PL011, ESP, some SCI) need FIFO-flush on reclaim
-  (K64F CFIFO precedent); single-datum ones (XMC-ASC-ish) do not -- a class the XMC test
-  never covered.
-- **Line-idle transient on reclaim** (XMC's documented spurious leading byte from pinning TX
-  low past a frame boundary) -- may or may not appear per chip depending on the passive-level
-  handling; each chip's reclaim needs the same "known artifact" honesty check.
+### G6. Driver-API maturation (OPEN: the build-layering question)
+The driver-lib + demo split is under way, not finished. `system/driver/<chip>/{xmcuart, xmcssc,
+k64uart, k64dspi}` are LIBS (`add_library`) with a demo app linking them, while
+`user/apps/<board>/{xmcspi, f411spi, k64drv, rxdrv}` are still monolithic DIAGNOSTIC apps
+(`kickos_add_diagnostic_app`) with driver and demo fused.
 
-### 2.1 Fleet UART-driver gap table  (silicon-available FIRST)
-(Console peripheral per board; "ring" = kernel IRQ-drained today; driver = userspace UART
-driver status.)
+**The open question is build layering, not packaging.** A chip driver lib lives under `system/`
+because it is board support a consumer links on top of the OS rather than an app, even though it
+builds UNPRIVILEGED like an app; the `system/` vs `user/` line is drawn by who links a thing, not by
+privilege. That leaves one directory sharing a privilege posture with `user/` and a consumption model
+with the kernel, and nothing enforces which side a new driver lands on. Rejected: moving the driver
+libs under `user/`, which would make an out-of-tree consumer link board support out of the app tree;
+and gating on privilege, which discriminates nothing now that root itself is unprivileged. Effort
+**L** (design gate first).
+
+How a driver is PACKAGED is decided in `design-m4-driver-model.md` (the class/service duality: the
+driver-lib class as the primitive, the shared service composed on it 1:1, the two capability shapes,
+the bus/device split). What a driver CONTRACT looks like is section 3.
+
+### G7. Driver-era enabler services (init CLOSED, power-manager OPEN)
+- **Init service: CLOSED.** The entry seam and a default init ship
+  (`system/include/kickos/sys/init.h`, `system/init/`): `kickos_init_entry`, a `KICKOS_INIT_PROVIDER`
+  target knob, and a default body that walks the board's service list before the app's
+  `kickos_app_main`. It was settled EARLY on purpose, because the entry rename is a consumer-facing
+  breaking change that is cheap now and expensive later, and because it is what spawns
+  drivers-with-caps in dependency order (3.1).
+- **Power-manager / clock-tree service: OPEN.** The userspace owner of the whole clock tree (PLL,
+  dividers, central refcounted tree-gates, a rate-change-notifier fan-out), with the kernel keeping
+  only the re-anchor and the privileged-step residue. DECISION: it comes AFTER the clock MECHANISM
+  (G4) and after the first drivers, because it is the policy layer over G4 and the rate-change
+  fan-out only matters once multiple derived-clock consumers exist. Rejected: building the standing
+  service inside M4; section 6 cuts the M4 scope to the cascade-free parts and defers the live DVFS
+  cascade to be built against the console as its first forced instance. Effort **L**, design gate.
+  **Known contradiction, OPEN**: 3.1 makes CLOCK-TREE a persistent RUNTIME service brought up BEFORE
+  the drivers, which cannot hold together with this dependency order.
+  `design-m4-fable-review.md` finding 6 carries both halves and the cheaper resolution (the DAG's
+  real dependency is only "gate the driver's clocks at bring-up", a one-shot init step like pinmux);
+  `TODO.md` tracks it.
+
+### G8. Gaps XMC-only testing HID (OPEN)
+Per-chip hazards one-chip testing could not surface. Each is a prediction until that chip's driver
+runs.
+- **Flush-to-shift-idle differs per UART.** Reclaim and deinit must wait for the SHIFT register to
+  drain, not just the holding register, or the last bits truncate. XMC USIC, K64F single-reg, PL011
+  FIFO and ESP FIFO all differ. Relatedly, **FIFO UARTs** (PL011, ESP, some SCI) need a FIFO flush on
+  reclaim (the K64F `CFIFO` precedent) and single-datum ones do not, a class the XMC test never
+  covered.
+- **Baud re-derivation.** XMC bakes a fixed 72 MHz constant, K64F re-derives from live
+  `SystemCoreClock`. Under G4 EVERY driver must re-derive, a path an XMC-only test never exercised.
+- **CTS/CTSE is the recurring silent-loss trap** (K64F `MODEM.TXCTSE`, STM32 `CR3.CTSE`, RX `SPMR`,
+  PL011 `UARTCR.CTSEN`), which is why G2's register set is per-chip.
+- **RX and ESP TX paths are unproven for handover**: SCI and ESP UART TX-idle plus FIFO semantics
+  under a userspace driver, and RX has no IRQ-demux body (G5).
+- **Line-idle transient on reclaim.** XMC's documented spurious leading byte comes from pinning TX
+  low past a frame boundary, and whether it appears depends on each chip's passive-level handling, so
+  each reclaim needs the same known-artifact honesty check.
+
+### 2.1 Fleet UART-driver gap table (silicon-available FIRST)
+Console peripheral per board. "ring" = kernel IRQ-drained today; driver = userspace UART driver
+status.
 
 | Board | Console UART (instance) | Isolation ceiling | Kernel console today | Userspace driver | Priority |
 |---|---|---|---|---|---|
 | XMC4800 | XMC USIC0-ch0 (U0C0) ASC @0x40030000 | PMSA per-thread (REAL) | ring + sync | **DONE (xmcuart)** | -- |
-| RX72M | Renesas SCI6 @0x0008A0C0 | RX-MPU per-thread (REAL) | ring | GAP | 1 (real isolation; needs G5 IRQ demux; TIE-prime HW-unverified) |
-| ESP32-C6 | C6 UART0 @0x60000000 (128-FIFO) | PMP per-thread (REAL) | ring | GAP | 1 (real; needs G5 APM open) |
-| K64F | Kinetis UART0 @0x4006A000 | coarse-AIPS (doc only) | ring + sync | GAP (reclaim body ready) | 2 (proves reclaim; end-to-end never run) |
+| K64F | Kinetis UART0 @0x4006A000 | coarse-AIPS (doc only) | ring + sync | **DONE (k64uart)**, reclaim unwitnessed | -- |
+| RX72M | Renesas SCI6 @0x0008A0C0 | RX-MPU per-thread (REAL) | ring | GAP | 1 (real isolation; needs the G5 IRQ-demux body; TIE-prime HW-unverified) |
+| ESP32-C6 | C6 UART0 @0x60000000 (128-FIFO) | PMP per-thread (REAL) | ring | GAP | 1 (real isolation) |
 | ESP32-WROOM (LX6) | Xtensa UART0 @0x3FF40000 (128-FIFO) | none (no MPU) | ring | GAP | 3 (functional only) |
 | STM32F411 (disco/blackpill) | USART2 @0x40004400 (old SR/DR), PA2 | PMSA (build-only HW) | polled | GAP | 3 (STM32 old-model reference driver) |
 | STM32F302 (nucleo) | USART2 @0x40004400 (NEW ISR/TDR), VCP | PMSA (RAM-tight) | polled | GAP | 4 (STM32 NEW-model variant) |
-| STM32F103 (bluepill-c8) | USART1 @0x40013800 (old SR/DR), PA9 | none | polled | GAP | 4 (shares F411 old-model driver) |
+| STM32F103 (bluepill-c8) | USART1 @0x40013800 (old SR/DR), PA9 | none | polled | GAP | 4 (shares the F411 old-model driver) |
 | RP2040 (picopi) | ARM PL011 UART0 @0x40034000 (FIFO) | v6-M PMSA per-thread | polled | GAP | 3 (PL011 reference; SMP board) |
 | SAM3X (due) | SAM3X UART @0x400E0800 | none | RETIRED | skip | -- (unit retired, HW fault) |
-| imxrt1062 (teensy) | NXP LPUART6 @0x40198000 (FIFO) | MPU deferred | build-only | skip for now | -- (not in silicon fleet) |
-| rp2350 | ARM PL011 UART0 @0x40070000 | PMSAv8 (deferred) | build-only | skip for now | -- (not flashed; SMP-era board) |
+| imxrt1062 (teensy) | NXP LPUART6 @0x40198000 (FIFO) | MPU deferred | build-only | skip for now | -- (not in the silicon fleet) |
+| rp2350 | ARM PL011 UART0 @0x40070000 | PMSAv8 (deferred) | build-only | skip for now | -- (SMP-era board) |
 | mps2 / virt / microbit | semihosting (no peripheral) | QEMU | polled (semihosting) | N/A | -- |
 
-STM32 driver note: the family splits into TWO register models -- **old SR/DR** (F411 USART2,
-F103 USART1) vs **NEW ISR/TDR** (F302 USART2). One STM32 driver with a compile/runtime model
-select covers both; do NOT assume one register layout across the family (a gap an XMC-only
-test could never surface).
-
-Silicon-available worth-doing set, in order: **RX72M, ESP32-C6, K64F, then the STM32 family
-+ RP2040 (PL011).** The LX6 ESP32-WROOM is functional-only (no MPU). The rest are QEMU/retired
--- skip.
+STM32 driver note: the family splits into TWO register models, **old SR/DR** (F411 USART2, F103
+USART1) and **NEW ISR/TDR** (F302 USART2). One STM32 driver with a compile or runtime model select
+covers both; do NOT assume one register layout across the family. Exactly the class of gap an
+XMC-only test could never surface.
 
 ---
 
 ## 3. DRIVER-FRAMEWORK DEPTH
 
-### 3.1 Bring-up dependency DAG (foundational services the peripheral drivers stand on)
-Peripheral drivers are not independent -- they sit on shared, central authorities that must
-be up first. The INIT service (G7) brings them up in this order:
+### 3.1 Bring-up dependency DAG (the foundational services peripheral drivers stand on)
+Peripheral drivers are not independent: they sit on shared central authorities that must be up first.
+The init service (G7) brings them up in this order.
 
 ```
-        +---------------------------------------------+
-        |  INIT service (root, all authority)         |
-        |  ONE-SHOT at bring-up, from a board pin-map: |
-        |   * PINMUX -- privileged pin-function config |
-        |     (NO runtime service; folds into init)    |
-        |   * gate clocks, grant MMIO caps, spawn      |
-        +---------------------------------------------+
-                  |                        |
-                  v                        v
-         +----------------+       +----------------+
-         |  CLOCK-TREE    |       | (kernel clock  |
-         |  service       |       |  residue:      |
-         |  RUNTIME: PLL, |       |  re-anchor)    |
-         |  dividers,     |       +----------------+
-         |  central gates,|
-         |  DVFS + rate-  |
-         |  change notify |
-         +----------------+
-                  |
-                  v
-         +----------------+   ONE-SHOT PINMUX (init calls the kernel seam): assign
-         |  PINMUX step   |   each driver's pin functions from the board pin-map,
-         | (in init, not  |   THEN grant the pin's register window at spawn. No
-         |  a service)    |   GPIO service on the path -- the driver toggles the
-         +----------------+   granted window DIRECTLY (see 3.5).
-             |     |     |
-             v     v     v
-      +------+ needs {clock}   +------+ {clock}  +------+ {clock, a granted
-      | UART | (pins pre-muxed)| I2C  |          | SPI  |  pin window for a
-      +------+                 +------+          +------+   direct-GPIO CS}
+   INIT service (root, all authority). ONE-SHOT at bring-up, from a board pin-map:
+     gate clocks -> mux pins -> grant MMIO caps at spawn -> spawn drivers -> app
+        |                                   |
+        v                                   v
+   CLOCK-TREE service                 kernel clock residue
+   RUNTIME: PLL, dividers,            (re-anchor only)
+   central gates, DVFS +
+   rate-change notify
+        |
+        v
+   PINMUX step, inside init, NOT a service: assign each driver's pin functions from the
+   board pin-map, THEN grant the pin's register window at spawn.
+        |          |          |
+        v          v          v
+     UART       I2C        SPI      needs {clock}; pins pre-muxed; a mode-2 CS also needs
+                                    a granted pin window (3.5). No GPIO service on the path.
 ```
 
-Foundational shapes -- the peripheral drivers stand on THREE distinct kinds, matched to how
-often each CHANGES at runtime:
-- **CLOCK-TREE -- a RUNTIME service** (persistent). Owner of the shared PLL/dividers/central
-  gates. A rate change (DVFS) cascades to every derived-clock consumer (UART re-derives baud,
-  SPI its prescaler) via a Common-Clock-Framework-shape notifier. Central + refcounted (a
-  branch feeding two peripherals gates off only when BOTH idle). Kernel residue = re-anchor its
-  own clock. It CHANGES at runtime, so it must be a standing service.
-- **GPIO -- NOT a service; a DIRECT-MMIO grant** (see 3.5). Pin TOGGLING is direct MMIO, never a
-  syscall. A driver that needs a pin gets that pin's register window granted AT SPAWN (the grant-
-  at-spawn MMIO path) and writes it itself, under a per-chip isolation ceiling on the window. The
-  kernel touches GPIO only for the one-shot PINMUX at init (below). The runtime pin ALLOCATOR that
-  mints-and-delegates per-pin caps, and the shared GPIO IRQ demux, are DEFERRED to M4.4 -- no
-  driver forces them yet (the SPI-CS path is a direct-grant pin, not a minted cap). A kernel pin
-  allocator + toggle syscall was built (af7d99a) and REMOVED after the 3.5 latency spike showed a
-  syscall cannot serve a hot CS. (This reverses the earlier "GPIO service mints per-pin caps"
-  model.)
-- **PINMUX -- ONE-SHOT init-time config, NOT a service.** Pin-function assignment is set once at
-  bring-up and does not change at runtime (unlike a hot GPIO CS, or the clock tree under DVFS),
-  so it needs no persistent service: it COLLAPSES into the init service's bring-up sequence.
-  Init muxes a driver's pins through `arch_pinmux_set` -- the mux registers live in the shared
-  SCU/PORT block alongside the clock gates, so the write lands privileged inside the kernel while
-  init itself stays unprivileged, gated on `AUTH_PINMUX`; natural since init is the root that
-  grants caps + spawns anyway -- THEN spawns the driver, which never touches pinmux at runtime.
-  Driven by a board
-  pin-map. Caveat: rare dynamic pin RE-config (runtime repurpose, or reconfiguring pins for
-  low-power sleep) would be a COLD call back through the same seam if ever needed -- not the
-  common path.
+Three distinct foundational SHAPES, matched to how often each CHANGES at runtime.
+- **CLOCK-TREE, a RUNTIME service** (persistent). Owner of the shared PLL, dividers and central
+  gates. A rate change cascades to every derived-clock consumer (UART re-derives baud, SPI its
+  prescaler) through a Common-Clock-Framework-shape notifier. Central and refcounted, so a branch
+  feeding two peripherals gates off only when BOTH are idle. Kernel residue is re-anchoring its own
+  clock. It changes at runtime, so it must be a standing service. (This framing is what G7 flags as
+  contradicting its own dependency order.)
+- **GPIO, NOT a service but a DIRECT-MMIO grant** (3.5 carries the decision, the latency numbers and
+  what stays deferred). Pin TOGGLING is direct MMIO, never a syscall, so the kernel touches GPIO only
+  for the one-shot PINMUX and a driver needing a pin gets that pin's window granted AT SPAWN under a
+  per-chip isolation ceiling. This REVERSES the earlier "GPIO service mints per-pin caps" model.
+- **PINMUX, ONE-SHOT init-time config, NOT a service.** Pin-function assignment is set once at
+  bring-up and does not change at runtime, unlike a hot GPIO CS or the clock tree under DVFS, so it
+  needs no persistent service and COLLAPSES into init's bring-up sequence. Init muxes through
+  `arch_pinmux_set`: the mux registers live in the shared SCU/PORT block alongside the clock gates,
+  so the write lands privileged inside the kernel while init itself stays unprivileged, gated on
+  `AUTH_PINMUX`. The seam, its per-chip backends and the declining fallback are
+  `reference/porting.md` (*Pin-function config*). Caveat: a rare dynamic pin RE-config (runtime
+  repurpose, or reconfiguring pins for low-power sleep) would be a COLD call back through the same
+  seam if ever needed, never the common path.
 
-Consequence: the init service is a topological bring-up (clock -> mux the pins -> grant each
-driver its pin windows at spawn -> the byte/transfer drivers -> apps), doing the one-shot pinmux
-itself; there is no GPIO service on the path (pins toggle directly, 3.5). This is why the init
-service is a GATING enabler for the driver era, not a nicety.
+Consequence: init is a topological bring-up (clock, mux, grant each driver its windows at spawn, the
+byte/transfer drivers, apps), doing the one-shot pinmux itself, with no GPIO service anywhere on the
+path. That is why init is a GATING enabler for the driver era rather than a nicety.
 
 **The bring-up inputs are CONSUMER DATA, not tree literals** (spike `design-m4-oot-board-config.md`,
-mechanism landed M4.4). kickos is a library of MECHANISM (kernel, the pinmux runner, the
-service-list runner, the driver CLASS/service targets); the board/product supplies POLICY as
-two POD tables + a `main`: `kos_board_pinmap` (the `{port,pin,func}` routing) and
-`kos_service_list` (an ordered set of `kos_service_bringup {start, cfg}` entries the default init
-walks BEFORE `main`). Per-instance parameters -- register base, grant window, priority, target hz,
-CS choice, I2C address -- travel as DATA in `kos_service_cfg`, not baked into the driver TU, so the
-SAME driver-class target serves N instances by config alone (the LPUART1..8 / N-SPI case). The
-console is just the first `KOS_SVC_CONSOLE` entry in the list (the service list is the sole
-userspace-console bring-up path). Each list/pinmap definition is one strong symbol chosen by a CMake
-target knob (`KICKOS_SERVICE_LIST` / `KICKOS_BOARD_PINMAP`), fail-loud on a missing/misspelled
-target -- no runtime manifest, no silent fallback (the anti-CapDL tenet). **Per-BOARD today**
-(the in-tree `frdmk64f` / `xmc4800-relax` configs are REFERENCE EXAMPLES); the per-app / fleet
-service-list rollout is future work.
-
-**Pinmux backends now cover 11 fleet chips** (M4.5): the original mk64f + xmc4800 plus rp2040,
-rp2350, esp32c6, stm32f411, stm32f103, stm32f302, sam3x8e, imxrt1062, esp32. `nrf51`, `mps2`, and
-`virt` keep the declining `-KOS_ENOSYS` fallback (`arch/common/arch_pinmux_set_default.cc`) --
-they have no central pinmux block (per-peripheral
-PSEL, emulated, or virtual), so a non-empty board pin-map is what fails loud there. The ABI is
-unchanged `{u16 port, u16 pin, u32 func}` with `func` a chip-OPAQUE per-chip encoding, so the wire
-stays neutral while each backend owns its encoding; stm32f103 covers default-mapped peripherals
-only (AFIO_MAPR remap is out of scope), and imxrt1062 keys `port`=GPIO-bank / `pin`=bit against a
-PARTIAL pad table (holes return `-KOS_EINVAL`). Two exercising board pin-maps ship (picopi GP2,
-f302nucleo PA0). See `reference/porting.md` (the pinmux seam) +
-`reference/architecture.md` ("Service publication") + `system/include/kickos/sys/service.h`.
+mechanism landed M4.4). kickos supplies MECHANISM; the board or product supplies POLICY as two POD
+tables plus a `main`: `kos_board_pinmap` (`{port, pin, func}` routing) and `kos_service_list` (ordered
+`kos_service_bringup {start, cfg}` entries the default init walks BEFORE `main`). Per-instance
+parameters (register base, grant window, priority, target hz, CS choice, I2C address) travel as DATA
+in `kos_service_cfg` rather than baked into the driver TU, so the SAME driver-class target serves N
+instances by config alone (the LPUART1..8 and N-SPI case). Each list and pinmap definition is one
+strong symbol chosen by a CMake target knob (`KICKOS_SERVICE_LIST` / `KICKOS_BOARD_PINMAP`), fail-loud
+on a missing or misspelled target: no runtime manifest and no silent fallback, which is the anti-CapDL
+tenet. **Per-BOARD today** (the in-tree `frdmk64f` and `xmc4800-relax` configs are REFERENCE
+EXAMPLES); the per-app / fleet rollout is future work.
 
 ### 3.2 Driver API taxonomy by I/O model
-The classical driver shapes map onto TWO IPC patterns:
+The classical driver shapes map onto TWO IPC patterns.
 
 | Driver | I/O model | IPC pattern | Kernel primitive |
 |---|---|---|---|
@@ -331,119 +281,90 @@ The classical driver shapes map onto TWO IPC patterns:
 | SPI | SYNC full-duplex transfer(tx,rx,len) | **CALL / REPLY** transaction | CAP_ENDPOINT + call/reply (**LANDED**: CAP_REPLY, `KOS_SYS_CALL`/`REPLY` 34/35) |
 | I2C | SYNC addressed start/addr/rw/stop | **CALL / REPLY** transaction | same substrate; the wire CONTRACT lands, the driver body follows a bench target |
 
-**KEY INSIGHT: the driver era surfaced the call/reply IPC requirement -- now satisfied.** The
-console (async stream) rides the synchronous *rendezvous* that landed in M3. SPI/I2C are
-request/reply TRANSACTIONS: a client sends a transfer request, BLOCKS, and gets the result
-back. That is the L4-style "call/reply fastpath" the M3 endpoint spike DEFERRED and M4.4
-built: a one-shot **reply capability** whose object NAMES the parked caller (no new object
-pool), `KOS_SYS_CALL`/`KOS_SYS_REPLY` over the existing `CAP_ENDPOINT` rendezvous, and the
-priority-donation contract that makes it an RTOS primitive rather than an inversion trap. The
-exact contract is `reference/ipc-call-reply.md`; the why is `book/synchronous-call-and-reply.md`.
+**The driver era surfaced the call/reply IPC requirement, which M4.4 then satisfied**, and the
+taxonomy is why: the console is an async stream that the M3 rendezvous already served, while SPI and
+I2C are request/reply TRANSACTIONS needing the L4-style fastpath the M3 endpoint spike had DEFERRED.
+Contracts: `reference/ipc-call-reply.md` (transport) and `reference/bus-service.md` (the SPI/I2C
+wire); the why is `book/synchronous-call-and-reply.md`.
 
-Analysis -- does {async-stream rendezvous (landed)} + {a call/reply layer} cover
-uart+spi+i2c?
-- UART: covered by the landed rendezvous + IRQ event. The tx side is a stream; the rx side
-  is IRQ-as-event feeding the endpoint. No call/reply needed.
-- SPI/I2C: realized by call/reply. The transfer contract on top of CAP_ENDPOINT + the MMIO grant:
-  - client holds a SIGNAL cap to the driver's request endpoint; driver holds its SPI MMIO grant.
-  - `spi_transfer(tx, rx, len)` = client frames a `kos_bus_req` in a stack buffer and `kos_call`s
-    it (in-place: the reply overwrites the request buffer), blocking until the reply. The
-    endpoint's kernel-copied bounded payload carries small transfers inline (~212 B under
-    `KOS_EP_MSG_MAX`); larger ones want a granted shared buffer, which the wire ABI already
-    reserves (`region_cap`/`offset`, DEFERRED) so it lands without an ABI break -- the same
-    physical-addressing discipline QW-3 flags for the IPC ring.
-  - driver does the MMIO transaction under its grant and `kos_reply`s a `kos_bus_rsp` {status, rx}.
-  - the REPLY capability is the piece that landed: a one-shot, auto-consumed cap whose object
-    NAMES the parked caller, so the driver replies to exactly that caller without a standing
-    per-client endpoint (the L4 call/reply fastpath).
-- I2C = SPI's shape + addressing/start-stop framing in the segment list; same IPC, same wire
-  header. The CONTRACT (`reference/bus-service.md`) lands with the SPI services; the first I2C
-  driver body waits on a bench target device.
-
-Outcome: **the call/reply (reply-cap) layer on CAP_ENDPOINT is the first driver-framework
-primitive** -- the shared substrate for every synchronous driver (SPI, I2C, and later
-block/net). The async-stream half was already there for UART. Contracts:
-`reference/ipc-call-reply.md` (transport) + `reference/bus-service.md` (the SPI/I2C wire).
+Does {async-stream rendezvous} + {call/reply} cover uart + spi + i2c? UART yes, with the tx side a
+stream and the rx side IRQ-as-event feeding the endpoint. SPI and I2C yes, over CAP_ENDPOINT plus the
+MMIO grant, with I2C adding only addressing and start/stop framing in the segment list, and the first
+I2C body waiting on a bench target device. Small transfers ride the kernel-copied bounded payload
+inline (~212 B under `KOS_EP_MSG_MAX`); larger ones want a granted shared buffer, which the wire ABI
+already reserves (`region_cap`/`offset`, DEFERRED) so it lands without an ABI break, on the same
+physical-addressing discipline QW-3 asks of the IPC ring. So **the call/reply layer on CAP_ENDPOINT
+is the first driver-framework primitive**, the shared substrate for every synchronous driver (SPI,
+I2C, later block and net).
 
 ### 3.3 Multi-instance threading (the "4 SPI" question)
-A chip with N SPI peripherals -- two shapes:
-- **Thread-per-instance** (LEAN): N driver threads, each with its OWN SPI MMIO grant + its
-  own request endpoint. Clean per-thread-peripheral isolation -- matches the grant model
-  exactly (one window, one thread, one boundary). A fault in SPI2's driver cannot touch SPI1.
-  Natural fit for the CPU-side-MPU boards. Cost: N threads (stack each), N endpoints.
-- **One-driver + worker-pool** (SHARED): one driver thread owns all N windows, a worker pool
-  fans out transactions. Shares windows => WEAKER isolation (one grant spanning multiple
-  peripherals, or the driver holds all N -- a bug in one path can scribble another's window).
-  Saves threads. Only justified when a SINGLE instance needs CONCURRENT transactions
-  (pipelined) and you want a pool behind one window.
+A chip with N SPI peripherals admits two shapes.
+- **Thread-per-instance** (LEAN): N driver threads, each with its OWN SPI MMIO grant and its own
+  request endpoint. One window, one thread, one boundary, so a fault in SPI2's driver cannot touch
+  SPI1. Natural on the CPU-side-MPU boards. Cost: N threads (a stack each) and N endpoints.
+- **One-driver + worker-pool** (SHARED): one driver thread owns all N windows, a worker pool fans out
+  transactions. Sharing windows means WEAKER isolation, since one grant spans multiple peripherals
+  and a bug in one path can scribble another's window. Saves threads. Only justified when a SINGLE
+  instance needs concurrent pipelined transactions behind one window.
 
-Lean: **thread-per-instance** as the default -- it is the honest expression of the grant =
-security-boundary model, and the per-thread-peripheral isolation the fleet just proved
-(xmcspi/rxdrv/c6blink) is exactly this. Add worker THREADS only within a single instance's
-driver when that one peripheral needs concurrent in-flight transactions. Do NOT collapse
-multiple peripherals behind one worker pool -- that trades away the isolation the MPU gives.
+DECIDED: **thread-per-instance** as the default, because it is the honest expression of the
+grant-as-security-boundary model and it is exactly the per-thread peripheral isolation the fleet
+proved (xmcspi, rxdrv, c6blink). Add worker THREADS only within one instance's driver when that
+peripheral needs concurrent in-flight transactions. Do NOT collapse multiple peripherals behind one
+worker pool, which trades away the isolation the MPU gives.
 
-### 3.4 DMA -- the hard isolation problem (distinct sub-topic, FLAG)
-DMA engines write PHYSICAL addresses and BYPASS the MPU (these MCUs have no IOMMU/SMMU). So
-a userspace driver that programs a DMA channel could point it at KERNEL memory (or another
-domain's) = a full isolation hole. The MPU protects CPU accesses only; the DMA master is a
-separate bus master the MPU never sees.
+### 3.4 DMA, the hard isolation problem (distinct sub-topic, FLAG)
+DMA engines write PHYSICAL addresses and BYPASS the MPU, since these MCUs have no IOMMU or SMMU. A
+userspace driver programming a DMA channel could point it at KERNEL memory or another domain's, a
+full isolation hole: the MPU protects CPU accesses only, and the DMA master is a separate bus master
+it never sees. Second axis: **a DMA controller is a SHARED resource** (channels feeding many
+peripherals) like the clock tree and pinmux, so it wants a CENTRAL owner allocating channels and
+validating descriptors rather than a per-driver grant of the whole block. Options.
+- **Kernel-mediated DMA setup**: a syscall validates the descriptor's src/dst against the driver's
+  granted regions before arming the channel. The driver never writes the DMA address registers
+  (privileged, outside the grant window) and instead asks the kernel to program a descriptor it has
+  proven safe. This is the clock-tree "privileged-step residue" pattern, the dangerous write staying
+  kernel-side behind a seam. Cost: a per-transfer syscall, fine for setup and bad for high-rate
+  scatter-gather.
+- **Defer DMA**: ship polled and IRQ-driven drivers first. The current SPI/UART drivers are already
+  polled or IRQ (`k64dspi` blocks on the EOQ IRQ), so nothing needs DMA yet and the driver era keeps
+  moving without opening the hole.
 
-Options:
-- **Kernel-mediated DMA setup** -- a syscall that validates the DMA descriptor's src/dst
-  addresses against the driver's granted regions before arming the channel. The driver never
-  writes the DMA address registers directly (those stay privileged / outside the grant
-  window); it asks the kernel to program a descriptor it has proven safe. Analogous to the
-  clock-tree "privileged-step residue" pattern: the dangerous write stays kernel-side behind
-  a seam. Cost: a per-transfer syscall (fine for setup, bad for high-rate scatter-gather).
-- **Defer DMA** -- ship polled / IRQ-driven drivers first; solve the DMA isolation story
-  later. The current SPI/UART drivers are already polled/IRQ (k64dspi blocks on EOQ IRQ), so
-  nothing needs DMA yet. This keeps the driver era moving without opening the hole.
+Verdict: **defer DMA to a dedicated sub-topic**, drivers polled or IRQ first. When it lands,
+kernel-mediated descriptor validation plus a central channel allocator is the shape. A distinct HARD
+problem, not part of the first driver-framework cut.
 
-Second axis: **DMA controllers are a SHARED resource** (channels feeding many peripherals) --
-like the clock tree and pinmux. So DMA also wants a CENTRAL owner (a DMA service that
-allocates channels + validates descriptors), NOT a per-driver grant of the whole DMA block.
+### 3.5 GPIO, a direct-MMIO grant rather than a kernel service
+**DECIDED (spike `design-m4-gpio-direct-spike.md`).** GPIO is NOT a kernel service and not a pin
+allocator that mints caps. The kernel touches GPIO only for the ONE-SHOT privileged PINMUX at init
+(3.1); pin TOGGLING is DIRECT MMIO. A driver needing a pin gets that pin's register block granted at
+spawn (the task #9 grant-at-spawn MMIO path) and writes it itself, with a per-chip isolation ceiling
+on the granted window. A kernel pin allocator plus toggle syscall (`GPIO_CLAIM`/`WRITE`/`READ`) WAS
+built (af7d99a) and then REMOVED once the latency spike below showed the syscall path cannot serve a
+hot pin. This reverses the earlier "GPIO service mints per-pin caps" model.
 
-Verdict: **defer DMA to a dedicated sub-topic**; drivers are polled/IRQ first. When DMA
-lands, kernel-mediated descriptor validation + a central channel allocator is the shape. Flag
-this as a distinct HARD problem, not part of the first driver-framework cut.
+**Why direct, and not a syscall.** The hot case is an SPI chip-select toggled every transaction. A
+`GPIO_WRITE` SVC round trip is ~100-200 cycles (exception entry, decode, `IrqLock`, `cap_resolve`,
+one store, exception return; none of it elidable, and the cap resolve IS the validation that
+justifies a syscall), so ~0.7-1.7 us per toggle at fleet clocks. A mode-2 CS brackets the transfer
+with two toggles, while a 16-bit frame at 72 MHz SCLK is only 222 ns and a 16-byte transfer 1.78 us.
+Two `GPIO_WRITE` SVCs therefore add 1.4-3.4 us SERIALIZED into a transaction whose entire payload is
+smaller than that, 7-16x slower for the 16-bit frame, and inject `IrqLock` spans into the
+highest-rate path in the system. Rule of thumb: **kernel-mediated GPIO is fine at <= ~1 kHz and NEVER
+inside a bus transaction; direct MMIO for everything hotter.** Rejected: forcing the whole fleet
+through the slow path to paper over one chip's inability to isolate a toggle register from its mux.
+KickOS accepts per-chip isolation ceilings instead (the K64F coarse-AIPS precedent, section 2.1).
 
-### 3.5 GPIO -- direct-MMIO grant, not a kernel service
-**DECIDED (spike `design-m4-gpio-direct-spike.md`).** GPIO is NOT a kernel service or a pin
-allocator that mints caps. The kernel touches GPIO only for the ONE-SHOT privileged PINMUX at
-init (3.1); pin TOGGLING is DIRECT MMIO. A driver that needs a pin gets that pin's register
-block granted at spawn (the task #9 grant-at-spawn MMIO path) and writes it itself, with a
-per-chip isolation ceiling on the granted window. A kernel pin allocator + toggle syscall
-(`GPIO_CLAIM`/`WRITE`/`READ`) WAS built (af7d99a) and then REMOVED after the latency spike below
-showed the syscall path cannot serve a hot pin. (This reverses the earlier "GPIO service mints
-per-pin caps" model this section used to carry.)
+**SPI chip-select has TWO first-class modes**, selected per DEVICE and never per chip: mode 1 is the
+engine-native hardware PCS, preferred wherever the device is wired to a HW-PCS pin and tolerates the
+engine's CS behavior; mode 2 is a driver-owned direct GPIO CS, required when the device needs a
+coherent CS level held across a multi-byte transaction the engine cannot sustain, or when the CS net
+has no HW-PCS pin. Both are shipped policies with their per-controller mechanics in
+`reference/bus-service.md` (*Chip-select policy*). What matters HERE is that mode 2 is load-bearing
+(it is the production KickCAT CS path on K64F), so a hot toggle must be reachable directly on every
+chip, which is what the ceiling table below answers.
 
-**Why direct, not a syscall.** The hot case is an SPI chip-select toggled every transaction. A
-`GPIO_WRITE` SVC round trip is ~100-200 cycles (exception entry + decode + `IrqLock` +
-`cap_resolve` + one store + exception return -- none of it elidable, the cap resolve IS the
-validation that justifies the syscall), so ~0.7-1.7 us per toggle at the fleet clocks. A mode-2
-CS brackets the transfer with two toggles; a 16-bit frame at 72 MHz SCLK is only 222 ns, a
-16-byte transfer 1.78 us. Two `GPIO_WRITE` SVCs add 1.4-3.4 us of overhead SERIALIZED into a
-transaction whose entire payload is smaller than that -- 7-16x slower for the 16-bit frame -- and
-inject `IrqLock` spans into the highest-rate path in the system. Rule of thumb: **kernel-mediated
-GPIO is fine at <= ~1 kHz and NEVER inside a bus transaction; direct MMIO for everything hotter.**
-Forcing the whole fleet through the slow path to paper over one chip's inability to isolate a
-toggle register from its mux would be the wrong tradeoff -- KickOS accepts per-chip isolation
-ceilings (the K64F coarse-AIPS precedent, 3.7 / section 2.1).
-
-**SPI chip-select has TWO first-class modes**, selected per DEVICE by the SPI driver, never by
-chip:
-- **Mode 1 -- hardware PCS**: the engine-native chip select. Preferred and optimal wherever the
-  device is wired to a HW-PCS pin and tolerates the engine's CS behavior (per-frame de-assert, or
-  a CONT window over the whole transaction). Hardware-timed, zero software overhead.
-- **Mode 2 -- driver-owned direct GPIO CS**: required when the device needs a coherent CS level
-  held across a multi-byte transaction the engine cannot sustain (de-asserts per frame / breaks
-  across FIFO refills -- the Stage-D DSPI bug where releasing HW PCS0 clocked a trailing dummy
-  byte and corrupted a length-sensitive ESC mailbox write), or when the CS net has no HW-PCS pin.
-  This is the production KickCAT CS path on K64F today (`system/driver/mk64f/k64dspi`, PTC4 by
-  PSOR/PCOR from the unprivileged driver thread).
-
-**Per-chip isolation ceiling for a direct toggle window** -- can the atomic set/clear + input
+**Per-chip isolation ceiling for a direct toggle window.** Can the atomic set/clear plus input
 registers be granted as a narrow window that EXCLUDES the pin-mux and all shared authority?
 
 | chip | mux-free toggle window carvable? | enforcement floor (GPIO data) | hot GPIO-CS (mode 2) direct? |
@@ -454,264 +375,172 @@ registers be granted as a narrow window that EXCLUDES the pin-mux and all shared
 | **ESP32-C6** (PMP) | **YES, best in fleet**: 8 B NAPOT over W1TS/W1TC (+0x08); IO_MUX + in-block FUNCn_OUT_SEL excluded | 4 B granularity, 16 entries (backend uses 8). Residue: bank-wide data bitmask, zero mux authority. Small-NAPOT-over-peripheral needs one silicon check | **YES** -- direct grant (atomic W1TS/W1TC) |
 | **ESP32-WROOM** (LX6, no MPU) | MOOT -- no MPU, no privilege split | **NONE** (trust-only chip) | **YES trivially** (atomic W1TS/W1TC; nothing to isolate) |
 
-ALLOCATION exclusivity is chip-INDEPENDENT (bookkeeping); REGISTER-grant exclusivity is a
-chip-DEPENDENT floor -- exactly the isolation-ceiling pattern of 3.7 / section 2.1. The two chips
-that cannot draw a per-pin line (XMC by PMSAv7 subregion math, K64F by having no peripheral gate
-at all) are hardware ceilings of the class KickOS already documents, not an argument for a
-kernel-mediated fleet default. Verdict: direct MMIO mode-2 CS is viable on every chip; the kernel
-toggle is viable nowhere hot.
+ALLOCATION exclusivity is chip-INDEPENDENT bookkeeping; REGISTER-grant exclusivity is a
+chip-DEPENDENT floor, the isolation-ceiling pattern of section 2.1 applied at pin granularity. The
+two chips that cannot draw a per-pin line (XMC by PMSAv7 subregion math, K64F by having no peripheral
+gate at all) are hardware ceilings of a class KickOS already documents, not an argument for a
+kernel-mediated fleet default. Verdict: direct-MMIO mode-2 CS is viable on every chip, the kernel
+toggle nowhere hot.
 
-**Deferred to M4.4** (the driver batch that consumes this):
-- **N MMIO windows per spawn** -- `thread_spawn` carries exactly ONE window today
-  (`attr.mmio_base`); an XMC SPI driver with a mode-2 CS needs TWO (USIC channel + port), a C6
-  driver its peripheral window + the W1TS/W1TC entry. Additive (a small bounded N, each
-  admissibility-checked + region/PMP-budget-checked as today), no new object model. Zero windows
-  needed on K64F / WROOM (open floor).
-- **The vendor-neutral `kos_gpio` helper** -- `kos_gpio_claim_out` (cold arbitration + mux
-  verify) returning a descriptor `{mode, set_addr, clr_addr, in_addr, mask}` with per-chip styles
-  folded in, so `kos_gpio_set/clear/get` inline to one store/load (BSET/BCLR on RX) and the SAME
-  driver logic runs on all five chips; `kos_gpio_require_direct` fails LOUD at bring-up
-  (no-deferral) so a hot-CS driver never runs degraded on a chip that can only offer the kernel
-  path.
-- **Runtime mint-and-delegate** of a per-pin window to an already-running holder -- NO forcing
-  consumer (every M4 CS is known at bring-up and served by grant-at-spawn); it is a kernel
-  object-model change (generation / revoke-vs-running-holder / region-budget-at-mint) that must
-  not be smuggled in through GPIO. Deferred until a dynamic-allocation consumer on a carvable chip
-  exists.
-- **Shared-IRQ demux** and any userspace GPIO service -- cold-path only, lands with its first
-  real IRQ-consuming consumer; orthogonal to the toggle path (a shared GPIO IRQ line hardware-
-  forces a demux, so IPC there is acceptable; a CS toggle never is).
+**Still DEFERRED, all four verified unbuilt.**
+- **N MMIO windows per spawn.** `thread_spawn` carries exactly ONE window (`attr.mmio_base`,
+  `user/include/kickos/sys/abi.h`), while an XMC SPI driver with a mode-2 CS needs TWO (USIC channel
+  plus port) and a C6 driver needs its peripheral window plus the W1TS/W1TC entry. Additive: a small
+  bounded N, each admissibility-checked and region/PMP-budget-checked as today, no new object model.
+  Zero windows needed on K64F or WROOM (open floor).
+- **The vendor-neutral `kos_gpio` helper.** `kos_gpio_claim_out` (cold arbitration plus mux verify)
+  returning a descriptor `{mode, set_addr, clr_addr, in_addr, mask}` with the per-chip styles folded
+  in, so `kos_gpio_set/clear/get` inline to one store or load (BSET/BCLR on RX) and the SAME driver
+  logic runs on all five chips. `kos_gpio_require_direct` fails LOUD at bring-up so a hot-CS driver
+  never runs degraded on a chip that can only offer the kernel path.
+- **Runtime mint-and-delegate** of a per-pin window to an already-running holder. NO forcing consumer
+  exists, since every M4 CS is known at bring-up and served by grant-at-spawn, and it is a kernel
+  object-model change (generation, revoke-vs-running-holder, region-budget-at-mint) that must not be
+  smuggled in through GPIO. Deferred until a dynamic-allocation consumer on a carvable chip exists.
+- **Shared-IRQ demux and any userspace GPIO service.** Cold path only, landing with its first real
+  IRQ-consuming consumer, orthogonal to the toggle path: a shared GPIO IRQ line hardware-forces a
+  demux so IPC there is acceptable, whereas a CS toggle never is. Designed in
+  `design-m4.6-irq-driver.md`.
 
-Cross-ref the pinmux (3.1) + DMA (3.4) sections -- same shared-resource-vs-performance-vs-
-isolation tension, different hot/cold profile. The allocation-vs-register ceiling is the
-peripheral-isolation pattern (3.3 / section 2.1) applied at pin granularity.
+Cross-ref pinmux (3.1) and DMA (3.4): same shared-resource-vs-performance-vs-isolation tension,
+different hot/cold profile.
 
 ---
 
 ## 4. THE MILESTONE-NUMBERING QUESTION (primary deliverable)
 
-> **DECIDED 2026-07-20 -- Option A.** The user chose **driver era -> SMP -> MMU**: driver era =
-> **M4**, SMP = **M5**, MMU / new-platform = **M6** (`roadmap.md`). The analysis below is retained
-> as the RATIONALE; QW-3 (4.1) now carries **M5** (SMP's number). Work is still named by THEME
-> where the number is not load-bearing, but the ordering is no longer open.
+> **DECIDED 2026-07-20, Option A.** Driver era = **M4**, SMP = **M5**, MMU / new-platform = **M6**;
+> `roadmap.md` is authoritative. Work is still named by THEME where the number is not load-bearing,
+> because the roadmap's own "anytime-coherence" tagging means several pieces are not strictly gated
+> by number. `design/README.md` cites this section by number.
 
-The tension: `roadmap.md` says **M4 = SMP** (one kernel image across cores); the user now
-describes **M4 = the driver era**. The roadmap also tags the driver-era pieces (init service,
-power-manager/clock-tree) as "anytime-coherence, whatever milestone number that carries,"
-and puts the **MMU / new-platform horizon** (x86_64, i.MX8MP AMP) as post-M6, foundational.
-This section lays out the ORDER of ALL remaining big rocks -- the user decides the numbers.
+### 4.1 The three remaining big rocks
+1. **DRIVER ERA (M4)**, single-core: fleet UART/console drivers, per-chip reclaim, clock-select
+   fleet-wide, the driver framework (call/reply IPC, taxonomy, multi-instance), and the enabling
+   services init, clock-tree/power-manager, pinmux, gpio.
+2. **SMP (M5)**: one kernel image across cores (RP2040/RP2350), which reworks the foundation because
+   `IrqLock` ("IRQs off means exclusive") is single-core-only (`design-m5-smp.md`).
+3. **MMU / new-platform (M6)**: x86_64 PC plus i.MX8MP heterogeneous AMP, MMU KickOS on the A53 and
+   MPU KickOS on the M7 over cross-core IPC (`design-mmu-era-exploration.md`).
 
-### 4.1 The three remaining big rocks + their enabling services
-1. **DRIVER ERA** -- fleet UART/console drivers, per-chip reclaim, clock-select fleet-wide,
-   the driver framework (call/reply IPC, taxonomy, multi-instance), and the enabling
-   services: **init**, **clock-tree/power-manager**, **pinmux**, **gpio**. Single-core.
-2. **SMP** (current roadmap M4) -- one kernel image across cores (RP2040/RP2350). Reworks the
-   foundation: `IrqLock` ("IRQs off => exclusive") is single-core-only; plan = Big Kernel
-   Lock first, then per-core run-queues. The AMP substrate is a de-risking stepping stone.
-3. **MMU / new-platform** -- x86_64 PC + i.MX8MP heterogeneous AMP (MMU KickOS on A53 +
-   MPU KickOS on M7 over cross-core IPC). Foundational, milestone-class, post-everything.
+**QW-3 carries M5.** Keep the shared-IPC ring contract PHYSICALLY addressed from day one
+(`design-mmu-era-exploration.md:330`). It was flagged for "M3/M4" but belongs with the SMP/AMP
+cross-core IPC work.
 
-Parked item that MOVES WITH SMP's number: **QW-3** (`design-mmu-era-exploration.md:330`) --
-keep the shared-IPC ring contract PHYSICALLY addressed from day one. It was flagged for
-"M3/M4"; it belongs with the SMP/AMP cross-core IPC work, so it carries SMP's number -- now
-**M5** (see the DECIDED banner above).
+### 4.2 The dependency argument (retained as the rationale)
+The driver era does NOT depend on SMP: entirely single-core, sharing no invariant refactor, and the
+console and clock seams it uses are already single-core correct. SMP is an OPTIMISATION until there
+is something to run, since "run the workload at 2x" presupposes the workload exists. The IPC order is
+right this way, because call/reply and the SMP cross-core ring are the SAME IPC lineage (control-plane
+sync plus data-plane shared-memory async), so call/reply first informs the ring and QW-3 is honoured
+in both. The i.MX8MP endgame needs the driver era AND AMP/IPC AND the MMU, so it is strictly last
+regardless; x86_64 is mostly independent MMU work (MMU plus a new boot/interrupt model) and can slot
+wherever the MMU work is scheduled.
 
-### 4.2 Dependency DAG across the big rocks
-```
-   DRIVER ERA (single-core)                    SMP (foundation rework)
-   - fleet drivers + reclaim                   - IrqLock -> BKL
-   - clock-select fleet                        - per-core run-queues
-   - call/reply IPC (on CAP_ENDPOINT)          - AMP substrate (de-risk)
-   - init / clock-tree / pinmux / gpio         - QW-3 phys-addressed ring
-        |                                            |
-        |  (delivers USABLE VALUE:                   |  (optimisation until there
-        |   real apps can land)                      |   is a driver ecosystem to run)
-        |                                            |
-        +----------------------+---------------------+
-                               v
-                    i.MX8MP ENDGAME (needs BOTH)
-                    - MMU KickOS on A53  +  MPU KickOS on M7
-                    - heterogeneous AMP over shared IPC
-                    - = driver-era drivers + AMP/IPC + MMU, together
-                               ^
-                               |
-                    x86_64 PC (MMU, boot/APIC) -- MMU work,
-                    largely independent of the driver era
-```
-
-Dependency argument:
-- **Driver era does NOT depend on SMP.** It is entirely single-core work. It shares no
-  invariant refactor with SMP -- the console/clock seams it uses are already single-core
-  correct.
-- **SMP is an OPTIMISATION until there is something to run.** One kernel across two cores
-  with no driver ecosystem is a foundation with little payload. SMP's value is "run the
-  driver/app workload at 2x," which presupposes the workload exists.
-- **SMP shares NO refactor the driver era needs.** The `IrqLock`->BKL rework is invasive but
-  orthogonal to the driver seams. The one overlap is IPC: the driver-era call/reply layer and
-  the SMP cross-core ring are the SAME IPC lineage (control-plane sync + data-plane
-  shared-mem async, per the IPC-performance spike). Doing call/reply FIRST (driver era)
-  informs the cross-core ring; QW-3 (phys-addressed ring) should be honored in BOTH so the
-  contract is portable.
-- **The i.MX8MP endgame needs BOTH** driver era (drivers on the M7 + A53) AND AMP/IPC (SMP's
-  cross-core lineage) AND MMU -- so it is strictly last regardless.
-- **x86_64 is mostly independent MMU work** -- it needs the MMU + a new boot/interrupt model,
-  not the driver era or SMP. It could slot anywhere the MMU work is scheduled.
-
-### 4.3 Ordering options
-- **Option A -- driver era first (RECOMMENDED, see below).**
-  driver era -> SMP -> MMU/new-platform.
-  PRO: delivers usable value now (real apps land, the "only KickCAT, one board" gap closes);
-  SMP then has a workload to accelerate; call/reply-before-cross-core-ring is the natural IPC
-  order; the init-service entry-rename breaking change is settled early. CON: the
-  single-SMP-image end goal slips a milestone; the AMP de-risking is deferred.
-- **Option B -- SMP first (keep roadmap M4=SMP).**
-  SMP -> driver era (as anytime-coherence in parallel) -> MMU.
-  PRO: honors the current roadmap; de-risks the multicore foundation while the codebase is
-  still small; RP2350 M33 board momentum. CON: builds a foundation with little to run on it;
-  the driver era (the thing that makes KickOS *usable*) waits; the call/reply IPC gets
-  designed AFTER the cross-core ring (backwards); "anytime-coherence in parallel" is how the
-  driver era has ALREADY been treated and it left the fleet at one console driver.
-- **Option C -- split (interleave).**
-  Driver-era CORE first (fleet drivers + reclaim + clock-select + init service = make M3
-  real), THEN SMP (with the call/reply IPC + QW-3 done as its IPC front-half), THEN the
-  driver FRAMEWORK maturation (call/reply drivers, DMA) + clock-tree service AFTER SMP.
-  PRO: gets the fleet-wide "make M3 real" done fast (the user's stated goal), settles the
-  init-entry breaking change early, then does SMP while the heavier framework/DMA design
-  bakes. CON: splits the driver era across two numbers -- the framework work is separated
-  from the drivers that motivate it.
-
-### 4.4 Recommendation (for the user to accept or override)
-**Option A: the driver era is the next milestone (make M3 real across the fleet), SMP
-follows, MMU/new-platform last.** Rationale: (1) the user's own framing -- "M3 = POC, the
-next thing = make it real across the fleet" -- IS the driver era; (2) it delivers usable
-value (real apps can land) whereas SMP is an optimisation with no workload yet; (3) the IPC
-order is right (call/reply informs the cross-core ring, not vice versa); (4) it forces the
-init-service entry-point rename NOW, while consumers are few. If the RP2350-M33 / RP2040 SMP
-hardware momentum is the stronger pull, Option C is the honest compromise: land the
-"make-M3-real" core first (drivers + reclaim + clock-select + init), then SMP, then the
-heavier framework (call/reply drivers, clock-tree service, DMA).
-
-Now DECIDED (Option A, see the banner atop this section): driver era = M4, SMP = M5, MMU = M6.
-The doc still names the work by THEME ("the driver era") where the number is not load-bearing,
-because the roadmap's own "anytime-coherence" tagging means several of these pieces are not
-strictly gated by number.
+### 4.3 The rejected orderings
+- **Option B, SMP first** (the old roadmap M4). It honored the then-current roadmap, de-risked the
+  multicore foundation while the codebase was small, and rode RP2350 M33 momentum. Rejected because
+  it builds a foundation with little to run on it, designs the cross-core ring BEFORE call/reply
+  (backwards), and "driver era as anytime-coherence in parallel" is exactly how the driver era had
+  already been treated, which is what left the fleet at one console driver.
+- **Option C, interleave.** Driver-era CORE first (fleet drivers, reclaim, clock-select, init), THEN
+  SMP with call/reply plus QW-3 as its IPC front-half, THEN framework maturation and the clock-tree
+  service. The honest compromise had RP2350-M33 hardware momentum been the stronger pull. Rejected
+  because it splits the driver era across two numbers, separating the framework work from the drivers
+  that motivate it.
 
 ---
 
 ## 5. PRIORITY / SEQUENCING (what unblocks what)
 
-Within the driver era, dependency order:
-1. **Init-service entry-point seam** (G7) -- rename EARLY; a cheap-now/break-later quick win.
-   Foundational: everything spawns through init. Mostly **NOW** (sim + build).
-2. **Foundational services** (section 3.1): **clock-tree**, **pinmux**, **gpio** -- the
-   drivers stand on these. Design gate first (central-vs-grant for pinmux is open). Clock-tree
-   builds on the G4 mechanism seam. Mix of **NOW** (design/sim) + **HW** (validate).
-3. **Call/reply IPC layer** on CAP_ENDPOINT (section 3.2) -- the substrate for SPI/I2C
-   drivers; the reply-cap is the missing half. **NOW** (sim/QEMU, like the endpoint proof).
-4. **Fleet console drivers + reclaim** (G1/G2/G3), silicon-available first: XMC done ->
-   RX72M, ESP32-C6 (each gated on its G5 prereq) -> K64F (reclaim proof) -> STM32 family +
-   RP2040. Per-chip **HW**.
-5. **Clock-select fleet** (G4) -- per opt-in chip; **HW**. Then the **power-manager /
-   clock-tree service** (G7) as the policy layer on top -- **HW + design**.
-6. **Driver framework maturation** (G6) -- the lib/demo split + typed contract. **NOW**
-   (design + sim), validated **HW**.
-7. **DMA** (3.4) -- DEFERRED sub-topic; polled/IRQ drivers first.
+Within the driver era. The init-service entry seam and the call/reply layer are landed, so they are
+prerequisites rather than steps.
+1. **Foundational services** (3.1): pinmux (landed), clock gating at bring-up, the GPIO direct-grant
+   path. Mix of **NOW** (design/sim) and **HW** (validate).
+2. **Fleet console drivers + reclaim** (G1/G2/G3), silicon-available first: RX72M and ESP32-C6, each
+   gated on its G5 prereq, then the STM32 family and RP2040 (PL011). Per-chip **HW**.
+3. **Clock-select fleet** (G4) per opt-in chip, **HW**; then the **power-manager / clock-tree
+   service** (G7) as the policy layer on top, **HW + design**.
+4. **Driver framework maturation** (G6): the remaining lib/demo splits and the build-layering call.
+   **NOW** (design + sim), validated on **HW**.
+5. **DMA** (3.4): DEFERRED sub-topic, polled and IRQ drivers first.
 
-Silicon-gated (need boards on a bench): G1 per-chip drivers, G2 reclaim validation, G3
-handover validation, G4 clock-select, G5 C6-APM + RX-IRQ-demux, and all HW re-validation.
-Doable NOW (in-tree / QEMU / sim / design): the init-entry seam, the call/reply IPC layer
-(like the endpoint proof, K64F+XMC+QEMU), the driver-framework design + lib/demo split, the
-pinmux central-vs-grant decision, the m2-review-followups read, and the milestone-numbering
-decision itself.
+Silicon-gated: G1 per-chip drivers, G2 reclaim validation, G3 handover validation, G4 clock-select,
+G5's rx72m IRQ-demux body, and all HW re-validation. Doable NOW: the G6 design work and lib/demo
+split, the m2-review-followups read, and every register-homework enumeration in G2.
 
 ### 5.1 Prereq / blocker summary
-- ESP32-C6 console driver  BLOCKED BY  C6 APM/PMS global open (G5, `design-c6-driver.md`).
-- RX72M IRQ-driven driver / ring  BLOCKED BY  the RX peripheral-IRQ demux stub (G5).
-- SPI/I2C userspace drivers  BLOCKED BY  the call/reply IPC layer (3.2).
-- Every fleet console driver  ENABLED BY  the xmcuart template (exists) + per-chip reclaim (G2).
-- Ordered driver bring-up  ENABLED BY  the init service + foundational services (3.1, G7).
-- The clock-tree rate-change fan-out  MATTERS ONLY ONCE  multiple derived-clock consumers
-  (drivers) exist -- so clock-tree SERVICE follows the first drivers, though the clock
-  MECHANISM (G4) can precede them.
+Each blocker is stated with its gap: RX72M IRQ-driven driver or ring on the missing
+`kickos_rx_dev_pending_line` body (G5), every fleet console driver on that chip's reclaim body (G2),
+ordered bring-up on init and the foundational steps (3.1, G7), and the clock-tree SERVICE on the
+first drivers existing, even though the clock MECHANISM (G4) can precede them (G7's contradiction).
+
+---
 
 ## 6. M4 design decisions (fable review 2026-07-20 + review discussion)
 
-Adversarial review in `design-m4-fable-review.md`; these are the accept/revise calls that
-supersede the earlier prose above where they differ.
+The adversarial review is `design-m4-fable-review.md`, which doubles as the driver era's risk register
+and carries each finding's OUTCOME. These are the accept/revise calls that supersede earlier prose
+above where they differ.
 
-- **Clock: there IS an M4 service, scoped to the SAFE parts; only the live cascade defers.**
-  Three-way split: (1) a clock ORACLE -- a driver queries its PARENT/BRANCH clock (a UART
-  needs its fPERIPH for baud, SPI its prescaler); `sys_cpu_clock_hz()` only gives the CORE
-  clock, so this is a real, read-only, cascade-free need, AND it is the seam a later
-  rate-change notify walks. (2) one-shot BOOT tree config/select+gate per branch (pinmux-
-  shaped, privileged pokes behind the kernel seam). (3) the live DVFS rate-change CASCADE
-  (cross-domain notify -> quiesce -> re-derive, a two-phase commit across untrusted drivers)
-  is DEFERRED and built against the CONSOLE as the first forced notify instance (M3 today
-  merely REFUSES a retune while the console is USER_OWNED -- `clock_select.cc:32`, verified
-  correct; that refuse-path is where the handshake grows). Authority is a SYSCALL-GATING
-  capability, never an SCU/RCC MMIO grant (that window ungates any peripheral / kills the
-  kernel timer clock); the kernel keeps every shared-clock-block register, so a service bug
-  is restartable policy, not a flash/PLL hard fault. Fixes the roadmap "Later/clock-tree" prose.
-- **GPIO: direct-MMIO grant, kernel does only pinmux (finding 9 superseded by the spike
-  `design-m4-gpio-direct-spike.md`).** The KickCAT ESC SPI needs a driver-owned CS (multi-device
-  buses, boards with no HW-PCS pin, CS held across FIFO refills), so mode-2 direct GPIO CS is IN
-  M4 -- served by the grant-at-spawn MMIO mechanism (task #9); a hot pin NEVER routes through a
-  syscall (~100-200-cycle SVC vs a 222 ns CS edge, section 3.5). A kernel pin allocator + toggle
-  syscall was built (af7d99a) then REMOVED once the latency spike confirmed it is non-viable for
-  a hot pin. The earlier "expose an atomic set/clear window excluding the mux" homework is CLOSED
-  as a documented NEGATIVE result on XMC: OMR (+0x04) and IOCR0-12 (+0x10-0x1C) share the one
-  32 B PMSAv7 min-region/subregion, so any region granting the toggle grants that port's remux --
-  address arithmetic, not a silicon question. The XMC answer is a dedicated-port grant (board
-  layout makes the over-grant harmless) or a trusted over-grant, the K64F-coarse-AIPS ceiling
-  class. Pinmux stays a one-shot privileged init step, verified (not set) by the cold claim path.
-  Shared-port IRQ demux (if ever needed) is a non-blocking per-subscription notification with
-  sticky-pending, ack ISFR before delivery -- NEVER a parked rendezvous send that would let one
-  slow subscriber deafen the port. DEFERRED to M4.4: N-windows-per-spawn, the vendor-neutral
-  `kos_gpio` helper, runtime mint-and-delegate (no forcing consumer). See section 3.5.
-- **Call/reply must carry the scheduling contract (finding 4).** Synchronous SPI/I2C over
-  CAP_ENDPOINT without priority donation = unbounded inversion on every transaction (KickCAT
-  cyclic traffic is the victim). The reply-cap design gate MUST include direct-handoff /
-  priority donation on call (as sem_post's token handoff already does), else it is not an
-  RTOS API.
-- **Transfer ABI is offset-based from day one (finding 10, the one M6 landmine).** A large-
-  transfer request speaks {region-cap, offset, len}, never a raw pointer -- cheap now, an
-  ABI break at M6 when a domain becomes a page-table root. Pull the QW-3 DISCIPLINE (not the
-  ring impl) into the M4 call/reply gate.
-- **Timed / abortable IPC -> EARLY-M4.** Gates BOTH the clock-cascade quiesce-timeout and a
-  driver-death waiter wake. Open since the handover spike; call/reply makes it load-bearing.
-- **Driver crash/restart + resource reclaim** (pin caps, clock-gate refcounts, AIPS slots,
-  endpoint holders) is a named M4 gap -- only the panic-path console reclaim exists today.
-- **RP2350 M33 arch question (settle in this pass).** The M33 is ARMv8-M Mainline; KickOS rides
-  the `armv7m` layer for the core (NVIC/SysTick/SVC/BASEPRI/regfile are a v7-M superset --
-  first silicon 40/40 mpu-off) and diverges only at the MPU: PMSAv8 (RBAR+RLAR+MAIR) is a
-  different unit from v7-M PMSAv7 (RBAR+RASR), so enforcement needs a new v8-M backend
-  (`design-rp2350-mpu-armv8m.md`). Decide: "armv7m board + v8-M MPU backend" vs a real
-  `armv8m` arch split. Gates M4 (RP2350 enforcement) and M5 (dual-M33 SMP endgame).
+- **Clock: there IS an M4 service, scoped to the SAFE parts, and only the live cascade defers.** The
+  G7 power-manager decision, in three parts. (1) A clock ORACLE, so a driver can query its PARENT or
+  BRANCH clock (a UART needs its fPERIPH for baud, SPI its prescaler); `sys_cpu_clock_hz()` gives
+  only the CORE clock, so this is a real read-only cascade-free need AND it is the seam a later
+  rate-change notify walks. (2) One-shot BOOT tree config/select/gate per branch, pinmux-shaped
+  privileged pokes behind the kernel seam. (3) The live DVFS rate-change CASCADE (cross-domain
+  notify, quiesce, re-derive: a two-phase commit across untrusted drivers) is DEFERRED and will be
+  built against the CONSOLE as the first forced notify instance, since M3 today merely REFUSES a
+  retune while the console is USER_OWNED (`clock_select.cc:32`, verified correct) and that
+  refuse-path is where the handshake grows. Authority is a SYSCALL-GATING capability and never an
+  SCU/RCC MMIO grant, because such a window ungates any peripheral and can kill the kernel timer
+  clock; the kernel keeps every shared-clock-block register, so a service bug is restartable policy
+  rather than a flash or PLL hard fault. This fixes the roadmap's "Later/clock-tree" prose.
+- **GPIO: direct-MMIO grant, kernel does only pinmux** (finding 9, superseded by
+  `design-m4-gpio-direct-spike.md`; the decision, its numbers and the XMC negative result are 3.5).
+  Pinmux stays a one-shot privileged init step, verified rather than set by the cold claim path. A
+  shared-port IRQ demux, if ever needed, is a non-blocking per-subscription notification with
+  sticky-pending and an ISFR ack before delivery, NEVER a parked rendezvous send that would let one
+  slow subscriber deafen the port.
+- **Call/reply carries the scheduling contract (finding 4): CLOSED.** Without priority donation,
+  synchronous SPI/I2C over CAP_ENDPOINT is unbounded inversion on every transaction, with KickCAT
+  cyclic traffic as the victim. Direct-handoff donation on call is in the shipped contract.
+- **The transfer ABI is offset-based from day one (finding 10, the one M6 landmine).** A
+  large-transfer request speaks `{region-cap, offset, len}` and never a raw pointer: cheap now, an
+  ABI break at M6 when a domain becomes a page-table root. This pulls the QW-3 DISCIPLINE, not the
+  ring implementation, into the call/reply contract.
+- **Timed / abortable IPC -> EARLY-M4: OPEN.** No timed or abortable receive/call exists. It gates
+  BOTH the clock-cascade quiesce-timeout and a driver-death waiter wake, and call/reply made it
+  load-bearing. What it is really asking for is named in `design-m4.6-irq-driver.md` section 7.5
+  (receive-from-either-of-two-sources, an M5 kernel object).
+- **Driver crash/restart plus resource reclaim: OPEN.** Pin caps, clock-gate refcounts, AIPS slots and
+  endpoint holders all leak on driver death; only the panic-path console reclaim exists. `TODO.md`
+  carries the `kos_cap_narrow` endpoint-rights gap that blocks a real driver-death story.
+- **RP2350 M33 arch question: SETTLED as "armv7m board plus a v8-M MPU backend"**, with no `armv8m`
+  arch directory. PMSAv8 (RBAR+RLAR+MAIR) is a different unit from PMSAv7 (RBAR+RASR) and gets its own
+  backend (`design-rp2350-mpu-armv8m.md`); the core is a v7-M superset and needed no split.
 
 ---
 
 ## 7. API-CONFORMANCE OBJECTIVE (the neutrality matrix)
 
-The gap list above is the WORK; this section pins WHY M4 does it. The objective is not "ship
-drivers" for its own sake -- full driver support is the VEHICLE that validates the M4 service
-APIs against real hardware variation. The end deliverable is a set of console/UART, gpio,
-pinmux, clock/power, and bus (SPI/I2C) service APIs proven GENUINELY VENDOR-NEUTRAL -- not
-accidentally shaped around one vendor's register model, clock tree, or pin scheme. A driver
-that lands cleanly on one vendor and then forces an API change to land on the next is the
-signal that the API leaked a vendor assumption; the matrix is how that leak gets caught.
+The gap list above is the WORK; this section pins WHY M4 does it. The objective is not "ship drivers"
+for its own sake: full driver support is the VEHICLE that validates the M4 service APIs against real
+hardware variation. The end deliverable is a set of console/UART, gpio, pinmux, clock/power and bus
+(SPI/I2C) service APIs proven GENUINELY VENDOR-NEUTRAL rather than accidentally shaped around one
+vendor's register model, clock tree or pin scheme. **The falsifier**: a driver that lands cleanly on
+one vendor and then forces an API change to land on the next has proven the API leaked a vendor
+assumption. The matrix is how that leak gets caught.
 
-The **bus (SPI/I2C) API is now realized** as call/reply (`reference/ipc-call-reply.md`) under a
-chip-neutral wire contract (`reference/bus-service.md`) + the thread-per-instance service model
-(3.2/3.3), and its first neutrality check is passed on two of the four matrix boards at once:
-XMC4800 (USIC-SSC, hardware MSLS/SELO0 CS via `PCR.FEM`) and FRDM-K64F (DSPI, driver-owned GPIO
-CS via direct `PSOR`/`PCOR`) run the SAME `kos_bus_req`/`rsp` wire and the SAME chip-neutral
-`spi_client` wrapper -- CS policy and the controller register model stay class-internal, so the
-wire named neither. The RX72M (RXv3/RX-MPU) and ESP32-C6 (PMP) legs, and the I2C driver body,
-extend the check across the remaining axes.
+The bus API's first neutrality check is already passed on two of the four matrix boards at once.
+XMC4800 (USIC-SSC, hardware MSLS/SELO0 CS via `PCR.FEM`) and FRDM-K64F (DSPI, driver-owned GPIO CS via
+direct `PSOR`/`PCOR`) run the SAME wire and the SAME chip-neutral `spi_client` wrapper, so CS policy
+and the controller register model stayed class-internal and the wire named neither
+(`reference/bus-service.md`). The RX72M (RXv3/RX-MPU) and ESP32-C6 (PMP) legs, and the I2C driver
+body, extend the check across the remaining axes.
 
 ### 7.1 The four-board neutrality matrix
-Four easy-to-flash boards, chosen for DIVERSITY across BOTH axes at once -- vendor AND
-arch/MPU family:
+Four easy-to-flash boards, chosen for DIVERSITY across vendor AND arch/MPU family at once.
 
 | Board | Arch | MPU family | Vendor |
 |---|---|---|---|
@@ -720,46 +549,42 @@ arch/MPU family:
 | k64f (FRDM-K64F) | armv7m | SYSMPU | NXP |
 | rx72m | RXv3 | RX-MPU | Renesas |
 
-Four vendors x four arch/MPU families is a far stronger API-neutrality test than adding
-another ARM board: two boards can share an ISA (xmc, k64f are both armv7m) yet still exercise
-DIFFERENT MPU units (PMSAv7 vs SYSMPU) and DIFFERENT vendors, and the two non-ARM boards (c6
-rv32imac/PMP, rx72m RXv3/RX-MPU) stress the API where an ARM-only fleet is silent. A vendor
-bias baked into a service API cannot survive being ported across all four.
+Four vendors by four arch/MPU families is a far stronger neutrality test than adding another ARM
+board. Two boards can share an ISA (xmc and k64f are both armv7m) yet still exercise DIFFERENT MPU
+units (PMSAv7 against SYSMPU) and different vendors, and the two non-ARM boards stress the API where
+an ARM-only fleet is silent. A vendor bias baked into a service API cannot survive all four ports.
 
 ### 7.2 The driver->board mapping principle (the scope guard)
 "Total / full driver support" is an ASPIRATION to FULL per-board peripheral coverage, NOT a set
 bounded a-priori to the peripheral CLASSES the M4 services define (console/UART, gpio, pinmux,
-clock/power, plus at least one bus SPI and/or I2C). Reaching for a board's WHOLE complement is
-how we discover hardware that needs a dedicated / new API -- that discovery IS the point. The
-bound is a COMPLEXITY-vs-GAIN weighting per candidate, NOT a class restriction: the per-board
-prioritized backlog + the cross-board neutrality shortlist in `docs/design-m4-driver-matrix.md`
-are what keep scope from ballooning into a four-vendor BSP while still exercising each API --
-and surfacing the high-gain NON-class peripherals (analog-in, PWM, the C6-ETM/XMC-ERU/RX-ELC
-event fabric, the xmc/rx72m on-chip EtherCAT SC) that a class restriction would hide.
+clock/power, plus at least one bus SPI and/or I2C). Reaching for a board's WHOLE complement is how we
+discover hardware that needs a dedicated or new API, and that discovery IS the point. The bound is a
+COMPLEXITY-vs-GAIN weighting per candidate, NOT a class restriction: the per-board prioritized
+backlog and the cross-board neutrality shortlist in `docs/design-m4-driver-matrix.md` are what keep
+scope from ballooning into a four-vendor BSP while still exercising each API, and what surface the
+high-gain NON-class peripherals (analog-in, PWM, the C6-ETM/XMC-ERU/RX-ELC event fabric, the
+xmc/rx72m on-chip EtherCAT SC) a class restriction would hide. That document is the source-of-record
+for the unlanded-peripheral survey, and `roadmap.md`'s scope-guard bullet rests on it too.
 
-So the discipline is: prefer MAPPING different drivers to different boards to maximize
-variation coverage, over duplicating one driver across all four. A given service API is
-"neutrality-proven" once its class has a working driver on boards spanning the vendor/arch
-spread -- not once every board carries every driver. Console/UART is the exception that DOES
-want all four (see 7.3); the rest earn their proof by covering the diversity axes, not by
-uniform replication. This keeps M4's scope from ballooning into a full BSP for four vendors
-while still exercising each API against enough hardware to expose a vendor assumption.
+So the discipline is to prefer MAPPING different drivers to different boards to maximize variation
+coverage, over duplicating one driver across all four. A service API is "neutrality-proven" once its
+class has a working driver on boards spanning the vendor/arch spread, not once every board carries
+every driver. Console/UART is the exception that DOES want all four (7.3); the rest earn their proof
+by covering the diversity axes rather than by uniform replication.
 
 ### 7.3 The no-probe constraint (a design INPUT, not an afterthought)
-Two of the four matrix boards -- rx72m and c6 -- are easy to FLASH but have NO usable debug
-probe. Bring-up on them is PRINT-DEBUG ONLY: no single-step, no register peek over a probe,
-only what the board can print. This is a hard input to the service design, not a testing
-footnote: it means the services must be CONSOLE-OBSERVABLE to be brought up on those two
-boards at all. If a driver / service can only be diagnosed through a debugger, it cannot be
-brought up on half the neutrality matrix.
+Two of the four matrix boards, rx72m and c6, are easy to FLASH but have NO usable debug probe.
+Bring-up there is PRINT-DEBUG ONLY: no single-step, no register peek over a probe, only what the
+board can print. A hard input to the service design rather than a testing footnote, because it means
+the services must be CONSOLE-OBSERVABLE to be brought up on those two boards at all. A service that
+can only be diagnosed through a debugger cannot be brought up on half the neutrality matrix.
 
-Consequences:
-- Console/UART is the FIRST driver on every matrix board (not just the interesting-isolation
-  ones), because it is the observability substrate every other bring-up on rx72m/c6 depends
-  on. This is why console/UART is the one class that wants all four boards (7.2).
-- The M4 services should surface bring-up state (init progress, allocation/grant results,
-  clock/baud derivation, transfer status) over the console, so a print-only board can
-  diagnose a failed handover / mux / clock-select without a probe.
-- The porting invariant already in play (a real `arch_console_reclaim`, section 1 / G2)
-  matters MORE here: on a no-probe board a garbled UART that eats the panic banner leaves
-  NO diagnostic channel at all.
+Consequences.
+- Console/UART is the FIRST driver on every matrix board, not just the interesting-isolation ones,
+  because it is the observability substrate every other bring-up on rx72m and c6 depends on. This is
+  why console/UART is the one class that wants all four boards (7.2).
+- The M4 services should surface bring-up state (init progress, allocation and grant results,
+  clock/baud derivation, transfer status) over the console, so a print-only board can diagnose a
+  failed handover, mux or clock-select without a probe.
+- The porting invariant of section 1 and G2 (a real `arch_console_reclaim`) matters MORE here: on a
+  no-probe board a garbled UART that eats the panic banner leaves NO diagnostic channel at all.

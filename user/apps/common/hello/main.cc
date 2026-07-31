@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// KickOS "hello" (C++ flavor). Two unprivileged threads bounce a token back and
-// forth over a pair of semaphores (ping-pong), pausing between hits so it is
-// watchable, until you stop the sim with Ctrl+C. Written against the ergonomic
-// C++ API (kos::). The byte-for-byte identical program in the plain-C API lives
-// in apps/hello_c -- compare the two: same syscalls, different call flavor.
-//
+// KickOS "hello" (C++ flavor), against the ergonomic C++ API (kos::). The
+// byte-for-byte identical program in the plain-C API lives in apps/hello_c.
 // (The exhaustive M0 verification lives in apps/selftest, not here.)
 
 #include <kickos/kos.h>
@@ -34,7 +30,6 @@ namespace
         kos::print(b);
     }
 
-    // Bounce forever: wait for my token, pause, speak, hand it to my peer.
     void ping(void*)
     {
         int n = 0;
