@@ -46,14 +46,60 @@ set_property(TARGET selftest APPEND PROPERTY ADDITIONAL_CLEAN_FILES "${_selftest
 # except microbit (its own hardcoded list further down).
 set(KICKOS_EXPECT_SKIPS "")
 
+# The same, for the arms that report PARTIAL: they ran their invariant and left a sub-case
+# unexercised here. A PARTIAL reports `ok`, so neither the plan/case reconciliation nor the
+# skip bookkeeping can see one and this by-name set is the only thing that can. It is NOT
+# derivable from _tap_arms: whether a board mints a free DEV window, reserves any block, or
+# can spare a stack are runtime facts, so the conditions below name the postures measured.
+set(KICKOS_EXPECT_PARTIALS "")
+if(KICKOS_ARCH STREQUAL "sim")
+  # The host admits exactly one DEV window shape and periph_reg_write_mask already holds
+  # it, so the free-window arms find nothing to take.
+  list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
+endif()
+if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
+  # The reserved-overlap matrix needs the board to declare at least one
+  # arch_reserved_blocks entry. The host and the mps2 parts declare none; the qemu-riscv
+  # PMP port does, so it runs the matrix and must not be permitted to drop it.
+  if(NOT KICKOS_BOARD STREQUAL "qemu-riscv")
+    list(APPEND KICKOS_EXPECT_PARTIALS grant_reserved)
+  endif()
+  if(KICKOS_ARCH STREQUAL "sim")
+    list(APPEND KICKOS_EXPECT_PARTIALS dev_window_exclusive)
+  endif()
+endif()
+# Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a raw list
+# deref would split the value into further bogus environment entries.
+list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
+
+# The EXACT number of tap::add calls main.cc reaches in this posture, handed to every
+# gate below. tap.cc plans `1..N` from the RUNTIME registry, so plan and case count
+# shrink together when an arm is deleted and no self-consistent parse can see it; only
+# an expectation from OUTSIDE the image can. The conditions mirror the #if guards around
+# the registration block at the bottom of main.cc, one clause per guard.
+set(_tap_arms 53) # unconditional
+if(KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms "${_tap_arms} + 10") # bus_device_slots, reboot_priv, 8 x irq_*
+endif()
+if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms "${_tap_arms} + 3") # endpoint_bound, grant_reserved, dev_window_exclusive
+endif()
+if(KICKOS_HAVE_MPU)
+  math(EXPR _tap_arms "${_tap_arms} + 1") # stackbase_arena
+endif()
+if(KICKOS_ARCH STREQUAL "sim")
+  math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
+endif()
+
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # The guard-probe case is registered only under KICKOS_ENABLE_SELFTEST (the sim
   # preset enables it), so the plan count still matches.
   add_test(NAME selftest
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_selftest.sh" "$<TARGET_FILE:selftest>")
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_selftest.sh" "$<TARGET_FILE:selftest>"
+            ${_tap_arms})
   set_tests_properties(selftest PROPERTIES TIMEOUT 30)
-  set_property(TEST selftest APPEND PROPERTY
-    ENVIRONMENT "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}")
+  set_property(TEST selftest APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
 
   # The OTHER console posture: the sim's only coverage of the published route
   # (kos_send on stdout cap index 0 -> userspace driver). One provider links per image,
@@ -61,8 +107,11 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(
     NAME    sim_published_console
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_published.sh"
-            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${_tap_arms})
   set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
+  # Its own build tree, but the same board posture, so the same two permission sets.
+  set_property(TEST sim_published_console APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
 
   # Dependency-inversion acceptance: an out-of-tree app builds against the
   # exported KickOS package (find_package + kickos_add_application) and runs.
@@ -79,15 +128,15 @@ endif()
 # it survives the coarse QEMU semihosting clock.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_selftest TARGET selftest BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
-  set_property(TEST ${KICKOS_QEMU_MPS2_TAG}_selftest APPEND PROPERTY
-    ENVIRONMENT "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" ARGS ${_tap_arms})
+  set_property(TEST ${KICKOS_QEMU_MPS2_TAG}_selftest APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
 endif()
 # microbit (nrf51) runs the same suite on armv6m with MAX_SEMAPHORES=4 / MAX_THREADS=2.
 # Every test must reclaim its semaphores so peak concurrent stays within 4.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" ARGS ${_tap_arms})
   # The only board with legitimate skips. MAX_THREADS=2 / MAX_SEMAPHORES=4 cannot host
   # the multi-worker choreographies:
   #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_deadlock,
@@ -95,17 +144,21 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   #   call_infoless_revert (4 workers), call_donation (3)
   #   domain_share: arena cannot spare the shared region
   #   irq_as_event: wants a 4 KiB MMIO page out of 16 KiB SRAM
-  # caller_stack and mmio_grant report PARTIAL instead and count as passes, not skips.
+  # Two more arms run their invariant and drop a sub-case, reporting PARTIAL: they count
+  # as passes, not skips, and carry their own permission set.
+  #   caller_stack: the arena cannot spare a caller-owned stack
+  #   confused_deputy: the arena cannot spare the grandchild's stack
   # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a semicolon
   # would split the value into a second bogus environment entry.
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,domain_share,irq_as_event")
+    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,domain_share,irq_as_event"
+    "EXPECT_PARTIALS=caller_stack,confused_deputy")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh")
-  set_property(TEST qemu_riscv_selftest APPEND PROPERTY
-    ENVIRONMENT "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" ARGS ${_tap_arms})
+  set_property(TEST qemu_riscv_selftest APPEND PROPERTY ENVIRONMENT
+    "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
 endif()
 
 # The same acceptance criterion for a bare-metal package: install the MCU
@@ -151,7 +204,9 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
   # Every archive of the rescan group, so the gate sees the WHOLE set of definitions the
   # link had to choose from; a partial list would read a backend as absent. The app's own
   # objects come too: they are on the link command line (always in the image) and an app
-  # may define a seam itself, KICKOS_APP_AUTHORITY being the one that does.
+  # may define a seam itself, KICKOS_APP_AUTHORITY being the one that does. add_test does
+  # NOT split a $<TARGET_OBJECTS:> expansion, so they reach the script as one
+  # semicolon-joined argument, which it splits back apart.
   set(_seam_archives "$<TARGET_FILE:kickos_kernel>" "$<TARGET_FILE:kickos_lib>"
                      "$<TARGET_FILE:kickos_user>"
                      "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>")

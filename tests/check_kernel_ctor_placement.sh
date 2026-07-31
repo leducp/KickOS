@@ -28,6 +28,7 @@
 # usage: check_kernel_ctor_placement.sh <elf> <nm> <objcopy> <kernel.a> <arch.a> <chip.a> <lib.a>
 
 set -eu
+. "$(dirname "$0")/lib/gate.sh"
 
 ELF="$1"
 NM="$2"
@@ -35,12 +36,9 @@ OBJCOPY="$3"
 shift 3
 # remaining args ($@) are the four kernel-owned archives
 
-fail() { echo "FAIL: $1" >&2; exit 1; }
-
 [ -f "$ELF" ] || fail "ELF not found: $ELF"
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+scratch_dir
 
 # --- app-ctor window bounds (the section symbols the split defines) -----------
 START="$("$NM" "$ELF" | awk '$3=="__kickos_app_init_array_start"{print $1}')"
@@ -52,7 +50,26 @@ SDEC=$((0x$START))
 EDEC=$((0x$END))
 [ "$EDEC" -ge "$SDEC" ] || fail "app window end (0x$END) is below start (0x$START) -- corrupt ELF"
 
-echo "== app-ctor window [0x$START, 0x$END) : $(((EDEC - SDEC) / 4)) entr(y/ies) =="
+# 4 bytes per pointer: registered on armv7m only (see the CMakeLists guard).
+APP_ENTRIES=$(((EDEC - SDEC) / 4))
+echo "== app-ctor window [0x$START, 0x$END) : $APP_ENTRIES entr(y/ies) =="
+
+# The pointer words a ctor array actually holds, thumb bit cleared, sorted unique.
+# The byte count is reconciled against the entry count the window symbols imply:
+# objcopy exits 0 and writes ZERO bytes for a section that does not exist, so a linker
+# script that renamed the OUTPUT section while keeping the symbols would leave every
+# assertion below reading an empty file (i.e. vacuously satisfied) while the entry
+# counts printed above still looked healthy.
+ctor_targets() { # <section> <entries> <outfile>
+  "$OBJCOPY" -O binary --only-section="$1" "$ELF" "$TMP/sect.bin" \
+    || fail "objcopy could not extract $1"
+  NREAD=$(( $(wc -c < "$TMP/sect.bin") / 4 ))
+  [ "$NREAD" -eq "$2" ] \
+    || fail "$1: the window symbols span $2 entr(y/ies) but objcopy read $NREAD -- output section renamed or NOBITS"
+  od -An -tx4 "$TMP/sect.bin" | tr ' ' '\n' | grep -E '^[0-9a-fA-F]{8}$' | while read -r W; do
+    printf '%x\n' $((0x$W & ~1))
+  done | sort -u > "$3"
+}
 
 # --- kernel-owned ctor NAMES (from the four closed-set archives) --------------
 : > "$TMP/kctors.txt"
@@ -62,13 +79,16 @@ for A in "$@"; do
     | awk '$3 ~ /^_GLOBAL__sub_[ID]/ {print $3}' >> "$TMP/kctors.txt"
 done
 sort -u "$TMP/kctors.txt" -o "$TMP/kctors.txt"
+require_nonempty "$TMP/kctors.txt" \
+  "collected zero kernel ctors from the archives (wrong archive paths?): the guard below would pass vacuously"
 KCOUNT=$(wc -l < "$TMP/kctors.txt")
-[ "$KCOUNT" -gt 0 ] || fail "collected zero kernel ctors from the archives -- wrong archive paths? (guard would pass vacuously)"
 echo "== $KCOUNT kernel-owned global-ctor name(s) across the closed archive set =="
 
 # --- kernel-owned ctor addresses as they landed in the final ELF --------------
 # (only those still present after --gc-sections matter; mask the thumb bit).
 "$NM" "$ELF" | awk '$3 ~ /^_GLOBAL__sub_[ID]/ {print $1, $3}' > "$TMP/elf_ctors.txt"
+require_nonempty "$TMP/elf_ctors.txt" \
+  "the ELF carries no _GLOBAL__sub_I ctor at all: both windows below would be vacuous"
 while read -r ADDR NAME; do
   if grep -qxF "$NAME" "$TMP/kctors.txt"; then
     printf '%x %s\n' $((0x$ADDR & ~1)) "$NAME"
@@ -104,13 +124,12 @@ PEDEC=$((0x$PEND))
 [ "$PEDEC" -gt "$PSDEC" ] \
   || fail "privileged .init_array is EMPTY -- an archive selector matched nothing (renamed kernel lib?); kernel ctors would run late"
 
-echo "== privileged-ctor window [0x$PSTART, 0x$PEND) : $(((PEDEC - PSDEC) / 4)) entr(y/ies) =="
+PRIV_ENTRIES=$(((PEDEC - PSDEC) / 4))
+echo "== privileged-ctor window [0x$PSTART, 0x$PEND) : $PRIV_ENTRIES entr(y/ies) =="
 
-"$OBJCOPY" -O binary --only-section=.init_array "$ELF" "$TMP/priv.bin" \
-  || fail "objcopy could not extract .init_array"
-od -An -tx4 "$TMP/priv.bin" | tr ' ' '\n' | grep -E '^[0-9a-fA-F]{8}$' | while read -r W; do
-  printf '%x\n' $((0x$W & ~1))
-done | sort -u > "$TMP/priv_targets.txt"
+ctor_targets .init_array "$PRIV_ENTRIES" "$TMP/priv_targets.txt"
+require_nonempty "$TMP/priv_targets.txt" \
+  ".init_array decoded to zero pointer words although it spans $PRIV_ENTRIES entr(y/ies)"
 
 FOREIGN=""
 while read -r TGT; do
@@ -137,23 +156,18 @@ echo "PASS: privileged ctor window holds only closed-set kernel ctors"
 # =============================================================================
 # Assertion 2 (ORDERING): no kernel ctor in the late app window.
 # =============================================================================
-# Empty window: nothing can have leaked (a --gc-sections'd minimal app). PASS.
-if [ "$SDEC" -eq "$EDEC" ]; then
-  echo "PASS: app-ctor window empty -- no kernel ctor can be inside it"
-  exit 0
+# On every board wired to this gate today the app window is EMPTY: --gc-sections drops
+# every app/libstdc++ ctor and only the two kernel ones survive, privileged. Skipping
+# the leg on that basis is how it stayed dead, so it is not skipped: an empty window is
+# extracted and reconciled like any other (0 entries must read 0 bytes), and assertion 3
+# below then carries the claim. The day an app ctor survives, this leg engages by itself.
+: > "$TMP/app_targets.txt"
+if [ "$APP_ENTRIES" -gt 0 ]; then
+  ctor_targets .kickos_app_init_array "$APP_ENTRIES" "$TMP/app_targets.txt"
+  require_nonempty "$TMP/app_targets.txt" \
+    ".kickos_app_init_array decoded to zero pointer words although it spans $APP_ENTRIES entr(y/ies)"
 fi
 
-# --- pointer words actually stored in the app window --------------------------
-# Extract just that section to a flat binary, read it as host-native (== target
-# little-endian) 4-byte words, and clear the thumb bit so each equals the even
-# function address nm reports.
-"$OBJCOPY" -O binary --only-section=.kickos_app_init_array "$ELF" "$TMP/app.bin" \
-  || fail "objcopy could not extract .kickos_app_init_array"
-od -An -tx4 "$TMP/app.bin" | tr ' ' '\n' | grep -E '^[0-9a-fA-F]{8}$' | while read -r W; do
-  printf '%x\n' $((0x$W & ~1))
-done | sort -u > "$TMP/app_targets.txt"
-
-# --- the assertion: no kernel ctor address appears in the app window ----------
 LEAK=""
 while read -r ADDR NAME; do
   if grep -qxF "$ADDR" "$TMP/app_targets.txt"; then
@@ -169,4 +183,33 @@ if [ -n "$LEAK" ]; then
   exit 1
 fi
 
-echo "PASS: no kernel-owned ctor is in the app-ctor window (all run early, kernel-side)"
+echo "PASS: no kernel-owned ctor is in the app-ctor window ($APP_ENTRIES entr(y/ies))"
+
+# =============================================================================
+# Assertion 3 (REACHABILITY): every surviving ctor is in one of the two windows.
+# =============================================================================
+# What makes the empty app window a claim rather than an early-out. --gc-sections keeps
+# a _GLOBAL__sub_I only because a KEEP'd array entry roots it, so one that survives in
+# the image while appearing in NEITHER array is a ctor that will never run: the linker
+# script grew a third bucket, or dropped the entry and kept the code.
+ORPHAN=""
+while read -r ADDR NAME; do
+  EVEN="$(printf '%x\n' $((0x$ADDR & ~1)))"
+  if grep -qxF "$EVEN" "$TMP/priv_targets.txt"; then
+    continue
+  fi
+  if grep -qxF "$EVEN" "$TMP/app_targets.txt"; then
+    continue
+  fi
+  ORPHAN="$ORPHAN
+  $NAME (0x$ADDR)"
+done < "$TMP/elf_ctors.txt"
+
+if [ -n "$ORPHAN" ]; then
+  echo "FAIL: global ctor(s) survive in the image but are in NEITHER init array --" >&2
+  echo "      nothing will ever run them. A third .init_array-like bucket in the chip" >&2
+  echo "      linker script, or an entry dropped while its code was kept.$ORPHAN" >&2
+  exit 1
+fi
+
+echo "PASS: all $(wc -l < "$TMP/elf_ctors.txt" | tr -d ' ') surviving ctor(s) are reachable from one of the two windows"

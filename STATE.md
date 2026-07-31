@@ -8,18 +8,20 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-On branch `unpriv-root-stage5`, off `master`. **M4.5.5 is MERGED** (squashed, PR #5).
-**M4.5.6 and M4.5.7 are COMPLETE and NOT merged**, six commits shipping as one PR. M4.5.6 is
-`c5d9b0d` (knob deletion, the write seam), `270b6fa` (the per-entry value mask, panic-message
-hardening), `124b68c` (the esp32c6 `.data` LMA fix, honest thread-pool provisioning, the ring and
-sim seam gates) and `989af16` (the silicon record). M4.5.7 -- removing the weak-symbol seam
-mechanism -- is `16e4af0` and `788b1d8`, and is summarised below the root list.
+On `master`. **M4.5.6 and M4.5.7 are MERGED**, squashed to `dde73ca` (PR #6). M4.5.6 deleted the
+root-privilege knob and brought the privileged-write seam, the per-entry value mask, the esp32c6
+`.data` LMA fix, honest thread-pool provisioning, and the ring and sim seam gates. M4.5.7 removed
+the weak-symbol seam mechanism, and is summarised below the root list.
+
+Captures and records across `TODO.md` and `docs/` stamp the pre-squash tips they ran on:
+`c5d9b0d`, `270b6fa`, `124b68c`, `989af16`, `16e4af0`, `788b1d8`. All six folded into `dde73ca` and
+reach no branch, so they resolve only where those objects still exist. The stamps stay as written.
 
 **Root is unconditionally unprivileged on every board.** `KICKOS_ROOT_PRIVILEGED` is DELETED,
-with no replacement and no porting escape hatch, and since `270b6fa` it appears in **no code or
-build file at all** -- not even a configure-time guard, so a stale `-D` is silently ignored.
-(Docs discuss the name historically, correctly; `master` still defaults it `ON`, which is why
-records taken there say so.) The invariant that arrives with it is **"exactly one privileged
+with no replacement and no porting escape hatch, and it appears in **no code or build file at all**
+-- not even a configure-time guard, so a stale `-D` is silently ignored. (Docs discuss the name
+historically, correctly; records taken on `master` before this merge ran it `ON`, which is why they
+say so.) The invariant that arrives with it is **"exactly one privileged
 thread, and it is `idle`"** (`docs/reference/invariants.md`,
 `root-unprivileged-idle-alone-privileged`). What travelled with it:
 
@@ -147,12 +149,21 @@ Per-board chips, cores and the fact that decides each class: `docs/reference/boa
   `kos_print` / `kos_kconsole_write`, and RTT still carries it. Real exposure: a freestanding app
   using `kos_print`, and a genuine DARK WINDOW between publish and the driver serving cap 0.
   M4.6.1.
-- **The `f302nucleo` fault reporter produces no dump, cause unknown.** The hardware faults
-  exactly as ARM ARM B3.1.1 requires and the reporter IS entered and runs, but no byte reaches
-  `USART2_TDR`. Not the new probers' bug -- the pre-existing `fault` app truncates identically.
-  Blocked on a physical ST-Link replug. **The structural hole behind it: every fault-dump gate in
-  the fleet runs on an UNBUFFERED-console board**, so no emulated gate can exercise a
-  buffered-ring panic flush. That is why it survived to silicon.
+- **The `f302nucleo` fault reporter produces no dump, cause OPEN, DEFERRED past M4.6.2** (no board
+  access before then). The hardware faults exactly as ARM ARM B3.1.1 requires, but no byte reaches
+  `USART2_TDR`; the pre-existing `fault` app truncates identically, so it is not the probers' bug.
+  The unresolved span is the WHOLE dump, not the narrow reporter-to-TDR gap once recorded: the
+  earlier "no lockup" and "MSP peak" readings both came from a fixed 120-step trace that stopped
+  while the reporter was still healthy, and stack exhaustion is now arithmetically excluded. The
+  emitted code on that path is instruction-identical to `pizero2350`'s, which dumps. First action on
+  board return needs no probe: read LD2 (PB13), which `kfault_terminate` blinks 3-and-pause.
+  `TODO.md` carries the arithmetic, the disassembly result and the breakpoint recipe.
+- **No emulated gate can exercise a buffered-ring panic flush, and the sim cannot substitute** (its
+  ring is provably empty at panic time; deleting `console_tx_flush_sync()` leaves the sim suite
+  green). The drain is now WITNESSED on `pizero2350` with a measured non-empty ring
+  (`used_at_panic=419` of 511, 0 after the flush) and a negative control that strands all 419, so it
+  is live and load-bearing on silicon while being dead code on the host. `TODO.md`, M4.5.6. Still
+  no automated gate: the in-env hole is open, the behaviour is not in doubt.
 - **Two boards advertise thread slots their arena cannot back**, which is why
   `KICKOS_POOL_ARENA_ASSERT` stays opt-in. Worst image per config: `frdmk64f-st +MPU` -28,992 B,
   `frdmk64f +MPU` -28,960 B, `bluepill-c8-st` -4,096 B, `bluepill-c8` -4,000 B. Headroom is

@@ -67,7 +67,7 @@ first, and does nothing to any object until it has.** Resolve returns the object
 `nullptr`. On `nullptr` the syscall returns `-1` and **never touches an object** -- no
 queue is linked, no counter moved, no memory dereferenced.
 
-You can already read this shape in today's `KOS_SYS_sem_wait`
+You can already read this shape in today's `KOS_SYS_SEM_WAIT`
 (`kernel/syscall/syscall.cc`):
 
 ```
@@ -90,7 +90,7 @@ Two properties make this a *chokepoint* and not merely a check:
 2. **Resolve and use happen under the same continuous `IrqLock`.** The pointer resolve
    hands back is only valid while the lock is held; releasing it between resolve and use
    would let a concurrent close/destroy free the slot underneath a validated pointer. The
-   comment on `KOS_SYS_sem_wait` states exactly this invariant, and it is a *precondition*
+   comment on `KOS_SYS_SEM_WAIT` states exactly this invariant, and it is a *precondition*
    of resolve under M3: the caller holds the lock and uses the result under it.
 
 ## WRAP the global pools, do not replace them
@@ -317,7 +317,7 @@ confusing two of its own objects, and the kernel never so much as blinks.
 - The exact object model, the rights/refcount contract, and the B1 delegation ABI:
   `../reference/architecture.md` ("Object model, capabilities & IPC").
 - The generational pool the guard rides on, and its ABA mechanics: `slotpool.h`.
-- The chokepoint as it exists today: `sem_resolve` / `KOS_SYS_sem_wait` in
+- The chokepoint as it exists today: `sem_resolve` / `KOS_SYS_SEM_WAIT` in
   `kernel/syscall/syscall.cc`.
 - The isolation this completes on the memory side: Chapter 7, *Memory protection (M2)*.
 - Further reading: Tanenbaum, *Modern Operating Systems*, ch.1 (the protection boundary)

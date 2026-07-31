@@ -110,8 +110,8 @@ objects never emit `cm.push` -- fine. switch.S is hand-asm, so a local
 `.option arch, +zca, +zcmp` makes the ASSEMBLER accept the mnemonics regardless of
 the file's `-march`; NO new multilib is required. But the mnemonics fault on silicon
 that lacks Zcmp, so the gate must be a BOARD/CPU knob (reflecting silicon), not just a
-toolchain capability. Derive `KICKOS_RISCV_HAS_ZCMP` from `KICKOS_MCPU` (set only for
-rp2350-hazard3).
+toolchain capability. Derive the Zcmp gate used in the listing below from `KICKOS_MCPU`
+(set only for rp2350-hazard3).
 
 ```
 /* Cooperative (voluntary) switch save/restore. Preemptive trap_entry still
@@ -167,7 +167,7 @@ Micro-benchmark to settle Zcmp (Hazard3 silicon; easy-flash, print-debug):
    the RP2350 system timer at its known rate. On the C6 use CLINT MTIME (core-clocked
    at 160 MHz) -- but the C6 cannot run Zcmp, so the A-vs-A+B comparison is
    Hazard3-only.
-3. Build two firmwares: `KICKOS_RISCV_HAS_ZCMP=0` and `=1`. Run the bench ping-pong
+3. Build two firmwares, one with the Zcmp gate off and one with it on. Run the bench ping-pong
    (user/apps/bench), compare min/avg switch cycles. The delta is the pure Zcmp win.
 4. Go/no-go: if the delta is below ~10% of the switch, Zcmp is not worth the build
    knob for throughput (keep it only if code size matters).

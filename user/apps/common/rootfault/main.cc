@@ -33,6 +33,15 @@ namespace
     {
         volatile int* own = static_cast<volatile int*>(arg); // -> region A (granted)
         *own = 0x1111;                                       // granted -> must succeed
+        // Read back: the marker below is the gate's CONTROL, so it must witness the
+        // write's EFFECT. Emitted after the store in program order, it would otherwise
+        // print with the grant machinery never exercised.
+        if (*own != 0x1111)
+        {
+            emit("[rootfault] ERROR: the child's own write did not stick\n");
+            kos_sem_post(CH_DONE);
+            return;
+        }
         emit("[rootfault] child: wrote my own granted region\n");
         kos_sem_post(CH_DONE);
         kos_sem_wait(CH_DONE); // park: keep A's domain alive under root's write
@@ -79,7 +88,7 @@ int main(int, char**)
     *static_cast<volatile int*>(rA) = 0x2222;
 
     // Reached ONLY where nothing is enforced. The "NOT confined" substring is the FAIL
-    // marker in tests/check_qemu_rootfault.sh and in this app's CMakeLists.
+    // marker in tests/check_rootfault.sh.
     emit("[rootfault] cross-domain write completed: root is NOT confined "
          "(no enforcement)\n");
     return 0;

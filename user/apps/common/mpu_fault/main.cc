@@ -3,8 +3,8 @@
 //
 // Memory-domain isolation gate. Its own binary because it ends the process: an
 // unprivileged domain-A thread writes its own granted region (OK), then writes domain B's
-// region, which must fault. The kernel reports "MPU FAULT" and shuts down. CTest asserts
-// the marker appears (and no "did not fault").
+// region, which must fault. The kernel reports "MPU FAULT" and shuts down.
+// tests/check_mpu_fault.sh owns the verdict.
 //
 // Static-data-free by construction: the worker takes its region base through its thread
 // ARG, by value, and derives both cells from it. The only memory it touches is its code
@@ -18,6 +18,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/libc/fmt.h> // ksnprintf: announce the address the gate pins the trap to
 #include <kickos/sys/emit.h> // publish-aware write (kos_print is dropped once published)
 
 using kickos::emit;
@@ -31,7 +32,16 @@ namespace
     {
         char* base = static_cast<char*>(arg); // region A base, by value
         emit("[domain] A: writing my own region\n");
-        *reinterpret_cast<volatile int*>(base + 64) = 0x1111; // granted -> ok
+        volatile int* own = reinterpret_cast<volatile int*>(base + 64); // granted -> ok
+        *own = 0x1111;
+        // Read back: the marker below is the gate's CONTROL, so it must witness the
+        // write's EFFECT. Emitted after the store in program order, it would otherwise
+        // print with region A never granted at all.
+        if (*own != 0x1111)
+        {
+            emit("[domain] ERROR: the control write did not stick\n");
+            return;
+        }
         emit("[domain] A: my region ok; writing domain B (expect fault)\n");
         *reinterpret_cast<volatile int*>(base + REGION) = 0x2222; // not granted -> fault
         // Reached only where the MPU is NOT enforced (privilege-only boards). NOT
@@ -52,6 +62,14 @@ int main(int, char**)
         emit("[domain] ERROR: ram_alloc failed\n");
         return 1;
     }
+
+    // Announced from root, which is not granted A and so may not touch it: the gate
+    // pins the reported fault address to this one. Without the pin, a grant that never
+    // happened faults on the worker's OWN write instead and prints the same banner.
+    char msg[96];
+    ksnprintf(msg, sizeof(msg), "[domain] expect fault at %p\n",
+              static_cast<char*>(rA) + REGION);
+    emit(msg);
 
     kos::thread::spawn(domainA_worker, rA, "domainA", 10, KOS_POLICY_FIFO, 0,
                        /*privileged=*/false, rA, REGION);

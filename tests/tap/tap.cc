@@ -30,13 +30,15 @@ namespace tap
         // only record; run_all() turns a non-zero count into a failing TAP line.
         int g_dropped = 0;
 
-        // Verdict of the running test. One buffer for the failure diagnostic and the
-        // skip reason: mutually exclusive, and it is real BSS on a 16 KiB-SRAM board.
+        // Verdict of the running test. One buffer for the failure diagnostic, the skip
+        // reason and the partial reason: mutually exclusive, and it is real BSS on a
+        // 16 KiB-SRAM board.
         enum class Verdict : unsigned char
         {
             PASS,
-            FAIL,
-            SKIP
+            PARTIAL,
+            SKIP,
+            FAIL
         };
         Verdict g_verdict = Verdict::PASS;
         char g_msg[192];
@@ -120,7 +122,7 @@ namespace tap
 
     void skip(char const* fmt, ...)
     {
-        if (g_verdict != Verdict::PASS) // never downgrade a recorded failure
+        if (g_verdict == Verdict::FAIL or g_verdict == Verdict::SKIP)
         {
             return;
         }
@@ -129,6 +131,19 @@ namespace tap
         kvsnprintf(g_msg, sizeof(g_msg), fmt, ap);
         va_end(ap);
         g_verdict = Verdict::SKIP;
+    }
+
+    void partial(char const* fmt, ...)
+    {
+        if (g_verdict != Verdict::PASS) // outranked by a fail or a skip; first partial wins
+        {
+            return;
+        }
+        va_list ap;
+        va_start(ap, fmt);
+        kvsnprintf(g_msg, sizeof(g_msg), fmt, ap);
+        va_end(ap);
+        g_verdict = Verdict::PARTIAL;
     }
 
     void diag(char const* fmt, ...)
@@ -159,6 +174,7 @@ namespace tap
         }
         int failed = 0;
         int skipped = 0;
+        int partials = 0;
         for (int i = 0; i < g_count; i++)
         {
             g_verdict = Verdict::PASS;
@@ -174,6 +190,11 @@ namespace tap
                 skipped++;
                 emitf("ok %d - %s # SKIP %s\n", i + 1, g_tests[i].name, g_msg);
             }
+            else if (g_verdict == Verdict::PARTIAL)
+            {
+                partials++;
+                emitf("ok %d - %s # PARTIAL %s\n", i + 1, g_tests[i].name, g_msg);
+            }
             else
             {
                 emitf("ok %d - %s\n", i + 1, g_tests[i].name);
@@ -185,17 +206,19 @@ namespace tap
             emitf("not ok %d - tap_registry_overflow # %d registration(s) dropped past MAX_TESTS=%d\n",
                   g_count + 1, g_dropped, MAX_TESTS);
         }
-        // Always emitted, zero included: gates key their skip budget off this line, so
-        // its absence must mean "truncated run", never "no skips". The completion
-        // marker must keep the `# all tests passed` substring the gates grep for.
+        // Both always emitted, zero included: a gate reconciles its by-name permission
+        // set against these counts, so an absent line must mean "truncated run", never
+        // "none of those". The completion marker must keep the `# all tests passed`
+        // substring the gates grep for.
         emitf("# skipped: %d\n", skipped);
-        if (failed == 0 and skipped == 0)
+        emitf("# partial: %d\n", partials);
+        if (failed == 0 and skipped == 0 and partials == 0)
         {
             emit("# all tests passed\n");
         }
         else if (failed == 0)
         {
-            emitf("# all tests passed (%d skipped)\n", skipped);
+            emitf("# all tests passed (%d skipped, %d partial)\n", skipped, partials);
         }
         else
         {

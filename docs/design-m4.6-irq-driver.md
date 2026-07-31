@@ -14,9 +14,9 @@ must reuse this substrate **unchanged**.
 Verified against `master` `64410b7`. Every file:line below was read at that commit.
 **Recovered 2026-07-30 from an unpushed worktree, unchanged.** It predates the whole M4.5.x
 unprivileged-root arc, so its citations need re-verifying at the top of M4.6.1: root is now
-unconditionally unprivileged, `AUTH_DEVICE`/`AUTH_CLOCK` are gone, and the authority set is the
-six bits in `reference/invariants.md`. The DESIGN is unaffected -- nothing here assumed the
-deleted posture.
+unconditionally unprivileged, the separate device and clock authority bits were deleted, and the
+authority set is the six `KOS_AUTH_*` bits in `reference/invariants.md`. The DESIGN is
+unaffected -- nothing here assumed the deleted posture.
 
 Prior art folded in and superseded: `git show c296feb:docs/design-m4-rx-irq-demux.md` (the
 277-line RX72M peripheral-IRQ demux spike, never landed on master). Its routing-class
@@ -62,9 +62,9 @@ The reviewer's first question. Explicitly:
 
 | Layer | Item | Status |
 |---|---|---|
-| **General kernel mechanism** | `CAP_IRQ` object type + pool + refcount (sec.2) | M4.6, reused verbatim by M4.7 |
+| **General kernel mechanism** | the IRQ capability object type + pool + refcount (sec.2) | M4.6, reused verbatim by M4.7 |
 | | `kos_irq_claim` (privileged mint) / `wait` / `ack` / `notify` (sec.2) | M4.6 |
-| | Delegation of a `CAP_IRQ` at spawn (sec.3) | M4.6 |
+| | Delegation of an IRQ cap at spawn (sec.3) | M4.6 |
 | | Teardown-on-death via `cap_teardown` (sec.4) | M4.6 |
 | | Per-binding EDGE/LEVEL trigger type (sec.5) | M4.6 |
 | | Chip **device-dispatch hook** that may post 0..N logical lines per physical vector (sec.6) | M4.6 |
@@ -84,13 +84,13 @@ capabilities. Everything in "UART-specific policy" lives in `system/driver/` or
 
 ---
 
-## 2. Decision 1 -- the IRQ line IS a capability (`CAP_IRQ`)
+## 2. Decision 1 -- the IRQ line IS a capability
 
 ### 2.1 The decision
 
-**An interrupt line becomes a first-class kernel object named by a new `CapType::CAP_IRQ`,
-allocated from a generational `SlotPool`, refcounted, delegated at spawn like any other cap,
-and released by the existing `cap_teardown` on thread exit.**
+**An interrupt line becomes a first-class kernel object named by a new `CapType` member for
+IRQ lines (sec.2.2), allocated from a generational `SlotPool`, refcounted, delegated at spawn
+like any other cap, and released by the existing `cap_teardown` on thread exit.**
 
 Rejected alternative: **a separate IRQ registry with its own ownership + teardown hook**
 (keep the integer handle, add an `irq_release_all(Thread*)` called from `exit_current`).
@@ -118,6 +118,16 @@ Cost of the capability route: 1 `CapType` enumerator, 1 pool + 1 `uint8_t` refco
 to a `SlotPool`. That is the entire delta. It is smaller than the registry.
 
 ### 2.2 The object
+
+`kernel/include/kickos/cap.h` gains exactly one enumerator:
+
+```c++
+enum class CapType : uint8_t
+{
+    // CAP_EMPTY / CAP_SEM / CAP_MUTEX / CAP_ENDPOINT / CAP_REPLY / CAP_AUTHORITY unchanged
+    CAP_IRQ // a tier-1 IRQ line binding; `obj` names a slot in the binding pool
+};
+```
 
 `kernel/include/kickos/irq.h`:
 
@@ -161,10 +171,10 @@ uint8_t irq_refs[KICKOS_MAX_IRQ_HANDLES];              // parallel refcount, as 
 
 ### 2.3 Rights -- every bit has a real check
 
-| Right | Meaning on a `CAP_IRQ` | Checked at |
+| Right | Meaning on an IRQ cap | Checked at |
 |---|---|---|
-| `CAP_WAIT` | may `kos_irq_wait` / `kos_irq_ack` (consume an event, rearm the line) | `cap_resolve_e(..., CAP_IRQ, CAP_WAIT)` |
-| `CAP_SIGNAL` | may `kos_irq_notify` (software-post the binding's notification) | `cap_resolve_e(..., CAP_IRQ, CAP_SIGNAL)` |
+| `CAP_WAIT` | may `kos_irq_wait` / `kos_irq_ack` (consume an event, rearm the line) | `cap_resolve_e`, IRQ type + `CAP_WAIT` |
+| `CAP_SIGNAL` | may `kos_irq_notify` (software-post the binding's notification) | `cap_resolve_e`, IRQ type + `CAP_SIGNAL` |
 | `CAP_TRANSFER` | may be delegated into a child table at spawn | the delegate site (unchanged) |
 
 No dead field -- the house rule at `kernel/include/kickos/cap.h:59-63`.
@@ -233,13 +243,15 @@ Body, under one `IrqLock`:
 3. `cap_has_free_slot(c)` probe FIRST, then `irq_bindings.alloc()`. Probe-before-allocate so
    a full cap table does not leak a binding slot -- the same discipline as the reply cap
    (`kernel/include/kickos/cap.h:146-149`). `-KOS_ENOMEM` on either.
-4. `sem_init(&b->sem, 0)`; `b->line = line`; `b->needs_rearm = true`;
-   `b->trigger = (flags & KOS_IRQ_LEVEL) != 0` (written as an `if`/`else`, not a ternary).
+4. `sem_init(&b->sem, 0)`; `b->line = line`; `b->needs_rearm = true`; `b->trigger` set to
+   `IRQ_LEVEL` when the claim carries the level flag and to `IRQ_EDGE` otherwise (written as
+   an `if`/`else`, not a ternary).
 5. `irq_refs[idx] = 1`.
 6. `irq_attach(line, irq_event_isr, b)`.
 7. `arch_irq_clear_pending(line)` -- drop pre-claim garbage, as today (`:152`). **Do not
    `arch_irq_unmask`.** This is the change that kills the handover race (sec.3.2).
-8. `cap_install(c, irq_bindings.handle_for(idx), CapType::CAP_IRQ, CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER)`.
+8. `cap_install` the binding handle `irq_bindings.handle_for(idx)` into `c`'s table with the
+   IRQ cap type and rights `CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER`.
 
 `irq_wait` / `irq_ack` take a cap handle and resolve it:
 
@@ -269,15 +281,16 @@ int irq_wait(Thread* c, int irq_cap)
 
 The three cap-machinery arms:
 
-- `obj_ref_inc`, `CAP_IRQ`: `irq_refs[irq_index_of(obj)]++`. Ignores `rights` (there is no
+- `obj_ref_inc`, IRQ arm: `irq_refs[irq_index_of(obj)]++`. Ignores `rights` (there is no
   recv-holder analogue).
-- `obj_close_protocol`, `CAP_IRQ`: **returns 0**, no protocol. It never refuses a voluntary
+- `obj_close_protocol`, IRQ arm: **returns 0**, no protocol. It never refuses a voluntary
   close (unlike the mutex R2 rule) and it wakes nobody -- see sec.4.2 for why that is right.
 - `obj_ref_drop` -> `irq_ref_drop(obj, teardown)`: sec.4.1.
-- `cap_resolve_e`: `else if (want == CapType::CAP_IRQ) { p = kernel().irq_bindings.resolve(e->obj); }`.
+- `cap_resolve_e`: one more `else if` arm, resolving the IRQ type through
+  `kernel().irq_bindings.resolve(e->obj)`.
 
 `cap_resolve_e`'s existing two-level guard now covers IRQ bindings for free: the per-task
-cap-gen, then the pool's object-gen. A stale `CAP_IRQ` naming a recycled binding slot fails
+cap-gen, then the pool's object-gen. A stale IRQ cap naming a recycled binding slot fails
 to resolve rather than aliasing a live line -- the ABA guard the bump allocator could never
 have.
 
@@ -344,7 +357,7 @@ That gives the two properties the gate asks for, as a pair of invariants:
 
 > **INVARIANT H1 (no armed-and-unowned).** From `arch_irq_unmask` to `irq_detach` a line has
 > exactly one live `IrqBinding`. `irq_claim` does not unmask; the only unmask is
-> `rearm_locked`, reachable only through `irq_wait`/`irq_ack` on a resolved `CAP_IRQ`; the
+> `rearm_locked`, reachable only through `irq_wait`/`irq_ack` on a resolved IRQ cap; the
 > only mask-and-detach is `irq_ref_drop` at refs -> 0. A line therefore transitions
 > unowned-masked -> owned-masked -> owned-armed -> owned-masked -> unowned-masked. It is
 > never armed-and-unowned.
@@ -490,7 +503,7 @@ Each requirement, discharged:
   Restoring the null-object default is what makes a later `irq_claim` pass its `-KOS_EBUSY`
   test.
 - **Binding slot returns to the pool.** `SlotPool::free` bumps the slot generation, so every
-  outstanding `CAP_IRQ` naming it stops resolving. A stale cap in another thread's table is
+  outstanding IRQ cap naming it stops resolving. A stale cap in another thread's table is
   now inert rather than dangerous -- the property the bump allocator lacked.
 - **Detach strictly before free.** `irq_detach` takes `IrqLock`; an ISR cannot be in flight
   once it returns (the ISR runs to completion and cannot be preempted by the lock holder).
@@ -502,7 +515,7 @@ Each requirement, discharged:
   cap, so `refs >= 1`, and a parked thread cannot self-exit) -- kept as defence-in-depth and
   as the correct behaviour once a kill primitive exists.
 
-### 4.2 Why `obj_close_protocol` for `CAP_IRQ` is empty
+### 4.2 Why the IRQ arm of `obj_close_protocol` is empty
 
 The endpoint arm EPIPEs parked senders when the last receiver goes (`:246-260`); the reply
 arm EPIPEs the parked caller (`:264-288`). Should the IRQ arm wake a parked waiter with
@@ -564,11 +577,11 @@ Mechanism, in two pieces:
    `arch_console_reclaim(); g_console_state = RECLAIMED;`.
 
 **Ordering is the whole point.** Doing the reclaim inside a cap arm would run it at an
-arbitrary index in `cap_teardown`'s loop (`:531-546`) -- possibly while the driver's
-`CAP_IRQ` is still live and the TX line still armed, so `arch_console_reclaim` would re-init
-a UART whose interrupt can still fire into `irq_event_isr` and post a dying thread's
-semaphore. Running it after the whole loop guarantees: every `CAP_IRQ` dropped -> every line
-masked and detached -> *then* the device is re-initialised. Deterministic.
+arbitrary index in `cap_teardown`'s loop (`:531-546`) -- possibly while the driver's IRQ cap
+is still live and the TX line still armed, so `arch_console_reclaim` would re-init a UART
+whose interrupt can still fire into `irq_event_isr` and post a dying thread's semaphore.
+Running it after the whole loop guarantees: every IRQ cap dropped -> every line masked and
+detached -> *then* the device is re-initialised. Deterministic.
 
 `arch_console_reclaim` falls back to a no-op (`arch/common/arch_console_reclaim_default.cc`)
 and is defined today only by **mk64f** (`chip_mk64f.cc:739`) and **xmc4800**
@@ -764,11 +777,18 @@ them.
   change** -- `vector_to_ipr` is identity for both.
 - `TEI6` / `ERI6` do **not**. Their "line" is a group SOURCE, not the group VECTOR 110;
   masking is `GENBL0.ENj`, not `IER[src>>3]`. **Decision: allocate group sources a dedicated
-  logical-line range above the vector space** -- `KICKOS_RX_GROUP_LINE_BASE = 256`, with
-  `line = 256 + group_index * 32 + bit`, so `TEI6 = 256 + 0*32 + 12 = 268` and
-  `ERI6 = 269`. `arch_irq_mask/unmask/clear_pending` gain a third branch for
-  `line >= 256` that toggles `GENBLn.ENj` and no-ops `clear_pending` (level: clearing is the
-  driver's peripheral write, RULE L1). `KICKOS_MAX_IRQ` on rx72m rises to 416 (256 + 5*32).
+  logical-line range above the vector space**, based at 256:
+
+  ```c++
+  // arch/rx/chip/rx72m -- group sources are logical lines above the ICU vector space.
+  enum { KICKOS_RX_GROUP_LINE_BASE = 256 };
+  // line = KICKOS_RX_GROUP_LINE_BASE + group_index * 32 + bit
+  ```
+
+  So `TEI6 = 256 + 0*32 + 12 = 268` and `ERI6 = 269`. `arch_irq_mask/unmask/clear_pending`
+  gain a third branch for `line >= 256` that toggles `GENBLn.ENj` and no-ops `clear_pending`
+  (level: clearing is the driver's peripheral write, RULE L1). `KICKOS_MAX_IRQ` on rx72m
+  rises to 416 (256 + 5*32).
 
   Rejected alternative: **reuse low logical lines `< 32` for group sources.** Rejected
   because `< 32` is the software-inject space, and overlapping the two would make
@@ -802,9 +822,13 @@ There is **no generic ring anywhere in the tree**: only the kernel's file-static
 `ConsoleTxRing` (`kernel/init/console_tx.cc:29-45`) and the RTT rings. M4.6 factors one out
 for userspace, because it needs two instances (TX and RX) and M4.7 will need more.
 
-`user/include/kickos/sys/byte_ring.h`:
+A new `byte_ring.h`, in the public `sys` include directory next to `bus.h`:
 
 ```c
+// Publication barrier for head/tail: KICKOS_CONSOLE_TX_BARRIER generalised out of the
+// kernel ring. Compiler-only by default, a real fence on a weakly-ordered core.
+#define KOS_RING_BARRIER() /* per-arch seam, exactly as console_tx.h:26-28 */
+
 // Single-producer / single-consumer byte ring. `size` MUST be a power of two; usable
 // capacity is size-1 (one slot reserved so head==tail is unambiguously empty).
 // head is written ONLY by the producer, tail ONLY by the consumer -- that is what makes
@@ -832,9 +856,9 @@ int    kos_byte_ring_pop_one(struct kos_byte_ring* r, unsigned char* out);
 
 POD plus free functions, not a template -- there is exactly one element type, and the
 template-discipline rule reserves templates for owning multi-type containers. It publishes
-`head`/`tail` per operation with the same barrier seam as `console_tx.h:26-28`
-(`KICKOS_CONSOLE_TX_BARRIER` generalised to `KOS_RING_BARRIER`), compiler-only by default and
-a real fence on a weakly-ordered core.
+`head`/`tail` per operation through the ring barrier declared above, the same seam as
+`console_tx.h:26-28` generalised out of the kernel ring: compiler-only by default and a real
+fence on a weakly-ordered core.
 
 **Placement.** Both rings plus the `Uart` state live in ONE power-of-two, naturally-aligned
 block from `kos_ram_alloc`, granted as the driver threads' shared data region (sec.3.3).
@@ -924,7 +948,7 @@ finding nothing asserted**, because `kos_irq_notify` wakes it without a hardware
 
 ### 7.4 The wire ABI
 
-`user/include/kickos/sys/uart.h`, alongside `bus.h`:
+A new `uart.h`, in the public `sys` include directory alongside `bus.h`:
 
 ```c
 enum kos_uart_op
@@ -986,7 +1010,7 @@ inventing a second reply convention. The 1:1 rule is satisfied: four ops, four c
 
 ### 7.5 TX and RX policy
 
-**TX (`KOS_UART_WRITE`).** Service thread: `n = kos_byte_ring_push(...)`; if the ring was
+**TX (the `WRITE` op).** Service thread: `n = kos_byte_ring_push(...)`; if the ring was
 empty before the push, `kos_irq_notify(tx_cap)`; reply `{status = 0, len = n}`. If `n < len`
 the client sees a short write and retries -- **no drop, backpressure surfaced to the caller**,
 which is strictly better than the kernel ring's overflow behaviour (`console_tx_write` drains
@@ -1005,13 +1029,13 @@ overflow into a hardware overrun plus a stuck level interrupt, i.e. it converts 
 loss into a storm. Error flags (`ORER`/`FER`/`PER` and friends) are cleared and counted, and
 the offending byte is discarded.
 
-**RX read, and the honest scope limit.** `KOS_UART_READ` is **non-blocking in M4.6**: it
+**RX read, and the honest scope limit.** The `READ` op is **non-blocking in M4.6**: it
 returns `0..len` bytes, possibly 0. A client that wants to wait has two options in M4.6:
 
 1. Poll with `kos_sleep_ns` between calls. Adequate for a console REPL; wasteful otherwise.
 2. Pass the driver a `CAP_SEM` bearing `CAP_SIGNAL` (delegated at spawn), which the driver
    posts on the RX ring's empty -> non-empty transition. The client does
-   `kos_sem_wait` then `KOS_UART_READ`. Zero new kernel mechanism.
+   `kos_sem_wait` then a `READ`. Zero new kernel mechanism.
 
 A **blocking `READ` that parks the client inside the driver is DEFERRED**, and the reason is
 a genuine missing primitive rather than a scheduling choice: the service thread would have to
@@ -1027,7 +1051,7 @@ under M4.6's scope. Option 2 above covers the real M4.6 use cases without it.
 ### 7.6 Accounting
 
 `kos_uart_stats` lives in the shared ring block (arena memory owned by privileged bring-up),
-so it survives the driver thread and is readable after a restart. `KOS_UART_STATS` exposes it
+so it survives the driver thread and is readable after a restart. The `STATS` op exposes it
 over the wire; a selftest asserts `rx_dropped == 0` on a paced test and non-zero on a
 deliberate flood, so the counter is proven live rather than merely present.
 
@@ -1035,7 +1059,7 @@ deliberate flood, so the counter is proven live rather than merely present.
 
 Confirmed from the fleet survey: on **most** chips the console UART's RX and TX share one
 interrupt line -- mk64f UART0 = **31** ("UART0 status sources (RX/TX combined)",
-`arch/arm/chip/mk64f/include/kickos/irq.h:14`), stm32f411 USART2 = 38, stm32f103 USART1 = 37,
+`arch/arm/chip/mk64f/irq.h:14`), stm32f411 USART2 = 38, stm32f103 USART1 = 37,
 stm32f302 USART2 = 38, sam3x8e UART = 8, rp2040 PL011 = 20, rp2350 PL011 = 34,
 imxrt1062 LPUART6 = 25, esp32c6 UART0 (one matrix source), esp32 UART0 (one matrix source).
 
@@ -1052,8 +1076,8 @@ Two chips are different, in opposite directions:
 
 **Decision: the driver handles the shared-line case, and it is the default shape.**
 `service_irq()` reads the status register once and services every asserted condition in one
-pass. The IRQ thread is written against ONE `CAP_IRQ`; a chip with separate lines is a
-*special case* served by spawning one IRQ thread per line, each with its own `CAP_IRQ`, all
+pass. The IRQ thread is written against ONE IRQ cap; a chip with separate lines is a
+*special case* served by spawning one IRQ thread per line, each with its own IRQ cap, all
 calling the same `service_irq()` (idempotent by contract). That way the shared case -- 11 of
 13 chips -- needs no extra thread, and the split case does not need a different class.
 

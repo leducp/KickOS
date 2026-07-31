@@ -787,13 +787,14 @@ KickOS output, only the trailing serial CR dropped and the ESP-ROM / J-Link boot
 ## picopi / RP2040 (armv6m Cortex-M0+, PMSA)
 
 ### selftest -- UNDER ENFORCEMENT
-Build: preset `picopi-st` + `-DKICKOS_HAVE_MPU=1 -DKICKOS_MTX_UNIT_SCALE=10`, target `selftest`.
+Build: preset `picopi-st` + `-DKICKOS_HAVE_MPU=1`, target `selftest`, with the mutex-test
+time unit forced to 10x for this run (bench-local; no such build knob exists in the tree).
 Flash: UF2 over the BOOTSEL mass-storage volume. Console: GP0 -> FTDI on ttyUSB1, `picocom`.
 Result: **42/42 pass, 0 fail** (source log `.session/logs/picopi-selftest-10x.log`).
 KEY FINDING (this M3 pass): at the DEFAULT mutex-test time unit the M0+ failed
 `not ok 14 - mutex_chain_boost` (`main.cc:836`, `nth('e',1) < nth('d',1)`) and needed the 10x
-unit (`-DKICKOS_MTX_UNIT_SCALE=10`) to reach 42/42. This was read as slow-core timing-margin
-fragility. UPDATE 2026-07-21: root-caused on silicon to TWO separate defects, both now FIXED (see
+unit to reach 42/42. This was read as slow-core timing-margin fragility.
+UPDATE 2026-07-21: root-caused on silicon to TWO separate defects, both now FIXED (see
 Finding #5). The x10 capture above stays for the record; the fixed default run is 42/42 (source
 log `.session/logs/rp2040-default.log`, build Jul 21 2026 13:38:38, identical 42-test list).
 ```

@@ -45,9 +45,10 @@ threads/mutex/condvar in the slave path (grep-confirmed). KickCAT's hardware sea
 | `kickcat::sleep(ns)` | `kos_sleep_ns(ns)` |
 | `since_epoch()` / `elapsed_time()` | `kos_clock_now()` (monotonic ns; the slave only takes deltas) |
 
-Delta: one new `lib/src/OS/KickOS/Time.cc` + an `elseif(KICKOS)` branch in KickCAT's
-`lib/CMakeLists.txt` (Time only; skip `Socket.cc`). **Gap:** KickOS `newlib_stubs.cc` has no
-`_gettimeofday`/`clock_gettime`/pthreads, so `std::chrono` clocks and any POSIX-time backend
+Delta, both in the KickCAT tree rather than this repo: one new
+`KickCAT/lib/src/OS/KickOS/Time.cc` + an `elseif(KICKOS)` branch in
+`KickCAT/lib/CMakeLists.txt` (Time only; skip `Socket.cc`). **Gap:** KickOS `newlib_stubs.cc`
+has no `_gettimeofday`/`clock_gettime`/pthreads, so `std::chrono` clocks and any POSIX-time backend
 return 0 -- the KickOS backend MUST route time through `kos_clock_now()` directly (cannot reuse
 `OS/Unix/Time.cc` or the default `SinceEpoch.cc`). (Optional later, for multi-threaded use:
 `kickcat::Thread`->`kos::thread::spawn`, `Mutex`->binary `kos::Semaphore` -- priority models

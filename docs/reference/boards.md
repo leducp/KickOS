@@ -26,7 +26,7 @@ of our progress, and they do not drift.
 Deeper evidence behind any row: [`../m2-readiness.md`](../m2-readiness.md) is the enforcement
 ledger (which chip is proven to enforce, and by what evidence), and each `../design-*.md`
 record carries its own status header (see [`../design/README.md`](../design/README.md) for the
-marker taxonomy). `../TODO.md` is the live task list. Where those and this file disagree, the
+marker taxonomy). `../../TODO.md` is the live task list. Where those and this file disagree, the
 code wins, then this file.
 
 ## Status matrix
@@ -545,7 +545,7 @@ Five things read across the whole table.
 - **The report carries a task name on some families and cannot on others.** ARM MemManage goes
   straight to the armv7m reporter, which prints the register dump and labels it `=== MPU FAULT ===`
   only when the CFSR MMFSR byte is set; the `MPU FAULT: task 'root'` form comes from
-  `kickos_isr_fault`, the RISC-V / chip-hook route. `tests/check_qemu_rootfault.sh` encodes exactly
+  `kickos_isr_fault`, the RISC-V / chip-hook route. `tests/check_rootfault.sh` encodes exactly
   that two-family split. On the ARM boards, attribution to root therefore rests on the
   announce-before-poke ordering plus the `MMFAR` match.
 - **Only the XMC's announce line is clipped.** It runs a userspace console driver, so
@@ -1587,11 +1587,11 @@ deletion, alongside the `frdmk64f` fault.
 [rootauth] PASS
 ```
 
-All five arms print and the tail reads `PASS`. Note for anyone tightening the gate: the in-env
-`tests/check_qemu_rootauth.sh` floor is `-lt 4` while the image unconditionally reports FIVE, so the
-post-narrow refusal arm -- the only one proving `kos_cap_narrow` takes EFFECT rather than returning 0
-and changing nothing -- could be deleted with four arms still printing and every gate green. The sim
-registration counts arms not at all. The floor wants raising to 5.
+All five arms print and the tail reads `PASS (5 arms)`. The count is not a floor: `tests/check_app_arms.sh`
+requires EXACTLY the number its caller declares, on the sim as well as under QEMU, so the post-narrow
+refusal arm -- the only one proving `kos_cap_narrow` takes EFFECT rather than returning 0 and changing
+nothing -- cannot be deleted with the gates still green. The capture above predates the `(5 arms)`
+suffix the verdict now carries.
 
 The board getting back on the USB bus is what unblocked both: it left mid-session in the previous
 pass (KickOS has no USB device stack, so nothing in the image can hold the connection up) and needed

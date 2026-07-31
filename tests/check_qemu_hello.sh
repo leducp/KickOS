@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
@@ -9,48 +9,18 @@
 # (PendSV) -> SVC-trampoline syscalls -> SysTick timer -> semaphore reschedule.
 
 set -u
+. "$(dirname "$0")/lib/gate.sh"
+
 elf="${1:?usage: check_qemu_hello.sh <hello.elf>}"
-qemu="${QEMU:-qemu-system-arm}"
-machine="${QEMU_MACHINE:-mps2-an386}"   # armv7m default; microbit for armv6m
-cpu_arg=""
-if [ -n "${QEMU_CPU:-}" ]; then
-    cpu_arg="-cpu ${QEMU_CPU}"
+
+# The demo ping-pongs forever ("press Ctrl+C"), so it is polled rather than run to
+# completion. Round 3 of BOTH threads, so one thread looping alone is not enough.
+poll_image "$elf" "KickOS" "ping 3" "pong 3"
+
+if [ "$POLL_OK" -ne 1 ]; then
+    fail "expected banner + ping/pong rounds not observed"
 fi
-# Extra machine args (RISC-V virt needs `-bios none` to run our image bare-metal in
-# M-mode rather than under OpenSBI); empty for the ARM machines.
-extra_arg="${QEMU_EXTRA:-}"
+assert_no_panic "hello panicked while ping-ponging"
 
-if ! command -v "$qemu" >/dev/null 2>&1; then
-    # Exit 77 (not 0): CTest treats this as SKIP, not PASS, so a CI box without
-    # QEMU does not silently green-light the gate.
-    echo "SKIP: $qemu not found"
-    exit 77
-fi
-
-# The demo ping-pongs forever ("press Ctrl+C"); poll its output and stop QEMU as
-# soon as the banner + a few rounds are seen (scheduling + syscalls + timer all
-# live), rather than burning the whole timeout window. QEMU_TIMEOUT bounds the
-# no-progress (fail) path.
-log="$(mktemp)"
-# shellcheck disable=SC2086
-"$qemu" -M "$machine" $cpu_arg $extra_arg -nographic -semihosting -kernel "$elf" >"$log" 2>&1 &
-qpid=$!
-pass=0
-for _ in $(seq 1 $(( ${QEMU_TIMEOUT:-8} * 5 ))); do   # poll at 5 Hz
-    if grep -q "KickOS" "$log" && grep -q "ping 3" "$log" && grep -q "pong 3" "$log"; then
-        pass=1
-        break
-    fi
-    kill -0 "$qpid" 2>/dev/null || break   # QEMU exited on its own
-    sleep 0.2
-done
-{ kill "$qpid"; wait "$qpid"; } 2>/dev/null
-cat "$log"; rm -f "$log"
-
-if [ "$pass" = 1 ]; then
-    echo "PASS: QEMU armv7m hello ping-ponged"
-    exit 0
-fi
-
-echo "FAIL: expected banner + ping/pong rounds not observed"
-exit 1
+echo "PASS: QEMU armv7m hello ping-ponged"
+exit 0

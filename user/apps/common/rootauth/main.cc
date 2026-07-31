@@ -30,11 +30,13 @@ namespace
     constexpr uint32_t BAD_PIN = 0xFFFFu;
 
     int failures = 0;
+    int arms = 0;
 
     void check(bool ok, char const* what)
     {
         if (ok)
         {
+            arms = arms + 1;
             char msg[96];
             ksnprintf(msg, sizeof(msg), "[rootauth] ok - %s\n", what);
             emit(msg);
@@ -90,6 +92,10 @@ int main(int, char**)
         emit(msg);
         return 1;
     }
-    emit("[rootauth] PASS\n");
+    // The count comes from a counter, the `ok -` lines from one emit per arm: the gate
+    // cross-checks the two, so output lost between them cannot read as a clean run.
+    char msg[64];
+    ksnprintf(msg, sizeof(msg), "[rootauth] PASS (%d arms)\n", arms);
+    emit(msg);
     return 0;
 }

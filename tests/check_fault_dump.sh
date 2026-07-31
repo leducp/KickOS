@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
@@ -16,43 +16,28 @@
 # so their armed-ring fault dump is validated by the manual HW flash pass, not here.
 
 set -u
+. "$(dirname "$0")/lib/gate.sh"
+: "${QEMU_TIMEOUT:=30}"
+: "${SIM_TIMEOUT:=15}"
+
 elf="${1:?usage: check_fault_dump.sh <fault.elf> <dump-marker>}"
 marker="${2:?usage: check_fault_dump.sh <fault.elf> <dump-marker>}"
 expect_status=132
 
-if [ -n "${QEMU_MACHINE:-}" ]; then
-    qemu="${QEMU:-qemu-system-arm}"
-    extra_arg="${QEMU_EXTRA:-}" # e.g. -bios none (RISC-V virt)
-    if ! command -v "$qemu" >/dev/null 2>&1; then
-        # Exit 77 -> CTest SKIP (not PASS): a QEMU-less box must not green-light it.
-        echo "SKIP: $qemu not found"
-        exit 77
-    fi
-    out="$(timeout "${QEMU_TIMEOUT:-30}" "$qemu" -M "$QEMU_MACHINE" $extra_arg \
-             -nographic -semihosting -kernel "$elf" 2>&1)"
-    status=$?
-else
-    out="$(timeout 15 "$elf" 2>&1)"
-    status=$?
-fi
-echo "$out"
+run_image "$elf"
 
-if echo "$out" | grep -q "did not fault"; then
-    echo "FAIL: the illegal instruction did not trap"
-    exit 1
+if has "did not fault"; then
+    fail "the illegal instruction did not trap"
 fi
-count="$(echo "$out" | grep -c "$marker")"
+count="$(printf '%s\n' "$OUT" | grep -c "$marker")"
 if [ "$count" -eq 0 ]; then
-    echo "FAIL: fault-dump marker '$marker' missing -- dump lost (enqueued into an undrained ring?)"
-    exit 1
+    fail "fault-dump marker '$marker' missing: dump lost (enqueued into an undrained ring?)"
 fi
 if [ "$count" -ne 1 ]; then
-    echo "FAIL: fault-dump marker '$marker' appeared $count times -- dump doubled (ring re-pushed?)"
-    exit 1
+    fail "fault-dump marker '$marker' appeared $count times: dump doubled (ring re-pushed?)"
 fi
-if [ "$status" -ne "$expect_status" ]; then
-    echo "FAIL: expected exit $expect_status (kfault_terminate), got $status"
-    exit 1
+if [ "$RC" -ne "$expect_status" ]; then
+    fail "expected exit $expect_status (kfault_terminate), got $RC"
 fi
 echo "PASS: fault dump present ('$marker') + exit $expect_status"
 exit 0

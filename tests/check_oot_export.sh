@@ -13,16 +13,14 @@
 # usage: check_oot_export.sh <kickos-build-dir> <kickos-source-dir> <cmake> <generator>
 
 set -eu
+. "$(dirname "$0")/lib/gate.sh"
 
 KICKOS_BUILD="$1"
 KICKOS_SRC="$2"
 CMAKE="${3:-cmake}"
 GEN="${4:-Ninja}"
 
-fail() { echo "FAIL: $1"; exit 1; }
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+scratch_dir
 
 echo "== installing KickOS package to $TMP/prefix =="
 "$CMAKE" --install "$KICKOS_BUILD" --prefix "$TMP/prefix" >/dev/null \

@@ -68,25 +68,22 @@
 #   - a name that survives ONLY in a stale source comment still resolves, so this gate
 #     catches a DELETED symbol, not a half-completed rename.
 #
-# Exactly one path is exempt: docs/design/retracted.md, which exists to hold
-# retractions whose reasoning is the point. Nothing else is exempt by design -- if a
-# clean run seems to need another exemption, that is a finding about the corpus.
+# NOTHING is exempt. If a clean run seems to need an exemption, that is a finding about
+# the corpus: a proposed name belongs in a fenced listing, and a claim about a name that
+# no longer exists can be written without spelling it.
 
 set -u
+. "$(dirname "$0")/lib/gate.sh"
 # NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
 
-fail() { echo "FAIL: $1" >&2; exit 1; }
 
 [ -d .git ] || [ -f .git ] || fail "must run from the repo root (no .git here)"
 command -v git >/dev/null 2>&1 || fail "git not found"
 
-TMP="$(mktemp -d)" || fail "mktemp failed"
-trap 'rm -rf "$TMP"' EXIT
-
-EXEMPT="docs/design/retracted.md"
+scratch_dir
 
 # --- corpus -------------------------------------------------------------------
-git ls-files -z '*.md' | tr '\0' '\n' | grep -v "^${EXEMPT}\$" > "$TMP/docs.txt"
+git ls-files -z '*.md' | tr '\0' '\n' > "$TMP/docs.txt"
 DOCS=$(wc -l < "$TMP/docs.txt" | tr -d ' ')
 [ "$DOCS" -gt 0 ] || fail "no tracked *.md found -- wrong directory? (gate would pass vacuously)"
 
@@ -136,7 +133,18 @@ sed -n 's/^ *\(KOS_SYS_[A-Z0-9_]*\) *= *\([0-9][0-9]*\).*/\1 \2/p' "$ABI" > "$TM
 # input and the gate would report PASS on a corpus it never read.
 tr '\n' '\0' < "$TMP/docs.txt" | xargs -0 grep -an '' /dev/null > "$TMP/corpus.txt" 2>/dev/null
 [ -s "$TMP/corpus.txt" ] || fail "read zero lines out of $DOCS doc file(s) -- extraction is broken"
-CORPUS_FILES=$(cut -d: -f1 < "$TMP/corpus.txt" | sort -u | wc -l | tr -d ' ')
+# Non-emptiness alone is satisfied by ONE readable doc: xargs splits the corpus into
+# several grep invocations and keeps going after one of them dies, so a doc the scan
+# never reached would simply contribute no findings. Reconcile file for file. A doc that
+# is genuinely EMPTY contributes no line either and is the one admissible absence.
+cut -d: -f1 < "$TMP/corpus.txt" | sort -u > "$TMP/corpus_files.txt"
+MISSED=""
+while read -r d; do
+  if ! grep -qxF "$d" "$TMP/corpus_files.txt" && [ -s "$d" ]; then
+    MISSED="$MISSED $d"
+  fi
+done < "$TMP/docs.txt"
+[ -z "$MISSED" ] || fail "the scan never read:$MISSED, so those were checked against nothing"
 
 awk -v T="$TMP" -v ABIH="$ABI" -F: '
 function load(f, arr,   l) { while ((getline l < f) > 0) { arr[l] = 1 } close(f) }

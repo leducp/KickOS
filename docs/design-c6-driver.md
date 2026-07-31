@@ -15,8 +15,8 @@ and an ungranted poke FAULTS, per thread -- but on the C6 that per-thread PMP li
 on top of a coarse, one-time **APM** background permit the fleet has never driven. Builds
 on the landed MMIO-grant seam (`design-task9-mmio-driver.md`;
 `kos_thread_params.mmio_base/mmio_size`), the k64drv privileged-shim -> unprivileged-driver
-structure (`user/apps/k64drv/main.cc`), and the rv32imac PMP backend + U-mode fault routing
-(`arch/riscv/rv32imac/arch_rv32imac.cc`).
+structure (`user/apps/frdmk64f/k64drv/main.cc`), and the rv32imac PMP backend + U-mode fault
+routing (`arch/riscv/rv32imac/arch_rv32imac.cc`).
 
 ## Why this exists -- the two-gate model the C6 forces (read first)
 On the C6, an HP-CPU access to an HP peripheral in **user (REE) mode** passes **two**

@@ -15,7 +15,8 @@
 An adversarial review of the M4 "driver era" design PRINCIPLES, run 2026-07-20 before
 M4 implementation starts. Sources reviewed: `docs/design-driver-era-scope.md`,
 `roadmap.md` (M4 + the "Later" init / power-manager / clock-tree prose + M5/M6),
-`docs/design-spi-driver.md` + the K64F/F411 instances, `docs/design-m3-console-handover.md`,
+`docs/design-spi-driver.md` + the K64F/F411 instances,
+`docs/design-m3-console-handover-stageii.md`,
 `docs/reference/invariants.md`, plus spot-checks of landed code (`kernel/time/clock_select.cc`,
 `kernel/init/console.cc`, `arch/arm/chip/xmc4800/usic_uart.cc`, `kernel/include/kickos/config/system.h`).
 

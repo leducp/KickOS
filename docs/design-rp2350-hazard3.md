@@ -44,7 +44,8 @@ gated on one crux.** The reasons it is cheap:
 
 - The `rv32imac` arch layer is already **ISA-generic and chip-parameterised** by design
   (`arch/riscv/rv32imac/arch_rv32imac.cc:5-11` names exactly the seam a chip fills). A
-  Hazard3 port is a NEW **chip backend** under `arch/riscv/chip/rp2350/`, not a new arch.
+  Hazard3 port is a NEW **chip backend**, a directory `arch/riscv/chip/rp2350` this port would
+  create, not a new arch.
 - The core-agnostic half of the SoC (clock tree, UART0 PL011, 64-bit TIMER0, resets,
   pads, boot block) is **already written and reasoned-about** in the ARM backend
   (`arch/arm/chip/rp2350/chip_rp2350.cc`) -- same registers, same sequences, same
@@ -376,7 +377,8 @@ already went through.
 
 ### 7.1 New preset + board descriptor
 
-- New board `boards/pizero2350-riscv/board.cmake`:
+- A new board directory `pizero2350-riscv` under `boards/`, to be created, with a `board.cmake`
+  setting:
   `KICKOS_ARCH_FAMILY riscv`, `KICKOS_ARCH rv32imac`, `KICKOS_CHIP rp2350`,
   `KICKOS_MCPU -march=rv32imac_zicsr -mabi=ilp32` (identical baseline to
   `boards/qemu-riscv/board.cmake:22`). The board resolver + RISC-V toolchain already route
@@ -388,10 +390,10 @@ already went through.
   The RISC-V board is a NEW board descriptor on the SAME chip. But `KICKOS_CHIP=rp2350`
   currently resolves to `arch/arm/chip/rp2350` because the family is `arm`. For RISC-V,
   family=`riscv` routes to `arch/riscv/chip/rp2350` (`arch/CMakeLists.txt:140`). So the two
-  chip backends coexist as `arch/arm/chip/rp2350/` and `arch/riscv/chip/rp2350/` -- the
-  family segment disambiguates. No collision. Good.
+  chip backends would coexist as `arch/arm/chip/rp2350/` (built today) and a new
+  `arch/riscv/chip/rp2350` -- the family segment disambiguates. No collision. Good.
 
-### 7.2 New chip backend `arch/riscv/chip/rp2350/`
+### 7.2 New chip backend, to be created at `arch/riscv/chip/rp2350`
 
 Files (mirroring `arch/riscv/chip/esp32c6/`):
 - `startup.S` -- RISC-V `_start` (gp/sp/tp), call `Reset_Handler`. Model on

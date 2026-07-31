@@ -226,4 +226,3 @@ the split is cheap and better motivated once the second consumer exists.
 - **UF2 emission / flashing**: `.bin` + `.hex` are emitted today; a `.uf2` needs the
   RP2350 family-id and the picotool/uf2 packer -- add when there is bench access.
 - **Second core (core1), WS2812 LED, real peripheral IRQ receive**: driver-era.
-```

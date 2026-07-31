@@ -162,10 +162,11 @@ This keeps: (a) the armv7m arch reused for everything non-MPU; (b) the v7-M fall
 backend untouched and still correct for M0+/M3/M4/M7; (c) the two backends
 side-by-side selected by presence-in-link, not by an `#ifdef` fork inside one
 function; (d) zero per-arch field in `arch_mpu_region`. An alternative -- a single
-`arch_mpu_apply` in `arch_arm_common.cc` with an `#if KICKOS_ARM_PMSAV8` fork -- is
-viable and smaller-diff, but couples two register layouts in one TU and risks the
-wrong branch being built; the separate-TU strong-override is cleaner and matches
-the K64F precedent. Pick the fork only if fable review prefers minimal file count.
+`arch_mpu_apply` in `arch_arm_common.cc` forked by `#if` on a PMSAv8 compile
+define -- is viable and smaller-diff, but couples two register layouts in one TU
+and risks the wrong branch being built; the separate-TU strong-override is
+cleaner and matches the K64F precedent. Pick the fork only if fable review
+prefers minimal file count.
 
 ### Addendum (as-implemented): the override target is `kickos_arch_mpu_commit`
 

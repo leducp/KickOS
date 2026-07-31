@@ -211,8 +211,8 @@ and simply parks again.
 
 Syscall surface. A channel is exposed the way semaphores are (syscall.cc): small
 integer handles into a per-`Kernel` slot pool, no pointers cross the user boundary.
-New numbers: `KOS_SYS_chan_open` (bind a direction + slot geometry, returns a
-handle), `KOS_SYS_chan_send`, `KOS_SYS_chan_recv`. `send`/`recv` bound the user
+Three new syscall numbers: a channel-open (bind a direction + slot geometry,
+returns a handle), a channel-send and a channel-receive. `send`/`recv` bound the user
 buffer with the existing `user_readable_ok` / `user_range_ok` confused-deputy floor
 (syscall.cc:93-145) -- the kernel copies into/out of the shared ring privileged, so
 the user buffer must lie in a region the caller is granted, identical to
