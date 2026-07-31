@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Unprivileged root -- start unprivileged holding capabilities
 
-> **Status: ACTIVE** -- **all five stages have landed**, stage 5 on branch `unpriv-root-stage5`,
-> which is **not merged**. `KICKOS_ROOT_PRIVILEGED` no longer exists, so **every board boots an
+> **Status: ACTIVE** -- **all five stages have landed and are merged** (stage 5 as `dde73ca`,
+> PR #6). `KICKOS_ROOT_PRIVILEGED` no longer exists, so **every board boots an
 > unprivileged root by construction**: there is no second posture to select, and no build in the
 > tree can select one. Six boards are additionally witnessed on silicon, covering every enforcement
 > backend -- `xmc4800-relax` (PMSAv7), `esp32c6-wroom` (RISC-V PMP), `pizero2350` (PMSAv8), `rx72m`
@@ -43,12 +43,12 @@ places where it does not work.
 9. Limits, including the boards where this does not work
 10. Verification: what witnesses what, and what nothing witnesses
 
-**Where this landed, and what it still owes.** The design landed as **M4.5.6**, three
-commits on branch `unpriv-root-stage5`, **not merged**: `c5d9b0d` (the knob deletion and the write
-seam), `270b6fa` (the per-entry value mask and the panic-message hardening), `124b68c` (the
-`esp32c6` `.data` LMA fix, thread-pool provisioning, and the ring and sim seam gates).
-**M4.5.7 -- removing the weak-symbol seam mechanism -- LANDED** as an isolated tip
-commit, closing the sub-milestone: 33 `__attribute__((weak))` definitions became one-symbol
+**Where this landed, and what it still owes.** The design landed as **M4.5.6** and is merged,
+squashed into `dde73ca`: the knob deletion and the write seam, the per-entry value mask and the
+panic-message hardening, then the `esp32c6` `.data` LMA fix, thread-pool provisioning, and the ring
+and sim seam gates. Captures below stamp the pre-squash tips they ran on; see the mapping in
+`STATE.md`. **M4.5.7 -- removing the weak-symbol seam mechanism -- LANDED** in the same squash,
+closing the sub-milestone: 33 `__attribute__((weak))` definitions became one-symbol
 fallback TUs (`.weak NMI_Handler` a file-local label in 11 `startup.S` files, `arch_mpu_apply` a
 plain non-overridable definition), 3 libc-interop symbols plus C++ COMDAT stayed weak behind
 `tests/weak_allowlist.txt`, and a four-leg CI gate (`seam_defaults`) runs on every board. It is
@@ -73,10 +73,10 @@ HW CS on SELO0)` at `270b6fa`.
 
 ## 1. The decision, and the design it superseded
 
-The earlier plan was `KOS_SYS_DROP_PRIV`: root boots privileged, does its bring-up, and then
-demotes itself before calling `main`. That needed a per-arch backend to change a *running*
-thread's privilege, a `thread_regions_recompose` to rebuild the MPU region set at the moment
-of demotion, and it put Xtensa last because Xtensa has no ring split to demote across.
+The earlier plan was a separate drop-privilege syscall: root boots privileged, does its bring-up,
+and then demotes itself before calling `main`. That needed a per-arch backend to change a
+*running* thread's privilege, a `thread_regions_recompose` to rebuild the MPU region set at the
+moment of demotion, and it put Xtensa last because Xtensa has no ring split to demote across.
 
 The replacement is simpler and strictly stronger: **root is created unprivileged, holding
 capabilities for the authorities its bring-up needs.** There is no demotion, so there is no
@@ -151,9 +151,9 @@ mostly *deletion*.
 
 ## 4. What was deleted rather than deferred
 
-`thread_regions_recompose`, `KOS_SYS_DROP_PRIV`, its per-arch backends, and the Xtensa-last
-sequencing are **deleted, not deferred**. They were machinery for managing a transition this
-design does not have; carrying them as "later" would imply they are still wanted.
+`thread_regions_recompose`, the separate drop-privilege syscall, its per-arch backends, and the
+Xtensa-last sequencing are **deleted, not deferred**. They were machinery for managing a
+transition this design does not have; carrying them as "later" would imply they are still wanted.
 
 `drop_priv` survives only as a **contingent, much smaller** item. It is the one mechanism that
 gives "privileged bring-up, then self-confinement for life", which is exactly what the blocked
@@ -185,8 +185,8 @@ first configure leaves the name in the consumer's cache as `UNINITIALIZED`, whic
 `DEFINED`, so the guard re-fires on every reconfigure until `cmake -U KICKOS_ROOT_PRIVILEGED`
 deletes the entry. The message names that incantation for exactly this reason.
 
-`KICKOS_SCRAMBLE_TEST` was deleted alongside it with **no tombstone**: an old
-`-DKICKOS_SCRAMBLE_TEST=ON` silently builds a plain `consoledemo`, and nothing in the configure
+The scramble-test build option was deleted alongside it with **no tombstone**: an old configure
+that still switches it on silently builds a plain `consoledemo`, and nothing in the configure
 output points at the `conreclaim` app that replaced it. That is the same silence class the consumer
 guard above exists to prevent.
 
@@ -261,7 +261,7 @@ is a `uint8_t` with three bits already spoken for (`CAP_WAIT`, `CAP_SIGNAL`, `CA
 leaving five -- one short of the set section 5.1 arrives at. `CapEntry` is a frozen 8-byte ABI and
 the rights *byte* cannot grow, but a `CAP_AUTHORITY` entry is poolless and leaves `obj` unused, so
 the authority word moves there and the struct keeps its size. This retires the "merge
-`AUTH_PINMUX` with `AUTH_CLOCK`" plan the old ceiling forced.
+`AUTH_PINMUX` with the clock-rate bit" plan the old ceiling forced.
 
 Two consequences follow, and both are improvements rather than costs:
 
@@ -308,10 +308,10 @@ ceiling. It does not fit, and it does not nearly fit, so the class granularity i
 
 ### 5.1 The authority set, re-cut into six
 
-**`AUTH_DEVICE` in its old shape is rejected.** It meant "console publish, shutdown, reboot",
-which holds together only while root does all three. Once root is *only* a spawner, publishing a
-console and ending the system belong to **different** threads, so no single bit can carry both
-without handing the console driver the power to end the system.
+**The old combined device authority bit is rejected.** It meant "console publish, shutdown,
+reboot", which holds together only while root does all three. Once root is *only* a spawner,
+publishing a console and ending the system belong to **different** threads, so no single bit can
+carry both without handing the console driver the power to end the system.
 
 The cut is six bits:
 
@@ -324,9 +324,10 @@ The cut is six bits:
 | `AUTH_SYSTEM` | `shutdown`, `reboot` | root / init |
 | `AUTH_CONSOLE` | `console_publish` | root, during service bring-up |
 
-`AUTH_DEVICE` and `AUTH_CLOCK` cease to exist as names. **`cpu_clock_set` keeps a bit of its own**
-precisely because a governor service needs clock-rate authority and nothing else: folding it into
-the lifecycle bit would hand the governor the power to end the system.
+The combined device bit and the separate clock bit both cease to exist as names. **`cpu_clock_set`
+keeps a bit of its own** precisely because a governor service needs clock-rate authority and
+nothing else: folding it into the lifecycle bit would hand the governor the power to end the
+system.
 
 **The console driver does not hold `AUTH_CONSOLE`, and that is not a future correction to make.**
 `kos_console_publish` is called by **root**, inside the service list's `start()` body
@@ -512,10 +513,10 @@ stops a sub-block window reaching a whole-block table entry.
 
 **Gating it on an authority bit instead is the obvious-looking alternative, and it is wrong.** The
 seam's callers are the bus drivers, so the lifecycle bit -- `AUTH_SYSTEM` under the cut in 5.1, and
-the old `AUTH_DEVICE` before it -- would hand `kos_shutdown` and reboot-to-bootloader to every
-unprivileged driver in the fleet; every other bit carries collateral just as unwanted, and a bit of
-its own would have to be justified against the same possession argument that removes the need for
-one. Possession is *sufficient* because a granted window already
+the old combined device bit before it -- would hand `kos_shutdown` and reboot-to-bootloader to
+every unprivileged driver in the fleet; every other bit carries collateral just as unwanted, and a
+bit of its own would have to be justified against the same possession argument that removes the
+need for one. Possession is *sufficient* because a granted window already
 means "may enable, configure and disable this device" wherever the silicon permits it directly -- the
 XMC `KSCFG` case in section 9 is the precedent -- so the seam brings K64F and F411 to the parity that
 window granularity already grants there.
@@ -565,9 +566,9 @@ plan:
   it is `rootauth`, which discriminates within one posture by declaring some bits and withholding
   others (section 10).
 
-**Stage 5 -- `KICKOS_ROOT_PRIVILEGED` deleted. LANDED**, on branch `unpriv-root-stage5`, not
-merged. The knob went with no replacement and no porting escape hatch; section 4 carries the
-decision and its reasons. Three things travelled with the deletion:
+**Stage 5 -- `KICKOS_ROOT_PRIVILEGED` deleted. LANDED** and merged (`dde73ca`). The knob went
+with no replacement and no porting escape hatch; section 4 carries the decision and its
+reasons. Three things travelled with the deletion:
 `ThreadAttr::privileged` became `false` (`kernel/include/kickos/thread.h`), every `#if
 KICKOS_ROOT_PRIVILEGED` site lost its condition rather than its body, and the invariant that
 leaves -- **"exactly one privileged thread, and it is `idle`"** -- became statable, which is why it
@@ -751,7 +752,7 @@ hazard) and stops a body from truncating the banner it just printed. Witnessed b
   `TCSR` and `PCR` (all `U,PV`) and gates the channel clock via `KSCFG`, and any one of those
   alone garbles the UART -- so the garbling never required FDR/BRG/CCR to land. It is now known
   they did not. That scrambler no longer lives in `consoledemo`: it was restaged as its own app,
-  `conreclaim`, and the `KICKOS_SCRAMBLE_TEST` option it hung off does not exist any more, so the
+  `conreclaim`, and the scramble-test build option it hung off does not exist any more, so the
   original artifact is not there to re-read.
 
   Two details of the old transcription: Table 18-20 marks exactly **three** channel registers
@@ -1074,10 +1075,11 @@ bootloader entry declines through the seam's `-KOS_ENOSYS` fallback
 (`arch/common/arch_reboot_default.cc`, selftest-gated so it is absent from a production image)
 rather than pretending.
 
-**Decision: it shares `arch_shutdown`'s authority**, rather than taking a `CAP_REBOOT` at index 3
-or a rights bit of its own. Two reasons: reboot-to-bootloader is the same class of act as shutdown
-(end this system, hand the chip to something else); and index 3 is the last free well-known index,
-worth more than bit granularity here. That shared bit is `AUTH_SYSTEM` (section 5.1).
+**Decision: it shares `arch_shutdown`'s authority**, rather than taking a dedicated reboot
+capability type at index 3 or a rights bit of its own. Two reasons: reboot-to-bootloader is the
+same class of act as shutdown (end this system, hand the chip to something else); and index 3 is
+the last free well-known index, worth more than bit granularity here. That shared bit is
+`AUTH_SYSTEM` (section 5.1).
 
 The counter-argument, recorded because it is real: shutdown merely stops execution, whereas
 reboot-to-bootloader leaves the board accepting new firmware over USB. Fusing them means anything
@@ -1098,12 +1100,12 @@ than the seam.** Post-4.5.4 work, owned by M4.6. Four parts:
    on armv6m/v7m/v8m with no chip-specific code, so a normal reset could sit in `arch/arm/common`,
    whereas bootloader entry is per-chip and only three backends have one (rp2040, rp2350,
    imxrt1062). RISC-V has no architectural reset, and RX and Xtensa each have their own mechanism.
-3. **The knob gates only the bootloader mode, and is renamed
-   `KICKOS_ENABLE_REBOOT_TO_BOOTLOADER`.** `KICKOS_ENABLE_SELFTEST` conflates "test-only syscall
-   surface" with "may this image put the board into firmware-accept mode", and the conflation costs
-   a real capability for no security gain: no production in-kernel path can reset the chip at all,
-   while a privileged thread may need to sequence one -- watchdog recovery, a fault-handler reset, a
-   bring-up retry -- none of which carries the bootloader's risk. **Not `..._IN_FLASH_MODE`**: the
+3. **The knob gates only the bootloader mode, and is renamed to an enable-reboot-to-bootloader
+   spelling.** `KICKOS_ENABLE_SELFTEST` conflates "test-only syscall surface" with "may this image
+   put the board into firmware-accept mode", and the conflation costs a real capability for no
+   security gain: no production in-kernel path can reset the chip at all, while a privileged
+   thread may need to sequence one -- watchdog recovery, a fault-handler reset, a bring-up
+   retry -- none of which carries the bootloader's risk. **Not `..._IN_FLASH_MODE`**: the
    existing sibling knob is `KICKOS_SHUTDOWN_TO_BOOTLOADER` (`CMakeLists.txt:117`), and two knobs
    naming one destination differently is drift.
 4. **Bootloader mode wants the knob AND an authority bit.** A normal reset is lifecycle, the same
@@ -1270,7 +1272,7 @@ an unprivileged child that pokes the register, so the app depends on nothing abo
 `mpu_fault` does not. The terminal arm's runner asserts the reporter's marker exactly once plus exit
 132, which is how `fault` is wired on every MPS2 image with the `HARD FAULT` marker
 (`user/apps/common/fault/CMakeLists.txt:26-29`); the survivable arm has its own runner
-(`tests/check_qemu_ringpriv.sh`), which asserts the `PASS (<n> arms)` verdict and an EXACT arm count,
+(`tests/check_app_arms.sh`), which asserts the `PASS (<n> arms)` verdict and an EXACT arm count,
 so an arm cannot be deleted with the gate still green. The register must be `SHCSR`, `ICSR` or
 `VTOR` and **not `STIR`**, because `CCR.USERSETMPEND` can legitimately make `STIR`
 unprivileged-writable, and this tree writes `STIR` from the kernel already

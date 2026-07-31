@@ -287,7 +287,7 @@ _write(fd, buf, len):
     return len
 ```
 
-`KOS_SYS_kconsole_write` keeps its exact semantics; its chip path simply DROPS in
+`KOS_SYS_KCONSOLE_WRITE` keeps its exact semantics; its chip path simply DROPS in
 `USER_OWNED` per D1 while RTT still carries it. Two rules are load-bearing:
 - **Per-invocation re-probe.** There is NO process-wide sticky state: every `_write`
   attempts `kos_send(0)` and, only on failure, falls back for THAT write. cap 0 is

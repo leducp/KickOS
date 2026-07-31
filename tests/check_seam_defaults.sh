@@ -39,9 +39,11 @@
 #      mangled names are taken on trust and the archive leg is what covers our code.
 
 set -u
+. "$(dirname "$0")/lib/gate.sh"
 
-# Locale-independent sort/grep collation; the map is parsed structurally, never by its
-# translated headings.
+# Locale-independent sort/grep collation; the map and the tool output are both parsed
+# structurally, never by their translated headings (readelf's are, under any other
+# locale, and the "File:" member marker the awks key on is one of them).
 export LC_ALL=C
 
 if [ "$#" -lt 6 ]; then
@@ -57,9 +59,13 @@ ALLOWLIST="$1"; shift
 # Everything left is a definition source: a .a is scanned member by member and joins the
 # link only when the map says so; a plain .o is on the link command line and is therefore
 # always in the image (the app's own TUs, which may define an app-side seam).
+#
+# Split on ';' as well as on argument boundaries: add_test does NOT split a
+# $<TARGET_OBJECTS:> expansion, so the app's whole object list arrives as ONE
+# semicolon-joined argument (verified in the generated CTestTestfile.cmake).
 ARCHIVES=""
 OBJECTS=""
-for _in in "$@"; do
+for _in in $(printf '%s\n' "$@" | tr ';' '\n'); do
     case "$_in" in
         *.a) ARCHIVES="$ARCHIVES $_in" ;;
         *)   OBJECTS="$OBJECTS $_in" ;;
@@ -68,15 +74,23 @@ done
 
 for f in "$ELF" "$MAP" "$ALLOWLIST"; do
     if [ ! -r "$f" ]; then
-        echo "FAIL: cannot read $f" >&2
-        exit 1
+        fail "cannot read $f"
     fi
 done
 
-TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+scratch_dir
 rc=0
-fail() { echo "FAIL: $*" >&2; rc=1; }
+# A seam violation is accumulated, so one run names every one of them; a BROKEN TOOL is
+# not, and takes gate.sh's fail()/tool_out() hard exit instead.
+bad() { echo "FAIL: $*" >&2; rc=1; }
+
+# nm prints "<addr> <type> <symbol>", prefixed "<archive>:<member>:" with -A. A source
+# of definitions with no GLOBAL definition at all is not one of ours, so requiring one
+# is a positive control on nm itself.
+NM_DEF_RE='^[0-9a-fA-F]+ [A-Z] '
+NM_ARCHIVE_DEF_RE=':[0-9a-fA-F]+ [A-Z] '
+# readelf -sW numbers every symbol-table row; a file it could not read has no row at all.
+READELF_SYM_RE='^ *[0-9]+: '
 
 # The RX psABI prefixes every C identifier with an underscore, so the allowlist carries
 # both spellings and nothing here needs to know which target it is looking at.
@@ -90,29 +104,39 @@ allowed() { grep -qxF "$1" "$TMP/allow"; }
 : > "$TMP/defs"
 for a in $ARCHIVES; do
     if [ ! -r "$a" ]; then
-        fail "cannot read archive $a"
+        bad "cannot read archive $a"
         continue
     fi
-    "$NM" -A --defined-only "$a" 2>/dev/null | awk -v A="$a" '
+    tool_out "$TMP/tool" "$NM_ARCHIVE_DEF_RE" "$NM" -A --defined-only "$a"
+    awk -v A="$a" '
         {
             split($1, p, ":")
             if (p[2] == "") { next }
             t = $(NF - 1)
             if (t !~ /^[A-Z]$/ || t == "N" || t == "U") { next }
             print A "\t" p[2] "\t" t "\t" $NF
-        }' >> "$TMP/defs"
+        }' "$TMP/tool" >> "$TMP/defs"
 done
+# An object that cannot be read is the same failure the archive arm above reports, and
+# skipping it classifies every seam the app itself defines (kickos_app_authority) as
+# having NO backend: the fallback then reads as correct and the app's narrower authority
+# mask is silently widened to the fallback's.
 for o in $OBJECTS; do
-    [ -r "$o" ] || continue
-    "$NM" --defined-only "$o" 2>/dev/null | awk -v O="$(basename "$o")" '
+    if [ ! -r "$o" ]; then
+        bad "cannot read object $o"
+        continue
+    fi
+    tool_out "$TMP/tool" "$NM_DEF_RE" "$NM" --defined-only "$o"
+    awk -v O="$(basename "$o")" '
         {
             t = $(NF - 1)
             if (t !~ /^[A-Z]$/ || t == "N" || t == "U") { next }
             print "-\t" O "\t" t "\t" $NF
-        }' >> "$TMP/defs"
-    echo "$(basename "$o")" >> "$TMP/cmdline_members"
+        }' "$TMP/tool" >> "$TMP/defs"
+    basename "$o" >> "$TMP/cmdline_members"
 done
-: >> "$TMP/cmdline_members"
+require_nonempty "$TMP/cmdline_members" \
+    "no app object was inventoried; a seam the app itself defines would read as backend-less"
 
 # --- inventory: COMDAT sections and the symbols they define -------------------
 # A C++ vague-linkage definition lives in a section carrying readelf's G (SHF_GROUP) flag.
@@ -122,7 +146,8 @@ done
 # NO flags prints an empty column and shifts those fields left onto the hex entry size,
 # which cannot contain a G.
 comdat_sections() { # <file> <archive-key> <member-name-when-not-an-archive>
-    "$READELF" -SW "$1" 2>/dev/null | awk -v A="$2" -v M0="$3" '
+    tool_out "$TMP/tool" '^ *\[ *[0-9]+\]' "$READELF" -SW "$1"
+    awk -v A="$2" -v M0="$3" '
         BEGIN { m = M0 }
         /^File:/ {
             m = $2
@@ -133,13 +158,14 @@ comdat_sections() { # <file> <archive-key> <member-name-when-not-an-archive>
             line = $0
             sub(/^ *\[ */, "", line)
             if ($(NF - 3) ~ /G/) { print A "\t" m "\t" (line + 0) }
-        }'
+        }' "$TMP/tool"
 }
 
 # Only a GLOBAL or WEAK definition with a real section index can participate in
 # cross-member resolution, which is the same set the nm inventory above keeps.
 comdat_symbols() { # <file> <archive-key> <member-name-when-not-an-archive>
-    "$READELF" -sW "$1" 2>/dev/null | awk -v A="$2" -v M0="$3" -v SEC="$TMP/comdat_sec" '
+    tool_out "$TMP/syms" "$READELF_SYM_RE" "$READELF" -sW "$1"
+    awk -v A="$2" -v M0="$3" -v SEC="$TMP/comdat_sec" '
         BEGIN {
             m = M0
             while ((getline line < SEC) > 0) {
@@ -154,26 +180,22 @@ comdat_symbols() { # <file> <archive-key> <member-name-when-not-an-archive>
         }
         ($5 == "GLOBAL" || $5 == "WEAK") && $7 ~ /^[0-9]+$/ {
             if ((m SUBSEP ($7 + 0)) in g) { print A "\t" m "\t" $8 }
-        }'
+        }' "$TMP/syms"
 }
 
 : > "$TMP/comdat_sec"
 for a in $ARCHIVES; do
-    [ -r "$a" ] || continue
     comdat_sections "$a" "$a" "" >> "$TMP/comdat_sec"
 done
 for o in $OBJECTS; do
-    [ -r "$o" ] || continue
     comdat_sections "$o" "-" "$(basename "$o")" >> "$TMP/comdat_sec"
 done
 
 : > "$TMP/comdat_syms"
 for a in $ARCHIVES; do
-    [ -r "$a" ] || continue
     comdat_symbols "$a" "$a" "" >> "$TMP/comdat_syms"
 done
 for o in $OBJECTS; do
-    [ -r "$o" ] || continue
     comdat_symbols "$o" "-" "$(basename "$o")" >> "$TMP/comdat_syms"
 done
 sort -u "$TMP/comdat_syms" -o "$TMP/comdat_syms"
@@ -189,7 +211,7 @@ awk -F'\t' '$2 !~ /_default\.cc\.o(bj)?$/' "$TMP/strong_defs" > "$TMP/be_defs"
 # --- leg 1: one strong symbol per fallback member, unique in its archive ------
 awk -F'\t' '{ print $1 "\t" $2 }' "$TMP/fb_defs" | sort -u > "$TMP/fb_members"
 if [ ! -s "$TMP/fb_members" ]; then
-    fail "no <symbol>_default.cc member found in any archive; the gate would be vacuous"
+    bad "no <symbol>_default.cc member found in any archive; the gate would be vacuous"
 fi
 while IFS=$'\t' read -r arch member; do
     # kickos_kernel is scanned BEFORE kickos_chip in the rescan group, so a fallback
@@ -197,20 +219,20 @@ while IFS=$'\t' read -r arch member; do
     # collides with the chip's definition. It belongs in the arch library.
     case "$arch" in
         *libkickos_kernel.a)
-            fail "leg 1: $member is in kickos_kernel; a fallback must sit in an archive the link scans AFTER the chip archive"
+            bad "leg 1: $member is in kickos_kernel; a fallback must sit in an archive the link scans AFTER the chip archive"
             ;;
     esac
     syms=$(awk -F'\t' -v a="$arch" -v m="$member" '$1 == a && $2 == m { print $4 }' "$TMP/fb_defs" | sort -u)
     n=$(printf '%s\n' "$syms" | grep -c .)
     if [ "$n" -ne 1 ]; then
-        fail "leg 1: $member defines $n global symbols, expected exactly 1: $(echo $syms)"
+        bad "leg 1: $member defines $n global symbols, expected exactly 1: $(echo $syms)"
         continue
     fi
     # Same archive, same symbol, another member: resolution would fall to member order.
     twin=$(awk -F'\t' -v a="$arch" -v m="$member" -v s="$syms" \
         '$1 == a && $2 != m && $4 == s { print $2 }' "$TMP/strong_defs" | sort -u)
     if [ -n "$twin" ]; then
-        fail "leg 1: $syms is defined by both $member and $(echo $twin) inside $arch"
+        bad "leg 1: $syms is defined by both $member and $(echo $twin) inside $arch"
     fi
 done < "$TMP/fb_members"
 
@@ -247,7 +269,7 @@ while read -r sym; do
     backends=$(awk -F'\t' -v s="$sym" '$4 == s { print $2 }' "$TMP/be_defs" | sort -u)
     nbackends=$(printf '%s\n' "$backends" | grep -c .)
     if [ "$nbackends" -gt 1 ]; then
-        fail "leg 2: $sym has $nbackends backend definitions ($(echo $backends)); which one this link resolves to is member order"
+        bad "leg 2: $sym has $nbackends backend definitions ($(echo $backends)); which one this link resolves to is member order"
         continue
     fi
     in_link=$(awk -F'\t' -v m="$fbmember" '$1 == m { print "yes" }' "$TMP/included" | head -1)
@@ -262,16 +284,16 @@ while read -r sym; do
         # all. If it is, the backend's own member was not anchored, the fallback answered
         # the reference first, and the board SILENTLY DECLINES at runtime.
         if [ -n "$in_link" ]; then
-            fail "leg 2: $fbmember entered the link although $backends defines $sym; that backend member is not anchored, so this board silently declines at runtime"
+            bad "leg 2: $fbmember entered the link although $backends defines $sym; that backend member is not anchored, so this board silently declines at runtime"
             continue
         fi
         if [ -z "$backend_linked" ]; then
-            fail "leg 2: $backends defines $sym but never entered the link, and its fallback did not either"
+            bad "leg 2: $backends defines $sym but never entered the link, and its fallback did not either"
         fi
         # The map must not mention the fallback member anywhere, not even as a discarded
         # section: an unextracted member cannot appear at all.
         if grep -qF "($fbmember)" "$MAP"; then
-            fail "leg 2: $fbmember appears in the link map although $backends owns $sym"
+            bad "leg 2: $fbmember appears in the link map although $backends owns $sym"
         fi
         continue
     fi
@@ -284,13 +306,13 @@ while read -r sym; do
     why=$(awk -F'\t' -v m="$fbmember" '$1 == m { print $2 }' "$TMP/included" | head -1)
     # The RX psABI underscore is in the symbol table but not in what ld prints here.
     if [ "$why" != "$sym" ] && [ "_$why" != "$sym" ]; then
-        fail "leg 3: $fbmember entered the link to satisfy '$why', not $sym"
+        bad "leg 3: $fbmember entered the link to satisfy '$why', not $sym"
         continue
     fi
     checked_fallback=$((checked_fallback + 1))
 done < "$TMP/seams"
 if [ "$checked_fallback" -eq 0 ]; then
-    fail "leg 3: this board resolved no seam from its fallback, so the fallback path is untested here"
+    bad "leg 3: this board resolved no seam from its fallback, so the fallback path is untested here"
 fi
 
 # --- leg 4: no weak symbol outside the allowlist ------------------------------
@@ -299,14 +321,14 @@ comdat_ok() { # <archive> <member> <section index>
 }
 
 for a in $ARCHIVES; do
-    [ -r "$a" ] || continue
-    "$READELF" -sW "$a" 2>/dev/null | awk -v A="$a" '
+    tool_out "$TMP/syms" "$READELF_SYM_RE" "$READELF" -sW "$a"
+    awk -v A="$a" '
         /^File:/ {
             m = $2
             sub(/^.*\(/, "", m); sub(/\)$/, "", m)
             next
         }
-        $5 == "WEAK" { print A "\t" m "\t" $7 "\t" $8 }' > "$TMP/weak_arch"
+        $5 == "WEAK" { print A "\t" m "\t" $7 "\t" $8 }' "$TMP/syms" > "$TMP/weak_arch"
     while IFS=$'\t' read -r arch member ndx sym; do
         [ -n "$sym" ] || continue
         if allowed "$sym"; then
@@ -315,19 +337,23 @@ for a in $ARCHIVES; do
         case "$sym" in
             _Z*|__Z*)
                 if [ "$ndx" = "UND" ]; then
-                    fail "leg 4: weak undefined C++ reference $sym in $member ($arch)"
+                    bad "leg 4: weak undefined C++ reference $sym in $member ($arch)"
                 elif ! comdat_ok "$arch" "$member" "$ndx"; then
-                    fail "leg 4: weak $sym in $member ($arch) is NOT COMDAT, so it is a weak attribute and not C++ vague linkage"
+                    bad "leg 4: weak $sym in $member ($arch) is NOT COMDAT, so it is a weak attribute and not C++ vague linkage"
                 fi
                 continue
                 ;;
         esac
-        fail "leg 4: weak symbol $sym in $member ($arch) is not on the allowlist"
+        bad "leg 4: weak symbol $sym in $member ($arch) is not on the allowlist"
     done < "$TMP/weak_arch"
 done
 
-"$NM" --defined-only "$ELF" 2>/dev/null | awk '$(NF-1) ~ /^[wWvV]$/ { print $NF }' > "$TMP/weak_elf"
-"$NM" --undefined-only "$ELF" 2>/dev/null | awk '$(NF-1) == "w" { print $NF }' >> "$TMP/weak_elf"
+tool_out "$TMP/tool" "$NM_DEF_RE" "$NM" --defined-only "$ELF"
+awk '$(NF-1) ~ /^[wWvV]$/ { print $NF }' "$TMP/tool" > "$TMP/weak_elf"
+# A fully linked image may legitimately carry no undefined symbol at all, so this one
+# gets no landmark beyond nm having succeeded.
+tool_out "$TMP/tool" '' "$NM" --undefined-only "$ELF"
+awk '$(NF-1) == "w" { print $NF }' "$TMP/tool" >> "$TMP/weak_elf"
 sort -u "$TMP/weak_elf" -o "$TMP/weak_elf"
 while read -r sym; do
     [ -n "$sym" ] || continue
@@ -335,7 +361,7 @@ while read -r sym; do
     case "$sym" in
         _Z*|__Z*|DW.ref.*) continue ;;
     esac
-    fail "leg 4: weak symbol $sym in the image is not on the allowlist"
+    bad "leg 4: weak symbol $sym in the image is not on the allowlist"
 done < "$TMP/weak_elf"
 
 if [ "$rc" -eq 0 ]; then

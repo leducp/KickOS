@@ -45,14 +45,14 @@ master `64410b7` -- rebase before any work in them.
   `KICKOS_CAP_FIRST_DYNAMIC` and costs a dynamic slot on all four 9-handle boards. **LANDED** as
   `KOS_SYS_REBOOT`; recorded in full in the `kos_reboot` section below and in
   `docs/design-unprivileged-root.md` section 9. The stage-4 re-cut renamed that shared bit from
-  `AUTH_DEVICE` without splitting reboot from shutdown.
+  its old device-authority spelling without splitting reboot from shutdown.
 - **`kos_ram_alloc` gets an explicit self-grant**, not an implicit one at alloc: `AUTH_MEMORY`-gated,
   bounded by `KICKOS_MPU_MAX_REGIONS`, failing loud with `-KOS_ENOMEM`. **LANDED** as
   `KOS_SYS_MEM_SELF_GRANT`.
 - **The selftest gate asserts a named, posture-dependent expected-skip list**, not a skip budget.
   **LANDED** as `EXPECT_SKIPS`.
-- **`KOS_CAP_SERVICE` is retired.** The ABI is not stable yet, so a superseded spelling is deleted
-  rather than deprecated. **LANDED.**
+- **The service capability index is retired.** The ABI is not stable yet, so a superseded spelling
+  is deleted rather than deprecated. **LANDED.**
 - **clang-format is decided against** as a gate -- see the CI-hygiene section.
 - **The record cites closing commits by SUBJECT, not by hash.** Hashes move under rebase; this
   branch proved it (the A/B witness hash `a463ab9` had to be re-resolved to `22e1c5a`).
@@ -381,8 +381,9 @@ triggers `push` only on `master`).
 
 - [ ] **Reduce `--repeat until-pass:4` to 2 on the four QEMU gates** -- or better, fix the timing
       root cause that made 4 look necessary. Four attempts hides a gate that fails most runs.
-- [ ] **Tighten the sim `mpu_fault` failure regex** to match what `tests/check_qemu_mpu_fault.sh`
-      already asserts; the sim side accepts more than it should, so it can pass on the wrong fault.
+- [x] **Tighten the sim `mpu_fault` failure regex** (M4.5.8): the sim registration now runs
+      `tests/check_mpu_fault.sh`, the same script the QEMU boards use, which also pins the reported
+      fault address to the one the app announces.
 - [ ] **Add link-only CI jobs for `f302nucleo-st` and `bluepill-c8-st`** (maintainer-confirmed
       2026-07-27). CI builds only the plain presets, so a selftest image that overflows 64 KiB of
       flash goes unnoticed until someone builds the `-st` preset by hand. These two boards are
@@ -446,7 +447,7 @@ backends are still bench debt (see the bench item below).
 
 A design investigation superseded stages 2-8 of the old plan: root should **start unprivileged
 holding capabilities** rather than start privileged and demote, so there is no demotion to build.
-`thread_regions_recompose`, `KOS_SYS_DROP_PRIV`, its per-arch backends and Xtensa-last are
+`thread_regions_recompose`, the drop-privilege syscall, its per-arch backends and Xtensa-last are
 **deleted, not deferred** -- the region set is composed once in `thread_create`
 (`kernel/thread/thread.cc:94-134`) from a privilege that never changes, and the rest existed only
 to manage a transition this design does not have. The reason, recorded once: **every ISA with a
@@ -480,9 +481,10 @@ frdmk64f+blink -- the 8 B being the argv struct itself).
       Placement verified by symbol address on all five enforcement images, not assumed.
 - [x] **Add `KOS_SYS_SHUTDOWN(status)`** -- see `m4.5.1: end the system through a syscall, not a
       direct kernel call`. Syscall **36**; privileged-only for now, which is exactly who can end the
-      system today, and stage 1 widens it to `AUTH_DEVICE`. Still the natural home for the "console
-      bytes lost on shutdown" item above, which now has one owner instead of two call sites. Gate:
-      selftest `shutdown_priv`, checked to FAIL (run truncates mid-suite) with the gate removed.
+      system today, and stage 1 widens it to an authority bit (`AUTH_SYSTEM` after the stage-4
+      re-cut). Still the natural home for the "console bytes lost on shutdown" item above, which
+      now has one owner instead of two call sites. Gate: selftest `shutdown_priv`, checked to FAIL
+      (run truncates mid-suite) with the gate removed.
 - [x] **Add a writable arm to `user_writable_ok`** -- see `m4.5.1: give user_writable_ok the
       static-data arm its read twin has`. New `arch_user_data_writable` seam. **The hole was wider
       than recorded here:** it is not just the five chips with no MPU *backend* (stm32f103,
@@ -500,9 +502,10 @@ frdmk64f+blink -- the 8 B being the argv struct itself).
 on frdmk64f+blink, no `.bss`).
 - [x] **Added `CapType::CAP_AUTHORITY`**, seated at `KOS_CAP_AUTHORITY` (index 2, already
       reserved, and now spelled for what it holds) carrying the **five unused bits of
-      `CapEntry.rights`**: `AUTH_MEMORY` (ram_alloc + MMIO grant), `AUTH_PINMUX`, `AUTH_CLOCK`,
-      `AUTH_IRQ`, `AUTH_DEVICE` (console publish, shutdown, and later reboot -- **not** periph
-      enable, which is possession-gated; see stage 3). Zero dynamic slots on
+      `CapEntry.rights`**: `AUTH_MEMORY` (ram_alloc + MMIO grant), `AUTH_PINMUX`, a clock bit,
+      `AUTH_IRQ`, and a device bit (console publish, shutdown, and later reboot -- **not** periph
+      enable, which is possession-gated; see stage 3). The stage-4 re-cut below replaced those last
+      two spellings with `AUTH_PSTATE`, `AUTH_SYSTEM` and `AUTH_CONSOLE`. Zero dynamic slots on
       every board. Poolless, so it resolves by reading the reserved slot and never via
       `cap_resolve_e`; `obj_ref_inc`/`obj_ref_drop`/`obj_close_protocol` each gained an explicit
       no-op arm rather than relying on a `default:` that asserts.
@@ -640,18 +643,19 @@ is what the stage built, and no item under it describes a posture that is still 
       base, never a range, and both writes are DERIVED from `base`, so no caller can name a shared
       block's register or the bit inside it. Retires `k64uart` and `k64dspi`'s root MMIO entirely, so
       `kickos_services_frdmk64f` came off `KICKOS_SERVICE_LIST_ROOT_MMIO`.
-- [x] **NOT gated `AUTH_DEVICE`, which is what this checklist previously said. The gate is
-      possession.** `caller_holds_mmio_block(base)` (`kernel/syscall/syscall_mem.cc`) requires a live
-      `ARCH_MPU_DEV` region whose base matches exactly; privileged callers bypass, as in
-      `cap_check_authority`. Deliberately not `user_range_ok` (that funnel asks whether the kernel
-      may dereference a user pointer, and passes trivially at `len == 0`); exact base rather than
-      containment is what stops a sub-block window reaching a whole-block entry. `AUTH_DEVICE` would
-      have handed `kos_shutdown` and reboot-to-bootloader to every unprivileged bus driver in the
-      fleet, since the seam's callers ARE the drivers, and every other existing bit carries
-      collateral just as unwanted with no free bits left. Possession is sufficient because a granted
-      window already means "may enable, configure and disable this device" wherever the silicon
-      permits it directly -- the XMC `KSCFG` case is the precedent, and the seam brings K64F and F411
-      to that parity. Rationale in full: `docs/design-unprivileged-root.md` sections 7 and 9.
+- [x] **NOT gated on a device authority bit, which is what this checklist previously said. The
+      gate is possession.** `caller_holds_mmio_block(base)` (`kernel/syscall/syscall_mem.cc`)
+      requires a live `ARCH_MPU_DEV` region whose base matches exactly; privileged callers bypass,
+      as in `cap_check_authority`. Deliberately not `user_range_ok` (that funnel asks whether the
+      kernel may dereference a user pointer, and passes trivially at `len == 0`); exact base rather
+      than containment is what stops a sub-block window reaching a whole-block entry. The device
+      bit of the day, now `AUTH_SYSTEM`, would have handed `kos_shutdown` and reboot-to-bootloader to
+      every unprivileged bus driver in the fleet, since the seam's callers ARE the drivers, and
+      every other existing bit carries collateral just as unwanted with no free bits left.
+      Possession is sufficient because a granted window already means "may enable, configure and
+      disable this device" wherever the silicon permits it directly -- the XMC `KSCFG` case is the
+      precedent, and the seam brings K64F and F411 to that parity. Rationale in full:
+      `docs/design-unprivileged-root.md` sections 7 and 9.
 - [x] **The call site is the DRIVER, not root**, which is what makes the seam's bound a fact rather
       than an aspiration: root holds no DEV region on any board (`ARCH_MPU_DEV` is attached only in
       `domain_for`, reached with MMIO only from `thread_spawn`, and `KOS_SYS_MEM_SELF_GRANT`
@@ -685,19 +689,20 @@ is what the stage built, and no item under it describes a posture that is still 
 
 **Stage 4 -- the app story. COMPLETE** (three commits: the delegation type guard, the re-cut plus
 `kos_cap_narrow`, then the narrow site plus the per-app declarations).
-- [x] **Re-cut the authority set into SIX bits, and delete `AUTH_DEVICE` and `AUTH_CLOCK` as names.**
-      `AUTH_DEVICE` in its old shape ("console publish, shutdown, reboot") held together only
-      while root does all three: once root is only a spawner, `console_publish` and `shutdown` go to
-      DIFFERENT threads and no single bit can carry both. The cut: `AUTH_MEMORY` (`ram_alloc`, MMIO
-      grant, `mem_self_grant`; root the spawner), `AUTH_PINMUX` (`pinmux_set`; root's board pin map
-      plus apps muxing their own pins), `AUTH_PSTATE` (`cpu_clock_set`; a governor service and nobody
-      else), `AUTH_IRQ` (drivers with lines), `AUTH_SYSTEM` (`shutdown`, `reboot`; root/init),
-      `AUTH_CONSOLE` (`console_publish`; the console driver). `cpu_clock_set` keeps its own bit
-      specifically because a CPU governor needs clock-rate authority and nothing else -- folding it
-      with shutdown would hand the governor the power to end the system. `AUTH_CONSOLE` must be a bit
-      and **cannot** be possession-gated the way `arch_periph_enable` is: `KOS_SYS_ENDPOINT_CREATE` is
-      completely ungated, so any thread can mint the endpoint it would publish, and
-      `cap_console_publish` has no owner check either (filed below under the M4.5.3 findings). Full
+- [x] **Re-cut the authority set into SIX bits, and delete the old device and clock bits as
+      names.** The device bit in its old shape ("console publish, shutdown, reboot") held together
+      only while root does all three: once root is only a spawner, `console_publish` and
+      `shutdown` go to DIFFERENT threads and no single bit can carry both. The cut:
+      `AUTH_MEMORY` (`ram_alloc`, MMIO grant, `mem_self_grant`; root the spawner), `AUTH_PINMUX`
+      (`pinmux_set`; root's board pin map plus apps muxing their own pins), `AUTH_PSTATE`
+      (`cpu_clock_set`; a governor service and nobody else), `AUTH_IRQ` (drivers with lines),
+      `AUTH_SYSTEM` (`shutdown`, `reboot`; root/init), `AUTH_CONSOLE` (`console_publish`; the
+      console driver). `cpu_clock_set` keeps its own bit specifically because a CPU governor needs
+      clock-rate authority and nothing else -- folding it with shutdown would hand the governor the
+      power to end the system. `AUTH_CONSOLE` must be a bit and **cannot** be possession-gated the
+      way `arch_periph_enable` is: `KOS_SYS_ENDPOINT_CREATE` is completely ungated, so any thread
+      can mint the endpoint it would publish, and `cap_console_publish` has no owner check either
+      (filed below under the M4.5.3 findings). Full
       reasoning in `docs/design-unprivileged-root.md` section 5.
 - [x] **Funded the sixth bit by moving the authority word out of `CapEntry.rights` into the poolless
       `obj` field.** `CapEntry` stays 8 bytes; `rights` is 0 on such an entry. The two families now
@@ -1043,16 +1048,16 @@ the rest of the bench debt under M4.6.3..N.
 
 ## M4.5.6 -- delete `KICKOS_ROOT_PRIVILEGED` -- and M4.5.7 -- remove the weak-symbol seam mechanism -- BOTH COMPLETE (2026-07-31)
 
-**TWO cleanup sub-milestones, in this order. BOTH ARE DONE**, six commits on
-`unpriv-root-stage5`, not yet merged and shipping as one PR. M4.5.6 -- deleting the
-`KICKOS_ROOT_PRIVILEGED` posture knob -- is four commits; M4.5.7 -- removing the weak-symbol seam
-mechanism -- is the two at the tip. The order was
+**TWO cleanup sub-milestones, in this order. BOTH ARE DONE** and merged, squashed into `dde73ca`
+(PR #6): M4.5.6 deleted the `KICKOS_ROOT_PRIVILEGED` posture knob, M4.5.7 removed the weak-symbol
+seam mechanism. The order was
 not a preference: the knob deletion removes a posture and every `#if` branch behind it, so the seam
 pass edited a one-posture tree instead of two. Both are foundation work ahead of M4.6 and
 neither is a driver feature. Next is **M4.6.1 -- IRQ + console visibility**.
 
-**Half one -- delete the `KICKOS_ROOT_PRIVILEGED` knob. COMPLETE** (2026-07-30/31, MinSizeRel, three
-commits on `unpriv-root-stage5`: `c5d9b0d` -> `270b6fa` -> `124b68c`, NOT merged). The first
+**Half one -- delete the `KICKOS_ROOT_PRIVILEGED` knob. COMPLETE** (2026-07-30/31, MinSizeRel,
+merged in `dde73ca`; developed as `c5d9b0d` -> `270b6fa` -> `124b68c`, which the captures
+stamp). The first
 inventory below was written at `c5d9b0d` and has been corrected against the two later commits.
 **Capture hygiene, recorded because this milestone broke its own rule.** It wrote down "commit before
 a witness pass" and then took most of the later captures at `270b6fa-dirty` or `2fc7799-dirty`
@@ -1077,7 +1082,7 @@ one, so those captures cannot be re-derived from history.
       below.
 
       **The name appears in NO code or build file at all.** `270b6fa` deleted the removed-knob
-      configure guards along with `KICKOS_SCRAMBLE_TEST`'s, so a `grep` over
+      configure guards along with the scramble-test option's, so a `grep` over
       `*.txt *.cmake *.h *.cc *.json *.in *.sh` returns zero hits. Consequence, and it is a
       deliberate trade rather than an oversight: a stale `-DKICKOS_ROOT_PRIVILEGED=...` is
       **silently ignored** on an in-tree configure AND on an out-of-tree consumer configure, with
@@ -1147,10 +1152,10 @@ one, so those captures cannot be re-derived from history.
       once `xmcssc` as a service was witnessed, so no service list is refused today. The variable and
       its gate stay for the next board whose bring-up writes MMIO from root, because that failure is
       silent and total.
-- [x] **`consoledemo -DKICKOS_SCRAMBLE_TEST=ON` is restaged as a standalone app, `conreclaim`,
-      registered only when `KICKOS_SERVICE_LIST=kickos_services_none`. THE `KICKOS_SCRAMBLE_TEST`
-      OPTION NO LONGER EXISTS** -- any doc still naming it is stale. The split was forced by a
-      premise conflict rather than chosen: U0C0 admits exactly ONE holder, the scrambler has to be
+- [x] **`consoledemo`'s scramble-test build option is restaged as a standalone app, `conreclaim`,
+      registered only when `KICKOS_SERVICE_LIST=kickos_services_none`. THAT OPTION NO LONGER
+      EXISTS** -- any doc still naming it is stale. The split was forced by a premise conflict
+      rather than chosen: U0C0 admits exactly ONE holder, the scrambler has to be
       it, and `consoledemo` exists to demonstrate the `xmcuart` handover, which needs `xmcuart` to
       be that holder. Two mutually exclusive premises behind one option in one ELF. Separating them
       costs nothing, because the property under test -- `arch_console_reclaim` repairs a garbled
@@ -1341,26 +1346,85 @@ duplicated.
 - [ ] **`f302nucleo`'s fault reporter produces NO dump, root cause OPEN.** Not the new probers' bug:
       the pre-existing `fault` app truncates at `[f` (338 bytes, `.session/m456-silicon/b4-fault.log`)
       exactly as `ringppb` does.
+      **DEFERRED until after M4.6.2**: no board access before then.
       **The hardware faults correctly** -- debugger attach confirms what ARM ARM B3.1.1 requires:
       `CFSR=0x00008200` (BFSR `0x82` = `PRECISERR|BFARVALID`), `BFAR=0xe000ed00` (the exact probed
-      address), `HFSR=0x40000000` (`FORCED`, because `BUSFAULTENA` is never set in-tree). The reporter
-      IS entered and runs at least 120 instructions, MSP peaks at least 376 B of 2 KiB with no
-      overflow, `DHCSR` bit 19 is clear so there is no lockup, and the UART is ready
-      (`CR1=0x0d`, `ISR=0x006000d0`, `TXE` and `TC` both set).
-      **Hypotheses KILLED, so they are not worth re-running:** hardware-does-not-fault, vector
-      unwired, null backend pointer, output-stuck-in-the-ring, `KICKOS_POLL_SPIN_MAX` (it is
-      1,000,000), and "buffered ring plus a missing `arch_console_reclaim`" -- `stm32f411` is ALSO
-      buffered and ALSO lacks one, and it dumps.
-      Unresolved span: between "reporter running inside `kpanic_enter`" and "a byte reaching
-      `USART2_TDR` (`0x40004428`)". BLOCKED on a physical ST-Link replug.
+      address), `HFSR=0x40000000` (`FORCED`, because `BUSFAULTENA` is never set in-tree), and the
+      UART is ready (`CR1=0x0d`, `ISR=0x006000d0`, `TXE` and `TC` both set).
+      **THE SPAN IS NOT NARROW, and two previously recorded readings are NOT evidence.**
+      `b5-nuc-fault-gdb.out` is a FIXED 120-instruction budget (`stepi 120`, its line 19), and
+      `DHCSR`/`HFSR`/`CFSR` are sampled at the END of the trace, after that budget ran out. At step
+      120 the reporter was executing normally inside `kvsnprintf`, storing the FIRST character of
+      `"\n=== HARD FAULT ===\n"` into the stack buffer. So "DHCSR bit 19 clear, no lockup" was read
+      off a healthy machine mid-dump and says nothing about the failure. Likewise "MSP peak 376 B"
+      is not a peak: `0x20003de8` is exactly the bottom of `kvsnprintf`'s frame, which is where the
+      trace stopped.
+      **Stack exhaustion is arithmetically EXCLUDED.** Entry MSP `0x20003f60`, reporter push 32 B,
+      `kprintf` 288 B, then the deepest branch `kconsole_write` 144 B plus `console_emit` 16 B plus
+      `write_sync` 8 B: 488 B worst case against a `0x20003800` floor, leaving 1,400 B spare. The
+      2 KiB versus 8 KiB `_kernel_stack_size` difference is not the answer. Do not raise it.
+      The real unresolved span is the REST of the dump: `kvsnprintf` past its first character,
+      `strlen`, `kconsole_write`'s CRLF cook, `console_emit`, `arch_console_write_sync`.
+      **The emitted code on that whole path is instruction-identical to `pizero2350`'s**, verified by
+      address-stripped disassembly of both builds. The only difference anywhere is two register
+      immediates in `arch_console_write_sync` (F3 `ISR`/`TDR` at `+0x41c`/`+0x428` against F4
+      `SR`/`DR` at `+0x400`/`+0x404`), each correct for its IP block.
+      **Correction to the killed-hypothesis list.** Still killed: hardware-does-not-fault, vector
+      unwired, null backend pointer, output-stuck-in-the-ring, `KICKOS_POLL_SPIN_MAX` (1,000,000).
+      "Buffered ring plus a missing `arch_console_reclaim`" is ALSO dead, but NOT for the reason
+      recorded: `f411disco` has no post-change fault witness at all. Its only one is 2026-07-29 at
+      `6646c8e`, under the MPU preset, from a MemManage fault, three tips before the failure, and it
+      was explicitly NOT in the retake list after the reclaim widening changed the panic path on
+      every board, because the board was not plugged in. The valid substitute witness is
+      `pizero2350`: `KICKOS_ARCH=armv7m`, buffered, defines no `arch_console_reclaim`, and dumped
+      fine post-change at `c5d9b0d`/`270b6fa`.
+      **HYPOTHESIS SPACE NARROWED on silicon, 2026-07-31, without the f302.** A dead ring flush
+      CANNOT explain total silence. On `pizero2350` with `console_tx_flush_sync()` deleted from
+      `kpanic_enter`, the fault dump STILL reached the wire: the reporter writes through
+      `arch_console_write_sync` regardless of ring state, so a broken drain strands PRE-fault output
+      and corrupts ordering but never silences the dump. So whatever f302 has, it is not a ring or
+      flush fault. Remaining candidates: its own `arch_console_write_sync` / USART2 polled path, the
+      vector routing, or the fault never reaching `HardFault_Handler` at all.
+      **FIRST ACTION when the board returns, and it needs NO probe: look at LD2 (PB13).**
+      `kfault_terminate` drives 3 x 0.2 s blinks then 2 s dark, forever, and the path is armed
+      (`kdiag_led_init()` at `kmain.cc:201` precedes the banner; `arch_diag_led_init`/`_set` both
+      resolve to `chip_stm32f302`). Blinking three-and-pause means the reporter ran to completion and
+      every `kprintf` executed, so the loss is downstream of TDR and the firmware is not at fault.
+      Dark or static means execution never reached `kfault_terminate` and the fault is inside the
+      span. One bit, no tooling, and it dominates both experiments queued earlier.
+      **When a probe is available, do NOT repeat the step-capped trace.** Use breakpoints plus
+      `continue`: `break *arch_console_write_sync`, `break *kfault_terminate`. A write_sync hit means
+      the firmware reached the writer, so step the TDR store and read `r0`/`r1`; only
+      `kfault_terminate` hitting means the dump was skipped upstream; neither hitting means halt and
+      read PC and `DHCSR` bit 19 THEN. Derive addresses from your own build. This dominates the TDR
+      watchpoint, which conflates "never reached the writer" with "reached it with n == 0".
 - [ ] **The structural coverage hole behind it: no emulated gate can exercise a buffered-ring panic
-      flush.** Every fault-dump gate in the fleet runs on an UNBUFFERED-console board -- mps2
-      semihosting, `microbit`, `virt` -- so the whole class of "the panic path has to drain a ring it
-      just reclaimed" has zero in-env coverage. That is why the item above survived to silicon, and it
-      will keep hiding the next one until some gate carries a buffered console.
+      flush, and the sim CANNOT substitute.** Every fault-dump gate in the fleet runs on an
+      UNBUFFERED-console board (mps2 semihosting, `microbit`, `virt`), so "the panic path must drain
+      a ring it just reclaimed" has zero in-env coverage. That is why the item above survived to
+      silicon. **The sim looked like the fix and is not**: its synthetic TX backend re-raises SIGUSR1
+      and re-asserts until the ring empties, so the ring is provably empty at panic time (`used=0`
+      measured for both `fault` and `panicgate1`). MEASURED CONSEQUENCE: deleting
+      `console_tx_flush_sync()` from `kpanic_enter` outright leaves the whole sim suite green. So the
+      flush is unreachable-dead from the sim's point of view. `sim_published_panic` (M4.6.1) covers
+      the reclaim and the polled route, not the drain.
+      **WITNESSED on `pizero2350` 2026-07-31 (`.session/m458-silicon/pzdrain-*.log`), which is the
+      first measurement of the drain with a PROVEN non-empty ring.** A burst-then-fault app with a
+      probe inside `kpanic_enter` (after `arch_irq_save`, before the flush) read
+      `used_at_panic=419` of a 511-byte usable ring, then 0 after the flush; all 16 burst lines
+      reached the wire in order, dump last. Negative control with the flush deleted: the same 419
+      stranded, only the 4 already-shifted bytes preceded the dump, and the remainder surfaced AFTER
+      it spliced mid-token, flushed only by `kickos_bootloader_handover` on the way to BOOTSEL. On an
+      image that halts instead of rebooting those 419 bytes are lost outright. The drain is therefore
+      live and load-bearing on RP2350 even though it is dead code on the sim. Captures were taken
+      from a dirty tree; the exact diff is pinned at `.session/m458-silicon/pzdrain-tree.diff`.
+      Two claims in the tree overstate this and are owed a fix: `tests/check_fault_dump.sh` (its
+      header) and `user/apps/common/fault/main.cc` (its header) both say the marker catches a dump
+      lost into an armed ring. On the sim it cannot. What `fault_dump` really covers is the
+      `RECLAIMED`-to-polled routing.
 
-**Half two -- remove the weak-symbol seam mechanism. COMPLETE** (2026-07-31, an isolated tip commit
-on `unpriv-root-stage5`, NOT merged). Outcome first, then the reasoning that chose it:
+**Half two -- remove the weak-symbol seam mechanism. COMPLETE** (2026-07-31, developed as an
+isolated tip commit, merged in `dde73ca`). Outcome first, then the reasoning that chose it:
 
 - **33 `__attribute__((weak))` definitions removed.** 32 were visible to a plain-fleet `nm` sweep;
   the 33rd, `SystemCoreClock`, is weak only under `KICKOS_BENCH=ON`, which is why the sweep missed
@@ -1656,7 +1720,7 @@ installed), so the pass needs no preparation beyond the board itself.
           staged. **RESOLVED in M4.5.6, and not the way this entry first proposed**: the scrambler is
           now its own app, `conreclaim`, REGISTERED only when `KICKOS_SERVICE_LIST` already resolves
           to `kickos_services_none` -- a kernel-driven console with no DEV holder anywhere, so the
-          scrambler is the sole holder. `KICKOS_SCRAMBLE_TEST` no longer exists.
+          scrambler is the sole holder. The scramble-test build option no longer exists.
       **The remedy shape is the part worth keeping, because the obvious one is unbuildable.**
       `KICKOS_SERVICE_LIST` is ONE global cache variable, resolved in the root `CMakeLists.txt` before
       any subdirectory is added, so an app's own `CMakeLists` can never set the list it needs -- it can
@@ -1785,10 +1849,10 @@ installed), so the pass needs no preparation beyond the board itself.
       `kernel/syscall/syscall.cc:390` -- and the whole thing sits behind `KICKOS_ENABLE_SELFTEST`.
       Four parts: a mode argument (at least a normal system reset and bootloader entry); a per-MODE
       `-KOS_ENOSYS` decline instead of a per-function one; the knob narrowed to the bootloader
-      mode and renamed `KICKOS_ENABLE_REBOOT_TO_BOOTLOADER`, matching the sibling
-      `KICKOS_SHUTDOWN_TO_BOOTLOADER` (`CMakeLists.txt:117`) rather than spelling one destination two
-      ways; and an authority bit on top of the knob for the bootloader mode alone. What it buys: no
-      production in-kernel path can reset the chip today, which costs watchdog recovery, a
+      mode and renamed to match the sibling `KICKOS_SHUTDOWN_TO_BOOTLOADER` (`CMakeLists.txt:117`)
+      rather than spelling one destination two ways (the proposed spelling is in that design
+      section); and an authority bit on top of the knob for the bootloader mode alone. What it
+      buys: no production in-kernel path can reset the chip today, which costs watchdog recovery, a
       fault-handler reset and a bring-up retry for no security reason, since a normal reset carries
       none of the bootloader risk. What it retires: `KICKOS_SHUTDOWN_TO_BOOTLOADER` becomes a policy
       on one seam instead of a parallel mechanism, and syscall 38 becomes a real production syscall
@@ -1966,9 +2030,11 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
 - [x] **Writable user-pointer bound-check** at the syscall boundary (arch-neutral) -- landed
       ade1879 (`user_writable_ok`; clock_now retrofitted). A recv into an unchecked out-buffer was a
       privileged write oracle; the endpoint recv buf + badge-out reuse it.
-- [x] **Endpoint/IPC object (CAP_ENDPOINT)** -- additive per `docs/design-m3-endpoint-stagei.md`
-      (fable-reviewed): `SlotPool<Endpoint,N>` + `endpoint_refs` + `recv_holders` (struct field) +
-      one `cap_resolve` case + obj_ref_inc(rights)/drop and obj_close_protocol (EPIPE-wake) arms;
+- [x] **Endpoint/IPC object (CAP_ENDPOINT)** -- additive per the stage-I endpoint design
+      (fable-reviewed, never filed as a doc; what shipped is narrated in
+      `docs/book/endpoints-synchronous-ipc-by-rendezvous.md`): `SlotPool<Endpoint,N>` +
+      `endpoint_refs` + `recv_holders` (struct field) + one `cap_resolve` case +
+      obj_ref_inc(rights)/drop and obj_close_protocol (EPIPE-wake) arms;
       synchronous rendezvous, kernel-copied bounded payload, parks on the shared `wq_block`/
       `wq_pop_highest` primitive; send/recv/create syscalls 26/27/28 (recv gated on the writable
       check). Aliases/object-side badging DEFERRED (root-only; console needs one unbadged cap).
@@ -2298,12 +2364,12 @@ below where they were previously mislabeled.
         (incl. domain_share / mmio_grant / confused_deputy + the close-while-parked sem test).
         `CapEntry` table embedded in the TCB (`cap.h`), single `cap_resolve` chokepoint
         (per-task cap-gen then global object-gen), rights WAIT/SIGNAL/TRANSFER each enforced at a
-        real site, refcounted destroy-on-last-close, `KOS_SYS_handle_close` (renamed from
+        real site, refcounted destroy-on-last-close, `KOS_SYS_HANDLE_CLOSE` (renamed from
         `sem_destroy`), authenticated-grant spawn delegation (subset-only rights narrowing,
         validate-before-claim, B1 handle==index-on-a-fresh-table deterministic placement).
         Reference: `docs/reference/architecture.md` + `invariants.md`; teaching: `docs/book` ch 8.1.
   - [x] **`sys_cpu_clock_hz()` syscall** -- DONE @638620d, already on master (build+sim/qemu verified). Read-only
-    `KOS_SYS_cpu_clock_hz` via the `arch_cpu_clock_hz()` seam (mirrors `clock_now`), value
+    `KOS_SYS_CPU_CLOCK_HZ` via the `arch_cpu_clock_hz()` seam (mirrors `clock_now`), value
     returned in-register (no out-pointer), each backend reuses its CMSIS `SystemCoreClock`;
     sim returns 0. selftest `t_cpu_clock_hz` covers both branches; all 5 ISAs + sim build,
     runtime green on sim/armv7m/rv32imac. Read-side precursor to user clock-select below.
@@ -2483,6 +2549,58 @@ Fleet re-validation follow-ups (from the 2026-07-22 M3-branch gate; see `docs/ar
 - Common caveat for ALL the flash caches/buffers: they are NOT coherent across a flash
   program/erase -- any future in-field flash-write/OTA path must invalidate the relevant
   cache/speculation buffer. Not a live risk (KickOS is a fixed flash image today).
+
+## M4.5.x -- foundational tightening
+
+M4.5.x tightens the foundation BEFORE more complexity lands on it. The driver era adds gates,
+drivers and controller backends; every one built on a layer that is about to be rewritten is paid
+for twice. Less is more: each pass below should end with fewer lines than it started.
+
+## M4.5.9 -- comments and the design tier
+
+Touches nearly every file, so it runs after M4.5.8 merges.
+
+- [ ] **Comment purge.** Keep the fact, cut the chronicle. `--` is a DETECTOR: a comment needing a
+      clause chain is already phrased wrong, so rewrite or delete it. Repunctuating to `;` keeps the
+      bad sentence and hides the signal. Baseline 817 in code, 3,506 in docs; gate at zero once
+      clean.
+      Narration is not explanation: the reason a thing is so is one line and stays, the story of
+      reaching it is history and git holds it.
+      **A comment that turns out to be the only protection for something is a MISSING GATE.** Write
+      the test. `virt.ld` is the model: the `qemu-riscv` gate stops the esp32 assert being copied
+      there, not the comment saying so.
+- [ ] **Categorize the design tier.** 29 docs, 10,797 lines, against Book 25/6,673 and Reference
+      9/5,840: the tier authoritative for nothing is the largest, and most of it describes landed
+      work. Per doc, teaching goes to the Book, the contract to the Reference, and the remainder is
+      a short decision list (decisions, why each alternative fails, any falsifier). Nothing left
+      means delete it.
+      A design doc is neither Book nor Reference. It records decisions for unsettled work, so it
+      does not teach and does not restate the contract.
+
+## M4.5.10 -- test foundation
+
+Before M4.6, not after: M4.6.1 and M4.6.2 add gates, and gates built on this layer while it is
+being replaced are written twice.
+
+- [ ] **Move binary introspection out of shell.** `check_seam_defaults.sh`,
+      `check_kernel_ctor_placement.sh`, `check_oot_export_mcu.sh` and
+      `check_riscv_no_smalldata.sh` are 762 lines parsing `nm`/`readelf`/`objdump` text through
+      pipelines. Keep invoking those tools, parse in stdlib Python as `tests/telemetry/*.py`
+      already does (no third-party dependency).
+      This is a correctness change, not tidying: a parser given unexpected input RAISES, while a
+      pipeline prints nothing and an absence-assertion reads nothing as clean. That class is why
+      M4.5.8 needed seven hand-placed positive controls, and it also covers the semicolon-joined
+      `TARGET_OBJECTS` list, locale-translated ld map headings, and running a `bash` gate under
+      `dash` (which garbles into plausible FALSE failures rather than erroring).
+      Leave the runner and TAP half alone: `tests/lib/gate.sh` is already converging.
+      Acceptance: fewer total lines than it replaced, and every gate still mutation-provable red.
+
+## M6
+
+- [ ] **Re-inventory the test-gate surface.** M4.5.10 takes the binary-introspection half; whatever
+      is still oversized then is this pass. Take the inventory against the surface as it is, do not
+      pre-design it here. Baseline at M4.5.8: 23 shell scripts, ~2,000 lines, plus 5 Python
+      checkers.
 
 ## Post-M6 optimizations (not scheduled)
 

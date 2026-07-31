@@ -10,28 +10,34 @@ if(NOT TARGET rootauth)
   return() # diagnostics off -> app not built; skip its tests
 endif()
 
+# EXACTLY five arms, all unconditional (main.cc), on every board: the count must equal
+# that, because any slack lets an arm be deleted with every gate still green and the arm
+# most worth deleting is the post-narrow refusal, the only one separating a narrow that
+# took effect from one that returned 0 and changed nothing. Raise this with the arm count.
+set(_arms 5)
+# main prints PASS and then returns, and that return calls kos_shutdown (gated on
+# KOS_AUTH_SYSTEM), so a regression dropping only that bit panics AFTER the verdict.
+set(_absent "root: shutdown refused")
+
 # No KICKOS_HAVE_MPU condition: authority is a capability check, not memory enforcement.
 if(KICKOS_BUILD_TESTS)
   if(KICKOS_ARCH STREQUAL "sim")
-    add_test(NAME rootauth COMMAND "$<TARGET_FILE:rootauth>")
-    # Anchored on the app's own prefix, like check_qemu_rootauth.sh: a bare ERROR|FAIL
-    # matches those substrings anywhere in the boot output.
-    # The panic clause closes a post-verdict hole: main prints PASS and then returns, and
-    # the return calls kos_shutdown (gated on KOS_AUTH_SYSTEM), so a regression dropping
-    # only that bit panics AFTER the PASS regex has matched.
-    set_tests_properties(rootauth PROPERTIES
-      TIMEOUT 15
-      PASS_REGULAR_EXPRESSION "\\[rootauth\\] PASS"
-      FAIL_REGULAR_EXPRESSION "\\[rootauth\\] (ERROR|FAIL);root: shutdown refused")
+    add_test(NAME rootauth
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh" "$<TARGET_FILE:rootauth>"
+              rootauth ${_arms} "${_absent}")
+    set_tests_properties(rootauth PROPERTIES TIMEOUT 15)
   elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
     kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_rootauth TARGET rootauth
       BOARD ${KICKOS_BOARD}
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_rootauth.sh")
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh"
+      ARGS rootauth ${_arms} "${_absent}")
   elseif(KICKOS_BOARD STREQUAL "microbit")
     kickos_add_qemu_test(NAME microbit_rootauth TARGET rootauth BOARD microbit
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_rootauth.sh")
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh"
+      ARGS rootauth ${_arms} "${_absent}")
   elseif(KICKOS_BOARD STREQUAL "qemu-riscv")
     kickos_add_qemu_test(NAME qemu_riscv_rootauth TARGET rootauth BOARD qemu-riscv
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_rootauth.sh")
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh"
+      ARGS rootauth ${_arms} "${_absent}")
   endif()
 endif()

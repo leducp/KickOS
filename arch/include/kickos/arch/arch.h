@@ -117,7 +117,8 @@ int arch_periph_enable(uintptr_t base);
 // system. XMC4800's USIC0 qualifies only because kickos_xmc_usic_init() ungates it from
 // arch_init; a U1C0/U2C0 entry behind CGATCLR1 would not.
 //
-// Returns 0, -KOS_EINVAL (not on the allowlist) or -KOS_ENOSYS (no backend). The default
+// Returns 0, -KOS_EINVAL (not on the allowlist, or `value` has a bit outside the entry's
+// mask; the store is skipped, never masked) or -KOS_ENOSYS (no backend). The default
 // declines and lives alone in arch/common/arch_periph_reg_write_default.cc.
 int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 

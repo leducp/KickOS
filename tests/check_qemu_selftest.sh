@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
@@ -7,18 +7,13 @@
 # QEMU_TIMEOUT is only a hang backstop.
 
 set -u
-elf="${1:?usage: check_qemu_selftest.sh <selftest.elf>}"
-qemu="${QEMU:-qemu-system-arm}"
-machine="${QEMU_MACHINE:-mps2-an386}"
-extra_arg="${QEMU_EXTRA:-}"             # e.g. -bios none (RISC-V virt)
-here="$(cd "$(dirname "$0")" && pwd)"
+here="$(dirname "$0")"
+. "$here/lib/gate.sh"
+: "${QEMU_TIMEOUT:=30}"
 
-if ! command -v "$qemu" >/dev/null 2>&1; then
-    # Exit 77 -> CTest SKIP (not PASS), so a QEMU-less box doesn't green-light it.
-    echo "SKIP: $qemu not found"
-    exit 77
-fi
+elf="${1:?usage: check_qemu_selftest.sh <selftest.elf> <expected-arms>}"
+want_arms="${2:?usage: check_qemu_selftest.sh <selftest.elf> <expected-arms>}"
 
-out="$(timeout "${QEMU_TIMEOUT:-30}" "$qemu" -M "$machine" $extra_arg -nographic -semihosting -kernel "$elf" 2>&1)"
-echo "$out"
-printf '%s\n' "$out" | "$here/check_tap_stream.sh" "qemu/$machine"
+need_qemu_machine
+run_image "$elf"
+printf '%s\n' "$OUT" | "$here/check_tap_stream.sh" "qemu/$QEMU_MACHINE" "$want_arms"

@@ -12,8 +12,8 @@
 Rulings from the review are load-bearing; the old open-questions section is now
 section 7 (resolved decisions).
 
-The READ side is landed: `sys_cpu_clock_hz()` (`KOS_SYS_cpu_clock_hz = 22`,
-`user/include/kickos/sys/abi.h:36`) returns `arch_cpu_clock_hz()`
+The READ side is landed: `sys_cpu_clock_hz()` (`KOS_SYS_CPU_CLOCK_HZ = 22`,
+`user/include/kickos/sys/abi.h:43`) returns `arch_cpu_clock_hz()`
 (`arch/include/kickos/arch/arch.h:79`), each backend returning its CMSIS
 `SystemCoreClock`. This note settles the WRITE side: retuning the core/bus clock
 at runtime WITHOUT breaking kernel time, in-flight sleeps, or the console.

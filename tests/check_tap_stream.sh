@@ -1,73 +1,112 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
 # Verdict on a completed TAP stream, read from stdin. Shared by every selftest gate.
 #
-# EXPECT_SKIPS (default empty) is a permission set, not a budget: a skip whose name is
-# not listed fails the gate, and a listed name that did not skip is a NOTE, never a
-# failure.
+# EXPECT_SKIPS and EXPECT_PARTIALS (both default empty) are permission sets, not budgets:
+# a skip or a partial whose name is not listed fails the gate, and a listed name that did
+# not skip / go partial is a NOTE, never a failure.
+#
+# A PARTIAL is an arm that ran its invariant and left a sub-case unexercised on this
+# board. It reports `ok`, so no plan/case reconciliation can see it and only the by-name
+# set can. That matters because a mechanism regression makes an arm take its PARTIAL
+# early return on EVERY board at once, which without this set is a green run with the
+# contract gone.
+#
+# <expected-arms> is what makes the suite non-vacuous. tap.cc plans `1..N` from the
+# RUNTIME registry, so a deleted arm shrinks the plan and the case count in lockstep and
+# no self-consistent parse can see it. The caller owns the number because five arms are
+# #if-conditional and the total is therefore per-posture.
+#
+# usage: <tap stream> | check_tap_stream.sh <label> <expected-arms>
 
 set -u
-label="${1:-selftest}"
+. "$(dirname "$0")/lib/gate.sh"
+label="${1:?usage: check_tap_stream.sh <label> <expected-arms>}"
+want_arms="${2:?usage: check_tap_stream.sh <label> <expected-arms>}"
 # A KICKOS_CONSOLE_CRLF board emits CR, which defeats the end-anchored parses below.
 out="$(tr -d '\r')"
 
 # A raw CMake list arrives semicolon-separated. Flattened to single-space separation
 # because the membership tests below are `case` globs against " $name ".
 expect_skips="$(printf '%s' "${EXPECT_SKIPS:-}" | tr ',;\t\n' '    ')"
+expect_partials="$(printf '%s' "${EXPECT_PARTIALS:-}" | tr ',;\t\n' '    ')"
 
 if echo "$out" | grep -q "not ok"; then
-    echo "FAIL: a TAP test reported not ok"
-    exit 1
+    echo "$out" | grep "not ok"
+    fail "a TAP test reported not ok"
 fi
 if ! echo "$out" | grep -q "# all tests passed"; then
-    echo "FAIL: TAP completion marker missing (crash / hang / truncated run?)"
-    exit 1
+    fail "TAP completion marker missing (crash / hang / truncated run?)"
 fi
 
 # Parsed after the completion marker so a truncated run is reported as truncated.
-skipped="$(echo "$out" | sed -n 's/^# skipped: \([0-9][0-9]*\)$/\1/p' | tail -1)"
-if [ -z "$skipped" ]; then
-    echo "FAIL: no '# skipped: N' summary in the TAP stream (harness regression?)"
-    exit 1
+plan="$(echo "$out" | sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' | tail -1)"
+if [ -z "$plan" ]; then
+    fail "no '1..N' plan line in the TAP stream (the whole stream was dropped?)"
+fi
+cases="$(echo "$out" | grep -c '^\(not \)\?ok [0-9]')"
+if [ "$plan" -ne "$cases" ]; then
+    fail "TAP plan claims $plan case(s) but $cases were reported"
+fi
+if [ "$plan" -ne "$want_arms" ]; then
+    fail "TAP plan is $plan, expected exactly $want_arms: an arm was added or deleted"
 fi
 
-# TAP spells a skip as a passing case with a directive: `ok <n> - <name> # SKIP <reason>`.
-skipped_names="$(echo "$out" \
-    | sed -n 's/^ok [0-9][0-9]* - \([A-Za-z0-9_]*\) # SKIP.*/\1/p' \
-    | tr '\n' ' ')"
-parsed=0
-for _n in $skipped_names; do parsed=$((parsed + 1)); done
+# One directive class. The harness spells both as a passing case carrying a directive,
+# `ok <n> - <name> # <DIRECTIVE> <reason>`, plus a matching `# <label>: N` summary line;
+# parse and permission are identical, only the tokens differ. Sets N to the count.
+check_directive() { # <DIRECTIVE> <summary-label> <permitted names>
+    _dir="$1"
+    _label="$2"
+    _expect="$3"
 
-# If the parse and the harness disagree, the list below is checking nothing.
-if [ "$parsed" -ne "$skipped" ]; then
-    echo "FAIL: harness reported $skipped skip(s) but $parsed SKIP line(s) parsed."
-    echo "      The 'ok N - name # SKIP' format moved; the expected-skip list is vacuous."
-    echo "$out" | grep "# SKIP"
-    exit 1
-fi
+    N="$(echo "$out" | sed -n "s/^# $_label: \([0-9][0-9]*\)\$/\1/p" | tail -1)"
+    if [ -z "$N" ]; then
+        fail "no '# $_label: N' summary in the TAP stream (harness regression?)"
+    fi
 
-unexpected=""
-for n in $skipped_names; do
-    case " $expect_skips " in
-        *" $n "*) ;;
-        *) unexpected="$unexpected $n" ;;
-    esac
-done
-if [ -n "$unexpected" ]; then
-    echo "FAIL: skip(s) not on the expected list:$unexpected"
-    echo "      expected:${expect_skips:+ $expect_skips}"
-    echo "$out" | grep "# SKIP"
-    exit 1
-fi
+    _names="$(echo "$out" \
+        | sed -n "s/^ok [0-9][0-9]* - \([A-Za-z0-9_]*\) # $_dir.*/\1/p" \
+        | tr '\n' ' ')"
+    _parsed=0
+    for _x in $_names; do _parsed=$((_parsed + 1)); done
 
-for e in $expect_skips; do
-    case " $skipped_names " in
-        *" $e "*) ;;
-        *) echo "NOTE: '$e' is on the expected-skip list but did not skip -- trim it" ;;
-    esac
-done
+    # If the parse and the harness disagree, the permission set below is checking nothing.
+    if [ "$_parsed" -ne "$N" ]; then
+        echo "FAIL: harness reported $N $_label but $_parsed $_dir line(s) parsed."
+        echo "      The 'ok N - name # $_dir' format moved, so the expected-$_label set is vacuous."
+        echo "$out" | grep "# $_dir"
+        exit 1
+    fi
 
-echo "PASS: $label TAP suite clean ($skipped skipped, all expected)"
+    _unexpected=""
+    for _x in $_names; do
+        case " $_expect " in
+            *" $_x "*) ;;
+            *) _unexpected="$_unexpected $_x" ;;
+        esac
+    done
+    if [ -n "$_unexpected" ]; then
+        echo "FAIL: $_dir not on the expected list:$_unexpected"
+        echo "      expected:${_expect:+ $_expect}"
+        echo "$out" | grep "# $_dir"
+        exit 1
+    fi
+
+    for _x in $_expect; do
+        case " $_names " in
+            *" $_x "*) ;;
+            *) echo "NOTE: '$_x' is on the expected-$_label list but no arm reported it; trim it" ;;
+        esac
+    done
+}
+
+check_directive SKIP skipped "$expect_skips"
+skipped="$N"
+check_directive PARTIAL partial "$expect_partials"
+partial="$N"
+
+echo "PASS: $label TAP suite clean ($plan arms, $skipped skipped, $partial partial, all expected)"
 exit 0

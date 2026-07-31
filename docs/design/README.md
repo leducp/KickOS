@@ -29,7 +29,7 @@ Two things follow from this that are easy to get wrong:
 - **Milestone numbers inside older documents may predate the renumbering.** The driver era took
   **M4**, SMP moved to **M5**, and the MMU horizon to **M6**; that decision is recorded in
   `../design-driver-era-scope.md` section 4. A document written before it may say "M4 = SMP".
-  `../roadmap.md` is authoritative.
+  `../../roadmap.md` is authoritative.
 
 ## LANDED
 
@@ -58,7 +58,7 @@ Two things follow from this that are easy to get wrong:
 | [`design-driver-era-scope.md`](../design-driver-era-scope.md) | The M4 gap list: what turns the M3 mechanisms into a fleet-wide capability. Section 4 records the milestone-ordering decision |
 | [`design-m4-driver-matrix.md`](../design-m4-driver-matrix.md) | The per-board peripheral survey and the complexity-vs-gain backlog that bounds M4's scope |
 | [`design-m4-driver-model.md`](../design-m4-driver-model.md) | How a driver is packaged: driver-lib class, service thread, or both (the ruling: both, service composed on the class) |
-| [`design-m4.6-irq-driver.md`](../design-m4.6-irq-driver.md) | DESIGN GATE for M4.6.1: an unprivileged driver owning an interrupt line -- `CAP_IRQ`, handover at spawn, reclaim on driver death, shared/grouped lines, and the buffered userspace UART on top |
+| [`design-m4.6-irq-driver.md`](../design-m4.6-irq-driver.md) | DESIGN GATE for M4.6.1: an unprivileged driver owning an interrupt line -- the proposed IRQ capability, handover at spawn, reclaim on driver death, shared/grouped lines, and the buffered userspace UART on top |
 | [`design-kickcat-k64f.md`](../design-kickcat-k64f.md) | Running the KickCAT EtherCAT slave on KickOS. Sim stage landed; the K64F hardware path is still the plan |
 | [`design-unprivileged-root.md`](../design-unprivileged-root.md) | Root starts unprivileged holding capabilities instead of starting privileged and demoting -- and the boards where that does not work |
 

@@ -217,12 +217,18 @@ jobs:
           cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
+      # seam_defaults is registered on every board and reads only nm/readelf output, so a
+      # board with no machine model still gets it. Named explicitly rather than running a
+      # bare ctest: qemu-riscv-bench also registers boot gates that belong to the run gate
+      # above, and a suite whose every case skipped reads like a suite that ran.
       - name: build-only rv32 boards
         run: |
           cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom
+          ctest --test-dir build/esp32c6-wroom -R seam_defaults --output-on-failure
           cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-bench
+          ctest --test-dir build/qemu-riscv-bench -R seam_defaults --output-on-failure
 
   # rv32imac (virt) UNDER PMP ENFORCEMENT (-DKICKOS_HAVE_MPU=1): runs the full-C++
   # throw under PMP + the gp-in-appdata CI gates (riscv_no_smalldata, qemu_riscv_cxxtest,
@@ -260,8 +266,10 @@ jobs:
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
 
-  # Xtensa LX6 (esp32-wroom) build-only gate: upstream QEMU ships no ESP32 machine
-  # model, so this proves build/link/linker-script + windowed-ABI asm, never a run.
+  # Xtensa LX6 (esp32-wroom) gate: upstream QEMU ships no ESP32 machine model, so this
+  # proves build/link/linker-script + windowed-ABI asm and never boots the image. It does
+  # run the one registered gate that needs no machine model, seam_defaults, which is the
+  # only CI execution of any gate on Xtensa.
   # The selftest config is built too (much more link surface). esptool is NOT
   # installed: it only serves the bootable .app.bin post-step, which CI cannot boot
   # anyway; CMake reports the skip without failing.
@@ -290,19 +298,25 @@ jobs:
         run: |
           echo "$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_PATH"
           echo "KICKOS_XTENSA_BIN=$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_ENV"
+      # seam_defaults reads nm/readelf output only, so it runs here despite there being no
+      # machine model. This is the ONLY CI execution of a gate on Xtensa, and the archive
+      # -extraction rule it enforces is per-link: no other job's tree can cover this one.
       - name: xtensa lx6 (esp32-wroom) build gate
         run: |
           cmake --preset esp32-wroom -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom
+          ctest --test-dir build/esp32-wroom -R seam_defaults --output-on-failure
       - name: xtensa lx6 + selftest config
         run: |
           cmake --preset esp32-wroom-st -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom-st
+          ctest --test-dir build/esp32-wroom-st -R seam_defaults --output-on-failure
 
-  # Build-only sweep of the remaining ARM boards (catches build/link/linker-script
-  # regressions). No run step -- these need silicon or a machine model CI does not
-  # carry. RX omitted (no hosted-runner toolchain; see the header). Xtensa is the
-  # job above; RISC-V is the qemu-riscv job.
+  # Build sweep of the remaining ARM boards (catches build/link/linker-script
+  # regressions). No BOOT step: these need silicon or a machine model CI does not carry.
+  # The machine-model-free gate they register, seam_defaults, does run. RX omitted (no
+  # hosted-runner toolchain; see the header). Xtensa is the job above; RISC-V is the
+  # qemu-riscv job.
   build-boards:
     runs-on: ubuntu-latest
     strategy:
@@ -335,6 +349,13 @@ jobs:
           echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
+      # The one gate these boards register that needs neither silicon nor an emulator:
+      # seam_defaults reads nm/readelf output, and the resolution it checks is per-link,
+      # so a board is only covered by its OWN tree. Named explicitly, not a bare ctest:
+      # qemu-telem registers the full QEMU boot suite and this job installs no emulator,
+      # so those cases would report as skips and a green run would read as a suite that
+      # ran. They stay unrun in CI; the qemu-arm job covers the an386 tree instead.
+      - run: ctest --test-dir build/${{ matrix.preset }} -R seam_defaults --output-on-failure
 
   # ARM MPU-ENFORCEMENT build gate: the enforcement-capable ARM boards (those
   # shipping arch/arm/chip/<chip>/mpu.cmake) with -DKICKOS_HAVE_MPU=1. The only job

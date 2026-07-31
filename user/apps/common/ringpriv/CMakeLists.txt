@@ -70,14 +70,14 @@ if(KICKOS_BUILD_TESTS)
   if(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
     kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_ringpriv TARGET ringpriv
       BOARD ${KICKOS_BOARD}
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_ringpriv.sh"
-      ARGS ${_arms})
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh"
+      ARGS ringpriv ${_arms})
     kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_ringppb TARGET ringppb
       BOARD ${KICKOS_BOARD}
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_ringppb.sh")
   elseif(KICKOS_BOARD STREQUAL "microbit")
     kickos_add_qemu_test(NAME microbit_ringpriv TARGET ringpriv BOARD microbit
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_ringpriv.sh"
-      ARGS ${_arms})
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh"
+      ARGS ringpriv ${_arms})
   endif()
 endif()

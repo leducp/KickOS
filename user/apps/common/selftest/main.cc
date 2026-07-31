@@ -1436,7 +1436,7 @@ namespace
         void* raw = kos_ram_alloc(STK + 16);
         if (raw == nullptr)
         {
-            tap::diag("caller_stack: PARTIAL -- accept half not run (arena cannot spare a stack)");
+            tap::partial("accept half not run (arena cannot spare a stack)");
             return;
         }
         void* stk = reinterpret_cast<void*>((reinterpret_cast<uintptr_t>(raw) + 15u) & ~uintptr_t{15});
@@ -1577,7 +1577,7 @@ namespace
         {
             // Tiny thread pool (e.g. microbit MAX_THREADS=2). The three encodability
             // cases above already ran, so this stays `ok` and names the dropped half.
-            tap::diag("mmio_grant: PARTIAL -- unprivileged half not run (thread pool too small)");
+            tap::partial("unprivileged half not run (thread pool too small)");
             kos_sem_destroy(g_mmio_done);
             return;
         }
@@ -1656,7 +1656,7 @@ namespace
         }
         else
         {
-            tap::diag("grant_reserved: PARTIAL -- arena-relative RAM cases not run (granule alloc failed)");
+            tap::partial("arena-relative RAM cases not run (granule alloc failed)");
         }
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, 0x1000u, 0x1000u) == 0);      // out-of-arena RAM refused
         TAP_CHECK(kos_grant_probe(KOS_GRANT_OP_RAM_PRIVILEGED, 0xFFFFFFF0u, 0x20u) == 0);    // wrap (32-bit) / out-of-arena (64-bit) refused
@@ -1686,7 +1686,7 @@ namespace
         uintptr_t const n = kos_grant_probe(KOS_GRANT_OP_RESERVED_COUNT, 0, 0);
         if (n == 0)
         {
-            tap::diag("grant_reserved: PARTIAL -- reserved-overlap matrix not run (board reserves nothing)");
+            tap::partial("reserved-overlap matrix not run (board reserves nothing)");
             return;
         }
         uintptr_t const rb = kos_grant_probe(KOS_GRANT_OP_RESERVED_BASE, 0, 0);       // block[0].base
@@ -1748,8 +1748,9 @@ namespace
     // The window is DISCOVERED, not hardcoded: kos_grant_probe says which bases the DEV
     // predicate admits on this board (reserved blocks and bit-band aliases differ per
     // chip), and the holder spawn itself rejects a base a board service already owns.
-    // The sim mints no DEV region at all (arch_mpu_region_encodable is fail-closed), so
-    // the search finds nothing there and the case reports PARTIAL. On any other
+    // The sim admits exactly one DEV window, its own fake register block at exactly
+    // SIM_PVREG_WINDOW (64 KiB), so a WIN-sized search finds nothing there and the case
+    // reports PARTIAL. On any other
     // enforcing board, including qemu built -DKICKOS_HAVE_MPU=1, an empty search FAILS.
     void devexcl_noop(void*) {}
     void t_dev_window_exclusive()
@@ -1795,8 +1796,8 @@ namespace
             TAP_CHECK(kos::thread::spawn(devexcl_noop, nullptr, "devnone", 10, KOS_POLICY_FIFO,
                                          0, false, nullptr, 0, nullptr, 0,
                                          reinterpret_cast<void*>(0x40000000u), WIN) < 0);
-            tap::diag("dev_window_exclusive: PARTIAL -- board mints no DEV window; "
-                      "exclusivity runs on enforcing boards (e.g. qemu -DKICKOS_HAVE_MPU=1)");
+            tap::partial("board mints no DEV window; exclusivity runs on enforcing boards "
+                         "(e.g. qemu -DKICKOS_HAVE_MPU=1)");
 #else
             // An enforcing board with no admissible DEV base means kos_grant_probe or the
             // discovery loop regressed. Passing here would silently drop every -KOS_EBUSY
@@ -1945,7 +1946,7 @@ namespace
         // on the roomier sim/qemu backends.
         if (g_cd_goodspawn < 0)
         {
-            tap::diag("confused_deputy: PARTIAL -- grandchild-name half not run (arena too small for its stack)");
+            tap::partial("grandchild-name half not run (arena too small for its stack)");
             return;
         }
         TAP_CHECK(g_cd_goodname_ran == 1);
@@ -2391,7 +2392,7 @@ namespace
             // EPIPE'd and posts, THEN drain it. Never fires on the CI targets.
             kos_handle_close(g_ep);
             if (cl2 >= 0) { wait_n(1); }
-            tap::diag("call_happy: PARTIAL -- slowpath half not run (pool too small)");
+            tap::partial("slowpath half not run (pool too small)");
             return;
         }
         wait_n(2);
@@ -3402,9 +3403,9 @@ namespace
             // register block landed on), and PRW_WIN is not it, so this discovery loop
             // finds nothing there. The held arms it drops are covered on the host by
             // periph_reg_write_mask below, which holds that window.
-            tap::diag("periph_reg_write_unheld: PARTIAL -- board mints no free DEV window, "
-                      "so the held arm runs on enforcing boards (e.g. qemu -DKICKOS_HAVE_MPU=1) "
-                      "and, on the host, in periph_reg_write_mask");
+            tap::partial("board mints no free DEV window, so the held arm runs on enforcing "
+                         "boards (e.g. qemu -DKICKOS_HAVE_MPU=1) and, on the host, in "
+                         "periph_reg_write_mask");
             return;
         }
         wait_n(1);

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
@@ -12,44 +12,21 @@
 # rc=-38 is -KOS_ENOSYS (system/include/kickos/sys/errno.h).
 
 set -u
+. "$(dirname "$0")/lib/gate.sh"
+
 elf="${1:?usage: check_reboot.sh <rebootdemo.elf>}"
 
-if [ -n "${QEMU_MACHINE:-}" ]; then
-    qemu="${QEMU:-qemu-system-arm}"
-    extra_arg="${QEMU_EXTRA:-}" # e.g. -bios none (RISC-V virt)
-    if ! command -v "$qemu" >/dev/null 2>&1; then
-        # Exit 77 -> CTest SKIP (not PASS), so a QEMU-less box doesn't green-light it.
-        echo "SKIP: $qemu not found"
-        exit 77
-    fi
-    # shellcheck disable=SC2086
-    out="$(timeout "${QEMU_TIMEOUT:-20}" "$qemu" -M "$QEMU_MACHINE" $extra_arg \
-             -nographic -semihosting -kernel "$elf" 2>&1)"
-    rc=$?
-else
-    out="$(timeout "${QEMU_TIMEOUT:-20}" "$elf" 2>&1)"
-    rc=$?
-fi
-echo "$out"
+run_image "$elf"
 
-# The reporters' literal dump markers (kpanic, the armv7m/armv6m/sim/riscv fault
-# reporters, kickos_isr_fault). Case-sensitive and anchored on the banner shape: a
-# substring match on "fault" also hits "EFAULT" and "default" in benign output.
-if echo "$out" | grep -qE "KERNEL PANIC:|=== (HARD|MPU|SIM) FAULT|=== RISC-V TRAP|MPU FAULT: task|ISOLATION FAULT:"; then
-    echo "FAIL: panic/fault during rebootdemo"
-    exit 1
+assert_no_panic "panic/fault during rebootdemo"
+if [ "$RC" -eq 124 ]; then
+    fail "rebootdemo timed out (no exit status forwarded)"
 fi
-if [ "$rc" -eq 124 ]; then
-    echo "FAIL: rebootdemo timed out (no exit status forwarded)"
-    exit 1
+if [ "$RC" -ne 0 ]; then
+    fail "rebootdemo exit status $RC (expected a clean shutdown)"
 fi
-if [ "$rc" -ne 0 ]; then
-    echo "FAIL: rebootdemo exit status $rc (expected a clean shutdown)"
-    exit 1
-fi
-if ! echo "$out" | grep -q "reboot declined: rc=-38"; then
-    echo "FAIL: the -KOS_ENOSYS refusal line is missing"
-    exit 1
+if ! has "reboot declined: rc=-38"; then
+    fail "the -KOS_ENOSYS refusal line is missing"
 fi
 echo "PASS: kos_reboot declined with -KOS_ENOSYS and the app shut down cleanly"
 exit 0

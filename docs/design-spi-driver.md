@@ -27,11 +27,12 @@
 > the DSPI window grant is a genuine per-thread capability only on the CPU-side-MPU
 > flavors (XMC PMSA / RISC-V PMP), NOT on K64F (kernel-vs-user, per-4-KB-slot).
 
-**IMPLEMENTED (build-only, pending silicon) 2026-07-17:** landed as `user/apps/xmcspi/`
-on **U0C1** (USIC0 channel 1, 0x4003_0200) -- the console keeps U0C0. Loopback is
-INTERNAL (RM 18.2.3.5 Loop Back Mode: DX0 input stage selects on-chip input "G" = the
-channel's own transmitter), so **no port pins are muxed and no MISO<->MOSI jumper is
-needed**. Granted window = 512 B `R|W|DEV` no-X (pow2, 0x200-aligned -> encodable).
+**IMPLEMENTED (build-only, pending silicon) 2026-07-17:** landed as
+`user/apps/xmc4800-relax/xmcspi/` on **U0C1** (USIC0 channel 1, 0x4003_0200) -- the console
+keeps U0C0. Loopback is INTERNAL (RM 18.2.3.5 Loop Back Mode: DX0 input stage selects
+on-chip input "G" = the channel's own transmitter), so **no port pins are muxed and no
+MISO<->MOSI jumper is needed**. Granted window = 512 B `R|W|DEV` no-X (pow2, 0x200-aligned
+-> encodable).
 Receive-complete IRQ = USIC0 **SR1 -> NVIC 85** (SR0 is the console TX); a single-word
 frame is SOF=1 so the completion flag is **AIF** (alternative receive), not RIF (RM
 18.4.2.7) -- the driver arms + W1Cs both. Negative test pokes the UNGRANTED **SCU**

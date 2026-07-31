@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
@@ -8,28 +8,21 @@
 # the toolchain libstdc++/libsupc++ over newlib runs on the target ISA -- no HW.
 
 set -u
+. "$(dirname "$0")/lib/gate.sh"
+: "${QEMU_TIMEOUT:=15}"
+
 elf="${1:?usage: check_qemu_cxxtest.sh <cxxtest.elf>}"
-qemu="${QEMU:-qemu-system-arm}"
-machine="${QEMU_MACHINE:-mps2-an386}"   # armv7m default; virt for RISC-V
-extra_arg="${QEMU_EXTRA:-}"             # RISC-V virt needs -bios none
 
-if ! command -v "$qemu" >/dev/null 2>&1; then
-    # Exit 77 -> CTest SKIP (not PASS), so a QEMU-less box doesn't green-light it.
-    echo "SKIP: $qemu not found"
-    exit 77
+need_qemu_machine
+run_image "$elf"
+
+assert_no_panic "the image faulted during the full-C++ checks"
+if has_e "FAIL:|SOME FAILED"; then
+    fail "a full-C++ check failed"
+fi
+if ! has "ALL PASS"; then
+    fail "'ALL PASS' summary not observed (image did not complete)"
 fi
 
-# shellcheck disable=SC2086
-out="$(timeout "${QEMU_TIMEOUT:-15}" "$qemu" -M "$machine" $extra_arg -nographic -semihosting -kernel "$elf" 2>&1)"
-echo "$out"
-
-if echo "$out" | grep -qiE "panic|unreachable|FAIL:|SOME FAILED"; then
-    echo "FAIL: a full-C++ check failed or the image faulted"
-    exit 1
-fi
-if echo "$out" | grep -q "ALL PASS"; then
-    echo "PASS: full-C++ exceptions/STL/RTTI executed under QEMU"
-    exit 0
-fi
-echo "FAIL: 'ALL PASS' summary not observed (image did not complete)"
-exit 1
+echo "PASS: full-C++ exceptions/STL/RTTI executed under QEMU"
+exit 0

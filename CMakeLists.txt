@@ -476,6 +476,18 @@ include(GNUInstallDirs)
 if(KICKOS_BUILD_TESTS)
   enable_testing()
 
+  # The panic/fault marker set for the sim FAIL_REGULAR_EXPRESSION registrations,
+  # scraped from the ONE definition the shell gates use (tests/lib/gate.sh). Both
+  # consumers take the same ERE dialect, so the string crosses verbatim. It must not
+  # contain a `;`: FAIL_REGULAR_EXPRESSION is a CMake list of regexes.
+  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/tests/lib/gate.sh" _panic_line
+       REGEX "^KOS_PANIC_RE=")
+  string(REGEX REPLACE "^KOS_PANIC_RE='(.*)'$" "\\1" KICKOS_PANIC_REGEX "${_panic_line}")
+  if(KICKOS_PANIC_REGEX STREQUAL "" OR KICKOS_PANIC_REGEX STREQUAL "${_panic_line}")
+    message(FATAL_ERROR "tests/lib/gate.sh no longer defines KOS_PANIC_RE='<ere>' on one "
+                        "line; the sim panic gates would register an empty regex")
+  endif()
+
   # Rebuild the tree before any test runs, so `ctest` / `ctest --preset` can never
   # execute a stale binary (configure-only + ctest would otherwise silently run the
   # previous build). The build is one CTest fixture (SETUP); every test registered
@@ -496,6 +508,17 @@ if(KICKOS_BUILD_TESTS)
       set_property(TEST "${ARGV0}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
     endif()
   endmacro()
+
+  # Doc-rot gate. It reads the SOURCE tree through `git ls-files` and never opens the
+  # build directory, so it is registered on every board rather than behind one: a gate
+  # that runs on a single posture is a gate that runs when that posture happens to be
+  # built. Registered with _add_test so it does not require the build fixture, which it
+  # has nothing to do with; WORKING_DIRECTORY because the script refuses to run anywhere
+  # but the repo root.
+  _add_test(NAME doc_names
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_doc_names.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(doc_names PROPERTIES TIMEOUT 120)
 endif()
 
 # Components are added as they land; guarded so every step boundary configures.

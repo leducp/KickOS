@@ -116,8 +116,8 @@ same many-modes blocks the SPI services use (XMC USIC IIC mode, RX SCI simple-I2
 mode-select resolves inside the class, not the wire.
 
 > **Taxonomy gap (flagged).** The bus design intends an EIO-class code for a NACK, but the
-> current `system/include/kickos/sys/errno.h` taxonomy has no `KOS_EIO`. Because no I2C
-> driver body exists yet, nothing defines it. The code that lands the first I2C service
+> current `system/include/kickos/sys/errno.h` taxonomy has no I/O-error code at all. Because
+> no I2C driver body exists yet, nothing defines one. The code that lands the first I2C service
 > must add an EIO-class code to the taxonomy (or map NACK onto an existing code) and this
 > page must be updated to name it exactly. Until then "a negative service status" is the
 > honest contract.

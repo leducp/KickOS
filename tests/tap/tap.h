@@ -30,18 +30,25 @@ namespace tap
     // Mark the CURRENT test SKIPPED with a printf-style reason: the harness emits
     // `ok N - name # SKIP <reason>` and counts it separately from the passes. Only
     // for a test that can assert NOTHING here; a test that ran its invariant and left
-    // a sub-case unexercised stays `ok` and says so with tap::diag instead (see
-    // PARTIAL in the selftest suite).
+    // a sub-case unexercised is tap::partial, not this.
     // Like tap::fail it only records and does NOT return: follow it with `return`.
     void skip(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+
+    // Mark the CURRENT test PARTIAL with a printf-style reason: it ran its invariant
+    // but left a sub-case unexercised on this board. The harness emits
+    // `ok N - name # PARTIAL <reason>` and counts it separately; it stays a PASS and
+    // is never a skip. Do NOT report a partial with tap::diag: a `#` comment carries
+    // no name a gate can key on, so the arm would be permitted implicitly everywhere.
+    // First partial per test wins; a fail or a skip recorded later outranks it.
+    void partial(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
     // Emit a free-form TAP diagnostic (`# <text>`) on the harness's own route.
     void diag(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
     // Run every registered test in order, emit TAP, and return the number that
-    // FAILED (0 == all passed). Skips are counted but are not failures; the per-board
-    // list of ALLOWED skips, by name, lives in the CTest gate
-    // (tests/check_qemu_selftest.sh EXPECT_SKIPS).
+    // FAILED (0 == all passed). Skips and partials are counted but are not failures;
+    // the per-board lists of ALLOWED ones, by name, live in the CTest gate
+    // (EXPECT_SKIPS / EXPECT_PARTIALS, checked by tests/check_tap_stream.sh).
     int run_all();
 }
 

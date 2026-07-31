@@ -55,13 +55,13 @@ reclaim failure otherwise); today only XMC (USIC) and K64F (UART0) have one.
 2. `CMakePresets.json` -- add a configure + build preset (only for boards that
    actually build/link today).
 3. `arch/arm/chip/<chip>/` -- the chip sources (`*.cc`, `*.S`, auto-globbed), a
-   linker script named exactly `<chip>.ld`, and `include/kickos/board_config.h`
-   with the board facts. CMake derives the dir from the chip name, puts it on the
+   linker script named exactly `<chip>.ld`, and
+   `arch/arm/chip/<chip>/include/kickos/board_config.h` with the board facts. CMake derives the dir from the chip name, puts it on the
    include path, and installs it -- **no root-CMake edit needed** (this used to be a
    silently-failing step).
 
 `boards/<board>/` is also where per-board overrides of a shared chip live: a
-board-specific `include/kickos/board_config.h` (selected EXCLUSIVELY over the chip
+board-specific `boards/<board>/include/kickos/board_config.h` (selected EXCLUSIVELY over the chip
 default -- see below) and/or a `<chip>.ld` linker override -- proven on the `stm32f411` pair
 (f411disco + blackpill) and the `stm32f103` pair (bluepill + bluepill-c8).
 
@@ -445,11 +445,14 @@ covers.
 
 It reports PARTIAL where no FREE DEV window can be minted -- on the host sim, because the
 one window the sim admits is the fake register block that `periph_reg_write_mask` holds.
-**That PARTIAL is invisible to every gate** -- it emits a `# diag` comment plus a plain `ok`
--- so a DEV-window-encodability regression on ARM would make every board take the PARTIAL
-early return and lose the seam's whole refusal contract fleet-wide with CI still green.
-Measured: the held arms DO run on `qemu`/`m3`/`m7`/`m33`/`riscv-mpu`/`microbit`; only `sim`
-degrades, and there `periph_reg_write_mask` covers the same ground with the window it holds.
+A PARTIAL is `tap::partial`, so the arm reports `ok N - <name> # PARTIAL <reason>` and the
+harness prints a `# partial: N` summary. The gate permits partials BY NAME, per board
+(`EXPECT_PARTIALS`, threaded from `user/apps/common/selftest/CMakeLists.txt` and checked in
+`tests/check_tap_stream.sh`), so a DEV-window-encodability regression on ARM cannot make
+every board take the PARTIAL early return and lose the seam's refusal contract fleet-wide
+behind a green CI: the boards where it is not permitted go red. Measured: the held arms DO
+run on `qemu`/`m3`/`m7`/`m33`/`riscv-mpu`/`microbit`; only `sim` degrades, and there
+`periph_reg_write_mask` covers the same ground with the window it holds.
 
 That second case, `periph_reg_write_mask` (sim only), is what puts the allowlist match, the
 mask edge, refuse-not-trim and the containment refusal under a gate: it drives the SHARED
@@ -857,7 +860,7 @@ buys a `Domain` too (`system.h:61`).
 The suite also allocates from the arena and never returns it: one 4 KiB page
 (`main.cc:504`) and three 256-byte domain regions (`:1505`, `:2901-2902`), 4,864 bytes in
 all, plus the two self-grant probe ladders (`:3221`, `:3283`) and one spare stack for
-`caller_stack` (`:1443`). Each has a real `tap::skip` or a `PARTIAL` diag when
+`caller_stack` (`:1443`). Each has a real `tap::skip` or a `tap::partial` when
 the arena cannot spare it, so these cost coverage rather than a failure.
 
 ### Deriving the suite's SRAM figures
@@ -923,10 +926,9 @@ Four are the concurrent-worker ceiling or the arena; one is the cap table:
 
 The FOUR that un-skipped are `endpoint_crossdomain`, `mem_self_grant_nonpow2`,
 `region_mode` and `domain_share` -- all four wanted arena, and arena is what the
-re-provisioning bought. `caller_stack` still reports `PARTIAL` as a `tap::diag`
-(`t_caller_stack`: `# caller_stack: PARTIAL -- accept half not run (arena cannot spare a
-stack)`) and counts as a pass, not a skip; `confused_deputy` carries the same construct and
-did not trip it on this part.
+re-provisioning bought. `caller_stack` still reports PARTIAL (`t_caller_stack`:
+`accept half not run (arena cannot spare a stack)`) and counts as a pass, not a skip;
+`confused_deputy` carries the same construct and did not trip it on this part.
 
 **8 of the 9 former skips were arena STARVATION wearing a "pool too small" label.** That
 label is not sloppiness in the cases: `kos_thread_spawn` returns `-KOS_ENOMEM` for BOTH
@@ -1108,7 +1110,7 @@ pins them is `user/apps/common/ringpriv`.
   `HFSR=0x40000000` (`FORCED`, because `BUSFAULTENA` is never set in-tree). Assert `BFAR`,
   not a banner.
 
-The gates are `tests/check_qemu_ringpriv.sh` and `tests/check_qemu_ringppb.sh`, and neither
+The gates are `tests/check_app_arms.sh` and `tests/check_qemu_ringppb.sh`, and neither
 is conditioned on enforcement: `cmake --preset qemu` IS the ring-only posture
 (`KICKOS_HAVE_MPU` defaults to 0 off the sim), which is what makes the ring gateable in CI
 rather than only capturable on no-MPU silicon. Both run permanently on the MPS2 M3/M4/M7/M33

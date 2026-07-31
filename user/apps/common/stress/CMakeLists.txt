@@ -18,8 +18,12 @@ endif()
 # a manual soak (real timing), run per board.
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(NAME sim_stress COMMAND "$<TARGET_FILE:stress>")
+  # KICKOS_PANIC_REGEX, not a lowercase "panic|unreachable": CTest's
+  # FAIL_REGULAR_EXPRESSION is case-sensitive, and the kernel prints "KERNEL PANIC:",
+  # so the old pattern matched only KICKOS_UNREACHABLE and let any panic AFTER the
+  # pass marker ship green.
   set_tests_properties(sim_stress PROPERTIES
     TIMEOUT 60
     PASS_REGULAR_EXPRESSION "STRESS PASS"
-    FAIL_REGULAR_EXPRESSION "STRESS FAIL|panic|unreachable")
+    FAIL_REGULAR_EXPRESSION "STRESS FAIL;${KICKOS_PANIC_REGEX}")
 endif()

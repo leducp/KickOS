@@ -6,8 +6,8 @@
 # what it reads. KICKOS_HAVE_TRACE_CLOCK is guarded with NOT DEFINED so a board/preset
 # that pre-defined it on the command line still wins.
 #
-# RP2350 reuses the armv7m arch (Cortex-M33): the DWT CYCCNT arch_trace_now fallback is
-# the trace clock.
+# RP2350 reuses the armv7m arch (Cortex-M33), but does NOT take the DWT CYCCNT
+# arch_trace_now fallback: chip_rp2350.cc defines its own from the 1 MHz TIMER0.
 set(KICKOS_TRACE_ARCH 1)
 if(NOT DEFINED KICKOS_HAVE_TRACE_CLOCK)
   set(KICKOS_HAVE_TRACE_CLOCK 1)

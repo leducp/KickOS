@@ -20,19 +20,16 @@
 # stream we just read came through the endpoint, not through a silent fallback. Without
 # it, a regression that skipped the publish entirely would still pass here.
 #
-# usage: check_sim_published.sh <kickos-source-dir> <cmake>
+# usage: check_sim_published.sh <kickos-source-dir> <cmake> <expected-arms>
 
 set -eu
+. "$(dirname "$0")/lib/gate.sh"
 
 KICKOS_SRC="$1"
 CMAKE="${2:-cmake}"
+WANT_ARMS="${3:?usage: check_sim_published.sh <src> <cmake> <expected-arms>}"
 
-fail() { echo "FAIL: $1"; exit 1; }
-# grep as a predicate, with `set -e` kept out of the way.
-has() { printf '%s\n' "$OUT" | grep -q "$1"; }
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+scratch_dir
 
 echo "== configuring the sim with the publishing service list =="
 # Via --preset so this tree matches the ordinary sim build exactly (generator, build
@@ -65,11 +62,10 @@ if has 'kos::print diagnostic'; then
     fail "the kernel debug console is STILL live -- no real handover, so this gate proved nothing"
 fi
 has '^# tap route: stdout endpoint' || fail "TAP did not take the published endpoint route"
-has '^1\.\.'    || fail "no TAP plan line: the whole stream was dropped (the M4.5 regression)"
-if has 'not ok'; then
-    fail "a TAP test reported not ok on the published console"
-fi
-has '^# skipped: 0$'      || fail "unexpected skip(s) on the sim, whose pools host the whole suite"
-has '^# all tests passed$' || fail "TAP completion marker missing (truncated run?)"
 
-echo "PASS: the full TAP stream is observable over a published userspace console"
+# The stream verdict itself is check_tap_stream.sh's, not a second copy of it here: plan
+# vs case count vs expected arms, the completion marker, and the by-name EXPECT_SKIPS /
+# EXPECT_PARTIALS permission sets, which a private parse would drift out of step with.
+printf '%s\n' "$OUT" | "$(dirname "$0")/check_tap_stream.sh" sim_published "$WANT_ARMS"
+
+echo "PASS: the full $WANT_ARMS-arm TAP stream is observable over a published userspace console"
