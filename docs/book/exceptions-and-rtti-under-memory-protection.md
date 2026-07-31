@@ -183,9 +183,11 @@ cosmetic: the kernel's own scheduler state -- `g_arch_current`, the CLINT doorbe
 in `gp` small-data, so leaving it there and granting the window would hand an unprivileged
 thread the scheduler), and anchor
 `__global_pointer$` **inside** the app's granted data region. Now the single `gp` window
-holds only app + C++-runtime small-data and is covered by the app grant, `gp` stays one
-link-time constant (no context-switch cost, `switch.S` untouched), and it folds into the
-existing app-data region at +0 protection entries. This also rules out the tempting
+holds only app + C++-runtime small-data and is covered by the app grant, and it folds into the
+existing app-data region at +0 protection entries. `gp` is one link-time constant, but
+`switch.S` still reloads it on every dispatch under `.option norelax`: a U-mode thread can
+write its own `gp`, and without the reload it would corrupt the next thread's small-data
+addressing. This also rules out the tempting
 "two `gp` bases, reload on the kernel<->user boundary" split: a single-image link has
 exactly one `__global_pointer$`, so two runtime `gp` values would make one reference set
 address wild memory. ARM and RX have no `gp` small-data model, so none of this applies to

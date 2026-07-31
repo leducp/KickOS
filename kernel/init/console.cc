@@ -291,10 +291,6 @@ extern "C" void kickos_terminate(int status)
     arch_shutdown(status);
 }
 
-// Memory-protection violation caught by the arch backend (sim: SIGSEGV over
-// the guard page). Report the offending task + address through the console.
-// M0: the intended wild-write demo is the final act, so we shut down cleanly
-// after reporting. M2 will turn this into per-task fault + resume.
 extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
 {
     // Funnel through kpanic_enter FIRST (B2): a terminal fault in USER_OWNED must reclaim

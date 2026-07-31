@@ -429,8 +429,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # kickos_board_names(<out>)
 #   The fleet's board names, from the SOLE source of truth: boards/*/board.cmake.
-#   Used for the KICKOS_BOARD cache-var help so it can never go stale (it used to
-#   hardcode 6 of the 16+ boards). Sorted for a stable string.
+#   Used for the KICKOS_BOARD cache-var help so it can never go stale. Sorted for a stable string.
 function(kickos_board_names out)
   file(GLOB _descs "${KICKOS_BOARDS_DIR}/*/board.cmake")
   set(_names "")
@@ -450,8 +449,7 @@ endfunction()
 #   (KICKOS_CHIP_ENFORCES_MPU) -- reverse-mapped to board names via the board
 #   descriptors, plus the sim (which enforces at the arch level via host mprotect
 #   and ships no chip mpu.cmake). Feeds the "enforcement-capable boards" hint in
-#   the KICKOS_HAVE_MPU rejection so that list can never drift from reality (it
-#   used to hardcode a board list that already omitted a stm32f411 board). Reads
+#   the KICKOS_HAVE_MPU rejection so that list can never drift from reality. Reads
 #   each descriptor in this function's scope so the KICKOS_CHIP/ARCH it sets never
 #   leak into the caller's build.
 function(kickos_enforcing_mpu_boards out)

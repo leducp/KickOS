@@ -5,9 +5,6 @@
 // thread's CONTROL.nPRIV posture. On Cortex-M the register state lives on the
 // thread's own PSP stack (hardware exception frame + the PendSV-saved callee
 // registers); the TCB only needs the top-of-saved-frame pointer to resume it.
-//
-// This is intentionally tiny (8 bytes) versus the sim's 2 KiB ucontext blob:
-// the ARM "context" is the stack, not a separate blob.
 
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H

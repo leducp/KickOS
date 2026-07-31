@@ -125,6 +125,12 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   table that wraps the unbacked apertures as Device + XN + no-access, programmed *before* the
   I-cache is enabled. Runs `SystemCoreClock` at the ROM-default **396 MHz** -- the 600 MHz
   CCM/PLL tree is a follow-up, not a regression. Full story: `../design-teensy-mpu-hang.md`.
+- **`f411disco` shares SPI1's PA5/PA6/PA7 with the onboard L3GD20 / I3G4250D gyro**, and the
+  gyro's SDO sits on PA6, which is MISO. Its chip-select is **PE3**. Anything driving SPI1 here
+  must preset PE3 HIGH (GPIOE output, through the pinmux seam) before any SCK activity, so the
+  gyro stays deselected and its SDO tri-stated off MISO. Confirmed against the UM1842 pin table;
+  `f411spi` does exactly this in root. A gyro fighting for MISO with PE3 high means the preset
+  did not take, not a wiring fault.
 - **`pizero2350`** -- Cortex-M33, but it reuses the **armv7m** arch backend verbatim (armv8-M is
   a superset for the switch/NVIC/SVC/PendSV path); only the MPU differs, and PMSAv8 has its own
   backend (`base+limit` RBAR/RLAR + MAIR, compile-gated so the v7-M/v6-M fleet is byte-identical).
@@ -249,6 +255,171 @@ figure to quote at `MinSizeRel`. A caution for whoever takes one: the VCP is not
 reset, so a fresh capture opens with **residue from the previous image** -- a stale
 `switch:`/`irq:` block or a stale `ping`/`pong` run above the banner is the old image, not
 this one. Read only what follows the banner.
+
+## Per-board hardware facts a porter cannot derive
+
+Boot-image field values, recomputed register bases and the register-level gotchas that brick or
+silence a board if they are wrong. Each is checked against the chip source; the manual citations
+are the clean-room derivation the source carries.
+
+### `pizero2350` (RP2350) -- the boot block and the recomputed bases
+
+**The IMAGE_DEF block is what makes the image bootable at all**, and the RP2350 hazard is a
+reincarnation of the RP2040 boot2 class rather than a repeat of it: there IS no boot2 (datasheet
+5.9.5). The bootrom does its own best-effort QSPI XIP setup, then scans the **first 4 KiB** of the
+image (5.1.5.2) for a block loop containing a valid IMAGE_DEF; if it does not find one, the image
+is rejected. With no `ENTRY_POINT` and no `VECTOR_TABLE` item the bootrom takes the Arm vector
+table to be **at the image base** and enters via the initial SP at `[base+0]` and reset PC at
+`[base+4]`, setting Secure SP and VTOR first (5.9.3.3, 5.9.5.1, 5.2.2).
+
+The 20-byte block emitted verbatim in `arch/arm/chip/rp2350/startup.S` (datasheet 5.9.5.1,
+"Minimum Arm IMAGE_DEF"):
+
+| Word | Value | Meaning |
+|---|---|---|
+| 0 | `0xffffded3` | `PICOBIN_BLOCK_MARKER_START` |
+| 1 | `0x10210142` | IMAGE_DEF item: type `0x42`, size 1 word, `image_type_flags = 0x1021` |
+| 2 | `0x000001ff` | LAST item, covered size = 1 word |
+| 3 | `0x00000000` | LINK = 0, a self-loop (single-block loop) |
+| 4 | `0xab123579` | `PICOBIN_BLOCK_MARKER_END` |
+
+`image_type_flags = 0x1021` decodes as EXE(1) | Security **S**(2) | CPU **ARM**(0) | CHIP
+**RP2350**(1) (5.9.3.1). Security=S matches the state the M33 boots in -- no TrustZone, never a
+drop to Non-secure. "Unsigned" is orthogonal to that field: on a chip that is not secured
+(`CRIT1.SECURE_BOOT_ENABLE` clear) no SIGNATURE or HASH_DEF item is required and this block is
+accepted as-is. The NS and Security-UNSPECIFIED variants are `0x1011` and `0x1001`; a Hazard3
+RISC-V image would be the same block with the CPU field = RISC-V(1), i.e. `0x1121`.
+
+Placement is PINNED rather than merely asserted: `rp2350.ld` puts `.text` at `ORIGIN(FLASH)` with
+`KEEP(*(.isr_vector))` first, so the vector table IS the image base, and `KEEP(*(.image_def))`
+lands the block immediately after it, well inside the 4 KiB window. Two `ASSERT`s enforce both
+(`ADDR(.text) == ORIGIN(FLASH)` and `g_image_def < ORIGIN(FLASH) + 0x1000`), and
+`Reset_Handler` writes `SCB->VTOR = 0x1000_0000` explicitly so a warm reboot or a debugger entry
+that skipped the bootrom still lands right. Nothing references the block, so it survives only
+because it rides into the link inside `startup.o` (already force-pulled by the arm-family
+`-Wl,-u,g_isr_vector`) and `KEEP` protects it from `--gc-sections`. No checksum tool and no `-u`
+addition -- unlike RP2040.
+
+**Every APB peripheral base moved relative to the RP2040** (datasheet 2.2.4), so no RP2040
+address can be reused. Recomputed in `arch/arm/chip/rp2350/mmap.h`:
+
+| Block | Base | Block | Base |
+|---|---|---|---|
+| CLOCKS | `0x4001_0000` | PADS_BANK0 | `0x4003_8000` |
+| RESETS | `0x4002_0000` | XOSC | `0x4004_8000` |
+| IO_BANK0 | `0x4002_8000` | PLL_SYS | `0x4005_0000` |
+| UART1 (console) | `0x4007_8000` | TIMER0 | `0x400B_0000` |
+| TICKS | `0x4010_8000` | | |
+
+Every APB register is also mirrored at `base + 0x1000` (XOR), `+ 0x2000` (SET) and `+ 0x3000`
+(CLR) for single-bit changes without a read-modify-write (datasheet 2.1.3), which is why a
+reserved-block entry for one of these covers `0x4000` and not `0x1000`.
+
+**Clock recipe** (`clocks_init`, every poll bounded so a dead crystal degrades instead of
+hanging): XOSC `CTRL.FREQ_RANGE = 0xaa0` (the 1-15 MHz range, for the 12 MHz crystal), then the
+`CTRL.ENABLE` magic `0xfab` in a SEPARATE store so `ENABLE` never latches before `FREQ_RANGE` is
+set, poll `STATUS.STABLE`; `clk_ref <- XOSC`, poll the one-hot `CLK_REF_SELECTED`;
+start the **TICKS TIMER0** generator with `CYCLES = 12` for a 1 MHz tick (this is the new common
+tick block, NOT RP2040's watchdog tick, and TIMER0 does not count until it runs -- kept on
+`clk_ref` so the monotonic clock is PLL-independent); PLL_SYS to 150 MHz as
+`12 MHz / REFDIV=1 x FBDIV=125 = 1500 MHz VCO / POSTDIV1=5 / POSTDIV2=2`, poll `CS.LOCK`;
+`clk_sys <- PLL` with `SystemCoreClock = 150e6` in the same step; `clk_peri <- clk_sys` and
+recompute the UART divisors. Fallbacks: no XOSC leaves ROSC (~6.5 MHz) with `CYCLES = 7`; no PLL
+lock stays on `clk_ref` at 12 MHz. The board always reaches a console.
+
+**The PADS.ISO gotcha, and it differs from RP2040.** RP2350 pads reset **ISOLATED** --
+`PADS.ISO` is **bit 8** and resets SET -- so a pad stays electrically disconnected until it is
+cleared. `uart1_init` clears ISO on both console pins (plus OD on TX, sets IE on RX), and
+`arch_pinmux_set` clears it unconditionally on every pin it touches. The RP2040 needed none of
+this, so a port carried over from it looks correct and drives nothing.
+
+**Interrupts.** 52 NVIC inputs (datasheet 3.2, Table 95): IRQ0..51, of which 46..51 are spare and
+never fire. `KICKOS_MAX_IRQ 52` sizes the `startup.S` vector `.rept` and the kernel IRQ table from
+one fact. The console line is **`UART1_IRQ = 34`** (only `TXIM` armed; the drain ISR is its sole
+source), because the console is UART1 on GP4/GP5 -- UART0's pins are not brought out on the
+Pi-Zero header.
+
+### `teensy41` (i.MX RT1062) -- the three ROM-consumed structures and the console
+
+**The boot ROM enters via `IVT.entry`, not the reset vector**, and hardware does NOT load MSP from
+the vector table, so `_boot_entry` (`startup.S`) sets `MSP = _estack` before any C runs and
+`Reset_Handler` then sets `VTOR`. The three structures sit at fixed flash offsets in the FlexSPI
+serial-NOR image based at `0x6000_0000`: **FCB @ +0x0000**, **IVT @ +0x1000** (RM Table 9-36:
+the FlexSPI-NOR IVT offset), **Boot Data @ +0x1020**. All three must be **static const image
+data**: a field needing a runtime initializer becomes a write to XIP flash and lands as 0 in the
+image, which bit this bring-up once (`entry = &_boot_entry | 1` demoted the IVT to a dynamic
+initializer, so `entry` was 0; the Thumb LSB is already in the function-symbol relocation, so use
+a bare address constant). Layout is self-verified by `offsetof`/`sizeof` `static_assert`s on the
+structs, and confirmed in the linked image (`.boot_fcb` @ `0x6000_0000`, `.boot_ivt` @
+`0x6000_1000`, `.isr_vector` @ `0x6000_2000`).
+
+Field values (`arch/arm/chip/imxrt1062/chip_imxrt1062.cc`; RM chapter 9):
+
+| Structure | Field | Value |
+|---|---|---|
+| FCB (RM 9.6.3, Table 9-15/9-18), 512 B | tag | `'FCFB'` = `0x42464346` |
+| | version | `0x56010000` (`'V'` 1.0.0) |
+| | `deviceType` @ `0x044` | **1** = serial NOR |
+| | `sflashPadType` @ `0x045` | **1** = single pad |
+| | `serialClkFreq` @ `0x046` | 1 = 30 MHz |
+| | read LUT seq 0 (1-1-1 `0x03` + 24-bit address) | `lookupTable[0] = 0x08180403`, `[1] = 0x00002404` |
+| IVT (RM 9.7.1, Table 9-37), 32 B | header | `0x412000D1` (tag `0xD1`, len `0x0020`, version `0x41`) |
+| | `entry` / `dcd` / `boot_data` / `self` / `csf` | `&_boot_entry` / 0 / `&Boot Data` / `0x6000_1000` / 0 |
+| Boot Data (RM 9.7.1.2, Table 9-38) | `start` / `length` / `plugin` | `0x6000_0000` / `__boot_image_length` / 0 |
+
+The LUT instruction encoding is `(opcode << 10) | (pads << 8) | operand` (RM 9.6.3.1).
+Single-pad `0x03` at 30 MHz is the universally compatible read -- no quad-enable -- which is what
+makes a first image flashable without a bench. **DCD is NULL** deliberately: the ROM register
+defaults suffice with no SDRAM/SEMC, and RM Table 9-37 makes it optional.
+
+**Console = LPUART6 = Teensy "Serial1" (pins 0/1)**, and every step of the wiring is a distinct
+register block:
+
+| Step | Register | Address | Value |
+|---|---|---|---|
+| clock gate | `CCM_CCGR3`, `CG3` = bits `[7:6]` | `0x400F_C074` | already enabled at reset; set explicitly anyway |
+| pin mux TX (pin 1) | `IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B0_02` | `0x401F_80C4` | ALT2 = `LPUART6_TX` |
+| pin mux RX (pin 0) | `IOMUXC_SW_MUX_CTL_PAD_GPIO_AD_B0_03` | `0x401F_80C8` | ALT2 = `LPUART6_RX` |
+| RX daisy | `IOMUXC_LPUART6_RX_SELECT_INPUT` | -- | daisy value selecting `AD_B0_03` |
+| controller | LPUART6 (RM Table 3-3) | `0x4019_8000` | GLOBAL/BAUD/STAT/CTRL/DATA at `+0x08`/`0x10`/`0x14`/`0x18`/`0x1C` |
+
+LPUART6 is IRQ **25** (RM Table 4-2, combined TX/RX), buffered TX over the shared `console_tx`
+ring with a synchronous fallback for the panic path -- the same seam as `mk64f`. Baud assumes the
+reset UART clock root (`pll3_80m/1` = 80 MHz, RM chapter 14) with `OSR = 15` and
+`SBR = root / (baud * 16)`; it tracks the real root once the CCM bring-up lands.
+`arch_pinmux_set` refuses `GPIO1.IO02`/`IO03` so a board pin map cannot steal the console pads.
+
+Why writable state lives in **OCRAM2** (`0x2020_0000`, 512 KiB) and not DTCM: ITCM and DTCM are
+carved out of the 512 KiB **FlexRAM**, whose split is set by `IOMUXC_GPR_GPR16`/`GPR17` from a
+fuse default at reset, whereas OCRAM2 is a dedicated bank present at reset with no GPR or fuse
+dependency (RM 3.2). For a port with no SWD bench that removes an entire class of "what partition
+did the ROM leave" risk.
+
+### `xmc4800-relax` -- two USIC-SSC facts and the two addresses every probe uses
+
+**A single-word SSC frame completes into `AIF`, not `RIF`.** The first word of a frame carries
+`RBUFSR.SOF = 1`, which sets the ALTERNATIVE receive flag `AIF` (`PSR` bit 15); later words set
+`RIF` (bit 14) (RM 18.4.2.7). A single-word transfer is therefore ALL first-word, so a driver
+waiting only on `RIF` never wakes. Every USIC-SSC consumer in the tree arms and W1Cs BOTH --
+`PSR` `RIF`/`AIF`, cleared through `PSCR` `CRIF`/`CAIF` -- which is correct for any frame length.
+
+**Loopback is INTERNAL and needs no pin and no jumper.** The DX0 input stage selects on-chip
+input **"G"** (`DX0CR.DSEL` = G, with `INSW` set), which is the channel's own transmitter, so a
+byte shifts out DOUT0 and is received on DIN0 entirely inside the chip (RM 18.2.3.5, Loop Back
+Mode). No port pin is muxed, no external MISO-MOSI wire exists, and the port `IOCR` mux therefore
+stays outside the driver's window as an escalation surface -- which is what lets `xmcspi` and
+`xmcssc` run a real SPI transfer from a thread holding nothing but the 512-byte channel window.
+
+Two addresses the probes on this board all use:
+
+- **`USIC0_SR1` = NVIC line 85** (RM Table 4-3), the channel-1 service-request node the SSC
+  driver blocks on. `USIC0_SR0` = **84** is the kernel CONSOLE channel's node, which is why an
+  `INPR` re-point onto SR0 is the interference case those probes exist to bound.
+- **`SCU_CGATCLR0` = `0x5000_4648`** (SCU peripheral clock-gate clear, at CCU `0x600` +
+  `CGATCLR0` `0x048`), the clock-tree escalation surface kept privileged and out of every
+  window. It is the canonical ungranted poke: on PMSAv7 an unprivileged access to it MemManages
+  before any bus access, and `CFSR=0x82` with `MMFAR=0x5000_4648` is the signature every
+  enforcement capture on this board carries.
 
 ## CI coverage & cross toolchains
 
@@ -2044,7 +2215,7 @@ caveats*). Even a unit would therefore witness the authority arm and nothing abo
 armv6m privilege boundary is `picopi`'s alone -- an M0+, which does implement the extension.
 
 **`bluepill-c8` carries no witness because no unit exists.** That is the binding reason, not RAM
-(heap policy, `design-flash-footprint.md` section 7), not the 9-handle provisioning (the authority
+(heap policy, `../archive/M4.5_footprint_meas.md` section 7), not the 9-handle provisioning (the authority
 cap costs zero dynamic slots), and not the missing MPU. It costs nothing either: `f302nucleo` is the
 same class -- a 64 KiB-flash armv7m part with no MPU and a real privilege ring -- and is on the
 bench, so it carries the hardware coverage for both.

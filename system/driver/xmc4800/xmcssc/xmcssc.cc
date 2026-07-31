@@ -60,7 +60,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// Register offsets (off::<REG>) and SSC bit fields are the shared chip definitions.
 using namespace kickos::xmc::reg::usic;
 
 namespace

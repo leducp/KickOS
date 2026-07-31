@@ -5,15 +5,9 @@
 // Sub-Family Reference Manual (K64P144M120SF5RM); hand-rolled (no vendor CMSIS
 // pack), consistent with the arch layer's clean-room regs.h.
 //
-// M1 scope: privilege + SVC only, no hardware MPU. clock_init() brings the core
-// from the MCG FEI reset clock (~20.97 MHz) up to 120 MHz via the PLL off the
-// FRDM's 50 MHz external clock (FEI->FBE->PBE->PEE), falling back to FEI if that
-// clock is absent. Drives the OpenSDA virtual UART (UART0 on PTB16/PTB17); the
-// baud tracks whichever clock won. Console is polled TX. NOT run in this
-// environment (no board/QEMU model); verified by build + image inspection.
-// Flash to the board to confirm. Silicon-risk points to check against the K64
-// RM if bring-up misbehaves: the 50 MHz source is an external CLOCK (EREFS0=0,
-// RANGE0=2), not a crystal; PRDIV/VDIV encodings; and the FRDIV /1536 mapping.
+// Silicon-risk points to check against the K64 RM if bring-up misbehaves: the
+// 50 MHz source is an external CLOCK (EREFS0=0, RANGE0=2), not a crystal;
+// PRDIV/VDIV encodings; and the FRDIV /1536 mapping.
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
@@ -24,8 +18,6 @@
 
 #include <stdint.h>
 
-// Hand-rolled register map for this chip (clean-room, no vendor CMSIS pack).
-// Bases in mmap.h, NVIC lines in irq.h, per-peripheral offsets/fields in regs/.
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"
 #include "irq.h"
@@ -511,7 +503,7 @@ int arch_periph_enable(uintptr_t base)
     else if (base == mmap::DSPI0_BASE)
     {
         scgc = reg::sim::SCGC6;
-        scgc_bit = reg::sim::SCGC6_SPI0; // RM 12.2.15
+        scgc_bit = reg::sim::SCGC6_SPI0; // RM 12.2.13
     }
     else
     {

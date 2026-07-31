@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 userspace polled UART TX console driver (console handover, M3 #4 stage
-// ii-a). An UNPRIVILEGED thread owns the granted USIC0 CH0 register window and
+// XMC4800 userspace polled UART TX console driver. An UNPRIVILEGED thread owns the granted USIC0 CH0 register window and
 // serves a console endpoint: it kos_recv()s byte batches from stdout clients and
 // POLL-writes each byte to the USIC transmit buffer. It does NOT clock/pin/baud
 // the USIC -- the kernel's kickos_xmc_usic_init() already did that at boot, and

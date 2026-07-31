@@ -8,7 +8,16 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-On `master`. **M4.5.6 and M4.5.7 are MERGED**, squashed to `dde73ca` (PR #6). M4.5.6 deleted the
+On branch `M4.5.9-comments`, off `master`. **M4.5.8 is MERGED**, squashed to `844bee9` (PR #7)
+together with the tail of M4.5.7. An audit had stacked eight deliberately-broken regressions into
+one tree and the sim suite still came back green, because the gates asserted that a marker printed
+rather than that the mechanism worked. What replaced them: fault-address pinning and control-effect
+assertions, exact arm-count and TAP plan-count floors derived per posture in CMake, a positive
+landmark checked on every tool invocation, `PARTIAL` promoted to a fourth permission-checked
+verdict, `check_doc_names` registered, and `seam_defaults` reaching the build-only CI jobs. Each
+fix was mutation-proved red before it counted.
+
+**M4.5.6 and M4.5.7 are MERGED**, squashed to `dde73ca` (PR #6). M4.5.6 deleted the
 root-privilege knob and brought the privileged-write seam, the per-entry value mask, the esp32c6
 `.data` LMA fix, honest thread-pool provisioning, and the ring and sim seam gates. M4.5.7 removed
 the weak-symbol seam mechanism, and is summarised below the root list.
@@ -16,6 +25,12 @@ the weak-symbol seam mechanism, and is summarised below the root list.
 Captures and records across `TODO.md` and `docs/` stamp the pre-squash tips they ran on:
 `c5d9b0d`, `270b6fa`, `124b68c`, `989af16`, `16e4af0`, `788b1d8`. All six folded into `dde73ca` and
 reach no branch, so they resolve only where those objects still exist. The stamps stay as written.
+
+**`c296feb` must also survive, and it is reachable only from the local unpushed branch
+`m4.2-presquash`.** It holds `git show c296feb:docs/design-m4-rx-irq-demux.md`, which
+`docs/design-m4.6-irq-driver.md` section 6 cites rather than reproduces for the RX routing-class
+taxonomy, the group-register table and the level-versus-edge semantics. One `git branch -D
+m4.2-presquash` destroys an M4.6.1 prerequisite.
 
 **Root is unconditionally unprivileged on every board.** `KICKOS_ROOT_PRIVILEGED` is DELETED,
 with no replacement and no porting escape hatch, and it appears in **no code or build file at all**
@@ -102,19 +117,22 @@ default, invisible through `find_package(KickOS)`, and the floors in `docs/refer
 assume it. The one commit to revert when bisecting a footprint or timing regression is
 `build: optimise the fleet (MinSizeRel)`.
 
-## Gates (ctest, re-measured at the half-two tip, zero failures)
+## Gates (ctest, re-measured on the M4.5.8 merge, zero failures)
 
-sim 20/20, `qemu` 19/19, `microbit` 13/13. Under `KICKOS_HAVE_MPU=1`: `qemu` 22/22, `qemu-m7`
-21/21, `qemu-m33` 21/21, `qemu-m3` 20/20, `qemu-riscv` 16/16. Eight configurations, each +1 on
-M4.5.6: `seam_defaults` runs everywhere. Fleet links 33/33, MPU variants 14/14. Per-commit
-numbers: one `panicgate` case or `ringpriv` registration moves several at once, so re-derive
-rather than carrying a tally forward.
+sim 21/21, `qemu` 20/20, `microbit` 14/14. Under `KICKOS_HAVE_MPU=1`: `qemu` 23/23, `qemu-m7`
+22/22, `qemu-m33` 22/22, `qemu-m3` 21/21, `qemu-riscv` 17/17. Eight configurations, each +1 on
+M4.5.7: `doc_names` is registered unconditionally and so runs everywhere. Fleet links 33/33, MPU
+variants 14/14. Per-commit numbers: one `panicgate` case or `ringpriv` registration moves several
+at once, so re-derive rather than carrying a tally forward.
+
+`doc_names` catches a cross-reference that no longer resolves, and it has already caught two
+regressions since being wired up, one of them 33 references reverted by a rebase. Run it after any
+doc-heavy rebase; a clean `git rebase` is not evidence. It reads TRACKED MARKDOWN ONLY, so the same
+citations in source comments, CMake strings and workflow YAML rot silently.
 
 `selftest` plans **68** on `sim`, **67** under enforcement, **63** without -- the sim's extra
 case is the seam backend it alone can answer. Skips 0 everywhere except `microbit`'s 9, all
-pinned by name in its gate. New this milestone: `panicgate` (five images, one case each, on every
-preset that enables the selftest, so all eight measured above), `privileged_spawn_refused`,
-`ringpriv`, `ringppb`.
+pinned by name in its gate.
 
 **`ringpriv` and `ringppb` are permanent CI, not bench captures**: `cmake --preset qemu` IS the
 ring-only posture, so the M3/M4/M7/M33 arms carry them with no MPU. `microbit` asserts the

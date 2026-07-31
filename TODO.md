@@ -92,14 +92,14 @@ measure pending N16. At branch tip (`text + data`, against 64 KiB of flash):
 **Tiering is unnecessary: both boards carry the fleet-uniform suite with ~14 KiB spare.** The
 revisit trigger ("only if headroom actually erodes") has **partly fired** -- 1,636 bytes went on
 `bluepill-c8-st` and 1,644 on `f302nucleo-st` against the M4.5.1 merge baseline, attributed
-symbol-by-symbol in `design-flash-footprint.md` section 9: two new selftest cases
+symbol-by-symbol in `docs/archive/M4.5_footprint_meas.md` section 9: two new selftest cases
 (`t_bus_device_slots` + helpers, `t_reboot_denied`), a real +88 in `domain_for` from the
 one-holder-per-MMIO-window check, and `MAX_TESTS` 64->128, whose 512 bytes land on RAM rather than
 flash. 21% is still ample, so tiering stays unbuilt.
 
 **The narrower N16 question now has a measured answer: per-preset build types**
-(`design-flash-footprint.md` section 10). `CMAKE_BUILD_TYPE=MinSizeRel` is byte-identical in
-`.text` to an explicit `-Os`, and its `-DNDEBUG` is inert in this tree -- there is no `NDEBUG`
+(`docs/archive/M4.5_footprint_meas.md` section 10). `CMAKE_BUILD_TYPE=MinSizeRel` is
+byte-identical in `.text` to an explicit `-Os`, and its `-DNDEBUG` is inert in this tree -- there is no `NDEBUG`
 reference anywhere and no `assert()` outside the `KICKOS_DEBUG` guards -- so its only cost is
 losing `-g`, recoverable with `-DCMAKE_C_FLAGS_MINSIZEREL="-Os -DNDEBUG -g"`. It also **inverts the
 block's stated cost**: `CMakeLists.txt:139-140` gives that cost as "the `-st` kernel is no longer
@@ -317,10 +317,12 @@ triggers `push` only on `master`).
       config (`CMakeLists.txt:139`), because an image with no debug info cannot be witnessed on
       silicon. The two-board `-Os` holding block is deleted, subsumed by the fleet default. The gap
       it closed, measured on f302nucleo's selftest image: 64,408 bytes unoptimised against 47,120 at
-      `-Os`, a 26.8% reduction with no source change (`design-flash-footprint.md` section 3, which
+      `-Os`, a 26.8% reduction with no source change (`docs/archive/M4.5_footprint_meas.md`
+      section 3, which
       measures all fourteen boards both ways). One caveat stands: the switch's I-cache footprint
       plausibly moved too, but **no instruction-cache or cycle measurement was ever taken**, so that
-      is not to be cited as measured (`design-flash-footprint.md` section 10). Consequence: every
+      is not to be cited as measured (`docs/archive/M4.5_footprint_meas.md` section 10).
+      Consequence: every
       published bench figure measured unoptimised code, and every silicon witness except the
       2026-07-29 `f302nucleo` captures, which are the first taken on `-Os` -- see the fleet
       re-witness pass under M4.5.5 below. No bench has been run optimised.
@@ -348,8 +350,9 @@ triggers `push` only on `master`).
 - [ ] **LTO does not link, on any board.** `-flto` fails every app with
       `(.isr_vector+0x4): undefined reference to Reset_Handler`. The handler is defined in a C++ TU
       and referenced **only** from the vector table in an assembly object, so the LTO plugin sees
-      no reason to keep the definition (measured on `bluepill-c8`, `design-flash-footprint.md`
-      section 12). So LTO is not an available footprint recovery today. It is not on the `-Os` path
+      no reason to keep the definition (measured on `bluepill-c8`; the defect record is
+      `docs/design-flash-footprint.md`, *LTO does not link*). So LTO is not an available footprint
+      recovery today. It is not on the `-Os` path
       N16 needs, so it gates nothing -- filed so it is not rediscovered. **Record only: no fix
       attempted.**
 - [ ] **`kickos_core` no longer carries the archive group.** c539d1c moved the RESCAN group onto
@@ -882,7 +885,8 @@ Blockers and limits:
   sits at reserved index 2 and spends zero dynamic slots. The arena is heap policy, not the part:
   measured 6,560 B (`bluepill-c8`, production image), 2,592 B (its selftest image), 14,752 B with
   the heap carve at zero; 8,512 and 4,512 on `f302nucleo` since its carve went to 2 K
-  (`design-flash-footprint.md` section 7, `docs/reference/porting.md` minimum-requirement). The "barely 3 KiB" reading is a selftest-image figure.
+  (`docs/archive/M4.5_footprint_meas.md` section 7, `docs/reference/porting.md`
+  minimum-requirement). The "barely 3 KiB" reading is a selftest-image figure.
 - **`Thread::privileged` survives**, with narrowed meaning: it selects the memory posture (kernel
   domain + permissive background), it is the confused-deputy bypass at `syscall_mem.cc:37`, and it
   stays the home for "may spawn a privileged child" -- which should NOT be a capability, since
@@ -1004,7 +1008,7 @@ the rest of the bench debt under M4.6.3..N.
       `docs/reference/boards.md` was captured from an UNOPTIMISED binary: the MCU presets built
       `CMAKE_BUILD_TYPE=Debug`, which is `-g` with no `-O` flag at all, and the fleet now builds
       `MinSizeRel` (`-Os -g`), which moves each image by roughly 17 to 23 KB. Per-board figures in
-      `docs/design-flash-footprint.md`.
+      `docs/archive/M4.5_footprint_meas.md`.
       **What does not transfer, and must be re-captured:** fault addresses, disassembly offsets,
       symbol sizes, stack-depth observations, and every timing figure -- the bench numbers, and
       `inprstorm`'s measured ~37,700 ISR invocations/second
@@ -1542,11 +1546,11 @@ fallback TUs now, so M6 rewrites bodies and not the resolution mechanism.
 
 ## M4.6.1 -- IRQ reclaim, the `irq_register` gate, and console visibility
 
-**First of the M4.6 sub-milestones, and the substrate the other two stand on.** All three items are
-already filed in detail further down this file; this section is the ownership statement, so the
-detail is not duplicated here. It goes first for two reasons: an interrupt-driven, respawnable
-console driver cannot be built until all three are fixed, and none of the three needs a board on the
-bench.
+**First of the M4.6 sub-milestones, and the substrate the other two stand on.** The first three
+items are filed in detail further down this file, so the detail is not duplicated here; the two
+after them are carried up from `docs/design-m4-fable-review.md`, which recorded them nowhere else.
+It goes first for two reasons: an interrupt-driven, respawnable console driver cannot be built until
+the first three are fixed, and none of them needs a board on the bench.
 
 - [ ] **Reclaim IRQ bindings on thread teardown.** Filed under *Found during the M4.5.2 stage-2 flip
       work* below: `irq_detach` has exactly one caller in the tree, nothing in `exit_current` touches
@@ -1564,6 +1568,39 @@ bench.
       `xmcuart.cc:179`). The remedy is ordering -- publish only once the driver has proved
       reachability, or have root verify before publishing -- so it is a handover redesign, and it has
       to land before a console driver whose bring-up is an enumeration handshake.
+- [ ] **The clock-tree service contradicts its own bring-up DAG, and the DVFS notifier cascade has
+      no timeout.** `docs/design-m4-fable-review.md` finding 6, OPEN, recorded nowhere else. Two
+      defects in one principle. **The contradiction**: `docs/design-driver-era-scope.md` section 3.1
+      makes CLOCK-TREE a persistent RUNTIME service that init brings up BEFORE gpio and the drivers,
+      while its G7 dependency list has the clock-tree SERVICE follow the first drivers. Both cannot
+      hold. Cheaper resolution recorded there: the DAG's real dependency is only "gate the driver's
+      clocks at bring-up", a one-shot init step like pinmux, with no standing service. **The
+      cascade**: "Linux CCF shape" hides that CCF notifiers are same-address-space calls under a
+      mutex, where each notify here is cross-domain IPC. A rate change during an in-flight SPI EOQ
+      or UART frame corrupts the wire, so the fan-out needs a PRE-quiesce (drain/park) plus a POST
+      phase, which is a two-phase commit across N untrusted driver threads: one slow or dead driver
+      stalls DVFS forever with no timeout, and a driver whose notify handler calls the clock service
+      re-enters a single-threaded service parked mid-cascade. **Recommendation as recorded**: drop
+      the standing clock-tree service from the M4 principle set, keep init one-shot gating (which
+      satisfies the DAG) plus the G4 kernel mechanism with the console handshake as the FIRST forced
+      instance of the notify protocol, and design the full service against that proven instance.
+      **Outcome recorded 2026-07-30**: no standing service was built, which is the recommendation
+      being followed rather than the finding being closed. The no-timeout half is not theoretical:
+      finding 5 materialised in exactly that shape in M4.5.6.
+- [ ] **`kos_cap_narrow` narrows authority but not endpoint rights, so there is no driver-death
+      story.** `docs/design-m4-fable-review.md` finding 5's residual API gap, recorded nowhere else.
+      `cap_narrow_authority` (`kernel/syscall/cap.cc:489`) refuses any cap that is not
+      `CAP_AUTHORITY` with `-KOS_EINVAL`, so "keep the endpoint cap but drop `WAIT`" cannot be
+      expressed. That is what defeats the only server-death wake the kernel has: last-receiver-gone
+      raises `-KOS_EPIPE` on parked waiters, but root keeps a WAIT-bearing cap on a service endpoint
+      so it can hand `SIGNAL` copies to clients, so `recv_holders >= 1` however the server dies and a
+      client parked in `kos_call` would block forever. `xmcssc` therefore has to panic on a bring-up
+      failure rather than exit, and carries the rule as a comment
+      (`system/driver/xmc4800/xmcssc/xmcssc.cc:333-354`). **Recommendation as recorded**: an
+      endpoint-rights narrow is the cheap enabler for a real driver-death story. The generalisation
+      is already ABI-free (the handle argument takes any cap); the work is the `recv_holders`
+      accounting `obj_close_protocol` does, which the `cap.cc` refusal names as the reason it was
+      left out.
 
 ## M4.6.2 -- USB CDC console (picopi, pizero2350, teensy41)
 
@@ -1663,6 +1700,20 @@ M4.5.5, whose `rx72m` visit was booked as debt rather than allowed to hold the r
 open, and which M4.5.6 then paid. `f411spi` is already WITNESS-READY (it builds from this tree,
 declares its mask, parks rather than returns, prints an explicit PASS/FAIL, and its flash tooling is
 installed), so the pass needs no preparation beyond the board itself.
+
+## Found during the M4.5.9 design-tier pass (2026-07-31)
+
+- [ ] **RX72M's ICU reserved block is too small, so Rule 7 cannot refuse an over-broad grant over
+      the group registers.** A live grant-admissibility hole, recorded only in
+      `docs/design-m4.6-irq-driver.md` section 6.4 and orthogonal to the IRQ work that found it.
+      `arch_reserved_blocks` (`arch/rx/chip/rx72m/chip_rx72m.cc:353-371`) reserves
+      `{mmap::ICU, 0x400}` with `mmap::ICU = 0x0008_7000` (`arch/rx/chip/rx72m/mmap.h:32`), so the
+      window is `0x87000..0x873FF`. That covers `IR`/`IER`/`IPR` but **not** `GRPBL0 0x87630`,
+      `GENBL0 0x87670`, `GRPAL0 0x87830` or `GENAL0 0x87870`. A privileged over-broad grant
+      covering `0x8763x` therefore succeeds today and the Rule-7 predicate has no basis to refuse
+      it, which also leaves the SYSMPU/MPU union wrong for anything that does take it. Fix: extend
+      the entry to span `0x87000..0x8787F`, size `0x880`. The RX IRQ controller is MPU-GOVERNED
+      memory, unlike the ARM PPB, which is why it has to be reserved at all.
 
 ## Found during the M4.5.2 stage-2 flip work (2026-07-28/29)
 
@@ -1829,14 +1880,13 @@ installed), so the pass needs no preparation beyond the board itself.
 - [ ] **About 270 `path:N` doc citations cannot be verified by any gate, and two of two spot-checks
       had drifted -- NEEDS A CONVENTION DECISION.** `tests/check_doc_names.sh` (landed, deliberately
       not wired into CTest) says so itself at `:54-57`: it strips the `:N` and never checks it,
-      because nothing in the current spelling says WHAT should be at that line. Two confirmed live
-      instances, both in one document: `docs/design-m3-clock-select.md:16` cites
-      `user/include/kickos/sys/abi.h:36` for the cpu-clock syscall, where line 36 is now
-      `KOS_SYS_IRQ_REGISTER = 14` (the real line is 43); and `:17` cites
-      `arch/include/kickos/arch/arch.h:79` for `arch_cpu_clock_hz()`, where line 79 is
-      `arch_timer_arm()` (real line 84). This is the reused-identifier class the project already
-      knows is expensive -- a citation that resolves to a live but unrelated thing is worse than one
-      that dangles. **The decision is the spelling**: if a citation carries the expected symbol
+      because nothing in the current spelling says WHAT should be at that line. The failure mode:
+      a citation of `user/include/kickos/sys/abi.h:36` for the cpu-clock syscall resolves to a live
+      but unrelated `KOS_SYS_IRQ_REGISTER = 14`, where the real line is 43. This is the
+      reused-identifier class the project already knows is expensive, and a citation resolving to a
+      live but unrelated thing is worse than one that dangles. Both originally-confirmed instances
+      sat in `docs/design-m3-clock-select.md` and were deleted by the M4.5.9 trim rather than
+      re-anchored, so the class is unchanged and only the two witnesses are gone. **The decision is the spelling**: if a citation carries the expected symbol
       (`arch.h:84 arch_cpu_clock_hz`), the gate can check it in about two lines; until then `:N` is
       decoration. This item scopes that work only -- fixing the ~270 citations belongs to the doc
       audit, and the two instances above are deliberately left as found.
@@ -2092,7 +2142,7 @@ Book + exploratory (M3-adjacent, not milestone-gating):
       receiver + register/bounded-copy; KickOS's sem_post already hands the token off and drives an
       immediate switch, so the fastpath shape exists) for control/RPC, and (b) shared-memory + async
       notifications (non-blocking) for throughput -- the M5 cross-core design
-      (`docs/design-multicore-ipc.md`) already uses an SPSC ring + doorbell, exactly that shape.
+      (`docs/design-m5-smp.md`) already uses an SPSC ring + doorbell, exactly that shape.
       Survey the literature, map both to CAP_ENDPOINT (#4) + the M5 rings, recommend the
       control-plane-vs-data-plane IPC strategy + a micro-benchmark. Good deep-research candidate.
 
@@ -2411,10 +2461,10 @@ below where they were previously mislabeled.
   of this family LANDED (M4.3): the `_write` stdout re-probe -- deleted the process-global sticky
   `g_stdout_probe` (per-invocation classify against the calling thread's own cap 0; no per-thread
   storage needed for it).
-- **M5 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spikes
-  2026-07-19: `docs/design-multicore.md` (AMP-vs-SMP feasibility on rp2040 + rp2350) and
-  `docs/design-multicore-ipc.md` (the RP2040 cross-core IPC); the SMP candidate ranking + staged
-  model + the SMP-is-per-chip-capability constraint are in `docs/design-m5-smp.md`. Candidate
+- **M5 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spike:
+  `docs/design-m5-smp.md` carries the AMP-vs-SMP feasibility, the cross-core IPC invariants, the
+  per-chip hardware mechanics, the SMP candidate ranking + staged model and the
+  SMP-is-per-chip-capability constraint. Candidate
   ranking by the real gate (inter-core atomic + arch-switch maturity): **RP2350 BEST** (M33
   LDREX/STREX enable fine-grained; also 2x Hazard3 -> prove SMP on ARM and RISC-V of one chip),
   **RP2040 big-lock-only** (armv6m has no exclusives; SIO hardware spinlocks -> single big kernel
@@ -2452,7 +2502,7 @@ below where they were previously mislabeled.
     refactor: AMP de-risks the shared mechanics (core-1 launch, IPC, console arbitration) that
     SMP also needs, and sidesteps the no-atomics problem entirely.
   - **Cross-core IPC -- required for AMP; none exists today** (`Semaphore`/`Mutex` are intra-core
-    only). Design in `docs/design-multicore-ipc.md`: a per-direction SPSC ring in a shared-SRAM
+    only). Design in `docs/design-m5-smp.md`: a per-direction SPSC ring in a shared-SRAM
     window (one writer per index + `DMB` ordering -> no lock, no atomics needed on M0+) with the
     SIO 8x32 FIFO used only as a doorbell (write a tag, raise `SIO_IRQ_PROCn`). API = a `Channel`
     (ring + a `Semaphore` in the receiver's kernel) exposed as `KOS_SYS_chan_{open,send,recv}`;
@@ -2544,8 +2594,7 @@ Fleet re-validation follow-ups (from the 2026-07-22 M3-branch gate; see `docs/ar
   lesson; (2) set `XIP_CTRL.NO_UNCACHED_*`/`NO_UNTRANSLATED_*` so mirror-window aliases
   bus-error (saves MPU/SAU regions); (3) MAIR NORMAL-WBWA on the flash region so the cache
   serves hits under enforcement; (4) invalidate-by-address after any future flash program.
-  Fold into `docs/design-rp2350-mpu-armv8m.md`. (Also: `docs/design-rp2350.md:12` doc-drift --
-  says UART0/GP0-1, actual port is UART1/GP4-5; fix when that file is next touched.)
+  Fold into `docs/design-rp2350-mpu-armv8m.md`.
 - Common caveat for ALL the flash caches/buffers: they are NOT coherent across a flash
   program/erase -- any future in-field flash-write/OTA path must invalidate the relevant
   cache/speculation buffer. Not a live risk (KickOS is a fixed flash image today).
@@ -2562,8 +2611,17 @@ Touches nearly every file, so it runs after M4.5.8 merges.
 
 - [ ] **Comment purge.** Keep the fact, cut the chronicle. `--` is a DETECTOR: a comment needing a
       clause chain is already phrased wrong, so rewrite or delete it. Repunctuating to `;` keeps the
-      bad sentence and hides the signal. Baseline 817 in code, 3,506 in docs; gate at zero once
-      clean.
+      bad sentence and hides the signal.
+      **There is no `--` count gate, and there will not be one** (decided 2026-07-31). A zero gate
+      is not reachable: a large share of surviving `--` comments are load-bearing, so the only way
+      to drive the count down is the repunctuation that destroys the detector. A counting gate would
+      then read the tree as clean while every bad sentence survived. The rule stays sweep-on-touch
+      plus no new clause chains.
+      **Open, and wanted: one ubiquitous mechanism that enforces house style across code, docs AND
+      build files.** `clang-format` was already decided against as a gate, and `uncrustify` is not a
+      fit either; neither reaches markdown or CMake, and a formatter cannot see the rules that
+      actually drift (braced `case` bodies, spelled operators, ASCII, narration). Needs a design
+      pass, not another per-rule script.
       Narration is not explanation: the reason a thing is so is one line and stays, the story of
       reaching it is history and git holds it.
       **A comment that turns out to be the only protection for something is a MISSING GATE.** Write
@@ -2576,31 +2634,113 @@ Touches nearly every file, so it runs after M4.5.8 merges.
       means delete it.
       A design doc is neither Book nor Reference. It records decisions for unsettled work, so it
       does not teach and does not restate the contract.
+- [ ] **Gate defects, root-caused rather than rewritten.** The four binary-introspection gates go
+      GREEN on a broken tool: a pipeline given unexpected input prints nothing, and an
+      absence-assertion reads nothing as clean. Verified instances, each a live defect.
+      `check_oot_export_mcu.sh` never sets `LC_ALL=C`, so a translated `Machine:` heading fails it
+      FALSELY; it reports a broken `readelf` as "did NOT relink", blaming a missing
+      `INTERFACE_LINK_DEPENDS`; its `ls *.ld | head -1` silently picks one of several.
+      `check_kernel_ctor_placement.sh` runs six bare `nm` pipelines under `#!/bin/sh`, which has no
+      `pipefail`, so every exit status is discarded; its own failure diagnostic at line 138 uses
+      gawk-only `strtonum`/`and`/`compl`, so a green run never discovers the diagnostic is broken;
+      its three address sets are compared as `printf '%x'` STRINGS with nothing asserting the
+      formats agree. `check_seam_defaults.sh` guards `UND` but not `ABS`, where `$(($3 + 0))`
+      evaluates to 0 and can match section 0; its `TARGET_OBJECTS` split at line 68 is unquoted, so
+      a glob character or a space in a build path inventories a different file as an empty one.
+- [ ] **Missing gates the purge surfaced.** The rule this milestone runs on is that a comment which
+      is the only protection for something is a MISSING GATE, so the sweep was asked to report them
+      rather than delete them. Every one below is a real constraint held by prose alone. None was
+      removed; each needs a test, and none is a comment problem.
+      *Kernel*: the `KICKOS_MIN_STACK_SIZE` per-arch floor is never checked against the deepest
+      `exit_current` chain, so a wrong override overflows only on thread exit, on hardware.
+      `wq_confirm_resume` requires the lock released BEFORE `wait_result` is read; inlining the read
+      under the lock compiles clean and passes on the sim, whose switch is synchronous, and races on
+      ARM. `ThreadPool` stack harvest must happen only once the exited thread is provably off-CPU.
+      `domain_for` requires `caller_authorized` resolved by the CALLER, never read from
+      `sched::current()` inside. `irq_register`'s clear-then-enable order matters only on ARM and RX,
+      which are default-masked; sim and riscv would never catch a reorder. `console_tx`'s
+      prime-the-pump applies per chip family and a refactor dropping it hangs TX on real
+      edge-triggered hardware only.
+      *ARM*: `arch_diag_led_init` depends on `uart0_init` having opened the PORTB gate earlier in
+      `arch_init`; reordering silently drops the PCR store. `chip_mps2` losing its
+      `kickos_arm_pmsav8_init` reference still links and silently writes RASR-shaped values into
+      RLAR. `sam3x8e`'s `tc_clock_init` ordering BusFaults a static ctor calling `ktime_now`, and its
+      `MOSCXTST` window is a guess pending Due silicon. `imxrt1062`'s MPU-before-cache order
+      manifests only as a silicon hang, and that chip has no board or QEMU model. `MODEM_TXCTSE`
+      without real CTS wiring makes the polled writer wait forever. `switch.S`'s FP-frame save order
+      is covered by `static_assert` for the scalar offsets only, not for `{s16-s31}` before
+      `{r4-r11,lr}`.
+      *RISC-V and Xtensa*: the C6 all-ones-NAPOT quirk, why the bootstrap entry uses TOR, is not
+      reproducible under QEMU. `arch_pinmux_set` writes the GPIO-matrix out-sel before the
+      kernel-owned-pin check, so dropping the matrix stage bypasses console and LED pin protection.
+      APM denial does not trap the way PMP does, so a bad region hangs instead of faulting.
+      *RX*: enabling SCI6 `SCR.TIE` while `SSR.TDRE` is set is EXPECTED to raise TXI6 and has never
+      been confirmed on silicon; if wrong, the console TX drain never re-arms after idle. An earlier
+      `CMWSTR.STR` readback guard raced at full switch speed and starved the far deadline whenever
+      the CPU never idled; nothing stops it being reintroduced.
+- [ ] **A registered arm that proves the gates still fail.** Point each gate's tool at `/bin/true`,
+      then at a stub emitting a translated heading, then at a truncated capture. Each must exit
+      non-zero with a TOOL error, not with the assertion's own diagnostic. Exit codes are read
+      unpiped, because `grep -c` exits 1 on zero matches and kills an `&&` chain before its
+      diagnostic prints. Without this arm the hand-placed landmark stays a habit of whoever
+      remembers, which is what let M4.5.8's eight stacked regressions pass.
+      A full Python rewrite of these four was proposed and DECLINED: it moved 762 lines to 585
+      while churning `check_riscv_no_smalldata.sh`, already the soundest of the four, and its
+      "before M4.6" sequencing rested on M4.6 adding introspection gates, where M4.6.1 and M4.6.2
+      add boot and TAP arms riding `tests/lib/gate.sh`, out of that proposal's scope either way.
 
-## M4.5.10 -- test foundation
+## MMU-era groundwork quick wins (from `docs/design-mmu-era-exploration.md` section 5)
 
-Before M4.6, not after: M4.6.1 and M4.6.2 add gates, and gates built on this layer while it is
-being replaced are written twice.
+Cheap seam/groundwork changes worth making WHILE M4/M5 code is written, so the MMU era does not
+force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`kaccess_from_user` /
+`kaccess_to_user`, `kernel/syscall/syscall_mem.cc`) and is not repeated here.
 
-- [ ] **Move binary introspection out of shell.** `check_seam_defaults.sh`,
-      `check_kernel_ctor_placement.sh`, `check_oot_export_mcu.sh` and
-      `check_riscv_no_smalldata.sh` are 762 lines parsing `nm`/`readelf`/`objdump` text through
-      pipelines. Keep invoking those tools, parse in stdlib Python as `tests/telemetry/*.py`
-      already does (no third-party dependency).
-      This is a correctness change, not tidying: a parser given unexpected input RAISES, while a
-      pipeline prints nothing and an absence-assertion reads nothing as clean. That class is why
-      M4.5.8 needed seven hand-placed positive controls, and it also covers the semicolon-joined
-      `TARGET_OBJECTS` list, locale-translated ld map headings, and running a `bash` gate under
-      `dash` (which garbles into plausible FALSE failures rather than erroring).
-      Leave the runner and TAP half alone: `tests/lib/gate.sh` is already converging.
-      Acceptance: fewer total lines than it replaced, and every gate still mutation-provable red.
+- [ ] **QW-1. Give `Domain` an opaque backend field instead of a bare region array**, or at least
+      route ALL region access through accessors. Today `struct Domain` exposes
+      `arch_mpu_region regions[]` directly and callers (`domain_for` dedup, `thread.cc` compose, any
+      future reader) touch it as a raw array. Keep it MPU-only in BEHAVIOR but funnel every read
+      through a small accessor surface (`domain_regions(d, &n)` / an opaque `domain_backend(d)`) so
+      the field can later become `arch_aspace*` without touching callers. Cheap now because there
+      are only a handful of readers; expensive later, once caps, IPC endpoints, MMIO grants and the
+      console-handover work all read `regions[]` directly and the representation has to swap under
+      pressure. A one-file accessor contains the blast radius of the single biggest below-seam
+      change.
+- [ ] **QW-3. Keep the shared-IPC ring contract PHYSICALLY addressed from day one.** When the IPC
+      ring lands (`docs/design-m5-smp.md`), specify that ring control words and slot
+      references are offsets or physical addresses, NEVER a pointer valid in one core's space, even
+      though on RP2040 (homogeneous, one physical space) a raw pointer would work. It costs nothing
+      there and is the exact property a heterogeneous A53/M7 pairing needs. Baking a VA into the
+      ring on the homogeneous prototype would silently work until the first MMU peer, then break
+      the wire format; getting the invariant into the design text is free, retrofitting it after
+      apps depend on the layout is not. The same discipline is what
+      `docs/design-m4-fable-review.md` finding 10 wants pulled into the M4 call/reply gate.
+- [ ] **QW-4. Isolate the pow2/natural-alignment MPU shaping so a page allocator can sit beside the
+      bump allocator.** `arch_ram_region_size` / `arch_ram_region_align` encode MPU-descriptor
+      geometry into the ALLOCATOR. Flag them as "MPU shaping" belonging behind the same arch family
+      switch that would later select frame allocation, with no behavior change, and do not let new
+      callers assume "allocation size is always the MPU-rounded size" outside the allocator. The
+      pow2 assumption already leaks (`domain_for` dedups on the rounded size) and each new leak is
+      another site a frame allocator must reconcile.
+- [ ] **QW-5. Confirm the cap/handle layer stays address-space-agnostic, and keep it that way.** A
+      do-no-harm review rule, not a change: the per-task handle to per-kernel object-pool model
+      (`cap.cc`) is ALREADY MMU-clean, and no cap/endpoint code should start keying on a physical
+      address or a region base the way `domain_for` does. Object naming stays purely by
+      handle/slot, never by address. Free, since it is the current design, but endpoint IPC is
+      exactly the code tempted to stash a shared-buffer physical address in a cap, which would drag
+      address-space assumptions into the one layer the MMU rewrite relies on being clean.
+- [ ] **QW-6. Reserve an `arch_aspace`-shaped hole in the arch seam doc, not the code.** `arch.h`'s
+      header prose already frames the seam as "concepts, never mechanisms" and freezes
+      `arch_mpu_region`. Add a NOTE that the MMU era introduces a PARALLEL `arch_aspace_*` family
+      rather than reinterpreting the MPU seam, so a future porter does not try to overload
+      `arch_mpu_apply` to mean "load a page table". A sentence of foresight prevents a wrong-shaped
+      first MMU port.
 
 ## M6
 
-- [ ] **Re-inventory the test-gate surface.** M4.5.10 takes the binary-introspection half; whatever
-      is still oversized then is this pass. Take the inventory against the surface as it is, do not
-      pre-design it here. Baseline at M4.5.8: 23 shell scripts, ~2,000 lines, plus 5 Python
-      checkers.
+- [ ] **Re-inventory the test-gate surface.** M4.5.9 root-caused the binary-introspection gates'
+      silent-failure paths without rewriting them; whatever is still oversized then is this pass.
+      Take the inventory against the surface as it is, do not pre-design it here. Baseline at
+      M4.5.8: 23 shell scripts, ~2,000 lines, plus 5 Python checkers.
 
 ## Post-M6 optimizations (not scheduled)
 
@@ -2622,8 +2762,9 @@ being replaced are written twice.
       model. Machinery: SAU/IDAU partition, secure-gateway veneers + S/NS call ABI, banked SPs, NVIC
       ITNS interrupt targeting, a separate Secure build/link. Per-chip capability -- M23/M33/M55/M85
       MAY implement it, detect + fall back to Option B alone; RP2350's M33 is a concrete target (also
-      the PMSAv8 + SMP target). Security/assurance play, not perf. Design in
-      `docs/design-armv8m-trustzone.md`.
+      the PMSAv8 + SMP target). Security/assurance play, not perf. The M5 dependency is mechanical.
+      The MPUs and the SAU are both banked per core, so a TrustZone SMP story must set up the
+      S/NS partition on each core separately.
 - [ ] **Confine the trusted kernel with an explicit MPU map ("Option B") -- FLEET-WIDE hardening**
       (post-M6, fable-gated, per-arch). Today privileged/kernel execution runs UNCONFINED on each
       backend's permissive background; a kernel wild pointer rides it silently instead of faulting.

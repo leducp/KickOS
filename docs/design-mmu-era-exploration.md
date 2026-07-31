@@ -218,7 +218,7 @@ crit-section (CLI/STI or just IF via `arch_irq_save`), timer, syscall, console,
 IRQ triad, idle (HLT). GENUINELY new: GDT/IDT/TSS setup, long-mode boot, the
 `arch_aspace_*` translation family (shared with any MMU arch), `syscall`/`sysret`
 MSR plumbing, and per-CPU state via GS-base (the x86 analog of the per-core
-globals design-multicore.md calls out).
+globals design-m5-smp.md calls out).
 
 **Rough effort shape.** Medium-large but well-trodden. Order of magnitude: boot
 + long mode + GDT/IDT (small, copy-the-wiki), thin IRQ/timer/console/switch
@@ -237,10 +237,10 @@ The i.MX8MP is 4x Cortex-A53 (ARMv8-A, VMSA/MMU) + 1x Cortex-M7 (ARMv7-M, MPU) i
 one SoC. The vision: an MMU KickOS instance on the A53 cluster alongside an MPU
 KickOS instance on the M7, one kernel per core-cluster, talking over cross-core
 IPC. This is the culmination of BOTH axes -- the MMU work (section 2/3) AND the
-AMP work (design-multicore / design-multicore-ipc) -- meeting on one board.
+AMP work (design-m5-smp) -- meeting on one board.
 
 **It extends the M4 SPSC-ring + doorbell model from homogeneous to
-heterogeneous.** The M4 design (design-multicore-ipc) is: two SPSC rings per
+heterogeneous.** The M4 design (design-m5-smp) is: two SPSC rings per
 channel (one per direction) in a shared-SRAM window, DMB-ordered index publish,
 a doorbell interrupt to wake the peer's local `recv`. That entire contract
 survives the A53/M7 asymmetry with three added concerns:
@@ -298,8 +298,8 @@ news).
 ## 5. QUICK WINS -- FLAG ONLY (proposals to schedule during M3/M4, NOT done here)
 
 These are cheap seam/groundwork changes worth making WHILE M3/M4 code is being
-written, so the MMU era does not force a breaking rewrite. Each is a PROPOSAL;
-none is implemented in this spike. Ordered by leverage.
+written, so the MMU era does not force a breaking rewrite. Each was a PROPOSAL;
+QW-2 has since LANDED and the rest are tracked in `TODO.md`. Ordered by leverage.
 
 **QW-1. Give `Domain` an opaque backend field instead of a bare region array --
 or at least route ALL region access through accessors.**
@@ -316,21 +316,21 @@ biggest below-seam change.
 PROPOSAL -- schedule, do not implement here.
 
 **QW-2. Name the "physical == the address you dereference" assumption in
-`user_range_ok` / `user_readable_ok` with a single choke helper.**
-What: the two validators (`syscall.cc:127-179`) both assume a validated user
-pointer is directly dereferenceable by the kernel. Introduce (design-only) the
-notion that "validate" and "access" are two steps, even if today they collapse
-(a `kaccess_from_user(ptr, ...)` that is currently an identity pass-through). Do
-NOT build translation -- just stop scattering raw `reinterpret_cast<T*>(user_ptr)`
-dereferences through the syscall handlers, routing them through one helper.
+`user_range_ok` / `user_readable_ok` with a single choke helper. -- LANDED.**
+What: the two validators both assume a validated user pointer is directly
+dereferenceable by the kernel. Split "validate" from "access" even though today
+they collapse, so raw `reinterpret_cast<T*>(user_ptr)` dereferences stop being
+scattered through the syscall handlers.
 Why cheap now / expensive later: the copy_from_user rewrite (section 2) is the
 nastiest MMU change because a user VA stops being kernel-dereferenceable. If every
 kernel-side user-pointer dereference already goes through ONE helper, that becomes
 one function to implement per arch; if not, it is a hunt across every syscall.
-PROPOSAL -- schedule, do not implement here.
+LANDED as `kaccess_from_user` / `kaccess_to_user`
+(`kernel/syscall/syscall_mem.cc`), identity today, with the callers-must-validate-first
+rule stated at the definition. Every remaining QW here is still a PROPOSAL.
 
 **QW-3. Keep the shared-IPC ring contract PHYSICALLY addressed from day one.**
-What: when the M5 IPC ring lands (design-multicore-ipc), specify that ring
+What: when the M5 IPC ring lands (design-m5-smp), specify that ring
 control words and slot references are offsets / physical addresses, NEVER a
 pointer valid in one core's space -- even though on RP2040 (homogeneous, one
 physical space) a raw pointer would work fine.
@@ -396,7 +396,7 @@ PROPOSAL -- fold into arch.h prose / the Book when convenient, do not implement 
   API freezes.
 
 - **TLB shootdown on SMP-MMU.** Section 2 notes `arch_aspace_activate` carries a
-  shootdown obligation the MPU never had. This collides with the design-multicore
+  shootdown obligation the MPU never had. This collides with the design-m5-smp
   BKL/SMP work. Research the interaction: is AMP-only (per-core-cluster kernels,
   no shared aspace) enough to dodge shootdown entirely for the first MMU product?
   (i.MX8MP AMP suggests yes.)
@@ -434,6 +434,6 @@ PROPOSAL -- fold into arch.h prose / the Book when convenient, do not implement 
 - i.MX8MP heterogeneous AMP, RPMsg/OpenAMP, MU doorbell, shared SRAM: rt-rk RPMsg
   inter-core communication; NXP community i.MX8MP RPMsg / shared-memory threads;
   Embedded Artists heterogeneous multi-core; Kynetics AMP notes.
-- Internal: `docs/design-multicore.md`, `docs/design-multicore-ipc.md`,
+- Internal: `docs/design-m5-smp.md`,
   `arch/include/kickos/arch/arch.h`, `kernel/domain/*`, `kernel/syscall/*`,
   `docs/book/handles-and-the-resolve-chokepoint.md`.

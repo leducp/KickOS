@@ -5,13 +5,19 @@ Copyright (c) 2026 Philippe Leduc
 
 # M4.6 design -- the IRQ-driven driver pattern, and the buffered userspace UART on top
 
-**DESIGN GATE. No code written yet.** This document is the M4.6 step-0 gate: the general
+> **Status: ACTIVE** -- the M4.6 step-0 design gate, no code written yet. See
+> `design/README.md` for the marker taxonomy.
+
+This document is the M4.6 step-0 gate: the general
 mechanism by which an **unprivileged userspace driver owns an interrupt line** -- claimed by
 privileged bring-up, handed to the driver at spawn, and **reclaimed when the driver dies**.
 UART is the first and forcing consumer; M4.7 (ADC / RTC / watchdog / entropy / PWM / DAC)
 must reuse this substrate **unchanged**.
 
-Verified against `master` `64410b7`. Every file:line below was read at that commit.
+Originally verified against `master` `64410b7`. For this pass, the citations flagged as
+stale (section 0 hole 1, section 2.4, section 6.4) were re-verified against `master`
+`0b37578`, 30 commits later. The rest of this document's file:line citations have not been
+re-walked and should be re-checked at the top of M4.6.1.
 **Recovered 2026-07-30 from an unpushed worktree, unchanged.** It predates the whole M4.5.x
 unprivileged-root arc, so its citations need re-verifying at the top of M4.6.1: root is now
 unconditionally unprivileged, the separate device and clock authority bits were deleted, and the
@@ -36,7 +42,7 @@ that pattern across the privilege boundary.
 The tier-1 IRQ substrate that must carry it (`kernel/irq/irq.cc`) has three holes:
 
 1. **Ungated.** `KOS_SYS_IRQ_REGISTER/WAIT/ACK` (14/15/16) have **no privilege check and no
-   capability** (`kernel/syscall/syscall.cc:593-604`). Any unprivileged thread may claim ANY
+   capability** (`kernel/syscall/syscall.cc:814-825`). Any unprivileged thread may claim ANY
    line in `[0, KICKOS_MAX_IRQ)`, first-come-first-served. Compare `KOS_SYS_IRQ_ATTACH = 11`
    (`:476-524`) which IS privileged AND requires a `CAP_SEM` bearing `CAP_SIGNAL`.
 2. **Nothing is released on death.** `sched::exit_current` (`kernel/sched/sched.cc:185-222`)
@@ -50,7 +56,7 @@ The tier-1 IRQ substrate that must carry it (`kernel/irq/irq.cc`) has three hole
 3. **Edge-only.** The binding contract is latch-and-coalesce (`arch/include/kickos/arch/arch.h:340-350`).
    Level sources -- RX72M `GROUPBL0`, and every "one status register, N sub-sources" UART --
    need a per-binding trigger type so the rearm does `clear_pending` then `unmask`
-   (`TODO.md:292-301`).
+   (`TODO.md`, heading "level-trigger tier-1 bindings").
 
 All three are closed here. Hole 1 and hole 2 are closed by the **same** decision.
 
@@ -91,6 +97,15 @@ capabilities. Everything in "UART-specific policy" lives in `system/driver/` or
 **An interrupt line becomes a first-class kernel object named by a new `CapType` member for
 IRQ lines (sec.2.2), allocated from a generational `SlotPool`, refcounted, delegated at spawn
 like any other cap, and released by the existing `cap_teardown` on thread exit.**
+
+**Three records now disagree on how M4.6.1 should gate `irq_register`, and this document does
+not resolve it.** `STATE.md` and `TODO.md` both scope M4.6.1 as gating `irq_register` on the
+existing `AUTH_IRQ` bit; `TODO.md` additionally flags a narrower per-line authority as an open
+decision, not yet made ("needs a decision rather than work"). This document answers the same
+question a third way, above: the line is not gated by an authority bit at all, it IS a
+capability, minted privileged-only, delegated at spawn, released by `cap_teardown`. Whoever
+starts M4.6.1 must notice this before picking one; it is the maintainer's call, not settled
+here.
 
 Rejected alternative: **a separate IRQ registry with its own ownership + teardown hook**
 (keep the integer handle, add an `irq_release_all(Thread*)` called from `exit_current`).
@@ -195,11 +210,13 @@ KOS_SYS_IRQ_CLAIM  = 14, // (line, flags) -> CAP_IRQ cap handle, or -KOS_E*
                          //   ENOMEM (binding pool or cap table full)
 KOS_SYS_IRQ_WAIT   = 15, // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
 KOS_SYS_IRQ_ACK    = 16, // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
-KOS_SYS_IRQ_NOTIFY = 36, // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks SIGNAL)
+KOS_SYS_IRQ_NOTIFY = 43, // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks SIGNAL)
 ```
 
-36 is the next free number (highest today is `KOS_SYS_REPLY = 35`,
-`user/include/kickos/sys/abi.h:60`).
+43 is PROPOSED, not assigned: it is the next free number as of this pass (highest today is
+`KOS_SYS_PERIPH_REG_WRITE = 42`, `user/include/kickos/sys/abi.h:74`). 36 is taken
+(`KOS_SYS_SHUTDOWN = 36`, `user/include/kickos/sys/abi.h:60`). Re-read the enum at the top
+of M4.6.1 before assigning, since the ABI keeps growing.
 
 Claim flags (`user/include/kickos/sys/abi.h`, new):
 
@@ -606,7 +623,8 @@ It becomes "the kernel forcibly took the UART back (panic, or driver death)".
 
 ## 5. Decision 4 -- level-triggered bindings
 
-`TODO.md:292-301` already specifies this; M4.6 is its first consumer, so it lands here.
+`TODO.md`, heading "level-trigger tier-1 bindings", already specifies this; M4.6 is its
+first consumer, so it lands here.
 
 The whole change is one helper, called from both `irq_wait` (on entry) and `irq_ack`:
 
@@ -652,7 +670,7 @@ Per-arch consequences of L1, which sec.8 tabulates:
 
 - **ARM NVIC** -- `ICER` is in the PPB, kernel-owned, per-line. Clean.
 - **RX72M dedicated vectors** -- `ICU.IER` bit, kernel-owned (and the ICU is already a
-  reserved block, `chip_rx72m.cc:294-312`). Clean.
+  reserved block, `chip_rx72m.cc:353-371`, function `arch_reserved_blocks`). Clean.
 - **RX72M GROUPBL0 sources** -- `GENBL0.ENj`, kernel-owned, per-source. Clean, **once the ICU
   reserved block is extended** (sec.6.4).
 - **ESP32-C6** -- the natural per-source mask is `UART_INT_ENA`, which lives inside the
@@ -663,7 +681,8 @@ Per-arch consequences of L1, which sec.8 tabulates:
 
 ### 5.2 The bulk-rearm hazard: **not triggered**
 
-`TODO.md:302-310` and `arch.h:356-362` warn that the software backends carry a coalesced
+`TODO.md`, heading "identity-free coalesced redelivery on the software backends", and
+`arch.h:356-362` warn that the software backends carry a coalesced
 redelivery through ONE shared cell plus ONE doorbell, so **at most one unmask-with-pending
 may occur per `IrqLock` region**.
 
@@ -677,7 +696,7 @@ have to reconstruct it:
   does not use the doorbell. The hazard is on unmask only.
 - `kos_irq_notify` does not touch the controller at all.
 
-So `TODO.md:302-310` stays correctly deferred; M4.6 does not force the identity-free
+So that `TODO.md` item stays correctly deferred; M4.6 does not force the identity-free
 dispatcher. If a future design adds a genuine bulk rearm, that TODO is its prerequisite.
 
 ---
@@ -801,7 +820,7 @@ them.
 
 ### 6.4 The `arch_reserved_blocks` finding (carried forward, still true)
 
-Verified at HEAD: `arch_reserved_blocks` in `arch/rx/chip/rx72m/chip_rx72m.cc:294-312`
+Verified at HEAD: `arch_reserved_blocks` in `arch/rx/chip/rx72m/chip_rx72m.cc:353-371`
 reserves `{mmap::ICU, 0x400}` = `0x87000..0x873FF`. That covers `IR`/`IER`/`IPR` but **NOT**
 the group registers the demux will use (`GRPBL0 0x87630`, `GENBL0 0x87670`,
 `GRPAL0 0x87830`, `GENAL0 0x87870`).
@@ -1107,7 +1126,7 @@ register work. **L** = new subsystem. "HW" = validation is silicon-gated.
 | **RISC-V / qemu virt** | no real device routed at all (semihosting console, `chip_virt.cc`) | nothing -- stays the inject-only substrate target. Useful for testing the *cap* mechanism in CI without hardware | **S** | no |
 | **Xtensa LX6 / esp32** | **BROKEN, worse than C6.** `arch_irq_mask/unmask` contain **no HW hook whatsoever** (`arch_xtensa.cc:550,561`), and `kickos_lx6_dispatch_l1:380-384` dispatches `g_console_line` unconditionally. One physical device line exists in total | (a) a new `kickos_lx6_hw_mask/unmask` hook clearing the console CPU int's `INTENABLE` bit; (b) an `INT_ST` demux in the L1 dispatcher; (c) a per-line table. Note `INTSET` latches only software ints 7/29 (`arch_xtensa.cc:544-548`), so `arch_irq_inject` cannot fake a real line here -- which is another reason `kos_irq_notify` is the doorbell (sec.2.6) | **M** | **yes** |
 | **sim** | dispatch bypasses the mask: `console_tx_service()` calls `kickos_isr_irq(TX_LINE)` without consulting `sim().irq_masked` (`arch/sim/sim.cc:447-451`) | make the TX-line delivery respect `irq_masked`, so the sim faithfully models mask-until-ack. Then the whole cap/teardown/level design is testable in CI with no hardware | **S** | no |
-| **rp2350 Hazard3** | **does not exist in tree** (no `arch/riscv/chip/rp2350*`; design-only, `docs/design-rp2350.md:180-202`) | out of scope | -- | -- |
+| **rp2350 Hazard3** | **does not exist in tree** (no `arch/riscv/chip/rp2350*`; design-only, `docs/design-rp2350.md` under *DEFERRED*) | out of scope | -- | -- |
 | **mps2, nrf51, virt** | semihosting console, no `arch_console_tx_backend` | no UART driver to build; they validate the *general* mechanism via injected lines | **S** | no |
 
 Two hard numeric ceilings to design against, both confirmed:
@@ -1129,31 +1148,37 @@ Two hard numeric ceilings to design against, both confirmed:
 
 ### 9.1 New selftests
 
-*(names and registration style to be finalised against `user/apps/common/selftest/main.cc`;
-the existing `irq_*` tests are the pattern)*
+This subsection was never written. No test names or registration list exist yet. The only
+guidance on record is a pointer: follow `user/apps/common/selftest/main.cc`'s style, with the
+existing `irq_*` tests as the pattern.
 
 ### 9.2 Board-by-board silicon order
 
-*(see below)*
+This subsection was never written. No board-by-board validation order exists for M4.6.
 
 ### 9.3 The RX72M chicken-and-egg, and the `SCR.TIE` assumption
 
-*(see below)*
+This subsection was never written. The heading names a real open problem, RX72M SCI6 TX
+bring-up and the `SCR.TIE` assumption referenced in section 7.2, but the analysis itself is
+missing and must not be reconstructed here.
 
 ---
 
 ## 10. Staging
 
-*(see below)*
+This section was never written. No staging plan exists for M4.6.
 
 ---
 
 ## 11. Open questions the reviewer must rule on
 
-*(see below)*
+This section was never written. It should have collected, at minimum, the section 6.3
+sparse-map trade-off flagged above and the three-way disagreement on IRQ authority scoping
+flagged in section 2.1; neither has a recorded resolution.
 
 ---
 
 ## 12. Deliberately out of scope
 
-*(see below)*
+This section was never written. No out-of-scope list exists for M4.6; do not infer one from
+silence elsewhere in this document.

@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Run in script mode (cmake -P) on EVERY build to (re)generate a small TU defining
-#   extern "C" char const kickos_build_stamp[]
-# with the current build time + git short hash (+ '+' when the working tree is dirty).
+#   extern "C" char const kickos_build_time[]
+#   extern "C" char const kickos_build_commit[]
 #
 # Why not __DATE__/__TIME__: those bake into whichever TU is compiled, so on an
 # incremental build the banner shows the time that TU last compiled -- NOT the time the

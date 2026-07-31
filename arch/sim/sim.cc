@@ -1,11 +1,5 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
-//
-// KickOS sim arch backend (host x86-64 Linux). The ONLY place host libc is
-// used. Design studied from the RIOT `native` port: ucontext-based context
-// switch, signal-driven timer + emulated device IRQs, mprotect over an mmap'd
-// guard page for MPU emulation. Deferred context switches run on signal exit,
-// mirroring the ARM PendSV-on-exception-return model.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
@@ -33,9 +27,6 @@
 #include <kickos/rtt.h>
 #endif
 
-// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
-// for the arch this backend implements, or a SESSION record mislabels the trace.
-// A wrong caps.cmake value breaks the build here instead of drifting silently.
 static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_SIM,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_SIM for sim");
 
@@ -437,11 +428,6 @@ namespace
     }
 
     // --- Buffered console TX backend (console_tx.h) ----------------------------
-    // A fictional TX peripheral: push writes one byte to host stdout; slot_free is
-    // an always-free channel EXCEPT inside the drain ISR, where a small synthetic
-    // budget forces the ring to drain over several deliveries (so it genuinely
-    // fills, primes, wraps, and empties). irq_enable/irq_disable gate + assert the
-    // emulated TX-empty line, delivered via SIGUSR1.
     enum
     {
         TX_LINE = 30,       // < KICKOS_MAX_IRQ / SIM_IRQ_LINES; not used by any test/bench

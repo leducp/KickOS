@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# A standalone downstream project consuming the installed KickOS package. It
-# does NOT live in the KickOS tree. This one uses the plain modern-CMake path:
-# a normal add_executable linked against the exported `kickos` usage target --
-# no KickOS-specific macro required. (kickos_add_application() remains available
-# as sugar, and on MCU targets for image emission.)
+# A standalone downstream project consuming the installed KickOS package -- not
+# part of the KickOS tree. Plain modern CMake: add_executable + kickos link.
 
 cmake_minimum_required(VERSION 3.24)
 project(kickos_oot_app LANGUAGES C CXX)

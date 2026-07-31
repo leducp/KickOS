@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The XMC4800 USIC0-CH1 SSC (SPI) bus SERVICE (M4.4). The XMC sibling of the K64F
+// The XMC4800 USIC0-CH1 SSC (SPI) bus SERVICE. The XMC sibling of the K64F
 // DSPI0 service (<kickos/driver/k64dspi.h>): a privileged one-time bring-up
 // (xmc_spi0_start) enables the U0C1 kernel clock, programs the fixed baud profile +
 // SSC-master + internal-loopback input, arms the RX interrupts, creates the request
@@ -18,8 +18,7 @@
 // endpoint's cap handle so the app -- same thread, same cap table -- can delegate a
 // SIGNAL-narrowed cap to ONE client: the service tracks device slots by the caller's
 // own request byte, so several devices behind one client are supported and several
-// mutually-untrusting clients are not. xmc_spi0_take_endpoint enforces that by
-// handing the handle out once.
+// mutually-untrusting clients are not.
 //
 // Chip select is the controller's own HARDWARE line (KOS_BUS_CS_HW): the driver
 // brackets the whole transaction with MSLS/SELO0, held across the software-paced

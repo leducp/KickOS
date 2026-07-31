@@ -278,3 +278,39 @@ are silicon-only -- no emulated board carries one -- and the `xmc4800` one is wi
 `conreclaim` (`c5d9b0d`). See
 [architecture.md](architecture.md), "Object model, capabilities & IPC" ->
 "Console device handover".
+
+## The publisher's obligations
+
+`kos_console_publish` hands the device away but cannot police what the publishing task does
+next. Three properties of the published console are therefore contracts on the PUBLISHER, not
+things the kernel enforces; the two console drivers (`system/driver/xmc4800/xmcuart`,
+`system/driver/mk64f/k64uart`) implement all three in their `*_console_start` helper, and
+`user/apps/common/initdemo` mirrors them.
+
+**Publish and driver-spawn are ONE atomic act.** Nothing may be spawned that depends on the
+console between the two. `kos_console_publish` returning has already flipped the state to
+`USER_OWNED` and pointed `g_stdout_target` at the endpoint, so a driver spawn that FAILS after
+it leaves the target naming an endpoint with no receiver. Every task spawned afterwards then
+parks on its first `printf` probe forever: the `kos_send` blocks with no receiver to rendezvous
+with, and no EPIPE fires while the publisher's own reference still holds, so the `_write`
+fallback never gets the `-1` it needs to route around the dead console. The kernel cannot
+cheaply tell "published" from "published and served", so the publisher must not spawn
+console-dependent tasks when the driver spawn did not succeed.
+
+**The publisher MUST drop its own WAIT-bearing capability immediately after the spawn.** The
+dead-endpoint gate is keyed on `recv_holders` reaching **0**, and nothing else fires it.
+`kos_endpoint_create` sets `recv_holders = 1` for the creator, and delegating a `CAP_WAIT` copy
+to the driver at spawn bumps it to **2**, so at that instant the endpoint has two receiver
+holders. If the publisher keeps its copy, the driver's death drops the count to 1, not 0: no
+EPIPE is delivered, parked senders are never woken, and every client hangs for the life of the
+system. That is strictly WORSE than a dark console, which is why the drop is a hard rule and
+not a tidiness convention. Dropping it does not tear the endpoint down, because the kernel holds
+its own `g_stdout_target` reference. A re-publish after a driver death therefore uses a FRESH
+endpoint, the publisher again holding no receiver.
+
+**There is a DARK WINDOW between the publish flip and the driver actually serving capability 0.**
+`console_emit`'s chip path is already dropping (RTT still carries it) while no userspace receiver
+exists yet. Output is not lost in it: a client `send` parks on `send_waiters` and the rendezvous
+absorbs the gap, which is why there is no "handover in progress" state to size. What the window
+does mean is that the console is dark on the wire for its duration, and that a failure inside it
+is the case the atomicity rule above exists to forbid.

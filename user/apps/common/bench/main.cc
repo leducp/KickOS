@@ -2,27 +2,15 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Context-switch microbenchmark (KICKOS_BENCH builds only). Two equal-priority
-// threads ping-pong via semaphores; every wait/post handoff forces one scheduler
-// switch. A higher-priority privileged reporter prints two things:
+// threads ping-pong via semaphores; a higher-priority privileged reporter prints
+// throughput (ctx-switches/s via kos::clock_now, works on every arch), per-switch
+// cost + IRQ-entry latency (cycles, only where switch.S brackets the swap with a
+// counter: armv7m DWT, rxv3 CMTW1, rv32imac rdcycle/MTIME, xtensa CCOUNT; absent
+// on M0/sim/frozen-QEMU), and worst-case ISR latency across a masked span.
 //
-//   throughput -- context switches/second, measured over a burst of N rounds with
-//     the monotonic clock (kos::clock_now). Needs no cycle counter, so it is the
-//     UNIFORM metric: it works on every arch, including Cortex-M0 and the sim.
-//   per-switch cost + IRQ-entry latency -- in CPU cycles, only where the arch has a
-//     cycle counter that switch.S brackets the swap with (armv7m DWT, rxv3 CMTW1,
-//     rv32imac rdcycle/MTIME, xtensa CCOUNT). Absent (scnt==0) on M0/sim/frozen-QEMU.
-//   worst-case ISR latency -- BEST-case IRQ entry above injects while uncontended; this
-//     injects at the START of a masked span (arch_irq_save, the IrqLock seam) and times
-//     inject->ISR-entry across it, modelling the M3 endpoint copy-under-IrqLock. Two
-//     views: `wcase-irq` cycle sweep over span sizes (real only where the counter runs)
-//     and `wcase-hold` ns/256B-span via clock_now (portable -- the number that survives
-//     a frozen DWT / the sim).
-//
-// The reporter is woken by the workload itself (player_b posts a gate every N rounds),
-// NOT by a timer -- so it cannot be starved by the players saturating the CPU (a real
-// tickless-timer starvation under 100%-CPU zero-idle load; see
-// docs/archive/M1_state.md). Numbers are comparable across arches and to ourselves once
-// M2 adds an MPU reprogram to the switch. Run telemetry OFF for clean numbers.
+// The reporter is woken by the workload itself, NOT by a timer, so it cannot be
+// starved by the players saturating the CPU (see docs/archive/M1_state.md).
+// Run telemetry OFF for clean numbers.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -76,10 +64,6 @@ namespace
         {
             kos_sem_wait(CH_B);
             kos_sem_post(CH_A);
-            // Deterministically wake the reporter every N rounds -- a semaphore post
-            // (direct reschedule to the higher-prio reporter), never a timer, so it
-            // cannot be starved by this CPU-bound ping-pong.
-            //
             // Explicit RMW through a local: '++' on a volatile is deprecated (C++20).
             uint32_t const round = g_rounds + 1;
             g_rounds = round;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The K64F/DSPI0 SPI bus SERVICE (M4.4). A privileged one-time bring-up
+// The K64F/DSPI0 SPI bus SERVICE. A privileged one-time bring-up
 // (k64dspi_spi_start) clock-gates + PORTD-muxes + configures DSPI0 while halted,
 // opens the DSPI AIPS slot to user mode, sets up the software GPIO chip select on
 // PTC4, creates the request ENDPOINT, and spawns the UNPRIVILEGED driver thread
@@ -17,7 +17,6 @@
 // thread, same cap table -- can delegate a SIGNAL-narrowed cap to ONE client: the
 // service tracks device slots by the caller's own request byte, so several devices
 // behind one client are supported and several mutually-untrusting clients are not.
-// k64dspi_take_endpoint enforces that by handing the handle out once.
 //
 // Chip select is a SOFTWARE GPIO on PTC4 (Arduino D9 = LAN9252 SCS), NOT hardware
 // PCS0: the driver brackets the whole transaction by driving PTC4 low (assert) /

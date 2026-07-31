@@ -190,12 +190,6 @@ namespace
         r8(sci::SCR) = sci::SCR_TE;       // enable transmitter (TIE off; the ring primes it)
     }
 
-    // --- Buffered console TX backend (console_tx.h). The ring drains via the SCI6
-    // transmit-data-empty interrupt (TXI6, vector 87); slot_free/push touch one
-    // register, and irq_enable/irq_disable gate SCR.TIE. Enabling TIE while SSR.TDRE
-    // is set is expected to raise TXI6 (the idle->busy prime relies on this; HW-
-    // unverified -- see the review checklist "SCR.TIE-while-TDRE actually fires
-    // TXI"). The RMW keeps SCR_TE set so the transmitter stays on. ---
     int rx_tx_slot_free(void) { return (r8(sci::SSR) & sci::SSR_TDRE) != 0; }
     void rx_tx_push(uint8_t b) { r8(sci::TDR) = b; }
     void rx_tx_irq_enable(void) { r8(sci::SCR) = static_cast<uint8_t>(r8(sci::SCR) | sci::SCR_TIE); }

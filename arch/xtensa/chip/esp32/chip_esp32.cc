@@ -5,10 +5,6 @@
 // transcribed from the ESP32 TRM (register base addresses per TRM 1.5.3 "System
 // and Memory / peripheral base"; UART/WDT register offsets per the UART and
 // Watchdog chapters). Hand-rolled, no ESP-IDF/HAL sources.
-//
-// arch_init raises the CPU to the 240 MHz PLL (clock_init_240mhz); the ROM leaves
-// UART0 (GPIO1 TX / GPIO3 RX) at 115200 and the console recomputes its divider for
-// the 80 MHz APB after the switch. arch_console_write polls the UART0 TX FIFO.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
@@ -17,9 +13,6 @@
 
 #include <stdint.h>
 
-// Hand-rolled register map for this chip (clean-room, no ESP-IDF/HAL pack).
-// Bases in mmap.h, matrix/CPU/logical IRQ numbers in irq.h, per-peripheral
-// offsets/fields in regs/.
 #include "mmap.h"
 #include "irq.h"
 #include "regs/uart.h"
@@ -315,12 +308,6 @@ namespace
     console_tx_backend const esp32_console_backend = {
         esp32_tx_slot_free, esp32_tx_push, esp32_tx_irq_enable, esp32_tx_irq_disable};
 
-    // One-time UART0 TX-interrupt wiring: TX-empty disabled + any ROM-left latch
-    // cleared, the empty threshold set, the peripheral source routed through the
-    // matrix to CPU interrupt 13, and that CPU line armed in INTENABLE (the arch
-    // records the CPU int + logical line for the level-1 dispatcher). No source
-    // asserts until console_tx_write sets INT_ENA, which only runs once the ring is
-    // armed and the drain ISR attached (console_buffer_init, later in kmain).
     void uart0_irq_setup()
     {
         // The console owns UART0, so silence every source (the ROM polls -- no IRQs)

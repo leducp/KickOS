@@ -5,10 +5,11 @@
 > VERIFICATION notes are the outcomes. Kept as the record of what was challenged and what
 > survived. See `design/README.md` for the marker taxonomy.
 >
-> **It is also the driver era's risk register, so each finding events have since tested carries an
-> OUTCOME line** (added 2026-07-30, at the M4.5.6 boundary). Findings **5** and **12** have
-> MATERIALISED as real defects. Findings **4**, **6** and **8** are OPEN and are squarely M4.6.1
-> (IRQ) work -- **re-read this document at the top of that milestone** rather than shelving it.
+> **It is also the driver era's risk register, so each finding that events have since tested carries
+> an OUTCOME line** (added 2026-07-30, at the M4.5.6 boundary). Findings **5** and **12** have
+> MATERIALISED as real defects. Finding **4** is CLOSED. Findings **6** and **8** are OPEN and are
+> squarely M4.6.1 (IRQ) work -- **re-read this document at the top of that milestone** rather than
+> shelving it.
 > Finding **10** stays OPEN as the M6 landmine. A finding with no OUTCOME line is untested by
 > events, not dismissed.
 
@@ -93,10 +94,11 @@ cyclic exchange over the K64F DSPI driver.
 **Recommendation:** the reply-cap design gate must include the scheduling contract (direct handoff on
 call -- client donates priority or the switch goes straight to the driver, as `sem_post`'s token
 handoff already does -- and back on reply). Without it, "synchronous driver API" is not an RTOS API.
-**OUTCOME (2026-07-30): OPEN, and it is M4.6.1's problem.** Nothing has donated priority yet; the
-call/reply drivers that shipped in M4.5.x are all served at the driver thread's static priority. The
-scheduling contract this finding asks for is the same contract findings 6 and 8 need, so all three
-are one milestone's work -- re-read them together at the top of M4.6.1.
+**OUTCOME: CLOSED.** Donation landed 2026-07-24 in `kernel/syscall/syscall_ipc.cc` through the
+`thread_effective_prio` funnel; the contract is `docs/reference/ipc-call-reply.md`, which names the
+KickCAT cyclic exchange as the victim this finding predicted. Two residuals are recorded there as
+stated limits: no nested or multi-level donation, and no timed call. Findings 6 and 8 still need
+their own scheduling work.
 
 ### 5. No death story on the call path: a crashed driver parks its clients forever  -- MATERIALISED
 **Principle:** call/reply + the missing-entirely list. **Severity: MAJOR.**

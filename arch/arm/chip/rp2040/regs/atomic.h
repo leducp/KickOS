@@ -20,8 +20,6 @@ namespace kickos::rp2040::reg::atomic
     constexpr uintptr_t SET_ALIAS = 0x2000u;
     constexpr uintptr_t CLR_ALIAS = 0x3000u;
 
-    // A write of `mask` to these addresses XORs / SETs / CLEARs the register at
-    // `addr` by that bitmask (addr = the register's normal-window address).
     constexpr uintptr_t as_xor(uintptr_t addr) { return addr + XOR_ALIAS; }
     constexpr uintptr_t as_set(uintptr_t addr) { return addr + SET_ALIAS; }
     constexpr uintptr_t as_clr(uintptr_t addr) { return addr + CLR_ALIAS; }

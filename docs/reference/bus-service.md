@@ -245,6 +245,62 @@ transfer to it. `spi_transfer`/`spi_transact` return rx bytes (`>= 0`) or a nega
 negative code and writes the driver's rounded-down bit clock to `*achieved_hz` when
 non-NULL.
 
+## K64F DSPI0 -- the register map behind the reference service
+
+Everything below is instance-relative to `DSPI0_BASE = 0x4002_C000` (K64 Sub-Family RM Rev.4
+Oct 2019, chapter 50), which is the whole window `k64dspi` is granted. Reset values are the RM's
+and they are load-bearing twice over: they are what the bring-up shim must undo, and they are
+what a read-back is compared against.
+
+| Register | Offset | Reset | Fields the service uses |
+|---|---|---|---|
+| `MCR` | `0x00` | `0000_4001h` | `MSTR` b31, `CONT_SCKE` b30, `DCONF` [29:28], `FRZ` b27, `MTFE` b26, `PCSSE` b25, `ROOE` b24, `PCSIS` [21:16], `DOZE` b15, `MDIS` b14, `DIS_TXF` b13, `DIS_RXF` b12, `CLR_TXF` b11, `CLR_RXF` b10, `SMPL_PT` [9:8], `HALT` b0 |
+| `TCR` | `0x08` | `0000_0000h` | transfer counter |
+| `CTAR0` | `0x0C` | `7800_0000h` | `DBR` b31, `FMSZ` [30:27], `CPOL` b26, `CPHA` b25, `LSBFE` b24, `PCSSCK` [23:22], `PASC` [21:20], `PDT` [19:18], `PBR` [17:16], `CSSCK` [15:12], `ASC` [11:8], `DT` [7:4], `BR` [3:0] |
+| `SR` | `0x2C` | `0200_0000h` | `TCF` b31 (w1c), `TXRXS` b30 (**read-only**), `EOQF` b28 (w1c), `TFUF` b27 (w1c), `TFFF` b25 (w1c, resets **1**), `RFOF` b19 (w1c), `RFDF` b17 (w1c), `TXCTR` [15:12], `RXCTR` [7:4] |
+| `RSER` | `0x30` | `0000_0000h` | `TCF_RE` b31, `EOQF_RE` b28, `TFUF_RE` b27, `TFFF_RE` b25, `TFFF_DIRS` b24, `RFOF_RE` b19, `RFDF_RE` b17, `RFDF_DIRS` b16 |
+| `PUSHR` | `0x34` | `0000_0000h` | `CONT` b31, `CTAS` [30:28], `EOQ` b27, `CTCNT` b26, `PCS` [21:16], `TXDATA` [15:0] |
+| `POPR` | `0x38` | `0000_0000h` | `RXDATA` [31:0], **read-only** (the frame is right-justified per `CTAR.FMSZ`; an 8-bit service masks `0xFF`) |
+| `TXFR0..3` | `0x3C..0x48` | `0000_0000h` | TX FIFO shadow, read-only (debug visibility) |
+| `RXFR0..3` | `0x7C..0x88` | `0000_0000h` | RX FIFO shadow, read-only (debug visibility) |
+
+**`MCR` resets to `MDIS = 1, HALT = 1`**: the module boots DISABLED and HALTED. A shim must clear
+`MDIS`, flush both FIFOs (`CLR_TXF | CLR_RXF`) and only then release `HALT`. `PCSIS` bit 16 set
+makes `PCS0` inactive-HIGH, which is what a CS-idle-high target wants. Both FIFOs are 4 entries
+deep on SPI0, so `SR.TXCTR`/`SR.RXCTR` are how the service paces a multi-word transfer.
+
+**`SR` flags are w1c and must be cleared BEFORE a line is re-armed.** An uncleared level
+re-asserts on unmask and STORMS the line -- the same hazard the PIT `TIF` case teaches. `TXRXS` is
+the exception: it is read-only status (RUNNING vs STOPPED), and setting `EOQF` auto-CLEARS it,
+because end-of-queue stops the module. An `EOQ`-paced design therefore clears `EOQF` and lets the
+next `PUSHR` restart the queue, which is exactly a request/response exchange. `EOQF` over `TCF` is
+the reason: `TCF` fires per frame (N interrupts for an N-frame command) while `EOQ` marked on the
+last frame fires ONCE per logical transfer, so the wake model does not change when a FIFO-burst
+optimisation lands.
+
+**Enable and reach**, all outside the granted window and therefore the shim's or the seam's:
+
+| What | Register | Value |
+|---|---|---|
+| clock gate | `SIM_SCGC6` @ `0x4004_803C` | `SPI0` = bit **12** (RM 12.2.13) |
+| bus supervisor-protect | `AIPS0_PACRF` @ `0x4000_0044` | slot 44, field 4 = bits `[15:12]`, `SP4` = bit **14**; the register resets to `0x4444_4444`, i.e. supervisor-only (RM 20.2.3) |
+| NVIC | -- | IRQ **26**, vector **42**, `0x0000_00A8`; ONE vector for every DSPI0 source, so the enabled `RSER` bit alone decides what wakes it |
+| pins (ALT2 of PORTD) | `PORTD_PCR0..3` | `PTD0 = SPI0_PCS0`, `PTD1 = SPI0_SCK`, `PTD2 = SPI0_SOUT`, `PTD3 = SPI0_SIN` |
+
+The `PACR` register and `SP` bit are DERIVED from the block base rather than tabled
+(`slot_of`/`pacr_of`/`pacr_sp_bit`, `arch/arm/chip/mk64f/regs/aips.h`, `static_assert`-pinned);
+the derivation itself is in `architecture.md` under *Memory domains*. `SIM_SCGC6` and `PORTD_PCRn`
+stay privileged permanently and are the escalation surfaces: the first could ungate any
+peripheral, the second could re-mux SPI onto or off arbitrary pins.
+
+The shipped service deviates from the design brief in two places, and the CODE is the contract:
+the granted window is **`0x40`**, not `0x100` (it still covers `MCR..SR` and the `PUSHR`/`POPR`
+pair the transfer path uses, and it is pow2 and 32-aligned so the same grant encodes on
+PMSA/PMP too), and CS is **`CS_GPIO` on PTC4**, not hardware `PCS0` -- a DSPI HW-PCS `CONT`
+window clocks a trailing dummy byte on release, so it suits only per-frame-CS-tolerant devices
+(see *Chip-select policy* above). The transfer path is polled on `SR.RXCTR` rather than blocking
+on IRQ 26; the IRQ row above is the silicon fact, not a claim that this service arms it.
+
 ## Neutrality
 
 Nothing in the wire names a FIFO depth, a CTAR, a PCS count, or a shift unit -- those are

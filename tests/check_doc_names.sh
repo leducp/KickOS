@@ -5,11 +5,6 @@
 # CI gate against doc rot: every KICKOS_* / KOS_* / CAP_* / AUTH_* identifier and
 # every in-repo file path a markdown file NAMES must still resolve in the tree.
 #
-# The failure this exists to stop is not the dangling reference, it is the reference
-# that resolves to the WRONG thing: syscall numbers 34/35/36 have already been reused
-# in this ABI, so a stale note naming a number now owned by a different syscall reads
-# as authoritative and costs debugging time. A name nobody can find is merely useless.
-#
 # Run from the repo root, no arguments, no build directory:
 #   tests/check_doc_names.sh
 #

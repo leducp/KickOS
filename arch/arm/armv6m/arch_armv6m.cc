@@ -6,8 +6,6 @@
 // the critical section is PRIMASK (mask ALL configurable interrupts -- v6-M has
 // no BASEPRI), and there is no DWT cycle counter, so arch_clock_now is supplied
 // by the chip (like arch_console_write), not here.
-//
-// Runtime-validated on QEMU Cortex-M0 (microbit); see docs/reference/porting.md.
 
 #include <kickos/arch/arch.h>
 

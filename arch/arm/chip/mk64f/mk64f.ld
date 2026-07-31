@@ -270,17 +270,16 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 #include <boot_arena.ld.h>
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
-/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
-   rather than silently drop a destructor. */
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
-/* App globals must fit the pow2 region. If this trips, raise _appdata_size to the
-   next power of two (it is the app's MPU-granted .data/.bss window). A zero-sized
-   used-end means the user-path selector matched nothing -- check the build layout. */
+/* App globals must fit _appdata_size, the app's MPU-granted .data/.bss window.
+   SYSMPU is 32-byte granular, so any 32-byte multiple works here; there is no
+   power-of-two requirement, unlike the PMSA chips.
+   A zero-sized used-end means the user-path selector matched nothing. */
 #if KICKOS_HAVE_MPU
 ASSERT(_appdata_used_end <= __kickos_appdata_start + _appdata_size,
-       "KickOS: app .data/.bss overflow _appdata_size (raise it to the next pow2)")
+       "KickOS: app .data/.bss overflow _appdata_size (raise it, 32-byte granular on SYSMPU)")
 /* Lower bound: an empty .appdata dropping its ALIGN would place .appbss below the base. */
 ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
        "KickOS: .appbss placed below the app-data window base (empty .appdata alignment-drop regression)")

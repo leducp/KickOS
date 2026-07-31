@@ -7,10 +7,6 @@
 // supplies the truly hardware-specific edges -- arch_init (clocks + console +
 // exception-priority install), arch_console_write (UART) -- and the linker
 // script that defines the user-RAM region and SystemCoreClock.
-//
-// Runtime verification is pending a Cortex-M4 execution target (QEMU or K64F
-// hardware); this compiles clean for the target ISA and the switch/SVC paths
-// are validated by construction + disassembly (see docs/reference/porting.md).
 
 #include <kickos/arch/arch.h>
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
@@ -80,9 +76,6 @@ void arch_context_init(struct arch_context* ctx,
     top &= ~static_cast<uintptr_t>(7); // AAPCS: 8-byte aligned stack
     uint32_t* sp = reinterpret_cast<uint32_t*>(top);
 
-    // A privileged (kernel) thread returns straight into the kernel epilogue; an
-    // unprivileged thread must reach the exit path via a syscall trap (see the
-    // kickos_user_thread_return note above).
     uint32_t ret = reinterpret_cast<uint32_t>(kickos_thread_return);
     if (not privileged)
     {
@@ -211,7 +204,6 @@ void kickos_armv7m_default_irq(void)
 
 // --- Fault reporting: a shared HardFault (+ MemManage/BusFault/UsageFault, which
 // the chip vectors route here too) that dumps the CPU context before the dead-end.
-// Replaces the per-chip stubs that discarded everything. -----------------------
 #ifndef KICKOS_PANIC_DUMP
 #define KICKOS_PANIC_DUMP 1
 #endif

@@ -4,7 +4,7 @@
 // STM32F103C8 ("Blue Pill", Cortex-M3) chip backend. Registers are clean-room
 // from RM0008; hand-rolled, no vendor HAL/CMSIS, consistent with the arch layer.
 //
-// M1 scope: privilege + SVC, no hardware MPU. Clocking: the Blue Pill carries an
+// Clocking: the Blue Pill carries an
 // 8 MHz HSE crystal, so clock_init() runs the PLL (HSE x9) to 72 MHz -- the F103
 // max -- for an accurate, full-speed SYSCLK instead of the imprecise HSI RC.
 // SYSCLK = HCLK = PCLK2 = 72 MHz, PCLK1 = 36 MHz (its max). Console = USART1 on
@@ -12,10 +12,6 @@
 // model (not MODER/AFR) and has no FPU. No watchdog runs at reset, so the reset
 // path is just C-runtime. Every RCC/HSE/PLL poll is bounded: a missing or dead
 // crystal degrades to the reset HSI clock rather than hanging the boot.
-//
-// NOT run in this environment (no F103 model here); verified by build + image
-// inspection. Flash (ST-LINK/openocd) to confirm; apps/blink toggles the onboard
-// LED (PC13, active-low) for a no-UART smoke test.
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>

@@ -5,91 +5,54 @@
 > `reference/invariants.md` (`grant-refuses-kernel-reserved-blocks`).
 > See `design/README.md` for the marker taxonomy.
 
-**LANDED.** The MMIO-grant mechanism is implemented and committed:
-`kos_thread_params.mmio_base/mmio_size` (Option A grant-at-spawn), the
-`arch_mpu_region_encodable(base,size)` arch seam (exact-cover, no rounding: PMSA/PMP
-pow2, SYSMPU 32 B, RX 16 B, sim fail-closed), `thread_spawn` boundary validation
-(privileged-only, no-wrap, encodable), and `domain_for` appending the MMIO region as a
-never-shared capability -- the stack-ownership refactor it sequenced behind also landed.
-The GPIO/timer first-driver bring-up (k64drv, K64F PIT) answered this brief's top HW risk
-on silicon: see "Per-backend feasibility -- K64F" below. This brief is retained as the
-design record; the driver briefs (`design-spi-driver*.md`) build on the landed seam.
+Decision record. Grant admissibility, the encodability seam and the peripheral-MMIO matrix belong
+to the Reference. The driver briefs (`design-spi-driver*.md`) build on the same seam.
 
 ## Key finding: the seam is most of the way there
-- `ARCH_MPU_DEV` (arch/include/kickos/arch/arch.h) already exists and is honored by the
-  ARM PMSA encoder (`mpu_rasr` -> `AP_RW | XN | MEM_DEVICE`).
-- `thread_create` already copies the whole `domain->regions[]` set into a thread's set,
-  and the budget assert already covers it; `user_range_ok` iterates regions by attr.
-- So an MMIO grant reduces to: append ONE `arch_mpu_region {R|W|DEV}` to a Domain, and
-  validate it at the boundary. Modeling MMIO as a DOMAIN region means `thread.cc`'s
-  composition loop needs no edit (keeps this out of the stack refactor's way).
+An MMIO grant reduces to appending ONE `arch_mpu_region {R|W|DEV}` to a Domain, plus boundary
+validation. `ARCH_MPU_DEV` already existed and was honored by the PMSA encoder, `thread_create`
+already copied the whole `domain->regions[]` set, and `user_range_ok` already iterated regions by
+attr.
 
 ## Load-bearing new invariant
-**An MMIO grant is PRIVILEGED-ONLY** (gate on `sched::current()->privileged`, reject -1),
-exactly like `ram_alloc`/`irq_attach`. Unlike the RAM `mem_base` grant (spawner-asserted,
-trusted-until-M2), MMIO must NOT be self-grantable by an unprivileged caller -- else it
-maps arbitrary peripheral space and defeats isolation.
+An MMIO grant is PRIVILEGED-ONLY, like `ram_alloc`/`irq_attach`. REJECTED: making it
+self-grantable by an unprivileged caller, which maps arbitrary peripheral space and defeats
+isolation. The RAM `mem_base` grant was different: spawner-asserted, trusted until M2.
 
 ## ABI (Option A -- grant at spawn; recommended minimal step)
-Extend `kos_thread_params` with `void* mmio_base; uint32_t mmio_size;` (0 = none); attr is
-implied `R|W|DEV` (device, RW, no-execute). One MMIO region per domain -- enough for the
-minimal driver. Option B (a dedicated `mmio_grant` syscall for multiple/post-spawn regions)
-is the documented follow-on; needs a domain/thread handle table + live re-apply.
+DECIDED: `kos_thread_params.mmio_base/mmio_size`, one MMIO region per domain, attr implied
+`R|W|DEV`, never X on any backend.
 
-Boundary validation in `thread_spawn` (before slot claim), when `mmio_base != 0`:
-1. privileged caller, else -1;
-2. `mmio_size != 0`, `base+size` no wrap;
-3. ENCODABILITY -- reject (do not round) what one descriptor cannot cover: pow2-MPU archs
-   (PMSA/PMP) require pow2 size >= min and base natural-aligned; byte-granular archs
-   (SYSMPU/RX) require size >= min + page alignment. (Rounding MMIO up over-grants
-   neighboring registers -- an isolation leak.)
-4. attr fixed `R|W|DEV`, never X.
+Option B (a dedicated `mmio_grant` syscall for multiple or post-spawn regions) is DEFERRED rather
+than rejected. It needs a domain/thread handle table plus a live re-apply. Its trigger is the
+region budget: a two-MMIO-plus-data driver is 7 of 8 on ARMv7-M.
 
-`domain_for` extended to append the MMIO region; **an MMIO-carrying domain is never shared**
-(a capability -- do not auto-share with a sibling that only matched the data region).
+DECIDED: model MMIO as a DOMAIN region, so `thread_create`'s composition loop needs no edit.
+REJECTED: MMIO handling inside `thread_create`, which would have collided with the
+stack-ownership refactor landing in the same window.
+
+DECIDED: reject a non-encodable window at the boundary. REJECTED: rounding it up, which
+over-grants the neighboring registers, an isolation leak. An awkward block (PIT) takes a padded
+window or two descriptors instead.
+
+DECIDED: an MMIO-carrying domain is never shared, not even with a sibling that matched only the
+data region. The grant is a capability.
 
 ## Per-backend feasibility
-- ARM PMSA (XMC): DEV already implemented (device + XN + RW). Pow2/aligned window. Do the
-  POC here first (enforcement-proven on silicon).
-- K64F SYSMPU: **ANSWERED on silicon (k64drv PIT driver): SYSMPU does NOT gate AIPS
-  peripheral-bridge accesses under user mode.** SYSMPU is a bus-slave-side unit (flash/SRAM
-  crossbar ports); it never sees the peripheral bridge. Peripherals are gated by the AIPS
-  bridge PACR -- by privilege+master, per 4 KB slot, NOT per-thread -- so a K64F MMIO grant is
-  INERT for peripheral isolation (kernel-vs-user, per-slot only). Per-thread peripheral
-  isolation is therefore impossible on K64F; it holds on the CPU-side-MPU chips (XMC PMSA,
-  RISC-V PMP, RX MPU). See `reference/architecture.md` (Memory domains -- the peripheral-MMIO
-  matrix) + `book/peripheral-isolation-and-the-hardware-ceiling.md`.
-- RISC-V PMP: ordinary NAPOT RW-NX (no device type; that's PMA). Pow2/aligned.
-- RX72M: UAC RW, clear X. 16 B page.
-- sim: mprotect cannot map MMIO -> `grant_region_set` skips non-arena regions (fail-closed).
-  The GPIO/LED half is HW-only; sim exercises the IRQ-as-event half against an arena-backed
-  fake device (the existing `t_irqdrv` pattern).
+The top HW risk was whether SYSMPU gates peripheral accesses under user mode. ANSWERED on silicon
+by the k64drv PIT driver: it does not. SYSMPU is a bus-slave-side unit (flash/SRAM crossbar ports)
+and never sees the peripheral bridge. The AIPS bridge PACR is what gates, by privilege plus
+master, per 4 KB slot, not per thread. So a K64F MMIO grant is INERT for peripheral isolation,
+per-thread peripheral isolation is impossible on K64F, and it holds only on the CPU-side-MPU chips
+(XMC PMSA, RISC-V PMP, RX MPU). Lead there. Matrix: `reference/architecture.md` (Memory domains).
+Narrative: `book/peripheral-isolation-and-the-hardware-ceiling.md`.
 
-## Minimal driver (XMC first, then K64F LED)
-Privileged boot does the unsafe one-time setup (pin mux + direction; start a periodic
-timer whose NVIC line the driver waits on). The UNPRIVILEGED driver is granted only: the
-GPIO data-register block (toggle, but cannot re-mux), the timer control block (to W1C its
-own interrupt flag), and the timer IRQ line via the existing tier-1 path. The IRQ path
-needs NO kernel change (`irq_register`/`irq_wait`/`irq_event_isr`/`irq_ack`); the only
-device-specific need is clearing the peripheral's interrupt flag, which is exactly what the
-timer MMIO grant is for (else the line re-asserts on unmask -> storm). Region budget on
-ARM PMSA: code + appdata + GPIO MMIO + timer MMIO + stack = 5 of 8.
+sim: no real peripheral window is encodable there, so the GPIO/LED half of a driver has no sim
+twin. sim exercises the IRQ-as-event half against an arena-backed fake device (the `t_irqdrv`
+pattern).
 
 ## Risks
-- SYSMPU peripheral gating (was top HW risk) -- RESOLVED: SYSMPU does not gate peripherals
-  (AIPS PACR does, coarse/per-slot). Per-thread peripheral isolation lands only on the
-  CPU-side-MPU chips (XMC PMSA, RISC-V PMP, RX MPU); lead there.
-- Pow2 over-grant on PMSA/PMP -- reject non-pow2 windows, do not round (over-grants
-  neighbors). Awkward blocks (e.g. PIT) may need a padded window or two descriptors.
-- Fault-vs-grant: an ungranted MMIO access must be reported not escalated; a device access
-  may surface as BusFault (not MemManage) on some Cortex-M / a bus error on SYSMPU -- the
-  fault reporter must decode both + print the address.
-- XN mandatory on every backend (never grant X to MMIO); keep a static check.
-- Region budget (8): code+appdata+data+MMIO(xN)+stack. A 2-MMIO+data driver is 7 on
-  ARMv7-M; that is the trigger for Option B / a params array.
-
-## Sequencing vs the stack-ownership refactor
-Land the stack/region refactor first; MMIO then rebases mechanically because it is a pure
-ADDITION to `domain->regions[]` (no edit to `thread_create`'s composition loop). Both
-streams touch the `KICKOS_MPU_MAX_REGIONS` budget assert and `domain_for` -- whoever lands
-second rebases those. Do NOT add MMIO handling inside `thread_create`.
+- Fault-vs-grant: an ungranted MMIO access must be reported, not escalated. A device access may
+  surface as BusFault rather than MemManage on some Cortex-M, and as a bus error on SYSMPU, so the
+  fault reporter must decode both and print the address.
+- Region budget (8 on ARMv7-M PMSA): code + appdata + data + MMIO(xN) + stack.

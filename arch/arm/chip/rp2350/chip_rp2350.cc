@@ -6,8 +6,7 @@
 // SDK sources, consistent with the arch layer's regs.h. Section numbers in the
 // comments cite that datasheet.
 //
-// First-pass scope: privilege + SVC on the reused armv7m arch, NO hardware MPU
-// (the armv8-m/PMSAv8 backend is deferred -- see docs/design-rp2350.md). clk_sys
+// clk_sys
 // is raised to 150 MHz off PLL_SYS (12 MHz XOSC x125 /5 /2, the datasheet default
 // max, 8.6); SystemCoreClock tracks it so the SysTick ns<->cycle math
 // (arch_arm_common) stays coherent. clk_ref stays on the 12 MHz XOSC and drives
@@ -25,12 +24,6 @@
 //     a pad (9.11.3).
 //   - 52 NVIC lines; the console is on UART1 (UART1_IRQ = 34, 3.2) -- see the
 //     IO_BANK0 block below for why the Pi-Zero header forces UART1, not UART0.
-//
-// NOT run in this environment (no RP2350 model in mainline QEMU; no bench access);
-// verified by build + image inspection. Flash via BOOTSEL/picotool to confirm UART1
-// output on GP4 (Waveshare RP2350-Pi-Zero 40-pin header pin 8). The board is always
-// BOOTSEL-recoverable, so a wrong
-// clock/boot config cannot permanently brick it.
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
@@ -39,8 +32,6 @@
 
 #include <stdint.h>
 
-// Hand-rolled register map for this chip (clean-room, no vendor SDK).
-// Bases in mmap.h, NVIC lines in irq.h, per-peripheral offsets/fields in regs/.
 #include "mmap.h"
 #include "irq.h"
 #include "regs/clocks.h"

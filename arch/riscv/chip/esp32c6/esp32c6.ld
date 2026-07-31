@@ -280,8 +280,6 @@ KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 ASSERT(_sidata == _sdata,
        "KickOS: .data LMA != VMA -- the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 
-/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
-   rather than silently drop a destructor. */
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 

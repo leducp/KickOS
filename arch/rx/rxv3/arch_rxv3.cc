@@ -1,15 +1,5 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
-//
-// RXv3 arch backend (Renesas RX72M): the parts of the arch.h seam that are RXv3
-// core-generic (chip-independent). The context switch + syscall trap assembly
-// lives in switch.S; the chip layer (arch/rx/chip/*) supplies the hardware edges
-// -- arch_init (clocks + console + module-stop release + INTB), arch_console_write,
-// arch_shutdown -- and the linker script that defines the user-RAM region and the
-// CMTW input-clock frequency.
-//
-// Upstream QEMU ships no RXv3 machine model, so nothing in CI executes this arch;
-// every RX run is on real silicon. Validation status: docs/reference/boards.md.
 
 #include <kickos/arch/arch.h>
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
@@ -20,17 +10,9 @@
 
 #include <stddef.h> // offsetof
 
-// The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
-// for the arch this backend implements, or a SESSION record mislabels the trace.
-// A wrong caps.cmake value breaks the build here instead of drifting silently.
 static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_RX,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_RX for rxv3");
 
-// Fault reporting (see the .fvectors shims in startup.S): the reporter calls
-// kpanic_enter first, which masks IRQs, forces the synchronous polled writer, and
-// flushes the ring -- so the dump is safe from an exception even though RX72M arms
-// the buffered SCI6 console. kfault_terminate is the shared panic/fault dead-end
-// (kernel.h).
 namespace kickos
 {
     void kprintf(char const* fmt, ...);
@@ -44,12 +26,6 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 #define KICKOS_PANIC_DUMP 1
 #endif
 
-// The SWINT switcher (switch.S) saves the full context: R1-R15 (single-precision
-// FP lives in the GPR file), FPSW, the two accumulators, AND -- with -mdfpu (the
-// rx72m board enables it for 64-bit doubles) -- the DPFPU register file (DR0-DR15
-// + DPSW/DCMR/DECNT, via DPUSHM/DPOPM). arch_context_init fabricates the matching
-// DPFPU slots below. If a future config drops -mdfpu, the DPUSHM/DPOPM ops and the
-// fabricated slots simply carry zeroes for state the compiler never touches.
 #if defined(__RX_DFPU_INSNS__)
 static_assert(sizeof(double) == 8, "-mdfpu should give 64-bit doubles");
 #endif
@@ -99,18 +75,6 @@ namespace
     // coalesced). Redelivered through the SWINT2 doorbell at unmask.
     volatile uint32_t g_irq_pending = 0;
 
-    // Opt-in MPU wedge localizer (DEFAULT OFF: -DKICKOS_RX_MPU_TRACE=1). Raw
-    // polled SCI6 byte, bounded spin, touching no ring or global -- safe from ISR and
-    // fault context. It interleaves with the buffered TAP output; the LAST byte before
-    // the console goes silent localizes a wedge around the first switch driven from
-    // the CMTW0 timer ISR under enforcement:
-    //   'T' then silence          -> hang in ktime_on_timer/tick_rr BEFORE apply
-    //   'T' '[' then silence      -> hang INSIDE arch_mpu_apply's MPU register writes
-    //   'T' '[' ']' then silence  -> hang AFTER apply (pendsw switch / re-arm / switched-in)
-    //   'T[]' flooding forever    -> timer/switch livelock (no forward progress)
-    //   'F' anywhere              -> an access exception fired (a FAULT, not a hang)
-    // The '[' / ']' pair is emitted only from ISR context (g_in_isr>0), so the thread-
-    // context switches of tests 1-3 stay quiet and only the test-4 timer path prints.
 #ifndef KICKOS_RX_MPU_TRACE
 #define KICKOS_RX_MPU_TRACE 0
 #endif
@@ -480,12 +444,11 @@ void arch_timer_arm(uint64_t deadline_ns)
     {
         cyc = 1; // never program 0
     }
-    // One-shot from zero: stop, load compare, clear counter, enable interrupt +
+    // One-shot from zero: stop, clear counter, load compare, enable interrupt +
     // clear-on-match, start. (CMWCR clock/prescale is set once by the chip init.)
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;
     reg32(CMTW0_BASE + CMTW_CMWCNT) = 0;
     reg32(CMTW0_BASE + CMTW_CMWCOR) = static_cast<uint32_t>(cyc);
-    // 32-bit up-counter, PCLK/8, clear-on-CMWCOR-match, compare-match interrupt.
     reg16(CMTW0_BASE + CMTW_CMWCR) = CMWCR_CKS_PCLK8 | CMWCR_CCLR_ON_MATCH | CMWCR_CMWIE;
     // Gate that actually arms the CMWCOR compare (else the counter free-runs past
     // it -- no clear, no CMWI). Reset value is 0. Idempotent; rewritten each arm so

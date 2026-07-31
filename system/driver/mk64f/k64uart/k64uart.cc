@@ -42,16 +42,12 @@
 
 namespace
 {
-    // UART0 window base/size now travel in kos_service_cfg (mmio_base/mmio_window),
-    // not literals here: the driver takes its register base from the spawn grant.
     // NOTE (coarse-AIPS): the DEV window grant is INERT for the peripheral. AIPS
     // bridges are not SYSMPU slave ports (RM 3.3.6.2), so UART0 is reachable by any
     // unprivileged thread once the AIPS PACR is open (kos_periph_enable below). The
     // grant is still what AUTHORISES that call (possession of the exact base), and it
     // keeps the spawn signature portable with the PMSA/PMP template.
 
-    // Byte offsets within the UART0 block (RM ch.52 register map). Only the TX data
-    // path is used here; S1 comes from the class leaf.
     constexpr uintptr_t D_OFFSET = 0x07u; // UART Data Register (RM 52.3.11)
 
     // Baud-divisor registers (RM 52.3): BDH/BDL hold SBR[12:0], C4 the BRFA 1/32
@@ -66,8 +62,6 @@ namespace
     // continues (mirrors the kernel writer's give-up-don't-hang policy).
     constexpr uint32_t TX_POLL_TIMEOUT = 1000000u;
 
-    // Poll S1.TDRE set (via the shared leaf), then write one byte to UART0_D. Returns
-    // false on timeout (byte dropped) so the caller keeps making progress.
     bool poll_put(uintptr_t win, uint8_t v)
     {
         for (uint32_t i = 0; i < TX_POLL_TIMEOUT; i++)
@@ -87,8 +81,7 @@ namespace
     // queried branch, the pattern the whole coming driver era uses (the kernel no longer
     // hardwires the baud for it). On a 0 (the oracle does not know this block) keep the
     // kernel-programmed baud. Same K64 formula the chip layer's uart0_init uses; UART0 is
-    // byte-mapped so r8. The re-derived value equals what the kernel already programmed,
-    // so the wire stays legible; the write proves the driver can own the divisor.
+    // byte-mapped so r8.
     void rederive_baud(uintptr_t win)
     {
         uint32_t const clk = kos_periph_clock_hz(win);
@@ -140,12 +133,8 @@ void k64uart_console_driver(void* arg)
         kos_exit(-1);
     }
 
-    // Re-derive the baud from the queried branch clock BEFORE first light, so the
-    // banner already rides the driver-owned divisor.
     rederive_baud(win);
 
-    // First-light banner straight to the window (proves the reachability + poll/D path
-    // independent of the endpoint). NOT libc stdio.
     win_puts(win, "[k64uart] driver up (polled TX)\n");
 
     int const ep = KOS_SPAWN_DELEGATED_CAP0; // delegated recv cap
@@ -173,12 +162,10 @@ void k64uart_console_driver(void* arg)
 
 int k64uart_console_start(struct kos_service_cfg const* cfg)
 {
-    // Base/window/priority come from the service cfg (data), not literals here.
     uintptr_t const win_base = cfg->mmio_base;
     uint32_t const win_size = cfg->mmio_window;
     uint8_t const driver_prio = cfg->prio;
 
-    // 1. Create the console endpoint E (full rights: WAIT|SIGNAL|TRANSFER).
     int const ep = kos_endpoint_create();
     if (ep < 0)
     {

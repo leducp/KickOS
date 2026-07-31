@@ -12,7 +12,7 @@
 namespace kos
 {
     // Debug console output (see kos_print): the developer escape hatch, not
-    // stdout. Ordinary output = libc stdio over a userspace console driver, Later.
+    // stdout. Ordinary output = libc stdio over a userspace console driver.
     inline void print(char const* s)
     {
         kos_print(s);
@@ -199,8 +199,7 @@ namespace kos
 
     // IRQ-as-event handle (tier-1 userspace driver):
     //   auto irq = kos::Irq::request(line); irq.wait(); ...; irq.ack();
-    // Non-owning handle wrapper; IRQ handles have no release path yet (out of
-    // M0.4 scope, which freelisted only semaphores).
+    // Non-owning handle wrapper; IRQ handles have no release path yet.
     class Irq
     {
     public:

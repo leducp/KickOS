@@ -43,7 +43,6 @@ int main(int argc, char** argv)
     uint8_t rec[TRACE_MAX_RECORD];
     size_t n;
 
-    // Opening SESSION: sim arch, ts_bits 32, probe 7, attempted 1, anchor big u64.
     n = encode_session(rec, /*seq*/ 0, /*t*/ 0x11223344u, ARCH_SIM, 32,
                        /*probe*/ 7, /*attempted*/ 1, /*anchor*/ 0x0102030405060708ull);
     emit(rec, n);
@@ -51,17 +50,14 @@ int main(int argc, char** argv)
            0u, 0x11223344u, (unsigned)TRACE_VERSION, (unsigned)ARCH_SIM, 32u, 7u, 1u,
            (unsigned long long)0x0102030405060708ull);
 
-    // First switch: from = no-thread -> tid 1.
     n = encode_switch(rec, 1, 0x11223350u, TRACE_NO_THREAD, 1);
     emit(rec, n);
     printf("SWITCH seq=%u t=%u from=%u to=%u\n", 1u, 0x11223350u, (unsigned)TRACE_NO_THREAD, 1u);
 
-    // A normal switch 1 -> 2.
     n = encode_switch(rec, 2, 0x11223360u, 1, 2);
     emit(rec, n);
     printf("SWITCH seq=%u t=%u from=%u to=%u\n", 2u, 0x11223360u, 1u, 2u);
 
-    // Syscall enter/exit on tid 2, nr 5 (sem_wait).
     n = encode_syscall_enter(rec, 3, 0x11223370u, 2, 5);
     emit(rec, n);
     printf("SYSCALL_ENTER seq=%u t=%u tid=%u nr=%u\n", 3u, 0x11223370u, 2u, 5u);
@@ -69,7 +65,6 @@ int main(int argc, char** argv)
     emit(rec, n);
     printf("SYSCALL_EXIT seq=%u t=%u tid=%u nr=%u\n", 4u, 0x11223380u, 2u, 5u);
 
-    // IRQ enter/exit on a device line, then the timer pseudo-line.
     n = encode_irq_enter(rec, 5, 0x11223390u, 7);
     emit(rec, n);
     printf("IRQ_ENTER seq=%u t=%u line=%u\n", 5u, 0x11223390u, 7u);

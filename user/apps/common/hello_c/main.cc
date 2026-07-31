@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// KickOS "hello_c" (C flavor). The same ping-pong demo as apps/hello, written
-// against the plain-C syscall API (kos_*) instead of the C++ (kos::) layer. Both
-// funnel through the identical syscall trap -- this is purely a style comparison.
-// The C form is more explicit (kos_thread_spawn takes a params struct, so a tiny
-// local wrapper earns its keep); the C++ sugar in apps/hello reads thinner. Use
-// whichever your app prefers -- the dual API is a first-class feature, not a
-// migration.
+// KickOS "hello_c" (C flavor): the same ping-pong demo as apps/hello, against
+// the plain-C syscall API (kos_*). Both funnel through the identical syscall
+// trap; this is a style comparison, not a migration.
 
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
@@ -54,9 +50,6 @@ namespace
         }
     }
 
-    // The C spawn takes a params struct; wrap it so the two spawns below stay
-    // readable (this is the ergonomics the C++ kos::thread::spawn bakes in). Both
-    // players get (g_ping, g_pong) delegated so they can name them by CH_PING/CH_PONG.
     int spawn(void (*entry)(void*), char const* name)
     {
         kos_cap_grant caps[] = {{g_ping, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER},

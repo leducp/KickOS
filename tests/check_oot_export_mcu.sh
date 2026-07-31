@@ -27,6 +27,13 @@
 set -eu
 . "$(dirname "$0")/lib/gate.sh"
 
+# readelf's headings ("Machine:") are translated under any other locale, and they are
+# parsed below.
+export LC_ALL=C
+
+# readelf -sW numbers every symbol-table row; a file it could not read has no row.
+READELF_SYM_RE='^ *[0-9]+: '
+
 KICKOS_BUILD="$1"
 KICKOS_SRC="$2"
 CMAKE="${3:-cmake}"
@@ -44,8 +51,17 @@ TC="$TMP/prefix/lib/cmake/KickOS/toolchain-arm-none-eabi.cmake"
 [ -f "$TMP/prefix/lib/cmake/KickOS/board.cmake" ] \
   || fail "shipped board descriptor (board.cmake) missing from package"
 
-# Board-agnostic: the package ships exactly one <chip>.ld.
-LD="$(ls "$TMP"/prefix/lib/kickos/*.ld 2>/dev/null | head -1)"
+# Board-agnostic: the package ships exactly one <chip>.ld. More than one and the relink
+# probe below would patch an arbitrary one, which is not necessarily the one that links.
+LD=""
+for _ld in "$TMP"/prefix/lib/kickos/*.ld; do
+  [ -f "$_ld" ] || continue
+  if [ -n "$LD" ]; then
+    fail "package ships several linker scripts ($(basename "$LD"), $(basename "$_ld")); \
+the relink probe cannot tell which one the link uses"
+  fi
+  LD="$_ld"
+done
 [ -n "$LD" ] || fail "shipped linker script missing from package"
 
 echo "== configuring out-of-tree MCU app with the shipped toolchain (no -DKICKOS_BOARD) =="
@@ -86,9 +102,12 @@ wrapper supplies"
 echo "== our warning policy must not reach the consumer's TUs =="
 CDB="$TMP/build/compile_commands.json"
 if [ -f "$CDB" ]; then
-  # Anchored on a leading space so -Wl,... link options do not false-trip.
-  if grep -qE ' -W(all|extra|shadow|undef|error)\b' "$CDB"; then
-    grep -oE ' -W(all|extra|shadow|undef|error)\b' "$CDB" | sort -u
+  # One argument per line, matched whole: a -W inside a path or attached to a -D value is
+  # then not an argument position. POSIX ERE only, because \b is a GNU extension.
+  tr '[:space:]' '\n' < "$CDB" > "$TMP/cdb_args"
+  LEAK_RE='"?-W(all|extra|shadow|undef|error)(=[^"]*)?"?,?'
+  if grep -qxE "$LEAK_RE" "$TMP/cdb_args"; then
+    grep -xE "$LEAK_RE" "$TMP/cdb_args" | sort -u
     fail "KickOS warning flags leaked onto an out-of-tree consumer's compile line"
   fi
 else
@@ -100,11 +119,16 @@ fi
 # does not relink. Append a top-level absolute symbol (always legal, never changes
 # the layout) and require it to appear in the rebuilt ELF.
 echo "== an edited linker script must relink (not leave a stale image) =="
-"$READELF" -sW "$APP" | grep -q 'kickos_relink_probe' \
-  && fail "probe symbol already present before the edit -- the check proves nothing"
+# Through tool_out both times: a readelf that reads nothing reports the probe absent,
+# which is the "correct" answer before the edit and the assertion's own failure after it.
+tool_out "$TMP/syms_before" "$READELF_SYM_RE" "$READELF" -sW "$APP"
+if grep -q 'kickos_relink_probe' "$TMP/syms_before"; then
+  fail "probe symbol already present before the edit -- the check proves nothing"
+fi
 printf '\n_kickos_relink_probe = 0xDEADBEEF;\n' >> "$LD"
 "$CMAKE" --build "$TMP/build" >/dev/null || fail "rebuild after the .ld edit failed"
-"$READELF" -sW "$APP" | grep -q 'kickos_relink_probe' \
+tool_out "$TMP/syms_after" "$READELF_SYM_RE" "$READELF" -sW "$APP"
+grep -q 'kickos_relink_probe' "$TMP/syms_after" \
   || fail "an edited linker script did NOT relink the out-of-tree app -- a stale \
 image would be flashed (INTERFACE_LINK_DEPENDS missing from the exported target?)"
 

@@ -263,8 +263,6 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 #include <boot_arena.ld.h>
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
-/* Static destructors are unsupported: nothing walks .fini_array. Fail the link
-   rather than silently drop a destructor. */
 ASSERT(__kickos_app_fini_array_end == __kickos_app_fini_array_start,
        "KickOS: .fini_array is non-empty -- a global with a non-trivial destructor? Static destructors are not supported; nothing would ever run it")
 
