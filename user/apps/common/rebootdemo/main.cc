@@ -11,7 +11,7 @@
 //
 // On a chip with a backend (rp2040 -> PICOBOOT/UF2, rp2350 -> BOOTSEL, imxrt1062 ->
 // HalfKay) the countdown is the last line printed and the board reappears as a flashing
-// device. Everywhere else the weak seam declines and the rc line is the verdict.
+// device. Everywhere else the fallback declines and the rc line is the verdict.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>

@@ -150,7 +150,7 @@ void kickos_xmc_usic_init(void)
 // its granted 0x200 window. Runs with IRQs masked, privileged; MUST be idempotent +
 // re-entrant, so it is straight-line ABSOLUTE stores only -- NO read-modify-write on
 // any driver-touched register (an RMW on a garbled value is not safe to repeat from a
-// nested-fault re-entry). Overrides the weak no-op in console.cc.
+// nested-fault re-entry). Replaces the no-op fallback TU.
 //
 // Reclaim depth = rewrite every in-window writable register init sets (baud/mode/DMA/
 // IRQ) PLUS the ones init leaves at reset default that a hostile driver can set to

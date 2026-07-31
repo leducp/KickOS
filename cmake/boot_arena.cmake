@@ -89,69 +89,99 @@ function(_kickos_target_cc_sources tgt basedir out)
   set(${out} "${_abs}" PARENT_SCOPE)
 endfunction()
 
-# The integer this link resolves `symbol` to: the chip library's strong definition when
-# it has one, else the arch library's weak default.
+# The integer this link resolves `symbol` to. There is no arch-vs-chip precedence to
+# model: every seam is defined ONCE by a backend, or not at all and then once by its
+# <symbol>_default.cc fallback TU (arch/CMakeLists.txt states the rule). So the model is
+# "the single backend definition, else the fallback", and two backend definitions are a
+# build bug rather than something to resolve by scan order.
 function(_kickos_seam_int arch_srcs chip_srcs symbol out)
-  foreach(_which arch chip)
-    set(_val_${_which} "")
-    foreach(_f IN LISTS ${_which}_srcs)
-      _kickos_seam_int_in_file("${_f}" "${symbol}" _v)
-      if(NOT _v STREQUAL "")
-        if(NOT _val_${_which} STREQUAL "" AND NOT _val_${_which} STREQUAL "${_v}")
-          message(FATAL_ERROR
-            "KickOS: two ${_which} sources define ${symbol}() with different values "
-            "(${_val_${_which}} and ${_v}); the link-time boot-stack model cannot tell "
-            "which one this link resolves to.")
-        endif()
-        set(_val_${_which} "${_v}")
+  set(_backend "")
+  set(_backend_file "")
+  set(_fallback "")
+  foreach(_f IN LISTS chip_srcs arch_srcs)
+    _kickos_seam_int_in_file("${_f}" "${symbol}" _v)
+    if(_v STREQUAL "")
+      continue()
+    endif()
+    get_filename_component(_base "${_f}" NAME)
+    if(_base MATCHES "_default\\.cc$")
+      if(NOT _fallback STREQUAL "")
+        message(FATAL_ERROR
+          "KickOS: ${symbol}() has more than one fallback TU; exactly one "
+          "<symbol>_default.cc may define it.")
       endif()
-    endforeach()
+      set(_fallback "${_v}")
+      continue()
+    endif()
+    if(NOT _backend STREQUAL "")
+      message(FATAL_ERROR
+        "KickOS: ${_backend_file} and ${_base} both define ${symbol}(), so this link "
+        "has two backend definitions and would fail on whichever archive member the "
+        "linker extracts first. Exactly one backend may define a seam.")
+    endif()
+    set(_backend "${_v}")
+    set(_backend_file "${_base}")
   endforeach()
-  if(NOT _val_chip STREQUAL "")
-    set(${out} "${_val_chip}" PARENT_SCOPE)
+  if(NOT _backend STREQUAL "")
+    set(${out} "${_backend}" PARENT_SCOPE)
     return()
   endif()
-  set(${out} "${_val_arch}" PARENT_SCOPE)
+  set(${out} "${_fallback}" PARENT_SCOPE)
 endfunction()
 
-# The two boot-stack sizes as the compile will see them: board_config.h through the real
+# The provisioning integers as the compile will see them: board_config.h through the real
 # preprocessor with the same -D overrides, so a command-line override cannot be missed.
-function(kickos_boot_stack_sizes board_inc overrides out_idle out_root)
+# The two boot-stack sizes, plus the default thread stack and the slot count, which
+# together are what the post-boot arena has to back.
+function(kickos_boot_stack_sizes board_inc overrides out_idle out_root out_user out_slots)
   set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                "${board_inc}/kickos/board_config.h")
   set(_probe "${CMAKE_CURRENT_BINARY_DIR}/boot_stack_probe.c")
   file(WRITE "${_probe}"
     "#include <kickos/board_config.h>\n"
+    "#include <kickos/config/system.h>\n"
     "#ifndef KICKOS_IDLE_STACK_SIZE\n"
     "#error \"KICKOS_IDLE_STACK_SIZE unset\"\n"
     "#endif\n"
     "#ifndef KICKOS_ROOT_STACK_SIZE\n"
     "#error \"KICKOS_ROOT_STACK_SIZE unset\"\n"
     "#endif\n"
+    "#ifndef KICKOS_USER_STACK_SIZE\n"
+    "#error \"KICKOS_USER_STACK_SIZE unset\"\n"
+    "#endif\n"
+    "#ifndef KICKOS_MAX_THREADS\n"
+    "#error \"KICKOS_MAX_THREADS unset\"\n"
+    "#endif\n"
     "kickos_boot_idle KICKOS_IDLE_STACK_SIZE\n"
-    "kickos_boot_root KICKOS_ROOT_STACK_SIZE\n")
+    "kickos_boot_root KICKOS_ROOT_STACK_SIZE\n"
+    "kickos_boot_user KICKOS_USER_STACK_SIZE\n"
+    "kickos_boot_slots KICKOS_MAX_THREADS\n")
   set(_flags "")
   foreach(_o IN LISTS overrides)
     list(APPEND _flags "-D${_o}")
   endforeach()
   execute_process(
-    COMMAND "${CMAKE_C_COMPILER}" -E -P -x c "-I${board_inc}" ${_flags} "${_probe}"
+    COMMAND "${CMAKE_C_COMPILER}" -E -P -x c "-I${board_inc}"
+            "-I${CMAKE_SOURCE_DIR}/kernel/include" "-I${CMAKE_SOURCE_DIR}/include"
+            ${_flags} "${_probe}"
     OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _rc)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR
-      "KickOS: could not read the boot-stack sizes from ${board_inc}/kickos/board_config.h. "
+      "KickOS: could not read the provisioning sizes from ${board_inc}/kickos/board_config.h. "
       "Every board must state KICKOS_IDLE_STACK_SIZE and KICKOS_ROOT_STACK_SIZE (the "
       "64 KiB system.h defaults do not fit an MCU arena).\n${_err}")
   endif()
-  foreach(_k idle root)
+  foreach(_k idle root user slots)
     if(NOT "${_out}" MATCHES "kickos_boot_${_k}[ \t]+([^\r\n]+)")
-      message(FATAL_ERROR "KickOS: boot-stack probe produced no ${_k} size:\n${_out}")
+      message(FATAL_ERROR "KickOS: provisioning probe produced no ${_k} value:\n${_out}")
     endif()
     math(EXPR _v "${CMAKE_MATCH_1}")
     set(_size_${_k} "${_v}")
   endforeach()
   set(${out_idle} "${_size_idle}" PARENT_SCOPE)
   set(${out_root} "${_size_root}" PARENT_SCOPE)
+  set(${out_user} "${_size_user}" PARENT_SCOPE)
+  set(${out_slots} "${_size_slots}" PARENT_SCOPE)
 endfunction()
 
 # The -D set arch/common/boot_arena.ld.h expects. Also refuses a chip linker script
@@ -169,14 +199,21 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt board_inc ld override
       message(FATAL_ERROR
         "KickOS: neither ${arch_tgt} nor ${chip_tgt} defines the region-encoding seam "
         "(arch_mpu_min_region / arch_mpu_region_pow2), so the link-time boot-stack model "
-        "has no region geometry. Every arch backend must define both.")
+        "has no region geometry. Every arch backend must define both, as a backend TU or "
+        "as a <symbol>_default.cc fallback.")
     endif()
   endforeach()
-  kickos_boot_stack_sizes("${board_inc}" "${overrides}" _idle _root)
+  kickos_boot_stack_sizes("${board_inc}" "${overrides}" _idle _root _user _slots)
   kickos_region_size("${_idle}" "${_mn}" "${_p2}" _isz)
   kickos_region_align("${_idle}" "${_mn}" "${_p2}" _ial)
   kickos_region_size("${_root}" "${_mn}" "${_p2}" _rsz)
   kickos_region_align("${_root}" "${_mn}" "${_p2}" _ral)
+  # The post-boot arena also has to back one default stack per thread slot, or the board
+  # advertises KICKOS_MAX_THREADS it cannot seat: kos_thread_spawn returns -KOS_ENOMEM
+  # for a slot the board claims to have, and it returns the SAME code for a full slot
+  # table, so the shortfall is indistinguishable from a legitimate limit at runtime.
+  kickos_region_size("${_user}" "${_mn}" "${_p2}" _usz)
+  kickos_region_align("${_user}" "${_mn}" "${_p2}" _ual)
   file(READ "${ld}" _ldtxt)
   if(NOT "${_ldtxt}" MATCHES "KICKOS_BOOT_ARENA_ASSERT")
     message(FATAL_ERROR
@@ -185,14 +222,21 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt board_inc ld override
       "error. Include <boot_arena.ld.h> and invoke it beside the existing "
       "__kickos_ram_start <= __kickos_ram_end assert.")
   endif()
-  # pow2 is posture-dependent on a v8-M chip: arch_arm_pmsav8.cc (the strong pow2=0)
+  # pow2 is posture-dependent on a v8-M chip: arch_arm_pmsav8.cc (the pow2=0 backend)
   # enters the link only at KICKOS_HAVE_MPU=1, so qemu-m33 and pizero2350 scrape pow2=1
-  # from the weak v7-M default without it. frdmk64f and rx72m compile theirs always.
+  # from the v7-M fallback TU without it. frdmk64f and rx72m compile theirs always.
   message(STATUS "KickOS: boot stacks idle=${_idle}->${_isz}/${_ial} "
                  "root=${_root}->${_rsz}/${_ral} (mpu granule ${_mn} pow2=${_p2})")
+  # Machine-readable for the fleet headroom sweep: only the linker knows the arena base,
+  # so the exact fit (alignment run-ups included) is asserted in boot_arena.ld.h. These
+  # are the demand terms that assert replays.
+  message(STATUS "KickOS: arena model idle=${_isz}/${_ial} root=${_rsz}/${_ral} "
+                 "pool=${_slots}x${_usz}/${_ual}")
   set(${out}
     "-DKICKOS_BOOT_IDLE_SIZE=${_isz}" "-DKICKOS_BOOT_IDLE_ALIGN=${_ial}"
     "-DKICKOS_BOOT_ROOT_SIZE=${_rsz}" "-DKICKOS_BOOT_ROOT_ALIGN=${_ral}"
+    "-DKICKOS_POOL_STACK_SIZE=${_usz}" "-DKICKOS_POOL_STACK_ALIGN=${_ual}"
+    "-DKICKOS_POOL_STACK_COUNT=${_slots}"
     PARENT_SCOPE)
   set(${out_mn} "${_mn}" PARENT_SCOPE)
   set(${out_pow2} "${_p2}" PARENT_SCOPE)

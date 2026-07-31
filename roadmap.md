@@ -24,11 +24,14 @@ whenever it is ready, tagged as such in `TODO.md`.
 
 > **Sequencing, decided 2026-07-27: M4 driver breadth and M5 SMP wait behind goal 1** -- the fleet
 > flip to an unprivileged root, `arch_periph_enable`, `kos_cap_narrow`, and the MPU region-encoding
-> classes. Both M4 and M5 multiply
-> capability and memory complexity across a fleet that still **defaults to privileged root**
-> (`KICKOS_ROOT_PRIVILEGED` defaults ON; five boards are flipped and witnessed), so doing either
-> first widens exactly the surface goal 1 then has to confine -- more drivers poking MMIO from
-> root, and on M5 a
+> classes. The flip itself is no longer a posture: root is **unprivileged on every board by
+> construction**, and both privileged-access seams a confined root needs now exist
+> (`arch_periph_enable`, then `arch_periph_reg_write`). The cleanup that makes the seam pattern
+> non-regressible is done too: M4.5.6 removed the weak-symbol seam mechanism and put a CI gate
+> (`seam_defaults`) on every board -- see `TODO.md`, *M4.5.6*. Goal 1 is complete.
+> Both M4 and M5 multiply capability and memory complexity across the whole fleet, so doing
+> either first widens exactly the surface goal 1 then has to confine -- more drivers poking MMIO
+> from root, and on M5 a
 > second core's worth of region sets and capability tables. Finish confining one core's worth
 > first. This reorders effort, not scope: nothing below is cancelled.
 
@@ -99,10 +102,14 @@ a driver framework on top. Single-core throughout. Full gap list + sequencing in
   validation** -- two console drivers exist, `system/driver/xmc4800/xmcuart` and
   `system/driver/mk64f/k64uart`; every other board is still kernel-owned, and those same two chips
   are the only ones shipping a reclaim body (the fault-funnel porting invariant: no real reclaim
-  => a driver-garbled UART silently eats the panic banner). One driver per chip family,
-  silicon-available first; isolation is real only where the MPU gates peripherals.
-- **Clock-select fleet-wide** -- extend `arch_cpu_clock_set` per opt-in chip, or keep the weak
-  default explicitly.
+  => a driver-garbled UART silently eats the panic banner). The panic path now reclaims from ANY
+  state rather than only after a handover, which widened that invariant rather than retiring it:
+  every chip body must be idempotent absolute stores. A board can still lose its dump for some
+  other reason -- one such case is open on `f302nucleo` -- and **no emulated gate can catch that
+  class, because every fault-dump gate in the fleet runs on an unbuffered console.** One driver per
+  chip family, silicon-available first; isolation is real only where the MPU gates peripherals.
+- **Clock-select fleet-wide** -- extend `arch_cpu_clock_set` per opt-in chip, or keep the declining
+  fallback explicitly.
 - **The enabling services** -- **init** (separate init from the app; spawn drivers-with-caps in
   dependency order; settle the entry-point rename EARLY), **clock-tree / power-manager**, **pinmux**
   (one-shot init-time config), **gpio** (a pin allocator that mints per-pin caps -- cold IPC to

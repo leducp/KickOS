@@ -12,7 +12,7 @@
  *   KICKOS_CORE_VECTORS_V8M   -- Cortex-M33 (v8-M): slot 7 = SecureFault
  *
  * The words reference Reset_Handler/SVC_Handler/PendSV_Handler/SysTick_Handler
- * (arch layer), HardFault_Handler (chip), NMI_Handler (.weak, per chip) and
+ * (arch layer), HardFault_Handler (chip), NMI_Handler (file-local, per chip) and
  * _estack (linker). Expanding the macro emits the same relocations the chips
  * spelled by hand, so the linked .isr_vector bytes are unchanged.
  */

@@ -120,8 +120,8 @@ SBR=`root/(baud*16)`. Baud tracks the real root once the CCM bring-up lands.
 ### 1. M7 MPU (PMSAv7) with cache attributes
 
 The shared `armv7m` PMSA backend (`arch_arm_common.cc`: `kickos_arm_mpu_program`, run from the
-weak `kickos_arch_mpu_commit`, + `arch_mpu_region_encodable`) already programs pow2 regions and
-RASR AP/XN. The M7
+`kickos_arch_mpu_commit` fallback TU, + `arch_mpu_region_encodable`) already programs pow2
+regions and RASR AP/XN. The M7
 difference the roadmap flagged: **the M7 has L1 I/D cache; every existing chip is
 cacheless**, so the RASR `TEX/S/C/B` fields, which today encode one fixed policy
 per memory type, must become **per-region cache attributes**:

@@ -263,6 +263,13 @@ SECTIONS
     ___kickos_ram_start = .;
     ___kickos_ram_end = _istack - _kernel_stack_size;
 
+    /* Chip memory extents read by the non-enforcing user-pointer admission
+       (arch_ram_common.cc). Symbols only, no layout effect. ROM and FVECT are
+       contiguous, so one range spans both. */
+    ___kickos_rom_start = ORIGIN(ROM);
+    ___kickos_rom_end = ORIGIN(FVECT) + LENGTH(FVECT);
+    ___kickos_sram_start = ORIGIN(RAM);
+
     /* App code region for unprivileged threads (RX + read): the code flash. The RX
        MPU takes arbitrary 16-byte-page bounds, so this need not be pow2. Lets an
        unprivileged thread fetch its code + read flash rodata. END = ORIGIN+LENGTH

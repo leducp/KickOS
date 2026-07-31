@@ -127,10 +127,12 @@ place by proving a distinct point about the arch/chip seam:
   capabilities (best-effort where absent).
 
 **MPU hardware programming is target-specific (chip or arch), not one shared routine.** The
-switch-in `arch_mpu_apply()` only **stashes** the incoming region set (shared, weak);
-`kickos_arch_mpu_commit()` **programs the hardware** from the context-switch epilogue, after the
-physical swap, and is the per-target override -- K64F SYSMPU, ARM PMSAv7/v6-M (XMC4800, F411,
-i.MX RT1062, RP2040; the shared weak default), RP2350 PMSAv8, C6/virt RISC-V PMP, RX72M MPU.
+switch-in `arch_mpu_apply()` only **stashes** the incoming region set (shared, and not
+overridable); `kickos_arch_mpu_commit()` **programs the hardware** from the context-switch
+epilogue, after the physical swap, and is the per-target definition -- K64F SYSMPU, ARM
+PMSAv7/v6-M (XMC4800, F411, i.MX RT1062, RP2040; the shared fallback TU
+`arch/arm/common/kickos_arch_mpu_commit_default.cc`), RP2350 PMSAv8, C6/virt RISC-V PMP,
+RX72M MPU.
 (See `design-mpu-commit-deferred.md`.) The set of enforcement-capable chips is not a list to
 maintain by hand: a chip opts in by shipping `arch/<family>/chip/<chip>/mpu.cmake`, and
 `KICKOS_HAVE_MPU=1` on a chip without one is a configure error rather than a silent no-op.
@@ -189,7 +191,7 @@ maintain by hand: a chip opts in by shipping `arch/<family>/chip/<chip>/mpu.cmak
    narrowed that bit away -- and a persistent init never returns (parks/loops). `kickos_default_init_run`
    narrows root's authority to `kickos_app_authority()` before the app main, so a custom provider that
    delegates to it inherits the confinement. A bad/missing provider is a build-time FATAL_ERROR, never
-   a silent fallback (not weak symbols).
+   a silent fallback (CMake target selection, not a link-time fallback).
 9. **Conventions.** Traditional include guards `KICKOS_<PATH>_H` (no `#pragma once`); no ternary
    operators; comments only for hidden constraints/invariants. **Allman brace style**, enforced by
    the checked-in `.clang-format`, matched to the sibling projects `../KickCAT` / `../kickmsg`
@@ -319,7 +321,7 @@ per-arch in `arch/<arch>/include/kickos/arch/context.h`.
   one-shot next-event timer. ARM: free-running TIM/DWT + compare (or SysTick). Sim:
   `clock_gettime(MONOTONIC)` + `timer_create`/`SIGALRM`.
 - `arch_mpu_apply(regions, n)` + `arch_mpu_probe_addr()` -- `arch_mpu_apply` **stashes** the
-  incoming region set on switch-in (shared/weak); `kickos_arch_mpu_commit()` **programs the
+  incoming region set on switch-in (shared, not overridable); `kickos_arch_mpu_commit()` **programs the
   hardware** from the switch epilogue, per **chip/arch**: K64F **SYSMPU**, ARM **PMSA** (v6-M/
   v7-M), RISC-V **PMP**, RX **MPU**. Sim: `arch_mpu_apply` `mprotect`s the arena directly
   (synchronous switch, no deferred commit). F103: no-op.
@@ -402,7 +404,8 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
   special-case as HELD. Two of those name conditions with no POSIX analogue in this kernel:
   **`ESRCH`** is a one-shot reply cap whose parked caller is gone (aborted or reused), and
   **`ENOSYS`** is an arch backend that does not implement the call on this chip -- the
-  weak-seam default, so an unported syscall is a clean refusal rather than a silent no-op. Two syscalls
+  declining fallback TU (e.g. `arch/common/arch_pinmux_set_default.cc`), so an unported syscall
+  is a clean refusal rather than a silent no-op. Two syscalls
   stay OUT of this scheme by return type: `ram_alloc` returns a pointer (every failure is NULL -- a
   negated errno cast to a pointer would be non-NULL) and `cpu_clock_hz`/`cpu_clock_set` return a
   u32 Hz whose 0 already means unknown / no-silicon-clock.
@@ -499,7 +502,7 @@ privileged waiver) -- power-of-two size plus natural alignment on a pow2-mode ba
 prospective committed geometry before it allocates a domain slot; the caller-owned-stack path in
 `thread_spawn` runs the same predicate on the stack region, and `thread_create` carries a backstop
 assert. Each enforcing chip declares its owns-for-life set via `arch_reserved_blocks` (`arch.h`) --
-there is **no weak default**, so an enforcing port that forgets one fails to *link* (affirmative
+there is **no fallback TU on purpose**, so an enforcing port that forgets one fails to *link* (affirmative
 fail-closed); the set is owns-for-life only (a neutralize-then-grant watchdog is excluded unless
 its tick feeds the timebase) and includes every access-permission controller, bus-side ones
 included -- the K64F AIPS bridge PACR pages, the ESP32-C6 HP_APM/HP_TEE. On a **bit-band core** (`arch_bitband_present()` != 0) the overlap
@@ -619,7 +622,7 @@ feeds the slave app.
   a `kickos_system` service that passes through to the app's `main`); it is spliced into the link
   group right after `kickos_kernel` and resolved across the RESCAN boundary. A power user names
   their own target; a missing/unknown provider is a CMake FATAL_ERROR -- never a silent fallback,
-  never a weak symbol -- and the installed package refuses a consumer override of the frozen
+  never a link-time fallback TU -- and the installed package refuses a consumer override of the frozen
   provider.
 - **Dependency-inversion packaging (the DX goal).** KickOS installs/exports a CMake package
   (config + libs + startup object + board linker script + flags). Consumption modes: **in-tree**
@@ -774,7 +777,7 @@ writer can finish) before publish returns. The **field panic path reclaims** the
 funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
 the diag LED stays the always-present 1-bit last resort. Still to build: the per-chip
 `arch_console_reclaim` bodies (force-retake the peripheral and rewrite every in-window register
-to a known baud/state, since userspace config is untrusted -- weak no-op today) and the userspace
+to a known baud/state, since userspace config is untrusted -- a no-op fallback TU today) and the userspace
 UART driver itself. Routing userspace output through a kernel syscall to "share" the device is
 rejected -- an ambient-authority console service contradicts the microkernel split.
 

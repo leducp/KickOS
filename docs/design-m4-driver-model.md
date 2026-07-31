@@ -257,7 +257,7 @@ though its register CODE is shared.
 Mechanism as landed:
 
 - Each enforcing chip declares its reserved set via `arch_reserved_blocks()`
-  (`arch/include/kickos/arch/arch.h`) -- there is NO weak default, so a port that
+  (`arch/include/kickos/arch/arch.h`) -- there is NO fallback TU on purpose, so a port that
   forgets to declare one fails to LINK rather than silently opening a hole
   (affirmative fail-closed). The set is owns-for-life only: the watchdog INSTANCE is
   excluded (neutralize-then-grant), unless its tick feeds the timebase (rp2040/rp2350).

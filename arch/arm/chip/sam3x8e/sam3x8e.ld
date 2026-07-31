@@ -108,6 +108,12 @@ SECTIONS
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
 
+    /* Chip memory extents read by the non-enforcing user-pointer admission
+       (arch_ram_common.cc). Symbols only, no layout effect. */
+    __kickos_rom_start = ORIGIN(FLASH);
+    __kickos_rom_end = ORIGIN(FLASH) + LENGTH(FLASH);
+    __kickos_sram_start = ORIGIN(RAM);
+
     /DISCARD/ : { *(.ARM.attributes) }
 }
 

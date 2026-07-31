@@ -95,13 +95,16 @@ SECTIONS
 
     _sidata = LOADADDR(.data);
 
+    /* NO `AT` clause: the ROM first-stage loader places each segment at its VMA, so a
+       load address that differs from the VMA is never written by anything and the
+       Reset_Handler copy would read uninitialized SRAM. Pinned by an ASSERT below. */
     .data : ALIGN(4)
     {
         _sdata = .;
         *(.data .data.*)
         . = ALIGN(4);
         _edata = .;
-    } > DRAM AT > DRAM
+    } > DRAM
 
     .bss (NOLOAD) : ALIGN(4)
     {
@@ -125,6 +128,12 @@ SECTIONS
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
 
+    /* Chip memory extents read by the non-enforcing user-pointer admission
+       (arch_ram_common.cc). Symbols only, no layout effect. */
+    __kickos_rom_start = ORIGIN(IRAM);
+    __kickos_rom_end = ORIGIN(IRAM) + LENGTH(IRAM);
+    __kickos_sram_start = ORIGIN(DRAM);
+
     /DISCARD/ : { *(.xtensa.info) *(.comment) *(.xt.*) }
 }
 
@@ -133,6 +142,15 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 
 #include <boot_arena.ld.h>
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
+
+/* The bootable image is built from section VMAs (esptool elf2image) and the ROM
+   first-stage loader places every segment at its VMA, so a load address that differs
+   from the VMA is never written by anything. Reset_Handler's LMA->VMA copy would then
+   read uninitialized SRAM and overwrite the correctly loaded initialized data -- silent,
+   unit-dependent corruption of whatever global lands there. Any `AT` clause added to a
+   loadable section trips this. */
+ASSERT(_sidata == _sdata,
+       "KickOS: .data LMA != VMA -- the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 
 /* Static destructors are unsupported: nothing walks .fini_array. Fail the link
    rather than silently drop a destructor. */

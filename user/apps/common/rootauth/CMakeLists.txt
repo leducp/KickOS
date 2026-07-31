@@ -10,10 +10,7 @@ if(NOT TARGET rootauth)
   return() # diagnostics off -> app not built; skip its tests
 endif()
 
-# Registered in BOTH postures: the discriminating arms are #if-selected on
-# KICKOS_ROOT_PRIVILEGED (see main.cc), so each posture asserts its own outcome. No
-# KICKOS_HAVE_MPU condition either, authority being a capability check rather than memory
-# enforcement.
+# No KICKOS_HAVE_MPU condition: authority is a capability check, not memory enforcement.
 if(KICKOS_BUILD_TESTS)
   if(KICKOS_ARCH STREQUAL "sim")
     add_test(NAME rootauth COMMAND "$<TARGET_FILE:rootauth>")
@@ -25,10 +22,13 @@ if(KICKOS_BUILD_TESTS)
     set_tests_properties(rootauth PROPERTIES
       TIMEOUT 15
       PASS_REGULAR_EXPRESSION "\\[rootauth\\] PASS"
-      FAIL_REGULAR_EXPRESSION "\\[rootauth\\] (ERROR|FAIL);unreachable: root: shutdown refused")
+      FAIL_REGULAR_EXPRESSION "\\[rootauth\\] (ERROR|FAIL);root: shutdown refused")
   elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
     kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_rootauth TARGET rootauth
       BOARD ${KICKOS_BOARD}
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_rootauth.sh")
+  elseif(KICKOS_BOARD STREQUAL "microbit")
+    kickos_add_qemu_test(NAME microbit_rootauth TARGET rootauth BOARD microbit
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_rootauth.sh")
   elseif(KICKOS_BOARD STREQUAL "qemu-riscv")
     kickos_add_qemu_test(NAME qemu_riscv_rootauth TARGET rootauth BOARD qemu-riscv

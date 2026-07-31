@@ -22,12 +22,10 @@
 //     and NEVER returns. Returning would exit, taking down every service it spawned.
 //     Persistence, not any registration act, is what keeps the system alive.
 //
-// Privilege posture: root's CPU mode is the build knob KICKOS_ROOT_PRIVILEGED, decided
-// once in kmain before any app code runs. Under OFF the app main / init body runs in an
-// UNPRIVILEGED root holding a CAP_AUTHORITY. An app must not assume ambient privilege:
-// the privileged acts are gated on authority bits (kos_console_publish on AUTH_CONSOLE,
-// and so on), and what root holds when main is entered is what kickos_app_authority()
-// below declares.
+// Privilege posture: the app main / init body runs in an UNPRIVILEGED root holding a
+// CAP_AUTHORITY. An app must not assume ambient privilege: the privileged acts are gated
+// on authority bits (kos_console_publish on AUTH_CONSOLE, and so on), and what root holds
+// when main is entered is what kickos_app_authority() below declares.
 //
 // Ordering: app and libstdc++ global constructors run in the kernel root thread
 // BEFORE kickos_init_entry is entered, so a custom init must not assume they can
@@ -105,14 +103,11 @@ int kickos_pinmux_run(void);
 // kos_shutdown, and a refusal panics "root: shutdown refused" (kernel/init/kmain.cc). A
 // never-returning app may declare 0.
 //
-// Has no effect where root is privileged: cap_check_authority short-circuits on
-// Thread::privileged, and kmain seats the cap only under KICKOS_ROOT_PRIVILEGED=OFF, so
-// the narrow finds an empty slot and answers -KOS_EBADF.
-//
-// Not a weak symbol. This and the fallback are both strong, and an app's definition
-// beats the fallback by keeping system/init/app_authority_default.cc from being
-// extracted at all. A weak attribute on this declaration would propagate to the app's
-// definition and leave link order deciding which one wins.
+// Not a weak symbol. This and the fallback are both ordinary definitions, and an app's
+// definition wins by keeping system/init/app_authority_default.cc from being extracted
+// at all. A weak attribute on this declaration would propagate to the app's definition
+// (GCC carries it from declaration to definition in one TU) and leave link order
+// deciding which one wins.
 uint8_t kickos_app_authority(void);
 
 #ifdef __cplusplus

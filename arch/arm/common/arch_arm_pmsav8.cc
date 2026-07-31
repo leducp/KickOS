@@ -24,8 +24,8 @@
 //
 // This TU is NOT in the always-compiled kickos_arch_armv7m source list; it is pulled
 // into the CHIP library only for a PMSAv8 chip (arch/arm/chip/<chip>/mpu.cmake sets
-// KICKOS_ARM_PMSAV8_SOURCE). The v6-M/v7-M PMSA fleet never links it, so their weak
-// commit stands byte-for-byte -- isolation is at link granularity, stronger than an
+// KICKOS_ARM_PMSAV8_SOURCE). The v6-M/v7-M PMSA fleet never links it, so their commit
+// fallback stands byte-for-byte -- isolation is at link granularity, stronger than an
 // #ifdef fork inside one TU. See docs/design-rp2350-mpu-armv8m.md.
 
 #include <kickos/arch/arch.h>
@@ -78,17 +78,17 @@ namespace
 extern "C"
 {
 
-// Read the shared pending stash written by the weak arch_mpu_apply (arch_arm_common.cc).
+// Read the shared pending stash written by arch_mpu_apply (arch_arm_common.cc).
 size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out);
 
 // One-time PMSAv8 setup: the MAIR attribute indirection + MemManage enable. Called
 // from the chip arch_init (chip_rp2350.cc) BEFORE the scheduler starts. This is also
 // the LINK ANCHOR: chip_rp2350.o (always pulled for arch_init) references this symbol,
-// which is defined ONLY here -- so GNU ld pulls this member, and its strong
-// kickos_arch_mpu_commit / arch_mpu_region_encodable then override the weak v7-M defs.
-// (A strong override in an un-referenced archive member would NOT win; the weak def in
-// the already-linked arch_arm_common.o would satisfy the symbol and this member would
-// never be pulled. The arch_init reference is what forces it in -- no -Wl,-u needed.)
+// which is defined ONLY here -- so GNU ld pulls this member, and its
+// kickos_arch_mpu_commit / arch_mpu_region_encodable are the ones the link resolves.
+// (A definition in an un-referenced archive member would NOT be reached; the fallback TU
+// would answer the reference first and the board would silently decline. The arch_init
+// reference is what anchors this member, so no -Wl,-u is needed.)
 //
 // SMP (M5): the MPU is per-core banked; this runs once PER CORE (folded into per-core
 // bring-up), not once globally -- correct as long as each core calls it at bring-up.
@@ -103,7 +103,7 @@ void kickos_arm_pmsav8_init(void)
     // PRIVDEFENA. Until then the privileged boot runs on the default memory map.
 }
 
-// STRONG override of the weak PMSAv7 kickos_arch_mpu_commit. Programs the running
+// Replaces the PMSAv7 kickos_arch_mpu_commit fallback. Programs the running
 // thread's per-thread regions from the shared stash into RBAR/RLAR, disabling the
 // unused descriptors up to MPU_TYPE.DREGION. Called from the armv7m PendSV epilogue
 // AFTER the physical swap. cpsid brackets the disable/reprogram/re-enable: PendSV is
@@ -152,8 +152,8 @@ void kickos_arch_mpu_commit(void)
 }
 
 // PMSAv8 is byte-granular on a 32-byte page: a window is encodable EXACTLY iff base and
-// base+size both land on a 32-byte boundary, with no power-of-two rule unlike the weak
-// v7-M PMSA. arch_mpu_min_region needs no override, the granule matching v7-M's 32.
+// base+size both land on a 32-byte boundary, with no power-of-two rule unlike the v7-M
+// PMSA. arch_mpu_min_region needs no backend here, the granule matching v7-M's 32.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size < 32u)
@@ -163,7 +163,7 @@ bool arch_mpu_region_encodable(uintptr_t base, size_t size)
     return (base & 31u) == 0 and (size & 31u) == 0;
 }
 
-// Overrides the weak v7-M 1, but only in an enforcement build: this TU is inside
+// Replaces the v7-M fallback 1, but only in an enforcement build: this TU is inside
 // KICKOS_HAVE_MPU.
 int arch_mpu_region_pow2(void)
 {

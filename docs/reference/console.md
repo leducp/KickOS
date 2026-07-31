@@ -87,7 +87,9 @@ otherwise                                         ->  arch_console_write_sync (p
 
 `g_console_state` starts `KERNEL_OWNED` (every board that never hands over stays here,
 so the sub-decision is the whole story for them); `kos_console_publish` flips it to
-`USER_OWNED`, and a panic on a handed-over UART flips it to `RECLAIMED`. See
+`USER_OWNED`, and a panic flips it to `RECLAIMED` **from any prior state, `KERNEL_OWNED`
+included** -- the axis records a publish, never whether the device is garbled, and a
+thread granted the console window can wreck the channel without ever publishing. See
 [architecture.md](architecture.md), "Console device handover".
 
 The `KERNEL_OWNED` sub-decision is the load-bearing invariant of the whole design:
@@ -140,12 +142,13 @@ ESP32-C6) and keeps this path rare.
 the scheduler and IRQs down. The seam is arranged so only the buffered backends
 carry a distinct implementation:
 
-- A **weak default** in `console.cc` forwards `arch_console_write_sync` ->
-  `arch_console_write`. Every polled-only chip reuses its normal writer for free.
-- Nearly every chip **overrides** it with a bounded polled writer (the fleet wraps its
+- A **fallback TU** (`arch/common/arch_console_write_sync_default.cc`) forwards
+  `arch_console_write_sync` -> `arch_console_write`. Every polled-only chip reuses its
+  normal writer for free.
+- Nearly every chip **defines its own** bounded polled writer (the fleet wraps its
   TX-ready poll in a spin-then-drop guard, so a wedged UART drops bytes instead of hanging
-  the panic path); the sim overrides with a bounded one-byte-at-a-time `write(1, ...)` to
-  host stdout. The weak default covers any chip that supplies no distinct sync writer.
+  the panic path); the sim defines a bounded one-byte-at-a-time `write(1, ...)` to host
+  stdout. The fallback covers any chip that supplies no distinct sync writer.
 
 **Panic and fault.** `kpanic` sets `g_console_panicking` (forcing every subsequent
 write to the sync path), flushes the ring in order (`console_tx_flush_sync` --
@@ -250,15 +253,28 @@ kernel ref on the stdout endpoint, and flips `g_console_state` to `USER_OWNED` l
 stale in-flight chip writer that raced the flip is drained via the `g_chip_writers` count
 before publish returns (it lowers its own priority and yields so a lower-priority writer
 can finish -- the scheduler is strict-priority). The panic path funnels through
-`kpanic_enter`, which flips a handed-over UART to `RECLAIMED` and polled-prints.
+`kpanic_enter`, which flips the UART to `RECLAIMED` and polled-prints.
+
+**The reclaim is unconditional-once, not handover-conditional.** `kpanic_enter` reclaims
+whenever the state is not already `RECLAIMED`, and it stores `RECLAIMED` *before* calling
+the body. Two properties follow. It runs exactly once, so a body that truncates the byte
+in the shift register cannot cut the banner it just printed; and a synchronous fault
+*inside* the body re-enters `kpanic_enter` and stops rather than recursing with the old
+state -- a pre-existing recursion hazard that the widening closed. The safety of reclaiming
+a device no driver ever touched rests entirely on every chip body being **idempotent
+absolute stores**, which `arch.h` requires; all three implementations were audited against
+it (`xmc4800` `usic_uart.cc`, `mk64f` `chip_mk64f.cc`, and the no-op fallback
+`arch/common/arch_console_reclaim_default.cc`).
 
 Known artifact (XMC4800 ASC): if the crashed driver cleared `SCTR.PDL`, the TX pin is
 held low across the fault, and reclaim's return to idle-high frames exactly one spurious
 leading byte (~`0xC0`) before the panic banner. It is a physical UART line-recovery
 transient (not lost/garbled output); the banner and fault dump that follow are byte-clean.
 
-Still **not built**: the real `arch_console_reclaim` bodies (the per-chip full-window
-register rewrite that recovers a UART a buggy driver scrambled -- the wiring exists, the
-bodies are a weak no-op today) and the userspace UART driver itself. See
+Still **not built**: a real `arch_console_reclaim` body on the chips that have none. Two
+exist (`xmc4800` `usic_uart.cc`, `mk64f` `chip_mk64f.cc`); every other chip keeps the no-op
+fallback, so on those boards the reclaim is wiring with nothing behind it. The two real bodies
+are silicon-only -- no emulated board carries one -- and the `xmc4800` one is witnessed by
+`conreclaim` (`c5d9b0d`). See
 [architecture.md](architecture.md), "Object model, capabilities & IPC" ->
 "Console device handover".

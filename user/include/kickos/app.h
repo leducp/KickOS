@@ -36,7 +36,9 @@ int kickos_app_main(int argc, char** argv);
 // Per-app build stamp: the app's OWN source compile time, distinct from the banner's
 // `build` line (the CMake-generated image link time). It moves only when the app TU
 // itself recompiles, so it tells "did the APP change" vs "was the image relinked".
-// Weak: the kernel sees only this declaration and calls through it.
+// Weak, and allowlisted in tests/weak_allowlist.txt: the definition below is emitted by
+// EVERY app TU (the build force-includes this header with -Dmain=...), so weak is the
+// C-compatible vague linkage that merges the duplicates. Not a backend seam.
 char const* kickos_app_build_stamp(void) __attribute__((weak));
 
 // Defined ONLY in an app TU (the build force-includes this header with

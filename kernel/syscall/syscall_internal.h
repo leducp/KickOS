@@ -47,6 +47,13 @@ namespace kickos
     // entry.
     bool caller_holds_mmio_block(uintptr_t base);
 
+    // The write seam's stronger twin: the region matched by the exact base must also
+    // CONTAIN [base + offset, +4). Possession of a window is possession of that window
+    // only, so an offset the window does not cover is refused before the chip allowlist
+    // is consulted. `offset` must already be 4-aligned and non-wrapping (the dispatch
+    // arm answers -KOS_EINVAL for those).
+    bool caller_holds_mmio_reg(uintptr_t base, uintptr_t offset);
+
     // The kernel<->user byte-access seam (identity today; one physical space).
     void kaccess_from_user(void* kdst, uintptr_t usrc, size_t n);
     void kaccess_to_user(uintptr_t udst, void const* ksrc, size_t n);

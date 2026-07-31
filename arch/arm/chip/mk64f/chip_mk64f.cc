@@ -320,7 +320,7 @@ namespace
 
     // --- SYSMPU (K64 RM section 19); base 0x4000_D000 -------------------------
     // NXP's byte/32-granular bus-master protection -- NOT the ARM core MPU
-    // (__MPU_PRESENT=0 here), so K64F overrides the weak ARM PMSA arch_mpu_apply.
+    // (__MPU_PRESENT=0 here), so K64F replaces the PMSAv7 commit, not the shared stash.
     // The Cortex-M4 core is TWO crossbar masters (RM 3.3.6.1): M0 = code bus
     // (instruction fetch + flash literal/rodata reads), M1 = system bus (SRAM +
     // peripheral data). RGD0 is the supervisor background; RGD1..11 are per-thread
@@ -369,7 +369,7 @@ void arch_init(void)
 }
 
 // Monotonic clock override: convert free-running PIT ticks (bus clock = core/2) to ns,
-// replacing the weak DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch
+// the required per-chip arch_clock_now (the DWT is unreliable on this silicon). Pure epoch
 // read: the anchor holds the rate, so a read in the window around a retune cannot bake
 // the phantom rate jump into the epoch.
 uint64_t arch_clock_now(void)
@@ -529,12 +529,12 @@ int arch_periph_enable(uintptr_t base)
 }
 
 #if KICKOS_HAVE_MPU
-// Shared pending-region stash written by the ARM-common weak arch_mpu_apply (stash-
+// Shared pending-region stash written by the ARM-common arch_mpu_apply (stash-
 // only). K64F does NOT override arch_mpu_apply -- it uses that shared stash and
 // overrides only the commit -- so there is no duplicate arch_mpu_apply symbol.
 extern "C" size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out);
 
-// SYSMPU commit: STRONG override of the weak PMSAv7 kickos_arch_mpu_commit (K64F has
+// SYSMPU commit: replaces the PMSAv7 kickos_arch_mpu_commit fallback (K64F has
 // no ARM core MPU). Programs the running thread's per-thread USER grants (RGD1..) from
 // the shared stash; supervisor + DMA stay covered by RGD0. Called from the armv7m
 // PendSV epilogue AFTER the physical swap (deferred-commit seam) -- this closes on K64F
@@ -600,7 +600,7 @@ extern "C" void kickos_arch_mpu_commit(void)
 
 // SYSMPU is byte-granular on a 32-byte page (SRTADDR/ENDADDR are addr[31:5]): a window
 // is exact iff base and base+size both land on a 32-byte boundary. No power-of-two size
-// is needed, unlike the weak PMSA default this overrides.
+// is needed, unlike the PMSA fallback this replaces.
 bool arch_mpu_region_encodable(uintptr_t base, size_t size)
 {
     if (size < 32u)
@@ -727,7 +727,7 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 // granted window. Runs with IRQs masked, privileged; MUST be idempotent + re-entrant,
 // so it is straight-line ABSOLUTE stores only -- NO read-modify-write (an RMW on a
 // garbled value is not safe to repeat from a nested-fault re-entry; note this drops
-// the C2 |= TIE style used on the non-panic backend paths). Overrides the weak no-op
+// the C2 |= TIE style used on the non-panic backend paths). Replaces the no-op fallback
 // in console.cc.
 //
 // Reclaim depth = rewrite what uart0_init sets (BDH/BDL/C4/C1/C2) PLUS the registers

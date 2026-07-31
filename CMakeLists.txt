@@ -109,7 +109,7 @@ endif()
 # OFF: a terminating image halts, and reflashing an RP2040/RP2350 needs a physical
 # BOOTSEL press. ON: both terminal dead-ends in kernel/init/console.cc call
 # arch_reboot first -- kickos_terminate (shutdown syscall, last-thread-out, the
-# software fault reporter) and the weak kfault_terminate (kpanic, and every ARM
+# software fault reporter) and the kfault_terminate fallback (kpanic, and every ARM
 # MPU/hard fault) -- so a fault-terminating bench image leaves the board in its
 # download mode and an unattended flash/test loop becomes possible. Bench/CI knob
 # only: a board that always jumps to its bootloader can never hold a soak image.
@@ -117,13 +117,13 @@ endif()
 option(KICKOS_SHUTDOWN_TO_BOOTLOADER
        "Terminating images reboot into the chip bootloader instead of halting" OFF)
 if(KICKOS_SHUTDOWN_TO_BOOTLOADER)
-  # arch_reboot's weak decline AND every strong backend are compiled out of a
+  # arch_reboot's declining fallback AND every chip backend are compiled out of a
   # non-selftest image, so the knob would not even link there. Refuse at configure
   # rather than emit an undefined reference from kickos_terminate.
   if(NOT KICKOS_ENABLE_SELFTEST)
     message(FATAL_ERROR
       "KICKOS_SHUTDOWN_TO_BOOTLOADER=ON requires KICKOS_ENABLE_SELFTEST=ON: "
-      "arch_reboot (the weak decline in kernel/syscall/syscall.cc and every strong "
+      "arch_reboot (the declining fallback in arch/common and every chip "
       "chip backend) is compiled out of a production image, so nothing would define "
       "the symbol. Use an -st preset, or leave this knob OFF.")
   endif()
@@ -209,7 +209,7 @@ add_compile_definitions(KICKOS_ARCH_SIM=${_arch_sim})
 # include/kickos/trace/record.h (the decoder tools/kicktrace.py follows it); a
 # static_assert there pins ARCH_RISCV == 5 so a reorder of the enum trips the build:
 #   sim     -> clock_now/1000 (us)             have=1,    id=0
-#   armv7m  -> weak DWT CYCCNT (mps2 overrides) have=1,    id=1
+#   armv7m  -> DWT CYCCNT fallback (mps2 replaces) have=1, id=1
 #   armv6m  -> chip-provided only (no DWT)      have=chip, id=2
 #   lx6     -> CCOUNT                           have=1,    id=3 (xtensa)
 #   rxv3    -> chip CMTW/timer                  have=1,    id=4 (rx)
@@ -246,16 +246,14 @@ if(NOT DEFINED KICKOS_HAVE_TRACE_CLOCK)
   if(KICKOS_ARCH STREQUAL "sim" OR KICKOS_ARCH STREQUAL "armv7m"
      OR KICKOS_ARCH STREQUAL "rxv3" OR KICKOS_ARCH STREQUAL "lx6"
      OR KICKOS_ARCH STREQUAL "rv32imac")
-    set(KICKOS_HAVE_TRACE_CLOCK 1) # sim clock/1000; armv7m weak DWT; rxv3 CMTW1; lx6 CCOUNT; rv32imac rdcycle
+    set(KICKOS_HAVE_TRACE_CLOCK 1) # sim clock/1000; armv7m DWT fallback; rxv3 CMTW1; lx6 CCOUNT; rv32imac rdcycle
   endif()
 endif()
 
 # Enforced-memory-protection capability. 1 only where a wild access to another
-# domain's memory actually FAULTS -- so a test/feature that needs a real guard page
-# (selftest mpu_privileged_guard) is gated on it and stays green on boards without
-# it. Today only the sim (mprotect) enforces; M2 sets it per chip as SYSMPU/PMSA/PMP
-# land, and the ESP32 (no MPU) deliberately stays 0. OVERRIDABLE like the trace
-# clock above -- a board/chip/preset may set it directly.
+# domain's memory actually FAULTS, so a feature needing a real guard page is gated on
+# it and stays green on boards without one. The ESP32 (no MPU) stays 0.
+# OVERRIDABLE like the trace clock above: a board/chip/preset may set it directly.
 if(NOT DEFINED KICKOS_HAVE_MPU)
   set(KICKOS_HAVE_MPU 0)
   if(KICKOS_ARCH STREQUAL "sim")
@@ -298,24 +296,6 @@ if(KICKOS_HAVE_MPU AND NOT KICKOS_CHIP_ENFORCES_MPU)
 endif()
 
 add_compile_definitions(KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU})
-
-# --- Root privilege posture (KICKOS_ROOT_PRIVILEGED) ------------------------
-# Whether kmain creates the root thread privileged (default ON). OFF creates root
-# unprivileged, holding a CAP_AUTHORITY with every AUTH_* bit (kernel/init/kmain.cc).
-# See docs/design-unprivileged-root.md stage 2; per-board validation is in
-# docs/reference/boards.md. A BUILD knob, never a weak symbol: the posture must be
-# visible in the build, not only in the link map. Always defined 0 or 1 so `#if`
-# is -Wundef-clean.
-option(KICKOS_ROOT_PRIVILEGED "Create the root thread privileged (OFF: unprivileged, holding an authority cap)" ON)
-if(KICKOS_ROOT_PRIVILEGED)
-  set(_root_priv 1)
-else()
-  set(_root_priv 0)
-endif()
-add_compile_definitions(KICKOS_ROOT_PRIVILEGED=${_root_priv})
-if(NOT KICKOS_ROOT_PRIVILEGED)
-  message(STATUS "KickOS: root thread is UNPRIVILEGED (holds CAP_AUTHORITY); enforcement=${KICKOS_HAVE_MPU}")
-endif()
 
 # --- Per-arch caller-provided-stack floor (KICKOS_MIN_STACK_SIZE) -----------
 # A syscall runs on the CALLING thread's stack, and the deepest such dispatch is the
@@ -361,14 +341,7 @@ message(STATUS "KickOS: caller-stack floor KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_ST
 # handover is an enforcement construct); must sit after the MPU block for that reason.
 if(NOT DEFINED KICKOS_SERVICE_LIST)
   if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
-    if(KICKOS_ROOT_PRIVILEGED)
-      set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax")
-    else()
-      # Console only: the SPI entry's bring-up configures the USIC from root, and an
-      # unprivileged root holds no MMIO grant for U0C1. See
-      # KICKOS_SERVICE_LIST_ROOT_MMIO below.
-      set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax_console")
-    endif()
+    set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax")
   elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)
     set(KICKOS_SERVICE_LIST "kickos_services_frdmk64f")
   else()
@@ -393,22 +366,25 @@ if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
 endif()
 message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST} (libs: ${KICKOS_SERVICE_LIST_LIBS})")
 
-# Service lists whose bring-up bodies write MMIO directly from the root thread.
-# Under KICKOS_ROOT_PRIVILEGED=OFF root faults on that write mid-bring-up, after the
-# console handover, so the board goes dark with no diagnostic. Refuse at configure
-# time instead. Retire an entry when its bring-up stops needing root MMIO; the SoT
-# for each listing is docs/design-unprivileged-root.md section 8.
-set(KICKOS_SERVICE_LIST_ROOT_MMIO
-  kickos_services_xmc4800relax)   # xmcssc USIC kernel clock, baud, protocol from root
-if(NOT KICKOS_ROOT_PRIVILEGED AND KICKOS_SERVICE_LIST IN_LIST KICKOS_SERVICE_LIST_ROOT_MMIO)
+# Service lists refused at enforcement. The name is historical: an entry landed here
+# when its bring-up wrote MMIO from the root thread, which faults mid-bring-up after the
+# console handover and darks the board with no diagnostic. An entry stays after that
+# placement is fixed until the fixed bring-up is witnessed on silicon, because lifting it
+# changes the DEFAULT image of the board. Gated on enforcement, not on root's posture:
+# with the MPU off an unprivileged root still reaches MMIO (measured: the cross-domain
+# write completes on a non-MPU image), so only an enforcing build can go dark here. The
+# SoT for each listing is docs/design-unprivileged-root.md section 8.
+# EMPTY: no service list is currently refused. The list and its gate stay for the next
+# board whose bring-up writes MMIO from root. That failure is silent and total (a dark
+# board, no diagnostic), so it must be caught at configure and not at the bench.
+set(KICKOS_SERVICE_LIST_ROOT_MMIO)
+if(KICKOS_HAVE_MPU AND KICKOS_SERVICE_LIST IN_LIST KICKOS_SERVICE_LIST_ROOT_MMIO)
   message(FATAL_ERROR
-    "KICKOS_ROOT_PRIVILEGED=OFF with KICKOS_SERVICE_LIST=${KICKOS_SERVICE_LIST}, whose "
-    "bring-up writes peripheral registers directly from root. An unprivileged root "
-    "faults on that write after the console has already been handed over, so the board "
-    "goes dark with no diagnostic. Pick a service list whose bring-up is pure syscall "
-    "(xmc4800-relax: kickos_services_xmc4800relax_console), or keep "
-    "KICKOS_ROOT_PRIVILEGED=ON for this image. The remaining listing needs the USIC "
-    "FDR/BRG/CCR seam, which arch_periph_enable does not cover. See "
+    "KICKOS_SERVICE_LIST=${KICKOS_SERVICE_LIST} is refused at KICKOS_HAVE_MPU=1: its "
+    "bring-up writes MMIO from the root thread, which faults after the console handover "
+    "and leaves the board dark with no diagnostic. Move the register access into the "
+    "thread that holds the window (KOS_SYS_PERIPH_REG_WRITE for a write-PV-only "
+    "register), or pick a service list whose bring-up is pure syscall. See "
     "docs/design-unprivileged-root.md section 8.")
 endif()
 
@@ -593,13 +569,10 @@ if(TARGET kickos_kernel)
   # (context.h); KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h). An OOT TU that
   # includes a kernel-internal header must see the same posture as the prebuilt libs
   # (ODR), so carry them as usage requirements.
-  # KICKOS_ROOT_PRIVILEGED is not ODR-motivated: it makes the root posture readable
-  # from an app TU (e.g. whether spawning a privileged child can succeed).
   target_compile_definitions(kickos_core INTERFACE
     KICKOS_TELEMETRY=${_telem} KICKOS_TELEMETRY_RTT=${_telem}
     KICKOS_TRACE_ARCH=${KICKOS_TRACE_ARCH}
     KICKOS_HAVE_MPU=${KICKOS_HAVE_MPU}
-    KICKOS_ROOT_PRIVILEGED=${_root_priv}
     KICKOS_DEBUG=$<BOOL:${KICKOS_DEBUG}>)
   target_compile_options(kickos_core INTERFACE -include kickos/app.h)
   # Force-include the seam header so an app-TU-defined kickos_init_entry gets C

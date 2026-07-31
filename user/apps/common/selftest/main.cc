@@ -13,7 +13,7 @@
 // of equal-prio threads; tickless sleep ordering; two threads blocking on one
 // sem (wait-queue regression); tier-1 IRQ-as-event (unprivileged driver reads
 // its granted MMIO); semaphore destroy (freelist reuse, stale-handle rejection,
-// quiescent-only); a privileged guard access surviving a syscall.
+// quiescent-only).
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -41,23 +41,10 @@ namespace
     constexpr uint8_t CH_FULL =
         KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER; // full-rights delegation
 
-    // Guard for tests whose PREMISE is a privileged root. On a KICKOS_ROOT_PRIVILEGED=0
-    // board main (== root) is an ordinary unprivileged thread whose region set is
-    // [app code RX, app static data RW, its own stack]: it cannot spawn a privileged
-    // child, and kos_ram_alloc grants the caller nothing (a test that needs to touch
-    // its allocation asks with kos_mem_self_grant, as t_irqdrv does).
-    //
-    // NOTE: the macro RETURNS from the enclosing test.
-#if KICKOS_ROOT_PRIVILEGED
-#define SKIP_TEST_IF_ROOT_UNPRIVILEGED(why) do { } while (0)
-#else
-#define SKIP_TEST_IF_ROOT_UNPRIVILEGED(why)                                              \
-    do                                                                                   \
-    {                                                                                    \
-        tap::skip("root unprivileged: " why);                                            \
-        return;                                                                          \
-    } while (0)
-#endif
+    // main (== root) is an ordinary unprivileged thread whose region set is [app code RX,
+    // app static data RW, its own stack]: it cannot spawn a privileged child, and
+    // kos_ram_alloc grants the caller nothing (a test that needs to touch its allocation
+    // asks with kos_mem_self_grant, as t_irqdrv does).
 
     // Execution-order log: workers append a token under g_lock (race-free across
     // preemption); the orchestrator asserts on it once they have all finished.
@@ -280,7 +267,7 @@ namespace
     void t_periph_clock_hz()
     {
         // A base no backend models returns 0 on EVERY target, proving the dispatch
-        // path + the weak/strong-override plumbing reach the arch seam. On the host
+        // path + the fallback/backend plumbing reach the arch seam. On the host
         // sim any base returns 0 (no silicon clock), mirroring cpu_clock_hz's sim-0.
         uint32_t const bogus = kos_periph_clock_hz(0xDEAD0000u);
         TAP_CHECK(bogus == 0u);
@@ -289,7 +276,7 @@ namespace
 
     // Pin-mux syscall (M4.3): kos_pinmux_set. An out-of-range port/pin is REJECTED
     // (rc < 0) on every target: -KOS_EINVAL where a chip owns its PORT/IOCR block,
-    // -KOS_ENOSYS on the weak-seam targets (host sim). So garbage is never silently
+    // -KOS_ENOSYS on the declining-fallback targets (host sim). So garbage is never silently
     // accepted and the dispatch -> arch-seam plumbing is proven. Touches no hardware:
     // both rejects return BEFORE any write.
     //
@@ -307,9 +294,9 @@ namespace
     // Clock-select seam (M3): kos_cpu_clock_set is PRIVILEGED (syscall gate returns
     // the sentinel 0 == "cannot change" to any unprivileged caller, with NO retune).
     // This test exercises exactly that unprivileged-reject contract. It MUST run from
-    // a spawned UNPRIVILEGED child: the selftest root thread is privileged (kmain), so
-    // a call made here would actually retune on a chip with a real backend (XMC/K64F)
-    // and leave the core clock moved for the rest of the suite. The privileged
+    // a spawned UNPRIVILEGED child, never from root: a posture in which root is
+    // privileged would actually retune on a chip with a real backend (XMC/K64F) and
+    // leave the core clock moved for the rest of the suite. The privileged
     // real-retune + coherence tail (re-anchor / baud / re-arm) is covered by the
     // clockretune harness, silicon-only; see docs/design-m3-clock-select.md sec 6.
     uint32_t g_clkset_low = 1; // child: kos_cpu_clock_set(LOW), expect 0 (rejected)
@@ -1344,26 +1331,6 @@ namespace
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-#if KICKOS_HAVE_MPU
-    // --- Privileged guard access survives a syscall ----------------------------
-    // Needs enforced protection: kos_guard_addr returns a real guarded page only
-    // where a wild access faults (sim now; per chip at M2). On a board without it
-    // the probe is 0 and this would fault, so it is compiled out there.
-    void t_mpu_guard()
-    {
-        // The one test whose subject IS the privileged posture: under the flip no
-        // privileged thread exists after boot, so the property is absent rather than
-        // failing. The complement (root canNOT reach outside its regions) is
-        // apps/rootfault, a separate binary because proving it ends the process.
-        SKIP_TEST_IF_ROOT_UNPRIVILEGED("no privileged caller exists; the inverse claim is "
-                                       "apps/rootfault");
-        volatile int* g = static_cast<volatile int*>(kos_guard_addr());
-        *g = 0x1234; // privileged (root): guard is RW, must not fault
-        kos_yield(); // a syscall must restore the caller's MPU posture, not PROT_NONE
-        TAP_CHECK(*g == 0x1234);
-    }
-#endif
-
     // --- One driver per line: a second claim on a bound line is refused --------
     void t_irq_ownership()
     {
@@ -1570,9 +1537,10 @@ namespace
     //     the neighbouring registers), and
     //   * any grant attempted by an UNPRIVILEGED caller (else a user thread maps
     //     arbitrary peripheral space and defeats isolation).
-    // The sim's arch_mpu_region_encodable is fail-closed (always false), so both halves
-    // land as a -1 spawn there; on an enforcing MCU the first still rejects the
-    // non-encodable window and the second the privilege violation.
+    // The sim's arch_mpu_region_encodable admits ONE window (its fake register block,
+    // t_periph_reg_write_mask) and neither of these names it, so both halves still land
+    // as a -1 spawn there; on an enforcing MCU the first rejects the non-encodable
+    // window and the second the privilege violation.
     int g_mmio_unpriv_rc = -2;
     int g_mmio_done = -1;
     void mmio_noop(void*) {}
@@ -1586,8 +1554,9 @@ namespace
     }
     void t_mmio_grant()
     {
-        // Privileged caller, non-encodable window (size 1, unaligned base): rejected with
-        // -KOS_EINVAL, not rounded.
+        // Non-encodable window (size 1, unaligned base): rejected with -KOS_EINVAL, not
+        // rounded. Geometry is checked ahead of the privilege gate, so the code is
+        // -KOS_EINVAL whatever posture the caller runs in.
         TAP_CHECK(kos::thread::spawn(mmio_noop, nullptr, "mmiobad", 10, KOS_POLICY_FIFO,
                                      0, false, nullptr, 0, nullptr, 0,
                                      reinterpret_cast<void*>(0x1001u), 1) == -KOS_EINVAL);
@@ -1698,9 +1667,9 @@ namespace
         // lies OUTSIDE the arena is refused with -KOS_EPERM (policy refusal), NOT
         // -KOS_ENOMEM (pool exhaustion), coherent with the stack_base path
         // (t_stackbase_arena). The code comes from domain_for, the authoritative
-        // chokepoint, not a pre-check at the spawn boundary. Caller is privileged
-        // (main); the CHILD is unprivileged, so domain_for evaluates the grant
-        // (0xE0000000 is 2048-aligned, so ONLY arena containment can reject it).
+        // chokepoint, not a pre-check at the spawn boundary. The CHILD is unprivileged,
+        // so domain_for evaluates the grant (0xE0000000 is 2048-aligned, so ONLY arena
+        // containment can reject it).
         // Fails before any slot is claimed.
         int const mrc = kos::thread::spawn(grant_noop, nullptr, "membad", 10, KOS_POLICY_FIFO,
                                            0, /*privileged=*/false,
@@ -1818,10 +1787,11 @@ namespace
             // Positively the sim, so a new arch with no DEV encoder fails loudly here
             // instead of inheriting this escape.
 #if KICKOS_ARCH_SIM
-            // The sim mints no DEV window at all: arch_mpu_region_encodable is
-            // fail-closed. Assert THAT premise end-to-end rather than skip: the sim
-            // gate reads a skip as "a test stopped running"
-            // (FAIL_REGULAR_EXPRESSION "# skipped: [1-9]").
+            // The sim admits exactly ONE DEV window shape (64 KiB, at the base its fake
+            // register block landed on: t_periph_reg_write_mask), never a WIN-sized one,
+            // so the exclusivity matrix needs two windows the sim cannot both mint. Assert THAT
+            // premise end-to-end rather than skip: the sim gate reads a skip as "a test
+            // stopped running" (FAIL_REGULAR_EXPRESSION "# skipped: [1-9]").
             TAP_CHECK(kos::thread::spawn(devexcl_noop, nullptr, "devnone", 10, KOS_POLICY_FIFO,
                                          0, false, nullptr, 0, nullptr, 0,
                                          reinterpret_cast<void*>(0x40000000u), WIN) < 0);
@@ -3101,7 +3071,7 @@ namespace
 #if defined(KICKOS_ENABLE_SELFTEST)
     // --- reboot-to-bootloader is privileged-only: the REFUSAL arm only -------------
     // The privileged arm stays out of this suite deliberately: root calling kos_reboot
-    // returns harmlessly on a weak-seam chip, but on picopi/pizero2350/teensy41 it
+    // returns harmlessly on a declining-fallback chip, but on picopi/pizero2350/teensy41 it
     // reboots the board mid-run and truncates the TAP stream. apps/rebootdemo owns it.
     int g_reboot_rc = -99;
     void reboot_denied_worker(void*) // caps: done@1
@@ -3153,7 +3123,7 @@ namespace
     // The child is UNPRIVILEGED and holds AUTH_PINMUX and nothing else, so exactly one
     // gate must accept it and the rest must refuse. Acceptance reads as "not
     // -KOS_EPERM": a gate that lets the call through returns its OWN answer instead
-    // (-KOS_ENOSYS on a weak-seam target like the sim, -KOS_EINVAL where a chip owns
+    // (-KOS_ENOSYS on a declining-fallback target like the sim, -KOS_EINVAL where a chip owns
     // the block).
     void auth_noop(void*) {}
     volatile long g_auth_pinmux = -99;   // AUTH_PINMUX held    -> anything but -KOS_EPERM
@@ -3268,12 +3238,12 @@ namespace
     // ARCH_MPU_DEV attribute filter rather than the base match alone.
     //
     // Both arms discriminate: with the possession check removed the sim answers
-    // -KOS_ENOSYS (weak arch_periph_enable), and a chip with a table answers 0 or
+    // -KOS_ENOSYS (the arch_periph_enable fallback), and a chip with a table answers 0 or
     // -KOS_EINVAL. None of those is -KOS_EPERM.
     //
-    // The complementary PASS arm (a holder reaching the backend) needs a DEV grant,
-    // which the sim cannot mint: arch_mpu_region_encodable is fail-closed there. It
-    // belongs to an enforcing board, same constraint as t_dev_window_exclusive.
+    // The complementary PASS arm (a holder reaching the backend) belongs to an enforcing
+    // board: the one DEV window the sim mints is at its fake register block, and
+    // arch_periph_enable has no sim backend to reach.
     constexpr uintptr_t PE_BASE = 0x40000000u; // peripheral space, never a code/data/stack base
     volatile long g_pe_unheld = 1; // sentinel: the contract returns 0 or a negative code
     volatile long g_pe_ram = 1;
@@ -3304,20 +3274,305 @@ namespace
         }
         wait_n(1);
         TAP_CHECK(g_pe_unheld == -KOS_EPERM);
-        // Arm 2's setup is one smallest-block kos_ram_alloc plus one self-grant in a fresh
-        // thread, and every arena-draining test is registered after this one, so a
-        // non-run is a regression in the arena floor or in self-grant, not a board limit.
+        // Arm 2 needs one arch_ram_region_size(1) block, so it runs only on a board whose
+        // arena still has one past kmain's two boot stacks and the default stack the
+        // thread pool bump-allocates per concurrently-live slot. That pool, not a test
+        // registered later, is the dominant arena consumer by this point.
         TAP_CHECK(g_pe_ram_ran == 1);
         TAP_CHECK(g_pe_ram == -KOS_EPERM);
+    }
+
+    // --- Privileged register write: the same possession gate, plus the refusal ------
+    // Arm 2 finds its DEV window by TRYING the spawn, not by kos_grant_probe, which
+    // needs KICKOS_ENABLE_SELFTEST and would drop the arm on a production-ABI build. A
+    // board that mints no window reports PARTIAL.
+    // Arm 3 runs from the UNHELD worker: alignment and wrap are checked before
+    // possession, so only an unheld caller separates -KOS_EINVAL from the -KOS_EPERM a
+    // dropped check would give.
+    // Arm 4 reuses arm 2's window; a second DEV grant would cost another arena block and
+    // t_dev_window_exclusive would refuse it.
+    // PRW_OFFSET must be 4-ALIGNED or arm 2 stops short of the chip layer. The BASE is
+    // what keeps it unnameable: the discovery loop steps 0x1000 and the only allowlist in
+    // the tree is XMC4800's at 0x40030200, so no candidate base matches an entry.
+    constexpr uintptr_t PRW_OFFSET = 0x4u;
+    // Pow2 >= the 32 B PMSA minimum; the discovery step is a multiple of it, so every
+    // candidate base stays WIN-aligned (PMSA masks an unaligned base down).
+    constexpr uint32_t PRW_WIN = 0x100u;
+    // ONE byte of .bss carries every arm's verdict, not a result word per arm. Sizing
+    // matters here: bluepill-c8's boot arena has ZERO slack (2560 B holds a 512 B idle
+    // plus a 2048 B root stack exactly), so any app static RAM this file adds fails the
+    // boot-arena link ASSERT, and microbit's 16 KiB arena starves mem_self_grant. The
+    // two workers write it in sequence (each is joined on CH_DONE before the next
+    // spawns), so the |= needs no atomicity.
+    constexpr unsigned PRW_UNHELD_OK = 1u << 0;     // arm 1: unheld base refused
+    constexpr unsigned PRW_HELD_RAN = 1u << 1;      // arm 2: a window was minted
+    constexpr unsigned PRW_HELD_OK = 1u << 2;       // arm 2: declined by the chip layer
+    constexpr unsigned PRW_MISALIGNED_OK = 1u << 3; // arm 3: offset not 4-aligned
+    constexpr unsigned PRW_WRAP_OK = 1u << 4;       // arm 3: base + offset wraps
+    constexpr unsigned PRW_PAST_END_OK = 1u << 5;   // arm 4: first word beyond the window
+    constexpr unsigned PRW_FAR_OK = 1u << 6;        // arm 4: 4 KiB beyond the window
+    volatile unsigned char g_prw = 0;
+    void periph_reg_write_held_worker(void* arg) // caps: g_done@1 (CH_DONE)
+    {
+        uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
+        unsigned seen = PRW_HELD_RAN;
+        long const held = kos_periph_reg_write(win, PRW_OFFSET, 0);
+        if (held == -KOS_ENOSYS or held == -KOS_EINVAL)
+        {
+            seen |= PRW_HELD_OK;
+        }
+        if (kos_periph_reg_write(win, PRW_WIN, 0) == -KOS_EPERM)
+        {
+            seen |= PRW_PAST_END_OK;
+        }
+        if (kos_periph_reg_write(win, 0x1000u, 0) == -KOS_EPERM)
+        {
+            seen |= PRW_FAR_OK;
+        }
+        g_prw = static_cast<unsigned char>(g_prw | seen);
+        kos_sem_post(CH_DONE);
+    }
+    void periph_reg_write_worker(void*) // caps: g_done@1 (CH_DONE)
+    {
+        unsigned seen = 0;
+        if (kos_periph_reg_write(PE_BASE, PRW_OFFSET, 0) == -KOS_EPERM)
+        {
+            seen |= PRW_UNHELD_OK;
+        }
+        // Both malformed-request refusals are checked from an UNHELD caller, which is
+        // what makes them discriminate: they run AHEAD of possession, so dropping either
+        // check falls through to the possession walk and answers -KOS_EPERM. From a
+        // holder the code is -KOS_EINVAL either way (an untabled offset earns the same
+        // code), so the arm would be vacuous there.
+        if (kos_periph_reg_write(PE_BASE, 0x2u, 0) == -KOS_EINVAL)
+        {
+            seen |= PRW_MISALIGNED_OK;
+        }
+        // PE_BASE + ~0x3 wraps at every uintptr_t width (the offset exceeds
+        // UINTPTR_MAX - PE_BASE on 32-bit and 64-bit alike), so -KOS_EINVAL is exact
+        // here and not width-dependent. The offset is 4-aligned, so the check above
+        // cannot answer for this one.
+        if (kos_periph_reg_write(PE_BASE, ~static_cast<uintptr_t>(0x3u), 0) == -KOS_EINVAL)
+        {
+            seen |= PRW_WRAP_OK;
+        }
+        g_prw = static_cast<unsigned char>(g_prw | seen);
+        kos_sem_post(CH_DONE);
+    }
+    void t_periph_reg_write_unheld()
+    {
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        int w = kos::thread::spawn_caps(periph_reg_write_worker, nullptr, "prwW", 10, caps, 1,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                        nullptr, 0, /*authority=*/KOS_AUTH_MEMORY);
+        if (w < 0)
+        {
+            tap::skip("thread pool too small");
+            return;
+        }
+        wait_n(1);
+        TAP_CHECK((g_prw & PRW_UNHELD_OK) != 0);
+        // Arm 3: no DEV window needed, so these run on EVERY board including the ones
+        // that mint none.
+        TAP_CHECK((g_prw & PRW_MISALIGNED_OK) != 0);
+        TAP_CHECK((g_prw & PRW_WRAP_OK) != 0);
+
+        // Arms 2 and 4 share one window.
+        int holder = -1;
+        for (uintptr_t b = 0x40000000u; b < 0x40100000u; b += 0x1000u)
+        {
+            holder = kos::thread::spawn(periph_reg_write_held_worker,
+                                        reinterpret_cast<void*>(b), "prwH", 10,
+                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                        nullptr, 0, nullptr, 0,
+                                        reinterpret_cast<void*>(b), PRW_WIN,
+                                        caps, 1, KOS_AUTH_MEMORY);
+            if (holder >= 0)
+            {
+                break;
+            }
+            if (holder == -KOS_ENOMEM)
+            {
+                break; // thread pool, not the window: no later base can succeed either
+            }
+        }
+        if (holder < 0)
+        {
+            // The sim admits exactly ONE DEV window shape (64 KiB, at the base its fake
+            // register block landed on), and PRW_WIN is not it, so this discovery loop
+            // finds nothing there. The held arms it drops are covered on the host by
+            // periph_reg_write_mask below, which holds that window.
+            tap::diag("periph_reg_write_unheld: PARTIAL -- board mints no free DEV window, "
+                      "so the held arm runs on enforcing boards (e.g. qemu -DKICKOS_HAVE_MPU=1) "
+                      "and, on the host, in periph_reg_write_mask");
+            return;
+        }
+        wait_n(1);
+        TAP_CHECK((g_prw & PRW_HELD_RAN) != 0);
+        TAP_CHECK((g_prw & PRW_HELD_OK) != 0);
+        // Arm 4. -KOS_ENOSYS on either of these would mean the offset reached the chip
+        // layer, so they discriminate on a board with a backend AND on one without.
+        TAP_CHECK((g_prw & PRW_PAST_END_OK) != 0);
+        TAP_CHECK((g_prw & PRW_FAR_OK) != 0);
+    }
+
+    // --- The allowlist and its VALUE MASK, reached on the host ---------------------
+#if KICKOS_ARCH_SIM
+    // xmc4800 is the only chip with a real backend, so on every other target the seam
+    // answers -KOS_ENOSYS and NO ctest anywhere reaches the allowlist match or the mask
+    // compare. arch/sim/sim.cc models a write-PV-only register block over real host
+    // pages so this arm reaches both. The path is the SHARED one: the same
+    // KOS_SYS_PERIPH_REG_WRITE dispatch arm and the same caller_holds_mmio_reg. Only the
+    // table and the store target are sim-side.
+    //
+    // What the sim CANNOT model is the bus classification itself: nothing here stops the
+    // worker storing to its own window directly, so the test seeds and reads the
+    // register that way. Under test is the KERNEL's narrowing of the seam, and the
+    // read-back is the only evidence of what the seam did or did not store.
+    //
+    // The sim maps the block at the FIRST of these candidates the host leaves free and
+    // publishes that base; one fixed address would make this arm's premise a bet on the
+    // process address space. This list and its ORDER must equal arch/sim/sim.cc's
+    // SIM_PVREG_BASES, and PVS_WIN / PVS_REG / PVS_BEYOND must equal its
+    // SIM_PVREG_WINDOW and its first two allowlist entries. A drift shows up as every
+    // candidate being refused, never as a pass.
+    constexpr uintptr_t PVS_BASES[] = {
+        0x40000000u, 0x100000000ull, 0x400000000ull, 0x10000000000ull, 0x100000000000ull,
+    };
+    constexpr uint32_t PVS_WIN = 0x10000u;       // the only DEV window shape the sim admits
+    constexpr uintptr_t PVS_REG = 0x010u;        // the masked entry, inside the window
+    constexpr uintptr_t PVS_UNLISTED = 0x014u;   // inside the window, not on the table
+    constexpr uintptr_t PVS_BEYOND = PVS_WIN;    // on the table, OUTSIDE the window
+    constexpr uint32_t PVS_MASK = 0x0000C3FFu;   // the entry's whole grant
+    constexpr uint32_t PVS_IN = 0x000080FFu;     // a strict subset of it
+    // Bit 16 is outside the mask, and the in-mask bits differ from PVS_IN, so a silent
+    // TRIM of this value is distinguishable from the refusal by read-back alone.
+    constexpr uint32_t PVS_OFF = 0x00010042u;
+    constexpr unsigned PVS_RAN = 1u << 0;
+    constexpr unsigned PVS_STORE_OK = 1u << 1;      // in-mask value accepted
+    constexpr unsigned PVS_STORE_LANDED = 1u << 2;  // and read back exact
+    constexpr unsigned PVS_FULLMASK_OK = 1u << 3;   // the whole mask is inside the grant
+    constexpr unsigned PVS_OFF_REFUSED = 1u << 4;   // off-mask value -KOS_EINVAL
+    constexpr unsigned PVS_OFF_NOTRIM = 1u << 5;    // and the register kept its value
+    constexpr unsigned PVS_UNLISTED_OK = 1u << 6;   // untabled offset refused, no store
+    constexpr unsigned PVS_BEYOND_OK = 1u << 7;     // tabled but uncontained: -KOS_EPERM
+    // Sim-only, so this byte costs no static RAM on a board with an arena floor.
+    volatile unsigned char g_pvs = 0;
+    void pvs_worker(void* arg) // caps: g_done@1 (CH_DONE)
+    {
+        uintptr_t const PVS_BASE = reinterpret_cast<uintptr_t>(arg);
+        unsigned seen = PVS_RAN;
+        volatile uint32_t* const reg =
+            reinterpret_cast<volatile uint32_t*>(PVS_BASE + PVS_REG);
+        volatile uint32_t* const unlisted =
+            reinterpret_cast<volatile uint32_t*>(PVS_BASE + PVS_UNLISTED);
+        if (kos_periph_reg_write(PVS_BASE, PVS_REG, PVS_IN) == 0)
+        {
+            seen |= PVS_STORE_OK;
+        }
+        if (*reg == PVS_IN)
+        {
+            seen |= PVS_STORE_LANDED;
+        }
+        // The mask's own value must be admitted: this pins the refusal at the mask EDGE,
+        // so a predicate that refuses more than (value & ~mask) cannot pass.
+        if (kos_periph_reg_write(PVS_BASE, PVS_REG, PVS_MASK) == 0 and *reg == PVS_MASK)
+        {
+            seen |= PVS_FULLMASK_OK;
+        }
+        kos_periph_reg_write(PVS_BASE, PVS_REG, PVS_IN); // known word before the refusal
+        if (kos_periph_reg_write(PVS_BASE, PVS_REG, PVS_OFF) == -KOS_EINVAL)
+        {
+            seen |= PVS_OFF_REFUSED;
+        }
+        if (*reg == PVS_IN)
+        {
+            seen |= PVS_OFF_NOTRIM;
+        }
+        *unlisted = 0;
+        if (kos_periph_reg_write(PVS_BASE, PVS_UNLISTED, 0x1u) == -KOS_EINVAL
+            and *unlisted == 0)
+        {
+            seen |= PVS_UNLISTED_OK;
+        }
+        // Named by the table, one word past the held window: the kernel's containment
+        // check is the only thing that refuses it, and -KOS_EPERM (not -KOS_EINVAL)
+        // is what proves the refusal came from there and not from the chip layer.
+        if (kos_periph_reg_write(PVS_BASE, PVS_BEYOND, 0x1u) == -KOS_EPERM)
+        {
+            seen |= PVS_BEYOND_OK;
+        }
+        g_pvs = static_cast<unsigned char>(g_pvs | seen);
+        kos_sem_post(CH_DONE);
+    }
+    void t_periph_reg_write_mask()
+    {
+        kos_cap_grant caps[] = {{g_done, CH_FULL}}; // done@1
+        // Try every candidate, in the sim's own order: exactly one is mapped, and which
+        // one depends on the host's address space, not on this test.
+        int w = -1;
+        for (uintptr_t b : PVS_BASES)
+        {
+            w = kos::thread::spawn(pvs_worker, reinterpret_cast<void*>(b), "pvsW", 10,
+                                   KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
+                                   nullptr, 0, reinterpret_cast<void*>(b), PVS_WIN,
+                                   caps, 1, KOS_AUTH_MEMORY);
+            if (w >= 0)
+            {
+                break;
+            }
+            if (w == -KOS_ENOMEM)
+            {
+                break; // thread pool, not the window: no later candidate can succeed
+            }
+        }
+        if (w < 0)
+        {
+            // No skip: the sim maps the block at one of PVS_BASES unless the host owns
+            // ALL of them, which is not a layout this test can be run in. So a refusal
+            // is a regression in the grant path, in the sim's mapping loop, or a drift
+            // between the two lists. A skip here would also fail the sim gate
+            // (FAIL_REGULAR_EXPRESSION "# skipped: [1-9]").
+            tap::fail("no candidate DEV window at the sim's fake register block "
+                      "(last rc %d) -- PVS_BASES drifted from SIM_PVREG_BASES, or the "
+                      "host owns every candidate", w);
+            return;
+        }
+        wait_n(1);
+        TAP_CHECK((g_pvs & PVS_RAN) != 0);
+        TAP_CHECK((g_pvs & PVS_STORE_OK) != 0);
+        TAP_CHECK((g_pvs & PVS_STORE_LANDED) != 0);
+        TAP_CHECK((g_pvs & PVS_FULLMASK_OK) != 0);
+        TAP_CHECK((g_pvs & PVS_OFF_REFUSED) != 0);
+        TAP_CHECK((g_pvs & PVS_OFF_NOTRIM) != 0);
+        TAP_CHECK((g_pvs & PVS_UNLISTED_OK) != 0);
+        TAP_CHECK((g_pvs & PVS_BEYOND_OK) != 0);
+    }
+#endif // KICKOS_ARCH_SIM
+
+    // --- No privilege minting after boot ---------------------------------------
+    // syscall_thread.cc refuses a privileged child to an unprivileged caller. That
+    // refusal is the whole of "only idle is privileged once boot is over", so it is
+    // asserted directly rather than inferred from a posture.
+    //
+    // Called from ROOT, which is unprivileged, so the refusal costs no thread slot and
+    // no arena block (the 16 KiB boards have neither to spare). A posture in which root
+    // were privileged turns this red rather than vacuous: the spawn would succeed.
+    void escalate_noop(void*) {}
+    void t_privileged_spawn_refused()
+    {
+        TAP_CHECK(kos::thread::spawn(escalate_noop, nullptr, "escd", 10, KOS_POLICY_FIFO,
+                                     0, /*privileged=*/true)
+                  == -KOS_EPERM);
     }
 
     // --- Self-grant, and the region budget that bounds it ----------------------
     // Exercises the REFUSAL at the region-budget ceiling: the call must fail LOUDLY
     // (-KOS_ENOMEM), not truncate the region set.
     //
-    // Runs in an UNPRIVILEGED child in EVERY posture, not in root: a privileged
-    // caller's self-grants are answered "already reachable" without spending a
-    // descriptor, so from root the ceiling is unreachable.
+    // Runs in an unprivileged CHILD, not in root: a privileged caller's self-grants are
+    // answered "already reachable" without spending a descriptor, so the ceiling would
+    // be unreachable.
     //
     // Each descriptor is bought with kos_ram_alloc(1), the SMALLEST region this
     // backend can describe (the allocator rounds up to arch_ram_region_size). The
@@ -3579,6 +3834,11 @@ int main(int, char**)
     tap::add("writable_global", t_writable_global);      // out-buffer in an app global
     tap::add("authority_cap", t_authority_cap);          // CAP_AUTHORITY: both arms of the gates
     tap::add("periph_enable_unheld", t_periph_enable_unheld); // possession is the whole periph-enable gate
+    tap::add("periph_reg_write_unheld", t_periph_reg_write_unheld); // same gate + the offset bound + the chip refusal
+#if KICKOS_ARCH_SIM
+    tap::add("periph_reg_write_mask", t_periph_reg_write_mask); // allowlist match + the per-entry value mask
+#endif
+    tap::add("privileged_spawn_refused", t_privileged_spawn_refused); // no privilege minting after boot
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     tap::add("irq_thread_ctx", t_irq);
@@ -3589,9 +3849,6 @@ int main(int, char**)
     tap::add("irq_ownership", t_irq_ownership);
     tap::add("irq_spurious", t_irq_spurious);
     tap::add("irq_stale_register", t_irq_stale_register);
-#if KICKOS_HAVE_MPU
-    tap::add("mpu_privileged_guard", t_mpu_guard); // needs enforced protection
-#endif
 #endif
     tap::add("caller_stack", t_caller_stack); // caller-owned stack API (no test-only syscalls)
     // Here, not beside mem_self_grant: see the run-order note at t_selfgrant_nonpow2.

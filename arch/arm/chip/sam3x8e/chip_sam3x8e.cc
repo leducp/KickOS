@@ -356,7 +356,7 @@ void arch_init(void)
     kickos_armv7m_init();
 }
 
-// Monotonic clock override: free-running TC0 ch0 ticks -> ns, replacing the weak
+// Monotonic clock: free-running TC0 ch0 ticks -> ns, the required per-chip source (the
 // DWT-backed arch_clock_now (unreliable on this silicon). Pure epoch read: the anchor
 // holds the rate, so no divide and no rate derivation happens here.
 uint64_t arch_clock_now(void)

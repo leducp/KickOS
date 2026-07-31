@@ -11,11 +11,7 @@ if(NOT TARGET rootfault)
   return() # diagnostics off -> app not built; skip its tests
 endif()
 
-# Registered ONLY in the flipped posture: the app runs in both and asserts a
-# different outcome in each (see main.cc), but the fleet emulator gates all build
-# KICKOS_ROOT_PRIVILEGED=ON, where the privileged-root arm is a hand-run control.
-# Delete the condition once a flipped board is a standing gate (TODO.md stage 2).
-if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND NOT KICKOS_ROOT_PRIVILEGED)
+if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU)
   if(KICKOS_ARCH STREQUAL "sim")
     add_test(NAME rootfault COMMAND "$<TARGET_FILE:rootfault>")
     set_tests_properties(rootfault PROPERTIES

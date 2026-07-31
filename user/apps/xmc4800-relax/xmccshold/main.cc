@@ -9,9 +9,10 @@
 // instead of one, so a held CS must be proven, not assumed.
 //
 // Modelled on user/apps/xmcspi (same U0C1 = 0x4003_0200 512 B window, same
-// privileged-bring-up + unprivileged-driver + spawn-with-MMIO-grant pattern).
-// It is NOT the enforcement proof -- no negative test, no MPU-fault poke; this
-// bench answers only the functional CS-hold question.
+// unprivileged-driver-brings-itself-up + spawn-with-MMIO-grant pattern, with
+// FDR/BRG/CCR going through kos_periph_reg_write). It is NOT the enforcement proof --
+// no negative test, no MPU-fault poke; this bench answers only the functional CS-hold
+// question.
 //
 // The finding under test (RM 18.4.5.1, PCR.FEM description, printed 18-99):
 //   FEM = 0 (reset): "an end of frame is assumed if the transmit buffer TBUF does
@@ -178,12 +179,77 @@ namespace
     // UNPRIVILEGED driver: granted app code+data (auto) and the U0C1 window (spawn
     // MMIO grant). No IRQ is registered -- the bench polls. No file-scope mutable
     // state: the window base arrives as the thread arg VALUE, counters are locals.
+    constexpr uint32_t FDR_WORD = FDR_DM_FRACTIONAL | FDR_STEP_367;
+    constexpr uint32_t BRG_WORD = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
+
+    // FDR.RESULT[25:16] is driven by the fractional divider and excluded from the
+    // read-back comparison.
+    constexpr uint32_t FDR_RESULT_MASK = 0x03FF0000u;
+
+    // One PV-classified register through the seam, then read back: a discarded store is
+    // silent at the bus, and the errno separates a refused call from a dropped one.
+    bool seam_write(char const* reg, uintptr_t win, uintptr_t off_reg, uint32_t val,
+                    uint32_t care)
+    {
+        int const rc = kos_periph_reg_write(win, off_reg, val);
+        uint32_t const got = r32(win + off_reg);
+        bool const ok = (rc == 0) and ((got & care) == (val & care));
+        char const* verdict = "DISCARDED/REFUSED";
+        if (ok)
+        {
+            verdict = "LANDED";
+        }
+        char s[112];
+        ksnprintf(s, sizeof(s), "[xmccshold] seam %s: rc=%d wrote=0x%x read=0x%x %s\n",
+                  reg, rc, static_cast<unsigned>(val), static_cast<unsigned>(got),
+                  verdict);
+        kos::print(s);
+        return ok;
+    }
+
+    // Bring-up, run by the thread that holds the window. Run 1 is fully configured under
+    // CCR.MODE=0 (RM 18.4.3 ordering rule); PCR starts with FEM=1.
+    bool bring_up(uintptr_t win)
+    {
+        r32(win + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
+        // RM p.18-165: read KSCFG back before touching other USIC registers to flush the
+        // control-block pipeline; keep the volatile read from being elided.
+        uint32_t const kscfg_sync = r32(win + off::KSCFG);
+        __asm volatile("" : : "r"(kscfg_sync) : "memory");
+
+        bool ok = seam_write("FDR", win, off::FDR, FDR_WORD, ~FDR_RESULT_MASK);
+        ok = seam_write("BRG", win, off::BRG, BRG_WORD, 0xFFFFFFFFu) and ok;
+
+        // SSC master, 8-bit MSB-first, single-shot start-on-TDV, FLE=63 so software
+        // SOF/EOF govern the frame end. All U,PV: direct stores.
+        r32(win + off::SCTR) = SCTR_WLE_8 | SCTR_FLE_63 | SCTR_TRM_ACTIVE | SCTR_SDIR_MSB;
+        r32(win + off::TCSR) = TCSR_BASE;
+        r32(win + off::PCR) = PCR_SSC_BASE | PCR_FEM;
+        r32(win + off::PSCR) = PSCR_MSLS | PSCR_MSLSEV | PSCR_CLEAR_RX; // clear stale
+
+        // Internal loop-back: DX0 receives the channel's own transmitter (input "G"),
+        // giving a clean per-word RX-complete marker with no port pin. Input-stage config
+        // must be done while CCR.MODE=0 (RM p.18-57).
+        r32(win + off::DX0CR) = DX0CR_INSW | DX0CR_DSEL_G;
+
+        // Enable the channel (config complete). No RX interrupt enables: the bench polls
+        // PSR. No INPR / NVIC routing, no IOCR pin-mux: MSLS is observed internally, so
+        // this is a fully pin-free measurement.
+        ok = seam_write("CCR", win, off::CCR, CCR_MODE_SSC, 0xFFFFFFFFu) and ok;
+        return ok;
+    }
+
     void cs_hold_driver(void* arg)
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
         volatile uint32_t* pcr = reinterpret_cast<volatile uint32_t*>(win + off::PCR);
 
-        // Run 1: FEM=1 (PCR already carries FEM from the privileged bring-up).
+        if (not bring_up(win))
+        {
+            kos_panic("[xmccshold] bring-up FAILURE: a PV register did not take the seam write");
+        }
+
+        // Run 1: FEM=1 (PCR carries FEM from the bring-up above).
         // Announce before the polling frame so a wedged board is diagnosable.
         kos::print("[xmccshold] run 1 FEM=1: driving 4-word software-paced frame\n");
         unsigned fem1_edges = run_frame(win);
@@ -238,36 +304,9 @@ namespace
 
 int main(int, char**)
 {
-    // Privileged bring-up (this main runs privileged). USIC0's module clock is
-    // already ungated by the console (U0C0) bring-up; here only U0C1's kernel clock,
-    // baud, SSC-master config and the loopback input-mux are programmed. Run 1 is
-    // fully configured under CCR.MODE=0 (RM 18.4.3 ordering rule); the driver flips
-    // only PCR.FEM for run 2 on the idle channel.
-    r32(U0C1_BASE + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
-    // RM p.18-165: read KSCFG back before touching other USIC registers to flush the
-    // control-block pipeline; keep the volatile read from being elided.
-    uint32_t kscfg_sync = r32(U0C1_BASE + off::KSCFG);
-    __asm volatile("" : : "r"(kscfg_sync) : "memory");
-
-    r32(U0C1_BASE + off::FDR) = FDR_DM_FRACTIONAL | FDR_STEP_367;
-    r32(U0C1_BASE + off::BRG) = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
-
-    // Config while CCR.MODE=0: SSC master, 8-bit MSB-first, single-shot start-on-TDV,
-    // FLE=63 so software SOF/EOF govern the frame end. PCR starts with FEM=1 (run 1).
-    r32(U0C1_BASE + off::SCTR) = SCTR_WLE_8 | SCTR_FLE_63 | SCTR_TRM_ACTIVE | SCTR_SDIR_MSB;
-    r32(U0C1_BASE + off::TCSR) = TCSR_BASE;
-    r32(U0C1_BASE + off::PCR) = PCR_SSC_BASE | PCR_FEM;
-    r32(U0C1_BASE + off::PSCR) = PSCR_MSLS | PSCR_MSLSEV | PSCR_CLEAR_RX; // clear stale
-
-    // Internal loop-back: DX0 receives the channel's own transmitter (input "G"),
-    // giving a clean per-word RX-complete marker with no port pin. Input-stage config
-    // must be done while CCR.MODE=0 (RM p.18-57).
-    r32(U0C1_BASE + off::DX0CR) = DX0CR_INSW | DX0CR_DSEL_G;
-
-    // Enable the channel (config complete). No RX interrupt enables: the bench polls
-    // PSR. No INPR / NVIC routing, no IOCR pin-mux: MSLS is observed internally, so
-    // this is a fully pin-free measurement.
-    r32(U0C1_BASE + off::CCR) = CCR_MODE_SSC;
+    // No register access from root: the bring-up belongs to the thread that holds the
+    // window. USIC0's module clock is already ungated by the console (U0C0) bring-up.
+    // The driver flips only PCR.FEM for run 2, on the idle channel.
 
     int drv = kos::thread::spawn(cs_hold_driver, reinterpret_cast<void*>(U0C1_BASE),
                                  "xmccshold", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
@@ -276,7 +315,13 @@ int main(int, char**)
                                  /*mmio=*/reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW);
     if (drv < 0)
     {
-        kos::print("[xmccshold] ERROR: driver spawn failed\n");
+        // -KOS_EBUSY: a live domain already holds U0C1, which this bench needs
+        // exclusively, so no service list carrying an SSC/SPI entry may run alongside
+        // it. The kernel console path drops every byte once a driver has published, so
+        // the errno goes out through the panic path.
+        char e[64];
+        ksnprintf(e, sizeof(e), "[xmccshold] U0C1 spawn refused, errno %d", -drv);
+        kos_panic(e);
     }
 
     int idle = kos_sem_create(0);

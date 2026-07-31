@@ -103,7 +103,8 @@ unbacked AHB slave. Done through a new shared seam, not a chip one-off.
 
 **The fixed-region seam** (`arch/arm/common/mpu.h`,
 `arch/arm/common/arch_arm_common.cc`). A chip may declare **thread-invariant**
-MPU regions via the weak hook `kickos_arm_mpu_fixed()`; `kickos_arm_mpu_fixed_init()`
+MPU regions via `kickos_arm_mpu_fixed()`, whose declining fallback is
+`arch/arm/common/kickos_arm_mpu_fixed_default.cc`; `kickos_arm_mpu_fixed_init()`
 programs them **once** into the **LOW** descriptor slots `[0, k)` and caches
 `k`. Per-thread grants then program into `[k, hw)`
 (`arch_arm_common.cc:217`), so a grant sits **above** the fixed background and

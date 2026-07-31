@@ -161,7 +161,9 @@ namespace kickos
         uint8_t prio = KICKOS_PRIO_MIN;
         Policy policy = Policy::FIFO;
         uint32_t quantum_ns = 0;
-        bool privileged = true;
+        // Default false: an attr struct that forgets the field must not mint privilege.
+        // idle is the one thread that spells `true` out (kernel/init/kmain.cc).
+        bool privileged = false;
         // Optional domain data region granted to an unprivileged thread (RW).
         // Threads sharing one region share a memory domain; base==0 => none.
         void* mem_base = nullptr;

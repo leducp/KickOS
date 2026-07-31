@@ -7,11 +7,10 @@
 # same claim: that one proves a spawned child is confined, this one proves the thread
 # that ran the ctors and the board bring-up is.
 #
-# Registered only on a build configured -DKICKOS_HAVE_MPU=1 AND
-# -DKICKOS_ROOT_PRIVILEGED=OFF. With a privileged root the write COMPLETES, which is
-# correct there and would rightly fail this gate -- so the app's own "NOT confined" line
-# is treated as a failure marker here, exactly as mpu_fault treats its no-enforcement
-# line. rootfault self-terminates either way, so QEMU_TIMEOUT is only a hang backstop.
+# Registered only on a build configured -DKICKOS_HAVE_MPU=1, so the app's own
+# "NOT confined" line is a failure marker here, exactly as mpu_fault treats its
+# no-enforcement line. rootfault self-terminates either way, so QEMU_TIMEOUT is only a
+# hang backstop.
 
 set -u
 elf="${1:?usage: check_qemu_rootfault.sh <rootfault.elf>}"
@@ -30,7 +29,7 @@ out="$(timeout "${QEMU_TIMEOUT:-20}" "$qemu" -M "$machine" $extra_arg -nographic
 echo "$out"
 
 if echo "$out" | grep -qE "ERROR|NOT confined"; then
-    echo "FAIL: root's cross-domain write was NOT trapped (root still privileged?)"
+    echo "FAIL: root's cross-domain write was NOT trapped (enforcement off?)"
     exit 1
 fi
 # The CONTROL half must have run: the child writing its own granted region proves the

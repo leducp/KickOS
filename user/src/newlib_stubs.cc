@@ -146,6 +146,8 @@ void _exit(int code)
 #ifdef __RX__
 // SjLj atexit/EH registration references __dso_handle; the RX libc may not
 // provide one. Weak so a libc that does still wins.
+// Weak on purpose, and allowlisted in tests/weak_allowlist.txt: a libc that ships its
+// own must own the handle the atexit registrations key on.
 __attribute__((weak)) void* __dso_handle = nullptr;
 #endif
 
@@ -153,8 +155,9 @@ __attribute__((weak)) void* __dso_handle = nullptr;
 // The pinned vendor toolchains are all built single-thread (--disable-threads), so
 // no reentrancy guard is needed for the single-threaded full-C++ opt-in (see the
 // design's "single-thread" caveat). Provide no-op weak stubs so a full-C++ app that
-// heap-allocates (operator new -> malloc) links; weak so a future thread-safe libc
-// port can override, and unreferenced (freestanding app) so it costs nothing.
+// heap-allocates (operator new -> malloc) links; weak (allowlisted in
+// tests/weak_allowlist.txt) so a future thread-safe libc port replaces them rather than
+// colliding, and unreferenced (freestanding app) so it costs nothing.
 //
 // FOOTGUN: these stubs stay no-ops because a correct guard is not expressible from
 // userspace as the ABI stands:

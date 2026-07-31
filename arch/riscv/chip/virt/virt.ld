@@ -155,6 +155,11 @@ SECTIONS
         *libkickos_lib.a:*(.data .data.*)
         . = ALIGN(4);
         _edata = .;
+    /* AT is load-bearing here and _sidata != _sdata is CORRECT: QEMU's ELF loader places
+       each segment at its PhysAddr, so .data's bytes really are at the LMA and the
+       Reset_Handler copy does real work. Do NOT add the _sidata == _sdata ASSERT the
+       esptool chip scripts carry: esptool elf2image builds from VMAs, which is why an AT
+       clause there left the copy reading unloaded memory. Loader-dependent, not arch. */
     } > RAM AT > RAM
 
     .bss (NOLOAD) : ALIGN(4)
@@ -252,6 +257,13 @@ SECTIONS
     . = ALIGN(16);
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
+
+    /* Chip memory extents read by the non-enforcing user-pointer admission
+       (arch_ram_common.cc). Symbols only, no layout effect. This chip executes FROM
+       RAM, so the rom range is empty and the sram range covers .text/.rodata. */
+    __kickos_rom_start = 0;
+    __kickos_rom_end = 0;
+    __kickos_sram_start = ORIGIN(RAM);
 
     /DISCARD/ : { *(.comment) *(.riscv.attributes) }
 }

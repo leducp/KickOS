@@ -7,7 +7,7 @@
 # silicon-observable on the operator's console. Enable with
 # -DKICKOS_CLOCK_RETUNE_TEST=ON. Only the two backends that strong-override
 # arch_cpu_clock_set (XMC4800, K64F) under enforcement -- elsewhere the retune is a
-# weak-default no-op and this harness would prove nothing.
+# fallback no-op and this harness would prove nothing.
 option(KICKOS_CLOCK_RETUNE_TEST "clockretune: privileged runtime clock-retune HW harness" OFF)
 if(NOT KICKOS_CLOCK_RETUNE_TEST)
   return()

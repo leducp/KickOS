@@ -16,7 +16,9 @@
 //   2. xmcssc_service -- the unprivileged driver thread: kos_recv a kos_bus_req,
 //      validate it, run the class transaction over the concatenated segment bytes,
 //      kos_reply a kos_bus_rsp. The reply cap is consumed on EVERY loop path.
-//   3. xmc_spi0_start -- the one-time bring-up (run from root) + endpoint + spawn.
+//   3. xmc_spi0_start, the endpoint + spawn shim. It touches no register: the channel
+//      is brought up by the driver thread itself, which is the only thread that can
+//      hold the U0C1 window.
 //
 // The data path is INTERNAL LOOP-BACK (DX0 = own transmitter, input "G", RM
 // 18.2.3.5): no external device on the bench, so rx == tx on-chip and SELO0 is armed
@@ -25,15 +27,17 @@
 // itself is proven on silicon by user/apps/xmccshold.
 //
 // Register split: the bring-up sets the kernel clock, baud profile (FDR/BRG), input
-// routing (INPR) and channel enable (CCR) once; the driver thread folds SCTR/TCSR/PCR
-// and runs the transfer. Everything sits inside the granted 0x200 window, but the split
-// is NOT merely placement: FDR/BRG/CCR are write-PV-only at the bus, and an
-// unprivileged write to them is silently discarded (no fault) -- measured on silicon by
-// user/apps/xmc4800-relax/pvprobe, docs/design-unprivileged-root.md section 9. So this
-// bring-up needs a privileged executor. CPOL/CPHA (BRG.SCLKCFG) are fixed to
-// SPI mode 0 at bring-up; a device profile therefore carries only bit order + word
-// size + the CS framing -- no per-device rate and no per-device CPOL/CPHA on this
-// chip (the internal loopback is phase-agnostic).
+// routing (INPR) and channel enable (CCR) once; the transaction engine folds SCTR/TCSR/
+// PCR per device. Everything sits inside the granted 0x200 window, but FDR/BRG/CCR are
+// write-PV-only at the bus and an unprivileged store to them is silently discarded with
+// no fault (measured: user/apps/xmc4800-relax/pvprobe), so those three go through
+// kos_periph_reg_write while the rest are direct stores. The bring-up READS them back:
+// a discarded store is invisible otherwise, and the channel would clock at whatever the
+// previous value implies.
+//
+// CPOL/CPHA (BRG.SCLKCFG) are fixed to SPI mode 0 at bring-up; a device profile
+// therefore carries only bit order + word size + the CS framing. No per-device rate and
+// no per-device CPOL/CPHA on this chip (the internal loopback is phase-agnostic).
 //
 // Register addresses / bit fields are clean-room from the XMC4700/XMC4800 Reference
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source.
@@ -48,6 +52,7 @@
 #include <kickos/sys/bytes.h>          // mem_copy
 #include <kickos/sys/spi_service.h>    // kickos::spi::serve_loop (shared choreography)
 #include <kickos/sys/driver_bringup.h> // kickos::driver::spawn_unprivileged
+#include <kickos/sys/emit.h>           // publish-aware write (kos_print is dropped once published)
 #include <kickos/io/mmio.h>            // r32
 
 #include <regs/usic.h> // shared XMC USIC register offsets + SSC bit fields
@@ -236,6 +241,79 @@ namespace
     // bring-up, taken ONCE by the app to delegate SIGNAL to its single client).
     // -1 = not up, or already taken.
     int g_spi0_ep = -1;
+
+    constexpr uint32_t FDR_WORD = FDR_DM_FRACTIONAL | FDR_STEP_367;
+    constexpr uint32_t BRG_WORD = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
+    constexpr uint32_t CCR_WORD = CCR_MODE_SSC | CCR_RIEN | CCR_AIEN;
+
+    // FDR/BRG read back exactly what was written apart from FDR.RESULT[25:16], which
+    // the fractional divider drives; BRG carries no read-only field in the bits this
+    // profile sets.
+    constexpr uint32_t FDR_RESULT_MASK = 0x03FF0000u;
+
+    // One PV-classified register: write it through the seam, then read it back. A
+    // dropped store leaves the register at its previous value and returns 0 from the
+    // store instruction, so the read-back is the only evidence either way.
+    bool priv_write_verify(uintptr_t win, uintptr_t offset, uint32_t value, uint32_t care)
+    {
+        if (kos_periph_reg_write(win, offset, value) != 0)
+        {
+            return false;
+        }
+        return (r32(win + offset) & care) == (value & care);
+    }
+
+    // One-time channel bring-up, run by the UNPRIVILEGED driver thread that holds the
+    // U0C1 window. Ordering is fixed by the RM: KSCFG first (with MODEN=0 the channel
+    // is inaccessible except through KSCFG), then every configuration register while
+    // CCR.MODE=0, then CCR last to enable the channel.
+    bool bring_up(uintptr_t win)
+    {
+        r32(win + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
+        // RM p.18-165: read KSCFG back before touching other USIC registers to flush
+        // the control-block pipeline; keep the volatile read from being elided.
+        uint32_t const kscfg_sync = r32(win + off::KSCFG);
+        __asm volatile("" : : "r"(kscfg_sync) : "memory");
+
+        if (not priv_write_verify(win, off::FDR, FDR_WORD, ~FDR_RESULT_MASK))
+        {
+            kickos::emit("[xmcssc] ERROR: FDR privileged write refused or discarded\n");
+            return false;
+        }
+        if (not priv_write_verify(win, off::BRG, BRG_WORD, 0xFFFFFFFFu))
+        {
+            kickos::emit("[xmcssc] ERROR: BRG privileged write refused or discarded\n");
+            return false;
+        }
+
+        // Seed only: the engine rewrites SCTR/PCR from the named device's profile at the
+        // head of every transfer, and an XFER on a slot with no CONFIG is refused, so no
+        // transfer ever runs on these values.
+        r32(win + off::SCTR) = SCTR_TRM_ACTIVE | (7u << SCTR_WLE_SHIFT) | SCTR_SDIR_MSB
+                             | (7u << SCTR_FLE_SHIFT);
+        r32(win + off::TCSR) = TCSR_BASE;
+        r32(win + off::PCR) = PCR_MSLSEN;
+        r32(win + off::PSCR) = PSCR_MSLS | PSCR_CLEAR_RX; // clear stale flags
+
+        // Internal loop-back: DX0 receives the channel's own transmitter (input "G")
+        // routed to the data shift unit. Input-stage config must be done while
+        // CCR.MODE=0 (RM p.18-57). No external device on the bench -> rx == tx.
+        r32(win + off::DX0CR) = DX0CR_INSW | DX0CR_DSEL_G;
+
+        // Route the receive / alternative-receive interrupts to service-request SR1
+        // (NVIC 85).
+        r32(win + off::INPR) = INPR_RINP_SR1 | INPR_AINP_SR1;
+
+        if (not priv_write_verify(win, off::CCR, CCR_WORD, 0xFFFFFFFFu))
+        {
+            kickos::emit("[xmcssc] ERROR: CCR privileged write refused or discarded\n");
+            return false;
+        }
+
+        // No IOCR pin-mux: the data path is internal loopback and SELO0 is never routed
+        // to a pin, so the IOCR escalation surface is not even touched.
+        return true;
+    }
 }
 
 extern "C"
@@ -248,26 +326,38 @@ extern "C"
     }
 
     // UNPRIVILEGED driver thread: owns the U0C1 window (spawn MMIO grant) + the USIC0
-    // SR1 IRQ (tier-1, registered here). The window base arrives as the arg VALUE
-    // (never dereferenced as memory). The delegated recv cap lands at child index 1.
+    // SR1 IRQ (tier-1, registered here) and runs the channel bring-up. The window base
+    // arrives as the arg VALUE (never dereferenced as memory). The delegated recv cap
+    // lands at child index 1. Diagnostics go through emit, not kos_print: the console is
+    // already USER_OWNED here, so the kernel chip path drops every byte.
+    //
+    // NO FAILURE PATH MAY kos_exit: root KEEPS a WAIT-bearing cap on E (it hands SIGNAL
+    // copies to clients), so recv_holders never reaches 0 when this thread dies and the
+    // last-receiver-gone -KOS_EPIPE wake never fires. A client parked in kos_call would
+    // then block forever. A bring-up refusal is a port/silicon fault, not a runtime
+    // condition, so the thread panics instead (as xmcspi/xmccshold do). serve_loop
+    // returns only after an EPIPE, which means no client is parked.
     void xmcssc_service(void* arg)
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
 
+        // BEFORE the CCR enable inside bring_up: CCR arms RIEN/AIEN, and NVIC 85 must
+        // already be owned when the first receive event can fire.
         int const h = kos_irq_register(USIC0_SR1_IRQ);
         if (h < 0)
         {
-            kos::print("[xmcssc] ERROR: irq_register(USIC0 SR1) failed\n");
-            while (true)
-            {
-                kos_sleep_ns(1000000000ull);
-            }
+            kos_panic("[xmcssc] irq_register(USIC0 SR1) failed");
+        }
+
+        if (not bring_up(win))
+        {
+            kos_panic("[xmcssc] channel bring-up refused (see the ERROR line above)");
         }
 
         UsicSscBus bus;
         bus.init(win, h);
 
-        kos::print("[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)\n");
+        kickos::emit("[xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)\n");
 
         kickos::spi::serve_loop(bus);
 
@@ -285,65 +375,15 @@ extern "C"
         uintptr_t const win_base = cfg->mmio_base;
         uint32_t const win_size = cfg->mmio_window;
         uint8_t const driver_prio = cfg->prio;
-        bool const cs_hw = (cfg->cs_policy == KOS_SVC_CS_HW);
 
-        // 1. One-time bring-up, run from the root/init thread: kernel clock gate,
-        //    baud (FDR/BRG), INPR routing, CCR enable. FDR/BRG/CCR are write-PV-only
-        //    at the bus, so this must run privileged: an unprivileged store to them is
-        //    silently discarded (docs/design-unprivileged-root.md section 9).
-        //    USIC0's module clock is already ungated by the console (U0C0)
-        //    bring-up. The SCU clock tree and the port IOCR pin-mux stay out of the
-        //    driver's window (the escalation surfaces the capability keeps out).
-        r32(win_base + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
-        // RM p.18-165: read KSCFG back before touching other USIC registers to flush
-        // the control-block pipeline; keep the volatile read from being elided.
-        uint32_t kscfg_sync = r32(win_base + off::KSCFG);
-        __asm volatile("" : : "r"(kscfg_sync) : "memory");
+        // No register access here. Root holds no DEV region at all
+        // (ARCH_MPU_DEV is attached only by thread_spawn), so the driver thread is the
+        // only thread that can address the channel; splitting the bring-up would leave
+        // a half its own caller cannot reach. USIC0's module clock is already ungated by
+        // the console (U0C0) bring-up. The SCU clock tree and the port IOCR pin-mux stay
+        // out of the driver's window.
 
-        // Baud generator (fractional divider + SSC bit-time dividers): set once here,
-        // fixed for the channel's life.
-        r32(win_base + off::FDR) = FDR_DM_FRACTIONAL | FDR_STEP_367;
-        r32(win_base + off::BRG) = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
-
-        // Initial shift + transmit + protocol config while the channel is disabled
-        // (CCR.MODE=0): the channel must be coherently configured before CCR enables it.
-        // The driver rewrites SCTR/PCR from the named device's profile inside every
-        // transfer, and refuses an XFER on a slot that has had no CONFIG, so this seed
-        // is never what a transfer runs on.
-        uint32_t sctr = SCTR_TRM_ACTIVE | (7u << SCTR_WLE_SHIFT) | SCTR_SDIR_MSB; // 8-bit MSB
-        uint32_t pcr = PCR_MSLSEN;
-        if (cs_hw)
-        {
-            sctr |= SCTR_FLE_63;
-            pcr = PCR_CS_HW;
-        }
-        else
-        {
-            sctr |= (7u << SCTR_FLE_SHIFT); // one 8-bit word per frame
-        }
-        r32(win_base + off::SCTR) = sctr;
-        r32(win_base + off::TCSR) = TCSR_BASE;
-        r32(win_base + off::PCR) = pcr;
-        r32(win_base + off::PSCR) = PSCR_MSLS | PSCR_CLEAR_RX; // clear stale flags
-
-        // Internal loop-back: DX0 receives the channel's own transmitter (input "G")
-        // routed to the data shift unit. Input-stage config must be done while
-        // CCR.MODE=0 (RM p.18-57). No external device on the bench -> rx == tx.
-        r32(win_base + off::DX0CR) = DX0CR_INSW | DX0CR_DSEL_G;
-
-        // Route the receive / alternative-receive interrupts to service-request SR1
-        // (NVIC 85). NVIC 85 stays masked until the driver's kos_irq_register, so no
-        // event is lost by arming at boot.
-        r32(win_base + off::INPR) = INPR_RINP_SR1 | INPR_AINP_SR1;
-
-        // Enable the channel + arm the receive interrupts in one CCR write (config
-        // now complete).
-        r32(win_base + off::CCR) = CCR_MODE_SSC | CCR_RIEN | CCR_AIEN;
-
-        // No IOCR pin-mux: the data path is internal loopback and SELO0 is never routed
-        // to a pin, so the IOCR escalation surface is not even touched.
-
-        // 2. Create the request endpoint E (full rights: WAIT|SIGNAL|TRANSFER). Root
+        // 1. Create the request endpoint E (full rights: WAIT|SIGNAL|TRANSFER). Root
         //    KEEPS this cap so the app -- same thread, same table -- can delegate a
         //    SIGNAL-narrowed copy to each client. g_spi0_ep records the handle.
         int const ep = kos_endpoint_create();
@@ -353,7 +393,7 @@ extern "C"
             return -1;
         }
 
-        // 3. Spawn the UNPRIVILEGED driver: granted the U0C1 window (R|W|DEV -- a real
+        // 2. Spawn the UNPRIVILEGED driver: granted the U0C1 window (R|W|DEV, a real
         //    per-thread capability on PMSA, reprogrammed every switch-in) and a WAIT-only
         //    recv cap on E (child index 1). No SIGNAL/TRANSFER on the child cap: the
         //    driver receives, it does not send or re-delegate. The USIC0 SR1 IRQ is

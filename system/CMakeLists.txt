@@ -37,7 +37,7 @@ add_library(kickos_default_init STATIC
   init/app_authority_default.cc)
 kickos_apply_freestanding(kickos_default_init)
 # It must NOT link kickos_core (that would force-include app.h with -Dmain and fire
-# app.h's weak-stamp block here). Give it just the include paths it needs: its own
+# app.h's build-stamp block here). Give it just the include paths it needs: its own
 # system/include (init.h) and user/include (app.h).
 target_include_directories(kickos_default_init PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/include"

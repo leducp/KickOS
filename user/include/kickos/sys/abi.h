@@ -65,8 +65,16 @@ enum kos_syscall_nr
     KOS_SYS_PERIPH_ENABLE = 39, // (base) -> 0, -KOS_EPERM (caller holds no window at that base),
                                 //   -KOS_EINVAL (no table entry), -KOS_ENOSYS (no backend).
                                 //   Gated on possession, not on an authority bit.
-    KOS_SYS_CAP_NARROW = 40    // (cap, mask) -> 0, -KOS_EBADF (bad cap), -KOS_EINVAL (not the
+    KOS_SYS_CAP_NARROW = 40,   // (cap, mask) -> 0, -KOS_EBADF (bad cap), -KOS_EINVAL (not the
                                //   authority cap). UNGATED: dropping authority needs none.
+    KOS_SYS_PANIC = 41,        // (msg) -> does not return. UNGATED: a thread that must
+                               //   abort has to be able to say why. msg is copied into
+                               //   kernel memory bounded + byte-checked; a message the
+                               //   kernel cannot read is replaced, never dereferenced.
+    KOS_SYS_PERIPH_REG_WRITE = 42 // (base, offset, value) -> 0, -KOS_EPERM (caller holds no
+                               //   window at that base), -KOS_EINVAL (base+offset is not on
+                               //   this chip's allowlist), -KOS_ENOSYS (no backend). Gated on
+                               //   possession of the block at `base`, not on an authority bit.
 };
 
 // `op` selector for KOS_SYS_GRANT_PROBE (self-test only). Values are a frozen

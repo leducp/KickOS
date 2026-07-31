@@ -49,7 +49,7 @@ Two things follow from this that are easy to get wrong:
 | [`design-rp2350-mpu-armv8m.md`](../design-rp2350-mpu-armv8m.md) | The ARMv8-M PMSAv8 MPU backend (`base`+`limit` + MAIR) behind the same seam |
 | [`design-teensy-rt1062.md`](../design-teensy-rt1062.md) | Teensy 4.1 / i.MX RT1062 bring-up (first M7) |
 | [`design-teensy-mpu-hang.md`](../design-teensy-mpu-hang.md) | Why an M7 stalled forever with no fault under enforcement, and the fixed-region wrap that fixed it |
-| [`design-m4-fable-review.md`](../design-m4-fable-review.md) | The adversarial review of the M4 design principles, with the verification outcomes |
+| [`design-m4-fable-review.md`](../design-m4-fable-review.md) | The adversarial review of the M4 design principles, with the verification outcomes. Doubles as the driver era's **risk register**: each finding events have tested carries an OUTCOME line (5 and 12 MATERIALISED as real defects; 4, 6 and 8 are OPEN and are M4.6.1 work, so re-read it at the top of that milestone) |
 
 ## ACTIVE
 
@@ -58,6 +58,7 @@ Two things follow from this that are easy to get wrong:
 | [`design-driver-era-scope.md`](../design-driver-era-scope.md) | The M4 gap list: what turns the M3 mechanisms into a fleet-wide capability. Section 4 records the milestone-ordering decision |
 | [`design-m4-driver-matrix.md`](../design-m4-driver-matrix.md) | The per-board peripheral survey and the complexity-vs-gain backlog that bounds M4's scope |
 | [`design-m4-driver-model.md`](../design-m4-driver-model.md) | How a driver is packaged: driver-lib class, service thread, or both (the ruling: both, service composed on the class) |
+| [`design-m4.6-irq-driver.md`](../design-m4.6-irq-driver.md) | DESIGN GATE for M4.6.1: an unprivileged driver owning an interrupt line -- `CAP_IRQ`, handover at spawn, reclaim on driver death, shared/grouped lines, and the buffered userspace UART on top |
 | [`design-kickcat-k64f.md`](../design-kickcat-k64f.md) | Running the KickCAT EtherCAT slave on KickOS. Sim stage landed; the K64F hardware path is still the plan |
 | [`design-unprivileged-root.md`](../design-unprivileged-root.md) | Root starts unprivileged holding capabilities instead of starting privileged and demoting -- and the boards where that does not work |
 

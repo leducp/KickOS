@@ -248,6 +248,12 @@ SECTIONS
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
 
+    /* Chip memory extents read by the non-enforcing user-pointer admission
+       (arch_ram_common.cc). Symbols only, no layout effect. */
+    __kickos_rom_start = ORIGIN(FLASH);
+    __kickos_rom_end = ORIGIN(FLASH) + LENGTH(FLASH);
+    __kickos_sram_start = ORIGIN(RAM);
+
     /* App code region for unprivileged threads (RX): the whole flash. SYSMPU is
        byte/32-granular (no pow2 rule), so this is start=0/end=1M-1. Lets an
        unprivileged thread fetch its code + read flash rodata via the core's code

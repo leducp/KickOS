@@ -592,7 +592,7 @@ uint64_t arch_clock_now(void)
     return kickos::arch_clk_mul_q32(ticks, MULT);
 }
 
-// Override the weak WFI idle. The tickless wakeup timer is SysTick, clocked off the
+// Replaces the WFI idle fallback. The tickless wakeup timer is SysTick, clocked off the
 // core clock -- which the RT106x halts under WFI, so SysTick stops counting and a
 // sleep with every thread idle never wakes (the GPT monotonic clock keeps running,
 // but it is not the wakeup source). Spin so the core clock, and thus SysTick, stays
@@ -621,7 +621,7 @@ int arch_reboot(void)
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RT1060 RM). Owns-for-life: the GPT1 monotonic time base and
 // the CCM (CCGR clock-gate roots). Bases are the constants above; sizes one 4 KB AIPS
-// slot each. M7 has NO bit-band, so arch_bitband_present keeps the weak 0 default.
+// slot each. M7 has NO bit-band, so arch_bitband_present keeps the fallback 0.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {

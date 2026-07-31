@@ -1,23 +1,30 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 USIC "PV write only" probe. The XMC4700/XMC4800 Reference Manual (V1.3,
-// 2016-07) Table 18-20 marks exactly three per-channel registers write-PV-only --
-// FDR (0x010), BRG (0x014), CCR (0x040) -- while every other register this project's
-// SPI bring-up touches (KSCFG 0x00C, INPR 0x018, DX0CR 0x01C, SCTR 0x034, TCSR 0x038,
-// PCR 0x03C, PSCR 0x04C) is U,PV for both read and write. The question this app
-// answers on silicon: when an UNPRIVILEGED thread holding an MPU grant for the channel
-// window writes FDR/BRG/CCR, does the write land, get dropped, or fault?
-// docs/design-unprivileged-root.md section 9 rests on the answer.
+// XMC4800 USIC "PV write only" probe, and the gate on the privileged-write seam that
+// answers it. The XMC4700/XMC4800 Reference Manual (V1.3, 2016-07) Table 18-20 marks
+// exactly three per-channel registers write-PV-only, FDR (0x010), BRG (0x014) and CCR
+// (0x040), while every other register this project's SPI bring-up touches (KSCFG
+// 0x00C, INPR 0x018, DX0CR 0x01C, SCTR 0x034, TCSR 0x038, PCR 0x03C, PSCR 0x04C) is
+// U,PV for both read and write.
+//
+// Everything runs in ONE unprivileged thread holding the channel grant, so the results
+// are directly comparable:
+//   * a DIRECT store to FDR/BRG/CCR must be DROPPED (the RM Table 18-20 reading);
+//   * the SAME register written through kos_periph_reg_write must LAND. Every pattern
+//     here is chosen inside the seam's per-entry value mask, so "landed exactly" stays
+//     a real observation rather than a mask artefact;
+//   * a value with a bit OUTSIDE that mask, on the same tabled register in the same held
+//     window, must be refused -KOS_EINVAL and leave the register UNCHANGED;
+//   * SCTR (U,PV) written directly must LAND. That is the POSITIVE control: it proves
+//     the grant and the MMIO path work, so a dropped store is about privilege;
+//   * an UNGRANTED SCU poke must MemManage. That is the NEGATIVE control, without which
+//     the MPU might not be enforcing and the run would say nothing.
+// The baseline value each direct store is compared against is itself installed through
+// the seam, so a "DROPPED" verdict cannot come from writing what was already there.
 //
 // The probe target is USIC0 channel 1 (0x4003_0200). U0C0 (0x4003_0000) is the console
 // UART: garbling it destroys the only output channel at the bench.
-//
-// Two controls decide whether a negative result means anything:
-//   * POSITIVE -- the same unprivileged thread writes SCTR (0x034, U,PV). If SCTR
-//     lands, the grant and the MMIO path demonstrably work.
-//   * NEGATIVE -- the thread ends on an UNGRANTED SCU poke. If that does not fault,
-//     the MPU is not enforcing and the run says nothing about privilege.
 //
 // Each write is announced BEFORE it is issued, so a bus fault identifies which
 // register faulted rather than losing the whole sequence.
@@ -51,8 +58,8 @@ namespace
     // Ungranted SCU clock-gate register (RM 11.*), the negative control.
     constexpr uintptr_t SCU_CGATCLR0 = 0x50004648u;
 
-    // Pattern A (what the unprivileged thread writes) and pattern B (what root leaves
-    // in place, so a dropped A is visible as an unchanged B).
+    // Pattern A (what the direct unprivileged store attempts) and pattern B (the
+    // baseline the seam installs first, so a dropped A is visible as an unchanged B).
     //
     // FDR: DM[15:14]=00B keeps the divider OFF so the read-only RESULT[25:16] field
     // cannot drift between the two reads; A and B differ only in STEP[9:0].
@@ -61,11 +68,16 @@ namespace
     // BRG: A and B differ only in PDIV[25:16].
     constexpr uint32_t BRG_A = 0x01550000u;
     constexpr uint32_t BRG_B = 0x02AA0000u;
-    // CCR: A selects SSC and arms the receive interrupts; B leaves MODE=0 (channel
-    // disabled). Nothing is ever loaded into TBUF here, so SSC mode stays inert and
-    // no signal is routed to a pin.
+    // CCR: A selects SSC and arms both receive interrupts; B leaves MODE=0 (channel
+    // disabled) and arms RIEN only, so A and B differ in MODE[3:0] and AIEN(15).
+    // Nothing is ever loaded into TBUF here, so SSC mode stays inert and no signal is
+    // routed to a pin; with MODE=0 pattern B can raise no receive event at all.
+    //
+    // Every pattern above lies inside the seam's per-entry value mask, which the seam
+    // refuses rather than silently trims. CCR's mask is MODE[3:0]|RIEN|AIEN, so
+    // CCR_TBIEN is NOT available as a pattern here; it is the out-of-mask probe below.
     constexpr uint32_t CCR_A = CCR_MODE_SSC | CCR_RIEN | CCR_AIEN;
-    constexpr uint32_t CCR_B = CCR_TBIEN;
+    constexpr uint32_t CCR_B = CCR_RIEN;
     // SCTR (the positive control): A and B differ in WLE[27:24], FLE[21:16] and SDIR.
     constexpr uint32_t SCTR_A = SCTR_WLE_8 | SCTR_FLE_8 | SCTR_TRM_ACTIVE | SCTR_SDIR_MSB;
     constexpr uint32_t SCTR_B = (3u << 24) | (3u << 16) | SCTR_TRM_ACTIVE;
@@ -83,20 +95,22 @@ namespace
         kos::print(s);
     }
 
-    // Privileged write + read-back: the reference for what a write that DID land looks
-    // like, reserved and read-only bits included.
-    void root_write(char const* reg, uintptr_t addr, uint32_t val)
+    // Write through the privileged-write seam + read back: the reference for what a
+    // write that DID land looks like, reserved and read-only bits included. The errno
+    // is reported so a refusal (-KOS_EPERM lost grant, -KOS_EINVAL off the allowlist,
+    // -KOS_ENOSYS no backend) is never read as a discarded store.
+    void seam_write(char const* reg, uintptr_t win, uintptr_t off_reg, uint32_t val)
     {
-        r32(addr) = val;
-        uint32_t const got = r32(addr);
-        char const* v = "exact";
-        if (got != val)
+        int const rc = kos_periph_reg_write(win, off_reg, val);
+        uint32_t const got = r32(win + off_reg);
+        char const* v = "DIFF (reserved/read-only bits)";
+        if (got == val)
         {
-            v = "DIFF (reserved/read-only bits)";
+            v = "exact";
         }
-        char s[112];
-        ksnprintf(s, sizeof(s), "[pvprobe] root %s: wrote=0x%x read=0x%x %s\n", reg,
-                  static_cast<unsigned>(val), static_cast<unsigned>(got), v);
+        char s[120];
+        ksnprintf(s, sizeof(s), "[pvprobe] seam %s: rc=%d wrote=0x%x read=0x%x %s\n", reg,
+                  rc, static_cast<unsigned>(val), static_cast<unsigned>(got), v);
         kos::print(s);
     }
 
@@ -132,15 +146,69 @@ namespace
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
 
         kos::print("[pvprobe] unprivileged probe up (granted U0C1 window 0x200)\n");
-        show("unpriv inherited", "FDR", r32(win + off::FDR));
-        show("unpriv inherited", "BRG", r32(win + off::BRG));
-        show("unpriv inherited", "CCR", r32(win + off::CCR));
-        show("unpriv inherited", "SCTR", r32(win + off::SCTR));
 
+        // KSCFG is U,PV: with MODEN=0 the channel is inaccessible for read AND write
+        // except through KSCFG, so a dropped write measured before this point would be a
+        // confound, not a result.
+        r32(win + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
+        // RM p.18-165: read KSCFG back before touching other USIC registers to flush the
+        // control-block pipeline; the barrier keeps the volatile read from being elided.
+        uint32_t const kscfg = r32(win + off::KSCFG);
+        __asm volatile("" : : "r"(kscfg) : "memory");
+        show("unpriv", "KSCFG", kscfg); // BPMODEN is a write-enable and reads back 0
+
+        kos::print("[pvprobe] baseline through the seam: pattern B\n");
+        seam_write("FDR", win, off::FDR, FDR_B);
+        seam_write("BRG", win, off::BRG, BRG_B);
+        seam_write("CCR", win, off::CCR, CCR_B);
+        r32(win + off::SCTR) = SCTR_B; // U,PV: a direct store is the baseline here
+
+        // Direct stores of pattern A. FDR/BRG/CCR must read back as B (dropped); the
+        // SCTR control must read back as A (landed).
         unpriv_write("SCTR[U,PV control]", win + off::SCTR, SCTR_A);
         unpriv_write("FDR[PV]", win + off::FDR, FDR_A);
         unpriv_write("BRG[PV]", win + off::BRG, BRG_A);
         unpriv_write("CCR[PV]", win + off::CCR, CCR_A);
+
+        // The same three registers, same thread, same window, through the seam: these
+        // must now read back as A.
+        kos::print("[pvprobe] pattern A through the seam (expect exact)\n");
+        seam_write("FDR", win, off::FDR, FDR_A);
+        seam_write("BRG", win, off::BRG, BRG_A);
+        seam_write("CCR", win, off::CCR, CCR_A);
+
+        // Out of MASK on an allowlisted register: CCR is tabled and this thread holds the
+        // window, but TBIEN(13) is outside CCR's granted MODE[3:0]|RIEN|AIEN. The seam
+        // must refuse the whole word instead of trimming it, so CCR still reads pattern A
+        // afterwards. A partial store would leave MODE set and TBIEN clear, which reads
+        // identically to a refusal without this read-back.
+        uint32_t const ccr_pre = r32(win + off::CCR);
+        int const off_mask = kos_periph_reg_write(win, off::CCR, CCR_MODE_SSC | CCR_TBIEN);
+        uint32_t const ccr_post = r32(win + off::CCR);
+        char const* mask_v = "CHANGED (value was not refused whole)";
+        if (ccr_post == ccr_pre)
+        {
+            mask_v = "unchanged";
+        }
+        char s1[128];
+        ksnprintf(s1, sizeof(s1),
+                  "[pvprobe] mask refusal: CCR|TBIEN rc=%d (want -%d), pre=0x%x post=0x%x %s\n",
+                  off_mask, KOS_EINVAL, static_cast<unsigned>(ccr_pre),
+                  static_cast<unsigned>(ccr_post), mask_v);
+        kos::print(s1);
+
+        // Off the allowlist: same held window, an offset the chip does not table. SCTR is
+        // U,PV, so a seam entry for it would be pointless, and its absence is exactly what
+        // the refusal contract is about.
+        int const off_list = kos_periph_reg_write(win, off::SCTR, SCTR_B);
+        // The sibling channel, whose window this thread does NOT hold: the possession
+        // gate must refuse before the chip table is consulted.
+        int const unheld = kos_periph_reg_write(U0C0_BASE, off::FDR, FDR_B);
+        char s2[120];
+        ksnprintf(s2, sizeof(s2),
+                  "[pvprobe] refusals: off-allowlist rc=%d (want -%d), unheld-window rc=%d (want -%d)\n",
+                  off_list, KOS_EINVAL, unheld, KOS_EPERM);
+        kos::print(s2);
 
         kos::print("[pvprobe] poking UNGRANTED SCU @ 0x50004648 (expect MPU FAULT)\n");
         uint32_t const leaked = r32(SCU_CGATCLR0);
@@ -150,37 +218,15 @@ namespace
                   "[pvprobe] UNGRANTED ACCESS DID NOT FAULT (SCU=0x%x): MPU not enforcing\n",
                   static_cast<unsigned>(leaked));
         kos::print(s);
-        while (true)
-        {
-            kos_sleep_ns(1000000000ull);
-        }
+        kos_panic("[pvprobe] isolation FAILURE: ungranted read landed");
     }
 }
 
 int main(int, char**)
 {
+    // No register access from root: it holds no DEV region, so a store here would
+    // MemManage before the probe ever ran.
     kos::print("[pvprobe] XMC4800 U0C1 PV-write probe (RM V1.3 Table 18-20)\n");
-
-    r32(U0C1_BASE + off::KSCFG) = KSCFG_MODEN | KSCFG_BPMODEN;
-    // RM p.18-165: read KSCFG back before touching other USIC registers to flush the
-    // control-block pipeline; the barrier keeps the volatile read from being elided.
-    // With MODEN=0 the channel is inaccessible for read AND write except KSCFG, so a
-    // dropped write measured before this point would be a confound, not a result.
-    uint32_t const kscfg = r32(U0C1_BASE + off::KSCFG);
-    __asm volatile("" : : "r"(kscfg) : "memory");
-    show("root", "KSCFG", kscfg); // BPMODEN is a write-enable and reads back 0
-
-    kos::print("[pvprobe] root baseline: pattern A\n");
-    root_write("FDR", U0C1_BASE + off::FDR, FDR_A);
-    root_write("BRG", U0C1_BASE + off::BRG, BRG_A);
-    root_write("CCR", U0C1_BASE + off::CCR, CCR_A);
-    root_write("SCTR", U0C1_BASE + off::SCTR, SCTR_A);
-
-    kos::print("[pvprobe] root reset: pattern B\n");
-    root_write("FDR", U0C1_BASE + off::FDR, FDR_B);
-    root_write("BRG", U0C1_BASE + off::BRG, BRG_B);
-    root_write("CCR", U0C1_BASE + off::CCR, CCR_B);
-    root_write("SCTR", U0C1_BASE + off::SCTR, SCTR_B);
 
     int const p = kos::thread::spawn(probe, reinterpret_cast<void*>(U0C1_BASE),
                                      "pvprobe", 10, KOS_POLICY_FIFO, 0,
@@ -191,7 +237,13 @@ int main(int, char**)
                                      U0C1_WINDOW);
     if (p < 0)
     {
-        kos::print("[pvprobe] ERROR: probe spawn failed\n");
+        // -KOS_EBUSY: a live domain already holds U0C1. The probe question (does an
+        // unprivileged HOLDER's PV write land?) is unanswerable without the grant. The
+        // kernel console path drops every byte once a driver has published, so the errno
+        // goes out through the panic path.
+        char e[64];
+        ksnprintf(e, sizeof(e), "[pvprobe] U0C1 probe spawn refused, errno %d", -p);
+        kos_panic(e);
     }
 
     // Park: fall back to a sleep park if the semaphore could not be created (else a -1

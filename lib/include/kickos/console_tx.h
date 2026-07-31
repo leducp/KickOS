@@ -69,7 +69,7 @@ void console_tx_isr(void);
 void console_tx_flush_sync(void);
 
 // Arch seam: a chip with a buffered console returns its backend + ring storage +
-// TX IRQ line here; the default (weak) returns null, leaving the console on the
+// TX IRQ line here; the fallback TU returns null, leaving the console on the
 // synchronous path (sim + polled-only chips). Called once by console_buffer_init.
 struct console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size,
                                                          int* irq_line);

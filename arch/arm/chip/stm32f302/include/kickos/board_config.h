@@ -29,8 +29,13 @@
 #ifndef KICKOS_MAX_HANDLES
 #define KICKOS_MAX_HANDLES 9
 #endif
+/* Every default stack here is bounded by the arena, which on 16 KiB is what is left
+   after the image's static footprint: KICKOS_MAX_THREADS x this size must still fit
+   past the two boot stacks (boot_arena.ld.h asserts it), so these are provisioning
+   facts, not comfort margins. Measured on silicon (paint-and-scan watermarks, whole
+   selftest suite): deepest pool worker 592 B, root 1048 B, idle 76 B. */
 #ifndef KICKOS_USER_STACK_SIZE
-#define KICKOS_USER_STACK_SIZE 2048
+#define KICKOS_USER_STACK_SIZE 1024
 #endif
 /* (f302 is not an enforcement target: its 16 KiB SRAM cannot hold the app-data
    block + arena. Default stacks are demand-allocated from the arena, not a pool.) */
@@ -38,7 +43,7 @@
 #define KICKOS_IDLE_STACK_SIZE 512
 #endif
 #ifndef KICKOS_ROOT_STACK_SIZE
-#define KICKOS_ROOT_STACK_SIZE 2048
+#define KICKOS_ROOT_STACK_SIZE 1536
 #endif
 
 #endif /* KICKOS_BOARD_CONFIG_H */

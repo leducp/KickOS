@@ -126,6 +126,24 @@ void kos_exit(int code) __attribute__((noreturn));
 // Privileged-only, so it is NOT noreturn: it returns -KOS_EPERM to a caller that may
 // not end the system, and does not return at all on success.
 int kos_shutdown(int status);
+
+// End the system through the kernel's panic path, printing `msg`: mask interrupts,
+// force the console back to a polled channel, flush, print KERNEL PANIC. Does not
+// return. Needs no authority.
+//
+// The reclaim to a polled channel happens on EVERY posture, not only after a console
+// handover: kpanic_enter reclaims from any state that is not already RECLAIMED, so a
+// thread holding the console window can garble the channel with no publish at all and
+// the banner still reaches the wire.
+//
+// This is the ONLY way an unprivileged thread can panic. The kernel's panic entry
+// touches kernel state no unprivileged thread may touch, so a thread that panics in
+// its own frame faults there instead and the message is lost.
+//
+// `msg` is copied into a bounded kernel buffer (longer messages are truncated) and
+// checked byte by byte, so an unreadable pointer costs the text, not the panic.
+void kos_panic(char const* msg) __attribute__((noreturn));
+
 void kos_irq_inject(int irq);
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -188,6 +206,18 @@ uint32_t kos_periph_clock_hz(uintptr_t base);
 // Returns 0, -KOS_EPERM (caller does not hold that window), -KOS_EINVAL (no entry for
 // that base, including bases the chip refuses), or -KOS_ENOSYS (no chip backend).
 int kos_periph_enable(uintptr_t base);
+
+// Write `value` to the register at `base + offset` PRIVILEGED, for the registers whose
+// WRITE side the bus classifies supervisor-only inside a window this thread legitimately
+// holds (XMC4800 USIC FDR/BRG/CCR). Such a store from an unprivileged thread is
+// SILENTLY DISCARDED by the bus, so a driver that needs one must come here.
+//
+// Authorised by possession, like kos_periph_enable: the caller must hold a live MMIO
+// grant whose base is exactly `base`. Possession is not blanket write access: the chip
+// carries an ALLOWLIST of (base, offset) pairs and everything else is refused.
+// Returns 0, -KOS_EPERM (caller does not hold that window), -KOS_EINVAL (base+offset is
+// not on the allowlist), or -KOS_ENOSYS (no chip backend).
+int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 
 // Drop authority: narrow the capability `cap` to `mask` (kos_cap_authority bits), which
 // can only CLEAR bits. A mask naming a bit the cap lacks does not add it. `cap` must be

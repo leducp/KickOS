@@ -15,7 +15,7 @@
 // -nographic -semihosting -kernel <elf>.
 //
 // Virtual board, no pads (semihosting console); arch_pinmux_set is intentionally
-// left as the weak ENOSYS seam.
+// left to the declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
@@ -205,7 +205,7 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 
 // --- C-runtime bring-up (called by _start in startup.S) ---------------------
 // A fault/panic on this QEMU target must EXIT with a status so a CTest run
-// catches it (no LED; the weak blink terminal would spin to a harness timeout).
+// catches it (no LED; the fallback blink terminal would spin to a harness timeout).
 void kfault_terminate(void)
 {
     arch_shutdown(132);

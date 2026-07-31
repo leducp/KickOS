@@ -17,13 +17,6 @@
 #include <kickos/kernel.h>
 #include <kickos/arch/arch.h>
 
-// Weak no-op defaults for the raw bottom edge. A chip backend with a known LED
-// provides strong overrides (arch/arm/chip/<chip>); a board without one -- or the
-// sim -- links these and the LED silently does nothing. Strong beats weak at link
-// regardless of archive order, so no ordering dependency.
-extern "C" __attribute__((weak)) void arch_diag_led_init(void) {}
-extern "C" __attribute__((weak)) void arch_diag_led_set(int) {}
-
 namespace kickos
 {
     namespace

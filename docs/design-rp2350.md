@@ -128,9 +128,10 @@ lowered. No PLL lock -> stay on clk_ref 12 MHz, UART on XOSC. The board always
 reaches a console.
 
 **Monotonic clock** = 64-bit TIMER0 microsecond counter (12.8), read via the
-non-latching `TIMERAWH/L` halves with a hi/lo/hi re-read (core-safe). Overrides the
-arch's weak DWT default -- TIMER0 is a true 64-bit source, no 32-bit wrap. TIMER0
-only counts once the TICKS TIMER0 generator (step 3) runs.
+non-latching `TIMERAWH/L` halves with a hi/lo/hi re-read (core-safe). `arch_clock_now`
+has no fallback TU -- every chip must define it; TIMER0 is a true 64-bit source, no
+32-bit wrap. The chip also defines `arch_trace_now` (`TIMERAWL`), displacing the armv7m
+DWT `CYCCNT` fallback. TIMER0 only counts once the TICKS TIMER0 generator (step 3) runs.
 
 ## UART0 console (datasheet 12.1)
 
@@ -146,7 +147,8 @@ RP2040 lesson).
 
 Diagnostic LED: **omitted**. The Waveshare Pi-Zero exposes only a WS2812 RGB LED
 (needs a PIO/bit-bang protocol, not a simple GPIO level). `arch_diag_led_*` keep
-their weak no-op defaults; a real WS2812 driver is a later, driver-era concern.
+their no-op fallbacks (`arch/common/arch_diag_led_{init,set}_default.cc`); a real WS2812
+driver is a later, driver-era concern.
 
 ## Interrupts
 

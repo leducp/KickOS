@@ -351,7 +351,7 @@ int arch_mpu_region_pow2(void)
 }
 
 // Rule 7 (arch.h): RISC-V has no Cortex-M bit-band alias, so the grant path never tests
-// an alias image here. Not weak: no ARM-common weak default exists in a RISC-V link.
+// an alias image here. No arch fallback TU exists in a RISC-V link.
 int arch_bitband_present(void)
 {
     return 0;
@@ -390,22 +390,18 @@ namespace
     volatile uint32_t g_irq_pending = 0;
 }
 
-// Forward decl: arch_irq_unmask redelivers a coalesced latch through this doorbell,
-// which is defined below.
+// The rv32imac chip hooks. Every fallback body lives in its own TU
+// (<symbol>_default.cc); this TU only calls them, so it needs the declarations.
+// arch_rv_inject_deliver is the doorbell arch_irq_unmask redelivers a coalesced latch
+// through; arch_rv_hw_{un,}mask reach a REAL controller line (interrupt matrix + PLIC)
+// from INSIDE the arch critical section; arch_rv_ext_eoi de-asserts a level source at
+// the head of the external-doorbell trap; arch_rv_has_mcounteren says whether the core
+// implements that CSR.
 void arch_rv_inject_deliver(int line);
-
-// Chip hook: route + enable a REAL hardware interrupt line at the controller (interrupt
-// matrix + PLIC). Weak no-op default -- software-injected lines (the doorbell) need no
-// per-line HW routing; the C6 overrides this for its UART0 TX-ring line.
-__attribute__((weak)) void arch_rv_hw_unmask(int line) { (void)line; }
-
-// Chip hook twin: disable a REAL hardware interrupt line at the controller. Weak no-op
-// default -- the software bitmask alone drops an injected raise, but a level-triggered
-// device source keeps re-asserting until the controller is told to mask it, so a driver's
-// mask-until-ack / spurious-handler mask must reach the HW once a real line exists (else a
-// storm). The C6 overrides arch_rv_hw_unmask for its UART0 TX-ring line; its counterpart
-// mask override lands with the 2nd real device line (see TODO fable finding 5).
-__attribute__((weak)) void arch_rv_hw_mask(int line) { (void)line; }
+void arch_rv_hw_unmask(int line);
+void arch_rv_hw_mask(int line);
+void arch_rv_ext_eoi(void);
+int arch_rv_has_mcounteren(void);
 
 void arch_irq_mask(int line)
 {
@@ -458,21 +454,6 @@ void arch_irq_clear_pending(int line)
     arch_irq_restore(s);
 }
 
-// The chip's delivery hook: raise the physical doorbell. Weak default = the virt
-// SSIP path; the ESP32-C6 overrides it (interrupt matrix FROM_CPU source). Keeping
-// the default here means the qemu-virt inject path is byte-for-byte unchanged.
-__attribute__((weak)) void arch_rv_inject_deliver(int line)
-{
-    (void)line; // ONE doorbell for all lines; the trap reads g_inject_line
-    __asm volatile("csrs mip, %0" ::"r"(MIP_SSIP) : "memory");
-}
-
-// The chip's end-of-interrupt hook, run at the head of the external-doorbell trap
-// (.Lext) BEFORE the line's ISR, so a level-triggered source is de-asserted and does
-// not re-fire on mret. Weak no-op default (the virt SSIP path clears its own pending
-// in kickos_rv_dispatch_soft; the C6 overrides this).
-__attribute__((weak)) void arch_rv_ext_eoi(void) {}
-
 void arch_irq_inject(int irq)
 {
     if (irq < 0 or irq >= 32)
@@ -518,11 +499,6 @@ void kickos_rv_ext_dispatch(void)
         kickos_isr_irq(line);
     }
 }
-
-// Real-device external dispatch (switch.S .Lextdev), ISR context. Weak no-op default
-// (qemu-virt routes no real device to KICKOS_RV_DEV_CPU_INT); the C6 overrides it to ack
-// its level source and run the device line's ISR.
-__attribute__((weak)) void kickos_rv_ext_dispatch_dev(void) {}
 
 // --- Idle -------------------------------------------------------------------
 void arch_idle_wait(void)
@@ -607,12 +583,6 @@ void kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
 #endif
     kfault_terminate();
 }
-
-// Whether this core implements the mcounteren CSR. Weakly true (SiFive/QEMU virt);
-// a chip whose core traps on `csrw mcounteren` (e.g. the ESP32-C6 HP core) overrides
-// this to 0 so bring-up skips the write instead of taking an illegal-instruction
-// trap into the not-yet-usable handler.
-__attribute__((weak)) int arch_rv_has_mcounteren(void) { return 1; }
 
 // --- One-time core bring-up, called by the chip's arch_init -----------------
 // The chip has already set g_clint_msip (+ its timer base). Install the single

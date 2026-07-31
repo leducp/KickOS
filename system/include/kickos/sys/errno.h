@@ -30,7 +30,7 @@ enum kos_errno
     KOS_EINVAL = 22,     // malformed argument: bad prio/stack/mask/count/irq line/alignment/size
     KOS_EPIPE = 32,      // endpoint has no receiver (dead), or the last one left while parked
     KOS_EDEADLK = 35,    // self/recursive lock, or a lock that would close a wait cycle
-    KOS_ENOSYS = 38,     // syscall/arch backend not implemented on this chip (weak-seam default)
+    KOS_ENOSYS = 38,     // syscall/arch backend not implemented on this chip (the declining fallback)
     KOS_EOVERFLOW = 75,  // a bounded counter is at its ceiling; the op is refused, not wrapped
     KOS_EOWNERDEAD = 130 // mutex ACQUIRED but the prior owner died holding it (state may be torn)
 };

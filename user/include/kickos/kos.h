@@ -290,8 +290,8 @@ namespace kos::thread
 
     // Delegate a fixed cap list to the child (B1: cap i -> child index i+1). The
     // common cross-thread-sem shape: a child that must wait/post sems the parent owns.
-    // Covers the extra args the caps-using workers need (privileged rr/stress workers;
-    // a shared mem grant for the domain test).
+    // Covers the extra args the caps-using workers need (a shared mem grant for the
+    // domain test).
     inline int spawn_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
                           kos_cap_grant const* caps, uint8_t cap_count,
                           uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,

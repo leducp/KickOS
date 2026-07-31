@@ -90,10 +90,9 @@ namespace
 
 extern "C"
 {
-    // Core clock in Hz. The chip backend defines the strong symbol and updates it at
-    // PLL bring-up; this weak 0 is the fallback for the sim (no chip clock) -- unused
-    // there anyway, since sim reports throughput only (no cycle->ns conversion).
-    uint32_t __attribute__((weak)) SystemCoreClock = 0;
+    // Core clock in Hz, defined and maintained by the chip backend at PLL bring-up.
+    // The sim has no chip: arch/sim/system_core_clock_default.cc carries its 0.
+    extern uint32_t SystemCoreClock;
 
     // Attach the bench handler to a spare line + unmask it (call once). The bench
     // app activates no other IRQ source, so any line the console does not own is free.

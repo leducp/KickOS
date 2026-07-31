@@ -10,9 +10,8 @@
 // ARG, by value, and derives both cells from it. The only memory it touches is its code
 // (flash, granted RX), region A (granted), and its own stack.
 //
-// The arg is a value, not a struct in region A: under KICKOS_ROOT_PRIVILEGED=0 root is
-// not granted A, so filling a struct there would fault in root during setup and prove
-// nothing about the child.
+// The arg MUST be a value, not a struct in region A: root is not granted A, so filling a
+// struct there faults in root during setup and proves nothing about the child.
 //
 // Where the MPU is a no-op (privilege-only boards) the cross-domain write COMPLETES and
 // the app ends via the "no enforcement" path, which is expected, not a failure.
