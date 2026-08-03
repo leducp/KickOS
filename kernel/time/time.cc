@@ -21,8 +21,8 @@ namespace kickos
 {
     namespace
     {
-        // Sorted (ascending deadline) singly-linked list of sleeping threads,
-        // rooted at kernel().sleepq.
+        // Sorted ascending by deadline, singly-linked through tnext, rooted at
+        // kernel().sleepq.
 
         void sleepq_insert(Thread* t)
         {
@@ -87,17 +87,19 @@ namespace kickos
 
         if (next == UINT64_MAX)
         {
-            arch_timer_disarm(); // tickless: nothing pending
+            arch_timer_disarm();
             return;
         }
 
-        // Minimum-delta guard: never arm a compare that may already be in the past.
-        uint64_t now = ktime_now();
-        uint64_t floor = now + KICKOS_TIMER_MIN_DELTA_NS;
-        if (next < floor)
-        {
-            next = floor;
-        }
+        // NO min-delta floor here, deliberately. This runs on EVERY context switch, and a
+        // floor re-derived from the clock would make `next` a different value on every
+        // call, which is the quantity the backends dedup their arm on. The dedup would
+        // never hit, the one-shot would restart from zero before reaching its compare, and
+        // a deadline inside the min-delta window would starve for as long as switches keep
+        // arriving. The floor belongs where the deadline is BORN, against ONE clock
+        // reading: ktime_sleep_until below for a sleeper, arm_slice for an RR quantum.
+        // An already-past deadline is an immediate fire; each backend floors its programmed
+        // delta at one tick to get that.
         arch_timer_arm(next);
     }
 
@@ -105,18 +107,24 @@ namespace kickos
     {
         IrqLock lock;
         Thread* c = sched::current();
+        // The floor is applied HERE, once, against one clock reading. See ktime_rearm.
+        uint64_t const floor = ktime_now() + KICKOS_TIMER_MIN_DELTA_NS;
+        if (deadline_ns < floor)
+        {
+            deadline_ns = floor;
+        }
         c->deadline_ns = deadline_ns;
         c->state = ThreadState::SLEEPING;
         sleepq_insert(c);
         ktime_rearm();
-        sched::block_current(); // drops from run set + reschedules; returns on wake
+        sched::block_current(); // returns on wake
     }
 
     void ktime_sleep_ns(uint64_t ns)
     {
-        // sleep(0) == yield: relinquish and return, do NOT park. Deliberately NOT
-        // extended to 0 < ns < min-delta -- those still round UP to the min slice:
-        // a delay promises time off-CPU, whereas yield() returns at once with no peer.
+        // sleep(0) yields instead of parking. Deliberately NOT extended to
+        // 0 < ns < min-delta, which still rounds UP to the min slice: a delay promises time
+        // off-CPU, whereas yield() returns at once when there is no peer.
         if (ns == 0)
         {
             sched::yield();
@@ -138,16 +146,18 @@ namespace kickos
         IrqLock lock;
         uint64_t now = ktime_now();
 
-        // Wake every sleeper whose deadline has passed.
+        // MUST precede the wake loop: sched::wake reassigns kernel().current and tick_rr
+        // reads it, so running it after silently drops any slice expiry landing on the same
+        // interrupt as a sleeper wake. On a coarse clock the two deadlines quantise
+        // together, so that is the common case, not a corner.
+        sched::tick_rr(now);
+
         while (kernel().sleepq != nullptr and kernel().sleepq->deadline_ns <= now)
         {
             Thread* t = kernel().sleepq;
             sleepq_remove(t);
-            sched::wake(t); // readies + reschedules (deferred in ISR ctx)
+            sched::wake(t);
         }
-
-        // Round-robin slice accounting for the running thread.
-        sched::tick_rr(now);
 
         ktime_rearm();
     }
