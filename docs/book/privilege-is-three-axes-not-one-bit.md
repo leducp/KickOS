@@ -45,8 +45,8 @@ hardware, not a law:
   support whatsoever.
 - **A chip with no protection unit** makes axis 2 vacuous while axes 1 and 3 stay
   perfectly real.
-- **A thread holding the right capability** can have axis 3 without either of the
-  other two -- which is the whole point of the authority capability below.
+- **A thread holding the right authority bits** can have axis 3 without either of the
+  other two -- which is the whole point of the authority word below.
 
 So the first job is to take the three apart and say which mechanism carries which.
 Everything else in this chapter follows from that split.
@@ -162,22 +162,24 @@ thread that needs to mux one pin at boot gets clock retuning and the console too
 it lasts exactly as long as the thread does; it cannot be narrowed, handed on in
 part, or inspected as anything other than "yes to everything".
 
-**A flag word on the thread.** One bit per authority on the TCB instead of one bit
-for all of them, checked per gate.
-This buys narrowing, and it is genuinely most of the win. What it does not buy is a
-*name*: the bits are ambient properties of a thread, so there is no way to hand a
-subset to somebody else, no place for the narrow-only rule to be enforced uniformly,
-and a second parallel authority model living beside the capability table that
-already exists for objects.
+**A bare flag word on the thread.** One bit per authority on the TCB instead of one
+bit for all of them, checked per gate. This buys narrowing, and narrowing is genuinely
+most of the win. What a *bare* word does not buy is any rule about how the bits
+travel: they are ambient properties of a thread, so nothing says a child may not be
+created holding more than its parent, nothing says the set only ever shrinks, and every
+gate is free to read the word its own way and get it subtly wrong in one place out of
+nine.
 
 **A capability.** The system already names authority-bearing things per task, with a
 rights field, a narrow-only delegation rule, and one resolve chokepoint (Chapter 8.1,
-*[Naming a kernel object](handles-and-the-resolve-chokepoint.md)*). Putting the
-authorities in that machinery makes them values the kernel can read, narrow, and
-refuse to copy, under rules that are already written and already audited.
+*[Naming a kernel object](handles-and-the-resolve-chokepoint.md)*). Adopting that
+machinery would inherit those rules -- already written, already audited -- rather than
+inventing a second set beside it.
 
-KickOS takes the third. Its mechanism gets a section of its own below; first, what
-happens to the flag.
+KickOS takes the second, under the third's rules, and the section below is about why
+that is a synthesis rather than a compromise: the discipline is the valuable half of
+the capability answer, and it turns out not to need the table. First, what happens to
+the flag.
 
 ## What carries what, after the split
 
@@ -185,7 +187,7 @@ happens to the flag.
 |---|---|---|---|
 | CPU mode | the fabricated first frame (per ISA) | once, at thread creation | no |
 | Memory posture | the thread's composed MPU region set | once, at thread creation | no |
-| Authority | an authority word in a capability | at creation, narrowable | yes |
+| Authority | an authority word on the thread | at creation, narrowable | yes |
 
 `Thread::privileged` survives the split with a narrowed meaning. It still selects the
 memory posture, it is still the confused-deputy bypass, and it stays the home for one
@@ -272,7 +274,7 @@ because whether it sleeps, no-ops or traps is a per-platform choice.
 An unprivileged idle would therefore have to trap into the kernel on every iteration just
 to sleep the core, which inverts the point of the cheapest loop in the system. So `idle`
 stays a kthread on hardware grounds, and it is a well-behaved one: it holds no
-authority capability, touches no application memory, and is the smallest possible
+authority, touches no application memory, and is the smallest possible
 body of code to have on the wrong side of the boundary. Every *other* privileged
 thread is a choice somebody made, and choices are the ones worth auditing.
 
@@ -298,53 +300,75 @@ property of the image.
 It also makes the direction one-way, which is the right direction to be one-way in:
 confinement, once entered, is not exitable.
 
-## The authority capability: shape and seat
+## The authority word: shape and seat
 
 The mechanism for axis 3, concretely.
 
-**One type, at an index that already existed.** `CapType::CAP_AUTHORITY` is seated at
-a *reserved* well-known capability index (`KOS_CAP_AUTHORITY`,
-`system/include/kickos/sys/cap_index.h`), which was already held back for a
-well-known service cap. Seating it there is what makes it cost **zero dynamic handle
-slots on every board**, including the four whose tables hold only nine handles. That
-arithmetic is the reason it is an authority-bearing capability at a reserved index
-rather than a new object type with a pool: a board that cannot spare one dynamic slot
-can still carry the whole authority model.
+**A byte on the thread, in padding that already existed.** The authority word is one
+`uint8_t` on the TCB, sited in alignment padding the struct was carrying anyway. It
+costs zero bytes per thread and zero capability-table slots. That arithmetic matters
+more than it sounds at the bottom of the fleet, where a whole per-task table is seven
+handles: spending one of them on authority would be spending it on every board, in
+every thread, for the life of the system, to hold eight bits -- and the parts that can
+least afford it are exactly the ones a bring-up task runs on.
 
-**Poolless.** There is no object behind this capability and no refcount, because the
-capability *is* its authority word. It therefore resolves by reading its reserved slot
-and type-checking the entry, never through the object-resolving path (which would take
-that word for a pool handle and correctly hand back nothing). What a type with no
-object side does to the object-side lifecycle recipe is Chapter 8.2's fact, not this
-chapter's:
-*[Adding a kernel object type](adding-a-kernel-object-type-the-additive-recipe.md)*.
+**Why not a capability, with the capability machinery right there.** A capability
+*names* something. Its table entry is eight bytes because it has to carry a
+generational handle into an object pool, a type, a rights byte and a generation, and
+those fields exist to answer one question: is the thing this entry names still the
+thing it named when you were given it? Authority asks no such question. It names no
+object, so there is no handle. Nothing can free it out from under its holder, so there
+is no refcount and no generation to bump. Delete the fields that do not apply and what
+is left is a rights byte with nothing behind it -- eight bits in an eight-byte costume,
+paying a well-known index on every board to hold what a spare byte on the thread holds
+for nothing.
 
-**The authority word lives where an object handle would.** `CapEntry` is a frozen
-eight bytes: an object handle, a type, a rights byte, a generation. The rights byte is
-the tempting home for authority bits and the wrong one. Three of its bits are already
-spent on object rights (`CAP_WAIT`, `CAP_SIGNAL`, `CAP_TRANSFER`), so it could hold at
-most five authorities for the life of the type, and a sixth would have to come from
-merging two -- fusing precisely the powers that were worth separating. The way out is
-a property of the type rather than of the byte: a poolless capability names no object,
-so its handle field means nothing, and an unused field in a frozen struct is free
-width. The authority word goes there, and the rights byte of such an entry is empty.
-The struct does not grow, the authority set is not capped at five, and the two
-families end up in separate fields with separate numbering -- so nothing has to keep
-an object right and an authority from colliding, a rule that would otherwise have to
-be remembered at every future addition. What bounds the width instead is the spawn
-parameter that carries an authority mask to a child; the exact width is
+And the fields that do not apply are not merely idle, which is the sharper half of the
+argument. A structure carries its own hazards, and delegation is where they bite:
+spawn copies a source entry's handle and type into the child verbatim, filtered by a
+rights bit, because for a real capability that copy *is* delegation. An authority entry
+travelling that path would arrive in the child as a seat the parent never granted, so
+the design would have to grow a refusal at that one site and then keep it -- a rule to
+be re-derived every time the delegation loop is touched, guarding against a copy that
+is only meaningful for the types it is not. With the word off the table there is no
+entry, so there is nothing for the copy to copy. **The cheapest way to close a forgery
+path is to not have the field.**
+
+That generalises into a test worth running before putting anything in a capability
+table: does this thing name something whose liveness the holder could otherwise get
+wrong? If it does not, the table is charging you its costs -- an index, a copy path, a
+type arm in every switch -- and handing back none of its properties.
+
+**The discipline travels without the table.** What made the capability answer
+attractive was never the eight bytes. It was three rules, and each applies to a plain
+field unchanged:
+
+- *A value, not an identity.* The word is data, so there is an operation that takes
+  some of it away. A boolean has nothing to take.
+- *Monotone in both directions.* A spawn may seat a word on a child, and the kernel
+  refuses any bit the parent does not itself hold; a narrow applies `word &= mask`,
+  which can only clear. Authority shrinks on the way down and on the way forward, and
+  never widens on either -- the same rule a delegated rights mask obeys.
+- *One chokepoint.* Every gate is a single call, so the answer is computed in one
+  place; see below.
+
+The one thing the table would have supplied for free is a *name* -- a handle userspace
+can pass in. Narrowing needs one, so the ABI keeps a **pseudo-handle**: a constant that
+names the authority word and nothing else, chosen as a value the handle codec provably
+cannot produce, so no real capability can ever be mistaken for it and it can never be
+mistaken for one. One constant, and a call site that narrows an authority reads exactly
+like a call site that narrows a capability.
+
+**Separate fields, separate numbering.** Object rights and authorities are different
+enums in different structures. That is a small thing that pays every time either set
+grows: nothing has to keep the two families disjoint, and no addition to one has to be
+checked against the other. Sharing a byte with the object rights is the tempting
+arrangement and the wrong one -- three of its bits are already spent (`CAP_WAIT`,
+`CAP_SIGNAL`, `CAP_TRANSFER`), so the authority set would be capped at five for the
+life of the type, and the sixth would have to come from merging two, fusing precisely
+the powers that were worth separating. What bounds the width here instead is the byte
+itself and the spawn parameter that carries a mask to a child; the exact width is
 [`../reference/architecture.md`](../reference/architecture.md).
-
-**The price of a field that means two things.** Reading a field whose meaning depends
-on the type is safe everywhere the reader dispatches on the type first. There is one
-place that does not, and it is the whole cost of the arrangement: the delegation site
-copies a source entry's handle and type *verbatim*, filtered only by a rights bit. A
-capability whose authority lives in the rights byte survives that copy inert, because
-the copy carries none of it; a capability whose authority lives in the handle field
-arrives in the child's table as a forged seat, word and all. So that one site refuses
-the *type* outright, ahead of any rights test. The transferable form of this: the
-price of overloading a field is not paid where the field is read, it is paid where
-something copies the field without reading it.
 
 **Class granularity, forced by arithmetic rather than taste.** The alternative was a
 capability per muxable pin, per clock, per line. The larger parts in the fleet have on
@@ -352,23 +376,24 @@ the order of a hundred muxable pins against a sixteen-slot table ceiling. It doe
 fit, and it does not nearly fit, so one bit per authority *class* is not a
 simplification anyone chose for elegance.
 
-**Non-delegable, by the type and not merely by a missing bit.** The delegation site
-refuses a `CAP_AUTHORITY` source outright, so an authority capability cannot be copied
-into a child's table by any path. It is *also* seated with an empty rights byte, so it
-carries no `CAP_TRANSFER` and would fail that site's other test as well -- but the
-type refusal is the one that does not depend on the contents of a field. The reserved
-index has exactly one writer, the kernel, which closes the forgery question completely
-rather than arguing about it. Authority reaches a child only as a mask on the spawn
-that creates it.
+**Non-delegable, and not by a rule anyone has to remember.** An authority word is not
+in a child's table because it is in nobody's table: there is no entry for a delegation
+to copy, and no rights bit that could have made one copyable. A child's word comes from
+exactly one place -- the mask on the spawn that creates it -- and the kernel is its only
+writer. Structural impossibility is worth more than a correct refusal, because a
+refusal is a line of code that a later reader can find redundant and delete.
 
 **One question at every gate.** Every gate asks
 `cap_check_authority(caller, AUTH_x)`, which is true when the caller is privileged
 **or** holds that bit. "Privileged implies every authority" is therefore stated once,
-inside that function, instead of once per call site -- and the conversion
-is behaviour-neutral by construction, since a privileged caller takes the same arm it
-always took. That property matters more than it sounds: it means every one of the
-sites is exercised by the existing fleet *before* anything depends on the new
-arm, instead of shipping unexercised until the first thing that needs it.
+inside that function, instead of once per call site. Two things fall out of that. The
+set of authority decisions in the kernel is enumerable by grepping one name, which is
+the only way a claim like "these are all the gates" gets checked rather than asserted
+-- and a count that was right the day it was written is exactly what lets the next
+decision hide. And a privileged caller takes the same arm it would have taken with no
+authority bits in the system at all, so every gate is exercised by the whole fleet from
+the moment it is written, instead of lying unexercised until the first thing that needs
+the other arm.
 
 ## Why this is worth doing at all: revocation
 
@@ -382,12 +407,12 @@ the entire run of the application, including every path through application code
 has since gone wrong. There is no operation that takes it away, because there is
 nothing to take away: the bit *is* the thread's identity.
 
-An authority carried in a capability's authority word is a value. Dropping one is a
-mask applied to a single table entry, which is a small operation precisely *because*
-the authority was made into data. The holder names its own capability and hands in a
-mask; the mask can only clear bits, and a mask that clears the last one empties the
-slot. The kernel refuses the corresponding gate afterwards, and it refuses it
-uniformly, because the gate was already asking the capability rather than the thread.
+An authority carried in a word is a value. Dropping one is a mask applied to a single
+byte, which is a small operation precisely *because* the authority was made into data.
+The holder names its own word by the pseudo-handle and hands in a mask; the mask can
+only clear bits. The kernel refuses the corresponding gate from that instant, and it
+refuses it uniformly, because every gate was already reduced to the same question asked
+in the same place.
 
 That narrowing call is itself **ungated**, which looks like a hole and is the only
 coherent choice: an authority required in order to drop authorities could never be
@@ -400,7 +425,7 @@ The narrow-only rule that makes this safe is not machinery of its own either -- 
 the same monotone rule the object capabilities use. A spawn may seat an authority word
 on the child, and the kernel refuses any bit the parent does not itself hold:
 authority narrows on the way down and never widens, exactly like a delegated rights
-mask. One rule, both capability families, checked in one place.
+mask. One rule, both families, checked in one place.
 
 And that is the difference the whole exercise buys. Without a droppable authority, an
 unprivileged application thread can still ask the kernel for every one of those acts,
@@ -552,9 +577,9 @@ Three, in the order they bite:
   [*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md).
 - Why the permissive privileged background is not free even for the kernel:
   Chapter 7.6, *[The CPU reads ahead](memory-types-and-speculative-access.md)*.
-- The capability machinery axis 3 rides on: Chapter 8.1,
-  *[Naming a kernel object](handles-and-the-resolve-chokepoint.md)*, and the
-  object-side recipe a poolless type bends: Chapter 8.2,
+- The capability machinery axis 3 borrows its discipline from: Chapter 8.1,
+  *[Naming a kernel object](handles-and-the-resolve-chokepoint.md)*, and what actually
+  goes in that table, one type at a time: Chapter 8.2,
   *[Adding a kernel object type](adding-a-kernel-object-type-the-additive-recipe.md)*.
 - The exact contracts: [`../reference/architecture.md`](../reference/architecture.md)
   ("User/kernel separation", "Memory domains", "Object model, capabilities & IPC") and

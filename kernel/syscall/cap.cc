@@ -6,12 +6,16 @@
 // destroy-on-last-close. slotpool.h stays generic: refs[] lives here.
 
 #include <kickos/cap.h>
+#include <kickos/console_tx.h> // console_note_driver_death
 #include <kickos/instance.h>
+#include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 
 #include <kickos/sys/errno.h>
+
+#include <string.h>
 
 namespace kickos
 {
@@ -23,13 +27,22 @@ namespace kickos
         // of every child. See docs/design-m3-console-handover-stageii.md (D3/D4/S3).
         int g_stdout_target = -1;
 
-        // The CapAuthority word of an entry already TYPE-TESTED as CAP_AUTHORITY: that
-        // type names no pool object, so `obj` carries the authority instead. Both callers
-        // check the type first: reading it off any other type is a bug.
-        uint8_t authority_word(CapEntry const& e)
-        {
-            return static_cast<uint8_t>(e.obj);
-        }
+        // Threads inside cap_teardown right now. A count, not a flag: an RR slice expiring
+        // in sched::tick_rr can switch a dying thread out at a chunk boundary and a second
+        // thread can then enter and finish its own sweep first. Gates the console reclaim,
+        // which must not run while ANY dying thread might still hold an IRQ cap on the line.
+        unsigned g_teardown_depth = 0;
+
+        // One flat .bss array carved into fixed-class runs at boot. A class's free list is
+        // threaded THROUGH THE FREE RUNS THEMSELVES, so there is no side table; the assert
+        // below is what keeps an entry wide enough to hold the link.
+        CapEntry g_cap_slab[kcap_slab_entries()];
+        CapEntry* g_cap_free[KCAP_CLASSES_LIVE] = {};
+
+        static_assert(sizeof(CapEntry) >= sizeof(void*),
+                      "a free run must be able to hold its own free-list link");
+
+        CapEntry** run_link(CapEntry* run) { return reinterpret_cast<CapEntry**>(run); }
 
         // Slot index of the semaphore a global handle names (via the live object, so
         // the SlotPool handle codec is never assumed here). -1 if it does not resolve.
@@ -43,11 +56,10 @@ namespace kickos
             return static_cast<int>(s - kernel().sems.at(0));
         }
 
-        // Drop one reference to semaphore `obj_handle`; free it at refs -> 0. `teardown`
-        // = the noreturn exit path: it must never strand a parked waiter, so a would-be
-        // free with waiters still linked LEAKS (floors refs at 1). That branch is
-        // unreachable via close today (a parked waiter pins its own cap => refs >= 1),
-        // so it asserts teardown. Same accounting shape every future pool's arm mirrors.
+        // Drop one reference to semaphore `obj_handle`; free it at refs -> 0. `teardown` is
+        // the noreturn exit path, which must never strand a parked waiter, so a would-be free
+        // with waiters still linked LEAKS (floors refs at 1). That branch is unreachable via
+        // close, since a parked waiter pins its own cap, hence the assert.
         void sem_ref_drop(int obj_handle, bool teardown)
         {
             int const idx = sem_index_of(obj_handle);
@@ -85,13 +97,11 @@ namespace kickos
             return static_cast<int>(m - kernel().mutexes.at(0));
         }
 
-        // Drop one reference to mutex `obj_handle`; free at refs -> 0. Same accounting
-        // shape as sem_ref_drop, same leak-don't-strand guard: refs -> 0 with a waiter
-        // still parked is unreachable via close (a parked waiter is BLOCKED, cannot run
-        // handle_close, so its own cap pins refs >= 1), so it asserts teardown and
-        // leaks rather than stranding. R4: refs -> 0 also implies owner == nullptr (an
-        // owner's own cap pins a ref via the R2 close guard, and R3 force-unlocked
-        // before this drop on the exit path). Assert it.
+        // Drop one reference to mutex `obj_handle`; free at refs -> 0. Same leak-don't-strand
+        // guard as sem_ref_drop: refs -> 0 with a waiter still parked is unreachable via close,
+        // because a parked waiter is BLOCKED and cannot run handle_close. R4: refs -> 0 also
+        // implies owner == nullptr, since an owner's own cap pins a ref via the R2 close guard
+        // and R3 force-unlocked before this drop on the exit path.
         void mutex_ref_drop(int obj_handle, bool teardown)
         {
             int const idx = mutex_index_of(obj_handle);
@@ -130,12 +140,10 @@ namespace kickos
             return static_cast<int>(e - kernel().endpoints.at(0));
         }
 
-        // Drop one reference to endpoint `obj_handle`; free at refs -> 0. Same accounting
-        // shape as sem_ref_drop, but the leak-don't-strand guard checks BOTH waitqs.
-        // Unreachable via close: a parked sender pins its own SIGNAL cap and a parked
-        // receiver its own WAIT cap (refs >= 1); and recv_holders -> 0 already emptied
-        // send_waiters, while recv_waiters requires a WAIT cap (which keeps refs >= 1).
-        // So refs -> 0 implies both queues empty; the guard is defense-in-depth.
+        // Drop one reference to endpoint `obj_handle`; free at refs -> 0. The
+        // leak-don't-strand guard checks BOTH waitqs, and is unreachable via close: a parked
+        // sender pins its own SIGNAL cap and a parked receiver its own WAIT cap, recv_holders
+        // -> 0 has already emptied send_waiters, and recv_waiters requires a WAIT cap.
         void endpoint_ref_drop(int obj_handle, bool teardown)
         {
             int const idx = endpoint_index_of(obj_handle);
@@ -161,10 +169,9 @@ namespace kickos
             }
         }
 
-        // Drop one reference to the object a (now-detached) cap entry named; dispatch to
-        // the per-type accounting arm. A future type reaching the default without its own
-        // arm traps in debug: a silent skip would leak its reference with no diagnostic
-        // (release builds still avoid treating a foreign handle as a sem index: safe leak).
+        // Drop one reference to the object a (now-detached) cap entry named. A new type
+        // reaching the default without its own arm traps in debug and leaks in release; a
+        // silent skip would lose the reference with no diagnostic.
         void obj_ref_drop(CapEntry const& e, bool teardown)
         {
             switch (static_cast<CapType>(e.type))
@@ -188,9 +195,10 @@ namespace kickos
             {
                 return; // names a thread by generational handle: holds no pool refcount
             }
-            case CapType::CAP_AUTHORITY:
+            case CapType::CAP_IRQ:
             {
-                return; // poolless: the cap IS its rights bits, there is nothing to free
+                irq_ref_drop(e.obj, teardown);
+                return;
             }
             default:
             {
@@ -202,8 +210,6 @@ namespace kickos
 
         // Per-type close/exit protocol, run BEFORE detach + drop at both call sites.
         // Returns 0, or a negative -KOS_E* to refuse a voluntary (non-teardown) close.
-        // CAP_SEM has no protocol: semaphores never needed the hook. The
-        // seam #3 (refuse-owned / force-unlock) and #4 (EPIPE-wake) fill their arms here.
         int obj_close_protocol(Thread* closer, CapEntry const& e, bool teardown)
         {
             switch (static_cast<CapType>(e.type))
@@ -268,14 +274,35 @@ namespace kickos
                                 s->wait_result = -KOS_EPIPE;
                                 sched::wake(s);
                             }
+                            // If that endpoint was the published console, no userspace
+                            // driver can ever serve it again: NOTE it, and let
+                            // exit_current run the reclaim after the whole teardown loop
+                            // (console_tx.h explains why not here).
+                            //
+                            // The note is NOT the reclaim decision. recv_holders counts
+                            // WAIT-bearing caps, so on a two-thread driver it reaches 0 when
+                            // the SERVICE thread dies, while the registers belong to the IRQ
+                            // thread, which parks on a line cap and is not counted here at
+                            // all. console_on_driver_death asks the device separately and
+                            // defers while any live domain still holds the register window.
+                            if (e.obj == g_stdout_target)
+                            {
+                                console_note_driver_death();
+                            }
                         }
                     }
                 }
                 return 0; // endpoints NEVER refuse a close (unlike mutex R2)
             }
-            case CapType::CAP_AUTHORITY:
+            case CapType::CAP_IRQ:
             {
-                return 0; // no object, no waiters, nothing to refuse a close over
+                // Deliberately EMPTY, and it must STAY empty: the endpoint arm's EPIPE-wake
+                // has no reachable analogue here, because a parked irq_wait waiter always
+                // holds its own cap (waiters <= refs) and cancellation unlinks the target
+                // before the target's own teardown runs. Only an ASYNCHRONOUS destroy could
+                // make the case reachable, and the leak-never-strand guard in irq_ref_drop
+                // is the assert that would say so.
+                return 0;
             }
             case CapType::CAP_REPLY:
             {
@@ -283,11 +310,12 @@ namespace kickos
                 // both voluntary close of a reply cap AND server-death teardown. If the
                 // caller is still parked, EPIPE it; the one-shot consume (empty + gen bump)
                 // happens at the shared close/teardown site after this returns. A dying
-                // closer skips its recompute (EXITED, never rescheduled).
+                // closer skips its recompute: it has only the rest of its own sweep left.
                 Thread* caller = cap_reply_caller(e.obj);
                 if (caller != nullptr)
                 {
                     caller->call_state = CALL_NONE; // stop the funnel counting this donor
+                    reply_donor_unpark(closer, caller); // and take it off the donor list
                     caller->wait_result = -KOS_EPIPE;
                 }
                 // Deflate BEFORE waking (H8): the wake's reschedule must run against our
@@ -311,66 +339,122 @@ namespace kickos
         }
     }
 
-    // Public (replaces sem_ref_inc; also the type-agnostic delegation entry point). Bump
-    // one reference to the object a global handle names. Handle MUST resolve. Holds IrqLock.
-    void obj_ref_inc(CapType type, int obj_handle, uint8_t rights)
+    namespace
     {
-        switch (type)
+        // Locate every counter one cap naming `obj_handle` moves: the object-side refcount,
+        // plus recv_holders for a WAIT-bearing endpoint cap. False = nothing to move (a
+        // poolless type, or a handle that no longer resolves). ONE locator serves both
+        // directions, so obj_ref_inc and obj_ref_undo cannot drift apart and cannot move one
+        // endpoint counter without the other.
+        bool ref_counters(CapType type, int obj_handle, uint8_t rights,
+                          uint8_t** refs, uint8_t** holders)
         {
-        case CapType::CAP_SEM:
-        {
-            (void)rights; // sem accounting ignores rights
-            int const idx = sem_index_of(obj_handle);
-            if (idx < 0)
+            *refs = nullptr;
+            *holders = nullptr;
+            switch (type)
             {
-                return;
+            case CapType::CAP_SEM:
+            {
+                int const idx = sem_index_of(obj_handle); // rights: sem accounting ignores them
+                if (idx < 0)
+                {
+                    return false;
+                }
+                *refs = &kernel().sem_refs[idx];
+                return true;
             }
-            kernel().sem_refs[idx]++;
+            case CapType::CAP_MUTEX:
+            {
+                int const idx = mutex_index_of(obj_handle);
+                if (idx < 0)
+                {
+                    return false;
+                }
+                *refs = &kernel().mutex_refs[idx];
+                return true;
+            }
+            case CapType::CAP_ENDPOINT:
+            {
+                int const idx = endpoint_index_of(obj_handle);
+                if (idx < 0)
+                {
+                    return false;
+                }
+                *refs = &kernel().endpoint_refs[idx];
+                // A cap COPY carrying CAP_WAIT adds a receiver holder.
+                if ((rights & CAP_WAIT) != 0)
+                {
+                    *holders = &kernel().endpoints.at(idx)->recv_holders;
+                }
+                return true;
+            }
+            case CapType::CAP_IRQ:
+            {
+                IrqBinding* b = kernel().irq_bindings.resolve(obj_handle);
+                if (b == nullptr)
+                {
+                    return false;
+                }
+                *refs = &kernel().irq_refs[static_cast<int>(b - kernel().irq_bindings.at(0))];
+                return true;
+            }
+            case CapType::CAP_REPLY:
+            {
+                return false; // names a thread by generational handle: no pool refcount
+            }
+            default:
+            {
+                KICKOS_ASSERT(false); // unknown type must trap in debug
+                return false;
+            }
+            }
+        }
+    }
+
+    // Bump one reference to the object a global handle names. Handle MUST resolve.
+    // Caller holds IrqLock.
+    bool obj_ref_inc(CapType type, int obj_handle, uint8_t rights)
+    {
+        uint8_t* refs = nullptr;
+        uint8_t* holders = nullptr;
+        if (not ref_counters(type, obj_handle, rights, &refs, &holders))
+        {
+            return true; // nothing to bump: not a refusal
+        }
+        // BOTH ceilings are tested before EITHER counter moves: an endpoint left with
+        // endpoint_refs bumped and recv_holders not (or the reverse) would leak a
+        // receiver into the dead-endpoint gate that no close could ever take back.
+        if (*refs == UINT8_MAX or (holders != nullptr and *holders == UINT8_MAX))
+        {
+            return false;
+        }
+        (*refs)++;
+        if (holders != nullptr)
+        {
+            (*holders)++;
+        }
+        return true;
+    }
+
+    void obj_ref_undo(CapType type, int obj_handle, uint8_t rights)
+    {
+        uint8_t* refs = nullptr;
+        uint8_t* holders = nullptr;
+        if (not ref_counters(type, obj_handle, rights, &refs, &holders))
+        {
             return;
         }
-        case CapType::CAP_MUTEX:
+        // Never reaches 0: every caller undoes a bump taken on an object some LIVE cap
+        // already named, so that cap holds the last reference. Hence no free-at-zero arm
+        // and no close protocol here.
+        KICKOS_ASSERT(*refs > 1);
+        if (*refs > 0)
         {
-            (void)rights; // mutex accounting ignores rights
-            int const idx = mutex_index_of(obj_handle);
-            if (idx < 0)
-            {
-                return;
-            }
-            kernel().mutex_refs[idx]++;
-            return;
+            (*refs)--;
         }
-        case CapType::CAP_ENDPOINT:
+        if (holders != nullptr and *holders > 0)
         {
-            int const idx = endpoint_index_of(obj_handle);
-            if (idx < 0)
-            {
-                return;
-            }
-            kernel().endpoint_refs[idx]++;
-            // Delegation COPIES a cap: a WAIT-bearing copy adds a receiver holder.
-            if ((rights & CAP_WAIT) != 0)
-            {
-                kernel().endpoints.at(idx)->recv_holders++;
-            }
-            return;
-        }
-        case CapType::CAP_REPLY:
-        {
-            (void)obj_handle;
-            (void)rights;
-            return; // names a thread by generational handle: no pool refcount to bump
-        }
-        case CapType::CAP_AUTHORITY:
-        {
-            (void)obj_handle;
-            (void)rights;
-            return; // poolless: no object behind it, so no refcount to bump
-        }
-        default:
-        {
-            KICKOS_ASSERT(false); // unknown type must trap in debug
-            return;
-        }
+            (*holders)--;
         }
     }
 
@@ -381,7 +465,10 @@ namespace kickos
             return nullptr;
         }
         int const idx = cap_handle & ((1 << KCAP_INDEX_BITS) - 1);
-        if (idx >= KICKOS_MAX_HANDLES)
+        // Bounded by THIS task's run, not by the largest class: a handle whose index is
+        // encodable but past the run this task was given must fail to resolve, never read
+        // a neighbouring task's run off the end of its own.
+        if (c->handles == nullptr or idx >= static_cast<int>(c->cap_capacity))
         {
             return nullptr;
         }
@@ -432,6 +519,10 @@ namespace kickos
         {
             p = kernel().endpoints.resolve(e->obj);
         }
+        else if (want == CapType::CAP_IRQ)
+        {
+            p = kernel().irq_bindings.resolve(e->obj);
+        }
         if (p != nullptr)
         {
             *err = 0;
@@ -455,74 +546,97 @@ namespace kickos
         {
             return true; // privileged implies every authority
         }
-        // Read the reserved slot by INDEX, not through cap_lookup: the kernel seats it,
-        // so there is no handle to validate and no cap-gen to match. The type test is
-        // what makes that safe: a delegated cap landing at index 2 under the i+1
-        // packing is not a CAP_AUTHORITY.
-        CapEntry const& e = c->handles[KOS_CAP_AUTHORITY];
-        if (e.type != static_cast<uint8_t>(CapType::CAP_AUTHORITY))
-        {
-            return false;
-        }
-        return (authority_word(e) & need) == need;
+        return (c->authority & need) == need;
     }
 
     void cap_seat_authority(Thread* t, uint8_t auth)
     {
-        CapEntry& e = t->handles[KOS_CAP_AUTHORITY];
         // Mask to AUTH_* bits, so a caller cannot seat a bit no gate reads.
-        uint8_t const w = static_cast<uint8_t>(auth & CAP_AUTH_ALL);
-        if (w == 0)
-        {
-            // Clear rather than seat a zero-authority cap: same permission, and an
-            // empty slot cannot be mistaken for a held authority.
-            e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-            e.obj = 0;
-            e.rights = 0;
-            return;
-        }
-        e.obj = static_cast<int32_t>(w); // the authority word; this type names no object
-        e.type = static_cast<uint8_t>(CapType::CAP_AUTHORITY);
-        e.rights = 0; // no object right means anything here, and 0 excludes CAP_TRANSFER
+        t->authority = static_cast<uint8_t>(auth & CAP_AUTH_ALL);
     }
 
     int cap_narrow_authority(Thread* c, int cap_handle, uint8_t mask)
     {
-        CapEntry* e = cap_lookup(c, cap_handle);
-        if (e == nullptr)
+        if (cap_handle != KOS_CAP_AUTHORITY)
         {
-            return -KOS_EBADF;
-        }
-        if (e->type != static_cast<uint8_t>(CapType::CAP_AUTHORITY))
-        {
-            // Object caps are out of scope: dropping CAP_WAIT from an endpoint cap has to
-            // run the recv_holders accounting obj_close_protocol does, and nothing asks
-            // for it yet. The handle argument keeps that generalisation ABI-free.
+            // Object caps are out of scope: dropping CAP_WAIT from an endpoint cap would
+            // have to run the recv_holders accounting obj_close_protocol does.
             return -KOS_EINVAL;
         }
-        uint8_t const w = static_cast<uint8_t>(authority_word(*e) & mask);
-        if (w == 0)
+        if (c->authority == 0)
         {
-            // Same clear-not-seat rule as cap_seat_authority, and it is why this goes
-            // through the slot rather than writing `obj`: an emptied slot must also lose
-            // its type, or cap_check_authority would read a zero word off a live entry.
-            e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-            e->obj = 0;
-            e->rights = 0;
-            return 0;
+            // Nothing to give up. A privileged thread lands here too: its permission does
+            // not come from this word, so narrowing it would be a lie.
+            return -KOS_EBADF;
         }
-        e->obj = static_cast<int32_t>(w); // narrowed: & can only clear bits
+        c->authority = static_cast<uint8_t>(c->authority & mask); // & can only clear bits
         return 0;
+    }
+
+    void cap_slab_init()
+    {
+        uint32_t off = 0;
+        for (int i = 0; i < KCAP_CLASSES_LIVE; i++)
+        {
+            g_cap_free[i] = nullptr;
+            // Push in reverse so the list comes out in address order and a first attach is
+            // deterministic across boots.
+            for (int r = KCAP_CLASSES[i].count - 1; r >= 0; r--)
+            {
+                CapEntry* run = &g_cap_slab[off + static_cast<uint32_t>(r) * KCAP_CLASSES[i].slots];
+                *run_link(run) = g_cap_free[i];
+                g_cap_free[i] = run;
+            }
+            off += static_cast<uint32_t>(KCAP_CLASSES[i].slots)
+                   * static_cast<uint32_t>(KCAP_CLASSES[i].count);
+        }
+        KICKOS_ASSERT(off == kcap_slab_entries());
+    }
+
+    CapEntry* cap_slab_attach(uint16_t want, uint8_t* cls, uint16_t* capacity)
+    {
+        for (int i = 0; i < KCAP_CLASSES_LIVE; i++)
+        {
+            if (KCAP_CLASSES[i].slots < want)
+            {
+                continue;
+            }
+            // The FIRST fitting class and no other: spilling into a larger one would let
+            // small spawns eat the runs a big task depends on.
+            CapEntry* run = g_cap_free[i];
+            if (run == nullptr)
+            {
+                return nullptr;
+            }
+            g_cap_free[i] = *run_link(run);
+            // CAP_EMPTY is 0 and so is a fresh cap-gen, so a zeroed run is an empty table.
+            memset(run, 0, static_cast<size_t>(KCAP_CLASSES[i].slots) * sizeof(CapEntry));
+            *cls = static_cast<uint8_t>(i);
+            *capacity = KCAP_CLASSES[i].slots;
+            return run;
+        }
+        return nullptr;
+    }
+
+    void cap_slab_detach(CapEntry* run, uint8_t cls)
+    {
+        if (run == nullptr)
+        {
+            return;
+        }
+        KICKOS_ASSERT(cls < KCAP_CLASSES_LIVE);
+        *run_link(run) = g_cap_free[cls];
+        g_cap_free[cls] = run;
     }
 
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
     {
-        // Bounds + reserved-slot guard (defense-in-depth; every caller already validates its
-        // index). Index 0 is the kernel stdout slot. ONLY cap_install_defaults seats it,
-        // writing the slot directly, so cap_install_at rejects 0 outright: no delegation or
-        // own-create may alias stdout. An out-of-range index is a kernel bug: trap in debug,
-        // no-op in release rather than scribble another thread's slot.
-        if (index <= KOS_CAP_STDOUT or index >= KICKOS_MAX_HANDLES)
+        // Index 0 is the kernel stdout slot, written directly by cap_seat_stdout and
+        // cap_install_defaults, so this entry point rejects it outright: no delegation or
+        // own-create may alias stdout. An out-of-range index is a kernel bug, so it traps in
+        // debug and no-ops in release rather than scribble another thread's slot.
+        if (index <= KOS_CAP_STDOUT or c->handles == nullptr
+            or index >= static_cast<int>(c->cap_capacity))
         {
             KICKOS_ASSERT(false);
             return;
@@ -535,12 +649,11 @@ namespace kickos
 
     int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights)
     {
-        // Own-create placement: scan from KICKOS_CAP_FIRST_DYNAMIC so an own create can NEVER
-        // land on a reserved well-known index (0 .. FIRST_DYNAMIC-1). Reserved slots are
-        // seated only by the kernel (stdout) or by explicit spawn delegation: frozen
-        // policy, see <kickos/sys/cap_index.h>. Costs FIRST_DYNAMIC slots per table; own
-        // caps live in [FIRST_DYNAMIC .. MAX-1].
-        for (int i = KICKOS_CAP_FIRST_DYNAMIC; i < KICKOS_MAX_HANDLES; i++)
+        // The scan starts at KICKOS_CAP_FIRST_DYNAMIC so an own create can NEVER land on a
+        // reserved well-known index. Reserved slots are seated only by the kernel (stdout) or
+        // by explicit spawn delegation; see <kickos/sys/cap_index.h>.
+        int const cap_end = static_cast<int>(c->cap_capacity);
+        for (int i = KICKOS_CAP_FIRST_DYNAMIC; i < cap_end; i++)
         {
             if (c->handles[i].type == static_cast<uint8_t>(CapType::CAP_EMPTY))
             {
@@ -554,7 +667,8 @@ namespace kickos
 
     bool cap_has_free_slot(Thread* c)
     {
-        for (int i = KICKOS_CAP_FIRST_DYNAMIC; i < KICKOS_MAX_HANDLES; i++)
+        int const cap_end = static_cast<int>(c->cap_capacity);
+        for (int i = KICKOS_CAP_FIRST_DYNAMIC; i < cap_end; i++)
         {
             if (c->handles[i].type == static_cast<uint8_t>(CapType::CAP_EMPTY))
             {
@@ -615,41 +729,87 @@ namespace kickos
         e->obj = 0;
         e->rights = 0;
         obj_ref_drop(detached, /*teardown=*/false);
+        // A VOLUNTARY close can also be the published console's last receiver going away, so
+        // the reclaim runs HERE and not as a note for whichever thread exits next: there is
+        // no teardown loop to finish first, and a pending note would reclaim the console at
+        // an unrelated moment. A no-op unless the note is set.
+        //
+        // Skipped while a teardown sweep is in flight: that thread may still hold an IRQ cap
+        // on the line. The note is sticky, so its own exit_current runs the reclaim.
+        if (not cap_teardown_active())
+        {
+            console_on_driver_death();
+        }
         return 0;
+    }
+
+    bool cap_teardown_active()
+    {
+        return g_teardown_depth > 0;
     }
 
     void cap_teardown(Thread* c)
     {
-        for (int i = 0; i < KICKOS_MAX_HANDLES; i++)
+        // Preconditions differ from every other entry point here: the caller must NOT
+        // hold IrqLock, and must have set c->dying first.
+        KICKOS_ASSERT(c->dying);
         {
-            CapEntry& e = c->handles[i];
-            if (e.type == static_cast<uint8_t>(CapType::CAP_EMPTY))
-            {
-                continue;
-            }
-            obj_close_protocol(c, e, /*teardown=*/true);
-            CapEntry const detached = e;
-            e.gen++;
-            e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-            e.obj = 0;
-            e.rights = 0;
-            obj_ref_drop(detached, /*teardown=*/true);
+            IrqLock lock;
+            g_teardown_depth++;
         }
+        int const cap_end = static_cast<int>(c->cap_capacity);
+        int i = 0;
+        while (i < cap_end)
+        {
+            IrqLock lock; // released at the bottom of every chunk: that is the point
+            for (int n = 0; n < KCAP_TEARDOWN_CHUNK and i < cap_end; n++, i++)
+            {
+                CapEntry& e = c->handles[i];
+                if (e.type == static_cast<uint8_t>(CapType::CAP_EMPTY))
+                {
+                    continue;
+                }
+                obj_close_protocol(c, e, /*teardown=*/true);
+                CapEntry const detached = e;
+                e.gen++;
+                e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+                e.obj = 0;
+                e.rights = 0;
+                obj_ref_drop(detached, /*teardown=*/true);
+            }
+        }
+        IrqLock lock;
+        // TOTALITY. Neither failure is visible downstream until an object pool has silently
+        // leaked a slot:
+        //   - no entry survived the sweep (a lost chunk boundary), and
+        //   - nobody is still parked on this thread (a CAP_REPLY arm that woke a caller
+        //     without unlinking it, which also walks a dead queue into the ready list).
+        // The first is O(table), hence debug-only; the second is O(1).
+#if KICKOS_DEBUG
+        for (int k = 0; k < cap_end; k++)
+        {
+            KICKOS_DEBUG_ASSERT(c->handles[k].type == static_cast<uint8_t>(CapType::CAP_EMPTY));
+        }
+#endif
+        KICKOS_ASSERT(c->reply_waiters.empty());
+        g_teardown_depth--;
     }
 
-    // Seat (or re-seat) a thread's reserved stdout slot (index 0) as a SEND-ONLY
-    // (CAP_SIGNAL, no WAIT/TRANSFER) copy of console endpoint `target`. CAP_SIGNAL bumps
-    // endpoint_refs but NOT recv_holders (a client is not a receiver), so it does not hold
-    // the dead-endpoint gate open. Written DIRECTLY (not via cap_install_at, which rejects
-    // index 0): this and cap_install_defaults are the sole writers of the reserved stdout
-    // slot, and the slot-0 cap-gen is never bumped (kernel-only policy, so a client's stale
-    // handle can never resolve it). Take the new ref BEFORE dropping any prior one (the same
-    // take-new-before-drop-old order cap_console_publish uses), so re-seating the same
-    // endpoint never transiently frees it. The thread's own cap_teardown drops this ref at
-    // exit. Caller holds IrqLock.
-    void cap_seat_stdout(Thread* t, int target)
+    // Seat (or re-seat) a thread's reserved stdout slot (index 0) as a SEND-ONLY (CAP_SIGNAL,
+    // no WAIT/TRANSFER) copy of console endpoint `target`. CAP_SIGNAL bumps endpoint_refs but
+    // NOT recv_holders, so a client does not hold the dead-endpoint gate open. Written
+    // DIRECTLY, since cap_install_at rejects index 0; this and cap_install_defaults are the
+    // slot's only writers, and its cap-gen is never bumped, so a client's stale handle can
+    // never resolve it. Take the new ref BEFORE dropping any prior one, or re-seating the same
+    // endpoint transiently frees it. The thread's own cap_teardown drops this ref at exit.
+    // Caller holds IrqLock.
+    bool cap_seat_stdout(Thread* t, int target)
     {
-        obj_ref_inc(CapType::CAP_ENDPOINT, target, CAP_SIGNAL);
+        // UNGUARDED against a capacity-0 `t`: see the unchecked precondition in cap.h.
+        if (not obj_ref_inc(CapType::CAP_ENDPOINT, target, CAP_SIGNAL))
+        {
+            return false; // at the ceiling: seat nothing, leave any prior seat alone
+        }
         CapEntry& e = t->handles[KOS_CAP_STDOUT];
         bool const had_prior = (e.type != static_cast<uint8_t>(CapType::CAP_EMPTY));
         CapEntry const prior = e;
@@ -660,6 +820,7 @@ namespace kickos
         {
             obj_ref_drop(prior, /*teardown=*/false);
         }
+        return true;
     }
 
     void cap_install_defaults(Thread* child)
@@ -670,23 +831,38 @@ namespace kickos
         {
             return;
         }
-        // Post-publish: seat the send-only stdout cap. A fresh child's slot 0 is empty, so
-        // cap_seat_stdout takes the ref with no prior to drop.
-        cap_seat_stdout(child, g_stdout_target);
+        // A ceiling refusal leaves slot 0 empty, which is the state the child already handles
+        // pre-publish, so the spawn is NOT failed over it.
+        (void)cap_seat_stdout(child, g_stdout_target);
     }
 
-    // Move the kernel's stdout-target ref to `obj_handle` (D3/S3). Caller holds IrqLock.
-    // Take the new ref BEFORE dropping the old so re-publishing the SAME endpoint never
-    // transiently frees it. The ref carries rights 0 (identity, no WAIT) so it never
-    // bumps recv_holders. Routed through obj_ref_inc / endpoint_ref_drop, never raw
-    // endpoint_refs[] arithmetic, so the free-at-zero teardown + waiter guard still apply.
-    void cap_console_publish(int obj_handle)
+    // Move the kernel's stdout-target ref to `obj_handle` and seat the publisher's own slot 0
+    // on it (D3/S3). Caller holds IrqLock. Take BOTH new refs BEFORE dropping any old one, or
+    // re-publishing the SAME endpoint transiently frees it and a ceiling refusal is no longer
+    // a clean no-op. The kernel's ref carries rights 0 (identity, no WAIT) so it never bumps
+    // recv_holders. It goes through obj_ref_inc / endpoint_ref_drop and never raw
+    // endpoint_refs[] arithmetic, so the free-at-zero teardown and waiter guard still apply.
+    //
+    // The publisher's own seat belongs here and not at the syscall: root was created before
+    // any publish, so its slot 0 is empty and cap_install_defaults never seated it. Without
+    // this its printf would kos_send(0) -> -KOS_EBADF and fall back to the now-dark kernel
+    // path.
+    bool cap_console_publish(Thread* publisher, int obj_handle)
     {
-        obj_ref_inc(CapType::CAP_ENDPOINT, obj_handle, 0);
+        if (not obj_ref_inc(CapType::CAP_ENDPOINT, obj_handle, 0))
+        {
+            return false;
+        }
+        if (not cap_seat_stdout(publisher, obj_handle))
+        {
+            obj_ref_undo(CapType::CAP_ENDPOINT, obj_handle, 0);
+            return false;
+        }
         if (g_stdout_target >= 0)
         {
             endpoint_ref_drop(g_stdout_target, /*teardown=*/false);
         }
         g_stdout_target = obj_handle;
+        return true;
     }
 }

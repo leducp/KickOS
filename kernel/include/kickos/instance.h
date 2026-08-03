@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The instance-scoped kernel runtime core (invariant #7): several kernel
-// instances co-reside in one host process (the KickCAT multi-slave sim -- one
-// MCU == one instance). App-owned OBJECTS (TCBs, semaphores) stay caller-owned;
-// this is only the runtime's own bookkeeping. The sim arch backend holds its own
-// parallel SimInstance (arch/sim) and never crosses the arch seam (invariant #1).
+// The instance-scoped kernel runtime core. Several kernel instances may co-reside in one
+// host process, one per simulated MCU, so nothing here may become a file-static. App-owned
+// OBJECTS (TCBs, semaphores) stay caller-owned; this is only the runtime's own bookkeeping.
+// The sim arch backend keeps its own parallel SimInstance and never crosses the arch seam.
 
 #ifndef KICKOS_INSTANCE_H
 #define KICKOS_INSTANCE_H
@@ -43,11 +42,9 @@ namespace kickos
         uint16_t next_tid = 0;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-        // --- telemetry counters (ktrace.h; instance-scoped, spike deliverable 5) ---
-        // seq: monotonic per-record sequence (loss detection). records_attempted:
-        // every record the frontend tried to emit (== last seq issued; carried in
-        // SESSION for the host cross-check). dropped: records the sink refused
-        // (ring full) -- records_attempted - dropped == records delivered.
+        // --- telemetry counters (ktrace.h) ---
+        // trace_records_attempted equals the last seq issued and is carried in SESSION for
+        // the host cross-check; attempted minus dropped is what was delivered.
         uint16_t trace_seq = 0;
         uint32_t trace_records_attempted = 0;
         uint32_t trace_dropped = 0;
@@ -58,33 +55,23 @@ namespace kickos
         Thread* sleepq = nullptr; // sorted ascending by deadline_ns
 
         // --- syscall object pools (syscall.cc) ---
-        // Semaphore registry: a generational slot pool (see slotpool.h). free() bumps
-        // the slot's generation so a stale handle (index+gen) fails to resolve rather
-        // than aliasing a recycled slot. All access goes through sem_resolve(). (gen
-        // wraps every 2^16 destroys of one slot -- acceptable at this scale.)
+        // Semaphore registry: a generational slot pool (see slotpool.h). Reached only
+        // through its own resolve(); the generation wraps every 2^16 destroys of one slot.
         SlotPool<Semaphore, KICKOS_MAX_SEMAPHORES> sems;
-        // Object-side refcount for the sem pool, owned by the cap layer (cap.cc):
-        // "how many caps name slot i". alloc sets 1; delegate bumps; close decrements;
-        // 0 => sems.free(). Parallel array so slotpool.h stays generic. uint8_t bounds
-        // the max caps naming one object -- assert every table cannot exceed it.
+        // Object-side refcount owned by the cap layer: how many caps name slot i. alloc
+        // sets 1, delegate bumps, close decrements, and 0 frees the slot. The uint8_t
+        // ceiling is enforced at the ONE increment site, obj_ref_inc, which refuses with
+        // -KOS_EOVERFLOW rather than wrapping; there is deliberately no static_assert
+        // welding it to MAX_THREADS x MAX_HANDLES.
         uint8_t sem_refs[KICKOS_MAX_SEMAPHORES] = {};
-        static_assert(KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES <= 255,
-                      "sem_refs is uint8_t: MAX_THREADS x MAX_HANDLES must not exceed 255");
-        // PI-mutex pool + its parallel object-side refcount, same shape as the sems
-        // (cap.cc owns the accounting; the array keeps SlotPool generic).
+        // PI-mutex pool and its object-side refcount, same shape as the sems.
         SlotPool<Mutex, KICKOS_MAX_MUTEXES> mutexes;
         uint8_t mutex_refs[KICKOS_MAX_MUTEXES] = {};
-        static_assert(KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES <= 255,
-                      "mutex_refs is uint8_t: MAX_THREADS x MAX_HANDLES must not exceed 255");
-        // Endpoint (IPC rendezvous) pool + its parallel object-side refcount, same
-        // shape as sems/mutexes (cap.cc owns the accounting). recv_holders lives IN
-        // the Endpoint struct, NOT here (its single home). endpoint_refs counts ALL
-        // caps naming a slot; the wider bound covers it summing with the cap tables.
+        // Endpoint (IPC rendezvous) pool and its object-side refcount. recv_holders is NOT
+        // here: its single home is the Endpoint struct, and it shares this ceiling because
+        // one obj_ref_inc moves both counters or neither.
         SlotPool<Endpoint, KICKOS_MAX_ENDPOINTS> endpoints;
         uint8_t endpoint_refs[KICKOS_MAX_ENDPOINTS] = {};
-        static_assert(KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES + KICKOS_MAX_ENDPOINTS <= 255,
-                      "endpoint_refs is uint8_t: MAX_THREADS x MAX_HANDLES + MAX_ENDPOINTS "
-                      "must not exceed 255");
         // Thread pool (see ThreadPool in thread.h): the TCBs + their kernel stacks,
         // intrinsic liveness (a slot is free iff state==EXITED), generation bumped at
         // reclaim (ABA). All allocation goes through thread_spawn().
@@ -96,8 +83,11 @@ namespace kickos
 
         // --- interrupt dispatch + IRQ-as-event bindings (irq.cc) ---
         IrqEntry irq_table[KICKOS_MAX_IRQ]; // line -> handler; ISR reads by index
-        IrqBinding irq_bindings[KICKOS_MAX_IRQ_HANDLES];
-        int irq_binding_count = 0;
+        // Tier-1 bindings and their object-side refcount, same shape as the pools above.
+        // Pooled, not bump-allocated, so a dead driver's line and slot come back:
+        // irq_ref_drop detaches BEFORE it frees.
+        SlotPool<IrqBinding, KICKOS_MAX_IRQ_HANDLES> irq_bindings;
+        uint8_t irq_refs[KICKOS_MAX_IRQ_HANDLES] = {};
         uint32_t irq_spurious_count = 0; // IRQs on a line with no driver (masked)
     };
 
@@ -106,9 +96,8 @@ namespace kickos
         extern Kernel g_instance;
     }
 
-    // The single access seam for instance-scoped state. Compile-time selectable
-    // storage: a static singleton, or a per-host-thread instance for the
-    // multi-slave sim (the thread-local pointer is installed per instance, Later).
+    // The single access seam for instance-scoped state. Storage is selected at compile
+    // time: a static singleton, or a per-host-thread instance for the multi-slave sim.
     inline Kernel& kernel()
     {
 #if defined(KICKOS_MULTI_INSTANCE)

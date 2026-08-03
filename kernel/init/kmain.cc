@@ -217,21 +217,33 @@ namespace kickos
         void* const root_stack =
             boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, "kmain: no arena for the root stack");
 
+        // Must precede ANY thread: the two static TCBs below are not pool slots, so their
+        // runs are attached by hand rather than by thread_spawn.
+        cap_slab_init();
+
         ThreadAttr idle_attr;
         idle_attr.name = "idle";
         idle_attr.prio = KICKOS_PRIO_IDLE;
         idle_attr.policy = Policy::FIFO;
         idle_attr.privileged = true;
+        // Idle gets no run at all. Capacity 0 makes "idle holds no capability" structural:
+        // it can neither create, receive nor be delegated one.
+        idle_attr.cap_run = nullptr;
+        idle_attr.cap_capacity = 0;
         thread_create(&g_idle_tcb, idle_entry, nullptr,
                       idle_stack, KICKOS_IDLE_STACK_SIZE, idle_attr);
         // Idle is created first, so it MUST be trace id 0 (the telemetry decoder
         // keys CPU% off tid 0 == idle). Assert the invariant, not just assume it.
         KICKOS_ASSERT(g_idle_tcb.id == KICKOS_TID_IDLE);
 
-        // Root runs at a low priority: adding a thread does not itself reschedule,
-        // so root still runs first (nothing higher is READY until it spawns them)
-        // and does all setup; then, once it blocks, higher-priority workers run,
-        // and their completion posts never preempt the low-priority orchestrator.
+        // Root runs at a low priority so a worker's completion post never preempts the
+        // orchestrator. That is the only scheduling property the priority buys, and it is
+        // NOT a staging guarantee: a spawn does not itself reschedule, but any interrupt
+        // between two spawns does, and reschedule() then takes the highest-priority READY
+        // thread, which is a prio-10 child and never root at PRIO_MIN+1. A worker can run
+        // its entire lifetime before its siblings are spawned. An orchestrator that needs
+        // its workers staged must GATE them on a semaphore it posts itself: spawn order is
+        // not a barrier.
         ThreadAttr root_attr;
         root_attr.name = "root";
         root_attr.prio = KICKOS_PRIO_MIN + 1;
@@ -241,6 +253,15 @@ namespace kickos
         // instant: root is unprivileged from its first instruction. idle above is the
         // only privileged thread in the system.
         root_attr.privileged = false;
+        // Root takes the LARGEST class. Capacity narrows only, never widens, so every
+        // capacity in the system descends from this one and no child can be given more
+        // than its parent holds.
+        root_attr.cap_run = cap_slab_attach(static_cast<uint16_t>(KICKOS_MAX_HANDLES),
+                                            &root_attr.cap_class, &root_attr.cap_capacity);
+        if (root_attr.cap_run == nullptr)
+        {
+            kpanic("kmain: no capability run for root");
+        }
         thread_create(&g_root_tcb, root_entry, nullptr,
                       root_stack, KICKOS_ROOT_STACK_SIZE, root_attr);
         // Root is seated with every authority. Ordering matters twice: after

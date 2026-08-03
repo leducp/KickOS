@@ -13,9 +13,9 @@ namespace kickos
 {
     namespace
     {
-        // Per-Kernel monotonic trace id. First call returns 0 (idle, created first
-        // in kmain); thereafter 1,2,...,0xFFFE then wraps to 1 -- 0 is idle-only
-        // and 0xFFFF is the "no thread" sentinel, so both are skipped on wrap.
+        // Per-Kernel monotonic trace id. The first call returns 0, which idle takes because
+        // kmain creates it first; the wrap goes back to 1, never to 0, and skips
+        // KICKOS_TID_NONE (0xFFFF), so neither sentinel is ever reissued.
         uint16_t assign_thread_id()
         {
             IrqLock lock;
@@ -35,10 +35,16 @@ namespace kickos
                        void* stack_base, size_t stack_size, ThreadAttr const& attr)
     {
         memset(t, 0, sizeof(*t));
+        // Must follow the memset, which would otherwise zero the run pointer the caller
+        // already attached.
+        t->handles = attr.cap_run;
+        t->cap_capacity = attr.cap_capacity;
+        t->cap_class = attr.cap_class;
+        t->spawner_tag = attr.spawner_tag;
         t->id = assign_thread_id();
-        // Copy the name into a kernel-owned bounded buffer; never alias attr.name -- via
-        // thread_spawn it can be a user pointer, and the fault reporter %s-prints t->name
-        // (an unbounded strlen / deref of a bad user pointer on the fault path is a crash).
+        // NEVER alias attr.name: via thread_spawn it can be a user pointer, and the fault
+        // reporter %s-prints t->name, so an unbounded strlen of a bad user pointer would
+        // crash the fault path itself.
         size_t ni = 0;
         if (attr.name != nullptr)
         {
@@ -129,12 +135,10 @@ namespace kickos
         }
         t->region_count = nr;
 
-        // Rule 7 backstop: no assembled region may overlap a kernel-reserved block.
-        // domain_for already refuses an inadmissible grant, so this is defence in
-        // depth against a future region source that bypasses that predicate -- it
-        // catches the leak at composition, before the thread ever runs. Privileged
-        // (kernel-domain) threads carry the whole-arena region, which is reserved-
-        // disjoint by grant_reserved_validate at boot.
+        // Rule 7 backstop: no assembled region may overlap a kernel-reserved block. Catches
+        // a region source that bypasses domain_for's admission, at composition, before the
+        // thread ever runs. Privileged threads carry the whole-arena region, which
+        // grant_reserved_validate proved reserved-disjoint at boot.
 #if KICKOS_HAVE_MPU
         for (size_t i = 0; i < nr; i++)
         {
