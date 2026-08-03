@@ -108,10 +108,10 @@ on the TX-ready flag -- telemetry measured that as the single largest on-CPU cos
 (~879 us per burst at the K64F FEI clock). The buffered producer instead copies and
 returns; the bytes leave later, in an interrupt.
 
-- **Producer** (`console_tx_write`, thread context): compute free space, `memcpy`
-  the burst into `[head, ...)` **lock-free**, then under a brief `IrqLock`: publish
-  the new `head` and enable the TX-empty IRQ ("prime the pump"). Returns
-  immediately -- the caller's cost is a `memcpy`, not the transmission.
+- **Producer** (`console_tx_write`, thread context): under `IrqLock`, compute free
+  space, copy the burst into `[head, ...)`, publish the new `head` and enable the
+  TX-empty IRQ ("prime the pump"). Returns immediately -- the caller's cost is a
+  copy, not the transmission.
 - **Consumer** (`console_tx_isr`, ISR context, bound to the chip's TX line via
   `irq_attach`): push ring bytes while a HW TX slot is free; when the ring drains
   to empty, disable its own TX IRQ.
@@ -123,16 +123,20 @@ producer's "publish head + enable IRQ" is atomic with respect to the ISR's "drai
 to empty + disable IRQ": either the ISR's empty-check happened before the publish
 (then the producer's enable re-arms it) or after (then the ISR sees the new bytes
 and keeps draining). **No lost wakeup, and no dropped output.** The lock is held
-for a pointer store plus one bit -- nanoseconds -- not the ~22 ms a 256-byte
-transmission used to hold. The `memcpy` itself is outside the lock: the ISR only
-ever reads up to the *published* head, so writing the not-yet-published region
-concurrently is the standard SPSC guarantee.
+for the copy plus a pointer store and one bit -- microseconds bounded by the ring
+size -- not the ~22 ms a 256-byte transmission used to hold. The copy is inside the
+lock, not outside it: that also serialises concurrent *thread* producers, which the
+SPSC argument alone would not cover.
 
-**Overflow policy: block-with-sync-drain, not drop.** If a burst does not fit, the
+**Overflow policy: stall-with-sync-drain, not drop.** If a burst does not fit, the
 producer disables the TX IRQ, drains the ring and writes the burst by polling -- in
 order, with other IRQs still serviced. RTT drops on a full ring (its host may be
-detached, so a blocking writer would hang forever); the UART always makes bounded
-progress, so **losing kernel debug output is worse than a bounded stall.** Ring
+detached, so a blocking writer would hang forever); the UART trades latency for data
+whenever the wire is alive, because **losing kernel debug output is worse than a
+bounded stall.** Both poll loops are nonetheless bounded by `DRAIN_POLL_CAP`: a
+channel that never frees a slot makes `drain_sync` reset the ring and the burst loop
+return mid-buffer, dropping silently and without a counter. That is the one case this
+path does lose bytes, and it is the case where the wire is already dead. Ring
 sizing is per-chip (>= `kprintf`'s 256 B buffer; e.g. 512 B on most parts, 2048 on the
 ESP32-C6) and keeps this path rare.
 

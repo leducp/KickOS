@@ -577,6 +577,38 @@ Every recipe -- ST-Link, external SWD, USB-DFU, picotool/BOOTSEL, esptool, bossa
 `rfp-cli`, and the J-Link / RTT deep-dive -- lives in [flashing.md](../flashing.md). Nothing
 operational belongs in this file.
 
+### The 64 KiB parts run the selftest as TWO images
+
+`bluepill-c8` and `f302nucleo` only. Every other board still produces one `selftest`, unchanged.
+The suite outgrew a 64 KiB part (`f302nucleo-st` was at 4 free bytes of 65536), so it is built as
+two self-contained images that partition the arms between them.
+
+- `selftest` is **part 1**, `selftest_p2` is **part 2**; both land in
+  `<build>/user/apps/common/selftest/` with the usual `.elf` / `.bin` / `.hex`.
+- **Flash and run them one after the other. Order does not matter.** Each initialises the board,
+  runs its own arms and self-terminates; they share no state and there is no handover between them.
+- **TAP numbering RESTARTS at 1 in each part.** `tap.cc` plans `1..N` from its own runtime registry,
+  so part 1 emits `1..44` and part 2 `1..30` under `KICKOS_ENABLE_SELFTEST`. **A pass is BOTH parts
+  green** -- a single `1..44` stream is half a run, not a short one, and reading it as a pass is the
+  obvious way to be fooled here.
+- Configure prints what to expect:
+  `-- selftest: split into two images -- selftest plans 44 arms, selftest_p2 plans 30 (74 together)`
+- These two boards now run the FULL arm set: `cap_dest`, `irq_discard` and `cap_capacity` are no
+  longer excluded on them. Expect `cap_capacity` to report PARTIAL (one capability class -- nothing
+  for it to observe), which counts as a pass.
+- Which arm sits in which part is decided by POSITION in the registration list at the bottom of
+  `user/apps/common/selftest/main.cc`, not by an annotation; the boundary is the `#undef TAP_ADD`.
+  Adding or moving an arm means updating the whole-suite floor AND the matching per-part clause in
+  `user/apps/common/selftest/CMakeLists.txt` -- getting it wrong is a configure error on every
+  board in the fleet, not a quietly smaller suite.
+
+**Witnessed on `f302nucleo`, not on `bluepill-c8`.** Both `f302nucleo` images boot at `9a00e73`
+(`1..44` and `1..30`, zero `not ok`) and all three restored arms ran there: `cap_dest` pass,
+`cap_capacity` PARTIAL, `irq_discard` pass. `bluepill-c8` has no unit on the bench, so its half of
+the split is build-only. They pass today on `sim`, `qemu`, `qemu-riscv` and `microbit`,
+and `microbit` is the harsher board (`KICKOS_MAX_THREADS` 2 against 3), which is the basis for
+expecting them to pass -- not evidence that they do.
+
 ## Terminal dead-ends and BOOTSEL handover -- `pizero2350`
 
 **`kos_reboot` is silicon-witnessed here** (2026-07-28, `6857df3`, the first execution of syscall 38
@@ -636,8 +668,8 @@ app's own verdict line, and any capture that is the sole evidence for a claim st
 tree. What it drops is the `PC`/`LR`/`xPSR` and `R0..R12` lines of a fault dump, which carry nothing
 checkable -- except in the two exemplars kept verbatim below to show the shape.
 
-**Root is unprivileged on every board by construction, as of 2026-07-30.** It holds a
-`CAP_AUTHORITY` rather than the whole arena, and there is no second posture: `KICKOS_ROOT_PRIVILEGED`
+**Root is unprivileged on every board by construction, as of 2026-07-30.** It holds an authority
+word rather than the whole arena, and there is no second posture: `KICKOS_ROOT_PRIVILEGED`
 is **deleted from the tree** -- no knob, no default, nothing to flip. The one surviving mention of
 the name in any CODE or BUILD file is a configure-time `FATAL_ERROR` in
 `cmake/KickOSConfig.cmake.in`; docs still discuss it historically. That refusal binds **out-of-tree
@@ -1035,7 +1067,7 @@ window at that base rather than on an authority bit; the contract and the per-ch
 so a granted channel-2 window would also expose the chained ch0+ch1 pair `arch_clock_now` runs on, so
 the PIT stays kernel-gated at boot instead.
 
-The board pin map is 5 rows (`system/init/pinmap_frdmk64f.cc`) -- the LED plus the four DSPI pins
+The board pin map is 5 rows (`system/init/frdmk64f/pinmap.cc`) -- the LED plus the four DSPI pins
 root muxes before any service starts: PTB21 `func=0x100` (ALT1) blue LED as GPIO; PTD1 / PTD2 / PTD3
 `func=0x200` (ALT2) as DSPI0 SCK / SOUT / SIN; PTC4 `func=0x100` (ALT1) as the DSPI0 software CS.
 All four DSPI rows read back their programmed mux on a halted target in the runs below --
@@ -2123,6 +2155,73 @@ gate can exercise a **buffered-ring panic flush** at all -- the code path that o
 console has a ring behind it is gated nowhere. That is not a missing test on one board; it is a class
 of path with no runnable target, and it belongs in *Coverage boundary* below as well as here.
 
+### M4.6.1 -- the IRQ-driven userspace UART consoles (2026-08-01/02)
+
+Five per-chip drivers, selected with `-DKICKOS_SERVICE_LIST=kickos_services_<board>_uartirq`. **No
+board default points at any of them**, deliberately. Every capture named here carries
+`# tap route: stdout endpoint -> console driver (service list published)`, which is what proves the
+stream crossed the userspace driver rather than falling back to the kernel's polled route.
+
+**The pass of record, 2026-08-03, all six boards at ONE CLEAN COMMITTED TIP `9a00e73`** -- the
+finished tree: Stage 3's capability slab, Stage 4's per-grant destinations, the CRLF cook, the
+first-light markers, the `rxsci` TIE ordering fix, `KOS_SYS_IRQ_DISCARD`, the device-window console
+reclaim with `KOS_SYS_THREAD_KILL`, the stable `ktime_rearm` deadline, and `rx72m` under MPU
+enforcement. `257def0` was the five-board pass that preceded it; see the boundary table.
+
+| board | enforcement | plan | result | capture (`.session/logs/`) |
+|---|---|---|---|---|
+| `xmc4800-relax` | PMSAv7, `MPU=1` | `1..78` | all pass, 0 skip, 1 partial, 2 boots | `m461h-xmc-uartirq.log` |
+| `frdmk64f` | SYSMPU, `MPU=1` | `1..78` | all pass, 0 skip, 1 partial, 2 boots | `m461h-k64-uartirq.log` |
+| `esp32c6-wroom` | PMP NAPOT, `MPU=1` | `1..78` | all pass, 0 skip, 1 partial | `m461h-c6-uartirq.log` |
+| `esp32-wroom` | none (no MPU) | `1..74` | all pass, 0 skip, 1 partial | `m461h-lx6-uartirq.log` |
+| `rx72m` | none (no MPU) | `1..74` | all pass, 0 skip, 1 partial | `m461h-rx-uartirq.log` |
+
+The one partial on every row is `cap_capacity` reporting that the board has a single capability
+class, which is true of every hardware board: they all ship the behaviour-identical default, and
+`sim` and `qemu` carry the multi-class witness.
+
+**What this pass witnessed that the earlier one could not.** All five first-light markers reached
+the wire (`[xmcuartirq] device up (IRQ TX)`, `[k64uartirq]`, `[c6uart]`, `[rxsci]`, `[lx6uart]`), so
+a silent bring-up can now self-diagnose on every board rather than on one. And the CRLF cook is
+visible in the bytes: `m461d-xmc-uartirq.log` ends its TAP lines `\r\n` where `m461c-xmc-uartirq.log`
+from the same board ends them with a bare `\n`. The published console and the kernel console agree
+byte for byte for the first time.
+
+**The immediately preceding pass, `cb5f2a4` (`m461c-*`)**, is what closed the driver work: `1..74` /
+`1..70`, zero partials, and the `rx72m` A/B below. Superseded as a status record, kept as the
+provenance of that fix.
+
+**`rx72m`'s stop at `ok 51` is closed, and the A/B that closed it is the artifact worth keeping.**
+Reverting ONLY the zero-length-plain-send FLUSH arm from `rxsci`'s service loop, at the same tip,
+reproduces the stop three times, byte-identical at 1716 B, each ending mid-string right after
+`ok 53 - privileged_spawn_refused` -- the same test the original `1..67` capture stopped after, in
+different numbering (`m461c-rx-noflush{,-2,-3}.log`). Deterministic in both directions.
+**The doorbell is not involved**, bench-measured both ways on this chip: an image with zero posts
+truncates identically, and one with 200 posts at bring-up plus three per write completes cleanly.
+The truncation is a byte-exact prefix short by one TX ring, lost at SHUTDOWN because `rxsci` alone
+did not implement root's
+zero-length flush request. The separate real defect was `service_irq` observing `TDRE` before arming
+`TIE`, a RULE T1 violation that intermittently left the drain a ring behind. `TODO.md` carries both.
+The board also carries the probe rule this bench keeps re-learning: a TDR marker inside a TDR bug
+generates false negatives, so the discriminating probe here is the LED path
+(`m461-rx-led.log`) or the `KOS_UART_STATS` counters, never a UART marker.
+
+**The K64F needed a human**, as its own entry above predicts: the first attempt hung right after
+`InitTarget()` and cleared only after physical intervention on the board. Nothing in the image.
+
+**The superseded first pass, 2026-08-01**, kept because it cost bench time and because the two
+`0caf982`-dirty boards were the run that found the RR scheduler bugs: `m461-xmc-schedfix.log` and
+`m461-k64-schedfix.log` (`1..71`), `m461-c6-ringfix.log` (`1..71`, `c42f054`),
+`m461-lx6-writeall.log` (`1..67`), `m461-rx-fixed-selftest.log` (`1..67`, stops at `ok 51`,
+untracked tree). Four of those five images are not identified by a commit and one carries no git
+identity at all.
+
+**The first per-board runs, kept because each found something the later full-suite run cannot show**:
+`m461-xmc-uartirq.log` (the first IRQ console ever to reach a wire, at `a946a12`-dirty),
+`m461-k64-uartirq.log` (`372e7b4`, the first-light marker plus the four review fixes),
+`m461-c6-uartirq.log`, `m461-lx6-uartirq.log`. The `m461-*-stall-*` and `m461-rx-trace*` captures are
+the storm and short-accept hunts and are only meaningful against the commits that closed them.
+
 ### Coverage boundary -- what this silicon witness covers
 
 The gap this section exists to track is commits green under emulation but never run on hardware. It
@@ -2143,6 +2242,14 @@ is closed for everything at or before `270b6fa`, and PARTIALLY at `124b68c` -- o
 | 2026-07-30 | `270b6fa` | Three boards not on the earlier passes, all off a CLEAN committed tip: `rx72m` `selftest` / `rootauth` / `rxdrv` (all three owed items closed in one visit, including the fleet's first mux WRITE that lands), `xmc4800-relax` `pvprobe` on a SECOND physical unit (adding the mask-refusal arm) and `xmcssc` as a SERVICE on the full default list, and the `f302nucleo` `selftest` BEFORE capture. Six captures. |
 | 2026-07-30 | `270b6fa-dirty` | The committed tip plus uncommitted work, nine captures: the `esp32c6-wroom` `.data` LMA diagnosis and its post-fix `c6blink` / `selftest` (closing the C6 mux-write debt and making the 2026-07-28 C6 witness retrospectively a pass by LUCK), `f302nucleo` `ringpriv` (the project's FIRST ring-arm silicon witness), and `inprstorm` at THREE rate profiles (closing the TX-FIFO residual). Dirty again, after the rule; see the M4.5.6 provenance note. |
 | 2026-07-30 | `124b68c` | Two captures only, and they are the milestone's sole clean-tip witnesses: `f302nucleo` `ringppb` and `fault`. Both expose one OPEN defect -- the fault reporter emits no dump on this board -- with the BusFault itself confirmed by a live debugger attach. Everything else in M4.5.6 predates this tip. |
+| 2026-08-01 | `97a85e4` | The M4.6.1 IRQ-capability pass: `irq_claim_gate` and `irq_reclaim` on all five bench boards -- four ISAs, four enforcement backends (PMSAv7, SYSMPU, RX-MPU, PMP) plus one no-MPU part -- and the first silicon confirmation of both plan counts, `1..71` under enforcement and `1..67` without. Also the `f302nucleo` fault-reporter LED pass, which is what reframed that defect. |
+| 2026-08-01 | `2511e20`-dirty .. `182e0dd`-dirty | The first M4.6.1 UART-console pass, four boards green and one short. Four of five images uncommitted, one with no git identity, and all five three arms behind the tree. SUPERSEDED by the row below. |
+| 2026-08-02 | `cb5f2a4` | The M4.6.1 UART-console pass: all five boards, one CLEAN committed tip, `1..74` enforcing / `1..70` not, zero failures, skips and partials. Closes the three-arm gap the previous row opened and the `rx72m` stop, with a reverting A/B that reproduces the stop three times. |
+| 2026-08-02 | `0f5a5bd-dirty` | Stage 3's capability slab, the CRLF cook and the five first-light markers, at `1..76` / `1..72`. The `m461d-*` banners stamp `0f5a5bd-dirty`, an ANCESTOR of `c82cc63` -- credit these captures to the banner, not to the branch tip they were taken from. Not a committed-tip pass. |
+| 2026-08-02 | `257def0` | The finished tree at `1..78` / `1..74`, five boards, zero failures. Also the pass that CAUGHT the `esp32-wroom` hang at `sleep_order` -- the Xtensa `CCOMPARE0` equality-match defect, fixed on its own merits at `b4e888d`. The boundary is closed as far as `257def0`. |
+| 2026-08-02 | `9a00e73` | **The pass of RECORD, and the boundary is closed.** Seven captures on six boards, `m461n-*`, all at this clean tip, zero `not ok`: `xmc4800-relax` `1..78`, `frdmk64f` `1..78`, `esp32c6-wroom` `1..78`, **`rx72m` `1..78` under MPU ENFORCEMENT for the first time**, `esp32-wroom` `1..74`, `f302nucleo` `1..44` + `1..30`. First silicon for the `ktime_rearm` fix, including the two boards it most exposes: `esp32-wroom` (Xtensa, no dedup guard at all) and `rx72m` (software dedup on the deadline value). |
+| 2026-08-02 | `20f6d43` | Superseded as the pass of record by `9a00e73` above. Seven captures on six boards, `m461m-*`, all stamping this clean tip: `xmc4800-relax` `1..78`, `frdmk64f` `1..78`, `esp32c6-wroom` `1..78`, `esp32-wroom` `1..74`, `rx72m` `1..74`, all via their `*_uartirq` service lists with first-light markers on the wire; plus `f302nucleo` `1..44` + `1..30` as two images. Zero `not ok`. First silicon for: the device-window console reclaim, `KOS_SYS_THREAD_KILL`, the Xtensa CCOMPARE fix (`b4e888d`), the LX6 unroutable-source silencing, the selftest suite split, and the three arms it restored (`cap_dest` PASS, `cap_capacity` PARTIAL, `irq_discard` PASS). |
+| 2026-08-02 | `b4e888d` | Witnessed at a clean tip by the `20f6d43` row above. `b4e888d` changed `arch_xtensa.cc` (`arch_timer_arm`, the CCOMPARE equality-match fix) and `selftest/main.cc`. Its OWN captures (`m461i-lx6-{1,2}`, `m461i-rx-{1,2,3}`, `m461j-rx`, `m461k-lx6`, `m461k-rx`) all stamp `cab37e6-dirty` and are named in no other tracked doc, so they identify no tree and cannot extend the boundary by themselves. |
 
 From `2fc7799` on there is only one posture to witness, so "both arms" stops being a thing a capture
 can have.
@@ -2215,8 +2322,8 @@ caveats*). Even a unit would therefore witness the authority arm and nothing abo
 armv6m privilege boundary is `picopi`'s alone -- an M0+, which does implement the extension.
 
 **`bluepill-c8` carries no witness because no unit exists.** That is the binding reason, not RAM
-(heap policy, `../archive/M4.5_footprint_meas.md` section 7), not the 9-handle provisioning (the authority
-cap costs zero dynamic slots), and not the missing MPU. It costs nothing either: `f302nucleo` is the
+(heap policy, `../archive/M4.5_footprint_meas.md` section 7), not the 7-handle provisioning (the authority
+word is TCB state and costs no slot at all), and not the missing MPU. It costs nothing either: `f302nucleo` is the
 same class -- a 64 KiB-flash armv7m part with no MPU and a real privilege ring -- and is on the
 bench, so it carries the hardware coverage for both.
 

@@ -82,21 +82,34 @@ seam family (section 9) proved insufficient for the blocked bring-up bodies. It 
 Gates that read `privileged` call `cap_check_authority(caller, AUTH_*)` and nothing else, with the
 privileged-implies-everything arm *inside* that function so no call site can encode it differently.
 
-- **It is poolless**, the capability being its authority bits, so it resolves by reading its reserved
+> **Superseded in mechanism, not in cut.** Authority is no longer a capability. The word lives in the
+> TCB as `Thread::authority`, a byte in padding the struct already carried, because it named no pool
+> object, held no refcount and bumped no generation -- so the table was charging an index on every
+> board and returning none of its properties. `KOS_CAP_AUTHORITY` survives only as the pseudo-handle
+> `kos_cap_narrow` takes to name the word. The gate chokepoint above, the bit cut in 5.1, the
+> narrowing rule in 5.2 and the revocation argument in section 6 are all unaffected; what follows is
+> the reserved-index design as it was decided here. Live contract:
+> `reference/invariants.md` (`authority-word-narrows-only`).
+
+- **It was poolless**, the capability being its authority bits, so it resolved by reading its reserved
   slot and never through `cap_resolve_e` (which would read that word as a pool index), and the refcount
-  arms are explicit no-ops so a missing arm traps rather than leaking silently.
-- **The authority word lives in `obj`, and that is what funds a six-bit set.** `CapEntry.rights` had
+  arms were explicit no-ops so a missing arm traps rather than leaking silently.
+- **The authority word lived in `obj`, and that is what funded a six-bit set.** `CapEntry.rights` had
   five bits free, one short of 5.1's cut, and `CapEntry` is a frozen 8-byte ABI. This retired the "merge
   `AUTH_PINMUX` with the clock-rate bit" plan the old ceiling forced. Accepted price: an object right is
   no longer a *distinguishable* wrong value in a mask, so the non-authority-bits spawn refusal catches
-  only bits above the six.
+  only bits above the six. (A dedicated TCB byte keeps the six-bit set and the accepted price alike,
+  and buys two more bits before anything has to widen.)
 - **The `obj` move had one blocker, closed first.** The delegation copy in `thread_spawn` copies `obj`
   and `type` with no type test, so with the word in `obj` a delegable authority cap becomes a full
-  forgery in a child table. That copy takes an explicit `CAP_AUTHORITY` refusal **first**, by type
-  rather than by rights, so it does not depend on the byte this change repurposes.
-- **Seated at `KOS_CAP_AUTHORITY` (index 2), already reserved**, so it costs zero dynamic slots on
-  every board including the four with 9 handles. That is the whole reason it is a rights-bearing cap at
-  a reserved index rather than a new object.
+  forgery in a child table. That copy took an explicit refusal of the authority cap TYPE **first**,
+  rather than resting on rights, so it did not depend on the byte this change repurposes. (Moving the
+  word off the table retires the blocker instead of guarding it: with no entry there is nothing for
+  the copy to copy, and the refusal went with the type.)
+- **Seated at the already-reserved index 2**, so it cost zero dynamic slots on every board including
+  the four smallest. That was the whole reason it was a rights-bearing cap at a reserved index rather
+  than a new object. (The TCB byte costs no index at all, which is strictly better on the same
+  arithmetic, and freed index 2 back to the dynamic range.)
 - **REJECTED: per-instance capabilities, on arithmetic rather than taste.** One capability per muxable
   pin, clock or line is roughly 100 on the larger parts against a 16-slot table ceiling. It does not
   nearly fit, so class granularity is forced.
@@ -129,11 +142,12 @@ the same reason.
 ### 5.2 Dropping an authority: `kos_cap_narrow`
 
 - **It is ungated, and it has to be.** An authority required in order to drop authorities is one no
-  thread could ever give up, and it clears bits only in the caller's own table. Narrowing to 0 empties
-  the slot, since an entry still claiming the type would answer for a capability nobody holds.
-- **It refuses any cap that is not the authority cap** (`-KOS_EINVAL`). Narrowing an object cap is not
-  merely unimplemented: dropping `CAP_WAIT` from an endpoint cap must run the `recv_holders` accounting
-  close performs, or the last-receiver `EPIPE` wake goes wrong.
+  thread could ever give up, and it clears bits only in the caller's own authority word. Narrowing to
+  0 leaves nothing further to give up, so a second narrow is refused `-KOS_EBADF`.
+- **It refuses any handle that does not name the authority word** (`-KOS_EINVAL`). Narrowing an object
+  cap is not merely unimplemented: dropping `CAP_WAIT` from an endpoint cap must run the `recv_holders`
+  accounting close performs, or the last-receiver `EPIPE` wake goes wrong. Keeping the handle argument
+  is what leaves that generalisation ABI-free.
 - **REJECTED: declaring the narrow mask as a CMake variable**, one value per build tree while one tree
   links `selftest` and `stress` against one kernel. It is per executable, `KICKOS_APP_AUTHORITY` in the
   app's own TU. The narrow runs after the pin map and the service list, so bring-up still holds its
@@ -259,17 +273,22 @@ Two records outlive them:
   UM section 1.4.3), and RISC-V `WFI` is only optionally available to U-mode with `mstatus.TW` deciding
   whether it traps, and may also be a plain NOP (priv. spec sections 3.3.3 and 3.1.6.6). The portable
   claim is that idle cannot *rely* on it. Book ch.7.5 has the long form.
-- **The reserved capability index range is full after this**: 0 stdout, 1 clock, 2 authority, 3 spare.
-  Spending index 3 means raising `KICKOS_CAP_FIRST_DYNAMIC`, which costs a dynamic slot on all four
-  9-handle boards.
+- **The reserved capability index range was full after this**: 0 stdout, 1 clock, 2 authority, 3 spare.
+  Spending index 3 meant raising `KICKOS_CAP_FIRST_DYNAMIC`, which costs a dynamic slot on every board
+  in the fleet. (Moving the authority word to the TCB gave two of those indices back; the range is 0
+  stdout, 1 clock, and the reserved-index arithmetic is the standing reason to prefer TCB state for
+  anything that names no object.)
 - **Delegation packing collides with the reserved names.** Spawn delegation puts cap *i* at child index
-  *i+1*, so a delegated cap lands on `KOS_CAP_CLOCK` and a second on the authority slot. The authority
-  cap is non-delegable so it cannot be the colliding cap, and a spawn asking for both an authority seat
-  and `cap_count >= 2` is **refused** rather than letting one silently overwrite the other. The real
-  fix, explicit per-grant destination indices, is deferred.
+  *i+1*, so a delegated cap lands on `KOS_CAP_CLOCK` and a second on the slot after it. The authority
+  seat was non-delegable so it could not be the colliding cap, and a spawn asking for both an authority
+  seat and two or more delegated caps was **refused** rather than letting one silently overwrite the
+  other. (That refusal is gone with the seat: there is no entry to overwrite. The clock-index collision
+  is not -- delegated cap 0 still lands on it.) The real fix, explicit per-grant destination indices,
+  is deferred.
 - **Cap-gen is a `uint16_t`** with no object generation behind a poolless cap, so 65536 close/re-seat
   cycles wrap it. Unreachable in-tree, same unbounded-counter class as the domain-refcount item in
-  `TODO.md`.
+  `TODO.md`. (Moot for authority, which has no slot and no generation; it still applies to the reply
+  cap.)
 
 ### The privileged-write seam family
 
@@ -310,8 +329,9 @@ escalation surface is **enumerable**.
 developer affordance for reflashing without touching the board, not a general system reset.
 
 **Decision: it shares `arch_shutdown`'s authority, `AUTH_SYSTEM`**, rather than a dedicated capability
-type at index 3 or a rights bit of its own. Reboot-to-bootloader is the same class of act as shutdown,
-and index 3 is the last free well-known index, worth more than bit granularity here. The
+type at a well-known index or a rights bit of its own. Reboot-to-bootloader is the same class of act
+as shutdown, and the last free well-known index was worth more than bit granularity here (the reserved
+range has since shrunk, which only strengthens that). The
 counter-argument, recorded because it is real: reboot-to-bootloader leaves the board accepting firmware
 over USB, so anything permitted to end the system can also put it into flashing mode. Accepted *for a
 feature compiled out of production images*, and the sharper half, a console publisher inheriting
