@@ -53,7 +53,7 @@ namespace kos
         kos_clock_set_realtime(unix_ns);
     }
     // Borrow the kernel's diagnostic LED (see kos_kernel_diag_led_set): a shared
-    // status pin, not an app-owned device -- provisional until caps land.
+    // status pin, not an app-owned device; provisional until caps land.
     inline void kernel_diag_led(bool on)
     {
         kos_kernel_diag_led_set(on);
@@ -113,10 +113,9 @@ namespace kos
             return *this;
         }
 
-        // Return the syscall status (0, or a negative -KOS_E*), surfaced now instead of
-        // swallowed: on a moved-from / failed / closed handle these do NOT block or signal
-        // -- they return -KOS_EBADF (so a caller can tell a real wait/post from a no-op),
-        // where before the thread silently proceeded as if synchronized.
+        // Return the syscall status (0, or a negative -KOS_E*). On a moved-from / failed /
+        // closed handle these do NOT block or signal: they return -KOS_EBADF, so a caller
+        // can tell a real wait/post from a no-op instead of proceeding as if synchronized.
         int wait()
         {
             return kos_sem_wait(id_);
@@ -138,7 +137,7 @@ namespace kos
     // close frees the object). Non-copyable, movable (a moved-from handle is emptied
     // so the dtor won't double-close). lock/unlock return the raw syscall codes (see
     // kos_mutex_lock: 0, -KOS_EOWNERDEAD, -KOS_EBADF, -KOS_EDEADLK). ROBUST-MUTEX CAVEAT:
-    // -KOS_EOWNERDEAD means the lock IS held (owner died) -- do NOT treat every rc < 0 as
+    // -KOS_EOWNERDEAD means the lock IS held (owner died), so do NOT treat every rc < 0 as
     // "not acquired" or you strand the mutex; special-case rc == -KOS_EOWNERDEAD as held.
     class Mutex
     {
@@ -150,8 +149,8 @@ namespace kos
         ~Mutex()
         {
             // Closing a mutex you still hold is refused (R2: kos_handle_close -> -KOS_EBUSY),
-            // so destroying a locked kos::Mutex leaks its cap -- the correct fail-safe
-            // (unlock before scope exit). Unlock a mutex before letting it die.
+            // so destroying a locked kos::Mutex leaks its cap. Unlock it before letting it
+            // die.
             if (id_ >= 0)
             {
                 kos_handle_close(id_);
@@ -197,15 +196,44 @@ namespace kos
         int id_;
     };
 
-    // IRQ-as-event handle (tier-1 userspace driver):
-    //   auto irq = kos::Irq::request(line); irq.wait(); ...; irq.ack();
-    // Non-owning handle wrapper; IRQ handles have no release path yet.
+    // IRQ line capability (tier-1 userspace driver). Two ways in:
+    //   root:   auto irq = kos::Irq::claim(line);        // needs KOS_AUTH_IRQ
+    //   driver: auto irq = kos::Irq::adopt(cap_index);   // a cap delegated at spawn
+    // then irq.wait(); ...; irq.ack();
+    // OWNING and move-only: the destructor closes the cap, which drops the binding's
+    // last reference and hands the line back if this was the only holder.
     class Irq
     {
     public:
-        static Irq request(int line)
+        static Irq claim(int line, unsigned int flags = KOS_IRQ_EDGE)
         {
-            return Irq(kos_irq_register(line));
+            return Irq(kos_irq_claim(line, flags));
+        }
+        // Wrap a cap the spawning parent already delegated into this thread's table.
+        static Irq adopt(int irq_cap)
+        {
+            return Irq(irq_cap);
+        }
+        Irq(Irq&& o)
+            : h_(o.h_)
+        {
+            o.h_ = -1;
+        }
+        Irq& operator=(Irq&& o)
+        {
+            if (this != &o)
+            {
+                close();
+                h_ = o.h_;
+                o.h_ = -1;
+            }
+            return *this;
+        }
+        Irq(Irq const&) = delete;
+        Irq& operator=(Irq const&) = delete;
+        ~Irq()
+        {
+            close();
         }
         int wait()
         {
@@ -214,6 +242,14 @@ namespace kos
         int ack()
         {
             return kos_irq_ack(h_);
+        }
+        int notify()
+        {
+            return kos_irq_notify(h_);
+        }
+        int discard()
+        {
+            return kos_irq_discard(h_);
         }
         int handle() const
         {
@@ -224,6 +260,14 @@ namespace kos
         explicit Irq(int h)
             : h_(h)
         {
+        }
+        void close()
+        {
+            if (h_ >= 0)
+            {
+                kos_handle_close(h_);
+                h_ = -1;
+            }
         }
         int h_;
     };
@@ -265,7 +309,8 @@ namespace kos::thread
                      void* stack = nullptr, uint32_t stack_size = 0,
                      void* mmio = nullptr, uint32_t mmio_size = 0,
                      kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
-                     uint8_t authority = 0)
+                     uint8_t authority = 0, uint16_t cap_capacity = 0,
+                     uint8_t const* cap_dest = nullptr)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -284,21 +329,23 @@ namespace kos::thread
         p.caps = caps;
         p.cap_count = cap_count;
         p.authority = authority;
+        p.cap_capacity = cap_capacity;
+        p.cap_dest = cap_dest;
         return kos_thread_spawn(&p);
     }
 
-    // Delegate a fixed cap list to the child (B1: cap i -> child index i+1). The
-    // common cross-thread-sem shape: a child that must wait/post sems the parent owns.
-    // Covers the extra args the caps-using workers need (a shared mem grant for the
-    // domain test).
+    // Delegate a fixed cap list to the child (B1 default: cap i -> child index i+1, and a
+    // grant may name its own index instead).
     inline int spawn_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
                           kos_cap_grant const* caps, uint8_t cap_count,
                           uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
                           bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
-                          uint8_t authority = 0)
+                          uint8_t authority = 0, uint16_t cap_capacity = 0,
+                          uint8_t const* cap_dest = nullptr)
     {
         return spawn(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
-                     nullptr, 0, nullptr, 0, caps, cap_count, authority);
+                     nullptr, 0, nullptr, 0, caps, cap_count, authority, cap_capacity,
+                     cap_dest);
     }
 }
 

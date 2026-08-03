@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// SEGGER RTT up-channel writer. The control block below reproduces the
-// documented on-target layout that J-Link locates by scanning RAM for the
-// acID string "SEGGER RTT"; it is statically initialized so the C-runtime
-// .data copy sets it up with no runtime init. Only that memory layout is
-// borrowed (a wire protocol, not vendor source) -- the ring logic is original.
+// SEGGER RTT up-channel writer. The control block below reproduces the documented
+// on-target layout that J-Link locates by scanning RAM for the ID string "SEGGER RTT";
+// it is statically initialized, so the C-runtime .data copy is the only setup it gets.
+// Clean-room: only that memory layout is borrowed (a wire protocol, not vendor source),
+// the ring logic is original.
 
 #include <kickos/rtt.h>
 
@@ -13,8 +13,8 @@
 
 namespace
 {
-    // Field NAMES are ours (KickOS style); only the field ORDER and sizes are
-    // fixed -- J-Link locates and reads this block by offset, not by name.
+    // Field ORDER and sizes are fixed: J-Link locates and reads this block by
+    // offset, not by name.
     struct RingBuffer
     {
         char const* name;
@@ -25,12 +25,12 @@ namespace
         uint32_t flags;
     };
 
-    // Two up channels now: 0 = console text, 1 = binary telemetry. The host
-    // (J-Link / OpenOCD `rtt`) reads up_count then iterates up[0..up_count-1],
-    // so the array MUST hold up_count entries laid out contiguously before down[].
+    // Up channel 0 = console text, 1 = binary telemetry. The host (J-Link / OpenOCD
+    // `rtt`) reads up_count then iterates up[0..up_count-1], so the array MUST hold
+    // up_count entries laid out contiguously before down[].
     struct ControlBlock
     {
-        char id[16]; // holds "SEGGER RTT" -- the signature J-Link scans RAM for
+        char id[16]; // holds "SEGGER RTT": the signature J-Link scans RAM for
         int32_t up_count;
         int32_t down_count;
         RingBuffer up[2];
@@ -38,11 +38,10 @@ namespace
     };
 
     char up_buf[1024];
-    // Telemetry ch1 ring. On a data-cached core (M7 / ESP32 / RX72M) this must
-    // live in uncached RAM so the probe sees writes; a non-issue on cacheless
-    // M0-M4 (the M1 targets). Size is a build knob: the default is MCU-RAM-safe;
-    // the sim/CI raises it (a host drains only at shutdown, so it must hold a
-    // whole run) via -DKICKOS_RTT_CH1_SIZE.
+    // Telemetry ch1 ring. On a data-cached core (M7 / ESP32 / RX72M) this must live in
+    // uncached RAM or the probe never sees the writes; cacheless M0-M4 are unaffected.
+    // The default size is chosen to fit MCU RAM; a sim/CI run drains only at shutdown,
+    // so it must raise the size via -DKICKOS_RTT_CH1_SIZE to hold a whole run.
 #ifndef KICKOS_RTT_CH1_SIZE
 #define KICKOS_RTT_CH1_SIZE 4096
 #endif
@@ -63,9 +62,8 @@ extern "C"
     };
 }
 
-// Single-core console: this only advances WrOff and reads the host-owned RdOff,
-// so a torn concurrent target writer (thread vs. ISR interleaving) is out of
-// scope for M1 -- callers must not write the up-channel from two contexts at
+// Single-writer only: this advances WrOff and reads the host-owned RdOff with no
+// interlock, so callers must never write the up-channel from a thread and an ISR at
 // once.
 extern "C" void kickos_rtt_write(char const* buf, size_t n)
 {
@@ -89,11 +87,10 @@ extern "C" void kickos_rtt_write(char const* buf, size_t n)
     }
 }
 
-// Channel 1 (telemetry), RECORD-ATOMIC. Callers must serialize (the kernel
-// frontend holds IrqLock across seq+stamp+write), so this is single-writer here;
-// it only advances WrOff and reads the host-owned RdOff. Whole-record-or-drop: a
-// half-written binary record would desync the decoder forever, so we check free
-// space for all `n` bytes up front and drop the record entirely if it won't fit.
+// Channel 1 (telemetry), RECORD-ATOMIC. Callers must serialize; the kernel frontend
+// does so by holding IrqLock across seq+stamp+write. Whole-record-or-drop: a
+// half-written binary record would desync the decoder forever, so free space for all
+// `n` bytes is checked up front and the record dropped entirely if it will not fit.
 extern "C" int kickos_rtt_write_record_ch1(uint8_t const* rec, size_t n)
 {
     RingBuffer& up = _SEGGER_RTT.up[RTT_CH_TELEMETRY];
@@ -123,8 +120,8 @@ extern "C" int kickos_rtt_write_record_ch1(uint8_t const* rec, size_t n)
     return 1;
 }
 
-// Drain pending ch1 bytes (rd_off -> wr_off) into `out`, advancing rd_off.
-// Host-side (sim flush); not called on the measured path.
+// Drain pending ch1 bytes (rd_off -> wr_off) into `out`, advancing rd_off. Host-side
+// use only (the sim flush); the target never drains its own ring.
 extern "C" size_t kickos_rtt_ch1_drain(char* out, size_t max)
 {
     RingBuffer& up = _SEGGER_RTT.up[RTT_CH_TELEMETRY];

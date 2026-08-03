@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Userspace syscall stubs: pack arguments and issue the arch syscall trap.
-// Identical source across arches; only arch_syscall() differs (sim trampoline
-// vs SVC on ARM).
+// Userspace syscall stubs. Identical source across arches; only arch_syscall()
+// differs (sim trampoline vs SVC on ARM).
 
 #include <kickos/sys.h>
 #include <kickos/libc/string.h>
@@ -112,6 +111,12 @@ int kos_console_publish(int ep)
                                          static_cast<uintptr_t>(ep), 0, 0, 0));
 }
 
+int kos_thread_kill(int thread_handle)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_KILL,
+                                         static_cast<uintptr_t>(thread_handle), 0, 0, 0));
+}
+
 int kos_cap_narrow(int cap, uint8_t mask)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_CAP_NARROW,
@@ -163,11 +168,10 @@ void kos_panic(char const* msg)
     __builtin_unreachable();
 }
 
-// Thread epilogue for UNPRIVILEGED threads: the arch plants this as the return
-// address of a user thread's entry, so a worker that returns exits via the
-// syscall trap (running the kernel exit path privileged) rather than calling
-// kickos_thread_return directly from unprivileged mode. Privileged threads use
-// kickos_thread_return; on the sim (no real privilege) this is unused.
+// Planted by the arch as the return address of an UNPRIVILEGED thread's entry: a worker
+// that returns must reach the kernel exit path through the syscall trap, never by
+// calling kickos_thread_return from unprivileged mode. Privileged threads use
+// kickos_thread_return; unused on the sim, which has no real privilege.
 void kickos_user_thread_return(void)
 {
     kos_exit(0);
@@ -210,22 +214,35 @@ int kos_irq_attach(int irq, int sem_id)
                      static_cast<uintptr_t>(sem_id), 0, 0));
 }
 
-int kos_irq_register(int line)
+int kos_irq_claim(int line, unsigned int flags)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_REGISTER, static_cast<uintptr_t>(line), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_CLAIM, static_cast<uintptr_t>(line),
+                     static_cast<uintptr_t>(flags), 0, 0));
 }
 
-int kos_irq_wait(int handle)
+int kos_irq_wait(int irq_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_WAIT, static_cast<uintptr_t>(handle), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_WAIT, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
 }
 
-int kos_irq_ack(int handle)
+int kos_irq_ack(int irq_cap)
 {
     return static_cast<int>(
-        arch_syscall(KOS_SYS_IRQ_ACK, static_cast<uintptr_t>(handle), 0, 0, 0));
+        arch_syscall(KOS_SYS_IRQ_ACK, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
+}
+
+int kos_irq_notify(int irq_cap)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_IRQ_NOTIFY, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
+}
+
+int kos_irq_discard(int irq_cap)
+{
+    return static_cast<int>(
+        arch_syscall(KOS_SYS_IRQ_DISCARD, static_cast<uintptr_t>(irq_cap), 0, 0, 0));
 }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -239,9 +256,8 @@ int kos_irq_unmask(int line)
 uint64_t kos_clock_now(void)
 {
     uint64_t out = 0;
-    // Surface the syscall status instead of discarding it: on a reject (bad/misaligned
-    // out-ptr, impossible for this well-formed stack local, so purely defensive) the
-    // out value is never written, so report 0 rather than an uninitialized time.
+    // On a reject (bad or misaligned out-ptr) the kernel never writes `out`, so the
+    // status must be checked or the caller gets an uninitialized time.
     long const rc = static_cast<long>(
         arch_syscall(KOS_SYS_CLOCK_NOW, reinterpret_cast<uintptr_t>(&out), 0, 0, 0));
     if (rc < 0)

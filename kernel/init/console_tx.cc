@@ -78,11 +78,10 @@ namespace
                 return;
             }
             g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[g_tx.tail]));
-            // Publish AFTER each byte, not once at the end: a synchronous CPU fault
-            // (illegal instr / MPU / bus) can land mid-loop -- it is not gated by the
-            // interrupt mask -- and its handler flushes again. A stale tail would
-            // make that flush re-push bytes already sent, doubling output before the
-            // panic banner. Per-byte publish keeps tail a truthful "already sent".
+            // Publish AFTER each byte, never once at the end. A synchronous CPU fault
+            // (illegal instruction, MPU, bus) is not gated by the interrupt mask, so it can
+            // land mid-loop, and its handler flushes again; a stale tail would make that
+            // flush re-push bytes already sent, doubling output before the panic banner.
             g_tx.tail = (g_tx.tail + 1u) & g_tx.mask;
         }
     }
@@ -125,9 +124,9 @@ void console_tx_write(char const* buf, size_t n)
         return;
     }
 
-    // The whole enqueue runs under IrqLock: it serializes concurrent thread
-    // producers and is atomic against the drain ISR. The fast-path copy is bounded
-    // (<= ring) -- microseconds, not the transmission the buffering moves off-caller.
+    // The whole enqueue runs under IrqLock: it serializes concurrent thread producers and
+    // is atomic against the drain ISR. The fast-path copy is bounded by the ring size, so
+    // the masked window is a copy, not a transmission.
     kickos::IrqLock lock;
 
     // Fast path: the burst fits.
@@ -143,13 +142,19 @@ void console_tx_write(char const* buf, size_t n)
         KICKOS_CONSOLE_TX_BARRIER();
         g_tx.head = idx;
         g_tx.backend->irq_enable();
-        // Prime the pump on the idle->busy transition. On an edge/transition-
-        // triggered TX interrupt (XMC USIC TBIEN, and -- pending HW confirmation --
-        // the PL011 with FEN=0 and the RX SCI TXI), enabling the IRQ on an idle
-        // channel raises nothing, so push the first byte directly to start the
-        // transfer; its completion event then drives the drain ISR. The prime is
-        // load-bearing there, NOT redundant. On a truly level-triggered part (K64F
-        // TDRE, asserted while the register is empty) it is a harmless immediate send.
+        // Priming the first byte on the idle->busy transition is NOT redundant: with a
+        // transition-triggered TX interrupt, enabling the IRQ on an idle channel raises
+        // nothing, and only this byte's completion event starts the drain ISR.
+        //   RX SCI TXI: REQUIRED. RX72M HW manual Rev.1.20 section 42.12.2(1) p.2308, a
+        //               TXI request is not generated "by setting the SCR.TIE bit to 1 while
+        //               the setting of the SCR.TE bit is 1". Same page, Note 2: gate a burst
+        //               at the ICU and NEVER by toggling TIE, because clearing TIE discards
+        //               an internally retained request.
+        //   XMC TBIEN:  REQUIRED. The USIC event is edge-per-word (RM V1.3 18.2.2.4
+        //               p.18-18), so an idle channel produces no event at all.
+        //   K64F TDRE:  harmless immediate send, level-asserted while the buffer is empty
+        //               (RM Rev.4 52.3.5; S1 resets to 0xC0 untransmitted).
+        //   PL011 FEN=0: unconfirmed; do not read the three above as settling it.
         if (was_empty and g_tx.head != g_tx.tail and g_tx.backend->slot_free() != 0)
         {
             g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[g_tx.tail]));
@@ -158,11 +163,10 @@ void console_tx_write(char const* buf, size_t n)
         return;
     }
 
-    // Overflow (rare: sustained > line-rate output): drain the ring + send the burst
-    // synchronously, TX IRQ off, bounded so a stuck channel cannot hang. Still under
-    // the lock -- a full drain can mask IRQs for up to the drain time, an accepted
-    // debug-console-flooding tradeoff in exchange for no producer/ISR race. Dropping
-    // kernel debug output would be worse than the stall.
+    // Overflow, meaning sustained output above the line rate: drain the ring and send the
+    // burst synchronously with the TX IRQ off, bounded so a stuck channel cannot hang.
+    // Deliberately still under the lock, so a full drain can mask IRQs for as long as the
+    // drain takes; that stall is preferred over a producer/ISR race or dropped output.
     g_tx.backend->irq_disable();
     drain_sync();
     for (size_t i = 0; i < n; i++)
@@ -175,11 +179,10 @@ void console_tx_write(char const* buf, size_t n)
     }
 }
 
-// The ISR drain pokes the device but is deliberately NOT bracketed by the B1
-// chip-writer count: console_tx_deinit detaches the handler and NVIC-masks the TX
-// line under IrqLock strictly BEFORE kos_console_publish flips the state, so this ISR
-// can never fire once the console is USER_OWNED -- there is no stale-writer window for
-// the count to guard here.
+// This drain pokes the device but is deliberately NOT bracketed by the chip-writer count:
+// console_tx_deinit detaches the handler and NVIC-masks the TX line under IrqLock strictly
+// BEFORE kos_console_publish flips the state, so this ISR cannot fire once the console is
+// USER_OWNED and there is no stale-writer window for the count to guard.
 void console_tx_isr(void)
 {
     uint32_t const head = g_tx.head; // producer cannot run during this ISR (priority)
@@ -202,11 +205,10 @@ void console_tx_flush_sync(void)
     {
         return;
     }
-    // Under IrqLock so "disable the TX IRQ + snapshot [tail, head)" is atomic against
-    // the drain ISR and any thread producer: without it a producer racing between the
-    // disable and drain_sync's head read could re-enable the IRQ or extend head while
-    // we drain. Idempotent -- a second flush finds head==tail and does nothing. Panic
-    // callers have already masked (kpanic_enter), where this nests harmlessly.
+    // Under IrqLock so the TX-IRQ disable and the [tail, head) snapshot are atomic against
+    // the drain ISR and any thread producer: a producer racing between the disable and
+    // drain_sync's head read could re-enable the IRQ or extend head mid-drain. Idempotent,
+    // since a second flush finds head == tail. Nests harmlessly under kpanic_enter's mask.
     kickos::IrqLock lock;
     g_tx.backend->irq_disable();
     drain_sync();
@@ -225,10 +227,9 @@ void console_buffer_init(void)
     {
         return;
     }
-    // Fail loud: a silently-dropped attach would leave the ring armed but never
-    // drained -- output would fill it, fall back to the bounded sync path, and
-    // "look like it works" while every buffered write stalled. A misconfigured TX
-    // line at boot is a build/port bug, not a runtime condition to paper over.
+    // A silently-dropped attach would leave the ring armed but never drained: output fills
+    // it, falls back to the bounded sync path, and looks like it works while every buffered
+    // write stalls. A misconfigured TX line at boot is a build/port bug, so panic.
     if (not kickos::irq_attach(line, console_tx_isr_trampoline, nullptr))
     {
         kickos::kpanic("console_buffer_init: irq_attach failed");

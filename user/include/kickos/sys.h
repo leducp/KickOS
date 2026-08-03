@@ -106,7 +106,9 @@ int kos_reply(int reply_cap, void const* buf, size_t len);
 // It also seats the CALLER's own cap index 0 to `ep`, so the publishing thread (the
 // init/root thread) can itself print through the driver afterwards. Re-callable to
 // re-point at a fresh driver (which also re-points the caller's cap 0). -> 0,
-// -KOS_EPERM (unprivileged), or -KOS_EBADF (bad / non-endpoint / stale cap).
+// -KOS_EPERM (unprivileged), -KOS_EBADF (bad / non-endpoint / stale cap), or
+// -KOS_EOVERFLOW (the endpoint's reference count is at its ceiling; nothing was
+// published and the kernel console is untouched).
 int kos_console_publish(int ep);
 
 // Drop THIS thread's capability. Type-agnostic (a cap knows its own type) and
@@ -119,6 +121,19 @@ int kos_sem_destroy(int cap); // alias of kos_handle_close (source compatibility
 
 int kos_thread_spawn(struct kos_thread_params const* params);
 void kos_exit(int code) __attribute__((noreturn));
+
+// Cancel a thread YOU spawned, named by the handle kos_thread_spawn returned. Returns 0,
+// -KOS_EBADF (bad / stale / already-exited handle), -KOS_EPERM (you did not spawn it) or
+// -KOS_EINVAL (naming yourself; that is kos_exit).
+//
+// COOPERATIVE, and the caller must treat it that way: it marks the target and, if the
+// target is parked in kos_irq_wait, wakes it there with -KOS_ECANCELED. The target then
+// runs its own exit. A thread parked in kos_recv, sleeping, or looping without ever
+// reaching kos_irq_wait is marked and KEEPS RUNNING: 0 means the request was accepted,
+// never that the thread is gone. There is no join, so a caller that must observe the
+// death watches something the target's exit changes (a released device window, an
+// endpoint going -KOS_EPIPE).
+int kos_thread_kill(int thread_handle);
 
 // End the WHOLE system with `status`: drain the buffered console, then hand over to the
 // chip's shutdown. This is what a returning kickos_init_entry does (see
@@ -178,12 +193,27 @@ int kos_irq_unmask(int line); // 0, or -KOS_EPERM (unprivileged) / -KOS_EINVAL (
 // -KOS_EBUSY (the line is already bound: no stealing).
 int kos_irq_attach(int irq, int sem_id);
 
-// Tier-1 IRQ-as-event: an unprivileged driver binds a line (irq_register), waits
-// for it to fire (irq_wait, thread context), then unmasks it once serviced
-// (irq_ack). The first-level ISR masks the line and posts the bound notification.
-int kos_irq_register(int line); // -> handle, or -KOS_EINVAL/-KOS_EBUSY/-KOS_ENOMEM
-int kos_irq_wait(int handle);   // block until the line fires; 0, or -KOS_EBADF
-int kos_irq_ack(int handle);    // unmask the line; 0, or -KOS_EBADF
+// Tier-1 IRQ-as-event. The line IS a capability: a privileged bring-up path CLAIMS it
+// (needs KOS_AUTH_IRQ) and delegates the resulting cap to the unprivileged driver at
+// spawn, which then waits for the line to fire (thread context) and unmasks it once
+// serviced. The first-level ISR masks the line and posts the bound notification.
+// Possession of the cap, not an authority bit, is what authorises wait/ack/notify.
+// `flags` is a kos_irq_claim_flags set; the trigger type is fixed for the line's life.
+int kos_irq_claim(int line, unsigned int flags); // -> cap, or -KOS_EPERM/EINVAL/EBUSY/ENOMEM
+int kos_irq_wait(int irq_cap);   // block until the line fires; 0, or -KOS_EBADF/-KOS_EPERM
+int kos_irq_ack(int irq_cap);    // unmask the line; 0, or -KOS_EBADF/-KOS_EPERM
+// Post the binding WITHOUT touching the controller: the doorbell a service thread
+// rings so the IRQ thread, sole owner of the peripheral registers, primes a transfer.
+// The woken waiter must tolerate finding nothing asserted. Needs KOS_CAP_SIGNAL.
+int kos_irq_notify(int irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
+// Drop the controller's latched pending for the line. An EDGE binding's rearm
+// deliberately KEEPS that latch (a raise that arrived while the line was masked must
+// still be delivered), and the controller is a reserved block no grant can reach, so
+// this is the only way to retire a pending the driver knows is stale: a raise that
+// predates the driver owning the device, or one it has just serviced out of band.
+// Neither masks nor unmasks: use it between a wait return and the ack, where the ISR
+// has already left the line masked. Needs KOS_CAP_WAIT.
+int kos_irq_discard(int irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
 uint64_t kos_clock_now(void);   // monotonic nanoseconds
 
 // Running core clock in Hz, so an app can do its own cycle<->ns math without the
@@ -219,12 +249,12 @@ int kos_periph_enable(uintptr_t base);
 // not on the allowlist), or -KOS_ENOSYS (no chip backend).
 int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 
-// Drop authority: narrow the capability `cap` to `mask` (kos_cap_authority bits), which
-// can only CLEAR bits. A mask naming a bit the cap lacks does not add it. `cap` must be
-// the authority cap, whose well-known handle is KOS_CAP_AUTHORITY (a fresh table has
-// cap-gen 0, so the handle equals the index). Narrowing to 0 gives up every authority.
+// Drop authority: narrow the caller's authority word to `mask` (kos_cap_authority bits),
+// which can only CLEAR bits. A mask naming a bit it lacks does not add it. `cap` must be
+// KOS_CAP_AUTHORITY, a pseudo-handle: the authority word is TCB state, not a table entry.
+// Narrowing to 0 gives up every authority.
 //
-// Irreversible for the caller: nothing widens an authority cap, and only a spawning
+// Irreversible for the caller: nothing widens an authority word, and only a spawning
 // parent can seat one. The kernel refuses those calls from the same thread from then
 // on, including from application code that has gone wrong.
 //
