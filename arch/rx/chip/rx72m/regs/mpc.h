@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RX72M MPC (multi-function pin controller) register offsets + fields for the
-// SCI6 console pins (Phase-1 register consolidation). From the RX72M Group
-// User's Manual: Hardware (r01uh0804ej0120, Rev.1.20) sec.23; hand-rolled,
-// clean-room. ADDITIVE: duplicates the literals still inline in chip_rx72m.cc.
-// Bases: mmap.h.
+// RX72M MPC (multi-function pin controller) register offsets + fields for the SCI6
+// console pins. From the RX72M Group User's Manual: Hardware (r01uh0804ej0120,
+// Rev.1.20) sec.23; hand-rolled, clean-room. Bases: mmap.h.
 
 #ifndef KICKOS_ARCH_RX_CHIP_RX72M_REGS_MPC_H
 #define KICKOS_ARCH_RX_CHIP_RX72M_REGS_MPC_H
@@ -31,10 +29,10 @@ namespace kickos::rx::reg::mpc
     constexpr uintptr_t pfs(uint32_t port, uint32_t pin) { return PFS + port * 8u + pin; }
 
     // arch_pinmux_set `func` encoding for this chip: [7:0] the PmnPFS byte written
-    // verbatim (PSEL[5:0] | ISEL bit6 | ASEL bit7, sec.23.2.2 -- every bit is defined,
-    // so no sub-byte reserved mask), [8] the PORTm.PMR bit value, [9] arm the PFS
-    // write. [31:10] must be zero -- reserved so ODR/DSCR/PCR can join the encoding
-    // later without a stale word being silently accepted.
+    // verbatim (PSEL[5:0] | ISEL bit6 | ASEL bit7, sec.23.2.2; every bit is defined, so
+    // no sub-byte reserved mask), [8] the PORTm.PMR bit value, [9] arm the PFS write.
+    // [31:10] must be zero, so a stale word cannot be silently accepted once ODR/DSCR/PCR
+    // join the encoding.
     constexpr uint32_t PINMUX_PFS_MASK = 0x000000FFu;
     constexpr uint32_t PINMUX_PMR = 1u << 8;     // 1 = peripheral function, 0 = general I/O
     constexpr uint32_t PINMUX_PFS_EN = 1u << 9;  // arm the PmnPFS write

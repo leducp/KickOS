@@ -4,7 +4,7 @@
  * Linker script for the Nordic nRF51822 (BBC micro:bit v1), Cortex-M0. This is
  * the runnable armv6m CI/verification target under QEMU (-M microbit).
  *   Flash : 256 KiB @ 0x0000_0000
- *   SRAM  :  16 KiB @ 0x2000_0000   (tiny -- provisioning is sized down to match)
+ *   SRAM  :  16 KiB @ 0x2000_0000   (tiny; provisioning is sized down to match)
  */
 
 ENTRY(Reset_Handler)

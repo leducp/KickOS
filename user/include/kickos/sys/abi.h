@@ -33,9 +33,11 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_ATTACH = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY)
     KOS_SYS_CLOCK_NOW = 12,     // (uint64_t* out)       -> 0, or -KOS_EINVAL/-KOS_EFAULT (bad out-ptr)
     KOS_SYS_RAM_ALLOC = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
-    KOS_SYS_IRQ_REGISTER = 14,  // (line)                -> irq handle, or -KOS_E* (EINVAL/EBUSY/ENOMEM)
-    KOS_SYS_IRQ_WAIT = 15,      // (handle)              -> 0, or -KOS_EBADF
-    KOS_SYS_IRQ_ACK = 16,       // (handle)              -> 0, or -KOS_EBADF
+    KOS_SYS_IRQ_CLAIM = 14,     // (line, flags) -> CAP_IRQ cap handle, or -KOS_E*: EPERM (lacks
+                                //   KOS_AUTH_IRQ), EINVAL (line/flags), EBUSY (line owned),
+                                //   ENOMEM (binding pool or cap table full)
+    KOS_SYS_IRQ_WAIT = 15,      // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
+    KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
     KOS_SYS_IRQ_SPURIOUS = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
     KOS_SYS_DIAG_LED_SET = 19,  // (on)                  -> 0 (kernel diagnostic LED)
     KOS_SYS_DIAG_LED_TOGGLE = 20, // ()                  -> 0 (kernel diagnostic LED)
@@ -48,7 +50,8 @@ enum kos_syscall_nr
     KOS_SYS_ENDPOINT_CREATE = 26, // ()                          -> endpoint cap, or -KOS_ENOMEM
     KOS_SYS_SEND = 27,          // (cap, buf, len)  -> bytes transferred, or -KOS_E* (see kos_send)
     KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or -KOS_E*
-    KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (not priv), -KOS_EBADF (bad cap)
+    KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (not priv), -KOS_EBADF (bad
+                                  //   cap), -KOS_EOVERFLOW (endpoint refcount at its ceiling)
     KOS_SYS_CPU_CLOCK_SET = 30,  // (kos_pstate_t as u32) -> landed core Hz (u32); 0 == cannot-change
     KOS_SYS_GRANT_PROBE = 31,    // (op, base, size) -> Rule 7 grant predicate 0/1, or for ops 6/7
                                  //   the raw reserved-block base/size; a BAD op returns -KOS_EINVAL
@@ -71,10 +74,29 @@ enum kos_syscall_nr
                                //   abort has to be able to say why. msg is copied into
                                //   kernel memory bounded + byte-checked; a message the
                                //   kernel cannot read is replaced, never dereferenced.
-    KOS_SYS_PERIPH_REG_WRITE = 42 // (base, offset, value) -> 0, -KOS_EPERM (caller holds no
+    KOS_SYS_PERIPH_REG_WRITE = 42, // (base, offset, value) -> 0, -KOS_EPERM (caller holds no
                                //   window at that base), -KOS_EINVAL (base+offset is not on
                                //   this chip's allowlist), -KOS_ENOSYS (no backend). Gated on
                                //   possession of the block at `base`, not on an authority bit.
+    KOS_SYS_IRQ_NOTIFY = 43,   // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks SIGNAL).
+                               //   Software-posts the binding WITHOUT touching the controller:
+                               //   the TX doorbell, not a simulated device raise.
+    KOS_SYS_IRQ_DISCARD = 44,  // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT).
+                               //   Drops whatever the controller has latched for the line.
+                               //   Neither masks nor unmasks.
+    KOS_SYS_THREAD_KILL = 45   // (thread_handle) -> 0, -KOS_EBADF (bad/stale/exited handle),
+                               //   -KOS_EPERM (the caller did not spawn that thread),
+                               //   -KOS_EINVAL (naming yourself; that is KOS_SYS_EXIT).
+                               //   COOPERATIVE: it marks the target and wakes it out of an
+                               //   irq_wait with -KOS_ECANCELED; the target exits itself.
+};
+
+// Flags for KOS_SYS_IRQ_CLAIM. The trigger type is a property of the SOURCE, so it is
+// fixed at claim time and never changes for the binding's life.
+enum kos_irq_claim_flags
+{
+    KOS_IRQ_EDGE = 0,      // default: latch-and-coalesce rearm (bare unmask)
+    KOS_IRQ_LEVEL = 1 << 0 // rearm discards the latch first, then unmasks
 };
 
 // `op` selector for KOS_SYS_GRANT_PROBE (self-test only). Values are a frozen
@@ -167,16 +189,17 @@ enum kos_cap_rights
     KOS_CAP_TRANSFER = 1 << 2 // may be delegated onward
 };
 
-// The authority word of the authority cap at KOS_CAP_AUTHORITY (must mirror
-// kickos::CapAuthority): its own field, sharing no numbering with kos_cap_rights.
-// A thread may pass a bit to a child (kos_thread_params::authority) only if it holds
-// that bit, and may drop bits with kos_cap_narrow. Nothing widens.
+// The thread's authority word (must mirror kickos::CapAuthority): its own field,
+// sharing no numbering with kos_cap_rights. It is TCB state, not a capability: there is
+// no table entry for it and nothing can delegate it. A thread may pass a bit to a
+// child (kos_thread_params::authority) only if it holds that bit, and may drop bits with
+// kos_cap_narrow(KOS_CAP_AUTHORITY, mask). Nothing widens.
 enum kos_cap_authority
 {
     KOS_AUTH_MEMORY = 1 << 0,  // kos_ram_alloc, the spawn-time MMIO grant, kos_mem_self_grant
     KOS_AUTH_PINMUX = 1 << 1,  // kos_pinmux_set
     KOS_AUTH_PSTATE = 1 << 2,  // kos_cpu_clock_set
-    KOS_AUTH_IRQ = 1 << 3,     // kos_irq_attach, kos_irq_unmask
+    KOS_AUTH_IRQ = 1 << 3,     // kos_irq_claim, kos_irq_attach, kos_irq_unmask
     KOS_AUTH_SYSTEM = 1 << 4,  // kos_shutdown, kos_reboot
     KOS_AUTH_CONSOLE = 1 << 5  // kos_console_publish
 };
@@ -190,13 +213,12 @@ enum kos_cap_authority
 // unprivileged driver whatever else that bit covers.
 
 // One entry of a spawn delegation list: hand the child a narrowed copy of the
-// parent cap `source_cap`. Deterministic placement (B1): delegated cap i lands at
-// the child's table index i+1 (index 0 reserved), and a fresh child table has
-// cap-gen 0 so the child's handle value == its index: known a priori, no handoff.
+// parent cap `source_cap`. Deterministic placement (B1): a fresh child table has cap-gen
+// 0, so the child's handle value EQUALS its index and is known a priori with no handoff.
+// Every driver bring-up and every service header is built on that.
 //
-// Table index of the FIRST delegated cap (i == 0). A driver spawned with one
-// delegated recv cap reads it here with no handoff; delegated cap i is at
-// KOS_SPAWN_DELEGATED_CAP0 + i.
+// Table index of the FIRST delegated cap (i == 0) under DEFAULT placement: delegated cap
+// i lands at KOS_SPAWN_DELEGATED_CAP0 + i.
 #define KOS_SPAWN_DELEGATED_CAP0 1
 struct kos_cap_grant
 {
@@ -222,17 +244,39 @@ struct kos_thread_params
     void* stack_base;    // caller-owned thread stack; 0 => kernel default (KICKOS_USER_STACK_SIZE)
     uint32_t stack_size; // size of the caller stack (bytes); ignored when stack_base == 0
     struct kos_cap_grant const* caps; // optional caps to delegate to the child (0 => none)
-    uint8_t cap_count;   // number of entries in caps[]; caps land at child indices 1..cap_count
-    // Authority bits (kos_cap_authority KOS_AUTH_*) to seat as the child's authority cap
-    // at KOS_CAP_AUTHORITY; 0 => none. Only a thread that already holds each bit may
-    // pass it: narrows, never widens, like a cap_grant mask. Fits in the padding after
-    // cap_count, so the struct does not grow. It, not CapEntry, is what bounds the
-    // authority word to 8 bits.
+    uint8_t cap_count;   // number of entries in caps[]; under default placement they land
+                         // at child indices 1..cap_count.
+                         // Above KICKOS_MAX_SPAWN_GRANTS: -KOS_EINVAL. That bound is the
+                         // spawn stager's, NOT the child table's ceiling.
+    // OPTIONAL per-grant destination indices, cap_count entries parallel to caps[], or
+    // null for "every cap takes its default index". An entry of 0 also means default, and
+    // 0 can never be a real destination: index 0 is the kernel's stdout slot and
+    // cap_install_at refuses it outright.
     //
-    // Rejected with -KOS_EINVAL together with cap_count >= KOS_CAP_AUTHORITY: delegated
-    // cap i lands at child index i+1, so a second delegated cap would land on the
-    // authority slot (until per-grant destination indices land; <kickos/sys/cap_index.h>).
+    // Default placement puts the first delegated cap at index 1, which is KOS_CAP_CLOCK's
+    // well-known index, so a parent handing a child one cap aliases a reserved name unless
+    // it names a destination here.
+    //
+    // Checked before the child exists, so a bad list costs -KOS_EINVAL and not a half-built
+    // thread: no two grants may land on the same index, counting the defaulted ones, and
+    // every index is below the capacity the child ACTUALLY receives, which is the bucket
+    // class the request rounded up to and not the request.
+    uint8_t const* cap_dest;
+    // Authority bits (kos_cap_authority KOS_AUTH_*) to seat as the child's authority
+    // word; 0 => none. Only a thread that already holds each bit may pass it: narrows,
+    // never widens, like a cap_grant mask. This 8-bit field is what bounds the authority
+    // word to 8 bits.
     uint8_t authority;
+    // Capability-table capacity to give the child, or 0 for the board default. The
+    // kernel rounds it UP to the smallest bucket class that fits and REFUSES if that
+    // class is exhausted; it never spills into a larger one, so a refusal names one
+    // per-board count.
+    //
+    // NARROW-ONLY, and that is a ceiling rather than a budget: a parent may not ask for
+    // more than its own capacity, but nothing is conserved, so a parent of capacity N may
+    // spawn any number of N-children. The per-class counts are the only wall against
+    // draining the slab.
+    uint16_t cap_capacity;
 };
 
 #endif

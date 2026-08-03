@@ -1,30 +1,30 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Minimal in-kernel debug console: write-only, unbuffered, routed to the arch
-// console bottom edge (sim: host stdout). The standard microkernel exception
-// for panic/early-boot/fault reporting.
+// Minimal in-kernel debug console: write-only, routed to the arch console bottom edge
+// (sim: host stdout). Reserved for panic, early boot and fault reporting.
 
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/arch/arch.h>
 #include <kickos/console_tx.h>
+#include <kickos/domain.h> // dev_window_free (the reclaim precondition)
 #include <kickos/irqlock.h>
 #include <kickos/libc/string.h>
 #include <kickos/libc/fmt.h>
 
 #include <stdarg.h>
 
-// Console backend selection (from the build; see KICKOS_CONSOLE). Default to the
-// chip transport only so a standalone compile still prints.
+// Set by the build from KICKOS_CONSOLE. The chip-only default keeps a standalone
+// compile printing.
 #ifndef KICKOS_CONSOLE_CHIP
 #define KICKOS_CONSOLE_CHIP 1
 #endif
 #ifndef KICKOS_CONSOLE_RTT
 #define KICKOS_CONSOLE_RTT 0
 #endif
-// Lower '\n' to CR+LF on the chip UART only (bare metal). Off by default so a
-// standalone/sim compile stays raw. Set by the build (see KICKOS_CONSOLE_CRLF).
+// Lowers '\n' to CR+LF on the chip UART only. Off by default so a standalone/sim
+// compile stays raw.
 #ifndef KICKOS_CONSOLE_CRLF
 #define KICKOS_CONSOLE_CRLF 0
 #endif
@@ -36,36 +36,38 @@
 namespace
 {
     // Forces the polled path once a panic has started: the ring's drain ISR is masked
-    // from that point on. kpanic_enter reaches RECLAIMED on every terminal path, and
-    // RECLAIMED already routes polled, so this carries only a panic that does NOT
-    // reclaim (the M2 kill-and-resume path noted in kpanic_enter).
+    // from that point on. Only carries a panic that does NOT reclaim, since RECLAIMED
+    // already routes polled.
     volatile bool g_console_panicking = false;
 
-    // Console device-ownership axis (orthogonal to the buffered-vs-sync decision):
-    // who owns the UART TX register. Consulted BEFORE the buffered/sync sub-decision,
-    // because in USER_OWNED the kernel must touch the device on NO path at all.
-    // See docs/design-m3-console-handover-stageii.md (D1).
+    // Who owns the UART TX register. Must be consulted BEFORE the buffered/sync
+    // sub-decision: in USER_OWNED the kernel may touch the device on NO path at all.
+    // See docs/design-m3-console-handover-stageii.md.
     enum class ConsoleState : uint8_t
     {
         KERNEL_OWNED, // boot default; kernel drives the UART (buffered ring or polled)
         USER_OWNED,   // a userspace driver owns the UART; kernel chip path DROPS
-        RECLAIMED     // panic forcibly took the UART back; polled-only
+        RECLAIMED     // the kernel forcibly took the UART back (panic, or driver death);
+                      // polled-only
     };
     volatile ConsoleState g_console_state = ConsoleState::KERNEL_OWNED;
 
-    // In-flight kernel chip writers (B1): incremented under the same read that decided
-    // to poke the device while KERNEL_OWNED, decremented after. kos_console_publish
-    // spins on this (state already flipped to USER_OWNED) so a writer that raced past a
-    // stale KERNEL_OWNED read drains off the device before the userspace driver touches
-    // it. After the flip NO path increments it, so it strictly drains to 0.
+    // Set by the cap layer when the published console endpoint loses its last
+    // WAIT-bearing cap; consumed by console_on_driver_death at the end of exit_current.
+    // A flag rather than an immediate reclaim; see console_tx.h.
+    volatile bool g_console_driver_died = false;
+
+    // In-flight kernel chip writers: incremented under the same state read that decided
+    // to poke the device while KERNEL_OWNED, decremented after. kos_console_publish flips
+    // the state first and then spins on this, so a writer that raced past a stale
+    // KERNEL_OWNED read is off the device before the userspace driver touches it. Nothing
+    // increments it after the flip, so it strictly drains to 0.
     volatile int g_chip_writers = 0;
 }
 
-// Console-ownership seam shared with console_tx.cc (disarm-fallback gate) and the
-// kos_console_publish syscall (handover). Declared in console_tx.h. Every access to the
-// chip-writer count, mutators and reader alike, runs under IrqLock: console_emit can run
-// in ISR/fault context, so a plain volatile increment could tear against a thread
-// producer's, and an unlocked reader could observe the torn intermediate.
+// Every access to the chip-writer count, mutators and reader alike, MUST run under
+// IrqLock: console_emit can run in ISR/fault context, so an unlocked volatile RMW tears
+// against a thread producer's and an unlocked reader can observe the intermediate.
 extern "C" int console_owner_is_kernel(void)
 {
     return static_cast<int>(g_console_state == ConsoleState::KERNEL_OWNED);
@@ -88,10 +90,47 @@ extern "C" void console_chip_writer_leave(void)
     g_chip_writers = g_chip_writers - 1;
 }
 
-// Read under the same lock the mutators take: an unlocked reader can observe a count
-// between a writer's load and its store, and a stale zero in kos_console_publish's
-// handover drain hands the UART to a userspace driver while a kernel writer is still
-// using the device. The drain yields between polls, so there is no livelock.
+extern "C" void console_note_driver_death(void)
+{
+    g_console_driver_died = true;
+}
+
+extern "C" void console_on_driver_death(void)
+{
+    if (not g_console_driver_died)
+    {
+        return;
+    }
+    // The note fires on the endpoint's last RECEIVER, which is the service thread, not
+    // necessarily the thread holding the registers: a driver is a THREAD GROUP.
+    // Reclaiming on the note alone would reprogram the UART under a live IRQ thread that
+    // owns those registers and silence its source (INT_ENA=0), parking it forever. So the
+    // precondition is asked of the DEVICE: nobody may still hold the window
+    // arch_console_reclaim is about to write. The note stays SET across a refusal and
+    // every exit_current and voluntary close re-runs this, so the LAST holder's own exit
+    // reclaims.
+    uintptr_t win_base = 0;
+    size_t win_size = 0;
+    arch_console_reclaim_window(&win_base, &win_size);
+    if (win_size != 0 and not kickos::dev_window_free(win_base, win_size))
+    {
+        return;
+    }
+    g_console_driver_died = false;
+    // Only a PUBLISHED console can lose its driver, so any other state means the flag
+    // outlived what set it (a re-publish, or a panic that already reclaimed). RECLAIMED is
+    // stored before the body so a fault inside that body cannot recurse, and so the body
+    // runs exactly once.
+    if (g_console_state != ConsoleState::USER_OWNED)
+    {
+        return;
+    }
+    g_console_state = ConsoleState::RECLAIMED;
+    arch_console_reclaim();
+}
+
+// A stale zero here makes kos_console_publish's handover drain give the UART to a
+// userspace driver while a kernel writer is still on the device, hence the lock.
 extern "C" int console_chip_writers(void)
 {
     kickos::IrqLock lock;
@@ -101,32 +140,27 @@ extern "C" int console_chip_writers(void)
 namespace kickos
 {
 #if KICKOS_CONSOLE_CHIP
-    // Route one already-CRLF-expanded chunk to the chip. The buffered path is used
-    // only in ordinary thread context with the ring armed; panic, any ISR/fault
-    // context, and pre-arm boot fall back to the bounded polled writer. This is the
-    // single choke point that keeps the ring a true single-producer (never entered
-    // from ISR context).
-    //
-    // Guarded on the chip backend: with it compiled out this has no caller at all
-    // (KICKOS_CONSOLE=none / =rtt).
+    // Takes an already-CRLF-expanded chunk. The buffered path is reachable only from
+    // ordinary thread context with the ring armed; panic, ISR/fault context and pre-arm
+    // boot fall back to the bounded polled writer. This is the single choke point that
+    // keeps the ring a true single-producer, so no other site may enqueue.
     static void console_emit(char const* buf, size_t n)
     {
         switch (g_console_state)
         {
         case ConsoleState::KERNEL_OWNED:
         {
-            // Bracket the device poke with the in-flight count under the SAME state read
-            // (B1). The buffered branch's poke happens inside console_tx_write's IrqLock
-            // (serialized with deinit); the else branch's polled poke does not, so the
-            // count is what publish drains against.
+            // The poke must be bracketed by the in-flight count under the SAME state read
+            // that selected this branch. The polled poke has no other serialisation, so
+            // this count is what publish drains against.
             console_chip_writer_enter();
             if (console_tx_armed() != 0 and arch_in_isr() == 0 and not g_console_panicking)
             {
-                arch_console_write(buf, n); // buffered ring
+                arch_console_write(buf, n);
             }
             else
             {
-                arch_console_write_sync(buf, n); // polled
+                arch_console_write_sync(buf, n);
             }
             console_chip_writer_leave();
             return;
@@ -137,25 +171,22 @@ namespace kickos
         }
         case ConsoleState::RECLAIMED:
         {
-            arch_console_write_sync(buf, n); // panic reclaimed it -> polled only
+            arch_console_write_sync(buf, n); // polled only, whatever the ring's state
             return;
         }
         }
     }
 #endif
 
-    // Fan-out to every enabled backend (compile-time). Per-backend locking: the
-    // RTT ring is a WrOff read-modify-write written from thread/ISR/fault contexts,
-    // so it runs under the crit section (microseconds); the chip transport routes
-    // through console_emit (buffered enqueue, or the bounded polled writer) and does
-    // its own brief locking internally -- never held under IrqLock across a full
-    // transmission (a 256B write at 115200 would mask interrupts for ~22 ms).
+    // Locking is PER BACKEND. RTT's WrOff RMW is written from thread, ISR and fault
+    // context, so it takes the crit section for the few microseconds it needs. The chip
+    // transport locks internally and must NEVER be held under IrqLock across a whole
+    // transmission: a 256 B write at 115200 would mask interrupts for ~22 ms.
     void kconsole_write(char const* buf, size_t n)
     {
 #if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
-        // KICKOS_CONSOLE=none: every backend is compiled out and this is deliberately
-        // a sink. The kernel still panics, faults and boots identically; it just says
-        // nothing.
+        // KICKOS_CONSOLE=none: every backend is compiled out and this is deliberately a
+        // sink. Panic, fault and boot behaviour is unchanged; they just say nothing.
         (void)buf;
         (void)n;
 #endif
@@ -167,11 +198,9 @@ namespace kickos
 #endif
 #if KICKOS_CONSOLE_CHIP
 #if KICKOS_CONSOLE_CRLF
-        // Expand '\n' -> "\r\n" once into a scratch buffer and emit whole chunks:
-        // a typical line becomes ONE console_emit (one enqueue / one lock) instead
-        // of one per fragment. The kernel never emits '\r' itself, so no doubling.
-        // RTT above stays raw (its viewer cooks). Chunked, so correctness does not
-        // depend on the buffer size; flush leaving room for a possible '\r'+'\n'.
+        // The kernel never emits '\r' itself, so this cannot double one. RTT above stays
+        // raw because its viewer cooks. The flush leaves room for a '\r'+'\n' pair, so
+        // correctness does not depend on the scratch size.
         char cooked[128];
         size_t j = 0;
         for (size_t i = 0; i < n; i++)
@@ -214,7 +243,7 @@ namespace kickos
 
     void kpanic(char const* msg)
     {
-        kpanic_enter(); // mask IRQs + force sync path + flush queued bytes
+        kpanic_enter();
         kputs("\nKERNEL PANIC: ");
         kputs(msg);
         kputs("\n");
@@ -222,26 +251,22 @@ namespace kickos
     }
 }
 
-// See kernel.h. Defined here so it can touch the file-local panic flag; extern "C"
-// so the arch fault reporters (separate TUs) can call it. Ordering matters: mask
-// FIRST (no ISR can enqueue after), then set the flag, then flush what is already
-// queued.
+// See kernel.h. The order below is load-bearing: mask FIRST so no ISR can enqueue after,
+// then set the flag, then flush what is already queued.
 extern "C" void kpanic_enter(void)
 {
     (void)arch_irq_save(); // never restored: the panic/fault path does not return
-    // Force the UART back to a polled-ready channel so the panic banner reaches the wire.
-    // Reclaim from ANY prior state, not only USER_OWNED: the ownership state tracks a
+    // Reclaims from ANY prior state, not only USER_OWNED: the ownership state tracks a
     // PUBLISH, never whether the device is garbled, and a thread granted the console
-    // window can wreck the channel with no publish at all (KERNEL_OWNED, see
-    // user/apps/xmc4800-relax/conreclaim). RECLAIMED is stored BEFORE the call, so a
-    // synchronous fault inside the reclaim body re-enters here and stops instead of
-    // recursing; it is also what makes reclaim run exactly once, so a body that
-    // truncates the byte in the shift register cannot cut the banner it just printed.
-    // Every chip body is idempotent absolute stores (arch.h), safe on a device no
-    // driver ever touched. Runs BEFORE the flush (a no-op post-handover: ring disarmed).
-    // M2 DEPENDENCY: only a TERMINAL fault exit may reclaim; a kill-and-resume fault path
-    // must NOT (the driver keeps the device, a dark report there is correct). Gate on
-    // "this fault terminates the system", not on "a fault happened".
+    // window can wreck the channel with no publish at all. RECLAIMED is stored BEFORE the
+    // call so a synchronous fault inside the reclaim body re-enters here and stops instead
+    // of recursing, and so the body runs exactly once: a second run could truncate the
+    // byte in the shift register and cut the banner it just printed. Every chip body is
+    // idempotent absolute stores (arch.h), safe on a device no driver ever touched.
+    // Must run BEFORE the flush.
+    // Only a TERMINAL fault exit may reclaim. When a kill-and-resume fault path arrives,
+    // gate this on "this fault terminates the system", not on "a fault happened": the
+    // driver keeps the device and a dark report there is correct.
     if (g_console_state != ConsoleState::RECLAIMED)
     {
         g_console_state = ConsoleState::RECLAIMED;
@@ -251,9 +276,8 @@ extern "C" void kpanic_enter(void)
     console_tx_flush_sync();
 }
 
-// Ordered hand-over to the chip's bootloader. MUST NOT be file-local: the once-flag is
-// shared with kfault_terminate, whose fallback body is a separate translation unit
-// (arch/common/kfault_terminate_default.cc).
+// MUST NOT be file-local: kfault_terminate's fallback body is a separate translation unit
+// (arch/common/kfault_terminate_default.cc) and shares the once-flag through this symbol.
 #if KICKOS_SHUTDOWN_TO_BOOTLOADER
 namespace
 {
@@ -262,17 +286,17 @@ namespace
 
 extern "C" void kickos_bootloader_handover(void)
 {
-    // arch_reboot kpanics if the ROM call returns, and kpanic ends in
-    // kfault_terminate -- which lands back here. Try exactly once.
+    // arch_reboot kpanics if the ROM call returns, kpanic ends in kfault_terminate, and
+    // that lands back here. Exactly once, or it recurses.
     if (g_handover_tried)
     {
         return;
     }
     g_handover_tried = true;
     console_tx_flush_sync();
-    // The bootrom reboots after a short delay (10 ms on RP2350), which a byte still
-    // sitting in the UART FIFO or shift register can outrun -- truncating the very
-    // dump the image was flashed to produce. flush_sync only empties the ring.
+    // console_tx_flush_sync only empties the ring. The bootrom reboots after a short delay
+    // (10 ms on RP2350), which a byte still in the UART FIFO or shift register can outrun,
+    // truncating the very dump the image was flashed to produce.
     arch_console_flush_sync();
     (void)arch_reboot(); // -KOS_ENOSYS on a chip with no bootloader entry: caller halts
 }
@@ -282,8 +306,8 @@ extern "C" void kickos_bootloader_handover(void)
 }
 #endif
 
-// See kernel.h. Every ordered terminal path funnels here so the drain-then-hand-over
-// order exists once, upstream of the per-chip arch_shutdown.
+// See kernel.h. Every ordered terminal path must funnel here, so the drain-then-hand-over
+// order exists in exactly one place upstream of the per-chip arch_shutdown.
 extern "C" void kickos_terminate(int status)
 {
     console_tx_flush_sync();
@@ -293,10 +317,10 @@ extern "C" void kickos_terminate(int status)
 
 extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
 {
-    // Funnel through kpanic_enter FIRST (B2): a terminal fault in USER_OWNED must reclaim
-    // the UART (the likeliest post-handover faulter IS the console driver itself), else the
-    // report prints to a device the kernel no longer owns and the system halts silently.
-    // kpanic_enter is idempotent and subsumes the flush, preserving the terminal behavior.
+    // Must run FIRST: a terminal fault in USER_OWNED has to reclaim the UART, the likeliest
+    // post-handover faulter being the console driver itself, else the report prints to a
+    // device the kernel no longer owns and the system halts silently. kpanic_enter is
+    // idempotent and subsumes the flush.
     kpanic_enter();
     ::kickos::Thread* c = ::kickos::sched::current();
     char const* who = "?";

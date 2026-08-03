@@ -4,9 +4,8 @@
 // STM32F103C8 ("Blue Pill", Cortex-M3) chip backend. Registers are clean-room
 // from RM0008; hand-rolled, no vendor HAL/CMSIS, consistent with the arch layer.
 //
-// Clocking: the Blue Pill carries an
-// 8 MHz HSE crystal, so clock_init() runs the PLL (HSE x9) to 72 MHz -- the F103
-// max -- for an accurate, full-speed SYSCLK instead of the imprecise HSI RC.
+// Clocking: the Blue Pill carries an 8 MHz HSE crystal, so clock_init() runs the PLL
+// (HSE x9) to 72 MHz, the F103 max, instead of the imprecise HSI RC.
 // SYSCLK = HCLK = PCLK2 = 72 MHz, PCLK1 = 36 MHz (its max). Console = USART1 on
 // PA9(TX)/PA10(RX), polled TX, on APB2 (72 MHz). F103 uses the older CRL/CRH GPIO
 // model (not MODER/AFR) and has no FPU. No watchdog runs at reset, so the reset
@@ -196,9 +195,9 @@ namespace
     // The v7-M default clock is the DWT cycle counter (core debug power domain),
     // which intermittently returns aliased garbage on parts in this fleet; the
     // software 32->64 wrap-extension turns one bad read into a phantom 2^32 jump
-    // that strands every timed wait. The F1 has no 32-bit timer -- all GP timers
-    // are 16-bit -- so a single free-runner would wrap every ~0.9 ms and lose
-    // whole wraps between clock reads (the same missed-wrap failure class as DWT).
+    // that strands every timed wait. The F1 has no 32-bit timer (all GP timers are
+    // 16-bit), so a single free-runner would wrap every ~0.9 ms and lose whole wraps
+    // between clock reads.
     // Instead chain two 16-bit timers into a 32-bit counter: TIM2 (master) counts
     // at the timer kernel clock and emits TRGO on each overflow; TIM3 (slave, ext
     // clock mode 1 off ITR1=TIM2) counts those overflows -> {TIM3:TIM2} is one
@@ -237,8 +236,8 @@ namespace
     // Software 64-bit extension of the 32-bit chained counter. Reads are RELIABLE
     // (unlike DWT): the pair wraps every 2^32/72e6 ~= 59 s. The wrap is folded
     // either by a thread read or, when the system is idle with the tickless timer
-    // disarmed, by the TIM3 (high-half) overflow ISR below -- exactly once (whoever
-    // reads first advances g_clk_last, so the other sees no backward step). Without
+    // disarmed, by the TIM3 (high-half) overflow ISR below, exactly once: whoever
+    // reads first advances g_clk_last, so the other sees no backward step. Without
     // that ISR a wrap across a fully-quiescent >59 s idle would be lost (a slow
     // DWT-style leap).
     volatile uint32_t g_clk_high = 0;

@@ -2,12 +2,11 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The per-board service list: an ordered set of userspace services the default init
-// brings up BEFORE the app's main, so a plain app gets its board's drivers (starting
-// with the console) with zero app code. This is the sole userspace-console bring-up
-// path: the console is just the first KOS_SVC_CONSOLE entry. Per-instance config
-// travels as DATA in kos_service_cfg, not as literals in the driver TU. Lives
-// in the kickos_system library; keep it dependency-free (shared verbatim by the init
-// body and every per-board provider TU).
+// brings up BEFORE the app's main. This is the sole userspace-console bring-up path: the
+// console is just the first KOS_SVC_CONSOLE entry. Per-instance config travels as DATA in
+// kos_service_cfg, not as literals in the driver TU. Lives in the kickos_system library;
+// keep it dependency-free (shared verbatim by the init body and every per-board provider
+// TU).
 //
 // HARD RULE: NO libc stdio anywhere in any service start(). Between an endpoint
 // publish and the driver's first recv, the publisher holds the only WAIT cap, so a
@@ -26,12 +25,16 @@ extern "C"
 #endif
 
 // kos_service_cfg.kind: the service class. start() rejects a cfg authored for the
-// wrong class. Room left for the bus classes the SPI/I2C phase adds.
+// wrong class.
 enum kos_svc_kind
 {
     KOS_SVC_CONSOLE = 0,
     KOS_SVC_SPI = 1,
-    KOS_SVC_I2C = 2
+    KOS_SVC_I2C = 2,
+    // A general UART port serving the <kickos/sys/uart.h> wire ABI: RX as well as TX,
+    // buffered rather than polled, and NOT a console handover (KOS_SVC_CONSOLE is the
+    // write-only stdout sink the kernel gives its own console away to).
+    KOS_SVC_UART = 3
 };
 
 // kos_service_cfg.cs_policy: SPI chip-select choice (driver-internal). Values match
@@ -43,10 +46,9 @@ enum kos_svc_cs_policy
     KOS_SVC_CS_GPIO = 2
 };
 
-// Per-instance bring-up config: DATA, not baked into driver code. POD, no libc, no
-// chip headers. One per service instance; the service's start() reads it (base/window
-// from here, not a literal). name/mmio_base are pointer-width, so sizeof is
-// 32 B on LP64 and 24 B on ILP32 (the static_assert below tracks both).
+// Per-instance bring-up config. POD, no libc, no chip headers. start() reads base/window
+// from here, never from a literal. name/mmio_base are pointer-width, so sizeof is 32 B on
+// LP64 and 24 B on ILP32 (the static_assert below tracks both).
 struct kos_service_cfg
 {
     char const* name;        // driver thread name (diagnostics); e.g. "k64uart", "spi0"
@@ -79,9 +81,7 @@ struct kos_service_list
 };
 
 // The selected board's service list. EXACTLY ONE definition links per image, chosen
-// by the KICKOS_SERVICE_LIST CMake target (default kickos_services_none, count = 0),
-// exactly like kickos_board_pinmap. See system/init/services_none.cc and a per-board
-// provider such as system/init/service_list_frdmk64f.cc.
+// by the KICKOS_SERVICE_LIST CMake target (default kickos_services_none, count = 0).
 extern struct kos_service_list const kickos_board_services;
 
 #ifdef __cplusplus

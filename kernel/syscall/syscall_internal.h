@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Cross-TU seam for the syscall implementation, split per domain (mem funnel,
-// IPC, threads, cap objects) out of syscall.cc. Declares ONLY what crosses a TU
-// boundary: the shared user-memory access funnel (defined in syscall_mem.cc,
-// used by every domain + the dispatch), and each domain handler the dispatch in
-// syscall.cc invokes. Genuinely TU-private helpers stay in their own TU's
-// anonymous namespace and never appear here. Not a public kernel header -- the
-// userspace-facing contract is <kickos/arch/arch.h> (syscall_dispatch) and the
+// Cross-TU seam for the syscall implementation. Declares ONLY what crosses a TU boundary:
+// the shared user-memory access funnel and the per-domain handlers the dispatch invokes.
+// TU-private helpers belong in their own TU's anonymous namespace and must not appear here.
+// NOT a public kernel header; the userspace-facing contract is <kickos/arch/arch.h> and the
 // object naming layer is <kickos/cap.h>.
 
 #ifndef KICKOS_SYSCALL_INTERNAL_H
@@ -21,11 +18,10 @@
 namespace kickos
 {
     // --- User-memory access funnel (syscall_mem.cc) ----------------------------
-    // The confused-deputy floor + the kernel<->user byte-access seam. Every
-    // kernel-side dereference of a user pointer funnels through these, so the MMU
-    // era reimplements exactly this set. Callers MUST validate (user_*_ok) before
-    // accessing (kaccess_* / ep_copy) -- the access functions are the COPY, not the
-    // check. See syscall_mem.cc for the full per-function invariants.
+    // The confused-deputy floor. EVERY kernel-side dereference of a user pointer must
+    // funnel through these, and callers MUST validate (user_*_ok) before accessing
+    // (kaccess_* / ep_copy): the access functions are the COPY, never the check.
+    // See syscall_mem.cc for the full per-function invariants.
 
     // A range lies within one region the current thread is granted with `need`
     // access. Privileged callers and len==0 pass.
@@ -36,8 +32,8 @@ namespace kickos
     bool user_readable_ok(uintptr_t ptr, size_t len);
 
     // A user WRITE buffer / out-pointer: granted WRITE region OR the app's writable
-    // static-data extent (arch_user_data_writable), for the backends that model no
-    // static-data region -- no-MPU chips and the host sim.
+    // static-data extent (arch_user_data_writable), which is what the backends modelling
+    // no static-data region rely on.
     bool user_writable_ok(uintptr_t ptr, size_t len);
 
     // --- MMIO possession (syscall_mem.cc) --------------------------------------
@@ -71,9 +67,9 @@ namespace kickos
     int mutex_create();
 
     // --- IPC endpoints (syscall_ipc.cc) ----------------------------------------
-    // endpoint_send/recv/call are FULLY LOCKLESS from dispatch (they take their own
-    // IrqLock for the resolve/deliver/park, then release it before the resume
-    // barrier): a spanning caller lock would livelock ARM (design section 3).
+    // endpoint_send/recv/call MUST be called with no caller-held IrqLock: they take their
+    // own for the resolve/deliver/park and release it before the resume barrier, and a
+    // spanning caller lock livelocks ARM.
     int endpoint_create();
     int endpoint_send(int cap, uintptr_t buf, size_t len);
     int endpoint_recv(int cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out);
@@ -82,6 +78,10 @@ namespace kickos
 
     // --- Thread lifecycle (syscall_thread.cc) ----------------------------------
     int thread_spawn(kos_thread_params const* p);
+    // Cancels a thread the caller spawned: marks it, and wakes it out of an irq_wait with
+    // -KOS_ECANCELED so the target runs its OWN exit. Returns 0, -KOS_EBADF, -KOS_EPERM or
+    // -KOS_EINVAL. Takes its own IrqLock.
+    int thread_kill(int thread_handle);
 }
 
 #endif

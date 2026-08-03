@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Infineon XMC4800 USIC ASC-mode (UART) polled console -- the thin ASC protocol
+// Infineon XMC4800 USIC ASC-mode (UART) polled console: the thin ASC protocol
 // layer over the shared USIC-IP mechanism in usic.h (module/kernel clock, baud
 // generator, input mux, raw TX/RX/status). ASC-specific register setup
 // (SCTR/TCSR/PCR/CCR + the pin mux) lives here. Register addresses and bit
@@ -47,14 +47,30 @@ namespace
 
     constexpr uintptr_t U0C0 = u::U0C0_BASE;
 
+    // The window arch_console_reclaim rewrites, and the one the driver is granted. ONE
+    // constant, because a reclaim that rewrote a register outside the window it reports
+    // would rewrite registers whose holder was never checked.
+    constexpr uintptr_t CONSOLE_WIN_BASE = U0C0;
+    constexpr size_t CONSOLE_WIN_SIZE = 0x200u;
+
+    // Every offset the reclaim body writes must lie inside that window. Adding a store
+    // outside it fails to build instead of silently widening the reclaim's reach.
+    static_assert(u::off::KSCFG < CONSOLE_WIN_SIZE and u::off::FDR < CONSOLE_WIN_SIZE
+                      and u::off::BRG < CONSOLE_WIN_SIZE and u::off::DX0CR < CONSOLE_WIN_SIZE
+                      and u::off::SCTR < CONSOLE_WIN_SIZE and u::off::TCSR < CONSOLE_WIN_SIZE
+                      and u::off::PCR < CONSOLE_WIN_SIZE and u::off::CCR < CONSOLE_WIN_SIZE
+                      and u::off::PSCR < CONSOLE_WIN_SIZE and u::off::FMR < CONSOLE_WIN_SIZE
+                      and u::off::TBCTR < CONSOLE_WIN_SIZE and u::off::RBCTR < CONSOLE_WIN_SIZE,
+                  "arch_console_reclaim writes outside the window it reports");
+
     // P1 IOCR4 controls P1.[7:4]; P1.5 = ALT2 U0C0.DOUT0 (TX), P1.4 = DX0B input (RX).
     constexpr uintptr_t P1_IOCR4 = rp::base(1) + rp::iocr_off(5);
     constexpr uint32_t PC4_SHIFT = rp::pc_shift(4);
     constexpr uint32_t PC5_SHIFT = rp::pc_shift(5);
 
     // Bounded so a misconfigured baud/enable NEVER hangs arch_console_write (it
-    // feeds the kernel banner and every kos_print). Cap far exceeds any real
-    // per-byte wait at 115200 baud. Modeled on the rp2040 backend's wait_mask.
+    // feeds the kernel banner and every kos_print). The cap far exceeds any real
+    // per-byte wait at 115200 baud.
     constexpr uint32_t TX_POLL_TIMEOUT = 1000000u;
 
     bool tx_wait_ready()
@@ -84,8 +100,8 @@ namespace
         return false;
     }
 
-    // --- Buffered console TX backend (console_tx.h). The ring drains via the
-    // USIC0 transmit-buffer interrupt (CCR.TBIEN) routed to SR0. ---
+    // Buffered console TX backend (console_tx.h); the ring drains on the USIC0
+    // transmit-buffer interrupt (CCR.TBIEN) routed to SR0.
     int xmc_tx_slot_free(void)
     {
         if (u::tx_ready(U0C0))
@@ -128,7 +144,7 @@ void kickos_xmc_usic_init(void)
     u::select_input(U0C0, u::off::DX0CR, ru::DX0_DSEL_B);
 
     // Route the transmit-buffer interrupt to service-request output SR0 (NVIC
-    // line 84); TBIEN stays clear -- the console ring primes it on the first write.
+    // line 84); TBIEN stays clear, the console ring primes it on the first write.
     u::tx_irq_route(U0C0, 0);
 
     // Enable the channel by selecting the ASC protocol (config must be complete
@@ -145,47 +161,55 @@ void kickos_xmc_usic_init(void)
     u::reg32(P1_IOCR4) = iocr;
 }
 
+// USIC0 CH0, one channel of the module (RM Table 18-21). On xmcuartirq the IRQ thread
+// holds this window, and that is NOT the thread whose death notes the console dead.
+void arch_console_reclaim_window(uintptr_t* base, size_t* size)
+{
+    *base = CONSOLE_WIN_BASE;
+    *size = CONSOLE_WIN_SIZE;
+}
+
 // Panic-path reclaim (console.cc D6): force U0C0 back to a known polled-ready ASC
 // channel after a userspace driver may have garbled EVERY writable register inside
 // its granted 0x200 window. Runs with IRQs masked, privileged; MUST be idempotent +
-// re-entrant, so it is straight-line ABSOLUTE stores only -- NO read-modify-write on
-// any driver-touched register (an RMW on a garbled value is not safe to repeat from a
-// nested-fault re-entry). Replaces the no-op fallback TU.
+// re-entrant, so it is straight-line ABSOLUTE stores only, NO read-modify-write on any
+// driver-touched register: an RMW on a garbled value is not safe to repeat from a
+// nested-fault re-entry.
 //
-// Reclaim depth = rewrite every in-window writable register init sets (baud/mode/DMA/
-// IRQ) PLUS the ones init leaves at reset default that a hostile driver can set to
-// cause SILENT LOSS -- here KSCFG.MODEN (module clock gate). Registers OUTSIDE the
-// window (SCU_CGATCLR0/PRCLR0 system clock gate, P1_IOCR4 pin mux) are privileged and
-// unreachable by the driver -> intact -> not touched.
+// Reclaim depth = every in-window writable register init sets (baud/mode/DMA/IRQ) plus
+// the ones init leaves at reset default that a hostile driver can set to cause SILENT
+// LOSS, here KSCFG.MODEN (module clock gate). Registers OUTSIDE the window
+// (SCU_CGATCLR0/PRCLR0 system clock gate, P1_IOCR4 pin mux) are privileged and out of
+// the driver's reach.
 void arch_console_reclaim(void)
 {
     // (a) Module kernel clock FIRST. The driver can clear KSCFG.MODEN (window offset
     // 0x00C), which gates the channel kernel clock; with it off EVERY later write here
     // is silently dropped and the banner is lost. kernel_clock_enable writes
     // MODEN|BPMODEN (absolute) and does the RM-mandated read-back before further access.
-    u::kernel_clock_enable(U0C0);
+    u::kernel_clock_enable(CONSOLE_WIN_BASE);
 
     // (b) Stop the channel and any driver FIFO/DMA/mode before reprogramming. Disabling
     // via CCR.MODE=0 halts an in-flight transfer; the FIFO controls may have been armed
     // by the driver (init never touches them).
-    u::reg32(U0C0 + u::off::CCR) = 0;
-    u::reg32(U0C0 + u::off::TBCTR) = 0;
-    u::reg32(U0C0 + u::off::RBCTR) = 0;
+    u::reg32(CONSOLE_WIN_BASE + u::off::CCR) = 0;
+    u::reg32(CONSOLE_WIN_BASE + u::off::TBCTR) = 0;
+    u::reg32(CONSOLE_WIN_BASE + u::off::RBCTR) = 0;
 
     // (c) Re-establish baud + full ASC config to the exact init values. TCSR absolute
     // store also clears any DMA-trigger / interrupt-enable bits the driver set.
-    u::set_baud(U0C0, u::BAUD_115200_72MHZ); // FDR + BRG
-    u::reg32(U0C0 + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
-    u::reg32(U0C0 + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
-    u::reg32(U0C0 + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
-    u::select_input(U0C0, u::off::DX0CR, ru::DX0_DSEL_B); // DX0 RX input mux
+    u::set_baud(CONSOLE_WIN_BASE, u::BAUD_115200_72MHZ); // FDR + BRG
+    u::reg32(CONSOLE_WIN_BASE + u::off::SCTR) = ru::SCTR_WLE_8 | ru::SCTR_FLE_8 | ru::SCTR_TRM_ACTIVE | ru::SCTR_PDL;
+    u::reg32(CONSOLE_WIN_BASE + u::off::TCSR) = ru::TCSR_TDEN_TDV | ru::TCSR_TDSSM;
+    u::reg32(CONSOLE_WIN_BASE + u::off::PCR) = ru::PCR_ASC_SP | ru::PCR_ASC_SMD | ru::PCR_ASC_TSTEN;
+    u::select_input(CONSOLE_WIN_BASE, u::off::DX0CR, ru::DX0_DSEL_B); // DX0 RX input mux
 
     // (d) Drop a stale Transmit-Data-Valid word a hostile driver may have loaded into
     // TBUF (TDV=1): FMR.MTDV=10B clears TDV so the pending word is gated off and never
     // sent (TCSR.TDEN starts a transfer only while TDV=1). Absolute write; TCSR control
-    // writes above do not clear the TDV status bit. (This does NOT remove the leading
-    // reconfig byte -- see the KNOWN ARTIFACT note at (e).)
-    u::reg32(U0C0 + u::off::FMR) = u::FMR_MTDV_CLEAR;
+    // writes above do not clear the TDV status bit. This does NOT remove the leading
+    // reconfig byte; see the KNOWN ARTIFACT note at (e).
+    u::reg32(CONSOLE_WIN_BASE + u::off::FMR) = u::FMR_MTDV_CLEAR;
 
     // (e) Clear stale protocol status flags, then re-enable the channel LAST (config
     // must be complete before the enabling MODE write). TBIEN stays clear: panic is
@@ -199,8 +223,8 @@ void arch_console_reclaim(void)
     // TBUF/TDV word (clearing TDV at (d) does not remove it); the banner + dump that
     // follow are byte-clean. Unavoidable from the TX side once the line has been pinned
     // low past a frame boundary.
-    u::reg32(U0C0 + u::off::PSCR) = 0xFFFFFFFFu;
-    u::reg32(U0C0 + u::off::CCR) = ru::CCR_MODE_ASC;
+    u::reg32(CONSOLE_WIN_BASE + u::off::PSCR) = 0xFFFFFFFFu;
+    u::reg32(CONSOLE_WIN_BASE + u::off::CCR) = ru::CCR_MODE_ASC;
 }
 
 void kickos_xmc_usic_write(char const* buf, size_t n)
@@ -229,8 +253,8 @@ void kickos_xmc_usic_write(char const* buf, size_t n)
 // old baud when fPERIPH moves. Both run under the caller's IrqLock (see cpu_clock_set).
 //
 // flush_sync: the generic step already poll-drained the software ring into TBUF; wait
-// for the buffer->shifter handoff (TDV clear) then the shifter to empty (PSR.BUSY clear),
-// both bounded -- the exact drain kickos_xmc_usic_write does after a print.
+// for the buffer->shifter handoff (TDV clear) then the shifter to empty (PSR.BUSY
+// clear), both bounded, as kickos_xmc_usic_write does after a print.
 void arch_console_flush_sync(void)
 {
     if (tx_wait_ready())
@@ -242,8 +266,8 @@ void arch_console_flush_sync(void)
 // retune: reprogram the baud generator (FDR + BRG) for the new fPERIPH = SystemCoreClock/2,
 // selecting the precomputed point for the landed clock. The reprogram is live (the
 // channel stays enabled) but is reached only with the channel idle and IRQs masked.
-// An unrecognized clock leaves the baud untouched (a P-state
-// whose fPERIPH has no in-tolerance divisor should be rejected at the seam -- ruling 2).
+// An unrecognized clock leaves the baud untouched: a P-state whose fPERIPH has no
+// in-tolerance divisor is rejected at the seam.
 void arch_console_retune(void)
 {
     u::Baud b;
@@ -259,9 +283,8 @@ void arch_console_retune(void)
 
 // Non-blocking RX drain: copy up to n received words into buf, return the count
 // read. The DX0 input (P1.4) is already routed to the ASC pre-processor by
-// kickos_xmc_usic_init(). This is the reusable polled-RX foundation -- there is
-// no kernel console-input consumer yet. No FIFO: the single-word standard
-// receive buffer means a caller that does not keep up loses bytes.
+// kickos_xmc_usic_init(). No FIFO: the single-word standard receive buffer means a
+// caller that does not keep up loses bytes.
 size_t kickos_xmc_usic_read(char* buf, size_t n)
 {
     size_t got = 0;

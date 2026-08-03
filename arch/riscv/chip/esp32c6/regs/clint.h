@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-C6 core-local CLINT registers (TRM v1.2 ch.1.7). Same seam as the qemu-virt
-// SiFive CLINT: MSIP (machine software int = deferred switch, mcause 3) + MTIME/
-// MTIMECMP (machine timer = tickless tick, mcause 7). The C6 adds MTIMECTL with an
-// explicit counter enable (MTCE) that virt does not have.
+// ESP32-C6 core-local CLINT registers (TRM v1.2 ch.1.7): MSIP (machine software int =
+// deferred switch, mcause 3) + MTIME/MTIMECMP (machine timer = tickless tick, mcause 7).
+// MTIME does not count until MTIMECTL.MTCE is set.
 //
-// MTIME is core-clocked: MEASURED ~160 MHz on silicon (2026-07-09), NOT the 16 MHz
-// SYSTIMER rate first assumed. 1e9/160e6 = 6.25 ns/tick = 25/4 exactly. If a future
-// clock bring-up changes the CPU frequency, MTIME_HZ must track it.
+// MTIME is core-clocked: MEASURED ~160 MHz on silicon, NOT the 16 MHz SYSTIMER rate.
+// 1e9/160e6 = 6.25 ns/tick = 25/4 exactly. If a future clock bring-up changes the CPU
+// frequency, MTIME_HZ must track it.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_CLINT_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_CLINT_H

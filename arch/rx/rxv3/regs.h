@@ -5,12 +5,14 @@
 // touches: the ICUD interrupt controller (IR/IER/IPR/SWINTR) and the two CMTW
 // units (one-shot timer + monotonic clock). Addresses are transcribed from the
 // RX72M Group User's Manual: Hardware (r01uh0804ej0120, Rev.1.20) with section
-// citations -- hand-rolled, clean-room (no vendor SDK), like the arm regs.h.
+// citations; hand-rolled, clean-room (no vendor SDK).
 
 #ifndef KICKOS_ARCH_RX_RXV3_REGS_H
 #define KICKOS_ARCH_RX_RXV3_REGS_H
 
 #include <stdint.h>
+
+#include <kickos/arch/rx_group.h> // GROUP_LINE_BASE/STRIDE: the core/chip line-space split
 
 namespace kickos
 {
@@ -34,54 +36,65 @@ namespace kickos
 
         // Kernel critical-section IPL: raising PSW.IPL to this level via MVTIPL
         // masks every source at or below it, leaving a higher band + NMI (IPL 15)
-        // live -- the BASEPRI-band analog. Device lines are programmed BELOW this
-        // level (see PRIO_DEVICE); the timer sits just under the lock too.
+        // live. Device lines are programmed BELOW this level (see PRIO_DEVICE); the
+        // timer sits just under the lock too.
         constexpr uint32_t IPL_LOCK = 12;   // crit-section mask level
         constexpr uint32_t IPL_DEVICE = 4;  // default device/timer priority (< lock)
 
         // --- ICUD interrupt controller (HW UM sec.15) ---
         // IRn per-source request flag (n = 16..255), one byte each (UM sec.15.2.1 p.479):
         //   ICU.IR016 @ 0008 7010h .. ICU.IR255 @ 0008 70FFh  => IR[n] = 0x87000 + n
+        // EDGE source: the ICU clears IR when the request is ACCEPTED, so a software
+        // write of 0 is never needed and, after the handler ran, would discard a request
+        // latched while the line was IER-masked (UM sec.15.2.1(1) p.480).
+        // LEVEL source: IR follows the source; "when level detection is selected, do not
+        // write to the IR flag", neither 0 nor 1 (UM sec.15.2.1(2) p.480, and the
+        // register's own R/(W) note p.479).
         constexpr uintptr_t ICU_IR_BASE = 0x00087000;
         // IERm enable registers, one bit per source (UM sec.15.2.2 p.481): line n is
         //   IER[n>>3] bit (n & 7), IER base 0008 7200h.
         constexpr uintptr_t ICU_IER_BASE = 0x00087200;
         // IPRr 4-bit per-source priority (UM sec.15.2.4 p.482). NOTE: the IPR index is
-        // NOT the vector number in general -- the ICUD shares IPR entries per a
+        // NOT the vector number in general: the ICUD shares IPR entries per a
         // source table (e.g. CMWI0 vector 30 => IPR006). arch_irq_unmask maps
         // vector -> IPR index via vector_to_ipr (arch_rxv3.cc); the lines the chip
         // programs directly (the CMTW timer + SWINT) use the documented index.
         constexpr uintptr_t ICU_IPR_BASE = 0x00087300;
         // Software interrupt generation (UM sec.15.2.5 p.484): writing 1 to SWINTR.SWINT
-        // pends the software interrupt (SWINT, vector 27) -- the only line software
-        // can raise (edge sources accept only a 0 write to IRn.IR).
+        // pends the software interrupt (SWINT, vector 27), the only line software can
+        // raise (edge sources accept only a 0 write to IRn.IR).
         constexpr uintptr_t ICU_SWINTR = 0x000872E0;
         constexpr uint8_t SWINTR_SWINT = 1u << 0;
         constexpr int SWINT_VECTOR = 27; // ICU.SWINTR -> IR027 (UM sec.15.2.5)
-        // SWINT is the deferred-switch line (the PendSV analog, spike sec.2): give it
-        // the lowest active priority so it is accepted only after every other ISR
-        // drains, and enable it in kickos_rxv3_init. SWINT (27) and SWINT2 (26)
-        // SHARE one IPR register, ICU.IPR[3] (RX72x UM interrupt table; confirmed
-        // in the Renesas BSP: "SWINT2,SWINT share IPR level"). SWINT's IER bit is
-        // IER[3].IEN3, SWINT2's is IER[3].IEN2 (both in the 0x87203 byte).
-        // FIRST-SILICON CONFIRM: this is the one switch constant not establishable
-        // by construction -- an IPR left at 0 means "never accepted", so a wrong
-        // address/index makes the switch silently dead on the first arch_switch.
-        // Cross-checked against the Renesas RX72N BSP iodefine (same RX700 ICU as
-        // RX72M): SWINTR@0x872E0, and SWINT/SWINT2 share ICU.IPR[3] @ 0x87303.
+        // SWINT is the deferred-switch line (the PendSV analog): give it the lowest
+        // active priority so it is accepted only after every other ISR drains, and
+        // enable it in kickos_rxv3_init. SWINT (27) and SWINT2 (26) SHARE one IPR
+        // register, ICU.IPR[3] @ 0x87303 (RX72x UM interrupt table; Renesas RX72N BSP
+        // iodefine, same RX700 ICU: "SWINT2,SWINT share IPR level"). SWINT's IER bit is
+        // IER[3].IEN3, SWINT2's is IER[3].IEN2 (both in the 0x87203 byte). An IPR left
+        // at 0 means "never accepted", so a wrong address or index makes the switch
+        // silently dead on the first arch_switch.
         constexpr uintptr_t ICU_IPR_SWINT = 0x00087303; // shared SWINT/SWINT2 IPR
         constexpr uint32_t IPL_PENDSW = 1;              // lowest active level (< IPL_LOCK)
         // Second software interrupt: NOT the switch line, so it is free for the
-        // test-injection scaffolding (arch_irq_inject) -- injecting it runs the
-        // device default handler, exercising the IRQ path without disturbing the
-        // switch mechanism on SWINT.
+        // test-injection scaffolding (arch_irq_inject), which exercises the IRQ path
+        // without disturbing the switch mechanism on SWINT.
         constexpr uintptr_t ICU_SWINT2R = 0x000872E1;
         constexpr uint8_t SWINT2R_SWINT2 = 1u << 0;
         constexpr int SWINT2_VECTOR = 26; // ICU.SWINT2R -> IR026
 
+        // SCI6 (the board console UART, chip mmap) has two DEDICATED edge vectors, both
+        // wired to their own INTB slot by the chip's startup.S; its other two sources
+        // (TEI6/ERI6) are GROUPBL0 group sources and have no vector at all (UM
+        // sec.15.3.1 Table 15.5 p.523, sec.15.4.4 Table 15.7 p.530). For both of these
+        // the IPR index is the vector number: "r matches the vector number when the
+        // interrupt vector number is 32 or greater" (UM sec.15.2.3 p.482).
+        constexpr int SCI6_RXI_VECTOR = 86; // receive-data-full, IER0A.IEN6, edge
+        constexpr int SCI6_TXI_VECTOR = 87; // transmit-data-empty, IER0A.IEN7, edge
+
         // --- Compare Match Timer W (HW UM sec.32, p.1608 ff) ---
-        // Two 32-bit up-counters. Unit 0 = one-shot next-event timer (SysTick
-        // analog); unit 1 = free-running monotonic clock (DWT analog).
+        // Two 32-bit up-counters. Unit 0 = one-shot next-event timer; unit 1 =
+        // free-running monotonic clock.
         constexpr uintptr_t CMTW0_BASE = 0x00094200;
         constexpr uintptr_t CMTW1_BASE = 0x00094280;
         constexpr uintptr_t CMTW_CMWSTR = 0x00; // 16-bit: b0 STR start/stop
@@ -90,10 +103,10 @@ namespace kickos
         constexpr uintptr_t CMTW_CMWCNT = 0x10; // 32-bit: counter
         constexpr uintptr_t CMTW_CMWCOR = 0x14; // 32-bit: compare-match constant
         constexpr uint16_t CMWSTR_STR = 1u << 0;
-        // CMWIOR.CMWE (b15): the CMWCOR compare-match operation is GATED by this bit
-        // -- with CMWE=0 (reset) the counter never matches CMWCOR, so it neither
-        // clears (CCLR=000) nor raises CMWI. It must be set for the one-shot timer
-        // (UM sec.32.2.3). CMTW1 (free-running clock) does no compare, so it omits it.
+        // CMWIOR.CMWE (b15) GATES the CMWCOR compare-match operation: with CMWE=0
+        // (reset) the counter never matches CMWCOR, so it neither clears (CCLR=000) nor
+        // raises CMWI. It must be set for the one-shot timer (UM sec.32.2.3). CMTW1
+        // (free-running clock) does no compare, so it omits it.
         constexpr uint16_t CMWIOR_CMWE = 1u << 15;
         // CMWCR fields (UM sec.32.2.2): CKS[1:0]=b1:0 clock select (00 => PCLK/8);
         // CMWIE=b3 compare-match interrupt enable; CMS=b9 counter size (0 => 32-bit);
@@ -112,15 +125,15 @@ namespace kickos
         // bits[31:4] of the start/end page registers (UM sec.17.1.2).
         //   RSPAGEn @ 0x86400 + n*8: RSPN[27:0] = start page = start_addr>>4,
         //     so the register value is start_addr with the low 4 bits masked off.
-        //   REPAGEn @ 0x86404 + n*8: REPN[27:0] = END page (INCLUSIVE -- the end
-        //     page is part of the region, UM sec.17.2.2), plus UAC[2:0] and V.
+        //   REPAGEn @ 0x86404 + n*8: REPN[27:0] = END page, INCLUSIVE (the end page
+        //     is part of the region, UM sec.17.2.2), plus UAC[2:0] and V.
         constexpr uintptr_t MPU_RSPAGE_BASE = 0x00086400; // + region*8
         constexpr uintptr_t MPU_REPAGE_BASE = 0x00086404; // + region*8
         constexpr uintptr_t MPU_REGION_STRIDE = 8;
         constexpr size_t MPU_REGION_COUNT = 8;
         // REPAGEn low bits (UM sec.17.2.2): V = region-valid, UAC[2:0] user-mode
         // access = b3 Read / b2 Write / b1 Execute (1 = permitted). Note the bit
-        // order: read is the HIGH bit, execute the low -- NOT r/w/x LSB-first.
+        // order: read is the HIGH bit, execute the low, NOT r/w/x LSB-first.
         constexpr uint32_t MPU_REPAGE_V = 1u << 0;
         constexpr uint32_t MPU_UAC_R = 1u << 3;
         constexpr uint32_t MPU_UAC_W = 1u << 2;

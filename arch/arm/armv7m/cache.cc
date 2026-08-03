@@ -3,12 +3,12 @@
 //
 // ARMv7-M L1 cache bring-up (Cortex-M7). The SCB cache-maintenance registers exist
 // only on cache-equipped v7-M; on M3/M4 the CCR IC/DC bits are reserved and on v6-M
-// the registers are absent -- so this is OPT-IN by call (a chip invokes it from
+// the registers are absent, so this is OPT-IN by call (a chip invokes it from
 // arch_init), never ambient. Clean-room from the ARMv7-M ARM / Cortex-M7 TRM.
 //
 // M7 gotcha (see docs/design-teensy-mpu-hang.md): enabling a cache ARMS speculative
 // prefetch of Normal memory, so the MPU anti-speculation regions MUST already be
-// programmed (cache-after-MPU) before calling this -- else the M7 speculates into
+// programmed (cache-after-MPU) before calling this, else the M7 speculates into
 // unbacked external memory and the AHB stalls with no fault.
 
 #include <stdint.h>
@@ -41,7 +41,7 @@ extern "C" void kickos_armv7m_icache_enable(void)
     __asm volatile("isb" ::: "memory");
 }
 
-// Enable the L1 data cache. INVALIDATE the whole cache by set/way first -- never clean:
+// Enable the L1 data cache. INVALIDATE the whole cache by set/way first, never clean:
 // RAM is live at boot and the cache lines are garbage, so a clean would write trash over
 // RAM. Caller must have the MPU memory attributes correct first (cache-after-MPU).
 extern "C" void kickos_armv7m_dcache_enable(void)

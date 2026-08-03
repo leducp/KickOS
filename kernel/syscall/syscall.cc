@@ -30,8 +30,8 @@ namespace kickos
 {
     namespace
     {
-        // B1 backstop: max yield passes kos_console_publish waits for the in-flight
-        // chip-writer count to reach 0 before declaring a stuck writer (a real bug).
+        // Max yield passes kos_console_publish waits for the in-flight chip-writer count
+        // to reach 0 before declaring a stuck writer.
         constexpr uint32_t CONSOLE_PUBLISH_DRAIN_MAX = KICKOS_POLL_SPIN_MAX;
 
         // Privileged in-kernel IRQ handler bound by KOS_SYS_IRQ_ATTACH: posts a
@@ -77,11 +77,10 @@ namespace kickos
                         break;
                     }
                     // This message prints after the kernel's trusted "KERNEL PANIC: "
-                    // prefix, so no control byte may reach the console: a newline lets
-                    // the caller continue on fresh lines that read as kernel output
-                    // (measured: an embedded "\n=== MPU FAULT ===" renders as a
-                    // convincing fault banner). Every such byte is REPLACED, so the
-                    // message is not cut short at the first one.
+                    // prefix, so no control byte may reach the console: a newline lets the
+                    // caller continue on fresh lines that read as kernel output, an
+                    // embedded "=== MPU FAULT ===" included. Every such byte is REPLACED,
+                    // so the message is not cut short at the first one.
                     unsigned char const c = static_cast<unsigned char>(buf[i]);
                     if (c < 0x20u or c == 0x7Fu)
                     {
@@ -336,39 +335,36 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                     return static_cast<uintptr_t>(-KOS_EBADF); // bad / non-endpoint / stale cap
                 }
                 handle = e->obj;
+                // Must precede the relinquish below: this is the only remaining step that
+                // can fail, and a refusal has to leave a working console behind. Children
+                // spawned after this get slot 0 via cap_install_defaults.
+                if (not cap_console_publish(c, handle))
+                {
+                    return static_cast<uintptr_t>(-KOS_EOVERFLOW); // endpoint refcount ceiling
+                }
                 if (console_owner_is_kernel() != 0)
                 {
-                    console_tx_deinit(); // D2 relinquish (idempotent; skipped on re-publish)
+                    console_tx_deinit(); // idempotent; skipped on re-publish
                 }
-                cap_console_publish(handle); // take the kernel stdout ref, drop any prior target
-                // Seat the PUBLISHER's own stdout cap (index 0) to the just-published
-                // endpoint, still under this lock. Root was created before any publish, so
-                // its slot 0 is empty and cap_install_defaults never seated it; without this
-                // the init/root thread's own printf would kos_send(0) -> -KOS_EBADF and fall
-                // back to the now-dark kernel path. Children spawned after this still get it
-                // via cap_install_defaults. On re-publish this re-points the caller's slot 0.
-                cap_seat_stdout(c, handle);
-                console_owner_set_user();    // flip to USER_OWNED (LAST)
+                console_owner_set_user();    // must be LAST
             }
-            // B1: drain any stale chip writer that raced past the pre-flip state read, with
-            // the lock RELEASED, before returning. After the flip no path increments the
-            // count, so it strictly drains. Root spawns the driver only after this returns,
-            // so the preempted writer is off the device before the driver touches it.
+            // Drains, with the lock RELEASED, any stale chip writer that raced past the
+            // pre-flip state read. Root spawns the driver only after this returns, so the
+            // preempted writer is off the device before the driver touches it.
             //
-            // The scheduler is STRICT PRIORITY, so a bare busy-spin here would LIVELOCK: an
-            // in-flight writer preempted mid arch_console_write_sync (a polled loop run
-            // WITHOUT IrqLock) can only finish once rescheduled, and it may be LOWER priority
-            // than this publisher (root, typically high). Drop to the minimum real priority
-            // and yield each pass so that lower-prio writer runs to completion. Safe to
-            // drain-to-zero because the state is already USER_OWNED: no path increments the
-            // count anymore, and an in-flight writer never blocks between enter and leave (a
-            // polled write), so a non-zero count always means a RUNNABLE writer exists.
+            // A bare busy-spin here LIVELOCKS under strict priority: an in-flight writer
+            // preempted mid arch_console_write_sync (a polled loop run WITHOUT IrqLock) can
+            // only finish once rescheduled, and it may be LOWER priority than this
+            // publisher. Hence the drop to the minimum real priority plus a yield each
+            // pass. Draining to zero terminates because the state is already USER_OWNED so
+            // nothing increments the count, and a polled writer never blocks between enter
+            // and leave, so a non-zero count always means a RUNNABLE writer.
             Thread* pub = sched::current();
             uint8_t const saved_prio = pub->prio;
             sched::set_prio(pub, KICKOS_PRIO_MIN);
-            // Generous bounded backstop: each pass is a full scheduler round and a poke is a
-            // handful of polled bytes, so a count that never drains is a real bug. Fail LOUD
-            // rather than hang silently or (worse) proceed while a writer still pokes the UART.
+            // Each pass is a full scheduler round and a poke is a handful of polled bytes,
+            // so a count that never drains is a real bug. Panicking beats hanging silently
+            // or, worse, proceeding while a writer still pokes the UART.
             uint32_t guard = 0;
             while (console_chip_writers() != 0)
             {
@@ -405,6 +401,11 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             return static_cast<uintptr_t>(
                 thread_spawn(reinterpret_cast<kos_thread_params const*>(a0)));
+        }
+        case KOS_SYS_THREAD_KILL:
+        {
+            // UNGATED by authority, gated by parenthood inside (syscall_thread.cc).
+            return static_cast<uintptr_t>(thread_kill(static_cast<int>(a0)));
         }
         case KOS_SYS_EXIT:
         {
@@ -811,17 +812,34 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             user_panic(a0); // noreturn
             return 0;
         }
-        case KOS_SYS_IRQ_REGISTER:
+        case KOS_SYS_IRQ_CLAIM:
         {
-            return static_cast<uintptr_t>(irq_register(static_cast<int>(a0)));
+            // The tier-1 mint takes a bare line number out of the namespace and makes it
+            // owned, so it is gated like IRQ_ATTACH and IRQ_UNMASK. USING an already-claimed
+            // line needs no authority: possession of the cap is the authorisation, checked
+            // in cap_resolve_e.
+            if (not cap_check_authority(sched::current(), AUTH_IRQ))
+            {
+                return static_cast<uintptr_t>(-KOS_EPERM); // claims a line namespace-wide
+            }
+            return static_cast<uintptr_t>(
+                irq_claim(sched::current(), static_cast<int>(a0), static_cast<unsigned int>(a1)));
         }
         case KOS_SYS_IRQ_WAIT:
         {
-            return static_cast<uintptr_t>(irq_wait(static_cast<int>(a0)));
+            return static_cast<uintptr_t>(irq_wait(sched::current(), static_cast<int>(a0)));
         }
         case KOS_SYS_IRQ_ACK:
         {
-            return static_cast<uintptr_t>(irq_ack(static_cast<int>(a0)));
+            return static_cast<uintptr_t>(irq_ack(sched::current(), static_cast<int>(a0)));
+        }
+        case KOS_SYS_IRQ_NOTIFY:
+        {
+            return static_cast<uintptr_t>(irq_notify(sched::current(), static_cast<int>(a0)));
+        }
+        case KOS_SYS_IRQ_DISCARD:
+        {
+            return static_cast<uintptr_t>(irq_discard(sched::current(), static_cast<int>(a0)));
         }
         case KOS_SYS_DIAG_LED_SET:
         {

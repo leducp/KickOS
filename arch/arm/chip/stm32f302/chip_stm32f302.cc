@@ -7,8 +7,8 @@
 // the USART is the NEWER model (ISR/TDR, not SR/DR).
 //
 // M1 scope: privilege + SVC, no MPU. The Nucleo-F302R8 carries no crystal, so
-// clock_init() runs the PLL from HSI/2 (the most portable path -- no HSE, no MCO
-// solder-bridge dependency, identical on every board): HSI/2 (4 MHz) x16 = 64 MHz
+// clock_init() runs the PLL from HSI/2 (no HSE and no MCO solder-bridge dependency,
+// so it is identical on every board): HSI/2 (4 MHz) x16 = 64 MHz
 // SYSCLK. HCLK=64, PCLK2=64, PCLK1=32 (its 36 MHz max). USART2 is on APB1, so its
 // BRR is derived from the achieved PCLK1. Console = USART2 on PA2/PA3 (AF7, the
 // ST-LINK VCP), polled TX. No watchdog runs at reset. Every HSI/PLL poll is
@@ -214,8 +214,8 @@ namespace
     // Software 64-bit extension of the 32-bit TIM2_CNT. Reads are RELIABLE (unlike
     // DWT): TIM2 wraps every 2^32/64e6 ~= 67 s. The wrap is folded either by a
     // thread read or, when the system is idle with the tickless timer disarmed, by
-    // the TIM2 overflow ISR below -- exactly once (whoever reads first advances
-    // g_clk_last, so the other sees no backward step). Without that ISR a wrap
+    // the TIM2 overflow ISR below, exactly once: whoever reads first advances
+    // g_clk_last, so the other sees no backward step. Without that ISR a wrap
     // across a fully-quiescent >67 s idle would be lost (a slow DWT-style leap).
     volatile uint32_t g_clk_high = 0;
     volatile uint32_t g_clk_last = 0;
@@ -371,8 +371,8 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 }
 
 // Kernel diagnostic LED: LD2 = PB13, active-high. The Nucleo-F302R8 wires LD2 to
-// PB13, NOT the usual Nucleo-64 PA5 -- UM1724 documents this LD2 = PA5-or-PB13
-// split per target (confirmed against the ST board doc). GPIOB is on the AHB at
+// PB13, NOT the usual Nucleo-64 PA5; UM1724 documents the LD2 = PA5-or-PB13 split
+// per target. GPIOB is on the AHB at
 // 0x4800_0400 (GPIOA + 0x400); its clock enable is RCC_AHBENR.IOPBEN (bit 18).
 void arch_diag_led_init(void)
 {

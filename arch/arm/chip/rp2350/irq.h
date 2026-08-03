@@ -12,7 +12,8 @@ namespace kickos::rp2350::irq
 {
     enum irq_num
     {
-        UART1_IRQ = 34, // PL011 UART1; only TXIM armed (drain ISR sole source)
+        UART1_IRQ = 34,   // PL011 UART1; only TXIM armed (drain ISR sole source)
+        USBCTRL_IRQ = 14, // USB device controller; one line, level (INTS ORs the sources)
     };
 }
 

@@ -13,9 +13,9 @@
 struct arch_context
 {
     // Saved PSP: lowest word of this thread's saved frame (the PendSV-pushed
-    // {r4-r11}, below the hardware exception frame). v6-M has no FPU, so -- unlike
-    // armv7m -- no EXC_RETURN is saved here (thread returns are always the
-    // non-FP 0xFFFFFFFD, reconstructed on switch-in).
+    // {r4-r11}, below the hardware exception frame). v6-M has no FPU, so no
+    // EXC_RETURN is saved here: thread returns are always the non-FP 0xFFFFFFFD,
+    // reconstructed on switch-in.
     uint32_t sp;
 
     // CONTROL.nPRIV: 0 = privileged (kernel), 1 = unprivileged (user). Saved on

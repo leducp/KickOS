@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// NXP i.MX RT1062 watchdog register maps: WDOG1/2 (RM ch.57, 16-bit access ONLY
-// -- a 32-bit access is illegal, RM 57.8.1) and RTWDOG/WDOG3 (RM ch.58, 32-bit).
+// NXP i.MX RT1062 watchdog register maps: WDOG1/2 (RM ch.57, 16-bit access ONLY;
+// a 32-bit access is illegal, RM 57.8.1) and RTWDOG/WDOG3 (RM ch.58, 32-bit).
 // The ROM hands off an armed RTWDOG (RM 58.4); KickOS disables all three.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_WDOG_H

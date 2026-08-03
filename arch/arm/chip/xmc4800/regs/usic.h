@@ -175,7 +175,7 @@ namespace kickos::xmc::reg::usic
 
     // DX0CR (RM p.18-173): INSW(4)=1 routes the synchronized input to the data
     // shift unit (SSC receive path); DSEL[2:0]=110B selects internal input "G" =
-    // the channel's own transmitter (LOOP-BACK, RM 18.2.3.5) -- no port pin.
+    // the channel's own transmitter (LOOP-BACK, RM 18.2.3.5), with no port pin.
     constexpr uint32_t DX0CR_INSW = 1u << 4;
     constexpr uint32_t DX0CR_DSEL_G = 0x6u;
 

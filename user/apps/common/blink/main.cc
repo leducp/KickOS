@@ -5,7 +5,7 @@
 // the board's LED and sleeps between edges, so a steady ~2.5 Hz blink is
 // end-to-end proof of the whole path on real silicon: reset -> C runtime ->
 // scheduler start -> thread spawn + context switch (main blocks, the blinker
-// runs) -> SysTick one-shot sleep -> wake. It needs no UART adapter -- just eyes
+// runs) -> SysTick one-shot sleep -> wake. It needs no UART adapter; just eyes
 // on the LED.
 //
 // No board-specific code here: the LED is the KERNEL's single diagnostic pin,

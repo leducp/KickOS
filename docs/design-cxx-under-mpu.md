@@ -7,7 +7,7 @@
 > protection units. The durable teaching is Book ch.7.2 and 7.3; this is the design record.
 > See `design/README.md` for the marker taxonomy.
 
-Scope: make the full-C++ opt-in (exceptions + STL + RTTI, commit dc632bd) work for an
+Scope: make the full-C++ opt-in (exceptions + STL + RTTI, commit dc632bd [DEAD HASH: resolves nowhere -- lost to an earlier history rewrite]) work for an
 UNPRIVILEGED, MPU-isolated userspace thread -- the convergence the north star needs
 (unprivileged C++ servers/drivers reached by IPC). `cxxtest` was gated
 `AND NOT KICKOS_HAVE_MPU`; this doc scopes lifting that gate. The committed `cxxtest` now spawns

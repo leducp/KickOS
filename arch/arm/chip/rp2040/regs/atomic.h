@@ -4,7 +4,7 @@
 // RP2040 atomic register-access aliases (RP2040 datasheet, RP-008371-DS, 2.1.2).
 // Every APB peripheral's register block is mirrored three times above its normal
 // window: a write to base+0x1000 XORs, base+0x2000 SETs, base+0x3000 CLEARs the
-// addressed register by the written bitmask -- so a single-bit change needs no
+// addressed register by the written bitmask, so a single-bit change needs no
 // read-modify-write. This applies to the APB blocks in mmap.h (CLOCKS, RESETS,
 // IO_BANK0, PADS_BANK0, XOSC, PLL_SYS, UART0, ...). It does NOT apply to SIO
 // (regs/sio.h, its own SET/CLR/XOR registers) nor to the XIP SSI.

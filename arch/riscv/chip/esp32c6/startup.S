@@ -5,9 +5,7 @@
  * copies the image segments into HP SRAM and enters at _start in MACHINE mode.
  * _start sets the global pointer + boot stack, then hands off to the C runtime
  * (Reset_Handler: .data/.bss/init_array + arch_init + kmain). mtvec is installed
- * later by kickos_rv32_init (from arch_init).
- *
- * Validated on ESP32-C6 silicon.
+ * later by kickos_rv32_init (from arch_init), so no trap must occur before then.
  */
 
     .section .text.init, "ax"

@@ -17,7 +17,7 @@ ENTRY(Reset_Handler)
 
 /* SRAM is two banks joined at 0x2000_0000 (SRAM_L below, SRAM_U above). Aligned
  * CPU word accesses cross it fine; unaligned/burst accesses across the seam are
- * unsupported (RM 3.5.3.1) -- see -mno-unaligned-access in the toolchain, and
+ * unsupported (RM 3.5.3.1); see -mno-unaligned-access in the toolchain, and
  * split this region if a DMA/burst buffer ever needs to straddle 0x2000_0000. */
 MEMORY
 {
@@ -81,7 +81,7 @@ SECTIONS
        (kernel/arch/chip/lib): Reset_Handler runs these before kmain, so the kernel
        instance is constructed before kmain uses it. Every OTHER ctor (app, libstdc++/
        libsupc++, KickCAT, newlib) lands in .kickos_app_init_array below and runs from
-       root_entry -- in a thread, kernel live -- because a ctor may call a KickOS
+       root_entry, in a thread with the kernel live, because a ctor may call a KickOS
        syscall (kos_clock_now), which needs ktime_init + a current thread. Colon
        selectors (not EXCLUDE_FILE) per the .appdata note above. */
     .init_array :
@@ -134,7 +134,7 @@ SECTIONS
 #if KICKOS_HAVE_MPU
         /* Zero the whole granted window past the loaded .appdata: the pre-.appbss
            alignment gap (forced by an over-aligned .appbss object), .appbss, and the
-           pad -- so no stale read-back anywhere in the app grant. */
+           and the pad, so no stale read-back anywhere in the app grant. */
         LONG(__kickos_appdata_load_end); LONG(__kickos_appdata_end - __kickos_appdata_load_end);
 #endif
         LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
@@ -148,13 +148,13 @@ SECTIONS
        Selection is INVERTED so that the app window is fail-safe: the CLOSED
        KickOS-owned set (kernel/arch/chip/lib) is captured FIRST, in script order,
        into the kernel .data/.bss below; the appdata catch-alls that follow then take
-       EVERYTHING ELSE -- the app's own objects, the toolchain runtime (libc/libgcc/
+       EVERYTHING ELSE: the app's own objects, the toolchain runtime (libc/libgcc/
        libstdc++/libsupc++), KickCAT, and any unknown NEW archive. An unmatched
        archive therefore lands app-side (reachable, works), never kernel-side (faults).
 
        The set is selected by the `archive:member` colon syntax, NOT EXCLUDE_FILE:
        this binutils does not match archive members inside EXCLUDE_FILE (a bare
-       `*libkickos_kernel.a` there matches nothing -- verified with nm), whereas
+       `*libkickos_kernel.a` there matches nothing, verified with nm), whereas
        `*libkickos_kernel.a:*(...)` does. A bare `*user*` likewise matched only an
        archive member's basename, missing libkickos_user.a's s_heap and the whole
        toolchain runtime; the colon inversion is path- and name-substring-independent.
@@ -198,7 +198,7 @@ SECTIONS
     } > RAM AT > FLASH
 
     /* Pin the base to the window (start + SIZEOF .appdata), NOT the default location
-       counter: an EMPTY .appdata (an app with no initialized globals -- the bench) does
+       counter: an EMPTY .appdata (an app with no initialized globals, e.g. the bench) does
        not carry the section ALIGN forward, so a defaulted .appbss falls back to
        kernel-.bss-end. Harmless here (ALIGN 32, so the gap is nil) but kept uniform with
        the pow2-window chips where the same fallback lands BELOW the granted window. */
@@ -286,7 +286,7 @@ ASSERT(ADDR(.appbss) >= __kickos_appdata_start,
 /* Selector-mismatch guard. The inverted scheme captures the CLOSED KickOS-owned set
    (kernel/arch/chip/lib) into kernel .data/.bss and lets .appdata/.appbss catch the
    rest, so a broken selector shows up as an EMPTY KERNEL side (kernel writable state
-   silently leaked into the app window) -- that is the failure to catch, and an empty
+   silently leaked into the app window); that is the failure to catch, and an empty
    .bss is the loud signal. NOT app-side: an empty .appdata is legitimate (a minimal
    freestanding app whose only app-side state was --gc-sections'd away), so it must
    not assert. The tight invariant (a kernel sentinel below __kickos_appdata_start)

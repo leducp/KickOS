@@ -8,7 +8,7 @@
  * VECBASE at this table, and makes the first WINDOWED call into C.
  *
  * WINDOWED ABI (Xtensa ISA, Windowed Register Option): the six window over/
- * underflow vectors are MANDATORY -- any call4/8/12 that outruns the physical
+ * underflow vectors are MANDATORY, since any call4/8/12 that outruns the physical
  * register file traps here to spill/fill a frame's registers to/from its stack
  * base save area. The exact s32e/l32e offsets and rfwo/rfwu returns are the
  * ISA-canonical handlers. Vector VECBASE offsets are the fixed LX6 layout
@@ -17,8 +17,9 @@
  *
  * Level-1 interrupts (the CCOMPARE0 timer is internal line 6, a level-1 line)
  * arrive at the User exception vector with EXCCAUSE=LEVEL1INTERRUPT(4); the entry
- * saves the interruptee's state, dispatches to C, and returns via rfe. The
- * PREEMPTIVE switch-on-ISR-exit is a documented TODO(HW) (see _kickos_int_level1).
+ * saves the interruptee's state, dispatches to C, and on exit either resumes the
+ * interruptee via rfe or completes a switch requested from ISR context
+ * (_kickos_int_level1).
  */
 
 /* PS bit fields (corebits.h): INTLEVEL[3:0], EXCM=bit4(0x10), UM=bit5(0x20),
@@ -42,10 +43,10 @@
 
 /* SPILL_ALL_WINDOWS: flush every live ancestor window of the current call chain
    to its stack, leaving WindowStart with a single live frame. Requires WOE=1,
-   EXCM=0, INTLEVEL>=EXCM_LEVEL (PS_SPILL). The 64-AR rotw sequence mandated by
-   the Xtensa ISA Reference Manual (Windowed Register Option) -- an ISA-dictated
-   mechanism. Kept identical to the copy in arch/xtensa/lx6/switch.S -- both files
-   need it and they are assembled separately. */
+   EXCM=0, INTLEVEL>=EXCM_LEVEL (PS_SPILL). The 64-AR rotw sequence is the one the
+   Xtensa ISA Reference Manual mandates (Windowed Register Option). Must stay
+   identical to the copy in arch/xtensa/lx6/switch.S; the two files are assembled
+   separately. */
     .macro SPILL_ALL_WINDOWS
     and     a12, a12, a12
     rotw    3
@@ -63,7 +64,7 @@
    offsets are single-sourced in the shared asm-safe header (also #included by the
    C++ frame fabricator arch_context_init); the FPU save area (F_F0/F_FCR/F_FSR)
    fits the a-regs' slack (they end at 0x5C; 0x60..0xA7 was unused). FP is banked
-   ONLY on this preemptive path -- the cooperative switch's caller-saved f-regs are
+   ONLY on this preemptive path: the cooperative switch's caller-saved f-regs are
    spilled by the compiler, so xtensa_switch needs none. */
 #include <kickos/arch/xtensa_frame.h>
 
@@ -121,7 +122,7 @@ _kickos_lx6_halt:
 
 /* ------------------------------------------------------------------------- */
 /* Unhandled synchronous exception (e.g. Coprocessor0Disabled from an FP insn   */
-/* in the integer-only build -- see chip_esp32.cc). Capture the fault special      */
+/* in an integer-only build, see chip_esp32.cc). Capture the fault special         */
 /* registers, then make a WINDOWED C call into the reporter to dump them over the  */
 /* console before the shared dead-end. Entered EXCM=1 with a0 = EXCCAUSE (read by   */
 /* _UserExceptionVector) and a1 = the interruptee SP. The four special regs go into */
@@ -153,9 +154,9 @@ _kickos_lx6_fault:
 /* was requested from ISR context (g_arch_switch_pending), completes the deferred   */
 /* swap: the preempted thread is banked in this interrupt-frame format and the      */
 /* incoming thread is resumed by the path its resume_kind selects (retw for a       */
-/* cooperatively-blocked thread, rfe for a previously-preempted one). This is the   */
-/* PendSV/SWINT analog -- the switch decision is made in C during dispatch and the  */
-/* physical swap happens here, on the way back to thread level.                     */
+/* cooperatively-blocked thread, rfe for a previously-preempted one). The switch    */
+/* decision is made in C during dispatch; the physical swap happens here, on the    */
+/* way back to thread level.                                                        */
 /* ------------------------------------------------------------------------- */
     .align 4
     .global _kickos_int_level1
@@ -222,7 +223,7 @@ _kickos_int_level1:
        OWN stack, so a switch-away at interrupt exit can abandon the register file
        without losing them. Mandatory: an ancestor frame that never overflowed
        lives only in the physical window file and would be clobbered by the next
-       thread. It also leaves WindowStart a single live frame -- the precondition
+       thread. It also leaves WindowStart a single live frame, the precondition
        BOTH resume paths rely on (retw and rfe; see switch.S). The spill must run
        with a1 = the interruptee's ORIGINAL sp (F_A1), so each ancestor flushes to
        its real base save area and reloads from there on resume; a1 survives the
@@ -244,7 +245,7 @@ _kickos_int_level1:
 
     /* C-callable posture: WOE=1, EXCM=0, INTLEVEL=1 (mask level-1 re-entry, allow
        higher). A window over/underflow during the C body spills/reloads the
-       interruptee's ancestor frames onto its own stack -- correct and transparent. */
+       interruptee's ancestor frames onto its own stack, which is transparent here. */
     movi    a2, PS_ISR_C
     wsr.ps  a2
     rsync
@@ -261,7 +262,7 @@ _kickos_int_level1:
     s32i    a3, a2, 0
 
     /* Preemption pending? (arch_switch set it from ISR context.) If not, resume the
-       interruptee from its own frame -- the shared rfe epilogue with a1 = frame. */
+       interruptee from its own frame through the shared rfe epilogue, a1 = frame. */
     movi    a2, g_arch_switch_pending
     l32i    a3, a2, 0
     beqz    a3, _kickos_lx6_irq_restore
@@ -294,9 +295,9 @@ _kickos_int_level1:
     /* Resume the incoming thread by the path its resume_kind selects. */
     l32i    a2, a3, CTX_KIND
     bnez    a2, .Lint_resume_irq
-    /* COOP: retw into its cooperative continuation. Identical to xtensa_switch's
-       retw resume -- the window file is a single frame, so WindowBase is irrelevant
-       and the underflow rebuilds the incoming chain from incoming->sp. */
+    /* COOP: retw into its cooperative continuation, as xtensa_switch's retw resume
+       does. The window file is a single frame, so WindowBase is irrelevant and the
+       underflow rebuilds the incoming chain from incoming->sp. */
     l32i    a1, a3, CTX_SP        /* incoming->sp (switch frame) */
     l32i    a4, a3, CTX_PS
     l32i    a0, a3, CTX_PC        /* return addr, carries CALLINC */
@@ -386,7 +387,7 @@ _kickos_lx6_irq_restore:
 /* ------------------------------------------------------------------------- */
     .section .vectors, "ax"
 
-/* --- WindowOverflow4 @ 0x000: spill a0-a3 to the callee frame base save area. -- */
+/* --- WindowOverflow4 @ 0x000: spill a0-a3 to the callee frame base save area. --- */
     .org 0x000
 _WindowOverflow4:
     s32e    a0, a5, -16

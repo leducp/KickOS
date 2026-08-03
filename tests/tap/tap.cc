@@ -13,7 +13,7 @@ namespace tap
 {
     namespace
     {
-        // 8 bytes each, and tap links into test images only -- no production image
+        // 8 bytes each, and tap links into test images only: no production image
         // carries this. The floor is microbit (16 KiB SRAM, armv6m), the smallest board
         // that builds the suite; the 64 KiB-flash parts cannot link it at all.
         constexpr int MAX_TESTS = 128;

@@ -21,8 +21,10 @@ namespace kickos::rp2350::reg::resets
     constexpr uint32_t IO_BANK0 = 1u << 6;
     constexpr uint32_t PADS_BANK0 = 1u << 9;
     constexpr uint32_t PLL_SYS = 1u << 14;
+    constexpr uint32_t PLL_USB = 1u << 15;
     constexpr uint32_t TIMER0 = 1u << 23;
     constexpr uint32_t UART1 = 1u << 27;
+    constexpr uint32_t USBCTRL = 1u << 28;
 }
 
 #endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_RESETS_H

@@ -4,25 +4,22 @@
 // XMC4800 userspace polled UART TX console driver (see <kickos/driver/xmcuart.h>).
 // An UNPRIVILEGED thread owns the granted USIC0 CH0 (U0C0) register window and
 // serves a console endpoint: kos_recv() a byte batch, then for each byte poll the
-// transmit-buffer status (TCSR.TDV) until the buffer is free and write TBUF0. This
-// mirrors the kernel polled writer (arch/arm/chip/xmc4800/usic_uart.cc
-// kickos_xmc_usic_write / tx_ready): TDV set means "the transmit buffer still holds
-// a word pending transfer" -- wait for it to clear before loading the next byte, or
-// the pending word is overwritten and a byte is dropped/garbled on the wire.
+// transmit-buffer status (TCSR.TDV) until the buffer is free and write TBUF0. TDV set
+// means the transmit buffer still holds a word pending transfer, so loading the next
+// byte before it clears overwrites that word and drops or garbles a byte on the wire.
 //
 // The driver does NOT touch clock/pins/baud: the kernel's kickos_xmc_usic_init()
 // configured them at boot and console_tx_deinit() left the channel ASC-mode,
 // pinned, and TX-capable in a polled state. Only registers INSIDE the granted
 // window (TCSR 0x038, TBUF0 0x080) are poked. SCU_CGATCLR0/PRCLR0 (clock) and
-// P1_IOCR4 (pin mux) live in separate privileged peripherals outside the window --
-// unreachable, and left intact.
+// P1_IOCR4 (pin mux) live in separate privileged peripherals outside the window,
+// unreachable and left intact.
 //
 // HARD RULE (design D7): NO libc stdio. printf/puts route through _write ->
-// kos_send(0, ..) -> this driver's own endpoint (a self-send that deadlocks, since
-// the driver holds the sole CAP_WAIT recv cap so recv_holders never reaches 0 and
-// no EPIPE fires). Diagnostics go direct to the USIC window (poll_put below) or via
-// kos_kconsole_write (kos::print -> the RTT / kernel debug path, which does NOT
-// route through the endpoint).
+// kos_send(0, ..) -> this driver's own endpoint, a self-send that deadlocks because
+// the driver holds the sole CAP_WAIT recv cap, so recv_holders never reaches 0 and
+// no EPIPE fires. Diagnostics go direct to the USIC window (poll_put below) or via
+// kos::print, which does NOT route through the endpoint.
 //
 // Register addresses / bit fields are clean-room from the XMC4700/XMC4800 Reference
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source.
@@ -48,8 +45,6 @@ namespace
     // (0x200) window at the 0x200-aligned channel base is one exact-cover descriptor;
     // the sibling channel U0C1 (base + 0x200) and the SCU/IOCR peripherals stay outside.
 
-    // Per-channel register offsets come from the shared chip header (regs/usic.h).
-    // The transmit-ready poll (TCSR.TDV) lives in the shared class leaf.
     using namespace kickos::xmc::reg::usic;
 
     // Bounded so a mis-configured baud/enable never HANGS the driver thread on a
@@ -71,8 +66,7 @@ namespace
         return false;
     }
 
-    // Direct-to-window diagnostic (NOT stdio, NOT the endpoint): exercises the exact
-    // poll+TBUF path so first-light on silicon is visible before any endpoint traffic.
+    // Direct-to-window diagnostic, not stdio and not the endpoint.
     void win_puts(uintptr_t win, char const* s)
     {
         for (; *s != '\0'; s++)
@@ -81,11 +75,8 @@ namespace
         }
     }
 
-    // Query the branch clock feeding U0C0 and print it on the RTT / kernel debug
-    // path (D7-safe: kos::print bypasses the endpoint, so the driver never self-
-    // sends). On the XMC4800 fPERIPH = fCPU/2 = 72 MHz; the driver does NOT touch
-    // baud (the kernel's stands). This proves the oracle returns a plausible branch
-    // clock a driver could size its own divisor from.
+    // Query the branch clock feeding U0C0 and report it through kos::print, which bypasses
+    // the endpoint (D7). Reporting only: the driver does not touch baud.
     void print_periph_clock(uintptr_t win)
     {
         uint32_t const hz = kos_periph_clock_hz(win);
@@ -125,7 +116,7 @@ void xmcuart_console_driver(void* arg)
         if (n < 0)
         {
             // Endpoint dead / EPIPE (root closed the last non-driver recv holder and
-            // the object tore down, or a bad cap): unrecoverable -- exit and let root
+            // the object tore down, or a bad cap): unrecoverable. Exit and let root
             // respawn + re-publish (D8). Do NOT diagnose via stdio here.
             break;
         }
@@ -165,9 +156,8 @@ int xmcuart_console_start(struct kos_service_cfg const* cfg)
     //    narrowed {E | WAIT} recv cap (lands at the child's table index 1). No
     //    SIGNAL/TRANSFER on the child cap: the driver receives, it does not send or
     //    re-delegate. driver_prio must be >= every client (D9: rendezvous has no PI).
-    //    On failure the helper reports (RTT path) + closes ep: publish already
-    //    flipped USER_OWNED, so the console is dark and the caller MUST NOT spawn
-    //    console-dependent apps after this (S6).
+    //    On failure the helper closes ep FIRST, which reclaims the console, and only
+    //    then reports, so the tag reaches the wire.
     int const drv = kickos::driver::spawn_unprivileged(
         xmcuart_console_driver, win_base, win_size, cfg->name, driver_prio, ep,
         "[xmcuart] ERROR: driver spawn failed\n");
@@ -176,14 +166,13 @@ int xmcuart_console_start(struct kos_service_cfg const* cfg)
         return -1;
     }
 
-    // 4. Close root's OWN WAIT-bearing cap on E immediately (S4). At spawn
-    //    recv_holders == 2 (root + driver); dropping root's copy leaves the driver as
-    //    the sole receiver, so the driver's eventual death drops recv_holders to 0 and
-    //    EPIPE-wakes parked senders. Keeping it would hang clients on driver death.
-    //    g_stdout_target survives on the kernel's own ref (S3), so closing here does
-    //    not tear the endpoint down.
-    kos_handle_close(ep);
-    return 0;
+    // 4. Close root's OWN WAIT-bearing cap on E (S4), then PROVE the driver is serving
+    //    before returning: a zero-length rendezvous on cap 0 returns only once the
+    //    driver has received it, which closes the dark window between the publish and
+    //    the driver serving. g_stdout_target survives on the kernel's own ref (S3), so
+    //    the close does not tear the endpoint down.
+    return kickos::driver::console_handover_finish(
+        ep, "[xmcuart] ERROR: driver died during bring-up\n");
 }
 
 }

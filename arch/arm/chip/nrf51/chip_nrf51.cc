@@ -1,23 +1,21 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// nRF51822 (BBC micro:bit v1, Cortex-M0) chip backend -- the runnable armv6m
-// verification target under QEMU (-M microbit). Like the mps2 chip, it uses ARM
-// semihosting for the console/clock/exit, so it needs no UART driver. The nRF51
-// watchdog is off at reset (unlike the K64F) and Cortex-M0 has no FPU, so the
-// reset path is just C-runtime init.
+// nRF51822 (BBC micro:bit v1, Cortex-M0) chip backend, the runnable armv6m
+// verification target under QEMU (-M microbit). It uses ARM semihosting for the
+// console/clock/exit, so it needs no UART driver. The nRF51 watchdog is off at reset
+// and Cortex-M0 has no FPU, so the reset path is just C-runtime init.
 //
-// SCOPE: this is a QEMU validation vehicle for the armv6m arch layer, not a
-// hardware product target. Two things QEMU models that the REAL nRF51 M0 does
-// not: (1) SysTick -- the Cortex-M0 in the nRF51 is built without it (Nordic
-// uses the RTC), so arch_timer_arm (SysTick, in the arch layer) is QEMU-only
-// here; a real micro:bit would need an RTC-based timer in this chip layer.
-// (2) unprivileged execution -- the M0 has no Unpriv/Priv extension (M0+ does),
-// so the nPRIV separation runs on QEMU but degrades to all-privileged on the
-// real M0. The real v6-M privilege+timer target is the RP2040 (M0+).
+// SCOPE: a QEMU validation vehicle for the armv6m arch layer, not a hardware product
+// target. Two things QEMU models that the REAL nRF51 M0 does not:
+// (1) SysTick: the Cortex-M0 in the nRF51 is built without it (Nordic uses the RTC),
+// so arch_timer_arm (SysTick, in the arch layer) is QEMU-only here; a real micro:bit
+// would need an RTC-based timer in this chip layer.
+// (2) unprivileged execution: the M0 has no Unpriv/Priv extension (M0+ does), so the
+// nPRIV separation runs on QEMU but degrades to all-privileged on the real M0.
 //
-// No central pinmux -- routing is per-peripheral PSEL; arch_pinmux_set is
-// intentionally left to the declining ENOSYS fallback.
+// No central pinmux: routing is per-peripheral PSEL, so arch_pinmux_set is left to
+// the declining ENOSYS fallback.
 
 #include <kickos/arch/arch.h>
 
@@ -74,13 +72,13 @@ void arch_console_write(char const* buf, size_t n)
 }
 
 // v6-M has no DWT; derive the monotonic clock from semihosting SYS_CLOCK
-// (centiseconds). Coarse (10 ms) but fine for the functional gate; monotonic-
-// clamped so a semihosting glitch can't stall armed sleepers.
+// (centiseconds, so 10 ms resolution). Monotonic-clamped so a semihosting glitch
+// cannot stall armed sleepers.
 uint64_t arch_clock_now(void)
 {
     // The monotonic-clamp RMW of `last` is shared between thread and ISR context
-    // and `last` is 64-bit on a 32-bit core (non-atomic), so guard it -- else a
-    // torn store latched by the clamp jumps the clock forward permanently.
+    // and `last` is 64-bit on a 32-bit core (non-atomic), so guard it: a torn store
+    // latched by the clamp jumps the clock forward permanently.
     static uint64_t last = 0;
     arch_irq_state_t st = arch_irq_save();
     long cs = semihost(SYS_CLOCK, nullptr);

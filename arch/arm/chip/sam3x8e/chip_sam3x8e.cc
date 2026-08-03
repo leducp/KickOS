@@ -43,7 +43,7 @@ namespace
 
     // EEFC (sec.18): the two flash banks. FWS (EEFC_FMR bits 11:8) sets the flash
     // read/write wait states; per sec.45 the AC-flash table, FWS=4 (5 read cycles)
-    // covers up to 90 MHz at VDDCORE 1.8V -- required for 84 MHz. Set BEFORE the
+    // covers up to 90 MHz at VDDCORE 1.8V, required for 84 MHz. Set BEFORE the
     // clock is raised. EEFC_FMR at 0x400E0A00 (bank 0) / 0x400E0C00 (bank 1).
     constexpr uintptr_t EEFC0_FMR = 0x400E0A00;
     constexpr uintptr_t EEFC1_FMR = 0x400E0C00;
@@ -61,14 +61,13 @@ namespace
     // (MOSCRCEN) enabled while the crystal warms up, then MOSCSEL picks the crystal.
     //
     // MOSCXTS asserts when the MOSCXTST counter expires, NOT on physical crystal
-    // detection -- so MOSCXTST MUST cover the crystal's worst-case warm-up or the
+    // detection, so MOSCXTST MUST cover the crystal's worst-case warm-up or the
     // status lies and PLLA locks on a still-settling MAINCK (the intermittent-boot
     // race). SLCK is the on-chip slow RC, spec'd 22..42 kHz, so size the count at
     // the FAST end. Time = MOSCXTST * 8 / SLCK. 0x80 = 128 -> 24.4 ms @42 kHz,
-    // 31.2 ms @32 kHz, 46.5 ms @22 kHz -- comfortably past the ~15 ms crystal spec.
-    // GUESS pending Due silicon: confirm the crystal's startup spec and, if a faster
-    // boot matters, trim toward the ~15 ms figure (0x50 gives ~15.2 ms @42 kHz, no
-    // margin). Larger = safer but slower boot.
+    // 31.2 ms @32 kHz, 46.5 ms @22 kHz, comfortably past the ~15 ms crystal spec.
+    // GUESS pending Due silicon: confirm the crystal's startup spec before trimming
+    // toward the ~15 ms figure (0x50 gives ~15.2 ms @42 kHz, no margin).
     constexpr uint32_t MOR_KEY = 0x37u << 16;
     constexpr uint32_t MOR_MOSCXTEN = 1u << 0;
     constexpr uint32_t MOR_MOSCRCEN = 1u << 3;
@@ -99,7 +98,7 @@ namespace
     // raw spin count on the reset 4 MHz RC: ~1M iterations is hundreds of ms, well
     // past the MOSCXTST window (tens of ms) and every SLCK-counted status delay,
     // so a good crystal always returns true. A false return means the source never
-    // came up -- the caller MUST NOT proceed to select it (that is the boot race).
+    // came up: the caller MUST NOT proceed to select it (that is the boot race).
     bool pmc_wait(uint32_t bit)
     {
         for (uint32_t i = 0; i < 0x100000u; i++)
@@ -122,7 +121,7 @@ namespace
         // 2. Start the 12 MHz crystal (RC stays MAINCK meanwhile). If MOSCXTS never
         //    asserts there is no usable crystal: stay on the 4 MHz fast RC so the core
         //    and diag LED still run. The UART divisor is computed for 84 MHz MCK, so
-        //    the console is unusable on this path -- degraded, not dead-locked.
+        //    the console is unusable on this path: degraded, not dead-locked.
         r32(CKGR_MOR) = MOR_CRYSTAL;
         if (not pmc_wait(SR_MOSCXTS))
         {
@@ -145,8 +144,8 @@ namespace
         }
 
         // 4. PLLA = 12 MHz * 14 / 1 = 168 MHz (sec.28 CKGR_PLLAR). If it never locks,
-        //    MCK is already stable on the 12 MHz crystal -- stay there (best-effort;
-        //    console still off since BRGR targets 84 MHz).
+        //    MCK is already stable on the 12 MHz crystal, so stay there (console
+        //    still off since BRGR targets 84 MHz).
         r32(CKGR_PLLAR) = PLLAR_ONE | PLLAR_MULA | PLLAR_COUNT | PLLAR_DIVA;
         if (not pmc_wait(SR_LOCKA))
         {
@@ -256,8 +255,8 @@ namespace
     // Software 64-bit extension of the 32-bit TC_CV0. Reads are RELIABLE (unlike
     // DWT): the counter wraps every 2^32/42e6 ~= 102 s. The wrap is folded either
     // by a thread read or, when the system is idle with the tickless timer
-    // disarmed, by the TC0 overflow (COVFS) ISR below -- exactly once (whoever
-    // reads first advances g_clk_last, so the other sees no backward step). Without
+    // disarmed, by the TC0 overflow (COVFS) ISR below, exactly once: whoever
+    // reads first advances g_clk_last, so the other sees no backward step. Without
     // that ISR a wrap across a fully-quiescent >102 s idle would be lost (a slow
     // DWT-style leap).
     volatile uint32_t g_clk_high = 0;
@@ -275,7 +274,7 @@ namespace
         // ungated TC access (it was a harmless DWT read before this override).
         // WFI-clocking constraint: TC0 keeps counting in WFI only in Sleep mode
         // (PMC_FSMR.LPM=0, the default). If Wait mode is ever selected MCK stops,
-        // freezing TC0 AND SysTick -- the whole time base halts, not just this clock.
+        // freezing TC0 AND SysTick: the whole time base halts, not just this clock.
         r32(PMC_PCER0) = PID_TC0;                 // clock TC0 channel 0
         r32(TC0_CMR0) = TC_CMR_TCCLKS_MCK2;       // MCK/2, capture, RC does not reset
         r32(TC0_CCR0) = TC_CCR_CLKEN | TC_CCR_SWTRG; // enable + start counting
@@ -470,7 +469,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 
 void Reset_Handler(void)
 {
-    // FIRST: the watchdog is enabled at reset and WDT_MR is write-once -- disable
+    // FIRST: the watchdog is enabled at reset and WDT_MR is write-once, so disable
     // it before anything else can burn the (~16 s) budget or the write.
     r32(WDT_MR) = WDT_MR_WDDIS;
     // Flash (hence the vector table) lives at 0x0008_0000; point VTOR there (the

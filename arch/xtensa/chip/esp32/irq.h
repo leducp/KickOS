@@ -20,15 +20,18 @@
 
 namespace kickos::esp32::irq
 {
-    // Peripheral interrupt sources (DPORT interrupt-matrix inputs).
+    // Peripheral interrupt sources (DPORT interrupt-matrix inputs). TRM Table 8.3-1:
+    // source 34 is UART_INTR, its PRO_CPU map register DPORT_PRO_UART_INTR_MAP_REG at
+    // 0x3FF0018C (TRM 12.4).
     enum periph_src
     {
-        UART0_SRC = 34, // UART0; map register at DPORT + 0x18C
+        UART0_SRC = 34,
     };
 
-    // Target CPU interrupt numbers. UART0_CPU_INT is external, LEVEL-triggered,
-    // level-1 (bit 13 is in KICKOS_L1_INT_MASK) and free on the PRO CPU. The two
-    // internal lines are arch-layer owned (see file header), mirrored for context.
+    // Target CPU interrupt numbers. TRM Table 8.3-2: 13 is Peripheral, Level-Triggered,
+    // priority 1, so it is C-handleable through the level-1 vector (bit 13 is in
+    // KICKOS_L1_INT_MASK) and no other in-tree source maps to it. The two internal lines
+    // are arch-layer owned (see file header), mirrored for context.
     enum cpu_int
     {
         UART0_CPU_INT = 13,

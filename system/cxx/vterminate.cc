@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 
-// Replaces libstdc++'s vterminate.o on the FULL_CXX link path so the linker
-// never extracts it -- and with it __cxa_demangle and the newlib float dtoa
-// (~65K flash) the default handler drags in only to demangle a name. t->name()
-// is deliberately the mangled name; no demangler is pulled.
+// Replaces libstdc++'s vterminate.o on the FULL_CXX link path, so the linker never
+// extracts it. Demangling t->name() here would pull __cxa_demangle back in, and the
+// newlib float dtoa with it (~65K flash); the name stays mangled.
 
 #include <exception>
 #include <cstdlib>

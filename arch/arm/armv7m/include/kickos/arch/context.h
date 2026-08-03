@@ -29,8 +29,8 @@ struct arch_context
 
     // The thread's fixed resting privilege (set once at init, never changed by a
     // switch). The SVC trampoline restores this on syscall return so a privileged
-    // thread issuing a syscall is NOT demoted to unprivileged -- it drops back to
-    // exactly its entry posture, matching the sim's resting-posture restore.
+    // thread issuing a syscall is NOT demoted to unprivileged; it drops back to
+    // exactly its entry posture.
     uint32_t resting_npriv;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY

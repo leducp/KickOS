@@ -13,7 +13,7 @@ namespace
     constexpr uint64_t BEAT_NS = 400000000ull; // 0.4 s between hits
 
     // Shared by both players; bound in main() once the kernel is up. (A global
-    // kos::Semaphore would run its ctor -- a syscall -- before the scheduler.)
+    // kos::Semaphore would run its ctor, a syscall, before the scheduler.)
     kos::Semaphore* g_ping = nullptr;
     kos::Semaphore* g_pong = nullptr;
 

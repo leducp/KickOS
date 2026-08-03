@@ -21,11 +21,11 @@ namespace kickos
     // Confused-deputy floor: syscall_dispatch runs privileged (it bypasses the
     // MPU), so it must never dereference a user pointer the CALLER could not
     // itself reach. A range passes iff it lies within one region the current
-    // thread is granted -- app code/rodata (RX) + static data (RW) + its domain
-    // data + its own stack (thread.cc composition) -- with the required access.
+    // thread is granted, with the required access: app code/rodata (RX), static data (RW),
+    // its domain data, and its own stack from the thread.cc composition.
     // Privileged callers (kernel domain, trusted) bypass. Struct + out-pointer
     // args are caller STACK locals; a read buffer / name string may instead point
-    // into the app's code/rodata/.data -- see user_readable_ok for how those are
+    // into the app's code/rodata/.data; see user_readable_ok for how those are
     // recognized on every backend (real MPU regions on HW, the host image on sim).
     bool user_range_ok(uintptr_t ptr, size_t len, uint32_t need)
     {
@@ -173,7 +173,7 @@ namespace kickos
     // translate / copy across address spaces); every kernel-side user-pointer
     // dereference funnels here, so that becomes one function to change, not a
     // hunt across syscalls. Callers MUST validate first (user_range_ok /
-    // user_readable_ok / user_writable_ok) -- this is the ACCESS, not the check.
+    // user_readable_ok / user_writable_ok): this is the ACCESS, never the check.
     // Byte loops, not memcpy: freestanding, and the arch rewrite hooks here.
     void kaccess_from_user(void* kdst, uintptr_t usrc, size_t n)
     {

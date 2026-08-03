@@ -3,7 +3,7 @@
  *
  * Linker script for the STM32F302R8 (Nucleo-F302R8), Cortex-M4F.
  *   Flash : 64 KiB @ 0x0800_0000
- *   SRAM  : 16 KiB @ 0x2000_0000   (tiny -- provisioning is sized down to match)
+ *   SRAM  : 16 KiB @ 0x2000_0000   (tiny; provisioning is sized down to match)
  */
 
 ENTRY(Reset_Handler)
@@ -20,7 +20,7 @@ _kernel_stack_size = 2K;
 /* Newlib heap: an explicit .userheap section carved from RAM before the thread arena
    (no MPU .appdata window on this chip). Every byte here is a byte the arena does not
    get, and on 16 KiB the selftest image's static footprint leaves the arena little room
-   for the two boot stacks -- hence 2K, in line with the other 16-20 KiB parts. A small
+   for the two boot stacks, hence 2K, in line with the other 16-20 KiB parts. A small
    heap does not stop printf: newlib falls back to unbuffered stdio when the buffer
    malloc fails (the nRF51 ships 0 and prints). 0 is legal for a board with no malloc
    app. */

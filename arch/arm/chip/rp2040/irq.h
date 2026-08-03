@@ -12,8 +12,9 @@ namespace kickos::rp2040::irq
 {
     enum irq_num
     {
-        UART0_IRQ = 20, // ARM PL011 UART0
-        UART1_IRQ = 21, // ARM PL011 UART1
+        USBCTRL_IRQ = 5, // USB device controller; one line, level (INTS ORs the sources)
+        UART0_IRQ = 20,  // ARM PL011 UART0
+        UART1_IRQ = 21,  // ARM PL011 UART1
     };
 }
 

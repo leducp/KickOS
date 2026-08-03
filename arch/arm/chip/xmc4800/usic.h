@@ -105,12 +105,12 @@ namespace usic
     // only; TCSR control writes do not clear TDV.
     constexpr uint32_t FMR_MTDV_CLEAR = 0x2u << 0;
 
-    // CCR.TBIEN (RM p.18-160): Transmit-Buffer Interrupt Enable -- fires the
+    // CCR.TBIEN (RM p.18-160): Transmit-Buffer Interrupt Enable. Fires the
     // standard-transmit-buffer interrupt when a word moves TBUF->shifter (TBUF now
     // free). The drain trigger for the buffered console; toggled by tx_irq_*.
     constexpr uint32_t CCR_TBIEN = 1u << 13;
 
-    // INPR.TBINP[6:4] (RM p.18-*): Transmit-Buffer interrupt node pointer -- picks
+    // INPR.TBINP[6:4] (RM p.18-*): Transmit-Buffer interrupt node pointer. Picks
     // which service-request output SR0..SR5 the TB interrupt drives (set at init).
     constexpr uint32_t INPR_TBINP_SHIFT = 4;
     constexpr uint32_t INPR_TBINP_MASK = 0x7u << 4;
@@ -190,7 +190,7 @@ namespace usic
     // Polled console UART does not need this; it exists for a future SSC/IIC user.
     void configure_fifo(uintptr_t base, uintptr_t ctr_off, uint32_t dptr, uint32_t size, uint32_t limit);
 
-    // Raw TX status/data (single-shot, no polling loop -- the caller bounds waits).
+    // Raw TX status/data (single-shot, no polling loop; the caller bounds waits).
     bool tx_ready(uintptr_t base); // TCSR.TDV clear: transmit buffer can take a word
     void tx_put(uintptr_t base, uint8_t v);
     bool tx_idle(uintptr_t base);  // PSR.BUSY clear: shifter has emptied

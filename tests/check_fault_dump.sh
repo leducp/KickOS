@@ -11,8 +11,8 @@
 # Native run for the sim; QEMU (semihosting) when QEMU_MACHINE is set.
 #
 # Coverage note: of the wired targets, only the sim actually ARMS a console ring
-# (mps2/virt/nrf51 are polled semihosting). The ring-arming silicon boards -- xmc4800,
-# mk64f, rx72m, esp32-wroom, rp2040, sam3x8e, the stm32 fleet -- have no QEMU model,
+# (mps2/virt/nrf51 are polled semihosting). The ring-arming silicon boards (xmc4800,
+# mk64f, rx72m, esp32-wroom, rp2040, sam3x8e, the stm32 fleet) have no QEMU model,
 # so their armed-ring fault dump is validated by the manual HW flash pass, not here.
 
 set -u

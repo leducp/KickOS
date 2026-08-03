@@ -163,7 +163,7 @@ sole effective-priority writer):
                           where ep->server == t )
 
 The `CAP_REPLY` donors and the endpoint-server term are found by scanning `t`'s own handle
-table (bounded by `KICKOS_MAX_HANDLES`, floor 9), NOT by scanning any object pool -- the
+table (bounded by `KICKOS_MAX_HANDLES`), NOT by scanning any object pool: the
 same cheap-scan philosophy as the mutex held-list walk. `Endpoint::server` is a raw
 `Thread*` set at every recv and CLEARED in the endpoint close/teardown arm when the server
 drops its `WAIT` cap (waker-cleared discipline, mirrors `blocked_on`).

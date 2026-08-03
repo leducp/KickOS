@@ -13,10 +13,10 @@
 // KOS_BUS_DEV_MAX device slots per call. Because a kos_call caller must be a spawned
 // pool thread (the root/init thread is guarded), the client is always a spawned thread
 // that receives the endpoint's SIGNAL cap by spawn-time delegation. The bring-up runs
-// in the root/init thread and records the endpoint's cap handle so the app -- same
-// thread, same cap table -- can delegate a SIGNAL-narrowed cap to ONE client: the
-// service tracks device slots by the caller's own request byte, so several devices
-// behind one client are supported and several mutually-untrusting clients are not.
+// in the root/init thread and records the endpoint's cap handle so the app, in the
+// same thread with the same cap table, can delegate a SIGNAL-narrowed cap to ONE
+// client: the service tracks device slots by the caller's own request byte, so several
+// devices behind one client are supported and several mutually-untrusting clients are not.
 //
 // Chip select is a SOFTWARE GPIO on PTC4 (Arduino D9 = LAN9252 SCS), NOT hardware
 // PCS0: the driver brackets the whole transaction by driving PTC4 low (assert) /
@@ -25,7 +25,7 @@
 // trailing dummy byte that corrupted length-sensitive LAN9252 mailbox writes.
 //
 // GPIO access path (K64 RM 3.10.1.1 / 3.3.6.2 / 3.3.7.1 / 4.6): GPIO is a direct
-// crossbar slave with NO access protection -- not an AIPS-Lite slot (no PACR) and
+// crossbar slave with NO access protection: not an AIPS-Lite slot (no PACR) and
 // not a SYSMPU slave port. So the unprivileged driver reaches GPIOC's data registers
 // with NO grant; only the PTC4 pin-mux + direction are set privileged one-time in
 // the bring-up. DSPI0 privilege stays AIPS-PACR slot 44 as before.
@@ -47,8 +47,8 @@ extern "C"
     int k64dspi_spi_start(struct kos_service_cfg const* cfg);
 
     // TAKE the DSPI0 service endpoint cap handle out of the ROOT/init thread's table
-    // (set by k64dspi_spi_start). The app -- which runs in the SAME root thread after
-    // the service walk -- delegates a SIGNAL-narrowed copy of it to its ONE SPI client,
+    // (set by k64dspi_spi_start). The app, which runs in the SAME root thread after
+    // the service walk, delegates a SIGNAL-narrowed copy of it to its ONE SPI client,
     // then closes its own copy. Handing it out is one-shot: a second call returns a
     // negative value, as does a service that did not come up.
     int k64dspi_take_endpoint(void);

@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RX72M peripheral BASE addresses (Phase-1 register consolidation). Transcribed
-// from the RX72M Group User's Manual: Hardware (r01uh0804ej0120, Rev.1.20);
-// hand-rolled, clean-room (no vendor SDK). ADDITIVE: these currently DUPLICATE
-// the literals still inline in chip_rx72m.cc; a later phase wires this in and
-// removes the duplicates. Register offsets + fields live in regs/<periph>.h.
+// RX72M peripheral BASE addresses. Transcribed from the RX72M Group User's Manual:
+// Hardware (r01uh0804ej0120, Rev.1.20); hand-rolled, clean-room (no vendor SDK).
+// Register offsets + fields live in regs/<periph>.h.
 //
-// NOTE: the ICU/CMTW/MPU register FILES are defined at the arch layer in
-// arch/rx/rxv3/regs.h (kickos::rxv3). The bases here are the ones the chip
-// backend references directly (arch_reserved_blocks, the CMTW/ICU wiring), kept
-// for a self-consistent chip mmap.
+// The ICU/CMTW/MPU register FILES are defined at the arch layer in arch/rx/rxv3/regs.h
+// (kickos::rxv3); the bases here are the ones the chip backend references directly
+// (arch_reserved_blocks, the CMTW/ICU wiring).
 
 #ifndef KICKOS_ARCH_RX_CHIP_RX72M_MMAP_H
 #define KICKOS_ARCH_RX_CHIP_RX72M_MMAP_H
@@ -21,7 +18,7 @@ namespace kickos::rx::mmap
 {
     // SYSTEM / low-power / clock-generation register block (UM sec.9/11/13).
     // NOTE: MOFCR (main osc forced oscillation, sec.9.2.19) sits OUTSIDE this
-    // block at 0x0008C293 -- see regs/cgc.h.
+    // block at 0x0008C293 (see regs/cgc.h).
     constexpr uintptr_t SYSTEM = 0x00080000;
     // Flash ROM cache control (UM sec.64.4). Not in the PRCR protect list.
     constexpr uintptr_t FLASH = 0x00081000;
@@ -30,7 +27,7 @@ namespace kickos::rx::mmap
     constexpr uintptr_t MPU = 0x00086400;
     // ICUD interrupt controller (UM sec.15). IR/IER/IPR bases in rxv3/regs.h.
     constexpr uintptr_t ICU = 0x00087000;
-    // SCI6 -- board console UART (UM sec.42).
+    // SCI6, the board console UART (UM sec.42).
     constexpr uintptr_t SCI6 = 0x0008A0C0;
     // Compare Match Timer W (UM sec.32). Register fields in rxv3/regs.h.
     constexpr uintptr_t CMTW0 = 0x00094200; // one-shot next-event timer

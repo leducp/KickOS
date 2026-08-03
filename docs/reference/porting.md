@@ -896,7 +896,9 @@ deepest pool worker 592 B, root 1,048 B, idle 76 B -- a 488 B (31.8%) margin on 
 root stack. That is the pattern to copy on a tight part: measure the watermark, then
 provision, rather than provisioning for comfort.
 
-Only `KICKOS_MAX_HANDLES >= 9` is asserted in-tree (`system.h:49-53`); the rest are
+No cap-table FLOOR is asserted in-tree. `cap.h` asserts only that the reserved range
+leaves a dynamic slot (`KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC`) and that a full
+grant list fits (`KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`); the suite's own floor is
 measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
 worker: `call_infoless_revert`, four mutually-dependent workers spawned before any join
 (`../../user/apps/common/selftest/main.cc:2212-2215`), and `mutex_chain_boost`, a four-link
@@ -908,9 +910,9 @@ return CANNOT say which of the two limits it hit, because `kos_thread_spawn` ans
 `-KOS_ENOMEM` for a full slot table and for a missing stack block alike. The other 61 cases
 need no 4th worker, so a small part loses one chained-priority-inheritance case and
 one call/reply case, not the suite. The 6-semaphore peak is `mutex_deadlock`: two permanent
-plus four live (`main.cc:1126-1129`) -- but on a 9-handle board the **cap table** binds
-first, since `KICKOS_CAP_FIRST_DYNAMIC 4`
-(`../../system/include/kickos/sys/cap_index.h:22`) plus the suite's two permanent caps
+plus four live (`main.cc:1126-1129`) -- but on a 7-handle board the **cap table** binds
+first, since `KICKOS_CAP_FIRST_DYNAMIC 2`
+(`../../system/include/kickos/sys/cap_index.h`) plus the suite's two permanent caps
 leaves 3 free against the 6 that case wants live (rationale `main.cc:1133-1136`).
 
 `f302nucleo` walked that ladder one knob at a time: at `KICKOS_MAX_THREADS=4` plus

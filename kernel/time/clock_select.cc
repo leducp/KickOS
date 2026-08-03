@@ -2,11 +2,10 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // User-selectable CPU clock: the arch-neutral coherence orchestration around the
-// arch_cpu_clock_set MECHANISM seam. This is NOT policy -- no governor, DVFS, or
-// idle heuristic lives here; it "changes the clock coherently to the requested
-// P-state and reports the landed Hz" for a future userspace power-manager service
-// to drive. The spec (with the load-bearing rulings) is docs/design-m3-clock-select.md;
-// the sequence below is section 2.3.
+// arch_cpu_clock_set MECHANISM seam. NOT policy: no governor, DVFS or idle heuristic
+// belongs here. It changes the clock coherently to the requested P-state and reports the
+// landed Hz, for a future userspace power-manager service to drive. The sequence below is
+// docs/design-m3-clock-select.md section 2.3.
 
 #include <kickos/time.h>
 #include <kickos/arch/arch.h>
@@ -20,10 +19,10 @@ namespace kickos
 {
     // Coherently retune the core clock to `target` and return the LANDED Hz (0 ==
     // could-not / did-not move). Runs the full coherence tail ONLY when the clock
-    // actually moved (achieved != previous, B1) -- never gated on a success flag,
-    // because a staged fallback (K64F fail_to_fei) moved the clock too and must be
-    // plumbed exactly like a success. Caller (the syscall) has already gated on
-    // privilege; this owns the console-ownership refusal + the masked transition.
+    // actually moved (achieved != previous). NEVER gate this on a success flag: a staged
+    // fallback (K64F fail_to_fei) moved the clock too and must be plumbed exactly like a
+    // success. The syscall has already gated on privilege; this owns the console-ownership
+    // refusal and the masked transition.
     uint32_t cpu_clock_set(kos_pstate_t target)
     {
         // S4: a userspace driver owns the UART -> the kernel cannot re-derive or
@@ -43,8 +42,8 @@ namespace kickos
         // cannot be no-op'd by the arm-dedup guard (it always reloads after a disarm).
         arch_timer_disarm();
 
-        // Flush console TX to SHIFT-IDLE (S6): drain the software ring into the UART
-        // (polled -- the TX IRQ is masked here), then wait for the shift register to
+        // Flush console TX to SHIFT-IDLE: drain the software ring into the UART
+        // (polled, the TX IRQ being masked here), then wait for the shift register to
         // empty, so no byte is still clocking out at the OLD baud when the peripheral
         // clock moves. Both are no-ops on a chip that does not retune / has no ring.
         console_tx_flush_sync();

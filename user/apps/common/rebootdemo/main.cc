@@ -4,7 +4,7 @@
 // The handover fires on a TIMEOUT rather than at the end of the run: a board whose image
 // is otherwise misbehaving still comes back for a reflash without a button press.
 //
-// Root makes the call -- selftest's reboot_priv owns the unprivileged refusal arm.
+// Root makes the call; selftest's reboot_priv owns the unprivileged refusal arm.
 //
 // On a chip with a backend (rp2040 -> PICOBOOT/UF2, rp2350 -> BOOTSEL, imxrt1062 ->
 // HalfKay) the countdown is the last line printed and the board reappears as a flashing

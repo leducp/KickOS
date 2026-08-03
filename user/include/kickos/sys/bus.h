@@ -3,8 +3,8 @@
 //
 // The SPI/I2C bus-service wire ABI: the request/reply/config structs a client
 // and a bus driver exchange 1:1 over a kos_call endpoint. Offset-based from day
-// one (region_cap == -1 selects the inline path; the region path is DEFERRED --
-// a driver returns a service-level error for region_cap != -1, this header only
+// one (region_cap == -1 selects the inline path; the region path is DEFERRED, so
+// a driver returns a service-level error for region_cap != -1 and this header only
 // defines the field). Fixed-width, naturally aligned, no compiler pragmas; native
 // endianness is fine, the payload is kernel-copied within one machine and never
 // crosses a link.
@@ -112,7 +112,7 @@ struct kos_bus_cfg
     uint8_t word_bits; // SPI frame size (8 default)
     uint8_t cs_policy; // enum kos_bus_cs_policy
     // HW PCS/SELO line index, or the driver's GPIO pin slot. Both in-tree drivers
-    // accept and ignore it -- each has exactly one CS line (bus-service.md).
+    // accept and ignore it: each has exactly one CS line (bus-service.md).
     uint8_t cs_index;
     uint8_t rsv[2];
 };

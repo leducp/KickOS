@@ -2,13 +2,12 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // ESP32-C6-WROOM-1 (ESP-RISC-V "HP CPU", RV32IMAC) peripheral base addresses.
-// One home for the memory-mapped block bases the chip backend touches; the per-
-// peripheral register maps live under regs/ and add their offsets onto these.
 //
 // Register addresses: ESP32-C6 TRM v1.2 (memory map Table 5.3-2; CLINT ch.1.7;
-// PLIC/INTMTX section 1.6 + ch.10; watchdogs ch.14/15; UART ch.26; RMT ch.30;
+// INTPRI/INTMTX section 1.6 + ch.10; watchdogs ch.14/15; UART ch.27; RMT ch.37;
 // USB Serial/JTAG ch.32; access permission HP_APM/HP_TEE ch.16). Hand-rolled,
-// no ESP-IDF/HAL sources.
+// no ESP-IDF/HAL sources. The one exception is PLIC_MX_BASE below, which no TRM
+// revision documents.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_MMAP_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_MMAP_H
@@ -17,9 +16,17 @@
 
 namespace kickos::esp32c6::mmap
 {
-    // --- CPU sub-system window (0x2000_0000). PLIC + core-local CLINT share the one
-    //     4 KB page at 0x2000_1000 (TRM ch.1.7): PLIC at +0x000, CLINT at +0x800.
-    constexpr uintptr_t PLIC_MX_BASE = 0x20001000u; // M-mode PLIC (real IRQ controller)
+    // --- CPU sub-system region, 0x2000_0000..0x2FFF_FFFF (TRM Table 1.4-1). The only
+    //     registers TRM v1.2 places in it are CORE_XT_EN @0x2000_0900 (section 1.13.4) and
+    //     the CLINT @ +0x1800 (M mode) / +0x1C00 (U mode) (section 1.7.5).
+    //
+    //     PLIC_MX_BASE is NOT in TRM v1.2: no revision documents any register there, and
+    //     the string "PLIC" does not appear in the manual. It is kept because the documented
+    //     enable (INTPRI_CORE0_CPU_INT_ENABLE_REG) resets to 0 and is never written by this
+    //     tree, yet CPU ints 30 and 31 both deliver on silicon; per TRM section 1.6.2 item 2
+    //     that is only possible if this window is a live second view of the controller.
+    //     Its field layout differs from INTPRI's (see regs/plic.h), so it is not a plain alias.
+    constexpr uintptr_t PLIC_MX_BASE = 0x20001000u; // undocumented CPU interrupt controller window
     constexpr uintptr_t CLINT_BASE = 0x20001800u;   // MSIP switch doorbell + MTIME/MTIMECMP
 
     // --- HP peripherals (memory map Table 5.3-2).

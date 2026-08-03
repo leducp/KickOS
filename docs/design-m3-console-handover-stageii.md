@@ -117,12 +117,13 @@ root-task rule D8 carries.
 
 **SUPERSEDED, the reservation mechanism (B3).** For index 0 to be dependable, an own-create
 (`sem`/`endpoint`/`mutex`) must never occupy it. This note proposed starting `cap_install`'s
-free-slot scan at index 1. What SHIPPED is a FROZEN reserved RANGE
-`[0 .. KICKOS_CAP_FIRST_DYNAMIC)`, today `[0..4)`: the placement scan starts at
-`KICKOS_CAP_FIRST_DYNAMIC` and `cap_install_at` refuses index 0 outright, so the range grows by
-appending rather than by moving anything. The sizing consequence landed differently too: this note
+free-slot scan at index 1. What SHIPPED is a reserved RANGE
+`[0 .. KICKOS_CAP_FIRST_DYNAMIC)`, today `[0..2)`: the placement scan starts at
+`KICKOS_CAP_FIRST_DYNAMIC` and `cap_install_at` refuses index 0 outright, so the range moves only
+by a deliberate fleet-wide ABI change and never by something drifting into it. The sizing
+consequence landed differently too: this note
 was written against a `KICKOS_MAX_HANDLES` default of 8 with a tiny-board floor of 6, whereas the
-values that shipped are 12 with the four polled-only tiny boards at 9. Current contract:
+values in force are 10 with the four polled-only tiny boards at 7. Current contract:
 `reference/invariants.md` (`own-create-skips-reserved-cap-index`) plus
 `reference/architecture.md`.
 

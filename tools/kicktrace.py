@@ -72,7 +72,7 @@ ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv
 SYSCALL_NAME = {
     1: "kconsole_write", 2: "yield", 3: "sleep_ns", 4: "sem_create", 5: "sem_wait",
     6: "sem_post", 7: "thread_spawn", 8: "exit", 9: "irq_inject", 10: "guard_addr",
-    11: "irq_attach", 12: "clock_now", 13: "ram_alloc", 14: "irq_register",
+    11: "irq_attach", 12: "clock_now", 13: "ram_alloc", 14: "irq_claim",
     15: "irq_wait", 16: "irq_ack", 17: "handle_close", 18: "irq_spurious",
     19: "diag_led_set", 20: "diag_led_toggle", 21: "irq_unmask", 22: "cpu_clock_hz",
     23: "mutex_create", 24: "mutex_lock", 25: "mutex_unlock", 26: "endpoint_create",
@@ -80,7 +80,8 @@ SYSCALL_NAME = {
     31: "grant_probe", 32: "periph_clock_hz", 33: "pinmux_set", 34: "call",
     35: "reply", 36: "shutdown", 37: "mem_self_grant", 38: "reboot",
     39: "periph_enable", 40: "cap_narrow", 41: "panic",
-    42: "periph_reg_write",
+    42: "periph_reg_write", 43: "irq_notify", 44: "irq_discard",
+    45: "thread_kill",
 }
 
 TRACE_MAGIC = 0x4B545243

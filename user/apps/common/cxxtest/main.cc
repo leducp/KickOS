@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Full-C++ opt-in smoke test (Stage B of docs/design-kickcat-k64f.md): proves the
-// toolchain's libstdc++/libsupc++ over newlib actually EXECUTES on the MCU --
+// toolchain's libstdc++/libsupc++ over newlib actually EXECUTES on the MCU:
 // exceptions (throw/catch, EH unwind), STL (std::vector, std::string over the heap),
 // and RTTI (dynamic_cast + typeid). Built ONLY under the FULL_CXX opt-in (see
 // CMakeLists.txt); a freestanding app cannot use any of this. Prints one PASS/FAIL
@@ -12,7 +12,7 @@
 // privileged root thread, which bypasses the MPU, so an inline throw would never
 // touch the app grant. Under enforcement the worker's throw/catch drives the DWARF/
 // EHABI/SjLj unwinder over eh_globals + the FDE registry, and every new/vector/string
-// allocation goes through the app-side arena -- all of which must lie in the worker's
+// allocation goes through the app-side arena. All of it must lie in the worker's
 // reachable grant. That is the real gate: full-C++ inside MPU confinement (the RISC-V
 // gp-in-appdata layout, docs/design-riscv-gp-split.md).
 
@@ -74,7 +74,7 @@ namespace
 
     void test_exceptions()
     {
-        // Custom type caught by its concrete type -- the right handler, with payload.
+        // Custom type caught by its concrete type: the right handler, with payload.
         bool right_handler = false;
         int seen_code = 0;
         try
@@ -96,7 +96,7 @@ namespace
         }
         report("exception caught by exact type", right_handler and seen_code == 42);
 
-        // Catch by std base -- proves the libsupc++ type-match walks the hierarchy.
+        // Catch by std base: proves the libsupc++ type-match walks the hierarchy.
         bool caught_by_base = false;
         try
         {
@@ -196,7 +196,7 @@ int main(int, char**)
     // (KICKOS_PRIO_MIN+1), so once main blocks on g_done the worker runs to completion
     // and root wakes as the last live thread (the selftest orchestration shape). Stack:
     // the kernel default KICKOS_USER_STACK_SIZE (8 KB on every gated board), demand-
-    // allocated from the app arena -- headroom for the EH unwind + libstdc++ working set,
+    // allocated from the app arena: headroom for the EH unwind + libstdc++ working set,
     // and it fits each board's window (a static KOS_STACK_DEFINE buffer would have to be a
     // pow2 region inside C6's 4 KB .appdata, which 8 KB cannot).
     kos_cap_grant caps[] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}}; // g_done@1

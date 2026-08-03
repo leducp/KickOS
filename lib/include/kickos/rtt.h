@@ -13,13 +13,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Publish barrier: ordering between the ring-buffer payload write and the WrOff
-// update the host reads. Compiler-only by default -- correct on the in-order,
-// single-core M-class parts KickOS targets today (a store-store on the same core
-// needs no hardware fence). A weakly-ordered core (Xtensa / RISC-V, or a future
-// multi-core part) must override this with a real fence via a CMake-injected
-// compile definition (-DKICKOS_RTT_PUBLISH_BARRIER=...); lib/ is a leaf, so it
-// must NOT reach up into an arch header for the barrier -- the build injects it.
+// Publish barrier: ordering between the ring-buffer payload write and the WrOff update
+// the host reads. Compiler-only by default, which holds on an in-order single-core
+// M-class part. A weakly-ordered core (Xtensa / RISC-V, or a multi-core part) MUST
+// override it with a real fence via -DKICKOS_RTT_PUBLISH_BARRIER=...; lib/ is a leaf,
+// so the barrier is build-injected and must NOT come from an arch header.
 #ifndef KICKOS_RTT_PUBLISH_BARRIER
 #define KICKOS_RTT_PUBLISH_BARRIER() __asm volatile("" ::: "memory")
 #endif

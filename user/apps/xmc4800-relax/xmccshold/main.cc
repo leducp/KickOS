@@ -10,7 +10,7 @@
 //
 // Modelled on user/apps/xmcspi (same U0C1 = 0x4003_0200 512 B window, same
 // unprivileged-driver-brings-itself-up + spawn-with-MMIO-grant pattern, with
-// FDR/BRG/CCR going through kos_periph_reg_write). It is NOT the enforcement proof --
+// FDR/BRG/CCR going through kos_periph_reg_write). It is NOT the enforcement proof:
 // no negative test, no MPU-fault poke; this bench answers only the functional CS-hold
 // question.
 //
@@ -85,15 +85,15 @@ namespace
     constexpr uint8_t FRAME_PATTERN[FRAME_WORDS] = {0xA5u, 0x3Cu, 0x00u, 0xFFu};
 
     // Deliberate slow-software pacing between words. Long enough that a real driver
-    // could not "sneak" the next word in before the SSC engine sees TBUF empty --
-    // this is the exact condition FEM must survive.
+    // could not "sneak" the next word in before the SSC engine sees TBUF empty.
+    // This is the exact condition FEM must survive.
     constexpr uint64_t WORD_GAP_NS = 3000000ull; // 3 ms
 
     // Bounded polls (RM/house rule: never an unbounded MMIO poll). After each TBUF
     // write we spin-poll PSR: CAPTURE_MAX is the hard ceiling so a dead channel
     // cannot wedge the bench; POST_RX_MARGIN is a short tail spun AFTER RX
     // completion so the trailing MSLS fall (FEM=0, and the FEM=1 end-of-frame) is
-    // caught in the same capture window, before the WORD_GAP sleep -- keeping every
+    // caught in the same capture window, before the WORD_GAP sleep, keeping every
     // edge attributed to exactly one word (no cross-word coalescing).
     constexpr unsigned CAPTURE_MAX = 500000u;
     constexpr unsigned POST_RX_MARGIN = 4000u;
@@ -177,7 +177,7 @@ namespace
     }
 
     // UNPRIVILEGED driver: granted app code+data (auto) and the U0C1 window (spawn
-    // MMIO grant). No IRQ is registered -- the bench polls. No file-scope mutable
+    // MMIO grant). No IRQ is registered; the bench polls. No file-scope mutable
     // state: the window base arrives as the thread arg VALUE, counters are locals.
     constexpr uint32_t FDR_WORD = FDR_DM_FRACTIONAL | FDR_STEP_367;
     constexpr uint32_t BRG_WORD = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
@@ -284,7 +284,7 @@ namespace
                   fem0_edges, v0);
         kos::print(s);
 
-        // Verdict: the HW CS-hold is usable ONLY if the bit provably governs --
+        // Verdict: the HW CS-hold is usable ONLY if the bit provably governs:
         // FEM=1 holds (2 edges = one bracket) AND FEM=0 pulses (~8 = per-word). A
         // board that simply always holds (2 and 2) or always pulses would fail here.
         char const* verdict = "hardware CS-hold NOT usable (FEM does not govern)";

@@ -3,7 +3,7 @@
 //
 // FP context-switch torture test (Cortex-M4F and any FPU armv7m). Proves the
 // kernel saves/restores the *callee-saved* FP register bank (s16-s31) across a
-// context switch -- the half the hardware does NOT auto-stack on exception entry
+// context switch: the half the hardware does NOT auto-stack on exception entry
 // (it lazily stacks only s0-s15 + FPSCR; s16-s31 are the PendSV switch's job).
 //
 // M4F FPU is single-precision, so this uses `float` (s-registers), not `double`
@@ -20,7 +20,7 @@ namespace
     // MUST be always-inlined into the caller: s16-s31 are callee-saved, so a real
     // function's epilogue would vpop (restore) them and wipe out the load/hold. By
     // inlining, the bank stays live across the intervening sleep call, and only the
-    // *caller's* single prologue/epilogue touches it -- never between load and read.
+    // *caller's* single prologue/epilogue touches it, never between load and read.
     __attribute__((always_inline)) inline void fp_bank_load(float const* in)
     {
         __asm volatile("vldmia %0, {s16-s31}" ::"r"(in)

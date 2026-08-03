@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Core register definitions shared by the ARMv6-M and ARMv7-M backends -- the
+// Core register definitions shared by the ARMv6-M and ARMv7-M backends: the
 // SCB/SysTick/NVIC subset whose offsets and bit values are identical across
 // both architecture profiles (clean-room, from the ARM Architecture Reference
 // Manuals). Arch-specific registers (v7-M BASEPRI band + DWT; each profile's

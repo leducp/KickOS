@@ -48,8 +48,8 @@ namespace kickos
         constexpr uint32_t RLAR_ATTR_DEVICE = 1u << 1; // AttrIndx 1 -> MAIR0 slot 1
 
         // MAIR attribute bytes (indexed by AttrIndx). Slot 0: Normal, outer+inner
-        // Write-Back, Read/Write-Allocate (0xFF) -- cacheable XIP flash + SRAM. Slot 1:
-        // Device-nGnRE (0x04) -- ordered MMIO. Programmed once into MPU_MAIR0.
+        // Write-Back, Read/Write-Allocate (0xFF) for cacheable XIP flash + SRAM. Slot 1:
+        // Device-nGnRE (0x04) for ordered MMIO. Programmed once into MPU_MAIR0.
         constexpr uint32_t MAIR_NORMAL_WBWA = 0xFFu;
         constexpr uint32_t MAIR_DEVICE_nGnRE = 0x04u;
     }

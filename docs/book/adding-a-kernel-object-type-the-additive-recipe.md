@@ -201,11 +201,15 @@ Nothing existing changes shape. This is the mutex (Chapter 2.3) and the endpoint
 
 Two guardrails are worth writing down because they bite silently otherwise:
 
-- **The refcount is `uint8_t`, and its bound is per pool.** The most references an
-  object can accrue is one per possible holder, so each pool needs its own
-  `static_assert` that the worst-case holder count fits in a byte (for the simple
-  types, `KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES <= 255`). A board that raises a knob
-  must not silently overflow the byte -- the assert is what stops it.
+- **The refcount is `uint8_t`, and the bound is enforced at RUNTIME, not by an assert.**
+  The most references an object can accrue is one per possible holder, so the naive bound
+  is `KICKOS_MAX_THREADS * KICKOS_MAX_HANDLES`. Do **not** weld that product into a
+  `static_assert`: it is a worst case nothing approaches, it omits the boot TCBs and the
+  kernel's own console reference, and stating it correctly ties two provisioning knobs
+  together tighter than the runtime needs. Instead the ONE increment site refuses:
+  `obj_ref_inc` returns false at `UINT8_MAX` and the caller reports `-KOS_EOVERFLOW`,
+  so a board that raises a knob gets a refusal it can diagnose rather than a build it
+  cannot ship.
 - **`obj_ref_inc` carries the rights** even though most arms ignore them. A type whose
   object holds a count of holders-with-a-particular-right (an endpoint tracking its
   receivers -- Chapter 8.3) reads the rights here; the delegation site already has them
@@ -225,14 +229,19 @@ away without being used must wake the caller it named with a broken-pipe error. 
 three arms are therefore: reference up, nothing; reference down, nothing; close
 protocol, the full stale-resolve-and-wake.
 
-**A type with no object at all.** The authority capability *is* its rights bits
-(Chapter 7.4,
-*[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*): `obj`
-is unused, there is nothing allocated, nothing to free, no waiters, and nothing a close
-could need to refuse. Steps 1, 2 and 4 vanish and all three of step 3's arms are a bare
-`return`.
+**A type with no object at all** is the limit of that same direction, and arriving there
+is a signal rather than a milestone. If `obj` is unused, nothing is allocated, nothing
+can be freed, there are no waiters and no close could need to refuse anything, then
+steps 1, 2 and 4 vanish and all three of step 3's arms are a bare `return` -- at which
+point the entry is a rights byte and a type inside an eight-byte struct, and the honest
+question is what it is doing in the table at all. A capability table earns its cost by
+naming things whose liveness a holder could otherwise get wrong. State that names
+nothing is just state, and belongs on the thread; axis-3 authority is where that
+argument is made in full (Chapter 7.4,
+*[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*).
 
-Two details make this a variant of the recipe rather than an exception to it.
+Two details make the reply capability a variant of the recipe rather than an exception
+to it.
 
 **An empty arm must be written out, not left to the `default`.** The `default` asserts,
 and that assertion is load-bearing: it is what catches a type somebody added to the enum
@@ -247,11 +256,11 @@ anything.**
 exists to turn a validated handle into a pool object; handed a capability with no pool
 behind it, it would look up `obj`, find nothing, and correctly return nothing -- so the
 type would be permanently unusable through the very path that makes every other type
-work. Both poolless types are looked up type-agnostically instead, with an **explicit
-type test** at the use site. For the authority capability that test is the whole safety
-argument for reading a fixed table index: the reserved slot can also be reached by the
-delegation packing, so what makes a direct read sound is not the index, it is the
-verification that what sits there is the type being asked for.
+work. A poolless type is looked up type-agnostically instead, with an **explicit type
+test** at the use site. That test is the whole safety argument, and it is not a
+formality: the reply capability's `obj` is a packed thread handle, so a reader that
+skipped the test and treated it as a pool index would not fail -- it would name an
+unrelated live object. The type test is what makes reinterpreting the field sound.
 
 So the recipe generalises by one word: *at most* one pool, one refcount array, and one
 resolve case. The three switches are the invariant; the pool is the common case.
@@ -260,8 +269,8 @@ resolve case. The three switches are the invariant; the pool is the common case.
 
 - The naming side this completes -- the handle, resolve chokepoint, and boundary vs
   detector: Chapter 8.1, *Naming a kernel object*.
-- The poolless type that carries no object at all, and why its authority lives in a
-  rights word: Chapter 7.4,
+- Why axis-3 authority is not in the capability table at all, and what test to apply
+  before putting anything in it: Chapter 7.4,
   *[Privilege is three axes, not one bit](privilege-is-three-axes-not-one-bit.md)*.
 - The first two instances of the recipe: Chapter 2.3, *Priority inheritance* (the
   mutex's close protocol and force-unlock), and Chapter 8.3, *Endpoints* (the

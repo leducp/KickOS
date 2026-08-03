@@ -8,14 +8,14 @@
 # only safe if the window holds NOTHING kernel-owned: the KickOS libs are built
 # -msmall-data-limit=0 so they emit no .sdata/.sbss and their globals land in the
 # kernel-side .data/.bss instead. One stray KickOS global left in .sdata/.sbss would
-# sit in the app-granted window -- a privilege-escalation vector (an unprivileged
+# sit in the app-granted window: a privilege-escalation vector (an unprivileged
 # thread could overwrite g_arch_current / g_clint_msip). This gate fails loud on any
 # such leak, per-archive, before it can ship.
 #
 # Section-level via objdump -h: with -msmall-data-limit=0 no KickOS object may carry
 # a .sdata/.sdata2/.sbss section. (nm is NOT used: this toolchain's nm reports .sdata
 # symbols with the same 'D'/'B' type as .data/.bss, so a symbol-type check would pass
-# vacuously -- verified. Section headers are the reliable signal.)
+# vacuously. Verified: section headers are the reliable signal.)
 #
 # usage: check_riscv_no_smalldata.sh <objdump> <kernel.a> <arch.a> <chip.a> <lib.a>
 

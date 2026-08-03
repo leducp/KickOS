@@ -14,9 +14,9 @@
  *
  * XIP mode here is the near-universal "03h serial read per access" (sec.4.10.3):
  * each XIP access issues an 8-bit 0x03 command + 24-bit address, then clocks in
- * data on a single line. Slow but compatible with any SPI flash -- correct for
- * first bring-up. All other setup (PLLs, regulator, faster QSPI modes) is the
- * platform's job over XIP, per the datasheet.
+ * data on a single line. Slow but compatible with any SPI flash. All other setup
+ * (PLLs, regulator, faster QSPI modes) is the platform's job over XIP, per the
+ * datasheet.
  *
  * This code is position-independent (runs from SRAM at a bootrom-chosen address):
  * only PC-relative branches and literal-pool loads; the sole absolute code target
@@ -36,10 +36,10 @@
     .equ SSI_SPI_CTRLR0, 0xf4
 
     /* CTRLR0 = 0x001f0300: SPI_FRF=STD(0), DFS_32=31 (32-bit data frames),
-     * TMOD=EEPROM_READ(3) -- transmit the cmd/addr control frame, then receive. */
+     * TMOD=EEPROM_READ(3): transmit the cmd/addr control frame, then receive. */
     .equ CTRLR0_XIP,     0x001f0300
     /* SPI_CTRLR0 = 0x03000218: XIP_CMD=0x03, INST_L=8b(2<<8), ADDR_L=24b(6<<2),
-     * TRANS_TYPE=1C1A(0) -- command+address both in standard 1-bit SPI. */
+     * TRANS_TYPE=1C1A(0): command+address both in standard 1-bit SPI. */
     .equ SPI_CTRLR0_XIP, 0x03000218
     /* SCK = clk_sys / BAUDR. clk_sys is the ~6.5 MHz ROSC at boot (and 12 MHz XOSC
      * after chip init); /4 keeps SCK comfortably within any flash's 03h limit. */

@@ -70,7 +70,7 @@ int main(int, char**)
               static_cast<unsigned>(WRAPS), static_cast<unsigned long long>(t0));
     emit(s);
 
-    // Phase A -- idle past ONE full wrap in a single sleep. The free-running counter
+    // Phase A: idle past ONE full wrap in a single sleep. The free-running counter
     // wraps mid-sleep with no thread reading it, so the wrap MUST be folded by the
     // overflow ISR for the sleep to resolve at the right wall time (checklist 1/4/5).
     uint64_t const a_req = WRAP_NS + (WRAP_NS / 2ull); // 1.5x wrap
@@ -97,7 +97,7 @@ int main(int, char**)
         pass = false;
     }
 
-    // Phase B -- soak across several wraps back to back; assert per-chunk rate and
+    // Phase B: soak across several wraps back to back; assert per-chunk rate and
     // seam-monotonicity (a burst of reads between chunks must never step backward).
     emit("[clocksoak] phase B: soak across N wraps\n");
     uint64_t prev = kos::clock_now();

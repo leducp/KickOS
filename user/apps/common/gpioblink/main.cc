@@ -4,7 +4,7 @@
 // GPIO direct-MMIO demo (M4.3): the kernel does NOT do GPIO. A privileged bring-up main
 // (the root thread runs privileged) grants the LED port's register block to an
 // UNPRIVILEGED worker as a spawn MMIO window; the worker toggles the pin by writing that
-// window DIRECTLY -- no syscall per edge. A syscall-per-toggle cannot serve a hot pin (a
+// window DIRECTLY: no syscall per edge. A syscall-per-toggle cannot serve a hot pin (a
 // spike measured an SVC round-trip well above a 16-bit chip-select's edge budget), so the
 // honest model is direct MMIO with a per-chip isolation ceiling on the granted window.
 //
@@ -158,7 +158,7 @@ namespace
         }
         fflush(stdout);
 
-        // Persistent: keep the window and slow-blink forever, mirroring the design -- a
+        // Persistent: keep the window and slow-blink forever, mirroring the design. A
         // granted pin is owned for the driver's life.
         while (true)
         {

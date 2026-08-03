@@ -5,7 +5,7 @@
 // (<kickos/sys/bus.h>). A client holds a SIGNAL-bearing cap on an SPI service
 // endpoint and issues transactions through these helpers; each builds a
 // kos_bus_req frame in a stack buffer, does one kos_call, and splits the rx bytes
-// out of the kos_bus_rsp reply. No chip register, no CS knowledge, no MMIO -- the
+// out of the kos_bus_rsp reply. No chip register, no CS knowledge, no MMIO: the
 // same object links against ANY bus driver (K64F DSPI, XMC USIC, ...); the driver
 // owns the controller and the chip-select. So a caller MUST be a spawned pool
 // thread (the root/init thread cannot kos_call: -KOS_EPERM).
@@ -18,7 +18,7 @@
 // Byte budget: a request frames as kos_bus_req(12) + nseg*kos_bus_seg + inline tx
 // bytes, capped by KOS_EP_MSG_MAX (256). spi_transfer clocks one segment;
 // spi_transact clocks a write phase then a read phase in ONE CS bracket (two
-// segments, one call) -- the register/CSR access shape.
+// segments, one call), the register/CSR access shape.
 
 #ifndef KICKOS_DRIVER_SPI_CLIENT_H
 #define KICKOS_DRIVER_SPI_CLIENT_H
@@ -41,8 +41,8 @@ extern "C"
     long spi_transfer(int ep, uint8_t device, void const* tx, void* rx, size_t len);
 
     // Two-phase transaction to device slot `device` in ONE CS bracket: clock `wlen`
-    // write bytes then `rlen` read bytes (dummy 0x00 out), all under a single held CS
-    // -- the coherent command+payload shape length-sensitive targets (e.g. LAN9252)
+    // write bytes then `rlen` read bytes (dummy 0x00 out), all under a single held CS,
+    // the coherent command+payload shape length-sensitive targets (e.g. LAN9252)
     // require. rd receives the read-phase bytes (may be NULL to discard). Returns
     // `rlen` (>= 0), or a negative -KOS_E*.
     long spi_transact(int ep, uint8_t device, void const* wr, size_t wlen, void* rd,

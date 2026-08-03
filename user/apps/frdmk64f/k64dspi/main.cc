@@ -14,12 +14,12 @@
 // closes its own retained cap so the driver is the sole recv holder (driver death
 // then EPIPE-wakes any parked client). The client speaks the neutral wrapper
 // (spi_transfer / spi_transact / spi_config over the bus call/reply ABI); it touches
-// no MMIO, no CS, no grant -- the driver owns all of that.
+// no MMIO, no CS, no grant; the driver owns all of that.
 //
 // Two build modes over the SAME service:
-//   DEFAULT -- LAN9252 BYTE_TEST probe (EasyCAT shield on the Arduino header): a
+//   DEFAULT: LAN9252 BYTE_TEST probe (EasyCAT shield on the Arduino header): a
 //   spi_transact(cmd, rx) reads the ESC byte-order signature 0x8765_4321.
-//   K64DSPI_LOOPBACK -- SOUT(PTD2)->SIN(PTD3) loopback self-test (jumper, no shield),
+//   K64DSPI_LOOPBACK: SOUT(PTD2)->SIN(PTD3) loopback self-test (jumper, no shield),
 //   behind CMake option K64DSPI_LOOPBACK=ON.
 //
 // Diagnostic app (kickos_add_diagnostic_app): build-only; the operator flashes +
@@ -91,7 +91,7 @@ namespace
         return true;
     }
 
-    // UNPRIVILEGED client: CONFIG (conservative baud, no CS -- the loopback jumper
+    // UNPRIVILEGED client: CONFIG (conservative baud, no CS; the loopback jumper
     // has none) then loopback transfers through the wrapper. SIGNAL cap at index 1.
     void spi_client(void*)
     {

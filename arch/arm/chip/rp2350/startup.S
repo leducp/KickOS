@@ -10,8 +10,8 @@
  * during the flash scan, then enters the image (datasheet 5.9.5). What the image
  * MUST carry instead is an IMAGE_DEF block somewhere in the first 4 KiB
  * (datasheet 5.1.5.2, 5.9.5): the bootrom scans for the block-loop start marker,
- * validates the IMAGE_DEF, then -- with no ENTRY_POINT/VECTOR_TABLE item present
- * -- reads the initial SP from [base+0] and the reset PC from [base+4] of the
+ * validates the IMAGE_DEF, then, with no ENTRY_POINT/VECTOR_TABLE item present,
+ * reads the initial SP from [base+0] and the reset PC from [base+4] of the
  * vector table at the image base (datasheet 5.9.3.3, 5.9.5.1). So the vector
  * table is PINNED at 0x1000_0000 and the IMAGE_DEF sits immediately after it.
  *

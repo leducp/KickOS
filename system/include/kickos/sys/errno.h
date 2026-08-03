@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The KickOS fleet-wide syscall error taxonomy. A syscall that can fail returns
-// its error as the NEGATED code (-KOS_Exxx); a handle/count/byte-count success is
-// non-negative, so the two never collide (handles are bounded well under INT_MAX
-// and counts stay small). Pointer-returning (ram_alloc) and Hz-returning
-// (cpu_clock_hz/set) syscalls stay OUT of this scheme -- see their own contracts.
+// The KickOS fleet-wide syscall error taxonomy. A syscall that can fail returns its
+// error as the NEGATED code (-KOS_Exxx); a handle/count/byte-count success is
+// non-negative, so the two never collide. Pointer-returning (ram_alloc) and Hz-returning
+// (cpu_clock_hz/set) syscalls stay OUT of this scheme; see their own contracts.
 //
 // Lives in the kickos_system library alongside cap_index.h; keep it dependency-free.
 // Shared verbatim by the kernel dispatch and the userspace wrappers.
 //
-// Values mirror the common POSIX errno numbers so they read at a glance; only the
-// MAGNITUDE is contract (the sign is applied at the return site). Every code is
-// returned NEGATIVE; there is no positive success-variant. EOWNERDEAD is the
-// robust-mutex case: it is ACQUIRED-with-a-warning, still returned as a negative
-// (-KOS_EOWNERDEAD) that a caller must special-case as HELD (see mutex_lock).
+// Values mirror the common POSIX errno numbers, but only the MAGNITUDE is contract (the
+// sign is applied at the return site). Every code is returned NEGATIVE; there is no
+// positive success-variant. -KOS_EOWNERDEAD is the one a caller must special-case as
+// HELD: the mutex was ACQUIRED (see mutex_lock).
 
 #ifndef KICKOS_SYS_ERRNO_H
 #define KICKOS_SYS_ERRNO_H
@@ -32,6 +30,8 @@ enum kos_errno
     KOS_EDEADLK = 35,    // self/recursive lock, or a lock that would close a wait cycle
     KOS_ENOSYS = 38,     // syscall/arch backend not implemented on this chip (the declining fallback)
     KOS_EOVERFLOW = 75,  // a bounded counter is at its ceiling; the op is refused, not wrapped
+    KOS_ECANCELED = 125, // this thread was cancelled: the wait it was in (or was about to
+                         //   enter) is abandoned, and the thread is expected to exit
     KOS_EOWNERDEAD = 130 // mutex ACQUIRED but the prior owner died holding it (state may be torn)
 };
 

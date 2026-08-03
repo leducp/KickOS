@@ -14,21 +14,18 @@
 
 namespace kickos
 {
-    // Remove and return the highest-priority waiter (FIFO among equal priority).
-    // The list mechanics are shared (List); the priority scan is the only
-    // wait-queue-specific policy on top.
+    // FIFO among equal priority.
     Thread* wq_pop_highest(List& q)
     {
         Thread* best = wq_peek_highest(q);
         if (best != nullptr)
         {
-            q.unlink(&best->link); // O(1): List is doubly-linked, no predecessor scan
+            q.unlink(&best->link);
             best->wait_queue = nullptr;
         }
         return best;
     }
 
-    // Same scan as wq_pop_highest but leaves the queue intact (B3 probe-before-pop).
     Thread* wq_peek_highest(List& q)
     {
         Thread* best = thread_of(q.head);
@@ -47,19 +44,17 @@ namespace kickos
         return best;
     }
 
-    // Resume barrier for the wake protocol (see sync.h). `epoch` is c->switch_count
-    // sampled under the block lock immediately before wq_block. After the block
-    // scope's lock is released, ARM's pended PendSV has not fired yet (arch_irq_restore
-    // has no ISB), so this thread is still executing pre-switch; spin until it is
-    // genuinely switched back in (switch_count advances -- switch_to bumps the INCOMING
-    // thread's count). Volatile so the compiler reloads each iteration; the value moves
-    // via the exception-mode switch, invisible to this function. Zero iterations on the
-    // sim (the switch already happened synchronously inside wq_block).
+    // `epoch` MUST be c->switch_count sampled under the block lock immediately before
+    // wq_block. On ARM the pended PendSV has not fired when that lock is released
+    // (arch_irq_restore has no ISB), so the caller is still executing pre-switch and must
+    // not trust anything a waker wrote. switch_to bumps the INCOMING thread's
+    // switch_count, so an advance is proof of a real switch-in. Volatile: the value moves
+    // via the exception-mode switch, invisibly to this function. Zero iterations on the
+    // sim, where wq_block switches synchronously.
     void wq_confirm_resume(Thread* c, uint64_t epoch)
     {
-        // Bounded (KICKOS_POLL_SPIN_MAX): the pended switch fires as soon as the
-        // caller's IrqLock drops, so the cap is far above any real wait and reaching
-        // it means the switch is never coming (a masked or lost PendSV).
+        // Reaching the cap means the switch is never coming (a masked or lost PendSV);
+        // the pended switch otherwise fires as soon as the caller's IrqLock drops.
         uint32_t spin = 0;
         while (*static_cast<uint64_t volatile*>(&c->switch_count) == epoch)
         {
@@ -70,21 +65,20 @@ namespace kickos
         }
     }
 
-    // Park the current thread on `q` and switch away; returns when woken.
+    // Returns when woken.
     void wq_block(List& q)
     {
         Thread* c = sched::current();
-        // Detach from the ready list FIRST: the ready list and wait queues
-        // share the TCB link node, so pushing onto the wait queue would clobber
-        // the links that the ready-list removal needs to read.
+        // Detach from the ready list FIRST: the ready list and the wait queues share the
+        // TCB link node, so the push below would clobber the links the ready-list removal
+        // still has to read.
         sched::detach_current();
         c->state = ThreadState::BLOCKED;
         c->wait_queue = &q;
         q.push_back(&c->link);
-        sched::reschedule(); // switch away; returns when woken
+        sched::reschedule();
     }
 
-    // --- Semaphore -------------------------------------------------------------
     // The ceiling must be representable in Semaphore::count, else the bound in sem_post is
     // itself the overflow it prevents.
     static_assert(KOS_SEM_COUNT_MAX <= INT_MAX,
@@ -105,7 +99,7 @@ namespace kickos
             return;
         }
         wq_block(s->waiters);
-        // Woken with the token handed to us directly; nothing to decrement.
+        // The token was handed over directly by sem_post; there is nothing to decrement.
     }
 
     bool sem_trywait(Semaphore* s)
@@ -125,7 +119,7 @@ namespace kickos
         Thread* w = wq_pop_highest(s->waiters);
         if (w != nullptr)
         {
-            sched::wake(w); // token handed directly to the woken waiter
+            sched::wake(w); // the token goes straight to the waiter, count stays put
             return true;
         }
         if (s->count >= KOS_SEM_COUNT_MAX)
@@ -136,12 +130,9 @@ namespace kickos
         return true;
     }
 
-    // --- Mutex (priority inheritance) -----------------------------------------
-    // Plain PI, boost-on-contention, revert-by-recompute over the owner's held list.
-    // All effective-priority writes funnel through sched::set_prio (the sole writer);
-    // wq_pop_highest needs no change (it rescans lazily, so a boosted parked waiter is
-    // never re-queued). Inheritance does NOT propagate through semaphores: a thread
-    // blocked on a sem has blocked_on == nullptr, so the chain walk stops there.
+    // Priority inheritance. sched::set_prio is the SOLE writer of an effective priority.
+    // Inheritance does NOT propagate through semaphores: a thread blocked on a sem has
+    // blocked_on == nullptr, so the chain walk stops there.
     namespace
     {
         void held_push(Thread* owner, Mutex* m)
@@ -165,8 +156,7 @@ namespace kickos
             }
         }
 
-        // Highest priority among the threads parked on m, or 0 (below any real prio)
-        // if none. Same scan shape as wq_pop_highest.
+        // Returns 0 when nobody is parked; 0 is below every real priority.
         uint8_t highest_waiter_prio(Mutex* m)
         {
             uint8_t best = 0;
@@ -181,24 +171,22 @@ namespace kickos
             return best;
         }
 
-        // Hand ownership of m to the popped waiter w. `status` and the blocked_on
-        // clear are written by the WAKER here, under the lock -- NOT by the woken
-        // thread after it resumes. On ARM the woken thread resumes only after a
-        // deferred PendSV, so a self-clear of blocked_on would leave a window where a
-        // parked thread has blocked_on == nullptr and the chain walk stops short of
-        // it (missed boost / missed deadlock). Caller holds IrqLock and has already
-        // held_remove'd m from the releaser and popped w off m->waiters.
+        // Caller holds IrqLock, and must already have held_remove'd m from the releaser
+        // and popped w off m->waiters.
+        // `status` and the blocked_on clear are written HERE by the waker, never by the
+        // woken thread after it resumes: on ARM the woken thread resumes only after a
+        // deferred PendSV, so a self-clear leaves a window in which a still-parked thread
+        // has blocked_on == nullptr and the chain walk stops short of it, losing a boost
+        // or a deadlock detection.
         void transfer_to(Mutex* m, Thread* w, intptr_t status)
         {
             m->owner = w;
             w->wait_result = status;
             w->blocked_on = nullptr;
             held_push(w, m);
-            // Boost w from the remaining waiters. This is VACUOUS at transfer time --
-            // wq_pop_highest returned the highest-prio waiter, so every waiter still on
-            // m is <= w's effective prio -- but kept as the correct general form (H4:
-            // the new owner inherits the remaining waiters) so it stays right if the
-            // pop policy ever changes.
+            // VACUOUS while the pop returns the highest-prio waiter: every waiter left on
+            // m is then <= w. Kept as the general form so a change of pop policy does not
+            // silently drop the new owner's inheritance.
             uint8_t wp = w->prio;
             uint8_t const hw = highest_waiter_prio(m);
             if (hw > wp)
@@ -212,10 +200,28 @@ namespace kickos
         }
     }
 
-    // The single effective-priority funnel (D3). Mutex term (the old recompute_prio),
-    // then the call/reply donors: each live CAP_REPLY in t's table names a parked caller,
-    // and each endpoint where t is the server contributes its highest parked SEND_WAIT
-    // caller. Bounded by KICKOS_MAX_HANDLES; no object-pool scan.
+    // Unchecked preconditions: `caller` is already off the ready set and off every other
+    // queue, so its `link` is free; and its CAP_REPLY is already installed in `server`'s
+    // table. The entry is what the server closes and the membership is what the funnel
+    // reads, so the two must move together or the funnel miscounts.
+    void reply_donor_park(Thread* server, Thread* caller)
+    {
+        server->reply_waiters.push(&caller->link);
+    }
+
+    // Must run wherever a CAP_REPLY entry is consumed (reply, voluntary close, exit
+    // teardown) and BEFORE the funnel recompute that follows, else the donor is counted
+    // after its cap is gone. Membership is TESTED, not assumed: cap_reply_caller matches
+    // only the low 8 bits of the call sequence, so a stale reply cap held by thread A can
+    // resolve to a caller actually parked on thread B, and unlinking it from A would
+    // splice B's list.
+    void reply_donor_unpark(Thread* server, Thread* caller)
+    {
+        (void)server->reply_waiters.unlink_if_present(&caller->link);
+    }
+
+    // The single effective-priority funnel. Runs under IrqLock on every mutex unlock,
+    // reply and close, so NO term added here may walk the capability table.
     uint8_t thread_effective_prio(Thread* t)
     {
         uint8_t p = t->base_prio;
@@ -227,31 +233,34 @@ namespace kickos
                 p = hw;
             }
         }
-        for (int i = 0; i < KICKOS_MAX_HANDLES; i++)
+        for (ListNode* n = t->reply_waiters.head; n != nullptr; n = n->next)
         {
-            CapEntry const& e = t->handles[i];
-            if (e.type == static_cast<uint8_t>(CapType::CAP_REPLY))
+            Thread* caller = thread_of(n);
+            if (caller->call_state == CALL_REPLY_WAIT and caller->prio > p)
             {
-                Thread* caller = cap_reply_caller(e.obj);
-                if (caller != nullptr and caller->prio > p)
-                {
-                    p = caller->prio;
-                }
+                p = caller->prio;
             }
-            else if (e.type == static_cast<uint8_t>(CapType::CAP_ENDPOINT)
-                     and (e.rights & CAP_WAIT) != 0)
+        }
+        // ep->server is the authoritative "t is this endpoint's receiver" bit;
+        // obj_close_protocol's endpoint arm clears it when t drops its WAIT cap. Do not
+        // re-derive it from t's table: that is the table walk this funnel must avoid.
+        for (int i = 0; i < decltype(kernel().endpoints)::capacity(); i++)
+        {
+            if (not kernel().endpoints.live(i))
             {
-                Endpoint* ep = kernel().endpoints.resolve(e.obj);
-                if (ep != nullptr and ep->server == t)
+                continue;
+            }
+            Endpoint* ep = kernel().endpoints.at(i);
+            if (ep->server != t)
+            {
+                continue;
+            }
+            for (ListNode* n = ep->send_waiters.head; n != nullptr; n = n->next)
+            {
+                Thread* s = thread_of(n);
+                if (s->call_state == CALL_SEND_WAIT and s->prio > p)
                 {
-                    for (ListNode* n = ep->send_waiters.head; n != nullptr; n = n->next)
-                    {
-                        Thread* s = thread_of(n);
-                        if (s->call_state == CALL_SEND_WAIT and s->prio > p)
-                        {
-                            p = s->prio;
-                        }
-                    }
+                    p = s->prio;
                 }
             }
         }
@@ -273,19 +282,18 @@ namespace kickos
             IrqLock lock;
             if (m->owner == nullptr)
             {
-                // Fast path: two stores, no prio work.
                 m->owner = c;
                 held_push(c, m);
                 return 0;
             }
             if (m->owner == c)
             {
-                return -KOS_EDEADLK; // self-deadlock: recursive lock is refused, not parked
+                return -KOS_EDEADLK; // a recursive lock is refused, never parked
             }
-            // Pass 1: cycle/deadlock detection, READ ONLY. Walk owner -> blocked_on ->
-            // owner ... ; if it reaches c, blocking c on m would close a wait cycle.
-            // The depth bound stops a PRE-EXISTING foreign cycle (those threads are
-            // already deadlocked; the bound just prevents an unbounded walk).
+            // Pass 1: cycle detection, READ ONLY, so a refusal writes no boost. Walking
+            // owner -> blocked_on -> owner reaching c means blocking c on m would close a
+            // wait cycle. The depth bound only stops the walk on a PRE-EXISTING foreign
+            // cycle; those threads are already deadlocked.
             {
                 Thread* t = m->owner;
                 int depth = 0;
@@ -293,7 +301,7 @@ namespace kickos
                 {
                     if (t == c)
                     {
-                        return -KOS_EDEADLK; // would deadlock -- refuse, no boost written
+                        return -KOS_EDEADLK;
                     }
                     if (t->blocked_on == nullptr)
                     {
@@ -307,8 +315,8 @@ namespace kickos
                     }
                 }
             }
-            // Pass 2: boost the chain (proven acyclic). Raise each owner to c's prio
-            // until one is already at/above it (I2 holds inductively above that point).
+            // Pass 2: the chain is now known acyclic. Stopping at the first owner already
+            // at or above c's prio is sufficient; everything above it is too.
             {
                 Thread* t = m->owner;
                 int depth = 0;
@@ -332,18 +340,14 @@ namespace kickos
                 }
             }
             c->blocked_on = m;
-            // Snapshot the switch-in epoch under the lock, right before parking: the
-            // resume barrier below waits for it to advance (see wq_confirm_resume).
+            // Must be sampled under the lock, immediately before parking; the barrier
+            // below waits for it to advance.
             epoch = c->switch_count;
-            wq_block(m->waiters); // parks; a waker transfers ownership + writes wait_result
+            wq_block(m->waiters); // a waker transfers ownership and writes wait_result
         }
-        // Resume barrier. The wait_result read MUST be both outside the critical
-        // section AND confirmed post-resume. On ARM arch_switch only PENDS PendSV and
-        // arch_irq_restore has no ISB, so 1-2 instructions retire on the STILL-current
-        // (not-yet-switched) thread after the unmask -- reading wait_result here
-        // without confirmation would return the pre-block value. wq_confirm_resume
-        // spins until this thread is genuinely switched back in (its epoch advances);
-        // the waker already cleared blocked_on and wrote wait_result under the lock.
+        // The wait_result read must be BOTH outside the critical section AND after the
+        // barrier: on ARM a couple of instructions retire on the not-yet-switched thread
+        // after the unmask, so reading it earlier returns the pre-block value.
         wq_confirm_resume(c, epoch);
         return static_cast<int>(c->wait_result);
     }
@@ -354,7 +358,7 @@ namespace kickos
         Thread* c = sched::current();
         if (m->owner != c)
         {
-            return -KOS_EPERM; // only the owner may unlock -- runtime error, never a panic
+            return -KOS_EPERM; // a non-owner unlock is a runtime error, never a panic
         }
         held_remove(c, m);
         Thread* w = wq_pop_highest(m->waiters);
@@ -364,28 +368,30 @@ namespace kickos
             uint8_t const np = thread_effective_prio(c);
             if (np != c->prio)
             {
-                // Lowering ourselves may make a middle-priority READY thread the
-                // highest runnable -- reschedule to give it the CPU (H8).
+                // Lowering ourselves can make a middle-priority READY thread the highest
+                // runnable, so the reschedule is not optional.
                 sched::set_prio(c, np);
                 sched::reschedule();
             }
             return 0;
         }
-        transfer_to(m, w, 0); // hand off + boost w from remaining waiters
+        transfer_to(m, w, 0);
         uint8_t const np = thread_effective_prio(c);
         if (np != c->prio)
         {
-            sched::set_prio(c, np); // revert our boost over what we STILL hold
+            sched::set_prio(c, np); // revert the boost over what we STILL hold
         }
-        sched::wake(w); // reschedule inside handles preemption by the new owner
+        sched::wake(w);
         return 0;
     }
 
     void mutex_force_unlock(Mutex* m, Thread* dying)
     {
-        // R3: the owner is EXITED, so it is never scheduled again -- skip ITS
-        // recompute. Deliver MUTEX_OWNER_DIED to the woken waiter (the protected
-        // state may be inconsistent). Never strands a waiter.
+        // `dying` gets NO recompute: it only runs the rest of its own teardown, so it
+        // stays boosted for the remainder of the sweep. That inversion is bounded and
+        // unmasked because the sweep is chunked. The waiter is woken with
+        // MUTEX_OWNER_DIED because the protected state may be inconsistent; it is never
+        // stranded.
         held_remove(dying, m);
         Thread* w = wq_pop_highest(m->waiters);
         if (w == nullptr)

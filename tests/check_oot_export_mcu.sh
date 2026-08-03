@@ -5,8 +5,8 @@
 # CI gate for the MCU out-of-tree packaging surface (the sim gate,
 # check_oot_export.sh, cannot exercise it): install a bare-metal KickOS package,
 # then configure + build a standalone app against it with the SHIPPED cross
-# toolchain via find_package(KickOS) + plain add_executable. Build-only -- an MCU
-# ELF can't run on the host -- so it asserts on what the build produced.
+# toolchain via find_package(KickOS) + plain add_executable. Build-only: an MCU
+# ELF can't run on the host, so it asserts on what the build produced.
 #
 # This is where the interesting machinery lives. The sim package has no linker
 # script, no reset vector and no flashable image, so everything the bare-metal
@@ -90,7 +90,7 @@ echo "== the optional wrapper produces the same image, not a better one =="
 # Compared by size, not byte-for-byte: app.h bakes __DATE__/__TIME__ into every app
 # TU, so two targets whose compiles straddle a second boundary differ in those fixed
 # -width bytes for reasons that say nothing about the link recipe. The length is
-# immune to that and still catches the thing worth catching -- the wrapper linking
+# immune to that and still catches the thing worth catching: the wrapper linking
 # in something, or with something, that the plain path does not get.
 SZ_PLAIN=$(wc -c < "$TMP/build/oot_mcu_app.bin")
 SZ_SUGAR=$(wc -c < "$TMP/build/oot_mcu_app_sugar.bin")

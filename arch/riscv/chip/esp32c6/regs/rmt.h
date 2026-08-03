@@ -27,7 +27,7 @@ namespace kickos::esp32c6::reg::rmt
     constexpr uint32_t MEM_RD_RST = 1u << 1;
     constexpr uint32_t APB_MEM_RST = 1u << 2;
     constexpr uint32_t IDLE_OUT_EN = 1u << 6;  // drive idle level (idle_out_lv=0 -> rest low)
-    constexpr uint32_t CARRIER_EN = 1u << 21;  // default 1 -- MUST clear (no IR carrier)
+    constexpr uint32_t CARRIER_EN = 1u << 21;  // resets to 1, MUST be cleared (no IR carrier)
     constexpr uint32_t CONF_UPDATE = 1u << 24;
     constexpr uint32_t DIV_CNT_S = 8u;         // [15:8] per-channel clock divider
     constexpr uint32_t MEM_SIZE_S = 16u;       // [18:16] RAM blocks

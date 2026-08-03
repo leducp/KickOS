@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The built-in FIFO + round-robin scheduling policy (RTEMS-style). This TU owns
-// the ready structure -- per-priority intrusive FIFO lists + a priority bitmap
-// (find-first-set for the highest non-empty) -- and the RR slice; the core
-// reaches all of it only through the SchedPolicy hooks. RR is FIFO plus
-// on_slice_expire rotation; a FIFO thread has quantum_ns == 0, so it never arms
-// a slice (no "FIFO slice"). The ready state lives in the Kernel struct
-// (instance-scoped); only this TU touches it.
+// The built-in FIFO + round-robin scheduling policy. This TU owns the ready structure
+// (per-priority intrusive FIFO lists plus a priority bitmap) and the RR slice; the core
+// reaches all of it only through the SchedPolicy hooks, and no other TU may touch the
+// ready state in the Kernel struct. A FIFO thread has quantum_ns == 0 and therefore never
+// arms a slice.
 
 #include <kickos/sched.h>
 #include <kickos/instance.h>
@@ -107,15 +105,24 @@ namespace kickos
 
         void policy_on_slice_expire(Thread* t)
         {
-            // Rotate to the equal-priority peer, then re-grant a fresh quantum: if
-            // there is no peer, reschedule() keeps t running and its deadline must
-            // not stay in the past (which would re-arm every min-delta -- a storm).
+            // The re-arm is not optional: with no equal-priority peer, reschedule() keeps t
+            // running, and a deadline left in the past re-arms every min-delta.
             rq_rotate(t);
             arm_slice(t);
         }
 
         void policy_on_switch_in(Thread* t)
         {
+            // A slice deadline still in the future MUST survive the switch. Re-arming it
+            // here would refund the whole quantum on every resume, so a thread preempted
+            // more often than its quantum would never expire a slice and would starve its
+            // equal-priority peer for as long as the preemption lasted.
+            if (t->policy == Policy::RR and t->quantum_ns > 0
+                and t->slice_deadline_ns != UINT64_MAX
+                and t->slice_deadline_ns > ktime_now())
+            {
+                return;
+            }
             arm_slice(t);
         }
 

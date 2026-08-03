@@ -4,7 +4,7 @@
 // XMC4800/USIC0-CH1 SSC bus-SERVICE silicon validation (M4.4 call/reply). The SSC
 // service is brought up by the board service list BEFORE main (xmc_spi0_start: endpoint
 // + unprivileged driver, which configures the channel itself). This app only drives it
-// as a CLIENT -- the XMC sibling of user/apps/k64dspi.
+// as a CLIENT: the XMC sibling of user/apps/k64dspi.
 //
 // Because a kos_call caller must be a spawned pool thread (the root/init thread is
 // guarded -> -KOS_EPERM), the client is a SPAWNED thread that receives the service
@@ -15,7 +15,7 @@
 // closes its own retained cap so the driver is the sole recv holder (driver death
 // then EPIPE-wakes any parked client). The client speaks the neutral wrapper
 // (spi_transfer / spi_transact / spi_config over the bus call/reply ABI); it touches
-// no MMIO, no CS, no grant -- the driver owns all of that.
+// no MMIO, no CS, no grant; the driver owns all of that.
 //
 // Data path is the driver's INTERNAL LOOP-BACK (DX0 = own transmitter): there is no
 // external XMC SPI device on the bench, so every byte echoes (rx == tx). The client

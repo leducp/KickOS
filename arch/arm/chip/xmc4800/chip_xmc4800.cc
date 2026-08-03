@@ -4,11 +4,10 @@
 // Infineon XMC4800 (XMC4800 Relax Kit, Cortex-M4F) chip backend. Registers
 // clean-room from the XMC4700/XMC4800 Reference Manual; hand-rolled, no XMCLib.
 //
-// The watchdog is OFF at reset (WDT_CTR.ENB
-// = 0), so the reset path is just FPU + C-runtime + VTOR. arch_init then runs
-// clock_init() to bring the SCU up from the 12 MHz crystal PLL to fCPU=144 MHz
-// (fPERIPH=72 MHz) -- the uncalibrated fOFI (~24 MHz) is too inaccurate for a
-// stable UART baud.
+// The watchdog is OFF at reset (WDT_CTR.ENB = 0), so the reset path is just FPU +
+// C-runtime + VTOR. clock_init() then brings the SCU up from the 12 MHz crystal PLL
+// to fCPU=144 MHz (fPERIPH=72 MHz); the uncalibrated fOFI (~24 MHz) is too inaccurate
+// for a stable UART baud.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 #include "mmap.h"
@@ -56,10 +55,8 @@ namespace
     constexpr uintptr_t SCB_VTOR = 0xE000ED08;
 
     // ---- Clock tree: 12 MHz XTAL -> system PLL -> fSYS=fCPU=144 MHz -----------
-    // Sequence and register values are clean-room from the XMC4700/4800 RM V1.3
-    // (SCU clock/PLL chapter + flash chapter). The 144 MHz profile -- NDIV/PDIV/
-    // K2DIV and the staged K2DIV ramp -- is the RM's crystal-PLL bring-up for
-    // this part; register addresses/fields are the RM's SCU/FLASH/memory-map values.
+    // Sequence, the 144 MHz NDIV/PDIV/K2DIV profile and the staged K2DIV ramp are the
+    // XMC4700/4800 RM V1.3 crystal-PLL bring-up (SCU clock/PLL + flash chapters).
 
     // 144 MHz profile: fVCO = 12 MHz * NDIV/PDIV = 12*24/1 = 288 MHz;
     // fPLL = fVCO/K2DIV = 288/2 = 144 MHz. Each PLLCON1 field is written as (value-1).
@@ -70,8 +67,7 @@ namespace
              | ((scu::PLL_PDIV - 1u) << scu::PLLCON1_PDIV_SHIFT);
     }
 
-    // Bounded like the rp2040 wait_mask / the USIC TX poll: a missing crystal
-    // degrades (returns) instead of hanging the boot. Cap dwarfs any real wait.
+    // Bounded: a missing crystal must degrade to a return, not hang the boot.
     constexpr uint32_t CLOCK_POLL_TIMEOUT = 1000000u;
 
     bool clock_wait_set(uintptr_t addr, uint32_t mask)
@@ -98,28 +94,22 @@ namespace
     }
 
     // --- CCU40: the monotonic time base (RM ch.23) ------------------------------
-    // The v7-M default clock is the DWT cycle counter, but on this silicon DWT_CYCCNT
-    // reads are unreliable (core debug power domain; observed returning DWT_CTRL's
-    // value) and the 32->64 software wrap-extension turns one bad read into a phantom
-    // 2^32 jump that strands every timed wait. CCU40's four 16-bit slices are chained
-    // (CC41/CC42/CC43 each count the overflow of the slice below) into ONE free-running
-    // 64-bit HARDWARE counter on fCCU -- a plain peripheral, not the debug domain --
-    // read as arch_clock_now. Being 64-bit in hardware there is NO software wrap word,
-    // so no read can manufacture a wrap (the DWT failure mode is structurally absent).
-    // ONLY the monotonic clock moves off DWT; arch_trace_now + the KICKOS_BENCH
-    // timestamps stay on raw DWT_CYCCNT (a glitch there skews a telemetry sample --
-    // tolerable -- but is fatal to the scheduler's monotonic clock, moved here).
+    // DWT_CYCCNT reads are unreliable on this silicon (core debug power domain; observed
+    // returning DWT_CTRL's value), and the 32->64 software wrap-extension turns one bad
+    // read into a phantom 2^32 jump that strands every timed wait. CCU40's four 16-bit
+    // slices are chained (CC41/CC42/CC43 each count the overflow of the slice below) into
+    // ONE free-running 64-bit HARDWARE counter on fCCU, read as arch_clock_now; there is
+    // no software wrap word, so no read can manufacture a wrap. arch_trace_now and the
+    // KICKOS_BENCH timestamps stay on raw DWT_CYCCNT, where a glitch costs one sample.
     //
-    // Register addresses/bits are the RM's SCU + CCU4 values, cross-checked against
-    // the XMC4800 CMSIS device header. A previous CCU4 attempt set only CLKSET.CCUCEN
-    // and the slices never counted: CCU40 also comes out of SCU reset both CLOCK-GATED
-    // (CGATCLR0) and held in PERIPHERAL RESET (PRCLR0), and needs the module prescaler
-    // run bit (GIDLC.SPRB) -- all three are required before any slice advances.
-    // SLEEPCR.CCUCR (RM SCU): keep fCCU running while the core is in SLEEP. The idle
-    // path is a plain WFI (SLEEP, not DEEPSLEEP), and by default the CCU clock gates
-    // off in SLEEP -- which freezes this counter on every tickless idle, so a sleep
-    // deadline is only ever approached during the brief wake windows and a 40 ms sleep
-    // stretches into tens of seconds. (A future DEEPSLEEP user must set DSLEEPCR too.)
+    // CLKSET.CCUCEN alone is not enough: CCU40 also comes out of SCU reset both
+    // CLOCK-GATED (CGATCLR0) and held in PERIPHERAL RESET (PRCLR0), and needs the module
+    // prescaler run bit (GIDLC.SPRB). All three are required before any slice advances.
+    // SLEEPCR.CCUCR (RM SCU): keep fCCU running while the core is in SLEEP. The idle path
+    // is a plain WFI (SLEEP, not DEEPSLEEP) and the CCU clock gates off in SLEEP by
+    // default, which freezes this counter on every tickless idle: a sleep deadline is then
+    // only approached during the brief wake windows and a 40 ms sleep stretches into tens
+    // of seconds. A future DEEPSLEEP user must set DSLEEPCR too.
 
     inline volatile uint32_t& cc4(unsigned slice, uintptr_t reg)
     {
@@ -128,7 +118,7 @@ namespace
 
     void ccu4_clock_init()
     {
-        // Boot-order constraint: arch_clock_now MUST NOT run before this -- CCU40 is
+        // Boot-order constraint: arch_clock_now MUST NOT run before this. CCU40 is
         // clock-gated + in reset out of SCU reset, so a TIMER read would BusFault.
         r32(scu::CLKSET) = scu::CLKSET_CCUCEN;          // fCCU on (fSYS-derived)
         r32(scu::CCUCLKCR) &= ~scu::CCUCLKCR_CCUDIV;    // CCUDIV=0 -> fCCU = fSYS = SystemCoreClock
@@ -188,8 +178,7 @@ namespace
                | lo;
     }
 
-    // Let a K2DIV step settle before the next one. A generous fixed nop count
-    // (a per-frequency settle delay; ~50 us is ample).
+    // Let a K2DIV step settle before the next one (~50 us, ample at every ramp point).
     void clock_delay()
     {
         for (volatile uint32_t i = 0; i < 8000u; i++)
@@ -203,10 +192,10 @@ namespace
     // counter runs at fCCU = fSYS = SystemCoreClock, so that is the rate handed to it.
     kickos::arch_clk_anchor g_clk;
 
-    // FCON.WSPFLASH[3:0]: flash read wait-states in fCPU cycles. WHY set-before-rise:
-    // a raw fCPU increase past the current wait-state's access window makes an
-    // instruction fetch from flash return before the data is valid -> a fetch fault,
-    // not merely wrong timing (RM 8.4.4). So widen WS before a rise, relax after a fall.
+    // FCON.WSPFLASH[3:0]: flash read wait-states in fCPU cycles. An fCPU increase past
+    // the current wait-state's access window makes an instruction fetch from flash
+    // return before the data is valid -> a fetch fault, not merely wrong timing (RM
+    // 8.4.4). Widen WS before a rise, relax after a fall.
     void set_flash_ws(uint32_t ws)
     {
         uint32_t fcon = r32(flash::FCON);
@@ -216,10 +205,10 @@ namespace
     }
 
     // Walk K2DIV one step at a time from `from` to `to` (fPLL = fVCO/K2DIV = 288/K2DIV),
-    // settling between steps. WHY stepwise, never a jump: a large K2DIV DECREASE (a
-    // frequency RISE) draws a current step the core supply cannot service in one edge
-    // -- a VDDC droop -- so the boot ramp and this retune both stair-step. The PLL stays
-    // LOCKED across a K2DIV change (only the output divider moves), so no relock/poll.
+    // settling between steps. A large K2DIV DECREASE (a frequency RISE) draws a current
+    // step the core supply cannot service in one edge (a VDDC droop), so never jump. The
+    // PLL stays LOCKED across a K2DIV change (only the output divider moves), so there is
+    // no relock to poll.
     void pll_k2div_staircase(uint32_t from_k2, uint32_t to_k2)
     {
         uint32_t k = from_k2;
@@ -321,8 +310,9 @@ namespace
     // 18-20): an unprivileged store inside a granted channel window is discarded with
     // no fault (measured, user/apps/xmc4800-relax/pvprobe).
     //
-    // U0C0 has no entry: the kernel owns that channel's baud and enable
-    // (usic_uart.cc). An absent entry is a refusal.
+    // U0C0 carries a CCR entry ONLY (the IRQ-driven console driver's TBIEN). It has no
+    // FDR and no BRG entry: the kernel owns that channel's baud (usic_uart.cc), which
+    // cpu_clock_set's retune veto assumes. An absent entry is a refusal.
     struct PrivWriteReg
     {
         uintptr_t base;
@@ -336,29 +326,32 @@ namespace
                   "U0C1 is USIC0's second channel");
 
     // Per-entry value masks. The store is one whole 32-bit word, so without a mask an
-    // entry hands back every bit of a register the bus withholds entirely. For CCR that
-    // is the channel's whole interrupt block, not the MODE field the driver wants.
-    // A value with a bit set outside its entry's mask is REFUSED (-KOS_EINVAL); the
-    // seam never masks the value and never read-modify-writes, because a silently
-    // dropped configuration bit is what the consumers' read-back exists to catch.
+    // entry hands back every bit of a register the bus withholds entirely; for CCR that
+    // is the channel's whole interrupt block. A value with a bit set outside its entry's
+    // mask is REFUSED (-KOS_EINVAL): the seam never masks the value and never
+    // read-modify-writes.
     //
     // CCR (RM V1.3 p.18-160..162): MODE[3:0] selects the protocol, RIEN(14)/AIEN(15)
     // are the receive interrupt enables xmcssc arms last. WITHHELD: HPCEN[7:6],
     // PM[9:8], RSIEN(10), DLIEN(11), TSIEN(12), TBIEN(13), BRGIEN(16), and the
     // read-only [5:4]/[31:17].
     constexpr uint32_t CCR_GRANT = ru::CCR_MODE_MASK | ru::CCR_RIEN | ru::CCR_AIEN;
+    // Console channel: the U0C0 holder additionally needs TBIEN.
+    // BRGIEN stays WITHHELD: it is clocked by the baud generator, so it free-runs even
+    // with the driver doing nothing.
+    constexpr uint32_t CCR_CONSOLE_GRANT = CCR_GRANT | ru::CCR_TBIEN;
     // FDR (RM V1.3 p.18-178): STEP[9:0] and DM[15:14] are the whole divider setting.
     // WITHHELD: RESULT[25:16] (type rh, driven by the divider), the read-only [13:10]
     // and [29:26], and [31:30], which the RM requires be written 0.
     constexpr uint32_t FDR_GRANT = ru::FDR_STEP_MASK | ru::FDR_DM_MASK;
     // BRG (RM V1.3 p.18-179..181): every writable field. Only the reserved read-only
-    // bits are withheld, so this mask is near-meaningless as an isolation bound; it is
-    // here so no entry carries a blanket word.
+    // bits are withheld, so this mask is near-meaningless as an isolation bound.
     constexpr uint32_t BRG_GRANT = ~ru::BRG_RESERVED_MASK;
 
     // The composed grants against the words they must equal: a field-mask edit in
     // regs/usic.h cannot silently widen what the seam hands an unprivileged caller.
     static_assert(CCR_GRANT == 0x0000C00Fu, "CCR grant is MODE[3:0]|RIEN|AIEN");
+    static_assert(CCR_CONSOLE_GRANT == 0x0000E00Fu, "console CCR grant is MODE[3:0]|TBIEN|RIEN|AIEN");
     static_assert(FDR_GRANT == 0x0000C3FFu, "FDR grant is STEP[9:0]|DM[15:14]");
     static_assert(BRG_GRANT == 0xF3FF7FDBu, "BRG grant is every writable BRG field");
 
@@ -366,6 +359,7 @@ namespace
         { ru::U0C1_BASE, ru::off::FDR, FDR_GRANT },
         { ru::U0C1_BASE, ru::off::BRG, BRG_GRANT },
         { ru::U0C1_BASE, ru::off::CCR, CCR_GRANT },
+        { ru::U0C0_BASE, ru::off::CCR, CCR_CONSOLE_GRANT },
     };
 }
 
@@ -425,11 +419,11 @@ uint32_t arch_cpu_clock_set(uint32_t target)
     }
     if (want_hz == previous)
     {
-        return previous; // no move (generic also guards; keep the backend honest)
+        return previous; // no move
     }
     // Only retune BETWEEN the known locked-PLL points. A boot that fell back to fOFI
-    // (~24 MHz, PLL never locked) or any unexpected state is left untouched -- return
-    // the truthful current Hz rather than driving a K2DIV staircase off a bypassed PLL.
+    // (~24 MHz, PLL never locked) or any unexpected state is left untouched: a K2DIV
+    // staircase off a bypassed PLL is not valid, so return the truthful current Hz.
     uint32_t cur_k2;
     if (previous == 144000000u) { cur_k2 = 2u; }
     else if (previous == 96000000u) { cur_k2 = 3u; }
@@ -450,7 +444,7 @@ uint32_t arch_cpu_clock_set(uint32_t target)
     }
     else
     {
-        // FALL: drop the frequency first (K2DIV UP), THEN relax flash wait-states -- the
+        // FALL: drop the frequency first (K2DIV UP), THEN relax flash wait-states; the
         // old (higher) WS is safe across the whole descent.
         pll_k2div_staircase(cur_k2, want_k2);
         set_flash_ws(want_ws);
@@ -465,13 +459,11 @@ uint32_t arch_cpu_clock_set(uint32_t target)
     return want_hz;
 }
 
-// Branch-clock oracle (arch.h): report the branch clock feeding a peripheral block
-// so a userspace driver derives its own divisor. On the XMC4800 every USIC runs at
-// fPERIPH = fCPU/2 (SCU PBCLKCR.PBDIV=1), so the invariant is SystemCoreClock/2
-// computed from the LIVE clock (a clock-select retune is auto-reflected, not a baked
-// snapshot). Match the three USIC module ranges (each is two 0x200 channels: USIC0
-// @0x40030000, USIC1 @0x48020000, USIC2 @0x48024000); any other block is unknown
-// here and returns 0 so the driver keeps its explicit fallback.
+// Branch-clock oracle (arch.h): report the branch clock feeding a peripheral block so a
+// userspace driver derives its own divisor. Every XMC4800 USIC runs at fPERIPH = fCPU/2
+// (SCU PBCLKCR.PBDIV=1), read from the LIVE SystemCoreClock so a clock-select retune is
+// reflected. The three USIC modules are two 0x200 channels each: USIC0 @0x40030000,
+// USIC1 @0x48020000, USIC2 @0x48024000. Any other block returns 0.
 uint32_t arch_periph_clock_hz(uintptr_t base)
 {
     bool in_usic = base >= mmap::USIC0_CH0_BASE and base < mmap::USIC0_CH0_BASE + mmap::USIC_MODULE_SPAN;
@@ -520,9 +512,8 @@ int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value)
 
 // Native transport = USIC0 ASC on P1.5/P1.4 (the Relax Kit VCOM -> ttyACM0). RTT
 // (if KICKOS_CONSOLE=both) is teed by the kernel console core, not here.
-//   arch_console_write      -- buffered (console ring drains via the TB interrupt).
-//   arch_console_write_sync -- the bounded polled writer; panic/fault/pre-arm use
-//                              it (replaces the declining fallback TU).
+// arch_console_write is buffered (the console ring drains on the TB interrupt);
+// arch_console_write_sync is the bounded polled writer used by panic/fault/pre-arm.
 void arch_console_write(char const* buf, size_t n)
 {
     console_tx_write(buf, n);
@@ -587,8 +578,7 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (XMC4[78]00 RM). Owns-for-life: the CCU40 monotonic time base
 // (its slice + the global-control prefix) and the SCU (clock gates / peripheral
-// resets / PLL). Bases are the constants above; sizes are one register block each.
-// This is the silicon-validation target -- keep it exact.
+// resets / PLL).
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
 {
     static struct arch_reserved_block const blocks[] = {

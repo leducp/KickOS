@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RX72M I/O-port register offsets + fields for the SCI6 console pins (PORTB) and
-// the diag LED (PORT8) (Phase-1 register consolidation). From the RX72M Group
-// User's Manual: Hardware (r01uh0804ej0120, Rev.1.20) sec.22; hand-rolled,
-// clean-room. ADDITIVE: duplicates the literals still inline in chip_rx72m.cc.
-// Bases: mmap.h.
+// RX72M I/O-port register offsets + fields for the SCI6 console pins (PORTB) and the
+// diag LED (PORT8). From the RX72M Group User's Manual: Hardware (r01uh0804ej0120,
+// Rev.1.20) sec.22; hand-rolled, clean-room. Bases: mmap.h.
 
 #ifndef KICKOS_ARCH_RX_CHIP_RX72M_REGS_PORT_H
 #define KICKOS_ARCH_RX_CHIP_RX72M_REGS_PORT_H
@@ -23,7 +21,7 @@ namespace kickos::rx::reg::port
     constexpr uintptr_t PMR_BASE = mmap::PORT + 0x60;  // mode (peripheral vs GPIO)
 
     // Port index runs 0..9, A..H, J..N, Q as a DENSE 0..0x17 (PORTG is 0x10, PORTQ is
-    // 0x17) -- the letters skip I, O and P, the addresses do not (UM sec.22.3 lists).
+    // 0x17): the letters skip I, O and P, the addresses do not (UM sec.22.3 lists).
     constexpr uint32_t PORT_INDEX_MAX = 0x17;
     constexpr uint32_t PIN_MAX = 7;
 

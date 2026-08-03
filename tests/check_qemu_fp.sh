@@ -4,7 +4,7 @@
 #
 # QEMU armv7m gate for the FP context-switch test: boot `fp_switch` on a QEMU
 # Cortex-M4F, let the checker run a few rounds against the trasher, then assert
-# the callee-saved FP bank (s16-s31) survives context switches -- "FP OK" must
+# the callee-saved FP bank (s16-s31) survives context switches: "FP OK" must
 # appear and "FP FAIL" must not. Proves the PendSV FP save/restore on real armv7m.
 
 set -u

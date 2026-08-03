@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Generic volatile MMIO accessors, static inline so a caller gets a bare
-// volatile load/store at the poke site (no call). Shared by the userspace device
-// drivers that reach a granted register window: r8/r16/r32 return an lvalue
-// reference to the width-typed volatile at `addr`, so `r32(base + OFF) = v` and
-// `r32(base + OFF) |= bit` read exactly as the hand-written cast did.
+// Volatile MMIO accessors for the userspace drivers that reach a granted register window.
+// The lvalue reference is what allows `r32(base + OFF) = v` and `r32(base + OFF) |= bit`;
+// static inline keeps the poke site a bare volatile load/store with no call.
 
 #ifndef KICKOS_IO_MMIO_H
 #define KICKOS_IO_MMIO_H

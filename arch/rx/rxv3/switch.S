@@ -2,28 +2,25 @@
  * Copyright (c) 2026 Philippe Leduc
  *
  * RXv3 context switch + syscall trap assembly (Renesas RX72M). Mechanisms:
- *   1. arch_switch        -- record the target + pend the SWINT switcher. NEVER
- *                            swaps inline (the ARM PendSV model): the physical
- *                            swap always happens in the SWINT handler, so there
- *                            is ONE saved-frame format for both a voluntary block
- *                            (thread context) and a preemptive wake (ISR context).
- *   2. kickos_rx_pendsw   -- the deferred switcher, installed at INTB[SWINT]. It
- *                            saves the FULL interrupted context (R1-R15, FPSW, the
- *                            two accumulators, PC, PSW) on the outgoing thread's
- *                            USP and restores the incoming one. Give SWINT the
- *                            LOWEST interrupt priority so it is accepted only after
- *                            every other ISR drains -- the tail-chain PendSV relies
- *                            on. Runs with I=0 (atomic; no nesting, so g_arch_next
- *                            cannot be rewritten under it).
- *   3. arch_start         -- enter the first thread: no outgoing to save, so it
- *                            jumps straight into the shared restore epilogue.
- *   4. kickos_rx_syscall_trap + svc_trampoline -- the syscall trap. INT #SYS
- *                            vectors to the trap on the ISP; it rewrites the stacked
- *                            PSW/PC so RTE returns to svc_trampoline running
- *                            SUPERVISOR-ON-USP (PM=0, U=1) = privileged execution on
- *                            the calling thread's OWN stack, so a blocking dispatch's
- *                            continuation is per-thread (arch.h arch_syscall).
- *   5. arch_syscall       -- the userspace trap stub.
+ *   1. arch_switch: record the target + pend the SWINT switcher. NEVER swaps inline;
+ *                   the physical swap always happens in the SWINT handler, so there is
+ *                   ONE saved-frame format for both a voluntary block (thread context)
+ *                   and a preemptive wake (ISR context).
+ *   2. kickos_rx_pendsw: the deferred switcher, installed at INTB[SWINT]. It saves the
+ *                   FULL interrupted context (R1-R15, FPSW, the two accumulators, PC,
+ *                   PSW) on the outgoing thread's USP and restores the incoming one.
+ *                   SWINT must carry the LOWEST interrupt priority so it is accepted
+ *                   only after every other ISR drains. Runs with I=0, so g_arch_next
+ *                   cannot be rewritten under it.
+ *   3. arch_start: enter the first thread. No outgoing context to save, so it jumps
+ *                   straight into the shared restore epilogue.
+ *   4. kickos_rx_syscall_trap + svc_trampoline: the syscall trap. INT #SYS vectors to
+ *                   the trap on the ISP; it rewrites the stacked PSW/PC so RTE returns
+ *                   to svc_trampoline running SUPERVISOR-ON-USP (PM=0, U=1) =
+ *                   privileged execution on the calling thread's OWN stack, so a
+ *                   blocking dispatch's continuation is per-thread (arch.h
+ *                   arch_syscall).
+ *   5. arch_syscall: the userspace trap stub.
  *
  * psABI (verified by disassembling rx-elf-gcc -misa=v3): args in R1-R4, 5th+ on
  * the stack ([SP+4] at entry, [SP]=return address), result in R1; callee-saved =
@@ -40,8 +37,8 @@
  * The word ABOVE the frame ([+96]) is the address a returning entry() RTSes into
  * (kickos_thread_return, or kickos_user_thread_return for a user thread).
  *
- * RX disp[Rn] addressing takes an UNSIGNED displacement only -- every stack edit
- * here adjusts the pointer first, never uses a negative displacement.
+ * RX disp[Rn] addressing takes an UNSIGNED displacement only: every stack edit here
+ * adjusts the pointer first, never uses a negative displacement.
  */
 
     .text
@@ -57,11 +54,10 @@
 #endif
 
 /* ------------------------------------------------------------------------- */
-/* arch_switch(from, to): R1=from (ignored -- the switcher saves g_arch_current),*/
-/* R2=to. Record the target and pend the SWINT switcher. Called with the kernel */
+/* arch_switch(from, to): R1=from (ignored; the switcher saves g_arch_current),  */
+/* R2=to. Record the target and pend the SWINT switcher. Called with the kernel  */
 /* IrqLock held (IPL>=SWINT), so SWINT is masked and fires only once the lock    */
-/* releases (thread context) or the ISR chain drains (ISR context) -- deferred,  */
-/* exactly like the ARM PendSV backend.                                          */
+/* releases (thread context) or the ISR chain drains (ISR context).              */
 /* ------------------------------------------------------------------------- */
     .global _arch_switch
 _arch_switch:
@@ -79,11 +75,10 @@ _arch_switch:
 /* ------------------------------------------------------------------------- */
     .global _kickos_rx_pendsw
 _kickos_rx_pendsw:
-    /* Consume the SWINT request in-handler (ICU.IR027 is NOT auto-cleared on
-       acceptance for the software interrupt; every other RX ISR clears its own IR
-       flag likewise). Without this, back-to-back switches re-trigger a stale SWINT
-       and the switcher live-locks (~10M switches, no forward progress) on HW; the
-       slow path masked it. R15 is free here (reloaded by the mvfc below). */
+    /* Consume the SWINT request in-handler: ICU.IR027 is NOT auto-cleared on acceptance
+       for a software interrupt, so without this write back-to-back switches re-trigger a
+       stale SWINT and the switcher live-locks. R15 is free here (reloaded by the mvfc
+       below). */
     push.l  r15                /* [ISP]=R15, 4[ISP]=PC, 8[ISP]=PSW */
     mov.l   #ICU_IR_SWINT, r15
     mov.b   #0, [r15]
@@ -105,9 +100,9 @@ _kickos_rx_pendsw:
     add     #12, r0            /* drop the 3 words off the ISP */
     setpsw  u                  /* switch to the USP (R0 = USP) */
     pushm   r1-r14             /* the rest of the GPRs, below [R15][PC][PSW] */
-    /* FPSW + the two accumulators (A0/A1: low, high, guard) -- a preempted thread
-       may hold DSP/FP state, so save it. Registers + the MVFAC/MVTAC accumulator-
-       move encodings per the RXv3 ISA UM; A0-then-A1 push order pairs the restore. */
+    /* FPSW + the two accumulators (A0/A1: low, high, guard): a preempted thread may hold
+       live DSP/FP state. MVFAC/MVTAC accumulator-move encodings per the RXv3 ISA UM;
+       A0-then-A1 push order pairs the restore. */
     mvfc    fpsw, r15
     push.l  r15
     mvfacgu #0, a1, r15
@@ -125,8 +120,8 @@ _kickos_rx_pendsw:
 #if defined(__RX_DFPU_INSNS__)
     /* DPFPU register file (64-bit doubles, -mdfpu): a preempted thread may hold
        live DR state at an arbitrary PC, so bank it below the accumulators. DR0-DR15
-       first (higher addresses), then DPSW/DCMR/DECNT (lower) -- arch_context_init
-       fabricates the identical layout; _kickos_rx_restore pops it in reverse. */
+       first (higher addresses), then DPSW/DCMR/DECNT (lower); arch_context_init
+       fabricates the identical layout, and _kickos_rx_restore pops it in reverse. */
     dpushm.d dr0-dr15
     dpushm.l dpsw-decnt
 #endif
@@ -147,7 +142,7 @@ _kickos_rx_pendsw:
     /* Bench: switch-body delta (entry stamp -> now). CMTW1 ticks scaled to ICLK
        cycles (ICLK 240 MHz = CMTW1 7.5 MHz x32), via the shared accumulator. Measures
        the save+swap window; a C call is safe here (R0 = incoming sp = bottom of the
-       frame, so bsr pushes below it -- same as the telemetry hook). */
+       frame, so bsr pushes below it, as in the telemetry hook). */
     mov.l   #CMTW1_CMWCNT, r1
     mov.l   [r1], r1
     mov.l   #_g_bench_sw_start, r2
@@ -173,22 +168,21 @@ _kickos_rx_pendsw:
     /* Shared restore epilogue (also entered by arch_start). R0 = incoming frame. */
     .global _kickos_rx_restore
 _kickos_rx_restore:
-    /* Deferred MPU commit: program the incoming thread's regions now that the
-       physical swap (g_arch_current = incoming, R0 = incoming->sp) is complete --
-       atomically with the switch, NOT eagerly in switch_to (shared seam, see
-       arch_rxv3.cc / docs/design-mpu-commit-deferred.md). Runs before the frame is
-       popped and before RTE drops to user mode. R0 (=USP) survives the call (RX
-       psABI); the C function pushes BELOW the incoming frame. Reload R0 from
-       g_arch_current->sp afterward (defensive; matches the bench/telemetry hooks) --
-       every register in the frame is popped next, so the call's caller-saved
+    /* Deferred MPU commit: program the incoming thread's regions now that the physical
+       swap (g_arch_current = incoming, R0 = incoming->sp) is complete, atomically with
+       the switch and NOT eagerly in switch_to (shared seam, see arch_rxv3.cc /
+       docs/design-mpu-commit-deferred.md). Runs before the frame is popped and before
+       RTE drops to user mode. R0 (=USP) survives the call (RX psABI); the C function
+       pushes BELOW the incoming frame. R0 is reloaded from g_arch_current->sp
+       afterward; every register in the frame is popped next, so the call's caller-saved
        clobbers are harmless. */
     bsr.a   _kickos_arch_mpu_commit
     mov.l   #_g_arch_current, r15
     mov.l   [r15], r15
     mov.l   [r15], r0          /* R0 = incoming->sp (frame base for the pops) */
 #if defined(__RX_DFPU_INSNS__)
-    /* Reload the DPFPU file first (it is the lowest part of the frame) -- reverse
-       of the save: DPSW/DCMR/DECNT (DPOPM.L) then DR0-DR15 (DPOPM.D). */
+    /* Reload the DPFPU file first (it is the lowest part of the frame), reverse of the
+       save: DPSW/DCMR/DECNT (DPOPM.L) then DR0-DR15 (DPOPM.D). */
     dpopm.l  dpsw-decnt
     dpopm.d  dr0-dr15
 #endif
@@ -210,7 +204,7 @@ _kickos_rx_restore:
     rte                        /* pops PC then PSW -> resume incoming */
 
 /* ------------------------------------------------------------------------- */
-/* arch_start(boot, first): R1=boot (ignored -- ISP/boot stack abandoned),      */
+/* arch_start(boot, first): R1=boot (ignored; the ISP/boot stack is abandoned), */
 /* R2=first. No outgoing context to save; select the USP and enter first via the */
 /* shared restore. The fabricated frame's PSW (IPL=0) releases the crit level    */
 /* sched::start() held. Never returns.                                           */
@@ -238,9 +232,9 @@ _arch_start:
 /* ------------------------------------------------------------------------- */
 /* kickos_rx_syscall_trap: installed at INTB[SYSCALL_VECTOR]. Entered on the ISP */
 /* with [R0]=userPC, [R0+4]=userPSW; R1-R4 hold the syscall args (INT saves no    */
-/* GPRs -- must preserve them). Rewrites the frame so RTE lands in svc_trampoline */
-/* SUPERVISOR-ON-USP, after stashing the original userPC/userPSW on the thread's  */
-/* USP for the trampoline's return. Scratch: R5, R14, R15 (caller-saved).         */
+/* GPRs, so they must be preserved). Rewrites the frame so RTE lands in           */
+/* svc_trampoline SUPERVISOR-ON-USP, after stashing the original userPC/userPSW on */
+/* the thread's USP for the trampoline's return. Scratch: R5, R14, R15.           */
 /* ------------------------------------------------------------------------- */
     .global _kickos_rx_syscall_trap
 _kickos_rx_syscall_trap:

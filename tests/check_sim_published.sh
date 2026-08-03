@@ -3,41 +3,46 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # CI gate for the POST-PUBLISH console posture: build the sim with the publishing
-# service list (kickos_services_sim -- a userspace console driver owns the "wire", see
-# system/init/service_list_sim.cc) and require the selftest TAP stream to arrive over
+# service list (kickos_services_sim: a userspace console driver owns the "wire", see
+# system/init/sim/service_list.cc) and require the selftest TAP stream to arrive over
 # the DRIVER, clean.
 #
 # Why this needs its own build: KICKOS_SERVICE_LIST selects one provider per image, so
 # the two console postures cannot coexist in a single tree. Every other sim and QEMU
 # gate runs kickos_services_none, where the kernel keeps the console, cap index 0 is
-# unseated and the endpoint route is never touched -- which is exactly how M4.5 shipped
-# a console handover that silenced the whole test harness on xmc4800-relax and
-# frdmk64f without a single gate going red. This gate is the missing half.
+# unseated, and the endpoint route is never touched. This gate is the missing half:
+# without it, a console handover that silences the whole test harness passes every
+# other gate.
 #
 # The load-bearing assertion is the NEGATIVE one: the console driver's own kos::print
 # banner must be ABSENT. It goes to the kernel debug console, which a published board
-# drops by design -- so its absence proves the handover really happened and the TAP
+# drops by design, so its absence proves the handover really happened and the TAP
 # stream we just read came through the endpoint, not through a silent fallback. Without
 # it, a regression that skipped the publish entirely would still pass here.
 #
-# usage: check_sim_published.sh <kickos-source-dir> <cmake> <expected-arms>
+# usage: check_sim_published.sh <kickos-source-dir> <cmake> <expected-arms> <have-mpu>
+#
+# <have-mpu> is not optional and is not cosmetic. The expected arm count is computed by
+# the CALLING tree's CMake, and the arm count depends on KICKOS_HAVE_MPU, but `--preset
+# sim` below re-derives that knob from scratch, and the sim's default is 1. So a caller
+# configured with -DKICKOS_HAVE_MPU=0 used to compare a posture-1 stream against a
+# posture-0 expectation and fail with "an arm was added or deleted", naming a regression
+# that did not exist. Forward the posture; do not infer it.
 
 set -eu
 . "$(dirname "$0")/lib/gate.sh"
 
 KICKOS_SRC="$1"
 CMAKE="${2:-cmake}"
-WANT_ARMS="${3:?usage: check_sim_published.sh <src> <cmake> <expected-arms>}"
+WANT_ARMS="${3:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <have-mpu>}"
+HAVE_MPU="${4:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <have-mpu>}"
 
 scratch_dir
 
 echo "== configuring the sim with the publishing service list =="
-# Via --preset so this tree matches the ordinary sim build exactly (generator, build
-# type, warning flags incl. -Werror, KICKOS_ENABLE_SELFTEST) and still inherits
-# CFLAGS/CXXFLAGS from the environment -- which is how the sim-ubsan job's sanitizer
-# flags reach it too.
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \
-    -DKICKOS_SERVICE_LIST=kickos_services_sim >/dev/null ) \
+    -DKICKOS_SERVICE_LIST=kickos_services_sim \
+    -DKICKOS_HAVE_MPU="$HAVE_MPU" >/dev/null ) \
   || fail "configure with kickos_services_sim failed"
 
 echo "== building selftest =="

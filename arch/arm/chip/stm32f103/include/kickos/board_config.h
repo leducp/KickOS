@@ -4,8 +4,8 @@
  * Per-board provisioning for the Blue Pill (STM32F103). CMake adds this dir to
  * the include path; pulled in by kickos/config/{board,system}.h and by the chip
  * startup.S. MAX_IRQ is a chip fact (NVIC line count) and drives the startup
- * vector table's .rept -- one fact, one place. The pool/stack sizes are
- * board/SRAM facts. Every knob is #ifndef-guarded so a CMake -D still wins.
+ * vector table's .rept. The pool/stack sizes are board/SRAM facts. Every knob
+ * is #ifndef-guarded so a CMake -D still wins.
  * Pure integer macros only: this header is also included from .S.
  *
  * Sized to the LOW-DENSITY floor (10 KiB SRAM); see stm32f103.ld.
@@ -24,11 +24,11 @@
 #ifndef KICKOS_MAX_SEMAPHORES
 #define KICKOS_MAX_SEMAPHORES 4
 #endif
-/* M3 cap table floor: FIRST_DYNAMIC(4) reserved + main's 2 permanent caps
-   (g_done/g_lock) + 3 concurrent own-caps (cap_index0 holds sem+endpoint+mutex) = 9.
+/* M3 cap table floor: FIRST_DYNAMIC(2) reserved + main's 2 permanent caps
+   (g_done/g_lock) + 3 concurrent own-caps (cap_index0 holds sem+endpoint+mutex) = 7.
    Below this the reduced selftest suite exhausts main's dynamic slots. */
 #ifndef KICKOS_MAX_HANDLES
-#define KICKOS_MAX_HANDLES 9
+#define KICKOS_MAX_HANDLES 7
 #endif
 #ifndef KICKOS_MAX_IRQ_HANDLES
 #define KICKOS_MAX_IRQ_HANDLES 4
