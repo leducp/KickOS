@@ -72,7 +72,8 @@ endif()
 set(KICKOS_PROVISION_OVERRIDES "")
 foreach(_knob KICKOS_MAX_IRQ KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE
               KICKOS_IDLE_STACK_SIZE KICKOS_ROOT_STACK_SIZE
-              KICKOS_MAX_SEMAPHORES KICKOS_MAX_HANDLES KICKOS_MAX_IRQ_HANDLES
+              KICKOS_MAX_SEMAPHORES KICKOS_MAX_HANDLES KICKOS_MAX_SPAWN_GRANTS
+              KICKOS_MAX_IRQ_HANDLES
               KICKOS_RTT_CH1_SIZE)
   if(DEFINED ${_knob})
     add_compile_definitions(${_knob}=${${_knob}})
@@ -186,6 +187,61 @@ else()
 endif()
 add_compile_definitions(KICKOS_CONSOLE_CHIP=${_con_chip} KICKOS_CONSOLE_RTT=${_con_rtt} KICKOS_CONSOLE_CRLF=${_con_crlf})
 message(STATUS "KickOS: console=${KICKOS_CONSOLE} (chip=${_con_chip} rtt=${_con_rtt} crlf=${_con_crlf})")
+
+# --- The sim's capability-class mix (Stage 3) ---------------------------------
+# Every hardware board ships the behaviour-identical default -- ONE class at the full
+# ceiling, one run per task -- so landing the elastic table regressed no image. The sim
+# declares a REAL mix instead, and it is not decoration: with a single class a small
+# request and a default request round to the same run, so the per-task-ceiling half of
+# the design has nothing to observe and `cap_capacity` reports PARTIAL. The sim is
+# therefore the fleet's only witness that a declared-small child is actually the tighter
+# ceiling, which is the property the whole stage exists to deliver.
+#
+# 6 slots, not 4: KCAP_TEARDOWN_CHUNK is 4 and must stay strictly below the smallest
+# class, or the tasks holding that class sweep in one chunk and the preemptible-teardown
+# path stops being exercised.
+# A board's mix lives HERE and nowhere else, deliberately: the selftest's PARTIAL
+# permission set has to know whether this board has more than one class, and a mix
+# declared in board_config.h with the expectation set here would be two sources of truth
+# for one fact. Both halves are set together or not at all.
+#
+# Every other board keeps the single-class default, which is byte-for-byte the old inline
+# table -- landing the elastic table regressed no image, and a board buys the saving by
+# measuring, not by inheriting a guess.
+set(KICKOS_CAP_MULTICLASS OFF)
+if(KICKOS_ARCH STREQUAL "sim")
+  # 6 slots, not 4: KCAP_TEARDOWN_CHUNK is 4 and must stay strictly below the smallest
+  # class, or the tasks holding it sweep in one chunk and the preemptible-teardown path
+  # stops being exercised.
+  set(KICKOS_CAP_MULTICLASS ON)
+  set(_cap_mix KICKOS_CAP_CLASS0_SLOTS=6 KICKOS_CAP_CLASS0_COUNT=10
+               KICKOS_CAP_CLASS1_SLOTS=10 KICKOS_CAP_CLASS1_COUNT=8)
+elseif(KICKOS_CHIP STREQUAL "mps2")
+  # The first hardware-shaped mix, and on this board because it is a RUNNABLE gate: a
+  # mis-sized count fails loudly in CI instead of on somebody's bench.
+  #
+  # The saving comes from the DEFAULT, not from the classes. With the default capacity at
+  # the ceiling every spawn asks for the largest class and a mix buys nothing. Root needs
+  # the full table (it orchestrates the suite and holds its permanent caps); workers hold
+  # 1 to 3 caps, and 8 slots still leaves 2 free above a full 5-grant delegation. The
+  # SECOND large run is what lets a child be given one at all.
+  #
+  # A run returns at SLOT RECLAIM, not at exit, so the counts cover every concurrently
+  # ALLOCATED slot rather than every live thread: 17 narrow + 2 wide is 19 runs against
+  # KICKOS_MAX_THREADS + 2 == 18 possible holders, so no concurrent mix can exhaust both
+  # classes at once.
+  set(KICKOS_CAP_MULTICLASS ON)
+  set(_cap_mix KICKOS_CAP_CLASS0_SLOTS=8 KICKOS_CAP_CLASS0_COUNT=17
+               KICKOS_CAP_CLASS1_SLOTS=10 KICKOS_CAP_CLASS1_COUNT=2
+               KICKOS_CAP_DEFAULT_CAPACITY=8)
+endif()
+if(KICKOS_CAP_MULTICLASS)
+  add_compile_definitions(${_cap_mix} KICKOS_CAP_MULTICLASS=1)
+  message(STATUS "KickOS: cap classes = ${_cap_mix}")
+else()
+  add_compile_definitions(KICKOS_CAP_MULTICLASS=0)
+  message(STATUS "KickOS: cap classes = single-class default")
+endif()
 
 # The sim arch, readable from the preprocessor. Positive identification only: a new
 # arch must land in the 0 branch of every `#if KICKOS_ARCH_SIM`.
@@ -330,11 +386,15 @@ message(STATUS "KickOS: caller-stack floor KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_ST
 # Service-list provider selection (the default-init service bring-up walk). The
 # default init walks the board's service list BEFORE the app main, so a plain app gets
 # its board's userspace services -- starting with the console, a KOS_SVC_CONSOLE entry --
-# with zero app code (see system/init/service_list_run.cc + <kickos/sys/service.h>).
+# with zero app code (see system/init/common/service_list_run.cc + <kickos/sys/service.h>).
 # This is the sole userspace-console bring-up path. KICKOS_SERVICE_LIST names the CMake
 # target that DEFINES kickos_board_services; KICKOS_SERVICE_LIST_LIBS is that target plus
 # every driver + class leaf its start()s reference (all back-reference kickos_user, so
-# they must join the rescan link group below). Default is kickos_services_none
+# they must join the rescan link group below). ADDING A PROVIDER MEANS EDITING BOTH PLACES:
+# registering it in system/CMakeLists.txt alone fails at CONFIGURE time with a
+# strongly-connected-component cycle, because the driver lib then sits outside the group while
+# the group's own members reference it. The error names the cycle, not the missing mapping.
+# Default is kickos_services_none
 # (count = 0: no-op). Resolved per-board AFTER KICKOS_HAVE_MPU is known (a driver
 # handover is an enforcement construct); must sit after the MPU block for that reason.
 if(NOT DEFINED KICKOS_SERVICE_LIST)
@@ -356,13 +416,58 @@ if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
     set(KICKOS_SERVICE_LIST_LIBS "kickos_services_xmc4800relax;kickos_xmcuart;kickos_xmcssc;kickos_class_xmc4800")
   elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_xmc4800relax_console")
     set(KICKOS_SERVICE_LIST_LIBS "kickos_services_xmc4800relax_console;kickos_xmcuart;kickos_class_xmc4800")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_xmc4800relax_uartirq")
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_xmc4800relax_uartirq;kickos_xmcuartirq;kickos_class_xmc4800")
   elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_frdmk64f")
     set(KICKOS_SERVICE_LIST_LIBS "kickos_services_frdmk64f;kickos_k64dspi;kickos_k64uart;kickos_class_mk64f")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_frdmk64f_uartirq")
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_frdmk64f_uartirq;kickos_k64uartirq;kickos_class_mk64f")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_esp32c6_uartirq")
+    # No class leaf: kickos_c6uart shares no register logic with the kernel side.
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_esp32c6_uartirq;kickos_c6uart")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_rx72m_uartirq")
+    # No class leaf: kickos_rxsci shares no register logic with the kernel side.
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_rx72m_uartirq;kickos_rxsci")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_esp32_uartirq")
+    # No class leaf: kickos_lx6uart shares no register logic with the kernel side.
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_esp32_uartirq;kickos_lx6uart")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_pizero2350_usbcdc")
+    # No class leaf: the USB register map is the driver's alone. One kickos_rpusb serves
+    # both RP boards.
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_pizero2350_usbcdc;kickos_rpusb")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_pizero2350_usbcdc_diag")
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_pizero2350_usbcdc_diag;kickos_rpusb")
+  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_picopi_usbcdc")
+    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_picopi_usbcdc;kickos_rpusb")
   else()
     set(KICKOS_SERVICE_LIST_LIBS "${KICKOS_SERVICE_LIST}")
   endif()
 endif()
 message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST} (libs: ${KICKOS_SERVICE_LIST_LIBS})")
+
+# USB device clock tree, in CHIP init. PLL_USB, clk_usb and the USB block's reset all
+# live in blocks the kernel owns for life, so an unprivileged driver cannot bring them up
+# and the chip backend must -- but only for an image that actually carries a USB driver.
+# OFF by default keeps the default image of every RP board byte-identical: a board with
+# no USB console must not pay a second PLL, and an unrun clock tree must not become a
+# shipping default. Implied by, never implying, a USB service list.
+#
+# Derived EVERY configure and deliberately NOT cached, like KICKOS_SERVICE_LIST_LIBS
+# above: caching it would keep the clock tree on in a build directory whose service list
+# was later switched back.
+if(NOT DEFINED KICKOS_USB_CONSOLE)
+  set(KICKOS_USB_CONSOLE OFF)
+  # Unanchored: the diagnostic list is "..._usbcdc_diag" and needs the same clock tree.
+  # An anchored match would silently leave PLL_USB off and the device would never
+  # enumerate, with nothing in the build to say why.
+  if(KICKOS_SERVICE_LIST MATCHES "_usbcdc")
+    set(KICKOS_USB_CONSOLE ON)
+  endif()
+endif()
+if(KICKOS_USB_CONSOLE)
+  add_compile_definitions(KICKOS_USB_CONSOLE=1)
+  message(STATUS "KickOS: USB device clock tree = on (chip init brings up PLL_USB)")
+endif()
 
 # Service lists refused at enforcement. The name is historical: an entry landed here
 # when its bring-up wrote MMIO from the root thread, which faults mid-bring-up after the
@@ -387,7 +492,7 @@ if(KICKOS_HAVE_MPU AND KICKOS_SERVICE_LIST IN_LIST KICKOS_SERVICE_LIST_ROOT_MMIO
 endif()
 
 # Board pin-map provider selection (the default-init pin-mux step). The default init
-# applies the board pin map BEFORE the console bring-up (see system/init/pinmux_run.cc
+# applies the board pin map BEFORE the console bring-up (see system/init/common/pinmux_run.cc
 # + <kickos/sys/pinmap.h>). KICKOS_BOARD_PINMAP names the CMake target that DEFINES
 # kickos_board_pinmap; it back-references kickos_user (via kos_pinmux_set at apply time)
 # and is read by kickos_default_init, so it must join the rescan link group below.
@@ -532,6 +637,24 @@ endforeach()
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/telemetry/CMakeLists.txt")
   add_subdirectory(tests/telemetry)
+endif()
+
+# Host-only SlotPool allocation-policy gate. Host-only of necessity, not convenience:
+# no SlotPool handle ever crosses the user/kernel boundary, so no on-target selftest
+# arm can observe which slot an object lands in. slotpool.h is standalone (stdint.h
+# only), so the gate instantiates the real template.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/slotpool/CMakeLists.txt")
+  add_subdirectory(tests/slotpool)
+endif()
+
+# Host-only next-event-deadline gate. Host-only of necessity too: the deadline the
+# arch backends dedup on never crosses the arch seam, so an on-target arm can only
+# time a wake and race the host scheduler for the answer. Compiles the real
+# kernel/time/time.cc against a fake clock instead.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ktime/CMakeLists.txt")
+  add_subdirectory(tests/ktime)
 endif()
 
 # Aggregate usage-requirement target: "link this and you get the whole OS".

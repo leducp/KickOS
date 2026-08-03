@@ -3,14 +3,11 @@
 
 # The M0 verification app + the CI gates. Links the freestanding TAP harness
 # (tests/tap) directly; the app self-asserts and emits TAP over the console.
-#
-# FULL-selftest prerequisite: KICKOS_MAX_HANDLES >= 9 (FIRST_DYNAMIC 4 + 2 permanent
-# suite caps + a 3-own-cap test peak; see config/system.h). Below 9 the suite hard-fails
-# on cap exhaustion by design; real apps use 1-3 caps and run fine below the floor.
-kickos_add_application(selftest
-  SOURCES main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc"
-  BOARD   ${KICKOS_BOARD})
-target_include_directories(selftest PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
+
+# The posture knobs the image(s) below carry. Collected into a list first: on the split
+# parts they have to reach TWO targets, and one applied to only one of them would give
+# the two halves different suites.
+set(_selftest_defs "")
 
 # The configure-time region-encoding seam: the two `return <int>;` literals
 # cmake/boot_arena.cmake scraped out of the backend .cc this link resolves.
@@ -22,17 +19,75 @@ target_include_directories(selftest PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
 get_property(_mpu_min_region_cfg GLOBAL PROPERTY KICKOS_MPU_MIN_REGION_CFG)
 get_property(_mpu_region_pow2_cfg GLOBAL PROPERTY KICKOS_MPU_REGION_POW2_CFG)
 if(NOT "${_mpu_min_region_cfg}" STREQUAL "" AND NOT "${_mpu_region_pow2_cfg}" STREQUAL "")
-  target_compile_definitions(selftest PRIVATE
+  list(APPEND _selftest_defs
     KICKOS_MPU_MIN_REGION_CFG=${_mpu_min_region_cfg}
     KICKOS_MPU_REGION_POW2_CFG=${_mpu_region_pow2_cfg})
 endif()
 
-# Size-optimise selftest's OWN TUs: at the fleet Debug default its .text overflows the
-# 64K-flash parts (stm32f103 bluepill-c8, stm32f302). Only this app's TUs are affected,
-# so the kernel/arch/lib archives stay at the board build type.
-if(NOT (KICKOS_ARCH STREQUAL "sim"))
-  target_compile_options(selftest PRIVATE -Os)
+# microbit is the fleet's only armv6m no-ring CI gate, and its 16 KiB arena cannot hold both
+# the UART service's 1 KiB shared ring block and the four shape-specific arena probes
+# (endpoint_crossdomain, mem_self_grant_nonpow2, region_mode, mem_self_grant). uart_service is
+# already covered on sim and on every larger board, so running it here would buy duplicate
+# coverage and cost four gated cases. Refuse it BY NAME rather than let the arena decide: it
+# skipped here for years only because the block did not fit, and the cap-table narrowing freed
+# just enough .bss for it to start fitting.
+if(KICKOS_BOARD STREQUAL "microbit")
+  list(APPEND _selftest_defs KICKOS_SELFTEST_NO_UART_SERVICE=1)
 endif()
+
+# cap_capacity is refused BY NAME on microbit, the way uart_service is above, rather
+# than by letting an arena outcome decide: the arm's THREE file-scope result globals come
+# out of a 16 KiB arena and were enough to flip mem_self_grant from RUN to SKIP. On a
+# single-class board the arm reports PARTIAL anyway -- "nothing to observe" -- so what is
+# given up is a permission-set entry, not coverage; the sim and qemu carry the real
+# witness. If microbit ever declares a class mix, this exclusion is the first thing to go.
+if(KICKOS_BOARD STREQUAL "microbit")
+  set(KICKOS_SELFTEST_NO_CAP_CAPACITY 1)
+  list(APPEND _selftest_defs KICKOS_SELFTEST_NO_CAP_CAPACITY=1)
+endif()
+
+# The two 64 KiB FLASH parts (stm32f103 bluepill-c8, stm32f302) build the suite as TWO
+# images: main.cc partitions its registration list into two contiguous regions and
+# KICKOS_SELFTEST_PART selects one, so the elided region's bodies are never emitted.
+# `selftest` is part 1 and `selftest_p2` is part 2, each planning 1..N from its own
+# registry, so the bench has to run both to cover the suite.
+#
+# They therefore carry no by-name exclusion of their own, cap_capacity included: that arm
+# sits in region 1 and every arena-sensitive probe (endpoint_crossdomain,
+# mem_self_grant_nonpow2, region_mode, mem_self_grant) sits in region 2, so its globals
+# can no longer reach the image holding the arms they starved on microbit.
+#
+# Undefined on every other board; main.cc then defaults it to 0 and registers everything.
+set(_selftest_split 0)
+if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302")
+  set(_selftest_split 1)
+endif()
+
+# The FULL suite needs more cap slots than a real app: it holds permanent suite caps and
+# peaks at several concurrent own-caps in one arm. The floor and its derivation live in
+# kernel/include/kickos/config/system.h; restating them here is what made this comment go
+# stale twice. Below the floor the suite hard-fails on cap exhaustion by design, which
+# makes the board a non-target for it, not a broken kernel.
+set(_selftest_srcs main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
+kickos_add_application(selftest SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD})
+set(_selftest_images selftest)
+if(_selftest_split)
+  kickos_add_application(selftest_p2 SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD})
+  list(APPEND _selftest_images selftest_p2)
+  target_compile_definitions(selftest    PRIVATE KICKOS_SELFTEST_PART=1)
+  target_compile_definitions(selftest_p2 PRIVATE KICKOS_SELFTEST_PART=2)
+endif()
+
+foreach(_img IN LISTS _selftest_images)
+  target_include_directories(${_img} PRIVATE "${PROJECT_SOURCE_DIR}/tests/tap")
+  target_compile_definitions(${_img} PRIVATE ${_selftest_defs})
+  # Size-optimise selftest's OWN TUs: at the fleet Debug default its .text overflows the
+  # 64K-flash parts (stm32f103 bluepill-c8, stm32f302). Only this app's TUs are affected,
+  # so the kernel/arch/lib archives stay at the board build type.
+  if(NOT (KICKOS_ARCH STREQUAL "sim"))
+    target_compile_options(${_img} PRIVATE -Os)
+  endif()
+endforeach()
 
 # Link map for the seam-fallback gate below: only the map names the archive MEMBER each
 # symbol was resolved from, which is what proves a backend's definition beat its
@@ -57,6 +112,16 @@ if(KICKOS_ARCH STREQUAL "sim")
   # it, so the free-window arms find nothing to take.
   list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
 endif()
+if(NOT KICKOS_CAP_MULTICLASS AND NOT KICKOS_SELFTEST_NO_CAP_CAPACITY)
+  # One capability class, so a smallest-class request and a default request round to the
+  # SAME run and cap_capacity has no per-task ceiling to observe. Every hardware board is
+  # here by design: they ship the behaviour-identical single-class default, and the sim
+  # carries the mix that witnesses the elastic half for the fleet. Derived from the
+  # class config rather than listed per board, so declaring a mix flips the expectation
+  # with it -- a board that gains a second class and keeps reporting PARTIAL is a gate
+  # failure, which is the point.
+  list(APPEND KICKOS_EXPECT_PARTIALS cap_capacity)
+endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   # The reserved-overlap matrix needs the board to declare at least one
   # arch_reserved_blocks entry. The host and the mps2 parts declare none; the qemu-riscv
@@ -77,9 +142,12 @@ list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
 # shrink together when an arm is deleted and no self-consistent parse can see it; only
 # an expectation from OUTSIDE the image can. The conditions mirror the #if guards around
 # the registration block at the bottom of main.cc, one clause per guard.
-set(_tap_arms 53) # unconditional
+set(_tap_arms 60) # unconditional
+if(KICKOS_SELFTEST_NO_CAP_CAPACITY)
+  math(EXPR _tap_arms "${_tap_arms} - 1") # cap_capacity: excluded on the 16 KiB-arena parts
+endif()
 if(KICKOS_ENABLE_SELFTEST)
-  math(EXPR _tap_arms "${_tap_arms} + 10") # bus_device_slots, reboot_priv, 8 x irq_*
+  math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 3") # endpoint_bound, grant_reserved, dev_window_exclusive
@@ -89,6 +157,50 @@ if(KICKOS_HAVE_MPU)
 endif()
 if(KICKOS_ARCH STREQUAL "sim")
   math(EXPR _tap_arms "${_tap_arms} + 1") # periph_reg_write_mask
+endif()
+
+# The same count, per region of the split list, mirroring the #if guards inside each
+# region. Region 1 ends at the `#undef TAP_ADD` after call_donation_pending in main.cc;
+# region 2 is everything below it.
+#
+# These two MUST stay independent expressions, never derived from _tap_arms above: the
+# equality asserted below is only a check while both sides are stated separately, and a
+# new arm has to move a clause on each side.
+set(_tap_arms_p1 44) # every arm in region 1
+if(KICKOS_SELFTEST_NO_CAP_CAPACITY)
+  math(EXPR _tap_arms_p1 "${_tap_arms_p1} - 1") # cap_capacity
+endif()
+
+set(_tap_arms_p2 16) # region 2, unconditional
+if(KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
+endif()
+if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
+  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 3") # endpoint_bound, grant_reserved, dev_window_exclusive
+endif()
+if(KICKOS_HAVE_MPU)
+  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 1") # stackbase_arena
+endif()
+if(KICKOS_ARCH STREQUAL "sim")
+  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 1") # periph_reg_write_mask
+endif()
+
+# Totality. Checked on EVERY board, not only the ones that split, so every posture in
+# the fleet exercises it.
+math(EXPR _tap_arms_split "${_tap_arms_p1} + ${_tap_arms_p2}")
+if(NOT _tap_arms_split EQUAL _tap_arms)
+  message(FATAL_ERROR
+    "selftest arm partition is not total: part 1 (${_tap_arms_p1}) + part 2 "
+    "(${_tap_arms_p2}) = ${_tap_arms_split}, but the whole suite registers ${_tap_arms} "
+    "arms in this posture. An arm was added, deleted or moved across the region boundary "
+    "in main.cc without its per-part clause moving with it. Fix the counts in "
+    "${CMAKE_CURRENT_LIST_FILE}, do not relax this check.")
+endif()
+
+if(_selftest_split)
+  message(STATUS
+    "selftest: split into two images -- selftest plans ${_tap_arms_p1} arms, "
+    "selftest_p2 plans ${_tap_arms_p2} (${_tap_arms} together)")
 endif()
 
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
@@ -103,13 +215,16 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
 
   # The OTHER console posture: the sim's only coverage of the published route
   # (kos_send on stdout cap index 0 -> userspace driver). One provider links per image,
-  # so it needs its own build tree; the script makes one.
+  # so it needs its own build tree; the script makes one. KICKOS_HAVE_MPU has to travel
+  # with the arm count: the script's `--preset sim` re-derives that knob, and the sim
+  # defaults it to 1, so an outer -DKICKOS_HAVE_MPU=0 otherwise checks a posture-1 stream
+  # against a posture-0 expectation.
   add_test(
     NAME    sim_published_console
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_published.sh"
-            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${_tap_arms})
+            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${_tap_arms} ${KICKOS_HAVE_MPU})
   set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
-  # Its own build tree, but the same board posture, so the same two permission sets.
+  # Its own build tree, at the same board posture, so the same two permission sets.
   set_property(TEST sim_published_console APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
 
@@ -142,8 +257,16 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_deadlock,
   #   mutex_multi_held: 3-worker PI choreographies on a 2-slot pool
   #   call_infoless_revert (4 workers), call_donation (3)
+  #   call_donation_hold, call_donation_slow, call_donation_pending: 3 workers each
   #   domain_share: arena cannot spare the shared region
   #   irq_as_event: wants a 4 KiB MMIO page out of 16 KiB SRAM
+  #   uart_service: PINNED above (KICKOS_SELFTEST_NO_UART_SERVICE), no longer an arena outcome
+  # ARENA CLIFF, and the reason uart_service is pinned rather than left to the allocator: this
+  # board sits close enough to the edge that ~1 KiB of new static demand flips FOUR cases
+  # (endpoint_crossdomain, mem_self_grant_nonpow2, region_mode, mem_self_grant) from running to
+  # skipped. The cap-table narrowing freed 64 B and that was enough to reach the tipping point.
+  # Twice this milestone ~28 B has moved an unrelated case. Before adding any static demand
+  # here, diff the whole TAP output, not the verdict: the arm that flips ON is the cause.
   # Two more arms run their invariant and drop a sub-case, reporting PARTIAL: they count
   # as passes, not skips, and carry their own permission set.
   #   caller_stack: the arena cannot spare a caller-owned stack
@@ -151,7 +274,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a semicolon
   # would split the value into a second bogus environment entry.
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,domain_share,irq_as_event"
+    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,call_donation_hold,call_donation_slow,call_donation_pending,domain_share,irq_as_event,uart_service"
     "EXPECT_PARTIALS=caller_stack,confused_deputy")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
