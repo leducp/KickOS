@@ -41,6 +41,7 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_console_reclaim_default.cc
   common/arch_console_retune_default.cc
   common/arch_console_tx_backend_default.cc
+  common/arch_console_reclaim_window_default.cc
   common/arch_console_write_sync_default.cc
   common/arch_cpu_clock_set_default.cc
   common/arch_diag_led_init_default.cc
@@ -72,12 +73,13 @@ endif()
 
 if(KICKOS_ARCH STREQUAL "sim")
   # sim.cc IS the backend for arch_console_write_sync, arch_console_tx_backend,
-  # kfault_terminate and arch_periph_reg_write, so those fallbacks are dropped: the
-  # sim has no chip archive, and a fallback beside a backend in ONE archive resolves
-  # by member order. SystemCoreClock has no chip to define it here.
+  # arch_console_reclaim_window, kfault_terminate and arch_periph_reg_write, so those fallbacks
+  # are dropped: the sim has no chip archive, and a fallback beside a backend in ONE
+  # archive resolves by member order. SystemCoreClock has no chip to define it here.
   set(_sim_defaults ${KICKOS_SEAM_DEFAULTS_COMMON})
   list(REMOVE_ITEM _sim_defaults
     common/arch_console_tx_backend_default.cc
+    common/arch_console_reclaim_window_default.cc
     common/arch_console_write_sync_default.cc
     common/arch_periph_reg_write_default.cc
     common/kfault_terminate_default.cc)
@@ -160,7 +162,8 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
     common/arch_ram_common.cc
     common/startup_ranges.cc
     ${KICKOS_SEAM_DEFAULTS_COMMON}
-    rx/rxv3/kickos_rx_dev_pending_line_default.cc
+    rx/rxv3/kickos_rx_dev_dispatch_default.cc
+    rx/rxv3/kickos_rx_group_arm_default.cc
     rx/rxv3/switch.S)
   kickos_apply_freestanding(kickos_arch_rxv3)
   target_include_directories(kickos_arch_rxv3 PUBLIC

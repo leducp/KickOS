@@ -28,8 +28,8 @@ extern "C"
 void arch_init(void);
 
 // C-runtime data init driven by the linker's copy/zero range tables (init .data,
-// zero .bss, for as many ranges as the chip declares -- e.g. a separate pow2 app-
-// data block under MPU enforcement). Called from a chip's Reset_Handler before the
+// zero .bss, for as many ranges as the chip declares, e.g. a separate pow2 app-data
+// block under MPU enforcement). Called from a chip's Reset_Handler before the
 // static ctors and arch_init; a chip whose linker script emits no tables need not
 // call it. Runs before any global is live, so it must touch none of its own.
 void kickos_ranges_init(void);
@@ -62,7 +62,7 @@ void arch_switch(struct arch_context* from, struct arch_context* to);
 // Enter the first thread from the boot context. `boot` is an optional save slot
 // for the boot context: a backend MAY populate it (the sim does, so a later
 // switch back unwinds to the host caller) or MAY ignore it and abandon the boot
-// stack (the ARM backend does -- the system always terminates via arch_shutdown,
+// stack (the ARM backend does; the system always terminates via arch_shutdown,
 // never by unwinding to boot). Callers MUST NOT switch back to `boot`.
 void arch_start(struct arch_context* boot, struct arch_context* first);
 
@@ -130,11 +130,11 @@ int arch_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 // (XMC4800, K64F) strong-overrides this.
 int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 
-// Retune the core/bus clock to a P-state and return the ACTUALLY-LANDED core Hz --
+// Retune the core/bus clock to a P-state and return the ACTUALLY-LANDED core Hz.
 // ALWAYS the truth about where the clock now sits, never a status:
 //   - a retune that fully succeeds returns the requested point's Hz;
 //   - a retune that FAILS and parks on a safe fallback (e.g. K64F fail_to_fei ->
-//     ~20.97 MHz) returns THAT fallback Hz -- non-zero, the clock DID move, so the
+//     ~20.97 MHz) returns THAT fallback Hz: non-zero, the clock DID move, so the
 //     caller MUST run the coherence tail;
 //   - 0 is returned ONLY when this chip cannot change its clock at all (the fallback TU
 //     / unsupported backend). 0 NEVER means "failed but moved".
@@ -145,19 +145,18 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 // ISR context (see the coherence sequence, docs/design-m3-clock-select.md sec 2.3).
 // Weak default returns 0 (this chip cannot change its clock).
 //
-// `target` carries a kos_pstate_t (sys/abi.h) as a plain u32 -- the seam stays ISA- and
-// ABI-neutral (it names a P-state concept, not a mechanism), so a backend that opts in
+// `target` carries a kos_pstate_t (sys/abi.h) as a plain u32; a backend that opts in
 // includes sys/abi.h itself to name the KOS_PSTATE_* points. The achievable set is small
 // and chip-specific; the truthful landed Hz is the RETURN value, not this selector.
 uint32_t arch_cpu_clock_set(uint32_t target);
 
 // Console coherence hooks for a clock retune (both no-op fallbacks; only a chip
 // whose console peripheral clock moves with the core clock overrides them):
-//   arch_console_flush_sync -- block until the TX shift register is fully idle
+//   arch_console_flush_sync: block until the TX shift register is fully idle
 //     (transmission-complete, NOT merely buffer-empty), so no in-flight byte is still
 //     clocking out at the OLD baud when the peripheral clock moves (S6). Called under
 //     the caller's IrqLock, BEFORE the rate change.
-//   arch_console_retune -- re-derive + reprogram the console baud from the CURRENT
+//   arch_console_retune: re-derive + reprogram the console baud from the CURRENT
 //     SystemCoreClock, AFTER the clock has landed. Called only when the clock actually
 //     moved (achieved != previous).
 void arch_console_flush_sync(void);
@@ -175,8 +174,8 @@ uint32_t arch_trace_now(void);
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 // Stamp the owning thread's trace id into a saved context, so the arch context-
-// switch path can emit {from,to} tids read from the PHYSICALLY-swapped contexts
-// -- never by re-reading shared scheduler state (which an ISR can rewrite between
+// switch path can emit {from,to} tids read from the PHYSICALLY-swapped contexts,
+// NEVER by re-reading shared scheduler state (which an ISR can rewrite between
 // the switch decision and the physical swap). Telemetry-only: this seam does not
 // exist when telemetry is compiled out (the id field is elided too). Called once
 // per thread in thread_create.
@@ -201,8 +200,8 @@ struct arch_mpu_region
 };
 
 // Load the running thread's regions on switch-in (replaces the whole active
-// set). sim: mprotect over the user-RAM arena -- grant the listed regions,
-// everything else no-access. Regions are non-overlapping; attr is the
+// set). sim: mprotect over the user-RAM arena, granting the listed regions and
+// no-access everywhere else. Regions are non-overlapping; attr is the
 // UNPRIVILEGED access (supervisor comes from the background region / SYSMPU RGD0).
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n);
 
@@ -355,18 +354,18 @@ size_t arch_domain_static_regions(struct arch_mpu_region* out, size_t max);
 // True iff [ptr, ptr+len) is app code/rodata/.data the backend recognizes as
 // caller-readable but does NOT describe as one of the running thread's MPU regions.
 // The confused-deputy floor (syscall_dispatch) reads a user buffer/name privileged;
-// it first checks the granted regions and, only if that misses, this hook -- so the
+// it first checks the granted regions and, only if that misses, this hook, so the
 // two together cover exactly what the UNPRIVILEGED caller could itself reach.
 //   enforcing MPU backend: code/rodata/.data ARE real regions (see
 //     arch_domain_static_regions), so the region check already admits them and this
-//     returns false -- any address outside the set is genuinely unreachable.
+//     returns false; any address outside the set is genuinely unreachable.
 //   non-enforcing backend: no per-domain isolation exists to breach, but the kernel
 //     dereferences the range PRIVILEGED, so it must be MAPPED: only the chip's
 //     linker-defined memories are admitted (code/rodata extent, and static RAM up to
 //     the arena base). An arena range falls through to the region check.
 //   host sim: app + kernel share one binary, sections are not MPU regions, so a range
 //     wholly inside the host image (and not the arena) is admitted; a wild pointer
-//     outside both is rejected. It cannot separate app rodata from kernel statics --
+//     outside both is rejected. It cannot separate app rodata from kernel statics;
 //     the security boundary it DOES enforce (cross-domain arena reads) stays closed.
 bool arch_user_text_readable(uintptr_t ptr, size_t len);
 
@@ -412,7 +411,7 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max);
 // Nonzero on a core with the Cortex-M bit-band peripheral/SRAM alias (M3/M4): a
 // reserved peripheral block is then ALSO reachable through its word-per-bit alias
 // image, and a device grant touching either alias window is refused (kernel/grant).
-// Fallback TU answers 0 (no alias -- M0+/M7/RISC-V/RX); the bit-band M4 chips
+// Fallback TU answers 0 (no alias: M0+/M7/RISC-V/RX); the bit-band M4 chips
 // (mk64f, stm32f411, xmc4800) strong-override to 1.
 int arch_bitband_present(void);
 
@@ -420,7 +419,7 @@ int arch_bitband_present(void);
 // Issued by the userspace syscall stubs; returns the syscall result.
 //
 // CONTRACT (portability-critical): the arch MUST run syscall_dispatch() in
-// privileged THREAD context on the calling thread's own continuation -- NOT in
+// privileged THREAD context on the calling thread's own continuation, NOT in
 // ISR/handler context. A blocking syscall (sem_wait, sleep, ...) blocks by an
 // ordinary synchronous context switch (arch_switch completes, resuming the
 // dispatch inline when the thread is next scheduled), exactly as if the kernel
@@ -438,13 +437,13 @@ uintptr_t arch_syscall(uintptr_t nr,
                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 
 // --- Interrupt controller (thin abstraction: mask / unmask / raise) --------
-// Deliberately minimal -- no priority grouping, pending-vs-active, edge-vs-level,
+// Deliberately minimal: no priority grouping, pending-vs-active, edge-vs-level,
 // or tail-chaining; those are earned per-chip at M1 against real silicon. On ARM
 // this backs onto the NVIC; on the sim, signal-driven injection.
 //
 // mask/unmask gate delivery of a line. The generic first-level ISR masks the
 // line before waking its driver (thread context), which unmasks via irq_ack once
-// serviced -- so the line cannot re-fire while it is being handled. A raise that
+// serviced, so the line cannot re-fire while it is being handled. A raise that
 // lands on a MASKED line is LATCHED one-deep (coalesced), not dropped: it is
 // redelivered through the normal ISR path the instant the line is unmasked.
 //
@@ -454,13 +453,13 @@ uintptr_t arch_syscall(uintptr_t nr,
 //
 // LOCKING CONTRACT: all four of mask/unmask/inject/clear_pending are SELF-BRACKETED
 // (each does its own interrupt-masked critical section over its state RMW), so a
-// caller need not hold IrqLock -- the test-scaffolding syscalls (irq_inject,
+// caller need not hold IrqLock; the test-scaffolding syscalls (irq_inject,
 // irq_unmask) call them bare.
 //
 // SINGLE-DOORBELL CONTRACT (software backends: sim, rv32imac, xtensa, rxv3-soft):
 // a coalesced redelivery is carried through ONE shared cell + ONE physical doorbell
 // and the per-line pending bit is cleared as it is rung. So AT MOST ONE unmask with
-// a pending redelivery may occur per IrqLock/interrupts-masked region -- a second
+// a pending redelivery may occur per IrqLock/interrupts-masked region; a second
 // would clobber the first's identity and lose an event. Holds today (irq_register/
 // wait/ack each unmask exactly one line per lock section); a future bulk-rearm path
 // needs the identity-free dispatcher (see TODO M4).
@@ -468,11 +467,11 @@ void arch_irq_mask(int line);
 
 // Enable delivery of a line, PRESERVING any raise latched while it was masked: a
 // latched raise fires through the normal first-level ISR path (kickos_isr_irq)
-// after enable -- never a direct notification from unmask itself.
+// after enable, never a direct notification from unmask itself.
 void arch_irq_unmask(int line);
 
 // Discard any raise latched on a line (best-effort: a controller that cannot drop
-// a native pending -- e.g. the PLIC for a real device line -- no-ops there). The
+// a native pending, e.g. the PLIC for a real device line, no-ops there). The
 // explicit discard primitive: called at first-arm (irq_register / console_tx /
 // bench) to drop pre-registration garbage, and reserved for the M4 level-trigger
 // rearm path.
@@ -480,19 +479,20 @@ void arch_irq_clear_pending(int line);
 
 // Raise device line `irq` (the controller's "raise"). sim: delivers an async
 // signal so the ISR runs in interrupt context; ARM: pends the NVIC line. Drives
-// scheduler trigger #4. A real driver never raises -- it register/wait/acks;
-// raising is fake-a-device-firing test scaffolding, privilege-gated.
+// scheduler trigger #4. A real driver never raises; it register/wait/acks. Raising
+// is fake-a-device-firing test scaffolding, privilege-gated.
 void arch_irq_inject(int irq);
 
 // --- Minimal debug console (bottom edge of the in-kernel console driver) ---
 // Write-only. Two edges:
-//   arch_console_write      -- normal path. A chip with a buffered console makes
+//   arch_console_write:      normal path. A chip with a buffered console makes
 //                              this enqueue + prime the TX IRQ (see console_tx.h);
 //                              otherwise it is the polled writer.
-//   arch_console_write_sync -- polled, bounded; safe with the scheduler/IRQs down.
+//   arch_console_write_sync: polled, bounded; safe with the scheduler/IRQs down.
 //                              Panic / fault / assert / pre-arm output uses this.
-//                              Weakly defaults to arch_console_write; a chip with a
-//                              buffered console overrides it with its polled writer.
+//                              Defaults to arch_console_write via a lone-TU fallback,
+//                              not a weak symbol; a chip with a buffered console
+//                              defines its own polled writer instead.
 void arch_console_write(char const* buf, size_t n);
 void arch_console_write_sync(char const* buf, size_t n);
 
@@ -502,17 +502,22 @@ void arch_console_write_sync(char const* buf, size_t n);
 // that supports handover overrides it with an idempotent full-window register rewrite.
 void arch_console_reclaim(void);
 
+// The register window arch_console_reclaim writes, i.e. the device a userspace console
+// driver is granted on this chip. *size == 0 (the fallback TU) means "no window": either
+// the console is not a memory-mapped device, or this chip has no handover.
+//
+// The window is the ARCH's answer, never an address userspace supplied: the reclaim is
+// about to reprogram exactly these registers.
+void arch_console_reclaim_window(uintptr_t* base, size_t* size);
+
 // --- Single on-board kernel diagnostic LED (optional) ----------------------
-// The board's one diagnostic LED -- the raw bottom edge of the kernel diag LED
-// (kdiag_led_*), a sibling of the console: a last-resort self-debug facility
-// that works UART-less, in a fault, before drivers exist. NOT a general device
-// driver (the userspace path is provisional; the capability model re-homes it as
-// a userspace GPIO driver later). arch_diag_led_init() configures the pin once
-// at boot; arch_diag_led_set() drives it (on != 0). Both have a no-op fallback-TU
-// default (kernel/init/led.cc): a board with no known LED -- or the sim -- does
-// nothing; a chip backend with one provides strong overrides. Raw set (no
-// toggle): the kernel side tracks state, so a toggle is one XOR there, not a
-// per-chip register quirk.
+// The board's one diagnostic LED, the raw bottom edge of the kernel diag LED
+// (kdiag_led_*): a last-resort self-debug facility that must work UART-less, in a
+// fault, before drivers exist. NOT a general device driver.
+// arch_diag_led_init() configures the pin once at boot; arch_diag_led_set() drives
+// it (on != 0). Both have a no-op fallback-TU default (kernel/init/led.cc): a board
+// with no known LED (or the sim) does nothing; a chip backend with one provides
+// strong overrides. Raw set, no toggle: the kernel side tracks the state.
 void arch_diag_led_init(void);
 void arch_diag_led_set(int on);
 

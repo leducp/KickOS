@@ -48,11 +48,10 @@
 #define KICKOS_POOL_TOP(ram_start) \
     (KICKOS_POOL_BASE(ram_start) + KICKOS_POOL_STACK_COUNT * KICKOS_POOL_STACK_SIZE)
 
-/* Opt-in, unlike KICKOS_BOOT_ARENA_ASSERT: as of m4.5.6 frdmk64f (KICKOS_HAVE_MPU=1),
- * bluepill-c8 and bluepill-c8-st still advertise more slots than their arena backs, so a
- * fleet-wide assert would break those links. A board invokes this once its provisioning
- * is honest. Verified by the per-image sweep, not by inspection: the arena base is a
- * link-time value, so only the linker can do this arithmetic.
+/* Opt-in, unlike KICKOS_BOOT_ARENA_ASSERT: some boards still advertise more slots than
+ * their arena backs, so a fleet-wide assert would break those links. A board invokes this
+ * once its provisioning is honest. The arena base is a link-time value, so only the linker
+ * can do this arithmetic.
  */
 #define KICKOS_POOL_ARENA_ASSERT(ram_start, ram_end)                    \
     ASSERT(KICKOS_POOL_TOP(ram_start) <= (ram_end),                     \

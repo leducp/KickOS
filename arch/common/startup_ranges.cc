@@ -4,10 +4,9 @@
 // Generic C-runtime data init shared by chips that split app globals into their own
 // pow2 MPU region: copy every {src, dst, len} triple in the linker's copy table
 // (initialized .data-class sections, loaded from flash) then zero every {dst, len}
-// pair in the zero table (.bss-class sections). One loop covers N ranges, so adding
-// a range (kernel data, app data, a future per-domain block) is a linker-only edit
-// with no startup churn. Runs from flash BEFORE any global is live, so it touches no
-// global of its own -- the tables live in flash rodata, always readable at entry.
+// pair in the zero table (.bss-class sections). Runs from flash BEFORE any global is
+// live, so it must touch no global of its own; the tables live in flash rodata,
+// always readable at entry.
 #include <stdint.h>
 
 extern "C"
