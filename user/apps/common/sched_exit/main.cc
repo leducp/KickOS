@@ -4,7 +4,7 @@
 // Regression: a NON-LAST thread that exits must not panic. A spawned worker runs
 // briefly then RETURNS (thread exit) while root is still alive. On an arch that
 // defers the context switch (ARM PendSV), the switch away from the exiting thread
-// can only fire once exit_current releases its crit section -- the bug this guards
+// can only fire once exit_current releases its crit section; the bug this guards
 // against ran KICKOS_UNREACHABLE first ("an EXITED thread was picked to run"). Root
 // then wakes and prints the survival marker; root's own return is the last-thread
 // exit -> clean shutdown. (The sim always worked, arch_switch being synchronous;

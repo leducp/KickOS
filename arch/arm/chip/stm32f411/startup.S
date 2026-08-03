@@ -5,9 +5,9 @@
  * The kernel exception handlers (SVC/PendSV/SysTick) come from the armv7m arch
  * layer; every external line routes to the generic kickos_armv7m_default_irq
  * (line = IPSR-16). STM32 runs from internal flash at 0x0800_0000 (aliased to
- * 0x0 at boot); the reset handler sets VTOR (in the chip C) is unnecessary since
- * M4 boots with VTOR=0 pointing at the flash-alias table -- the linker places
- * .isr_vector at flash start. There is no flash config field (that is K64F).
+ * 0x0 at boot). No VTOR write is needed: the M4 boots with VTOR=0 pointing at the
+ * flash-alias table and the linker places .isr_vector at flash start. There is no
+ * flash config field on this part.
  */
 
 #include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */

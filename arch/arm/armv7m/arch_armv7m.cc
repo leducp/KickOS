@@ -4,9 +4,9 @@
 // ARMv7-M arch backend: the parts of the arch.h seam that are Cortex-M core
 // generic (present on every v7-M part, chip-independent). The context switch +
 // syscall trap assembly lives in switch.S; the chip layer (arch/arm/chip/*)
-// supplies the truly hardware-specific edges -- arch_init (clocks + console +
-// exception-priority install), arch_console_write (UART) -- and the linker
-// script that defines the user-RAM region and SystemCoreClock.
+// supplies the truly hardware-specific edges (arch_init: clocks + console +
+// exception-priority install; arch_console_write: UART) and the linker script
+// that defines the user-RAM region and SystemCoreClock.
 
 #include <kickos/arch/arch.h>
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
@@ -118,7 +118,7 @@ arch_irq_state_t arch_irq_save(void)
     uint32_t prev;
     __asm volatile("mrs %0, basepri" : "=r"(prev));
     // Nested-lock fast path: if BASEPRI already masks at least as strongly as the
-    // lock, the section is already in effect -- no BASEPRI change and thus no barrier
+    // lock, the section is already in effect: no BASEPRI change and thus no barrier
     // is needed. Skips the DSB+ISB (a pipeline flush) on every nested IrqLock; the hot
     // syscall->sem->wake->reschedule->ktime_rearm path nests ~6-8. Lower BASEPRI value
     // = stronger mask; 0 = no mask. (A weaker prev, e.g. a device band 0x30, still
@@ -130,7 +130,7 @@ arch_irq_state_t arch_irq_save(void)
     __asm volatile("msr basepri, %0" ::"r"(PRIO_LOCK_BASEPRI) : "memory");
     // Raising BASEPRI is not self-synchronizing: without these barriers an
     // interrupt could be taken on the following instruction under the OLD mask
-    // (ARMv7-M ARM, "Barriers" -- a BASEPRI write needs DSB+ISB to take effect).
+    // (ARMv7-M ARM, "Barriers": a BASEPRI write needs DSB+ISB to take effect).
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
     return prev;
@@ -164,11 +164,11 @@ void arch_irq_unmask(int line)
     // masks priorities numerically >= 0x20. Without this a device IRQ would
     // preempt an IrqLock-held section and corrupt kernel state (regs.h band).
     reinterpret_cast<volatile uint8_t*>(NVIC_IPR0)[l] = static_cast<uint8_t>(PRIO_DEVICE);
-    // Latch-and-coalesce: PRESERVE any latched NVIC pending across enable -- a raise
+    // Latch-and-coalesce: PRESERVE any latched NVIC pending across enable. A raise
     // that arrived while the line was masked fires through the normal ISR path the
-    // instant ISER is set. Drain a preceding device-flag clear (dsb -- the W1C may
-    // still sit in the write buffer, and exception entry does not order device
-    // writes) so a level source that is genuinely deasserted does not re-latch.
+    // instant ISER is set. Drain a preceding device-flag clear (the W1C may still sit
+    // in the write buffer, and exception entry does not order device writes) so a
+    // level source that is genuinely deasserted does not re-latch.
     __asm volatile("dsb" ::: "memory");
     reg32(NVIC_ISER0 + (l >> 5) * 4) = 1u << (l & 31);
 }
@@ -234,7 +234,7 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     {
         stk = "PSP";
     }
-    // A set MMFSR byte (CFSR[7:0]) means the MemManage (MPU) fault took it -- label
+    // A set MMFSR byte (CFSR[7:0]) means the MemManage (MPU) fault took it, so label
     // it as such so an isolation trap reads clearly; otherwise the generic label.
     char const* label = "HARD FAULT";
     if (cfsr & 0xFFu)

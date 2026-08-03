@@ -2,10 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // mps2-an386 (QEMU Cortex-M4F) chip backend: the hardware edges the armv7m arch
-// layer leaves to the chip -- reset/C-runtime bring-up, arch_init (FPU + core
-// exception/clock setup), and the debug console. QEMU semihosting stands in for
-// a UART here (console + exit code), so this target needs no peripheral driver;
-// the K64F chip layer (item 10) swaps semihosting for real MCG clocks + UART0.
+// layer leaves to the chip, namely reset/C-runtime bring-up, arch_init (FPU + core
+// exception/clock setup), and the debug console. QEMU semihosting stands in for a
+// UART here (console + exit code), so this target needs no peripheral driver.
 //
 // The emulated CMSDK has no pin-function mux; arch_pinmux_set is intentionally
 // left to the declining ENOSYS fallback.
@@ -33,7 +32,7 @@ extern "C"
     // PMSAv8 MPU backend (arch/arm/common/arch_arm_pmsav8.cc): one-time MAIR +
     // MemManage enable. Also the LINK ANCHOR that pulls the PMSAv8 archive member,
     // so its commit/encodable replace the v7-M fallback TUs. Only the M33
-    // board (mps2-an505) defines KICKOS_MPS2_PMSAV8 -- see the chip's mpu.cmake.
+    // board (mps2-an505) defines KICKOS_MPS2_PMSAV8; see the chip's mpu.cmake.
 #if KICKOS_HAVE_MPU && defined(KICKOS_MPS2_PMSAV8)
     void kickos_arm_pmsav8_init(void);
 #endif
@@ -80,7 +79,7 @@ extern "C"
 
 void arch_init(void)
 {
-    // FPU is enabled earlier (Reset_Handler, before C++ ctors) -- see there.
+    // FPU is enabled earlier (Reset_Handler, before C++ ctors).
 #if KICKOS_HAVE_MPU && defined(KICKOS_MPS2_PMSAV8)
     // MUST precede kickos_armv7m_init and MUST NOT be dropped: this reference pulls
     // the PMSAv8 backend into the link. Without it the build still succeeds, but the
@@ -90,10 +89,9 @@ void arch_init(void)
     kickos_armv7m_init();
 }
 
-// The required per-chip clock. QEMU does not implement the DWT
-// cycle counter (it reads frozen), so derive the monotonic clock from the
-// semihosting SYS_CLOCK (centiseconds since start). Coarse (10 ms) -- fine for
-// the QEMU functional gate; real silicon uses the DWT default.
+// The required per-chip clock. QEMU does not implement the DWT cycle counter (it reads
+// frozen), so derive the monotonic clock from the semihosting SYS_CLOCK (centiseconds
+// since start). Resolution is 10 ms.
 uint64_t arch_clock_now(void)
 {
     // Must be monotonic: a semihosting error/glitch (cs < 0) must not regress the
@@ -117,11 +115,9 @@ uint64_t arch_clock_now(void)
     return ns;
 }
 
-// Replaces the arch layer's DWT trace-clock fallback: QEMU's DWT CYCCNT reads frozen
-// (same reason as arch_clock_now above), so derive the telemetry timestamp from
-// the same monotonic semihosting clock. Coarse (10 ms), but the QEMU telemetry
-// gate is STRUCTURAL (chain/pairs/no-gaps), not latency-accurate; real silicon
-// uses the cycle-accurate DWT default.
+// Replaces the arch layer's DWT trace-clock fallback: QEMU's DWT CYCCNT reads frozen,
+// so derive the telemetry timestamp from the same monotonic semihosting clock. 10 ms
+// resolution, so timestamps here carry no latency information.
 uint32_t arch_trace_now(void)
 {
     return static_cast<uint32_t>(arch_clock_now() / 1000ull); // us
@@ -129,8 +125,7 @@ uint32_t arch_trace_now(void)
 
 // Replaces the arch layer's WFI idle fallback: this target's clock is the semihosting
 // SYS_CLOCK (arch_clock_now above), and QEMU <= 10 stops it while the core halts
-// in WFI -- so a sleep with every thread idle never wakes. Spin instead. QEMU-only
-// board, so the wasted cycles cost nothing real.
+// in WFI, so a sleep with every thread idle never wakes. Spin instead.
 void arch_idle_wait(void)
 {
     __asm volatile("nop");
@@ -153,9 +148,8 @@ void arch_shutdown(int status)
     // records_attempted snapshot, breaking the decoder cross-check. Held to exit.
     (void)arch_irq_save();
     // Capture the ch1 telemetry ring to a host file via semihosting (QEMU writes
-    // it relative to its CWD) so the offline decoder gets the trace -- the mirror
-    // of the sim's file flush, giving the QEMU gate byte-level structural coverage
-    // of the PendSV-tail asm hook. Best-effort on this dying path.
+    // it relative to its CWD) so the offline decoder gets the trace. Best-effort on
+    // this dying path.
     kickos_trace_final_session();
     kickos_trace_report_counters();
     {
@@ -195,11 +189,9 @@ void arch_shutdown(int status)
     }
 }
 
-// C-runtime bring-up (the reset vector). Runs on MSP; touches only linker
-// symbols until .data/.bss are live.
-// A fault/panic on this QEMU target must EXIT with a status so a CTest run
-// catches it -- there is no LED, and the blink terminal fallback (kernel.h) would
-// just spin until the harness times out. Override it to exit.
+// A fault/panic on this QEMU target must EXIT with a status so a CTest run catches
+// it: there is no LED, and the blink terminal fallback (kernel.h) would just spin
+// until the harness times out.
 void kfault_terminate(void)
 {
     arch_shutdown(132);

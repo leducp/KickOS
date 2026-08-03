@@ -7,14 +7,14 @@
 //     int main(int argc, char** argv)
 //
 // and kickos_add_application() compiles it with -Dmain=kickos_app_main so the
-// app source stays portable -- the same file builds unchanged as a plain hosted
+// app source stays portable: the same file builds unchanged as a plain hosted
 // program or on KickOS. The kernel's boot path calls kickos_app_main after init;
 // its int return becomes the process exit status on the sim (a daemon-style app
 // simply never returns).
 //
 // C++ global constructors of an app (and of any library it links, e.g. libstdc++)
-// run on MCU targets from the kernel's root thread just before kickos_app_main --
-// the kernel is live, so a ctor may use KickOS syscalls -- but they run on ONE
+// run on MCU targets from the kernel's root thread just before kickos_app_main.
+// The kernel is live, so a ctor may use KickOS syscalls, but they run on ONE
 // thread in sequence: an app global ctor MUST NOT block (sleep/wait), or a
 // higher-priority thread it already spawned may run before the remaining globals
 // are constructed. Do blocking work inside main, not in a global ctor.

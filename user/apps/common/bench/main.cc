@@ -130,7 +130,7 @@ namespace
             kos::print(s);
 
             // Worst-case ISR latency, portable term: how long interrupts stay masked
-            // across one endpoint-sized (256B) copy span -- the interval an ISR waits
+            // across one endpoint-sized (256B) copy span: the interval an ISR waits
             // behind such a syscall critical section. clock_now-based, so it survives a
             // frozen/absent cycle counter (mps2 DWT / sim); the cycle sweep below adds
             // the exception-entry term where a counter exists.
@@ -148,7 +148,7 @@ namespace
             kickos_bench_switch_report(&smin, &savg, &smax, &scnt);
             if (scnt == 0)
             {
-                // no cycle counter on this arch -- throughput is the metric
+                // no cycle counter on this arch; throughput is the metric
                 prev_rounds = g_rounds;
                 prev_ns = kos::clock_now();
                 continue;
@@ -236,7 +236,7 @@ namespace
     // above (caller -> server on the call, server -> caller on the reply), so the number
     // sits directly beside the ctx-switch throughput. Both peers are SPAWNED pool threads:
     // the caller must be a pool thread (a reply cap names its parked caller by ThreadPool
-    // slot -- the file-static root TCB has no slot). Run once BEFORE the players spawn, so
+    // slot; the file-static root TCB has no slot). Run once BEFORE the players spawn, so
     // the two threads exit and free their slots and the peak concurrency stays at 2.
     constexpr uint32_t CALLREPLY_REPS = 20000;
     void callreply_server(void*) // caps: E(WAIT)@1, done@2
@@ -300,7 +300,7 @@ namespace
         if (sv < 0 or cl < 0)
         {
             // The bench needs both peers or neither can make progress (a lone thread parks
-            // forever). Close and skip -- never fires where the pool holds 2 (the minimum).
+            // forever). Close and skip; never fires where the pool holds 2 (the minimum).
             kos_handle_close(ep);
             kos::print("  call/reply: SKIP (thread pool too small)\n");
             return;
@@ -326,7 +326,7 @@ int main(int, char**)
     g_b = &b;
     g_gate = &gate;
 
-    // Players at prio 1 (KICKOS_PRIO_MIN) -- below root's prio 2 so the reporter (root)
+    // Players at prio 1 (KICKOS_PRIO_MIN): below root's prio 2 so the reporter (root)
     // preempts them when player_b posts the gate. Only two spawned threads: fits the
     // smallest pool (KICKOS_MAX_THREADS == 2).
     kos_cap_grant acaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}};                    // A@1, B@2

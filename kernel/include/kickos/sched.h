@@ -14,10 +14,9 @@
 
 namespace kickos
 {
-    // Pluggable scheduling policy (RTEMS-style). The core is pure mechanism (run
-    // state, current, the context switch); the policy owns WHICH thread runs next
-    // -- it holds the ready structure and enqueues/dequeues through these hooks,
-    // the core never touches ready state. EDF / rate-monotonic drop in here.
+    // Pluggable scheduling policy. The core is pure mechanism (run state, current, the
+    // context switch); the policy owns WHICH thread runs next and holds the ready
+    // structure. The core must never touch ready state except through these hooks.
     struct SchedPolicy
     {
         // Scheduling decision.
@@ -68,12 +67,12 @@ namespace kickos
         // Make a previously-removed thread runnable again; preempts if warranted.
         void wake(Thread* t);
 
-        // The SOLE writer of a thread's effective priority (Thread::prio). A READY
-        // thread is re-seated through the policy hooks (rq_remove locates its list by
-        // reading t->prio, so a bare field write would corrupt the ready lists);
-        // RUNNING/BLOCKED/SLEEPING take the value directly (wait queues scan lazily at
-        // pop, the timer list is prio-independent). Does NOT reschedule -- the caller
-        // decides. Used by priority inheritance; no code else may write t->prio.
+        // The SOLE writer of a thread's effective priority: no other code may write
+        // t->prio. A READY or RUNNING thread is re-seated through the policy hooks, since
+        // rq_remove locates its list by reading t->prio and a bare field write would
+        // corrupt the ready lists; BLOCKED and SLEEPING threads take the value directly,
+        // because wait queues scan lazily at pop and the timer list is prio-independent.
+        // Does NOT reschedule; the caller decides.
         void set_prio(Thread* t, uint8_t p);
 
         // Terminate the current thread with exit code `code`; never returns. The

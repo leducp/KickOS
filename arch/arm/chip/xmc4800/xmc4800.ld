@@ -104,7 +104,7 @@ SECTIONS
 #if KICKOS_HAVE_MPU
         /* Zero the whole granted window past the loaded .appdata: the pre-.appbss
            alignment gap (forced by an over-aligned .appbss object), .appbss, and the
-           pad -- so no stale read-back anywhere in the app grant. */
+           and the pad, so no stale read-back anywhere in the app grant. */
         LONG(__kickos_appdata_load_end); LONG(__kickos_appdata_end - __kickos_appdata_load_end);
 #endif
         LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
@@ -118,7 +118,7 @@ SECTIONS
        app-side with an INVERTED selection: the CLOSED KickOS-owned set (kernel/arch/
        chip/lib) is captured FIRST, in script order, via the `archive:member` colon
        syntax into the kernel .data/.bss at the RAM base; the .appdata/.appbss catch-alls
-       that follow then take EVERYTHING ELSE -- the app's own objects, the toolchain
+       that follow then take EVERYTHING ELSE: the app's own objects, the toolchain
        runtime (libc/libgcc/libstdc++/libsupc++), KickCAT, libkickos_user.a's heap, and
        any unknown NEW archive. An unmatched archive lands app-side (reachable), never
        kernel-side (faults). Colon syntax, NOT EXCLUDE_FILE: this binutils does not match
@@ -166,7 +166,7 @@ SECTIONS
     } > RAM AT > FLASH
 
     /* Pin the base to the window (start + SIZEOF .appdata), NOT the default location
-       counter: an EMPTY .appdata (an app with no initialized globals -- the bench) does
+       counter: an EMPTY .appdata (an app with no initialized globals, e.g. the bench) does
        not carry its ALIGN(_appdata_size) forward, so a defaulted .appbss falls back to
        kernel-.bss-end, BELOW the granted window, and every app-global access faults. */
     .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
@@ -230,8 +230,7 @@ SECTIONS
        power-of-two-aligned PMSA region (2 MiB @ 0x0800_0000). Lets an
        unprivileged thread fetch its instructions + read flash-resident rodata
        (string literals, const tables). Whole-flash means kernel code is also
-       unprivileged-readable (confidentiality, not escalation) -- a tighter
-       app-only .text region is a later refinement. */
+       unprivileged-readable (confidentiality, not escalation). */
     __kickos_code_start = ORIGIN(FLASH);
     __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);
 

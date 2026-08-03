@@ -173,17 +173,16 @@ namespace
     // but that DWT intermittently returns aliased garbage on parts in this fleet,
     // which the software 32->64 wrap-extension turns into a phantom 2^32 jump that
     // strands every timed wait. TIM2 is a plain 32-bit general-purpose timer on
-    // APB1 (not the debug domain): free-run it and use it as arch_clock_now. ONLY
-    // the monotonic clock moves off DWT; arch_trace_now stays on raw DWT_CYCCNT (a
-    // glitch there skews a telemetry sample -- tolerable -- but is fatal to the
-    // scheduler clock). TIM2 does not collide with the one-shot tickless timer
+    // APB1 (not the debug domain): free-run it and use it as arch_clock_now.
+    // arch_trace_now stays on raw DWT_CYCCNT, where a glitch costs one telemetry
+    // sample. TIM2 does not collide with the one-shot tickless timer
     // (SysTick, core-generic) nor any driver (none use TIM2 on this port).
 
     // Software 64-bit extension of the 32-bit TIM2_CNT. Reads are RELIABLE (unlike
     // DWT): TIM2 wraps every 2^32/84e6 ~= 51 s. The wrap is folded either by a
     // thread read or, when the system is idle with the tickless timer disarmed, by
-    // the TIM2 overflow ISR below -- exactly once (whoever reads first advances
-    // g_clk_last, so the other sees no backward step). Without that ISR a wrap
+    // the TIM2 overflow ISR below, exactly once: whoever reads first advances
+    // g_clk_last, so the other sees no backward step. Without that ISR a wrap
     // across a fully-quiescent >51 s idle would be lost (a slow DWT-style leap).
     volatile uint32_t g_clk_high = 0;
     volatile uint32_t g_clk_last = 0;
@@ -199,9 +198,8 @@ namespace
         // (__init_array) calling ktime_now()/arch_clock_now() BusFaults here on the
         // ungated APB1 access (it was a harmless DWT read before this override).
         r32(rcc::APB1ENR) |= rcc::APB1ENR_TIM2EN;
-        // Keep TIM2 clocked in Sleep mode (WFI); TIM2LPEN resets to 1 but make the
-        // dependency explicit -- clearing it would freeze the clock the instant the
-        // idle thread executes WFI.
+        // Keep TIM2 clocked in Sleep mode (WFI). TIM2LPEN resets to 1; clearing it
+        // would freeze the clock the instant the idle thread executes WFI.
         r32(rcc::APB1LPENR) |= rcc::APB1ENR_TIM2EN;
         r32(tim::CR1) = 0;             // stop; upcount, defaults
         r32(tim::PSC) = 0;             // no prescale: count at the timer kernel clock

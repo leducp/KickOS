@@ -5,19 +5,19 @@
 # CI gate for the enforced (KICKOS_HAVE_MPU) boot-ctor split. The chip linker
 # scripts route ONLY the closed KickOS-owned archive set (libkickos_kernel.a /
 # libkickos_arch_<arch>.a / libkickos_chip_<chip>.a / libkickos_lib.a) into
-# .init_array -- Reset_Handler runs those before kmain -- and send every OTHER
+# .init_array (Reset_Handler runs those before kmain) and send every OTHER
 # ctor (app / libstdc++ / libsupc++ / newlib / KickCAT) into .kickos_app_init_array,
 # which root_entry runs LATER, kernel-live. That set is duplicated across 13 linker
 # scripts; a future kernel-side archive whose ctor is NOT added to the set would
-# silently fall into .kickos_app_init_array and run too late -- kmain would use an
+# silently fall into .kickos_app_init_array and run too late: kmain would use an
 # unconstructed kernel object. This gate catches exactly that regression.
 #
 # The gate enforces the partition in BOTH directions, because the two failures are
 # different bugs:
-#   1. privilege -- a NON-kernel ctor inside .init_array runs from Reset_Handler at
+#   1. privilege: a NON-kernel ctor inside .init_array runs from Reset_Handler at
 #      full privilege, ahead of kmain, i.e. app code executing inside the TCB. This
 #      is what a regression to a monolithic KEEP(*(.init_array)) looks like.
-#   2. ordering  -- a KERNEL ctor inside .kickos_app_init_array runs after kmain has
+#   2. ordering: a KERNEL ctor inside .kickos_app_init_array runs after kmain has
 #      already used the object it constructs.
 #
 # The check works on POINTERS, not symbol addresses: each _GLOBAL__sub_I/_D ctor is
@@ -122,7 +122,7 @@ done < "$TMP/ctor_even.txt" > "$TMP/kernel_ctor_addrs.txt"
 # =============================================================================
 # The check above guards the "too late" direction. This guards the direction that
 # matters for privilege: .init_array runs from Reset_Handler, fully privileged,
-# before the kernel is even up -- so anything landing there is inside the TCB by
+# before the kernel is even up, so anything landing there is inside the TCB by
 # construction. The linker partitions by input ARCHIVE, which an app cannot forge
 # (naming a section .init_array.00099 still misses every archive selector). But a
 # script that regresses to a monolithic `KEEP(*(.init_array))`, or that grows a
@@ -141,7 +141,7 @@ PEDEC=$((0x$PEND))
 # every kernel ctor would then fall through to the app bucket and run too late.
 # Sound HERE only: this gate runs on armv7m+MPU, where the two kernel ctors always
 # survive --gc-sections. It is NOT a universal invariant, so do NOT lift it into the
-# linker scripts as an ASSERT -- on the Xtensa esp32 port every ctor is legitimately
+# linker scripts as an ASSERT: on the Xtensa esp32 port every ctor is legitimately
 # collected and both windows are empty.
 [ "$PEDEC" -gt "$PSDEC" ] \
   || fail "privileged .init_array is EMPTY -- an archive selector matched nothing (renamed kernel lib?); kernel ctors would run late"

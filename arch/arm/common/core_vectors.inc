@@ -7,9 +7,9 @@
  * varies per chip and stays open-coded in each startup.S. A chip invokes the
  * macro for its profile right after its own .section/.align/g_isr_vector header:
  *
- *   KICKOS_CORE_VECTORS_V7M   -- Cortex-M3/M4 (v7-M): MemManage/BusFault/Usage
- *   KICKOS_CORE_VECTORS_V6M   -- Cortex-M0/M0+ (v6-M): slots 4/5/6 reserved
- *   KICKOS_CORE_VECTORS_V8M   -- Cortex-M33 (v8-M): slot 7 = SecureFault
+ *   KICKOS_CORE_VECTORS_V7M : Cortex-M3/M4 (v7-M): MemManage/BusFault/Usage
+ *   KICKOS_CORE_VECTORS_V6M : Cortex-M0/M0+ (v6-M): slots 4/5/6 reserved
+ *   KICKOS_CORE_VECTORS_V8M : Cortex-M33 (v8-M): slot 7 = SecureFault
  *
  * The words reference Reset_Handler/SVC_Handler/PendSV_Handler/SysTick_Handler
  * (arch layer), HardFault_Handler (chip), NMI_Handler (file-local, per chip) and

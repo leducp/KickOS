@@ -2,11 +2,11 @@
  * Copyright (c) 2026 Philippe Leduc
  *
  * ARMv7-M context switch + syscall trap assembly. Three mechanisms live here:
- *   1. PendSV_Handler  -- the deferred context switch (the arch_switch backend).
- *   2. SVC_Handler + svc_trampoline -- the syscall trap. THE M1 spike: dispatch
- *      runs in PRIVILEGED THREAD mode, so a blocking syscall is an ordinary
- *      synchronous PendSV switch resumed inline (arch.h arch_syscall contract).
- *   3. arch_start / arch_syscall -- first-thread entry and the user-side trap.
+ *   1. PendSV_Handler: the deferred context switch (the arch_switch backend).
+ *   2. SVC_Handler + svc_trampoline: the syscall trap. Dispatch runs in PRIVILEGED
+ *      THREAD mode, so a blocking syscall is an ordinary synchronous PendSV switch
+ *      resumed inline (arch.h arch_syscall contract).
+ *   3. arch_start / arch_syscall: first-thread entry and the user-side trap.
  *
  * Saved-frame layout (must match arch_context_init in arch_armv7m.cc), low->high
  * address on the thread's PSP:
@@ -23,9 +23,9 @@
     .text
 
 /* ------------------------------------------------------------------------- */
-/* PendSV_Handler -- switch from g_arch_current to g_arch_next.               */
-/* Lowest priority: it runs after every other exception tail-chains, so a     */
-/* switch requested from an ISR happens on the way back to thread level.      */
+/* PendSV_Handler: switch from g_arch_current to g_arch_next. Lowest priority */
+/* so it runs after every other exception tail-chains; a switch requested from */
+/* an ISR happens on the way back to thread level.                            */
 /* ------------------------------------------------------------------------- */
     .thumb_func
     .global PendSV_Handler
@@ -41,7 +41,7 @@ PendSV_Handler:
     ldr     r3, =g_arch_current
     ldr     r2, [r3]                /* outgoing ctx* (0 => first start) */
 #if KICKOS_TELEMETRY
-    /* Spill the OUTGOING ctx* now, before the swap clobbers r2 -- the telemetry
+    /* Spill the OUTGOING ctx* now, before the swap clobbers r2: the telemetry
        tail emits from this spilled value and the incoming ctx* it actually loads,
        never re-reading g_arch_next (a SysTick preempting PendSV can rewrite it).
        r3 is pushed only to keep MSP 8-byte aligned across the later bl. */
@@ -78,7 +78,7 @@ PendSV_Handler:
     isb
 #if KICKOS_BENCH
     /* Bench: delta = now - entry stamp -> kickos_bench_switch_done. Read here,
-       right after the switch body, BEFORE any telemetry emit -- so the measured
+       right after the switch body, BEFORE any telemetry emit, so the measured
        window brackets only the save/restore, not the emit. r1 (incoming ctx*) and
        the entry-spilled {r2,r3} below it are preserved across the balanced push/pop
        (telemetry reads them next). Keep MSP 8-byte aligned; save EXC_RETURN. */
@@ -108,27 +108,26 @@ PendSV_Handler:
     bl      kickos_trace_switch_done /* (r0=from_tid, r1=to_tid) */
     pop     {r0, lr}                /* restore EXC_RETURN */
 #endif
-    /* Deferred MPU commit: program the incoming thread's regions now that the
-       physical PSP/register swap is done -- atomically with the switch, NOT eagerly
-       in switch_to (shared seam, see arch_arm_common.cc / design-mpu-commit-deferred).
-       Eager apply would run the OUTGOING thread under the incoming region set until
-       PendSV fires -> a fault on its own stack. Callee regs (r4-r11) survive the call
-       (AAPCS); r0-r3/r12 are reloaded from the HW frame on exception return; lr holds
-       EXC_RETURN and must be preserved across the bl (r0 pad keeps MSP 8-byte aligned).
-       Resolves to the PMSAv7 commit fallback (F411/XMC) or a chip's own (K64F
-       SYSMPU); a no-MPU board gets the empty commit fallback. */
+    /* Deferred MPU commit: program the incoming thread's regions now that the physical
+       PSP/register swap is done, NOT eagerly in switch_to (shared seam, see
+       arch_arm_common.cc). Eager apply would run the OUTGOING thread under the incoming
+       region set until PendSV fires -> a fault on its own stack. Callee regs (r4-r11)
+       survive the call (AAPCS); r0-r3/r12 are reloaded from the HW frame on exception
+       return; lr holds EXC_RETURN and must be preserved across the bl (the r0 pad keeps
+       MSP 8-byte aligned). kickos_arch_mpu_commit resolves to the PMSAv7 fallback, a
+       chip override (K64F SYSMPU), or an empty fallback on a no-MPU board. */
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
     pop     {r0, lr}
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
 
 /* ------------------------------------------------------------------------- */
-/* SVC_Handler -- redirect the exception return into svc_trampoline running   */
+/* SVC_Handler: redirect the exception return into svc_trampoline, which runs */
 /* in PRIVILEGED THREAD mode. It does NOT dispatch (that would run in handler */
 /* mode, where a blocking switch could only be deferred, breaking the         */
 /* synchronous-blocking contract). The hardware exception frame already holds */
 /* the args (r0=nr, r1=a0, r2=a1, r3=a2, r12=a3) and, in LR, the return       */
-/* address of arch_syscall's caller -- so we only rewrite the stacked PC.     */
+/* address of arch_syscall's caller, so only the stacked PC is rewritten.     */
 /* ------------------------------------------------------------------------- */
     .thumb_func
     .global SVC_Handler
@@ -150,9 +149,9 @@ SVC_Handler:
 /* blocking syscall_dispatch here blocks by pending PendSV (arch_switch); the  */
 /* switch is a real exception preempting this thread-mode code, and PendSV     */
 /* freezes the mid-dispatch continuation on THIS thread's stack, resuming it   */
-/* inline when the thread is next scheduled -- exactly the sim's synchronous   */
-/* call semantics. Privilege is dropped with a plain CONTROL write (no trap    */
-/* needed to LOWER privilege in thread mode) before returning to the user.     */
+/* inline when the thread is next scheduled. Privilege is dropped with a plain */
+/* CONTROL write (no trap is needed to LOWER privilege in thread mode) before  */
+/* returning to the user.                                                      */
     .thumb_func
     .global svc_trampoline
 svc_trampoline:
@@ -173,7 +172,7 @@ svc_trampoline:
     bx      lr                      /* -> arch_syscall's caller, r0=result */
 
 /* ------------------------------------------------------------------------- */
-/* arch_start(boot, first) -- enter the first thread from boot (thread/MSP).  */
+/* arch_start(boot, first): enter the first thread from boot (thread/MSP).    */
 /* Reuses the PendSV switch path: mark "no outgoing to save" and pend PendSV.  */
 /* PendSV fires once sched::start() releases its IrqLock (BASEPRI), loading    */
 /* `first`; boot's MSP frame is abandoned (the system never returns to boot).  */
@@ -194,7 +193,7 @@ arch_start:                         /* r0=boot (ignored on MCU), r1=first */
     bx      lr
 
 /* ------------------------------------------------------------------------- */
-/* arch_syscall(nr, a0, a1, a2, a3) -- userspace trap (runs unprivileged).    */
+/* arch_syscall(nr, a0, a1, a2, a3): userspace trap (runs unprivileged).      */
 /* AAPCS: r0=nr r1=a0 r2=a1 r3=a2, [sp]=a3. Move a3 into r12 so the exception  */
 /* frame carries it; the result is delivered in r0 by svc_trampoline, which    */
 /* returns straight to this function's caller (the trailing bx is a fallback). */

@@ -148,10 +148,9 @@ namespace
     };
     static_assert(sizeof(flexspi_nor_config) == 0x200, "serial-NOR FCB must be 512 B");
 
-    // Single-pad (1-1-1) 0x03 normal read at 30 MHz -- the universally-compatible
-    // read for a first bring-up (no quad-mode enable needed). LUT instruction =
-    // (opcode<<10)|(pads<<8)|operand; two per 32-bit word (RM 9.6.3.1 note 2 /
-    // Table 9-16). seq0 = CMD 0x03 (1-pad) + 24-bit RADDR (1-pad) + READ (1-pad).
+    // Single-pad (1-1-1) 0x03 normal read at 30 MHz; no quad-mode enable needed. LUT
+    // instruction = (opcode<<10)|(pads<<8)|operand, two per 32-bit word (RM 9.6.3.1
+    // note 2 / Table 9-16). seq0 = CMD 0x03 (1-pad) + 24-bit RADDR (1-pad) + READ (1-pad).
     // FLASH-SPECIFIC: validate this LUT + serialClkFreq against the Teensy's flash
     // before flashing (design doc DEFERRED note).
     __attribute__((section(".boot_fcb"), used))
@@ -228,9 +227,9 @@ namespace
     const boot_ivt g_boot_ivt = {
         0x412000D1u,  // header: tag 0xD1, len 0x0020, version 0x41 (RM 9.7.1.1)
         // entry: &_boot_entry. The Thumb LSB is already set by the function-symbol
-        // relocation -- an explicit `| 1` would make this non-constant and demote
-        // the whole IVT to a runtime initializer (a write to XIP flash -> a 0 entry
-        // in the image). Keep it a pure address constant.
+        // relocation; an explicit `| 1` would make this non-constant and demote the
+        // whole IVT to a runtime initializer (a write to XIP flash -> a 0 entry in
+        // the image). Keep it a pure address constant.
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(&_boot_entry)),
         0,
         0,            // dcd: none (ROM defaults; no SDRAM/SEMC)
@@ -264,7 +263,7 @@ namespace
         // RTWDOG: an app reconfig only takes effect >= 2.5 LPO(32 kHz) clocks (~76 us)
         // after the ROM exits (RM 58.4); attempted earlier it is silently dropped. Spin
         // past that window, then unlock + clear EN (IRQs masked across the 128-bus-clock
-        // window, TOVAL non-zero), and CONFIRM via CS.RCS -- retry if the write missed.
+        // window, TOVAL non-zero), and CONFIRM via CS.RCS; retry if the write missed.
         for (volatile uint32_t d = 0; d < 200000u; d++)
         {
         }
@@ -412,14 +411,13 @@ void arch_init(void)
 {
 #if KICKOS_HAVE_MPU
     // M7 XIP anti-speculation + L1 caches (ERR011573; docs/design-teensy-mpu-hang.md).
-    // ORDER IS LOAD-BEARING: the fixed MPU regions -- which mark the unbacked external
-    // Normal bands (FlexSPI beyond the 8 MiB image + the SEMC aperture) as Device, so
-    // the M7 cannot speculatively prefetch into an AHB slave that never responds -- must
-    // be LIVE BEFORE the cache is enabled, because a cache is what arms that speculation.
+    // ORDER IS LOAD-BEARING: the fixed MPU regions mark the unbacked external Normal
+    // bands (FlexSPI beyond the 8 MiB image + the SEMC aperture) as Device, so the M7
+    // cannot speculatively prefetch into an AHB slave that never responds. They must be
+    // LIVE BEFORE the cache is enabled; a cache is what arms that speculation.
     kickos_arm_mpu_fixed_init();
-    // I-cache is the config the fix was silicon-proven with. The D-cache defaults ON
-    // (KICKOS_IMXRT_DCACHE, arch/CMakeLists.txt); the coherency obligation arrives with
-    // M4-era DMA.
+    // The D-cache defaults ON (KICKOS_IMXRT_DCACHE, arch/CMakeLists.txt); the coherency
+    // obligation arrives with DMA.
     kickos_armv7m_icache_enable();
 #if defined(KICKOS_IMXRT_DCACHE) && KICKOS_IMXRT_DCACHE
     kickos_armv7m_dcache_enable();
@@ -438,12 +436,11 @@ void arch_init(void)
 // Chip fixed (thread-invariant) MPU regions, programmed once into the LOW slots by the
 // shared kickos_arm_mpu_fixed_init; per-thread grants sit above them (higher slot wins).
 // ERR011573 / Arm 1013783-B: the M7 speculatively prefetches Normal memory, and the
-// ARMv7-M default map leaves 0x6000_0000-0x9FFF_FFFF Normal -- so speculation past the
+// ARMv7-M default map leaves 0x6000_0000-0x9FFF_FFFF Normal, so speculation past the
 // populated 8 MiB of flash, or into the unbacked SEMC aperture, hits an AHB slave that
 // never responds and stalls the core with NO fault. Wrap both external Normal bands
 // Device + XN + no-access; overlay the real 8 MiB as Normal cacheable priv-RO+X.
-// (Option A: keep PRIVDEFENA for RAM/peripherals; the whole-map explicit "Option B"
-// hardening is post-M6 -- TODO.md.) The row type mirrors arch/arm/common/mpu.h.
+// PRIVDEFENA stays on for RAM/peripherals. The row type mirrors arch/arm/common/mpu.h.
 extern "C"
 {
     struct kickos_arm_mpu_fixed_region
@@ -521,9 +518,8 @@ static uintptr_t const imxrt_pad_mux[6][32] = {
     },
 };
 
-// Daisy (SELECT_INPUT) table, keyed by func's OWN index bits[15:8] -- NOT parallel
-// to the pad table (a SELECT_INPUT belongs to a (pad, MUX_MODE) pair, not to a pad).
-// Only the LPUART6_RX daisy exists so far; room is reserved for more.
+// Daisy (SELECT_INPUT) table, keyed by func's OWN index bits[15:8], NOT parallel to
+// the pad table: a SELECT_INPUT belongs to a (pad, MUX_MODE) pair, not to a pad.
 static uintptr_t const imxrt_daisy[] = {
     reg::iomuxc::LPUART6_RX_SELECT_INPUT, // index 0
 };
@@ -585,11 +581,10 @@ uint64_t arch_clock_now(void)
 }
 
 // Replaces the WFI idle fallback. The tickless wakeup timer is SysTick, clocked off the
-// core clock -- which the RT106x halts under WFI, so SysTick stops counting and a
-// sleep with every thread idle never wakes (the GPT monotonic clock keeps running,
-// but it is not the wakeup source). Spin so the core clock, and thus SysTick, stays
-// alive. A GPT output-compare wakeup (GPT counts through WAIT via CR_WAITEN, so WFI
-// would be safe) is the power-optimal follow-up; a busy idle is correct for now.
+// core clock, which the RT106x halts under WFI: SysTick stops counting and a sleep with
+// every thread idle never wakes (the GPT monotonic clock keeps running, but it is not
+// the wakeup source). Spin so the core clock, and thus SysTick, stays alive. A GPT
+// output-compare wakeup would allow WFI (GPT counts through WAIT via CR_WAITEN).
 void arch_idle_wait(void)
 {
     __asm volatile("nop");

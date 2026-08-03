@@ -203,7 +203,7 @@ extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, si
     reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA;
     reg32(MPU_CTRL) = 0;
     __asm volatile("dsb" ::: "memory");
-    // Chip fixed regions own the LOW slots [0, k) -- programmed once by
+    // Chip fixed regions own the LOW slots [0, k), programmed once by
     // kickos_arm_mpu_fixed_init and NEVER touched here (disabling the MPU above does
     // not clear descriptors, so they survive the reprogram). Per-thread grants go in
     // [k, hw), so a grant sits ABOVE the fixed background and correctly overrides it
@@ -220,8 +220,8 @@ extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, si
         // never silently mis-encoded (ctz would under-size it and the base would
         // snap). Unprivileged regions are pow2 by construction (arch_ram_region_*
         // + the pow2 linker code/data sections); a privileged thread's non-pow2
-        // whole-arena grant is simply dropped here -- harmless, it runs on the
-        // PRIVDEFENA background. (Linker contract: code/data regions must be pow2.)
+        // whole-arena grant is simply dropped here and runs on the PRIVDEFENA
+        // background. Linker contract: code/data regions must be pow2.
         if (j < n and regions[j].size >= 32
             and (regions[j].size & (regions[j].size - 1)) == 0)
         {
@@ -343,7 +343,7 @@ void arch_irq_inject(int irq)
     unsigned l = static_cast<unsigned>(irq);
     // Latch-and-coalesce: the NVIC holds ISPR pending independently of ISER, so a
     // raise on a masked (disabled) line latches and fires the instant the line is
-    // enabled -- write ISPR unconditionally, do not drop.
+    // enabled: write ISPR unconditionally, do not drop.
     reg32(NVIC_ISPR0 + (l >> 5) * 4) = 1u << (l & 31);
 }
 

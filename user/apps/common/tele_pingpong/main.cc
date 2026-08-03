@@ -6,7 +6,7 @@
 // multi-wake-in-one-ISR (several periodic sleepers whose deadlines coalesce, so
 // one timer ISR wakes them together -> many reschedules collapse to a SINGLE
 // physical switch). The workers are DAEMONS (they never return); only the root
-// thread ends -- by returning from main, which makes the boot path call
+// thread ends, by returning from main, which makes the boot path call
 // arch_shutdown directly. This deliberately avoids a spawned thread calling
 // exit(): on the ARM port a non-last thread exit is currently broken (the
 // deferred PendSV switch cannot fire under exit_current's held IrqLock), a
@@ -76,7 +76,7 @@ int main(int, char**)
     }
 
     // Let the daemons run for a bounded time (root is prio 2, below the workers,
-    // so it runs only while they are all blocked -- then this sleep expires and we
+    // so it runs only while they are all blocked; then this sleep expires and we
     // return, ending the run cleanly through the boot path's arch_shutdown).
     kos::sleep_ns(RUN_NS);
     kos::print("tele_pingpong: done\n");

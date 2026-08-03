@@ -15,17 +15,17 @@
 // kos_call caller must be a spawned pool thread (the root/init thread is guarded),
 // the client is always a spawned thread that receives the endpoint's SIGNAL cap by
 // spawn-time delegation. The bring-up runs in the root/init thread and records the
-// endpoint's cap handle so the app -- same thread, same cap table -- can delegate a
-// SIGNAL-narrowed cap to ONE client: the service tracks device slots by the caller's
-// own request byte, so several devices behind one client are supported and several
-// mutually-untrusting clients are not.
+// endpoint's cap handle so the app, in the same thread with the same cap table, can
+// delegate a SIGNAL-narrowed cap to ONE client: the service tracks device slots by the
+// caller's own request byte, so several devices behind one client are supported and
+// several mutually-untrusting clients are not.
 //
 // Chip select is the controller's own HARDWARE line (KOS_BUS_CS_HW): the driver
 // brackets the whole transaction with MSLS/SELO0, held across the software-paced
-// words by PCR.FEM=1 (RM 18.4.5.1 -- proven by user/apps/xmccshold). SCTR.FLE=63
+// words by PCR.FEM=1 (RM 18.4.5.1; proven by user/apps/xmccshold). SCTR.FLE=63
 // hands the frame end to the software TCSR.SOF/EOF markers, so MSLS asserts on the
-// first word and releases only after the last -- one coherent frame, the length-
-// sensitive-target shape.
+// first word and releases only after the last: one coherent frame, the
+// length-sensitive-target shape.
 //
 // The data path is INTERNAL LOOP-BACK (DX0 = own transmitter, RM 18.2.3.5): there is
 // no external XMC SPI device on the bench, so a byte shifts out DOUT0 and is received
@@ -53,8 +53,8 @@ extern "C"
     int xmc_spi0_start(struct kos_service_cfg const* cfg);
 
     // TAKE the USIC0-CH1 SSC service endpoint cap handle out of the ROOT/init thread's
-    // table (set by xmc_spi0_start). The app -- which runs in the SAME root thread
-    // after the service walk -- delegates a SIGNAL-narrowed copy of it to its ONE SPI
+    // table (set by xmc_spi0_start). The app, which runs in the SAME root thread
+    // after the service walk, delegates a SIGNAL-narrowed copy of it to its ONE SPI
     // client, then closes its own copy. Handing it out is one-shot: a second call
     // returns a negative value, as does a service that did not come up.
     int xmc_spi0_take_endpoint(void);

@@ -6,7 +6,7 @@
  *                                   to this base in the reset handler.)
  *   SRAM  :  96 KiB @ 0x2007_0000  (the contiguous alias: SRAM0 64 KiB + SRAM1 32 KiB
  *                                   joined at 0x2007_0000..0x2008_8000, so both banks
- *                                   are usable as one region -- NOT 64 KiB @ 0x2000_0000)
+ *                                   are usable as one region, NOT 64 KiB @ 0x2000_0000)
  */
 
 ENTRY(Reset_Handler)

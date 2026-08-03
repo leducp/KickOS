@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Minimal ARMv7-M core peripheral register definitions -- arch-internal, NOT
+// Minimal ARMv7-M core peripheral register definitions, arch-internal, NOT
 // part of the porting ABI (kept out of the installed kickos/ headers). Only the
 // registers the arch backend actually touches: SCB (ICSR/SHPR/CCR), SysTick,
 // NVIC (enable/pending), and DWT (cycle counter) for the tickless clock.

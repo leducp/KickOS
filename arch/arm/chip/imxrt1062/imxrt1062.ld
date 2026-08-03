@@ -33,7 +33,7 @@ _kernel_stack_size = 8K;               /* boot/handler (MSP) stack */
 
 /* App-owned globals get their own MPU region (M2, KICKOS_HAVE_MPU). The ARMv7-M
    PMSA needs a power-of-two region, base ALIGNED to its size (the encoder validates
-   pow2 SIZE only -- hardware snaps a mis-aligned base DOWN and would grant kernel RAM),
+   pow2 SIZE only; hardware snaps a mis-aligned base DOWN and would grant kernel RAM),
    so _appdata_size must be pow2 AND .appdata is ALIGN(_appdata_size) below. Inert at
    KICKOS_HAVE_MPU=0. */
 #if KICKOS_HAVE_MPU
@@ -156,9 +156,8 @@ SECTIONS
     _sidata = LOADADDR(.data);
 
 #if KICKOS_HAVE_MPU
-    /* Enforcement layout (see mk64f.ld for the inverted-selector rationale). The
-       ARMv7-M PMSA is power-of-two granular (unlike K64F SYSMPU), so the app
-       window base + size must be pow2 -- addressed in the design doc / M2 pass. */
+    /* Enforcement layout (see mk64f.ld for the inverted selector). The ARMv7-M PMSA is
+       power-of-two granular, so the app window base + size must both be pow2. */
     .data : ALIGN(4)
     {
         _sdata = .;
@@ -194,7 +193,7 @@ SECTIONS
     } > RAM AT > FLASH
 
     /* Pin the base to the window (start + SIZEOF .appdata), NOT the default location
-       counter: an EMPTY .appdata (an app with no initialized globals -- the bench) does
+       counter: an EMPTY .appdata (an app with no initialized globals, e.g. the bench) does
        not carry its ALIGN(_appdata_size) forward, so a defaulted .appbss falls back to
        kernel-.bss-end, BELOW the granted window, and every app-global access faults. */
     .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)

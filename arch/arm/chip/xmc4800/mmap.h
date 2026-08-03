@@ -3,7 +3,7 @@
 //
 // XMC4800 peripheral base addresses. Clean-room from the XMC4700/XMC4800
 // Reference Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. Bases
-// only -- per-peripheral register offsets/bit fields live in regs/<periph>.h.
+// only; per-peripheral register offsets/bit fields live in regs/<periph>.h.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_MMAP_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_MMAP_H
@@ -40,7 +40,7 @@ namespace kickos::xmc::mmap
 
     // Flash: the FLASH0 controller (FCON etc.) vs the cached code/exec alias the
     // image is linked at and VTOR points to. These are two different addresses
-    // for the same flash -- the alias is memory, the controller is registers.
+    // for the same flash: the alias is memory, the controller is registers.
     constexpr uintptr_t FLASH0_CTRL_BASE = 0x58001000;
     constexpr uintptr_t FLASH_CACHED_BASE = 0x08000000;
 }

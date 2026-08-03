@@ -4,7 +4,7 @@
 // Shared SPI bus-service choreography, templated over a concrete transaction
 // ENGINE (the per-chip Bus class): the request parse+run (serve_one), the
 // error reply, and the recv/dispatch loop. Every SPI driver defines its own
-// Bus (the register access + CS framing -- the silicon), then runs
+// Bus (the register access + CS framing, i.e. the silicon), then runs
 // spi_serve_loop() on it. No MMIO and no chip knowledge live here; only the
 // wire-ABI framing over <kickos/sys/bus.h> plus the per-device slot store. The
 // Bus supplies a nested profile type and the two members the shared code calls
@@ -13,8 +13,8 @@
 //     uint32_t fold(struct kos_bus_cfg const& cfg, Profile& out);   // -> achieved hz
 //     void     transfer(Profile const& p, unsigned char* buf, size_t len);
 // A controller has ONE live profile register set, so a transfer cannot be issued
-// without naming the profile it must (re-)apply first -- hence the profile is an
-// argument of transfer(), not a separate select() a future path could forget.
+// without naming the profile it must (re-)apply first, so the profile is an
+// argument of transfer() rather than a separate select() a future path could forget.
 // Instantiated only on an anonymous-namespace Bus, so each instantiation is
 // TU-local (internal linkage, no COMDAT).
 
@@ -49,7 +49,7 @@ inline void reply_error(int reply_cap, int16_t status)
 // Slots are indexed by the CALLER's own device byte, which is sound only while a
 // single client can reach the endpoint: a client holds a SIGNAL-only cap, and
 // spawn-time delegation refuses a source cap without CAP_TRANSFER, so a client
-// cannot pass its copy on -- the reachable set is exactly what the bring-up handed
+// cannot pass its copy on: the reachable set is exactly what the bring-up handed
 // out. That is the one-client-several-devices case (a flash and a sensor on one
 // bus). Mutually-untrusting clients sharing a bus would need badged endpoints and
 // are NOT supported here.
@@ -69,7 +69,7 @@ struct SlotTable
 };
 
 // Parse + run one request; ALWAYS completes the call (consumes reply_cap on every
-// path, success or error -- a leaked reply cap parks the client forever).
+// path, success or error; a leaked reply cap parks the client forever).
 template <typename Bus>
 void serve_one(Bus& bus, SlotTable<Bus>& slots, unsigned char const* msg, size_t n,
                int reply_cap)

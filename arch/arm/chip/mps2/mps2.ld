@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Linker script for the QEMU `mps2-an386` (ARM MPS2 FPGA, Cortex-M4F) -- the
+ * Linker script for the QEMU `mps2-an386` (ARM MPS2 FPGA, Cortex-M4F), the
  * runnable armv7m CI/verification target. QEMU maps a code region at
  * 0x00000000 (vectors read at reset, VTOR=0) and SRAM at 0x20000000.
  *
@@ -115,7 +115,7 @@ SECTIONS
 #if KICKOS_HAVE_MPU
         /* Zero the whole granted window past the loaded .appdata: the pre-.appbss
            alignment gap (forced by an over-aligned .appbss object), .appbss, and the
-           pad -- so no stale read-back anywhere in the app grant. */
+           and the pad, so no stale read-back anywhere in the app grant. */
         LONG(__kickos_appdata_load_end); LONG(__kickos_appdata_end - __kickos_appdata_load_end);
 #endif
         LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
@@ -129,7 +129,7 @@ SECTIONS
        kernel-side vs app-side with an INVERTED selection: the CLOSED KickOS-owned set
        (kernel/arch/chip/lib) is captured FIRST, in script order, via the
        `archive:member` colon syntax into the kernel .data/.bss at the RAM base; the
-       .appdata/.appbss catch-alls that follow then take EVERYTHING ELSE -- the app's
+       .appdata/.appbss catch-alls that follow then take EVERYTHING ELSE: the app's
        own objects, the toolchain runtime (libc/libgcc/libstdc++/libsupc++), KickCAT,
        libkickos_user.a's heap, and any unknown NEW archive. An unmatched archive lands
        app-side (reachable), never kernel-side (faults). */
@@ -172,7 +172,7 @@ SECTIONS
     } > RAM AT > FLASH
 
     /* Pin the base to the window (start + SIZEOF .appdata), NOT the default location
-       counter: an EMPTY .appdata (an app with no initialized globals -- the bench) does
+       counter: an EMPTY .appdata (an app with no initialized globals, e.g. the bench) does
        not carry its ALIGN(_appdata_size) forward, so a defaulted .appbss falls back to
        kernel-.bss-end, BELOW the granted window, and every app-global access faults. */
     .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
@@ -220,7 +220,7 @@ SECTIONS
 #endif
 
     /* Everything from here up to _kernel_stack_size below _estack is the
-       arch_ram_alloc pool (runtime bump-allocated, so just symbols -- no section
+       arch_ram_alloc pool (runtime bump-allocated, so just symbols; no section
        to reserve). The top _kernel_stack_size bytes are the MSP stack. */
     . = ALIGN(32);
     __kickos_ram_start = .;
@@ -236,8 +236,7 @@ SECTIONS
     /* App code region for unprivileged threads (RX): the whole flash, a pow2 PMSA
        region (4 MiB @ 0x0000_0000, base aligned to its size). Lets an unprivileged
        thread fetch its code + read flash rodata. Kernel code is also unprivileged-
-       readable (confidentiality, not escalation) -- a tighter app-only .text region
-       is a later refinement, as on the other PMSA chips. */
+       readable (confidentiality, not escalation). */
     __kickos_code_start = ORIGIN(FLASH);
     __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);
 #endif

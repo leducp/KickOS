@@ -8,9 +8,9 @@
 # Run from the repo root, no arguments, no build directory:
 #   tests/check_doc_names.sh
 #
-# EXTRACTION RULE (precision over recall -- a checker that cries wolf gets disabled):
+# EXTRACTION RULE (precision over recall: a checker that cries wolf gets disabled):
 #
-#   corpus       every tracked *.md, discovered via `git ls-files` -- nothing is
+#   corpus       every tracked *.md, discovered via `git ls-files`. Nothing is
 #                hardcoded, so moving a file into docs/archive/ neither hides it from
 #                the gate nor breaks the gate. Read with `grep -a`: M1_raw_meas.md
 #                holds raw serial captures with NUL bytes, and a checker that lets
@@ -18,14 +18,14 @@
 #
 #   fences       lines inside a ``` fence are SKIPPED. Design docs fence PROPOSED
 #                code and capture files fence device output; neither names the tree.
-#                Unbalanced fences are themselves reported -- the state machine's
+#                Unbalanced fences are themselves reported: the state machine's
 #                correctness depends on them, so it may not assume them.
 #
 #   identifiers  matched anywhere on a non-fenced line, backticked or not. Backticks
 #                are NOT required here (they are for paths): a KICKOS_/KOS_/CAP_/AUTH_
 #                token is never English prose, so demanding them would only lose recall.
 #                A token whose spelling is not in the tree but whose UPPERCASED form is
-#                gets the sharper message -- an ungreppable mis-spelling, not a dead
+#                gets the sharper message: an ungreppable mis-spelling, not a dead
 #                name. Dropped:
 #                  - a trailing `*` or `_` (KOS_E*, KOS_SYS_SEM_*): a wildcard names
 #                    a family, not a symbol.
@@ -88,7 +88,7 @@ DOCS=$(wc -l < "$TMP/docs.txt" | tr -d ' ')
 # scripts and presets all land here without the gate needing to know their syntax.
 # This script is excluded from its own scan: its comments quote mis-spellings and dead
 # names as EXAMPLES, and once it is tracked those examples would enter the valid set and
-# mask the very findings they describe. (Measured: it masked two.)
+# mask the very findings they describe.
 git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^tests/check_doc_names\.sh$' > "$TMP/src.txt"
 [ -s "$TMP/src.txt" ] || fail "no tracked non-markdown sources -- cannot build the valid identifier set"
 # The alphabet here MUST match the one the doc scan below uses, lowercase included:
@@ -109,7 +109,7 @@ awk -F/ '{ print $1 }' "$TMP/tracked.txt" | sort -u > "$TMP/toplevel.txt"
 
 # Extensions the tree actually uses. Derived, not listed, so a doc naming a BUILD
 # ARTIFACT (.hex/.uf2/.elf/.log) or a linker section (.bss/.eh_frame) is never
-# mistaken for a source reference -- no such extension is tracked.
+# mistaken for a source reference: no such extension is tracked.
 sed 's|.*/||' "$TMP/tracked.txt" | grep '\.' | sed 's|.*\.||' | sort -u > "$TMP/exts.txt"
 [ -s "$TMP/exts.txt" ] || fail "derived no file extensions from the tree -- path shape rule is broken"
 
@@ -145,7 +145,7 @@ awk -v T="$TMP" -v ABIH="$ABI" -F: '
 function load(f, arr,   l) { while ((getline l < f) > 0) { arr[l] = 1 } close(f) }
 
 # Collapse "a/b/../c" and "a/./b". Leading ".." that escapes the root is left in
-# place, which makes the path unresolvable -- correct, it is outside the repo.
+# place, which makes the path unresolvable. That is correct: it is outside the repo.
 function norm(p,   n, c, i, out, top) {
   gsub(/\/\/+/, "/", p)
   n = split(p, c, "/")
@@ -263,9 +263,9 @@ BEGIN {
 
     # A path must be SHAPED like one: a tree-known extension on the last component,
     # or an explicit trailing slash for a directory. This is the whole precision
-    # story. Without it, the prose alternations this corpus uses constantly -- the
+    # story. Without it, the prose alternations this corpus uses constantly (the
     # kernel/app split, the user/kernel boundary, the arch/chip seam, ldrex/strex,
-    # PA4/PA5, SIM_SCGC4/5 -- are shape-identical to directory references and every
+    # PA4/PA5, SIM_SCGC4/5) are shape-identical to directory references and every
     # one of them reports. The cost is stated in the header: write a directory
     # reference WITH a trailing slash or the gate will not check it.
     if (!slash) {
@@ -282,7 +282,7 @@ BEGIN {
     # Only judge candidates that plausibly MEAN this repo: rooted at a tracked
     # top-level entry, or landing in a directory that really exists once resolved
     # against the doc. `../../roadmap.md` resolves to the ROOT, whose parent is the
-    # empty string -- and the root always exists, so it counts as plausible.
+    # empty string; the root always exists, so it counts as plausible.
     split(r1, t1, "/")
     r1parent = r1; if (!sub(/\/[^\/]*$/, "", r1parent)) { r1parent = "" }
     r2parent = r2; if (!sub(/\/[^\/]*$/, "", r2parent)) { r2parent = "" }

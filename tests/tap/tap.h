@@ -4,7 +4,7 @@
 // A tiny freestanding TAP (Test Anything Protocol) harness for KickOS test apps.
 // Runs on the target: the same binary emits `1..N` / `ok N - name` on the sim, on
 // QEMU semihosting and on an MCU UART, so CTest keys off the TAP stream. No
-// exceptions, no heap, no STL -- a fixed-size static registry of function pointers;
+// exceptions, no heap, no STL: a fixed-size static registry of function pointers;
 // a test fails by recording a message (TAP_CHECK / tap::fail) or declares itself
 // unrunnable here (tap::skip), both checked when the test function returns.
 //
@@ -53,7 +53,7 @@ namespace tap
 }
 
 // Assert `cond`; on failure record "<file>:<line>: <expr>" and RETURN from the
-// current test (so later steps don't run on bad state -- the harness marks it
+// current test (so later steps don't run on bad state; the harness marks it
 // "not ok"). Only valid inside a registered test function (returns void).
 #define TAP_CHECK(cond)                                          \
     do                                                           \

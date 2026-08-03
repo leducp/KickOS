@@ -18,9 +18,9 @@ namespace kickos
     void ktime_init();
 
     // Coherently retune the core clock to `target` (the MECHANISM seam; policy lives
-    // in a future userspace power manager). Returns the LANDED core Hz -- 0 if the chip
-    // cannot change its clock, or if a userspace driver owns the console. Privileged,
-    // thread context. See kernel/time/clock_select.cc + docs/design-m3-clock-select.md.
+    // in a future userspace power manager). Returns the LANDED core Hz, or 0 if the chip
+    // cannot change its clock or a userspace driver owns the console. Privileged, thread
+    // context. See kernel/time/clock_select.cc and docs/design-m3-clock-select.md.
     uint32_t cpu_clock_set(kos_pstate_t target);
     uint64_t ktime_now(); // monotonic nanoseconds
 

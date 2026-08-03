@@ -4,12 +4,12 @@
 // XMC4800 userspace polled UART TX console driver. An UNPRIVILEGED thread owns the granted USIC0 CH0 register window and
 // serves a console endpoint: it kos_recv()s byte batches from stdout clients and
 // POLL-writes each byte to the USIC transmit buffer. It does NOT clock/pin/baud
-// the USIC -- the kernel's kickos_xmc_usic_init() already did that at boot, and
+// the USIC: the kernel's kickos_xmc_usic_init() already did that at boot, and
 // console_tx_deinit() left the channel TX-capable in a polled state. The driver
 // only drives TX inside its window; SCU (clock) and P1 IOCR (pin mux) stay OUT of
 // the window, privileged.
 //
-// HARD RULE (design D7): the driver MUST NOT use libc stdio (printf/puts) -- that
+// HARD RULE (design D7): the driver MUST NOT use libc stdio (printf/puts). That
 // self-sends to the very endpoint it serves and deadlocks. Diagnostics go direct
 // to the USIC window or via kos_kconsole_write (RTT / kernel debug path).
 //

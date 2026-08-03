@@ -76,7 +76,7 @@ namespace
 
     // Set the line pending. On ARM a direct STIR write (works while PRIMASK holds the
     // span masked); elsewhere the arch inject seam (no-op where no line is software-
-    // injectable -- the sample then reads 0).
+    // injectable, where the sample then reads 0).
     inline void bench_irq_raise(int line)
     {
 #if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
@@ -142,7 +142,7 @@ extern "C"
     // the line is not injectable. The mask is the SAME arch_irq_save/restore seam
     // kickos::IrqLock wraps, so the span is the identical primitive every syscall
     // critical section holds. Frozen-counter arches (mps2 DWT / sim) read ~1, exactly
-    // as the best-case line does -- the ns hold below is the number that survives there.
+    // as the best-case line does; the ns hold below is the number that survives there.
     uint32_t kickos_bench_irq_masked_once(int line, uint32_t span_bytes)
     {
         if (span_bytes > BENCH_LAT_SPAN_MAX)
@@ -151,7 +151,7 @@ extern "C"
         }
         arch_irq_unmask(line);
         g_irq_seen = 0;
-        arch_irq_state_t st = arch_irq_save(); // begin span -- a raised IRQ is held off
+        arch_irq_state_t st = arch_irq_save(); // span begins; a raised IRQ is held off
         uint32_t t0 = cyccnt();
         bench_irq_raise(line);                 // pending now; cannot fire until restore
         for (uint32_t i = 0; i < span_bytes; i++)
@@ -176,7 +176,7 @@ extern "C"
     }
 
     // Portable worst-case term: how long interrupts stay masked across ONE span_bytes
-    // copy, in ns via clock_now -- the interval an ISR waits behind such a syscall
+    // copy, in ns via clock_now: the interval an ISR waits behind such a syscall
     // critical section. Auto-amplifies (doubles reps under one mask) until the window
     // clears the coarse-clock floor, so even mps2's 10 ms semihosting clock resolves it;
     // returns ns-per-copy. Survives a frozen/absent cycle counter -> the cross-arch
@@ -248,7 +248,7 @@ extern "C"
         s_sum = 0;
         s_count = 0;
         // Drop any un-banked xtensa sample so the first switch after a reset only
-        // re-primes (banks nothing) -- else the previous window's last switch would
+        // re-primes and banks nothing; else the previous window's last switch would
         // leak into this window's min/max (it is banked one switch late by design).
         g_bench_sw_end = 0;
     }

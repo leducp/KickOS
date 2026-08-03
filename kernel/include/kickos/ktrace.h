@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Telemetry frontend (telemetry.md deliverable 4): thin emit wrappers over
-// the pure record encoders + the RTT ch1 sink. THE critical rule (spike (b)):
-// assigning the sequence number, sampling arch_trace_now(), and writing the
-// record are ONE atomic region under a single IrqLock -- otherwise a preempting
-// context could interleave and issue an out-of-order seq/stamp, silently
-// corrupting the host's loss and latency accounting. Non-negotiable.
+// Telemetry frontend: thin emit wrappers over the pure record encoders and the RTT ch1
+// sink. THE critical rule: assigning the sequence number, sampling arch_trace_now() and
+// writing the record are ONE atomic region under a single IrqLock. Split them and a
+// preempting context interleaves, issuing an out-of-order seq/stamp that silently corrupts
+// the host's loss and latency accounting.
 //
 // Counters (seq, records_attempted, dropped, probe_overhead) are instance-scoped
 // (Kernel), so the multi-instance sim never shares them across emulated MCUs.

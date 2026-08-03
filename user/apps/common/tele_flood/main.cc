@@ -6,7 +6,7 @@
 // the NoBlockSkip sink is driven full and drops whole records. The gate then
 // asserts the drop path is RECORD-ATOMIC: the flushed file parses into whole
 // records with contiguous sequence numbers (never a torn record), and the drop
-// accounting reconciles -- decoded records + dropped == attempted (printed by
+// accounting reconciles: decoded records + dropped == attempted (printed by
 // kickos_trace_report_counters at shutdown).
 
 #include <kickos/kos.h>

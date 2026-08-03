@@ -3,7 +3,7 @@
 //
 // ARMv6-M (Cortex-M0/M0+) arch backend: the Cortex-M0 core-generic half of the
 // arch.h seam. Context switch + syscall trap are in switch.S. Versus armv7m:
-// the critical section is PRIMASK (mask ALL configurable interrupts -- v6-M has
+// the critical section is PRIMASK (mask ALL configurable interrupts; v6-M has
 // no BASEPRI), and there is no DWT cycle counter, so arch_clock_now is supplied
 // by the chip (like arch_console_write), not here.
 
@@ -22,7 +22,7 @@ static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_ARMV6M,
 
 // Fault reporting (the shared HardFault handler below): the reporter calls
 // kpanic_enter first, which masks IRQs, forces the synchronous polled writer, and
-// flushes the ring -- so the dump is safe from fault context whether or not the
+// flushes the ring, so the dump is safe from fault context whether or not the
 // chip armed the buffered console (rp2040 does, nrf51 does not). kfault_terminate
 // is the shared panic/fault dead-end (kernel.h; nrf51 overrides it to exit under
 // QEMU, rp2040 uses the blink fallback).
@@ -128,7 +128,7 @@ void arch_irq_unmask(int line)
         return;
     }
     unsigned l = static_cast<unsigned>(line);
-    // Latch-and-coalesce: PRESERVE any latched NVIC pending across enable -- a raise
+    // Latch-and-coalesce: PRESERVE any latched NVIC pending across enable. A raise
     // taken while the line was masked fires through the normal ISR path the instant
     // ISER is set (see the v7-M note). Drain a preceding device-flag clear (dsb) so
     // a genuinely deasserted level source does not re-latch.
@@ -187,7 +187,7 @@ void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
 // Naked entry: pick the stacked frame (MSP vs PSP per EXC_RETURN bit 2) and pass it,
 // with EXC_RETURN, to the C reporter. Naked so no prologue perturbs the SP before we
 // read it. v6-M has no IT block, so the stack select is branch-based (movs/tst/beq/
-// mrs) -- the v7-M ite/mrseq form is illegal here.
+// mrs); the v7-M ite/mrseq form is illegal here.
 __attribute__((naked)) void HardFault_Handler(void)
 {
     __asm volatile(

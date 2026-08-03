@@ -3,8 +3,8 @@
 //
 // Kernel diagnostic LED: the board's single status LED, owned by the kernel as a
 // sibling of the console (kernel/init/console.cc). It is a last-resort self-debug
-// facility -- it works with no UART wired, inside a fault, before any driver
-// exists -- NOT a general device driver. The kernel drives it directly for
+// facility that works with no UART wired, inside a fault, before any driver
+// exists. NOT a general device driver. The kernel drives it directly for
 // self-debug (a solid LED on panic); userspace borrows it through a syscall
 // (kos_kernel_diag_led_*). That userspace path is PROVISIONAL: once the M2
 // capability model lands, an app that blinks an LED becomes a userspace GPIO

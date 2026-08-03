@@ -4,7 +4,7 @@
 // Infineon XMC4800 USIC shared-IP layer implementation. Protocol-independent
 // mechanism only (see usic.h). Clean-room from the XMC4700/XMC4800 Reference
 // Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. No unbounded
-// polling loops here -- a misconfigured channel must never hang the caller.
+// polling loops here: a misconfigured channel must never hang the caller.
 
 #include "usic.h"
 

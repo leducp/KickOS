@@ -14,7 +14,7 @@ namespace kickos
     // Kernel entry: called by the arch boot path (sim: host main) after arch_init.
     // Creates the idle + root threads and starts the scheduler; the host argv is
     // forwarded to the app entry (argc=0/argv=nullptr on MCU). Does not return in
-    // practice -- arch_shutdown ends the process; the int return is a formality.
+    // practice: arch_shutdown ends the process, and the int return is a formality.
     int kmain(int argc, char** argv);
 
     // Console fan-out: sends text to every enabled backend (KICKOS_CONSOLE =
@@ -45,27 +45,26 @@ namespace kickos
 
 // Enter the panic / fault dead-end. Called FIRST by kpanic and by every arch fault
 // reporter, before any dump is printed. Three premise-free steps, in order:
-//   1. mask IRQs on this core (arch_irq_save, never restored -- we do not return),
+//   1. mask IRQs on this core (arch_irq_save, never restored, since we do not return),
 //      so the timer/scheduler/other threads stop while the dump prints and the
 //      terminal blinks (kpanic runs in THREAD context; the fault path is already
 //      masked, where this is a harmless re-mask);
 //   2. force the console onto the synchronous polled writer for all subsequent
-//      output -- works whether or not this arch armed the buffered ring, which
-//      retires the whole "did this arch arm the ring?" class of fault-path bugs;
+//      output, whether or not this arch ever armed the buffered ring;
 //   3. drain bytes already queued in the ring so the dump prints in order.
 // Idempotent: safe to call again from kfault_terminate after a reporter called it.
 extern "C" void kpanic_enter(void);
 
 // Terminal for the panic / fault dead-end, shared by kpanic and the arch fault
 // handlers. The fallback (arch/common/kfault_terminate_default.cc) blinks the diag LED in a distinctive
-// pattern forever -- the right signal on real, headless hardware. The host and
-// QEMU targets override it (sim.cc / chip_mps2 / chip_virt / chip_nrf51) to exit
+// pattern forever, which is the only signal available on real headless hardware. The host
+// and QEMU targets override it (sim.cc / chip_mps2 / chip_virt / chip_nrf51) to exit
 // with a fault status, so the test harness catches a fault instead of timing out
 // on a spin. extern "C": overridden across TUs and called from the arch handlers.
 // Under KICKOS_SHUTDOWN_TO_BOOTLOADER the fallback hands the chip to its
-// bootloader instead of reaching the blink -- an ARM MPU/hard fault terminates HERE
-// (kickos_armv7m_fault_report), not through kickos_terminate, so the images that
-// cost a BOOTSEL press need this arm and not only the one below.
+// bootloader instead of reaching the blink. An ARM MPU/hard fault terminates HERE
+// (kickos_armv7m_fault_report), never through kickos_terminate, so a chip that would
+// otherwise need a physical boot-select press needs this arm and not only the one below.
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
 // The chokepoint every ORDERED terminal path goes through: the KOS_SYS_SHUTDOWN

@@ -8,25 +8,23 @@
 // STRONG override of the two shared arch-seam symbols that the v7-M PMSA backend
 // gets wrong on a v8-M core:
 //
-//   kickos_arch_mpu_commit  -- programs the running thread's regions into the
-//                              PMSAv8 RBAR/RLAR pair (the v7-M path writes RASR
-//                              values to what is RLAR on v8-M, and clears the RBAR
-//                              low bits that are now SH/AP/XN -> AP=priv-only, so an
-//                              unprivileged thread faults on its own stack).
-//   arch_mpu_region_encodable -- 32-byte-granular (PMSAv8 takes an arbitrary
-//                              32-byte-aligned [base, base+size); no power-of-two).
+//   kickos_arch_mpu_commit: programs the running thread's regions into the PMSAv8
+//     RBAR/RLAR pair. The v7-M path writes RASR values to what is RLAR on v8-M, and
+//     clears the RBAR low bits that are now SH/AP/XN -> AP=priv-only, so an
+//     unprivileged thread faults on its own stack.
+//   arch_mpu_region_encodable: 32-byte-granular (PMSAv8 takes an arbitrary
+//     32-byte-aligned [base, base+size); no power-of-two).
 //
 // The stash-only arch_mpu_apply (arch_arm_common.cc) is SHARED unchanged: it records
 // the incoming region set; the armv7m PendSV epilogue calls kickos_arch_mpu_commit
 // AFTER the physical swap (the deferred-commit seam), which lands here. This is the
-// K64F/SYSMPU precedent exactly -- a chip with a non-PMSAv7 MPU overrides only the
-// commit and reads the same stash via kickos_arm_mpu_pending.
+// K64F/SYSMPU precedent: a chip with a non-PMSAv7 MPU overrides only the commit and
+// reads the same stash via kickos_arm_mpu_pending.
 //
 // This TU is NOT in the always-compiled kickos_arch_armv7m source list; it is pulled
 // into the CHIP library only for a PMSAv8 chip (arch/arm/chip/<chip>/mpu.cmake sets
 // KICKOS_ARM_PMSAV8_SOURCE). The v6-M/v7-M PMSA fleet never links it, so their commit
-// fallback stands byte-for-byte -- isolation is at link granularity, stronger than an
-// #ifdef fork inside one TU. See docs/design-rp2350-mpu-armv8m.md.
+// fallback stands byte-for-byte. See docs/design-rp2350-mpu-armv8m.md.
 
 #include <kickos/arch/arch.h>
 
@@ -84,14 +82,12 @@ size_t kickos_arm_mpu_pending(struct arch_mpu_region const** out);
 // One-time PMSAv8 setup: the MAIR attribute indirection + MemManage enable. Called
 // from the chip arch_init (chip_rp2350.cc) BEFORE the scheduler starts. This is also
 // the LINK ANCHOR: chip_rp2350.o (always pulled for arch_init) references this symbol,
-// which is defined ONLY here -- so GNU ld pulls this member, and its
+// which is defined ONLY here, so GNU ld pulls this member and its
 // kickos_arch_mpu_commit / arch_mpu_region_encodable are the ones the link resolves.
-// (A definition in an un-referenced archive member would NOT be reached; the fallback TU
-// would answer the reference first and the board would silently decline. The arch_init
-// reference is what anchors this member, so no -Wl,-u is needed.)
+// A definition in an un-referenced archive member would NOT be reached: the fallback TU
+// would answer the reference first and the board would silently decline.
 //
-// SMP (M5): the MPU is per-core banked; this runs once PER CORE (folded into per-core
-// bring-up), not once globally -- correct as long as each core calls it at bring-up.
+// The MPU is per-core banked, so this must run once PER CORE at bring-up.
 void kickos_arm_pmsav8_init(void)
 {
     reg32(MPU_MAIR0) = MAIR_NORMAL_WBWA | (MAIR_DEVICE_nGnRE << 8); // slot0 Normal, slot1 Device
