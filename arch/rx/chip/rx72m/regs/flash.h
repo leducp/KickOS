@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RX72M flash ROM-cache register offsets + fields (Phase-1 register
-// consolidation). From the RX72M Group User's Manual: Hardware
-// (r01uh0804ej0120, Rev.1.20) sec.64.4.1/64.4.2; hand-rolled, clean-room.
-// ADDITIVE: duplicates the literals still inline in chip_rx72m.cc. 16-bit
-// access; not in the PRCR Table 13.1 protect list (no unlock needed). Bases:
-// mmap.h.
+// RX72M flash ROM-cache register offsets + fields. From the RX72M Group User's
+// Manual: Hardware (r01uh0804ej0120, Rev.1.20) sec.64.4.1/64.4.2; hand-rolled,
+// clean-room. 16-bit access; not in the PRCR Table 13.1 protect list, so no
+// unlock is needed. Bases: mmap.h.
 
 #ifndef KICKOS_ARCH_RX_CHIP_RX72M_REGS_FLASH_H
 #define KICKOS_ARCH_RX_CHIP_RX72M_REGS_FLASH_H

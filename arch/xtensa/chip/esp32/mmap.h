@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// ESP32-D0WDQ6 (WROOM-32) peripheral base addresses (ESP32 TRM 1.5.3 "System and
-// Memory / peripheral base"). Bases only; register offsets + fields live in
-// regs/<periph>.h. Hand-rolled, no ESP-IDF/HAL sources.
+// ESP32-D0WDQ6 (WROOM-32) peripheral base addresses (ESP32 TRM v5.8 Table 3.3-6,
+// "Peripheral Address Mapping", chapter 3 System and Memory). Bases only; register
+// offsets + fields live in regs/<periph>.h. Hand-rolled, no ESP-IDF/HAL sources.
 
 #ifndef KICKOS_ARCH_XTENSA_CHIP_ESP32_MMAP_H
 #define KICKOS_ARCH_XTENSA_CHIP_ESP32_MMAP_H
@@ -18,7 +18,7 @@ namespace kickos::esp32::mmap
     constexpr uintptr_t RTC_CNTL_BASE = 0x3FF48000u; // RTC control / clock / MWDT
     constexpr uintptr_t IO_MUX_BASE = 0x3FF49000u;
 
-    // Timer groups are 0x1000 apart (TRM ch.18 "Timer Group").
+    // Timer groups are 0x1000 apart (TRM ch.10 "Timer Group (TIMG)").
     constexpr uintptr_t TIMG0_BASE = 0x3FF5F000u;
     constexpr uintptr_t TIMG1_BASE = 0x3FF60000u;
 

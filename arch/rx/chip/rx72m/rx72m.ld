@@ -6,7 +6,7 @@
  *
  *   Code flash : 4 MiB  @ 0xFFC0_0000 .. 0xFFFF_FFFF (UM memory map)
  *   SRAM       : 512 KiB @ 0x0000_0000 (main on-chip RAM; expansion RAM omitted)
- *   OFSM       : option-setting memory @ 0xFE7F_5D00 (MDE/OFS0/OFS1) -- data in
+ *   OFSM       : option-setting memory @ 0xFE7F_5D00 (MDE/OFS0/OFS1); data in
  *                the image, not code (UM sec.7). Determines endian + WDT/LVD state.
  *
  * Two vector tables (UM sec.2.6):
@@ -16,7 +16,7 @@
  *
  * RX section names: GCC emits .text/.rodata/.data/.bss for KickOS TUs, but the
  * GNU RX libc/libgcc use the RX-native short names P (code), C/C_1/C_2/W/L
- * (const), D/D_1/D_2 (data), B/B_1/B_2 (bss) -- all matched below.
+ * (const), D/D_1/D_2 (data), B/B_1/B_2 (bss); all matched below.
  *
  * RX symbol names: the RX psABI user-label-prefix is '_', so a C `extern _sidata`
  * resolves to `__sidata` and `extern __kickos_ram_start` to `___kickos_ram_start`.
@@ -39,14 +39,12 @@ _kernel_stack_size = 8K;               /* ISP (boot/ISR) stack reservation */
 
 /* App-owned globals get their own MPU region so an unprivileged thread reaches its
    own .data/.bss but not the kernel's. The RX MPU takes arbitrary 16-byte-page
-   bounds, but the shared alloc/linker path shapes regions as a power of two (so the
-   PMSA/NAPOT backends share the block), so the app data is padded up to this pow2
-   size; a real app whose globals exceed it trips the ASSERT below. Keep it pow2.
-   Gated on KICKOS_HAVE_MPU (the script is cpp-preprocessed): a non-enforcement
-   build reserves no app-data block and separates nothing (zero overhead).
-   The window pad (window minus app statics + runtime) IS the newlib heap; cxxtest's
-   measured peak (~4.2K on RISC-V-class DWARF, ~5.9K ARM) and printf both fit the pad a
-   32K window leaves (~14K). Override it down for a tight freestanding demo. */
+   bounds, but the shared alloc/linker path shapes regions as a power of two, so the
+   app data is padded up to this pow2 size; a real app whose globals exceed it trips
+   the ASSERT below. Keep it pow2. Gated on KICKOS_HAVE_MPU (the script is
+   cpp-preprocessed): a non-enforcement build reserves no app-data block.
+   The window pad (window minus app statics + runtime) IS the newlib heap: a 32K
+   window leaves ~14K, which cxxtest's measured peak (~4.2K-5.9K) and printf fit. */
 #if KICKOS_HAVE_MPU
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 32K
@@ -110,8 +108,7 @@ SECTIONS
         ___init_array_end = .;
     } > ROM
 
-    /* .fini_array, app side, ASSERTed empty below; nothing walks it. See
-       arch/arm/chip/stm32f411/stm32f411.ld. */
+    /* .fini_array, app side, ASSERTed empty below; nothing walks it. */
     .kickos_app_fini_array : ALIGN(4)
     {
         ___kickos_app_fini_array_start = .;
@@ -145,7 +142,7 @@ SECTIONS
 #if KICKOS_HAVE_MPU
         /* Zero the whole granted window past the loaded .appdata: the pre-.appbss
            alignment gap (forced by an over-aligned .appbss object), .appbss, and the
-           pad -- so no stale read-back anywhere in the app grant. */
+           pad, so no stale read-back anywhere in the app grant. */
         LONG(___kickos_appdata_load_end); LONG(___kickos_appdata_end - ___kickos_appdata_load_end);
 #endif
         LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
@@ -155,16 +152,15 @@ SECTIONS
     __sidata = LOADADDR(.data);
 
 #if KICKOS_HAVE_MPU
-    /* Enforcement layout (mirrors mk64f.ld). Writable state SPLIT kernel-side vs app-
-       side with an INVERTED selection: the CLOSED KickOS-owned set (kernel/arch/chip/
-       lib) is captured FIRST via `archive:member` colon syntax into the kernel .data/
-       .bss at the RAM base; the .appdata/.appbss catch-alls take EVERYTHING ELSE (app +
-       toolchain runtime + libkickos_user.a's heap + any unknown NEW archive). An
-       unmatched archive lands app-side (reachable), never kernel-side (faults). Colon
-       syntax, NOT EXCLUDE_FILE (this binutils does not match archive members there); a
-       bare `*user*` missed the toolchain runtime + heap. Both closed-set and catch-all
-       carry BOTH the GCC .data/.bss AND the RX-native D/B names -- a KickOS TU that emits
-       an RX-native section must still be captured kernel-side. The RX MPU takes arbitrary
+    /* Enforcement layout. Writable state SPLIT kernel-side vs app-side with an INVERTED
+       selection: the CLOSED KickOS-owned set (kernel/arch/chip/lib) is captured FIRST via
+       `archive:member` colon syntax into the kernel .data/.bss at the RAM base; the
+       .appdata/.appbss catch-alls take EVERYTHING ELSE (app + toolchain runtime +
+       libkickos_user.a's heap + any unknown NEW archive). An unmatched archive lands
+       app-side (reachable), never kernel-side (faults). Colon syntax, NOT EXCLUDE_FILE:
+       this binutils does not match archive members there. Both closed-set and catch-all
+       must carry BOTH the GCC .data/.bss AND the RX-native D/B names, or a KickOS TU that
+       emits an RX-native section escapes the kernel side. The RX MPU takes arbitrary
        16-byte bounds, but the shared linker path shapes the app window as a pow2 aligned
        above the kernel data by a top-level ALIGN. */
     .data : ALIGN(4)
@@ -207,8 +203,8 @@ SECTIONS
     } > RAM AT > ROM
 
     /* Pin the base to the window (start + SIZEOF .appdata), NOT the default location
-       counter: an EMPTY .appdata (an app with no initialized globals -- the bench) does
-       not carry its ALIGN(_appdata_size) forward, so a defaulted .appbss falls back to
+       counter: an EMPTY .appdata (an app with no initialized globals) does not carry
+       its ALIGN(_appdata_size) forward, so a defaulted .appbss falls back to
        kernel-.bss-end, BELOW the granted window, and every app-global access faults. */
     .appbss (___kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
     {
@@ -273,7 +269,7 @@ SECTIONS
     /* App code region for unprivileged threads (RX + read): the code flash. The RX
        MPU takes arbitrary 16-byte-page bounds, so this need not be pow2. Lets an
        unprivileged thread fetch its code + read flash rodata. END = ORIGIN+LENGTH
-       (0xFFFFFF80, the start of the fixed vectors) and NOT 0xFFC00000+4M -- the
+       (0xFFFFFF80, the start of the fixed vectors) and NOT 0xFFC00000+4M: the
        latter is 0x1_0000_0000, which wraps to 0 in a 32-bit uintptr_t and would
        make domain.cc's `end > start` false, silently dropping the code region and
        faulting the thread on its first instruction fetch. The fixed vectors are

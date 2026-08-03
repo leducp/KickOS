@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // ESP32-D0WDQ6 (WROOM-32) chip backend. Register addresses are clean-room facts
-// transcribed from the ESP32 TRM (register base addresses per TRM 1.5.3 "System
-// and Memory / peripheral base"; UART/WDT register offsets per the UART and
-// Watchdog chapters). Hand-rolled, no ESP-IDF/HAL sources.
+// transcribed from the ESP32 TRM v5.8 (peripheral base addresses per Table 3.3-6 in
+// chapter 3, "System and Memory"; UART/WDT register offsets per the UART and Watchdog
+// chapters). Hand-rolled, no ESP-IDF/HAL sources.
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
@@ -35,11 +35,10 @@ extern "C"
 {
     void kickos_lx6_init(void);
 
-    // Arm a chip device interrupt (here UART0 TX-empty) that the interrupt matrix
-    // routes to a CPU interrupt number, binding the logical line its drain ISR is
-    // attached to (arch/xtensa/lx6). Enables the CPU interrupt in INTENABLE once;
-    // the per-transfer gate is the peripheral bit toggled by irq_enable/irq_disable.
-    void kickos_lx6_bind_console_int(int cpu_int, int line);
+    // Add a (CPU interrupt, logical line) device route and arm that CPU interrupt in
+    // INTENABLE, which then serves as the line's kernel-owned mask (RULE L1). The
+    // per-transfer gate stays at the peripheral, in the driver-owned reg::uart::INT_ENA.
+    void kickos_lx6_bind_dev_int(int cpu_int, int line);
 
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     extern void (*__init_array_start[])();
@@ -71,8 +70,8 @@ namespace
     //     via the separate FLASHBOOT_MOD_EN bit (a flash-boot watchdog independent
     //     of WDT_EN), which stays live until explicitly cleared. So each WDT needs
     //     both WDT_EN and FLASHBOOT_MOD_EN cleared. NOTE: the classic ESP32 has NO
-    //     RTC super-watchdog (SWD) -- that block (RTC_CNTL_SWD_*) was introduced on
-    //     the ESP32-S2 and later, so there is nothing more to disable here. ---
+    //     RTC super-watchdog (SWD); RTC_CNTL_SWD_* first appears on the ESP32-S2, so
+    //     there is nothing more to disable here.
     void timg_wdt_disable(uintptr_t base)
     {
         r32(base + reg::timg::WDTWPROTECT_OFF) = reg::timg::WDT_WKEY;
@@ -92,20 +91,18 @@ namespace
 
     // --- CPU clock: raise the core from the ROM's 40 MHz XTAL to the 240 MHz PLL.
     //     The classic ESP32 makes 240 MHz from the 480 MHz BBPLL divided by 2. The
-    //     BBPLL analog register file is NOT memory-mapped -- it is reached over the
-    //     chip's internal "reg-I2C" bus, whose bit-level transaction lives in the
-    //     ESP32 ROM. We call that ROM routine at its fixed entry (mmap::ROM_REGI2C_WRITE,
-    //     the same symbol the IDF links as _regi2c_impl_write) rather than re-implement
-    //     the analog-master protocol. Register addresses/bitfields and the 480 MHz/
-    //     40 MHz-XTAL analog values are clean-room facts from the ESP32 TRM (RTC_CNTL
-    //     + DPORT clock chapters, analog-PLL description). ---
+    //     BBPLL analog register file is NOT memory-mapped: it is reached over the
+    //     chip's internal "reg-I2C" bus, whose bit-level transaction lives in the ESP32
+    //     ROM, so the ROM routine is called at its fixed entry (mmap::ROM_REGI2C_WRITE,
+    //     the symbol the IDF links as _regi2c_impl_write). Register addresses/bitfields
+    //     and the 480 MHz / 40 MHz-XTAL analog values are clean-room facts from the
+    //     ESP32 TRM (RTC_CNTL + DPORT clock chapters, analog-PLL description).
 
-    // The classic-ESP32 BBPLL has NO memory-mapped lock/ready bit (esp-idf itself
-    // times the PLL enable with a fixed delay). Its real robustness primitive is a
-    // slow-clock-domain barrier: start a TIMG0 RTC calibration for 0 slow cycles and
-    // wait for RDY, which the hardware sets on the next RTC-slow edge -- so the analog
-    // writes we just made have provably latched across the clock-domain crossing
-    // before we switch the CPU onto the PLL.
+    // The classic-ESP32 BBPLL has NO memory-mapped lock/ready bit. The available
+    // barrier is a slow-clock-domain one: start a TIMG0 RTC calibration for 0 slow
+    // cycles and wait for RDY, which the hardware sets on the next RTC-slow edge, so
+    // the analog writes have provably latched across the clock-domain crossing before
+    // the CPU is switched onto the PLL.
     constexpr uintptr_t TIMG0_RTCCALICFG = mmap::TIMG0_BASE + reg::timg::RTCCALICFG_OFF;
 
     inline uint32_t rd_ccount()
@@ -129,16 +126,16 @@ namespace
 
     void bbpll_write(uint8_t reg_add, uint8_t data)
     {
-        // ROM _regi2c_impl_write(block, host_id, reg_add, data) -- windowed ABI,
-        // fixed ROM address. Does the whole analog reg-I2C transaction internally.
+        // ROM _regi2c_impl_write(block, host_id, reg_add, data): windowed ABI at a fixed
+        // ROM address, doing the whole analog reg-I2C transaction internally.
         auto rom_regi2c_write =
             reinterpret_cast<void (*)(uint8_t, uint8_t, uint8_t, uint8_t)>(mmap::ROM_REGI2C_WRITE);
         rom_regi2c_write(reg::system::I2C_BBPLL, reg::system::I2C_BBPLL_HOSTID, reg_add, data);
     }
 
     // Wait one RTC-slow cycle so pending analog/RTC writes latch across the clock
-    // domain. Bounded: if RDY never sets (e.g. slow clock stopped) it returns after
-    // the cap rather than hanging -- the caller's fixed settle delay still covers it.
+    // domain. Bounded: if RDY never sets (e.g. slow clock stopped) it returns after the
+    // cap rather than hanging; the caller's fixed settle delay still covers it.
     void wait_slow_cycle()
     {
         r32(TIMG0_RTCCALICFG) = 0;                       // CLK_SEL=RTC_SLOW, MAX=0, clear RDY/START
@@ -173,8 +170,8 @@ namespace
         bbpll_write(10, 0x00); // OC_ENB_VCON
         bbpll_write(12, 0x00); // BBADC_CAL_7_0
 
-        // Raise core voltage to 1.25 V BEFORE locking the PLL -- 240 MHz is unstable
-        // at the XTAL-boot voltage. Still on the 40 MHz XTAL here, so 40 cyc/us.
+        // Raise core voltage to 1.25 V BEFORE locking the PLL: 240 MHz is unstable at
+        // the XTAL-boot voltage. Still on the 40 MHz XTAL here, so 40 cyc/us.
         uint32_t dbias = r32(reg::rtc_cntl::DBIAS_REG);
         dbias &= ~(reg::rtc_cntl::DIG_DBIAS_MASK << reg::rtc_cntl::DIG_DBIAS_SHIFT);
         dbias |= reg::rtc_cntl::DIG_DBIAS_1V25 << reg::rtc_cntl::DIG_DBIAS_SHIFT;
@@ -220,14 +217,11 @@ namespace
 
     // --- Monotonic clock: TIMG0 timer T0, a 64-bit free-running up-counter -------
     // Replaces the CCOUNT-backed arch_clock_now fallback (arch/xtensa/lx6). CCOUNT is a
-    // 32-bit core cycle counter software-extended to 64 bits: a wrap not observed
-    // within one 2^32-cycle window (~17.9 s at 240 MHz) is lost -- the same narrow-
-    // counter + software-wrap-word class just moved off DWT on K64F (PIT) and off
-    // CCU4 on XMC. A native 64-bit HW counter has NO software wrap word, so a
-    // missed/aliased read cannot manufacture a phantom wrap. Bonus: CCOUNT is gated
-    // by WAITI (the idle path clock-gates the core, freezing CCOUNT every idle); the
-    // TIMG runs off APB, which keeps running in plain WAITI -- so this also removes
-    // the lose-time-on-every-idle error the CCOUNT source carries.
+    // 32-bit core cycle counter software-extended to 64 bits, so a wrap not observed
+    // within one 2^32-cycle window (~17.9 s at 240 MHz) is lost; a native 64-bit counter
+    // has no software wrap word to miss. CCOUNT is also gated by WAITI, so the idle path
+    // freezes it on every idle, while the TIMG runs off APB, which keeps running in
+    // plain WAITI.
     constexpr uintptr_t TIMG0_T0CONFIG = mmap::TIMG0_BASE + reg::timg::T0CONFIG_OFF;
     constexpr uintptr_t TIMG0_T0LO = mmap::TIMG0_BASE + reg::timg::T0LO_OFF;
     constexpr uintptr_t TIMG0_T0HI = mmap::TIMG0_BASE + reg::timg::T0HI_OFF;
@@ -242,11 +236,10 @@ namespace
     // counter at 40 MHz wraps in ~4600 years, so there is no wrap concern at all.
     constexpr uint32_t TIMG_HZ = reg::system::APB_CLOCK_HZ / reg::timg::DIVIDER; // 40 MHz
 
-    // ticks -> ns reciprocal multiply (the K64F pit pattern): ns = ticks*1e9/HZ via
-    // mult = (1e9<<32)/HZ, ns = (ticks*mult)>>32, done as a 64x64->64 split so the
-    // product never overflows. HZ is a compile-time constant here (APB is fixed on
-    // the PLL), so the one divide folds at build time -- unlike K64F, whose bus
-    // clock could be one of two runtime values.
+    // ticks -> ns reciprocal multiply: ns = ticks*1e9/HZ via mult = (1e9<<32)/HZ,
+    // ns = (ticks*mult)>>32, done as a 64x64->64 split so the product never overflows.
+    // HZ is a compile-time constant here (APB is fixed on the PLL), so the one divide
+    // folds at build time.
     constexpr uint64_t TIMG_NS_MULT = kickos::arch_clk_recip_q32(TIMG_HZ);
 
     void timg_clock_init()
@@ -254,8 +247,8 @@ namespace
         // Boot-order constraint: arch_clock_now MUST NOT run before this, and this
         // MUST run AFTER clock_init_240mhz (the counter rate is derived off the
         // 80 MHz PLL APB; running it on the 40 MHz XTAL APB would tick at half rate).
-        // The TIMG0 APB clock is already live -- the ROM armed its MWDT and
-        // clock_init_240mhz's wait_slow_cycle drives TIMG0 RTCCALICFG -- so no DPORT
+        // The TIMG0 APB clock is already live (the ROM armed its MWDT and
+        // clock_init_240mhz's wait_slow_cycle drives TIMG0 RTCCALICFG), so no DPORT
         // peripheral-clock ungate is needed here.
         // Free-running up-counter: no alarm, no autoreload, prescaler = reg::timg::DIVIDER.
         r32(TIMG0_T0CONFIG) = reg::timg::T0_INCREASE | (reg::timg::DIVIDER << reg::timg::T0_DIVIDER_SHIFT);
@@ -267,13 +260,12 @@ namespace
     }
 
     // Read the 64-bit T0 count. The live counter is NOT directly readable: write
-    // T0UPDATE to latch it into the T0LO/T0HI shadow regs, THEN read LO+HI (the
-    // LTMR64 twin). A bare LO/HI read without the latch is stale. The whole
-    // latch-then-read runs under the crit section: the LO/HI shadow is one shared
-    // resource, so an interleaved reader's UPDATE landing between our LO and HI
-    // reads would tear the pair across a low-word rollover -- exactly the torn read
-    // this change exists to remove. On the classic ESP32 T0UPDATE has no ready/self-
-    // clearing bit (that is an S2/S3 addition); a single write latches synchronously.
+    // T0UPDATE to latch it into the T0LO/T0HI shadow regs, THEN read LO+HI. A bare
+    // LO/HI read without the latch is stale. The whole latch-then-read runs under the
+    // crit section because the LO/HI shadow is one shared resource: an interleaved
+    // reader's UPDATE landing between the LO and HI reads tears the pair across a
+    // low-word rollover. On the classic ESP32 T0UPDATE has no ready/self-clearing bit
+    // (that is an S2/S3 addition); a single write latches synchronously.
     uint64_t timg_ticks()
     {
         arch_irq_state_t s = arch_irq_save();
@@ -286,12 +278,16 @@ namespace
 
     // --- Buffered console TX backend (console_tx.h). The ring drains via the UART0
     // TX-empty interrupt; slot_free/push touch the FIFO + status regs, irq_enable/
-    // disable gate reg::uart::TXFIFO_EMPTY_INT AT THE PERIPHERAL (the CPU line stays
-    // armed in INTENABLE). ---
+    // disable gate reg::uart::TXFIFO_EMPTY_INT AT THE PERIPHERAL; the CPU line's own
+    // INTENABLE bit is the kernel's mask and is not touched here. ---
+    uint32_t uart0_txfifo_cnt()
+    {
+        return (r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK;
+    }
+
     int esp32_tx_slot_free(void)
     {
-        return ((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK) <
-               reg::uart::TXFIFO_LIMIT;
+        return uart0_txfifo_cnt() < reg::uart::TXFIFO_LIMIT;
     }
     void esp32_tx_push(uint8_t b) { r32(reg::uart::FIFO) = b; }
     void esp32_tx_irq_enable(void)
@@ -308,10 +304,37 @@ namespace
     console_tx_backend const esp32_console_backend = {
         esp32_tx_slot_free, esp32_tx_push, esp32_tx_irq_enable, esp32_tx_irq_disable};
 
+    // UART0 sub-source -> logical line. Every entry currently names the ONE grouped line
+    // (design-m4.6-irq-driver.md sections 5.1 and 7.7): the kernel-owned mask is CPU int
+    // 13's INTENABLE bit, which cannot separate sub-sources, so splitting them across
+    // lines would let masking one silently mask the others.
+    struct uart0_route
+    {
+        uint32_t bit;
+        int line;
+    };
+    constexpr uart0_route UART0_LINES[] = {
+        {reg::uart::TXFIFO_EMPTY_INT, irq::CONSOLE_TX_LINE},
+        {reg::uart::RXFIFO_FULL_INT, irq::CONSOLE_TX_LINE},
+        {reg::uart::RXFIFO_OVF_INT, irq::CONSOLE_TX_LINE},
+        {reg::uart::FRM_ERR_INT, irq::CONSOLE_TX_LINE},
+        {reg::uart::PARITY_ERR_INT, irq::CONSOLE_TX_LINE},
+    };
+
+    constexpr uint32_t uart0_routed_mask()
+    {
+        uint32_t m = 0;
+        for (auto const& row : UART0_LINES)
+        {
+            m = m | row.bit;
+        }
+        return m;
+    }
+
     void uart0_irq_setup()
     {
-        // The console owns UART0, so silence every source (the ROM polls -- no IRQs)
-        // and ack anything it left latched. Critical: CPU int 13 is armed below while
+        // The console owns UART0, so silence every source (the ROM polls, no IRQs) and
+        // ack anything it left latched. Critical: CPU int 13 is armed below while
         // the ring is still unarmed, so a stale ROM-enabled source would storm the
         // level-1 dispatcher. console_tx_write re-enables ONLY TXFIFO_EMPTY, later.
         r32(reg::uart::INT_ENA) = 0;
@@ -324,8 +347,88 @@ namespace
         r32(reg::uart::CONF1) = conf1;
 
         r32(reg::dport::PRO_UART_INTR_MAP) = irq::UART0_CPU_INT;
-        kickos_lx6_bind_console_int(static_cast<int>(irq::UART0_CPU_INT), irq::CONSOLE_TX_LINE);
+        kickos_lx6_bind_dev_int(static_cast<int>(irq::UART0_CPU_INT), irq::CONSOLE_TX_LINE);
     }
+}
+
+extern "C"
+{
+
+// --- Device dispatch: one asserted CPU interrupt -> 0..N logical lines --------
+// ISR context, called from the level-1 entry (arch/xtensa/lx6). Every UART0 sub-source
+// shares one interrupt-matrix source and one CPU interrupt, so this is where they are
+// told apart; 0 posts is a valid outcome.
+// INT_ST is already INT_RAW & INT_ENA, so a disabled source cannot appear here. The
+// driver owns every clear: this posts and returns, per RULE L1.
+void kickos_lx6_dispatch_dev(int cpu_int)
+{
+    if (cpu_int != static_cast<int>(irq::UART0_CPU_INT))
+    {
+        return;
+    }
+    uint32_t const st = r32(reg::uart::INT_ST);
+    // A source with no row in UART0_LINES has nothing that will ever clear it, and the
+    // level-1 handler re-enters on the still-asserted CPU interrupt forever. It never
+    // reaches the kernel's spurious accounting, because that is only entered through
+    // kickos_isr_irq and an unroutable source posts no line, so this is a live-lock, not
+    // a degraded line. Silence it HERE. The window's MMIO grant lets an unprivileged
+    // driver enable any sub-source (RXFIFO_TOUT is the obvious one), so refusing to route
+    // it must cost that driver its interrupt, never the machine.
+    uint32_t const stray = st & ~uart0_routed_mask();
+    if (stray != 0)
+    {
+        r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~stray;
+        r32(reg::uart::INT_CLR) = stray;
+    }
+    uint32_t posted = 0;
+    for (auto const& row : UART0_LINES)
+    {
+        uint32_t const seen = 1u << static_cast<unsigned>(row.line);
+        if ((st & row.bit) == 0 or (posted & seen) != 0)
+        {
+            continue;
+        }
+        posted = posted | seen;
+        kickos_isr_irq(row.line);
+    }
+}
+
+// --- Console reclaim: force UART0 back to a polled-ready channel --------------
+// Runs from kpanic_enter, possibly in a partial nested-fault state, after a userspace
+// driver has owned the whole UART0 window. Straight-line ABSOLUTE stores only: no reads
+// of driver-mutable state, no loops, no baud derived from a clock the fault may have
+// left wrong, and running it twice lands on the same registers.
+// The pads are not restored because they cannot be lost: arch_pinmux_set refuses GPIO1
+// and GPIO3.
+void arch_console_reclaim(void)
+{
+    // Silence first. A stale enabled source would storm the level-1 handler through the
+    // whole panic dump, and INT_ENA=0 makes every INT_ST bit read 0 whatever is latched.
+    r32(reg::uart::INT_ENA) = 0;
+    r32(reg::uart::INT_CLR) = 0xFFFFFFFFu;
+
+    // Framing and clock select, plus a FIFO reset in the same absolute word so the dead
+    // driver's queued bytes do not bury the dump. The two RST bits are R/W, not
+    // self-clearing, so the second store is what releases them.
+    r32(reg::uart::CONF0) =
+        reg::uart::CONF0_8N1 | reg::uart::CONF0_TXFIFO_RST | reg::uart::CONF0_RXFIFO_RST;
+    r32(reg::uart::CONF0) = reg::uart::CONF0_8N1;
+
+    // Thresholds back to the bring-up values; also clears RX_TOUT_EN and RX_FLOW_EN,
+    // the latter of which would gate TX on a CTS this board does not wire.
+    r32(reg::uart::CONF1) =
+        ((reg::uart::TXFIFO_EMPTY_THRHD & reg::uart::TXFIFO_EMPTY_THRHD_MASK)
+         << reg::uart::TXFIFO_EMPTY_THRHD_SHIFT)
+        | ((reg::uart::RXFIFO_FULL_THRHD & reg::uart::RXFIFO_FULL_THRHD_MASK)
+           << reg::uart::RXFIFO_FULL_THRHD_SHIFT);
+
+    // Baud off the fixed 80 MHz APB, the same constant folding clock_init_240mhz does.
+    // SystemCoreClock is deliberately not consulted: it is writable state.
+    constexpr uint32_t CLKDIV16 = (reg::system::APB_CLOCK_HZ << 4) / reg::uart::CONSOLE_BAUD;
+    r32(reg::uart::CLKDIV) = ((CLKDIV16 & 0xFu) << reg::uart::CLKDIV_FRAC_SHIFT)
+                             | ((CLKDIV16 >> 4) & reg::uart::CLKDIV_INT_MASK);
+}
+
 }
 
 extern "C"
@@ -353,8 +456,8 @@ void arch_diag_led_set(int on)
 }
 
 // Pins arch_pinmux_set refuses (EBUSY). GPIO1/GPIO3 = the U0 console TX/RX.
-// GPIO6..11 drive the SPI flash the image executes from (XIP) -- remuxing ANY of
-// them bricks execution, so this refusal is not optional.
+// GPIO6..11 drive the SPI flash the image executes from (XIP), so remuxing ANY of them
+// stops execution dead.
 static bool esp32_pin_kernel_owned(uint32_t pin)
 {
     return pin == 1u or pin == 3u or (pin >= 6u and pin <= 11u);
@@ -362,8 +465,8 @@ static bool esp32_pin_kernel_owned(uint32_t pin)
 
 // One-shot pin-function config (KOS_SYS_PINMUX_SET). port must be 0 (the WROOM has a
 // single GPIO bank). func = the raw IO_MUX_GPIOn word (MCU_SEL | drive | FUN_IE),
-// written verbatim to the pad's IO_MUX register -- like the esp32c6 backend. The GPIO
-// number indexes reg::gpio::IO_MUX_OFF, whose offsets are scrambled in silicon (never
+// written verbatim to the pad's IO_MUX register. The GPIO number indexes
+// reg::gpio::IO_MUX_OFF, whose offsets are scrambled in silicon (never
 // pin*4); a 0 offset is a nonexistent/unbonded GPIO and fails EINVAL. GPIO-matrix
 // signal routing (the second half of a full mux) is DEFERRED; this is the IO_MUX layer
 // only. Validation runs before the register write.
@@ -388,14 +491,12 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
 
 void arch_init(void)
 {
-    // FP: the LX6 single-precision FPU (coprocessor 0) IS enabled for all threads
-    // (kickos_lx6_init sets CPENABLE), so `float` works here exactly as it does on
-    // the Cortex-M4F boards and via soft-float on the M0/M3 boards -- a thread that
-    // compiles clean on one KickOS board must not fault on another. The FP data
-    // registers are caller-saved on Xtensa (the compiler spills live f-regs around
-    // any call), so the COOPERATIVE switch needs no FP handling; only the PREEMPTIVE
-    // path banks them -- the level-1 interrupt frame saves/restores f0-f15+FCR+FSR
-    // (startup.S). Double stays soft-float (__muldf3): the LX6 FPU is single-only.
+    // FP: the LX6 single-precision FPU (coprocessor 0) is enabled for all threads
+    // (kickos_lx6_init sets CPENABLE). The FP data registers are caller-saved on Xtensa
+    // (the compiler spills live f-regs around any call), so the COOPERATIVE switch needs
+    // no FP handling; only the PREEMPTIVE path banks them, in the level-1 interrupt frame
+    // that saves/restores f0-f15+FCR+FSR (startup.S). Double stays soft-float
+    // (__muldf3): the LX6 FPU is single-only.
     wdt_disable();
     clock_init_240mhz(); // 40 MHz XTAL -> 240 MHz PLL; updates SystemCoreClock + UART0 baud
     timg_clock_init();   // 64-bit monotonic time base; AFTER the PLL (rate is off APB)
@@ -421,9 +522,9 @@ void arch_console_write(char const* buf, size_t n)
     console_tx_write(buf, n); // buffered; the routing guard (console.cc) keeps this thread-only
 }
 
-// Synchronous polled writer -- the panic / fault / pre-arm path (console.cc selects
-// it when the ring is unarmed or in ISR/panic context). Replaces the fallback
-// that would otherwise re-enter the buffered arch_console_write.
+// Synchronous polled writer for the panic / fault / pre-arm path (console.cc selects it
+// when the ring is unarmed or in ISR/panic context); it replaces a fallback that would
+// re-enter the buffered writer.
 void arch_console_write_sync(char const* buf, size_t n)
 {
     for (size_t i = 0; i < n; i++)
@@ -452,9 +553,9 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
 void arch_shutdown(int status)
 {
     (void)status; // no exit on bare metal
-    // RSIL 15 then WAITI 15: mask everything (incl. below NMI) and park -- the
-    // RP2040/K64F "cpsid i; wfi" twin. WAITI writes PS.INTLEVEL from its immediate,
-    // so it must be 15, not 0 (waiti 0 would unmask everything the rsil masked).
+    // RSIL 15 then WAITI 15: mask everything (incl. below NMI) and park. WAITI writes
+    // PS.INTLEVEL from its immediate, so it must be 15, not 0 (waiti 0 would unmask
+    // everything the rsil masked).
     __asm volatile("rsil a0, 15" ::: "a0", "memory");
     while (true)
     {
@@ -464,8 +565,7 @@ void arch_shutdown(int status)
 
 void Reset_Handler(void)
 {
-    // .data is already in RAM (the image links data at its VMA), but keep the copy
-    // loop for uniformity with the ARM ports -- it is a no-op when LMA == VMA.
+    // The image links .data at its VMA, so LMA == VMA and this loop is a no-op.
     uint32_t* src = &_sidata;
     uint32_t* dst = &_sdata;
     while (dst < &_edata)

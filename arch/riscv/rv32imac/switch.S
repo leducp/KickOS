@@ -1,31 +1,29 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * RV32IMAC context switch + trap entry + syscall trampoline. One mtvec DIRECT-mode
- * trap (trap_entry) demuxes on mcause; mechanisms:
- *   1. trap_entry     -- saves the FULL interrupted context (all GPRs + mepc +
- *                        mstatus) on the running thread's OWN stack, then demuxes.
- *                        ONE frame format for every path (the RX single-frame
- *                        model), so a preempted thread and a blocked-in-syscall
- *                        thread resume identically.
- *   2. .Lswitch       -- the deferred switcher (mcause = machine software / msip).
- *                        arch_switch pends msip; the physical swap ALWAYS happens
- *                        here (the PendSV/SWINT analog). Saves outgoing, restores
- *                        incoming, mret. Runs with MIE=0 (atomic).
- *   3. .Lecall + svc_trampoline -- the syscall trap. ecall rewrites the return so
- *                        mret lands in svc_trampoline running M-mode (privileged)
- *                        on the calling thread's OWN stack, so a blocking dispatch's
- *                        continuation is per-thread (arch.h arch_syscall contract).
- *   4. arch_start     -- enter the first thread: no outgoing to save, jump straight
- *                        into the shared restore epilogue.
- *   5. arch_syscall   -- the userspace trap stub (args already in a0-a4).
+ * RV32IMAC context switch + trap entry + syscall trampoline. Every mtvec vector slot
+ * enters trap_entry, which demuxes on mcause:
+ *   1. trap_entry     saves the FULL interrupted context (all GPRs + mepc + mstatus)
+ *                     on the running thread's OWN stack, then demuxes. ONE frame
+ *                     format for every path, so a preempted thread and a
+ *                     blocked-in-syscall thread resume identically.
+ *   2. .Lswitch       the deferred switcher (mcause = machine software / msip).
+ *                     arch_switch pends msip; the physical swap ALWAYS happens here.
+ *                     Saves outgoing, restores incoming, mret. Runs with MIE=0.
+ *   3. .Lecall + svc_trampoline: the syscall trap. ecall rewrites the return so mret
+ *                     lands in svc_trampoline running M-mode (privileged) on the
+ *                     calling thread's OWN stack, so a blocking dispatch's
+ *                     continuation is per-thread (arch.h arch_syscall contract).
+ *   4. arch_start     enter the first thread: no outgoing to save, jump straight into
+ *                     the shared restore epilogue.
+ *   5. arch_syscall   the userspace trap stub (args already in a0-a4).
  *
  * Save frame (128 B, low->high on the thread's stack; ctx.sp = its base). Must match
  * arch_context_init (arch_rv32imac.cc). gp/tp are NOT saved (link-time constant
  * across threads); gp is instead force-reloaded to __global_pointer$ in .Lrestore so a
- * U-mode thread cannot corrupt it for the next thread (Option-4 puts gp in live app
- * small-data). ecall is always 4 bytes (no compressed form), so the user return is
- * mepc+4.
+ * U-mode thread cannot corrupt it for the next thread, since the gp anchor sits inside
+ * the live app small-data window. ecall is always 4 bytes (no compressed form), so the
+ * user return is mepc+4.
  */
 
 #include <kickos/arch/rv_trap_ids.h>
@@ -161,9 +159,9 @@ trap_entry:
     sw      t1, 0(t0)
     j       .Lrestore
 
-/* --- Supervisor software (ssip): a software-injected IRQ in ISR context. This is */
-/* the arch_irq_inject test/bench channel (the sim's SIGUSR1 twin). kickos_rv_      */
-/* dispatch_soft (arch .cc) clears ssip + runs the injected line's kickos_isr_irq.  */
+/* --- Supervisor software (ssip): a software-injected IRQ in ISR context, the      */
+/* arch_irq_inject test/bench channel. kickos_rv_dispatch_soft (arch .cc) clears    */
+/* ssip and runs the injected line's kickos_isr_irq.                               */
 .Lssoft:
     la      t0, g_isr_depth
     lw      t1, 0(t0)
@@ -258,8 +256,8 @@ trap_entry:
     call    kickos_trace_switch_done   /* (from,to) from the swapped contexts */
 #endif
     /* Deferred MPU commit: program the incoming thread's PMP now that the physical
-       swap (g_arch_current = incoming, sp = incoming->sp) is complete -- atomically
-       with the switch, NOT eagerly in switch_to (shared seam, see arch_rv32imac.cc /
+       swap (g_arch_current = incoming, sp = incoming->sp) is complete, so the commit is
+       atomic with the switch and NOT eager in switch_to (see arch_rv32imac.cc /
        docs/design-mpu-commit-deferred.md). Runs here in the M-mode msip trap with
        MIE=0, before .Lrestore pops the frame and mret drops to U-mode. sp survives the
        call (callee-saved); every caller-saved clobber is reloaded by .Lrestore next. */
@@ -303,14 +301,13 @@ svc_trampoline:
 /* the CSR loads, then reloaded with the rest.)                                  */
 .Lrestore:
     /* Force gp to its canonical link-time value before returning to any (re)dispatched
-       thread. gp is NOT per-thread (see the frame comment), but Option-4 anchors
-       __global_pointer$ inside the LIVE app small-data window, so a malicious U-mode
-       thread can write gp arbitrarily; the next thread's gp-relative small-data loads
-       would then resolve at attacker-chosen addresses. This choke point (every dispatch
-       path funnels here) makes gp self-healing per switch. norelax: the assembler would
-       otherwise relax `la gp, __global_pointer$` to a no-op that assumes gp already holds
-       it. Cheap (2 instrs) and the kernel uses no gp-relative code, so clobbering gp here
-       is safe. See docs/design-riscv-gp-split.md. */
+       thread. gp is NOT per-thread (see the frame comment), but __global_pointer$ is
+       anchored inside the LIVE app small-data window, so a U-mode thread can write gp
+       arbitrarily and the next thread's gp-relative small-data loads would resolve at
+       attacker-chosen addresses. Every dispatch path funnels here, so gp is self-healing
+       per switch. norelax: the assembler would otherwise relax `la gp, __global_pointer$`
+       to a no-op that assumes gp already holds it. The kernel uses no gp-relative code,
+       so clobbering gp here is safe. See docs/design-riscv-gp-split.md. */
     .option push
     .option norelax
     la      gp, __global_pointer$
@@ -356,11 +353,10 @@ svc_trampoline:
     addi    sp, sp, FRAME
     mret
 
-/* --- Unhandled exception: dump the trap CSRs + hand off to the shared dead-end   */
-/* (a fault is a genuine bug at M1). mcause/mepc/mtval/mstatus are still live -- no */
-/* trap has been taken since the vector -- so read them straight into the args. The */
-/* saved frame is at sp (a valid stack for the call). kickos_rv_fault_report is      */
-/* [[noreturn]] (blink on real HW, exit on QEMU); the spin is a belt-and-braces stop. */
+/* --- Unhandled exception: dump the trap CSRs + hand off to the shared dead-end.    */
+/* mcause/mepc/mtval/mstatus are still live (no trap has been taken since the        */
+/* vector), so read them straight into the args. The saved frame is at sp (a valid   */
+/* stack for the call). kickos_rv_fault_report never returns; the spin is a backstop. */
 .Lfault:
     csrr    a0, mcause
     csrr    a1, mepc
@@ -372,7 +368,7 @@ svc_trampoline:
 /* ------------------------------------------------------------------------- */
 /* arch_start(boot, first): a0=boot (ignored), a1=first. No outgoing to save;   */
 /* seed g_arch_current and enter the first thread via the shared restore. The    */
-/* fabricated frame's mstatus (MPIE=1) turns MIE on -- releasing the crit level  */
+/* fabricated frame's mstatus (MPIE=1) turns MIE on, releasing the crit level     */
 /* the scheduler held. Never returns (boot stack abandoned).                     */
 /* ------------------------------------------------------------------------- */
     .global arch_start

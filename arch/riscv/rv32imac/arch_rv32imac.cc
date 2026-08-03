@@ -4,7 +4,7 @@
 // RISC-V RV32IMAC arch backend: the ISA-generic half of the arch.h seam. The
 // context switch + trap entry + syscall trampoline + first-thread entry assembly
 // lives in switch.S; the chip layer (arch/riscv/chip/{virt,esp32c6}) supplies the
-// hardware edges -- arch_init, arch_console_write, arch_shutdown, the clock/timer
+// hardware edges: arch_init, arch_console_write, arch_shutdown, the clock/timer
 // (arch_clock_now / arch_timer_arm / arch_timer_disarm), the CLINT base
 // (g_clint_msip, for the deferred-switch software interrupt), and the linker
 // script + startup vectors.
@@ -21,9 +21,8 @@ static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_RISCV,
               "KICKOS_TRACE_ARCH does not match ArchId::ARCH_RISCV for rv32imac");
 
 // Fault reporting (see the .Lfault shim in switch.S): the reporter calls kpanic_enter
-// first, which masks IRQs, forces the synchronous polled writer, and flushes the ring
-// -- so the dump is safe from the fault path whether or not the chip armed a buffered
-// console (the ESP32-C6 now arms one via its UART0 TX ring; qemu-virt stays polled).
+// first, which masks IRQs, forces the synchronous polled writer and flushes the ring, so
+// the dump is safe from the fault path whether or not the chip armed a buffered console.
 // kfault_terminate is the shared panic/fault dead-end (kernel.h).
 namespace kickos
 {
@@ -72,9 +71,9 @@ extern "C"
     struct arch_context* volatile g_arch_current = nullptr;
     struct arch_context* volatile g_arch_next = nullptr;
 
-    // In-ISR depth (the IPSR!=0 analog): bumped by the timer/external trap paths
-    // (switch.S), NOT by the ecall or msip-switch paths -- so arch_in_isr() reads
-    // false throughout syscall_dispatch (arch.h contract).
+    // In-ISR depth: bumped by the timer/external trap paths (switch.S), NOT by the ecall
+    // or msip-switch paths, so arch_in_isr() reads false throughout syscall_dispatch
+    // (arch.h contract).
     volatile uint32_t g_isr_depth = 0;
 
     // CLINT machine-software-interrupt-pending register for this hart, set by the
@@ -145,11 +144,11 @@ void arch_context_init(struct arch_context* ctx,
     ctx->sp = reinterpret_cast<uint32_t>(f);
 }
 
-// --- Switch: record the target + pend the msip switcher (never swaps inline) --
-// Always deferred (the RX SWINT / ARM PendSV model): the physical swap happens in
-// the msip trap. Called under the kernel IrqLock (mstatus.MIE=0), so the pended
-// msip fires only once the lock releases (thread context) or the current trap
-// returns (ISR context). No in-ISR branch is needed -- deferral is inherent.
+// --- Switch: record the target + pend the msip switcher (never swaps inline) ---
+// Always deferred: the physical swap happens in the msip trap. Called under the kernel
+// IrqLock (mstatus.MIE=0), so the pended msip fires only once the lock releases (thread
+// context) or the current trap returns (ISR context). Deferral is inherent, so no
+// in-ISR branch is needed.
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
     (void)from; // the switcher saves g_arch_current
@@ -168,8 +167,8 @@ arch_irq_state_t arch_irq_save(void)
 
 void arch_irq_restore(arch_irq_state_t state)
 {
-    // csrs only SETS bits: state is 0 or MSTATUS_MIE, so this re-enables MIE iff it
-    // was enabled at the paired save (and is a no-op otherwise) -- nesting-safe.
+    // csrs only SETS bits: state is 0 or MSTATUS_MIE, so this re-enables MIE iff it was
+    // enabled at the paired save and is a no-op otherwise, which keeps it nesting-safe.
     __asm volatile("csrs mstatus, %0" ::"r"(state) : "memory");
 }
 
@@ -179,11 +178,10 @@ int arch_in_isr(void)
 }
 
 // --- Trace clock: the cycle CSR (rdcycle), always present, 32-bit raw ---------
-// The ideal cycle-accurate trace source: reads its own low 32 bits (wraps; the
-// host reconstructs absolute time from the SESSION clock_hz anchors). No ns
-// conversion, no wrap-extend, no crit section -- safe on the switch path.
-// KICKOS_HAVE_TRACE_CLOCK is set for rv32imac. (mcounteren.CY is enabled in
-// kickos_rv32_init so a U-mode thread can read it too.)
+// Reads its own low 32 bits (wraps; the host reconstructs absolute time from the SESSION
+// clock_hz anchors). No ns conversion, no wrap-extend and no crit section, so it is safe
+// on the switch path. mcounteren.CY is enabled in kickos_rv32_init so a U-mode thread can
+// read it too.
 uint32_t arch_trace_now(void)
 {
     uint32_t v;
@@ -197,7 +195,7 @@ uint32_t arch_trace_now(void)
 namespace
 {
     // NAPOT encoding: for a region of size 2^k (k>=3) aligned to its size,
-    // pmpaddr = (base>>2) | ((size>>3)-1) -- the trailing 1s encode the size.
+    // pmpaddr = (base>>2) | ((size>>3)-1); the trailing 1s encode the size.
     uint32_t pmp_napot_addr(uintptr_t base, size_t size)
     {
         return (static_cast<uint32_t>(base) >> 2)
@@ -245,9 +243,8 @@ namespace
 // STASH-ONLY apply (deferred-commit seam, docs/design-mpu-commit-deferred.md): record
 // the incoming set; kickos_arch_mpu_commit writes the PMP CSRs from the .Lswitch switch
 // epilogue (switch.S) AFTER the physical msip-driven swap. Eager apply on the deferred
-// switch would run the OUTGOING user thread under the incoming PMP set until msip fires
-// -> it faults on its own stack. Name + semantics match the ARM seam (arch_arm_common.cc);
-// rv32imac is its own arch lib, so the stash is local (no cross-arch symbol sharing).
+// switch would run the OUTGOING user thread under the incoming PMP set until msip fires,
+// so it would fault on its own stack.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     if (n > 8)
@@ -263,17 +260,15 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 
 // Program the 8 PMP entries from the stash. Called from .Lswitch / arch_start after the
 // physical swap; that path runs in the M-mode trap with MIE=0, so the CSR writes are
-// atomic vs interrupts -- the trap context IS the bracket (no MIE toggle here: enabling
-// interrupts mid-trap would be a bug). regions/n are bound to the stash so the body is
-// verbatim.
+// already atomic vs interrupts and must NOT toggle MIE here.
 void kickos_arch_mpu_commit(void)
 {
     struct arch_mpu_region const* const regions = g_pend_regions;
     size_t const n = g_pend_count;
     // Build 8 PMP entries (0..7). A region is NAPOT-encoded only if its size is a
-    // power of two >= 8 (unprivileged regions come from the pow2 allocator); a
-    // non-pow2 region -- e.g. a privileged thread's whole-arena grant -- is left
-    // OFF, which is harmless since that thread runs in M-mode and bypasses PMP.
+    // power of two >= 8 (unprivileged regions come from the pow2 allocator); a non-pow2
+    // region (e.g. a privileged thread's whole-arena grant) is left OFF, which is
+    // harmless since that thread runs in M-mode and bypasses PMP.
     uint32_t addr[8] = {0};
     uint8_t cfg[8] = {0};
     for (size_t i = 0; i < 8; i++)
@@ -298,15 +293,15 @@ void kickos_arch_mpu_commit(void)
                         | (static_cast<uint32_t>(cfg[6]) << 16) | (static_cast<uint32_t>(cfg[7]) << 24);
     __asm volatile("csrw pmpcfg0, %0" ::"r"(cfg0) : "memory");
     __asm volatile("csrw pmpcfg1, %0" ::"r"(cfg1) : "memory");
-    // Order the PMP update before the mret (arch_switch) that drops to U-mode, so
-    // the incoming thread's fetches/loads see the new entries. Per the priv spec
-    // the writing hart sees PMP changes on its next access, but a fence is the
-    // conservative guarantee across the M->U transition (fable step-1 F4).
+    // Order the PMP update before the mret (arch_switch) that drops to U-mode, so the
+    // incoming thread's fetches/loads see the new entries. The priv spec says the writing
+    // hart sees PMP changes on its next access; the fence is the conservative guarantee
+    // across the M->U transition.
     __asm volatile("fence" ::: "memory");
 }
 #else
-// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + syscall only,
-// exactly the ARM/RX M1 posture. The permissive bootstrap PMP stays in place.
+// No enforcement on this board (KICKOS_HAVE_MPU=0): privilege + syscall only. The
+// permissive bootstrap PMP stays in place.
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {
     (void)regions;
@@ -346,21 +341,20 @@ int arch_bitband_present(void)
 
 
 // --- Interrupt controller (software-injected test scaffolding) ---------------
-// arch_irq_inject fakes a device firing -- test/bench scaffolding (arch.h). It masks
-// with a software bitmask (a raise on a masked line latches one-deep, redelivered at
-// unmask) and records the logical line in g_inject_line, then hands the actual raise
-// to a chip-overridable
-// delivery hook (arch_rv_inject_deliver). ONE physical doorbell carries every logical
-// line; g_inject_line tells the trap which line it was -- so arch_irq_mask/unmask
-// stay pure-software and are decoupled from the physical interrupt.
+// arch_irq_inject fakes a device firing (test/bench scaffolding, arch.h). It masks with a
+// software bitmask (a raise on a masked line latches one-deep, redelivered at unmask),
+// records the logical line in g_inject_line, then hands the actual raise to a
+// chip-overridable delivery hook (arch_rv_inject_deliver). ONE physical doorbell carries
+// every logical line and g_inject_line tells the trap which line it was, so
+// arch_irq_mask/unmask stay pure-software and decoupled from the physical interrupt.
 //
 // virt default: the SUPERVISOR SOFTWARE interrupt (mip.SSIP, a software-writable bit,
-// mcause=1) as a private channel (RISC-V gives no software-raise of a real PLIC line;
-// QEMU models that faithfully). SSIP needs S-mode, present on the QEMU virt CPU.
+// mcause=1) as a private channel, since RISC-V gives no software-raise of a real PLIC
+// line. SSIP needs S-mode, present on the QEMU virt CPU.
 //
 // ESP32-C6 override (chip_esp32c6.cc): the C6 HP core is M/U-only (no SSIP), so its
 // override raises a real machine interrupt via the interrupt matrix + INTPRI local
-// controller -- a FROM_CPU source routed to a dedicated CPU interrupt ID. That ID
+// controller, from a FROM_CPU source routed to a dedicated CPU interrupt ID. That ID
 // vectors here as mcause=<ID> (the C6 reports mcause = interrupt ID, not the standard
 // mcause=11), demuxed to .Lext in switch.S -> kickos_rv_ext_dispatch below.
 namespace
@@ -417,8 +411,8 @@ void arch_irq_unmask(int line)
     // configure with MIE cleared + a FENCE). No-op for injected lines.
     arch_rv_hw_unmask(line);
     // Latch-and-coalesce: a raise taken on this software line while it was masked
-    // redelivers now through the doorbell. The raise sets mip.SSIP with MIE=0, so it
-    // fires at arch_irq_restore -- the normal ISR path, not a direct post.
+    // redelivers now through the doorbell. The raise sets mip.SSIP with MIE=0, so it fires
+    // at arch_irq_restore, on the normal ISR path rather than as a direct post.
     if ((g_irq_pending & (1u << line)) != 0)
     {
         g_irq_pending = g_irq_pending & ~(1u << line);
@@ -459,8 +453,8 @@ void arch_irq_inject(int irq)
 }
 
 // SSIP dispatch (switch.S .Lssoft, virt), ISR context. Clear the software interrupt,
-// then run the injected line's first-level ISR (kickos_isr_irq masks the line + wakes
-// its driver -- kernel/irq/irq.cc); the driver re-unmasks via irq_ack.
+// then run the injected line's first-level ISR (kickos_isr_irq masks the line and wakes
+// its driver, kernel/irq/irq.cc); the driver re-unmasks via irq_ack.
 void kickos_rv_dispatch_soft(void)
 {
     __asm volatile("csrc mip, %0" ::"r"(MIP_SSIP) : "memory");
@@ -475,7 +469,7 @@ void kickos_rv_dispatch_soft(void)
 // External-doorbell dispatch (switch.S .Lext), ISR context. Only reached on a chip
 // whose arch_rv_inject_deliver raises a real machine external interrupt (the C6).
 // EOI the chip's controller source first (so a level source cannot re-fire), then run
-// the injected line's ISR -- identical downstream handling to the SSIP path.
+// the injected line's ISR, exactly as the SSIP path does.
 void kickos_rv_ext_dispatch(void)
 {
     arch_rv_ext_eoi();
@@ -503,10 +497,10 @@ void kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
 {
     kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
     // An access fault taken FROM U-mode (mstatus.MPP==0) is a PMP domain violation by an
-    // unprivileged thread -- instruction fetch (mcause 1) as well as load (5) / store (7);
-    // a fetch from an ungranted region must report the same as a data access. Route it to
-    // the kernel reporter that names the task and exits via the reported-fault path
-    // (matches the sim + the ARM MemManage split). mtval holds the faulting address. An
+    // unprivileged thread, on instruction fetch (mcause 1) as well as load (5) / store
+    // (7); a fetch from an ungranted region must report the same as a data access. Route
+    // it to the kernel reporter that names the task and exits via the reported-fault path.
+    // mtval holds the faulting address. An
     // access fault from M-mode (MPP!=0) is a genuine kernel bug (M-mode bypasses the
     // unlocked PMP entries), so it falls through to the generic dump + kfault_terminate.
     bool const from_user = (mstatus & MSTATUS_MPP_M) == 0;
@@ -597,20 +591,19 @@ void kickos_rv32_init(void)
 
     // Let U-mode threads read cycle/time/instret (rdcycle in arch_trace_now, and a
     // userspace clock read) instead of trapping. mcounteren bits CY|TM|IR. Skipped
-    // on cores that trap on the write (see arch_rv_has_mcounteren; the ESP32-C6 HP
-    // core is one -- it faults, hanging bring-up).
+    // on cores that trap on the write (see arch_rv_has_mcounteren; the ESP32-C6 HP core
+    // is one, and the fault hangs bring-up).
     if (arch_rv_has_mcounteren() != 0)
     {
         __asm volatile("csrw mcounteren, %0" ::"r"(0x7u) : "memory");
     }
 
     // Permissive bootstrap PMP: ONE entry covering the whole address space, R+W+X,
-    // U-accessible. RISC-V is fail-CLOSED -- once PMP is implemented (it is on this
-    // core), a U-mode access with NO matching entry FAULTS (unlike ARM, where
-    // unprivileged is unrestricted until the MPU clamps it). So an unprivileged
-    // thread can't even fetch its first instruction without this. It gives U-mode
-    // full access (no isolation) -- exactly the ARM/RX M1 posture; M2's arch_mpu_apply
-    // refines per-thread PMP. Use TOR (A=01, top = pmpaddr0<<2) rather than the
+    // U-accessible. RISC-V is fail-CLOSED: once PMP is implemented (it is on this core), a
+    // U-mode access with NO matching entry FAULTS, so an unprivileged thread cannot even
+    // fetch its first instruction without this entry. It grants U-mode full access, with
+    // no isolation until arch_mpu_apply refines per-thread PMP. Use TOR (A=01, top =
+    // pmpaddr0<<2) rather than the
     // all-ones NAPOT idiom: the ESP32-C6 PMP does not honor the all-ones-NAPOT
     // match-everything special case (U-mode still takes an instruction-access fault),
     // whereas TOR with pmpaddr0 = 0xFFFFFFFF covers [0, 0x4_00000000) on both it and

@@ -44,8 +44,8 @@ namespace kickos::esp32c6::reg::gpio
 
     // arch_pinmux_set `func` encoding for this chip: [15:0] the IO_MUX_GPIOn_REG word,
     // [23] arm the matrix out-sel write, [31:24] the out-sel signal index. [22:16] must
-    // be zero -- reserved so FUNCn INV_SEL/OEN_SEL (TRM Reg 7.16 bits 8..10) can join
-    // the encoding later without a stale word being silently accepted.
+    // be zero: reserved so FUNCn INV_SEL/OEN_SEL (TRM Reg 7.16 bits 8..10) can join the
+    // encoding later without a stale word being silently accepted.
     constexpr uint32_t PINMUX_IO_MUX_MASK = 0x0000FFFFu; // Reg 7.20 defines up to FILTER_EN (bit 15)
     constexpr uint32_t PINMUX_RESERVED = 0x007F0000u;
     constexpr uint32_t PINMUX_MATRIX_EN = 1u << 23;

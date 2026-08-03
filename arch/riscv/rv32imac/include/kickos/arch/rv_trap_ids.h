@@ -3,9 +3,8 @@
  *
  * Machine-interrupt demux IDs shared between the RV32IMAC trap entry (switch.S) and
  * any chip that must target them. Plain #defines so the assembler and C++ both use
- * ONE source of truth -- the doorbell ID had lived as a bare literal in switch.S and
- * a separate constant in chip_esp32c6.cc, with nothing tying them together (a silent
- * drift would route the C6 inject to a demux arm that just returns -> livelock).
+ * ONE source of truth: an ID that drifts between switch.S and the chip layer routes an
+ * inject to a demux arm that just returns, which livelocks.
  */
 
 #ifndef KICKOS_ARCH_RV_TRAP_IDS_H

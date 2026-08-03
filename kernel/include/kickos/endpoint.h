@@ -10,30 +10,29 @@
 
 namespace kickos
 {
-    struct Thread; // kickos/thread.h -- Endpoint::server names the conventional receiver
+    struct Thread; // kickos/thread.h
 
-    // A cap-named synchronous rendezvous point. No kernel payload storage: the
-    // parked side's own (bound-checked, stable-because-BLOCKED) user buffer is the
-    // storage, and the ARRIVING thread does the bounded copy under IrqLock.
-    // INVARIANT (MMU-era load-bearing): the endpoint names nothing by address -- no
-    // physical buffer address is stored here or handed out as a badge. The transient
-    // user-buffer pointer lives in the parked thread's TCB ipc descriptor for the
-    // rendezvous only; ep_copy reaches it via the arch's privileged access. Two
-    // waitqs; both are the shared List + wq_pop_highest primitive (sem/mutex are the
-    // other users). INVARIANT: the two waitqs are never simultaneously non-empty (an
-    // arrival always drains the opposite queue before it parks on its own).
+    // A cap-named synchronous rendezvous point. There is NO kernel payload storage: the
+    // parked side's own user buffer is the storage, stable because that side is BLOCKED,
+    // and the ARRIVING thread does the bounded copy under IrqLock.
+    // INVARIANT: the endpoint names nothing by address. No buffer address is stored here
+    // or handed out as a badge; the transient user-buffer pointer lives in the parked
+    // thread's TCB ipc descriptor for the rendezvous only.
+    // INVARIANT: the two waitqs are never simultaneously non-empty, because an arrival
+    // always drains the opposite queue before parking on its own.
     struct Endpoint
     {
         List send_waiters;    // parked senders (buffer descriptor in their TCB)
         List recv_waiters;    // parked receivers (buffer + badge-out descriptor in their TCB)
-        // Live caps carrying CAP_WAIT (recv right) naming this endpoint. NOT the pool
-        // refcount (endpoint_refs[] counts ALL caps): it gates the send-side
-        // dead-endpoint check and fires EPIPE at 0. The single home for this state.
+        // Live caps carrying CAP_WAIT naming this endpoint, and the single home for that
+        // state. NOT the pool refcount, which counts ALL caps: this one gates the send-side
+        // dead-endpoint check and fires EPIPE at 0. Shares endpoint_refs' uint8_t ceiling
+        // and refusal, because obj_ref_inc tests both before moving either.
         uint8_t recv_holders;
-        // The conventional single receiver, set at every recv (v1: one server per
-        // endpoint, documented not enforced). The D2 boost target when a caller parks
-        // on send_waiters. A raw Thread* cleared in the endpoint close/teardown arm when
-        // the server drops its WAIT cap (B2), so it never dangles onto a reused TCB.
+        // The conventional single receiver, re-set at every recv. One server per endpoint
+        // is documented, not enforced. Also the boost target when a caller parks on
+        // send_waiters. MUST be cleared in the endpoint close/teardown arm when the server
+        // drops its WAIT cap, else this raw pointer dangles onto a reused TCB.
         Thread* server;
     };
 }

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// RX72M clock-generation + SYSTEM/low-power register offsets + fields (Phase-1
-// register consolidation). From the RX72M Group User's Manual: Hardware
-// (r01uh0804ej0120, Rev.1.20) sec.9 (CGC), sec.11 (module stop), sec.13
-// (register protect); hand-rolled, clean-room. ADDITIVE: duplicates the
-// literals still inline in chip_rx72m.cc. Bases: mmap.h.
+// RX72M clock-generation + SYSTEM/low-power register offsets + fields. From the
+// RX72M Group User's Manual: Hardware (r01uh0804ej0120, Rev.1.20) sec.9 (CGC),
+// sec.11 (module stop), sec.13 (register protect); hand-rolled, clean-room.
+// Bases: mmap.h.
 
 #ifndef KICKOS_ARCH_RX_CHIP_RX72M_REGS_CGC_H
 #define KICKOS_ARCH_RX_CHIP_RX72M_REGS_CGC_H

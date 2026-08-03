@@ -46,10 +46,9 @@ namespace
 {
     using namespace kickos::rxv3;
 
-    // Free-running CMTW1 is 32-bit; extend to a monotonic 64-bit count in
-    // software by catching wraps on each read (the armv7m DWT pattern). LIMITATION
-    // (M1): a wrap not observed within one 2^32-cycle period is missed; a
-    // counter-overflow interrupt is the refinement.
+    // Free-running CMTW1 is 32-bit; extend to a monotonic 64-bit count in software by
+    // catching wraps on each read. LIMITATION (M1): a wrap not observed within one
+    // 2^32-cycle period is missed; a counter-overflow interrupt is the refinement.
     volatile uint32_t g_cyc_high = 0;
     volatile uint32_t g_cyc_last = 0;
 
@@ -61,13 +60,12 @@ namespace
     // Software IRQ controller for INJECTED logical lines. The RX ICU cannot pend an
     // arbitrary peripheral line from software (only the two software interrupts are
     // settable), so injected lines are delivered over the single SWINT2 doorbell:
-    // g_inject_line carries the logical line, g_irq_masked gates it. Mirrors the
-    // sim/xtensa/riscv model. Lines < SOFT_IRQ_LINES are software (this controller);
-    // lines >= it are real ICU vectors gated by ICU.IER (e.g. console TXI6 = 87).
-    // RX's own sub-32 vectors (SWINT 26/27, timer CMWI0 30) are configured directly
-    // by the arch/chip init and never pass through the arch_irq_* seam, so they do
-    // not collide. Masked-by-default (RX is a masked controller): a line is armed
-    // only by arch_irq_unmask (kernel irq_register/irq_ack), like the ARM NVIC.
+    // g_inject_line carries the logical line, g_irq_masked gates it. Lines <
+    // SOFT_IRQ_LINES are software (this controller); lines >= it are real ICU vectors
+    // gated by ICU.IER (e.g. console TXI6 = 87). RX's own sub-32 vectors (SWINT 26/27,
+    // timer CMWI0 30) are configured directly by the arch/chip init and never pass
+    // through the arch_irq_* seam, so they do not collide. Masked-by-default: a line is
+    // armed only by arch_irq_unmask (kernel irq_register/irq_ack).
     constexpr int SOFT_IRQ_LINES = 32;
     volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     volatile int g_inject_line = -1;
@@ -167,8 +165,8 @@ namespace
         volatile uint8_t& ier = reg8(ICU_IER_BASE + (l >> 3));
         uint8_t bit = static_cast<uint8_t>(1u << (l & 7));
         // IER packs 8 lines per byte, so this RMW must be atomic against a device
-        // ISR's arch_irq_mask on a sibling line -- callable from unlocked syscall
-        // context (irq_attach/irq_unmask). Matches the riscv/xtensa mask primitives.
+        // ISR's arch_irq_mask on a sibling line, and is callable from unlocked syscall
+        // context (irq_attach/irq_unmask).
         arch_irq_state_t s = arch_irq_save();
         if (on)
         {
@@ -182,7 +180,7 @@ namespace
     }
 
     // RX72M ICU IPR index for a vector. IR (UM sec.15.2.1) and IER (sec.15.2.2)
-    // are indexed 1:1 by vector; only IPR (sec.15.2.4) is shared -- several sources
+    // are indexed 1:1 by vector; only IPR (sec.15.2.4) is shared: several sources
     // collapse onto one IPR entry, so the IPR index is NOT the vector number in
     // general. This table carries the mappings confirmed against the UM interrupt
     // vector table (sec.15.3.1); an unlisted vector falls back to identity, which
@@ -223,9 +221,8 @@ extern "C"
 //   [+0 A0LO][+4 A0HI][+8 A0GU][+12 A1LO][+16 A1HI][+20 A1GU][+24 FPSW]
 //   [+28 R1=arg .. +84 R15][+88 PC=entry][+92 PSW]
 // and, ABOVE the frame, [+96] = the address a returning entry() RTSes into
-// (kickos_thread_return for a kernel thread, kickos_user_thread_return for a user
-// one -- which traps out via the exit syscall since it cannot run the kernel
-// epilogue with PM=1). RTE pops PC then PSW, delivering R1=arg per the psABI.
+// (kickos_thread_return for a kernel thread, kickos_user_thread_return for a user one).
+// RTE pops PC then PSW, delivering R1=arg per the psABI.
 void arch_context_init(struct arch_context* ctx,
                        void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size,
@@ -285,17 +282,17 @@ arch_irq_state_t arch_irq_save(void)
     uint32_t psw;
     __asm volatile("mvfc psw, %0" : "=r"(psw));
     // Raise to IPL_LOCK (12). MVTIPL takes an immediate only, so the level is a
-    // literal (static_assert above pins it). MVTIPL is self-synchronizing -- no
-    // DSB/ISB dance is needed (that concern is ARM's BASEPRI-specific).
+    // literal (static_assert above pins it). MVTIPL is self-synchronizing; no barrier
+    // is needed after it.
     __asm volatile("mvtipl #12" ::: "memory");
     return (psw & PSW_IPL_MASK) >> PSW_IPL_SHIFT; // old IPL
 }
 
 void arch_irq_restore(arch_irq_state_t state)
 {
-    // Restore only the IPL field (MVTIPL can't take a runtime value; write the
-    // whole PSW via MVTC with just the IPL bits replaced -- PM is ignored on write
-    // in supervisor, flags/U/I are preserved from the current PSW).
+    // Restore only the IPL field: MVTIPL cannot take a runtime value, so the whole PSW
+    // goes back via MVTC with just the IPL bits replaced. PM is ignored on write in
+    // supervisor; flags/U/I are preserved from the current PSW.
     uint32_t psw;
     __asm volatile("mvfc psw, %0" : "=r"(psw));
     psw = (psw & ~PSW_IPL_MASK) |
@@ -311,21 +308,20 @@ int arch_in_isr(void)
 // C side of the RX exception handler (startup.S .fvectors shims branch here with
 // r1=cause [the fixed-vector offset], r2=stacked PC, r3=stacked PSW). Dump the
 // context, then hand off to the shared dead-end (blink on real HW). Runs on the
-// ISP in supervisor mode. kpanic_enter masks IRQs (raises PSW.IPL, never restored --
+// ISP in supervisor mode. kpanic_enter masks IRQs (raises PSW.IPL, never restored;
 // this path does not return), forces the polled writer, and flushes the ring.
 void kickos_rx_fault_report(uint32_t cause, uint32_t pc, uint32_t psw)
 {
-    rx_mpu_mark('F'); // localizer: an exception fired (a FAULT, not a hang) -- raw, pre-console
+    rx_mpu_mark('F'); // localizer: an exception fired (a FAULT, not a hang), raw, pre-console
     kpanic_enter();
 #if KICKOS_HAVE_MPU
-    // The access exception (fixed vector +0x54) IS the RX MPU violation, and the RX
-    // MPU checks user mode only (UM sec.17.1.1) -- so one taken with the faulting
-    // PSW.PM set is an unprivileged thread hitting an ungranted region. Route it to
-    // the shared reporter that names the task + address, exactly like the riscv PMP
-    // and ARM MemManage paths. MPESTS.DMPER => operand access (address in MPDEA, DRW
-    // gives read vs write); MPESTS.IMPER => instruction fetch (address is the stacked
-    // PC). An access exception from supervisor cannot be an MPU fault (supervisor is
-    // never checked), so it falls through to the generic dump = a genuine kernel bug.
+    // The access exception (fixed vector +0x54) IS the RX MPU violation, and the RX MPU
+    // checks user mode only (UM sec.17.1.1), so one taken with the faulting PSW.PM set is
+    // an unprivileged thread hitting an ungranted region. MPESTS.DMPER => operand access
+    // (address in MPDEA, DRW gives read vs write); MPESTS.IMPER => instruction fetch
+    // (address is the stacked PC). An access exception from supervisor cannot be an MPU
+    // fault (supervisor is never checked), so it falls through to the generic dump = a
+    // genuine kernel bug.
     if (cause == 0x54 and (psw & PSW_PM) != 0)
     {
         uint32_t const sts = reg32(MPU_MPESTS);
@@ -384,10 +380,10 @@ uint64_t arch_clock_now(void)
 }
 
 // --- Trace clock (telemetry timestamp seam) ---------------------------------
-// The free-running 32-bit CMTW1 counter IS a natural raw trace clock: u32, wraps
-// on its own, host reconstructs absolute time from the SESSION clock_hz anchors
-// (arch.h). No extra hardware spent -- same source as arch_clock_now, read raw
-// (no ns conversion, no wrap-extend). KICKOS_HAVE_TRACE_CLOCK is set for rxv3.
+// The free-running 32-bit CMTW1 counter IS the raw trace clock: u32, wraps on its own,
+// host reconstructs absolute time from the SESSION clock_hz anchors (arch.h). Same source
+// as arch_clock_now, read raw: no ns conversion, no wrap-extend.
+// KICKOS_HAVE_TRACE_CLOCK is set for rxv3.
 uint32_t arch_trace_now(void)
 {
     return reg32(CMTW1_BASE + CMTW_CMWCNT);
@@ -401,16 +397,13 @@ static uint64_t g_rx_armed_ns = ~0ull;
 
 void arch_timer_arm(uint64_t deadline_ns)
 {
-    // Idempotent re-arm: ktime_rearm calls this on EVERY context switch. If the
-    // one-shot is already running toward this exact deadline, leave CMWCNT alone --
-    // resetting it to 0 each switch (players ping-ponging faster than the deadline)
-    // means the compare is never reached and a far deadline (e.g. a reporter's 0.5s
-    // sleep) starves. "Running toward it" is tracked purely in software: the timer
-    // ISR sets g_rx_armed_ns = ~0 before it re-arms, so its own re-arm is never
-    // skipped, and a reschedule with the same pending deadline is. (An earlier guard
-    // read CMWSTR.STR to decide this, but that HW readback raced at full switch speed
-    // -- the guard intermittently failed, reset CMWCNT, and the far deadline starved
-    // on silicon whenever the CPU never idled.)
+    // Idempotent re-arm: ktime_rearm calls this on EVERY context switch. If the one-shot
+    // is already running toward this exact deadline, leave CMWCNT alone; resetting it to 0
+    // each switch means the compare is never reached, so a far deadline starves whenever
+    // threads ping-pong faster than it. "Running toward it" must be tracked in software,
+    // NOT read back from CMWSTR.STR, which races at full switch speed. The timer ISR sets
+    // g_rx_armed_ns = ~0 before it re-arms, so its own re-arm is never skipped and a
+    // reschedule with the same pending deadline is.
     if (deadline_ns == g_rx_armed_ns)
     {
         return;
@@ -450,9 +443,9 @@ void arch_timer_arm(uint64_t deadline_ns)
     reg32(CMTW0_BASE + CMTW_CMWCNT) = 0;
     reg32(CMTW0_BASE + CMTW_CMWCOR) = static_cast<uint32_t>(cyc);
     reg16(CMTW0_BASE + CMTW_CMWCR) = CMWCR_CKS_PCLK8 | CMWCR_CCLR_ON_MATCH | CMWCR_CMWIE;
-    // Gate that actually arms the CMWCOR compare (else the counter free-runs past
-    // it -- no clear, no CMWI). Reset value is 0. Idempotent; rewritten each arm so
-    // no path can leave it clear. (First-silicon fix; UM sec.32.2.3.)
+    // Gate that actually arms the CMWCOR compare; without it the counter free-runs past
+    // CMWCOR with no clear and no CMWI (UM sec.32.2.3). Reset value is 0, and it is
+    // rewritten on each arm so no path can leave it clear.
     reg16(CMTW0_BASE + CMTW_CMWIOR) = CMWIOR_CMWE;
     reg16(CMTW0_BASE + CMTW_CMWSTR) = CMWSTR_STR;
 }
@@ -465,21 +458,18 @@ void arch_timer_disarm(void)
 }
 
 // --- MPU: per-thread memory protection (RX72M MPU, UM sec.17) ---------------
-// On RX the MPU checks accesses ONLY in user mode; supervisor is never checked
-// and always permitted (UM sec.17.1.1 / the sec.17.3.4 flow). So a PRIVILEGED
-// (PM=0) thread keeps full access no matter what these registers hold, and there
-// is no K64F-style supervisor-field hazard to guard against -- there is simply no
-// supervisor field. Enforcement therefore reduces to: a no-access background
-// (MPBAC=0) so a user thread faults everywhere it has no explicit region, plus
-// the running thread's regions loaded into the eight RSPAGEn/REPAGEn slots.
+// On RX the MPU checks accesses ONLY in user mode; supervisor is never checked and always
+// permitted (UM sec.17.1.1, the sec.17.3.4 flow). A PRIVILEGED (PM=0) thread keeps full
+// access no matter what these registers hold, and there is no supervisor permission field
+// at all. Enforcement therefore reduces to: a no-access background (MPBAC=0) so a user
+// thread faults everywhere it has no explicit region, plus the running thread's regions
+// loaded into the eight RSPAGEn/REPAGEn slots.
 //
-// Deferred-commit seam (docs/design-mpu-commit-deferred.md): arch_mpu_apply only
-// STASHES the incoming set; kickos_arch_mpu_commit programs the RSPAGEn/REPAGEn slots
-// from the SWINT switch epilogue (switch.S, kickos_rx_restore) AFTER the physical
-// register/PSW swap. Eager apply on RX's deferred SWINT switch would load the incoming
-// region set while the OUTGOING user thread is still physically running -> it faults on
-// its own stack. Name + semantics match the ARM seam (arch_arm_common.cc); RX is its
-// own arch lib, so the stash is local (no cross-arch symbol sharing).
+// Deferred-commit seam (docs/design-mpu-commit-deferred.md): arch_mpu_apply only STASHES
+// the incoming set; kickos_arch_mpu_commit programs the RSPAGEn/REPAGEn slots from the
+// SWINT switch epilogue (switch.S, kickos_rx_restore) AFTER the physical register/PSW
+// swap. Eager apply on RX's deferred SWINT switch would load the incoming region set while
+// the OUTGOING user thread is still physically running -> it faults on its own stack.
 #if KICKOS_HAVE_MPU
 namespace
 {
@@ -502,9 +492,8 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 
 // Program the RX MPU from the stash. Called from the SWINT switcher (kickos_rx_pendsw
 // -> kickos_rx_restore, and the arch_start first-entry path) after the physical swap.
-// That handler runs with PSW.I=0, so the register writes are already atomic vs
-// interrupts; the arch_irq_save/restore (IPL) bracket is nested-safe insurance and
-// matches the seam contract. regions/n are bound to the stash so the body is verbatim.
+// That handler already runs with PSW.I=0; the arch_irq_save/restore bracket keeps the seam
+// callable from anywhere else.
 void kickos_arch_mpu_commit(void)
 {
     arch_irq_state_t const irq = arch_irq_save();
@@ -516,7 +505,7 @@ void kickos_arch_mpu_commit(void)
     }
     // One-time: background = no user access (UBAC=0), then enable. Overlaps OR
     // their permission bits with the background (UM sec.17.1.4), so a nonzero
-    // MPBAC would silently grant every user thread -- it must stay 0. MPOPI.INV
+    // MPBAC would silently grant every user thread, so it must stay 0. MPOPI.INV
     // clears any stale region V bits (reset leaves REPAGEn.V=0, but be explicit).
     // MPU registers are supervisor-only and not PRCR-gated (UM Table 13.1), so no
     // unlock. MPEN takes effect on the RTE into user mode (UM sec.17.2.3).
@@ -528,12 +517,9 @@ void kickos_arch_mpu_commit(void)
         reg32(MPU_MPEN) = MPU_MPEN_MPEN;
         mpu_ready = true;
     }
-    // Skip the register rewrite when the incoming set already matches what the MPU
-    // holds. RR ping-pong between two PRIVILEGED threads reprograms the IDENTICAL
-    // kernel-domain region on every timer tick, and RX supervisor is never checked,
-    // so the registers already describe a correct set -- rewriting them (from the
-    // timer ISR, at RR frequency) only adds MPU-bus traffic. Compare against the
-    // last-applied set; on a match the hardware is already correct, so return.
+    // Skip the register rewrite when the incoming set already matches the last applied
+    // one: RR ping-pong between privileged threads would otherwise reprogram the identical
+    // kernel-domain region from the timer ISR on every tick.
     static struct arch_mpu_region s_last[MPU_REGION_COUNT];
     static size_t s_last_n = ~static_cast<size_t>(0);
     bool same = (n == s_last_n);
@@ -551,8 +537,8 @@ void kickos_arch_mpu_commit(void)
         // (start) BEFORE REPAGEn, and put V in the REPAGEn write so a slot is never
         // momentarily valid with a stale end/attr.
         // A region the 16-byte pages cannot represent EXACTLY is fail-closed (slot left
-        // V=0), never masked wider -- rounding base/end to page bounds would grant up to
-        // 15 bytes beyond the region on each side (matches ARM PMSA / RISC-V PMP skip).
+        // V=0), never masked wider: rounding base/end to page bounds would grant up to
+        // 15 bytes beyond the region on each side.
         for (size_t i = 0; i < MPU_REGION_COUNT; i++)
         {
             uintptr_t const rsp = MPU_RSPAGE_BASE + i * MPU_REGION_STRIDE;
@@ -584,13 +570,11 @@ void kickos_arch_mpu_commit(void)
                 reg32(rep) = 0; // clears V -> slot inactive
             }
         }
-        // UM sec.17.4.3: read back an MPU register so the writes are in effect before
-        // the scheduler's RTE drops into user mode -- the RX visibility barrier (the
-        // ARM DSB/ISB analog). The asm consumes the value so the volatile load is
-        // really issued and is not reordered past here.
+        // UM sec.17.4.3: read back an MPU register so the writes are in effect before the
+        // scheduler's RTE drops into user mode. The asm consumes the value so the volatile
+        // load is really issued and is not reordered past here.
         uint32_t const mpu_sync = reg32(MPU_MPEN);
         __asm volatile("" ::"r"(mpu_sync) : "memory");
-        // Cache the applied set so an identical follow-up switch skips the rewrite.
         s_last_n = n;
         for (size_t i = 0; i < n and i < MPU_REGION_COUNT; i++)
         {
@@ -648,6 +632,20 @@ int arch_bitband_present(void)
 
 
 // --- Interrupt controller (ICUD) --------------------------------------------
+// Chip hooks, both lone-TU seams (arch/CMakeLists.txt states the rule).
+//
+// kickos_rx_dev_dispatch: called from the shared first-level ISR. The chip reads its own
+// status registers and must call kickos_isr_irq ONCE PER ASSERTED SOURCE; a group vector
+// can assert several at once (UM sec.15.5.4 Fig.15.17 p.542). It also owns the per-source
+// clear, so the generic entry writes no IRn: an edge vector's IRn is already cleared by the
+// ICU on acceptance, and a level group source's must not be written (UM sec.15.2.1 p.480).
+//
+// kickos_rx_group_arm: arm (on != 0) or disarm a GROUP-source logical line at its
+// GENxxx.ENj. The group registers, the group -> vector map and the lazy arming of the group
+// vector itself belong to the chip; the core owns only the line-space split.
+void kickos_rx_dev_dispatch(void);
+void kickos_rx_group_arm(int line, int on);
+
 // Self-bracketed (arch_irq_save/restore) so the soft-line g_irq_masked/g_irq_pending
 // RMWs are atomic against a device ISR regardless of the caller: kos_irq_inject/unmask
 // reach here without an IrqLock (syscall.cc), and a bare RMW preempted mid-update would
@@ -662,6 +660,10 @@ void arch_irq_mask(int line)
     if (line < SOFT_IRQ_LINES)
     {
         g_irq_masked |= (1u << static_cast<unsigned>(line));
+    }
+    else if (line >= GROUP_LINE_BASE)
+    {
+        kickos_rx_group_arm(line, 0);
     }
     else
     {
@@ -681,7 +683,7 @@ void arch_irq_unmask(int line)
     {
         g_irq_masked &= ~(1u << static_cast<unsigned>(line));
         // Latch-and-coalesce: a raise taken on this soft line while masked
-        // redelivers now through SWINT2 -- the normal ISR path, not a direct post.
+        // redelivers now through SWINT2: the normal ISR path, not a direct post.
         if ((g_irq_pending & (1u << static_cast<unsigned>(line))) != 0)
         {
             g_irq_pending &= ~(1u << static_cast<unsigned>(line));
@@ -689,12 +691,19 @@ void arch_irq_unmask(int line)
             reg8(ICU_SWINT2R) = SWINT2R_SWINT2;
         }
     }
+    else if (line >= GROUP_LINE_BASE)
+    {
+        // No IPR/IER here: a group SOURCE has neither. Its mask is GENxxx.ENj, and the
+        // group VECTOR's own IPR/IER are armed lazily by the chip once some source in
+        // that group is armed.
+        kickos_rx_group_arm(line, 1);
+    }
     else
     {
         // Program the source priority BELOW the kernel lock level before enabling, so
         // a device line cannot preempt an IrqLock-held section (the armv7m NVIC_IPR
         // care). IPR is shared per the ICU source table, so the index comes from
-        // vector_to_ipr -- NOT the vector (IR/IER stay vector-indexed via icu_ier_set).
+        // vector_to_ipr, NOT the vector (IR/IER stay vector-indexed via icu_ier_set).
         // A real ICU line is preserve-correct already: IR latches a request while
         // IER=0, so re-enabling here fires a raise taken while masked.
         reg8(ICU_IPR_BASE + vector_to_ipr(line)) = static_cast<uint8_t>(IPL_DEVICE);
@@ -714,9 +723,20 @@ void arch_irq_clear_pending(int line)
     {
         g_irq_pending &= ~(1u << static_cast<unsigned>(line));
     }
+    else if (line >= GROUP_LINE_BASE)
+    {
+        // A group source is level-detected: GRPxxx.ISj and the group's IRn both FOLLOW
+        // the source and go down only when the peripheral request clears or GENxxx.ENj
+        // is written 0 (UM sec.15.5.4 p.542). GRPxxx is read-only and these groups have
+        // no clear register at all (sec.15.2.25 p.505 defines one only for the edge
+        // groups IE0/BE0). So there is nothing kernel-side to drop: the clear is the
+        // DRIVER's own peripheral write (RULE L1). Deliberately a no-op, not an error:
+        // the level-rearm path calls this before every unmask.
+    }
     else
     {
-        // Real ICU line: drop the latched request flag (IR is vector-indexed).
+        // Real ICU line: drop the latched request flag (IR is vector-indexed). Only an
+        // EDGE vector may be written; see the ICU_IR_BASE note in regs.h.
         reg8(ICU_IR_BASE + static_cast<unsigned>(line)) = 0;
     }
     arch_irq_restore(s);
@@ -724,8 +744,8 @@ void arch_irq_clear_pending(int line)
 
 void arch_irq_inject(int irq)
 {
-    // Only logical lines are injectable. A real peripheral line cannot be pended from
-    // software on RX, and drivers never inject -- so anything >= SOFT_IRQ_LINES drops.
+    // Only logical lines are injectable: a real peripheral line cannot be pended from
+    // software on RX, so anything >= SOFT_IRQ_LINES drops.
     if (irq < 0 or irq >= SOFT_IRQ_LINES)
     {
         return;
@@ -765,24 +785,35 @@ __attribute__((interrupt)) void kickos_rx_timer_isr(void)
     g_in_isr--;
 }
 
-// Buffered-console drain ISR. Routed from INTB[87] (SCI6 TXI6) by the chip's
-// startup.S; the ring/backend/line come from the chip via arch_console_tx_backend,
-// and console_buffer_init unmasks the line + arms the ring. TXI6 is edge-triggered
-// (UM sec.15.3.1): the ICU clears IR087 on accept, so no source flag is touched
-// here -- console_tx_isr pushes bytes and gates SCR.TIE, which re-arms the edge.
+// SCI6 transmit-data-empty (TXI6, vector 87), routed from INTB[87] by the chip's
+// startup.S. TXI6 is edge-triggered (UM sec.15.3.1 Table 15.5 p.523): the ICU clears IR087
+// on accept, so no source flag is touched here; console_tx_isr pushes bytes and gates
+// SCR.TIE, which re-arms the edge.
+//
+// The INTB slot is fixed in flash, so this vector is SHARED between two owners over the
+// life of the boot. Once kos_console_publish has run console_tx_deinit (handler detached,
+// line masked, ring disarmed) a raise here can only belong to a driver that claimed vector
+// 87; routing it to console_tx_isr would find an empty ring and call the backend's
+// irq_disable, clearing SCR.TIE behind the driver's back.
 __attribute__((interrupt)) void kickos_rx_console_txi_isr(void)
 {
     g_in_isr++;
-    console_tx_isr();
+    if (console_tx_armed() != 0)
+    {
+        console_tx_isr();
+    }
+    else
+    {
+        kickos_isr_irq(SCI6_TXI_VECTOR);
+    }
     g_in_isr--;
 }
 
 // SWINT2 doorbell: the software IRQ controller's delivery vector. arch_irq_inject
 // latched the logical line in g_inject_line and pended SWINT2; run its bound handler.
-// Clear IR026 first -- a software interrupt's request flag is NOT auto-cleared on
-// accept (the same omission that livelocked SWINT), so leaving it set re-fires the
-// doorbell forever. kickos_isr_irq runs the handler, which masks the line itself
-// (irq_event_isr / the null-object default), so no masking here.
+// Clear IR026 first: a software interrupt's request flag is NOT auto-cleared on accept,
+// so leaving it set re-fires the doorbell forever. kickos_isr_irq runs the handler, which
+// masks the line itself (irq_event_isr / the null-object default), so no masking here.
 __attribute__((interrupt)) void kickos_rx_swint2(void)
 {
     reg8(ICU_IR_BASE + SWINT2_VECTOR) = 0;
@@ -796,33 +827,27 @@ __attribute__((interrupt)) void kickos_rx_swint2(void)
     g_in_isr--;
 }
 
-// Chip hook: name the pending real-device line for the shared default ISR. The INTB
-// routes EVERY device source to kickos_rx_default_irq and the RXv3 core has no cheap
-// current-vector read, so the first-level ISR cannot identify the line on its own. The
-// fallback body is in kickos_rx_dev_pending_line_default.cc.
-int kickos_rx_dev_pending_line(void);
-
-// Device-line default entry: the real first-level ISR for every INTB device slot.
-// The chip hook names the fired line (the one fact RX cannot derive); the rest is
-// the generic first-level sequence, identical to the SWINT2 inject path above and
-// the riscv .Lextdev dispatch -- clear the ICU edge-request flag, then post the
-// bound target. kickos_isr_irq runs the handler, which masks the line at the ICU
-// IER (irq_event_isr / the null-object default), so the unprivileged driver
-// services it without a re-fire; no masking here. (A level source keeps IRn
-// asserted -- writing 0 is then a no-op -- but the IER mask still gates re-entry.)
-// With no chip override the hook returns -1 and this is inert.
+// Device-line default entry: the shared first-level ISR for every INTB device slot that
+// has no dedicated one. RXv3 has no cheap current-vector read, so this entry cannot name
+// the source; the chip reads its OWN status registers and posts what it finds. With no
+// chip override the fallback does nothing and this is inert.
 __attribute__((interrupt)) void kickos_rx_default_irq(void)
 {
     g_in_isr++;
-    int line = kickos_rx_dev_pending_line();
-    // Bound the hook's line to the RX ICU IR register space (256 vectors, one byte each)
-    // before indexing it: a bogus vector from a future chip override must not scribble an
-    // arbitrary register (the reg8 write precedes kickos_isr_irq's own range check).
-    if (line >= 0 and line < 256)
-    {
-        reg8(ICU_IR_BASE + static_cast<unsigned>(line)) = 0;
-        kickos_isr_irq(line);
-    }
+    kickos_rx_dev_dispatch();
+    g_in_isr--;
+}
+
+// SCI6 receive-data-full (RXI6, vector 86), routed from INTB[86] by the chip's startup.S.
+// It needs a DEDICATED slot rather than the shared dispatch above because an edge source
+// cannot be discovered after the fact: the ICU clears IR086 when the request is accepted
+// (UM sec.15.2.1(1) p.480), so any dispatch would find the flag it must test already 0.
+// Nothing is written here for the same reason, and a write after the handler would discard
+// a request latched while irq_event_isr had the line IER-masked, i.e. drop a received byte.
+__attribute__((interrupt)) void kickos_rx_sci6_rxi_isr(void)
+{
+    g_in_isr++;
+    kickos_isr_irq(SCI6_RXI_VECTOR);
     g_in_isr--;
 }
 
@@ -851,7 +876,7 @@ void kickos_rxv3_init(void)
     icu_ier_set(SWINT2_VECTOR, true);
 
     // CMTW1: free-running 32-bit counter (CCLR=001 disables clearing, so it wraps
-    // at 2^32 on its own), PCLK/8, no interrupt -- read-extended in software (sec.5).
+    // at 2^32 on its own), PCLK/8, no interrupt; read-extended in software (sec.5).
     // It is also the raw telemetry trace clock (arch_trace_now).
     reg16(CMTW1_BASE + CMTW_CMWSTR) = 0;
     reg32(CMTW1_BASE + CMTW_CMWCNT) = 0;

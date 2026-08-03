@@ -1,30 +1,26 @@
 /* SPDX-License-Identifier: CECILL-C
  * Copyright (c) 2026 Philippe Leduc
  *
- * Linker script for the ESP32-C6-WROOM-1 (ESP-RISC-V, RV32IMAC). The image links
- * to run from the unified HP SRAM (the ROM loader copies segments in, so LMA == VMA
- * and the Reset_Handler .data copy is a no-op) -- the classic-ESP32 posture. A
- * bootable image (esptool elf2image) + the exact SRAM sub-regions are HW-pass work.
+ * Linker script for the ESP32-C6-WROOM-1 (ESP-RISC-V, RV32IMAC). The image links to
+ * run from the unified HP SRAM; the ROM loader places every segment at its VMA, so
+ * LMA == VMA and the Reset_Handler .data copy is a no-op.
  *
- * ESP32-C6 (C6 TRM Table 1.4-1): the HP SRAM sits in the single unified
- * Instruction/Data region 0x4000_0000..0x4FFF_FFFF (R/W, one address for both fetch
- * and load/store -- unlike the classic ESP32's split IRAM/DRAM windows). So ONE pow2
- * NAPOT code region covers unprivileged instruction fetch AND the shared-RX read.
- * 512 KiB unified HP SRAM at 0x4080_0000. _start (.text.init) is placed first.
+ * The HP SRAM sits in the single unified Instruction/Data region
+ * 0x4000_0000..0x4FFF_FFFF (C6 TRM Table 1.4-1): R/W, one address for both fetch and
+ * load/store, so ONE pow2 NAPOT code region covers unprivileged instruction fetch AND
+ * the shared-RX read. 512 KiB of it at 0x4080_0000. _start (.text.init) is placed first.
  * Chip<->arch contract: __kickos_ram_start/_end (the arch_ram_alloc pool), _estack,
  * and the C-runtime _sidata/.../_ebss symbols.
  *
  * Under KICKOS_HAVE_MPU the script also carves the two linker-defined regions every
- * UNPRIVILEGED thread needs under PMP enforcement (see arch_domain_static_regions),
- * exactly as the qemu-riscv virt.ld does (shared rv32imac PMP backend):
- *   __kickos_code_start/_end     -- all code+rodata as ONE pow2 NAPOT region (RX)
- *   __kickos_appdata_start/_end  -- app .data/.bss as ONE pow2 NAPOT region (RW-NX)
- * All-SRAM target: the code region is carved from the SRAM image at ORIGIN, which is
- * 8 MiB-aligned (0x4080_0000), so any pow2 sub-block up to 8 MiB is naturally
- * NAPOT-aligned. The single gp small-data window (__global_pointer$ +/- 0x800) is
- * anchored INSIDE .appdata: the KickOS libs are built -msmall-data-limit=0 (emit no
- * small-data), so the window holds only app + C++-runtime small-data and is covered
- * by the app grant.
+ * UNPRIVILEGED thread needs under PMP enforcement (see arch_domain_static_regions):
+ *   __kickos_code_start/_end     all code+rodata as ONE pow2 NAPOT region (RX)
+ *   __kickos_appdata_start/_end  app .data/.bss as ONE pow2 NAPOT region (RW-NX)
+ * The code region is carved from the SRAM image at ORIGIN, which is 8 MiB-aligned
+ * (0x4080_0000), so any pow2 sub-block up to 8 MiB is naturally NAPOT-aligned. The
+ * single gp small-data window (__global_pointer$ +/- 0x800) is anchored INSIDE
+ * .appdata: the KickOS libs are built -msmall-data-limit=0 (emit no small-data), so the
+ * window holds only app + C++-runtime small-data and is covered by the app grant.
  */
 
 ENTRY(_start)
@@ -42,14 +38,13 @@ _kernel_stack_size = 16K;
    still pow2-aligned), so each region base is naturally aligned to its size. Raise
    _code_size / _appdata_size to the next pow2 if an ASSERT below trips. */
 #if KICKOS_HAVE_MPU
-/* Bumped 64K->128K: the full-C++ opt-in folds .eh_frame + .gcc_except_table INTO this
-   region (retained, not discarded -- see .text), and libstdc++/libsupc++ text pushes
-   real code+rodata past 64K. */
+/* 128K, not 64K: the full-C++ opt-in folds .eh_frame + .gcc_except_table INTO this
+   region (retained, not discarded, see .text) and libstdc++/libsupc++ text pushes real
+   code+rodata past 64K. */
 _code_size = 128K;
 /* App writable window: the pad (window minus app statics + runtime + gp small-data) IS
-   the newlib heap; cxxtest's measured peak (~4.2K on RISC-V DWARF) and printf both fit
-   the pad a 32K window leaves (~14K, matches virt.ld). Override it down for a tight
-   freestanding demo. */
+   the newlib heap. cxxtest's measured peak (~4.2K on RISC-V DWARF) and printf both fit
+   the ~14K pad a 32K window leaves. */
 #ifndef KICKOS_APPDATA_SIZE
 #define KICKOS_APPDATA_SIZE 32K
 #endif
@@ -74,12 +69,11 @@ SECTIONS
         *(.srodata .srodata.*)
         /* DWARF EH unwind + landing-pad tables for the full-C++ opt-in (a plain
            freestanding app is built -fno-exceptions and emits none of these, so the
-           section is empty bar the terminator). RISC-V uses DWARF .eh_frame (unlike
-           ARM's linker-defined .ARM.exidx); with -nostartfiles there is no crtbegin
-           frame_dummy, so Reset_Handler registers it at boot via a WEAK __register_frame
-           (called only in a FULL_CXX link -- see chip_esp32c6.cc). KEEP so --gc-sections
-           cannot drop it, contiguous, with the LONG(0) terminator standing in for
-           crtend's __FRAME_END__. */
+           section is empty bar the terminator). With -nostartfiles there is no crtbegin
+           frame_dummy, so Reset_Handler registers the table at boot via a WEAK
+           __register_frame (chip_esp32c6.cc). KEEP so --gc-sections cannot drop it,
+           contiguous, with the LONG(0) terminator standing in for crtend's
+           __FRAME_END__. */
         *(.gcc_except_table .gcc_except_table.*)
         . = ALIGN(4);
         __eh_frame_start = .;
@@ -129,24 +123,23 @@ SECTIONS
 #if KICKOS_HAVE_MPU
     /* The code NAPOT region spans [ORIGIN, ORIGIN + _code_size). The end is a symbol
        (not a section pad) so the image carries no zero fill. The gap between
-       _code_used_end and __kickos_code_end is unused SRAM covered by the RX grant --
-       harmless (an unprivileged thread never branches there). */
+       _code_used_end and __kickos_code_end is unused SRAM left inside the RX grant. */
     __kickos_code_end = __kickos_code_start + _code_size;
 
     _sidata = LOADADDR(.data);
 
-    /* Enforcement layout (mirrors mk64f.ld). Writable state SPLIT kernel-side vs app-
-       side with an INVERTED selection: the CLOSED KickOS-owned set (kernel/arch/chip/
-       lib) is captured FIRST via `archive:member` colon syntax into the kernel .data/
-       .bss right after the code region; the .appdata/.appbss catch-alls take EVERYTHING
-       ELSE, including the single gp small-data window. The KickOS libs are built
-       -msmall-data-limit=0, so they emit NO .sdata/.sbss -- their former small globals
-       (g_arch_current, g_clint_msip, ...) land in ordinary .data / .bss and are captured
-       here kernel-side. The gp window (.sdata/.sbss + __global_pointer$) holds only
-       app + C++-runtime small-data and moves into .appdata (below). Kernel .data is
-       pinned at __kickos_code_end; the app window is a pow2 NAPOT region aligned above
-       the kernel data by a top-level ALIGN (kernel .data/.bss are non-empty and advance
-       the region pointer, so no explicit-VMA empty-section fold-back).
+    /* Enforcement layout. Writable state SPLIT kernel-side vs app-side with an INVERTED
+       selection: the CLOSED KickOS-owned set (kernel/arch/chip/lib) is captured FIRST via
+       `archive:member` colon syntax into the kernel .data/.bss right after the code
+       region; the .appdata/.appbss catch-alls take EVERYTHING ELSE, including the single
+       gp small-data window. The KickOS libs are built -msmall-data-limit=0, so they emit
+       NO .sdata/.sbss and their small globals (g_arch_current, g_clint_msip, ...) land in
+       ordinary .data / .bss and are captured here kernel-side. The gp window
+       (.sdata/.sbss + __global_pointer$) holds only app + C++-runtime small-data and
+       moves into .appdata (below). Kernel .data is pinned at __kickos_code_end; the app
+       window is a pow2 NAPOT region aligned above the kernel data by a top-level ALIGN
+       (kernel .data/.bss are non-empty and advance the region pointer, so no
+       explicit-VMA empty-section fold-back).
 
        NO `AT` clause on ANY loadable section here: the ROM first-stage loader places
        each segment at its VMA, so a load address that differs from the VMA is never
@@ -274,9 +267,9 @@ KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 /* The bootable image is built from section VMAs (esptool elf2image) and the ROM
    first-stage loader places every segment at its VMA, so a load address that differs
    from the VMA is never written by anything. Reset_Handler's LMA->VMA copies would then
-   read uninitialized SRAM and overwrite the correctly loaded initialized data -- silent,
-   unit-dependent corruption of whatever global lands there. Any `AT` clause added to a
-   loadable section trips this. */
+   read uninitialized SRAM and overwrite the correctly loaded initialized data, silently
+   corrupting whatever global lands there. Any `AT` clause on a loadable section trips
+   this. */
 ASSERT(_sidata == _sdata,
        "KickOS: .data LMA != VMA -- the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 

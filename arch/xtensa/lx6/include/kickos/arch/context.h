@@ -6,12 +6,12 @@
 // windowed ABI keeps the bulk of a thread's register state in the physical AR
 // window file; the switch flushes ALL live windows of the outgoing thread to its
 // OWN stack (SPILL_ALL_WINDOWS) before the SP swap, so on resume only three words
-// are needed -- the rest is reloaded lazily from the stack by the window-underflow
+// are needed; the rest is reloaded lazily from the stack by the window-underflow
 // handler (startup.S) as the thread returns up its call chain. See switch.S.
 //
-// No npriv/resting_npriv field (unlike the ARM ports): the classic ESP32 core has
-// no privileged/unprivileged CPU split, so KickOS runs all-privileged and a
-// syscall is a plain call. Privilege is a no-op on this arch.
+// There is no npriv/resting_npriv field: the classic ESP32 core has no
+// privileged/unprivileged CPU split, so KickOS runs all-privileged and a syscall is a
+// plain call.
 
 #ifndef KICKOS_ARCH_CONTEXT_H
 #define KICKOS_ARCH_CONTEXT_H
@@ -42,16 +42,16 @@ struct arch_context
     // lives in its interrupt frame, not here.) Offset 4.
     uint32_t ps;
 
-    // Saved return address (a0) WITH its top-2-bit window CALLINC field intact --
-    // the value the resuming `retw` uses to rotate the window back to the caller
-    // and drive the underflow reload. COOP only. Offset 8.
+    // Saved return address (a0) WITH its top-2-bit window CALLINC field intact: the
+    // resuming `retw` uses that field to rotate the window back to the caller and
+    // drive the underflow reload. COOP only. Offset 8.
     uint32_t pc;
 
     // Which resume path reconstitutes this thread: KICKOS_RESUME_COOP (set by the
     // xtensa_switch save when a running thread blocks) or KICKOS_RESUME_IRQ (set by
     // the level-1 interrupt exit when it preempts this thread, AND by
-    // arch_context_init for a FRESH thread -- a fresh thread is started via the same
-    // rfe restore path as a preempted one, from a fabricated interrupt frame, so its
+    // arch_context_init for a FRESH thread: a fresh thread starts via the same rfe
+    // restore path as a preempted one, from a fabricated interrupt frame, so its
     // outermost trampoline frame is a real `entry`-established window rather than a
     // phantom retw target). Offset 12.
     uint32_t resume_kind;
@@ -59,8 +59,8 @@ struct arch_context
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     // Telemetry only: the owning thread's trace id, stamped once by
     // arch_trace_stamp_id (thread_create) and read by the switch path to emit the
-    // {from,to} SWITCH record from the physically-swapped contexts. OFFSET 16 --
-    // switch.S / startup.S hard-code it. Elided with the whole telemetry path.
+    // {from,to} SWITCH record from the physically-swapped contexts. switch.S /
+    // startup.S hard-code it at OFFSET 16.
     uint32_t trace_tid;
 #endif
 };

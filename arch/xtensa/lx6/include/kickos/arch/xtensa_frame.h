@@ -7,13 +7,12 @@
  * fabricated for a fresh thread's first resume by arch_context_init (arch/xtensa/
  * lx6/arch_xtensa.cc). Both the save/restore asm and the C++ fabricator index this
  * frame, so the offsets live here once instead of being hand-synced across the two
- * files. Asm-safe: plain object/function-like #defines only -- no C types and no
- * literal suffixes gas cannot parse -- includable from both a .cc and a cpp-
- * processed .S.
+ * files. Asm-safe: plain object/function-like #defines only, with no C types and no
+ * literal suffixes gas cannot parse, so this is includable from both a .cc and a
+ * cpp-processed .S.
  *
- * Pure-asm frame: no C struct mirrors it, so there is nothing to static_assert the
- * offsets against (unlike the arch_context CTX_* offsets, which context.h defines
- * and arch_xtensa.cc anchors to struct arch_context via offsetof static_asserts).
+ * Pure-asm frame: no C struct mirrors it, so there is nothing to static_assert these
+ * offsets against.
  */
 #ifndef KICKOS_ARCH_XTENSA_FRAME_H
 #define KICKOS_ARCH_XTENSA_FRAME_H

@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // ESP32-C6 USB Serial/JTAG registers (TRM v1.2 ch.32). The native USB console; the
-// ROM leaves it enumerated. KickOS does NOT use it as the console (host-CDC-drain
-// gated + re-enumerates on reset) -- UART0 is the real console. Kept for reference.
+// ROM leaves it enumerated. NOT used as the console: it is gated on the host draining
+// CDC and it re-enumerates on reset. UART0 is the console.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_USB_SERIAL_JTAG_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_USB_SERIAL_JTAG_H

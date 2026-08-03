@@ -12,7 +12,7 @@
  * (RX72M Group User's Manual: Hardware, r01uh0804ej0120, Rev.1.20.)
  */
 
-#include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the INTB table size */
+#include <kickos/board_config.h>   /* KICKOS_RX_INTB_ENTRIES: the INTB table size */
 
     .text
 
@@ -31,10 +31,13 @@
 /* ------------------------------------------------------------------------- */
 /* Relocatable interrupt vector table (INTB). Slot n -> handler for INT/IRQ n.  */
 /* Slots 0..15 carry no peripheral source; slot 1 = syscall trap (regs.h        */
-/* SYSCALL_VECTOR), slot 27 = SWINT (the deferred context switch, PendSV analog),*/
-/* slot 30 = CMTW0 compare match (CMWI0), slot 87 = SCI6 TXI6 (buffered console  */
-/* drain). Slot 26 = SWINT2, the software-inject doorbell: arch_irq_inject latches  */
+/* SYSCALL_VECTOR), slot 27 = SWINT (the deferred context switch),               */
+/* slot 30 = CMTW0 compare match (CMWI0), slot 86 = SCI6 RXI6, slot 87 = SCI6 TXI6 */
+/* (buffered console drain, or a userspace TX driver after the console handover).  */
+/* Slot 26 = SWINT2, the software-inject doorbell: arch_irq_inject latches         */
 /* the logical line + pends SWINT2, and kickos_rx_swint2 dispatches it.            */
+/* Every other device slot goes to the shared default entry, which asks the chip   */
+/* to demux; that is how the group vectors (106..113) are served.                  */
 /* ------------------------------------------------------------------------- */
     .section .rvectors, "a"
     .balign 4
@@ -50,12 +53,13 @@ _g_rvectors:
     .word _kickos_rx_default_irq      /* 28 */
     .word _kickos_rx_default_irq      /* 29 */
     .word _kickos_rx_timer_isr        /* 30: CMTW0 compare match (CMWI0) */
-    .rept (87 - 31)
-    .word _kickos_rx_default_irq      /* 31..86 */
+    .rept (86 - 31)
+    .word _kickos_rx_default_irq      /* 31..85 */
     .endr
-    .word _kickos_rx_console_txi_isr  /* 87: SCI6 TXI6 -> buffered console drain */
-    .rept (KICKOS_MAX_IRQ - 88)
-    .word _kickos_rx_default_irq      /* 88..255 */
+    .word _kickos_rx_sci6_rxi_isr     /* 86: SCI6 RXI6 -> tier-1 line 86 */
+    .word _kickos_rx_console_txi_isr  /* 87: SCI6 TXI6 -> console drain, or line 87 */
+    .rept (KICKOS_RX_INTB_ENTRIES - 88)
+    .word _kickos_rx_default_irq      /* 88..255, incl. the group vectors 106..113 */
     .endr
 
 /* ------------------------------------------------------------------------- */

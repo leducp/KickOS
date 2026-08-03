@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Synchronous IPC: endpoint create + the send/recv/call/reply rendezvous. Split
-// out of syscall.cc; the mem funnel it leans on (ep_copy / write_recv_info /
-// user_readable_ok / user_writable_ok) lives in syscall_mem.cc, declared in
-// syscall_internal.h. send/recv/call are FULLY LOCKLESS from the dispatch: each
-// takes its own IrqLock for the resolve/deliver/park then releases it before the
-// resume barrier -- a spanning caller lock would keep BASEPRI raised across
-// wq_confirm_resume and livelock ARM (design section 3). External linkage.
+// Synchronous IPC: endpoint create plus the send/recv/call/reply rendezvous. send, recv
+// and call MUST be entered with no caller-held IrqLock: each takes its own for the
+// resolve/deliver/park then releases it before the resume barrier, and a spanning caller
+// lock would keep BASEPRI raised across wq_confirm_resume and livelock ARM.
 
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
@@ -114,7 +111,7 @@ namespace kickos
             }
             if (e->recv_holders == 0)
             {
-                return -KOS_EPIPE; // F1: dead endpoint -- no receiver can ever exist
+                return -KOS_EPIPE; // dead endpoint: no receiver can ever exist
             }
             Thread* w = wq_pop_highest(e->recv_waiters);
             if (w != nullptr)
@@ -156,8 +153,8 @@ namespace kickos
         {
             return -KOS_EFAULT;
         }
-        // The out-ptr now delivers a kos_recv_info (8 bytes, 4-aligned) -- widened
-        // from a bare badge u32. badge_out == 0 is an info-less recv (see M3 below).
+        // The out-ptr delivers a kos_recv_info (8 bytes, 4-aligned), not a bare badge u32.
+        // badge_out == 0 means an info-less recv, which cannot host a call.
         if (badge_out != 0
             and ((badge_out & (alignof(uint32_t) - 1)) != 0
                  or not user_writable_ok(badge_out, sizeof(kos_recv_info))))
@@ -194,9 +191,9 @@ namespace kickos
                 }
                 if (s->call_state == CALL_SEND_WAIT)
                 {
-                    // A slow-path caller: it needs a reply cap minted into OUR table.
-                    // M3: an info-less recv cannot host a call -- reject this caller
-                    // (ENOSYS) and keep scanning for plain traffic behind it.
+                    // A slow-path caller needs a reply cap minted into OUR table, which an
+                    // info-less recv cannot deliver: reject this caller with ENOSYS and
+                    // keep scanning for plain traffic behind it.
                     if (badge_out == 0)
                     {
                         s->call_state = CALL_NONE; // B1: clear before waking
@@ -235,10 +232,11 @@ namespace kickos
                     KICKOS_ASSERT(rcap >= 0); // the probe above guarantees this
                     write_recv_info(badge_out, KOS_BADGE_NONE, rcap);
                     // Repurpose the caller's ipc to the reply target (in-place buffer,
-                    // reply capacity); it stays parked queue-less in REPLY_WAIT.
+                    // reply capacity); it re-parks on OUR reply-donor list.
                     s->ipc.len = s->call_rx_cap;
                     s->ipc.badge_out = 0;
                     s->call_state = CALL_REPLY_WAIT;
+                    reply_donor_park(c, s);
                     // D1: inherit the caller's priority for the transaction.
                     if (s->prio > c->prio)
                     {
@@ -314,7 +312,7 @@ namespace kickos
             }
             if (e->recv_holders == 0)
             {
-                return -KOS_EPIPE; // dead endpoint -- no receiver can ever exist
+                return -KOS_EPIPE; // dead endpoint: no receiver can ever exist
             }
             Thread* w = wq_peek_highest(e->recv_waiters);
             if (w != nullptr)
@@ -324,6 +322,16 @@ namespace kickos
                 if (w->ipc.badge_out == 0)
                 {
                     return -KOS_ENOSYS; // M3: info-less receiver cannot host a call
+                }
+                if (w->dying)
+                {
+                    // A half-torn table must never take a new cap: the sweep may already
+                    // have passed the slot, so the mint would outlive the thread and
+                    // strand this caller. Unreachable today, since a thread reaches
+                    // exit_current from RUNNING and is thus parked on no recv queue, but
+                    // the sweep now drops IrqLock between chunks and this check is what
+                    // keeps it unreachable.
+                    return -KOS_EPIPE;
                 }
                 if (not cap_has_free_slot(w))
                 {
@@ -358,6 +366,7 @@ namespace kickos
                 sched::detach_current();
                 c->state = ThreadState::BLOCKED;
                 c->wait_queue = nullptr;
+                reply_donor_park(w, c); // off the ready set: `link` is free to re-use
                 sched::wake(w);
             }
             else
@@ -384,9 +393,9 @@ namespace kickos
         return static_cast<int>(c->wait_result); // reply bytes, or -KOS_EPIPE/-KOS_ENOMEM/-KOS_ENOSYS
     }
 
-    // Complete a call: copy the reply into the parked caller's buffer and wake it.
-    // One-shot -- the cap is consumed on EVERY exit. Returns 0, or -KOS_E* (EBADF bad
-    // or non-reply cap, EFAULT bad reply buffer, ESRCH the caller is gone/aborted).
+    // Copies the reply into the parked caller's buffer and wakes it. One-shot: the cap is
+    // consumed on EVERY exit. Returns 0, or -KOS_E* (EBADF bad or non-reply cap, EFAULT bad
+    // reply buffer, ESRCH the caller is gone or aborted).
     int endpoint_reply(int reply_cap, uintptr_t buf, size_t len)
     {
         if (len > KOS_EP_MSG_MAX)
@@ -414,13 +423,20 @@ namespace kickos
         e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
         e->obj = 0;
         e->rights = 0;
+        if (caller != nullptr)
+        {
+            // Must happen in the SAME step as the entry, and before either funnel
+            // recompute below: a donor left linked past its cap is a boost the replier
+            // can never shed.
+            reply_donor_unpark(c, caller);
+        }
         if (caller == nullptr)
         {
             // Cap consumed but no caller to complete: still revert our donation
             // through the funnel (defense-in-depth for when timed-call / kill land
             // and a stale reply becomes reachable). Unreachable today.
             sched::set_prio(c, thread_effective_prio(c));
-            return -KOS_ESRCH; // caller aborted/reused -- a cheap no-op, cap consumed
+            return -KOS_ESRCH; // caller aborted or reused; the cap is consumed regardless
         }
         size_t n = len;
         if (caller->call_rx_cap < n)

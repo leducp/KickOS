@@ -3,14 +3,15 @@
  *
  * Linker script for the ESP32-D0WDQ6 (WROOM-32), Xtensa LX6. The image links
  * ENTIRELY into internal SRAM (no flash cache / XIP), so the ROM loader copies
- * every segment to its RAM load address and jumps -- no second stage, no MMU
+ * every segment to its RAM load address and jumps: no second stage, no MMU
  * setup (see startup.S). Addresses are from the ESP32 TRM
  * 1.3.2 "Embedded Memory" (Table 1-3, internal SRAM address mapping):
  *
- *   Internal SRAM0 (IRAM, exec): 0x4007_0000 .. 0x4009_FFFF (192 KiB; low 64 KiB
- *                                is the cache region) -- code links at 0x4008_0000.
- *   Internal SRAM2 (DRAM, data): 0x3FFA_E000 .. 0x3FFD_FFFF (200 KiB) -- data links
- *                                at 0x3FFB_0000.
+ *   Internal SRAM0 (IRAM, exec): 0x4007_0000 .. 0x4009_FFFF (192 KiB; the low
+ *                                64 KiB is the cache region), so code links at
+ *                                0x4008_0000.
+ *   Internal SRAM2 (DRAM, data): 0x3FFA_E000 .. 0x3FFD_FFFF (200 KiB), so data
+ *                                links at 0x3FFB_0000.
  *
  * IRAM is word-access only, so .rodata (byte-addressable strings/const data) lives
  * in DRAM, not with .text.
@@ -146,9 +147,9 @@ KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 /* The bootable image is built from section VMAs (esptool elf2image) and the ROM
    first-stage loader places every segment at its VMA, so a load address that differs
    from the VMA is never written by anything. Reset_Handler's LMA->VMA copy would then
-   read uninitialized SRAM and overwrite the correctly loaded initialized data -- silent,
-   unit-dependent corruption of whatever global lands there. Any `AT` clause added to a
-   loadable section trips this. */
+   read uninitialized SRAM and overwrite the correctly loaded initialized data, silently
+   corrupting whatever global lands there. Any `AT` clause on a loadable section trips
+   this. */
 ASSERT(_sidata == _sdata,
        "KickOS: .data LMA != VMA -- the ROM loader places segments at their VMAs, so the LMA holds no image bytes (drop the AT clause)")
 

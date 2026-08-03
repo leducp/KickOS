@@ -4,14 +4,13 @@
 // ESP32-C6 interrupt-source numbers.
 //
 // Two distinct numbering spaces meet on this core:
-//  1. CPU interrupt IDs (0..31). The C6 vectors mcause = ID (Espressif's custom
-//     scheme, not the standard mcause=11). The local CLINT owns 3 (msip) and 7
-//     (mtip); external device IDs come from 1-2, 5-6, 8-31. The two IDs KickOS
-//     claims -- the software-inject doorbell (31) and the real-device line (30) --
-//     are owned by the shared arch header <kickos/arch/rv_trap_ids.h>
-//     (KICKOS_RV_INJECT_DOORBELL_CPU_INT / KICKOS_RV_DEV_CPU_INT) so switch.S and
-//     the chip layer cannot drift; they are NOT redefined here. Mirrored below as
-//     enumerators for reference only.
+//  1. CPU interrupt IDs (0..31). The C6 vectors mcause = ID, not the standard
+//     mcause = 11. The local CLINT owns 3 (msip) and 7 (mtip); external device IDs
+//     come from 1-2, 5-6, 8-31. The two IDs KickOS claims (software-inject doorbell
+//     31, real-device line 30) are owned by the shared arch header
+//     <kickos/arch/rv_trap_ids.h> (KICKOS_RV_INJECT_DOORBELL_CPU_INT /
+//     KICKOS_RV_DEV_CPU_INT) and are NOT redefined here; the enumerators below only
+//     mirror them.
 //  2. Logical kernel IRQ lines (kickos_isr_irq / irq_register). Chip-local.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_IRQ_H
@@ -21,7 +20,12 @@
 
 namespace kickos::esp32c6::irq
 {
-    // Logical kernel IRQ line: UART0 TX-empty -> buffered console ring drain.
+    // Logical kernel IRQ lines. UART0_TX_LINE is the GROUPED UART0 line: every UART0
+    // sub-source (TX-empty, RX-full, RX-timeout, overrun, framing, parity) shares one
+    // interrupt-matrix source (no.43, TRM section 10.3.1) and one UART_INT_ST word, and the
+    // only kernel-owned mask on this chip gates the whole CPU interrupt, so the
+    // sub-sources cannot be separately maskable lines. The chip demuxes them
+    // (kickos_rv_ext_dispatch_dev) and they all post here.
     enum kernel_line : int
     {
         UART0_TX_LINE = 16,
