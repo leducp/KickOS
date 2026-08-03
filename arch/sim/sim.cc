@@ -246,12 +246,13 @@ namespace
         SimContext* c = reinterpret_cast<SimContext*>(p);
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
         // A new thread's first run resumes HERE (not after a swapcontext), so emit
-        // its switch-in record before running its body. The ucontext was created
-        // with IRQ signals blocked (arch_context_init) precisely so no ISR can
-        // preempt between the physical swap and this emit; unblock them only now.
+        // its switch-in record before running its body.
         trace_emit_switch_in();
-        sigprocmask(SIG_UNBLOCK, &sim().irq_signals, nullptr);
 #endif
+        // arch_context_init blocked the IRQ signals; this is the matching unblock, and
+        // it must precede the arena transition below, whose arch_irq_restore is exact
+        // and would otherwise re-block them for this thread's whole life.
+        sigprocmask(SIG_UNBLOCK, &sim().irq_signals, nullptr);
         // Enter user code under this thread's OWN resting MPU posture. arch_mpu_apply
         // at the starting switch left the arena raised (and recorded this thread's set);
         // lower to it now, on this thread's own stack, which the gap-based lower keeps
@@ -547,7 +548,7 @@ namespace
         isr_frame_leave(interrupted);
     }
 
-    void on_sigsegv(int, siginfo_t* si, void*)
+    void on_sigsegv(int, siginfo_t* si, void* ucontext)
     {
         uintptr_t addr = reinterpret_cast<uintptr_t>(si->si_addr);
         // Establish ISR context (parity with the ARM fault path, where IPSR is
@@ -556,6 +557,22 @@ namespace
         // writer, else the fault line would be enqueued into the buffered ring and
         // lost when this handler _exit()s without draining it.
         isr_frame_enter();
+        // si_code and the faulting PC, which kickos_isr_fault's shared banner cannot
+        // carry. Without them the banner is actively misleading: a resumed-garbage
+        // context traps on an instruction FETCH at 0, and reads identically to a null
+        // store. SI_KERNEL with pc == 0 is the tell, and si_addr alone cannot show it.
+        uintptr_t pc = 0;
+#if defined(__x86_64__)
+        if (ucontext != nullptr)
+        {
+            pc = static_cast<uintptr_t>(
+                static_cast<ucontext_t*>(ucontext)->uc_mcontext.gregs[REG_RIP]);
+        }
+#else
+        (void)ucontext;
+#endif
+        ::kickos::kprintf("\n[sim] SIGSEGV si_code=%d si_addr=%p pc=%p\n", si->si_code,
+                          reinterpret_cast<void*>(addr), reinterpret_cast<void*>(pc));
         // We cannot distinguish read vs write portably here; report as write since
         // the demo/wild-write path is a store. Reporting routes through the kernel.
         kickos_isr_fault(addr, 1);
@@ -708,24 +725,28 @@ void kfault_terminate(void)
 
 void arch_shutdown(int status)
 {
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // Mask IRQs/signals across the ENTIRE flush: root_entry -> arch_shutdown holds
-    // no lock, so a timer ISR landing here would emit records AFTER the closing
-    // SESSION's records_attempted snapshot (and could deferred-swap away from root
-    // mid-drain), breaking the decoder's decoded+lost==attempted cross-check. Held
-    // to _exit and never restored; the process is dying.
+    // Mask IRQs/signals for the rest of this function: root_entry -> arch_shutdown
+    // holds no lock, so a timer ISR landing here could deferred-swap away from root
+    // mid-drain and strand whatever is still in the ring. Held to _exit and never
+    // restored; the process is dying. Under telemetry it additionally keeps a late
+    // ISR from emitting records AFTER the closing SESSION's records_attempted
+    // snapshot, which would break the decoder's decoded+lost==attempted check.
     (void)arch_irq_save();
-    // Emit the closing SESSION (far anchor + final count), then drain the ch1
-    // telemetry ring to a file for the offline decoder. Best-effort: on a dying
-    // path we still want whatever was captured. File is $KICKOS_TRACE_FILE or a
-    // default in the CWD.
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // The closing SESSION (far anchor + final count). Best-effort: on a dying path
+    // we still want whatever was captured. MUST precede the console drain below,
+    // because report_counters prints through the buffered ring.
     kickos_trace_final_session();
     kickos_trace_report_counters();
-    // report_counters printed the "[ktrace] counters" line via kprintf -> the
-    // buffered console ring, but IRQs/signals are masked here so the SIGUSR1-driven
-    // drain ISR can never run. Drain it synchronously (drain_sync pushes straight
-    // to stdout, no signal needed) before _exit, else the line is stranded.
+#endif
+    // Drain the buffered console ring synchronously: IRQs/signals are masked here so
+    // the SIGUSR1-driven drain ISR can never run, and drain_sync pushes straight to
+    // stdout with no signal needed. Without this, anything still enqueued at
+    // shutdown is stranded by _exit. No-op while the ring is unarmed.
     console_tx_flush_sync();
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // Drain the ch1 telemetry ring to a file for the offline decoder. Path is
+    // $KICKOS_TRACE_FILE or a default in the CWD.
     char const* path = getenv("KICKOS_TRACE_FILE");
     if (path == nullptr)
     {
@@ -826,16 +847,22 @@ void arch_context_init(struct arch_context* ctx,
     }
     memset(c, 0, sizeof(*c));
     context_capture(&c->uc);
-    // New threads always start with all interrupts enabled, independent of the
-    // creating thread's current mask (which may be inside a critical section).
+    // Start from an empty mask, not the creating thread's (which may be inside a
+    // critical section), so a new thread's posture never depends on its spawner.
     sigemptyset(&c->uc.uc_sigmask);
-#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
-    // ...except: start IRQ signals BLOCKED so no ISR can preempt between the
-    // physical swap into this new thread and the trampoline's switch-in emit. The
-    // trampoline unblocks them right after emitting (see trampoline()).
+    // The IRQ signals are then blocked until the trampoline unblocks them, which is
+    // the first point at which this thread is running on its own stack.
+    //
+    // glibc's swapcontext installs the TARGET's sigmask (rt_sigprocmask) 29 bytes of
+    // instructions before it loads the target's rsp, and arch_switch publishes
+    // sim().current before the swap. With an empty mask here, a SIGALRM delivered in
+    // that gap runs on the OUTGOING thread's stack while sim().current already names
+    // this one, so on_sigalrm samples the wrong `interrupted` and isr_frame_leave
+    // saves the outgoing frame into THIS context, destroying the makecontext entry.
+    // Resuming it later jumps to a zeroed frame (rip == 0), which the SIGSEGV handler
+    // then misreports as a write at 0x0.
     sigaddset(&c->uc.uc_sigmask, SIGALRM);
     sigaddset(&c->uc.uc_sigmask, SIGUSR1);
-#endif
     // getcontext() filled uc_stack with the CALLER's stack; retarget it here.
     c->uc.uc_stack.ss_sp = stack_base;
     c->uc.uc_stack.ss_size = stack_size;

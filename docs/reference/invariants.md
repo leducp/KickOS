@@ -49,7 +49,7 @@
 
 - **`irqlock-nesting-safe`** -- IrqLock must record the prior interrupt-mask state and restore exactly that on scope exit (never unconditionally unmask), so nested critical sections compose. Every arch's arch_irq_save/restore returns/consumes the full prior state (BASEPRI word, PSW.IPL field, PS, or the sim's SIGALRM/SIGUSR1 unblocked flags).
   - *applies:* critical section / IrqLock; all arches
-  - *source:* kernel/include/kickos/irqlock.h:14-32; arch/arm/armv7m/arch_armv7m.cc:164-181; arch/rx/rxv3/arch_rxv3.cc:207-228; arch/xtensa/lx6/arch_xtensa.cc:233-245; arch/sim/sim.cc:526-559
+  - *source:* kernel/include/kickos/irqlock.h:14-32; arch/arm/armv7m/arch_armv7m.cc:164-181; arch/rx/rxv3/arch_rxv3.cc:207-228; arch/xtensa/lx6/arch_xtensa.cc:233-245; arch/sim/sim.cc:527-576
 
 - **`basepri-write-needs-barrier`** -- On ARMv7-M, raising BASEPRI is not self-synchronizing: arch_irq_save must follow the msr with DSB+ISB, else an interrupt can still be taken under the old mask on the next instruction and preempt a critical section. (RX MVTIPL and Xtensa RSIL are self-synchronizing and correctly omit the dance.)
   - *applies:* critical section; armv7m
@@ -257,7 +257,7 @@
 
 - **`switch-record-from-physical-contexts`** -- The SWITCH {from_tid,to_tid} record must be emitted from the tids read out of the two contexts that PHYSICALLY swapped, never by re-reading g_arch_next or shared scheduler state (a preempting ISR can rewrite the decision between switch_to and the physical swap). trace_tid is stamped once at thread_create and read at the pinned ctx offset; from_tid==0xFFFF on the first switch; multiple wakes in one ISR collapse to exactly one SWITCH record.
   - *applies:* telemetry, context switch; armv7m, armv6m, rx, xtensa, sim
-  - *source:* arch/include/kickos/arch/arch.h:80-88,205-210; arch/arm/armv7m/switch.S:43-95; arch/sim/sim.cc:106-131,235-251,481-523; kernel/thread/thread.cc:75-79; docs/reference/telemetry.md
+  - *source:* arch/include/kickos/arch/arch.h:80-88,205-210; arch/arm/armv7m/switch.S:43-95; arch/sim/sim.cc:106-131,243-251,482-524; kernel/thread/thread.cc:75-79; docs/reference/telemetry.md
 
 - **`telemetry-emit-fp-and-fault-free`** -- The context-switch telemetry emit runs in the PendSV/SWINT/L1 tail with the incoming thread's FP state live in registers, so its whole call path is built -mgeneral-regs-only and must touch NO FP register. Fault/NMI handlers must never call ktrace_* (they preempt the BASEPRI/PRIMASK lock and would issue records out of the atomic emit region).
   - *applies:* telemetry FP-register-free ISR paths; armv7m, rx, xtensa
@@ -271,9 +271,13 @@
   - *applies:* telemetry; kernel + all arches
   - *source:* kernel/include/kickos/ktrace.h:142-154; arch/arm/armv7m/include/kickos/arch/context.h:39-45; arch/include/kickos/arch/arch.h:80-88
 
+- **`telemetry-gate-emission-only`** -- A `KICKOS_TELEMETRY` gate may contain ONLY record emission. Anything that changes signal/interrupt masking, ordering or object lifetime belongs OUTSIDE it: gate such code and the telemetry-OFF build silently loses a correctness property the telemetry-ON build has, which no gate catches because every emulated tree runs telemetry OFF. The sim's fresh-context IRQ-signal block and its matching trampoline unblock were gated this way, and the resulting context corruption reached CI as an intermittent `sim_stress` failure that no local run reproduced; `arch_shutdown`'s shutdown masking and console drain were gated the same way.
+  - *applies:* telemetry conditional compilation; all arches, the sim especially
+  - *source:* arch/sim/sim.cc (arch_context_init's sigaddset pair, the trampoline's sigprocmask, arch_shutdown's arch_irq_save and console drain)
+
 - **`trace-clock-u32-anchored`** -- arch_trace_now() is a raw monotonic u32 counter that wraps (armv7m DWT CYCCNT, rx/xtensa cycle/CMTW counters, sim ns/1000 us); absolute time is reconstructed by the decoder from the two SESSION clock anchors (near at init, far at shutdown). A target with no such source must not define KICKOS_HAVE_TRACE_CLOCK and cannot enable telemetry. The closing SESSION + ch1 drain at shutdown must run with IRQs masked so no record lands after the records_attempted snapshot.
   - *applies:* telemetry trace clock, record framing; all arches
-  - *source:* arch/include/kickos/arch/arch.h:70-88; arch/arm/armv7m/arch_armv7m.cc:192-198; arch/sim/sim.cc:366-419,576-581; kernel/include/kickos/ktrace.h:116-134
+  - *source:* arch/include/kickos/arch/arch.h:70-88; arch/arm/armv7m/arch_armv7m.cc:192-198; arch/sim/sim.cc:366-419,593-598; kernel/include/kickos/ktrace.h:116-134
 
 ## Scheduler & instance state
 
