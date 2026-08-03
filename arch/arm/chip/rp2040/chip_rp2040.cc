@@ -87,6 +87,11 @@ namespace
     // The cap is far longer than any legitimate wait (XOSC startup is ~1 ms).
     constexpr uint32_t POLL_TIMEOUT = 1000000u;
 
+#if defined(KICKOS_USB_CONSOLE)
+    // Cycles spent letting a stopped clock generator settle before its aux mux moves.
+    constexpr uint32_t CLK_STOP_SPIN = 64u;
+#endif
+
     bool wait_mask(uintptr_t addr, uint32_t mask)
     {
         for (uint32_t i = 0; i < POLL_TIMEOUT; i++)
@@ -129,6 +134,54 @@ namespace
         r32(reg::atomic::as_clr(reg::pll::PWR)) = reg::pll::PWR_POSTDIVPD; // enable post-dividers
         return true;
     }
+
+#if defined(KICKOS_USB_CONSOLE)
+    // PLL_USB at 48 MHz, clk_usb onto it, and the USB block out of reset. All three
+    // touch RESETS/CLOCKS, which the kernel owns for life, so the unprivileged driver
+    // cannot do them; everything inside the USB block itself is left to it.
+    //
+    // RULE U2 (design-m4.6.2-usb-cdc.md 7.3): refused, at bring-up time, when the
+    // crystal did not come up. A full-speed device cannot be sourced from the ring
+    // oscillator, and a 6.5 MHz clk_sys also violates the clk_sys > 1.1 * clk_usb
+    // workaround for RP2040-E16.
+    void usb_clock_init()
+    {
+        if (SystemCoreClock < reg::clocks::CLK_SYS_MIN_FOR_USB_HZ)
+        {
+            return;
+        }
+        r32(reg::atomic::as_set(reg::resets::RESET)) = reg::resets::PLL_USB;
+        r32(reg::atomic::as_clr(reg::resets::RESET)) = reg::resets::PLL_USB;
+        wait_mask(reg::resets::RESET_DONE, reg::resets::PLL_USB);
+
+        r32(reg::pll_usb::CS) = reg::pll::CS_REFDIV_1;
+        r32(reg::pll_usb::FBDIV_INT) = reg::pll_usb::FBDIV_100;
+        r32(reg::atomic::as_clr(reg::pll_usb::PWR)) =
+            reg::pll::PWR_PD | reg::pll::PWR_VCOPD;
+        if (not wait_mask(reg::pll_usb::CS, reg::pll::CS_LOCK))
+        {
+            return; // the block stays in reset: an un-clocked controller never enumerates
+        }
+        r32(reg::pll_usb::PRIM) = reg::pll_usb::PRIM_POSTDIV;
+        r32(reg::atomic::as_clr(reg::pll_usb::PWR)) = reg::pll::PWR_POSTDIVPD;
+
+        // clk_usb has no glitchless mux, so the source may only be changed with the
+        // generator stopped (datasheet 2.15.3.2). This part has no CTRL.ENABLED status
+        // bit either, so the stop cannot be polled: the datasheet rule is two cycles of
+        // the source, and this spin covers that at any clk_sys this board reaches.
+        r32(reg::clocks::CLK_USB_CTRL) = reg::clocks::CLK_USB_AUXSRC_PLL_USB;
+        for (uint32_t i = 0; i < CLK_STOP_SPIN; i++)
+        {
+            __asm volatile("nop");
+        }
+        r32(reg::clocks::CLK_USB_CTRL) =
+            reg::clocks::CLK_USB_AUXSRC_PLL_USB | reg::clocks::CLK_USB_ENABLE;
+
+        // The DPRAM is unreachable until the block is out of reset (datasheet 4.1.2.7),
+        // and RESET_DONE only asserts once clk_usb runs, hence the ordering above.
+        unreset(reg::resets::USBCTRL);
+    }
+#endif
 
     void clocks_init()
     {
@@ -228,12 +281,15 @@ void arch_init(void)
     // Reset-release ordering is load-bearing: a peripheral's RESET_DONE only
     // asserts once it has a running clock. IO_BANK0/PADS_BANK0/TIMER are clocked
     // by clk_sys/clk_ref (already live off the ROSC at reset), so release them
-    // now. UART0 is clocked by clk_peri, which is OFF until clocks_init -- release
-    // it BEFORE that and its RESET_DONE never asserts, hanging the boot.
+    // now. UART0 is clocked by clk_peri, which is OFF until clocks_init: release it
+    // BEFORE that and its RESET_DONE never asserts, hanging the boot.
     unreset(reg::resets::IO_BANK0 | reg::resets::PADS_BANK0 | reg::resets::TIMER);
     clocks_init();
     unreset(reg::resets::UART0);
     uart0_init();
+#if defined(KICKOS_USB_CONSOLE)
+    usb_clock_init(); // after clocks_init: PLL_USB needs the crystal verdict
+#endif
     kickos_armv6m_init();
 }
 
@@ -390,8 +446,8 @@ int arch_reboot(void)
 
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RP2040 datasheet). Owns-for-life: the 64-bit TIMER (monotonic
-// base), the WATCHDOG (its /12 TICK feeds the 1 MHz TIMER -- reserved despite the
-// general watchdog-exclusion, R3), and the RESETS + CLOCKS control blocks. Each is a
+// base), the WATCHDOG (its /12 TICK feeds the 1 MHz TIMER, so it is reserved despite
+// the general watchdog exclusion, R3), and the RESETS + CLOCKS blocks. Each is a
 // full 16 KB window so the SET/CLR/XOR atomic aliases (+0x1000/+0x2000/+0x3000) are
 // covered too (R2). M0+ has no bit-band -> the arch_bitband_present fallback 0 stands.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)

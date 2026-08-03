@@ -19,6 +19,7 @@ namespace kickos::rp2350::reg::clocks
     constexpr uintptr_t CLK_SYS_CTRL = mmap::CLOCKS_BASE + 0x3cu;
     constexpr uintptr_t CLK_SYS_SELECTED = mmap::CLOCKS_BASE + 0x44u;
     constexpr uintptr_t CLK_PERI_CTRL = mmap::CLOCKS_BASE + 0x48u;
+    constexpr uintptr_t CLK_USB_CTRL = mmap::CLOCKS_BASE + 0x60u;
 
     // clk_ref: SRC glitchless mux; SELECTED is one-hot (1 << SRC).
     constexpr uint32_t CLK_REF_SRC_XOSC = 0x2u;
@@ -36,6 +37,16 @@ namespace kickos::rp2350::reg::clocks
     // fallback); CLK_SYS=0x0 tracks clk_sys (150 MHz on PLL, 12 MHz clk_ref else).
     constexpr uint32_t CLK_PERI_ENABLE_XOSC = (1u << 11) | (0x4u << 5);
     constexpr uint32_t CLK_PERI_ENABLE_CLK_SYS = (1u << 11) | (0x0u << 5);
+
+    // Aux mux only (DS 8.1.3.2): CLK_USB_SELECTED reads 1 whatever the state, so a start
+    // cannot be polled. Poll ENABLED, not SELECTED, when stopping the generator.
+    constexpr uint32_t CLK_USB_AUXSRC_PLL_USB = 0x0u << 5;
+    constexpr uint32_t CLK_USB_ENABLE = 1u << 11;
+    constexpr uint32_t CLK_USB_ENABLED = 1u << 28;
+    constexpr uint32_t CLK_USB_HZ = 48000000u;
+    // RP2350-E12: status crosses clk_usb -> clk_sys unsynchronised and can be lost when
+    // clk_sys is not at least 10 % faster than clk_usb. Below this, USB is refused.
+    constexpr uint32_t CLK_SYS_MIN_FOR_USB_HZ = 53000000u;
 
     // clk_sys target once on PLL_SYS (DS default max, 8.6).
     constexpr uint32_t CLK_SYS_HZ = 150000000u;

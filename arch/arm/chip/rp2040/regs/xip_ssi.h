@@ -24,10 +24,10 @@ namespace kickos::rp2040::reg::xip_ssi
     constexpr uintptr_t SPI_CTRLR0 = mmap::XIP_SSI_BASE + 0xf4u;
 
     // CTRLR0 = 0x001f0300: SPI_FRF=STD(0), DFS_32=31 (32-bit frames),
-    // TMOD=EEPROM_READ(3) -- transmit the cmd/addr control frame, then receive.
+    // TMOD=EEPROM_READ(3): transmit the cmd/addr control frame, then receive.
     constexpr uint32_t CTRLR0_XIP = 0x001f0300u;
     // SPI_CTRLR0 = 0x03000218: XIP_CMD=0x03, INST_L=8b(2<<8), ADDR_L=24b(6<<2),
-    // TRANS_TYPE=1C1A(0) -- command + address both in standard 1-bit SPI.
+    // TRANS_TYPE=1C1A(0): command + address both in standard 1-bit SPI.
     constexpr uint32_t SPI_CTRLR0_XIP = 0x03000218u;
     // /4 keeps SCK within any flash's 03h read limit at the boot clk_sys.
     constexpr uint32_t BAUDR_DIV = 4u;

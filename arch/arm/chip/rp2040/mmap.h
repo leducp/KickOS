@@ -20,6 +20,7 @@ namespace kickos::rp2040::mmap
     constexpr uintptr_t PADS_BANK0_BASE = 0x4001c000u; // user-bank pad control (DS 2.19.6)
     constexpr uintptr_t XOSC_BASE = 0x40024000u;     // 12 MHz crystal oscillator (DS 2.16)
     constexpr uintptr_t PLL_SYS_BASE = 0x40028000u;  // system PLL (DS 2.18)
+    constexpr uintptr_t PLL_USB_BASE = 0x4002c000u;  // USB PLL, 48 MHz ceiling (DS 2.18)
     constexpr uintptr_t UART0_BASE = 0x40034000u;    // ARM PL011 UART0 (DS 4.2)
     constexpr uintptr_t TIMER_BASE = 0x40054000u;    // 64-bit us monotonic timer (DS 4.6)
     constexpr uintptr_t WATCHDOG_BASE = 0x40058000u; // watchdog + TICK generator (DS 4.7)
@@ -27,6 +28,15 @@ namespace kickos::rp2040::mmap
     // Single-cycle IO (SIO): on the core-local IOPORT bus, NOT the APB. It has its
     // own SET/CLR/XOR registers and does NOT use the +0x2000/+0x3000 alias window.
     constexpr uintptr_t SIO_BASE = 0xd0000000u; // single-cycle IO / GPIO (DS 2.3.1)
+
+    // USB device controller (DS 2.2.2, 4.1). On the AHB-Lite, not the APB: the 4 KiB
+    // DPRAM sits at the base and the register block 0x10000 above it. The DPRAM takes
+    // 8/16/32-bit accesses and has NO set/clear aliases (DS 4.1.2.7).
+    constexpr uintptr_t USBCTRL_DPRAM_BASE = 0x50100000u;
+    constexpr uintptr_t USBCTRL_REGS_BASE = 0x50110000u;
+    // 128 KiB covering both. PMSAv6 needs a power-of-two naturally-aligned region and
+    // 0x50100000 is 128 KiB-aligned; the whole span is the USB block's own AHB slot.
+    constexpr uintptr_t USBCTRL_WINDOW = 0x20000u;
 
     // Synopsys SSI (QSPI flash controller) fronting the XIP window. Configured by
     // boot2 for execute-in-place; runs on the AHB, no atomic alias window.

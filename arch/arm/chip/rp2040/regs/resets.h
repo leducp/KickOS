@@ -21,8 +21,10 @@ namespace kickos::rp2040::reg::resets
     constexpr uint32_t IO_BANK0 = 1u << 5;
     constexpr uint32_t PADS_BANK0 = 1u << 8;
     constexpr uint32_t PLL_SYS = 1u << 12;
+    constexpr uint32_t PLL_USB = 1u << 13;
     constexpr uint32_t TIMER = 1u << 21;
     constexpr uint32_t UART0 = 1u << 22;
+    constexpr uint32_t USBCTRL = 1u << 24;
 }
 
 #endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_RESETS_H

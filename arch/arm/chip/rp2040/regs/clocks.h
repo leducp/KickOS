@@ -19,6 +19,7 @@ namespace kickos::rp2040::reg::clocks
     constexpr uintptr_t CLK_SYS_CTRL = mmap::CLOCKS_BASE + 0x3cu;
     constexpr uintptr_t CLK_SYS_SELECTED = mmap::CLOCKS_BASE + 0x44u;
     constexpr uintptr_t CLK_PERI_CTRL = mmap::CLOCKS_BASE + 0x48u;
+    constexpr uintptr_t CLK_USB_CTRL = mmap::CLOCKS_BASE + 0x54u;
 
     constexpr uint32_t CLK_REF_SRC_XOSC = 0x2u;          // CTRL.SRC glitchless
     constexpr uint32_t CLK_REF_SELECTED_XOSC = 1u << 2;  // one-hot readback
@@ -36,6 +37,16 @@ namespace kickos::rp2040::reg::clocks
     // never locks); CLK_SYS=0x0 tracks clk_sys (125 MHz on PLL, ROSC in fallback).
     constexpr uint32_t CLK_PERI_ENABLE_XOSC = (1u << 11) | (0x4u << 5);
     constexpr uint32_t CLK_PERI_ENABLE_CLK_SYS = (1u << 11) | (0x0u << 5);
+
+    // Aux mux only (DS 2.15.3.2): CLK_USB_SELECTED reads 1 whatever the state, and there
+    // is no ENABLED bit. Neither starting nor stopping the generator can be polled;
+    // stopping it is a timed wait.
+    constexpr uint32_t CLK_USB_AUXSRC_PLL_USB = 0x0u << 5;
+    constexpr uint32_t CLK_USB_ENABLE = 1u << 11;
+    constexpr uint32_t CLK_USB_HZ = 48000000u;
+    // RP2040-E16: status crosses clk_usb -> clk_sys unsynchronised and can be lost when
+    // clk_sys is not at least 10 % faster than clk_usb. Below this, USB is refused.
+    constexpr uint32_t CLK_SYS_MIN_FOR_USB_HZ = 53000000u;
 }
 
 #endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_CLOCKS_H

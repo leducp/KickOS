@@ -22,8 +22,8 @@
 //     watchdog.
 //   - PADS gained an ISO (isolation) bit that resets SET and must be cleared to use
 //     a pad (9.11.3).
-//   - 52 NVIC lines; the console is on UART1 (UART1_IRQ = 34, 3.2) -- see the
-//     IO_BANK0 block below for why the Pi-Zero header forces UART1, not UART0.
+//   - 52 NVIC lines; the console is on UART1 (UART1_IRQ = 34, 3.2). See the IO_BANK0
+//     block below for why the Pi-Zero header forces UART1, not UART0.
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
@@ -144,6 +144,58 @@ namespace
         return true;
     }
 
+#if defined(KICKOS_USB_CONSOLE)
+    // PLL_USB at 48 MHz, clk_usb onto it, and the USB block out of reset. All three
+    // touch RESETS/CLOCKS, which the MPU reserves for the kernel
+    // (arch_reserved_blocks), so the unprivileged driver cannot do them; everything
+    // inside the USB block itself is left to it.
+    //
+    // RULE U2 (design-m4.6.2-usb-cdc.md 7.3): refused, at bring-up time, when the
+    // crystal did not come up. A full-speed device cannot be sourced from the ring
+    // oscillator, and a 6.5 MHz clk_sys also violates the clk_sys > 1.1 * clk_usb
+    // workaround for RP2350-E12. The refusal is silent here because the console is not
+    // up yet; the driver reports it (its DPRAM reads back as bus errors with the block
+    // still in reset).
+    void usb_clock_init()
+    {
+        if (SystemCoreClock < reg::clocks::CLK_SYS_MIN_FOR_USB_HZ)
+        {
+            return;
+        }
+        r32(reg::resets::RESET + mmap::ATOMIC_SET) = reg::resets::PLL_USB;
+        r32(reg::resets::RESET + mmap::ATOMIC_CLR) = reg::resets::PLL_USB;
+        wait_mask(reg::resets::RESET_DONE, reg::resets::PLL_USB);
+
+        r32(reg::pll_usb::CS) = reg::pll::CS_REFDIV_1;
+        r32(reg::pll_usb::FBDIV_INT) = reg::pll_usb::FBDIV_100;
+        r32(reg::pll_usb::PWR + mmap::ATOMIC_CLR) = reg::pll::PWR_PD | reg::pll::PWR_VCOPD;
+        if (not wait_mask(reg::pll_usb::CS, reg::pll::CS_LOCK))
+        {
+            return; // the block stays in reset: an un-clocked controller never enumerates
+        }
+        r32(reg::pll_usb::PRIM) = reg::pll_usb::PRIM_POSTDIV;
+        r32(reg::pll_usb::PWR + mmap::ATOMIC_CLR) = reg::pll::PWR_POSTDIVPD;
+
+        // clk_usb has no glitchless mux, so the source may only be changed with the
+        // generator stopped (datasheet 8.1.3.2). Both writes are absolute values, never
+        // read-modify-writes, so no reset-value assumption leaks in.
+        r32(reg::clocks::CLK_USB_CTRL) = reg::clocks::CLK_USB_AUXSRC_PLL_USB;
+        for (uint32_t i = 0; i < POLL_TIMEOUT; i++)
+        {
+            if ((r32(reg::clocks::CLK_USB_CTRL) & reg::clocks::CLK_USB_ENABLED) == 0u)
+            {
+                break;
+            }
+        }
+        r32(reg::clocks::CLK_USB_CTRL) =
+            reg::clocks::CLK_USB_AUXSRC_PLL_USB | reg::clocks::CLK_USB_ENABLE;
+
+        // The DPRAM is unreachable until the block is out of reset (datasheet 12.7.1.1.3),
+        // and RESET_DONE only asserts once clk_usb runs, hence the ordering above.
+        unreset(reg::resets::USBCTRL);
+    }
+#endif
+
     // Start the TICKS TIMER0 generator so the 64-bit system TIMER0 counts. The
     // generator must be stopped before CYCLES is changed (datasheet 8.5.1).
     void ticks_timer0_start(uint32_t cycles)
@@ -212,7 +264,7 @@ namespace
     void uart1_init()
     {
         // Route GP4/GP5 to UART1 and make the pads usable. The RP2350 pads reset
-        // ISOLATED (PAD_ISO set) -- clear it or the pad stays disconnected.
+        // ISOLATED (PAD_ISO set): clear it or the pad stays disconnected.
         r32(reg::io_bank0::GPIO4_CTRL) = reg::io_bank0::FUNCSEL_UART;
         r32(reg::io_bank0::GPIO5_CTRL) = reg::io_bank0::FUNCSEL_UART;
         r32(reg::pads::GPIO4 + mmap::ATOMIC_CLR) = reg::pads::ISO | reg::pads::OD; // TX: connect, drive out
@@ -260,15 +312,18 @@ extern "C"
 
 void arch_init(void)
 {
-    // Reset-release ordering is load-bearing (the RP2040 lesson): a peripheral's
-    // RESET_DONE only asserts once it has a running clock. IO_BANK0/PADS_BANK0/TIMER0
-    // are clocked by clk_sys/clk_ref (already live off the ROSC at reset), so release
-    // them now. UART1 is clocked by clk_peri, which is OFF until clocks_init -- release
-    // it BEFORE that and its RESET_DONE never asserts, hanging the boot.
+    // Reset-release ordering is load-bearing: a peripheral's RESET_DONE only asserts
+    // once it has a running clock. IO_BANK0/PADS_BANK0/TIMER0 are clocked by
+    // clk_sys/clk_ref (already live off the ROSC at reset), so release them now. UART1
+    // is clocked by clk_peri, which is OFF until clocks_init: release it BEFORE that
+    // and its RESET_DONE never asserts, hanging the boot.
     unreset(reg::resets::IO_BANK0 | reg::resets::PADS_BANK0 | reg::resets::TIMER0);
     clocks_init();
     unreset(reg::resets::UART1);
     uart1_init();
+#if defined(KICKOS_USB_CONSOLE)
+    usb_clock_init(); // after clocks_init: PLL_USB needs the crystal verdict
+#endif
 #if KICKOS_HAVE_MPU
     kickos_arm_pmsav8_init(); // MAIR + MemManage; first switch enables the MPU
 #endif
@@ -377,8 +432,8 @@ uint32_t arch_trace_now(void)
 #if defined(KICKOS_ENABLE_SELFTEST)
 // Reboot into BOOTSEL (firmware-download) mode via the bootrom `reboot` entry. The
 // header differs from the RP2040's: the magic third byte is 0x02, and the Arm lookup
-// helper (rom_table_lookup_val, no table argument) is the halfword at 0x16 -- 0x18 is a
-// different entry here. Once the magic matches, those pointers are valid; the byte at
+// helper (rom_table_lookup_val, no table argument) is the halfword at 0x16; 0x18 is a
+// different entry here. Once the magic matches, those pointers are valid. The byte at
 // 0x13 is a ROM build number the datasheet forbids using to locate functions.
 int arch_reboot(void)
 {
@@ -416,8 +471,8 @@ int arch_reboot(void)
 
 #if KICKOS_HAVE_MPU
 // Rule 7 reserved set (RP2350 datasheet). Owns-for-life: the 64-bit TIMER0 (monotonic
-// base), the TICKS block (its TIMER0 generator is the 1 MHz source -- the RP2040
-// watchdog role moved here), and the RESETS + CLOCKS control blocks. Full 16 KB
+// base), the TICKS block (its TIMER0 generator is the 1 MHz source), and the
+// RESETS + CLOCKS control blocks. Full 16 KB
 // windows each so the SET/CLR/XOR atomic aliases are covered. M33 (Arm) has no
 // bit-band -> the arch_bitband_present fallback 0 stands.
 size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
@@ -449,7 +504,7 @@ void Reset_Handler(void)
     r32(0xE000ED08) = 0x10000000u;
 
     // Enable the FPU (CP10/CP11 full access) before any code a hard-float ABI might
-    // emit FP into -- Cortex-M33 has an FPv5-SP FPU. SCB->CPACR = 0xE000ED88.
+    // emit FP into; Cortex-M33 has an FPv5-SP FPU. SCB->CPACR = 0xE000ED88.
     r32(0xE000ED88) |= (0xFu << 20);
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");

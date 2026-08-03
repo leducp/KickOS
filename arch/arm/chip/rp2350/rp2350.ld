@@ -21,7 +21,7 @@
  * ENFORCEMENT (KICKOS_HAVE_MPU): the armv8-m / PMSAv8 MPU backend
  * (arch/arm/common/arch_arm_pmsav8.cc, docs/design-rp2350-mpu-armv8m.md). PMSAv8 uses
  * RBAR/RLAR base+limit at a 32-byte granule (NON-pow2, like SYSMPU), so the app-data
- * window is just two 32-byte-aligned symbols -- NONE of the pow2 .appdata machinery of
+ * window is just two 32-byte-aligned symbols: NONE of the pow2 .appdata machinery of
  * the v6-M/v7-M PMSA chips (rp2040.ld ALIGN(pow2)) is needed. The writable state is
  * split KERNEL vs app exactly as mk64f.ld (the other byte-granular backend). A
  * non-enforcement build (KICKOS_HAVE_MPU=0) reserves no window and is unchanged.
@@ -154,7 +154,7 @@ SECTIONS
        an unmatched archive lands app-side (reachable), never kernel-side (faults). The
        `archive:member` colon syntax is used (this binutils does not match archive
        members inside EXCLUDE_FILE). PMSAv8 is 32-byte granular with an arbitrary base,
-       so the app window needs no pow2 base -- it is simply placed above kernel data. */
+       so the app window needs no pow2 base; it is simply placed above kernel data. */
     .data : ALIGN(4)
     {
         _sdata = .;
