@@ -2,9 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The default init's pin-mux step: apply the selected board pin map (see
-// <kickos/sys/pinmap.h>) before the service list -- the DAG middle of the
-// clock->pinmux->service->app chain. A board with an empty map (count = 0) is a
-// no-op. On the first failing entry it reports port/pin/rc and returns that rc.
+// <kickos/sys/pinmap.h>) before the service list. A board with an empty map (count = 0)
+// is a no-op.
 //
 // HARD RULE (as in service_list_run.cc): no libc stdio here. Diagnostics go via
 // kos::print (the RTT / kernel debug path), never stdio.

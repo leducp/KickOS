@@ -10,3 +10,10 @@
 if(KICKOS_HAVE_MPU)
   add_subdirectory(c6blink)
 endif()
+
+# CPU-interrupt-controller identity probe (INTPRI @0x600C_5000 vs the undocumented
+# 0x2000_1000 window). Needs the enforcement grant predicates, so enforcement builds only;
+# also self-gates on KICKOS_ENABLE_SELFTEST.
+if(KICKOS_HAVE_MPU)
+  add_subdirectory(c6intpri)
+endif()

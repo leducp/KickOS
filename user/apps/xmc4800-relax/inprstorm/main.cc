@@ -10,7 +10,7 @@
 //   * The kernel console TX drains on U0C0 -> USIC0 SR0 -> NVIC 84, bound as an
 //     in-kernel handler (console_tx.cc console_tx_isr).
 //   * INPR (channel-window offset 0x018) selects the SRx node for RIF/AIF. RINP/AINP
-//     field 0 selects SR0 -- the console's node. INPR is U,PV and in-window.
+//     field 0 selects SR0, the console's node. INPR is U,PV and in-window.
 //   * DX0CR internal loopback makes every TBUF0 write produce a receive event; the
 //     attacker arms CCR.RIEN|AIEN itself through kos_periph_reg_write, whose only
 //     credential is the U0C1 grant it legitimately holds.
@@ -269,7 +269,7 @@ namespace
         seam_write("BRG", win, off::BRG, BRG_WORD, 0xFFFFFFFFu);
 #endif
 
-        // Hold so root prints several heartbeats that DO drain -- the console is
+        // Hold so root prints several heartbeats that DO drain; the console is
         // demonstrably alive right up to the storm.
         kos_sleep_ns(2000000000ull);
 

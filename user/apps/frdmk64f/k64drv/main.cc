@@ -1,26 +1,21 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F GPIO/timer FIRST unprivileged userspace driver over the MMIO-grant seam
-// (task #9 Stage 2). A privileged bring-up shim clocks + programs PIT channel 2 and
-// opens the PIT peripheral slot to user mode; the UNPRIVILEGED driver thread is
-// granted the PIT ch2 window (32 B @ 0x4003_7120, spanning ch2+ch3 at the 0x10 stride)
-// + the PIT ch2 IRQ (tier-1). ch2 (not ch0/ch1): the kernel monotonic clock owns the
-// chained ch0+ch1 pair, so a userspace timer must live elsewhere. It W1C's its own flag
-// write to the peripheral, toggles the diag LED, heartbeats, then reads PIT_MCR at
-// 0x4003_7000 -- OUTSIDE the SYSMPU window but in the same 4 KB slot.
+// K64F PIT driver run by an unprivileged thread granted the PIT ch2 window (32 B @
+// 0x4003_7120, spanning ch2+ch3 at the 0x10 stride) and a WAIT cap on the PIT ch2 IRQ.
+// ch2, not ch0/ch1: the kernel monotonic clock owns the chained ch0+ch1 pair.
 //
 // K64F peripheral privilege is gated by the AIPS peripheral bridge (PACR), NOT by
 // SYSMPU (K64 RM 3.3.6.2 / 3.3.7.1: MPU slave ports cover flash / SRAM / FlexBus
 // only; the AIPS bridges are not MPU slave ports, "protection built into bridge").
 // User access is enabled per 4 KB slot by clearing the slot's PACR SP bit (PACRG
-// for PIT slot 55; RM 20.2.3). So the SYSMPU MMIO grant is INERT for peripherals here
-// (the write reaches PIT via the AIPS-opened slot, not the RGD), and AIPS granularity
-// is the whole 4 KB slot: once open, EVERY unprivileged thread reaches it -- an MMIO
-// grant is not a per-thread peripheral capability on K64F. The PIT_MCR read
-// succeeding (same slot, outside the SYSMPU window) demonstrates that, not a failure.
+// for PIT slot 55; RM 20.2.3). The SYSMPU MMIO grant is therefore INERT for
+// peripherals here, and AIPS granularity is the whole 4 KB slot: once open, EVERY
+// unprivileged thread reaches it, so an MMIO grant is not a per-thread peripheral
+// capability on K64F. The PIT_MCR read at the end sits outside the SYSMPU window and
+// is EXPECTED to succeed; that success is the demonstration, not a bug to fix.
 //
-// Diagnostic app (kickos_add_diagnostic_app): never a production image. Build-only;
+// Diagnostic app (kickos_add_diagnostic_app): build-only, never a production image;
 // the operator flashes + validates.
 
 #include <kickos/kos.h>
@@ -37,8 +32,8 @@ namespace
     constexpr uintptr_t SIM_SCGC6 = 0x4004803Cu;  // 12.2.13/325
     constexpr uint32_t SCGC6_PIT = 1u << 23;      // PIT clock gate (bit 23)
     constexpr uintptr_t PIT_MCR = 0x40037000u;    // 41.3.1: MDIS=bit1, FRZ=bit0
-    // ch2, NOT ch0/ch1: the kernel monotonic clock (arch_clock_now) owns the chained
-    // ch0+ch1 pair as its 64-bit time base -- this driver must never touch them.
+    // ch0+ch1 are the kernel monotonic clock's 64-bit time base (arch_clock_now);
+    // writing either from here breaks kernel time.
     constexpr uintptr_t PIT_CH2 = 0x40037120u;    // ch2 window base (LDVAL/CVAL/TCTRL/TFLG)
     constexpr uintptr_t PIT_LDVAL2 = 0x40037120u; // 41.3.2
     constexpr uintptr_t PIT_TCTRL2 = 0x40037128u; // 41.3.4: CHN=b2, TIE=b1, TEN=b0
@@ -59,43 +54,33 @@ namespace
         return *reinterpret_cast<volatile uint32_t*>(a);
     }
 
-    // UNPRIVILEGED driver: granted app code+data (auto), the PIT ch2 window (via
-    // the spawn MMIO grant) and the PIT IRQ (tier-1). It touches no file-scope
-    // mutable state -- the window base arrives as the thread arg VALUE (never
-    // dereferenced as memory), and the format buffer lives on its granted stack.
+    // Unprivileged, granted only app code+data, the PIT ch2 window and a WAIT-only cap
+    // on the PIT line. It must touch no file-scope mutable state: the window base
+    // arrives as the thread arg VALUE (never dereferenced as memory) and the format
+    // buffer lives on its granted stack.
     void pit_driver(void* arg)
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // PIT ch2 window base
         volatile uint32_t* tflg2 = reinterpret_cast<volatile uint32_t*>(win + TFLG_OFFSET);
 
-        int h = kos_irq_register(PIT2_IRQ);
-        if (h < 0)
-        {
-            kos::print("[k64drv] ERROR: irq_register(PIT2) failed\n");
-            while (true)
-            {
-                kos_sleep_ns(1000000000ull);
-            }
-        }
+        int const h = KOS_SPAWN_DELEGATED_CAP0; // claimed by root, delegated at spawn
 
-        // wait; service shape: kos_irq_wait auto-re-arms the consumed line on return,
-        // so no explicit kernel ack. The peripheral W1C stays: it must clear the TIF
-        // level BEFORE the next kos_irq_wait re-arms/unmasks, else the level re-fires.
+        // kos_irq_wait auto-re-arms the consumed line on return, so no explicit kernel
+        // ack. The peripheral W1C must still clear the TIF level BEFORE the next
+        // kos_irq_wait re-arms the line, else the level re-fires at once.
         for (int tick = 0; tick < DRIVER_TICKS; tick++)
         {
             kos_irq_wait(h);
-            *tflg2 = 1u; // W1C TIF: direct unprivileged write to the peripheral (reaches
-                         // PIT via the AIPS-opened slot; the SYSMPU RGD is inert here).
-                         // Clears the level so the line does not storm on the next re-arm.
+            *tflg2 = 1u; // W1C TIF: clears the level so the line does not storm when the
+                         // next wait re-arms it.
             kos::kernel_diag_led_toggle();
             char s[48];
             ksnprintf(s, sizeof(s), "[k64drv] tick %d\n", tick + 1);
             kos::print(s);
         }
 
-        // AIPS-granularity demo: read PIT_MCR at 0x4003_7000, outside the SYSMPU 32 B
-        // window but in the same 4 KB AIPS slot the shim opened. Expected to succeed --
-        // AIPS gates per 4 KB slot, not per SYSMPU window.
+        // PIT_MCR is outside the granted SYSMPU 32 B window but inside the same 4 KB AIPS
+        // slot, so this read is EXPECTED to succeed: AIPS gates per slot, not per window.
         kos::print("[k64drv] reading PIT_MCR (same AIPS slot, outside SYSMPU window)\n");
         uint32_t mcr = r32(PIT_MCR);
         char s[64];
@@ -103,7 +88,7 @@ namespace
                   static_cast<unsigned>(mcr));
         kos::print(s);
 
-        // Daemon park (never exit: a non-last-thread exit is unsafe on this arch).
+        // Must never exit: a non-last-thread exit is unsafe on this arch.
         while (true)
         {
             kos_sleep_ns(1000000000ull);
@@ -111,13 +96,13 @@ namespace
     }
 }
 
+KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_IRQ);
+
 int main(int, char**)
 {
-    // Privileged bring-up (this main runs privileged): the one-time unsafe setup
-    // the unprivileged driver must NOT be able to do -- clock-gate + module enable
-    // + timer program. Then hand the driver ONLY the ch2 register window. NOTE: the
-    // kernel clock already clock-gated the PIT and enabled MCR at boot; SCGC6/MCR here
-    // are idempotent, and this must NOT disturb ch0/ch1 (the kernel time base).
+    // The kernel clock already clock-gated the PIT and enabled MCR at boot, so SCGC6/MCR
+    // here are idempotent; nothing in this bring-up may disturb ch0/ch1 (the kernel time
+    // base).
     r32(SIM_SCGC6) |= SCGC6_PIT;      // clock the PIT (also enables its AIPS slot)
     r32(AIPS0_PACRG) &= ~PACR_PIT_SP; // open PIT slot 55 to user mode (clear SP; RM 20.2.3)
     r32(PIT_MCR) = 0u;                // MDIS=0 (module on), FRZ=0
@@ -133,21 +118,34 @@ int main(int, char**)
     r32(PIT_LDVAL2) = ldval;
     r32(PIT_TCTRL2) = TCTRL_TEN | TCTRL_TIE; // TFLG untouched (reset 0); driver owns it
 
+    // TIF is a level source, so EDGE is safe only because the driver W1Cs TFLG before
+    // the next wait re-arms the line.
+    int const irq = kos_irq_claim(PIT2_IRQ, KOS_IRQ_EDGE);
+    if (irq < 0)
+    {
+        kos::print("[k64drv] ERROR: irq_claim(PIT2) failed\n");
+    }
+    kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
+
     int drv = kos::thread::spawn(pit_driver, reinterpret_cast<void*>(PIT_CH2), "k64drv", 10,
                                  KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                  /*mem=*/nullptr, /*mem_size=*/0,
                                  /*stack=*/nullptr, /*stack_size=*/0,
-                                 /*mmio=*/reinterpret_cast<void*>(PIT_CH2), PIT_CH2_WINDOW);
+                                 /*mmio=*/reinterpret_cast<void*>(PIT_CH2), PIT_CH2_WINDOW,
+                                 caps, 1);
     if (drv < 0)
     {
-        // Console is the only oracle at the bench: a silent dead board would be
-        // indistinguishable from a bring-up failure, so say so.
+        // The console is the only oracle at the bench: without this line a failed spawn
+        // and a dead board look identical.
         kos::print("[k64drv] ERROR: driver spawn failed\n");
     }
+    if (irq >= 0)
+    {
+        kos_handle_close(irq); // the driver is the sole holder from here
+    }
 
-    // Park: the driver heartbeats, then demonstrates AIPS-per-slot granularity. Fall
-    // back to a sleep park if the semaphore could not be created (else a -1 handle
-    // spins a hot loop of failing sem_wait syscalls against the driver).
+    // Sleep park when the semaphore could not be created: a -1 handle would spin a hot
+    // loop of failing sem_wait syscalls against the driver.
     int idle = kos_sem_create(0);
     while (true)
     {

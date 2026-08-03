@@ -4,10 +4,9 @@
 // K64F/UART0 userspace polled UART TX console driver (see <kickos/driver/k64uart.h>).
 // An UNPRIVILEGED thread owns the granted UART0 register window and serves a console
 // endpoint: kos_recv() a byte batch, then for each byte poll S1.TDRE until the data
-// register is free and write UART0_D. This mirrors the kernel polled writer
-// (arch/arm/chip/mk64f/chip_mk64f.cc arch_console_write_sync): S1.TDRE clear means
-// the data register still holds a byte the shifter has not taken; wait for it to set
-// before loading the next byte, or a byte is dropped on the wire.
+// register is free and write UART0_D. S1.TDRE clear means the data register still holds
+// a byte the shifter has not taken, so loading the next byte before it sets drops one on
+// the wire.
 //
 // The driver touches no SIM or PORT register itself: the kernel's uart0_init()
 // configured clock and pins at boot and left the UART TX-capable in a polled state,
@@ -19,10 +18,10 @@
 // (a 32-bit access at base+4 spans S1/S2/C3/D and reading D pops the RX FIFO).
 //
 // HARD RULE (design D7): NO libc stdio. printf/puts route through _write ->
-// kos_send(0, ..) -> this driver's own endpoint (a self-send that deadlocks, since
-// the driver holds the sole CAP_WAIT recv cap so recv_holders never reaches 0).
-// Diagnostics go direct to the UART0 window (win_puts below) or via kos::print
-// (kos_kconsole_write -> the RTT / kernel debug path, which bypasses the endpoint).
+// kos_send(0, ..) -> this driver's own endpoint, a self-send that deadlocks because
+// the driver holds the sole CAP_WAIT recv cap, so recv_holders never reaches 0.
+// Diagnostics go direct to the UART0 window (win_puts below) or via kos::print, which
+// bypasses the endpoint.
 //
 // Register addresses / bit fields are from the K64 Sub-Family Reference Manual
 // (K64P144M120SF5RM); consistent with the chip layer's clean-room regs.
@@ -75,13 +74,10 @@ namespace
         return false;
     }
 
-    // Own the baud divisor from the queried branch clock: ask the kernel for UART0's
-    // branch clock and re-derive SBR/BRFA for 115200 from it, then write BDH/BDL/C4
-    // inside the already-granted window. This is the driver owning its divisor from the
-    // queried branch, the pattern the whole coming driver era uses (the kernel no longer
-    // hardwires the baud for it). On a 0 (the oracle does not know this block) keep the
-    // kernel-programmed baud. Same K64 formula the chip layer's uart0_init uses; UART0 is
-    // byte-mapped so r8.
+    // Ask the kernel for UART0's branch clock and re-derive SBR/BRFA for 115200 from it,
+    // then write BDH/BDL/C4 inside the already-granted window. On a 0 return the oracle
+    // does not know this block, so the kernel-programmed baud stands. Same K64 formula the
+    // chip layer's uart0_init uses.
     void rederive_baud(uintptr_t win)
     {
         uint32_t const clk = kos_periph_clock_hz(win);
@@ -97,8 +93,7 @@ namespace
         r8(win + C4_OFFSET) = static_cast<uint8_t>(brfa & 0x1F);
     }
 
-    // Direct-to-window diagnostic (NOT stdio, NOT the endpoint): exercises the exact
-    // poll+D path so first-light on silicon is visible before any endpoint traffic.
+    // Direct-to-window diagnostic, not stdio and not the endpoint.
     void win_puts(uintptr_t win, char const* s)
     {
         for (; *s != '\0'; s++)
@@ -115,18 +110,16 @@ void k64uart_console_driver(void* arg)
 {
     uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // UART0 window base
 
-    // First act: open UART0's AIPS0 slot 106 SP bit (RM 20.2.3) through the grant this
-    // thread holds. Until it returns, every register access below is supervisor-only
-    // and faults. SCGC4_UART0 is already set by uart0_init, so the clock half is a
-    // no-op here.
+    // Open UART0's AIPS0 slot 106 SP bit (RM 20.2.3) through the grant this thread holds.
+    // Until it returns, every register access below is supervisor-only and faults.
+    // SCGC4_UART0 is already set by uart0_init, so the clock half is a no-op here.
     //
-    // NO TRANSPORT SURVIVES THIS FAILURE on the chip backend. k64uart_console_start
-    // published before spawning, so console_emit's USER_OWNED arm drops the line below
-    // (kernel/init/console.cc); it reaches the wire only on a build that also carries
-    // RTT. kickos::emit is NOT the remedy here that it is for every other driver: this
-    // thread's stdout cap (index 0) is the console endpoint it was spawned to SERVE, so
-    // its send parks on an endpoint with no receiver and never returns. The window
-    // itself is supervisor-only at this point, so win_puts cannot report either.
+    // NO TRANSPORT SURVIVES THIS FAILURE on the chip backend: the start published before
+    // spawning, so console_emit's USER_OWNED arm drops the line below and it reaches the
+    // wire only on a build that also carries RTT. kickos::emit is NOT the remedy it is for
+    // every other driver, because this thread's stdout cap (index 0) is the console
+    // endpoint it was spawned to SERVE, so its send parks on an endpoint with no receiver.
+    // The window is supervisor-only at this point, so win_puts cannot report either.
     if (kos_periph_enable(win) != 0)
     {
         kos::print("[k64uart] ERROR: periph_enable failed, UART0 unreachable\n");
@@ -192,9 +185,8 @@ int k64uart_console_start(struct kos_service_cfg const* cfg)
     //    recv cap (lands at the child's table index 1). No SIGNAL/TRANSFER on the child
     //    cap: the driver receives, it does not send or re-delegate. driver_prio must be
     //    >= every client (D9: rendezvous has no PI).
-    //    On failure the helper reports (RTT path) + closes ep: publish already
-    //    flipped USER_OWNED, so the console is dark and the caller MUST NOT spawn
-    //    console-dependent apps after this (S6).
+    //    On failure the helper closes ep FIRST, which reclaims the console, and only
+    //    then reports, so the tag reaches the wire.
     int const drv = kickos::driver::spawn_unprivileged(
         k64uart_console_driver, win_base, win_size, cfg->name, driver_prio, ep,
         "[k64uart] ERROR: driver spawn failed\n");
@@ -203,12 +195,12 @@ int k64uart_console_start(struct kos_service_cfg const* cfg)
         return -1;
     }
 
-    // 4. Close root's OWN WAIT-bearing cap on E immediately (S4). At spawn recv_holders
-    //    == 2 (root + driver); dropping root's copy leaves the driver as the sole
-    //    receiver, so the driver's eventual death drops recv_holders to 0 and EPIPE-wakes
-    //    parked senders. g_stdout_target survives on the kernel's own ref (S3).
-    kos_handle_close(ep);
-    return 0;
+    // 4. Close root's OWN WAIT-bearing cap on E (S4), then PROVE the driver is serving
+    //    before returning: a zero-length rendezvous on cap 0 returns only once the driver
+    //    has received it, which closes the dark window between the publish and the driver
+    //    serving. g_stdout_target survives on the kernel's own ref (S3).
+    return kickos::driver::console_handover_finish(
+        ep, "[k64uart] ERROR: driver died during bring-up\n");
 }
 
 }

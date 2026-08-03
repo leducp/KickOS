@@ -1,19 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// frdmk64f service-list provider: the board's kickos_board_services, brought up in
-// array order by the default init BEFORE the app's main. Two entries:
-//   [0] KOS_SVC_CONSOLE -> k64uart_console_start (UART0 handover; console FIRST so
-//       the app's stdout reaches the wire before anything else runs).
-//   [1] KOS_SVC_SPI     -> k64dspi_spi_start     (DSPI0 bus service on an endpoint).
-// Per-instance config travels as DATA (kos_service_cfg), never as literals in a
-// driver TU. Selected by KICKOS_SERVICE_LIST=kickos_services_frdmk64f (the frdmk64f
-// enforcement default); the console comes up via this list (its first KOS_SVC_CONSOLE
-// entry). EXACTLY ONE kickos_board_services links per image.
-//
-// This combined list lives with the DSPI driver (not the UART driver) because it now
-// spans both; the CMake target links kickos_k64uart AND kickos_k64dspi so both
-// drivers + their class leaves come along.
+// frdmk64f service-list provider, brought up in array order by the default init BEFORE
+// the app's main. The console entry MUST stay first, so the app's stdout reaches the wire
+// before anything else runs. Selected by KICKOS_SERVICE_LIST=kickos_services_frdmk64f
+// (the frdmk64f enforcement default); its CMake target links kickos_k64uart AND
+// kickos_k64dspi. EXACTLY ONE kickos_board_services links per image.
 
 #include <kickos/sys/service.h>
 
@@ -30,9 +22,9 @@ extern "C"
         /*cs_policy=*/KOS_SVC_CS_NONE, /*cs_index=*/0, /*rsv=*/{ 0, 0 }
     };
 
-    // DSPI0 @ 0x4002_C000, 0x40 B window (RM ch.50; AIPS0 slot 44; the 32-aligned
-    // pow2 window that encodes on SYSMPU/PMSA/PMP alike). hz, cs_policy and cs_index are
-    // informational: nothing reads them. No boot rate is in effect (spi_service.h refuses
+    // DSPI0 @ 0x4002_C000, 0x40 B window (RM ch.50; AIPS0 slot 44; the 32-aligned pow2
+    // window that encodes on SYSMPU/PMSA/PMP alike). hz, cs_policy and cs_index are
+    // informational, nothing reads them: no boot rate is in effect (spi_service.h refuses
     // an XFER until a client CONFIG op folds a profile, which is what programs CTAR0), and
     // the driver hardcodes the PTC4 CS pin. The call/reply path donates the caller's
     // priority to the driver, so its static prio is a floor, not the served priority.
