@@ -897,11 +897,17 @@ root stack. That is the pattern to copy on a tight part: measure the watermark, 
 provision, rather than provisioning for comfort.
 
 The cap table is the one row that is NOT a board knob. `KICKOS_MAX_HANDLES` is summed at
-configure from three declarations -- the kernel's reserved range, the chosen service list's
-`RETAINED_CAPS`, and the app's `CAPABILITIES` (`cmake/cap_table.cmake`) -- and checked
-against the board's `KICKOS_CAP_TABLE_SUPPLY`, which is all a board states. A demand that
-exceeds supply is a configure FATAL naming every term; a board too small for an app's
-OPTIONAL peak still configures, and the arms that wanted those slots reclaim and skip.
+configure from four declarations (`cmake/cap_table.cmake`) -- the kernel's reserved range,
+the chosen service list's `RETAINED_CAPS`, the app's `CAPABILITIES`, and the peak
+concurrent INBOUND reply capabilities a task's table must hold, declared by whoever owns
+the protocol's fan-in: `INBOUND_REPLY_CAPS` on `kickos_add_board_provider`,
+`CAPABILITIES_INBOUND_REPLY` on `kickos_add_application`, combined as the widest, and
+**0 by default** -- nothing in tree declares it. The total is checked against the board's
+`KICKOS_CAP_TABLE_SUPPLY`, which is all a board states. A demand that exceeds supply is a
+configure FATAL naming every term; a board too small for an app's OPTIONAL peak still
+configures, and the arms that wanted those slots reclaim and skip. Beneath the sum the
+grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1` RAISES a width that falls below it instead
+of refusing it, and refuses only when the floor itself exceeds the board's supply.
 `cap.h` keeps both asserts (`KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC`, and
 `KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`) as the backstop for a build that bypasses
 the sum. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent

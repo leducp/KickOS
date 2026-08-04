@@ -55,7 +55,7 @@ struct CapEntry
 {
     int32_t  obj;    // the GLOBAL generational object handle this cap names
     uint8_t  type;   // CapType -- checked at resolve
-    uint8_t  rights; // WAIT / SIGNAL / TRANSFER -- checked at resolve
+    uint8_t  rights; // WAIT / SIGNAL checked at resolve; TRANSFER at the delegate site
     uint16_t gen;    // per-slot cap generation, bumped on close
 };
 ```
@@ -117,8 +117,21 @@ Two properties make this a *chokepoint* and not merely a check:
 
 1. **It is the only door.** There is no path from a syscall argument to an object pointer
    that bypasses resolve. Add rights, add types, add object kinds -- they are all enforced
-   inside this one function, so there is one place to get right and one place to audit.
-   Rights in particular are checked *here and nowhere else*.
+   inside this one function, so there is one place to get right and one place to audit. A
+   right that names an *operation on the object* -- WAIT, SIGNAL -- is checked *here and
+   nowhere else*.
+
+   TRANSFER is the exception that proves the rule rather than a wart in it. It does not
+   name an operation on the object at all; it names permission for the *entry* to be
+   copied into a child's table. Resolve never performs that copy, so there is nothing at
+   resolve for a TRANSFER check to gate -- no call site asks resolve for it -- and the
+   check lives where the copy happens, in the spawn path's grant loop. Read the rule
+   precisely and the two are one rule: **a right is checked at the chokepoint for the
+   operation it names.** Every right whose operation is "reach this object" funnels
+   through resolve; a right whose operation is "duplicate this name" has its own single
+   site. Getting this backwards -- adding a TRANSFER test to resolve for symmetry's sake --
+   would put a check on a path that can never violate it, which is how a field starts
+   being checked twice and enforced nowhere.
 2. **Resolve and use happen under the same continuous `IrqLock`.** The pointer resolve
    hands back is only valid while the lock is held; releasing it between resolve and use
    would let a concurrent close/destroy free the slot underneath a validated pointer. This

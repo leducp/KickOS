@@ -227,18 +227,25 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_add_application(<name> SOURCES <src...> BOARD <board> [FULL_CXX]
-#                        [CAPABILITIES <n>] [CAPABILITIES_OPTIONAL <m>])
+#                        [CAPABILITIES <n>] [CAPABILITIES_OPTIONAL <m>]
+#                        [CAPABILITIES_INBOUND_REPLY <r>])
 #   Links the app against the KickOS component libraries and emits the image.
 #   For sim this is a runnable host ELF whose entry (host main) lives in the
 #   sim arch backend; the app must define kickos_app_main().
 #
-#   CAPABILITIES is this app's PEAK of concurrently held capabilities, one of the three
+#   CAPABILITIES is this app's PEAK of concurrently held capabilities, one of the four
 #   terms the per-task table width is summed from (cmake/cap_table.cmake). Omitted, the app
 #   gets KICKOS_CAP_APP_PEAK_DEFAULT.
 #   CAPABILITIES_OPTIONAL is further peak whose holders reclaim and self-skip when they
 #   cannot allocate, so it is granted only where supply covers it and never makes a board
-#   fail to configure. Out of tree the declaration is recorded and NOT acted on: the width
-#   is fixed by the installed package the app links.
+#   fail to configure.
+#   CAPABILITIES_INBOUND_REPLY is how many CAP_REPLY capabilities one of this app's tasks
+#   holds at once as the SERVER side of kos_call: a client mints into the server's table
+#   (kernel/syscall/syscall_ipc.cc), so without it the sum does not bound when the server's
+#   own creates start failing. It is the peak of CONCURRENTLY parked callers, not a count of
+#   calls. Omitted, the app gets KICKOS_CAP_REPLY_DEFAULT (0).
+#   Out of tree any of these three is recorded, WARNED about and not acted on: the width is
+#   fixed by the installed package the app links.
 #
 #   OPTIONAL SUGAR. The supported out-of-tree path is plain CMake -- find_package
 #   (KickOS), add_executable, target_link_libraries(app PRIVATE kickos) [or
@@ -253,7 +260,14 @@ endfunction()
 # ---------------------------------------------------------------------------
 function(kickos_add_application name)
   cmake_parse_arguments(APP "FULL_CXX"
-    "BOARD;CAPABILITIES;CAPABILITIES_OPTIONAL" "SOURCES" ${ARGN})
+    "BOARD;CAPABILITIES;CAPABILITIES_OPTIONAL;CAPABILITIES_INBOUND_REPLY" "SOURCES" ${ARGN})
+  # A misspelled keyword would otherwise fall through the DEFINED guards below and record NO
+  # declaration at all, leaving the app on the undeclared default with nothing said.
+  if(APP_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR "kickos_add_application(${name}): unrecognised argument(s) "
+      "'${APP_UNPARSED_ARGUMENTS}'. Keywords are FULL_CXX, BOARD, SOURCES, CAPABILITIES, "
+      "CAPABILITIES_OPTIONAL, CAPABILITIES_INBOUND_REPLY.")
+  endif()
   if(NOT APP_SOURCES)
     message(FATAL_ERROR "kickos_add_application(${name}): SOURCES required")
   endif()
@@ -282,15 +296,20 @@ function(kickos_add_application name)
   add_executable(${name} ${APP_SOURCES})
   # Only an EXPLICIT declaration is recorded, so the sum's diagnostics can name the app that
   # set the width rather than the default.
-  if(DEFINED APP_CAPABILITIES OR DEFINED APP_CAPABILITIES_OPTIONAL)
+  if(DEFINED APP_CAPABILITIES OR DEFINED APP_CAPABILITIES_OPTIONAL
+     OR DEFINED APP_CAPABILITIES_INBOUND_REPLY)
     if(NOT DEFINED APP_CAPABILITIES)
       set(APP_CAPABILITIES "${KICKOS_CAP_APP_PEAK_DEFAULT}")
     endif()
     if(NOT DEFINED APP_CAPABILITIES_OPTIONAL)
       set(APP_CAPABILITIES_OPTIONAL 0)
     endif()
+    if(NOT DEFINED APP_CAPABILITIES_INBOUND_REPLY)
+      set(APP_CAPABILITIES_INBOUND_REPLY "${KICKOS_CAP_REPLY_DEFAULT}")
+    endif()
     kickos_declare_app_capabilities(${name}
-      "${APP_CAPABILITIES}" "${APP_CAPABILITIES_OPTIONAL}")
+      "${APP_CAPABILITIES}" "${APP_CAPABILITIES_OPTIONAL}"
+      "${APP_CAPABILITIES_INBOUND_REPLY}")
   endif()
   # Warning policy only on our own code: in tree every app under user/apps is ours;
   # out of tree the application target belongs to the consumer.
@@ -426,7 +445,8 @@ function(kickos_add_qemu_test)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_add_board_provider(<name> SOURCE <cc> [LINK <libs...>] [RETAINED_CAPS <n>])
+# kickos_add_board_provider(<name> SOURCE <cc> [LINK <libs...>] [RETAINED_CAPS <n>]
+#                           [INBOUND_REPLY_CAPS <r>])
 #   A board-descriptor provider library (pinmap or service-list): a freestanding
 #   STATIC lib defining one board-descriptor symbol (kickos_board_pinmap or
 #   kickos_board_services), seeing only system/include, exported to KickOSTargets.
@@ -437,12 +457,24 @@ endfunction()
 #   provider passes none. The target is kickos_<name>.
 #
 #   RETAINED_CAPS is how many capabilities a SERVICE LIST leaves in root's table for the
-#   life of the image, one of the three terms the per-task table width is summed from
+#   life of the image, one of the four terms the per-task table width is summed from
 #   (cmake/cap_table.cmake). It is RETENTION, not the bring-up peak: a list whose bring-up
 #   transiently holds more than its retention plus the app's peak must declare the
 #   transient. A pinmap provider holds none and passes nothing.
+#
+#   INBOUND_REPLY_CAPS is how many CAP_REPLY capabilities one of the list's SERVICES holds at
+#   once as the server side of kos_call: a client mints into the server's table
+#   (kernel/syscall/syscall_ipc.cc), so a list whose protocol admits several parked callers
+#   must say how many. The widest declaration in the tree wins (the app may declare it too),
+#   so this is not added to the app's number.
 function(kickos_add_board_provider name)
-  cmake_parse_arguments(BP "" "SOURCE;RETAINED_CAPS" "LINK" ${ARGN})
+  cmake_parse_arguments(BP "" "SOURCE;RETAINED_CAPS;INBOUND_REPLY_CAPS" "LINK" ${ARGN})
+  # A misspelled keyword would otherwise be dropped and the count silently default.
+  if(BP_UNPARSED_ARGUMENTS)
+    message(FATAL_ERROR "kickos_add_board_provider(${name}): unrecognised argument(s) "
+      "'${BP_UNPARSED_ARGUMENTS}'. Keywords are SOURCE, LINK, RETAINED_CAPS, "
+      "INBOUND_REPLY_CAPS.")
+  endif()
   if(NOT BP_SOURCE)
     message(FATAL_ERROR "kickos_add_board_provider(${name}): SOURCE required")
   endif()
@@ -450,7 +482,19 @@ function(kickos_add_board_provider name)
   if(NOT DEFINED BP_RETAINED_CAPS)
     set(BP_RETAINED_CAPS 0)
   endif()
-  set_target_properties(kickos_${name} PROPERTIES KICKOS_CAP_RETAINED "${BP_RETAINED_CAPS}")
+  if(NOT DEFINED BP_INBOUND_REPLY_CAPS)
+    set(BP_INBOUND_REPLY_CAPS "${KICKOS_CAP_REPLY_DEFAULT}")
+  endif()
+  # Refused HERE, where the declarer is named: the resolve reads these properties numerically
+  # and would otherwise take a negative as a real term and narrow the summed width.
+  foreach(_n "${BP_RETAINED_CAPS}" "${BP_INBOUND_REPLY_CAPS}")
+    if(NOT "${_n}" MATCHES "^[0-9]+$")
+      message(FATAL_ERROR "kickos_add_board_provider(${name}): '${_n}' is not a non-negative "
+        "integer count of concurrently held capabilities")
+    endif()
+  endforeach()
+  set_target_properties(kickos_${name} PROPERTIES
+    KICKOS_CAP_RETAINED "${BP_RETAINED_CAPS}" KICKOS_CAP_REPLY "${BP_INBOUND_REPLY_CAPS}")
   kickos_apply_freestanding(kickos_${name})
   target_include_directories(kickos_${name} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")

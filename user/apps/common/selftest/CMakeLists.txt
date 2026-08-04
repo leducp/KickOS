@@ -98,6 +98,15 @@ if(KICKOS_ARCH STREQUAL "sim")
   # it, so the free-window arms find nothing to take.
   list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
 endif()
+# cap_chunk_span needs a table WIDER than the chunk granule (KCAP_CHUNK_TARGET) to reach a
+# segmented index at all; below that it runs the flat-decode half and reports PARTIAL. The
+# summed width is not a variable here, because cmake/cap_table.cmake resolves it after this
+# directory is added, so the condition is the chips whose KICKOS_CAP_TABLE_SUPPLY is 7.
+# Changing the granule changes which boards land here.
+if(KICKOS_CHIP STREQUAL "nrf51" OR KICKOS_CHIP STREQUAL "stm32f103"
+   OR KICKOS_CHIP STREQUAL "stm32f302")
+  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
+endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   # The reserved-overlap matrix needs the board to declare at least one
   # arch_reserved_blocks entry. The host and the mps2 parts declare none; the qemu-riscv
@@ -118,7 +127,7 @@ list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
 # shrink together when an arm is deleted and no self-consistent parse can see it; only
 # an expectation from OUTSIDE the image can. The conditions mirror the #if guards around
 # the registration block at the bottom of main.cc, one clause per guard.
-set(_tap_arms 59) # unconditional
+set(_tap_arms 61) # unconditional
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
 endif()
@@ -141,7 +150,7 @@ endif()
 # new arm has to move a clause on each side.
 set(_tap_arms_p1 43) # every arm in region 1
 
-set(_tap_arms_p2 16) # region 2, unconditional
+set(_tap_arms_p2 18) # region 2, unconditional
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
 endif()
@@ -236,15 +245,16 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # direction, flips one of endpoint_crossdomain, mem_self_grant_nonpow2, region_mode or
   # mem_self_grant between running and skipped. Before changing any static demand here, diff
   # the whole TAP output and not the verdict: the arm that flips is the cause.
-  # Two more arms run their invariant and drop a sub-case, reporting PARTIAL: they count
+  # Three more arms run their invariant and drop a sub-case, reporting PARTIAL: they count
   # as passes, not skips, and carry their own permission set.
   #   caller_stack: the arena cannot spare a caller-owned stack
   #   confused_deputy: the arena cannot spare the grandchild's stack
+  #   cap_chunk_span: a 7-slot table compiles the flat decode, so no segmented index exists
   # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a semicolon
   # would split the value into a second bogus environment entry.
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,call_donation_hold,call_donation_slow,call_donation_pending,domain_share,irq_as_event,uart_service"
-    "EXPECT_PARTIALS=caller_stack,confused_deputy")
+    "EXPECT_PARTIALS=caller_stack,confused_deputy,cap_chunk_span")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv

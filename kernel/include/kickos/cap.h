@@ -35,6 +35,11 @@ static_assert(KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC,
 static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES,
               "a full grant list must fit the child table at indices 1..cap_count");
 
+// The width is NOT checked against KICKOS_CAP_TABLE_SUPPLY here, though the configure sum
+// refuses a total above it: tests/captable restates KICKOS_MAX_HANDLES to compile a geometry
+// no board sums to, and it is a legitimate consumer of this header. That backstop lives in
+// cap.cc, the one TU that carves the slab.
+
 namespace kickos
 {
     struct Thread; // kickos/thread.h
@@ -197,6 +202,8 @@ namespace kickos
     // TWO CODE PATHS, selected below. At one chunk there is no directory index, no shift
     // and no mask, and the run is exactly KICKOS_MAX_HANDLES wide with nothing rounded up.
     // armv6m has no divide instruction, so the chunk width must stay a power of two.
+    // Changing this also moves KCAP_CHUNK_SHIFT below, which boards compile the flat decode,
+    // and so the cap_chunk_span PARTIAL list in user/apps/common/selftest/CMakeLists.txt.
 #define KCAP_CHUNK_TARGET 8
 #if KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET
 #define KCAP_RUN_CHUNKS 1
@@ -222,21 +229,24 @@ namespace kickos
                   "a run rounds up by less than one whole chunk, or the chunk count is not "
                   "a ceiling division");
 
-    // A run is returned at SLOT RECLAIM and not at exit, so this counts concurrently
-    // ALLOCATED runs and not live threads: every pool slot, plus root. idle takes none.
-    static constexpr uint16_t KCAP_RUN_COUNT = KICKOS_MAX_THREADS + 2;
+    // The runs held by something that is NOT a thread-pool slot: root's (a static TCB, so no
+    // slot accounts for it) and the one thread_spawn holds in its ThreadAttr until
+    // thread_create takes it over. idle holds none. A new kind of holder is a term here.
+    static constexpr uint16_t KCAP_RUN_OFF_POOL = 2;
+
+    // One run per possible holder. A run is returned at SLOT RECLAIM and not at exit, so an
+    // EXITED slot still holds its own. Short by one and a spawn is refused while a thread slot
+    // is still free, which nothing downstream tells apart from a full pool: both -KOS_ENOMEM.
+    static constexpr uint16_t KCAP_RUN_COUNT = KICKOS_MAX_THREADS + KCAP_RUN_OFF_POOL;
 
     static constexpr uint32_t kcap_slab_entries()
     {
         return KCAP_RUN_SLOTS * static_cast<uint32_t>(KCAP_RUN_COUNT);
     }
 
-    // A slab that runs dry refuses a spawn while a thread slot is still free, and nothing
-    // downstream distinguishes that from a full pool: both are -KOS_ENOMEM. So the chunk
-    // supply must never be the binding constraint on the thread pool.
     static_assert(KCAP_RUN_COUNT > KICKOS_MAX_THREADS,
-                  "the slab must hold one run per pool slot plus root's, or the cap table "
-                  "silently caps the thread pool below KICKOS_MAX_THREADS");
+                  "KCAP_RUN_COUNT wrapped its uint16_t: KICKOS_MAX_THREADS is within "
+                  "KCAP_RUN_OFF_POOL of the type's ceiling and the slab would carve one run");
 
     // A task's chunk directory. It lives in the TCB, not inside the run itself.
     struct CapRun
@@ -255,7 +265,12 @@ namespace kickos
     }
 
     // Does this task hold a run at all? A run is all-or-nothing, so chunk 0 answers for the
-    // whole directory. idle, and a slot between reclaim and the next spawn, hold none.
+    // whole directory.
+    //
+    // The runless set, in full and stated only here: idle, whose directory is created empty,
+    // and any thread-pool slot outside a live spawn, which is one never yet allocated as well
+    // as one reclaimed and not yet handed to the next spawn. An EXITED slot is NOT one of
+    // them: its run is returned at reclaim.
     inline bool cap_run_held(CapRun const& run)
     {
         return run.chunk[0] != nullptr;
@@ -449,6 +464,10 @@ namespace kickos
     {
         if (index < KICKOS_CAP_FIRST_DYNAMIC)
         {
+            // Out of the list, but still a DEAD entry, so it must not keep the object handle
+            // it named: leave the null link pair a zeroed run carries. That keeps "a dead
+            // entry's obj holds the free-list links" true of every dead entry.
+            kcap_free_link(cap_slot(run, index), KCAP_FREE_NONE, KCAP_FREE_NONE);
             return;
         }
         uint16_t const self = kcap_free_ref(index);
@@ -471,9 +490,13 @@ namespace kickos
     // and strands nothing. Caller holds IrqLock.
     [[nodiscard]] bool cap_slab_attach(CapRun* run, uint16_t* free_head);
 
-    // Return a run to the slab. Caller holds IrqLock. A run holding nothing is a no-op, so
-    // an unwind path may call it unconditionally.
-    void cap_slab_detach(CapRun* run);
+    // Return a run to the slab and clear `*free_head`. Caller holds IrqLock. A run holding
+    // nothing is a no-op, so an unwind path may call it unconditionally.
+    //
+    // The head is a PARAMETER for the same reason attach takes it: a head left naming a slot
+    // in a chunk this call just gave away answers cap_has_free_slot TRUE for a table that no
+    // longer exists, and the next attach may already have handed that chunk to another task.
+    void cap_slab_detach(CapRun* run, uint16_t* free_head);
 
     // Carve the slab and thread the free list. Called once from kmain before any thread
     // exists.
@@ -561,16 +584,14 @@ namespace kickos
 
     // Seat (or re-seat) thread t's reserved stdout slot (index 0) as a SEND-ONLY
     // (CAP_SIGNAL) copy of console endpoint `target`. Written DIRECTLY (cap_install_at
-    // rejects index 0): this and cap_install_defaults are the sole writers of the
-    // reserved slot, and the slot-0 cap-gen is never bumped (kernel-only policy). Takes
-    // the new ref BEFORE dropping any prior one (cap_console_publish order) so re-seating
-    // the same endpoint never transiently frees it. Caller holds IrqLock.
-    // False = the endpoint's refcount is at its uint8_t ceiling: NOTHING is seated and
-    // any prior seat is left exactly as it was.
-    //
-    // PRECONDITION, unchecked: `t` must hold a cap run (`cap_run_held`). It writes slot 0
-    // with NO bound test, so a runless thread is a null deref. Anything that can create a
-    // thread WITHOUT a run must add the guard back.
+    // rejects index 0): this and cap_install_defaults are the only paths that SEAT the
+    // reserved slot, and neither bumps its cap-gen. handle_close is not one of them: a task
+    // that closes handle 0 itself DOES bump that gen, and a re-seat afterwards no longer
+    // answers the KOS_CAP_STDOUT handle userspace names. Takes the new ref BEFORE dropping
+    // any prior one (cap_console_publish order) so re-seating the same endpoint never
+    // transiently frees it. Caller holds IrqLock.
+    // False = NOTHING is seated and any prior seat is left exactly as it was: either `t`
+    // holds no run (cap_run_held), or the endpoint's refcount is at its uint8_t ceiling.
     bool cap_seat_stdout(Thread* t, int target);
 
     // The privileged default cap set for a freshly spawned child. Pre-publish it installs
@@ -584,7 +605,8 @@ namespace kickos
     // dropped, so a re-publish of the same endpoint never transiently frees it and a
     // ceiling refusal leaves the whole prior arrangement intact. The kernel's own ref
     // carries rights 0 (identity, no WAIT), the publisher's CAP_SIGNAL.
-    // False = the endpoint's refcount is at its uint8_t ceiling; nothing changed.
+    // False = the endpoint's refcount is at its uint8_t ceiling, or `publisher` holds no
+    // capability run; nothing changed either way.
     bool cap_console_publish(Thread* publisher, int obj_handle);
 
     // Bump one reference to the object named by a global handle (delegation and create).
@@ -606,6 +628,8 @@ namespace kickos
     // probe-before-mint predicate for the reply cap (B3: never pop a receiver a reply cap
     // cannot be minted into). Takes nothing: the kos_call fastpath runs it interrupt-masked
     // on the RECEIVER's table, not its own. Caller holds IrqLock.
+    //
+    // Must not grow a cap_run_held test: a runless thread's head is already KCAP_FREE_NONE.
     bool cap_has_free_slot(Thread* c);
 
     // The single authority chokepoint: may thread `c` ask the kernel to do `need` (one or

@@ -5,9 +5,16 @@ Copyright (c) 2026 Philippe Leduc
 
 # Design -- the capability table, from a clean sheet
 
-> **Status: ACTIVE** -- implemented, awaiting a silicon witness. Every section below has landed
-> except where the text says otherwise; the branch is held until the bench is available, so nothing
-> here is witnessed on hardware. See `design/README.md` for the marker taxonomy.
+> **Status: ACTIVE** -- landed on `master`. Every section below has landed except where the text
+> says otherwise. See `design/README.md` for the marker taxonomy.
+>
+> **NOT WITNESSED ON HARDWARE, and the earlier pass does not close that.** A two-board run on
+> `xmc4800-relax` (PMSAv7) and `frdmk64f` (SYSMPU) was taken on a PRE-SQUASH state of the branch
+> that is not an ancestor of what merged: 26 code files changed after it, `cap.h`, `cap.cc`,
+> `thread.h`, `syscall_thread.cc`, `sync.cc`, `slotpool.h`, `cmake/cap_table.cmake` and the
+> selftest among them. That run is evidence the design boots and runs under two MPU classes; it is
+> not a witness of the merged tree, and no record may quote it as one. The capture that stamps a
+> tip reachable from `master` is the first real witness this document has.
 
 The capability table landed in stages during M4.5/M4.6 and works. This document re-derives it from
 scratch, because the mechanism that grew around it costs more than it buys: a three-class slab of
@@ -24,7 +31,7 @@ actually is here** -- and it fixes the direction of travel: the fleet will span 
 
 Four concerns, deliberately not in the same place.
 
-`kernel/include/kickos/cap.h:129-139`, 8 bytes:
+`CapEntry` (`kernel/include/kickos/cap.h`), 8 bytes:
 
 - `obj` -- **the reference**: a global generational object handle into an object pool.
 - `type` -- **which pool** `obj` indexes.
@@ -59,10 +66,12 @@ two indices with different rights. The console publish path depends on the secon
 holds a console endpoint with full rights while index 0 is a send-only `CAP_SIGNAL` copy of that
 same endpoint.
 
-`CAP_REPLY` is the one entry that breaks the "`obj` names a pool slot" rule -- it packs a 24-bit
-thread handle plus an 8-bit call sequence and is routinely negative
-(`cap_install_reply`, `kernel/syscall/cap.cc`). Any re-cut of the entry has to re-cut
-that packing too; section 5 does.
+`CAP_REPLY` is the one entry that breaks the "`obj` names a pool slot" rule: `obj` holds a
+generational THREAD handle instead, whole and unshifted, so it takes all 32 bits and is routinely
+negative. The 8-bit call sequence that rides with it lives in the spare bits beside the type and
+the rights (`KCAP_REPLY_SEQ_LO_BITS` / `KCAP_REPLY_SEQ_HI_BITS`, seated by `cap_reply_seq_seat`;
+`cap_install_reply`, `kernel/syscall/cap.cc`). Any re-cut of the entry has to re-cut
+that packing too; section 5 is where that was worked out.
 
 ## 2. Why capabilities, and not an access-control list
 
@@ -149,9 +158,10 @@ none of them is vacuous given only its predecessor.
 3. **The narrow-only clamp against the spawner.** It is *not* the identity while the ABI field
    survives -- the selftest arm relies on `0xFFFF` being clamped to the parent's capacity so it can
    ask for root's ceiling without knowing it, which is a behaviour, not a no-op. Nor is every task's
-   capacity equal: idle is capacity 0 **by construction** (`kernel/init/kmain.cc:229-232`), which is
-   what makes "idle holds no capability" structural. The clamp is the identity only for threads that
-   can issue a spawn, and once the field of (2) is gone it has nothing left to clamp. It conserved
+   capacity equal: idle is capacity 0 **by construction** (`idle_attr.cap_run = CapRun{}` in
+   `kernel/init/kmain.cc`), which is what makes "idle holds no capability" structural. The clamp is
+   the identity only for threads that can issue a spawn, and once the field of (2) is gone it has
+   nothing left to clamp. It conserved
    nothing in any case -- narrow-only is a ceiling, not a budget, so a parent of capacity N could
    spawn any number of N-children, and the run count was the only real wall.
 4. **`Thread::cap_class`.** Its only reader is the slab detach path; with one class it is a
@@ -159,7 +169,7 @@ none of them is vacuous given only its predecessor.
 5. **The per-board default spawn capacity knob.** It exists only to name a board default for the
    field deleted in (2), and `mps2` is the only board that overrides it.
 6. **`KICKOS_MAX_HANDLES` as a board knob.** The per-task width becomes a configure-time sum of
-   three declarations (section 6). The codec stops deriving `KCAP_INDEX_BITS` from it, which is what
+   four declarations (section 6). The codec stops deriving `KCAP_INDEX_BITS` from it, which is what
    couples the handle bit-layout to a per-board RAM decision (section 5).
 
 The mix silently cut the sim from 16 usable thread slots to 7: every spawn took the default
@@ -176,8 +186,11 @@ false for that board; section 10 carries the sweep.
   and it rests on **one** seated index, not two. `KOS_CAP_STDOUT` is 0 in every task and is genuinely
   seated -- `cap_install_defaults` and `cap_seat_stdout` write it, and
   `system/init/common/default_init_run.cc`, `user/include/kickos/sys/driver_bringup.h` and
-  `user/apps/common/drvdeath/main.cc` read it. `KOS_CAP_CLOCK` at index 1 has no writer and no reader
-  anywhere in the tree (`system/include/kickos/sys/cap_index.h`). One seated index is enough: a
+  `user/apps/common/drvdeath/main.cc` read it. `KOS_CAP_CLOCK` at index 1 has no reader that names
+  it by that constant, but it is written: `KOS_SPAWN_DELEGATED_CAP0` is 1 and `cap_install_at`
+  rejects only index 0, so every DEFAULTED spawn grant seats index 1 -- which is the aliasing
+  recorded in section 11 (`system/include/kickos/sys/cap_index.h`,
+  `user/include/kickos/sys/abi.h`). One seated index is enough for the layout argument: a
   global index space cannot give every task its own index 0.
 - **No fragmentation.** One size class gives this for free; it does not need fixed classes to
   achieve it. The slab-level "refuse, never spill" becomes vacuous rather than load-bearing, which
@@ -250,7 +263,7 @@ sweep (`kernel/syscall/cap.cc`, `handle_close` and `cap_teardown`) -- with **no 
 16 generation bits the storage width *is* the field width and that is correct by construction. At 15
 the same unmasked increment overflows into the 16th bit after 32768 closes, and every handle the slot
 then mints carries a generation the codec cannot represent: the slot is bricked.
-`kernel/include/kickos/slotpool.h:83` has the identical shape on the object side.
+`SlotPool::free` in `kernel/include/kickos/slotpool.h` has the identical shape on the object side.
 
 The residual escape risk is stated per the Book's criterion
 (`docs/book/stale-handles-generation-width-and-allocation-policy.md`): 16 bits is **1 in 65536**
@@ -264,24 +277,25 @@ needs neither.
 pseudo-handle is `0x7FFFFFFF`, all ones in its low 31 bits, so **its index field is all ones at
 every split**. Forbid the top index value as a slot and no encodable handle can collide with it --
 at 16/16, at 15/16, at 17/14 alike. That is why it must be a stated rule of the codec rather than a
-coincidence of how wide the capacity field happens to be: relying on `Thread::cap_capacity` being a
-`uint16_t` whose maximum is one below 2^16 would make the property vanish the moment that field
-widened.
+coincidence of how wide the capacity happens to be: relying on the capacity's own type -- the deleted
+`Thread::cap_capacity` was a `uint16_t` whose maximum was one below 2^16 -- would make the property
+vanish the moment that type widened. The capacity is not a field at all now: `thread_cap_capacity`
+(`kernel/include/kickos/thread.h`) computes it.
 
-**The existing assertion does not enforce it.** `kernel/include/kickos/cap.h:71-72` asserts
-`KICKOS_MAX_HANDLES <= (1 << KCAP_INDEX_BITS)`, and `<=` **permits** capacity == `2^index_bits`,
-which is exactly the colliding case. A new assert is required, of the form
-`capacity <= (1u << index_bits) - 1`. Two further copies of the superseded 15/16 arithmetic are
-hard-coded and must be rewritten with it: the sign-wall comment and assert at
-`kernel/include/kickos/cap.h:63-70` ("At 15 index bits it is exactly INT32_MAX"), and
-`system/include/kickos/sys/cap_index.h`, which states that `KOS_CAP_AUTHORITY` "caps
-`KICKOS_MAX_HANDLES` at 32767". All three carry the same fact and all three go stale together.
+**The rule has to be asserted as `capacity <= 2^index_bits - 1`, not `<= 2^index_bits`.** The
+weaker form **permits** capacity == `2^index_bits`, which is exactly the colliding case: the top
+index becomes a seatable slot and the pseudo-handle is mintable. `KCAP_RESERVED_INDEX` names that
+one forbidden value in `kernel/include/kickos/cap.h` and the assert is written against it, so the
+capacity rule and the two pseudo-handles (`KCAP_INVALID`, `KOS_CAP_AUTHORITY`) all stand on the same
+stated constant rather than on an incidental field width. The same fact was previously spelled out
+in the 15/16 arithmetic in two further places -- a sign-wall comment in `cap.h` and a claim in
+`system/include/kickos/sys/cap_index.h` that `KOS_CAP_AUTHORITY` capped `KICKOS_MAX_HANDLES` at
+32767 -- and the lesson is the one that made three copies stale at once: state the rule in one
+place and derive everything from it.
 
-**`cap_capacity` becomes a `uint32_t`**, the natural word on every target. It costs nothing: once
-`cap_class` is deleted, `handles` plus a `uint32_t` occupies the same 8 bytes on a 32-bit target and
-the same 16 on a 64-bit one that `handles` plus a `uint16_t` and a `uint8_t` did. It removes a
-narrowing conversion and needs no change if the index ever widens. The consequence is the reason the
-new assert above is not optional: a `uint32_t` field can express a capacity the 16-bit index cannot
+**The capacity is carried as a `uint32_t`**, the natural word on every target. It costs nothing, it
+removes a narrowing conversion, and it needs no change if the index ever widens. It is also why the
+assert above is not optional: a `uint32_t` capacity can express a value the 16-bit index cannot
 address, so the "index field cannot address the whole table" guard becomes the **real** wall rather
 than an incidental one.
 
@@ -298,28 +312,28 @@ numbers, rather than three splits each defended by a different estimate of deman
 | --- | --- | --- | --- |
 | capability handle | yes, via the out-parameter | 31 -> 32 | the ABI change above |
 | object pools (`SlotPool`) | no, kernel-internal | 31 -> 32 | the `handle < 0` guards, section 5a |
-| thread handle | yes, and masked to 24 bits for `CAP_REPLY` | 24 -> 32 | relocating the call sequence, below |
+| thread handle | yes, and was masked to 24 bits for `CAP_REPLY` | 24 -> 32 | relocating the call sequence, below |
 
-**The thread pool needs `CAP_REPLY`'s call sequence relocated, and the current packing hides that.**
-The reply encoder used to mask the thread handle to `0xFFFFFF` and
-packs an 8-bit call sequence into bits [31:24] of `CapEntry::obj`. That mask is a no-op **only by
-coincidence**: `ThreadPool::INDEX_BITS` is 8 and the generation is a `uint16_t`, so the handle is
-exactly 24 bits wide today. Widen the thread index and the mask silently eats the generation from
-the top -- at 15 index bits it leaves **9** generation bits, collapsing the late-reply ABA guard in
-`cap_reply_caller` from 65536 reuses to 512, with no assert anywhere in the tree to say so. The Book
-chapter on generation width identifies that counter as the most exposed of the three, being
-cross-task, holder-controlled and unbounded in retention.
+**The thread pool needed `CAP_REPLY`'s call sequence relocated, and the packing hid that.**
+The reply encoder masked the thread handle to `0xFFFFFF` and packed an 8-bit call sequence into bits
+[31:24] of `CapEntry::obj`. That mask was a no-op **only by coincidence**: `ThreadPool::INDEX_BITS`
+was 8 and the generation a `uint16_t`, so the handle was exactly 24 bits wide. Widening the thread
+index would have let the mask silently eat the generation from the top -- at 15 index bits it left
+**9** generation bits, collapsing the late-reply ABA guard in `cap_reply_caller` from 65536 reuses to
+512, with no assert anywhere in the tree to say so. The Book chapter on generation width identifies
+that counter as the most exposed of the three, being cross-task, holder-controlled and unbounded in
+retention.
 
-The way out is spare space already in the entry: `CapType` uses 3 of 8 bits and `CapRights` 3 of 8.
-Relocating the call sequence there frees `obj` entirely, so the thread handle gets a full 32 bits,
-`CapEntry` stays 8 bytes, and the packing stops depending on a coincidence. **A `static_assert`
-tying the packing to the thread index width lands in this rework regardless of the split chosen**:
-the current arrangement is a silent truncation waiting for an unrelated knob to move.
+The way out was spare space already in the entry: `CapType` uses 3 of 8 bits and `CapRights` 3 of 8.
+Relocating the call sequence there freed `obj` entirely, so the thread handle now carries a full 32
+bits, `CapEntry` stays 8 bytes, and the packing no longer depends on a coincidence. `KCAP_TYPE_BITS`
+plus `KCAP_REPLY_SEQ_LO_BITS` is asserted to fill exactly one byte, so the arrangement cannot become
+a silent truncation when an unrelated knob moves.
 
 Two reasons not to defer the choice. A re-cut **renumbers every handle value**, which is an ABI
-change, and the ABI freezes at M6 -- so "later" means under freeze or never. And the split is
-currently *derived per board* from `KICKOS_MAX_HANDLES`, which already makes the same logical handle
-print differently on `microbit` and on `mk64f`; one fixed split removes that.
+change, and the ABI freezes at M6 -- so "later" means under freeze or never. And the split was
+*derived per board* from `KICKOS_MAX_HANDLES`, which made the same logical handle print differently
+on `microbit` and on `mk64f`; one fixed split removed that.
 
 **Do not widen the handle to 64 bits.** Every MCU target in the fleet is 32-bit -- `armv6m`,
 `armv7m` (which is where the Cortex-M33 parts sit too: there is no `armv8m` arch, `qemu-m33` and
@@ -330,30 +344,33 @@ If the M6 horizon makes it worth doing, the codec is one constant by then.
 
 ## 5a. The object codec is the binding limit, and it is in scope
 
-Widening the capability index alone fixes the limit that does **not** bind. The one that does is the
-OBJECT handle codec: `SlotPool::INDEX_BITS` is 8, so every pool -- semaphores, mutexes, endpoints,
-IRQ bindings -- tops out at **256 objects**, and `ThreadPool::INDEX_BITS` caps threads the same way.
-A capability table of 65535 slots pointing into a universe of about 1280 objects is not scale.
+Widening the capability index alone would fix the limit that does **not** bind. The one that did was
+the OBJECT handle codec: an 8-bit `SlotPool::INDEX_BITS` topped every pool -- semaphores, mutexes,
+endpoints, IRQ bindings -- out at **256 objects**, and `ThreadPool::INDEX_BITS` capped threads the
+same way. A capability table of 65535 slots pointing into a universe of about 1280 objects is not
+scale.
 
-**The 256 is unused headroom, not a hard wall.** The object handle packs `(gen << INDEX_BITS) |
-index` with `gen_` a `uint16_t`, so it spends 8 + 16 = **24 of the 32 available bits and wastes
-eight**. Taking it to 16/16 with the rest of the fleet gives **65535 objects per pool with the
-generation untouched**.
+**That 256 was unused headroom, not a hard wall.** The object handle packs `(gen << INDEX_BITS) |
+index` with `gen_` a `uint16_t`, so at 8 index bits it spent 8 + 16 = **24 of the 32 available bits
+and wasted eight**. Both codecs sit at **16/16** with the rest of the fleet -- `SlotPool::INDEX_BITS`
+and `ThreadPool::INDEX_BITS` are 16 -- so each pool addresses **65535 objects with the generation
+untouched**, and the whole word is spent.
 
-Three blockers, all cheap:
+Three things that had to move with them, all cheap:
 
-- `static_assert(N - 1 <= UINT8_MAX, "SlotPool: cursor_ too narrow for N")` -- `cursor_` is a
-  `uint8_t` and must widen. One byte per pool.
-- **The `handle < 0` guards.** `free()` and `resolve()` in `kernel/include/kickos/slotpool.h` both
-  reject a negative handle up front, and `alloc()` returns `-1` on a full pool. At 16/16 a handle
-  with the top generation bit set **is** negative in `int`, so those guards would silently reject
-  live handles. The pool's failure signal has to leave the handle value the same way the capability
-  handle's does; the value itself is already sign-agnostic where it is stored, since a `CAP_REPLY`
-  `obj` is routinely negative today.
-- `used_[N]` and `gen_[N]` are statically sized arrays, so a board pays for the `N` it
-  **configures**, not for the ceiling. `microbit` configures **4** semaphores
+- **`cursor_`'s width.** It stores an index, so widening `INDEX_BITS` past it would truncate the
+  resume point and alias two slots onto one. The assert is against `UINT16_MAX`, and the cost is one
+  byte per pool.
+- **The `handle < 0` guards.** With the whole word spent, a handle whose generation has aged into
+  bit 31 **is** negative in `int`, so any sign test in `free()` or `resolve()` would silently reject
+  live handles. Neither performs one (`kernel/include/kickos/slotpool.h` flags both sites "NO SIGN
+  TEST"); what keeps `alloc()`'s `-1` out of range instead is the same capacity rule the capability
+  codec uses -- the all-ones index is never seated. The value was already sign-agnostic where it is
+  stored, since a `CAP_REPLY` `obj` is routinely negative.
+- **The static arrays.** `used_[N]` and `gen_[N]` are statically sized, so a board pays for the `N`
+  it **configures**, not for the ceiling. `microbit` configures **4** semaphores
   (`arch/arm/chip/nrf51/include/kickos/board_config.h`); a large part configures thousands and pays
-  for thousands.
+  for thousands. Raising the ceiling therefore costs a small board nothing.
 
 Nothing has hit this because nothing configures anywhere near it. The
 `kernel/include/kickos/config/system.h` **defaults** are 16 semaphores, 8 mutexes and 4 endpoints --
@@ -363,10 +380,12 @@ three boards. It becomes binding on a multi-core part with gigabytes of RAM, whi
 direction, so the two codecs are reworked together: they are the same problem twice, with the same
 reasoning.
 
-## 6. Provisioning: one number, three declarations, summed at configure
+## 6. Provisioning: one number, four declarations, summed at configure
 
-The per-task width cannot become one fleet-wide value. Demand varies in both directions and the
-evidence is measured -- here is what the tree declares:
+The per-task width cannot become one fleet-wide value. Demand varies in both directions, and the
+evidence is measured: below is the per-board demand the sum replaces -- one row per board header that
+named its own `KICKOS_MAX_HANDLES`, with the slab that width implied. **No board header declares a
+width**; the table is kept for the spread in it, which is the whole argument:
 
 | board | `KICKOS_MAX_THREADS` | `KICKOS_MAX_HANDLES` | slab |
 | --- | --- | --- | --- |
@@ -380,7 +399,7 @@ A single value breaks something either way. At 12 for all, `microbit` gains 160 
 `mk64f` regress: they need 12 because their SPI service holds a request-endpoint capability in
 **root's** table for the life of the image.
 
-**So the number stays, and stops being a board knob.** It becomes a configure-time **sum of three
+**So the number stays, and stops being a board knob.** It becomes a configure-time **sum of four
 declarations, each made by whoever knows the fact:**
 
 - **the kernel's reserved indices** -- a constant, `KICKOS_CAP_FIRST_DYNAMIC`;
@@ -389,7 +408,26 @@ declarations, each made by whoever knows the fact:**
   default (root `CMakeLists.txt`), so it is a per-image choice, and one board has several service
   lists that retain different amounts;
 - **the app's peak concurrent capabilities**, declared by the app, via a macro mirroring the
-  existing `KICKOS_APP_AUTHORITY` (`system/include/kickos/sys/init.h`).
+  existing `KICKOS_APP_AUTHORITY` (`system/include/kickos/sys/init.h`);
+- **the peak concurrent INBOUND reply capabilities** a task's table must hold, declared by whoever
+  owns the protocol's fan-in: `INBOUND_REPLY_CAPS` on the service list, `CAPABILITIES_INBOUND_REPLY`
+  on the app, combined as the widest. A client mints into the SERVER's table, so without this term
+  the sum is not a bound on when a task's own mint can fail.
+
+Beneath the sum sits a floor that is nobody's declaration: a table too narrow to seat a full spawn
+grant list is unsound whatever any app asked for, since delegated cap *i* lands at child index
+*i*+1 with no runtime check. The floor **raises** the width rather than refusing it, and it refuses
+only when it exceeds the board's supply -- so no app is ever told to overstate a demand it does not
+have, and `cap.h`'s `KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES` backstop holds by construction.
+
+**The reply term is honest but PESSIMISTIC under one width, and that is a reason it stays 0 in
+tree.** The four terms are peaks of *different tasks*: an app's peak belongs to the thread doing the
+creates, while an inbound reply cap lands in whichever thread is serving. Summing them provisions
+every table for the worst of all roles at once. The in-tree suite's true concurrent inbound-reply
+peak is **1**, and declaring it would push the supply-7 boards to 8 and stop them configuring, while
+no in-tree server's own peak plus its reply actually exceeds the width it already has. The term is
+therefore declared and defaulted to 0: it is the number a reserved reply sub-range has to be sized
+from, and it becomes chargeable rather than pessimistic once a run is sized per task.
 
 **The board declares supply only** -- its arena, and which peripherals exist. It contributes no
 demand figure at all.
@@ -415,8 +453,9 @@ What the sum buys:
 
 **The price, stated plainly rather than discovered later:** the sum exposes that `microbit`'s 7
 works today only because an arm **skips at runtime**. `mutex_deadlock` -- the case that holds 6
-capabilities -- is in `microbit`'s hardcoded skip list
-(`user/apps/common/selftest/CMakeLists.txt:243`), so the board never pays for it. Under a
+capabilities -- is in `microbit`'s hardcoded skip list: the `EXPECT_SKIPS` list set on the
+`microbit_selftest` test (`user/apps/common/selftest/CMakeLists.txt`), so the board never pays
+for it. Under a
 configure-time sum that skip is not visible, and the two honest options are that the selftest
 declares a reduced footprint for 16 KiB parts, or configure states plainly that the board cannot
 host the full suite. Nothing here lets 7 satisfy a declared 6-plus-reserved demand.
@@ -431,13 +470,16 @@ dropped.
 way every knob in `kernel/include/kickos/config/system.h` already does, and never a kernel-side
 table keyed on board name -- because an out-of-tree board must be able to set it. Recorded as a
 separate finding and **out of scope here**: out-of-tree boards are not actually supported today.
-`KICKOS_BOARDS_DIR` is hard-derived from the repository layout (`cmake/kickos.cmake:30`) and is not
-overridable, and an installed package can only build the single board it was built for
-(`cmake/kickos.cmake:256`).
+`KICKOS_BOARDS_DIR` is hard-derived from the repository layout (`cmake/kickos.cmake`) and is not
+overridable, and an installed package can only build the single board it was built for --
+`kickos_load_board_descriptor`'s installed-package branch resolves only when the requested board
+matches the one recorded at build time, else it is a `FATAL_ERROR` (`cmake/kickos.cmake`).
 
-Related and unchanged by this document: `cap_install` returns a bare `-1` on a full table,
-hand-translated at five call sites, with `kernel/irq/irq.cc:178` carrying an inline warning that the
-raw value reads as `-KOS_EPERM`. That should be folded into the same errno change.
+Related, and folded into the same errno change: `cap_install` used to return a bare `-1` on a full
+table, hand-translated at each call site and shadowed by the fact that the raw value reads as
+`-KOS_EPERM`. It returns `-KOS_EMFILE` itself now, and every caller
+(`kernel/syscall/syscall_obj.cc`, `kernel/syscall/syscall_ipc.cc`, `kernel/irq/irq.cc`) propagates
+that `rc` unchanged.
 
 ## 7. One law, fleet-wide: segmented storage, fully reserved at spawn
 
@@ -449,11 +491,12 @@ memory to whoever asked for the object. This design escapes it differently, by r
 be one contiguous block.
 
 **There is one law, not a per-board posture. Growth is removed.** The reason is the reply mint: a
-client drives `cap_install` on **another thread's** table
-(`kernel/syscall/syscall_ipc.cc:348`, and `:231` on the recv side), and
-`kernel/include/kickos/cap.h:150` already records the property that makes that safe -- "a client
-driving a server's reply mint can fill the SERVER's run and reach nothing else". A growing table
-converts that bounded, self-inflicted refusal into an **unbounded arena drain charged to the
+client drives `cap_install` on **another thread's** table (`cap_install_reply` in
+`kernel/syscall/syscall_ipc.cc`, called from both `endpoint_call` and `endpoint_recv`), and
+`cap_install`'s own contract comment in `kernel/include/kickos/cap.h` already records the property
+that makes that safe -- "a client drives this on a SERVER's table, so a full run has to refuse
+rather than reach for a chunk". A growing table converts that bounded, self-inflicted refusal into
+an **unbounded arena drain charged to the
 victim**, and an unrecoverable one: there is no `arch_ram_free` anywhere in `kernel/`, `arch/` or
 `system/`, so the drained bytes never come back. Reserving bytes instead of slots does not help
 either: reserved bytes are unavailable to everyone else, so the footprint is identical.
@@ -486,10 +529,29 @@ The design:
   a non-power-of-two chunk cannot buy the exact fit back at runtime.
 
 Mid-life failure -- the ninth `sem_create`, an hour in, refused because *another* task consumed the
-arena -- is what all of this exists to make impossible. Three things make it undesirable at every
-point in the fleet, not only on a small target: failure stops being a function of the task's own
-declared needs, it surfaces inside application logic rather than at provisioning time, and it is
-unbounded in when it can occur.
+arena -- is what all of this exists to BOUND. Three things make it undesirable at every point in the
+fleet, not only on a small target: failure stops being a function of the task's own declared needs,
+it surfaces inside application logic rather than at provisioning time, and it is unbounded in when
+it can occur.
+
+**"Impossible" would be the wrong word, and the reply mint is why.** `cap_install_reply` drives plain
+`cap_install` on the SERVER's table, so inbound reply capabilities and that server's own creates draw
+on one free list with no partition between them. A server whose window is full of parked callers gets
+`-KOS_EMFILE` on its own next create, and the coupling runs between PEERS: one client's `kos_call` can
+be refused because three others are mid-call, against a resource neither of them declared. Measured
+against the three criteria above, that failure satisfies all of them.
+
+So the claim this design can actually carry is narrower, and it is still worth having: **a bounded,
+self-inflicted refusal instead of an unbounded arena drain charged to the victim.** Bounded, because
+a full run refuses rather than reaching for a chunk, so the damage cannot leave the one table;
+self-inflicted, because the traffic that fills a server's window is traffic that server chose to
+accept. What section 6's fourth term buys is that the number configure computes is once again an
+honest input to that bound. What it does not buy is a partition: sizing a table for reply traffic is
+not the same as reserving part of it for reply traffic, and only the reservation would stop client
+traffic crowding out a server's own creates. That reservation is deferred, with its reasoning, to the
+per-task-width work (`roadmap.md`'s ledger names the number) -- it needs either a second free-list
+head, which section 4's `Thread` has no room for, or an O(width) scan on the `kos_call` fastpath, and
+it has to be sized from exactly the term added here.
 
 ## 8. SMP (M5) consequences
 
@@ -501,20 +563,20 @@ Three assumptions in the current subsystem are uniprocessor and bear on this des
 - The slab free list's push and pop need **a plain spinlock**, not a lock-free construction. A bare
   compare-and-swap is not an option: the free list is a Treiber stack whose next pointer lives
   inside the freed block, which is the textbook ABA failure, and `armv6m` has no `ldrex`/`strex` at
-  all (`docs/reference/architecture.md:237`). A spinlock is the right cost because attach and detach
-  happen at spawn and reclaim -- they are not a hot path.
+  all (`docs/reference/architecture.md`, "How KickOS differs from its inspirations"). A spinlock is
+  the right cost because attach and detach happen at spawn and reclaim -- they are not a hot path.
 
 **That list is incomplete, and the rest is an M5 catalogue this rework does not answer.** Recorded
 here because they are all in the capability path and all invisible from a uniprocessor reading:
 
 - **The cross-task reply mint has a probe/install TOCTOU.** `cap_install` on another thread's table
-  (`kernel/syscall/syscall_ipc.cc:348`, `:231`) is preceded by a probe on the target, and the
-  `KICKOS_ASSERT(rcap >= 0)` that follows is what stands in for a check. With another core minting
-  between the probe and the install, that assert becomes a **hang in release** -- a caller parked
-  with no reply capability and no error return.
-- **The `w->dying` check** at `kernel/syscall/syscall_ipc.cc:316-330`. Its own comment already
-  states the uniprocessor dependency: the sweep drops `IrqLock` between chunks and this check is
-  what covers the gap.
+  (`cap_install_reply` in `kernel/syscall/syscall_ipc.cc`, both call sites) is preceded by a probe
+  on the target, and the `KICKOS_ASSERT(minted == 0)` that follows is what stands in for a check.
+  With another core minting between the probe and the install, that assert becomes a **hang in
+  release** -- a caller parked with no reply capability and no error return.
+- **The `w->dying` check** in `endpoint_call` (`kernel/syscall/syscall_ipc.cc`). Its own comment
+  already states the uniprocessor dependency: the sweep drops `IrqLock` between chunks and this
+  check is what covers the gap.
 - **`cap_reply_caller`** (`kernel/syscall/cap.cc`) is a **four-load, non-atomic** one-shot guard:
   thread generation, then `state`, then `call_state`, then the low byte of `call_seq`. Nothing keeps
   the four consistent with each other across cores.
@@ -527,6 +589,19 @@ here because they are all in the capability path and all invisible from a unipro
   published console endpoint every task's index 0 shadows.
 - **The endpoint `server` back-pointer** (`kernel/include/kickos/endpoint.h`), re-set at every recv
   and required to be cleared on teardown.
+- **The per-run free list, `Thread::cap_free_head`** (`kernel/include/kickos/thread.h`): an intrusive
+  list whose links live in the run's own dead entries, and `cap_install` pops its head and
+  `cap_install_at` unlinks through it **on a PEER's TCB** -- that is what a client does when it mints
+  a reply capability into a server's table (`cap_install_reply`, both call sites in
+  `kernel/syscall/syscall_ipc.cc`). Two clients calling one server splice the same list, and so does
+  the server's own create.
+- **The served chain, `Thread::served_head` and `Endpoint::next_served`**
+  (`kernel/include/kickos/thread.h`, `kernel/include/kickos/endpoint.h`): `endpoint_server_set`
+  splices it at every recv that moves an endpoint's server, and its `endpoint_server_clear` step
+  writes the PRIOR server's `served_head` -- a different thread's TCB -- while
+  `thread_effective_prio` may be walking that same chain (`kernel/sync/sync.cc`). The walk's own
+  liveness argument, that a chain member is always a live slot because `server` is cleared before
+  `recv_holders` can reach 0, is an ordering claim with no barrier behind it.
 
 **M5 must answer these. This rework does not**, and the entry width is not what decides them: an
 atomic 64-bit load buys nothing while three writers still write the fields separately, without
@@ -574,17 +649,22 @@ Five things worth carrying:
 Each of these is a gate or a claim that goes wrong *silently* if the deletions land without it. A
 coupling already satisfied is checked here, not re-done.
 
-- **The selftest's exhaustion arm.** `t_cap_index0` (`user/apps/common/selftest/main.cc:3771`)
-  asserts a full table returns the old exhaustion errno, twice, and asserts the table recovers
-  afterwards. It is unconditional -- it runs on every board -- so the new errno of section 6 breaks
-  every gate in the fleet until this arm moves with it.
+- **The selftest's exhaustion arm.** `t_cap_index0` (`user/apps/common/selftest/main.cc`) asserts
+  the exhaustion errno on a full table, twice, and asserts the table recovers afterwards. It is
+  unconditional -- it runs on every board -- so the new errno of section 6 breaks
+  every gate in the fleet until this arm moves with it. Two neighbouring arms in the same file cover
+  the storage geometry and the codec's cap-gen half: `t_cap_chunk_span` proves the SEGMENTED index
+  decode by holding a live slot at or above the chunk granule (registered as a PARTIAL where the
+  configured width compiles the flat decode instead and no such slot exists), and `t_cap_gen_reuse`
+  fills the table, closes one slot so the free list has exactly one node, and proves the refill lands
+  on that same index with a different cap-gen while the stale handle stops resolving.
 - **Every gate expectation derived from a deleted configure variable.** CMake evaluates an undefined
   name as **false**, so a predicate of the form `if(NOT <deleted-variable> AND ...)` does not fail
   when the variable goes: its first clause becomes silently **always true**, and the expectation it
   guarded is then asserted on boards that no longer register the arm at all. Deleting a knob
   therefore means re-deriving every expectation keyed on it, never merely leaving the predicate.
 - **The TAP arm counts.** `_tap_arms`, `_tap_arms_p1` and `_tap_arms_p2`
-  (`user/apps/common/selftest/CMakeLists.txt:118-152`) are hand-maintained and reconciled against
+  (`user/apps/common/selftest/CMakeLists.txt`) are hand-maintained and reconciled against
   each other with a `FATAL_ERROR` at configure time. Deleting an arm without decrementing all three
   fails the configure, which is the correct behaviour and must simply be done.
 - **The positional capacity parameter** on `spawn` and `spawn_caps` (`user/include/kickos/kos.h`),
@@ -609,21 +689,46 @@ Not settled by this document:
   A restructuring that removes the chunked window would delete the question instead of answering
   it.
 - **`cap_console_publish` checks possession but not service.** Possession *is* checked, by its
-  caller: `kernel/syscall/syscall.cc:313-341` does a `cap_lookup`, then re-checks that the entry is
-  a `CAP_ENDPOINT` and that the object still resolves. Two things it does not check: **any rights
-  suffice** ("Any rights: the publish is identity-only"), and **nothing compares the publisher
+  caller: the `KOS_SYS_CONSOLE_PUBLISH` case in `syscall_dispatch` (`kernel/syscall/syscall.cc`) does
+  a `cap_lookup`, then re-checks that the entry is a `CAP_ENDPOINT` and that the object still
+  resolves. Two things it does not check: **any rights suffice** ("Any rights: the publish is
+  identity-only"), and **nothing compares the publisher
   against the endpoint's `server`**. So a holder of a send-only copy can publish an endpoint it does
   not serve, and every task's stdout then points at a rendezvous nobody receives on.
-- The unchecked precondition on the stdout seat: it writes index 0 with no bound test, so a
-  capacity-0 thread is a null dereference. Its safety argument names idle as the only capacity-0
-  thread, and that enumeration is incomplete -- the slot reclaim path produces a second class of
-  capacity-0 thread with a null run pointer. No seat path reaches it today.
 - **`KOS_CAP_CLOCK` is kept, and its reservation is currently aliased.** It is a deliberate provision
   for a userspace CPU governor, which is why index 1 stays reserved rather than being reclaimed as a
-  dynamic slot. But `user/include/kickos/sys/abi.h:256` places the first delegated capability on
-  index 1 under default placement, so **default spawn delegation overwrites the reservation**. The
-  aliasing has to be closed -- by moving the default delegation base or by refusing a defaulted
-  grant onto a reserved index -- or the provision means nothing.
+  dynamic slot. But `KOS_SPAWN_DELEGATED_CAP0` (`user/include/kickos/sys/abi.h`) places the first
+  delegated capability on index 1 under default placement, so **default spawn delegation overwrites
+  the reservation**. The aliasing has to be closed -- by moving the default delegation base or by
+  refusing a defaulted grant onto a reserved index -- or the provision means nothing.
+- **`handle_close` accepts a RESERVED index, and one such call costs a thread its console for good.**
+  `cap_lookup` bounds on `thread_cap_capacity` and on nothing else, so `handle_close(c, 0)` resolves:
+  slot 0 is seated, its cap-gen is 0, and the bare handle 0 therefore gen-matches. The close bumps
+  that gen. Userspace names stdout as the bare constant `KOS_CAP_STDOUT`
+  (`system/include/kickos/sys/cap_index.h`) and never as a minted handle, and `cap_seat_stdout`
+  re-seats the slot WITHOUT resetting the gen, so no later publish makes handle 0 resolve in that
+  thread again. LATENT: nothing in `user/`, `system/`, `tests/` or `examples/` closes a reserved
+  index. The open question is whether `handle_close` should refuse below `KICKOS_CAP_FIRST_DYNAMIC`.
+- **`KCAP_RUN_OFF_POOL` is 2, where the true peak of concurrently attached runs is
+  `KICKOS_MAX_THREADS + 1`.** `ThreadPool::alloc` detaches the reclaimed slot's run BEFORE
+  `cap_slab_attach` takes the new one (`kernel/include/kickos/thread.h`), so the pool term and
+  `thread_spawn`'s in-flight term never both count and one of the two off-pool runs is never live.
+  `+ 1` would save `KCAP_RUN_SLOTS * 8` bytes of `.bss`. Left alone deliberately: it spends the last
+  margin on an allocation whose exhaustion is indistinguishable from a full thread pool, both being
+  `-KOS_ENOMEM`.
+- **`t_cap_chunk_span` cannot be mutation-proved**, so its evidence is coverage and not detection. A
+  CONSISTENT bijective mis-decode in `cap_slot` merely relabels slots: every install/lookup pair
+  still agrees and the arm passes. Every non-injective mutation also corrupts `cap_run_free_build`,
+  which threads its links through `cap_slot`, and so breaks BOOT rather than that one arm.
+  `t_cap_gen_reuse` has a clean kill by contrast, which is the shape to aim for.
+- **The fourth provisioning term is declared by NOTHING in tree**, so the summing branch, the
+  service-list property read and the diagnostic path that names the term all have zero exercise, and
+  a typo in a property name would go unnoticed. The default must stay 0 (section 6), so closing this
+  wants a fixture rather than an in-tree declaration.
+- **The crowding scenario has no test anywhere**: several concurrent callers filling one server's
+  window, which is where `kernel/syscall/syscall_ipc.cc` returns `-KOS_EMFILE` against the RECEIVER's
+  table rather than the caller's. Closing it needs three threads and at least three dynamic slots, so
+  the arm would want a SKIP on the supply-7 boards.
 
 Before any of this lands: each deletion needs a mutation proof that the gate it claims to protect
 actually fails when the property is broken, per the project rule that an unproved gate is not
@@ -635,6 +740,6 @@ evidence. The specific ones that matter:
 - the `microbit` arena floor holding across the change, measured at 0 to 7 bytes of slack;
 - **`microbit`'s skip set unchanged in BOTH directions.** "The floor holds" is not sufficient.
   Freeing `.bss` can flip a currently-skipped arena arm from SKIP to RUN, and the board's skip
-  expectations are a hardcoded by-name list
-  (`user/apps/common/selftest/CMakeLists.txt:243`), so a *gain* in slack breaks the gate exactly as
+  expectations are a hardcoded by-name list, the `EXPECT_SKIPS` list set on the `microbit_selftest`
+  test (`user/apps/common/selftest/CMakeLists.txt`), so a *gain* in slack breaks the gate exactly as
   a loss does. The set must be asserted equal, not merely non-growing.

@@ -566,8 +566,15 @@ namespace
 
         // Closing a reserved slot must not put it in the list: it is the kernel's to re-seat,
         // and an own create that could land there would alias a well-known name.
+        //
+        // clear() zeroes every obj, so without this marker the case passes either way.
+        CapEntry* reserved = cap_slot(run, KOS_CAP_STDOUT);
+        reserved->obj = 0x5AA5;
         close_at(run, KOS_CAP_STDOUT, &head);
         check(head == KCAP_FREE_NONE, "releasing a reserved index adds nothing to the list");
+        // Out of the list, but still a DEAD entry, so obj must carry the null link pair or the
+        // "a dead entry holds its free-list links in obj" invariant is not universal.
+        check(reserved->obj == 0, "and the closed reserved entry keeps no stale object handle");
         check(take(run, &head) == KCAP_NO_SLOT, "so the table is still full");
     }
 

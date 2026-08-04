@@ -18,12 +18,22 @@ exploits this: **there is no reply-object pool.** A `CAP_REPLY` entry in the SER
 handle table names the parked caller by generational thread handle; the caller's own
 parked TCB is the reply object.
 
-- **`CapType::CAP_REPLY`** (`kernel/include/kickos/cap.h`) -- a fourth `CapType` arm
-  beside `CAP_SEM` / `CAP_MUTEX` / `CAP_ENDPOINT`.
-- **`CapEntry.obj` packing** (fits the frozen 8-byte `CapEntry`): bits `[23:0]` =
-  `ThreadPool::handle_for(caller)` (`gen:16 | index:8`); bits `[31:24]` = the caller's
-  `call_seq` low byte. Decode with MASKED shifts (`obj & 0xFFFFFF` handle,
-  `(uint32_t)obj >> 24` seq8) -- seq8's top bit makes a signed `int32_t` negative.
+- **`CapType::CAP_REPLY`** (`kernel/include/kickos/cap.h`) -- one arm beside `CAP_SEM` /
+  `CAP_MUTEX` / `CAP_ENDPOINT` / `CAP_IRQ`.
+- **`CapEntry.obj` packing** (fits the frozen 8-byte `CapEntry`): `obj` holds
+  `ThreadPool::handle_for(caller)` WHOLE and UNSHIFTED, all 32 bits of it
+  (`gen:16 | index:16`, since `ThreadPool::INDEX_BITS` is 16) -- read it back with
+  `cap_reply_handle`. The caller's 8-bit `call_seq` low byte is NOT in `obj`: it is split
+  across the two spare bitfields beside the type and the rights -- `seq_lo`
+  (`KCAP_REPLY_SEQ_LO_BITS` = 5, beside `CapType`'s 3) and `seq_hi`
+  (`KCAP_REPLY_SEQ_HI_BITS` = 3, beside `CapRights`' 3) -- seated by `cap_reply_seq_seat`
+  and read by `cap_reply_seq`. Giving `obj` to the whole handle is what makes it impossible
+  for any width of the thread index to truncate the thread generation.
+- **Decode the handle with UNSIGNED shifts** (`cap_reply_caller`): a fully aged thread
+  generation sets bit 31, so `obj` is routinely negative and an arithmetic shift would
+  corrupt the generation. The high bits are compared in FULL, not truncated to the
+  generation's storage width, so a handle carrying anything above the field fails to
+  resolve rather than aliasing a live slot.
 - **`CapEntry.rights = 0`** -- no `WAIT` / `SIGNAL` / `TRANSFER`. A reply cap is not
   delegable, not dupable, and usable only by `KOS_SYS_REPLY` and `KOS_SYS_HANDLE_CLOSE`.
 - **No `ThreadPool` refcount.** The cap does NOT pin the caller's thread slot; staleness
@@ -44,7 +54,7 @@ requires, under one `IrqLock`: index in range, thread-slot gen match, `state == 
 
 - `call_rx_cap` -- reply capacity (the in-place buffer size).
 - `call_seq` (`uint16_t`) -- bumped per call BEFORE the reply cap is packed; its low byte
-  rides the cap obj word.
+  rides the entry's `seq_lo` / `seq_hi` spare bits.
 - `call_state` -- `CALL_NONE` / `CALL_SEND_WAIT` (still parked on the endpoint's
   `send_waiters`) / `CALL_REPLY_WAIT` (queue-less, bound to the reply cap).
 
@@ -164,7 +174,12 @@ sole effective-priority writer):
                           where ep->server == t )
 
 The `CAP_REPLY` donors and the endpoint-server term are found by scanning `t`'s own handle
-table (bounded by `KICKOS_MAX_HANDLES`), NOT by scanning any object pool: the
+table -- bounded by `KICKOS_MAX_HANDLES`, which is not a board knob but the configure-time
+SUM of four declarations, the kernel's reserved range, the chosen service list's retention,
+the widest app peak and the widest declared peak of concurrent INBOUND reply capabilities
+(0 by default, declared by nothing in tree), raised to the grant-list floor
+`KICKOS_MAX_SPAWN_GRANTS + 1` when the sum falls below it (`cmake/cap_table.cmake`) -- NOT
+by scanning any object pool: the
 same cheap-scan philosophy as the mutex held-list walk. `Endpoint::server` is a raw
 `Thread*` set at every recv and CLEARED in the endpoint close/teardown arm when the server
 drops its `WAIT` cap (waker-cleared discipline, mirrors `blocked_on`).

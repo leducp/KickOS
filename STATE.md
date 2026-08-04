@@ -8,213 +8,108 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-On branch `M4.7-cap-rework`, off `master` at `0667bfa`. **M4.7.1 is the capability-table rework, in
-flight**; its design gate is `docs/design-capability-table.md` (ACTIVE, and it records what has
-landed and what has not).
+**M4.7.2 is complete on branch `M4.7.2-review-findings`, and awaits the maintainer's merge.** It
+worked the A-list in the untracked `TODO_FIX.md`, which is still the worklist and now also carries a
+Part C of findings raised while doing the work and deliberately deferred. **`TODO_FIX.md` is
+untracked and NOT gitignored, so `git clean -fd` destroys it.**
 
-**M4.7 is three numbers, not one** (`roadmap.md` assigns them): M4.7.1 is this branch -- codec,
-storage, errno, configure-time sizing, all under one fleet-wide width. M4.7.2 is the review
-findings against it. M4.7.3 removes the one-width law and gives each task a table sized to its own
-declared demand, which is what makes M4.7.1's chunk directory load-bearing rather than inert. The
-arc is deliberate: M4.7.1 lands the machinery, M4.7.3 lands the reason for it.
+Behind it on `master`: M4.7.1 (PR #10, the capability-table rework), M4.6.1 (PR #9, the IRQ
+substrate and the buffered userspace UART), M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 +
+M4.5.7 (PR #6).
 
-**M4.7's pass of record is `c82af2c`, two boards**: `xmc4800-relax` (PMSAv7) and `frdmk64f`
-(SYSMPU), each `1..77` with 77 ok, 0 not-ok, **0 skipped and 0 partial**, stamp clean, each
-re-run for reproducibility. `frdmk64f` is the only witness of the GRANULE-MULTIPLE region-shaping
-path. **M4.6.1's pass of record (`9a00e73`, six boards) covers M4.6.1 and does NOT cover this
-work.**
+### The bench pass, and why it is the first one
 
-**What `c82af2c` does NOT witness.** The rework boots and runs under two MPU classes; that is the
-claim, and it is narrower than "the rework is exercised". A coverage audit of the arms:
-- **Asserted:** `KOS_EMFILE` on a full table (and asserted as *not* `-KOS_ENOMEM`); the
-  out-parameter contract for both the capability and the thread handle; the index half of the
-  handle codec.
-- **Crossed but never asserted:** the chunk boundary. The exhaustion arm does install indices 8,
-  9, 10 through the segmented path, but no assertion mentions the crossing, so that arm would
-  pass byte-identically on a flat 7-slot board.
-- **Not reached at all:** the generation half of the codec -- the gen-mismatch branch of
-  `cap_lookup` is unreachable from userspace today, because the empty-slot test short-circuits
-  first and tail-release hands out a different slot; the configure-time width sum (no runtime
-  check); the 16-bit pools (structurally unobservable from userspace).
-Closing the first two wants one arm asserting an installed index >= 8 and one holding a handle
-across a full free-list rotation. `grant_reserved`'s PARTIAL condition is "does the board declare
-an `arch_reserved_block`", and it has a second partial path the by-name expectation set cannot
-distinguish.
-
-**The branch does not merge until the review findings are dispositioned** (see `TODO_FIX.md`).
-
-**M4.6.1 LANDED** (PR #9), both halves, the second witnessed on silicon. Behind it on `master`:
-M4.5.9 (PR #8, the comment purge and the design-doc cleanup), M4.5.8 + M4.5.7 (`844bee9`, PR #7,
-the gates that fail and the weak-symbol removal), M4.5.6 + M4.5.7 (`dde73ca`, PR #6, unprivileged
-root).
-
-**The IRQ substrate.** A line is a `CAP_IRQ` from a generational pool, the mint takes `AUTH_IRQ`,
-`wait`/`ack`/`notify` take possession plus the matching right, reclaim rides `cap_teardown` so
-every death path releases the line, and a claim does not arm -- the first wait does, in the thread
-that will consume the event. Tier-1 EDGE lines can clear a stale pending from userspace
-(`KOS_SYS_IRQ_DISCARD` / `kos_irq_discard`, gated by selftest `irq_discard`).
-
-**The buffered userspace UART.** An SPSC byte ring, the `kos_uart_*` wire ABI, and a two-thread
-driver (service thread parks in `recv`, IRQ thread owns the device) whose only link is a doorbell;
-handover is ordered, so root proves the driver is serving before any client runs. Five per-chip
-consumers exist. **Four of them carry the entire selftest over the userspace driver, on silicon,
-with nothing left in the kernel's path.** Every capture below shows
-`# tap route: stdout endpoint -> console driver (service list published)`, so the bytes provably
-crossed `printf` -> `_write` -> `kos_send(0)` -> endpoint -> service thread -> ring -> doorbell ->
-IRQ thread -> the peripheral's TX register.
-
-| board | ISA / enforcement | plan | result | capture (`.session/logs/`) |
-| --- | --- | --- | --- | --- |
-| `xmc4800-relax` | armv7m / PMSAv7 | `1..78` | all pass, 0 skip, 1 partial | `m461n-xmc-ktime.log` |
-| `frdmk64f` | armv7m / SYSMPU | `1..78` | all pass, 0 skip, 1 partial | `m461n-k64-ktime.log` |
-| `esp32c6-wroom` | rv32imac / PMP | `1..78` | all pass, 0 skip, 1 partial | `m461n-c6-ktime.log` |
-| `rx72m` | RXv3 / **RX-MPU** | `1..78` | all pass, 0 skip, 1 partial | `m461n-rx-ktime-mpu.log` |
-| `esp32-wroom` | Xtensa LX6 / no MPU in silicon | `1..74` | all pass, 0 skip, 1 partial | `m461n-lx6-ktime.log` |
-| `f302nucleo` part 1 | armv7m / no MPU in silicon | `1..44` | all pass, 3 skip, 1 partial | `m461n-f302-p1.log` |
-| `f302nucleo` part 2 | armv7m / no MPU in silicon | `1..30` | all pass, 4 skip, 2 partial | `m461n-f302-p2.log` |
-
-**All seven images are the same clean committed tip, `9a00e73`**, and the plans are the current
-ones. `m461n-*` is the pass of record. Every capture was checked for the two silent capture
-failures this bench has produced before: all ten stamp `20f6d43` with no `-dirty`, none contains a
-`not ok`, all reach the completion marker, and none shows an interleaved half-line (the two-reader
-clobber tell).
-
-The single partial on each board is `cap_capacity` reporting that the board has one capability
-class, which is true of every hardware board. `f302nucleo`'s extra skips are PROVISIONING, not
-defects: `KICKOS_MAX_THREADS` is 3 there, so `mutex_chain_boost`, `mutex_deadlock` and
-`call_infoless_revert` skip as `pool too small`, and part 2 adds `domain_share`, `confused_deputy`
-and `mem_self_grant` for the same reason plus `irq_as_event` (4 KiB MMIO-page alloc).
-
-**`rx72m` runs under MPU ENFORCEMENT for the first time**, and that closes a real gap rather than
-adding a row: the chip has an MPU (`arch/rx/chip/rx72m/mpu.cmake` -- "KICKOS_HAVE_MPU=1 actually
-faults a cross-domain access"), its preset never set the knob, and every prior capture and every
-prior record described it as "no MPU". It is `1..78` with the four MPU-gated arms genuinely
-executing -- `endpoint_bound` (48), `stackbase_arena` (74), `grant_reserved` (75),
-`dev_window_exclusive` (76) -- none of which appear in a non-enforced capture. `esp32-wroom` and
-`f302nucleo` are the only remaining boards at `1..74`/`1..44`+`1..30`, and those two chips have no
-MPU at all.
-
-**What this pass witnessed that no earlier one could**, all six previously unproven:
-the console reclaim keyed on the device window and the `KOS_SYS_THREAD_KILL` cancellation primitive
-(`20f6d43`); the Xtensa CCOMPARE equality-match fix (`b4e888d`, on `esp32-wroom`); the LX6 demux
-silencing an unroutable UART0 sub-source; **the selftest suite split, on `f302nucleo`, whose two
-images had never been booted**; and the three arms that split restored, which had never executed on
-that silicon -- `cap_dest` (part 1, ok 8) PASS, `cap_capacity` (part 1, ok 9) PARTIAL exactly as
-predicted, `irq_discard` (part 2, ok 16) PASS. 44 + 30 = 74 matches the configure prediction.
-
-All five `*_uartirq` service lists are on the wire with their first-light markers --
-`[xmcuartirq] device up (IRQ TX)` and its four siblings `[k64uartirq]`, `[c6uart]`, `[lx6uart]`,
-`[rxsci]` -- so on every board the whole suite ran THROUGH the userspace driver, which is what
-exercises the bring-up paths this change touched. The CRLF cook holds on silicon too:
-driver-carried lines end `\r\n` where an earlier capture from the same board shows a bare `\n`, so
-the published console and the kernel console agree byte for byte.
-
-**`rx72m`'s stop at `ok 51` is FIXED, and the doorbell is not involved.** Bench-confirmed on this
-chip: an image with zero doorbell posts truncates identically, and one with 200 posts at bring-up
-plus three on every write completes cleanly -- so the design gate's counting-semaphore argument
-(sec.7.5) stands as written. Two independent things were happening.
-
-The truncation was never a mid-run wedge. The short stream is a **byte-exact prefix** of the
-complete one, short by exactly **511 bytes -- one TX ring's usable capacity**: the tail was
-produced and then lost at SHUTDOWN, because root sends two zero-length flush requests after `main`
-returns and then halts with interrupts masked, and `rxsci` was the one driver not implementing that
-request. No driver-side change can rescue a missing flush -- by then root has stopped asking.
-
-The second defect is a RULE T1 violation and **a RACE**. `service_irq` read `TDRE` **before** arming
-`TIE`, and the only raise this chip offers is a TDR-to-TSR transfer taken with `TIE` already 1; a
-transfer completing inside that window landed with `TIE` clear, leaving ring non-empty, `TDRE` set,
-`TIE` set and no edge left, which is why the drain intermittently fell a ring behind. Arming before
-observing closes it. **A 3-of-3 A/B either way is luck**: the same tip measured 0-of-5 in another
-pass. The window is a few instructions against an 87 us byte time, so any scheduling shift flips it,
-and any perturbation -- an extra sleep, a polled probe, a raised budget -- can look like a fix.
-
-**The sim corrupted a freshly created context under preemption** (`6f4daed`, found after the
-silicon pass). `arch_context_init` left a new `ucontext`'s signal mask empty; glibc's `swapcontext`
-installs the target's mask 29 instruction bytes before it loads the target's stack pointer, and
-`arch_switch` publishes `sim().current` before the swap, so a SIGALRM in that window ran on the
-OUTGOING thread's stack while `sim().current` already named the incoming one. `isr_frame_leave`
-then saved that frame into the new thread's context and destroyed its `makecontext` entry;
-resuming it jumped to a zeroed frame with `rip == 0`. It surfaced as an intermittent `sim_stress`
-CI failure that reproduced in no plain local run. The fix blocks the IRQ signals in a fresh context
-and unblocks them in the trampoline -- **both halves already existed but were gated on
-`KICKOS_TELEMETRY`, which the sim builds as 0**, and the general rule is now the invariant
-`telemetry-gate-emission-only`. The sim SIGSEGV handler also reports `si_code` and the faulting pc,
-because the shared banner hardcodes "write" and carried neither, so an instruction fetch at 0 read
-as a null store.
-
-**The capability table's landed shape**, which M4.7 re-derives: the authority word lives in
-`Thread::authority` and not in the table (`264beae`; it names no pool object, holds no refcount and
-bumps no generation), `KCAP_INDEX_BITS` is derived from `KICKOS_MAX_HANDLES` with the 15-bit sign
-boundary pinned by `static_assert`, and `KICKOS_MAX_SPAWN_GRANTS` is split out so the four
-caller-stack arrays in `syscall_thread.cc` stop scaling with the ceiling. `6be8220` bounded the two
-interrupt-masked windows an elastic table would have turned into milliseconds: the
-effective-priority funnel **no longer reads the capability table at all** (reply donors come off an
-intrusive `HeadList` on the TCB, served endpoints off the endpoint pool's existing back-pointer),
-and `cap_teardown` takes and releases its own `IrqLock` every 4 slots behind a `Thread::dying`
-marker. Both are prospective rather than live -- `KICKOS_MAX_HANDLES` is 7 to 12 today -- but the
-measured waste was 405,504 table slots visited to find 20 donors.
-
-**The table is no longer inline in the TCB.** A task's table is a run taken at spawn from a
-statically partitioned slab of fixed size classes and returned at slot reclaim; the TCB keeps a
-pointer, a capacity and a class id. The parent declares the child's capacity, narrow-only -- a
-**ceiling, not a conserved budget**. A request takes the smallest class that fits and is
-**refused, never spilled**, so fixed classes cannot fragment and "refuse when full" stays truthful.
-The runtime path never touches the slab: attach at spawn, detach at reclaim, and `cap_install` /
-`cap_lookup` / `cap_teardown` work only inside the task's own run. The mechanism costs **+196 B of
-text and +8 B per TCB**; `qemu`'s declared mix gives 192 B of `.bss` back on its selftest image.
-Every hardware board ships the default -- one class at the full ceiling, one run per possible task.
-
-**The declared mix REGRESSED the sim, and M4.7 deletes the mix rather than tuning it.** The sim
-declares class0 at 6 slots x 10 runs and class1 at 10 slots x 8 runs while
-the default spawn capacity was `KICKOS_MAX_HANDLES` (10) and the sim did not override it: every
-spawn asks for 10, only class1 fits, refuse-never-spill leaves class0 reachable by nothing but the
-one selftest arm that asks narrow, and root takes one of the 8 class1 runs -- **7 remain**.
-`KICKOS_MAX_THREADS` is 16 on the sim, so nine thread slots are unreachable. Measured `sim_stress`:
-6 sleepers / 12 live / 2040 churn cycles at `b56ceff`, against 1 / 7 / 1190 with the mix in place.
-The stress app sizes itself to the probed budget, so the gate reports PASS either way and the
-regression was invisible to it.
-
-**Silicon.** Wire values, per-capture tips and what each capture does NOT witness:
+**Two boards at one TREE, 2026-08-04 (`e74933d`, stamped `da716a8` / `15fdd82` -- identical trees), both `1..79` with zero not-ok, zero
+skipped and zero partial.** Wire values and the full non-witness list:
 `docs/reference/boards.md`.
+
+**It is the FIRST silicon witness of the merged capability table, covering M4.7.1 and M4.7.2
+together.** M4.7.1's own pass was taken at `c82af2c`, which is **not an ancestor of `master`** -- it
+survives only on `backup/m47-presquash`, and 26 code files changed between it and the merged
+`4ad39a8`, `cap.h` / `cap.cc` / `thread.h` / `syscall_thread.cc` / `sync.cc` / `slotpool.h` /
+`cmake/cap_table.cmake` and the selftest among them. That run is evidence the design boots under two
+MPU classes. It is not a witness of what merged, and no record may quote it as one. This mattered
+because I believed the old pass-of-record line in THIS FILE and propagated it into a tracked
+reference doc before an agent failed to corroborate it.
+
+**What the new pass does NOT witness**, which is the part worth carrying:
+- **only the 2-chunk geometry.** The flat run is a supply-7 board's shape and `cap_chunk_span`
+  reports PARTIAL there; no bench board reproduces it.
+- **only armv7m.** The rework is arch-neutral and only one ISA ran it.
+- **the fourth provisioning term is 0 in every configure in the tree**, so its summing path, the
+  service-list read and its diagnostic are unexercised everywhere, on silicon and off.
+- **`cap_chunk_span` cannot be mutation-proved even in principle**: a consistent bijective mis-decode
+  in `cap_slot` relabels slots and every install/lookup pair still agrees, while every non-injective
+  mutation also corrupts `cap_run_free_build` and breaks BOOT rather than one arm. Its evidence is
+  coverage, not detection. `cap_gen_reuse` DOES have a clean kill: deleting the generation test fails
+  it, and the same mutation on the pre-milestone tree leaves the whole suite green, which is the
+  proof that branch had never once executed.
+- the A5 crowding scenario (concurrent callers filling a server's window) has no test anywhere.
+
+### What M4.7.2 changed
+
+Three latent code defects, all latent rather than live and all committed as such: `cap_slab_detach`
+left `cap_free_head` naming a slot in a run it had returned; `g_stdout_target` was an endpoint
+HANDLE sign-tested as if it were an index; and a `static_assert` cited as a guarantee could not fail.
+Then the smaller cap.h/cap.cc items, the provisioning model (the grant-list floor RAISES the width
+instead of refusing it, a fourth declared term for inbound reply capabilities defaulting to 0, an
+out-of-tree warning, a fallback-provenance marker), two selftest arms, and a reference/Book/design
+resync.
+
+**The ten-angle review found more in the NEW work than in the old**, which is the lesson to carry.
+Angle 9 found three MAJOR defects in interfaces this milestone had just added: the out-of-tree
+warning could not fire for an `add_subdirectory`/`FetchContent` consumer (it HAS `boards/`, so it
+read as in-tree while its declaration landed after the resolve), a misspelled keyword was dropped
+silently, and `INBOUND_REPLY_CAPS -1` passed CMake truthiness and NARROWED the summed width. All
+three are fixed and each refusal is proven to bite.
+
+**The same false claim lives in several places, and fixing one instance does not find the others.**
+That bit three times here: the `CAP_REPLY` packing, the three-term sum, and a `KICKOS_MAX_HANDLES=9`
+guard. Sweep by CLAIM, tree-wide, including source comments and CMake strings -- `doc_names` reads
+tracked markdown only and cannot see those.
+
+**Provisioning widths, measured 2026-08-04** (re-derive with `cmake --preset <board>` and read the
+`KickOS: cap table =` line; do not trust these once anything declares): **7** on the three supply-7
+boards, **10** on supply-16 boards, **11** on `xmc4800-relax` and `frdmk64f` UNDER ENFORCEMENT, where
+`CMakeLists.txt` resolves the service list after `KICKOS_HAVE_MPU` and picks the retaining one. So 11
+is the normal silicon posture on both flagship boards, not an opt-in. **No board's width changed in
+this milestone**, floor and reply term both being inert on today's declarations.
+
+**`KICKOS_ENABLE_SELFTEST` is ON only on the `-st` presets.** A silicon selftest run needs
+`--preset <board>-st -DKICKOS_HAVE_MPU=1`. Getting this wrong costs 17 arms and still reads as a
+clean pass: the plain preset gave `1..62` where the `-st` one gives `1..79`.
+
+**Flash, WAIT, arm, reset.** The documented J-Link order is flash-then-arm-then-reset, but the flash
+script's own `r;g` runs the suite immediately, so arming straight after captures its headless tail
+and the log looks doubled. Let that run finish first.
 
 ## What is next (locked order)
 
-1. **M4.7.1 -- the capability-table rework.** Design gate:
-   `docs/design-capability-table.md` (ACTIVE, implemented). It deletes the size-class mix rather
-   than tuning it, which makes per-spawn declared capacity and the narrow-only clamp vacuous;
-   decouples the handle codec from provisioning; and gives a full table its own errno.
-   **This supersedes the former item 1 ("per-board capability-class mixes"), which was work that
-   should now never be done**: the mix is what silently cut the sim from 16 usable thread slots to
-   7, and `TODO.md` never contained the demand counts that item told a reader to start from.
-   **It carries an M4 number despite being kernel-core work, not driver-era work**, because the
-   banner and package versions are `0.<milestone>.<submilestone>` and must stay monotonic -- and it
-   lands BEFORE the rest of the driver era because the capability table is the heart of userspace.
-   It is also a prerequisite for M5: three assumptions in the subsystem are uniprocessor (the
-   chunked masked window in `cap_teardown`, the unlocked `Thread::authority` read, and the slab
-   free list).
-2. **M4.7.2 -- the review findings against M4.7.1.** The ten-angle pass produced defects that are
-   latent rather than live (`cap_slab_detach` does not clear `cap_free_head`, so a reclaimed slot
-   answers `cap_has_free_slot` true against a null directory; `g_stdout_target` is an `int` handle
-   sign-tested at `cap.cc:835` and `:866`, which misfires once the console endpoint's generation
-   reaches 32768), a `static_assert` that cannot fail (`KCAP_RUN_COUNT > KICKOS_MAX_THREADS` over
-   `KCAP_RUN_COUNT = KICKOS_MAX_THREADS + 2`), the `_floor` rule forcing every app to declare a
-   capability peak it does not hold, reply capabilities having no term in the configure-time sum,
-   and two Book sections that teach the allocator this branch replaced.
-3. **M4.7.3 -- per-task table width.** Removes the one-width law: a run is sized from the spawning
-   task's own declared demand rather than the fleet maximum, which is what makes the chunk
-   directory load-bearing and collapses `cap_slab_attach`'s O(width) masked window at spawn to
-   O(declared). It also restores the only provisioning lever an out-of-tree consumer has, since
-   `kickos_cap_table_resolve` never runs in a `find_package` consumer's project.
-4. **M4.8.1 -- USB CDC console**, continuing the work recorded above as M4.6.2. Enumeration and
-   bulk IN are witnessed on `pizero2350`; the production service list, bulk OUT, and `teensy41`
-   are not.
-5. **M4.8.2..N -- the fleet-wide witness pass**: every capture before M4.5.2 was taken at `-O0`,
-   and `f411spi` lands here. **Nothing in-tree can catch a wrong `arch_mpu_region_pow2()` literal
-   in a backend** (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m`
-   silicon is the only check on that class for the RX MPU -- and it passed.
+1. **M4.7.3 -- per-task table width, and the reserved reply sub-range.** Removes the one-width law,
+   which is what makes M4.7.1's chunk directory load-bearing rather than inert, and partitions the
+   run so client reply traffic cannot crowd out a server's own creates. `roadmap.md`'s ledger assigns
+   the number and argues the split; `docs/design-capability-table.md` section 7 states the bound
+   honestly (bounded, not impossible). **Fix the configuration mechanism INSIDE this number**, not
+   after: per-task width adds more computed outputs, so the workarounds compound exactly here.
+2. **The configuration-mechanism spike -- Kconfig before M5.** AGREED, number unassigned. The
+   deciding question is not Kconfig, it is whether KickOS becomes one-app-per-build: the width is a
+   max over APP TARGET PROPERTIES, a build-graph fact Kconfig cannot express, and Zephyr only escapes
+   it because one app per build makes the app's own fragment the whole answer. `roadmap.md` carries
+   the analysis and the two options.
+3. **M4.7.4 -- delete the legacy management.** Unreleased before M6, so there is no compatibility to
+   carry and anything existing only because something else USED to is cost. `roadmap.md` defines the
+   class and `TODO.md` lists the sweeps; sequence it after M4.7.3, whose generated header removes the
+   `config/system.h` fallback rather than tuning it.
+4. **M4.8.1 -- the driver class layer.** Branch `M4.8.1-driver-class` holds only its 102-line spec,
+   parked; `tree(master) == tree(4ad39a8)` when it was cut, so it needs no rebase.
+5. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
+   `pizero2350`; the production service list, bulk OUT and `teensy41` are not.
+6. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
+   **Nothing in-tree can catch a wrong `arch_mpu_region_pow2()` literal in a backend**
+   (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m` silicon is the only
+   check on that class for the RX MPU.
 
-Captures and records already stamped `M4.6.2` keep that name: they describe measurements that
-happened under it, and a measurement is never renamed.
+Captures and records already stamped `M4.6.2` keep that name: a measurement is never renamed.
 
 ## Build posture
 
@@ -229,73 +124,57 @@ The build identity is **`0.4.7`**, in both `project()` and `KICKOS_VERSION` (roo
 The scheme is `0.<milestone>.<submilestone>` and **the bump belongs to the milestone**: it sat at
 `0.4.5-2` across all of M4.6, so every M4.6 banner shipped a submilestone behind.
 
-## Gates (ctest, zero failures)
+## Gates
 
-| tree | enforcing | ring-only / no MPU |
-| --- | --- | --- |
-| `sim` | **26/26** (its default posture) | -- |
-| `sim-telem` | **28/28** | -- |
-| `qemu` | 23/23 | 20/20 |
-| `qemu-m7` | 22/22 | 19/19 |
-| `qemu-m33` | 22/22 | 19/19 |
-| `qemu-m3` | 21/21 | 18/18 |
-| `qemu-riscv` | 17/17 | 15/15 |
-| `qemu-telem` | -- | 21/21 |
-| `microbit` | -- | 14/14 |
+**Do not carry a tally forward from this file.** One `panicgate` case or `ringpriv` registration
+moves several at once, so the number here rots every milestone and has misled repeatedly. Re-derive:
 
-**Only the two `sim` rows were re-derived at this tip**, each from a fresh build directory. The
-`qemu*` and `microbit` rows and the fleet link sweep carry forward from M4.6.1 and were NOT re-run
-after the sim fresh-context fix: quote them as carried, not as measured here.
+    source .session/env.sh          # MANDATORY: all four cross families need it
+    cmake --preset <tree> -B <dir> [-DKICKOS_HAVE_MPU=0|1]
+    cmake --build <dir> -j8 && ctest --test-dir <dir>
 
-**`sim` defaults to `KICKOS_HAVE_MPU=1`** (`CMakeLists.txt`, keyed on the arch, not on the preset),
-which is why it has no second column. **`--preset` does NOT reset a cached `KICKOS_HAVE_MPU`**, so
-an earlier `-DKICKOS_HAVE_MPU=1` in the same build dir silently keeps the MPU posture and its
-higher tally; pass the value explicitly when measuring either one. Per-commit numbers: one
-`panicgate` case or `ringpriv` registration moves several at once, so re-derive rather than
-carrying a tally forward.
+**`--preset` does NOT reset a cached `KICKOS_HAVE_MPU`**, so use a FRESH build dir per posture and
+pass the value explicitly, then confirm it from `CMakeCache.txt`. **`sim` defaults to
+`KICKOS_HAVE_MPU=1`** keyed on the arch, not the preset, which is why it has one posture only.
 
-**The fleet links with zero failures** across four ISAs: every preset at its default posture, the
-MPU variants, the gate trees at both postures, and the 5 `*_uartirq` service lists on their own
-boards. The Gates table above is 9 trees and 14 posture-configurations, and the 5 service lists are
-exact. **No other partition of that total is derivable** from `cmake/presets/*.json` or `ci.yml`, so
-re-derive the breakdown from a sweep before quoting one, or quote only the sweep's own pass/fail.
+**Swept 2026-08-04 at tree `e74933d`: zero failures, every tree, both postures, and all 26 presets
+configure and build.** That sweep is the measurement; the shape worth remembering is that the
+enforcing and ring-only postures differ by a handful of arms and that `microbit` is the only board
+in the fleet with skips.
 
-`doc_names` catches a cross-reference that no longer resolves, and it has already caught two
-regressions since being wired up, one of them 33 references reverted by a rebase. Run it after any
-doc-heavy rebase; a clean `git rebase` is not evidence. It reads TRACKED MARKDOWN ONLY, so the same
-citations in source comments, CMake strings and workflow YAML rot silently -- M4.6.1 removed one
-such comment citation by hand for exactly that reason.
+Two facts a re-derive will not tell you:
 
-`selftest` plans **79** on `sim`, **78** under enforcement, **74** without, **73** on `microbit`
-and **74** on the two 64 KiB chips, the last of those SPLIT ACROSS TWO IMAGES as `1..44` plus
-`1..30` -- the sim's extra case is the seam backend it alone can answer, and `microbit` alone still
-refuses `cap_capacity` by name (its 16 KiB arena). Both silicon plan counts are confirmed on
-hardware and match the capture table above; of the 64 KiB pair only `f302nucleo` is witnessed there,
-`bluepill-c8` having no unit. **Skips are 0 on every bench board**, and
-`microbit`'s **13** are the only ones left in the fleet -- `xmc4800-relax` and `frdmk64f` used to
-skip `mutex_deadlock` as `SKIP pool too small` when no pool was ever full: their SPI service keeps a
-request-endpoint cap in ROOT'S cap table for the life of the image, and the fix was sizing
-`KICKOS_MAX_HANDLES` on those two chips (14 at `8f47990`, re-derived to 12 at `264beae` once
-`KICKOS_CAP_FIRST_DYNAMIC` dropped to 2, which is the same 8 usable dynamic slots either way).
-The 13 are all pinned by name in `microbit`'s gate:
-`uart_service` (its 1 KiB ring block does not fit a 16 KiB part's arena), `domain_share`,
-`irq_as_event`, five mutex choreographies, and five `call_*` cases -- `call_infoless_revert` plus
-the four donation ones, three of which `6be8220` added. That is 1+1+1+5+5 = 13. `-KOS_ENOMEM` cannot distinguish a full cap table from an empty pool, so its
-message is misleading on every board. The arm count is an **exact floor per posture** in
-`user/apps/common/selftest/CMakeLists.txt`, so adding a case without raising it fails rather than
-passing quietly. **Adding a `static` to a shared test is not free on the tiny boards**: it comes out
-of `microbit`'s 16 KiB arena, which is why a new case reports its results back over its own
-endpoint rather than through file-scope state.
+- **`oot_export_mcu` fails deterministically when `ctest` runs without `.session/env.sh` sourced** --
+  it falls through to the picolibc C-only `/usr/bin` twin. 100% reproducible without the env, 100%
+  absent with it. It is an environment artifact, not a code failure, and it re-configures in a
+  subprocess so the toolchain vars must be exported at ctest time too.
+- **`qemu-riscv` under enforcement is the only posture reporting zero partials** where every ARM
+  enforcing posture reports one. Both are "all expected"; it is an encoded per-arch difference, not a
+  defect, and it reads as a bug later if nobody says so.
 
 **The sim has no virtual time and its gates are not deterministic**: `arch_clock_now` reads
 `CLOCK_MONOTONIC` and the tickless one-shot is a real `timer_create` delivering SIGALRM, so
 preemption lands at an arbitrary host instruction and a sim gate can fail load-dependently.
 
+`doc_names` catches a cross-reference that no longer resolves and has already caught two regressions,
+one of them 33 references reverted by a rebase. Run it after any doc-heavy rebase; a clean
+`git rebase` is not evidence. **It reads TRACKED MARKDOWN ONLY**, so the same citations in source
+comments, CMake strings and workflow YAML rot silently -- and it validates a PATH and an IDENTIFIER,
+never a LINE NUMBER, which is why this tree cites path + symbol and `design-capability-table.md` now
+carries no `path:line` at all.
+
+**The selftest arm count is an EXACT FLOOR per posture** in `user/apps/common/selftest/CMakeLists.txt`
+(`_tap_arms`, plus the independent partition `_tap_arms_p1` + `_tap_arms_p2` for the two-image split,
+with a totality FATAL if they disagree), so adding a case without moving both fails loudly rather
+than passing quietly. **Adding a `static` to a shared test is not free**: it comes out of `microbit`'s
+16 KiB arena, which is why a new case reports over its own endpoint rather than through file-scope
+state. `-KOS_ENOMEM` cannot distinguish a full cap table from an empty pool, which is why
+`-KOS_EMFILE` exists.
+
 **`ringpriv` and `ringppb` are permanent CI, not bench captures**: `cmake --preset qemu` IS the
-ring-only posture, so the M3/M4/M7/M33 arms carry them with no MPU. `microbit` asserts the
-OPPOSITE outcome with one arm (`CONTROL.nPRIV == 0`, no privilege axis) rather than skipping,
-machine-checking the armv6m classification, and does not build `ringppb` -- on a no-ring core the
-PPB read legitimately succeeds.
+ring-only posture. `microbit` asserts the OPPOSITE outcome with one arm (`CONTROL.nPRIV == 0`) rather
+than skipping, machine-checking the armv6m classification, and does not build `ringppb` -- on a
+no-ring core the PPB read legitimately succeeds.
 
 ## Board matrix
 

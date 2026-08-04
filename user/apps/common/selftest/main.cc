@@ -3724,44 +3724,69 @@ namespace
         kos_sem_destroy(g_xd_done);
     }
 
-    // One own-create of whichever object type this board still has a pool slot for. A create
-    // allocates its OBJECT before installing the cap, so a pool that empties on the same
-    // create that fills the table returns the pool refusal and says nothing about the table;
-    // the mutex fallback gets past that. -KOS_EMFILE out of here means the table is full,
-    // -KOS_ENOMEM that every pool tried is empty.
-    int fill_one_cap(kos_cap_t* out)
+    // One own-create of whichever object type this board still has a pool slot for, reporting
+    // which pool answered: an arm that USES the capability it landed on cannot treat a
+    // semaphore and a mutex alike. A create allocates its OBJECT before installing the cap, so
+    // a pool that empties on the same create that fills the table returns the pool refusal and
+    // says nothing about the table; the mutex fallback gets past that. -KOS_EMFILE out of here
+    // means the table is full, -KOS_ENOMEM that every pool tried is empty.
+    int fill_one_cap_typed(kos_cap_t* out, bool* is_sem)
     {
+        *is_sem = true;
         int rc = kos_sem_create(0, out);
         if (rc == -KOS_ENOMEM)
         {
+            *is_sem = false;
             rc = kos_mutex_create(out);
         }
         return rc;
     }
 
+    int fill_one_cap(kos_cap_t* out)
+    {
+        bool is_sem = false;
+        return fill_one_cap_typed(out, &is_sem);
+    }
+
+    // The low 16 bits of a cap handle are its table slot and the high 16 its cap-gen; the
+    // split is fixed fleet-wide (cap.h), so neither is board-derived.
+    constexpr kos_cap_t CAP_IDX_MASK = 0xFFFFu;
+    constexpr int CAP_GEN_SHIFT = 16;
+
+    // Own-creates until the table refuses. The caller owns every handle written to `held`.
+    int fill_table(kos_cap_t* held, bool* held_is_sem, int room)
+    {
+        int n = 0;
+        while (n < room)
+        {
+            kos_cap_t h = KOS_CAP_NONE;
+            bool is_sem = false;
+            if (fill_one_cap_typed(&h, &is_sem) != 0)
+            {
+                break;
+            }
+            held[n] = h;
+            held_is_sem[n] = is_sem;
+            n = n + 1;
+        }
+        return n;
+    }
+
     // --- B3: index 0 is the kernel stdout slot; an own create never lands there ---------
     void t_cap_index0()
     {
-        // The low 16 bits of a cap handle are its table slot; the split is fixed
-        // fleet-wide (cap.h), so this mask is not board-derived.
-        // cap_install scans from KOS_CAP_FIRST_DYNAMIC, so an own sem/endpoint/mutex create
-        // never returns a reserved well-known slot (0 = console default; 1..FIRST_DYNAMIC-1
-        // = board/service delegation): it lands at >= KOS_CAP_FIRST_DYNAMIC. This is the
-        // FROZEN cap-index convention (cap_index.h) enforced kernel-side, so a board that
-        // delegates no well-known cap cannot let the app's first create alias a reserved
-        // index.
-        //
-        // FIRST_DYNAMIC-floor TRIPWIRE: the `>= KOS_CAP_FIRST_DYNAMIC` checks below fail
-        // LOUDLY if cap_install ever regresses to scanning from 1 (own creates would then
-        // land at index 1..3, aliasing the reserved range). Delegation uses explicit
-        // indices, so it is blind to the scan floor: only an OWN create catches it.
-        constexpr kos_cap_t IDX_MASK = 0xFFFFu;
+        // The reserved plane is never threaded onto the run's free list, so an own
+        // sem/endpoint/mutex create cannot pop a well-known slot (0 = console default,
+        // 1..FIRST_DYNAMIC-1 = board/service delegation) and lands at
+        // >= KOS_CAP_FIRST_DYNAMIC. The checks below fail LOUDLY if the free list is ever
+        // built from a lower index. Delegation seats an explicit index and so cannot catch
+        // that; only an OWN create can.
         kos_cap_t s = KOS_CAP_NONE;
-        TAP_CHECK(kos_sem_create(0, &s) == 0 and (s & IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
+        TAP_CHECK(kos_sem_create(0, &s) == 0 and (s & CAP_IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
         kos_cap_t e = KOS_CAP_NONE;
-        TAP_CHECK(kos_endpoint_create(&e) == 0 and (e & IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
+        TAP_CHECK(kos_endpoint_create(&e) == 0 and (e & CAP_IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
         kos_cap_t m = KOS_CAP_NONE;
-        TAP_CHECK(kos_mutex_create(&m) == 0 and (m & IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
+        TAP_CHECK(kos_mutex_create(&m) == 0 and (m & CAP_IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC);
         TAP_CHECK(kos_handle_close(s) == 0);
         TAP_CHECK(kos_handle_close(e) == 0);
         TAP_CHECK(kos_handle_close(m) == 0);
@@ -3788,9 +3813,8 @@ namespace
 
         // Exhaustion: own-creates fill the remaining slots [FIRST_DYNAMIC .. MAX_HANDLES-1]
         // and then fail with -KOS_EMFILE and NOT the -KOS_ENOMEM of an exhausted pool: the
-        // reserved range stays off-limits even at the LAST free slot. held[] must stay sized
-        // to the widest KICKOS_MAX_HANDLES in the fleet.
-        kos_cap_t held[16];
+        // reserved range stays off-limits even at the LAST free slot.
+        kos_cap_t held[KICKOS_MAX_HANDLES];
         int n = 0;
         while (true)
         {
@@ -3799,7 +3823,7 @@ namespace
             {
                 break;
             }
-            TAP_CHECK((h & IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC); // never a reserved slot, not even the last free one
+            TAP_CHECK((h & CAP_IDX_MASK) >= KOS_CAP_FIRST_DYNAMIC); // never a reserved slot, not even the last free one
             held[n] = h;
             n = n + 1;
             if (n >= static_cast<int>(sizeof(held) / sizeof(held[0])))
@@ -3819,8 +3843,133 @@ namespace
             TAP_CHECK(kos_handle_close(held[i]) == 0);
         }
         kos_cap_t again = KOS_CAP_NONE; // table recovers once slots are freed
-        TAP_CHECK(kos_sem_create(0, &again) == 0 and (again & IDX_MASK) != 0);
+        TAP_CHECK(kos_sem_create(0, &again) == 0 and (again & CAP_IDX_MASK) != 0);
         TAP_CHECK(kos_handle_close(again) == 0);
+    }
+
+    // --- the SEGMENTED index decode: a live slot at or above the chunk granule ------------
+    void t_cap_chunk_span()
+    {
+        // cap.h's KCAP_CHUNK_TARGET, forwarded by cmake/cap_table.cmake. A table no wider than
+        // this compiles the FLAT decode and has no segmented slot to reach, so a hardcoded
+        // mirror of the granule would make this arm claim the segmented path on a board that
+        // never compiled it.
+        constexpr uint32_t CHUNK_SLOTS = KICKOS_CAP_CHUNK_SLOTS;
+        constexpr uint32_t TABLE_SLOTS = KICKOS_MAX_HANDLES;
+
+        kos_cap_t held[KICKOS_MAX_HANDLES];
+        bool held_is_sem[KICKOS_MAX_HANDLES];
+        int const n = fill_table(held, held_is_sem, KICKOS_MAX_HANDLES);
+        TAP_CHECK(n >= 1);
+
+        int top = 0;
+        bool below_granule = false;
+        for (int i = 0; i < n; i++)
+        {
+            if ((held[i] & CAP_IDX_MASK) > (held[top] & CAP_IDX_MASK))
+            {
+                top = i;
+            }
+            if ((held[i] & CAP_IDX_MASK) < CHUNK_SLOTS)
+            {
+                below_granule = true;
+            }
+            for (int j = i + 1; j < n; j++)
+            {
+                // A directory index that decoded to the wrong chunk would still report back
+                // the index the install asked for, so only distinctness catches it.
+                TAP_CHECK((held[i] & CAP_IDX_MASK) != (held[j] & CAP_IDX_MASK));
+            }
+        }
+
+        // Gated on the CONFIGURED width, never on the index the fill reached: a wide board
+        // whose pools ran dry early must FAIL here, not report PARTIAL.
+        if (TABLE_SLOTS <= CHUNK_SLOTS)
+        {
+            for (int i = 0; i < n; i++)
+            {
+                TAP_CHECK(kos_handle_close(held[i]) == 0);
+            }
+            tap::partial("table is %u slot(s): the flat decode, no index reaches the granule",
+                         static_cast<unsigned>(TABLE_SLOTS));
+            return;
+        }
+        TAP_CHECK((held[top] & CAP_IDX_MASK) >= CHUNK_SLOTS);
+        TAP_CHECK(below_granule); // both sides of the boundary live at once
+
+        // USABLE, not merely numbered: the operation has to reach the object, which is the
+        // only proof the directory index and the in-chunk offset recombined onto the entry
+        // the install wrote.
+        if (held_is_sem[top])
+        {
+            TAP_CHECK(kos_sem_post(held[top]) == 0);
+            TAP_CHECK(kos_sem_wait(held[top]) == 0);
+        }
+        else
+        {
+            TAP_CHECK(kos_mutex_lock(held[top]) == 0);
+            TAP_CHECK(kos_mutex_unlock(held[top]) == 0);
+        }
+        TAP_CHECK(kos_handle_close(held[top]) == 0);
+        TAP_CHECK(kos_handle_close(held[top]) == -KOS_EBADF); // the entry the close emptied
+        for (int i = 0; i < n; i++)
+        {
+            if (i == top)
+            {
+                continue;
+            }
+            // Ordered after the close above on purpose: had the high slot's decode aliased
+            // one of these, that close would have emptied this entry too and this would be
+            // -KOS_EBADF.
+            TAP_CHECK(kos_handle_close(held[i]) == 0);
+        }
+    }
+
+    // --- the cap-gen half of the handle codec: a recycled slot stales the old handle -------
+    void t_cap_gen_reuse()
+    {
+        kos_cap_t held[KICKOS_MAX_HANDLES];
+        bool held_is_sem[KICKOS_MAX_HANDLES];
+        int n = fill_table(held, held_is_sem, KICKOS_MAX_HANDLES);
+        TAP_CHECK(n >= 1);
+        // The table has to be FULL, and -KOS_EMFILE is the only thing that says so. A close
+        // then leaves the released slot as the free list's ONLY node, so the next install is
+        // forced back onto that same index; with any slot still free the mint lands elsewhere
+        // (a release goes to the TAIL, cap.h) and the cap-gen test in cap_lookup stays
+        // unreachable behind the empty-slot test ahead of it.
+        kos_cap_t refused = 0; // not KOS_CAP_NONE: the refusal must be what writes that word
+        TAP_CHECK(fill_one_cap(&refused) == -KOS_EMFILE and refused == KOS_CAP_NONE);
+
+        kos_cap_t const stale = held[n - 1];
+        n = n - 1;
+        TAP_CHECK(kos_handle_close(stale) == 0);
+        kos_cap_t fresh = KOS_CAP_NONE;
+        bool fresh_is_sem = false;
+        TAP_CHECK(fill_one_cap_typed(&fresh, &fresh_is_sem) == 0);
+        TAP_CHECK((fresh & CAP_IDX_MASK) == (stale & CAP_IDX_MASK));     // the same slot
+        TAP_CHECK((fresh >> CAP_GEN_SHIFT) != (stale >> CAP_GEN_SHIFT)); // a new cap-gen
+
+        // The slot is in range and NOT empty, so the cap-gen comparison is the only test in
+        // cap_lookup left that can refuse `stale`. `fresh` on that same index is the control:
+        // without it a refusal for any other reason would read identically.
+        if (fresh_is_sem)
+        {
+            TAP_CHECK(kos_sem_post(stale) == -KOS_EBADF);
+            TAP_CHECK(kos_sem_post(fresh) == 0);
+            TAP_CHECK(kos_sem_wait(fresh) == 0);
+        }
+        else
+        {
+            TAP_CHECK(kos_mutex_lock(stale) == -KOS_EBADF);
+            TAP_CHECK(kos_mutex_lock(fresh) == 0);
+            TAP_CHECK(kos_mutex_unlock(fresh) == 0);
+        }
+        TAP_CHECK(kos_handle_close(stale) == -KOS_EBADF);
+        TAP_CHECK(kos_handle_close(fresh) == 0);
+        for (int i = 0; i < n; i++)
+        {
+            TAP_CHECK(kos_handle_close(held[i]) == 0);
+        }
     }
 
     // --- console_publish needs AUTH_CONSOLE; a bad cap is rejected with no side effect --
@@ -4654,6 +4803,8 @@ int main(int, char**)
 #endif
     // Console handover mechanism (M3 #4 stage ii-a): production syscalls, every board.
     TAP_ADD("cap_index0", t_cap_index0);              // B3 index-0 reservation + FIRST_DYNAMIC floor
+    TAP_ADD("cap_chunk_span", t_cap_chunk_span);        // M4.7.1: the segmented index decode
+    TAP_ADD("cap_gen_reuse", t_cap_gen_reuse);          // M4.7.1: the cap-gen half of the codec
     TAP_ADD("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
     TAP_ADD("shutdown_priv", t_shutdown_denied);        // KOS_SYS_SHUTDOWN privileged-only
 #if defined(KICKOS_ENABLE_SELFTEST)
