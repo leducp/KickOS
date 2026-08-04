@@ -34,7 +34,7 @@
 using kickos::emit;
 
 #if defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD
-extern "C" int kickos_simcon_window_thread(void);
+extern "C" kos_thread_t kickos_simcon_window_thread(void);
 
 namespace
 {
@@ -45,7 +45,7 @@ namespace
     constexpr int NEST_DONE = KOS_SPAWN_DELEGATED_CAP0;     // the child's gate back to root
     constexpr int NEST_PARK = KOS_SPAWN_DELEGATED_CAP0 + 1; // what the grandchild waits on
 
-    volatile int g_grandchild = -1;
+    volatile kos_thread_t g_grandchild = KOS_THREAD_NONE;
     volatile int g_child_kill_rc = 1; // 1 == the child never got that far
 
     void nest_grandchild(void*) // caps: park@1
@@ -59,11 +59,12 @@ namespace
         kos_cap_grant const caps[1] = {{NEST_PARK, KOS_CAP_WAIT}};
         g_grandchild = kos::thread::spawn(nest_grandchild, nullptr, "nestgc", 9,
                                           KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                          nullptr, 0, nullptr, 0, nullptr, 0, caps, 1);
+                                          nullptr, 0, nullptr, 0, nullptr, 0, caps, 1)
+                           .id();
         kos_sem_post(NEST_DONE);
         // The accept half of the gate: a spawner may cancel its own child. Root's
         // -KOS_EPERM below is the refuse half.
-        if (g_grandchild >= 0)
+        if (g_grandchild != KOS_THREAD_NONE)
         {
             g_child_kill_rc = kos_thread_kill(g_grandchild);
         }
@@ -75,25 +76,29 @@ namespace
     // results have to be carried out through the reclaimed route.
     void kill_gate_matrix(int* bad_handle_rc, int* big_handle_rc, int* stranger_rc)
     {
-        *bad_handle_rc = kos_thread_kill(-1);
-        *big_handle_rc = kos_thread_kill(0x7fffffff);
+        // Both carry the reserved all-ones index (0x7fffffff at an aged generation), so
+        // neither is mintable and both must fail to resolve.
+        *bad_handle_rc = kos_thread_kill(KOS_THREAD_NONE);
+        *big_handle_rc = kos_thread_kill(0x7fffffffu);
         *stranger_rc = 0; // 0 is never a legal answer here, so an unrun matrix fails
-        int const park = kos_sem_create(0);
-        int const done = kos_sem_create(0);
-        if (park < 0 or done < 0)
+        kos_cap_t park = KOS_CAP_NONE;
+        kos_cap_t done = KOS_CAP_NONE;
+        int const park_rc = kos_sem_create(0, &park);
+        int const done_rc = kos_sem_create(0, &done);
+        if (park_rc != 0 or done_rc != 0)
         {
             return;
         }
         kos_cap_grant const caps[2] = {{done, CAP_FULL}, {park, CAP_FULL}};
-        int const child = kos::thread::spawn(nest_child, nullptr, "nestch", 9,
-                                             KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                             nullptr, 0, nullptr, 0, nullptr, 0, caps, 2);
-        if (child < 0)
+        auto const child = kos::thread::spawn(nest_child, nullptr, "nestch", 9,
+                                              KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                              nullptr, 0, nullptr, 0, nullptr, 0, caps, 2);
+        if (not child.valid())
         {
             return;
         }
         kos_sem_wait(done); // the grandchild exists
-        if (g_grandchild >= 0)
+        if (g_grandchild != KOS_THREAD_NONE)
         {
             *stranger_rc = kos_thread_kill(g_grandchild);
         }
@@ -137,8 +142,8 @@ int main(int, char**)
     kos_print("[drvdeath] kernel console AFTER death, window HELD "
               "(must NOT reach the wire)\n");
 
-    int const wt = kickos_simcon_window_thread();
-    if (wt < 0)
+    kos_thread_t const wt = kickos_simcon_window_thread();
+    if (wt == KOS_THREAD_NONE)
     {
         kos_print("[drvdeath] ERROR: no window thread handle\n");
         return 2;

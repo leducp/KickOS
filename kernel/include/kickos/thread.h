@@ -10,7 +10,10 @@
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
 #include <kickos/config.h>
+#include <kickos/endpoint.h> // EP_SERVED_NONE: the served-endpoint chain head below
 #include <kickos/list.h>
+
+#include <kickos/sys/abi.h> // KOS_THREAD_NONE: the handle codec's reserved index
 
 namespace kickos
 {
@@ -165,19 +168,35 @@ namespace kickos
 
         uint64_t switch_count; // introspection
 
-        // Per-task capability table: typed, rights-bearing, refcounted handles naming global
-        // objects. The run is taken from the slab (cap.h) by the CALLER before thread_create,
-        // as `domain` is, so an exhausted slab fails the spawn instead of leaving a half-built
-        // thread. thread_create's memset would zero the pointer, so it re-establishes all
-        // three from ThreadAttr afterwards.
+        // Per-task capability table (cap.h). The run is reserved from the slab by the CALLER
+        // before thread_create, as `domain` is, so an exhausted slab fails the spawn instead
+        // of leaving a half-built thread. thread_create's memset would zero the directory, so
+        // it re-establishes it from ThreadAttr afterwards.
         //
-        // cap_capacity is the run's real size, the CLASS size, not what the parent asked for.
-        // Every scan site must be bounded by it and never by KICKOS_MAX_HANDLES, which is now
-        // only the largest class. A capacity of 0 is legal (idle holds no capabilities).
-        CapEntry* handles;
-        uint16_t cap_capacity;
-        uint8_t cap_class;
+        // Every scan site must be bounded by thread_cap_capacity and never by
+        // KICKOS_MAX_HANDLES: a capacity of 0 is legal (idle holds no run, and neither does a
+        // pool slot between reclaim and the next spawn).
+        CapRun caps;
+        // Head of the run's free-slot list (cap.h), a slot index biased by one. KCAP_FREE_NONE
+        // is 0, so the thread_create memset leaves it EMPTY and not "slot 0": a thread whose
+        // list was never threaded refuses every mint rather than handing out a reserved index.
+        uint16_t cap_free_head;
+        // Endpoints where ep->server == this thread, chained through Endpoint::next_served
+        // (endpoint.h). The SEND_WAIT donor enumeration for thread_effective_prio, which runs
+        // interrupt-masked and so may walk neither the capability table nor the endpoint pool.
+        // EP_SERVED_NONE is 0, so the thread_create memset leaves it empty.
+        uint16_t served_head;
     };
+
+    // A thread's capability-table capacity: the declared width if it holds a run, else 0.
+    inline uint32_t thread_cap_capacity(Thread const* t)
+    {
+        if (not cap_run_held(t->caps))
+        {
+            return 0;
+        }
+        return KICKOS_MAX_HANDLES;
+    }
 
     // Recover the TCB owning a ready/wait list node (nullptr-safe).
     inline Thread* thread_of(ListNode* n)
@@ -218,12 +237,12 @@ namespace kickos
         // owned by the free list (harvest at reclaim). false for caller-owned and the
         // static idle/root stacks.
         bool kstack_owned = false;
-        // Pre-attached capability run (cap_slab_attach): an exhausted slab must fail the
-        // spawn BEFORE anything is built. null with capacity 0 is legal and means the
-        // thread holds no capabilities.
-        CapEntry* cap_run = nullptr;
-        uint16_t cap_capacity = 0;
-        uint8_t cap_class = 0;
+        // Pre-reserved capability run (cap_slab_attach): an exhausted slab must fail the
+        // spawn BEFORE anything is built. An empty directory is legal and means the thread
+        // holds no capabilities. The free-list head travels with it: attach threads the list,
+        // and a run seated without its head would refuse every mint.
+        CapRun cap_run = {};
+        uint16_t cap_free_head = KCAP_FREE_NONE;
     };
 
     // Static thread-slot pool (instance-scoped; the TCBs only, since default stacks are
@@ -236,9 +255,19 @@ namespace kickos
     // re-inits the TCB, privilege posture included, from scratch.
     struct ThreadPool
     {
-        static constexpr int INDEX_BITS = 8; // handle low bits; the generation takes the rest
-        static_assert(KICKOS_MAX_THREADS <= (1 << INDEX_BITS),
-                      "thread handle index field too small for KICKOS_MAX_THREADS");
+        // The uint16_t generation takes the other 16, so the handle spends the whole word: a
+        // fully aged one has bit 31 set and no sign test says anything about it. The kill tag
+        // below, not this, is what caps the pool at 65534.
+        static constexpr int INDEX_BITS = 16;
+        // STRICTLY less: the all-ones index is reserved and never seated, which is what makes
+        // KOS_THREAD_NONE unmintable by ANY generation and not merely out of the current
+        // pool's range. KILL_TAG_BOOT already forces a stricter bound, so this is the
+        // backstop for a change to the tag scheme.
+        static_assert(KICKOS_MAX_THREADS < (1 << INDEX_BITS),
+                      "thread handle index field too small for KICKOS_MAX_THREADS, or the "
+                      "pool would seat the index KOS_THREAD_NONE reserves");
+        static_assert((KOS_THREAD_NONE & ((1u << INDEX_BITS) - 1u)) == ((1u << INDEX_BITS) - 1u),
+                      "KOS_THREAD_NONE must carry the reserved all-ones index");
 
         // Kill-gate identity, DERIVED from the slot index rather than stored. The two boot
         // TCBs (idle, root) SHARE KILL_TAG_BOOT because neither is a slot, which is safe
@@ -257,6 +286,12 @@ namespace kickos
         Thread slots[KICKOS_MAX_THREADS];
         int next = 0;
         uint16_t gen[KICKOS_MAX_THREADS] = {};
+
+        // A CAP_REPLY carries this handle in CapEntry::obj, whole and unmasked (cap.h). At
+        // 16 + 16 the fit is EXACT: a widening would truncate the GENERATION from the top and
+        // collapse cap_reply_caller's late-reply guard with nothing at runtime to report it.
+        static_assert(INDEX_BITS + 8 * sizeof(gen[0]) <= 8 * sizeof(CapEntry::obj),
+                      "a thread handle no longer fits CAP_REPLY's obj word");
 
         // Free list of reclaimed kernel-default stacks: a SINGLE size class
         // (KICKOS_USER_STACK_SIZE), so it cannot fragment and the link lives in the dead
@@ -309,11 +344,10 @@ namespace kickos
                         slots[s].kstack_owned = false;
                     }
                     // Same reclaim-point reasoning as the stack: the thread is off-CPU and
-                    // cap_teardown has already emptied every entry. Cleared as it is returned,
-                    // so a second reclaim of this slot cannot double-free the run.
-                    cap_slab_detach(slots[s].handles, slots[s].cap_class);
-                    slots[s].handles = nullptr;
-                    slots[s].cap_capacity = 0;
+                    // cap_teardown has already emptied every entry. cap_slab_detach clears the
+                    // directory as it returns each chunk, so a second reclaim of this slot
+                    // cannot double-free one.
+                    cap_slab_detach(&slots[s].caps);
                     // A slot's kill tag is its INDEX and so outlives its occupant: a child
                     // still naming this tag must be orphaned before the slot changes hands,
                     // or the new occupant inherits cancel authority over threads it never
@@ -397,10 +431,10 @@ namespace kickos
         }
 
         // The opaque handle for a live slot index, carrying its current generation.
-        int handle_for(int index) const
+        kos_thread_t handle_for(int index) const
         {
-            return static_cast<int>((static_cast<uint32_t>(gen[index]) << INDEX_BITS) |
-                                    static_cast<uint32_t>(index));
+            return (static_cast<uint32_t>(gen[index]) << INDEX_BITS) |
+                   static_cast<uint32_t>(index);
         }
     };
 }

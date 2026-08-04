@@ -54,8 +54,9 @@ int main(int, char**)
     // A refusal here means root's AUTH_MEMORY seat is missing, a different bug, so it
     // is reported distinctly.
     void* rA = kos_ram_alloc(4096);
-    int done = kos_sem_create(0);
-    if (rA == nullptr or done < 0)
+    kos_cap_t done = KOS_CAP_NONE;
+    int const done_rc = kos_sem_create(0, &done);
+    if (rA == nullptr or done_rc != 0)
     {
         emit("[rootfault] ERROR: ram_alloc / sem_create refused (authority seat?)\n");
         return 1;
@@ -66,10 +67,10 @@ int main(int, char**)
     kos_cap_grant caps[] = {
         { done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER },
     };
-    int const child = kos::thread::spawn_caps(confined_child, rA, "confined", 10,
+    auto const child = kos::thread::spawn_caps(confined_child, rA, "confined", 10,
                                              caps, 1, KOS_POLICY_FIFO, 0,
                                              /*privileged=*/false, rA, 4096);
-    if (child < 0)
+    if (not child.valid())
     {
         emit("[rootfault] ERROR: child spawn refused\n");
         return 1;

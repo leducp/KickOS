@@ -2,8 +2,10 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Generational slot pool: a fixed array of N slots, each with a generation counter.
-// Handles pack (gen << INDEX_BITS) | index; free() bumps the slot's generation so a
-// stale handle (naming a since-recycled slot) fails to resolve: the ABA guard.
+// Handles pack (gen << INDEX_BITS) | index and spend all 32 bits, so a handle is NOT a
+// signed quantity: alloc() signals a full pool with -1, which is an INDEX and never a
+// handle. free() bumps the slot's generation so a stale handle (naming a since-recycled
+// slot) fails to resolve: the ABA guard.
 //
 // The guard's strength is the WRAP DISTANCE. gen_ is uint16_t, so a stale handle naming
 // slot i resolves again after 65536 frees OF THAT SLOT. That is why alloc() is NEXT-FIT:
@@ -25,11 +27,19 @@ namespace kickos
     template <class T, int N>
     class SlotPool
     {
-        static constexpr int INDEX_BITS = 8; // handle low bits; the generation takes the rest
-        static_assert(N <= (1 << INDEX_BITS), "SlotPool: N exceeds the handle index field");
+        // The uint16_t generation takes the other 16, so the handle spends the whole word. A
+        // fully aged handle has bit 31 set and is NEGATIVE as an int, so neither free() nor
+        // resolve() may test its sign.
+        static constexpr int INDEX_BITS = 16;
+        static constexpr uint32_t INDEX_MASK = (1u << INDEX_BITS) - 1u;
+        // The one index value the pool never seats, so no handle a live slot can mint carries
+        // an all-ones index. That keeps `-1`, and every other malformed word whose low half
+        // is all ones, unresolvable rather than aliasing the top slot once its generation has
+        // aged far enough.
+        static_assert(N < (1 << INDEX_BITS), "SlotPool: N would seat the reserved all-ones index");
         // cursor_ stores an index, so widening INDEX_BITS past the cursor type would
         // truncate it and alias two slots onto one resume point.
-        static_assert(N - 1 <= UINT8_MAX, "SlotPool: cursor_ too narrow for N");
+        static_assert(N - 1 <= UINT16_MAX, "SlotPool: cursor_ too narrow for N");
 
         // The index after `index`, wrapped into [0, N).
         static int next_of(int index)
@@ -57,7 +67,7 @@ namespace kickos
                 if (not used_[index])
                 {
                     used_[index] = true;
-                    cursor_ = static_cast<uint8_t>(next_of(index));
+                    cursor_ = static_cast<uint16_t>(next_of(index));
                     return index;
                 }
                 index = next_of(index);
@@ -69,13 +79,13 @@ namespace kickos
         // to it stop resolving, then mark it free. Self-guards the index (a safety-
         // critical primitive must not corrupt an adjacent slot on a malformed handle,
         // even though callers resolve() first today).
+        //
+        // NO SIGN TEST. An aged handle has bit 31 set, so `handle < 0` would silently refuse
+        // to release live slots after 32768 recycles of one of them; the reserved all-ones
+        // index is what keeps a `-1` out of range instead.
         void free(int handle)
         {
-            if (handle < 0)
-            {
-                return;
-            }
-            int const index = handle & ((1 << INDEX_BITS) - 1);
+            int const index = static_cast<int>(static_cast<uint32_t>(handle) & INDEX_MASK);
             if (index >= N)
             {
                 return;
@@ -85,17 +95,12 @@ namespace kickos
         }
 
         // Validate + resolve a handle to its slot, or nullptr if out-of-range, freed,
-        // or stale (generation mismatch).
+        // or stale (generation mismatch). No sign test, for free()'s reason.
         T* resolve(int handle)
         {
-            if (handle < 0)
-            {
-                return nullptr;
-            }
-            int const index = handle & ((1 << INDEX_BITS) - 1);
-            // Full high bits, not truncated to 16: a handle carrying junk above the generation
-            // field (bits set beyond what handle_for ever produces) must fail to resolve, not alias.
-            uint32_t const gen = static_cast<uint32_t>(handle) >> INDEX_BITS;
+            uint32_t const u = static_cast<uint32_t>(handle);
+            int const index = static_cast<int>(u & INDEX_MASK);
+            uint32_t const gen = u >> INDEX_BITS;
             if (index >= N or not used_[index] or static_cast<uint32_t>(gen_[index]) != gen)
             {
                 return nullptr;
@@ -112,6 +117,31 @@ namespace kickos
         static constexpr int capacity() { return N; }
         bool live(int index) const { return used_[index]; }
 
+        // Slot index of an object this pool handed out, for a caller holding the object but
+        // not its handle; -1 if `p` is not one of our slot bases. Compares addresses as
+        // integers, because subtracting pointers that may not point into slots_ is UB.
+        // sizeof(T) is rarely a power of two, so a core with no divide instruction calls a
+        // libgcc helper here; keep it off any per-message path.
+        int index_of(T const* p) const
+        {
+            uintptr_t const base = reinterpret_cast<uintptr_t>(&slots_[0]);
+            uintptr_t const q = reinterpret_cast<uintptr_t>(p);
+            if (q < base)
+            {
+                return -1;
+            }
+            uintptr_t const off = q - base;
+            if (off >= sizeof(slots_))
+            {
+                return -1;
+            }
+            if (off % sizeof(T) != 0)
+            {
+                return -1; // interior pointer, not a slot base
+            }
+            return static_cast<int>(off / sizeof(T));
+        }
+
         // The opaque handle for a live slot index, carrying its current generation.
         int handle_for(int index) const
         {
@@ -122,7 +152,7 @@ namespace kickos
     private:
         T slots_[N];
         bool used_[N] = {};    // all slots start free
-        uint8_t cursor_ = 0;   // next-fit resume point; an index, always in [0, N)
+        uint16_t cursor_ = 0;  // next-fit resume point; an index, always in [0, N)
         uint16_t gen_[N] = {}; // generations start at 0
     };
 }

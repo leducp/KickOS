@@ -22,10 +22,17 @@ enum kos_errno
     KOS_EPERM = 1,       // privilege denied / missing cap right / not the owner
     KOS_ESRCH = 3,       // reply target gone: a one-shot reply cap's caller is stale (aborted/reused)
     KOS_EBADF = 9,       // handle names nothing valid: bad index, empty, stale gen, wrong type
-    KOS_ENOMEM = 12,     // exhaustion: an object pool / cap table / RAM arena is full
+    KOS_ENOMEM = 12,     // something had to be ALLOCATED and could not be: an object pool, the
+                         //   thread pool, the RAM arena, the capability-chunk slab, the caller's
+                         //   MPU descriptor budget. A full capability table is KOS_EMFILE, which
+                         //   allocates nothing.
     KOS_EFAULT = 14,     // user buffer/pointer not owned by the caller (isolation reject)
     KOS_EBUSY = 16,      // resource held/in-use: close a mutex you own; claim an owned irq line
     KOS_EINVAL = 22,     // malformed argument: bad prio/stack/mask/count/irq line/alignment/size
+    KOS_EMFILE = 24,     // ONE task's capability table has no free slot; nothing was allocated.
+                         //   Table width is declared demand summed at configure
+                         //   (cmake/cap_table.cmake). From kos_call this names the SERVER's
+                         //   table, not the caller's: the reply cap is minted into the receiver.
     KOS_EPIPE = 32,      // endpoint has no receiver (dead), or the last one left while parked
     KOS_EDEADLK = 35,    // self/recursive lock, or a lock that would close a wait cycle
     KOS_ENOSYS = 38,     // syscall/arch backend not implemented on this chip (the declining fallback)

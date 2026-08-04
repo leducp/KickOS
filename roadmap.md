@@ -119,6 +119,56 @@ a driver framework on top. Single-core throughout. Full gap list + sequencing in
   class/service duality (driver-lib class as the primitive, service composed on top; the consumer
   picks the coupling and pays only for what it uses) is designed in `docs/design-m4-driver-model.md`.
 
+#### The sub-milestone ledger -- THIS PARAGRAPH IS THE ONLY PLACE A NUMBER IS ASSIGNED
+
+**No other file assigns a sub-milestone number.** Any document may cite one, but a document that
+*defines* one is a bug: the numbers moved once already and the correction had to chase fourteen
+references across four files. A design record should say "deferred", "fleet work" or "the wave after
+this one" and let this ledger say which number that is. `../STATE.md` carries the locked ORDER of
+what is next; this carries the numbering.
+
+| number | subject | state |
+| --- | --- | --- |
+| M4.1 | the init + service seam | landed |
+| M4.2 | the first driver proof (K64F console) | landed |
+| M4.3 | foundational services: clock oracle, pinmux | landed |
+| M4.4 | per-chip console drivers | landed |
+| M4.5.x | unprivileged root, region encoding, the gates that fail, the comment purge | landed |
+| M4.6.1 | the IRQ substrate and the buffered userspace UART | landed |
+| M4.6.2 | the USB CDC console, partially witnessed on `pizero2350` | superseded by M4.8.2 |
+| **M4.7.1** | **the capability-table rework**: codec, storage, errno, sizing (`docs/design-capability-table.md`) | ACTIVE |
+| M4.7.2 | the review findings against M4.7.1 | next |
+| M4.7.3 | per-task table width: the chunk directory earns its keep | planned |
+| M4.8.1 | the class layer the driver-model ruling requires and SPI never got | after M4.7.3 |
+| M4.8.2 | the USB CDC console, continuing M4.6.2 | planned |
+| M4.8.3..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
+
+**M4.7.x is kernel-core work carrying an M4 number on purpose.** The banner and package versions are
+`0.<milestone>.<submilestone>` and must stay monotonic, so a capability rework cannot be numbered
+back into M3 even though capabilities are M3's theme. It lands BEFORE the rest of the driver era
+because the capability table is the heart of userspace, and it gates M5: three assumptions in that
+subsystem are single-core.
+
+**The three M4.7 numbers are one arc, and M4.7.3 is what the other two are for.** M4.7.1 fixes the
+handle codec, the errno and the storage, and sizes the table at configure from declared demand --
+but under **one fleet-wide width**, which is the assumption M4.7.3 removes. At one width the chunk
+directory M4.7.1 introduces is provably inert: `CapChunkList::take` is all-or-nothing, so the chunk
+free list is isomorphic to a free list of whole runs and segmentation can never succeed where a
+contiguous run would have failed. It is landed anyway, deliberately, because per-task width is the
+only thing that makes it load-bearing and that is the next number but one. The alternative -- flat
+runs now, chunks again in M4.7.3 -- churns the layout and burns a bench pass to save forty lines.
+The cost of carrying it meanwhile is 440 to 936 bytes on the mid-range boards and nothing at all on
+the 16 KiB parts, which take the flat path at `KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET`.
+
+**Why per-task width is not YAGNI.** One fleet-wide width means every thread is provisioned for the
+fattest thread in the image. At the ceiling the codec is cut for -- one task holding 60000
+capabilities against 64 threads -- that is ~30 MiB where the real demand is ~530 KiB, a factor of
+~58. An operating system is the ceiling its applications work under, not the application: the width
+law is the one part of M4.7.1 that does not survive contact with the top of its own declared range.
+
+**Documents written before 2026-08-03 use `M4.7` to mean the driver wave now numbered M4.8.x.**
+Those records are frozen at their decision date and are not renumbered.
+
 ### M5 -- SMP (one kernel image across cores)
 Run a multi-core part at 100% under a single KickOS -- not two AMP instances. Reworks the
 foundation: `IrqLock` ("interrupts off => exclusive") is single-core-only. Plan: a **Big Kernel

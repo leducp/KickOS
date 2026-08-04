@@ -10,6 +10,10 @@
 // of generation bumps that slot took. Nothing decodes the handle, so widening INDEX_BITS
 // cannot turn this into a silent pass.
 //
+// It also covers the two consequences of the 16-bit index: a pool of more than 256 slots,
+// and a handle whose aged generation sets bit 31. A sign test on a handle would silently
+// reject the second as an error.
+//
 // Host-only: the policy is a property of the header, not of any board, and the object index
 // is not observable from userspace on a target (a task sees cap handles, never slot indices),
 // so no on-target selftest arm can witness this.
@@ -194,7 +198,10 @@ namespace
         int const handle = pool.handle_for(index);
 
         check(pool.resolve(handle) == pool.at(index), "a live handle resolves to its slot");
-        check(pool.resolve(-1) == nullptr, "a negative handle never resolves");
+        // A fully aged handle IS negative (below), so this is not "a negative handle never
+        // resolves". What makes -1 unresolvable is its all-ones INDEX, which the pool never
+        // seats.
+        check(pool.resolve(-1) == nullptr, "an all-ones handle names the reserved index");
 
         pool.free(handle);
         check(pool.resolve(handle) == nullptr, "a freed handle stops resolving");
@@ -203,6 +210,67 @@ namespace
         check(index2 >= 0, "reclaim after free");
         check(pool.resolve(handle) == nullptr, "the stale handle stays dead after the reclaim");
         check(pool.resolve(pool.handle_for(index2)) != nullptr, "the fresh handle resolves");
+    }
+
+    // A slot recycled past 32768 times mints a handle with bit 31 set: negative as an int,
+    // and it must still resolve and still free. A `handle < 0` guard breaks here and nowhere
+    // else, since no in-tree workload recycles one slot that many times.
+    void case_aged_generation_handle_is_negative_and_live()
+    {
+        kickos::SlotPool<Obj, 4> pool;
+        // free() bumps the slot's generation; alloc() next-fit walks the ring, so 4 slots per
+        // lap. Drive slot 0's generation past the sign bit.
+        for (uint32_t g = 0; g < 0x8000u; g++)
+        {
+            for (int s = 0; s < 4; s++)
+            {
+                int const index = pool.alloc();
+                check(index >= 0, "aged churn keeps finding a slot");
+                pool.free(pool.handle_for(index));
+            }
+        }
+        int const index = pool.alloc();
+        check(index >= 0, "a claim after the aged churn");
+        int const handle = pool.handle_for(index);
+        printf("# aged handle for slot %d = 0x%08x (negative=%d)\n", index,
+               static_cast<unsigned>(handle), static_cast<int>(handle < 0));
+        check(handle < 0, "an aged generation sets bit 31: the handle is negative");
+        check(pool.resolve(handle) == pool.at(index), "and a negative live handle still resolves");
+        pool.free(handle);
+        check(pool.resolve(handle) == nullptr, "and a negative handle still frees its slot");
+    }
+
+    // At file scope: the widest pool is far too large for a stack frame.
+    constexpr int WIDE = 1024;
+    constexpr int WIDEST = (1 << 16) - 1; // SlotPool refuses an N that would seat all-ones
+    kickos::SlotPool<Obj, WIDE> g_wide;
+    kickos::SlotPool<Obj, WIDEST> g_widest;
+
+    // Every slot of a wide pool is claimable, distinct, and resolves; the top slot is the one
+    // an index field one bit too narrow would alias onto another.
+    template <int N>
+    void case_pool_past_the_old_wall(kickos::SlotPool<Obj, N>& pool, char const* label)
+    {
+        int top = -1;
+        for (int i = 0; i < N; i++)
+        {
+            int const index = pool.alloc();
+            if (index < 0 or index >= N)
+            {
+                printf("not ok - %s: claim %d returned %d\n", label, i, index);
+                g_failures++;
+                return;
+            }
+            top = index;
+        }
+        check(pool.alloc() == -1, "a full wide pool reports -1");
+        check(top == N - 1, "the last claim is the top slot");
+        int const handle = pool.handle_for(N - 1);
+        check(pool.resolve(handle) == pool.at(N - 1), "the top slot's handle resolves to it");
+        check(pool.resolve(handle - 1) == pool.at(N - 2),
+              "and its neighbour is a different slot, so the index field is wide enough");
+        printf("# %s N=%d: every slot claimable, top handle 0x%08x\n", label, N,
+               static_cast<unsigned>(handle));
     }
 }
 
@@ -221,6 +289,9 @@ int main()
     case_lone_free_slot_found_from_any_cursor<5>("wrap");
     case_exhaustion_is_exact();
     case_resolve_semantics();
+    case_aged_generation_handle_is_negative_and_live();
+    case_pool_past_the_old_wall<WIDE>(g_wide, "wide pool");
+    case_pool_past_the_old_wall<WIDEST>(g_widest, "widest pool");
 
     if (g_failures != 0)
     {

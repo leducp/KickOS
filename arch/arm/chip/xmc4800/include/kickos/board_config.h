@@ -14,15 +14,6 @@
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 8
 #endif
-/* Root's cap table must cover the board service list's RETAINED caps, not just
-   FIRST_DYNAMIC: xmcssc keeps its SPI request endpoint for the life of the image.
-   Budget: 2 reserved + 2 permanent selftest caps + 1 retained SPI ep + 6 concurrent in
-   t_mutex_deadlock = 11, so the fleet default of 10 already fails. Exhaustion surfaces
-   only as a mislabelled "SKIP pool too small", because -KOS_ENOMEM cannot distinguish
-   a full cap table from an empty pool. */
-#ifndef KICKOS_MAX_HANDLES
-#define KICKOS_MAX_HANDLES 12
-#endif
 #ifndef KICKOS_USER_STACK_SIZE
 #define KICKOS_USER_STACK_SIZE 4096
 #endif

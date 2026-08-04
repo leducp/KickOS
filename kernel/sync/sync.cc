@@ -220,6 +220,47 @@ namespace kickos
         (void)server->reply_waiters.unlink_if_present(&caller->link);
     }
 
+    void endpoint_server_clear(Endpoint* ep)
+    {
+        Thread* const prior = ep->server;
+        if (prior == nullptr)
+        {
+            return;
+        }
+        int const index = kernel().endpoints.index_of(ep);
+        KICKOS_ASSERT(index >= 0); // a biased -1 is the sentinel and would silently cut a chain
+        uint16_t const self = ep_served_ref(index);
+        uint16_t* pp = &prior->served_head;
+        while (*pp != EP_SERVED_NONE)
+        {
+            if (*pp == self)
+            {
+                *pp = ep->next_served;
+                ep->next_served = EP_SERVED_NONE;
+                ep->server = nullptr;
+                return;
+            }
+            pp = &kernel().endpoints.at(ep_served_index(*pp))->next_served;
+        }
+        KICKOS_ASSERT(false); // server set, yet absent from that server's chain
+    }
+
+    void endpoint_server_set(Endpoint* ep, Thread* t)
+    {
+        // Same thread recv'ing again: this early return keeps index_of's divide off the
+        // per-message path.
+        if (ep->server == t)
+        {
+            return;
+        }
+        endpoint_server_clear(ep);
+        int const index = kernel().endpoints.index_of(ep);
+        KICKOS_ASSERT(index >= 0);
+        ep->next_served = t->served_head;
+        t->served_head = ep_served_ref(index);
+        ep->server = t;
+    }
+
     // The single effective-priority funnel. Runs under IrqLock on every mutex unlock,
     // reply and close, so NO term added here may walk the capability table.
     uint8_t thread_effective_prio(Thread* t)
@@ -241,20 +282,16 @@ namespace kickos
                 p = caller->prio;
             }
         }
-        // ep->server is the authoritative "t is this endpoint's receiver" bit;
-        // obj_close_protocol's endpoint arm clears it when t drops its WAIT cap. Do not
-        // re-derive it from t's table: that is the table walk this funnel must avoid.
-        for (int i = 0; i < decltype(kernel().endpoints)::capacity(); i++)
+        // ep->server stays the authoritative "t is this endpoint's receiver" bit; the chain
+        // only indexes it. Do not re-derive membership from t's capability table, and do not
+        // sweep the endpoint pool either: at a large KICKOS_MAX_ENDPOINTS that sweep is the
+        // masked window. A chain member is always a live slot: server is cleared before
+        // recv_holders can reach 0, and the slot is freed only at zero refs.
+        uint16_t r = t->served_head;
+        while (r != EP_SERVED_NONE)
         {
-            if (not kernel().endpoints.live(i))
-            {
-                continue;
-            }
-            Endpoint* ep = kernel().endpoints.at(i);
-            if (ep->server != t)
-            {
-                continue;
-            }
+            Endpoint* ep = kernel().endpoints.at(ep_served_index(r));
+            KICKOS_DEBUG_ASSERT(ep->server == t);
             for (ListNode* n = ep->send_waiters.head; n != nullptr; n = n->next)
             {
                 Thread* s = thread_of(n);
@@ -263,6 +300,7 @@ namespace kickos
                     p = s->prio;
                 }
             }
+            r = ep->next_served;
         }
         return p;
     }

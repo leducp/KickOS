@@ -248,7 +248,7 @@ namespace
             {
                 break; // endpoint dead: let the bring-up respawn us
             }
-            if (info.reply_cap >= 0)
+            if (info.reply_cap != KOS_CAP_NONE)
             {
                 kickos::uart::serve_one(sh, msg, static_cast<size_t>(n), info.reply_cap);
                 continue;
@@ -304,8 +304,8 @@ int lx6uart_console_start(struct kos_service_cfg const* cfg)
     g_shared = static_cast<kickos::uart::Shared*>(blk);
     kickos::uart::shared_init(g_shared);
 
-    int const ep = kos_endpoint_create();
-    if (ep < 0)
+    kos_cap_t ep = KOS_CAP_NONE;
+    if (kos_endpoint_create(&ep) != 0)
     {
         kos::print("[lx6uart] ERROR: endpoint_create failed\n");
         return -1;
@@ -327,8 +327,8 @@ int lx6uart_console_start(struct kos_service_cfg const* cfg)
     //    and the UART latch stays set until the driver clears it, so the rearm must discard
     //    a stale pending first. It comes back MASKED: the IRQ thread's first wait arms it,
     //    in the thread that will consume the event.
-    int const irq = kos_irq_claim(lx6irq::CONSOLE_TX_LINE, KOS_IRQ_LEVEL);
-    if (irq < 0)
+    kos_cap_t irq = KOS_CAP_NONE;
+    if (kos_irq_claim(lx6irq::CONSOLE_TX_LINE, KOS_IRQ_LEVEL, &irq) != 0)
     {
         kos_handle_close(ep); // closing reclaims the console, so the tag reaches the wire
         kos::print("[lx6uart] ERROR: irq_claim failed\n");
@@ -338,15 +338,15 @@ int lx6uart_console_start(struct kos_service_cfg const* cfg)
     // 4. The IRQ thread: the register window (R|W|DEV), the line (WAIT) and the shared
     //    block. Strictly ABOVE the service thread.
     kos_cap_grant const irq_caps[1] = {{irq, KOS_CAP_WAIT}};
-    int const irqt = kos::thread::spawn(lx6uart_irq_thread, g_shared, "lx6uartirq",
-                                        static_cast<uint8_t>(cfg->prio + 1),
-                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                        /*mem=*/g_shared,
-                                        kickos::uart::KOS_UART_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/reinterpret_cast<void*>(cfg->mmio_base),
-                                        cfg->mmio_window, irq_caps, 1);
-    if (irqt < 0)
+    auto const irqt = kos::thread::spawn(lx6uart_irq_thread, g_shared, "lx6uartirq",
+                                         static_cast<uint8_t>(cfg->prio + 1),
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                         /*mem=*/g_shared,
+                                         kickos::uart::KOS_UART_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/reinterpret_cast<void*>(cfg->mmio_base),
+                                         cfg->mmio_window, irq_caps, 1);
+    if (not irqt.valid())
     {
         kos_handle_close(irq);
         kos_handle_close(ep); // closing reclaims the console, so the tag reaches the wire
@@ -378,14 +378,14 @@ int lx6uart_console_start(struct kos_service_cfg const* cfg)
     //    this chip INTSET cannot raise a real line at all. No MMIO window, because a DEV
     //    window has exactly one holder.
     kos_cap_grant const svc_caps[2] = {{ep, KOS_CAP_WAIT}, {irq, KOS_CAP_SIGNAL}};
-    int const svct = kos::thread::spawn(lx6uart_service_thread, g_shared, cfg->name,
-                                        cfg->prio, KOS_POLICY_FIFO, 0,
-                                        /*privileged=*/false,
-                                        /*mem=*/g_shared,
-                                        kickos::uart::KOS_UART_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/nullptr, 0, svc_caps, 2);
-    if (svct < 0)
+    auto const svct = kos::thread::spawn(lx6uart_service_thread, g_shared, cfg->name,
+                                         cfg->prio, KOS_POLICY_FIFO, 0,
+                                         /*privileged=*/false,
+                                         /*mem=*/g_shared,
+                                         kickos::uart::KOS_UART_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/nullptr, 0, svc_caps, 2);
+    if (not svct.valid())
     {
         kos_handle_close(irq);
         kos_handle_close(ep);

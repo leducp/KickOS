@@ -39,6 +39,8 @@
 #ifndef KICKOS_DRIVER_XMCSSC_H
 #define KICKOS_DRIVER_XMCSSC_H
 
+#include <kickos/sys/abi.h> // kos_cap_t (the endpoint handle this hands out)
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -52,12 +54,10 @@ extern "C"
     // stdio (the service-list HARD RULE); diagnostics use kos::print.
     int xmc_spi0_start(struct kos_service_cfg const* cfg);
 
-    // TAKE the USIC0-CH1 SSC service endpoint cap handle out of the ROOT/init thread's
-    // table (set by xmc_spi0_start). The app, which runs in the SAME root thread
-    // after the service walk, delegates a SIGNAL-narrowed copy of it to its ONE SPI
-    // client, then closes its own copy. Handing it out is one-shot: a second call
-    // returns a negative value, as does a service that did not come up.
-    int xmc_spi0_take_endpoint(void);
+    // TAKE the USIC0-CH1 SSC service endpoint cap out of the root thread's table
+    // (seated by xmc_spi0_start): the caller owns it and closes its own copy.
+    // One-shot. A second call, or a service that did not come up, returns KOS_CAP_NONE.
+    kos_cap_t xmc_spi0_take_endpoint(void);
 
 #ifdef __cplusplus
 }

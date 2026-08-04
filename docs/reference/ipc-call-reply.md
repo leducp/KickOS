@@ -78,14 +78,14 @@ the reply is safe. A client wanting split tx/rx copies locally.
 | `-KOS_EBADF` | bad endpoint cap |
 | `-KOS_EPERM` | missing `CAP_SIGNAL`, no caller context, or a non-pool caller |
 | `-KOS_EPIPE` | dead endpoint (`recv_holders == 0`), or the server died mid-transaction |
-| `-KOS_ENOMEM` | the server's handle table is full (no free slot to mint the reply cap) |
+| `-KOS_EMFILE` | the server's handle table is full (no free slot to mint the reply cap) |
 | `-KOS_ENOSYS` | the receiver took an info-less recv and cannot host a call |
 
 Both buffer bound-checks run up front, in caller context, once. Two paths:
 
 - **Fastpath** (a receiver is already parked in recv): under one `IrqLock`, PROBE before
   popping -- reject an info-less receiver (`ipc.badge_out == 0` -> `ENOSYS`) or a full
-  receiver table (`ENOMEM`) with NO side effects, THEN pop, copy the request into the
+  receiver table (`EMFILE`) with NO side effects, THEN pop, copy the request into the
   receiver's buffer, mint the reply cap into the receiver's table, deliver its
   `kos_recv_info`, repurpose the caller's `ipc` to the reply target, park the caller
   queue-less in `CALL_REPLY_WAIT`, donate (D1), and wake the server (switches to it now).
@@ -95,7 +95,7 @@ Both buffer bound-checks run up front, in caller context, once. Two paths:
 
 ## `KOS_SYS_REPLY = 35`
 
-    kos_reply(int reply_cap, void const* buf, size_t len) -> int
+    kos_reply(kos_cap_t reply_cap, void const* buf, size_t len) -> int
 
 Completes a call: copy the reply into the parked caller's buffer and wake it. The cap is
 consumed on EVERY exit (one-shot). `len > KOS_EP_MSG_MAX` is clamped (the caller's
@@ -116,11 +116,12 @@ and the full stale-resolve above is what makes it safe.
 
 The recv out-pointer is now a `struct kos_recv_info` (was a bare `uint32_t` badge):
 
-    struct kos_recv_info { uint32_t badge; int32_t reply_cap; };   // 8 bytes, 4-aligned
+    struct kos_recv_info { uint32_t badge; kos_cap_t reply_cap; };   // 8 bytes, 4-aligned
 
-- A plain `kos_send` arrival delivers `reply_cap == -1`.
-- A `kos_call` arrival delivers a real one-shot `CAP_REPLY` handle (`>= 0`) in the
-  receiver's table; the receiver must eventually `kos_reply` it or `kos_handle_close` it.
+- A plain `kos_send` arrival delivers `reply_cap == KOS_CAP_NONE`.
+- A `kos_call` arrival delivers a real one-shot `CAP_REPLY` handle in the receiver's
+  table; the receiver must eventually `kos_reply` it or `kos_handle_close` it. Test it
+  against `KOS_CAP_NONE`: a handle fills all 32 bits, so no sign test works.
 - **Info-less recv** (`out == NULL`, i.e. `badge_out == 0`): the receiver is NOT minted a
   reply cap and REJECTS calls -- the caller's `kos_call` fails `-KOS_ENOSYS`. Plain sends
   behave exactly as before. `endpoint_recv` validates 8 writable bytes at a 4-aligned
@@ -181,8 +182,8 @@ The cap is consumed exactly once per unpark:
 | server dies mid-transaction (fault -> exit) | `cap_teardown` hits the same close arm | woken, `-KOS_EPIPE` |
 | server dies while caller still in `CALL_SEND_WAIT` | `recv_holders` -> 0 drains `send_waiters` | woken, `-KOS_EPIPE` |
 | endpoint destroyed while a reply is outstanding | nothing -- the cap names the CALLER, not the endpoint | server can still reply; woken normally |
-| mint fails, fastpath | fail the call `-KOS_ENOMEM` BEFORE any side effect | error return, no state change |
-| mint fails, slowpath (pop at recv) | wake the popped caller `-KOS_ENOMEM`, recv retries | woken, `-KOS_ENOMEM` |
+| mint fails, fastpath | fail the call `-KOS_EMFILE` BEFORE any side effect | error return, no state change |
+| mint fails, slowpath (pop at recv) | wake the popped caller `-KOS_EMFILE`, recv retries | woken, `-KOS_EMFILE` |
 | info-less receiver hit at recv (slowpath) | wake the popped caller `-KOS_ENOSYS`, recv keeps scanning | woken, `-KOS_ENOSYS` |
 | server closes / loses its `WAIT` cap while `ep->server == it` | close arm clears `ep->server` + recomputes | any lingering D2 donation dropped |
 

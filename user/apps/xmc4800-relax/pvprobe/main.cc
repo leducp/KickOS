@@ -228,30 +228,31 @@ int main(int, char**)
     // MemManage before the probe ever ran.
     kos::print("[pvprobe] XMC4800 U0C1 PV-write probe (RM V1.3 Table 18-20)\n");
 
-    int const p = kos::thread::spawn(probe, reinterpret_cast<void*>(U0C1_BASE),
-                                     "pvprobe", 10, KOS_POLICY_FIFO, 0,
-                                     /*privileged=*/false,
-                                     /*mem=*/nullptr, /*mem_size=*/0,
-                                     /*stack=*/nullptr, /*stack_size=*/0,
-                                     /*mmio=*/reinterpret_cast<void*>(U0C1_BASE),
-                                     U0C1_WINDOW);
-    if (p < 0)
+    auto const p = kos::thread::spawn(probe, reinterpret_cast<void*>(U0C1_BASE),
+                                      "pvprobe", 10, KOS_POLICY_FIFO, 0,
+                                      /*privileged=*/false,
+                                      /*mem=*/nullptr, /*mem_size=*/0,
+                                      /*stack=*/nullptr, /*stack_size=*/0,
+                                      /*mmio=*/reinterpret_cast<void*>(U0C1_BASE),
+                                      U0C1_WINDOW);
+    if (not p.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C1. The probe question (does an
         // unprivileged HOLDER's PV write land?) is unanswerable without the grant. The
         // kernel console path drops every byte once a driver has published, so the errno
         // goes out through the panic path.
         char e[64];
-        ksnprintf(e, sizeof(e), "[pvprobe] U0C1 probe spawn refused, errno %d", -p);
+        ksnprintf(e, sizeof(e), "[pvprobe] U0C1 probe spawn refused, errno %d", -p.error());
         kos_panic(e);
     }
 
-    // Park: fall back to a sleep park if the semaphore could not be created (else a -1
-    // handle spins a hot loop of failing sem_wait syscalls).
-    int const idle = kos_sem_create(0);
+    // Park: fall back to a sleep park if the semaphore could not be created (else an
+    // unmintable handle spins a hot loop of failing sem_wait syscalls).
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

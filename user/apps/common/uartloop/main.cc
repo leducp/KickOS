@@ -27,14 +27,14 @@
 
 #include <stdint.h>
 
-extern "C" int kickos_sim_uart_take_endpoint(void);
+extern "C" kos_cap_t kickos_sim_uart_take_endpoint(void);
 
 namespace
 {
     constexpr int CH_DONE = 1; // delegated completion sem
     constexpr int CH_EP = 2;   // delegated SIGNAL-only cap on the service endpoint
 
-    int g_done = -1;
+    kos_cap_t g_done = KOS_CAP_NONE;
     // Root is the only reader and reads after the CH_DONE handshake, so no barrier beyond
     // the semaphore is needed.
     volatile int g_wrote = -99;
@@ -234,22 +234,21 @@ KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM);
 
 int main(int, char**)
 {
-    int const ep = kickos_sim_uart_take_endpoint();
-    if (ep < 0)
+    kos_cap_t const ep = kickos_sim_uart_take_endpoint();
+    if (ep == KOS_CAP_NONE)
     {
         kos_print("[uartloop] ERROR: no UART service endpoint (wrong service list?)\n");
         return 1;
     }
-    g_done = kos_sem_create(0);
-    if (g_done < 0)
+    if (kos_sem_create(0, &g_done) != 0)
     {
         kos_print("[uartloop] ERROR: sem_create failed\n");
         return 1;
     }
     kos_cap_grant const caps[2] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL},
                                    {ep, KOS_CAP_SIGNAL}};
-    int const cl = kos::thread::spawn_caps(client, nullptr, "uartcl", 10, caps, 2);
-    if (cl < 0)
+    auto const cl = kos::thread::spawn_caps(client, nullptr, "uartcl", 10, caps, 2);
+    if (not cl.valid())
     {
         kos_print("[uartloop] ERROR: client spawn failed\n");
         return 1;

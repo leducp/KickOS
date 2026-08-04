@@ -588,14 +588,12 @@ two self-contained images that partition the arms between them.
 - **Flash and run them one after the other. Order does not matter.** Each initialises the board,
   runs its own arms and self-terminates; they share no state and there is no handover between them.
 - **TAP numbering RESTARTS at 1 in each part.** `tap.cc` plans `1..N` from its own runtime registry,
-  so part 1 emits `1..44` and part 2 `1..30` under `KICKOS_ENABLE_SELFTEST`. **A pass is BOTH parts
-  green** -- a single `1..44` stream is half a run, not a short one, and reading it as a pass is the
+  so part 1 emits `1..43` and part 2 `1..30` under `KICKOS_ENABLE_SELFTEST`. **A pass is BOTH parts
+  green** -- a single `1..43` stream is half a run, not a short one, and reading it as a pass is the
   obvious way to be fooled here.
 - Configure prints what to expect:
-  `-- selftest: split into two images -- selftest plans 44 arms, selftest_p2 plans 30 (74 together)`
-- These two boards now run the FULL arm set: `cap_dest`, `irq_discard` and `cap_capacity` are no
-  longer excluded on them. Expect `cap_capacity` to report PARTIAL (one capability class -- nothing
-  for it to observe), which counts as a pass.
+  `-- selftest: split into two images -- selftest plans 43 arms, selftest_p2 plans 30 (73 together)`
+- These two boards run the FULL arm set: `cap_dest` and `irq_discard` are not excluded on them.
 - Which arm sits in which part is decided by POSITION in the registration list at the bottom of
   `user/apps/common/selftest/main.cc`, not by an annotation; the boundary is the `#undef TAP_ADD`.
   Adding or moving an arm means updating the whole-suite floor AND the matching per-part clause in

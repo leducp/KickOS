@@ -37,7 +37,7 @@ namespace spi
 
 // Build a service-level error reply (no rx) and complete the call. ALWAYS
 // consumes the reply cap.
-inline void reply_error(int reply_cap, int16_t status)
+inline void reply_error(kos_cap_t reply_cap, int16_t status)
 {
     struct kos_bus_rsp rsp;
     rsp.status = status;
@@ -72,7 +72,7 @@ struct SlotTable
 // path, success or error; a leaked reply cap parks the client forever).
 template <typename Bus>
 void serve_one(Bus& bus, SlotTable<Bus>& slots, unsigned char const* msg, size_t n,
-               int reply_cap)
+               kos_cap_t reply_cap)
 {
     if (n < sizeof(struct kos_bus_req))
     {
@@ -184,18 +184,18 @@ void serve_one(Bus& bus, SlotTable<Bus>& slots, unsigned char const* msg, size_t
 template <typename Bus>
 void serve_loop(Bus& bus)
 {
-    int const ep = KOS_SPAWN_DELEGATED_CAP0; // delegated {E | WAIT} recv cap
+    kos_cap_t const ep = KOS_SPAWN_DELEGATED_CAP0; // delegated {E | WAIT} recv cap
     SlotTable<Bus> slots;
     unsigned char msg[KOS_EP_MSG_MAX];
     while (true)
     {
-        struct kos_recv_info info = {0u, -1};
+        struct kos_recv_info info = {0u, KOS_CAP_NONE};
         long const n = kos_recv(ep, msg, sizeof(msg), &info);
         if (n < 0)
         {
             break; // EPIPE / dead endpoint: exit, let root respawn
         }
-        if (info.reply_cap < 0)
+        if (info.reply_cap == KOS_CAP_NONE)
         {
             continue; // plain send: not part of the bus call/reply protocol
         }

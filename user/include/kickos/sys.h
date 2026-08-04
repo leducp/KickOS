@@ -17,6 +17,11 @@ extern "C"
 {
 #endif
 
+// The byte-count-or-negative-errno returns below (kos_kconsole_write, kos_send, kos_recv,
+// kos_call) must stay a FIXED-WIDTH signed type: `long` is 4 bytes on the cross toolchains
+// and 8 on the host, which is two widths for one declaration across the trap boundary. A
+// static_assert in user/src/syscall_stubs.cc holds these at 4.
+
 // Debug console: unbuffered, polling, straight at the kernel console (works in
 // boot/panic, driver-independent). NOT stdout: KickOS has no fd namespace; ordinary
 // output = libc stdio over a userspace console driver (Later). kos_print strlen's in
@@ -24,26 +29,35 @@ extern "C"
 // unbounded user ptr. Returns bytes written (>= 0; a len-0 write is a legitimate 0),
 // or -KOS_EFAULT if the buffer is not readable by the caller. kos_print stays void:
 // it discards both the count and any -KOS_EFAULT.
-long kos_kconsole_write(void const* buf, size_t len);
+int32_t kos_kconsole_write(void const* buf, size_t len);
 void kos_print(char const* s);
 
 void kos_yield(void);
 void kos_sleep_ns(uint64_t ns);
 
-// Counting semaphore. The returned handle is an OPAQUE per-task CAPABILITY (index +
-// generation in THIS thread's table); do not assume it's an array index, and it does
-// NOT name the same object in another thread: share it with a child by delegating
-// it via kos_thread_params.caps (see kos_cap_grant). sem_create grants the creator a
-// full-rights (WAIT|SIGNAL|TRANSFER) cap.
-// -> opaque cap handle; -KOS_ENOMEM (pool/table full); or -KOS_EINVAL when `initial` is
-// outside [0, KOS_SEM_COUNT_MAX] (abi.h).
-int kos_sem_create(int initial);
+// EVERY capability-minting call below returns a status and writes the handle to `*out_cap`.
+// The handle is a full 32-bit word (abi.h, kos_cap_t) with no room left for an errno.
+// `*out_cap` is ALWAYS written, KOS_CAP_NONE on every failure, so a caller that ignores the
+// status holds a handle no call will accept rather than an uninitialized one.
+//
+// Counting semaphore. The handle is an OPAQUE per-task CAPABILITY (index + generation in
+// THIS thread's table); do not assume it's an array index, and it does NOT name the same
+// object in another thread: share it with a child by delegating it via
+// kos_thread_params.caps (see kos_cap_grant). Create grants the creator a full-rights
+// (WAIT|SIGNAL|TRANSFER) cap.
+// The two exhaustion codes are NOT interchangeable: -KOS_ENOMEM is the object's own shared
+// pool (here KICKOS_MAX_SEMAPHORES), -KOS_EMFILE is THIS task's capability table. Every
+// create below can return either.
+// -> 0; -KOS_ENOMEM (sem pool); -KOS_EMFILE (table full); -KOS_EINVAL when `initial` is outside
+// [0, KOS_SEM_COUNT_MAX] (abi.h) or out_cap is null/misaligned; -KOS_EFAULT (out_cap is
+// not writable by the caller).
+int kos_sem_create(int initial, kos_cap_t* out_cap);
 // 0, or -KOS_EBADF (bad/stale/closed cap) / -KOS_EPERM (cap lacks WAIT/SIGNAL). Check
 // the return: a stale cap must not be mistaken for a completed wait/post.
-int kos_sem_wait(int sem);
+int kos_sem_wait(kos_cap_t sem);
 // Also -KOS_EOVERFLOW with no waiter and the count at KOS_SEM_COUNT_MAX; the token is
 // not banked.
-int kos_sem_post(int sem);
+int kos_sem_post(kos_cap_t sem);
 
 // Priority-inheritance mutex. Like a semaphore, the handle is an OPAQUE per-task
 // CAPABILITY: share it with a child by delegating it via kos_thread_params.caps.
@@ -52,7 +66,7 @@ int kos_sem_post(int sem);
 // higher-priority waiter, the holder is boosted to the waiter's priority until it
 // unlocks (bounded priority inversion). Not recursive: locking a mutex you already
 // hold returns -KOS_EDEADLK. No trylock/timed lock (parity with the unexposed sem_trywait).
-int kos_mutex_create(void); // -> opaque cap handle, or -KOS_ENOMEM (pool/table full)
+int kos_mutex_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EINVAL/-KOS_EFAULT
 // Acquire. Return codes (ALL error-shaped codes are negative: see <kickos/sys/errno.h>):
 //   0               acquired, protected state consistent
 //   -KOS_EOWNERDEAD acquired BUT the previous owner died holding it (state may be torn):
@@ -63,41 +77,43 @@ int kos_mutex_create(void); // -> opaque cap handle, or -KOS_ENOMEM (pool/table 
 // every rc < 0 as a failed acquire would STRAND the mutex on the -KOS_EOWNERDEAD path (the
 // lock is held). Callers MUST special-case rc == -KOS_EOWNERDEAD as HELD, distinct from
 // the other negatives which mean not-held.
-int kos_mutex_lock(int mtx);
+int kos_mutex_lock(kos_cap_t mtx);
 // 0, -KOS_EBADF (bad cap), or -KOS_EPERM (caller is not the owner). Only the owner unlocks.
-int kos_mutex_unlock(int mtx);
+int kos_mutex_unlock(kos_cap_t mtx);
 
 // Synchronous IPC rendezvous endpoint. The handle is an OPAQUE per-task CAPABILITY
 // (like a sem/mutex): delegate it to a child via kos_thread_params.caps. create grants
 // a full-rights cap (send needs SIGNAL, recv needs WAIT). send and recv block until the
 // peer arrives; the kernel copies min(sent, capacity) bytes (receiver-side truncation is
 // not an error). A send above KOS_EP_MSG_MAX is rejected (-KOS_EINVAL); recv clamps its capacity.
-int kos_endpoint_create(void); // -> opaque cap handle, or -KOS_ENOMEM (pool/table full)
+int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EINVAL/-KOS_EFAULT
 // Send `len` bytes. -> bytes transferred (>= 0), or a negative -KOS_E*: EINVAL (len > MSG_MAX),
 // EFAULT (bad buffer), EBADF/EPERM (bad cap / no SIGNAL right), EPIPE (dead endpoint, or the
 // last receiver went away while parked). n == 0 is a valid zero-length signal, not an error.
-long kos_send(int ep, void const* buf, size_t len);
+int32_t kos_send(kos_cap_t ep, void const* buf, size_t len);
 // Receive up to `cap_len` bytes into buf; `info` (if non-null) receives the sender badge
-// and reply cap (kos_recv_info: reply_cap == -1 for a plain kos_send, a real one-shot
-// CAP_REPLY handle for a kos_call). Passing info == NULL is an INFO-LESS recv: it REJECTS
-// calls (the caller's kos_call fails -KOS_ENOSYS) and behaves as before for plain sends.
+// and reply cap (kos_recv_info: reply_cap == KOS_CAP_NONE for a plain kos_send, a real
+// one-shot CAP_REPLY handle for a kos_call). Passing info == NULL is an INFO-LESS recv: it
+// REJECTS calls (the caller's kos_call fails -KOS_ENOSYS) and behaves as before for plain
+// sends.
 // -> bytes received (>= 0), or a negative -KOS_E*: EFAULT (bad buffer / out-ptr), EINVAL
 // (misaligned out-ptr), EBADF/EPERM (bad cap / no WAIT right).
-long kos_recv(int ep, void* buf, size_t cap_len, struct kos_recv_info* info);
+int32_t kos_recv(kos_cap_t ep, void* buf, size_t cap_len, struct kos_recv_info* info);
 
 // Synchronous call/reply (L4-style). kos_call delivers `send_len` request bytes and
 // blocks until the server replies into the SAME buffer (in-place, up to `recv_cap`); it
 // mints a one-shot reply cap in the server's recv info. -> reply bytes (>= 0), or a
 // negative -KOS_E*: EINVAL (request > KOS_EP_MSG_MAX), EFAULT (bad buffer), EBADF/EPERM
-// (bad cap / no SIGNAL), EPIPE (dead endpoint or server died mid-call), ENOMEM (server
-// cap table full), ENOSYS (server took an info-less recv, so it hosts no calls).
-long kos_call(int ep, void* buf, size_t send_len, size_t recv_cap);
+// (bad cap / no SIGNAL), EPIPE (dead endpoint or server died mid-call), EMFILE (the
+// SERVER's cap table is full, so the reply cap cannot be minted; nothing the caller can
+// widen), ENOSYS (server took an info-less recv, so it hosts no calls).
+int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap);
 // Complete the call named by `reply_cap` (from kos_recv_info.reply_cap): copy `len` reply
 // bytes to the parked caller and wake it. The cap is one-shot (consumed here; a server
 // loop must reply or kos_handle_close it on EVERY path, else the caller parks forever).
 // -> 0, or a negative -KOS_E*: EBADF (bad / non-reply cap), EFAULT (bad reply buffer),
 // ESRCH (the caller is already gone, aborted or its slot reused; cap consumed anyway).
-int kos_reply(int reply_cap, void const* buf, size_t len);
+int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len);
 
 // Hand the kernel console UART over to a userspace driver serving endpoint `ep`.
 // Privileged-only (-KOS_EPERM for an unprivileged caller, -KOS_EBADF for a bad cap). After this the
@@ -109,22 +125,32 @@ int kos_reply(int reply_cap, void const* buf, size_t len);
 // -KOS_EPERM (unprivileged), -KOS_EBADF (bad / non-endpoint / stale cap), or
 // -KOS_EOVERFLOW (the endpoint's reference count is at its ceiling; nothing was
 // published and the kernel console is untouched).
-int kos_console_publish(int ep);
+int kos_console_publish(kos_cap_t ep);
 
 // Drop THIS thread's capability. Type-agnostic (a cap knows its own type) and
 // refcounted: the underlying object is destroyed only at the LAST close across all
 // holders. Always succeeds on a live cap, even while other holders remain open (it
 // touches no waiters). Returns 0, -KOS_EBADF (bad/stale cap), or -KOS_EBUSY (refused: you
 // are trying to close a mutex you still hold, unlock it first).
-int kos_handle_close(int cap);
-int kos_sem_destroy(int cap); // alias of kos_handle_close (source compatibility)
+int kos_handle_close(kos_cap_t cap);
+int kos_sem_destroy(kos_cap_t cap); // alias of kos_handle_close (source compatibility)
 
-int kos_thread_spawn(struct kos_thread_params const* params);
+// Start a thread. A thread handle spends the whole 32-bit word (abi.h, kos_thread_t) and
+// cannot share a return value with an errno: this returns 0 and writes the child's handle
+// to `*out_thread`, or a negative -KOS_E* (EINVAL/EFAULT malformed params or out-pointer,
+// EPERM privilege or authority, EBADF a grant naming no live cap, EBUSY an MMIO window a
+// live thread holds, ENOMEM thread pool / stack arena / domain pool, EOVERFLOW a delegated
+// object's refcount at its ceiling). `*out_thread` is ALWAYS written, KOS_THREAD_NONE on
+// every failure.
+//
+// The out-pointer is validated BEFORE the child is created: a spawn that succeeded and then
+// could not deliver its handle would leave a thread nothing can name or kill.
+int kos_thread_spawn(struct kos_thread_params const* params, kos_thread_t* out_thread);
 void kos_exit(int code) __attribute__((noreturn));
 
-// Cancel a thread YOU spawned, named by the handle kos_thread_spawn returned. Returns 0,
-// -KOS_EBADF (bad / stale / already-exited handle), -KOS_EPERM (you did not spawn it) or
-// -KOS_EINVAL (naming yourself; that is kos_exit).
+// Cancel a thread YOU spawned, named by the handle kos_thread_spawn delivered. Returns 0,
+// -KOS_EBADF (bad / stale / already-exited handle, KOS_THREAD_NONE included), -KOS_EPERM
+// (you did not spawn it) or -KOS_EINVAL (naming yourself; that is kos_exit).
 //
 // COOPERATIVE, and the caller must treat it that way: it marks the target and, if the
 // target is parked in kos_irq_wait, wakes it there with -KOS_ECANCELED. The target then
@@ -133,7 +159,7 @@ void kos_exit(int code) __attribute__((noreturn));
 // never that the thread is gone. There is no join, so a caller that must observe the
 // death watches something the target's exit changes (a released device window, an
 // endpoint going -KOS_EPIPE).
-int kos_thread_kill(int thread_handle);
+int kos_thread_kill(kos_thread_t thread);
 
 // End the WHOLE system with `status`: drain the buffered console, then hand over to the
 // chip's shutdown. This is what a returning kickos_init_entry does (see
@@ -191,7 +217,7 @@ int kos_irq_unmask(int line); // 0, or -KOS_EPERM (unprivileged) / -KOS_EINVAL (
 // (tier-2, privileged in-kernel handler). Returns 0, or -KOS_EPERM (unprivileged),
 // -KOS_EINVAL (bad irq line), -KOS_EBADF (bad sem cap / no SIGNAL right -> EPERM),
 // -KOS_EBUSY (the line is already bound: no stealing).
-int kos_irq_attach(int irq, int sem_id);
+int kos_irq_attach(int irq, kos_cap_t sem_cap);
 
 // Tier-1 IRQ-as-event. The line IS a capability: a privileged bring-up path CLAIMS it
 // (needs KOS_AUTH_IRQ) and delegates the resulting cap to the unprivileged driver at
@@ -199,13 +225,15 @@ int kos_irq_attach(int irq, int sem_id);
 // serviced. The first-level ISR masks the line and posts the bound notification.
 // Possession of the cap, not an authority bit, is what authorises wait/ack/notify.
 // `flags` is a kos_irq_claim_flags set; the trigger type is fixed for the line's life.
-int kos_irq_claim(int line, unsigned int flags); // -> cap, or -KOS_EPERM/EINVAL/EBUSY/ENOMEM
-int kos_irq_wait(int irq_cap);   // block until the line fires; 0, or -KOS_EBADF/-KOS_EPERM
-int kos_irq_ack(int irq_cap);    // unmask the line; 0, or -KOS_EBADF/-KOS_EPERM
+// -> 0, or -KOS_EPERM/EINVAL/EBUSY/EFAULT, -KOS_ENOMEM (binding pool) or -KOS_EMFILE (the
+// caller's cap table); the cap lands in *out_cap.
+int kos_irq_claim(int line, unsigned int flags, kos_cap_t* out_cap);
+int kos_irq_wait(kos_cap_t irq_cap);   // block until the line fires; 0, or -KOS_EBADF/-KOS_EPERM
+int kos_irq_ack(kos_cap_t irq_cap);    // unmask the line; 0, or -KOS_EBADF/-KOS_EPERM
 // Post the binding WITHOUT touching the controller: the doorbell a service thread
 // rings so the IRQ thread, sole owner of the peripheral registers, primes a transfer.
 // The woken waiter must tolerate finding nothing asserted. Needs KOS_CAP_SIGNAL.
-int kos_irq_notify(int irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
+int kos_irq_notify(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
 // Drop the controller's latched pending for the line. An EDGE binding's rearm
 // deliberately KEEPS that latch (a raise that arrived while the line was masked must
 // still be delivered), and the controller is a reserved block no grant can reach, so
@@ -213,7 +241,7 @@ int kos_irq_notify(int irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
 // predates the driver owning the device, or one it has just serviced out of band.
 // Neither masks nor unmasks: use it between a wait return and the ack, where the ISR
 // has already left the line masked. Needs KOS_CAP_WAIT.
-int kos_irq_discard(int irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
+int kos_irq_discard(kos_cap_t irq_cap); // 0, or -KOS_EBADF/-KOS_EPERM
 uint64_t kos_clock_now(void);   // monotonic nanoseconds
 
 // Running core clock in Hz, so an app can do its own cycle<->ns math without the
@@ -261,7 +289,7 @@ int kos_periph_reg_write(uintptr_t base, uintptr_t offset, uint32_t value);
 // Needs no authority itself: a bit required to drop bits would be one a thread could
 // never give up. Returns 0, -KOS_EBADF (cap does not resolve), or -KOS_EINVAL (cap is
 // not an authority cap: narrowing object rights is not supported).
-int kos_cap_narrow(int cap, uint8_t mask);
+int kos_cap_narrow(kos_cap_t cap, uint8_t mask);
 
 // One-shot init-time pin-function config: point pin `pin` of port `port` at raw
 // chip function code `func` (the PC/PCR encoding, opaque here). Needs AUTH_PINMUX.

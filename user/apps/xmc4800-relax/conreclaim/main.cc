@@ -96,28 +96,29 @@ int main(int, char**)
 {
     kos::print("[conreclaim] scramble-then-panic console-reclaim test\n");
 
-    int const s = kos::thread::spawn(
+    auto const s = kos::thread::spawn(
         scrambler, reinterpret_cast<void*>(U0C0_BASE), "scrambler",
         SCRAMBLER_PRIO, KOS_POLICY_FIFO, /*quantum_ns=*/0,
         /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
         /*stack=*/nullptr, /*stack_size=*/0,
         /*mmio=*/reinterpret_cast<void*>(U0C0_BASE), U0C0_WINDOW);
-    if (s < 0)
+    if (not s.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C0, which no service list may do
         // while this test runs.
         char e[64];
-        ksnprintf(e, sizeof(e), "[conreclaim] U0C0 spawn refused, errno %d", -s);
+        ksnprintf(e, sizeof(e), "[conreclaim] U0C0 spawn refused, errno %d", -s.error());
         kos_panic(e);
     }
 
     // Park: root exiting would end the system before the scrambler faults. Fall back to
-    // a sleep park if the semaphore could not be created (else a -1 handle spins a hot
-    // loop of failing sem_wait syscalls).
-    int const idle = kos_sem_create(0);
+    // a sleep park if the semaphore could not be created (else an unmintable handle spins a
+    // hot loop of failing sem_wait syscalls).
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

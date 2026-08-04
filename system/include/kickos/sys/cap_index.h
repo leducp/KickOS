@@ -37,11 +37,10 @@ enum kos_cap_index
 };
 
 // The thread's authority word is NOT a capability-table entry; it lives in the TCB
-// beside `privileged`. This pseudo-handle is the name kos_cap_narrow takes for it, and
-// is a value the handle codec cannot produce, so it can never collide with a real cap
-// (cap.h pins that with a static_assert against the widest encodable handle). Being
-// INT32_MAX, it caps KICKOS_MAX_HANDLES at 32767: at 32768 the codec's widest handle IS
-// this value and that static_assert fires.
-#define KOS_CAP_AUTHORITY 0x7FFFFFFF
+// beside `privileged`. This pseudo-handle is the name kos_cap_narrow takes for it.
+//
+// Its low KCAP_INDEX_BITS are all ones, and the codec's capacity rule (cap.h) reserves that
+// index and never seats a slot on it, so no table can mint this word at any width.
+#define KOS_CAP_AUTHORITY 0x7FFFFFFFu
 
 #endif

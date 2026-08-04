@@ -35,11 +35,10 @@ namespace kickos
                        void* stack_base, size_t stack_size, ThreadAttr const& attr)
     {
         memset(t, 0, sizeof(*t));
-        // Must follow the memset, which would otherwise zero the run pointer the caller
-        // already attached.
-        t->handles = attr.cap_run;
-        t->cap_capacity = attr.cap_capacity;
-        t->cap_class = attr.cap_class;
+        // Must follow the memset, which would otherwise zero the chunk directory AND the
+        // free-list head the caller already reserved and threaded.
+        t->caps = attr.cap_run;
+        t->cap_free_head = attr.cap_free_head;
         t->spawner_tag = attr.spawner_tag;
         t->id = assign_thread_id();
         // NEVER alias attr.name: via thread_spawn it can be a user pointer, and the fault

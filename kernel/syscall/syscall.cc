@@ -28,6 +28,14 @@
 
 namespace kickos
 {
+    // syscall_dispatch answers at REGISTER width (8 bytes on the host), and the userspace
+    // stub narrows that to a fixed 4. The byte-count producers must therefore already be
+    // 4 bytes here, or the two halves of the boundary disagree on which target: see the
+    // matching static_assert in user/src/syscall_stubs.cc.
+    static_assert(sizeof(endpoint_send(0, 0, 0)) == 4, "must be exactly 4 bytes");
+    static_assert(sizeof(endpoint_recv(0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
+    static_assert(sizeof(endpoint_call(0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
+
     namespace
     {
         // Max yield passes kos_console_publish waits for the in-flight chip-writer count
@@ -46,6 +54,37 @@ namespace kickos
             {
                 sem_post(s);
             }
+        }
+
+        // A minting syscall's out-pointer, checked BEFORE the object is created: a mint
+        // that succeeded and then could not deliver its handle would leave an object
+        // nothing can name and nothing can close. Same rules as CLOCK_NOW's and RECV's
+        // out-pointers: the kernel writes it privileged, so an unprivileged caller must
+        // own it, and a misaligned pointer is a malformed argument. Serves the THREAD mint
+        // too: kos_thread_t and kos_cap_t are different codecs, both 32-bit words.
+        int cap_out_check(uintptr_t out)
+        {
+            if (out == 0 or (out & (alignof(uint32_t) - 1)) != 0)
+            {
+                return -KOS_EINVAL; // null or misaligned out-ptr
+            }
+            if (not user_writable_ok(out, sizeof(uint32_t)))
+            {
+                return -KOS_EFAULT; // out-ptr not owned by the caller
+            }
+            return 0;
+        }
+
+        // Deliver a minted handle. Nothing is written on failure: the stub seated its
+        // codec's NONE before trapping, so the sys.h "always written" guarantee already
+        // holds.
+        uintptr_t cap_out_deliver(uintptr_t out, int rc, uint32_t handle)
+        {
+            if (rc == 0)
+            {
+                kaccess_to_user(out, &handle, sizeof(handle));
+            }
+            return static_cast<uintptr_t>(rc);
         }
 
         // KOS_SYS_PANIC's body. noinline is load-bearing: the message buffer must not
@@ -197,14 +236,21 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_SEM_CREATE:
         {
-            return static_cast<uintptr_t>(sem_create(static_cast<int>(a0)));
+            int rc = cap_out_check(a1);
+            if (rc != 0)
+            {
+                return static_cast<uintptr_t>(rc);
+            }
+            uint32_t h = KCAP_INVALID;
+            rc = sem_create(static_cast<int>(a0), &h);
+            return cap_out_deliver(a1, rc, h);
         }
         case KOS_SYS_HANDLE_CLOSE:
         {
             // Type-agnostic close: drop THIS task's cap (a cap knows its own type).
             // Refcounted: the object is freed only at the last close.
             IrqLock lock;
-            return static_cast<uintptr_t>(handle_close(sched::current(), static_cast<int>(a0)));
+            return static_cast<uintptr_t>(handle_close(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_SEM_WAIT:
         {
@@ -213,7 +259,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             IrqLock lock;
             int err = 0;
             Semaphore* s = static_cast<Semaphore*>(
-                cap_resolve_e(sched::current(), static_cast<int>(a0), CapType::CAP_SEM, CAP_WAIT, &err));
+                cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_SEM, CAP_WAIT, &err));
             if (s == nullptr)
             {
                 return static_cast<uintptr_t>(-err); // EBADF (bad/closed cap) or EPERM (no WAIT right)
@@ -226,7 +272,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             IrqLock lock;
             int err = 0;
             Semaphore* s = static_cast<Semaphore*>(
-                cap_resolve_e(sched::current(), static_cast<int>(a0), CapType::CAP_SEM, CAP_SIGNAL, &err));
+                cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_SEM, CAP_SIGNAL, &err));
             if (s == nullptr)
             {
                 return static_cast<uintptr_t>(-err); // EBADF (bad/closed cap) or EPERM (no SIGNAL right)
@@ -239,7 +285,14 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_MUTEX_CREATE:
         {
-            return static_cast<uintptr_t>(mutex_create());
+            int rc = cap_out_check(a0);
+            if (rc != 0)
+            {
+                return static_cast<uintptr_t>(rc);
+            }
+            uint32_t h = KCAP_INVALID;
+            rc = mutex_create(&h);
+            return cap_out_deliver(a0, rc, h);
         }
         case KOS_SYS_MUTEX_LOCK:
         {
@@ -256,7 +309,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 IrqLock lock;
                 m = static_cast<Mutex*>(
-                    cap_resolve_e(sched::current(), static_cast<int>(a0), CapType::CAP_MUTEX, 0, &err));
+                    cap_resolve_e(sched::current(), static_cast<uint32_t>(a0), CapType::CAP_MUTEX, 0, &err));
             }
             if (m == nullptr)
             {
@@ -280,7 +333,14 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_ENDPOINT_CREATE:
         {
-            return static_cast<uintptr_t>(endpoint_create());
+            int rc = cap_out_check(a0);
+            if (rc != 0)
+            {
+                return static_cast<uintptr_t>(rc);
+            }
+            uint32_t h = KCAP_INVALID;
+            rc = endpoint_create(&h);
+            return cap_out_deliver(a0, rc, h);
         }
         case KOS_SYS_SEND:
         {
@@ -288,19 +348,19 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // the resolve/deliver/park, then releases it before the resume barrier: a
             // spanning caller lock would livelock ARM (design section 3).
             return static_cast<uintptr_t>(
-                endpoint_send(static_cast<int>(a0), a1, static_cast<size_t>(a2)));
+                endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2)));
         }
         case KOS_SYS_RECV:
         {
             return static_cast<uintptr_t>(
-                endpoint_recv(static_cast<int>(a0), a1, static_cast<size_t>(a2), a3));
+                endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3));
         }
         case KOS_SYS_CALL:
         {
             // FULLY LOCKLESS (no dispatch IrqLock), same as SEND/RECV: a spanning caller
             // lock would keep BASEPRI raised across the resume barrier and livelock ARM.
             return static_cast<uintptr_t>(
-                endpoint_call(static_cast<int>(a0), a1, static_cast<size_t>(a2),
+                endpoint_call(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
                               static_cast<size_t>(a3)));
         }
         case KOS_SYS_REPLY:
@@ -308,7 +368,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // Does not block the replier (it wakes the caller and returns), so it does
             // its whole job under endpoint_reply's own lock.
             return static_cast<uintptr_t>(
-                endpoint_reply(static_cast<int>(a0), a1, static_cast<size_t>(a2)));
+                endpoint_reply(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2)));
         }
         case KOS_SYS_CONSOLE_PUBLISH:
         {
@@ -328,7 +388,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 // index (S3). cap_lookup validates the cap-gen; re-check type + object
                 // liveness (mirrors irq_attach's resolve-once pattern). Any rights: the
                 // publish is identity-only.
-                CapEntry* e = cap_lookup(c, static_cast<int>(a0));
+                CapEntry* e = cap_lookup(c, static_cast<uint32_t>(a0));
                 if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_ENDPOINT)
                     or kernel().endpoints.resolve(e->obj) == nullptr)
                 {
@@ -399,13 +459,21 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_THREAD_SPAWN:
         {
-            return static_cast<uintptr_t>(
-                thread_spawn(reinterpret_cast<kos_thread_params const*>(a0)));
+            // Checked BEFORE the child is created: a spawn that succeeded and then could not
+            // deliver its handle would leave a thread nothing can name or kill.
+            int rc = cap_out_check(a1);
+            if (rc != 0)
+            {
+                return static_cast<uintptr_t>(rc);
+            }
+            kos_thread_t h = KOS_THREAD_NONE;
+            rc = thread_spawn(reinterpret_cast<kos_thread_params const*>(a0), &h);
+            return cap_out_deliver(a1, rc, h);
         }
         case KOS_SYS_THREAD_KILL:
         {
             // UNGATED by authority, gated by parenthood inside (syscall_thread.cc).
-            return static_cast<uintptr_t>(thread_kill(static_cast<int>(a0)));
+            return static_cast<uintptr_t>(thread_kill(static_cast<kos_thread_t>(a0)));
         }
         case KOS_SYS_EXIT:
         {
@@ -582,7 +650,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // line to an already-dead handle.
             IrqLock lock;
             int irq = static_cast<int>(a0);
-            int cap_handle = static_cast<int>(a1);
+            uint32_t const cap_handle = static_cast<uint32_t>(a1);
             if (irq < 0 or irq >= KICKOS_MAX_IRQ)
             {
                 return static_cast<uintptr_t>(-KOS_EINVAL); // bad irq line
@@ -739,7 +807,8 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 return static_cast<uintptr_t>(-KOS_EPERM);
             }
             // Full budget is a returned error; truncating the set instead would fault
-            // the thread on memory it was told it had.
+            // the thread on memory it was told it had. NOT -KOS_EMFILE: that code names the
+            // capability table, and the knob here is KICKOS_MPU_MAX_REGIONS.
             if (c->region_count >= KICKOS_MPU_MAX_REGIONS)
             {
                 return static_cast<uintptr_t>(-KOS_ENOMEM);
@@ -800,7 +869,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // It can only clear bits in the CALLER's own table.
             IrqLock lock;
             return static_cast<uintptr_t>(
-                cap_narrow_authority(sched::current(), static_cast<int>(a0),
+                cap_narrow_authority(sched::current(), static_cast<uint32_t>(a0),
                                      static_cast<uint8_t>(a1)));
         }
         case KOS_SYS_PANIC:
@@ -822,24 +891,31 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             {
                 return static_cast<uintptr_t>(-KOS_EPERM); // claims a line namespace-wide
             }
-            return static_cast<uintptr_t>(
-                irq_claim(sched::current(), static_cast<int>(a0), static_cast<unsigned int>(a1)));
+            int rc = cap_out_check(a2);
+            if (rc != 0)
+            {
+                return static_cast<uintptr_t>(rc);
+            }
+            uint32_t h = KCAP_INVALID;
+            rc = irq_claim(sched::current(), static_cast<int>(a0),
+                           static_cast<unsigned int>(a1), &h);
+            return cap_out_deliver(a2, rc, h);
         }
         case KOS_SYS_IRQ_WAIT:
         {
-            return static_cast<uintptr_t>(irq_wait(sched::current(), static_cast<int>(a0)));
+            return static_cast<uintptr_t>(irq_wait(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_IRQ_ACK:
         {
-            return static_cast<uintptr_t>(irq_ack(sched::current(), static_cast<int>(a0)));
+            return static_cast<uintptr_t>(irq_ack(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_IRQ_NOTIFY:
         {
-            return static_cast<uintptr_t>(irq_notify(sched::current(), static_cast<int>(a0)));
+            return static_cast<uintptr_t>(irq_notify(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_IRQ_DISCARD:
         {
-            return static_cast<uintptr_t>(irq_discard(sched::current(), static_cast<int>(a0)));
+            return static_cast<uintptr_t>(irq_discard(sched::current(), static_cast<uint32_t>(a0)));
         }
         case KOS_SYS_DIAG_LED_SET:
         {

@@ -308,26 +308,28 @@ int main(int, char**)
     // window. USIC0's module clock is already ungated by the console (U0C0) bring-up.
     // The driver flips only PCR.FEM for run 2, on the idle channel.
 
-    int drv = kos::thread::spawn(cs_hold_driver, reinterpret_cast<void*>(U0C1_BASE),
-                                 "xmccshold", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                 /*mem=*/nullptr, /*mem_size=*/0,
-                                 /*stack=*/nullptr, /*stack_size=*/0,
-                                 /*mmio=*/reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW);
-    if (drv < 0)
+    auto drv = kos::thread::spawn(cs_hold_driver, reinterpret_cast<void*>(U0C1_BASE),
+                                  "xmccshold", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                  /*mem=*/nullptr, /*mem_size=*/0,
+                                  /*stack=*/nullptr, /*stack_size=*/0,
+                                  /*mmio=*/reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW);
+    if (not drv.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C1, which this bench needs
         // exclusively, so no service list carrying an SSC/SPI entry may run alongside
         // it. The kernel console path drops every byte once a driver has published, so
         // the errno goes out through the panic path.
         char e[64];
-        ksnprintf(e, sizeof(e), "[xmccshold] U0C1 spawn refused, errno %d", -drv);
+        ksnprintf(e, sizeof(e), "[xmccshold] U0C1 spawn refused, errno %d", -drv.error());
         kos_panic(e);
     }
 
-    int idle = kos_sem_create(0);
+    kos_cap_t idle = KOS_CAP_NONE;
+
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

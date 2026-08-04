@@ -223,41 +223,43 @@ int main(int, char**)
     // never be steered onto pins.
 
     // EDGE: the driver W1Cs PSCR before it acks, so a bare unmask cannot storm.
-    int const irq = kos_irq_claim(USIC0_SR1_IRQ, KOS_IRQ_EDGE);
-    if (irq < 0)
+    kos_cap_t irq = KOS_CAP_NONE;
+    int const irq_rc = kos_irq_claim(USIC0_SR1_IRQ, KOS_IRQ_EDGE, &irq);
+    if (irq_rc != 0)
     {
         char e[64];
-        ksnprintf(e, sizeof(e), "[xmcspi] irq_claim(85) refused, errno %d", -irq);
+        ksnprintf(e, sizeof(e), "[xmcspi] irq_claim(85) refused, errno %d", -irq_rc);
         kos_panic(e);
     }
     kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
 
-    int drv = kos::thread::spawn(spi_driver, reinterpret_cast<void*>(U0C1_BASE),
-                                 "xmcspi", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                 /*mem=*/nullptr, /*mem_size=*/0,
-                                 /*stack=*/nullptr, /*stack_size=*/0,
-                                 /*mmio=*/reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW,
-                                 caps, 1);
-    if (drv < 0)
+    auto drv = kos::thread::spawn(spi_driver, reinterpret_cast<void*>(U0C1_BASE),
+                                  "xmcspi", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                  /*mem=*/nullptr, /*mem_size=*/0,
+                                  /*stack=*/nullptr, /*stack_size=*/0,
+                                  /*mmio=*/reinterpret_cast<void*>(U0C1_BASE), U0C1_WINDOW,
+                                  caps, 1);
+    if (not drv.valid())
     {
         // -KOS_EBUSY: a live domain already holds U0C1, which this app needs
         // exclusively, so no service list carrying an SSC/SPI entry may run alongside
         // it. The kernel console path drops every byte once a driver has published, so
         // the errno goes out through the panic path.
         char e[64];
-        ksnprintf(e, sizeof(e), "[xmcspi] U0C1 driver spawn refused, errno %d", -drv);
+        ksnprintf(e, sizeof(e), "[xmcspi] U0C1 driver spawn refused, errno %d", -drv.error());
         kos_panic(e);
     }
     // Root's copy must go, else the line stays pinned by a cap nobody waits on instead
     // of returning to the pool when the driver dies.
     kos_handle_close(irq);
 
-    // Sleep park when the semaphore could not be created: a -1 handle would spin a hot
-    // loop of failing sem_wait syscalls.
-    int idle = kos_sem_create(0);
+    // Sleep park when the semaphore could not be created: an unmintable handle would spin
+    // a hot loop of failing sem_wait syscalls.
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

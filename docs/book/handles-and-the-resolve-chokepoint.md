@@ -20,25 +20,26 @@ the kernel correct and the part that merely helps an app find its own bugs.
 
 ## The problem with a global integer id
 
-Today a KickOS semaphore lives in a per-*kernel* `SlotPool` and is named by an opaque
-integer handle that `sem_resolve` validates (`kernel/syscall/syscall.cc`). The handle is
-opaque, but it is **ambient**: it is a global name, and any task that can guess or forge
-the integer can name the object. `kos_sem_wait(4)` from any thread reaches semaphore 4.
-Isolation says a task should touch only what it has been *given*; a global namespace any
+The simplest scheme that satisfies "no kernel pointer crosses the boundary" is a single
+kernel-wide pool of objects, named by an index into it. It is opaque, it is bounded, and it
+is checkable -- and it is **ambient**. The name is global, so any task that can guess or
+forge the integer can name the object: `kos_sem_wait(4)` from any thread reaches semaphore
+4. Isolation says a task should touch only what it has been *given*; a global namespace any
 task can enumerate is the opposite -- it is ambient authority, and ambient authority
 contradicts the isolation the MPU chapters (Chapter 7) work so hard to build. Fencing a
 task's *memory* while leaving the *object namespace* open would be half a boundary.
 
 ## What a handle is
 
-The M3 answer is a **capability handle**: a per-task, typed, rights-bearing, refcounted
+The answer is a **capability handle**: a per-task, typed, rights-bearing, refcounted
 reference to a kernel object.
 
 - **Per-task.** The number `3` is not a global object id; it is an index into *this
   task's* table. Task A's `3` and task B's `3` are unrelated. A task can only name objects
   its table holds an entry for -- it cannot forge a name for an object it was never given.
-- **Typed.** An entry records what kind of object it names (semaphore, mutex, endpoint).
-  A handle to a semaphore cannot be used where an endpoint is expected.
+- **Typed.** An entry records what kind of object it names (semaphore, PI mutex, IPC
+  endpoint, interrupt binding, reply). A handle to a semaphore cannot be used where an
+  endpoint is expected.
 - **Rights-bearing.** An entry carries a small set of rights bits (WAIT, SIGNAL,
   TRANSFER). Holding a handle is not blanket authority over the object; it is exactly the
   operations the rights permit.
@@ -46,11 +47,10 @@ reference to a kernel object.
   is governed by how many handles name it, not by any single task (see *Lifecycle*).
 
 The shape is Zircon's `zx_handle_t` more than seL4's CNodes -- a small flat array embedded
-in the TCB, no capability-graph boot manifest. Concretely (design sketch, not a contract):
+in the TCB, no capability-graph boot manifest. The entry a task's table holds carries the
+four properties above, and nothing more:
 
 ```
-enum class CapType : uint8_t { CAP_EMPTY = 0, CAP_SEM, CAP_MUTEX, CAP_ENDPOINT };
-
 struct CapEntry
 {
     int32_t  obj;    // the GLOBAL generational object handle this cap names
@@ -60,22 +60,54 @@ struct CapEntry
 };
 ```
 
+### The handle a task holds, and how it gets there
+
+The handle itself is an **unsigned 32-bit** word (`kos_cap_t`), and every bit of it is
+spent: the low `KCAP_INDEX_BITS` are the index into the task's table, the high
+`KCAP_GEN_BITS` are the generation, and the split is fixed fleet-wide rather than derived
+from a board's table size, so the same logical capability prints the same value on every
+target.
+
+That it is *unsigned*, with no sign bit held back, is a consequence of how the handle
+travels, and the two facts have to be read together. A minting syscall does not return the
+handle: it returns a **status** -- 0 or a negated error code -- and writes the handle
+through an **out-parameter**, as in `kos_sem_create(int initial, kos_cap_t* out_cap)`
+(`user/include/kickos/sys.h`). With failure carried in the return value, the handle never
+has to reserve a bit to signal it, so a live handle may have bit 31 set and `h < 0` is *not*
+an error test on one. Chapter 8.7 works through what that extra bit is worth.
+
+It does cost something, though, and this is the part worth internalising: once every bit
+pattern can be a live handle, a sentinel can no longer be "a negative number". "No
+capability" -- what a full table refuses with, and what a message arrival carries when there
+is no reply capability to hand over -- has to be a *value the codec provably cannot mint*.
+That is bought with a capacity rule rather than with arithmetic: one index value (all ones)
+is reserved and never seated as a table slot, so every word carrying it as its index is
+unmintable at any index/generation split. `KOS_CAP_NONE` and the authority pseudo-handle
+`KOS_CAP_AUTHORITY` both stand on that one property (`kernel/include/kickos/cap.h`). The
+general shape recurs whenever a value space is widened to its limit: the room for
+out-of-band answers has to be carved out deliberately, because it is no longer left over.
+
 ## The resolve chokepoint: validate, then use, under one lock
 
 The load-bearing discipline is that **every object-naming syscall resolves the handle
 first, and does nothing to any object until it has.** Resolve returns the object pointer or
-`nullptr`. On `nullptr` the syscall returns `-1` and **never touches an object** -- no
-queue is linked, no counter moved, no memory dereferenced.
+`nullptr`. On `nullptr` the syscall returns a negated error code and **never touches an
+object** -- no queue is linked, no counter moved, no memory dereferenced. The refusal is
+also classified, because the two ways to fail are not the same news for the caller:
+`cap_resolve_e` reports `KOS_EBADF` for a handle that does not name a live object of the
+right type, and `KOS_EPERM` for one that names it but lacks a required right
+(`kernel/syscall/cap.cc`).
 
-You can already read this shape in today's `KOS_SYS_SEM_WAIT`
-(`kernel/syscall/syscall.cc`):
+The shape, as `KOS_SYS_SEM_WAIT` has it (`kernel/syscall/syscall.cc`):
 
 ```
 IrqLock lock;
-Semaphore* s = sem_resolve(a0);
+int err = 0;
+Semaphore* s = static_cast<Semaphore*>(
+    cap_resolve_e(sched::current(), handle, CapType::CAP_SEM, CAP_WAIT, &err));
 if (s == nullptr)
 {
-    return -1;               // bad handle: object untouched
+    return -err;             // EBADF or EPERM: object untouched
 }
 sem_wait(s);                 // use, under the SAME lock
 return 0;
@@ -85,20 +117,34 @@ Two properties make this a *chokepoint* and not merely a check:
 
 1. **It is the only door.** There is no path from a syscall argument to an object pointer
    that bypasses resolve. Add rights, add types, add object kinds -- they are all enforced
-   inside this one function (`sem_resolve` today; `cap_resolve` under M3), so there is one
-   place to get right and one place to audit.
+   inside this one function, so there is one place to get right and one place to audit.
+   Rights in particular are checked *here and nowhere else*.
 2. **Resolve and use happen under the same continuous `IrqLock`.** The pointer resolve
    hands back is only valid while the lock is held; releasing it between resolve and use
-   would let a concurrent close/destroy free the slot underneath a validated pointer. The
-   comment on `KOS_SYS_SEM_WAIT` states exactly this invariant, and it is a *precondition*
-   of resolve under M3: the caller holds the lock and uses the result under it.
+   would let a concurrent close/destroy free the slot underneath a validated pointer. This
+   is a *precondition* of resolve, not a courtesy: the caller holds the lock and uses the
+   result under it.
 
 ## WRAP the global pools, do not replace them
 
-Under M3 the per-task table does **not** point straight at a `Semaphore*` or own the
-object. It wraps: a cap entry stores a *global object handle*, and resolve is two-level --
-validate the cap entry in this task's table, then hand its stored global handle to the
-unchanged global `SlotPool`, which re-validates in the usual way.
+The per-task table does **not** point straight at a `Semaphore*` or own the object. It
+wraps: a cap entry stores a *global object handle*, and resolve is therefore **two-level**.
+Level one validates the cap entry in this task's table -- index within the task's own run,
+entry non-empty, cap generation matching, type as expected, rights sufficient (`cap_lookup`,
+then the type and rights tests in `cap_resolve_e`). Level two hands the entry's stored
+global handle to the object pool, which re-validates it in its own terms -- index in range,
+slot still in use, object generation matching (`kernel/include/kickos/slotpool.h`). Either
+level can refuse, and a refusal at either one produces the same untouched object and a
+negated error.
+
+Two levels, and not one, because they answer two different questions: level one asks *may
+this task name this?*, level two asks *is the thing still there?* A recycled table slot can
+hold an entry naming a perfectly healthy object -- level one catches that and level two
+would wave it through. The converse, a live capability naming a destroyed object, is what
+level two is for, and it is unreachable for a reason that lives nowhere near
+resolve: a task's own capability *pins* a reference, so while any holder's entry names an
+object the refcount cannot reach zero. That is a property of the lifecycle discipline below,
+not of the resolve, and level two is what stops the resolve from depending on it.
 
 The invariant that forces this is worth stating plainly, because conflating its two halves
 is the design error:
@@ -121,40 +167,40 @@ each catches a different mistake:
 
 ## The key insight: the detector has two consumers with different stakes
 
-Here is the crux of the whole mechanism, and the thing most easily gotten wrong. The `-1`
-that resolve produces on a bad handle is consumed by **two** parties, and they depend on it
-in completely different ways.
+Here is the crux of the whole mechanism, and the thing most easily gotten wrong. The refusal
+resolve produces on a bad handle is consumed by **two** parties, and they depend on it in
+completely different ways.
 
 **Consumer 1 -- kernel integrity. Unconditional. Load-bearing.** Resolve gates every
 dereference the kernel is about to perform. A stale, forged, wrong-type, or
 insufficient-rights handle can **never** cause the kernel to operate on the wrong object:
 never link a TCB onto a wait queue it does not belong on, never dereference freed memory,
 never reach an object the caller holds no cap to. This holds *regardless of what userspace
-does next*. The kernel returned `-1` and touched nothing; the kernel is fine whether the
+does next*. The kernel returned an error and touched nothing; the kernel is fine whether the
 caller checks the value, ignores it, or sets it on fire.
 
 **Consumer 2 -- application correctness. Conditional. Only if the app checks.** The same
-`-1` also tells the *app* "the handle you named is bad." A correct app branches on it. A
-buggy app that ignores it misbehaves -- but, crucially, only within its **own** authority,
+error code also tells the *app* "the handle you named is bad." A correct app branches on it.
+A buggy app that ignores it misbehaves -- but, crucially, only within its **own** authority,
 because the handle only ever named the app's own objects.
 
-The cautionary example is real and shaped the M3 design. Suppose a worker calls a blocking
-wait, ignores the return value, and proceeds:
+The cautionary example is worth spelling out. Suppose a worker calls a blocking wait,
+ignores the return value, and proceeds:
 
 ```
-kos_sem_wait(h);   // returns -1 because h did not resolve in THIS task
+kos_sem_wait(h);   // returns -KOS_EBADF because h did not resolve in THIS task
 // ... worker runs on, believing it blocked, but it never did
 ```
 
 If `h` failed to resolve, the wait did nothing and the worker runs **unblocked** -- a
 silent race, entirely inside the app's own logic. The kernel is not confused for a moment;
-the *app* is. Under KickOS's original plan this was easy to trigger, because the app fleet
-shared semaphores through file-scope global integers (a child using main's handle value),
-which resolve to `CAP_EMPTY` in a per-task table. The design's fix is deterministic
-placement: a fresh table has cap-gen 0 in every slot, so `handle == index`, and delegated
-caps land at well-known indices the child knows a priori -- no discovery, no shared global.
-The point for this chapter: the hazard is an *app-correctness* hazard, and the design
-addresses it at the app/ABI layer. Kernel integrity was never in question either way.
+the *app* is. The way this bug arrives in practice is an app sharing a handle *value*
+through a file-scope global -- a child reading the integer main happened to get -- which in
+a per-task table names an empty slot in the child. What removes the temptation is
+deterministic placement: a fresh table carries generation 0 in every slot, so `handle ==
+index` there, and delegated caps land at indices the child knows a priori -- no discovery,
+no shared global. The point for this chapter: the hazard is an *app-correctness* hazard, and
+it is addressed at the app/ABI layer. Kernel integrity was never in question either way.
 
 ## Separate the boundary from the detector
 
@@ -171,7 +217,7 @@ boundary one bit; rights and per-task scoping are what confine authority.
 **The use-after-free DETECTOR (defense in depth).** The generation counters -- cap-gen and
 object-gen -- catch a handle that *would have resolved* to a slot that has since been
 recycled. This is a **bug detector**, not a boundary. It is what turns a use-after-close
-from silent aliasing into a clean `-1`.
+from silent aliasing into a clean refusal.
 
 Confusing these two is the classic error: treating generation *width* as if it were the
 strength of the isolation boundary. It is not. Widening the generation makes the detector
@@ -184,9 +230,8 @@ Why is generation only a detector? Because **no finite scheme that reuses storag
 never alias.** Pigeonhole: a fixed number of slots plus a fixed-width handle can encode
 only finitely many `(index, generation)` pairs, so an unbounded sequence of
 allocate/free cycles must eventually repeat one. A repeated pair is a stale handle that
-resolves to a fresh object -- the ABA problem. You cannot design it away; you can only push
-the wrap point past the system's operational lifetime and ensure that a wrap, if it ever
-happened, breaches nothing.
+resolves to a fresh object -- the ABA problem. You cannot design it away; you can only make a
+wrap unlikely per erroneous use, and ensure that a wrap, when it happens, breaches nothing.
 
 The clarifying anchor is the humble POSIX file descriptor. An fd has **no generation at
 all**. `close(3); open(...)` returns `3` again, and a stale `3` held by some forgotten
@@ -201,31 +246,42 @@ legitimately holds right now*. It cannot forge authority, cannot cross to anothe
 cannot escalate. So "proper" here means precisely two things, and generation width is
 relevant to only the first:
 
-1. **Cannot wrap within the system's operational lifetime** -- push the ABA window out
-   far enough that a reuse cycle never completes in practice.
-2. **Breaches nothing if it did** -- guaranteed by the per-task scope and rights boundary,
+1. **A wrap is improbable per erroneous use** -- a stale handle escapes only if the slot's
+   counter has come all the way round to the value that handle carries, so a g-bit
+   generation misses with probability `2^-g`.
+2. **Breaches nothing if it does** -- guaranteed by the per-task scope and rights boundary,
    independent of any counter.
+
+Note what bar (1) is *not*. It is not "cannot wrap within the device's service life". That
+sounds like the natural criterion and it is not purchasable: a recycle is a couple of
+syscalls, so the counter can be driven around its whole cycle in seconds of dedicated churn
+regardless of how wide it is made, and no width a 32-bit handle can afford changes that.
+Chapter 8.7 works the arithmetic and shows why the escape probability is the criterion that
+survives it -- which is also why the honest form of a width decision is a probability you
+state, never the word "safe".
 
 ## The width choice, concretely
 
-KickOS uses a **16-bit** cap generation. That is at parity with the object pool's existing
-`uint16_t` guard (`slotpool.h`), and it costs **zero extra bytes** -- it fits in what would
-otherwise be padding in the 8-byte `CapEntry`. Sixteen bits gives a 2^16 window per slot
-before a self-inflicted ABA could recur, which comfortably clears bar (1) for an MCU's
-operational lifetime; bar (2) holds by construction regardless.
+The cap generation is **16 bits**, at parity with the object pool's `uint16_t` guard
+(`kernel/include/kickos/slotpool.h`), and it costs **zero extra bytes** -- it occupies what
+would otherwise be padding in the 8-byte `CapEntry`. Sixteen bits means one erroneous use in
+65536 aliases instead of failing; bar (2) holds by construction regardless of that number.
+The field width and the storage width are deliberately equal, because the two sites that
+bump the counter do so *unmasked*: one bit narrower and the counter would overflow past what
+the codec can encode, and the slot would mint handles that could never resolve.
 
-The theoretical no-wrap upgrade, if it is ever wanted, is a **single global monotonic
-birth-stamp**: a 32- or 64-bit allocation counter stamped into each object when it is
-born, with the handle carrying the stamp. A monotonic counter of sufficient width does not
-recur within any real lifetime. It is deferred to a future codec-unification pass and is
-gated by a **handle-width decision** -- a full 32-bit stamp cannot coexist with index bits
-inside a 32-bit handle without going to a 64-bit handle, and that is a cross-arch ABI
-change, not a tweak.
+The upgrade that would actually retire the wrap, rather than lengthening it, is a **single
+global monotonic birth-stamp**: one allocation counter stamped into each object at birth,
+with the handle carrying the stamp. A monotonic counter never repeats a value, so there is no
+cycle to come around. What it costs is the thing that makes it a real decision rather than a
+free win: a stamp wide enough to be monotonic for a device lifetime cannot share a 32-bit
+word with an index field, so it forces a 64-bit handle -- a fleet-wide ABI change, not a
+tweak. That is the trade a design either pays for or declines; it is not a detail.
 
 One tempting "fix" is explicitly **not** a solution: per-slot **retirement** -- leaking a
 slot once its generation is about to wrap. On a fixed pool that just bleeds the pool: every
 retired slot is capacity gone forever, and a long-running system starves. Retirement trades
-a probabilistic detector miss for a guaranteed resource leak. It is not on the table.
+a probabilistic detector miss for a guaranteed resource leak.
 
 ## Lifecycle: refcount and destroy-on-last-close
 
@@ -268,33 +324,53 @@ delegation is available (a parent hands a child specific caps, with rights narro
 widened), deterministic, and never required. The usability benchmark stays *write a `main`,
 that's it.*
 
-## The ISR fail-safe variant
+## Where the chokepoint cannot run: the ISR
 
-There is one place the chokepoint runs where returning `-1` is impossible: an interrupt
-handler. Today `irq_sem_post` (`kernel/syscall/syscall.cc`) re-resolves the stored handle
-on **every fire** from ISR context, and on `nullptr` it **silently drops the post**:
+There is one context in which the whole discipline above is unavailable, and it is
+instructive precisely because it is. An interrupt handler has nowhere to return an error to,
+and -- more decisively -- it cannot resolve a *capability* at all. A capability handle is an
+index into the current task's table, and in interrupt context "the current task" is whichever
+thread the interrupt happened to land on. Resolving a stored cap handle there would read a
+stranger's table.
 
-```
-void irq_sem_post(void* arg)
-{
-    int handle = static_cast<int>(reinterpret_cast<intptr_t>(arg));
-    Semaphore* s = sem_resolve(handle);
-    if (s != nullptr)
-    {
-        sem_post(s);
-    }
-    // nullptr: drop the post. Never post to a WRONG object.
-}
-```
+So the cap resolve is hoisted out of ISR context in both of the shapes KickOS offers, and
+comparing them is the point of this section, because they answer the same impossibility
+differently.
 
-This is the same detector, used where an error return has nowhere to go. A torn-down
-binding (its semaphore since freed) degrades to **"no post"** -- never **"wrong post."**
-The kernel would rather miss a wakeup than link a fresh, unrelated object onto an interrupt
-that a stale handle happens to alias. Under M3 the binding stores the resolved **global**
-handle (an ISR never resolves a *cap* -- `current()` in interrupt context is some random
-interrupted thread's table), so `irq_attach` resolves the cap once at attach time, requires
-`CAP_SIGNAL`, and stores the global handle. The ISR keeps today's fail-safe behavior
-verbatim (design record section 4, finding M5).
+**Resolve once, re-resolve the global per fire.** Binding a semaphore to a line
+(`kernel/syscall/syscall.cc`) resolves the *capability* once at bind time, checks it carries
+the signal right, and stores the **global object handle** in the binding. The ISR then
+re-resolves that global against the object pool on every fire, and if the object is gone it
+**silently drops the post**. The generation check still runs; only its failure branch
+changes, because an interrupt has nowhere to return an error to. A torn-down binding degrades
+to "no post", never "wrong post".
+
+**Resolve once, carry the pointer.** Claiming an interrupt line as a capability
+(`kernel/irq/irq.cc`) instead hands the first-level ISR the *address* of the binding it will
+post to, so the ISR does no lookup at all: mask the line, post, return. That buys the ISR's
+latency back, and it moves the hazard from a stale handle to a dangling pointer.
+
+The pair is the lesson. A check you cannot perform must be replaced either by a cheaper
+check whose failure direction you have chosen deliberately, or by a structure in which the
+check is unnecessary -- never by a check performed badly. The second is faster and the first
+needs no ordering discipline; which is right depends on whether you can afford the pool walk.
+
+Carrying a pointer moves the hazard rather than deleting it, and the two halves of that
+mechanism are what close it:
+
+- **Detach before free.** The binding's slot cannot return to its pool while the dispatch
+  table still holds its address, so releasing a binding restores the line's default handler
+  and masks the line *first*, and only then frees the slot. The ordering is the entire
+  guarantee; reversed, a firing line would post into a recycled slot.
+- **A null object, not a null slot.** Every line's dispatch entry is always a valid
+  function. A line with no driver holds a default handler that masks the line and counts the
+  event, so an interrupt arriving on an unowned line cannot dereference anything and cannot
+  be silently lost either.
+
+The lesson generalises past interrupts: a torn-down binding degrades to **"no post"** and
+never to **"wrong post."** The kernel would rather miss a wakeup than link a fresh, unrelated
+object onto an interrupt that a stale name happens to alias. Where an error return has
+nowhere to go, pick the failure direction deliberately and make it the only one reachable.
 
 ## The transferable rule
 
@@ -308,17 +384,25 @@ under the lock that resolve required. Then keep two ideas apart in your head:
   probabilistic under pigeonhole ABA, and widening it only lowers the odds of a missed,
   self-inflicted, single-task-scoped alias.
 
+Then resolve in the layers the facts come in. Capability liveness and object liveness are two
+different facts about two different things, so the resolve that checks them is two-level, and
+the level that answers *may this task name it* cannot also answer *is it still there*.
+
 A file descriptor ships with the boundary and *no* detector, and the world runs on it.
 KickOS ships both -- so the day a generation wraps, the worst case is one buggy task
 confusing two of its own objects, and the kernel never so much as blinks.
 
 ## Where to go next
 
-- The exact object model, the rights/refcount contract, and the B1 delegation ABI:
+- The exact object model, the rights/refcount contract, and the delegation ABI:
   `../reference/architecture.md` ("Object model, capabilities & IPC").
-- The generational pool the guard rides on, and its ABA mechanics: `slotpool.h`.
-- The chokepoint as it exists today: `sem_resolve` / `KOS_SYS_SEM_WAIT` in
-  `kernel/syscall/syscall.cc`.
+- The generational pool level two rides on, and its ABA mechanics:
+  `kernel/include/kickos/slotpool.h`.
+- The chokepoint itself: `cap_lookup` / `cap_resolve_e` in `kernel/syscall/cap.cc`, and a
+  caller of it in `KOS_SYS_SEM_WAIT` (`kernel/syscall/syscall.cc`).
+- What the generation is worth, why its width is not the criterion it looks like, and why the
+  three counters in the system do not share a bit budget: Chapter 8.7,
+  *[A stale handle must not be usable](stale-handles-generation-width-and-allocation-policy.md)*.
 - The isolation this completes on the memory side: Chapter 7, *Memory protection (M2)*.
 - Further reading: Tanenbaum, *Modern Operating Systems*, ch.1 (the protection boundary)
   and the capability-systems literature (Dennis and Van Horn; the seL4 and Zircon handle

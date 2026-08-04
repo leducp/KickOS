@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <kickos/cap.h>     // KCAP_INVALID (the minting out-parameter's failure value)
 #include <kickos/sys/abi.h> // kos_thread_params (thread_spawn parameter)
 
 namespace kickos
@@ -59,29 +60,38 @@ namespace kickos
     void ep_copy(uintptr_t dst, uintptr_t src, size_t n);
 
     // Deliver a receiver's kos_recv_info (badge + reply_cap) into its parked
-    // out-ptr, or nothing when out == 0. reply_cap == -1 marks a plain send.
-    void write_recv_info(uintptr_t out, uint32_t badge, int32_t reply_cap);
+    // out-ptr, or nothing when out == 0. KCAP_INVALID marks a plain send.
+    void write_recv_info(uintptr_t out, uint32_t badge, uint32_t reply_cap);
 
     // --- Cap-object creators (syscall_obj.cc) ----------------------------------
-    int sem_create(int initial);
-    int mutex_create();
+    // Every minting call has one shape: a status return plus a handle out-parameter,
+    // which is written on EVERY path (KCAP_INVALID on failure). A handle spends all 32
+    // bits, so it cannot share the return value with an errno.
+    int sem_create(int initial, uint32_t* out_cap);
+    int mutex_create(uint32_t* out_cap);
 
     // --- IPC endpoints (syscall_ipc.cc) ----------------------------------------
     // endpoint_send/recv/call MUST be called with no caller-held IrqLock: they take their
     // own for the resolve/deliver/park and release it before the resume barrier, and a
     // spanning caller lock livelocks ARM.
-    int endpoint_create();
-    int endpoint_send(int cap, uintptr_t buf, size_t len);
-    int endpoint_recv(int cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out);
-    int endpoint_call(int cap, uintptr_t buf, size_t send_len, size_t recv_cap);
-    int endpoint_reply(int reply_cap, uintptr_t buf, size_t len);
+    //
+    // The three byte-count returns are int32_t so this side of the trap boundary matches
+    // <kickos/sys.h> exactly; endpoint_create and endpoint_reply answer a plain status and
+    // need no pinned width.
+    int endpoint_create(uint32_t* out_cap);
+    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len);
+    int32_t endpoint_recv(uint32_t cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out);
+    int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap);
+    int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len);
 
     // --- Thread lifecycle (syscall_thread.cc) ----------------------------------
-    int thread_spawn(kos_thread_params const* p);
+    // Same minting shape as the cap creators above, for the same reason: a thread handle
+    // spends all 32 bits. *out_thread is written on EVERY path (KOS_THREAD_NONE on failure).
+    int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread);
     // Cancels a thread the caller spawned: marks it, and wakes it out of an irq_wait with
     // -KOS_ECANCELED so the target runs its OWN exit. Returns 0, -KOS_EBADF, -KOS_EPERM or
     // -KOS_EINVAL. Takes its own IrqLock.
-    int thread_kill(int thread_handle);
+    int thread_kill(kos_thread_t thread);
 }
 
 #endif

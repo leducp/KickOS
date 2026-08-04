@@ -20,7 +20,7 @@ namespace kickos
     {
         // Resolve a caller's CAP_IRQ to its binding, enforcing `need` at the one
         // rights chokepoint. Caller holds IrqLock.
-        IrqBinding* binding_of_cap(Thread* c, int cap_handle, uint8_t need, int* err)
+        IrqBinding* binding_of_cap(Thread* c, uint32_t cap_handle, uint8_t need, int* err)
         {
             return static_cast<IrqBinding*>(
                 cap_resolve_e(c, cap_handle, CapType::CAP_IRQ, need, err));
@@ -124,9 +124,10 @@ namespace kickos
         arch_irq_mask(irq); // register/attach armed the line; detach disarms it
     }
 
-    int irq_claim(Thread* c, int line, unsigned int flags)
+    int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap)
     {
         IrqLock lock;
+        *out_cap = KCAP_INVALID;
         if (c == nullptr)
         {
             return -KOS_EPERM; // no caller context (defensive; unreachable from a real syscall)
@@ -169,20 +170,22 @@ namespace kickos
         // A full table is a clean failure: release the just-claimed binding. Install
         // BEFORE attaching so a failure path never leaves a line bound to a slot that
         // is about to be freed.
-        int const cap = cap_install(c, obj, CapType::CAP_IRQ,
-                                    CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER);
-        if (cap < 0)
+        uint32_t cap = KCAP_INVALID;
+        int const rc = cap_install(c, obj, CapType::CAP_IRQ,
+                                   CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, &cap);
+        if (rc != 0)
         {
             k.irq_refs[i] = 0;
             k.irq_bindings.free(obj);
-            return -KOS_ENOMEM; // cap_install returns a bare -1, which reads as -KOS_EPERM
+            return rc;
         }
         // The ISR is handed the binding's ADDRESS, stable for the slot's life.
         irq_attach(line, irq_event_isr, b);
         // Deliberately NOT armed here. The line stays masked until the first irq_wait, so it
         // is never armed while its eventual owner is not yet running, which is what closes
         // the publish-to-claim window.
-        return cap;
+        *out_cap = cap;
+        return 0;
     }
 
     // Is `t` parked inside irq_wait right now? A parked waiter pins its binding through its
@@ -197,22 +200,21 @@ namespace kickos
         {
             return false;
         }
-        Kernel& k = kernel();
-        for (int i = 0; i < k.irq_bindings.capacity(); i++)
-        {
-            if (t->wait_queue == &k.irq_bindings.at(i)->sem.waiters)
-            {
-                return true;
-            }
-        }
-        return false;
+        // Not a sweep: this runs interrupt-masked and must not grow with
+        // KICKOS_MAX_IRQ_HANDLES. A binding owns one wait queue at a fixed offset in its
+        // slot, so index_of on the back-computed base answers membership, and its
+        // slot-stride check is what stops an unrelated List aliasing one.
+        constexpr size_t waitq_off = offsetof(IrqBinding, sem) + offsetof(Semaphore, waiters);
+        IrqBinding const* cand = reinterpret_cast<IrqBinding const*>(
+            reinterpret_cast<char const*>(t->wait_queue) - waitq_off);
+        return kernel().irq_bindings.index_of(cand) >= 0;
     }
 
     // The ONE cancellation point in the kernel. It must NOT be folded back into sem_wait:
     // sem_wait returns void and never reads wait_result, so a third party waking it early
     // would be indistinguishable from a post. Parking through wq_block directly is what
     // gives this wait an error return.
-    int irq_wait(Thread* c, int cap_handle)
+    int irq_wait(Thread* c, uint32_t cap_handle)
     {
         IrqBinding* b = nullptr;
         uint64_t epoch = 0;
@@ -266,7 +268,7 @@ namespace kickos
         return 0;
     }
 
-    int irq_ack(Thread* c, int cap_handle)
+    int irq_ack(Thread* c, uint32_t cap_handle)
     {
         IrqLock lock;
         int err = 0;
@@ -281,7 +283,7 @@ namespace kickos
         return 0;
     }
 
-    int irq_discard(Thread* c, int cap_handle)
+    int irq_discard(Thread* c, uint32_t cap_handle)
     {
         IrqLock lock;
         int err = 0;
@@ -299,7 +301,7 @@ namespace kickos
         return 0;
     }
 
-    int irq_notify(Thread* c, int cap_handle)
+    int irq_notify(Thread* c, uint32_t cap_handle)
     {
         IrqLock lock;
         int err = 0;

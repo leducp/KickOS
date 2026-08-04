@@ -33,6 +33,8 @@
 #ifndef KICKOS_DRIVER_K64DSPI_H
 #define KICKOS_DRIVER_K64DSPI_H
 
+#include <kickos/sys/abi.h> // kos_cap_t (the endpoint handle this hands out)
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -46,12 +48,10 @@ extern "C"
     // stdio (the service-list HARD RULE); diagnostics use kos::print.
     int k64dspi_spi_start(struct kos_service_cfg const* cfg);
 
-    // TAKE the DSPI0 service endpoint cap handle out of the ROOT/init thread's table
-    // (set by k64dspi_spi_start). The app, which runs in the SAME root thread after
-    // the service walk, delegates a SIGNAL-narrowed copy of it to its ONE SPI client,
-    // then closes its own copy. Handing it out is one-shot: a second call returns a
-    // negative value, as does a service that did not come up.
-    int k64dspi_take_endpoint(void);
+    // TAKE the DSPI0 service endpoint cap out of the root thread's table (seated by
+    // k64dspi_spi_start): the caller owns it and closes its own copy.
+    // One-shot. A second call, or a service that did not come up, returns KOS_CAP_NONE.
+    kos_cap_t k64dspi_take_endpoint(void);
 
 #ifdef __cplusplus
 }

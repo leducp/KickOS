@@ -393,7 +393,7 @@ namespace
             }
             // A console client SENDS raw bytes; a UART client CALLS with a wire frame, and
             // serve_one returns without effect on a reply-less message.
-            if (info.reply_cap < 0)
+            if (info.reply_cap == KOS_CAP_NONE)
             {
                 if (n == 0)
                 {
@@ -442,8 +442,8 @@ int k64uartirq_console_start(struct kos_service_cfg const* cfg)
         ctx->baud = 115200u;
     }
 
-    int const ep = kos_endpoint_create();
-    if (ep < 0)
+    kos_cap_t ep = KOS_CAP_NONE;
+    if (kos_endpoint_create(&ep) != 0)
     {
         kos::print("[k64uartirq] ERROR: endpoint_create failed\n");
         return -1;
@@ -465,8 +465,8 @@ int k64uartirq_console_start(struct kos_service_cfg const* cfg)
     // survived from before that clear (design-m4.6-irq-driver.md section 5). Claimed by
     // root because the mint needs AUTH_IRQ and both driver threads run at authority 0; it
     // comes back MASKED, and the IRQ thread's first wait is what arms it.
-    int const irq = kos_irq_claim(kickos::mk64f::irq::UART0_RXTX_IRQ, KOS_IRQ_LEVEL);
-    if (irq < 0)
+    kos_cap_t irq = KOS_CAP_NONE;
+    if (kos_irq_claim(kickos::mk64f::irq::UART0_RXTX_IRQ, KOS_IRQ_LEVEL, &irq) != 0)
     {
         // CLOSE BEFORE PRINTING: the publish above already flipped the console to
         // USER_OWNED, where a kernel-console write is a bare DROP. Closing takes the
@@ -482,12 +482,12 @@ int k64uartirq_console_start(struct kos_service_cfg const* cfg)
     // holder, so its spawn would be refused -KOS_EBUSY if it asked. Strictly above the
     // service thread.
     kos_cap_grant const irq_caps[1] = { { irq, KOS_CAP_WAIT } };
-    int const irqt = kos::thread::spawn(
+    auto const irqt = kos::thread::spawn(
         irq_thread, ctx, "uartirq", static_cast<uint8_t>(cfg->prio + 1), KOS_POLICY_FIFO,
         /*quantum_ns=*/0, /*privileged=*/false, /*mem=*/ctx,
         kickos::uart::KOS_UART_BLOCK_SIZE, /*stack=*/nullptr, /*stack_size=*/0,
         /*mmio=*/reinterpret_cast<void*>(ctx->win), cfg->mmio_window, irq_caps, 1);
-    if (irqt < 0)
+    if (not irqt.valid())
     {
         kos_handle_close(irq);
         kos_handle_close(ep); // reclaims the console, so the tag below reaches the wire
@@ -516,7 +516,7 @@ int k64uartirq_console_start(struct kos_service_cfg const* cfg)
         {
             kos_handle_close(irq);
             kos_handle_close(ep);
-            (void)kos_thread_kill(irqt);
+            (void)irqt.kill();
             kos::print("[k64uartirq] ERROR: IRQ thread never reached its loop\n");
             return -1;
         }
@@ -528,15 +528,15 @@ int k64uartirq_console_start(struct kos_service_cfg const* cfg)
     // only). SIGNAL is a pure post on the binding, not a raise at the controller, which
     // is what lets this thread start a transfer without touching a register it cannot own.
     kos_cap_grant const svc_caps[2] = { { ep, KOS_CAP_WAIT }, { irq, KOS_CAP_SIGNAL } };
-    int const svct = kos::thread::spawn(
+    auto const svct = kos::thread::spawn(
         service_thread, ctx, cfg->name, cfg->prio, KOS_POLICY_FIFO, /*quantum_ns=*/0,
         /*privileged=*/false, /*mem=*/ctx, kickos::uart::KOS_UART_BLOCK_SIZE,
         /*stack=*/nullptr, /*stack_size=*/0, /*mmio=*/nullptr, 0, svc_caps, 2);
-    if (svct < 0)
+    if (not svct.valid())
     {
         kos_handle_close(irq);
         kos_handle_close(ep);
-        (void)kos_thread_kill(irqt); // frees the window, which is what gives the console back
+        (void)irqt.kill(); // frees the window, which is what gives the console back
         kos::print("[k64uartirq] ERROR: service thread spawn failed\n");
         return -1;
     }

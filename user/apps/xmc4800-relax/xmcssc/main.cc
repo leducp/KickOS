@@ -176,8 +176,8 @@ int main(int, char**)
     // The board service list already brought the SSC service up (privileged USIC
     // config + endpoint + unprivileged driver) before this main. Take the endpoint it
     // recorded.
-    int const ep = xmc_spi0_take_endpoint();
-    if (ep < 0)
+    kos_cap_t const ep = xmc_spi0_take_endpoint();
+    if (ep == KOS_CAP_NONE)
     {
         kos::print("[xmcssc] ERROR: SPI service not up (endpoint unavailable)\n");
     }
@@ -188,9 +188,9 @@ int main(int, char**)
         kos_cap_grant const caps[1] = {
             { /*source_cap=*/ep, /*rights_mask=*/KOS_CAP_SIGNAL },
         };
-        int const c = kos::thread::spawn_caps(spi_client, nullptr, "xmcssc-cli", 9,
-                                              caps, /*cap_count=*/1);
-        if (c < 0)
+        auto const c = kos::thread::spawn_caps(spi_client, nullptr, "xmcssc-cli", 9,
+                                               caps, /*cap_count=*/1);
+        if (not c.valid())
         {
             kos::print("[xmcssc] ERROR: client spawn failed\n");
         }
@@ -203,10 +203,11 @@ int main(int, char**)
     }
 
     // Park: fall back to a sleep park if the idle semaphore could not be created.
-    int idle = kos_sem_create(0);
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

@@ -165,7 +165,7 @@ namespace
         report("typeid reflects dynamic type", typeid_ok);
     }
 
-    int g_done = -1; // worker -> main handoff (MAIN's cap; delegated to the worker)
+    kos_cap_t g_done = KOS_CAP_NONE; // worker -> main handoff (MAIN's cap; delegated to the worker)
     // B1: fresh child table => handle == index; the worker's delegated g_done is at index 1.
     constexpr int CH_DONE = 1;
 
@@ -191,7 +191,7 @@ int main(int, char**)
 {
     kos::print("KickOS full-C++ opt-in test\n");
 
-    g_done = kos_sem_create(0);
+    (void)kos_sem_create(0, &g_done);
     // Default spawn => UNPRIVILEGED (privileged=false). prio 10 sits above root
     // (KICKOS_PRIO_MIN+1), so once main blocks on g_done the worker runs to completion
     // and root wakes as the last live thread (the selftest orchestration shape). Stack:
@@ -200,8 +200,8 @@ int main(int, char**)
     // and it fits each board's window (a static KOS_STACK_DEFINE buffer would have to be a
     // pow2 region inside C6's 4 KB .appdata, which 8 KB cannot).
     kos_cap_grant caps[] = {{g_done, KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER}}; // g_done@1
-    int w = kos::thread::spawn_caps(cxx_worker, nullptr, "cxxwork", 10, caps, 1);
-    if (w < 0)
+    auto w = kos::thread::spawn_caps(cxx_worker, nullptr, "cxxwork", 10, caps, 1);
+    if (not w.valid())
     {
         kos::print("SOME FAILED\n"); // spawn failure: fail loud, do not fall back to privileged
         return 1;

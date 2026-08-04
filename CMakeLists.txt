@@ -5,10 +5,10 @@ cmake_minimum_required(VERSION 3.24)
 # Two versions, deliberately not the same thing. The project version is numeric because
 # write_basic_package_version_file demands it, and tracks the milestone only: it is what an
 # out-of-tree consumer's find_package(KickOS) matches against.
-project(KickOS VERSION 0.4.5 LANGUAGES C CXX ASM)
+project(KickOS VERSION 0.4.7 LANGUAGES C CXX ASM)
 # KICKOS_VERSION is the build identity in the boot banner, and takes a point-release suffix
 # CMake would reject above. Scheme: 0.<milestone>.<submilestone>[-<point>].
-set(KICKOS_VERSION "0.4.5-2")
+set(KICKOS_VERSION "0.4.7-1")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
@@ -69,10 +69,23 @@ endif()
 # compile against the shipped board_config.h defaults -- which the -D just changed
 # for the prebuilt .a libs -- silently disagreeing on the Kernel layout (ODR). The
 # normal (no-override) build stamps nothing extra: the header stays the sole truth.
+#
+# KICKOS_MAX_HANDLES is refused below, not listed: it is the ANSWER of the configure-time
+# sum (cmake/cap_table.cmake), and a -D would leave the sum's checks guarding a number
+# nothing compiles against.
+if(DEFINED KICKOS_MAX_HANDLES)
+  message(FATAL_ERROR
+    "KICKOS_MAX_HANDLES is not a knob any more: the per-task capability table is summed at "
+    "configure from the kernel's reserved range, the service list's RETAINED_CAPS and the "
+    "app's CAPABILITIES declaration (docs/design-capability-table.md section 6). To widen "
+    "it, raise the demand that is really higher, or the board's KICKOS_CAP_TABLE_SUPPLY "
+    "if its RAM can back more.")
+endif()
 set(KICKOS_PROVISION_OVERRIDES "")
 foreach(_knob KICKOS_MAX_IRQ KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE
               KICKOS_IDLE_STACK_SIZE KICKOS_ROOT_STACK_SIZE
-              KICKOS_MAX_SEMAPHORES KICKOS_MAX_HANDLES KICKOS_MAX_SPAWN_GRANTS
+              KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES KICKOS_MAX_ENDPOINTS
+              KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
               KICKOS_MAX_IRQ_HANDLES
               KICKOS_RTT_CH1_SIZE)
   if(DEFINED ${_knob})
@@ -187,61 +200,6 @@ else()
 endif()
 add_compile_definitions(KICKOS_CONSOLE_CHIP=${_con_chip} KICKOS_CONSOLE_RTT=${_con_rtt} KICKOS_CONSOLE_CRLF=${_con_crlf})
 message(STATUS "KickOS: console=${KICKOS_CONSOLE} (chip=${_con_chip} rtt=${_con_rtt} crlf=${_con_crlf})")
-
-# --- The sim's capability-class mix (Stage 3) ---------------------------------
-# Every hardware board ships the behaviour-identical default -- ONE class at the full
-# ceiling, one run per task -- so landing the elastic table regressed no image. The sim
-# declares a REAL mix instead, and it is not decoration: with a single class a small
-# request and a default request round to the same run, so the per-task-ceiling half of
-# the design has nothing to observe and `cap_capacity` reports PARTIAL. The sim is
-# therefore the fleet's only witness that a declared-small child is actually the tighter
-# ceiling, which is the property the whole stage exists to deliver.
-#
-# 6 slots, not 4: KCAP_TEARDOWN_CHUNK is 4 and must stay strictly below the smallest
-# class, or the tasks holding that class sweep in one chunk and the preemptible-teardown
-# path stops being exercised.
-# A board's mix lives HERE and nowhere else, deliberately: the selftest's PARTIAL
-# permission set has to know whether this board has more than one class, and a mix
-# declared in board_config.h with the expectation set here would be two sources of truth
-# for one fact. Both halves are set together or not at all.
-#
-# Every other board keeps the single-class default, which is byte-for-byte the old inline
-# table -- landing the elastic table regressed no image, and a board buys the saving by
-# measuring, not by inheriting a guess.
-set(KICKOS_CAP_MULTICLASS OFF)
-if(KICKOS_ARCH STREQUAL "sim")
-  # 6 slots, not 4: KCAP_TEARDOWN_CHUNK is 4 and must stay strictly below the smallest
-  # class, or the tasks holding it sweep in one chunk and the preemptible-teardown path
-  # stops being exercised.
-  set(KICKOS_CAP_MULTICLASS ON)
-  set(_cap_mix KICKOS_CAP_CLASS0_SLOTS=6 KICKOS_CAP_CLASS0_COUNT=10
-               KICKOS_CAP_CLASS1_SLOTS=10 KICKOS_CAP_CLASS1_COUNT=8)
-elseif(KICKOS_CHIP STREQUAL "mps2")
-  # The first hardware-shaped mix, and on this board because it is a RUNNABLE gate: a
-  # mis-sized count fails loudly in CI instead of on somebody's bench.
-  #
-  # The saving comes from the DEFAULT, not from the classes. With the default capacity at
-  # the ceiling every spawn asks for the largest class and a mix buys nothing. Root needs
-  # the full table (it orchestrates the suite and holds its permanent caps); workers hold
-  # 1 to 3 caps, and 8 slots still leaves 2 free above a full 5-grant delegation. The
-  # SECOND large run is what lets a child be given one at all.
-  #
-  # A run returns at SLOT RECLAIM, not at exit, so the counts cover every concurrently
-  # ALLOCATED slot rather than every live thread: 17 narrow + 2 wide is 19 runs against
-  # KICKOS_MAX_THREADS + 2 == 18 possible holders, so no concurrent mix can exhaust both
-  # classes at once.
-  set(KICKOS_CAP_MULTICLASS ON)
-  set(_cap_mix KICKOS_CAP_CLASS0_SLOTS=8 KICKOS_CAP_CLASS0_COUNT=17
-               KICKOS_CAP_CLASS1_SLOTS=10 KICKOS_CAP_CLASS1_COUNT=2
-               KICKOS_CAP_DEFAULT_CAPACITY=8)
-endif()
-if(KICKOS_CAP_MULTICLASS)
-  add_compile_definitions(${_cap_mix} KICKOS_CAP_MULTICLASS=1)
-  message(STATUS "KickOS: cap classes = ${_cap_mix}")
-else()
-  add_compile_definitions(KICKOS_CAP_MULTICLASS=0)
-  message(STATUS "KickOS: cap classes = single-class default")
-endif()
 
 # The sim arch, readable from the preprocessor. Positive identification only: a new
 # arch must land in the 0 branch of every `#if KICKOS_ARCH_SIM`.
@@ -657,6 +615,22 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/ktime)
 endif()
 
+# Host-only capability-table storage + free-list policy gate. Host-only of necessity: the
+# chunk geometry is chosen by an #if, so one build compiles one geometry, and neither a
+# directory mapping nor a free-list length is observable from userspace.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/captable/CMakeLists.txt")
+  add_subdirectory(tests/captable)
+endif()
+
+# Host-only CAP_REPLY packing gate. Host-only of necessity: the case it exists for is a thread
+# index above 255, which needs more slots than any board in the fleet configures, and no cap
+# entry is observable from userspace.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capreply/CMakeLists.txt")
+  add_subdirectory(tests/capreply)
+endif()
+
 # Aggregate usage-requirement target: "link this and you get the whole OS".
 # Lets a consumer write a plain add_executable(app ...) + target_link_libraries:
 # the link recipe (component group, entry glue, MCU link flags) is baked into
@@ -865,6 +839,16 @@ if(TARGET kickos_core)
   endif()
 endif()
 
+# Must stay AFTER add_subdirectory(user/apps): that is the last place an app can declare its
+# peak. Carried to consumers on kickos_core for the same ODR reason as the provisioning
+# overrides above.
+kickos_cap_table_resolve("${KICKOS_BOARD_INCLUDE_DIR}" "${KICKOS_PROVISION_OVERRIDES}"
+                         "${KICKOS_SERVICE_LIST}" KICKOS_CAP_TABLE_SLOTS)
+if(TARGET kickos_core)
+  target_compile_definitions(kickos_core INTERFACE
+    KICKOS_MAX_HANDLES=${KICKOS_CAP_TABLE_SLOTS})
+endif()
+
 # --- Install / export: the dependency-inversion package --------------------
 # Consumers do find_package(KickOS) + kickos_add_application() out of tree.
 include(CMakePackageConfigHelpers)
@@ -913,11 +897,13 @@ write_basic_package_version_file(
   VERSION "${PROJECT_VERSION}"
   COMPATIBILITY SameMajorVersion)
 
-# The build helper is shipped verbatim so kickos_add_application() is available.
+# The build helper is shipped verbatim so kickos_add_application() is available; it
+# include()s cap_table.cmake list-dir-relative, so that must land beside it.
 install(FILES
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfig.cmake"
           "${CMAKE_CURRENT_BINARY_DIR}/KickOSConfigVersion.cmake"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/kickos.cmake"
+          "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cap_table.cmake"
         DESTINATION "${KICKOS_CMAKE_DIR}")
 
 # Ship the cross toolchain file for MCU packages: an out-of-tree consumer

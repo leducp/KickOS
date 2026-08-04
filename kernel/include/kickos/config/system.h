@@ -38,55 +38,28 @@
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16
 #endif
-// Per-task capability-table ceiling, and the width the handle codec's index field is
-// derived from. Indices 0 .. KICKOS_CAP_FIRST_DYNAMIC-1 are the well-known reserved
-// range (index 0 = kernel stdout; see cap_index.h); own caps live in
-// [FIRST_DYNAMIC .. MAX-1].
+// What this board can BACK: the widest per-task capability table its RAM can spare, and the
+// only capability figure a board may state. The width itself is summed from declared demand
+// (cmake/cap_table.cmake) and refused if it exceeds this. Each slot costs
+// (KICKOS_MAX_THREADS + 2) x sizeof(CapEntry) bytes of Kernel .bss.
+#ifndef KICKOS_CAP_TABLE_SUPPLY
+#define KICKOS_CAP_TABLE_SUPPLY 16
+#endif
+// Per-task capability-table size. Every task's run is exactly this wide (cap.h carves the
+// slab into KICKOS_MAX_HANDLES-entry runs), so raising it costs .bss per possible task.
+//
+// NOT a knob: cmake/cap_table.cmake sums the three declarations and forwards the total as a
+// -D, and a command-line KICKOS_MAX_HANDLES is refused at configure. This #ifndef fires only
+// for a compile that has neither the KickOS CMake nor the exported `kickos` target.
+//
+// Indices 0 .. KICKOS_CAP_FIRST_DYNAMIC-1 are the well-known reserved range
+// (index 0 = kernel stdout; see cap_index.h); own caps live in [FIRST_DYNAMIC .. MAX-1].
 // A child that takes d delegated caps has MAX_HANDLES - 1 - max(d, FIRST_DYNAMIC-1) own
-// slots: delegates spend the reserved plane rather than being handed it on top, so budget
-// for the delegates, not just for the creates.
-// Below 7 the FULL selftest hard-fails on cap exhaustion by design: it needs
-// FIRST_DYNAMIC(2) + 2 permanent caps + a 3-own-cap peak. Lowering the floor on a board
-// makes it a non-target for that suite, not a broken kernel.
+// slots: delegates spend the reserved plane rather than being handed it on top, so an app
+// declares for the delegates, not just for the creates.
 #ifndef KICKOS_MAX_HANDLES
 #define KICKOS_MAX_HANDLES 10
 #endif
-// Capability-table storage: the size classes the per-task table is taken from at spawn.
-// Classes must be ascending, and class 0 is required. A request takes the smallest class
-// that fits it and is REFUSED if that class is empty: it never spills into a larger one,
-// so a spawn fails iff concurrent same-class demand exceeds that class's static count.
-// The default is one class at the full ceiling, one run per possible task, which is
-// byte-for-byte and refusal-for-refusal identical to an inline per-TCB table.
-#ifndef KICKOS_CAP_CLASS0_SLOTS
-#define KICKOS_CAP_CLASS0_SLOTS KICKOS_MAX_HANDLES
-#endif
-#ifndef KICKOS_CAP_CLASS0_COUNT
-#define KICKOS_CAP_CLASS0_COUNT (KICKOS_MAX_THREADS + 2)
-#endif
-// Classes 1 and 2 are optional: a count of 0 disables the class entirely.
-#ifndef KICKOS_CAP_CLASS1_SLOTS
-#define KICKOS_CAP_CLASS1_SLOTS 0
-#endif
-#ifndef KICKOS_CAP_CLASS1_COUNT
-#define KICKOS_CAP_CLASS1_COUNT 0
-#endif
-#ifndef KICKOS_CAP_CLASS2_SLOTS
-#define KICKOS_CAP_CLASS2_SLOTS 0
-#endif
-#ifndef KICKOS_CAP_CLASS2_COUNT
-#define KICKOS_CAP_CLASS2_COUNT 0
-#endif
-// Derived by the root CMakeLists from the class mix and cross-checked against the class
-// table in cap.h. Never set by hand; the default exists only so a translation unit built
-// outside that scope still compiles.
-#ifndef KICKOS_CAP_MULTICLASS
-#define KICKOS_CAP_MULTICLASS 0
-#endif
-// Capacity a spawn that declares none gets.
-#ifndef KICKOS_CAP_DEFAULT_CAPACITY
-#define KICKOS_CAP_DEFAULT_CAPACITY KICKOS_MAX_HANDLES
-#endif
-
 // Caps one spawn may delegate. NOT tied to KICKOS_MAX_HANDLES: thread_spawn stages the
 // grant list in CALLER-stack arrays (16 bytes per entry) and root's stack can be 1 KiB,
 // so raising this costs caller stack, not .bss, and tying it to the table ceiling would

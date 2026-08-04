@@ -241,15 +241,15 @@ namespace
     // The DSPI0 service endpoint cap in the ROOT/init thread's table (set by the
     // bring-up, taken ONCE by the app to delegate SIGNAL to its single client).
     // -1 = not up, or already taken.
-    int g_spi0_ep = -1;
+    kos_cap_t g_spi0_ep = KOS_CAP_NONE;
 }
 
 extern "C"
 {
-    int k64dspi_take_endpoint(void)
+    kos_cap_t k64dspi_take_endpoint(void)
     {
-        int const ep = g_spi0_ep;
-        g_spi0_ep = -1; // one-shot: device slots are caller-named, so ONE client only
+        kos_cap_t const ep = g_spi0_ep;
+        g_spi0_ep = KOS_CAP_NONE; // one-shot: device slots are caller-named, so ONE client only
         return ep;
     }
 
@@ -313,8 +313,8 @@ extern "C"
         // 1. Create the request endpoint E (full rights: WAIT|SIGNAL|TRANSFER). Root KEEPS
         //    this cap so the app, on the same thread and table, can delegate a
         //    SIGNAL-narrowed copy to each client. g_spi0_ep records the handle.
-        int const ep = kos_endpoint_create();
-        if (ep < 0)
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (kos_endpoint_create(&ep) != 0)
         {
             kos::print("[k64dspi] ERROR: endpoint_create failed\n");
             return -1;
@@ -325,10 +325,10 @@ extern "C"
         //    kos_periph_enable) and a WAIT-only recv cap on E (child index 1). No
         //    SIGNAL/TRANSFER on the child cap: the driver receives, it does not send or
         //    re-delegate.
-        int const drv = kickos::driver::spawn_unprivileged(
+        auto const drv = kickos::driver::spawn_unprivileged(
             k64dspi_service, win_base, win_size, cfg->name, driver_prio, ep,
             "[k64dspi] ERROR: driver spawn failed\n");
-        if (drv < 0)
+        if (not drv.valid())
         {
             return -1;
         }

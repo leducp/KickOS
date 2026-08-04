@@ -45,7 +45,7 @@ namespace
     // from the user arena, naturally aligned, to satisfy the RAM arm of
     // grant_region_admissible for the grants below.
     kickos::uart::Shared* g_shared = nullptr;
-    int g_uart_ep = -1;
+    kos_cap_t g_uart_ep = KOS_CAP_NONE;
 
     // The per-chip class, sim edition. Every method here may be called ONLY from the IRQ
     // thread: on a real chip they touch the granted register window, which has exactly
@@ -130,10 +130,10 @@ extern "C"
 
 // One-shot: the app takes the handle and delegates a SIGNAL-narrowed copy to each client
 // it spawns.
-int kickos_sim_uart_take_endpoint(void)
+kos_cap_t kickos_sim_uart_take_endpoint(void)
 {
-    int const ep = g_uart_ep;
-    g_uart_ep = -1;
+    kos_cap_t const ep = g_uart_ep;
+    g_uart_ep = KOS_CAP_NONE;
     return ep;
 }
 
@@ -166,8 +166,8 @@ static int sim_uart_start(struct kos_service_cfg const* cfg)
 
     // 2. The request endpoint. Root KEEPS a full-rights cap so it can hand SIGNAL copies
     //    to clients; the driver's service thread gets WAIT only.
-    int const ep = kos_endpoint_create();
-    if (ep < 0)
+    kos_cap_t ep = KOS_CAP_NONE;
+    if (kos_endpoint_create(&ep) != 0)
     {
         kos::print("[simuart] ERROR: endpoint_create failed\n");
         return -1;
@@ -176,8 +176,8 @@ static int sim_uart_start(struct kos_service_cfg const* cfg)
     // 3. The line. Claimed HERE because minting needs KOS_AUTH_IRQ and both driver
     //    threads run at authority 0. It comes back MASKED: the IRQ thread's first wait
     //    arms it, in the thread that will consume the event.
-    int const irq = kos_irq_claim(SIMUART_LINE, KOS_IRQ_EDGE);
-    if (irq < 0)
+    kos_cap_t irq = KOS_CAP_NONE;
+    if (kos_irq_claim(SIMUART_LINE, KOS_IRQ_EDGE, &irq) != 0)
     {
         kos::print("[simuart] ERROR: irq_claim failed\n");
         kos_handle_close(ep);
@@ -189,14 +189,14 @@ static int sim_uart_start(struct kos_service_cfg const* cfg)
     //    exactly one holder and the second spawn is refused -KOS_EBUSY. Its priority is
     //    strictly ABOVE the service thread: a device drain must preempt request serving.
     kos_cap_grant const irq_caps[1] = {{irq, KOS_CAP_WAIT}};
-    int const irqt = kos::thread::spawn(uart_irq_thread, g_shared, "uartirq",
-                                        static_cast<uint8_t>(cfg->prio + 1),
-                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                        /*mem=*/g_shared,
-                                        kickos::uart::KOS_UART_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/nullptr, 0, irq_caps, 1);
-    if (irqt < 0)
+    auto const irqt = kos::thread::spawn(uart_irq_thread, g_shared, "uartirq",
+                                         static_cast<uint8_t>(cfg->prio + 1),
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                         /*mem=*/g_shared,
+                                         kickos::uart::KOS_UART_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/nullptr, 0, irq_caps, 1);
+    if (not irqt.valid())
     {
         kos::print("[simuart] ERROR: IRQ thread spawn failed\n");
         kos_handle_close(irq);
@@ -230,14 +230,14 @@ static int sim_uart_start(struct kos_service_cfg const* cfg)
     //    controller"; it is a pure post on the binding, which is what lets this thread
     //    start a transfer without touching a register it does not own.
     kos_cap_grant const svc_caps[2] = {{ep, KOS_CAP_WAIT}, {irq, KOS_CAP_SIGNAL}};
-    int const svct = kos::thread::spawn(uart_service_thread, g_shared, cfg->name,
-                                        cfg->prio, KOS_POLICY_FIFO, 0,
-                                        /*privileged=*/false,
-                                        /*mem=*/g_shared,
-                                        kickos::uart::KOS_UART_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/nullptr, 0, svc_caps, 2);
-    if (svct < 0)
+    auto const svct = kos::thread::spawn(uart_service_thread, g_shared, cfg->name,
+                                         cfg->prio, KOS_POLICY_FIFO, 0,
+                                         /*privileged=*/false,
+                                         /*mem=*/g_shared,
+                                         kickos::uart::KOS_UART_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/nullptr, 0, svc_caps, 2);
+    if (not svct.valid())
     {
         kos::print("[simuart] ERROR: service thread spawn failed\n");
         kos_handle_close(irq);
