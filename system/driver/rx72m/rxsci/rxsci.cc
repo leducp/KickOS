@@ -305,7 +305,7 @@ namespace
             {
                 break; // endpoint dead (EPIPE) or a bad cap: let the bring-up respawn us
             }
-            if (info.reply_cap < 0)
+            if (info.reply_cap == KOS_CAP_NONE)
             {
                 if (n == 0)
                 {
@@ -357,8 +357,8 @@ int rxsci_console_start(struct kos_service_cfg const* cfg)
     g_shared = static_cast<kickos::uart::Shared*>(blk);
     kickos::uart::shared_init(g_shared);
 
-    int const ep = kos_endpoint_create();
-    if (ep < 0)
+    kos_cap_t ep = KOS_CAP_NONE;
+    if (kos_endpoint_create(&ep) != 0)
     {
         kos::print("[rxsci] ERROR: endpoint_create failed\n");
         return -1;
@@ -378,15 +378,15 @@ int rxsci_console_start(struct kos_service_cfg const* cfg)
     // 3. The two lines. Claimed HERE because minting needs KOS_AUTH_IRQ and every driver
     //    thread runs at authority 0. Both come back MASKED: the waiting thread's first
     //    irq_wait arms the line, in the thread that will consume the event.
-    int const txi = kos_irq_claim(SCI6_TXI_LINE, KOS_IRQ_EDGE);
-    if (txi < 0)
+    kos_cap_t txi = KOS_CAP_NONE;
+    if (kos_irq_claim(SCI6_TXI_LINE, KOS_IRQ_EDGE, &txi) != 0)
     {
         kos_handle_close(ep);
         kos::print("[rxsci] ERROR: irq_claim of TXI6 failed\n");
         return -1;
     }
-    int const rxi = kos_irq_claim(SCI6_RXI_LINE, KOS_IRQ_EDGE);
-    if (rxi < 0)
+    kos_cap_t rxi = KOS_CAP_NONE;
+    if (kos_irq_claim(SCI6_RXI_LINE, KOS_IRQ_EDGE, &rxi) != 0)
     {
         kos_handle_close(txi);
         kos_handle_close(ep);
@@ -397,15 +397,15 @@ int rxsci_console_start(struct kos_service_cfg const* cfg)
     // 4. The IRQ thread: the TX line (WAIT), the ring block and the SCI6 window, of which
     //    it is the ONLY holder. Strictly above the service thread.
     kos_cap_grant const irq_caps[1] = {{txi, KOS_CAP_WAIT}};
-    int const irqt = kos::thread::spawn(uart_irq_thread, g_shared, "rxsciirq",
-                                        static_cast<uint8_t>(cfg->prio + 1),
-                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                        /*mem=*/g_shared,
-                                        kickos::uart::KOS_UART_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/reinterpret_cast<void*>(mmap::SCI6),
-                                        SCI6_WINDOW, irq_caps, 1);
-    if (irqt < 0)
+    auto const irqt = kos::thread::spawn(uart_irq_thread, g_shared, "rxsciirq",
+                                         static_cast<uint8_t>(cfg->prio + 1),
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                         /*mem=*/g_shared,
+                                         kickos::uart::KOS_UART_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/reinterpret_cast<void*>(mmap::SCI6),
+                                         SCI6_WINDOW, irq_caps, 1);
+    if (not irqt.valid())
     {
         kos_handle_close(rxi);
         kos_handle_close(txi);
@@ -417,13 +417,13 @@ int rxsci_console_start(struct kos_service_cfg const* cfg)
     // 5. The RX relay: the RX line (WAIT) and the TX line as its doorbell (SIGNAL). No
     //    window and no ring.
     kos_cap_grant const relay_caps[2] = {{rxi, KOS_CAP_WAIT}, {txi, KOS_CAP_SIGNAL}};
-    int const relayt = kos::thread::spawn(uart_rx_relay_thread, nullptr, "rxscirx",
-                                          static_cast<uint8_t>(cfg->prio + 1),
-                                          KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                          /*mem=*/nullptr, /*mem_size=*/0,
-                                          /*stack=*/nullptr, /*stack_size=*/0,
-                                          /*mmio=*/nullptr, 0, relay_caps, 2);
-    if (relayt < 0)
+    auto const relayt = kos::thread::spawn(uart_rx_relay_thread, nullptr, "rxscirx",
+                                           static_cast<uint8_t>(cfg->prio + 1),
+                                           KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                           /*mem=*/nullptr, /*mem_size=*/0,
+                                           /*stack=*/nullptr, /*stack_size=*/0,
+                                           /*mmio=*/nullptr, 0, relay_caps, 2);
+    if (not relayt.valid())
     {
         kos_handle_close(rxi);
         kos_handle_close(txi);
@@ -457,14 +457,14 @@ int rxsci_console_start(struct kos_service_cfg const* cfg)
     //    (SIGNAL only). SIGNAL is a pure post on the binding, not a raise at the
     //    controller, so this thread starts a transfer without touching a register.
     kos_cap_grant const svc_caps[2] = {{ep, KOS_CAP_WAIT}, {txi, KOS_CAP_SIGNAL}};
-    int const svct = kos::thread::spawn(uart_service_thread, g_shared, cfg->name,
-                                        cfg->prio, KOS_POLICY_FIFO, 0,
-                                        /*privileged=*/false,
-                                        /*mem=*/g_shared,
-                                        kickos::uart::KOS_UART_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/nullptr, 0, svc_caps, 2);
-    if (svct < 0)
+    auto const svct = kos::thread::spawn(uart_service_thread, g_shared, cfg->name,
+                                         cfg->prio, KOS_POLICY_FIFO, 0,
+                                         /*privileged=*/false,
+                                         /*mem=*/g_shared,
+                                         kickos::uart::KOS_UART_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/nullptr, 0, svc_caps, 2);
+    if (not svct.valid())
     {
         kos_handle_close(rxi);
         kos_handle_close(txi);

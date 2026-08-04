@@ -237,10 +237,12 @@ namespace
             kos::print("[c6intpri] VERDICT PARTIAL A and B disagree; read the dumps\n");
         }
 
-        int idle = kos_sem_create(0);
+        kos_cap_t idle = KOS_CAP_NONE;
+
+        (void)kos_sem_create(0, &idle);
         while (true)
         {
-            if (idle < 0)
+            if (idle == KOS_CAP_NONE)
             {
                 kos_sleep_ns(1000000000ull);
                 continue;
@@ -270,25 +272,27 @@ int main(int, char**)
     kos::print(g);
     kos::print("[c6intpri] 0x20001000 is Rule 7 reserved and root is unprivileged: no direct readback\n");
 
-    int const drv = kos::thread::spawn(probe, reinterpret_cast<void*>(INTPRI_BASE),
-                                       "c6intpri", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                       /*mem=*/nullptr, /*mem_size=*/0,
-                                       /*stack=*/nullptr, /*stack_size=*/0,
-                                       /*mmio=*/reinterpret_cast<void*>(INTPRI_BASE),
-                                       INTPRI_WINDOW,
-                                       /*caps=*/nullptr, /*cap_count=*/0,
-                                       KOS_AUTH_IRQ);
-    if (drv < 0)
+    auto const drv = kos::thread::spawn(probe, reinterpret_cast<void*>(INTPRI_BASE),
+                                        "c6intpri", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                        /*mem=*/nullptr, /*mem_size=*/0,
+                                        /*stack=*/nullptr, /*stack_size=*/0,
+                                        /*mmio=*/reinterpret_cast<void*>(INTPRI_BASE),
+                                        INTPRI_WINDOW,
+                                        /*caps=*/nullptr, /*cap_count=*/0,
+                                        KOS_AUTH_IRQ);
+    if (not drv.valid())
     {
         char e[80];
-        ksnprintf(e, sizeof(e), "[c6intpri] VERDICT INCONCLUSIVE probe spawn failed rc %d\n", drv);
+        ksnprintf(e, sizeof(e), "[c6intpri] VERDICT INCONCLUSIVE probe spawn failed rc %d\n", drv.error());
         kos::print(e);
     }
 
-    int idle = kos_sem_create(0);
+    kos_cap_t idle = KOS_CAP_NONE;
+
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

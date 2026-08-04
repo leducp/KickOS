@@ -212,26 +212,27 @@ int main(int, char**)
     }
 
     // Spawn the UNPRIVILEGED driver granted ONLY the 64 B pin-bank window. No IRQ.
-    int drv = kos::thread::spawn(blink_driver,
-                                 reinterpret_cast<void*>(GPIO_MMIO_WINDOW_BASE),
-                                 "c6blink", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                 /*mem=*/nullptr, /*mem_size=*/0,
-                                 /*stack=*/nullptr, /*stack_size=*/0,
-                                 /*mmio=*/reinterpret_cast<void*>(GPIO_MMIO_WINDOW_BASE),
-                                 GPIO_MMIO_WINDOW);
-    if (drv < 0)
+    auto drv = kos::thread::spawn(blink_driver,
+                                  reinterpret_cast<void*>(GPIO_MMIO_WINDOW_BASE),
+                                  "c6blink", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                  /*mem=*/nullptr, /*mem_size=*/0,
+                                  /*stack=*/nullptr, /*stack_size=*/0,
+                                  /*mmio=*/reinterpret_cast<void*>(GPIO_MMIO_WINDOW_BASE),
+                                  GPIO_MMIO_WINDOW);
+    if (not drv.valid())
     {
         // Console is the only oracle at the bench: a silent dead board must not be
         // mistaken for a bring-up failure, so say so.
         kos::print("[c6blink] ERROR: driver spawn failed\n");
     }
 
-    // Park: fall back to a sleep park if the semaphore could not be created (else a
-    // -1 handle spins a hot loop of failing sem_wait syscalls).
-    int idle = kos_sem_create(0);
+    // Park: fall back to a sleep park if the semaphore could not be created (else an
+    // unmintable handle spins a hot loop of failing sem_wait syscalls).
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

@@ -14,14 +14,6 @@
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16
 #endif
-/* Raised above the fleet default because root must also cover the caps this board's
-   service list RETAINS for the life of the image, not just the reserved plane. The
-   derivation lives with the demand: config/system.h for the fleet floor, and the app
-   that sets the peak. Exhaustion surfaces as a mislabelled "SKIP pool too small",
-   because -KOS_ENOMEM cannot distinguish a full cap table from an empty pool. */
-#ifndef KICKOS_MAX_HANDLES
-#define KICKOS_MAX_HANDLES 12
-#endif
 #ifndef KICKOS_USER_STACK_SIZE
 #define KICKOS_USER_STACK_SIZE 8192
 #endif

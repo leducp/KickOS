@@ -176,22 +176,23 @@ int main(int, char**)
            static_cast<unsigned>(PORT), static_cast<unsigned>(PIN));
     fflush(stdout);
 
-    int const w = kos::thread::spawn(
+    auto const w = kos::thread::spawn(
         worker, reinterpret_cast<void*>(WINDOW_BASE), "gpioblink", 10,
         KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
         /*mem=*/nullptr, /*mem_size=*/0, /*stack=*/nullptr, /*stack_size=*/0,
         /*mmio=*/reinterpret_cast<void*>(WINDOW_BASE), WINDOW_SIZE);
-    if (w < 0)
+    if (not w.valid())
     {
-        printf("[gpioblink] ERROR: worker spawn failed rc %d\n", w);
+        printf("[gpioblink] ERROR: worker spawn failed rc %d\n", w.error());
         fflush(stdout);
     }
 
     // Root parks so the worker owns the CPU; blocking here proves the switch.
-    int const idle = kos_sem_create(0);
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(EDGE_NS);
             continue;

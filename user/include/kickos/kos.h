@@ -29,9 +29,9 @@ namespace kos
     {
         kos_irq_inject(irq);
     }
-    inline int irq_attach(int irq, int sem_id)
+    inline int irq_attach(int irq, kos_cap_t sem_cap)
     {
-        return kos_irq_attach(irq, sem_id);
+        return kos_irq_attach(irq, sem_cap);
     }
     inline uint64_t clock_now()
     {
@@ -73,6 +73,10 @@ namespace kos
         kos_exit(code);
     }
 
+    // These wrappers carry both the handle and the code the create returned. `valid()` is
+    // the ONLY correct success test: there is no negative handle to compare against, and a
+    // live handle may look negative if cast to int.
+    //
     // Owning counting semaphore: ctor creates, dtor closes its cap (last close frees
     // the object). Non-copyable, movable (a moved-from handle is emptied so the dtor
     // won't double-close).
@@ -80,12 +84,12 @@ namespace kos
     {
     public:
         explicit Semaphore(int initial = 0)
-            : id_(kos_sem_create(initial))
         {
+            err_ = kos_sem_create(initial, &id_);
         }
         ~Semaphore()
         {
-            if (id_ >= 0)
+            if (id_ != KOS_CAP_NONE)
             {
                 kos_sem_destroy(id_);
             }
@@ -95,20 +99,21 @@ namespace kos
         Semaphore& operator=(Semaphore const&) = delete;
 
         Semaphore(Semaphore&& other) noexcept
-            : id_(other.id_)
+            : id_(other.id_), err_(other.err_)
         {
-            other.id_ = -1;
+            other.id_ = KOS_CAP_NONE;
         }
         Semaphore& operator=(Semaphore&& other) noexcept
         {
             if (this != &other)
             {
-                if (id_ >= 0)
+                if (id_ != KOS_CAP_NONE)
                 {
                     kos_sem_destroy(id_);
                 }
                 id_ = other.id_;
-                other.id_ = -1;
+                err_ = other.err_;
+                other.id_ = KOS_CAP_NONE;
             }
             return *this;
         }
@@ -124,13 +129,22 @@ namespace kos
         {
             return kos_sem_post(id_);
         }
-        int id() const
+        kos_cap_t id() const
         {
             return id_;
         }
+        bool valid() const
+        {
+            return id_ != KOS_CAP_NONE;
+        }
+        int error() const
+        {
+            return err_;
+        }
 
     private:
-        int id_;
+        kos_cap_t id_ = KOS_CAP_NONE;
+        int err_ = -KOS_EBADF;
     };
 
     // Owning priority-inheritance mutex: ctor creates, dtor closes its cap (last
@@ -143,15 +157,15 @@ namespace kos
     {
     public:
         Mutex()
-            : id_(kos_mutex_create())
         {
+            err_ = kos_mutex_create(&id_);
         }
         ~Mutex()
         {
             // Closing a mutex you still hold is refused (R2: kos_handle_close -> -KOS_EBUSY),
             // so destroying a locked kos::Mutex leaks its cap. Unlock it before letting it
             // die.
-            if (id_ >= 0)
+            if (id_ != KOS_CAP_NONE)
             {
                 kos_handle_close(id_);
             }
@@ -161,20 +175,21 @@ namespace kos
         Mutex& operator=(Mutex const&) = delete;
 
         Mutex(Mutex&& other) noexcept
-            : id_(other.id_)
+            : id_(other.id_), err_(other.err_)
         {
-            other.id_ = -1;
+            other.id_ = KOS_CAP_NONE;
         }
         Mutex& operator=(Mutex&& other) noexcept
         {
             if (this != &other)
             {
-                if (id_ >= 0)
+                if (id_ != KOS_CAP_NONE)
                 {
                     kos_handle_close(id_);
                 }
                 id_ = other.id_;
-                other.id_ = -1;
+                err_ = other.err_;
+                other.id_ = KOS_CAP_NONE;
             }
             return *this;
         }
@@ -187,13 +202,22 @@ namespace kos
         {
             return kos_mutex_unlock(id_);
         }
-        int id() const
+        kos_cap_t id() const
         {
             return id_;
         }
+        bool valid() const
+        {
+            return id_ != KOS_CAP_NONE;
+        }
+        int error() const
+        {
+            return err_;
+        }
 
     private:
-        int id_;
+        kos_cap_t id_ = KOS_CAP_NONE;
+        int err_ = -KOS_EBADF;
     };
 
     // IRQ line capability (tier-1 userspace driver). Two ways in:
@@ -207,17 +231,19 @@ namespace kos
     public:
         static Irq claim(int line, unsigned int flags = KOS_IRQ_EDGE)
         {
-            return Irq(kos_irq_claim(line, flags));
+            kos_cap_t h = KOS_CAP_NONE;
+            int const rc = kos_irq_claim(line, flags, &h);
+            return Irq(h, rc);
         }
         // Wrap a cap the spawning parent already delegated into this thread's table.
-        static Irq adopt(int irq_cap)
+        static Irq adopt(kos_cap_t irq_cap)
         {
-            return Irq(irq_cap);
+            return Irq(irq_cap, 0);
         }
         Irq(Irq&& o)
-            : h_(o.h_)
+            : h_(o.h_), err_(o.err_)
         {
-            o.h_ = -1;
+            o.h_ = KOS_CAP_NONE;
         }
         Irq& operator=(Irq&& o)
         {
@@ -225,7 +251,8 @@ namespace kos
             {
                 close();
                 h_ = o.h_;
-                o.h_ = -1;
+                err_ = o.err_;
+                o.h_ = KOS_CAP_NONE;
             }
             return *this;
         }
@@ -251,25 +278,35 @@ namespace kos
         {
             return kos_irq_discard(h_);
         }
-        int handle() const
+        kos_cap_t handle() const
         {
             return h_;
         }
+        bool valid() const
+        {
+            return h_ != KOS_CAP_NONE;
+        }
+        // The code kos_irq_claim returned; 0 for an adopted cap.
+        int error() const
+        {
+            return err_;
+        }
 
     private:
-        explicit Irq(int h)
-            : h_(h)
+        Irq(kos_cap_t h, int err)
+            : h_(h), err_(err)
         {
         }
         void close()
         {
-            if (h_ >= 0)
+            if (h_ != KOS_CAP_NONE)
             {
                 kos_handle_close(h_);
-                h_ = -1;
+                h_ = KOS_CAP_NONE;
             }
         }
-        int h_;
+        kos_cap_t h_;
+        int err_;
     };
 }
 
@@ -292,25 +329,61 @@ namespace kos
 
 namespace kos::thread
 {
+    // What spawn hands back: the handle and the code kos_thread_spawn returned. `valid()` is
+    // the ONLY correct success test: there is no negative handle to compare against, and a
+    // live handle looks negative cast to int.
+    //
+    // NOT owning, unlike Semaphore: a thread handle names nothing to close, so there is no
+    // destructor and copying is free. kill() is COOPERATIVE (see kos_thread_kill).
+    class Handle
+    {
+    public:
+        Handle() = default;
+        Handle(kos_thread_t id, int err)
+            : id_(id), err_(err)
+        {
+        }
+
+        kos_thread_t id() const
+        {
+            return id_;
+        }
+        bool valid() const
+        {
+            return id_ != KOS_THREAD_NONE;
+        }
+        int error() const
+        {
+            return err_;
+        }
+        // Returns -KOS_EBADF on a failed spawn: KOS_THREAD_NONE names nothing to cancel.
+        int kill() const
+        {
+            return kos_thread_kill(id_);
+        }
+
+    private:
+        kos_thread_t id_ = KOS_THREAD_NONE;
+        int err_ = -KOS_EBADF;
+    };
+
     // Start a thread (not a process: KickOS has one address space, isolation is
     // by MPU + privilege). Unprivileged by default. `mem`/`mem_size` grant the
     // thread a domain data region (threads sharing one region share a domain).
     // Spawning does NOT preempt the caller, even for a higher-priority thread:
-    // the new thread runs once the caller next blocks or yields. Returns an opaque
-    // handle (index+generation, not the telemetry thread id), or a negative -KOS_E* code.
+    // the new thread runs once the caller next blocks or yields.
     // `stack`/`stack_size` are optional: pass a caller-owned buffer to size a thread's
     // stack to its need, or leave them 0 to get the kernel default (KICKOS_USER_STACK_SIZE).
     // `mmio`/`mmio_size` grant a device register block (R|W|DEV); the caller needs
     // AUTH_MEMORY (privilege implies every authority).
-    inline int spawn(void (*entry)(void*), void* arg, char const* name,
-                     uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
-                     uint32_t quantum_ns = 0, bool privileged = false,
-                     void* mem = nullptr, uint32_t mem_size = 0,
-                     void* stack = nullptr, uint32_t stack_size = 0,
-                     void* mmio = nullptr, uint32_t mmio_size = 0,
-                     kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
-                     uint8_t authority = 0, uint16_t cap_capacity = 0,
-                     uint8_t const* cap_dest = nullptr)
+    inline Handle spawn(void (*entry)(void*), void* arg, char const* name,
+                        uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
+                        uint32_t quantum_ns = 0, bool privileged = false,
+                        void* mem = nullptr, uint32_t mem_size = 0,
+                        void* stack = nullptr, uint32_t stack_size = 0,
+                        void* mmio = nullptr, uint32_t mmio_size = 0,
+                        kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
+                        uint8_t authority = 0, uint16_t const* cap_dest = nullptr)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -329,23 +402,22 @@ namespace kos::thread
         p.caps = caps;
         p.cap_count = cap_count;
         p.authority = authority;
-        p.cap_capacity = cap_capacity;
         p.cap_dest = cap_dest;
-        return kos_thread_spawn(&p);
+        kos_thread_t h = KOS_THREAD_NONE;
+        int const rc = kos_thread_spawn(&p, &h);
+        return Handle(h, rc);
     }
 
     // Delegate a fixed cap list to the child (B1 default: cap i -> child index i+1, and a
     // grant may name its own index instead).
-    inline int spawn_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
-                          kos_cap_grant const* caps, uint8_t cap_count,
-                          uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
-                          bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
-                          uint8_t authority = 0, uint16_t cap_capacity = 0,
-                          uint8_t const* cap_dest = nullptr)
+    inline Handle spawn_caps(void (*entry)(void*), void* arg, char const* name, uint8_t prio,
+                             kos_cap_grant const* caps, uint8_t cap_count,
+                             uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
+                             bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
+                             uint8_t authority = 0, uint16_t const* cap_dest = nullptr)
     {
         return spawn(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
-                     nullptr, 0, nullptr, 0, caps, cap_count, authority, cap_capacity,
-                     cap_dest);
+                     nullptr, 0, nullptr, 0, caps, cap_count, authority, cap_dest);
     }
 }
 

@@ -1340,7 +1340,7 @@ duplicated.
 
 - [ ] **`kos_thread_spawn` returns `-KOS_ENOMEM` for two different failures**, so arena starvation is
       indistinguishable from a legitimate pool limit at runtime:
-      `kernel/syscall/syscall_thread.cc:292` is "thread pool exhausted" and `:365` is "stack arena
+      `kernel/syscall/syscall_thread.cc:306` is "thread pool exhausted" and `:375` is "stack arena
       exhausted". That ambiguity mislabelled
       **8 of `f302nucleo`'s 9 skips** as `SKIP pool too small` when every one of them was arena
       starvation, and it is what made the investigation above cost a session. Two distinguishable
@@ -1634,7 +1634,8 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       Gated by `tests/check_sim_drvdeath.sh`, the only hardware-free witness in the fleet, whose
       assertion is one `kos_print` call site absent before the death and present after. **Not
       closed**: a per-chip `arch_console_reclaim` body exists only on `mk64f`, `xmc4800` and `esp32`,
-      so elsewhere the polled route returns but the DEVICE is whatever the driver left (M4.7).
+      so elsewhere the polled route returns but the DEVICE is whatever the driver left. Per-chip
+      bodies are fleet work; see `roadmap.md`'s sub-milestone ledger for the number.
 - [x] **Console visibility and handover ordering. LANDED**, by the second of the two remedies the
       finding offered -- root VERIFIES, rather than the publish being reordered.
       `console_handover_finish` (`user/include/kickos/sys/driver_bringup.h`) closes root's own WAIT
@@ -2254,8 +2255,11 @@ case in one build.
       named no pool object, held no refcount and never bumped a generation: it is now
       `Thread::authority`, a `uint8_t` in the EXISTING padding after `privileged`, which costs zero
       (placing it before `handles[]` instead cost 4 bytes of padding per TCB and ate a quarter of
-      the saving). `KOS_CAP_CLOCK` had no writer and the reserved spare was explicitly for nothing;
-      both deleted, `KICKOS_CAP_FIRST_DYNAMIC` lowered 4 -> 2. **Not a flag day, and that was
+      the saving). The authority cap's own slot and the reserved spare were explicitly for
+      nothing once the word moved to the TCB; both deleted, `KICKOS_CAP_FIRST_DYNAMIC` lowered
+      4 -> 2. `KOS_CAP_CLOCK` was NOT deleted and still holds index 1: it has no writer yet
+      because it is a provision for a userspace CPU governor, whose authority bit is
+      `AUTH_PSTATE`. **Not a flag day, and that was
       checked before it was relied on**: all 19 `KOS_SPAWN_DELEGATED_CAP0` sites express the rule
       through the constant, none hardcode a literal, and the constant never read
       `KICKOS_CAP_FIRST_DYNAMIC` anyway. Measured on linked ELFs: `microbit` and `bluepill-c8` -64 B
@@ -2455,7 +2459,7 @@ global design's costs are better on every axis except hazard 6. And at M6 the wh
 question should be re-argued from scratch rather than inherited.
 
 **Refused, and recorded so it is not re-priced**: narrowing `CapEntry` below 8 bytes, in any form.
-`reply_cap_obj` packs a 24-bit generational thread handle plus an 8-bit call sequence
+the reply encoder packed a 24-bit generational thread handle plus an 8-bit call sequence
 (`kernel/syscall/syscall_ipc.cc`), a word that is routinely NEGATIVE -- which is why
 `cap_reply_caller` decodes with masked rather than arithmetic shifts. An `int16_t obj` therefore
 **cannot represent a reply capability at all**, and a 16-bit re-cut leaves roughly 7 bits of THREAD
@@ -2513,6 +2517,75 @@ later one onto the index the child expects.
       wants a report channel, and two file-scope words is exactly what starved microbit's arena
       twice in this milestone. There is no `sem_trywait` to do it more neatly.
 
+## Found during the M4.7 cap-rework pass (2026-08-03)
+
+Filed together because one pass turned them up, not because they share a fix: two
+scheduler/teardown defects found root-causing the intermittent `sim_stress` failure, two
+capability-plane findings from re-reading the reserved indices and the per-board sizing, and one
+consumer-facing build limitation that is NOT M4.7 scope. Each says what it rests on and whether it
+was read or measured.
+
+- [ ] **Out-of-tree boards are not supported, and that contradicts a stated principle.**
+      `cmake/kickos.cmake:30` derives `KICKOS_BOARDS_DIR` from `<repo>/boards` with
+      `get_filename_component` -- no cache variable, no override -- and
+      `kickos_load_board_descriptor` (`cmake/kickos.cmake:55-73`) has exactly three outcomes: an
+      in-tree `boards/<board>/board.cmake`, or, only where `KICKOS_IN_TREE` is FALSE, the single
+      board the installed package was built for, or `FATAL_ERROR`. `KICKOS_BOARD_INCLUDE_DIR`
+      (`CMakeLists.txt:52-56`) searches only the in-tree `boards/` path before falling back to the
+      chip dir. So a consumer cannot supply a board without editing the KickOS tree or carrying a
+      patch against a vendored copy, while `docs/book/README.md:26` says porting a CPU is "the
+      small arch/chip seam, not a kernel restructure". Shape of the fix: make the boards search
+      path a LIST a consumer can extend, and let the board include-dir lookup search the same
+      list. NOT M4.7 scope -- recorded so it does not evaporate. Read directly.
+- [ ] **Round-robin refunds a full quantum after a long preemption.**
+      `kernel/sched/policy_fifo_rr.cc:114-127`, `policy_on_switch_in`: a slice survives the switch
+      only while `slice_deadline_ns` is still in the future, so a preemption LONGER than the
+      remaining quantum falls through to `arm_slice` and the thread is granted a fresh full one.
+      The stress app runs RR at a 300 us quantum (`user/apps/common/stress/main.cc:216`) and
+      preemptions on a loaded runner routinely exceed that, so round-robin degenerates toward FIFO
+      in exactly the environment the preserve-the-slice fix was written for -- it covers short
+      preemptions only. Fairness defect, not a crash. Read directly; not observed as a failure.
+- [ ] **The concurrent capability-teardown path is never exercised.**
+      `kernel/include/kickos/cap.h:326-328` states that an RR slice expiring in `sched::tick_rr` is
+      the only thing that switches a dying thread out at a chunk boundary, and so the only way two
+      threads are ever inside `cap_teardown` at once. Instrumented counters put that path at **zero
+      hits** across the whole suite, including with the quantum cut to 25 us. Forced (a spin in the
+      chunk gap plus every churner made RR) it takes 10402 hits with 7 concurrent sweeps and the
+      suite still passes, so the design appears sound and nothing guards it against regression. That
+      leaves `g_teardown_depth` and `cap_teardown_active()` (`kernel/syscall/cap.cc:34`, `746-748`)
+      and the deferred console-death reclaim that reads it (`kernel/sched/sched.cc:209`) untested by
+      anything in-tree. A restructuring that removes the chunked window would DELETE the question
+      rather than answer it, which is worth deciding deliberately rather than by side effect.
+      **Measured by a subagent with instrumented counters -- the zero-hit figure and the forced-path
+      figure are both its numbers, worth re-deriving before acting on them.**
+- [ ] **`sched::wake` dereferences `kernel().current` unguarded.** `kernel/sched/sched.cc:143`
+      reads `kernel().current->dying` with no null test, while `tick_rr` in the same file guards the
+      same pointer (`sched.cc:256-260`). `kernel().current` is null between `sched::init`
+      (`sched.cc:50`) and `sched::start` (`sched.cc:80`). No reachable pre-start waker was found,
+      so this is LATENT rather than live; the asymmetry is the defect -- one of the two readers is
+      guarded and the other is not. Read directly, reachability searched and not demonstrated.
+- [ ] **`KOS_CAP_CLOCK` is aliased by default spawn delegation, so today it reserves nothing.** It
+      is index 1, held for "a board's well-known clock/time service cap"
+      (`system/include/kickos/sys/cap_index.h:35`) -- the provision a future userspace CPU governor
+      would name, `AUTH_PSTATE` being its matching authority bit. But default placement puts
+      delegated cap `i` at child index `i + 1`, so the FIRST delegated cap lands on index 1:
+      `user/include/kickos/sys/abi.h:248-249` states the placement ("under default placement they
+      land at child indices 1..cap_count") and `abi.h:256-258` states the consequence outright. A
+      parent avoids it only by naming a `cap_dest`, and nothing requires one, so the reserved slot
+      is routinely overwritten. Closing the aliasing is a precondition for the provision meaning
+      anything: either default placement starts at `KICKOS_CAP_FIRST_DYNAMIC`, or the index stops
+      being reserved. Read directly; the placement claim checked in `abi.h` itself.
+- [ ] **`mk64f`'s handle budget has no recorded derivation.**
+      `arch/arm/chip/mk64f/include/kickos/board_config.h:17-24` raises `KICKOS_MAX_HANDLES` to 12
+      and says only that root must cover the caps the board's service list RETAINS, pointing at
+      "the app that sets the peak" for the arithmetic rather than giving it.
+      `arch/arm/chip/xmc4800/include/kickos/board_config.h:17-25` reaches the same 12 and spells its
+      sum out (2 reserved + 2 permanent selftest caps + 1 retained SPI endpoint + 6 concurrent in
+      `t_mutex_deadlock` = 11, so the fleet default of 10 already fails). Whoever re-derives the
+      M4.7 sizing sum needs the `mk64f` figure justified or corrected -- it is the one 12 with no
+      arithmetic behind it. Same family as the copy-pasted-derivation item below, but that one is
+      about duplication and this one is about a figure nothing supports. Read directly.
+
 ## Found by the 10-angle review (2026-08-02)
 
 Ten angles ran against the finished branch. What they found splits three ways: fixed in the same
@@ -2525,9 +2598,9 @@ is a claim I could not verify either way. Each item says which.
       for a `KICKOS_MAX_HANDLES` run for root and `kpanic`s when none fits, so a mix whose widest
       class stopped short of the ceiling would not degrade -- the board would not boot. Four angles
       converged on this independently. `kcap_largest_class_slots()` plus the equality assert now
-      pin it, and `KICKOS_CAP_DEFAULT_CAPACITY` is bounded against the largest class rather than
+      pin it, and the default spawn capacity was bounded against the largest class rather than
       against the ceiling macro.
-- [x] **`KICKOS_CAP_MULTICLASS` could drift from the class table.** The selftest derives
+- [x] **The multiclass switch could drift from the class table.** The selftest derives
       `cap_capacity`'s PARTIAL permission from the CMake variable, so a mix reaching the compiler
       by any other route than the one root-CMakeLists block would silently make that expectation
       wrong. It is now emitted as a compile definition in both branches and cross-checked in
@@ -2620,9 +2693,9 @@ is a claim I could not verify either way. Each item says which.
       time -- `cap_dest` PASS, `cap_capacity` PARTIAL as predicted, `irq_discard` PASS. 44 + 30 = 74
       matches the configure prediction. `bluepill-c8` is not on this bench and remains unwitnessed.
 - [ ] **The sim's slab is 43% unreachable by default spawns.** Its mix is 10x6 + 8x10 with
-      `KICKOS_CAP_DEFAULT_CAPACITY` left at `KICKOS_MAX_HANDLES`, so every undeclared spawn asks
+      the default spawn capacity left at `KICKOS_MAX_HANDLES`, so every undeclared spawn asks
       for 10 and takes a class-1 run -- 8 of them, against 16 threads -- while the ten 6-slot runs
-      are reachable only by an explicit declaration. Adding `KICKOS_CAP_DEFAULT_CAPACITY=6` is the
+      are reachable only by an explicit declaration. Lowering the default spawn capacity to 6 is the
       obvious fix and it is WRONG here: `t_cap_capacity` compares a `capq_run(1)` against a
       `capq_run(0xFFFF)` clamped to root's capacity, so dropping the default to 6 makes both round
       to the same run and the arm reports PARTIAL. The sim is the fleet's ONLY witness that a

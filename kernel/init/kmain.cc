@@ -226,10 +226,9 @@ namespace kickos
         idle_attr.prio = KICKOS_PRIO_IDLE;
         idle_attr.policy = Policy::FIFO;
         idle_attr.privileged = true;
-        // Idle gets no run at all. Capacity 0 makes "idle holds no capability" structural:
-        // it can neither create, receive nor be delegated one.
-        idle_attr.cap_run = nullptr;
-        idle_attr.cap_capacity = 0;
+        // Idle gets no run at all: an empty directory means capacity 0, so it can neither
+        // create, receive nor be delegated a capability.
+        idle_attr.cap_run = CapRun{};
         thread_create(&g_idle_tcb, idle_entry, nullptr,
                       idle_stack, KICKOS_IDLE_STACK_SIZE, idle_attr);
         // Idle is created first, so it MUST be trace id 0 (the telemetry decoder
@@ -253,12 +252,7 @@ namespace kickos
         // instant: root is unprivileged from its first instruction. idle above is the
         // only privileged thread in the system.
         root_attr.privileged = false;
-        // Root takes the LARGEST class. Capacity narrows only, never widens, so every
-        // capacity in the system descends from this one and no child can be given more
-        // than its parent holds.
-        root_attr.cap_run = cap_slab_attach(static_cast<uint16_t>(KICKOS_MAX_HANDLES),
-                                            &root_attr.cap_class, &root_attr.cap_capacity);
-        if (root_attr.cap_run == nullptr)
+        if (not cap_slab_attach(&root_attr.cap_run, &root_attr.cap_free_head))
         {
             kpanic("kmain: no capability run for root");
         }

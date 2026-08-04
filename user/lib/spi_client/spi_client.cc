@@ -20,8 +20,8 @@ namespace
     // `rx_skip` of the full-duplex reply (single segment: skip 0, len = wr_len; two
     // segments: skip the write phase, len = rd_len). Returns rx bytes (>= 0) or
     // -KOS_E*.
-    long frame_call(int ep, uint8_t device, uint8_t nseg, size_t wr_len, void const* wr,
-                    size_t rd_len, void* rx, size_t rx_skip, size_t rx_len)
+    int32_t frame_call(kos_cap_t ep, uint8_t device, uint8_t nseg, size_t wr_len, void const* wr,
+                       size_t rd_len, void* rx, size_t rx_skip, size_t rx_len)
     {
         size_t const total = wr_len + rd_len;
         if (total == 0)
@@ -72,7 +72,7 @@ namespace
         }
         mem_zero(payload + wr_len, rd_len); // read phase shifts dummy 0x00 out
 
-        long const rc = kos_call(ep, buf, framing + total, sizeof(buf));
+        int32_t const rc = kos_call(ep, buf, framing + total, sizeof(buf));
         if (rc < 0)
         {
             return rc;
@@ -109,21 +109,21 @@ namespace
         {
             mem_copy(rx, rxb + rx_skip, out);
         }
-        return static_cast<long>(out);
+        return static_cast<int32_t>(out);
     }
 }
 
 extern "C"
 {
-    long spi_transfer(int ep, uint8_t device, void const* tx, void* rx, size_t len)
+    int32_t spi_transfer(kos_cap_t ep, uint8_t device, void const* tx, void* rx, size_t len)
     {
         // One segment: rx is the whole full-duplex result (skip 0, len bytes).
         return frame_call(ep, device, /*nseg=*/1, /*wr_len=*/len, tx, /*rd_len=*/0, rx,
                           /*rx_skip=*/0, /*rx_len=*/len);
     }
 
-    long spi_transact(int ep, uint8_t device, void const* wr, size_t wlen, void* rd,
-                      size_t rlen)
+    int32_t spi_transact(kos_cap_t ep, uint8_t device, void const* wr, size_t wlen, void* rd,
+                         size_t rlen)
     {
         if (wlen == 0)
         {
@@ -136,7 +136,7 @@ extern "C"
                           /*rx_skip=*/wlen, /*rx_len=*/rlen);
     }
 
-    int spi_config(int ep, uint8_t device, struct kos_bus_cfg const* cfg,
+    int spi_config(kos_cap_t ep, uint8_t device, struct kos_bus_cfg const* cfg,
                    uint32_t* achieved_hz)
     {
         if (cfg == nullptr)
@@ -156,7 +156,7 @@ extern "C"
         unsigned char* payload = buf + sizeof(struct kos_bus_req);
         mem_copy(payload, cfg, sizeof(struct kos_bus_cfg));
 
-        long const rc =
+        int32_t const rc =
             kos_call(ep, buf, sizeof(struct kos_bus_req) + sizeof(struct kos_bus_cfg), sizeof(buf));
         if (rc < 0)
         {

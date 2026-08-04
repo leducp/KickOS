@@ -39,7 +39,8 @@ int main(int, char**)
     kos::thread::spawn(blinker, nullptr, "blink", 10);
 
     // Root parks so the blinker owns the CPU; blocking here proves the switch.
-    int idle = kos_sem_create(0);
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
         kos_sem_wait(idle);

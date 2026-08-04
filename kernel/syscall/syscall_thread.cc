@@ -28,9 +28,10 @@ namespace kickos
     // sim's mid-syscall `raised`, the ARM CONTROL.nPRIV, the RX PSW). Any syscall that
     // resolves a thread BY HANDLE must additionally reject state == EXITED: the generation
     // bumps at reclaim, not at exit, so an exited slot still gen-matches.
-    int thread_spawn(kos_thread_params const* p)
+    int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread)
     {
         IrqLock lock;
+        *out_thread = KOS_THREAD_NONE; // every early return below leaves the sentinel seated
         if (p == nullptr)
         {
             return -KOS_EINVAL; // null params
@@ -169,22 +170,12 @@ namespace kickos
         int deleg_obj[KICKOS_MAX_SPAWN_GRANTS];
         uint8_t deleg_type[KICKOS_MAX_SPAWN_GRANTS];
         uint8_t deleg_rights[KICKOS_MAX_SPAWN_GRANTS];
-        uint8_t deleg_dest[KICKOS_MAX_SPAWN_GRANTS];
+        // uint16_t: a destination is a capability-table index and a table is up to
+        // KICKOS_MAX_HANDLES == 65535 slots wide, which a byte cannot name.
+        uint16_t deleg_dest[KICKOS_MAX_SPAWN_GRANTS];
         int const ncaps = static_cast<int>(p->cap_count);
 
-        // What the slab is ASKED for, narrowed against the caller's own capacity: a
-        // ceiling, not a conserved budget. The destinations are bounded later against what
-        // the slab actually hands back, because a bucket class may round up.
         Thread* const spawner = sched::current();
-        uint16_t want = p->cap_capacity;
-        if (want == 0u)
-        {
-            want = static_cast<uint16_t>(KICKOS_CAP_DEFAULT_CAPACITY);
-        }
-        if (spawner != nullptr and want > spawner->cap_capacity)
-        {
-            want = spawner->cap_capacity;
-        }
         if (ncaps > 0)
         {
             // Delegated cap i lands at child index i+1 by DEFAULT, index 0 being the
@@ -220,17 +211,26 @@ namespace kickos
             }
             // The optional destination array, snapshotted the same way and for the same
             // double-fetch reason. Absent => every entry defaults.
-            uint8_t dbuf[KICKOS_MAX_SPAWN_GRANTS] = {};
+            uint16_t dbuf[KICKOS_MAX_SPAWN_GRANTS] = {};
             if (p->cap_dest != nullptr)
             {
                 uintptr_t const du = reinterpret_cast<uintptr_t>(p->cap_dest);
-                if (not user_readable_ok(du, static_cast<size_t>(ncaps)))
+                // The misalignment reject precedes the copy for the params struct's reason:
+                // kaccess_from_user loads privileged, and a misaligned halfword load traps in
+                // the kernel on a strict-align arch.
+                if ((du & (alignof(uint16_t) - 1)) != 0)
+                {
+                    return -KOS_EINVAL; // misaligned destination array
+                }
+                if (not user_readable_ok(du, sizeof(uint16_t) * static_cast<size_t>(ncaps)))
                 {
                     return -KOS_EFAULT; // destination array not readable by the caller
                 }
                 for (int ci = 0; ci < ncaps; ci++)
                 {
-                    kaccess_from_user(&dbuf[ci], du + static_cast<size_t>(ci), 1);
+                    kaccess_from_user(&dbuf[ci],
+                                      du + static_cast<size_t>(ci) * sizeof(uint16_t),
+                                      sizeof(uint16_t));
                 }
             }
             for (int ci = 0; ci < ncaps; ci++)
@@ -262,7 +262,7 @@ namespace kickos
                     dest = static_cast<unsigned>(KOS_SPAWN_DELEGATED_CAP0) +
                            static_cast<unsigned>(ci);
                 }
-                deleg_dest[ci] = static_cast<uint8_t>(dest);
+                deleg_dest[ci] = static_cast<uint16_t>(dest);
             }
             // No two grants may land on the same slot, defaulted ones included: the second
             // install would silently overwrite the first and leak its reference. Runs
@@ -377,12 +377,11 @@ namespace kickos
             stack_size = KICKOS_USER_STACK_SIZE;
             attr.kstack_owned = true;
         }
-        // Taken BEFORE the reference loop so one unwind path serves both failures. This
-        // bounds the child's WIDTH only; total consumption is bounded by the per-class
-        // counts. An exhausted class is refused rather than served from a larger one, so
-        // the error names exactly one board knob.
-        attr.cap_run = cap_slab_attach(want, &attr.cap_class, &attr.cap_capacity);
-        if (attr.cap_run == nullptr)
+        // Taken BEFORE the reference loop so one unwind path serves both failures. This is
+        // -KOS_ENOMEM and not the table-full -KOS_EMFILE: the child gets no table at all,
+        // and the slab is a shared supply. The cap.h KCAP_RUN_COUNT assert makes this
+        // refusal unreachable anyway, since the thread pool always fills first.
+        if (not cap_slab_attach(&attr.cap_run, &attr.cap_free_head))
         {
             if (attr.kstack_owned)
             {
@@ -391,15 +390,13 @@ namespace kickos
             k.threads.release(i);
             return -KOS_ENOMEM;
         }
-        // Bounded by the run the child ACTUALLY gets, not by what the spawn asked for: a
-        // request of 1 legitimately rounds up to the smallest class. Checked after the
-        // attach that decides it and before any reference is taken, so the only unwind owed
-        // here is the run.
+        // Bounded by the run the child ACTUALLY gets. Checked before any reference is
+        // taken, so the only unwind owed here is the run.
         for (int ci = 0; ci < ncaps; ci++)
         {
-            if (deleg_dest[ci] >= attr.cap_capacity)
+            if (deleg_dest[ci] >= KICKOS_MAX_HANDLES)
             {
-                cap_slab_detach(attr.cap_run, attr.cap_class);
+                cap_slab_detach(&attr.cap_run);
                 if (attr.kstack_owned)
                 {
                     k.threads.stack_push(stack);
@@ -426,7 +423,7 @@ namespace kickos
                 obj_ref_undo(static_cast<CapType>(deleg_type[cj]), deleg_obj[cj],
                              deleg_rights[cj]);
             }
-            cap_slab_detach(attr.cap_run, attr.cap_class);
+            cap_slab_detach(&attr.cap_run);
             if (attr.kstack_owned)
             {
                 k.threads.stack_push(stack);
@@ -447,7 +444,8 @@ namespace kickos
             cap_install_at(child, static_cast<int>(deleg_dest[ci]), deleg_obj[ci],
                            static_cast<CapType>(deleg_type[ci]), deleg_rights[ci]);
         }
-        return k.threads.handle_for(i);
+        *out_thread = k.threads.handle_for(i);
+        return 0;
     }
 
     // NOT a destroy. This only MARKS the target and wakes it out of the one wait it can be
@@ -458,17 +456,16 @@ namespace kickos
     // The gate is PARENTHOOD, not an authority bit and not a capability, which makes it
     // NON-TRANSFERABLE: there is no table entry for a cap_grant to copy, so a driver
     // cannot hand its children's lives to a client.
-    int thread_kill(int thread_handle)
+    int thread_kill(kos_thread_t thread)
     {
         IrqLock lock;
         Kernel& k = kernel();
-        if (thread_handle < 0)
-        {
-            return -KOS_EBADF;
-        }
-        uint32_t const h = static_cast<uint32_t>(thread_handle);
-        int const index = static_cast<int>(h & ((1u << ThreadPool::INDEX_BITS) - 1u));
-        uint16_t const gen = static_cast<uint16_t>(h >> ThreadPool::INDEX_BITS);
+        // NO SIGN TEST. A slot aged past 32768 reclaims mints a handle with bit 31 set, so
+        // rejecting "negative" handles would refuse to cancel live threads. KOS_THREAD_NONE
+        // and every other malformed word is caught by the index range check below, the pool
+        // never seating the all-ones index.
+        int const index = static_cast<int>(thread & ((1u << ThreadPool::INDEX_BITS) - 1u));
+        uint16_t const gen = static_cast<uint16_t>(thread >> ThreadPool::INDEX_BITS);
         if (index >= k.threads.next)
         {
             return -KOS_EBADF; // names a slot that was never allocated

@@ -27,22 +27,25 @@ namespace kickos
         // of every child. See docs/design-m3-console-handover-stageii.md (D3/D4/S3).
         int g_stdout_target = -1;
 
-        // Threads inside cap_teardown right now. A count, not a flag: an RR slice expiring
-        // in sched::tick_rr can switch a dying thread out at a chunk boundary and a second
-        // thread can then enter and finish its own sweep first. Gates the console reclaim,
-        // which must not run while ANY dying thread might still hold an IRQ cap on the line.
-        unsigned g_teardown_depth = 0;
-
-        // One flat .bss array carved into fixed-class runs at boot. A class's free list is
-        // threaded THROUGH THE FREE RUNS THEMSELVES, so there is no side table; the assert
-        // below is what keeps an entry wide enough to hold the link.
-        CapEntry g_cap_slab[kcap_slab_entries()];
-        CapEntry* g_cap_free[KCAP_CLASSES_LIVE] = {};
-
-        static_assert(sizeof(CapEntry) >= sizeof(void*),
-                      "a free run must be able to hold its own free-list link");
-
-        CapEntry** run_link(CapEntry* run) { return reinterpret_cast<CapEntry**>(run); }
+        // Every .bss datum this module owns, in ONE object. The grouping is load-bearing:
+        // CapEntry is 8-aligned, so as separate objects the linker drops four bytes of fill
+        // in front of the array, and on microbit that takes a whole 32-byte granule of user
+        // arena. Inside the struct the two words land in the array's own tail alignment.
+        struct CapState
+        {
+            // One flat array carved into uniform CHUNKS at boot. The free list is threaded
+            // THROUGH THE FREE CHUNKS THEMSELVES, so there is no side table (CapChunkList,
+            // cap.h).
+            CapEntry chunks[kcap_slab_entries()];
+            CapChunkList free_chunks;
+            // Threads inside cap_teardown right now. A count, not a flag: an RR slice
+            // expiring in sched::tick_rr can switch a dying thread out at a chunk boundary
+            // and a second thread can then enter and finish its own sweep first. Gates the
+            // console reclaim, which must not run while ANY dying thread might still hold
+            // an IRQ cap on the line.
+            unsigned teardown_depth;
+        };
+        CapState g_cap;
 
         // Slot index of the semaphore a global handle names (via the live object, so
         // the SlotPool handle codec is never assumed here). -1 if it does not resolve.
@@ -165,6 +168,10 @@ namespace kickos
                     r = 1;                   // leak, never strand
                     return;
                 }
+                // A live server pins a WAIT-bearing cap, so neither recv_holders nor
+                // endpoint_refs can reach 0 while the field is set. A slot freed with it set
+                // would leave a chain entry pointing into a reused endpoint.
+                KICKOS_ASSERT(e == nullptr or e->server == nullptr);
                 kernel().endpoints.free(obj_handle);
             }
         }
@@ -248,7 +255,7 @@ namespace kickos
                     // skips its own recompute (mirrors mutex_force_unlock).
                     if (ep->server == closer)
                     {
-                        ep->server = nullptr;
+                        endpoint_server_clear(ep);
                         // A live closer self-lowers: give up the CPU if a higher thread is
                         // now the top runnable (H8), mirroring mutex_unlock's no-waiter path.
                         if (not teardown)
@@ -311,7 +318,7 @@ namespace kickos
                 // caller is still parked, EPIPE it; the one-shot consume (empty + gen bump)
                 // happens at the shared close/teardown site after this returns. A dying
                 // closer skips its recompute: it has only the rest of its own sweep left.
-                Thread* caller = cap_reply_caller(e.obj);
+                Thread* caller = cap_reply_caller(e);
                 if (caller != nullptr)
                 {
                     caller->call_state = CALL_NONE; // stop the funnel counting this donor
@@ -458,28 +465,27 @@ namespace kickos
         }
     }
 
-    CapEntry* cap_lookup(Thread* c, int cap_handle)
+    CapEntry* cap_lookup(Thread* c, uint32_t cap_handle)
     {
         if (c == nullptr)
         {
             return nullptr;
         }
-        int const idx = cap_handle & ((1 << KCAP_INDEX_BITS) - 1);
-        // Bounded by THIS task's run, not by the largest class: a handle whose index is
-        // encodable but past the run this task was given must fail to resolve, never read
-        // a neighbouring task's run off the end of its own.
-        if (c->handles == nullptr or idx >= static_cast<int>(c->cap_capacity))
+        uint32_t const idx = cap_handle & KCAP_INDEX_MASK;
+        // Bounded by THIS task's run, not by the codec's index field: an encodable index past
+        // the run must fail to resolve, never read a neighbouring run off the end of this
+        // one. This is also the test that refuses KOS_CAP_AUTHORITY and KCAP_INVALID, whose
+        // index field is the one value the capacity rule keeps out of every run.
+        if (idx >= thread_cap_capacity(c))
         {
-            return nullptr;
+            return nullptr; // capacity 0 (no run) is caught here too: nothing is in range
         }
-        CapEntry& e = c->handles[idx];
+        CapEntry& e = *cap_slot(c->caps, idx);
         if (e.type == static_cast<uint8_t>(CapType::CAP_EMPTY))
         {
             return nullptr;
         }
-        // Full high bits (not truncated): a handle carrying junk above the cap-gen field
-        // must fail to resolve, not alias (mirrors slotpool.h's resolve()).
-        uint32_t const cgen = static_cast<uint32_t>(cap_handle) >> KCAP_INDEX_BITS;
+        uint32_t const cgen = cap_handle >> KCAP_INDEX_BITS;
         if (static_cast<uint32_t>(e.gen) != cgen)
         {
             return nullptr;
@@ -487,7 +493,7 @@ namespace kickos
         return &e;
     }
 
-    void* cap_resolve_e(Thread* c, int cap_handle, CapType want, uint8_t need, int* err)
+    void* cap_resolve_e(Thread* c, uint32_t cap_handle, CapType want, uint8_t need, int* err)
     {
         *err = KOS_EBADF; // bad index / empty / stale cap-gen / wrong type / stale object
         CapEntry* e = cap_lookup(c, cap_handle);
@@ -530,7 +536,7 @@ namespace kickos
         return p;
     }
 
-    void* cap_resolve(Thread* c, int cap_handle, CapType want, uint8_t need)
+    void* cap_resolve(Thread* c, uint32_t cap_handle, CapType want, uint8_t need)
     {
         int err = 0;
         return cap_resolve_e(c, cap_handle, want, need, &err);
@@ -555,7 +561,7 @@ namespace kickos
         t->authority = static_cast<uint8_t>(auth & CAP_AUTH_ALL);
     }
 
-    int cap_narrow_authority(Thread* c, int cap_handle, uint8_t mask)
+    int cap_narrow_authority(Thread* c, uint32_t cap_handle, uint8_t mask)
     {
         if (cap_handle != KOS_CAP_AUTHORITY)
         {
@@ -575,58 +581,39 @@ namespace kickos
 
     void cap_slab_init()
     {
-        uint32_t off = 0;
-        for (int i = 0; i < KCAP_CLASSES_LIVE; i++)
+        g_cap.free_chunks.head = nullptr;
+        // Push in reverse so the list comes out in address order and a first attach is
+        // deterministic across boots.
+        uint32_t const total = KCAP_RUN_CHUNKS * static_cast<uint32_t>(KCAP_RUN_COUNT);
+        for (uint32_t c = total; c > 0; c--)
         {
-            g_cap_free[i] = nullptr;
-            // Push in reverse so the list comes out in address order and a first attach is
-            // deterministic across boots.
-            for (int r = KCAP_CLASSES[i].count - 1; r >= 0; r--)
-            {
-                CapEntry* run = &g_cap_slab[off + static_cast<uint32_t>(r) * KCAP_CLASSES[i].slots];
-                *run_link(run) = g_cap_free[i];
-                g_cap_free[i] = run;
-            }
-            off += static_cast<uint32_t>(KCAP_CLASSES[i].slots)
-                   * static_cast<uint32_t>(KCAP_CLASSES[i].count);
+            g_cap.free_chunks.push(&g_cap.chunks[(c - 1) * KCAP_CHUNK_SLOTS]);
         }
-        KICKOS_ASSERT(off == kcap_slab_entries());
     }
 
-    CapEntry* cap_slab_attach(uint16_t want, uint8_t* cls, uint16_t* capacity)
+    bool cap_slab_attach(CapRun* run, uint16_t* free_head)
     {
-        for (int i = 0; i < KCAP_CLASSES_LIVE; i++)
+        *free_head = KCAP_FREE_NONE;
+        if (not g_cap.free_chunks.take(run))
         {
-            if (KCAP_CLASSES[i].slots < want)
-            {
-                continue;
-            }
-            // The FIRST fitting class and no other: spilling into a larger one would let
-            // small spawns eat the runs a big task depends on.
-            CapEntry* run = g_cap_free[i];
-            if (run == nullptr)
-            {
-                return nullptr;
-            }
-            g_cap_free[i] = *run_link(run);
-            // CAP_EMPTY is 0 and so is a fresh cap-gen, so a zeroed run is an empty table.
-            memset(run, 0, static_cast<size_t>(KCAP_CLASSES[i].slots) * sizeof(CapEntry));
-            *cls = static_cast<uint8_t>(i);
-            *capacity = KCAP_CLASSES[i].slots;
-            return run;
+            return false;
         }
-        return nullptr;
+        // CAP_EMPTY is 0 and so is a fresh cap-gen, so a zeroed chunk is an empty table.
+        // Required, not tidiness: take() left its own free-list link in entry 0.
+        for (uint32_t i = 0; i < KCAP_RUN_CHUNKS; i++)
+        {
+            memset(run->chunk[i], 0, KCAP_CHUNK_SLOTS * sizeof(CapEntry));
+        }
+        // A run holds exactly KICKOS_MAX_HANDLES addressable slots (thread_cap_capacity), so
+        // the list stops there and the chunk-rounded tail stays out of it: an index the tail
+        // could hand out is one cap_install would refuse.
+        *free_head = cap_run_free_build(*run, KICKOS_MAX_HANDLES);
+        return true;
     }
 
-    void cap_slab_detach(CapEntry* run, uint8_t cls)
+    void cap_slab_detach(CapRun* run)
     {
-        if (run == nullptr)
-        {
-            return;
-        }
-        KICKOS_ASSERT(cls < KCAP_CLASSES_LIVE);
-        *run_link(run) = g_cap_free[cls];
-        g_cap_free[cls] = run;
+        g_cap.free_chunks.give(run);
     }
 
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
@@ -635,61 +622,70 @@ namespace kickos
         // cap_install_defaults, so this entry point rejects it outright: no delegation or
         // own-create may alias stdout. An out-of-range index is a kernel bug, so it traps in
         // debug and no-ops in release rather than scribble another thread's slot.
-        if (index <= KOS_CAP_STDOUT or c->handles == nullptr
-            or index >= static_cast<int>(c->cap_capacity))
+        if (index <= KOS_CAP_STDOUT or index >= static_cast<int>(thread_cap_capacity(c)))
         {
             KICKOS_ASSERT(false);
             return;
         }
-        CapEntry& e = c->handles[index];
+        CapEntry& e = *cap_slot(c->caps, static_cast<uint32_t>(index));
+        // Both halves of the free-list contract: a live entry is not in the list, so
+        // overwriting one would strand its reference AND unlink a slot the list never held.
+        KICKOS_ASSERT(e.type == static_cast<uint8_t>(CapType::CAP_EMPTY));
+        cap_run_free_unlink(c->caps, static_cast<uint32_t>(index), &c->cap_free_head);
         e.obj = obj_handle;
         e.type = static_cast<uint8_t>(type);
         e.rights = rights;
     }
 
-    int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights)
+    int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights, uint32_t* out_cap)
     {
-        // The scan starts at KICKOS_CAP_FIRST_DYNAMIC so an own create can NEVER land on a
-        // reserved well-known index. Reserved slots are seated only by the kernel (stdout) or
-        // by explicit spawn delegation; see <kickos/sys/cap_index.h>.
-        int const cap_end = static_cast<int>(c->cap_capacity);
-        for (int i = KICKOS_CAP_FIRST_DYNAMIC; i < cap_end; i++)
+        *out_cap = KCAP_INVALID;
+        // TAKES NO CHUNK. A full run refuses here, and that refusal is the containment
+        // boundary a client's reply mint runs into on a server's table (cap.h).
+        uint32_t const index = cap_run_peek_free(c->cap_free_head);
+        if (index == KCAP_NO_SLOT)
         {
-            if (c->handles[i].type == static_cast<uint8_t>(CapType::CAP_EMPTY))
-            {
-                cap_install_at(c, i, obj_handle, type, rights);
-                return static_cast<int>((static_cast<uint32_t>(c->handles[i].gen) << KCAP_INDEX_BITS)
-                                        | static_cast<uint32_t>(i));
-            }
+            return -KOS_EMFILE;
         }
-        return -1;
+        cap_install_at(c, static_cast<int>(index), obj_handle, type, rights);
+        *out_cap = (static_cast<uint32_t>(cap_slot(c->caps, index)->gen) << KCAP_INDEX_BITS)
+                   | index;
+        return 0;
+    }
+
+    int cap_install_reply(Thread* c, Thread* caller, uint32_t* out_cap)
+    {
+        int const idx = kernel().threads.index_of(caller);
+        KICKOS_ASSERT(idx >= 0); // endpoint_call rejects a non-pool caller up front
+        // The handle is stored WHOLE in CapEntry::obj (thread.h asserts the widths match),
+        // so this reinterprets a full 32-bit word rather than narrowing it.
+        int const rc = cap_install(c, static_cast<int>(kernel().threads.handle_for(idx)),
+                                   CapType::CAP_REPLY, 0, out_cap);
+        if (rc != 0)
+        {
+            return rc;
+        }
+        cap_reply_seq_seat(cap_slot(c->caps, *out_cap & KCAP_INDEX_MASK),
+                           static_cast<uint8_t>(caller->call_seq & 0xFF));
+        return 0;
     }
 
     bool cap_has_free_slot(Thread* c)
     {
-        int const cap_end = static_cast<int>(c->cap_capacity);
-        for (int i = KICKOS_CAP_FIRST_DYNAMIC; i < cap_end; i++)
-        {
-            if (c->handles[i].type == static_cast<uint8_t>(CapType::CAP_EMPTY))
-            {
-                return true;
-            }
-        }
-        return false;
+        return c->cap_free_head != KCAP_FREE_NONE;
     }
 
-    Thread* cap_reply_caller(int32_t obj)
+    Thread* cap_reply_caller(CapEntry const& e)
     {
-        // MASKED shifts (m6): the seq8 top bit makes obj negative, so an arithmetic
-        // shift would corrupt the packed thread handle.
-        uint32_t const u = static_cast<uint32_t>(obj);
-        int const handle = static_cast<int>(u & 0xFFFFFFu);
-        uint8_t const seq8 = static_cast<uint8_t>(u >> 24);
-        int const index = handle & ((1 << ThreadPool::INDEX_BITS) - 1);
-        uint32_t const gen =
-            (static_cast<uint32_t>(handle) >> ThreadPool::INDEX_BITS) & 0xFFFFu;
+        uint32_t const u = cap_reply_handle(e);
+        uint32_t const index = u & ((1u << ThreadPool::INDEX_BITS) - 1u);
+        // The FULL high bits, not truncated to the generation's storage width: a handle
+        // carrying anything above the field must fail to resolve rather than alias a live
+        // slot.
+        uint32_t const gen = u >> ThreadPool::INDEX_BITS;
+        uint8_t const seq8 = cap_reply_seq(e);
         ThreadPool& tp = kernel().threads;
-        if (index < 0 or index >= tp.next)
+        if (index >= static_cast<uint32_t>(tp.next))
         {
             return nullptr;
         }
@@ -709,7 +705,7 @@ namespace kickos
         return t;
     }
 
-    int handle_close(Thread* c, int cap_handle)
+    int handle_close(Thread* c, uint32_t cap_handle)
     {
         CapEntry* e = cap_lookup(c, cap_handle);
         if (e == nullptr)
@@ -723,11 +719,12 @@ namespace kickos
         }
         CapEntry const detached = *e;
         // Stale the handle + empty the slot BEFORE dropping the ref, so the slot is
-        // cleanly reusable and no stale handle resolves during the drop.
+        // cleanly reusable and no stale handle resolves during the drop. The release writes
+        // the free-list links over `obj`, so it must follow the copy above.
         e->gen++;
         e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-        e->obj = 0;
         e->rights = 0;
+        cap_run_free_release(c->caps, cap_handle & KCAP_INDEX_MASK, &c->cap_free_head);
         obj_ref_drop(detached, /*teardown=*/false);
         // A VOLUNTARY close can also be the published console's last receiver going away, so
         // the reclaim runs HERE and not as a note for whichever thread exits next: there is
@@ -745,7 +742,7 @@ namespace kickos
 
     bool cap_teardown_active()
     {
-        return g_teardown_depth > 0;
+        return g_cap.teardown_depth > 0;
     }
 
     void cap_teardown(Thread* c)
@@ -755,16 +752,16 @@ namespace kickos
         KICKOS_ASSERT(c->dying);
         {
             IrqLock lock;
-            g_teardown_depth++;
+            g_cap.teardown_depth++;
         }
-        int const cap_end = static_cast<int>(c->cap_capacity);
-        int i = 0;
+        uint32_t const cap_end = thread_cap_capacity(c);
+        uint32_t i = 0;
         while (i < cap_end)
         {
             IrqLock lock; // released at the bottom of every chunk: that is the point
             for (int n = 0; n < KCAP_TEARDOWN_CHUNK and i < cap_end; n++, i++)
             {
-                CapEntry& e = c->handles[i];
+                CapEntry& e = *cap_slot(c->caps, i);
                 if (e.type == static_cast<uint8_t>(CapType::CAP_EMPTY))
                 {
                     continue;
@@ -773,26 +770,31 @@ namespace kickos
                 CapEntry const detached = e;
                 e.gen++;
                 e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-                e.obj = 0;
                 e.rights = 0;
+                cap_run_free_release(c->caps, i, &c->cap_free_head);
                 obj_ref_drop(detached, /*teardown=*/true);
             }
         }
         IrqLock lock;
-        // TOTALITY. Neither failure is visible downstream until an object pool has silently
-        // leaked a slot:
-        //   - no entry survived the sweep (a lost chunk boundary), and
+        // TOTALITY. None of these failures is visible downstream until an object pool has
+        // silently leaked a slot, or the funnel has read a dangling donor:
+        //   - no entry survived the sweep (a lost chunk boundary),
         //   - nobody is still parked on this thread (a CAP_REPLY arm that woke a caller
-        //     without unlinking it, which also walks a dead queue into the ready list).
-        // The first is O(table), hence debug-only; the second is O(1).
+        //     without unlinking it, which also walks a dead queue into the ready list), and
+        //   - this thread serves no endpoint (an endpoint arm that cleared Endpoint::server
+        //     without unlinking the chain, which then outlives the TCB into its next
+        //     occupant).
+        // The first is O(table), hence debug-only; the other two are O(1).
 #if KICKOS_DEBUG
-        for (int k = 0; k < cap_end; k++)
+        for (uint32_t k = 0; k < cap_end; k++)
         {
-            KICKOS_DEBUG_ASSERT(c->handles[k].type == static_cast<uint8_t>(CapType::CAP_EMPTY));
+            KICKOS_DEBUG_ASSERT(cap_slot(c->caps, k)->type
+                                == static_cast<uint8_t>(CapType::CAP_EMPTY));
         }
 #endif
         KICKOS_ASSERT(c->reply_waiters.empty());
-        g_teardown_depth--;
+        KICKOS_ASSERT(c->served_head == EP_SERVED_NONE);
+        g_cap.teardown_depth--;
     }
 
     // Seat (or re-seat) a thread's reserved stdout slot (index 0) as a SEND-ONLY (CAP_SIGNAL,
@@ -805,12 +807,12 @@ namespace kickos
     // Caller holds IrqLock.
     bool cap_seat_stdout(Thread* t, int target)
     {
-        // UNGUARDED against a capacity-0 `t`: see the unchecked precondition in cap.h.
+        // UNGUARDED against a runless `t`: see the unchecked precondition in cap.h.
         if (not obj_ref_inc(CapType::CAP_ENDPOINT, target, CAP_SIGNAL))
         {
             return false; // at the ceiling: seat nothing, leave any prior seat alone
         }
-        CapEntry& e = t->handles[KOS_CAP_STDOUT];
+        CapEntry& e = *cap_slot(t->caps, KOS_CAP_STDOUT);
         bool const had_prior = (e.type != static_cast<uint8_t>(CapType::CAP_EMPTY));
         CapEntry const prior = e;
         e.obj = target;

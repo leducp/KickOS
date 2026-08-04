@@ -120,36 +120,37 @@ int main(int, char**)
 
     // TIF is a level source, so EDGE is safe only because the driver W1Cs TFLG before
     // the next wait re-arms the line.
-    int const irq = kos_irq_claim(PIT2_IRQ, KOS_IRQ_EDGE);
-    if (irq < 0)
+    kos_cap_t irq = KOS_CAP_NONE;
+    if (kos_irq_claim(PIT2_IRQ, KOS_IRQ_EDGE, &irq) != 0)
     {
         kos::print("[k64drv] ERROR: irq_claim(PIT2) failed\n");
     }
     kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
 
-    int drv = kos::thread::spawn(pit_driver, reinterpret_cast<void*>(PIT_CH2), "k64drv", 10,
-                                 KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                 /*mem=*/nullptr, /*mem_size=*/0,
-                                 /*stack=*/nullptr, /*stack_size=*/0,
-                                 /*mmio=*/reinterpret_cast<void*>(PIT_CH2), PIT_CH2_WINDOW,
-                                 caps, 1);
-    if (drv < 0)
+    auto drv = kos::thread::spawn(pit_driver, reinterpret_cast<void*>(PIT_CH2), "k64drv", 10,
+                                  KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                  /*mem=*/nullptr, /*mem_size=*/0,
+                                  /*stack=*/nullptr, /*stack_size=*/0,
+                                  /*mmio=*/reinterpret_cast<void*>(PIT_CH2), PIT_CH2_WINDOW,
+                                  caps, 1);
+    if (not drv.valid())
     {
         // The console is the only oracle at the bench: without this line a failed spawn
         // and a dead board look identical.
         kos::print("[k64drv] ERROR: driver spawn failed\n");
     }
-    if (irq >= 0)
+    if (irq != KOS_CAP_NONE)
     {
         kos_handle_close(irq); // the driver is the sole holder from here
     }
 
-    // Sleep park when the semaphore could not be created: a -1 handle would spin a hot
-    // loop of failing sem_wait syscalls against the driver.
-    int idle = kos_sem_create(0);
+    // Sleep park when the semaphore could not be created: an unmintable handle would spin
+    // a hot loop of failing sem_wait syscalls against the driver.
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

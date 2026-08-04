@@ -37,8 +37,8 @@ namespace
         (void)write(1, s, n);
     }
 
-    // The window thread, or -1 where this build has none. Defined unconditionally.
-    int g_win_thread = -1;
+    // The window thread, invalid where this build has none. Defined unconditionally.
+    kos::thread::Handle g_win_thread;
 
 #if (defined(KICKOS_SIMCON_WINDOW_THREAD) && KICKOS_SIMCON_WINDOW_THREAD) \
     || (defined(KICKOS_SIMCON_IRQ_WEDGE) && KICKOS_SIMCON_IRQ_WEDGE)
@@ -72,16 +72,18 @@ namespace
 
     // Claims the line and spawns `entry` on the first candidate window the host leaves
     // free. The caller's own line cap goes before returning: the spawned thread is the
-    // only holder that needs one. A negative return leaves nothing to close.
-    int spawn_window_thread(void (*entry)(void*), uint8_t prio, char const* name)
+    // only holder that needs one. An invalid handle leaves nothing to close.
+    kos::thread::Handle spawn_window_thread(void (*entry)(void*), uint8_t prio,
+                                            char const* name)
     {
-        int const line = kos_irq_claim(SIMCON_WIN_LINE, KOS_IRQ_EDGE);
-        if (line < 0)
+        kos_cap_t line = KOS_CAP_NONE;
+        int const line_rc = kos_irq_claim(SIMCON_WIN_LINE, KOS_IRQ_EDGE, &line);
+        if (line_rc != 0)
         {
-            return line;
+            return kos::thread::Handle(KOS_THREAD_NONE, line_rc);
         }
         kos_cap_grant const win_caps[1] = {{line, KOS_CAP_WAIT}};
-        int t = -1;
+        kos::thread::Handle t;
         for (uintptr_t b : SIMCON_WIN_BASES)
         {
             t = kos::thread::spawn(
@@ -89,11 +91,11 @@ namespace
                 /*privileged=*/false, /*mem=*/nullptr, /*mem_size=*/0,
                 /*stack=*/nullptr, /*stack_size=*/0,
                 /*mmio=*/reinterpret_cast<void*>(b), SIMCON_WIN, win_caps, 1);
-            if (t >= 0)
+            if (t.valid())
             {
                 break;
             }
-            if (t == -KOS_ENOMEM)
+            if (t.error() == -KOS_ENOMEM)
             {
                 break; // the pool, not the window: no later candidate can succeed
             }
@@ -184,11 +186,11 @@ extern "C"
         kos_exit(0);
     }
 
-    // The window thread's handle, for the app that cancels it. -1 before the bring-up
-    // runs, after it failed, and in every build without the window thread.
-    int kickos_simcon_window_thread(void)
+    // The window thread's handle, for the app that cancels it. KOS_THREAD_NONE before the
+    // bring-up runs, after it failed, and in every build without the window thread.
+    kos_thread_t kickos_simcon_window_thread(void)
     {
-        return g_win_thread;
+        return g_win_thread.id();
     }
 
 #if defined(KICKOS_SIMCON_IRQ_WEDGE) && KICKOS_SIMCON_IRQ_WEDGE
@@ -198,7 +200,7 @@ extern "C"
     // E takes recv_holders to 0 and notes the console dead. Once the service thread exists
     // it holds a WAIT cap on E and that close no longer reclaims, which leaves the tag
     // below with nowhere to go.
-    static int simconsole_start_wedge(struct kos_service_cfg const* cfg, int ep)
+    static int simconsole_start_wedge(struct kos_service_cfg const* cfg, kos_cap_t ep)
     {
         if (kos_console_publish(ep) != 0)
         {
@@ -210,9 +212,9 @@ extern "C"
         // take, and then the timeout tag below would prove nothing.
         kos::print("[simcon] wedge: post-publish kernel write (must NOT reach the wire)\n");
 
-        int const irqt = spawn_window_thread(simconsole_wedge_thread,
-                                             static_cast<uint8_t>(cfg->prio + 1), "simconirq");
-        if (irqt < 0)
+        auto const irqt = spawn_window_thread(simconsole_wedge_thread,
+                                              static_cast<uint8_t>(cfg->prio + 1), "simconirq");
+        if (not irqt.valid())
         {
             kos_handle_close(ep);
             kos::print("[simcon] ERROR: no line or DEV window for the wedge irq thread\n");
@@ -228,7 +230,7 @@ extern "C"
             if (waited >= WIN_READY_MAX)
             {
                 kos_handle_close(ep);
-                (void)kos_thread_kill(irqt);
+                (void)irqt.kill();
                 kos::print("[simcon] ERROR: IRQ thread never reached its loop\n");
                 return -1;
             }
@@ -237,13 +239,13 @@ extern "C"
         }
 
         // Unreachable while the wedge thread holds ready at 0.
-        int const drv = kickos::driver::spawn_unprivileged(
+        auto const drv = kickos::driver::spawn_unprivileged(
             simconsole_driver, /*win_base=*/0, /*win_size=*/0, cfg->name, cfg->prio, ep,
             "[simcon] ERROR: driver spawn failed\n");
-        if (drv < 0)
+        if (not drv.valid())
         {
-            (void)kos_thread_kill(irqt);
-            return drv;
+            (void)irqt.kill();
+            return drv.error();
         }
         return kickos::driver::console_handover_finish(
             ep, "[simcon] ERROR: driver died during bring-up\n", irqt);
@@ -258,10 +260,11 @@ extern "C"
         {
             return -1; // cfg authored for another service class
         }
-        int const ep = kos_endpoint_create();
-        if (ep < 0)
+        kos_cap_t ep = KOS_CAP_NONE;
+        int const ep_rc = kos_endpoint_create(&ep);
+        if (ep_rc != 0)
         {
-            return ep;
+            return ep_rc;
         }
 #if defined(KICKOS_SIMCON_IRQ_WEDGE) && KICKOS_SIMCON_IRQ_WEDGE
         return simconsole_start_wedge(cfg, ep);
@@ -270,7 +273,7 @@ extern "C"
         // BEFORE the publish, so a failure here still reports on a kernel-owned console.
         g_win_thread = spawn_window_thread(simconsole_window_thread,
                                            static_cast<uint8_t>(cfg->prio + 1), "simconwin");
-        if (g_win_thread < 0)
+        if (not g_win_thread.valid())
         {
             kos::print("[simcon] ERROR: no line or DEV window for the window thread\n");
             kos_handle_close(ep);
@@ -299,12 +302,12 @@ extern "C"
         }
         // The driver thread gets NO window: the sim's "device" is fd 1, and under
         // KICKOS_SIMCON_WINDOW_THREAD the registers belong to the thread above.
-        int const drv = kickos::driver::spawn_unprivileged(
+        auto const drv = kickos::driver::spawn_unprivileged(
             simconsole_driver, /*win_base=*/0, /*win_size=*/0, cfg->name, cfg->prio, ep,
             "[simcon] ERROR: driver spawn failed\n");
-        if (drv < 0)
+        if (not drv.valid())
         {
-            return drv; // the helper already closed ep, which reclaimed the console
+            return drv.error(); // the helper already closed ep, which reclaimed the console
         }
         // Close root's cap, then prove the driver is serving before any client runs.
         return kickos::driver::console_handover_finish(

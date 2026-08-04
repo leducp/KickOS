@@ -151,11 +151,11 @@ int main(int, char**)
         kos::print("[k64console] ERROR: fault-target ram_alloc failed\n");
     }
     kos_sleep_ns(200000000ull); // 200 ms
-    int const s = kos::thread::spawn(
+    auto const s = kos::thread::spawn(
         scrambler, fault_target, "scrambler",
         /*prio=*/SCRAMBLER_PRIO, KOS_POLICY_FIFO, /*quantum_ns=*/0,
         /*privileged=*/false);
-    if (s < 0)
+    if (not s.valid())
     {
         kos::print("[k64console] ERROR: scrambler spawn failed\n");
     }
@@ -167,19 +167,21 @@ int main(int, char**)
     fflush(stdout);
     // Spawn the printing worker: its index-0 cap is seated to the published endpoint
     // by cap_install_defaults (it is spawned after the init's publish).
-    int const w = kos::thread::spawn(worker, nullptr, "worker", WORKER_PRIO);
-    if (w < 0)
+    auto const w = kos::thread::spawn(worker, nullptr, "worker", WORKER_PRIO);
+    if (not w.valid())
     {
         kos::print("[k64console] ERROR: worker spawn failed\n");
     }
 #endif
 
     // Park: keep the app alive (root exiting would tear the system down). Fall back to a
-    // sleep park if the semaphore could not be created (else a -1 handle hot-loops sem_wait).
-    int const idle = kos_sem_create(0);
+    // sleep park if the semaphore could not be created, else an unmintable handle hot-loops
+    // sem_wait.
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

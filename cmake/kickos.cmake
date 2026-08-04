@@ -29,6 +29,9 @@
 # ---------------------------------------------------------------------------
 get_filename_component(KICKOS_BOARDS_DIR "${CMAKE_CURRENT_LIST_DIR}/../boards" ABSOLUTE)
 
+# List-dir-relative: cap_table.cmake must be installed beside this file.
+include("${CMAKE_CURRENT_LIST_DIR}/cap_table.cmake")
+
 # In-tree vs installed-package signal: a source tree has boards/ beside cmake/; an
 # installed package ships kickos.cmake with no boards/ sibling. Named once; every
 # in-tree-vs-consumer decision below reads this one variable.
@@ -223,10 +226,19 @@ function(kickos_emit_image target)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_add_application(<name> SOURCES <src...> BOARD <board> [FULL_CXX])
+# kickos_add_application(<name> SOURCES <src...> BOARD <board> [FULL_CXX]
+#                        [CAPABILITIES <n>] [CAPABILITIES_OPTIONAL <m>])
 #   Links the app against the KickOS component libraries and emits the image.
 #   For sim this is a runnable host ELF whose entry (host main) lives in the
 #   sim arch backend; the app must define kickos_app_main().
+#
+#   CAPABILITIES is this app's PEAK of concurrently held capabilities, one of the three
+#   terms the per-task table width is summed from (cmake/cap_table.cmake). Omitted, the app
+#   gets KICKOS_CAP_APP_PEAK_DEFAULT.
+#   CAPABILITIES_OPTIONAL is further peak whose holders reclaim and self-skip when they
+#   cannot allocate, so it is granted only where supply covers it and never makes a board
+#   fail to configure. Out of tree the declaration is recorded and NOT acted on: the width
+#   is fixed by the installed package the app links.
 #
 #   OPTIONAL SUGAR. The supported out-of-tree path is plain CMake -- find_package
 #   (KickOS), add_executable, target_link_libraries(app PRIVATE kickos) [or
@@ -240,7 +252,8 @@ endfunction()
 #   zero-overhead. No effect on the sim (already hosted against host libstdc++).
 # ---------------------------------------------------------------------------
 function(kickos_add_application name)
-  cmake_parse_arguments(APP "FULL_CXX" "BOARD" "SOURCES" ${ARGN})
+  cmake_parse_arguments(APP "FULL_CXX"
+    "BOARD;CAPABILITIES;CAPABILITIES_OPTIONAL" "SOURCES" ${ARGN})
   if(NOT APP_SOURCES)
     message(FATAL_ERROR "kickos_add_application(${name}): SOURCES required")
   endif()
@@ -267,6 +280,18 @@ function(kickos_add_application name)
   # produce the same image; what is left here is board validation and the image
   # emission that cannot ride a usage requirement.
   add_executable(${name} ${APP_SOURCES})
+  # Only an EXPLICIT declaration is recorded, so the sum's diagnostics can name the app that
+  # set the width rather than the default.
+  if(DEFINED APP_CAPABILITIES OR DEFINED APP_CAPABILITIES_OPTIONAL)
+    if(NOT DEFINED APP_CAPABILITIES)
+      set(APP_CAPABILITIES "${KICKOS_CAP_APP_PEAK_DEFAULT}")
+    endif()
+    if(NOT DEFINED APP_CAPABILITIES_OPTIONAL)
+      set(APP_CAPABILITIES_OPTIONAL 0)
+    endif()
+    kickos_declare_app_capabilities(${name}
+      "${APP_CAPABILITIES}" "${APP_CAPABILITIES_OPTIONAL}")
+  endif()
   # Warning policy only on our own code: in tree every app under user/apps is ours;
   # out of tree the application target belongs to the consumer.
   if(KICKOS_IN_TREE)
@@ -401,7 +426,7 @@ function(kickos_add_qemu_test)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# kickos_add_board_provider(<name> SOURCE <cc> [LINK <libs...>])
+# kickos_add_board_provider(<name> SOURCE <cc> [LINK <libs...>] [RETAINED_CAPS <n>])
 #   A board-descriptor provider library (pinmap or service-list): a freestanding
 #   STATIC lib defining one board-descriptor symbol (kickos_board_pinmap or
 #   kickos_board_services), seeing only system/include, exported to KickOSTargets.
@@ -410,12 +435,22 @@ endfunction()
 #   forget the install). LINK carries a service list's board driver targets (they
 #   back-reference kickos_user, so they join the rescan link group); a pure pinmap
 #   provider passes none. The target is kickos_<name>.
+#
+#   RETAINED_CAPS is how many capabilities a SERVICE LIST leaves in root's table for the
+#   life of the image, one of the three terms the per-task table width is summed from
+#   (cmake/cap_table.cmake). It is RETENTION, not the bring-up peak: a list whose bring-up
+#   transiently holds more than its retention plus the app's peak must declare the
+#   transient. A pinmap provider holds none and passes nothing.
 function(kickos_add_board_provider name)
-  cmake_parse_arguments(BP "" "SOURCE" "LINK" ${ARGN})
+  cmake_parse_arguments(BP "" "SOURCE;RETAINED_CAPS" "LINK" ${ARGN})
   if(NOT BP_SOURCE)
     message(FATAL_ERROR "kickos_add_board_provider(${name}): SOURCE required")
   endif()
   add_library(kickos_${name} STATIC ${BP_SOURCE})
+  if(NOT DEFINED BP_RETAINED_CAPS)
+    set(BP_RETAINED_CAPS 0)
+  endif()
+  set_target_properties(kickos_${name} PROPERTIES KICKOS_CAP_RETAINED "${BP_RETAINED_CAPS}")
   kickos_apply_freestanding(kickos_${name})
   target_include_directories(kickos_${name} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")

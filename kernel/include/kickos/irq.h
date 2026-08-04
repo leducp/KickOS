@@ -80,8 +80,10 @@ namespace kickos
     // caller must hold AUTH_IRQ; claims `line` (one owner, no stealing), allocates a
     // binding, and installs a full-rights CAP_IRQ into `c`'s table. The line is left
     // MASKED with needs_rearm set, so the first irq_wait arms it in the thread that
-    // will consume the event. -> cap handle, or -KOS_E*.
-    int irq_claim(Thread* c, int line, unsigned int flags);
+    // will consume the event. -> 0 with the cap in *out_cap, or -KOS_E*: the two
+    // exhaustion cases are distinct, -KOS_ENOMEM for the binding pool and -KOS_EMFILE
+    // for the caller's own table.
+    int irq_claim(Thread* c, int line, unsigned int flags, uint32_t* out_cap);
     // Block until the line fires; 0, or -KOS_E*. Auto-rearms the previously-consumed line
     // on entry, so `wait; service` alone keeps receiving IRQs and an explicit irq_ack is
     // OPTIONAL. Needs CAP_WAIT on the cap.
@@ -89,25 +91,25 @@ namespace kickos
     // -KOS_ECANCELED means the caller was cancelled (thread_kill): the wait was abandoned
     // and the line NOT rearmed, and every later irq_wait answers the same. The one
     // cancellation point in the kernel, and the only park a third party may end.
-    int irq_wait(Thread* c, int cap_handle);
+    int irq_wait(Thread* c, uint32_t cap_handle);
     // Is `t` parked inside irq_wait right now? The predicate thread_kill needs before it
     // may deliver a wait_result to a parked thread. Caller holds IrqLock.
     bool irq_thread_parked(Thread const* t);
     // Unmask the previously-consumed line so it can fire again; 0, or -KOS_E*.
     // OPTIONAL and idempotent: the next irq_wait rearms anyway, and a redundant
     // ack after that wait is a no-op (needs_rearm already false). Needs CAP_WAIT.
-    int irq_ack(Thread* c, int cap_handle);
+    int irq_ack(Thread* c, uint32_t cap_handle);
     // Discard whatever the controller has latched for this line, right now; 0, or
     // -KOS_E*. Needs CAP_WAIT. The ONLY way an EDGE driver can drop a pending it
     // knows is stale: rearm deliberately preserves an EDGE latch (the coalesce contract),
     // and the controller sits in arch_reserved_blocks, so no grant reaches the register.
     // Does NOT unmask; the intended shape is wait; read the device; discard; ack.
-    int irq_discard(Thread* c, int cap_handle);
+    int irq_discard(Thread* c, uint32_t cap_handle);
     // Software-post the binding's notification WITHOUT touching the controller: the
     // TX doorbell a service thread rings so the IRQ thread (sole owner of every
     // peripheral register) primes a transfer. Needs CAP_SIGNAL. Distinct from
     // arch_irq_inject, which raises AT the controller and simulates a device.
-    int irq_notify(Thread* c, int cap_handle);
+    int irq_notify(Thread* c, uint32_t cap_handle);
 
     // Drop one reference to IRQ binding `obj_handle`; release the line and free the
     // slot at refs -> 0. Called only by the cap layer's accounting.

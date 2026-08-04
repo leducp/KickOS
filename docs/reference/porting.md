@@ -879,7 +879,7 @@ requirement, for a zero-skip run:
 | --- | --- | --- | --- | --- |
 | `KICKOS_MAX_THREADS` | 16 (`config/system.h:42`) | `thread.h:199` | **>= 4** | 2 |
 | `KICKOS_MAX_SEMAPHORES` | 16 (`system.h:24`) | `instance.h:65` | **>= 6** | 4 (f302) |
-| `KICKOS_MAX_HANDLES` | 12 (`system.h:55`) | per-thread cap table | **>= 9** | 9 |
+| `KICKOS_CAP_TABLE_SUPPLY` | 16 (`system.h`) | per-task cap table | **>= 10** | 7 |
 | `KICKOS_MAX_MUTEXES` | 8 (`system.h:30`) | `instance.h:75` | >= 2 | 4 (c8) |
 | `KICKOS_MAX_ENDPOINTS` | 4 (`system.h:37`) | `instance.h:83` | >= 1 | 4 |
 | `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h:99`) | `instance.h:99` | >= 1 | 4 (f302) |
@@ -896,10 +896,15 @@ deepest pool worker 592 B, root 1,048 B, idle 76 B -- a 488 B (31.8%) margin on 
 root stack. That is the pattern to copy on a tight part: measure the watermark, then
 provision, rather than provisioning for comfort.
 
-No cap-table FLOOR is asserted in-tree. `cap.h` asserts only that the reserved range
-leaves a dynamic slot (`KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC`) and that a full
-grant list fits (`KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`); the suite's own floor is
-measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
+The cap table is the one row that is NOT a board knob. `KICKOS_MAX_HANDLES` is summed at
+configure from three declarations -- the kernel's reserved range, the chosen service list's
+`RETAINED_CAPS`, and the app's `CAPABILITIES` (`cmake/cap_table.cmake`) -- and checked
+against the board's `KICKOS_CAP_TABLE_SUPPLY`, which is all a board states. A demand that
+exceeds supply is a configure FATAL naming every term; a board too small for an app's
+OPTIONAL peak still configures, and the arms that wanted those slots reclaim and skip.
+`cap.h` keeps both asserts (`KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC`, and
+`KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`) as the backstop for a build that bypasses
+the sum. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
 worker: `call_infoless_revert`, four mutually-dependent workers spawned before any join
 (`../../user/apps/common/selftest/main.cc:2212-2215`), and `mutex_chain_boost`, a four-link
 boost chain (`main.cc:1010-1013`). `call_infoless_revert` is the only case that asks first
@@ -932,7 +937,10 @@ so they take no pool slot -- which is why `f302nucleo` runs a two-thread app at
 `KICKOS_MAX_THREADS 2`. The knob dominates static RAM: on `f302nucleo` `selftest` at
 `KICKOS_MAX_HANDLES=9` and heap 0, `g_instance` measures 2,448 bytes at 2 threads,
 3,296 at 4, 4,152 at 6 and 5,000 at 8 -- **about 424 bytes per slot**, because each slot
-buys a `Domain` too (`system.h:61`).
+buys a `Domain` too (`system.h:61`). Those four figures were taken at a 9-slot cap table,
+a width no board in the fleet configures: `KICKOS_MAX_HANDLES` is not a per-chip knob, it
+is the summed total described above, and part of the per-thread cost is the cap run itself,
+so neither the base nor the slope carries over to a table of another width unmeasured.
 
 The suite also allocates from the arena and never returns it: one 4 KiB page
 (`main.cc:504`) and three 256-byte domain regions (`:1505`, `:2901-2902`), 4,864 bytes in
@@ -946,9 +954,9 @@ Measured, not assumed -- but measured BEFORE the `124b68c` right-size, which too
 `KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_MAX_THREADS` to 3. Every byte column below is
 therefore the older link; the METHOD is what to reuse, and step 5 of the checklist is how.
 `f302nucleo` `selftest` at the then-shipped `f302nucleo-st` provisioning
-(`cmake/presets/arm.json`, `f302nucleo-st`; `KICKOS_MAX_HANDLES` stays at the chip's 9,
-`arch/arm/chip/stm32f302/include/kickos/board_config.h`), `-Os`, no-MPU 16-byte
-granule. `g_instance` measures 3,336:
+(`cmake/presets/arm.json`, `f302nucleo-st`; the cap table was 9 slots wide, a width no
+board configures today -- `KICKOS_MAX_HANDLES` is summed at configure and no chip header
+states it), `-Os`, no-MPU 16-byte granule. `g_instance` measures 3,336:
 
     static  (.data 380 + .bss 8,260 + 32 alignment)   8,672
     .userheap  (KICKOS_USER_HEAP_SIZE=0)                  0
@@ -972,7 +980,10 @@ shared domain region and the two cross-domain buffers those four un-skipped case
 take. That is **a 32 KiB part**, and an enforcing chip pays an `.appdata` window
 besides, plus power-of-two natural alignment on every block where
 `arch_mpu_region_pow2()` is 1 (a base+limit backend pays only one granule per block). One of
-the five is not a RAM question at all: `mutex_deadlock` wants `KICKOS_MAX_HANDLES` above 9.
+the five is not a RAM question at all: `mutex_deadlock` wants the suite's 3 OPTIONAL
+capabilities, so it needs a board whose `KICKOS_CAP_TABLE_SUPPLY` covers the full summed
+demand of 10 -- 2 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandatory peak + 3
+optional. Every small part in the fleet supplies 7.
 `f411disco` is the zero-skip
 witness -- 128 KiB SRAM, 0 skips -- and it provisions `KICKOS_MAX_THREADS 8`
 (`../../boards/f411disco/include/kickos/board_config.h:17`), above the measured 4-thread
@@ -997,7 +1008,7 @@ Four are the concurrent-worker ceiling or the arena; one is the cap table:
 | --- | --- | --- | --- |
 | `mutex_chain_boost` | pool too small | 4th worker against N = 3 | `main.cc` (`t_mutex_chain`) |
 | `call_infoless_revert` | pool too small (4 interdependent workers) | 4th worker against N = 3 | `main.cc` (`t_call_infoless_revert`) |
-| `mutex_deadlock` | pool too small | 6 live caps against 3 free at `KICKOS_MAX_HANDLES 9` | `main.cc` (`t_mutex_deadlock`) |
+| `mutex_deadlock` | pool too small | 6 live caps against the 3 free the 7-slot supply leaves; the suite's 3 OPTIONAL slots are not granted | `main.cc` (`t_mutex_deadlock`) |
 | `irq_as_event` | 4 KiB MMIO-page alloc failed -- board too small | one 4,096 B block | `main.cc` (`t_irqdrv`) |
 | `mem_self_grant` | arena too small to reach the region ceiling | the `kos_ram_alloc(1)` ladder | `main.cc` (`t_selfgrant`) |
 
@@ -1018,7 +1029,14 @@ LINK time on boards that opt in (see *The SRAM model*). At the current
 4th-worker skips are honest under either reading.
 
 **`mutex_deadlock` is mislabelled differently, and no arena work will ever un-skip it**:
-its guard is `KICKOS_MAX_HANDLES = 9` / semaphore exhaustion, not memory at all.
+its guard is cap-table and semaphore exhaustion, not memory at all. The two halves of a
+declared demand fail in different places, and this arm is the second kind. A **peak** that
+the board's supply cannot seat is a configure FATAL naming every term, so it never reaches
+a run at all. An **OPTIONAL** peak that does not fit is simply not granted: the width stays
+at the mandatory sum, configure announces the dropped slots and the app that declared them,
+and the arm that wanted them reclaims what it did get and skips itself
+(`cmake/cap_table.cmake`). Granting them here means raising `KICKOS_CAP_TABLE_SUPPLY`, and
+the chip's `board_config.h` records why that is not affordable on this part.
 
 The genuine 16 KiB limits that remain are small and specific: `irq_as_event` needs one
 4,096 B block, and `caller_stack`'s accept half needs 2,064 B.

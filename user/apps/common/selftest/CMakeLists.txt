@@ -28,22 +28,10 @@ endif()
 # the UART service's 1 KiB shared ring block and the four shape-specific arena probes
 # (endpoint_crossdomain, mem_self_grant_nonpow2, region_mode, mem_self_grant). uart_service is
 # already covered on sim and on every larger board, so running it here would buy duplicate
-# coverage and cost four gated cases. Refuse it BY NAME rather than let the arena decide: it
-# skipped here for years only because the block did not fit, and the cap-table narrowing freed
-# just enough .bss for it to start fitting.
+# coverage and cost four gated cases. Refuse it BY NAME rather than let the arena decide: left
+# to the allocator it flips with a few tens of bytes of unrelated static demand.
 if(KICKOS_BOARD STREQUAL "microbit")
   list(APPEND _selftest_defs KICKOS_SELFTEST_NO_UART_SERVICE=1)
-endif()
-
-# cap_capacity is refused BY NAME on microbit, the way uart_service is above, rather
-# than by letting an arena outcome decide: the arm's THREE file-scope result globals come
-# out of a 16 KiB arena and were enough to flip mem_self_grant from RUN to SKIP. On a
-# single-class board the arm reports PARTIAL anyway -- "nothing to observe" -- so what is
-# given up is a permission-set entry, not coverage; the sim and qemu carry the real
-# witness. If microbit ever declares a class mix, this exclusion is the first thing to go.
-if(KICKOS_BOARD STREQUAL "microbit")
-  set(KICKOS_SELFTEST_NO_CAP_CAPACITY 1)
-  list(APPEND _selftest_defs KICKOS_SELFTEST_NO_CAP_CAPACITY=1)
 endif()
 
 # The two 64 KiB FLASH parts (stm32f103 bluepill-c8, stm32f302) build the suite as TWO
@@ -52,27 +40,25 @@ endif()
 # `selftest` is part 1 and `selftest_p2` is part 2, each planning 1..N from its own
 # registry, so the bench has to run both to cover the suite.
 #
-# They therefore carry no by-name exclusion of their own, cap_capacity included: that arm
-# sits in region 1 and every arena-sensitive probe (endpoint_crossdomain,
-# mem_self_grant_nonpow2, region_mode, mem_self_grant) sits in region 2, so its globals
-# can no longer reach the image holding the arms they starved on microbit.
-#
 # Undefined on every other board; main.cc then defaults it to 0 and registers everything.
 set(_selftest_split 0)
 if(KICKOS_CHIP STREQUAL "stm32f103" OR KICKOS_CHIP STREQUAL "stm32f302")
   set(_selftest_split 1)
 endif()
 
-# The FULL suite needs more cap slots than a real app: it holds permanent suite caps and
-# peaks at several concurrent own-caps in one arm. The floor and its derivation live in
-# kernel/include/kickos/config/system.h; restating them here is what made this comment go
-# stale twice. Below the floor the suite hard-fails on cap exhaustion by design, which
-# makes the board a non-target for it, not a broken kernel.
+# The suite's PEAK concurrently held capabilities, which only the suite knows. CAPABILITIES
+# must always fit: main's 2 permanent caps (g_lock, g_done) plus the widest mandatory arm's
+# 3 own-caps. CAPABILITIES_OPTIONAL is 3 more for t_mutex_deadlock, which holds 2 mutexes and
+# 4 semaphores at once, reclaims all six, and skips when it cannot allocate them - so a board
+# that cannot grant them stays a target for the rest of the suite. Neither is a sum over the
+# run: every other arm reclaims before the next begins.
 set(_selftest_srcs main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
-kickos_add_application(selftest SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD})
+kickos_add_application(selftest SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD}
+  CAPABILITIES 5 CAPABILITIES_OPTIONAL 3)
 set(_selftest_images selftest)
 if(_selftest_split)
-  kickos_add_application(selftest_p2 SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD})
+  kickos_add_application(selftest_p2 SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD}
+    CAPABILITIES 5 CAPABILITIES_OPTIONAL 3)
   list(APPEND _selftest_images selftest_p2)
   target_compile_definitions(selftest    PRIVATE KICKOS_SELFTEST_PART=1)
   target_compile_definitions(selftest_p2 PRIVATE KICKOS_SELFTEST_PART=2)
@@ -112,16 +98,6 @@ if(KICKOS_ARCH STREQUAL "sim")
   # it, so the free-window arms find nothing to take.
   list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
 endif()
-if(NOT KICKOS_CAP_MULTICLASS AND NOT KICKOS_SELFTEST_NO_CAP_CAPACITY)
-  # One capability class, so a smallest-class request and a default request round to the
-  # SAME run and cap_capacity has no per-task ceiling to observe. Every hardware board is
-  # here by design: they ship the behaviour-identical single-class default, and the sim
-  # carries the mix that witnesses the elastic half for the fleet. Derived from the
-  # class config rather than listed per board, so declaring a mix flips the expectation
-  # with it -- a board that gains a second class and keeps reporting PARTIAL is a gate
-  # failure, which is the point.
-  list(APPEND KICKOS_EXPECT_PARTIALS cap_capacity)
-endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   # The reserved-overlap matrix needs the board to declare at least one
   # arch_reserved_blocks entry. The host and the mps2 parts declare none; the qemu-riscv
@@ -142,10 +118,7 @@ list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
 # shrink together when an arm is deleted and no self-consistent parse can see it; only
 # an expectation from OUTSIDE the image can. The conditions mirror the #if guards around
 # the registration block at the bottom of main.cc, one clause per guard.
-set(_tap_arms 60) # unconditional
-if(KICKOS_SELFTEST_NO_CAP_CAPACITY)
-  math(EXPR _tap_arms "${_tap_arms} - 1") # cap_capacity: excluded on the 16 KiB-arena parts
-endif()
+set(_tap_arms 59) # unconditional
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
 endif()
@@ -166,10 +139,7 @@ endif()
 # These two MUST stay independent expressions, never derived from _tap_arms above: the
 # equality asserted below is only a check while both sides are stated separately, and a
 # new arm has to move a clause on each side.
-set(_tap_arms_p1 44) # every arm in region 1
-if(KICKOS_SELFTEST_NO_CAP_CAPACITY)
-  math(EXPR _tap_arms_p1 "${_tap_arms_p1} - 1") # cap_capacity
-endif()
+set(_tap_arms_p1 43) # every arm in region 1
 
 set(_tap_arms_p2 16) # region 2, unconditional
 if(KICKOS_ENABLE_SELFTEST)
@@ -262,11 +232,10 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   #   irq_as_event: wants a 4 KiB MMIO page out of 16 KiB SRAM
   #   uart_service: PINNED above (KICKOS_SELFTEST_NO_UART_SERVICE), no longer an arena outcome
   # ARENA CLIFF, and the reason uart_service is pinned rather than left to the allocator: this
-  # board sits close enough to the edge that ~1 KiB of new static demand flips FOUR cases
-  # (endpoint_crossdomain, mem_self_grant_nonpow2, region_mode, mem_self_grant) from running to
-  # skipped. The cap-table narrowing freed 64 B and that was enough to reach the tipping point.
-  # Twice this milestone ~28 B has moved an unrelated case. Before adding any static demand
-  # here, diff the whole TAP output, not the verdict: the arm that flips ON is the cause.
+  # board sits close enough to the edge that a few tens of bytes of static demand, in EITHER
+  # direction, flips one of endpoint_crossdomain, mem_self_grant_nonpow2, region_mode or
+  # mem_self_grant between running and skipped. Before changing any static demand here, diff
+  # the whole TAP output and not the verdict: the arm that flips is the cause.
   # Two more arms run their invariant and drop a sub-case, reporting PARTIAL: they count
   # as passes, not skips, and carry their own permission set.
   #   caller_stack: the arena cannot spare a caller-owned stack

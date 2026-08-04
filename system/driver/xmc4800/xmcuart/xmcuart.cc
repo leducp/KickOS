@@ -135,8 +135,8 @@ int xmcuart_console_start(struct kos_service_cfg const* cfg)
     uint32_t const win_size = cfg->mmio_window;
     uint8_t const driver_prio = cfg->prio;
 
-    int const ep = kos_endpoint_create();
-    if (ep < 0)
+    kos_cap_t ep = KOS_CAP_NONE;
+    if (kos_endpoint_create(&ep) != 0)
     {
         kos::print("[xmcuart] ERROR: endpoint_create failed\n");
         return -1;
@@ -158,10 +158,10 @@ int xmcuart_console_start(struct kos_service_cfg const* cfg)
     //    re-delegate. driver_prio must be >= every client (D9: rendezvous has no PI).
     //    On failure the helper closes ep FIRST, which reclaims the console, and only
     //    then reports, so the tag reaches the wire.
-    int const drv = kickos::driver::spawn_unprivileged(
+    auto const drv = kickos::driver::spawn_unprivileged(
         xmcuart_console_driver, win_base, win_size, cfg->name, driver_prio, ep,
         "[xmcuart] ERROR: driver spawn failed\n");
-    if (drv < 0)
+    if (not drv.valid())
     {
         return -1;
     }

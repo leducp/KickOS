@@ -234,36 +234,37 @@ int main(int, char**)
 
     // EDGE is safe only because the driver's DR read clears RXNE before the next
     // kos_irq_wait re-arms the line.
-    int const irq = kos_irq_claim(SPI1_IRQ, KOS_IRQ_EDGE);
-    if (irq < 0)
+    kos_cap_t irq = KOS_CAP_NONE;
+    if (kos_irq_claim(SPI1_IRQ, KOS_IRQ_EDGE, &irq) != 0)
     {
         kos::print("[f411spi] ERROR: irq_claim(SPI1) failed\n");
     }
     kos_cap_grant const caps[1] = {{irq, KOS_CAP_WAIT}};
 
-    int drv = kos::thread::spawn(spi_driver, reinterpret_cast<void*>(SPI1_BASE),
-                                 "f411spi", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                 /*mem=*/nullptr, /*mem_size=*/0,
-                                 /*stack=*/nullptr, /*stack_size=*/0,
-                                 /*mmio=*/reinterpret_cast<void*>(SPI1_BASE), SPI1_WINDOW,
-                                 caps, 1);
-    if (drv < 0)
+    auto drv = kos::thread::spawn(spi_driver, reinterpret_cast<void*>(SPI1_BASE),
+                                  "f411spi", 10, KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                  /*mem=*/nullptr, /*mem_size=*/0,
+                                  /*stack=*/nullptr, /*stack_size=*/0,
+                                  /*mmio=*/reinterpret_cast<void*>(SPI1_BASE), SPI1_WINDOW,
+                                  caps, 1);
+    if (not drv.valid())
     {
         // The console is the only oracle at the bench: without this line a failed spawn
         // and a dead board look identical.
         kos::print("[f411spi] ERROR: driver spawn failed\n");
     }
-    if (irq >= 0)
+    if (irq != KOS_CAP_NONE)
     {
         kos_handle_close(irq); // the driver is the sole holder from here
     }
 
-    // Sleep park when the semaphore could not be created: a -1 handle would spin a hot
-    // loop of failing sem_wait syscalls.
-    int idle = kos_sem_create(0);
+    // Sleep park when the semaphore could not be created: an unmintable handle would spin
+    // a hot loop of failing sem_wait syscalls.
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
-        if (idle < 0)
+        if (idle == KOS_CAP_NONE)
         {
             kos_sleep_ns(1000000000ull);
             continue;

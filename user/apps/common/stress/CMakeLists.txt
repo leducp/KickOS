@@ -14,8 +14,10 @@ endif()
 
 # Bounded, self-verifying concurrency stress -- exercises scheduler + semaphores +
 # the tickless timer under many mixed-priority threads, then asserts conservation.
-# Sim gate: deterministic virtual time, so it is a reliable CI check. On MCUs it is
-# a manual soak (real timing), run per board.
+# The sim has NO virtual clock: arch_clock_now reads CLOCK_MONOTONIC and the one-shot is a
+# real timer_create delivering SIGALRM, so this gate is wall-clock timed like the MCU runs
+# and its conservation counts, not its timings, are what it asserts. On MCUs it is a
+# manual soak, run per board.
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(NAME sim_stress COMMAND "$<TARGET_FILE:stress>")
   # KICKOS_PANIC_REGEX, not a lowercase "panic|unreachable": CTest's

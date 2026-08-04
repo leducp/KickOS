@@ -242,11 +242,11 @@ namespace
     void callreply_server(void*) // caps: E(WAIT)@1, done@2
     {
         unsigned char buf[16];
-        struct kos_recv_info info = {0, static_cast<int32_t>(-1)};
+        struct kos_recv_info info = {0, KOS_CAP_NONE};
         for (uint32_t i = 0; i < CALLREPLY_REPS; i++)
         {
             long n = kos_recv(1, buf, sizeof(buf), &info);
-            if (n >= 0 and info.reply_cap >= 0)
+            if (n >= 0 and info.reply_cap != KOS_CAP_NONE)
             {
                 kos_reply(info.reply_cap, buf, static_cast<size_t>(n)); // echo the request back
             }
@@ -286,8 +286,8 @@ namespace
     }
     void measure_callreply()
     {
-        int ep = kos_endpoint_create();
-        if (ep < 0)
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (kos_endpoint_create(&ep) != 0)
         {
             kos::print("  call/reply: SKIP (no endpoint)\n");
             return;
@@ -295,9 +295,9 @@ namespace
         kos::Semaphore done(0);
         kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {done.id(), CH_FULL}};   // E(WAIT)@1, done@2
         kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}}; // E(SIGNAL)@1, done@2
-        int sv = kos::thread::spawn_caps(callreply_server, nullptr, "cr_srv", 1, scaps, 2);
-        int cl = kos::thread::spawn_caps(callreply_caller, nullptr, "cr_cl", 2, ccaps, 2);
-        if (sv < 0 or cl < 0)
+        auto sv = kos::thread::spawn_caps(callreply_server, nullptr, "cr_srv", 1, scaps, 2);
+        auto cl = kos::thread::spawn_caps(callreply_caller, nullptr, "cr_cl", 2, ccaps, 2);
+        if (not sv.valid() or not cl.valid())
         {
             // The bench needs both peers or neither can make progress (a lone thread parks
             // forever). Close and skip; never fires where the pool holds 2 (the minimum).
@@ -331,9 +331,9 @@ int main(int, char**)
     // smallest pool (KICKOS_MAX_THREADS == 2).
     kos_cap_grant acaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}};                    // A@1, B@2
     kos_cap_grant bcaps[] = {{a.id(), CH_FULL}, {b.id(), CH_FULL}, {gate.id(), CH_FULL}}; // +gate@3
-    int ra = kos::thread::spawn_caps(player_a, nullptr, "bench_a", 1, acaps, 2);
-    int rb = kos::thread::spawn_caps(player_b, nullptr, "bench_b", 1, bcaps, 3);
-    if (ra < 0 or rb < 0)
+    auto ra = kos::thread::spawn_caps(player_a, nullptr, "bench_a", 1, acaps, 2);
+    auto rb = kos::thread::spawn_caps(player_b, nullptr, "bench_b", 1, bcaps, 3);
+    if (not ra.valid() or not rb.valid())
     {
         kos::print("bench: FAILED to spawn players (thread pool too small?)\n");
         kos::Semaphore park(0);

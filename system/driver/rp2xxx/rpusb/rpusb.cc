@@ -419,8 +419,8 @@ int rpusb_console_start(struct kos_service_cfg const* cfg)
     g_shared = static_cast<kickos::usb::Shared*>(blk);
     kickos::usb::shared_init(g_shared);
 
-    int const ep = kos_endpoint_create();
-    if (ep < 0)
+    kos_cap_t ep = KOS_CAP_NONE;
+    if (kos_endpoint_create(&ep) != 0)
     {
         kos::print("[rpusb] ERROR: endpoint_create failed\n");
         return -1;
@@ -440,8 +440,8 @@ int rpusb_console_start(struct kos_service_cfg const* cfg)
     // LEVEL: INTS is a pure OR of sources cleared at the peripheral, and its BUFF_STATUS
     // bit stays asserted until every BUFF_STATUS bit is clear. It comes back MASKED: the
     // IRQ thread's first wait arms it, in the thread that consumes it.
-    int const irq = kos_irq_claim(rpchip::irq::USBCTRL_IRQ, KOS_IRQ_LEVEL);
-    if (irq < 0)
+    kos_cap_t irq = KOS_CAP_NONE;
+    if (kos_irq_claim(rpchip::irq::USBCTRL_IRQ, KOS_IRQ_LEVEL, &irq) != 0)
     {
         kos_handle_close(ep); // closing reclaims the console, so the tag reaches the wire
         kos::print("[rpusb] ERROR: irq_claim failed\n");
@@ -452,15 +452,15 @@ int rpusb_console_start(struct kos_service_cfg const* cfg)
     // block. Strictly ABOVE the service thread: on USB the drain has an enumeration
     // deadline to meet.
     kos_cap_grant const irq_caps[1] = {{irq, KOS_CAP_WAIT}};
-    int const irqt = kos::thread::spawn(rpusb_irq_thread, g_shared, "rpusbirq",
-                                        static_cast<uint8_t>(cfg->prio + 1),
-                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                        /*mem=*/g_shared,
-                                        kickos::usb::KOS_USB_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/reinterpret_cast<void*>(cfg->mmio_base),
-                                        cfg->mmio_window, irq_caps, 1);
-    if (irqt < 0)
+    auto const irqt = kos::thread::spawn(rpusb_irq_thread, g_shared, "rpusbirq",
+                                         static_cast<uint8_t>(cfg->prio + 1),
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                         /*mem=*/g_shared,
+                                         kickos::usb::KOS_USB_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/reinterpret_cast<void*>(cfg->mmio_base),
+                                         cfg->mmio_window, irq_caps, 1);
+    if (not irqt.valid())
     {
         kos_handle_close(irq);
         kos_handle_close(ep); // closing reclaims the console, so the tag reaches the wire
@@ -485,7 +485,7 @@ int rpusb_console_start(struct kos_service_cfg const* cfg)
         {
             kos_handle_close(irq);
             kos_handle_close(ep);
-            (void)kos_thread_kill(irqt);
+            (void)irqt.kill();
             kos::print("[rpusb] ERROR: IRQ thread never reached its loop\n");
             return -1;
         }
@@ -496,18 +496,18 @@ int rpusb_console_start(struct kos_service_cfg const* cfg)
     // The service thread: the endpoint (WAIT) and the SAME line as the DOORBELL (SIGNAL
     // only). No MMIO window: a DEV window has exactly one holder.
     kos_cap_grant const svc_caps[2] = {{ep, KOS_CAP_WAIT}, {irq, KOS_CAP_SIGNAL}};
-    int const svct = kos::thread::spawn(rpusb_service_thread, g_shared, cfg->name,
-                                        cfg->prio, KOS_POLICY_FIFO, 0,
-                                        /*privileged=*/false,
-                                        /*mem=*/g_shared,
-                                        kickos::usb::KOS_USB_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/nullptr, 0, svc_caps, 2);
-    if (svct < 0)
+    auto const svct = kos::thread::spawn(rpusb_service_thread, g_shared, cfg->name,
+                                         cfg->prio, KOS_POLICY_FIFO, 0,
+                                         /*privileged=*/false,
+                                         /*mem=*/g_shared,
+                                         kickos::usb::KOS_USB_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/nullptr, 0, svc_caps, 2);
+    if (not svct.valid())
     {
         kos_handle_close(irq);
         kos_handle_close(ep);
-        (void)kos_thread_kill(irqt); // frees the window, which is what gives the console back
+        (void)irqt.kill(); // frees the window, which is what gives the console back
         kos::print("[rpusb] ERROR: service thread spawn failed\n");
         return -1;
     }

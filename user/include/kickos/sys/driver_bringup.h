@@ -34,26 +34,27 @@ namespace kickos
 namespace driver
 {
 
-inline int spawn_unprivileged(void (*entry)(void*), uintptr_t win_base, uint32_t win_size,
-                              char const* name, uint8_t prio, int ep, char const* fail_tag,
-                              int irq_cap = -1)
+inline kos::thread::Handle spawn_unprivileged(void (*entry)(void*), uintptr_t win_base,
+                                              uint32_t win_size, char const* name, uint8_t prio,
+                                              kos_cap_t ep, char const* fail_tag,
+                                              kos_cap_t irq_cap = KOS_CAP_NONE)
 {
     kos_cap_grant const caps[2] = {
         { /*source_cap=*/ep, /*rights_mask=*/KOS_CAP_WAIT },
         { /*source_cap=*/irq_cap, /*rights_mask=*/KOS_CAP_WAIT },
     };
     uint8_t cap_count = 1;
-    if (irq_cap >= 0)
+    if (irq_cap != KOS_CAP_NONE)
     {
         cap_count = 2;
     }
-    int const drv = kos::thread::spawn(
+    kos::thread::Handle const drv = kos::thread::spawn(
         entry, reinterpret_cast<void*>(win_base), name,
         prio, KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
         /*mem=*/nullptr, /*mem_size=*/0, /*stack=*/nullptr, /*stack_size=*/0,
         /*mmio=*/reinterpret_cast<void*>(win_base), win_size,
         caps, cap_count);
-    if (drv < 0)
+    if (not drv.valid())
     {
         // CLOSE BEFORE PRINTING on a console service: the publish already flipped the
         // console to USER_OWNED, so a kernel-console write here is DROPPED. Closing takes
@@ -85,17 +86,18 @@ inline int spawn_unprivileged(void (*entry)(void*), uintptr_t win_base, uint32_t
 // register window is free, and on a probe failure the service thread is the one that died,
 // so the IRQ thread is still holding it. Without the cancel the tag below prints into a
 // console nothing has given back. It relies on the driver threads sitting ABOVE root, so
-// the cancelled thread runs to its exit before this call returns. -1 (the default) is a
-// single-thread driver, which released the window at its own death.
-inline int console_handover_finish(int ep, char const* fail_tag, int irq_thread = -1)
+// the cancelled thread runs to its exit before this call returns. A default-constructed
+// Handle means a single-thread driver, which released the window at its own death.
+inline int console_handover_finish(kos_cap_t ep, char const* fail_tag,
+                                   kos::thread::Handle irq_thread = {})
 {
     kos_handle_close(ep);
     int const rc = kos_send(KOS_CAP_STDOUT, "", 0);
     if (rc < 0)
     {
-        if (irq_thread >= 0)
+        if (irq_thread.valid())
         {
-            (void)kos_thread_kill(irq_thread);
+            (void)irq_thread.kill();
         }
         kos::print(fail_tag);
         return rc;

@@ -23,9 +23,10 @@ namespace kickos
     // a per-task CAP_SEM capability (cap.h). cap_resolve is the single validate-and-
     // resolve chokepoint (per-task cap-gen guard, then the pool's object-gen guard).
     // sem_wait needs CAP_WAIT, sem_post needs CAP_SIGNAL.
-    int sem_create(int initial)
+    int sem_create(int initial, uint32_t* out_cap)
     {
         IrqLock lock;
+        *out_cap = KCAP_INVALID;
         Thread* c = sched::current();
         if (c == nullptr)
         {
@@ -48,17 +49,18 @@ namespace kickos
         kernel().sem_refs[i] = 1; // this creator's cap is the first reference
         int const obj = kernel().sems.handle_for(i);
         // Install the owning cap with full rights (WAIT|SIGNAL|TRANSFER) in the
-        // creator's table; the returned CAP handle is what userspace sees. A full
-        // table is a clean failure: release the just-claimed sem (refs -> 0).
-        int const cap = cap_install(c, obj, CapType::CAP_SEM,
-                                    CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER);
-        if (cap < 0)
+        // creator's table; that CAP handle is what userspace sees. A full table is a
+        // clean failure: release the just-claimed sem (refs -> 0). The pool refusal above
+        // and this one are DIFFERENT codes and must stay so: the sem here was allocatable.
+        int const rc = cap_install(c, obj, CapType::CAP_SEM,
+                                   CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, out_cap);
+        if (rc != 0)
         {
             kernel().sem_refs[i] = 0;
             kernel().sems.free(obj);
-            return -KOS_ENOMEM; // cap table full
+            return rc;
         }
-        return cap;
+        return 0;
     }
 
     // --- PI-mutex capability (mirrors sem_create) ------------------------------
@@ -66,9 +68,10 @@ namespace kickos
     // CAP_MUTEX capability. Possession IS the lock/unlock authority (no WAIT/SIGNAL
     // split), so the creator cap carries CAP_TRANSFER only and lock/unlock resolve
     // with need == 0. Rollback on a full table mirrors sem_create.
-    int mutex_create()
+    int mutex_create(uint32_t* out_cap)
     {
         IrqLock lock;
+        *out_cap = KCAP_INVALID;
         Thread* c = sched::current();
         if (c == nullptr)
         {
@@ -82,13 +85,13 @@ namespace kickos
         mutex_init(kernel().mutexes.at(i));
         kernel().mutex_refs[i] = 1;
         int const obj = kernel().mutexes.handle_for(i);
-        int const cap = cap_install(c, obj, CapType::CAP_MUTEX, CAP_TRANSFER);
-        if (cap < 0)
+        int const rc = cap_install(c, obj, CapType::CAP_MUTEX, CAP_TRANSFER, out_cap);
+        if (rc != 0)
         {
             kernel().mutex_refs[i] = 0;
             kernel().mutexes.free(obj);
-            return -KOS_ENOMEM; // cap table full
+            return rc;
         }
-        return cap;
+        return 0;
     }
 }

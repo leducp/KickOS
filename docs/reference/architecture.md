@@ -82,22 +82,22 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   ways a region reaches a thread -- a spawn grant, and self-grant -- both gated on `AUTH_MEMORY`.
   Untyped/Retype answers "which memory may this task obtain and from whose budget", and a
   single-owner static arena answers it already, without a derivation object per allocation.
-- **No CNodes and no hierarchical CSpace.** A capability handle is one flat `int32` packing a
-  table index against a 16-bit generation, and the index field is **derived** from
-  `KICKOS_MAX_HANDLES` (`kcap_index_bits_for`, `kernel/include/kickos/cap.h`) rather than fixed:
-  floored at **4 bits**, so a board with 16 slots or fewer keeps the historical layout, and
-  bounded at **15**, because the packed handle comes back through a syscall whose negative
-  returns are error codes and so must stay positive in `int32` (15 + 16 = 31 exactly). Every
-  board in the fleet ships between **7 and 12** slots, so in practice the field is 4 bits
-  everywhere and no table holds more than **16 entries** -- and provisioning a board past 16
-  silently widens its index field to 5 bits, renumbering every handle on that board whose cap-gen
-  is nonzero (a fresh table still has `handle == index`, so the B1 contract is untouched). That is
-  harmless, because no handle value survives a reboot, but it is worth knowing before raising
-  `KICKOS_MAX_HANDLES` casually. Hierarchical CSpace exists to address a
+- **No CNodes and no hierarchical CSpace.** A capability handle is one flat unsigned 32-bit word
+  (`kos_cap_t`) packing a **16-bit** table index against a **16-bit** generation
+  (`kernel/include/kickos/cap.h`). Both widths are FIXED fleet-wide and neither is derived from
+  `KICKOS_MAX_HANDLES`, so the same logical capability prints the same value on every board. The
+  word is spendable in full because the handle no longer travels in an errno-carrying return: a
+  minting syscall returns a status and writes the handle to an out-parameter. One index value is
+  reserved -- the all-ones index is never a slot, which caps a table at `2^16 - 1` entries and is
+  what makes `KOS_CAP_AUTHORITY` and `KOS_CAP_NONE` unmintable. Every board in the fleet ships
+  between **7 and 11** slots -- summed at configure from declared demand, not set per board
+  (`cmake/cap_table.cmake`) -- and widening a table no longer renumbers anything.
+  Hierarchical CSpace exists to address a
   space too large to index directly; at that size the guard/radix machinery would cost more than
   the space it organises. What actually keeps tables small is not the field width but the
-  **static** allocation: the table is embedded in every TCB, at
-  `KICKOS_MAX_THREADS x KICKOS_MAX_HANDLES x 8` bytes of `.bss`.
+  **static** allocation: one slab holds a run per possible task, at
+  `(KICKOS_MAX_THREADS + 2) x KICKOS_MAX_HANDLES x 8` bytes of `.bss`, rounded up to whole
+  chunks.
 - **No derivation tree and no recursive revoke.** Refcounted last-close plus cap-generation
   staling already gives the property that matters (a revoked capability stops working, and a stale
   handle cannot be resurrected). A derivation tree buys *transitive* revoke, which needs
@@ -106,7 +106,7 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   better.
 - **No per-instance (per-pin, per-clock, per-line) capabilities.** Roughly **100 muxable pins** on
   the larger parts, and the cost is not addressing -- the index field would reach them -- it is
-  that the table is **statically embedded in every TCB**: at
+  that a run is **statically reserved for every possible task**: at
   `KICKOS_MAX_THREADS x KICKOS_MAX_HANDLES x 8` bytes, a 100-slot table is **12,800 bytes** of
   `.bss` at the fleet's `KICKOS_MAX_THREADS` of 16, and still 1,600 bytes on the two-thread tiny
   boards, against a measured boot arena of 6,560 bytes on `bluepill-c8`. Worse, the requirement is
@@ -424,10 +424,10 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
   error as the **negated** code `-KOS_Exxx`; a success -- a handle, a count, a byte-count -- is
   **non-negative**, so `rc < 0` is unambiguously an error and never aliases a valid handle/count
   (handles are bounded well under `INT_MAX`, counts stay small). The code set mirrors POSIX
-  magnitudes -- `EPERM` `ESRCH` `EBADF` `ENOMEM` `EFAULT` `EBUSY` `EINVAL` `EPIPE` `EDEADLK`
-  `ENOSYS` -- plus **`EOWNERDEAD`**, the robust-mutex case: a mutex *acquired* while its prior
-  owner died holding it, still returned negative (`-KOS_EOWNERDEAD`) for the caller to
-  special-case as HELD. Two of those name conditions with no POSIX analogue in this kernel:
+  magnitudes -- `EPERM` `ESRCH` `EBADF` `ENOMEM` `EFAULT` `EBUSY` `EINVAL` `EMFILE` `EPIPE`
+  `EDEADLK` `ENOSYS` -- plus **`EOWNERDEAD`**, the robust-mutex case: a mutex *acquired*
+  while its prior owner died holding it, still returned negative (`-KOS_EOWNERDEAD`) for the
+  caller to special-case as HELD. Two of those name conditions with no POSIX analogue in this kernel:
   **`ESRCH`** is a one-shot reply cap whose parked caller is gone (aborted or reused), and
   **`ENOSYS`** is an arch backend that does not implement the call on this chip -- the
   declining fallback TU (e.g. `arch/common/arch_pinmux_set_default.cc`), so an unported syscall
@@ -838,12 +838,20 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
 `kernel/syscall/cap.cc`, `kernel/syscall/syscall.cc`.
 
 - **Per-task typed handle table, not global ids or fds.** A global object id every task can name
-  is ambient authority -- the opposite of the isolation pillar. Each `Thread` embeds a fixed
-  `CapEntry handles[KICKOS_MAX_HANDLES]` (default **10**; the four tiny boards -- nRF51, F302,
-  and both F103s -- floor at **7**, which is `KICKOS_CAP_FIRST_DYNAMIC` + the selftest's 2
-  permanent caps + a 3-own-cap test peak, so 7 is the full-selftest prerequisite rather than an
-  arbitrary minimum: a board below it still runs KickOS, since real apps use 1-3 caps, but the
-  suite hard-fails there on cap exhaustion by design); a `CapEntry` is
+  is ambient authority -- the opposite of the isolation pillar. Each `Thread` holds a `CapRun`,
+  a directory of fixed-size `CapEntry` chunks reserved from one static slab AT SPAWN -- every
+  chunk or the spawn fails, and `cap_install` never allocates, which is what keeps a client
+  driving a server's reply mint inside the server's own run. A table that fits one chunk
+  (`KCAP_CHUNK_TARGET`, 8) compiles a FLAT path with no directory, no shift and no mask, and its
+  run is exactly the declared width; wider tables reserve a ceiling count of chunks, so the last
+  chunk's tail is paid for and unaddressable. The addressable width is a configure-time SUM of
+  three declarations -- the kernel's reserved range, the chosen service list's `RETAINED_CAPS`,
+  and the app's declared `CAPABILITIES` peak -- checked against the board's
+  `KICKOS_CAP_TABLE_SUPPLY`,
+  which is the only capability figure a board states (**10** where nothing retains and the
+  selftest's optional peak is granted; **11** on the two SPI service lists; **7** on the four
+  tiny boards, whose supply clamps the optional peak away, so the arms that wanted it reclaim
+  and skip); a `CapEntry` is
   8 bytes = (global object handle, `CapType`, rights, cap-gen). Handles are **opaque** to
   userspace (never assume an array index). The table is a pure per-task naming+rights layer that
   WRAPs the unchanged global object pools (`slotpool.h`), it does not replace them: object
@@ -873,9 +881,10 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
   board's clock/time-service cap. Axis-3 authority is deliberately **not** one of them: the
   authority word names no pool object, holds no refcount and bumps no generation, so it lives in
   the TCB as `Thread::authority` (8 bits in existing padding) and costs no index on any board.
-  `KOS_CAP_AUTHORITY` survives as a **pseudo-handle** -- `INT32_MAX`, a value the handle codec
-  provably cannot mint, pinned by a `cap.h` static_assert -- so `kos_cap_narrow` still has a name
-  for the word without the word owning a slot. **The authority width is 8 bits**, bounded by
+  `KOS_CAP_AUTHORITY` survives as a **pseudo-handle** -- `0x7FFFFFFF`, whose index field is the
+  all-ones value the codec's capacity rule keeps out of every table, pinned by a `cap.h`
+  static_assert -- so `kos_cap_narrow` still has a name for the word without the word owning a
+  slot. **The authority width is 8 bits**, bounded by
   `Thread::authority` and `kos_thread_params::authority` alike: six are defined, so a seventh and
   eighth cost nothing and a ninth widens both fields. An
   **own-create** (`sem`/`mutex`/`endpoint` create) scans placement from
@@ -884,8 +893,8 @@ Book ch.8.2.** The contract below is code-synced to `kernel/include/kickos/cap.h
   by explicit spawn delegation, whose `i+1` packing lands delegated cap 0 on the reserved clock
   index. Userspace only *names* a reserved slot by these constants -- it never chooses the
   index. The range is not frozen, but either direction is an ABI break: renumber **downward** only
-  for a slot nothing seats, and only as one commit with the board `KICKOS_MAX_HANDLES` values that
-  absorb it, keeping the usable dynamic count constant; **append** by raising the last reserved
+  for a slot nothing seats, keeping the usable dynamic count constant -- the width follows on its
+  own, since the reserved range is one of the terms it is summed from; **append** by raising the last reserved
   index and `KICKOS_CAP_FIRST_DYNAMIC` together, which costs one slot on every table in the fleet
   -- so weigh it first against putting the state in the TCB, as the authority word does. The
   `cap.h` static_assert floors the dynamic count at >=1 either way.

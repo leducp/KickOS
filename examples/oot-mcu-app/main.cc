@@ -34,7 +34,8 @@ int main(int, char**)
     kos::thread::spawn(blinker, nullptr, "blink", 10);
 
     // Bare metal has nowhere to return to, so the root thread parks forever.
-    int idle = kos_sem_create(0);
+    kos_cap_t idle = KOS_CAP_NONE;
+    (void)kos_sem_create(0, &idle);
     while (true)
     {
         kos_sem_wait(idle);

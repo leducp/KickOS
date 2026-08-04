@@ -655,7 +655,7 @@ inline uint32_t tx_write(Shared* sh, unsigned char const* p, uint32_t n)
 // ---------------------------------------------------------------------------------
 // The service thread. Parks in recv, replies out of ring state, never touches the device.
 // A kos_call is a <kickos/sys/uart.h> frame; a plain send is a raw console write.
-inline void reply_status(int reply_cap, int32_t status, uint16_t len)
+inline void reply_status(kos_cap_t reply_cap, int32_t status, uint16_t len)
 {
     struct kos_uart_rsp rsp;
     rsp.status = status;
@@ -664,9 +664,9 @@ inline void reply_status(int reply_cap, int32_t status, uint16_t len)
     (void)kos_reply(reply_cap, &rsp, sizeof(rsp));
 }
 
-inline void serve_one(Shared* sh, unsigned char const* msg, size_t n, int reply_cap)
+inline void serve_one(Shared* sh, unsigned char const* msg, size_t n, kos_cap_t reply_cap)
 {
-    if (reply_cap < 0)
+    if (reply_cap == KOS_CAP_NONE)
     {
         return; // a plain send, not a call: nothing to reply to
     }
@@ -757,7 +757,7 @@ inline void console_serve_loop(Shared* sh)
         {
             break; // endpoint dead: let the bring-up respawn us
         }
-        if (info.reply_cap >= 0)
+        if (info.reply_cap != KOS_CAP_NONE)
         {
             serve_one(sh, msg, static_cast<size_t>(n), info.reply_cap);
             continue;

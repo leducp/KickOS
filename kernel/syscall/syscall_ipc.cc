@@ -28,18 +28,6 @@ namespace kickos
         // scheme yet, so every message carries this. Distinct from the "no out-ptr"
         // markers (ipc.badge_out == 0), which mean the receiver asked for no badge.
         constexpr uint32_t KOS_BADGE_NONE = 0;
-
-        // Pack a CAP_REPLY obj word naming the parked caller: bits [23:0] its generational
-        // thread handle, bits [31:24] its call_seq low byte. Fits the 8-byte CapEntry.
-        int32_t reply_cap_obj(Thread* caller)
-        {
-            int const idx = kernel().threads.index_of(caller);
-            KICKOS_ASSERT(idx >= 0); // endpoint_call rejects non-pool callers up front
-            uint32_t const handle =
-                static_cast<uint32_t>(kernel().threads.handle_for(idx)) & 0xFFFFFFu;
-            uint32_t const seq8 = static_cast<uint32_t>(caller->call_seq) & 0xFFu;
-            return static_cast<int32_t>(handle | (seq8 << 24));
-        }
     }
 
     // --- Endpoint capability (IPC rendezvous; mirrors sem_create) ---------------
@@ -48,9 +36,10 @@ namespace kickos
     // (WAIT|SIGNAL|TRANSFER); send needs CAP_SIGNAL, recv needs CAP_WAIT. Two
     // counters init visibly paired: endpoint_refs (all caps) and recv_holders
     // (WAIT-bearing caps). Rollback on a full table unwinds BOTH.
-    int endpoint_create()
+    int endpoint_create(uint32_t* out_cap)
     {
         IrqLock lock;
+        *out_cap = KCAP_INVALID;
         Thread* c = sched::current();
         if (c == nullptr)
         {
@@ -66,17 +55,20 @@ namespace kickos
         ep->recv_waiters = List{};
         ep->recv_holders = 1;         // creator holds a WAIT-bearing cap
         ep->server = nullptr;         // no conventional receiver until the first recv
+        // A reused slot keeps its last occupant's link, and "server null implies unlinked"
+        // must hold from the moment the slot is handed out.
+        ep->next_served = EP_SERVED_NONE;
         kernel().endpoint_refs[i] = 1; // this creator's cap is the first reference
         int const obj = kernel().endpoints.handle_for(i);
-        int const cap = cap_install(c, obj, CapType::CAP_ENDPOINT,
-                                    CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER);
-        if (cap < 0)
+        int const rc = cap_install(c, obj, CapType::CAP_ENDPOINT,
+                                   CAP_WAIT | CAP_SIGNAL | CAP_TRANSFER, out_cap);
+        if (rc != 0)
         {
             kernel().endpoint_refs[i] = 0;
             kernel().endpoints.free(obj);
-            return -KOS_ENOMEM; // cap table full
+            return rc;
         }
-        return cap;
+        return 0;
     }
 
     // Synchronous send: rendezvous with a parked receiver (deliver now) or park.
@@ -84,7 +76,7 @@ namespace kickos
     // this would keep BASEPRI raised across wq_confirm_resume and livelock ARM.
     // Returns bytes transferred (>= 0), or -KOS_E* (EINVAL oversize, EFAULT bad buffer,
     // EBADF/EPERM bad cap or missing SIGNAL, EPIPE dead endpoint / last receiver left).
-    int endpoint_send(int cap, uintptr_t buf, size_t len)
+    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len)
     {
         if (len > KOS_EP_MSG_MAX)
         {
@@ -122,8 +114,8 @@ namespace kickos
                     n = w->ipc.len; // receiver-side datagram truncation (not an error)
                 }
                 ep_copy(w->ipc.buf, buf, n); // sender-ctx copy into the parked receiver's buffer
-                // Plain send: reply_cap == -1 (this is not a call).
-                write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, -1);
+                // Plain send: no reply cap (this is not a call).
+                write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, KCAP_INVALID);
                 w->wait_result = static_cast<intptr_t>(n);
                 sched::wake(w);
                 return static_cast<int>(n); // did not block: no resume barrier
@@ -136,14 +128,14 @@ namespace kickos
             wq_block(e->send_waiters);
         }
         wq_confirm_resume(c, epoch);
-        return static_cast<int>(c->wait_result); // n (>= 0), or -KOS_EPIPE (last receiver left)
+        return static_cast<int32_t>(c->wait_result); // n (>= 0), or -KOS_EPIPE (last receiver left)
     }
 
     // Synchronous recv: take from a parked sender (copy now) or park. FULLY LOCKLESS
     // from dispatch, same reason as endpoint_send. Returns bytes received (>= 0), or
     // -KOS_E* (EFAULT bad buffer/out-ptr, EINVAL misaligned badge, EBADF/EPERM bad cap or
     // missing WAIT). n == 0 is a VALID zero-length signal, not an error.
-    int endpoint_recv(int cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out)
+    int32_t endpoint_recv(uint32_t cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out)
     {
         if (cap_len > KOS_EP_MSG_MAX)
         {
@@ -181,7 +173,7 @@ namespace kickos
             {
                 return -err; // EBADF (bad cap) or EPERM (no WAIT right)
             }
-            e->server = c; // the conventional receiver (D2 boost target)
+            endpoint_server_set(e, c); // the conventional receiver (D2 boost target)
             while (true)
             {
                 Thread* s = wq_pop_highest(e->send_waiters);
@@ -213,7 +205,7 @@ namespace kickos
                     if (not cap_has_free_slot(c))
                     {
                         s->call_state = CALL_NONE;
-                        s->wait_result = -KOS_ENOMEM;
+                        s->wait_result = -KOS_EMFILE; // OUR table, reported to the caller
                         uint8_t const np = thread_effective_prio(c);
                         if (np != c->prio)
                         {
@@ -228,8 +220,10 @@ namespace kickos
                         n = cap_len; // truncate the request into our capacity
                     }
                     ep_copy(buf, s->ipc.buf, n);
-                    int const rcap = cap_install(c, reply_cap_obj(s), CapType::CAP_REPLY, 0);
-                    KICKOS_ASSERT(rcap >= 0); // the probe above guarantees this
+                    uint32_t rcap = KCAP_INVALID;
+                    // Not inside the assert: a compiled-out condition would drop the mint.
+                    int const minted = cap_install_reply(c, s, &rcap);
+                    KICKOS_ASSERT(minted == 0); // cap_has_free_slot probed this above
                     write_recv_info(badge_out, KOS_BADGE_NONE, rcap);
                     // Repurpose the caller's ipc to the reply target (in-place buffer,
                     // reply capacity); it re-parks on OUR reply-donor list.
@@ -251,7 +245,7 @@ namespace kickos
                     n = cap_len; // truncate into the receiver's capacity
                 }
                 ep_copy(buf, s->ipc.buf, n); // receiver-ctx copy from the parked sender
-                write_recv_info(badge_out, KOS_BADGE_NONE, -1);
+                write_recv_info(badge_out, KOS_BADGE_NONE, KCAP_INVALID);
                 s->wait_result = static_cast<intptr_t>(n);
                 sched::wake(s);
                 return static_cast<int>(n);
@@ -263,15 +257,15 @@ namespace kickos
             wq_block(e->recv_waiters);
         }
         wq_confirm_resume(c, epoch);
-        return static_cast<int>(c->wait_result);
+        return static_cast<int32_t>(c->wait_result);
     }
 
     // Synchronous call: deliver a request to the endpoint's server, park until it
     // replies. In-place buffer (request out, reply back). FULLY LOCKLESS from dispatch
     // like SEND/RECV. Returns reply bytes (>= 0), or -KOS_E* (EINVAL oversize, EFAULT
     // bad buffer, EBADF/EPERM bad cap or no SIGNAL, EPIPE dead endpoint or server died,
-    // ENOMEM server table full, ENOSYS server took an info-less recv).
-    int endpoint_call(int cap, uintptr_t buf, size_t send_len, size_t recv_cap)
+    // EMFILE the SERVER's table is full, ENOSYS server took an info-less recv).
+    int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap)
     {
         if (send_len > KOS_EP_MSG_MAX)
         {
@@ -295,7 +289,7 @@ namespace kickos
         // kos_call callers must be spawned pool threads: the reply cap names the
         // caller by its pool slot handle. The root/init TCB spawns and parks, it does
         // not call. Reject a non-pool caller cleanly (covers fast- AND slow-path, so
-        // the recv-side reply_cap_obj(s) is then guaranteed a pool thread).
+        // the recv-side cap_install_reply is then guaranteed a pool thread).
         if (kernel().threads.index_of(c) < 0)
         {
             return -KOS_EPERM;
@@ -335,7 +329,7 @@ namespace kickos
                 }
                 if (not cap_has_free_slot(w))
                 {
-                    return -KOS_ENOMEM; // receiver table full: no side effects yet
+                    return -KOS_EMFILE; // the RECEIVER's table, not ours: no side effects yet
                 }
                 (void)wq_pop_highest(e->recv_waiters); // == w (nothing mutates under the lock)
                 size_t n = send_len;
@@ -345,8 +339,10 @@ namespace kickos
                 }
                 ep_copy(w->ipc.buf, buf, n);
                 c->call_seq++; // new epoch BEFORE packing (the reply cap rides this seq)
-                int const rcap = cap_install(w, reply_cap_obj(c), CapType::CAP_REPLY, 0);
-                KICKOS_ASSERT(rcap >= 0); // probed above
+                uint32_t rcap = KCAP_INVALID;
+                // Not inside the assert: a compiled-out condition would drop the mint.
+                int const minted = cap_install_reply(w, c, &rcap);
+                KICKOS_ASSERT(minted == 0); // cap_has_free_slot probed w above
                 write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, rcap);
                 w->wait_result = static_cast<intptr_t>(n);
                 // Repurpose our own ipc to the reply target (in-place buffer); the
@@ -390,13 +386,13 @@ namespace kickos
         }
         wq_confirm_resume(c, epoch);
         c->call_state = CALL_NONE; // B1: single-writer-clean on EVERY return path
-        return static_cast<int>(c->wait_result); // reply bytes, or -KOS_EPIPE/-KOS_ENOMEM/-KOS_ENOSYS
+        return static_cast<int32_t>(c->wait_result); // reply bytes, or -KOS_EPIPE/-KOS_EMFILE/-KOS_ENOSYS
     }
 
     // Copies the reply into the parked caller's buffer and wakes it. One-shot: the cap is
     // consumed on EVERY exit. Returns 0, or -KOS_E* (EBADF bad or non-reply cap, EFAULT bad
     // reply buffer, ESRCH the caller is gone or aborted).
-    int endpoint_reply(int reply_cap, uintptr_t buf, size_t len)
+    int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len)
     {
         if (len > KOS_EP_MSG_MAX)
         {
@@ -417,12 +413,13 @@ namespace kickos
         {
             return -KOS_EBADF; // bad / non-reply cap
         }
-        Thread* caller = cap_reply_caller(e->obj); // full stale-resolve BEFORE consume
-        // Consume the cap (one-shot): stale the handle + empty the slot, exactly once.
+        Thread* caller = cap_reply_caller(*e); // full stale-resolve BEFORE consume
+        // Consume the cap (one-shot): stale the handle + empty the slot, exactly once. The
+        // release writes the free-list links over `obj`, so it must follow the resolve above.
         e->gen++;
         e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-        e->obj = 0;
         e->rights = 0;
+        cap_run_free_release(c->caps, reply_cap & KCAP_INDEX_MASK, &c->cap_free_head);
         if (caller != nullptr)
         {
             // Must happen in the SAME step as the entry, and before either funnel

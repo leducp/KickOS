@@ -311,7 +311,7 @@ inline uint32_t console_write_all(Shared* sh, unsigned char const* p, uint32_t n
 }
 
 // The service thread. Parks in recv, replies out of ring state, never touches the device.
-inline void reply_status(int reply_cap, int32_t status, uint16_t len)
+inline void reply_status(kos_cap_t reply_cap, int32_t status, uint16_t len)
 {
     struct kos_uart_rsp rsp;
     rsp.status = status;
@@ -320,9 +320,9 @@ inline void reply_status(int reply_cap, int32_t status, uint16_t len)
     (void)kos_reply(reply_cap, &rsp, sizeof(rsp));
 }
 
-inline void serve_one(Shared* sh, unsigned char const* msg, size_t n, int reply_cap)
+inline void serve_one(Shared* sh, unsigned char const* msg, size_t n, kos_cap_t reply_cap)
 {
-    if (reply_cap < 0)
+    if (reply_cap == KOS_CAP_NONE)
     {
         return; // a plain send, not a call: nothing to reply to, and nothing to do
     }

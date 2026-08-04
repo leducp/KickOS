@@ -216,7 +216,7 @@ namespace
     // The SSC service endpoint cap in the ROOT/init thread's table (set by the
     // bring-up, taken ONCE by the app to delegate SIGNAL to its single client).
     // -1 = not up, or already taken.
-    int g_spi0_ep = -1;
+    kos_cap_t g_spi0_ep = KOS_CAP_NONE;
 
     constexpr uint32_t FDR_WORD = FDR_DM_FRACTIONAL | FDR_STEP_367;
     constexpr uint32_t BRG_WORD = BRG_PDIV_13 | BRG_DCTQ_15 | BRG_PCTQ_0;
@@ -294,10 +294,10 @@ namespace
 
 extern "C"
 {
-    int xmc_spi0_take_endpoint(void)
+    kos_cap_t xmc_spi0_take_endpoint(void)
     {
-        int const ep = g_spi0_ep;
-        g_spi0_ep = -1; // one-shot: device slots are caller-named, so ONE client only
+        kos_cap_t const ep = g_spi0_ep;
+        g_spi0_ep = KOS_CAP_NONE; // one-shot: device slots are caller-named, so ONE client only
         return ep;
     }
 
@@ -354,8 +354,8 @@ extern "C"
         // 1. Create the request endpoint E (full rights: WAIT|SIGNAL|TRANSFER). Root KEEPS
         //    this cap so the app, on the same thread and table, can delegate a
         //    SIGNAL-narrowed copy to each client. g_spi0_ep records the handle.
-        int const ep = kos_endpoint_create();
-        if (ep < 0)
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (kos_endpoint_create(&ep) != 0)
         {
             kos::print("[xmcssc] ERROR: endpoint_create failed\n");
             return -1;
@@ -365,8 +365,8 @@ extern "C"
         //    and the driver runs at authority 0. The line comes back MASKED, so nothing
         //    can fire on it until the driver's first wait arms it. EDGE trigger: the
         //    receive flags are W1C'd by the driver before it acks.
-        int const irq = kos_irq_claim(USIC0_SR1_IRQ, KOS_IRQ_EDGE);
-        if (irq < 0)
+        kos_cap_t irq = KOS_CAP_NONE;
+        if (kos_irq_claim(USIC0_SR1_IRQ, KOS_IRQ_EDGE, &irq) != 0)
         {
             kos::print("[xmcssc] ERROR: irq_claim(USIC0 SR1) failed\n");
             kos_handle_close(ep);
@@ -377,10 +377,10 @@ extern "C"
         //    recv cap on E (child index 1) and a WAIT-only copy of the line cap (index 2).
         //    No SIGNAL/TRANSFER on either child cap: the driver receives and services, it
         //    does not send, ring its own doorbell, or re-delegate.
-        int const drv = kickos::driver::spawn_unprivileged(
+        auto const drv = kickos::driver::spawn_unprivileged(
             xmcssc_service, win_base, win_size, cfg->name, driver_prio, ep,
             "[xmcssc] ERROR: driver spawn failed\n", irq);
-        if (drv < 0)
+        if (not drv.valid())
         {
             kos_handle_close(irq);
             return -1;

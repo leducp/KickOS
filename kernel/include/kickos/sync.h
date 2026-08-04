@@ -104,11 +104,19 @@ namespace kickos
     void reply_donor_park(Thread* server, Thread* caller);
     void reply_donor_unpark(Thread* server, Thread* caller);
 
+    // The ONLY writers of Endpoint::server. They keep that field and the server's
+    // served-endpoint chain in step. set() re-seats: it unlinks `ep` from a previous server
+    // first, so recv may call it on every arrival. Caller holds IrqLock.
+    void endpoint_server_set(Endpoint* ep, Thread* t);
+    void endpoint_server_clear(Endpoint* ep);
+
     // The single effective-priority recompute funnel. t's effective prio is the max of its
     // base_prio, the highest waiter across every mutex it holds, the prio of every caller
     // parked on t->reply_waiters, and the highest parked SEND_WAIT caller on each endpoint
     // where ep->server == t. NEVER a restore-to-base: a revert must respect every live
     // donor, so a mutex unlock mid-transaction cannot deflate a live call donation.
+    // Every term is O(donors) and none is bounded by a configured pool capacity: this runs
+    // interrupt-masked on every mutex unlock, reply and close.
     // Caller holds IrqLock.
     uint8_t thread_effective_prio(Thread* t);
 }

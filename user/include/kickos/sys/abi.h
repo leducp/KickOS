@@ -10,32 +10,59 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <kickos/sys/cap_index.h> // KOS_CAP_AUTHORITY, the well-known indices
 #include <kickos/sys/errno.h> // KOS_E* taxonomy: failures return -KOS_Exxx (see below)
 
 // Return-encoding contract (see errno.h). A syscall that can fail returns its error
-// as -KOS_Exxx (negative); success is a non-negative handle / byte-count / count, so
-// the two are collision-free. EXCEPTIONS: ram_alloc returns a pointer (0/NULL on ANY
-// failure, unable to carry a negative errno in-band) and cpu_clock_hz / cpu_clock_set /
-// periph_clock_hz return a u32 Hz with a 0 == cannot/unknown sentinel; all stay OUT of the scheme.
+// as -KOS_Exxx (negative); success is a non-negative byte-count / count, so the two are
+// collision-free. EXCEPTIONS: ram_alloc returns a pointer (0/NULL on ANY failure, unable
+// to carry a negative errno in-band) and cpu_clock_hz / cpu_clock_set / periph_clock_hz
+// return a u32 Hz with a 0 == cannot/unknown sentinel; all stay OUT of the scheme.
+
+// A capability handle. 16 index bits + 16 generation bits, so a live handle spends the
+// WHOLE 32-bit word and may have bit 31 set: `h < 0` is not an error test on a capability,
+// and every capability-MINTING call returns a status and delivers the handle through an
+// out-parameter.
+typedef uint32_t kos_cap_t;
+
+// "No capability". The codec reserves the all-ones index and never seats a slot on it,
+// so no table can mint this word (nor KOS_CAP_AUTHORITY, which shares that index field).
+// Written to a minting call's out-parameter on EVERY failure, and carried by
+// kos_recv_info.reply_cap for a plain send.
+#define KOS_CAP_NONE 0xFFFFFFFFu
+
+// A thread handle: 16 index bits + 16 generation bits over the THREAD pool, whose slots and
+// generations are unrelated to kos_cap_t's. Both are plain 32-bit words, so the compiler
+// will NOT catch a cap handle passed where a thread handle belongs; it just resolves against
+// the wrong table. A slot aged past 32768 reclaims mints a handle with bit 31 set, so
+// `h < 0` is not an error test here either.
+typedef uint32_t kos_thread_t;
+
+// "No thread". The thread pool never seats the all-ones index (kernel thread.h ties the two
+// with a static_assert), so no generation can mint this word.
+#define KOS_THREAD_NONE 0xFFFFFFFFu
+
 enum kos_syscall_nr
 {
     KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len)            -> bytes written, or -KOS_EFAULT (bad buffer)
     KOS_SYS_YIELD = 2,          // ()                    -> 0
     KOS_SYS_SLEEP_NS = 3,       // (ns_lo, ns_hi)        -> 0
-    KOS_SYS_SEM_CREATE = 4,     // (initial)             -> opaque sem handle, or -KOS_E* (ENOMEM)
+    KOS_SYS_SEM_CREATE = 4,     // (initial, kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM sem pool,
+                                //   EMFILE caller's cap table, EINVAL/EFAULT)
     KOS_SYS_SEM_WAIT = 5,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM (C wrapper now surfaces it)
     KOS_SYS_SEM_POST = 6,       // (cap)   -> 0, or -KOS_EBADF/-KOS_EPERM (C wrapper now surfaces it)
     KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)
-    KOS_SYS_THREAD_SPAWN = 7,   // (kos_thread_params*)  -> opaque thread handle, or -KOS_E*
+    KOS_SYS_THREAD_SPAWN = 7,   // (kos_thread_params*, kos_thread_t* out) -> 0, or -KOS_E*
+                                //   (EINVAL/EFAULT/EPERM/EBADF/EBUSY/ENOMEM/EOVERFLOW)
     KOS_SYS_EXIT = 8,           // (code)                -> does not return
     KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, or -KOS_EINVAL (self-test only)
     KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
     KOS_SYS_IRQ_ATTACH = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY)
     KOS_SYS_CLOCK_NOW = 12,     // (uint64_t* out)       -> 0, or -KOS_EINVAL/-KOS_EFAULT (bad out-ptr)
     KOS_SYS_RAM_ALLOC = 13,     // (size)                -> user-RAM ptr, or 0/NULL on ANY failure
-    KOS_SYS_IRQ_CLAIM = 14,     // (line, flags) -> CAP_IRQ cap handle, or -KOS_E*: EPERM (lacks
-                                //   KOS_AUTH_IRQ), EINVAL (line/flags), EBUSY (line owned),
-                                //   ENOMEM (binding pool or cap table full)
+    KOS_SYS_IRQ_CLAIM = 14,     // (line, flags, kos_cap_t* out) -> 0, or -KOS_E*: EPERM (lacks
+                                //   KOS_AUTH_IRQ), EINVAL (line/flags/out-ptr), EFAULT (out-ptr),
+                                //   EBUSY (line owned), ENOMEM (binding pool), EMFILE (cap table)
     KOS_SYS_IRQ_WAIT = 15,      // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
     KOS_SYS_IRQ_ACK = 16,       // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT)
     KOS_SYS_IRQ_SPURIOUS = 18,  // ()  -> count of IRQs on unbound lines (self-test only)
@@ -43,11 +70,13 @@ enum kos_syscall_nr
     KOS_SYS_DIAG_LED_TOGGLE = 20, // ()                  -> 0 (kernel diagnostic LED)
     KOS_SYS_IRQ_UNMASK = 21,    // (irq)  -> 0, or -KOS_E* (EPERM/EINVAL; self-test only)
     KOS_SYS_CPU_CLOCK_HZ = 22,  // ()  -> running core clock in Hz (u32), 0 if unknown (NO KOS_E*)
-    KOS_SYS_MUTEX_CREATE = 23,  // ()     -> opaque mutex cap, or -KOS_ENOMEM (pool/table full)
+    KOS_SYS_MUTEX_CREATE = 23,  // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM mutex pool, EMFILE
+                                //   caller's cap table, EINVAL/EFAULT)
     KOS_SYS_MUTEX_LOCK = 24,    // (cap)  -> 0 held; -KOS_EOWNERDEAD held-but-owner-died; -KOS_EBADF
                                 //   / -KOS_EDEADLK NOT held (see the wrapper decl for the caveat)
     KOS_SYS_MUTEX_UNLOCK = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner)
-    KOS_SYS_ENDPOINT_CREATE = 26, // ()                          -> endpoint cap, or -KOS_ENOMEM
+    KOS_SYS_ENDPOINT_CREATE = 26, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM endpoint pool,
+                                  //   EMFILE caller's cap table, EINVAL/EFAULT)
     KOS_SYS_SEND = 27,          // (cap, buf, len)  -> bytes transferred, or -KOS_E* (see kos_send)
     KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or -KOS_E*
     KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (not priv), -KOS_EBADF (bad
@@ -58,7 +87,8 @@ enum kos_syscall_nr
                                  //   (self-test only; compiled out unless KICKOS_HAVE_MPU)
     KOS_SYS_PERIPH_CLOCK_HZ = 32, // (base) -> peripheral branch clock in Hz (u32), 0 if unknown (NO KOS_E*)
     KOS_SYS_PINMUX_SET = 33,  // (port, pin, func) -> 0, -KOS_EPERM (not priv), -KOS_EINVAL (range), -KOS_EBUSY (kernel-owned pin), -KOS_ENOSYS (no backend)
-    KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EPERM/EPIPE/ENOMEM/ENOSYS)
+    KOS_SYS_CALL = 34,        // (ep_cap, buf, send_len, recv_cap) -> reply bytes (>= 0), or -KOS_E* (EINVAL/EFAULT/EBADF/EPERM/EPIPE/ENOSYS,
+                              //   EMFILE the SERVER's cap table has no slot for the reply cap)
     KOS_SYS_REPLY = 35,       // (reply_cap, buf, len) -> 0, or -KOS_E* (EBADF bad/non-reply cap, ESRCH stale caller, EFAULT bad buffer)
     KOS_SYS_SHUTDOWN = 36,    // (status) -> does not return; -KOS_EPERM if refused
     KOS_SYS_MEM_SELF_GRANT = 37, // (base, size) -> 0, or -KOS_E* (EPERM/EINVAL/ENOMEM)
@@ -84,7 +114,7 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_DISCARD = 44,  // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT).
                                //   Drops whatever the controller has latched for the line.
                                //   Neither masks nor unmasks.
-    KOS_SYS_THREAD_KILL = 45   // (thread_handle) -> 0, -KOS_EBADF (bad/stale/exited handle),
+    KOS_SYS_THREAD_KILL = 45   // (kos_thread_t) -> 0, -KOS_EBADF (bad/stale/exited handle),
                                //   -KOS_EPERM (the caller did not spawn that thread),
                                //   -KOS_EINVAL (naming yourself; that is KOS_SYS_EXIT).
                                //   COOPERATIVE: it marks the target and wakes it out of an
@@ -115,14 +145,16 @@ enum kos_grant_op
 };
 
 // Widened KOS_SYS_RECV out-pointer (was a bare u32 badge). 8 bytes, 4-aligned. A
-// plain kos_send arrival delivers reply_cap == -1; a kos_call arrival delivers a
-// real one-shot reply cap handle (>= 0) the receiver must eventually kos_reply or
+// plain kos_send arrival delivers reply_cap == KOS_CAP_NONE; a kos_call arrival delivers
+// a real one-shot reply cap handle the receiver must eventually kos_reply or
 // kos_handle_close. A receiver that passes a null out-ptr (info-less recv) REJECTS
 // calls (the caller's kos_call fails -KOS_ENOSYS) and behaves as before for plain sends.
 struct kos_recv_info
 {
-    uint32_t badge;    // sender badge (KOS_BADGE_NONE == 0 in this stage)
-    int32_t reply_cap; // -1 plain send; else a one-shot CAP_REPLY handle in the receiver's table
+    uint32_t badge;      // sender badge (KOS_BADGE_NONE == 0 in this stage)
+    kos_cap_t reply_cap; // KOS_CAP_NONE for a plain send; else a one-shot CAP_REPLY handle
+                         // in the receiver's table. Test it against KOS_CAP_NONE: a live
+                         // reply cap can have bit 31 set, so no sign test works.
 };
 #ifdef __cplusplus
 static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
@@ -222,8 +254,8 @@ enum kos_cap_authority
 #define KOS_SPAWN_DELEGATED_CAP0 1
 struct kos_cap_grant
 {
-    int source_cap;      // a cap handle in the SPAWNING thread's table
-    uint8_t rights_mask; // subset of the source cap's rights (kos_cap_rights bits)
+    kos_cap_t source_cap; // a cap handle in the SPAWNING thread's table
+    uint8_t rights_mask;  // subset of the source cap's rights (kos_cap_rights bits)
 };
 
 // Thread-creation parameters (kernel allocates TCB + stack from a static pool).
@@ -259,24 +291,16 @@ struct kos_thread_params
     //
     // Checked before the child exists, so a bad list costs -KOS_EINVAL and not a half-built
     // thread: no two grants may land on the same index, counting the defaulted ones, and
-    // every index is below the capacity the child ACTUALLY receives, which is the bucket
-    // class the request rounded up to and not the request.
-    uint8_t const* cap_dest;
+    // every index is below the child's table size (KICKOS_MAX_HANDLES on this board).
+    //
+    // The array must be uint16_t-aligned; the kernel refuses it otherwise rather than take
+    // a misaligned privileged load on a strict-align arch.
+    uint16_t const* cap_dest;
     // Authority bits (kos_cap_authority KOS_AUTH_*) to seat as the child's authority
     // word; 0 => none. Only a thread that already holds each bit may pass it: narrows,
     // never widens, like a cap_grant mask. This 8-bit field is what bounds the authority
     // word to 8 bits.
     uint8_t authority;
-    // Capability-table capacity to give the child, or 0 for the board default. The
-    // kernel rounds it UP to the smallest bucket class that fits and REFUSES if that
-    // class is exhausted; it never spills into a larger one, so a refusal names one
-    // per-board count.
-    //
-    // NARROW-ONLY, and that is a ceiling rather than a budget: a parent may not ask for
-    // more than its own capacity, but nothing is conserved, so a parent of capacity N may
-    // spawn any number of N-children. The per-class counts are the only wall against
-    // draining the slab.
-    uint16_t cap_capacity;
 };
 
 #endif

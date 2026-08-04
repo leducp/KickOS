@@ -202,7 +202,7 @@ namespace
             {
                 break; // endpoint dead (EPIPE) or a bad cap: let the bring-up respawn us
             }
-            if (info.reply_cap >= 0)
+            if (info.reply_cap != KOS_CAP_NONE)
             {
                 kickos::uart::serve_one(&ctx->sh, msg, static_cast<size_t>(n), info.reply_cap);
                 continue;
@@ -248,8 +248,8 @@ int xmcuartirq_console_start(struct kos_service_cfg const* cfg)
     ctx->win = cfg->mmio_base;
 
     // 2. The console endpoint.
-    int const ep = kos_endpoint_create();
-    if (ep < 0)
+    kos_cap_t ep = KOS_CAP_NONE;
+    if (kos_endpoint_create(&ep) != 0)
     {
         kos::print("[xmcuartirq] ERROR: endpoint_create failed\n");
         return -1;
@@ -274,8 +274,8 @@ int xmcuartirq_console_start(struct kos_service_cfg const* cfg)
     //    arms it, in the thread that will consume the event. EDGE, with no peripheral-side
     //    clear to pair with it: PSR.TBIF has no influence on interrupt generation and does
     //    not need clearing (RM 18.2.2.3 p.18-17), so PSCR.CTBIF is cosmetic here.
-    int const irq = kos_irq_claim(kickos::xmc::irq::USIC0_SR0, KOS_IRQ_EDGE);
-    if (irq < 0)
+    kos_cap_t irq = KOS_CAP_NONE;
+    if (kos_irq_claim(kickos::xmc::irq::USIC0_SR0, KOS_IRQ_EDGE, &irq) != 0)
     {
         kos_handle_close(ep);
         kos::print("[xmcuartirq] ERROR: irq_claim(USIC0 SR0) failed\n");
@@ -293,14 +293,14 @@ int xmcuartirq_console_start(struct kos_service_cfg const* cfg)
     //    byte that bring_up's drain managed to push would lose its transmit-buffer event
     //    and stall until the next doorbell.
     kos_cap_grant const irq_caps[1] = { { irq, KOS_CAP_WAIT } };
-    int const irqt = kos::thread::spawn(irq_thread, ctx, "uartirq",
-                                        static_cast<uint8_t>(cfg->prio + 1),
-                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                        /*mem=*/ctx, kickos::uart::KOS_UART_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/reinterpret_cast<void*>(cfg->mmio_base),
-                                        cfg->mmio_window, irq_caps, 1);
-    if (irqt < 0)
+    auto const irqt = kos::thread::spawn(irq_thread, ctx, "uartirq",
+                                         static_cast<uint8_t>(cfg->prio + 1),
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                         /*mem=*/ctx, kickos::uart::KOS_UART_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/reinterpret_cast<void*>(cfg->mmio_base),
+                                         cfg->mmio_window, irq_caps, 1);
+    if (not irqt.valid())
     {
         kos_handle_close(irq);
         kos_handle_close(ep);
@@ -328,7 +328,7 @@ int xmcuartirq_console_start(struct kos_service_cfg const* cfg)
         {
             kos_handle_close(irq);
             kos_handle_close(ep);
-            (void)kos_thread_kill(irqt);
+            (void)irqt.kill();
             kos::print("[xmcuartirq] ERROR: IRQ thread never reached its loop\n");
             return -1;
         }
@@ -341,16 +341,16 @@ int xmcuartirq_console_start(struct kos_service_cfg const* cfg)
     //    a raise at the controller, so this thread starts a transfer without touching a
     //    register it does not own.
     kos_cap_grant const svc_caps[2] = { { ep, KOS_CAP_WAIT }, { irq, KOS_CAP_SIGNAL } };
-    int const svct = kos::thread::spawn(service_thread, ctx, cfg->name, cfg->prio,
-                                        KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                        /*mem=*/ctx, kickos::uart::KOS_UART_BLOCK_SIZE,
-                                        /*stack=*/nullptr, /*stack_size=*/0,
-                                        /*mmio=*/nullptr, 0, svc_caps, 2);
-    if (svct < 0)
+    auto const svct = kos::thread::spawn(service_thread, ctx, cfg->name, cfg->prio,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false,
+                                         /*mem=*/ctx, kickos::uart::KOS_UART_BLOCK_SIZE,
+                                         /*stack=*/nullptr, /*stack_size=*/0,
+                                         /*mmio=*/nullptr, 0, svc_caps, 2);
+    if (not svct.valid())
     {
         kos_handle_close(irq);
         kos_handle_close(ep);
-        (void)kos_thread_kill(irqt); // frees the window, which is what gives the console back
+        (void)irqt.kill(); // frees the window, which is what gives the console back
         kos::print("[xmcuartirq] ERROR: service thread spawn failed\n");
         return -1;
     }

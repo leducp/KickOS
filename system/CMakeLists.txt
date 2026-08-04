@@ -70,8 +70,11 @@ kickos_add_board_provider(pinmap_f302nucleo SOURCE init/f302nucleo/pinmap.cc)
 # along. service.h lives in kickos_system (system/include); the driver libs it links
 # carry user/include (kos.h/sys.h + the driver headers) transitively.
 if(KICKOS_CHIP STREQUAL "mk64f")
+  # RETAINED_CAPS 1: k64dspi keeps its SPI request endpoint (g_spi0_ep) in root's table for
+  # the life of the image. The console entry retains nothing -- console_handover_finish
+  # closes root's cap, and the published route lives at the reserved index 0.
   kickos_add_board_provider(services_frdmk64f SOURCE init/frdmk64f/service_list.cc
-    LINK kickos_k64dspi kickos_k64uart)
+    LINK kickos_k64dspi kickos_k64uart RETAINED_CAPS 1)
   # IRQ-console alternative: the same KOS_SVC_CONSOLE entry served by the two-thread
   # buffered driver, with the SPI one left out, so it links kickos_k64uartirq ALONE.
   # Never the board default: the IRQ-driven console has no silicon witness yet.
@@ -81,8 +84,10 @@ if(KICKOS_CHIP STREQUAL "mk64f")
   target_include_directories(kickos_services_frdmk64f_uartirq PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "xmc4800")
+  # RETAINED_CAPS 1: xmcssc keeps its SPI request endpoint (g_spi0_ep) in root's table for
+  # the life of the image. The console entry retains nothing (see the mk64f list above).
   kickos_add_board_provider(services_xmc4800relax SOURCE init/xmc4800-relax/service_list.cc
-    LINK kickos_xmcuart kickos_xmcssc)
+    LINK kickos_xmcuart kickos_xmcssc RETAINED_CAPS 1)
   # Console-only alternative: the same KOS_SVC_CONSOLE entry with the SPI one left out,
   # so it links kickos_xmcuart ALONE. That is the point of it: the SSC driver's
   # bring-up needs a privileged root, so an image for an unprivileged root must not
@@ -188,7 +193,10 @@ if(KICKOS_ARCH STREQUAL "sim")
   # loopback "device" (init/sim/service_list_uart.cc). Its own provider rather than a second
   # entry in the list above, because one service list links per image and the existing sim
   # gates must keep testing the console posture unchanged.
-  kickos_add_board_provider(services_simuart SOURCE init/sim/service_list_uart.cc)
+  # RETAINED_CAPS 1: g_uart_ep stays in root's table until the app takes it, and the app
+  # runs on that same table, so the slot is spoken for either way.
+  kickos_add_board_provider(services_simuart SOURCE init/sim/service_list_uart.cc
+    RETAINED_CAPS 1)
   target_include_directories(kickos_services_simuart PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 endif()
