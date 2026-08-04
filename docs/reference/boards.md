@@ -2058,9 +2058,10 @@ left over.
   remaining four want more arena than right-sizing can free on a 16 KiB part, so they stay skipped --
   correctly, and still under the wrong label.
 - **Test 18 (`mutex_deadlock`) is mislabelled DIFFERENTLY, and no arena work will ever un-skip it.**
-  Its guard is `KICKOS_MAX_HANDLES=9` and semaphore exhaustion, so it will keep skipping on this
-  board however the stacks are sized. Anyone reading a residual `pool too small` there and reaching
-  for more arena is chasing the wrong resource.
+  Its guard is the configured `KICKOS_MAX_HANDLES` (7 on the supply-7 boards, of which this is one)
+  or semaphore exhaustion, so it will keep skipping on this board however the stacks are sized.
+  Anyone reading a residual `pool too small` there and reaching for more arena is chasing the wrong
+  resource.
 
 The 16 KiB limits that remain are genuine: `irq_as_event` needs one 4096 B block, and
 `caller_stack`'s accept half needs 2064 B -- it still prints
@@ -2160,7 +2161,46 @@ board default points at any of them**, deliberately. Every capture named here ca
 `# tap route: stdout endpoint -> console driver (service list published)`, which is what proves the
 stream crossed the userspace driver rather than falling back to the kernel's polled route.
 
-**The pass of record, 2026-08-03, all six boards at ONE CLEAN COMMITTED TIP `9a00e73`** -- the
+**The capability-table pass, 2026-08-04, two boards at ONE TREE.** The banners stamp `da716a8` and
+`15fdd82`, two commits with the IDENTICAL tree `e74933d` (the difference is a message rewrite), so the
+images are byte-identical. **Tree identity is the test, not hash identity** -- which is what the
+M4.7.1 pass below fails, its tree being 26 code files from what merged. It
+covers M4.7.1 and M4.7.2 together, and it is the FIRST silicon witness of either: M4.7.1's own
+two-board run was taken at `c82af2c`, which is **not an ancestor of `master`** (it survives only on
+`backup/m47-presquash`, and 26 code files changed between it and the merged `4ad39a8` -- `cap.h`,
+`cap.cc`, `thread.h`, `syscall_thread.cc`, `sync.cc`, `slotpool.h`, `cmake/cap_table.cmake` and the
+selftest among them). No record may quote `c82af2c` as a witness of the merged rework.
+
+| board | enforcement | plan | result | capture (`.session/logs/`) |
+|---|---|---|---|---|
+| `xmc4800-relax` | PMSAv7, `-st` + `MPU=1` | `1..79` | 79 ok, 0 not-ok, 0 skip, 0 partial | `m472-xmc-st.log` |
+| `frdmk64f` | SYSMPU, `-st` + `MPU=1` | `1..79` | 79 ok, 0 not-ok, 0 skip, 0 partial | `m472-k64-st.log` |
+
+Both ran the RETAINING service list, which is the enforcing default on these two boards
+(`CMakeLists.txt` resolves `KICKOS_SERVICE_LIST` after `KICKOS_HAVE_MPU` is known), so both
+configured an **11-slot** table -- the widest in the fleet, and the only width that exercises the
+retained term. Both carry `# tap route: stdout endpoint -> console driver (service list published)`,
+so the whole suite crossed the userspace driver. The two arms this milestone added are on the wire as
+`ok 49 - cap_chunk_span` and `ok 50 - cap_gen_reuse`; the first asserts an installed index at or
+above the chunk granule and round-trips it through the segmented decode, which no capture before
+this one did.
+
+**What these two captures do NOT witness.** Only the 2-chunk geometry: the flat run is a supply-7
+board's shape and `cap_chunk_span` reports PARTIAL there, which no bench board reproduces. Nothing
+on any other ISA -- the rework is arch-neutral but only armv7m ran it. The fourth provisioning term
+is 0 in every configure in the tree, so its summing path is unexercised on silicon and everywhere
+else. And `t_cap_chunk_span` cannot be mutation-proved even in principle (a consistent bijective
+mis-decode relabels slots and every install/lookup pair still agrees), so its evidence is coverage,
+not detection; `t_cap_gen_reuse` does have a clean kill.
+
+**Both logs were checked for the two silent capture failures this bench has produced.** Exactly one
+reader per log with `fuser` confirmed free before arming, no zero-byte log, zero interleaved
+half-lines, one banner and one plan line and one completion marker each, and both stamp their tree
+with no `-dirty`. A first `-st` attempt produced a log with 158 `ok` lines: that was the headless
+TAIL of the flash script's own `r;g` run, captured because the reader attached mid-stream, and the
+remedy is to let that run finish before arming. It is not a clobber, and it is not in the record.
+
+**The earlier pass of record, 2026-08-03, all six boards at ONE CLEAN COMMITTED TIP `9a00e73`** -- the
 finished tree: Stage 3's capability slab, Stage 4's per-grant destinations, the CRLF cook, the
 first-light markers, the `rxsci` TIE ordering fix, `KOS_SYS_IRQ_DISCARD`, the device-window console
 reclaim with `KOS_SYS_THREAD_KILL`, the stable `ktime_rearm` deadline, and `rx72m` under MPU
@@ -2245,7 +2285,8 @@ is closed for everything at or before `270b6fa`, and PARTIALLY at `124b68c` -- o
 | 2026-08-02 | `cb5f2a4` | The M4.6.1 UART-console pass: all five boards, one CLEAN committed tip, `1..74` enforcing / `1..70` not, zero failures, skips and partials. Closes the three-arm gap the previous row opened and the `rx72m` stop, with a reverting A/B that reproduces the stop three times. |
 | 2026-08-02 | `0f5a5bd-dirty` | Stage 3's capability slab, the CRLF cook and the five first-light markers, at `1..76` / `1..72`. The `m461d-*` banners stamp `0f5a5bd-dirty`, an ANCESTOR of `c82cc63` -- credit these captures to the banner, not to the branch tip they were taken from. Not a committed-tip pass. |
 | 2026-08-02 | `257def0` | The finished tree at `1..78` / `1..74`, five boards, zero failures. Also the pass that CAUGHT the `esp32-wroom` hang at `sleep_order` -- the Xtensa `CCOMPARE0` equality-match defect, fixed on its own merits at `b4e888d`. The boundary is closed as far as `257def0`. |
-| 2026-08-02 | `9a00e73` | **The pass of RECORD, and the boundary is closed.** Seven captures on six boards, `m461n-*`, all at this clean tip, zero `not ok`: `xmc4800-relax` `1..78`, `frdmk64f` `1..78`, `esp32c6-wroom` `1..78`, **`rx72m` `1..78` under MPU ENFORCEMENT for the first time**, `esp32-wroom` `1..74`, `f302nucleo` `1..44` + `1..30`. First silicon for the `ktime_rearm` fix, including the two boards it most exposes: `esp32-wroom` (Xtensa, no dedup guard at all) and `rx72m` (software dedup on the deadline value). |
+| 2026-08-04 | `da716a8` | **The capability-table pass of RECORD, and the FIRST witness of the merged rework.** Two captures, `m472-{xmc,k64}-st`, both `1..79` with 79 ok and zero not-ok, skips or partials, at an 11-slot table under the retaining service list. Covers M4.7.1 and M4.7.2 together, because M4.7.1's own `c82af2c` run is not an ancestor of `master` and stamps a tree 26 code files away from what merged. First silicon for the segmented chunk decode being ASSERTED (`cap_chunk_span`) and for the capability generation-mismatch branch of `cap_lookup` being reached at all (`cap_gen_reuse`). Two boards, one ISA, one geometry: see the section above for what it does not cover. |
+| 2026-08-02 | `9a00e73` | Superseded as the pass of record by `da716a8` above for the capability subsystem; still the pass of record for the M4.6.1 IRQ and UART work on six boards. **The boundary is closed.** Seven captures on six boards, `m461n-*`, all at this clean tip, zero `not ok`: `xmc4800-relax` `1..78`, `frdmk64f` `1..78`, `esp32c6-wroom` `1..78`, **`rx72m` `1..78` under MPU ENFORCEMENT for the first time**, `esp32-wroom` `1..74`, `f302nucleo` `1..44` + `1..30`. First silicon for the `ktime_rearm` fix, including the two boards it most exposes: `esp32-wroom` (Xtensa, no dedup guard at all) and `rx72m` (software dedup on the deadline value). |
 | 2026-08-02 | `20f6d43` | Superseded as the pass of record by `9a00e73` above. Seven captures on six boards, `m461m-*`, all stamping this clean tip: `xmc4800-relax` `1..78`, `frdmk64f` `1..78`, `esp32c6-wroom` `1..78`, `esp32-wroom` `1..74`, `rx72m` `1..74`, all via their `*_uartirq` service lists with first-light markers on the wire; plus `f302nucleo` `1..44` + `1..30` as two images. Zero `not ok`. First silicon for: the device-window console reclaim, `KOS_SYS_THREAD_KILL`, the Xtensa CCOMPARE fix (`b4e888d`), the LX6 unroutable-source silencing, the selftest suite split, and the three arms it restored (`cap_dest` PASS, `cap_capacity` PARTIAL, `irq_discard` PASS). |
 | 2026-08-02 | `b4e888d` | Witnessed at a clean tip by the `20f6d43` row above. `b4e888d` changed `arch_xtensa.cc` (`arch_timer_arm`, the CCOMPARE equality-match fix) and `selftest/main.cc`. Its OWN captures (`m461i-lx6-{1,2}`, `m461i-rx-{1,2,3}`, `m461j-rx`, `m461k-lx6`, `m461k-rx`) all stamp `cab37e6-dirty` and are named in no other tracked doc, so they identify no tree and cannot extend the boundary by themselves. |
 

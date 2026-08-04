@@ -136,9 +136,10 @@ what is next; this carries the numbering.
 | M4.5.x | unprivileged root, region encoding, the gates that fail, the comment purge | landed |
 | M4.6.1 | the IRQ substrate and the buffered userspace UART | landed |
 | M4.6.2 | the USB CDC console, partially witnessed on `pizero2350` | superseded by M4.8.2 |
-| **M4.7.1** | **the capability-table rework**: codec, storage, errno, sizing (`docs/design-capability-table.md`) | ACTIVE |
-| M4.7.2 | the review findings against M4.7.1 | next |
-| M4.7.3 | per-task table width: the chunk directory earns its keep | planned |
+| M4.7.1 | the capability-table rework: codec, storage, errno, sizing (`docs/design-capability-table.md`) | landed |
+| **M4.7.2** | **the review findings against M4.7.1** | ACTIVE |
+| M4.7.3 | per-task table width, and the reserved reply sub-range: the chunk directory earns its keep | planned |
+| M4.7.4 | delete the legacy management: nothing is released before M6, so there is none to carry | planned |
 | M4.8.1 | the class layer the driver-model ruling requires and SPI never got | after M4.7.3 |
 | M4.8.2 | the USB CDC console, continuing M4.6.2 | planned |
 | M4.8.3..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
@@ -160,6 +161,37 @@ runs now, chunks again in M4.7.3 -- churns the layout and burns a bench pass to 
 The cost of carrying it meanwhile is 440 to 936 bytes on the mid-range boards and nothing at all on
 the 16 KiB parts, which take the flat path at `KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET`.
 
+**The reserved reply sub-range is M4.7.3's and not M4.7.2's, and the split is not arbitrary.** A
+client mints a reply capability into the SERVER's table through plain `cap_install`, so inbound
+reply caps and the server's own creates draw on one free list: the configure-time sum is therefore
+not a bound on when a task's own mint can fail, and the coupling runs between PEERS, since one
+client's `kos_call` can be refused because three others are mid-call. M4.7.2 answers the
+provisioning half only, with a fourth declared term whose default is 0 -- the three supply-7 boards
+sit at demand == floor == supply, so a nonzero fleet default would stop them configuring at all.
+Partitioning the run so client traffic can never crowd out the server's own creates is the other
+half, and it belongs here because it needs a second free-list head, which `cap.h` records as
+unavailable ("Thread has no spare bytes for a second field" is why the list is circular), or an
+O(width) scan on the `kos_call` fastpath -- and because it has to be sized from the number M4.7.2's
+term supplies. It is the same run-geometry question as per-task width, so it is answered once.
+
+**M4.7.4 exists because compatibility work keeps appearing on its own.** KickOS is not released and
+will not be before M6, so **there is no legacy to manage** and every mechanism that manages some is
+pure cost: it has to be kept in sync, it is read as a supported path, and it makes a deleted thing
+look alive. The class, with the instances found so far:
+
+- **tombstones for deleted knobs.** A guard whose only job is to refuse something that no longer
+  exists. `KICKOS_MAX_HANDLES` had one, and M4.7.2 caught itself UPDATING its message text to match a
+  new term, which is the whole failure in one line. Deleted; the sweep looks for the rest.
+- **fallbacks that only fire when the build is already wrong.** `kernel/include/kickos/config/system.h`
+  defaults `KICKOS_MAX_HANDLES` and then asserts against its own default, because two CMake probes
+  read the header before the value exists. That is a workaround for configuration living in two
+  places, and the generated header in M4.7.3 removes the need for it rather than tuning it.
+- **inert grants and parameters kept "for signature parity"** with a path that no longer needs them.
+- **doc and comment text that documents a removed mechanism as if a reader might still meet it.**
+
+The rule for the pass: if the only reason a thing exists is that something else USED to exist, delete
+it. Keep a guard only when it catches a mistake somebody can still make today.
+
 **Why per-task width is not YAGNI.** One fleet-wide width means every thread is provisioned for the
 fattest thread in the image. At the ceiling the codec is cut for -- one task holding 60000
 capabilities against 64 threads -- that is ~30 MiB where the real demand is ~530 KiB, a factor of
@@ -168,6 +200,43 @@ law is the one part of M4.7.1 that does not survive contact with the top of its 
 
 **Documents written before 2026-08-03 use `M4.7` to mean the driver wave now numbered M4.8.x.**
 Those records are frozen at their decision date and are not renumbered.
+
+### Configuration mechanism -- Kconfig before M5 (SPIKE AGREED, number unassigned)
+**Open, and it revisits a decision that had no home in this repo.** A pre-M4 spike settled on "a
+consolidated per-board descriptor, NOT devicetree/Kconfig", judged as overkill below roughly 30 to 40
+boards; the tree is at 20. That verdict was recorded only in a developer's local notes, which is why
+this entry exists at all.
+
+**It also bundled two questions and judged both on board count.** Board count is the right criterion
+for devicetree, which is hardware description. It is close to irrelevant for Kconfig, which is knob
+management, validation and dependency expression. The pressure now is not board count: configuration
+is split across C headers and CMake with leakage in both directions. Today that costs two `cc -E -P`
+probes reading headers back into CMake (`cmake/cap_table.cmake`, `cmake/boot_arena.cmake`), a
+`file(STRINGS)` scrape of a `static constexpr` that no preprocessor can hand over, a directory-tree
+walk in `_kickos_cap_define_tree` because `COMPILE_DEFINITIONS` are copied when a subdirectory is
+added and the width is not known until after `user/apps`, and a `KICKOS_MAX_HANDLES` fallback in
+`kernel/include/kickos/config/system.h` that exists only so a misconfigured build still preprocesses
+-- now guarded by a `static_assert` against that same fallback.
+
+**Kconfig would be additive, not a replacement**: it owns the knobs and emits a generated header,
+while CMake keeps the build graph.
+
+**The deciding question is not Kconfig, and the spike must answer it rather than assume it.** The
+capability-table width is a maximum over APP TARGET PROPERTIES plus the service list's. Those are
+build-graph facts, and Kconfig is one-pass and static with no way to say "the widest declaration among
+the app targets in this build". So:
+- **one app per build**, with app declarations becoming config fragments, removes the problem
+  outright and is what makes per-board `defconfig` genuinely useful -- but the tree builds every app
+  in a single configure and CI depends on that;
+- **a hybrid** leaves the target-graph summing in CMake, gives Kconfig the static knobs
+  (`KICKOS_MAX_THREADS`, `KICKOS_MAX_SPAWN_GRANTS`, `KICKOS_CAP_TABLE_SUPPLY`, `KICKOS_HAVE_MPU`,
+  board selection), and has the two meet at one generated header. Incremental and reversible.
+
+**Sequence it in two parts.** The generated header is worth doing inside M4.7.3 on its own merits,
+since per-task width adds a width and a class id per task and every workaround above would otherwise
+have to be ported onto a wider set of computed outputs. Kconfig then lands on a clean seam and is
+largely deletion. A build-time `kconfiglib` host dependency comes with it, which would be the
+project's first.
 
 ### M5 -- SMP (one kernel image across cores)
 Run a multi-core part at 100% under a single KickOS -- not two AMP instances. Reworks the

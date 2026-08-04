@@ -19,13 +19,29 @@
 
 namespace kickos
 {
+    // The backstop for the one configure check with no header equivalent: the width is summed
+    // by cmake/cap_table.cmake and refused above the board's declared supply, but a compile
+    // with neither the KickOS CMake nor the exported `kickos` target takes the
+    // config/system.h #ifndef fallback instead. That number sizes the slab below and decides
+    // KCAP_RUN_CHUNKS, hence sizeof(Thread). It cannot live in cap.h: tests/captable restates
+    // the width to compile a geometry no board sums to.
+    static_assert(KICKOS_MAX_HANDLES <= KICKOS_CAP_TABLE_SUPPLY,
+                  "the capability table is wider than this board says it can back: the width "
+                  "came from the config/system.h fallback, not from the configure-time sum");
+
     namespace
     {
+        // "No stdout target published yet". The all-ones index, which SlotPool never seats
+        // (slotpool.h), so no live endpoint handle can equal it. Tested by EQUALITY, never by
+        // sign: a live handle spends the whole word, and one whose slot generation has reached
+        // 32768 has bit 31 set and is NEGATIVE as an int.
+        constexpr int KCAP_STDOUT_NONE = -1;
+
         // Console stdout target: the GLOBAL gen-encoded endpoint handle a userspace
-        // console driver serves, or -1 pre-publish. The kernel holds ONE ref on it
-        // (moved on re-publish); cap_install_defaults seats a send-only copy at index 0
-        // of every child. See docs/design-m3-console-handover-stageii.md (D3/D4/S3).
-        int g_stdout_target = -1;
+        // console driver serves. The kernel holds ONE ref on it (moved on re-publish);
+        // cap_install_defaults seats a send-only copy at index 0 of every child. See
+        // docs/design-m3-console-handover-stageii.md (D3/D4/S3).
+        int g_stdout_target = KCAP_STDOUT_NONE;
 
         // Every .bss datum this module owns, in ONE object. The grouping is load-bearing:
         // CapEntry is 8-aligned, so as separate objects the linker drops four bytes of fill
@@ -611,9 +627,12 @@ namespace kickos
         return true;
     }
 
-    void cap_slab_detach(CapRun* run)
+    void cap_slab_detach(CapRun* run, uint16_t* free_head)
     {
         g_cap.free_chunks.give(run);
+        // The list lived in the chunks just given back, so a surviving head would name a slot
+        // in a chunk the next attach can hand to another task.
+        *free_head = KCAP_FREE_NONE;
     }
 
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
@@ -801,13 +820,17 @@ namespace kickos
     // no WAIT/TRANSFER) copy of console endpoint `target`. CAP_SIGNAL bumps endpoint_refs but
     // NOT recv_holders, so a client does not hold the dead-endpoint gate open. Written
     // DIRECTLY, since cap_install_at rejects index 0; this and cap_install_defaults are the
-    // slot's only writers, and its cap-gen is never bumped, so a client's stale handle can
-    // never resolve it. Take the new ref BEFORE dropping any prior one, or re-seating the same
-    // endpoint transiently frees it. The thread's own cap_teardown drops this ref at exit.
-    // Caller holds IrqLock.
+    // only writers that SEAT it. Take the new ref BEFORE dropping any prior one, or re-seating
+    // the same endpoint transiently frees it. The thread's own cap_teardown drops this ref at
+    // exit. Caller holds IrqLock.
     bool cap_seat_stdout(Thread* t, int target)
     {
-        // UNGUARDED against a runless `t`: see the unchecked precondition in cap.h.
+        // Slot 0 is written with no bound test below. Ordered before the ref so a runless `t`
+        // leaves nothing to undo.
+        if (not cap_run_held(t->caps))
+        {
+            return false;
+        }
         if (not obj_ref_inc(CapType::CAP_ENDPOINT, target, CAP_SIGNAL))
         {
             return false; // at the ceiling: seat nothing, leave any prior seat alone
@@ -829,7 +852,7 @@ namespace kickos
     {
         // Pre-publish: nothing seated (index 0 empty). The selftest/bring-up world that
         // never publishes is untouched, and its apps fall back to kconsole_write.
-        if (g_stdout_target < 0)
+        if (g_stdout_target == KCAP_STDOUT_NONE)
         {
             return;
         }
@@ -860,7 +883,7 @@ namespace kickos
             obj_ref_undo(CapType::CAP_ENDPOINT, obj_handle, 0);
             return false;
         }
-        if (g_stdout_target >= 0)
+        if (g_stdout_target != KCAP_STDOUT_NONE)
         {
             endpoint_ref_drop(g_stdout_target, /*teardown=*/false);
         }

@@ -174,8 +174,8 @@ namespace kickos
         // it re-establishes it from ThreadAttr afterwards.
         //
         // Every scan site must be bounded by thread_cap_capacity and never by
-        // KICKOS_MAX_HANDLES: a capacity of 0 is legal (idle holds no run, and neither does a
-        // pool slot between reclaim and the next spawn).
+        // KICKOS_MAX_HANDLES: a capacity of 0 is legal, and cap_run_held (cap.h) enumerates
+        // the threads that have it.
         CapRun caps;
         // Head of the run's free-slot list (cap.h), a slot index biased by one. KCAP_FREE_NONE
         // is 0, so the thread_create memset leaves it EMPTY and not "slot 0": a thread whose
@@ -326,6 +326,11 @@ namespace kickos
 
         // Claim a slot: reclaim an EXITED one (bumping its generation to kill stale
         // handles) or bump-allocate a fresh one. Returns the index, or -1 if full.
+        //
+        // Lowest-exited, NOT SlotPool's next-fit cursor: this holds `next` down, and both the
+        // scan below and the spawner_tag sweep are bounded by `next` under the caller's
+        // IrqLock. The price is wrap distance, concentrated on one slot when one thread lives
+        // at a time.
         [[nodiscard]] int alloc()
         {
             for (int s = 0; s < next; s++)
@@ -346,8 +351,9 @@ namespace kickos
                     // Same reclaim-point reasoning as the stack: the thread is off-CPU and
                     // cap_teardown has already emptied every entry. cap_slab_detach clears the
                     // directory as it returns each chunk, so a second reclaim of this slot
-                    // cannot double-free one.
-                    cap_slab_detach(&slots[s].caps);
+                    // cannot double-free one, and it clears the free-list head, which by then
+                    // names a slot in a chunk this call gives away.
+                    cap_slab_detach(&slots[s].caps, &slots[s].cap_free_head);
                     // A slot's kill tag is its INDEX and so outlives its occupant: a child
                     // still naming this tag must be orphaned before the slot changes hands,
                     // or the new occupant inherits cancel authority over threads it never

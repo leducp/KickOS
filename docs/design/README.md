@@ -2,8 +2,8 @@
 # Design records -- index by status
 
 The `design-*.md` documents are per-topic design records: the reasoning behind a decision, the
-option space that was considered, and the evidence a claim rests on. There are 28 of them and they
-accumulated in commit order with no index, which made the collection hard to use -- a reader could
+option space that was considered, and the evidence a claim rests on. They accumulated in commit
+order with no index, which made the collection hard to use -- a reader could
 not tell whether a document described the current system, a plan, or a road not taken.
 
 **The files live in the parent directory (`../design-*.md`), not here.** Relocating them is a
@@ -65,7 +65,7 @@ Two things follow from this that are easy to get wrong:
 | [`design-m4-driver-matrix.md`](../design-m4-driver-matrix.md) | The per-board peripheral survey and the complexity-vs-gain backlog that bounds M4's scope |
 | [`design-m4-driver-model.md`](../design-m4-driver-model.md) | How a driver is packaged: driver-lib class, service thread, or both (the ruling: both, service composed on the class) |
 | [`design-m4.6-irq-driver.md`](../design-m4.6-irq-driver.md) | The M4.6.1 design gate: an unprivileged driver owning an interrupt line -- the proposed IRQ capability, handover at spawn, reclaim on driver death, shared/grouped lines, and the buffered userspace UART on top |
-| [`design-capability-table.md`](../design-capability-table.md) | The capability table re-derived from a clean sheet: what a capability is here, why possession and not an access list, the size-class mix and the per-spawn interface deleted, the codec decoupled from provisioning, and reserve-or-grow as a per-board posture from 16 KiB to 8 GB |
+| [`design-capability-table.md`](../design-capability-table.md) | The capability table re-derived from a clean sheet: what a capability is here, why possession and not an access list, the size-class mix and the per-spawn interface deleted, the codec decoupled from provisioning, and one reservation law fleet-wide -- segmented storage taken whole at spawn, no growth -- across a range from 16 KiB to 8 GB |
 | [`design-kickcat-k64f.md`](../design-kickcat-k64f.md) | Running the KickCAT EtherCAT slave on KickOS. Sim stage landed; the K64F hardware path is still the plan |
 
 | [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose |

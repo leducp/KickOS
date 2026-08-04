@@ -7,13 +7,14 @@ Copyright (c) 2026 Philippe Leduc
 > Chapter 8.1 introduced the generation counter as the *detector* half of the resolve
 > chokepoint and left it there. This chapter is the detector on its own terms: what a
 > generation actually buys, why "how many bits?" is the wrong first question, why several
-> counters are not several equal defenses -- and do not even share a bit budget -- and why
-> the *allocation policy* of the pool underneath turns out to be worth more than any of the
-> bits. For the exact widths, the handle codec and the contract they enforce, link into
+> counters of identical width are still not several equal defenses, and why the *allocation
+> policy* of the pool underneath turns out to be worth more than any of the bits. For the
+> exact widths, the handle codec and the contract they enforce, link into
 > `../reference/architecture.md` ("Object model, capabilities & IPC"),
 > `../reference/invariants.md` (`handle-not-pointer-across-boundary`,
 > `object-access-via-per-task-cap`), and the code they describe --
-> `kernel/include/kickos/slotpool.h` and `kernel/include/kickos/cap.h`.
+> `kernel/include/kickos/slotpool.h`, `kernel/include/kickos/cap.h` and
+> `kernel/include/kickos/thread.h`.
 
 ## The problem: a name that outlives the thing it named
 
@@ -195,16 +196,18 @@ bits:
 3. **What does a wrap actually reach?** An object the holder already legitimately has, or
    one it was never given?
 
-Then a fourth, which the arithmetic above has just made interesting: **how many bits does
-this particular counter even get?** It is tempting to assume one answer for the whole system,
-since it is one mechanism. There is no such thing. Each counter's budget is set by how *its*
-handle travels, and no two of them travel the same way.
+Then a fourth, which the arithmetic above has just made interesting: **what would widening
+this particular counter cost?** It is tempting to expect three different answers -- three
+counters at three layers, three encodings, surely three different amounts of slack. There is
+no slack anywhere. Each of the three below splits a 32-bit word into 16 index bits and a
+16-bit generation, and each of them spends that word entirely. Not one has a spare bit to
+hand its generation, so on all three "widen it" means a wider handle *word*: a fleet-wide ABI
+decision, never a field edit.
 
-Read "budget" carefully, because this is the trap. All three of the counters below are
-sixteen bits wide, which is exactly what makes it easy to miss: equal widths, wildly unequal
-room. A counter's budget is not what it spends, it is what it *could* spend -- and therefore
-what widening it would cost, which is the number you need the moment anyone asks for more
-bits.
+That uniformity matters, and it is not a coincidence to wave past, because the exposure is not
+uniform at all: equal widths, wildly unequal exposure. So whatever set the width, it was not
+the hazard analysis; it was the size of the word the handle travels in, and a word is 32 bits
+for reasons that have nothing to do with ABA.
 
 KickOS carries three such counters, and running the questions over them separates them
 sharply.
@@ -215,63 +218,64 @@ closed the capability -- and resolution takes the rights from whatever entry is 
 *at that moment*. So a wrap hands that task an object it already holds a capability for, at
 the rights that entry already carries. The failure is one task misdirecting itself among its
 own objects. It is the counter with the *widest* reachability into buggy code and the
-*narrowest* consequence. Its budget is the whole 32-bit word: 16 index bits and 16
-generation bits, and the split is fixed fleet-wide rather than derived from a board's table
-size, so the same logical capability prints the same value on every target and a per-board
-RAM decision cannot renumber the ABI. Escape probability, one in 65536 per erroneous use.
+*narrowest* consequence. It spends a whole 32-bit word -- 16 index bits and 16 generation
+bits (`KCAP_INDEX_BITS`, `KCAP_GEN_BITS`) -- and the split is fixed fleet-wide rather than
+derived from a board's table size, so the same logical capability prints the same value on
+every target and a per-board RAM decision cannot renumber the ABI. Escape probability, one in
+65536 per erroneous use.
 
 **The object-pool generation** guards use-after-destroy, and it inverts the exposure.
 Wrapping it is rarer, because a pool slot only frees when the last holder closes and the
 refcount reaches zero -- there is a real backstop making the free path infrequent. But the
 consequence, if it ever bites, is genuinely cross-task: a handle resolving to an object a
 *different* task created. The backstop bounds *when* a wrap can bite; it does nothing about
-*how badly*. Its budget is the most generous of the three and for a reason that has nothing
-to do with the hazard: this handle is **kernel-internal**. A create stores the pool handle
-inside a capability table entry and hands userspace the *capability* handle instead
-(`kernel/syscall/syscall_obj.cc`), so the pool codec answers to no userspace convention at
-all. It rides in a signed 32-bit field and its resolve refuses a negative value, so it has 31
-bits to play with and spends 24 of them: 8 index bits and a 16-bit generation
-(`kernel/include/kickos/slotpool.h`). Seven bits sit unspent -- the only real headroom in the
-system, belonging to the counter with the fewest places a stale value can be held.
+*how badly*. This is also the handle furthest from any userspace convention: it is
+**kernel-internal**, because a create stores the pool handle inside a capability table entry
+and hands userspace the *capability* handle instead (`kernel/syscall/syscall_obj.cc`). That
+freedom buys it no extra room -- the same 16 and 16, the same full word -- but it does show up
+in the code, in a place worth stopping at. The pool passes its handles around in a *signed*
+`int`, and neither `free` nor `resolve` is permitted to test that sign: both cast to
+`uint32_t` first, because a slot recycled past its 32768th free mints handles with bit 31 set,
+and a `handle < 0` guard would from then on silently refuse to release live slots. What keeps
+a stray `-1` from resolving is not the sign but the **reserved all-ones index** the pool never
+seats, so no handle a live slot can mint carries it (`kernel/include/kickos/slotpool.h`).
+Escape probability, again one in 65536 per erroneous use.
 
 **The thread generation carried inside a reply capability** is the interesting one. A reply
 capability names the parked caller by its generational thread handle. That handle is held by
 the *server* -- a peer -- and it is held for as long as the server chooses to hold it. You
 cannot make it drop the thing. Reachability is cross-task, retention is holder-controlled
 and unbounded, and the consequence of a wrap is a reply delivered into a thread slot that has
-since been recycled into an unrelated thread. It is the most exposed of the three by every
-one of the first three questions -- and it has the smallest budget, squeezed twice over.
-A thread handle used to be returned as a minting syscall's return value, which put it behind
-exactly the 31-bit wall described above -- and it is worth seeing what that cost, because the
-failure is more concrete than the arithmetic suggests. Widen the index so that index plus
-generation spend the whole word, and the handle goes negative on the far side of its own wrap.
-A caller reading `< 0` as failure then cannot tell a live handle from an errno. Measured on
-this kernel over 40000 spawn/exit cycles against one slot, before the fix: **7232 successful
-spawns handed back a negative handle, the first at cycle 32769** -- and asking the kernel to
-cancel one of those live threads was refused as a bad handle. The kernel would not kill a
-thread it had itself just created.
+since been recycled into an unrelated thread. It is the most exposed of the three by every one
+of the first three questions -- and by the fourth it is not one bit better funded than the
+other two: 16 index bits, a 16-bit generation, a full word, and its own reserved all-ones
+index to keep "no thread" unmintable (`kernel/include/kickos/thread.h`).
 
-Note what the width alone would not have told you: the wrap is not a distant event. One slot
-recycled 32768 times is seconds of work, and nothing about it is exotic.
+Two interfaces press on that word, and both of them had to be pushed back for it to stay
+whole. The first is the calling convention, and it is worth seeing what it costs in the
+concrete rather than the abstract, because the failure is uglier than the arithmetic suggests.
+Spend the whole word on index plus generation and the handle goes negative on the far side of
+its own wrap; a caller reading `< 0` as failure then cannot tell a live handle from an errno.
+Run the numbers on one slot churned in a loop: past its 32768th recycle every handle it mints
+has bit 31 set, so over 40000 spawn/exit cycles against that single slot **7232 of the handles
+handed back are negative, the first at cycle 32769** -- and a caller testing the sign would
+refuse to cancel a thread the kernel had just created for it, as a bad handle. Note what the
+width alone would not have told you: the wrap is not a distant event. One slot recycled 32768
+times is seconds of work, and nothing about it is exotic. So a thread handle travels in an
+out-parameter, exactly like a capability handle, and the minting call returns a status: **a
+value that spends its whole word cannot also carry a failure signal.**
 
-The handle now travels in an out-parameter, like the capability handle, so the wall is gone
-rather than merely distant. Both minting calls in this kernel now return a status and write
-the handle out, which is the general shape: **a value that spends its whole word cannot also
-carry a failure signal.**
-
-It used to face a *second*, independent squeeze as well, and that pair is the instructive
-part. A reply capability packs the thread handle into one 32-bit entry field, and it once
-shared that field with the caller's 8-bit call sequence, leaving 24 bits: exactly what a
-pool spending 8 index bits and a 16-bit generation needs, with not one bit of headroom.
-Widening the index by one would have truncated the *generation* from the top, silently, with
-nothing at runtime to report it -- which is why the assertion that forbade it sat beside the
-index width rather than beside the packing.
-
-That squeeze was removed by moving the call sequence into spare bits of the entry's type and
-rights fields, which had three of eight bits used each. The handle now occupies the field
-whole. Worth extracting, because it recurs: **when a field is exactly full, look for
-unspent bits in its neighbours before you conclude the width is the constraint.** The reply
-entry was never short of space; it was short of *packing*.
+The second is the packing, and the pair is the instructive part. A reply capability names its
+caller in one 32-bit entry field, and the thread handle fills that field exactly -- while the
+reply protocol also needs the caller's 8-bit call sequence stored in the same entry, or a
+late reply from a previous call could not be told from a live one. Take those eight bits out
+of the handle's field and they come out of the *generation*, from the top, silently, with
+nothing at runtime to report it. So they are not taken from there. They ride in the spare bits
+beside the entry's type and its rights, each of which uses three of its eight
+(`KCAP_REPLY_SEQ_LO_BITS`, `KCAP_REPLY_SEQ_HI_BITS`), and the handle keeps its own field
+whole. Worth extracting, because it recurs: **when a field is exactly full, look for unspent
+bits in its neighbours before you conclude the width is the constraint.** The reply entry was
+never short of space; it was short of *packing*.
 
 The general lesson gets two edges. The first is what the three exposure questions were for:
 **reachability and consequence can point in opposite directions, so the widest counter is not
@@ -280,25 +284,28 @@ often.** Before sizing anything, enumerate the holders and their retention. A co
 guarding a mistake a task can only make against itself is a fundamentally different object
 from one guarding a handle a peer holds and that you cannot make it drop.
 
-The second edge is arithmetic rather than judgement: **the counters do not share a budget,
-and here the one with the most exposure has the smallest.** The capability generation, whose
-stale handles never leave one task's own table, travels in a word it has entirely to itself.
-The thread generation inside a reply capability, held by a peer for as long as that peer
-likes, is squeezed by a calling convention and then by a co-tenant in the same word, and ends
-with zero headroom. Sized by the hazard, the room would have gone the other way round. It was
-allotted by two interfaces instead, neither of which was answering a question about ABA.
+The second edge is arithmetic rather than judgement, and it cuts the other way: **rank the
+three by exposure and you have learned nothing about what any of them can be paid.** The
+capability generation, whose stale handles never leave one task's own table, and the thread
+generation inside a reply capability, held by a peer for as long as that peer likes, sit at
+the two ends of the exposure scale -- and they are the same sixteen bits in an equally full
+word. The width was settled by the size of a machine word, and kept whole against a return
+convention and a packing decision; not one of the three parties to that was answering a
+question about ABA. Sized by the hazard, the room would not have come out equal.
 
 So a sizing pass has two halves that are easy to run together and must not be: work out what
 each counter is *exposed* to, and separately work out what each counter can actually be
-*paid*. A budget set by a return convention and a packing decision owes nothing to the
-hazard analysis, and noticing the mismatch is the entire value of doing both.
+*paid*. Here the second half returns the same answer three times -- a full word, no slack,
+widening means a 64-bit handle -- and that answer is the useful result, not a disappointing
+one, because it says the width is not the lever. The rest of this chapter is about what is.
 
-This also disposes of a tempting economy, in the one place an encoding really is shared.
-Where two fields sit in one word -- a thread handle under a call sequence -- widening either
-narrows the other, so a byte "spent" on sequence numbers is a byte taken off an ABA
-detector. Price such a change against every field in the word, not just the one you were
-thinking about; the field with the least visible failure mode is frequently the one that
-pays.
+This also disposes of a tempting economy, wherever an encoding really is shared. Where two
+fields sit in one word -- a call sequence beside a type, or beside a rights mask -- widening
+either narrows the other, so bits "spent" on sequence numbers are bits a wider rights mask
+cannot have, and the assertion that catches the collision has to sit beside the *type* width
+rather than beside the packing. Price such a change against every field in the word, not just
+the one you were thinking about; the field with the least visible failure mode is frequently
+the one that pays.
 
 ## The payoff: allocation policy is part of the guard
 
@@ -327,63 +334,92 @@ effective wrap distance is not N times one slot's; it is exactly one slot's, and
 N-1 counters are decoration. It is the pathological case, and it is also the default case,
 which is a bad combination.
 
-The fix is next-fit: keep a cursor at the slot the last allocation landed on, and resume
-scanning from there rather than from zero. Now the same workload walks the pool -- slot 0,
-then 1, then 2, wrapping around at N -- and each slot's counter advances once per lap
-instead of once per recycle. The effective wrap distance is multiplied by roughly the pool
-size. The cost is **one byte of cursor per pool**, no handle bits, no table bytes, no change
-to the encoding, no change to the ABI, and no change to what resolve does.
+There are two ways out, and neither of them costs a handle bit. They are the same rule stated
+twice: **never hand back the slot you just released.**
 
-Compare the two purchases honestly:
+The first is a **next-fit cursor**. Remember the slot the last allocation landed on, resume
+the scan from there rather than from zero, and -- the part that is easy to get wrong -- do not
+rewind the cursor when a slot is freed. Now the same workload walks the pool, slot 0, then 1,
+then 2, wrapping around at N, and each slot's counter advances once per lap instead of once
+per recycle. The cost is **one cursor per pool**, no handle bits, no change to the encoding,
+no change to the ABI, and no change to what resolve does.
+
+The second is a **FIFO free list**. Thread the free slots onto a list, take the head to
+allocate, and put a released slot back at the **tail**. The slot handed out next is then
+always the one that has been free the longest, so with F free slots each counter advances
+once per F mints. The cost is a list head plus the links -- and the links can live in the dead
+slots themselves, which have nothing else to say while they are dead. Note how narrow the
+margin for error is: inserting at the *head* instead, which reads just as naturally, hands the
+just-released slot straight back and concentrates every mint on one counter. That is first-fit
+again, by another route, and the ordering is the only thing standing between the two.
+
+Compare the purchases honestly:
 
 | move | cost | effect on effective wrap distance |
 | --- | --- | --- |
 | widen the generation by k bits | k bits in every handle, possibly a wider handle word and an ABI change | x 2^k, capped by whatever the handle word has left |
-| first-fit -> next-fit | one byte of cursor per allocator | x N (the number of slots), free |
+| first-fit -> a next-fit cursor | one cursor per allocator | x N (the number of slots), free |
+| first-fit -> release at the list tail | one list head; the links ride inside the dead slots | x F (the number of free slots), free |
 
-On a pool of a few dozen slots the policy change buys five bits of generation and does not
-spend any. On the pools where the counter is under the most pressure -- the ones churning
-one object at a time, which is precisely the workload first-fit degenerates on -- it buys the
-most. **Policy bought what no amount of bit-packing could.**
+On a pool of a few dozen slots either policy buys five bits of generation and spends none. On
+the pools where the counter is under the most pressure -- the ones churning one object at a
+time, which is precisely the workload first-fit degenerates on -- it buys the most. **Policy
+bought what no amount of bit-packing could.**
 
 ### Which allocator does what, and why the distinction matters
 
-The principle is general. Its *application* is per-allocator, and there are two allocators
-under a capability handle that choose differently, so "the system spreads its recycles" would
-be the wrong thing to take away.
+The principle is general. Its *application* is per-allocator, and the allocators sitting under
+a capability handle do not all reach for the same instrument -- nor do they all reach. "The
+system spreads its recycles" is the wrong thing to take away. Read each one.
 
-The **object pool** allocates next-fit. `alloc` begins its scan at a stored cursor and walks
+The **object pool** spreads by position. `alloc` begins its scan at a stored cursor and walks
 the ring once, and `free` deliberately does *not* rewind the cursor to the slot it just
 released -- aiming it back at the freshly-freed slot is exactly the first-fit concentration
 the cursor exists to prevent (`kernel/include/kickos/slotpool.h`).
 
-The **per-task capability table** does not. `cap_install` scans from the first dynamic index
-upward and takes the first empty entry (`kernel/syscall/cap.cc`): first-fit, over the run of
-entries belonging to that one task. So for a task that holds one capability at a time --
-create, use, close, create again -- every recycle lands on the same table slot, and that
-table's effective wrap distance is one counter's, the 1.3 seconds computed earlier, whatever
-the run's width. The other entries' counters sit at zero.
+The **per-task capability table** spreads by age. Its free dynamic slots are a circular list
+threaded through the object words of the dead entries themselves; a mint takes the head, and
+closing a capability returns its slot to the tail (`kernel/include/kickos/cap.h`,
+`kernel/syscall/cap.cc`). Same goal as the cursor, different instrument, and a different bill.
+The mint is a head read rather than a scan, which is worth having where a client mints a reply
+capability into a *server's* table on the IPC path; the links cost no bytes of their own; and
+the head is per-task state, two bytes in every TCB rather than one field in one pool header --
+cheap either way, but a different line in a different budget.
 
-Two things follow, and they are both worth having straight. The first is that the price of
-the cursor is not the same purchase here: a pool is one object with one cursor, so it costs
-one byte in the kernel, while a capability table is *per-task*, so a cursor is a byte in every
-TCB and a decision about per-thread state rather than about a pool header. Cheap either way,
-but a different line in a different budget.
+Then the **thread pool**, which reclaims the *lowest* exited slot. A workload that keeps one
+worker alive at a time -- spawn, run, exit, spawn again -- comes back to that same slot every
+cycle, so the thread generation's effective wrap distance is one counter's and not the pool's:
+the seconds of dedicated churn the arithmetic above worked out, whatever the pool's width. And
+this is the counter a peer holds for as long as it likes, so of the three it is where that
+shortening lands hardest.
 
-The second is that the boundary does not move. A short wrap distance in a capability table is
-a detector with poorer odds, not a hole: the entries a wrap can reach all belong to the same
-task, and it can at worst hand that task a different object it holds a capability for right
-now, at that entry's rights. That is Chapter 8.1's split doing its job -- bounds, liveness,
-type and rights are what confine authority, and they owe nothing to any counter. Which is why
-the two facts have to be stated together rather than one standing in for the other: how far
-the counter goes is a question about *detection rates*, and it answers nothing about
-*confinement*.
+It is also the one place where declining to spread is a purchase rather than an omission, and
+the price is worth reading, because it is what makes the principle land differently here. This
+pool keeps no free-slot bitmap: liveness is the TCB's own state, and slots come from a bump
+allocator whose high-water mark never falls. Taking the lowest exited slot holds that mark
+down, and two sweeps are bounded by it rather than by the pool's declared width -- one of them
+the reclaim's own, which runs with interrupts masked. A cursor preferring fresh slots would
+push the mark to the full width almost at once and make that masked loop always cost the
+maximum. So the wrap distance here is spent on a shorter interrupt-masked window. Spreading
+recycles is close to free in the two allocators above and is not free in this one, which is
+why matching the neighbour's policy on sight would be the wrong instinct.
+
+What that does and does not mean has to be said plainly, because a short wrap distance is a
+detector with poorer odds and not a hole. A reply is not admitted on the thread generation
+alone: the entry also carries the caller's call sequence, and a reply whose sequence does not
+match the one the parked thread is waiting on is refused -- an independent guard on the same
+path, and the reason those eight bits were worth somebody's packing. Behind both, Chapter 8.1's
+split is doing its job: bounds, liveness, type and rights are what confine authority, and they
+owe nothing to any counter. The two facts have to be stated together rather than one standing
+in for the other: how far a counter goes is a question about *detection rates*, and it answers
+nothing about *confinement*.
 
 The allocation policy is the part of the guard that lives outside the guard, which is exactly
-why it gets missed: the counter is in the header, the packing is in the header, the
-comparison is in resolve, and the thing that determines whether any of it works is in a
-`for` loop in the allocator that reads like a triviality. Read both allocators as part of the
-ABA guard, because that is what they are.
+why it gets missed: the counter is in the header, the packing is in the header, the comparison
+is in resolve, and the thing that decides whether any of it works is a cursor one allocator
+declines to rewind, an end of a list another chooses to insert at, and a scan direction a
+third never had reason to revisit. Every one of those reads like a triviality. Read each
+allocator under a handle as part of the ABA guard, because that is what they are.
 
 The transferable version, worth carrying to problems that have nothing to do with handles:
 **when a defense is a counter, find out what drives the counter before you widen it.** A
@@ -436,14 +472,15 @@ detector, and a detector is graded on probabilities, not guarantees.
   an errno-carrying return is an *interface* cost, not a machine one, and moving the failure
   signal to its own channel gives the bit back. Ask what would have to change for the
   constraint to go away; sometimes the answer is one function signature.
-- Several counters running the same mechanism are not several equal defenses, and they do not
-  share a budget. Enumerate who can hold a stale handle, for how long, and what a wrap would
-  reach -- then, separately, what each one's encoding can pay for. Exposure and budget are set
-  by different things and routinely disagree.
+- Several counters running the same mechanism are not several equal defenses, and equal widths
+  are no evidence that they were sized. Enumerate who can hold a stale handle, for how long,
+  and what a wrap would reach -- then, separately, what each one's encoding could actually pay
+  for. Exposure and encoding are set by different things and routinely disagree.
 - Before widening the field, look at what drives it. First-fit collapses N counters into one;
-  next-fit restores all N for one byte of cursor. **The cheaper, better move is usually to
-  change how slots are chosen, not how wide the name is** -- and check per allocator, because
-  the policy is a property of each one, not of the mechanism they share.
+  a cursor that is never rewound, or a release that goes to the tail of a free list, restores
+  all N for a couple of bytes of state. **The cheaper, better move is usually to change how
+  slots are chosen, not how wide the name is** -- and check per allocator, because the policy
+  is a property of each one, not of the mechanism they share.
 
 ## Where to go next
 
@@ -452,12 +489,13 @@ detector, and a detector is graded on probabilities, not guarantees.
 - The refcount discipline that decides *when* a pool slot is freed, and therefore how often a
   pool generation advances at all: Chapter 8.2,
   *[Adding a kernel object type: the additive recipe](adding-a-kernel-object-type-the-additive-recipe.md)*.
-- The reply capability whose object word carries the most-exposed and least-funded of the
-  three counters: Chapter 8.5,
+- The reply capability whose object word carries the most exposed of the three counters, and
+  the call sequence that guards the same path independently: Chapter 8.5,
   *[Synchronous call/reply: the reply capability](synchronous-call-and-reply.md)*.
 - The exact widths and the handle codec: `kernel/include/kickos/cap.h` (`KCAP_GEN_BITS`,
   `KCAP_INDEX_BITS`, `KICKOS_MAX_HANDLES`), the reply entry's call-sequence packing
-  (`KCAP_REPLY_SEQ_BITS`), and `kernel/include/kickos/slotpool.h`.
+  (`KCAP_REPLY_SEQ_BITS`), the capability table's free list (`KCAP_FREE_NONE`), and the two
+  pools -- `kernel/include/kickos/slotpool.h` and `kernel/include/kickos/thread.h`.
 - The contract these guards are part of: `../reference/architecture.md` ("Object model,
   capabilities & IPC") and `../reference/invariants.md`.
 - Further reading: Tanenbaum, *Modern Operating Systems*, ch.1 (the protection boundary), and

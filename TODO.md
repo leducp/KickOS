@@ -15,6 +15,32 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## M4.7.4 -- delete the legacy management (nothing is released before M6)
+
+KickOS is unreleased and will not ship before M6, so **there is no backward compatibility to
+manage**. Anything that exists only because something else USED to exist is cost: it must be kept in
+sync, it reads as a supported path, and it makes a deleted thing look alive. `roadmap.md`'s ledger
+carries the number and the class definition.
+
+- [ ] **Sweep for tombstones: guards whose only job is to refuse a knob that no longer exists.**
+      `KICKOS_MAX_HANDLES` had one in the root `CMakeLists.txt` and M4.7.2 caught itself editing its
+      message text to name a newly added term -- maintaining a memorial. Deleted there; find the rest.
+      Grep shape: `if(DEFINED ...)` + `FATAL_ERROR` naming something absent from the tree, plus
+      `#ifdef`/`#error` pairs on removed macros.
+- [ ] **Sweep for fallbacks that fire only when the build is already wrong.** A default that can only
+      be reached by a misconfiguration is a silent failure mode wearing a default's clothes. The known
+      one is `KICKOS_MAX_HANDLES` in `kernel/include/kickos/config/system.h`, which defaults and then
+      asserts against its own default; **M4.7.3's generated header removes the need rather than tuning
+      it**, so sequence this after that.
+- [ ] **Sweep for inert parameters and grants kept "for signature parity"** with a path that no longer
+      requires them (there are several in `user/apps/` and the mk64f driver comments).
+- [ ] **Sweep comments and docs for removed mechanisms described as if a reader might still meet
+      one.** Do it by CLAIM, tree-wide, not by location: M4.7.2 proved three times that the same false
+      statement lives in several files and fixing one copy does not find the others. `doc_names` reads
+      tracked markdown only, so source comments, CMake strings and workflow YAML need their own grep.
+- [ ] **The rule to apply:** delete it if its only justification is history. Keep a guard only when it
+      catches a mistake somebody can still make today.
+
 ## Where the branch is (READ THIS FIRST IF RESUMING)
 
 `M4.6.1-irq`, off `master` at `b56ceff`. Linear, no merges, unpushed. Re-derive the commit count
@@ -1346,8 +1372,9 @@ duplicated.
       starvation, and it is what made the investigation above cost a session. Two distinguishable
       codes, or one diagnostic line naming which limit was hit, would have ended it immediately.
 - [ ] **`selftest`'s `mutex_deadlock` skip is mislabelled DIFFERENTLY, and the shared label hides
-      that.** Its guard is `KICKOS_MAX_HANDLES = 9` / semaphore exhaustion, not stack arena and not
-      thread count, so no amount of arena work will EVER un-skip it -- yet it reads as a pool-size
+      that.** Its guard is the configured `KICKOS_MAX_HANDLES` (7 on the supply-7 boards) or
+      semaphore exhaustion, not stack arena and not thread count, so no amount of arena work will
+      EVER un-skip it -- yet it reads as a pool-size
       skip, identical in wording to the eight that were real. Give it its own reason string.
 - [ ] **Two boards block the fleet-wide boot-arena assert.** `KICKOS_POOL_ARENA_ASSERT`
       (`arch/common/boot_arena.ld.h:57`) is opt-in and only `arch/arm/chip/stm32f302/stm32f302.ld:127`
@@ -2227,6 +2254,19 @@ M4.6.1. Each landed with a gate that is RED without it.
 
 ## The capability table: stages 0, 1 and 2 are LANDED; Stage 3 is the elastic storage
 
+**SUPERSEDED in mechanism by the capability-table rework, which re-derived the table from a clean
+sheet and DELETED the storage shape recorded below.** Gone: the fixed bucket classes (runs of
+4/16/64, each with its own free list), the per-spawn declared capacity and its ABI field, the
+narrow-only clamp against the spawner, `Thread::cap_class`, the per-board default spawn-capacity
+knob, and `KICKOS_MAX_HANDLES` as a board knob -- so `KCAP_INDEX_BITS` no longer derives from it
+either. In their place: a fixed `CapRun caps` member in `Thread` with no capacity and no class id,
+ONE uniform chunk size with no classes, `thread_cap_capacity` returning the one image-wide
+`KICKOS_MAX_HANDLES` for every task that holds a run (and 0 for idle, which holds none), and a
+configure-time width sum (`cmake/cap_table.cmake`). See `docs/design-capability-table.md`
+section 3 for the deletions and section 6 for the provisioning that replaced them. Everything
+below is kept as the record of what was built and why, checkboxes included; read it as dated
+history, not as the current shape.
+
 A design spike and an adversarial review of it ran on 2026-08-01. **Both were EXPLORATORY and are
 squashed out of this branch's history per `docs/README.md` -- spikes never reach master.** Their
 durable teaching is Book chapter 8.7
@@ -2246,8 +2286,8 @@ the image pays for the possibility).
 **Demand is genuinely uneven, counted from the tree rather than assumed**: a polled console driver
 holds 1 capability, an IRQ-driven UART or SPI service task 2, the three-task `rxsci` 2 per task, a
 plain worker child 1 to 2 -- and the selftest's deadlock case holds 6 and spawns children at 5
-grants. Against that, boards provision 7 to 12 slots for **every** task, almost entirely to hold one
-case in one build.
+grants. Against that, an image provisions 7, 10 or 11 slots for **every** task, almost entirely to
+hold one case in one build.
 
 ### What is landed
 
@@ -2751,9 +2791,13 @@ cancellation are proven only by `sim_driver_death` case 3 and its four mutation 
 - [ ] **`kos_thread_kill` has NO fleet coverage.** Every refusal assertion -- bad handle, big
       handle, a stranger's thread, spawner-accepts, exited-slot EBADF -- lives in the sim
       `drvdeath` app, so no non-sim board exercises the syscall at all. Adding a `thread_kill`
-      selftest arm in region 2 means moving `_tap_arms` 60 -> 61 AND `_tap_arms_p2` 16 -> 17 in
-      `user/apps/common/selftest/CMakeLists.txt`; the split's totality assertion fails the
-      configure on EVERY board if only one of the two moves.
+      selftest arm means raising the whole-suite floor `_tap_arms` AND the clause for the region the
+      arm lands in, `_tap_arms_p2` for region 2 or `_tap_arms_p1` for region 1
+      (`user/apps/common/selftest/CMakeLists.txt`). Read the current values out of that file, never
+      out of this entry. The three are deliberately independent expressions, and the split's totality
+      FATAL fails the configure on EVERY board the moment p1 + p2 stops equalling the whole, so a
+      half-done edit cannot pass quietly -- but the conditional `math(EXPR ...)` clauses beneath each
+      one are per-posture, so an arm gated on `KICKOS_HAVE_MPU` moves a clause and not the base.
 - [ ] **The stale-spawner-tag clear in `ThreadPool::alloc` is argued, not gated.** It is what
       stops a reclaimed slot's new occupant inheriting the right to kill the previous occupant's
       orphans. Witnessing it needs a thread-slot reuse plus a surviving orphan whose spawner held

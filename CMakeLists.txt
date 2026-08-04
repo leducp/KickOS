@@ -70,17 +70,8 @@ endif()
 # for the prebuilt .a libs -- silently disagreeing on the Kernel layout (ODR). The
 # normal (no-override) build stamps nothing extra: the header stays the sole truth.
 #
-# KICKOS_MAX_HANDLES is refused below, not listed: it is the ANSWER of the configure-time
-# sum (cmake/cap_table.cmake), and a -D would leave the sum's checks guarding a number
-# nothing compiles against.
-if(DEFINED KICKOS_MAX_HANDLES)
-  message(FATAL_ERROR
-    "KICKOS_MAX_HANDLES is not a knob any more: the per-task capability table is summed at "
-    "configure from the kernel's reserved range, the service list's RETAINED_CAPS and the "
-    "app's CAPABILITIES declaration (docs/design-capability-table.md section 6). To widen "
-    "it, raise the demand that is really higher, or the board's KICKOS_CAP_TABLE_SUPPLY "
-    "if its RAM can back more.")
-endif()
+# KICKOS_MAX_HANDLES is absent from the list on purpose: it is the ANSWER of the sum in
+# cmake/cap_table.cmake, not an input, so a -D sets a cache variable nothing reads.
 set(KICKOS_PROVISION_OVERRIDES "")
 foreach(_knob KICKOS_MAX_IRQ KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE
               KICKOS_IDLE_STACK_SIZE KICKOS_ROOT_STACK_SIZE
@@ -843,10 +834,12 @@ endif()
 # peak. Carried to consumers on kickos_core for the same ODR reason as the provisioning
 # overrides above.
 kickos_cap_table_resolve("${KICKOS_BOARD_INCLUDE_DIR}" "${KICKOS_PROVISION_OVERRIDES}"
-                         "${KICKOS_SERVICE_LIST}" KICKOS_CAP_TABLE_SLOTS)
+                         "${KICKOS_SERVICE_LIST}" KICKOS_CAP_TABLE_SLOTS
+                         KICKOS_CAP_TABLE_CHUNK)
 if(TARGET kickos_core)
   target_compile_definitions(kickos_core INTERFACE
-    KICKOS_MAX_HANDLES=${KICKOS_CAP_TABLE_SLOTS})
+    KICKOS_MAX_HANDLES=${KICKOS_CAP_TABLE_SLOTS}
+    KICKOS_CAP_CHUNK_SLOTS=${KICKOS_CAP_TABLE_CHUNK})
 endif()
 
 # --- Install / export: the dependency-inversion package --------------------

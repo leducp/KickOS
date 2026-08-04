@@ -379,8 +379,9 @@ namespace kickos
         }
         // Taken BEFORE the reference loop so one unwind path serves both failures. This is
         // -KOS_ENOMEM and not the table-full -KOS_EMFILE: the child gets no table at all,
-        // and the slab is a shared supply. The cap.h KCAP_RUN_COUNT assert makes this
-        // refusal unreachable anyway, since the thread pool always fills first.
+        // and the slab is a shared supply. Unreachable anyway: KCAP_RUN_COUNT is one run per
+        // holder (cap.h), and k.threads.alloc() above already claimed this spawn's slot, whose
+        // own run its reclaim arm gave back, so the pool always fills first.
         if (not cap_slab_attach(&attr.cap_run, &attr.cap_free_head))
         {
             if (attr.kstack_owned)
@@ -396,7 +397,7 @@ namespace kickos
         {
             if (deleg_dest[ci] >= KICKOS_MAX_HANDLES)
             {
-                cap_slab_detach(&attr.cap_run);
+                cap_slab_detach(&attr.cap_run, &attr.cap_free_head);
                 if (attr.kstack_owned)
                 {
                     k.threads.stack_push(stack);
@@ -423,7 +424,7 @@ namespace kickos
                 obj_ref_undo(static_cast<CapType>(deleg_type[cj]), deleg_obj[cj],
                              deleg_rights[cj]);
             }
-            cap_slab_detach(&attr.cap_run);
+            cap_slab_detach(&attr.cap_run, &attr.cap_free_head);
             if (attr.kstack_owned)
             {
                 k.threads.stack_push(stack);
