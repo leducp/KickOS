@@ -181,8 +181,9 @@ namespace kickos
             // Delegated cap i lands at child index i+1 by DEFAULT, index 0 being the
             // kernel's stdout slot, and each grant may name its own index instead. That
             // default packing is independent of the reserved cap-index range; what makes
-            // the default indices fit is KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES,
-            // static_asserted in cap.h.
+            // the default indices fit is KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
+            // static_asserted in cap.h. A caller-NAMED destination is not covered by it and
+            // is refused at the bound below.
             if (ncaps > KICKOS_MAX_SPAWN_GRANTS)
             {
                 return -KOS_EINVAL; // more grants than one spawn may carry
@@ -377,12 +378,13 @@ namespace kickos
             stack_size = KICKOS_USER_STACK_SIZE;
             attr.kstack_owned = true;
         }
-        // Taken BEFORE the reference loop so one unwind path serves both failures. This is
-        // -KOS_ENOMEM and not the table-full -KOS_EMFILE: the child gets no table at all,
-        // and the slab is a shared supply. Unreachable anyway: KCAP_RUN_COUNT is one run per
-        // holder (cap.h), and k.threads.alloc() above already claimed this spawn's slot, whose
-        // own run its reclaim arm gave back, so the pool always fills first.
-        if (not cap_slab_attach(&attr.cap_run, &attr.cap_free_head))
+        // Taken BEFORE the reference loop so one unwind path serves both failures. This
+        // cannot actually fail: every spawn asks for KICKOS_CAP_CHILD_WIDTH, the slab
+        // guarantees KCAP_CHILD_CHUNKS to every run holder (cap.h), and k.threads.alloc()
+        // above already claimed this spawn's slot, whose own run its reclaim arm gave back,
+        // so the pool always fills first.
+        if (not cap_slab_attach(&attr.cap_run, KICKOS_CAP_CHILD_WIDTH, &attr.cap_free_head,
+                                &attr.cap_width))
         {
             if (attr.kstack_owned)
             {
@@ -395,9 +397,9 @@ namespace kickos
         // taken, so the only unwind owed here is the run.
         for (int ci = 0; ci < ncaps; ci++)
         {
-            if (deleg_dest[ci] >= KICKOS_MAX_HANDLES)
+            if (deleg_dest[ci] >= attr.cap_width)
             {
-                cap_slab_detach(&attr.cap_run, &attr.cap_free_head);
+                cap_slab_detach(&attr.cap_run, &attr.cap_free_head, &attr.cap_width);
                 if (attr.kstack_owned)
                 {
                     k.threads.stack_push(stack);
@@ -424,7 +426,7 @@ namespace kickos
                 obj_ref_undo(static_cast<CapType>(deleg_type[cj]), deleg_obj[cj],
                              deleg_rights[cj]);
             }
-            cap_slab_detach(&attr.cap_run, &attr.cap_free_head);
+            cap_slab_detach(&attr.cap_run, &attr.cap_free_head, &attr.cap_width);
             if (attr.kstack_owned)
             {
                 k.threads.stack_push(stack);

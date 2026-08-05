@@ -103,9 +103,11 @@ endif()
 # summed width is not a variable here, because cmake/cap_table.cmake resolves it after this
 # directory is added, so the condition is the chips whose KICKOS_CAP_TABLE_SUPPLY is 7.
 # Changing the granule changes which boards land here.
+# cap_child_width is on the same condition: at a summed width of 7 the child width IS root's,
+# so the arm cannot tell a child table from the summed one.
 if(KICKOS_CHIP STREQUAL "nrf51" OR KICKOS_CHIP STREQUAL "stm32f103"
    OR KICKOS_CHIP STREQUAL "stm32f302")
-  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span)
+  list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span cap_child_width)
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
   # The reserved-overlap matrix needs the board to declare at least one
@@ -127,7 +129,7 @@ list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
 # shrink together when an arm is deleted and no self-consistent parse can see it; only
 # an expectation from OUTSIDE the image can. The conditions mirror the #if guards around
 # the registration block at the bottom of main.cc, one clause per guard.
-set(_tap_arms 61) # unconditional
+set(_tap_arms 66) # unconditional
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
 endif()
@@ -150,7 +152,7 @@ endif()
 # new arm has to move a clause on each side.
 set(_tap_arms_p1 43) # every arm in region 1
 
-set(_tap_arms_p2 18) # region 2, unconditional
+set(_tap_arms_p2 23) # region 2, unconditional
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
 endif()
@@ -240,6 +242,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   #   domain_share: arena cannot spare the shared region
   #   irq_as_event: wants a 4 KiB MMIO page out of 16 KiB SRAM
   #   uart_service: PINNED above (KICKOS_SELFTEST_NO_UART_SERVICE), no longer an arena outcome
+  #   cap_reply_bound_fast, cap_reply_bound_slow, cap_reply_release_close: 3 workers each
   # ARENA CLIFF, and the reason uart_service is pinned rather than left to the allocator: this
   # board sits close enough to the edge that a few tens of bytes of static demand, in EITHER
   # direction, flips one of endpoint_crossdomain, mem_self_grant_nonpow2, region_mode or
@@ -250,11 +253,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   #   caller_stack: the arena cannot spare a caller-owned stack
   #   confused_deputy: the arena cannot spare the grandchild's stack
   #   cap_chunk_span: a 7-slot table compiles the flat decode, so no segmented index exists
+  #   cap_child_width: at 7 the child width IS root's summed width
   # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a semicolon
   # would split the value into a second bogus environment entry.
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,call_donation_hold,call_donation_slow,call_donation_pending,domain_share,irq_as_event,uart_service"
-    "EXPECT_PARTIALS=caller_stack,confused_deputy,cap_chunk_span")
+    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,call_donation_hold,call_donation_slow,call_donation_pending,domain_share,irq_as_event,uart_service,cap_reply_bound_fast,cap_reply_bound_slow,cap_reply_release_close"
+    "EXPECT_PARTIALS=caller_stack,confused_deputy,cap_chunk_span,cap_child_width")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv

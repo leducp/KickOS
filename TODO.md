@@ -22,24 +22,76 @@ manage**. Anything that exists only because something else USED to exist is cost
 sync, it reads as a supported path, and it makes a deleted thing look alive. `roadmap.md`'s ledger
 carries the number and the class definition.
 
-- [ ] **Sweep for tombstones: guards whose only job is to refuse a knob that no longer exists.**
-      `KICKOS_MAX_HANDLES` had one in the root `CMakeLists.txt` and M4.7.2 caught itself editing its
-      message text to name a newly added term -- maintaining a memorial. Deleted there; find the rest.
-      Grep shape: `if(DEFINED ...)` + `FATAL_ERROR` naming something absent from the tree, plus
-      `#ifdef`/`#error` pairs on removed macros.
-- [ ] **Sweep for fallbacks that fire only when the build is already wrong.** A default that can only
-      be reached by a misconfiguration is a silent failure mode wearing a default's clothes. The known
-      one is `KICKOS_MAX_HANDLES` in `kernel/include/kickos/config/system.h`, which defaults and then
-      asserts against its own default; **M4.7.3's generated header removes the need rather than tuning
-      it**, so sequence this after that.
-- [ ] **Sweep for inert parameters and grants kept "for signature parity"** with a path that no longer
-      requires them (there are several in `user/apps/` and the mk64f driver comments).
-- [ ] **Sweep comments and docs for removed mechanisms described as if a reader might still meet
-      one.** Do it by CLAIM, tree-wide, not by location: M4.7.2 proved three times that the same false
-      statement lives in several files and fixing one copy does not find the others. `doc_names` reads
-      tracked markdown only, so source comments, CMake strings and workflow YAML need their own grep.
+**The sweep has been RUN.** M4.7.3 audited all four surfaces and banked the inventory at
+`.session/spikes/legacy-audit.md` (gitignored, main checkout only). M4.7.4 is execution against the
+rows below, not discovery. Every row was re-verified at `6f2eb55`.
+
+**Class 1 (tombstones) and class 2 (fallbacks reachable only from a broken build) are EMPTY.** The
+one instance of each was `KICKOS_MAX_HANDLES`, and both died with M4.7.3's generated header; the
+supply assert that commit orphaned was deleted in the same milestone. An enumeration of every
+`if(DEFINED)` (11), `message(FATAL_ERROR)` (50) and `#error`/`#warning` (17) site found no other
+instance -- each names something that still exists.
+
+**`.github/workflows/*.yml` is CLEAN end to end** -- the one surface of the four with no residue.
+Every symbol, ctest case name, doc path and preset name it references resolves.
+
+- [ ] **Class 4, the Reference tier contradicting itself.** `docs/reference/boards.md:670-673` says a
+      `KICKOS_ROOT_PRIVILEGED` `FATAL_ERROR` survives in `cmake/KickOSConfig.cmake.in`. No such
+      refusal exists and the name greps to zero in every build file;
+      `docs/reference/invariants.md:106` says correctly that it was deleted and a stale `-D` is now
+      silently ignored. Two Reference docs disagree and `boards.md` is the stale one.
+- [ ] **Class 4, `architecture.md`'s live repo-layout tree.** `:320` lists `libcxx/  # __cxa_* stubs,
+      guards, operator new/delete`; `lib/` has no such directory and none of those symbols exists
+      tree-wide -- `CMakeLists.txt:743` says "a stray operator new stays a link error". `:319`
+      annotates `libc/` with a heap and an assert it does not contain. `:803` promises
+      `__cxa_pure_virtual` and `__cxa_atexit`; only `__dso_handle` exists.
+- [ ] **Class 4, a deleted TAP case named in the present tense.** `boards.md:605` and `:2217` say the
+      one partial on every row is `cap_capacity`. That case died in `4ad39a8`; the successor is
+      `cap_chunk_span`, which `STATE.md` already uses. `boards.md:2290` is a DATED capture row and
+      stays as written -- a measurement is never renamed.
+- [ ] **Class 4, a driver path that no longer exists.** Two source/CMake comments still place drivers
+      under a `user/` subtree that was moved to `system/driver/<chip>/<name>/`
+      (`CMakeLists.txt:827`, `arch/arm/chip/xmc4800/regs/usic.h:141`, the latter also naming two wrong
+      app paths). Zero hits in tracked markdown -- exactly the surface `doc_names` cannot see.
+- [ ] **Class 4, `roadmap.md` calling landed work open.** `:70` names `sys_cpu_clock_hz()`, which does
+      not exist (`kos_cpu_clock_hz()`); `:63,66,71` list the console device handover and the
+      clock-select write side as open, and both landed with a LANDED design record each.
+- [ ] **Class 4, low value but still false.** `TODO.md:2336,2640` say `kcap_smallest_class_slots()` /
+      `kcap_largest_class_slots()` pin chunk 4 **now**; neither symbol exists. `TODO.md:4047` names
+      `kickos_armv6m_mpu_commit` for the arch-neutral `kickos_arch_mpu_commit`. `TODO.md:470` claims a
+      `qemu_reboot_declined` that is not registered. `boards.md:2299` names a nonexistent `arch_sim`.
+- [ ] **Class 3, and the test for it is NOT "does the MPU gate this chip's peripherals".** It is
+      **does this spawn's grantee call a `kos_periph_*` syscall**, because `kernel/syscall/syscall_mem.cc`
+      makes MMIO possession *the sole authorisation* for `arch_periph_enable`. By that test only
+      `user/apps/common/gpioblink`, `user/apps/frdmk64f/k64console` and `user/apps/frdmk64f/k64drv`
+      hold a genuinely inert window; `system/driver/mk64f/{k64dspi,k64uart,k64uartirq}` and
+      `user/apps/rx72m/rxdrv` all call `kos_periph_enable`, so their grants are load-bearing and must
+      NOT be swept. `k64uart.cc` had already drifted into calling its own live grant inert -- deleting
+      it on that comment's word would have killed the K64F console. Corrected in M4.7.3.
+      The remaining cost is that one silicon fact is written out longhand in **seven** files, which is
+      how that copy came to be wrong. Collapse to one statement in `docs/reference/boards.md` plus
+      back-references.
+- [ ] **Class 4, the largest single instance: `irq_register`, a function that does not exist**, named
+      in ten comments across `arch/` and `kernel/irq/irq.cc`. The API is `irq_attach` / `irq_claim`.
+- [ ] **Class 3, `kos_service_cfg.cs_policy` / `.cs_index` ARE legacy after all.** Corrected during the
+      audit: the reader `cfg->cs_policy == KOS_SVC_CS_HW` was added in `9ae301f` and **deleted in
+      `dde73ca`**, so a reader really did exist. Thirteen initializers still author both fields and
+      nothing reads either. Blocked only by rebalancing a `sizeof` assert. Do not conflate them with
+      the identically named `kos_bus_cfg` fields, which ARE live (`k64dspi.cc`, `xmcssc.cc`).
 - [ ] **The rule to apply:** delete it if its only justification is history. Keep a guard only when it
       catches a mistake somebody can still make today.
+
+**Two things deliberately NOT filed as legacy, with the check that settled each:**
+
+- `KICKOS_MIN_STACK_SIZE`'s `#ifndef` default in `config/system.h` survives: it is reachable when
+  `KICKOS_ARCH` matches none of the six ladder arms, which is a NEW PORT and a mistake somebody can
+  still make today.
+
+**One maintainer decision, not an evidence gap.** `CMakeLists.txt:438-448` gates on
+`KICKOS_SERVICE_LIST_ROOT_MMIO`, which is deliberately EMPTY, so the `FATAL_ERROR` cannot fire on any
+configure in the tree. Its comment argues it stays for the next board whose bring-up writes MMIO from
+root, and that failure is silent and total. By the M4.7.4 rule that is a keep -- but it is
+data-driven with empty data and will rot unnoticed, so decide it rather than defaulting.
 
 ## Where the branch is (READ THIS FIRST IF RESUMING)
 
@@ -2262,7 +2314,8 @@ knob, and `KICKOS_MAX_HANDLES` as a board knob -- so `KCAP_INDEX_BITS` no longer
 either. In their place: a fixed `CapRun caps` member in `Thread` with no capacity and no class id,
 ONE uniform chunk size with no classes, `thread_cap_capacity` returning the one image-wide
 `KICKOS_MAX_HANDLES` for every task that holds a run (and 0 for idle, which holds none), and a
-configure-time width sum (`cmake/cap_table.cmake`). See `docs/design-capability-table.md`
+configure-time width sum (`cmake/cap_table.cmake`). **The one image-wide width was repealed by
+M4.7.3**: root keeps the sum, a spawned task gets `KICKOS_CAP_CHILD_WIDTH`. See `docs/design-capability-table.md`
 section 3 for the deletions and section 6 for the provisioning that replaced them. Everything
 below is kept as the record of what was built and why, checkboxes included; read it as dated
 history, not as the current shape.
@@ -2467,7 +2520,8 @@ with the consequence that comes with them, because each was chosen against a rea
    **receiver's** table (`kernel/syscall/syscall_ipc.cc`, the call fastpath and the recv slowpath);
    nothing ever installs into a sender's. So a task's capability consumption can be driven by a
    peer's syscall -- but only for tasks that recv with a non-zero info pointer, only by their own
-   clients, and both sites probe with `cap_has_free_slot` and refuse before committing. Under this
+   clients, and both sites probe before committing -- with `cap_has_free_slot` as written, and with
+   `cap_can_take_reply` since M4.7.3 replaced it. Under this
    design that consumption lands in the server's own declared run and nowhere else. **The current
    exposure is preserved exactly, not widened.**
 3. **Spawn-time slab drain.** Real, and the mitigation is NOT "spawn is authority-gated" -- it

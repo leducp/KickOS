@@ -19,16 +19,6 @@
 
 namespace kickos
 {
-    // The backstop for the one configure check with no header equivalent: the width is summed
-    // by cmake/cap_table.cmake and refused above the board's declared supply, but a compile
-    // with neither the KickOS CMake nor the exported `kickos` target takes the
-    // config/system.h #ifndef fallback instead. That number sizes the slab below and decides
-    // KCAP_RUN_CHUNKS, hence sizeof(Thread). It cannot live in cap.h: tests/captable restates
-    // the width to compile a geometry no board sums to.
-    static_assert(KICKOS_MAX_HANDLES <= KICKOS_CAP_TABLE_SUPPLY,
-                  "the capability table is wider than this board says it can back: the width "
-                  "came from the config/system.h fallback, not from the configure-time sum");
-
     namespace
     {
         // "No stdout target published yet". The all-ones index, which SlotPool never seats
@@ -600,39 +590,48 @@ namespace kickos
         g_cap.free_chunks.head = nullptr;
         // Push in reverse so the list comes out in address order and a first attach is
         // deterministic across boots.
-        uint32_t const total = KCAP_RUN_CHUNKS * static_cast<uint32_t>(KCAP_RUN_COUNT);
-        for (uint32_t c = total; c > 0; c--)
+        for (uint32_t c = KCAP_SLAB_CHUNKS; c > 0; c--)
         {
             g_cap.free_chunks.push(&g_cap.chunks[(c - 1) * KCAP_CHUNK_SLOTS]);
         }
     }
 
-    bool cap_slab_attach(CapRun* run, uint16_t* free_head)
+    bool cap_slab_attach(CapRun* run, uint32_t width, uint16_t* free_head, uint16_t* out_width)
     {
         *free_head = KCAP_FREE_NONE;
-        if (not g_cap.free_chunks.take(run))
+        *out_width = 0;
+        KICKOS_ASSERT(width >= KICKOS_CAP_FIRST_DYNAMIC and width <= KICKOS_MAX_HANDLES);
+        uint32_t const chunks = kcap_chunks_for(width);
+        if (not g_cap.free_chunks.take(run, chunks))
         {
             return false;
         }
         // CAP_EMPTY is 0 and so is a fresh cap-gen, so a zeroed chunk is an empty table.
         // Required, not tidiness: take() left its own free-list link in entry 0.
-        for (uint32_t i = 0; i < KCAP_RUN_CHUNKS; i++)
+        for (uint32_t i = 0; i < chunks; i++)
         {
             memset(run->chunk[i], 0, KCAP_CHUNK_SLOTS * sizeof(CapEntry));
         }
-        // A run holds exactly KICKOS_MAX_HANDLES addressable slots (thread_cap_capacity), so
-        // the list stops there and the chunk-rounded tail stays out of it: an index the tail
-        // could hand out is one cap_install would refuse.
-        *free_head = cap_run_free_build(*run, KICKOS_MAX_HANDLES);
+        uint32_t capacity = width;
+#if KCAP_RUN_CHUNKS == 1
+        // One chunk of exactly KICKOS_MAX_HANDLES: a narrower request buys no storage here,
+        // so the flat path seats the ceiling and stores nothing.
+        capacity = KICKOS_MAX_HANDLES;
+#endif
+        // The list stops at the capacity, so the chunk-rounded tail stays out of it: an index
+        // the tail could hand out is one cap_install would refuse.
+        *free_head = cap_run_free_build(*run, capacity);
+        *out_width = static_cast<uint16_t>(capacity);
         return true;
     }
 
-    void cap_slab_detach(CapRun* run, uint16_t* free_head)
+    void cap_slab_detach(CapRun* run, uint16_t* free_head, uint16_t* out_width)
     {
         g_cap.free_chunks.give(run);
         // The list lived in the chunks just given back, so a surviving head would name a slot
         // in a chunk the next attach can hand to another task.
         *free_head = KCAP_FREE_NONE;
+        *out_width = 0;
     }
 
     void cap_install_at(Thread* c, int index, int obj_handle, CapType type, uint8_t rights)
@@ -676,6 +675,11 @@ namespace kickos
     {
         int const idx = kernel().threads.index_of(caller);
         KICKOS_ASSERT(idx >= 0); // endpoint_call rejects a non-pool caller up front
+        if (cap_reply_live(c) >= KICKOS_CAP_REPLY_MAX)
+        {
+            *out_cap = KCAP_INVALID;
+            return -KOS_EMFILE; // at c's reply bound: the same shape as a full table
+        }
         // The handle is stored WHOLE in CapEntry::obj (thread.h asserts the widths match),
         // so this reinterprets a full 32-bit word rather than narrowing it.
         int const rc = cap_install(c, static_cast<int>(kernel().threads.handle_for(idx)),
@@ -686,12 +690,51 @@ namespace kickos
         }
         cap_reply_seq_seat(cap_slot(c->caps, *out_cap & KCAP_INDEX_MASK),
                            static_cast<uint8_t>(caller->call_seq & 0xFF));
+#if KCAP_RUN_CHUNKS > 1
+        c->cap_reply_live++;
+#endif
         return 0;
     }
 
-    bool cap_has_free_slot(Thread* c)
+    uint32_t cap_reply_live(Thread const* c)
     {
-        return c->cap_free_head != KCAP_FREE_NONE;
+#if KCAP_RUN_CHUNKS == 1
+        // The flat path is selected by KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET, so this scan
+        // is at most a granule of entry loads, not the codec's 60000-slot ceiling. An entry
+        // is a CAP_REPLY iff cap_install_reply put it there: it is the only mint of that
+        // type, and rights 0 makes it undelegable.
+        uint32_t n = 0;
+        uint32_t const end = thread_cap_capacity(c);
+        for (uint32_t i = KICKOS_CAP_FIRST_DYNAMIC; i < end; i++)
+        {
+            if (cap_slot(c->caps, i)->type == static_cast<uint8_t>(CapType::CAP_REPLY))
+            {
+                n++;
+            }
+        }
+        return n;
+#else
+        return c->cap_reply_live;
+#endif
+    }
+
+    void cap_reply_released(Thread* c)
+    {
+#if KCAP_RUN_CHUNKS == 1
+        (void)c;
+#else
+        KICKOS_ASSERT(c->cap_reply_live > 0);
+        c->cap_reply_live--;
+#endif
+    }
+
+    bool cap_can_take_reply(Thread* c)
+    {
+        if (c->cap_free_head == KCAP_FREE_NONE)
+        {
+            return false;
+        }
+        return cap_reply_live(c) < KICKOS_CAP_REPLY_MAX;
     }
 
     Thread* cap_reply_caller(CapEntry const& e)
@@ -744,6 +787,10 @@ namespace kickos
         e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
         e->rights = 0;
         cap_run_free_release(c->caps, cap_handle & KCAP_INDEX_MASK, &c->cap_free_head);
+        if (detached.type == static_cast<uint8_t>(CapType::CAP_REPLY))
+        {
+            cap_reply_released(c); // the close-instead-of-reply path kos_reply does not cover
+        }
         obj_ref_drop(detached, /*teardown=*/false);
         // A VOLUNTARY close can also be the published console's last receiver going away, so
         // the reclaim runs HERE and not as a note for whichever thread exits next: there is
@@ -791,6 +838,10 @@ namespace kickos
                 e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
                 e.rights = 0;
                 cap_run_free_release(c->caps, i, &c->cap_free_head);
+                if (detached.type == static_cast<uint8_t>(CapType::CAP_REPLY))
+                {
+                    cap_reply_released(c);
+                }
                 obj_ref_drop(detached, /*teardown=*/true);
             }
         }
@@ -798,12 +849,16 @@ namespace kickos
         // TOTALITY. None of these failures is visible downstream until an object pool has
         // silently leaked a slot, or the funnel has read a dangling donor:
         //   - no entry survived the sweep (a lost chunk boundary),
+        //   - the reply count agrees with the emptied table (a release arm that forgot
+        //     cap_reply_released, which would make the slot's next occupant refuse its first
+        //     caller). SEGMENTED BOARDS ONLY: on the flat path cap_reply_live rescans the
+        //     table the loop above just emptied, so it restates the check above it,
         //   - nobody is still parked on this thread (a CAP_REPLY arm that woke a caller
         //     without unlinking it, which also walks a dead queue into the ready list), and
         //   - this thread serves no endpoint (an endpoint arm that cleared Endpoint::server
         //     without unlinking the chain, which then outlives the TCB into its next
         //     occupant).
-        // The first is O(table), hence debug-only; the other two are O(1).
+        // The first is O(table), hence debug-only; the rest are O(1) or bounded by a chunk.
 #if KICKOS_DEBUG
         for (uint32_t k = 0; k < cap_end; k++)
         {
@@ -811,6 +866,7 @@ namespace kickos
                                 == static_cast<uint8_t>(CapType::CAP_EMPTY));
         }
 #endif
+        KICKOS_ASSERT(cap_reply_live(c) == 0);
         KICKOS_ASSERT(c->reply_waiters.empty());
         KICKOS_ASSERT(c->served_head == EP_SERVED_NONE);
         g_cap.teardown_depth--;

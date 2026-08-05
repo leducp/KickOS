@@ -180,8 +180,9 @@ int k64uart_console_start(struct kos_service_cfg const* cfg)
     // never sets it, and the reclaim path re-forces it. It is also unwritable while C2
     // TE/RE are set anyway. So there is nothing to disable for the polled path.
 
-    // 3. Spawn the UNPRIVILEGED driver: granted the UART0 window (R|W|DEV, inert on
-    //    coarse-AIPS but kept for spawn-signature portability) and a narrowed {E | WAIT}
+    // 3. Spawn the UNPRIVILEGED driver: granted the UART0 window (R|W|DEV; SYSMPU does not
+    //    gate it, but possession is the sole authorisation for the kos_periph_enable above,
+    //    so removing the grant kills the console) and a narrowed {E | WAIT}
     //    recv cap (lands at the child's table index 1). No SIGNAL/TRANSFER on the child
     //    cap: the driver receives, it does not send or re-delegate. driver_prio must be
     //    >= every client (D9: rendezvous has no PI).

@@ -291,8 +291,8 @@ struct kos_thread_params
     //
     // Checked before the child exists, so a bad list costs -KOS_EINVAL and not a half-built
     // thread: no two grants may land on the same index, counting the defaulted ones, and
-    // every index is below the child's table size (KICKOS_MAX_HANDLES, one width for the
-    // whole image, summed at configure and not stated by any board).
+    // every index is below KICKOS_CAP_CHILD_WIDTH, the width every spawned child gets. That
+    // is NARROWER than KICKOS_MAX_HANDLES, which is the summed width root alone gets.
     //
     // The array must be uint16_t-aligned; the kernel refuses it otherwise rather than take
     // a misaligned privileged load on a strict-align arch.

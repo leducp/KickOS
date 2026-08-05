@@ -418,16 +418,33 @@ Beneath the sum sits a floor that is nobody's declaration: a table too narrow to
 grant list is unsound whatever any app asked for, since delegated cap *i* lands at child index
 *i*+1 with no runtime check. The floor **raises** the width rather than refusing it, and it refuses
 only when it exceeds the board's supply -- so no app is ever told to overstate a demand it does not
-have, and `cap.h`'s `KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES` backstop holds by construction.
+have, and `cap.h`'s `KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH` backstop holds by
+construction: M4.7.3 re-aimed it at the child default, which is that same floor.
+
+**The summed width is what ROOT gets, and no other task gets it.** Every spawned child is seated at
+`KICKOS_CAP_CHILD_WIDTH` -- that same grant-list floor -- and there is no way to ask for anything
+else: no per-spawn field, no board knob, and no app declaration reaches it. The constant answers to
+`KICKOS_MAX_SPAWN_GRANTS` and the reply term, never to an app's demand, so raising a demand widens
+root's table and leaves every child exactly where it was.
+
+**What that costs a child is concrete.** On the sim's selftest image the sum resolves to **10** --
+2 reserved + 5 declared peak + 3 optional, nothing retained -- while the floor is **7**
+(`KICKOS_MAX_SPAWN_GRANTS` 6 + 1, the reply term being 0). A child spends index 0 on stdout and,
+taking two delegated grants, indices 1 and 2 on those (`KOS_SPAWN_DELEGATED_CAP0` is 1), so it
+keeps **4** slots of its own where one fleet-wide width gave it **7**. An app whose children hold
+more than that has nothing it can declare: the only lever is `KICKOS_MAX_SPAWN_GRANTS`, which
+widens every child table in the image at once.
 
 **The reply term is honest but PESSIMISTIC under one width, and that is a reason it stays 0 in
 tree.** The four terms are peaks of *different tasks*: an app's peak belongs to the thread doing the
 creates, while an inbound reply cap lands in whichever thread is serving. Summing them provisions
-every table for the worst of all roles at once. The in-tree suite's true concurrent inbound-reply
+root's table for the worst of all roles at once. The in-tree suite's true concurrent inbound-reply
 peak is **1**, and declaring it would push the supply-7 boards to 8 and stop them configuring, while
 no in-tree server's own peak plus its reply actually exceeds the width it already has. The term is
 therefore declared and defaulted to 0: it is the number a reserved reply sub-range has to be sized
-from, and it becomes chargeable rather than pessimistic once a run is sized per task.
+from, and it is charged to the child floor as well as to the sum (`_floor = _grants + 1 + _reply`,
+`cmake/cap_table.cmake`), so a nonzero declaration widens every table in the image and not only
+root's.
 
 **The board declares supply only** -- its arena, and which peripherals exist. It contributes no
 demand figure at all.
@@ -481,7 +498,12 @@ table, hand-translated at each call site and shadowed by the fact that the raw v
 (`kernel/syscall/syscall_obj.cc`, `kernel/syscall/syscall_ipc.cc`, `kernel/irq/irq.cc`) propagates
 that `rc` unchanged.
 
-## 7. One law, fleet-wide: segmented storage, fully reserved at spawn
+## 7. One law: segmented storage, fully reserved at spawn
+
+The law is **reserve at spawn, never grow**, and it holds for every task on every board. It is NOT
+one width fleet-wide: M4.7.3 gave root the summed width and every other task
+`KICKOS_CAP_CHILD_WIDTH`, which is what makes the chunk directory below load-bearing rather than
+isomorphic to a free list of whole runs.
 
 **Either the worst case is reserved at spawn -- which requires a number -- or it is not, and then
 allocation can fail at any point in a task's life.** That is not a conservation law and no claim
@@ -547,11 +569,29 @@ a full run refuses rather than reaching for a chunk, so the damage cannot leave 
 self-inflicted, because the traffic that fills a server's window is traffic that server chose to
 accept. What section 6's fourth term buys is that the number configure computes is once again an
 honest input to that bound. What it does not buy is a partition: sizing a table for reply traffic is
-not the same as reserving part of it for reply traffic, and only the reservation would stop client
-traffic crowding out a server's own creates. That reservation is deferred, with its reasoning, to the
-per-task-width work (`roadmap.md`'s ledger names the number) -- it needs either a second free-list
-head, which section 4's `Thread` has no room for, or an O(width) scan on the `kos_call` fastpath, and
-it has to be sized from exactly the term added here.
+not the same as reserving part of it for reply traffic, and only a partition would stop client
+traffic crowding out a server's own creates.
+
+M4.7.3 supplied that partition, and it is a CAP rather than a reservation: `KICKOS_CAP_REPLY_MAX`
+bounds the `CAP_REPLY` entries one task holds at once, enforced at `cap_can_take_reply`, which
+replaced `cap_has_free_slot` at both `kos_call` probes. A cap reserves no index, so it neither
+collides with delegation placement nor moves any board's width; it needs one counter where a
+reservation would have needed a second free-list head plus a range boundary. The partition is
+ONE-WAY by design: reply traffic can never crowd out a server's own creates, while the server's own
+creates may still take a slot a reply wanted -- which is the residual named just above, and is
+self-inflicted for the same reason. The counter is a `Thread` field on the segmented path, where the
+chunk directory's second pointer leaves tail padding for it, and a scan bounded by
+`KCAP_CHUNK_TARGET` on the flat path, where a field would cost 8 bytes per TCB.
+
+**A cap alone does not deliver the one-way half, and the reason is worth stating because the first
+implementation got it wrong.** A bound is only a partition if the width it is spent against was sized
+for it. The reply term is summed into the width, but the summed width is ROOT's; a spawned child gets
+`KICKOS_CAP_CHILD_WIDTH`, and **every server in the tree is a spawned child**. With the term charged
+to root alone, a declared inbound-reply peak of 5 against a 7-slot child let three peers drive that
+child's own-create budget to zero -- measured, not argued. So the term is charged to the child width
+as well, and `cmake/cap_table.cmake` refuses at configure any combination that would leave a
+default-width child no dynamic slot of its own once the bound is spent. The guarantee is a
+configure-time property, not a runtime one.
 
 ## 8. SMP (M5) consequences
 
@@ -595,6 +635,26 @@ here because they are all in the capability path and all invisible from a unipro
   a reply capability into a server's table (`cap_install_reply`, both call sites in
   `kernel/syscall/syscall_ipc.cc`). Two clients calling one server splice the same list, and so does
   the server's own create.
+- **The reply-bound counter, `Thread::cap_reply_live`** (`kernel/include/kickos/thread.h`): the
+  same shape as `cap_free_head` above and a different failure, which is the point.
+  `cap_install_reply` (`kernel/syscall/cap.cc`) INCREMENTS it on the parked receiver's TCB driven
+  by the CLIENT, from both call sites in `kernel/syscall/syscall_ipc.cc`, while only the owner
+  decrements it, through `cap_reply_released` at `kos_reply`, at `handle_close` and in the teardown
+  sweep. A lost update corrupts no memory: if the decrement is what vanishes, the count never comes
+  back down, and the server sits permanently at `KICKOS_CAP_REPLY_MAX` REFUSING every later caller
+  with `-KOS_EMFILE` for the rest of its life.
+- **The width itself, `Thread::cap_width`** (`kernel/include/kickos/thread.h`, the segmented path's
+  stored capacity): written by the SPAWNER on a PEER's TCB -- `cap_slab_attach` seats it in the
+  `ThreadAttr` and `thread_create` copies it into the child -- and read at every `cap_lookup`
+  (`kernel/syscall/cap.cc`) through `thread_cap_capacity`, as **the bound that keeps `cap_slot`
+  inside the task's own run**. Sharper than anything above, because it is not a counter: a torn or
+  stale read there is an out-of-run memory access, a table indexed past the last chunk its
+  directory holds.
+- **`cap_reply_live()` SCANS a peer's whole table on the FLAT path** (`kernel/syscall/cap.cc`, the
+  `KCAP_RUN_CHUNKS == 1` arm, where no counter is stored at all): a bounded read-only walk of
+  another thread's entries, typed one at a time, with no snapshot and nothing holding them still
+  as it goes. A client drives that walk through `cap_can_take_reply` and `cap_install_reply`, and
+  `cap_teardown`'s `cap_reply_live(c) == 0` assert stands on it too.
 - **The served chain, `Thread::served_head` and `Endpoint::next_served`**
   (`kernel/include/kickos/thread.h`, `kernel/include/kickos/endpoint.h`): `endpoint_server_set`
   splices it at every recv that moves an endpoint's server, and its `endpoint_server_clear` step
@@ -713,7 +773,8 @@ Not settled by this document:
   `KICKOS_MAX_THREADS + 1`.** `ThreadPool::alloc` detaches the reclaimed slot's run BEFORE
   `cap_slab_attach` takes the new one (`kernel/include/kickos/thread.h`), so the pool term and
   `thread_spawn`'s in-flight term never both count and one of the two off-pool runs is never live.
-  `+ 1` would save `KCAP_RUN_SLOTS * 8` bytes of `.bss`. Left alone deliberately: it spends the last
+  `+ 1` would save one child-width run, `KCAP_CHILD_CHUNKS * KCAP_CHUNK_SLOTS * 8` bytes of `.bss`.
+  Left alone deliberately: it spends the last
   margin on an allocation whose exhaustion is indistinguishable from a full thread pool, both being
   `-KOS_ENOMEM`.
 - **`t_cap_chunk_span` cannot be mutation-proved**, so its evidence is coverage and not detection. A
@@ -725,10 +786,10 @@ Not settled by this document:
   service-list property read and the diagnostic path that names the term all have zero exercise, and
   a typo in a property name would go unnoticed. The default must stay 0 (section 6), so closing this
   wants a fixture rather than an in-tree declaration.
-- **The crowding scenario has no test anywhere**: several concurrent callers filling one server's
-  window, which is where `kernel/syscall/syscall_ipc.cc` returns `-KOS_EMFILE` against the RECEIVER's
-  table rather than the caller's. Closing it needs three threads and at least three dynamic slots, so
-  the arm would want a SKIP on the supply-7 boards.
+- ~~**The crowding scenario has no test anywhere**~~ -- CLOSED by M4.7.3's `cap_reply_bound_fast`
+  and `cap_reply_bound_slow`, which drive the two `-KOS_EMFILE` probes against the RECEIVER's table
+  separately (the `endpoint_call` fastpath and the recv-side scan of parked callers). Both need
+  three threads, so both SKIP on the two-slot boards, as predicted.
 
 Before any of this lands: each deletion needs a mutation proof that the gate it claims to protect
 actually fails when the property is broken, per the project rule that an unproved gate is not
@@ -738,8 +799,11 @@ evidence. The specific ones that matter:
 - a wrong per-task width producing the new errno rather than a pool-shortage message, and the
   configure-time sum failing with every term named;
 - the `microbit` arena floor holding across the change, measured at 0 to 7 bytes of slack;
-- **`microbit`'s skip set unchanged in BOTH directions.** "The floor holds" is not sufficient.
-  Freeing `.bss` can flip a currently-skipped arena arm from SKIP to RUN, and the board's skip
-  expectations are a hardcoded by-name list, the `EXPECT_SKIPS` list set on the `microbit_selftest`
-  test (`user/apps/common/selftest/CMakeLists.txt`), so a *gain* in slack breaks the gate exactly as
-  a loss does. The set must be asserted equal, not merely non-growing.
+- **`microbit`'s skip set, checked by hand in the RUN direction.** "The floor holds" is not
+  sufficient: freeing `.bss` can flip a currently-skipped arena arm from SKIP to RUN. But the gate
+  will not tell you. `EXPECT_SKIPS` and `EXPECT_PARTIALS` are **permission sets, not budgets**
+  (`tests/check_tap_stream.sh` says so and implements it): an unlisted skip FAILS, while a listed
+  name that did NOT skip is a `NOTE` and the gate still passes. So a LOSS of slack is caught
+  automatically and a GAIN is not. An earlier revision of this list claimed a gain "breaks the gate
+  exactly as a loss does"; that was false, and the practical consequence is that any change moving
+  `microbit`'s `.bss` must have its skip set diffed by eye.

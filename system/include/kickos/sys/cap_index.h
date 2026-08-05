@@ -20,8 +20,9 @@
 // table width summed in cmake/cap_table.cmake, so the width follows on its own and the
 // usable dynamic count is unchanged. Appending a well-known slot RAISES the last reserved
 // index and KICKOS_CAP_FIRST_DYNAMIC together and costs one slot on every table in the
-// fleet. Keep the range SMALL; the floor static_assert in cap.h guarantees at least one
-// dynamic slot remains.
+// fleet, and it raises the default child width with it. Keep the range SMALL; the floor
+// static_assert in cap.h guarantees at least one dynamic slot remains in the narrowest
+// table.
 //
 // KOS_SPAWN_DELEGATED_CAP0 (abi.h) is INDEPENDENT of this constant: under DEFAULT
 // placement delegated cap i lands at child index i+1 whatever the reserved range is, so

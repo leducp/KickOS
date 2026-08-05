@@ -252,7 +252,10 @@ namespace kickos
         // instant: root is unprivileged from its first instruction. idle above is the
         // only privileged thread in the system.
         root_attr.privileged = false;
-        if (not cap_slab_attach(&root_attr.cap_run, &root_attr.cap_free_head))
+        // Root is the only holder of the full summed width; the slab backs exactly this one
+        // widening over the child width.
+        if (not cap_slab_attach(&root_attr.cap_run, KICKOS_MAX_HANDLES,
+                                &root_attr.cap_free_head, &root_attr.cap_width))
         {
             kpanic("kmain: no capability run for root");
         }

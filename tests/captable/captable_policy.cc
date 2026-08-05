@@ -18,10 +18,17 @@
 
 #include <kickos/config/system.h>
 
-// The tree compiles one width, summed at configure; this gate needs both geometries, so it
-// restates the width from its target's CAPTABLE_GATE_WIDTH before cap.h reads it.
+// The tree compiles one geometry, summed at configure; this gate needs all of them, so it
+// restates the width and the child width from its target's CAPTABLE_GATE_* before cap.h
+// reads them. The generated header is included FIRST so that cap.h's own include of it is a
+// no-op and cannot put the configured values back.
+#include <kickos/config/cap_width.h>
 #undef KICKOS_MAX_HANDLES
 #define KICKOS_MAX_HANDLES CAPTABLE_GATE_WIDTH
+#undef KICKOS_CAP_CHILD_WIDTH
+#define KICKOS_CAP_CHILD_WIDTH CAPTABLE_GATE_CHILD
+#undef KICKOS_CAP_REPLY_MAX
+#define KICKOS_CAP_REPLY_MAX 1
 
 #include <kickos/cap.h>
 
@@ -41,13 +48,21 @@ using kickos::KCAP_FREE_NONE;
 using kickos::kcap_free_prev;
 using kickos::kcap_free_ref;
 using kickos::KCAP_NO_SLOT;
-using kickos::KCAP_RUN_SLOTS;
+using kickos::KCAP_CHILD_CHUNKS;
+using kickos::kcap_chunks_for;
+using kickos::KCAP_ROOT_CHUNKS;
+using kickos::KCAP_RUN_COUNT;
+using kickos::KCAP_SLAB_CHUNKS;
 
 namespace
 {
     constexpr uint32_t WIDTH = KICKOS_MAX_HANDLES;
+    constexpr uint32_t CHILD = KICKOS_CAP_CHILD_WIDTH;
     constexpr uint32_t FIRST = KICKOS_CAP_FIRST_DYNAMIC;
     constexpr uint32_t SPAN = WIDTH - FIRST;
+    // What the widest run reserves. Not a capacity: the last chunk's tail is paid for and
+    // unaddressable.
+    constexpr uint32_t RUN_SLOTS = KCAP_ROOT_CHUNKS * KCAP_CHUNK_SLOTS;
 
     int g_failures = 0;
 
@@ -62,7 +77,7 @@ namespace
     }
 
     constexpr uint32_t RUNS = 4;
-    CapEntry g_slab[KCAP_RUN_SLOTS * RUNS];
+    CapEntry g_slab[RUN_SLOTS * RUNS];
 
     // Thread `chunks` chunks onto a fresh list, lowest address first (cap_slab_init's order).
     void list_of(CapChunkList* list, uint32_t chunks)
@@ -136,7 +151,7 @@ namespace
     // Zero a reserved run and thread its free list: cap_slab_attach, which take() does not do.
     uint16_t clear(CapRun const& run)
     {
-        for (uint32_t i = 0; i < KCAP_RUN_SLOTS; i++)
+        for (uint32_t i = 0; i < RUN_SLOTS; i++)
         {
             CapEntry* e = cap_slot(run, i);
             e->obj = 0;
@@ -207,17 +222,74 @@ namespace
     // to one path would still pass every other case here.
     void case_geometry()
     {
-        printf("# width %u: %u chunk(s) of %u = %u slot(s) reserved\n", WIDTH,
-               static_cast<unsigned>(KCAP_RUN_CHUNKS),
-               static_cast<unsigned>(KCAP_CHUNK_SLOTS), static_cast<unsigned>(KCAP_RUN_SLOTS));
+        printf("# width %u (child %u): %u chunk(s) of %u = %u slot(s) reserved\n", WIDTH,
+               CHILD, static_cast<unsigned>(KCAP_RUN_CHUNKS),
+               static_cast<unsigned>(KCAP_CHUNK_SLOTS), static_cast<unsigned>(RUN_SLOTS));
         check(KCAP_RUN_CHUNKS == CAPTABLE_GATE_CHUNKS,
               "the #if selected the chunk count this target was built to exercise");
-        check(KCAP_RUN_SLOTS >= WIDTH, "a run reserves at least the addressable width");
-        check(KCAP_RUN_SLOTS - WIDTH < KCAP_CHUNK_SLOTS, "a run rounds up by under one chunk");
+        check(RUN_SLOTS >= WIDTH, "a run reserves at least the addressable width");
+        check(RUN_SLOTS - WIDTH < KCAP_CHUNK_SLOTS, "a run rounds up by under one chunk");
         if (KCAP_RUN_CHUNKS == 1)
         {
-            check(KCAP_RUN_SLOTS == WIDTH, "the flat run rounds nothing up");
+            check(RUN_SLOTS == WIDTH, "the flat run rounds nothing up");
         }
+        check(kcap_chunks_for(WIDTH) == KCAP_ROOT_CHUNKS,
+              "the widest run's chunk count is what kcap_chunks_for says of the width");
+        // KCAP_CHILD_CHUNKS IS kcap_chunks_for(CHILD), so comparing the two proves nothing.
+        // The ceiling property it has to have is an independent fact.
+        check(KCAP_CHILD_CHUNKS * KCAP_CHUNK_SLOTS >= CHILD
+                  and KCAP_CHILD_CHUNKS * KCAP_CHUNK_SLOTS - CHILD < KCAP_CHUNK_SLOTS,
+              "the child run reserves the child width and rounds up by under one chunk");
+        check(KCAP_CHILD_CHUNKS <= KCAP_ROOT_CHUNKS, "the child class is never the wider one");
+        // EXACT, never a lower bound: a `>=` here would let a surplus term reappear in the
+        // formula with nothing failing.
+        check(KCAP_SLAB_CHUNKS
+                  == KCAP_RUN_COUNT * KCAP_CHILD_CHUNKS + KCAP_ROOT_CHUNKS - KCAP_CHILD_CHUNKS,
+              "the slab is one child-width run per holder plus root's widening, exactly");
+    }
+
+    // A run NARROWER than the widest: exactly its own chunks come off the list, and the
+    // directory entries above it are cleared, so give() returns what was taken and cap_slot
+    // can never reach a chunk the run does not hold.
+    void case_partial_take_clears_the_tail()
+    {
+        if (KCAP_CHILD_CHUNKS == KCAP_ROOT_CHUNKS)
+        {
+            printf("# child and widest run are the same size: no partial take exists\n");
+            return;
+        }
+        CapChunkList list;
+        list_of(&list, KCAP_ROOT_CHUNKS);
+        CapRun run = {};
+        // Seed the tail with a live-looking pointer: a take that did not clear it would leave
+        // give() returning a chunk this run never held.
+        for (uint32_t c = 0; c < KCAP_RUN_CHUNKS; c++)
+        {
+            run.chunk[c] = &g_slab[0];
+        }
+        check(list.take(&run, KCAP_CHILD_CHUNKS), "a narrow run comes off the list");
+        check(list_len(list) == KCAP_ROOT_CHUNKS - KCAP_CHILD_CHUNKS,
+              "a narrow run takes exactly its own chunks");
+        bool tail_clear = true;
+        for (uint32_t c = KCAP_CHILD_CHUNKS; c < KCAP_RUN_CHUNKS; c++)
+        {
+            if (run.chunk[c] != nullptr)
+            {
+                tail_clear = false;
+            }
+        }
+        check(tail_clear, "the directory above a narrow run is cleared");
+        if (not tail_clear)
+        {
+            // Do NOT walk on: give() would push the seed pointer a second time, cycling the
+            // free list, and list_len below would never terminate. The gate would report a
+            // TIMEOUT instead of the failure just recorded.
+            return;
+        }
+        check(cap_run_held(run), "a narrow run still reads as held");
+        list.give(&run);
+        check(list_len(list) == KCAP_ROOT_CHUNKS, "give() returns exactly what was taken");
+        check(not cap_run_held(run), "give() clears a narrow run's directory too");
     }
 
     // Every addressable index maps to its own entry, and the segmented mapping is the chunk
@@ -277,13 +349,24 @@ namespace
         uint32_t const len = list_len(list);
         snapshot(list, before, RUNS * 8);
 
-        CapRun run = {};
-        check(not list.take(&run), "a list short of one chunk refuses the run");
-        check(not cap_run_held(run), "a refused run holds nothing");
+        // SEEDED, not zeroed: a zeroed CapRun cannot tell "the refusal cleared the directory"
+        // from "it was already clear".
+        CapRun run;
         for (uint32_t c = 0; c < KCAP_RUN_CHUNKS; c++)
         {
-            check(run.chunk[c] == nullptr, "a refused run leaves no chunk in its directory");
+            run.chunk[c] = &g_slab[0];
         }
+        check(not list.take(&run, KCAP_ROOT_CHUNKS), "a list short of one chunk refuses the run");
+        check(not cap_run_held(run), "a refused run holds nothing");
+        bool cleared = true;
+        for (uint32_t c = 0; c < KCAP_RUN_CHUNKS; c++)
+        {
+            if (run.chunk[c] != nullptr)
+            {
+                cleared = false;
+            }
+        }
+        check(cleared, "a refused run leaves no chunk in its directory");
         check(list_len(list) == len, "a refused take returns every chunk it took");
         snapshot(list, after, RUNS * 8);
         bool same = true;
@@ -295,6 +378,45 @@ namespace
             }
         }
         check(same, "a refused take restores the free list's ORDER, not just its length");
+        if (not cleared)
+        {
+            return; // the give() below would push the seed pointer and cycle the list
+        }
+        list.give(&run);
+        check(list_len(list) == len, "and give() on a refused run adds nothing to the list");
+    }
+
+    // The refusal at the FIRST chunk, on EVERY geometry including the flat one: the list is
+    // empty, so not one directory entry is written and the unwind loop runs zero times. Only
+    // the unconditional clear can make the postcondition hold here. Seeded for the reason
+    // above: a zeroed CapRun cannot tell a cleared directory from one that never held
+    // anything.
+    void case_refused_take_clears_the_directory()
+    {
+        CapChunkList empty;
+        empty.head = nullptr;
+        CapRun stale;
+        for (uint32_t c = 0; c < KCAP_RUN_CHUNKS; c++)
+        {
+            stale.chunk[c] = &g_slab[0];
+        }
+        check(not empty.take(&stale, KCAP_ROOT_CHUNKS), "an empty list refuses at chunk 0");
+        bool cleared = true;
+        for (uint32_t c = 0; c < KCAP_RUN_CHUNKS; c++)
+        {
+            if (stale.chunk[c] != nullptr)
+            {
+                cleared = false;
+            }
+        }
+        check(cleared, "and a chunk-0 refusal clears the whole directory");
+        check(not cap_run_held(stale), "so cap_run_held answers false for a run holding nothing");
+        if (not cleared)
+        {
+            return; // give() would push the seed pointer, and the walk below would not end
+        }
+        empty.give(&stale);
+        check(empty.head == nullptr, "and give() on it returns nothing to the free list");
     }
 
     // The list serves whole runs and nothing else: RUNS runs, then a refusal, and one give()
@@ -302,30 +424,31 @@ namespace
     void case_reservation_is_exact_and_reversible()
     {
         CapChunkList list;
-        list_of(&list, KCAP_RUN_CHUNKS * RUNS);
+        list_of(&list, KCAP_ROOT_CHUNKS * RUNS);
         CapRun held[RUNS] = {};
         for (uint32_t r = 0; r < RUNS; r++)
         {
-            check(list.take(&held[r]), "the list serves a whole run while chunks remain");
+            check(list.take(&held[r], KCAP_ROOT_CHUNKS),
+                  "the list serves a whole run while chunks remain");
         }
         check(list.head == nullptr, "RUNS runs consume the list exactly");
         CapRun over = {};
-        check(not list.take(&over), "an empty list refuses a run");
-        check(not list.take(&over), "the refusal is idempotent");
+        check(not list.take(&over, KCAP_ROOT_CHUNKS), "an empty list refuses a run");
+        check(not list.take(&over, KCAP_ROOT_CHUNKS), "the refusal is idempotent");
 
         list.give(&held[1]);
-        check(list_len(list) == KCAP_RUN_CHUNKS, "give() returns every chunk of a run");
+        check(list_len(list) == KCAP_ROOT_CHUNKS, "give() returns every chunk of a run");
         check(not cap_run_held(held[1]), "give() clears the directory it returned");
         CapRun again = {};
-        check(list.take(&again), "one returned run buys exactly one more");
-        check(not list.take(&over), "and no more than one");
+        check(list.take(&again, KCAP_ROOT_CHUNKS), "one returned run buys exactly one more");
+        check(not list.take(&over, KCAP_ROOT_CHUNKS), "and no more than one");
 
         list.give(&again);
         for (uint32_t r = 0; r < RUNS; r++)
         {
             list.give(&held[r]); // a run that was already given is a no-op
         }
-        check(list_len(list) == KCAP_RUN_CHUNKS * RUNS, "every chunk comes back");
+        check(list_len(list) == KCAP_ROOT_CHUNKS * RUNS, "every chunk comes back");
     }
 
     // --- the free-slot list ------------------------------------------------------------
@@ -333,8 +456,8 @@ namespace
     // Reserve one run out of the slab and clear it. Every policy case below starts here.
     uint16_t fresh(CapChunkList* list, CapRun* run)
     {
-        list_of(list, KCAP_RUN_CHUNKS);
-        check(list->take(run), "the policy cases get their run");
+        list_of(list, KCAP_ROOT_CHUNKS);
+        check(list->take(run, KCAP_ROOT_CHUNKS), "the policy cases get their run");
         return clear(*run);
     }
 
@@ -593,9 +716,9 @@ namespace
 
         CapChunkList list;
         CapRun run = {};
-        list_of(&list, KCAP_RUN_CHUNKS);
-        check(list.take(&run), "the unthreaded case gets its run");
-        for (uint32_t i = 0; i < KCAP_RUN_SLOTS; i++)
+        list_of(&list, KCAP_ROOT_CHUNKS);
+        check(list.take(&run, KCAP_ROOT_CHUNKS), "the unthreaded case gets its run");
+        for (uint32_t i = 0; i < RUN_SLOTS; i++)
         {
             CapEntry* e = cap_slot(run, i);
             e->obj = 0;
@@ -613,7 +736,9 @@ int main()
 {
     case_geometry();
     case_slot_mapping_is_a_bijection();
+    case_partial_take_clears_the_tail();
     case_short_take_is_all_or_nothing();
+    case_refused_take_clears_the_directory();
     case_reservation_is_exact_and_reversible();
     case_no_list_is_refused();
     case_fresh_list_is_every_dynamic_slot_ascending();

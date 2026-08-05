@@ -10,6 +10,13 @@
 
 #include <kickos/kos.h>
 
+// The only gate that compiles the INSTALLED config/cap_width.h: nothing on the kos.h path
+// reaches it, so its install() rule could regress unnoticed.
+#include <kickos/config/cap_width.h>
+static_assert(KICKOS_CAP_CHILD_WIDTH <= KICKOS_MAX_HANDLES,
+              "the installed kickos/config/cap_width.h is the one the libraries were built "
+              "with");
+
 #include <stdint.h>
 
 namespace

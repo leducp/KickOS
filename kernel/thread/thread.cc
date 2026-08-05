@@ -39,6 +39,9 @@ namespace kickos
         // free-list head the caller already reserved and threaded.
         t->caps = attr.cap_run;
         t->cap_free_head = attr.cap_free_head;
+#if KCAP_RUN_CHUNKS > 1
+        t->cap_width = attr.cap_width;
+#endif
         t->spawner_tag = attr.spawner_tag;
         t->id = assign_thread_id();
         // NEVER alias attr.name: via thread_spawn it can be a user pointer, and the fault

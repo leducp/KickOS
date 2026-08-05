@@ -67,7 +67,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
       - run: cmake --preset sim
       - run: cmake --build --preset sim
-      - run: ctest --preset sim --output-on-failure
+      - run: ctest --preset sim --no-tests=error --output-on-failure
 
   # The sim gate rebuilt under UndefinedBehaviorSanitizer. -fno-sanitize-recover=all
   # is what makes it a GATE: UBSan's default is print-and-continue, exit status 0.
@@ -95,7 +95,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
       - run: cmake --preset sim -B build/sim-ubsan
       - run: cmake --build build/sim-ubsan
-      - run: ctest --test-dir build/sim-ubsan --output-on-failure
+      - run: ctest --test-dir build/sim-ubsan --no-tests=error --output-on-failure
 
   # armv7m (mps2-an386) + armv6m (microbit) under QEMU, on the pinned Arm GNU toolchain.
   qemu-arm:
@@ -140,24 +140,24 @@ jobs:
         run: |
           cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
-          ctest --preset qemu --output-on-failure --repeat until-pass:4
+          ctest --preset qemu --no-tests=error --output-on-failure --repeat until-pass:4
       # Coverage the an386 cannot buy: the M33 is armv8-M (PMSAv8), the M7 has 16 MPU
       # regions to the M4's 8, and the M3 has no FPU so the soft-float switch path runs.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
         run: |
           cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m33
-          ctest --preset qemu-m33 --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:4
       - name: armv7m (mps2-an500, Cortex-M7)
         run: |
           cmake --preset qemu-m7 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m7
-          ctest --preset qemu-m7 --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:4
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
         run: |
           cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m3
-          ctest --preset qemu-m3 --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:4
       # ARM MPU enforcement at RUNTIME: the full TAP suite as unprivileged threads plus
       # a real MemManage denial in mpu_fault, over both PMSA revisions: v7 on the
       # M4/M7/M3, v8 on the M33 (a different register layout, not the same code path).
@@ -174,13 +174,13 @@ jobs:
               -DKICKOS_ENABLE_SELFTEST=ON -DKICKOS_HAVE_MPU=1 \
               -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
             cmake --build "build/$b-mpu"
-            ctest --test-dir "build/$b-mpu" --output-on-failure --repeat until-pass:4
+            ctest --test-dir "build/$b-mpu" --no-tests=error --output-on-failure --repeat until-pass:4
           done
       - name: armv6m (microbit)
         run: |
           cmake --preset microbit -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset microbit
-          ctest --preset microbit --output-on-failure --repeat until-pass:4
+          ctest --preset microbit --no-tests=error --output-on-failure --repeat until-pass:4
 
   # rv32imac (virt) under QEMU, plus build-only checks of the other two rv32 boards,
   # on the pinned RISCstar toolchain (newlib, soft-float rv32imac/ilp32 multilib).
@@ -216,7 +216,7 @@ jobs:
         run: |
           cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv
-          ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-riscv --no-tests=error --output-on-failure --repeat until-pass:4
       # seam_defaults is registered on every board and reads only nm/readelf output, so a
       # board with no machine model still gets it. Named explicitly rather than running a
       # bare ctest: qemu-riscv-bench also registers boot gates that belong to the run gate
@@ -225,10 +225,10 @@ jobs:
         run: |
           cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom
-          ctest --test-dir build/esp32c6-wroom -R seam_defaults --output-on-failure
+          ctest --test-dir build/esp32c6-wroom -R seam_defaults --no-tests=error --output-on-failure
           cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-bench
-          ctest --test-dir build/qemu-riscv-bench -R seam_defaults --output-on-failure
+          ctest --test-dir build/qemu-riscv-bench -R seam_defaults --no-tests=error --output-on-failure
 
   # rv32imac (virt) UNDER PMP ENFORCEMENT (-DKICKOS_HAVE_MPU=1): runs the full-C++
   # throw under PMP + the gp-in-appdata CI gates (riscv_no_smalldata, qemu_riscv_cxxtest,
@@ -264,7 +264,7 @@ jobs:
         run: |
           cmake --preset qemu-riscv -DKICKOS_HAVE_MPU=1 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv
-          ctest --preset qemu-riscv --output-on-failure --repeat until-pass:4
+          ctest --preset qemu-riscv --no-tests=error --output-on-failure --repeat until-pass:4
 
   # Xtensa LX6 (esp32-wroom) gate: upstream QEMU ships no ESP32 machine model, so this
   # proves build/link/linker-script + windowed-ABI asm and never boots the image. It does
@@ -305,12 +305,12 @@ jobs:
         run: |
           cmake --preset esp32-wroom -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom
-          ctest --test-dir build/esp32-wroom -R seam_defaults --output-on-failure
+          ctest --test-dir build/esp32-wroom -R seam_defaults --no-tests=error --output-on-failure
       - name: xtensa lx6 + selftest config
         run: |
           cmake --preset esp32-wroom-st -DKICKOS_XTENSA_BIN="$KICKOS_XTENSA_BIN"
           cmake --build --preset esp32-wroom-st
-          ctest --test-dir build/esp32-wroom-st -R seam_defaults --output-on-failure
+          ctest --test-dir build/esp32-wroom-st -R seam_defaults --no-tests=error --output-on-failure
 
   # Build sweep of the remaining ARM boards (catches build/link/linker-script
   # regressions). No BOOT step: these need silicon or a machine model CI does not carry.
@@ -355,7 +355,7 @@ jobs:
       # qemu-telem registers the full QEMU boot suite and this job installs no emulator,
       # so those cases would report as skips and a green run would read as a suite that
       # ran. They stay unrun in CI; the qemu-arm job covers the an386 tree instead.
-      - run: ctest --test-dir build/${{ matrix.preset }} -R seam_defaults --output-on-failure
+      - run: ctest --test-dir build/${{ matrix.preset }} -R seam_defaults --no-tests=error --output-on-failure
 
   # ARM MPU-ENFORCEMENT build gate: the enforcement-capable ARM boards (those
   # shipping arch/arm/chip/<chip>/mpu.cmake) with -DKICKOS_HAVE_MPU=1. The only job
@@ -410,4 +410,4 @@ jobs:
           echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_HAVE_MPU=1 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
-      - run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
+      - run: ctest --test-dir build/${{ matrix.preset }} --no-tests=error --output-on-failure
