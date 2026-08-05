@@ -37,15 +37,6 @@ enum kos_svc_kind
     KOS_SVC_UART = 3
 };
 
-// kos_service_cfg.cs_policy: SPI chip-select choice (driver-internal). Values match
-// enum kos_bus_cs_policy in <kickos/sys/bus.h>.
-enum kos_svc_cs_policy
-{
-    KOS_SVC_CS_NONE = 0,
-    KOS_SVC_CS_HW = 1,
-    KOS_SVC_CS_GPIO = 2
-};
-
 // Per-instance bring-up config. POD, no libc, no chip headers. start() reads base/window
 // from here, never from a literal. name/mmio_base are pointer-width, so sizeof is 32 B on
 // LP64 and 24 B on ILP32 (the static_assert below tracks both).
@@ -58,9 +49,7 @@ struct kos_service_cfg
     uint16_t addr;           // I2C 7/10-bit slave address slot; 0 when unused
     uint8_t prio;            // driver thread priority
     uint8_t kind;            // enum kos_svc_kind; start() rejects a mismatched cfg
-    uint8_t cs_policy;       // enum kos_svc_cs_policy (SPI; driver-internal)
-    uint8_t cs_index;        // HW CS line index, or the driver's GPIO pin slot
-    uint8_t rsv[2];          // reserved zero (keeps the struct pointer-aligned, room to grow)
+    uint8_t rsv[4];          // reserved zero (keeps the struct pointer-aligned, room to grow)
 };
 
 // One service instance to bring up. start() is the one-shot handover choreography

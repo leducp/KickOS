@@ -668,11 +668,10 @@ checkable -- except in the two exemplars kept verbatim below to show the shape.
 
 **Root is unprivileged on every board by construction, as of 2026-07-30.** It holds an authority
 word rather than the whole arena, and there is no second posture: `KICKOS_ROOT_PRIVILEGED`
-is **deleted from the tree** -- no knob, no default, nothing to flip. The one surviving mention of
-the name in any CODE or BUILD file is a configure-time `FATAL_ERROR` in
-`cmake/KickOSConfig.cmake.in`; docs still discuss it historically. That refusal binds **out-of-tree
-consumers only** -- an in-tree configure still passing the `-D` silently ignores it, with nothing
-louder than CMake's unused-variable warning. The banner suffix went with it: every board now prints
+is **deleted from the tree** -- no knob, no default, nothing to flip. The name has **zero hits in
+every code and build file**, including `cmake/KickOSConfig.cmake.in`; only docs still discuss it,
+historically. So a build passing the `-D` gets nothing louder than CMake's unused-variable warning,
+in tree or out of it. The banner suffix went with it: every board now prints
 `mpu enforce` and says nothing about the posture, because under a single posture the suffix carried
 no information.
 
@@ -1032,6 +1031,33 @@ driver), `k64dspi` up in the same image, and `ok 47 - periph_enable_unheld`.
 privileged-posture reference is the earlier SYSMPU regression at `75227d4` (61 cases / 60 `ok` / 1
 skip / 0 fail, `mpu_fault` trapping at `0x2001b000`) -- a different tree and a different case count.
 What this run attributes is the seam, not a posture delta measured side by side on one tree.
+
+#### When an MMIO grant is INERT, and the one test that decides it
+
+**Canonical statement. Seven source files used to write this out longhand, which is how one of the
+copies came to be wrong.** Cite this section instead of restating it.
+
+The chip fact: on `mk64f`, AIPS peripheral bridges are **not** SYSMPU slave ports (K64 RM 3.3.6.2 /
+3.3.7.1 -- the MPU's slave ports cover flash, SRAM and FlexBus only, and protection for the bridges
+is "built into the bridge"). User access is enabled per 4 KiB slot by clearing that slot's `PACR` SP
+bit, and AIPS granularity is the whole slot, so **once a slot is open EVERY unprivileged thread
+reaches it**. On this chip an MMIO window is therefore not a per-thread *peripheral* capability. What
+SYSMPU still enforces is MEMORY isolation, which is what the scramble tests fault against.
+
+**But "the MPU does not gate this chip's peripherals" is NOT the test for whether a grant may be
+deleted.** The test is: **does this spawn's grantee call a `kos_periph_*` syscall?** MMIO possession
+is the *sole* authorisation for `arch_periph_enable` (`kernel/syscall/syscall_mem.cc`), so a grant
+feeding such a call is load-bearing no matter what the MPU does with peripherals. Measured across the
+tree:
+
+| grant | verdict |
+|---|---|
+| `system/driver/mk64f/k64uart`, `k64uartirq`, `k64dspi`; `user/apps/rx72m/rxdrv`; `user/apps/f411disco/f411spi`; `user/apps/xmc4800-relax/xmcspi` | **LOAD-BEARING** -- each calls `kos_periph_enable`. Deleting the grant breaks the device |
+| `user/apps/common/gpioblink`, `user/apps/frdmk64f/k64console`, `user/apps/frdmk64f/k64drv` | genuinely inert; kept for spawn-signature parity and portability to an enforcing chip |
+
+`k64uart.cc` had already drifted into calling its own live grant inert. Deleting it on that comment's
+word would have silenced the K64F console, which is why the test above is stated in terms of the
+syscall and not the silicon.
 
 **Both skips are named on the wire, and this `# skipped: 2` is the before-side of the
 `mpu_privileged_guard` deletion** -- *M4.5.6* below reads a measured 2 -> 1 delta against exactly
@@ -2214,9 +2240,11 @@ enforcement. `257def0` was the five-board pass that preceded it; see the boundar
 | `esp32-wroom` | none (no MPU) | `1..74` | all pass, 0 skip, 1 partial | `m461h-lx6-uartirq.log` |
 | `rx72m` | none (no MPU) | `1..74` | all pass, 0 skip, 1 partial | `m461h-rx-uartirq.log` |
 
-The one partial on every row is `cap_capacity` reporting that the board has a single capability
-class, which is true of every hardware board: they all ship the behaviour-identical default, and
-`sim` and `qemu` carry the multi-class witness.
+The one partial on every row is `cap_capacity`, reporting that the board had a single capability
+class -- true of every hardware board then, since they all shipped the behaviour-identical default,
+with `sim` and `qemu` carrying the multi-class witness. **That arm no longer exists**: it died in
+`4ad39a8` and `cap_chunk_span` took its place in the one-partial slot, so do not grep for it in
+today's suite. The captures above are unchanged, as a measurement is never renamed.
 
 **What this pass witnessed that the earlier one could not.** All five first-light markers reached
 the wire (`[xmcuartirq] device up (IRQ TX)`, `[k64uartirq]`, `[c6uart]`, `[rxsci]`, `[lx6uart]`), so
@@ -2296,7 +2324,7 @@ can have.
 **What the boundary still does NOT cover at this tip.** The seam's positive path is still
 silicon-only in the sense that no emulator models a PV-restricted register; what IS gated now is the
 MECHANISM -- allowlist match, mask compare, refuse-not-trim, containment, alignment, wrap -- on the
-host, via `arch_sim`'s `arch_periph_reg_write` backend over a published 64 KiB window, six mutations
+host, via `kickos_arch_sim`'s `arch_periph_reg_write` backend over a published 64 KiB window, six mutations
 each caught by a distinct check. What stays silicon-only is the bus's PV CLASSIFICATION (the silent
 discard remains a `pvprobe`-only fact), that a tabled block is CLOCKED, and any real chip's mask
 column. **No emulated gate can exercise a buffered-ring panic flush**, because every fault-dump gate

@@ -196,7 +196,7 @@ extern "C"
     // doorbell (int 7), whose dispatcher then services this line. The timer (CCOMPARE0)
     // and the int-7 doorbell are the only PHYSICAL lines, driven via INTENABLE directly.
     // 1 = masked. All lines start MASKED at reset (the arch.h reset contract); a driver
-    // unmasks its line (arch_irq_unmask, or irq_register) before use.
+    // unmasks its line (arch_irq_unmask, or irq_claim) before use.
     static volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     static volatile int g_inject_line = -1;    // pending software-injected logical line
     // bit set = a raise landed on this logical line while masked (latched one-deep,

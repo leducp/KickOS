@@ -41,11 +41,10 @@
 
 namespace
 {
-    // NOTE (coarse-AIPS): the DEV window grant is INERT for the peripheral. AIPS
-    // bridges are not SYSMPU slave ports (RM 3.3.6.2), so UART0 is reachable by any
-    // unprivileged thread once the AIPS PACR is open (kos_periph_enable below). The
-    // grant is still what AUTHORISES that call (possession of the exact base), and it
-    // keeps the spawn signature portable with the PMSA/PMP template.
+    // The DEV window grant here is LOAD-BEARING: it is what authorises the
+    // kos_periph_enable below, since MMIO possession is the sole authorisation for it.
+    // Do NOT delete it on the grounds that SYSMPU cannot gate peripherals -- that is
+    // true and irrelevant. See docs/reference/boards.md, "When an MMIO grant is INERT".
 
     constexpr uintptr_t D_OFFSET = 0x07u; // UART Data Register (RM 52.3.11)
 

@@ -7,14 +7,12 @@
 // zero app code doing the handover.
 //
 // Honesty (coarse-AIPS ceiling): unlike the XMC PMSA reference, the handover here is
-// FUNCTIONAL + RECLAIM-PROOF, NOT per-thread peripheral ownership. AIPS peripheral
-// bridges are not SYSMPU slave ports (chip_mk64f.cc, the PIT-ceiling note ~163-167:
-// per-AIPS-slot protection is the accepted K64F ceiling), so once the bring-up opens
-// UART0's AIPS PACR the peripheral is reachable by EVERY unprivileged thread; the
-// per-thread SYSMPU window grant is inert for it. What SYSMPU DOES still enforce is
-// MEMORY isolation (each thread's stack/data), and that is exactly what the scramble
-// test faults against to trigger the panic-path console reclaim. That is why the
-// KICKOS_HAVE_MPU gate stays: without SYSMPU the memory-fault trigger cannot fire.
+// FUNCTIONAL + RECLAIM-PROOF, NOT per-thread peripheral ownership: this app's window
+// grant is one of the three genuinely inert ones (docs/reference/boards.md, "When an
+// MMIO grant is INERT"). What SYSMPU DOES still enforce is MEMORY isolation (each
+// thread's stack/data), and that is exactly what the scramble test faults against to
+// trigger the panic-path console reclaim. That is why the KICKOS_HAVE_MPU gate stays:
+// without SYSMPU the memory-fault trigger cannot fire.
 //
 // Flow:
 //   * Before main: a global constructor emits one line via printf. Constructors run

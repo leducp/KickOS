@@ -109,7 +109,7 @@ namespace
         // bit L set => line L masked (a raise latches, see irq_pending). All lines
         // start MASKED at reset (the
         // arch.h reset contract, matching the NVIC/RX silicon posture); a driver
-        // unmasks its line (arch_irq_unmask, or irq_register) before use.
+        // unmasks its line (arch_irq_unmask, or irq_claim) before use.
         volatile sig_atomic_t irq_masked = static_cast<sig_atomic_t>(0xFFFFFFFFu);
         // bit L set => a raise landed on line L while it was masked (latched one-
         // deep, coalesced). Redelivered through the ISR path at unmask.

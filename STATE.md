@@ -8,9 +8,10 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.7.3 is complete on branch `M4.7.3-per-task-width`, squashed to one commit off `master`, and
-awaits the maintainer's merge.** The pre-squash history is `backup/m473-presquash`; the squash left
-the tree hash unchanged, so the silicon captures below still witness it. `TODO_FIX.md` is still the
+**M4.7.3 is MERGED** (PR #12, squashed to one commit; pre-squash history on
+`backup/m473-presquash`, and the squash left the tree hash unchanged so the silicon captures below
+still witness it). **The next number is the configuration mechanism**, before M4.8 -- see "What is
+next". `TODO_FIX.md` is still the
 untracked worklist and is **NOT gitignored, so `git clean -fd` destroys it**. Behind it on `master`: M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1
 (PR #9), M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
 
@@ -111,13 +112,23 @@ whether the grantee calls a `kos_periph_*` syscall -- not whether the chip's MPU
 
 ### Preparatory work banked for the next two numbers
 
-**The configuration-mechanism spike is DONE** and recommends **no to one-app-per-build, yes to the
-hybrid**. Measured: 11.8x wall-clock on `xmc4800-relax`, 13.2x on `sim`, ~8.3x across CI, to buy
-640 B on a 128 KiB part and **0 B on the 16 KiB part**. The decisive fact is not the multiplier:
-`ctest -R seam_defaults` in a one-app tree prints "No tests were found!!!" and **exits 0**, and five
-CI steps gate whole boards on that shape. `--no-tests=error` now rides every ctest in the workflow.
-Doc: `.session/spikes/design-config-mechanism.md`, deliberately outside master history.
-**The one-app-per-build decision is the maintainer's and is NOT recorded in `roadmap.md` yet.**
+**The configuration-mechanism spike is DONE, and so is its successor.** One-app-per-build is out:
+11.8x wall-clock on `xmc4800-relax`, 13.2x on `sim`, ~8.3x across CI, to buy 640 B on a 128 KiB part
+and **0 B on the 16 KiB part**. The decisive fact is not the multiplier: `ctest -R seam_defaults` in a
+one-app tree prints "No tests were found!!!" and **exits 0**, and five CI steps gate whole boards on
+that shape. `--no-tests=error` now rides every ctest in the workflow.
+
+**The answer is NOT the hybrid either, and that is the one thing to carry forward.** The hybrid kept
+the demand summing in CMake; with one kernel build and N apps the summing is **deleted**, because the
+maximum has nothing to range over -- the apps do not exist when the kernel is configured. The width
+becomes an ordinary `int` with a `range`.
+
+Spike II corrected four conclusions the first draft supported and answered every fork: the `.config`
+bridge is a generated CMake fragment, a disabled boolean is ABSENT and tested with `#ifdef`, the
+service-list rows are generated as DATA while the bring-up array stays hand-written, and the ISA flags
+never enter Kconfig at all. Docs: `.session/spikes/design-config-mechanism{,-ii}.md` plus its
+corrections file and progress ledger, all deliberately outside master history -- which is why
+**`roadmap.md`'s M4.7.5 entry is the only tracked record** and must not be trimmed to a heading.
 
 **The M4.7.4 legacy sweep has been RUN**, and `TODO.md`'s section is now execution rather than
 discovery. Classes 1 and 2 came back EMPTY; the workflow YAML is clean end to end; 17 of 32 class-4
@@ -126,9 +137,12 @@ items sit in source comments and CMake strings where `doc_names` is blind. Inven
 
 ## What is next (locked order)
 
-1. **The configuration-mechanism spike's DECISION.** The work is done; the one-app-per-build call
-   and the number are the maintainer's.
-2. **M4.7.4 -- delete the legacy management.** `TODO.md` carries the inventory to execute.
+1. **M4.7.4 -- delete the legacy management.** ACTIVE. `TODO.md` carries the inventory to execute.
+   One of its rows is load-bearing for the next number: the dead `kos_service_cfg.cs_policy` /
+   `.cs_index` fields must go BEFORE M4.7.5 writes a generator that would emit them.
+2. **M4.7.5 -- the configuration mechanism.** Kconfig owns configuration, CMake keeps the build
+   graph. **The spike is DONE and every decision it left open has been made** -- see `roadmap.md`'s
+   ledger entry, which is the only tracked record, since the spike itself is gitignored.
 3. **M4.8.1 -- the driver class layer.** Branch `M4.8.1-driver-class` holds only its 102-line spec,
    parked; it was cut at `tree(4ad39a8)`, so check whether it now needs a rebase.
 4. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on

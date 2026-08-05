@@ -6,8 +6,10 @@
 // (c6blink). The RX MPU is CPU-side and checks EVERY access to the whole address
 // space 0000_0000h-FFFF_FFFFh in user mode, including the peripheral/SFR aperture
 // (UM r01uh0804ej0120 sec.17.1 + Table 17.1); supervisor is never checked. So a
-// granted MMIO window IS a genuine per-thread capability, unlike K64F where the
-// SYSMPU cannot gate peripherals (k64drv proved that grant inert).
+// granted MMIO window IS a genuine per-thread capability, unlike K64F where SYSMPU
+// cannot gate peripherals at all (docs/reference/boards.md, "When an MMIO grant is
+// INERT"; k64drv demonstrates it). This app's own window grant is LOAD-BEARING either
+// way, because it authorises the kos_periph_enable in the spawned driver.
 //
 // main only prints and spawns (the fleet pattern, see apps/common/gpioblink): the
 // mux goes through kos_pinmux_set, which the kernel mediates on both the MPC PmnPFS

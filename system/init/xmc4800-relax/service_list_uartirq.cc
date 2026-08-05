@@ -30,7 +30,7 @@ extern "C"
     static struct kos_service_cfg const xmcuartirq_cfg = {
         /*name=*/"xmcuartirq", /*mmio_base=*/0x40030000u, /*mmio_window=*/0x200u,
         /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*cs_policy=*/KOS_SVC_CS_NONE, /*cs_index=*/0, /*rsv=*/{ 0, 0 }
+        /*rsv=*/{ 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const xmc4800relax_uartirq_services[] = {

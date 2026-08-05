@@ -19,19 +19,19 @@ extern "C"
     static struct kos_service_cfg const k64uart_cfg = {
         /*name=*/"k64uart", /*mmio_base=*/0x4006A000u, /*mmio_window=*/0x20u,
         /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*cs_policy=*/KOS_SVC_CS_NONE, /*cs_index=*/0, /*rsv=*/{ 0, 0 }
+        /*rsv=*/{ 0, 0, 0, 0 }
     };
 
     // DSPI0 @ 0x4002_C000, 0x40 B window (RM ch.50; AIPS0 slot 44; the 32-aligned pow2
-    // window that encodes on SYSMPU/PMSA/PMP alike). hz, cs_policy and cs_index are
-    // informational, nothing reads them: no boot rate is in effect (spi_service.h refuses
-    // an XFER until a client CONFIG op folds a profile, which is what programs CTAR0), and
-    // the driver hardcodes the PTC4 CS pin. The call/reply path donates the caller's
-    // priority to the driver, so its static prio is a floor, not the served priority.
+    // window that encodes on SYSMPU/PMSA/PMP alike). hz is informational and nothing reads
+    // it: no boot rate is in effect, because spi_service.h refuses an XFER until a client
+    // CONFIG op folds a profile, which is what programs CTAR0. The CS pin is hardcoded to
+    // PTC4 in the driver. The call/reply path donates the caller's priority to the driver,
+    // so its static prio is a floor, not the served priority.
     static struct kos_service_cfg const k64dspi_cfg = {
         /*name=*/"k64dspi", /*mmio_base=*/0x4002C000u, /*mmio_window=*/0x40u,
         /*hz=*/10000000u, /*addr=*/0, /*prio=*/11, /*kind=*/KOS_SVC_SPI,
-        /*cs_policy=*/KOS_SVC_CS_GPIO, /*cs_index=*/4, /*rsv=*/{ 0, 0 }
+        /*rsv=*/{ 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const frdmk64f_services[] = {

@@ -12,7 +12,7 @@
 //     The internal lines (timer 6, software doorbell 7) are owned by the
 //     arch/xtensa/lx6 layer (arch_xtensa.cc CCOMPARE0_INT / SW_INT_L1) and are
 //     mirrored here for reference only, NOT redefined as chip constants.
-//  3. Logical kernel IRQ lines (irq_table index / irq_register). A software
+//  3. Logical kernel IRQ lines (irq_table index / irq_claim). A software
 //     controller decoupled from the physical Xtensa interrupts; chip-local.
 
 #ifndef KICKOS_ARCH_XTENSA_CHIP_ESP32_IRQ_H

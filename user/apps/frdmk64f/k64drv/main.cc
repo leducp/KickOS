@@ -5,15 +5,13 @@
 // 0x4003_7120, spanning ch2+ch3 at the 0x10 stride) and a WAIT cap on the PIT ch2 IRQ.
 // ch2, not ch0/ch1: the kernel monotonic clock owns the chained ch0+ch1 pair.
 //
-// K64F peripheral privilege is gated by the AIPS peripheral bridge (PACR), NOT by
-// SYSMPU (K64 RM 3.3.6.2 / 3.3.7.1: MPU slave ports cover flash / SRAM / FlexBus
-// only; the AIPS bridges are not MPU slave ports, "protection built into bridge").
-// User access is enabled per 4 KB slot by clearing the slot's PACR SP bit (PACRG
-// for PIT slot 55; RM 20.2.3). The SYSMPU MMIO grant is therefore INERT for
-// peripherals here, and AIPS granularity is the whole 4 KB slot: once open, EVERY
-// unprivileged thread reaches it, so an MMIO grant is not a per-thread peripheral
-// capability on K64F. The PIT_MCR read at the end sits outside the SYSMPU window and
-// is EXPECTED to succeed; that success is the demonstration, not a bug to fix.
+// This app exists to DEMONSTRATE the K64F peripheral ceiling: privilege is gated by the
+// AIPS bridge (PACR) rather than by SYSMPU, so its window grant is genuinely inert and an
+// MMIO grant is not a per-thread peripheral capability on this chip. The register-level
+// argument and the one test that decides whether any given grant may be deleted are in
+// docs/reference/boards.md, "When an MMIO grant is INERT" -- PACRG for PIT slot 55 is the
+// slot at issue here (RM 20.2.3). The PIT_MCR read at the end sits outside the SYSMPU
+// window and is EXPECTED to succeed; that success is the demonstration, not a bug to fix.
 //
 // Diagnostic app (kickos_add_diagnostic_app): build-only, never a production image;
 // the operator flashes + validates.

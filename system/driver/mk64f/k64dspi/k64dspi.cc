@@ -40,8 +40,9 @@ namespace
     // board pin map, NOT to hardware SPI0_PCS0 (PTC4/ALT2).
     //
     // GPIOC (K64 RM 55.2): direct crossbar slave at 0x400F_F080, system-clocked (RM
-    // 55.1.1), NOT AIPS/MPU-gated (RM 3.10.1.1). The unprivileged driver reaches it
-    // free, because GPIO bypasses the MPU entirely and the SYSMPU MMIO grant is inert.
+    // 55.1.1), NOT AIPS/MPU-gated (RM 3.10.1.1), so the unprivileged driver reaches it
+    // free. That is about GPIOC only: this driver's own DSPI0 window grant is
+    // LOAD-BEARING (docs/reference/boards.md, "When an MMIO grant is INERT").
     constexpr uintptr_t GPIOC_BASE = 0x400FF080u;
     constexpr uintptr_t GPIOC_PSOR = GPIOC_BASE + 0x04u; // set   -> PTC4 high (CS idle)
     constexpr uintptr_t GPIOC_PCOR = GPIOC_BASE + 0x08u; // clear -> PTC4 low  (CS asserted)
