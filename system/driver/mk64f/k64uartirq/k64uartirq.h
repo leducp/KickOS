@@ -16,11 +16,10 @@
 // attached (INVARIANT H2, kernel/irq/irq.cc irq_claim), so the publish must precede the
 // claim.
 //
-// AIPS bridges are not SYSMPU slave ports (RM 3.3.6.2), so the per-thread window grant is
-// INERT for the peripheral and the real enabler is the AIPS PACR open. The grant is what
-// AUTHORISES that call and what makes the window single-holder, so the service thread
-// structurally cannot poke the device. SYSMPU still enforces the memory isolation of the
-// shared ring block.
+// The window grant is LOAD-BEARING: it authorises the kos_periph_enable that opens the
+// AIPS PACR, and it makes the window single-holder, so the service thread structurally
+// cannot poke the device. SYSMPU still enforces the memory isolation of the shared ring
+// block. See docs/reference/boards.md, "When an MMIO grant is INERT".
 
 #ifndef KICKOS_DRIVER_MK64F_K64UARTIRQ_H
 #define KICKOS_DRIVER_MK64F_K64UARTIRQ_H

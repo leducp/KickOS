@@ -362,7 +362,7 @@ namespace
     constexpr uint32_t MIP_SSIP = 1u << 1;
     // bit set = line masked. All lines start MASKED at reset (the arch.h reset
     // contract, matching the NVIC/RX silicon posture); a driver unmasks its line
-    // (arch_irq_unmask, or irq_register) before use.
+    // (arch_irq_unmask, or irq_claim) before use.
     volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     volatile int g_inject_line = -1;     // the pending software-injected line
     // bit set = a raise landed on this software line while masked (latched one-

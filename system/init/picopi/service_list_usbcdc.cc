@@ -27,7 +27,7 @@ extern "C"
     static struct kos_service_cfg const rpusb_cfg = {
         /*name=*/"rpusb", /*mmio_base=*/0x50100000u, /*mmio_window=*/0x20000u,
         /*hz=*/0u, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*cs_policy=*/KOS_SVC_CS_NONE, /*cs_index=*/0, /*rsv=*/{ 0, 0 }
+        /*rsv=*/{ 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const picopi_usbcdc_services[] = {

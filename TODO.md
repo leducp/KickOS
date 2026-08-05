@@ -35,32 +35,40 @@ instance -- each names something that still exists.
 **`.github/workflows/*.yml` is CLEAN end to end** -- the one surface of the four with no residue.
 Every symbol, ctest case name, doc path and preset name it references resolves.
 
-- [ ] **Class 4, the Reference tier contradicting itself.** `docs/reference/boards.md:670-673` says a
+- [x] **Class 4, the Reference tier contradicting itself.** `docs/reference/boards.md:670-673` says a **DONE:** it now says the name has zero hits in every code and build file, matching `invariants.md`.
       `KICKOS_ROOT_PRIVILEGED` `FATAL_ERROR` survives in `cmake/KickOSConfig.cmake.in`. No such
       refusal exists and the name greps to zero in every build file;
       `docs/reference/invariants.md:106` says correctly that it was deleted and a stale `-D` is now
       silently ignored. Two Reference docs disagree and `boards.md` is the stale one.
-- [ ] **Class 4, `architecture.md`'s live repo-layout tree.** `:320` lists `libcxx/  # __cxa_* stubs,
+- [x] **Class 4, `architecture.md`'s live repo-layout tree.** `:320` lists `libcxx/  # __cxa_* stubs, **DONE:** the layout names the real `lib/` tree, and the C++ section states what actually exists (`__dso_handle` only, `operator new` a link error).
       guards, operator new/delete`; `lib/` has no such directory and none of those symbols exists
       tree-wide -- `CMakeLists.txt:743` says "a stray operator new stays a link error". `:319`
       annotates `libc/` with a heap and an assert it does not contain. `:803` promises
       `__cxa_pure_virtual` and `__cxa_atexit`; only `__dso_handle` exists.
-- [ ] **Class 4, a deleted TAP case named in the present tense.** `boards.md:605` and `:2217` say the
+- [x] **Class 4, a deleted TAP case named in the present tense.** `boards.md:605` and `:2217` say the **DONE for `:2217`**, which named it in the present tense. `:605` was LEFT deliberately: it is a tip-stamped capture at `9a00e73`, and a measurement is never renamed.
       one partial on every row is `cap_capacity`. That case died in `4ad39a8`; the successor is
       `cap_chunk_span`, which `STATE.md` already uses. `boards.md:2290` is a DATED capture row and
       stays as written -- a measurement is never renamed.
-- [ ] **Class 4, a driver path that no longer exists.** Two source/CMake comments still place drivers
+- [x] **Class 4, a driver path that no longer exists.** Two source/CMake comments still place drivers **DONE:** `usic.h` names `system/driver/xmc4800/xmcssc` and the two real app paths; the CMake comment names `system/init/<board>/`.
       under a `user/` subtree that was moved to `system/driver/<chip>/<name>/`
       (`CMakeLists.txt:827`, `arch/arm/chip/xmc4800/regs/usic.h:141`, the latter also naming two wrong
       app paths). Zero hits in tracked markdown -- exactly the surface `doc_names` cannot see.
-- [ ] **Class 4, `roadmap.md` calling landed work open.** `:70` names `sys_cpu_clock_hz()`, which does
+- [x] **Class 4, `roadmap.md` calling landed work open.** `:70` names `sys_cpu_clock_hz()`, which does **DONE:** both marked LANDED with their design records, and the symbol corrected to `kos_cpu_clock_hz`.
       not exist (`kos_cpu_clock_hz()`); `:63,66,71` list the console device handover and the
       clock-select write side as open, and both landed with a LANDED design record each.
-- [ ] **Class 4, low value but still false.** `TODO.md:2336,2640` say `kcap_smallest_class_slots()` /
-      `kcap_largest_class_slots()` pin chunk 4 **now**; neither symbol exists. `TODO.md:4047` names
-      `kickos_armv6m_mpu_commit` for the arch-neutral `kickos_arch_mpu_commit`. `TODO.md:470` claims a
-      `qemu_reboot_declined` that is not registered. `boards.md:2299` names a nonexistent `arch_sim`.
-- [ ] **Class 3, and the test for it is NOT "does the MPU gate this chip's peripherals".** It is
+- [x] **Class 4, low value but still false.** `kcap_smallest_class_slots()` /
+      `kcap_largest_class_slots()` said they pin chunk 4 **now**; neither symbol exists, and both went
+      with the capability-class mix in M4.7.1 -- said so in place rather than rewriting two completed
+      records. `kickos_armv6m_mpu_commit` now reads as what it was then against the arch-neutral
+      `kickos_arch_mpu_commit` it became. `boards.md` said `arch_sim`; the target is
+      `kickos_arch_sim`.
+      **One of the four claims was itself false and is withdrawn: `qemu_reboot_declined` IS
+      registered.** `user/apps/common/rebootdemo/CMakeLists.txt` builds the name from
+      `KICKOS_QEMU_MPS2_TAG`, which is `KICKOS_BOARD` with dashes swapped for underscores, so on the
+      `qemu` preset it resolves and `ctest -N` lists it as Test #17. Verified by running it, not by
+      grepping for the literal -- the reason the audit missed it is that the name never appears as a
+      string anywhere.
+- [x] **Class 3, and the test for it is NOT "does the MPU gate this chip's peripherals".** It is
       **does this spawn's grantee call a `kos_periph_*` syscall**, because `kernel/syscall/syscall_mem.cc`
       makes MMIO possession *the sole authorisation* for `arch_periph_enable`. By that test only
       `user/apps/common/gpioblink`, `user/apps/frdmk64f/k64console` and `user/apps/frdmk64f/k64drv`
@@ -68,16 +76,26 @@ Every symbol, ctest case name, doc path and preset name it references resolves.
       `user/apps/rx72m/rxdrv` all call `kos_periph_enable`, so their grants are load-bearing and must
       NOT be swept. `k64uart.cc` had already drifted into calling its own live grant inert -- deleting
       it on that comment's word would have killed the K64F console. Corrected in M4.7.3.
-      The remaining cost is that one silicon fact is written out longhand in **seven** files, which is
-      how that copy came to be wrong. Collapse to one statement in `docs/reference/boards.md` plus
-      back-references.
-- [ ] **Class 4, the largest single instance: `irq_register`, a function that does not exist**, named
+      **DONE:** collapsed to one canonical statement, `docs/reference/boards.md` -> "When an MMIO
+      grant is INERT, and the one test that decides it", carrying the register-level argument and a
+      table of all nine grants by verdict. The seven longhand copies became back-references, and each
+      LOAD-BEARING site now says so in its own first line, so the k64uart drift cannot recur silently.
+      Two sites that looked like part of this duplication were left alone deliberately: `xmcspi` and
+      `f411spi` make a DIFFERENT claim (a vacuous isolation test when enforcement is off), and
+      `rxdrv`'s reference to `k64drv` was already correct.
+- [x] **Class 4, the largest single instance: `irq_register`, a function that does not exist**, named **DONE:** all ten now name `irq_claim`, the driver-facing call that arms a line.
       in ten comments across `arch/` and `kernel/irq/irq.cc`. The API is `irq_attach` / `irq_claim`.
-- [ ] **Class 3, `kos_service_cfg.cs_policy` / `.cs_index` ARE legacy after all.** Corrected during the
-      audit: the reader `cfg->cs_policy == KOS_SVC_CS_HW` was added in `9ae301f` and **deleted in
-      `dde73ca`**, so a reader really did exist. Thirteen initializers still author both fields and
-      nothing reads either. Blocked only by rebalancing a `sizeof` assert. Do not conflate them with
-      the identically named `kos_bus_cfg` fields, which ARE live (`k64dspi.cc`, `xmcssc.cc`).
+- [x] **Class 3, `kos_service_cfg.cs_policy` / `.cs_index` ARE legacy after all.** Corrected during the
+      audit: a reader comparing `cfg->cs_policy` against the SPI hardware-CS enumerator was added in
+      `9ae301f` and **deleted in `dde73ca`**, so a reader really did exist.
+      **DONE:** both fields deleted, along with the service-side CS enum that nothing else used, and
+      **14** initializers (not 13, across 12 files) rewritten. The `sizeof` assert needed no
+      rebalancing after all: `rsv` widened from 2 to 4 bytes keeps the fixed part at exactly 16, so
+      the layout is **byte-identical** on both data models -- 32 B on LP64 and 24 B on ILP32, verified
+      by compiling the old and new shapes side by side. The identically named `kos_bus_cfg` fields
+      were NOT touched and remain live (`k64dspi.cc`, `xmcssc.cc`).
+      Ten presets across five ISAs build clean. **`doc_names` caught this row itself** naming the
+      deleted enumerator, which is the gate doing its job on a claim written the same day.
 - [ ] **The rule to apply:** delete it if its only justification is history. Keep a guard only when it
       catches a mistake somebody can still make today.
 
@@ -87,11 +105,22 @@ Every symbol, ctest case name, doc path and preset name it references resolves.
   `KICKOS_ARCH` matches none of the six ladder arms, which is a NEW PORT and a mistake somebody can
   still make today.
 
-**One maintainer decision, not an evidence gap.** `CMakeLists.txt:438-448` gates on
-`KICKOS_SERVICE_LIST_ROOT_MMIO`, which is deliberately EMPTY, so the `FATAL_ERROR` cannot fire on any
-configure in the tree. Its comment argues it stays for the next board whose bring-up writes MMIO from
-root, and that failure is silent and total. By the M4.7.4 rule that is a keep -- but it is
-data-driven with empty data and will rot unnoticed, so decide it rather than defaulting.
+**One maintainer decision, not an evidence gap -- DECIDED 2026-08-05: DELETE.** The gate on
+`KICKOS_SERVICE_LIST_ROOT_MMIO` was an empty list plus a `FATAL_ERROR` that could not fire on any
+configure in the tree. Its comment argued it should stay for the next board whose bring-up writes
+MMIO from root. **The maintainer's ruling: that class of misconfiguration cannot arise under the
+M4.7.5 mechanism unless a user genuinely asks for it, and the tree will not carry hand-rolled
+catchers for every misuse when a proper framework is coming.** 22 lines deleted; four enforcing
+configurations still build, including `frdmk64f` on its full service list, which is the board the
+gate used to police.
+
+**A gate blind spot found while doing it, worth knowing before it is trusted.** Eleven tracked
+markdown references still spell that name, and `doc_names` passes anyway. The reason is not that the
+name still exists: the gate builds its valid-identifier set from every tracked NON-markdown file, and
+`docs/audit/kickos-codebase-audit.html` mentions it. So **any name recorded in `docs/audit/*.html`
+stays permanently valid to this gate**, even after it is deleted from the build. That is consistent
+with the gate's stated behaviour for stale source comments, but an audit HTML is a DOCUMENT behaving
+as a source, which is a wider hole than the comment case it was designed around.
 
 ## Where the branch is (READ THIS FIRST IF RESUMING)
 
@@ -2386,7 +2415,8 @@ hold one case in one build.
       repairs fell out: `domain_release` moved BEFORE the sweep, because the "same critical section
       as the EPIPE-wake" argument is unavailable under chunking and ORDER has to replace atomicity;
       and the console reclaim is gated on a teardown-active COUNT rather than a flag, because two
-      sweeps can overlap. Chunk 4 is pinned by `static_assert` BELOW `kcap_smallest_class_slots()`
+      sweeps can overlap. Chunk 4 was pinned by `static_assert` BELOW `kcap_smallest_class_slots()`
+      (that helper and the whole capability-class mix were deleted in M4.7.1; neither name exists)
       -- Stage 3 re-expressed the bound against the smallest bucket class rather than against the
       fleet's smallest `KICKOS_MAX_HANDLES`, because a sweep is bounded by the RUN a task was
       given. At 16 the whole fleet would take one chunk and the preemption path would be dead code.
@@ -2691,9 +2721,10 @@ is a claim I could not verify either way. Each item says which.
 - [x] **No `static_assert` that some cap class equals `KICKOS_MAX_HANDLES`.** `kmain` asks the slab
       for a `KICKOS_MAX_HANDLES` run for root and `kpanic`s when none fits, so a mix whose widest
       class stopped short of the ceiling would not degrade -- the board would not boot. Four angles
-      converged on this independently. `kcap_largest_class_slots()` plus the equality assert now
-      pin it, and the default spawn capacity was bounded against the largest class rather than
-      against the ceiling macro.
+      converged on this independently. `kcap_largest_class_slots()` plus the equality assert pinned
+      it at the time, and the default spawn capacity was bounded against the largest class rather
+      than against the ceiling macro. (Both went with the capability-class mix in M4.7.1: there is
+      one uniform width per task now, so neither helper exists.)
 - [x] **The multiclass switch could drift from the class table.** The selftest derives
       `cap_capacity`'s PARTIAL permission from the CMake variable, so a mix reaching the compiler
       by any other route than the one root-CMakeLists block would silently make that expectation
@@ -4098,7 +4129,8 @@ below where they were previously mislabeled.
         set until the physical swap -> it can fault on its own stack (or, worse, on a no-MPU
         build, silently run under the wrong isolation). Found on RP2040/armv6m under
         mutex-chain churn (selftest test 14 HardFault; cur/MPU=chA while chC physically ran),
-        fixed by committing the MPU in the PendSV epilogue (armv6m `kickos_armv6m_mpu_commit`,
+        fixed by committing the MPU in the PendSV epilogue (armv6m, via what was then its own
+        `kickos_armv6m_mpu_commit` and is now the shared arch-neutral `kickos_arch_mpu_commit`,
         silicon 42/42 on the 50ms x300 repro). LATENT the same way on **v7-M / RX / RISC-V**
         (all eager-apply + deferred switch) -- unobserved there under looser timing, but a real
         soundness hole. Complete fix = move MPU-commit into EACH deferred arch's switch

@@ -138,9 +138,9 @@ namespace kickos::xmc::reg::usic
     constexpr uint32_t DX0_DSEL_B = 0x1u;
 
     // ---- SSC (SPI) mode field constants --------------------------------------
-    // Shared by the XMC SSC users: user/driver/xmcssc, user/apps/xmcspi,
-    // user/apps/xmccshold. Only atomic offsets/bits live here; each driver
-    // assembles its own PCR/TCSR/PSCR write masks from these (mechanism, not policy).
+    // Shared by the XMC SSC users: system/driver/xmc4800/xmcssc and
+    // user/apps/xmc4800-relax/{xmcspi,xmccshold}. Only atomic offsets/bits live here; each
+    // driver assembles its own PCR/TCSR/PSCR write masks from these (mechanism, not policy).
 
     // Fixed 72 MHz SSC baud profile (fCPU=144 MHz), reused verbatim by all SSC
     // users: FDR fractional mode (DM=10B, FDR_DM_FRACTIONAL above) STEP=367; BRG

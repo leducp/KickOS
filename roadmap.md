@@ -60,15 +60,20 @@ The object/credential model on top of M2's enforcement:
   **LANDED -- the first M3 capability:** the semaphore syscall ABI migrated from global object ids
   to a per-task `CapEntry` table with a single `cap_resolve` chokepoint, silicon-validated under
   enforcement on all four M2 mechanism classes, plus authenticated-grant spawn delegation
-  (subset-only rights narrowing, deterministic B1 placement). The items below stay open.
+  (subset-only rights narrowing, deterministic B1 placement). Each item below carries its own
+  status; two of the four have since landed with a design record each.
 - **One blocking primitive**, not an object zoo -- a cap-named wait/wake object; richer sync
   built in userspace; the sole justified typed object is a priority-inheritance mutex.
 - **Console *device* handover** -- a userspace UART driver takes the peripheral as a capability;
   the kernel relinquishes it and the panic path reclaims + re-inits it.
+  **LANDED**, silicon-proven on XMC: `docs/design-m3-console-handover-stageii.md`. What remains is
+  fleet coverage, not the mechanism -- a per-chip `arch_console_reclaim` body exists on three chips.
 - **Low-barrier hard constraint** -- a plain app never writes a capability manifest; the runtime
   wires a sane default cap set (never resurrect CapDL-to-boot friction).
-- **User-selectable CPU clock / low-power mode** -- the `sys_cpu_clock_hz()` read syscall has
-  landed; the write side (clock-select / low-power) stays open.
+- **User-selectable CPU clock / low-power mode.** **LANDED, both sides**: the read is
+  `kos_cpu_clock_hz()` (`KOS_SYS_CPU_CLOCK_HZ`) and the write is `KOS_SYS_CPU_CLOCK_SET` over the
+  `arch_cpu_clock_set` seam with its coherence tail -- `docs/design-m3-clock-select.md`. A governor,
+  DVFS and any idle heuristic are deliberately NOT in it: the seam is mechanism, not policy.
 
 ### M4 -- the driver era (make M3 real, fleet-wide)
 M3 proved the mechanisms (endpoints/IPC, console handover, panic reclaim, clock-select) but each
@@ -138,9 +143,10 @@ what is next; this carries the numbering.
 | M4.6.2 | the USB CDC console, partially witnessed on `pizero2350` | superseded by M4.8.2 |
 | M4.7.1 | the capability-table rework: codec, storage, errno, sizing (`docs/design-capability-table.md`) | landed |
 | M4.7.2 | the review findings against M4.7.1 | landed |
-| **M4.7.3** | **per-task table width, and a per-task cap on inbound replies: the chunk directory earns its keep** | ACTIVE |
-| M4.7.4 | delete the legacy management: nothing is released before M6, so there is none to carry | planned |
-| M4.8.1 | the class layer the driver-model ruling requires and SPI never got | after M4.7.3 |
+| M4.7.3 | per-task table width, and a per-task cap on inbound replies: the chunk directory earns its keep | landed |
+| **M4.7.4** | **delete the legacy management: nothing is released before M6, so there is none to carry** | ACTIVE |
+| M4.7.5 | Kconfig owns configuration; CMake keeps the build graph | planned |
+| M4.8.1 | the class layer the driver-model ruling requires and SPI never got | after M4.7.5 |
 | M4.8.2 | the USB CDC console, continuing M4.6.2 | planned |
 | M4.8.3..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
 
@@ -210,8 +216,35 @@ law is the one part of M4.7.1 that does not survive contact with the top of its 
 **Documents written before 2026-08-03 use `M4.7` to mean the driver wave now numbered M4.8.x.**
 Those records are frozen at their decision date and are not renumbered.
 
-### Configuration mechanism -- Kconfig before M5 (SPIKE AGREED, number unassigned)
-**Open, and it revisits a decision that had no home in this repo.** A pre-M4 spike settled on "a
+### M4.7.5 -- configuration mechanism: Kconfig owns configuration, CMake keeps the build graph
+**NUMBER ASSIGNED 2026-08-05, and the design questions below are now answered rather than open.** The
+spike is deliberately outside master history, so this entry is the tracked record of what was decided.
+
+**What is settled.** Kconfig is the single declaration language for every knob and emits a generated
+header; CMake keeps the build graph; logic too complex for CMake moves to Python, which the tree
+already requires. **One kernel configure/build, then link N apps** -- Zephyr's per-app kernel was
+measured and rejected at 12 to 19 times the rebuild cost to buy 640 B on a 128 KiB part and nothing
+at all on the 16 KiB one. Declarations are prefix-free and the emitted prefix is `CONFIG_`, as in
+every Kconfig project. A disabled boolean is **absent**, tested with `#ifdef`, following Linux:
+the 0 case is not handled, because the knobs come from Kconfig and the setting side is validated
+there. Python emits a small CMake fragment that CMake `include()`s, rather than CMake parsing
+`.config` itself: NuttX and Zephyr parse, esp-idf generates, and generating keeps string work out of
+the language that reads worst. **Devicetree stays refused, and for its own reason** -- it is hardware
+description, and that is the only question board count was ever the right criterion for.
+
+**The acceptance test the milestone is judged against:** adding a knob, a board, a service or a
+driver must be a DECLARATION, never a mechanism change. The corollary that makes it checkable is
+that a CMake function may know its arguments and the shape of Kconfig's output, but never which
+boards, chips or knobs exist -- not by naming them, not by globbing for them, and not by
+reimplementing a tool that already knows. Nine of today's 26 CMake functions pass, eleven are
+deleted outright, four are ported, and two fail for a different reason and survive anyway.
+
+**Two orderings bind.** The dead `kos_service_cfg` fields must be deleted in M4.7.4, before a
+generator exists that would emit them; and the per-board ladders must move into Kconfig before the
+driver wave, not after, or the wave writes roughly 564 hand-maintained artifacts that the scheme then
+deletes. `kconfiglib` is ISC, one pure-Python file, build-time only, and never in a shipped artefact.
+
+**This revisits a decision that had no home in this repo.** A pre-M4 spike settled on "a
 consolidated per-board descriptor, NOT devicetree/Kconfig", judged as overkill below roughly 30 to 40
 boards; the tree is at 20. That verdict was recorded only in a developer's local notes, which is why
 this entry exists at all.
@@ -231,23 +264,23 @@ misconfigured build still preprocessed.
 **Kconfig would be additive, not a replacement**: it owns the knobs and emits a generated header,
 while CMake keeps the build graph.
 
-**The deciding question is not Kconfig, and the spike must answer it rather than assume it.** The
-capability-table width is a maximum over APP TARGET PROPERTIES plus the service list's. Those are
+**The deciding question was never Kconfig, and the answer is neither option the spike started with.**
+The capability-table width was a maximum over APP TARGET PROPERTIES plus the service list's. Those are
 build-graph facts, and Kconfig is one-pass and static with no way to say "the widest declaration among
-the app targets in this build". So:
-- **one app per build**, with app declarations becoming config fragments, removes the problem
-  outright and is what makes per-board `defconfig` genuinely useful -- but the tree builds every app
-  in a single configure and CI depends on that;
-- **a hybrid** leaves the target-graph summing in CMake, gives Kconfig the static knobs
-  (`KICKOS_MAX_THREADS`, `KICKOS_MAX_SPAWN_GRANTS`, `KICKOS_CAP_TABLE_SUPPLY`, `KICKOS_HAVE_MPU`,
-  board selection), and has the two meet at one generated header. Incremental and reversible.
+the app targets in this build". The two candidates were one-app-per-build, which removes the problem
+but breaks whole-fleet-in-one-configure, and a hybrid that keeps the summing in CMake. **The answer is
+that the summing is DELETED rather than relocated**: with one kernel build and N apps, the maximum has
+nothing to range over, because the apps do not exist when the kernel is configured. The width becomes
+an ordinary provisioning integer -- an `int` with a `range`, stated in the defconfig like any pool size
+-- and what the summing used to guarantee is replaced by an app-side `static_assert` against the
+installed generated header plus the runtime refusal that already exists.
 
-**Sequence it in two parts.** The generated header is worth doing inside M4.7.3 on its own merits,
-since per-task width adds a width and a class id per task and every workaround above would otherwise
-have to be ported onto a wider set of computed outputs. Kconfig then lands on a clean seam and is
-largely deletion. A build-time `kconfiglib` host dependency comes with it, which is NOT the project's
-first: `arch/CMakeLists.txt` already requires `Python3` for the RP2040/RP2350 second-stage checksum,
-in CI as well as locally.
+**Half of it has already landed.** The generated header was worth doing inside M4.7.3 on its own
+merits, since per-task width adds a width and a class id per task and every workaround above would
+otherwise have been ported onto a wider set of computed outputs. It shipped there, taking the
+directory-tree walk and the fallback with it, so Kconfig now lands on a clean seam and is largely
+deletion. The build-time `kconfiglib` host dependency is NOT the project's first: `arch/CMakeLists.txt`
+already requires `Python3` for the RP2040/RP2350 second-stage checksum, in CI as well as locally.
 
 ### M5 -- SMP (one kernel image across cores)
 Run a multi-core part at 100% under a single KickOS -- not two AMP instances. Reworks the

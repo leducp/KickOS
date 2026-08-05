@@ -389,8 +389,6 @@ if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
     # No class leaf: the USB register map is the driver's alone. One kickos_rpusb serves
     # both RP boards.
     set(KICKOS_SERVICE_LIST_LIBS "kickos_services_pizero2350_usbcdc;kickos_rpusb")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_pizero2350_usbcdc_diag")
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_pizero2350_usbcdc_diag;kickos_rpusb")
   elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_picopi_usbcdc")
     set(KICKOS_SERVICE_LIST_LIBS "kickos_services_picopi_usbcdc;kickos_rpusb")
   else()
@@ -411,9 +409,9 @@ message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST} (libs: ${KICKOS_SE
 # was later switched back.
 if(NOT DEFINED KICKOS_USB_CONSOLE)
   set(KICKOS_USB_CONSOLE OFF)
-  # Unanchored: the diagnostic list is "..._usbcdc_diag" and needs the same clock tree.
-  # An anchored match would silently leave PLL_USB off and the device would never
-  # enumerate, with nothing in the build to say why.
+  # Unanchored on purpose: any list with a "_usbcdc" stem needs the same clock tree, so a
+  # suffixed variant is covered the day it is added. An anchored match would silently leave
+  # PLL_USB off and the device would never enumerate, with nothing in the build to say why.
   if(KICKOS_SERVICE_LIST MATCHES "_usbcdc")
     set(KICKOS_USB_CONSOLE ON)
   endif()
@@ -421,28 +419,6 @@ endif()
 if(KICKOS_USB_CONSOLE)
   add_compile_definitions(KICKOS_USB_CONSOLE=1)
   message(STATUS "KickOS: USB device clock tree = on (chip init brings up PLL_USB)")
-endif()
-
-# Service lists refused at enforcement. The name is historical: an entry landed here
-# when its bring-up wrote MMIO from the root thread, which faults mid-bring-up after the
-# console handover and darks the board with no diagnostic. An entry stays after that
-# placement is fixed until the fixed bring-up is witnessed on silicon, because lifting it
-# changes the DEFAULT image of the board. Gated on enforcement, not on root's posture:
-# with the MPU off an unprivileged root still reaches MMIO (measured: the cross-domain
-# write completes on a non-MPU image), so only an enforcing build can go dark here. The
-# SoT for each listing is docs/design-unprivileged-root.md section 8.
-# EMPTY: no service list is currently refused. The list and its gate stay for the next
-# board whose bring-up writes MMIO from root. That failure is silent and total (a dark
-# board, no diagnostic), so it must be caught at configure and not at the bench.
-set(KICKOS_SERVICE_LIST_ROOT_MMIO)
-if(KICKOS_HAVE_MPU AND KICKOS_SERVICE_LIST IN_LIST KICKOS_SERVICE_LIST_ROOT_MMIO)
-  message(FATAL_ERROR
-    "KICKOS_SERVICE_LIST=${KICKOS_SERVICE_LIST} is refused at KICKOS_HAVE_MPU=1: its "
-    "bring-up writes MMIO from the root thread, which faults after the console handover "
-    "and leaves the board dark with no diagnostic. Move the register access into the "
-    "thread that holds the window (KOS_SYS_PERIPH_REG_WRITE for a write-PV-only "
-    "register), or pick a service list whose bring-up is pure syscall. See "
-    "docs/design-unprivileged-root.md section 8.")
 endif()
 
 # Board pin-map provider selection (the default-init pin-mux step). The default init
@@ -828,10 +804,15 @@ if(TARGET kickos_core)
     message(STATUS "KickOS: init provider = ${KICKOS_INIT_PROVIDER} (non-default). "
       "For an installed/exported package it must also be install(EXPORT KickOSTargets).")
   endif()
-  # Same late validation for the service-list provider (defined in system/ or a chip's
-  # user/driver/ subtree, so it is not a target at the kickos_core site above).
+  # Same late validation for the service-list provider (defined under system/init/<board>/, so
+  # it is not a target at the kickos_core site above).
   if(NOT TARGET ${KICKOS_SERVICE_LIST})
     message(FATAL_ERROR "KICKOS_SERVICE_LIST='${KICKOS_SERVICE_LIST}' is not a CMake target. Name a target that defines kickos_board_services, or use the default kickos_services_none (count = 0).")
+  endif()
+  # And for the pin map. Without this a misspelled target name reaches the LINK_GROUP as a
+  # bare -l, so the board silently keeps kickos_pinmap_none and boots with unmuxed pins.
+  if(NOT TARGET ${KICKOS_BOARD_PINMAP})
+    message(FATAL_ERROR "KICKOS_BOARD_PINMAP='${KICKOS_BOARD_PINMAP}' is not a CMake target. Name a target that defines kos_board_pinmap, or use the default kickos_pinmap_none.")
   endif()
 endif()
 

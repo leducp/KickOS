@@ -78,7 +78,7 @@ namespace kickos
     }
 
     // Seed every line with the null-object default so the dispatch table has no
-    // null slots. Must run before any irq_attach/irq_register (kmain, pre-start).
+    // null slots. Must run before any irq_attach/irq_claim (kmain, pre-start).
     void irq_init()
     {
         IrqLock lock;

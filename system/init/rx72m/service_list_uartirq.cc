@@ -26,7 +26,7 @@ extern "C"
     static struct kos_service_cfg const rxsci_cfg = {
         /*name=*/"rxsci", /*mmio_base=*/0x0008A0C0u, /*mmio_window=*/16u,
         /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*cs_policy=*/KOS_SVC_CS_NONE, /*cs_index=*/0, /*rsv=*/{ 0, 0 }
+        /*rsv=*/{ 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const rx72m_uartirq_services[] = {

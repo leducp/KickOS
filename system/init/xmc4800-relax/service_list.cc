@@ -20,7 +20,7 @@ extern "C"
     static struct kos_service_cfg const xmcuart_cfg = {
         /*name=*/"xmcuart", /*mmio_base=*/0x40030000u, /*mmio_window=*/0x200u,
         /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*cs_policy=*/KOS_SVC_CS_NONE, /*cs_index=*/0, /*rsv=*/{ 0, 0 }
+        /*rsv=*/{ 0, 0, 0, 0 }
     };
 
     // USIC0 CH1 @ 0x4003_0200, 0x200 B window (RM Table 18-21; the 0x200-aligned pow2
@@ -31,7 +31,7 @@ extern "C"
     static struct kos_service_cfg const xmcssc_cfg = {
         /*name=*/"xmcssc", /*mmio_base=*/0x40030200u, /*mmio_window=*/0x200u,
         /*hz=*/1000000u, /*addr=*/0, /*prio=*/11, /*kind=*/KOS_SVC_SPI,
-        /*cs_policy=*/KOS_SVC_CS_HW, /*cs_index=*/0, /*rsv=*/{ 0, 0 }
+        /*rsv=*/{ 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const xmc4800relax_services[] = {

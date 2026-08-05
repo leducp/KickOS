@@ -448,7 +448,7 @@ uintptr_t arch_syscall(uintptr_t nr,
 // redelivered through the normal ISR path the instant the line is unmasked.
 //
 // RESET CONTRACT (uniform across every arch): all lines start MASKED at reset. A
-// driver unmasks its line (arch_irq_unmask, or irq_register which arms it) before
+// driver unmasks its line (arch_irq_unmask, or irq_claim which arms it) before
 // use; nothing may assume a line is deliverable until it has been unmasked.
 //
 // LOCKING CONTRACT: all four of mask/unmask/inject/clear_pending are SELF-BRACKETED
@@ -460,7 +460,7 @@ uintptr_t arch_syscall(uintptr_t nr,
 // a coalesced redelivery is carried through ONE shared cell + ONE physical doorbell
 // and the per-line pending bit is cleared as it is rung. So AT MOST ONE unmask with
 // a pending redelivery may occur per IrqLock/interrupts-masked region; a second
-// would clobber the first's identity and lose an event. Holds today (irq_register/
+// would clobber the first's identity and lose an event. Holds today (irq_claim/
 // wait/ack each unmask exactly one line per lock section); a future bulk-rearm path
 // needs the identity-free dispatcher (see TODO M4).
 void arch_irq_mask(int line);
@@ -472,7 +472,7 @@ void arch_irq_unmask(int line);
 
 // Discard any raise latched on a line (best-effort: a controller that cannot drop
 // a native pending, e.g. the PLIC for a real device line, no-ops there). The
-// explicit discard primitive: called at first-arm (irq_register / console_tx /
+// explicit discard primitive: called at first-arm (irq_claim / console_tx /
 // bench) to drop pre-registration garbage, and reserved for the M4 level-trigger
 // rearm path.
 void arch_irq_clear_pending(int line);

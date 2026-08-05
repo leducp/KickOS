@@ -319,8 +319,8 @@ KickOS/
     include/kickos/                 # public kernel + syscall-number headers
     sched/  thread/  sync/  time/  irq/  syscall/  init/  ktrace/  bench/  domain/  grant/
   lib/
-    libc/                           # freestanding: mem/str, small vsnprintf, heap, assert
-    libcxx/                         # __cxa_* stubs, guards, operator new/delete
+    libc/                           # freestanding: mem/str (string.cc) + a small vsnprintf (fmt.cc)
+    include/kickos/                 # libc/{fmt,string}.h, console_tx.h, rtt.h
     rtt.cc                          # SEGGER RTT backend (console ch0 + telemetry ch1)
   system/                           # kickos_system: fleet-wide system layer
     include/kickos/sys/             # errno.h (KOS_E* taxonomy), cap_index.h (the well-known cap
@@ -804,10 +804,13 @@ feeds the slave app.
 ## C++ decisions
 
 - **Kernel**: freestanding C++ -- `-ffreestanding -fno-exceptions -fno-rtti
-  -fno-threadsafe-statics -fno-use-cxa-atexit`. Bring-up: run `.init_array` ctors in startup;
-  provide `__cxa_pure_virtual`, `__dso_handle`/`__cxa_atexit` stub; `operator new/delete` mapped
-  to the kernel heap or `=delete`d. No implicitly heap-allocating STL. `extern "C"` at
-  asm/startup/syscall seams.
+  -fno-threadsafe-statics -fno-use-cxa-atexit`. Bring-up: run `.init_array` ctors in startup.
+  Of the usual ABI stubs only `__dso_handle` exists (`user/src/newlib_stubs.cc`, and it is in
+  `tests/weak_allowlist.txt`): `-fno-use-cxa-atexit` removes the need for `__cxa_atexit`, and
+  `__cxa_pure_virtual` is never emitted because nothing declares a pure virtual. **`operator
+  new/delete` is not provided at all** -- the kernel links `-nostdlib++`, so a stray `operator new`
+  is a LINK ERROR rather than a silent heap allocation (`CMakeLists.txt:746`). No implicitly
+  heap-allocating STL. `extern "C"` at asm/startup/syscall seams.
 - **Userspace**: default freestanding subset; **each app may opt into full C++**
   (`-fexceptions -frtti`) by linking the toolchain's `libstdc++`/`libsupc++` over the **toolchain's
   own libc** -- newlib on every arch (Arm GNU / RISCStar / GNURX are all newlib) -- so the C++

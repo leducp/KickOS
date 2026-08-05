@@ -11,7 +11,7 @@
 //     <kickos/arch/rv_trap_ids.h> (KICKOS_RV_INJECT_DOORBELL_CPU_INT /
 //     KICKOS_RV_DEV_CPU_INT) and are NOT redefined here; the enumerators below only
 //     mirror them.
-//  2. Logical kernel IRQ lines (kickos_isr_irq / irq_register). Chip-local.
+//  2. Logical kernel IRQ lines (kickos_isr_irq / irq_claim). Chip-local.
 
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_IRQ_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_IRQ_H

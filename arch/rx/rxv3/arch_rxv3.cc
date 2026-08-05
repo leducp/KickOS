@@ -65,7 +65,7 @@ namespace
     // gated by ICU.IER (e.g. console TXI6 = 87). RX's own sub-32 vectors (SWINT 26/27,
     // timer CMWI0 30) are configured directly by the arch/chip init and never pass
     // through the arch_irq_* seam, so they do not collide. Masked-by-default: a line is
-    // armed only by arch_irq_unmask (kernel irq_register/irq_ack).
+    // armed only by arch_irq_unmask (kernel irq_claim/irq_ack).
     constexpr int SOFT_IRQ_LINES = 32;
     volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
     volatile int g_inject_line = -1;

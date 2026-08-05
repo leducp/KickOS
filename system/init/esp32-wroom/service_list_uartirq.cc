@@ -20,7 +20,7 @@ int lx6uart_console_start(struct kos_service_cfg const* cfg);
 static struct kos_service_cfg const lx6uart_cfg = {
     /*name=*/"lx6uart", /*mmio_base=*/0x3FF40000u, /*mmio_window=*/0x1000u,
     /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-    /*cs_policy=*/KOS_SVC_CS_NONE, /*cs_index=*/0, /*rsv=*/{0, 0}
+    /*rsv=*/{ 0, 0, 0, 0 }
 };
 
 static struct kos_service_bringup const lx6uart_services[] = {

@@ -319,7 +319,7 @@ extern "C"
     static struct kos_service_cfg const simcon_cfg = {
         /*name=*/"simcon", /*mmio_base=*/0, /*mmio_window=*/0,
         /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*cs_policy=*/KOS_SVC_CS_NONE, /*cs_index=*/0, /*rsv=*/{ 0, 0 }
+        /*rsv=*/{ 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const sim_services[] = {
