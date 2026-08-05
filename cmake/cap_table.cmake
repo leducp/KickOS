@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The per-task capability-table width, summed at CONFIGURE time from four declarations,
+# ROOT's capability-table width, summed at CONFIGURE time from four declarations,
 # each made by whoever owns the fact (docs/design-capability-table.md section 6):
 #
 #   reserved indices      the kernel        KICKOS_CAP_FIRST_DYNAMIC (sys/cap_index.h)
@@ -10,6 +10,9 @@
 #   peak inbound replies  whoever knows the protocol's fan-in, service list or app:
 #                                           INBOUND_REPLY_CAPS (kickos_add_board_provider)
 #                                           CAPABILITIES_INBOUND_REPLY (kickos_add_application)
+#
+# The summed width is what ROOT gets, and root alone. Every spawned child gets
+# KICKOS_CAP_CHILD_WIDTH, the grant-list floor below, and nothing can ask for another width.
 #
 # The inbound-reply term is what the SERVER side of kos_call needs: cap_install_reply mints
 # into the receiver's table and shares its one free list with the receiver's own creates
@@ -49,6 +52,7 @@ function(kickos_cap_probe board_inc overrides out_reserved out_supply out_grants
                           out_chunk out_off_pool)
   set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                "${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/system.h"
+               "${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/cap_geometry.h"
                "${PROJECT_SOURCE_DIR}/system/include/kickos/sys/cap_index.h"
                "${PROJECT_SOURCE_DIR}/kernel/include/kickos/cap.h")
   if(board_inc)
@@ -58,12 +62,11 @@ function(kickos_cap_probe board_inc overrides out_reserved out_supply out_grants
   set(_probe "${CMAKE_CURRENT_BINARY_DIR}/cap_table_probe.c")
   # config/system.h pulls board_config.h itself when the board ships one, so the sim (which
   # ships none) probes through the same file as every MCU.
-  # cap.h is preprocessed, never compiled, so its static_asserts (which need the summed width
-  # this function is on its way to computing) are not evaluated.
+  # ONLY input headers: cap.h reads the width this function is on its way to computing.
   file(WRITE "${_probe}"
     "#include <kickos/config/system.h>\n"
+    "#include <kickos/config/cap_geometry.h>\n"
     "#include <kickos/sys/cap_index.h>\n"
-    "#include <kickos/cap.h>\n"
     "#ifndef KCAP_CHUNK_TARGET\n"
     "#error \"KCAP_CHUNK_TARGET unset\"\n"
     "#endif\n"
@@ -152,24 +155,35 @@ function(_kickos_cap_geometry slots chunk out_chunks out_reserved_slots)
   set(${out_reserved_slots} "${_r}" PARENT_SCOPE)
 endfunction()
 
-# The width the installed package was BUILT with, off the exported usage target that carries
-# it (root CMakeLists.txt stamps it on kickos_core), or "" when there is no such target to
-# read. Only the out-of-tree warning below uses it.
+# The slab's chunk count and .bss: one child-width run per holder, plus root's own widening
+# on top. Every run holder is GUARANTEED the child width and every spawn asks for exactly
+# that, so a spawn can never be refused for want of a chunk.
+# MIRRORS KCAP_SLAB_CHUNKS in kernel/include/kickos/cap.h; the two must move together.
+function(_kickos_cap_slab slots child chunk threads off_pool
+                          out_bytes out_chunks out_child_chunks)
+  _kickos_cap_geometry("${slots}" "${chunk}" _root_chunks _root_res)
+  math(EXPR _chunk_slots "${_root_res} / ${_root_chunks}")
+  math(EXPR _child_chunks "(${child} + ${_chunk_slots} - 1) / ${_chunk_slots}")
+  math(EXPR _n "(${threads} + ${off_pool}) * ${_child_chunks} + ${_root_chunks} - ${_child_chunks}")
+  math(EXPR _b "${_n} * ${_chunk_slots} * 8")
+  set(${out_bytes} "${_b}" PARENT_SCOPE)
+  set(${out_chunks} "${_n}" PARENT_SCOPE)
+  set(${out_child_chunks} "${_child_chunks}" PARENT_SCOPE)
+endfunction()
+
+# The width the package was BUILT with: the resolve's own answer in tree, else what
+# KickOSConfig.cmake recorded for an installed package. "" when neither is set. Only the
+# out-of-tree warning below may use it; what a COMPILE reads is the generated header.
 function(_kickos_cap_installed_width out)
   set(${out} "" PARENT_SCOPE)
-  if(NOT TARGET kickos_core)
+  get_property(_resolved_width GLOBAL PROPERTY KICKOS_CAP_TABLE_WIDTH)
+  if("${_resolved_width}" MATCHES "^[0-9]+$")
+    set(${out} "${_resolved_width}" PARENT_SCOPE)
     return()
   endif()
-  get_target_property(_defs kickos_core INTERFACE_COMPILE_DEFINITIONS)
-  if(NOT _defs)
-    return()
+  if("${KICKOS_CAP_TABLE_WIDTH}" MATCHES "^[0-9]+$")
+    set(${out} "${KICKOS_CAP_TABLE_WIDTH}" PARENT_SCOPE)
   endif()
-  foreach(_d IN LISTS _defs)
-    if(_d MATCHES "^KICKOS_MAX_HANDLES=([0-9]+)$")
-      set(${out} "${CMAKE_MATCH_1}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
 endfunction()
 
 # Record one app target's declared demand. `peak` is what must ALWAYS fit; `optional` is
@@ -211,36 +225,24 @@ function(kickos_declare_app_capabilities target peak optional reply)
                          "demand declared in tree, on a board whose KICKOS_CAP_TABLE_SUPPLY "
                          "can back it.")
       if(_installed STREQUAL "")
-        string(APPEND _how " The width is in <prefix>/lib/cmake/KickOS/KickOSTargets.cmake "
+        string(APPEND _how " The width is in <prefix>/include/kickos/config/cap_width.h "
                            "as KICKOS_MAX_HANDLES.")
       endif()
     endif()
     message(WARNING
       "kickos_declare_app_capabilities(${target}): this declaration (peak ${peak}, optional "
-      "${optional}, inbound reply ${reply}) CANNOT be honoured here. The per-task capability "
-      "table is summed once, when KickOS itself is configured, and compiled into its libraries; "
-      "that sum has already run, so the width is ${_width} and this declaration reaches nothing. "
-      "A create past it returns -KOS_EMFILE at runtime, whatever this says. ${_how}")
+      "${optional}, inbound reply ${reply}) CANNOT be honoured here. The capability-table "
+      "width is summed once, when KickOS itself is configured, and compiled into its "
+      "libraries; that sum has already run, so root's width is ${_width} and this declaration "
+      "reaches nothing. A create past it returns -KOS_EMFILE at runtime, whatever this says. "
+      "${_how}")
   endif()
-endfunction()
-
-# Apply `def` to every target in the tree, including those already created. NOT
-# add_compile_definitions(): a subdirectory COPIES COMPILE_DEFINITIONS when it is added, so a
-# value known only after user/apps never reaches an earlier component. A directory's OWN
-# property is read at generate time, so appending per directory does.
-function(_kickos_cap_define_tree def)
-  set(_dirs "${PROJECT_SOURCE_DIR}")
-  while(_dirs)
-    list(POP_FRONT _dirs _d)
-    set_property(DIRECTORY "${_d}" APPEND PROPERTY COMPILE_DEFINITIONS "${def}")
-    get_property(_subs DIRECTORY "${_d}" PROPERTY SUBDIRECTORIES)
-    list(APPEND _dirs ${_subs})
-  endwhile()
 endfunction()
 
 # Sum the declarations, check the total against the board's supply, and forward the width.
 # Call ONCE, after every subdirectory that can declare (user/apps is added last).
-function(kickos_cap_table_resolve board_inc overrides service_list out_slots out_chunk)
+function(kickos_cap_table_resolve board_inc overrides service_list out_slots out_chunk
+                                  out_child_width out_reply_max)
   kickos_cap_probe("${board_inc}" "${overrides}" _reserved _supply _grants _threads _chunk
                    _off_pool)
 
@@ -307,7 +309,24 @@ function(kickos_cap_table_resolve board_inc overrides service_list out_slots out
   # (cap.h). The floor answers to KICKOS_MAX_SPAWN_GRANTS, not to anything an app holds, so it
   # RAISES a narrower demand. Refusing one instead would make every app in the fleet declare
   # up to the floor whether it holds that much or not.
-  math(EXPR _floor "${_grants} + 1")
+  #
+  # The reply term belongs in the floor and not only in the sum: the sum widens ROOT, while
+  # KICKOS_CAP_REPLY_MAX bounds reply capabilities on every task alike, and every server in
+  # the tree is a spawned child seated at this floor.
+  math(EXPR _floor "${_grants} + 1 + ${_reply}")
+
+  # Of cap.h's three bounds on the child width, this is the one that does not hold by
+  # construction: a small enough KICKOS_MAX_SPAWN_GRANTS puts a child's WHOLE table inside
+  # the reserved range.
+  if(NOT _floor GREATER _reserved)
+    message(FATAL_ERROR
+      "KickOS: a spawned child's capability table would be ${_floor} slot(s), which is "
+      "entirely inside the ${_reserved}-slot reserved index range (KICKOS_CAP_FIRST_DYNAMIC), "
+      "so no child could ever create a capability of its own. Every spawned child is seated "
+      "at this width and nothing can ask for another. It is KICKOS_MAX_SPAWN_GRANTS=${_grants} "
+      "+ 1 + ${_reply} declared inbound reply cap(s); raise KICKOS_MAX_SPAWN_GRANTS.")
+  endif()
+
   set(_req "${_sum}")
   set(_want "${_sum_full}")
   set(_floor_note "")
@@ -325,32 +344,36 @@ function(kickos_cap_table_resolve board_inc overrides service_list out_slots out
     "  peak concurrent, declared by ${_peak_by} : ${_peak}\n"
     "  peak inbound reply caps, declared by ${_reply_by} : ${_reply}\n"
     "  = demand : ${_sum}\n"
-    "  grant-list floor, KICKOS_MAX_SPAWN_GRANTS ${_grants} + 1 : ${_floor}${_floor_note}\n"
+    "  grant-list floor, KICKOS_MAX_SPAWN_GRANTS ${_grants} + 1 + ${_reply} reply : "
+    "${_floor}${_floor_note}\n"
     "  board supply (KICKOS_CAP_TABLE_SUPPLY) : ${_supply}\n")
 
   if(_floor GREATER _supply)
     math(EXPR _short "${_floor} - ${_supply}")
     message(FATAL_ERROR
-      "KickOS: a full spawn grant list cannot fit the per-task capability table on board "
+      "KickOS: a full spawn grant list cannot fit root's capability table on board "
       "'${KICKOS_BOARD}': KICKOS_MAX_SPAWN_GRANTS=${_grants} needs ${_floor} slot(s) (grant i "
       "lands at child index i+1, and nothing checks it at runtime), and the board supplies "
       "${_supply} -- short by ${_short}.\n" ${_terms}
-      "No app declaration can fix this: the floor is a property of the grant list and the "
-      "reserved plane. Lower KICKOS_MAX_SPAWN_GRANTS, or raise the board's "
-      "KICKOS_CAP_TABLE_SUPPLY if its RAM really can back it.")
+      "The grant list and the reserved plane are most of this floor and no app declaration "
+      "moves them; the inbound-reply term IS an app or service-list declaration, and it is "
+      "${_reply} here. Lower KICKOS_MAX_SPAWN_GRANTS, lower the declared INBOUND_REPLY_CAPS / "
+      "CAPABILITIES_INBOUND_REPLY, or raise the board's KICKOS_CAP_TABLE_SUPPLY if its RAM "
+      "really can back it.")
   endif()
 
   # Supply is checked against DEMAND, not against the chunk-rounded reservation: rounding the
   # check up would newly refuse a board whose supply is not a multiple of the granule.
   _kickos_cap_geometry("${_req}" "${_chunk}" _req_chunks _req_res)
-  math(EXPR _bytes "${_req_res} * (${_threads} + ${_off_pool}) * 8")
+  _kickos_cap_slab("${_req}" "${_floor}" "${_chunk}" "${_threads}" "${_off_pool}"
+                   _bytes _slab_chunks _child_chunks)
   if(_req GREATER _supply)
     math(EXPR _short "${_req} - ${_supply}")
     message(FATAL_ERROR
-      "KickOS: the per-task capability table needs ${_req} slot(s), but board "
+      "KickOS: root's capability table needs ${_req} slot(s), but board "
       "'${KICKOS_BOARD}' supplies ${_supply} -- short by ${_short} slot(s) "
-      "(${_req_chunks} chunk(s) = ${_req_res} slot(s) reserved x (KICKOS_MAX_THREADS "
-      "${_threads} + ${_off_pool}) x 8 = ${_bytes} B of Kernel .bss).\n"
+      "(${_req_chunks} chunk(s) per widest run, ${_slab_chunks} chunk(s) of slab = "
+      "${_bytes} B of Kernel .bss).\n"
       ${_terms}
       "The board states supply only. Lower a demand above, or raise the board's "
       "KICKOS_CAP_TABLE_SUPPLY if its RAM really can back it.")
@@ -361,7 +384,8 @@ function(kickos_cap_table_resolve board_inc overrides service_list out_slots out
     set(_slots "${_want}")
   endif()
   _kickos_cap_geometry("${_slots}" "${_chunk}" _chunks _res_slots)
-  math(EXPR _bytes "${_res_slots} * (${_threads} + ${_off_pool}) * 8")
+  _kickos_cap_slab("${_slots}" "${_floor}" "${_chunk}" "${_threads}" "${_off_pool}"
+                   _bytes _slab_chunks _child_chunks)
   # string(CONCAT), never set() with several arguments: that makes a LIST, and a list deref
   # inside message() shows its separating semicolons.
   string(CONCAT _why
@@ -393,11 +417,35 @@ function(kickos_cap_table_resolve board_inc overrides service_list out_slots out
     message(STATUS "KickOS: cap table: ${_opt} optional slot(s) of ${_full_by} granted")
   endif()
 
-  _kickos_cap_define_tree("KICKOS_MAX_HANDLES=${_slots}")
-  # The granule too, so a test that has to know which decode cap.h compiled reads the same
-  # number the geometry above used instead of mirroring the literal.
-  _kickos_cap_define_tree("KICKOS_CAP_CHUNK_SLOTS=${_chunk}")
+  math(EXPR _root_extra "${_chunks} - ${_child_chunks}")
+  message(STATUS "KickOS: cap table: child width ${_floor} slot(s) = ${_child_chunks} "
+                 "chunk(s) guaranteed to each of ${_threads} + ${_off_pool} run holder(s), "
+                 "plus ${_root_extra} chunk(s) for root's own widening")
+
+  # Never 0: a task that may hold no inbound reply capability could never serve a kos_call.
+  # It reserves no slot, so raising the floor to 1 costs no width.
+  set(_reply_max "${_reply}")
+  if(_reply_max LESS 1)
+    set(_reply_max 1)
+  endif()
+
+  # A child must keep at least one dynamic slot once the reply bound is spent, or peers alone
+  # could fill its table. Subsumes the reserved-plane refusal above numerically, but names the
+  # declared reply peak rather than KICKOS_MAX_SPAWN_GRANTS.
+  math(EXPR _child_own "${_floor} - ${_reserved} - ${_reply_max}")
+  if(_child_own LESS 1)
+    message(FATAL_ERROR
+      "KickOS: a spawned child would keep ${_child_own} slot(s) of its own once inbound "
+      "reply capabilities are accounted: child width ${_floor} - ${_reserved} reserved - "
+      "${_reply_max} inbound reply. Peers could then fill its table on their own, which is "
+      "what KICKOS_CAP_REPLY_MAX exists to prevent. Raise KICKOS_MAX_SPAWN_GRANTS, or lower "
+      "the declared INBOUND_REPLY_CAPS / CAPABILITIES_INBOUND_REPLY.")
+  endif()
+
   set_property(GLOBAL PROPERTY KICKOS_CAP_TABLE_RESOLVED TRUE)
+  set_property(GLOBAL PROPERTY KICKOS_CAP_TABLE_WIDTH "${_slots}")
   set(${out_slots} "${_slots}" PARENT_SCOPE)
   set(${out_chunk} "${_chunk}" PARENT_SCOPE)
+  set(${out_child_width} "${_floor}" PARENT_SCOPE)
+  set(${out_reply_max} "${_reply_max}" PARENT_SCOPE)
 endfunction()

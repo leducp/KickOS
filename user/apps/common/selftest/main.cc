@@ -10,6 +10,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/config/cap_width.h>
 #include <kickos/sys/bus.h> // compile-checks the wire-ABI struct-size static_asserts
 #include <kickos/sys/byte_ring.h>
 #include <kickos/sys/uart_service.h>
@@ -3850,8 +3851,8 @@ namespace
     // --- the SEGMENTED index decode: a live slot at or above the chunk granule ------------
     void t_cap_chunk_span()
     {
-        // cap.h's KCAP_CHUNK_TARGET, forwarded by cmake/cap_table.cmake. A table no wider than
-        // this compiles the FLAT decode and has no segmented slot to reach, so a hardcoded
+        // config/cap_geometry.h's KCAP_CHUNK_TARGET, via config/cap_width.h. A table no wider
+        // than this compiles the FLAT decode and has no segmented slot to reach, so a hardcoded
         // mirror of the granule would make this arm claim the segmented path on a board that
         // never compiled it.
         constexpr uint32_t CHUNK_SLOTS = KICKOS_CAP_CHUNK_SLOTS;
@@ -3970,6 +3971,301 @@ namespace
         {
             TAP_CHECK(kos_handle_close(held[i]) == 0);
         }
+    }
+
+    // --- M4.7.3: per-task table width, and the inbound reply bound ------------------------
+    //
+    // NO new file-scope state below: every worker reports through the shared event log, and
+    // a static here would come straight out of the 16 KiB boards' user arena.
+
+    void* units(unsigned n)
+    {
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(n));
+    }
+    uint64_t unit_delay(void* arg)
+    {
+        return g_call_unit * static_cast<uint64_t>(reinterpret_cast<uintptr_t>(arg));
+    }
+
+    // Marks one '#' per capability it got: the width it was seated with, minus the reserved
+    // plane, minus the one grant landing on a dynamic index (done@1 is below
+    // KOS_CAP_FIRST_DYNAMIC and so was never on the free list, lock@2 is above it and was).
+    void width_child(void*) // caps: done@1, lock@2
+    {
+        kos_cap_t held[KICKOS_MAX_HANDLES];
+        int n = 0;
+        while (n < static_cast<int>(sizeof(held) / sizeof(held[0])))
+        {
+            kos_cap_t h = KOS_CAP_NONE;
+            if (fill_one_cap(&h) != 0)
+            {
+                break;
+            }
+            held[n] = h;
+            n = n + 1;
+        }
+        kos_cap_t refused = 0; // not KOS_CAP_NONE: the refusal must be what writes that word
+        if (fill_one_cap(&refused) == -KOS_EMFILE and refused == KOS_CAP_NONE)
+        {
+            log_put('E'); // the TABLE refused, not an object pool
+        }
+        for (int i = 0; i < n; i++)
+        {
+            if (kos_handle_close(held[i]) == 0)
+            {
+                log_put('#');
+            }
+        }
+        kos_sem_post(CH_DONE);
+    }
+
+    // --- every spawned child gets KICKOS_CAP_CHILD_WIDTH, not root's summed width ---------
+    void t_cap_child_width()
+    {
+        if (not pool_can_host(1))
+        {
+            tap::skip("pool too small");
+            return;
+        }
+        log_reset();
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}}; // -> done@1, lock@2
+        auto w = kos::thread::spawn_caps(width_child, nullptr, "cw", 10, caps, 2);
+        TAP_CHECK(w.valid());
+        wait_n(1);
+        TAP_CHECK(count('E') == 1);
+        TAP_CHECK(count('#') == KICKOS_CAP_CHILD_WIDTH - KOS_CAP_FIRST_DYNAMIC - 1);
+        if (KICKOS_CAP_CHILD_WIDTH == KICKOS_MAX_HANDLES)
+        {
+            tap::partial("child width %u == root's summed width: the two are one table here",
+                         static_cast<unsigned>(KICKOS_CAP_CHILD_WIDTH));
+        }
+    }
+
+    // Holds A's reply capability across a SECOND recv, so B's call meets the bound. Root's
+    // first plain send is what unparks that second recv; the reply to A follows it, and that
+    // is what lifts the bound for B's retry. Root's second plain send ends the run.
+    void rb_server(void* arg) // caps: done@1, lock@2, E(WAIT)@3
+    {
+        char b[8];
+        kos_sleep_ns(unit_delay(arg));
+        struct kos_recv_info first = {0, KOS_CAP_NONE};
+        kos_recv(CH_AUX, b, sizeof(b), &first);
+        log_put('1');
+        struct kos_recv_info wake = {0, KOS_CAP_NONE};
+        kos_recv(CH_AUX, b, sizeof(b), &wake);
+        kos_reply(first.reply_cap, "r", 1);
+        log_put('2');
+        int plains = 0;
+        if (wake.reply_cap == KOS_CAP_NONE)
+        {
+            plains = 1;
+        }
+        else
+        {
+            // Only a kernel with no bound puts a call here. Reply to it, and keep serving:
+            // the arm must FAIL on the missing refusal, never hang on a stranded caller.
+            kos_reply(wake.reply_cap, "r", 1);
+        }
+        while (plains < 2)
+        {
+            struct kos_recv_info info = {0, KOS_CAP_NONE};
+            kos_recv(CH_AUX, b, sizeof(b), &info);
+            if (info.reply_cap == KOS_CAP_NONE)
+            {
+                plains = plains + 1;
+                continue;
+            }
+            kos_reply(info.reply_cap, "r", 1);
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void rb_caller_a(void* arg) // caps: done@1, lock@2, E(SIGNAL)@3
+    {
+        char b[8] = {0};
+        kos_sleep_ns(unit_delay(arg));
+        if (kos_call(CH_AUX, b, 4, sizeof(b)) == 1)
+        {
+            log_put('A');
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void rb_caller_b(void* arg) // caps: done@1, lock@2, E(SIGNAL)@3
+    {
+        char b[8] = {0};
+        kos_sleep_ns(unit_delay(arg));
+        if (kos_call(CH_AUX, b, 4, sizeof(b)) == -KOS_EMFILE)
+        {
+            log_put('E'); // refused against the SERVER's reply bound, not against our table
+        }
+        kos_sleep_ns(g_call_unit * 12); // past root's first plain send, so A has been replied to
+        if (kos_call(CH_AUX, b, 4, sizeof(b)) == 1)
+        {
+            log_put('K'); // and admitted once A's reply capability was consumed
+        }
+        kos_sem_post(CH_DONE);
+    }
+
+    // `server_delay` decides WHICH probe refuses B. 0 parks the server in recv before either
+    // caller runs, so B meets endpoint_call's fastpath probe; a delay past both callers makes
+    // B park in CALL_SEND_WAIT first, so the refusal comes back through the recv-side scan.
+    void reply_bound_arm(unsigned server_delay, unsigned b_delay)
+    {
+        // The choreography holds exactly ONE reply capability live and asserts B meets the
+        // bound against it. A higher bound needs KICKOS_CAP_REPLY_MAX callers parked before
+        // B, which is that many more thread slots and an ordering this log cannot express, so
+        // skip rather than assert a bound that is not the configured one.
+        if (KICKOS_CAP_REPLY_MAX != 1)
+        {
+            tap::skip("KICKOS_CAP_REPLY_MAX is %u: this arm only drives a bound of 1",
+                      static_cast<unsigned>(KICKOS_CAP_REPLY_MAX));
+            return;
+        }
+        if (not pool_can_host(3))
+        {
+            tap::skip("pool too small (3 interdependent workers)");
+            return;
+        }
+        log_reset();
+        g_call_unit = mtx_time_unit();
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_WAIT_ONLY}};
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        auto sv = kos::thread::spawn_caps(rb_server, units(server_delay), "rbS", 8, scaps, 3);
+        auto ca = kos::thread::spawn_caps(rb_caller_a, units(1), "rbA", 20, ccaps, 3);
+        auto cb = kos::thread::spawn_caps(rb_caller_b, units(b_delay), "rbB", 12, ccaps, 3);
+        TAP_CHECK(sv.valid() and ca.valid() and cb.valid());
+        char plain[4] = {0};
+        kos_sleep_ns(g_call_unit * (server_delay + 6));
+        kos_send(g_ep, plain, 4); // unpark the second recv, so the server can reply to A
+        kos_sleep_ns(g_call_unit * 14);
+        kos_send(g_ep, plain, 4); // end the run, whatever the server ended up serving
+        wait_n(3);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        TAP_CHECK(count('E') == 1);           // B refused while A's reply capability was live
+        TAP_CHECK(count('K') == 1);           // and admitted after it was consumed
+        TAP_CHECK(count('A') == 1);           // A was never crowded out by B
+        TAP_CHECK(nth('E', 1) < nth('2', 1)); // the refusal preceded the reply that lifted it
+    }
+
+    // --- the reply bound, met at endpoint_call's fastpath probe ---------------------------
+    void t_cap_reply_bound_fast()
+    {
+        reply_bound_arm(0, 3);
+    }
+
+    // --- the same bound, delivered through the recv-side scan of parked callers -----------
+    void t_cap_reply_bound_slow()
+    {
+        reply_bound_arm(4, 0);
+    }
+
+    // Serves calls until root's plain send ends the run. arg != 0 consumes the FIRST reply
+    // capability with kos_handle_close rather than kos_reply: a release path kos_reply does
+    // not cover, and the caller sees -KOS_EPIPE.
+    void rp_server(void* arg) // caps: done@1, lock@2, E(WAIT)@3
+    {
+        char b[8];
+        for (int i = 0; i < 3; i++)
+        {
+            struct kos_recv_info info = {0, KOS_CAP_NONE};
+            kos_recv(CH_AUX, b, sizeof(b), &info);
+            if (info.reply_cap == KOS_CAP_NONE)
+            {
+                break; // root's plain send: the run is over, refused callers and all
+            }
+            if (i == 0 and arg != nullptr)
+            {
+                kos_handle_close(info.reply_cap);
+                log_put('c');
+                continue;
+            }
+            log_put('K');
+            kos_reply(info.reply_cap, "r", 1);
+        }
+        kos_sem_post(CH_DONE);
+    }
+    void rp_caller(void* arg) // caps: done@1, lock@2, E(SIGNAL)@3
+    {
+        char b[8] = {0};
+        kos_sleep_ns(unit_delay(arg));
+        long const rc = kos_call(CH_AUX, b, 4, sizeof(b));
+        if (rc == -KOS_EPIPE)
+        {
+            log_put('P');
+        }
+        if (rc == 1)
+        {
+            log_put('B');
+        }
+        kos_sem_post(CH_DONE);
+    }
+
+    // --- a reply cap consumed by CLOSE still admits the next caller -----------------------
+    void t_cap_reply_release_close()
+    {
+        if (not pool_can_host(3))
+        {
+            tap::skip("pool too small (3 interdependent workers)");
+            return;
+        }
+        log_reset();
+        g_call_unit = mtx_time_unit();
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_WAIT_ONLY}};
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        auto sv = kos::thread::spawn_caps(rp_server, units(1), "rpS", 8, scaps, 3);
+        auto ca = kos::thread::spawn_caps(rp_caller, units(1), "rpA", 20, ccaps, 3);
+        auto cb = kos::thread::spawn_caps(rp_caller, units(5), "rpB", 12, ccaps, 3);
+        TAP_CHECK(sv.valid() and ca.valid() and cb.valid());
+        char plain[4] = {0};
+        kos_sleep_ns(g_call_unit * 9);
+        kos_send(g_ep, plain, 4); // ends the server's run whether or not B got in
+        wait_n(3);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        TAP_CHECK(count('c') == 1 and count('P') == 1); // A's cap closed, A woken -KOS_EPIPE
+        TAP_CHECK(count('K') == 1 and count('B') == 1); // and B admitted behind it
+    }
+
+    // Takes a call and EXITS holding the reply capability: the teardown sweep is what has to
+    // account it, or the slot's next occupant refuses its own first caller.
+    void rr_dying_server(void*) // caps: done@1, lock@2, E(WAIT)@3
+    {
+        char b[8];
+        struct kos_recv_info info = {0, KOS_CAP_NONE};
+        kos_recv(CH_AUX, b, sizeof(b), &info);
+        log_put('d');
+        kos_sem_post(CH_DONE);
+    }
+
+    // --- a slot reclaimed from a server that died mid-call admits its next caller ---------
+    void t_cap_reply_slot_reuse()
+    {
+        if (not pool_can_host(2))
+        {
+            tap::skip("pool too small (2 interdependent workers)");
+            return;
+        }
+        log_reset();
+        g_call_unit = mtx_time_unit();
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_WAIT_ONLY}};
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        auto s1 = kos::thread::spawn_caps(rr_dying_server, nullptr, "rrD", 8, scaps, 3);
+        auto c1 = kos::thread::spawn_caps(rp_caller, units(2), "rr1", 12, ccaps, 3);
+        TAP_CHECK(s1.valid() and c1.valid());
+        wait_n(2);
+        TAP_CHECK(count('d') == 1 and count('P') == 1); // died holding a live reply cap
+
+        // Both slots are EXITED now, so these two reclaim them.
+        auto s2 = kos::thread::spawn_caps(rp_server, nullptr, "rrS", 8, scaps, 3);
+        auto c2 = kos::thread::spawn_caps(rp_caller, units(2), "rr2", 12, ccaps, 3);
+        TAP_CHECK(s2.valid() and c2.valid());
+        char plain[4] = {0};
+        kos_sleep_ns(g_call_unit * 6);
+        kos_send(g_ep, plain, 4);
+        wait_n(2);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        TAP_CHECK(count('K') == 1 and count('B') == 1); // the next occupant admitted its first
     }
 
     // --- console_publish needs AUTH_CONSOLE; a bad cap is rejected with no side effect --
@@ -4805,6 +5101,11 @@ int main(int, char**)
     TAP_ADD("cap_index0", t_cap_index0);              // B3 index-0 reservation + FIRST_DYNAMIC floor
     TAP_ADD("cap_chunk_span", t_cap_chunk_span);        // M4.7.1: the segmented index decode
     TAP_ADD("cap_gen_reuse", t_cap_gen_reuse);          // M4.7.1: the cap-gen half of the codec
+    TAP_ADD("cap_child_width", t_cap_child_width);      // M4.7.3: a child gets the child width
+    TAP_ADD("cap_reply_bound_fast", t_cap_reply_bound_fast); // M4.7.3: the bound at the fastpath probe
+    TAP_ADD("cap_reply_bound_slow", t_cap_reply_bound_slow); // M4.7.3: the same, via the recv-side scan
+    TAP_ADD("cap_reply_release_close", t_cap_reply_release_close); // M4.7.3: close consumes a reply cap
+    TAP_ADD("cap_reply_slot_reuse", t_cap_reply_slot_reuse);       // M4.7.3: a dead server's slot is clean
     TAP_ADD("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
     TAP_ADD("shutdown_priv", t_shutdown_denied);        // KOS_SYS_SHUTDOWN privileged-only
 #if defined(KICKOS_ENABLE_SELFTEST)

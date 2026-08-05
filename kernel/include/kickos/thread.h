@@ -174,13 +174,25 @@ namespace kickos
         // it re-establishes it from ThreadAttr afterwards.
         //
         // Every scan site must be bounded by thread_cap_capacity and never by
-        // KICKOS_MAX_HANDLES: a capacity of 0 is legal, and cap_run_held (cap.h) enumerates
-        // the threads that have it.
+        // KICKOS_MAX_HANDLES: capacities differ per task, a capacity of 0 is legal, and
+        // cap_run_held (cap.h) enumerates the threads that have none.
         CapRun caps;
         // Head of the run's free-slot list (cap.h), a slot index biased by one. KCAP_FREE_NONE
         // is 0, so the thread_create memset leaves it EMPTY and not "slot 0": a thread whose
         // list was never threaded refuses every mint rather than handing out a reserved index.
         uint16_t cap_free_head;
+#if KCAP_RUN_CHUNKS > 1
+        // This task's addressable capacity, 0 when it holds no run. Root's is
+        // KICKOS_MAX_HANDLES and a spawned child's is narrower, so no reader may assume
+        // either.
+        uint16_t cap_width;
+        // Live inbound CAP_REPLY entries, bounded by KICKOS_CAP_REPLY_MAX.
+        //
+        // Both fields land in the TAIL PADDING the chunk directory's second pointer creates,
+        // so they cost nothing here and 8 B per TCB on the flat path, which the 16 KiB boards
+        // cannot spare. Keep the uint16_t group CONTIGUOUS after `caps`.
+        uint16_t cap_reply_live;
+#endif
         // Endpoints where ep->server == this thread, chained through Endpoint::next_served
         // (endpoint.h). The SEND_WAIT donor enumeration for thread_effective_prio, which runs
         // interrupt-masked and so may walk neither the capability table nor the endpoint pool.
@@ -188,14 +200,36 @@ namespace kickos
         uint16_t served_head;
     };
 
-    // A thread's capability-table capacity: the declared width if it holds a run, else 0.
+    // A thread's capability-table capacity: the width it was seated with if it holds a run,
+    // else 0.
     inline uint32_t thread_cap_capacity(Thread const* t)
     {
+#if KCAP_RUN_CHUNKS == 1
+        // The flat run is exactly one chunk of exactly KICKOS_MAX_HANDLES slots, so a held
+        // run IS the ceiling and there is nothing to store.
         if (not cap_run_held(t->caps))
         {
             return 0;
         }
         return KICKOS_MAX_HANDLES;
+#else
+        return t->cap_width; // 0 == no run: attach and detach keep the two in step
+#endif
+    }
+
+    // Return t's run to the slab and clear everything that travels with it. A width left
+    // naming a run this call gave away answers thread_cap_capacity for a table that no
+    // longer exists; a reply count left standing makes the slot's next occupant refuse its
+    // first caller. Caller holds IrqLock.
+    inline void thread_cap_release(Thread* t)
+    {
+#if KCAP_RUN_CHUNKS == 1
+        uint16_t width = 0;
+        cap_slab_detach(&t->caps, &t->cap_free_head, &width);
+#else
+        cap_slab_detach(&t->caps, &t->cap_free_head, &t->cap_width);
+        t->cap_reply_live = 0;
+#endif
     }
 
     // Recover the TCB owning a ready/wait list node (nullptr-safe).
@@ -239,10 +273,12 @@ namespace kickos
         bool kstack_owned = false;
         // Pre-reserved capability run (cap_slab_attach): an exhausted slab must fail the
         // spawn BEFORE anything is built. An empty directory is legal and means the thread
-        // holds no capabilities. The free-list head travels with it: attach threads the list,
-        // and a run seated without its head would refuse every mint.
+        // holds no capabilities. The free-list head and the seated capacity travel with it:
+        // attach threads the list, and a run seated without its head would refuse every mint.
+        // Unconditional, unlike Thread's: this is caller stack, not per-TCB .bss.
         CapRun cap_run = {};
         uint16_t cap_free_head = KCAP_FREE_NONE;
+        uint16_t cap_width = 0;
     };
 
     // Static thread-slot pool (instance-scoped; the TCBs only, since default stacks are
@@ -353,7 +389,7 @@ namespace kickos
                     // directory as it returns each chunk, so a second reclaim of this slot
                     // cannot double-free one, and it clears the free-list head, which by then
                     // names a slot in a chunk this call gives away.
-                    cap_slab_detach(&slots[s].caps, &slots[s].cap_free_head);
+                    thread_cap_release(&slots[s]);
                     // A slot's kill tag is its INDEX and so outlives its occupant: a child
                     // still naming this tag must be orphaned before the slot changes hands,
                     // or the new occupant inherits cancel authority over threads it never

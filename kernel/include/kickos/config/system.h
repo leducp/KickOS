@@ -40,44 +40,11 @@
 #endif
 // What this board can BACK: the widest per-task capability table its RAM can spare, and the
 // only capability figure a board may state. The width itself is summed from declared demand
-// (cmake/cap_table.cmake) and refused if it exceeds this. Each slot costs
-// (KICKOS_MAX_THREADS + KCAP_RUN_OFF_POOL) x sizeof(CapEntry) bytes of Kernel .bss.
+// (cmake/cap_table.cmake) and refused if it exceeds this. It prices ROOT's table alone: the
+// slab backs one CHILD-width run per holder plus root's own widening (KCAP_SLAB_CHUNKS,
+// cap.h), so a slot here does not cost (KICKOS_MAX_THREADS + KCAP_RUN_OFF_POOL) of itself.
 #ifndef KICKOS_CAP_TABLE_SUPPLY
 #define KICKOS_CAP_TABLE_SUPPLY 16
-#endif
-// Per-task capability-table size. Every task's run is exactly this wide (cap.h carves the
-// slab into KICKOS_MAX_HANDLES-entry runs), so raising it costs .bss per possible task.
-//
-// NOT a knob: cmake/cap_table.cmake sums the four declarations and forwards the total as a
-// -D, so a command-line one sets a cache variable nothing reads. The fallback below fires
-// only for a compile that has neither the KickOS CMake nor the exported `kickos` target, and
-// the assert after it then rejects that compile: the number decides KCAP_RUN_CHUNKS (cap.h),
-// hence sizeof(CapRun) and sizeof(Thread), so a TU taking the fallback beside TUs that took
-// the summed width disagrees on the Thread layout with nothing to notice.
-//
-// Indices 0 .. KICKOS_CAP_FIRST_DYNAMIC-1 are the well-known reserved range
-// (index 0 = kernel stdout; see cap_index.h); own caps live in [FIRST_DYNAMIC .. MAX-1].
-// A child that takes d delegated caps has MAX_HANDLES - 1 - max(d, FIRST_DYNAMIC-1) own
-// slots: delegates spend the reserved plane rather than being handed it on top, so an app
-// declares for the delegates, not just for the creates.
-#ifndef KICKOS_MAX_HANDLES
-// Kept as a real number so the assert below is the ONE diagnostic, not the first of a cascade
-// of "KICKOS_MAX_HANDLES undeclared" errors out of cap.h and thread.h.
-#define KICKOS_MAX_HANDLES 10
-#define KICKOS_MAX_HANDLES_IS_FALLBACK 1
-#endif
-// A static_assert and NOT an #error: cmake/cap_table.cmake and cmake/boot_arena.cmake both
-// read this header through `cc -E` before the width exists, and an #error would kill configure
-// on every board. A preprocessed probe never reaches semantic analysis, so this is invisible
-// to it and hard for anything that actually compiles.
-#ifdef KICKOS_MAX_HANDLES_IS_FALLBACK
-static_assert(KICKOS_MAX_HANDLES_IS_FALLBACK == 0,
-              "KICKOS_MAX_HANDLES came from this header's fallback, not from the "
-              "configure-time sum in cmake/cap_table.cmake. It sizes the capability-table "
-              "run and picks the chunk geometry, so this TU's sizeof(Thread) need not match "
-              "the kernel it links against. Link the exported `kickos` target, which carries "
-              "the width as a usage requirement. Do NOT hand-pass it: a wrong value compiles "
-              "clean in every TU and nothing here can see it.");
 #endif
 // Caps one spawn may delegate. NOT tied to KICKOS_MAX_HANDLES: thread_spawn stages the
 // grant list in CALLER-stack arrays (16 bytes per entry) and root's stack can be 1 KiB,

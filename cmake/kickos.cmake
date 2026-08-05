@@ -234,7 +234,7 @@ endfunction()
 #   sim arch backend; the app must define kickos_app_main().
 #
 #   CAPABILITIES is this app's PEAK of concurrently held capabilities, one of the four
-#   terms the per-task table width is summed from (cmake/cap_table.cmake). Omitted, the app
+#   terms root's table width is summed from (cmake/cap_table.cmake). Omitted, the app
 #   gets KICKOS_CAP_APP_PEAK_DEFAULT.
 #   CAPABILITIES_OPTIONAL is further peak whose holders reclaim and self-skip when they
 #   cannot allocate, so it is granted only where supply covers it and never makes a board
@@ -244,6 +244,8 @@ endfunction()
 #   (kernel/syscall/syscall_ipc.cc), so without it the sum does not bound when the server's
 #   own creates start failing. It is the peak of CONCURRENTLY parked callers, not a count of
 #   calls. Omitted, the app gets KICKOS_CAP_REPLY_DEFAULT (0).
+#   All three size ROOT's table. Every spawned child is seated at KICKOS_CAP_CHILD_WIDTH,
+#   which no declaration here reaches.
 #   Out of tree any of these three is recorded, WARNED about and not acted on: the width is
 #   fixed by the installed package the app links.
 #
@@ -260,13 +262,22 @@ endfunction()
 # ---------------------------------------------------------------------------
 function(kickos_add_application name)
   cmake_parse_arguments(APP "FULL_CXX"
-    "BOARD;CAPABILITIES;CAPABILITIES_OPTIONAL;CAPABILITIES_INBOUND_REPLY" "SOURCES" ${ARGN})
+    "BOARD;CAPABILITIES;CAPABILITIES_OPTIONAL;CAPABILITIES_INBOUND_REPLY"
+    "SOURCES" ${ARGN})
   # A misspelled keyword would otherwise fall through the DEFINED guards below and record NO
   # declaration at all, leaving the app on the undeclared default with nothing said.
   if(APP_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "kickos_add_application(${name}): unrecognised argument(s) "
       "'${APP_UNPARSED_ARGUMENTS}'. Keywords are FULL_CXX, BOARD, SOURCES, CAPABILITIES, "
       "CAPABILITIES_OPTIONAL, CAPABILITIES_INBOUND_REPLY.")
+  endif()
+  # cmake_parse_arguments leaves the variable UNDEFINED for a keyword given no value, and the
+  # unquoted ${ARGN} above drops an empty value to the same shape, so the DEFINED guards below
+  # would silently record the default instead.
+  if(APP_KEYWORDS_MISSING_VALUES)
+    message(FATAL_ERROR "kickos_add_application(${name}): keyword(s) "
+      "'${APP_KEYWORDS_MISSING_VALUES}' given with no value. Give each a non-negative "
+      "integer, or omit the keyword to take the default.")
   endif()
   if(NOT APP_SOURCES)
     message(FATAL_ERROR "kickos_add_application(${name}): SOURCES required")
@@ -457,7 +468,7 @@ endfunction()
 #   provider passes none. The target is kickos_<name>.
 #
 #   RETAINED_CAPS is how many capabilities a SERVICE LIST leaves in root's table for the
-#   life of the image, one of the four terms the per-task table width is summed from
+#   life of the image, one of the four terms root's table width is summed from
 #   (cmake/cap_table.cmake). It is RETENTION, not the bring-up peak: a list whose bring-up
 #   transiently holds more than its retention plus the app's peak must declare the
 #   transient. A pinmap provider holds none and passes nothing.
@@ -474,6 +485,13 @@ function(kickos_add_board_provider name)
     message(FATAL_ERROR "kickos_add_board_provider(${name}): unrecognised argument(s) "
       "'${BP_UNPARSED_ARGUMENTS}'. Keywords are SOURCE, LINK, RETAINED_CAPS, "
       "INBOUND_REPLY_CAPS.")
+  endif()
+  # A keyword given no value (or an empty one, which the unquoted ${ARGN} drops) leaves the
+  # variable UNDEFINED, so the DEFINED guards below would default it past the numeric check.
+  if(BP_KEYWORDS_MISSING_VALUES)
+    message(FATAL_ERROR "kickos_add_board_provider(${name}): keyword(s) "
+      "'${BP_KEYWORDS_MISSING_VALUES}' given with no value. Give each a value, or omit the "
+      "keyword to take the default.")
   endif()
   if(NOT BP_SOURCE)
     message(FATAL_ERROR "kickos_add_board_provider(${name}): SOURCE required")

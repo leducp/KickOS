@@ -909,8 +909,9 @@ configures, and the arms that wanted those slots reclaim and skip. Beneath the s
 grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1` RAISES a width that falls below it instead
 of refusing it, and refuses only when the floor itself exceeds the board's supply.
 `cap.h` keeps both asserts (`KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC`, and
-`KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`) as the backstop for a build that bypasses
-the sum. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
+`KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`) because `tests/captable` substitutes a
+width the sum never produces. A build that misses the generated `kickos/config/cap_width.h`
+does not reach them: it fails on the missing include. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
 worker: `call_infoless_revert`, four mutually-dependent workers spawned before any join
 (`../../user/apps/common/selftest/main.cc:2212-2215`), and `mutex_chain_boost`, a four-link
 boost chain (`main.cc:1010-1013`). `call_infoless_revert` is the only case that asks first

@@ -173,13 +173,13 @@ sole effective-priority writer):
                         highest parked CALL_SEND_WAIT caller on each endpoint
                           where ep->server == t )
 
-The `CAP_REPLY` donors and the endpoint-server term are found by scanning `t`'s own handle
-table -- bounded by `KICKOS_MAX_HANDLES`, which is not a board knob but the configure-time
-SUM of four declarations, the kernel's reserved range, the chosen service list's retention,
-the widest app peak and the widest declared peak of concurrent INBOUND reply capabilities
-(0 by default, declared by nothing in tree), raised to the grant-list floor
-`KICKOS_MAX_SPAWN_GRANTS + 1` when the sum falls below it (`cmake/cap_table.cmake`) -- NOT
-by scanning any object pool: the
+Neither term scans the handle table. The `CAP_REPLY` donors come from `Thread::reply_waiters`,
+one entry per live reply capability `t` holds, and the endpoint-server term from the chain
+through `Endpoint::next_served` -- both O(donors) rather than O(table), and
+`kernel/include/kickos/thread.h` forbids a table walk here in as many words. A capacity-bounded
+scan would in any case be wrong now that width is per task: `KICKOS_MAX_HANDLES` is ROOT's width,
+and a scan of `t`'s table is bounded by `thread_cap_capacity(t)`. Nothing here scans an object
+pool either: the
 same cheap-scan philosophy as the mutex held-list walk. `Endpoint::server` is a raw
 `Thread*` set at every recv and CLEARED in the endpoint close/teardown arm when the server
 drops its `WAIT` cap (waker-cleared discipline, mirrors `blocked_on`).

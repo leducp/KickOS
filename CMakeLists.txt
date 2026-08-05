@@ -39,6 +39,11 @@ message(STATUS "KickOS: board=${KICKOS_BOARD} family=${KICKOS_ARCH_FAMILY} arch=
 # without reaching up into a peer component's dir.
 include_directories("${PROJECT_SOURCE_DIR}/include")
 
+# Holds config/cap_width.h, written at the bottom of this file. The directory must be added
+# HERE, before any add_subdirectory: a subdirectory copies the include directories in force
+# when it is added, and the width is not known until after user/apps.
+include_directories("${PROJECT_BINARY_DIR}/generated/include")
+
 # --- Board provisioning (board_config.h) -----------------------------------
 # Per-board facts -- KICKOS_MAX_IRQ, the thread/stack pool sizes, and (for a chip
 # shared by >1 board) HW like the LED pin + HSE crystal -- live in board_config.h.
@@ -831,15 +836,19 @@ if(TARGET kickos_core)
 endif()
 
 # Must stay AFTER add_subdirectory(user/apps): that is the last place an app can declare its
-# peak. Carried to consumers on kickos_core for the same ODR reason as the provisioning
-# overrides above.
+# peak.
 kickos_cap_table_resolve("${KICKOS_BOARD_INCLUDE_DIR}" "${KICKOS_PROVISION_OVERRIDES}"
                          "${KICKOS_SERVICE_LIST}" KICKOS_CAP_TABLE_SLOTS
-                         KICKOS_CAP_TABLE_CHUNK)
+                         KICKOS_CAP_TABLE_CHUNK KICKOS_CAP_TABLE_CHILD_WIDTH
+                         KICKOS_CAP_TABLE_REPLY_MAX)
+configure_file("${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/cap_width.h.in"
+               "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h" @ONLY)
 if(TARGET kickos_core)
-  target_compile_definitions(kickos_core INTERFACE
-    KICKOS_MAX_HANDLES=${KICKOS_CAP_TABLE_SLOTS}
-    KICKOS_CAP_CHUNK_SLOTS=${KICKOS_CAP_TABLE_CHUNK})
+  # The in-tree include_directories at the top of this file does not reach an
+  # add_subdirectory/FetchContent consumer's own targets; this does.
+  target_include_directories(kickos_core INTERFACE
+    "$<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/generated/include>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 endif()
 
 # --- Install / export: the dependency-inversion package --------------------
@@ -864,7 +873,13 @@ install(DIRECTORY
           "${CMAKE_CURRENT_SOURCE_DIR}/lib/include/"
           "${CMAKE_CURRENT_SOURCE_DIR}/user/include/"
           "${CMAKE_CURRENT_SOURCE_DIR}/system/include/"
-        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+        PATTERN "*.h.in" EXCLUDE)
+
+# An installed consumer that includes a kernel header must take the same width as the
+# prebuilt libraries, or its sizeof(Thread) does not match theirs.
+install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
 
 # Ship the selected board's board_config.h (MAX_IRQ + provisioning) so an
 # out-of-tree consumer's config headers read the same values the prebuilt libs

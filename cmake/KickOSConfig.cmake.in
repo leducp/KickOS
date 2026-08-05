@@ -28,6 +28,11 @@ set(KICKOS_BOARD "@KICKOS_BOARD@")
 set(KICKOS_ARCH "@KICKOS_ARCH@")
 set(KICKOS_CHIP "@KICKOS_CHIP@")
 
+# ROOT's capability-table width this package's libraries were compiled with, for CMake code
+# that has to report it. What a COMPILE reads is <prefix>/include/kickos/config/cap_width.h;
+# this must never be used to override that.
+set(KICKOS_CAP_TABLE_WIDTH "@KICKOS_CAP_TABLE_SLOTS@")
+
 # The init provider was frozen INTO the exported link recipe at KickOS build time
 # (kickos_core's LINK_GROUP names @KICKOS_INIT_PROVIDER@). A consumer override would
 # silently no-op, because the shipped recipe still pulls the packaged provider, so a

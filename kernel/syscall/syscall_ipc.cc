@@ -200,9 +200,10 @@ namespace kickos
                         sched::wake(s);
                         continue;
                     }
-                    // B3: probe the mint before committing (our table may be full;
-                    // a plain sender behind it can still be served, so keep scanning).
-                    if (not cap_has_free_slot(c))
+                    // B3: probe the mint before committing (our table may be full, or we
+                    // may be at our reply bound; a plain sender behind it can still be
+                    // served, so keep scanning).
+                    if (not cap_can_take_reply(c))
                     {
                         s->call_state = CALL_NONE;
                         s->wait_result = -KOS_EMFILE; // OUR table, reported to the caller
@@ -223,7 +224,7 @@ namespace kickos
                     uint32_t rcap = KCAP_INVALID;
                     // Not inside the assert: a compiled-out condition would drop the mint.
                     int const minted = cap_install_reply(c, s, &rcap);
-                    KICKOS_ASSERT(minted == 0); // cap_has_free_slot probed this above
+                    KICKOS_ASSERT(minted == 0); // cap_can_take_reply probed this above
                     write_recv_info(badge_out, KOS_BADGE_NONE, rcap);
                     // Repurpose the caller's ipc to the reply target (in-place buffer,
                     // reply capacity); it re-parks on OUR reply-donor list.
@@ -264,7 +265,8 @@ namespace kickos
     // replies. In-place buffer (request out, reply back). FULLY LOCKLESS from dispatch
     // like SEND/RECV. Returns reply bytes (>= 0), or -KOS_E* (EINVAL oversize, EFAULT
     // bad buffer, EBADF/EPERM bad cap or no SIGNAL, EPIPE dead endpoint or server died,
-    // EMFILE the SERVER's table is full, ENOSYS server took an info-less recv).
+    // EMFILE the SERVER's table is full or it is at its inbound reply bound, ENOSYS
+    // server took an info-less recv).
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap)
     {
         if (send_len > KOS_EP_MSG_MAX)
@@ -327,9 +329,10 @@ namespace kickos
                     // keeps it unreachable.
                     return -KOS_EPIPE;
                 }
-                if (not cap_has_free_slot(w))
+                if (not cap_can_take_reply(w))
                 {
-                    return -KOS_EMFILE; // the RECEIVER's table, not ours: no side effects yet
+                    // The RECEIVER's table or its reply bound, not ours: no side effects yet.
+                    return -KOS_EMFILE;
                 }
                 (void)wq_pop_highest(e->recv_waiters); // == w (nothing mutates under the lock)
                 size_t n = send_len;
@@ -342,7 +345,7 @@ namespace kickos
                 uint32_t rcap = KCAP_INVALID;
                 // Not inside the assert: a compiled-out condition would drop the mint.
                 int const minted = cap_install_reply(w, c, &rcap);
-                KICKOS_ASSERT(minted == 0); // cap_has_free_slot probed w above
+                KICKOS_ASSERT(minted == 0); // cap_can_take_reply probed w above
                 write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, rcap);
                 w->wait_result = static_cast<intptr_t>(n);
                 // Repurpose our own ipc to the reply target (in-place buffer); the
@@ -420,6 +423,7 @@ namespace kickos
         e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
         e->rights = 0;
         cap_run_free_release(c->caps, reply_cap & KCAP_INDEX_MASK, &c->cap_free_head);
+        cap_reply_released(c);
         if (caller != nullptr)
         {
             // Must happen in the SAME step as the entry, and before either funnel

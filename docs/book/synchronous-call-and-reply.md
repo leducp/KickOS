@@ -129,9 +129,13 @@ Two failure shapes have to be honest, and both are resolved by probing before co
   right on the console, and if a call could force a reply capability into the console's
   table, hostile clients could fill it and pin its priority. Because the console receives
   info-less, their calls simply bounce.
-- A server whose table is full cannot mint. The kernel discovers this *before* it pops the
-  waiting server or copies anything, so a call that cannot be hosted fails with no side
-  effect rather than stranding a half-served server off its queue.
+- A server that cannot mint refuses the call. Two things stop it: its table has no free slot,
+  or it already holds as many parked callers as it was provisioned for. The second is what keeps
+  the first from being reachable by peers alone -- without a bound on inbound replies, enough
+  simultaneous callers could fill a server's table and leave it unable to create anything of its
+  own, which is a failure its own code never asked for. Either way the kernel discovers it
+  *before* it pops the waiting server or copies anything, so a call that cannot be hosted fails
+  with no side effect rather than stranding a half-served server off its queue.
 
 Everything else is the death matrix in the Reference: a server that dies mid-transaction,
 a reply capability closed instead of replied, a stale caller -- each wakes the caller with

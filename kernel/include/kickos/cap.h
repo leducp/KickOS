@@ -18,27 +18,33 @@
 
 #include <stdint.h>
 
-#include <kickos/config/system.h> // KICKOS_MAX_HANDLES (the codec must address it)
-#include <kickos/sys/cap_index.h> // KICKOS_CAP_FIRST_DYNAMIC, KOS_CAP_AUTHORITY
+#include <kickos/config/cap_geometry.h> // KCAP_CHUNK_TARGET
+#include <kickos/config/cap_width.h>    // KICKOS_MAX_HANDLES (generated at configure)
+#include <kickos/config/system.h>       // KICKOS_MAX_SPAWN_GRANTS, KICKOS_MAX_THREADS
+#include <kickos/sys/cap_index.h>       // KICKOS_CAP_FIRST_DYNAMIC, KOS_CAP_AUTHORITY
 
-// cmake/cap_table.cmake checks both asserts below at configure. They stay as the backstop
-// for a build that bypasses it.
+// cmake/cap_table.cmake refuses a tree that would break any of these at CONFIGURE. They stay
+// as the backstop for tests/captable, which substitutes widths the sum never produces and is
+// a legitimate consumer of this header.
+
+// KICKOS_CAP_CHILD_WIDTH is the narrowest table in the image (root alone holds
+// KICKOS_MAX_HANDLES), so the bounds below are stated against it.
+static_assert(KICKOS_CAP_CHILD_WIDTH <= KICKOS_MAX_HANDLES,
+              "the child width must fit the widest run the slab backs");
 
 // The reserved range must leave at least one dynamic slot, or no own-create could ever
 // succeed.
-static_assert(KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC,
-              "no dynamic cap slots left: raise the app's declared CAPABILITIES or shrink "
-              "the reserved range");
+static_assert(KICKOS_CAP_CHILD_WIDTH > KICKOS_CAP_FIRST_DYNAMIC,
+              "no dynamic cap slots left in a spawned child: raise KICKOS_MAX_SPAWN_GRANTS, "
+              "or shrink the reserved range");
 
-// Delegated cap i lands at child index i+1. This assert is the ONLY bound thread_spawn's
-// grant loop relies on; there is no runtime check.
-static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES,
+// Delegated cap i lands at child index i+1, so a child taking d of them keeps
+// KICKOS_CAP_CHILD_WIDTH - 1 - max(d, KICKOS_CAP_FIRST_DYNAMIC-1) own slots: delegates spend
+// the reserved plane rather than being handed it on top, and an app declares for the delegates
+// and not just for the creates. This assert is the ONLY bound thread_spawn's grant loop relies
+// on for a DEFAULTED destination; a caller-named one is bound-tested at runtime.
+static_assert(KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH,
               "a full grant list must fit the child table at indices 1..cap_count");
-
-// The width is NOT checked against KICKOS_CAP_TABLE_SUPPLY here, though the configure sum
-// refuses a total above it: tests/captable restates KICKOS_MAX_HANDLES to compile a geometry
-// no board sums to, and it is a legitimate consumer of this header. That backstop lives in
-// cap.cc, the one TU that carves the slab.
 
 namespace kickos
 {
@@ -184,8 +190,9 @@ namespace kickos
         return static_cast<uint32_t>(e.obj);
     }
 
-    // A task's table is KCAP_RUN_CHUNKS chunks of KCAP_CHUNK_SLOTS entries with a
-    // task-relative index, taken all-or-nothing at spawn and returned at slot reclaim.
+    // A task's table is up to KCAP_RUN_CHUNKS chunks of KCAP_CHUNK_SLOTS entries with a
+    // task-relative index, taken all-or-nothing at spawn and returned at slot reclaim. How
+    // many chunks is PER TASK: root takes KCAP_ROOT_CHUNKS, every child KCAP_CHILD_CHUNKS.
     //
     // cap_install NEVER allocates: a client mints reply capabilities into a SERVER's table
     // (syscall_ipc.cc), so an install that could take a chunk would drain the arena at the
@@ -200,11 +207,8 @@ namespace kickos
     // cap_teardown work entirely inside the task's own run.
     //
     // TWO CODE PATHS, selected below. At one chunk there is no directory index, no shift
-    // and no mask, and the run is exactly KICKOS_MAX_HANDLES wide with nothing rounded up.
-    // armv6m has no divide instruction, so the chunk width must stay a power of two.
-    // Changing this also moves KCAP_CHUNK_SHIFT below, which boards compile the flat decode,
-    // and so the cap_chunk_span PARTIAL list in user/apps/common/selftest/CMakeLists.txt.
-#define KCAP_CHUNK_TARGET 8
+    // and no mask, and every run is exactly KICKOS_MAX_HANDLES wide with nothing rounded up
+    // and nothing to store: on the flat path a task's capacity IS the ceiling.
 #if KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET
 #define KCAP_RUN_CHUNKS 1
 #define KCAP_CHUNK_SLOTS KICKOS_MAX_HANDLES
@@ -214,18 +218,29 @@ namespace kickos
 #define KCAP_RUN_CHUNKS ((KICKOS_MAX_HANDLES + KCAP_CHUNK_SLOTS - 1) / KCAP_CHUNK_SLOTS)
 #endif
 
-    // What a run RESERVES, which is NOT the capacity: a task addresses KICKOS_MAX_HANDLES
-    // slots and cap_install refuses there, so the last chunk's tail is reserved and
-    // unreachable. Do not reclaim the tail by widening the capacity: the configure-time sum
-    // would stop predicting where a table fills.
-    static constexpr uint32_t KCAP_RUN_SLOTS = KCAP_RUN_CHUNKS * KCAP_CHUNK_SLOTS;
-
 #if KCAP_RUN_CHUNKS > 1
     static_assert((1u << KCAP_CHUNK_SHIFT) == KCAP_CHUNK_SLOTS,
                   "the segmented index split is a shift and a mask, so the chunk width must "
                   "be exactly 2^KCAP_CHUNK_SHIFT");
 #endif
-    static_assert(KCAP_RUN_SLOTS - KICKOS_MAX_HANDLES < KCAP_CHUNK_SLOTS,
+
+    // How many chunks a run of `width` addressable slots reserves. A task addresses exactly
+    // `width` slots and cap_install refuses above it, so the last chunk's tail is reserved
+    // and unreachable. Do not reclaim the tail by widening the capacity: the configure-time
+    // sum would stop predicting where a table fills.
+    constexpr uint32_t kcap_chunks_for(uint32_t width)
+    {
+#if KCAP_RUN_CHUNKS == 1
+        (void)width;
+        return 1;
+#else
+        return (width + KCAP_CHUNK_SLOTS - 1u) >> KCAP_CHUNK_SHIFT;
+#endif
+    }
+
+    static constexpr uint32_t KCAP_ROOT_CHUNKS = KCAP_RUN_CHUNKS;
+    static constexpr uint32_t KCAP_CHILD_CHUNKS = kcap_chunks_for(KICKOS_CAP_CHILD_WIDTH);
+    static_assert(KCAP_ROOT_CHUNKS * KCAP_CHUNK_SLOTS - KICKOS_MAX_HANDLES < KCAP_CHUNK_SLOTS,
                   "a run rounds up by less than one whole chunk, or the chunk count is not "
                   "a ceiling division");
 
@@ -239,9 +254,17 @@ namespace kickos
     // is still free, which nothing downstream tells apart from a full pool: both -KOS_ENOMEM.
     static constexpr uint16_t KCAP_RUN_COUNT = KICKOS_MAX_THREADS + KCAP_RUN_OFF_POOL;
 
+    // Every run holder is GUARANTEED the child width, plus root's own widening on top: a
+    // spawn can never be refused for want of a chunk, because every spawn asks for exactly
+    // the child width. Nothing else is backed, and nothing else can ask.
+    // MIRRORS _kickos_cap_slab in cmake/cap_table.cmake; the two must move together.
+    static constexpr uint32_t KCAP_SLAB_CHUNKS =
+        static_cast<uint32_t>(KCAP_RUN_COUNT) * KCAP_CHILD_CHUNKS
+        + (KCAP_ROOT_CHUNKS - KCAP_CHILD_CHUNKS);
+
     static constexpr uint32_t kcap_slab_entries()
     {
-        return KCAP_RUN_SLOTS * static_cast<uint32_t>(KCAP_RUN_COUNT);
+        return KCAP_SLAB_CHUNKS * KCAP_CHUNK_SLOTS;
     }
 
     static_assert(KCAP_RUN_COUNT > KICKOS_MAX_THREADS,
@@ -296,28 +319,40 @@ namespace kickos
             head = chunk;
         }
 
-        // Reserve a whole run: every chunk or none, and a short list is left exactly as it
-        // was with no chunk stranded in a half-built run. Does NOT zero the chunks: the
-        // link it just overwrote is still in entry 0, so the caller must clear them before
-        // the run is used as a table.
-        [[nodiscard]] bool take(CapRun* run)
+        // Reserve `chunks` of a run: every chunk or none, and a short list is left exactly
+        // as it was with no chunk stranded in a half-built run. Does NOT zero the chunks:
+        // the link it just overwrote is still in entry 0, so the caller must clear them
+        // before the run is used as a table.
+        //
+        // Directory entries at and above what was taken are CLEARED, so give() returns
+        // exactly what was taken and cap_slot can never reach a chunk this run does not
+        // hold. A REFUSAL took nothing, so it clears the whole directory: leave an entry
+        // standing there and cap_run_held answers true for a run holding nothing, and the
+        // give() that follows injects a foreign chunk into the free list.
+        [[nodiscard]] bool take(CapRun* run, uint32_t chunks)
         {
-            for (uint32_t i = 0; i < KCAP_RUN_CHUNKS; i++)
+            uint32_t taken = 0;
+            while (taken < chunks and head != nullptr)
             {
-                if (head == nullptr)
-                {
-                    while (i > 0)
-                    {
-                        i--;
-                        push(run->chunk[i]);
-                        run->chunk[i] = nullptr;
-                    }
-                    return false;
-                }
-                run->chunk[i] = head;
+                run->chunk[taken] = head;
                 head = *link_of(head);
+                taken++;
             }
-            return true;
+            if (taken < chunks)
+            {
+                while (taken > 0)
+                {
+                    taken--;
+                    push(run->chunk[taken]);
+                }
+            }
+            // `taken` is `chunks` on success and 0 on a refusal, so one loop clears the tail
+            // of a narrow run and the whole directory of a refused one.
+            for (uint32_t i = taken; i < KCAP_RUN_CHUNKS; i++)
+            {
+                run->chunk[i] = nullptr;
+            }
+            return taken == chunks;
         }
 
         // Return every chunk of a run and clear the directory. A run that holds nothing is a
@@ -336,8 +371,8 @@ namespace kickos
         }
     };
 
-    // "No slot": not an index, and distinct from every index a run of KICKOS_MAX_HANDLES
-    // slots can form.
+    // "No slot": not an index, and distinct from every index a run of at most
+    // KICKOS_MAX_HANDLES slots can form.
     static constexpr uint32_t KCAP_NO_SLOT = 0xFFFFFFFFu;
 
     // --- the run's free list -----------------------------------------------------------
@@ -349,8 +384,7 @@ namespace kickos
     //
     // Doubly linked because spawn delegation seats a CALLER-NAMED index
     // (kos_thread_params::cap_dest), so an arbitrary slot has to leave the list. Circular
-    // because the head's predecessor IS the tail, and Thread has no spare bytes for a
-    // second field.
+    // because the head's predecessor IS the tail, which costs no second head field.
     //
     // The reserved index plane is never in the list, so no pop can hand a well-known index
     // to an own create.
@@ -485,18 +519,25 @@ namespace kickos
         kcap_free_set_prev(h, self);
     }
 
-    // Reserve a whole run for one task and thread its free list: false leaves `run` empty,
-    // `*free_head` KCAP_FREE_NONE and the slab untouched, so an exhausted slab fails the spawn
-    // and strands nothing. Caller holds IrqLock.
-    [[nodiscard]] bool cap_slab_attach(CapRun* run, uint16_t* free_head);
-
-    // Return a run to the slab and clear `*free_head`. Caller holds IrqLock. A run holding
-    // nothing is a no-op, so an unwind path may call it unconditionally.
+    // Reserve a run WIDE ENOUGH for `width` addressable slots and thread its free list:
+    // false leaves `run` empty, `*free_head` KCAP_FREE_NONE, `*out_width` 0 and the slab
+    // untouched, so an exhausted slab fails the spawn and strands nothing. On success
+    // `*out_width` is the capacity actually seated, which on the flat path is the ceiling
+    // whatever was asked. Caller holds IrqLock.
     //
-    // The head is a PARAMETER for the same reason attach takes it: a head left naming a slot
-    // in a chunk this call just gave away answers cap_has_free_slot TRUE for a table that no
+    // The width travels with the head for the reason the head travels with the run: a
+    // capacity left naming a run this call did not build answers thread_cap_capacity nonzero
+    // for a table that does not exist, and cap_lookup would then index a null chunk pointer.
+    [[nodiscard]] bool cap_slab_attach(CapRun* run, uint32_t width, uint16_t* free_head,
+                                       uint16_t* out_width);
+
+    // Return a run to the slab and clear `*free_head` AND `*out_width`. Caller holds IrqLock.
+    // A run holding nothing is a no-op, so an unwind path may call it unconditionally.
+    //
+    // Both are PARAMETERS for the same reason attach takes them: a head left naming a slot
+    // in a chunk this call just gave away answers cap_run_peek_free for a table that no
     // longer exists, and the next attach may already have handed that chunk to another task.
-    void cap_slab_detach(CapRun* run, uint16_t* free_head);
+    void cap_slab_detach(CapRun* run, uint16_t* free_head, uint16_t* out_width);
 
     // Carve the slab and thread the free list. Called once from kmain before any thread
     // exists.
@@ -541,10 +582,30 @@ namespace kickos
 
     // Mint a one-shot CAP_REPLY into c's table naming parked caller `caller`: its whole
     // 32-bit generational thread handle in the entry's obj, its call_seq low byte in the
-    // entry's spare bits (cap_reply_seq_seat). Same refusal as cap_install (-KOS_EMFILE,
-    // *out_cap left KCAP_INVALID). `caller` MUST be a thread-pool slot: the handle names a
-    // pool slot, and endpoint_call rejects a non-pool caller up front. Caller holds IrqLock.
+    // entry's spare bits (cap_reply_seq_seat). Refuses -KOS_EMFILE with *out_cap left
+    // KCAP_INVALID when the table is full OR c already holds KICKOS_CAP_REPLY_MAX live reply
+    // caps. `caller` MUST be a thread-pool slot: the handle names a pool slot, and
+    // endpoint_call rejects a non-pool caller up front. Caller holds IrqLock.
     [[nodiscard]] int cap_install_reply(Thread* c, Thread* caller, uint32_t* out_cap);
+
+    // Live inbound CAP_REPLY entries in c's table. O(1) where the counter is stored; on the
+    // flat path a scan bounded by KCAP_CHUNK_TARGET. Caller holds IrqLock: the flat path
+    // reads a PEER's whole table, and the segmented one a counter a peer increments.
+    uint32_t cap_reply_live(Thread const* c);
+
+    // Account one CAP_REPLY entry leaving c's table. EVERY release path that empties one must
+    // call it (kos_reply, handle_close and the teardown sweep), or c's next caller is refused
+    // against a capability that is already gone. A no-op where cap_reply_live counts by
+    // scanning. Caller holds IrqLock.
+    void cap_reply_released(Thread* c);
+
+    // The probe-before-mint predicate for the reply cap (B3: never pop a receiver a reply cap
+    // cannot be minted into). True iff c has a free dynamic slot AND is below
+    // KICKOS_CAP_REPLY_MAX live reply caps. Takes nothing: the kos_call fastpath runs it
+    // interrupt-masked on the RECEIVER's table, not its own. Caller holds IrqLock.
+    //
+    // Must not grow a cap_run_held test: a runless thread's head is already KCAP_FREE_NONE.
+    bool cap_can_take_reply(Thread* c);
 
     // Type-agnostic close: bump the slot's cap-gen (stale the handle), empty the entry,
     // then drop one reference to the named object (freeing it at refs -> 0). Returns 0,
@@ -553,13 +614,14 @@ namespace kickos
 
     // Slots released per IrqLock hold in cap_teardown: the cap on the interrupt-masked
     // window, not on the sweep's total work. Unrelated to the storage chunk of
-    // KCAP_CHUNK_SLOTS, which bounds an allocation. The board with the narrowest table is
-    // the binding one: at or above its capacity every sweep takes exactly one chunk and the
-    // release-and-resume path becomes dead code no board exercises.
+    // KCAP_CHUNK_SLOTS, which bounds an allocation. Every spawned child holds
+    // KICKOS_CAP_CHILD_WIDTH and root alone is wider, so that width is the binding one: at
+    // or above it every sweep takes exactly one chunk and the release-and-resume path
+    // becomes dead code no board exercises.
     static constexpr int KCAP_TEARDOWN_CHUNK = 4;
-    static_assert(KCAP_TEARDOWN_CHUNK < KICKOS_MAX_HANDLES,
-                  "teardown chunk must not span the whole table, or no board ever "
-                  "exercises the preemption point");
+    static_assert(KCAP_TEARDOWN_CHUNK < KICKOS_CAP_CHILD_WIDTH,
+                  "teardown chunk must not span a spawned child's whole table, or no board "
+                  "ever exercises the preemption point");
 
     // Exit teardown: close every non-EMPTY handle before the TCB slot is reclaimable, or the
     // thread leaks its object references. A close that would drop refs to 0 with a waiter
@@ -623,14 +685,6 @@ namespace kickos
     // partially-taken batch (the spawn delegation loop), never as a general release: it runs
     // no close protocol and frees nothing. Caller holds IrqLock.
     void obj_ref_undo(CapType type, int obj_handle, uint8_t rights);
-
-    // True if c's table has a free dynamic slot (one cap_install could take): the
-    // probe-before-mint predicate for the reply cap (B3: never pop a receiver a reply cap
-    // cannot be minted into). Takes nothing: the kos_call fastpath runs it interrupt-masked
-    // on the RECEIVER's table, not its own. Caller holds IrqLock.
-    //
-    // Must not grow a cap_run_held test: a runless thread's head is already KCAP_FREE_NONE.
-    bool cap_has_free_slot(Thread* c);
 
     // The single authority chokepoint: may thread `c` ask the kernel to do `need` (one or
     // more AUTH_* bits)? True if it is privileged, or if its authority word carries EVERY

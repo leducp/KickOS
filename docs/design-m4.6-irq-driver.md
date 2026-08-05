@@ -304,9 +304,10 @@ does not want `IrqLock`) and steps 2 onward under one `IrqLock`:
 2. Range-check `line`, reject unknown `flags` bits (`-KOS_EINVAL`).
 3. `-KOS_EBUSY` if `irq_table[line].handler != irq_default_handler` (the existing one-owner
    test, `kernel/irq/irq.cc` (`irq_register`)).
-4. `cap_has_free_slot(c)` probe FIRST, then `irq_bindings.alloc()`. Probe-before-allocate so
-   a full cap table does not leak a binding slot -- the same discipline as the reply cap
-   (`kernel/include/kickos/cap.h` (`cap_has_free_slot`)). `-KOS_ENOMEM` on either.
+4. `irq_bindings.alloc()`, then `cap_install`, and release the binding when the install
+   refuses: a full cap table must not leak a binding slot. `-KOS_ENOMEM` on either.
+   (Shipped as install-then-unwind rather than the probe-before-allocate the reply cap uses,
+   because the claimer drives this on its OWN table -- see `kernel/irq/irq.cc` (`irq_claim`).)
 5. `sem_init(&b->sem, 0)`; `b->line = line`; `b->needs_rearm = true`; `b->trigger` set to
    `IRQ_LEVEL` when the claim carries the level flag and to `IRQ_EDGE` otherwise (written as
    an `if`/`else`, not a ternary).

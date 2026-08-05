@@ -102,9 +102,11 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   Hierarchical CSpace exists to address a
   space too large to index directly; at that size the guard/radix machinery would cost more than
   the space it organises. What actually keeps tables small is not the field width but the
-  **static** allocation: one slab holds a run per possible task, at
-  `(KICKOS_MAX_THREADS + 2) x KICKOS_MAX_HANDLES x 8` bytes of `.bss`, rounded up to whole
-  chunks.
+  **static** allocation: one slab holds a run per possible task. A run is NOT one width -- root
+  gets the summed `KICKOS_MAX_HANDLES`, every spawned task gets `KICKOS_CAP_CHILD_WIDTH` -- so the
+  slab is `((KICKOS_MAX_THREADS + 2) x child chunks + root's extra chunks) x 8 x 8` bytes of
+  `.bss`. Re-derive it from the `KickOS: cap table =` line at configure rather than from this
+  formula.
 - **No derivation tree and no recursive revoke.** Refcounted last-close plus cap-generation
   staling already gives the property that matters (a revoked capability stops working, and a stale
   handle cannot be resurrected). A derivation tree buys *transitive* revoke, which needs
@@ -116,7 +118,8 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
 - **No per-instance (per-pin, per-clock, per-line) capabilities.** Roughly **100 muxable pins** on
   the larger parts, and the cost is not addressing -- the index field would reach them -- it is
   that a run is **statically reserved for every possible task**, in whole chunks: 100 slots rounds
-  to 13 chunks = 104 reserved slots per run, so at
+  to 13 chunks = 104 reserved slots per run. Per-task width does not rescue this -- the pins would
+  be held by a driver task, and a task that holds them needs the width -- so at
   `(KICKOS_MAX_THREADS + 2) x 104 x 8` bytes the table is **14,976 bytes** of
   `.bss` at the fleet's `KICKOS_MAX_THREADS` of 16, and still 3,328 bytes on the two-thread tiny
   boards, against a measured boot arena of 6,560 bytes on `bluepill-c8` -- which those boards would
@@ -130,8 +133,8 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
 
 The common thread is that a run is statically reserved for every possible task -- the TCB holds only
 the chunk *directory*, and the entries live in one slab carved at boot -- which is what holds the
-fleet's three configured widths at 7, 10 and 11 slots regardless of what the handle codec could
-address. If that ever changes, two
+fleet's three configured ROOT widths at 7, 10 and 11 slots regardless of what the handle codec
+could address. A spawned task is narrower still: it gets `KICKOS_CAP_CHILD_WIDTH`. If that ever changes, two
 of the four deserve revisiting -- the CNode and per-instance bullets. The untyped-memory bullet
 never depended on table size at all, and the derivation-tree bullet gets *stronger* as tables
 grow. But the
@@ -465,9 +468,11 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
   **`ESRCH`** is a one-shot reply cap whose parked caller is gone (aborted or reused);
   **`ENOSYS`** is an arch backend that does not implement the call on this chip -- the
   declining fallback TU (e.g. `arch/common/arch_pinmux_set_default.cc`), so an unported syscall
-  is a clean refusal rather than a silent no-op; **`EMFILE`** is ONE task's capability table having
-  no free slot, and it is deliberately not `ENOMEM` because nothing was allocated (from
-  `KOS_SYS_CALL` it names the SERVER's table, since the reply cap is minted into the receiver);
+  is a clean refusal rather than a silent no-op; **`EMFILE`** is ONE task's capability table
+  refusing a mint, and it is deliberately not `ENOMEM` because the fix is a wider declaration
+  rather than more RAM (from `KOS_SYS_CALL` it names the SERVER's table, since the reply cap is
+  minted into the receiver). TWO conditions produce it, and the second has free slots: the run's
+  free list is empty, or the task already holds `KICKOS_CAP_REPLY_MAX` live `CAP_REPLY` entries;
   **`EOVERFLOW`** is a bounded counter already at its ceiling, refused rather than wrapped --
   `sem_post` with no waiter at `KOS_SEM_COUNT_MAX` and the object-refcount ceiling behind
   `KOS_SYS_CONSOLE_PUBLISH` and a spawn's delegation batch (`kernel/syscall/syscall.cc`,
@@ -903,7 +908,9 @@ recipe in Book ch.8.2. The contract below is code-synced to `kernel/include/kick
   driving a server's reply mint inside the server's own run. A table that fits one chunk
   (`KCAP_CHUNK_TARGET`, 8) compiles a FLAT path with no directory, no shift and no mask, and its
   run is exactly the declared width; wider tables reserve a ceiling count of chunks, so the last
-  chunk's tail is paid for and unaddressable. The addressable width is a configure-time SUM of
+  chunk's tail is paid for and unaddressable. **The width is per TASK, not per image**: root gets
+  the sum below, every spawned task gets `KICKOS_CAP_CHILD_WIDTH`, and the slab is carved from both
+  classes rather than from the widest. Root's width is a configure-time SUM of
   four declarations -- the kernel's reserved range, the chosen service list's `RETAINED_CAPS`, the
   app's declared `CAPABILITIES` peak, and the peak concurrent INBOUND reply capabilities a task's
   table must hold (`INBOUND_REPLY_CAPS` on the service list, `CAPABILITIES_INBOUND_REPLY` on the
@@ -918,8 +925,10 @@ recipe in Book ch.8.2. The contract below is code-synced to `kernel/include/kick
   three supply-7 boards (`bluepill-c8`, `microbit`, `f302nucleo`), whose supply clamps the
   selftest's optional peak away, so the arms that wanted it reclaim and skip -- one flat chunk,
   224 B of `.bss`. **10** on every supply-16 board at its preset default, and equally under any
-  `*_uartirq` service list, since those retain nothing: two chunks of 8 with a 6-slot unaddressable
-  tail, 2304 B where `KICKOS_MAX_THREADS` is 16 and 1280 B where it is 8. **11** only when a
+  `*_uartirq` service list, since those retain nothing: root takes two chunks of 8 with a 6-slot
+  unaddressable tail while every spawned task takes one, 1280 B where `KICKOS_MAX_THREADS` is 16
+  and 768 B where it is 8. Those are the widths ROOT is configured at; a spawned task gets
+  `KICKOS_CAP_CHILD_WIDTH` whatever the row says. **11** only when a
   RETAINING service list is selected -- exactly three declare `RETAINED_CAPS 1`
   (`system/CMakeLists.txt`): the two SPI lists `services_frdmk64f` and `services_xmc4800relax`, and
   the sim's UART list `services_simuart`. A `CapEntry` is
