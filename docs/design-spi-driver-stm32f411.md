@@ -145,8 +145,9 @@ Unprivileged driver: app code (RX) + app static-data (RW-NX) + private stack + S
 Pure addition, no kernel change: transfer path = in-window MMIO + the existing tier-1 IRQ
 event path; the only device-specific step is the RXNE quiesce before the next wait. Order: (1)
 root's mediated pinmux, (2) unprivileged driver -- `kos_periph_enable`, SPI1 config, `spi_transfer`, (3) loopback
-words, (4) the ungranted-poke MemManage proof. Build with `-DKICKOS_HAVE_MPU=1` (the app
-`#error`s otherwise -- it exists to prove enforcement). Build-only; the operator swaps in the
+words, (4) the ungranted-poke MemManage proof. Build with `cmake --preset f411disco` (its base
+variant enforces by default; the app `#error`s under `f411disco-flat` -- it exists to prove
+enforcement). Build-only; the operator swaps in the
 F411, wires PA7->PA6, and validates.
 
 Bench: the 32F411E-DISCO ST-LINK/V2 is SWD-only -- **no VCP** (UM1842; `reference/boards.md`).

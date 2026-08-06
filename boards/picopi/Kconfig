@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Raspberry Pi Pico. The pin map is NOT gated on the posture: it is what exercises the
+# rp2040 pinmux backend, and a pin map muxes pins without handing a device to anyone.
+
+if BOARD_PICOPI
+
+config KICKOS_BOARD_PINMAP
+	string
+	default "kickos_pinmap_picopi"
+
+endif

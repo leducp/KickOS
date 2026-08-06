@@ -18,17 +18,6 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 2K;
 
-/* Newlib heap: EMPTY. 16 KiB RAM cannot pay for a heap and the thread arena; even a
-   4K heap starves the arena and kos::thread::spawn fails. A variant that needs a heap
-   passes -DKICKOS_USER_HEAP_SIZE=<n> and pays for it in stacks.
-   The section stays at zero length rather than being deleted: _sbrk is force-linked
-   into every image (-u,_exit shares its TU), so its strong reference to
-   _kickos_heap_start would break every link on this board. An allocating app
-   therefore fails at RUNTIME (malloc returns NULL), not at link. */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 0
-#endif
-
 SECTIONS
 {
     .text :
@@ -99,6 +88,10 @@ SECTIONS
         _ebss = .;
     } > RAM
 
+    /* Kept even at the zero length this board configures: _sbrk is force-linked into
+       every image (-u,_exit shares its TU), so its strong reference to
+       _kickos_heap_start would break every link here. An allocating app fails at
+       RUNTIME (malloc returns NULL), not at link. */
     .userheap (NOLOAD) :
     {
         . = ALIGN(8);

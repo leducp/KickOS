@@ -7,8 +7,8 @@
 # region (must succeed), then writes domain B's region (must fault). Native for the
 # sim, QEMU when QEMU_MACHINE is set.
 #
-# Registered only on a build configured -DKICKOS_HAVE_MPU=1; on a no-enforcement build
-# the write completes, which is correct there and would (rightly) fail this gate.
+# Registered only on an enforcing build; on a flat one the write completes, which is
+# correct there and would (rightly) fail this gate.
 #
 # The banner alone is not the claim. Without the control marker AND the address pin
 # below, a total grant failure (region A never granted at all) still passes: the fault

@@ -7,6 +7,7 @@
 // run on silicon.
 
 #include <kickos/sys/service.h>
+#include <kickos/chip_mmap.h>
 
 extern "C"
 {
@@ -18,8 +19,8 @@ int lx6uart_console_start(struct kos_service_cfg const* cfg);
 // is the whole 4 KiB peripheral page: start() refuses any other base, because the class
 // applies its offsets to whatever it is granted.
 static struct kos_service_cfg const lx6uart_cfg = {
-    /*name=*/"lx6uart", /*mmio_base=*/0x3FF40000u, /*mmio_window=*/0x1000u,
-    /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
+    /*name=*/"lx6uart", /*mmio_base=*/kickos::esp32::mmap::UART0_BASE,
+    /*mmio_window=*/0x1000u, /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
     /*rsv=*/{ 0, 0, 0, 0 }
 };
 

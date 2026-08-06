@@ -8,6 +8,7 @@
 // kickos_k64dspi. EXACTLY ONE kickos_board_services links per image.
 
 #include <kickos/sys/service.h>
+#include <kickos/chip_mmap.h>
 
 #include <kickos/driver/k64uart.h>
 #include <kickos/driver/k64dspi.h>
@@ -17,8 +18,8 @@ extern "C"
     // UART0 @ 0x4006_A000, 0x20 B (RM ch.52; AIPS0 slot 106). prio 12 >= every
     // stdout client (D9: no PI on the console rendezvous).
     static struct kos_service_cfg const k64uart_cfg = {
-        /*name=*/"k64uart", /*mmio_base=*/0x4006A000u, /*mmio_window=*/0x20u,
-        /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
+        /*name=*/"k64uart", /*mmio_base=*/kickos::mk64f::mmap::UART0_BASE,
+        /*mmio_window=*/0x20u, /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
         /*rsv=*/{ 0, 0, 0, 0 }
     };
 
@@ -29,8 +30,8 @@ extern "C"
     // PTC4 in the driver. The call/reply path donates the caller's priority to the driver,
     // so its static prio is a floor, not the served priority.
     static struct kos_service_cfg const k64dspi_cfg = {
-        /*name=*/"k64dspi", /*mmio_base=*/0x4002C000u, /*mmio_window=*/0x40u,
-        /*hz=*/10000000u, /*addr=*/0, /*prio=*/11, /*kind=*/KOS_SVC_SPI,
+        /*name=*/"k64dspi", /*mmio_base=*/kickos::mk64f::mmap::DSPI0_BASE,
+        /*mmio_window=*/0x40u, /*hz=*/10000000u, /*addr=*/0, /*prio=*/11, /*kind=*/KOS_SVC_SPI,
         /*rsv=*/{ 0, 0, 0, 0 }
     };
 

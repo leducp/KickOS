@@ -45,7 +45,7 @@
 // Without enforcement the granted window is a no-op, nothing faults, and the reclaim
 // path is never entered.
 #if !KICKOS_HAVE_MPU
-#error "conreclaim requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
+#error "conreclaim requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace

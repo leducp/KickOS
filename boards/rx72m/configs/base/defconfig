@@ -1,0 +1,8 @@
+CONFIG_BOARD_RX72M=y
+
+# Only what differs from the Kconfig defaults, as savedefconfig would write it and in
+# the declaration order it uses.
+CONFIG_MEMORY_MODEL_MPU=y
+CONFIG_KICKOS_USER_STACK_SIZE=8192
+CONFIG_KICKOS_IDLE_STACK_SIZE=512
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192

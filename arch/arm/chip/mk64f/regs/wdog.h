@@ -6,7 +6,7 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_MK64F_REGS_WDOG_H
 #define KICKOS_ARCH_ARM_CHIP_MK64F_REGS_WDOG_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

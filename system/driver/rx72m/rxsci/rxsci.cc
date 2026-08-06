@@ -12,7 +12,7 @@
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart_service.h>
 
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "regs/sci.h"
 
 #include <stdint.h>
@@ -290,9 +290,8 @@ namespace
 #endif
     }
 
-    // Not kickos::uart::serve_loop: kos_console_publish routes libc stdout to cap 0 as a
-    // PLAIN SEND of raw bytes with no kos_uart_req framing, and serve_one discards a
-    // reply-less message.
+    // kos_console_publish routes libc stdout to cap 0 as a PLAIN SEND of raw bytes with
+    // no kos_uart_req framing. serve_one discards a reply-less message.
     void uart_service_thread(void* arg)
     {
         kickos::uart::Shared* sh = static_cast<kickos::uart::Shared*>(arg);

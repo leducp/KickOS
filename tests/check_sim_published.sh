@@ -20,29 +20,30 @@
 # stream we just read came through the endpoint, not through a silent fallback. Without
 # it, a regression that skipped the publish entirely would still pass here.
 #
-# usage: check_sim_published.sh <kickos-source-dir> <cmake> <expected-arms> <have-mpu>
+# usage: check_sim_published.sh <kickos-source-dir> <cmake> <expected-arms> <variant>
 #
-# <have-mpu> is not optional and is not cosmetic. The expected arm count is computed by
-# the CALLING tree's CMake, and the arm count depends on KICKOS_HAVE_MPU, but `--preset
-# sim` below re-derives that knob from scratch, and the sim's default is 1. So a caller
-# configured with -DKICKOS_HAVE_MPU=0 used to compare a posture-1 stream against a
-# posture-0 expectation and fail with "an arm was added or deleted", naming a regression
-# that did not exist. Forward the posture; do not infer it.
+# <variant> is not optional and is not cosmetic. The expected arm count is computed by
+# the CALLING tree's CMake and depends on the posture, which is part of the variant the
+# caller was configured with; the build below is a fresh one and would otherwise take
+# the board's base variant. A caller on another variant would then compare its own
+# expectation against a different posture's stream and fail with "an arm was added or
+# deleted", naming a regression that does not exist. Forward the variant; do not infer
+# the posture.
 
 set -eu
 . "$(dirname "$0")/lib/gate.sh"
 
 KICKOS_SRC="$1"
 CMAKE="${2:-cmake}"
-WANT_ARMS="${3:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <have-mpu>}"
-HAVE_MPU="${4:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <have-mpu>}"
+WANT_ARMS="${3:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <variant>}"
+VARIANT="${4:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <variant>}"
 
 scratch_dir
 
 echo "== configuring the sim with the publishing service list =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \
     -DKICKOS_SERVICE_LIST=kickos_services_sim \
-    -DKICKOS_HAVE_MPU="$HAVE_MPU" >/dev/null ) \
+    -DKICKOS_CONFIG_VARIANT="$VARIANT" >/dev/null ) \
   || fail "configure with kickos_services_sim failed"
 
 echo "== building selftest =="

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F console bring-up demo (M4.3): the DEFAULT INIT relinquishes the UART0 OpenSDA
+// K64F console bring-up demo: the DEFAULT INIT relinquishes the UART0 OpenSDA
 // VCOM to an UNPRIVILEGED userspace driver (kickos_k64uart) BEFORE this app's main
 // runs, so a normal worker's printf() output reaches the wire THROUGH that driver with
 // zero app code doing the handover.
@@ -31,7 +31,7 @@
 //     worker is spawned AFTER publish), rendezvous-delivered to the driver, then
 //     poll-written to UART0. No knowledge of endpoints/drivers/MMIO in the worker.
 //
-// Requires enforcement (-DKICKOS_HAVE_MPU=1): SYSMPU memory isolation is what the
+// Requires enforcement (the board's base variant): SYSMPU memory isolation is what the
 // scramble test's ungranted-memory write faults against to trigger the reclaim path.
 
 #include <kickos/kos.h>
@@ -40,12 +40,12 @@
 #include <stdio.h>
 
 #if !KICKOS_HAVE_MPU
-#error "k64console requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
+#error "k64console requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace
 {
-    // Pre-publish poison probe (M4.3 silicon repro), re-expressed as a global ctor so
+    // Pre-publish poison probe (silicon repro), re-expressed as a global ctor so
     // it runs BEFORE the init bring-up publishes (main now runs post-publish). cap 0 is
     // empty here, so this printf falls back to the kernel console path; the worker's
     // later printfs still reach k64uart because _write reclassifies per thread.

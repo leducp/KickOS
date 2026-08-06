@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Board descriptor: the single source of truth for this board's arch/chip/CPU.
-# Included by the board resolver (cmake/kickos.cmake) and by the RISC-V cross
-# toolchain file (pre-project, for the ISA/ABI baseline). Side-effect free.
+# Board descriptor: which arch and which chip, and any CPU flag that is this BOARD's
+# rather than its chip's. Included by the board resolver (cmake/kickos.cmake) and by the
+# cross toolchain file pre-project(), which then includes the chip's own cpu.cmake for
+# the flags left unset here. Side-effect free: set only these.
 #
 # ESP32-C6-WROOM-1 (ESP-RISC-V "HP CPU", RV32IMAC, M/U + PMP). Shares the rv32imac
 # arch with the qemu-riscv (virt) board; the esp32c6 chip layer supplies the real
@@ -16,4 +17,3 @@ set(KICKOS_CHIP        "esp32c6")
 
 # RV32IMAC + ILP32, Zicsr explicit (the trap/switch path needs CSR opcodes; modern
 # binutils split them out of the base ISA). Maps to the rv32imac/ilp32 multilib.
-set(KICKOS_MCPU -march=rv32imac_zicsr -mabi=ilp32)

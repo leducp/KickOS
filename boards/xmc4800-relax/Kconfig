@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# XMC4800 Relax Kit. Its userspace services and pin map are gated on the enforcing
+# posture, because a driver handover is an enforcement construct: on a flat build the
+# kernel keeps the console and there is nothing to hand over.
+
+if BOARD_XMC4800_RELAX
+
+config KICKOS_SERVICE_LIST
+	string
+	default "kickos_services_xmc4800relax" if MEMORY_MODEL_MPU
+
+config KICKOS_BOARD_PINMAP
+	string
+	default "kickos_pinmap_xmc4800relax" if MEMORY_MODEL_MPU
+
+endif

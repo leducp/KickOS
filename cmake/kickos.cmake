@@ -92,8 +92,8 @@ endfunction()
 #
 # WARNING FLAGS NEVER LEAVE THIS PROJECT: they are applied PRIVATE to targets we
 # own, and the exported `kickos`/`kickos_cxx` usage targets carry none of them.
-# Application targets are the one shape both the fleet and a consumer create --
-# see the KICKOS_IN_TREE guard in kickos_add_application().
+# Application targets are the one shape both the fleet and a consumer create; see
+# the KICKOS_IN_TREE guard in kickos_add_application().
 # ---------------------------------------------------------------------------
 set(KICKOS_WARN_FLAGS
   -Wall -Wextra -Wshadow -Wundef)
@@ -149,7 +149,7 @@ endfunction()
 # The per-chip -mcpu/-mfpu/-mfloat-abi baseline is set globally by the ARM
 # toolchain file (CMAKE_<LANG>_FLAGS_INIT) so it applies uniformly to every
 # compile and link (correct multilib). Freestanding TUs on ARM therefore need
-# no extra CPU flags here -- kickos_apply_freestanding() is arch-agnostic.
+# no extra CPU flags here; kickos_apply_freestanding() is arch-agnostic.
 
 # ---------------------------------------------------------------------------
 # kickos_emit_image(<target>)
@@ -164,7 +164,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 function(kickos_emit_image target)
   # KICKOS_ARCH is the single source of truth for "is this the sim" (set by the
-  # toolchain + board descriptor, and recorded in the installed package -- so this
+  # toolchain + board descriptor, and recorded in the installed package, so this
   # also holds for an out-of-tree consumer).
   if(KICKOS_ARCH STREQUAL "sim")
     return()
@@ -181,7 +181,7 @@ function(kickos_emit_image target)
   endif()
 
   # Espressif chips (Xtensa esp32, RISC-V esp32c6): the raw objcopy .bin is NOT
-  # bootable -- the ROM loader needs the Espressif image format (magic 0xE9, segment
+  # bootable: the ROM loader needs the Espressif image format (magic 0xE9, segment
   # table, checksum); esptool elf2image builds it from the ELF (entry -> _start,
   # segments -> SRAM). Graceful: if esptool is not on PATH (i.e. the esp-idf env is
   # not active), skip and tell the user, rather than failing the build (the ELF +
@@ -192,7 +192,7 @@ function(kickos_emit_image target)
     # Our app IS the image at the ROM bootloader offset (0x1000 on esp32), so the
     # first-stage ROM loads it using the header's flash mode BEFORE any code
     # reconfigures the SPI pins. esptool's elf2image default is QIO, which the esp32
-    # ROM reads unreliably from that position -- it loads segment 0 then reads a
+    # ROM reads unreliably from that position. It loads segment 0 then reads a
     # garbage segment-1 header (`load:0xffffffff,len:-1`) and RTC-WDT reset-loops.
     # Force DIO for esp32 (same reason esp-idf always flashes its 2nd-stage
     # bootloader as DIO). Verified on ESP32-D0WD-V3 silicon 2026-07-08.
@@ -202,7 +202,7 @@ function(kickos_emit_image target)
     elseif(KICKOS_CHIP STREQUAL "esp32c6")
       # ESP32-C6: our app is a RAM-only image at flash 0x0 with NO 2nd-stage
       # bootloader, so the RISC-V ROM loader needs --ram-only-header (which implies
-      # --dont-append-digest) to boot it -- a plain elf2image image is loaded but
+      # --dont-append-digest) to boot it. A plain elf2image image is loaded but
       # never entered (`ets_loader.c 67`). DIO for the same reason as esp32 (the ROM
       # mis-reads a QIO header from the boot position -> "Checksum failure" reset
       # loop). Verified on ESP32-C6-WROOM silicon 2026-07-08.
@@ -249,10 +249,10 @@ endfunction()
 #   Out of tree any of these three is recorded, WARNED about and not acted on: the width is
 #   fixed by the installed package the app links.
 #
-#   OPTIONAL SUGAR. The supported out-of-tree path is plain CMake -- find_package
-#   (KickOS), add_executable, target_link_libraries(app PRIVATE kickos) [or
-#   kickos_cxx], kickos_emit_image on MCU -- and that path is complete. This helper
-#   exists for the in-tree fleet; a consumer may use it, but nothing needs it.
+#   OPTIONAL SUGAR. The supported out-of-tree path is plain CMake, and it is
+#   complete: find_package(KickOS), add_executable, target_link_libraries(app
+#   PRIVATE kickos) [or kickos_cxx], kickos_emit_image on MCU. This helper exists
+#   for the in-tree fleet; a consumer may use it, but nothing needs it.
 #
 #   FULL_CXX (opt-in, docs/design-kickcat-k64f.md "Libc strategy"): compile this
 #   app's C++ TUs with -fexceptions/-frtti (NOT the freestanding clamp) and link
@@ -329,7 +329,7 @@ function(kickos_add_application name)
   endif()
   # NB: the app is NOT built -msmall-data-limit=0 under RISC-V PMP. With the gp
   # window anchored inside the .appdata grant (chip .ld), the app's small globals
-  # land in that granted window, and keeping small-data enabled is REQUIRED -- the
+  # land in that granted window, and keeping small-data enabled is REQUIRED: the
   # flag on a -fexceptions TU hangs __cxa_throw in the FDE walk. Only the KickOS
   # libs get the flag (kickos_apply_freestanding). See docs/design-cxx-under-mpu.md.
   # The OS-agnostic entry glue (-Dmain / -include app.h) rides each leaf's core, so
@@ -345,7 +345,7 @@ endfunction()
 
 # ---------------------------------------------------------------------------
 # kickos_add_diagnostic_app(<name> SOURCES <src...> BOARD <board>)
-#   A DIAGNOSTIC (test/bring-up) app -- built ONLY when KICKOS_ENABLE_SELFTEST is
+#   A DIAGNOSTIC (test/bring-up) app, built ONLY when KICKOS_ENABLE_SELFTEST is
 #   on, because it depends on the test-only syscall surface (kos_irq_inject,
 #   kos_guard_addr, ...) that is deliberately kept OUT of the production ABI, and/or
 #   deliberately faults. A production build carries no diagnostic image. Callers
@@ -367,13 +367,13 @@ endfunction()
 #   kickos_user (user/include + the component group ordered after it), sees
 #   system/include (sys.h/abi.h pull errno.h from kickos_system, which
 #   kickos_user carries only PRIVATE), optionally sees a chip register dir
-#   (REGDIR, e.g. arch/arm/chip/xmc4800 for regs/usic.h -- definitions only, no
+#   (REGDIR, e.g. arch/arm/chip/xmc4800 for regs/usic.h, definitions only and no
 #   code/kernel headers), optionally links a chip class leaf (CLASS, decision
 #   R-A: shared register logic like a FIFO-level read comes from the freestanding
 #   kickos_class_<chip> leaf, not a local copy), and is EXPORTED so an out-of-tree
 #   consumer (e.g. a KickCAT LAN9252 slave) links it on top of the OS. Its
 #   .data/.bss land in .appdata (the lib is outside the closed kernel set, so the
-#   chip .ld catch-all captures it -- user-reachable). The target is
+#   chip .ld catch-all captures it, so they are user-reachable). The target is
 #   kickos_<name>; SOURCES defaults to <name>.cc.
 function(kickos_add_driver name)
   cmake_parse_arguments(DRV "" "CLASS;REGDIR" "SOURCES" ${ARGN})
@@ -478,6 +478,38 @@ endfunction()
 #   (kernel/syscall/syscall_ipc.cc), so a list whose protocol admits several parked callers
 #   must say how many. The widest declaration in the tree wins (the app may declare it too),
 #   so this is not added to the app's number.
+# Every member of the rescan archive group has to be NAMED, which is the only reason a list
+# of them exists. It is derived from the provider's own declared links rather than restated:
+# kickos_add_board_provider below already takes LINK, and kickos_add_driver already takes
+# CLASS, so the closure walks edges the declarations put there. PRIVATE deps count, which is
+# what reaches a driver's class leaf: PRIVATE is excluded from INTERFACE_LINK_LIBRARIES but
+# still sits in the target's own LINK_LIBRARIES.
+#
+# The walk stops at kickos_user. That library and its own dependencies (the arch leaf and
+# kickos_lib) are put in the group separately, so descending into it would only re-add them.
+function(kickos_service_libs_closure target out)
+  set(_seen "")
+  set(_queue "${target}")
+  while(_queue)
+    list(POP_FRONT _queue _t)
+    if(NOT TARGET ${_t})
+      continue()
+    endif()
+    if("${_t}" IN_LIST _seen)
+      continue()
+    endif()
+    if("${_t}" STREQUAL "kickos_user")
+      continue()
+    endif()
+    list(APPEND _seen "${_t}")
+    get_target_property(_deps "${_t}" LINK_LIBRARIES)
+    if(_deps)
+      list(APPEND _queue ${_deps})
+    endif()
+  endwhile()
+  set(${out} "${_seen}" PARENT_SCOPE)
+endfunction()
+
 function(kickos_add_board_provider name)
   cmake_parse_arguments(BP "" "SOURCE;RETAINED_CAPS;INBOUND_REPLY_CAPS" "LINK" ${ARGN})
   # A misspelled keyword would otherwise be dropped and the count silently default.
@@ -542,8 +574,8 @@ endfunction()
 # ---------------------------------------------------------------------------
 # kickos_enforcing_mpu_boards(<out>)
 #   The boards whose chip enforces memory protection, derived at configure time
-#   from the SOLE source of truth -- the arch/*/chip/*/mpu.cmake opt-in files
-#   (KICKOS_CHIP_ENFORCES_MPU) -- reverse-mapped to board names via the board
+#   from the SOLE source of truth, the arch/*/chip/*/mpu.cmake opt-in files
+#   (KICKOS_CHIP_ENFORCES_MPU), reverse-mapped to board names via the board
 #   descriptors, plus the sim (which enforces at the arch level via host mprotect
 #   and ships no chip mpu.cmake). Feeds the "enforcement-capable boards" hint in
 #   the KICKOS_HAVE_MPU rejection so that list can never drift from reality. Reads

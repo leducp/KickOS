@@ -46,7 +46,7 @@
 // Without enforcement the granted window is a no-op and the "unprivileged" thread is
 // not confined, so every result below is meaningless.
 #if !KICKOS_HAVE_MPU
-#error "pvprobe requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
+#error "pvprobe requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 using namespace kickos::xmc::reg::usic;

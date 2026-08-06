@@ -38,7 +38,7 @@
 // Without enforcement there is no Rule 7 and the grant predicates below are inline
 // `return true`, so the capture would describe a different machine.
 #if !KICKOS_HAVE_MPU
-#error "c6intpri requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
+#error "c6intpri requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace

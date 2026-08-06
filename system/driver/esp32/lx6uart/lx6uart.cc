@@ -40,7 +40,7 @@
 #include <kickos/sys/uart_service.h>
 
 #include "irq.h"
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "regs/uart.h"
 
 #include <stdint.h>
@@ -233,9 +233,9 @@ namespace
         kickos::uart::irq_loop(dev, sh); // parks in irq_wait; never returns
     }
 
-    // Not kickos::uart::serve_loop: this endpoint carries TWO protocols. A kos_call is a
-    // kos_uart_req frame, a plain send is raw console bytes, and serve_one refuses a plain
-    // send, which for a console would silently swallow every print.
+    // This endpoint carries TWO protocols: a kos_call is a kos_uart_req frame, a plain
+    // send is raw console bytes. serve_one refuses a plain send, which for a console
+    // would silently swallow every print.
     void lx6uart_service_thread(void* arg)
     {
         kickos::uart::Shared* sh = static_cast<kickos::uart::Shared*>(arg);
@@ -258,9 +258,9 @@ namespace
                 (void)kickos::uart::console_flush(sh); // zero-length plain send == flush
                 continue;
             }
-            // Not a bare tx_write: a plain send cannot report a short accept, so a producer
-            // that outruns the 115200 baud wire would have its tail silently spliced away.
-            // Staying out of kos_recv until the ring took it all is what paces it.
+            // A plain send cannot report a short accept, so a producer that outruns the
+            // 115200 baud wire would have its tail silently spliced away. Staying out of
+            // kos_recv until the ring took it all is what paces it.
             uint32_t const took =
                 kickos::uart::console_write_all(sh, msg, static_cast<uint32_t>(n));
             sh->stats.tx_dropped += static_cast<uint32_t>(n) - took;

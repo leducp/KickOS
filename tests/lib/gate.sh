@@ -5,13 +5,22 @@
 #   . "$(dirname "$0")/lib/gate.sh"
 # POSIX sh (dash-clean), because /bin/sh is dash on the CI images.
 
-# The reporters' literal dump markers, as one ERE: kpanic (which KICKOS_UNREACHABLE
-# routes through), the armv7m/armv6m/sim/riscv fault reporters, kickos_isr_fault, the
-# K64F SYSMPU hook. Case-sensitive and anchored on the banner shape, because a
-# substring match on "fault" also hits "EFAULT" and "default" in benign output.
-# cmake/kickos.cmake SCRAPES this assignment for the CTest FAIL_REGULAR_EXPRESSION
-# registrations, so it must stay one line of the form KOS_PANIC_RE='<ere>'.
-KOS_PANIC_RE='KERNEL PANIC:|=== (HARD|MPU|SIM) FAULT|=== RISC-V TRAP|MPU FAULT: task|ISOLATION FAULT:'
+# The reporters' literal dump markers, as one ERE: kpanic (which KICKOS_UNREACHABLE routes
+# through), the armv7m/armv6m/sim/riscv fault reporters, kickos_isr_fault, the K64F SYSMPU
+# hook. Case-sensitive and anchored on the banner shape, because a substring match on
+# "fault" also hits "EFAULT" and "default" in benign output.
+#
+# It lives in tests/lib/panic.ere, ONE line, read by both consumers: this file and the root
+# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. A plain data file is
+# readable by both languages without either parsing the other.
+# Every caller sources this file as <its own dir>/lib/gate.sh, so the data file sits beside
+# it. Read once, and REFUSE an empty result: an empty ERE matches nothing, so every panic
+# gate in the suite would silently stop failing.
+KOS_PANIC_RE="$(cat "$(dirname "$0")/lib/panic.ere")"
+if [ -z "$KOS_PANIC_RE" ]; then
+    echo "FAIL: tests/lib/panic.ere is empty or unreadable; every panic gate would pass" >&2
+    exit 1
+fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 

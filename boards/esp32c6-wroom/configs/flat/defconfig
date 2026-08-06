@@ -1,0 +1,7 @@
+CONFIG_BOARD_ESP32C6_WROOM=y
+
+# The non-enforcing posture of a board that can enforce, which is what the
+# ring-only and no-MPU code paths are built and run from.
+CONFIG_KICKOS_USER_STACK_SIZE=8192
+CONFIG_KICKOS_IDLE_STACK_SIZE=512
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192

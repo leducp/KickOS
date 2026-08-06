@@ -145,7 +145,8 @@ what is next; this carries the numbering.
 | M4.7.2 | the review findings against M4.7.1 | landed |
 | M4.7.3 | per-task table width, and a per-task cap on inbound replies: the chunk directory earns its keep | landed |
 | **M4.7.4** | **delete the legacy management: nothing is released before M6, so there is none to carry** | ACTIVE |
-| M4.7.5 | Kconfig owns configuration; CMake keeps the build graph | planned |
+| M4.7.5 | Kconfig owns configuration; CMake keeps the build graph | landed |
+| M4.7.6 | the language level moves to C++20, and the tree uses what it buys | planned |
 | M4.8.1 | the class layer the driver-model ruling requires and SPI never got | after M4.7.5 |
 | M4.8.2 | the USB CDC console, continuing M4.6.2 | planned |
 | M4.8.3..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
@@ -251,8 +252,8 @@ this entry exists at all.
 
 **It also bundled two questions and judged both on board count.** Board count is the right criterion
 for devicetree, which is hardware description. It is close to irrelevant for Kconfig, which is knob
-management, validation and dependency expression. The pressure now is not board count: configuration
-is split across C headers and CMake with leakage in both directions. Today that costs two `cc -E -P`
+management, validation and dependency expression. The pressure was not board count: configuration
+was split across C headers and CMake with leakage in both directions. That cost two `cc -E -P`
 probes reading headers back into CMake (`cmake/cap_table.cmake`, `cmake/boot_arena.cmake`), a
 `file(STRINGS)` scrape of a `static constexpr` that no preprocessor can hand over, and a
 hand-rolled C++ function-body parser in CMake regex (`_kickos_seam_int_in_file` in
@@ -261,6 +262,15 @@ M4.7.3's generated header removed two more of the same class: the directory-tree
 the width to subdirectories, and the `KICKOS_MAX_HANDLES` fallback that existed only so a
 misconfigured build still preprocessed.
 
+**Both `cc -E -P` probes and the `constexpr` scrape are now GONE, and the rule they leave behind
+is about direction.** The provisioning integers reach CMake from the generated fragment, which is
+the same resolution the compile reads. The structural constants the width is summed from went the
+other way: they are declared in `cmake/cap_geometry.cmake` and emitted to C through the generated
+`config/cap_width.h`, because a value the BUILD must read cannot be owned by C without a probe to
+read it back. They are not configuration and get no Kconfig symbol -- nothing selects one, and no
+defconfig can state one. What survives is the function-body parser, which reads a C++ RETURN
+LITERAL rather than a macro and is a different problem.
+
 **Kconfig would be additive, not a replacement**: it owns the knobs and emits a generated header,
 while CMake keeps the build graph.
 
@@ -268,12 +278,20 @@ while CMake keeps the build graph.
 The capability-table width was a maximum over APP TARGET PROPERTIES plus the service list's. Those are
 build-graph facts, and Kconfig is one-pass and static with no way to say "the widest declaration among
 the app targets in this build". The two candidates were one-app-per-build, which removes the problem
-but breaks whole-fleet-in-one-configure, and a hybrid that keeps the summing in CMake. **The answer is
-that the summing is DELETED rather than relocated**: with one kernel build and N apps, the maximum has
-nothing to range over, because the apps do not exist when the kernel is configured. The width becomes
-an ordinary provisioning integer -- an `int` with a `range`, stated in the defconfig like any pool size
--- and what the summing used to guarantee is replaced by an app-side `static_assert` against the
-installed generated header plus the runtime refusal that already exists.
+but breaks whole-fleet-in-one-configure, and a hybrid that keeps the summing in CMake. **The design's
+answer is that the summing is DELETED rather than relocated**: with one kernel build and N apps, the
+maximum has nothing to range over, because the apps do not exist when the kernel is configured. The
+width becomes an ordinary provisioning integer -- an `int` with a `range`, stated in the defconfig
+like any pool size -- and what the summing used to guarantee is replaced by an app-side
+`static_assert` against the installed generated header plus the runtime refusal that already exists.
+
+**That deletion has NOT happened, and what landed keeps the summing in CMake deliberately.** Its
+terms are target properties -- the widest app `CAPABILITIES` and the service list's `RETAINED_CAPS`
+-- so the sum is build-graph arithmetic over numbers CMake already holds, which is what CMake is
+for. What made it a hazard was never the arithmetic: it was that its INPUTS were read back out of C
+through a preprocessor probe, and that is what is gone. Deleting the sum outright is a separate
+change with its own consequences -- every board would state a width it cannot compute, and the
+optional-demand grant would go with it -- and it is not required to close the backflow.
 
 **Half of it has already landed.** The generated header was worth doing inside M4.7.3 on its own
 merits, since per-task width adds a width and a class id per task and every workaround above would
@@ -281,6 +299,44 @@ otherwise have been ported onto a wider set of computed outputs. It shipped ther
 directory-tree walk and the fallback with it, so Kconfig now lands on a clean seam and is largely
 deletion. The build-time `kconfiglib` host dependency is NOT the project's first: `arch/CMakeLists.txt`
 already requires `Python3` for the RP2040/RP2350 second-stage checksum, in CI as well as locally.
+
+### M4.7.6 -- C++20, and the four features that pay for it
+
+The tree pins `cxx_std_17`, which is why twelve aggregate initialisers carry `/*field=*/`
+comment labels: a label can sit beside the wrong field and still compile, and the language
+had no way to say it. Designated initializers are C99 in C and C++20 in C++, so a C
+consumer of `kos_service_cfg` can already write `.name =` today while the in-tree C++ that
+defines those same structures cannot.
+
+**No compiler in the fleet blocks it.** RX GNURX 14.2 is the oldest, then ARM 15, the host
+15, RISC-V and Xtensa 16.1; C++20 was feature-complete well before 14. RX is nonetheless
+the one to build FIRST: it is a vendor fork and the only family with no CI, so a break
+there surfaces on the bench rather than in a pull request.
+
+**What earns the bump, in order of what it buys this kernel:**
+- **`constinit`** asserts an object is constant-initialised: no runtime static initialiser,
+  no guard variable. The tree already gates on this at link time (`kernel_ctor_placement`
+  proves no kernel ctor leaked into the app-ctor window); `constinit` makes it a per-object
+  compile-time property instead of an archaeology check.
+- **designated initializers** delete twelve files of comment labels that can lie.
+- **`<bit>`** (`has_single_bit`, `bit_ceil`, `countl_zero`, `bit_cast`) replaces the pow2
+  and PMP NAPOT arithmetic the tree hand-rolls in three places, constexpr and lowering to
+  the count-leading-zeros instruction.
+- **`[[no_unique_address]]`** can shrink a struct, which is `.bss` on a 16 KiB part.
+
+**What it costs, and how it is measured.** Images move: header and inlining differences are
+expected, so this milestone measures the delta with the 50-preset instrument and states it,
+rather than claiming equivalence. `char8_t` is a real breaking change for any `u8""`
+literal, and rewritten comparisons can shift overload resolution where a class defines
+`operator==`/`!=` by hand; both are greppable before the flag is flipped.
+
+**C++23 and C++26 are deliberately NOT this milestone.** GCC 14's C++23 is incomplete, and
+the RX fork is where that would be felt. Of C++23 only `[[assume]]` and `std::unreachable`
+would be used here and both are already expressible; `std::expected` cannot cross a C ABI
+syscall boundary. C++26's contracts, `std::inplace_vector` and above all reflection are the
+ones that would change how this kernel is written -- reflection is what "generate the DATA,
+not the TU" wants to be -- but none is in a released cross compiler. Revisit when the RX
+toolchain moves.
 
 ### M5 -- SMP (one kernel image across cores)
 Run a multi-core part at 100% under a single KickOS -- not two AMP instances. Reworks the

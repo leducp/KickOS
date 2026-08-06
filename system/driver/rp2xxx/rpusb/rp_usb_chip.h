@@ -12,13 +12,13 @@
 #if defined(KICKOS_RPUSB_CHIP_RP2350)
 
 #include "irq.h"
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 namespace rpchip = kickos::rp2350;
 
 #elif defined(KICKOS_RPUSB_CHIP_RP2040)
 
 #include "irq.h"
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 namespace rpchip = kickos::rp2040;
 
 #else

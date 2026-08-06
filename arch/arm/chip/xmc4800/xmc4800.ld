@@ -33,11 +33,6 @@ _kernel_stack_size = 8K;
 _appdata_size = KICKOS_APPDATA_SIZE;
 #endif
 
-/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch). */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 16K
-#endif
-
 SECTIONS
 {
     .text :

@@ -12,7 +12,7 @@
  * (RX72M Group User's Manual: Hardware, r01uh0804ej0120, Rev.1.20.)
  */
 
-#include <kickos/board_config.h>   /* KICKOS_RX_INTB_ENTRIES: the INTB table size */
+#include <kickos/chip_limits.h>   /* KICKOS_RX_INTB_ENTRIES: the INTB table size */
 
     .text
 

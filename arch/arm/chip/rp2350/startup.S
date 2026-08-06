@@ -21,7 +21,7 @@
  * (IRQ0..51; 46..51 are spare/never-fire), matching KICKOS_MAX_IRQ.
  */
 
-#include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
+#include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
 #include "core_vectors.inc"        /* shared core-exception vector block */
 
     .syntax unified

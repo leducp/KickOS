@@ -9,7 +9,7 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2350_REGS_TICKS_H
 #define KICKOS_ARCH_ARM_CHIP_RP2350_REGS_TICKS_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

@@ -9,7 +9,7 @@
  * scans the first 4 KiB of the image for an IMAGE_DEF block-loop; with no
  * ENTRY_POINT/VECTOR_TABLE item it reads the initial SP/PC from the vector table at
  * the image base. So the vector table is PINNED at the flash origin (0x1000_0000)
- * and the IMAGE_DEF block (startup.S, .image_def) is homed immediately after it --
+ * and the IMAGE_DEF block (startup.S, .image_def) is homed immediately after it,
  * both inside the 4 KiB scan window. This is the RP2040 boot2/vector-slot lesson
  * (rp2040.ld pinned .text) applied to the new boot format: the vector VMA is fixed
  * by section placement, not left to whatever the linker packs ahead of it.
@@ -48,11 +48,6 @@ _kernel_stack_size = 8K;
 #define KICKOS_APPDATA_SIZE 128K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
-#endif
-
-/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch). */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 16K
 #endif
 
 SECTIONS

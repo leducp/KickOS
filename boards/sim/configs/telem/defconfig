@@ -1,0 +1,10 @@
+CONFIG_BOARD_SIM=y
+
+# RTT telemetry on the host. A whole run has to fit the channel-1 ring,
+# hence 16384 rather than the 4096 default.
+CONFIG_MEMORY_MODEL_MPU=y
+CONFIG_CONSOLE_BOTH=y
+CONFIG_TELEMETRY_RTT=y
+CONFIG_KICKOS_RTT_CH1_SIZE=16384
+CONFIG_KICKOS_DEBUG=y
+CONFIG_KICKOS_ENABLE_SELFTEST=y

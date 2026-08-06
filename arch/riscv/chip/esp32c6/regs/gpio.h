@@ -9,7 +9,7 @@
 #ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_GPIO_H
 #define KICKOS_ARCH_RISCV_CHIP_ESP32C6_REGS_GPIO_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

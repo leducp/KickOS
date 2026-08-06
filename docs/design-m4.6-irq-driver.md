@@ -987,7 +987,7 @@ implements them.
 (`arch/rx/rxv3/arch_rxv3.cc` (`SOFT_IRQ_LINES`)): `< 32` = software-inject logical lines,
 `>= 32` = real ICU vectors, `IER`-gated via `icu_ier_set` (vector-indexed) and `IPR` via
 `vector_to_ipr`. `rx72m` sets `KICKOS_MAX_IRQ = 256`
-(`boards/rx72m/include/kickos/board_config.h` (`KICKOS_MAX_IRQ`)), so:
+(`boards/rx72m/configs/base/defconfig` (`KICKOS_MAX_IRQ`)), so:
 
 - `RXI6 = 86` and `TXI6 = 87` fit the existing `>= 32` real-vector path with **no seam
   change** -- `vector_to_ipr` is identity for both.
@@ -1357,9 +1357,9 @@ wait-on-either-of-two-sources, the same M5 object sec.7.5 defers the blocking re
 
 **Binding-pool budget, and a real ceiling.** `KICKOS_MAX_IRQ_HANDLES` is 8 by default but
 **4** on bluepill-c8, f302nucleo and microbit (the `KICKOS_MAX_IRQ_HANDLES` override in each of
-`arch/arm/chip/stm32f103/include/kickos/board_config.h`,
-`arch/arm/chip/stm32f302/include/kickos/board_config.h`,
-`arch/arm/chip/nrf51/include/kickos/board_config.h`). One shared-line UART needs 1 handle,
+`boards/bluepill-c8/configs/base/defconfig`,
+`boards/f302nucleo/configs/base/defconfig`,
+`boards/microbit/configs/base/defconfig`). One shared-line UART needs 1 handle,
 so those boards are fine. The RX72M three-line UART needs 3 of 8. This is now a *recoverable*
 budget rather than a permanent burn, because Decision 1 gives the pool a free path -- which is
 the second concrete payoff of making the line a capability.

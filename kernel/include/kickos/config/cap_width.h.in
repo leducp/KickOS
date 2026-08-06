@@ -20,4 +20,12 @@
 // kos_call in the fleet could complete. It reserves NO slot: it bounds, it does not carve.
 #define KICKOS_CAP_REPLY_MAX @KICKOS_CAP_TABLE_REPLY_MAX@
 
+// The structural constants the width above is summed from. They are declared in
+// cmake/cap_geometry.cmake, which is the side that has to read them, and emitted here for
+// C. They are not configuration: nothing selects one, Kconfig declares no symbol for any
+// of them, and no defconfig can state one.
+#define KICKOS_CAP_FIRST_DYNAMIC @KICKOS_CAP_FIRST_DYNAMIC@
+#define KCAP_CHUNK_TARGET @KICKOS_CAP_CHUNK_TARGET@
+#define KCAP_RUN_OFF_POOL @KICKOS_CAP_RUN_OFF_POOL@
+
 #endif

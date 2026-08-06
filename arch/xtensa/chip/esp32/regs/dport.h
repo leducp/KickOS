@@ -7,7 +7,7 @@
 #ifndef KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_DPORT_H
 #define KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_DPORT_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

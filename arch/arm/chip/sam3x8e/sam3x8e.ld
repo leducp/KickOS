@@ -20,12 +20,6 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 8K;
 
-/* Newlib heap: an explicit .userheap section carved from RAM before the thread arena
-   (no MPU .appdata window on this chip). 0 is legal for a board with no malloc app. */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 16K
-#endif
-
 SECTIONS
 {
     .text :

@@ -32,12 +32,6 @@ MEMORY
 _estack = ORIGIN(DRAM) + LENGTH(DRAM); /* initial stack: top of DRAM */
 _kernel_stack_size = 8K;               /* boot/interrupt stack reserve */
 
-/* Newlib heap: an explicit .userheap section carved from DRAM before the thread arena
-   (this chip has no MPU .appdata window). 0 is legal for a board with no malloc app. */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 16K
-#endif
-
 SECTIONS
 {
     /* Xtensa exception/interrupt vectors at VECBASE. Must be 1 KiB aligned; the

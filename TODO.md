@@ -2654,10 +2654,12 @@ was read or measured.
       `get_filename_component` -- no cache variable, no override -- and
       `kickos_load_board_descriptor` (`cmake/kickos.cmake:55-73`) has exactly three outcomes: an
       in-tree `boards/<board>/board.cmake`, or, only where `KICKOS_IN_TREE` is FALSE, the single
-      board the installed package was built for, or `FATAL_ERROR`. `KICKOS_BOARD_INCLUDE_DIR`
-      (`CMakeLists.txt:52-56`) searches only the in-tree `boards/` path before falling back to the
-      chip dir. So a consumer cannot supply a board without editing the KickOS tree or carrying a
-      patch against a vendored copy, while `docs/book/README.md:26` says porting a CPU is "the
+      board the installed package was built for, or `FATAL_ERROR`. The provisioning path
+      no longer looks for a board directory at all: M4.7.5 deleted the per-board headers, so the
+      values come from `boards/<board>/configs/<variant>/defconfig` and the only in-tree search
+      left is the chip's own include dir. That does not change the conclusion here, because a
+      consumer still cannot supply a board without editing the KickOS tree or carrying a patch
+      against a vendored copy, while `docs/book/README.md:26` says porting a CPU is "the
       small arch/chip seam, not a kernel restructure". Shape of the fix: make the boards search
       path a LIST a consumer can extend, and let the board include-dir lookup search the same
       list. NOT M4.7 scope -- recorded so it does not evaporate. Read directly.
@@ -2699,16 +2701,17 @@ was read or measured.
       is routinely overwritten. Closing the aliasing is a precondition for the provision meaning
       anything: either default placement starts at `KICKOS_CAP_FIRST_DYNAMIC`, or the index stops
       being reserved. Read directly; the placement claim checked in `abi.h` itself.
-- [ ] **`mk64f`'s handle budget has no recorded derivation.**
-      `arch/arm/chip/mk64f/include/kickos/board_config.h:17-24` raises `KICKOS_MAX_HANDLES` to 12
-      and says only that root must cover the caps the board's service list RETAINS, pointing at
-      "the app that sets the peak" for the arithmetic rather than giving it.
-      `arch/arm/chip/xmc4800/include/kickos/board_config.h:17-25` reaches the same 12 and spells its
-      sum out (2 reserved + 2 permanent selftest caps + 1 retained SPI endpoint + 6 concurrent in
-      `t_mutex_deadlock` = 11, so the fleet default of 10 already fails). Whoever re-derives the
-      M4.7 sizing sum needs the `mk64f` figure justified or corrected -- it is the one 12 with no
-      arithmetic behind it. Same family as the copy-pasted-derivation item below, but that one is
-      about duplication and this one is about a figure nothing supports. Read directly.
+- [ ] **STALE, WRONG MECHANISM (not just a rotted line number): `mk64f`'s handle budget has no
+      recorded derivation.** This described `boards/frdmk64f/configs/base/defconfig` and
+      `boards/xmc4800-relax/configs/base/defconfig` each stating `KICKOS_MAX_HANDLES=12` directly.
+      Neither defconfig sets any such symbol today, and `cmake/cap_table.cmake` now explicitly
+      forbids a board from stating the table's width at all ("A board must NOT state the width...
+      Kconfig declares no such symbol, so an attempt to set it is refused by name"): the width is
+      summed at CONFIGURE time from the kernel's reserved-index count, the service list's retained
+      caps (`RETAINED_CAPS`), and the app's declared peak (`CAPABILITIES`), each stated by whoever
+      owns the fact. Whatever open question this pointed at -- an unjustified `mk64f` figure --
+      needs to be re-derived against that configure-time sum; there is no board-stated constant
+      left to cite a line number against.
 
 ## Found by the 10-angle review (2026-08-02)
 
@@ -2923,11 +2926,13 @@ never touched. What was FIXED is in the commit. What was found and NOT fixed:
       holder. Behaviour change, so not folded into a comment pass.
 - [ ] **The console register window is stated 7+ times per chip with no cross-check**, and it is
       not an xmc-only shape: `mk64f` is identical and `chip_mk64f.cc` already documents the
-      unenforced invariant ("the two must not drift"). Single-sourcing it through a header is
-      IMPOSSIBLE as the obvious fix: a `system/init/` service list gets exactly one include dir
-      (`system/include`) and the driver `REGDIR` is PRIVATE, so a chip `mmap.h` is unreachable,
-      with zero precedent for a service list including a chip header. The real fix is
-      ENFORCEMENT, not deduplication: `cap_console_publish` has no owner check at all today, and
+      unenforced invariant ("the two must not drift"). Single-sourcing it through a header WAS impossible
+      when this was written, because a `system/init/` service list got exactly one include dir
+      (`system/include`) and the driver `REGDIR` is PRIVATE, so a chip's base-address header was
+      unreachable. M4.7.5 removed that premise: the headers are public as
+      `<kickos/chip_mmap.h>`, the chip include dir is on the path, and the rows name the constant.
+      The DEDUPLICATION is therefore done. The idea below stands on its own and is not replaced by
+      it, because it answers a different question, drift versus authority: `cap_console_publish` has no owner check at all today, and
       requiring the publisher to hold exactly `arch_console_reclaim_window()` closes the drift on
       every board with machinery that already exists (`caller_holds_mmio_block`). That is a
       feature, not cleanup.
@@ -2948,10 +2953,14 @@ never touched. What was FIXED is in the commit. What was found and NOT fixed:
       can see; and the demand varies by posture and by split part. If it is ever wanted, it
       belongs in CMake via the existing `cmake/boot_arena.cmake` preprocessor probe, which
       already reads `KICKOS_*` macros out of headers, keyed per posture.
-- [ ] **`bluepill-c8` is the only board that shadows a chip `board_config.h`**, and the lookup is
-      either/or, so any knob the chip right-sized and the board omits silently reverts to the
-      fleet default. That is how `KICKOS_MAX_SEMAPHORES` regressed (fixed here). Nothing gates
-      the shadowing; a second such board would repeat it.
+- [x] **CLOSED BY DELETING THE MECHANISM: `bluepill-c8` was the only board that shadowed a chip
+      `board_config.h`**, and the lookup was either/or, so any knob the chip right-sized and the
+      board omitted silently reverted to the fleet default -- that is how `KICKOS_MAX_SEMAPHORES`
+      regressed, and nothing gated the shadowing. Both the per-board and per-chip `board_config.h`
+      and the either/or lookup between them are gone: a knob now has exactly one place to be set,
+      its Kconfig declaration's own `default N if CHIP_X` list (e.g. `KICKOS_USER_HEAP_SIZE` in the
+      root `Kconfig`), which a board's defconfig may explicitly override but cannot silently omit
+      into. There is no longer a second header to shadow, so a second board cannot repeat this.
 - [ ] **Two comments describe a defect two incompatible ways, so one of them is wrong about the
       code**: `tele_pingpong/main.cc` says a non-last thread exit is currently broken on ARM
       while `sched_exit/main.cc` documents it fixed and `check_sched_exit.sh` gates it; and
@@ -3488,7 +3497,7 @@ here because they are pre-existing isolation facts, not things that pass created
       the group registers.** A live grant-admissibility hole, recorded only in
       `docs/design-m4.6-irq-driver.md` section 6.4 and orthogonal to the IRQ work that found it.
       `arch_reserved_blocks` (`arch/rx/chip/rx72m/chip_rx72m.cc:353-371`) reserves
-      `{mmap::ICU, 0x400}` with `mmap::ICU = 0x0008_7000` (`arch/rx/chip/rx72m/mmap.h:32`), so the
+      `{mmap::ICU, 0x400}` with `mmap::ICU = 0x0008_7000` (`arch/rx/chip/rx72m/include/kickos/chip_mmap.h`), so the
       window is `0x87000..0x873FF`. That covers `IR`/`IER`/`IPR` but **not** `GRPBL0 0x87630`,
       `GENBL0 0x87670`, `GRPAL0 0x87830` or `GENAL0 0x87870`. A privileged over-broad grant
       covering `0x8763x` therefore succeeds today and the Rule-7 predicate has no basis to refuse
@@ -3646,7 +3655,7 @@ here because they are pre-existing isolation facts, not things that pass created
       4,096 that two 2,048-byte stacks need. The cause is the carve rather than the part: 8 K
       `.userheap` (`arch/arm/chip/stm32f103/stm32f103.ld:27`) where `f302nucleo` now takes 2 K, plus the
       board raising ROOT/USER to 2048 over the chip default of 1024
-      (`boards/bluepill-c8/include/kickos/board_config.h:31`, `:37`). Full arithmetic and its
+      (`boards/bluepill-c8/configs/base/defconfig:9`, `:11`). Full arithmetic and its
       provenance are already in `docs/reference/boards.md`; the fix is cutting the carve. The
       prediction is worth acting on because the same model called all three `f302nucleo` silicon
       outcomes correctly -- `hello` two threads, `stress` pass, `selftest` spawns refused.

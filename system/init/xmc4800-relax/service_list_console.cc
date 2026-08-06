@@ -13,6 +13,7 @@
 // root is enough.
 
 #include <kickos/sys/service.h>
+#include <kickos/chip_mmap.h>
 
 #include <kickos/driver/xmcuart.h>
 
@@ -23,8 +24,8 @@ extern "C"
     // channel U0C1 (base + 0x200) and the SCU / IOCR peripherals outside it. prio 12
     // must be >= every stdout client's priority (D9: no PI on the console rendezvous).
     static struct kos_service_cfg const xmcuart_cfg = {
-        /*name=*/"xmcuart", /*mmio_base=*/0x40030000u, /*mmio_window=*/0x200u,
-        /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
+        /*name=*/"xmcuart", /*mmio_base=*/kickos::xmc::mmap::USIC0_CH0_BASE,
+        /*mmio_window=*/0x200u, /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
         /*rsv=*/{ 0, 0, 0, 0 }
     };
 

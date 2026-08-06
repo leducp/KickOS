@@ -97,8 +97,8 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   **MODEL PREDICTION, not a witness: `bluepill-c8` fails `hello`'s second spawn by 96 bytes.** The
   board can never be flashed, so this is arithmetic and stays arithmetic. Arena 6,560 B, read with
   `arm-none-eabi-nm` on the `hello` ELF at `9ba4e4b`; idle 512 and root 2,048 leave **4,000** against
-  the **4,096** two 2,048-byte stacks need (`boards/bluepill-c8/include/kickos/board_config.h:31`,
-  `:34`, `:37`; every figure is a multiple of the 32-byte no-MPU granule, so alignment costs nothing
+  the **4,096** two 2,048-byte stacks need (`boards/bluepill-c8/configs/base/defconfig:9`,
+  `:10`, `:11`; every figure is a multiple of the 32-byte no-MPU granule, so alignment costs nothing
   here). The cause is the **heap carve**, not the part: 8 KiB `.userheap`
   (`arch/arm/chip/stm32f103/stm32f103.ld`) where `f302nucleo` now takes 2K, and the C8 has 4 KiB *more*
   SRAM. The model is the one in `porting.md`'s `## Minimum hardware requirement` section; it
@@ -136,7 +136,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   backend (`base+limit` RBAR/RLAR + MAIR, compile-gated so the v7-M/v6-M fleet is byte-identical).
   Console is **UART1 on GP4/GP5** -- UART0's pins are not brought out on the Pi-Zero header.
   BOOTSEL-recoverable, so a bad clock or boot-block config cannot brick it.
-- **`xmc4800-relax` and `frdmk64f` under `-DKICKOS_HAVE_MPU=1` now print TAP through their
+- **`xmc4800-relax` and `frdmk64f` under enforcement now print TAP through their
   userspace UART driver** (2026-07-27), so the `-DKICKOS_SERVICE_LIST=kickos_services_none`
   workaround is no longer needed to get a verdict. The old symptom was a banner,
   `[xmcuart|k64uart] driver up`, a stray `x`, then silence: the TAP harness wrote to the kernel
@@ -158,9 +158,10 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   publish-aware writers are unaffected -- `kickos::emit`, the TAP `emit`, and libc `_write`, so
   `printf` and `std::cout` do reach the published driver. For a `kos_print`-based app, build
   `-DKICKOS_CONSOLE=both` and capture RTT, or halt the target and read the peripheral's registers.
-  `KICKOS_CONSOLE=both` is carried by no board preset, the `-st` ones included -- the only two
-  presets that set it are `sim-telem` and `qemu-telem`, neither of which is a board -- so it has to
-  be passed on the configure line, and a VCOM-only capture is the default a bench run falls into.
+  All three `xmc4800-relax` variants (`base`, `st`, `flat`) state `CONFIG_CONSOLE_BOTH=y` in their
+  defconfig, plus `sim-telem` and `qemu-telem` which are not boards; every other board preset
+  carries neither, so on those it has to be passed on the configure line, and a VCOM-only capture
+  is the default a bench run falls into.
 - **`kpanic_enter`'s UART reclaim clips bytes the userspace driver had in flight.** Reproducible on
   `xmc4800-relax`: the report always reaches the wire (that is the point of the reclaim), but roughly
   the last 8 bytes queued by the polled TX writer are garbled, eating the tail of the line before the
@@ -196,7 +197,7 @@ banner's `heap 2 KiB` witnesses (`176109e` itself still declared 4K).
 
 **`hello` PASS is the run-floor witness.** Two threads
 (`user/apps/common/hello/main.cc:74-75`), both spawned, `printf` alive, at
-`KICKOS_USER_HEAP_SIZE 2K` (`arch/arm/chip/stm32f302/stm32f302.ld:28`) -- the halved carve
+`KICKOS_USER_HEAP_SIZE` 2048 (its chip default, declared in `Kconfig`) -- the halved carve
 neither starves stdio nor costs a thread stack.
 
 **`stress` PASS**, verbatim:
@@ -218,11 +219,11 @@ Two independent causes, both measured on the ELF at the tip:
 - **Arena.** The suite's static footprint is 7,760 B and its heap carve 2,064 B, leaving an
   arena of 4,512 B (`arch/arm/chip/stm32f302/stm32f302.ld:110-111`). The idle and root boot
   stacks take 512 + 2,048, so **1,952 B remain** -- below the 2,048 one spawned thread's
-  stack needs (`arch/arm/chip/stm32f302/include/kickos/board_config.h:33`). Every spawning
+  stack needs (`boards/f302nucleo/configs/base/defconfig:9`). Every spawning
   case therefore fails on `w >= 0` / `drv >= 0` / `a >= 0 and b >= 0`.
 - **Object pools.** A zero-skip run needs `KICKOS_MAX_SEMAPHORES >= 6` (peak is
   `mutex_deadlock`: two permanent plus four live); this chip provisions 4
-  (`arch/arm/chip/stm32f302/include/kickos/board_config.h:21`). That is the `sem_destroy`
+  (`boards/f302nucleo/configs/base/defconfig:6`). That is the `sem_destroy`
   failure on `h >= 0`.
 
 Two further provisionings were flashed, which is the evidence that **no single knob fixes
@@ -301,7 +302,7 @@ because it rides into the link inside `startup.o` (already force-pulled by the a
 addition -- unlike RP2040.
 
 **Every APB peripheral base moved relative to the RP2040** (datasheet 2.2.4), so no RP2040
-address can be reused. Recomputed in `arch/arm/chip/rp2350/mmap.h`:
+address can be reused. Recomputed in `arch/arm/chip/rp2350/include/kickos/chip_mmap.h`:
 
 | Block | Base | Block | Base |
 |---|---|---|---|
@@ -470,12 +471,13 @@ the board".
 
   **Unwitnessed is not the same as ungated, and the ring arm is the case that separates them.** The
   board now carries a flashable prober (`user/apps/common/ringpriv` -- `ringpriv` plus `ringppb`),
-  and the SAME arm runs as a permanent CTest on the emulated targets, because
-  `cmake --preset qemu` IS the ring-only posture: `ringpriv`/`ringppb` are registered on `qemu`,
-  `qemu-m3`, `qemu-m7` and `qemu-m33`, and `microbit` registers `ringpriv` asserting the OPPOSITE
-  outcome. So the ring property is machine-checked on every push; what THIS board adds is that the
-  property holds on real no-MPU armv7m silicon rather than under emulation. The claim to keep
-  narrow: no gate covers this board's own chip code, its clock tree or its USART.
+  and the SAME arm runs as a permanent CTest on the emulated targets, because neither test is
+  conditioned on enforcement -- a board's `flat` variant IS the ring-only posture, its base one
+  enforcing -- so `ringpriv`/`ringppb` are registered on `qemu`, `qemu-m3`, `qemu-m7` and `qemu-m33`
+  in both postures, and `microbit` registers `ringpriv` asserting the OPPOSITE outcome. So the ring
+  property is machine-checked on every push; what THIS board adds is that the property holds on
+  real no-MPU armv7m silicon rather than under emulation. The claim to keep narrow: no gate covers
+  this board's own chip code, its clock tree or its USART.
 
   **The gap's one concrete instance is fixed, and it is why the boot-arena link assert now exists.**
   M4.5.2's static growth took the `f302nucleo-st` arena below what `kmain`'s two boot stacks need.
@@ -489,10 +491,11 @@ the board".
 
   `kmain` takes both bootstrap stacks from the arena through `boot_stack_alloc` --
   `KICKOS_IDLE_STACK_SIZE` then `KICKOS_ROOT_STACK_SIZE`, 512 and 2,048 on this chip
-  (`arch/arm/chip/stm32f302/include/kickos/board_config.h:38`, `:41`) -- so it needs **2,560 B**, and
+  (`boards/f302nucleo/configs/base/defconfig:10`, `:11`) -- so it needs **2,560 B**, and
   an unsatisfied second allocation is `kpanic("kmain: no arena for the root stack")`
   (`kernel/init/kmain.cc:218`) rather than a degraded boot. The fix was the heap carve: `6d49e14`
-  halved `KICKOS_USER_HEAP_SIZE` to 2K (`arch/arm/chip/stm32f302/stm32f302.ld:28`), which returns
+  halved `KICKOS_USER_HEAP_SIZE` to 2K (then a `stm32f302.ld` default, now the chip's
+  declared one in `Kconfig`), which returns
   1:1 to the arena because the heap is carved below `__kickos_ram_start`. **Boot at the tip is now
   witnessed rather than computed** -- see *`f302nucleo` on silicon* above. `176109e` was superseded
   by the branch reorder and resolves against `backup/m4.5.2-pre-reorder`, not the live branch.
@@ -1870,9 +1873,11 @@ actual mask column. A green host gate says the seam's LOGIC is right, never that
 
 **`panicgate` is FIVE cases, and it is a real gate.** One source, five images, because a run observes
 exactly one panic; each image carries `KICKOS_PANICGATE_CASE=<n>` and is registered as a CTest on
-every one of the NINE ctest presets (`sim`, `sim-telem`, `qemu`, `qemu-telem`, `qemu-m3`, `qemu-m7`,
-`qemu-m33`, `microbit`, `qemu-riscv`), with two spellings of each verdict -- a CTest regex on the sim
-and an `-F` literal for the QEMU script. Case 4 additionally asserts an ABSENT literal (`CUTME`), so
+every one of the FOURTEEN ctest presets (`sim`, `sim-telem`, `qemu`, `qemu-telem`, `qemu-m3`, `qemu-m7`,
+`qemu-m33`, `microbit`, `qemu-riscv`, and the five `-flat` variant presets `qemu-flat`,
+`qemu-m33-flat`, `qemu-m7-flat`, `qemu-m3-flat`, `qemu-riscv-flat` -- registration keys off
+`KICKOS_BOARD`, not the configuration variant), with two spellings of each verdict -- a CTest regex
+on the sim and an `-F` literal for the QEMU script. Case 4 additionally asserts an ABSENT literal (`CUTME`), so
 a truncation that dropped nothing would fail rather than pass. Keep it distinct from the
 `conreclaim` note above, which correctly says no CTest gate exists or can for THAT capture: what
 cannot be gated is a panic reaching the wire off a specific board's clock-gated channel. The panic
@@ -2056,12 +2061,13 @@ the clean `270b6fa`. So the 9 -> 5 delta is attributable to the provisioning cha
 else on either tree, but it was **not re-taken at `124b68c`**, where the change actually landed. That
 is the sharpest instance of this milestone breaking its own commit-before-witness rule.
 
-The fix is `commit 124b68c`: `arch/arm/chip/stm32f302/include/kickos/board_config.h` takes
+The fix is `commit 124b68c`: `boards/f302nucleo/configs/base/defconfig` takes
 `KICKOS_USER_STACK_SIZE` 2048 -> 1024 and `KICKOS_ROOT_STACK_SIZE` 2048 -> 1536, and the
 `f302nucleo-st` preset takes `KICKOS_MAX_THREADS` 4 -> 3 and drops its own
 `KICKOS_USER_STACK_SIZE` override. Every number was chosen against MEASURED paint-and-scan
-watermarks over the whole selftest suite, which `board_config.h` now records in a comment: deepest
-pool worker **592 B**, root **1048 B**, idle **76 B**. The wire evidence is two arena lines,
+watermarks over the whole selftest suite, which survive in `porting.md` rather than in any
+generated header: deepest pool worker **592 B**, root **1048 B**, idle **76 B**. The wire evidence
+is two arena lines,
 baseline then new provisioning:
 
 ```
@@ -2120,8 +2126,9 @@ the result -- **no self-promotion** -- and the last arm adds that nothing else i
 either.
 
 **`ringpriv` and `ringppb` are PERMANENT CI, not a bench capture, and that is the more durable half
-of this.** `cmake --preset qemu` IS the ring-only posture, so both run on `qemu`, `qemu-m3`,
-`qemu-m7` and `qemu-m33`. `microbit` asserts the OPPOSITE outcome with one arm
+of this.** Neither test is conditioned on enforcement -- a board's `flat` variant IS the ring-only
+posture, its base one enforcing -- so both run on `qemu`, `qemu-m3`, `qemu-m7` and `qemu-m33` in
+both postures. `microbit` asserts the OPPOSITE outcome with one arm
 (`CONTROL.nPRIV == 0`: the nRF51822's Cortex-M0 has no privilege axis) rather than skipping, which
 machine-checks the armv6m classification instead of quietly excusing it -- and it does NOT build
 `ringppb`, because on a no-ring core the PPB read legitimately SUCCEEDS and a confinement gate there
@@ -2400,8 +2407,9 @@ confinement arm and nothing else; the ring arm wants exactly a ring with no MPU,
 M4 has, and that is still why no other board can stand in. The prober now exists
 (`user/apps/common/ringpriv`: `ringpriv` plus `ringppb`) and `ringpriv` returned `PASS (5 arms)` on
 this silicon -- see *M4.5.6* above. It is also the one arm that is **permanent CI** rather than a
-bench-only capture: `cmake --preset qemu` IS the ring-only posture, so the same arms run on the four
-MPS2 presets, and `microbit` asserts the opposite outcome instead of skipping.
+bench-only capture: neither test is conditioned on enforcement -- a board's `flat` variant IS the
+ring-only posture, its base one enforcing -- so the same arms run on the four MPS2 presets in both
+postures, and `microbit` asserts the opposite outcome instead of skipping.
 
 What is left on this board is narrower and different from what it was. Not the arena (boot and the
 suite are witnessed, and the pool was right-sized at `124b68c`), not the prober, and not the ring

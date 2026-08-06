@@ -1,0 +1,14 @@
+/* SPDX-License-Identifier: CECILL-C */
+/* Copyright (c) 2026 Philippe Leduc */
+/*
+ * Chip constants: facts of the part, not knobs. Unconditional #define.
+ *
+ * Included from startup.S too, so pure integer macros only.
+ */
+#ifndef KICKOS_CHIP_LIMITS_H
+#define KICKOS_CHIP_LIMITS_H
+
+/* SAM3X8E: peripheral IDs 0..44 */
+#define KICKOS_MAX_IRQ 45
+
+#endif /* KICKOS_CHIP_LIMITS_H */

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F/DSPI0 SPI bus-SERVICE silicon validation (M4.4 call/reply). The DSPI0 service
+// K64F/DSPI0 SPI bus-SERVICE silicon validation (call/reply). The DSPI0 service
 // is brought up by the board service list BEFORE main (k64dspi_spi_start: privileged
 // DSPI config + endpoint + unprivileged driver). This app only drives it as a CLIENT.
 //
@@ -35,9 +35,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// Backstops the CMake enforcement-build gate: the MMIO-grant seam is an M2 construct.
+// Backstops the CMake enforcement-build gate: the MMIO-grant seam needs enforcement.
 #if !KICKOS_HAVE_MPU
-#error "k64dspi requires the enforcement build: configure with -DKICKOS_HAVE_MPU=1"
+#error "k64dspi requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace

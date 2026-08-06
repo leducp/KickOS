@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# One stanza per board. Adding a board is this stanza plus a defconfig under
+# boards/<board>/configs/<variant>/. The defconfig is not optional: a board+variant
+# that has none is a FATAL_ERROR at configure, because every knob reaches C through
+# the generated header.
+
+choice
+	prompt "Target board"
+	default BOARD_SIM
+
+config BOARD_BLACKPILL
+	bool "blackpill (WeAct STM32F411)"
+	select CHIP_STM32F411
+
+config BOARD_BLUEPILL_C8
+	bool "bluepill-c8 (STM32F103C8)"
+	select CHIP_STM32F103
+
+config BOARD_DUE
+	bool "due (Arduino Due, SAM3X8E)"
+	select CHIP_SAM3X8E
+
+config BOARD_ESP32_WROOM
+	bool "esp32-wroom (Xtensa LX6)"
+	select CHIP_ESP32
+
+config BOARD_ESP32C6_WROOM
+	bool "esp32c6-wroom (RV32IMAC)"
+	select CHIP_ESP32C6
+
+config BOARD_F302NUCLEO
+	bool "f302nucleo (Nucleo-64 STM32F302)"
+	select CHIP_STM32F302
+
+config BOARD_F411DISCO
+	bool "f411disco (STM32F411 Discovery)"
+	select CHIP_STM32F411
+
+config BOARD_FRDMK64F
+	bool "frdmk64f (NXP FRDM-K64F)"
+	select CHIP_MK64F
+
+config BOARD_MICROBIT
+	bool "microbit (BBC micro:bit, nRF51822)"
+	select CHIP_NRF51
+
+config BOARD_PICOPI
+	bool "picopi (Raspberry Pi Pico, RP2040)"
+	select CHIP_RP2040
+
+config BOARD_PIZERO2350
+	bool "pizero2350 (RP2350)"
+	select CHIP_RP2350
+
+config BOARD_QEMU
+	bool "qemu (mps2-an386, Cortex-M4)"
+	select CHIP_MPS2
+
+config BOARD_QEMU_M3
+	bool "qemu-m3 (mps2-an385, Cortex-M3)"
+	select CHIP_MPS2
+
+config BOARD_QEMU_M33
+	bool "qemu-m33 (mps2-an505, Cortex-M33)"
+	select CHIP_MPS2
+
+config BOARD_QEMU_M7
+	bool "qemu-m7 (mps2-an500, Cortex-M7)"
+	select CHIP_MPS2
+
+config BOARD_QEMU_RISCV
+	bool "qemu-riscv (virt)"
+	select CHIP_VIRT
+
+config BOARD_RX72M
+	bool "rx72m (Renesas RX72M)"
+	select CHIP_RX72M
+
+config BOARD_SIM
+	bool "sim (host)"
+	select ARCH_SIM
+
+config BOARD_TEENSY41
+	bool "teensy41 (i.MX RT1062)"
+	select CHIP_IMXRT1062
+
+config BOARD_XMC4800_RELAX
+	bool "xmc4800-relax (Infineon XMC4800 Relax Kit)"
+	select CHIP_XMC4800
+
+endchoice
+
+config KICKOS_BOARD
+	string
+	default "blackpill" if BOARD_BLACKPILL
+	default "bluepill-c8" if BOARD_BLUEPILL_C8
+	default "due" if BOARD_DUE
+	default "esp32-wroom" if BOARD_ESP32_WROOM
+	default "esp32c6-wroom" if BOARD_ESP32C6_WROOM
+	default "f302nucleo" if BOARD_F302NUCLEO
+	default "f411disco" if BOARD_F411DISCO
+	default "frdmk64f" if BOARD_FRDMK64F
+	default "microbit" if BOARD_MICROBIT
+	default "picopi" if BOARD_PICOPI
+	default "pizero2350" if BOARD_PIZERO2350
+	default "qemu" if BOARD_QEMU
+	default "qemu-m3" if BOARD_QEMU_M3
+	default "qemu-m33" if BOARD_QEMU_M33
+	default "qemu-m7" if BOARD_QEMU_M7
+	default "qemu-riscv" if BOARD_QEMU_RISCV
+	default "rx72m" if BOARD_RX72M
+	default "sim" if BOARD_SIM
+	default "teensy41" if BOARD_TEENSY41
+	default "xmc4800-relax" if BOARD_XMC4800_RELAX

@@ -8,16 +8,78 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.7.3 is MERGED** (PR #12, squashed to one commit; pre-squash history on
-`backup/m473-presquash`, and the squash left the tree hash unchanged so the silicon captures below
-still witness it). **The next number is the configuration mechanism**, before M4.8 -- see "What is
-next". `TODO_FIX.md` is still the
-untracked worklist and is **NOT gitignored, so `git clean -fd` destroys it**. Behind it on `master`: M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1
-(PR #9), M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
+**M4.7.4 is MERGED** (PR #13). **M4.7.5 is COMPLETE on branch `M4.7.5-config-mechanism`,
+squashed to two commits off `master` `f00a267` and UNPUSHED.** The C++20 work that follows it
+lives on its own branch, `M4.7.6-cpp20`, so this one can merge on its own. `TODO_FIX.md` is
+still the untracked worklist and is **NOT gitignored, so `git clean -fd` destroys it**; its
+Part D is eleven M4.7.5 items.
+Behind M4.7.4 on `master`: M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1 (PR #9),
+M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
 
-### The bench pass: FIVE boards, FOUR ISAs, FOUR enforcement classes
+### M4.7.5 so far: what has landed, and the ONE measurement that matters
 
-Witnessed for M4.7.3, all five on one code tree.
+All 20 boards configure from Kconfig. `.config`, the C header and a CMake fragment are generated
+into the BUILD tree, out of source; the source tree holds only declarations and defconfigs. **The 17
+per-board and per-chip `board_config.h` files are DELETED**, so a knob has exactly one place to be
+set. Gone with them: the `-D` forwarding loop and the provision-overrides variable it fed, the
+`kickos_core` ODR re-stamp that existed to paper over that variable, a dead overrides parameter on
+four probe functions, the board-include-dir variable whose board branch no board took, the
+service-list and pin-map board-name ladders, and the eleven-arm libs ladder (now DERIVED from the
+provider's own declared `LINK`/`CLASS` edges). Grep the branch log rather than this file for the
+names: naming a deleted identifier here is what `doc_names` refuses, correctly.
+
+**BOTH `cc -E -P` PROBES ARE GONE**, which is the reason Kconfig was proposed at all (`TODO_FIX.md`
+C4/C5). Nothing in the build preprocesses a kernel header to read a value back out of C. The
+provisioning integers the cap-table sum and the boot-arena model need now come from the generated
+CMake fragment -- the same resolution the compile reads -- and the table's structural constants go
+the other way: `cmake/cap_geometry.cmake` declares them and the generated `config/cap_width.h`
+carries them to C, because **a value the BUILD must read cannot be owned by C without a probe to
+read it back**. They are not configuration and get no Kconfig symbol. The summing itself STAYS in
+CMake, over target properties, and `roadmap.md` says why the design's "delete the sum" endpoint is
+not what closing the backflow required.
+
+**Step 5 landed, so a preset is a board plus a variant and nothing else, and the posture is part of
+the variant.** 50 presets over 20 boards. The fourteen enforcing boards state the enforcing posture
+in their own defconfigs and carry a `<board>-flat` preset beside it, which is what the ring-only
+gates build; `sim` has no flat variant, because host mprotect is the only posture it has. Every
+variant defconfig is a COMPLETE statement, not a delta on `base`, which is what `savedefconfig`
+writes back -- so a board's provisioning is now repeated once per variant and nothing checks the
+copies against each other (`TODO_FIX.md` D10). The command-line posture flag is gone with its
+translation arm, and with it the "fresh build dir per posture" rule.
+
+**The measurement to re-run before trusting any change here: 50 build pairs, 767 images, 679
+identical, 88 differing** against a pre-Kconfig baseline, plus 14 run-gate suites standalone
+(sim and sim-telem, microbit, both postures of the four mps2 boards and of qemu-riscv,
+qemu-telem). Harness
+in `.session/`: `m475-sweep.sh` (one build per preset into `build/sweep-*`, NOT `/tmp`),
+`m475-cmp.sh` (carries its own validation notes), `m475-baseline.sh` (rebuilds the baseline under
+the post-step-5 preset names, and carries the preset-to-posture table plus the thirteen pre-Kconfig
+cells that deliberately have no counterpart), `m475-pre/` (the baseline artifacts, rebuilt
+2026-08-05 under the new keys) and the `.claude/worktrees/m475-baseline` worktree at the
+pre-Kconfig tree `32656cfbfba8`. Every witness here names the TREE it was taken on and not a
+commit: the M4.7.5 history was squashed on 2026-08-06, and `git log --format="%h %T"` maps one
+to the other.
+**Run four times** across the milestone, each against the tree as committed; the live result is
+at tree `2c89943017f5`. **Every one of the 88 differs in exactly one symbol**, `kickos::kmain`,
+by exactly
+two bytes, and only on rv32imac: that is the idle-stack cut meeting RISC-V's 12-bit signed
+immediate, where 2048 costs `lui`+`addi` and 512 is one `addi`. ARM encodes both as a single
+MOV.W modified immediate, so the same source change is invisible on every ARM board. No `.data`
+or `.bss` moved anywhere. Everything else in the milestone is image-neutral, which is the claim
+the instrument exists to make.
+
+**Two instrument facts that cost hours and will cost them again.** "Byte-identical image" is NOT a
+claim this tree can make: `kickos_app_build_stamp` folds `__DATE__`/`__TIME__` and its CODE size
+varies between two builds of one tree, so the comparison strips addresses, excludes three
+build-identity symbols and SORTS. And **a batch `ctest` across all 63 suites is not a valid
+instrument for `sim` and `qemu`**: they have no silicon clock, fail under the load of a
+back-to-back run, and pass standalone. CI runs one board per job for exactly that reason.
+
+### The bench pass: SIX boards, FIVE ISAs, every enforcement class the fleet has
+
+Witnessed for M4.7.5 at tree `2c89943017f5`, all six on one code tree, each flashed and
+captured alone. Every enforcing board reached its posture from its own `-st` variant
+defconfig, with no posture flag anywhere on the command line.
 
 | board | ISA / enforcement | plan | result |
 | --- | --- | --- | --- |
@@ -26,24 +88,29 @@ Witnessed for M4.7.3, all five on one code tree.
 | `rx72m` | RXv3 / RX-MPU enforce | `1..84` | 84 ok, 0 not-ok, 0 skip, 0 partial |
 | `esp32c6-wroom` | rv32imac / PMP NAPOT enforce | `1..84` | 84 ok, 0 not-ok, 0 skip, 0 partial |
 | `esp32-wroom` | Xtensa LX6 / no-ring | `1..80` | 80 ok, 0 not-ok, 0 skip, 0 partial |
+| `f302nucleo` | armv7m / ring-only, two images | `1..43` + `1..37` | 43 + 37 ok, 0 not-ok, 3 + 7 skip |
 
-Logs: `.session/logs/m473-*.log`.
+Logs: `.session/logs/m475-*.log`. Harness: `.session/m475-bench.sh <board> [jlink-sn]`,
+`APP=selftest_p2` for the second image of a split part.
 
-**This is the widest silicon coverage any M4.7 number has had**, and it is the answer to the
-"only armv7m" gap M4.7.2 carried: four ISAs, and all four enforcement backends the fleet has
-(PMSAv7, SYSMPU, RX-MPU, PMP) plus a no-ring board. The LX6 plan is 80 rather than 84 because a
-no-ring board registers neither the three MPU-and-selftest arms nor `stackbase_arena` -- that is
-the arm arithmetic working, not a shortfall.
+**This is the widest silicon coverage the project has had**, and it is wider than
+M4.7.3's by the board that matters for the ring: `f302nucleo` is the only physically
+present ARM part with no MPU, so the ring-only posture now has a hardware witness beside
+the four enforcing backends and the no-ring LX6.
 
-**Width 11 had never been EXECUTED anywhere before this pass.** Every other segmented run in the
-tree is width 10, so the geometry where `KCAP_ROOT_CHUNKS - KCAP_CHILD_CHUNKS` is non-zero was
-compiled and never run. `xmc4800-relax` and `frdmk64f` are the two boards that close it; `rx72m`,
-`esp32c6-wroom` and `esp32-wroom` all configure to 10.
+**It is also the only witness the idle-stack cut can have on three arches.** The image
+comparison cannot see that change on ARM at all, and CI never boots rxv3, lx6 or the C6.
+`rx72m`, `esp32-wroom` and `esp32c6-wroom` running the full suite at a 512-byte idle
+stack is the evidence, and there is no substitute for it in tree.
 
-**What the pass still does NOT witness:** the flat single-chunk path -- no bench board compiles it,
-`microbit` being the only bootable flat board and a CI gate rather than a bench capture -- and
-`KICKOS_CAP_REPLY_MAX` above 1, which nothing in the tree declares, so the reply-bound arms skip
-above 1 rather than adapt.
+**Three rig facts this pass cost, all now encoded in the harness.** `tools/flash.sh`
+picks the first `ttyACM` it finds, which on a six-board bench is another board's probe:
+the C6 flash went at the K64F's VCOM until the port was named by its by-id path. The
+RX72M's suite is over about a second after `rfp-cli -run` releases reset, so a reader
+armed after the flash captures nothing; its console is an FTDI on a different USB device
+from the E2 Lite, so the reader is armed FIRST there. And an RX capture starts with two
+NUL bytes from the reset transient, which makes `grep` treat the whole log as binary and
+silently report zero of everything, so every summary grep is `-a`.
 
 ### What M4.7.3 changed
 
@@ -65,8 +132,9 @@ on every supply-16 board. The cap costs one counter, reserves no index, and move
 
 **The generated header replaced three workarounds**, and they were deleted rather than tuned: the
 `config/system.h` fallback, the provenance marker with its self-referential assert, and the
-directory-tree walker that carried the width to subdirectories. `KCAP_CHUNK_TARGET` moved to `config/cap_geometry.h` so the probe reads
-input headers only and never `cap.h` -- that is what removed the circularity at its root.
+directory-tree walker that carried the width to subdirectories. The chunk granule moved out of
+`cap.h` so the probe read input headers only -- that is what removed the circularity at its root,
+and M4.7.5 then deleted the probe itself.
 
 **A mechanism was shipped and then REMOVED inside the same milestone, and the reason generalises.**
 `kos_thread_params::cap_width` plus `CAPABILITIES_WIDE_CHILDREN` let a parent name a wider child.
@@ -137,26 +205,37 @@ items sit in source comments and CMake strings where `doc_names` is blind. Inven
 
 ## What is next (locked order)
 
-1. **M4.7.4 -- delete the legacy management.** ACTIVE. `TODO.md` carries the inventory to execute.
-   One of its rows is load-bearing for the next number: the dead `kos_service_cfg.cs_policy` /
-   `.cs_index` fields must go BEFORE M4.7.5 writes a generator that would emit them.
-2. **M4.7.5 -- the configuration mechanism.** Kconfig owns configuration, CMake keeps the build
-   graph. **The spike is DONE and every decision it left open has been made** -- see `roadmap.md`'s
-   ledger entry, which is the only tracked record, since the spike itself is gitignored.
-3. **M4.8.1 -- the driver class layer.** Branch `M4.8.1-driver-class` holds only its 102-line spec,
+1. **M4.7.6 -- C++20**, assigned by the user 2026-08-05 with an explicit go, entry in
+   `roadmap.md`. RX GNURX 14.2 is the oldest compiler in the fleet and the only family
+   with no CI, so it builds first; then the four features that pay (`constinit`,
+   designated initializers, `<bit>`, `[[no_unique_address]]`). Images move, so it is
+   measured with the 50-preset instrument and the delta is STATED, not claimed away.
+2. **M4.7.5 -- COMPLETE.** Every step landed (step 4 was moot: its deliverable was deleting a
+   central driver map in the generator, and that map was never written, because the closure
+   derives the driver set from the target graph). Step 7a landed last, so 13 chips own their CPU
+   baseline and only five boards state one: the four mps2 images, whose CORE is not a chip fact,
+   and `pizero2350`, which differs from its chip in the float ABI alone. An installed package has
+   no `arch/` tree, so its descriptor ships with the resolved flags baked in.
+   The ten-angle review ran and its findings are fixed; what it left open is `TODO_FIX.md`
+   Part D, now thirteen items. The `menuconfig --edit` item was already closed when it was
+   written down: `.config` is the live state and the generator bases on it, so an interactive
+   edit survives the next configure.
+   What remains before it merges is the maintainer's own gate: review, merge, push.
+4. **M4.8.1 -- the driver class layer.** Branch `M4.8.1-driver-class` holds only its 102-line spec,
    parked; it was cut at `tree(4ad39a8)`, so check whether it now needs a rebase.
-4. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
+5. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
    `pizero2350`; the production service list, bulk OUT and `teensy41` are not.
-5. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
+6. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
    **Nothing in-tree can catch a wrong `arch_mpu_region_pow2()` literal in a backend**
    (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m` silicon is the only
    check on that class for the RX MPU.
 
 Captures and records already stamped `M4.6.2` keep that name: a measurement is never renamed.
 
-**`KICKOS_ENABLE_SELFTEST` is ON only on the `-st` presets.** A silicon selftest run needs
-`--preset <board>-st -DKICKOS_HAVE_MPU=1`. Getting this wrong costs arms and still reads as a clean
-pass. **Flash, WAIT for the flash script's own `r;g` to finish, arm exactly ONE reader by its
+**`KICKOS_ENABLE_SELFTEST` is ON only on the `-st` variants** (and on the boards whose base
+variant is a run gate). A silicon selftest run is `--preset <board>-st`, which on an
+enforcing board already IS the enforcing posture. Getting the variant wrong costs arms and
+still reads as a clean pass. **Flash, WAIT for the flash script's own `r;g` to finish, arm exactly ONE reader by its
 `by-id` symlink, then reset separately** -- `.session/m473-bench.sh` encodes the whole order and
 refuses rather than producing a plausible-looking wrong log.
 
@@ -179,12 +258,13 @@ The scheme is `0.<milestone>.<submilestone>` and **the bump belongs to the miles
 moves several at once, so the number here rots every milestone and has misled repeatedly. Re-derive:
 
     source .session/env.sh          # MANDATORY: all four cross families need it
-    cmake --preset <tree> -B <dir> [-DKICKOS_HAVE_MPU=0|1]
+    cmake --preset <tree> -B <dir>
     cmake --build <dir> -j8 && ctest --test-dir <dir>
 
-**`--preset` does NOT reset a cached `KICKOS_HAVE_MPU`**, so use a FRESH build dir per posture and
-pass the value explicitly, then confirm it from `CMakeCache.txt`. **`sim` defaults to
-`KICKOS_HAVE_MPU=1`** keyed on the arch, not the preset, which is why it has one posture only.
+**The posture is part of the preset**, so there is no flag to pass and no cached value to
+reset: a board that can enforce does so on its base variant and carries a `<board>-flat`
+preset for the ring-only one. `sim` has no flat variant at all -- it enforces through host
+mprotect, so enforcement is the only posture it has.
 
 **Swept 2026-08-04 at tree `e74933d`: zero failures, every tree, both postures, and all 26 presets
 configure and build.** That sweep is the measurement; the shape worth remembering is that the

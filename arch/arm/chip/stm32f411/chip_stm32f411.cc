@@ -15,7 +15,7 @@
 // the reset path is FPU + C-runtime + clocks.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/flash.h"
 #include "regs/gpio.h"
@@ -25,7 +25,11 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_anchor.h> // shared tickless-clock epoch anchor (B2)
-#include <kickos/board_config.h> // per-board HSE freq + LED pin (Disco vs Black Pill)
+#include <kickos/board_config.h>
+// Board wiring (HSE freq + diag LED), unconditional and required: a board on this chip
+// that ships no boards/<board>/include/kickos/board_wiring.h fails here rather than
+// compiling against another board's crystal and LED port.
+#include <kickos/board_wiring.h>
 #include <kickos/config/limits.h>
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
@@ -39,24 +43,6 @@ namespace flash = kickos::stm32f411::reg::flash;
 namespace gpio = kickos::stm32f411::reg::gpio;
 namespace tim = kickos::stm32f411::reg::tim;
 namespace usart = kickos::stm32f411::reg::usart;
-
-// Board defaults if a board_config.h omits them (keeps a standalone compile sane;
-// the shipped boards define all of these). Disco values.
-#ifndef KICKOS_HSE_HZ
-#define KICKOS_HSE_HZ 8000000
-#endif
-#ifndef KICKOS_LED_GPIO
-#define KICKOS_LED_GPIO 0x40020C00
-#endif
-#ifndef KICKOS_LED_RCC_AHB1_BIT
-#define KICKOS_LED_RCC_AHB1_BIT 3
-#endif
-#ifndef KICKOS_LED_PIN
-#define KICKOS_LED_PIN 12
-#endif
-#ifndef KICKOS_LED_ACTIVE_LOW
-#define KICKOS_LED_ACTIVE_LOW 0
-#endif
 
 namespace kickos
 {
@@ -330,38 +316,39 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     return &f4_console_backend;
 }
 
-// Kernel diagnostic LED: the pin/port/polarity are board facts (KICKOS_LED_*,
-// from board_config.h) so one stm32f411 backend drives the Disco's PD12
+// Kernel diagnostic LED: the pin/port/polarity are board facts (KICKOS_DIAG_LED_*,
+// from board_wiring.h) so one stm32f411 backend drives the Disco's PD12
 // (active-high) and the Black Pill's PC13 (active-low) unchanged.
 void arch_diag_led_init(void)
 {
-    r32(rcc::AHB1ENR) |= (1u << KICKOS_LED_RCC_AHB1_BIT);
-    uint32_t m = r32(KICKOS_LED_GPIO + gpio::MODER);
-    m &= ~(0x3u << (KICKOS_LED_PIN * 2));
-    m |= (gpio::MODER_OUTPUT << (KICKOS_LED_PIN * 2)); // general-purpose output
-    r32(KICKOS_LED_GPIO + gpio::MODER) = m;
+    r32(rcc::AHB1ENR) |= (1u << KICKOS_DIAG_LED_RCC_AHB1_BIT);
+    uint32_t m = r32(KICKOS_DIAG_LED_GPIO + gpio::MODER);
+    m &= ~(0x3u << (KICKOS_DIAG_LED_PIN * 2));
+    m |= (gpio::MODER_OUTPUT << (KICKOS_DIAG_LED_PIN * 2)); // general-purpose output
+    r32(KICKOS_DIAG_LED_GPIO + gpio::MODER) = m;
 }
 
 void arch_diag_led_set(int on)
 {
-    constexpr uintptr_t bsrr = KICKOS_LED_GPIO + gpio::BSRR; // [15:0]=set, [31:16]=reset
+    constexpr uintptr_t bsrr = KICKOS_DIAG_LED_GPIO + gpio::BSRR; // [15:0]=set, [31:16]=reset
     bool high = (on != 0);
-#if KICKOS_LED_ACTIVE_LOW
+#if KICKOS_DIAG_LED_ACTIVE_LOW
     high = not high; // lit when driven low
 #endif
     if (high)
     {
-        r32(bsrr) = 1u << KICKOS_LED_PIN;
+        r32(bsrr) = 1u << KICKOS_DIAG_LED_PIN;
     }
     else
     {
-        r32(bsrr) = 1u << (KICKOS_LED_PIN + 16);
+        r32(bsrr) = 1u << (KICKOS_DIAG_LED_PIN + 16);
     }
 }
 
 // Board LED port index, derived from the LED's GPIO base at compile time (Disco PD12
 // -> port 3; Black Pill PC13 -> port 2). Refused so a board map cannot steal the LED.
-constexpr uint32_t LED_PORT_INDEX = (KICKOS_LED_GPIO - mmap::GPIOA_BASE) / mmap::GPIO_STRIDE;
+constexpr uint32_t LED_PORT_INDEX =
+    (KICKOS_DIAG_LED_GPIO - mmap::GPIOA_BASE) / mmap::GPIO_STRIDE;
 
 // Kernel-owned pins arch_pinmux_set refuses so a board map cannot dark the console or
 // steal the diag LED. PA2/PA3 = USART2 TX/RX; the LED port/pin is board-derived above.
@@ -371,7 +358,7 @@ static bool f411_pin_kernel_owned(uint32_t port, uint32_t pin)
     {
         return true;
     }
-    if (port == LED_PORT_INDEX and pin == KICKOS_LED_PIN)
+    if (port == LED_PORT_INDEX and pin == KICKOS_DIAG_LED_PIN)
     {
         return true;
     }

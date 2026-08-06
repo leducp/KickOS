@@ -17,17 +17,6 @@ MEMORY
 _estack = ORIGIN(RAM) + LENGTH(RAM);
 _kernel_stack_size = 2K;
 
-/* Newlib heap: an explicit .userheap section carved from RAM before the thread arena
-   (no MPU .appdata window on this chip). Every byte here is a byte the arena does not
-   get, and on 16 KiB the selftest image's static footprint leaves the arena little room
-   for the two boot stacks, hence 2K, in line with the other 16-20 KiB parts. A small
-   heap does not stop printf: newlib falls back to unbuffered stdio when the buffer
-   malloc fails (the nRF51 ships 0 and prints). 0 is legal for a board with no malloc
-   app. */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 2K
-#endif
-
 SECTIONS
 {
     .text :

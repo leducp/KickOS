@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
-# The M0 verification app + the CI gates. Links the freestanding TAP harness
+# The core verification app + the CI gates. Links the freestanding TAP harness
 # (tests/tap) directly; the app self-asserts and emits TAP over the console.
 
 # The posture knobs the image(s) below carry. Collected into a list first: on the split
@@ -98,15 +98,14 @@ if(KICKOS_ARCH STREQUAL "sim")
   # it, so the free-window arms find nothing to take.
   list(APPEND KICKOS_EXPECT_PARTIALS periph_reg_write_unheld)
 endif()
-# cap_chunk_span needs a table WIDER than the chunk granule (KCAP_CHUNK_TARGET) to reach a
-# segmented index at all; below that it runs the flat-decode half and reports PARTIAL. The
-# summed width is not a variable here, because cmake/cap_table.cmake resolves it after this
-# directory is added, so the condition is the chips whose KICKOS_CAP_TABLE_SUPPLY is 7.
-# Changing the granule changes which boards land here.
-# cap_child_width is on the same condition: at a summed width of 7 the child width IS root's,
-# so the arm cannot tell a child table from the summed one.
-if(KICKOS_CHIP STREQUAL "nrf51" OR KICKOS_CHIP STREQUAL "stm32f103"
-   OR KICKOS_CHIP STREQUAL "stm32f302")
+# cap_chunk_span needs a table WIDER than the chunk granule (KICKOS_CAP_CHUNK_TARGET) to
+# reach a segmented index at all; below that it runs the flat-decode half and reports
+# PARTIAL. The summed width itself is not a variable here. cmake/cap_table.cmake resolves
+# it after this directory is added, but the board's SUPPLY is a variable, and the sum is
+# refused above it, so a supply within the granule guarantees the flat decode.
+# cap_child_width is on the same condition: at that width the child width IS root's, so the
+# arm cannot tell a child table from the summed one.
+if(KICKOS_CAP_TABLE_SUPPLY LESS_EQUAL KICKOS_CAP_CHUNK_TARGET)
   list(APPEND KICKOS_EXPECT_PARTIALS cap_chunk_span cap_child_width)
 endif()
 if(KICKOS_HAVE_MPU AND KICKOS_ENABLE_SELFTEST)
@@ -196,14 +195,15 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
 
   # The OTHER console posture: the sim's only coverage of the published route
   # (kos_send on stdout cap index 0 -> userspace driver). One provider links per image,
-  # so it needs its own build tree; the script makes one. KICKOS_HAVE_MPU has to travel
-  # with the arm count: the script's `--preset sim` re-derives that knob, and the sim
-  # defaults it to 1, so an outer -DKICKOS_HAVE_MPU=0 otherwise checks a posture-1 stream
-  # against a posture-0 expectation.
+  # so it needs its own build tree; the script makes one. The variant has to travel with
+  # the arm count, because the posture is part of it and the arm count depends on the
+  # posture: a fresh build would otherwise take the board's base variant and the script
+  # would check that stream against this tree's expectation.
   add_test(
     NAME    sim_published_console
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_published.sh"
-            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${_tap_arms} ${KICKOS_HAVE_MPU})
+            "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${_tap_arms}
+            "${KICKOS_CONFIG_VARIANT}")
   set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
   # Its own build tree, at the same board posture, so the same two permission sets.
   set_property(TEST sim_published_console APPEND PROPERTY ENVIRONMENT
@@ -270,7 +270,7 @@ endif()
 # The same acceptance criterion for a bare-metal package: install the MCU
 # package, then build an out-of-tree app against it with the SHIPPED cross
 # toolchain (build-only; an MCU ELF can't run on the host). Registered on the
-# qemu board -- the runnable ARM CI target -- so the MCU packaging surface
+# qemu board, which is the runnable ARM CI target, so the MCU packaging surface
 # (shipped toolchain + board.cmake, the INSTALL_INTERFACE linker script, the
 # single-board guard) gets real coverage the sim gate can't give.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
@@ -288,7 +288,7 @@ endif()
 
 # Boot-ctor-split guard: on an enforced armv7m link (.kickos_app_init_array exists),
 # assert no closed-set kernel ctor leaked into the app-ctor window (would run after
-# kmain). Runs against this selftest ELF -- a plain app is enough: the check needs
+# kmain). Runs against this selftest ELF. A plain app is enough: the check needs
 # the section symbols plus the four kernel archives, not app/libstdc++ ctors.
 if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
   add_test(
@@ -339,7 +339,7 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
 endif()
 
 # RISC-V-under-PMP small-data guard: the gp window sits inside the app grant, so the
-# KickOS libs (built -msmall-data-limit=0) must emit ZERO .sdata/.sbss -- a stray
+# KickOS libs (built -msmall-data-limit=0) must emit ZERO .sdata/.sbss. A stray
 # kernel global there is reachable/writable by an unprivileged thread. Assert per
 # archive (docs/design-riscv-gp-split.md, Option 4).
 if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")

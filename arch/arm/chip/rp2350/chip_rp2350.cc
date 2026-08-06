@@ -32,7 +32,7 @@
 
 #include <stdint.h>
 
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/clocks.h"
 #include "regs/io_bank0.h"

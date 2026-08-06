@@ -1,0 +1,10 @@
+CONFIG_BOARD_QEMU=y
+
+# RTT telemetry over the structural QEMU gate. Non-enforcing, where its
+# captures were taken: what it exercises is the PendSV assembly, not a posture.
+CONFIG_KICKOS_USER_STACK_SIZE=8192
+CONFIG_KICKOS_IDLE_STACK_SIZE=512
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192
+CONFIG_CONSOLE_BOTH=y
+CONFIG_TELEMETRY_RTT=y
+CONFIG_KICKOS_ENABLE_SELFTEST=y

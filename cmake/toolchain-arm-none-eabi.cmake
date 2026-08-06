@@ -13,19 +13,19 @@
 # The compiler this file wants is the official Arm GNU Toolchain (arm-none-eabi,
 # newlib-based, ships libstdc++/libsupc++): the full-C++ opt-in needs newlib's full
 # libstdc++, which Debian's picolibc-based apt toolchain cannot provide. The
-# capability check after the finds is what ENFORCES that -- whatever gets resolved
+# capability check after the finds is what ENFORCES that. Whatever gets resolved
 # (hint, PATH, or -D) is refused at configure time unless it has newlib + libstdc++
 # for THIS board's multilib. The hint is convenience and reproducibility only.
 
 set(CMAKE_SYSTEM_NAME      Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 
-# The board picks the arch; the *chip* picks the exact core + FPU. Both F103
-# (Cortex-M3, no FPU) and F411 (Cortex-M4F) resolve to the armv7m arch but need
-# different -mcpu, so the CPU flags key off the board, not the arch. That fact
-# (arch + chip + -mcpu) lives in ONE place per board: boards/<board>/board.cmake,
-# included here (pre-project, for -mcpu) and by the build's board resolver
-# (cmake/kickos.cmake) so the toolchain and the build can never disagree.
+# The board picks the arch; the *chip* picks the exact core + FPU, and says so in its own
+# arch/arm/chip/<chip>/cpu.cmake. Both F103 (Cortex-M3, no FPU) and F411 (Cortex-M4F)
+# resolve to the armv7m arch and need different -mcpu, so the flags key off the chip and
+# not the arch. The board descriptor states arch + chip, and a CPU flag only where the
+# board itself differs from its chip; both are read here pre-project() and by the build's
+# board resolver (cmake/kickos.cmake), so the toolchain and the build cannot disagree.
 set(KICKOS_BOARD "frdmk64f" CACHE STRING "Target board: qemu|frdmk64f|f411disco|bluepill-c8|picopi")
 
 # In-tree the descriptor is boards/<board>/board.cmake relative to the repo root
@@ -49,14 +49,28 @@ else()
   message(FATAL_ERROR "KickOS arm toolchain: no board descriptor for '${KICKOS_BOARD}'")
 endif()
 
-# A bare-metal ARM board's descriptor must define KICKOS_MCPU. The sim descriptor
-# (KICKOS_ARCH=sim) does not -- catch a misdirected -DKICKOS_BOARD=sim (or any
-# non-MCU board) under the ARM toolchain up front, not as an opaque later failure.
-if(NOT DEFINED KICKOS_MCPU)
-  message(FATAL_ERROR "KickOS arm toolchain: board '${KICKOS_BOARD}' has no "
-    "KICKOS_MCPU (is it the sim? use the host toolchain for that)")
+
+# The chip's own CPU baseline, for whatever the board left unset. It is a chip fact:
+# `board` states the arch, the CHIP states the core and its FPU. Sibling of the caps.cmake
+# and mpu.cmake this tree already keeps per chip, and included AFTER the descriptor so a
+# board that genuinely differs (a float ABI, or the mps2 boards' emulated core) wins.
+# An installed package has no arch/ tree and ships a descriptor with the flags already
+# resolved into it, so a missing file here is not an error; a missing VALUE is, below.
+set(_kos_cpu_chip "${CMAKE_CURRENT_LIST_DIR}/../arch/arm/chip/${KICKOS_CHIP}/cpu.cmake")
+if(EXISTS "${_kos_cpu_chip}")
+  include("${_kos_cpu_chip}")
 endif()
-set(_kos_cpu ${KICKOS_MCPU})
+
+# A bare-metal ARM board must end up with both. The sim descriptor (KICKOS_ARCH=sim) has
+# no chip and no cpu.cmake, so a misdirected -DKICKOS_BOARD=sim (or any non-MCU board)
+# under the ARM toolchain is caught up front, not as an opaque later failure.
+if(NOT DEFINED KICKOS_MCPU OR NOT DEFINED KICKOS_MFLOAT_ABI)
+  message(FATAL_ERROR "KickOS arm toolchain: board '${KICKOS_BOARD}' resolved no CPU "
+    "baseline. Neither boards/${KICKOS_BOARD}/board.cmake nor "
+    "arch/arm/chip/${KICKOS_CHIP}/cpu.cmake states -mcpu and the float ABI (is it the "
+    "sim? use the host toolchain for that)")
+endif()
+set(_kos_cpu ${KICKOS_MCPU} -mfloat-abi=${KICKOS_MFLOAT_ABI})
 
 set(KICKOS_ARCH   "${KICKOS_ARCH}" CACHE STRING "KickOS arch backend selected by this toolchain")
 
@@ -103,7 +117,7 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 # -mthumb: Cortex-M is Thumb-only. -ffunction/-fdata-sections + --gc-sections
 # (at link) drop unreferenced code so the image is minimal. -mno-unaligned-access:
 # some parts (K64F) forbid unaligned/burst accesses across a RAM bank boundary
-# (0x2000_0000, SRAM_L|SRAM_U) -- force the compiler to never emit one.
+# (0x2000_0000, SRAM_L|SRAM_U), so the compiler must never emit one.
 string(JOIN " " _kos_common ${_kos_cpu} -mthumb -mno-unaligned-access
        -ffunction-sections -fdata-sections)
 set(CMAKE_C_FLAGS_INIT   "${_kos_common}")
