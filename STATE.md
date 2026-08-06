@@ -8,13 +8,15 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.7.6 is MERGED** (PR #15), and with it M4.7.x is closed: it was kernel-core work carrying an
-M4 number on purpose. `master` is `5f3cd8a`, tree `82fa51f`. The next number is **M4.8.1**, the
-first of the driver wave. Behind it on `master`: M4.7.5 (PR #14), M4.7.4 (PR #13), M4.7.3
-(PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1 (PR #9), M4.5.9 (PR #8), M4.5.8 + M4.5.7
-(PR #7), M4.5.6 + M4.5.7 (PR #6).
+**M4.7.7 is complete on `M4.7.7-root-thread` and merging.** Root is seated in the thread pool, so it
+carries a kill tag of its own instead of sharing idle's boot tag, it is nameable by a handle and by a
+reply capability, and an app's own `main` reaches every call/reply service API. `master` is still
+`5f3cd8a`, tree `82fa51f`. **The next number is M4.7.8**, so M4.7.x is not closed; it is kernel-core
+work carrying an M4 number on purpose. Behind M4.7.6 (PR #15) on `master`: M4.7.5 (PR #14), M4.7.4
+(PR #13), M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1 (PR #9), M4.5.9 (PR #8),
+M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
 
-What those two milestones left behind is now ordinary tree shape and is documented where it
+What M4.7.5 and M4.7.6 left behind is now ordinary tree shape and is documented where it
 belongs, not here: the configuration mechanism in `README.md` and `docs/reference/porting.md`,
 the C++20 level and its consumer rule in `cmake/kickos.cmake`, the measurement instruments in
 their own script headers under `.session/`. This file keeps only what a command cannot
@@ -22,13 +24,24 @@ re-derive.
 
 ### What the captures do NOT witness
 
-**`rx72m` has no M4.7.6 witness.** Deleting both `.init_array` entries is a BOOT-PATH change, and
-RXv3 is the one arch with neither an emulator gate nor a bench run for it. It builds, and that is
-the whole of what is known. The board is on the main bench; run `TAG=m476 .session/bench.sh rx72m`
-when that bench is back. Four boards did run, all at tree `aa596ce31128`, three ISAs and every
-enforcement class the secondary bench can host: `xmc4800-relax` (PMSAv7) and `frdmk64f` (SYSMPU)
-84 ok, `esp32c6-wroom` (PMP NAPOT) 84 ok, `esp32-wroom` (LX6, no per-task unit) 80 ok, zero
-not-ok and zero skip anywhere. Logs `.session/logs/m476-*.log`.
+**`rx72m` owes TWO witnesses, M4.7.6 and M4.7.7.** It sits on the MAIN bench, and the main bench is
+what is unavailable; the secondary bench cannot host it. M4.7.6 is the sharper debt: deleting both
+`.init_array` entries is a BOOT-PATH change, and RXv3 is the one arch with neither an emulator gate
+nor a bench run for it. It builds, and that is the whole of what is known. M4.7.7's residual risk is
+lower, because seating root in the pool is arch-neutral C with no assembly and no per-arch boot path.
+Run `TAG=m476 .session/bench.sh rx72m`, then the M4.7.7 tag, when that bench is back. Four boards did
+run M4.7.6, all at tree `aa596ce31128`, three ISAs and every enforcement class the secondary bench
+can host: `xmc4800-relax` (PMSAv7) and `frdmk64f` (SYSMPU) 84 ok, `esp32c6-wroom` (PMP NAPOT) 84 ok,
+`esp32-wroom` (LX6, no per-task unit) 80 ok, zero not-ok and zero skip anywhere. Logs
+`.session/logs/m476-*.log`.
+
+**M4.7.7 has no silicon witness at all, and the gap is a maintainer decision rather than an
+oversight.** Silicon is to be taken AFTER the merge, and a failure there becomes its own
+sub-milestone. What did gate it: `sim`, the four MPS2 machines (`qemu`, `qemu-m3`, `qemu-m7`,
+`qemu-m33`) in both postures, `microbit`, and `qemu-riscv` in both postures, every one of them now
+running the `call_from_root` arm, with `sched_exit` and `rootauth` registered on the same set. The
+bench captures behind the payload sweep are measurements of the IPC path, not witnesses of root's
+seating.
 
 **A batch `ctest` across all suites is not a valid instrument for `sim` and `qemu`.** They have no
 silicon clock, fail under the load of a back-to-back run, and pass standalone. CI runs one board
@@ -48,12 +61,18 @@ rather than producing a plausible-looking wrong log.
 
 ## What is next (locked order)
 
-1. **M4.8.1 -- the driver class layer**, the class layer the driver-model ruling requires and
-   that SPI never got. Branch `M4.8.1-driver-class` holds only its 102-line spec, parked; it was
-   cut at `tree(4ad39a8)`, so the first question is whether it still rebases.
-2. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
+1. **M4.7.7 -- root is a pool thread**, this milestone, merging.
+2. **M4.7.8 -- the timed wait and the reaper init**: an abortable and timed call, a thread join,
+   wait-until-last, and an init that reaps before it shuts the system down. Its design spike is
+   gitignored and never enters history, so `TODO.md`'s M4.7.8 section carries the settled facts
+   rather than a pointer to it.
+3. **M4.8.1 -- the driver class layer**, the class layer the driver-model ruling requires and
+   that SPI never got. IN FLIGHT on its own branch `M4.8.1-driver-class`, three commits past
+   `master`, carrying a per-driver-type class and a five-call UART class API. It also adds an
+   `ENOTSUP` code to the errno set, so M4.7.8's new errno must not collide with it.
+4. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
    `pizero2350`; the production service list, bulk OUT and `teensy41` are not.
-3. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
+5. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
    **Nothing in-tree can catch a wrong `arch_mpu_region_pow2()` literal in a backend**
    (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m` silicon is the
    only check on that class for the RX MPU.

@@ -35,10 +35,12 @@
     ASSERT(KICKOS_BOOT_ROOT_BASE(ram_start) + KICKOS_BOOT_ROOT_SIZE <= (ram_end), \
            "KickOS: the user-RAM arena cannot hold the idle + root boot stacks once MPU natural alignment is paid -- kmain would kpanic before root ever runs. Lower KICKOS_ROOT_STACK_SIZE / KICKOS_IDLE_STACK_SIZE in the board's variant defconfig (boards/<board>/configs/<variant>/defconfig), or cut this image's static footprint.")
 
-/* Same replay carried one step further: past the two boot stacks the arena must also
- * back one KICKOS_USER_STACK_SIZE block per KICKOS_MAX_THREADS slot, because that is
- * what the pool bump-allocates on demand (syscall_thread.cc). All the pool blocks share
- * one size, so only the FIRST pays an alignment run-up.
+/* Same replay carried one step further: past the two boot stacks the arena must also back
+ * KICKOS_MAX_THREADS blocks of KICKOS_USER_STACK_SIZE, because that is what the pool
+ * bump-allocates on demand (syscall_thread.cc). The count is SLOTS MINUS ROOT and not the
+ * slot count: the pool holds KICKOS_THREAD_SLOTS, and root's slot draws its stack from the
+ * boot replay above instead. All the pool blocks share one size, so only the FIRST pays an
+ * alignment run-up.
  *
  * KICKOS_POOL_STACK_* arrive as -D beside the KICKOS_BOOT_* set, from the same source.
  */

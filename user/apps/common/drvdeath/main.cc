@@ -47,6 +47,12 @@ namespace
 
     volatile kos_thread_t g_grandchild = KOS_THREAD_NONE;
     volatile int g_child_kill_rc = 1; // 1 == the child never got that far
+    volatile int g_root_kill_rc = 1;  // 1 == the child never got that far
+
+    // Root's slot is the FIRST allocation the thread pool ever makes, so it is index 0 at
+    // generation 0 on every board and posture, and handle_for(0) is the bare 0. Change that
+    // encoding and this case silently names some other thread instead.
+    constexpr kos_thread_t ROOT_THREAD = 0;
 
     void nest_grandchild(void*) // caps: park@1
     {
@@ -61,6 +67,10 @@ namespace
                                           KOS_POLICY_FIFO, 0, /*privileged=*/false,
                                           nullptr, 0, nullptr, 0, nullptr, 0, caps, 1)
                            .id();
+        // Root is unkillable: it leaves spawner_tag at KILL_TAG_NONE and kill_tag_of never
+        // answers NONE. Issued from a CHILD, because root aiming at itself is -KOS_EINVAL
+        // (that is kos_exit's path) and would witness nothing about the parenthood gate.
+        g_root_kill_rc = kos_thread_kill(ROOT_THREAD);
         kos_sem_post(NEST_DONE);
         // The accept half of the gate: a spawner may cancel its own child. Root's
         // -KOS_EPERM below is the refuse half.
@@ -180,7 +190,12 @@ int main(int, char**)
         kos_print("[drvdeath] ERROR: a spawner could not cancel its own child\n");
         return 7;
     }
-    kos_print("[drvdeath] kill gate: EBADF/EPERM refused, spawner accepted\n");
+    if (g_root_kill_rc != -KOS_EPERM)
+    {
+        kos_print("[drvdeath] ERROR: root was killable by a thread it spawned\n");
+        return 8;
+    }
+    kos_print("[drvdeath] kill gate: EBADF/EPERM refused, root unkillable, spawner accepted\n");
 #endif
 
     // Identical call to the one dropped above; its presence on the wire is the assertion.

@@ -149,14 +149,14 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
     endif()
   endforeach()
   # What the post-boot arena has to back: the two boot-stack sizes, the default thread
-  # stack and the slot count. From the generated fragment, so they are the same
-  # resolution the compile reads: sizing the arena from any other copy of these numbers
-  # models an image nobody builds.
+  # stack and how many of it. From the generated fragment, so they are the same resolution
+  # the compile reads: sizing the arena from any other copy of these numbers models an
+  # image nobody builds.
   set(_idle "${KICKOS_IDLE_STACK_SIZE}")
   set(_root "${KICKOS_ROOT_STACK_SIZE}")
   set(_user "${KICKOS_USER_STACK_SIZE}")
-  set(_slots "${KICKOS_MAX_THREADS}")
-  foreach(_v idle root user slots)
+  set(_stacks "${KICKOS_MAX_THREADS}")
+  foreach(_v idle root user stacks)
     if(NOT "${_${_v}}" MATCHES "^[0-9]+$")
       message(FATAL_ERROR
         "KickOS: the boot-arena model has no ${_v} size. Every board states "
@@ -168,10 +168,12 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
   kickos_region_align("${_idle}" "${_mn}" "${_p2}" _ial)
   kickos_region_size("${_root}" "${_mn}" "${_p2}" _rsz)
   kickos_region_align("${_root}" "${_mn}" "${_p2}" _ral)
-  # The post-boot arena also has to back one default stack per thread slot, or the board
+  # The post-boot arena also has to back KICKOS_MAX_THREADS default stacks, or the board
   # advertises KICKOS_MAX_THREADS it cannot seat: kos_thread_spawn returns -KOS_ENOMEM
   # for a slot the board claims to have, and it returns the SAME code for a full slot
   # table, so the shortfall is indistinguishable from a legitimate limit at runtime.
+  # SLOTS MINUS ROOT, not the slot count: the pool holds KICKOS_THREAD_SLOTS, and root's
+  # slot takes its stack from the boot replay above rather than from this demand.
   kickos_region_size("${_user}" "${_mn}" "${_p2}" _usz)
   kickos_region_align("${_user}" "${_mn}" "${_p2}" _ual)
   file(READ "${ld}" _ldtxt)
@@ -191,12 +193,12 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
   # so the exact fit (alignment run-ups included) is asserted in boot_arena.ld.h. These
   # are the demand terms that assert replays.
   message(STATUS "KickOS: arena model idle=${_isz}/${_ial} root=${_rsz}/${_ral} "
-                 "pool=${_slots}x${_usz}/${_ual}")
+                 "pool=${_stacks}x${_usz}/${_ual}")
   set(${out}
     "-DKICKOS_BOOT_IDLE_SIZE=${_isz}" "-DKICKOS_BOOT_IDLE_ALIGN=${_ial}"
     "-DKICKOS_BOOT_ROOT_SIZE=${_rsz}" "-DKICKOS_BOOT_ROOT_ALIGN=${_ral}"
     "-DKICKOS_POOL_STACK_SIZE=${_usz}" "-DKICKOS_POOL_STACK_ALIGN=${_ual}"
-    "-DKICKOS_POOL_STACK_COUNT=${_slots}"
+    "-DKICKOS_POOL_STACK_COUNT=${_stacks}"
     PARENT_SCOPE)
   set(${out_mn} "${_mn}" PARENT_SCOPE)
   set(${out_pow2} "${_p2}" PARENT_SCOPE)

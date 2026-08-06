@@ -7,8 +7,7 @@
 // kos_bus_req frame in a stack buffer, does one kos_call, and splits the rx bytes
 // out of the kos_bus_rsp reply. No chip register, no CS knowledge, no MMIO: the
 // same object links against ANY bus driver (K64F DSPI, XMC USIC, ...); the driver
-// owns the controller and the chip-select. So a caller MUST be a spawned pool
-// thread (the root/init thread cannot kos_call: -KOS_EPERM).
+// owns the controller and the chip-select.
 //
 // `device` names one of KOS_BUS_DEV_MAX slots on that bus (a flash and a sensor on
 // one bus are slots 0 and 1). The slots belong to the endpoint, and a service tracks

@@ -6,10 +6,9 @@
 // + unprivileged driver, which configures the channel itself). This app only drives it
 // as a CLIENT: the XMC sibling of user/apps/k64dspi.
 //
-// Because a kos_call caller must be a spawned pool thread (the root/init thread is
-// guarded -> -KOS_EPERM), the client is a SPAWNED thread that receives the service
-// endpoint's SIGNAL cap by spawn-time delegation (positional: child index 1). main
-// (running in the root/init thread, sharing its cap table) reads the endpoint handle
+// The client is a SPAWNED thread that receives the service endpoint's SIGNAL cap by
+// spawn-time delegation (positional: child index 1). main (running in the root thread,
+// sharing its cap table) reads the endpoint handle
 // the service recorded (xmc_spi0_take_endpoint, a one-shot handout) and delegates a
 // SIGNAL-narrowed copy, then
 // closes its own retained cap so the driver is the sole recv holder (driver death
@@ -184,7 +183,7 @@ int main(int, char**)
     else
     {
         // Delegate a SIGNAL-narrowed copy of E to the spawned client (child index 1).
-        // The client is the caller (a pool thread); root cannot kos_call.
+        // The client is the caller.
         kos_cap_grant const caps[1] = {
             { .source_cap = ep, .rights_mask = KOS_CAP_SIGNAL },
         };

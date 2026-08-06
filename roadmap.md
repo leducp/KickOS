@@ -144,10 +144,12 @@ what is next; this carries the numbering.
 | M4.7.1 | the capability-table rework: codec, storage, errno, sizing (`docs/design-capability-table.md`) | landed |
 | M4.7.2 | the review findings against M4.7.1 | landed |
 | M4.7.3 | per-task table width, and a per-task cap on inbound replies: the chunk directory earns its keep | landed |
-| **M4.7.4** | **delete the legacy management: nothing is released before M6, so there is none to carry** | ACTIVE |
+| M4.7.4 | delete the legacy management: nothing is released before M6, so there is none to carry | landed |
 | M4.7.5 | Kconfig owns configuration; CMake keeps the build graph | landed |
-| M4.7.6 | the language level moves to C++20, and the tree uses what it buys | planned |
-| M4.8.1 | the class layer the driver-model ruling requires and SPI never got | after M4.7.5 |
+| M4.7.6 | the language level moves to C++20, and the tree uses what it buys | landed |
+| **M4.7.7** | **root is a pool thread: a kill tag of its own, a nameable root, call/reply from an app's own `main`** | ACTIVE |
+| M4.7.8 | the timed wait and the reaper init: an abortable/timed call, thread join, wait-until-last, and an init that reaps before it shuts down | after M4.7.7 |
+| M4.8.1 | the class layer the driver-model ruling requires and SPI never got | in flight |
 | M4.8.2 | the USB CDC console, continuing M4.6.2 | planned |
 | M4.8.3..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
 

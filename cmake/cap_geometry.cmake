@@ -20,7 +20,7 @@ set(KICKOS_CAP_FIRST_DYNAMIC 2)
 # the cap_chunk_span PARTIAL list in user/apps/common/selftest/CMakeLists.txt.
 set(KICKOS_CAP_CHUNK_TARGET 8)
 
-# The runs held by something that is NOT a thread-pool slot: root's (a static TCB, so no
-# slot accounts for it) and the one thread_spawn holds in its ThreadAttr until
-# thread_create takes it over. idle holds none. A new kind of holder is a term here.
-set(KICKOS_CAP_RUN_OFF_POOL 2)
+# The runs held by something that is NOT a thread-pool slot: just the one thread_spawn holds
+# in its ThreadAttr until thread_create takes it over. Root's slot accounts for root's run,
+# and idle holds none. A new kind of holder is a term here.
+set(KICKOS_CAP_RUN_OFF_POOL 1)

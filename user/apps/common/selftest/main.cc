@@ -2687,20 +2687,6 @@ namespace
         TAP_CHECK(nth('c', 1) < nth('s', 1)); // (b) caller ran before the server proceeded
     }
 
-    // --- Call/reply: a NON-pool caller is rejected, never faults -----------------
-    // The selftest orchestrator runs on the file-static root/init TCB, which is NOT a
-    // ThreadPool slot, so it cannot be named by a reply cap. kos_call from here must fail
-    // -KOS_EPERM up front. This genuinely exercises the guard: a POOL caller with a valid
-    // SIGNAL cap and no parked receiver would slow-path PARK (hang), so an immediate
-    // -KOS_EPERM proves the non-pool check fired, not a rights or park path.
-    void t_call_nonpool_caller()
-    {
-        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
-        char buf[8] = {0};
-        TAP_CHECK(kos_call(g_ep, buf, 4, sizeof(buf)) == -KOS_EPERM);
-        TAP_CHECK(kos_handle_close(g_ep) == 0);
-    }
-
     // --- Call/reply: happy path: request delivered, reply returned in-place ---
     // A server recvs the request (info-bearing), records it, and replies a known payload;
     // the caller's kos_call returns the reply byte count and the reply OVERWRITES its send
@@ -2803,6 +2789,64 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         TAP_CHECK(g_echo_reqn == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
         TAP_CHECK(g_echo_rc == 5 and memcmp(g_echo_rplbuf, "pong!", 5) == 0);
+    }
+
+    // --- Call/reply: root calls like any other thread --------------------------------
+    // The orchestrator IS root, and root holds an ordinary thread-pool slot, so a reply
+    // capability can name it. Both dispatch sites are driven against one spawned echo
+    // server: (A) the server parked in recv before root calls, (B) root parked in
+    // SEND_WAIT first. The server must exist BEFORE the call either way, or the endpoint
+    // has no recv holder and the call is -KOS_EPIPE.
+    //
+    // The server runs at KICKOS_PRIO_MIN, one BELOW root, and both halves rest on that.
+    // Above root it can park in recv between the spawn and the call on any tick, which makes
+    // half (B) a second fastpath run with the same assertions and nothing to say so; and
+    // every donation site is `>`-guarded, so only a server that root outranks makes root DONATE
+    // and exercises the revert. The price is that the server is still READY with only its exit
+    // left when root resumes, so each half drains it before anything spawns again.
+    void t_call_from_root()
+    {
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {0, EP_WAIT_ONLY}}; // done@1, E(WAIT)@2
+        char buf[16];
+
+        g_echo_reqn = -99;
+        memset(g_echo_reqbuf, 0, sizeof(g_echo_reqbuf));
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        scaps[1].source_cap = g_ep;
+        auto sv = kos::thread::spawn_caps(echo_server, nullptr, "rtS", 1, scaps, 2);
+        if (not sv.valid())
+        {
+            kos_handle_close(g_ep);
+            tap::skip("pool too small for 1 thread");
+            return;
+        }
+        kos_sleep_ns(3000000ull); // root yields: the server runs and parks in recv (fastpath)
+        memcpy(buf, "ping", 4);
+        long rc = kos_call(g_ep, buf, 4, sizeof(buf)); // reply lands back in buf
+        wait_n(1);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        TAP_CHECK(g_echo_reqn == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
+        TAP_CHECK(rc == 5 and memcmp(buf, "pong!", 5) == 0);
+        kos_sleep_ns(3000000ull); // the server reaches EXITED, so its slot is reclaimable
+
+        g_echo_reqn = -99;
+        memset(g_echo_reqbuf, 0, sizeof(g_echo_reqbuf));
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        scaps[1].source_cap = g_ep;
+        auto sv2 = kos::thread::spawn_caps(echo_server, nullptr, "rtS2", 1, scaps, 2);
+        if (not sv2.valid())
+        {
+            kos_handle_close(g_ep);
+            tap::partial("slowpath half not run (pool too small)");
+            return;
+        }
+        memcpy(buf, "ping", 4);
+        rc = kos_call(g_ep, buf, 4, sizeof(buf)); // no receiver parked yet: root blocks first
+        wait_n(1);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        TAP_CHECK(g_echo_reqn == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
+        TAP_CHECK(rc == 5 and memcmp(buf, "pong!", 5) == 0);
+        kos_sleep_ns(3000000ull); // the server reaches EXITED, so its slot is reclaimable
     }
 
     // --- Call/reply: reply + request truncation (datagram clamp, not an error) ---
@@ -3313,7 +3357,7 @@ namespace
     // slot 1's value.
     //
     // MAIN must be the server: a spawned server plus a spawned client is two workers, which
-    // a 2-slot pool cannot host. The client must be spawned because root cannot kos_call.
+    // a 2-slot pool cannot host, so the client is the one thread spawned.
     struct MockBus
     {
         struct Profile
@@ -3458,7 +3502,7 @@ namespace
     // serve_one touches only the shared block, never a register (the peripheral belongs to
     // the IRQ thread and the domain model enforces that at spawn), so the whole
     // request/reply surface is testable with NO device at all. MAIN is the server, as in
-    // t_bus_device_slots; the client must be spawned because root cannot kos_call.
+    // t_bus_device_slots, so the client is the one thread spawned.
     //
     // The TX doorbell is structurally NOT coverable here: serve_one rings kos_irq_notify on
     // child cap index 2, which in root's own table is the authority slot, so a
@@ -5074,8 +5118,8 @@ int main(int, char**)
     TAP_ADD("endpoint_dead", t_endpoint_dead);             // F1 dead endpoint: send refused, no park
     TAP_ADD("call_infoless_revert", t_call_infoless_revert); // info-less bounce reverts the D2 boost
     TAP_ADD("call_close_reply", t_call_close_reply);         // close-instead-of-reply EPIPEs + yields
-    TAP_ADD("call_nonpool_caller", t_call_nonpool_caller);   // non-pool (root) caller rejected, no fault
     TAP_ADD("call_happy", t_call_happy);                     // request delivered + reply in-place (fast+slow)
+    TAP_ADD("call_from_root", t_call_from_root);             // root is a pool slot, so it may call (fast+slow)
     TAP_ADD("call_truncation", t_call_truncation);           // request + reply datagram clamp
     TAP_ADD("call_double_reply", t_call_double_reply);       // one-shot cap -> second reply -KOS_EBADF
     TAP_ADD("call_server_death", t_call_server_death);       // die mid-xact -> caller EPIPE (teardown arm)

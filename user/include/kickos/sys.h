@@ -146,6 +146,12 @@ int kos_sem_destroy(kos_cap_t cap); // alias of kos_handle_close (source compati
 // The out-pointer is validated BEFORE the child is created: a spawn that succeeded and then
 // could not deliver its handle would leave a thread nothing can name or kill.
 int kos_thread_spawn(struct kos_thread_params const* params, kos_thread_t* out_thread);
+
+// End the CALLING thread with `code`, or the whole system when the caller is root: root's
+// exit is a kos_shutdown(code), exactly as returning from main is, so plain C exit() and
+// abort() from main end the system with children still alive. Root therefore needs
+// KOS_AUTH_SYSTEM to call this at all (see <kickos/sys/init.h>); it panics without it,
+// there being no way to report a refusal through a noreturn call.
 void kos_exit(int code) __attribute__((noreturn));
 
 // Cancel a thread YOU spawned, named by the handle kos_thread_spawn delivered. Returns 0,

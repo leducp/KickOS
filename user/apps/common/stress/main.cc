@@ -14,10 +14,11 @@
 // Pool use scales to the board: the soak first PROBES the concurrent thread budget
 // (spawn parked threads until one is refused), then sizes the ping-pong pairs and
 // sleepers to fit it, so it runs a real soak on ANY pool instead of SKIPping the small
-// boards. idle/root are separate static TCBs, not pool-allocated. The printed counts are
-// NOT fixed: they shrink from MAX_PAIRS/MAX_SLEEPERS with the probed budget, so any knob
-// that moves the thread pool moves them. Every create/spawn is still checked: a board too
-// small even for one pair SKIPs rather than hanging a join.
+// boards. The probed budget is KICKOS_MAX_THREADS at most: the pool holds one slot more
+// than that, and root occupies it. The printed counts are NOT fixed: they shrink from
+// MAX_PAIRS/MAX_SLEEPERS with the probed budget, so any knob that moves the thread pool
+// moves them. Every create/spawn is still checked: a board too small even for one pair
+// SKIPs rather than hanging a join.
 //
 // Then a spawn/exit churn phase: live*CHURN_GENERATIONS spawn/exit cycles, at most
 // `live` (the just-freed conservation set) concurrent, each batch joined before the
@@ -145,9 +146,10 @@ namespace
         kos_sem_post(CH_DONE);
     }
 
-    // Concurrent thread budget = how many prober threads can be live at once (idle
-    // and root are static TCBs, off the pool). Spawn until refused, then release +
-    // join them all, leaving the pool empty again.
+    // Concurrent thread budget = how many prober threads can be live at once. Root holds a
+    // pool slot the whole run and the pool is sized one above KICKOS_MAX_THREADS, so this
+    // still reaches KICKOS_MAX_THREADS minus whatever the service list holds. Spawn until
+    // refused, then release + join them all, leaving the pool empty again.
     int probe_budget()
     {
         if (kos_sem_create(0, &g_gate) != 0)

@@ -231,8 +231,7 @@ caller; only the identical 14-arg `kos::thread::spawn` shape is factored here.
 ## The client wrapper (`<kickos/driver/spi_client.h>`)
 
 Chip-neutral -- no chip register, no CS knowledge, no MMIO; the same object links against
-any SPI service. A client holds a `SIGNAL`-bearing cap on the service endpoint (so it must
-be a spawned pool thread -- see `ipc-call-reply.md`).
+any SPI service. A client holds a `SIGNAL`-bearing cap on the service endpoint.
 
     long spi_transfer(int ep, uint8_t device, void const* tx, void* rx, size_t len); // 1 segment
     long spi_transact(int ep, uint8_t device, void const* wr, size_t wlen,           // write then read,

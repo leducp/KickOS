@@ -30,15 +30,17 @@ survives is below; everything else was re-verified fixed against tree `82fa51f`.
       thread again. LATENT: nothing in `user/`, `system/`, `tests/` or `examples/` closes a
       reserved index. Fix is a refusal below `KICKOS_CAP_FIRST_DYNAMIC` plus a selftest arm
       proving it. Also stated in `docs/design-capability-table.md` section 11.
-- [ ] **`KICKOS_CAP_RUN_OFF_POOL` reserves one run more than the true peak.** It is 2
-      (`cmake/cap_geometry.cmake:26`) where the peak of concurrently ATTACHED runs is
-      `KICKOS_MAX_THREADS + 1`: `ThreadPool::alloc` returns the reclaimed slot's run
-      (`kernel/include/kickos/thread.h:393`) before the spawn's `cap_slab_attach`
-      (`kernel/syscall/syscall_thread.cc:385`), so the in-flight run REPLACES a pool one rather
-      than adding to it. Cutting to 1 saves one child-width run of `.bss` and must move
-      `cmake/cap_table.cmake:156`'s footprint arithmetic with it. Deliberately not folded in: it
+- [ ] **`KICKOS_CAP_RUN_OFF_POOL` reserves one run more than the true peak.** It is 1
+      (`cmake/cap_geometry.cmake:26`), the in-flight spawn run, where the peak of concurrently
+      ATTACHED runs is `KICKOS_THREAD_SLOTS`: `ThreadPool::alloc` returns the reclaimed slot's run
+      before the spawn's `cap_slab_attach` (`kernel/syscall/syscall_thread.cc`), and the slot a
+      spawn targets holds none either way, so the in-flight run REPLACES a pool one rather than
+      adding to it. Cutting to 0 saves one child-width run of `.bss` and must move
+      `cmake/cap_table.cmake`'s footprint arithmetic with it. Deliberately not folded in: it
       spends the last margin on an allocation whose exhaustion is indistinguishable from a full
-      thread pool, both `-KOS_ENOMEM`, so it wants its own measurement.
+      thread pool, both `-KOS_ENOMEM`, so it wants its own measurement. M4.7.7 moved the number
+      from 2 to 1 by seating root in the pool, which did not touch this margin: the total
+      `KCAP_RUN_COUNT` is unchanged.
 - [ ] **The out-of-tree capability WARNING has no gate.** `kickos_declare_app_capabilities` warns
       when a declaration cannot be honoured (`cmake/cap_table.cmake:137-144`), but neither
       `examples/oot-app/CMakeLists.txt` nor `examples/oot-mcu-app/CMakeLists.txt` passes any
@@ -128,6 +130,204 @@ to all 20.
       `sys/spi_service.h:24` fail for a different reason, including the C++ `<kickos/kos.h>`. Fix
       is a C gate beside the C++ one with an explicit exclusion list, so the split is stated
       rather than discovered. API-surface work, not M4.7.
+
+## M4.7.8 -- the timed wait and the reaper init
+
+An abortable and timed call, a thread join, wait-until-last, and an init that reaps before it shuts
+the system down. `roadmap.md`'s ledger carries the number. **The design spike is gitignored and never
+enters history, so the items below carry the facts rather than a pointer to it.** Everything here is
+settled; what is left is execution.
+
+- [ ] **Two new syscall numbers, a timed call and a join, and NOT a flag on `kos_call`.** The trap
+      frame carries the syscall number plus FOUR argument slots (`arch_syscall`, `syscall_dispatch`),
+      and `kos_call` already spends all four on `ep`, `buf`, `send_len` and `recv_cap`
+      (`user/src/syscall_stubs.cc`), so there is no slot left for a deadline. Freeing one means the
+      stub packing `send_len` and `recv_cap` into a single word: both are bounded by `KOS_EP_MSG_MAX`
+      (256), so each fits nine bits, and `endpoint_call` already refuses a `send_len` above the bound
+      and clamps `recv_cap`. No stub in the tree packs two scalars into one slot today, so this is
+      new ground: `kos_sleep_ns` does the OPPOSITE, splitting one 64-bit value across two slots with
+      `kos_u64_lo` / `kos_u64_hi`, and it is not a precedent for the move.
+- [ ] **The timeout is one relative `uint32_t` of MICROSECONDS, with `UINT32_MAX` meaning no
+      deadline.** Only one slot is available, and 32 bits of nanoseconds spans 4.3 s, which is too
+      short to be a timeout; microseconds give about 71 minutes and give up no resolution that exists,
+      because `KICKOS_TIMER_MIN_DELTA_NS` is 20 us (`kernel/include/kickos/config/board.h`) and no
+      deadline in the system can be finer. That constant is one fleet-wide `constexpr` with no
+      override hook, so the floor is the same on every board today.
+- [ ] **One deadline spans both call phases for free.** The send-wait to reply-wait transition moves
+      the caller through `link` only, from `wq_block` on the endpoint's `send_waiters` to
+      `reply_donor_park` on the server's `reply_waiters`, and never touches `tnext`, which is the
+      timer delta list's own field and is documented as SEPARATE from `link` exactly so a timed wait
+      can be on the timer list and a wait queue at once (`Thread::tnext`). Nothing needs re-arming
+      across the handoff.
+- [ ] **The untimed path must stay free**: no timer arm, no clock read, no sleep-queue touch, all of
+      it behind one comparison against the no-deadline sentinel. The M4.7.7 payload sweep puts the
+      fixed cost of a round trip at about 35 us on `xmc4800-relax` and about 52 us on `frdmk64f` (the
+      zero-length intercept of the sweep; the 8 B points measured 36.0 and 53.6 us), against a payload
+      copy of 62.5 and 75.0 ns per byte per copy. The rendezvous is already the expensive part by two
+      orders of magnitude and must not grow. Those absolute figures are only in the gitignored bench
+      logs (`.session/logs/m477-xmc4800-relax-bench.log`,
+      `.session/logs/m477-frdmk64f-bench.log`); what is tracked is the per-byte pair, in the
+      `esp32-wroom` clock item below, and `user/apps/common/bench/main.cc`'s note that the sweep's
+      slope is twice the per-byte copy.
+- [ ] **The existing ABA guard already suffices for a timed-out caller, so `cap_reply_caller` needs
+      no change.** It rejects on four independent grounds before the reply cap is consumed (index out
+      of pool range, thread-slot generation mismatch, a thread no longer parked in
+      `CALL_REPLY_WAIT`, and a rolled `call_seq`), and the server sees `-KOS_ESRCH` through the
+      `endpoint_reply` branch that is already written and carries the marking "Unreachable today."
+      **Correction to the design note: only ONE test exercises the guard, not three.**
+      `tests/capreply/capreply_packing.cc` covers the CODEC (`cap_reply_seq_seat`, `cap_reply_seq`,
+      `cap_reply_handle`) over all 256 sequence values, and nothing exercises the runtime resolve or
+      the `-KOS_ESRCH` outcome, precisely because that outcome is unreachable today. The selftest
+      double-reply arm is stopped earlier, by the per-slot cap-gen guard in `cap_lookup`
+      (`-KOS_EBADF`), and `tests/slotpool/slotpool_policy.cc` is the generic `SlotPool` wrap
+      distance, which `ThreadPool` explicitly is not. A timed call is what makes the branch
+      reachable, so it is also what first needs an arm on it.
+- [ ] **`docs/reference/ipc-call-reply.md` justifies that unreachability with "there is no
+      `thread_kill`", which is already stale.** `thread_kill` exists; it is a cooperative cancel flag
+      honoured at the target's next `irq_wait` and does not unpark a `CALL_REPLY_WAIT` caller, so the
+      code comment still holds while the Reference's REASON does not. A timed call falsifies the
+      sentence outright, so fix it in this milestone.
+- [ ] **One residue the timeout side cannot fix: the reply capability pins a slot in the SERVER's
+      table** until the server replies or closes it. `cap_install_reply` mints into the receiver's own
+      run and `cap_reply_released` accounts every release, so a caller that times out leaves a live
+      inbound reply cap behind, and reclaiming it would mean reaching across a containment boundary.
+      It is bounded, by `KICKOS_CAP_REPLY_MAX` against `Thread::cap_reply_live`, and that bound is
+      the whole of the answer.
+- [ ] **A new errno, in the style of the existing set** (`system/include/kickos/sys/errno.h`, 14
+      codes today; the magnitude is the contract and the value is always returned negated). An
+      `ENOTSUP` code is being added concurrently on `M4.8.1-driver-class` as 95, so the two must not
+      collide.
+- [ ] **Two primitives, not one, and the timeout question resolves per primitive.** There is no join
+      of any kind today (`user/include/kickos/sys.h`: "There is no join, so a caller that must
+      observe the thread is gone"). A deadline belongs only where the caller knows the bound, so
+      `join` by handle takes one: a user joining its own worker knows what it is waiting for.
+      **Wait-until-last takes NO deadline.** It is not a wait for an event, it IS the shutdown
+      condition, and it is already expressible as the live-thread count reaching 1
+      (`sched::live_count`; the kernel's own test is `kernel().live` at 0 after the exiting thread's
+      own decrement, in `sched::exit_current`). Root can only name threads it spawned, so `main`'s
+      grandchildren are unnameable from root and an aggregate is the only correct shutdown primitive.
+- [ ] **The reaper init CALLS `main`; it does not spawn it.** "main returned" already IS the join,
+      and there is no correct timeout for a join on `main`: a legitimate `main` may run for hours or
+      park forever by design, so a supervisor cannot tell wedged from working. Calling it also costs
+      no pool slot, no arena stack, no narrower capability table for `main` and no stdout delegation,
+      and it keeps working the four in-tree apps that grant a DEV window from `main`. What is given
+      up: a wedged `main` wedges the supervisor, and the answer to that is a watchdog rather than a
+      supervisor.
+- [ ] **The send arm is the cheapest of the three, and it closes a PRE-EXISTING wedge.** A plain
+      sender parks with `call_state` set to `CALL_NONE` (`endpoint_send`), so it satisfies neither
+      call-state-gated term of `thread_effective_prio`, has no priority donation to revert, and is
+      handed `KCAP_INVALID` instead of a reply capability; the unwind is unlink, write the result,
+      wake. `console_handover_finish` (`user/include/kickos/sys/driver_bringup.h`) issues a plain
+      zero-length `kos_send` on `KOS_CAP_STDOUT` from the bring-up path that runs IN root, on every
+      board with a userspace console driver (ten call sites), and the header already states the
+      wedge: a driver that hangs in bring-up instead of dying parks that send indefinitely. The file
+      is byte-identical on `master`, so the wedge is independent of M4.7.7, which only added a second
+      door to it. A timed send plus a deadline at that call site is the item, and it is one line of
+      consumer code once the syscall exists.
+- [ ] **A timed recv is symmetric with the send arm** and closes the practical half of the item
+      "`kos_cap_narrow` narrows authority but not endpoint rights, so there is no driver-death story":
+      a parked receiver has no last-sender wake at all, and `recv_waiters` are woken by nothing in
+      the tree.
+- [ ] **Root's own kill tag is an enabler, but a weaker one than it reads.** Root now holds a real
+      tag (`ThreadPool::ROOT_INDEX`, `ThreadPool::is_root`) instead of sharing `KILL_TAG_BOOT` with
+      idle, and that is what makes root nameable by a handle and by a reply capability. It is NOT
+      what makes killing a child possible: `thread_spawn` seats `attr.spawner_tag` from
+      `kill_tag_of(spawner)` and a BOOT-tagged root already matched its BOOT-tagged children on
+      `master`. The load-bearing fact for reaping is the other one: root's children can never be
+      orphaned, because orphaning happens only in `ThreadPool::alloc`'s sweep over a reclaimed
+      `EXITED` slot and root never reaches `EXITED`, which is what M4.7.7's exit redirect of
+      `KOS_SYS_EXIT` into `kickos_terminate` secures.
+- [ ] **`KICKOS_CAP_CHILD_WIDTH` is NOT a fixed ceiling**, recorded here so the wrong version is not
+      repeated. `cmake/cap_table.cmake` computes it as `KICKOS_MAX_SPAWN_GRANTS` plus 1 plus the
+      widest declared inbound reply caps, and hands that floor to every child verbatim; the summed
+      demand widens root only. `KICKOS_MAX_SPAWN_GRANTS` is a Kconfig knob with `range 2 16` and
+      `default 6`, no board in the tree overrides it, and no service list or app declares an inbound
+      reply cap, so the width is 7 on every board today. Its Kconfig help states the cost is caller
+      stack and not `.bss`, because `thread_spawn` stages the grant list in arrays on the calling
+      thread's own stack. The residual constraint worth stating is only that ONE width serves every
+      child, so whatever `main` needs sets the floor for every worker in the image.
+- [ ] **`ktime_on_timer` cannot be reused as the timeout unwind.** It does a generic `sleepq_remove`
+      plus `sched::wake` (`kernel/time/time.cc`) and knows nothing else about the thread, while a
+      thread parked in IPC is still linked through `link`, which the ready lists, the wait queues and
+      a server's `reply_waiters` all reuse one at a time (`kernel/include/kickos/list.h`). The wake
+      would leave it on `send_waiters` and then `on_ready` would overwrite the same node, and no
+      `wait_result` would be written, so the woken caller would return a stale byte count.
+      `sched::block_current` already states the rule: safe for the timer path only, because the sleep
+      queue uses the separate `tnext`. What the unwind needs is a TOTAL dispatch keyed on the
+      thread's own state.
+- [ ] **Every unpark path must cancel the pending deadline, or the singly-linked `tnext` chain
+      corrupts.** Six are the endpoint rendezvous in `kernel/syscall/syscall_ipc.cc`:
+      `endpoint_send`'s receiver wake, `endpoint_recv`'s two `CALL_SEND_WAIT` bounces and its
+      plain-sender wake, `endpoint_call`'s fastpath receiver wake, and `endpoint_reply`'s caller
+      wake. Eight counting the two `obj_close_protocol` arms that EPIPE-wake IPC waiters (the
+      endpoint arm at `recv_holders` zero, and the `CAP_REPLY` arm). Twelve counting the other wait
+      parks a deadline could sit under: `sem_post`, `mutex_unlock`, `mutex_force_unlock` and
+      `thread_kill`'s `irq_wait` cancel, which is the one path that hand-unlinks from
+      `Thread::wait_queue`.
+- [ ] **Do not derive the timeout's four-way case from the existing fields.** Adding send and recv
+      arms turns the unwind into a case over the wait queue and the call state, both already present,
+      but a mis-tagged park unwinds the WRONG list silently. `Thread::blocked_on` exists and is a
+      `Mutex*` only, the priority-inheritance chain edge; what the kernel really uses is
+      `Thread::wait_queue` plus `Thread::call_state`, and a `CALL_REPLY_WAIT` caller is queue-less
+      with no back-pointer to its server. `irq_thread_parked` already back-computes an owning object
+      from `wait_queue` by `offsetof`, which is the workaround proving there is no tag. The
+      generalized tagged `blocked_on` edge probably wants to land first.
+
+## Found auditing the panic and fault scope (2026-08-06)
+
+Two audits are in flight on this, both gitignored spikes in the main checkout
+(`.session/spikes/audit-panic-scope-syscall.md`, `.session/spikes/audit-panic-scope-faults.md`).
+The items below are the parts that belong in tracked history whatever those audits conclude.
+
+- [ ] **A terminating image without `KOS_AUTH_SYSTEM` cannot exit cleanly: a successful termination
+      reports as a crash.** Both routes panic when the shutdown is refused. A returning `main`
+      reaches `kos_panic("root: shutdown refused")` in `root_entry` (`kernel/init/kmain.cc`), and
+      M4.7.7's root-exit path reaches `kpanic("root: exit shutdown refused")` in the `KOS_SYS_EXIT`
+      arm (`kernel/syscall/syscall.cc`); both end in `kfault_terminate`, which exits with the fault
+      status 132. `system/include/kickos/sys/init.h` already requires the authority for a returning
+      `main` and `docs/reference/invariants.md`'s `init-return-is-shutdown` repeats it, so the rule
+      is documented and still only discoverable at runtime; the single gate is
+      `user/apps/common/rootauth`, which passes the panic text to `tests/check_app_arms.sh` as a
+      must-NOT-appear marker. Proposed shape: refuse the combination at CONFIGURE time, where the
+      tree already prefers failing loud and early (the HAS_MPU-without-`mpu.cmake` refusal in the
+      root `CMakeLists.txt` is the model). The obstacle to price first is that nothing declares "this
+      image terminates" and the authority mask is a C symbol in the app's own translation unit
+      (`KICKOS_APP_AUTHORITY`) that no build file reads, so the gate needs a declaration that does
+      not exist yet.
+- [ ] **An MPU fault in any thread terminates the whole system, so isolation currently buys
+      detection, attribution and prevention of cross-domain corruption, and NOT availability.**
+      `arch/arm/armv7m/arch_armv7m.cc`'s `kickos_armv7m_fault_report` dumps the frame and calls
+      `kfault_terminate()` on every path, and every other backend reaches a system-wide terminal too,
+      though not all through that call: armv6m and xtensa are also unconditional, armv8-m boards run
+      the armv7m reporter (`KICKOS_ARCH` is `armv7m` on `qemu-m33` and `pizero2350`), while rv32imac,
+      rxv3 and the sim route a user-context fault to `kickos_isr_fault`, which names the task and
+      then calls `kickos_terminate` anyway. **Correction to carry: `EXC_RETURN` bit 2 does NOT
+      distinguish a user-context fault from one taken mid-syscall.** It selects MSP against PSP, and
+      a syscall runs in privileged thread mode on the calling thread's own PSP, because `SVC_Handler`
+      rewrites the stacked PC to `svc_trampoline` and clears `CONTROL.nPRIV`; the reporter reads that
+      bit only to print the stack's name. The sound discriminators already in the tree are the
+      stacked `xPSR` IPSR field (printed but never decoded), a `CONTROL.nPRIV` read in the handler,
+      and `ctx.resting_npriv`. What a thread-scoped death could already lean on: `cap_teardown` plus
+      `sched::exit_current` tear down a dying thread's capabilities, its domain reference, its held
+      mutexes, its served endpoints (EPIPE-waking every parked sender) and its owned IRQ lines. Two
+      real gaps behind that: there is no grant capability type, so spawn-time windows go only
+      transitively with `domain_release`, and a `kos_mem_self_grant` window in `Thread::regions` is
+      never cleared at exit at all; the stack, the capability slab run and the orphaning of children
+      are all deferred to `ThreadPool::alloc`'s reclaim sweep. `kernel/include/kickos/domain.h`
+      already documents a supervisor respawning after a death, requiring that a supervisor learning
+      of it by watchdog, timeout or a future join must join before respawning, and no fault path can
+      reach that today.
+- [ ] **Standard C `exit()` does not link on the ARM ports.** It pulls `__libc_fini_array`, whose
+      `_fini` no linker script in this tree defines: every `.ld` carves a `.kickos_app_fini_array`
+      output section and then `ASSERT`s it empty, and not one defines or provides `_fini`. The
+      failure is "dangerous relocation: unsupported relocation", measured on mps2-an386 (preset
+      `qemu`) and banked nowhere; the mechanism is recorded in exactly one place,
+      `user/apps/common/sched_exit/main.cc`. The live routes into `_exit` are therefore `abort()` and
+      a failed `assert`, both newlib's own, reaching this tree's `_exit` in
+      `user/src/newlib_stubs.cc` (force-linked fleet-wide through `-Wl,-u,_exit`). Against this
+      project's consumer-API surface a plain C `main` should be able to call `exit()`, so the item is
+      to satisfy `__libc_fini_array` in the linker scripts rather than to leave the standard call a
+      link error.
 
 ## M4.7.4 -- delete the legacy management (nothing is released before M6)
 
@@ -4596,6 +4796,57 @@ Touches nearly every file, so it runs after M4.5.8 merges.
       while churning `check_riscv_no_smalldata.sh`, already the soundest of the four, and its
       "before M4.6" sequencing rested on M4.6 adding introspection gates, where M4.6.1 and M4.6.2
       add boot and TAP arms riding `tests/lib/gate.sh`, out of that proposal's scope either way.
+
+## Found taking the M4.7.7 payload measurement (2026-08-06)
+
+- [ ] **`esp32-wroom` reports impossible elapsed times, so its clock read is not trustworthy.**
+      The `bench` call/reply sweep at tree `bcb94ff` returned 9 ns and then 0 ns per round trip
+      over 20000 calls at the 16 B and 128 B steps, with 1853 ns at 8 B, while its 32/64/256 B
+      steps are self-consistent at 75.0 ns per byte and agree with `xmc4800-relax` and
+      `frdmk64f` on 9 cycles per byte. So the IPC path is sound on this board and the TIMG0
+      read behind `arch_clock_now` (`arch/xtensa/chip/esp32/chip_esp32.cc`) is what returns a
+      stale or non-monotonic value: 0 ns across 20000 syscalls is not a slow clock, it is the
+      same value twice. Nothing gates it, because no in-env suite reads the clock twice around
+      a known interval and asserts the delta grew. A driver-era item: the same read backs every
+      timeout a driver takes. Log `.session/logs/m477-esp32-wroom-bench.log`.
+- [ ] **Every `kickos_bench_*` helper is a kernel function called directly, so the bench app
+      cannot measure anything on a board with an MPU or a PMP.** They are plain calls, not
+      syscalls, so they run at the caller's privilege, and each reads kernel `.data`
+      (`SystemCoreClock`, the switch accumulators) or a peripheral (`arch_clock_now`). Root has
+      not been privileged since `m4.5.1` (`0171b75`), so the first call faults: witnessed as
+      `ccu4_ticks` refused at `MMFAR=0x4000c470` on `xmc4800-relax` and `kickos_bench_core_hz`
+      refused at `0x1fff0038` on `frdmk64f`, both AFTER the payload sweep, which is why the
+      sweep is unaffected. On a board with no unit the reads succeed instead, so the throughput
+      and cycle metrics are reachable only there. The `masked_hold` model is already deleted
+      rather than repaired, its answer being available from the sweep's slope. What is left is
+      a choice for whoever wants the cycle metrics back on an enforcing board: measure inside
+      the kernel at boot, or expose the counters through the syscall ABI.
+
+## Found in the M4.7.7 ten-angle review (2026-08-06)
+
+- [ ] **The `bench` app has no execution gate on any board and compile coverage on exactly one
+      arch.** `boards/qemu-riscv/configs/bench/defconfig` is the ONLY provisioning in the fleet
+      that sets `CONFIG_KICKOS_BENCH=y`, and `user/apps/common/CMakeLists.txt:141` builds the app
+      only under that flag, so `qemu-riscv-bench` is the one preset that compiles it. CI then runs
+      `ctest -R seam_defaults` against that build dir (`.github/workflows/ci.yml:201`) and nothing
+      anywhere registers an `add_test` for the binary, so the app is never EXECUTED by any gate on
+      any board. A compile break on armv7m, armv6m, xtensa or RX therefore reaches nobody, and a
+      break in the app's own sequencing (its call/reply sweep spawns and joins two peers per step
+      against a pool that is 3 slots wide on three boards) reaches nobody at all. Cheapest first
+      cut: one more `bench` variant on a board with a machine model plus an `add_test` matching
+      the sweep's own output lines, since a bench that prints no measurement is the failure shape.
+- [ ] **`cmake/cap_table.cmake` hand-mirrors `KICKOS_THREAD_SLOTS`' `+1` with nothing
+      cross-checking it against the C macro.** `kickos_cap_table_resolve` computes
+      `math(EXPR _pool "${_threads} + 1")` and comments that it MIRRORS
+      `kernel/include/kickos/config/system.h`; if the C side ever changes shape the two silently
+      disagree. Bounded today: `_pool` reaches only the configure-time `message(STATUS)` text and
+      the `_kickos_cap_slab` arithmetic behind it, never `cap_width.h`, so a divergence yields a
+      wrong RAM diagnostic and not a wrong binary. The tree already has the fix shape: the
+      structural cap constants (`KCAP_RUN_OFF_POOL`, `KCAP_CHUNK_TARGET`,
+      `KICKOS_CAP_FIRST_DYNAMIC`) are declared in `cmake/cap_geometry.cmake` and forwarded to C
+      through the header generated from `kernel/include/kickos/config/cap_width.h.in`, so one side
+      owns each value. Forwarding the slot count the same way leaves `system.h` deriving the macro
+      from the generated header instead of restating `+ 1`.
 
 ## MMU-era groundwork quick wins (from `docs/design-mmu-era-exploration.md` section 5)
 

@@ -34,15 +34,22 @@
 #define KICKOS_MAX_ENDPOINTS 4
 #endif
 
-// Static thread pool the syscall thread_spawn draws from (+ its kernel stacks).
+// Threads the syscall thread_spawn can seat CONCURRENTLY (+ their kernel stacks). This is
+// what every defconfig states and what the boot arena backs one default stack per; it does
+// NOT count root, which holds a slot of its own.
 #ifndef KICKOS_MAX_THREADS
 #define KICKOS_MAX_THREADS 16
 #endif
+// Slots in the thread pool (thread.h). Root takes one at boot and never reaches EXITED, so
+// it is never reclaimed and a spawn can still draw KICKOS_MAX_THREADS of them. Size a TCB
+// array or a cap-run count from THIS; size a user stack or the boot arena from
+// KICKOS_MAX_THREADS.
+#define KICKOS_THREAD_SLOTS (KICKOS_MAX_THREADS + 1)
 // What this board can BACK: the widest per-task capability table its RAM can spare, and the
 // only capability figure a board may state. The width itself is summed from declared demand
 // (cmake/cap_table.cmake) and refused if it exceeds this. It prices ROOT's table alone: the
 // slab backs one CHILD-width run per holder plus root's own widening (KCAP_SLAB_CHUNKS,
-// cap.h), so a slot here does not cost (KICKOS_MAX_THREADS + KCAP_RUN_OFF_POOL) of itself.
+// cap.h), so a slot here does not cost (KICKOS_THREAD_SLOTS + KCAP_RUN_OFF_POOL) of itself.
 #ifndef KICKOS_CAP_TABLE_SUPPLY
 #define KICKOS_CAP_TABLE_SUPPLY 16
 #endif

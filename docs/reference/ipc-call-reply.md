@@ -75,9 +75,9 @@ the reply is safe. A client wanting split tx/rx copies locally.
 - `send_len > KOS_EP_MSG_MAX` (256) -> `-KOS_EINVAL` (never clamped). `recv_cap` above the
   bound is clamped (harmless). Reply truncation into `recv_cap` follows datagram semantics
   (not an error).
-- The caller MUST be a spawned pool thread (`threads.index_of(c) >= 0`); the reply cap
-  names it by pool-slot handle. The root/init TCB spawns and parks, it does not call ->
-  `-KOS_EPERM`.
+- The caller is named by its thread-pool slot handle in the reply cap, so any thread the
+  pool seats may call, root included. Idle is the one TCB outside the pool and it issues no
+  syscall at all.
 - Returns reply bytes (`>= 0`), or a negative error:
 
 | Return | Meaning |
@@ -86,7 +86,7 @@ the reply is safe. A client wanting split tx/rx copies locally.
 | `-KOS_EINVAL` | `send_len` exceeds `KOS_EP_MSG_MAX` |
 | `-KOS_EFAULT` | `buf` not readable (`send_len`) or not writable (`recv_cap`) by the caller |
 | `-KOS_EBADF` | bad endpoint cap |
-| `-KOS_EPERM` | missing `CAP_SIGNAL`, no caller context, or a non-pool caller |
+| `-KOS_EPERM` | missing `CAP_SIGNAL`, or no caller context |
 | `-KOS_EPIPE` | dead endpoint (`recv_holders == 0`), or the server died mid-transaction |
 | `-KOS_EMFILE` | the server's handle table is full (no free slot to mint the reply cap) |
 | `-KOS_ENOSYS` | the receiver took an info-less recv and cannot host a call |
@@ -220,8 +220,21 @@ closer `EXITED`; `sched::wake` already defers the switch in that case, so it is 
 - **No timed / abortable call.** A parked caller waits indefinitely. `call_seq` already
   closes the late-reply ABA (an 8-bit, 256-deep window per thread) so a timeout path bolts
   on without an ABI change.
-- **Callers must be spawned pool threads** (the root/init TCB cannot `kos_call`:
-  `-KOS_EPERM`).
+- **A caller may be root, and a root park is terminal for the whole system.** A pool caller
+  holding a valid `CAP_SIGNAL` with no receiver ever parking is parked forever (no timeout
+  above), and root is a pool thread like any other. Nothing else ends that park either: root
+  leaves `spawner_tag` at `KILL_TAG_NONE` so `kos_thread_kill` refuses it `-KOS_EPERM`
+  (`kernel/syscall/syscall_thread.cc`), a cancel would only wake an `irq_wait` park in any
+  case, and `kernel().live` never reaches 0 while root is parked, so shutdown never fires.
+  Where a worker's park costs one thread, root's costs the image.
+- **Root holding a mutex the service takes is an undetected deadlock.** Root locks a mutex,
+  calls a service, and the service locks the same mutex: `mutex_lock`'s cycle-detection pass
+  walks `blocked_on`, which only `mutex_lock` itself ever sets, and a call park sets nothing.
+  The walk therefore ends at root, reports no `-KOS_EDEADLK`, and both threads wedge. LATENT:
+  no in-tree service takes a mutex mid-transaction (same premise as the D2 limit above). A
+  timed call would bound that wedge, not detect it: the cycle stays invisible, the caller
+  learns only that time ran out, and the service stays blocked until the caller releases the
+  mutex of its own accord.
 - **No cross-call state hold.** A reply cap lives across exactly one transaction; there is
   no bus-claim/session that spans multiple calls (a coherent multi-phase transaction is
   expressed as one call with multiple segments -- see `bus-service.md`).

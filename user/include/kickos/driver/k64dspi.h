@@ -10,10 +10,9 @@
 //
 // The client speaks the neutral wrapper (<kickos/driver/spi_client.h>): spi_transfer /
 // spi_transact / spi_config over a SIGNAL-bearing cap on the endpoint, naming one of
-// KOS_BUS_DEV_MAX device slots per call. Because a kos_call caller must be a spawned
-// pool thread (the root/init thread is guarded), the client is always a spawned thread
-// that receives the endpoint's SIGNAL cap by spawn-time delegation. The bring-up runs
-// in the root/init thread and records the endpoint's cap handle so the app, in the
+// KOS_BUS_DEV_MAX device slots per call. The client is a spawned thread that receives
+// the endpoint's SIGNAL cap by spawn-time delegation. The bring-up runs
+// in the root thread and records the endpoint's cap handle so the app, in the
 // same thread with the same cap table, can delegate a SIGNAL-narrowed cap to ONE
 // client: the service tracks device slots by the caller's own request byte, so several
 // devices behind one client are supported and several mutually-untrusting clients are not.
