@@ -188,7 +188,7 @@ fi
 # The kill primitive did its job: cancelled, exited, window released.
 has '\[simcon\] window thread cancelled, releasing the registers' \
   || fail "case 3: the window thread was never cancelled out of kos_irq_wait"
-has '\[drvdeath\] kill gate: EBADF/EPERM refused, spawner accepted' \
+has '\[drvdeath\] kill gate: EBADF/EPERM refused, root unkillable, spawner accepted' \
   || fail "case 3: the thread_kill gate matrix did not pass"
 
 COUNT="$(count_of '\[drvdeath\] kernel console AFTER death (reclaimed)')"

@@ -63,7 +63,7 @@ namespace kickos
     {
         // EVERY member below needs an initialiser, holding exactly the value .bss zeroing
         // gives it: that is what keeps the implicit default constructor constexpr, and so
-        // the static TCBs and the whole Kernel constinit. Drop one and kmain.cc and
+        // the static idle TCB and the whole Kernel constinit. Drop one and kmain.cc and
         // instance.cc stop compiling.
         arch_context ctx{}; // saved machine context (opaque)
 
@@ -271,11 +271,12 @@ namespace kickos
         // spawn cleanly). null => thread_create resolves from privileged + mem_base.
         Domain* domain = nullptr;
         // Who is allowed to cancel the new thread (a kill tag). thread_spawn seats the
-        // caller's; the boot TCBs (idle, root) leave it NONE and are so un-killable.
+        // caller's; idle and root leave it NONE and are so un-killable. A handle DOES name
+        // root, so this is the whole of its protection: kill_tag_of never answers NONE.
         uint16_t spawner_tag = 0;
         // The stack passed to thread_create was demand-allocated by the kernel and is
-        // owned by the free list (harvest at reclaim). false for caller-owned and the
-        // static idle/root stacks.
+        // owned by the free list (harvest at reclaim). false for caller-owned and for the
+        // arena-allocated idle/root stacks.
         bool kstack_owned = false;
         // Pre-reserved capability run (cap_slab_attach): an exhausted slab must fail the
         // spawn BEFORE anything is built. An empty directory is legal and means the thread
@@ -295,6 +296,10 @@ namespace kickos
     // invalidates it (ABA). This is NOT the generic SlotPool: different liveness, generation
     // timing and reclaim. Caller serializes (IrqLock); reuse is safe because thread_create
     // re-inits the TCB, privilege posture included, from scratch.
+    //
+    // KICKOS_THREAD_SLOTS, not KICKOS_MAX_THREADS: kmain claims one slot for root before any
+    // spawn can run, and root never reaches EXITED, so a spawn still draws the full
+    // KICKOS_MAX_THREADS the board states.
     struct ThreadPool
     {
         // The uint16_t generation takes the other 16, so the handle spends the whole word: a
@@ -305,19 +310,18 @@ namespace kickos
         // KOS_THREAD_NONE unmintable by ANY generation and not merely out of the current
         // pool's range. KILL_TAG_BOOT already forces a stricter bound, so this is the
         // backstop for a change to the tag scheme.
-        static_assert(KICKOS_MAX_THREADS < (1 << INDEX_BITS),
-                      "thread handle index field too small for KICKOS_MAX_THREADS, or the "
+        static_assert(KICKOS_THREAD_SLOTS < (1 << INDEX_BITS),
+                      "thread handle index field too small for KICKOS_THREAD_SLOTS, or the "
                       "pool would seat the index KOS_THREAD_NONE reserves");
         static_assert((KOS_THREAD_NONE & ((1u << INDEX_BITS) - 1u)) == ((1u << INDEX_BITS) - 1u),
                       "KOS_THREAD_NONE must carry the reserved all-ones index");
 
-        // Kill-gate identity, DERIVED from the slot index rather than stored. The two boot
-        // TCBs (idle, root) SHARE KILL_TAG_BOOT because neither is a slot, which is safe
-        // only while idle issues no syscall (its body is a bare arch_idle_wait loop, see
-        // kernel/init/kmain.cc). An idle that could ever CALL needs a tag of its own.
+        // Kill-gate identity, DERIVED from the slot index rather than stored. KILL_TAG_BOOT
+        // names idle and only idle, the one TCB outside the pool: every other thread, root
+        // included, has a slot and so a tag of its own.
         static constexpr uint16_t KILL_TAG_NONE = 0;
         static constexpr uint16_t KILL_TAG_BOOT = 0xFFFFu;
-        static_assert(KICKOS_MAX_THREADS < KILL_TAG_BOOT,
+        static_assert(KICKOS_THREAD_SLOTS < KILL_TAG_BOOT,
                       "a pool slot's kill tag would collide with the boot tag");
 
         static constexpr uint16_t kill_tag_for_index(int index)
@@ -325,9 +329,9 @@ namespace kickos
             return static_cast<uint16_t>(index + 1);
         }
 
-        Thread slots[KICKOS_MAX_THREADS];
+        Thread slots[KICKOS_THREAD_SLOTS];
         int next = 0;
-        uint16_t gen[KICKOS_MAX_THREADS] = {};
+        uint16_t gen[KICKOS_THREAD_SLOTS] = {};
 
         // A CAP_REPLY carries this handle in CapEntry::obj, whole and unmasked (cap.h). At
         // 16 + 16 the fit is EXACT: a widening would truncate the GENERATION from the top and
@@ -412,7 +416,7 @@ namespace kickos
                     return s;
                 }
             }
-            if (next >= KICKOS_MAX_THREADS)
+            if (next >= KICKOS_THREAD_SLOTS)
             {
                 return -1;
             }
@@ -443,9 +447,9 @@ namespace kickos
             }
         }
 
-        // Index of a TCB in this pool, or -1 if it is not a pool slot (e.g. the
-        // file-static root/idle TCBs). UB-free: compares addresses as integers rather
-        // than subtracting pointers that may not point into slots[].
+        // Index of a TCB in this pool, or -1 if it is not a pool slot, which today is idle
+        // and nothing else. UB-free: compares addresses as integers rather than subtracting
+        // pointers that may not point into slots[].
         int index_of(Thread const* t) const
         {
             uintptr_t const base = reinterpret_cast<uintptr_t>(&slots[0]);
@@ -466,8 +470,19 @@ namespace kickos
             return static_cast<int>(off / sizeof(Thread));
         }
 
-        // The kill tag naming `t`: its slot index if it is one of ours, else the shared
-        // boot tag. Never KILL_TAG_NONE, so a thread with no spawner matches nobody.
+        // Root's slot: kmain claims it before any spawn can run, so it is index 0 on every
+        // board and every boot (kmain asserts that rather than assuming it). Do NOT identify
+        // root by spawner_tag == KILL_TAG_NONE instead: alloc's sweep above clears a
+        // reclaimed slot's children to NONE, so that test names every orphan too.
+        static constexpr int ROOT_INDEX = 0;
+
+        bool is_root(Thread const* t) const
+        {
+            return t == &slots[ROOT_INDEX];
+        }
+
+        // The kill tag naming `t`: its slot index if it is one of ours, else the boot tag.
+        // Never KILL_TAG_NONE, so a thread with no spawner matches nobody.
         uint16_t kill_tag_of(Thread const* t) const
         {
             int const index = index_of(t);

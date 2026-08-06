@@ -249,7 +249,7 @@ namespace kickos
     // One run per possible holder. A run is returned at SLOT RECLAIM and not at exit, so an
     // EXITED slot still holds its own. Short by one and a spawn is refused while a thread slot
     // is still free, which nothing downstream tells apart from a full pool: both -KOS_ENOMEM.
-    static constexpr uint16_t KCAP_RUN_COUNT = KICKOS_MAX_THREADS + KCAP_RUN_OFF_POOL_COUNT;
+    static constexpr uint16_t KCAP_RUN_COUNT = KICKOS_THREAD_SLOTS + KCAP_RUN_OFF_POOL_COUNT;
 
     // Every run holder is GUARANTEED the child width, plus root's own widening on top: a
     // spawn can never be refused for want of a chunk, because every spawn asks for exactly
@@ -264,8 +264,8 @@ namespace kickos
         return KCAP_SLAB_CHUNKS * KCAP_CHUNK_SLOTS;
     }
 
-    static_assert(KCAP_RUN_COUNT > KICKOS_MAX_THREADS,
-                  "KCAP_RUN_COUNT wrapped its uint16_t: KICKOS_MAX_THREADS is within "
+    static_assert(KCAP_RUN_COUNT > KICKOS_THREAD_SLOTS,
+                  "KCAP_RUN_COUNT wrapped its uint16_t: KICKOS_THREAD_SLOTS is within "
                   "KCAP_RUN_OFF_POOL of the type's ceiling and the slab would carve one run");
 
     // A task's chunk directory. It lives in the TCB, not inside the run itself.
@@ -288,9 +288,9 @@ namespace kickos
     // whole directory.
     //
     // The runless set, in full and stated only here: idle, whose directory is created empty,
-    // and any thread-pool slot outside a live spawn, which is one never yet allocated as well
-    // as one reclaimed and not yet handed to the next spawn. An EXITED slot is NOT one of
-    // them: its run is returned at reclaim.
+    // and any thread-pool slot no live thread occupies, which is one never yet allocated as
+    // well as one reclaimed and not yet handed to its next occupant. An EXITED slot is NOT
+    // one of them: its run is returned at reclaim.
     inline bool cap_run_held(CapRun const& run)
     {
         return run.chunk[0] != nullptr;
@@ -581,8 +581,8 @@ namespace kickos
     // 32-bit generational thread handle in the entry's obj, its call_seq low byte in the
     // entry's spare bits (cap_reply_seq_seat). Refuses -KOS_EMFILE with *out_cap left
     // KCAP_INVALID when the table is full OR c already holds KICKOS_CAP_REPLY_MAX live reply
-    // caps. `caller` MUST be a thread-pool slot: the handle names a pool slot, and
-    // endpoint_call rejects a non-pool caller up front. Caller holds IrqLock.
+    // caps. `caller` MUST be a thread-pool slot, which every thread that can reach a syscall
+    // is: idle is the one TCB outside the pool and it issues none. Caller holds IrqLock.
     [[nodiscard]] int cap_install_reply(Thread* c, Thread* caller, uint32_t* out_cap);
 
     // Live inbound CAP_REPLY entries in c's table. O(1) where the counter is stored; on the
@@ -633,7 +633,7 @@ namespace kickos
     //
     // An RR slice expiring in sched::tick_rr is the only thing that switches a dying thread
     // out at a chunk boundary, and so the only way two threads are ever in here at once
-    // (g_teardown_depth, cap.cc).
+    // (g_cap.teardown_depth, cap.cc).
     void cap_teardown(Thread* c);
 
     // True while any thread is inside cap_teardown. A preempted sweep may still hold an IRQ

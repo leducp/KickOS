@@ -34,8 +34,7 @@ extern "C" int kickos_default_init_run(int argc, char** argv)
     // TAKES it, not when it finishes, so the first probe only STARTS the drain. The
     // second cannot be taken until the service thread is back in kos_recv, which it
     // reaches only after the first flush returned, so this send completing IS the drained
-    // signal. There is no reply channel to use instead: kos_call is refused to a non-pool
-    // caller.
+    // signal. The console protocol carries no reply-bearing flush op to use instead.
     (void)kos_send(KOS_CAP_STDOUT, "", 0);
     return rc;
 }

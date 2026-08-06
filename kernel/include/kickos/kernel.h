@@ -68,11 +68,11 @@ extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
 
 // The chokepoint every ORDERED terminal path goes through: the KOS_SYS_SHUTDOWN
-// syscall, last-thread-out (sched::exit_current) and the software fault reporter
-// (kickos_isr_fault, the RISC-V/chip-hook route). Drains the buffered console, then
-// ends the system via arch_shutdown. Sits here, upstream of the arch seam, because
-// arch_shutdown itself is per-chip (one fallback TU plus four chip backends); a
-// hook inside it would have to be duplicated per arch.
+// syscall, KOS_SYS_EXIT issued by ROOT, last-thread-out (sched::exit_current) and the
+// software fault reporter (kickos_isr_fault, the RISC-V/chip-hook route). Drains the
+// buffered console, then ends the system via arch_shutdown. Sits here, upstream of the
+// arch seam, because arch_shutdown itself is per-chip (one fallback TU plus four chip
+// backends); a hook inside it would have to be duplicated per arch.
 // Under KICKOS_SHUTDOWN_TO_BOOTLOADER it tries arch_reboot before halting, so a
 // bench board returns to a flashable state on its own. A chip with no bootloader
 // entry declines with -KOS_ENOSYS and falls through to the halt.

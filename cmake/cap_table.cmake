@@ -165,6 +165,10 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
         "cmake/cap_geometry.cmake; one of the two was not read before this call.")
     endif()
   endforeach()
+  # Run holders are POOL SLOTS, and the pool has one more than the spawnable count because
+  # kmain claims one for root before any spawn can run.
+  # MIRRORS KICKOS_THREAD_SLOTS in kernel/include/kickos/config/system.h.
+  math(EXPR _pool "${_threads} + 1")
 
   set(_retained 0)
   set(_retained_by "${service_list}")
@@ -285,7 +289,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
   # Supply is checked against DEMAND, not against the chunk-rounded reservation: rounding the
   # check up would newly refuse a board whose supply is not a multiple of the granule.
   _kickos_cap_geometry("${_req}" "${_chunk}" _req_chunks _req_res)
-  _kickos_cap_slab("${_req}" "${_floor}" "${_chunk}" "${_threads}" "${_off_pool}"
+  _kickos_cap_slab("${_req}" "${_floor}" "${_chunk}" "${_pool}" "${_off_pool}"
                    _bytes _slab_chunks _child_chunks)
   if(_req GREATER _supply)
     math(EXPR _short "${_req} - ${_supply}")
@@ -304,7 +308,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
     set(_slots "${_want}")
   endif()
   _kickos_cap_geometry("${_slots}" "${_chunk}" _chunks _res_slots)
-  _kickos_cap_slab("${_slots}" "${_floor}" "${_chunk}" "${_threads}" "${_off_pool}"
+  _kickos_cap_slab("${_slots}" "${_floor}" "${_chunk}" "${_pool}" "${_off_pool}"
                    _bytes _slab_chunks _child_chunks)
   # string(CONCAT), never set() with several arguments: that makes a LIST, and a list deref
   # inside message() shows its separating semicolons.
@@ -339,7 +343,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
 
   math(EXPR _root_extra "${_chunks} - ${_child_chunks}")
   message(STATUS "KickOS: cap table: child width ${_floor} slot(s) = ${_child_chunks} "
-                 "chunk(s) guaranteed to each of ${_threads} + ${_off_pool} run holder(s), "
+                 "chunk(s) guaranteed to each of ${_pool} + ${_off_pool} run holder(s), "
                  "plus ${_root_extra} chunk(s) for root's own widening")
 
   # Never 0: a task that may hold no inbound reply capability could never serve a kos_call.

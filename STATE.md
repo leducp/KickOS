@@ -8,261 +8,76 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.7.5 is MERGED** (PR #14), squashed to two commits. **M4.7.6 (C++20) is IN PROGRESS on
-branch `M4.7.6-cpp20`, off `master` `7e0bfc0` and UNPUSHED.** `TODO_FIX.md` is still the
-untracked worklist and is **NOT gitignored, so `git clean -fd` destroys it**; its Part D is
-eleven M4.7.5 items.
-Behind M4.7.5 on `master`: M4.7.4 (PR #13), M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10),
-M4.6.1 (PR #9), M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
+**M4.7.7 is complete on `M4.7.7-root-thread` and merging.** Root is seated in the thread pool, so it
+carries a kill tag of its own instead of sharing idle's boot tag, it is nameable by a handle and by a
+reply capability, and an app's own `main` reaches every call/reply service API. `master` is still
+`5f3cd8a`, tree `82fa51f`. **The next number is M4.7.8**, so M4.7.x is not closed; it is kernel-core
+work carrying an M4 number on purpose. Behind M4.7.6 (PR #15) on `master`: M4.7.5 (PR #14), M4.7.4
+(PR #13), M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1 (PR #9), M4.5.9 (PR #8),
+M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
 
-### M4.7.5 so far: what has landed, and the ONE measurement that matters
+What M4.7.5 and M4.7.6 left behind is now ordinary tree shape and is documented where it
+belongs, not here: the configuration mechanism in `README.md` and `docs/reference/porting.md`,
+the C++20 level and its consumer rule in `cmake/kickos.cmake`, the measurement instruments in
+their own script headers under `.session/`. This file keeps only what a command cannot
+re-derive.
 
-All 20 boards configure from Kconfig. `.config`, the C header and a CMake fragment are generated
-into the BUILD tree, out of source; the source tree holds only declarations and defconfigs. **The 17
-per-board and per-chip `board_config.h` files are DELETED**, so a knob has exactly one place to be
-set. Gone with them: the `-D` forwarding loop and the provision-overrides variable it fed, the
-`kickos_core` ODR re-stamp that existed to paper over that variable, a dead overrides parameter on
-four probe functions, the board-include-dir variable whose board branch no board took, the
-service-list and pin-map board-name ladders, and the eleven-arm libs ladder (now DERIVED from the
-provider's own declared `LINK`/`CLASS` edges). Grep the branch log rather than this file for the
-names: naming a deleted identifier here is what `doc_names` refuses, correctly.
+### What the captures do NOT witness
 
-**BOTH `cc -E -P` PROBES ARE GONE**, which is the reason Kconfig was proposed at all (`TODO_FIX.md`
-C4/C5). Nothing in the build preprocesses a kernel header to read a value back out of C. The
-provisioning integers the cap-table sum and the boot-arena model need now come from the generated
-CMake fragment -- the same resolution the compile reads -- and the table's structural constants go
-the other way: `cmake/cap_geometry.cmake` declares them and the generated `config/cap_width.h`
-carries them to C, because **a value the BUILD must read cannot be owned by C without a probe to
-read it back**. They are not configuration and get no Kconfig symbol. The summing itself STAYS in
-CMake, over target properties, and `roadmap.md` says why the design's "delete the sum" endpoint is
-not what closing the backflow required.
+**`rx72m` owes TWO witnesses, M4.7.6 and M4.7.7.** It sits on the MAIN bench, and the main bench is
+what is unavailable; the secondary bench cannot host it. M4.7.6 is the sharper debt: deleting both
+`.init_array` entries is a BOOT-PATH change, and RXv3 is the one arch with neither an emulator gate
+nor a bench run for it. It builds, and that is the whole of what is known. M4.7.7's residual risk is
+lower, because seating root in the pool is arch-neutral C with no assembly and no per-arch boot path.
+Run `TAG=m476 .session/bench.sh rx72m`, then the M4.7.7 tag, when that bench is back. Four boards did
+run M4.7.6, all at tree `aa596ce31128`, three ISAs and every enforcement class the secondary bench
+can host: `xmc4800-relax` (PMSAv7) and `frdmk64f` (SYSMPU) 84 ok, `esp32c6-wroom` (PMP NAPOT) 84 ok,
+`esp32-wroom` (LX6, no per-task unit) 80 ok, zero not-ok and zero skip anywhere. Logs
+`.session/logs/m476-*.log`.
 
-**Step 5 landed, so a preset is a board plus a variant and nothing else, and the posture is part of
-the variant.** 50 presets over 20 boards. The fourteen enforcing boards state the enforcing posture
-in their own defconfigs and carry a `<board>-flat` preset beside it, which is what the ring-only
-gates build; `sim` has no flat variant, because host mprotect is the only posture it has. Every
-variant defconfig is a COMPLETE statement, not a delta on `base`, which is what `savedefconfig`
-writes back -- so a board's provisioning is now repeated once per variant and nothing checks the
-copies against each other (`TODO_FIX.md` D10). The command-line posture flag is gone with its
-translation arm, and with it the "fresh build dir per posture" rule.
+**M4.7.7 has no silicon witness at all, and the gap is a maintainer decision rather than an
+oversight.** Silicon is to be taken AFTER the merge, and a failure there becomes its own
+sub-milestone. What did gate it: `sim`, the four MPS2 machines (`qemu`, `qemu-m3`, `qemu-m7`,
+`qemu-m33`) in both postures, `microbit`, and `qemu-riscv` in both postures, every one of them now
+running the `call_from_root` arm, with `sched_exit` and `rootauth` registered on the same set. The
+bench captures behind the payload sweep are measurements of the IPC path, not witnesses of root's
+seating.
 
-**The measurement to re-run before trusting any change here: 50 build pairs, 767 images, 679
-identical, 88 differing** against a pre-Kconfig baseline, plus 14 run-gate suites standalone
-(sim and sim-telem, microbit, both postures of the four mps2 boards and of qemu-riscv,
-qemu-telem). Harness
-in `.session/`: `m475-sweep.sh` (one build per preset into `build/sweep-*`, NOT `/tmp`),
-`m475-cmp.sh` (carries its own validation notes), `m475-baseline.sh` (rebuilds the baseline under
-the post-step-5 preset names, and carries the preset-to-posture table plus the thirteen pre-Kconfig
-cells that deliberately have no counterpart), `m475-pre/` (the baseline artifacts, rebuilt
-2026-08-05 under the new keys) and the `.claude/worktrees/m475-baseline` worktree at the
-pre-Kconfig tree `32656cfbfba8`. Every witness here names the TREE it was taken on and not a
-commit: the M4.7.5 history was squashed on 2026-08-06, and `git log --format="%h %T"` maps one
-to the other.
-**Run four times** across the milestone, each against the tree as committed; the live result is
-at tree `2c89943017f5`. **Every one of the 88 differs in exactly one symbol**, `kickos::kmain`,
-by exactly
-two bytes, and only on rv32imac: that is the idle-stack cut meeting RISC-V's 12-bit signed
-immediate, where 2048 costs `lui`+`addi` and 512 is one `addi`. ARM encodes both as a single
-MOV.W modified immediate, so the same source change is invisible on every ARM board. No `.data`
-or `.bss` moved anywhere. Everything else in the milestone is image-neutral, which is the claim
-the instrument exists to make.
+**A batch `ctest` across all suites is not a valid instrument for `sim` and `qemu`.** They have no
+silicon clock, fail under the load of a back-to-back run, and pass standalone. CI runs one board
+per job for that reason, and so must any local sweep.
 
-**Two instrument facts that cost hours and will cost them again.** "Byte-identical image" is NOT a
-claim this tree can make: `kickos_app_build_stamp` folds `__DATE__`/`__TIME__` and its CODE size
-varies between two builds of one tree, so the comparison strips addresses, excludes three
-build-identity symbols and SORTS. And **a batch `ctest` across all 63 suites is not a valid
-instrument for `sim` and `qemu`**: they have no silicon clock, fail under the load of a
-back-to-back run, and pass standalone. CI runs one board per job for exactly that reason.
+**`EXPECT_SKIPS` and `EXPECT_PARTIALS` are PERMISSION SETS, not budgets.**
+`tests/check_tap_stream.sh` fails an UNLISTED skip but only NOTEs a listed arm that did not skip.
+A LOSS of arena slack is therefore caught automatically and a GAIN is not: any change that moves
+`microbit`'s `.bss` needs its skip set diffed by eye.
 
-### The bench pass: SIX boards, FIVE ISAs, every enforcement class the fleet has
-
-Witnessed for M4.7.5 at tree `2c89943017f5`, all six on one code tree, each flashed and
-captured alone. Every enforcing board reached its posture from its own `-st` variant
-defconfig, with no posture flag anywhere on the command line.
-
-| board | ISA / enforcement | plan | result |
-| --- | --- | --- | --- |
-| `xmc4800-relax` | armv7m / PMSAv7 enforce | `1..84` | 84 ok, 0 not-ok, 0 skip, 0 partial |
-| `frdmk64f` | armv7m / SYSMPU enforce | `1..84` | 84 ok, 0 not-ok, 0 skip, 0 partial |
-| `rx72m` | RXv3 / RX-MPU enforce | `1..84` | 84 ok, 0 not-ok, 0 skip, 0 partial |
-| `esp32c6-wroom` | rv32imac / PMP NAPOT enforce | `1..84` | 84 ok, 0 not-ok, 0 skip, 0 partial |
-| `esp32-wroom` | Xtensa LX6 / no-ring | `1..80` | 80 ok, 0 not-ok, 0 skip, 0 partial |
-| `f302nucleo` | armv7m / ring-only, two images | `1..43` + `1..37` | 43 + 37 ok, 0 not-ok, 3 + 7 skip |
-
-Logs: `.session/logs/m475-*.log`. Harness: `.session/bench.sh <board> [jlink-sn]` with `TAG=m475`,
-`APP=selftest_p2` for the second image of a split part.
-
-**This is the widest silicon coverage the project has had**, and it is wider than
-M4.7.3's by the board that matters for the ring: `f302nucleo` is the only physically
-present ARM part with no MPU, so the ring-only posture now has a hardware witness beside
-the four enforcing backends and the no-ring LX6.
-
-**It is also the only witness the idle-stack cut can have on three arches.** The image
-comparison cannot see that change on ARM at all, and CI never boots rxv3, lx6 or the C6.
-`rx72m`, `esp32-wroom` and `esp32c6-wroom` running the full suite at a 512-byte idle
-stack is the evidence, and there is no substitute for it in tree.
-
-**Three rig facts this pass cost, all now encoded in the harness.** `tools/flash.sh`
-picks the first `ttyACM` it finds, which on a six-board bench is another board's probe:
-the C6 flash went at the K64F's VCOM until the port was named by its by-id path. The
-RX72M's suite is over about a second after `rfp-cli -run` releases reset, so a reader
-armed after the flash captures nothing; its console is an FTDI on a different USB device
-from the E2 Lite, so the reader is armed FIRST there. And an RX capture starts with two
-NUL bytes from the reset transient, which makes `grep` treat the whole log as binary and
-silently report zero of everything, so every summary grep is `-a`.
-
-### What M4.7.3 changed
-
-**The width is per task.** Root gets the configure-time sum; every spawned task gets
-`KICKOS_CAP_CHILD_WIDTH`, the grant-list floor plus the declared inbound-reply peak. That is what
-makes M4.7.1's chunk directory load-bearing instead of provably inert. **No board's width moved** --
-7 / 10 / 11 across all 36 presets, verified before and after against a worktree at `eb685b6`.
-
-**The saving, measured fleet-wide:** 2304 -> 1216 B on 23 presets, 1280 -> 704 B on 8, and **zero on
-the five flat supply-7 images**, whose arena is byte-identical (`_ebss == __kickos_ram_start ==
-0x20001ae0` on `microbit`, before and after). Per-task width saves nothing on a 16 KiB part by
-construction: a flat run is one chunk of the ceiling whatever a task declares. That is the opposite
-of the naive expectation.
-
-**The reply bound is a CAP, not a sub-range**, and the roadmap row that promised a sub-range was
-updated to say so. A reservation collides with delegated placement -- grant 5 lands at index 6,
-inside a top reservation on a width-7 child -- and would silently demote `cap_chunk_span` to PARTIAL
-on every supply-16 board. The cap costs one counter, reserves no index, and moves no width.
-
-**The generated header replaced three workarounds**, and they were deleted rather than tuned: the
-`config/system.h` fallback, the provenance marker with its self-referential assert, and the
-directory-tree walker that carried the width to subdirectories. The chunk granule moved out of
-`cap.h` so the probe read input headers only -- that is what removed the circularity at its root,
-and M4.7.5 then deleted the probe itself.
-
-**A mechanism was shipped and then REMOVED inside the same milestone, and the reason generalises.**
-`kos_thread_params::cap_width` plus `CAPABILITIES_WIDE_CHILDREN` let a parent name a wider child.
-Four independent review angles converged on it: no driver, app or service used it; its only
-declaration existed to feed the two arms testing it; its budget was a build-time promise nothing
-enforced at runtime; an empty keyword value silently read as 0; it was unbounded (a 6.4 MB slab
-configured clean); and the arm named for its guarantee did not test it. Removing it kept **100%** of
-the saving, returned a further 64 B per segmented board, and deleted two defects at the root. The
-design document's own opening criticises the design it replaced for "a per-spawn interface whose
-only non-zero caller is the test of itself" -- and one milestone later it had grown another.
-
-### What the ten-angle review found, and the two that matter most
-
-**An unprivileged task could halt the kernel.** `kos_thread_spawn` checked only the upper edge of
-`cap_width`; a lower value reached an unconditional `KICKOS_ASSERT` -- which is `kpanic`, not
-debug-gated. Two angles reproduced the panic independently. Gone with the field.
-
-**The reply bound's one-way guarantee was false for every server in the tree.** The reply term
-widened ROOT, while the bound it sizes applies to every task and every in-tree server is a spawned
-child on the child width. A reviewer measured three peers driving a child server's own-create budget
-to zero. The term is now charged to the child width too, and configure refuses any combination
-leaving a default-width child no slot of its own.
-
-**`EXPECT_SKIPS` / `EXPECT_PARTIALS` are PERMISSION SETS, not budgets**, and the design record said
-otherwise. `tests/check_tap_stream.sh` fails an UNLISTED skip and only NOTEs a listed arm that did
-not skip. So a LOSS of arena slack is caught automatically and a GAIN is not: any change moving
-`microbit`'s `.bss` must have its skip set diffed by eye. The false claim was corrected, but it had
-already propagated into three review briefs before anyone checked it.
-
-**Sweep by CLAIM, tree-wide, not by location.** It bit again: the same dead statement about the
-deleted fallback stood in `cap.cc`, `cap.h`, `porting.md` and `roadmap.md`, and the FIRST commit of
-this milestone created a fresh tombstone -- an assert whose message named the mechanism that commit
-had just deleted, and which could no longer fail.
-
-**The Reference tier had never stated the per-task law at all**, and carried three repealed `.bss`
-formulas plus a `-KOS_EMFILE` definition false in both its clauses. `architecture.md` is the one
-reference doc no reviewer had ever covered in full; it has now been covered.
-
-**A comment in `k64uart.cc` called its own live grant inert** and "kept for spawn-signature parity".
-It calls `kos_periph_enable`, for which MMIO possession is the sole authorisation, so deleting the
-grant on that comment's word would have silenced the K64F console. The test for an inert grant is
-whether the grantee calls a `kos_periph_*` syscall -- not whether the chip's MPU gates peripherals.
-
-### Preparatory work banked for the next two numbers
-
-**The configuration-mechanism spike is DONE, and so is its successor.** One-app-per-build is out:
-11.8x wall-clock on `xmc4800-relax`, 13.2x on `sim`, ~8.3x across CI, to buy 640 B on a 128 KiB part
-and **0 B on the 16 KiB part**. The decisive fact is not the multiplier: `ctest -R seam_defaults` in a
-one-app tree prints "No tests were found!!!" and **exits 0**, and five CI steps gate whole boards on
-that shape. `--no-tests=error` now rides every ctest in the workflow.
-
-**The answer is NOT the hybrid either, and that is the one thing to carry forward.** The hybrid kept
-the demand summing in CMake; with one kernel build and N apps the summing is **deleted**, because the
-maximum has nothing to range over -- the apps do not exist when the kernel is configured. The width
-becomes an ordinary `int` with a `range`.
-
-Spike II corrected four conclusions the first draft supported and answered every fork: the `.config`
-bridge is a generated CMake fragment, a disabled boolean is ABSENT and tested with `#ifdef`, the
-service-list rows are generated as DATA while the bring-up array stays hand-written, and the ISA flags
-never enter Kconfig at all. Docs: `.session/spikes/design-config-mechanism{,-ii}.md` plus its
-corrections file and progress ledger, all deliberately outside master history -- which is why
-**`roadmap.md`'s M4.7.5 entry is the only tracked record** and must not be trimmed to a heading.
-
-**The M4.7.4 legacy sweep has been RUN**, and `TODO.md`'s section is now execution rather than
-discovery. Classes 1 and 2 came back EMPTY; the workflow YAML is clean end to end; 17 of 32 class-4
-items sit in source comments and CMake strings where `doc_names` is blind. Inventory:
-`.session/spikes/legacy-audit.md`.
+**A silicon selftest run is `--preset <board>-st`.** `KICKOS_ENABLE_SELFTEST` is ON only on the
+`-st` variants and on the boards whose base variant is itself a run gate. Getting the variant
+wrong costs arms and still reads as a clean pass. Flash, WAIT for the flash script's own `r;g` to
+finish, arm exactly ONE reader by its `by-id` symlink, then reset separately;
+`.session/bench.sh <board> [sn]` with `TAG=<milestone>` encodes the whole order and refuses
+rather than producing a plausible-looking wrong log.
 
 ## What is next (locked order)
 
-1. **M4.7.6 -- C++20**, assigned by the user 2026-08-05 with an explicit go, entry in
-   `roadmap.md`. RX GNURX 14.2 is the oldest compiler in the fleet and the only family
-   with no CI, so it builds first; then the features that pay (`constinit`, designated
-   initializers; `<bit>` was measured and mostly refused, and `[[no_unique_address]]` has
-   no candidate at all, see `roadmap.md`). Images move, so it is measured with the
-   50-preset instrument and the delta is STATED, not claimed away.
-   The whole milestone was measured against the M4.7.5 tip, tree `431675a7c08f`, rebuilt
-   in `.claude/worktrees/m476-baseline` and keyed into `.session/m476-pre`:
-   50 pairs, 767 images, EVERY image moves, and thirty non-debug
-   symbols carry all of it. `.data` drops 8 bytes fleet-wide (the two `.init_array`
-   words), `.bss` is unchanged everywhere, and `.text` drops 356 to 638 bytes per board.
-   The one board that grows is `esp32-wroom`, by 4 bytes of `.rodata` with an identical
-   symbol set: Xtensa collected both ctors already, so it had nothing to give back.
-   Every gate is GREEN on this tree, run one board at a time because a batch run is not a
-   valid instrument here: 15 suites, 325 tests, `.session/m476-gates/`, plus the sim rebuilt
-   under UBSan with `-fno-sanitize-recover=all` (32/32). `kernel_ctor_placement` now reports
-   0 kernel ctors, 0 surviving ctors and both windows empty, and still passes all three of
-   its assertions.
-   **Silicon: FOUR boards on the secondary bench, all at tree `aa596ce31128`**, three ISAs
-   and every enforcement class the bench can host. `xmc4800-relax` (armv7m / PMSAv7
-   enforce) and `frdmk64f` (armv7m / SYSMPU enforce) 84 ok; `esp32c6-wroom` (rv32imac /
-   PMP NAPOT enforce) 84 ok; `esp32-wroom` (Xtensa LX6, no per-task unit, `mpu off`)
-   80 ok. Zero not-ok, zero skip, zero partial anywhere. Logs `.session/logs/m476-*.log`,
-   harness `.session/bench.sh <board> [sn]` with `TAG=m476`. The banners read `d08b819`
-   on the two ARM boards and `d626160` on the two Espressif ones because the squash landed
-   between the runs; it moved only `STATE.md`, no image reads that, so the four runs are
-   ONE witness on ONE tree.
-   **The one arch still unwitnessed is RXv3.** Deleting both `.init_array` entries is a
-   BOOT-PATH change and `rx72m` has neither an emulator gate nor a bench run for it: the
-   board lives on the main bench, which was unavailable. It builds, and that is all anyone
-   knows. The LX6 result is what makes this tolerable rather than reckless, since Xtensa
-   was the other arch with no gate at all and it now boots and runs the full suite.
-2. **M4.7.5 -- COMPLETE.** Every step landed (step 4 was moot: its deliverable was deleting a
-   central driver map in the generator, and that map was never written, because the closure
-   derives the driver set from the target graph). Step 7a landed last, so 13 chips own their CPU
-   baseline and only five boards state one: the four mps2 images, whose CORE is not a chip fact,
-   and `pizero2350`, which differs from its chip in the float ABI alone. An installed package has
-   no `arch/` tree, so its descriptor ships with the resolved flags baked in.
-   The ten-angle review ran and its findings are fixed; what it left open is `TODO_FIX.md`
-   Part D, now thirteen items. The `menuconfig --edit` item was already closed when it was
-   written down: `.config` is the live state and the generator bases on it, so an interactive
-   edit survives the next configure. MERGED as PR #14.
-3. **M4.8.1 -- the driver class layer.** Branch `M4.8.1-driver-class` holds only its 102-line spec,
-   parked; it was cut at `tree(4ad39a8)`, so check whether it now needs a rebase.
+1. **M4.7.7 -- root is a pool thread**, this milestone, merging.
+2. **M4.7.8 -- the timed wait and the reaper init**: an abortable and timed call, a thread join,
+   wait-until-last, and an init that reaps before it shuts the system down. Its design spike is
+   gitignored and never enters history, so `TODO.md`'s M4.7.8 section carries the settled facts
+   rather than a pointer to it.
+3. **M4.8.1 -- the driver class layer**, the class layer the driver-model ruling requires and
+   that SPI never got. IN FLIGHT on its own branch `M4.8.1-driver-class`, three commits past
+   `master`, carrying a per-driver-type class and a five-call UART class API. It also adds an
+   `ENOTSUP` code to the errno set, so M4.7.8's new errno must not collide with it.
 4. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
    `pizero2350`; the production service list, bulk OUT and `teensy41` are not.
 5. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
    **Nothing in-tree can catch a wrong `arch_mpu_region_pow2()` literal in a backend**
-   (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m` silicon is the only
-   check on that class for the RX MPU.
+   (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m` silicon is the
+   only check on that class for the RX MPU.
 
 Captures and records already stamped `M4.6.2` keep that name: a measurement is never renamed.
-
-**`KICKOS_ENABLE_SELFTEST` is ON only on the `-st` variants** (and on the boards whose base
-variant is a run gate). A silicon selftest run is `--preset <board>-st`, which on an
-enforcing board already IS the enforcing posture. Getting the variant wrong costs arms and
-still reads as a clean pass. **Flash, WAIT for the flash script's own `r;g` to finish, arm exactly ONE reader by its
-`by-id` symlink, then reset separately** -- `.session/bench.sh` encodes the whole order and
-refuses rather than producing a plausible-looking wrong log.
 
 ## Build posture
 

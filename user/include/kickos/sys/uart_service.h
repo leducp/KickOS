@@ -170,10 +170,9 @@ inline uint32_t tx_write(Shared* sh, unsigned char const* p, uint32_t n)
 // Block until the TX ring is empty, or the budget runs out. Returns the bytes STILL
 // queued, so 0 means drained.
 //
-// A ZERO-LENGTH plain send on a console endpoint means FLUSH. It is the only drain
-// request root can make: kos_call is refused to a non-pool caller (-KOS_EPERM), so a
-// reply-bearing op is unreachable from the thread that is about to shut the system down,
-// and the length is the only field a plain send carries.
+// A ZERO-LENGTH plain send on a console endpoint means FLUSH. The length is the only field
+// a plain send carries, and the console protocol has no reply-bearing op, so zero length is
+// the whole of the encoding.
 //
 // Rings the doorbell on every pass, for the reason tx_write does: with the consumer parked
 // in kos_irq_wait the caller is the only remaining wake source, and that pass is also what

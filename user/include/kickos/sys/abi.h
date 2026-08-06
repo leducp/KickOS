@@ -54,7 +54,9 @@ enum kos_syscall_nr
     KOS_SYS_HANDLE_CLOSE = 17,  // (cap)   -> 0, -KOS_EBADF (bad cap), -KOS_EBUSY (own a held mutex)
     KOS_SYS_THREAD_SPAWN = 7,   // (kos_thread_params*, kos_thread_t* out) -> 0, or -KOS_E*
                                 //   (EINVAL/EFAULT/EPERM/EBADF/EBUSY/ENOMEM/EOVERFLOW)
-    KOS_SYS_EXIT = 8,           // (code)                -> does not return
+    KOS_SYS_EXIT = 8,           // (code)                -> does not return. Ends the calling
+                                //   thread, or the SYSTEM when the caller is root (which
+                                //   needs KOS_AUTH_SYSTEM for it, and panics without).
     KOS_SYS_IRQ_INJECT = 9,     // (irq)                 -> 0, or -KOS_EINVAL (self-test only)
     KOS_SYS_GUARD_ADDR = 10,    // ()  -> protected probe addr (self-test only)
     KOS_SYS_IRQ_ATTACH = 11,    // (irq, sem_handle)  -> 0, or -KOS_E* (EPERM/EINVAL/EBADF/EBUSY)

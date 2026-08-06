@@ -2,10 +2,17 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Regression gate: a non-last thread that exits must not panic. Boot sched_exit
-# (natively for the sim, on QEMU when QEMU_MACHINE is set) and assert the worker
-# actually ran and exited AND that root ran past it. Requiring only the survival
-# marker passes with the spawn deleted: root survives an exit that never happened.
+# Two regression gates on one boot of sched_exit (natively for the sim, on QEMU when
+# QEMU_MACHINE is set).
+#
+# 1. A non-last thread that exits must not panic. Assert the worker actually ran and
+# exited AND that root ran past it: requiring only the survival marker passes with the
+# spawn deleted, root surviving an exit that never happened.
+#
+# 2. Root's own exit must end the SYSTEM while a child is still alive. arch_shutdown
+# forwards the status, so the exit code IS the witness: 7 means root's exit reached
+# kickos_terminate carrying its argument, 124 means the system ran on with a dead init
+# and the image had to be killed.
 
 set -u
 . "$(dirname "$0")/lib/gate.sh"
@@ -16,7 +23,7 @@ elf="${1:?usage: check_sched_exit.sh <sched_exit.elf>}"
 
 run_image "$elf"
 
-assert_no_panic "panic on non-last thread exit"
+assert_no_panic "panic on thread exit"
 if ! has "worker: running"; then
     fail "the worker never ran (spawn refused or dropped?)"
 fi
@@ -26,6 +33,18 @@ fi
 if ! has "root: survived worker exit"; then
     fail "root did not survive the worker's exit"
 fi
+if has "parked spawn refused"; then
+    fail "the never-exiting child was refused; root's exit arm witnessed nothing"
+fi
+if ! has "root: exiting with a child alive"; then
+    fail "root never reached its own exit"
+fi
+if [ "$RC" -eq 124 ]; then
+    fail "root's exit left the system running with a dead init (timed out)"
+fi
+if [ "$RC" -ne 7 ]; then
+    fail "root's exit shut down with status $RC, not the 7 it passed"
+fi
 
-echo "PASS: non-last thread exit did not panic"
+echo "PASS: a non-last thread exit did not panic, and root's exit shut the system down"
 exit 0

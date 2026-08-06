@@ -87,8 +87,9 @@ int kickos_pinmux_run(void);
 //     KICKOS_APP_AUTHORITY(KOS_AUTH_MEMORY | KOS_AUTH_SYSTEM | KOS_AUTH_PINMUX);
 //
 // An app whose main RETURNS must keep KOS_AUTH_SYSTEM: root_entry ends the system with
-// kos_shutdown, and a refusal panics "root: shutdown refused" (kernel/init/kmain.cc). A
-// never-returning app may declare 0.
+// kos_shutdown, and a refusal panics "root: shutdown refused" (kernel/init/kmain.cc). The
+// same holds for a main that calls exit() or abort(), root's kos_exit being a shutdown too
+// (<kickos/sys.h>). A never-returning app may declare 0.
 //
 // Not weak, and must not become weak: the attribute would propagate to the app's own
 // definition (GCC carries it from declaration to definition in one TU) and leave link

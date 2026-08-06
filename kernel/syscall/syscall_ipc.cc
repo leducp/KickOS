@@ -288,14 +288,6 @@ namespace kickos
         {
             return -KOS_EPERM; // no caller context (defensive)
         }
-        // kos_call callers must be spawned pool threads: the reply cap names the
-        // caller by its pool slot handle. The root/init TCB spawns and parks, it does
-        // not call. Reject a non-pool caller cleanly (covers fast- AND slow-path, so
-        // the recv-side cap_install_reply is then guaranteed a pool thread).
-        if (kernel().threads.index_of(c) < 0)
-        {
-            return -KOS_EPERM;
-        }
         uint64_t epoch = 0;
         {
             IrqLock lock;

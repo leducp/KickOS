@@ -5,7 +5,8 @@ kickos_add_application(sched_exit
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
 
-# The bug was ARM-only (deferred PendSV switch); the sim gate locks parity. Through the
+# The non-last-exit bug was ARM-only (deferred PendSV switch); the sim gate locks parity
+# (root's exit arm is arch-neutral and runs everywhere this does). Through the
 # same script as the QEMU boards: PASS_REGULAR_EXPRESSION is an OR, so it cannot require
 # the worker markers TOO, and root survives an exit that never happened.
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")

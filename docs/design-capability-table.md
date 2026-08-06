@@ -769,11 +769,12 @@ Not settled by this document:
   re-seats the slot WITHOUT resetting the gen, so no later publish makes handle 0 resolve in that
   thread again. LATENT: nothing in `user/`, `system/`, `tests/` or `examples/` closes a reserved
   index. The open question is whether `handle_close` should refuse below `KICKOS_CAP_FIRST_DYNAMIC`.
-- **`KCAP_RUN_OFF_POOL` is 2, where the true peak of concurrently attached runs is
-  `KICKOS_MAX_THREADS + 1`.** `ThreadPool::alloc` detaches the reclaimed slot's run BEFORE
+- **`KCAP_RUN_OFF_POOL` is 1, where the true peak of concurrently attached runs is
+  `KICKOS_THREAD_SLOTS`.** `ThreadPool::alloc` detaches the reclaimed slot's run BEFORE
   `cap_slab_attach` takes the new one (`kernel/include/kickos/thread.h`), so the pool term and
-  `thread_spawn`'s in-flight term never both count and one of the two off-pool runs is never live.
-  `+ 1` would save one child-width run, `KCAP_CHILD_CHUNKS * KCAP_CHUNK_SLOTS * 8` bytes of `.bss`.
+  `thread_spawn`'s in-flight term never both count: the slot a spawn targets holds no run while
+  the in-flight one is live. `0` would save one child-width run,
+  `KCAP_CHILD_CHUNKS * KCAP_CHUNK_SLOTS * 8` bytes of `.bss`.
   Left alone deliberately: it spends the last
   margin on an allocation whose exhaustion is indistinguishable from a full thread pool, both being
   `-KOS_ENOMEM`.

@@ -674,7 +674,11 @@ namespace kickos
     int cap_install_reply(Thread* c, Thread* caller, uint32_t* out_cap)
     {
         int const idx = kernel().threads.index_of(caller);
-        KICKOS_ASSERT(idx >= 0); // endpoint_call rejects a non-pool caller up front
+        // Every thread that can issue a syscall holds a slot: idle is the one TCB outside the
+        // pool, and kmain creates it with cap_run = CapRun{}, so its capacity is 0 and every
+        // cap_lookup fails -KOS_EBADF ahead of any mint or park. Give idle a run and this
+        // assert becomes reachable.
+        KICKOS_ASSERT(idx >= 0);
         if (cap_reply_live(c) >= KICKOS_CAP_REPLY_MAX)
         {
             *out_cap = KCAP_INVALID;

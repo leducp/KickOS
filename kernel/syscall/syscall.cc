@@ -479,6 +479,22 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         }
         case KOS_SYS_EXIT:
         {
+            Thread* c = sched::current();
+            // Root's exit ends the SYSTEM, through the same terminal path a returning main
+            // takes: ending the system is a right root already holds (AUTH_SYSTEM), and
+            // root's slot must never reach EXITED, since the pool, the domain table and the
+            // boot arena are all sized for root holding its slot for the whole run, and the
+            // reclaim sweep would strip the spawner_tag off every child root ever spawned.
+            if (kernel().threads.is_root(c))
+            {
+                if (not cap_check_authority(c, AUTH_SYSTEM))
+                {
+                    // Cannot be reported: kos_exit is noreturn and _exit spins after it, so
+                    // a returned refusal would loop root forever with nothing on the wire.
+                    kpanic("root: exit shutdown refused");
+                }
+                kickos_terminate(static_cast<int>(a0)); // noreturn
+            }
             sched::exit_current(static_cast<int>(a0)); // noreturn
             return 0;
         }

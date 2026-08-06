@@ -937,13 +937,13 @@ requirement, for a zero-skip run:
 
 | Knob | Default | Pool | Suite needs | Tight-board value |
 | --- | --- | --- | --- | --- |
-| `KICKOS_MAX_THREADS` | 16 (`config/system.h:42`) | `thread.h:199` | **>= 4** | 2 |
-| `KICKOS_MAX_SEMAPHORES` | 16 (`system.h:24`) | `instance.h:65` | **>= 6** | 4 (f302) |
+| `KICKOS_MAX_THREADS` | 16 (`config/system.h:41`) | `thread.h:332` | **>= 4** | 2 |
+| `KICKOS_MAX_SEMAPHORES` | 16 (`system.h:22`) | `instance.h:65` | **>= 6** | 4 (f302) |
 | `KICKOS_CAP_TABLE_SUPPLY` | 16 (`system.h`) | per-task cap table | **>= 10** | 7 |
-| `KICKOS_MAX_MUTEXES` | 8 (`system.h:30`) | `instance.h:75` | >= 2 | 4 (c8) |
-| `KICKOS_MAX_ENDPOINTS` | 4 (`system.h:37`) | `instance.h:83` | >= 1 | 4 |
-| `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h:99`) | `instance.h:99` | >= 1 | 4 (f302) |
-| `KICKOS_MAX_DOMAINS` | `MAX_THREADS + 2` (`system.h:61`) | `instance.h:95` | derived | 4 |
+| `KICKOS_MAX_MUTEXES` | 8 (`system.h:27`) | `instance.h:75` | >= 2 | 4 (c8) |
+| `KICKOS_MAX_ENDPOINTS` | 4 (`system.h:34`) | `instance.h:83` | >= 1 | 4 |
+| `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h:100`) | `instance.h:99` | >= 1 | 4 (f302) |
+| `KICKOS_MAX_DOMAINS` | `MAX_THREADS + 2` (`system.h:67`) | `instance.h:95` | derived | 4 |
 
 The `Tight-board value` column is the chip default. The `f302nucleo` `st` variant
 overrides semaphores to 6 and threads to **3** -- not 4: it was
@@ -998,16 +998,29 @@ which is why the honest place to answer it is the link, and why `KICKOS_POOL_ARE
 exists. Eight of `f302nucleo`'s nine pre-`124b68c` skips were arena starvation labelled
 "pool too small"; see *The 5 skips on a 16 KiB part*.
 
-`KICKOS_MAX_THREADS` counts **spawnable** threads only. Idle and root run on
-file-static TCBs (`kernel/init/kmain.cc:85-86`) handed to `thread_create` by pointer,
-so they take no pool slot -- which is why `f302nucleo` runs a two-thread app at
-`KICKOS_MAX_THREADS 2`. The knob dominates static RAM: on `f302nucleo` `selftest` at
+`KICKOS_MAX_THREADS` counts **spawnable** threads only. The pool is one slot wider than the
+knob (`KICKOS_THREAD_SLOTS`, `kernel/include/kickos/config/system.h`): root holds one for the
+life of the system and never reaches `EXITED`, so a spawn still draws the full stated count.
+That is why `f302nucleo` runs a two-thread app at `KICKOS_MAX_THREADS 2`. Idle is the one
+thread the pool does not seat; it runs on a file-static TCB handed to `thread_create` by
+pointer. The knob dominates static RAM: on `f302nucleo` `selftest` at
 `KICKOS_MAX_HANDLES=9` and heap 0, `g_instance` measures 2,448 bytes at 2 threads,
 3,296 at 4, 4,152 at 6 and 5,000 at 8 -- **about 424 bytes per slot**, because each slot
-buys a `Domain` too (`system.h:61`). Those four figures were taken at a 9-slot cap table,
+buys a `Domain` too (`system.h:67`). **Those four figures hold one slot fewer than the same
+knob value gives today**: they were measured with root's TCB outside `g_instance`, so the
+slope carries and the base does not. **Do not correct them with the 424-byte slope**: that
+slope includes a `Domain` per slot, and seating root added a pool slot WITHOUT one, so the
+slope overshoots the real growth by roughly 165 bytes. They were also taken at a 9-slot cap table,
 a width no board in the fleet configures: `KICKOS_MAX_HANDLES` is not a per-chip knob, it
 is the summed total described above, and part of the per-thread cost is the cap run itself,
 so neither the base nor the slope carries over to a table of another width unmeasured.
+
+Seating root in the pool itself cost almost nothing, measured on four boards. Static RAM is
+**flat to the byte** on `bluepill-c8-st`, `microbit` and `f302nucleo`: the deleted
+`g_root_tcb` pays for the extra pool slot exactly. It is **+8 bytes on `xmc4800-relax`**,
+where `Thread` is 264 bytes with the FPU context and `ThreadPool` grows 272 rather than 266,
+because the extra `gen[]` entry pushes the trailing pointer past an 8-byte boundary. Text grew
+184 to 236 bytes depending on the ISA, the most on `microbit`'s Thumb-1.
 
 The suite also allocates from the arena and never returns it: one 4 KiB page
 (`main.cc:504`) and three 256-byte domain regions (`:1505`, `:2901-2902`), 4,864 bytes in
@@ -1023,7 +1036,11 @@ therefore the older link; the METHOD is what to reuse, and step 5 of the checkli
 `f302nucleo` `selftest` at the then-shipped `f302nucleo-st` provisioning
 (then in `cmake/presets/arm.json`; the cap table was 9 slots wide, a width no
 board configures today -- `KICKOS_MAX_HANDLES` is summed at configure and no chip header
-states it), `-Os`, no-MPU 16-byte granule. `g_instance` measures 3,336:
+states it), `-Os`, no-MPU 16-byte granule. `g_instance` measures 3,336. **That figure and the
+`.data`/`.bss` breakdown below it hold one pool slot fewer than the same knob value gives
+today**, for the reason stated above, and the 424-byte slope must NOT be used to correct
+them: it prices a `Domain` per slot, where seating root added a slot without one, so it
+overshoots by roughly 165 bytes.
 
     static  (.data 380 + .bss 8,260 + 32 alignment)   8,672
     .userheap  (KICKOS_USER_HEAP_SIZE=0)                  0

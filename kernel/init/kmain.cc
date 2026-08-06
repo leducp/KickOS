@@ -10,6 +10,7 @@
 #include <kickos/cap.h> // cap_seat_authority + CAP_AUTH_ALL (the unprivileged-root seat)
 #include <kickos/domain.h>
 #include <kickos/grant.h>
+#include <kickos/instance.h> // kernel(): root's TCB is an ordinary thread-pool slot
 #include <kickos/irqlock.h>
 #include <kickos/time.h>
 #include <kickos/irq.h>
@@ -83,10 +84,10 @@ namespace kickos
 {
     namespace
     {
-        // The bootstrap idle/root TCBs. Still file-static: instance-scoping residue
-        // (invariant #7). Their STACKS are deliberately NOT here; see boot_stack_alloc.
+        // Idle's TCB, the one thread the pool does not seat. Still file-static:
+        // instance-scoping residue (invariant #7). Its STACK is deliberately NOT here;
+        // see boot_stack_alloc.
         constinit Thread g_idle_tcb;
-        constinit Thread g_root_tcb;
 
         // Take one bootstrap thread stack from the user-RAM arena, and assert at boot the
         // two properties an MPU descriptor over it depends on. A .bss array satisfies
@@ -217,8 +218,8 @@ namespace kickos
         void* const root_stack =
             boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, "kmain: no arena for the root stack");
 
-        // Must precede ANY thread: the two static TCBs below are not pool slots, so their
-        // runs are attached by hand rather than by thread_spawn.
+        // Must precede the cap_slab_attach below: this rebuilds the free-chunk list from
+        // scratch, so running it afterwards would hand root's run back to the free list.
         cap_slab_init();
 
         ThreadAttr idle_attr;
@@ -259,15 +260,35 @@ namespace kickos
         {
             kpanic("kmain: no capability run for root");
         }
-        thread_create(&g_root_tcb, root_entry, nullptr,
+        // Root takes an ordinary pool slot, so a handle names it and every generation-guarded
+        // mechanism (a reply capability above all) works from root as it does from a child.
+        // It leaves spawner_tag at KILL_TAG_NONE and never reaches EXITED, so no kill matches
+        // it and no reclaim revisits its slot.
+        int root_slot = -1;
+        {
+            IrqLock lock;
+            root_slot = kernel().threads.alloc();
+        }
+        // Exact, not merely non-negative: ThreadPool::is_root names that one slot and
+        // KOS_SYS_EXIT reads it to decide whether an exit ends the system, so an allocation
+        // slipped in ahead of root would silently redirect THAT thread's exit. A -1 would
+        // name slots[-1], which this rejects too.
+        KICKOS_ASSERT(root_slot == ThreadPool::ROOT_INDEX);
+        Thread* const root_tcb = &kernel().threads.slots[root_slot];
+        thread_create(root_tcb, root_entry, nullptr,
                       root_stack, KICKOS_ROOT_STACK_SIZE, root_attr);
+        // Root's unkillability rests entirely on this default, which nothing above states.
+        KICKOS_ASSERT(root_tcb->spawner_tag == ThreadPool::KILL_TAG_NONE);
+        // True would push a KICKOS_ROOT_STACK_SIZE block onto a free list whose one size class
+        // is KICKOS_USER_STACK_SIZE.
+        KICKOS_ASSERT(not root_tcb->kstack_owned);
         // Root is seated with every authority. Ordering matters twice: after
         // thread_create, which zeroes the cap table and would wipe the seat; before
         // sched::start(), so the seat is in place before root's first instruction.
         // IrqLock is cap_seat_authority's documented precondition.
         {
             IrqLock lock;
-            cap_seat_authority(&g_root_tcb, CAP_AUTH_ALL);
+            cap_seat_authority(root_tcb, CAP_AUTH_ALL);
         }
 
         sched::start(); // returns only if the scheduler ever unwinds to boot
