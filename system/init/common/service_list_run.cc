@@ -13,16 +13,18 @@
 #include <kickos/sys/service.h>
 #include <kickos/sys/init.h>
 
+#include <span>
+
 extern "C" int kickos_service_list_run(void)
 {
-    for (uint32_t i = 0; i < kickos_board_services.count; ++i)
+    std::span const services{kickos_board_services.services, kickos_board_services.count};
+    for (struct kos_service_bringup const& s : services)
     {
-        struct kos_service_bringup const* s = &kickos_board_services.services[i];
-        if (s->start == nullptr)
+        if (s.start == nullptr)
         {
             continue; // skipped slot
         }
-        int const rc = s->start(s->cfg);
+        int const rc = s.start(s.cfg);
         if (rc != 0)
         {
             return rc;

@@ -26,6 +26,8 @@
 
 #include "syscall_internal.h"
 
+#include <span>
+
 namespace kickos
 {
     // syscall_dispatch answers at REGISTER width (8 bytes on the host), and the userspace
@@ -589,22 +591,24 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 case KOS_GRANT_OP_RESERVED_BASE:
                 {
                     struct arch_reserved_block blk[KICKOS_MAX_RESERVED];
-                    size_t const n = arch_reserved_blocks(blk, KICKOS_MAX_RESERVED);
-                    if (base >= n)
+                    std::span const blocks{blk,
+                                           arch_reserved_blocks(blk, KICKOS_MAX_RESERVED)};
+                    if (base >= blocks.size())
                     {
                         return 0;
                     }
-                    return blk[base].base;
+                    return blocks[base].base;
                 }
                 case KOS_GRANT_OP_RESERVED_SIZE:
                 {
                     struct arch_reserved_block blk[KICKOS_MAX_RESERVED];
-                    size_t const n = arch_reserved_blocks(blk, KICKOS_MAX_RESERVED);
-                    if (base >= n)
+                    std::span const blocks{blk,
+                                           arch_reserved_blocks(blk, KICKOS_MAX_RESERVED)};
+                    if (base >= blocks.size())
                     {
                         return 0;
                     }
-                    return blk[base].size;
+                    return blocks[base].size;
                 }
                 default:
                 {

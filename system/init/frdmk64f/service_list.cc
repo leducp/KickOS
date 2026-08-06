@@ -18,9 +18,14 @@ extern "C"
     // UART0 @ 0x4006_A000, 0x20 B (RM ch.52; AIPS0 slot 106). prio 12 >= every
     // stdout client (D9: no PI on the console rendezvous).
     static struct kos_service_cfg const k64uart_cfg = {
-        /*name=*/"k64uart", /*mmio_base=*/kickos::mk64f::mmap::UART0_BASE,
-        /*mmio_window=*/0x20u, /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*rsv=*/{ 0, 0, 0, 0 }
+        .name = "k64uart",
+        .mmio_base = kickos::mk64f::mmap::UART0_BASE,
+        .mmio_window = 0x20u,
+        .hz = 0,
+        .addr = 0,
+        .prio = 12,
+        .kind = KOS_SVC_CONSOLE,
+        .rsv = { 0, 0, 0, 0 }
     };
 
     // DSPI0 @ 0x4002_C000, 0x40 B window (RM ch.50; AIPS0 slot 44; the 32-aligned pow2
@@ -30,9 +35,14 @@ extern "C"
     // PTC4 in the driver. The call/reply path donates the caller's priority to the driver,
     // so its static prio is a floor, not the served priority.
     static struct kos_service_cfg const k64dspi_cfg = {
-        /*name=*/"k64dspi", /*mmio_base=*/kickos::mk64f::mmap::DSPI0_BASE,
-        /*mmio_window=*/0x40u, /*hz=*/10000000u, /*addr=*/0, /*prio=*/11, /*kind=*/KOS_SVC_SPI,
-        /*rsv=*/{ 0, 0, 0, 0 }
+        .name = "k64dspi",
+        .mmio_base = kickos::mk64f::mmap::DSPI0_BASE,
+        .mmio_window = 0x40u,
+        .hz = 10000000u,
+        .addr = 0,
+        .prio = 11,
+        .kind = KOS_SVC_SPI,
+        .rsv = { 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const frdmk64f_services[] = {

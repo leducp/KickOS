@@ -407,11 +407,11 @@ namespace
     // out at depth 0, perform any deferred context switch requested during it.
     void isr_frame_enter()
     {
-        sim().isr_depth++;
+        sim().isr_depth = sim().isr_depth + 1;
     }
     void isr_frame_leave(SimContext* interrupted)
     {
-        sim().isr_depth--;
+        sim().isr_depth = sim().isr_depth - 1;
         if (sim().isr_depth == 0 and sim().current != interrupted)
         {
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -1261,13 +1261,13 @@ uintptr_t arch_syscall(uintptr_t nr,
     if (sim().arena != nullptr and sim().current != nullptr)
     {
         self = sim().current;
-        self->raised++;
+        self->raised = self->raised + 1;
         arena_raise_all();
     }
     uintptr_t r = syscall_dispatch(nr, a0, a1, a2, a3);
     if (self != nullptr)
     {
-        self->raised--;
+        self->raised = self->raised - 1;
         if (self->raised == 0)
         {
             arena_lower_to_applied();

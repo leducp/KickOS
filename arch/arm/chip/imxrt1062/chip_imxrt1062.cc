@@ -264,8 +264,9 @@ namespace
         // after the ROM exits (RM 58.4); attempted earlier it is silently dropped. Spin
         // past that window, then unlock + clear EN (IRQs masked across the 128-bus-clock
         // window, TOVAL non-zero), and CONFIRM via CS.RCS; retry if the write missed.
-        for (volatile uint32_t d = 0; d < 200000u; d++)
+        for (volatile uint32_t d = 0; d < 200000u;)
         {
+            d = d + 1;
         }
         for (int tries = 0; tries < 8; tries++)
         {
@@ -284,8 +285,9 @@ namespace
             {
                 break;
             }
-            for (volatile uint32_t d = 0; d < 20000u; d++)
+            for (volatile uint32_t d = 0; d < 20000u;)
             {
+                d = d + 1;
             }
         }
     }

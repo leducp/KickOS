@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Storage for the singleton kernel instance. All-constant init keeps it in BSS:
-// no dynamic-init guard, so kernel() stays zero-cost and signal-safe.
+// Storage for the singleton kernel instance. constinit puts it in BSS with no boot-time
+// constructor and no .init_array entry, so kernel() stays zero-cost and signal-safe; the
+// compiler refuses the declaration the day a Kernel member loses its initialiser.
 
 #include <kickos/instance.h>
 
@@ -10,6 +11,6 @@ namespace kickos
 {
     namespace detail
     {
-        Kernel g_instance;
+        constinit Kernel g_instance;
     }
 }

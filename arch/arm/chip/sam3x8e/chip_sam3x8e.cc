@@ -294,7 +294,7 @@ namespace
         uint32_t cur = r32(TC0_CV0);
         if (cur < g_clk_last)
         {
-            g_clk_high++;
+            g_clk_high = g_clk_high + 1;
         }
         g_clk_last = cur;
         uint64_t hi = g_clk_high;

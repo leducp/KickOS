@@ -12,6 +12,8 @@
 #include <kickos/arch/arch.h>
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
+#include <bit>
+
 #include <stdint.h>
 
 // The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
@@ -273,8 +275,7 @@ void kickos_arch_mpu_commit(void)
     uint8_t cfg[8] = {0};
     for (size_t i = 0; i < 8; i++)
     {
-        if (i < n and regions[i].size >= 8
-            and (regions[i].size & (regions[i].size - 1)) == 0)
+        if (i < n and regions[i].size >= 8 and std::has_single_bit(regions[i].size))
         {
             addr[i] = pmp_napot_addr(regions[i].base, regions[i].size);
             cfg[i] = pmp_cfg(regions[i].attr);

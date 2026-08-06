@@ -13,6 +13,8 @@
 #include <kickos/sys.h> // kos_pinmux_set
 #include <kickos/kos.h> // kos::print (RTT/kernel debug path; NOT stdio)
 
+#include <span>
+
 namespace
 {
     // Decimal-format a non-negative value into buf's tail; return the first digit.
@@ -31,17 +33,17 @@ namespace
 
 extern "C" int kickos_pinmux_run(void)
 {
-    for (uint32_t i = 0; i < kickos_board_pinmap.count; ++i)
+    std::span const entries{kickos_board_pinmap.entries, kickos_board_pinmap.count};
+    for (struct kos_pinmux_entry const& e : entries)
     {
-        struct kos_pinmux_entry const* e = &kickos_board_pinmap.entries[i];
-        int const rc = kos_pinmux_set(e->port, e->pin, e->func);
+        int const rc = kos_pinmux_set(e.port, e.pin, e.func);
         if (rc != 0)
         {
             char buf[16];
             kos::print("[pinmux] ERROR: port ");
-            kos::print(u32_dec(e->port, buf, sizeof(buf)));
+            kos::print(u32_dec(e.port, buf, sizeof(buf)));
             kos::print(" pin ");
-            kos::print(u32_dec(e->pin, buf, sizeof(buf)));
+            kos::print(u32_dec(e.pin, buf, sizeof(buf)));
             kos::print(" rc -");
             kos::print(u32_dec(static_cast<uint32_t>(-rc), buf, sizeof(buf)));
             kos::print("\n");

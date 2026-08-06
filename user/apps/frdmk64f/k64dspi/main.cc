@@ -277,7 +277,7 @@ int main(int, char**)
         // Delegate a SIGNAL-narrowed copy of E to the spawned client (child index 1).
         // The client is the caller (a pool thread); root cannot kos_call.
         kos_cap_grant const caps[1] = {
-            { /*source_cap=*/ep, /*rights_mask=*/KOS_CAP_SIGNAL },
+            { .source_cap = ep, .rights_mask = KOS_CAP_SIGNAL },
         };
         auto const c = kos::thread::spawn_caps(spi_client, nullptr, "k64spi-cli", 9,
                                                caps, /*cap_count=*/1);

@@ -158,7 +158,9 @@ namespace kickos
         IrqBinding* b = k.irq_bindings.at(i);
         sem_init(&b->sem, 0);
         b->line = line;
-        b->needs_rearm = true; // the first irq_wait arms the line (INVARIANT H1)
+        // The first irq_wait arms the line (INVARIANT H1): a claim leaves it masked, so
+        // there is no window in which the line is armed and unowned.
+        b->needs_rearm = true;
         b->armed_once = false;
         b->trigger = IRQ_EDGE;
         if ((flags & static_cast<unsigned int>(KOS_IRQ_LEVEL)) != 0)

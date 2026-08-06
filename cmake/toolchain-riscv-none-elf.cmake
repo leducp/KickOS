@@ -39,10 +39,9 @@ else()
 endif()
 
 
-# The chip's own CPU baseline, for whatever the board left unset. It is a chip fact:
-# `board` states the arch, the CHIP states the core and its FPU. Sibling of the caps.cmake
-# and mpu.cmake this tree already keeps per chip, and included AFTER the descriptor so a
-# board that genuinely differs (a float ABI, or the mps2 boards' emulated core) wins.
+# The chip's own CPU baseline, included AFTER the board descriptor so a board that states
+# its own float ABI wins. A chip whose core really is per-board ships no cpu.cmake at all
+# (mps2).
 # An installed package has no arch/ tree and ships a descriptor with the flags already
 # resolved into it, so a missing file here is not an error; a missing VALUE is, below.
 set(_kos_cpu_chip "${CMAKE_CURRENT_LIST_DIR}/../arch/riscv/chip/${KICKOS_CHIP}/cpu.cmake")

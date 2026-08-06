@@ -56,9 +56,9 @@ namespace
 
     // IRQ-entry latency: a bench handler timestamps its own entry; kickos_bench_irq_once
     // triggers the line and returns (entry - trigger) cycles.
-    volatile uint32_t g_irq_entry = 0;
-    volatile uint64_t g_irq_entry_ns = 0; // clock_now stamp for the frozen-counter arches
-    volatile uint32_t g_irq_seen = 0;
+    constinit volatile uint32_t g_irq_entry = 0;
+    constinit volatile uint64_t g_irq_entry_ns = 0; // clock_now stamp for the frozen-counter arches
+    constinit volatile uint32_t g_irq_seen = 0;
 
     void bench_irq_handler(void*)
     {
@@ -71,8 +71,8 @@ namespace
     // IrqLock (bounded by KOS_EP_MSG_MAX). volatile so it is neither elided nor
     // hoisted out of the masked window.
     constexpr uint32_t BENCH_LAT_SPAN_MAX = 1024;
-    volatile uint8_t g_lat_src[BENCH_LAT_SPAN_MAX] = {0};
-    volatile uint8_t g_lat_dst[BENCH_LAT_SPAN_MAX] = {0};
+    constinit volatile uint8_t g_lat_src[BENCH_LAT_SPAN_MAX] = {0};
+    constinit volatile uint8_t g_lat_dst[BENCH_LAT_SPAN_MAX] = {0};
 
     // Set the line pending. On ARM a direct STIR write (works while PRIMASK holds the
     // span masked); elsewhere the arch inject seam (no-op where no line is software-
@@ -212,19 +212,19 @@ extern "C"
     }
 
     // Switch-entry timestamp, written by the switch handler (switch.S).
-    uint32_t g_bench_sw_start = 0;
+    constinit uint32_t g_bench_sw_start = 0;
     // Xtensa only: the windowed exit can't host a call, so switch.S stamps the switch
     // END here and accumulates (end-start) at the NEXT switch entry (a safe call site).
-    uint32_t g_bench_sw_end = 0;
+    constinit uint32_t g_bench_sw_end = 0;
 
     uint32_t kickos_bench_core_hz(void) { return SystemCoreClock; }
 
     namespace
     {
-        uint32_t s_min = 0xFFFFFFFFu;
-        uint32_t s_max = 0;
-        uint32_t s_count = 0;
-        uint64_t s_sum = 0;
+        constinit uint32_t s_min = 0xFFFFFFFFu;
+        constinit uint32_t s_max = 0;
+        constinit uint32_t s_count = 0;
+        constinit uint64_t s_sum = 0;
     }
 
     void kickos_bench_switch_done(uint32_t delta)

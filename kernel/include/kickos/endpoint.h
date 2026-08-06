@@ -45,17 +45,17 @@ namespace kickos
         // state. NOT the pool refcount, which counts ALL caps: this one gates the send-side
         // dead-endpoint check and fires EPIPE at 0. Shares endpoint_refs' uint8_t ceiling
         // and refusal, because obj_ref_inc tests both before moving either.
-        uint8_t recv_holders;
+        uint8_t recv_holders = 0;
         // Intrusive link in `server`'s served-endpoint chain, or EP_SERVED_NONE.
         // Non-sentinel exactly while `server` is non-null.
-        uint16_t next_served;
+        uint16_t next_served = EP_SERVED_NONE;
         // The conventional single receiver, re-set at every recv. One server per endpoint
         // is documented, not enforced. Also the boost target when a caller parks on
         // send_waiters. MUST be cleared in the endpoint close/teardown arm when the server
         // drops its WAIT cap, else this raw pointer dangles onto a reused TCB.
         // Write it ONLY through endpoint_server_set/endpoint_server_clear (sync.h); the
         // chain above indexes this field, and a bare store leaves that chain stale.
-        Thread* server;
+        Thread* server = nullptr;
     };
 }
 

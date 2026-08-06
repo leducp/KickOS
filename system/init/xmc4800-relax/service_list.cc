@@ -19,9 +19,14 @@ extern "C"
     // USIC0 CH0 @ 0x4003_0000, 0x200 B (RM Table 18-21). prio 12 must be >= every stdout
     // client's priority (D9: no PI on the console rendezvous).
     static struct kos_service_cfg const xmcuart_cfg = {
-        /*name=*/"xmcuart", /*mmio_base=*/kickos::xmc::mmap::USIC0_CH0_BASE,
-        /*mmio_window=*/0x200u, /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*rsv=*/{ 0, 0, 0, 0 }
+        .name = "xmcuart",
+        .mmio_base = kickos::xmc::mmap::USIC0_CH0_BASE,
+        .mmio_window = 0x200u,
+        .hz = 0,
+        .addr = 0,
+        .prio = 12,
+        .kind = KOS_SVC_CONSOLE,
+        .rsv = { 0, 0, 0, 0 }
     };
 
     // USIC0 CH1 @ 0x4003_0200, 0x200 B window (RM Table 18-21; the 0x200-aligned pow2
@@ -30,9 +35,14 @@ extern "C"
     // line, held across the transaction by PCR.FEM=1. The call/reply path donates the
     // caller's priority to the driver, so its static prio is a floor, not the served one.
     static struct kos_service_cfg const xmcssc_cfg = {
-        /*name=*/"xmcssc", /*mmio_base=*/kickos::xmc::mmap::USIC0_CH1_BASE,
-        /*mmio_window=*/0x200u, /*hz=*/1000000u, /*addr=*/0, /*prio=*/11, /*kind=*/KOS_SVC_SPI,
-        /*rsv=*/{ 0, 0, 0, 0 }
+        .name = "xmcssc",
+        .mmio_base = kickos::xmc::mmap::USIC0_CH1_BASE,
+        .mmio_window = 0x200u,
+        .hz = 1000000u,
+        .addr = 0,
+        .prio = 11,
+        .kind = KOS_SVC_SPI,
+        .rsv = { 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const xmc4800relax_services[] = {

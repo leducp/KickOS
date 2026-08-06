@@ -119,9 +119,17 @@ set(KICKOS_FREESTANDING_CXX_FLAGS
   -fno-exceptions -fno-rtti
   -fno-threadsafe-statics -fno-use-cxa-atexit)
 
+# Applied PRIVATE, so the C++20 level does not ride out through KickOSTargets.cmake as
+# INTERFACE_COMPILE_FEATURES and compile a consumer's C++17 codebase as C++20. The rule
+# that buys: no INSTALLED header may use a C++20 construct, since a consumer compiles
+# those in their own dialect. tests/check_public_headers.sh is what keeps it true.
+set(KICKOS_CXX_STANDARD cxx_std_20)
+set(KICKOS_CXX_INTERFACE_STANDARD cxx_std_17)
+
 # freestanding TUs: kernel, lib, user, and the ARM arch backends (C++ + ASM).
 function(kickos_apply_freestanding target)
-  target_compile_features(${target} PUBLIC cxx_std_17)
+  target_compile_features(${target} PRIVATE ${KICKOS_CXX_STANDARD})
+  target_compile_features(${target} INTERFACE ${KICKOS_CXX_INTERFACE_STANDARD})
   target_compile_options(${target} PRIVATE
     ${KICKOS_WARN_FLAGS} ${KICKOS_FREESTANDING_FLAGS}
     "$<$<COMPILE_LANGUAGE:CXX>:${KICKOS_FREESTANDING_CXX_FLAGS}>")
@@ -140,7 +148,8 @@ endfunction()
 
 # hosted C++ TUs: the sim arch backend only
 function(kickos_apply_hosted target)
-  target_compile_features(${target} PUBLIC cxx_std_17)
+  target_compile_features(${target} PRIVATE ${KICKOS_CXX_STANDARD})
+  target_compile_features(${target} INTERFACE ${KICKOS_CXX_INTERFACE_STANDARD})
   target_compile_options(${target} PRIVATE
     ${KICKOS_WARN_FLAGS} -fno-exceptions -fno-rtti)
   target_compile_definitions(${target} PRIVATE _GNU_SOURCE)

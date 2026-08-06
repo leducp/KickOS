@@ -36,10 +36,14 @@ extern "C"
     // thread and must be >= every stdout client; the driver spawns its IRQ thread at
     // prio + 1, so 12 must leave one priority above it free.
     static struct kos_service_cfg const rpusb_cfg = {
-        /*name=*/"rpusb", /*mmio_base=*/kickos::rp2350::mmap::USBCTRL_DPRAM_BASE,
-        /*mmio_window=*/kickos::rp2350::mmap::USBCTRL_WINDOW,
-        /*hz=*/0u, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*rsv=*/{ 0, 0, 0, 0 }
+        .name = "rpusb",
+        .mmio_base = kickos::rp2350::mmap::USBCTRL_DPRAM_BASE,
+        .mmio_window = kickos::rp2350::mmap::USBCTRL_WINDOW,
+        .hz = 0u,
+        .addr = 0,
+        .prio = 12,
+        .kind = KOS_SVC_CONSOLE,
+        .rsv = { 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const pizero2350_usbcdc_services[] = {

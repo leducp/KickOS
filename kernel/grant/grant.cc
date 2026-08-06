@@ -9,6 +9,8 @@
 #include <kickos/domain.h> // arch_domain_static_regions
 #include <kickos/kernel.h> // KICKOS_ASSERT
 
+#include <span>
+
 namespace kickos
 {
     namespace
@@ -38,12 +40,12 @@ namespace kickos
             return true; // wraps 2^32; inadmissible, fail closed
         }
         struct arch_reserved_block blocks[KICKOS_MAX_RESERVED];
-        size_t const n = arch_reserved_blocks(blocks, KICKOS_MAX_RESERVED);
+        std::span const reserved{blocks, arch_reserved_blocks(blocks, KICKOS_MAX_RESERVED)};
         int const bitband = arch_bitband_present();
-        for (size_t i = 0; i < n; i++)
+        for (struct arch_reserved_block const& b : reserved)
         {
-            uintptr_t const b_base = blocks[i].base;
-            uintptr_t const b_last = blocks[i].base + blocks[i].size - 1u;
+            uintptr_t const b_base = b.base;
+            uintptr_t const b_last = b.base + b.size - 1u;
             if (grant_ranges_overlap(base, last, b_base, b_last))
             {
                 return true;
@@ -57,7 +59,7 @@ namespace kickos
             {
                 uintptr_t const alias_base =
                     BB_PERI_ALIAS_BASE + (b_base - BB_PERI_BASE) * 32u;
-                uintptr_t const alias_last = alias_base + blocks[i].size * 32u - 1u;
+                uintptr_t const alias_last = alias_base + b.size * 32u - 1u;
                 if (grant_ranges_overlap(base, last, alias_base, alias_last))
                 {
                     return true;
@@ -143,14 +145,15 @@ namespace kickos
         // grant_hits_reserved read past the buffer; catch it at boot. A zero count
         // (KICKOS_RESERVED_NONE, the sim) is legal, so there is NO count > 0 assert.
         KICKOS_ASSERT(n <= KICKOS_MAX_RESERVED);
+        std::span const reserved{blocks, n};
         // arch_ram_region_size and arch_ram_region_admissible mask with min - 1.
         size_t const min = arch_mpu_min_region();
         KICKOS_ASSERT(min == 0 or (min & (min - 1u)) == 0);
         // Each declared block must be well-formed.
-        for (size_t i = 0; i < n; i++)
+        for (struct arch_reserved_block const& b : reserved)
         {
-            KICKOS_ASSERT(blocks[i].size != 0);
-            KICKOS_ASSERT(blocks[i].base + blocks[i].size - 1u >= blocks[i].base);
+            KICKOS_ASSERT(b.size != 0);
+            KICKOS_ASSERT(b.base + b.size - 1u >= b.base);
         }
         // The static grantable extents must be reserved-disjoint: a legitimate grant
         // of app memory must never be refused, and the kernel must never have reserved
@@ -161,10 +164,11 @@ namespace kickos
             KICKOS_ASSERT(not grant_hits_reserved(arch_ram_base(), ram_size));
         }
         struct arch_mpu_region statics[KICKOS_MPU_MAX_REGIONS];
-        size_t const sn = arch_domain_static_regions(statics, KICKOS_MPU_MAX_REGIONS);
-        for (size_t i = 0; i < sn; i++)
+        std::span const region_set{statics,
+                                   arch_domain_static_regions(statics, KICKOS_MPU_MAX_REGIONS)};
+        for (struct arch_mpu_region const& r : region_set)
         {
-            KICKOS_ASSERT(not grant_hits_reserved(statics[i].base, statics[i].size));
+            KICKOS_ASSERT(not grant_hits_reserved(r.base, r.size));
         }
     }
 }

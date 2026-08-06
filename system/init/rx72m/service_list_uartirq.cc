@@ -25,9 +25,14 @@ extern "C"
     // must leave one priority above it free. hz is 0 because the driver does not
     // reprogram the baud divisor on a live channel: it inherits the kernel console's rate.
     static struct kos_service_cfg const rxsci_cfg = {
-        /*name=*/"rxsci", /*mmio_base=*/kickos::rx::mmap::SCI6, /*mmio_window=*/16u,
-        /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*rsv=*/{ 0, 0, 0, 0 }
+        .name = "rxsci",
+        .mmio_base = kickos::rx::mmap::SCI6,
+        .mmio_window = 16u,
+        .hz = 0,
+        .addr = 0,
+        .prio = 12,
+        .kind = KOS_SVC_CONSOLE,
+        .rsv = { 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const rx72m_uartirq_services[] = {

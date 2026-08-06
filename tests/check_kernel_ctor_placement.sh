@@ -25,6 +25,13 @@
 # set) to those functions. So we read the pointer words inside the app window and
 # assert none of them resolves to a ctor that came from a kernel archive.
 #
+# ZERO CTORS ANYWHERE IS A HEALTHY RESULT: the kernel's static objects are constinit, so
+# the closed archive set defines no _GLOBAL__sub_I and both windows are legitimately
+# empty. Every count below may be zero, and each assertion engages by itself the day a
+# ctor reappears. A missing TOOL RESULT is still fatal on the spot: an archive that is not
+# on disk, an nm/objcopy that failed, an absent window symbol, or a section whose byte
+# count contradicts its window symbols. Those are what catch a renamed archive or section.
+#
 # usage: check_kernel_ctor_placement.sh <elf> <nm> <objcopy> <kernel.a> <arch.a> <chip.a> <lib.a>
 
 set -eu
@@ -98,16 +105,13 @@ for A in "$@"; do
   awk '$3 ~ /^_GLOBAL__sub_[ID]/ {print $3}' "$TMP/karch" >> "$TMP/kctors.txt"
 done
 sort -u "$TMP/kctors.txt" -o "$TMP/kctors.txt"
-require_nonempty "$TMP/kctors.txt" \
-  "collected zero kernel ctors from the archives (wrong archive paths?): the guard below would pass vacuously"
-KCOUNT=$(wc -l < "$TMP/kctors.txt")
+KCOUNT=$(wc -l < "$TMP/kctors.txt" | tr -d ' ')
 echo "== $KCOUNT kernel-owned global-ctor name(s) across the closed archive set =="
 
 # --- kernel-owned ctor addresses as they landed in the final ELF --------------
 # (only those still present after --gc-sections matter; mask the thumb bit).
 awk '$3 ~ /^_GLOBAL__sub_[ID]/ {print $1, $3}' "$TMP/nm_elf" > "$TMP/elf_ctors.txt"
-require_nonempty "$TMP/elf_ctors.txt" \
-  "the ELF carries no _GLOBAL__sub_I ctor at all: both windows below would be vacuous"
+echo "== $(wc -l < "$TMP/elf_ctors.txt" | tr -d ' ') surviving global ctor(s) in the image =="
 while read -r ADDR NAME; do
   printf '%s %s\n' "$(even_hex "$ADDR")" "$NAME"
 done < "$TMP/elf_ctors.txt" > "$TMP/ctor_even.txt"
@@ -137,21 +141,18 @@ PSDEC=$((0x$PSTART))
 PEDEC=$((0x$PEND))
 [ "$PEDEC" -ge "$PSDEC" ] || fail "privileged window end (0x$PEND) is below start (0x$PSTART)"
 
-# An EMPTY privileged window means a selector matched nothing (renamed archive):
-# every kernel ctor would then fall through to the app bucket and run too late.
-# Sound HERE only: this gate runs on armv7m+MPU, where the two kernel ctors always
-# survive --gc-sections. It is NOT a universal invariant, so do NOT lift it into the
-# linker scripts as an ASSERT: on the Xtensa esp32 port every ctor is legitimately
-# collected and both windows are empty.
-[ "$PEDEC" -gt "$PSDEC" ] \
-  || fail "privileged .init_array is EMPTY -- an archive selector matched nothing (renamed kernel lib?); kernel ctors would run late"
-
 PRIV_ENTRIES=$(((PEDEC - PSDEC) / 4))
 echo "== privileged-ctor window [0x$PSTART, 0x$PEND) : $PRIV_ENTRIES entr(y/ies) =="
 
-ctor_targets .init_array "$PRIV_ENTRIES" "$TMP/priv_targets.txt"
-require_nonempty "$TMP/priv_targets.txt" \
-  ".init_array decoded to zero pointer words although it spans $PRIV_ENTRIES entr(y/ies)"
+# An empty window is skipped rather than extracted: objcopy writes zero bytes both for an
+# empty section and for a missing one, so extracting it proves nothing and would only trip
+# the decoded-nothing guard below.
+: > "$TMP/priv_targets.txt"
+if [ "$PRIV_ENTRIES" -gt 0 ]; then
+  ctor_targets .init_array "$PRIV_ENTRIES" "$TMP/priv_targets.txt"
+  require_nonempty "$TMP/priv_targets.txt" \
+    ".init_array decoded to zero pointer words although it spans $PRIV_ENTRIES entr(y/ies)"
+fi
 
 FOREIGN=""
 while read -r TGT; do
@@ -180,10 +181,9 @@ echo "PASS: privileged ctor window holds only closed-set kernel ctors"
 # Assertion 2 (ORDERING): no kernel ctor in the late app window.
 # =============================================================================
 # On every board wired to this gate today the app window is EMPTY: --gc-sections drops
-# every app/libstdc++ ctor and only the two kernel ones survive, privileged. Skipping
-# the leg on that basis is how it stayed dead, so it is not skipped: an empty window is
-# extracted and reconciled like any other (0 entries must read 0 bytes), and assertion 3
-# below then carries the claim. The day an app ctor survives, this leg engages by itself.
+# every app/libstdc++ ctor, and the kernel's own statics are constinit. The leg still
+# engages by itself the day an app ctor survives, and assertion 3 below is what stops an
+# empty window from passing vacuously.
 : > "$TMP/app_targets.txt"
 if [ "$APP_ENTRIES" -gt 0 ]; then
   ctor_targets .kickos_app_init_array "$APP_ENTRIES" "$TMP/app_targets.txt"

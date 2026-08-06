@@ -21,8 +21,8 @@ namespace kickos
         // returned by free_slot().
         enum { KDOM_KERNEL_INDEX = 0, KDOM_DEFAULT_USER_INDEX = 1 };
 
-        Domain* g_kernel = nullptr;       // domains[KDOM_KERNEL_INDEX]
-        Domain* g_default_user = nullptr; // domains[KDOM_DEFAULT_USER_INDEX]
+        constinit Domain* g_kernel = nullptr;       // domains[KDOM_KERNEL_INDEX]
+        constinit Domain* g_default_user = nullptr; // domains[KDOM_DEFAULT_USER_INDEX]
 
         // A slot is free iff it is not immortal and holds no live thread.
         Domain* free_slot()

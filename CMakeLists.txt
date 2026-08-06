@@ -861,7 +861,7 @@ if(TARGET kickos_kernel)
     # object lib's own compile, hence the direct flags. The per-chip -mcpu baseline
     # comes from the toolchain file globally.
     add_library(kickos_cxx_rt OBJECT system/cxx/vterminate.cc)
-    target_compile_features(kickos_cxx_rt PRIVATE cxx_std_17)
+    target_compile_features(kickos_cxx_rt PRIVATE cxx_std_20)
     target_compile_options(kickos_cxx_rt PRIVATE ${KICKOS_WARN_FLAGS} -fexceptions -frtti)
     # An object library links nothing: kickos_user/kickos_kernel here are usage
     # requirements (include dirs) only, and PRIVATE keeps them off consumers.

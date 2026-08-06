@@ -300,7 +300,7 @@ directory-tree walk and the fallback with it, so Kconfig now lands on a clean se
 deletion. The build-time `kconfiglib` host dependency is NOT the project's first: `arch/CMakeLists.txt`
 already requires `Python3` for the RP2040/RP2350 second-stage checksum, in CI as well as locally.
 
-### M4.7.6 -- C++20, and the four features that pay for it
+### M4.7.6 -- C++20, and the features that pay for it
 
 The tree pins `cxx_std_17`, which is why twelve aggregate initialisers carry `/*field=*/`
 comment labels: a label can sit beside the wrong field and still compile, and the language
@@ -319,10 +319,20 @@ there surfaces on the bench rather than in a pull request.
   proves no kernel ctor leaked into the app-ctor window); `constinit` makes it a per-object
   compile-time property instead of an archaeology check.
 - **designated initializers** delete twelve files of comment labels that can lie.
-- **`<bit>`** (`has_single_bit`, `bit_ceil`, `countl_zero`, `bit_cast`) replaces the pow2
-  and PMP NAPOT arithmetic the tree hand-rolls in three places, constexpr and lowering to
-  the count-leading-zeros instruction.
-- **`[[no_unique_address]]`** can shrink a struct, which is `.bss` on a 16 KiB part.
+- **`<bit>`**, and it pays far less than it looks. Measured on all five toolchains:
+  `countl_zero` lowers to a count-leading-zeros instruction on ARM and Xtensa only, while
+  rv32imac (no Zbb) and RX emit an out-of-line libgcc call, so it is a pessimization there.
+  The textbook site, the `bit_ceil` loop in `arch_ram_region_size`, sits in an INSTALLED
+  header and is blocked by the C++17 interface rule. What survives measurement is two
+  sites: `countr_zero` in the PMSAv7 RASR encoder, which is byte-identical, drops a cast
+  and is defined at zero where `__builtin_ctz(0)` is undefined, and `has_single_bit` in
+  the PMP NAPOT gate, which saves four bytes. Four other candidates were REFUSED because
+  the hand-rolled form lets the compiler fuse the pow2 test with the alignment test that
+  follows it.
+- **`[[no_unique_address]]`** shrinks a struct only where a member's type is EMPTY, and a
+  sweep of every class in `kernel/`, `arch/`, `lib/`, `system/` and `user/` found none: the
+  tree has no stateless policy, comparator or tag idiom, and every type carries a register
+  window, a shared-memory pointer or real bookkeeping. Nothing to apply it to.
 
 **What it costs, and how it is measured.** Images move: header and inlining differences are
 expected, so this milestone measures the delta with the 50-preset instrument and states it,

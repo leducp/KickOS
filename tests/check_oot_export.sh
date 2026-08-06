@@ -42,6 +42,12 @@ echo "== installing KickOS package to $TMP/prefix =="
 "$CMAKE" --install "$KICKOS_BUILD" --prefix "$TMP/prefix" >/dev/null \
   || fail "cmake --install failed"
 
+# The package ADVERTISES cxx_std_17 while the kernel is built at C++20, so every header
+# it ships has to compile at the advertised level.
+"$(dirname "$0")/check_public_headers.sh" "$TMP/prefix" "${CXX:-g++}" c++17 \
+  || fail "the installed headers do not compile at the level the package advertises"
+
+
 echo "== configuring out-of-tree app via find_package(KickOS) =="
 "$CMAKE" -S "$KICKOS_SRC/examples/oot-app" -B "$TMP/build" -G "$GEN" \
   -DCMAKE_PREFIX_PATH="$TMP/prefix" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \

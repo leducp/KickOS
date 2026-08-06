@@ -38,7 +38,7 @@ namespace
     // Forces the polled path once a panic has started: the ring's drain ISR is masked
     // from that point on. Only carries a panic that does NOT reclaim, since RECLAIMED
     // already routes polled.
-    volatile bool g_console_panicking = false;
+    constinit volatile bool g_console_panicking = false;
 
     // Who owns the UART TX register. Must be consulted BEFORE the buffered/sync
     // sub-decision: in USER_OWNED the kernel may touch the device on NO path at all.
@@ -50,19 +50,19 @@ namespace
         RECLAIMED     // the kernel forcibly took the UART back (panic, or driver death);
                       // polled-only
     };
-    volatile ConsoleState g_console_state = ConsoleState::KERNEL_OWNED;
+    constinit volatile ConsoleState g_console_state = ConsoleState::KERNEL_OWNED;
 
     // Set by the cap layer when the published console endpoint loses its last
     // WAIT-bearing cap; consumed by console_on_driver_death at the end of exit_current.
     // A flag rather than an immediate reclaim; see console_tx.h.
-    volatile bool g_console_driver_died = false;
+    constinit volatile bool g_console_driver_died = false;
 
     // In-flight kernel chip writers: incremented under the same state read that decided
     // to poke the device while KERNEL_OWNED, decremented after. kos_console_publish flips
     // the state first and then spins on this, so a writer that raced past a stale
     // KERNEL_OWNED read is off the device before the userspace driver touches it. Nothing
     // increments it after the flip, so it strictly drains to 0.
-    volatile int g_chip_writers = 0;
+    constinit volatile int g_chip_writers = 0;
 }
 
 // Every access to the chip-writer count, mutators and reader alike, MUST run under
@@ -281,7 +281,7 @@ extern "C" void kpanic_enter(void)
 #if KICKOS_SHUTDOWN_TO_BOOTLOADER
 namespace
 {
-    bool g_handover_tried = false;
+    constinit bool g_handover_tried = false;
 }
 
 extern "C" void kickos_bootloader_handover(void)
