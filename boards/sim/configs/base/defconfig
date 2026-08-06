@@ -1,6 +1,7 @@
 CONFIG_BOARD_SIM=y
 
-# The one board whose posture is not a command-line choice: the sim enforces through
-# host mprotect, so enforcement is its only posture and it says so here rather than
-# being inferred from the arch.
+# The one board whose posture is not a choice: the sim enforces through host
+# mprotect, so enforcement is the only posture it has and there is no flat variant.
 CONFIG_MEMORY_MODEL_MPU=y
+CONFIG_KICKOS_DEBUG=y
+CONFIG_KICKOS_ENABLE_SELFTEST=y

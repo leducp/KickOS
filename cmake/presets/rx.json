@@ -9,6 +9,7 @@
       "toolchainFile": "${sourceDir}/cmake/toolchain-rx-elf.cmake",
       "cacheVariables": {
         "KICKOS_BOARD": "rx72m",
+        "KICKOS_CONFIG_VARIANT": "base",
         "CMAKE_BUILD_TYPE": "MinSizeRel",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
@@ -18,11 +19,19 @@
       "displayName": "Renesas RX72M (RXv3) + selftest (full IRQ suite)",
       "inherits": "rx72m",
       "binaryDir": "${sourceDir}/build/rx72m-st",
-      "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" }
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" }
+    },
+    {
+      "name": "rx72m-flat",
+      "displayName": "Renesas RX72M with no RX-MPU enforcement",
+      "inherits": "rx72m",
+      "binaryDir": "${sourceDir}/build/rx72m-flat",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" }
     }
   ],
   "buildPresets": [
     { "name": "rx72m", "configurePreset": "rx72m" },
-    { "name": "rx72m-st", "configurePreset": "rx72m-st" }
+    { "name": "rx72m-st", "configurePreset": "rx72m-st" },
+    { "name": "rx72m-flat", "configurePreset": "rx72m-flat" }
   ]
 }

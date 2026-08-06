@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: CECILL-C
+# The SAME pinned vendor tarball used locally (reproducibility): the RISCstar toolchain
+# (riscv32-none-elf, newlib, rv32imac soft-float multilib).
+name: RISCstar toolchain
+description: Fetch (cached) the pinned riscv32-none-elf toolchain and export its bin/.
+
+inputs:
+  dir:
+    description: Directory the tarball unpacks to; also the cache key.
+    required: false
+    default: riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf
+  url:
+    description: Tarball URL; must name the same release as `dir`.
+    required: false
+    default: https://releases.riscstar.com/toolchain/16.1-r1/riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf.tar.xz
+
+runs:
+  using: composite
+  steps:
+    - name: Cache RISCstar toolchain
+      id: cache-rv
+      uses: actions/cache@v4
+      with:
+        path: ~/tc/${{ inputs.dir }}
+        key: ${{ inputs.dir }}
+
+    - name: Download RISCstar toolchain
+      if: steps.cache-rv.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        RV_TC_URL: ${{ inputs.url }}
+      run: |
+        mkdir -p ~/tc
+        curl -fsSL --retry 3 --retry-delay 5 -o /tmp/rv.tar.xz "$RV_TC_URL"
+        file /tmp/rv.tar.xz | grep -q XZ || { echo "rv toolchain: $RV_TC_URL served non-xz (gated/redirect?)"; exit 1; }
+        tar -C ~/tc -xf /tmp/rv.tar.xz
+
+    - name: Put toolchain on PATH + bin
+      shell: bash
+      env:
+        RV_TC_DIR: ${{ inputs.dir }}
+      # Env var and PATH; either alone is sufficient (see the arm-toolchain action).
+      # Only the variable NAME must agree with the toolchain file.
+      run: |
+        echo "$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_PATH"
+        echo "KICKOS_RISCV_TOOLCHAIN_BIN=$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_ENV"

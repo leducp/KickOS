@@ -5,8 +5,8 @@
 // Manual, K64P144M120SF5RM). Bases only; register offsets + fields live in
 // regs/<periph>.h. Hand-rolled, no vendor CMSIS pack.
 
-#ifndef KICKOS_ARCH_ARM_CHIP_MK64F_MMAP_H
-#define KICKOS_ARCH_ARM_CHIP_MK64F_MMAP_H
+#ifndef KICKOS_CHIP_MMAP_H
+#define KICKOS_CHIP_MMAP_H
 
 #include <stdint.h>
 
@@ -45,4 +45,4 @@ namespace kickos::mk64f::mmap
     constexpr uintptr_t GPIO_STRIDE = 0x40u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_MMAP_H
+#endif // KICKOS_CHIP_MMAP_H

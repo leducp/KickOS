@@ -52,13 +52,6 @@ _kernel_stack_size = 8K;               /* ISP (boot/ISR) stack reservation */
 _appdata_size = KICKOS_APPDATA_SIZE;
 #endif
 
-/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch).
-   RX prepends one underscore, so the C `_kickos_heap_*` resolves to the double-underscore
-   linker symbols defined below. */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 16K
-#endif
-
 SECTIONS
 {
     /* Option-setting memory: little-endian + WDT/LVD off (all-ones defaults;
@@ -246,6 +239,8 @@ SECTIONS
     /* Non-enforcement build: no .appdata window, so the newlib heap is an explicit
        section carved from RAM before the thread arena. Double underscore per the RX
        psABI (C `_kickos_heap_*`). */
+    /* RX prepends one underscore, so the C `_kickos_heap_*` resolves to the
+       double-underscore symbols defined here. */
     .userheap (NOLOAD) :
     {
         . = ALIGN(8);

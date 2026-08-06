@@ -38,13 +38,6 @@ _kernel_stack_size = 16K;              /* boot/handler (MSP) stack */
 _appdata_size = KICKOS_APPDATA_SIZE;
 #endif
 
-/* Non-enforcement heap: an explicit .userheap section carved from RAM before the
-   thread arena (no .appdata window in that posture). qemu (mps2) runs the full-C++
-   cxxtest gate, whose measured peak is ~5.9K, so 16K is ample; RAM is 4 MiB. */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 16K
-#endif
-
 SECTIONS
 {
     .isr_vector ORIGIN(FLASH) :

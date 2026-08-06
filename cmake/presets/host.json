@@ -9,10 +9,9 @@
       "toolchainFile": "${sourceDir}/cmake/toolchain-host.cmake",
       "cacheVariables": {
         "KICKOS_BOARD": "sim",
+        "KICKOS_CONFIG_VARIANT": "base",
         "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "KICKOS_ENABLE_SELFTEST": "ON",
-        "KICKOS_DEBUG": "ON"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     },
     {
@@ -20,11 +19,7 @@
       "displayName": "Host sim + telemetry (RTT ch1) - runs the telemetry CI gates",
       "inherits": "sim",
       "binaryDir": "${sourceDir}/build/sim-telem",
-      "cacheVariables": {
-        "KICKOS_TELEMETRY": "rtt",
-        "KICKOS_CONSOLE": "both",
-        "KICKOS_RTT_CH1_SIZE": "16384"
-      }
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "telem" }
     }
   ],
   "buildPresets": [

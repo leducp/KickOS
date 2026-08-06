@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Board descriptor for a Renesas RX72M board (RX72M Group, RXv3 core). Included
-# by cmake/toolchain-rx-elf.cmake. Sets the arch/family/chip resolution and the
-# per-board CPU baseline in ONE place (the spike sec.1 board-descriptor seam).
+# Board descriptor for a Renesas RX72M board (RX72M Group, RXv3 core). Included by
+# cmake/toolchain-rx-elf.cmake, which then includes the chip's own cpu.cmake for the ISA
+# baseline this board does not override.
 #
 #   KICKOS_ARCH_FAMILY  rx   -> arch/rx/... source tree + include routing
 #   KICKOS_ARCH         rxv3 -> arch/rx/rxv3 backend (context switch, syscall)
@@ -22,4 +22,3 @@ set(KICKOS_CHIP        "rx72m")
 # DPFPU register file (DR0-DR15 + DPSW/DCMR/DECNT) so it is switch-safe (switch.S).
 # KICKOS_MCPU is the uniform descriptor field every board sets (the rx toolchain
 # reads it into _kos_cpu, like the arm toolchain).
-set(KICKOS_MCPU -misa=v3 -mdfpu)

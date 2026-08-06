@@ -2,11 +2,15 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Well-known capability-table index convention. Lives in the kickos_system
-// library; keep it dependency-free (it is shared verbatim by the kernel and every
-// userspace TU).
+// library; it is shared verbatim by the kernel and every userspace TU.
 
 #ifndef KICKOS_SYS_CAP_INDEX_H
 #define KICKOS_SYS_CAP_INDEX_H
+
+// KICKOS_CAP_FIRST_DYNAMIC is a term of the table width the build sums, so the build owns
+// it (cmake/cap_geometry.cmake) and emits it into this generated header. The header is
+// installed beside the others, so a missing one is an include failure, not a silent 0.
+#include <kickos/config/cap_width.h>
 
 // The reserved (well-known) capability indices are kernel policy. An own-create
 // (sem/mutex/endpoint create) NEVER lands below KICKOS_CAP_FIRST_DYNAMIC (enforced in
@@ -16,11 +20,11 @@
 // userspace only NAMES them by these constants, it does not choose the index.
 //
 // The range is not frozen, but a renumber may only go DOWNWARD, only for a slot NOTHING
-// seats, and is an ABI break. No board edit goes with it: this constant is a term of the
-// table width summed in cmake/cap_table.cmake, so the width follows on its own and the
-// usable dynamic count is unchanged. Appending a well-known slot RAISES the last reserved
-// index and KICKOS_CAP_FIRST_DYNAMIC together and costs one slot on every table in the
-// fleet, and it raises the default child width with it. Keep the range SMALL; the floor
+// seats, and is an ABI break. It is one edit, in cmake/cap_geometry.cmake: the width is
+// summed from it, so the width follows on its own and the usable dynamic count is
+// unchanged. Appending a well-known slot RAISES the last reserved index and
+// KICKOS_CAP_FIRST_DYNAMIC together and costs one slot on every table in the fleet, and
+// it raises the default child width with it. Keep the range SMALL; the floor
 // static_assert in cap.h guarantees at least one dynamic slot remains in the narrowest
 // table.
 //
@@ -29,7 +33,6 @@
 // moving KICKOS_CAP_FIRST_DYNAMIC never moves a delegated index. Under that placement the
 // first delegated cap lands on index 1, KOS_CAP_CLOCK; a spawn that must not alias a
 // well-known name names a destination per grant (kos_thread_params::cap_dest).
-#define KICKOS_CAP_FIRST_DYNAMIC 2
 
 enum kos_cap_index
 {

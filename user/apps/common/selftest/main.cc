@@ -282,7 +282,7 @@ namespace
         TAP_CHECK(hz == 0u or hz >= 1000000u);
     }
 
-    // Branch-clock oracle (M4.3): kos_periph_clock_hz.
+    // Branch-clock oracle: kos_periph_clock_hz.
     void t_periph_clock_hz()
     {
         // A base no backend models returns 0 on EVERY target, proving the dispatch
@@ -293,7 +293,7 @@ namespace
         TAP_CHECK(bogus == kos_periph_clock_hz(0xDEAD0000u)); // read-only + stable
     }
 
-    // Pin-mux syscall (M4.3): kos_pinmux_set. An out-of-range port/pin is REJECTED
+    // Pin-mux syscall: kos_pinmux_set. An out-of-range port/pin is REJECTED
     // (rc < 0) on every target: -KOS_EINVAL where a chip owns its PORT/IOCR block,
     // -KOS_ENOSYS on the declining-fallback targets (host sim). So garbage is never silently
     // accepted and the dispatch -> arch-seam plumbing is proven. Touches no hardware:
@@ -310,7 +310,7 @@ namespace
         TAP_CHECK(bad_pin < 0 and bad_pin != -KOS_EPERM);   // pin out of range
     }
 
-    // Clock-select seam (M3): kos_cpu_clock_set is PRIVILEGED (syscall gate returns
+    // Clock-select seam: kos_cpu_clock_set is PRIVILEGED (syscall gate returns
     // the sentinel 0 == "cannot change" to any unprivileged caller, with NO retune).
     // This test exercises exactly that unprivileged-reject contract. It MUST run from
     // a spawned UNPRIVILEGED child, never from root: a posture in which root is
@@ -2126,7 +2126,7 @@ namespace
     // chip), and the holder spawn itself rejects a base a board service already owns.
     // The sim admits exactly one DEV window, its fake register block at SIM_PVREG_WINDOW
     // (64 KiB), so a WIN-sized search finds nothing there and the case reports PARTIAL. On
-    // any other enforcing board, qemu built -DKICKOS_HAVE_MPU=1 included, an empty search
+    // any other enforcing board, the qemu base variant included, an empty search
     // must FAIL.
     constexpr int CH_DEVHOLD = 2; // the holder gate, delegated SECOND (done@1, hold@2)
     void devexcl_hold(void*) // caps: done@1, hold@2
@@ -2188,7 +2188,7 @@ namespace
                                              hcaps, 2)
                               .valid());
             tap::partial("board mints no DEV window; exclusivity runs on enforcing boards "
-                         "(e.g. qemu -DKICKOS_HAVE_MPU=1)");
+                         "(e.g. the qemu base variant)");
 #else
             // An enforcing board with no admissible DEV base means kos_grant_probe or the
             // discovery loop regressed. Passing here would silently drop every -KOS_EBUSY
@@ -2376,7 +2376,7 @@ namespace
 #endif
     }
 
-    // --- Endpoint IPC: synchronous rendezvous send/recv (M3 #4 stage i) ----------
+    // --- Endpoint IPC: synchronous rendezvous send/recv ----------
     // The endpoint cap is delegated to workers at child index 2 (done@1, E@2). Workers
     // are UNPRIVILEGED so the kernel's copy into/from a parked peer runs against real
     // enforcement (the cross-domain privileged write, design section 3.1).
@@ -2565,7 +2565,7 @@ namespace
         kos_sem_destroy(g_ep_go);
     }
 
-    // --- Call/reply (M4.4): info-less receiver bounces a call, D2 boost is REVERTED ------
+    // --- Call/reply: info-less receiver bounces a call, D2 boost is REVERTED ------
     // A high caller's slow-path kos_call boosts the low server it targets (D2). An
     // INFO-LESS recv cannot host the call, so recv rejects the caller (-KOS_ENOSYS) and MUST
     // revert that boost. Observables as in the PI donation arm: 'u' before 'm' while
@@ -2639,7 +2639,7 @@ namespace
         TAP_CHECK(nth('m', 1) < nth('z', 1)); // REVERT: server back at base, spoiler ran before it resumed
     }
 
-    // --- Call/reply (M4.4): close-instead-of-reply EPIPEs the caller AND yields to it -----
+    // --- Call/reply: close-instead-of-reply EPIPEs the caller AND yields to it -----
     // A low server takes a high caller's call (D1-boosted to the caller's prio), then closes
     // the reply cap instead of replying. The close arm must (a) wake the caller -KOS_EPIPE
     // and (b) deflate the server BEFORE waking, so the higher caller runs before the server
@@ -2687,7 +2687,7 @@ namespace
         TAP_CHECK(nth('c', 1) < nth('s', 1)); // (b) caller ran before the server proceeded
     }
 
-    // --- Call/reply (M4.4): a NON-pool caller is rejected, never faults -----------------
+    // --- Call/reply: a NON-pool caller is rejected, never faults -----------------
     // The selftest orchestrator runs on the file-static root/init TCB, which is NOT a
     // ThreadPool slot, so it cannot be named by a reply cap. kos_call from here must fail
     // -KOS_EPERM up front. This genuinely exercises the guard: a POOL caller with a valid
@@ -2701,7 +2701,7 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
-    // --- Call/reply (M4.4): happy path: request delivered, reply returned in-place ---
+    // --- Call/reply: happy path: request delivered, reply returned in-place ---
     // A server recvs the request (info-bearing), records it, and replies a known payload;
     // the caller's kos_call returns the reply byte count and the reply OVERWRITES its send
     // buffer (in-place). Both paths are covered: (A) server parked in recv first (fastpath),
@@ -2805,7 +2805,7 @@ namespace
         TAP_CHECK(g_echo_rc == 5 and memcmp(g_echo_rplbuf, "pong!", 5) == 0);
     }
 
-    // --- Call/reply (M4.4): reply + request truncation (datagram clamp, not an error) ---
+    // --- Call/reply: reply + request truncation (datagram clamp, not an error) ---
     // One call exercises BOTH clamps: the caller sends 8 bytes into a server recv buffer of
     // 3 (request truncated to 3), and the server replies 8 bytes into a caller recv_cap of 3
     // (reply truncated to 3). Neither is an error: the byte counts just clamp.
@@ -2873,7 +2873,7 @@ namespace
         TAP_CHECK(g_trunc_rc == 3 and memcmp(g_trunc_rplbuf, "123", 3) == 0);   // reply clamped
     }
 
-    // --- Call/reply (M4.4): a second reply on a consumed cap is rejected -----------------
+    // --- Call/reply: a second reply on a consumed cap is rejected -----------------
     // The reply cap is one-shot: the first kos_reply consumes it (empty slot + gen bump), so
     // a second kos_reply on the same handle fails resolve with -KOS_EBADF.
     volatile int g_dr_second = -99; // second kos_reply rc
@@ -2923,7 +2923,7 @@ namespace
         TAP_CHECK(g_dr_second == -KOS_EBADF);   // the second reply was rejected
     }
 
-    // --- Call/reply (M4.4): server dies mid-transaction -> caller EPIPE (teardown arm) ---
+    // --- Call/reply: server dies mid-transaction -> caller EPIPE (teardown arm) ---
     // The server takes the call (REPLY_WAIT, holding the reply cap) then exits WITHOUT
     // replying. cap_teardown walks its table, hits the CAP_REPLY arm, and wakes the parked
     // caller with -KOS_EPIPE.
@@ -2966,7 +2966,7 @@ namespace
         TAP_CHECK(g_sd_callrc == -KOS_EPIPE);   // caller woken EPIPE by the reply-cap teardown
     }
 
-    // --- Call/reply (M4.4): server dies pre-pop -> caller EPIPE (recv_holders -> 0) ------
+    // --- Call/reply: server dies pre-pop -> caller EPIPE (recv_holders -> 0) ------
     // The caller parks in SEND_WAIT (no receiver has popped it yet). MAIN holds the sole
     // WAIT cap; closing it drives recv_holders to 0, which drains send_waiters and EPIPEs
     // the parked call: the pre-pop counterpart to the mid-transaction teardown above.
@@ -2991,7 +2991,7 @@ namespace
         TAP_CHECK(g_pp_callrc == -KOS_EPIPE);
     }
 
-    // --- Call/reply (M4.4): donation ordering (positive) --------------------------------
+    // --- Call/reply: donation ordering (positive) --------------------------------
     // low(8) server, high(20) caller, medium(12) spoiler. On the fastpath call the server is
     // D1-boosted to the caller's prio, so the spoiler (which wakes WHILE the server holds
     // the transaction) cannot preempt: the reply reaches the caller ('c') before the
@@ -3071,7 +3071,7 @@ namespace
         TAP_CHECK(nth('c', 1) < nth('m', 1)); // DONATION: the reply reached the caller before the spoiler ran
     }
 
-    // --- Call/reply (M4.4 D3): a donation must survive an UNRELATED recompute ----------
+    // --- Call/reply (D3): a donation must survive an UNRELATED recompute ----------
     // t_call_donation covers the boost being APPLIED. These two cover it being KEPT: the
     // server runs an unrelated mutex_unlock mid-transaction, which funnels through
     // thread_effective_prio, and the funnel must re-derive the live donation from the donor
@@ -3300,7 +3300,7 @@ namespace
         TAP_CHECK(nth('r', 1) < nth('m', 1));
     }
 
-    // --- Bus service (M4.5.2): per-device slot profiles ---------------------------
+    // --- Bus service: per-device slot profiles ---------------------------
     // Gated for FLASH, not for a syscall: the mock bus plus the serve_one instantiation
     // cost ~1.3 KiB, and the non-selftest bluepill-c8 image has ~1.3 KiB of its 64 KiB
     // left. Every CI gate sets the flag.
@@ -3454,7 +3454,7 @@ namespace
 #endif
 
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // --- UART service (M4.6.1 second half): the wire ABI over the shared rings -----
+    // --- UART service: the wire ABI over the shared rings -----
     // serve_one touches only the shared block, never a register (the peripheral belongs to
     // the IRQ thread and the domain model enforces that at spawn), so the whole
     // request/reply surface is testable with NO device at all. MAIN is the server, as in
@@ -3973,7 +3973,7 @@ namespace
         }
     }
 
-    // --- M4.7.3: per-task table width, and the inbound reply bound ------------------------
+    // --- Per-task table width, and the inbound reply bound ------------------------
     //
     // NO new file-scope state below: every worker reports through the shared event log, and
     // a static here would come straight out of the 16 KiB boards' user arena.
@@ -4654,7 +4654,7 @@ namespace
             // finds nothing there. The held arms it drops are covered on the host by
             // periph_reg_write_mask below, which holds that window.
             tap::partial("board mints no free DEV window, so the held arm runs on enforcing "
-                         "boards (e.g. qemu -DKICKOS_HAVE_MPU=1) and, on the host, in "
+                         "boards (e.g. the qemu base variant) and, on the host, in "
                          "periph_reg_write_mask");
             return;
         }
@@ -5053,7 +5053,7 @@ int main(int, char**)
     TAP_ADD("sem_destroy", t_sem_destroy);
     TAP_ADD("sem_destroy_quiescent", t_sem_destroy_busy);
     TAP_ADD("sem_raii", t_sem_raii);
-    // PI-mutex capability (M3): production syscalls only, so runs on every board.
+    // PI-mutex capability: production syscalls only, so runs on every board.
     TAP_ADD("mutex_basic", t_mutex_basic);             // H1 mutual exclusion
     TAP_ADD("mutex_pi_donation", t_mutex_pi);          // H2/H4/H8 boost + revert
     TAP_ADD("mutex_chain_boost", t_mutex_chain);       // H5 chained boost
@@ -5064,21 +5064,21 @@ int main(int, char**)
     TAP_ADD("mutex_unlock_errors", t_mutex_unlock_errors); // non-owner / unlocked -> -KOS_EPERM
     TAP_ADD("mutex_owner_died_nowaiter", t_mutex_owner_died_nowaiter); // R3 no-waiter branch
     TAP_ADD("mutex_deleg_refcount", t_mutex_deleg_refcount); // child close, parent still locks
-    // Endpoint IPC (M3 #4 stage i): production syscalls, so runs on every board.
+    // Endpoint IPC: production syscalls, so runs on every board.
     TAP_ADD("endpoint_rendezvous", t_endpoint_rendezvous); // both orderings + zero-len + truncation
     TAP_ADD("endpoint_reject", t_endpoint_reject);         // F4 oversize + bad cap
     TAP_ADD("endpoint_rights", t_endpoint_rights);         // send needs SIGNAL, recv needs WAIT
     TAP_ADD("endpoint_epipe", t_endpoint_epipe);           // parked sender woken on last WAIT close
     TAP_ADD("endpoint_dead", t_endpoint_dead);             // F1 dead endpoint: send refused, no park
-    TAP_ADD("call_infoless_revert", t_call_infoless_revert); // M4.4: info-less bounce reverts the D2 boost
-    TAP_ADD("call_close_reply", t_call_close_reply);         // M4.4: close-instead-of-reply EPIPEs + yields
-    TAP_ADD("call_nonpool_caller", t_call_nonpool_caller);   // M4.4: non-pool (root) caller rejected, no fault
-    TAP_ADD("call_happy", t_call_happy);                     // M4.4: request delivered + reply in-place (fast+slow)
-    TAP_ADD("call_truncation", t_call_truncation);           // M4.4: request + reply datagram clamp
-    TAP_ADD("call_double_reply", t_call_double_reply);       // M4.4: one-shot cap -> second reply -KOS_EBADF
-    TAP_ADD("call_server_death", t_call_server_death);       // M4.4: die mid-xact -> caller EPIPE (teardown arm)
-    TAP_ADD("call_prepop_death", t_call_prepop_death);       // M4.4: die pre-pop -> caller EPIPE (recv_holders 0)
-    TAP_ADD("call_donation", t_call_donation);               // M4.4: D1 donation keeps the spoiler off the xact
+    TAP_ADD("call_infoless_revert", t_call_infoless_revert); // info-less bounce reverts the D2 boost
+    TAP_ADD("call_close_reply", t_call_close_reply);         // close-instead-of-reply EPIPEs + yields
+    TAP_ADD("call_nonpool_caller", t_call_nonpool_caller);   // non-pool (root) caller rejected, no fault
+    TAP_ADD("call_happy", t_call_happy);                     // request delivered + reply in-place (fast+slow)
+    TAP_ADD("call_truncation", t_call_truncation);           // request + reply datagram clamp
+    TAP_ADD("call_double_reply", t_call_double_reply);       // one-shot cap -> second reply -KOS_EBADF
+    TAP_ADD("call_server_death", t_call_server_death);       // die mid-xact -> caller EPIPE (teardown arm)
+    TAP_ADD("call_prepop_death", t_call_prepop_death);       // die pre-pop -> caller EPIPE (recv_holders 0)
+    TAP_ADD("call_donation", t_call_donation);               // D1 donation keeps the spoiler off the xact
     TAP_ADD("call_donation_hold", t_call_donation_hold);     // D3: a reply donor survives an unrelated recompute
     TAP_ADD("call_donation_slow", t_call_donation_slow);     // D3: same, via the recv-side mint
     TAP_ADD("call_donation_pending", t_call_donation_pending); // D3: a SEND_WAIT donor does too
@@ -5090,22 +5090,22 @@ int main(int, char**)
 #define TAP_ADD(name, fn) TAP_ELIDE(fn)
 #endif
 #if defined(KICKOS_ENABLE_SELFTEST)
-    TAP_ADD("bus_device_slots", t_bus_device_slots); // M4.5.2: per-device profiles do not clobber
-    TAP_ADD("uart_service", t_uart_service);         // M4.6.1: the UART wire ABI over the rings
+    TAP_ADD("bus_device_slots", t_bus_device_slots); // per-device profiles do not clobber
+    TAP_ADD("uart_service", t_uart_service);         // the UART wire ABI over the rings
 #endif
     TAP_ADD("endpoint_crossdomain", t_endpoint_crossdomain); // F5 cross-domain copy + delegation
 #if KICKOS_HAVE_MPU && defined(KICKOS_ENABLE_SELFTEST)
     TAP_ADD("endpoint_bound", t_endpoint_bound); // bound-check: bad recv/send buffer refused
 #endif
-    // Console handover mechanism (M3 #4 stage ii-a): production syscalls, every board.
+    // Console handover mechanism: production syscalls, every board.
     TAP_ADD("cap_index0", t_cap_index0);              // B3 index-0 reservation + FIRST_DYNAMIC floor
-    TAP_ADD("cap_chunk_span", t_cap_chunk_span);        // M4.7.1: the segmented index decode
-    TAP_ADD("cap_gen_reuse", t_cap_gen_reuse);          // M4.7.1: the cap-gen half of the codec
-    TAP_ADD("cap_child_width", t_cap_child_width);      // M4.7.3: a child gets the child width
-    TAP_ADD("cap_reply_bound_fast", t_cap_reply_bound_fast); // M4.7.3: the bound at the fastpath probe
-    TAP_ADD("cap_reply_bound_slow", t_cap_reply_bound_slow); // M4.7.3: the same, via the recv-side scan
-    TAP_ADD("cap_reply_release_close", t_cap_reply_release_close); // M4.7.3: close consumes a reply cap
-    TAP_ADD("cap_reply_slot_reuse", t_cap_reply_slot_reuse);       // M4.7.3: a dead server's slot is clean
+    TAP_ADD("cap_chunk_span", t_cap_chunk_span);        // the segmented index decode
+    TAP_ADD("cap_gen_reuse", t_cap_gen_reuse);          // the cap-gen half of the codec
+    TAP_ADD("cap_child_width", t_cap_child_width);      // a child gets the child width
+    TAP_ADD("cap_reply_bound_fast", t_cap_reply_bound_fast); // the bound at the fastpath probe
+    TAP_ADD("cap_reply_bound_slow", t_cap_reply_bound_slow); // the same, via the recv-side scan
+    TAP_ADD("cap_reply_release_close", t_cap_reply_release_close); // close consumes a reply cap
+    TAP_ADD("cap_reply_slot_reuse", t_cap_reply_slot_reuse);       // a dead server's slot is clean
     TAP_ADD("console_publish_priv", t_console_publish); // D3 privileged-only + bad-cap reject
     TAP_ADD("shutdown_priv", t_shutdown_denied);        // KOS_SYS_SHUTDOWN privileged-only
 #if defined(KICKOS_ENABLE_SELFTEST)

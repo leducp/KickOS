@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
-# Board descriptor: the single source of truth for this board's arch/chip/CPU.
-# Included by the board resolver (cmake/kickos.cmake) and by the Xtensa cross
-# toolchain file (pre-project, for the ABI baseline). Side-effect free: set only
-# these.
+# Board descriptor: which arch and which chip, and any CPU flag that is this BOARD's
+# rather than its chip's. Included by the board resolver (cmake/kickos.cmake) and by the
+# cross toolchain file pre-project(), which then includes the chip's own cpu.cmake for
+# the flags left unset here. Side-effect free: set only these.
 #
-# ESP32-WROOM-32 (ESP32-D0WDQ6, Xtensa LX6) -- the first non-ARM board. The Xtensa
+# ESP32-WROOM-32 (ESP32-D0WDQ6, Xtensa LX6) is the first non-ARM board. Its Xtensa
 # core config is baked into the xtensa-esp32-elf toolchain, so unlike ARM there is
 # no -mcpu selection here: the ABI baseline is fixed by the toolchain file. The
 # windowed ABI (the toolchain default) is used so the prebuilt esp32 libgcc/libc

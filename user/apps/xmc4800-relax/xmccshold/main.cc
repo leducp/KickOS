@@ -48,7 +48,7 @@
 // only a real capability under PMSA. Gate on enforcement so the window means
 // something (and so the build config matches the xmcspi reference).
 #if !KICKOS_HAVE_MPU
-#error "xmccshold requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
+#error "xmccshold requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 // Register offsets (off::<REG>) and SSC bit fields are the shared chip definitions.

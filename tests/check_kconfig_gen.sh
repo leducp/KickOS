@@ -22,7 +22,8 @@ if [ "$#" -ne 2 ]; then
     fail "usage: check_kconfig_gen.sh <python> <srcdir>"
 fi
 PY="$1"
-SRC="$2"
+# Absolute, because the paths the fragment reports are and leg 1 compares them literally.
+SRC="$(cd "$2" && pwd)" || fail "no source tree at $2"
 GEN="$SRC/tools/kconfig/genconfig.py"
 DEFCONFIG="$SRC/boards/xmc4800-relax/configs/base/defconfig"
 
@@ -81,9 +82,22 @@ grep -q '^set(KICKOS_CHIP "xmc4800")$' "$F" || fail "fragment lost the chip"
 grep -q '^set(KICKOS_CONSOLE "both")$' "$F" || fail "fragment lost the console backend"
 grep -q '^set(KICKOS_TELEMETRY "off")$' "$F" || fail "fragment lost the telemetry sink"
 grep -q '^set(KICKOS_MIN_STACK_SIZE 640)$' "$F" || fail "fragment lost the stack floor"
-grep -q '^set(KICKOS_HAVE_MPU 0)$' "$F" || fail "the base variant is not the flat posture"
-grep -q '^set(KICKOS_KCONFIG_SOURCES ".*/Kconfig;.*defconfig")$' "$F" \
+grep -q '^set(KICKOS_HAVE_MPU 1)$' "$F" \
+    || fail "the base variant of an enforcing board did not resolve the enforcing posture"
+# What it read, named file by file rather than matched on the list's SHAPE. A shape match
+# still looks right with the per-board boards/*/Kconfig entries dropped. Those are where a
+# board states its service list and pin map, so editing one would stop reaching the next
+# build with nothing to say so.
+SOURCES="$(grep '^set(KICKOS_KCONFIG_SOURCES ' "$F")" \
     || fail "fragment does not report what it read, so a Kconfig edit would not reconfigure"
+for want in "$SRC/Kconfig" "$SRC/boards/Kconfig" "$SRC/boards/xmc4800-relax/Kconfig" \
+            "$SRC/arch/Kconfig" "$DEFCONFIG"; do
+    # First, middle or last element; never a substring of a longer path.
+    case "$SOURCES" in
+        *"\"$want;"* | *";$want;"* | *";$want\")") ;;
+        *) fail "KICKOS_KCONFIG_SOURCES does not name $want, so editing it would not reconfigure" ;;
+    esac
+done
 # These five reach C from CMake rather than through the header, so a missing line here
 # lets option() supply its own default and .config stops describing the build.
 for flag in KICKOS_DEBUG KICKOS_ENABLE_SELFTEST KICKOS_BENCH \
@@ -118,12 +132,14 @@ refuse "CONFIG_KICKOS_SHUTDOWN_TO_BOOTLOADER=y" \
 refuse "KICKOS_MAX_THREADS=4" "not of the form CONFIG_<name>=<value>"
 
 # --- Leg 3: keeps leg 2 from passing by refusing everything ------------------
-# Both are legal here and both are silent today: the enforcing posture, and RTT
-# telemetry, which this board can host only because its console carries RTT.
-gen "$TMP/mpu" "CONFIG_MEMORY_MODEL_MPU=y" \
-    || fail "the enforcing posture was refused: $(cat "$TMP/mpu.err")"
-grep -q '^set(KICKOS_HAVE_MPU 1)$' "$TMP/mpu/kickos_config.cmake" \
-    || fail "the enforcing posture did not reach the fragment"
+# Both are legal here and both are silent today: the flat posture, which is what this
+# board's own flat variant states, and RTT telemetry, which it can host only because
+# its console carries RTT. The flat direction is the one worth driving here, because
+# the base defconfig already witnesses the enforcing one.
+gen "$TMP/flat" "CONFIG_MEMORY_MODEL_FLAT=y" \
+    || fail "the flat posture was refused: $(cat "$TMP/flat.err")"
+grep -q '^set(KICKOS_HAVE_MPU 0)$' "$TMP/flat/kickos_config.cmake" \
+    || fail "the flat posture did not reach the fragment"
 gen "$TMP/telem" "CONFIG_TELEMETRY_RTT=y" \
     || fail "RTT telemetry was refused on a board that carries RTT: $(cat "$TMP/telem.err")"
 
@@ -137,8 +153,7 @@ grep -q '^set(KICKOS_SERVICE_LIST "kickos_services_sim")$' "$TMP/svc/kickos_conf
 
 # --- Leg 4: the same posture on a board whose chip declares no MPU ------------
 # The one refusal that needs a second board, and the one whose diagnostic a user acts
-# on. It must carry the DECLARATION's own help: that is what replaced a hand-written
-# CMake hint which globbed the tree for the list of capable boards.
+# on. It must carry the DECLARATION's own help.
 NOMPU="$SRC/boards/microbit/configs/base/defconfig"
 [ -f "$NOMPU" ] || fail "no defconfig at $NOMPU"
 if gen_with "$NOMPU" "$TMP/nompu" "CONFIG_MEMORY_MODEL_MPU=y"; then
@@ -165,4 +180,24 @@ grep -q 'CONSOLE_RTT || CONSOLE_BOTH' "$TMP/notelem.err" \
 gen_with "$NOMPU" "$TMP/mbrtt" "CONFIG_CONSOLE_RTT=y" \
     || fail "the RTT console was refused, so an arm gained a dependency it does not have"
 
-echo "PASS: kconfig generation, 7 refusals, 4 accepted overrides"
+# --- Leg 6: EVERY defconfig in the tree resolves -----------------------------
+# The legs above read two fixtures. Every other variant is otherwise resolved by nothing
+# until somebody configures that board; that includes all eleven -st ones, the silicon
+# bench path. A defconfig the declarations refuse is a board that cannot be built at all.
+# Each gets its OWN gendir: the generator refuses a variant change inside a directory that
+# already holds a live .config.
+mkdir -p "$TMP/all" || fail "cannot create $TMP/all"
+n=0
+for dc in "$SRC"/boards/*/configs/*/defconfig; do
+    [ -f "$dc" ] || continue
+    n=$((n + 1))
+    out="$TMP/all/$n"
+    gen_with "$dc" "$out" || fail "$dc was refused: $(cat "$out.err")"
+    [ -s "$out/include/kickos/board_config.h" ] || fail "$dc generated no board_config.h"
+    [ -s "$out/kickos_config.cmake" ] || fail "$dc generated no cmake fragment"
+done
+# A glob that matched nothing would leave every assertion above unexecuted and this leg
+# reporting success over zero work.
+[ "$n" -gt 0 ] || fail "no defconfig under $SRC/boards/*/configs/"
+
+echo "PASS: kconfig generation, 7 refusals, 4 accepted overrides, $n defconfigs resolved"

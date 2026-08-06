@@ -103,7 +103,7 @@ wire by construction but `bluepill-c8`'s 4-pin header does not carry. So
 `tools/flash-stlink.sh` defaults it **on** for `f411disco` and `f302nucleo` and off
 elsewhere; `STLINK_UNDER_RESET=1` forces it on, `=0` off.
 ```sh
-FLASH_BUILD=$PWD/build/f411disco-mpu tools/flash.sh f411disco selftest
+FLASH_BUILD=$PWD/build/f411disco-st tools/flash.sh f411disco selftest
 ```
 Nucleo consoles reach the ST-Link VCP (`ttyACM*`) with no
 wiring; the F411-DISCO does **not** route USART2 to its VCP -- use an external

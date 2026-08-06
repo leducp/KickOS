@@ -129,73 +129,11 @@ function(_kickos_seam_int arch_srcs chip_srcs symbol out)
   set(${out} "${_fallback}" PARENT_SCOPE)
 endfunction()
 
-# The provisioning integers as the compile will see them: the GENERATED board_config.h
-# through the real preprocessor, which is the only place they live now. The two boot-stack
-# sizes, plus the default thread stack and the slot count, which together are what the
-# post-boot arena has to back.
-function(kickos_boot_stack_sizes board_inc out_idle out_root out_user out_slots)
-  # No CONFIGURE_DEPENDS on a board header: there is none. The generated one is rewritten
-  # every configure, and the declarations it comes from are already depended on by the
-  # Kconfig block in the root CMakeLists.
-  set(_probe "${CMAKE_CURRENT_BINARY_DIR}/boot_stack_probe.c")
-  file(WRITE "${_probe}"
-    "#include <kickos/config/system.h>\n"
-    "#ifndef KICKOS_IDLE_STACK_SIZE\n"
-    "#error \"KICKOS_IDLE_STACK_SIZE unset\"\n"
-    "#endif\n"
-    "#ifndef KICKOS_ROOT_STACK_SIZE\n"
-    "#error \"KICKOS_ROOT_STACK_SIZE unset\"\n"
-    "#endif\n"
-    "#ifndef KICKOS_USER_STACK_SIZE\n"
-    "#error \"KICKOS_USER_STACK_SIZE unset\"\n"
-    "#endif\n"
-    "#ifndef KICKOS_MAX_THREADS\n"
-    "#error \"KICKOS_MAX_THREADS unset\"\n"
-    "#endif\n"
-    "kickos_boot_idle KICKOS_IDLE_STACK_SIZE\n"
-    "kickos_boot_root KICKOS_ROOT_STACK_SIZE\n"
-    "kickos_boot_user KICKOS_USER_STACK_SIZE\n"
-    "kickos_boot_slots KICKOS_MAX_THREADS\n")
-  # The generated header goes AHEAD of the board directory, as it is on the compile line:
-  # see the same insertion in cmake/cap_table.cmake for why a probe that reads the source
-  # header instead measures numbers no translation unit ever sees.
-  set(_incs "-I${CMAKE_SOURCE_DIR}/kernel/include" "-I${CMAKE_SOURCE_DIR}/include")
-  # A bare -I with nothing after it consumes the NEXT argument as its path, so an empty
-  # directory must contribute no flag at all rather than an empty one. The sim has no chip
-  # and therefore no chip include dir, which is exactly that case.
-  if(board_inc)
-    list(INSERT _incs 0 "-I${board_inc}")
-  endif()
-  if(EXISTS "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h")
-    list(INSERT _incs 0 "-I${PROJECT_BINARY_DIR}/generated/include")
-  endif()
-  execute_process(
-    COMMAND "${CMAKE_C_COMPILER}" -E -P -x c ${_incs} "${_probe}"
-    OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _rc)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR
-      "KickOS: could not read the provisioning sizes through the preprocessor. Every board "
-      "states KICKOS_IDLE_STACK_SIZE and KICKOS_ROOT_STACK_SIZE in its defconfig (the "
-      "64 KiB system.h defaults do not fit an MCU arena).\n${_err}")
-  endif()
-  foreach(_k idle root user slots)
-    if(NOT "${_out}" MATCHES "kickos_boot_${_k}[ \t]+([^\r\n]+)")
-      message(FATAL_ERROR "KickOS: provisioning probe produced no ${_k} value:\n${_out}")
-    endif()
-    math(EXPR _v "${CMAKE_MATCH_1}")
-    set(_size_${_k} "${_v}")
-  endforeach()
-  set(${out_idle} "${_size_idle}" PARENT_SCOPE)
-  set(${out_root} "${_size_root}" PARENT_SCOPE)
-  set(${out_user} "${_size_user}" PARENT_SCOPE)
-  set(${out_slots} "${_size_slots}" PARENT_SCOPE)
-endfunction()
-
 # The -D set arch/common/boot_arena.ld.h expects. Also refuses a chip linker script
 # that carries no KICKOS_BOOT_ARENA_ASSERT, so no board can opt out by omission.
 # out_mn and out_pow2 hand back the raw scraped seam integers; every other output is
 # derived from them.
-function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt board_inc ld
+function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
                                 out out_mn out_pow2)
   _kickos_target_cc_sources("${arch_tgt}" "${arch_dir}" _arch_srcs)
   _kickos_target_cc_sources("${chip_tgt}" "${arch_dir}" _chip_srcs)
@@ -210,7 +148,22 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt board_inc ld
         "as a <symbol>_default.cc fallback.")
     endif()
   endforeach()
-  kickos_boot_stack_sizes("${board_inc}" _idle _root _user _slots)
+  # What the post-boot arena has to back: the two boot-stack sizes, the default thread
+  # stack and the slot count. From the generated fragment, so they are the same
+  # resolution the compile reads: sizing the arena from any other copy of these numbers
+  # models an image nobody builds.
+  set(_idle "${KICKOS_IDLE_STACK_SIZE}")
+  set(_root "${KICKOS_ROOT_STACK_SIZE}")
+  set(_user "${KICKOS_USER_STACK_SIZE}")
+  set(_slots "${KICKOS_MAX_THREADS}")
+  foreach(_v idle root user slots)
+    if(NOT "${_${_v}}" MATCHES "^[0-9]+$")
+      message(FATAL_ERROR
+        "KickOS: the boot-arena model has no ${_v} size. Every board states "
+        "KICKOS_IDLE_STACK_SIZE and KICKOS_ROOT_STACK_SIZE in its defconfig, and the "
+        "generated kickos_config.cmake is what carries them here.")
+    endif()
+  endforeach()
   kickos_region_size("${_idle}" "${_mn}" "${_p2}" _isz)
   kickos_region_align("${_idle}" "${_mn}" "${_p2}" _ial)
   kickos_region_size("${_root}" "${_mn}" "${_p2}" _rsz)

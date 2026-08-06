@@ -5,8 +5,8 @@
 // RP-008371-DS). Bases only; register offsets + fields live in regs/<periph>.h.
 // Clean-room from the datasheet, no vendor SDK sources.
 
-#ifndef KICKOS_ARCH_ARM_CHIP_RP2040_MMAP_H
-#define KICKOS_ARCH_ARM_CHIP_RP2040_MMAP_H
+#ifndef KICKOS_CHIP_MMAP_H
+#define KICKOS_CHIP_MMAP_H
 
 #include <stdint.h>
 
@@ -43,4 +43,4 @@ namespace kickos::rp2040::mmap
     constexpr uintptr_t XIP_SSI_BASE = 0x18000000u; // XIP SSI (DS 4.10.13)
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_MMAP_H
+#endif // KICKOS_CHIP_MMAP_H

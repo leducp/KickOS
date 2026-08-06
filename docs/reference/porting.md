@@ -71,20 +71,26 @@ is where a bus-side unit reports: `mk64f` reads SYSMPU `CESR`, decodes the per-s
 `SPERR` nibble, and says so explicitly when NO protection error is latched -- which is the tell
 for a peripheral-bridge fault rather than an MPU one.
 
-### Adding a board/chip (the three edit points)
+### Adding a board/chip (the five edit points)
 
 1. `boards/<board>/board.cmake` -- the board descriptor: one file setting
-   `KICKOS_ARCH`, `KICKOS_CHIP` (empty for the sim), and `KICKOS_MCPU`
-   (`-mcpu/-mfpu/-mfloat-abi`). This is the **single source of truth** for the
-   board -> {arch, chip, CPU} triple: the ARM cross toolchain includes it
-   pre-`project()` for the `-mcpu` baseline, and the build's board resolver
-   (`cmake/kickos.cmake`, `kickos_load_board_descriptor`) includes the same file
-   for arch + chip. The two can never disagree. (This replaced the old triplet:
-   a `-mcpu` ladder in the toolchain + `kickos_resolve_board`/`kickos_resolve_chip`
-   ladders in `kickos.cmake`.)
-2. `CMakePresets.json` -- add a configure + build preset (only for boards that
+   `KICKOS_ARCH` and `KICKOS_CHIP` (empty for the sim), plus a CPU flag
+   (`KICKOS_MCPU` / `KICKOS_MFLOAT_ABI`) only where the board genuinely differs
+   from its chip's baseline (a float ABI, or an emulated core on the mps2 QEMU
+   boards). The build's board resolver (`cmake/kickos.cmake`,
+   `kickos_load_board_descriptor`) and the ARM cross toolchain
+   (`cmake/toolchain-arm-none-eabi.cmake`) both include this file pre-`project()`,
+   so arch/chip/CPU can never disagree between the two.
+2. `arch/arm/chip/<chip>/cpu.cmake` -- the chip's own CPU baseline (`KICKOS_MCPU`,
+   `KICKOS_MFLOAT_ABI`): the core and its FPU are a **chip** fact, not a board
+   one, so this is where `-mcpu`/`-mfpu`/`-mfloat-abi` actually live. The
+   toolchain file includes it right after the board descriptor and only fills
+   in what the board left unset (`if(NOT DEFINED ...)`); a bare-metal board that
+   resolves neither value here nor in its own `board.cmake` is refused at
+   configure. A new chip must ship one.
+3. `CMakePresets.json` -- add a configure + build preset (only for boards that
    actually build/link today).
-3. `arch/arm/chip/<chip>/` -- the chip sources (`*.cc`, `*.S`, auto-globbed), a
+4. `arch/arm/chip/<chip>/` -- the chip sources (`*.cc`, `*.S`, auto-globbed), a
    linker script named exactly `<chip>.ld`,
    `arch/arm/chip/<chip>/include/kickos/chip_limits.h` with the chip's own constants
    (configure REFUSES a chip that ships none), and
@@ -92,8 +98,9 @@ for a peripheral-bridge fault rather than an MPU one.
    addresses. CMake derives the dir from the chip name, puts it on the include path,
    and installs it -- **no root-CMake edit needed** (this used to be a
    silently-failing step).
-4. `boards/<board>/configs/<variant>/defconfig` -- the board's provisioning. Without
-   one the board takes the fleet defaults, which are the sim's and do not fit an MCU.
+5. `boards/<board>/configs/<variant>/defconfig` -- the board's configuration, one
+   complete statement per variant. At least a `base`; configure REFUSES a board that
+   ships none, and names the variants it does ship.
 
 `boards/<board>/` is also where a `<chip>.ld` linker override lives for a shared chip,
 and `boards/<board>/Kconfig` where its own options go -- proven on the `stm32f411` pair
@@ -128,10 +135,9 @@ override to get wrong: earlier this was an if/else between two headers sharing o
 include guard, so a board that restated one knob silently lost every other value its
 chip had set.
 
-### Configuration from Kconfig (a board with a defconfig)
+### Configuration from Kconfig
 
-A board that carries `boards/<board>/configs/<variant>/defconfig` takes its
-configuration from Kconfig instead of from the header and the CMake ladders above.
+A board's configuration is `boards/<board>/configs/<variant>/defconfig`.
 `tools/kconfig/genconfig.py` resolves the declarations and writes three things into the
 build tree's `generated/` directory: `.config` (the audit surface), a `board_config.h`
 under `include/kickos/`, and a `kickos_config.cmake` fragment that the root
@@ -139,11 +145,20 @@ under `include/kickos/`, and a `kickos_config.cmake` fragment that the root
 include directory precedes the board's, and both headers carry the same include guard,
 and there is no source `board_config.h` for it to shadow.
 
-Nothing about that board's provisioning is stated in CMake. The knobs are declared in
+Nothing about a board's provisioning is stated in CMake. The knobs are declared in
 `Kconfig` with a `range` and a `default`, the arch and chip facts in `arch/Kconfig`, the
 board stanzas in `boards/Kconfig`, and the board's own values in its defconfig, which
-states only what differs from the declared defaults. A board with no defconfig keeps the
-path above unchanged, so the two coexist and a board crosses on its own.
+states only what differs from the declared defaults.
+
+**A preset selects a board and a variant and nothing else**, in NuttX's
+`<board>:<variant>` spirit, and the memory-protection posture is part of what a variant
+states. So a board that can enforce says so in the variants that do
+(`CONFIG_MEMORY_MODEL_MPU=y`) and carries a `flat` variant where the non-enforcing build
+is wanted; the enforcing posture is not something a `-D` flips in an existing build
+directory, and the stale-cache trap that made a fresh directory mandatory per posture
+cannot be expressed. A variant defconfig is a COMPLETE statement rather than a delta on
+`base`, which is what `savedefconfig` writes back and what makes any one of them
+readable on its own.
 
 **A value the declarations do not permit is REFUSED at configure, not defaulted.**
 kconfiglib warns on an out-of-range integer and falls back on the symbol's own default,
@@ -619,12 +634,12 @@ section exists to prevent. Both are `-Os` figures, and the second one's SRAM hal
 it is what makes the SRAM half a provisioning statement. At the chip defaults it refuses
 every spawn. At the `f302nucleo-st` provisioning the same 16 KiB part runs the suite on
 silicon at **63 ok / 0 not ok / 5 skipped**, plan `1..63` (measured at `124b68c`,
-`.session/m456-silicon/b5-nuc-selftest-after.log`). That provisioning is split across two
-files and a porter must read both: the PRESET (`cmake/presets/arm.json`, `f302nucleo-st`)
-sets `KICKOS_ENABLE_SELFTEST=ON`, `KICKOS_USER_HEAP_SIZE=0`, `KICKOS_MAX_SEMAPHORES=6` and
-`KICKOS_MAX_THREADS=3`, while the stack sizes live in the board's defconfig
-(`KICKOS_USER_STACK_SIZE 1024`, `KICKOS_ROOT_STACK_SIZE 1536`, `KICKOS_IDLE_STACK_SIZE
-512`). So "KickOS runs here", "KickOS is validated here with named skips" and "KickOS is
+`.session/m456-silicon/b5-nuc-selftest-after.log`). That provisioning is one file, the `st` variant's
+defconfig (`../../boards/f302nucleo/configs/st/defconfig`): self-test on,
+`KICKOS_USER_HEAP_SIZE 0`, `KICKOS_MAX_SEMAPHORES 6`, `KICKOS_MAX_THREADS 3`, and the
+stack sizes (`KICKOS_USER_STACK_SIZE 1024`, `KICKOS_ROOT_STACK_SIZE 1536`,
+`KICKOS_IDLE_STACK_SIZE 512`). It used to be split between the preset and the board's
+defconfig, and a porter had to read both. So "KickOS runs here", "KickOS is validated here with named skips" and "KickOS is
 validated here with none" are three different claims about one board.
 
 A **named** reduced suite is a supported posture, not a degraded one. `microbit` (nRF51,
@@ -723,7 +738,7 @@ looks far larger -- 49,112 bytes in `../archive/M4.5_footprint_meas.md` s.3 -- b
 data share the 512 KiB RAM and the figure is whole-RAM occupancy. Measured at tip, its
 `hello` code is ordinary: `.text` 22,840 + `.data` 48 + `.init_array` 8 = 22,896, and
 the rest of the 49,072-byte total is `.bss` 9,792 plus a 16,384-byte `.userheap`
-(`arch/riscv/chip/esp32c6/esp32c6.ld:61`). Per-ISA code density accounts for the
+(`KICKOS_USER_HEAP_SIZE` at this chip's declared default). Per-ISA code density accounts for the
 remaining ARM/non-ARM gap; that attribution is **inferred, not measured**.
 
 The suite spans 46,932 to 57,568 bytes at `-Os` across the fleet and both
@@ -740,9 +755,10 @@ linker-script symbol, so the split is readable out of any linked ELF:
 - **static** -- `.data` plus real `.bss`, dominated by `kickos::detail::g_instance`,
   the kernel singleton holding every object pool
   (`kernel/include/kickos/instance.h:65-99`).
-- **`.userheap`** -- `KICKOS_USER_HEAP_SIZE`, carved *below* `__kickos_ram_start`
-  (`arch/arm/chip/stm32f302/stm32f302.ld:105`), so it trades against the arena 1:1.
-  Per-chip default, `-D`-overridable (`arch/CMakeLists.txt:312-314`).
+- **`.userheap`** -- `KICKOS_USER_HEAP_SIZE`, carved *below* `__kickos_ram_start` by
+  `stm32f302.ld`, so it trades against the arena 1:1. A knob like the stacks: its
+  per-chip default is declared in `Kconfig` and a variant states its own, which reaches
+  the linker script as a `-D` (`arch/CMakeLists.txt`).
 - **arena** -- `[__kickos_ram_start, __kickos_ram_end)`
   (`arch/arm/chip/stm32f302/stm32f302.ld:110-111`), the MPU-governed user-RAM pool.
   **Every thread stack comes from here**, as does every `kos_ram_alloc`.
@@ -831,8 +847,8 @@ flip lands where the model says it does.
 
 `KICKOS_USER_HEAP_SIZE 0` is a supported profile, not a broken one. Newlib falls back to
 unbuffered stdio when the stream-buffer `malloc` fails, so `printf` and `std::cout` still
-emit with no heap (`arch/arm/chip/stm32f302/stm32f302.ld:24-26`). The in-tree precedent is
-`nrf51`, which ships heap 0 (`arch/arm/chip/nrf51/nrf51.ld:29`) and whose
+emit with no heap. The in-tree precedent is
+`nrf51`, whose chip default is heap 0 (`Kconfig`, `KICKOS_USER_HEAP_SIZE`) and whose
 `microbit_selftest` QEMU gate is green
 (`../../user/apps/common/selftest/CMakeLists.txt:96`).
 
@@ -842,10 +858,8 @@ written against `printf`/`std::cout` rather than `kos_*` requires those APIs to 
 a heap.
 
 So the SRAM floor is **16 KiB with a static-allocation profile**, and the carve is a
-per-board decision recorded in the chip's linker script: 0 on `nrf51`, 2K on `stm32f302`
-(`arch/arm/chip/stm32f302/stm32f302.ld:28`), 8K on `stm32f103`
-(`arch/arm/chip/stm32f103/stm32f103.ld:27`), 16K on `esp32c6`
-(`arch/riscv/chip/esp32c6/esp32c6.ld:61`).
+decision a variant can state, over a chip default declared in `Kconfig`: 0 on `nrf51`,
+2048 on `stm32f302`, 8192 on `stm32f103` and `stm32f411`, 16384 everywhere else.
 
 A part at the floor **plus MPU enforcement** is tighter still, because enforcement costs
 RAM of its own: region descriptors, per-domain data in `g_instance`
@@ -903,10 +917,9 @@ Four readings, and they are the point of the section:
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways.
 - **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than
   `f302nucleo` and hosts *fewer* threads, missing `hello`'s second stack by 96 bytes,
-  because its heap carve is 8K against f302's 2K
-  (`arch/arm/chip/stm32f103/stm32f103.ld:27`,
-  `arch/arm/chip/stm32f302/stm32f302.ld:28`). `microbit`, the same 16 KiB part class,
-  carves heap 0 (`arch/arm/chip/nrf51/nrf51.ld:29`) and has the roomiest small-board
+  because its heap carve is 8K against f302's 2K (both chip defaults, `Kconfig`,
+  `KICKOS_USER_HEAP_SIZE`). `microbit`, the same 16 KiB part class,
+  carves heap 0 and has the roomiest small-board
   arena in the fleet. **The heap carve, not the part's SRAM, is usually what binds.**
   (`bluepill-c8` is build-only, so its N=1 is a model prediction, not a witness.)
 - On a comfortable board the constraint **inverts**: `f411disco`'s arena would hold 24
@@ -932,13 +945,13 @@ requirement, for a zero-skip run:
 | `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h:99`) | `instance.h:99` | >= 1 | 4 (f302) |
 | `KICKOS_MAX_DOMAINS` | `MAX_THREADS + 2` (`system.h:61`) | `instance.h:95` | derived | 4 |
 
-The `Tight-board value` column is the chip default. The `f302nucleo-st` PRESET
-(`cmake/presets/arm.json`) overrides semaphores to 6 and threads to **3** -- not 4: it was
+The `Tight-board value` column is the chip default. The `f302nucleo` `st` variant
+overrides semaphores to 6 and threads to **3** -- not 4: it was
 cut at `124b68c` once the pool assert made the overcommit a link error, and any text citing
-`arm.json` for `KICKOS_MAX_THREADS=4` on this board is stale. The stack sizes moved the
-other way, out of the preset and into the board's defconfig
+`arm.json` for `KICKOS_MAX_THREADS=4` on this board is stale. The stack sizes are the
+board's own, in its base defconfig
 (`KICKOS_USER_STACK_SIZE` 2048 -> **1024**, `KICKOS_ROOT_STACK_SIZE` 2048 -> **1536**),
-chosen against MEASURED paint-and-scan watermarks now recorded beside them in that header:
+chosen against MEASURED paint-and-scan watermarks:
 deepest pool worker 592 B, root 1,048 B, idle 76 B -- a 488 B (31.8%) margin on the 1,536 B
 root stack. That is the pattern to copy on a tight part: measure the watermark, then
 provision, rather than provisioning for comfort.
@@ -1008,7 +1021,7 @@ Measured, not assumed -- but measured BEFORE the `124b68c` right-size, which too
 `KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_MAX_THREADS` to 3. Every byte column below is
 therefore the older link; the METHOD is what to reuse, and step 5 of the checklist is how.
 `f302nucleo` `selftest` at the then-shipped `f302nucleo-st` provisioning
-(`cmake/presets/arm.json`, `f302nucleo-st`; the cap table was 9 slots wide, a width no
+(then in `cmake/presets/arm.json`; the cap table was 9 slots wide, a width no
 board configures today -- `KICKOS_MAX_HANDLES` is summed at configure and no chip header
 states it), `-Os`, no-MPU 16-byte granule. `g_instance` measures 3,336:
 
@@ -1260,9 +1273,9 @@ pins them is `user/apps/common/ringpriv`.
   not a banner.
 
 The gates are `tests/check_app_arms.sh` and `tests/check_qemu_ringppb.sh`, and neither
-is conditioned on enforcement: `cmake --preset qemu` IS the ring-only posture
-(`KICKOS_HAVE_MPU` defaults to 0 off the sim), which is what makes the ring gateable in CI
-rather than only capturable on no-MPU silicon. Both run permanently on the MPS2 M3/M4/M7/M33
+is conditioned on enforcement: `cmake --preset qemu-flat` IS the ring-only posture (the
+board's `flat` variant, its base one enforcing), which is what makes the ring gateable in
+CI rather than only capturable on no-MPU silicon. Both run permanently on the MPS2 M3/M4/M7/M33
 arms. `microbit` (Cortex-M0: no Unprivileged/Privileged Extension, so `msr CONTROL` is
 discarded) asserts the OPPOSITE outcome with one arm rather than skipping, which
 machine-checks the armv6m classification instead of leaving it as prose; it does not build

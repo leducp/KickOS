@@ -2,9 +2,9 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # One stanza per board. Adding a board is this stanza plus a defconfig under
-# boards/<board>/configs/<variant>/: no ladder arm, no _LIBS string, no
-# mechanism. A board with no defconfig is declared but not yet configurable
-# from Kconfig, and still builds through the pre-Kconfig path.
+# boards/<board>/configs/<variant>/. The defconfig is not optional: a board+variant
+# that has none is a FATAL_ERROR at configure, because every knob reaches C through
+# the generated header.
 
 choice
 	prompt "Target board"

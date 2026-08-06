@@ -176,7 +176,7 @@ elseif(KICKOS_ARCH STREQUAL "rxv3")
           ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rx/rxv3/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "lx6")
-  # ESP32 Xtensa LX6 -- the first non-ARM ISA. Windowed ABI, so the
+  # ESP32 Xtensa LX6, the first non-ARM ISA. Windowed ABI, so the
   # context switch spills all live register windows to the outgoing thread's stack
   # before the SP swap (switch.S); the mandatory window over/underflow + interrupt
   # vectors live in the chip startup.S. Syscall is a plain call (no privilege
@@ -199,7 +199,7 @@ elseif(KICKOS_ARCH STREQUAL "lx6")
   set(KICKOS_ARCH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/xtensa/lx6/include" PARENT_SCOPE)
 elseif(KICKOS_ARCH STREQUAL "rv32imac")
   # RISC-V RV32IMAC (ESP32-C6 + QEMU virt): single mtvec trap that demuxes on
-  # mcause -- ONE deferred switcher via CLINT msip (the RX SWINT / ARM PendSV
+  # mcause. ONE deferred switcher via CLINT msip (the RX SWINT / ARM PendSV
   # model), ecall syscall trap -> a privileged-thread trampoline (switch.S); the
   # core-generic seam (mstatus.MIE crit, rdcycle trace clock, wfi idle, PMP stub)
   # in arch_rv32imac.cc. No F/D extension -> soft-float, so the switch banks no FP.
@@ -270,7 +270,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # 256 bytes of flash, checks a CRC-32/MPEG-2 over bytes 0..251, then runs it.)
   # Everything is keyed on ${KICKOS_CHIP}: the CPU baseline comes from the
   # toolchain (KICKOS_MCPU_FLAGS), the checksum tool is cmake/<chip>_checksum.py,
-  # and the forced blob symbol is g_<chip>_boot2 -- so a future boot2 chip that
+  # and the forced blob symbol is g_<chip>_boot2, so a future boot2 chip that
   # doesn't supply those fails loudly instead of building a silently-wrong image.
   set(_boot2_src "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/boot2.S")
   if(EXISTS "${_boot2_src}")
@@ -318,7 +318,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   add_library(kickos_chip_${KICKOS_CHIP} STATIC ${_chip_src})
   kickos_apply_freestanding(kickos_chip_${KICKOS_CHIP})
   # M7 D-cache: forward the option to the imxrt chip TU so arch_init calls
-  # kickos_armv7m_dcache_enable(). Default ON -- silicon-validated (selftest 43/43 + a
+  # kickos_armv7m_dcache_enable(). Default ON, silicon-validated (selftest 43/43 plus a
   # ~38 M-switch soak under enforcement, a measurable throughput win). Safe while the M7 is
   # single-core with no DMA; M4 DMA drivers MUST add clean/invalidate cache maintenance
   # around DMA buffers. Set OFF to opt back out.
@@ -356,12 +356,12 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   # --- Rule 6 class-driver leaf (M4, decision R-A) -----------------------------
   # A chip that factors register logic shared between the kernel and an
   # unprivileged userspace driver puts it in a FREESTANDING, STATELESS leaf under
-  # <family>/chip/<chip>/class/ -- POD + free functions by explicit base, no
+  # <family>/chip/<chip>/class/: POD + free functions by explicit base, no
   # ctor/dtor, no mutable static (rules 3/4). It is built as kickos_class_<chip>,
   # its OWN static lib on a bare include path: repo include/ + this chip's register
   # dir ONLY, deliberately NOT kernel/include. KickOS links kernel + driver into one
   # MPU-partitioned ELF, so this leaf is ONE shared read-only copy consumed from two
-  # trust domains -- which is why it must carry no writable state. The kernel-side
+  # trust domains, so it must carry no writable state. The kernel-side
   # (timebase) consumer is DEFERRED to Phase A; today the leaf is pulled in by the
   # chip's userspace driver/app so it is not --gc-sections-stripped.
   set(_class_dir
@@ -371,7 +371,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
     add_library(kickos_class_${KICKOS_CHIP} STATIC ${_class_src})
     kickos_apply_freestanding(kickos_class_${KICKOS_CHIP})
     # PUBLIC: the class/ dir carries the leaf's own header, propagated to whichever
-    # driver/app links this lib. PRIVATE: repo include/ + the chip register dir --
+    # driver/app links this lib. PRIVATE: repo include/ + the chip register dir,
     # the leaf's whole world. NO kernel/include (verified via compile_commands): the
     # leaf must compile under the kernel bar without seeing kernel headers.
     target_include_directories(kickos_class_${KICKOS_CHIP}
@@ -421,7 +421,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
   kickos_boot_arena_defs("${CMAKE_CURRENT_SOURCE_DIR}"
                          "kickos_arch_${KICKOS_ARCH}" "kickos_chip_${KICKOS_CHIP}"
-                         "${KICKOS_CHIP_INCLUDE_DIR}" "${_ld}" _boot_defs
+                         "${_ld}" _boot_defs
                          _mpu_min_region_cfg _mpu_region_pow2_cfg)
   list(APPEND _ld_defs ${_boot_defs})
   # The scraped region-encoding seam, read by the one app TU that checks the runtime seam

@@ -11,9 +11,8 @@
 # "fault" also hits "EFAULT" and "default" in benign output.
 #
 # It lives in tests/lib/panic.ere, ONE line, read by both consumers: this file and the root
-# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. It used to live here as
-# a shell assignment that CMake scraped with a regex, which made the quoting load-bearing.
-# A plain data file is readable by both languages without either parsing the other.
+# CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. A plain data file is
+# readable by both languages without either parsing the other.
 # Every caller sources this file as <its own dir>/lib/gate.sh, so the data file sits beside
 # it. Read once, and REFUSE an empty result: an empty ERE matches nothing, so every panic
 # gate in the suite would silently stop failing.

@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: CECILL-C
+# The SAME pinned vendor tarball used locally (reproducibility): the official Arm GNU
+# Toolchain (arm-none-eabi, newlib). Not apt gcc-arm-none-eabi, not xPack.
+name: Arm GNU toolchain
+description: Fetch (cached) the pinned arm-none-eabi toolchain and export its bin/.
+
+inputs:
+  dir:
+    description: >
+      Directory the tarball unpacks to; also the cache key. CI uses 15.2.rel1, the
+      newest arm-none-eabi that developer.arm.com serves anonymously (15.3.rel1 is
+      gitlab-only + login-gated); the desk toolchain is 15.3.rel1, a harmless minor
+      skew for build-regression coverage.
+    required: false
+    default: arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi
+  url:
+    description: Tarball URL; must name the same release as `dir`.
+    required: false
+    default: https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz
+
+runs:
+  using: composite
+  steps:
+    - name: Cache Arm GNU toolchain
+      id: cache-arm
+      uses: actions/cache@v4
+      with:
+        path: ~/tc/${{ inputs.dir }}
+        key: ${{ inputs.dir }}
+
+    - name: Download Arm GNU toolchain
+      if: steps.cache-arm.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ARM_TC_URL: ${{ inputs.url }}
+      run: |
+        mkdir -p ~/tc
+        # developer.arm.com 302-redirects to an anonymous Azure blob; fail loud if not xz.
+        curl -fsSL --retry 3 --retry-delay 5 -o /tmp/arm.tar.xz "$ARM_TC_URL"
+        file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
+        tar -C ~/tc -xf /tmp/arm.tar.xz
+
+    - name: Put toolchain on PATH + bin
+      shell: bash
+      env:
+        ARM_TC_DIR: ${{ inputs.dir }}
+      # Env var and PATH; either alone is sufficient (the toolchain files seed
+      # KICKOS_*_TOOLCHAIN_BIN from the environment, and an empty hint falls back
+      # to PATH). Belt-and-braces is deliberate. Only the variable NAME must agree
+      # with the toolchain file.
+      run: |
+        echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
+        echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"

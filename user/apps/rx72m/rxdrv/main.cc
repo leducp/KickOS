@@ -43,7 +43,7 @@
 // ungranted poke below succeeds and the console prints the isolation-FAILURE line:
 // a false verdict. Refuse to build a misleading oracle. (CMake gates it too.)
 #if !KICKOS_HAVE_MPU
-#error "rxdrv requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
+#error "rxdrv requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace

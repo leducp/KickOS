@@ -207,7 +207,8 @@ an RX-mangled `sbrk` sufficed.
 
 ## Experiment (the original evidence anchor -- now folded into the committed cxxtest)
 
-qemu-riscv `virt`, `-DKICKOS_HAVE_MPU=1`, RISCStar newlib toolchain. The original throwaway app
+qemu-riscv `virt`, `cmake --preset qemu-riscv` (its base variant enforces by default), RISCStar
+newlib toolchain. The original throwaway app
 `cxxumpu` -- root, privileged as it still was then, spawns an **unprivileged** worker
 (`kos::thread::spawn(..., privileged=false)`) that runs full C++ -- has since been folded into the
 committed `cxxtest` (same spawn shape, now the standing `qemu_riscv_cxxtest` gate), so the

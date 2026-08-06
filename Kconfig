@@ -24,6 +24,16 @@ config HAS_TRACE_CLOCK
 	  An arch_trace_now exists. The armv6m default is n and a chip that ships its
 	  own counter selects it back on.
 
+config KICKOS_TRACE_CLOCK_DECLARED
+	int
+	default 1 if HAS_TRACE_CLOCK
+	default 0
+	help
+	  HAS_TRACE_CLOCK as a number the generated fragment can carry. The capability
+	  is stated twice -- here, and by arch/<family>/chip/<chip>/caps.cmake plus the
+	  arch ladder in CMakeLists.txt -- and this is the half CMake cannot compute, so
+	  it is what the agreement check there compares against.
+
 source "boards/Kconfig"
 source "boards/*/Kconfig"
 source "arch/Kconfig"
@@ -107,11 +117,13 @@ config KICKOS_MAX_IRQ_HANDLES
 
 config KICKOS_MAX_SPAWN_GRANTS
 	int "Caps one spawn may delegate"
-	range 1 16
+	range 2 16
 	default 6
 	help
 	  Costs caller stack, not .bss: thread_spawn stages the grant list in arrays
-	  on the calling thread's own stack.
+	  on the calling thread's own stack. The floor is 2, not 1: the child width is
+	  this plus one plus the reply peak, and a width inside the reserved index
+	  range leaves a child no slot of its own, which configure refuses.
 
 config KICKOS_CAP_TABLE_SUPPLY
 	int "Capability slots this board's RAM can back"
@@ -135,6 +147,19 @@ config KICKOS_ROOT_STACK_SIZE
 	int "Root thread stack"
 	range 512 262144
 	default 65536
+
+config KICKOS_USER_HEAP_SIZE
+	int "Userspace heap the linker script carves"
+	range 0 1048576
+	default 0 if CHIP_NRF51
+	default 2048 if CHIP_STM32F302
+	default 8192 if CHIP_STM32F103
+	default 8192 if CHIP_STM32F411
+	default 16384
+	help
+	  Read by the linker script. Every byte here is a byte the thread arena does
+	  not get. Zero carves nothing and still prints: newlib falls back
+	  to unbuffered stdio when the buffer malloc fails.
 
 config KICKOS_MIN_STACK_SIZE
 	int
@@ -209,12 +234,13 @@ config KICKOS_TELEMETRY
 
 config KICKOS_RTT_CH1_SIZE
 	int "RTT channel-1 ring bytes"
-	depends on TELEMETRY_RTT
+	depends on CONSOLE_RTT || CONSOLE_BOTH
 	range 256 65536
 	default 4096
 	help
 	  A whole run has to fit, so a long trace raises it. The default matches the
-	  rtt.cc fallback; the presets in use ask for 16384.
+	  rtt.cc fallback. It sizes up1_buf, which the RTT CONSOLE links, so it is
+	  offered wherever that transport is selected and not only under telemetry.
 
 endmenu
 
@@ -240,8 +266,12 @@ config KICKOS_SHUTDOWN_TO_BOOTLOADER
 
 config KICKOS_BENCH
 	bool "Cycle-accurate context-switch microbench"
-	depends on HAS_TRACE_CLOCK
 	default n
+	help
+	  Brackets the switch body with the core's own cycle counter, which is not
+	  arch_trace_now and so does not answer to HAS_TRACE_CLOCK: the brackets live
+	  in each switch.S that carries them, and an arch without them builds the knob
+	  and measures nothing.
 
 config SCHED_PERIODIC_TICK
 	bool "Force a classic periodic scheduler tick"

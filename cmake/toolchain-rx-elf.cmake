@@ -11,7 +11,7 @@
 #
 # The ARM toolchain hardcodes an ISA *family* of "arm"; this file introduces the
 # third family value, "rx". The per-board arch/chip/CPU facts live in a board
-# descriptor (boards/<board>/board.cmake) that this file includes -- the same
+# descriptor (boards/<board>/board.cmake) that this file includes, the same
 # board-descriptor seam the ARM toolchain uses.
 
 set(CMAKE_SYSTEM_NAME      Generic)
@@ -41,8 +41,22 @@ else()
   message(FATAL_ERROR "KickOS rx toolchain: no board descriptor for '${KICKOS_BOARD}'")
 endif()
 
+
+# The chip's own CPU baseline, for whatever the board left unset. It is a chip fact:
+# `board` states the arch, the CHIP states the core and its FPU. Sibling of the caps.cmake
+# and mpu.cmake this tree already keeps per chip, and included AFTER the descriptor so a
+# board that genuinely differs (a float ABI, or the mps2 boards' emulated core) wins.
+# An installed package has no arch/ tree and ships a descriptor with the flags already
+# resolved into it, so a missing file here is not an error; a missing VALUE is, below.
+set(_kos_cpu_chip "${CMAKE_CURRENT_LIST_DIR}/../arch/rx/chip/${KICKOS_CHIP}/cpu.cmake")
+if(EXISTS "${_kos_cpu_chip}")
+  include("${_kos_cpu_chip}")
+endif()
+
 if(NOT DEFINED KICKOS_MCPU)
-  message(FATAL_ERROR "KickOS rx toolchain: board '${KICKOS_BOARD}' has no KICKOS_MCPU")
+  message(FATAL_ERROR "KickOS rx toolchain: board '${KICKOS_BOARD}' resolved no ISA "
+    "baseline from boards/${KICKOS_BOARD}/board.cmake or "
+    "arch/rx/chip/${KICKOS_CHIP}/cpu.cmake")
 endif()
 set(_kos_cpu ${KICKOS_MCPU})
 

@@ -51,13 +51,6 @@ _code_size = 128K;
 _appdata_size = KICKOS_APPDATA_SIZE;
 #endif
 
-/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch).
-   qemu-riscv also builds cxxtest NON-enforcement (freestanding PMP-less path); its
-   measured peak is ~4.2K, so 16K is ample. */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 16K
-#endif
-
 SECTIONS
 {
     .text ORIGIN(RAM) : ALIGN(4)

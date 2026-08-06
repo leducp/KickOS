@@ -5,8 +5,8 @@
 // Reference Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. Bases
 // only; per-peripheral register offsets/bit fields live in regs/<periph>.h.
 
-#ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_MMAP_H
-#define KICKOS_ARCH_ARM_CHIP_XMC4800_MMAP_H
+#ifndef KICKOS_CHIP_MMAP_H
+#define KICKOS_CHIP_MMAP_H
 
 #include <stdint.h>
 

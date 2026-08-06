@@ -68,8 +68,8 @@ namespace kickos::mk64f::reg::aips
     static_assert(pacr_of(55u) == 0x40000048u);
     static_assert(pacr_sp_bit(55u) == (1u << 2));
 
-    // The bound itself: the last AIPS0 slot resolves, and the AIPS1 blocks M4.6 reaches
-    // for (UART4, GPIOA) do not.
+    // The bound itself: the last AIPS0 slot resolves, and the AIPS1 blocks (UART4, GPIOA)
+    // do not.
     static_assert(slot_of(mmap::AIPS1_BASE - SLOT_STRIDE) == SLOT_COUNT - 1u);
     static_assert(pacr_of(SLOT_COUNT - 1u) == mmap::AIPS0_BASE + 0x6Cu);
     static_assert(slot_of(mmap::UART4_BASE) == SLOT_NONE);

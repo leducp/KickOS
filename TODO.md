@@ -2701,16 +2701,17 @@ was read or measured.
       is routinely overwritten. Closing the aliasing is a precondition for the provision meaning
       anything: either default placement starts at `KICKOS_CAP_FIRST_DYNAMIC`, or the index stops
       being reserved. Read directly; the placement claim checked in `abi.h` itself.
-- [ ] **`mk64f`'s handle budget has no recorded derivation.**
-      `boards/frdmk64f/configs/base/defconfig:17-24` raises `KICKOS_MAX_HANDLES` to 12
-      and says only that root must cover the caps the board's service list RETAINS, pointing at
-      "the app that sets the peak" for the arithmetic rather than giving it.
-      `boards/xmc4800-relax/configs/base/defconfig:17-25` reaches the same 12 and spells its
-      sum out (2 reserved + 2 permanent selftest caps + 1 retained SPI endpoint + 6 concurrent in
-      `t_mutex_deadlock` = 11, so the fleet default of 10 already fails). Whoever re-derives the
-      M4.7 sizing sum needs the `mk64f` figure justified or corrected -- it is the one 12 with no
-      arithmetic behind it. Same family as the copy-pasted-derivation item below, but that one is
-      about duplication and this one is about a figure nothing supports. Read directly.
+- [ ] **STALE, WRONG MECHANISM (not just a rotted line number): `mk64f`'s handle budget has no
+      recorded derivation.** This described `boards/frdmk64f/configs/base/defconfig` and
+      `boards/xmc4800-relax/configs/base/defconfig` each stating `KICKOS_MAX_HANDLES=12` directly.
+      Neither defconfig sets any such symbol today, and `cmake/cap_table.cmake` now explicitly
+      forbids a board from stating the table's width at all ("A board must NOT state the width...
+      Kconfig declares no such symbol, so an attempt to set it is refused by name"): the width is
+      summed at CONFIGURE time from the kernel's reserved-index count, the service list's retained
+      caps (`RETAINED_CAPS`), and the app's declared peak (`CAPABILITIES`), each stated by whoever
+      owns the fact. Whatever open question this pointed at -- an unjustified `mk64f` figure --
+      needs to be re-derived against that configure-time sum; there is no board-stated constant
+      left to cite a line number against.
 
 ## Found by the 10-angle review (2026-08-02)
 
@@ -2952,10 +2953,14 @@ never touched. What was FIXED is in the commit. What was found and NOT fixed:
       can see; and the demand varies by posture and by split part. If it is ever wanted, it
       belongs in CMake via the existing `cmake/boot_arena.cmake` preprocessor probe, which
       already reads `KICKOS_*` macros out of headers, keyed per posture.
-- [ ] **`bluepill-c8` is the only board that shadows a chip `board_config.h`**, and the lookup is
-      either/or, so any knob the chip right-sized and the board omits silently reverts to the
-      fleet default. That is how `KICKOS_MAX_SEMAPHORES` regressed (fixed here). Nothing gates
-      the shadowing; a second such board would repeat it.
+- [x] **CLOSED BY DELETING THE MECHANISM: `bluepill-c8` was the only board that shadowed a chip
+      `board_config.h`**, and the lookup was either/or, so any knob the chip right-sized and the
+      board omitted silently reverted to the fleet default -- that is how `KICKOS_MAX_SEMAPHORES`
+      regressed, and nothing gated the shadowing. Both the per-board and per-chip `board_config.h`
+      and the either/or lookup between them are gone: a knob now has exactly one place to be set,
+      its Kconfig declaration's own `default N if CHIP_X` list (e.g. `KICKOS_USER_HEAP_SIZE` in the
+      root `Kconfig`), which a board's defconfig may explicitly override but cannot silently omit
+      into. There is no longer a second header to shadow, so a second board cannot repeat this.
 - [ ] **Two comments describe a defect two incompatible ways, so one of them is wrong about the
       code**: `tele_pingpong/main.cc` says a non-last thread exit is currently broken on ARM
       while `sched_exit/main.cc` documents it fixed and `check_sched_exit.sh` gates it; and
@@ -3650,7 +3655,7 @@ here because they are pre-existing isolation facts, not things that pass created
       4,096 that two 2,048-byte stacks need. The cause is the carve rather than the part: 8 K
       `.userheap` (`arch/arm/chip/stm32f103/stm32f103.ld:27`) where `f302nucleo` now takes 2 K, plus the
       board raising ROOT/USER to 2048 over the chip default of 1024
-      (`boards/bluepill-c8/configs/base/defconfig:31`, `:37`). Full arithmetic and its
+      (`boards/bluepill-c8/configs/base/defconfig:9`, `:11`). Full arithmetic and its
       provenance are already in `docs/reference/boards.md`; the fix is cutting the carve. The
       prediction is worth acting on because the same model called all three `f302nucleo` silicon
       outcomes correctly -- `hello` two threads, `stress` pass, `selftest` spawns refused.

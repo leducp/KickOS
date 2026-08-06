@@ -7,8 +7,8 @@
 # that one proves a spawned child is confined, this one proves the thread that ran the
 # ctors and the board bring-up is. Native for the sim, QEMU when QEMU_MACHINE is set.
 #
-# Registered only on a build configured -DKICKOS_HAVE_MPU=1, so the app's own
-# "NOT confined" line is a failure marker here.
+# Registered only on an enforcing build, so the app's own "NOT confined" line is a
+# failure marker here.
 
 set -u
 . "$(dirname "$0")/lib/gate.sh"

@@ -30,3 +30,15 @@ kickos_emit_image(oot_mcu_app)
 # Built only to keep the shipped sugar covered out of tree; the target above is
 # the reference shape.
 kickos_add_application(oot_mcu_app_sugar SOURCES main.cc)
+
+# What the KickOS build this links against resolved for those knobs, forwarded so main.cc
+# can static_assert that the package's headers state the same. The CI gate passes them; a
+# hand build of this example leaves them unset and asserts nothing, which is the point of
+# a downstream project not having to know them. Both targets compile the same source, so
+# both carry them or the images stop being comparable.
+foreach(_expect KICKOS_EXPECT_MAX_THREADS KICKOS_EXPECT_USER_STACK_SIZE)
+  if(DEFINED ${_expect})
+    target_compile_definitions(oot_mcu_app PRIVATE ${_expect}=${${_expect}})
+    target_compile_definitions(oot_mcu_app_sugar PRIVATE ${_expect}=${${_expect}})
+  endif()
+endforeach()

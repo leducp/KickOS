@@ -23,7 +23,7 @@
 # The total is then RAISED to the grant-list floor, KICKOS_MAX_SPAWN_GRANTS + 1, whenever it
 # falls below it: a full grant list lands at child indices 1..cap_count with no runtime check
 # (cap.h), which is a property of the grant list and the reserved plane and not of anything
-# any app holds. So the floor widens a narrow demand instead of refusing it -- an app is
+# any app holds. So the floor widens a narrow demand instead of refusing it, and an app is
 # never asked to declare capabilities it does not hold.
 #
 # A board may state SUPPLY and nothing else (KICKOS_CAP_TABLE_SUPPLY, in its defconfig). A
@@ -31,7 +31,8 @@
 # list's retention, so it would go stale the moment either changes, with nothing to notice.
 # Kconfig declares no such symbol, so an attempt to set it is refused by name.
 #
-# Every input is read back through the real preprocessor, as in cmake/boot_arena.cmake.
+# Every input is a number the build states: the provisioning integers come from the
+# generated CMake fragment and the structural constants from cmake/cap_geometry.cmake.
 
 # What an app that declares nothing gets: the widest peak that still configures on the
 # fleet's smallest supply (7 slots) once the reserved plane is paid, so a plain `int main`
@@ -43,84 +44,6 @@ set(KICKOS_CAP_APP_PEAK_DEFAULT 5)
 # nonzero fleet-wide value here stops them configuring. A task that really does hold
 # concurrent parked callers declares them.
 set(KICKOS_CAP_REPLY_DEFAULT 0)
-
-# The provisioning integers as the compile will see them: the kernel's reserved range, the
-# board's supply, the grant-list width, the thread count, the chunk granule and the count of
-# runs held by something that is not a thread-pool slot.
-function(kickos_cap_probe board_inc out_reserved out_supply out_grants out_threads
-                          out_chunk out_off_pool)
-  set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-               "${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/system.h"
-               "${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/cap_geometry.h"
-               "${PROJECT_SOURCE_DIR}/system/include/kickos/sys/cap_index.h"
-               "${PROJECT_SOURCE_DIR}/kernel/include/kickos/cap.h")
-  set(_probe "${CMAKE_CURRENT_BINARY_DIR}/cap_table_probe.c")
-  # config/system.h pulls the generated board_config.h itself, so every board probes
-  # through the same file.
-  # ONLY input headers: cap.h reads the width this function is on its way to computing.
-  file(WRITE "${_probe}"
-    "#include <kickos/config/system.h>\n"
-    "#include <kickos/config/cap_geometry.h>\n"
-    "#include <kickos/sys/cap_index.h>\n"
-    "#ifndef KCAP_CHUNK_TARGET\n"
-    "#error \"KCAP_CHUNK_TARGET unset\"\n"
-    "#endif\n"
-    "#ifndef KICKOS_CAP_FIRST_DYNAMIC\n"
-    "#error \"KICKOS_CAP_FIRST_DYNAMIC unset\"\n"
-    "#endif\n"
-    "#ifndef KICKOS_CAP_TABLE_SUPPLY\n"
-    "#error \"KICKOS_CAP_TABLE_SUPPLY unset\"\n"
-    "#endif\n"
-    "#ifndef KICKOS_MAX_SPAWN_GRANTS\n"
-    "#error \"KICKOS_MAX_SPAWN_GRANTS unset\"\n"
-    "#endif\n"
-    "#ifndef KICKOS_MAX_THREADS\n"
-    "#error \"KICKOS_MAX_THREADS unset\"\n"
-    "#endif\n"
-    "#ifndef KCAP_RUN_OFF_POOL\n"
-    "#error \"KCAP_RUN_OFF_POOL unset\"\n"
-    "#endif\n"
-    "kickos_cap_reserved KICKOS_CAP_FIRST_DYNAMIC\n"
-    "kickos_cap_supply KICKOS_CAP_TABLE_SUPPLY\n"
-    "kickos_cap_grants KICKOS_MAX_SPAWN_GRANTS\n"
-    "kickos_cap_threads KICKOS_MAX_THREADS\n"
-    "kickos_cap_chunk KCAP_CHUNK_TARGET\n"
-    "kickos_cap_off_pool KCAP_RUN_OFF_POOL\n")
-  set(_incs "-I${PROJECT_SOURCE_DIR}/kernel/include" "-I${PROJECT_SOURCE_DIR}/system/include"
-            "-I${PROJECT_SOURCE_DIR}/include")
-  if(board_inc)
-    list(INSERT _incs 0 "-I${board_inc}")
-  endif()
-  # AHEAD of the board directory, exactly as the compile has it. A board configured from
-  # Kconfig compiles against the generated board_config.h, so a probe reading the source
-  # header instead would size the table from numbers no translation unit ever sees.
-  if(EXISTS "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h")
-    list(INSERT _incs 0 "-I${PROJECT_BINARY_DIR}/generated/include")
-  endif()
-  execute_process(
-    COMMAND "${CMAKE_C_COMPILER}" -E -P -x c ${_incs} "${_probe}"
-    OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _rc)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR
-      "KickOS: could not read the capability-table provisioning through the preprocessor. "
-      "Every board must leave KICKOS_CAP_TABLE_SUPPLY, KICKOS_MAX_SPAWN_GRANTS and "
-      "KICKOS_MAX_THREADS defined (config/system.h carries the fleet defaults).\n${_err}")
-  endif()
-  foreach(_k reserved supply grants threads chunk off_pool)
-    if(NOT "${_out}" MATCHES "kickos_cap_${_k}[ \t]+([^\r\n]+)")
-      message(FATAL_ERROR "KickOS: capability probe produced no ${_k} value:\n${_out}")
-    endif()
-    math(EXPR _v_${_k} "${CMAKE_MATCH_1}")
-  endforeach()
-
-
-  set(${out_reserved} "${_v_reserved}" PARENT_SCOPE)
-  set(${out_supply} "${_v_supply}" PARENT_SCOPE)
-  set(${out_grants} "${_v_grants}" PARENT_SCOPE)
-  set(${out_threads} "${_v_threads}" PARENT_SCOPE)
-  set(${out_chunk} "${_v_chunk}" PARENT_SCOPE)
-  set(${out_off_pool} "${_v_off_pool}" PARENT_SCOPE)
-endfunction()
 
 # The chunk geometry cap.h will compile for `slots`. MIRRORS the #if in cap.h: one exact-width
 # chunk when the whole table fits the granule, else a ceiling count of granule-wide chunks.
@@ -185,7 +108,7 @@ function(kickos_declare_app_capabilities target peak optional reply)
     KICKOS_CAP_REPLY "${reply}")
   set_property(GLOBAL APPEND PROPERTY KICKOS_CAP_APP_TARGETS "${target}")
   # A declaration made after the sum is resolved cannot move it: the width is already compiled
-  # into the libraries. Keyed on the resolve having RUN, not on being out of tree -- an
+  # into the libraries. Keyed on the resolve having RUN, not on being out of tree: an
   # add_subdirectory(KickOS) or FetchContent consumer HAS boards/, so it reads as in-tree while
   # its declarations land after the root CMakeLists.txt has already resolved, which is the same
   # silent drop a find_package consumer gets. Every in-tree declaration site precedes the
@@ -223,10 +146,25 @@ endfunction()
 
 # Sum the declarations, check the total against the board's supply, and forward the width.
 # Call ONCE, after every subdirectory that can declare (user/apps is added last).
-function(kickos_cap_table_resolve board_inc service_list out_slots out_chunk
+function(kickos_cap_table_resolve service_list out_slots out_chunk
                                   out_child_width out_reply_max)
-  kickos_cap_probe("${board_inc}" _reserved _supply _grants _threads _chunk
-                   _off_pool)
+  # Every term is a number the build already holds: the structural constants from
+  # cmake/cap_geometry.cmake, the provisioning integers from the generated fragment, and
+  # the demand from target properties. Nothing is read back out of C.
+  set(_reserved "${KICKOS_CAP_FIRST_DYNAMIC}")
+  set(_chunk "${KICKOS_CAP_CHUNK_TARGET}")
+  set(_off_pool "${KICKOS_CAP_RUN_OFF_POOL}")
+  set(_supply "${KICKOS_CAP_TABLE_SUPPLY}")
+  set(_grants "${KICKOS_MAX_SPAWN_GRANTS}")
+  set(_threads "${KICKOS_MAX_THREADS}")
+  foreach(_v reserved chunk off_pool supply grants threads)
+    if(NOT "${_${_v}}" MATCHES "^[0-9]+$")
+      message(FATAL_ERROR
+        "KickOS: the capability-table sum has no ${_v} value. The provisioning integers "
+        "come from the generated kickos_config.cmake and the structural constants from "
+        "cmake/cap_geometry.cmake; one of the two was not read before this call.")
+    endif()
+  endforeach()
 
   set(_retained 0)
   set(_retained_by "${service_list}")

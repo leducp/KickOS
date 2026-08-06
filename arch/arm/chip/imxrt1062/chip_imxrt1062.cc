@@ -298,8 +298,9 @@ namespace
     // (RM ch.52). The armv7m arch provides NO clock fallback: the DWT is debug-domain
     // and unreliable on the M7 (lockable, absent under a debugger reset). We source
     // GPT1 from ipg_clk_24M (CLKSRC=0b101 + EN_24M, RM Table 52-3), so the counter is
-    // fixed at 24 MHz and IMMUNE to any ARM-PLL retune (the 396->600 MHz follow-up) --
-    // no re-anchor on cpu_clock_set. Free-run 32-bit counter (RM 52.7.1.2 FRR=1),
+    // fixed at 24 MHz and IMMUNE to any ARM-PLL retune (the 396->600 MHz follow-up),
+    // so there is no re-anchor on cpu_clock_set. Free-run 32-bit counter (RM 52.7.1.2
+    // FRR=1),
     // extended to 64-bit monotonic ns in software (wraps every 2^32/24e6 ~= 179 s;
     // the scheduler reads far more often, and clocksoak validates multi-wrap).
     uint32_t g_gpt_hi = 0;   // software high word; read/updated under the crit section

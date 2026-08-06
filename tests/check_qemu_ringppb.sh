@@ -5,7 +5,7 @@
 # QEMU PRIVILEGE-RING gate, fault arm: boot the `ringppb` image and assert that an
 # unprivileged read of the privileged-only PPB (SCB->CPUID) TRAPS.
 #
-# Unlike check_rootfault.sh this is registered WITHOUT KICKOS_HAVE_MPU, because the
+# Unlike check_rootfault.sh this is registered in both postures, because the
 # refusal is not the MPU's: ValidateAddress() takes the default system address map for any
 # PPB access before consulting MPU_CTRL.ENABLE (ARM DDI 0403E.e B3.5.1/B3.5.3). That is
 # what makes this the one confinement trap a no-MPU board can witness, so the app's own

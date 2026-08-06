@@ -8,7 +8,8 @@
       "toolchainFile": "${sourceDir}/cmake/toolchain-riscv-none-elf.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "MinSizeRel",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "KICKOS_CONFIG_VARIANT": "base"
       }
     },
     {
@@ -16,14 +17,21 @@
       "displayName": "QEMU virt (RISC-V RV32IMAC, M-mode) - runnable [first RISC-V ISA]",
       "inherits": "riscv-base",
       "binaryDir": "${sourceDir}/build/qemu-riscv",
-      "cacheVariables": { "KICKOS_BOARD": "qemu-riscv", "KICKOS_ENABLE_SELFTEST": "ON" }
+      "cacheVariables": { "KICKOS_BOARD": "qemu-riscv" }
+    },
+    {
+      "name": "qemu-riscv-flat",
+      "displayName": "QEMU virt (RISC-V) with no PMP enforcement - runnable",
+      "inherits": "qemu-riscv",
+      "binaryDir": "${sourceDir}/build/qemu-riscv-flat",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" }
     },
     {
       "name": "qemu-riscv-bench",
       "displayName": "QEMU virt (RISC-V) + KICKOS_BENCH - context-switch microbench",
       "inherits": "qemu-riscv",
       "binaryDir": "${sourceDir}/build/qemu-riscv-bench",
-      "cacheVariables": { "KICKOS_BENCH": "ON" }
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "bench" }
     },
     {
       "name": "esp32c6-wroom",
@@ -37,16 +45,26 @@
       "displayName": "ESP32-C6-WROOM-1 (RISC-V RV32IMAC) + selftest (full IRQ suite)",
       "inherits": "esp32c6-wroom",
       "binaryDir": "${sourceDir}/build/esp32c6-wroom-st",
-      "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" }
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" }
+    },
+    {
+      "name": "esp32c6-wroom-flat",
+      "displayName": "ESP32-C6-WROOM-1 with no PMP enforcement",
+      "inherits": "esp32c6-wroom",
+      "binaryDir": "${sourceDir}/build/esp32c6-wroom-flat",
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "flat" }
     }
   ],
   "buildPresets": [
     { "name": "qemu-riscv",    "configurePreset": "qemu-riscv" },
+    { "name": "qemu-riscv-flat", "configurePreset": "qemu-riscv-flat" },
     { "name": "qemu-riscv-bench", "configurePreset": "qemu-riscv-bench" },
     { "name": "esp32c6-wroom", "configurePreset": "esp32c6-wroom" },
-    { "name": "esp32c6-wroom-st", "configurePreset": "esp32c6-wroom-st" }
+    { "name": "esp32c6-wroom-st", "configurePreset": "esp32c6-wroom-st" },
+    { "name": "esp32c6-wroom-flat", "configurePreset": "esp32c6-wroom-flat" }
   ],
   "testPresets": [
-    { "name": "qemu-riscv", "configurePreset": "qemu-riscv", "output": { "outputOnFailure": true } }
+    { "name": "qemu-riscv", "configurePreset": "qemu-riscv", "output": { "outputOnFailure": true } },
+    { "name": "qemu-riscv-flat", "configurePreset": "qemu-riscv-flat", "output": { "outputOnFailure": true } }
   ]
 }

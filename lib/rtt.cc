@@ -9,11 +9,9 @@
 
 #include <kickos/rtt.h>
 
-// The generated provisioning header, for KICKOS_RTT_CH1_SIZE below. This file is the one
-// C consumer of a knob that reached it as a -D until M4.7.5 deleted that forwarding, so
-// without this include the ring silently fell back to the 4096 default and .bss shrank by
-// 12 KiB on a build that asked for 16384. __has_include because lib/ must still compile
-// standalone, with no configuration at all.
+// Supplies KICKOS_RTT_CH1_SIZE below. Without it the ring silently takes the 4096 default
+// instead of the configured size. __has_include: lib/ must still compile standalone, with
+// no configuration at all.
 #if defined(__has_include) && __has_include(<kickos/board_config.h>)
 #include <kickos/board_config.h>
 #endif

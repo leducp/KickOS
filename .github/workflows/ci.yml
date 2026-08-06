@@ -8,10 +8,12 @@
 # -misa=v3/-mdfpu, which exist only in the registration-gated Renesas GNURX build.
 #
 # MPU enforcement runs at RUNTIME on all three ISA families: sim (host mprotect),
-# rv32imac (PMP, qemu-riscv-mpu), ARM on both PMSA revisions (the enforcement step
-# in qemu-arm). build-boards-mpu is the only coverage of the chip-specific backends
-# QEMU has no model for (SYSMPU, the M7 anti-speculation wrap, PMSAv6): link surface
-# only, never the trap.
+# rv32imac (PMP, qemu-riscv-mpu), ARM on both PMSA revisions (the four mps2 run gates
+# in qemu-arm). It is the BASE variant of every board that can enforce, so a preset
+# names it and no -D flips it; the non-enforcing posture has its own `-flat` presets,
+# which is what the ring-only gates run on. build-boards-mpu is the only coverage of
+# the chip-specific backends QEMU has no model for (SYSMPU, the M7 anti-speculation
+# wrap, PMSAv6): link surface only, never the trap.
 #
 # Warnings-as-errors rides EVERY job with no flag (KICKOS_WERROR defaults ON for any
 # in-tree build; see cmake/kickos.cmake, incl. the -DKICKOS_WERROR=OFF escape).
@@ -22,6 +24,11 @@
 # (riscv32-none-elf, newlib, rv32imac soft-float multilib), and Espressif's
 # crosstool-NG Xtensa build. All downloaded + cached; no apt gcc-arm-none-eabi /
 # xPack. The sim job uses the host g++.
+#
+# Each pin (and the reason for it) lives in the composite action that uses it, under
+# .github/actions/<name>: arm-toolchain, riscv-toolchain, xtensa-toolchain, kconfiglib.
+# A job asks for one by name and gets the cache, the fetch and the exported
+# KICKOS_*_BIN / KICKOS_KCONFIG_PY; the version is stated in exactly one place.
 
 name: CI
 
@@ -37,46 +44,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # These name the vendor tarballs; only the KICKOS_*_TOOLCHAIN_BIN variable NAMES
-  # must agree with the toolchain files (which seed them from the environment).
-  # CI uses 15.2.rel1, the newest arm-none-eabi that developer.arm.com serves
-  # anonymously (15.3.rel1 is gitlab-only + login-gated); the desk toolchain is
-  # 15.3.rel1, a harmless minor skew for build-regression coverage.
-  ARM_TC_DIR: arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi
-  ARM_TC_URL: https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi.tar.xz
-  RV_TC_DIR: riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf
-  RV_TC_URL: https://releases.riscstar.com/toolchain/16.1-r1/riscstar-toolchain-16.1-r1-x86_64-riscv32-none-elf.tar.xz
-  # Espressif's Xtensa toolchain (a public GitHub release asset). The tarball is
-  # named xtensa-esp-elf but installs the per-chip xtensa-esp32-elf-* program names
-  # the toolchain file looks for, and unpacks to a version-less xtensa-esp-elf/ --
-  # hence the separate tag in the cache key. Do NOT downgrade to esp-12.2.0: its
-  # GCC 12.2 predates -nostdlib++, which the freestanding-C++ posture passes, so
-  # every compile dies on "unrecognized command-line option".
-  XT_TC_DIR: xtensa-esp-elf
-  XT_TC_TAG: esp-16.1.0_20260609
-  XT_TC_URL: https://github.com/espressif/crosstool-NG/releases/download/esp-16.1.0_20260609/xtensa-esp-elf-16.1.0_20260609-x86_64-linux-gnu.tar.xz
-
 jobs:
   # Authoritative deterministic gate: the full ctest suite on the host sim.
   sim:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install kconfiglib
-        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
-        # and shadows the interpreter the flash tools run on. Pinned: the version
-        # every configuration measurement was taken at.
-        run: |
-          # The runner image is not guaranteed to carry python3-venv, and this is the
-          # first apt use in the job, so install it rather than fail eight jobs at once.
-          python3 -m venv ~/kconfig-venv || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends python3-venv
-            python3 -m venv ~/kconfig-venv
-          }
-          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
-          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kconfiglib
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
       - run: cmake --preset sim
@@ -105,20 +79,7 @@ jobs:
       CXXFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
     steps:
       - uses: actions/checkout@v4
-      - name: Install kconfiglib
-        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
-        # and shadows the interpreter the flash tools run on. Pinned: the version
-        # every configuration measurement was taken at.
-        run: |
-          # The runner image is not guaranteed to carry python3-venv, and this is the
-          # first apt use in the job, so install it rather than fail eight jobs at once.
-          python3 -m venv ~/kconfig-venv || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends python3-venv
-            python3 -m venv ~/kconfig-venv
-          }
-          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
-          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kconfiglib
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
       - run: cmake --preset sim -B build/sim-ubsan
@@ -137,52 +98,29 @@ jobs:
       QEMU_TIMEOUT: "30"
     steps:
       - uses: actions/checkout@v4
-      - name: Install kconfiglib
-        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
-        # and shadows the interpreter the flash tools run on. Pinned: the version
-        # every configuration measurement was taken at.
-        run: |
-          # The runner image is not guaranteed to carry python3-venv, and this is the
-          # first apt use in the job, so install it rather than fail eight jobs at once.
-          python3 -m venv ~/kconfig-venv || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends python3-venv
-            python3 -m venv ~/kconfig-venv
-          }
-          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
-          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kconfiglib
       - name: Install QEMU + build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-arm curl xz-utils
-      - name: Cache Arm GNU toolchain
-        id: cache-arm
-        uses: actions/cache@v4
-        with:
-          path: ~/tc/${{ env.ARM_TC_DIR }}
-          key: ${{ env.ARM_TC_DIR }}
-      - name: Download Arm GNU toolchain
-        if: steps.cache-arm.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/tc
-          # developer.arm.com 302-redirects to an anonymous Azure blob; fail loud if not xz.
-          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/arm.tar.xz "$ARM_TC_URL"
-          file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
-          tar -C ~/tc -xf /tmp/arm.tar.xz
-      - name: Put toolchain on PATH + bin
-        # Env var and PATH; either alone is sufficient (the toolchain files seed
-        # KICKOS_*_TOOLCHAIN_BIN from the environment, and an empty hint falls back
-        # to PATH). Belt-and-braces is deliberate.
-        run: |
-          echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
-          echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/arm-toolchain
       # --repeat until-pass:4: the mps2 QEMU timer is coarse (DWT frozen; ~100 Hz
       # semihosting clock), so the run gates can transiently miss their output
       # window under CI-host load. Retry rides that out; a real hang still fails
       # (each attempt is bounded by the gate's own timeout).
+      # ARM MPU enforcement at RUNTIME, which is what the base variant of these four
+      # boards states: the full TAP suite as unprivileged threads plus a real MemManage
+      # denial in mpu_fault, over both PMSA revisions: v7 on the M4/M7/M3, v8 on the M33
+      # (a different register layout, not the same code path).
       - name: armv7m (mps2-an386)
         run: |
           cmake --preset qemu -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu
           ctest --preset qemu --no-tests=error --output-on-failure --repeat until-pass:4
+          # Posture pin. The enforcing posture is a line in this board's base defconfig
+          # and those two gates are REGISTERED only when it resolves on, so deleting it
+          # would shrink the suite above in silence and leave the run green. Naming them
+          # makes an empty selection the failure (--no-tests=error). Same --repeat as the
+          # suite: the coarse mps2 clock is why it is there.
+          ctest --preset qemu -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
       # Coverage the an386 cannot buy: the M33 is armv8-M (PMSAv8), the M7 has 16 MPU
       # regions to the M4's 8, and the M3 has no FPU so the soft-float switch path runs.
       - name: armv8-m mainline (mps2-an505, Cortex-M33)
@@ -190,33 +128,35 @@ jobs:
           cmake --preset qemu-m33 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m33
           ctest --preset qemu-m33 --no-tests=error --output-on-failure --repeat until-pass:4
+          # Posture pin, as on the an386: each mps2 board carries its own base
+          # defconfig, so one pin does not cover the other three.
+          ctest --preset qemu-m33 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
       - name: armv7m (mps2-an500, Cortex-M7)
         run: |
           cmake --preset qemu-m7 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m7
           ctest --preset qemu-m7 --no-tests=error --output-on-failure --repeat until-pass:4
+          # Posture pin, as on the an386: each mps2 board carries its own base
+          # defconfig, so one pin does not cover the other three.
+          ctest --preset qemu-m7 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
       - name: armv7m soft-float (mps2-an385, Cortex-M3)
         run: |
           cmake --preset qemu-m3 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
           cmake --build --preset qemu-m3
           ctest --preset qemu-m3 --no-tests=error --output-on-failure --repeat until-pass:4
-      # ARM MPU enforcement at RUNTIME: the full TAP suite as unprivileged threads plus
-      # a real MemManage denial in mpu_fault, over both PMSA revisions: v7 on the
-      # M4/M7/M3, v8 on the M33 (a different register layout, not the same code path).
-      # Separate build dirs; the presets above own build/<preset>.
-      # Configured without a preset, so MinSizeRel is not inherited: the build type must be
-      # pinned here or no -O reaches the compiler.
-      - name: ARM PMSA enforcement run gates (v7 + v8)
+          # Posture pin, as on the an386: each mps2 board carries its own base
+          # defconfig, so one pin does not cover the other three.
+          ctest --preset qemu-m3 -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
+      # The ring-only posture of the same four boards, which is what ringpriv and
+      # ringppb assert against: the privilege ring holds with the MPU absent. Its own
+      # preset and its own build directory, because the posture is a configuration
+      # variant and not something a -D can flip in place.
+      - name: ARM ring-only run gates (no PMSA enforcement)
         run: |
           for b in qemu qemu-m33 qemu-m7 qemu-m3; do
-            cmake -S . -B "build/$b-mpu" -G Ninja \
-              -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm-none-eabi.cmake \
-              -DCMAKE_BUILD_TYPE=MinSizeRel \
-              -DKICKOS_BOARD="$b" \
-              -DKICKOS_ENABLE_SELFTEST=ON -DKICKOS_HAVE_MPU=1 \
-              -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
-            cmake --build "build/$b-mpu"
-            ctest --test-dir "build/$b-mpu" --no-tests=error --output-on-failure --repeat until-pass:4
+            cmake --preset "$b-flat" -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+            cmake --build --preset "$b-flat"
+            ctest --preset "$b-flat" --no-tests=error --output-on-failure --repeat until-pass:4
           done
       - name: armv6m (microbit)
         run: |
@@ -234,45 +174,17 @@ jobs:
       QEMU_TIMEOUT: "30"
     steps:
       - uses: actions/checkout@v4
-      - name: Install kconfiglib
-        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
-        # and shadows the interpreter the flash tools run on. Pinned: the version
-        # every configuration measurement was taken at.
-        run: |
-          # The runner image is not guaranteed to carry python3-venv, and this is the
-          # first apt use in the job, so install it rather than fail eight jobs at once.
-          python3 -m venv ~/kconfig-venv || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends python3-venv
-            python3 -m venv ~/kconfig-venv
-          }
-          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
-          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kconfiglib
       - name: Install QEMU + build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
-      - name: Cache RISCstar toolchain
-        id: cache-rv
-        uses: actions/cache@v4
-        with:
-          path: ~/tc/${{ env.RV_TC_DIR }}
-          key: ${{ env.RV_TC_DIR }}
-      - name: Download RISCstar toolchain
-        if: steps.cache-rv.outputs.cache-hit != 'true'
+      - uses: ./.github/actions/riscv-toolchain
+      # The ring-only posture: this board's flat variant is what the freestanding
+      # PMP-less hello and cxxtest gates are registered on.
+      - name: rv32imac (virt) run gate, no PMP enforcement
         run: |
-          mkdir -p ~/tc
-          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/rv.tar.xz "$RV_TC_URL"
-          file /tmp/rv.tar.xz | grep -q XZ || { echo "rv toolchain: $RV_TC_URL served non-xz (gated/redirect?)"; exit 1; }
-          tar -C ~/tc -xf /tmp/rv.tar.xz
-      - name: Put toolchain on PATH + bin
-        # Env var and PATH; either alone is sufficient (see qemu-arm).
-        run: |
-          echo "$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_PATH"
-          echo "KICKOS_RISCV_TOOLCHAIN_BIN=$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_ENV"
-      - name: rv32imac (virt) run gate
-        run: |
-          cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
-          cmake --build --preset qemu-riscv
-          ctest --preset qemu-riscv --no-tests=error --output-on-failure --repeat until-pass:4
+          cmake --preset qemu-riscv-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset qemu-riscv-flat
+          ctest --preset qemu-riscv-flat --no-tests=error --output-on-failure --repeat until-pass:4
       # seam_defaults is registered on every board and reads only nm/readelf output, so a
       # board with no machine model still gets it. Named explicitly rather than running a
       # bare ctest: qemu-riscv-bench also registers boot gates that belong to the run gate
@@ -282,13 +194,15 @@ jobs:
           cmake --preset esp32c6-wroom -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset esp32c6-wroom
           ctest --test-dir build/esp32c6-wroom -R seam_defaults --no-tests=error --output-on-failure
+          cmake --preset esp32c6-wroom-flat -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --build --preset esp32c6-wroom-flat
           cmake --preset qemu-riscv-bench -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv-bench
           ctest --test-dir build/qemu-riscv-bench -R seam_defaults --no-tests=error --output-on-failure
 
-  # rv32imac (virt) UNDER PMP ENFORCEMENT (-DKICKOS_HAVE_MPU=1): runs the full-C++
+  # rv32imac (virt) UNDER PMP ENFORCEMENT, which is this board's base variant: runs the full-C++
   # throw under PMP + the gp-in-appdata CI gates (riscv_no_smalldata, qemu_riscv_cxxtest,
-  # qemu_riscv_mpu_fault -- docs/design-riscv-gp-split.md, docs/design-cxx-under-mpu.md).
+  # qemu_riscv_mpu_fault; see docs/design-riscv-gp-split.md and docs/design-cxx-under-mpu.md).
   # Deterministic (~3s, no silicon). Same RISCstar toolchain as the non-enforcement job.
   qemu-riscv-mpu:
     runs-on: ubuntu-latest
@@ -296,45 +210,18 @@ jobs:
       QEMU_TIMEOUT: "30"
     steps:
       - uses: actions/checkout@v4
-      - name: Install kconfiglib
-        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
-        # and shadows the interpreter the flash tools run on. Pinned: the version
-        # every configuration measurement was taken at.
-        run: |
-          # The runner image is not guaranteed to carry python3-venv, and this is the
-          # first apt use in the job, so install it rather than fail eight jobs at once.
-          python3 -m venv ~/kconfig-venv || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends python3-venv
-            python3 -m venv ~/kconfig-venv
-          }
-          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
-          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kconfiglib
       - name: Install QEMU + build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
-      - name: Cache RISCstar toolchain
-        id: cache-rv
-        uses: actions/cache@v4
-        with:
-          path: ~/tc/${{ env.RV_TC_DIR }}
-          key: ${{ env.RV_TC_DIR }}
-      - name: Download RISCstar toolchain
-        if: steps.cache-rv.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/tc
-          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/rv.tar.xz "$RV_TC_URL"
-          file /tmp/rv.tar.xz | grep -q XZ || { echo "rv toolchain: $RV_TC_URL served non-xz (gated/redirect?)"; exit 1; }
-          tar -C ~/tc -xf /tmp/rv.tar.xz
-      - name: Put toolchain on PATH + bin
-        # Env var and PATH; either alone is sufficient (see qemu-arm).
-        run: |
-          echo "$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_PATH"
-          echo "KICKOS_RISCV_TOOLCHAIN_BIN=$HOME/tc/${RV_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/riscv-toolchain
       - name: rv32imac (virt) enforcement gate
         run: |
-          cmake --preset qemu-riscv -DKICKOS_HAVE_MPU=1 -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
+          cmake --preset qemu-riscv -DKICKOS_RISCV_TOOLCHAIN_BIN="$KICKOS_RISCV_TOOLCHAIN_BIN"
           cmake --build --preset qemu-riscv
           ctest --preset qemu-riscv --no-tests=error --output-on-failure --repeat until-pass:4
+          # Posture pin, as in qemu-arm: PMP enforcement is a line in this board's base
+          # defconfig, and dropping it de-registers these gates instead of failing them.
+          ctest --preset qemu-riscv -R 'mpu_fault|rootfault' --no-tests=error --output-on-failure --repeat until-pass:4
 
   # Xtensa LX6 (esp32-wroom) gate: upstream QEMU ships no ESP32 machine model, so this
   # proves build/link/linker-script + windowed-ABI asm and never boots the image. It does
@@ -347,41 +234,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install kconfiglib
-        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
-        # and shadows the interpreter the flash tools run on. Pinned: the version
-        # every configuration measurement was taken at.
-        run: |
-          # The runner image is not guaranteed to carry python3-venv, and this is the
-          # first apt use in the job, so install it rather than fail eight jobs at once.
-          python3 -m venv ~/kconfig-venv || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends python3-venv
-            python3 -m venv ~/kconfig-venv
-          }
-          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
-          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kconfiglib
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils file
-      - name: Cache Xtensa toolchain
-        id: cache-xt
-        uses: actions/cache@v4
-        with:
-          path: ~/tc/${{ env.XT_TC_DIR }}
-          # Tag in the key: the extracted dir is version-less, so a tag bump must miss.
-          key: ${{ env.XT_TC_DIR }}-${{ env.XT_TC_TAG }}
-      - name: Download Xtensa toolchain
-        if: steps.cache-xt.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/tc
-          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/xt.tar.xz "$XT_TC_URL"
-          file /tmp/xt.tar.xz | grep -q XZ || { echo "xtensa toolchain: $XT_TC_URL served non-xz (gated/redirect?)"; exit 1; }
-          tar -C ~/tc -xf /tmp/xt.tar.xz
-      - name: Put toolchain on PATH + bin
-        # Env var and PATH; either alone is sufficient (see qemu-arm).
-        run: |
-          echo "$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_PATH"
-          echo "KICKOS_XTENSA_BIN=$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/xtensa-toolchain
       # seam_defaults reads nm/readelf output only, so it runs here despite there being no
       # machine model. This is the ONLY CI execution of a gate on Xtensa, and the archive
       # -extraction rule it enforces is per-link: no other job's tree can cover this one.
@@ -406,45 +262,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [frdmk64f, f411disco, blackpill, bluepill-c8, picopi,
-                 f302nucleo, due, xmc4800-relax, qemu-telem, teensy41, pizero2350]
+        preset: [frdmk64f-flat, f411disco-flat, blackpill-flat, bluepill-c8, picopi-flat,
+                 f302nucleo, due, xmc4800-relax-flat, qemu-telem, teensy41-flat,
+                 pizero2350-flat]
     steps:
       - uses: actions/checkout@v4
-      - name: Install kconfiglib
-        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
-        # and shadows the interpreter the flash tools run on. Pinned: the version
-        # every configuration measurement was taken at.
-        run: |
-          # The runner image is not guaranteed to carry python3-venv, and this is the
-          # first apt use in the job, so install it rather than fail eight jobs at once.
-          python3 -m venv ~/kconfig-venv || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends python3-venv
-            python3 -m venv ~/kconfig-venv
-          }
-          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
-          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kconfiglib
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils
-      - name: Cache Arm GNU toolchain
-        id: cache-arm
-        uses: actions/cache@v4
-        with:
-          path: ~/tc/${{ env.ARM_TC_DIR }}
-          key: ${{ env.ARM_TC_DIR }}
-      - name: Download Arm GNU toolchain
-        if: steps.cache-arm.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/tc
-          # developer.arm.com 302-redirects to an anonymous Azure blob; fail loud if not xz.
-          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/arm.tar.xz "$ARM_TC_URL"
-          file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
-          tar -C ~/tc -xf /tmp/arm.tar.xz
-      - name: Put toolchain on PATH + bin
-        # Env var and PATH; either alone is sufficient (see qemu-arm).
-        run: |
-          echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
-          echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/arm-toolchain
       - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
       # The one gate these boards register that needs neither silicon nor an emulator:
@@ -456,7 +282,8 @@ jobs:
       - run: ctest --test-dir build/${{ matrix.preset }} -R seam_defaults --no-tests=error --output-on-failure
 
   # ARM MPU-ENFORCEMENT build gate: the enforcement-capable ARM boards (those
-  # shipping arch/arm/chip/<chip>/mpu.cmake) with -DKICKOS_HAVE_MPU=1. The only job
+  # shipping arch/arm/chip/<chip>/mpu.cmake) on their base variant, which states the
+  # enforcing posture because that is the posture they ship. The only job
   # that builds the enforcement-only link surface of the silicon boards: the
   # .appdata/.appbss window and its ASSERTs, the closed-set archive selectors, the
   # grant symbols, and arch_reserved_blocks, which has NO weak default on purpose,
@@ -468,10 +295,17 @@ jobs:
   # anti-speculation wrap, picopi is PMSAv6 with no MemManage). Trapping stays
   # silicon-proven; see docs/reference/boards.md.
   #
-  # The one ctest gate, kernel_ctor_placement, passes VACUOUSLY here: every app in
-  # this matrix links an empty .kickos_app_init_array window, so the check takes its
-  # "window empty -> PASS" early-out. It still proves the ctor-split section symbols
-  # EXIST, failing loudly when they do not.
+  # kernel_ctor_placement passes VACUOUSLY here: every app in this matrix links an
+  # empty .kickos_app_init_array window, so the check takes its "window empty -> PASS"
+  # early-out. It still proves the ctor-split section symbols EXIST, failing loudly
+  # when they do not.
+  #
+  # The bare ctest (no -R) is what gives oot_export_mcu its teeth. It is registered on
+  # pizero2350 as well as qemu, and only the pizero2350 run can catch a descriptor bake
+  # that writes nothing: qemu is one of the four mps2 boards that state their own
+  # KICKOS_MCPU, so its shipped board.cmake is complete either way, while pizero2350
+  # leaves the core to the chip. The gate installs the package and cross-builds an
+  # out-of-tree app with the shipped toolchain, which this job already has.
   #
   # No `ctest --preset` (arm.json defines test presets only for qemu/qemu-telem/
   # microbit): --test-dir on the preset's binaryDir. picopi links under enforcement
@@ -485,41 +319,10 @@ jobs:
                  xmc4800-relax, picopi]
     steps:
       - uses: actions/checkout@v4
-      - name: Install kconfiglib
-        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
-        # and shadows the interpreter the flash tools run on. Pinned: the version
-        # every configuration measurement was taken at.
-        run: |
-          # The runner image is not guaranteed to carry python3-venv, and this is the
-          # first apt use in the job, so install it rather than fail eight jobs at once.
-          python3 -m venv ~/kconfig-venv || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends python3-venv
-            python3 -m venv ~/kconfig-venv
-          }
-          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
-          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/kconfiglib
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils
-      - name: Cache Arm GNU toolchain
-        id: cache-arm
-        uses: actions/cache@v4
-        with:
-          path: ~/tc/${{ env.ARM_TC_DIR }}
-          key: ${{ env.ARM_TC_DIR }}
-      - name: Download Arm GNU toolchain
-        if: steps.cache-arm.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/tc
-          # developer.arm.com 302-redirects to an anonymous Azure blob; fail loud if not xz.
-          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/arm.tar.xz "$ARM_TC_URL"
-          file /tmp/arm.tar.xz | grep -q XZ || { echo "arm toolchain: $ARM_TC_URL served non-xz (gated/redirect?)"; exit 1; }
-          tar -C ~/tc -xf /tmp/arm.tar.xz
-      - name: Put toolchain on PATH + bin
-        # Env var and PATH; either alone is sufficient (see qemu-arm).
-        run: |
-          echo "$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_PATH"
-          echo "KICKOS_ARM_TOOLCHAIN_BIN=$HOME/tc/${ARM_TC_DIR}/bin" >> "$GITHUB_ENV"
-      - run: cmake --preset ${{ matrix.preset }} -DKICKOS_HAVE_MPU=1 -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
+      - uses: ./.github/actions/arm-toolchain
+      - run: cmake --preset ${{ matrix.preset }} -DKICKOS_ARM_TOOLCHAIN_BIN="$KICKOS_ARM_TOOLCHAIN_BIN"
       - run: cmake --build --preset ${{ matrix.preset }}
       - run: ctest --test-dir build/${{ matrix.preset }} --no-tests=error --output-on-failure

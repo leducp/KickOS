@@ -9,8 +9,8 @@
 // no ESP-IDF/HAL sources. The one exception is PLIC_MX_BASE below, which no TRM
 // revision documents.
 
-#ifndef KICKOS_ARCH_RISCV_CHIP_ESP32C6_MMAP_H
-#define KICKOS_ARCH_RISCV_CHIP_ESP32C6_MMAP_H
+#ifndef KICKOS_CHIP_MMAP_H
+#define KICKOS_CHIP_MMAP_H
 
 #include <stdint.h>
 

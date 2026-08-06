@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: CECILL-C
+# Espressif's crosstool-NG Xtensa build (a public GitHub release asset). The SAME
+# pinned vendor tarball used locally (reproducibility).
+name: Xtensa toolchain
+description: Fetch (cached) the pinned xtensa-esp-elf toolchain and export its bin/.
+
+inputs:
+  dir:
+    description: >
+      Directory the tarball unpacks to. The tarball is named xtensa-esp-elf but
+      installs the per-chip xtensa-esp32-elf-* program names the toolchain file looks
+      for, and unpacks to a version-less xtensa-esp-elf/ -- hence the separate tag
+      below, which the cache key needs.
+    required: false
+    default: xtensa-esp-elf
+  tag:
+    description: >
+      Release tag, part of the cache key because the extracted directory is
+      version-less. Do NOT downgrade to esp-12.2.0: its GCC 12.2 predates
+      -nostdlib++, which the freestanding-C++ posture passes, so every compile dies
+      on "unrecognized command-line option".
+    required: false
+    default: esp-16.1.0_20260609
+  url:
+    description: Tarball URL; must name the same release as `tag`.
+    required: false
+    default: https://github.com/espressif/crosstool-NG/releases/download/esp-16.1.0_20260609/xtensa-esp-elf-16.1.0_20260609-x86_64-linux-gnu.tar.xz
+
+runs:
+  using: composite
+  steps:
+    - name: Cache Xtensa toolchain
+      id: cache-xt
+      uses: actions/cache@v4
+      with:
+        path: ~/tc/${{ inputs.dir }}
+        # Tag in the key: the extracted dir is version-less, so a tag bump must miss.
+        key: ${{ inputs.dir }}-${{ inputs.tag }}
+
+    - name: Download Xtensa toolchain
+      if: steps.cache-xt.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        XT_TC_URL: ${{ inputs.url }}
+      run: |
+        mkdir -p ~/tc
+        curl -fsSL --retry 3 --retry-delay 5 -o /tmp/xt.tar.xz "$XT_TC_URL"
+        file /tmp/xt.tar.xz | grep -q XZ || { echo "xtensa toolchain: $XT_TC_URL served non-xz (gated/redirect?)"; exit 1; }
+        tar -C ~/tc -xf /tmp/xt.tar.xz
+
+    - name: Put toolchain on PATH + bin
+      shell: bash
+      env:
+        XT_TC_DIR: ${{ inputs.dir }}
+      # Env var and PATH; either alone is sufficient (see the arm-toolchain action).
+      # Only the variable NAME must agree with the toolchain file.
+      run: |
+        echo "$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_PATH"
+        echo "KICKOS_XTENSA_BIN=$HOME/tc/${XT_TC_DIR}/bin" >> "$GITHUB_ENV"

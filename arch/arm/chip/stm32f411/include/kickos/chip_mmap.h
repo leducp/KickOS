@@ -5,8 +5,8 @@
 // clean-room from RM0383. Bases only; register offsets + fields live in
 // regs/<periph>.h. Hand-rolled, no vendor HAL/CMSIS.
 
-#ifndef KICKOS_ARCH_ARM_CHIP_STM32F411_MMAP_H
-#define KICKOS_ARCH_ARM_CHIP_STM32F411_MMAP_H
+#ifndef KICKOS_CHIP_MMAP_H
+#define KICKOS_CHIP_MMAP_H
 
 #include <stdint.h>
 
@@ -31,4 +31,4 @@ namespace kickos::stm32f411::mmap
     constexpr uintptr_t SCB_CPACR = 0xE000ED88u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_STM32F411_MMAP_H
+#endif // KICKOS_CHIP_MMAP_H

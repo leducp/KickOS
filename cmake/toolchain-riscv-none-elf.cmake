@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Cross toolchain for the KickOS RISC-V targets (riscv32-none-elf, the pinned
-# RISCStar GNU RISC-V cross compiler -- newlib, multilib, so `-march=rv32imac
+# RISCStar GNU RISC-V cross compiler: newlib, multilib, so `-march=rv32imac
 # -mabi=ilp32` selects the rv32imac/ilp32 SOFT-FLOAT newlib/libgcc + libstdc++
 # out of the box). Sibling of toolchain-rx-elf.cmake: bare-metal freestanding, no
 # host libc, no default startfiles. The board/chip layer supplies the linker
@@ -12,7 +12,7 @@
 #
 # This file introduces the family value "riscv" (arm|rx|xtensa|riscv). The
 # per-board arch/chip/CPU facts live in a board descriptor
-# (boards/<board>/board.cmake) that this file includes -- the same seam every
+# (boards/<board>/board.cmake) that this file includes, the same seam every
 # other family's toolchain uses. RISCStar is the reproducible prebuilt this file
 # targets (newlib, rv32imac/ilp32 soft-float multilib with libstdc++ OOTB). The
 # soft-float multilib is the C6-safety guarantee: no F/D instructions leak into the
@@ -38,8 +38,22 @@ else()
   message(FATAL_ERROR "KickOS riscv toolchain: no board descriptor for '${KICKOS_BOARD}'")
 endif()
 
+
+# The chip's own CPU baseline, for whatever the board left unset. It is a chip fact:
+# `board` states the arch, the CHIP states the core and its FPU. Sibling of the caps.cmake
+# and mpu.cmake this tree already keeps per chip, and included AFTER the descriptor so a
+# board that genuinely differs (a float ABI, or the mps2 boards' emulated core) wins.
+# An installed package has no arch/ tree and ships a descriptor with the flags already
+# resolved into it, so a missing file here is not an error; a missing VALUE is, below.
+set(_kos_cpu_chip "${CMAKE_CURRENT_LIST_DIR}/../arch/riscv/chip/${KICKOS_CHIP}/cpu.cmake")
+if(EXISTS "${_kos_cpu_chip}")
+  include("${_kos_cpu_chip}")
+endif()
+
 if(NOT DEFINED KICKOS_MCPU)
-  message(FATAL_ERROR "KickOS riscv toolchain: board '${KICKOS_BOARD}' has no KICKOS_MCPU")
+  message(FATAL_ERROR "KickOS riscv toolchain: board '${KICKOS_BOARD}' resolved no ISA "
+    "baseline from boards/${KICKOS_BOARD}/board.cmake or "
+    "arch/riscv/chip/${KICKOS_CHIP}/cpu.cmake")
 endif()
 set(_kos_cpu ${KICKOS_MCPU})
 
@@ -81,7 +95,7 @@ kickos_require_usable_cross_cxx("riscv" "${CMAKE_CXX_COMPILER}"
   ${_kos_cpu})
 
 # No linker script + startup during CMake's compiler probe (the board supplies
-# them at the app-link step), so probe with a static library -- a step boundary
+# them at the app-link step), so probe with a static library. A step boundary
 # must always configure standalone.
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 

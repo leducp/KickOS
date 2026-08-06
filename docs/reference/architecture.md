@@ -175,7 +175,10 @@ PMSAv7/v6-M (XMC4800, F411, i.MX RT1062, RP2040; the shared fallback TU
 RX72M MPU.
 (See `design-mpu-commit-deferred.md`.) The set of enforcement-capable chips is not a list to
 maintain by hand: a chip opts in by shipping `arch/<family>/chip/<chip>/mpu.cmake`, and
-`KICKOS_HAVE_MPU=1` on a chip without one is a configure error rather than a silent no-op.
+the same chips select `HAS_MPU` in `arch/Kconfig`, which is what makes the enforcing
+posture selectable at all. A configuration asking for it on a chip that declares neither is
+refused -- by Kconfig on the unmet dependency, or by a configure error if the two
+declarations ever disagree -- rather than becoming a silent no-op.
 
 ---
 
@@ -295,15 +298,22 @@ threaded, C++ guard/lock hooks) routed to KickOS syscalls. (Honest caveat: that 
 KickOS/
   CMakeLists.txt
   CMakePresets.json + cmake/presets/*.json   # per-arch/board presets (arm, host, riscv, rx, xtensa)
+  Kconfig                          # top-level symbol tree: capability facts (HAS_MPU, ...),
+                                    #   sourced boards/Kconfig + arch/Kconfig + per-board Kconfig
+  tools/kconfig/genconfig.py       # resolves a board's defconfig into <build>/generated/:
+                                    #   .config, include/kickos/board_config.h, kickos_config.cmake
   cmake/
     toolchain-{arm-none-eabi,riscv-none-elf,rx-elf,xtensa-esp32-elf,host}.cmake
     toolchain-cxx-runtime-check.cmake  # refuses a resolved cross compiler that lacks
                                     #   newlib + libstdc++ for THIS board's multilib
     kickos.cmake                    # board -> arch/chip resolution + image (.bin/.uf2/.hex) helpers
+    cap_geometry.cmake              # the table's structural constants, emitted to C
     cap_table.cmake                 # the configure-time capability-width sum + supply check
-    boot_arena.cmake                # the boot-arena footprint probe
+    boot_arena.cmake                # the boot-arena footprint model
     build_stamp.cmake               # the build identity stamped into the image
   arch/
+    Kconfig                        # arch/chip capability declarations: pure `select`, no knobs,
+                                    #   no chip CONSTANT (those live in chip_limits.h)
     include/kickos/arch/arch.h      # THE porting interface (extern "C" seam)
     sim/                            # host x86-64 backend
     arm/
@@ -341,8 +351,12 @@ KickOS/
                                     #   (TAP gate), stress, sched_exit, mpu_fault, fault,
                                     #   fp_switch, blink, bench, cxxtest, tele_*
     apps/<board>/                   # that board's own demos (xmcspi, k64drv, rxdrv, c6blink, ...)
-  boards/<board>/                   # per-board descriptor: board.cmake (arch/chip/-mcpu)
-                                    #   + optional board_config.h / <chip>.ld overrides
+  boards/
+    Kconfig                        # one stanza per board: the board choice + `select` of its chip
+    <board>/                       # board.cmake (arch/chip, + a CPU flag only where the board
+                                    #   differs from its chip) + configs/<variant>/defconfig
+                                    #   (Kconfig-resolved into the generated board_config.h)
+                                    #   + optional <chip>.ld override / board-local Kconfig
   docs/                             # README.md (map); book/ (how & why); reference/ (code-synced)
   README.md  roadmap.md  TODO.md  STATE.md
 ```
@@ -830,8 +844,10 @@ feeds the slave app.
 
 - **CMake + Ninja.** Toolchain files `toolchain-arm-none-eabi.cmake` / `toolchain-host.cmake`;
   presets in `CMakePresets.json` + `cmake/presets/*.json`.
-- Board select `-DKICKOS_BOARD=<board>` (or a preset); the board descriptor pins chip, arch,
-  memory map, console driver, clock config, linker script.
+- Board select `-DKICKOS_BOARD=<board>` plus `-DKICKOS_CONFIG_VARIANT=<variant>` (or a preset,
+  which is exactly that pair and nothing else); the board descriptor pins chip, arch,
+  memory map, console driver, clock config, linker script, and the variant's defconfig
+  states the configuration, the memory-protection posture included.
 - Static libs: `kickos_kernel` (TCB/scheduler), `kickos_arch_<arch>`, `kickos_lib`, `kickos_user`
   (linked as one RESCAN link group, since arch<->kernel reference each other). A clean split
   separates `kickos_kernel` (TCB/scheduler) from **`kickos_system`** -- the fleet-wide system

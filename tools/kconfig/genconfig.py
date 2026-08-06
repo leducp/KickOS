@@ -22,19 +22,16 @@ import sys
 import kconfiglib
 
 # Which knobs reach C is a RULE, not a list: every numeric symbol named KICKOS_*, in
-# declaration order. A list here would mean a new knob is declared, set in a defconfig,
-# resolved into .config, and then silently never reaches the compile, which is what a
-# hand-maintained one did to the board-wiring facts. Over-emitting is harmless while a
-# knob still arrives as a -D, since the header's define is #ifndef-guarded and the -D
-# wins; under-emitting is a defect. The names are the ones the tree uses today rather
-# than CONFIG_-prefixed, which is why stock genconfig --header-path cannot write this
-# header yet: the rename rides along with the per-knob #if to #ifdef conversion.
+# declaration order. With a hand-maintained list a knob can be declared, set in a
+# defconfig, resolved into .config, and then silently never reach the compile.
+# Over-emitting is harmless while a knob still arrives as a -D, since the header's define
+# is #ifndef-guarded and the -D wins; under-emitting is a defect. The names are the ones
+# the tree uses, not CONFIG_-prefixed.
 C_KNOB_PREFIX = "KICKOS_"
 C_KNOB_TYPES = (kconfiglib.INT, kconfiglib.HEX)
 
-# What CMake reads. Each entry REPLACES a ladder arm rather than duplicating one, so a
-# value CMake can derive for itself (the console 0/1 pair from the console string) is
-# deliberately absent: two computations of one fact is the thing being removed.
+# What CMake reads. A value CMake can derive for itself (the console 0/1 pair from the
+# console string) is deliberately absent, so no fact is computed twice.
 CMAKE_STRING_KNOBS = [
     "KICKOS_BOARD",
     "KICKOS_ARCH",
@@ -45,9 +42,20 @@ CMAKE_STRING_KNOBS = [
     "KICKOS_SERVICE_LIST",
     "KICKOS_BOARD_PINMAP",
 ]
+# The provisioning integers CMake itself has to do arithmetic on: the capability-table
+# sum (cmake/cap_table.cmake) and the boot-arena model (cmake/boot_arena.cmake). A knob
+# CMake computes with belongs here; one only C reads does not.
 CMAKE_INT_KNOBS = [
     "KICKOS_HAVE_MPU",
+    "KICKOS_TRACE_CLOCK_DECLARED",
     "KICKOS_MIN_STACK_SIZE",
+    "KICKOS_USER_HEAP_SIZE",
+    "KICKOS_MAX_THREADS",
+    "KICKOS_MAX_SPAWN_GRANTS",
+    "KICKOS_CAP_TABLE_SUPPLY",
+    "KICKOS_IDLE_STACK_SIZE",
+    "KICKOS_ROOT_STACK_SIZE",
+    "KICKOS_USER_STACK_SIZE",
 ]
 # CMake variable name -> Kconfig symbol. These reach C through an unconditional
 # add_compile_definitions rather than through the #ifndef header, so CMake must take
@@ -198,7 +206,17 @@ def check_assignments(kconf, wanted):
         got = sym.str_value
         if got == value.strip('"'):
             continue
-        if sym.type in (kconfiglib.INT, kconfiglib.HEX) and sym.ranges:
+        prompted = False
+        for node in sym.nodes:
+            if node.prompt:
+                prompted = True
+        if not prompted:
+            # kconfiglib drops a user value on a promptless symbol and says nothing, so
+            # without this arm the refusal below would blame the symbol's dependency,
+            # which for every promptless symbol in this tree is `y`.
+            reason = ("no prompt, so nothing can set it: it is derived, not "
+                      "configuration")
+        elif sym.type in (kconfiglib.INT, kconfiglib.HEX) and sym.ranges:
             low, high, _cond = sym.ranges[0]
             reason = ("outside the declared range [" + low.str_value + ", " +
                       high.str_value + "]")
@@ -231,11 +249,39 @@ def main(argv):
     # rules afterwards. Editing a defconfig therefore does NOT reach an existing build
     # dir until it is reloaded, which is the same contract CMake already has.
     live = os.path.join(gendir, ".config")
+    stamp = os.path.join(gendir, ".defconfig")
     base = defconfig
     if os.path.exists(live):
         base = live
+        # Which defconfig the live state came from. Selecting another variant in an
+        # EXISTING build directory would otherwise be dropped in silence: the live
+        # .config is the base, so the newly named defconfig is never read, and board,
+        # arch, family and chip all still agree so no other check notices. Refusing is
+        # the answer rather than reloading, because reloading discards whatever
+        # menuconfig has accumulated here.
+        previous = ""
+        if os.path.exists(stamp):
+            previous = open(stamp).read().strip()
+        if previous != "" and previous != defconfig:
+            sys.stderr.write(
+                "REFUSED variant change: this build directory is configured from\n"
+                "  " + previous + "\nand the request names\n  " + defconfig + "\n"
+                "The live " + live + " is the state this build is based on, so the new "
+                "defconfig would be read by nothing. Use a fresh build directory, or "
+                "delete that .config to reload from the new variant.\n")
+            return 1
     kconf = kconfiglib.Kconfig("Kconfig", warn_to_stderr=True)
     print(kconf.load_config(base))
+
+    # Every symbol a defconfig or an override NAMED that the tree does not declare.
+    # kconfiglib does not warn on one by default (warn_assign_undef is off), and a
+    # hand-edited live .config is not read back as a set of requests, so a typo there
+    # would otherwise land nowhere at all and say nothing.
+    if kconf.missing_syms:
+        for name, value in kconf.missing_syms:
+            sys.stderr.write("REFUSED CONFIG_" + name + "=" + value
+                             + ": no such symbol\n")
+        return 1
 
     # Only the DEFCONFIG's lines are read back as requests. A live .config is state, not
     # a set of requests: every symbol in it is an explicit value, so checking them would
@@ -271,6 +317,8 @@ def main(argv):
 
     os.makedirs(os.path.join(gendir, "include", "kickos"), exist_ok=True)
     kconf.write_config(os.path.join(gendir, ".config"))
+    with open(stamp, "w") as handle:
+        handle.write(defconfig + "\n")
     write_board_config(
         os.path.join(gendir, "include", "kickos", "board_config.h"), kconf)
     write_cmake_fragment(os.path.join(gendir, "kickos_config.cmake"), kconf,

@@ -68,7 +68,7 @@
 #include <stdint.h>
 
 #if !KICKOS_HAVE_MPU
-#error "inprstorm requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
+#error "inprstorm requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 // Set by the inprstormmax target; the default target keeps the comparison profile.

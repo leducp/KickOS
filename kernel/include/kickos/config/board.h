@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Board / chip-derived configuration. These are hardware facts, not app knobs;
-// at M1/M2 they leave the global config entirely for the board layer (MAX_IRQ
-// sized to the chip's NVIC line count, MIN_DELTA to the timer resolution). The
-// values here are the sim placeholders.
+// Board / chip-derived configuration. These are hardware facts, not app knobs:
+// MAX_IRQ is sized to the chip's NVIC line count, MIN_DELTA to the timer resolution.
 
 #ifndef KICKOS_CONFIG_BOARD_H
 #define KICKOS_CONFIG_BOARD_H
@@ -13,27 +11,21 @@
 
 #include <kickos/units.h>
 
-// The provisioning KNOBS (config/system.h) live in board_config.h, which on a board
-// configured from Kconfig is generated into the build tree. CMake adds the directory
-// to the include path and installs it for out-of-tree consumers. A plain
-// sim/standalone build has none and falls through to the defaults. A CMake -D still
-// overrides, because those defines are #ifndef-guarded.
+// The provisioning knobs (config/system.h) come from board_config.h, generated into the
+// build tree and installed for out-of-tree consumers. A standalone build has none and
+// falls through to the defaults. A CMake -D still wins: those defines are #ifndef-guarded.
 #if defined(__has_include) && __has_include(<kickos/board_config.h>)
 #include <kickos/board_config.h>
 #endif
 
-// The chip's CONSTANTS, which are a different kind of thing and so a different header:
-// nothing configures them, no option depends on them, and they are defined
-// unconditionally. Keeping them out of board_config.h is what lets that header be
-// generated from the configuration without shadowing them.
+// The chip's constants. They must stay out of the generated board_config.h, which would
+// otherwise shadow them.
 #if defined(__has_include) && __has_include(<kickos/chip_limits.h>)
 #include <kickos/chip_limits.h>
 #endif
 
-// The sim has no chip and therefore no chip_limits.h. This is its value, not a
-// fleet-wide fallback: every real chip defines the macro unconditionally, so a chip
-// whose header is missing from the include path fails here rather than silently
-// sizing its IRQ table to 32.
+// The sim's value, not a fleet-wide fallback. A real chip whose chip_limits.h is off the
+// include path must fail here rather than silently size its IRQ table to 32.
 #ifndef KICKOS_MAX_IRQ
 #if defined(KICKOS_ARCH_SIM) && KICKOS_ARCH_SIM
 #define KICKOS_MAX_IRQ 32

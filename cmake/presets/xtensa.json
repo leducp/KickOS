@@ -9,6 +9,7 @@
       "toolchainFile": "${sourceDir}/cmake/toolchain-xtensa-esp32-elf.cmake",
       "cacheVariables": {
         "KICKOS_BOARD": "esp32-wroom",
+        "KICKOS_CONFIG_VARIANT": "base",
         "CMAKE_BUILD_TYPE": "MinSizeRel",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
@@ -18,7 +19,7 @@
       "displayName": "ESP32-WROOM-32 (Xtensa LX6) + selftest (full IRQ suite)",
       "inherits": "esp32-wroom",
       "binaryDir": "${sourceDir}/build/esp32-wroom-st",
-      "cacheVariables": { "KICKOS_ENABLE_SELFTEST": "ON" }
+      "cacheVariables": { "KICKOS_CONFIG_VARIANT": "st" }
     }
   ],
   "buildPresets": [

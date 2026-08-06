@@ -6,8 +6,8 @@
 // Hand-rolled clean-room, no vendor SDK. All APB peripheral bases moved relative
 // to the RP2040 (datasheet 2.2.4).
 
-#ifndef KICKOS_ARCH_ARM_CHIP_RP2350_MMAP_H
-#define KICKOS_ARCH_ARM_CHIP_RP2350_MMAP_H
+#ifndef KICKOS_CHIP_MMAP_H
+#define KICKOS_CHIP_MMAP_H
 
 #include <stdint.h>
 
@@ -49,4 +49,4 @@ namespace kickos::rp2350::mmap
     constexpr uintptr_t USBCTRL_WINDOW = 0x20000u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_MMAP_H
+#endif // KICKOS_CHIP_MMAP_H

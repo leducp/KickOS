@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: CECILL-C
+# kconfiglib for the KickOS build, in a venv of its own so its bin/ never lands on
+# PATH and shadows the interpreter the flash tools run on. Build-time only.
+name: Install kconfiglib
+description: Provision the pinned kconfiglib in ~/kconfig-venv and export KICKOS_KCONFIG_PY.
+
+inputs:
+  version:
+    description: >
+      kconfiglib version. Pinned: the version every configuration measurement was
+      taken at.
+    required: false
+    default: "14.1.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Python minor version (cache key)
+      id: py
+      shell: bash
+      # A venv's site-packages path carries the interpreter's MINOR version, while its
+      # bin/python is a symlink to the image's python3. Restoring a venv built for 3.12
+      # onto an image that moved to 3.13 yields a venv that imports nothing, so the
+      # minor version has to be part of the key.
+      run: |
+        echo "tag=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" >> "$GITHUB_OUTPUT"
+
+    - name: Cache kconfiglib venv
+      uses: actions/cache@v4
+      with:
+        # Absolute, and the same absolute path on every ubuntu-latest runner
+        # ($HOME=/home/runner): a venv is not relocatable, so that is what makes
+        # caching one safe here.
+        path: ~/kconfig-venv
+        key: kconfig-venv-${{ runner.os }}-py${{ steps.py.outputs.tag }}-kconfiglib-${{ inputs.version }}
+
+    - name: Create the venv
+      shell: bash
+      env:
+        KCONFIGLIB_VERSION: ${{ inputs.version }}
+      # Guarded by an import rather than by the cache-hit flag alone: a restore that
+      # unpacked something unusable must rebuild instead of failing the configure step
+      # much later with a confusing kconfig error.
+      run: |
+        if ~/kconfig-venv/bin/python -c 'import kconfiglib' 2>/dev/null; then
+          echo "kconfiglib venv restored from cache"
+        else
+          rm -rf ~/kconfig-venv
+          # The runner image is not guaranteed to carry python3-venv, so install it
+          # rather than fail the job over a missing prerequisite.
+          python3 -m venv ~/kconfig-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/kconfig-venv
+          }
+          ~/kconfig-venv/bin/pip install --disable-pip-version-check "kconfiglib==${KCONFIGLIB_VERSION}"
+        fi
+
+    - name: Export KICKOS_KCONFIG_PY
+      shell: bash
+      # An ABSOLUTE path, which is what cmake/kconfig.cmake requires.
+      run: echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"

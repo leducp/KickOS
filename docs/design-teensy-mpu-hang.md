@@ -15,7 +15,7 @@ shipped fix. The board-level account is `reference/boards.md`, the seam's contra
 
 ## Symptom (confirmed on silicon)
 
-REPRO: `teensy41-st -DKICKOS_HAVE_MPU=1` (banner `mpu enforce`, plan `1..43`) hangs
+REPRO: `cmake --preset teensy41-st` (its base variant enforces by default; banner `mpu enforce`, plan `1..43`) hangs
 DETERMINISTICALLY at test 6 `rr_interleave`. The failure intersects exactly
 { MPU enforce } x { KOS_POLICY_RR } x { M7 }: no-MPU RR passes, and MPU priority-preempt (test 3)
 passes.

@@ -14,8 +14,8 @@
  *   RAM   : OCRAM2 512 KiB @ 0x2020_0000                                  (RM 3.2)
  *
  * OCRAM2 is a dedicated 512 KiB bank, independent of the configurable FlexRAM
- * (ITCM/DTCM/OCRAM) partition and available at reset with no IOMUXC_GPR setup --
- * chosen for the first bring-up so the image needs no FlexRAM programming. Moving
+ * (ITCM/DTCM/OCRAM) partition and available at reset with no IOMUXC_GPR setup, so
+ * the image needs no FlexRAM programming. Moving
  * writable state (and hot code) to DTCM/ITCM is a performance follow-up; see
  * docs/design-teensy-rt1062.md.
  */
@@ -41,11 +41,6 @@ _kernel_stack_size = 8K;               /* boot/handler (MSP) stack */
 #define KICKOS_APPDATA_SIZE 128K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
-#endif
-
-/* Non-enforcement heap: the .userheap section size (see the #else SECTIONS branch). */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 16K
 #endif
 
 SECTIONS

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800/USIC0-CH1 SSC bus-SERVICE silicon validation (M4.4 call/reply). The SSC
+// XMC4800/USIC0-CH1 SSC bus-SERVICE silicon validation (call/reply). The SSC
 // service is brought up by the board service list BEFORE main (xmc_spi0_start: endpoint
 // + unprivileged driver, which configures the channel itself). This app only drives it
 // as a CLIENT: the XMC sibling of user/apps/k64dspi.
@@ -35,10 +35,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// Backstops the CMake enforcement-build gate: the MMIO-grant seam is an M2 construct,
-// and a granted DEV window is only a real capability under PMSA.
+// Backstops the CMake enforcement-build gate: a granted DEV window is only a real
+// capability under PMSA.
 #if !KICKOS_HAVE_MPU
-#error "xmcssc requires the enforcement build: configure with -DKICKOS_HAVE_MPU=1"
+#error "xmcssc requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace

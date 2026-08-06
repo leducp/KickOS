@@ -2,13 +2,13 @@
  * Copyright (c) 2026 Philippe Leduc
  *
  * BOARD OVERRIDE of arch/arm/chip/mps2/mps2.ld for the QEMU `mps2-an505` (ARM MPS2
- * FPGA, Cortex-M33) -- the runnable PMSAv8 verification target. Identical to the
- * chip default in every respect EXCEPT the memory map, which is why this file
+ * FPGA, Cortex-M33). It is the runnable PMSAv8 verification target, identical to
+ * the chip default in every respect EXCEPT the memory map, which is why this file
  * exists at all (arch/CMakeLists.txt picks up boards/<board>/<chip>.ld).
  *
- * The AN505 is an SSE-200/IoTKit image and comes out of reset in SECURE state, so
- * the image is linked at the SECURE aliases of the two SSRAM banks -- code SRAM
- * 0x0000_0000 -> 0x1000_0000 (4 MiB), and SSRAM1 0x2800_0000 -> 0x3800_0000
+ * The AN505 is an SSE-200/IoTKit image and comes out of reset in SECURE state. The
+ * image is therefore linked at the SECURE aliases of the two SSRAM banks: code
+ * SRAM 0x0000_0000 -> 0x1000_0000 (4 MiB), and SSRAM1 0x2800_0000 -> 0x3800_0000
  * (2 MiB). Linking at the non-secure aliases would put every access on the far
  * side of the SAU/IDAU from the state the core actually runs in.
  *
@@ -37,13 +37,6 @@ _kernel_stack_size = 16K;              /* boot/handler (MSP) stack */
 #define KICKOS_APPDATA_SIZE 64K
 #endif
 _appdata_size = KICKOS_APPDATA_SIZE;
-#endif
-
-/* Non-enforcement heap: an explicit .userheap section carved from RAM before the
-   thread arena (no .appdata window in that posture). This board runs the full-C++
-   cxxtest gate, whose measured peak is ~5.9K, so 16K is ample; RAM is 2 MiB. */
-#ifndef KICKOS_USER_HEAP_SIZE
-#define KICKOS_USER_HEAP_SIZE 16K
 #endif
 
 SECTIONS
@@ -116,7 +109,7 @@ SECTIONS
 #if KICKOS_HAVE_MPU
         /* Zero the whole granted window past the loaded .appdata: the pre-.appbss
            alignment gap (forced by an over-aligned .appbss object), .appbss, and the
-           pad -- so no stale read-back anywhere in the app grant. */
+           pad. That leaves no stale read-back anywhere in the app grant. */
         LONG(__kickos_appdata_load_end); LONG(__kickos_appdata_end - __kickos_appdata_load_end);
 #endif
         LONG(ADDR(.bss));    LONG(SIZEOF(.bss));
@@ -130,9 +123,9 @@ SECTIONS
        kernel-side vs app-side with an INVERTED selection: the CLOSED KickOS-owned set
        (kernel/arch/chip/lib) is captured FIRST, in script order, via the
        `archive:member` colon syntax into the kernel .data/.bss at the RAM base; the
-       .appdata/.appbss catch-alls that follow then take EVERYTHING ELSE -- the app's
-       own objects, the toolchain runtime (libc/libgcc/libstdc++/libsupc++), KickCAT,
-       libkickos_user.a's heap, and any unknown NEW archive. An unmatched archive lands
+       .appdata/.appbss catch-alls that follow then take EVERYTHING ELSE. That covers
+       the app's own objects, the toolchain runtime (libc/libgcc/libstdc++/libsupc++),
+       KickCAT, libkickos_user.a's heap, and any unknown NEW archive. An unmatched archive lands
        app-side (reachable), never kernel-side (faults). */
     .data : ALIGN(4)
     {
@@ -173,9 +166,10 @@ SECTIONS
     } > RAM AT > FLASH
 
     /* Pin the base to the window (start + SIZEOF .appdata), NOT the default location
-       counter: an EMPTY .appdata (an app with no initialized globals -- the bench) does
-       not carry its ALIGN(_appdata_size) forward, so a defaulted .appbss falls back to
-       kernel-.bss-end, BELOW the granted window, and every app-global access faults. */
+       counter. An app with no initialized globals, such as the bench, ends up with an
+       EMPTY .appdata that does not carry its ALIGN(_appdata_size) forward; a defaulted
+       .appbss then falls back to kernel-.bss-end, BELOW the granted window, and every
+       app-global access faults. */
     .appbss (__kickos_appdata_start + SIZEOF(.appdata)) (NOLOAD) : ALIGN(4)
     {
         *(.bss .bss.* COMMON)
@@ -221,8 +215,9 @@ SECTIONS
 #endif
 
     /* Everything from here up to _kernel_stack_size below _estack is the
-       arch_ram_alloc pool (runtime bump-allocated, so just symbols -- no section
-       to reserve). The top _kernel_stack_size bytes are the MSP stack. */
+       arch_ram_alloc pool. It is runtime bump-allocated, so only symbols are placed
+       here; no section needs reserving. The top _kernel_stack_size bytes are the
+       MSP stack. */
     . = ALIGN(32);
     __kickos_ram_start = .;
     __kickos_ram_end = _estack - _kernel_stack_size;
@@ -237,7 +232,7 @@ SECTIONS
     /* App code region for unprivileged threads (RX): the whole flash, a pow2 PMSA
        region (4 MiB @ 0x1000_0000, base aligned to its size). Lets an unprivileged
        thread fetch its code + read flash rodata. Kernel code is also unprivileged-
-       readable (confidentiality, not escalation) -- a tighter app-only .text region
+       readable (confidentiality, not escalation). A tighter app-only .text region
        is a later refinement, as on the other PMSA chips. */
     __kickos_code_start = ORIGIN(FLASH);
     __kickos_code_end = ORIGIN(FLASH) + LENGTH(FLASH);

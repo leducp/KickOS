@@ -18,8 +18,7 @@
 
 #include <stdint.h>
 
-#include <kickos/config/cap_geometry.h> // KCAP_CHUNK_TARGET
-#include <kickos/config/cap_width.h>    // KICKOS_MAX_HANDLES (generated at configure)
+#include <kickos/config/cap_width.h> // KICKOS_MAX_HANDLES, KCAP_CHUNK_TARGET (generated)
 #include <kickos/config/system.h>       // KICKOS_MAX_SPAWN_GRANTS, KICKOS_MAX_THREADS
 #include <kickos/sys/cap_index.h>       // KICKOS_CAP_FIRST_DYNAMIC, KOS_CAP_AUTHORITY
 
@@ -244,8 +243,7 @@ namespace kickos
                   "a run rounds up by less than one whole chunk, or the chunk count is not "
                   "a ceiling division");
 
-    // KCAP_RUN_OFF_POOL is a macro in config/cap_geometry.h, where CMake can read it through
-    // the preprocessor; this is the typed name for C++ to use.
+    // KCAP_RUN_OFF_POOL comes from the generated config/cap_width.h.
     static constexpr uint16_t KCAP_RUN_OFF_POOL_COUNT = KCAP_RUN_OFF_POOL;
 
     // One run per possible holder. A run is returned at SLOT RECLAIM and not at exit, so an

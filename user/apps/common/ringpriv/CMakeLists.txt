@@ -8,9 +8,9 @@
 #   ringppb  - terminal: ends on the privileged-only PPB read.
 # Neither is conditioned on KICKOS_HAVE_MPU. That is the point of this gate: the ring is
 # the fabricated first frame's CONTROL.nPRIV and the PPB permission is architectural, so
-# both arms hold with the MPU absent, disabled, or enforcing. A board configured
-# -DKICKOS_HAVE_MPU=0 IS the ring-only posture, which is what makes this gateable in CI
-# rather than only capturable on no-MPU silicon.
+# both arms hold with the MPU absent, disabled, or enforcing. A board's `flat` variant
+# IS the ring-only posture, which is what makes this gateable in CI rather than only
+# capturable on no-MPU silicon.
 
 # ARM only. The privilege axis exists on other ISAs (rv32imac mstatus.MPP, rxv3
 # PSW_THREAD_USER) but reaching it needs their own asm and their own trap expectation:

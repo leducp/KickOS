@@ -5,8 +5,8 @@
 // "Peripheral Address Mapping", chapter 3 System and Memory). Bases only; register
 // offsets + fields live in regs/<periph>.h. Hand-rolled, no ESP-IDF/HAL sources.
 
-#ifndef KICKOS_ARCH_XTENSA_CHIP_ESP32_MMAP_H
-#define KICKOS_ARCH_XTENSA_CHIP_ESP32_MMAP_H
+#ifndef KICKOS_CHIP_MMAP_H
+#define KICKOS_CHIP_MMAP_H
 
 #include <stdint.h>
 
@@ -34,4 +34,4 @@ namespace kickos::esp32::mmap
     constexpr uintptr_t ROM_REGI2C_WRITE = 0x400041A4u;
 }
 
-#endif // KICKOS_ARCH_XTENSA_CHIP_ESP32_MMAP_H
+#endif // KICKOS_CHIP_MMAP_H

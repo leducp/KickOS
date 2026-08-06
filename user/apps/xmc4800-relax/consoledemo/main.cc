@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Console bring-up demo (M4.3): the DEFAULT INIT relinquishes the XMC4800 UART to an
+// Console bring-up demo: the DEFAULT INIT relinquishes the XMC4800 UART to an
 // UNPRIVILEGED userspace driver BEFORE this app's main runs, so a normal worker's
 // printf() output reaches the wire THROUGH that driver with zero app code doing the
 // handover.
@@ -27,7 +27,7 @@
 // the "[init] pre-publish ctor line" (kernel path), THEN "[xmcuart] driver up" + the
 // worker's numbered lines, all emerging via the userspace driver.
 //
-// Requires enforcement (-DKICKOS_HAVE_MPU=1): on PMSA the granted U0C0 window is a
+// Requires enforcement (the board's base variant): on PMSA the granted U0C0 window is a
 // real per-thread capability, so the driver genuinely owns the device and SCU/IOCR
 // stay privileged. Without it the isolation the handover relies on is a no-op.
 
@@ -37,12 +37,12 @@
 #include <stdio.h>
 
 #if !KICKOS_HAVE_MPU
-#error "consoledemo requires enforcement: configure with -DKICKOS_HAVE_MPU=1"
+#error "consoledemo requires enforcement: build the board's base variant, not its flat one"
 #endif
 
 namespace
 {
-    // Pre-publish poison probe (M4.3 silicon repro), re-expressed as a global ctor so
+    // Pre-publish poison probe (silicon repro), re-expressed as a global ctor so
     // it runs BEFORE the init bring-up publishes (main now runs post-publish). cap 0 is
     // empty here, so this printf falls back to the kernel console path; the worker's
     // later printfs still reach xmcuart because _write reclassifies per thread.

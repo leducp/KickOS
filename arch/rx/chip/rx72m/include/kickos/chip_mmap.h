@@ -9,8 +9,8 @@
 // (kickos::rxv3); the bases here are the ones the chip backend references directly
 // (arch_reserved_blocks, the CMTW/ICU wiring).
 
-#ifndef KICKOS_ARCH_RX_CHIP_RX72M_MMAP_H
-#define KICKOS_ARCH_RX_CHIP_RX72M_MMAP_H
+#ifndef KICKOS_CHIP_MMAP_H
+#define KICKOS_CHIP_MMAP_H
 
 #include <stdint.h>
 

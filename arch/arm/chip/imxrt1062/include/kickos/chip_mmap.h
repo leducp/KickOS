@@ -5,8 +5,8 @@
 // Reference Manual, Rev. 3, IMXRT1060RM). Bases only; register offsets + fields
 // live in regs/<periph>.h. Hand-rolled, no vendor CMSIS/SDK.
 
-#ifndef KICKOS_ARCH_ARM_CHIP_IMXRT1062_MMAP_H
-#define KICKOS_ARCH_ARM_CHIP_IMXRT1062_MMAP_H
+#ifndef KICKOS_CHIP_MMAP_H
+#define KICKOS_CHIP_MMAP_H
 
 #include <stdint.h>
 
@@ -31,4 +31,4 @@ namespace kickos::imxrt1062::mmap
     constexpr uintptr_t RTWDOG_BASE = 0x400BC000u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_IMXRT1062_MMAP_H
+#endif // KICKOS_CHIP_MMAP_H
