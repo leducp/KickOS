@@ -3849,6 +3849,8 @@ namespace
     }
 
     // --- the SEGMENTED index decode: a live slot at or above the chunk granule ------------
+    // Not a detector for a mis-decode: a consistent bijective one relabels slots and this arm
+    // still passes. docs/design-capability-table.md section on the chunk boundary has the case.
     void t_cap_chunk_span()
     {
         // config/cap_geometry.h's KCAP_CHUNK_TARGET, via config/cap_width.h. A table no wider

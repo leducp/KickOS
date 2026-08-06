@@ -15,6 +15,120 @@ This file is the **granular, actionable** status. The milestone-level plan (the 
 per milestone) is `roadmap.md`; validated end-state + per-board detail is
 `docs/archive/M1_state.md`; the board/console readiness matrix is `docs/m2-readiness.md`.
 
+## Retired from the M4.7.2 review backlog (triaged 2026-08-06)
+
+M4.7.2, .3, .5 and .6 closed most of the review backlog without the entries being updated. What
+survives is below; everything else was re-verified fixed against tree `82fa51f`.
+
+- [ ] **`handle_close` does not refuse a RESERVED index, and one such call costs a thread its
+      console for good.** `cap_lookup` bounds on `thread_cap_capacity` and nothing else
+      (`kernel/syscall/cap.cc:485`), so `handle_close(c, 0)` resolves -- slot 0 is seated, its
+      cap-gen is 0, and the bare handle 0 gen-matches -- and the close bumps that gen
+      (`cap.cc:786`). Userspace names stdout as the bare constant `KOS_CAP_STDOUT`
+      (`system/include/kickos/sys/cap_index.h:39`) and `cap_seat_stdout` re-seats the slot without
+      resetting the gen (`cap.cc:882-904`), so no later publish makes handle 0 resolve in that
+      thread again. LATENT: nothing in `user/`, `system/`, `tests/` or `examples/` closes a
+      reserved index. Fix is a refusal below `KICKOS_CAP_FIRST_DYNAMIC` plus a selftest arm
+      proving it. Also stated in `docs/design-capability-table.md` section 11.
+- [ ] **`KICKOS_CAP_RUN_OFF_POOL` reserves one run more than the true peak.** It is 2
+      (`cmake/cap_geometry.cmake:26`) where the peak of concurrently ATTACHED runs is
+      `KICKOS_MAX_THREADS + 1`: `ThreadPool::alloc` returns the reclaimed slot's run
+      (`kernel/include/kickos/thread.h:393`) before the spawn's `cap_slab_attach`
+      (`kernel/syscall/syscall_thread.cc:385`), so the in-flight run REPLACES a pool one rather
+      than adding to it. Cutting to 1 saves one child-width run of `.bss` and must move
+      `cmake/cap_table.cmake:156`'s footprint arithmetic with it. Deliberately not folded in: it
+      spends the last margin on an allocation whose exhaustion is indistinguishable from a full
+      thread pool, both `-KOS_ENOMEM`, so it wants its own measurement.
+- [ ] **The out-of-tree capability WARNING has no gate.** `kickos_declare_app_capabilities` warns
+      when a declaration cannot be honoured (`cmake/cap_table.cmake:137-144`), but neither
+      `examples/oot-app/CMakeLists.txt` nor `examples/oot-mcu-app/CMakeLists.txt` passes any
+      capability keyword, so `tests/check_oot_export.sh` and `check_oot_export_mcu.sh` never
+      invoke it. Nothing would catch a regression in its text, in the `KICKOS_IN_TREE` detection,
+      or in `_kickos_cap_installed_width`. Wants a small OOT app that declares `CAPABILITIES` and
+      greps stderr. Proportionate: the warning is a diagnostic, so a regression costs a missing
+      warning rather than corruption, and the two OOT gates are delicate.
+- [ ] **`grant_reserved` has three `tap::partial` exits the bench cannot tell apart.**
+      `user/apps/common/selftest/main.cc:2014` partials at `:2037` (granule alloc failed), `:2064`
+      (board reserves nothing) and `:2190` (board mints no DEV window), while
+      `selftest/CMakeLists.txt:116` matches `KICKOS_EXPECT_PARTIALS` on the test NAME alone, so a
+      partial from an unexpected cause reads as the expected one.
+- [ ] **`docs/reference/architecture.md` has never had a full-document correctness audit.** The
+      M4.7.x edits corrected only the rows a grep surfaced; the rest is unreviewed. It is the one
+      reference doc no reviewer covered in full -- the agent assigned to it died without
+      reporting -- and `docs/audit/` holds only the 2026-07-29 codebase HTML, the only sweep
+      banked since being the legacy-residue one at `.session/spikes/legacy-audit.md`.
+
+## Found during the M4.7.5 configuration-mechanism work (triaged 2026-08-06)
+
+The whole fleet is on Kconfig now, so anything that once read "scoped to a crossed board" applies
+to all 20.
+
+- [ ] **Nothing checks that the generated fragment and the `-D` translation carry the same knob
+      set.** `tools/kconfig/genconfig.py:35-70` owns 23 fragment variables (8 string, 10 int, 5
+      bool); `CMakeLists.txt:92-146` translates a bare `-D` into a `CONFIG_*` request over its own
+      lists; nothing compares the two. A knob in the fragment but not the translation is one the
+      fragment SILENTLY OVERWRITES -- that shape has now bitten three times (the posture, the five
+      booleans, and `KICKOS_SERVICE_LIST`/`KICKOS_BOARD_PINMAP`, whose omission reddened four sim
+      gates). `tests/check_kconfig_gen.sh:51` drives `genconfig.py` DIRECTLY, so the CMake
+      translation never executes under any gate; its only round-trip leg is `KICKOS_SERVICE_LIST`
+      (`:149-152`), there is none for `KICKOS_BOARD_PINMAP`, and no leg tests a provisioning
+      integer accepted as an override or a boolean forced to `n` against a defconfig that sets it
+      `y`. The only real exercise of the translation is `-DKICKOS_SERVICE_LIST=` in the four sim
+      gates.
+- [ ] **Five booleans reach C from CMake, not from the generated header.** `KICKOS_DEBUG`,
+      `KICKOS_ENABLE_SELFTEST`, `KICKOS_BENCH`, `KICKOS_SHUTDOWN_TO_BOOTLOADER`
+      (`CMakeLists.txt:245,253,278,295`) and `KICKOS_SCHED_PERIODIC_TICK`
+      (`kernel/CMakeLists.txt:93`) arrive by `add_compile_definitions`, because
+      `tools/kconfig/genconfig.py:30-31` emits only `INT`/`HEX` symbols. The fragment is therefore
+      load-bearing for them and `option()` must defer via CMP0077. Converting the emitter to
+      `#if`-style booleans retires the fragment lines, the deference and the
+      `check_kconfig_gen.sh:101-106` presence assert together.
+- [ ] **A board's provisioning is repeated once per variant and nothing compares the copies.** 50
+      defconfigs over 20 boards (20 `base`, 14 `flat`, 13 `st`, 2 `telem`, 1 `bench`), each a
+      COMPLETE statement rather than a delta on `base` -- which is the Kconfig model and what
+      `savedefconfig` writes back. A board with `base`, `st` and `flat` states
+      `KICKOS_MAX_THREADS` three times and an edit to one is silent in the other two.
+      `check_kconfig_gen.sh:183-201` iterates all 50 but only asserts each RESOLVES; it never
+      diffs a variant against its base, and `savedefconfig` regenerates one variant from the live
+      `.config`, so it cannot catch a divergence either. Cheap first cut: a gate asserting every
+      variant agrees with its board's `base` outside a per-variant allowlist of the symbols that
+      variant exists to change. The rule behind it is the open question -- nothing declares which
+      axis a variant owns. Expressing a variant as `base` plus a fragment was considered and
+      rejected: it breaks the `savedefconfig` round trip.
+- [ ] **The "is this a knob?" rule has never been applied once over the whole symbol set.** The
+      rule is in the design -- a hardware fact earns a Kconfig declaration only if some option's
+      availability or default depends on it -- but it was only ever applied to the two symbols the
+      maintainer asked about (`KICKOS_MAX_IRQ`, `KICKOS_RX_INTB_ENTRIES`), both of which left
+      Kconfig for `chip_limits.h`. `KICKOS_CONSOLE` is the named open case: an unconditional
+      prompted `choice` at `Kconfig:183-202`, a real choice on a board with two transports and a
+      fact on a board with one, with nothing distinguishing them.
+- [ ] **A wrong `arch_mpu_region_pow2` / `arch_mpu_min_region` literal is caught by nothing
+      in-tree.** `cmake/boot_arena.cmake:53` (`_kickos_seam_int_in_file`, driven from `:140-141`)
+      regex-scrapes the return literal out of the same backend TU the link resolves, and also
+      reimplements the linker's archive-member selection rule. It is the one value the ownership
+      rule cannot place: there is no configuration behind it, so nothing resolves it and there is
+      nowhere for it to come FROM. `rx72m` silicon is the only check for the RX MPU. Already
+      recorded at `STATE.md:254`; filed here so it survives the next STATE.md rewrite.
+- [ ] **Decide whether `kickos_app_build_stamp` should be reproducible.** It folds `__DATE__` and
+      `__TIME__` in an app TU (`user/include/kickos/app.h:53-54`), so its CODE size varies between
+      two builds of an identical tree (measured at 0x8c, 0x90 and 0x94) and every later address
+      shifts with it. It exists to answer "did the APP change or was the image relinked", which a
+      content hash would answer without perturbing code size. While it stands, **"byte-identical
+      image" is not a claim this tree can make** -- and `docs/reference/boards.md:2199` makes it,
+      correct in intent ("Tree identity is the test, not hash identity") but wrong in wording.
+- [ ] **The package ships a C ABI whose C-ness nothing checks.**
+      `tests/check_public_headers.sh:45` compiles every installed header with `-x c++` at the
+      standard its one caller passes (`c++17`, `check_oot_export.sh:47`); there is no C leg
+      anywhere. The tree contains zero `.c` files, `user/apps/common/hello_c` is `main.cc`, and
+      both `examples/oot-app` and `examples/oot-mcu-app` are C++. Re-measured 2026-08-06:
+      `gcc -std=c11` over the 58 installed headers passes **25** and fails **33**. Some are C++ by
+      design and should be EXCLUDED rather than fixed (`kos.h` is the RAII wrapper, `list.h` the
+      intrusive template); the `sys/` ones are not, and `sys/` IS the C ABI surface --
+      `sys/bytes.h:18-19,28` uses `static_cast`, while `sys/uart_service.h:37` and
+      `sys/spi_service.h:24` fail for a different reason, including the C++ `<kickos/kos.h>`. Fix
+      is a C gate beside the C++ one with an explicit exclusion list, so the split is stated
+      rather than discovered. API-surface work, not M4.7.
+
 ## M4.7.4 -- delete the legacy management (nothing is released before M6)
 
 KickOS is unreleased and will not ship before M6, so **there is no backward compatibility to
@@ -2669,8 +2783,16 @@ was read or measured.
       remaining quantum falls through to `arm_slice` and the thread is granted a fresh full one.
       The stress app runs RR at a 300 us quantum (`user/apps/common/stress/main.cc:216`) and
       preemptions on a loaded runner routinely exceed that, so round-robin degenerates toward FIFO
-      in exactly the environment the preserve-the-slice fix was written for -- it covers short
-      preemptions only. Fairness defect, not a crash. Read directly; not observed as a failure.
+      in exactly the environment the preserve-the-slice fix was written for. It covers short
+      preemptions only. Read directly; not observed as a failure.
+      **Reconciled 2026-08-06 against `docs/reference/invariants.md:172`
+      (`rr-quantum-is-wall-clock`), which states this case as INTENDED**: the quantum measures
+      wall-clock and not CPU time, and CPU-time accounting was refused by name because it needs an
+      `on_switch_out` hook plus a `slice_left_ns` field and weakens the peer-latency bound to
+      "eventually". That paragraph is byte-identical at `0fb3ba6`, so it PREDATES this entry. Not a
+      defect to fix, then, but an over-broad claim to bound: the invariant promises no
+      equal-priority peer waits longer than one quantum of REAL time, and with a preemption longer
+      than the remaining quantum the peer's actual wait is preemption plus quantum.
 - [ ] **The concurrent capability-teardown path is never exercised.**
       `kernel/include/kickos/cap.h:326-328` states that an RR slice expiring in `sched::tick_rr` is
       the only thing that switches a dying thread out at a chunk boundary, and so the only way two
@@ -2678,7 +2800,8 @@ was read or measured.
       hits** across the whole suite, including with the quantum cut to 25 us. Forced (a spin in the
       chunk gap plus every churner made RR) it takes 10402 hits with 7 concurrent sweeps and the
       suite still passes, so the design appears sound and nothing guards it against regression. That
-      leaves `g_teardown_depth` and `cap_teardown_active()` (`kernel/syscall/cap.cc:34`, `746-748`)
+      leaves `g_cap.teardown_depth` and `cap_teardown_active()` (`kernel/syscall/cap.cc:52`, bumped
+      `:821`, decremented `:872`)
       and the deferred console-death reclaim that reads it (`kernel/sched/sched.cc:209`) untested by
       anything in-tree. A restructuring that removes the chunked window would DELETE the question
       rather than answer it, which is worth deciding deliberately rather than by side effect.

@@ -2195,8 +2195,9 @@ board default points at any of them**, deliberately. Every capture named here ca
 stream crossed the userspace driver rather than falling back to the kernel's polled route.
 
 **The capability-table pass, 2026-08-04, two boards at ONE TREE.** The banners stamp `da716a8` and
-`15fdd82`, two commits with the IDENTICAL tree `e74933d` (the difference is a message rewrite), so the
-images are byte-identical. **Tree identity is the test, not hash identity** -- which is what the
+`15fdd82`, two commits with the IDENTICAL tree `e74933d` (the difference is a message rewrite), so
+both images were built from the same sources and differ only in what the build stamp bakes in.
+**Tree identity is the test, not hash identity** -- which is what the
 M4.7.1 pass below fails, its tree being 26 code files from what merged. It
 covers M4.7.1 and M4.7.2 together, and it is the FIRST silicon witness of either: M4.7.1's own
 two-board run was taken at `c82af2c`, which is **not an ancestor of `master`** (it survives only on

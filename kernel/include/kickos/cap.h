@@ -633,7 +633,7 @@ namespace kickos
     //
     // An RR slice expiring in sched::tick_rr is the only thing that switches a dying thread
     // out at a chunk boundary, and so the only way two threads are ever in here at once
-    // (g_teardown_depth, cap.cc).
+    // (g_cap.teardown_depth, cap.cc).
     void cap_teardown(Thread* c);
 
     // True while any thread is inside cap_teardown. A preempted sweep may still hold an IRQ
