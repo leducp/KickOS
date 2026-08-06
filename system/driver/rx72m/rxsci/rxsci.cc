@@ -12,7 +12,7 @@
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart_service.h>
 
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "regs/sci.h"
 
 #include <stdint.h>

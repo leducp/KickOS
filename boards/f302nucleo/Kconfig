@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Nucleo-64 STM32F302. Ungated pin map, as on picopi: it is what exercises the f302
+# pinmux backend, and this board has no MPU to gate on.
+
+if BOARD_F302NUCLEO
+
+config KICKOS_BOARD_PINMAP
+	string
+	default "kickos_pinmap_f302nucleo"
+
+endif

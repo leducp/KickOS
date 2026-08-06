@@ -9,7 +9,7 @@
 #ifndef KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_RTC_CNTL_H
 #define KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_RTC_CNTL_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

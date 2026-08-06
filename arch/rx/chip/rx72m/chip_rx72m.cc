@@ -24,7 +24,7 @@
 #include <stdint.h>
 
 // Bases in mmap.h, IRQ vectors in irq.h, per-peripheral offsets/fields in regs/.
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/cgc.h"
 #include "regs/flash.h"

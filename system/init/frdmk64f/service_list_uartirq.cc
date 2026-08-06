@@ -15,6 +15,7 @@
 // authority. No app needs KOS_AUTH_IRQ.
 
 #include <kickos/sys/service.h>
+#include <kickos/chip_mmap.h>
 
 #include <k64uartirq.h>
 
@@ -25,8 +26,8 @@ extern "C"
     // the driver spawns its IRQ thread at prio + 1, so 12 must leave one priority above
     // it free.
     static struct kos_service_cfg const k64uartirq_cfg = {
-        /*name=*/"k64uartirq", /*mmio_base=*/0x4006A000u, /*mmio_window=*/0x20u,
-        /*hz=*/115200u, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
+        /*name=*/"k64uartirq", /*mmio_base=*/kickos::mk64f::mmap::UART0_BASE,
+        /*mmio_window=*/0x20u, /*hz=*/115200u, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
         /*rsv=*/{ 0, 0, 0, 0 }
     };
 

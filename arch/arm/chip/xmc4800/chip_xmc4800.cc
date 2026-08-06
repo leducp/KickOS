@@ -10,7 +10,7 @@
 // for a stable UART baud.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "regs/ccu4.h"
 #include "regs/flash.h"
 #include "regs/port.h"

@@ -7,7 +7,7 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_RP2350_REGS_XOSC_H
 #define KICKOS_ARCH_ARM_CHIP_RP2350_REGS_XOSC_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

@@ -10,7 +10,7 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_SCU_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_SCU_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

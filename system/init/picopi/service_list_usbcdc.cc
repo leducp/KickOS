@@ -16,6 +16,7 @@
 // is open question 3 of docs/design-m4.6.2-usb-cdc.md.
 
 #include <kickos/sys/service.h>
+#include <kickos/chip_mmap.h>
 
 extern "C"
 {
@@ -25,7 +26,8 @@ extern "C"
     // 128 KiB because PMSAv6 needs a power-of-two naturally aligned region; 0x50100000 is
     // 128 KiB-aligned and the whole run stays inside the USB block's own AHB slot.
     static struct kos_service_cfg const rpusb_cfg = {
-        /*name=*/"rpusb", /*mmio_base=*/0x50100000u, /*mmio_window=*/0x20000u,
+        /*name=*/"rpusb", /*mmio_base=*/kickos::rp2040::mmap::USBCTRL_DPRAM_BASE,
+        /*mmio_window=*/kickos::rp2040::mmap::USBCTRL_WINDOW,
         /*hz=*/0u, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
         /*rsv=*/{ 0, 0, 0, 0 }
     };

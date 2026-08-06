@@ -9,7 +9,7 @@
  * chip_imxrt1062.cc.
  */
 
-#include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
+#include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
 #include "core_vectors.inc"        /* shared core-exception vector block */
 
     .syntax unified

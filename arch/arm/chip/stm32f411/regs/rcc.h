@@ -7,7 +7,7 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_STM32F411_REGS_RCC_H
 #define KICKOS_ARCH_ARM_CHIP_STM32F411_REGS_RCC_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

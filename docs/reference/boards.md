@@ -97,7 +97,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
   **MODEL PREDICTION, not a witness: `bluepill-c8` fails `hello`'s second spawn by 96 bytes.** The
   board can never be flashed, so this is arithmetic and stays arithmetic. Arena 6,560 B, read with
   `arm-none-eabi-nm` on the `hello` ELF at `9ba4e4b`; idle 512 and root 2,048 leave **4,000** against
-  the **4,096** two 2,048-byte stacks need (`boards/bluepill-c8/include/kickos/board_config.h:31`,
+  the **4,096** two 2,048-byte stacks need (`boards/bluepill-c8/configs/base/defconfig:31`,
   `:34`, `:37`; every figure is a multiple of the 32-byte no-MPU granule, so alignment costs nothing
   here). The cause is the **heap carve**, not the part: 8 KiB `.userheap`
   (`arch/arm/chip/stm32f103/stm32f103.ld`) where `f302nucleo` now takes 2K, and the C8 has 4 KiB *more*
@@ -218,11 +218,11 @@ Two independent causes, both measured on the ELF at the tip:
 - **Arena.** The suite's static footprint is 7,760 B and its heap carve 2,064 B, leaving an
   arena of 4,512 B (`arch/arm/chip/stm32f302/stm32f302.ld:110-111`). The idle and root boot
   stacks take 512 + 2,048, so **1,952 B remain** -- below the 2,048 one spawned thread's
-  stack needs (`arch/arm/chip/stm32f302/include/kickos/board_config.h:33`). Every spawning
+  stack needs (`boards/f302nucleo/configs/base/defconfig:33`). Every spawning
   case therefore fails on `w >= 0` / `drv >= 0` / `a >= 0 and b >= 0`.
 - **Object pools.** A zero-skip run needs `KICKOS_MAX_SEMAPHORES >= 6` (peak is
   `mutex_deadlock`: two permanent plus four live); this chip provisions 4
-  (`arch/arm/chip/stm32f302/include/kickos/board_config.h:21`). That is the `sem_destroy`
+  (`boards/f302nucleo/configs/base/defconfig:21`). That is the `sem_destroy`
   failure on `h >= 0`.
 
 Two further provisionings were flashed, which is the evidence that **no single knob fixes
@@ -301,7 +301,7 @@ because it rides into the link inside `startup.o` (already force-pulled by the a
 addition -- unlike RP2040.
 
 **Every APB peripheral base moved relative to the RP2040** (datasheet 2.2.4), so no RP2040
-address can be reused. Recomputed in `arch/arm/chip/rp2350/mmap.h`:
+address can be reused. Recomputed in `arch/arm/chip/rp2350/include/kickos/chip_mmap.h`:
 
 | Block | Base | Block | Base |
 |---|---|---|---|
@@ -489,7 +489,7 @@ the board".
 
   `kmain` takes both bootstrap stacks from the arena through `boot_stack_alloc` --
   `KICKOS_IDLE_STACK_SIZE` then `KICKOS_ROOT_STACK_SIZE`, 512 and 2,048 on this chip
-  (`arch/arm/chip/stm32f302/include/kickos/board_config.h:38`, `:41`) -- so it needs **2,560 B**, and
+  (`boards/f302nucleo/configs/base/defconfig:38`, `:41`) -- so it needs **2,560 B**, and
   an unsatisfied second allocation is `kpanic("kmain: no arena for the root stack")`
   (`kernel/init/kmain.cc:218`) rather than a degraded boot. The fix was the heap carve: `6d49e14`
   halved `KICKOS_USER_HEAP_SIZE` to 2K (`arch/arm/chip/stm32f302/stm32f302.ld:28`), which returns
@@ -2056,7 +2056,7 @@ the clean `270b6fa`. So the 9 -> 5 delta is attributable to the provisioning cha
 else on either tree, but it was **not re-taken at `124b68c`**, where the change actually landed. That
 is the sharpest instance of this milestone breaking its own commit-before-witness rule.
 
-The fix is `commit 124b68c`: `arch/arm/chip/stm32f302/include/kickos/board_config.h` takes
+The fix is `commit 124b68c`: `boards/f302nucleo/configs/base/defconfig` takes
 `KICKOS_USER_STACK_SIZE` 2048 -> 1024 and `KICKOS_ROOT_STACK_SIZE` 2048 -> 1536, and the
 `f302nucleo-st` preset takes `KICKOS_MAX_THREADS` 4 -> 3 and drops its own
 `KICKOS_USER_STACK_SIZE` override. Every number was chosen against MEASURED paint-and-scan

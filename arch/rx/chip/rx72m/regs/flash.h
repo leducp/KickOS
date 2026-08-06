@@ -11,7 +11,7 @@
 
 #include <stdint.h>
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 namespace kickos::rx::reg::flash
 {

@@ -62,6 +62,33 @@ for -- SYSMPU, the M7 anti-speculation wrap, PMSAv6 -- stay silicon-validated; s
 
 ## Building
 
+Configuration is Kconfig; CMake keeps the build graph. The workflow is the usual Kconfig one,
+spelled in CMake's verbs -- a preset selects the board's stored defconfig, the menu edits the
+live configuration, and the build follows it:
+
+```sh
+cmake --preset frdmk64f-st -B build/k64   # seed .config from the board's defconfig
+ninja -C build/k64 menuconfig             # edit the live configuration
+ninja -C build/k64                        # build what .config now says
+ninja -C build/k64 savedefconfig          # persist it back to the board's defconfig
+ninja -C build/k64 defconfig              # or reload, discarding local edits
+rm -rf build/k64                          # distclean: nothing is written in-tree
+```
+
+`boards/<board>/configs/<variant>/defconfig` is the saved, reviewable starting point, kept in
+git. `<build>/generated/.config` is the live state the build is based on, and it is
+authoritative once it exists -- exactly as a preset seeds `CMakeCache.txt` once and the cache
+rules afterwards. So editing a defconfig reaches a NEW build directory, or an existing one
+after `ninja defconfig`.
+
+Nothing generated is written into the source tree: `.config`, the C header the compile reads
+(`kickos/board_config.h`) and the CMake fragment all live under `<build>/generated/`.
+
+`menuconfig` needs `kconfiglib` (build-time only, one pure-Python file, ISC, never in a
+shipped artefact). Put it in a venv of its own and point `KICKOS_KCONFIG_PY` at that
+interpreter by absolute path; `cmake` prints the exact recipe if it cannot import it. A
+packaged `kconfig-mconf` parses this tree unmodified and works too.
+
 ```sh
 # Host sim (runs the full test suite in CI):
 cmake --preset sim && cmake --build --preset sim && ctest --preset sim --output-on-failure
@@ -74,10 +101,11 @@ Runnable emulator gates: `ctest --preset qemu` (Cortex-M4), `ctest --preset micr
 (Cortex-M0), `ctest --preset qemu-riscv` (RV32IMAC). The MCU presets are `frdmk64f`,
 `teensy41`, `f411disco`, `blackpill`, `bluepill-c8`, `f302nucleo`, `picopi`, `pizero2350`,
 `due`, `xmc4800-relax`, `esp32-wroom`, `esp32c6-wroom`, and `rx72m` -- each with a `-st`
-selftest variant. Add `-DKICKOS_HAVE_MPU=1` on any board whose chip ships an enforcement
-block (`arch/*/chip/<chip>/mpu.cmake`); on one that does not, it is a configure error by
-design rather than a silent no-op. Flashing is per-board -- see
-[`docs/flashing.md`](docs/flashing.md) and [`docs/reference/boards.md`](docs/reference/boards.md).
+selftest variant. Add `-DKICKOS_HAVE_MPU=1` on any board whose chip ships an enforcement block
+(`arch/*/chip/<chip>/mpu.cmake`); on one that does not, asking for it is refused at configure
+with the declaration's own explanation rather than becoming a silent no-op. That flag becomes a
+defconfig line rather than a command-line argument when the posture becomes a variant. Flashing is per-board -- see [`docs/flashing.md`](docs/flashing.md) and
+[`docs/reference/boards.md`](docs/reference/boards.md).
 
 **Cross toolchains.** A cross build finds its compiler through a per-family hint --
 `KICKOS_ARM_TOOLCHAIN_BIN`, `KICKOS_RISCV_TOOLCHAIN_BIN`, `KICKOS_RX_TOOLCHAIN_BIN`,

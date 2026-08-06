@@ -7,7 +7,7 @@
  * external line routes to the generic kickos_armv6m_default_irq (line=IPSR-16).
  */
 
-#include <kickos/board_config.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
+#include <kickos/chip_limits.h>   /* KICKOS_MAX_IRQ: the NVIC line count */
 #include "core_vectors.inc"        /* shared core-exception vector block */
 
     .syntax unified

@@ -12,7 +12,7 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_IOMUXC_H
 #define KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_IOMUXC_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

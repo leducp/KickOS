@@ -9,6 +9,15 @@
 
 #include <kickos/rtt.h>
 
+// The generated provisioning header, for KICKOS_RTT_CH1_SIZE below. This file is the one
+// C consumer of a knob that reached it as a -D until M4.7.5 deleted that forwarding, so
+// without this include the ring silently fell back to the 4096 default and .bss shrank by
+// 12 KiB on a build that asked for 16384. __has_include because lib/ must still compile
+// standalone, with no configuration at all.
+#if defined(__has_include) && __has_include(<kickos/board_config.h>)
+#include <kickos/board_config.h>
+#endif
+
 #include <stdint.h>
 
 namespace
@@ -40,8 +49,8 @@ namespace
     char up_buf[1024];
     // Telemetry ch1 ring. On a data-cached core (M7 / ESP32 / RX72M) this must live in
     // uncached RAM or the probe never sees the writes; cacheless M0-M4 are unaffected.
-    // The default size is chosen to fit MCU RAM; a sim/CI run drains only at shutdown,
-    // so it must raise the size via -DKICKOS_RTT_CH1_SIZE to hold a whole run.
+    // The default size is chosen to fit MCU RAM; a sim/CI run drains only at shutdown, so
+    // it raises the size in its defconfig (CONFIG_KICKOS_RTT_CH1_SIZE) to hold a whole run.
 #ifndef KICKOS_RTT_CH1_SIZE
 #define KICKOS_RTT_CH1_SIZE 4096
 #endif

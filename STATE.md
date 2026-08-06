@@ -8,12 +8,35 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.7.3 is MERGED** (PR #12, squashed to one commit; pre-squash history on
-`backup/m473-presquash`, and the squash left the tree hash unchanged so the silicon captures below
-still witness it). **The next number is the configuration mechanism**, before M4.8 -- see "What is
-next". `TODO_FIX.md` is still the
-untracked worklist and is **NOT gitignored, so `git clean -fd` destroys it**. Behind it on `master`: M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1
-(PR #9), M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
+**M4.7.4 is MERGED** (PR #13). **M4.7.5 is IN PROGRESS on branch `M4.7.5-config-mechanism`,
+14 commits off `master` `f00a267`, UNPUSHED and unsquashed.** `TODO_FIX.md` is still the untracked
+worklist and is **NOT gitignored, so `git clean -fd` destroys it**; its Part D is nine M4.7.5 items.
+Behind M4.7.4 on `master`: M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1 (PR #9),
+M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
+
+### M4.7.5 so far: what has landed, and the ONE measurement that matters
+
+All 20 boards configure from Kconfig. `.config`, the C header and a CMake fragment are generated
+into the BUILD tree, out of source; the source tree holds only declarations and defconfigs. **The 17
+per-board and per-chip `board_config.h` files are DELETED**, so a knob has exactly one place to be
+set. Gone with them: the `-D` forwarding loop and the provision-overrides variable it fed, the
+`kickos_core` ODR re-stamp that existed to paper over that variable, a dead overrides parameter on
+four probe functions, the board-include-dir variable whose board branch no board took, the
+service-list and pin-map board-name ladders, and the eleven-arm libs ladder (now DERIVED from the
+provider's own declared `LINK`/`CLASS` edges). Grep the branch log rather than this file for the
+names: naming a deleted identifier here is what `doc_names` refuses, correctly.
+
+**The measurement to re-run before trusting any change here: 72 build pairs, 1046 images, 0
+differing** against a pre-Kconfig baseline. Harness in `.session/`: `m475-sweep.sh` (builds into
+`build/sweep-*`, NOT `/tmp`), `m475-cmp.sh` (carries its own validation notes), `m475-pre/` (the
+baseline artifacts) and the `.claude/worktrees/m475-baseline` worktree at `ac03a1e`.
+
+**Two instrument facts that cost hours and will cost them again.** "Byte-identical image" is NOT a
+claim this tree can make: `kickos_app_build_stamp` folds `__DATE__`/`__TIME__` and its CODE size
+varies between two builds of one tree, so the comparison strips addresses, excludes three
+build-identity symbols and SORTS. And **a batch `ctest` across all 63 suites is not a valid
+instrument for `sim` and `qemu`**: they have no silicon clock, fail under the load of a
+back-to-back run, and pass standalone. CI runs one board per job for exactly that reason.
 
 ### The bench pass: FIVE boards, FOUR ISAs, FOUR enforcement classes
 
@@ -137,12 +160,19 @@ items sit in source comments and CMake strings where `doc_names` is blind. Inven
 
 ## What is next (locked order)
 
-1. **M4.7.4 -- delete the legacy management.** ACTIVE. `TODO.md` carries the inventory to execute.
-   One of its rows is load-bearing for the next number: the dead `kos_service_cfg.cs_policy` /
-   `.cs_index` fields must go BEFORE M4.7.5 writes a generator that would emit them.
-2. **M4.7.5 -- the configuration mechanism.** Kconfig owns configuration, CMake keeps the build
-   graph. **The spike is DONE and every decision it left open has been made** -- see `roadmap.md`'s
-   ledger entry, which is the only tracked record, since the spike itself is gitignored.
+1. **M4.7.5 -- FINISH IT.** What is deliberately NOT started, in value order:
+   **step 5**, variant defconfigs, which retires the cached-`KICKOS_HAVE_MPU` trap below but
+   rewires the very flag the verification harness keys its 72 pairs on, so the harness moves with
+   it; **the two `cc -E -P` probes and the `constexpr` scrape**, the last of the backflow and the
+   reason Kconfig was proposed at all, which need the cap-table arithmetic to move to Python
+   (design section 9.2); **step 7a**, the toolchain including the chip's own `cpu.cmake`, whose
+   measured payoff is one deduplicated pair (`stm32f411`) plus an ownership fix, against 16 new
+   per-chip files, all four toolchain files and an install path that does not ship per-chip
+   `.cmake` today. **Step 4 is MOOT**: its deliverable was deleting a central `DRIVER_TARGETS` map
+   in the generator, and that map was never written, because the closure derives the driver set
+   from the target graph instead.
+   Also open: `menuconfig` needs an `--edit` mode, because `.config` lives in the build tree and is
+   rewritten every configure, so there is nowhere for interactive edits to accumulate.
 3. **M4.8.1 -- the driver class layer.** Branch `M4.8.1-driver-class` holds only its 102-line spec,
    parked; it was cut at `tree(4ad39a8)`, so check whether it now needs a rebase.
 4. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
@@ -182,7 +212,8 @@ moves several at once, so the number here rots every milestone and has misled re
     cmake --preset <tree> -B <dir> [-DKICKOS_HAVE_MPU=0|1]
     cmake --build <dir> -j8 && ctest --test-dir <dir>
 
-**`--preset` does NOT reset a cached `KICKOS_HAVE_MPU`**, so use a FRESH build dir per posture and
+**`--preset` does NOT reset a cached `KICKOS_HAVE_MPU`** (M4.7.5 step 5 is what makes this
+unrepresentable, and it is not done), so use a FRESH build dir per posture and
 pass the value explicitly, then confirm it from `CMakeCache.txt`. **`sim` defaults to
 `KICKOS_HAVE_MPU=1`** keyed on the arch, not the preset, which is why it has one posture only.
 

@@ -1,0 +1,7 @@
+CONFIG_BOARD_QEMU=y
+
+# One chip serves four boards that differ only by emulated core, so nothing here
+# varies between them and the core lives in the board descriptor.
+CONFIG_KICKOS_USER_STACK_SIZE=8192
+CONFIG_KICKOS_IDLE_STACK_SIZE=2048
+CONFIG_KICKOS_ROOT_STACK_SIZE=8192

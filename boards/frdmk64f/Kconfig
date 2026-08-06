@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# FRDM-K64F. Gated on the enforcing posture for the reason given in
+# boards/xmc4800-relax/Kconfig.
+
+if BOARD_FRDMK64F
+
+config KICKOS_SERVICE_LIST
+	string
+	default "kickos_services_frdmk64f" if MEMORY_MODEL_MPU
+
+config KICKOS_BOARD_PINMAP
+	string
+	default "kickos_pinmap_frdmk64f" if MEMORY_MODEL_MPU
+
+endif

@@ -85,36 +85,83 @@ for a peripheral-bridge fault rather than an MPU one.
 2. `CMakePresets.json` -- add a configure + build preset (only for boards that
    actually build/link today).
 3. `arch/arm/chip/<chip>/` -- the chip sources (`*.cc`, `*.S`, auto-globbed), a
-   linker script named exactly `<chip>.ld`, and
-   `arch/arm/chip/<chip>/include/kickos/board_config.h` with the board facts. CMake derives the dir from the chip name, puts it on the
-   include path, and installs it -- **no root-CMake edit needed** (this used to be a
+   linker script named exactly `<chip>.ld`,
+   `arch/arm/chip/<chip>/include/kickos/chip_limits.h` with the chip's own constants
+   (configure REFUSES a chip that ships none), and
+   `arch/arm/chip/<chip>/include/kickos/chip_mmap.h` with its peripheral base
+   addresses. CMake derives the dir from the chip name, puts it on the include path,
+   and installs it -- **no root-CMake edit needed** (this used to be a
    silently-failing step).
+4. `boards/<board>/configs/<variant>/defconfig` -- the board's provisioning. Without
+   one the board takes the fleet defaults, which are the sim's and do not fit an MCU.
 
-`boards/<board>/` is also where per-board overrides of a shared chip live: a
-board-specific `boards/<board>/include/kickos/board_config.h` (selected EXCLUSIVELY over the chip
-default -- see below) and/or a `<chip>.ld` linker override -- proven on the `stm32f411` pair
-(f411disco + blackpill) and the `stm32f103` pair (bluepill + bluepill-c8).
+`boards/<board>/` is also where a `<chip>.ld` linker override lives for a shared chip,
+and `boards/<board>/Kconfig` where its own options go -- proven on the `stm32f411` pair
+(f411disco + blackpill), which share a chip and differ in five wiring facts.
 
-`board_config.h` is a pure-`#define` header (so `startup.S` includes it too),
-pulled in by `kernel/include/kickos/config/{board,system}.h`. It sets:
-   - `KICKOS_MAX_IRQ` -- the chip's NVIC line count. The `startup.S` vector table
-     derives its `.rept` from this exact macro, so the vector table and the kernel
-     IRQ table are **one fact**, not the same number copied into two files (the old
-     silent-skew hazard). Defaults to 32 if the header is absent.
-   - `KICKOS_MAX_THREADS` + the idle/root/user stack sizes, sized to the chip's
-     SRAM. Too big and the link fails on the linker-script RAM `ASSERT`.
-   Every knob is `#ifndef`-guarded, so a `-DKICKOS_...=` on the CMake line still
-   overrides for a one-off (edit the header for a persistent/shipped change). The
-   sim has no chip header and falls through to the config-header defaults.
+**Two headers, because there are two kinds of fact**, and both are pure-`#define` so
+`startup.S` can include them. `kernel/include/kickos/config/{board,system}.h` pull in
+both.
 
-`boards/<board>/include` is selected **EXCLUSIVELY** over the chip include dir
-(`CMakeLists.txt`, `KICKOS_BOARD_INCLUDE_DIR`: it is an if/else, not an append), and both
-headers use the same include guard, so a board that ships its own `board_config.h` never
-sees the chip's -- not even for a knob it did not restate. `bluepill-c8` hits this: it has
-`boards/bluepill-c8/include/kickos/board_config.h` with `KICKOS_USER_STACK_SIZE 2048` /
-`KICKOS_ROOT_STACK_SIZE 2048`, so `arch/arm/chip/stm32f103/include/kickos/board_config.h`
--- sized to the low-density 10 KiB floor at 1024/1024 -- is NEVER seen. Copy the chip
-header and edit it; do not write a partial override and expect the chip's values behind it.
+`chip_limits.h` holds the chip's CONSTANTS, defined **unconditionally** on the model of
+`kernel/include/kickos/config/limits.h`: `KICKOS_MAX_IRQ` (the NVIC or ICU line count,
+which the `startup.S` vector table derives its `.rept` from, so the vector table and
+the kernel IRQ table are **one fact** rather than the same number in two files) and, on
+the RX, `KICKOS_RX_INTB_ENTRIES`. Nothing configures these and no option's availability
+depends on them, which is exactly why they are not knobs: a smaller value would shrink
+the kernel table and the vector table together and strand the lines above it, with
+nothing to catch it. A configuration cannot set them, and a chip that ships no
+`chip_limits.h` is refused at configure rather than falling back on the sim's 32.
+
+`board_config.h` holds the provisioning KNOBS: `KICKOS_MAX_THREADS`, the idle/root/user
+stack sizes sized to the chip's SRAM (too big and the link fails on the linker-script
+RAM `ASSERT`), and the pool sizes. **There is no such file in the source tree**: it is
+GENERATED into the build tree from the board's defconfig, and it is what the whole fleet
+compiles against. That is the other reason the chip's constants sit in their own headers
+with their own include guards -- a generated header on the front of the include path
+would otherwise shadow them.
+
+A knob therefore has exactly ONE place to be set, its defconfig, and a `-DKICKOS_...=`
+on the CMake line becomes a REQUEST against the declarations rather than a define behind
+their back. There is no per-board-versus-per-chip precedence to learn and no partial
+override to get wrong: earlier this was an if/else between two headers sharing one
+include guard, so a board that restated one knob silently lost every other value its
+chip had set.
+
+### Configuration from Kconfig (a board with a defconfig)
+
+A board that carries `boards/<board>/configs/<variant>/defconfig` takes its
+configuration from Kconfig instead of from the header and the CMake ladders above.
+`tools/kconfig/genconfig.py` resolves the declarations and writes three things into the
+build tree's `generated/` directory: `.config` (the audit surface), a `board_config.h`
+under `include/kickos/`, and a `kickos_config.cmake` fragment that the root
+`CMakeLists.txt` includes once. The generated
+include directory precedes the board's, and both headers carry the same include guard,
+and there is no source `board_config.h` for it to shadow.
+
+Nothing about that board's provisioning is stated in CMake. The knobs are declared in
+`Kconfig` with a `range` and a `default`, the arch and chip facts in `arch/Kconfig`, the
+board stanzas in `boards/Kconfig`, and the board's own values in its defconfig, which
+states only what differs from the declared defaults. A board with no defconfig keeps the
+path above unchanged, so the two coexist and a board crosses on its own.
+
+**A value the declarations do not permit is REFUSED at configure, not defaulted.**
+kconfiglib warns on an out-of-range integer and falls back on the symbol's own default,
+which is the fleet value rather than the one asked for, so a board could otherwise be
+handed a LARGER pool than its defconfig specified. The generator reads every requested
+value back after resolution and exits non-zero on a mismatch, naming the symbol, the
+range or the unmet dependency, and what it actually resolved to. The same applies to a
+`-D` on the CMake line: on a crossed board it becomes a request the generator can refuse,
+including one that names no symbol at all.
+
+`kconfiglib` is then required. It is build-time only, one pure-Python file, ISC, and
+never reaches a shipped artefact. Put it in a venv of its own and name the interpreter
+absolutely through `KICKOS_KCONFIG_PY`; do not put that venv's `bin/` on `PATH`, where
+its `python3` shadows the interpreter the ESP flash tools run on. `cmake/kconfig.cmake`
+prints the exact recipe when it cannot import it. A packaged `kconfig-mconf` parses this
+tree unmodified and can drive `menuconfig` interactively, but it cannot replace the
+generator: the read-back refusal above is the generator's, and the C implementation has
+the same silent out-of-range fallback.
 
 **An `AT` clause in `<chip>.ld` is only valid if the LOADER honours LMA.** This is
 LOADER-dependent, not arch-dependent, and both sides of the decision look identical in the
@@ -575,7 +622,7 @@ silicon at **63 ok / 0 not ok / 5 skipped**, plan `1..63` (measured at `124b68c`
 `.session/m456-silicon/b5-nuc-selftest-after.log`). That provisioning is split across two
 files and a porter must read both: the PRESET (`cmake/presets/arm.json`, `f302nucleo-st`)
 sets `KICKOS_ENABLE_SELFTEST=ON`, `KICKOS_USER_HEAP_SIZE=0`, `KICKOS_MAX_SEMAPHORES=6` and
-`KICKOS_MAX_THREADS=3`, while the stack sizes live in the chip's `board_config.h`
+`KICKOS_MAX_THREADS=3`, while the stack sizes live in the board's defconfig
 (`KICKOS_USER_STACK_SIZE 1024`, `KICKOS_ROOT_STACK_SIZE 1536`, `KICKOS_IDLE_STACK_SIZE
 512`). So "KickOS runs here", "KickOS is validated here with named skips" and "KickOS is
 validated here with none" are three different claims about one board.
@@ -864,7 +911,7 @@ Four readings, and they are the point of the section:
   (`bluepill-c8` is build-only, so its N=1 is a model prediction, not a witness.)
 - On a comfortable board the constraint **inverts**: `f411disco`'s arena would hold 24
   user stacks and `KICKOS_MAX_THREADS 8` is what caps it
-  (`../../boards/f411disco/include/kickos/board_config.h:17`). Above roughly 32 KiB of
+  (`../../boards/f411disco/configs/base/defconfig`). Above roughly 32 KiB of
   SRAM, provisioning is the knob and the part is not the limit.
 
 ### What binds beyond memory
@@ -889,7 +936,7 @@ The `Tight-board value` column is the chip default. The `f302nucleo-st` PRESET
 (`cmake/presets/arm.json`) overrides semaphores to 6 and threads to **3** -- not 4: it was
 cut at `124b68c` once the pool assert made the overcommit a link error, and any text citing
 `arm.json` for `KICKOS_MAX_THREADS=4` on this board is stale. The stack sizes moved the
-other way, out of the preset and into the chip's `board_config.h`
+other way, out of the preset and into the board's defconfig
 (`KICKOS_USER_STACK_SIZE` 2048 -> **1024**, `KICKOS_ROOT_STACK_SIZE` 2048 -> **1536**),
 chosen against MEASURED paint-and-scan watermarks now recorded beside them in that header:
 deepest pool worker 592 B, root 1,048 B, idle 76 B -- a 488 B (31.8%) margin on the 1,536 B
@@ -993,7 +1040,7 @@ demand of 10 -- 2 reserved (`KICKOS_CAP_FIRST_DYNAMIC`) + the suite's 5 mandator
 optional. Every small part in the fleet supplies 7.
 `f411disco` is the zero-skip
 witness -- 128 KiB SRAM, 0 skips -- and it provisions `KICKOS_MAX_THREADS 8`
-(`../../boards/f411disco/include/kickos/board_config.h:17`), above the measured 4-thread
+(`../../boards/f411disco/configs/base/defconfig`), above the measured 4-thread
 peak, so 4 is a floor and not a fitted value.
 
 The 16 KiB result is not slack to spend elsewhere: raising only the thread pool on this
@@ -1043,7 +1090,7 @@ a run at all. An **OPTIONAL** peak that does not fit is simply not granted: the 
 at the mandatory sum, configure announces the dropped slots and the app that declared them,
 and the arm that wanted them reclaims what it did get and skips itself
 (`cmake/cap_table.cmake`). Granting them here means raising `KICKOS_CAP_TABLE_SUPPLY`, and
-the chip's `board_config.h` records why that is not affordable on this part.
+the board's defconfig records why that is not affordable on this part.
 
 The genuine 16 KiB limits that remain are small and specific: `irq_as_event` needs one
 4,096 B block, and `caller_stack`'s accept half needs 2,064 B.
@@ -1058,7 +1105,7 @@ Given a new part's flash and SRAM, in order:
    Below 64 KiB the part runs KickOS but cannot host the validation suite -- plan to
    witness it with `apps/blink` and `hello`, or with a named expected-skip list as
    `microbit` does.
-2. **Write the board's stack and pool knobs explicitly** in `board_config.h`. There is
+2. **Write the board's stack and pool knobs explicitly** in its defconfig. There is
    no useful default on a small part: the `config/system.h` fallbacks are 64 KiB stacks
    and 16 threads, sized for the host sim. If the board ships its own header it must
    restate EVERY knob it needs -- `boards/<board>/include` replaces the chip's header

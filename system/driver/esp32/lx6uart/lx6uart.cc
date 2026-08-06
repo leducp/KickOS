@@ -40,7 +40,7 @@
 #include <kickos/sys/uart_service.h>
 
 #include "irq.h"
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "regs/uart.h"
 
 #include <stdint.h>

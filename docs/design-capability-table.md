@@ -369,7 +369,7 @@ Three things that had to move with them, all cheap:
   stored, since a `CAP_REPLY` `obj` is routinely negative.
 - **The static arrays.** `used_[N]` and `gen_[N]` are statically sized, so a board pays for the `N`
   it **configures**, not for the ceiling. `microbit` configures **4** semaphores
-  (`arch/arm/chip/nrf51/include/kickos/board_config.h`); a large part configures thousands and pays
+  (`boards/microbit/configs/base/defconfig`); a large part configures thousands and pays
   for thousands. Raising the ceiling therefore costs a small board nothing.
 
 Nothing has hit this because nothing configures anywhere near it. The
@@ -450,7 +450,7 @@ root's.
 demand figure at all.
 
 **The old scheme failed structurally, not through carelessness.**
-`arch/arm/chip/xmc4800/include/kickos/board_config.h` carries the arithmetic in its own comment:
+`boards/xmc4800-relax/configs/base/defconfig` carries the arithmetic in its own comment:
 "2 reserved + 2 permanent selftest caps + 1 retained SPI ep + 6 concurrent in `t_mutex_deadlock`".
 That is a **board header summing an app's working set and a chosen service list's retention** --
 two addends it cannot know. Change the app, change the service list, and the number is silently

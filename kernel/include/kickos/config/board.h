@@ -13,18 +13,33 @@
 
 #include <kickos/units.h>
 
-// Per-board facts (MAX_IRQ + the provisioning knobs in config/system.h) live in
-// the selected board's board_config.h; CMake adds that dir to the include path
-// and installs it for out-of-tree consumers. A plain sim/standalone build has
-// none and falls through to the defaults below (which are the sim values). A
-// CMake -D still overrides (the header guards are #ifndef).
+// The provisioning KNOBS (config/system.h) live in board_config.h, which on a board
+// configured from Kconfig is generated into the build tree. CMake adds the directory
+// to the include path and installs it for out-of-tree consumers. A plain
+// sim/standalone build has none and falls through to the defaults. A CMake -D still
+// overrides, because those defines are #ifndef-guarded.
 #if defined(__has_include) && __has_include(<kickos/board_config.h>)
 #include <kickos/board_config.h>
 #endif
 
-// In-kernel IRQ-table size (sim placeholder; right-sized per chip via the header).
+// The chip's CONSTANTS, which are a different kind of thing and so a different header:
+// nothing configures them, no option depends on them, and they are defined
+// unconditionally. Keeping them out of board_config.h is what lets that header be
+// generated from the configuration without shadowing them.
+#if defined(__has_include) && __has_include(<kickos/chip_limits.h>)
+#include <kickos/chip_limits.h>
+#endif
+
+// The sim has no chip and therefore no chip_limits.h. This is its value, not a
+// fleet-wide fallback: every real chip defines the macro unconditionally, so a chip
+// whose header is missing from the include path fails here rather than silently
+// sizing its IRQ table to 32.
 #ifndef KICKOS_MAX_IRQ
+#if defined(KICKOS_ARCH_SIM) && KICKOS_ARCH_SIM
 #define KICKOS_MAX_IRQ 32
+#else
+#error "no kickos/chip_limits.h on the include path: the chip's KICKOS_MAX_IRQ is missing"
+#endif
 #endif
 
 namespace kickos

@@ -12,6 +12,7 @@ set(KICKOS_VERSION "0.4.7-1")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(cmake/kickos.cmake)
+include(cmake/kconfig.cmake)
 
 # KICKOS: a plain boolean an add_subdirectory(KickOS) consumer tests with if(KICKOS),
 # exactly like if(LINUX). __KickOS__: defined for every in-tree TU here, and carried
@@ -39,58 +40,181 @@ message(STATUS "KickOS: board=${KICKOS_BOARD} family=${KICKOS_ARCH_FAMILY} arch=
 # without reaching up into a peer component's dir.
 include_directories("${PROJECT_SOURCE_DIR}/include")
 
-# Holds config/cap_width.h, written at the bottom of this file. The directory must be added
-# HERE, before any add_subdirectory: a subdirectory copies the include directories in force
-# when it is added, and the width is not known until after user/apps.
+# Holds config/cap_width.h, written at the bottom of this file, and on a board configured
+# from Kconfig also kickos/board_config.h. The directory must be added HERE, before any
+# add_subdirectory: a subdirectory copies the include directories in force when it is
+# added, and the width is not known until after user/apps. It precedes the board include
+# directory below, which is what lets the generated board_config.h shadow the board's own.
 include_directories("${PROJECT_BINARY_DIR}/generated/include")
 
-# --- Board provisioning (board_config.h) -----------------------------------
-# Per-board facts -- KICKOS_MAX_IRQ, the thread/stack pool sizes, and (for a chip
-# shared by >1 board) HW like the LED pin + HSE crystal -- live in board_config.h.
-# It is pulled in by the kernel config headers (config/{board,system}.h), the chip
-# startup.S (so MAX_IRQ and the vector-table .rept are ONE fact) and, on a
-# multi-board chip, the chip clock/LED code. The board/chip split: a board with
-# per-board needs owns boards/<board>/include; a single-board chip keeps its
-# default under the chip dir. Prefer the board dir, fall back to the chip dir.
-# The sim has neither: config/{board,system}.h fall through to their #ifndef
-# defaults, which are the sim values.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/include")
-  set(KICKOS_BOARD_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/include")
-elseif(KICKOS_CHIP)
-  set(KICKOS_BOARD_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/include")
-endif()
-if(KICKOS_BOARD_INCLUDE_DIR)
-  include_directories("${KICKOS_BOARD_INCLUDE_DIR}")
+# --- Board provisioning -----------------------------------------------------
+# There is no board_config.h in the source tree any more: the provisioning knobs come
+# from the board's defconfig and reach C through the GENERATED header on the include
+# path above. What is left under a chip's include/ is the chip's own constants, and one
+# directory now serves every board.
+#
+# The chip's CONSTANTS (chip_limits.h) are a separate header and so a separate include
+# directory: it is added IN ADDITION to the board dir, not instead of it, because the
+# selection above is an if/else and a board that owns a board_config.h must still see
+# its chip's constants. The chip startup.S reads it too, which is what keeps MAX_IRQ
+# and the vector-table .rept one fact.
+if(KICKOS_CHIP)
+  set(KICKOS_CHIP_INCLUDE_DIR
+      "${CMAKE_CURRENT_SOURCE_DIR}/arch/${KICKOS_ARCH_FAMILY}/chip/${KICKOS_CHIP}/include")
+  if(NOT EXISTS "${KICKOS_CHIP_INCLUDE_DIR}/kickos/chip_limits.h")
+    message(FATAL_ERROR
+      "Chip '${KICKOS_CHIP}' ships no ${KICKOS_CHIP_INCLUDE_DIR}/kickos/chip_limits.h. "
+      "Every chip states its own interrupt-line count there, unconditionally; without "
+      "it config/board.h has no KICKOS_MAX_IRQ and refuses rather than guessing 32.")
+  endif()
+  include_directories("${KICKOS_CHIP_INCLUDE_DIR}")
 endif()
 
-# Transient override: a knob set on the CMake command line (e.g.
-# -DKICKOS_MAX_THREADS=4) is forwarded as a compile definition and wins over the
-# header's #ifndef. For a PERSISTENT change edit the board's board_config.h --
-# that is also what out-of-tree consumers read (the shipped header).
-#
-# Any override is collected into KICKOS_PROVISION_OVERRIDES and ALSO stamped onto
-# the exported `kickos` INTERFACE target below. Without that, an out-of-tree
-# consumer whose TUs include a kernel-internal header (e.g. instance.h) would
-# compile against the shipped board_config.h defaults -- which the -D just changed
-# for the prebuilt .a libs -- silently disagreeing on the Kernel layout (ODR). The
-# normal (no-override) build stamps nothing extra: the header stays the sole truth.
-#
-# KICKOS_MAX_HANDLES is absent from the list on purpose: it is the ANSWER of the sum in
-# cmake/cap_table.cmake, not an input, so a -D sets a cache variable nothing reads.
-set(KICKOS_PROVISION_OVERRIDES "")
-foreach(_knob KICKOS_MAX_IRQ KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE
-              KICKOS_IDLE_STACK_SIZE KICKOS_ROOT_STACK_SIZE
-              KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES KICKOS_MAX_ENDPOINTS
-              KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
-              KICKOS_MAX_IRQ_HANDLES
-              KICKOS_RTT_CH1_SIZE)
-  if(DEFINED ${_knob})
-    add_compile_definitions(${_knob}=${${_knob}})
-    list(APPEND KICKOS_PROVISION_OVERRIDES "${_knob}=${${_knob}}")
+# --- Configuration from Kconfig --------------------------------------------
+# A board with boards/<board>/configs/<variant>/defconfig is configured from Kconfig:
+# the generator resolves the declarations and writes both the C header the compile
+# reads and the fragment included below. A board with no defconfig keeps the path
+# above, which is how the fleet crosses one board at a time.
+set(KICKOS_CONFIG_VARIANT "base" CACHE STRING
+    "Configuration variant under boards/<board>/configs/")
+set(KICKOS_DEFCONFIG
+    "${CMAKE_CURRENT_SOURCE_DIR}/boards/${KICKOS_BOARD}/configs/${KICKOS_CONFIG_VARIANT}/defconfig")
+set(KICKOS_FROM_KCONFIG OFF)
+if(EXISTS "${KICKOS_DEFCONFIG}")
+  set(KICKOS_FROM_KCONFIG ON)
+
+  # TRANSITIONAL. These knobs still arrive as a bare -D or a cache variable, so they
+  # are handed to the generator as requests it can refuse rather than being applied
+  # behind its back. Each arm dies with the mechanism that feeds it: the posture when
+  # it becomes a variant, the integers when the -D forwarding loop above goes.
+  #
+  # Every arm translates in BOTH directions. Sending only the positive one would let a
+  # defconfig that enables something outrank a command line asking to turn it off, and
+  # the request would be dropped without a word.
+  set(_kcfg_req "")
+  # A provisioning knob set on the CMake command line (-DKICKOS_MAX_THREADS=4) becomes a
+  # REQUEST, and that is now its only route: it no longer reaches the compiler as a -D
+  # behind the resolution's back. So an out-of-range value is refused instead of silently
+  # disagreeing with .config, and the generated header stays the one place C reads.
+  #
+  # KICKOS_MAX_HANDLES is absent on purpose: it is the ANSWER of the sum in
+  # cmake/cap_table.cmake, not an input, and Kconfig declares no such symbol, so an
+  # attempt to set it is refused by name.
+  foreach(_knob KICKOS_MAX_THREADS KICKOS_USER_STACK_SIZE KICKOS_IDLE_STACK_SIZE
+                KICKOS_ROOT_STACK_SIZE KICKOS_MAX_SEMAPHORES KICKOS_MAX_MUTEXES
+                KICKOS_MAX_ENDPOINTS KICKOS_CAP_TABLE_SUPPLY KICKOS_MAX_SPAWN_GRANTS
+                KICKOS_MAX_IRQ_HANDLES KICKOS_RTT_CH1_SIZE)
+    if(DEFINED ${_knob})
+      list(APPEND _kcfg_req "CONFIG_${_knob}=${${_knob}}")
+    endif()
+  endforeach()
+  if(DEFINED KICKOS_HAVE_MPU)
+    if(KICKOS_HAVE_MPU)
+      list(APPEND _kcfg_req "CONFIG_MEMORY_MODEL_MPU=y")
+    else()
+      list(APPEND _kcfg_req "CONFIG_MEMORY_MODEL_FLAT=y")
+    endif()
   endif()
-endforeach()
+  if(DEFINED KICKOS_CONSOLE)
+    string(TOUPPER "${KICKOS_CONSOLE}" _kcfg_console)
+    list(APPEND _kcfg_req "CONFIG_CONSOLE_${_kcfg_console}=y")
+  endif()
+  # Both enums go through as CONFIG_<CHOICE>_<VALUE>, so a value neither knows about
+  # comes back as "no such symbol" rather than needing its own validation arm here.
+  if(DEFINED KICKOS_TELEMETRY)
+    string(TOUPPER "${KICKOS_TELEMETRY}" _kcfg_telem)
+    list(APPEND _kcfg_req "CONFIG_TELEMETRY_${_kcfg_telem}=y")
+  endif()
+  # String-valued, so the request is quoted. Missing these was a real defect: four sim
+  # gates re-configure with -DKICKOS_SERVICE_LIST=..., and a knob the fragment sets but
+  # the translation omits is one the fragment silently overwrites.
+  foreach(_str KICKOS_SERVICE_LIST KICKOS_BOARD_PINMAP)
+    if(DEFINED ${_str})
+      list(APPEND _kcfg_req "CONFIG_${_str}=\"${${_str}}\"")
+    endif()
+  endforeach()
+  foreach(_flag KICKOS_ENABLE_SELFTEST KICKOS_DEBUG KICKOS_BENCH
+                KICKOS_SHUTDOWN_TO_BOOTLOADER CONFIG_SCHED_PERIODIC_TICK)
+    if(DEFINED ${_flag})
+      string(REGEX REPLACE "^CONFIG_" "" _sym "${_flag}")
+      set(_val "n")
+      if(${_flag})
+        set(_val "y")
+      endif()
+      list(APPEND _kcfg_req "CONFIG_${_sym}=${_val}")
+    endif()
+  endforeach()
+
+  kickos_kconfig_generate("${CMAKE_CURRENT_SOURCE_DIR}" "${KICKOS_DEFCONFIG}"
+                          "${PROJECT_BINARY_DIR}/generated" "${_kcfg_req}")
+
+  # The board descriptor's own answers, before the fragment can overwrite them. These
+  # four are the one pair of INDEPENDENT sources in the seam (boards/<b>/board.cmake
+  # against boards/Kconfig plus arch/Kconfig), so a typo in either is caught here.
+  # Every other fragment value replaces a ladder arm and has nothing to compare with.
+  set(_cmake_board "${KICKOS_BOARD}")
+  set(_cmake_arch "${KICKOS_ARCH}")
+  set(_cmake_chip "${KICKOS_CHIP}")
+  set(_cmake_family "${KICKOS_ARCH_FAMILY}")
+  include("${PROJECT_BINARY_DIR}/generated/kickos_config.cmake")
+  kickos_kconfig_agree("the board" "${_cmake_board}" "${KICKOS_BOARD}")
+  kickos_kconfig_agree("the arch" "${_cmake_arch}" "${KICKOS_ARCH}")
+  kickos_kconfig_agree("the arch family" "${_cmake_family}" "${KICKOS_ARCH_FAMILY}")
+  kickos_kconfig_agree("the chip" "${_cmake_chip}" "${KICKOS_CHIP}")
+
+  # The declarations, AND the live .config: editing either must reach the next build.
+  # .config is written during configure and so is older than the build system CMake
+  # writes afterwards, which is why depending on it does not loop.
+  set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" APPEND
+               PROPERTY CMAKE_CONFIGURE_DEPENDS
+               ${KICKOS_KCONFIG_SOURCES} "${PROJECT_BINARY_DIR}/generated/.config")
+  message(STATUS "KickOS: configuration from ${KICKOS_DEFCONFIG}")
+
+  # Three verbs on the live configuration. The defconfig is the SAVED starting point in
+  # git; generated/.config is the live state this build is based on, exactly as a
+  # preset seeds CMakeCache.txt once and the cache rules afterwards.
+  #
+  #   menuconfig    edit the live state
+  #   savedefconfig persist it back to the board's defconfig, minimally
+  #   defconfig     discard it and reload from the board's defconfig
+  #
+  # USES_TERMINAL because menuconfig is curses. Each runs the interpreter found at
+  # configure; none is wired into the default build.
+  kickos_find_kconfig(_kcfg_py _kcfg_found)
+  if(_kcfg_found)
+    add_custom_target(menuconfig
+      COMMAND "${CMAKE_COMMAND}" -E env
+              "KCONFIG_CONFIG=${PROJECT_BINARY_DIR}/generated/.config"
+              "${_kcfg_py}" "${KICKOS_KCONFIG_BIN_MENUCONFIG}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      USES_TERMINAL
+      COMMENT "Editing ${PROJECT_BINARY_DIR}/generated/.config (rebuild to apply)")
+    add_custom_target(savedefconfig
+      COMMAND "${CMAKE_COMMAND}" -E env
+              "KCONFIG_CONFIG=${PROJECT_BINARY_DIR}/generated/.config"
+              "${_kcfg_py}" "${KICKOS_KCONFIG_BIN_SAVEDEFCONFIG}"
+              --kconfig Kconfig --out "${KICKOS_DEFCONFIG}"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      COMMENT "Writing the minimal defconfig to ${KICKOS_DEFCONFIG}")
+    # RELOADS, it does not merely discard: this is `make <board>_defconfig`, so it puts
+    # .config back to what the saved defconfig says and the CONFIGURE_DEPENDS above makes
+    # the next build pick it up. A target that deleted the file and printed an
+    # instruction would be a workaround around the tool rather than the tool's own verb.
+    add_custom_target(defconfig
+      COMMAND "${CMAKE_COMMAND}" -E rm -f "${PROJECT_BINARY_DIR}/generated/.config"
+      COMMAND "${_kcfg_py}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/kconfig/genconfig.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}" "${KICKOS_DEFCONFIG}"
+              "${PROJECT_BINARY_DIR}/generated" ${_kcfg_req}
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      COMMENT "Reloading the live configuration from ${KICKOS_DEFCONFIG}")
+  endif()
+endif()
 
 # --- Config knobs (architecture.md) ----------------------------------------
+# On a board configured from Kconfig the fragment above already set the five knobs it
+# owns as normal variables, and CMP0077 (NEW at this cmake_minimum_required) makes
+# option() defer to those, so .config stays the single answer rather than being
+# overwritten by a default here.
 option(CONFIG_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
 option(KICKOS_BUILD_APPS          "Build in-tree demo applications"          ON)
 option(KICKOS_BUILD_TESTS         "Register CTest cases"                     ON)
@@ -161,16 +285,17 @@ endif()
 # KICKOS_CONSOLE = chip | rtt | both | none. `chip` = the board's native transport
 # (UART / semihosting / USIC); `rtt` = SEGGER RTT (needs a debug probe); resolved
 # to compile-time KICKOS_CONSOLE_CHIP/RTT for the kernel console core. Default is
-# `chip` (no probe assumed); the XMC4800 defaults `both` (its native transport is
-# USIC and it has an onboard J-Link -> visible over ttyACM0 AND JLinkRTTClient).
+# `chip`, no probe assumed. A board wanting another backend states it in its
+# defconfig, which is why nothing here names a board.
 if(NOT DEFINED KICKOS_CONSOLE)
-  if(KICKOS_BOARD STREQUAL "xmc4800-relax")
-    set(KICKOS_CONSOLE "both")
-  else()
-    set(KICKOS_CONSOLE "chip")
-  endif()
+  set(KICKOS_CONSOLE "chip")
 endif()
-set(KICKOS_CONSOLE "${KICKOS_CONSOLE}" CACHE STRING "Console backend: chip|rtt|both|none")
+# NOT cached on a board configured from Kconfig: a cache entry written from .config
+# would come back as a request on the next configure and outrank a changed defconfig,
+# which is the stale-cache trap this migration exists to remove.
+if(NOT KICKOS_FROM_KCONFIG)
+  set(KICKOS_CONSOLE "${KICKOS_CONSOLE}" CACHE STRING "Console backend: chip|rtt|both|none")
+endif()
 if(KICKOS_CONSOLE STREQUAL "chip")
   set(_con_chip 1)
   set(_con_rtt 0)
@@ -351,51 +476,28 @@ message(STATUS "KickOS: caller-stack floor KICKOS_MIN_STACK_SIZE=${KICKOS_MIN_ST
 # Default is kickos_services_none
 # (count = 0: no-op). Resolved per-board AFTER KICKOS_HAVE_MPU is known (a driver
 # handover is an enforcement construct); must sit after the MPU block for that reason.
+# A board configured from Kconfig states its own in boards/<board>/Kconfig and the
+# fragment already set it; this is the fallback for a board that has no defconfig.
 if(NOT DEFINED KICKOS_SERVICE_LIST)
-  if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
-    set(KICKOS_SERVICE_LIST "kickos_services_xmc4800relax")
-  elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)
-    set(KICKOS_SERVICE_LIST "kickos_services_frdmk64f")
-  else()
-    set(KICKOS_SERVICE_LIST "kickos_services_none")
-  endif()
+  set(KICKOS_SERVICE_LIST "kickos_services_none")
 endif()
-set(KICKOS_SERVICE_LIST "${KICKOS_SERVICE_LIST}" CACHE STRING
-  "CMake target defining kickos_board_services (the default-init service bring-up walk). Default kickos_services_none (count = 0: no services).")
+if(NOT KICKOS_FROM_KCONFIG) # see the KICKOS_CONSOLE cache guard above
+  set(KICKOS_SERVICE_LIST "${KICKOS_SERVICE_LIST}" CACHE STRING
+    "CMake target defining kickos_board_services (the default-init service bring-up walk). Default kickos_services_none (count = 0: no services).")
+endif()
 # Derive the lib closure from the selected target EVERY configure (like the console
 # knob), so an explicit A/B override still injects a linkable provider. A custom
 # provider may pre-set KICKOS_SERVICE_LIST_LIBS with its own dep list.
-if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
-  if(KICKOS_SERVICE_LIST STREQUAL "kickos_services_xmc4800relax")
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_xmc4800relax;kickos_xmcuart;kickos_xmcssc;kickos_class_xmc4800")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_xmc4800relax_console")
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_xmc4800relax_console;kickos_xmcuart;kickos_class_xmc4800")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_xmc4800relax_uartirq")
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_xmc4800relax_uartirq;kickos_xmcuartirq;kickos_class_xmc4800")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_frdmk64f")
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_frdmk64f;kickos_k64dspi;kickos_k64uart;kickos_class_mk64f")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_frdmk64f_uartirq")
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_frdmk64f_uartirq;kickos_k64uartirq;kickos_class_mk64f")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_esp32c6_uartirq")
-    # No class leaf: kickos_c6uart shares no register logic with the kernel side.
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_esp32c6_uartirq;kickos_c6uart")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_rx72m_uartirq")
-    # No class leaf: kickos_rxsci shares no register logic with the kernel side.
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_rx72m_uartirq;kickos_rxsci")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_esp32_uartirq")
-    # No class leaf: kickos_lx6uart shares no register logic with the kernel side.
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_esp32_uartirq;kickos_lx6uart")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_pizero2350_usbcdc")
-    # No class leaf: the USB register map is the driver's alone. One kickos_rpusb serves
-    # both RP boards.
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_pizero2350_usbcdc;kickos_rpusb")
-  elseif(KICKOS_SERVICE_LIST STREQUAL "kickos_services_picopi_usbcdc")
-    set(KICKOS_SERVICE_LIST_LIBS "kickos_services_picopi_usbcdc;kickos_rpusb")
-  else()
-    set(KICKOS_SERVICE_LIST_LIBS "${KICKOS_SERVICE_LIST}")
-  endif()
-endif()
-message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST} (libs: ${KICKOS_SERVICE_LIST_LIBS})")
+#
+# It is DERIVED, not restated: kickos_add_board_provider already took LINK and
+# kickos_add_driver already took CLASS, so the closure over the provider's own link
+# libraries is the same information the eleven-arm ladder here used to spell out. That
+# ladder was a second place to edit when adding a driver, and its own comment above says
+# forgetting one fails as a link-group cycle that names the cycle rather than the mapping.
+# The closure itself is derived further down, once add_subdirectory(system) has created the
+# provider and driver targets: it reads their link edges, so it cannot run before they
+# exist. A custom provider may still pre-set KICKOS_SERVICE_LIST_LIBS here.
+message(STATUS "KickOS: service list = ${KICKOS_SERVICE_LIST}")
 
 # USB device clock tree, in CHIP init. PLL_USB, clk_usb and the USB block's reset all
 # live in blocks the kernel owns for life, so an unprivileged driver cannot bring them up
@@ -428,21 +530,15 @@ endif()
 # and is read by kickos_default_init, so it must join the rescan link group below.
 # Default is kickos_pinmap_none (count = 0: nothing to mux). Resolved per-board AFTER
 # KICKOS_HAVE_MPU is known, like KICKOS_SERVICE_LIST above; must sit after that block.
+# As with the service list: stated per board in Kconfig, this is the no-defconfig
+# fallback.
 if(NOT DEFINED KICKOS_BOARD_PINMAP)
-  if(KICKOS_BOARD STREQUAL "xmc4800-relax" AND KICKOS_HAVE_MPU)
-    set(KICKOS_BOARD_PINMAP "kickos_pinmap_xmc4800relax")
-  elseif(KICKOS_BOARD STREQUAL "frdmk64f" AND KICKOS_HAVE_MPU)
-    set(KICKOS_BOARD_PINMAP "kickos_pinmap_frdmk64f")
-  elseif(KICKOS_BOARD STREQUAL "picopi")
-    set(KICKOS_BOARD_PINMAP "kickos_pinmap_picopi") # non-MPU; ungated (exercises the rp2040 backend)
-  elseif(KICKOS_BOARD STREQUAL "f302nucleo")
-    set(KICKOS_BOARD_PINMAP "kickos_pinmap_f302nucleo") # non-MPU; ungated (exercises the f302 backend)
-  else()
-    set(KICKOS_BOARD_PINMAP "kickos_pinmap_none")
-  endif()
+  set(KICKOS_BOARD_PINMAP "kickos_pinmap_none")
 endif()
-set(KICKOS_BOARD_PINMAP "${KICKOS_BOARD_PINMAP}" CACHE STRING
-  "CMake target defining kickos_board_pinmap (the default-init pin-mux step). Default kickos_pinmap_none (nothing to mux).")
+if(NOT KICKOS_FROM_KCONFIG) # see the KICKOS_CONSOLE cache guard above
+  set(KICKOS_BOARD_PINMAP "${KICKOS_BOARD_PINMAP}" CACHE STRING
+    "CMake target defining kickos_board_pinmap (the default-init pin-mux step). Default kickos_pinmap_none (nothing to mux).")
+endif()
 # Each provider is a pure data lib with no further deps, so the lib closure is just the
 # selected target. A custom provider may pre-set KICKOS_BOARD_PINMAP_LIBS.
 if(NOT DEFINED KICKOS_BOARD_PINMAP_LIBS)
@@ -460,7 +556,9 @@ endif()
 if(NOT DEFINED KICKOS_TELEMETRY)
   set(KICKOS_TELEMETRY "off")
 endif()
-set(KICKOS_TELEMETRY "${KICKOS_TELEMETRY}" CACHE STRING "Telemetry sink: off|rtt")
+if(NOT KICKOS_FROM_KCONFIG) # see the KICKOS_CONSOLE cache guard above
+  set(KICKOS_TELEMETRY "${KICKOS_TELEMETRY}" CACHE STRING "Telemetry sink: off|rtt")
+endif()
 if(KICKOS_TELEMETRY STREQUAL "off")
   set(_telem 0)
 elseif(KICKOS_TELEMETRY STREQUAL "rtt")
@@ -509,16 +607,15 @@ include(GNUInstallDirs)
 if(KICKOS_BUILD_TESTS)
   enable_testing()
 
-  # The panic/fault marker set for the sim FAIL_REGULAR_EXPRESSION registrations,
-  # scraped from the ONE definition the shell gates use (tests/lib/gate.sh). Both
-  # consumers take the same ERE dialect, so the string crosses verbatim. It must not
-  # contain a `;`: FAIL_REGULAR_EXPRESSION is a CMake list of regexes.
-  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/tests/lib/gate.sh" _panic_line
-       REGEX "^KOS_PANIC_RE=")
-  string(REGEX REPLACE "^KOS_PANIC_RE='(.*)'$" "\\1" KICKOS_PANIC_REGEX "${_panic_line}")
-  if(KICKOS_PANIC_REGEX STREQUAL "" OR KICKOS_PANIC_REGEX STREQUAL "${_panic_line}")
-    message(FATAL_ERROR "tests/lib/gate.sh no longer defines KOS_PANIC_RE='<ere>' on one "
-                        "line; the sim panic gates would register an empty regex")
+  # The panic/fault marker set for the sim FAIL_REGULAR_EXPRESSION registrations, read from
+  # the ONE file both consumers read: this and tests/lib/gate.sh. Same ERE dialect, so the
+  # string crosses verbatim. It must not contain a `;`: FAIL_REGULAR_EXPRESSION is a CMake
+  # list of regexes. It was scraped out of the shell script with a regex until M4.7.5, which
+  # made that script's quoting load-bearing for the build.
+  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/tests/lib/panic.ere" KICKOS_PANIC_REGEX LIMIT_COUNT 1)
+  if(KICKOS_PANIC_REGEX STREQUAL "")
+    message(FATAL_ERROR "tests/lib/panic.ere is empty; the sim panic gates would register "
+                        "an empty regex and no fault would ever fail a test")
   endif()
 
   # Rebuild the tree before any test runs, so `ctest` / `ctest --preset` can never
@@ -552,6 +649,21 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_doc_names.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(doc_names PROPERTIES TIMEOUT 120)
+
+  # Kconfig generator gate. A source-tree host check like doc_names, so it registers
+  # on every board and requires no build. No board's configuration comes from Kconfig
+  # yet, so a box without kconfiglib is told rather than refused; the board that
+  # crosses first is what makes it mandatory.
+  kickos_find_kconfig(_kconfig_py _kconfig_found)
+  if(_kconfig_found)
+    _add_test(NAME kconfig_gen
+              COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_kconfig_gen.sh"
+                      "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120)
+  else()
+    kickos_kconfig_hint(_kconfig_hint)
+    message(STATUS "KickOS: kconfig_gen NOT registered. ${_kconfig_hint}")
+  endif()
 endif()
 
 # Components are added as they land; guarded so every step boundary configures.
@@ -632,6 +744,12 @@ if(TARGET kickos_kernel)
   # start()s, and those back-reference kickos_user + a class leaf, so the whole closure
   # must be in-group to rescan-resolve (one item on the none default, three on a
   # migrated board).
+  # Derived HERE and not at the knob: the walk reads the provider's and drivers' own link
+  # edges, which exist only after add_subdirectory(system) above.
+  if(NOT DEFINED KICKOS_SERVICE_LIST_LIBS)
+    kickos_service_libs_closure("${KICKOS_SERVICE_LIST}" KICKOS_SERVICE_LIST_LIBS)
+    message(STATUS "KickOS: service-list closure = ${KICKOS_SERVICE_LIST_LIBS}")
+  endif()
   # The archive list, named once; the group is built per posture leaf below, because
   # the leaves differ in which toolchain runtime joins it and CMake forbids one
   # target's closure from carrying a library in two groups.
@@ -648,13 +766,10 @@ if(TARGET kickos_kernel)
   # renamed to the kernel-called symbol; app.h is force-included so the renamed C++
   # main gets C linkage (unmangled).
   target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)
-  # A transient -D knob override changed the values the libs were built with but not
-  # the shipped board_config.h, so carry those overrides here too (they win over the
-  # header's #ifndef) -- else an OOT TU including a kernel-internal header would
-  # disagree on the layout (ODR).
-  if(KICKOS_PROVISION_OVERRIDES)
-    target_compile_definitions(kickos_core INTERFACE ${KICKOS_PROVISION_OVERRIDES})
-  endif()
+  # No provisioning re-stamp: a -D knob is a Kconfig request now, so it lands in the
+  # GENERATED board_config.h that both the libs and the shipped package carry. There is
+  # no longer a value the libs were built with that the header does not state, which is
+  # what the re-stamp existed to paper over.
   # KICKOS_TELEMETRY gates fields in struct Kernel (instance.h) and arch_context
   # (context.h); KICKOS_HAVE_MPU branches KOS_STACK_DEFINE (kos.h). An OOT TU that
   # includes a kernel-internal header must see the same posture as the prebuilt libs
@@ -818,7 +933,7 @@ endif()
 
 # Must stay AFTER add_subdirectory(user/apps): that is the last place an app can declare its
 # peak.
-kickos_cap_table_resolve("${KICKOS_BOARD_INCLUDE_DIR}" "${KICKOS_PROVISION_OVERRIDES}"
+kickos_cap_table_resolve("${KICKOS_CHIP_INCLUDE_DIR}"
                          "${KICKOS_SERVICE_LIST}" KICKOS_CAP_TABLE_SLOTS
                          KICKOS_CAP_TABLE_CHUNK KICKOS_CAP_TABLE_CHILD_WIDTH
                          KICKOS_CAP_TABLE_REPLY_MAX)
@@ -862,11 +977,20 @@ install(DIRECTORY
 install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/config/cap_width.h"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos/config")
 
-# Ship the selected board's board_config.h (MAX_IRQ + provisioning) so an
-# out-of-tree consumer's config headers read the same values the prebuilt libs
-# did -- the header replaces the old -D provisioning export.
-if(KICKOS_BOARD_INCLUDE_DIR)
-  install(DIRECTORY "${KICKOS_BOARD_INCLUDE_DIR}/"
+# Ship the GENERATED provisioning header, which is the one the prebuilt libs were
+# compiled against and now the only one there is. It replaces the old -D provisioning
+# export, and a consumer whose TU includes a kernel-internal header reads exactly the
+# values this build used.
+if(KICKOS_FROM_KCONFIG)
+  install(FILES "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h"
+          DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/kickos")
+endif()
+
+# And the chip's constants, which config/board.h now requires: a consumer whose TU
+# includes a kernel config header has no KICKOS_MAX_IRQ without it and gets an #error
+# rather than a wrong table size.
+if(KICKOS_CHIP_INCLUDE_DIR)
+  install(DIRECTORY "${KICKOS_CHIP_INCLUDE_DIR}/"
           DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 endif()
 

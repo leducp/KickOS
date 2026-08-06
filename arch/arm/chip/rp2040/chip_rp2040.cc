@@ -25,7 +25,7 @@
 
 #include <stdint.h>
 
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/atomic.h"
 #include "regs/clocks.h"

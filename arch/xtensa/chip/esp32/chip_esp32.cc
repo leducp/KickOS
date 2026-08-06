@@ -13,7 +13,7 @@
 
 #include <stdint.h>
 
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/uart.h"
 #include "regs/timg.h"

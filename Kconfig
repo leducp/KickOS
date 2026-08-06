@@ -1,0 +1,250 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# KickOS configuration. Symbols are declared without a prefix, as in every Kconfig
+# dialect; the tooling adds CONFIG_ when it writes .config and the generated header.
+
+mainmenu "KickOS configuration"
+
+# --- Capability facts -------------------------------------------------------
+# Never prompted: a chip or an arch selects them. A fact earns a declaration here
+# only when some option's availability or default depends on it, so this list is
+# short on purpose and grows when an option needs it, not when silicon has it.
+
+config HAS_MPU
+	bool
+	help
+	  The chip carves the KICKOS_HAVE_MPU .appdata window AND its arch ships a
+	  real arch_mpu_apply, so enforcement faults instead of granting no regions.
+
+config HAS_TRACE_CLOCK
+	bool
+	default y if ARCH_SIM || ARCH_ARMV7M || ARCH_RXV3 || ARCH_LX6 || ARCH_RV32IMAC
+	help
+	  An arch_trace_now exists. The armv6m default is n and a chip that ships its
+	  own counter selects it back on.
+
+source "boards/Kconfig"
+source "boards/*/Kconfig"
+source "arch/Kconfig"
+
+# --- Memory protection ------------------------------------------------------
+
+choice
+	prompt "Memory model"
+	default MEMORY_MODEL_FLAT
+	help
+	  Only the models the selected chip advertises are offered, so a posture that
+	  would enforce nothing cannot be chosen.
+
+config MEMORY_MODEL_FLAT
+	bool "Flat, no protection"
+
+config MEMORY_MODEL_MPU
+	bool "MPU / PMSA / PMP / RX-MPU region enforcement"
+	depends on HAS_MPU
+	help
+	  Offered only where a wild cross-domain access actually FAULTS, which needs
+	  the chip's linker script to carve the .appdata window AND its arch to ship a
+	  real arch_mpu_apply. Without both, arch_domain_static_regions grants zero
+	  regions and the posture enforces nothing. A chip declares the capability by
+	  selecting HAS_MPU in arch/Kconfig, which is also where to look for the
+	  chips that can; bringing a new one up means the window, the backend, and
+	  then that select once enforcement is validated on hardware.
+
+endchoice
+
+config KICKOS_HAVE_MPU
+	int
+	default 1 if MEMORY_MODEL_MPU
+	default 0
+
+# --- Userspace services and pin mux -----------------------------------------
+# Both name a CMake target: the one defining kickos_board_services, and the one
+# defining kickos_board_pinmap. A board states its own default in
+# boards/<board>/Kconfig; the default here is the no-op every other board takes.
+#
+# Prompted, unlike the chip constants, because WHICH provider an image runs is a real
+# choice and the tree proves it: four sim gates build the same board against different
+# providers to exercise publish, panic-flush and driver death.
+
+config KICKOS_SERVICE_LIST
+	string "CMake target defining kickos_board_services"
+	default "kickos_services_none"
+
+config KICKOS_BOARD_PINMAP
+	string "CMake target defining kickos_board_pinmap"
+	default "kickos_pinmap_none"
+
+# --- Kernel provisioning ----------------------------------------------------
+
+menu "Kernel provisioning"
+
+config KICKOS_MAX_THREADS
+	int "Static thread pool"
+	range 2 64
+	default 16
+
+config KICKOS_MAX_SEMAPHORES
+	int "CAP_SEM pool"
+	range 0 64
+	default 16
+
+config KICKOS_MAX_MUTEXES
+	int "CAP_MUTEX pool"
+	range 0 64
+	default 8
+
+config KICKOS_MAX_ENDPOINTS
+	int "IPC endpoint pool"
+	range 0 32
+	default 4
+
+config KICKOS_MAX_IRQ_HANDLES
+	int "Tier-1 IRQ-as-event handles"
+	range 0 32
+	default 8
+
+config KICKOS_MAX_SPAWN_GRANTS
+	int "Caps one spawn may delegate"
+	range 1 16
+	default 6
+	help
+	  Costs caller stack, not .bss: thread_spawn stages the grant list in arrays
+	  on the calling thread's own stack.
+
+config KICKOS_CAP_TABLE_SUPPLY
+	int "Capability slots this board's RAM can back"
+	range 7 64
+	default 16
+	help
+	  SUPPLY, not demand. The width is summed from declared demand and refused
+	  above this.
+
+config KICKOS_USER_STACK_SIZE
+	int "Default spawned-thread stack"
+	range 512 262144
+	default 65536
+
+config KICKOS_IDLE_STACK_SIZE
+	int "Idle thread stack"
+	range 256 262144
+	default 65536
+
+config KICKOS_ROOT_STACK_SIZE
+	int "Root thread stack"
+	range 512 262144
+	default 65536
+
+config KICKOS_MIN_STACK_SIZE
+	int
+	default 512 if ARCH_ARMV6M
+	default 640 if ARCH_ARMV7M
+	default 640 if ARCH_RXV3
+	default 896 if ARCH_RV32IMAC
+	default 896 if ARCH_LX6
+	default 1024
+	help
+	  The floor for a caller-provided stack: the arch's deepest thread-exit
+	  dispatch, measured. A stack below it passes the spawn check and then
+	  overflows on exit.
+
+endmenu
+
+# --- Console and telemetry --------------------------------------------------
+
+menu "Console and telemetry"
+
+choice
+	prompt "Kernel console backend"
+	default CONSOLE_CHIP
+
+config CONSOLE_NONE
+	bool "none"
+
+config CONSOLE_CHIP
+	bool "chip native transport"
+
+config CONSOLE_RTT
+	bool "SEGGER RTT"
+
+config CONSOLE_BOTH
+	bool "chip + RTT"
+	help
+	  Both paths off the board at once, which is what a part with a native
+	  transport AND an attached probe can do.
+
+endchoice
+
+# Neither RTT arm depends on HAS_TRACE_CLOCK, and that is deliberate: the console
+# transport is a plain RAM ring (lib/rtt.cc reads no clock), so a trace clock has
+# nothing to do with it. Telemetry is the one that needs arch_trace_now, and says so.
+# What decides whether RTT can actually DELIVER is an attached debug probe, a fact
+# about the rig rather than the part, and nothing here models it.
+
+config KICKOS_CONSOLE
+	string
+	default "none" if CONSOLE_NONE
+	default "chip" if CONSOLE_CHIP
+	default "rtt" if CONSOLE_RTT
+	default "both" if CONSOLE_BOTH
+
+choice
+	prompt "Telemetry transport"
+	default TELEMETRY_OFF
+
+config TELEMETRY_OFF
+	bool "off"
+
+config TELEMETRY_RTT
+	bool "RTT channel 1"
+	depends on HAS_TRACE_CLOCK && (CONSOLE_RTT || CONSOLE_BOTH)
+
+endchoice
+
+config KICKOS_TELEMETRY
+	string
+	default "rtt" if TELEMETRY_RTT
+	default "off"
+
+config KICKOS_RTT_CH1_SIZE
+	int "RTT channel-1 ring bytes"
+	depends on TELEMETRY_RTT
+	range 256 65536
+	default 4096
+	help
+	  A whole run has to fit, so a long trace raises it. The default matches the
+	  rtt.cc fallback; the presets in use ask for 16384.
+
+endmenu
+
+# --- Debug and test ---------------------------------------------------------
+
+menu "Debug and test"
+
+config KICKOS_DEBUG
+	bool "Internal-consistency guards"
+	default n
+
+config KICKOS_ENABLE_SELFTEST
+	bool "Test-only self-test syscalls"
+	default n
+
+config KICKOS_SHUTDOWN_TO_BOOTLOADER
+	bool "Terminating images reboot into the chip bootloader"
+	depends on KICKOS_ENABLE_SELFTEST
+	default n
+	help
+	  arch_reboot is compiled out of a production image, so without the self-test
+	  syscalls nothing defines the symbol.
+
+config KICKOS_BENCH
+	bool "Cycle-accurate context-switch microbench"
+	depends on HAS_TRACE_CLOCK
+	default n
+
+config SCHED_PERIODIC_TICK
+	bool "Force a classic periodic scheduler tick"
+	default n
+
+endmenu

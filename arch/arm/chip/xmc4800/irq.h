@@ -3,7 +3,7 @@
 //
 // XMC4800 NVIC interrupt-node numbers (RM interrupt-node-assignment table).
 // Clean-room from the XMC4700/XMC4800 Reference Manual (V1.3, 2016-07). The
-// total line count (IRQ0..IRQ111) is KICKOS_MAX_IRQ in board_config.h.
+// total line count (IRQ0..IRQ111) is KICKOS_MAX_IRQ in chip_limits.h.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_IRQ_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_IRQ_H

@@ -421,8 +421,7 @@ if(KICKOS_CHIP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${KICKOS_ARCH_FAMILY}/chi
   include("${CMAKE_SOURCE_DIR}/cmake/boot_arena.cmake")
   kickos_boot_arena_defs("${CMAKE_CURRENT_SOURCE_DIR}"
                          "kickos_arch_${KICKOS_ARCH}" "kickos_chip_${KICKOS_CHIP}"
-                         "${KICKOS_BOARD_INCLUDE_DIR}" "${_ld}"
-                         "${KICKOS_PROVISION_OVERRIDES}" _boot_defs
+                         "${KICKOS_CHIP_INCLUDE_DIR}" "${_ld}" _boot_defs
                          _mpu_min_region_cfg _mpu_region_pow2_cfg)
   list(APPEND _ld_defs ${_boot_defs})
   # The scraped region-encoding seam, read by the one app TU that checks the runtime seam

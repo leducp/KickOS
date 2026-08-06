@@ -18,7 +18,7 @@
 #include <stdint.h>
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/aips.h"
 #include "regs/gpio.h"

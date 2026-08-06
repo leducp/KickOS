@@ -26,13 +26,12 @@
 # any app holds. So the floor widens a narrow demand instead of refusing it -- an app is
 # never asked to declare capabilities it does not hold.
 #
-# A board may state SUPPLY and nothing else (KICKOS_CAP_TABLE_SUPPLY, through the
-# board_config.h #ifndef seam). A board header must NOT carry the width: it cannot know an
-# app's working set or a chosen service list's retention, so it would go stale the moment
-# either changes, with nothing to notice.
+# A board may state SUPPLY and nothing else (KICKOS_CAP_TABLE_SUPPLY, in its defconfig). A
+# board must NOT state the width: it cannot know an app's working set or a chosen service
+# list's retention, so it would go stale the moment either changes, with nothing to notice.
+# Kconfig declares no such symbol, so an attempt to set it is refused by name.
 #
-# Every input a header owns is read back through the real preprocessor with the same -D
-# overrides the compile will see, as in cmake/boot_arena.cmake.
+# Every input is read back through the real preprocessor, as in cmake/boot_arena.cmake.
 
 # What an app that declares nothing gets: the widest peak that still configures on the
 # fleet's smallest supply (7 slots) once the reserved plane is paid, so a plain `int main`
@@ -48,20 +47,16 @@ set(KICKOS_CAP_REPLY_DEFAULT 0)
 # The provisioning integers as the compile will see them: the kernel's reserved range, the
 # board's supply, the grant-list width, the thread count, the chunk granule and the count of
 # runs held by something that is not a thread-pool slot.
-function(kickos_cap_probe board_inc overrides out_reserved out_supply out_grants out_threads
+function(kickos_cap_probe board_inc out_reserved out_supply out_grants out_threads
                           out_chunk out_off_pool)
   set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                "${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/system.h"
                "${PROJECT_SOURCE_DIR}/kernel/include/kickos/config/cap_geometry.h"
                "${PROJECT_SOURCE_DIR}/system/include/kickos/sys/cap_index.h"
                "${PROJECT_SOURCE_DIR}/kernel/include/kickos/cap.h")
-  if(board_inc)
-    set_property(DIRECTORY "${PROJECT_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-                 "${board_inc}/kickos/board_config.h")
-  endif()
   set(_probe "${CMAKE_CURRENT_BINARY_DIR}/cap_table_probe.c")
-  # config/system.h pulls board_config.h itself when the board ships one, so the sim (which
-  # ships none) probes through the same file as every MCU.
+  # config/system.h pulls the generated board_config.h itself, so every board probes
+  # through the same file.
   # ONLY input headers: cap.h reads the width this function is on its way to computing.
   file(WRITE "${_probe}"
     "#include <kickos/config/system.h>\n"
@@ -82,22 +77,28 @@ function(kickos_cap_probe board_inc overrides out_reserved out_supply out_grants
     "#ifndef KICKOS_MAX_THREADS\n"
     "#error \"KICKOS_MAX_THREADS unset\"\n"
     "#endif\n"
+    "#ifndef KCAP_RUN_OFF_POOL\n"
+    "#error \"KCAP_RUN_OFF_POOL unset\"\n"
+    "#endif\n"
     "kickos_cap_reserved KICKOS_CAP_FIRST_DYNAMIC\n"
     "kickos_cap_supply KICKOS_CAP_TABLE_SUPPLY\n"
     "kickos_cap_grants KICKOS_MAX_SPAWN_GRANTS\n"
     "kickos_cap_threads KICKOS_MAX_THREADS\n"
-    "kickos_cap_chunk KCAP_CHUNK_TARGET\n")
-  set(_flags "")
-  foreach(_o IN LISTS overrides)
-    list(APPEND _flags "-D${_o}")
-  endforeach()
+    "kickos_cap_chunk KCAP_CHUNK_TARGET\n"
+    "kickos_cap_off_pool KCAP_RUN_OFF_POOL\n")
   set(_incs "-I${PROJECT_SOURCE_DIR}/kernel/include" "-I${PROJECT_SOURCE_DIR}/system/include"
             "-I${PROJECT_SOURCE_DIR}/include")
   if(board_inc)
     list(INSERT _incs 0 "-I${board_inc}")
   endif()
+  # AHEAD of the board directory, exactly as the compile has it. A board configured from
+  # Kconfig compiles against the generated board_config.h, so a probe reading the source
+  # header instead would size the table from numbers no translation unit ever sees.
+  if(EXISTS "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h")
+    list(INSERT _incs 0 "-I${PROJECT_BINARY_DIR}/generated/include")
+  endif()
   execute_process(
-    COMMAND "${CMAKE_C_COMPILER}" -E -P -x c ${_incs} ${_flags} "${_probe}"
+    COMMAND "${CMAKE_C_COMPILER}" -E -P -x c ${_incs} "${_probe}"
     OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _rc)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR
@@ -105,32 +106,13 @@ function(kickos_cap_probe board_inc overrides out_reserved out_supply out_grants
       "Every board must leave KICKOS_CAP_TABLE_SUPPLY, KICKOS_MAX_SPAWN_GRANTS and "
       "KICKOS_MAX_THREADS defined (config/system.h carries the fleet defaults).\n${_err}")
   endif()
-  foreach(_k reserved supply grants threads chunk)
+  foreach(_k reserved supply grants threads chunk off_pool)
     if(NOT "${_out}" MATCHES "kickos_cap_${_k}[ \t]+([^\r\n]+)")
       message(FATAL_ERROR "KickOS: capability probe produced no ${_k} value:\n${_out}")
     endif()
     math(EXPR _v_${_k} "${CMAKE_MATCH_1}")
   endforeach()
 
-  # KCAP_RUN_OFF_POOL is a constexpr, not a macro, so the preprocessor cannot hand it over the
-  # way it hands KCAP_CHUNK_TARGET: read its declaration. A rename or a change of type FATALs
-  # here rather than leaving the .bss figures below on a literal of their own.
-  set(_off_pool "")
-  file(STRINGS "${PROJECT_SOURCE_DIR}/kernel/include/kickos/cap.h" _off_pool_lines
-       REGEX "KCAP_RUN_OFF_POOL[ \t]*=")
-  foreach(_l IN LISTS _off_pool_lines)
-    # The trailing `;` is required: without it `= 1 + 1;` reads as 1, and a hex literal as 0.
-    if(_l MATCHES "constexpr[ \t]+uint16_t[ \t]+KCAP_RUN_OFF_POOL[ \t]*=[ \t]*([0-9]+)[ \t]*;")
-      set(_off_pool "${CMAKE_MATCH_1}")
-    endif()
-  endforeach()
-  if(_off_pool STREQUAL "")
-    message(FATAL_ERROR
-      "KickOS: kernel/include/kickos/cap.h no longer declares KCAP_RUN_OFF_POOL as a "
-      "`constexpr uint16_t KCAP_RUN_OFF_POOL = <literal>`. The run count in the .bss figures "
-      "below is read from that declaration so the two cannot drift; match the new form here.")
-  endif()
-  math(EXPR _v_off_pool "${_off_pool}")
 
   set(${out_reserved} "${_v_reserved}" PARENT_SCOPE)
   set(${out_supply} "${_v_supply}" PARENT_SCOPE)
@@ -241,9 +223,9 @@ endfunction()
 
 # Sum the declarations, check the total against the board's supply, and forward the width.
 # Call ONCE, after every subdirectory that can declare (user/apps is added last).
-function(kickos_cap_table_resolve board_inc overrides service_list out_slots out_chunk
+function(kickos_cap_table_resolve board_inc service_list out_slots out_chunk
                                   out_child_width out_reply_max)
-  kickos_cap_probe("${board_inc}" "${overrides}" _reserved _supply _grants _threads _chunk
+  kickos_cap_probe("${board_inc}" _reserved _supply _grants _threads _chunk
                    _off_pool)
 
   set(_retained 0)

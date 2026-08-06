@@ -18,7 +18,7 @@
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/ccm.h"
 #include "regs/gpt.h"

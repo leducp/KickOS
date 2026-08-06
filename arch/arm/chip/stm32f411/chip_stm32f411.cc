@@ -15,7 +15,7 @@
 // the reset path is FPU + C-runtime + clocks.
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
-#include "mmap.h"
+#include <kickos/chip_mmap.h>
 #include "irq.h"
 #include "regs/flash.h"
 #include "regs/gpio.h"

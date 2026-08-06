@@ -478,6 +478,38 @@ endfunction()
 #   (kernel/syscall/syscall_ipc.cc), so a list whose protocol admits several parked callers
 #   must say how many. The widest declaration in the tree wins (the app may declare it too),
 #   so this is not added to the app's number.
+# Every member of the rescan archive group has to be NAMED, which is the only reason a list
+# of them exists. It is derived from the provider's own declared links rather than restated:
+# kickos_add_board_provider below already takes LINK, and kickos_add_driver already takes
+# CLASS, so the closure walks edges the declarations put there. PRIVATE deps count, which is
+# what reaches a driver's class leaf: PRIVATE is excluded from INTERFACE_LINK_LIBRARIES but
+# still sits in the target's own LINK_LIBRARIES.
+#
+# The walk stops at kickos_user. That library and its own dependencies (the arch leaf and
+# kickos_lib) are put in the group separately, so descending into it would only re-add them.
+function(kickos_service_libs_closure target out)
+  set(_seen "")
+  set(_queue "${target}")
+  while(_queue)
+    list(POP_FRONT _queue _t)
+    if(NOT TARGET ${_t})
+      continue()
+    endif()
+    if("${_t}" IN_LIST _seen)
+      continue()
+    endif()
+    if("${_t}" STREQUAL "kickos_user")
+      continue()
+    endif()
+    list(APPEND _seen "${_t}")
+    get_target_property(_deps "${_t}" LINK_LIBRARIES)
+    if(_deps)
+      list(APPEND _queue ${_deps})
+    endif()
+  endwhile()
+  set(${out} "${_seen}" PARENT_SCOPE)
+endfunction()
+
 function(kickos_add_board_provider name)
   cmake_parse_arguments(BP "" "SOURCE;RETAINED_CAPS;INBOUND_REPLY_CAPS" "LINK" ${ARGN})
   # A misspelled keyword would otherwise be dropped and the count silently default.

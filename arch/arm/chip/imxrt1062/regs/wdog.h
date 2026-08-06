@@ -8,7 +8,7 @@
 #ifndef KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_WDOG_H
 #define KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_WDOG_H
 
-#include "../mmap.h"
+#include <kickos/chip_mmap.h>
 
 #include <stdint.h>
 

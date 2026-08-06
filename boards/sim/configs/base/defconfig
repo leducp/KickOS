@@ -1,0 +1,6 @@
+CONFIG_BOARD_SIM=y
+
+# The one board whose posture is not a command-line choice: the sim enforces through
+# host mprotect, so enforcement is its only posture and it says so here rather than
+# being inferred from the arch.
+CONFIG_MEMORY_MODEL_MPU=y

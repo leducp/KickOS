@@ -63,6 +63,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install kconfiglib
+        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
+        # and shadows the interpreter the flash tools run on. Pinned: the version
+        # every configuration measurement was taken at.
+        run: |
+          # The runner image is not guaranteed to carry python3-venv, and this is the
+          # first apt use in the job, so install it rather than fail eight jobs at once.
+          python3 -m venv ~/kconfig-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/kconfig-venv
+          }
+          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
+          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
       - run: cmake --preset sim
@@ -91,6 +105,20 @@ jobs:
       CXXFLAGS: "-fsanitize=undefined -fno-sanitize-recover=all"
     steps:
       - uses: actions/checkout@v4
+      - name: Install kconfiglib
+        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
+        # and shadows the interpreter the flash tools run on. Pinned: the version
+        # every configuration measurement was taken at.
+        run: |
+          # The runner image is not guaranteed to carry python3-venv, and this is the
+          # first apt use in the job, so install it rather than fail eight jobs at once.
+          python3 -m venv ~/kconfig-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/kconfig-venv
+          }
+          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
+          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
       - run: cmake --preset sim -B build/sim-ubsan
@@ -109,6 +137,20 @@ jobs:
       QEMU_TIMEOUT: "30"
     steps:
       - uses: actions/checkout@v4
+      - name: Install kconfiglib
+        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
+        # and shadows the interpreter the flash tools run on. Pinned: the version
+        # every configuration measurement was taken at.
+        run: |
+          # The runner image is not guaranteed to carry python3-venv, and this is the
+          # first apt use in the job, so install it rather than fail eight jobs at once.
+          python3 -m venv ~/kconfig-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/kconfig-venv
+          }
+          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
+          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
       - name: Install QEMU + build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-arm curl xz-utils
       - name: Cache Arm GNU toolchain
@@ -192,6 +234,20 @@ jobs:
       QEMU_TIMEOUT: "30"
     steps:
       - uses: actions/checkout@v4
+      - name: Install kconfiglib
+        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
+        # and shadows the interpreter the flash tools run on. Pinned: the version
+        # every configuration measurement was taken at.
+        run: |
+          # The runner image is not guaranteed to carry python3-venv, and this is the
+          # first apt use in the job, so install it rather than fail eight jobs at once.
+          python3 -m venv ~/kconfig-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/kconfig-venv
+          }
+          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
+          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
       - name: Install QEMU + build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
       - name: Cache RISCstar toolchain
@@ -240,6 +296,20 @@ jobs:
       QEMU_TIMEOUT: "30"
     steps:
       - uses: actions/checkout@v4
+      - name: Install kconfiglib
+        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
+        # and shadows the interpreter the flash tools run on. Pinned: the version
+        # every configuration measurement was taken at.
+        run: |
+          # The runner image is not guaranteed to carry python3-venv, and this is the
+          # first apt use in the job, so install it rather than fail eight jobs at once.
+          python3 -m venv ~/kconfig-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/kconfig-venv
+          }
+          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
+          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
       - name: Install QEMU + build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build qemu-system-misc curl xz-utils
       - name: Cache RISCstar toolchain
@@ -277,6 +347,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install kconfiglib
+        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
+        # and shadows the interpreter the flash tools run on. Pinned: the version
+        # every configuration measurement was taken at.
+        run: |
+          # The runner image is not guaranteed to carry python3-venv, and this is the
+          # first apt use in the job, so install it rather than fail eight jobs at once.
+          python3 -m venv ~/kconfig-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/kconfig-venv
+          }
+          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
+          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils file
       - name: Cache Xtensa toolchain
@@ -326,6 +410,20 @@ jobs:
                  f302nucleo, due, xmc4800-relax, qemu-telem, teensy41, pizero2350]
     steps:
       - uses: actions/checkout@v4
+      - name: Install kconfiglib
+        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
+        # and shadows the interpreter the flash tools run on. Pinned: the version
+        # every configuration measurement was taken at.
+        run: |
+          # The runner image is not guaranteed to carry python3-venv, and this is the
+          # first apt use in the job, so install it rather than fail eight jobs at once.
+          python3 -m venv ~/kconfig-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/kconfig-venv
+          }
+          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
+          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils
       - name: Cache Arm GNU toolchain
@@ -387,6 +485,20 @@ jobs:
                  xmc4800-relax, picopi]
     steps:
       - uses: actions/checkout@v4
+      - name: Install kconfiglib
+        # Build-time only, and in a venv of its own so its bin/ never lands on PATH
+        # and shadows the interpreter the flash tools run on. Pinned: the version
+        # every configuration measurement was taken at.
+        run: |
+          # The runner image is not guaranteed to carry python3-venv, and this is the
+          # first apt use in the job, so install it rather than fail eight jobs at once.
+          python3 -m venv ~/kconfig-venv || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-venv
+            python3 -m venv ~/kconfig-venv
+          }
+          ~/kconfig-venv/bin/pip install --disable-pip-version-check kconfiglib==14.1.0
+          echo "KICKOS_KCONFIG_PY=$HOME/kconfig-venv/bin/python" >> "$GITHUB_ENV"
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build curl xz-utils
       - name: Cache Arm GNU toolchain

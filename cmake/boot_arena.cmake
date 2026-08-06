@@ -129,16 +129,16 @@ function(_kickos_seam_int arch_srcs chip_srcs symbol out)
   set(${out} "${_fallback}" PARENT_SCOPE)
 endfunction()
 
-# The provisioning integers as the compile will see them: board_config.h through the real
-# preprocessor with the same -D overrides, so a command-line override cannot be missed.
-# The two boot-stack sizes, plus the default thread stack and the slot count, which
-# together are what the post-boot arena has to back.
-function(kickos_boot_stack_sizes board_inc overrides out_idle out_root out_user out_slots)
-  set_property(DIRECTORY "${CMAKE_SOURCE_DIR}" APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-               "${board_inc}/kickos/board_config.h")
+# The provisioning integers as the compile will see them: the GENERATED board_config.h
+# through the real preprocessor, which is the only place they live now. The two boot-stack
+# sizes, plus the default thread stack and the slot count, which together are what the
+# post-boot arena has to back.
+function(kickos_boot_stack_sizes board_inc out_idle out_root out_user out_slots)
+  # No CONFIGURE_DEPENDS on a board header: there is none. The generated one is rewritten
+  # every configure, and the declarations it comes from are already depended on by the
+  # Kconfig block in the root CMakeLists.
   set(_probe "${CMAKE_CURRENT_BINARY_DIR}/boot_stack_probe.c")
   file(WRITE "${_probe}"
-    "#include <kickos/board_config.h>\n"
     "#include <kickos/config/system.h>\n"
     "#ifndef KICKOS_IDLE_STACK_SIZE\n"
     "#error \"KICKOS_IDLE_STACK_SIZE unset\"\n"
@@ -156,19 +156,26 @@ function(kickos_boot_stack_sizes board_inc overrides out_idle out_root out_user 
     "kickos_boot_root KICKOS_ROOT_STACK_SIZE\n"
     "kickos_boot_user KICKOS_USER_STACK_SIZE\n"
     "kickos_boot_slots KICKOS_MAX_THREADS\n")
-  set(_flags "")
-  foreach(_o IN LISTS overrides)
-    list(APPEND _flags "-D${_o}")
-  endforeach()
+  # The generated header goes AHEAD of the board directory, as it is on the compile line:
+  # see the same insertion in cmake/cap_table.cmake for why a probe that reads the source
+  # header instead measures numbers no translation unit ever sees.
+  set(_incs "-I${CMAKE_SOURCE_DIR}/kernel/include" "-I${CMAKE_SOURCE_DIR}/include")
+  # A bare -I with nothing after it consumes the NEXT argument as its path, so an empty
+  # directory must contribute no flag at all rather than an empty one. The sim has no chip
+  # and therefore no chip include dir, which is exactly that case.
+  if(board_inc)
+    list(INSERT _incs 0 "-I${board_inc}")
+  endif()
+  if(EXISTS "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h")
+    list(INSERT _incs 0 "-I${PROJECT_BINARY_DIR}/generated/include")
+  endif()
   execute_process(
-    COMMAND "${CMAKE_C_COMPILER}" -E -P -x c "-I${board_inc}"
-            "-I${CMAKE_SOURCE_DIR}/kernel/include" "-I${CMAKE_SOURCE_DIR}/include"
-            ${_flags} "${_probe}"
+    COMMAND "${CMAKE_C_COMPILER}" -E -P -x c ${_incs} "${_probe}"
     OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _rc)
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR
-      "KickOS: could not read the provisioning sizes from ${board_inc}/kickos/board_config.h. "
-      "Every board must state KICKOS_IDLE_STACK_SIZE and KICKOS_ROOT_STACK_SIZE (the "
+      "KickOS: could not read the provisioning sizes through the preprocessor. Every board "
+      "states KICKOS_IDLE_STACK_SIZE and KICKOS_ROOT_STACK_SIZE in its defconfig (the "
       "64 KiB system.h defaults do not fit an MCU arena).\n${_err}")
   endif()
   foreach(_k idle root user slots)
@@ -188,7 +195,7 @@ endfunction()
 # that carries no KICKOS_BOOT_ARENA_ASSERT, so no board can opt out by omission.
 # out_mn and out_pow2 hand back the raw scraped seam integers; every other output is
 # derived from them.
-function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt board_inc ld overrides
+function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt board_inc ld
                                 out out_mn out_pow2)
   _kickos_target_cc_sources("${arch_tgt}" "${arch_dir}" _arch_srcs)
   _kickos_target_cc_sources("${chip_tgt}" "${arch_dir}" _chip_srcs)
@@ -203,7 +210,7 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt board_inc ld override
         "as a <symbol>_default.cc fallback.")
     endif()
   endforeach()
-  kickos_boot_stack_sizes("${board_inc}" "${overrides}" _idle _root _user _slots)
+  kickos_boot_stack_sizes("${board_inc}" _idle _root _user _slots)
   kickos_region_size("${_idle}" "${_mn}" "${_p2}" _isz)
   kickos_region_align("${_idle}" "${_mn}" "${_p2}" _ial)
   kickos_region_size("${_root}" "${_mn}" "${_p2}" _rsz)
