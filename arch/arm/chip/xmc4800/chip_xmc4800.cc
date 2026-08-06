@@ -181,8 +181,10 @@ namespace
     // Let a K2DIV step settle before the next one (~50 us, ample at every ramp point).
     void clock_delay()
     {
-        for (volatile uint32_t i = 0; i < 8000u; i++)
+        // The counter is volatile so -Os keeps the wait.
+        for (volatile uint32_t i = 0; i < 8000u;)
         {
+            i = i + 1;
             __asm volatile("nop");
         }
     }

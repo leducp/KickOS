@@ -21,7 +21,7 @@ namespace kickos
 {
     namespace
     {
-        bool g_led_on = false;
+        constinit bool g_led_on = false;
     }
 
     void kdiag_led_init(void)

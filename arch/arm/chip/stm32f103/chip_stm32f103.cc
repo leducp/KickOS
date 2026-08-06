@@ -311,7 +311,7 @@ namespace
         {
             if (g_clk_last - cur > 0x80000000u)
             {
-                g_clk_high++;       // genuine chain wrap
+                g_clk_high = g_clk_high + 1;       // genuine chain wrap
             }
             else
             {

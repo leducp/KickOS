@@ -110,7 +110,7 @@ int main(int, char**)
     // Spawn the counting sink with a narrowed {ep | WAIT} recv cap (lands at child
     // index 1). No SIGNAL/TRANSFER: it only receives.
     kos_cap_grant const caps[1] = {
-        { /*source_cap=*/ep, /*rights_mask=*/KOS_CAP_WAIT },
+        { .source_cap = ep, .rights_mask = KOS_CAP_WAIT },
     };
     auto const drv = kos::thread::spawn_caps(console_sink, nullptr, "sink", DRIVER_PRIO,
                                              caps, /*cap_count=*/1);

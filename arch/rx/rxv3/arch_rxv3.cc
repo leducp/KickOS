@@ -133,7 +133,7 @@ namespace
         uint32_t cur = reg32(CMTW1_BASE + CMTW_CMWCNT);
         if (cur < g_cyc_last)
         {
-            g_cyc_high++;
+            g_cyc_high = g_cyc_high + 1;
         }
         g_cyc_last = cur;
         uint64_t hi = g_cyc_high;
@@ -780,9 +780,9 @@ __attribute__((interrupt)) void kickos_rx_timer_isr(void)
     reg8(ICU_IR_BASE + CMWI0_VECTOR) = 0; // clear the request flag
     reg16(CMTW0_BASE + CMTW_CMWSTR) = 0;  // one-shot: stop until re-armed
     g_rx_armed_ns = ~0ull;                // invalidate so kickos_isr_timer's re-arm reprograms
-    g_in_isr++;
+    g_in_isr = g_in_isr + 1;
     kickos_isr_timer(); // re-arms the next deadline
-    g_in_isr--;
+    g_in_isr = g_in_isr - 1;
 }
 
 // SCI6 transmit-data-empty (TXI6, vector 87), routed from INTB[87] by the chip's
@@ -797,7 +797,7 @@ __attribute__((interrupt)) void kickos_rx_timer_isr(void)
 // irq_disable, clearing SCR.TIE behind the driver's back.
 __attribute__((interrupt)) void kickos_rx_console_txi_isr(void)
 {
-    g_in_isr++;
+    g_in_isr = g_in_isr + 1;
     if (console_tx_armed() != 0)
     {
         console_tx_isr();
@@ -806,7 +806,7 @@ __attribute__((interrupt)) void kickos_rx_console_txi_isr(void)
     {
         kickos_isr_irq(SCI6_TXI_VECTOR);
     }
-    g_in_isr--;
+    g_in_isr = g_in_isr - 1;
 }
 
 // SWINT2 doorbell: the software IRQ controller's delivery vector. arch_irq_inject
@@ -817,14 +817,14 @@ __attribute__((interrupt)) void kickos_rx_console_txi_isr(void)
 __attribute__((interrupt)) void kickos_rx_swint2(void)
 {
     reg8(ICU_IR_BASE + SWINT2_VECTOR) = 0;
-    g_in_isr++;
+    g_in_isr = g_in_isr + 1;
     int line = g_inject_line;
     g_inject_line = -1;
     if (line >= 0)
     {
         kickos_isr_irq(line);
     }
-    g_in_isr--;
+    g_in_isr = g_in_isr - 1;
 }
 
 // Device-line default entry: the shared first-level ISR for every INTB device slot that
@@ -833,9 +833,9 @@ __attribute__((interrupt)) void kickos_rx_swint2(void)
 // chip override the fallback does nothing and this is inert.
 __attribute__((interrupt)) void kickos_rx_default_irq(void)
 {
-    g_in_isr++;
+    g_in_isr = g_in_isr + 1;
     kickos_rx_dev_dispatch();
-    g_in_isr--;
+    g_in_isr = g_in_isr - 1;
 }
 
 // SCI6 receive-data-full (RXI6, vector 86), routed from INTB[86] by the chip's startup.S.
@@ -846,9 +846,9 @@ __attribute__((interrupt)) void kickos_rx_default_irq(void)
 // a request latched while irq_event_isr had the line IER-masked, i.e. drop a received byte.
 __attribute__((interrupt)) void kickos_rx_sci6_rxi_isr(void)
 {
-    g_in_isr++;
+    g_in_isr = g_in_isr + 1;
     kickos_isr_irq(SCI6_RXI_VECTOR);
-    g_in_isr--;
+    g_in_isr = g_in_isr - 1;
 }
 
 // --- One-time core bring-up, called by the chip's arch_init -----------------

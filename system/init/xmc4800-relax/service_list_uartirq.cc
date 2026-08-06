@@ -29,9 +29,14 @@ extern "C"
     // priority above it free. Baud is not the driver's to set: FDR and BRG carry no U0C0
     // allowlist entry, so the kernel's own init values stand and hz is unread.
     static struct kos_service_cfg const xmcuartirq_cfg = {
-        /*name=*/"xmcuartirq", /*mmio_base=*/kickos::xmc::mmap::USIC0_CH0_BASE,
-        /*mmio_window=*/0x200u, /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*rsv=*/{ 0, 0, 0, 0 }
+        .name = "xmcuartirq",
+        .mmio_base = kickos::xmc::mmap::USIC0_CH0_BASE,
+        .mmio_window = 0x200u,
+        .hz = 0,
+        .addr = 0,
+        .prio = 12,
+        .kind = KOS_SVC_CONSOLE,
+        .rsv = { 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const xmc4800relax_uartirq_services[] = {

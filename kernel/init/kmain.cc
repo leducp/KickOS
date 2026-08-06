@@ -85,8 +85,8 @@ namespace kickos
     {
         // The bootstrap idle/root TCBs. Still file-static: instance-scoping residue
         // (invariant #7). Their STACKS are deliberately NOT here; see boot_stack_alloc.
-        Thread g_idle_tcb;
-        Thread g_root_tcb;
+        constinit Thread g_idle_tcb;
+        constinit Thread g_root_tcb;
 
         // Take one bootstrap thread stack from the user-RAM arena, and assert at boot the
         // two properties an MPU descriptor over it depends on. A .bss array satisfies

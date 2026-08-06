@@ -61,74 +61,80 @@ namespace kickos
     // The TCB. Intrusive links keep the scheduler allocation-free.
     struct Thread
     {
-        arch_context ctx; // saved machine context (opaque)
+        // EVERY member below needs an initialiser, holding exactly the value .bss zeroing
+        // gives it: that is what keeps the implicit default constructor constexpr, and so
+        // the static TCBs and the whole Kernel constinit. Drop one and kmain.cc and
+        // instance.cc stop compiling.
+        arch_context ctx{}; // saved machine context (opaque)
 
         // ready-list XOR wait-queue XOR reply-donor membership (shared node; see list.h)
         ListNode link;
-        List* wait_queue; // wait queue we're parked on, or nullptr; read at sem_timedwait (Later)
+        // wait queue we're parked on, or nullptr; read at sem_timedwait (Later)
+        List* wait_queue = nullptr;
 
         // timer delta-list membership (singly linked, sorted by deadline); SEPARATE
         // from `link` so a timed wait can be on the timer list AND a wait queue at once.
-        Thread* tnext;
-        uint64_t deadline_ns;
-        bool on_timer;
+        Thread* tnext = nullptr;
+        uint64_t deadline_ns = 0;
+        bool on_timer = false;
 
         // Per-Kernel monotonic thread identity (telemetry). Assigned in
         // thread_create; idle is created first so idle == 0. 0xFFFF is the
         // "no thread" sentinel (never assigned); 0 is idle-only after wrap.
-        uint16_t id;
+        uint16_t id = 0;
 
-        char name_buf[KICKOS_THREAD_NAME_MAX]; // kernel-owned bounded copy; name points here
-        char const* name;   // -> name_buf (set in thread_create); never a user pointer
-        uint8_t prio;      // EFFECTIVE priority: the only field sched/policy/wq read.
-                           // Sole writer is sched::set_prio (re-seats READY threads).
-        uint8_t base_prio; // assignment anchor; PI raises `prio` above it, never below
-        Policy policy;
-        ThreadState state;
-        bool privileged;
+        char name_buf[KICKOS_THREAD_NAME_MAX] = {}; // kernel-owned bounded copy; name points here
+        char const* name = nullptr; // -> name_buf (set in thread_create); never a user pointer
+        uint8_t prio = 0;      // EFFECTIVE priority: the only field sched/policy/wq read.
+                               // Sole writer is sched::set_prio (re-seats READY threads).
+        uint8_t base_prio = 0; // assignment anchor; PI raises `prio` above it, never below
+        Policy policy = Policy::FIFO;
+        ThreadState state = ThreadState::INACTIVE;
+        bool privileged = false;
         // Set once at the top of exit_current, never cleared: this thread is running its
         // own capability teardown. The sweep RELEASES IrqLock between chunks, so `state`
         // cannot serve as the marker (a switch back in rewrites it to RUNNING). Gates the
         // cross-task reply mint, since a half-torn table must not accept a new cap, and the
         // wake-during-teardown switch deferral.
-        bool dying;
+        bool dying = false;
         // CapAuthority (AUTH_*) bits. Read by cap_check_authority WITHOUT IrqLock, so it
         // must stay a single byte that no path writes concurrently: the parent seats it at
         // spawn before the child runs, and only the thread itself narrows it. Ignored when
         // `privileged`. Fits the padding before quantum_ns; moving it grows every TCB.
-        uint8_t authority;
+        uint8_t authority = 0;
 
         // Round-robin: quantum_ns == 0 means no slicing (pure FIFO within prio).
-        uint32_t quantum_ns;
-        uint64_t slice_deadline_ns;
+        uint32_t quantum_ns = 0;
+        uint64_t slice_deadline_ns = 0;
 
-        void* stack_base;
-        size_t stack_size;
+        void* stack_base = nullptr;
+        size_t stack_size = 0;
         // stack_base was demand-allocated by the kernel (convenient spawn) and must
         // be harvested onto the free list when this slot is reclaimed. A caller-owned
         // stack (app-supplied) is never harvested: the app owns that memory.
-        bool kstack_owned;
+        bool kstack_owned = false;
         // Cancellation request (KOS_SYS_THREAD_KILL). One-way: set by the spawner, never
         // cleared, honoured only at the target's own cancellation points, of which irq_wait
         // is the only one. A thread that never reaches one keeps running.
-        bool cancelled;
+        bool cancelled = false;
         // Who may cancel this thread: the KILL TAG of the thread that spawned it, or
         // KILL_TAG_NONE. It is the whole of the kill gate, so it must never alias; see
-        // kill_tag_of and the clear in ThreadPool::alloc.
-        uint16_t spawner_tag;
+        // kill_tag_of and the clear in ThreadPool::alloc. ThreadPool::KILL_TAG_NONE is 0,
+        // spelled out here because ThreadPool is declared below this struct.
+        uint16_t spawner_tag = 0;
         // These three fit the padding before `domain`; moving them grows every TCB.
 
         // The memory domain this thread belongs to (shared region set + privilege).
         // Its regions are copied into regions[] below at create, plus this thread's
         // private stack; the effective set is what arch_mpu_apply loads per switch-in.
-        Domain* domain;
-        arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS];
-        size_t region_count;
+        Domain* domain = nullptr;
+        arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS] = {};
+        size_t region_count = 0;
 
-        intptr_t wait_result; // wake-status channel (mutex: 0 / -KOS_EOWNERDEAD;
-                              // endpoint: byte count >= 0, or -KOS_EPIPE); the waker
-                              // writes it before sched::wake, the sleeper reads it after
-                              // wq_block returns. Timed wait shares it.
+        intptr_t wait_result = 0; // wake-status channel (mutex: 0 / -KOS_EOWNERDEAD;
+                                  // endpoint: byte count >= 0, or -KOS_EPIPE); the waker
+                                  // writes it before sched::wake, the sleeper reads it
+                                  // after wq_block returns. Timed wait shares it.
 
         // Parked-IPC descriptor: valid ONLY while this thread is parked on an endpoint
         // waitq (send_waiters/recv_waiters). The arriving peer reads it privileged under
@@ -139,7 +145,7 @@ namespace kickos
             size_t    len;       // sender: bytes to send; receiver: buffer capacity
             uintptr_t badge_out; // receiver only: where to store the badge (0 => none)
         };
-        IpcDesc ipc;
+        IpcDesc ipc = {};
 
         // Call/reply descriptor (M4.4): valid while parked in a kos_call. call_rx_cap
         // is the reply capacity (in-place: the request buffer becomes the reply target);
@@ -147,17 +153,17 @@ namespace kickos
         // late-reply ABA guard, one-shot); call_state is a CallState. Written by the
         // caller before parking and by the popper/replier under IrqLock (single-writer
         // at every stage, same discipline as ipc). Zeroed by the thread_create memset.
-        size_t call_rx_cap;
-        uint16_t call_seq;
-        uint8_t call_state;
+        size_t call_rx_cap = 0;
+        uint16_t call_seq = 0;
+        uint8_t call_state = CALL_NONE;
 
         // Priority-inheritance bookkeeping (M3 mutex). blocked_on is the mutex this
         // thread is parked on (nullptr otherwise), the chain-walk edge. held_list is
         // the head of the mutexes this thread OWNS, linked through Mutex::next_held;
         // thread_effective_prio scans it. Both are touched only under IrqLock at the
         // mutex block/unblock sites.
-        Mutex* blocked_on;
-        Mutex* held_list;
+        Mutex* blocked_on = nullptr;
+        Mutex* held_list = nullptr;
 
         // Callers parked in CALL_REPLY_WAIT on a reply cap THIS thread holds: one entry per
         // live CAP_REPLY in its table, linked through the caller's own `link`, which is free
@@ -166,7 +172,7 @@ namespace kickos
         // and teardown arms all empty it, so a dying server never strands a donor.
         HeadList reply_waiters;
 
-        uint64_t switch_count; // introspection
+        uint64_t switch_count = 0; // introspection
 
         // Per-task capability table (cap.h). The run is reserved from the slab by the CALLER
         // before thread_create, as `domain` is, so an exhausted slab fails the spawn instead
@@ -176,28 +182,28 @@ namespace kickos
         // Every scan site must be bounded by thread_cap_capacity and never by
         // KICKOS_MAX_HANDLES: capacities differ per task, a capacity of 0 is legal, and
         // cap_run_held (cap.h) enumerates the threads that have none.
-        CapRun caps;
+        CapRun caps = {};
         // Head of the run's free-slot list (cap.h), a slot index biased by one. KCAP_FREE_NONE
         // is 0, so the thread_create memset leaves it EMPTY and not "slot 0": a thread whose
         // list was never threaded refuses every mint rather than handing out a reserved index.
-        uint16_t cap_free_head;
+        uint16_t cap_free_head = KCAP_FREE_NONE;
 #if KCAP_RUN_CHUNKS > 1
         // This task's addressable capacity, 0 when it holds no run. Root's is
         // KICKOS_MAX_HANDLES and a spawned child's is narrower, so no reader may assume
         // either.
-        uint16_t cap_width;
+        uint16_t cap_width = 0;
         // Live inbound CAP_REPLY entries, bounded by KICKOS_CAP_REPLY_MAX.
         //
         // Both fields land in the TAIL PADDING the chunk directory's second pointer creates,
         // so they cost nothing here and 8 B per TCB on the flat path, which the 16 KiB boards
         // cannot spare. Keep the uint16_t group CONTIGUOUS after `caps`.
-        uint16_t cap_reply_live;
+        uint16_t cap_reply_live = 0;
 #endif
         // Endpoints where ep->server == this thread, chained through Endpoint::next_served
         // (endpoint.h). The SEND_WAIT donor enumeration for thread_effective_prio, which runs
         // interrupt-masked and so may walk neither the capability table nor the endpoint pool.
         // EP_SERVED_NONE is 0, so the thread_create memset leaves it empty.
-        uint16_t served_head;
+        uint16_t served_head = EP_SERVED_NONE;
     };
 
     // A thread's capability-table capacity: the width it was seated with if it holds a run,

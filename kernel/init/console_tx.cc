@@ -44,7 +44,7 @@ namespace
         uint32_t space() const { return size - 1u - used(); }
     };
 
-    ConsoleTxRing g_tx;
+    constinit ConsoleTxRing g_tx;
 
     // A dead/misconfigured TX channel must NEVER hang panic/fault/boot, so every
     // synchronous poll is bounded (matches the chips' own TX_POLL_TIMEOUT) and bails

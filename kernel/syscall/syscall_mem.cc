@@ -16,6 +16,8 @@
 
 #include "syscall_internal.h"
 
+#include <span>
+
 namespace kickos
 {
     // Confused-deputy floor: syscall_dispatch runs privileged (it bypasses the
@@ -47,9 +49,9 @@ namespace kickos
         {
             return false; // address-space wrap
         }
-        for (size_t i = 0; i < c->region_count; i++)
+        std::span const regions{c->regions, c->region_count};
+        for (arch_mpu_region const& r : regions)
         {
-            arch_mpu_region const& r = c->regions[i];
             if ((r.attr & need) != need)
             {
                 continue;
@@ -72,9 +74,9 @@ namespace kickos
         // member is a read.
         arch_mpu_region const* mmio_block_of(Thread const* c, uintptr_t base)
         {
-            for (size_t i = 0; i < c->region_count; i++)
+            std::span const regions{c->regions, c->region_count};
+            for (arch_mpu_region const& r : regions)
             {
-                arch_mpu_region const& r = c->regions[i];
                 uint32_t const need = ARCH_MPU_DEV | ARCH_MPU_R | ARCH_MPU_W;
                 if ((r.attr & need) != need)
                 {

@@ -45,18 +45,20 @@ namespace kickos
     // the ISR is handed this binding directly as its arg, so it never searches a table in ISR
     // context. It lives in a SlotPool, whose slot addresses are stable for the slot's life,
     // which is what keeps that invariant true once the binding becomes freeable.
+    // A freed slot keeps its last contents (slotpool.h), so no field below means anything
+    // until irq_claim has seated all five; none of them is a live default. Whether a LINE
+    // is held is not stored here: irq_table[line].handler holds the null-object default
+    // exactly while the line is free.
     struct IrqBinding
     {
         Semaphore sem;
-        int line = -1;
+        int line = 0;
         // Set ONLY when an irq_wait returns (event consumed, line masked by the ISR,
         // awaiting rearm), NEVER in the ISR. Setting it in the ISR races the
         // ack;compute;wait shape: unmasking before the event is serviced re-fires the
         // still-asserted line -> phantom sem post -> next wait returns with no event ->
         // the driver drains an empty device FIFO. Thread context only, under IrqLock.
-        // Starts TRUE, so that a claim leaves the line masked and the first wait arms it:
-        // there is no window in which the line is armed and unowned.
-        bool needs_rearm = true;
+        bool needs_rearm = false;
         uint8_t trigger = IRQ_EDGE;
         // False until the first arm. That arm discards a latch left from before the
         // line had an owner, whatever the trigger type; a LEVEL binding then keeps

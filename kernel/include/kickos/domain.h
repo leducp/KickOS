@@ -31,11 +31,11 @@ namespace kickos
         // Shared regions (attr = unprivileged rights; supervisor comes from the
         // background region / SYSMPU RGD0). The per-thread stack is NOT here: it is
         // private and added when the thread's region set is composed.
-        arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS];
-        size_t region_count;
-        bool privileged;
-        bool immortal;     // kernel + default-user singletons: never freed
-        uint16_t refcount; // live threads; 0 and not immortal => free slot
+        arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS] = {};
+        size_t region_count = 0;
+        bool privileged = false;
+        bool immortal = false; // kernel + default-user singletons: never freed
+        uint16_t refcount = 0; // live threads; 0 and not immortal => free slot
     };
 
     // The ONLY sanctioned way to read a domain's regions from outside domain.cc, which

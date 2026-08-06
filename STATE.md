@@ -8,13 +8,12 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.7.4 is MERGED** (PR #13). **M4.7.5 is COMPLETE on branch `M4.7.5-config-mechanism`,
-squashed to two commits off `master` `f00a267` and UNPUSHED.** The C++20 work that follows it
-lives on its own branch, `M4.7.6-cpp20`, so this one can merge on its own. `TODO_FIX.md` is
-still the untracked worklist and is **NOT gitignored, so `git clean -fd` destroys it**; its
-Part D is eleven M4.7.5 items.
-Behind M4.7.4 on `master`: M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1 (PR #9),
-M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
+**M4.7.5 is MERGED** (PR #14), squashed to two commits. **M4.7.6 (C++20) is IN PROGRESS on
+branch `M4.7.6-cpp20`, off `master` `7e0bfc0` and UNPUSHED.** `TODO_FIX.md` is still the
+untracked worklist and is **NOT gitignored, so `git clean -fd` destroys it**; its Part D is
+eleven M4.7.5 items.
+Behind M4.7.5 on `master`: M4.7.4 (PR #13), M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10),
+M4.6.1 (PR #9), M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
 
 ### M4.7.5 so far: what has landed, and the ONE measurement that matters
 
@@ -90,7 +89,7 @@ defconfig, with no posture flag anywhere on the command line.
 | `esp32-wroom` | Xtensa LX6 / no-ring | `1..80` | 80 ok, 0 not-ok, 0 skip, 0 partial |
 | `f302nucleo` | armv7m / ring-only, two images | `1..43` + `1..37` | 43 + 37 ok, 0 not-ok, 3 + 7 skip |
 
-Logs: `.session/logs/m475-*.log`. Harness: `.session/m475-bench.sh <board> [jlink-sn]`,
+Logs: `.session/logs/m475-*.log`. Harness: `.session/bench.sh <board> [jlink-sn]` with `TAG=m475`,
 `APP=selftest_p2` for the second image of a split part.
 
 **This is the widest silicon coverage the project has had**, and it is wider than
@@ -207,9 +206,36 @@ items sit in source comments and CMake strings where `doc_names` is blind. Inven
 
 1. **M4.7.6 -- C++20**, assigned by the user 2026-08-05 with an explicit go, entry in
    `roadmap.md`. RX GNURX 14.2 is the oldest compiler in the fleet and the only family
-   with no CI, so it builds first; then the four features that pay (`constinit`,
-   designated initializers, `<bit>`, `[[no_unique_address]]`). Images move, so it is
-   measured with the 50-preset instrument and the delta is STATED, not claimed away.
+   with no CI, so it builds first; then the features that pay (`constinit`, designated
+   initializers; `<bit>` was measured and mostly refused, and `[[no_unique_address]]` has
+   no candidate at all, see `roadmap.md`). Images move, so it is measured with the
+   50-preset instrument and the delta is STATED, not claimed away.
+   The whole milestone was measured against the M4.7.5 tip, tree `431675a7c08f`, rebuilt
+   in `.claude/worktrees/m476-baseline` and keyed into `.session/m476-pre`:
+   50 pairs, 767 images, EVERY image moves, and thirty non-debug
+   symbols carry all of it. `.data` drops 8 bytes fleet-wide (the two `.init_array`
+   words), `.bss` is unchanged everywhere, and `.text` drops 356 to 638 bytes per board.
+   The one board that grows is `esp32-wroom`, by 4 bytes of `.rodata` with an identical
+   symbol set: Xtensa collected both ctors already, so it had nothing to give back.
+   Every gate is GREEN on this tree, run one board at a time because a batch run is not a
+   valid instrument here: 15 suites, 325 tests, `.session/m476-gates/`, plus the sim rebuilt
+   under UBSan with `-fno-sanitize-recover=all` (32/32). `kernel_ctor_placement` now reports
+   0 kernel ctors, 0 surviving ctors and both windows empty, and still passes all three of
+   its assertions.
+   **Silicon: FOUR boards on the secondary bench, all at tree `aa596ce31128`**, three ISAs
+   and every enforcement class the bench can host. `xmc4800-relax` (armv7m / PMSAv7
+   enforce) and `frdmk64f` (armv7m / SYSMPU enforce) 84 ok; `esp32c6-wroom` (rv32imac /
+   PMP NAPOT enforce) 84 ok; `esp32-wroom` (Xtensa LX6, no per-task unit, `mpu off`)
+   80 ok. Zero not-ok, zero skip, zero partial anywhere. Logs `.session/logs/m476-*.log`,
+   harness `.session/bench.sh <board> [sn]` with `TAG=m476`. The banners read `d08b819`
+   on the two ARM boards and `d626160` on the two Espressif ones because the squash landed
+   between the runs; it moved only `STATE.md`, no image reads that, so the four runs are
+   ONE witness on ONE tree.
+   **The one arch still unwitnessed is RXv3.** Deleting both `.init_array` entries is a
+   BOOT-PATH change and `rx72m` has neither an emulator gate nor a bench run for it: the
+   board lives on the main bench, which was unavailable. It builds, and that is all anyone
+   knows. The LX6 result is what makes this tolerable rather than reckless, since Xtensa
+   was the other arch with no gate at all and it now boots and runs the full suite.
 2. **M4.7.5 -- COMPLETE.** Every step landed (step 4 was moot: its deliverable was deleting a
    central driver map in the generator, and that map was never written, because the closure
    derives the driver set from the target graph). Step 7a landed last, so 13 chips own their CPU
@@ -219,13 +245,12 @@ items sit in source comments and CMake strings where `doc_names` is blind. Inven
    The ten-angle review ran and its findings are fixed; what it left open is `TODO_FIX.md`
    Part D, now thirteen items. The `menuconfig --edit` item was already closed when it was
    written down: `.config` is the live state and the generator bases on it, so an interactive
-   edit survives the next configure.
-   What remains before it merges is the maintainer's own gate: review, merge, push.
-4. **M4.8.1 -- the driver class layer.** Branch `M4.8.1-driver-class` holds only its 102-line spec,
+   edit survives the next configure. MERGED as PR #14.
+3. **M4.8.1 -- the driver class layer.** Branch `M4.8.1-driver-class` holds only its 102-line spec,
    parked; it was cut at `tree(4ad39a8)`, so check whether it now needs a rebase.
-5. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
+4. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
    `pizero2350`; the production service list, bulk OUT and `teensy41` are not.
-6. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
+5. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
    **Nothing in-tree can catch a wrong `arch_mpu_region_pow2()` literal in a backend**
    (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m` silicon is the only
    check on that class for the RX MPU.
@@ -236,7 +261,7 @@ Captures and records already stamped `M4.6.2` keep that name: a measurement is n
 variant is a run gate). A silicon selftest run is `--preset <board>-st`, which on an
 enforcing board already IS the enforcing posture. Getting the variant wrong costs arms and
 still reads as a clean pass. **Flash, WAIT for the flash script's own `r;g` to finish, arm exactly ONE reader by its
-`by-id` symlink, then reset separately** -- `.session/m473-bench.sh` encodes the whole order and
+`by-id` symlink, then reset separately** -- `.session/bench.sh` encodes the whole order and
 refuses rather than producing a plausible-looking wrong log.
 
 ## Build posture

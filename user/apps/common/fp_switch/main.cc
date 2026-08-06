@@ -54,8 +54,9 @@ namespace
         while (true)
         {
             fp_bank_load(junk);
-            for (volatile int i = 0; i < 2000; i++)
+            for (volatile int i = 0; i < 2000;)
             {
+                i = i + 1;
             }
         }
     }

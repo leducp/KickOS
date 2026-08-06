@@ -44,7 +44,7 @@ namespace
         RingBuffer down[1];
     };
 
-    char up_buf[1024];
+    constinit char up_buf[1024];
     // Telemetry ch1 ring. On a data-cached core (M7 / ESP32 / RX72M) this must live in
     // uncached RAM or the probe never sees the writes; cacheless M0-M4 are unaffected.
     // The default size is chosen to fit MCU RAM; a sim/CI run drains only at shutdown, so
@@ -52,14 +52,14 @@ namespace
 #ifndef KICKOS_RTT_CH1_SIZE
 #define KICKOS_RTT_CH1_SIZE 4096
 #endif
-    char up1_buf[KICKOS_RTT_CH1_SIZE];
-    char down_buf[16];
+    constinit char up1_buf[KICKOS_RTT_CH1_SIZE];
+    constinit char down_buf[16];
 }
 
 extern "C"
 {
     // Flags = 0 selects NO_BLOCK_SKIP: a full buffer drops rather than blocks.
-    ControlBlock _SEGGER_RTT = {
+    constinit ControlBlock _SEGGER_RTT = {
         {'S', 'E', 'G', 'G', 'E', 'R', ' ', 'R', 'T', 'T', 0, 0, 0, 0, 0, 0},
         2,
         1,

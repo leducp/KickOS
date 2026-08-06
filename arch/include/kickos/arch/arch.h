@@ -235,7 +235,7 @@ size_t arch_mpu_min_region(void);
 // Which of the two enforcing region-encoding modes this backend uses. Read only where
 // arch_mpu_min_region() != 0.
 // 1: size a power of two, base naturally aligned to it. PMSAv7 RASR carries
-//    __builtin_ctz(size) - 1 and PMP NAPOT folds the size into the trailing address
+//    ctz(size) - 1 and PMP NAPOT folds the size into the trailing address
 //    bits, so no other size is expressible.
 // 0: base+limit descriptors (PMSAv8 RBAR/RLAR, SYSMPU SRTADDR/ENDADDR, RX
 //    RSPAGEn/REPAGEn), so every arch_mpu_min_region() multiple is nameable.

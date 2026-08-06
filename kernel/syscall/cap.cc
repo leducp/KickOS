@@ -31,7 +31,7 @@ namespace kickos
         // console driver serves. The kernel holds ONE ref on it (moved on re-publish);
         // cap_install_defaults seats a send-only copy at index 0 of every child. See
         // docs/design-m3-console-handover-stageii.md (D3/D4/S3).
-        int g_stdout_target = KCAP_STDOUT_NONE;
+        constinit int g_stdout_target = KCAP_STDOUT_NONE;
 
         // Every .bss datum this module owns, in ONE object. The grouping is load-bearing:
         // CapEntry is 8-aligned, so as separate objects the linker drops four bytes of fill
@@ -51,7 +51,7 @@ namespace kickos
             // an IRQ cap on the line.
             unsigned teardown_depth;
         };
-        CapState g_cap;
+        constinit CapState g_cap;
 
         // Slot index of the semaphore a global handle names (via the live object, so
         // the SlotPool handle codec is never assumed here). -1 if it does not resolve.

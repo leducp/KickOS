@@ -136,7 +136,7 @@ namespace kickos
             return c->slice_deadline_ns;
         }
 
-        SchedPolicy const g_fifo_rr = {
+        constinit SchedPolicy const g_fifo_rr = {
             policy_pick_next,
             policy_on_ready,
             policy_on_remove,

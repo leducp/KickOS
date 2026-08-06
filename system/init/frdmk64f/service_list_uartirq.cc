@@ -26,9 +26,14 @@ extern "C"
     // the driver spawns its IRQ thread at prio + 1, so 12 must leave one priority above
     // it free.
     static struct kos_service_cfg const k64uartirq_cfg = {
-        /*name=*/"k64uartirq", /*mmio_base=*/kickos::mk64f::mmap::UART0_BASE,
-        /*mmio_window=*/0x20u, /*hz=*/115200u, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_CONSOLE,
-        /*rsv=*/{ 0, 0, 0, 0 }
+        .name = "k64uartirq",
+        .mmio_base = kickos::mk64f::mmap::UART0_BASE,
+        .mmio_window = 0x20u,
+        .hz = 115200u,
+        .addr = 0,
+        .prio = 12,
+        .kind = KOS_SVC_CONSOLE,
+        .rsv = { 0, 0, 0, 0 }
     };
 
     static struct kos_service_bringup const frdmk64f_uartirq_services[] = {

@@ -254,9 +254,14 @@ static int sim_uart_start(struct kos_service_cfg const* cfg)
 }
 
 static struct kos_service_cfg const simuart_cfg = {
-    /*name=*/"simuart", /*mmio_base=*/0, /*mmio_window=*/0,
-    /*hz=*/0, /*addr=*/0, /*prio=*/12, /*kind=*/KOS_SVC_UART,
-    /*rsv=*/{ 0, 0, 0, 0 }
+    .name = "simuart",
+    .mmio_base = 0,
+    .mmio_window = 0,
+    .hz = 0,
+    .addr = 0,
+    .prio = 12,
+    .kind = KOS_SVC_UART,
+    .rsv = { 0, 0, 0, 0 }
 };
 
 static struct kos_service_bringup const simuart_services[] = {

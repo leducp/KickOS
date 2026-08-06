@@ -14,6 +14,8 @@
 
 #include <kickos/arch/arch.h>
 
+#include <bit>
+
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the ns/cycle conversions
 
 #include "regs.h"
@@ -168,8 +170,7 @@ namespace
     uint32_t mpu_rasr(size_t size, uint32_t attr)
     {
         using namespace kickos::arm;
-        uint32_t const size_field =
-            static_cast<uint32_t>(__builtin_ctz(static_cast<unsigned>(size))) - 1u;
+        uint32_t const size_field = static_cast<uint32_t>(std::countr_zero(size)) - 1u;
         uint32_t rasr = MPU_RASR_ENABLE | (size_field << 1);
         if (attr & ARCH_MPU_X)
         {
