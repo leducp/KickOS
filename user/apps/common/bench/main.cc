@@ -2,11 +2,20 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Context-switch microbenchmark (KICKOS_BENCH builds only). Two equal-priority
-// threads ping-pong via semaphores; a higher-priority privileged reporter prints
-// throughput (ctx-switches/s via kos::clock_now, works on every arch), per-switch
-// cost + IRQ-entry latency (cycles, only where switch.S brackets the swap with a
-// counter: armv7m DWT, rxv3 CMTW1, rv32imac rdcycle/MTIME, xtensa CCOUNT; absent
-// on M0/sim/frozen-QEMU), and worst-case ISR latency across a masked span.
+// threads ping-pong via semaphores; the reporter prints throughput (ctx-switches/s via
+// kos::clock_now, works on every arch) plus per-switch cost + IRQ-entry latency (cycles,
+// only where switch.S brackets the swap with a counter: armv7m DWT, rxv3 CMTW1,
+// rv32imac rdcycle/MTIME, xtensa CCOUNT; absent on M0/sim/frozen-QEMU).
+//
+// The call/reply round-trip sweep measures the real syscall path, so the copy it times is
+// the one under the kernel's own IrqLock.
+//
+// EVERY kickos_bench_* helper below is a KERNEL function called directly, not a syscall, so
+// it runs at the CALLER's privilege, and this app's main is root, which is unprivileged on
+// every board. Each one reads kernel .data or a peripheral, so on a board with an MPU or
+// PMP the first call faults; where there is no such unit it returns a number instead. The
+// reporter's cycle metrics are therefore reachable only on the no-unit boards. The sweep
+// above is the one measurement here that goes through the syscall ABI and holds everywhere.
 //
 // The reporter is woken by the workload itself, NOT by a timer, so it cannot be
 // starved by the players saturating the CPU (see docs/archive/M1_state.md).
@@ -24,7 +33,6 @@ extern "C"
     void kickos_bench_irq_setup(int line);
     uint32_t kickos_bench_irq_once(int line);
     uint32_t kickos_bench_irq_masked_once(int line, uint32_t span_bytes);
-    uint32_t kickos_bench_masked_hold_ns(uint32_t span_bytes);
 }
 
 namespace
@@ -85,9 +93,10 @@ namespace
 
     // The reporter runs as the ROOT thread (main), not a spawned one, so the bench
     // needs only 2 pool slots (the two players) and fits boards with KICKOS_MAX_THREADS
-    // as low as 2 (nrf51, stm32f103/f302). Root is privileged (DWT/STIR/CCOUNT reads
-    // are privileged) and prio KICKOS_PRIO_MIN+1 == 2; the players run at prio 1, so a
-    // gate post from player_b preempts straight into the reporter.
+    // as low as 2 (nrf51, stm32f103/f302). Root is prio KICKOS_PRIO_MIN+1 == 2 and the
+    // players run at prio 1, so a gate post from player_b preempts straight into the
+    // reporter. The DWT/STIR/CCOUNT reads below need PRIVILEGE, which root does not
+    // have, so they reach only the boards with no unit to refuse them.
     void reporter_loop()
     {
         uint32_t hz = kickos_bench_core_hz();
@@ -128,20 +137,6 @@ namespace
                       static_cast<unsigned>(switches),
                       static_cast<unsigned>(d_ns / 1000000ull));
             kos::print(s);
-
-            // Worst-case ISR latency, portable term: how long interrupts stay masked
-            // across one endpoint-sized (256B) copy span: the interval an ISR waits
-            // behind such a syscall critical section. clock_now-based, so it survives a
-            // frozen/absent cycle counter (mps2 DWT / sim); the cycle sweep below adds
-            // the exception-entry term where a counter exists.
-            uint32_t hold_ns = kickos_bench_masked_hold_ns(256);
-            if (hold_ns != 0)
-            {
-                ksnprintf(s, sizeof(s),
-                          "  wcase-hold: %u ns masked / 256B endpoint-copy span\n",
-                          static_cast<unsigned>(hold_ns));
-                kos::print(s);
-            }
 
             // Per-switch cost + IRQ latency only where switch.S bracketed real cycles.
             uint32_t smin, savg, smax, scnt;
@@ -234,58 +229,83 @@ namespace
 
     // Call/reply round-trip: the same 2-switches-per-round handoff as the sem ping-pong
     // above (caller -> server on the call, server -> caller on the reply), so the number
-    // sits directly beside the ctx-switch throughput. Both peers are SPAWNED pool threads:
-    // the caller must be a pool thread (a reply cap names its parked caller by ThreadPool
-    // slot; the file-static root TCB has no slot). Run once BEFORE the players spawn, so
-    // the two threads exit and free their slots and the peak concurrency stays at 2.
+    // sits directly beside the ctx-switch throughput. Both peers are SPAWNED so the number
+    // is a worker-to-worker figure and not root's.
     constexpr uint32_t CALLREPLY_REPS = 20000;
+
+    // Both peers run ABOVE root (prio KICKOS_PRIO_MIN + 1 == 2). A peer MUST outrank root:
+    // it posts `done` as its last act but reaches EXITED only afterwards, and root preempting
+    // it on that post leaves the peer READY, holding a slot ThreadPool::alloc cannot reclaim
+    // when the next sweep step spawns. Where the pool is 3 slots that spawn is -KOS_ENOMEM.
+    constexpr uint8_t CR_PRIO = 4;
+
+    // The payload one sweep step measures. Written by measure_callreply BEFORE it spawns
+    // either peer, so neither thread races the write.
+    volatile uint32_t g_cr_len = 16;
+
     void callreply_server(void*) // caps: E(WAIT)@1, done@2
     {
-        unsigned char buf[16];
+        unsigned char buf[KOS_EP_MSG_MAX];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         for (uint32_t i = 0; i < CALLREPLY_REPS; i++)
         {
             long n = kos_recv(1, buf, sizeof(buf), &info);
-            if (n >= 0 and info.reply_cap != KOS_CAP_NONE)
+            if (n < 0 or info.reply_cap == KOS_CAP_NONE)
             {
-                kos_reply(info.reply_cap, buf, static_cast<size_t>(n)); // echo the request back
+                // A reply-less message is the stop sentinel measure_callreply sends to drain
+                // a server whose peer never spawned; a parked receiver pins its own WAIT cap,
+                // so nothing but a message can end that park.
+                break;
             }
+            kos_reply(info.reply_cap, buf, static_cast<size_t>(n)); // echo the request back
         }
         kos_sem_post(2);
     }
     void callreply_caller(void*) // caps: E(SIGNAL)@1, done@2
     {
-        unsigned char buf[16];
+        unsigned char buf[KOS_EP_MSG_MAX];
+        size_t const len = static_cast<size_t>(g_cr_len);
         for (unsigned i = 0; i < sizeof(buf); i++)
         {
             buf[i] = static_cast<unsigned char>(i);
         }
         uint64_t t0 = kos::clock_now();
-        for (uint32_t i = 0; i < CALLREPLY_REPS; i++)
+        uint32_t reps = 0;
+        while (reps < CALLREPLY_REPS)
         {
-            (void)kos_call(1, buf, sizeof(buf), sizeof(buf));
+            // In place: the request goes out of this buffer and the reply lands back in it.
+            if (kos_call(1, buf, len, len) < 0)
+            {
+                break;
+            }
+            reps++;
         }
         uint64_t d_ns = kos::clock_now() - t0;
 
-        uint32_t rt_per_s = 0;
-        uint32_t ns_per_rt = 0;
-        if (d_ns != 0)
+        if (reps == CALLREPLY_REPS)
         {
-            rt_per_s = static_cast<uint32_t>(
-                static_cast<uint64_t>(CALLREPLY_REPS) * 1000000000ull / d_ns);
-            ns_per_rt = static_cast<uint32_t>(d_ns / CALLREPLY_REPS);
+            uint32_t rt_per_s = 0;
+            uint32_t ns_per_rt = 0;
+            if (d_ns != 0)
+            {
+                rt_per_s = static_cast<uint32_t>(
+                    static_cast<uint64_t>(CALLREPLY_REPS) * 1000000000ull / d_ns);
+                ns_per_rt = static_cast<uint32_t>(d_ns / CALLREPLY_REPS);
+            }
+            char s[160];
+            ksnprintf(
+                s, sizeof(s),
+                "  call/reply: %u B  %u ns/round-trip  (%u round-trips/s over %u calls / %u ms)\n",
+                static_cast<unsigned>(len), static_cast<unsigned>(ns_per_rt),
+                static_cast<unsigned>(rt_per_s), static_cast<unsigned>(CALLREPLY_REPS),
+                static_cast<unsigned>(d_ns / 1000000ull));
+            kos::print(s);
         }
-        char s[160];
-        ksnprintf(s, sizeof(s),
-                  "  call/reply: %u round-trips/s  (%u ns/round-trip over %u calls / %u ms)\n",
-                  static_cast<unsigned>(rt_per_s), static_cast<unsigned>(ns_per_rt),
-                  static_cast<unsigned>(CALLREPLY_REPS),
-                  static_cast<unsigned>(d_ns / 1000000ull));
-        kos::print(s);
         kos_sem_post(2);
     }
-    void measure_callreply()
+    void measure_callreply(uint32_t len)
     {
+        g_cr_len = len;
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
@@ -295,13 +315,24 @@ namespace
         kos::Semaphore done(0);
         kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {done.id(), CH_FULL}};   // E(WAIT)@1, done@2
         kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}}; // E(SIGNAL)@1, done@2
-        auto sv = kos::thread::spawn_caps(callreply_server, nullptr, "cr_srv", 1, scaps, 2);
-        auto cl = kos::thread::spawn_caps(callreply_caller, nullptr, "cr_cl", 2, ccaps, 2);
+        auto sv = kos::thread::spawn_caps(callreply_server, nullptr, "cr_srv", CR_PRIO, scaps, 2);
+        auto cl = kos::thread::spawn_caps(callreply_caller, nullptr, "cr_cl", CR_PRIO, ccaps, 2);
         if (not sv.valid() or not cl.valid())
         {
-            // The bench needs both peers or neither can make progress (a lone thread parks
-            // forever). Close and skip; never fires where the pool holds 2 (the minimum).
+            // Neither peer can make progress alone, and a lone one holds its slot for the whole
+            // run unless it is drained HERE: the server has to be sent the sentinel, and the
+            // caller wakes -KOS_EPIPE only once recv_holders reaches 0, which is this close.
+            unsigned char stop = 0;
+            if (sv.valid())
+            {
+                (void)kos_send(ep, &stop, 1);
+                done.wait();
+            }
             kos_handle_close(ep);
+            if (cl.valid())
+            {
+                done.wait();
+            }
             kos::print("  call/reply: SKIP (thread pool too small)\n");
             return;
         }
@@ -309,6 +340,11 @@ namespace
         done.wait(); // server ran all REPS and exited
         kos_handle_close(ep);
     }
+
+    // The payload sizes the round-trip sweep walks, up to the ceiling a call can carry.
+    // The slope across them is TWICE the per-byte cost of the endpoint copy, because a
+    // round trip copies the request in and the reply back, both under one IrqLock.
+    constexpr uint32_t CR_SPANS[] = {8, 16, 32, 64, 128, 256};
 }
 
 int main(int, char**)
@@ -317,8 +353,12 @@ int main(int, char**)
     kos::print("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
     kos::print("workload, not a timer. Telemetry OFF for clean numbers.\n\n");
 
-    // One-shot call/reply round-trip (runs before the players spawn, so it reuses a slot).
-    measure_callreply();
+    // Runs before the players spawn, and each step joins BOTH its peers before the next
+    // starts, so two pool slots beside root's carry the whole sweep.
+    for (unsigned i = 0; i < sizeof(CR_SPANS) / sizeof(CR_SPANS[0]); i++)
+    {
+        measure_callreply(CR_SPANS[i]);
+    }
     kos::print("\n");
 
     kos::Semaphore a(0), b(0), gate(0);

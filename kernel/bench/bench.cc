@@ -175,42 +175,6 @@ extern "C"
         return d;
     }
 
-    // Portable worst-case term: how long interrupts stay masked across ONE span_bytes
-    // copy, in ns via clock_now: the interval an ISR waits behind such a syscall
-    // critical section. Auto-amplifies (doubles reps under one mask) until the window
-    // clears the coarse-clock floor, so even mps2's 10 ms semihosting clock resolves it;
-    // returns ns-per-copy. Survives a frozen/absent cycle counter -> the cross-arch
-    // number. 0 if the clock never advanced.
-    uint32_t kickos_bench_masked_hold_ns(uint32_t span_bytes)
-    {
-        if (span_bytes == 0 or span_bytes > BENCH_LAT_SPAN_MAX)
-        {
-            span_bytes = BENCH_LAT_SPAN_MAX;
-        }
-        uint32_t reps = 256;
-        for (int tries = 0; tries < 24; tries++)
-        {
-            arch_irq_state_t st = arch_irq_save();
-            uint64_t n0 = arch_clock_now();
-            for (uint32_t r = 0; r < reps; r++)
-            {
-                for (uint32_t i = 0; i < span_bytes; i++)
-                {
-                    g_lat_dst[i] = g_lat_src[i];
-                }
-            }
-            uint64_t n1 = arch_clock_now();
-            arch_irq_restore(st);
-            uint64_t d = n1 - n0;
-            if (d >= 40000000ull) // 40 ms: >= 4 ticks of the coarsest (10 ms) clock
-            {
-                return static_cast<uint32_t>(d / reps);
-            }
-            reps *= 2;
-        }
-        return 0;
-    }
-
     // Switch-entry timestamp, written by the switch handler (switch.S).
     constinit uint32_t g_bench_sw_start = 0;
     // Xtensa only: the windowed exit can't host a call, so switch.S stamps the switch
