@@ -94,9 +94,6 @@ namespace kickos
     // and the line NOT rearmed, and every later irq_wait answers the same. The one
     // cancellation point in the kernel, and the only park a third party may end.
     int irq_wait(Thread* c, uint32_t cap_handle);
-    // Is `t` parked inside irq_wait right now? The predicate thread_kill needs before it
-    // may deliver a wait_result to a parked thread. Caller holds IrqLock.
-    bool irq_thread_parked(Thread const* t);
     // Unmask the previously-consumed line so it can fire again; 0, or -KOS_E*.
     // OPTIONAL and idempotent: the next irq_wait rearms anyway, and a redundant
     // ack after that wait is a no-op (needs_rearm already false). Needs CAP_WAIT.

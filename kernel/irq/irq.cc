@@ -190,28 +190,6 @@ namespace kickos
         return 0;
     }
 
-    // Is `t` parked inside irq_wait right now? A parked waiter pins its binding through its
-    // own cap, so a match can never name a slot that has been freed under it.
-    //
-    // thread_kill needs this because a wait queue does not say what it delivers: only THIS
-    // park reads wait_result, and sem_wait ignores it, so an early wake on a plain semaphore
-    // would read as a token that was never handed over.
-    bool irq_thread_parked(Thread const* t)
-    {
-        if (t == nullptr or t->wait_queue == nullptr)
-        {
-            return false;
-        }
-        // Not a sweep: this runs interrupt-masked and must not grow with
-        // KICKOS_MAX_IRQ_HANDLES. A binding owns one wait queue at a fixed offset in its
-        // slot, so index_of on the back-computed base answers membership, and its
-        // slot-stride check is what stops an unrelated List aliasing one.
-        constexpr size_t waitq_off = offsetof(IrqBinding, sem) + offsetof(Semaphore, waiters);
-        IrqBinding const* cand = reinterpret_cast<IrqBinding const*>(
-            reinterpret_cast<char const*>(t->wait_queue) - waitq_off);
-        return kernel().irq_bindings.index_of(cand) >= 0;
-    }
-
     // The ONE cancellation point in the kernel. It must NOT be folded back into sem_wait:
     // sem_wait returns void and never reads wait_result, so a third party waking it early
     // would be indistinguishable from a post. Parking through wq_block directly is what
@@ -248,7 +226,9 @@ namespace kickos
             // binding cannot be freed under us.
             c->wait_result = 0; // sem_post hands the token WITHOUT writing this
             epoch = c->switch_count;
-            wq_block(b->sem.waiters);
+            // WAIT_IRQ, not WAIT_SEM, though the queue is a semaphore's: it is the only
+            // tag that says this park reads wait_result and so may be ended early.
+            wq_block(b->sem.waiters, WAIT_IRQ, b);
         }
         // Mandatory, and OUTSIDE the lock: on ARM the switch is only pended when the
         // block scope's lock drops, so a wait_result read before this returns the

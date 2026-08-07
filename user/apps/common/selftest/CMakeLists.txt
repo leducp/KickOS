@@ -129,6 +129,9 @@ list(JOIN KICKOS_EXPECT_PARTIALS "," KICKOS_EXPECT_PARTIALS)
 # an expectation from OUTSIDE the image can. The conditions mirror the #if guards around
 # the registration block at the bottom of main.cc, one clause per guard.
 set(_tap_arms 66) # unconditional
+if(KICKOS_TIMED_WAIT)
+  math(EXPR _tap_arms "${_tap_arms} + 11") # endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap, thread_join, join_stale_gen, join_timeout
+endif()
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms "${_tap_arms} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
 endif()
@@ -149,9 +152,15 @@ endif()
 # These two MUST stay independent expressions, never derived from _tap_arms above: the
 # equality asserted below is only a check while both sides are stated separately, and a
 # new arm has to move a clause on each side.
-set(_tap_arms_p1 43) # every arm in region 1
+set(_tap_arms_p1 43) # region 1, unconditional
+if(KICKOS_TIMED_WAIT)
+  math(EXPR _tap_arms_p1 "${_tap_arms_p1} + 8") # endpoint_send_timeout, recv_timeout, timed_arg_refusals, 3 x call_timeout_*, reply_stale_caller, reply_abandoned_cap
+endif()
 
 set(_tap_arms_p2 23) # region 2, unconditional
+if(KICKOS_TIMED_WAIT)
+  math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 3") # thread_join, join_stale_gen, join_timeout
+endif()
 if(KICKOS_ENABLE_SELFTEST)
   math(EXPR _tap_arms_p2 "${_tap_arms_p2} + 14") # bus_device_slots, uart_service, reboot_priv, 11 x irq_*
 endif()
@@ -195,15 +204,16 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
 
   # The OTHER console posture: the sim's only coverage of the published route
   # (kos_send on stdout cap index 0 -> userspace driver). One provider links per image,
-  # so it needs its own build tree; the script makes one. The variant has to travel with
-  # the arm count, because the posture is part of it and the arm count depends on the
-  # posture: a fresh build would otherwise take the board's base variant and the script
-  # would check that stream against this tree's expectation.
+  # so it needs its own build tree; the script makes one. Every input the arm count
+  # depends on has to travel with it, because a fresh build otherwise takes the board's
+  # base variant and every knob default, and the script would check that stream against
+  # this tree's expectation. That is the variant AND KICKOS_TIMED_WAIT, which gates 11
+  # arms of its own.
   add_test(
     NAME    sim_published_console
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_published.sh"
             "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${_tap_arms}
-            "${KICKOS_CONFIG_VARIANT}")
+            "${KICKOS_CONFIG_VARIANT}" "${KICKOS_TIMED_WAIT}")
   set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
   # Its own build tree, at the same board posture, so the same two permission sets.
   set_property(TEST sim_published_console APPEND PROPERTY ENVIRONMENT
@@ -238,6 +248,8 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_deadlock,
   #   mutex_multi_held: 3-worker PI choreographies on a 2-slot pool
   #   call_infoless_revert (4 workers), call_donation (3)
+  #   call_timeout_revert: 3 workers (server, caller, spoiler); an arm only under
+  #     KICKOS_TIMED_WAIT, so its name is appended below rather than spelled in the string
   #   call_donation_hold, call_donation_slow, call_donation_pending: 3 workers each
   #   domain_share: arena cannot spare the shared region
   #   irq_as_event: wants a 4 KiB MMIO page out of 16 KiB SRAM
@@ -256,8 +268,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   #   cap_child_width: at 7 the child width IS root's summed width
   # Comma-separated, never semicolons: ENVIRONMENT is itself a CMake list, so a semicolon
   # would split the value into a second bogus environment entry.
+  set(_microbit_timed_skips "")
+  if(KICKOS_TIMED_WAIT)
+    set(_microbit_timed_skips ",call_timeout_revert")
+  endif()
   set_property(TEST microbit_selftest APPEND PROPERTY ENVIRONMENT
-    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,call_donation_hold,call_donation_slow,call_donation_pending,domain_share,irq_as_event,uart_service,cap_reply_bound_fast,cap_reply_bound_slow,cap_reply_release_close"
+    "EXPECT_SKIPS=mutex_basic,mutex_pi_donation,mutex_chain_boost,mutex_deadlock,mutex_multi_held,call_infoless_revert,call_donation,call_donation_hold,call_donation_slow,call_donation_pending,domain_share,irq_as_event,uart_service,cap_reply_bound_fast,cap_reply_bound_slow,cap_reply_release_close${_microbit_timed_skips}"
     "EXPECT_PARTIALS=caller_stack,confused_deputy,cap_chunk_span,cap_child_width")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")

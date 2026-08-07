@@ -21,29 +21,32 @@
 # it, a regression that skipped the publish entirely would still pass here.
 #
 # usage: check_sim_published.sh <kickos-source-dir> <cmake> <expected-arms> <variant>
+#                               <timed-wait>
 #
-# <variant> is not optional and is not cosmetic. The expected arm count is computed by
-# the CALLING tree's CMake and depends on the posture, which is part of the variant the
-# caller was configured with; the build below is a fresh one and would otherwise take
-# the board's base variant. A caller on another variant would then compare its own
-# expectation against a different posture's stream and fail with "an arm was added or
-# deleted", naming a regression that does not exist. Forward the variant; do not infer
-# the posture.
+# <variant> and <timed-wait> are not optional and are not cosmetic. The expected arm
+# count is computed by the CALLING tree's CMake and depends on the posture; the build
+# below is a fresh one and would otherwise take the board's base variant and every knob
+# default. A caller at another posture would then compare its own expectation against a
+# different posture's stream and fail with "an arm was added or deleted", naming a
+# regression that does not exist. Every input the arm count depends on must be
+# forwarded; do not infer the posture.
 
 set -eu
 . "$(dirname "$0")/lib/gate.sh"
 
 KICKOS_SRC="$1"
 CMAKE="${2:-cmake}"
-WANT_ARMS="${3:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <variant>}"
-VARIANT="${4:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <variant>}"
+WANT_ARMS="${3:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <variant> <timed-wait>}"
+VARIANT="${4:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <variant> <timed-wait>}"
+TIMED_WAIT="${5:?usage: check_sim_published.sh <src> <cmake> <expected-arms> <variant> <timed-wait>}"
 
 scratch_dir
 
 echo "== configuring the sim with the publishing service list =="
 ( cd "$KICKOS_SRC" && "$CMAKE" --preset sim -B "$TMP/build" \
     -DKICKOS_SERVICE_LIST=kickos_services_sim \
-    -DKICKOS_CONFIG_VARIANT="$VARIANT" >/dev/null ) \
+    -DKICKOS_CONFIG_VARIANT="$VARIANT" \
+    -DKICKOS_TIMED_WAIT="$TIMED_WAIT" >/dev/null ) \
   || fail "configure with kickos_services_sim failed"
 
 echo "== building selftest =="

@@ -66,6 +66,11 @@ inline kos::thread::Handle spawn_unprivileged(void (*entry)(void*), uintptr_t wi
     return drv;
 }
 
+#if KICKOS_TIMED_WAIT
+// A driver that hangs in bring-up must not cost the board more than this.
+constexpr uint32_t KOS_DRIVER_HANDOVER_PROBE_US = 1000000;
+#endif
+
 // The LAST two steps of a console handover, in this order because either order wrong
 // fails silently. Closes the caller's own WAIT-bearing cap on E, then PROVES the driver
 // is serving before any console client runs. Returns 0, or the probe's negative rc.
@@ -79,30 +84,54 @@ inline kos::thread::Handle spawn_unprivileged(void (*entry)(void*), uintptr_t wi
 // The probe is a ZERO-LENGTH rendezvous on cap 0, the same route every client uses. A
 // rendezvous send returns only once a receiver has actually taken it, so on success the
 // DARK WINDOW between the publish and the driver serving is closed by the time this
-// returns. A driver that hangs in bring-up instead of dying parks this send indefinitely;
-// per-chip bring-up polls are bounded by KICKOS_POLL_SPIN_MAX.
+// returns. A driver that HANGS in bring-up instead of dying never EPIPEs the probe: the
+// probe is bounded by KOS_DRIVER_HANDOVER_PROBE_US only where KICKOS_TIMED_WAIT is on, and
+// without it the probe cannot give up at all, so such a driver parks the handing-over
+// thread with nothing to recover it. Per-chip bring-up polls are bounded by
+// KICKOS_POLL_SPIN_MAX either way.
 //
-// `irq_thread` is MANDATORY for a two-thread driver: the console comes back only once the
-// register window is free, and on a probe failure the service thread is the one that died,
-// so the IRQ thread is still holding it. Without the cancel the tag below prints into a
-// console nothing has given back. It relies on the driver threads sitting ABOVE root, so
-// the cancelled thread runs to its exit before this call returns. A default-constructed
-// Handle means a single-thread driver, which released the window at its own death.
+// The two failures are different failures, and only one of them can be answered here.
+//
+// -KOS_EPIPE means the service thread DIED: recv_holders reached 0, which is what gave the
+// console back, so the tag reaches the wire. `irq_thread` is MANDATORY for a two-thread
+// driver, because the console comes back only once the register window is free and the
+// dead thread is not the one holding it; the cancel therefore precedes the tag. It relies
+// on the driver threads sitting ABOVE root, so the cancelled thread runs to its exit
+// before this call returns. A default-constructed Handle means a single-thread driver,
+// which released the window at its own death.
+//
+// Any other refusal, -KOS_ETIMEDOUT above all where the probe is bounded, leaves the
+// service thread ALIVE and still the sole receiver: recv_holders never reaches 0, so the
+// console is NOT reclaimed and every kernel-console write is dropped for the rest of the
+// run. Nothing here recovers from that. kos_thread_kill is cooperative and wakes only a
+// thread parked in kos_irq_wait, so it cannot end one hung anywhere else, and cancelling
+// the IRQ thread of a driver that may yet start serving would break a merely slow one. The
+// code is returned unchanged and no tag is printed: a print into a console nobody gave
+// back is a report that was never made, and the caller must treat the code as the whole
+// outcome.
 inline int console_handover_finish(kos_cap_t ep, char const* fail_tag,
                                    kos::thread::Handle irq_thread = {})
 {
     kos_handle_close(ep);
+#if KICKOS_TIMED_WAIT
+    int const rc = kos_send_timed(KOS_CAP_STDOUT, "", 0, KOS_DRIVER_HANDOVER_PROBE_US);
+#else
     int const rc = kos_send(KOS_CAP_STDOUT, "", 0);
-    if (rc < 0)
+#endif
+    if (rc >= 0)
     {
-        if (irq_thread.valid())
-        {
-            (void)irq_thread.kill();
-        }
-        kos::print(fail_tag);
+        return 0;
+    }
+    if (rc != -KOS_EPIPE)
+    {
         return rc;
     }
-    return 0;
+    if (irq_thread.valid())
+    {
+        (void)irq_thread.kill();
+    }
+    kos::print(fail_tag);
+    return rc;
 }
 
 } // namespace driver

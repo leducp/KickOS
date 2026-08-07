@@ -273,6 +273,38 @@ settled; what is left is execution.
       from `wait_queue` by `offsetof`, which is the workaround proving there is no tag. The
       generalized tagged `blocked_on` edge probably wants to land first.
 
+### The reaper init is BLOCKED, and not on effort (2026-08-06)
+
+- [ ] **`kos_wait_last()` answers "am I the last thread in the SYSTEM"; a reaper init needs
+      "has the APP finished". Those coincide only in an image with no services, and the init is
+      never in one.** `sched::add` increments `kernel().live` for every non-idle thread with no
+      exclusion for a driver or a daemon (`kernel/sched/sched.cc`), and the init itself spawns the
+      service threads one step earlier in `kickos_service_list_run`. So an init that called
+      `kos_wait_last()` after `main` would park forever on threads it created. This is not a
+      per-app regression to absorb: it is EVERY app whose `main` returns, on `frdmk64f` and
+      `xmc4800-relax` at their default enforcing posture and on every `uartirq` / `usbcdc`
+      configuration, which is the posture the six-board M4.7.7 fleet capture ran in. Two ctest
+      gates would HANG rather than fail (`sim_published_console`, `sim_uartloop`). There is no
+      `stop()` hook on `kos_service_bringup`, so "tear the services down, then reap" is not
+      available either.
+      **The rest of M4.7.8 does not depend on it**: `kos_wait_last()` is app-callable and correct
+      as built, and only the app knows which live threads are its own work.
+      **The way forward, and it is core-path work needing its own number and an explicit go:**
+      classify a thread as app or infrastructure, with ONE privileged call from the init
+      immediately after `kickos_service_list_run` returns, marking everything then live as
+      infrastructure. That instant is the only one where the set is exactly right, it needs no
+      spawn parameter and no per-driver edit, and it gives the existing `kernel().live == 0`
+      terminate edge the same meaning, which is the reaper stated properly at the kernel level.
+      Residual risk to design against: a driver that respawns after death comes back
+      unclassified and would then be reaped on. Rejected alternative, recorded so it is not
+      re-derived: a live-count watermark taken after bring-up, which fails because a count is not
+      an identity and a driver death or respawn moves the floor.
+      **Four apps return from `main` with a child that never exits** and would hang under any
+      reaping init, so they need `exit()` said explicitly whenever this lands: `initdemo`
+      (`console_sink` parks in recv), `tele_pingpong` (five daemons), `drvdeath`
+      (`nest_grandchild` parks on a semaphore nothing posts, and `thread_kill` is cooperative so
+      it does not wake that park), and `rootfault` on its no-enforcement fall-through.
+
 ## Found auditing the panic and fault scope (2026-08-06)
 
 Two audits are in flight on this, both gitignored spikes in the main checkout
@@ -4796,6 +4828,38 @@ Touches nearly every file, so it runs after M4.5.8 merges.
       while churning `check_riscv_no_smalldata.sh`, already the soundest of the four, and its
       "before M4.6" sequencing rested on M4.6 adding introspection gates, where M4.6.1 and M4.6.2
       add boot and TAP arms riding `tests/lib/gate.sh`, out of that proposal's scope either way.
+
+## Found taking the M4.7.8 payload measurement (2026-08-06)
+
+- [ ] **The call/reply sweep is PRECISE but not ACCURATE, so it cannot accept or reject a change
+      of a few percent.** Measured on `xmc4800-relax` silicon, enforcing, one bench variant, 8 B
+      round trip. `master` `de2801d` sits at 37997-38152 ns across five builds padded with 0, 4, 20,
+      68 and 260 bytes of `.text`, so **layout moves it by 155 ns, 0.4 percent** and the instrument
+      is stable per image (the same binary re-flashed is byte-identical). Against that band the
+      milestone's own points are 38290, **36047**, 40070 and 39814 at the tip: a spread of 3767 ns
+      that layout cannot explain. **The middle point is 2000 ns FASTER than `master` while strictly
+      adding code to the path**, which no amount of added work produces, so the number is not a
+      per-round-trip cost. Two candidate causes were tested and REFUTED: code layout (the padding
+      sweep above) and the deadline cancel that now runs on every wake (removing it made the tip
+      slightly WORSE, 40064).
+      **The surviving explanation is that the sweep does not measure one thing.** A round trip takes
+      the endpoint FASTPATH when a receiver is already parked and the SLOWPATH when the caller parks
+      first, and those cost very differently; a small scheduling shift changes the MIX rather than
+      the per-path cost, which fits stability per binary, insensitivity to padding, and swings that
+      do not track work added. **Fix before trusting it: have the sweep report its fastpath and
+      slowpath counts**, so a reading is interpretable instead of an average over an unknown mix.
+      Until then the tip's +4.6 percent against `master` is UNEXPLAINED, not established, and the
+      argument that the untimed path did not grow is a code reading: two stores at a park, two at an
+      unpark, and one comparison against `KOS_TIMEOUT_NONE`.
+- [ ] **An `endpoint_call` / `endpoint_recv` kernel signature crossing FOUR arguments was tried and
+      REVERTED, because it bought nothing measurable.** Both gained a fifth parameter in M4.7.8 and
+      an ARM AAPCS fifth word is passed on the stack, which is visible in the prologues
+      (`ldr.w r9, [sp, #64]`) and in a caller-side `str r2, [sp, #104]`. Holding them at four (the
+      call taking the lengths already packed by its timed stub, the recv carrying a flag beside a
+      `cap_len` that needs only nine bits) removed exactly that traffic and moved the sweep from
+      40070 to 40313, i.e. not at all. It also put a bit inside a user-supplied word that userspace
+      must never set, which the untimed arm then has to mask defensively. Recorded so the idea is
+      not re-derived as an obvious win; revisit only with an instrument that can see it.
 
 ## Found taking the M4.7.7 payload measurement (2026-08-06)
 

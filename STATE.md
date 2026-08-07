@@ -8,13 +8,22 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.7.7 is complete on `M4.7.7-root-thread` and merging.** Root is seated in the thread pool, so it
+**M4.7.7 is MERGED (PR #16), and `master` is `de2801d`.** Root is seated in the thread pool, so it
 carries a kill tag of its own instead of sharing idle's boot tag, it is nameable by a handle and by a
-reply capability, and an app's own `main` reaches every call/reply service API. `master` is still
-`5f3cd8a`, tree `82fa51f`. **The next number is M4.7.8**, so M4.7.x is not closed; it is kernel-core
-work carrying an M4 number on purpose. Behind M4.7.6 (PR #15) on `master`: M4.7.5 (PR #14), M4.7.4
-(PR #13), M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1 (PR #9), M4.5.9 (PR #8),
-M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
+reply capability, and an app's own `main` reaches every call/reply service API. It is witnessed on
+six boards; see below.
+
+**M4.7.8 is IN FLIGHT on `M4.7.8-timed-wait`.** Landed: a total tagged wait edge, so a parked
+thread names what it waits for and the object owning the list it is on; timed send, call and
+receive, the send closing a console-handover wedge that predates every release; and a join by
+handle plus wait-until-last. **The reaper init is BLOCKED and the milestone cannot deliver it**:
+`kos_wait_last()` means "last thread in the system" while a reaper needs "the app has finished",
+and the init spawns the service threads itself, so it would park on its own children on every
+board with a service list. `TODO.md` carries the analysis and the way forward, which is core-path
+work needing its own number. **M4.7.x is not closed**; it is kernel-core work carrying an M4
+number on purpose. Behind M4.7.6 (PR #15) on
+`master`: M4.7.5 (PR #14), M4.7.4 (PR #13), M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10),
+M4.6.1 (PR #9), M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
 
 What M4.7.5 and M4.7.6 left behind is now ordinary tree shape and is documented where it
 belongs, not here: the configuration mechanism in `README.md` and `docs/reference/porting.md`,
@@ -24,24 +33,47 @@ re-derive.
 
 ### What the captures do NOT witness
 
-**`rx72m` owes TWO witnesses, M4.7.6 and M4.7.7.** It sits on the MAIN bench, and the main bench is
-what is unavailable; the secondary bench cannot host it. M4.7.6 is the sharper debt: deleting both
-`.init_array` entries is a BOOT-PATH change, and RXv3 is the one arch with neither an emulator gate
-nor a bench run for it. It builds, and that is the whole of what is known. M4.7.7's residual risk is
-lower, because seating root in the pool is arch-neutral C with no assembly and no per-arch boot path.
-Run `TAG=m476 .session/bench.sh rx72m`, then the M4.7.7 tag, when that bench is back. Four boards did
-run M4.7.6, all at tree `aa596ce31128`, three ISAs and every enforcement class the secondary bench
-can host: `xmc4800-relax` (PMSAv7) and `frdmk64f` (SYSMPU) 84 ok, `esp32c6-wroom` (PMP NAPOT) 84 ok,
-`esp32-wroom` (LX6, no per-task unit) 80 ok, zero not-ok and zero skip anywhere. Logs
-`.session/logs/m476-*.log`.
+**The M4.7.6 and M4.7.7 silicon debts are PAID.** Both were taken together on 2026-08-06 at
+`de2801d`, the M4.7.7 merge, on a rare day when both benches were plugged at once. One run
+discharges both because M4.7.6 is an ancestor of that tree, so a board that boots at all has
+exercised the `.init_array` deletion that was the whole of the M4.7.6 risk; a separate `m476` run
+would only have earned something had this one failed. Six boards, four ISAs, every enforcement
+class the fleet has, zero `not ok` anywhere. Logs `.session/logs/m477-*.log`.
 
-**M4.7.7 has no silicon witness at all, and the gap is a maintainer decision rather than an
-oversight.** Silicon is to be taken AFTER the merge, and a failure there becomes its own
-sub-milestone. What did gate it: `sim`, the four MPS2 machines (`qemu`, `qemu-m3`, `qemu-m7`,
-`qemu-m33`) in both postures, `microbit`, and `qemu-riscv` in both postures, every one of them now
-running the `call_from_root` arm, with `sched_exit` and `rootauth` registered on the same set. The
-bench captures behind the payload sweep are measurements of the IPC path, not witnesses of root's
-seating.
+| board | plan | result |
+| --- | --- | --- |
+| `rx72m` (RXv3, RX MPU) | `1..84` | 84 ok, 0 skip, enforce |
+| `xmc4800-relax` (PMSAv7) | `1..84` | 84 ok, 0 skip, enforce |
+| `frdmk64f` (SYSMPU) | `1..84` | 84 ok, 0 skip, enforce |
+| `esp32c6-wroom` (PMP NAPOT) | `1..84` | 84 ok, 0 skip, enforce |
+| `esp32-wroom` (LX6, no unit) | `1..80` | 80 ok, 0 skip, off |
+| `f302nucleo` (ring-only) | `1..43` + `1..37` | 43 + 37 ok, 3 + 7 skip, 0 + 4 partial, off |
+
+**M4.7.8 is witnessed on ALL SIX boards** at the FINAL tree, zero `not ok` anywhere: `rx72m`,
+`xmc4800-relax`, `frdmk64f` and `esp32c6-wroom` 95 ok enforcing, `esp32-wroom` 91 ok,
+`f302nucleo` 51 + 40 ok across its two images. Logs `.session/logs/m478c-*.log`. The captures
+carry TWO commit hashes, `19b548c` on the first five boards and `d00e342` on the last two,
+because the commits were reworded mid-pass; the trees are byte-identical and the enforcing
+boards report the same 95 under both, so it is one witness of one tree.
+The K64F needed a second attempt earlier in the day for a reason worth knowing rather than
+retrying blindly: its OpenSDA probe shows a SEGGER licence dialog once per calendar day, the
+acknowledgement is date-stamped, and that pass crossed midnight. The board was on the bus and
+healthy, and `bench.sh`'s preflight refused by name instead of capturing a 0-byte log.
+`CONTEXT.local.md` carries the detail.
+
+**`f302nucleo` is the one board whose capture is not self-validating**, and its skips are
+provisioning (a 3-thread pool, a 7-slot cap table), not defects. `bench.sh` prints counts but does
+not run `tests/check_tap_stream.sh`, so both images were piped through it by hand against the arm
+counts derived from `user/apps/common/selftest/CMakeLists.txt` rather than from their own plan
+lines. Do the same for any future silicon capture on a board with no ctest gate: a plan that
+reconciles with itself proves nothing about an arm that was deleted.
+
+**`.session/bench-fleet.sh` is the instrument for a fleet pass now**, and it exists because a
+caller must never pair a board with a probe serial by hand. `for b in "board sn"; do bench.sh $b`
+is correct in bash and silently wrong in zsh, which does not word-split: the pair arrives as one
+board name and `bench.sh` dies at its configure line before printing anything, so the board reads
+as skipped rather than failed. The fleet script resolves serials itself from sysfs by `idProduct`,
+reports an absent board as absent, and handles the two-image boards.
 
 **A batch `ctest` across all suites is not a valid instrument for `sim` and `qemu`.** They have no
 silicon clock, fail under the load of a back-to-back run, and pass standalone. CI runs one board
@@ -61,15 +93,22 @@ rather than producing a plausible-looking wrong log.
 
 ## What is next (locked order)
 
-1. **M4.7.7 -- root is a pool thread**, this milestone, merging.
-2. **M4.7.8 -- the timed wait and the reaper init**: an abortable and timed call, a thread join,
-   wait-until-last, and an init that reaps before it shuts the system down. Its design spike is
-   gitignored and never enters history, so `TODO.md`'s M4.7.8 section carries the settled facts
-   rather than a pointer to it.
+1. **M4.7.7 -- root is a pool thread**, MERGED as PR #16 and witnessed on six boards.
+2. **M4.7.8 -- the timed wait**, THIS milestone, feature-complete on its branch: an abortable and
+   timed send, call and receive, a thread join, and wait-until-last. Its design spike is gitignored
+   and never enters history, so `TODO.md`'s M4.7.8 section carries the settled facts rather than a
+   pointer to it. The order was fixed and the reason is structural: **the tagged wait edge landed
+   FIRST**, because a caller parked on a server's reply list has no edge back to that server, so no
+   timed or aborted wait can revert its priority donation or unlink it without one.
+   `KOS_ETIMEDOUT` is 110, clear of M4.8.1's `ENOTSUP` at 95. **The reaper init named in the
+   original scope is NOT delivered** and is refused rather than deferred quietly; the next number
+   for it, and the thread classification it actually needs, are in `TODO.md`.
 3. **M4.8.1 -- the driver class layer**, the class layer the driver-model ruling requires and
-   that SPI never got. IN FLIGHT on its own branch `M4.8.1-driver-class`, three commits past
-   `master`, carrying a per-driver-type class and a five-call UART class API. It also adds an
-   `ENOTSUP` code to the errno set, so M4.7.8's new errno must not collide with it.
+   that SPI never got. IN FLIGHT on its own branch `M4.8.1-driver-class`, REBASED onto `de2801d`
+   on 2026-08-06 (four commits; the cherry-picked worklist-retire commit dropped itself by
+   patch-id, and the branch builds), carrying a per-driver-type class and a five-call UART class
+   API. Keep it rebased as M4.7.8 lands: its SPI proxy marshals into `kos_call`, which M4.7.8
+   changes.
 4. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
    `pizero2350`; the production service list, bulk OUT and `teensy41` are not.
 5. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.

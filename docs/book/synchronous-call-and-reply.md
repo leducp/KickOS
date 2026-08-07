@@ -141,9 +141,10 @@ Everything else is the death matrix in the Reference: a server that dies mid-tra
 a reply capability closed instead of replied, a stale caller -- each wakes the caller with
 a broken-pipe error or is a cheap no-op, and each consumes the capability exactly once. The
 guarantee a client relies on is simple: a call returns, one way or another. It is never
-left blocked forever by a server's misbehavior (the one exception being cycles a client
-builds itself -- calling itself, or two servers calling each other -- which have no
-detection and no timeout).
+left blocked forever by a server's misbehavior. Cycles a client builds itself -- calling
+itself, or two servers calling each other -- are the one shape the kernel does not
+diagnose: there is no cycle detection on this path, so a client that wants a bound on
+one has to supply a deadline, which ends the wedge without ever naming its cause.
 
 ## The service model: a class, and a thread that speaks the wire
 

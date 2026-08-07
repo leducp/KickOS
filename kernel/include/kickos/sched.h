@@ -56,7 +56,7 @@ namespace kickos
         void yield();
 
         // Remove `current` from the run set (state must already be set to the reason,
-        // e.g. BLOCKED/SLEEPING), then reschedule. Returns when the thread is resumed.
+        // e.g. BLOCKED), then reschedule. Returns when the thread is resumed.
         void block_current();
 
         // Remove `current` from the ready list WITHOUT rescheduling. A blocking
@@ -70,7 +70,7 @@ namespace kickos
         // The SOLE writer of a thread's effective priority: no other code may write
         // t->prio. A READY or RUNNING thread is re-seated through the policy hooks, since
         // rq_remove locates its list by reading t->prio and a bare field write would
-        // corrupt the ready lists; BLOCKED and SLEEPING threads take the value directly,
+        // corrupt the ready lists; a BLOCKED thread takes the value directly,
         // because wait queues scan lazily at pop and the timer list is prio-independent.
         // Does NOT reschedule; the caller decides.
         void set_prio(Thread* t, uint8_t p);

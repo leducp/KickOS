@@ -325,10 +325,17 @@ namespace kickos
                 // happens at the shared close/teardown site after this returns. A dying
                 // closer skips its recompute: it has only the rest of its own sweep left.
                 Thread* caller = cap_reply_caller(e);
+                // The unlink DECIDES, and so must precede every other write: a stale reply
+                // cap can resolve to a caller parked on a DIFFERENT server, and this arm
+                // owns nothing of that thread (not its call_state, not its wait_result, and
+                // least of all its `link`, which is that server's list).
+                if (caller != nullptr and not reply_donor_unpark(closer, caller))
+                {
+                    caller = nullptr;
+                }
                 if (caller != nullptr)
                 {
                     caller->call_state = CALL_NONE; // stop the funnel counting this donor
-                    reply_donor_unpark(closer, caller); // and take it off the donor list
                     caller->wait_result = -KOS_EPIPE;
                 }
                 // Deflate BEFORE waking (H8): the wake's reschedule must run against our

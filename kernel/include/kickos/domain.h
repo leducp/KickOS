@@ -72,8 +72,9 @@ namespace kickos
     // A respawn issued while the dying holder still references its domain earns
     // -KOS_EBUSY. sched::exit_current drops the reference BEFORE the cap_teardown sweep
     // that EPIPE-wakes a respawner, so a woken supervisor always observes the window
-    // already free. A supervisor that learns of the death some OTHER way (watchdog,
-    // timeout, a future join) MUST join before respawning, or retry on -KOS_EBUSY.
+    // already free. A supervisor that learns of the death some OTHER way (a watchdog, a
+    // timeout) must retry on -KOS_EBUSY, or where KICKOS_TIMED_WAIT is on, wait the death
+    // out with kos_thread_join before respawning.
     //
     // Returns null on refusal and writes the reason to *err (never null; 0 on success):
     //   KOS_EPERM   the grant is inadmissible (reserved-block hit, out-of-arena data,

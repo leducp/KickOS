@@ -78,10 +78,20 @@ namespace kickos
     // The three byte-count returns are int32_t so this side of the trap boundary matches
     // <kickos/sys.h> exactly; endpoint_create and endpoint_reply answer a plain status and
     // need no pinned width.
+    //
+    // ONE implementation per operation serves both the timed and the untimed syscall
+    // number; the untimed dispatch arm passes KOS_TIMEOUT_NONE (recv: timed == false).
     int endpoint_create(uint32_t* out_cap);
-    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len);
-    int32_t endpoint_recv(uint32_t cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out);
-    int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap);
+    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us);
+    // `timed` selects KOS_SYS_RECV_TIMED, and then `badge_out` names a kos_recv_timed_opts
+    // rather than a bare kos_recv_info: there is no argument slot left for the deadline, so
+    // it is read out of that struct before this ever parks, and `badge_out` is rewritten to
+    // the kos_recv_info NESTED in it. Nothing past that point sees the difference.
+    int32_t endpoint_recv(uint32_t cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out,
+                          bool timed);
+    // The deadline bounds BOTH call phases: the send-side park and the reply-side park.
+    int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
+                          uint32_t timeout_us);
     int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len);
 
     // --- Thread lifecycle (syscall_thread.cc) ----------------------------------
@@ -92,6 +102,19 @@ namespace kickos
     // -KOS_ECANCELED so the target runs its OWN exit. Returns 0, -KOS_EBADF, -KOS_EPERM or
     // -KOS_EINVAL. Takes its own IrqLock.
     int thread_kill(kos_thread_t thread);
+#if KICKOS_TIMED_WAIT
+    // Both BLOCK, so like the endpoint calls they must be reached with no caller-held
+    // IrqLock: each takes its own for the gate and the park, then releases it before the
+    // resume barrier and the wait_result read.
+    //
+    // Waits for a thread the caller spawned to be gone, up to `timeout_us` relative
+    // microseconds (KOS_TIMEOUT_NONE: no bound). Returns 0 (including for a target that had
+    // already exited), -KOS_ETIMEDOUT, -KOS_EBADF, -KOS_EPERM or -KOS_EDEADLK.
+    int thread_join(kos_thread_t thread, uint32_t timeout_us);
+    // Waits until the caller is the last live thread. ROOT ONLY: returns 0, or -KOS_EPERM
+    // to any other caller.
+    int thread_wait_last();
+#endif
 }
 
 #endif

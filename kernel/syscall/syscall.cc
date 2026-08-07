@@ -34,9 +34,9 @@ namespace kickos
     // stub narrows that to a fixed 4. The byte-count producers must therefore already be
     // 4 bytes here, or the two halves of the boundary disagree on which target: see the
     // matching static_assert in user/src/syscall_stubs.cc.
-    static_assert(sizeof(endpoint_send(0, 0, 0)) == 4, "must be exactly 4 bytes");
-    static_assert(sizeof(endpoint_recv(0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
-    static_assert(sizeof(endpoint_call(0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
+    static_assert(sizeof(endpoint_send(0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
+    static_assert(sizeof(endpoint_recv(0, 0, 0, 0, false)) == 4, "must be exactly 4 bytes");
+    static_assert(sizeof(endpoint_call(0, 0, 0, 0, 0)) == 4, "must be exactly 4 bytes");
 
     namespace
     {
@@ -350,21 +350,54 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // the resolve/deliver/park, then releases it before the resume barrier: a
             // spanning caller lock would livelock ARM (design section 3).
             return static_cast<uintptr_t>(
-                endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2)));
+                endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
+                              KOS_TIMEOUT_NONE));
         }
+#if KICKOS_TIMED_WAIT
+        case KOS_SYS_SEND_TIMED:
+        {
+            return static_cast<uintptr_t>(
+                endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
+                              static_cast<uint32_t>(a3)));
+        }
+#endif
         case KOS_SYS_RECV:
         {
             return static_cast<uintptr_t>(
-                endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3));
+                endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3,
+                              /*timed=*/false));
         }
+#if KICKOS_TIMED_WAIT
+        case KOS_SYS_RECV_TIMED:
+        {
+            // The deadline is not an argument: a3 names a kos_recv_timed_opts holding it,
+            // with the ordinary kos_recv_info nested inside. endpoint_recv reads the
+            // deadline through the validated-pointer path and hands the rest of itself the
+            // nested struct, so nothing downstream knows the difference.
+            return static_cast<uintptr_t>(
+                endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3,
+                              /*timed=*/true));
+        }
+#endif
         case KOS_SYS_CALL:
         {
             // FULLY LOCKLESS (no dispatch IrqLock), same as SEND/RECV: a spanning caller
             // lock would keep BASEPRI raised across the resume barrier and livelock ARM.
             return static_cast<uintptr_t>(
                 endpoint_call(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
-                              static_cast<size_t>(a3)));
+                              static_cast<size_t>(a3), KOS_TIMEOUT_NONE));
         }
+#if KICKOS_TIMED_WAIT
+        case KOS_SYS_CALL_TIMED:
+        {
+            // a2 carries both lengths so a3 can carry the deadline. Unpacking is this arm's
+            // whole job: the bound checks stay in endpoint_call, which is the sole validator
+            // (the stub only saturates, so an oversize length still arrives out of range).
+            return static_cast<uintptr_t>(
+                endpoint_call(static_cast<uint32_t>(a0), a1, kos_call_lens_send(a2),
+                              kos_call_lens_recv(a2), static_cast<uint32_t>(a3)));
+        }
+#endif
         case KOS_SYS_REPLY:
         {
             // Does not block the replier (it wakes the caller and returns), so it does
@@ -477,6 +510,19 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // UNGATED by authority, gated by parenthood inside (syscall_thread.cc).
             return static_cast<uintptr_t>(thread_kill(static_cast<kos_thread_t>(a0)));
         }
+#if KICKOS_TIMED_WAIT
+        case KOS_SYS_THREAD_JOIN:
+        {
+            // Blocks, so no dispatch IrqLock, same as SEND/RECV/CALL. Parenthood-gated
+            // inside, like the cancel above.
+            return static_cast<uintptr_t>(
+                thread_join(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
+        }
+        case KOS_SYS_WAIT_LAST:
+        {
+            return static_cast<uintptr_t>(thread_wait_last());
+        }
+#endif
         case KOS_SYS_EXIT:
         {
             Thread* c = sched::current();

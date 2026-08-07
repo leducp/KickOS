@@ -134,7 +134,8 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
     endif()
   endforeach()
   foreach(_flag KICKOS_ENABLE_SELFTEST KICKOS_DEBUG KICKOS_BENCH
-                KICKOS_SHUTDOWN_TO_BOOTLOADER CONFIG_SCHED_PERIODIC_TICK)
+                KICKOS_SHUTDOWN_TO_BOOTLOADER KICKOS_TIMED_WAIT
+                CONFIG_SCHED_PERIODIC_TICK)
     if(DEFINED ${_flag})
       string(REGEX REPLACE "^CONFIG_" "" _sym "${_flag}")
       set(_val "n")
@@ -251,6 +252,22 @@ endif()
 if(KICKOS_ENABLE_SELFTEST)
   # Directory-wide so kernel dispatch, the user stub, and the app agree.
   add_compile_definitions(KICKOS_ENABLE_SELFTEST=1)
+endif()
+
+# --- Bounded waits ----------------------------------------------------------
+# ON: send/call/recv accept a deadline, a thread can be joined, and a thread can wait
+# until it is the last one live. OFF: those five dispatch arms and their stubs are not
+# built, and their (permanently allocated) syscall numbers answer -KOS_EINVAL. The
+# numbers are never reused. See the help text in Kconfig for what OFF gives up:
+# console_handover_finish falls back to the untimed send, so a console driver that hangs
+# in bring-up parks the handing-over thread with nothing to recover it.
+# Always defined 0 or 1 so `#if KICKOS_TIMED_WAIT` is -Wundef-clean.
+option(KICKOS_TIMED_WAIT "Bounded waits: timed send/call/receive, join, wait-until-last" ON)
+if(KICKOS_TIMED_WAIT)
+  add_compile_definitions(KICKOS_TIMED_WAIT=1)
+else()
+  add_compile_definitions(KICKOS_TIMED_WAIT=0)
+  message(STATUS "KickOS: bounded waits OFF (console bring-up parks unbounded)")
 endif()
 
 # --- Terminating images hand the chip back to its bootloader ----------------

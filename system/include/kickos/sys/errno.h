@@ -37,6 +37,9 @@ enum kos_errno
     KOS_EDEADLK = 35,    // self/recursive lock, or a lock that would close a wait cycle
     KOS_ENOSYS = 38,     // syscall/arch backend not implemented on this chip (the declining fallback)
     KOS_EOVERFLOW = 75,  // a bounded counter is at its ceiling; the op is refused, not wrapped
+    KOS_ETIMEDOUT = 110, // a caller-supplied deadline passed before the operation could
+                         //   complete, and NOTHING happened: a timed send that expires
+                         //   delivered no bytes and left no state behind
     KOS_ECANCELED = 125, // this thread was cancelled: the wait it was in (or was about to
                          //   enter) is abandoned, and the thread is expected to exit
     KOS_EOWNERDEAD = 130 // mutex ACQUIRED but the prior owner died holding it (state may be torn)

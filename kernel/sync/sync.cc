@@ -21,7 +21,11 @@ namespace kickos
         if (best != nullptr)
         {
             q.unlink(&best->link);
-            best->wait_queue = nullptr;
+            best->clear_wait_edge();
+            // No deadline cancel here. A pop is not an unpark: endpoint_recv pops a
+            // CALL_SEND_WAIT caller straight into reply_donor_park, and cancelling here
+            // would strip the deadline that must span both call phases. sched::wake owns
+            // the cancel, because becoming ready is what ends a wait.
         }
         return best;
     }
@@ -66,7 +70,7 @@ namespace kickos
     }
 
     // Returns when woken.
-    void wq_block(List& q)
+    void wq_block(List& q, WaitKind kind, void* obj)
     {
         Thread* c = sched::current();
         // Detach from the ready list FIRST: the ready list and the wait queues share the
@@ -75,8 +79,21 @@ namespace kickos
         sched::detach_current();
         c->state = ThreadState::BLOCKED;
         c->wait_queue = &q;
+        c->wait_kind = kind;
+        c->wait_obj = obj;
         q.push_back(&c->link);
         sched::reschedule();
+    }
+
+    void park_queueless(Thread* c, WaitKind kind, void* obj)
+    {
+        // Same ordering rule as wq_block: the ready-list removal reads `link`, so it must
+        // run before anything re-uses that node.
+        sched::detach_current();
+        c->state = ThreadState::BLOCKED;
+        c->wait_queue = nullptr;
+        c->wait_kind = kind;
+        c->wait_obj = obj;
     }
 
     // The ceiling must be representable in Semaphore::count, else the bound in sem_post is
@@ -98,7 +115,7 @@ namespace kickos
             s->count--;
             return;
         }
-        wq_block(s->waiters);
+        wq_block(s->waiters, WAIT_SEM, s);
         // The token was handed over directly by sem_post; there is nothing to decrement.
     }
 
@@ -131,8 +148,8 @@ namespace kickos
     }
 
     // Priority inheritance. sched::set_prio is the SOLE writer of an effective priority.
-    // Inheritance does NOT propagate through semaphores: a thread blocked on a sem has
-    // blocked_on == nullptr, so the chain walk stops there.
+    // Inheritance does NOT propagate through semaphores: a thread blocked on a sem answers
+    // nullptr from wait_mutex(), so the chain walk stops there.
     namespace
     {
         void held_push(Thread* owner, Mutex* m)
@@ -172,17 +189,16 @@ namespace kickos
         }
 
         // Caller holds IrqLock, and must already have held_remove'd m from the releaser
-        // and popped w off m->waiters.
-        // `status` and the blocked_on clear are written HERE by the waker, never by the
-        // woken thread after it resumes: on ARM the woken thread resumes only after a
-        // deferred PendSV, so a self-clear leaves a window in which a still-parked thread
-        // has blocked_on == nullptr and the chain walk stops short of it, losing a boost
+        // and popped w off m->waiters; that pop is what cleared w's wait edge.
+        // Both that clear and `status` belong to the WAKER, never to the woken thread
+        // after it resumes: on ARM the woken thread resumes only after a deferred PendSV,
+        // so a self-clear leaves a window in which a still-parked thread already answers
+        // nullptr from wait_mutex() and the chain walk stops short of it, losing a boost
         // or a deadlock detection.
         void transfer_to(Mutex* m, Thread* w, intptr_t status)
         {
             m->owner = w;
             w->wait_result = status;
-            w->blocked_on = nullptr;
             held_push(w, m);
             // VACUOUS while the pop returns the highest-prio waiter: every waiter left on
             // m is then <= w. Kept as the general form so a change of pop policy does not
@@ -207,6 +223,11 @@ namespace kickos
     void reply_donor_park(Thread* server, Thread* caller)
     {
         server->reply_waiters.push(&caller->link);
+        // The server is the ONLY edge back from a queue-less reply park; endpoint_recv
+        // re-parks a just-popped SEND_WAIT caller here, so this must run after that pop
+        // cleared the endpoint edge.
+        caller->wait_kind = WAIT_EP_REPLY;
+        caller->wait_obj = server;
     }
 
     // Must run wherever a CAP_REPLY entry is consumed (reply, voluntary close, exit
@@ -214,10 +235,19 @@ namespace kickos
     // after its cap is gone. Membership is TESTED, not assumed: cap_reply_caller matches
     // only the low 8 bits of the call sequence, so a stale reply cap held by thread A can
     // resolve to a caller actually parked on thread B, and unlinking it from A would
-    // splice B's list.
-    void reply_donor_unpark(Thread* server, Thread* caller)
+    // splice B's list. The false return is what the caller must branch on: `link` is
+    // ready-list XOR wait-queue XOR reply-donor, so completing a transaction against a
+    // caller this did not unlink walks two lists through one node.
+    bool reply_donor_unpark(Thread* server, Thread* caller)
     {
-        (void)server->reply_waiters.unlink_if_present(&caller->link);
+        // The clear rides the unlink: clearing on a miss would erase a live edge while the
+        // caller stays linked on that other server's list.
+        if (not server->reply_waiters.unlink_if_present(&caller->link))
+        {
+            return false;
+        }
+        caller->clear_wait_edge();
+        return true;
     }
 
     void endpoint_server_clear(Endpoint* ep)
@@ -329,7 +359,7 @@ namespace kickos
                 return -KOS_EDEADLK; // a recursive lock is refused, never parked
             }
             // Pass 1: cycle detection, READ ONLY, so a refusal writes no boost. Walking
-            // owner -> blocked_on -> owner reaching c means blocking c on m would close a
+            // owner -> wait_mutex() -> owner reaching c means blocking c on m would close a
             // wait cycle. The depth bound only stops the walk on a PRE-EXISTING foreign
             // cycle; those threads are already deadlocked.
             {
@@ -341,11 +371,11 @@ namespace kickos
                     {
                         return -KOS_EDEADLK;
                     }
-                    if (t->blocked_on == nullptr)
+                    if (t->wait_mutex() == nullptr)
                     {
-                        break; // t is runnable or sem-blocked: chain ends
+                        break; // t is runnable or parked on something else: chain ends
                     }
-                    t = t->blocked_on->owner;
+                    t = t->wait_mutex()->owner;
                     depth++;
                     if (depth > KICKOS_MAX_MUTEXES)
                     {
@@ -365,11 +395,11 @@ namespace kickos
                         break;
                     }
                     sched::set_prio(t, c->prio);
-                    if (t->blocked_on == nullptr)
+                    if (t->wait_mutex() == nullptr)
                     {
                         break;
                     }
-                    t = t->blocked_on->owner;
+                    t = t->wait_mutex()->owner;
                     depth++;
                     if (depth > KICKOS_MAX_MUTEXES)
                     {
@@ -377,11 +407,12 @@ namespace kickos
                     }
                 }
             }
-            c->blocked_on = m;
             // Must be sampled under the lock, immediately before parking; the barrier
             // below waits for it to advance.
             epoch = c->switch_count;
-            wq_block(m->waiters); // a waker transfers ownership and writes wait_result
+            // WAIT_MUTEX is what puts c on the chain walk above for the next blocker.
+            // A waker transfers ownership and writes wait_result.
+            wq_block(m->waiters, WAIT_MUTEX, m);
         }
         // The wait_result read must be BOTH outside the critical section AND after the
         // barrier: on ARM a couple of instructions retire on the not-yet-switched thread

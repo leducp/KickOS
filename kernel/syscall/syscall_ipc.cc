@@ -14,6 +14,7 @@
 #include <kickos/sched.h>
 #include <kickos/sync.h>
 #include <kickos/thread.h>
+#include <kickos/time.h>
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
@@ -28,6 +29,22 @@ namespace kickos
         // scheme yet, so every message carries this. Distinct from the "no out-ptr"
         // markers (ipc.badge_out == 0), which mean the receiver asked for no badge.
         constexpr uint32_t KOS_BADGE_NONE = 0;
+
+        // The single seam KICKOS_TIMED_WAIT cuts on the IPC parks. With it off no caller
+        // can name a deadline, so every park below reaches this and stops here, and
+        // ktime_deadline_arm leaves the image with the dispatch arms that fed it.
+        void park_deadline_arm(Thread* t, uint32_t timeout_us)
+        {
+#if KICKOS_TIMED_WAIT
+            if (timeout_us != KOS_TIMEOUT_NONE)
+            {
+                ktime_deadline_arm(t, timeout_us);
+            }
+#else
+            (void)t;
+            (void)timeout_us;
+#endif
+        }
     }
 
     // --- Endpoint capability (IPC rendezvous; mirrors sem_create) ---------------
@@ -75,8 +92,11 @@ namespace kickos
     // FULLY LOCKLESS from dispatch (see design section 3): a caller IrqLock spanning
     // this would keep BASEPRI raised across wq_confirm_resume and livelock ARM.
     // Returns bytes transferred (>= 0), or -KOS_E* (EINVAL oversize, EFAULT bad buffer,
-    // EBADF/EPERM bad cap or missing SIGNAL, EPIPE dead endpoint / last receiver left).
-    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len)
+    // EBADF/EPERM bad cap or missing SIGNAL, EPIPE dead endpoint / last receiver left,
+    // ETIMEDOUT `timeout_us` elapsed with no receiver, in which case nothing was sent).
+    // `timeout_us` is relative microseconds and bounds the PARK only: KOS_TIMEOUT_NONE
+    // parks forever.
+    int32_t endpoint_send(uint32_t cap, uintptr_t buf, size_t len, uint32_t timeout_us)
     {
         if (len > KOS_EP_MSG_MAX)
         {
@@ -125,17 +145,24 @@ namespace kickos
             c->ipc.badge_out = 0;
             c->call_state = CALL_NONE; // B1: a plain sender is never a call
             epoch = c->switch_count;
-            wq_block(e->send_waiters);
+            park_deadline_arm(c, timeout_us);
+            wq_block(e->send_waiters, WAIT_EP_SEND, e);
         }
         wq_confirm_resume(c, epoch);
-        return static_cast<int32_t>(c->wait_result); // n (>= 0), or -KOS_EPIPE (last receiver left)
+        // n (>= 0), -KOS_EPIPE (last receiver left) or -KOS_ETIMEDOUT (ktime_on_timer)
+        return static_cast<int32_t>(c->wait_result);
     }
 
     // Synchronous recv: take from a parked sender (copy now) or park. FULLY LOCKLESS
     // from dispatch, same reason as endpoint_send. Returns bytes received (>= 0), or
     // -KOS_E* (EFAULT bad buffer/out-ptr, EINVAL misaligned badge, EBADF/EPERM bad cap or
-    // missing WAIT). n == 0 is a VALID zero-length signal, not an error.
-    int32_t endpoint_recv(uint32_t cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out)
+    // missing WAIT, ETIMEDOUT the deadline elapsed with no sender). n == 0 is a VALID
+    // zero-length signal, not an error.
+    // `timed` == KOS_SYS_RECV_TIMED, and then `badge_out` names a kos_recv_timed_opts
+    // rather than a bare kos_recv_info: the deadline is read out of it here, and everything
+    // downstream sees only the kos_recv_info NESTED inside it.
+    int32_t endpoint_recv(uint32_t cap, uintptr_t buf, size_t cap_len, uintptr_t badge_out,
+                          bool timed)
     {
         if (cap_len > KOS_EP_MSG_MAX)
         {
@@ -145,8 +172,48 @@ namespace kickos
         {
             return -KOS_EFAULT;
         }
+        // Consumes the opts struct and REWRITES badge_out to the kos_recv_info nested in it.
+        // Each arm below validates the out-ptr exactly once, on the address the kernel
+        // actually stores to.
+        uint32_t timeout_us = KOS_TIMEOUT_NONE;
+#if KICKOS_TIMED_WAIT
+        if (timed)
+        {
+            // The deadline rides the opts struct, so there is nowhere to state one without
+            // it. Refused rather than silently parked forever.
+            if (badge_out == 0)
+            {
+                return -KOS_EINVAL;
+            }
+            if ((badge_out & (alignof(uint32_t) - 1)) != 0)
+            {
+                return -KOS_EINVAL; // load-bearing for the privileged read below
+            }
+            // IN-OUT here, so readable as well as writable; plain recv keeps its
+            // writable-only check because it never reads the caller's copy.
+            if (not user_readable_ok(badge_out, sizeof(kos_recv_timed_opts))
+                or not user_writable_ok(badge_out, sizeof(kos_recv_timed_opts)))
+            {
+                return -KOS_EFAULT;
+            }
+            // Copied into kernel storage ONCE, before anything can park. The struct stays
+            // user-writable, so a value re-read after the park would be whatever the caller
+            // has since put there.
+            kaccess_from_user(&timeout_us,
+                              badge_out + offsetof(kos_recv_timed_opts, timeout_us),
+                              sizeof(timeout_us));
+            badge_out = badge_out + offsetof(kos_recv_timed_opts, info);
+        }
+        else // binds to the `if` below, across the #endif
+#else
+        (void)timed; // no dispatch arm can pass true: KOS_SYS_RECV_TIMED is not built
+#endif
         // The out-ptr delivers a kos_recv_info (8 bytes, 4-aligned), not a bare badge u32.
-        // badge_out == 0 means an info-less recv, which cannot host a call.
+        // badge_out == 0 means an info-less recv, which cannot host a call. UNREACHED on the
+        // timed path, which must keep its own check: the rewritten badge_out spans [4, 12)
+        // of the opts struct proved writable there, and offsetof(info) == 4 preserves the
+        // alignment. abi.h static_asserts both (offsetof == 4, sizeof(opts) == 12), so
+        // widening kos_recv_info without widening opts is what would break the containment.
         if (badge_out != 0
             and ((badge_out & (alignof(uint32_t) - 1)) != 0
                  or not user_writable_ok(badge_out, sizeof(kos_recv_info))))
@@ -255,7 +322,8 @@ namespace kickos
             c->ipc.len = cap_len;
             c->ipc.badge_out = badge_out;
             epoch = c->switch_count;
-            wq_block(e->recv_waiters);
+            park_deadline_arm(c, timeout_us);
+            wq_block(e->recv_waiters, WAIT_EP_RECV, e);
         }
         wq_confirm_resume(c, epoch);
         return static_cast<int32_t>(c->wait_result);
@@ -266,8 +334,14 @@ namespace kickos
     // like SEND/RECV. Returns reply bytes (>= 0), or -KOS_E* (EINVAL oversize, EFAULT
     // bad buffer, EBADF/EPERM bad cap or no SIGNAL, EPIPE dead endpoint or server died,
     // EMFILE the SERVER's table is full or it is at its inbound reply bound, ENOSYS
-    // server took an info-less recv).
-    int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap)
+    // server took an info-less recv, ETIMEDOUT `timeout_us` elapsed).
+    // `timeout_us` is relative microseconds and bounds the WHOLE call, not one park:
+    // ONE deadline covers the wait on send_waiters AND the wait for the reply. It survives
+    // the handoff between them because that transition moves the caller through `link`
+    // only, while the delta list uses `tnext`, and because sched::wake owns the cancel and
+    // a park-to-park migration never wakes. KOS_TIMEOUT_NONE parks forever on either path.
+    int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
+                          uint32_t timeout_us)
     {
         if (send_len > KOS_EP_MSG_MAX)
         {
@@ -354,10 +428,11 @@ namespace kickos
                     sched::set_prio(w, c->prio);
                 }
                 epoch = c->switch_count;
-                sched::detach_current();
-                c->state = ThreadState::BLOCKED;
-                c->wait_queue = nullptr;
+                park_queueless(c, WAIT_EP_REPLY, w);
                 reply_donor_park(w, c); // off the ready set: `link` is free to re-use
+                // The fastpath skips the send-side park entirely, so the deadline is armed
+                // straight onto the reply wait. Must precede the wake: that switches away.
+                park_deadline_arm(c, timeout_us);
                 sched::wake(w);
             }
             else
@@ -376,13 +451,86 @@ namespace kickos
                     sched::set_prio(e->server, c->prio);
                 }
                 epoch = c->switch_count;
-                wq_block(e->send_waiters);
+                // Armed ONCE, here, and never re-armed: when a server later pops this
+                // caller onto its reply_waiters the deadline rides along untouched, and it
+                // then bounds the reply wait.
+                park_deadline_arm(c, timeout_us);
+                // Same kind as a plain sender: call_state already separates the two, and
+                // the wait edge answers only which list and which object.
+                wq_block(e->send_waiters, WAIT_EP_SEND, e);
             }
         }
         wq_confirm_resume(c, epoch);
         c->call_state = CALL_NONE; // B1: single-writer-clean on EVERY return path
-        return static_cast<int32_t>(c->wait_result); // reply bytes, or -KOS_EPIPE/-KOS_EMFILE/-KOS_ENOSYS
+        // reply bytes, or -KOS_EPIPE/-KOS_EMFILE/-KOS_ENOSYS/-KOS_ETIMEDOUT
+        return static_cast<int32_t>(c->wait_result);
     }
+
+#if KICKOS_TIMED_WAIT
+    // Unwind an expired deadline found under an endpoint park. Called ONLY from
+    // ktime_on_timer, under the timer's IrqLock, with `t` already off the delta list and
+    // its wait edge still intact: that edge is the only thing naming the list `t` is on.
+    // This function exists so time.cc decides "a deadline expired on this thread" and
+    // nothing more; every endpoint internal below belongs to this layer.
+    void endpoint_wait_timeout(Thread* t)
+    {
+        switch (t->wait_kind)
+        {
+            case WAIT_EP_SEND:
+            case WAIT_EP_RECV:
+            {
+                // Only a CALL_SEND_WAIT thread donates: it is a caller no receiver has
+                // taken yet, and it D2-boosted the endpoint's conventional server. A plain
+                // sender and a receiver are CALL_NONE.
+                bool const donor =
+                    (t->wait_kind == WAIT_EP_SEND and t->call_state == CALL_SEND_WAIT);
+                Endpoint* const e = t->wait_endpoint(); // before the edge is cleared
+                KICKOS_ASSERT(e != nullptr);           // wq_block never parks here without one
+                t->wait_queue->unlink(&t->link);
+                t->clear_wait_edge();
+                t->call_state = CALL_NONE;
+                // An endpoint with no conventional receiver yet has nobody to have boosted.
+                if (donor and e->server != nullptr)
+                {
+                    // Both the unlink and the CALL_NONE above MUST precede this: the funnel
+                    // counts a SEND_WAIT donor still linked on send_waiters, so recomputing
+                    // first would re-derive the very boost we are reverting.
+                    sched::set_prio(e->server, thread_effective_prio(e->server));
+                }
+                break;
+            }
+            case WAIT_EP_REPLY:
+            {
+                // Queue-less: the server is the only edge back, and reply_donor_unpark
+                // clears it as it unlinks.
+                Thread* const server = t->wait_server();
+                KICKOS_ASSERT(server != nullptr); // reply_donor_park never seats a null
+                bool const unlinked = reply_donor_unpark(server, t);
+                // Unlike the userspace-reachable stale-cap route into reply/close, the edge
+                // here NAMES the list this thread is on, so a miss is a kernel bug.
+                KICKOS_ASSERT(unlinked);
+                t->call_state = CALL_NONE;
+                // The abandoned reply cap must die with the call it named: cap_reply_caller
+                // matches only the low 8 bits of call_seq, so a cap left on this call's seq
+                // resolves to this thread again after exactly 256 further calls.
+                t->call_seq++;
+                // D3, after the unlink and the CALL_NONE for the same reason as above.
+                sched::set_prio(server, thread_effective_prio(server));
+                // The server KEEPS the reply capability. Reclaiming an entry from another
+                // task's table would reach across a containment boundary; the residue is
+                // bounded by KICKOS_CAP_REPLY_MAX against Thread::cap_reply_live, and the
+                // server's eventual reply consumes it and answers -KOS_ESRCH.
+                break;
+            }
+            default:
+            {
+                KICKOS_UNREACHABLE("endpoint_wait_timeout on a non-endpoint park");
+            }
+        }
+        t->wait_result = -KOS_ETIMEDOUT;
+        sched::wake(t);
+    }
+#endif
 
     // Copies the reply into the parked caller's buffer and wakes it. One-shot: the cap is
     // consumed on EVERY exit. Returns 0, or -KOS_E* (EBADF bad or non-reply cap, EFAULT bad
@@ -416,18 +564,21 @@ namespace kickos
         e->rights = 0;
         cap_run_free_release(c->caps, reply_cap & KCAP_INDEX_MASK, &c->cap_free_head);
         cap_reply_released(c);
-        if (caller != nullptr)
+        // Must happen in the SAME step as the entry, and before either funnel recompute
+        // below: a donor left linked past its cap is a boost the replier can never shed.
+        // A false return means the resolve landed on a caller parked on ANOTHER server, so
+        // this reply owns nothing of it and must complete as if the caller were gone.
+        if (caller != nullptr and not reply_donor_unpark(c, caller))
         {
-            // Must happen in the SAME step as the entry, and before either funnel
-            // recompute below: a donor left linked past its cap is a boost the replier
-            // can never shed.
-            reply_donor_unpark(c, caller);
+            caller = nullptr;
         }
         if (caller == nullptr)
         {
-            // Cap consumed but no caller to complete: still revert our donation
-            // through the funnel (defense-in-depth for when timed-call / kill land
-            // and a stale reply becomes reachable). Unreachable today.
+            // Cap consumed but no caller to complete. A timed call whose deadline expired
+            // is the reachable route: it leaves CALL_NONE behind, so cap_reply_caller's
+            // call_state test answers nullptr for a cap this server still legitimately
+            // holds. Revert our donation through the funnel anyway; the caller is already
+            // awake with -KOS_ETIMEDOUT.
             sched::set_prio(c, thread_effective_prio(c));
             return -KOS_ESRCH; // caller aborted or reused; the cap is consumed regardless
         }

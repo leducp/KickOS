@@ -73,12 +73,13 @@ namespace kickos
 {
     // Park current on q and switch away. Returns when a waker has popped this
     // thread from q and readied it. Thread context only (parking from an ISR
-    // has no thread identity to park).
-    void wq_block(List& q);
+    // has no thread identity to park). `kind` and `obj` are the wait edge: the
+    // record of WHICH list this park is on, for wakers that do not hold q.
+    void wq_block(List& q, WaitKind kind, void* obj);
 
     // Remove and return the highest-priority waiter (FIFO among equals), or
-    // nullptr if q is empty. Selection only: does not change any thread state
-    // and does not schedule. Callable from thread OR interrupt context.
+    // nullptr if q is empty. Unlinks and clears the popped thread's wait edge;
+    // changes nothing else and does not schedule. Thread OR interrupt context.
     Thread* wq_pop_highest(List& q);
 }
 ```
@@ -90,8 +91,30 @@ also covered the predicate -- that is the lost-wakeup fix, and it is a *precondi
 of `wq_block`, not something it does for you.
 
 `wq_pop_highest` is the selection half: scan the queue, pick the highest-priority
-thread, and unlink it. It deliberately does **not** wake the thread or touch its
-state -- it only chooses.
+thread, and unlink it. It does **not** wake the thread, deliver it a result, or
+schedule -- it chooses, and it retracts the one claim the parked thread had made about
+itself.
+
+### The wait edge, and why the pop retracts it
+
+The queue answers "who is waiting here". Nothing in it answers the reverse question --
+"given this thread, which list is it on?" -- and some wakers only ever have the thread.
+A deadline expires and the timer holds a thread; a cancellation names a thread. Neither
+can walk every queue in the system to find the one link to unlink.
+
+So the park records the answer on the thread itself: `kind` says what class of wait
+this is, `obj` names the object whose list it is on. That pair is the *wait edge*, and
+it is why `wq_block` takes three arguments rather than one -- the queue push and the
+edge must be established under the same lock, or a waker arriving from the thread side
+sees a thread that is parked and claims to be nowhere.
+
+The pop is the mirror image. Once `wq_pop_highest` has unlinked a thread, the edge is
+a lie: it still names a list the thread is no longer on, and a waker that trusted it
+would unlink a link that is already free. So the pop clears it, and a caller that
+re-parks the popped thread somewhere else must state the new edge afresh. This is
+exactly what a call/reply handoff does -- pop a caller off the endpoint's send queue,
+park it again to await a reply -- and it is the reason the clearing belongs in the pop
+rather than in each waker.
 
 ### The lazy at-pop scan is load-bearing
 
@@ -158,7 +181,7 @@ while still holding the lock:
 {
     IrqLock lock;
     ...
-    wq_block(q);              // park
+    wq_block(q, kind, obj);   // park
     return current->wait_result;   // read what the waker left us
 }
 ```
@@ -198,7 +221,7 @@ uint64_t epoch;
     IrqLock lock;
     ...                       // predicate + transfer setup, all under one lock
     epoch = current->switch_count;   // sample BEFORE parking
-    wq_block(q);              // park (returns pre-switch on deferred archs)
+    wq_block(q, kind, obj);   // park (returns pre-switch on deferred archs)
 }                             // lock released -> the pended switch can now fire
 wq_confirm_resume(current, epoch);   // spin until genuinely resumed
 return current->wait_result;         // now the waker's write is visible
@@ -222,11 +245,16 @@ does to priorities, how an endpoint copies bytes -- live entirely in step 2, whe
 they belong. There is exactly one lost-wakeup discipline to get right, one place where
 the deferred-switch subtlety is handled, and one field for delivering a result.
 
-A future timed wait (wake either on the event or on a deadline) is the one planned
-extension, and it fits the same shape: it needs one distinguishable timeout value per
-type reserved in the `wait_result` namespace, and a deadline on the tickless timer
-list (Chapter 2.1) alongside the queue membership. It does not need a second
-primitive.
+A timed wait -- wake on the event *or* on a deadline -- is the sharpest test of whether
+one primitive was really enough, because it introduces a second waker that arrives from
+the timer rather than from the object. It needs no second primitive. The deadline goes
+on the tickless timer list (Chapter 2.1) alongside the queue membership, the expiry
+reuses the `wait_result` channel with one distinguishable value, and the unwind is an
+ordinary step-2 transfer run by the timer: retract the wait edge, deliver the timeout,
+wake. What the deadline *does* cost is the discipline of keeping the two memberships
+independent -- a thread on a wait queue and on the timer list is on two lists at once,
+so they must not share a link field, and exactly one path may cancel the deadline, or a
+park-to-park handoff will silently disarm a deadline that was meant to span both waits.
 
 ## Where to go next
 
