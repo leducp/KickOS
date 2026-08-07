@@ -129,6 +129,16 @@ namespace kickos
         void wake(Thread* t)
         {
             IrqLock lock;
+            // THE unpark funnel, and so the ONE place a timed wait's deadline is dropped.
+            // Deliberately NOT in wq_pop_highest: a CALL_SEND_WAIT caller popped there goes
+            // straight to reply_donor_park, a park-to-park migration that never becomes
+            // ready, and a cancel there would strip the single deadline that must span both
+            // call phases. Becoming ready IS this call, so an unpark that forgets to cancel
+            // cannot be written.
+            if (t->on_timer)
+            {
+                ktime_deadline_cancel(t);
+            }
             if (t->state == ThreadState::READY or t->state == ThreadState::RUNNING)
             {
                 return;
@@ -167,7 +177,7 @@ namespace kickos
                 kernel().policy->on_ready(t);
                 return;
             }
-            // BLOCKED and SLEEPING threads are on no ready list, and neither queue is
+            // A BLOCKED thread is on no ready list, and neither queue it can be on is
             // prio-ordered: wq_pop_highest rescans at pop, the timer list is
             // deadline-sorted.
             t->prio = p;
@@ -215,6 +225,34 @@ namespace kickos
                 {
                     k.live--;
                 }
+#if KICKOS_TIMED_WAIT
+                // Join and wait-until-last are parked on NO list, so this pool scan IS the
+                // waiter lookup; it runs at a thread exit and nowhere else. The wait edge
+                // and wait_result are the waker's to write BEFORE the wake, as on every
+                // wait queue. `dying` is set, so each wake below returns without switching
+                // and the reschedule further down stays the single switch away.
+                bool const last_out = (k.live == 1);
+                for (int s = 0; s < k.threads.next; s++)
+                {
+                    Thread* const w = &k.threads.slots[s];
+                    if (w->wait_join_target() == c)
+                    {
+                        w->clear_wait_edge();
+                        w->wait_result = 0;
+                        wake(w);
+                        continue;
+                    }
+                    // A parked waiter is still counted live, so a count of 1 here names
+                    // that waiter and nothing else.
+                    if (last_out and w->wait_kind == WAIT_LIVE_LAST)
+                    {
+                        // No wait_result: reaching this wake IS the whole answer, and
+                        // thread_wait_last returns 0 without reading one.
+                        w->clear_wait_edge();
+                        wake(w);
+                    }
+                }
+#endif
                 if (k.live == 0)
                 {
                     // Last non-idle thread out ends the process with its exit code.

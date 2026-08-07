@@ -92,16 +92,18 @@ Why this is safe is the elegant part. At the moment of copy, both buffers are st
   running, so it cannot mutate the buffer) and its MPU regions are immutable for its
   lifetime (so the memory cannot be remapped underneath the copy).
 
-There is no time-of-check-to-time-of-use gap, either: the only way a KickOS thread
-goes away is by exiting itself (there is no `thread_kill`), so a parked peer cannot
-vanish mid-copy. And the resolve, the peer check, and the copy-or-park all happen
-inside *one* continuous `IrqLock`, so no third party interleaves.
+There is no time-of-check-to-time-of-use gap, either. A KickOS thread only ever goes away
+by exiting itself: cancellation is cooperative, marking the target and letting it run its
+own exit at its next cancellation point, so nothing can tear a thread down from outside
+while it sits parked in a rendezvous. And the resolve, the peer check, and the copy-or-park
+all happen inside *one* continuous `IrqLock`, so no third party interleaves.
 
 The copy is a bounded `memcpy` between the two user buffers. The size is `n = min(sender
 length, receiver capacity)`: a receiver with a smaller buffer *truncates* the message
 (datagram semantics -- both sides simply learn `n` bytes moved), which is not an error.
-A zero-length send is a legitimate `n == 0` signal, not a failure -- userspace must not
-conflate it with the `-1` that means "something went wrong."
+A zero-length send is a legitimate `n == 0` signal, not a failure. That is the whole reason
+the return splits by sign rather than reserving a magic value: a byte count is non-negative,
+an error is a negated `errno`, and the two can never be confused.
 
 The parked side leaves behind exactly what the waker needs -- a small descriptor in its
 own thread control block:
@@ -124,27 +126,37 @@ never re-reads its own descriptor.
 Sketch of the send path (the receive path is its mirror):
 
 ```
-kos_send(cap, buf, len):
-    if len > KOS_EP_MSG_MAX:            return -1   // reject oversize; do not clamp
-    if not user_readable_ok(buf, len):  return -1   // sender's own buffer, checked once
+send(cap, buf, len, timeout_us):                     // timeout_us may be "no deadline"
+    if len > KOS_EP_MSG_MAX:            return -EINVAL  // reject oversize; do not clamp
+    if not user_readable_ok(buf, len):  return -EFAULT  // sender's own buffer, checked once
     {
         IrqLock lock
         e = cap_resolve(current, cap, CAP_ENDPOINT, CAP_SIGNAL)   // need the send right
-        if e == nullptr:            return -1
-        if e->recv_holders == 0:    return -1        // dead endpoint (below)
+        if e == nullptr:            return -EBADF / -EPERM
+        if e->recv_holders == 0:    return -EPIPE     // dead endpoint (below)
         w = wq_pop_highest(e->recv_waiters)
         if w != nullptr:                             // a receiver is parked -> deliver now
             n = min(len, w->ipc.len)
             copy buf -> w->ipc.buf, n bytes          // running sender copies into parked receiver
             w->wait_result = n
             sched::wake(w)
-            return n                                  // did not block
+            return n                                  // did not block: no clock read at all
         current->ipc = { buf, len, ... }             // no receiver -> park
-        sample epoch; wq_block(e->send_waiters)
+        if timeout_us is a deadline:  arm it on current
+        sample epoch; wq_block(e->send_waiters, WAIT_EP_SEND, e)
     }
     wq_confirm_resume(current, epoch)                // Chapter 2.2 barrier
-    return current->wait_result                       // n (>= 0), or -1 (broken pipe)
+    return current->wait_result                       // n (>= 0), -EPIPE, or -ETIMEDOUT
 ```
+
+Two details in that sketch carry more weight than they look. The deadline is armed only on
+the path that actually parks, so a rendezvous that completes immediately never reads the
+clock and never touches the timer's data structures -- the cost of the feature is one
+comparison for everyone who does not use it. And the park states *what* it is waiting for
+(`WAIT_EP_SEND`) and *which object* owns the list it is on. That tag is not decoration: when
+a deadline expires, the timer knows only that this thread's time is up, and the tag is the
+only thing that says which queue to unlink it from and which donation to unwind. A wait that
+cannot be named cannot be undone from outside.
 
 The bound-checks run **up front, in the caller's context**, before the lock -- each
 buffer checked against *its own owner's* regions: the sender's buffer for read, the
@@ -168,13 +180,13 @@ plain refcount cannot:
 - **The dead-endpoint gate.** When a sender arrives, if `recv_holders == 0` there is no
   receiver and -- because rights are only ever narrowed on delegation, never widened
   (Chapter 8.1) -- no new receive capability can ever be minted. So the send fails
-  immediately with `-1` rather than parking forever. A send-only client closing its own
+  immediately with `-EPIPE` rather than parking forever. A send-only client closing its own
   capability drops `endpoint_refs` but not `recv_holders`, so it must *not* trigger
   this; that is exactly why the two counts are separate.
 - **Broken pipe (EPIPE).** When the *last* receive-holder goes away -- closes its
   capability or exits -- any senders already parked would otherwise wait forever. So
   the close protocol (Chapter 8.2) for an endpoint, on dropping `recv_holders` to zero,
-  wakes every parked sender with `wait_result = -1`:
+  wakes every parked sender with `wait_result = -EPIPE`:
 
 ```
 case CAP_ENDPOINT:   // obj_close_protocol arm; runs on voluntary close AND teardown
@@ -183,7 +195,7 @@ case CAP_ENDPOINT:   // obj_close_protocol arm; runs on voluntary close AND tear
         ep->recv_holders--
         if ep->recv_holders == 0:
             while ((s = wq_pop_highest(ep->send_waiters)) != nullptr):
-                s->wait_result = -1        // broken pipe
+                s->wait_result = -EPIPE    // broken pipe
                 sched::wake(s)
     return 0     // an endpoint NEVER refuses a close (unlike the mutex)
 ```
@@ -205,18 +217,21 @@ as it is a decision and not an accident.
 The endpoint is intentionally the smallest thing that is a real IPC primitive. Three
 omissions are deliberate, not unfinished:
 
-- **No priority inheritance.** A thread parked on an endpoint has no `blocked_on`
-  mutex, so the PI chain walk (Chapter 2.3) correctly stops at it -- a high-priority
-  sender does *not* lend its urgency to a low-priority receiver. There is no owner to
-  boost; an endpoint is a rendezvous, not a lock. The mitigation is configuration: a
-  server that must be responsive should out-rank its clients, so it is scheduled
-  promptly when a client sends.
-- **No call/reply.** The primitive is one-way send and one-way receive. The
-  request-then-await-response (RPC) pattern is a userspace convention built from a pair
-  of endpoints, not a kernel mechanism.
-- **No timed send/receive.** A blocked party waits indefinitely. Timed waits are the
-  one planned substrate extension (Chapter 2.2) and would apply to sem, mutex, and
-  endpoint uniformly; they are not special-cased here.
+- **No priority inheritance.** A thread parked on an endpoint carries an endpoint-kind
+  wait edge, not a mutex one, so the PI chain walk (Chapter 2.3) correctly stops at it -- a
+  high-priority sender does *not* lend its urgency to a low-priority receiver. There is no
+  owner to boost; an endpoint is a rendezvous, not a lock. The mitigation is configuration:
+  a server that must be responsive should out-rank its clients, so it is scheduled promptly
+  when a client sends. Donation does exist for the *call/reply* layer built on top of this
+  primitive, where a transaction genuinely has a server to lend to.
+- **No call/reply in the primitive itself.** Send and receive are one-way, and neither
+  carries the notion of a reply owed. Request-then-await-response is a *separate* layer
+  with its own syscalls and its own reply capability (Chapter 8.5); what the endpoint
+  omits is any awareness of it, which is what keeps a plain send/receive pair free of
+  transaction state it would never use.
+- **No mutual exclusion, and no ordering beyond the rendezvous.** An endpoint moves one
+  message between two threads; it is not a lock, not a queue, and not a broadcast. Anything
+  richer is built above it.
 
 There are also three honest lifecycle asymmetries in the minimal set, each safe in the
 intended client/server topology but worth naming:
@@ -229,9 +244,10 @@ intended client/server topology but worth naming:
   its own receive capability keeps `recv_holders >= 1`, so the dead-endpoint gate
   passes and no broken-pipe wake ever fires. Unlike the mutex's self-deadlock there is
   no cheap detection, because `recv_holders` counts capabilities, not threads.
-- **`-1` is overloaded.** Bad capability, bad buffer, dead endpoint, and broken pipe
-  all return `-1` -- there is no errno. Adequate for the primitive; worth knowing before
-  building retry logic that tries to distinguish them.
+- **A park is unbounded unless the caller bounds it.** Send and receive both take an
+  optional deadline, and a caller that supplies one gets `-ETIMEDOUT` instead of an
+  indefinite park. A caller that does not is choosing to wait forever, which is the right
+  default for a server's receive loop and the wrong one for a bring-up probe.
 
 ## The porting contract: a cross-domain privileged write
 

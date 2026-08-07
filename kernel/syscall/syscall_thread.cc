@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Thread lifecycle syscalls: thread_spawn and thread_kill. The noreturn exit path is
-// sched::exit_current, which the dispatch calls directly.
+// Thread lifecycle syscalls: thread_spawn, thread_kill, thread_join and the
+// wait-until-last aggregate. The noreturn exit path is sched::exit_current, which the
+// dispatch calls directly.
 
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
@@ -10,11 +11,12 @@
 #include <kickos/domain.h>
 #include <kickos/grant.h>
 #include <kickos/instance.h>
-#include <kickos/irq.h> // irq_thread_parked (the one park a cancel may end)
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/sync.h> // wq_confirm_resume: the two parks below read waker-set state
 #include <kickos/thread.h>
+#include <kickos/time.h> // ktime_deadline_arm: join's optional bound
 
 #include <kickos/sys/abi.h>
 #include <kickos/sys/errno.h>
@@ -23,6 +25,50 @@
 
 namespace kickos
 {
+    namespace
+    {
+        // Resolve a thread handle against the pool, or nullptr for a slot that was never
+        // allocated or was reclaimed under this handle. An EXITED slot RESOLVES here: the
+        // generation bumps at reclaim and not at exit, and only the caller can say whether
+        // that state is a refusal (thread_kill) or the answer (thread_join). Caller holds
+        // IrqLock.
+        //
+        // NO SIGN TEST. A slot aged past 32768 reclaims mints a handle with bit 31 set, so
+        // rejecting "negative" handles would refuse live threads. KOS_THREAD_NONE and every
+        // other malformed word is caught by the index range check, the pool never seating
+        // the all-ones index.
+        Thread* thread_resolve(kos_thread_t thread)
+        {
+            Kernel& k = kernel();
+            int const index =
+                static_cast<int>(thread & ((1u << ThreadPool::INDEX_BITS) - 1u));
+            uint16_t const gen = static_cast<uint16_t>(thread >> ThreadPool::INDEX_BITS);
+            if (index >= k.threads.next)
+            {
+                return nullptr;
+            }
+            if (k.threads.gen[index] != gen)
+            {
+                return nullptr;
+            }
+            return &k.threads.slots[index];
+        }
+
+        // Spawn parenthood: the whole gate on both thread_kill and thread_join. It is
+        // NON-TRANSFERABLE, there being no table entry for a cap_grant to copy, and it
+        // grants the caller nothing it did not already hold. kill_tag_of never answers
+        // KILL_TAG_NONE, so an orphan (a child whose spawner's slot changed hands) matches
+        // nobody at all. Caller holds IrqLock.
+        bool caller_spawned(Thread const* t, Thread const* c)
+        {
+            if (c == nullptr or t->spawner_tag == ThreadPool::KILL_TAG_NONE)
+            {
+                return false;
+            }
+            return t->spawner_tag == kernel().threads.kill_tag_of(c);
+        }
+    }
+
     // Slot reuse is safe because thread_create re-inits the TCB and re-fabricates the arch
     // context from scratch, so a reclaimed slot's privilege posture is a clean reset (the
     // sim's mid-syscall `raised`, the ARM CONTROL.nPRIV, the RX PSW). Any syscall that
@@ -462,24 +508,13 @@ namespace kickos
     int thread_kill(kos_thread_t thread)
     {
         IrqLock lock;
-        Kernel& k = kernel();
-        // NO SIGN TEST. A slot aged past 32768 reclaims mints a handle with bit 31 set, so
-        // rejecting "negative" handles would refuse to cancel live threads. KOS_THREAD_NONE
-        // and every other malformed word is caught by the index range check below, the pool
-        // never seating the all-ones index.
-        int const index = static_cast<int>(thread & ((1u << ThreadPool::INDEX_BITS) - 1u));
-        uint16_t const gen = static_cast<uint16_t>(thread >> ThreadPool::INDEX_BITS);
-        if (index >= k.threads.next)
+        Thread* const t = thread_resolve(thread);
+        if (t == nullptr)
         {
-            return -KOS_EBADF; // names a slot that was never allocated
+            return -KOS_EBADF; // never allocated, or the slot was reclaimed under this handle
         }
-        Thread* const t = &k.threads.slots[index];
-        if (k.threads.gen[index] != gen)
-        {
-            return -KOS_EBADF; // the slot was reclaimed under this handle
-        }
-        // The generation bumps at RECLAIM, not at exit, so an exited-but-unreclaimed slot
-        // still gen-matches and has to be rejected here.
+        // An exited-but-unreclaimed slot still gen-matches, and there is nothing left to
+        // cancel in it. thread_join is the one caller that must ACCEPT that state instead.
         if (t->state == ThreadState::EXITED or t->state == ThreadState::INACTIVE)
         {
             return -KOS_EBADF;
@@ -489,21 +524,100 @@ namespace kickos
         {
             return -KOS_EINVAL; // ending yourself is kos_exit; this path must return to its caller
         }
-        if (c == nullptr or t->spawner_tag == ThreadPool::KILL_TAG_NONE
-            or t->spawner_tag != k.threads.kill_tag_of(c))
+        if (not caller_spawned(t, c))
         {
             return -KOS_EPERM;
         }
         t->cancelled = true; // one-way: honoured at the target's next irq_wait
-        if (irq_thread_parked(t))
+        // WAIT_IRQ and no other kind: a wait queue does not say what it delivers, and only
+        // this park reads wait_result. sem_wait ignores it, so an early wake on a plain
+        // semaphore would read as a token that was never handed over.
+        if (t->wait_kind == WAIT_IRQ)
         {
             // sched::wake neither unlinks nor writes wait_result: both are the waker's job,
             // under this lock, BEFORE the call (see sync.h).
             t->wait_queue->unlink(&t->link);
-            t->wait_queue = nullptr;
+            t->clear_wait_edge();
             t->wait_result = -KOS_ECANCELED;
             sched::wake(t);
         }
         return 0;
     }
+
+#if KICKOS_TIMED_WAIT
+    // Park until the named thread is gone, bounded by `timeout_us` unless that is
+    // KOS_TIMEOUT_NONE. The joiner parks queue-less tagged WAIT_JOIN; sched::exit_current
+    // sweeps the pool for that tag, and that sweep is the only thing that wakes it.
+    int thread_join(kos_thread_t thread, uint32_t timeout_us)
+    {
+        Thread* const c = sched::current();
+        uint64_t epoch = 0;
+        {
+            IrqLock lock;
+            Thread* const t = thread_resolve(thread);
+            if (t == nullptr or t->state == ThreadState::INACTIVE)
+            {
+                return -KOS_EBADF; // never allocated, or reclaimed under this handle
+            }
+            if (t == c)
+            {
+                return -KOS_EDEADLK; // nothing would ever wake this park
+            }
+            if (not caller_spawned(t, c))
+            {
+                return -KOS_EPERM;
+            }
+            // THE state join exists to observe, and the one thread_kill refuses: the
+            // generation bumps at RECLAIM and not at exit, so a handle to an
+            // exited-but-unreclaimed slot still resolves, and the target IS gone. Refusing
+            // it here would hang a joiner on an already-dead thread.
+            if (t->state == ThreadState::EXITED)
+            {
+                return 0;
+            }
+            park_queueless(c, WAIT_JOIN, t);
+            if (timeout_us != KOS_TIMEOUT_NONE)
+            {
+                ktime_deadline_arm(c, timeout_us);
+            }
+            epoch = c->switch_count;
+            sched::reschedule();
+        }
+        wq_confirm_resume(c, epoch); // the lock is RELEASED across this: see sync.h
+        return static_cast<int>(c->wait_result); // 0, or -KOS_ETIMEDOUT from the timer arm
+    }
+
+    // Park until the CALLER is the last live thread. Takes NO deadline: this is the
+    // shutdown condition itself rather than a wait for an event, so there is no bound a
+    // caller could know. It is also the only shutdown primitive that covers a main's
+    // GRANDCHILDREN, which no handle it holds can name.
+    //
+    // ROOT ONLY. It observes, and waits on, threads outside the caller's own spawn
+    // subtree, and it is single-seat: whoever parks here first denies the primitive to
+    // everyone else for as long as it waits. Root being the sole caller is also what makes
+    // a second waiter impossible, since root cannot be inside two syscalls at once.
+    int thread_wait_last()
+    {
+        Thread* const c = sched::current();
+        uint64_t epoch = 0;
+        {
+            IrqLock lock;
+            if (not kernel().threads.is_root(c))
+            {
+                return -KOS_EPERM;
+            }
+            if (sched::live_count() <= 1)
+            {
+                return 0; // already the last one: parking here would never be woken
+            }
+            park_queueless(c, WAIT_LIVE_LAST, nullptr);
+            epoch = c->switch_count;
+            sched::reschedule();
+        }
+        wq_confirm_resume(c, epoch);
+        // The exit sweep is the only waker and it releases this park only when the caller
+        // IS the last live thread, so there is no other outcome to report.
+        return 0;
+    }
+#endif
 }

@@ -406,7 +406,7 @@ RX MPU) must fit the same seam with no signature changes.
 
 ## Scheduler (the core constraint)
 
-**TCB:** saved SP/context ptr, `state` (INACTIVE/READY/RUNNING/BLOCKED/SLEEPING/EXITED), `prio`
+**TCB:** saved SP/context ptr, `state` (INACTIVE/READY/RUNNING/BLOCKED/EXITED, where BLOCKED covers a wait queue, the timer delta list and a queue-less park alike -- `wait_kind` is what says which), `prio`
 (+ `base_prio` for later prio-inheritance), `policy` (FIFO|RR), `quantum_ns` +
 `slice_deadline_ns` (an ABSOLUTE deadline: the RR quantum is wall-clock, see
 `invariants.md` `rr-quantum-is-wall-clock`), intrusive
@@ -454,6 +454,30 @@ compare that may already be in the past). Pure-FIFO with nothing time-pending =>
 zero timer interrupts. `CONFIG_SCHED_PERIODIC_TICK` (opt-in) forces a classic periodic tick.
 Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
 
+**Thread lifecycle past the exit -- cancel, join, wait-until-last.** `KOS_SYS_THREAD_KILL` is a
+COOPERATIVE cancel: it marks the target and wakes it out of the one park it can be woken from
+with an error (`irq_wait`, `-KOS_ECANCELED`); the target then runs its own `sched::exit_current`.
+`KOS_SYS_THREAD_JOIN` OBSERVES the death, bounded by an optional `timeout_us`
+(`KOS_TIMEOUT_NONE` = none). The joiner parks **queue-less** tagged `WAIT_JOIN` with `wait_obj`
+naming the target TCB, and `sched::exit_current` sweeps the thread pool for that tag at every
+thread exit -- a scan at an exit and on no other path, which is what buys join **zero per-TCB
+state and no waiter list**, a byte budget the 16 KiB boards care about. Kill and join take the
+SAME gate, spawn parenthood (`ThreadAttr::spawner_tag` against `ThreadPool::kill_tag_of`), which
+is non-transferable: there is no table entry for a `cap_grant` to copy, and it hands the caller
+nothing it did not already have. They decide ONE state oppositely, and that difference is the
+point -- see `invariants.md` `join-accepts-the-unreclaimed-exit`.
+`KOS_SYS_WAIT_LAST` is the AGGREGATE: it returns once the caller is the last live thread
+(`sched::live_count()` reaching 1), parking queue-less tagged `WAIT_LIVE_LAST` and woken by that
+same exit sweep. It takes **no deadline** -- it is the shutdown condition itself rather than a
+wait for an event, so no caller could know a bound -- and it is **root-only**, `-KOS_EPERM` to
+anyone else: it reaches outside the caller's own spawn subtree, and it is single-seat, so an
+ordinary thread parking there first would deny root its shutdown condition for as long as it
+waits. That refusal is also what makes a second-waiter case unreachable, so there is none to
+refuse. It is the only way to await a thread
+the caller cannot NAME: a spawn hands back a handle to the child alone, so a `main`'s
+grandchildren are unnameable. Its condition is GLOBAL, so it never returns in an image whose
+service list holds a driver thread that does not exit.
+
 ---
 
 ## User/kernel separation
@@ -474,10 +498,10 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
   `cap.h`'s `KCAP_INDEX_BITS` / `KCAP_GEN_BITS`, the "NO SIGN TEST" notes on `free()` and
   `resolve()` in `kernel/include/kickos/slotpool.h`, and `ThreadPool::INDEX_BITS`. The code set
   mirrors POSIX magnitudes -- `EPERM` `ESRCH` `EBADF` `ENOMEM` `EFAULT` `EBUSY` `EINVAL` `EMFILE`
-  `EPIPE` `EDEADLK` `ENOSYS` `EOVERFLOW` `ECANCELED` -- plus **`EOWNERDEAD`**, the robust-mutex
-  case: a mutex *acquired*
+  `EPIPE` `EDEADLK` `ENOSYS` `EOVERFLOW` `ETIMEDOUT` `ECANCELED` -- plus **`EOWNERDEAD`**, the
+  robust-mutex case: a mutex *acquired*
   while its prior owner died holding it, still returned negative (`-KOS_EOWNERDEAD`) for the
-  caller to special-case as HELD. Five of those carry a kernel-specific meaning that has to be
+  caller to special-case as HELD. Six of those carry a kernel-specific meaning that has to be
   stated, because the POSIX name does not give it:
   **`ESRCH`** is a one-shot reply cap whose parked caller is gone (aborted or reused);
   **`ENOSYS`** is an arch backend that does not implement the call on this chip -- the
@@ -490,7 +514,19 @@ Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
   **`EOVERFLOW`** is a bounded counter already at its ceiling, refused rather than wrapped --
   `sem_post` with no waiter at `KOS_SEM_COUNT_MAX` and the object-refcount ceiling behind
   `KOS_SYS_CONSOLE_PUBLISH` and a spawn's delegation batch (`kernel/syscall/syscall.cc`,
-  `kernel/syscall/syscall_thread.cc`; documented per call in `user/include/kickos/sys.h`); and
+  `kernel/syscall/syscall_thread.cc`; documented per call in `user/include/kickos/sys.h`);
+  **`ETIMEDOUT`** is a caller-supplied deadline that passed before the operation could happen,
+  and it promises that NOTHING happened for the caller: `KOS_SYS_SEND_TIMED`, `KOS_SYS_RECV_TIMED`,
+  `KOS_SYS_CALL_TIMED` and `KOS_SYS_THREAD_JOIN` given a `timeout_us` other than
+  `KOS_TIMEOUT_NONE` expire with no peer, move no bytes, return no reply, and leave the joined
+  thread running. `kernel/time/time.cc` decides only THAT a deadline
+  expired and delegates each endpoint park's unwind to `endpoint_wait_timeout`
+  (`kernel/syscall/syscall_ipc.cc`), which unlinks the right queue and reverts the right
+  donation; the deadline is cancelled in `sched::wake`, the one unpark funnel, so a rendezvous
+  that beats it can never also report it. ONE caveat, and it is the reason the promise is
+  worded per-caller: a `KOS_SYS_CALL_TIMED` whose request a server had already taken leaves
+  that server holding its reply capability, whose eventual `KOS_SYS_REPLY` answers `ESRCH`;
+  and
   **`ECANCELED`** is *this* thread having been cancelled by `KOS_SYS_THREAD_KILL` -- the wait it was
   in, or was about to enter, is abandoned and the thread is expected to exit itself
   (`kernel/syscall/syscall_thread.cc` sets `wait_result`, `kernel/irq/irq.cc` refuses to re-block an

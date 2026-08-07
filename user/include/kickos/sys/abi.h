@@ -79,7 +79,8 @@ enum kos_syscall_nr
     KOS_SYS_MUTEX_UNLOCK = 25,  // (cap)  -> 0, -KOS_EBADF (bad cap), -KOS_EPERM (caller not owner)
     KOS_SYS_ENDPOINT_CREATE = 26, // (kos_cap_t* out) -> 0, or -KOS_E* (ENOMEM endpoint pool,
                                   //   EMFILE caller's cap table, EINVAL/EFAULT)
-    KOS_SYS_SEND = 27,          // (cap, buf, len)  -> bytes transferred, or -KOS_E* (see kos_send)
+    KOS_SYS_SEND = 27,          // (cap, buf, len) -> bytes transferred, or -KOS_E*, parking
+                                //   indefinitely
     KOS_SYS_RECV = 28,          // (cap, buf, cap_len, kos_recv_info* out) -> bytes received, or -KOS_E*
     KOS_SYS_CONSOLE_PUBLISH = 29, // (endpoint_cap) -> 0, -KOS_EPERM (not priv), -KOS_EBADF (bad
                                   //   cap), -KOS_EOVERFLOW (endpoint refcount at its ceiling)
@@ -116,11 +117,31 @@ enum kos_syscall_nr
     KOS_SYS_IRQ_DISCARD = 44,  // (irq_cap) -> 0, or -KOS_EBADF / -KOS_EPERM (cap lacks WAIT).
                                //   Drops whatever the controller has latched for the line.
                                //   Neither masks nor unmasks.
-    KOS_SYS_THREAD_KILL = 45   // (kos_thread_t) -> 0, -KOS_EBADF (bad/stale/exited handle),
+    KOS_SYS_THREAD_KILL = 45,  // (kos_thread_t) -> 0, -KOS_EBADF (bad/stale/exited handle),
                                //   -KOS_EPERM (the caller did not spawn that thread),
                                //   -KOS_EINVAL (naming yourself; that is KOS_SYS_EXIT).
                                //   COOPERATIVE: it marks the target and wakes it out of an
                                //   irq_wait with -KOS_ECANCELED; the target exits itself.
+    KOS_SYS_CALL_TIMED = 46,   // (ep_cap, buf, kos_call_lens_pack(send_len, recv_cap),
+                               //   timeout_us) -> as KOS_SYS_CALL, plus -KOS_ETIMEDOUT. Its
+                               //   own number and not a flag on KOS_SYS_CALL: the untimed
+                               //   form spends all four slots, so the deadline costs a slot
+                               //   that only the packed lengths can free.
+    KOS_SYS_RECV_TIMED = 47,   // (cap, buf, cap_len, kos_recv_timed_opts* in-out) -> as
+                               //   KOS_SYS_RECV, plus -KOS_ETIMEDOUT, and -KOS_EINVAL for a
+                               //   null opts: the deadline rides that struct, so an
+                               //   opts-less timed recv cannot express one.
+    KOS_SYS_THREAD_JOIN = 48,  // (kos_thread_t, timeout_us) -> 0 (the target is gone,
+                               //   INCLUDING a target that had already exited),
+                               //   -KOS_ETIMEDOUT, -KOS_EBADF (never allocated / reclaimed
+                               //   under this handle), -KOS_EPERM (the caller did not spawn
+                               //   it), -KOS_EDEADLK (naming yourself).
+    KOS_SYS_WAIT_LAST = 49,    // () -> 0 once the caller is the last live thread, or
+                               //   -KOS_EPERM to any thread but root. Takes NO deadline:
+                               //   it is the shutdown condition, and no caller can know a
+                               //   bound for it.
+    KOS_SYS_SEND_TIMED = 50    // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
+                               //   -KOS_ETIMEDOUT
 };
 
 // Flags for KOS_SYS_IRQ_CLAIM. The trigger type is a property of the SOURCE, so it is
@@ -164,6 +185,32 @@ static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 byte
 _Static_assert(sizeof(struct kos_recv_info) == 8, "kos_recv_info must stay 8 bytes (ABI)");
 #endif
 
+// KOS_SYS_RECV_TIMED's argument struct: the deadline plus, NESTED, the out-struct above.
+// A distinct type and not a third member of kos_recv_info, because the timeout is an INPUT
+// while kos_recv_info is purely an OUT-struct that recv loops routinely declare
+// uninitialised (`struct kos_recv_info info;` in uart_service.h, usb_cdc_service.h and
+// every in-tree UART/SCI console driver). A third member would put a stack-garbage deadline
+// one line away from all of them; nesting puts it out of reach of the type system. It also
+// keeps the kernel's write-back a WHOLE-struct copy of kos_recv_info, with no uninitialised
+// tail to leak into user memory and no input word to preserve: the dispatch hands
+// write_recv_info the nested struct's address.
+struct kos_recv_timed_opts
+{
+    uint32_t timeout_us;       // IN: relative microseconds, or KOS_TIMEOUT_NONE
+    struct kos_recv_info info; // OUT: written exactly as a plain kos_recv writes it
+};
+#ifdef __cplusplus
+static_assert(sizeof(struct kos_recv_timed_opts) == 12,
+              "kos_recv_timed_opts must stay 12 bytes (ABI)");
+static_assert(offsetof(struct kos_recv_timed_opts, info) == 4,
+              "the nested kos_recv_info must sit at offset 4 (ABI)");
+#else
+_Static_assert(sizeof(struct kos_recv_timed_opts) == 12,
+               "kos_recv_timed_opts must stay 12 bytes (ABI)");
+_Static_assert(offsetof(struct kos_recv_timed_opts, info) == 4,
+               "the nested kos_recv_info must sit at offset 4 (ABI)");
+#endif
+
 // P-state selector for KOS_SYS_CPU_CLOCK_SET. A fixed-width u32 enum (NOT a raw Hz):
 // the achievable set is small and chip-specific, and the truthful landed Hz is the
 // syscall's return value. Carried as a plain u32 in the syscall register, so the width
@@ -178,6 +225,53 @@ typedef enum kos_pstate_e : uint32_t
 
 // Shared payload bound: send REJECTS a len above this; recv clamps its capacity to it.
 #define KOS_EP_MSG_MAX 256
+
+// A timeout is RELATIVE microseconds; KOS_TIMEOUT_NONE means no deadline. Microseconds
+// and not nanoseconds because 32 bits of nanoseconds spans only 4.3 s, and nothing finer
+// exists anyway: the fleet-wide timer floor is 20 us.
+#define KOS_TIMEOUT_NONE UINT32_MAX
+
+// KOS_SYS_CALL_TIMED packs both message lengths into ONE argument slot so the fourth can
+// carry the deadline. Nine bits each, because both are bounded by KOS_EP_MSG_MAX.
+#define KOS_CALL_LEN_BITS 9
+#define KOS_CALL_LEN_MASK ((1u << KOS_CALL_LEN_BITS) - 1u)
+// STRICT: kos_call_len_field saturates an oversize length AT KOS_CALL_LEN_MASK, and that
+// saturated value must still read ABOVE KOS_EP_MSG_MAX for the kernel's
+// `send_len > KOS_EP_MSG_MAX` refusal to fire. At equality a 511-byte oversize request
+// would be accepted.
+#ifdef __cplusplus
+static_assert((unsigned)KOS_EP_MSG_MAX < KOS_CALL_LEN_MASK,
+              "KOS_EP_MSG_MAX must stay strictly below the packed field's saturation value");
+#else
+_Static_assert((unsigned)KOS_EP_MSG_MAX < KOS_CALL_LEN_MASK,
+               "KOS_EP_MSG_MAX must stay strictly below the packed field's saturation value");
+#endif
+
+// SATURATES at the field width instead of masking, and that is what PRESERVES a refusal:
+// the kernel is the only validator, and it rejects send_len > KOS_EP_MSG_MAX. A masked 512
+// would arrive as 0 and become a silent zero-length call; a saturated 511 is still above
+// the bound, so the -KOS_EINVAL still fires (and an oversize recv_cap still hits the
+// kernel's harmless clamp). It never widens what the kernel will accept.
+static inline uintptr_t kos_call_len_field(size_t len)
+{
+    if (len > (size_t)KOS_CALL_LEN_MASK)
+    {
+        return (uintptr_t)KOS_CALL_LEN_MASK;
+    }
+    return (uintptr_t)len;
+}
+static inline uintptr_t kos_call_lens_pack(size_t send_len, size_t recv_cap)
+{
+    return (kos_call_len_field(recv_cap) << KOS_CALL_LEN_BITS) | kos_call_len_field(send_len);
+}
+static inline size_t kos_call_lens_send(uintptr_t packed)
+{
+    return (size_t)(packed & KOS_CALL_LEN_MASK);
+}
+static inline size_t kos_call_lens_recv(uintptr_t packed)
+{
+    return (size_t)((packed >> KOS_CALL_LEN_BITS) & KOS_CALL_LEN_MASK);
+}
 
 // Counting-semaphore ceiling. The kernel keeps the count in an `int`, so this is the
 // type's range rather than a policy number. sem_create refuses an initial outside

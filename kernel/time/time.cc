@@ -8,11 +8,18 @@
 // CONFIG_SCHED_PERIODIC_TICK forces a classic periodic tick instead.
 
 #include <kickos/time.h>
+#if KICKOS_TIMED_WAIT
+#include <kickos/endpoint.h> // endpoint_wait_timeout: the IPC layer owns every EP unwind
+#endif
 #include <kickos/sched.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
+#include <kickos/kernel.h>
 #include <kickos/ktrace.h>
+
+#include <kickos/sys/errno.h> // KOS_ETIMEDOUT: the value every expiry arm delivers
+
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 #include <kickos/trace/record.h>
 #endif
@@ -114,10 +121,43 @@ namespace kickos
             deadline_ns = floor;
         }
         c->deadline_ns = deadline_ns;
-        c->state = ThreadState::SLEEPING;
+        c->state = ThreadState::BLOCKED;
+        // All three fields, like every other park: a sleeper is on no wait queue, and
+        // leaving the field unwritten would make this park correct only by virtue of
+        // whoever cleared it last.
+        c->wait_queue = nullptr;
+        c->wait_kind = WAIT_SLEEP;
+        c->wait_obj = nullptr; // the delta list is rooted in the Kernel, not in an object
         sleepq_insert(c);
         ktime_rearm();
         sched::block_current(); // returns on wake
+    }
+
+#if KICKOS_TIMED_WAIT
+    void ktime_deadline_arm(Thread* t, uint32_t timeout_us)
+    {
+        // The floor is applied HERE, once, against one clock reading. See ktime_rearm.
+        uint64_t const now = ktime_now();
+        uint64_t deadline = now + static_cast<uint64_t>(timeout_us) * 1000u;
+        uint64_t const floor = now + KICKOS_TIMER_MIN_DELTA_NS;
+        if (deadline < floor)
+        {
+            deadline = floor;
+        }
+        t->deadline_ns = deadline;
+        sleepq_insert(t);
+    }
+#endif
+
+    void ktime_deadline_cancel(Thread* t)
+    {
+        if (not t->on_timer)
+        {
+            return;
+        }
+        sleepq_remove(t);
+        // No ktime_rearm: switch_to rearms on every context switch, and a timer left armed
+        // early only costs a wakeup that finds nothing expired.
     }
 
     void ktime_sleep_ns(uint64_t ns)
@@ -156,7 +196,44 @@ namespace kickos
         {
             Thread* t = kernel().sleepq;
             sleepq_remove(t);
-            sched::wake(t);
+            // The tag is cleared HERE and never in sleepq_remove: a timed wait is on the
+            // sleepq AND a wait queue at once, so a clear there would erase the very edge
+            // this dispatch has to read. sched::wake reuses `link` for the ready list, so a
+            // thread still linked on a wait queue must leave it BEFORE the wake.
+            switch (t->wait_kind)
+            {
+                case WAIT_SLEEP:
+                {
+                    t->clear_wait_edge();
+                    sched::wake(t);
+                    break;
+                }
+#if KICKOS_TIMED_WAIT
+                case WAIT_JOIN:
+                {
+                    // On no list at all, so clearing the tag IS the whole unwind. It also
+                    // makes exit_current's sweep miss a joiner that has already given up.
+                    t->clear_wait_edge();
+                    t->wait_result = -KOS_ETIMEDOUT;
+                    sched::wake(t);
+                    break;
+                }
+                case WAIT_EP_SEND:
+                case WAIT_EP_RECV:
+                case WAIT_EP_REPLY:
+                {
+                    // Delegated whole: which list to unlink from and which priority
+                    // donation to revert are endpoint internals, and this file must not
+                    // learn them. See endpoint_wait_timeout (kickos/endpoint.h).
+                    endpoint_wait_timeout(t);
+                    break;
+                }
+#endif
+                default:
+                {
+                    kpanic("expired deadline on a park that cannot time out");
+                }
+            }
         }
 
         ktime_rearm();

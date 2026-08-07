@@ -103,6 +103,66 @@ Both buffer bound-checks run up front, in caller context, once. Two paths:
   + transfer + donation happen later in server context inside `endpoint_recv`. Boost the
   conventional server now (D2) if this caller outranks it.
 
+## `KOS_SYS_CALL_TIMED = 46`
+
+    kos_call_timed(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
+                   uint32_t timeout_us) -> int32_t
+
+`kos_call` with a deadline of `timeout_us` RELATIVE microseconds (`KOS_TIMEOUT_NONE` = no
+deadline, which is exactly `kos_call`). Same returns as `KOS_SYS_CALL`, plus:
+
+| Return | Meaning |
+|---|---|
+| `-KOS_ETIMEDOUT` | the deadline passed; no reply was received and none can arrive later |
+
+- **Its own syscall number, not a flag.** The trap frame carries four argument slots and
+  `kos_call` spends all four, so a deadline needs one freed. The stub packs `send_len` and
+  `recv_cap` into a single slot (`kos_call_lens_pack`, nine bits each, both bounded by
+  `KOS_EP_MSG_MAX`) and the dispatch arm unpacks. `kos_call` keeps its own number with the
+  lengths UNPACKED, so the untimed path pays no packing.
+- The pack SATURATES each field at 511 rather than masking it. The kernel remains the sole
+  validator, and a masked `512` would arrive as `0` and become a silent zero-length call; a
+  saturated `511` is still above `KOS_EP_MSG_MAX`, so the `-KOS_EINVAL` still fires.
+- **ONE deadline spans BOTH phases**, the wait on `send_waiters` and the wait for the reply.
+  It is armed once, at the call, and survives the handoff between the two: that transition
+  moves the caller through `link` while the timer delta list uses `tnext`, and the cancel
+  lives in `sched::wake`, which a park-to-park migration never reaches.
+- **A timeout is not an abort.** If a server already took the request, it keeps its reply
+  cap; its later `kos_reply` gets `-KOS_ESRCH` and consumes the cap. Reclaiming that entry
+  would reach across a containment boundary, so it is left alone; the residue is bounded by
+  `KICKOS_CAP_REPLY_MAX` against `Thread::cap_reply_live`.
+
+## `KOS_SYS_RECV_TIMED = 47`
+
+    kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
+                   struct kos_recv_timed_opts* opts)
+        -> int32_t
+
+`kos_recv` with a deadline. It travels in a struct because `kos_recv` also spends all four
+argument slots and a 9-bit `cap_len` has no packing partner. Same returns as
+`KOS_SYS_RECV`, plus `-KOS_ETIMEDOUT`, and `-KOS_EINVAL` when `opts == NULL` (there is
+nowhere else to state a deadline). `opts` is IN-OUT, so it is checked readable as well as
+writable; plain `kos_recv` keeps its writable-only check.
+
+**`kos_recv_info` did NOT grow a timeout field; a separate type appeared that NESTS it**,
+and that separation is the load-bearing part:
+
+    struct kos_recv_timed_opts {
+        uint32_t timeout_us;        // IN
+        struct kos_recv_info info;  // OUT, written exactly as a plain recv writes it
+    };                              // 12 bytes, info at offset 4
+
+A third member on `kos_recv_info` would have put an *input* field inside the struct every
+plain recv loop declares uninitialised (`struct kos_recv_info info;` in `uart_service.h`
+and `usb_cdc_service.h`), so a stack-garbage deadline would have been one line away, and
+the rule against it would have been a comment anyone could violate. Nesting makes it
+unrepresentable: a `kos_recv` caller has no timeout field to reach. It also keeps the
+kernel's write-back a WHOLE-struct copy of `kos_recv_info` -- the dispatch passes
+`opts + offsetof(struct kos_recv_timed_opts, info)` as the ordinary out-pointer, so
+`write_recv_info` is unchanged, has no uninitialised tail to leak into user memory, and has
+no input word to preserve. `opts->timeout_us` therefore survives every call, and a recv
+loop may reuse one struct.
+
 ## `KOS_SYS_REPLY = 35`
 
     kos_reply(kos_cap_t reply_cap, void const* buf, size_t len) -> int
@@ -118,15 +178,22 @@ consumed on EVERY exit (one-shot). `len > KOS_EP_MSG_MAX` is clamped (the caller
 | `-KOS_EFAULT` | `buf` not readable by the server for `len` |
 | `-KOS_ESRCH` | the caller is gone/aborted/reused (stale resolve); the cap is still consumed |
 
-`ESRCH` is a cheap no-op today (a parked caller cannot fault or exit and there is no
-`thread_kill`, so it is unreachable); it becomes reachable when timed-call / kill land,
-and the full stale-resolve above is what makes it safe.
+`ESRCH` is REACHABLE, by exactly one route: `kos_call_timed`. A caller whose deadline
+expires is unwound out of `CALL_REPLY_WAIT` and left `CALL_NONE`, while the server keeps
+the reply cap it was minted; the server's eventual `kos_reply` then resolves the cap, finds
+no caller in `CALL_REPLY_WAIT`, consumes the cap and answers `-KOS_ESRCH`. The full
+stale-resolve in `cap_reply_caller` is what makes that safe: it rejects on four independent
+grounds (index out of pool range, thread-slot generation mismatch, the `CALL_REPLY_WAIT`
+test, and a rolled `call_seq`) before anything is consumed.
 
 ## `KOS_SYS_RECV = 28` -- widened out-pointer
 
 The recv out-pointer is now a `struct kos_recv_info` (was a bare `uint32_t` badge):
 
     struct kos_recv_info { uint32_t badge; kos_cap_t reply_cap; };   // 8 bytes, 4-aligned
+
+It is PURELY an out-struct, and stays that way: the timed recv carries its deadline in its
+own `kos_recv_timed_opts`, which nests this one (see `KOS_SYS_RECV_TIMED` above).
 
 - A plain `kos_send` arrival delivers `reply_cap == KOS_CAP_NONE`.
 - A `kos_call` arrival delivers a real one-shot `CAP_REPLY` handle in the receiver's
@@ -165,6 +232,13 @@ sole effective-priority writer):
   is `>=` the server's recomputed priority whenever it donated, so the switch back is
   immediate. Symmetric with D1.
 
+A donation that is never reverted changes no return code, so the revert is invisible to
+any arm that only reads results: dropping the `sched::set_prio` in `endpoint_wait_timeout`
+leaves the whole timed-call family green. What holds it is a scheduling ORDER --
+`call_timeout_revert` in `user/apps/common/selftest/main.cc` runs a medium-priority
+spoiler against a boosted server and requires it to run between the expiry and the
+server's next log entry. It is the only arm that fails when that line goes.
+
 **The single funnel (`thread_effective_prio(t)`).**
 
     effective(t) = max( t->base_prio,
@@ -182,7 +256,7 @@ and a scan of `t`'s table is bounded by `thread_cap_capacity(t)`. Nothing here s
 pool either: the
 same cheap-scan philosophy as the mutex held-list walk. `Endpoint::server` is a raw
 `Thread*` set at every recv and CLEARED in the endpoint close/teardown arm when the server
-drops its `WAIT` cap (waker-cleared discipline, mirrors `blocked_on`).
+drops its `WAIT` cap (waker-cleared discipline, like every wait edge).
 
 ## Lifecycle / death matrix
 
@@ -191,7 +265,10 @@ The cap is consumed exactly once per unpark:
 | Event | Mechanism | Caller outcome |
 |---|---|---|
 | `kos_reply` success | consume, copy reply, wake | woken, reply bytes |
-| `kos_reply` to a stale caller | consume anyway, `-KOS_ESRCH` to server | n/a (already gone) |
+| `kos_reply` to a stale caller | consume anyway, `-KOS_ESRCH` to server | n/a (already timed out) |
+| `kos_reply` on an abandoned cap whose caller is mid-call elsewhere | consume; the reply-waiter unlink misses, so complete as if gone | untouched: its live call is another server's |
+| `kos_call_timed` deadline expires in `CALL_SEND_WAIT` | timer unwinds `send_waiters`, reverts D2 | woken, `-KOS_ETIMEDOUT`, never taken |
+| `kos_call_timed` deadline expires in `CALL_REPLY_WAIT` | timer unwinds the donor list, reverts D3 | woken, `-KOS_ETIMEDOUT`; server keeps the cap |
 | second `kos_reply` / bad handle | resolve fails at lookup | unaffected |
 | server `handle_close`s the reply cap | `CAP_REPLY` close arm: EPIPE-wake caller, consume | woken, `-KOS_EPIPE` |
 | server dies mid-transaction (fault -> exit) | `cap_teardown` hits the same close arm | woken, `-KOS_EPIPE` |
@@ -202,34 +279,37 @@ The cap is consumed exactly once per unpark:
 | info-less receiver hit at recv (slowpath) | wake the popped caller `-KOS_ENOSYS`, recv keeps scanning | woken, `-KOS_ENOSYS` |
 | server closes / loses its `WAIT` cap while `ep->server == it` | close arm clears `ep->server` + recomputes | any lingering D2 donation dropped |
 
-The `CAP_REPLY` close arm runs the SAME full stale-resolve as `kos_reply` before waking
-(defense in depth, load-bearing once timed-call lands). A teardown wake runs with the
+The `CAP_REPLY` close arm runs the SAME full stale-resolve as `kos_reply` before waking,
+which is load-bearing now that a timed call can leave a stale cap behind. A teardown wake runs with the
 closer `EXITED`; `sched::wake` already defers the switch in that case, so it is safe.
 
 ## Documented limits
 
 - **Single-level donation only.** A nested call (service A `kos_call`s service B while
-  serving C) does NOT propagate C's boost through A to B. The `blocked_on` edge is not yet
-  generalized to a thread-or-mutex tag. No current consumer nests calls (SPI/I2C services
-  call no one).
+  serving C) does NOT propagate C's boost through A to B. The chain walk follows the
+  `WAIT_MUTEX` edge only; a `WAIT_EP_REPLY` park names its server but no walk consumes that
+  edge yet. No current consumer nests calls (SPI/I2C services call no one).
 - **D2 through an already-held mutex is not re-boosted.** If the server is parked on a
   mutex when a high caller enqueues, D2 writes `ep->server`'s field but the mutex owner is
   not re-boosted (the chain walk runs only at `mutex_lock`). No current consumer takes a
   mutex mid-transaction. A ~10-line fix (re-run `mutex_lock`'s pass-2 chain walk after the
   D2 raise) is banked for when one does.
-- **No timed / abortable call.** A parked caller waits indefinitely. `call_seq` already
-  closes the late-reply ABA (an 8-bit, 256-deep window per thread) so a timeout path bolts
-  on without an ABI change.
-- **A caller may be root, and a root park is terminal for the whole system.** A pool caller
-  holding a valid `CAP_SIGNAL` with no receiver ever parking is parked forever (no timeout
-  above), and root is a pool thread like any other. Nothing else ends that park either: root
-  leaves `spawner_tag` at `KILL_TAG_NONE` so `kos_thread_kill` refuses it `-KOS_EPERM`
+- **An UNTIMED call still parks indefinitely.** `kos_call` has no deadline; `kos_call_timed`
+  is the bounded form, and its deadline covers both phases (the wait on `send_waiters` and
+  the wait for the reply). A timeout does not abort the transaction: a request a server has
+  already taken stays taken, and that server still holds the reply cap.
+- **A caller may be root, and an UNTIMED root park is terminal for the whole system.** A pool
+  caller holding a valid `CAP_SIGNAL` with no receiver ever parking is parked forever, and
+  root is a pool thread like any other. Nothing else ends that park: root leaves
+  `spawner_tag` at `KILL_TAG_NONE` so `kos_thread_kill` refuses it `-KOS_EPERM`
   (`kernel/syscall/syscall_thread.cc`), a cancel would only wake an `irq_wait` park in any
   case, and `kernel().live` never reaches 0 while root is parked, so shutdown never fires.
-  Where a worker's park costs one thread, root's costs the image.
+  Where a worker's park costs one thread, root's costs the image. `kos_call_timed` is the
+  answer, and root is exactly where it is worth paying for.
 - **Root holding a mutex the service takes is an undetected deadlock.** Root locks a mutex,
   calls a service, and the service locks the same mutex: `mutex_lock`'s cycle-detection pass
-  walks `blocked_on`, which only `mutex_lock` itself ever sets, and a call park sets nothing.
+  walks the `WAIT_MUTEX` wait edge (`Thread::wait_mutex()`), which only `mutex_lock` ever
+  seats, and a call park tags `WAIT_EP_*` instead, so the accessor answers `nullptr` there.
   The walk therefore ends at root, reports no `-KOS_EDEADLK`, and both threads wedge. LATENT:
   no in-tree service takes a mutex mid-transaction (same premise as the D2 limit above). A
   timed call would bound that wedge, not detect it: the cycle stays invisible, the caller
@@ -239,7 +319,8 @@ closer `EXITED`; `sched::wake` already defers the switch in that case, so it is 
   no bus-claim/session that spans multiple calls (a coherent multi-phase transaction is
   expressed as one call with multiple segments -- see `bus-service.md`).
 - **Call-cycle (A<->B) and self-call** (a caller holding the only `WAIT` cap) park forever
-  -- there is no cycle detection and no timeout.
+  under `kos_call`: there is no cycle detection. `kos_call_timed` bounds the park without
+  detecting the cycle.
 
 ## Cross-references
 

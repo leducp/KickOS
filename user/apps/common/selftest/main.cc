@@ -2565,13 +2565,495 @@ namespace
         kos_sem_destroy(g_ep_go);
     }
 
+#if KICKOS_TIMED_WAIT
+    // --- Timed send: the deadline expires with a LIVE endpoint and nobody in recv ------
+    // Main keeps its WAIT cap for the whole arm, so recv_holders stays 1 and no EPIPE can
+    // fire: the only thing missing is a parked receiver, which is exactly what a deadline
+    // has to answer for. The worker's report rides an UNTIMED send on the SAME endpoint,
+    // and main recvs it only after sleeping far past the deadline, so the report arriving
+    // at all is the proof that the three-argument form still parks.
+    constexpr uint32_t EP_SEND_TIMEOUT_US = 4000;
+    // 20x the deadline, not 6x: this sleep must still be running when the deadline fires,
+    // so the margin has to absorb a timer that overruns.
+    constexpr uint64_t EP_SEND_TIMEOUT_WAIT_NS = 80000000ull;
+    // `entered` is the clock immediately before the timed syscall. It is what lets a
+    // receiving arm decide WHICH path it staged: a reading earlier than the receiver's own
+    // pre-syscall reading means the caller was already parked (slow path), a later one
+    // means the receiver parked first (fast path). Both stagings satisfy every rc and
+    // duration assertion, so nothing else here can tell them apart.
+    struct EpTimedSend
+    {
+        int32_t rc;
+        uint32_t waited_us;
+        uint64_t entered;
+    };
+    void ep_timed_worker(void*) // caps: done@1, E(SIGNAL)@2
+    {
+        EpTimedSend r;
+        uint64_t const t0 = kos_clock_now();
+        r.entered = t0;
+        r.rc = static_cast<int32_t>(
+            kos_send_timed(2, EP_MSG, strlen(EP_MSG), EP_SEND_TIMEOUT_US));
+        r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        (void)kos_send(2, &r, sizeof(r)); // untimed: parks until main's recv, long after
+        kos_sem_post(CH_DONE);
+    }
+    void t_endpoint_send_timeout()
+    {
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}}; // done@1, E(SIGNAL)@2
+        auto w = kos::thread::spawn_caps(ep_timed_worker, nullptr, "eptm", 12, caps, 2,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w.valid());
+        kos_sleep_ns(EP_SEND_TIMEOUT_WAIT_NS); // outlast the deadline without ever recv'ing
+        EpTimedSend r;
+        memset(&r, 0, sizeof(r));
+        long const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
+        TAP_CHECK(n == static_cast<long>(sizeof(r))); // the untimed report parked and landed
+        TAP_CHECK(r.rc == -KOS_ETIMEDOUT);            // expired, and no bytes crossed
+        // Both clock reads bracket the syscall, so this cannot pass on a deadline the
+        // kernel fired immediately.
+        TAP_CHECK(r.waited_us >= EP_SEND_TIMEOUT_US);
+        wait_n(1);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+    }
+
+    // The three timed-call arms share one deadline and one outlast-it sleep. Main keeps its
+    // WAIT cap for the whole of each, so recv_holders stays 1 and no EPIPE can be mistaken
+    // for an expiry. Each caller reports over an UNTIMED send on its own endpoint, so no
+    // arm needs file-scope result state.
+    constexpr uint32_t EP_CALL_TIMEOUT_US = 4000;
+    // 20x, for the same reason as EP_SEND_TIMEOUT_WAIT_NS.
+    constexpr uint64_t EP_CALL_TIMEOUT_WAIT_NS = 80000000ull;
+    constexpr uint64_t EP_CALL_SETTLE_NS = 3000000ull; // long enough for the caller to park
+    // The reply-wait arm needs the OPPOSITE ordering from every other arm here: the server
+    // must pop the caller BEFORE its deadline fires, so the settle sleep has to finish
+    // inside the deadline rather than outlast it. The margin is 20x, not the 1x a 4 ms
+    // deadline would leave: at 1x the caller times out first, the server's recv returns the
+    // report instead of the request, and the arm leaks its reply cap into the census
+    // cap_child_width reads.
+    constexpr uint32_t EP_CALL_REPLY_TIMEOUT_US = 60000;
+    constexpr uint64_t EP_CALL_REPLY_WAIT_NS = 1200000000ull; // 20x the deadline above
+    // A deadline no arm here can reach: it is on a recv that pops an ALREADY-parked peer,
+    // so it never arms, and it doubles as the witness that the kernel leaves the input word
+    // alone.
+    constexpr uint32_t EP_RECV_GENEROUS_US = 200000;
+
+    // --- Timed call: the deadline expires while parked on send_waiters ------------------
+    // The endpoint HAS a conventional server (main's warm-up recv seats ep->server) but
+    // nobody is in recv when the call lands, so the caller parks as CALL_SEND_WAIT and the
+    // unwind has a real D2 boost to revert rather than the null-server shortcut.
+    void ep_call_pending_worker(void*) // caps: done@1, E(SIGNAL)@2
+    {
+        char warm[1] = {0};
+        kos_send(2, warm, sizeof(warm)); // main's warm-up recv takes this and seats ep->server
+        char buf[8] = {0};
+        EpTimedSend r;
+        uint64_t const t0 = kos_clock_now();
+        r.entered = t0;
+        r.rc = kos_call_timed(2, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
+        r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        (void)kos_send(2, &r, sizeof(r)); // untimed: parks until main's recv, long after
+        kos_sem_post(CH_DONE);
+    }
+    void t_call_timeout_pending()
+    {
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}}; // done@1, E(SIGNAL)@2
+        auto w = kos::thread::spawn_caps(ep_call_pending_worker, nullptr, "cltp", 12, caps, 2,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w.valid());
+        char warm[1] = {0};
+        TAP_CHECK(kos_recv(g_ep, warm, sizeof(warm), nullptr) == 1); // seats ep->server = main
+        kos_sleep_ns(EP_CALL_TIMEOUT_WAIT_NS); // outlast the deadline without ever recv'ing
+        EpTimedSend r;
+        memset(&r, 0, sizeof(r));
+        long const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
+        TAP_CHECK(n == static_cast<long>(sizeof(r))); // the untimed report parked and landed
+        TAP_CHECK(r.rc == -KOS_ETIMEDOUT);            // expired on send_waiters, never taken
+        // Both clock reads bracket the syscall, so this cannot pass on a deadline the
+        // kernel fired immediately.
+        TAP_CHECK(r.waited_us >= EP_CALL_TIMEOUT_US);
+        wait_n(1);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+    }
+
+    // --- Timed call: the deadline expires in CALL_REPLY_WAIT, reached by the SLOW path ---
+    // THE arm for the one-deadline-spans-both-phases rule. The caller parks on send_waiters
+    // first (main sleeps instead of recv'ing), and main's info-bearing recv then MIGRATES it
+    // onto main's reply_waiters. That migration is a park-to-park move and not an unpark, so
+    // the deadline armed once at the call must survive it: were the cancel back in
+    // wq_pop_highest, this caller would park forever and the arm would HANG rather than
+    // fail. Main never replies.
+    //
+    // The slow path is the whole point, and no assertion below enforces it: staged on the
+    // fast path the deadline is armed straight onto the reply park, nothing migrates, and
+    // every rc, duration and cap assertion below still passes. `r.entered` separates them.
+    void ep_call_reply_worker(void*) // caps: done@1, E(SIGNAL)@2
+    {
+        char buf[8] = {0};
+        EpTimedSend r;
+        uint64_t const t0 = kos_clock_now();
+        r.entered = t0;
+        r.rc = kos_call_timed(2, buf, 4, sizeof(buf), EP_CALL_REPLY_TIMEOUT_US);
+        r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        (void)kos_send(2, &r, sizeof(r));
+        kos_sem_post(CH_DONE);
+    }
+    void t_call_timeout_reply()
+    {
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        auto w = kos::thread::spawn_caps(ep_call_reply_worker, nullptr, "cltr", 12, caps, 2,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w.valid());
+        // Root is the lowest-priority thread, so once this sleep blocks root the caller
+        // runs to its own park before root can resume.
+        kos_sleep_ns(EP_CALL_SETTLE_NS); // the caller is now parked as CALL_SEND_WAIT
+        char req[8];
+        // A TIMED recv here, generously bounded: the caller is already parked, so this pops
+        // it without ever arming a deadline, and the surviving opts.timeout_us is what shows
+        // the kernel wrote the NESTED kos_recv_info and left the input word alone. A loop
+        // reusing one opts struct depends on exactly that.
+        struct kos_recv_timed_opts opts;
+        opts.timeout_us = EP_RECV_GENEROUS_US;
+        opts.info.badge = 0;
+        opts.info.reply_cap = KOS_CAP_NONE;
+        uint64_t const before_recv = kos_clock_now();
+        long const got = kos_recv_timed(g_ep, req, sizeof(req), &opts); // slow-path pop + migration
+        TAP_CHECK(got == 4);
+        TAP_CHECK(opts.info.reply_cap != KOS_CAP_NONE); // we hold the reply cap, and never use it
+        TAP_CHECK(opts.timeout_us == EP_RECV_GENEROUS_US);
+        kos_cap_t const reply_cap = opts.info.reply_cap;
+        kos_sleep_ns(EP_CALL_REPLY_WAIT_NS); // outlast the deadline without replying
+        EpTimedSend r;
+        memset(&r, 0, sizeof(r));
+        long const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
+        TAP_CHECK(n == static_cast<long>(sizeof(r)));
+        // THE staging witness. The caller read its clock before entering the call; that
+        // reading precedes main's own pre-recv reading, and main was running when it took
+        // that reading, so the caller was already off-CPU inside the call. The recv above
+        // therefore POPPED a parked caller instead of parking. A fast-path staging inverts
+        // this and fails here rather than passing on the path the arm does not test.
+        TAP_CHECK(r.entered < before_recv);
+        TAP_CHECK(r.rc == -KOS_ETIMEDOUT); // the deadline crossed the handoff and fired
+        TAP_CHECK(r.waited_us >= EP_CALL_REPLY_TIMEOUT_US);
+        // The cap outlives the caller by design (reclaiming it would cross a containment
+        // boundary), so closing it is still the server's job and must succeed with nobody
+        // left to wake.
+        TAP_CHECK(kos_handle_close(reply_cap) == 0);
+        wait_n(1);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+    }
+
+    // --- Reply to a caller that already timed out: -KOS_ESRCH, cap consumed --------------
+    // Staged on the FAST path (main is already parked in recv when the call lands), which
+    // is the other half of the CALL_REPLY_WAIT unwind: there the deadline is armed straight
+    // onto the reply park.
+    void ep_reply_stale_worker(void*) // caps: done@1, E(SIGNAL)@2
+    {
+        char buf[8] = {0};
+        EpTimedSend r;
+        // The settle sleep is on the CALLER here, the mirror image of the reply-wait arm:
+        // main must reach its recv and park before this call lands, or the call takes the
+        // slow path and the reply cap is minted by the recv-side scan instead.
+        kos_sleep_ns(EP_CALL_SETTLE_NS);
+        uint64_t const t0 = kos_clock_now();
+        r.entered = t0;
+        r.rc = kos_call_timed(2, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US);
+        r.waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        (void)kos_send(2, &r, sizeof(r));
+        kos_sem_post(CH_DONE);
+    }
+    void t_reply_stale_caller()
+    {
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        auto w = kos::thread::spawn_caps(ep_reply_stale_worker, nullptr, "rpst", 12, caps, 2,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false);
+        TAP_CHECK(w.valid());
+        char req[8];
+        struct kos_recv_info info = {0, KOS_CAP_NONE};
+        uint64_t const before_recv = kos_clock_now();
+        long const got = kos_recv(g_ep, req, sizeof(req), &info); // parks, then the call fills it
+        TAP_CHECK(got == 4 and info.reply_cap != KOS_CAP_NONE);
+        kos_sleep_ns(EP_CALL_TIMEOUT_WAIT_NS); // the caller's deadline expires under us
+        char rep[4] = {0};
+        // The cap still resolves, but the caller it names left CALL_REPLY_WAIT, so the
+        // reply has nowhere to land. It is consumed anyway.
+        TAP_CHECK(kos_reply(info.reply_cap, rep, sizeof(rep)) == -KOS_ESRCH);
+        // Consumed exactly once: the slot is empty and its cap-gen rolled, so the handle no
+        // longer resolves at all and the second attempt fails EARLIER, on the cap.
+        TAP_CHECK(kos_reply(info.reply_cap, rep, sizeof(rep)) == -KOS_EBADF);
+        TAP_CHECK(kos_handle_close(info.reply_cap) == -KOS_EBADF);
+        EpTimedSend r;
+        memset(&r, 0, sizeof(r));
+        long const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
+        TAP_CHECK(n == static_cast<long>(sizeof(r)));
+        // The mirror of the reply-wait arm's witness: the caller entered its call AFTER
+        // main took the reading above and then stopped running, so main was parked in the
+        // recv when the call landed. That is the FAST path, and a slow-path staging fails
+        // here instead of duplicating the other arm.
+        TAP_CHECK(r.entered > before_recv);
+        TAP_CHECK(r.rc == -KOS_ETIMEDOUT); // expired on the reply park, not on send_waiters
+        TAP_CHECK(r.waited_us >= EP_CALL_TIMEOUT_US);
+        wait_n(1);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+    }
+
+    // --- Reply on an abandoned cap once its sequence has come round again ---------------
+    // reply_stale_caller covers a timed-out caller that is doing nothing else: there
+    // cap_reply_caller answers nullptr on the call_state test alone, and the sequence never
+    // has to be right. This arm reaches PAST that test. The caller times out, leaving a
+    // live one-shot cap in a server's table, and then runs further calls until its call_seq
+    // low byte comes back to the one packed in that cap. On that call the abandoned cap
+    // resolves through index, generation, BLOCKED, CALL_REPLY_WAIT and sequence: every
+    // test but the last.
+    //
+    // What must then stop it is that the caller is parked on the SECOND server's
+    // reply_waiters, so the abandoned holder's unlink finds nothing of its own and the
+    // reply completes as if the caller were gone. Without that the reply copies its bytes
+    // into a buffer belonging to a transaction it has no part in and wakes a thread still
+    // linked on another list.
+    //
+    // A SECOND server, and not a second call to the same one, because the holder of the
+    // abandoned cap is already at KICKOS_CAP_REPLY_MAX and can mint no other: there is no
+    // staging in which one server holds both the stale cap and the live transaction.
+    //
+    // The window carries no sleep. Main learns that the second server has taken the
+    // aliasing call by RENDEZVOUS on a second endpoint: the token is sent only after that
+    // recv returned, and main's recv of it cannot complete earlier. The second endpoint is
+    // not a convenience: on one endpoint main's recv could pop a loop call instead of the
+    // token, mint a reply cap for it and strand the caller.
+    char const SR_GOOD[] = "OK!!";
+    char const SR_BAD[] = "BAD!";
+    // The abandoned call left call_seq at A and the timeout unwind rolled it to A+1, so the
+    // caller's k-th further call runs at A+1+k and the low byte packed in the cap (A) comes
+    // round again at k == 255. The loops below are sized so the LAST call is exactly that
+    // one: anything shorter and the sequence test refuses the cap before the guard this arm
+    // exists for is ever consulted.
+    constexpr int SR_SEQ_PERIOD = 1 << 8; // KCAP_REPLY_SEQ_BITS
+    constexpr int SR_ALIAS_CALL = SR_SEQ_PERIOD - 1;
+    void sr_caller(void*) // caps: done@1, lock@2, E1(SIGNAL)@3
+    {
+        char buf[8] = {0};
+        kos_sleep_ns(EP_CALL_SETTLE_NS); // main parks in recv first: the call takes the fastpath
+        if (kos_call_timed(3, buf, 4, sizeof(buf), EP_CALL_TIMEOUT_US) == -KOS_ETIMEDOUT)
+        {
+            log_put('T');
+        }
+        bool ok = true;
+        for (int k = 0; k < SR_ALIAS_CALL; k++)
+        {
+            memcpy(buf, "req2", 4);
+            int32_t const rc = kos_call(3, buf, 4, sizeof(buf));
+            if (rc != 4 or memcmp(buf, SR_GOOD, 4) != 0)
+            {
+                ok = false; // one log entry for the whole loop: 255 of these say nothing
+            }
+        }
+        char c = 'X';
+        if (ok)
+        {
+            c = 'K'; // every call, the aliasing one included, got ITS OWN server's bytes
+        }
+        log_put(c);
+        kos_sem_post(CH_DONE);
+    }
+    void sr_second_server(void*) // caps: done@1, E1(FULL)@2, E2(FULL)@3
+    {
+        char buf[8];
+        kos_sleep_ns(EP_CALL_TIMEOUT_WAIT_NS); // outlast the first call's deadline
+        for (int k = 0; k < SR_ALIAS_CALL - 1; k++)
+        {
+            struct kos_recv_info info = {0, KOS_CAP_NONE};
+            kos_recv(2, buf, sizeof(buf), &info);
+            kos_reply(info.reply_cap, SR_GOOD, 4);
+        }
+        struct kos_recv_info last = {0, KOS_CAP_NONE};
+        kos_recv(2, buf, sizeof(buf), &last); // the aliasing call, held unanswered
+        kos_send(3, "rdy", 3);                // rendezvous: completes only in main's recv
+        // Main runs its reply while we are parked here; the go token releases us.
+        kos_recv(3, buf, sizeof(buf), nullptr);
+        kos_reply(last.reply_cap, SR_GOOD, 4);
+        kos_sem_post(CH_DONE);
+    }
+    void t_reply_abandoned_cap()
+    {
+        if (not pool_can_host(2))
+        {
+            tap::skip("pool too small (2 interdependent workers)");
+            return;
+        }
+        log_reset();
+        kos_cap_t ep2 = KOS_CAP_NONE;
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        TAP_CHECK(kos_endpoint_create(&ep2) == 0);
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_ep, CH_FULL}, {ep2, CH_FULL}};
+        auto cl = kos::thread::spawn_caps(sr_caller, nullptr, "srC", 12, ccaps, 3);
+        auto s2 = kos::thread::spawn_caps(sr_second_server, nullptr, "srS", 10, scaps, 3);
+        TAP_CHECK(cl.valid() and s2.valid());
+        char req[8];
+        struct kos_recv_info info = {0, KOS_CAP_NONE};
+        long const got = kos_recv(g_ep, req, sizeof(req), &info); // the FIRST call
+        TAP_CHECK(got == 4 and info.reply_cap != KOS_CAP_NONE);
+        // Never replied, and never touched again until the token arrives: the deadline
+        // expires under us and this cap is abandoned for the rest of the arm.
+        char tok[8];
+        long const rdy = kos_recv(ep2, tok, sizeof(tok), nullptr);
+        TAP_CHECK(rdy == 3 and memcmp(tok, "rdy", 3) == 0); // the aliasing call is parked
+        // Every resolve test but the reply-waiter unlink now passes on this cap.
+        TAP_CHECK(kos_reply(info.reply_cap, SR_BAD, 4) == -KOS_ESRCH);
+        // Consumed exactly once even on the refusal, so the handle no longer resolves.
+        TAP_CHECK(kos_reply(info.reply_cap, SR_BAD, 4) == -KOS_EBADF);
+        TAP_CHECK(kos_handle_close(info.reply_cap) == -KOS_EBADF);
+        TAP_CHECK(kos_send(ep2, "go", 2) == 2); // release the second server's reply
+        wait_n(2);
+        TAP_CHECK(kos_handle_close(ep2) == 0);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        TAP_CHECK(log_eq("TK")); // timed out, then every call answered by its own server
+    }
+
+    // --- Timed recv: the deadline expires with nobody sending ---------------------------
+    // Runs in main with NO worker: nothing arrives, so there is no cross-domain copy to
+    // make unprivileged.
+    void t_recv_timeout()
+    {
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        char buf[8];
+        struct kos_recv_timed_opts opts;
+        opts.timeout_us = EP_CALL_TIMEOUT_US;
+        opts.info.badge = 0;
+        opts.info.reply_cap = KOS_CAP_NONE;
+        uint64_t const t0 = kos_clock_now();
+        long const n = kos_recv_timed(g_ep, buf, sizeof(buf), &opts);
+        uint32_t const waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        TAP_CHECK(n == -KOS_ETIMEDOUT); // expired, and no bytes arrived
+        TAP_CHECK(waited_us >= EP_CALL_TIMEOUT_US);
+        TAP_CHECK(opts.timeout_us == EP_CALL_TIMEOUT_US); // an input, never written back
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+    }
+
+    // --- Malformed arguments to the timed forms -----------------------------------------
+    // Every refusal here is decided before anything parks or copies, so main runs the whole
+    // arm alone. The EFAULT half needs a pointer the caller does not own, which a
+    // privileged caller can never present: it lives in t_endpoint_bound with the rest of
+    // the bound-check coverage.
+    void t_timed_arg_refusals()
+    {
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        char buf[8];
+        // The deadline rides the opts struct, so an opts-less timed recv cannot express
+        // one. The KERNEL is the refuser: nothing in the stub may answer this, or the
+        // refusal would depend on which libc the caller linked.
+        TAP_CHECK(kos_recv_timed(g_ep, buf, sizeof(buf), nullptr) == -KOS_EINVAL);
+        // Misalignment is EINVAL and not EFAULT: the kernel reads timeout_us out of this
+        // struct with a privileged access, which an unaligned address would fault on parts
+        // that trap it.
+        alignas(alignof(struct kos_recv_timed_opts))
+            unsigned char raw[sizeof(struct kos_recv_timed_opts) + alignof(uint32_t)];
+        memset(raw, 0, sizeof(raw));
+        struct kos_recv_timed_opts* const skewed =
+            reinterpret_cast<struct kos_recv_timed_opts*>(raw + 1);
+        TAP_CHECK(kos_recv_timed(g_ep, buf, sizeof(buf), skewed) == -KOS_EINVAL);
+        // The timed call packs both lengths into one argument word and SATURATES rather
+        // than masking. A masked 512 would arrive as 0 and become a silent zero-length
+        // call; the saturated value is still above KOS_EP_MSG_MAX, so the kernel's F4
+        // refusal survives the packing. Nothing is sent, so no endpoint state moves.
+        TAP_CHECK(kos_call_timed(g_ep, buf, KOS_EP_MSG_MAX + 1, sizeof(buf),
+                                 EP_CALL_TIMEOUT_US)
+                  == -KOS_EINVAL);
+        TAP_CHECK(kos_call_timed(g_ep, buf, 512, sizeof(buf), EP_CALL_TIMEOUT_US)
+                  == -KOS_EINVAL);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+    }
+
+    // --- Timed call: the expiry unwind REVERTS the D2 boost ------------------------------
+    // The only arm that can tell whether endpoint_wait_timeout still calls set_prio on the
+    // WAIT_EP_SEND branch: delete that one line and every other timed-call arm stays green,
+    // because a boost nobody observes changes no return code.
+    //
+    // Staging, in units of mtx_time_unit(): the server takes main's plain send first, which
+    // seats it as the endpoint's conventional server and is what gives the caller something
+    // to boost. It then busy-spins for the rest of the arm, so it is never in recv and the
+    // caller must park on send_waiters. The caller (high) wakes mid-spin and calls with a
+    // deadline; the spoiler (medium) wakes after that and is held off only by the boost.
+    //   'u' before 'm': the boost HELD while the caller was parked.
+    //   'm' before 'z': the expiry unwind dropped it, so the spoiler outranks the server
+    //                   again. Without the revert the server stays pinned at the caller's
+    //                   priority and 'z' comes first.
+#endif
+    // Also the time unit of the untimed choreographies below, so it stays outside the gate.
+    uint64_t g_call_unit = 1000000ull;
+#if KICKOS_TIMED_WAIT
+    void ctr_server(void*) // caps: done@1, lock@2, E(WAIT)@3
+    {
+        char buf[16];
+        kos_recv(3, buf, sizeof(buf), nullptr); // takes main's plain send; ep->server = us
+        log_put('a');
+        mtx_spin(g_call_unit * 6);  // the caller wakes and D2-boosts us inside this
+        log_put('u');
+        mtx_spin(g_call_unit * 8);  // the deadline expires inside this, and reverts us
+        log_put('z');
+        kos_sem_post(CH_DONE);
+    }
+    void ctr_caller(void*) // caps: done@1, lock@2, E(SIGNAL)@3
+    {
+        char buf[8] = {0};
+        kos_sleep_ns(g_call_unit * 2); // wake mid-spin: the server is not in recv, so we park
+        uint32_t const deadline_us = static_cast<uint32_t>((g_call_unit * 8ull) / 1000ull);
+        int32_t const rc = kos_call_timed(3, buf, 4, sizeof(buf), deadline_us);
+        char c = 'X';
+        if (rc == -KOS_ETIMEDOUT)
+        {
+            c = 'c';
+        }
+        log_put(c);
+        kos_sem_post(CH_DONE);
+    }
+    void ctr_spoiler(void*) // caps: done@1, lock@2 (medium prio)
+    {
+        kos_sleep_ns(g_call_unit * 4); // ready while the server is boosted, so it must wait
+        log_put('m');
+        kos_sem_post(CH_DONE);
+    }
+    void t_call_timeout_revert()
+    {
+        // Ask before spawning: the three workers wait on each other, so a partial set
+        // cannot be drained and a guard after the spawns would hang rather than skip.
+        if (not pool_can_host(3))
+        {
+            tap::skip("pool too small (3 interdependent workers)");
+            return;
+        }
+        log_reset();
+        g_call_unit = mtx_time_unit();
+        TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_WAIT_ONLY}};
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        kos_cap_grant mcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
+        auto sv = kos::thread::spawn_caps(ctr_server, nullptr, "ctrS", 8, scaps, 3);
+        auto cl = kos::thread::spawn_caps(ctr_caller, nullptr, "ctrC", 20, ccaps, 3);
+        auto sp = kos::thread::spawn_caps(ctr_spoiler, nullptr, "ctrM", 12, mcaps, 2);
+        TAP_CHECK(sv.valid() and cl.valid() and sp.valid());
+        char warm[4] = {0};
+        kos_send(g_ep, warm, 4); // parks root, which is what lets the workers start
+        wait_n(3);
+        TAP_CHECK(kos_handle_close(g_ep) == 0);
+        TAP_CHECK(count('c') == 1 and count('X') == 0); // the call expired, it did not bounce
+        TAP_CHECK(count('a') == 1 and count('u') == 1 and count('m') == 1 and count('z') == 1);
+        TAP_CHECK(nth('u', 1) < nth('m', 1)); // BOOST held while the caller was parked
+        TAP_CHECK(nth('m', 1) < nth('z', 1)); // REVERT: the unwind put the server back at base
+    }
+#endif
+
     // --- Call/reply: info-less receiver bounces a call, D2 boost is REVERTED ------
     // A high caller's slow-path kos_call boosts the low server it targets (D2). An
     // INFO-LESS recv cannot host the call, so recv rejects the caller (-KOS_ENOSYS) and MUST
     // revert that boost. Observables as in the PI donation arm: 'u' before 'm' while
     // boosted, 'm' before 'z' after the revert. Without the revert the server stays pinned
     // above the spoiler and 'z' precedes 'm'.
-    uint64_t g_call_unit = 1000000ull;
     volatile long g_ci_rc = -99;
     void ci_server(void*) // caps: done@1, lock@2, E(WAIT)@3
     {
@@ -3664,6 +4146,9 @@ namespace
     // buffer: an unprivileged caller cannot launder an un-owned page through IPC.
     volatile long g_ep_badrecv_rc = -99;
     volatile long g_ep_badsend_rc = -99;
+#if KICKOS_TIMED_WAIT
+    volatile long g_ep_badopts_rc = -99;
+#endif
     int g_ep_bnd_neg_ran = 0;
     void ep_bound_worker(void*) // caps: done@1, E@2 (unpriv)
     {
@@ -3672,6 +4157,15 @@ namespace
         {
             g_ep_badrecv_rc = kos_recv(2, bad, 8, nullptr);           // write oracle -> -KOS_EFAULT
             g_ep_badsend_rc = kos_send(2, static_cast<char const*>(bad), 8); // cross-domain read -> -KOS_EFAULT
+#if KICKOS_TIMED_WAIT
+            // The opts struct is IN-OUT, and an arena page is granule-aligned, so this
+            // clears the alignment gate above and lands on the readable+writable check.
+            // The message buffer is a valid stack local: the refusal is about opts alone.
+            char obuf[8];
+            g_ep_badopts_rc =
+                kos_recv_timed(2, obuf, sizeof(obuf),
+                               static_cast<struct kos_recv_timed_opts*>(bad));
+#endif
             g_ep_bnd_neg_ran = 1;
         }
         kos_sem_post(CH_DONE);
@@ -3679,7 +4173,11 @@ namespace
     void t_endpoint_bound()
     {
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
-        g_ep_badrecv_rc = -99; g_ep_badsend_rc = -99; g_ep_bnd_neg_ran = 0;
+        g_ep_badrecv_rc = -99; g_ep_badsend_rc = -99;
+#if KICKOS_TIMED_WAIT
+        g_ep_badopts_rc = -99;
+#endif
+        g_ep_bnd_neg_ran = 0;
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, CH_FULL}}; // done@1, E@2
         auto w = kos::thread::spawn_caps(ep_bound_worker, nullptr, "epbn", 12, caps, 2,
                                          KOS_POLICY_FIFO, 0, /*privileged=*/false);
@@ -3689,6 +4187,9 @@ namespace
         {
             TAP_CHECK(g_ep_badrecv_rc == -KOS_EFAULT); // bad recv buffer rejected, never parked
             TAP_CHECK(g_ep_badsend_rc == -KOS_EFAULT); // bad send buffer rejected, never parked
+#if KICKOS_TIMED_WAIT
+            TAP_CHECK(g_ep_badopts_rc == -KOS_EFAULT); // un-owned opts rejected, no deadline read
+#endif
         }
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
@@ -4863,6 +5364,138 @@ namespace
                   == -KOS_EPERM);
     }
 
+#if KICKOS_TIMED_WAIT
+    // --- Join: the death is observed, and an unreclaimed exit still resolves ----
+    // Root's slot is the FIRST allocation the thread pool ever makes, so it is index 0 at
+    // generation 0 on every board and posture, and handle_for(0) is the bare 0. Change
+    // that encoding and the two cases below silently name some other thread.
+    constexpr kos_thread_t ROOT_THREAD = 0;
+    // Generous, and only ever spent by a refusal: every join it bounds must answer without
+    // parking, so an expiry here is the failure and not the schedule.
+    constexpr uint32_t JOIN_GENEROUS_US = 60000;
+    // The target holds itself alive across the join below, which is the only thing that
+    // separates the PARKED path from the already-EXITED early return: both answer 0, and
+    // an instant answer is the signature of the wrong one.
+    constexpr uint32_t JOIN_PARK_US = 20000;
+    constexpr uint64_t JOIN_PARK_NS = 20000000ull;
+
+    // caps: none. Outlives the join that waits for it, then exits.
+    void join_target(void*)
+    {
+        kos_sleep_ns(JOIN_PARK_NS);
+    }
+
+    // caps: none. Exists only to occupy a slot and free it again.
+    void join_probe(void*) {}
+
+    void join_stranger(void*) // caps: done@1, lock@2
+    {
+        // Root leaves spawner_tag at KILL_TAG_NONE and kill_tag_of never answers NONE, so
+        // root is nobody's child. Issued from a CHILD because root naming itself is the
+        // -KOS_EDEADLK case below and would witness nothing about the gate.
+        char c = 'x';
+        if (kos_thread_join(ROOT_THREAD, JOIN_GENEROUS_US) == -KOS_EPERM)
+        {
+            c = 'P';
+        }
+        log_put(c);
+        kos_sem_post(CH_DONE);
+    }
+
+    void t_thread_join()
+    {
+        log_reset();
+        // One slot at a time: the target is joined before the stranger is spawned.
+        auto w = kos::thread::spawn(join_target, nullptr, "join", 10);
+        TAP_CHECK(w.valid());
+        // PARKED path, and the elapsed time is what says so: the target sleeps
+        // JOIN_PARK_NS before it exits, so a join that answers 0 in less than that
+        // answered from the EXITED early return instead, and the next case would be the
+        // only one this arm ever ran.
+        uint64_t t0 = kos_clock_now();
+        int const parked_rc = w.join();
+        uint32_t waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        TAP_CHECK(parked_rc == 0);
+        TAP_CHECK(waited_us >= JOIN_PARK_US); // the target's own exit is what woke it
+        // The generation bumps at RECLAIM and not at exit, and root has spawned nothing
+        // since, so this handle still names the slot its EXITED occupant holds. The bound
+        // is what makes the case total instead of a hang: a kernel that read that state as
+        // "still running" answers -KOS_ETIMEDOUT here, and one that read it as a stale
+        // handle answers -KOS_EBADF.
+        t0 = kos_clock_now();
+        int const exited_rc = kos_thread_join(w.id(), JOIN_GENEROUS_US);
+        waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        TAP_CHECK(exited_rc == 0);
+        TAP_CHECK(waited_us < JOIN_PARK_US); // answered from the slot, with nothing to wait for
+        // Refusals that need no target thread: a handle the pool never seats, one whose
+        // index is past every slot, and root naming itself.
+        TAP_CHECK(kos_thread_join(KOS_THREAD_NONE, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_join(0x7fffffffu, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_join(ROOT_THREAD, JOIN_GENEROUS_US) == -KOS_EDEADLK);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}}; // done@1, lock@2
+        auto s = kos::thread::spawn_caps(join_stranger, nullptr, "jstr", 10, caps, 2);
+        TAP_CHECK(s.valid());
+        wait_n(1);
+        TAP_CHECK(log_eq("P")); // parenthood is the whole gate, and nothing delegates it
+    }
+
+    // --- Join: a handle whose slot changed hands --------------------------------
+    // thread_resolve has two ways to answer nullptr, and the refusals in t_thread_join
+    // reach only the first: KOS_THREAD_NONE and 0x7fffffff both mask to an index no pool
+    // ever seats, so they leave through the range check and the generation compare below
+    // it is never executed.
+    //
+    // The reach is bought by RECLAIM. The pool hands out the LOWEST exited slot, and the
+    // first target took that slot when it was spawned, so every slot below it was live and
+    // still is: the second spawn therefore lands on the first target's slot and bumps its
+    // generation. The first handle then carries an index the pool does seat and a
+    // generation nothing holds, which is the second branch and nothing else.
+    void t_join_stale_gen()
+    {
+        auto first = kos::thread::spawn(join_probe, nullptr, "jgn1", 10);
+        TAP_CHECK(first.valid());
+        TAP_CHECK(first.join() == 0); // EXITED, and its slot is now the lowest reclaimable
+        kos_thread_t const stale = first.id();
+        auto second = kos::thread::spawn(join_probe, nullptr, "jgn2", 10);
+        if (not second.valid())
+        {
+            tap::skip("pool too small");
+            return;
+        }
+        // Same slot, new generation: the two handles differ, and the second one resolves.
+        TAP_CHECK(second.id() != stale);
+        TAP_CHECK(kos_thread_join(stale, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(second.join() == 0);
+    }
+
+    // --- Join: a target that outlives its deadline ------------------------------
+    constexpr uint32_t JOIN_TIMEOUT_US = 4000;
+    // 20x the deadline, not 1x: at 1x the worker could reach its own exit first and the
+    // join would legitimately answer 0.
+    constexpr uint64_t JOIN_OUTLIVE_NS = 80000000ull;
+
+    void join_slow(void*) // caps: none
+    {
+        kos_sleep_ns(JOIN_OUTLIVE_NS);
+    }
+
+    void t_join_timeout()
+    {
+        auto w = kos::thread::spawn(join_slow, nullptr, "jslo", 10);
+        TAP_CHECK(w.valid());
+        uint64_t const t0 = kos_clock_now();
+        int const rc = w.join(JOIN_TIMEOUT_US);
+        uint32_t const waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
+        TAP_CHECK(rc == -KOS_ETIMEDOUT); // the target is still running, and nothing waits on it
+        // Both clock reads bracket the syscall, so this cannot pass on a deadline the
+        // kernel fired immediately.
+        TAP_CHECK(waited_us >= JOIN_TIMEOUT_US);
+        // The expiry cleared the wait edge, so the target's exit sweep finds nothing to
+        // wake and this is a FRESH park. It must still be woken by that same exit.
+        TAP_CHECK(w.join() == 0);
+    }
+#endif
+
     // --- Self-grant, and the region budget that bounds it ----------------------
     // Exercises the REFUSAL at the region-budget ceiling: the call must fail LOUDLY
     // (-KOS_ENOMEM), not truncate the region set.
@@ -5116,6 +5749,16 @@ int main(int, char**)
     TAP_ADD("endpoint_rights", t_endpoint_rights);         // send needs SIGNAL, recv needs WAIT
     TAP_ADD("endpoint_epipe", t_endpoint_epipe);           // parked sender woken on last WAIT close
     TAP_ADD("endpoint_dead", t_endpoint_dead);             // F1 dead endpoint: send refused, no park
+#if KICKOS_TIMED_WAIT
+    TAP_ADD("endpoint_send_timeout", t_endpoint_send_timeout); // timed send expires; untimed still parks
+    TAP_ADD("recv_timeout", t_recv_timeout);                   // timed recv expires with nobody sending
+    TAP_ADD("timed_arg_refusals", t_timed_arg_refusals);       // null/misaligned opts, oversize packed send_len
+    TAP_ADD("call_timeout_pending", t_call_timeout_pending);   // timed call expires on send_waiters
+    TAP_ADD("call_timeout_revert", t_call_timeout_revert);     // ... and that unwind reverts the D2 boost
+    TAP_ADD("call_timeout_reply", t_call_timeout_reply);       // ... and in CALL_REPLY_WAIT, via the SLOW path
+    TAP_ADD("reply_stale_caller", t_reply_stale_caller);       // reply to a timed-out caller: -KOS_ESRCH
+    TAP_ADD("reply_abandoned_cap", t_reply_abandoned_cap);     // ... and while that caller is in a SECOND call
+#endif
     TAP_ADD("call_infoless_revert", t_call_infoless_revert); // info-less bounce reverts the D2 boost
     TAP_ADD("call_close_reply", t_call_close_reply);         // close-instead-of-reply EPIPEs + yields
     TAP_ADD("call_happy", t_call_happy);                     // request delivered + reply in-place (fast+slow)
@@ -5165,6 +5808,11 @@ int main(int, char**)
     TAP_ADD("periph_reg_write_mask", t_periph_reg_write_mask); // allowlist match + the per-entry value mask
 #endif
     TAP_ADD("privileged_spawn_refused", t_privileged_spawn_refused); // no privilege minting after boot
+#if KICKOS_TIMED_WAIT
+    TAP_ADD("thread_join", t_thread_join);   // parked join, unreclaimed exit, the refusals
+    TAP_ADD("join_stale_gen", t_join_stale_gen); // a reclaimed slot: the generation branch
+    TAP_ADD("join_timeout", t_join_timeout); // a target that outlives its deadline
+#endif
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     TAP_ADD("irq_thread_ctx", t_irq);

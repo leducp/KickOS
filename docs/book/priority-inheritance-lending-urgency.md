@@ -124,7 +124,7 @@ void set_prio(Thread* t, uint8_t p)
     }
     else
     {
-        t->prio = p;   // BLOCKED/SLEEPING/RUNNING just take the value
+        t->prio = p;   // BLOCKED and RUNNING just take the value
     }
 }
 ```
@@ -143,8 +143,12 @@ holds" is computed over). No priority work at all.
 On a *contended* lock -- the owner is someone else -- the caller must lend its priority
 down the chain of blocked owners before it parks. The chain is: the mutex's owner;
 if that owner is itself blocked on another mutex, that mutex's owner; and so on, each
-hop followed through a per-thread `blocked_on` pointer (the mutex a thread is currently
-parked on, or null).
+hop followed through the parked thread's **wait edge**: a per-thread (kind, object) pair
+naming what it is waiting for and which object owns the list it is on. The walk reads that
+edge through a narrowing accessor, `wait_mutex()`, which answers the mutex for a mutex park
+and null for every other kind. That is what makes the accessor, and not a raw pointer, the
+right shape: a thread parked on something that is not a mutex has no owner to lend to, and
+the walk must stop there rather than reinterpret whatever object the edge names.
 
 Two things can go wrong on that walk, and they force it to be **two passes**:
 
@@ -156,21 +160,25 @@ if m->owner == c:  return -2      // locking a mutex you already hold: self-dead
 t = m->owner
 while t != nullptr:
     if t == c:  return -2         // the chain loops back to us: locking would deadlock
-    if t->blocked_on == nullptr:  break
-    t = t->blocked_on->owner
+    if t->wait_mutex() == nullptr:  break
+    t = t->wait_mutex()->owner
 
 // PASS 2 -- boost, now that the chain is known acyclic:
 t = m->owner
 while t != nullptr:
     if t->prio >= c->prio:  break            // chain already at/above our urgency
     sched::set_prio(t, c->prio)
-    if t->blocked_on == nullptr:  break
-    t = t->blocked_on->owner
+    if t->wait_mutex() == nullptr:  break
+    t = t->wait_mutex()->owner
 
-c->blocked_on = m
-wq_block(m->waiters)              // park; we own the mutex when we return
-c->blocked_on = nullptr
+wq_block(m->waiters, WAIT_MUTEX, m)   // parks AND seats the wait edge; we own it on return
 ```
+
+The park and the edge are seated by the same call, and the waker clears both when it hands
+the mutex over. Neither may be left to the parked thread to do after it resumes: on an
+architecture that defers the switch, a self-clear leaves a window in which a still-parked
+thread already answers null from `wait_mutex()`, and a walk crossing that window stops
+short and loses a boost.
 
 Why two passes and not one: a single fused walk might boost the first few owners in a
 chain and *then* discover a cycle -- leaving those boosts applied for a lock that will
@@ -187,10 +195,12 @@ Three subtleties are worth internalizing:
   toward a waiter's priority; once a node in the chain is already at or above the
   caller's priority, every node past it was boosted to at least that level when its own
   waiter blocked (I2, inductively). No lower node remains.
-- **PI stops at semaphores.** `blocked_on` is set only on the mutex path; a thread
-  parked on a *semaphore* has `blocked_on == nullptr`, so the walk stops there. A
-  semaphore has no owner to boost, so inheritance genuinely cannot propagate through
-  it. This is the classic PI boundary -- document it, do not try to "fix" it.
+- **PI stops at semaphores.** A thread parked on a *semaphore* carries a semaphore-kind
+  wait edge, so `wait_mutex()` answers null and the walk stops there. A semaphore has no
+  owner to boost, so inheritance genuinely cannot propagate through it. This is the classic
+  PI boundary -- document it, do not try to "fix" it. The same is true of an IPC park: it
+  names an endpoint or a server, not an owner, and call/reply donation is a separate
+  mechanism reaching the same `set_prio` funnel rather than an extension of this walk.
 
 ## Reverting: the unlock path
 

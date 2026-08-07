@@ -17,16 +17,16 @@
 
 namespace kickos
 {
-    struct Domain; // kickos/domain.h: the shared region set a thread belongs to
-    struct Mutex;  // kickos/sync.h: PI bookkeeping links (blocked_on + held list)
+    struct Domain;   // kickos/domain.h: the shared region set a thread belongs to
+    struct Endpoint; // kickos/endpoint.h: the object a WAIT_EP_SEND/RECV edge names
+    struct Mutex;    // kickos/sync.h: PI bookkeeping (the wait edge and the held list)
 
     enum class ThreadState : uint8_t
     {
         INACTIVE, // not yet added
         READY,    // runnable, on a ready list
         RUNNING,  // currently executing
-        BLOCKED,  // on a wait queue
-        SLEEPING, // on the timer delta list
+        BLOCKED,  // parked: on a wait queue, on the timer delta list, or on neither
         EXITED    // done
     };
 
@@ -45,6 +45,26 @@ namespace kickos
         CALL_NONE = 0,
         CALL_SEND_WAIT,
         CALL_REPLY_WAIT
+    };
+
+    // What a parked thread waits FOR, and the object owning the list it is on. Set at
+    // every park and cleared at every unpark: thread_kill dispatches on it, and a
+    // mis-tagged park unwinds the wrong list. A caller parked on a server's reply_waiters
+    // has no wait_queue, so the tag is its only edge back to that server. WAIT_JOIN and
+    // WAIT_LIVE_LAST are on no list of any kind: the tag is the ONLY thing that finds
+    // them, and sched::exit_current sweeps the pool for it at every thread exit.
+    enum WaitKind : uint8_t
+    {
+        WAIT_NONE = 0,
+        WAIT_MUTEX,     // wait_obj: the Mutex. The PI chain-walk edge.
+        WAIT_SEM,       // wait_obj: the Semaphore
+        WAIT_IRQ,       // wait_obj: the IrqBinding. The one park a cancel may end.
+        WAIT_EP_SEND,   // wait_obj: the Endpoint; on its send_waiters
+        WAIT_EP_RECV,   // wait_obj: the Endpoint; on its recv_waiters
+        WAIT_EP_REPLY,  // wait_obj: the SERVER thread; queue-less on its reply_waiters
+        WAIT_SLEEP,     // wait_obj: none; on the timer delta list
+        WAIT_JOIN,      // wait_obj: the TARGET thread; queue-less on no list at all
+        WAIT_LIVE_LAST, // wait_obj: none; queue-less. Carries no deadline, ever.
     };
 
     // Kernel-owned bounded copy of a thread name (never aliases a user pointer).
@@ -69,7 +89,8 @@ namespace kickos
 
         // ready-list XOR wait-queue XOR reply-donor membership (shared node; see list.h)
         ListNode link;
-        // wait queue we're parked on, or nullptr; read at sem_timedwait (Later)
+        // The wait queue we are parked on, or nullptr. Null does NOT mean "not parked": a
+        // WAIT_EP_REPLY caller is parked queue-less, and wait_kind below is its only edge.
         List* wait_queue = nullptr;
 
         // timer delta-list membership (singly linked, sorted by deadline); SEPARATE
@@ -156,13 +177,15 @@ namespace kickos
         size_t call_rx_cap = 0;
         uint16_t call_seq = 0;
         uint8_t call_state = CALL_NONE;
+        WaitKind wait_kind = WAIT_NONE;
 
-        // Priority-inheritance bookkeeping (M3 mutex). blocked_on is the mutex this
-        // thread is parked on (nullptr otherwise), the chain-walk edge. held_list is
-        // the head of the mutexes this thread OWNS, linked through Mutex::next_held;
-        // thread_effective_prio scans it. Both are touched only under IrqLock at the
-        // mutex block/unblock sites.
-        Mutex* blocked_on = nullptr;
+        // The object the wait edge names, valid only for the kinds that document one.
+        // Read it through the accessors below and never raw: an untagged cast is how a
+        // mis-tagged park reaches the wrong type.
+        void* wait_obj = nullptr;
+        // Head of the mutexes this thread OWNS, linked through Mutex::next_held;
+        // thread_effective_prio scans it. Touched only under IrqLock at the mutex
+        // block/unblock sites.
         Mutex* held_list = nullptr;
 
         // Callers parked in CALL_REPLY_WAIT on a reply cap THIS thread holds: one entry per
@@ -204,6 +227,53 @@ namespace kickos
         // interrupt-masked and so may walk neither the capability table nor the endpoint pool.
         // EP_SERVED_NONE is 0, so the thread_create memset leaves it empty.
         uint16_t served_head = EP_SERVED_NONE;
+
+        // The one teardown writer for the edge wq_block and park_queueless establish. It is
+        // unconditional by design: which of the three a given park left set is not knowledge
+        // an unpark site may encode, and a partial clear leaves the tag and the queue
+        // disagreeing about where this thread is parked. Callers keep their own unlink,
+        // which must run BEFORE this: the unlink reads wait_queue.
+        void clear_wait_edge()
+        {
+            wait_queue = nullptr;
+            wait_kind = WAIT_NONE;
+            wait_obj = nullptr;
+        }
+
+        // The wait edge, narrowed to one kind each. TOTAL: every other kind answers
+        // nullptr, which is what terminates the PI chain walk at a non-mutex park.
+        Mutex* wait_mutex() const
+        {
+            if (wait_kind != WAIT_MUTEX)
+            {
+                return nullptr;
+            }
+            return static_cast<Mutex*>(wait_obj);
+        }
+        Endpoint* wait_endpoint() const
+        {
+            if (wait_kind != WAIT_EP_SEND and wait_kind != WAIT_EP_RECV)
+            {
+                return nullptr;
+            }
+            return static_cast<Endpoint*>(wait_obj);
+        }
+        Thread* wait_server() const
+        {
+            if (wait_kind != WAIT_EP_REPLY)
+            {
+                return nullptr;
+            }
+            return static_cast<Thread*>(wait_obj);
+        }
+        Thread* wait_join_target() const
+        {
+            if (wait_kind != WAIT_JOIN)
+            {
+                return nullptr;
+            }
+            return static_cast<Thread*>(wait_obj);
+        }
     };
 
     // A thread's capability-table capacity: the width it was seated with if it holds a run,

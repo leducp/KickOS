@@ -361,6 +361,15 @@ namespace kos::thread
         {
             return kos_thread_kill(id_);
         }
+#if KICKOS_TIMED_WAIT
+        // Wait for the thread to be gone (see kos_thread_join): 0 also for a thread that
+        // had already exited, and -KOS_EBADF on a failed spawn. Unbounded by default, which
+        // is what a caller wants when it has just kill()ed a cooperative target.
+        int join(uint32_t timeout_us = KOS_TIMEOUT_NONE) const
+        {
+            return kos_thread_join(id_, timeout_us);
+        }
+#endif
 
     private:
         kos_thread_t id_ = KOS_THREAD_NONE;

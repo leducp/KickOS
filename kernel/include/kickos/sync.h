@@ -51,20 +51,33 @@ namespace kickos
     // Park current on q and switch away; returns once a waker popped it and woke it.
     // Thread context only. Caller holds ONE continuous IrqLock across the block decision
     // AND this call; that is what makes it lost-wake-free.
-    void wq_block(List& q);
+    //
+    // `kind` and `obj` are the wait edge (thread.h): `obj` must be the object owning `q`,
+    // and the pair must name the list this call parks on, because thread_kill and the
+    // timed unwind reach that list through the tag and nothing else. wq_pop_highest clears
+    // both, so a re-park onto another list has to re-state them.
+    void wq_block(List& q, WaitKind kind, void* obj);
+
+    // Park `current` on NO list at all: the wait edge is then the ONLY thing that can find
+    // it again, so `kind` must be a kind some waker sweeps for (thread.h). Detaches from
+    // the ready set WITHOUT rescheduling, so the caller decides when to switch away and
+    // may link the thread somewhere else first. The waker writes wait_result and clears
+    // the edge before waking, exactly as on a wait queue; a parked thread never writes its
+    // own result. Caller holds IrqLock.
+    void park_queueless(Thread* c, WaitKind kind, void* obj);
 
     // Resume barrier, MANDATORY for any blocking primitive that reads waker-set TCB state
     // (wait_result) after resuming:
     //     Thread* c = sched::current(); uint64_t epoch;
     //     { IrqLock lock; ...predicate + set up state...; epoch = c->switch_count;
-    //       wq_block(q); }                          // lock RELEASED here
+    //       wq_block(q, kind, obj); }              // lock RELEASED here
     //     wq_confirm_resume(c, epoch);              // <- barrier, OUTSIDE the lock
     //     use c->wait_result;                       // now guaranteed post-resume
     // On ARM arch_switch only PENDS PendSV and arch_irq_restore has no ISB, so a few
     // instructions retire on the not-yet-switched thread after the block scope's lock
     // drops, and a wait_result read there returns the PRE-block value. No-op on the sim,
     // whose switch is synchronous. The waker, never the sleeper, must write wait_result
-    // and clear blocked_on under the lock.
+    // and clear the wait edge under the lock.
     void wq_confirm_resume(Thread* c, uint64_t epoch);
 
     void sem_init(Semaphore* s, int initial);
@@ -102,7 +115,12 @@ namespace kickos
     // called at every reply-cap mint site and at every site that consumes a CAP_REPLY
     // entry, or the list and the table entries drift apart. Caller holds IrqLock.
     void reply_donor_park(Thread* server, Thread* caller);
-    void reply_donor_unpark(Thread* server, Thread* caller);
+    // False means `caller` was NOT on this server's list and NOTHING was touched: a stale
+    // reply cap can resolve to a caller parked on a DIFFERENT server. A false return
+    // forbids every step that follows an unpark (delivering into the caller's buffer,
+    // writing its wait_result or call_state, waking it), because the caller is still
+    // parked on that other server and `link` is that list's.
+    bool reply_donor_unpark(Thread* server, Thread* caller);
 
     // The ONLY writers of Endpoint::server. They keep that field and the server's
     // served-endpoint chain in step. set() re-seats: it unlinks `ep` from a previous server

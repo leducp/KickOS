@@ -16,8 +16,15 @@ extern "C"
 // a trap.
 static_assert(sizeof(kos_kconsole_write(nullptr, 0)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_send(0, nullptr, 0)) == 4, "must be exactly 4 bytes");
+#if KICKOS_TIMED_WAIT
+static_assert(sizeof(kos_send_timed(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
+#endif
 static_assert(sizeof(kos_recv(0, nullptr, 0, nullptr)) == 4, "must be exactly 4 bytes");
 static_assert(sizeof(kos_call(0, nullptr, 0, 0)) == 4, "must be exactly 4 bytes");
+#if KICKOS_TIMED_WAIT
+static_assert(sizeof(kos_call_timed(0, nullptr, 0, 0, 0)) == 4, "must be exactly 4 bytes");
+static_assert(sizeof(kos_recv_timed(0, nullptr, 0, nullptr)) == 4, "must be exactly 4 bytes");
+#endif
 
 // arch_syscall returns at REGISTER width, so the narrowing casts below truncate. They are
 // exact: a transferred count is bounded by KOS_EP_MSG_MAX / the kernel's 4096-byte console
@@ -106,6 +113,17 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len)
                                              static_cast<uintptr_t>(len), 0));
 }
 
+#if KICKOS_TIMED_WAIT
+int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us)
+{
+    return static_cast<int32_t>(arch_syscall(KOS_SYS_SEND_TIMED,
+                                             static_cast<uintptr_t>(ep),
+                                             reinterpret_cast<uintptr_t>(buf),
+                                             static_cast<uintptr_t>(len),
+                                             static_cast<uintptr_t>(timeout_us)));
+}
+#endif
+
 int32_t kos_recv(kos_cap_t ep, void* buf, size_t cap_len, struct kos_recv_info* info)
 {
     return static_cast<int32_t>(arch_syscall(KOS_SYS_RECV,
@@ -115,6 +133,18 @@ int32_t kos_recv(kos_cap_t ep, void* buf, size_t cap_len, struct kos_recv_info* 
                                              reinterpret_cast<uintptr_t>(info)));
 }
 
+#if KICKOS_TIMED_WAIT
+int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
+                       struct kos_recv_timed_opts* opts)
+{
+    return static_cast<int32_t>(arch_syscall(KOS_SYS_RECV_TIMED,
+                                             static_cast<uintptr_t>(ep),
+                                             reinterpret_cast<uintptr_t>(buf),
+                                             static_cast<uintptr_t>(cap_len),
+                                             reinterpret_cast<uintptr_t>(opts)));
+}
+#endif
+
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
 {
     return static_cast<int32_t>(arch_syscall(KOS_SYS_CALL,
@@ -123,6 +153,18 @@ int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap)
                                              static_cast<uintptr_t>(send_len),
                                              static_cast<uintptr_t>(recv_cap)));
 }
+
+#if KICKOS_TIMED_WAIT
+int32_t kos_call_timed(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
+                       uint32_t timeout_us)
+{
+    return static_cast<int32_t>(arch_syscall(KOS_SYS_CALL_TIMED,
+                                             static_cast<uintptr_t>(ep),
+                                             reinterpret_cast<uintptr_t>(buf),
+                                             kos_call_lens_pack(send_len, recv_cap),
+                                             static_cast<uintptr_t>(timeout_us)));
+}
+#endif
 
 int kos_reply(kos_cap_t reply_cap, void const* buf, size_t len)
 {
@@ -143,6 +185,20 @@ int kos_thread_kill(kos_thread_t thread)
     return static_cast<int>(arch_syscall(KOS_SYS_THREAD_KILL,
                                          static_cast<uintptr_t>(thread), 0, 0, 0));
 }
+
+#if KICKOS_TIMED_WAIT
+int kos_thread_join(kos_thread_t thread, uint32_t timeout_us)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_JOIN,
+                                         static_cast<uintptr_t>(thread),
+                                         static_cast<uintptr_t>(timeout_us), 0, 0));
+}
+
+int kos_wait_last(void)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_WAIT_LAST, 0, 0, 0, 0));
+}
+#endif
 
 int kos_cap_narrow(kos_cap_t cap, uint8_t mask)
 {

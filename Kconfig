@@ -277,4 +277,26 @@ config SCHED_PERIODIC_TICK
 	bool "Force a classic periodic scheduler tick"
 	default n
 
+config KICKOS_TIMED_WAIT
+	bool "Bounded waits: timed send/call/receive, join, wait-until-last"
+	default y
+	help
+	  The five bounded-wait syscalls (send_timed, call_timed, recv_timed,
+	  thread_join, wait_last) and the deadline machinery only they reach: the
+	  per-park deadline arm, the endpoint unwind, and the exit-time sweep that
+	  wakes a joiner. Their syscall numbers stay allocated in either posture;
+	  with this off the dispatch arms and the userspace stubs are gone and those
+	  numbers answer -KOS_EINVAL like any other unimplemented call.
+
+	  Off saves roughly 1.4 KiB of .text on every image. Nothing is free: the
+	  syscall dispatch is one switch reachable from the trap entry, so a board
+	  that calls none of these still links all of them, and on the smallest parts
+	  in the fleet that is about a third of the remaining flash.
+
+	  The capability given up is real. console_handover_finish bounds a console
+	  driver that hangs in bring-up; with this off it falls back to the untimed
+	  send, so such a driver parks the handing-over thread forever and nothing in
+	  the system recovers it. That wedge predates the timed send and turning this
+	  knob off restores it. Every image with a userspace console driver pays it.
+
 endmenu

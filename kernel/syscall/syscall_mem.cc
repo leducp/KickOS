@@ -216,7 +216,9 @@ namespace kickos
 
     // Deliver a receiver's kos_recv_info (badge + reply_cap) into its parked out-ptr,
     // or nothing when it asked for none (info-less recv, out == 0). KCAP_INVALID marks
-    // a plain send; a real handle marks a call. Validated for 8 bytes at recv.
+    // a plain send; a real handle marks a call. Validated for 8 bytes at recv. A timed
+    // recv points `out` at the kos_recv_info NESTED in its opts struct, so this stays a
+    // whole-struct copy with no uninitialised tail and no input field to preserve.
     void write_recv_info(uintptr_t out, uint32_t badge, uint32_t reply_cap)
     {
         if (out == 0)

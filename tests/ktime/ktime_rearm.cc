@@ -24,6 +24,7 @@
 #include <kickos/arch/arch.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 
 namespace
 {
@@ -87,6 +88,27 @@ namespace kickos
     {
         Kernel g_instance;
     }
+
+    // time.cc calls kpanic when ktime_on_timer finds a deadline under a park that cannot
+    // time out. kpanic is noreturn: a stub that returns is undefined behaviour, and would
+    // present as this gate passing through a kernel invariant violation.
+    void kpanic(char const* msg)
+    {
+        fprintf(stderr, "kpanic: %s\n", msg);
+        abort();
+    }
+
+#if KICKOS_TIMED_WAIT
+    // ktime_on_timer delegates every endpoint park's unwind to the IPC layer, which this
+    // gate does not link (it compiles time.cc alone against a fake clock). No arm here
+    // stages an endpoint park, so reaching this is a test that staged something it cannot
+    // model; abort rather than return, for the same reason as kpanic above.
+    void endpoint_wait_timeout(Thread*)
+    {
+        fprintf(stderr, "endpoint_wait_timeout: no IPC layer in this gate\n");
+        abort();
+    }
+#endif
 
     namespace sched
     {
