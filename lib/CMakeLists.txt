@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 
+# strerror.cc carries prose no other member needs, so it is its own member: an image
+# that never names an error code leaves it unextracted, as rtt.cc.obj already is.
 add_library(kickos_lib STATIC
   libc/string.cc
   libc/fmt.cc
+  strerror.cc
   rtt.cc)
 kickos_apply_freestanding(kickos_lib)
+# errno.h / strerror.h live in the kickos_system header home.
+target_include_directories(kickos_lib PRIVATE "${PROJECT_SOURCE_DIR}/system/include")
 
 # The ch1 telemetry ring writer (kickos_rtt_write_record_ch1) is called from the
 # ARM PendSV tail via the switch hook, so it too must be FP-register-free there.

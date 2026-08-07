@@ -66,10 +66,8 @@ inline kos::thread::Handle spawn_unprivileged(void (*entry)(void*), uintptr_t wi
     return drv;
 }
 
-#if KICKOS_TIMED_WAIT
 // A driver that hangs in bring-up must not cost the board more than this.
 constexpr uint32_t KOS_DRIVER_HANDOVER_PROBE_US = 1000000;
-#endif
 
 // The LAST two steps of a console handover, in this order because either order wrong
 // fails silently. Closes the caller's own WAIT-bearing cap on E, then PROVES the driver
@@ -85,10 +83,8 @@ constexpr uint32_t KOS_DRIVER_HANDOVER_PROBE_US = 1000000;
 // rendezvous send returns only once a receiver has actually taken it, so on success the
 // DARK WINDOW between the publish and the driver serving is closed by the time this
 // returns. A driver that HANGS in bring-up instead of dying never EPIPEs the probe: the
-// probe is bounded by KOS_DRIVER_HANDOVER_PROBE_US only where KICKOS_TIMED_WAIT is on, and
-// without it the probe cannot give up at all, so such a driver parks the handing-over
-// thread with nothing to recover it. Per-chip bring-up polls are bounded by
-// KICKOS_POLL_SPIN_MAX either way.
+// probe is bounded by KOS_DRIVER_HANDOVER_PROBE_US. Per-chip bring-up polls are bounded by
+// KICKOS_POLL_SPIN_MAX.
 //
 // The two failures are different failures, and only one of them can be answered here.
 //
@@ -100,24 +96,19 @@ constexpr uint32_t KOS_DRIVER_HANDOVER_PROBE_US = 1000000;
 // before this call returns. A default-constructed Handle means a single-thread driver,
 // which released the window at its own death.
 //
-// Any other refusal, -KOS_ETIMEDOUT above all where the probe is bounded, leaves the
-// service thread ALIVE and still the sole receiver: recv_holders never reaches 0, so the
-// console is NOT reclaimed and every kernel-console write is dropped for the rest of the
-// run. Nothing here recovers from that. kos_thread_kill is cooperative and wakes only a
-// thread parked in kos_irq_wait, so it cannot end one hung anywhere else, and cancelling
-// the IRQ thread of a driver that may yet start serving would break a merely slow one. The
-// code is returned unchanged and no tag is printed: a print into a console nobody gave
-// back is a report that was never made, and the caller must treat the code as the whole
-// outcome.
+// Any other refusal, -KOS_ETIMEDOUT above all, leaves the service thread ALIVE and still
+// the sole receiver: recv_holders never reaches 0, so the console is NOT reclaimed and
+// every kernel-console write is dropped for the rest of the run. Nothing here recovers
+// from that. kos_thread_kill is cooperative and wakes only a thread parked in
+// kos_irq_wait, so it cannot end one hung anywhere else, and cancelling the IRQ thread of
+// a driver that may yet start serving would break a merely slow one. The code is returned
+// unchanged and no tag is printed: a print into a console nobody gave back is a report
+// that was never made, and the caller must treat the code as the whole outcome.
 inline int console_handover_finish(kos_cap_t ep, char const* fail_tag,
                                    kos::thread::Handle irq_thread = {})
 {
     kos_handle_close(ep);
-#if KICKOS_TIMED_WAIT
     int const rc = kos_send_timed(KOS_CAP_STDOUT, "", 0, KOS_DRIVER_HANDOVER_PROBE_US);
-#else
-    int const rc = kos_send(KOS_CAP_STDOUT, "", 0);
-#endif
     if (rc >= 0)
     {
         return 0;

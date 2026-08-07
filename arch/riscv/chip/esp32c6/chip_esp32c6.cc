@@ -129,6 +129,47 @@ namespace
     constexpr uint32_t CONSOLE_TXFIFO_EMPTY_THRHD = 32;   // re-fire when the FIFO drains to <=32
     constexpr uint32_t CONSOLE_TX_SIZE = 512;             // ring; power of two; > kprintf's 256B buf
 
+    // The window arch_console_reclaim rewrites, and the one a userspace console driver is
+    // granted (system/init/esp32c6-wroom/service_list_uartirq.cc). ONE constant: a reclaim
+    // reaching outside the window it reports would rewrite registers whose holder was
+    // never checked. UART1 sits at base + 0x1000, outside it.
+    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
+    constexpr size_t CONSOLE_WIN_SIZE = 0x1000u;
+
+    // Every offset the reclaim body writes must lie inside that window. Adding a store
+    // outside it fails to build instead of silently widening the reclaim's reach.
+    static_assert(reg::uart::OFF_INT_ENA < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_INT_CLR < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_CLKDIV < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_CONF0 < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_SWFC_CONF0 < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_IDLE_CONF < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_RS485_CONF < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_CLK_CONF < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_REG_UPDATE < CONSOLE_WIN_SIZE,
+                  "arch_console_reclaim writes outside the window it reports");
+
+    // The ROM's baud divisor, captured by arch_init. KickOS never programs UART0, so this
+    // is the only record of the working value: the divisor's correct setting depends on
+    // the clock source PCR selected, which is not derivable from anything in the window.
+    // 0 means arch_init has not run yet, and the reclaim then leaves the divisor alone.
+    constinit uint32_t g_console_clkdiv = 0;
+
+    // A UART core whose synchronisation never completes must cost the panic path a bounded
+    // delay, not the dump.
+    constexpr uint32_t REG_UPDATE_SPIN_MAX = 200000u;
+
+    void uart_reg_update_wait()
+    {
+        for (uint32_t i = 0; i < REG_UPDATE_SPIN_MAX; i++)
+        {
+            if ((r32(reg::uart::REG_UPDATE) & reg::uart::REG_UPDATE_SYNC) == 0)
+            {
+                return;
+            }
+        }
+    }
+
     // --- Watchdogs (regs/wdt.h; TRM ch.14 MWDT, ch.15 RWDT/SWD). ALL must be disabled
     //     or the ROM-armed WDTs reset the part within seconds. Common unlock key 0x50D83AA1.
 
@@ -457,6 +498,58 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     return &c6_console_backend;
 }
 
+// UART0 @ 0x6000_0000 (TRM v1.2, memory map Table 5.3-2), the whole block c6uart is
+// granted. On that driver the IRQ thread holds the grant, not the service thread whose
+// death notes the console dead.
+void arch_console_reclaim_window(uintptr_t* base, size_t* size)
+{
+    *base = CONSOLE_WIN_BASE;
+    *size = CONSOLE_WIN_SIZE;
+}
+
+// Panic-path reclaim (console.cc D6): force UART0 back to a known polled-ready 8N1 channel
+// after a userspace driver may have garbled every writable register in its granted window.
+// Runs with IRQs masked, privileged; MUST be idempotent + re-entrant, so it is straight-line
+// ABSOLUTE stores only, NO read-modify-write: an RMW on a garbled value is not safe to
+// repeat from a nested-fault re-entry.
+//
+// Reclaim depth = the in-window registers a driver can set to cause SILENT LOSS, each named
+// below with the failure it prevents. There are no init values to restore beyond the baud
+// divisor: KickOS never programs UART0, it inherits the ROM's setup. The clock source and
+// its divider (PCR) and the pad mux (IO MUX) are privileged blocks outside the window, out
+// of the driver's reach.
+//
+// The TX FIFO is deliberately NOT reset, unlike the esp32 body: it is 128 bytes deep, and on
+// a panic from KERNEL_OWNED it holds bytes the TX ISR pushed and already removed from the
+// ring, which kpanic_enter's flush therefore cannot re-send. Dropping them would cut a hole
+// in the middle of the log; keeping them costs ~11 ms of stale bytes ahead of the dump.
+void arch_console_reclaim(void)
+{
+    // Silence first: a stale enabled source would storm the dispatcher through the whole
+    // dump, and INT_ENA=0 makes every INT_ST bit read 0 whatever is latched.
+    r32(reg::uart::INT_ENA) = 0;
+    r32(reg::uart::INT_CLR) = 0xFFFFFFFFu;
+
+    // TX_SCLK_EN clear stops the transmitter dead and TX_RST_CORE set holds it in reset.
+    r32(reg::uart::CLK_CONF) = reg::uart::CLK_CONF_RUN;
+
+    // The _SYNC stores below reach the UART core only on the REG_UPDATE write that ends the
+    // body; waiting for the previous synchronisation first is the TRM's own step
+    // (section 27.5.2.2).
+    uart_reg_update_wait();
+    if (g_console_clkdiv != 0)
+    {
+        r32(reg::uart::CLKDIV) = g_console_clkdiv;
+    }
+    // TX_FLOW_EN alone gates every byte on a CTS this board does not wire, TXFIFO_RST held
+    // asserted transmits nothing, and TXD_INV corrupts every frame.
+    r32(reg::uart::CONF0) = reg::uart::CONF0_8N1;
+    r32(reg::uart::SWFC_CONF0) = reg::uart::SWFC_CONF0_IDLE; // FORCE_XOFF stops the transmitter
+    r32(reg::uart::RS485_CONF) = 0;                          // RS485 gates TX on a busy receiver
+    r32(reg::uart::IDLE_CONF) = reg::uart::IDLE_CONF_DEFAULT; // TX_IDLE_NUM stretches to 1023 bit times
+    r32(reg::uart::REG_UPDATE) = reg::uart::REG_UPDATE_SYNC;
+}
+
 // Route + enable a real device line: aim its interrupt-matrix source at the line's CPU
 // interrupt, configure that CPU int (level, priority) and enable it at the controller and
 // in mie. A line with no route stays on the software doorbell (no-op). The UART's own
@@ -659,6 +752,10 @@ void arch_init(void)
 {
     wdt_disable_all(); // or the ROM-armed watchdogs reset the part in seconds
     c6_early_mark('E'); // watchdogs disabled
+
+    // Before anything unprivileged exists: arch_console_reclaim has no other way back to a
+    // working baud (see g_console_clkdiv).
+    g_console_clkdiv = r32(reg::uart::CLKDIV);
 
     g_clint_msip = r32p(reg::clint::MSIP);   // the deferred-switch software interrupt
 #if KICKOS_BENCH

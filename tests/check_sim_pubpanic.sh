@@ -9,6 +9,9 @@
 #   pubpanic1  kos_panic  -> "KERNEL PANIC: [pubpanic] banner after handover"
 #   pubpanic2  ud2/SIGILL -> "=== SIM FAULT (illegal instruction)", exactly once
 #
+# Case 2 inverts on a backend with fault isolation: root's illegal instruction kills root
+# alone, so the claim becomes survival rather than reporting. See the case-2 block.
+#
 # Why this needs its own build: KICKOS_SERVICE_LIST selects one provider per image, so
 # the published posture cannot coexist with the default one in a single tree.
 #
@@ -28,14 +31,17 @@ set -eu
 
 KICKOS_SRC="$1"
 CMAKE="${2:-cmake}"
+# The caller's, not this script's to sniff: what a user-thread fault DOES is a property
+# of the backend, and case 2's illegal instruction is executed by root.
+OUTCOME="${3:-panic}"
 
 FAULT_STATUS=132 # kfault_terminate -> arch_shutdown(132) on the host
 
 fail() { echo "FAIL: $1"; exit 1; }
 # grep as a predicate, with `set -e` kept out of the way.
 has() { printf '%s\n' "$OUT" | grep -q "$1"; }
-# grep -c exits 1 on zero matches, which under `set -e` would kill the script before its
-# fail message ever prints: red for the right reason, but with no diagnostic.
+# grep -c exits 1 on zero matches, so without `|| true` set -e kills the script before its
+# fail message prints.
 count_of() { printf '%s\n' "$OUT" | grep -c "$1" || true; }
 
 TMP="$(mktemp -d)"
@@ -50,8 +56,6 @@ echo "== building pubpanic1 + pubpanic2 =="
 "$CMAKE" --build "$TMP/build" --target pubpanic1 pubpanic2 >/dev/null \
   || fail "pubpanic build failed"
 
-# Assertions every case shares: the publish happened, the endpoint route carried the
-# app's marker, and the kernel debug console is dark.
 common_asserts() {
     # Checked FIRST: a missing publish also strands the driver, and reporting that
     # instead would name a symptom rather than the cause.
@@ -87,18 +91,59 @@ COUNT="$(count_of 'KERNEL PANIC: \[pubpanic\] banner after handover')"
 echo "== case 2: illegal instruction on a published console =="
 APP="$TMP/build/user/apps/common/pubpanic/pubpanic2"
 [ -x "$APP" ] || fail "pubpanic2 binary not produced at $APP"
-set +e
-OUT="$(timeout "${SIM_TIMEOUT:-30}" "$APP" 2>&1)"
-RC=$?
-set -e
+
+if [ "$OUTCOME" = panic ]; then
+    set +e
+    OUT="$(timeout "${SIM_TIMEOUT:-30}" "$APP" 2>&1)"
+    RC=$?
+    set -e
+    printf '%s\n' "$OUT"
+    common_asserts "case 2"
+    COUNT="$(count_of '=== SIM FAULT (illegal instruction)')"
+    [ "$COUNT" -ne 0 ] \
+      || fail "case 2: the fault dump never reached the wire (the f302nucleo defect shape)"
+    [ "$COUNT" -eq 1 ] \
+      || fail "case 2: the fault dump appeared $COUNT times (ring re-pushed?)"
+    [ "$RC" -eq "$FAULT_STATUS" ] \
+      || fail "case 2: expected exit $FAULT_STATUS (kfault_terminate), got $RC"
+    echo "PASS: both terminal reports reach the wire over a published userspace console"
+    exit 0
+fi
+
+# thread-kill: the illegal instruction is root's own fault, so it is no longer terminal.
+# The claim inverts with it. What must still hold is that the SYSTEM survives: the
+# console driver keeps the wire and the process does not die, which is asserted
+# positively by finding it still alive after the settle.
+#
+# The dump's ABSENCE is asserted deliberately, not tolerated. console_emit drops kernel
+# writes while the console is USER_OWNED (kernel/init/console.cc), and the thread-kill
+# path must not call kpanic_enter, whose reclaim is permanent and would take the console
+# away from a system that is meant to keep running. So a user-thread fault on a published
+# console is currently reported ONLY through the exit code its joiner reads. That is
+# design-m4.7.9-fault-isolation.md open question 3, still open; pinning it here is what
+# turns this gate red the day the dump is routed over the published console instead.
+LOG="$TMP/case2.log"
+"$APP" >"$LOG" 2>&1 &
+APID=$!
+sleep "${SIM_SETTLE:-3}"
+ALIVE=0
+if kill -0 "$APID" 2>/dev/null; then
+    ALIVE=1
+fi
+{ kill "$APID"; wait "$APID"; } 2>/dev/null
+OUT="$(tr -d '\r' < "$LOG")"
 printf '%s\n' "$OUT"
 common_asserts "case 2"
-COUNT="$(count_of '=== SIM FAULT (illegal instruction)')"
-[ "$COUNT" -ne 0 ] \
-  || fail "case 2: the fault dump never reached the wire (the f302nucleo defect shape)"
-[ "$COUNT" -eq 1 ] \
-  || fail "case 2: the fault dump appeared $COUNT times (ring re-pushed?)"
-[ "$RC" -eq "$FAULT_STATUS" ] \
-  || fail "case 2: expected exit $FAULT_STATUS (kfault_terminate), got $RC"
+[ "$ALIVE" -eq 1 ] \
+  || fail "case 2: the image died; root's fault was supposed to kill root alone"
+if has 'KERNEL PANIC'; then
+    fail "case 2: a user-thread fault reached the panic path"
+fi
+if has '=== SIM FAULT'; then
+    fail "case 2: the fault reporter ran; the thread kill should have claimed this fault"
+fi
+if has 'THREAD FAULT'; then
+    fail "case 2: the kill dump reached a USER_OWNED console; open question 3 moved, retune this gate"
+fi
 
-echo "PASS: both terminal reports reach the wire over a published userspace console"
+echo "PASS: case 1 reaches the wire; case 2 kills root alone and the driver keeps the console"

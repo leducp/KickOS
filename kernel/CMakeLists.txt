@@ -10,6 +10,7 @@ set(KICKOS_KERNEL_SOURCES
   ktrace/ktrace.cc
   init/console.cc
   init/console_tx.cc
+  init/fault.cc
   init/led.cc
   init/instance.cc
   init/kmain.cc)
@@ -34,7 +35,7 @@ add_library(kickos_kernel STATIC ${KICKOS_KERNEL_SOURCES})
 kickos_apply_freestanding(kickos_kernel)
 
 # Build-time stamp (kickos_build_stamp[], read by the kmain banner). Regenerated on
-# EVERY build so the banner reflects the image actually linked -- __DATE__/__TIME__ bakes
+# EVERY build so the banner reflects the image actually linked; __DATE__/__TIME__ bakes
 # per-TU and goes stale on incremental builds (see cmake/build_stamp.cmake). The custom
 # target has no OUTPUT, so it is always out of date and reruns each build; the kernel lib
 # recompiles the tiny generated TU and dependents relink, keeping the stamp truthful.
@@ -59,7 +60,7 @@ if(KICKOS_TELEMETRY_ON AND (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUA
 endif()
 
 # console_tx_isr drains the ring from ISR context, so its emit path must take no
-# FP register (no lazy FP stacking on the drain) -- same treatment as ktrace.
+# FP register (no lazy FP stacking on the drain), same treatment as ktrace.
 if(KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m")
   set_source_files_properties(init/console_tx.cc PROPERTIES COMPILE_OPTIONS "-mgeneral-regs-only")
 endif()

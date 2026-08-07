@@ -134,7 +134,7 @@ if(EXISTS "${KICKOS_DEFCONFIG}")
     endif()
   endforeach()
   foreach(_flag KICKOS_ENABLE_SELFTEST KICKOS_DEBUG KICKOS_BENCH
-                KICKOS_SHUTDOWN_TO_BOOTLOADER KICKOS_TIMED_WAIT
+                KICKOS_SHUTDOWN_TO_BOOTLOADER
                 CONFIG_SCHED_PERIODIC_TICK)
     if(DEFINED ${_flag})
       string(REGEX REPLACE "^CONFIG_" "" _sym "${_flag}")
@@ -254,22 +254,6 @@ if(KICKOS_ENABLE_SELFTEST)
   add_compile_definitions(KICKOS_ENABLE_SELFTEST=1)
 endif()
 
-# --- Bounded waits ----------------------------------------------------------
-# ON: send/call/recv accept a deadline, a thread can be joined, and a thread can wait
-# until it is the last one live. OFF: those five dispatch arms and their stubs are not
-# built, and their (permanently allocated) syscall numbers answer -KOS_EINVAL. The
-# numbers are never reused. See the help text in Kconfig for what OFF gives up:
-# console_handover_finish falls back to the untimed send, so a console driver that hangs
-# in bring-up parks the handing-over thread with nothing to recover it.
-# Always defined 0 or 1 so `#if KICKOS_TIMED_WAIT` is -Wundef-clean.
-option(KICKOS_TIMED_WAIT "Bounded waits: timed send/call/receive, join, wait-until-last" ON)
-if(KICKOS_TIMED_WAIT)
-  add_compile_definitions(KICKOS_TIMED_WAIT=1)
-else()
-  add_compile_definitions(KICKOS_TIMED_WAIT=0)
-  message(STATUS "KickOS: bounded waits OFF (console bring-up parks unbounded)")
-endif()
-
 # --- Terminating images hand the chip back to its bootloader ----------------
 # OFF: a terminating image halts, and reflashing an RP2040/RP2350 needs a physical
 # BOOTSEL press. ON: both terminal dead-ends in kernel/init/console.cc call
@@ -385,6 +369,57 @@ if(KICKOS_CHIP)
   if(EXISTS "${_caps_optin}")
     include("${_caps_optin}")
   endif()
+endif()
+# KICKOS_FAULT_ISOLATION is never overridable: a backend that defines
+# arch_fault_is_user_thread / arch_fault_redirect_to_exit and is not listed here links
+# BOTH its definition and the fallback into one archive, resolved by member order.
+#
+# NOT KICKOS_HAVE_MPU. Privilege comes from arch_context_init and kmain spawns root
+# unprivileged in every posture, so a flat board kills a faulting thread exactly as an
+# enforcing one does (docs/design-m4.7.9-fault-isolation.md section 3.1).
+#
+# KICKOS_HAVE_PRIV_RING: a core without a privilege ring cannot tell a thread's own fault
+# from a kernel bug in code it called, and MUST keep panicking.
+#
+# Per BOARD, not per arch: the ARMv6-M Unprivileged/Privileged Extension is OPTIONAL and
+# separate from the MPU extension, Cortex-M0 omits it and Cortex-M0+ implements it, and
+# both are KICKOS_ARCH=armv6m with no predefined macro between them. Measured on microbit,
+# whose msr CONTROL is discarded (docs/reference/boards.md, "microbit has no privilege
+# axis").
+if(KICKOS_ARCH STREQUAL "armv6m")
+  if(KICKOS_BOARD STREQUAL "microbit")
+    set(KICKOS_HAVE_PRIV_RING 0) # nRF51822, Cortex-M0
+  elseif(KICKOS_BOARD STREQUAL "picopi")
+    set(KICKOS_HAVE_PRIV_RING 1) # RP2040, Cortex-M0+
+  else()
+    message(FATAL_ERROR
+      "armv6m board '${KICKOS_BOARD}' is not classified. Cortex-M0 has no privilege ring "
+      "and Cortex-M0+ does; state which this core is (see the table in "
+      "docs/design-unprivileged-root.md section 2) rather than letting it be guessed.")
+  endif()
+elseif(KICKOS_ARCH STREQUAL "lx6")
+  # PS.UM is 1 for kernel and thread alike and arch_context_init discards `privileged`.
+  set(KICKOS_HAVE_PRIV_RING 0)
+else()
+  set(KICKOS_HAVE_PRIV_RING 1)
+endif()
+
+# rxv3 is excluded despite an exact privilege ring (PSW.PM): its redirect is an `rte` no
+# emulator in the tree can execute, so it would ship unwitnessed. lx6 is already refused
+# by KICKOS_HAVE_PRIV_RING.
+#
+# sim's seam rewrites the ucontext register file directly, so on a host layout it does not
+# know arch_fault_is_user_thread declines and the gates would assert an outcome the
+# runtime cannot produce.
+set(KICKOS_FAULT_ISOLATION 0)
+set(KICKOS_FAULT_OUTCOME panic)
+if(KICKOS_HAVE_PRIV_RING
+    AND (KICKOS_ARCH STREQUAL "armv7m"
+      OR KICKOS_ARCH STREQUAL "armv6m"
+      OR KICKOS_ARCH STREQUAL "rv32imac"
+      OR (KICKOS_ARCH STREQUAL "sim" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")))
+  set(KICKOS_FAULT_ISOLATION 1)
+  set(KICKOS_FAULT_OUTCOME thread-kill)
 endif()
 if(NOT DEFINED KICKOS_TRACE_ARCH)
   set(KICKOS_TRACE_ARCH 0)

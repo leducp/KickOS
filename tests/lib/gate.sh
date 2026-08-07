@@ -104,26 +104,29 @@ run_image() {
 }
 
 # For an app that never terminates on its own: boot it in the background and poll its
-# output until EVERY pattern has appeared, then stop QEMU. POLL_OK is 1 when they all
-# landed, 0 when the poll ran out or QEMU died first; OUT carries the whole run either
-# way. QEMU_TIMEOUT bounds only the no-progress path.
+# output until EVERY pattern has appeared, then stop it. POLL_OK is 1 when they all
+# landed, 0 when the poll ran out or the image died first; OUT carries the whole run
+# either way. QEMU_TIMEOUT bounds only the no-progress path.
 poll_image() { # <elf> <ere>...
-    need_qemu
-    need_qemu_machine
     _elf="$1"
     shift
     _log="$(mktemp)" || fail "mktemp failed"
-    # QEMU_EXTRA is a word list (e.g. `-bios none`), so it must split.
-    # shellcheck disable=SC2086
-    "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
-        -nographic -semihosting -kernel "$_elf" >"$_log" 2>&1 &
+    if [ -n "${QEMU_MACHINE:-}" ]; then
+        need_qemu
+        # QEMU_EXTRA is a word list (e.g. `-bios none`), so it must split.
+        # shellcheck disable=SC2086
+        "$QEMU_BIN" -M "$QEMU_MACHINE" ${QEMU_EXTRA:-} \
+            -nographic -semihosting -kernel "$_elf" >"$_log" 2>&1 &
+    else
+        "$_elf" >"$_log" 2>&1 &
+    fi
     _qpid=$!
     _n=0
     while [ "$_n" -lt $(( ${QEMU_TIMEOUT:-8} * 5 )) ]; do   # poll at 5 Hz
         if _poll_matched "$_log" "$@"; then
             break
         fi
-        kill -0 "$_qpid" 2>/dev/null || break               # QEMU exited on its own
+        kill -0 "$_qpid" 2>/dev/null || break               # the image exited on its own
         sleep 0.2
         _n=$((_n + 1))
     done
@@ -158,13 +161,21 @@ assert_no_panic() {
     fi
 }
 
-# The faulting address the reporters recorded, as bare hex digits: armv7m dumps MMFAR
-# (MemManage) or BFAR (BusFault), the kernel-reported path (sim, RISC-V) names it in
-# its MPU FAULT line. Both are printed only when the address is live, never stale.
+# The faulting address the reporters recorded, as bare hex digits: armv7m's panic dump
+# prints MMFAR (MemManage) or BFAR (BusFault), the thread-kill dump prints whichever it
+# captured as ADDR, and the kernel-reported path (sim, RISC-V) names it in its MPU FAULT
+# line. All are printed only when the address is live, never stale.
 reported_fault_addr() {
     printf '%s\n' "$OUT" \
         | sed -n -e 's/.*MMFAR=0x\([0-9a-fA-F]*\).*/\1/p' \
                  -e 's/.*BFAR=0x\([0-9a-fA-F]*\).*/\1/p' \
+                 -e 's/.*ADDR=0x\([0-9a-fA-F]*\).*/\1/p' \
                  -e 's/.*attempted [a-z]* at 0x\([0-9a-fA-F]*\).*/\1/p' \
         | head -n1
+}
+
+# The thread-kill dump's banner for a named task, as an ERE; kernel/init/fault.cc owns
+# the wording, and four gates pin it through here.
+thread_fault_re() { # <task-name>
+    printf "=== THREAD FAULT === task '%s' killed" "$1"
 }

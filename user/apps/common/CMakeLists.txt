@@ -34,19 +34,22 @@ add_subdirectory(drvdeath)
 # device. Sim-only and self-gated; its gate builds its own tree.
 add_subdirectory(uartloop)
 add_subdirectory(sched_exit)
+# The C library's own exit() on every port: it must link and reach KOS_SYS_EXIT.
+add_subdirectory(libc_exit)
 
 add_subdirectory(selftest)
 add_subdirectory(stress)
 
 # GPIO pin-allocator demo (M4.3): board-agnostic (the pin is two compile defs), so
-# built for every board -- on a chip with no GPIO backend claim returns -KOS_ENOSYS
+# built for every board - on a chip with no GPIO backend claim returns -KOS_ENOSYS
 # and the app parks.
 add_subdirectory(gpioblink)
 
-# Diagnostic apps -- self-gated on KICKOS_ENABLE_SELFTEST via kickos_add_diagnostic_app
+# Diagnostic apps, self-gated on KICKOS_ENABLE_SELFTEST via kickos_add_diagnostic_app
 # (see each CMakeLists), so no per-board list here. `fault` deliberately executes an
 # illegal instruction; it is never built into a production image.
 add_subdirectory(fault)
+add_subdirectory(faultsurvive)
 add_subdirectory(specfault)
 # kos_reboot plumbing witness + the unattended-reflash affordance. Board-agnostic;
 # its ctest arms are the declining-fallback targets only (see its CMakeLists).
@@ -59,11 +62,11 @@ add_subdirectory(rebootdemo)
 # AND the run is automatable; sim never compiles newlib_stubs, XMC has no QEMU model).
 add_subdirectory(initdemo)
 
-# Privileged runtime clock-retune HW harness -- self-gates on KICKOS_CLOCK_RETUNE_TEST
+# Privileged runtime clock-retune HW harness, self-gates on KICKOS_CLOCK_RETUNE_TEST
 # (OFF by default) + xmc4800-relax/frdmk64f + enforcement in its own CMakeLists.
 add_subdirectory(clockretune)
 
-# Clock-hardening wrap/soak HW harness -- self-gates on KICKOS_CLOCKSOAK_TEST (OFF by
+# Clock-hardening wrap/soak HW harness, self-gates on KICKOS_CLOCKSOAK_TEST (OFF by
 # default) in its own CMakeLists; arch-neutral, builds for any board.
 add_subdirectory(clocksoak)
 
@@ -74,14 +77,14 @@ add_subdirectory(clocksoak)
 # stops the linker pulling libstdc++'s demangle + float dtoa, ~63K .text). Each board's
 # RAM must also cover the runtime heap: the freestanding chips carve a fixed .userheap
 # (the MPU chips route the runtime writable state into the granted .appdata window).
-# frdmk64f builds under MPU enforcement too -- the KickOS full-C++-under-isolation gate.
+# frdmk64f builds under MPU enforcement too, the KickOS full-C++-under-isolation gate.
 # mk64f.ld routes libkickos_user.a's heap arena + the libstdc++ writable state into the
 # granted .appdata/.appbss window (archive:member colon-inclusion of the closed kernel
-# set), and the EHABI .exidx tables are read-only in flash, reached via the code grant --
+# set), and the EHABI .exidx tables are read-only in flash, reached via the code grant,
 # so an unprivileged thread runs the full runtime (the freedom-k64f slave reached
 # OPERATIONAL under SYSMPU). The operator runs cxxtest on K64F silicon.
 # picopi (rp2040/EHABI), rx72m (RXv3/SjLj) and esp32c6-wroom (rv32imac/DWARF) build
-# cxxtest ONLY under enforcement -- each chip .ld homes the toolchain EH tables (EHABI
+# cxxtest ONLY under enforcement: each chip .ld homes the toolchain EH tables (EHABI
 # .ARM.extab / DWARF .eh_frame+.gcc_except_table / RX SjLj .gcc_except_table) into the
 # app code+data grants and routes the runtime writable state into the .appdata window.
 # The QEMU mps2 images build it in BOTH postures: the non-enforcement build is the

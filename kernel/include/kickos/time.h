@@ -31,13 +31,11 @@ namespace kickos
     // Convenience: sleep for a relative duration.
     void ktime_sleep_ns(uint64_t ns);
 
-#if KICKOS_TIMED_WAIT
     // Give `t` a deadline `timeout_us` microseconds out and put it on the delta list, so a
     // park on some OTHER queue can be unwound when the deadline passes. The min-delta floor
     // is applied here, at the deadline's birth, and must never be re-derived later
     // (invariant timer-min-delta-guard). Caller holds IrqLock.
     void ktime_deadline_arm(Thread* t, uint32_t timeout_us);
-#endif
 
     // Drop `t`'s deadline, if it has one. Called from sched::wake and nowhere else: an
     // unpark IS a wake, while a pop is not necessarily one, and a park-to-park migration

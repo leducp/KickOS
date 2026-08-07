@@ -131,6 +131,14 @@ void _exit(int code)
     }
 }
 
+// exit() reaches _exit above only through __libc_fini_array, which calls this. It must
+// STAY empty: every chip .ld routes the app .fini_array into a section of its own and
+// ASSERTs it empty, and newlib's own array bounds are weak-undefined in these images, so
+// a destructor registered there has no runner either way.
+void _fini(void)
+{
+}
+
 // _sbrk and its bump arena live in newlib_sbrk.cc, not here: this TU is force-linked
 // into every image by -Wl,-u,_exit, so a strong reference to _kickos_heap_start from
 // here would defeat the heapless-board link error.

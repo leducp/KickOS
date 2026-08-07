@@ -528,6 +528,29 @@ void arch_diag_led_set(int on);
 // no-op default (per-arch); a chip backend with an external MPU strong-overrides.
 void arch_fault_report_extra(void);
 
+// --- Fault isolation: kill the faulting thread instead of the system --------
+// `frame` is the backend's own fault frame (whatever its handler already holds),
+// opaque to the core and never dereferenced outside these two.
+//
+// Did this fault happen in UNPRIVILEGED THREAD context, i.e. is it the running
+// thread's own fault rather than a kernel bug? Syscall dispatch runs PRIVILEGED on
+// the thread's own stack, so the thread's identity is not the answer; the CPU's
+// privilege at fault time is. Fallback-TU default: false, so a backend that has not
+// opted in panics.
+//
+// A backend whose fault frame lives in MEMORY on the faulting thread's own stack must
+// gate on kickos_fault_frame_trusted BEFORE it reads a single word of that frame: a
+// wild SP hands the handler a frame the thread never legitimately produced. Facts read
+// out of a REGISTER (privilege, cause, fault-status) are always valid and need no gate.
+bool arch_fault_is_user_thread(void* frame);
+
+// Rewrite `frame` so the exception return lands in kickos_thread_fault_exit,
+// privileged, in thread mode, on the faulting thread's own stack, and hand the fault
+// facts to kickos_fault_record for the stub to print in thread context. The thread is
+// dying, so its register values need not be preserved. Called ONLY when
+// arch_fault_is_user_thread returned true; fallback-TU default: empty.
+void arch_fault_redirect_to_exit(void* frame);
+
 // --- Idle -------------------------------------------------------------------
 // Block until the next interrupt (ARM WFI; sim sigsuspend).
 void arch_idle_wait(void);
@@ -544,6 +567,34 @@ uintptr_t syscall_dispatch(uintptr_t nr,
                            uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3);
 // A memory-protection violation was caught (sim: SIGSEGV over the arena).
 void kickos_isr_fault(uintptr_t addr, int is_write);
+
+// Fault isolation, called from the arch fault handler BEFORE it starts its dump.
+// Applies the kill rule and, when it holds, calls arch_fault_redirect_to_exit.
+// Returns true when the handler must simply RETURN: the exception return then lands
+// in kickos_thread_fault_exit. False means the fault panics.
+bool kickos_fault_kill_thread(void* frame);
+
+// Does [frame, frame + bytes) lie inside the RUNNING thread's own stack? The
+// arch-neutral frame-validity guard: a fault frame that the hardware (or the trap
+// prologue) wrote somewhere else was produced by an SP the thread had no business
+// holding, so nothing in it may be believed and the fault must panic. Fails closed on
+// no current thread, on idle, and on a thread with no recorded stack. Cheaper
+// arch-specific early-outs (armv7m reads the CFSR stacking bits) do not replace it:
+// neither test subsumes the other.
+bool kickos_fault_frame_trusted(void const* frame, size_t bytes);
+
+// The facts arch_fault_redirect_to_exit captured, printed later by
+// kickos_thread_fault_exit in thread context. NOTHING may print from the handler:
+// printing there forces kpanic_enter, which masks interrupts and reclaims the console
+// permanently, and the system is meant to survive this fault. `status_name` names the
+// arch fault-status word for the reader (armv7m: "CFSR"). `addr` is read only when
+// `addr_valid`, since a fault-address register holds stale contents otherwise.
+void kickos_fault_record(char const* status_name, uint32_t status,
+                         uintptr_t pc, uintptr_t addr, int addr_valid);
+
+// Where arch_fault_redirect_to_exit points the faulting thread. Runs privileged, in
+// thread mode, on that thread's own stack.
+void kickos_thread_fault_exit(void) __attribute__((noreturn));
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 // A context switch physically completed: emit a SWITCH record {from_tid, to_tid}.

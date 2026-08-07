@@ -3,19 +3,40 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # ROOT-confinement gate: boot the `rootfault` image and assert that ROOT's write into a
-# child's granted region TRAPS. The peer of check_mpu_fault.sh, and NOT the same claim:
-# that one proves a spawned child is confined, this one proves the thread that ran the
-# ctors and the board bring-up is. Native for the sim, QEMU when QEMU_MACHINE is set.
+# child's granted region TRAPS and is credited to root. The peer of check_mpu_fault.sh,
+# and NOT the same claim: that one proves a spawned child is confined, this one proves
+# the thread that ran the ctors and the board bring-up is. Native for the sim, QEMU when
+# QEMU_MACHINE is set.
 #
 # Registered only on an enforcing build, so the app's own "NOT confined" line is a
 # failure marker here.
+#
+# <outcome> is the caller's, not this script's to sniff, and it is the same split
+# check_mpu_fault.sh takes. On the `thread-kill' arm root itself is what dies: kmain
+# spawns root unprivileged, so the rule reaches it like any other thread. The child is
+# still parked on its semaphore afterwards, which is what keeps the image alive and why
+# that arm polls rather than waiting for an exit; the child outliving root IS the
+# system-continues half of the claim.
 
 set -u
 . "$(dirname "$0")/lib/gate.sh"
 
-elf="${1:?usage: check_rootfault.sh <rootfault.elf>}"
+_usage="usage: check_rootfault.sh <rootfault.elf> <outcome: panic|thread-kill>"
+elf="${1:?$_usage}"
+outcome="${2:?$_usage}"
 
-run_image "$elf"
+case "$outcome" in
+    panic)
+        run_image "$elf"
+        ;;
+    thread-kill)
+        poll_image "$elf" "child: wrote my own granted region" \
+                          "$(thread_fault_re root)" "ADDR=0x"
+        ;;
+    *)
+        fail "$_usage"
+        ;;
+esac
 
 if has "ERROR"; then
     fail "rootfault reported a failed setup or control arm"
@@ -38,7 +59,16 @@ want="$(printf '%s\n' "$OUT" \
 if [ -z "$want" ]; then
     fail "root never reached the deliberate write (faulted earlier?)"
 fi
-if ! has_e "MPU FAULT: task 'root'|=== MPU FAULT ==="; then
+if [ "$outcome" = "thread-kill" ]; then
+    if ! has_e "$(thread_fault_re root)"; then
+        fail "no thread-kill for 'root' (crash / hang / truncated run?)"
+    fi
+    # The kill must be the WHOLE outcome: a redirect that fired and then escalated
+    # anyway still prints the banner above.
+    assert_no_panic "root's violation killed the thread AND panicked the system"
+    # Root died, so the "ERROR: child unparked" line the app prints if its wait ever
+    # returns must still be absent. Checked above with the other ERROR markers.
+elif ! has_e "MPU FAULT: task 'root'|=== MPU FAULT ==="; then
     fail "MPU FAULT marker missing (crash / hang / truncated run?)"
 fi
 got="$(reported_fault_addr)"
@@ -49,5 +79,5 @@ if [ "$((0x$got))" -ne "$((0x$want))" ]; then
     fail "root trapped at 0x$got, not at the child's region 0x$want"
 fi
 
-echo "PASS: root took an MPU trap on the cross-domain write at 0x$got"
+echo "PASS: root took a memory trap on the cross-domain write at 0x$got ($outcome)"
 exit 0

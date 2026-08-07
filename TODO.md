@@ -361,6 +361,81 @@ The items below are the parts that belong in tracked history whatever those audi
       to satisfy `__libc_fini_array` in the linker scripts rather than to leave the standard call a
       link error.
 
+## Found by the M4.7.9 ten-angle review (2026-08-07)
+
+Both items were measured on `23b9abb` and neither is a defect this milestone introduced. Both are
+scheduler and console core-path work, so neither rides M4.7.9. The capture behind both is
+`docs/archive/M4.7.9_teardown_latency_meas.md`.
+
+- [ ] **`sched::wake()` suppresses rescheduling for EVERY thread woken while the current thread is
+      dying, whatever its priority, and that reads as starvation rather than as safety.**
+      `kernel/sched/sched.cc`'s `wake` returns early on `kernel().current->dying`, so a
+      priority-20 peer woken by the `cap_teardown` sweep of a priority-1 thread waits for the rest
+      of the sweep. **The safety claim in that early return's own comment is already contradicted by
+      the tree**: `sched::tick_rr` calls `reschedule()` with no `dying` check at all, so an RR dying
+      thread IS switched out mid-sweep, which is exactly the interleaving the comment says must not
+      happen. `g_cap.teardown_depth` corroborates it from the other side: it is a COUNT, not a flag,
+      and its own comment already states that an RR slice expiry can switch a dying thread out and
+      let a second thread finish its sweep first.
+      Measured: RR at q=20us preempted the sweep on 8/8 deaths; with an equal-priority peer and
+      `KCAP_TEARDOWN_CHUNK` forced to 1, 48/48 deaths took up to 8 (xmc4800-relax) / 13 (frdmk64f)
+      preemptions inside a single sweep. Nothing broke across 1080 silicon plus 488 sim deaths,
+      including a soak whose woken peers churned capabilities and objects on wake.
+      Minimal repair is a priority comparison, `current->dying and t->prio <= current->prio`, not
+      removal of the guard. Estimated benefit: a woken higher-priority peer waits only for the
+      current chunk, 13.2us (xmc4800-relax) / 18.9us (frdmk64f) at the shipped chunk width, a 4x to
+      9x reduction, and `KCAP_TEARDOWN_CHUNK` becomes a thread-latency knob instead of an
+      ISR-latency one.
+      **Open proof obligation, and the reason this is not a one-line change:** enumerate every peer
+      that can observe a dying thread's half-swept capability table. The soak is evidence, not
+      proof, because its woken peers only churned their OWN resources. Until that enumeration
+      exists, the measured 1568 deaths say the interleaving is survivable, not that it is safe.
+      This also decides M4.7.9's rejected priority deflate, which is inert while the blanket guard
+      stands (`docs/design-m4.7.9-fault-isolation.md` section 5.1).
+      **Coupling, and it runs the wrong way:** narrowing the guard puts MORE traffic through the
+      preemptible window between a fault redirect and its stub, so the fault-record race gets more
+      likely, not less. `fault-record-is-printed-only-by-its-owner` is the invariant that then
+      carries the weight, and it must still hold after this change.
+
+- [ ] **`console_tx_write`'s overflow branch drains a full ring synchronously under `IrqLock`, so
+      any kernel print carries an unbounded term.** `kernel/init/console_tx.cc`: once the burst does
+      not fit, the branch disables the TX IRQ, calls `drain_sync()` and then pushes byte by byte,
+      all still under the lock, and the code says the stall is deliberately preferred over a
+      producer/ISR race or dropped output. At the fleet's console rates that is about 87us per byte
+      over a 512-byte ring. Measured through the M4.7.9 fault path, which prints before it exits:
+      under console pressure the preemptible THREAD FAULT dump grew from 105us to 290us
+      (xmc4800-relax) and from 132us to 876us (frdmk64f), dwarfing the `cap_teardown` sweep it
+      precedes. Never entered on silicon in these runs; the pressure was synthetic. The interest is
+      not the fault path specifically: every kernel print inherits this, and it is the single
+      largest masked window in the tree. Decide whether the drop-on-overflow the comment rejects is
+      actually worse than a multi-hundred-microsecond interrupt mask.
+
+## Left out of the M4.7.9 diagnostic catalogue, on purpose (2026-08-07)
+
+Both were considered while `include/kickos/diag.h` was built and both were declined for a reason,
+not deferred for lack of time. Recorded so the next reader does not re-derive the reasoning and
+"finish the job".
+
+- [ ] **Driver bring-up prose is NOT in the catalogue, and a second table would be a different
+      mechanism wearing the same name.** `system/` carries 76 `kos::print`, 5 `emit`, 7 `win_puts`
+      and 7 `wire_puts` sites, worth 755 bytes on xmc4800-relax hello_c per
+      `docs/archive/M4.7.9_footprint_meas.md`. It earns **zero** on both boards that select the
+      short column: neither bluepill-c8 nor f302nucleo links a driver archive at all. It also goes
+      through the userspace `kos::print` rather than `kputs`, and lives in `kickos_system` rather
+      than the kernel, so it cannot share the kernel catalogue's include or its emit path.
+      Becomes worth doing only if a driver-carrying board ever selects `KICKOS_DIAG_TERSE`; until
+      then the saving is hypothetical and the second table is pure surface.
+
+- [ ] **`KICKOS_DEBUG_ASSERT` still stringifies its whole condition** (`kernel/include/kickos/debug.h`,
+      9 sites), so it is the one diagnostic the short column does not reach. Left alone because
+      `KICKOS_DEBUG` is `n` on every board and in every preset: wiring a short arm now would add an
+      `#if` branch that NOTHING compiles, which is the exact shape that let the bounded-waits knob's
+      off posture rot unbuilt until M4.7.9 deleted it (that symbol is not spelled here, because it
+      no longer exists in the tree). If `KICKOS_DEBUG` ever becomes selectable by a
+      preset, this needs the same treatment `KICKOS_ASSERT` got: drop the condition text and pass
+      `__FILE_NAME__` and `__LINE__` as SEPARATE arguments (measured 4x better than one joined
+      `"file:line"` literal, see the capture).
+
 ## M4.7.4 -- delete the legacy management (nothing is released before M6)
 
 KickOS is unreleased and will not ship before M6, so **there is no backward compatibility to

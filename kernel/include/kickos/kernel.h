@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <kickos/diag.h>
 #include <kickos/thread.h>
 
 namespace kickos
@@ -27,6 +28,14 @@ namespace kickos
 
     // Unrecoverable error: report and halt the system.
     void kpanic(char const* msg) __attribute__((noreturn));
+
+#if KICKOS_DIAG_TERSE
+    // The terse assert terminal. file and line arrive SEPARATELY on purpose: the file
+    // string is then one literal per translation unit that every assert in it shares,
+    // and the line never becomes a string at all. Joining them into one "file:line"
+    // literal per site costs four times as much (M4.7.9_footprint_meas.md).
+    void kpanic_at(char const* file, unsigned line) __attribute__((noreturn));
+#endif
 
     // Kernel diagnostic LED: the board's single status LED, a sibling of the
     // console. init() at boot; set()/toggle() drive it. Owned by the kernel so a
@@ -78,6 +87,16 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 // entry declines with -KOS_ENOSYS and falls through to the halt.
 extern "C" void kickos_terminate(int status) __attribute__((noreturn));
 
+#if KICKOS_DIAG_TERSE
+#define KICKOS_ASSERT(cond)                               \
+    do                                                    \
+    {                                                     \
+        if (not(cond))                                    \
+        {                                                 \
+            ::kickos::kpanic_at(__FILE_NAME__, __LINE__); \
+        }                                                 \
+    } while (0)
+#else
 #define KICKOS_ASSERT(cond)                     \
     do                                          \
     {                                           \
@@ -86,10 +105,16 @@ extern "C" void kickos_terminate(int status) __attribute__((noreturn));
             ::kickos::kpanic("assert: " #cond); \
         }                                       \
     } while (0)
+#endif
 
 // A control-flow point that must never be reached: halt LOUDLY with a diagnostic
 // (kpanic is [[noreturn]]), never spin silently. Distinct from a defensive guard
 // (e.g. the kernel().live clamp), which prevents a real consequence and stays.
-#define KICKOS_UNREACHABLE(msg) ::kickos::kpanic("unreachable: " msg)
+// Takes a diag.h catalogue entry, which carries its own "unreachable: " in the prose
+// column, because a runtime pointer cannot be concatenated with a prefix here.
+// It expands to a bare kpanic and is NOT therefore redundant: it marks a state the code
+// believes cannot occur, where kpanic marks one it refuses to continue from. Keeping the
+// two spellings apart is what makes the first kind greppable.
+#define KICKOS_UNREACHABLE(msg) ::kickos::kpanic(msg)
 
 #endif

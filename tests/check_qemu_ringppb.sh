@@ -10,11 +10,20 @@
 # PPB access before consulting MPU_CTRL.ENABLE (ARM DDI 0403E.e B3.5.1/B3.5.3). That is
 # what makes this the one confinement trap a no-MPU board can witness, so the app's own
 # "NOT confined" line is a failure marker in every posture.
+#
+# <outcome> is the caller's, not this script's to sniff, and it is the same split
+# check_mpu_fault.sh and check_rootfault.sh take: what a detected violation DOES is a
+# property of the backend. The read happens in ROOT, which kmain spawns unprivileged in
+# every posture, so on an isolating backend the BusFault kills root instead of panicking.
+# Root is the only thread this image ever has, so exit_current ends the process either
+# way and both arms can wait for an exit.
 
 set -u
 . "$(dirname "$0")/lib/gate.sh"
 
-elf="${1:?usage: check_qemu_ringppb.sh <ringppb.elf>}"
+_usage="usage: check_qemu_ringppb.sh <ringppb.elf> <outcome: panic|thread-kill>"
+elf="${1:?$_usage}"
+outcome="${2:?$_usage}"
 
 need_qemu_machine
 run_image "$elf"
@@ -32,13 +41,30 @@ fi
 if ! has "root: reading privileged-only SCB->CPUID"; then
     fail "root never reached the deliberate PPB read (faulted earlier?)"
 fi
-if ! has_e "=== (HARD|MPU) FAULT ==="; then
-    fail "no fault dump (the read completed silently, or the image hung)"
-fi
+case "$outcome" in
+    panic)
+        if ! has_e "=== (HARD|MPU) FAULT ==="; then
+            fail "no fault dump (the read completed silently, or the image hung)"
+        fi
+        ;;
+    thread-kill)
+        if ! has_e "$(thread_fault_re root)"; then
+            fail "no thread-kill for 'root' (the read completed silently, or it hung?)"
+        fi
+        # The kill must be the WHOLE outcome: a redirect that fired and then escalated
+        # anyway still prints the banner above.
+        assert_no_panic "the PPB refusal killed root AND panicked the system"
+        ;;
+    *)
+        fail "$_usage"
+        ;;
+esac
 
 # Discriminate a genuine BUS fault from any other trap that also prints this banner. A
 # PPB permission failure sets a BFSR bit, and BFSR is CFSR[15:8]; without this check a
 # stray UsageFault or a stacking fault elsewhere would satisfy the banner grep above.
+# Both dumps print CFSR under that name, the thread-kill one because
+# arch_fault_redirect_to_exit captures it before clearing the sticky bits.
 cfsr="$(printf '%s\n' "$OUT" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
 if [ -z "$cfsr" ]; then
     fail "fault dump carries no CFSR (KICKOS_PANIC_DUMP off?)"
@@ -47,19 +73,33 @@ if [ $(( (0x$cfsr >> 8) & 0xFF )) -eq 0 ]; then
     fail "CFSR=0x$cfsr has an empty BFSR byte: the trap was not a BusFault"
 fi
 
-# Pin the trap to the address the app actually probed. The dump prints BFAR only when the
-# CFSR BFARVALID bit is set, so its presence already means the address is live rather than
-# stale; requiring it to equal SCB->CPUID is what separates "the PPB refused THIS read"
-# from any other precise BusFault the image might have taken on the way here.
-# Read BFAR by name rather than through reported_fault_addr(), which would also accept
-# an MMFAR: this gate's claim is specifically that a BUS fault recorded the address.
-bfar="$(printf '%s\n' "$OUT" | sed -n 's/.*BFAR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
+# Pin the trap to the address the app actually probed. The address is printed only when
+# the CFSR VALID bit is set, so its presence already means it is live rather than stale;
+# requiring it to equal SCB->CPUID is what separates "the PPB refused THIS read" from any
+# other precise BusFault the image might have taken on the way here.
+#
+# The claim is specifically that a BUS fault recorded it, so the panic dump's address is
+# read as BFAR by name rather than through reported_fault_addr(), which would also accept
+# an MMFAR. The thread-kill dump prints one address under the neutral name ADDR, and
+# arch_fault_redirect_to_exit takes MMFAR whenever MMARVALID is set and BFAR otherwise:
+# MMARVALID clear plus BFARVALID set is therefore the same claim, spelled in the CFSR.
+if [ "$outcome" = "thread-kill" ]; then
+    if [ $(( 0x$cfsr & 0x80 )) -ne 0 ]; then
+        fail "CFSR=0x$cfsr has MMARVALID set: ADDR below is MMFAR, not the BusFault's"
+    fi
+    if [ $(( 0x$cfsr & 0x8000 )) -eq 0 ]; then
+        fail "CFSR=0x$cfsr has BFARVALID clear: the BusFault recorded no address"
+    fi
+    bfar="$(printf '%s\n' "$OUT" | sed -n 's/.*ADDR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
+else
+    bfar="$(printf '%s\n' "$OUT" | sed -n 's/.*BFAR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
+fi
 if [ -z "$bfar" ]; then
-    fail "no BFAR in the dump: the BusFault recorded no faulting address"
+    fail "no faulting address in the dump: the BusFault recorded none"
 fi
 if [ "$(( 0x$bfar ))" -ne "$(( 0xE000ED00 ))" ]; then
     fail "BusFault at 0x$bfar, not at SCB->CPUID 0xe000ed00"
 fi
 
-echo "PASS: the unprivileged PPB read took a precise BusFault at 0x$bfar (CFSR=0x$cfsr)"
+echo "PASS: the unprivileged PPB read took a precise BusFault at 0x$bfar (CFSR=0x$cfsr, $outcome)"
 exit 0

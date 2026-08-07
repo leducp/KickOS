@@ -548,9 +548,28 @@ namespace
         isr_frame_leave(interrupted);
     }
 
+    // The seam is handed the ucontext alone, so the siginfo facts travel here instead:
+    // written by a fault handler immediately before it calls kickos_fault_kill_thread,
+    // read only inside that call.
+    struct SimFaultInfo
+    {
+        uintptr_t addr;
+        int code;
+        bool addr_valid;
+    };
+    SimFaultInfo g_sim_fault = {};
+
     void on_sigsegv(int, siginfo_t* si, void* ucontext)
     {
         uintptr_t addr = reinterpret_cast<uintptr_t>(si->si_addr);
+        // BEFORE isr_frame_enter: arch_fault_is_user_thread reads isr_depth to tell a
+        // fault in an ISR body (a kernel bug) from one in the thread it interrupted, and
+        // isr_frame_enter below would make every fault look like the former.
+        g_sim_fault = {addr, si->si_code, true};
+        if (kickos_fault_kill_thread(ucontext))
+        {
+            return; // sigreturn resumes at kickos_thread_fault_exit
+        }
         // Establish ISR context (parity with the ARM fault path, where IPSR is
         // non-zero in the fault handler): kickos_isr_fault reports via kprintf, and
         // the console routing guard MUST see arch_in_isr() to take the synchronous
@@ -585,8 +604,15 @@ namespace
     // reporter. kpanic_enter masks signals, forces the synchronous polled writer, and
     // flushes the ring, so the dump survives the ARMED console ring instead of being
     // enqueued and lost. Then the shared dead-end exits 132.
-    void on_sigill(int, siginfo_t* si, void*)
+    void on_sigill(int, siginfo_t* si, void* ucontext)
     {
+        // si_addr is the faulting PC here, not a data address; the PC comes out of the
+        // ucontext instead.
+        g_sim_fault = {0, si->si_code, false};
+        if (kickos_fault_kill_thread(ucontext))
+        {
+            return;
+        }
         isr_frame_enter();
         kpanic_enter();
         ::kickos::kprintf("\n=== SIM FAULT (illegal instruction) at %p ===\n", si->si_addr);
@@ -1038,6 +1064,63 @@ void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 // switch is a synchronous longjmp. The symbol must still resolve, as the self-grant
 // path calls it.
 void kickos_arch_mpu_commit(void) {}
+
+// --- Fault isolation --------------------------------------------------------
+// The host has no rings. arch_syscall raises the WHOLE arena for the duration of
+// dispatch and tracks it per-context in SimContext::raised, so kernel code cannot take
+// an arena SIGSEGV at all and `raised == 0` at fault time is the fact CONTROL.nPRIV
+// carries on ARM: user code, not kernel code the thread merely called. isr_depth covers
+// the other half of clause 3.2.
+//
+// Frame validity needs no stack-bounds test and could not use one: there is no
+// guest-memory exception frame to fabricate. The resume context is the ucontext the
+// HOST kernel wrote, on a dedicated sigaltstack, so it is complete by construction.
+// A sim thread's stack is a plain arena block with no guard page, so a guest stack
+// overflow is not detected on this backend at all.
+bool arch_fault_is_user_thread(void* frame)
+{
+#if defined(__x86_64__)
+    if (frame == nullptr)
+    {
+        return false;
+    }
+    if (sim().isr_depth != 0)
+    {
+        return false;
+    }
+    if (sim().current == nullptr or sim().current->raised != 0)
+    {
+        return false;
+    }
+    return true;
+#else
+    (void)frame;
+    return false;
+#endif
+}
+
+void arch_fault_redirect_to_exit(void* frame)
+{
+#if defined(__x86_64__)
+    ucontext_t* const uc = static_cast<ucontext_t*>(frame);
+    uintptr_t const pc = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
+    kickos_fault_record("si_code", static_cast<uint32_t>(g_sim_fault.code), pc,
+                        g_sim_fault.addr, static_cast<int>(g_sim_fault.addr_valid));
+    // The stub is kernel code and cap_teardown reaches memory outside this thread's
+    // resting grant, so raise the arena as arch_syscall does. Never unwound: the stub
+    // never returns, and the raised count is what makes guard_apply_current hold the
+    // arena up across the teardown's blocking points.
+    if (sim().current != nullptr)
+    {
+        sim().current->raised = sim().current->raised + 1;
+        arena_raise_all();
+    }
+    uc->uc_mcontext.gregs[REG_RIP] =
+        static_cast<greg_t>(reinterpret_cast<uintptr_t>(&kickos_thread_fault_exit));
+#else
+    (void)frame;
+#endif
+}
 
 size_t arch_mpu_min_region(void)
 {

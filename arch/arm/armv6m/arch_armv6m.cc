@@ -8,6 +8,7 @@
 // by the chip (like arch_console_write), not here.
 
 #include <kickos/arch/arch.h>
+#include <kickos/diag.h>
 
 #include "regs.h"
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
@@ -165,6 +166,13 @@ void kickos_armv6m_default_irq(void)
 // per-chip stubs that discarded everything. ----------------------------------------
 void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
 {
+    // The naked handler reaches here by `bx`, so this function's own return IS the
+    // exception return. Nothing may print above: kpanic_enter's console reclaim is
+    // permanent and this fault is survivable.
+    if (kickos_fault_kill_thread(frame))
+    {
+        return;
+    }
     kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
     ::kickos::kprintf("\n=== HARD FAULT ===\n");
 #if KICKOS_PANIC_DUMP
@@ -173,10 +181,8 @@ void kickos_armv6m_fault_report(uint32_t* frame, uint32_t exc_return)
     {
         stk = "PSP";
     }
-    ::kickos::kprintf("  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n",
-                      frame[6], frame[5], frame[7], stk);
-    ::kickos::kprintf("  R0=0x%x R1=0x%x R2=0x%x R3=0x%x R12=0x%x\n",
-                      frame[0], frame[1], frame[2], frame[3], frame[4]);
+    ::kickos::kprintf(KDIAG_F_ARM_REGS1, frame[6], frame[5], frame[7], stk);
+    ::kickos::kprintf(KDIAG_F_ARM_REGS2, frame[0], frame[1], frame[2], frame[3], frame[4]);
 #else
     (void)frame;
     (void)exc_return;

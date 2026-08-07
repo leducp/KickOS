@@ -30,20 +30,12 @@ namespace kickos
         // markers (ipc.badge_out == 0), which mean the receiver asked for no badge.
         constexpr uint32_t KOS_BADGE_NONE = 0;
 
-        // The single seam KICKOS_TIMED_WAIT cuts on the IPC parks. With it off no caller
-        // can name a deadline, so every park below reaches this and stops here, and
-        // ktime_deadline_arm leaves the image with the dispatch arms that fed it.
         void park_deadline_arm(Thread* t, uint32_t timeout_us)
         {
-#if KICKOS_TIMED_WAIT
             if (timeout_us != KOS_TIMEOUT_NONE)
             {
                 ktime_deadline_arm(t, timeout_us);
             }
-#else
-            (void)t;
-            (void)timeout_us;
-#endif
         }
     }
 
@@ -176,7 +168,6 @@ namespace kickos
         // Each arm below validates the out-ptr exactly once, on the address the kernel
         // actually stores to.
         uint32_t timeout_us = KOS_TIMEOUT_NONE;
-#if KICKOS_TIMED_WAIT
         if (timed)
         {
             // The deadline rides the opts struct, so there is nowhere to state one without
@@ -204,10 +195,7 @@ namespace kickos
                               sizeof(timeout_us));
             badge_out = badge_out + offsetof(kos_recv_timed_opts, info);
         }
-        else // binds to the `if` below, across the #endif
-#else
-        (void)timed; // no dispatch arm can pass true: KOS_SYS_RECV_TIMED is not built
-#endif
+        else // binds to the `if` below, past the comment block
         // The out-ptr delivers a kos_recv_info (8 bytes, 4-aligned), not a bare badge u32.
         // badge_out == 0 means an info-less recv, which cannot host a call. UNREACHED on the
         // timed path, which must keep its own check: the rewritten badge_out spans [4, 12)
@@ -466,7 +454,6 @@ namespace kickos
         return static_cast<int32_t>(c->wait_result);
     }
 
-#if KICKOS_TIMED_WAIT
     // Unwind an expired deadline found under an endpoint park. Called ONLY from
     // ktime_on_timer, under the timer's IrqLock, with `t` already off the delta list and
     // its wait edge still intact: that edge is the only thing naming the list `t` is on.
@@ -524,13 +511,12 @@ namespace kickos
             }
             default:
             {
-                KICKOS_UNREACHABLE("endpoint_wait_timeout on a non-endpoint park");
+                KICKOS_UNREACHABLE(::kickos::diag::kTimeoutNotEp);
             }
         }
         t->wait_result = -KOS_ETIMEDOUT;
         sched::wake(t);
     }
-#endif
 
     // Copies the reply into the parked caller's buffer and wakes it. One-shot: the cap is
     // consumed on EVERY exit. Returns 0, or -KOS_E* (EBADF bad or non-reply cap, EFAULT bad

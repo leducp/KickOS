@@ -132,31 +132,31 @@ namespace kickos
 #if KICKOS_HAVE_MPU
             mpu = "enforce";
 #endif
-            char const* rule = "  ==============================================\n";
+            char const* rule = diag::kBannerRule;
             kputs("\n");
             kputs(rule);
-            kprintf("   KickOS %s  -  microkernel RTOS\n", KICKOS_VERSION);
+            kprintf(KDIAG_F_BANNER_NAME, KICKOS_VERSION);
             kputs(rule);
-            kprintf("   board   %s\n", KICKOS_BOARD_NAME);
-            kprintf("   arch    %s\n", KICKOS_ARCH_NAME);
-            kprintf("   mpu     %s\n", mpu);
-            kprintf("   sched   %s\n", sched);
-            kprintf("   build   %s\n", kickos_build_time);
+            kprintf(KDIAG_F_BANNER_BOARD, KICKOS_BOARD_NAME);
+            kprintf(KDIAG_F_BANNER_ARCH, KICKOS_ARCH_NAME);
+            kprintf(KDIAG_F_BANNER_MPU, mpu);
+            kprintf(KDIAG_F_BANNER_SCHED, sched);
+            kprintf(KDIAG_F_BANNER_BUILD, kickos_build_time);
             if (kickos_app_build_stamp != nullptr)
             {
-                kprintf("   app     %s\n", kickos_app_build_stamp());
+                kprintf(KDIAG_F_BANNER_APP, kickos_app_build_stamp());
             }
-            kprintf("   commit  %s\n", kickos_build_commit);
+            kprintf(KDIAG_F_BANNER_COMMIT, kickos_build_commit);
             uintptr_t const heap_lo = reinterpret_cast<uintptr_t>(_kickos_heap_start);
             uintptr_t const heap_hi = reinterpret_cast<uintptr_t>(_kickos_heap_limit);
             if (heap_hi > heap_lo)
             {
-                kprintf("   heap    %u KiB available\n",
+                kprintf(KDIAG_F_BANNER_HEAP,
                         static_cast<unsigned>((heap_hi - heap_lo) / 1024));
             }
             else
             {
-                kprintf("   heap    none\n");
+                kprintf(KDIAG_F_BANNER_NOHEAP);
             }
             kputs("\n");
         }
@@ -214,9 +214,9 @@ namespace kickos
         // instead of after it. Worth up to one root-stack's width of arena on every
         // pow2-descriptor board, so KICKOS_BOOT_ARENA_ASSERT models this exact order.
         void* const idle_stack =
-            boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, "kmain: no arena for the idle stack");
+            boot_stack_alloc(KICKOS_IDLE_STACK_SIZE, diag::kBootIdleStack);
         void* const root_stack =
-            boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, "kmain: no arena for the root stack");
+            boot_stack_alloc(KICKOS_ROOT_STACK_SIZE, diag::kBootRootStack);
 
         // Must precede the cap_slab_attach below: this rebuilds the free-chunk list from
         // scratch, so running it afterwards would hand root's run back to the free list.
@@ -258,7 +258,7 @@ namespace kickos
         if (not cap_slab_attach(&root_attr.cap_run, KICKOS_MAX_HANDLES,
                                 &root_attr.cap_free_head, &root_attr.cap_width))
         {
-            kpanic("kmain: no capability run for root");
+            kpanic(diag::kBootRootRun);
         }
         // Root takes an ordinary pool slot, so a handle names it and every generation-guarded
         // mechanism (a reply capability above all) works from root as it does from a child.

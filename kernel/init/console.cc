@@ -249,6 +249,32 @@ namespace kickos
         kputs("\n");
         kfault_terminate(); // blink forever (real HW) or exit with a fault status (host/QEMU)
     }
+
+#if KICKOS_DIAG_TERSE
+    // Deliberately not kprintf: an assert fires in whatever thread context tripped it,
+    // and kvsnprintf's 256-byte frame does not fit the 512-byte idle stack the boards
+    // that select this posture provision.
+    void kpanic_at(char const* file, unsigned line)
+    {
+        kpanic_enter();
+        kputs("\nKERNEL PANIC: assert ");
+        kputs(file);
+        kputs(":");
+        char digits[12];
+        size_t n = sizeof(digits) - 1;
+        digits[n] = '\0';
+        unsigned value = line;
+        do
+        {
+            n = n - 1;
+            digits[n] = static_cast<char>('0' + (value % 10));
+            value = value / 10;
+        } while (value != 0 and n != 0);
+        kputs(&digits[n]);
+        kputs("\n");
+        kfault_terminate();
+    }
+#endif
 }
 
 // See kernel.h. The order below is load-bearing: mask FIRST so no ISR can enqueue after,
@@ -333,7 +359,6 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
     {
         dir = "write";
     }
-    ::kickos::kprintf("\nMPU FAULT: task '%s' attempted %s at %p -- reported\n",
-                      who, dir, reinterpret_cast<void*>(addr));
+    ::kickos::kprintf(KDIAG_F_MPU_FAULT, who, dir, reinterpret_cast<void*>(addr));
     kickos_terminate(0);
 }

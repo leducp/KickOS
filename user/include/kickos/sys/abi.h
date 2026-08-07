@@ -42,6 +42,11 @@ typedef uint32_t kos_thread_t;
 // with a static_assert), so no generation can mint this word.
 #define KOS_THREAD_NONE 0xFFFFFFFFu
 
+// The exit code a thread killed by a CPU fault reports: what a joiner reads back, and
+// the process status when it was the last thread live. Distinct from kfault_terminate's
+// 132, so a capture tells a survived fault from a panic. A clean kos_exit(139) aliases it.
+#define KOS_EXIT_FAULT 139
+
 enum kos_syscall_nr
 {
     KOS_SYS_KCONSOLE_WRITE = 1, // (buf, len)            -> bytes written, or -KOS_EFAULT (bad buffer)
