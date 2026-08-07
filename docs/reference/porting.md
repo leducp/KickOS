@@ -71,6 +71,111 @@ is where a bus-side unit reports: `mk64f` reads SYSMPU `CESR`, decodes the per-s
 `SPERR` nibble, and says so explicitly when NO protection error is latched -- which is the tell
 for a peripheral-bridge fault rather than an MPU one.
 
+### Fault-isolation contract (a faulting thread dies alone)
+
+**The rule.** A fault taken in unprivileged thread context, in a thread that is not already
+dying, kills that thread and nothing else; every other fault panics exactly as before. The
+core half is `kernel/init/fault.cc`: a backend's fault handler calls
+`kickos_fault_kill_thread(frame)` BEFORE it starts its dump and simply RETURNS when that
+answers true, and the exception return then lands in `kickos_thread_fault_exit`. The
+reasoning is in `../design-m4.7.9-fault-isolation.md` (sections 3 and 4).
+
+**The two seams**, both declared in `arch/include/kickos/arch/arch.h`, both optional. Their
+fallback bodies (`arch/common/arch_fault_is_user_thread_default.cc`,
+`arch/common/arch_fault_redirect_to_exit_default.cc`) decline and do nothing, so a backend
+that has not been ported keeps today's panic path with no edit at all.
+
+- `bool arch_fault_is_user_thread(void* frame)` answers whether the CPU was **unprivileged**
+  and in **thread context** at fault time. The thread's identity is NOT the answer, and
+  neither is `ctx.resting_npriv`: syscall dispatch runs PRIVILEGED on the thread's own stack
+  (`invariants.md`, `syscall-in-priv-thread-context`), so a fault there is a kernel bug in
+  code the thread merely called and it must still panic. armv7m and armv6m read
+  `CONTROL.nPRIV` plus the stacked `xPSR` IPSR field (exception entry does not modify
+  `CONTROL`, so the read gives the privilege at fault time); rv32imac reads `mstatus.MPP`,
+  the privilege before the trap, out of a CSR; the sim has no ring and reads its own
+  `raised` / `isr_depth` pair, which carries the same fact.
+- `void arch_fault_redirect_to_exit(void* frame)` rewrites the resume context so the
+  exception return lands in `kickos_thread_fault_exit`, privileged, in thread mode, on the
+  faulting thread's own stack, and hands the fault facts to `kickos_fault_record`. It is
+  called ONLY after the predicate returned true. The thread is dying, so its register values
+  need not be preserved and the stub takes no arguments. Concretely: ARM rewrites the stacked
+  PC, keeps the T bit and CLEARS the IT/ICI bits (a fault inside an IT block would otherwise
+  resume with stale condition state and conditionally skip the stub's first instructions),
+  then clears `CONTROL.nPRIV`, which exception return does not restore; RISC-V writes `mepc`
+  and sets `mstatus.MPP` to M. A backend whose fault-status registers are sticky and
+  write-1-to-clear must also clear them here: unlike the panic path this fault is not the
+  last, so a bit left set mislabels the NEXT thread's fault with this one's status.
+
+**The handler MUST NOT PRINT.** Printing from a fault handler forces `kpanic_enter`, which
+masks interrupts and reclaims the console permanently (the contract above, and
+`invariants.md`, `panic-console-probe-independent`), and a system that is meant to survive
+this fault cannot pay that. The facts go to `kickos_fault_record` and are printed later by
+`kickos_thread_fault_exit`, in thread context, through the ordinary `kprintf` path. That is
+why the kill test sits ahead of the first output AND ahead of `kpanic_enter` in
+`kickos_armv7m_fault_report` and `kickos_rv_fault_report`.
+
+**Proving the frame is trustworthy.** A port must know which of its fault facts it may
+believe before it reads them, and this is the part that is easy to get wrong.
+
+- A fact read from a REGISTER (privilege, cause, fault-status, fault-address) is always
+  valid: nothing the thread did to its stack can forge it.
+- A frame that lives in MEMORY on the faulting thread's stack must be gated by
+  `kickos_fault_frame_trusted(frame, bytes)` BEFORE a single word of it is read. A wild SP
+  hands the handler a frame the thread never legitimately produced; the test is that the
+  whole frame lies inside the running thread's own recorded stack, and it fails closed on no
+  current thread, on idle, and on a thread with no recorded stack.
+- On a STACK OVERFLOW the abort happens during HARDWARE STACKING: the stacking decrements SP
+  before the writes, so on an abort the frame pointer names memory that was never written.
+  armv7m therefore ALSO declines on the CFSR stacking-error bits MSTKERR/MUNSTKERR (bits 4/3)
+  and STKERR/UNSTKERR (bits 12/11), mask `0x1818`, read out of the register before the frame
+  is touched. `MLSPERR` and `LSPERR` are deliberately EXCLUDED: lazy FP preservation leaves
+  the integer frame valid, and including them would panic a legitimate user fault.
+- The two tests do NOT subsume each other and a port needs both wherever both apply. The
+  CFSR bits catch a stacking abort whose SP was still in range; the bounds test catches a
+  frame the hardware wrote in full at an SP the thread had no business holding, which sets no
+  CFSR bit at all. A core with no fault-status register (v6-M) has only the bounds test.
+  rv32imac has no stacking abort to detect (its trap prologue is software and runs M-mode,
+  which bypasses the unlocked PMP entries), which is exactly what makes the bounds test
+  load-bearing there: an overflowed thread's frame is written SUCCESSFULLY below its own
+  stack, and nothing else would say so.
+- Worth one line of history: an earlier implementation read the stacked IPSR field straight
+  out of that stale RAM and declined only BY ACCIDENT, because those bytes happened to be
+  non-zero. Had they held zero, the kernel would have rewritten and resumed a fabricated
+  context, privileged.
+
+**The classification a new port must state** (top-level `CMakeLists.txt`).
+
+- `KICKOS_HAVE_PRIV_RING` answers whether the core has a privilege ring to read at all.
+  Every discriminator above is one, so a core without one can never tell a thread's own fault
+  from a kernel bug in code it called and MUST keep panicking. It is per BOARD and not per
+  arch, because the ARMv6-M Unprivileged/Privileged Extension is OPTIONAL and separate from
+  the MPU extension: Cortex-M0 omits it, Cortex-M0+ implements it, and both are
+  `KICKOS_ARCH=armv6m` with no predefined macro between them. armv6m is therefore ENUMERATED
+  per `KICKOS_BOARD` with a `FATAL_ERROR` default, so a new armv6m board must declare its
+  class instead of silently inheriting one.
+- `KICKOS_FAULT_ISOLATION` is the derived flag, and it does two jobs from one fact. It
+  selects the backend seam TUs (`arch/CMakeLists.txt` drops the two declining fallbacks from
+  the shared list, and adds `arch/arm/armv6m/arch_armv6m_fault.cc` only where it holds), and
+  spelled as `KICKOS_FAULT_OUTCOME` (`panic` or `thread-kill`) it is the token the fault
+  gates parse. The link and the test therefore assert the same fact, and no gate re-derives
+  the posture from an arch name of its own. `tests/check_faultsurvive.sh` is the witness.
+- It is NOT gated on `KICKOS_HAVE_MPU`. Privilege comes from `arch_context_init` and `kmain`
+  spawns root unprivileged in every posture, so a FLAT board kills a faulting thread exactly
+  as an enforcing one does. What differs on a flat board is only which accesses fault at all:
+  a cross-domain write completes there instead of trapping.
+
+**Why rxv3 and lx6 decline.**
+
+- lx6 CANNOT. `PS.UM` is 1 for kernel and thread alike and `arch_context_init` discards
+  `privileged`, so it has no privilege ring and `KICKOS_HAVE_PRIV_RING` refuses it.
+- rxv3 COULD. It has an exact discriminator (`PSW.PM`) and its exception frame sits on the
+  kernel ISP. It declines because the redirect is an `rte` that has never executed: there is
+  no RXv3 emulator anywhere in the tree, so it would ship unwitnessed.
+- The sim carries an extra term (an x86_64 host) because its seam rewrites the host
+  `ucontext` register file directly. On a host layout it does not know
+  `arch_fault_is_user_thread` declines, and the gates would then assert an outcome the
+  runtime cannot produce.
+
 ### Adding a board/chip (the five edit points)
 
 1. `boards/<board>/board.cmake` -- the board descriptor: one file setting
