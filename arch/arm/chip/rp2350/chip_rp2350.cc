@@ -27,6 +27,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
+#include <kickos/diag.h>
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
@@ -465,7 +466,7 @@ int arch_reboot(void)
     // works around by forcing 1. Not in the datasheet errata.
     rom_reboot(REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
                10u, 0u, 0u);
-    kickos::kpanic("arch_reboot: rp2350 bootrom reboot returned");
+    kickos::kpanic(kickos::diag::kRebootRp2350);
 }
 #endif
 

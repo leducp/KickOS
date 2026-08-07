@@ -10,6 +10,7 @@
 // script + startup vectors.
 
 #include <kickos/arch/arch.h>
+#include <kickos/diag.h>
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <bit>
@@ -488,14 +489,72 @@ void arch_idle_wait(void)
     __asm volatile("wfi");
 }
 
-// --- Unhandled trap (switch.S .Lfault): a fault is a genuine bug at M1 --------
-// The .Lfault shim reads the trap CSRs and passes them here. Dump the context, then
-// hand off to the shared dead-end (blink on real HW, exit with a fault status on
-// QEMU/virt so a CTest run reports it rather than hanging). ecall (mcause 8/11) is
-// demuxed before .Lfault, so it never reaches this reporter.
-void kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
-                            uint32_t mstatus)
+// --- Fault isolation ----------------------------------------------------------
+// mstatus.MPP is the privilege BEFORE the trap and lives in a CSR, so it is valid
+// whatever the stack did; nothing between the vector and here writes it. NOT the
+// thread's identity: .Lecall runs syscall dispatch in M-mode on the thread's own
+// stack, so a fault there is a kernel bug and MPP says so.
+//
+// The frame is the one trap_entry pushed at sp. There is no stacking abort to detect
+// on this core (the prologue is software, and it runs M-mode, which bypasses the
+// unlocked PMP entries), which is why the stack-bounds test is load-bearing here: an
+// overflowed thread's frame is written SUCCESSFULLY below its own stack.
+bool arch_fault_is_user_thread(void* frame)
 {
+    uint32_t mstatus;
+    __asm volatile("csrr %0, mstatus" : "=r"(mstatus));
+    if ((mstatus & MSTATUS_MPP_M) != 0)
+    {
+        return false;
+    }
+    return kickos_fault_frame_trusted(frame, FRAME_WORDS * 4);
+}
+
+// Mirrors .Lecall: point mepc at the stub and set MPP=M so the mret lands M-mode on
+// this thread's own stack, sp still on the trap frame. MIE is 0 for the whole trap,
+// so MPIE is what turns interrupts back on for the stub, which blocks and reschedules.
+void arch_fault_redirect_to_exit(void* frame)
+{
+    uint32_t mcause;
+    uint32_t mepc;
+    uint32_t mtval;
+    __asm volatile("csrr %0, mcause" : "=r"(mcause));
+    __asm volatile("csrr %0, mepc" : "=r"(mepc));
+    __asm volatile("csrr %0, mtval" : "=r"(mtval));
+    // mtval is the faulting address only for an access/misaligned cause; for an illegal
+    // instruction it holds the instruction bits, which is not an address.
+    int addr_valid = 0;
+    if (mcause == 1 or mcause == 4 or mcause == 5 or mcause == 6 or mcause == 7)
+    {
+        addr_valid = 1;
+    }
+    kickos_fault_record("mcause", mcause, mepc, mtval, addr_valid);
+    (void)frame;
+
+    uint32_t const stub = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit);
+    __asm volatile("csrw mepc, %0" ::"r"(stub) : "memory");
+    uint32_t next;
+    __asm volatile("csrr %0, mstatus" : "=r"(next));
+    next |= MSTATUS_MPP_M | MSTATUS_MPIE;
+    __asm volatile("csrw mstatus, %0" ::"r"(next) : "memory");
+}
+
+// --- Unhandled trap (switch.S .Lfault) ----------------------------------------
+// The .Lfault shim reads the trap CSRs and passes them here. A true return means
+// .Lfault must mret instead of dumping: the redirect above already re-pointed
+// mepc/mstatus at the stub. Otherwise dump the context, then hand off to the shared
+// dead-end (blink on real HW, exit with a fault status on QEMU/virt so a CTest run
+// reports it rather than hanging). ecall (mcause 8/11) is demuxed before .Lfault, so it
+// never reaches this reporter.
+bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
+                            uint32_t mstatus, void* frame)
+{
+    // Nothing may print above: kpanic_enter's console reclaim is permanent and this
+    // fault is survivable.
+    if (kickos_fault_kill_thread(frame))
+    {
+        return true;
+    }
     kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
     // An access fault taken FROM U-mode (mstatus.MPP==0) is a PMP domain violation by an
     // unprivileged thread, on instruction fetch (mcause 1) as well as load (5) / store
@@ -556,8 +615,8 @@ void kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
     }
     ::kickos::kprintf("\n=== RISC-V TRAP (%s) ===\n", what);
 #if KICKOS_PANIC_DUMP
-    ::kickos::kprintf("  mcause=0x%x mepc=0x%x\n", mcause, mepc);
-    ::kickos::kprintf("  mtval=0x%x mstatus=0x%x\n", mtval, mstatus);
+    ::kickos::kprintf(KDIAG_F_RV_CAUSE, mcause, mepc);
+    ::kickos::kprintf(KDIAG_F_RV_STATUS, mtval, mstatus);
 #else
     (void)mepc;
     (void)mtval;

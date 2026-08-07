@@ -102,7 +102,6 @@ namespace kickos
     // -KOS_ECANCELED so the target runs its OWN exit. Returns 0, -KOS_EBADF, -KOS_EPERM or
     // -KOS_EINVAL. Takes its own IrqLock.
     int thread_kill(kos_thread_t thread);
-#if KICKOS_TIMED_WAIT
     // Both BLOCK, so like the endpoint calls they must be reached with no caller-held
     // IrqLock: each takes its own for the gate and the park, then releases it before the
     // resume barrier and the wait_result read.
@@ -114,7 +113,6 @@ namespace kickos
     // Waits until the caller is the last live thread. ROOT ONLY: returns 0, or -KOS_EPERM
     // to any other caller.
     int thread_wait_last();
-#endif
 }
 
 #endif

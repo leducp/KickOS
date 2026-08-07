@@ -8,7 +8,10 @@ set(KICKOS_USER_SOURCES src/syscall_stubs.cc src/init_args.cc)
 # the archive pulls it only for an app that allocates; merging it into
 # newlib_stubs.cc disables the heapless-board link error (-Wl,-u,_exit force-links
 # that object everywhere).
-if(NOT KICKOS_ARCH STREQUAL "sim")
+# sim_exit.cc is a TU of its own so the archive pulls it only for an app that calls exit().
+if(KICKOS_ARCH STREQUAL "sim")
+  list(APPEND KICKOS_USER_SOURCES src/sim_exit.cc)
+else()
   list(APPEND KICKOS_USER_SOURCES src/newlib_stubs.cc src/newlib_sbrk.cc)
 endif()
 

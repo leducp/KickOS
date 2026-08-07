@@ -58,7 +58,6 @@ namespace kickos
         Thread* server = nullptr;
     };
 
-#if KICKOS_TIMED_WAIT
     // Unwind `t`'s expired deadline out of whichever endpoint park it sits under
     // (WAIT_EP_SEND, WAIT_EP_RECV or WAIT_EP_REPLY), reverting any priority donation that
     // park had pinned, and wake it with -KOS_ETIMEDOUT. Implemented by the IPC layer
@@ -67,7 +66,6 @@ namespace kickos
     // internals. Caller is ktime_on_timer, holding IrqLock, with `t` already off the delta
     // list and its wait edge still set.
     void endpoint_wait_timeout(Thread* t);
-#endif
 }
 
 #endif

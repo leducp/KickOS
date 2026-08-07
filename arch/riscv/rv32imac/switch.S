@@ -356,14 +356,21 @@ svc_trampoline:
 /* --- Unhandled exception: dump the trap CSRs + hand off to the shared dead-end.    */
 /* mcause/mepc/mtval/mstatus are still live (no trap has been taken since the        */
 /* vector), so read them straight into the args. The saved frame is at sp (a valid   */
-/* stack for the call). kickos_rv_fault_report never returns; the spin is a backstop. */
+/* stack for the call) and is also a4, the frame-validity argument. A NON-ZERO       */
+/* return means fault isolation claimed this fault: mepc/mstatus already point at    */
+/* kickos_thread_fault_exit (M-mode, this thread's own stack, sp still on the frame, */
+/* exactly as .Lecall enters svc_trampoline), so mret rather than dump. On zero the  */
+/* reporter never returns; the spin is a backstop.                                   */
 .Lfault:
     csrr    a0, mcause
     csrr    a1, mepc
     csrr    a2, mtval
     csrr    a3, mstatus
+    mv      a4, sp
     call    kickos_rv_fault_report
+    bnez    a0, 2f
 1:  j       1b
+2:  mret
 
 /* ------------------------------------------------------------------------- */
 /* arch_start(boot, first): a0=boot (ignored), a1=first. No outgoing to save;   */

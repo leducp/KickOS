@@ -9,6 +9,7 @@
 // that defines the user-RAM region and SystemCoreClock.
 
 #include <kickos/arch/arch.h>
+#include <kickos/diag.h>
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 
 #include "regs.h"
@@ -219,12 +220,89 @@ extern "C" void kfault_terminate(void) __attribute__((noreturn));
 extern "C"
 {
 
+// NOT ctx.resting_npriv: that says the thread is a user thread, while syscall dispatch
+// runs PRIVILEGED in thread mode on the thread's own stack (switch.S svc_trampoline), so
+// a fault there is a kernel bug. Exception entry does not modify CONTROL, so reading it
+// here gives the privilege at fault time. A non-zero stacked IPSR means the fault
+// escalated from inside another handler: also a kernel bug.
+bool arch_fault_is_user_thread(void* frame)
+{
+    uint32_t control;
+    __asm volatile("mrs %0, control" : "=r"(control));
+    if ((control & 1u) == 0u)
+    {
+        return false;
+    }
+    // MSTKERR/MUNSTKERR (CFSR bits 4/3) and STKERR/UNSTKERR (bits 12/11) mean the
+    // hardware aborted mid-stacking, so `frame` addresses memory the frame was never
+    // written to and f[7] below would be whatever RAM already held. A stack overflow
+    // arrives exactly this way; declining sends it to the panic dump.
+    if (kickos::arm::reg32(0xE000ED28) & 0x1818u)
+    {
+        return false;
+    }
+    // Neither test subsumes the other: the CFSR bits catch a stacking abort whose SP was
+    // still in range, this catches a frame written in full at a wild SP, which sets no
+    // CFSR bit at all.
+    if (not kickos_fault_frame_trusted(frame, 32))
+    {
+        return false;
+    }
+    uint32_t const* const f = static_cast<uint32_t const*>(frame);
+    return (f[7] & 0x1FFu) == 0u; // stacked xPSR IPSR field
+}
+
+void arch_fault_redirect_to_exit(void* frame)
+{
+    uint32_t const cfsr = kickos::arm::reg32(0xE000ED28);
+    uint32_t const hfsr = kickos::arm::reg32(0xE000ED2C);
+    uintptr_t addr = 0;
+    int addr_valid = 0;
+    // MMFAR/BFAR hold a stale address unless the matching VALID bit is set
+    // (MMARVALID = CFSR bit 7, BFARVALID = bit 15).
+    if (cfsr & (1u << 7))
+    {
+        addr = kickos::arm::reg32(0xE000ED34);
+        addr_valid = 1;
+    }
+    else if (cfsr & (1u << 15))
+    {
+        addr = kickos::arm::reg32(0xE000ED38);
+        addr_valid = 1;
+    }
+    uint32_t* const f = static_cast<uint32_t*>(frame);
+    kickos_fault_record("CFSR", cfsr, f[6], addr, addr_valid);
+    // Both are write-1-to-clear and sticky, and this fault is not the last one: a bit
+    // left set would mislabel the NEXT thread's fault with this one's status.
+    kickos::arm::reg32(0xE000ED28) = cfsr;
+    kickos::arm::reg32(0xE000ED2C) = hfsr;
+
+    f[6] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit) & ~1u; // drop the Thumb bit
+    // Keep T (bit 24) and the stack-realign bit 9, clear IT/ICI (bits 26:25 and 15:10):
+    // a fault inside an IT block would otherwise resume with stale condition state and
+    // conditionally skip the stub's first instructions.
+    f[7] = (f[7] & ~((3u << 25) | (0x3Fu << 10))) | (1u << 24);
+    // Exception return does not restore CONTROL, so clearing nPRIV here is what makes
+    // the stub privileged. SPSEL is the bit handler mode ignores; nPRIV is not.
+    uint32_t control;
+    __asm volatile("mrs %0, control" : "=r"(control));
+    __asm volatile("msr control, %0" ::"r"(control & ~1u));
+    __asm volatile("isb" ::: "memory");
+}
+
 // C side of the fault handler: `frame` points at the hardware-stacked exception
 // frame {r0,r1,r2,r3,r12,lr,pc,xPSR}; `exc_return` is the EXC_RETURN in LR (bit 2
 // selects the pre-fault stack). Dump it plus the fault-status registers, then hand
 // off to the shared terminal (blink on real HW, exit on host/QEMU).
 void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
 {
+    // HardFault_Handler reaches here by a plain `b`, so this function's own return IS the
+    // exception return. Nothing may print above: kpanic_enter's console reclaim is
+    // permanent and this fault is survivable.
+    if (kickos_fault_kill_thread(frame))
+    {
+        return;
+    }
     kpanic_enter(); // mask IRQs + force the sync path + flush queued bytes, in order
 #if KICKOS_PANIC_DUMP
     uint32_t cfsr = kickos::arm::reg32(0xE000ED28);
@@ -242,24 +320,22 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
         label = "MPU FAULT";
     }
     ::kickos::kprintf("\n=== %s ===\n", label);
-    ::kickos::kprintf("  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n",
-                      frame[6], frame[5], frame[7], stk);
-    ::kickos::kprintf("  R0=0x%x R1=0x%x R2=0x%x R3=0x%x R12=0x%x\n",
-                      frame[0], frame[1], frame[2], frame[3], frame[4]);
-    ::kickos::kprintf("  CFSR=0x%x HFSR=0x%x\n", cfsr, hfsr);
+    ::kickos::kprintf(KDIAG_F_ARM_REGS1, frame[6], frame[5], frame[7], stk);
+    ::kickos::kprintf(KDIAG_F_ARM_REGS2, frame[0], frame[1], frame[2], frame[3], frame[4]);
+    ::kickos::kprintf(KDIAG_F_ARM_CFSR, cfsr, hfsr);
     if (cfsr & (1u << 10)) // BFSR IMPRECISERR: the stacked PC is past the faulting store
     {
-        ::kickos::kprintf("  (imprecise bus fault: PC/regs are post-fault, not the culprit)\n");
+        ::kickos::kprintf(KDIAG_F_ARM_IMPRECISE);
     }
     // MMFAR/BFAR only hold a valid address when the matching CFSR VALID bit is set
     // (MMARVALID = bit 7, BFARVALID = bit 15); otherwise their contents are stale.
     if (cfsr & (1u << 7))
     {
-        ::kickos::kprintf("  MMFAR=0x%x\n", kickos::arm::reg32(0xE000ED34));
+        ::kickos::kprintf(KDIAG_F_ARM_MMFAR, kickos::arm::reg32(0xE000ED34));
     }
     if (cfsr & (1u << 15))
     {
-        ::kickos::kprintf("  BFAR=0x%x\n", kickos::arm::reg32(0xE000ED38));
+        ::kickos::kprintf(KDIAG_F_ARM_BFAR, kickos::arm::reg32(0xE000ED38));
     }
     arch_fault_report_extra(); // chip hook: e.g. K64F SYSMPU error capture
 #else

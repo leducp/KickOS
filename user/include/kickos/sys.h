@@ -88,14 +88,12 @@ int kos_mutex_unlock(kos_cap_t mtx);
 // peer arrives; the kernel copies min(sent, capacity) bytes (receiver-side truncation is
 // not an error). A send above KOS_EP_MSG_MAX is rejected (-KOS_EINVAL); recv clamps its capacity.
 int kos_endpoint_create(kos_cap_t* out_cap); // -> 0, or -KOS_ENOMEM/-KOS_EMFILE/-KOS_EINVAL/-KOS_EFAULT
-#if KICKOS_TIMED_WAIT
 // Send `len` bytes, giving up after `timeout_us` RELATIVE microseconds, or never if that is
 // KOS_TIMEOUT_NONE. The deadline bounds the PARK only: a receiver already waiting
 // rendezvouses regardless of it.
 // -> as kos_send below, plus -KOS_ETIMEDOUT (the deadline passed with NO receiver: the send
 // did NOT happen and no bytes crossed).
 int32_t kos_send_timed(kos_cap_t ep, void const* buf, size_t len, uint32_t timeout_us);
-#endif
 // Send with no deadline: park until a receiver arrives, however long that takes.
 // -> bytes transferred (>= 0), or a negative -KOS_E*: EINVAL (len > MSG_MAX), EFAULT (bad
 // buffer), EBADF/EPERM (bad cap / no SIGNAL right), EPIPE (dead endpoint, or the last
@@ -109,7 +107,6 @@ int32_t kos_send(kos_cap_t ep, void const* buf, size_t len);
 // -> bytes received (>= 0), or a negative -KOS_E*: EFAULT (bad buffer / out-ptr), EINVAL
 // (misaligned out-ptr), EBADF/EPERM (bad cap / no WAIT right).
 int32_t kos_recv(kos_cap_t ep, void* buf, size_t cap_len, struct kos_recv_info* info);
-#if KICKOS_TIMED_WAIT
 // The same receive, giving up after opts->timeout_us RELATIVE microseconds (or never, if
 // that is KOS_TIMEOUT_NONE). The deadline travels in a struct because kos_recv already
 // spends all four argument slots, and in its OWN struct (with the out-struct nested at
@@ -120,7 +117,6 @@ int32_t kos_recv(kos_cap_t ep, void* buf, size_t cap_len, struct kos_recv_info* 
 // received) and -KOS_EINVAL for opts == NULL.
 int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
                        struct kos_recv_timed_opts* opts);
-#endif
 
 // Synchronous call/reply (L4-style). kos_call delivers `send_len` request bytes and
 // blocks until the server replies into the SAME buffer (in-place, up to `recv_cap`); it
@@ -130,7 +126,6 @@ int32_t kos_recv_timed(kos_cap_t ep, void* buf, size_t cap_len,
 // SERVER's cap table is full, so the reply cap cannot be minted; nothing the caller can
 // widen), ENOSYS (server took an info-less recv, so it hosts no calls).
 int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap);
-#if KICKOS_TIMED_WAIT
 // The same call, giving up after `timeout_us` RELATIVE microseconds, or never if that is
 // KOS_TIMEOUT_NONE. The deadline bounds the WHOLE call, both phases: the wait for a server
 // to take the request AND the wait for its reply. That differs from kos_send_timed, which
@@ -141,7 +136,6 @@ int32_t kos_call(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap);
 // no bytes land in the buffer after this returns.
 int32_t kos_call_timed(kos_cap_t ep, void* buf, size_t send_len, size_t recv_cap,
                        uint32_t timeout_us);
-#endif
 // Complete the call named by `reply_cap` (from kos_recv_info.reply_cap): copy `len` reply
 // bytes to the parked caller and wake it. The cap is one-shot (consumed here; a server
 // loop must reply or kos_handle_close it on EVERY path, else the caller parks forever).
@@ -197,10 +191,9 @@ void kos_exit(int code) __attribute__((noreturn));
 // runs its own exit. A thread parked in kos_recv, sleeping, or looping without ever
 // reaching kos_irq_wait is marked and KEEPS RUNNING: 0 means the request was accepted,
 // never that the thread is gone. A caller that must OBSERVE the death has to wait for it
-// separately, which is what kos_thread_join below does when KICKOS_TIMED_WAIT is on.
+// separately, which is what kos_thread_join below does.
 int kos_thread_kill(kos_thread_t thread);
 
-#if KICKOS_TIMED_WAIT
 // Wait for a thread YOU spawned to be gone, giving up after `timeout_us` RELATIVE
 // microseconds, or never if that is KOS_TIMEOUT_NONE. Returns 0 (the target is gone),
 // -KOS_ETIMEDOUT (it outlived the deadline and is still running), -KOS_EBADF (a handle
@@ -227,7 +220,6 @@ int kos_thread_join(kos_thread_t thread, uint32_t timeout_us);
 // and it is single-seat, so an ordinary thread parking here first would deny root its
 // shutdown condition for as long as it waits.
 int kos_wait_last(void);
-#endif
 
 // End the WHOLE system with `status`: drain the buffered console, then hand over to the
 // chip's shutdown. This is what a returning kickos_init_entry does (see

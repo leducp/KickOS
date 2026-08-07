@@ -64,7 +64,7 @@ namespace kickos
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
-                kpanic("wq_confirm_resume: switch never landed");
+                kpanic(diag::kResumeNoSwitch);
             }
         }
     }

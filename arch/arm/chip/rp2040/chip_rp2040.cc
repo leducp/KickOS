@@ -20,6 +20,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
+#include <kickos/diag.h>
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
@@ -440,7 +441,7 @@ int arch_reboot(void)
     // (0, 0): no activity-LED pin, and neither USB interface disabled, so both
     // PICOBOOT (picotool) and UF2 mass storage answer.
     usb_boot(0u, 0u);
-    kickos::kpanic("arch_reboot: rp2040 _reset_to_usb_boot returned");
+    kickos::kpanic(kickos::diag::kRebootRp2040);
 }
 #endif
 

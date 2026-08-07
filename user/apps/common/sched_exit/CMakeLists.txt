@@ -10,16 +10,11 @@ kickos_add_application(sched_exit
 # forever. main() skips that phase when SCHED_EXIT_SERVICE_THREADS is 1, and the gate
 # registrations below stay conditioned on the same value: the markers that phase prints
 # are what they assert.
-# KICKOS_TIMED_WAIT=0 deletes kos_wait_last, so main() skips the same phase there and the
-# gates come off for the same reason.
 set(_sched_exit_gateable TRUE)
 set(_sched_exit_services 0)
 if(KICKOS_SERVICE_LIST AND NOT KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
   set(_sched_exit_gateable FALSE)
   set(_sched_exit_services 1)
-endif()
-if(NOT KICKOS_TIMED_WAIT)
-  set(_sched_exit_gateable FALSE)
 endif()
 target_compile_definitions(sched_exit PRIVATE
   SCHED_EXIT_SERVICE_THREADS=${_sched_exit_services})

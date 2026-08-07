@@ -110,7 +110,7 @@ namespace kickos
             // and the supposedly blocked thread keeps running.
             if (arch_in_isr())
             {
-                kpanic("kickos: blocking operation from ISR context");
+                kpanic(diag::kBlockInIsr);
             }
             kernel().policy->on_remove(kernel().current);
         }
@@ -225,7 +225,6 @@ namespace kickos
                 {
                     k.live--;
                 }
-#if KICKOS_TIMED_WAIT
                 // Join and wait-until-last are parked on NO list, so this pool scan IS the
                 // waiter lookup; it runs at a thread exit and nowhere else. The wait edge
                 // and wait_result are the waker's to write BEFORE the wake, as on every
@@ -252,7 +251,6 @@ namespace kickos
                         wake(w);
                     }
                 }
-#endif
                 if (k.live == 0)
                 {
                     // Last non-idle thread out ends the process with its exit code.

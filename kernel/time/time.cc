@@ -8,9 +8,7 @@
 // CONFIG_SCHED_PERIODIC_TICK forces a classic periodic tick instead.
 
 #include <kickos/time.h>
-#if KICKOS_TIMED_WAIT
 #include <kickos/endpoint.h> // endpoint_wait_timeout: the IPC layer owns every EP unwind
-#endif
 #include <kickos/sched.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -133,7 +131,6 @@ namespace kickos
         sched::block_current(); // returns on wake
     }
 
-#if KICKOS_TIMED_WAIT
     void ktime_deadline_arm(Thread* t, uint32_t timeout_us)
     {
         // The floor is applied HERE, once, against one clock reading. See ktime_rearm.
@@ -147,7 +144,6 @@ namespace kickos
         t->deadline_ns = deadline;
         sleepq_insert(t);
     }
-#endif
 
     void ktime_deadline_cancel(Thread* t)
     {
@@ -208,7 +204,6 @@ namespace kickos
                     sched::wake(t);
                     break;
                 }
-#if KICKOS_TIMED_WAIT
                 case WAIT_JOIN:
                 {
                     // On no list at all, so clearing the tag IS the whole unwind. It also
@@ -228,10 +223,9 @@ namespace kickos
                     endpoint_wait_timeout(t);
                     break;
                 }
-#endif
                 default:
                 {
-                    kpanic("expired deadline on a park that cannot time out");
+                    kpanic(diag::kDeadlineNoTimer);
                 }
             }
         }

@@ -163,5 +163,5 @@ namespace kickos
 extern "C" void kickos_thread_return(void)
 {
     ::kickos::sched::exit_current(0); // a worker returning normally exits 0
-    KICKOS_UNREACHABLE("thread continued past exit_current");
+    KICKOS_UNREACHABLE(::kickos::diag::kPastExitCurrent);
 }

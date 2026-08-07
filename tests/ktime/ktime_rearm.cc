@@ -98,7 +98,6 @@ namespace kickos
         abort();
     }
 
-#if KICKOS_TIMED_WAIT
     // ktime_on_timer delegates every endpoint park's unwind to the IPC layer, which this
     // gate does not link (it compiles time.cc alone against a fake clock). No arm here
     // stages an endpoint park, so reaching this is a test that staged something it cannot
@@ -108,7 +107,6 @@ namespace kickos
         fprintf(stderr, "endpoint_wait_timeout: no IPC layer in this gate\n");
         abort();
     }
-#endif
 
     namespace sched
     {

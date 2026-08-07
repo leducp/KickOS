@@ -12,6 +12,7 @@
 #include <kickos/console_tx.h>
 
 #include <kickos/config/limits.h>
+#include <kickos/diag.h>
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
@@ -232,7 +233,7 @@ void console_buffer_init(void)
     // write stalls. A misconfigured TX line at boot is a build/port bug, so panic.
     if (not kickos::irq_attach(line, console_tx_isr_trampoline, nullptr))
     {
-        kickos::kpanic("console_buffer_init: irq_attach failed");
+        kickos::kpanic(kickos::diag::kConsoleAttach);
     }
     // Arm g_tx (backend + ring) BEFORE the line can fire: the latch-and-coalesce
     // contract redelivers any pend latched on this line before boot the instant

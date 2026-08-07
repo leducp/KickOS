@@ -20,25 +20,11 @@ if(NOT (KICKOS_ARCH STREQUAL "armv7m" OR KICKOS_ARCH STREQUAL "armv6m"))
   return()
 endif()
 
-# Does this core implement a privilege ring? ARMv7-M always does (CONTROL.nPRIV is
-# architectural). ARMv6-M's Unprivileged/Privileged Extension is OPTIONAL and separate
-# from the MPU extension: Cortex-M0+ implements it, Cortex-M0 does not, and both are
-# KICKOS_ARCH=armv6m - so the answer is per BOARD, not per arch, and there is no
-# predefined macro that separates them. Enumerated rather than defaulted: a new armv6m
-# port must state its class here instead of silently inheriting one and reporting a
-# vacuous pass.
-if(KICKOS_ARCH STREQUAL "armv7m")
-  set(_ring 1)
-elseif(KICKOS_BOARD STREQUAL "microbit")
-  set(_ring 0) # nRF51822, Cortex-M0: msr CONTROL is discarded, every thread is privileged
-elseif(KICKOS_BOARD STREQUAL "picopi")
-  set(_ring 1) # RP2040, Cortex-M0+: implements the extension
-else()
-  message(FATAL_ERROR
-    "ringpriv: armv6m board '${KICKOS_BOARD}' is not classified. Cortex-M0 has no "
-    "privilege ring and Cortex-M0+ does; state which this core is (see the table in "
-    "docs/design-unprivileged-root.md section 2) rather than letting the gate guess.")
-endif()
+# Does this core implement a privilege ring? The top-level CMakeLists.txt derives it and
+# FATAL_ERRORs on an unclassified armv6m board, because fault isolation reads the SAME
+# axis: a core with no ring cannot tell a thread's own fault from a kernel bug, so it must
+# keep panicking.
+set(_ring ${KICKOS_HAVE_PRIV_RING})
 
 kickos_add_diagnostic_app(ringpriv
   SOURCES main.cc
@@ -74,7 +60,8 @@ if(KICKOS_BUILD_TESTS)
       ARGS ringpriv ${_arms})
     kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_ringppb TARGET ringppb
       BOARD ${KICKOS_BOARD}
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_ringppb.sh")
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_ringppb.sh"
+      ARGS ${KICKOS_FAULT_OUTCOME})
   elseif(KICKOS_BOARD STREQUAL "microbit")
     kickos_add_qemu_test(NAME microbit_ringpriv TARGET ringpriv BOARD microbit
       SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh"

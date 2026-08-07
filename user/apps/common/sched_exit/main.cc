@@ -7,8 +7,7 @@
 // RETURNS (thread exit) while root is still alive. On an arch that defers the context
 // switch (ARM PendSV), the switch away from the exiting thread can only fire once
 // exit_current releases its crit section; the bug this guards against ran
-// KICKOS_UNREACHABLE first ("an EXITED thread was picked to run"). (The sim always
-// worked, arch_switch being synchronous; this locks parity across sim/qemu/microbit.)
+// KICKOS_UNREACHABLE first ("an EXITED thread was picked to run").
 //
 // 2. WAIT-UNTIL-LAST is the shutdown condition: root parks in kos_wait_last while a child
 // is alive and is released by that child's exit, and a child's own kos_wait_last is
@@ -16,8 +15,7 @@
 // selftest suite because the condition is GLOBAL: an image carrying a service list has a
 // driver thread that never exits, so kernel().live never reaches 1 and the call never
 // returns. SCHED_EXIT_SERVICE_THREADS says which kind of image this is, and the phase is
-// skipped rather than hung when it cannot complete. KICKOS_TIMED_WAIT=0 deletes
-// kos_wait_last outright, so the phase is skipped there too, and the same way.
+// skipped rather than hung when it cannot complete.
 //
 // 3. ROOT's exit ends the SYSTEM, not just root's thread. Root spawns a child that never
 // exits, then exits itself: with root's exit treated as an ordinary thread exit,
@@ -25,10 +23,8 @@
 // until the harness times out. So the witness is the exit STATUS arriving at all, and
 // EXIT_CODE is nonzero because a shutdown that dropped the status would still exit 0.
 //
-// kos_exit, not exit(): the sim does not compile newlib_stubs.cc, so its exit() is the host
-// libc's and reaches no syscall, and newlib's exit() does not LINK on the freestanding
-// ports at all (it pulls __libc_fini_array, and no linker script here defines _fini). What
-// does reach this call through newlib_stubs.cc's _exit is abort(), and so a failed assert.
+// kos_exit, not exit(): exit() and abort() reach that same KOS_SYS_EXIT on every port,
+// and apps/libc_exit is the gate on that route.
 
 #include <kickos/kos.h>
 
@@ -43,7 +39,6 @@ namespace
         // return -> thread exit while root is still alive (the non-last case)
     }
 
-#if KICKOS_TIMED_WAIT
     // A NON-ROOT wait-until-last caller: the primitive reaches outside the caller's own
     // spawn subtree and is single-seat, so it is root's alone. The sleep keeps this behind
     // root's own call, which is what makes the phase below observe a released root rather
@@ -61,7 +56,6 @@ namespace
         }
         // return -> this exit takes the live count to 1 and releases root
     }
-#endif
 
     // Holds kernel().live above zero for root's exit. Never exits: an image that hangs
     // here is the regression, not a stuck test.
@@ -80,7 +74,6 @@ int main(int, char**)
     kos::thread::spawn(worker, nullptr, "worker", 10);
     kos::sleep_ns(300000000ull); // 0.3s: root blocks here -> worker runs + exits
     kos::print("root: survived worker exit\n");
-#if KICKOS_TIMED_WAIT
     auto second = kos::thread::spawn(second_waiter, nullptr, "wlast", 10);
     if (not second.valid())
     {
@@ -104,9 +97,6 @@ int main(int, char**)
         kos::print("root: wait_last unexpectedly refused\n");
     }
 #endif // SCHED_EXIT_SERVICE_THREADS
-#else
-    kos::print("root: timed wait compiled out, wait-until-last skipped\n");
-#endif // KICKOS_TIMED_WAIT
     // Reuses the previous phase's reclaimed slot, as every phase here does: the whole
     // image never holds more than ONE concurrent child, so it runs on a two-slot pool.
     auto parked_thread = kos::thread::spawn(parked, nullptr, "parked", 10);

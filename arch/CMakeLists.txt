@@ -46,6 +46,8 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
   common/arch_cpu_clock_set_default.cc
   common/arch_diag_led_init_default.cc
   common/arch_diag_led_set_default.cc
+  common/arch_fault_is_user_thread_default.cc
+  common/arch_fault_redirect_to_exit_default.cc
   common/arch_periph_clock_hz_default.cc
   common/arch_periph_enable_default.cc
   common/arch_periph_reg_write_default.cc
@@ -55,6 +57,11 @@ set(KICKOS_SEAM_DEFAULTS_COMMON
 # gate as its callers and its chip backends.
 if(KICKOS_ENABLE_SELFTEST)
   list(APPEND KICKOS_SEAM_DEFAULTS_COMMON common/arch_reboot_default.cc)
+endif()
+if(KICKOS_FAULT_ISOLATION)
+  list(REMOVE_ITEM KICKOS_SEAM_DEFAULTS_COMMON
+    common/arch_fault_is_user_thread_default.cc
+    common/arch_fault_redirect_to_exit_default.cc)
 endif()
 
 # ARM PMSA + core fallbacks, shared by armv6m and armv7m.
@@ -135,8 +142,14 @@ elseif(KICKOS_ARCH STREQUAL "armv6m")
   # Cortex-M0/M0+ (RP2040). PRIMASK crit + v6-M-subset switch.S; the
   # chip supplies arch_clock_now (no DWT) + arch_init/console + linker script.
   # No arch_trace_now fallback: v6-M has no DWT, so the trace clock is a chip contract.
+  # A Cortex-M0 has no privilege ring and keeps the declining fault fallbacks instead.
+  set(KICKOS_ARMV6M_FAULT "")
+  if(KICKOS_FAULT_ISOLATION)
+    set(KICKOS_ARMV6M_FAULT arm/armv6m/arch_armv6m_fault.cc)
+  endif()
   add_library(kickos_arch_armv6m STATIC
     arm/armv6m/arch_armv6m.cc
+    ${KICKOS_ARMV6M_FAULT}
     arm/common/arch_arm_common.cc
     common/arch_ram_common.cc
     common/startup_ranges.cc

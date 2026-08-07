@@ -544,7 +544,6 @@ namespace kickos
         return 0;
     }
 
-#if KICKOS_TIMED_WAIT
     // Park until the named thread is gone, bounded by `timeout_us` unless that is
     // KOS_TIMEOUT_NONE. The joiner parks queue-less tagged WAIT_JOIN; sched::exit_current
     // sweeps the pool for that tag, and that sweep is the only thing that wakes it.
@@ -619,5 +618,4 @@ namespace kickos
         // IS the last live thread, so there is no other outcome to report.
         return 0;
     }
-#endif
 }

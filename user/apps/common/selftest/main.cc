@@ -2565,7 +2565,6 @@ namespace
         kos_sem_destroy(g_ep_go);
     }
 
-#if KICKOS_TIMED_WAIT
     // --- Timed send: the deadline expires with a LIVE endpoint and nobody in recv ------
     // Main keeps its WAIT cap for the whole arm, so recv_holders stays 1 and no EPIPE can
     // fire: the only thing missing is a parked receiver, which is exactly what a deadline
@@ -2969,6 +2968,8 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
+    uint64_t g_call_unit = 1000000ull;
+
     // --- Timed call: the expiry unwind REVERTS the D2 boost ------------------------------
     // The only arm that can tell whether endpoint_wait_timeout still calls set_prio on the
     // WAIT_EP_SEND branch: delete that one line and every other timed-call arm stays green,
@@ -2983,10 +2984,6 @@ namespace
     //   'm' before 'z': the expiry unwind dropped it, so the spoiler outranks the server
     //                   again. Without the revert the server stays pinned at the caller's
     //                   priority and 'z' comes first.
-#endif
-    // Also the time unit of the untimed choreographies below, so it stays outside the gate.
-    uint64_t g_call_unit = 1000000ull;
-#if KICKOS_TIMED_WAIT
     void ctr_server(void*) // caps: done@1, lock@2, E(WAIT)@3
     {
         char buf[16];
@@ -3046,7 +3043,6 @@ namespace
         TAP_CHECK(nth('u', 1) < nth('m', 1)); // BOOST held while the caller was parked
         TAP_CHECK(nth('m', 1) < nth('z', 1)); // REVERT: the unwind put the server back at base
     }
-#endif
 
     // --- Call/reply: info-less receiver bounces a call, D2 boost is REVERTED ------
     // A high caller's slow-path kos_call boosts the low server it targets (D2). An
@@ -4146,9 +4142,7 @@ namespace
     // buffer: an unprivileged caller cannot launder an un-owned page through IPC.
     volatile long g_ep_badrecv_rc = -99;
     volatile long g_ep_badsend_rc = -99;
-#if KICKOS_TIMED_WAIT
     volatile long g_ep_badopts_rc = -99;
-#endif
     int g_ep_bnd_neg_ran = 0;
     void ep_bound_worker(void*) // caps: done@1, E@2 (unpriv)
     {
@@ -4157,7 +4151,6 @@ namespace
         {
             g_ep_badrecv_rc = kos_recv(2, bad, 8, nullptr);           // write oracle -> -KOS_EFAULT
             g_ep_badsend_rc = kos_send(2, static_cast<char const*>(bad), 8); // cross-domain read -> -KOS_EFAULT
-#if KICKOS_TIMED_WAIT
             // The opts struct is IN-OUT, and an arena page is granule-aligned, so this
             // clears the alignment gate above and lands on the readable+writable check.
             // The message buffer is a valid stack local: the refusal is about opts alone.
@@ -4165,7 +4158,6 @@ namespace
             g_ep_badopts_rc =
                 kos_recv_timed(2, obuf, sizeof(obuf),
                                static_cast<struct kos_recv_timed_opts*>(bad));
-#endif
             g_ep_bnd_neg_ran = 1;
         }
         kos_sem_post(CH_DONE);
@@ -4174,9 +4166,7 @@ namespace
     {
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         g_ep_badrecv_rc = -99; g_ep_badsend_rc = -99;
-#if KICKOS_TIMED_WAIT
         g_ep_badopts_rc = -99;
-#endif
         g_ep_bnd_neg_ran = 0;
         kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_ep, CH_FULL}}; // done@1, E@2
         auto w = kos::thread::spawn_caps(ep_bound_worker, nullptr, "epbn", 12, caps, 2,
@@ -4187,9 +4177,7 @@ namespace
         {
             TAP_CHECK(g_ep_badrecv_rc == -KOS_EFAULT); // bad recv buffer rejected, never parked
             TAP_CHECK(g_ep_badsend_rc == -KOS_EFAULT); // bad send buffer rejected, never parked
-#if KICKOS_TIMED_WAIT
             TAP_CHECK(g_ep_badopts_rc == -KOS_EFAULT); // un-owned opts rejected, no deadline read
-#endif
         }
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
@@ -5364,7 +5352,6 @@ namespace
                   == -KOS_EPERM);
     }
 
-#if KICKOS_TIMED_WAIT
     // --- Join: the death is observed, and an unreclaimed exit still resolves ----
     // Root's slot is the FIRST allocation the thread pool ever makes, so it is index 0 at
     // generation 0 on every board and posture, and handle_for(0) is the bare 0. Change
@@ -5494,7 +5481,6 @@ namespace
         // wake and this is a FRESH park. It must still be woken by that same exit.
         TAP_CHECK(w.join() == 0);
     }
-#endif
 
     // --- Self-grant, and the region budget that bounds it ----------------------
     // Exercises the REFUSAL at the region-budget ceiling: the call must fail LOUDLY
@@ -5749,7 +5735,6 @@ int main(int, char**)
     TAP_ADD("endpoint_rights", t_endpoint_rights);         // send needs SIGNAL, recv needs WAIT
     TAP_ADD("endpoint_epipe", t_endpoint_epipe);           // parked sender woken on last WAIT close
     TAP_ADD("endpoint_dead", t_endpoint_dead);             // F1 dead endpoint: send refused, no park
-#if KICKOS_TIMED_WAIT
     TAP_ADD("endpoint_send_timeout", t_endpoint_send_timeout); // timed send expires; untimed still parks
     TAP_ADD("recv_timeout", t_recv_timeout);                   // timed recv expires with nobody sending
     TAP_ADD("timed_arg_refusals", t_timed_arg_refusals);       // null/misaligned opts, oversize packed send_len
@@ -5758,7 +5743,6 @@ int main(int, char**)
     TAP_ADD("call_timeout_reply", t_call_timeout_reply);       // ... and in CALL_REPLY_WAIT, via the SLOW path
     TAP_ADD("reply_stale_caller", t_reply_stale_caller);       // reply to a timed-out caller: -KOS_ESRCH
     TAP_ADD("reply_abandoned_cap", t_reply_abandoned_cap);     // ... and while that caller is in a SECOND call
-#endif
     TAP_ADD("call_infoless_revert", t_call_infoless_revert); // info-less bounce reverts the D2 boost
     TAP_ADD("call_close_reply", t_call_close_reply);         // close-instead-of-reply EPIPEs + yields
     TAP_ADD("call_happy", t_call_happy);                     // request delivered + reply in-place (fast+slow)
@@ -5808,11 +5792,9 @@ int main(int, char**)
     TAP_ADD("periph_reg_write_mask", t_periph_reg_write_mask); // allowlist match + the per-entry value mask
 #endif
     TAP_ADD("privileged_spawn_refused", t_privileged_spawn_refused); // no privilege minting after boot
-#if KICKOS_TIMED_WAIT
     TAP_ADD("thread_join", t_thread_join);   // parked join, unreclaimed exit, the refusals
     TAP_ADD("join_stale_gen", t_join_stale_gen); // a reclaimed slot: the generation branch
     TAP_ADD("join_timeout", t_join_timeout); // a target that outlives its deadline
-#endif
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     TAP_ADD("irq_thread_ctx", t_irq);

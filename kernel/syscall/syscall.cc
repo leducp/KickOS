@@ -147,7 +147,7 @@ namespace kickos
             }
             if (buf[0] == '\0')
             {
-                kpanic("user panic (no readable message)");
+                kpanic(diag::kUserPanicNoMsg);
             }
             kpanic(buf);
         }
@@ -353,21 +353,18 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
                               KOS_TIMEOUT_NONE));
         }
-#if KICKOS_TIMED_WAIT
         case KOS_SYS_SEND_TIMED:
         {
             return static_cast<uintptr_t>(
                 endpoint_send(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
                               static_cast<uint32_t>(a3)));
         }
-#endif
         case KOS_SYS_RECV:
         {
             return static_cast<uintptr_t>(
                 endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3,
                               /*timed=*/false));
         }
-#if KICKOS_TIMED_WAIT
         case KOS_SYS_RECV_TIMED:
         {
             // The deadline is not an argument: a3 names a kos_recv_timed_opts holding it,
@@ -378,7 +375,6 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 endpoint_recv(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2), a3,
                               /*timed=*/true));
         }
-#endif
         case KOS_SYS_CALL:
         {
             // FULLY LOCKLESS (no dispatch IrqLock), same as SEND/RECV: a spanning caller
@@ -387,7 +383,6 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 endpoint_call(static_cast<uint32_t>(a0), a1, static_cast<size_t>(a2),
                               static_cast<size_t>(a3), KOS_TIMEOUT_NONE));
         }
-#if KICKOS_TIMED_WAIT
         case KOS_SYS_CALL_TIMED:
         {
             // a2 carries both lengths so a3 can carry the deadline. Unpacking is this arm's
@@ -397,7 +392,6 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 endpoint_call(static_cast<uint32_t>(a0), a1, kos_call_lens_send(a2),
                               kos_call_lens_recv(a2), static_cast<uint32_t>(a3)));
         }
-#endif
         case KOS_SYS_REPLY:
         {
             // Does not block the replier (it wakes the caller and returns), so it does
@@ -467,7 +461,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 guard = guard + 1;
                 if (guard >= CONSOLE_PUBLISH_DRAIN_MAX)
                 {
-                    kpanic("console_publish: chip-writer drain did not converge");
+                    kpanic(diag::kPublishNoDrain);
                 }
             }
             sched::set_prio(pub, saved_prio);
@@ -510,7 +504,6 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             // UNGATED by authority, gated by parenthood inside (syscall_thread.cc).
             return static_cast<uintptr_t>(thread_kill(static_cast<kos_thread_t>(a0)));
         }
-#if KICKOS_TIMED_WAIT
         case KOS_SYS_THREAD_JOIN:
         {
             // Blocks, so no dispatch IrqLock, same as SEND/RECV/CALL. Parenthood-gated
@@ -522,7 +515,6 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             return static_cast<uintptr_t>(thread_wait_last());
         }
-#endif
         case KOS_SYS_EXIT:
         {
             Thread* c = sched::current();
@@ -537,7 +529,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                 {
                     // Cannot be reported: kos_exit is noreturn and _exit spins after it, so
                     // a returned refusal would loop root forever with nothing on the wire.
-                    kpanic("root: exit shutdown refused");
+                    kpanic(diag::kRootExitRefused);
                 }
                 kickos_terminate(static_cast<int>(a0)); // noreturn
             }

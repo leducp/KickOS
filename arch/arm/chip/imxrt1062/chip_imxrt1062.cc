@@ -13,6 +13,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/config/limits.h>
+#include <kickos/diag.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
@@ -604,7 +605,7 @@ int arch_reboot(void)
 {
     __asm volatile("cpsid i" ::: "memory"); // dispatch runs in thread mode with IRQs live
     __asm volatile("bkpt #251");
-    kickos::kpanic("arch_reboot: imxrt1062 bkpt resumed (no MKL02?)");
+    kickos::kpanic(kickos::diag::kRebootImxrt);
 }
 #endif
 
