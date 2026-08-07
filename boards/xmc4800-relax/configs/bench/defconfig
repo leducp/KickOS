@@ -1,0 +1,21 @@
+CONFIG_BOARD_XMC4800_RELAX=y
+
+# The call/reply payload sweep, on the board its numbers were taken on. This mirrors the
+# `st` variant rather than the qemu-riscv `bench` one: the ENFORCING posture is where the
+# M4.7.7 figures were measured, and a posture change moves the rendezvous cost this
+# variant exists to measure.
+CONFIG_MEMORY_MODEL_MPU=y
+CONFIG_KICKOS_MAX_THREADS=8
+CONFIG_KICKOS_USER_STACK_SIZE=4096
+CONFIG_KICKOS_IDLE_STACK_SIZE=512
+CONFIG_KICKOS_ROOT_STACK_SIZE=4096
+CONFIG_CONSOLE_BOTH=y
+CONFIG_KICKOS_ENABLE_SELFTEST=y
+CONFIG_KICKOS_BENCH=y
+
+# NO service list, though this board's enforcing default has one. The bench app prints
+# through kos_print, which is dropped once a userspace console driver is published, so a
+# bench built with the driver measures correctly and reports NOTHING. Keeping the kernel
+# console also removes the driver thread from the run set, which is what the figures this
+# variant is compared against were measured without.
+CONFIG_KICKOS_SERVICE_LIST="kickos_services_none"
