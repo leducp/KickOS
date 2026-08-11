@@ -8,28 +8,33 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.7.7 is MERGED (PR #16), and `master` is `de2801d`.** Root is seated in the thread pool, so it
-carries a kill tag of its own instead of sharing idle's boot tag, it is nameable by a handle and by a
-reply capability, and an app's own `main` reaches every call/reply service API. It is witnessed on
-six boards; see below.
+**M4.8.1 is MERGED (PR #19), and `master` is `d4d250bc`.** One generic driver service replaced
+twelve per-(class x chip) bring-ups: a POD descriptor plus one `bring_up`, twelve `constexpr`
+validity legs, and the thread bodies in the class substrate. `driver_bringup.h` is gone. Per-chip
+service code went from 2307 lines to about 1039, and the bring-up from eight hand-written copies to
+one.
 
-**M4.7.8 is IN FLIGHT on `M4.7.8-timed-wait`.** Landed: a total tagged wait edge, so a parked
-thread names what it waits for and the object owning the list it is on; timed send, call and
-receive, the send closing a console-handover wedge that predates every release; and a join by
-handle plus wait-until-last. **The reaper init is BLOCKED and the milestone cannot deliver it**:
-`kos_wait_last()` means "last thread in the system" while a reaper needs "the app has finished",
-and the init spawns the service threads itself, so it would park on its own children on every
-board with a service list. `TODO.md` carries the analysis and the way forward, which is core-path
-work needing its own number. **M4.7.x is not closed**; it is kernel-core work carrying an M4
-number on purpose. Behind M4.7.6 (PR #15) on
-`master`: M4.7.5 (PR #14), M4.7.4 (PR #13), M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10),
-M4.6.1 (PR #9), M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 + M4.5.7 (PR #6).
+Behind it on `master`: M4.7.9 (PR #18), M4.7.8 (PR #17), M4.7.7 (PR #16), M4.7.6 (PR #15),
+M4.7.5 (PR #14), M4.7.4 (PR #13), M4.7.3 (PR #12), M4.7.2 (PR #11), M4.7.1 (PR #10), M4.6.1 (PR #9),
+M4.5.9 (PR #8), M4.5.8 + M4.5.7 (PR #7), M4.5.6 (PR #6).
 
-What M4.7.5 and M4.7.6 left behind is now ordinary tree shape and is documented where it
-belongs, not here: the configuration mechanism in `README.md` and `docs/reference/porting.md`,
-the C++20 level and its consumer rule in `cmake/kickos.cmake`, the measurement instruments in
-their own script headers under `.session/`. This file keeps only what a command cannot
-re-derive.
+**Three defects that predate the driver work were fixed alongside it**, and each is the kind that
+only silicon or a sanitizer finds:
+- **PendSV read `g_arch_next` and the deferred MPU stash unmasked** on both ARM ports. The pair is
+  written together under the kernel lock, so a device IRQ between the two reads resumed a thread with
+  another thread's regions programmed. It presented as a USB CDC hard fault on `picopi` about 75% of
+  runs, and the fault frames were FOSSILS of an earlier SVC, which is why the dump read like an
+  escalated `svc`.
+- **Three selftest IRQ arms hardcoded NVIC line numbers with no per-chip free-line set.** Inert on
+  QEMU, wired peripherals on RP2040. `KICKOS_IRQ_SOFT_ONLY_BASE` lets a chip declare the fact.
+- **`thread_join` read its start time after the spawn**, so a higher-priority target could reach its
+  sleep first and the measured interval no longer contained it.
+
+**Two arms filed as unreliable were not flakes.** `rr_interleave` was a symptom of the PendSV race
+(4 failures in 6 runs before, 0 in 6 after) and `thread_join` was 80% on one board and 0 across
+twelve runs on four others. Both had been written down as marginal and left alone, and that is what
+kept a genuine scheduler race hidden. **Measure a rate on both sides of a change before applying a
+flake label.**
 
 ### What the captures do NOT witness
 
@@ -48,6 +53,26 @@ class the fleet has, zero `not ok` anywhere. Logs `.session/logs/m477-*.log`.
 | `esp32c6-wroom` (PMP NAPOT) | `1..84` | 84 ok, 0 skip, enforce |
 | `esp32-wroom` (LX6, no unit) | `1..80` | 80 ok, 0 skip, off |
 | `f302nucleo` (ring-only) | `1..43` + `1..37` | 43 + 37 ok, 3 + 7 skip, 0 + 4 partial, off |
+
+**M4.8.1 is witnessed on EVERY enforcement class the fleet has**, each with its own converted
+driver seen coming up, and `picopi` gives the project its FIRST clean armv6m enforcement capture:
+
+| board | class | plan | driver witnessed |
+| --- | --- | --- | --- |
+| `esp32c6-wroom` | PMP NAPOT | `1..95` | `c6uart` |
+| `rx72m` | RX MPU | `1..95` | `rxsci`, the 3-thread 2-line outlier |
+| `xmc4800-relax` | PMSAv7 | `1..95` | `xmcuartirq`, `xmcuart`, `xmcssc` |
+| `frdmk64f` | SYSMPU | `1..95` | `k64uart`, `k64dspi`, `k64uartirq` |
+| `picopi` | PMSAv6, armv6m | `1..95` | -- |
+| `esp32-wroom` | LX6, no unit | `1..91` | `lx6uart` |
+| `f302nucleo` | ring-only | `1..51` + `1..40` | -- |
+
+**A DRIVER IS ONLY IN THE IMAGE IF THE SERVICE LIST PUTS IT THERE.** `rx72m-st`, `esp32-wroom-st` and
+`esp32c6-wroom-st` all default to `kickos_services_none`, so a green run on a default preset says
+NOTHING about that board's driver. This was got wrong twice in one session. `bench.sh` takes
+`SERVICE_LIST=` for exactly this, and the IRQ UART services live only in the `*_uartirq` providers and
+are never a default. The polled default lists also claim no IRQ line at all, which is why a timing arm
+can pass there and fail under `_uartirq` on the same board.
 
 **M4.7.8 is witnessed on ALL SIX boards** at the FINAL tree, zero `not ok` anywhere: `rx72m`,
 `xmc4800-relax`, `frdmk64f` and `esp32c6-wroom` 95 ok enforcing, `esp32-wroom` 91 ok,
@@ -93,28 +118,26 @@ rather than producing a plausible-looking wrong log.
 
 ## What is next (locked order)
 
-1. **M4.7.7 -- root is a pool thread**, MERGED as PR #16 and witnessed on six boards.
-2. **M4.7.8 -- the timed wait**, THIS milestone, feature-complete on its branch: an abortable and
-   timed send, call and receive, a thread join, and wait-until-last. Its design spike is gitignored
-   and never enters history, so `TODO.md`'s M4.7.8 section carries the settled facts rather than a
-   pointer to it. The order was fixed and the reason is structural: **the tagged wait edge landed
-   FIRST**, because a caller parked on a server's reply list has no edge back to that server, so no
-   timed or aborted wait can revert its priority donation or unlink it without one.
-   `KOS_ETIMEDOUT` is 110, clear of M4.8.1's `ENOTSUP` at 95. **The reaper init named in the
-   original scope is NOT delivered** and is refused rather than deferred quietly; the next number
-   for it, and the thread classification it actually needs, are in `TODO.md`.
-3. **M4.8.1 -- the driver class layer**, the class layer the driver-model ruling requires and
-   that SPI never got. IN FLIGHT on its own branch `M4.8.1-driver-class`, REBASED onto `de2801d`
-   on 2026-08-06 (four commits; the cherry-picked worklist-retire commit dropped itself by
-   patch-id, and the branch builds), carrying a per-driver-type class and a five-call UART class
-   API. Keep it rebased as M4.7.8 lands: its SPI proxy marshals into `kos_call`, which M4.7.8
-   changes.
-4. **M4.8.2 -- USB CDC console**, continuing M4.6.2. Enumeration and bulk IN are witnessed on
-   `pizero2350`; the production service list, bulk OUT and `teensy41` are not.
-5. **M4.8.3..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
+1. **M4.8.1 -- the generic driver service**, MERGED as PR #19 and witnessed on every enforcement
+   class the fleet has.
+2. **M4.8.2 -- the host unit-test layer**, and the `sched::wake()` dying-guard repair it is the tool
+   to prove. Its ruling is `docs/design-m4.8.2-host-unit-tests.md`, and its first gate already landed
+   inside M4.8.1 (`tests/drvbringup`) because that is whose coverage gap it closed. The layer has TWO
+   seams, not one: a **U-seam** at the syscall boundary, which needs no kernel and no fixture and is
+   what `drvbringup` uses, and a **K-seam** at the arch boundary, which resets the whole singleton.
+   The U-seam half lands first.
+3. **M4.8.3 -- the task layer**, if `docs/design-task-layer.md` rules for it. A task is a set of
+   threads; the address space attaches to Domain, not Task. The spike's motivation is now partly
+   discharged: the single bring-up tail takes a thread SET, which is what the old one-handle
+   parameter could not express.
+4. **M4.9.1 -- USB CDC console**, continuing M4.6.2. The console now **enumerates and carries payload
+   on an RP2040** (`picopi`, 5.4-5.8 KiB per run), where every earlier witness was RP2350. What it
+   does not do is deliver its tail: `main` returns and the teardown drops about 2.7 KiB still queued
+   in the PUBLISHED console's ring, because that path drains only the kernel transport.
+5. **M4.9.2..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
    **Nothing in-tree can catch a wrong `arch_mpu_region_pow2()` literal in a backend**
-   (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m` silicon is the
-   only check on that class for the RX MPU.
+   (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m` silicon is the only
+   check on that class for the RX MPU.
 
 Captures and records already stamped `M4.6.2` keep that name: a measurement is never renamed.
 

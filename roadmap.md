@@ -140,18 +140,21 @@ what is next; this carries the numbering.
 | M4.4 | per-chip console drivers | landed |
 | M4.5.x | unprivileged root, region encoding, the gates that fail, the comment purge | landed |
 | M4.6.1 | the IRQ substrate and the buffered userspace UART | landed |
-| M4.6.2 | the USB CDC console, partially witnessed on `pizero2350` | superseded by M4.8.2 |
+| M4.6.2 | the USB CDC console, partially witnessed on `pizero2350` | superseded by M4.9.1 |
 | M4.7.1 | the capability-table rework: codec, storage, errno, sizing (`docs/design-capability-table.md`) | landed |
 | M4.7.2 | the review findings against M4.7.1 | landed |
 | M4.7.3 | per-task table width, and a per-task cap on inbound replies: the chunk directory earns its keep | landed |
 | M4.7.4 | delete the legacy management: nothing is released before M6, so there is none to carry | landed |
 | M4.7.5 | Kconfig owns configuration; CMake keeps the build graph | landed |
 | M4.7.6 | the language level moves to C++20, and the tree uses what it buys | landed |
-| **M4.7.7** | **root is a pool thread: a kill tag of its own, a nameable root, call/reply from an app's own `main`** | ACTIVE |
-| M4.7.8 | the timed wait and the reaper init: an abortable/timed call, thread join, wait-until-last, and an init that reaps before it shuts down | after M4.7.7 |
-| M4.8.1 | the class layer the driver-model ruling requires and SPI never got | in flight |
-| M4.8.2 | the USB CDC console, continuing M4.6.2 | planned |
-| M4.8.3..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
+| M4.7.7 | root is a pool thread: a kill tag of its own, a nameable root, call/reply from an app's own `main` | landed |
+| M4.7.8 | the timed wait: an abortable/timed call, thread join, wait-until-last | landed |
+| M4.7.9 | fault isolation: a thread that faults dies alone, `exit()` reaches the kernel on every port, diagnostics carry a short column | landed |
+| M4.8.1 | the class layer the driver-model ruling requires, plus the one generic service over (class x chip) that replaced twelve bring-ups | merged, PR 19 |
+| M4.8.2 | the host unit-test layer, and the `sched::wake()` dying-guard repair it is the tool to prove | planned |
+| M4.8.3 | the task layer: a set of threads that is one unit, if the spike rules for it | spike |
+| M4.9.1 | the USB CDC console, continuing M4.6.2 | planned |
+| M4.9.2..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
 
 **M4.7.x is kernel-core work carrying an M4 number on purpose.** The banner and package versions are
 `0.<milestone>.<submilestone>` and must stay monotonic, so a capability rework cannot be numbered
@@ -216,8 +219,16 @@ capabilities against 64 threads -- that is ~30 MiB where the real demand is ~530
 ~58. An operating system is the ceiling its applications work under, not the application: the width
 law is the one part of M4.7.1 that does not survive contact with the top of its own declared range.
 
-**Documents written before 2026-08-03 use `M4.7` to mean the driver wave now numbered M4.8.x.**
-Those records are frozen at their decision date and are not renumbered.
+**The driver wave has been renumbered TWICE, and frozen records keep the number of their decision
+date.** Documents written before 2026-08-03 use `M4.7` for it; documents written between then and
+2026-08-07 use `M4.8.x`; it is now `M4.9.x`. Both moves happened for the same reason, and the
+repetition is the signal rather than the chore: kernel-core work keeps turning out to be the
+prerequisite for the driver work, so it takes the nearer numbers and the drivers move out. A third
+move should be read as evidence about the sequencing, not as bookkeeping.
+
+The roadmap is a DIRECTION, not a contract: renumbering to match what the work turned out to be
+beats forcing work into a number it does not fit. Only the banner and package versions may never
+go backward.
 
 ### M4.7.5 -- configuration mechanism: Kconfig owns configuration, CMake keeps the build graph
 **NUMBER ASSIGNED 2026-08-05, and the design questions below are now answered rather than open.** The

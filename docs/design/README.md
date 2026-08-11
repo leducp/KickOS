@@ -74,6 +74,8 @@ Two things follow from this that are easy to get wrong:
 
 | Document | Subject |
 |---|---|
+| [`design-m4.8.2-host-unit-tests.md`](../design-m4.8.2-host-unit-tests.md) | The host unit-test layer: two seams, one at the syscall boundary and one at the arch boundary, and why the first needs no fixture |
+| [`design-task-layer.md`](../design-task-layer.md) | A task as a set of threads, with the address space on Domain rather than Task |
 | [`design-m5-smp.md`](../design-m5-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
 | [`design-rp2350-hazard3.md`](../design-rp2350-hazard3.md) | Porting to the RP2350's RISC-V Hazard3 cores as a sibling of the M33 port |
 | [`design-riscv-switch-cost.md`](../design-riscv-switch-cost.md) | Whether the RISC-V switch gap is worth a cooperative fast-path and/or Zcmp |

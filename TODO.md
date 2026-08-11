@@ -5372,3 +5372,33 @@ scheduler, because a 20 ms park is long enough that a real early wake would be a
 Note the discipline that surfaced this: it had already been A/B-proved identical before and after the
 service rework, which made it easy to file as pre-existing and stop. Pre-existing is not the same as
 harmless, and a rate is what tells them apart.
+
+## exit() scope is CHIP-defined, not app-defined (ruled 2026-08-07)
+
+The ruling: on an MCU a thread IS the unit of isolation, so a thread and a process are the same
+thing and `exit()` in a thread ends that thread. On an A-class part with an MMU and real processes,
+`exit()` from any thread ends the WHOLE PROCESS, which is what POSIX says. So the scope follows the
+target's process model. It is a platform fact derived from the memory model, never a knob an
+application author sets: an app that could choose would be choosing whether its peers die.
+
+**Consequence for the tree today, and it inverts the open question in `m4.8.1: the services exit
+through the C library`.** Every current target is the MCU case, so `exit()` must mean thread-exit
+everywhere, and the cross ports do NOT deliver that. Disassembly of `exit` in the RX image: it calls
+`__call_exitprocs` (the `atexit` / `__cxa_atexit` list), then loads `__stdio_exit_handler` and calls
+it if non-null, and only then reaches `_exit` -> `kos_exit`. Both are IMAGE-global teardown, and
+running image-global teardown because one thread ended is wrong even under thread-equals-process:
+newlib assumes one process per image and KickOS puts many threads in one. Provably inert right now
+(nothing registers an atexit handler and KickOS uses its own `kprintf`, not newlib stdio), and the
+`.ld` `ASSERT(.fini_array empty)` does not cover it, because that assert governs STATIC registration
+only. It goes live the first image that links real stdio, which the consumer-API principle
+("standard `printf` / `std::cout`") invites.
+
+`user/src/sim_exit.cc` already does the right thing and is the model: override `exit()` outright and
+route it to `kos_exit`. Do the same on the cross ports. Overriding `exit` and not `_exit` is not a
+style choice: glibc's `exit()` calls its own hidden alias, so an `_exit` definition is never reached
+(measured when `sim_exit.cc` was written).
+
+When the MMU era arrives (`docs/design-mmu-era-exploration.md`), the same seam flips rather than
+grows a second mechanism: on a target with processes, `exit()` ends the process and the thread-scope
+primitive stays `kos_exit`.
+
