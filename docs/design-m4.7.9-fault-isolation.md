@@ -404,8 +404,8 @@ The join ABI is not changing for this.
 
 ### 9.3 The fault record can be taken by a later fault, and the print says so
 
-`g_fault` is one record, because `sizeof(Thread)` is exactly 256 on armv6m and a per-thread field
-would grow every TCB. The window between the redirect and the stub is PREEMPTIBLE, since `dying` is
+`g_fault` is one record, because `Thread` carries no tail padding on any target, so a per-thread
+field would grow every TCB (256 bytes where `KCAP_RUN_CHUNKS` is 1, 264 where it is 2). The window between the redirect and the stub is PREEMPTIBLE, since `dying` is
 not set until `exit_current` runs at the end of `kickos_thread_fault_exit`, so a second unrelated
 fault can overwrite the record before the first thread's stub reads it.
 

@@ -276,6 +276,54 @@ namespace kickos
         }
     };
 
+    // The TCB budget, enforced per configuration rather than as one number: the three blocks a
+    // target legitimately moves are computed from its own types, and only the scalar remainder
+    // is a literal. Editing that literal is how a deliberate TCB change lands.
+    //
+    // MEASURE ON A 32-BIT TARGET. A uint16_t added to Thread costs 8 bytes on armv6m and 0 on
+    // the host: the padding before `domain` is saturated on 32-bit and there is no tail padding.
+
+    // ctx through tnext, which is where the target's context size stops shifting the layout.
+    constexpr size_t thread_head_bytes()
+    {
+        size_t const members =
+            sizeof(arch_context) + sizeof(ListNode) + sizeof(List*) + sizeof(Thread*);
+        return members + (alignof(uint64_t) - members % alignof(uint64_t)) % alignof(uint64_t);
+    }
+
+    // deadline_ns onwards, minus the region array and the capability directory. RXv3 aligns
+    // uint64_t to 4 and so spends less padding here than every other 32-bit target.
+    constexpr size_t thread_scalar_bytes()
+    {
+        size_t bytes = 124;
+        if (sizeof(void*) == 8)
+        {
+            bytes = 188;
+        }
+        else if (alignof(uint64_t) == 4)
+        {
+            bytes = 120;
+        }
+#if KCAP_RUN_CHUNKS > 1
+        bytes = bytes + 2 * sizeof(uint16_t); // cap_width + cap_reply_live
+#endif
+        return bytes;
+    }
+
+    constexpr size_t KICKOS_THREAD_EXPECTED_SIZE =
+        thread_head_bytes() + KICKOS_MPU_MAX_REGIONS * sizeof(arch_mpu_region)
+        + sizeof(CapRun) + thread_scalar_bytes();
+
+    static_assert(sizeof(Thread) == KICKOS_THREAD_EXPECTED_SIZE,
+                  "sizeof(Thread) moved. Either drop the member that grew the TCB, or re-measure "
+                  "on a 32-BIT target and edit thread_scalar_bytes: a host measurement prices a "
+                  "uint16_t at 0 and is blind to this");
+    // With no tail padding, a new member is never free: that is what the fault record and
+    // docs/reference/invariants.md argue from.
+    static_assert(offsetof(Thread, served_head) + sizeof(Thread::served_head) == sizeof(Thread),
+                  "Thread grew tail padding: the last member no longer closes the struct, so the "
+                  "TCB now has slack a new member would land in for free");
+
     // A thread's capability-table capacity: the width it was seated with if it holds a run,
     // else 0.
     inline uint32_t thread_cap_capacity(Thread const* t)
