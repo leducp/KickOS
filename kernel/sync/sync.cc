@@ -73,11 +73,13 @@ namespace kickos
     void wq_block(List& q, WaitKind kind, void* obj)
     {
         Thread* c = sched::current();
+        // BLOCKED before the detach: on_remove reads `state` to tell a park from a
+        // set_prio re-seat, and only a park forfeits the RR slice remainder.
+        c->state = ThreadState::BLOCKED;
         // Detach from the ready list FIRST: the ready list and the wait queues share the
         // TCB link node, so the push below would clobber the links the ready-list removal
         // still has to read.
         sched::detach_current();
-        c->state = ThreadState::BLOCKED;
         c->wait_queue = &q;
         c->wait_kind = kind;
         c->wait_obj = obj;
@@ -87,10 +89,11 @@ namespace kickos
 
     void park_queueless(Thread* c, WaitKind kind, void* obj)
     {
-        // Same ordering rule as wq_block: the ready-list removal reads `link`, so it must
-        // run before anything re-uses that node.
-        sched::detach_current();
+        // Same ordering rule as wq_block: BLOCKED before the detach (on_remove reads it),
+        // and the ready-list removal reads `link`, so it must run before anything re-uses
+        // that node.
         c->state = ThreadState::BLOCKED;
+        sched::detach_current();
         c->wait_queue = nullptr;
         c->wait_kind = kind;
         c->wait_obj = obj;

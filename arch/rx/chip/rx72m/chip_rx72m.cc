@@ -76,6 +76,10 @@ namespace
     constexpr uint32_t CLOCK_POLL_LIMIT = 2000000u;
     constexpr uint32_t CONSOLE_POLL_LIMIT = 1000000u;
 
+    // The kernel console's rate. A userspace driver taking the channel over asks for its
+    // own through kos_uart_config and is told what it actually got.
+    constexpr uint32_t CONSOLE_BAUD = 115200u;
+
     void unlock_registers(bool on)
     {
         if (on)
@@ -152,6 +156,84 @@ namespace
         return true;
     }
 
+    // HOCO frequency, from HOCOCR2.HCFRQ (UM sec.9.2.13 p.364). Readable whatever
+    // HOCOCR.HCSTP says; only the WRITE is gated on the HOCO being stopped.
+    uint32_t hoco_hz()
+    {
+        uint8_t const f = r8(cgc::HOCOCR2) & cgc::HOCOCR2_HCFRQ_MASK;
+        if (f == 0)
+        {
+            return cgc::HOCO_16MHZ;
+        }
+        if (f == 1)
+        {
+            return cgc::HOCO_18MHZ;
+        }
+        if (f == 2)
+        {
+            return cgc::HOCO_20MHZ;
+        }
+        return 0; // 11b is prohibited: no frequency to report
+    }
+
+    // The clock the SCKCR dividers are fed from, read out of the LIVE tree rather than
+    // assumed from what clock_to_pll_240mhz() intended, so a degraded bring-up (or a later
+    // retune) is reflected instead of silently mispriced. Returns 0 for a tree this cannot
+    // describe, which every caller must forward rather than substitute a nominal for.
+    uint32_t clock_source_hz()
+    {
+        uint16_t const sel =
+            (r16(cgc::SCKCR3) >> cgc::SCKCR3_CKSEL_S) & cgc::SCKCR3_CKSEL_MASK;
+        if (sel == cgc::CKSEL_LOCO)
+        {
+            return cgc::LOCO_HZ;
+        }
+        if (sel == cgc::CKSEL_HOCO)
+        {
+            return hoco_hz();
+        }
+        if (sel == cgc::CKSEL_MAIN)
+        {
+            return cgc::MAIN_OSC_HZ;
+        }
+        if (sel == cgc::CKSEL_SUB)
+        {
+            return cgc::SUB_OSC_HZ;
+        }
+        if (sel != cgc::CKSEL_PLL)
+        {
+            return 0; // 101..111 are prohibited encodings
+        }
+        uint16_t const pllcr = r16(cgc::PLLCR);
+        uint32_t in = cgc::MAIN_OSC_HZ;
+        if ((pllcr & cgc::PLLCR_PLLSRCSEL) != 0)
+        {
+            in = hoco_hz();
+        }
+        uint32_t const plidiv = (pllcr & cgc::PLLCR_PLIDIV_MASK) + 1u;
+        uint32_t const stc = (pllcr >> cgc::PLLCR_STC_S) & cgc::PLLCR_STC_MASK;
+        if (in == 0u or plidiv > 3u or stc < cgc::PLLCR_STC_MIN or stc > cgc::PLLCR_STC_MAX)
+        {
+            return 0;
+        }
+        // The multiplier runs in HALF steps, so it is applied as (STC+1)/2 with the divide
+        // last: rounding it to an integer first would drop 500 kHz per PLL input MHz.
+        uint64_t const out = static_cast<uint64_t>(in) * (stc + 1u) / (2u * plidiv);
+        return static_cast<uint32_t>(out);
+    }
+
+    // PCLKB, the SCI and CMTW clock (UM sec.42 preamble p.2144 for the SCI).
+    uint32_t pclkb_hz()
+    {
+        uint32_t const src = clock_source_hz();
+        uint32_t const pckb = (r32(cgc::SCKCR) >> cgc::SCKCR_PCKB_S) & cgc::SCKCR_DIV_MASK;
+        if (src == 0u or pckb > cgc::SCKCR_DIV_MAX)
+        {
+            return 0; // 0111..1111 are prohibited division ratios
+        }
+        return src >> pckb;
+    }
+
     // Enable the 8 KB flash ROM cache (UM sec.64.7.1). Reset auto-invalidates it, so
     // there is no coherency risk today; a future flash self-program must re-invalidate
     // (write ROMCIV=1) before re-enable. Bounded invalidate poll degrades, never hangs.
@@ -179,11 +261,23 @@ namespace
         mpc_pfs_unlock(false);
         r8(port::PORTB_PMR) |= port::PB1 | port::PB0; // PB1,PB0 -> peripheral function
 
-        r8(sci::SCR) = 0;                 // TE/RE off while configuring
-        r8(sci::SMR) = 0;                 // async, 8-bit, no parity, 1 stop, CKS=00
-        r8(sci::SEMR) = sci::SEMR_115200; // BGDM+ABCS
-        r8(sci::BRR) = sci::BRR_115200;
-        // >= 1-bit settle before TE (sec.42 init). Volatile so -Os keeps the wait.
+        // SMR, SCMR, SEMR and BRR are all writable only with TE and RE both 0
+        // (UM sec.42.2.9/12/13/15 notes).
+        r8(sci::SCR) = 0;
+        r8(sci::SCMR) = sci::SCMR_UART;
+
+        // The divisor comes from the LIVE clock tree, so a bring-up that fell back to the
+        // LOCO still lands a usable console instead of a rate off by three orders of
+        // magnitude. A tree pclkb_hz() cannot describe leaves the reset divisor alone.
+        sci::BaudSetting bs;
+        if (sci::baud_select(pclkb_hz(), CONSOLE_BAUD, &bs))
+        {
+            r8(sci::SMR) = bs.cks; // async, 8 data bits, no parity, one stop bit
+            r8(sci::SEMR) = bs.semr;
+            r8(sci::BRR) = bs.brr;
+        }
+        // Volatile so -Os keeps the wait. UM sec.42 requires NO settle here: Fig.42.13
+        // p.2234 has the hardware itself hold TXD high for one frame after TE goes 1.
         for (volatile uint32_t d = 0; d < 10000u;)
         {
             d = d + 1;
@@ -232,7 +326,7 @@ extern "C"
 void arch_init(void)
 {
     unlock_registers(true);
-    bool on_pll = clock_to_pll_240mhz();
+    (void)clock_to_pll_240mhz(); // the landed tree is read back below, not assumed here
     // Release the module stops for the timer + console (UM sec.11 MSTPCR).
     r32(cgc::MSTPCRA) &= ~(cgc::MSTPA_CMTW0 | cgc::MSTPA_CMTW1);
     r32(cgc::MSTPCRB) &= ~cgc::MSTPB_SCI6;
@@ -240,10 +334,19 @@ void arch_init(void)
 
     rom_cache_enable(); // MEMWAIT set above; ROM cache is not PRCR-gated
 
-    if (on_pll)
+    // Read back, not assumed from on_pll: a bring-up that degraded to the LOCO must price
+    // its ticks and its baud at the rate it actually landed on. A tree the derivation
+    // cannot describe leaves both at their reset nominals rather than at zero.
+    uint32_t const src = clock_source_hz();
+    uint32_t const ick = (r32(cgc::SCKCR) >> cgc::SCKCR_ICK_S) & cgc::SCKCR_DIV_MASK;
+    if (src != 0u and ick <= cgc::SCKCR_DIV_MAX)
     {
-        SystemCoreClock = cgc::ICLK_HZ;
-        kickos_rx_timer_hz = cgc::PCLKB_DIV8_HZ;
+        SystemCoreClock = src >> ick;
+    }
+    uint32_t const pclkb = pclkb_hz();
+    if (pclkb != 0u)
+    {
+        kickos_rx_timer_hz = pclkb / 8u; // CMTW input is PCLKB/8
     }
 
     sci6_console_init();
@@ -338,6 +441,27 @@ void kickos_rx_dev_dispatch(void)
                            + static_cast<int>(g * 32u + bit));
         }
     }
+}
+
+// Branch-clock oracle (arch.h): report the clock feeding a peripheral block so a userspace
+// driver derives its own divisor. SCI0..SCI6 run on PCLKB (UM sec.42 preamble p.2144),
+// which is READ OUT OF THE LIVE TREE on every call rather than cached from arch_init: the
+// whole point is that a driver's reported baud tracks the clock the channel is actually on.
+//
+// The SYSTEM block this reads is kernel-reserved (arch_reserved_blocks), so the holder of
+// an SCI window has no way to read the select itself. A block this chip does not model
+// returns 0, which the contract makes the caller refuse on rather than guess.
+//
+// This definition MUST stay in this TU: the member is always anchored (-u g_isr_vector
+// reaches it through startup.S), and a dedicated TU nothing else references would leave the
+// arch/common fallback answering with 0 and no link error at all.
+uint32_t arch_periph_clock_hz(uintptr_t base)
+{
+    if (base != mmap::SCI6)
+    {
+        return 0;
+    }
+    return pclkb_hz();
 }
 
 void arch_console_write(char const* buf, size_t n)

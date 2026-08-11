@@ -163,7 +163,7 @@ namespace
     {
         for (uint32_t i = 0; i < REG_UPDATE_SPIN_MAX; i++)
         {
-            if ((r32(reg::uart::REG_UPDATE) & reg::uart::REG_UPDATE_SYNC) == 0)
+            if ((r32(reg::uart::REG_UPDATE) & reg::uart::REG_UPDATE_BIT) == 0)
             {
                 return;
             }
@@ -547,7 +547,7 @@ void arch_console_reclaim(void)
     r32(reg::uart::SWFC_CONF0) = reg::uart::SWFC_CONF0_IDLE; // FORCE_XOFF stops the transmitter
     r32(reg::uart::RS485_CONF) = 0;                          // RS485 gates TX on a busy receiver
     r32(reg::uart::IDLE_CONF) = reg::uart::IDLE_CONF_DEFAULT; // TX_IDLE_NUM stretches to 1023 bit times
-    r32(reg::uart::REG_UPDATE) = reg::uart::REG_UPDATE_SYNC;
+    r32(reg::uart::REG_UPDATE) = reg::uart::REG_UPDATE_BIT;
 }
 
 // Route + enable a real device line: aim its interrupt-matrix source at the line's CPU
@@ -711,6 +711,60 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     }
     r32(reg::io_mux::gpio(pin)) = func & reg::gpio::PINMUX_IO_MUX_MASK;
     return 0;
+}
+
+// Branch-clock oracle (arch.h): report the function clock feeding a peripheral block so a
+// userspace driver derives its own divisor. On this chip the select AND the divider live in
+// PCR, which is a Rule 7 reserved block, so the holder of a UART window cannot read either
+// and this is the only way it learns its own rate. Every field is read LIVE: a select the
+// ROM or a later bootloader changed is reflected, and nothing here is compiled in.
+//
+// TWO LEAVES CANNOT BE READ BACK, and both answer 0 rather than a guess. RC_FAST_CLK is
+// "17.5 MHz by default ... with adjustable frequency" (TRM section 8.2.3) and the only
+// register naming it, PCR_FOSC_FREQ, is HRO and reads 20; a wrong branch clock silently
+// garbles the wire, so a UART sourced from it has no reportable rate. Select 0 is no clock
+// at all. The crystal IS readable (PCR_CLK_XTAL_FREQ, RO, MHz).
+uint32_t arch_periph_clock_hz(uintptr_t base)
+{
+    if (base != mmap::UART0_BASE)
+    {
+        return 0;
+    }
+    uint32_t const conf = r32(reg::pcr::UART0_SCLK_CONF);
+    if ((conf & reg::pcr::UART0_SCLK_EN) == 0u)
+    {
+        return 0; // the function clock is gated: the block is not counting anything
+    }
+    uint32_t src = 0;
+    uint32_t const sel = (conf >> reg::pcr::UART0_SCLK_SEL_S) & reg::pcr::UART0_SCLK_SEL_MASK;
+    if (sel == reg::pcr::SCLK_SEL_XTAL)
+    {
+        uint32_t const mhz =
+            (r32(reg::pcr::SYSCLK_CONF) >> reg::pcr::CLK_XTAL_FREQ_S) & reg::pcr::CLK_XTAL_FREQ_MASK;
+        src = mhz * 1000000u;
+    }
+    else if (sel == reg::pcr::SCLK_SEL_PLL_F80M)
+    {
+        src = reg::pcr::PLL_F80M_HZ;
+    }
+    if (src == 0u)
+    {
+        return 0;
+    }
+    // The TRM contradicts itself on which of DIV_A and DIV_B is the numerator: section 8.5.1
+    // calls DIV_A the denominator, while the two chapters that actually write the equation
+    // for an identical PCR divider (I2C section 29.4.1, RMT section 37.3.3) put DIV_A over
+    // DIV_B. With both fields zero the two readings agree and the divisor is DIV_NUM + 1; a
+    // non-zero fraction is refused rather than resolved from the wrong one.
+    uint32_t const div_a = (conf >> reg::pcr::UART0_SCLK_DIV_A_S) & reg::pcr::UART0_SCLK_DIV_A_MASK;
+    uint32_t const div_b = (conf >> reg::pcr::UART0_SCLK_DIV_B_S) & reg::pcr::UART0_SCLK_DIV_B_MASK;
+    if (div_a != 0u or div_b != 0u)
+    {
+        return 0;
+    }
+    uint32_t const div_num =
+        (conf >> reg::pcr::UART0_SCLK_DIV_NUM_S) & reg::pcr::UART0_SCLK_DIV_NUM_MASK;
+    return src / (div_num + 1u);
 }
 
 // HP_APM background permit for security mode REE0, which is what U-mode is by reset

@@ -483,10 +483,13 @@ The corrected bring-up sequence, all of it in root's `start()`:
 Steps 2-3 are the *only* new syscalls in the sequence. Step 1 is unchanged. No new kernel
 handover primitive is needed -- which is the payoff of Decision 1.
 
-### 3.3 Delegation: extend `spawn_unprivileged`, do not invent
+### 3.3 Delegation: extend the spawn helper, do not invent
 
-`user/include/kickos/sys/driver_bringup.h`'s `spawn_unprivileged` grants exactly
-`{ep, KOS_CAP_WAIT}` plus one MMIO window. It needs two extensions, both plumbing over
+> Superseded by M4.8.1: the per-thread cap list argued for here is now descriptor data and the
+> helper is `user/include/kickos/sys/driver_service.h`'s `spawn_one`. The shape below is what
+> landed; only its spelling changed.
+
+The helper of the day granted exactly `{ep, KOS_CAP_WAIT}` plus one MMIO window. It needs two extensions, both plumbing over
 machinery that already exists (spawn already delegates a cap list into child indices from
 `KOS_SPAWN_DELEGATED_CAP0 = 1`):
 
@@ -515,8 +518,9 @@ struct kos_driver_spawn
 int spawn_driver(struct kos_driver_spawn const* p);
 ```
 
-`spawn_unprivileged` stays as the one-cap convenience wrapper so the two landed SPI services
-(`system/init/frdmk64f/service_list.cc`, `service_list_xmc4800relax.cc`) do not churn.
+The one-cap helper stayed beside it so the two landed SPI services
+(`system/init/frdmk64f/service_list.cc`, `service_list_xmc4800relax.cc`) did not churn; M4.8.1
+retired it, and both services became descriptors instead.
 
 **Corrected at implementation time: the two threads CANNOT both hold the window.** An earlier
 draft here claimed they could -- that a spawn carrying MMIO takes a fresh domain slot

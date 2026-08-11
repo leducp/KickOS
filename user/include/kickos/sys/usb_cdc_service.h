@@ -50,12 +50,14 @@
 
 #include <kickos/sys/byte_ring.h>
 #include <kickos/sys/bytes.h> // mem_copy, mem_zero
+#include <kickos/sys/driver_service.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
 #include <kickos/sys/usb_cdc.h>
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
 
 namespace kickos
 {
@@ -114,6 +116,11 @@ inline void shared_init(Shared* s)
     kos_byte_ring_init(&s->tx, s->tx_buf, KOS_USB_TX_SIZE);
     kos_byte_ring_init(&s->rx, s->rx_buf, KOS_USB_RX_SIZE);
 }
+
+// The offset a generic bring-up polls the readiness latch through, it being unable to name
+// Shared. Never write the offset as a literal in a descriptor: the latch must be the volatile
+// uint32_t this expression locates, and `configured` sits beside it.
+constexpr uint16_t KOS_USB_READY_OFFSET = static_cast<uint16_t>(offsetof(Shared, ready));
 
 // ---------------------------------------------------------------------------------
 // The class layer. Owns the whole USB protocol; the service thread never sees it.
@@ -625,7 +632,7 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
             sh->stats.irq_spurious++;
         }
     }
-    kos_exit(0);
+    exit(0);
 }
 
 // ---------------------------------------------------------------------------------
@@ -770,7 +777,21 @@ inline void console_serve_loop(Shared* sh)
         // in-flight loss drop_in_flight() counts.
         sh->stats.tx_dropped += static_cast<uint32_t>(n) - took;
     }
-    kos_exit(0);
+    exit(0);
+}
+
+// ---------------------------------------------------------------------------------
+// The class-side half of the descriptor check. The generic validator cannot know that the
+// loops above read KOS_USB_CAP_EP == 1, KOS_USB_CAP_DOORBELL == 2 and KOS_USB_CAP_LINE ==
+// 1, so a descriptor that grants the right caps in the wrong ORDER passes valid() and
+// stalls silently.
+//
+// valid() only RANGE-checks ready_offset, so a literal there can land on a field already
+// non-zero when the poll first reads it, which turns the barrier into a silent no-op.
+constexpr bool desc_ok(driver::Descriptor const& d)
+{
+    return driver::ring_doorbell_shape_ok(d, KOS_USB_READY_OFFSET,
+                                          static_cast<uint32_t>(KOS_USB_BLOCK_SIZE));
 }
 
 } // namespace usb

@@ -237,7 +237,8 @@ endfunction()
 # ---------------------------------------------------------------------------
 # kickos_add_application(<name> SOURCES <src...> BOARD <board> [FULL_CXX]
 #                        [CAPABILITIES <n>] [CAPABILITIES_OPTIONAL <m>]
-#                        [CAPABILITIES_INBOUND_REPLY <r>])
+#                        [CAPABILITIES_INBOUND_REPLY <r>]
+#                        [SPI_BACKEND <target>])
 #   Links the app against the KickOS component libraries and emits the image.
 #   For sim this is a runnable host ELF whose entry (host main) lives in the
 #   sim arch backend; the app must define kickos_app_main().
@@ -263,6 +264,18 @@ endfunction()
 #   PRIVATE kickos) [or kickos_cxx], kickos_emit_image on MCU. This helper exists
 #   for the in-tree fleet; a consumer may use it, but nothing needs it.
 #
+#   SPI_BACKEND names the CMake target providing this executable's implementation of the
+#   SPI class <kickos/driver/spi.h>: a per-chip local engine (kickos_spi_xmcssc,
+#   kickos_spi_k64dspi) or the chip-agnostic kickos_spi_proxy. Target-name-valued and
+#   fail-loud, like KICKOS_SERVICE_LIST and KICKOS_INIT_PROVIDER.
+#   PER CONSUMER TARGET, not per build directory: which chip is a board fact, but local
+#   versus remote is a system-composition choice, and two executables in one tree may
+#   legitimately differ. It is a per-target keyword rather than a global knob because the
+#   backend archives are kept OUT of the shared kickos link group, so nothing else in the
+#   image decides it. Exactly ONE backend per executable: they define the same four symbols,
+#   so a second one is a duplicate definition rather than a choice, which is also why a
+#   service driver in the same image keeps its engine copy under private symbols.
+#
 #   FULL_CXX (opt-in, docs/design-kickcat-k64f.md "Libc strategy"): compile this
 #   app's C++ TUs with -fexceptions/-frtti (NOT the freestanding clamp) and link
 #   the toolchain's libstdc++/libsupc++ over newlib, so exceptions + STL + RTTI
@@ -271,14 +284,14 @@ endfunction()
 # ---------------------------------------------------------------------------
 function(kickos_add_application name)
   cmake_parse_arguments(APP "FULL_CXX"
-    "BOARD;CAPABILITIES;CAPABILITIES_OPTIONAL;CAPABILITIES_INBOUND_REPLY"
+    "BOARD;CAPABILITIES;CAPABILITIES_OPTIONAL;CAPABILITIES_INBOUND_REPLY;SPI_BACKEND"
     "SOURCES" ${ARGN})
   # A misspelled keyword would otherwise fall through the DEFINED guards below and record NO
   # declaration at all, leaving the app on the undeclared default with nothing said.
   if(APP_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "kickos_add_application(${name}): unrecognised argument(s) "
       "'${APP_UNPARSED_ARGUMENTS}'. Keywords are FULL_CXX, BOARD, SOURCES, CAPABILITIES, "
-      "CAPABILITIES_OPTIONAL, CAPABILITIES_INBOUND_REPLY.")
+      "CAPABILITIES_OPTIONAL, CAPABILITIES_INBOUND_REPLY, SPI_BACKEND.")
   endif()
   # cmake_parse_arguments leaves the variable UNDEFINED for a keyword given no value, and the
   # unquoted ${ARGN} above drops an empty value to the same shape, so the DEFINED guards below
@@ -343,6 +356,17 @@ function(kickos_add_application name)
   # libs get the flag (kickos_apply_freestanding). See docs/design-cxx-under-mpu.md.
   # The OS-agnostic entry glue (-Dmain / -include app.h) rides each leaf's core, so
   # the plain add_executable path gets it too. FULL_CXX picks the full-C++ leaf.
+  # Ahead of the posture leaf, so the selected backend's archive precedes the rescan group
+  # on the link line and a group member that ever referenced a class symbol would resolve
+  # against the executable's own choice rather than pull a second one.
+  if(APP_SPI_BACKEND)
+    if(NOT TARGET ${APP_SPI_BACKEND})
+      message(FATAL_ERROR "kickos_add_application(${name}): SPI_BACKEND='${APP_SPI_BACKEND}' "
+        "is not a CMake target. Name a target defining the <kickos/driver/spi.h> class: a "
+        "per-chip engine (kickos_spi_xmcssc, kickos_spi_k64dspi) or kickos_spi_proxy.")
+    endif()
+    target_link_libraries(${name} PRIVATE ${APP_SPI_BACKEND})
+  endif()
   if(APP_FULL_CXX)
     target_link_libraries(${name} PRIVATE kickos_cxx)
   else()

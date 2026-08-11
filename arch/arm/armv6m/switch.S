@@ -49,6 +49,14 @@ PendSV_Handler:
     ands    r0, r1
     str     r0, [r3, #4]            /* outgoing->npriv */
 1:
+    /* g_arch_next and the deferred MPU stash are ONE pair, written together under the
+       kernel lock; PendSV must consume them as one. A device IRQ preempting between the
+       two (every v6-M device line sits at reset priority 0, above PendSV) reschedules
+       and replaces BOTH, so an unmasked PendSV can restore one thread's PSP and then
+       program the other thread's regions -> the resumed thread faults on its own stack.
+       PRIMASK masks PendSV itself, so entry here implies PRIMASK==0 and the cpsie below
+       restores the entry state exactly. */
+    cpsid   i
     ldr     r2, =g_arch_current
     ldr     r1, =g_arch_next
     ldr     r1, [r1]                /* incoming ctx* */
@@ -89,6 +97,7 @@ PendSV_Handler:
        r0-r3/r12 are reloaded from the HW frame on exception return; lr is rebuilt
        right below. */
     bl      kickos_arch_mpu_commit
+    cpsie   i                       /* pair consumed; never resume a thread masked */
     ldr     r0, =0xFFFFFFFD         /* EXC_RETURN: thread mode, PSP */
     mov     lr, r0
     bx      lr

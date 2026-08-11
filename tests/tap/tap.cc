@@ -43,6 +43,9 @@ namespace tap
         Verdict g_verdict = Verdict::PASS;
         char g_msg[192];
 
+        // Repair for the failing path, or null. Never runs on a passing test.
+        TestFn g_after_failure = nullptr;
+
         // The one writer for the whole stream. Same policy as libc's _write
         // (user/src/newlib_stubs.cc) and <kickos/sys/emit.h>: try this thread's stdout
         // cap at index 0, fall back to the kernel debug console for the remainder when
@@ -156,6 +159,8 @@ namespace tap
         emitf("# %s\n", b);
     }
 
+    void set_after_failure(TestFn fn) { g_after_failure = fn; }
+
     int run_all()
     {
         int plan = g_count;
@@ -184,6 +189,10 @@ namespace tap
             {
                 failed++;
                 emitf("not ok %d - %s # %s\n", i + 1, g_tests[i].name, g_msg);
+                if (g_after_failure != nullptr)
+                {
+                    g_after_failure();
+                }
             }
             else if (g_verdict == Verdict::SKIP)
             {

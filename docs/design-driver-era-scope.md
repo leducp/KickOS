@@ -532,12 +532,16 @@ vendor's register model, clock tree or pin scheme. **The falsifier**: a driver t
 one vendor and then forces an API change to land on the next has proven the API leaked a vendor
 assumption. The matrix is how that leak gets caught.
 
-The bus API's first neutrality check is already passed on two of the four matrix boards at once.
-XMC4800 (USIC-SSC, hardware MSLS/SELO0 CS via `PCR.FEM`) and FRDM-K64F (DSPI, driver-owned GPIO CS via
-direct `PSOR`/`PCOR`) run the SAME wire and the SAME chip-neutral `spi_client` wrapper, so CS policy
-and the controller register model stayed class-internal and the wire named neither
-(`reference/bus-service.md`). The RX72M (RXv3/RX-MPU) and ESP32-C6 (PMP) legs, and the I2C driver
-body, extend the check across the remaining axes.
+The bus API's first neutrality check runs on two of the four matrix boards at once, and it is
+PARTLY passed. XMC4800 (USIC-SSC, hardware MSLS/SELO0 CS via `PCR.FEM`) and FRDM-K64F (DSPI,
+driver-owned GPIO CS via direct `PSOR`/`PCOR`) run the SAME wire and the SAME class,
+`<kickos/driver/spi.h>`, so the controller register model stayed engine-internal and the wire
+names none of it (`reference/bus-service.md`). What did NOT come out neutral is `cs_policy`: the
+two engines accept DISJOINT subsets of it (`KOS_BUS_CS_HW` on the XMC, `KOS_BUS_CS_GPIO` on the
+K64F, each refusing the other with `-KOS_ENOTSUP`), so a consumer that moves between them must
+change that one field. That is the leak the matrix exists to catch, recorded rather than papered
+over. The RX72M (RXv3/RX-MPU) and ESP32-C6 (PMP) legs, and the I2C driver body, extend the check
+across the remaining axes.
 
 ### 7.1 The four-board neutrality matrix
 Four easy-to-flash boards, chosen for DIVERSITY across vendor AND arch/MPU family at once.

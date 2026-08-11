@@ -120,7 +120,7 @@ printf '%s\n' "$OUT"
 
 has '\[simcon\] driver dying during bring-up' \
   || fail "case 2: the driver never reached its bring-up death"
-has '\[simcon\] ERROR: driver died during bring-up' \
+has '\[simcon\] ERROR: a driver thread died during bring-up' \
   || fail "case 2: the failed handover was NOT reported -- either the probe missed the dead driver, or the console never came back to report on"
 # The app must not have run at all: a nonzero service-list result aborts init before it.
 if has '\[drvdeath\]'; then

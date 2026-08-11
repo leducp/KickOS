@@ -3,10 +3,12 @@
 
 The exact wire contract a client and an unprivileged bus driver exchange 1:1 over a
 `kos_call` endpoint (`ipc-call-reply.md` is the transport). Code source of truth:
-`user/include/kickos/sys/bus.h` (the wire ABI), `user/include/kickos/driver/spi_client.h`
-+ `user/lib/spi_client/spi_client.cc` (the neutral client wrapper),
+`user/include/kickos/sys/bus.h` (the wire ABI), `user/include/kickos/driver/spi.h` (the SPI
+CLASS this protocol serialises) + `user/lib/spi_proxy/spi_proxy.cc` (the proxy backend of that
+class), `user/include/kickos/sys/spi_service.h` (the transport),
 `system/driver/mk64f/k64dspi/k64dspi.cc` + `system/driver/xmc4800/xmcssc/xmcssc.cc` (the two
-reference SPI services). If a page and the code disagree, the page is the bug.
+reference SPI services) and their engines `spi_dspi.cc` / `spi_usic.cc`. If a page and the code
+disagree, the page is the bug.
 
 ## Layering
 
@@ -178,9 +180,11 @@ driver thread is UNPRIVILEGED:
 - **XMC4800 USIC0-CH1** -- word size, bit order and the CS framing are in `SCTR`/`PCR` and
   are per-device. Rate (`FDR`, `BRG`) and CPOL/CPHA (`BRG.SCLKCFG`) are NOT: those registers
   are write-privileged-only at the bus and an unprivileged store to them is silently
-  discarded (measured on silicon -- `../design-unprivileged-root.md` section 9,
-  `user/apps/xmc4800-relax/pvprobe`). The service fixes them at bring-up, `xmcssc`
-  deliberately discards `cfg.hz`, and every device on that bus shares one rate and mode 0.
+  discarded (measured on silicon: `../design-unprivileged-root.md` section 9,
+  `user/apps/xmc4800-relax/pvprobe`). `kos_spi_bus_open` fixes them, and every device on that
+  bus shares one rate and mode 0, so the engine REFUSES (`-KOS_ENOTSUP`) any non-zero `cfg.hz`
+  and any `CPOL`/`CPHA` bit rather than dropping them. `cfg.hz == 0` asks for the rate the
+  channel is already programmed to, which it reads back out of FDR + BRG.
 
 Re-applying costs 2 register writes on XMC and 3 on K64F per transfer -- orders of magnitude
 under one SPI byte time -- so no dirty-tracking of the live slot is worth its state.
@@ -195,54 +199,59 @@ driver dies). The service loop is: `kos_recv` a request with a `kos_recv_info`; 
 `reply_cap < 0` it is a plain send (not this protocol) -- ignore; otherwise run the class
 transaction under the MMIO grant and `kos_reply` a `kos_bus_rsp`.
 
-## The shared serve loop (`<kickos/sys/spi_service.h>`)
+## The transport (`<kickos/sys/spi_service.h>`)
 
-A concrete SPI service supplies only its silicon; the recv / parse / reply choreography is
-shared and templated over the chip's `Bus` class. `kickos::spi::serve_loop<Bus>(bus)` blocks on
-the delegated WAIT recv cap (`KOS_SPAWN_DELEGATED_CAP0`), drops plain sends (no reply cap), and
-hands every call to `serve_one`, which parses the `kos_bus_req` / `seg` / `cfg` framing, enforces
-the inline budget, routes `req.device` to its slot, and ALWAYS consumes the reply cap (the
-invariant above) -- returning when the endpoint dies (`n < 0` -> `EPIPE`) so the driver thread can
-exit and let root respawn. The shared layer owns the slot store (`kickos::spi::SlotTable<Bus>`, a
-`serve_loop` local, so per-slot state costs driver STACK and no `.bss`); the `Bus` owns the
-silicon. The `Bus` supplies a nested profile type and exactly the two members the template calls
-(the implicit interface):
+The service is a THIN TRANSPORT over the SPI class and there is no engine interface and no
+template: `kickos::spi::serve_loop(bus)` blocks on the delegated WAIT recv cap
+(`KOS_SPAWN_DELEGATED_CAP0`), drops plain sends (no reply cap), and hands every call to
+`serve_one`, which parses the `kos_bus_req` / `seg` / `cfg` framing, enforces the inline budget,
+routes `req.device` to its slot, calls the class, and ALWAYS consumes the reply cap (the
+invariant above), returning when the endpoint dies (`n < 0` -> `EPIPE`) so the driver thread can
+exit and let root respawn. It owns the slot store (`kickos::spi::SlotTable`, a `serve_loop`
+local, so per-slot state costs driver STACK and no `.bss`) and nothing else.
 
-    struct Profile;                                                    // POD chip words
-    uint32_t fold(struct kos_bus_cfg const& cfg, Profile& out);        // -> achieved hz
-    void     transfer(Profile const& p, unsigned char* buf, size_t len); // apply, then clock in place
-
-The profile is an ARGUMENT of `transfer`, not a separate `select(slot)` call: with one live
-profile register set, a transfer that did not name its profile would silently clock on the
-previous device's, which is exactly the bug the slots fix. `Bus` is defined in an anonymous
-namespace, so each instantiation is TU-local (internal linkage, no COMDAT). `k64dspi` and
-`xmcssc` are the two reference services; a new bus driver writes only its `Bus` and calls
+The slot store holds one `kos_spi_device` HANDLE per slot, and every transfer names its handle:
+with one live profile register set, a transfer that did not name its device would silently clock
+on the previous one's profile, which is exactly the bug the slots fix. The class it calls is
+chosen by the LINK, so the driver thread runs the same engine a local consumer of the same bus
+would run; the driver's own copy carries private symbols (its `CMakeLists.txt`) so a proxy
+consumer in the same image is not a duplicate definition. `k64dspi` and `xmcssc` are the two
+reference services; a new bus driver writes an engine against `<kickos/driver/spi.h>` and calls
 `serve_loop`.
 
-## The spawn helper (`<kickos/sys/driver_bringup.h>`)
+## The bring-up (`<kickos/sys/driver_service.h>`)
 
-`kickos::driver::spawn_unprivileged(entry, win_base, win_size, name, prio, ep, fail_tag)` is the
-shared tail of every unprivileged-driver bring-up: it spawns the driver thread unprivileged with
-its granted MMIO window (passed as BOTH the entry arg value and the grant) and a WAIT-only recv
-cap on the service endpoint at child cap index 1, printing `fail_tag` and closing the endpoint on
-a spawn failure. The privileged, per-class bring-up (pinmux, clock, register init) stays in the
-caller; only the identical 14-arg `kos::thread::spawn` shape is factored here.
+A bus service's whole bring-up is `kickos::driver::bring_up(desc, cfg, &g_ep)` over a
+`constexpr Descriptor` authored in the driver's own TU, which is also the only TU that sees the
+chip's register directory. It creates the endpoint, claims the descriptor's IRQ lines, and spawns
+each thread with its own MMIO window, memory grant and cap list, `caps[i]` landing at child cap
+index `KOS_SPAWN_DELEGATED_CAP0 + i`; every failure unwinds the steps already taken. A bus takes
+the `KOS_DRV_EP_RETAIN` posture: root keeps the full-rights cap so the app can delegate a narrowed
+copy per client, which also means root never stops being a receiver, so NO failure path in the
+driver thread may `exit()` under it. The privileged, per-class bring-up (pinmux, clock, register
+init) stays in the caller.
 
-## The client wrapper (`<kickos/driver/spi_client.h>`)
+## The client side is the CLASS, not a wrapper (`<kickos/driver/spi.h>`)
 
-Chip-neutral -- no chip register, no CS knowledge, no MMIO; the same object links against
-any SPI service. A client holds a `SIGNAL`-bearing cap on the service endpoint.
+There is no separate client API. A client calls the SPI class, and its `SPI_BACKEND` is
+`kickos_spi_proxy`, whose four bodies marshal onto this protocol. The mapping IS the 1:1 rule:
 
-    long spi_transfer(int ep, uint8_t device, void const* tx, void* rx, size_t len); // 1 segment
-    long spi_transact(int ep, uint8_t device, void const* wr, size_t wlen,           // write then read,
-                      void* rd, size_t rlen);                                        //   one CS bracket
-    int  spi_config(int ep, uint8_t device, struct kos_bus_cfg const* cfg, uint32_t* achieved_hz);
+| class call | request |
+|---|---|
+| `kos_spi_bus_open` / `kos_spi_bus_close` | nothing on the wire: the peripheral's lifecycle belongs to whoever holds its window grant, and the driver thread performs it before `serve_loop` |
+| `kos_spi_device_open` | `KOS_BUS_OP_CONFIG`, replying the achieved bit clock |
+| `kos_spi_transfer` | `KOS_BUS_OP_XFER` |
 
-`device` is the slot each call addresses; `spi_config` must run once per slot before any
-transfer to it. `spi_transfer`/`spi_transact` return rx bytes (`>= 0`) or a negative
-`-KOS_E*` (a `kos_call` failure OR the service `status`). `spi_config` returns 0 or a
-negative code and writes the driver's rounded-down bit clock to `*achieved_hz` when
-non-NULL.
+The wire has exactly those two ops and the class exactly those four calls, so neither side can
+express something the other cannot. `kos_bus_req.device` is the slot, which is
+`kos_spi_device_config.slot`; a transfer naming a slot no `CONFIG` opened is refused. A client
+holds a `SIGNAL`-bearing cap on the service endpoint; any thread may call, root included, and a
+caller parked in a call has no timeout (`ipc-call-reply.md`).
+
+`KOS_SPI_XFER_MAX` (212 B) is this protocol's inline budget stated in the class header, and BOTH
+the proxy and the local engines refuse a longer transfer. That is what keeps an API written
+against the class serialisable: an SPI transaction cannot be resumed after its chip select has
+been released, so there is no short-count answer to give.
 
 ## K64F DSPI0 -- the register map behind the reference service
 
@@ -302,15 +311,15 @@ on IRQ 26; the IRQ row above is the silicon fact, not a claim that this service 
 
 ## Neutrality
 
-Nothing in the wire names a FIFO depth, a CTAR, a PCS count, or a shift unit -- those are
-all class-internal. The one deliberate abstraction leak is `cs_index` (a small integer
-naming a controller CS line or a driver pin slot). Both reference drivers **accept it and
-do not interpret it**: `k64dspi` drives one hardwired GPIO CS (`PTC4`) for every slot and
-`xmcssc` drives one fixed `SELO0`, so neither bounds-checks the field and neither refuses
-an out-of-range value. A driver with more than one CS line has to read and bound it; until
-one exists, two slots configured with different `cs_index` values share one physical CS.
-See `../design-driver-era-scope.md` (the neutrality matrix) for how the same contract lands
-on DSPI / USIC / PL022 / C6.
+Nothing in the wire names a FIFO depth, a CTAR, a PCS count, or a shift unit: those are all
+engine-internal. The abstraction leaks are `cs_index` and `cs_policy`, and both are REFUSED
+rather than interpreted loosely. `k64dspi` drives one hardwired GPIO CS (`PTC4`) and `xmcssc`
+one fixed `SELO0`, so each accepts `cs_index == 0` only and answers `-KOS_ENOTSUP` otherwise; a
+driver with more than one CS line reads and bounds it. `cs_policy` is the real leak: the two
+engines accept DISJOINT subsets of it (`KOS_BUS_CS_HW` on the XMC, `KOS_BUS_CS_GPIO` on the
+K64F, each refusing the other with `-KOS_ENOTSUP`), so a consumer moving between them changes
+that one field. Recorded rather than papered over: see `../design-driver-era-scope.md` (the
+neutrality matrix) for how the same contract lands on DSPI / USIC / PL022 / C6.
 
 ## Cross-references
 

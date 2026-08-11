@@ -60,6 +60,14 @@ PendSV_Handler:
     and     r0, r0, #1              /* privilege (nPRIV): a thread blocked mid- */
     str     r0, [r2, #4]            /* syscall is privileged and must resume so */
 1:
+    /* g_arch_next and the deferred MPU stash are ONE pair, written together under the
+       kernel lock; PendSV must consume them as one. A device IRQ (PRIO_DEVICE, above
+       PRIO_PENDSV) preempting between the two reschedules and replaces BOTH, so an
+       unmasked PendSV can restore one thread's PSP and then program the other thread's
+       regions -> the resumed thread faults on its own stack. PRIMASK masks PendSV
+       itself, so entry here implies PRIMASK==0 and the cpsie below restores the entry
+       state exactly; the kernel lock uses BASEPRI and is untouched by this. */
+    cpsid   i
     ldr     r1, =g_arch_next
     ldr     r1, [r1]                /* incoming ctx* */
     str     r1, [r3]                /* g_arch_current = incoming */
@@ -119,6 +127,7 @@ PendSV_Handler:
     push    {r0, lr}
     bl      kickos_arch_mpu_commit
     pop     {r0, lr}
+    cpsie   i                       /* pair consumed; never resume a thread masked */
     bx      lr                      /* EXC_RETURN -> resume incoming on PSP */
 
 /* ------------------------------------------------------------------------- */

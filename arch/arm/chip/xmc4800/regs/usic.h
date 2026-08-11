@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// XMC4800 USIC channel registers + bit fields, including the ASC (UART) and
-// SSC (SPI) mode layers. Clean-room from the XMC4700/XMC4800 Reference Manual
-// (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source. "RM p.NN" are the
-// manual's printed pages. A USIC channel is addressed by base (see mmap.h) +
-// the offsets below.
+// XMC4800 USIC channel registers + bit fields, ASC (UART) and SSC (SPI) mode
+// layers. Clean-room from the XMC4700/XMC4800 Reference Manual (V1.3, 2016-07);
+// no XMCLib/DAVE/CMSIS vendor source. "RM p.NN" are the manual's printed pages.
 
 #ifndef KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_USIC_H
 #define KICKOS_ARCH_ARM_CHIP_XMC4800_REGS_USIC_H
@@ -16,7 +14,7 @@
 
 namespace kickos::xmc::reg::usic
 {
-    // Console channel (Relax Kit VCOM): USIC0 channel 0. The SSC (SPI) drivers
+    // Console channel (Relax Kit VCOM) is USIC0 channel 0; the SSC (SPI) drivers
     // use the sibling channel 1.
     constexpr uintptr_t U0C0_BASE = mmap::USIC0_CH0_BASE;
     constexpr uintptr_t U0C1_BASE = mmap::USIC0_CH1_BASE;
@@ -67,9 +65,19 @@ namespace kickos::xmc::reg::usic
     constexpr uint32_t BRG_PCTQ_SHIFT = 8;  // [9:8]
     constexpr uint32_t BRG_DCTQ_SHIFT = 10; // [14:10]
     constexpr uint32_t BRG_PDIV_SHIFT = 16; // [25:16]
-    // BRG bits 2, 5, 15 and [27:26] are the register's only reserved bits
-    // (RM p.18-181, type r, "Read as 0; should be written with 0"). Every other bit
-    // belongs to a writable field.
+    constexpr uint32_t BRG_PCTQ_MASK = 0x3u << BRG_PCTQ_SHIFT;
+    constexpr uint32_t BRG_DCTQ_MASK = 0x1Fu << BRG_DCTQ_SHIFT;
+    constexpr uint32_t BRG_PDIV_MASK = 0x3FFu << BRG_PDIV_SHIFT;
+    // The three divider-chain selects (RM p.18-180..181): CLKSEL[1:0] picks the baud source,
+    // PPPEN(4) inserts the fPIN/2 stage, CTQSEL[7:6] picks fCTQIN. The ASC rate formula
+    // RM eq.18.6 holds ONLY while all three are 0, so software recovering a rate from
+    // PDIV/PCTQ/DCTQ must check them first or report a rate off by a factor of two or four.
+    constexpr uint32_t BRG_CLKSEL_MASK = 0x3u << 0;
+    constexpr uint32_t BRG_PPPEN = 1u << 4;
+    constexpr uint32_t BRG_CTQSEL_MASK = 0x3u << 6;
+    constexpr uint32_t BRG_CHAIN_EQ186_MASK = BRG_CLKSEL_MASK | BRG_PPPEN | BRG_CTQSEL_MASK;
+    // BRG bits 2, 5, 15 and [27:26] are the register's only reserved bits (RM p.18-181,
+    // type r, "Read as 0; should be written with 0").
     constexpr uint32_t BRG_RESERVED_MASK = (1u << 2) | (1u << 5) | (1u << 15) | (0x3u << 26);
 
     // DXnCR (RM p.18-173): DSEL[2:0] selects the input line DXnA..DXnG.
@@ -89,8 +97,12 @@ namespace kickos::xmc::reg::usic
     constexpr uint32_t INPR_TBINP_SHIFT = 4;
     constexpr uint32_t INPR_TBINP_MASK = 0x7u << 4;
 
-    // PSR.BUSY (RM p.18-70): transfer in progress. With PCR.TSTEN=1 it reflects
-    // true TX end-of-frame, unlike TCSR.TDV which clears one frame early.
+    // PSR.BUSY (RM 18.3.3.16, p.18-65; field p.18-71): set from the start-of-frame bit to the
+    // end of the LAST STOP BIT. Transmit status reaches it only with PCR.TSTEN=1 and receive
+    // status only with PCR.RSTEN=1; with both clear the bit never moves.
+    //
+    // BUSY IS NOT SUFFICIENT ALONE for "drained": its window STARTS at the start bit, so a
+    // word sitting in TBUF with TCSR.TDV=1 that has not begun shifting reads BUSY=0.
     constexpr uint32_t PSR_BUSY = 1u << 9;
 
     // RBUFSR (RM p.18-204): RDV0/RDV1 "Receive Data Valid"; RBUF.DSR[15:0] word.
@@ -115,6 +127,8 @@ namespace kickos::xmc::reg::usic
     constexpr uint32_t SCTR_WLE_8 = 7u << 24;
 
     // TCSR (RM p.18-186): TDEN[11:10]=01B start when TDV=1; TDSSM(8)=1 single-shot.
+    // With TDSSM=0 loading the shift register does not clear TDV (RM 18.3.3.11, p.18-64), so
+    // TDV cannot mean "drained" in that configuration.
     constexpr uint32_t TCSR_TDEN_TDV = 0x1u << 10;
     constexpr uint32_t TCSR_TDSSM = 1u << 8;
 
@@ -138,14 +152,10 @@ namespace kickos::xmc::reg::usic
     constexpr uint32_t DX0_DSEL_B = 0x1u;
 
     // ---- SSC (SPI) mode field constants --------------------------------------
-    // Shared by the XMC SSC users: system/driver/xmc4800/xmcssc and
-    // user/apps/xmc4800-relax/{xmcspi,xmccshold}. Only atomic offsets/bits live here; each
-    // driver assembles its own PCR/TCSR/PSCR write masks from these (mechanism, not policy).
+    // Users: system/driver/xmc4800/xmcssc and user/apps/xmc4800-relax/{xmcspi,xmccshold}.
 
-    // Fixed 72 MHz SSC baud profile (fCPU=144 MHz), reused verbatim by all SSC
-    // users: FDR fractional mode (DM=10B, FDR_DM_FRACTIONAL above) STEP=367; BRG
-    // PDIV+1=14, PCTQ+1=1, DCTQ+1=16 (RM eq.18.8; RM p.18-178 / p.18-179). The
-    // exact rate is immaterial over an on-chip loopback, only that the clock runs.
+    // 72 MHz SSC baud profile (fCPU=144 MHz): FDR fractional mode (DM=10B) STEP=367; BRG
+    // PDIV+1=14, PCTQ+1=1, DCTQ+1=16 (RM eq.18.8; RM p.18-178 / p.18-179).
     constexpr uint32_t FDR_STEP_367 = 367u;
     constexpr uint32_t BRG_PDIV_13 = 13u << 16; // PDIV+1 = 14
     constexpr uint32_t BRG_DCTQ_15 = 15u << 10; // DCTQ+1 = 16
@@ -153,13 +163,11 @@ namespace kickos::xmc::reg::usic
 
     // SCTR (RM p.18-183): SDIR(0)=1 MSB-first (SPI bit order); FLE[21:16]=63 (0x3F)
     // leaves the frame length to the software TCSR.SOF/EOF markers (RM 18.4.3.6).
-    // SCTR_TRM_ACTIVE / SCTR_WLE_8 / SCTR_FLE_8 are shared with the ASC layer above.
     constexpr uint32_t SCTR_SDIR_MSB = 1u << 0;
     constexpr uint32_t SCTR_FLE_63 = 0x3Fu << 16;
 
     // TCSR (RM p.18-186..189): SOF(5)/EOF(6) mark the TBUF word as FIRST/LAST of a
-    // software-governed frame (sampled when TDV goes valid). TCSR_TDEN_TDV /
-    // TCSR_TDSSM are shared with the ASC layer above.
+    // software-governed frame, sampled when TDV goes valid.
     constexpr uint32_t TCSR_SOF = 1u << 5;
     constexpr uint32_t TCSR_EOF = 1u << 6;
 
@@ -207,8 +215,8 @@ namespace kickos::xmc::reg::usic
     constexpr uint32_t PSCR_CAIF = 1u << 15;
 
     // ---- Precomputed baud-generator parameters (raw register field values) ----
-    // No runtime solver: a new baud is a documented hand-calc of the RM formula
-    // fASC = fPERIPH*STEP/1024 / ((PDIV+1)*(PCTQ+1)*(DCTQ+1)) (RM eq.18.6).
+    // A new baud is a hand-calc of fASC = fPERIPH*STEP/1024 / ((PDIV+1)*(PCTQ+1)*(DCTQ+1))
+    // (RM eq.18.6); there is no runtime solver.
     struct Baud
     {
         uint16_t step; // FDR.STEP[9:0]

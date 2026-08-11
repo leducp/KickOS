@@ -45,6 +45,13 @@ namespace tap
     // Emit a free-form TAP diagnostic (`# <text>`) on the harness's own route.
     void diag(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
+    // Register a repair to run after a test that FAILED, before the next one starts. A
+    // failing TAP_CHECK RETURNS mid-test, so a suite sharing state across tests strands
+    // whatever the abandoned test had not consumed, and the next test reads it as its own:
+    // one real failure is then reported as several. Runs on the failing path ONLY. Call
+    // before run_all(); one hook, last writer wins.
+    void set_after_failure(TestFn fn);
+
     // Run every registered test in order, emit TAP, and return the number that
     // FAILED (0 == all passed). Skips and partials are counted but are not failures;
     // the per-board lists of ALLOWED ones, by name, live in the CTest gate

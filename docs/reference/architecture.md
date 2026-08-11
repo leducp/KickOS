@@ -346,7 +346,7 @@ KickOS/
   user/
     include/                        # userspace API (kos.h, sys.h, app.h) + driver/ client headers
     src/                            # syscall stubs + newlib stubs
-    lib/spi_client/                 # vendor-neutral bus-service client wrapper
+    lib/spi_proxy/                  # vendor-neutral proxy backend of the SPI class
     apps/common/                    # fleet-wide apps; a sample, not the list: hello, selftest
                                     #   (TAP gate), stress, sched_exit, mpu_fault, fault,
                                     #   fp_switch, blink, bench, cxxtest, tele_*
