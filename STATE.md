@@ -38,39 +38,15 @@ flake label.**
 
 ### What the captures do NOT witness
 
-**The M4.7.6 and M4.7.7 silicon debts are PAID.** Both were taken together on 2026-08-06 at
-`de2801d`, the M4.7.7 merge, on a rare day when both benches were plugged at once. One run
-discharges both because M4.7.6 is an ancestor of that tree, so a board that boots at all has
-exercised the `.init_array` deletion that was the whole of the M4.7.6 risk; a separate `m476` run
-would only have earned something had this one failed. Six boards, four ISAs, every enforcement
-class the fleet has, zero `not ok` anywhere. Logs `.session/logs/m477-*.log`.
-
-| board | plan | result |
-| --- | --- | --- |
-| `rx72m` (RXv3, RX MPU) | `1..84` | 84 ok, 0 skip, enforce |
-| `xmc4800-relax` (PMSAv7) | `1..84` | 84 ok, 0 skip, enforce |
-| `frdmk64f` (SYSMPU) | `1..84` | 84 ok, 0 skip, enforce |
-| `esp32c6-wroom` (PMP NAPOT) | `1..84` | 84 ok, 0 skip, enforce |
-| `esp32-wroom` (LX6, no unit) | `1..80` | 80 ok, 0 skip, off |
-| `f302nucleo` (ring-only) | `1..43` + `1..37` | 43 + 37 ok, 3 + 7 skip, 0 + 4 partial, off |
-
-**M4.8.1 is witnessed on EVERY enforcement class the fleet has**, each with its own converted
-driver seen coming up, and `picopi` gives the project its FIRST clean armv6m enforcement capture:
-
-| board | class | plan | driver witnessed |
-| --- | --- | --- | --- |
-| `esp32c6-wroom` | PMP NAPOT | `1..95` | `c6uart` |
-| `rx72m` | RX MPU | `1..95` | `rxsci`, the 3-thread 2-line outlier |
-| `xmc4800-relax` | PMSAv7 | `1..95` | `xmcuartirq`, `xmcuart`, `xmcssc` |
-| `frdmk64f` | SYSMPU | `1..95` | `k64uart`, `k64dspi`, `k64uartirq` |
-| `picopi` | PMSAv6, armv6m | `1..95` | -- |
-| `esp32-wroom` | LX6, no unit | `1..91` | `lx6uart` |
-| `f302nucleo` | ring-only | `1..51` + `1..40` | -- |
+**The M4.7.6/M4.7.7, M4.7.8 and M4.8.1 silicon debts are PAID**, and those three capture sessions
+are archived at `docs/archive/M4.7-M4.8.1_fleet_selftest_meas.md`: six boards, four ISAs, every
+enforcement class the fleet has, and `picopi`'s first clean armv6m enforcement run. Go there for a
+row. The lessons those passes taught that apply to the NEXT capture are below.
 
 **M4.8.2 is witnessed on SIX boards at `b77a3ef4`**, which is every enforcement class the fleet can
 currently reach: `picopi` is the only gap and it is not on any bus. A scheduler change is shipped
 kernel code on every board, which is why the whole fleet ran rather than one representative. Logs
-`.session/logs/m482-*.log`, and **all seven streams were piped through `tests/check_tap_stream.sh`
+`.session/logs/m482-*.log`, and **all seven streams were piped through `tests/integration/check_tap_stream.sh`
 by hand** rather than read off the printed counts. `f302nucleo` is the exception that proves the rule
 and its permission sets are NOT declared anywhere in the tree: they were taken from
 `CONTEXT.local.md`'s provisioning list, so for that board alone the check is only as good as that
@@ -111,21 +87,9 @@ NOTHING about that board's driver. This was got wrong twice in one session. `ben
 are never a default. The polled default lists also claim no IRQ line at all, which is why a timing arm
 can pass there and fail under `_uartirq` on the same board.
 
-**M4.7.8 is witnessed on ALL SIX boards** at the FINAL tree, zero `not ok` anywhere: `rx72m`,
-`xmc4800-relax`, `frdmk64f` and `esp32c6-wroom` 95 ok enforcing, `esp32-wroom` 91 ok,
-`f302nucleo` 51 + 40 ok across its two images. Logs `.session/logs/m478c-*.log`. The captures
-carry TWO commit hashes, `19b548c` on the first five boards and `d00e342` on the last two,
-because the commits were reworded mid-pass; the trees are byte-identical and the enforcing
-boards report the same 95 under both, so it is one witness of one tree.
-The K64F needed a second attempt earlier in the day for a reason worth knowing rather than
-retrying blindly: its OpenSDA probe shows a SEGGER licence dialog once per calendar day, the
-acknowledgement is date-stamped, and that pass crossed midnight. The board was on the bus and
-healthy, and `bench.sh`'s preflight refused by name instead of capturing a 0-byte log.
-`CONTEXT.local.md` carries the detail.
-
 **`f302nucleo` is the one board whose capture is not self-validating**, and its skips are
 provisioning (a 3-thread pool, a 7-slot cap table), not defects. `bench.sh` prints counts but does
-not run `tests/check_tap_stream.sh`, so both images were piped through it by hand against the arm
+not run `tests/integration/check_tap_stream.sh`, so both images were piped through it by hand against the arm
 counts derived from `user/apps/common/selftest/CMakeLists.txt` rather than from their own plan
 lines. Do the same for any future silicon capture on a board with no ctest gate: a plan that
 reconciles with itself proves nothing about an arm that was deleted.
@@ -146,7 +110,7 @@ defined once in the root `CMakeLists.txt`. It is not a synonym for "runs on the 
 `oot_export` runs the app it built and deliberately does not carry it.
 
 **`EXPECT_SKIPS` and `EXPECT_PARTIALS` are PERMISSION SETS, not budgets.**
-`tests/check_tap_stream.sh` fails an UNLISTED skip but only NOTEs a listed arm that did not skip.
+`tests/integration/check_tap_stream.sh` fails an UNLISTED skip but only NOTEs a listed arm that did not skip.
 A LOSS of arena slack is therefore caught automatically and a GAIN is not: any change that moves
 `microbit`'s `.bss` needs its skip set diffed by eye.
 
@@ -159,16 +123,20 @@ rather than producing a plausible-looking wrong log.
 
 ## What is next (locked order)
 
-1. **M4.8.1 -- the generic driver service**, MERGED as PR #19 and witnessed on every enforcement
-   class the fleet has.
-2. **M4.8.2 -- the host unit-test layer**, and the `sched::wake()` dying-guard repair it is the tool
-   to prove. Its record is `docs/design-m4.8.2-host-unit-tests.md`; section 8 is what landing it
-   found. The layer has TWO seams, not one: a **U-seam** at the syscall boundary, which needs no
-   kernel and no fixture (`tests/drvbringup`, landed inside M4.8.1), and a **K-seam** at the arch
-   boundary, which resets the whole singleton (`tests/kfixture`, plus its first gate
-   `tests/schedwake`). **The K-seam is SIXTEEN functions, and the real `cap_teardown` rides it for
-   free**: adding `syscall/cap.cc` trades two stubs for two others and does not widen the seam, so a
-   fixture with a stubbed-out sweep would have been strictly worse for nothing.
+**M4.8.1 is DONE and merged (PR #19). Two things have LANDED ON THIS BRANCH AND ARE NOT MERGED:
+M4.8.2's groundwork, and M4.8.3's step 9.3.** What follows is what remains, in order.
+
+1. **M4.8.2 -- the host unit-test layer**, and the `sched::wake()` dying-guard repair it is the tool
+   to prove. **RE-SCOPED: it now ABSORBS a test framework (GoogleTest, pulled through Conan) instead
+   of deferring one.** `docs/design-m4.8.2-host-unit-tests.md` section 5 ruled "no framework yet,
+   doctest eventually"; that is the one ruling that changed, the rest of the record stands, and
+   section 8 is what landing the groundwork found. The layer has TWO seams, not one: a **U-seam** at
+   the syscall boundary, which needs no kernel and no fixture (`tests/unit/drvbringup`, landed inside
+   M4.8.1), and a **K-seam** at the arch boundary, which resets the whole singleton
+   (`tests/unit/kfixture`, plus its first gate `tests/unit/schedwake`). **The K-seam is SIXTEEN
+   functions, and the real `cap_teardown` rides it for free**: adding `syscall/cap.cc` trades two
+   stubs for two others and does not widen the seam, so a fixture with a stubbed-out sweep would have
+   been strictly worse for nothing.
    **The repair is THREE clauses, not the one `TODO.md` proposed.** A priority comparison alone
    strands `exit_current`'s own waiter loop, which wakes joiners after its `on_remove` when the
    dying thread can never be picked again; the `EXITED` clause is what keeps that loop's single final
@@ -177,17 +145,24 @@ rather than producing a plausible-looking wrong log.
    and RX pend it until the enclosing IrqLock releases and would have survived by luck of the port.
    The same fact widens the mid-chunk exposure the narrowing introduces from a host curiosity to a
    silicon one, and `kernel/include/kickos/cap.h` is where it is stated portably.
+   **The framework has LANDED and the migration is done**: GoogleTest via Conan, `find_package(GTest
+   QUIET CONFIG)` so vcpkg or a distro package satisfies it equally, and nothing fetched at build
+   time. Registration is PER CASE through `gtest_discover_tests`, which took the sim suite from 38
+   ctest entries to 152 (124 gtest cases replacing 10 whole-binary entries). `-L host` 131 and
+   `-LE host` 22 partition it exactly. A BOARD BUILD REACHES NO `find_package(GTest)`: the probe is
+   inside `if(KICKOS_ARCH STREQUAL "sim")`, so no cross target can acquire a dependency-manager
+   requirement by accident, and `frdmk64f-st` configures with zero gtest or conan lines.
    Still owed: the `class_backend` widening, the blocking-call trap's mechanism, an arm for the
-   concurrent sweep, the migration, and one SILICON obligation (below).
-3. **M4.8.3 -- the task layer**, if `docs/design-task-layer.md` rules for it. A task is a set of
+   concurrent sweep, and one SILICON obligation (below).
+2. **M4.8.3 -- the task layer**, if `docs/design-task-layer.md` rules for it. A task is a set of
    threads; the address space attaches to Domain, not Task. The spike's motivation is now partly
    discharged: the single bring-up tail takes a thread SET, which is what the old one-handle
    parameter could not express.
-4. **M4.9.1 -- USB CDC console**, continuing M4.6.2. The console now **enumerates and carries payload
+3. **M4.9.1 -- USB CDC console**, continuing M4.6.2. The console now **enumerates and carries payload
    on an RP2040** (`picopi`, 5.4-5.8 KiB per run), where every earlier witness was RP2350. What it
    does not do is deliver its tail: `main` returns and the teardown drops about 2.7 KiB still queued
    in the PUBLISHED console's ring, because that path drains only the kernel transport.
-5. **M4.9.2..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
+4. **M4.9.2..N -- the fleet-wide witness pass**, and the per-chip `arch_console_reclaim` bodies.
    **Nothing in-tree can catch a wrong `arch_mpu_region_pow2()` literal in a backend**
    (`cmake/boot_arena.cmake` scrapes the same file the link resolves), so `rx72m` silicon is the only
    check on that class for the RX MPU.

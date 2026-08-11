@@ -13,7 +13,7 @@ endif()
 # OWN, named <symbol>_default.cc, that defines EXACTLY ONE symbol. A backend that
 # defines the symbol satisfies the reference from its own member, so the fallback member
 # is never extracted; a second symbol in a fallback TU would drag the member in anyway
-# and collide with that backend. tests/check_seam_defaults.sh asserts both the
+# and collide with that backend. tests/static/check_seam_defaults.sh asserts both the
 # one-symbol rule and the per-board resolution.
 #
 # This is LINKER behaviour, not language semantics. It is behaviour every Unix-like

@@ -145,7 +145,7 @@ void _fini(void)
 
 #ifdef __RX__
 // SjLj atexit/EH registration references __dso_handle and the RX libc may not provide
-// one. Weak on purpose (allowlisted in tests/weak_allowlist.txt) so a libc that ships
+// one. Weak on purpose (allowlisted in tests/static/weak_allowlist.txt) so a libc that ships
 // its own keeps ownership of the handle the atexit registrations key on.
 __attribute__((weak)) void* __dso_handle = nullptr;
 #endif
@@ -166,7 +166,7 @@ extern "C" struct _reent* __getreent(void)
 #endif
 
 // Newlib brackets every arena mutation with __malloc_lock/__malloc_unlock. No-op weak
-// stubs (allowlisted in tests/weak_allowlist.txt) so a full-C++ app that heap-allocates
+// stubs (allowlisted in tests/static/weak_allowlist.txt) so a full-C++ app that heap-allocates
 // links and a thread-safe libc port can replace them; the pinned vendor toolchains are
 // all built --disable-threads, so nothing else needs the guard.
 //

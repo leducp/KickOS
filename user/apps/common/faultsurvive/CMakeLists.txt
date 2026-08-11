@@ -52,13 +52,13 @@ endif()
 # an enforcing one does; nothing here depends on the MPU.
 if(KICKOS_ARCH STREQUAL "sim")
   add_test(NAME ${_fs_tag}_faultsurvive
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_faultsurvive.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
             "$<TARGET_FILE:faultsurvive>" survive ${KICKOS_ARCH})
   set_tests_properties(${_fs_tag}_faultsurvive PROPERTIES TIMEOUT 30)
 else()
   kickos_add_qemu_test(NAME ${_fs_tag}_faultsurvive TARGET faultsurvive
     BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_faultsurvive.sh" ARGS survive ${KICKOS_ARCH})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS survive ${KICKOS_ARCH})
 endif()
 
 # The two REFUSAL arms need a hardware stack guard: they turn on the frame the fault
@@ -74,7 +74,7 @@ if(KICKOS_ARCH STREQUAL "sim" OR NOT KICKOS_HAVE_MPU)
 endif()
 kickos_add_qemu_test(NAME ${_fs_tag}_faultoverflow TARGET faultsurvive_ovf
   BOARD ${KICKOS_BOARD}
-  SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_faultsurvive.sh" ARGS overflow ${KICKOS_ARCH})
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS overflow ${KICKOS_ARCH})
 kickos_add_qemu_test(NAME ${_fs_tag}_faultoffstack TARGET faultsurvive_off
   BOARD ${KICKOS_BOARD}
-  SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_faultsurvive.sh" ARGS offstack ${KICKOS_ARCH})
+  SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh" ARGS offstack ${KICKOS_ARCH})

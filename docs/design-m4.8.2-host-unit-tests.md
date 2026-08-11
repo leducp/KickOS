@@ -6,7 +6,9 @@
 > **Status: ACTIVE.** Sections 0 to 6 were written as a spike and are kept as the reasoning;
 > section 7's items 1 to 4 have LANDED and section 8 is the record of what landing them found,
 > including two corrections to this document and one to `TODO.md`. Items 5 to 7 are still owed.
-> See `design/README.md` for the marker taxonomy.
+> Section 9 is the framework decision, which is GoogleTest via Conan and which SUPERSEDES item 5
+> of section 1 and two of section 4.3's three bullets. See `design/README.md` for the marker
+> taxonomy.
 >
 > This continues an earlier spike that lives on a branch, not in this tree: the M4.9 host
 > unit-test record and its `pidonation` proof of concept, written when the layer was still
@@ -25,8 +27,8 @@ seam the OS already declares -- and differ in which seam they cut:
 
 | | cuts | subject | existing instance | state to reset |
 |---|---|---|---|---|
-| **U-seam** | the syscall boundary, `extern "C" kos_*` | user- and system-side code: bring-up choreography, service transports, class contracts | `tests/uartclass/`, and now `tests/drvbringup/` | none: there is no kernel |
-| **K-seam** | the arch boundary, `extern "C" arch_*` | kernel internals: scheduler, sync, caps, time | `tests/ktime/`, and the prior spike's `pidonation` | the whole `Kernel` instance |
+| **U-seam** | the syscall boundary, `extern "C" kos_*` | user- and system-side code: bring-up choreography, service transports, class contracts | `tests/unit/uartclass/`, and now `tests/unit/drvbringup/` | none: there is no kernel |
+| **K-seam** | the arch boundary, `extern "C" arch_*` | kernel internals: scheduler, sync, caps, time | `tests/unit/ktime/`, and the prior spike's `pidonation` | the whole `Kernel` instance |
 
 The prior spike found the K-seam and measured it at 16 functions. It did not look for the U-seam,
 because its customer did not need one. **The U-seam is 11 functions, it is the cheaper half, and it
@@ -47,7 +49,7 @@ Restated so this document can be read alone, not to re-argue any of it.
    was bought by a real defect: a mock in a target image satisfied five public class names from the
    executable, the real backend's archive member was then never extracted, no duplicate was
    reported, and two boards ran with their console driver silently redirected into the mock. The
-   remedy in the tree is `tests/uartclass/` plus the `class_backend` ctest gate.
+   remedy in the tree is `tests/unit/uartclass/` plus the `class_backend` ctest gate.
 3. **The layer FREES silicon coverage, it does not replace it.** Silicon stays the sole authority
    for whether an MPU/PMP descriptor DENIES a store, for context-switch assembly and `EXC_RETURN`,
    for a real interrupt arriving mid-critical-section, for the fault path, for peripheral register
@@ -55,9 +57,10 @@ Restated so this document can be read alone, not to re-argue any of it.
 4. **A `Kernel` fixture is practical today; `KICKOS_MULTI_INSTANCE` is not a prerequisite.**
    `kernel() = Kernel{}` plus `sched::init()` is the entire reset, because every member of the
    struct carries an initialiser.
-5. **No framework yet.** doctest is the eventual choice on the house rules (real include guard,
-   zero non-ASCII, C++11, one file, MIT) and Boost.UT is out on sight (`#pragma once`, non-ASCII).
-   Adopt when the arm count makes filtering worth the repo weight, and not before.
+5. **No framework yet.** SUPERSEDED by section 9: the layer is GoogleTest via Conan. doctest was
+   the eventual choice on the house rules (real include guard, zero non-ASCII, C++11, one file,
+   MIT) and Boost.UT was out on sight (`#pragma once`, non-ASCII); the argument that lost is that
+   filtering was priced at executable granularity and death cases at one executable each.
 6. **gmock is rejected on mechanism, not weight.** Every KickOS seam is an `extern "C"` free
    function in code compiled `-fno-exceptions -fno-rtti`; gmock cannot mock a free function and
    offers "introduce an interface" as the remedy. The linker already redirects for free.
@@ -84,7 +87,7 @@ That is not a refinement, it changes the landing order. A K-seam gate has to rea
 and its arms are therefore order-coupled through one global. A U-seam gate has no kernel: reset is a
 `memset` of a static arena and three counters, arms are independent, and there is no
 `arch_switch`-returns trap to document because there is no scheduler to switch. The U-seam half of
-the layer is strictly less to get wrong, and `tests/uartclass/` shows it was already being built
+the layer is strictly less to get wrong, and `tests/unit/uartclass/` shows it was already being built
 without being named.
 
 ### 2.2 The proving ground is a failure path, not a state machine
@@ -102,7 +105,7 @@ gate.
 > *"`check_class_backend.sh` is on an unmerged branch. Should the layer depend on it landing, or
 > carry the gate itself?"*
 
-It landed. `tests/check_class_backend.sh` is in this tree and runs as ctest `class_backend`. The
+It landed. `tests/static/check_class_backend.sh` is in this tree and runs as ctest `class_backend`. The
 question that replaces it is section 6.3, and it is sharper.
 
 ## 3. The seam, and what each choice cannot test
@@ -134,7 +137,7 @@ This list is the price of the choice and it is not short.
   question, and stays one.
 - **Whether cooperative cancellation happened.** `kos_thread_kill` is honoured only inside
   `kos_irq_wait`. No thread runs in a U-seam gate, so "the peer actually died" belongs to
-  `tests/check_sim_drvdeath.sh` and to silicon.
+  `tests/integration/check_sim_drvdeath.sh` and to silicon.
 - **Whether a close reclaims the console.** `kos_handle_close(ep)` taking `recv_holders` to 0, the
   console being noted dead, and the next `kos::print` reaching the wire are three kernel effects.
   A U-seam gate proves the ORDER of the calls that would cause them. That is the half with no other
@@ -225,15 +228,18 @@ trace buffer, and the sharpest arm in the gate would become a truncation.
   U-seam gate replaces. Linking it into a U-seam gate would make the harness a client of the fake it
   is reporting through, and a K-seam gate has the same problem one level down. `tests/tap/` is the
   ON-TARGET harness, it is good at that, and it stays there.
-- **The right substrate already exists and must not be abstracted.** Four host gates use a
+- **The right substrate already exists and must not be abstracted.** SUPERSEDED by section 9,
+  which prices what this bullet does not: one ctest entry per executable. Four host gates use a
   `g_failures` counter, `printf("not ok - ")`, and a `main` that lists its cases by name. That is
   about twenty lines per gate, it is readable without documentation, and every copy is free to grow
   the one helper its own subject needs. Do not factor it into `tests/lib/`: the day it becomes a
-  library is the day a gate author has to read it.
+  library is the day a gate author has to read it. The half that STANDS is the last sentence:
+  nothing was factored into `tests/lib/`, and the one shared substrate is `tests/unit/kfixture/`,
+  which was already shared.
 
 ## 5. The proof of concept: `bring_up`'s unwind, exercised
 
-`tests/drvbringup/`, one ctest case `drv_bringup`, registered on the sim build beside the other
+`tests/unit/drvbringup/`, one ctest case `drv_bringup`, registered on the sim build beside the other
 five host gates.
 
 ```
@@ -247,7 +253,7 @@ Its failure branches -- a refused `kos_irq_claim`, a readiness timeout, a refuse
 `kos_thread_spawn`, a refused `block_init`, a refused publish -- had **zero** coverage of any kind
 before this gate, and three separate reasons they could not get any:
 
-- `tests/check_sim_drvdeath.sh` case 2 covers the handover tail's EPIPE arm, which is DOWNSTREAM of
+- `tests/integration/check_sim_drvdeath.sh` case 2 covers the handover tail's EPIPE arm, which is DOWNSTREAM of
   a bring-up that already succeeded, not `unwind` itself.
 - The sim's two other console postures do not route through `bring_up` at all, deliberately: the
   host may refuse any given candidate window base, so those postures discover the base BY SPAWNING,
@@ -259,10 +265,10 @@ before this gate, and three separate reasons they could not get any:
 
 | file | lines | what |
 |---|---|---|
-| `tests/drvbringup/kos_seam.h` | 65 | the control block and the trace accessors |
-| `tests/drvbringup/kos_seam.cc` | 243 | the eleven faked syscalls, recording |
-| `tests/drvbringup/bringup_unwind.cc` | 384 | 13 arms over 2 synthetic descriptors |
-| `tests/drvbringup/CMakeLists.txt` | 25 | one executable |
+| `tests/unit/drvbringup/kos_seam.h` | 65 | the control block and the trace accessors |
+| `tests/unit/drvbringup/kos_seam.cc` | 243 | the eleven faked syscalls, recording |
+| `tests/unit/drvbringup/bringup_unwind.cc` | 384 | 13 arms over 2 synthetic descriptors |
+| `tests/unit/drvbringup/CMakeLists.txt` | 25 | one executable |
 
 Three decisions inside that are worth stating because the obvious alternative is worse.
 
@@ -386,7 +392,7 @@ is cheap groundwork M4.8.2 should carry.
 
 ### 6.3 The open question that replaces the prior spike's
 
-`tests/drvbringup/kos_seam.cc` defines **eleven public `kos_*` names**. That is section 2's disease
+`tests/unit/drvbringup/kos_seam.cc` defines **eleven public `kos_*` names**. That is section 2's disease
 one level up from a driver class, and the gate that exists for it does not cover it:
 `check_class_backend.sh` derives its symbol set from `user/include/kickos/driver/*.h` only, so no
 syscall name is in the set.
@@ -400,7 +406,7 @@ that defines `kos_print` in the executable and references `kos_recv` fails with
 
 So the protection is TU granularity, not a gate. Two things follow, and the second is the finding:
 
-- `tests/drvbringup/` is safe today, and so would any future U-seam gate be.
+- `tests/unit/drvbringup/` is safe today, and so would any future U-seam gate be.
 - **The day `syscall_stubs.cc` is split per subsystem -- which is an ordinary refactor nobody would
   flag -- the protection is gone and the failure is silent.** Either widen `class_backend`'s symbol
   set to the syscall headers, or write down that the file is deliberately monolithic. Preference:
@@ -416,7 +422,7 @@ What remains:
    programs, and is what makes the second half of 6.2's claim literally true. Root `CMakeLists.txt`
    defines it once. `oot_export` is the one gate that reads as host and does not qualify, because it
    RUNS the app it built.
-2. **The K-seam fixture, landed.** `tests/kfixture/`: `kfixture.h` + `kfixture.cc` + `karch_seam.cc`,
+2. **The K-seam fixture, landed.** `tests/unit/kfixture/`: `kfixture.h` + `kfixture.cc` + `karch_seam.cc`,
    plus `kickos_add_kseam_gate()`. Re-derived, and the number held: **sixteen**, the same set the
    prior spike stubbed. See section 8.1 for what that measurement also showed.
 3. **The `sched::wake()` observer enumeration** (4.1). Done; it is section 8.2, and it changed the
@@ -518,7 +524,7 @@ park by design (`Thread::wait_mutex` answers null there, which is what stops the
 
 Neither route needs the timer deflate below, and neither is exotic. The consequence for this
 milestone is that the two sites the first draft dismissed are exactly the ones that had no arm; the
-gate now has one for the mutex site (`tests/schedwake/wake_dying.cc`).
+gate now has one for the mutex site (`tests/unit/schedwake/wake_dying.cc`).
 
 **What this does to the latency claim.** `TODO.md`'s 4x-to-9x figure was measured on the sweep rather
 than on the reachable wake set, and the first correction here replaced it with a count of call
@@ -605,3 +611,55 @@ obligations are explicitly still open. The **fault-redirect coupling** is silico
 now flows through the preemptible window between a fault redirect and its stub. And the
 **concurrent-teardown path** (`TODO.md`) still has zero in-tree hits; the K-seam fixture is now the
 instrument that could seat two sweeps at once, and no arm does yet.
+
+## 9. GoogleTest, and the three rulings it supersedes
+
+The framework question in section 1's item 5 and section 4.3 is **CLOSED, and not the way either
+of them left it.** The deferral ("doctest, and adopt when the arm count makes filtering worth the
+repo weight") was rejected: the sibling project `/home/leduc/projets/KickCAT` already consumes
+GoogleTest through Conan, and KickOS carrying a second framework is a cost with no argument behind
+it. So the layer is **GoogleTest, supplied by Conan**, and three earlier rulings go with it.
+
+**"No framework yet" (1.5) is superseded.** doctest was chosen on the house rules and never on
+capability, and the capability that decided it in the end was neither filtering nor a diff printer:
+it is `EXPECT_DEATH`. Section 1's item 7 ruled that death cases need no fork framework, one
+executable per case plus a ctest `PASS_REGULAR_EXPRESSION` being enough. That ruling was true and it
+is now obsolete, because a forking death case sits in the SAME binary as the ordinary cases. What it
+retires is not one target but a whole belt-and-braces arrangement: `PASS_REGULAR_EXPRESSION` makes
+ctest ignore the return code, which is why `kickos_add_kseam_gate()` also carried
+`FAIL_REGULAR_EXPRESSION "not ok"` on every gate, panic or not, and why a gate could never print
+"not ok" on a passing run. Both properties are gone. The mechanism that replaces them is
+`KICKOS_EXPECT_PANIC` in `tests/unit/kfixture/kseam_test.h`, and it needs one thing said out loud:
+gtest matches a death test against the FORKED CHILD's stderr, `kpanic` writes stdout, and the fold
+therefore happens inside the child, `dup2(STDERR_FILENO, STDOUT_FILENO)`. Folding it the other way
+round replaces gtest's own capture pipe and every death case then reports an empty child message,
+which reads exactly like a panic that never fired.
+
+**"The right substrate already exists and must not be abstracted" (4.3) is superseded**, and its
+reasoning was sound: four gates times twenty lines of `g_failures` + `printf("not ok - ")` is
+readable without documentation. What it did not price is that ONE ctest entry per executable makes a
+kernel's independent invariants indistinguishable to `ctest -R`. The layer now registers PER CASE
+through `gtest_discover_tests` (`kickos_add_unit_test` in `cmake/kickos.cmake`), a deliberate
+divergence from KickCAT's single `add_test`: KickCAT is a library with one job.
+
+**"No fetched dependency, ever" (4.3) STANDS, unchanged.** Nothing is fetched at build time, there
+is no submodule and no `ExternalProject`. The committed CMake calls `find_package(GTest CONFIG)`
+and nothing else, so Conan, vcpkg and a system install all satisfy it; `conan/conanfile.py` is one
+way to produce it, not the way the tree depends on. There is no committed Conan profile: `conan
+profile detect` covers the host, and the deps are host-only, so a checked-in template would be a
+second description of the toolchain that nothing renders and nothing checks.
+
+Three knobs carry the split. `KICKOS_BUILD_TESTS` stays the umbrella and the `tests/static/`
+checks stay under it alone, because they need no dependency and they are what catches drift.
+`KICKOS_BUILD_UNIT_TESTS` defaults to whether `find_package(GTest QUIET CONFIG)` succeeded and
+FATALs if it is forced ON without it. `KICKOS_BUILD_INTEGRATION_TESTS` declines the gates that RUN
+an image. **A board build reaches no `find_package(GTest)` at all**: the probe is inside
+`if(KICKOS_ARCH STREQUAL "sim")`, so a cross target cannot acquire a dependency-manager
+requirement even by accident.
+
+One thing the migration found that section 6.2's `host` label made possible. The label already
+means "executes no KickOS image", which is exactly the question
+`KICKOS_BUILD_INTEGRATION_TESTS` has to answer, so the knob is keyed on the label rather than on a
+second list of gate names. It cannot be keyed on it at `add_test` time, because the label is set by
+the line AFTER; a `cmake_language(DEFER CALL ...)` to the end of the registering directory is where
+both facts are finally in scope.

@@ -3,7 +3,7 @@
 
 # End-to-end buffered-UART exercise against the real two-thread driver. Diagnostic app
 # (KICKOS_ENABLE_SELFTEST only); sim-only, because the loopback "device" it drives is the
-# host wire (see tests/check_sim_uartloop.sh).
+# host wire (see tests/integration/check_sim_uartloop.sh).
 if(NOT KICKOS_ARCH STREQUAL "sim")
   return()
 endif()
@@ -26,7 +26,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ENABLE_SELFTEST
    AND KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
   add_test(
     NAME    sim_uart_loopback
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_uartloop.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_uartloop.sh"
             "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
   set_tests_properties(sim_uart_loopback PROPERTIES TIMEOUT 300)
 endif()

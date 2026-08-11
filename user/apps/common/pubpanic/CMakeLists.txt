@@ -25,7 +25,7 @@ endforeach()
 if(KICKOS_BUILD_TESTS AND KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
   add_test(
     NAME    sim_published_panic
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_pubpanic.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_pubpanic.sh"
             "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${KICKOS_FAULT_OUTCOME})
   set_tests_properties(sim_published_panic PROPERTIES TIMEOUT 300)
 endif()

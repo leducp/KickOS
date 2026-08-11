@@ -52,17 +52,17 @@ foreach(_case 1 2 3 4 5)
   elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
     kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_panicgate${_case}
       TARGET panicgate${_case} BOARD ${KICKOS_BOARD}
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_panicgate.sh"
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_panicgate.sh"
       ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}")
   elseif(KICKOS_BOARD STREQUAL "microbit")
     kickos_add_qemu_test(NAME microbit_panicgate${_case}
       TARGET panicgate${_case} BOARD microbit
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_panicgate.sh"
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_panicgate.sh"
       ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}")
   elseif(KICKOS_BOARD STREQUAL "qemu-riscv")
     kickos_add_qemu_test(NAME qemu_riscv_panicgate${_case}
       TARGET panicgate${_case} BOARD qemu-riscv
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_panicgate.sh"
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_panicgate.sh"
       ARGS "${_pg_txt_${_case}}" "${_pg_absent_${_case}}")
   endif()
 endforeach()

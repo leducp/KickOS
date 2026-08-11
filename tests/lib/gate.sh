@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # Primitives shared by the gate scripts. SOURCED, never executed:
-#   . "$(dirname "$0")/lib/gate.sh"
+#   . "$(dirname "$0")/../lib/gate.sh"
 # POSIX sh (dash-clean), because /bin/sh is dash on the CI images.
 
 # The reporters' literal dump markers, as one ERE: kpanic (which KICKOS_UNREACHABLE routes
@@ -13,10 +13,10 @@
 # It lives in tests/lib/panic.ere, ONE line, read by both consumers: this file and the root
 # CMakeLists, which registers it as a ctest FAIL_REGULAR_EXPRESSION. A plain data file is
 # readable by both languages without either parsing the other.
-# Every caller sources this file as <its own dir>/lib/gate.sh, so the data file sits beside
-# it. Read once, and REFUSE an empty result: an empty ERE matches nothing, so every panic
-# gate in the suite would silently stop failing.
-KOS_PANIC_RE="$(cat "$(dirname "$0")/lib/panic.ere")"
+# Every caller lives one level below tests/ and sources this file as ../lib/gate.sh, so the
+# data file sits beside it. Read once, and REFUSE an empty result: an empty ERE matches
+# nothing, so every panic gate in the suite would silently stop failing.
+KOS_PANIC_RE="$(cat "$(dirname "$0")/../lib/panic.ere")"
 if [ -z "$KOS_PANIC_RE" ]; then
     echo "FAIL: tests/lib/panic.ere is empty or unreadable; every panic gate would pass" >&2
     exit 1

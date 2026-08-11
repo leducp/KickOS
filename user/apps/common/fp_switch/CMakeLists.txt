@@ -11,5 +11,5 @@ kickos_add_application(fp_switch
 # add_subdirectory gate decides that (user/apps/common/CMakeLists.txt).
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_fp_switch TARGET fp_switch BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_fp.sh")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_fp.sh")
 endif()

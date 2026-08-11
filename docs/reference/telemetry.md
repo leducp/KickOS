@@ -347,7 +347,7 @@ live stream via `--follow` (stdin/fifo, e.g. `JLinkRTTLogger -RTTChannel 1`;
 
 ## 8. CI gates (host-runnable, no probe)
 
-1. **Golden-vector round-trip** (`tests/telemetry/gen_golden.cc` +
+1. **Golden-vector round-trip** (`tests/unit/telemetry/gen_golden.cc` +
    `check_golden.py`, ctest `telemetry_golden`) -- drives the *pure encoders*
    (section 3) with scripted `seq`/`t` into a file, decodes with `kicktrace.py
    --csv`, asserts the exact canonical text. Locks byte layout + endianness +
@@ -378,7 +378,7 @@ live stream via `--follow` (stdin/fifo, e.g. `JLinkRTTLogger -RTTChannel 1`;
    This is the ONLY automated coverage of the PendSV-tail C-callback
    (EXC_RETURN save, MSP alignment, `-mgeneral-regs-only`); without it that asm
    is validated only by the manual XMC step.
-5. **Trace-metadata drift guard** (`tests/telemetry/gen_idmap.cc` + `check_idmap.py`,
+5. **Trace-metadata drift guard** (`tests/unit/telemetry/gen_idmap.cc` + `check_idmap.py`,
    ctest `telemetry_idmap`) -- a THREE-way check whose authority is
    `user/include/kickos/sys/abi.h`: `check_idmap.py` parses `enum kos_syscall_nr` and
    requires every enumerator to appear, at the same number, in both the `gen_idmap.cc`

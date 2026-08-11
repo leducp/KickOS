@@ -15,7 +15,7 @@
 # symbol, so the service's four class symbols are RENAMED below. A fifth class call that
 # forgets its rename here is reported as a duplicate symbol ONLY where another definer of that
 # public name is in the same link; forgetting the rename on ALL FOUR is not reported at all,
-# and tests/check_class_backend.sh is what catches that. See k64dspi.cc.
+# and tests/static/check_class_backend.sh is what catches that. See k64dspi.cc.
 #
 # The DSPI RX-FIFO fill-level read is shared register logic, so both targets link the
 # kickos_class_mk64f leaf rather than carrying a local copy.

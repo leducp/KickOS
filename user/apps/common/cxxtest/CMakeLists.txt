@@ -17,12 +17,12 @@ kickos_add_application(cxxtest
 # same gate runs the runtime UNPRIVILEGED (see user/apps/common/CMakeLists.txt).
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_cxxtest TARGET cxxtest BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_cxxtest.sh")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_cxxtest.sh")
 endif()
 
 # QEMU RISC-V gate: the same full-C++ smoke on a QEMU `virt` (RV32IMAC, M-mode),
 # proving the RISCStar newlib libstdc++ over the same porting-layer seam.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_cxxtest TARGET cxxtest BOARD qemu-riscv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_cxxtest.sh")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_cxxtest.sh")
 endif()

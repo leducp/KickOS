@@ -63,10 +63,10 @@ set(_selftest_srcs main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
 # driver whenever the board's service list brings one up (on frdmk64f and xmc4800-relax that
 # is the Kconfig default and needs no -D). Two definitions in one image is legal only because
 # the SPI SERVICE drivers rename their class symbols; this mock holds the public names alone.
-# tests/check_class_backend.sh asserts it per link.
+# tests/static/check_class_backend.sh asserts it per link.
 #
 # There is no uart_mock.cc here on purpose. The UART class contract is measured on the host
-# (tests/uartclass), so no target image defines the public kos_uart_* names and every board
+# (tests/unit/uartclass), so no target image defines the public kos_uart_* names and every board
 # links exactly one UART backend.
 if(KICKOS_ENABLE_SELFTEST)
   list(APPEND _selftest_srcs spi_mock.cc)
@@ -101,7 +101,7 @@ target_link_options(selftest PRIVATE "-Wl,-Map=${_selftest_map}")
 set_property(TARGET selftest APPEND PROPERTY ADDITIONAL_CLEAN_FILES "${_selftest_map}")
 
 # The expected-skip list every gate below carries (EXPECT_SKIPS, checked by name in
-# tests/check_tap_stream.sh). Empty means "no test may skip", which is every board here
+# tests/integration/check_tap_stream.sh). Empty means "no test may skip", which is every board here
 # except microbit (its own hardcoded list further down).
 set(KICKOS_EXPECT_SKIPS "")
 
@@ -205,7 +205,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # The guard-probe case is registered only under KICKOS_ENABLE_SELFTEST (the sim
   # preset enables it), so the plan count still matches.
   add_test(NAME selftest
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_selftest.sh" "$<TARGET_FILE:selftest>"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_selftest.sh" "$<TARGET_FILE:selftest>"
             ${_tap_arms})
   set_tests_properties(selftest PROPERTIES TIMEOUT 30)
   set_property(TEST selftest APPEND PROPERTY ENVIRONMENT
@@ -219,7 +219,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # this tree's expectation.
   add_test(
     NAME    sim_published_console
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_published.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_published.sh"
             "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}" ${_tap_arms}
             "${KICKOS_CONFIG_VARIANT}")
   set_tests_properties(sim_published_console PROPERTIES TIMEOUT 300)
@@ -231,7 +231,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   # exported KickOS package (find_package + kickos_add_application) and runs.
   add_test(
     NAME    oot_export
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_oot_export.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export.sh"
             "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
             "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
   set_tests_properties(oot_export PROPERTIES TIMEOUT 120)
@@ -242,7 +242,7 @@ endif()
 # it survives the coarse QEMU semihosting clock.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_selftest TARGET selftest BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" ARGS ${_tap_arms})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
   set_property(TEST ${KICKOS_QEMU_MPS2_TAG}_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
 endif()
@@ -250,7 +250,7 @@ endif()
 # Every test must reclaim its semaphores so peak concurrent stays within 4.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_selftest TARGET selftest BOARD microbit
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" ARGS ${_tap_arms})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
   # The only board with legitimate skips. MAX_THREADS=2 / MAX_SEMAPHORES=4 cannot host
   # the multi-worker choreographies:
   #   mutex_basic, mutex_pi_donation, mutex_chain_boost, mutex_deadlock,
@@ -281,7 +281,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
 endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_selftest TARGET selftest BOARD qemu-riscv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_selftest.sh" ARGS ${_tap_arms})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_selftest.sh" ARGS ${_tap_arms})
   set_property(TEST qemu_riscv_selftest APPEND PROPERTY ENVIRONMENT
     "EXPECT_SKIPS=${KICKOS_EXPECT_SKIPS}" "EXPECT_PARTIALS=${KICKOS_EXPECT_PARTIALS}")
 endif()
@@ -295,7 +295,7 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
   add_test(
     NAME    oot_export_mcu
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_oot_export_mcu.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_oot_export_mcu.sh"
             "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
             "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
   # FIXTURES_REQUIRED is named explicitly: without it ctest -j runs cmake --install on the
@@ -313,7 +313,7 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
   add_test(
     NAME    kernel_ctor_placement
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_kernel_ctor_placement.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_kernel_ctor_placement.sh"
             "$<TARGET_FILE:selftest>" "${CMAKE_NM}" "${CMAKE_OBJCOPY}"
             "$<TARGET_FILE:kickos_kernel>"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
@@ -350,10 +350,10 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
   list(APPEND _seam_archives "$<TARGET_OBJECTS:selftest>")
   add_test(
     NAME    seam_defaults
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_seam_defaults.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_seam_defaults.sh"
             "${CMAKE_NM}" "${CMAKE_READELF}"
             "$<TARGET_FILE:selftest>" "${_selftest_map}"
-            "${PROJECT_SOURCE_DIR}/tests/weak_allowlist.txt"
+            "${PROJECT_SOURCE_DIR}/tests/static/weak_allowlist.txt"
             ${_seam_archives})
   set_tests_properties(seam_defaults PROPERTIES TIMEOUT 120 LABELS host)
 
@@ -370,7 +370,7 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
   endif()
   add_test(
     NAME    class_backend
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_class_backend.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_class_backend.sh"
             "${CMAKE_NM}"
             "${PROJECT_SOURCE_DIR}/user/include/kickos/driver"
             "${_selftest_map}" "${_class_expect_app}"
@@ -385,7 +385,7 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
   add_test(
     NAME    riscv_no_smalldata
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_riscv_no_smalldata.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_riscv_no_smalldata.sh"
             "${CMAKE_OBJDUMP}"
             "$<TARGET_FILE:kickos_kernel>"
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"

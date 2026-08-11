@@ -239,7 +239,7 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 <td class="c-status"><span class="st st-open">Open</span></td>
 <td class="c-sev">Medium</td>
 <td class="c-area">Tests &amp; CI</td>
-<td class="c-body"><code class="loc">tests/check_kernel_ctor_placement.sh, selftest/CMakeLists.txt:129</code>
+<td class="c-body"><code class="loc">tests/static/check_kernel_ctor_placement.sh, selftest/CMakeLists.txt:129</code>
 <p class="problem">The gate that guards the ctor privilege boundary passes vacuously on every board it runs on. It is registered against the selftest image on armv7m + MPU, and selftest links with an empty .kickos_app_init_array window on every board in the matrix, so it takes the 'app-ctor window empty' early-out and never inspects a pointer. Only cxxtest has a non-empty window.</p>
 <p class="fix"><span class="fixlabel">Fix: </span>Point it at cxxtest, or register it against both. It is not worthless as it stands &#8212; it still fails loudly if the enforced ctor-split symbols go missing, and 9c057a6 added the privilege-direction assertion that fails on exactly the pre-fix bluepill shape &#8212; but the pointer inspection, the part that catches an app ctor in the privileged bucket, has never run. Listed here as open rather than hidden: the build-boards-mpu job comment states the vacuity itself, so this is a known limitation with no owner rather than an undetected one. Now one instance of the broader pattern in N32, whose proposed post-link ELF check would subsume this gate rather than re-point it.</p></td>
 </tr>
@@ -401,7 +401,7 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 <td class="c-status"><span class="st st-open">Open</span></td>
 <td class="c-sev">Low</td>
 <td class="c-area">Tests &amp; CI</td>
-<td class="c-body"><code class="loc">tests/check_oot_export.sh:37, check_oot_export_mcu.sh:60</code>
+<td class="c-body"><code class="loc">tests/integration/check_oot_export.sh:37, check_oot_export_mcu.sh:60</code>
 <p class="problem">The out-of-tree build steps still redirect to /dev/null, so a failure surfaces as 'FAIL: out-of-tree build failed' with no compiler diagnostic and has to be reproduced by hand.</p>
 <p class="fix"><span class="fixlabel">Fix: </span>Capture to a temp file and echo it on the failure path. The MCU gate grew substantially in ed18739 and now asserts five separate properties, which makes a diagnostic-free failure more expensive than it was.</p></td>
 </tr>

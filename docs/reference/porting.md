@@ -158,7 +158,7 @@ believe before it reads them, and this is the part that is easy to get wrong.
   the shared list, and adds `arch/arm/armv6m/arch_armv6m_fault.cc` only where it holds), and
   spelled as `KICKOS_FAULT_OUTCOME` (`panic` or `thread-kill`) it is the token the fault
   gates parse. The link and the test therefore assert the same fact, and no gate re-derives
-  the posture from an arch name of its own. `tests/check_faultsurvive.sh` is the witness.
+  the posture from an arch name of its own. `tests/integration/check_faultsurvive.sh` is the witness.
 - It is NOT gated on `KICKOS_HAVE_MPU`. Privilege comes from `arch_context_init` and `kmain`
   spawns root unprivileged in every posture, so a FLAT board kills a faulting thread exactly
   as an enforcing one does. What differs on a flat board is only which accesses fault at all:
@@ -647,13 +647,13 @@ runtime.** Proved by mutation: the group reversed plus `arch_idle_wait` moved in
 unreferenced TU linked with ZERO diagnostics, `objdump` showing the fallback's `wfi`
 instead of the chip's `nop`.
 
-`tests/check_seam_defaults.sh` (ctest `seam_defaults`, run on EVERY board) gates it in four
+`tests/static/check_seam_defaults.sh` (ctest `seam_defaults`, run on EVERY board) gates it in four
 legs, all four mutation-proved: the one-symbol rule, plus no fallback in `kickos_kernel`; for
 a seam a backend defines, the fallback member ABSENT from the link map with the backend's
 member present -- the anchoring leg; for a seam no backend defines, the fallback member
 present in the map's inclusion list for that exact symbol, and a board that resolves no seam
 from a fallback at all fails too, so the gate cannot go vacuous; and zero weak symbols
-outside `tests/weak_allowlist.txt`.
+outside `tests/static/weak_allowlist.txt`.
 
 | Chip | Block | Register | Per-entry value mask | Why it needs the seam |
 |------|-------|----------|----------------------|-----------------------|
@@ -690,7 +690,7 @@ one window the sim admits is the fake register block that `periph_reg_write_mask
 A PARTIAL is `tap::partial`, so the arm reports `ok N - <name> # PARTIAL <reason>` and the
 harness prints a `# partial: N` summary. The gate permits partials BY NAME, per board
 (`EXPECT_PARTIALS`, threaded from `user/apps/common/selftest/CMakeLists.txt` and checked in
-`tests/check_tap_stream.sh`), so a DEV-window-encodability regression on ARM cannot make
+`tests/integration/check_tap_stream.sh`), so a DEV-window-encodability regression on ARM cannot make
 every board take the PARTIAL early return and lose the seam's refusal contract fleet-wide
 behind a green CI: the boards where it is not permitted go red. Measured: the held arms DO
 run on `qemu`/`m3`/`m7`/`m33`/`riscv-mpu`/`microbit`; only `sim` degrades, and there
@@ -1074,7 +1074,7 @@ configures, and the arms that wanted those slots reclaim and skip. Beneath the s
 grant-list floor `KICKOS_MAX_SPAWN_GRANTS + 1` RAISES a width that falls below it instead
 of refusing it, and refuses only when the floor itself exceeds the board's supply.
 `cap.h` keeps both asserts (`KICKOS_MAX_HANDLES > KICKOS_CAP_FIRST_DYNAMIC`, and
-`KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`) because `tests/captable` substitutes a
+`KICKOS_MAX_SPAWN_GRANTS < KICKOS_MAX_HANDLES`) because `tests/unit/captable` substitutes a
 width the sum never produces. A build that misses the generated `kickos/config/cap_width.h`
 does not reach them: it fails on the missing include. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
 worker: `call_infoless_revert`, four mutually-dependent workers spawned before any join
@@ -1394,7 +1394,7 @@ pins them is `user/apps/common/ringpriv`.
   `HFSR=0x40000000` (`FORCED`, because `BUSFAULTENA` is never set in-tree). Assert `BFAR`,
   not a banner.
 
-The gates are `tests/check_app_arms.sh` and `tests/check_qemu_ringppb.sh`, and neither
+The gates are `tests/integration/check_app_arms.sh` and `tests/integration/check_qemu_ringppb.sh`, and neither
 is conditioned on enforcement: `cmake --preset qemu-flat` IS the ring-only posture (the
 board's `flat` variant, its base one enforcing), which is what makes the ring gateable in
 CI rather than only capturable on no-MPU silicon. Both run permanently on the MPS2 M3/M4/M7/M33

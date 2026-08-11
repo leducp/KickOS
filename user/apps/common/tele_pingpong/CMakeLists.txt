@@ -10,7 +10,7 @@ kickos_add_application(tele_pingpong
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(
     NAME    telemetry_structural
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/telemetry/check_run.py"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/telemetry/check_run.py"
             "$<TARGET_FILE:tele_pingpong>"
             "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
   set_tests_properties(telemetry_structural PROPERTIES TIMEOUT 40)
@@ -20,6 +20,6 @@ endif()
 # coverage of the PendSV-tail switch-hook ASM. Trace captured via semihosting.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
   kickos_add_qemu_test(NAME telemetry_qemu_structural TARGET tele_pingpong BOARD qemu
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/telemetry/check_qemu.py"
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/telemetry/check_qemu.py"
     TIMEOUT 40 ARGS "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
 endif()

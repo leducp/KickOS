@@ -321,7 +321,7 @@ unprivileged root read `SCB->CPUID`, and that BusFault is now a thread kill. Its
 `qemu_ringpriv` is unaffected.
 
 
-`tests/check_fault_dump.sh`, `tests/check_mpu_fault.sh` and `tests/check_rootfault.sh` all assert
+`tests/integration/check_fault_dump.sh`, `tests/integration/check_mpu_fault.sh` and `tests/integration/check_rootfault.sh` all assert
 today that a deliberate fault ends the system. Under this rule that stays true on a flat board and
 becomes false on an enforcing one. Each gate must therefore become posture-aware, and the enforcing
 arm must assert the opposite of what it asserts now.

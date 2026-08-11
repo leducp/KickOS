@@ -55,7 +55,7 @@ REC_LEN = {
 
 # TODO(de-drift): ARCH_NAME is a hand-maintained mirror of the C++ source of truth
 # (kickos::trace::ArchId in include/kickos/trace/record.h). The number is the WIRE
-# contract; the string here is a human label. The tests/telemetry idmap cross-check
+# contract; the string here is a human label. The tests/unit/telemetry idmap cross-check
 # fails the build if the number set drifts. The durable fix is to GENERATE this from
 # the C++ enum (nanobind / a codegen step); that is future-milestone work.
 ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv"}
@@ -65,7 +65,7 @@ ARCH_NAME = {0: "sim", 1: "armv7m", 2: "armv6m", 3: "xtensa", 4: "rx", 5: "riscv
 # judge them by on-CPU overhead.
 #
 # TODO(de-drift): this is a hand-maintained mirror of enum kos_syscall_nr
-# (user/include/kickos/sys/abi.h). The tests/telemetry idmap gate parses abi.h and
+# (user/include/kickos/sys/abi.h). The tests/unit/telemetry idmap gate parses abi.h and
 # fails if a number is missing or stale here, or if a label is not the enumerator
 # suffix lowercased, so keep the names mechanical. The durable fix is to GENERATE
 # this from the C++ enum (nanobind / a codegen step); that is future-milestone work.

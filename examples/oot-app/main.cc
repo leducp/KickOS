@@ -18,7 +18,7 @@ static_assert(KICKOS_CAP_CHILD_WIDTH <= KICKOS_MAX_HANDLES,
 // kickos/board_config.h and the chip's include directory. Nothing on the kos.h path pulls
 // a kernel config header, so both install() rules could be deleted with this gate still
 // green. KICKOS_EXPECT_* are the values the KickOS build this links against resolved,
-// passed in by tests/check_oot_export.sh; without board_config.h the knobs fall back to
+// passed in by tests/integration/check_oot_export.sh; without board_config.h the knobs fall back to
 // config/system.h's fleet defaults and the libraries are sized differently, which nothing
 // would report until a spawn failed on the target.
 #include <kickos/config.h>

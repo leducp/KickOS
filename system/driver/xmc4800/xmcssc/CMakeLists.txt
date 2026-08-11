@@ -15,7 +15,7 @@
 # symbol, so the service's four class symbols are RENAMED below. A fifth class call that
 # forgets its rename here is reported as a duplicate symbol ONLY where another definer of that
 # public name is in the same link; forgetting the rename on ALL FOUR is not reported at all,
-# and tests/check_class_backend.sh is what catches that. See xmcssc.cc.
+# and tests/static/check_class_backend.sh is what catches that. See xmcssc.cc.
 #
 # REGDIR carries regs/usic.h (the shared USIC offset + bit-field header): definitions only, no
 # code. No class leaf: the SSC engine needs no shared register-logic object.

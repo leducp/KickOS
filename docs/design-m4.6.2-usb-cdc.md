@@ -794,7 +794,7 @@ rather than hypothetical.
 in any emulator this project uses, so essentially nothing about a USB console can be gated in CI
 or on the host.** M4.6.1's second half could at least put a real two-thread driver over a
 loopback device on the sim (`system/init/sim/service_list_uart.cc`, gated by
-`tests/check_sim_uartloop.sh`) because its "device" was host `fd` 1 and the doorbell was the only
+`tests/integration/check_sim_uartloop.sh`) because its "device" was host `fd` 1 and the doorbell was the only
 thing that could move a byte. **USB has no such trick available.** A USB device is defined by
 what a *host* does to it -- tokens, resets, a nine-stage enumeration -- and neither the sim nor
 QEMU on any target in this fleet presents one. Writing a fake device controller whose "host" is a

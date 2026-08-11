@@ -44,7 +44,7 @@ survives is below; everything else was re-verified fixed against tree `82fa51f`.
 - [ ] **The out-of-tree capability WARNING has no gate.** `kickos_declare_app_capabilities` warns
       when a declaration cannot be honoured (`cmake/cap_table.cmake:137-144`), but neither
       `examples/oot-app/CMakeLists.txt` nor `examples/oot-mcu-app/CMakeLists.txt` passes any
-      capability keyword, so `tests/check_oot_export.sh` and `check_oot_export_mcu.sh` never
+      capability keyword, so `tests/integration/check_oot_export.sh` and `check_oot_export_mcu.sh` never
       invoke it. Nothing would catch a regression in its text, in the `KICKOS_IN_TREE` detection,
       or in `_kickos_cap_installed_width`. Wants a small OOT app that declares `CAPABILITIES` and
       greps stderr. Proportionate: the warning is a diagnostic, so a regression costs a missing
@@ -71,7 +71,7 @@ to all 20.
       lists; nothing compares the two. A knob in the fragment but not the translation is one the
       fragment SILENTLY OVERWRITES -- that shape has now bitten three times (the posture, the five
       booleans, and `KICKOS_SERVICE_LIST`/`KICKOS_BOARD_PINMAP`, whose omission reddened four sim
-      gates). `tests/check_kconfig_gen.sh:51` drives `genconfig.py` DIRECTLY, so the CMake
+      gates). `tests/static/check_kconfig_gen.sh:51` drives `genconfig.py` DIRECTLY, so the CMake
       translation never executes under any gate; its only round-trip leg is `KICKOS_SERVICE_LIST`
       (`:149-152`), there is none for `KICKOS_BOARD_PINMAP`, and no leg tests a provisioning
       integer accepted as an override or a boolean forced to `n` against a defconfig that sets it
@@ -119,7 +119,7 @@ to all 20.
       image" is not a claim this tree can make** -- and `docs/reference/boards.md:2199` makes it,
       correct in intent ("Tree identity is the test, not hash identity") but wrong in wording.
 - [ ] **The package ships a C ABI whose C-ness nothing checks.**
-      `tests/check_public_headers.sh:45` compiles every installed header with `-x c++` at the
+      `tests/static/check_public_headers.sh:45` compiles every installed header with `-x c++` at the
       standard its one caller passes (`c++17`, `check_oot_export.sh:47`); there is no C leg
       anywhere. The tree contains zero `.c` files, `user/apps/common/hello_c` is `main.cc`, and
       both `examples/oot-app` and `examples/oot-mcu-app` are C++. Re-measured 2026-08-06:
@@ -175,11 +175,11 @@ settled; what is left is execution.
       `CALL_REPLY_WAIT`, and a rolled `call_seq`), and the server sees `-KOS_ESRCH` through the
       `endpoint_reply` branch that is already written and carries the marking "Unreachable today."
       **Correction to the design note: only ONE test exercises the guard, not three.**
-      `tests/capreply/capreply_packing.cc` covers the CODEC (`cap_reply_seq_seat`, `cap_reply_seq`,
+      `tests/unit/capreply/capreply_packing.cc` covers the CODEC (`cap_reply_seq_seat`, `cap_reply_seq`,
       `cap_reply_handle`) over all 256 sequence values, and nothing exercises the runtime resolve or
       the `-KOS_ESRCH` outcome, precisely because that outcome is unreachable today. The selftest
       double-reply arm is stopped earlier, by the per-slot cap-gen guard in `cap_lookup`
-      (`-KOS_EBADF`), and `tests/slotpool/slotpool_policy.cc` is the generic `SlotPool` wrap
+      (`-KOS_EBADF`), and `tests/unit/slotpool/slotpool_policy.cc` is the generic `SlotPool` wrap
       distance, which `ThreadPool` explicitly is not. A timed call is what makes the branch
       reachable, so it is also what first needs an arm on it.
 - [ ] **`docs/reference/ipc-call-reply.md` justifies that unreachability with "there is no
@@ -319,35 +319,41 @@ The items below are the parts that belong in tracked history whatever those audi
       status 132. `system/include/kickos/sys/init.h` already requires the authority for a returning
       `main` and `docs/reference/invariants.md`'s `init-return-is-shutdown` repeats it, so the rule
       is documented and still only discoverable at runtime; the single gate is
-      `user/apps/common/rootauth`, which passes the panic text to `tests/check_app_arms.sh` as a
+      `user/apps/common/rootauth`, which passes the panic text to `tests/integration/check_app_arms.sh` as a
       must-NOT-appear marker. Proposed shape: refuse the combination at CONFIGURE time, where the
       tree already prefers failing loud and early (the HAS_MPU-without-`mpu.cmake` refusal in the
       root `CMakeLists.txt` is the model). The obstacle to price first is that nothing declares "this
       image terminates" and the authority mask is a C symbol in the app's own translation unit
       (`KICKOS_APP_AUTHORITY`) that no build file reads, so the gate needs a declaration that does
       not exist yet.
-- [ ] **An MPU fault in any thread terminates the whole system, so isolation currently buys
+- [ ] **The fault path is thread-scoped on four backends (armv6m, armv7m, rv32imac, sim) and
+      still system-terminal on two (xtensa, rxv3); on those two, isolation still buys only
       detection, attribution and prevention of cross-domain corruption, and NOT availability.**
-      `arch/arm/armv7m/arch_armv7m.cc`'s `kickos_armv7m_fault_report` dumps the frame and calls
-      `kfault_terminate()` on every path, and every other backend reaches a system-wide terminal too,
-      though not all through that call: armv6m and xtensa are also unconditional, armv8-m boards run
-      the armv7m reporter (`KICKOS_ARCH` is `armv7m` on `qemu-m33` and `pizero2350`), while rv32imac,
-      rxv3 and the sim route a user-context fault to `kickos_isr_fault`, which names the task and
-      then calls `kickos_terminate` anyway. **Correction to carry: `EXC_RETURN` bit 2 does NOT
-      distinguish a user-context fault from one taken mid-syscall.** It selects MSP against PSP, and
-      a syscall runs in privileged thread mode on the calling thread's own PSP, because `SVC_Handler`
-      rewrites the stacked PC to `svc_trampoline` and clears `CONTROL.nPRIV`; the reporter reads that
-      bit only to print the stack's name. The sound discriminators already in the tree are the
-      stacked `xPSR` IPSR field (printed but never decoded), a `CONTROL.nPRIV` read in the handler,
-      and `ctx.resting_npriv`. What a thread-scoped death could already lean on: `cap_teardown` plus
-      `sched::exit_current` tear down a dying thread's capabilities, its domain reference, its held
-      mutexes, its served endpoints (EPIPE-waking every parked sender) and its owned IRQ lines. Two
-      real gaps behind that: there is no grant capability type, so spawn-time windows go only
-      transitively with `domain_release`, and a `kos_mem_self_grant` window in `Thread::regions` is
-      never cleared at exit at all; the stack, the capability slab run and the orphaning of children
-      are all deferred to `ThreadPool::alloc`'s reclaim sweep. `kernel/include/kickos/domain.h`
-      already documents a supervisor respawning after a death, requiring that a supervisor learning
-      of it by watchdog, timeout or a future join must join before respawning, and no fault path can
+      `arch/arm/armv7m/arch_armv7m.cc`'s `kickos_armv7m_fault_report` now opens with
+      `if (kickos_fault_kill_thread(frame)) { return; }`, which redirects the stacked PC to
+      `kickos_thread_fault_exit`; `kfault_terminate()` is the FALLBACK, not every path.
+      `kickos_fault_kill_thread` exists on armv6m, armv7m, rv32imac and the sim (plus its shared
+      body in `kernel/init/fault.cc`), gated by `user/apps/common/faultsurvive` and
+      `user/apps/common/drvdeath`. armv8-m boards run the armv7m reporter (`KICKOS_ARCH` is
+      `armv7m` on `qemu-m33` and `pizero2350`) so they inherit the same early return. xtensa and
+      rxv3 have no such function: xtensa's `kickos_lx6_fault_report` and rxv3's fault handler both
+      still reach `kfault_terminate()` on every path (rxv3 after `kickos_isr_fault` names the
+      task), so the original claim stands for those two only. **Correction to carry: `EXC_RETURN`
+      bit 2 does NOT distinguish a user-context fault from one taken mid-syscall.** It selects MSP
+      against PSP, and a syscall runs in privileged thread mode on the calling thread's own PSP,
+      because `SVC_Handler` rewrites the stacked PC to `svc_trampoline` and clears
+      `CONTROL.nPRIV`; the reporter reads that bit only to print the stack's name. The sound
+      discriminators already in the tree are the stacked `xPSR` IPSR field (printed but never
+      decoded), a `CONTROL.nPRIV` read in the handler, and `ctx.resting_npriv`. What a
+      thread-scoped death already leans on: `cap_teardown` plus `sched::exit_current` tear down a
+      dying thread's capabilities, its domain reference, its held mutexes, its served endpoints
+      (EPIPE-waking every parked sender) and its owned IRQ lines. Two real gaps still open: there
+      is no grant capability type, so spawn-time windows go only transitively with
+      `domain_release`, and a `kos_mem_self_grant` window in `Thread::regions` is never cleared at
+      exit at all; the stack, the capability slab run and the orphaning of children are all
+      deferred to `ThreadPool::alloc`'s reclaim sweep. `kernel/include/kickos/domain.h` already
+      documents a supervisor respawning after a death, requiring that a supervisor learning of it
+      by watchdog, timeout or a future join must join before respawning, and no fault path can
       reach that today.
 - [ ] **Standard C `exit()` does not link on the ARM ports.** It pulls `__libc_fini_array`, whose
       `_fini` no linker script in this tree defines: every `.ld` carves a `.kickos_app_fini_array`
@@ -371,35 +377,13 @@ scheduler and console core-path work, so neither rides M4.7.9. The capture behin
       current thread was dying, whatever its priority, which read as starvation rather than as
       safety.** The guard is now three clauses (`kernel/sched/sched.cc`): a null `current`, an
       `EXITED` current, then `dying and t->prio <= current->prio`. Gated by `sched_wake`
-      (`tests/schedwake/`) on the new K-seam host fixture, five mutants killed. The record is
-      `docs/design-m4.8.2-host-unit-tests.md` section 8; the enumeration this item asked for is 8.2.
-      What the original entry got wrong, and it took the enumeration to see:
-      - **A priority comparison ALONE strands `exit_current`'s own waiters.** That loop wakes join
-        and wait-until-last waiters after its `on_remove`, when the dying thread can never be picked
-        again, so a higher-priority joiner switching there abandons the rest of the loop: the
-        waiters not yet reached are never woken and `kickos_terminate` never runs. Three of the four
-        ports defer the switch to the `IrqLock` release and survive by luck of the port; the sim
-        does not. Hence the `EXITED` clause, which needs no new field.
-      - **ALL THREE in-sweep wake sites can preempt, and the first reading of this said two could
-        not.** The claim was that the mutex force-unlock and the reply EPIPE leave the dying thread
-        boosted at or above the peer they wake. That bound is a SNAPSHOT taken when the peer parked:
-        `sched::set_prio` on a BLOCKED thread propagates nothing and the PI chain walk terminates at
-        a non-mutex park, so a later boost of the parked peer never reaches the dying thread. The
-        `endpoint_call` D2 donation and an ordinary chain boost are both routes. The 4x to 9x figure
-        was measured on the sweep rather than on the reachable wake set, and counting call SITES was
-        no better: the endpoint drain is a loop over every parked sender while the other two wake one
-        thread each. Nothing has been measured; only the direction is established.
-      - **The deflate and the narrowing multiply.** `endpoint_wait_timeout` already calls
-        `sched::set_prio(server, thread_effective_prio(server))` with no `dying` test, from the
-        timer, in the chunk gap, where `server` may BE the dying thread. It lowers the very quantity
-        the new guard compares, so it can turn either bounded site into a preemption. This is the
-        sharper form of the coupling note below, and it also means M4.7.9's rejected priority
-        deflate is PARTLY live already (`docs/design-m4.7.9-fault-isolation.md` section 5.1).
-      - **The already-live set had two bounds nobody stated.** `tick_rr` preempts a dying sweep only
-        for an **RR** thread with a non-zero quantum, so a FIFO one was never preempted mid-sweep
-        and now can be; and `tick_rr` switches from an ISR, which every hardware port defers to the
-        chunk boundary, where a thread-context wake on the sim switches mid-chunk with the slot
-        still live. Both are new exposure and both fall to the same construction (see 8.2).
+      (`tests/unit/schedwake/`) on the new K-seam host fixture, twelve mutants killed. The record is
+      `docs/design-m4.8.2-host-unit-tests.md` sections 8.2 to 8.4: the wake-site enumeration this
+      item asked for, the four things the original entry got wrong (a priority comparison alone
+      strands `exit_current`'s own waiters; all three in-sweep wake sites can preempt; the
+      `endpoint_wait_timeout` deflate and the narrowing multiply, which also makes M4.7.9's rejected
+      priority deflate partly live already per `docs/design-m4.7.9-fault-isolation.md` section 5.1;
+      and the two bounds nobody had stated on the already-live `tick_rr` set), and the mutation table.
       The measurements the entry carried stand and are not re-run: RR at q=20us preempted the sweep
       on 8/8 deaths; with `KCAP_TEARDOWN_CHUNK` forced to 1, 48/48 deaths took up to 8
       (xmc4800-relax) / 13 (frdmk64f) preemptions inside one sweep; nothing broke across 1080
@@ -928,7 +912,7 @@ triggers `push` only on `master`).
 - [ ] **Reduce `--repeat until-pass:4` to 2 on the four QEMU gates** -- or better, fix the timing
       root cause that made 4 look necessary. Four attempts hides a gate that fails most runs.
 - [x] **Tighten the sim `mpu_fault` failure regex** (M4.5.8): the sim registration now runs
-      `tests/check_mpu_fault.sh`, the same script the QEMU boards use, which also pins the reported
+      `tests/integration/check_mpu_fault.sh`, the same script the QEMU boards use, which also pins the reported
       fault address to the one the app announces.
 - [ ] **Add link-only CI jobs for `f302nucleo-st` and `bluepill-c8-st`** (maintainer-confirmed
       2026-07-27). CI builds only the plain presets, so a selftest image that overflows 64 KiB of
@@ -964,8 +948,7 @@ triggers `push` only on `master`).
       controlled by someone else.
 - [ ] **Wire the telemetry runtime gates into CI.** The `sim-telem` / `qemu-telem` presets exist
       and work, but no job runs them, so telemetry can rot without anything going red.
-- [ ] **Move `.claude/` from `.git/info/exclude` into `.gitignore`** -- `.git/info/exclude` is
-      per-clone, so every other clone sees the directory as untracked noise.
+- [x] **Move `.claude/` from `.git/info/exclude` into `.gitignore`** -- DONE, `**/.claude/`.
 
 ## `kos_reboot` (reboot-to-bootloader) -- BUILT (2026-07-28)
 
@@ -1198,16 +1181,9 @@ is what the stage built, and no item under it describes a posture that is still 
 - [x] **NOT gated on a device authority bit, which is what this checklist previously said. The
       gate is possession.** `caller_holds_mmio_block(base)` (`kernel/syscall/syscall_mem.cc`)
       requires a live `ARCH_MPU_DEV` region whose base matches exactly; privileged callers bypass,
-      as in `cap_check_authority`. Deliberately not `user_range_ok` (that funnel asks whether the
-      kernel may dereference a user pointer, and passes trivially at `len == 0`); exact base rather
-      than containment is what stops a sub-block window reaching a whole-block entry. The device
-      bit of the day, now `AUTH_SYSTEM`, would have handed `kos_shutdown` and reboot-to-bootloader to
-      every unprivileged bus driver in the fleet, since the seam's callers ARE the drivers, and
-      every other existing bit carries collateral just as unwanted with no free bits left.
-      Possession is sufficient because a granted window already means "may enable, configure and
-      disable this device" wherever the silicon permits it directly -- the XMC `KSCFG` case is the
-      precedent, and the seam brings K64F and F411 to that parity. Rationale in full:
-      `docs/design-unprivileged-root.md` sections 7 and 9.
+      as in `cap_check_authority`. Rationale in full, including why not `user_range_ok`, why exact
+      base rather than containment, and what an authority bit would have handed every unprivileged
+      bus driver: `docs/design-unprivileged-root.md` sections 7 and 9.
 - [x] **The call site is the DRIVER, not root**, which is what makes the seam's bound a fact rather
       than an aspiration: root holds no DEV region on any board (`ARCH_MPU_DEV` is attached only in
       `domain_for`, reached with MMIO only from `thread_spawn`, and `KOS_SYS_MEM_SELF_GRANT`
@@ -1241,21 +1217,12 @@ is what the stage built, and no item under it describes a posture that is still 
 
 **Stage 4 -- the app story. COMPLETE** (three commits: the delegation type guard, the re-cut plus
 `kos_cap_narrow`, then the narrow site plus the per-app declarations).
-- [x] **Re-cut the authority set into SIX bits, and delete the old device and clock bits as
-      names.** The device bit in its old shape ("console publish, shutdown, reboot") held together
-      only while root does all three: once root is only a spawner, `console_publish` and
-      `shutdown` go to DIFFERENT threads and no single bit can carry both. The cut:
-      `AUTH_MEMORY` (`ram_alloc`, MMIO grant, `mem_self_grant`; root the spawner), `AUTH_PINMUX`
-      (`pinmux_set`; root's board pin map plus apps muxing their own pins), `AUTH_PSTATE`
-      (`cpu_clock_set`; a governor service and nobody else), `AUTH_IRQ` (drivers with lines),
-      `AUTH_SYSTEM` (`shutdown`, `reboot`; root/init), `AUTH_CONSOLE` (`console_publish`; the
-      console driver). `cpu_clock_set` keeps its own bit specifically because a CPU governor needs
-      clock-rate authority and nothing else -- folding it with shutdown would hand the governor the
-      power to end the system. `AUTH_CONSOLE` must be a bit and **cannot** be possession-gated the
-      way `arch_periph_enable` is: `KOS_SYS_ENDPOINT_CREATE` is completely ungated, so any thread
-      can mint the endpoint it would publish, and `cap_console_publish` has no owner check either
-      (filed below under the M4.5.3 findings). Full
-      reasoning in `docs/design-unprivileged-root.md` section 5.
+- [x] **Re-cut the authority set into SIX bits** -- `AUTH_MEMORY`, `AUTH_PINMUX`, `AUTH_PSTATE`,
+      `AUTH_IRQ`, `AUTH_SYSTEM`, `AUTH_CONSOLE` -- **and delete the old device and clock bits as
+      names.** Why each bit is separate, and why `AUTH_CONSOLE` cannot be possession-gated the way
+      `arch_periph_enable` is: `docs/design-unprivileged-root.md` section 5. The ungated
+      `KOS_SYS_ENDPOINT_CREATE` and the missing `cap_console_publish` owner check that force that
+      last point are filed below under the M4.5.3 findings.
 - [x] **Funded the sixth bit by moving the authority word out of `CapEntry.rights` into the poolless
       `obj` field.** `CapEntry` stays 8 bytes; `rights` is 0 on such an entry. The two families now
       have separate enums (`CapRights` bits 0..2, `CapAuthority` bits 0..5) and separate numbering,
@@ -1333,7 +1300,7 @@ Opened by stage 4:
       untestable defense-in-depth guard is a signal to look for a shape in which the hazard cannot
       arise, not a prompt to build a kernel-side unit hook to pin the guard.
 - [x] **The sim selftest gate runs an unprivileged root** (M4.5.5). The TAP verdict logic moved out
-      of `tests/check_qemu_selftest.sh` into `tests/check_tap_stream.sh` (stdin), with
+      of `tests/integration/check_qemu_selftest.sh` into `tests/integration/check_tap_stream.sh` (stdin), with
       `check_sim_selftest.sh` as the sim runner, so the sim permits a skip BY NAME through the same
       `EXPECT_SKIPS` list rather than by a count regex. `KICKOS_HAVE_MPU` is 1 by arch on the sim, so
       the existing `KICKOS_EXPECT_SKIPS` condition already covered the flipped sim -- only the
@@ -1977,7 +1944,7 @@ duplicated.
       image that halts instead of rebooting those 419 bytes are lost outright. The drain is therefore
       live and load-bearing on RP2350 even though it is dead code on the sim. Captures were taken
       from a dirty tree; the exact diff is pinned at `.session/m458-silicon/pzdrain-tree.diff`.
-      Two claims in the tree overstate this and are owed a fix: `tests/check_fault_dump.sh` (its
+      Two claims in the tree overstate this and are owed a fix: `tests/integration/check_fault_dump.sh` (its
       header) and `user/apps/common/fault/main.cc` (its header) both say the marker catches a dump
       lost into an armed ring. On the sim it cannot. What `fault_dump` really covers is the
       `RECLAIMED`-to-polled routing.
@@ -2067,9 +2034,9 @@ symbol. That rule is standard across every Unix-like linker and MSVC's `.lib` ha
 `__attribute__((weak))` is a GNU extension whose archive interaction is implementation-defined. So
 it is a real portability gain, but the seam is still not expressible in pure C.
 
-**Non-regressible: the gate LANDED** as `tests/check_seam_defaults.sh`, ctest name `seam_defaults`,
+**Non-regressible: the gate LANDED** as `tests/static/check_seam_defaults.sh`, ctest name `seam_defaults`,
 registered in `user/apps/common/selftest/CMakeLists.txt` and running on EVERY board. It reads the
-selftest ELF, that target's `-Wl,-Map` link map, `tests/weak_allowlist.txt`, every archive of the
+selftest ELF, that target's `-Wl,-Map` link map, `tests/static/weak_allowlist.txt`, every archive of the
 rescan group and the app's own objects. Four legs, all four mutation-proved:
 
 1. Each `*_default.cc` member defines EXACTLY ONE global symbol, no other member of the same archive
@@ -2125,7 +2092,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       (design section 3.3, corrected there against an earlier draft).
       **The SIM consumer** closes the in-env half: `system/init/sim/service_list_uart.cc` is a
       `KOS_SVC_UART` port over host fd 1 with TX fed back to RX, running the real two-thread
-      driver, gated by `tests/check_sim_uartloop.sh`. Nothing raises that line, so the service
+      driver, gated by `tests/integration/check_sim_uartloop.sh`. Nothing raises that line, so the service
       thread's doorbell is the only thing that can move a byte -- which is exactly what makes the
       doorbell mutation-provable, and it is.
       **The XMC channel question was answered the way the design recommended**: the driver BECOMES
@@ -2139,20 +2106,12 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       work* below: `irq_detach` has exactly one caller in the tree, nothing in `exit_current` touches
       IRQ bindings, so a dead driver keeps its line forever and its binding slot leaks too.
       `spi_service.h` already promises the respawn this breaks.
-- [x] **Gate the mint on `AUTH_IRQ`, and gate use on possession of the line cap. LANDED.** Filed under the
-      same section: `irq_register` is completely ungated today while its tier-2 neighbours
-      `IRQ_ATTACH` and `IRQ_UNMASK` both check `AUTH_IRQ`, so combined with the reclaim gap **any
-      thread can squat any line on the chip permanently -- one syscall, irreversible, no authority
-      needed.** **RULED 2026-07-31** (`docs/design-m4.6-irq-driver.md` section 2.1): the two are one
-      subject with two axes. Minting a binding from a bare line number takes `AUTH_IRQ` -- the bit
-      exists, so no new authority; `wait`/`ack`/`notify` on an already-claimed line take **possession
-      of the line cap** plus the matching right, checked at `cap_resolve_e`. The authority gate alone
-      closes squatting and cannot close reclaim, because no bit releases anything -- `cap_teardown` is
-      what does, which is why the line becomes an object. A NARROWER per-line authority is **REFUSED**
-      (section 3.6): tier-2 `irq_attach` is a namespace-wide door for the same `AUTH_IRQ` holders, so
-      a per-line grant on tier-1 mint buys nothing until that syscall is retired. The falsifier is
-      recorded there. `AUTH_IRQ`'s own comment (`kernel/include/kickos/cap.h` (`enum CapAuthority`))
-      lists only `irq_attach` / `irq_unmask` and gains `irq_claim` with the gate.
+- [x] **Gate the mint on `AUTH_IRQ`, and gate use on possession of the line cap. LANDED.** It closed
+      a hole where any thread could squat any line on the chip permanently -- one syscall,
+      irreversible, no authority needed. Minting takes `AUTH_IRQ`; `wait`/`ack`/`notify` take
+      possession of the line cap plus the matching right at `cap_resolve_e`. Ruled 2026-07-31 and
+      implemented as ruled, with a narrower per-line authority REFUSED and its falsifier recorded:
+      `docs/design-m4.6-irq-driver.md` sections 2.1 and 3.6.
 - [x] **The gate breaks all four in-tree tier-1 drivers, so they migrated in the same commit.**
       `k64drv` (`user/apps/frdmk64f/k64drv/main.cc`), `f411spi`
       (`user/apps/f411disco/f411spi/main.cc`), `xmcspi`
@@ -2173,7 +2132,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       thread identity, so a multi-threaded driver reclaims only when its LAST receiver dies), and
       `exit_current` ACTS after the whole `cap_teardown` loop -- reclaiming inside a cap arm could
       re-init the UART while the dying driver's IRQ cap is still live and its line still armed.
-      Gated by `tests/check_sim_drvdeath.sh`, the only hardware-free witness in the fleet, whose
+      Gated by `tests/integration/check_sim_drvdeath.sh`, the only hardware-free witness in the fleet, whose
       assertion is one `kos_print` call site absent before the death and present after. **Not
       closed**: a per-chip `arch_console_reclaim` body exists only on `mk64f`, `xmc4800` and `esp32`,
       so elsewhere the polled route returns but the DEVICE is whatever the driver left. Per-chip
@@ -2188,7 +2147,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       cannot report its own bring-up failure"**: the report is possible because the death gives the
       console back, so the path is no longer structurally mute. A failed spawn self-heals the same
       way (`handle_close` acts on a pending reclaim note, and the helper closes before printing).
-      Both cases gated by `tests/check_sim_drvdeath.sh`; the second one is also what
+      Both cases gated by `tests/integration/check_sim_drvdeath.sh`; the second one is also what
       mutation-proves the probe, since without it the service returns 0 and the app runs on a
       console nothing is serving. **Deliberately NOT the other remedy**: publishing after the spawn
       would have the kernel ring and the driver drive one UART at once. A single-owner device means
@@ -2220,7 +2179,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       the last `SIGNAL` holder goes. Only the mirror exists (`recv_holders` -> 0 EPIPEs parked
       SENDERS, `obj_close_protocol`), so a console driver parked in `recv` blocks forever however
       its clients go away, and `system/init/sim/service_list.cc`'s own `n < 0` break is unreachable
-      defence rather than a working exit. `tests/check_sim_drvdeath.sh` therefore bounds the driver
+      defence rather than a working exit. `tests/integration/check_sim_drvdeath.sh` therefore bounds the driver
       to N served messages instead. So the gap has TWO halves now: root cannot drop `WAIT` while
       keeping the endpoint (the narrow), and a parked receiver has no last-sender wake at all.
       `cap_narrow_authority` (`kernel/syscall/cap.cc`) refuses any handle that does not name the
@@ -2495,18 +2454,11 @@ Filed by `ef14ab2`, which fixed the defect in one driver and named the other thr
       retry granularity (200 x 1 ms became 2000 x 100 us at the same ~200 ms ceiling).
 - [x] **`design-m4.6-irq-driver.md` section 7.5 said the short accept was "strictly better than the
       kernel ring's overflow behaviour". It is backwards. CORRECTED in the doc.**
-      The kernel ring's overflow branch calls `drain_sync` and refuses no byte while the channel
-      makes progress: under `IrqLock` it drains the ring, then poll-pushes the burst behind it, so
-      no caller has to do anything. Its price is an IRQ-masked stall, latency rather than data. A
-      userspace driver cannot buy that, because it must never mask interrupts, so a short accept is
-      the only option left to it -- and its cost is that correctness moves to the caller. Believing
-      the inverted version is what made three drivers look finished.
-      **The kernel ring is NOT lossless either, and the doc must not say so** -- both
-      poll loops are capped by `DRAIN_POLL_CAP`, and a stuck channel makes `drain_sync` reset the
-      ring (`console_tx.cc:77`) and the burst loop return mid-buffer (`:179`), silently and
-      uncounted. Sec.7.5 and `docs/reference/console.md` state the narrower comparison: the kernel
-      trades latency for data while the wire is alive, and degrades to a silent drop only where a
-      userspace driver has nothing to deliver either.
+      The kernel trades an IRQ-masked stall for the byte; a userspace driver must never mask, so a
+      short accept is the only option left to it and correctness moves to the caller. **Believing the
+      inverted version is what made three drivers look finished.** The kernel ring is NOT lossless
+      either: both poll loops are capped by `DRAIN_POLL_CAP` and a stuck channel drops silently and
+      uncounted. Sec.7.5 and `docs/reference/console.md` now state the narrower comparison.
 
 ## Named by a commit that fixed something else, and never filed anywhere
 
@@ -2570,7 +2522,7 @@ dedups on. Absorbing state; it is the mechanism behind a measured RP2350 hang.
       being restarted on every switch.
 - [x] **Fleet-wide green.** `xmc4800-relax` and `frdmk64f` run `1..78` clean twice each, all six
       boards pass at `m461n-*`, and sim, qemu, qemu-m3/m7/m33, qemu-riscv and microbit are green.
-- [x] **The acceptance test is a REGISTERED ctest**, `tests/ktime/ktime_rearm.cc`: it compiles the
+- [x] **The acceptance test is a REGISTERED ctest**, `tests/unit/ktime/ktime_rearm.cc`: it compiles the
       real `kernel/time/time.cc` against a fake clock and a recording `arch_timer_arm`, so it reads
       the exact value the backends dedup on -- a quantity no on-target arm can see. Mutation-proved:
       restoring the floor to `ktime_rearm` makes the moving target visible -- `got 1017500
@@ -2751,7 +2703,7 @@ M4.6.1. Each landed with a gate that is RED without it.
       **Rejected: making `PENDSTCLR` conditional.** It is ARM-only, it leaves RX, Xtensa, RISC-V
       and the sim exposed, and it does not touch the moving-target property that is the actual
       root cause -- the countdown restart would survive it untouched.
-      **Gate:** `tests/ktime/ktime_rearm.cc`, which compiles the
+      **Gate:** `tests/unit/ktime/ktime_rearm.cc`, which compiles the
       real `kernel/time/time.cc` against a fake clock and a recording `arch_timer_arm` and reads
       the exact value the backends dedup on. Host-only of necessity: that value never crosses the
       arch seam, so an on-target arm can only time a wake. The end-to-end symptom WAS reproduced
@@ -3342,11 +3294,19 @@ cancellation are proven only by `sim_driver_death` case 3 and its four mutation 
       console-window design away from two stored words and away from a `Thread* spawner` field
       (40 bytes). Give the arena headroom, or make the arm state its requirement, rather than
       leaving the next byte to discover it.
-- [ ] **Deliberate loudness regression on the driver ready-timeout path.** On `k64uartirq` and
-      `xmcuartirq`, an IRQ thread wedged BEFORE its first `kos_irq_wait` cannot be cancelled, so
-      that one bring-up diagnostic is now dropped where it used to print. It used to print by
-      reclaiming the device under a live thread, which is the defect this change removes -- so the
-      trade is right, but the failure is quieter than it was and that is worth knowing at a bench.
+- [ ] **`ThreadSet::cancel_all` cannot kill a driver thread wedged BEFORE its first `kos_irq_wait`.**
+      `cancel_all()` (`user/include/kickos/sys/driver_service.h`) calls `kos_thread_kill` on every
+      spawned peer, but the kill is COOPERATIVE and honoured only inside `kos_irq_wait`, so a peer
+      that has not yet reached its first wait rides out the unwind alive. The loudness regression
+      this entry used to report is fixed: `unwind()` now closes `ep` BEFORE cancelling peers and
+      before printing, so the endpoint's last receiver holder goes to 0, the console is noted dead
+      and reclaimed, and the tag reaches the wire. On `k64uartirq` and `xmcuartirq`
+      (`system/driver/mk64f/k64uartirq/k64uartirq.cc`,
+      `system/driver/xmc4800/xmcuartirq/xmcuartirq.cc`, both `thread_count = 2, barrier_after = 1`)
+      leg L8 forces the {EP, WAIT} holder's index >= `barrier_after`, so at a ready-timeout no
+      receiver has been spawned yet and this specific case never exercises the gap -- but the
+      underlying `cancel_all` hazard is general and still open for any peer wedged before its own
+      first wait.
 - [ ] **The sim's `arch_console_reclaim_window` returns the fake PV register block unconditionally.** The
       sim console's wire is host fd 1 and its reclaim is a no-op, so this is a modelling statement
       -- "if a sim console driver held registers, these are the registers" -- not a hardware fact.
@@ -3361,13 +3321,11 @@ cancellation are proven only by `sim_driver_death` case 3 and its four mutation 
 The plan was reviewed before execution; it killed three items and found a live bug the plan
 never touched. What was FIXED is in the commit. What was found and NOT fixed:
 
-- [ ] **`rpusb.cc` breaks the bring-up ordering its five siblings follow.** Every other driver
-      waits for the IRQ thread's bring-up BEFORE spawning the service thread, so a timeout is
-      still reportable: root is the sole receiver holder and closing the endpoint reclaims the
-      console. In `system/driver/rp2xxx/rpusb/rpusb.cc` the wait sits AFTER both spawns and after
-      `kos_handle_close(irq)`, and the timeout path returns -1 without closing `ep`. That
-      diagnostic cannot reach the wire, and the endpoint is left with the service thread as
-      holder. Behaviour change, so not folded into a comment pass.
+- [x] **`rpusb.cc` breaks the bring-up ordering its five siblings follow.** SUPERSEDED by M4.8.1:
+      the descriptor's `barrier_after = 1` against `thread_count = 2` puts the readiness poll
+      BETWEEN the two spawns and leg L8 makes any other placement unrepresentable under HANDOVER,
+      and the generic `unwind` closes the endpoint before it prints. Record:
+      `docs/design-generic-driver-service.md`.
 - [ ] **The console register window is stated 7+ times per chip with no cross-check**, and it is
       not an xmc-only shape: `mk64f` is identical and `chip_mk64f.cc` already documents the
       unenforced invariant ("the two must not drift"). Single-sourcing it through a header WAS impossible
@@ -3438,7 +3396,7 @@ never touched. What was FIXED is in the commit. What was found and NOT fixed:
 - [x] **`sim_published_console` compared a posture-1 TAP stream against a posture-0 expectation, and
       failed naming a regression that did not exist. FIXED.** The gate's expected arm count is
       computed by the CALLING tree's CMake and depends on `KICKOS_HAVE_MPU`, but
-      `tests/check_sim_published.sh` re-configures its own build tree with a bare `--preset sim`,
+      `tests/integration/check_sim_published.sh` re-configures its own build tree with a bare `--preset sim`,
       and `CMakeLists.txt` defaults that knob to 1 for the sim arch. So `cmake --preset sim
       -DKICKOS_HAVE_MPU=0` produced a red gate reading `TAP plan is 75, expected exactly 71` on a
       perfectly healthy tree. The posture is now forwarded as a required fourth argument, and the
@@ -3968,13 +3926,8 @@ here because they are pre-existing isolation facts, not things that pass created
       and slot 1 with different `cs_index` values and get the same physical line. `bus-service.md`
       and `bus.h` now say so; a multi-CS driver has to read and bound the field, and that is when
       the `-KOS_EINVAL` refusal the contract wants becomes real.
-- [x] **The tier-1 mint was completely ungated. FIXED in M4.6.1**, the sharper half of the same
-      area: any unprivileged thread could permanently squat any line on the chip, one syscall,
-      irreversible, no authority needed. **Ruled 2026-07-31** and implemented as ruled: the mint
-      checks `AUTH_IRQ` like its tier-2 neighbours `IRQ_ATTACH` and `IRQ_UNMASK`, `wait`/`ack`/
-      `notify` need possession of the line cap plus the matching right at `cap_resolve_e`, and there
-      is no seventh authority bit. Per-line granularity stays REFUSED. The statement of record is
-      `docs/design-m4.6-irq-driver.md` sections 2.1 and 3.6.
+- [x] **The tier-1 mint was completely ungated. FIXED in M4.6.1**, no seventh authority bit added.
+      Statement of record: `docs/design-m4.6-irq-driver.md` sections 2.1 and 3.6.
 - [ ] **FOUR in-tree apps grant a DEV window a live board-service driver already holds, so the
       M4.5.2 one-holder-per-window check (`domain_for` -> `-KOS_EBUSY`) now refuses their spawn.
       Silicon-only: no in-env gate covers any of them** (all are `kickos_add_diagnostic_app` or a
@@ -4107,7 +4060,7 @@ here because they are pre-existing isolation facts, not things that pass created
       **The boot-arena link assert cannot catch this**: `arch/common/boot_arena.ld.h` replays the
       idle and root stacks only, never the N user stacks a spawning app needs.
 - [ ] **About 270 `path:N` doc citations cannot be verified by any gate, and two of two spot-checks
-      had drifted -- NEEDS A CONVENTION DECISION.** `tests/check_doc_names.sh` (landed, deliberately
+      had drifted -- NEEDS A CONVENTION DECISION.** `tests/static/check_doc_names.sh` (landed, deliberately
       not wired into CTest) says so itself at `:54-57`: it strips the `:N` and never checks it,
       because nothing in the current spelling says WHAT should be at that line. The failure mode:
       a citation of `user/include/kickos/sys/abi.h:36` for the cpu-clock syscall resolves to a live
@@ -4265,25 +4218,29 @@ here because they are pre-existing isolation facts, not things that pass created
       would pass both mutations `periph_enable_unheld` was checked against, so that regression would
       ship silently. Untestable in-env: the sim's `arch_mpu_region_encodable` is unconditionally
       false, so no DEV region can exist there. The only route is a hosted unit test that fabricates a
-      `Thread` plus an `arch_mpu_region` array and calls the predicate directly, and no such harness
-      exists.
+      `Thread` plus an `arch_mpu_region` array and calls the predicate directly. The harness now
+      exists (`tests/unit/kfixture`); the arm is still owed.
 
 ## Needs hardware (bench time, not code)
 
 Every item here is scheduled: it comes due in the M4.6.3..N witness pass, which is deliberately last
 so that nothing before it waits on bench access.
 
-- [ ] **v6-M MPU programming has zero coverage anywhere.** QEMU models no Cortex-M0+ and no
-      Cortex-M23 core, so neither the emulator gates nor the silicon fleet ever exercises the
-      armv6m MPU backend. Closing it needs an **RP2040 on the bench** -- there is no software
-      substitute for it.
+- [x] **v6-M MPU programming has zero coverage anywhere. PAID 2026-08-10 by `picopi`**, the RP2040
+      this item was waiting on: armv6m enforcement, a first for the project. Capture archived in
+      `docs/archive/M4.7-M4.8.1_fleet_selftest_meas.md`; the three failing arms and the working
+      armv6m fault reporter are in the picopi section below. QEMU still models no Cortex-M0+ or
+      Cortex-M23, so this class stays silicon-only.
 - [x] **M7 speculation class** -- already covered by validated Teensy silicon (the imxrt
       MPU-enforce hang record, `docs/design-teensy-mpu-hang.md`); recorded here so the gap list
       stays honest about what *is* already covered.
-- [ ] **`arch_reboot` is witnessed on RP2350 only** (pizero2350, BOOTSEL). Two backends have never
-      run: `rebootdemo` on a picopi (RP2040 -> PICOBOOT/UF2) and on a Teensy 4.1 (`bkpt #251` ->
-      HalfKay). The Teensy path is the least certain: it is not vendor-documented, and on
-      non-Teensy RT1062 hardware the `bkpt` faults instead.
+- [ ] **`arch_reboot`'s Teensy 4.1 half (`bkpt #251` -> HalfKay) has never run.** RP2350
+      (pizero2350, BOOTSEL) is witnessed via `rebootdemo`, and the RP2040 half is now paid too,
+      though not via `rebootdemo`: the picopi USB CDC console runs record
+      `KICKOS_SHUTDOWN_TO_BOOTLOADER` surviving the fault path (`kickos_terminate` reaches
+      `arch_reboot`), so a faulting picopi image returns itself to BOOTSEL/UF2. The Teensy path
+      remains the least certain of the three: it is not vendor-documented, and on non-Teensy
+      RT1062 hardware the `bkpt` faults instead.
 - [ ] **ONE stage-4 per-app authority witness is left, and it is BLOCKED on board access, not on
       work: `f411spi` (F411-disco, PMSAv7).** Three apps were owed -- the others, `c6blink`
       (ESP32-C6, PMP NAPOT) and `rxdrv` (RX72M, RXv3), **were both taken in M4.5.6** at
@@ -4339,22 +4296,14 @@ Remaining M3 (to finish the milestone) -- gated flow (fable design review -> bra
 Silicon target for the handover: the CPU-side-MPU boards (XMC/RX/C6) where per-thread peripheral
 isolation is real; K64F is coarse-AIPS (documentation, not enforcement).
 
-- [x] **Teensy 4.1 (i.MX RT1062, M7) MPU-enforce hang -- ROOT-CAUSED AND FIXED @c072712.** The
-      deterministic `teensy41-st -DKICKOS_HAVE_MPU=1` hang at test 6 `rr_interleave` was never a
-      switch bug. A dropped (non-pow2) whole-arena grant left the worker on the PRIVDEFENA
-      background, which types the entire 1 GiB FlexSPI/SEMC aperture as Normal; the M7 -- the one
-      core in the fleet that speculates -- prefetched past the populated 8 MiB into an AHB slave
-      that never responds, and an in-order core cannot retire behind an access that never
-      completes, so it stalled forever with NO fault to report (NXP ERR011573 / Arm 1013783-B).
-      Fixed by a new shared seam, `kickos_arm_mpu_fixed` in `arch/arm/common/`: a chip declares
-      thread-invariant regions that are programmed once into the LOW descriptor slots (so
-      per-thread grants still override them), and imxrt wraps the unbacked apertures as
-      Device + XN + no-access *before* the I-cache is enabled -- ordering is load-bearing,
-      because the cache is what arms the speculation. Enforcement selftest went from a hang to a
-      full pass with a clean soak; the durable teaching is Book ch.7.6. Full record:
-      `docs/design-teensy-mpu-hang.md` (LANDED). Its residuals are tracked separately: D-cache
-      default-on is done (below), "Option B" is the fleet-wide post-M6 item, and the
-      reprogram-window / HFNMIENA bypasses are accepted in the design record.
+- [x] **Teensy 4.1 (i.MX RT1062, M7) MPU-enforce hang -- ROOT-CAUSED AND FIXED @c072712.** M7
+      speculation past the populated 8 MiB into an unbacked AHB slave, stalling forever with NO
+      fault to report (NXP ERR011573 / Arm 1013783-B); fixed by the shared `kickos_arm_mpu_fixed`
+      seam in `arch/arm/common/`, with the aperture wrap ordered BEFORE the I-cache enable.
+      Enforcement selftest went from a hang to a full pass with a clean soak. Full record:
+      `docs/design-teensy-mpu-hang.md` (LANDED); teaching is Book ch.7.6. Its residuals are tracked
+      separately: D-cache default-on is done (below), "Option B" is the fleet-wide post-M6 item, and
+      the reprogram-window / HFNMIENA bypasses are accepted in the design record.
 
 Book + exploratory (M3-adjacent, not milestone-gating):
 - [x] **Book chapter: the syscall mechanism** -- landed as ch.3.9,
@@ -4577,19 +4526,13 @@ below where they were previously mislabeled.
         cross-domain trap, 2026-07-17). REMAINING: m2-review-followup #5 (RX rounds
         misaligned regions instead of skipping -- fail-closed drift, build-robustness).
         See `docs/m2-review-followups.md`.
-  - [~] **MPU-commit / deferred-switch soundness race -- armv6m FIXED, fleet-wide PENDING.**
-        `switch_to()` calls `arch_mpu_apply(next)` EAGERLY, but every arch with a deferred
-        (PendSV/software-IRQ) switch keeps running the OUTGOING thread with `next`'s region
-        set until the physical swap -> it can fault on its own stack (or, worse, on a no-MPU
-        build, silently run under the wrong isolation). Found on RP2040/armv6m under
-        mutex-chain churn (selftest test 14 HardFault; cur/MPU=chA while chC physically ran),
-        fixed by committing the MPU in the PendSV epilogue (armv6m, via what was then its own
-        `kickos_armv6m_mpu_commit` and is now the shared arch-neutral `kickos_arch_mpu_commit`,
-        silicon 42/42 on the 50ms x300 repro). LATENT the same way on **v7-M / RX / RISC-V**
-        (all eager-apply + deferred switch) -- unobserved there under looser timing, but a real
-        soundness hole. Complete fix = move MPU-commit into EACH deferred arch's switch
-        epilogue (stash-in-apply / commit-after-swap). GATE ON A FABLE REVIEW + per-arch
-        silicon re-validation before it lands (core switch-path change). Pre-M4.
+  - [x] **MPU-commit / deferred-switch soundness race -- SUPERSEDED: the seam is fleet-wide.**
+        `arch_mpu_apply` stashes at the switch decision and `kickos_arch_mpu_commit` programs from
+        the switch epilogue after the physical swap, on every enforcing backend. Found on
+        RP2040/armv6m under mutex-chain churn (selftest test 14 HardFault; cur/MPU=chA while chC
+        physically ran), first fixed there (silicon 42/42 on the 50ms x300 repro) and generalised
+        since. Record: `docs/design-mpu-commit-deferred.md` (LANDED); contract in
+        `docs/reference/invariants.md` (`mpu-apply-on-every-switch-in`, `arch-switch-may-defer`).
 - **[M4] level-trigger tier-1 bindings.** The tier-1 IRQ contract is now latch-and-coalesce
   (a raise on a masked line latches one-deep, redelivered at unmask -- edge-safe, no lost
   pulse). A LEVEL source needs the opposite at rearm: after the driver clears the device, a
@@ -5015,23 +4958,19 @@ object holding its own instance state, which the service THREAD instantiates. A 
 sole user of a bus links the object and calls it, paying no dispatch; the service exists for the
 shared case only.
 
-- [ ] **Inventory: 10 drivers, 0 expose a driver object.** Seven have no header at all -- everything
-      lives in an anonymous namespace in a single `.cc`, so there is nothing to link:
-      `system/driver/xmc4800/xmcssc` (SPI), `system/driver/mk64f/k64dspi` (SPI),
-      `system/driver/xmc4800/xmcuart`, `system/driver/mk64f/k64uart`,
-      `system/driver/esp32c6/c6uart`, `system/driver/esp32/lx6uart`.
-      Three DO have a header, and all three expose exactly one symbol, a service entry point:
-      `k64uartirq_console_start`, `rxsci_console_start`, and `xmcuartirq`'s equivalent, each taking
-      `struct kos_service_cfg const*`. `rp2xxx/rpusb`'s two headers are per-chip register deltas,
-      not a driver API.
+- [x] **Inventory: 10 drivers, 0 exposed a driver object.** SUPERSEDED by the M4.8.1 conversion:
+      the classes are `user/include/kickos/driver/`, and one generic `bring_up` over a per-chip POD
+      descriptor replaced the twelve per-(class x chip) services. Record:
+      `docs/design-generic-driver-service.md`.
 - [ ] **The class leaves are not the class.** `arch/*/chip/*/class/` is real but holds
       register-logic fragments: `dspi_class.h` exposes one function, `dspi_rx_count(base)`. That
       satisfies the Rule 6 seam's "a real leaf and a real consumer each"; it is not a driver.
       Keep the leaves stateless and freestanding as they are -- the class object is a layer above
       them, not a replacement.
-- [ ] **Convert every driver, and make the shape the fleet's semantic.** UART, SPI and USB alike.
-      A new driver arrives class-first from then on; a service that invents API the class does not
-      have is the defect to watch for.
+- [x] **Convert every driver, and make the shape the fleet's semantic.** DONE fleet-wide in M4.8.1,
+      UART, SPI and USB alike (`docs/design-generic-driver-service.md`). The standing part: a new
+      driver arrives class-first from then on, and a service that invents API the class does not have
+      is the defect to watch for.
 - [ ] **The class API must be COMMON per peripheral kind, not per chip.** A client wraps it once and
       stops thinking about the hardware -- that abstraction is the whole point of a kernel plus a
       userspace service layer, and `roadmap.md` already sets it as M4's objective: prove the
@@ -5080,16 +5019,10 @@ shared case only.
       per image with the same chip and the same driver source. So it belongs to the CONSUMER TARGET
       rather than to a global macro -- one image may legitimately have one consumer local and another
       remote -- which is the shape `KICKOS_SERVICE_LIST` and `KICKOS_INIT_PROVIDER` already use.
-- [ ] **Console is a COOKED UART, not a type, and the tree has that inverted.** The type is the raw
-      UART; console is a policy layer above it that owns CRLF expansion and the panic-path
-      synchronous writer -- and the cooking already lives in `kernel/init/console.cc`
-      (`KICKOS_CONSOLE_CRLF`), not in any driver. But every driver's only public entry point is a
-      `*_console_start` hook, so the cooked case is the one the code is built around and the raw
-      UART is what has no API. `user/include/kickos/sys/uart.h` already defines the raw wire
-      contract -- `kos_uart_op`, `kos_uart_req`, `kos_uart_rsp`, parity and flag enums, stats -- so
-      the raw type is specified over IPC and unavailable in-process, the same inversion as SPI.
-      Converting UART means the class is the raw device, console composes on it, and a client that
-      wants bytes rather than a console gets them without a service.
+- [x] **Console is a COOKED UART, not a type, and the tree HAD that inverted.** Fixed by the M4.8.1
+      conversion: the raw type is `user/include/kickos/driver/uart.h`, five calls, in-process, and
+      console composes on it, so a client wanting bytes rather than a console gets them without a
+      service. Record: `docs/design-generic-driver-service.md`.
 - [ ] **The class must NOT cook. Cooking is the service's job.** Policy in the primitive is what
       makes a primitive unreusable: a class that expands CRLF forces every consumer wanting raw
       bytes to un-cook or thread a flag, and it stops being the plain device. So the UART class
@@ -5099,11 +5032,9 @@ shared case only.
       because a panic cannot call a service. The rule that makes both right: cooking lives with each
       CONSUMER that needs it, never in the device layer. Collapsing them would either put policy
       back in the class or make the panic path depend on IPC.
-- [ ] **Do it before the endpoints gain more consumers.** The ruling also requires the service
-      request protocol to be a 1:1 serialization of the class methods, "the class API, over the
-      wire". With no class methods the wire protocol IS the API, so extracting a class later means
-      deriving it from its own transport -- the drift that clause exists to prevent -- and the cost
-      grows per consumer. This is why it precedes M4.8.2's USB work rather than following it.
+- [x] **Done before the endpoints gained more consumers**, which is why M4.8.1 preceded the USB work
+      rather than following it: with no class methods the wire protocol IS the API, and extracting a
+      class later would mean deriving it from its own transport.
 
 ## MMU-era groundwork quick wins (from `docs/design-mmu-era-exploration.md` section 5)
 
@@ -5156,7 +5087,11 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
 - [ ] **Re-inventory the test-gate surface.** M4.5.9 root-caused the binary-introspection gates'
       silent-failure paths without rewriting them; whatever is still oversized then is this pass.
       Take the inventory against the surface as it is, do not pre-design it here. Baseline at
-      M4.5.8: 23 shell scripts, ~2,000 lines, plus 5 Python checkers.
+      M4.5.8: 23 shell scripts, ~2,000 lines, plus 5 Python checkers -- STALE, predates the `tests/`
+      reorganisation: the shell scripts now live under `tests/static/` and `tests/integration/`,
+      unit gates under `tests/unit/`, and the host unit layer is GoogleTest with per-case `ctest`
+      entries rather than scripts. Re-derive the count when this pass runs; do not carry the old
+      numbers forward as current.
 
 ## Post-M6 optimizations (not scheduled)
 
@@ -5421,9 +5356,9 @@ primitive stays `kos_exit`.
 The layer's record is `docs/design-m4.8.2-host-unit-tests.md`; section 8 is what landing it found.
 Items 5 to 7 of its section 7 are still owed and are the ones below plus the migration.
 
-- [ ] **`tests/check_class_backend.sh` does not cover the SYSCALL symbol set, and the only thing
+- [ ] **`tests/static/check_class_backend.sh` does not cover the SYSCALL symbol set, and the only thing
       protecting it is that `user/src/syscall_stubs.cc` is one archive member.** A U-seam gate
-      defines public `kos_*` names (`tests/drvbringup/kos_seam.cc` defines eleven), and a target
+      defines public `kos_*` names (`tests/unit/drvbringup/kos_seam.cc` defines eleven), and a target
       image linking one would satisfy them from the executable and keep the real stubs' member out
       of the link. Today a target image uses far more than eleven syscalls, so the linker must
       extract that member for the rest and the definitions collide loudly. **The day
@@ -5432,7 +5367,7 @@ Items 5 to 7 of its section 7 are still owed and are the ones below plus the mig
       headers; a comment does not survive a refactor.
 - [ ] **The blocking-call trap in the K-seam fixture needs a mechanism, not a paragraph.** Under a
       returning `arch_switch` an arm that asserts on a blocking primitive's RETURN VALUE is
-      asserting on a fiction, because no waker ever wrote `wait_result`. `tests/kfixture/kfixture.h`
+      asserting on a fiction, because no waker ever wrote `wait_result`. `tests/unit/kfixture/kfixture.h`
       states it as note 2 and nothing enforces it. It becomes urgent the first time a gate drives
       `mutex_lock` or `endpoint_recv` rather than the scheduler directly, which `sched_wake` does
       not.
@@ -5440,7 +5375,7 @@ Items 5 to 7 of its section 7 are still owed and are the ones below plus the mig
       K-seam fixture can seat two dying threads and drive one sweep into another, which is what the
       existing zero-hits entry above wanted and could not get in-env. Two sweeps at once is the one
       thing `g_cap.teardown_depth` exists to count, and nothing gates it.
-- [ ] **`tests/kfixture/reset()` cannot clear `g_cap.teardown_depth`**, because `cap.cc` keeps its
+- [ ] **`tests/unit/kfixture/reset()` cannot clear `g_cap.teardown_depth`**, because `cap.cc` keeps its
       `CapState` in a TU-local `constinit` that the `kernel() = Kernel{}` assignment does not reach.
       It refuses loudly instead (`cap_teardown_active()` at the top of `reset`), so an arm that
       abandons a sweep stops the suite rather than poisoning every later arm. Widening
@@ -5455,7 +5390,7 @@ Items 5 to 7 of its section 7 are still owed and are the ones below plus the mig
       usual outcome.
 - [ ] **`cap.cc`'s `g_stdout_target` is a THIRD TU-local the K-seam fixture cannot reset**, and
       unlike `teardown_depth` it cannot even be detected: `cap.cc` exports no reader. So
-      `tests/kfixture/kfixture.h` note 4 carries a "no arm may call `cap_console_publish`", and a
+      `tests/unit/kfixture/kfixture.h` note 4 carries a "no arm may call `cap_console_publish`", and a
       comment is a stopgap, not a fix. The failure it prevents is nasty: `reset()` zeroes the
       endpoint pool, so gen-encoded handles REPEAT across arms, and a stale global handle can be
       matched by a later arm's unrelated endpoint close, noting a console death in a DIFFERENT arm's
@@ -5487,11 +5422,6 @@ follows is what survived that.
       `domain_release`; the IRQ line and the console got no equivalent. A READING: no in-tree arm
       hits it, because `irq_reclaim`'s worker runs ABOVE root so the woken peer is lower-priority.
       Needs a supervisor above its driver, which is a normal posture with no in-tree instance.
-- [ ] **`Thread::domain` dangles for the whole sweep and the park.** `exit_current` releases without
-      nulling, deliberately and early. Nothing dereferences it today (the only other reader is
-      `thread_create`), but a peer's `domain_for` can recycle that slot while `c->domain` still names
-      it, and the new preemption makes that overlap the sweep rather than follow it. A future second
-      `domain_release(c->domain)` would decrement a LIVE domain to zero.
 - [ ] **`sched::wake` will resurrect an EXITED thread.** The early return covers READY and RUNNING
       only, so `wake(t)` with `t->state == EXITED` sets it READY and pushes it onto the ready list,
       after which `ThreadPool::alloc` no longer sees the slot as free. Unreachable today (an exiting
@@ -5502,10 +5432,21 @@ follows is what survived that.
       making `console_on_driver_death` unconditional, and so does deleting the fixture's own
       in-flight-sweep refusal. The K-seam fixture is now the instrument that could seat two sweeps at
       once, which is what the zero-hits entry above always wanted. Nothing does yet.
-- [ ] **The `host` label has no gate.** Eighteen hand-applied sites, and nothing checks that a new
-      test carries it or that an image-runner does not. `ctest -L host` silently shrinks and
-      `ctest -LE host` silently grows on the next test added, which is exactly the mechanicalness the
-      label was supposed to buy. A `check_labels.sh` over `ctest --show-only=json-v1` is a few lines.
+- [ ] **The `host` label is now LOAD-BEARING, and still has no gate.** Re-derived with
+      `git grep -n "LABELS host" -- '*.txt' '*.cmake'`: 11 literal sites (2 in the root
+      `CMakeLists.txt`, 1 in the shared `kickos_discover_unit_tests` in `cmake/kickos.cmake`, 1 in
+      `tests/unit/captable`, 2 in `tests/unit/telemetry`, 5 in `user/apps/common/selftest`), plus 6
+      more test targets that inherit the label indirectly through `kickos_add_unit_test` /
+      `kickos_add_kseam_gate` -- not the stale eighteen. Since M4.8.2 the root `CMakeLists.txt`
+      defers `kickos_decline_image_test`, which sets `DISABLED TRUE` on any test NOT labelled
+      `host` when `KICKOS_BUILD_INTEGRATION_TESTS=OFF`. Both directions are now silent: a host
+      test missing the label gets disabled under that knob, and an image test wrongly labelled
+      `host` carries `host` in `_labels`, so `kickos_decline_image_test`'s `NOT "host" IN_LIST`
+      check is false, it is never disabled, and it keeps running under a knob meant to skip it.
+      `ctest -L host` silently shrinks and
+      `ctest -LE host` silently grows on the next test added either way, which is exactly the
+      mechanicalness the label was supposed to buy. A `check_labels.sh` over
+      `ctest --show-only=json-v1` is a few lines.
 - [ ] **`f302nucleo`'s skip and partial sets are declared nowhere in the tree.** `microbit` is the
       only board whose expectations are stated (`user/apps/common/selftest/CMakeLists.txt`), so a
       hand-run of `check_tap_stream.sh` on f302nucleo has to be handed sets taken from the log being

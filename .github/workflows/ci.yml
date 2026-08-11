@@ -53,7 +53,11 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
-      - run: cmake --preset sim
+      # Before the configure, and NOT optional: KICKOS_BUILD_UNIT_TESTS defaults to whether
+      # find_package(GTest) succeeded, so a runner without it drops the whole host unit layer
+      # and still reports green.
+      - uses: ./.github/actions/gtest
+      - run: cmake --preset sim -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
       - run: cmake --build --preset sim
       - run: ctest --preset sim --no-tests=error --output-on-failure
 
@@ -82,7 +86,11 @@ jobs:
       - uses: ./.github/actions/kconfiglib
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build g++
-      - run: cmake --preset sim -B build/sim-ubsan
+      # GTest itself is built by Conan WITHOUT the job's CFLAGS (Conan uses its own profile),
+      # so the instrumented tree links an uninstrumented gtest. That is the same arrangement
+      # every UBSan build has with libstdc++ and it is what keeps the subject instrumented.
+      - uses: ./.github/actions/gtest
+      - run: cmake --preset sim -B build/sim-ubsan -DCMAKE_PREFIX_PATH="$KICKOS_GTEST_PREFIX" -DKICKOS_BUILD_UNIT_TESTS=ON
       - run: cmake --build build/sim-ubsan
       - run: ctest --test-dir build/sim-ubsan --no-tests=error --output-on-failure
 

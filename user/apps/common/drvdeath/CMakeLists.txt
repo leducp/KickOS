@@ -3,7 +3,7 @@
 
 # Console reclaim on driver death. Diagnostic app (KICKOS_ENABLE_SELFTEST only); sim-only
 # because the published posture plus a driver that exits on cue is only automatable on
-# the host (see tests/check_sim_drvdeath.sh).
+# the host (see tests/integration/check_sim_drvdeath.sh).
 if(NOT KICKOS_ARCH STREQUAL "sim")
   return()
 endif()
@@ -28,7 +28,7 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
   add_test(
     NAME    sim_driver_death
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sim_drvdeath.sh"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_drvdeath.sh"
             "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
   set_tests_properties(sim_driver_death PROPERTIES TIMEOUT 300)
 endif()

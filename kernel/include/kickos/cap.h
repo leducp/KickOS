@@ -23,7 +23,7 @@
 #include <kickos/sys/cap_index.h>       // KICKOS_CAP_FIRST_DYNAMIC, KOS_CAP_AUTHORITY
 
 // cmake/cap_table.cmake refuses a tree that would break any of these at CONFIGURE. They stay
-// as the backstop for tests/captable, which substitutes widths the sum never produces and is
+// as the backstop for tests/unit/captable, which substitutes widths the sum never produces and is
 // a legitimate consumer of this header.
 
 // KICKOS_CAP_CHILD_WIDTH is the narrowest table in the image (root alone holds

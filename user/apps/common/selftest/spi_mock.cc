@@ -10,7 +10,7 @@
 //
 // This TU holds the PUBLIC class names alone. A selftest image on a board whose service list
 // brings up an SPI driver also carries that chip engine, which is legal only because a service
-// driver renames its four class symbols; tests/check_class_backend.sh asserts it per link.
+// driver renames its four class symbols; tests/static/check_class_backend.sh asserts it per link.
 
 #include <kickos/driver/spi.h>
 

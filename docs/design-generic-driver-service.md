@@ -1124,7 +1124,7 @@ and the class backends (`uart_c6.cc`, `uart_lx6.cc`, `uart_k64.cc`, `uart_xmc.cc
 | `system/init/sim/service_list_uart.cc` | 271 | ~120 | `LoopUart` stays; the bring-up, the cfg and the list |
 
 **Unchanged.** Every class backend, `driver/uart.h`, `driver/spi.h`,
-`tests/check_class_backend.sh`, `cmake/kickos.cmake`, and every driver `CMakeLists.txt` except
+`tests/static/check_class_backend.sh`, `cmake/kickos.cmake`, and every driver `CMakeLists.txt` except
 `rxsci`'s (see risk R5).
 
 **Totals.** Per-chip service code 2307 -> ~1039. Substrate 1570 -> ~1880. Net about **-1000

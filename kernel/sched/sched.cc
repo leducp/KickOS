@@ -146,32 +146,19 @@ namespace kickos
             t->state = ThreadState::READY;
             kernel().policy->on_ready(t);
             Thread const* const c = kernel().current;
-            // Null between sched::init and sched::start. No reachable pre-start waker exists
-            // today; the test is here because tick_rr guards the same pointer and one
-            // guarded reader plus one unguarded reader is the defect.
+            // Null between sched::init and sched::start.
             if (c == nullptr)
             {
                 return;
             }
-            // EXITED means exit_current is past its own on_remove, so this thread will never
-            // be picked again and a switch here would ABANDON the rest of exit_current: the
-            // join waiters it has not reached yet would never be woken and kickos_terminate
-            // would never run. Its own final reschedule is the switch.
+            // Never picked again, so a switch here abandons the rest of exit_current: its
+            // remaining waiters go unwoken. Its own final reschedule is the switch.
             if (c->state == ThreadState::EXITED)
             {
                 return;
             }
-            // Inside the dying thread's cap_teardown sweep. This is a DECISION and not a fast
-            // path: an RR slice expiry rotates the running thread behind its equals, and then
-            // pick_next WOULD take an equal-priority peer. What makes admitting a strictly
-            // higher-priority one safe is that the sweep drops IrqLock between chunks and c is
-            // still on the ready structure, so it resumes and stays total. tick_rr already
-            // switches an RR dying thread out at a chunk boundary with no dying test at all.
-            // Reads kernel().current, which switch_to publishes BEFORE a deferred arch_switch:
-            // after one admitted wake the dying thread keeps running with `c` naming the peer,
-            // so later wakes in the same chunk are unguarded. Harmless today because the EPIPE
-            // drain pops in descending priority, so pick_next returns the published peer and
-            // reschedule early-returns.
+            // Not an optimisation: an RR slice expiry can rotate the dying thread off its
+            // ready-list head, and pick_next would then take an equal-priority peer.
             if (c->dying and t->prio <= c->prio)
             {
                 return;

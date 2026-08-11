@@ -28,8 +28,8 @@ Tiers: **C** = `.c .cc .h .S .ld`; **M** = `.md`; **B** = `CMakeLists.txt .cmake
 | Copyright line beside the SPDX, per the template | C M B S | ~58 files | see Q1 |
 | Guard triple present, `#ifndef` and `#define` agree | C headers | 0 | existence and self-consistency, not the spelling |
 | No tab indent, no trailing whitespace, no CRLF, final newline present | C M B S | 0 | `UseTab: Never`, and `.S` holds it too |
-| `set -u` in every `tests/check_*.sh` | S | **5** | the same scripts M4.5.9 flags for discarded exit status |
-| Every `tests/check_*.sh` sources `tests/lib/gate.sh` | S | 0 | |
+| `set -u` in every `tests/*/check_*.sh` | S | **5** | the same scripts M4.5.9 flags for discarded exit status |
+| Every `tests/*/check_*.sh` sources `tests/lib/gate.sh` | S | 0 | |
 
 ### Bucket 2 -- decidable only with real scanning
 
@@ -116,5 +116,5 @@ About 300 lines in one file (~110 scanner, ~120 rules, ~70 driver, report), agai
 - **Q3. Python.** Does no-ternary bind the S tier? Three files use `a if c else b` today.
 - **Q4. Pre-commit hook.** Ship an opt-in hook under `tools/`? Developer-local, so it can only ever be
   a convenience on top of the ctest gate, never the enforcement point.
-- **Q5. Scope of the `set -u` and `gate.sh` rules.** Proposed as `tests/check_*.sh` only: `gate.sh` and
+- **Q5. Scope of the `set -u` and `gate.sh` rules.** Proposed as `tests/*/check_*.sh` only: `gate.sh` and
   `tools/flash-common.sh` are sourced with no shebang, and `tools/flash-*` are bash. Cover `tools/`?

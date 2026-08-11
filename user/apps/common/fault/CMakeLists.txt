@@ -36,7 +36,7 @@ endif()
 # sim: x86 ud2 -> SIGILL -> the sim fault reporter, dumped through the ARMED ring.
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(NAME fault_dump
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh" "$<TARGET_FILE:fault>"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh" "$<TARGET_FILE:fault>"
             "${_fault_marker}" ${_fault_status})
   set_tests_properties(fault_dump PROPERTIES TIMEOUT 15)
 endif()
@@ -46,20 +46,20 @@ endif()
 # must pass the per-board machine name.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_fault_dump TARGET fault BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh"
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"
     ARGS "${_fault_marker}" ${_fault_status})
 endif()
 
 # microbit (armv6m): the same, exercising the ldr+bx reporter branch end-to-end.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_fault_dump TARGET fault BOARD microbit
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh"
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"
     ARGS "${_fault_marker}" ${_fault_status})
 endif()
 
 # qemu-riscv (rv32imac): illegal instruction -> kickos_rv_fault_report.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_fault_dump TARGET fault BOARD qemu-riscv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_fault_dump.sh"
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_fault_dump.sh"
     ARGS "${_fault_marker}" ${_fault_status})
 endif()

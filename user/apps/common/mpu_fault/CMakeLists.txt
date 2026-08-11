@@ -16,7 +16,7 @@ endif()
 # announced, and without both a total grant failure passes.
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(NAME mpu_fault
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_mpu_fault.sh" "$<TARGET_FILE:mpu_fault>"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_mpu_fault.sh" "$<TARGET_FILE:mpu_fault>"
             ${KICKOS_FAULT_OUTCOME})
   set_tests_properties(mpu_fault PROPERTIES TIMEOUT 15)
 endif()
@@ -27,7 +27,7 @@ endif()
 # `-bios none` runs the image bare-metal in M-mode.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv" AND KICKOS_HAVE_MPU)
   kickos_add_qemu_test(NAME qemu_riscv_mpu_fault TARGET mpu_fault BOARD qemu-riscv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_mpu_fault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_mpu_fault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
 endif()
 
 # The ARM peer of that gate: proof that a PMSA denial actually TRAPS at runtime, not
@@ -36,5 +36,5 @@ endif()
 # dedicated PMSAv8 backend, whose RBAR/RLAR encoding is a different register layout.
 if(KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS AND KICKOS_HAVE_MPU)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_mpu_fault TARGET mpu_fault BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_mpu_fault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_mpu_fault.sh" ARGS ${KICKOS_FAULT_OUTCOME})
 endif()
