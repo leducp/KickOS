@@ -152,12 +152,24 @@ M4.8.2's groundwork, and M4.8.3's step 9.3.** What follows is what remains, in o
    `-LE host` 22 partition it exactly. A BOARD BUILD REACHES NO `find_package(GTest)`: the probe is
    inside `if(KICKOS_ARCH STREQUAL "sim")`, so no cross target can acquire a dependency-manager
    requirement by accident, and `frdmk64f-st` configures with zero gtest or conan lines.
-   Still owed: the `class_backend` widening, the blocking-call trap's mechanism, an arm for the
-   concurrent sweep, and one SILICON obligation (below).
-2. **M4.8.3 -- the task layer**, if `docs/design-task-layer.md` rules for it. A task is a set of
-   threads; the address space attaches to Domain, not Task. The spike's motivation is now partly
-   discharged: the single bring-up tail takes a thread SET, which is what the old one-handle
-   parameter could not express.
+   The `class_backend` gate is widened too: its symbol set went from the 11 driver-class names to 82
+   by reading the syscall headers as well, so the U-seam's shadowing hazard no longer rests on
+   `user/src/syscall_stubs.cc` happening to be one archive member.
+   Still owed: the blocking-call trap's mechanism, an arm for the concurrent sweep, and one SILICON
+   obligation (below).
+2. **M4.8.3 -- the task layer**, `docs/design-task-layer.md`. A task is a set of threads; the address
+   space attaches to Domain, not Task. **Step 9.3 has LANDED**: a `Task` owns the `Domain*`, one task
+   per thread implicitly, `Thread::domain` became `Thread::task`. A pointer swap, so `sizeof(Thread)`
+   is unchanged on all three measured presets (256 microbit, 264 picopi, 2480 sim). Steps 9.4
+   (drivers opt in) and 9.5 (task-scoped death and the group kill) are owed, in that order, and 9.5
+   is the one with nothing to build on.
+   Its section 10 said "not in M4.8.x at all"; three of those four reasons are spent and the fourth
+   argues about step 9.4, not 9.3. **Its steps 9.1 and 9.2 were already done**: 9.1 fully, because
+   M4.8.1's generic `bring_up` accumulates every spawned thread into a `ThreadSet` so no driver can
+   under-report a peer, and 9.2 by this branch's `sizeof(Thread)` assert.
+   **The banners now say `thread '%s'` where they said `task '%s'`**, because with a Task in the tree
+   naming a thread and saying "task" is a second truth. Archived silicon captures keep the old
+   string: editing those would falsify what a past image printed.
 3. **M4.9.1 -- USB CDC console**, continuing M4.6.2. The console now **enumerates and carries payload
    on an RP2040** (`picopi`, 5.4-5.8 KiB per run), where every earlier witness was RP2350. What it
    does not do is deliver its tail: `main` returns and the teardown drops about 2.7 KiB still queued

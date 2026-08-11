@@ -372,7 +372,9 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
     NAME    class_backend
     COMMAND "${PROJECT_SOURCE_DIR}/tests/static/check_class_backend.sh"
             "${CMAKE_NM}"
-            "${PROJECT_SOURCE_DIR}/user/include/kickos/driver"
+            # Escaped, because CMake splits an unescaped `;` in a COMMAND argument into
+            # separate arguments and the positional ones after it would shift.
+            "${PROJECT_SOURCE_DIR}/user/include/kickos/driver\;${PROJECT_SOURCE_DIR}/user/include/kickos\;${PROJECT_SOURCE_DIR}/user/include/kickos/sys"
             "${_selftest_map}" "${_class_expect_app}"
             ${_seam_archives})
   set_tests_properties(class_backend PROPERTIES TIMEOUT 120 LABELS host)

@@ -394,8 +394,8 @@ is cheap groundwork M4.8.2 should carry.
 
 `tests/unit/drvbringup/kos_seam.cc` defines **eleven public `kos_*` names**. That is section 2's disease
 one level up from a driver class, and the gate that exists for it does not cover it:
-`check_class_backend.sh` derives its symbol set from `user/include/kickos/driver/*.h` only, so no
-syscall name is in the set.
+`check_class_backend.sh` derived its symbol set from `user/include/kickos/driver/*.h` only, so no
+syscall name was in the set.
 
 **Investigated, and the syscall seam turns out to be accidentally safe -- for a reason that could
 evaporate.** Every syscall stub in the tree lives in ONE archive member,
@@ -408,9 +408,18 @@ So the protection is TU granularity, not a gate. Two things follow, and the seco
 
 - `tests/unit/drvbringup/` is safe today, and so would any future U-seam gate be.
 - **The day `syscall_stubs.cc` is split per subsystem -- which is an ordinary refactor nobody would
-  flag -- the protection is gone and the failure is silent.** Either widen `class_backend`'s symbol
-  set to the syscall headers, or write down that the file is deliberately monolithic. Preference:
-  widen the gate, because a comment does not survive a refactor.
+  flag -- the protection is gone and the failure is silent.**
+
+**The gate is now widened, so the protection no longer rests on TU granularity.** Its second argument
+takes a `;`-separated list of header directories and carries `user/include/kickos` and
+`user/include/kickos/sys` alongside the driver classes: 11 declared symbols became 82. Escaped as
+`\;` in `add_test`, or CMake splits it and every positional argument after it shifts.
+
+**How to mutation-test it, because the obvious way tests the OLD protection.** Appending a syscall
+definition to an app TU makes the LINK fail, so `kickos_build` fails and the gate never runs. Feed
+the script an object defining `kos_clock_now` directly instead, which is the post-split world: leg 1
+names it against `syscall_stubs.cc.obj`. On `rx72m` the count must come back non-zero (57 defined of
+82) or the underscore-prefix leg is passing vacuously.
 
 ## 7. The order M4.8.2 took, and what it still owes
 

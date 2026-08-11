@@ -14,12 +14,18 @@
 # to uart_mock.cc over the live UART register file: kernel banner, then silence.
 #
 # Usage:
-#   check_class_backend.sh <nm> <classdir> <map> <expect-app-definition> <source>...
+#   check_class_backend.sh <nm> <headerdirs> <map> <expect-app-definition> <source>...
 #
-# <classdir> is the directory of class headers; the symbol set is DERIVED from them, so
-# over-capture is safe: a name never defined twice can never fail. <expect-app-definition>
-# is 1 on an image that compiles a mock, and is the positive control: green then means "no
-# second definer" rather than "found nothing".
+# <headerdirs> is a ';'-separated list of public-header directories, each read at depth 1.
+# It covers the SYSCALL set as well as the driver classes, because the same shadowing works
+# through either: a U-seam gate defines public kos_* names, and today only the fact that
+# user/src/syscall_stubs.cc is ONE archive member keeps a target image from resolving them
+# out of its own executable. Splitting that file per subsystem is an ordinary refactor, and
+# the derived set is what has to survive it.
+#
+# The symbol set is DERIVED from the headers, so over-capture is safe: a name never defined
+# twice can never fail. <expect-app-definition> is 1 on an image that compiles a mock, and is
+# the positive control: green then means "no second definer" rather than "found nothing".
 
 set -u
 # Every path arrives as an argument and is re-split unquoted below; a glob character in a
@@ -31,16 +37,16 @@ set -f
 export LC_ALL=C
 
 if [ "$#" -lt 5 ]; then
-    echo "usage: $0 <nm> <classdir> <map> <expect-app-definition> <source>..." >&2
+    echo "usage: $0 <nm> <headerdirs> <map> <expect-app-definition> <source>..." >&2
     exit 2
 fi
 
 NM="$1"; shift
-CLASSDIR="$1"; shift
+HEADERDIRS="$1"; shift
 MAP="$1"; shift
 EXPECT_APP="$1"; shift
 
-[ -d "$CLASSDIR" ] || fail "class header directory does not exist: $CLASSDIR"
+[ -n "$HEADERDIRS" ] || fail "no header directory given"
 [ -r "$MAP" ] || fail "cannot read $MAP"
 
 # Split on ';' as well as on argument boundaries: add_test does NOT split a
@@ -83,11 +89,20 @@ NM_ARCHIVE_DEF_RE=':[0-9a-fA-F]+ [A-Z] '
 # Line comments go first: the prose in these headers names the calls, and "see
 # kos_uart_open" must not become a symbol.
 #
-# `find`, not a shell glob: `set -f` above would leave "$CLASSDIR"/*.h unexpanded and the
-# set empty.
+# `find`, not a shell glob: `set -f` above would leave "$_d"/*.h unexpanded and the set empty.
 : > "$TMP/class_syms"
-find "$CLASSDIR" -maxdepth 1 -name '*.h' -print > "$TMP/headers"
-require_nonempty "$TMP/headers" "no header found in $CLASSDIR"
+: > "$TMP/headers"
+_oldifs=$IFS
+IFS=';'
+for _d in $HEADERDIRS; do
+    IFS=$_oldifs
+    [ -n "$_d" ] || continue
+    [ -d "$_d" ] || fail "header directory does not exist: $_d"
+    find "$_d" -maxdepth 1 -name '*.h' -print >> "$TMP/headers"
+    IFS=';'
+done
+IFS=$_oldifs
+require_nonempty "$TMP/headers" "no header found in $HEADERDIRS"
 while IFS= read -r h; do
     [ -r "$h" ] || continue
     sed -e 's://.*::' "$h" \
@@ -96,7 +111,7 @@ while IFS= read -r h; do
 done < "$TMP/headers"
 sort -u "$TMP/class_syms" -o "$TMP/class_syms"
 require_nonempty "$TMP/class_syms" \
-    "no class symbol was parsed out of $CLASSDIR/*.h; this gate would be vacuous"
+    "no class symbol was parsed out of the headers in $HEADERDIRS; this gate would be vacuous"
 ndeclared=$(wc -l < "$TMP/class_syms" | tr -d ' ')
 # The RX psABI prefixes every C identifier with an underscore, so the set carries BOTH
 # spellings. Without this the inventory comes back empty on such a target and legs 1 and 2
@@ -156,7 +171,7 @@ sort -u "$TMP/app_kos" -o "$TMP/app_kos"
 while IFS=$'\t' read -r sym member; do
     [ -n "$sym" ] || continue
     if ! grep -qxF "$sym" "$TMP/class_syms"; then
-        bad "leg 3: $member defines the public symbol $sym, which is not declared by any header in $CLASSDIR; the class symbol set this gate derives is incomplete"
+        bad "leg 3: $member defines the public symbol $sym, which is not declared by any header in $HEADERDIRS; the class symbol set this gate derives is incomplete"
     fi
 done < "$TMP/app_kos"
 

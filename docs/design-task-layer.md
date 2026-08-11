@@ -220,7 +220,7 @@ Both are `%s`-substituted with `Thread::name` (`kernel/init/fault.cc:101-105`,
 exists these banners are actively wrong: they name a thread and say "task".
 
 **Decision: the banners change to `thread '%s'` as part of this work.** Cost is `diag.h` plus four
-gate scripts (`tests/check_mpu_fault.sh:58,74`, `check_fault_dump.sh`, `check_rootfault.sh`,
+gate scripts (`tests/integration/check_mpu_fault.sh:58,74`, `check_fault_dump.sh`, `check_rootfault.sh`,
 `check_qemu_ringppb.sh`). This is not optional cleanup: leaving them is a second truth about what
 the word means.
 

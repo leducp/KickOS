@@ -5356,15 +5356,18 @@ primitive stays `kos_exit`.
 The layer's record is `docs/design-m4.8.2-host-unit-tests.md`; section 8 is what landing it found.
 Items 5 to 7 of its section 7 are still owed and are the ones below plus the migration.
 
-- [ ] **`tests/static/check_class_backend.sh` does not cover the SYSCALL symbol set, and the only thing
-      protecting it is that `user/src/syscall_stubs.cc` is one archive member.** A U-seam gate
-      defines public `kos_*` names (`tests/unit/drvbringup/kos_seam.cc` defines eleven), and a target
-      image linking one would satisfy them from the executable and keep the real stubs' member out
-      of the link. Today a target image uses far more than eleven syscalls, so the linker must
-      extract that member for the rest and the definitions collide loudly. **The day
-      `syscall_stubs.cc` is split per subsystem, which is an ordinary refactor nobody would flag,
-      the protection is gone and the failure is silent.** Widen the gate's symbol set to the syscall
-      headers; a comment does not survive a refactor.
+- [x] **FIXED in M4.8.2. `tests/static/check_class_backend.sh` covered the driver classes only, and
+      the SYSCALL set was protected by nothing but `user/src/syscall_stubs.cc` being one archive
+      member** -- a split per subsystem, an ordinary refactor nobody would flag, and the failure
+      goes silent. The second argument is now a `;`-separated list of header directories and carries
+      `user/include/kickos` and `user/include/kickos/sys` as well: **11 declared symbols became 82**,
+      of which 56 to 62 are defined per image. Escaped as `\;` in `add_test`, because CMake splits an
+      unescaped one into separate arguments and every positional after it shifts.
+      Killed by feeding the gate an object defining `kos_clock_now`: leg 1 names it against
+      `syscall_stubs.cc.obj`. Note that mutating an app TU instead does NOT test this -- the link
+      collides first and `kickos_build` fails before the gate runs, which is the old protection, not
+      the new one. Green on seven presets; `rx72m` reports 57 defined rather than 0, so the RX
+      underscore-prefix leg is live.
 - [ ] **The blocking-call trap in the K-seam fixture needs a mechanism, not a paragraph.** Under a
       returning `arch_switch` an arm that asserts on a blocking primitive's RETURN VALUE is
       asserting on a fiction, because no waker ever wrote `wait_result`. `tests/unit/kfixture/kfixture.h`
