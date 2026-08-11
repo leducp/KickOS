@@ -217,12 +217,12 @@ settled; what is left is execution.
       sender parks with `call_state` set to `CALL_NONE` (`endpoint_send`), so it satisfies neither
       call-state-gated term of `thread_effective_prio`, has no priority donation to revert, and is
       handed `KCAP_INVALID` instead of a reply capability; the unwind is unlink, write the result,
-      wake. `console_handover_finish` (`user/include/kickos/sys/driver_bringup.h`) issues a plain
+      wake. `console_handover_finish` (`user/include/kickos/sys/driver_service.h`) issues a plain
       zero-length `kos_send` on `KOS_CAP_STDOUT` from the bring-up path that runs IN root, on every
-      board with a userspace console driver (ten call sites), and the header already states the
-      wedge: a driver that hangs in bring-up instead of dying parks that send indefinitely. The file
-      is byte-identical on `master`, so the wedge is independent of M4.7.7, which only added a second
-      door to it. A timed send plus a deadline at that call site is the item, and it is one line of
+      board with a userspace console driver, and the header already states the wedge: a driver that
+      hangs in bring-up instead of dying parks that send indefinitely. That send is byte-identical
+      to `master`'s (where it lives in the retired `driver_bringup.h`), so the wedge is independent
+      of M4.7.7, which only added a second door to it. A timed send plus a deadline at that call site is the item, and it is one line of
       consumer code once the syscall exists.
 - [ ] **A timed recv is symmetric with the send arm** and closes the practical half of the item
       "`kos_cap_narrow` narrows authority but not endpoint rights, so there is no driver-death story":
@@ -2167,7 +2167,7 @@ silicon -- the per-board record is in *M4.6.1 IRQ consoles on silicon* below.
       bodies are fleet work; see `roadmap.md`'s sub-milestone ledger for the number.
 - [x] **Console visibility and handover ordering. LANDED**, by the second of the two remedies the
       finding offered -- root VERIFIES, rather than the publish being reordered.
-      `console_handover_finish` (`user/include/kickos/sys/driver_bringup.h`) closes root's own WAIT
+      `console_handover_finish` (`user/include/kickos/sys/driver_service.h`) closes root's own WAIT
       cap and then probes the route with a ZERO-LENGTH rendezvous on cap 0, which returns only once
       the driver has received: no client can run inside the window. Closing before probing is
       load-bearing -- it leaves the driver as the sole receiver, so a death takes `recv_holders` to
@@ -2681,8 +2681,9 @@ Captures: old `.session/logs/m461-rx-fixed-selftest.log`, `m461-rx-led.log`; new
 - [ ] **The probe for the mechanism, and it must not share a channel with the bug.** `d2804ce`
       found the `mark()` TDR probe was itself generating the storm it was measuring, because a TDR
       write with `TIE` armed IS an interrupt. Use `arch_diag_led_set` (P80/PORT8, which shares
-      nothing with SCI6 -- `.session/logs/m461-rx-led.log`), not a UART marker and not
-      `RXSCI_TRACE`'s `'P'`. The one measurement that settles it: `Shared::stats` already carries
+      nothing with SCI6 -- `.session/logs/m461-rx-led.log`), not a UART marker. (`RXSCI_TRACE` and
+      its `'P'` push are GONE as of the generic-service rework; the warning stands for any
+      replacement probe.) The one measurement that settles it: `Shared::stats` already carries
       `irq_wakes`, `tx_bytes` and `irq_spurious`, readable over the endpoint with `KOS_UART_STATS`.
       Run the reverted control, which now reproduces on demand, and read the three counters at the
       stop. Run the `RXSCI_NO_RX=1` control alongside, as `d2804ce` did, so the reading cannot be
@@ -3393,9 +3394,10 @@ never touched. What was FIXED is in the commit. What was found and NOT fixed:
       into. There is no longer a second header to shadow, so a second board cannot repeat this.
 - [ ] **Two comments describe a defect two incompatible ways, so one of them is wrong about the
       code**: `tele_pingpong/main.cc` says a non-last thread exit is currently broken on ARM
-      while `sched_exit/main.cc` documents it fixed and `check_sched_exit.sh` gates it; and
-      `rxsci.cc`'s `RXSCI_LED_TRACE` is described as both a latched drop witness and a
-      drain-rate witness while the code only sets it on the give-up branch.
+      while `sched_exit/main.cc` documents it fixed and `check_sched_exit.sh` gates it. (The
+      `rxsci.cc` `RXSCI_LED_TRACE` half of this item is RESOLVED: the macro is deleted. Its only
+      writer was the service thread's short-accept branch, which `uart::console_thread` now owns,
+      so keeping it would have left a witness nothing sets.)
 - [ ] **`usbcdcwit`'s `STALL_MAX = 2000` is 5x off its comment** (each zero-accept sleeps 0.2 ms,
       so the bound is ~400 ms, not ~2000 frames). The comment was corrected; if 2000 frames was
       the intent, the CONSTANT is what needs changing.
@@ -4138,7 +4140,7 @@ here because they are pre-existing isolation facts, not things that pass created
       `endpoint_send` parks on `wq_block(e->send_waiters)` when no receiver is waiting
       (`kernel/syscall/syscall_ipc.cc:137`), with no `-KOS_EPIPE` escape because `recv_holders` is
       >= 1 for its own WAIT cap. So the driver would park forever instead of exiting. Measured on
-      the code, not inferred. `spawn_unprivileged` also cannot observe a failure inside the child's
+      the code, not inferred. A spawn also cannot observe a failure inside the child's
       first instructions, so root reports bring-up success either way: the board goes dark with no
       evidence. This is why `kos_periph_enable`'s failure arm there is a comment rather than a
       report. The remedy is ordering, not a call-site swap -- publish only once the driver has
@@ -4987,6 +4989,109 @@ Touches nearly every file, so it runs after M4.5.8 merges.
       owns each value. Forwarding the slot count the same way leaves `system.h` deriving the macro
       from the generated header instead of restating `+ 1`.
 
+## M4.8.1 -- every driver gets a class, per the driver-model ruling
+
+The driver era resumes here, and this is the first thing it fixes. `docs/design-m4-driver-model.md`
+states the ruling: **"The class is the primitive; the service is a thin thread composed on top of
+it. Never the reverse"**, and "A consumer that cannot afford an IPC round-trip links the class and
+calls it". In practice the ruling is inverted for **every driver in the tree**, so this is one
+fleet-wide conversion and not a per-peripheral fix.
+
+The intended shape, which nothing currently implements: a **struct plus free functions**, a C-like
+object holding its own instance state, which the service THREAD instantiates. A consumer that is the
+sole user of a bus links the object and calls it, paying no dispatch; the service exists for the
+shared case only.
+
+- [ ] **Inventory: 10 drivers, 0 expose a driver object.** Seven have no header at all -- everything
+      lives in an anonymous namespace in a single `.cc`, so there is nothing to link:
+      `system/driver/xmc4800/xmcssc` (SPI), `system/driver/mk64f/k64dspi` (SPI),
+      `system/driver/xmc4800/xmcuart`, `system/driver/mk64f/k64uart`,
+      `system/driver/esp32c6/c6uart`, `system/driver/esp32/lx6uart`.
+      Three DO have a header, and all three expose exactly one symbol, a service entry point:
+      `k64uartirq_console_start`, `rxsci_console_start`, and `xmcuartirq`'s equivalent, each taking
+      `struct kos_service_cfg const*`. `rp2xxx/rpusb`'s two headers are per-chip register deltas,
+      not a driver API.
+- [ ] **The class leaves are not the class.** `arch/*/chip/*/class/` is real but holds
+      register-logic fragments: `dspi_class.h` exposes one function, `dspi_rx_count(base)`. That
+      satisfies the Rule 6 seam's "a real leaf and a real consumer each"; it is not a driver.
+      Keep the leaves stateless and freestanding as they are -- the class object is a layer above
+      them, not a replacement.
+- [ ] **Convert every driver, and make the shape the fleet's semantic.** UART, SPI and USB alike.
+      A new driver arrives class-first from then on; a service that invents API the class does not
+      have is the defect to watch for.
+- [ ] **The class API must be COMMON per peripheral kind, not per chip.** A client wraps it once and
+      stops thinking about the hardware -- that abstraction is the whole point of a kernel plus a
+      userspace service layer, and `roadmap.md` already sets it as M4's objective: prove the
+      console/UART, gpio, pinmux, clock/power and bus APIs are "genuinely vendor-neutral, not
+      accidentally shaped around one vendor". So `spi_transfer(obj, ...)` reads the same against
+      XMC USIC and K64F DSPI, and only construction names the chip.
+      **Done for SPI, and it was the ruling inverted exactly.** The neutral API used to be
+      reachable only over IPC: the old client wrapper was chip-agnostic and took an endpoint
+      capability, while the per-chip headers beside it (`xmcssc.h`, `k64dspi.h`) exposed only a
+      service start hook, so the only way to get the neutral API was to pay the dispatch. It is now
+      `user/include/kickos/driver/spi.h`, the class, with `system/driver/xmc4800/xmcssc/spi_usic.cc`
+      and `system/driver/mk64f/k64dspi/spi_dspi.cc` as local engines, `user/lib/spi_proxy/` as the
+      proxy over the wire, and `user/include/kickos/sys/spi_service.h` reduced to a transport that
+      calls the same class a local consumer links. Still open for the other driver types below.
+- [ ] **The unit of commonality is the DRIVER TYPE, and the taxonomy is layered.** One API per
+      peripheral kind, not one universal API and not one per chip:
+      **SPI**, **I2C**, **UART**, **USB host**, then **per USB device class** (CDC-ACM first, the
+      others as they arrive) layered on the host controller rather than beside it, and equally
+      **timer**, **PWM** (open: its own type, or a timer with a capture/compare mode), **one-wire**
+      and **GPIO**. That list is examples, not an enumeration: **the rule is general to every driver
+      type the fleet grows.** A backend that cannot express its hardware in its type's API is the
+      signal that the API is shaped around one vendor -- which is the discovery M4 exists to make,
+      so treat a genuine misfit as a finding rather than forcing it.
+- [ ] **Drivers STACK, and a high-level class must not care whether its bus is local or a service.**
+      An accelerometer on SPI is its own class, in its own type; what it needs is a BUS, and that bus
+      may be either a local SPI class instance (in-process, no dispatch) or the SPI service over an
+      endpoint. So a stacked class is written against the bus type's API and never against a
+      concrete backing.
+      **This is what the 1:1-serialization requirement actually buys**, and the reason to keep it
+      strict: the remote implementation is a PROXY in the ordinary RPC sense, with the identical
+      signature to the local object, so substituting one for the other is a build choice and nothing
+      above it changes. Let the two drift and every stacked driver has to know which it is talking to.
+      The symmetry is also the drift test: the proxy marshals into `kos_call`, and the service thread
+      on the other end unmarshals and calls THE SAME local class a local consumer would have linked.
+      A call the proxy has and the class does not, or a service that does something the class cannot,
+      means the 1:1 property is already broken.
+      **DECIDED: the substitution is compile-time, one API with several implementation `.cc` files
+      and CMake selecting one.** No function-pointer indirection, no metaprogramming -- the choice is
+      known when the image is built, so it costs nothing at runtime and keeps a direct call. For SPI
+      that is three implementations of one header: the per-chip local ones (USIC registers, DSPI
+      registers) and ONE proxy whose bodies marshal into `kos_call` on the service endpoint. The
+      proxy is per BUS TYPE, not per chip, because it speaks the chip-agnostic wire protocol.
+      **Two axes select it, and only the first follows the board.** Which chip is a board fact, like
+      everything else keyed on `KICKOS_BOARD`. Local-versus-remote is a SYSTEM COMPOSITION fact:
+      alone on the bus means local, sharing it with another consumer means remote, and that differs
+      per image with the same chip and the same driver source. So it belongs to the CONSUMER TARGET
+      rather than to a global macro -- one image may legitimately have one consumer local and another
+      remote -- which is the shape `KICKOS_SERVICE_LIST` and `KICKOS_INIT_PROVIDER` already use.
+- [ ] **Console is a COOKED UART, not a type, and the tree has that inverted.** The type is the raw
+      UART; console is a policy layer above it that owns CRLF expansion and the panic-path
+      synchronous writer -- and the cooking already lives in `kernel/init/console.cc`
+      (`KICKOS_CONSOLE_CRLF`), not in any driver. But every driver's only public entry point is a
+      `*_console_start` hook, so the cooked case is the one the code is built around and the raw
+      UART is what has no API. `user/include/kickos/sys/uart.h` already defines the raw wire
+      contract -- `kos_uart_op`, `kos_uart_req`, `kos_uart_rsp`, parity and flag enums, stats -- so
+      the raw type is specified over IPC and unavailable in-process, the same inversion as SPI.
+      Converting UART means the class is the raw device, console composes on it, and a client that
+      wants bytes rather than a console gets them without a service.
+- [ ] **The class must NOT cook. Cooking is the service's job.** Policy in the primitive is what
+      makes a primitive unreusable: a class that expands CRLF forces every consumer wanting raw
+      bytes to un-cook or thread a flag, and it stops being the plain device. So the UART class
+      moves bytes and nothing else; the console SERVICE owns the line discipline.
+      **This leaves two cookers, which is correct and not duplication to collapse.** The kernel
+      keeps its own in `kernel/init/console.cc` for the pre-handover console and the panic path,
+      because a panic cannot call a service. The rule that makes both right: cooking lives with each
+      CONSUMER that needs it, never in the device layer. Collapsing them would either put policy
+      back in the class or make the panic path depend on IPC.
+- [ ] **Do it before the endpoints gain more consumers.** The ruling also requires the service
+      request protocol to be a 1:1 serialization of the class methods, "the class API, over the
+      wire". With no class methods the wire protocol IS the API, so extracting a class later means
+      deriving it from its own transport -- the drift that clause exists to prevent -- and the cost
+      grows per consumer. This is why it precedes M4.8.2's USB work rather than following it.
+
 ## MMU-era groundwork quick wins (from `docs/design-mmu-era-exploration.md` section 5)
 
 Cheap seam/groundwork changes worth making WHILE M4/M5 code is written, so the MMU era does not
@@ -5079,3 +5184,191 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
         - RX-MPU (RX72M): restrict the supervisor region set. Xtensa (WROOM): N/A (no MPU).
       Cost: forks the fleet-wide "privileged = background" contract every board rests on (incl. the
       armv7m non-pow2-arena-drop path) -- needs a per-arch fable pass + probe-ful bring-up.
+
+## M4.8.1 re-witness after the generic-service rework (2026-08-10)
+
+The six-board pass at `e21167b6` is SUPERSEDED: a witness is valid for a TREE, and the rework
+replaced every service bring-up in the tree. Retaken at `1c250bad` over the remote bench
+(`.session/logs/m481r-*.log`).
+
+| board | class witnessed | plan | result |
+| --- | --- | --- | --- |
+| `rx72m` (RXv3, RX MPU) | RX MPU, and `rxsci` itself | `1..95` | 95 ok, 0 not ok, enforce |
+| `xmc4800-relax` (PMSAv7) | PMSAv7 | `1..95` | 95 ok, 0 not ok, enforce |
+| `picopi` (PMSAv6, armv6m) | **armv6m enforcement, a FIRST** | `1..95` | 92 ok, **3 not ok**, enforce |
+| `esp32-wroom` (LX6) | no-unit | `1..91` | 91 ok, 0 not ok, off |
+| `f302nucleo` (ring-only) | ring-only | `1..51` + `1..40` | 51 + 40 ok, 3 + 7 skip, 0 + 4 partial |
+
+**`rx72m` is the load-bearing row.** `rxsci` went 332 lines to 110 and is the outlier that decides
+whether the descriptor's variation points are right -- three threads, two lines with different
+per-thread rights, a relay holding no grant, and a spawn before the readiness barrier. It passes on
+RXv3 silicon under MPU enforcement, and there is no RXv3 emulator anywhere, so nothing else could
+have said so.
+
+**picopi's 3 failures are PRE-EXISTING and this pass proves it**: the same three arms with the same
+asserts fail identically at `a1220233` (before the rework) and at `1c250bad` (after). See the
+armv6m section above.
+
+**NOT WITNESSED, and it is not a small gap.** `frdmk64f` and `esp32c6-wroom` are absent from the
+bench, so **SYSMPU and PMP NAPOT have no witness of this tree at all**. Both are converted drivers
+(`k64uartirq`, `k64uart`, `k64dspi`, `c6uart`) and one of them carries a deliberate behaviour
+change: `k64dspi` now panics where it used to `exit(-1)`. That change is build-only. `rpusb` is also
+unwitnessed -- it builds and links for both `pizero2350` and `picopi` but has never run since the
+conversion, and its own console-reclaim premise is a named open gap.
+
+## picopi USB CDC console hard-faults, on BOTH trees, at DIFFERENT sites (2026-08-10)
+
+First time `rpusb` has ever run on an RP2040; every prior CDC witness is `pizero2350` (RP2350).
+Preset `picopi-st` with `-DKICKOS_SERVICE_LIST=kickos_services_picopi_usbcdc`, app `usbcdcwit`.
+
+**What WORKS, and it is not nothing.** The device enumerates: `/dev/ttyACM0` appears **1.0 s** after
+boot on both trees, so the descriptor tables, the chapter 9 request machine and the RP2040 USB clock
+tree all come up. The kernel banner reaches the GP0 UART and then stops, which is the console
+publishing to USB as designed.
+
+**What FAILS: a HARD FAULT, and zero bytes ever reach the ACM.** Both in unprivileged thread
+context (`(PSP)`, `IPSR == 0`), both AT A SYSCALL STUB:
+
+| tree | PC | LR (caller) | R0 |
+| --- | --- | --- | --- |
+| `a1220233` pre-rework | `kos_call`, `syscall_stubs.cc:142` | `uart_call`, `usbcdcwit/main.cc:60` -- the APP | `0x0` |
+| `aa38390a` post-rework | `kos_irq_notify`, `syscall_stubs.cc:317` | `usb::serve_one`, `usb_cdc_service.h:702` -- the SERVICE thread | **`0x2b`** |
+
+**`0x2b` is 43, and `KOS_SYS_IRQ_NOTIFY = 43`** (`abi.h:119`). So `R0` holds the syscall number at
+the moment of the fault: the `svc` escalated to a HardFault instead of dispatching. That is the
+shape to chase, and it is an armv6m-specific one.
+
+**DO NOT record this as "pre-existing, the rework is innocent".** Both trees fault, so a defect
+predates the rework -- but the SITES DIFFER, and the post-rework one is in the SERVICE thread where
+the pre-rework one is in the APP. The service must be up before the app calls, so the post-rework
+fault is EARLIER. That is consistent with two different stories and this pass cannot separate them:
+either one root cause surfacing sooner, or a SECOND service-side fault masking the first.
+
+**First thing to check**, because it is the one the rework could plausibly have broken:
+`kos_irq_notify` acts on the doorbell cap, and the doorbell is `caps[1]` of the service thread in
+the new descriptor. A wrong cap INDEX would give `-KOS_EBADF` or `-KOS_EPERM` rather than a fault,
+which is why `usb_cdc_service.h`'s `desc_ok` exists and why it is not obviously implicated -- but
+the doorbell is exactly the object this syscall touches, so verify the index before looking wider.
+
+**Two facts this pass establishes for free:**
+- **armv6m's fault reporter WORKS on silicon**, which `STATE.md` records as having executed nowhere.
+  The dump is legible: PC, LR, xPSR and R0-R3 plus R12. That gap is closed independently of the CDC.
+- **`KICKOS_SHUTDOWN_TO_BOOTLOADER` survives the fault path** (`kickos_terminate` reaches
+  `arch_reboot`), so a FAULTING picopi image still returns itself to BOOTSEL. picopi is fully
+  self-serve even for images that die.
+
+**Instrument note, and it cost a void measurement.** For a CDC run that knob cuts BOTH ways: it
+rescues a faulting board, and it REMOVES THE DEVICE when the app ends normally, so an ACM read after
+the fact returns 0 bytes from a stale node and reads as "not one byte reached the ACM". Open the ACM
+the instant it appears, in the same shell as the flash.
+
+## The PendSV pair fix is witnessed on both armv7m MPU classes (2026-08-10)
+
+`367497c2` is silicon-proven beyond the picopi runs that found it. Taken under the `_uartirq`
+service list deliberately, because the race needs a DEVICE IRQ preempting PendSV and the polled
+default lists generate almost none.
+
+| board | class | plan | result |
+| --- | --- | --- | --- |
+| `picopi` | armv6m / PMSAv6 | -- | **11 consecutive CDC runs, zero faults**, 5.4-5.8 KiB per run, against 3 faults in 4 before |
+| `frdmk64f` | armv7m / **SYSMPU** | `1..95` | 94 ok, 1 not ok -- the pre-existing `thread_join` arm, IDENTICAL to its pre-fix baseline |
+| `xmc4800-relax` | armv7m / **PMSAv7** | `1..95` | 95 ok, 0 not ok |
+| `picopi` selftest | armv6m | `1..95` | 92 ok, 3 not ok -- the documented armv6m IRQ arms, unchanged |
+
+So all three MPU backends that share the fixed path are covered. `rx72m` is RXv3 and does NOT
+exercise it; `f302nucleo` has no MPU, so its region commit is a no-op.
+
+**A LEAD, not a claim.** `xmc4800-relax` + `uartirq` reported `rr_interleave` failing BEFORE the fix
+(`m481u`) and clean after (`pv-xmc`). One run each way proves nothing -- `rr_interleave` is already
+recorded as unreliable under `uartirq` -- but the coincidence is worth chasing, because the bug just
+fixed was precisely "a device IRQ preempting PendSV corrupts the switch", which is an ORDERING
+corruption, and `rr_interleave` and `thread_join` are both ordering/timing arms that only misbehave
+under interrupt load. If the marginality was partly THIS, it should now be reproducibly clean.
+**The arch caveat that stops this being tidy:** `TODO.md` records the `rr_interleave` marginality on
+`rx72m` + `uartirq`, and rx72m is RXv3, so the ARM fix cannot explain that one. Either there are two
+causes or the RX case is the real one. Settle it with repeated `xmc4800-relax` + `uartirq` runs before
+touching the arm.
+
+**The first RP2040 CDC bytes ever.** Every prior CDC witness is `pizero2350` (RP2350). The console now
+carries payload on an RP2040. The next defect is named in `367497c2` and is NOT fixed: `main` returns,
+the bootloader teardown drops about 2.7 KiB still queued in the PUBLISHED console's TX ring, and the
+app's own PASS line is inside that. The shutdown path drains only the kernel transport, and
+`accepted=` counts ring acceptance rather than delivery.
+
+**A separate latent defect, found and deliberately left alone:** `arch/arm/common/arch_arm_common.cc`
+writes `SCB_SHCSR |= SHCSR_MEMFAULTENA` in code SHARED with armv6m. **SHCSR does not exist on
+ARMv6-M** and there is no MemManage exception there; the comment above it is a v7-M statement. RP2040
+reads it back as 0, so it is RAZ/WI and harmless today, but it is architecturally a reserved-SCS
+access on a v6-M core.
+right now; fold this into `TODO.md` on that branch when it is free.
+
+`TODO.md` carried `rr_interleave` as "not a reliable arm" and the earlier note said five trees gave
+## rr_interleave's ARM marginality had a ROOT CAUSE: the PendSV pair race (2026-08-10)
+
+`TODO.md` carried `rr_interleave` as "not a reliable arm", and the earlier note said five trees gave
+five orders, i.e. it was treated as inherently marginal and left alone. It was not inherent on ARM.
+
+**`xmc4800-relax` + `kickos_services_xmc4800relax_uartirq`, six runs each side of `367497c2`:**
+
+| tree | runs | `rr_interleave` failures |
+| --- | --- | --- |
+| `7bdf1067`, before the PendSV pair fix | 6 | **4** |
+| `367497c2`, after it | 6 | **0** |
+
+Every failure was arm 11 and only arm 11, at `main.cc:462`, `nth('B', 1) < nth('A', 2)` -- an
+ORDERING assertion. That is exactly what the fixed bug corrupted: a device IRQ preempting PendSV
+between its two reads of `g_arch_next` and the region stash, so a switch completed with one thread's
+stack and another's regions. Under the `_uartirq` service list there is real interrupt traffic to do
+the preempting, which is why the arm was marginal there and nowhere else.
+
+**The RX half of the old entry does NOT reproduce, on either tree.** `rx72m` +
+`kickos_services_rx72m_uartirq` is clean 6/6 (five runs at `367497c2` plus the earlier `m481u` run at
+`7bdf1067`). rx72m is RXv3 and shares none of the fixed ARM code, so both trees are the same code
+there -- and both are clean. So the recorded rx72m marginality either predates something already
+fixed or was specific to the trees it was measured on, which is what "five trees give five orders"
+literally says. **It is not evidence of a second live cause.**
+
+**What this changes:** `rr_interleave` should be treated as a REAL arm again on ARM, not a known
+flake. A flake label on an arm whose failure had a root cause is worse than no label -- it is what
+kept a genuine scheduler race hidden, and the arm was doing its job the whole time. Any future
+"marginal on silicon" verdict wants a rate measured on both sides of a change before the label goes
+on.
+
+**Caveat, stated because the numbers are small:** 4/6 against 0/6 is suggestive, not conclusive; a
+Fisher exact on those counts sits around p = 0.03. The mechanism is what carries the claim, not the
+counts -- an ordering arm failing under interrupt load, cured by fixing an ordering corruption caused
+by interrupt load.
+
+## thread_join is NOT a flake either: 80% on frdmk64f + uartirq, and nowhere else (2026-08-10)
+
+Found by applying the `rr_interleave` lesson one board over -- measure a RATE before writing "flake".
+
+| board + service list | runs | `thread_join` failures |
+| --- | --- | --- |
+| `frdmk64f` + `kickos_services_frdmk64f_uartirq` | 5 | **4** (7 runs total across the day: 5) |
+| `xmc4800-relax` + `..._xmc4800relax_uartirq` | 5 | 0 |
+| `rx72m` + `..._rx72m_uartirq` | 5 | 0 |
+| `esp32-wroom` + `..._esp32_uartirq` | 1 | 0 |
+| `esp32c6-wroom` + `..._esp32c6_uartirq` | 1 | 0 |
+
+**80% is not marginality, it is a defect**, and it is K64F-specific and IRQ-service-specific: the same
+board on its DEFAULT list (`k64uart` + `k64dspi`, polled) is 95 ok clean, and every other board is
+clean under its own IRQ list.
+
+**It is NOT the PendSV pair race.** That fix is in this tree and cured `rr_interleave`; this survives
+it, so it is a different cause.
+
+The assertion is `waited_us >= JOIN_PARK_US` at `main.cc:5395` against `JOIN_PARK_NS = 20000000`
+(20 ms): the target sleeps 20 ms and the join must not return before that. So **the join returns
+EARLY** -- either a spurious wake or a mis-measured elapsed time.
+
+**The first thing to check, and why:** `CONTEXT.local.md` records that the K64F's **DWT is dead**, so
+its cycle counter is unavailable and only wall-clock is valid. If `waited_us` is derived from
+anything DWT-shaped on this board it would under-report and the arm would fail while the join
+behaved correctly -- an instrument fault, not a kernel one. That distinction decides whether this is
+a real early wake (kernel) or a bad measurement (test). Rule the instrument out before chasing the
+scheduler, because a 20 ms park is long enough that a real early wake would be a serious IPC defect.
+
+Note the discipline that surfaced this: it had already been A/B-proved identical before and after the
+service rework, which made it easy to file as pre-existing and stop. Pre-existing is not the same as
+harmless, and a rate is what tells them apart.
