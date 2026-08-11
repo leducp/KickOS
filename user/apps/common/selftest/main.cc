@@ -21,6 +21,12 @@
 
 #include "tap.h"
 
+// The chip's own constants. A sim build ships none (same guard as config/board.h), so
+// anything read from here needs a fallback.
+#if defined(__has_include) and __has_include(<kickos/chip_limits.h>)
+#include <kickos/chip_limits.h>
+#endif
+
 // Which region of the registration list at the bottom of this file to register: 0 (the
 // default) is all of it, 1 and 2 are the two contiguous regions the 64 KiB FLASH parts
 // build as separate images. TAP_ADD is REDEFINED at the region boundary, so an arm
@@ -118,6 +124,20 @@ namespace
         {
             kos_sem_wait(g_done);
         }
+    }
+
+    // g_done outlives every arm and there is no sem_trywait to drain it with, so a fresh
+    // object is the only way back to a known count: an arm that a failing TAP_CHECK
+    // returned out of leaves the posts of its remaining wait_n calls banked, and the next
+    // arm's first wait_n takes one of those instead of its own event, reporting one real
+    // failure as several. A worker still running from the abandoned arm holds a cap to the
+    // OLD object, whose bumped generation refuses its post.
+    // ONLY after a failure: between every arm it churns a cap slot 90 times over and starves
+    // the later spawns on the smallest board.
+    void done_reset()
+    {
+        kos_sem_destroy(g_done);
+        kos_sem_create(0, &g_done);
     }
 
     // Staging gate: every worker of a test must exist before ANY of them runs. A spawn
@@ -399,6 +419,11 @@ namespace
     uint64_t g_rr_burn_ns = 2000000ull;
     void rr_worker(void* arg) // caps: done@1, lock@2, gate@3
     {
+        // Arrival, posted BEFORE the turnstile: the gate proves both workers were spawned,
+        // not that both reached it. A worker still starting when the gate opens lets its
+        // peer burn a whole slice alone, and the interleave then measures spawn latency
+        // instead of the scheduler. Tens of microseconds of extra bring-up flip it.
+        kos_sem_post(CH_DONE);
         stage_wait(3);
         char c = arg_char(arg);
         for (int i = 0; i < 3; i++)
@@ -442,9 +467,10 @@ namespace
         auto b = kos::thread::spawn_caps(rr_worker, reinterpret_cast<void*>('B'), "rrB", 10,
                                          caps, 3, KOS_POLICY_RR, static_cast<uint32_t>(quantum),
                                          /*privileged=*/false);
-        stage_release();
         TAP_CHECK(g_gate != KOS_CAP_NONE and a.valid() and b.valid()); // spawn failure would hang the join below
-        wait_n(2);
+        wait_n(2);        // both parked on the turnstile
+        stage_release();
+        wait_n(2);        // both finished their burns
         kos_handle_close(g_gate);
         // Sustained interleave: each of B's earlier iterations precedes A's next. A
         // pure-FIFO scheduler would run A's three to completion first, so a pass here is
@@ -649,9 +675,18 @@ namespace
     // driver's ONLY way to drop a pending it knows is stale. Dropping it gives ONE
     // service where coalescing gives two, which is what makes this arm non-vacuous.
     int g_disc_serviced = 0;
+    // This is the one arm that RETIRES a pending, so its line must have no source that can
+    // re-assert underneath the ICPR write. A chip that declares such a line wins here,
+    // and a peripheral line only passes while nothing drives it. RP2040 IRQ15 is
+    // SIO_IRQ_PROC0, which re-asserts from the core-local FIFO level with no enable bit,
+    // and the retired latch redelivers.
     // Not 11: t_irq_ownership deliberately leaves that line bound to a stale handle, so
     // sharing it would make this arm depend on registration order to still be claimable.
+#if defined(KICKOS_IRQ_SOFT_ONLY_BASE)
+    constexpr int DISCARD_LINE = KICKOS_IRQ_SOFT_ONLY_BASE;
+#else
     constexpr int DISCARD_LINE = 15;
+#endif
 
     void discard_driver(void*)
     {
@@ -3823,38 +3858,19 @@ namespace
     }
 
     // --- Bus service: per-device slot profiles ---------------------------
-    // Gated for FLASH, not for a syscall: the mock bus plus the serve_one instantiation
-    // cost ~1.3 KiB, and the non-selftest bluepill-c8 image has ~1.3 KiB of its 64 KiB
-    // left. Every CI gate sets the flag.
+    // Gated for FLASH, not for a syscall: the mock backend plus serve_one cost ~1.3 KiB, and
+    // the non-selftest bluepill-c8 image has ~1.3 KiB of its 64 KiB left. Every CI gate sets
+    // the flag.
 #if defined(KICKOS_ENABLE_SELFTEST)
-    // A controller has a single live profile register set, so kickos::spi::serve_one keeps
-    // one folded profile per kos_bus_req.device and re-applies the named one inside every
-    // transfer. The MOCK bus fills the buffer with the word_bits of the profile it was
-    // handed, so a transfer on slot 0 must read back slot 0's word size even after slot 1
-    // was configured; with one global profile the second CONFIG wins and slot 0 reads back
-    // slot 1's value.
+    // A controller has a single live profile register set, so kickos::spi::serve_one keeps one
+    // device HANDLE per kos_bus_req.device and re-applies the named one inside every transfer.
+    // The class backend under it here is spi_mock.cc, which fills the buffer with the word size
+    // of the handle it was given, so a transfer on slot 0 must read back slot 0's word size
+    // even after slot 1 was opened; with one global profile the second CONFIG wins and slot 0
+    // reads back slot 1's value.
     //
-    // MAIN must be the server: a spawned server plus a spawned client is two workers, which
-    // a 2-slot pool cannot host, so the client is the one thread spawned.
-    struct MockBus
-    {
-        struct Profile
-        {
-            uint8_t word_bits;
-        };
-        uint32_t fold(struct kos_bus_cfg const& cfg, Profile& out)
-        {
-            out.word_bits = cfg.word_bits;
-            return cfg.hz;
-        }
-        void transfer(Profile const& p, unsigned char* buf, size_t len)
-        {
-            for (size_t i = 0; i < len; i++)
-            {
-                buf[i] = p.word_bits;
-            }
-        }
-    };
+    // MAIN must be the server: a spawned server plus a spawned client is two workers, which a
+    // 2-slot pool cannot host, so the client is the one thread spawned.
 
     // What the client observed, in call order.
     volatile int g_slot_cfg0 = -99;
@@ -3951,8 +3967,10 @@ namespace
             return;
         }
 
-        MockBus bus;
-        kickos::spi::SlotTable<MockBus> slots;
+        struct kos_spi_bus bus;
+        struct kos_spi_bus_config bcfg = {0u, KOS_CAP_NONE, KOS_CAP_NONE};
+        TAP_CHECK(kos_spi_bus_open(&bus, &bcfg) == 0);
+        kickos::spi::SlotTable slots;
         unsigned char msg[64]; // the six requests below are 24 bytes at most
         for (int i = 0; i < 6; i++)
         {
@@ -3962,7 +3980,7 @@ namespace
             {
                 break;
             }
-            kickos::spi::serve_one(bus, slots, msg, static_cast<size_t>(n), info.reply_cap);
+            kickos::spi::serve_one(&bus, slots, msg, static_cast<size_t>(n), info.reply_cap);
         }
         wait_n(1);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
@@ -5392,6 +5410,12 @@ namespace
     void t_thread_join()
     {
         log_reset();
+        // t0 is read BEFORE the spawn. The target outranks root and thread_spawn runs
+        // IRQ-masked, so an interrupt landing in that syscall reschedules to the target the
+        // instant the mask drops: it reaches its sleep first, and a t0 taken afterwards
+        // excludes that head start from an interval the check below requires to CONTAIN the
+        // sleep.
+        uint64_t t0 = kos_clock_now();
         // One slot at a time: the target is joined before the stranger is spawned.
         auto w = kos::thread::spawn(join_target, nullptr, "join", 10);
         TAP_CHECK(w.valid());
@@ -5399,7 +5423,6 @@ namespace
         // JOIN_PARK_NS before it exits, so a join that answers 0 in less than that
         // answered from the EXITED early return instead, and the next case would be the
         // only one this arm ever ran.
-        uint64_t t0 = kos_clock_now();
         int const parked_rc = w.join();
         uint32_t waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         TAP_CHECK(parked_rc == 0);
@@ -5692,6 +5715,7 @@ int main(int, char**)
 {
     kos_sem_create(1, &g_lock);
     kos_sem_create(0, &g_done);
+    tap::set_after_failure(done_reset);
 
 // Region 1: everything down to the #undef below. Moving an arm across that boundary,
 // adding one or deleting one has to move the matching per-part floor in this app's
