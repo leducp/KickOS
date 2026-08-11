@@ -37,6 +37,10 @@ enum kos_errno
     KOS_EDEADLK = 35,    // self/recursive lock, or a lock that would close a wait cycle
     KOS_ENOSYS = 38,     // syscall/arch backend not implemented on this chip (the declining fallback)
     KOS_EOVERFLOW = 75,  // a bounded counter is at its ceiling; the op is refused, not wrapped
+    KOS_ENOTSUP = 95,    // the request is well-formed and the backend simply cannot express it:
+                         //   a frame format this controller has no encoding for, a rate outside
+                         //   its divider's reach. Distinct from KOS_EINVAL, which blames the
+                         //   caller, and from KOS_ENOSYS, which says the arch arm is absent.
     KOS_ETIMEDOUT = 110, // a caller-supplied deadline passed before the operation could
                          //   complete, and NOTHING happened: a timed send that expires
                          //   delivered no bytes and left no state behind

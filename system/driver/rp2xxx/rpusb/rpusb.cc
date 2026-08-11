@@ -30,7 +30,7 @@
 
 #include <kickos/io/mmio.h>
 #include <kickos/sys/bytes.h>
-#include <kickos/sys/driver_bringup.h> // console_handover_finish
+#include <kickos/sys/driver_service.h>
 #include <kickos/sys/service.h>
 #include <kickos/sys/usb_cdc_service.h>
 
@@ -39,7 +39,9 @@
 
 #include <stdint.h>
 
+namespace drv = kickos::driver;
 namespace reg = kickos::rpusb::reg;
+namespace usb = kickos::usb;
 
 namespace
 {
@@ -51,17 +53,10 @@ namespace
     constexpr uint32_t BULK_OUT_BUF = reg::DP_DATA_BASE + 64; // 0x1C0
     constexpr uint32_t NOTIFY_BUF = reg::DP_DATA_BASE + 128;  // 0x200
 
-    // Bound on the wait for the IRQ thread's own bring-up. Sleeping, not spinning: that
-    // thread may sit below root's priority, so a spin would never let it run.
-    constexpr uint32_t READY_WAIT_NS = 1000000u; // 1 ms
-    constexpr uint32_t READY_WAIT_MAX = 1000;    // ~1 s total
-
-    kickos::usb::Shared* g_shared = nullptr;
-
     // Every method touches the granted window: IRQ thread only.
     struct RpUsb
     {
-        kickos::usb::Shared* sh;
+        usb::Shared* sh;
         uintptr_t dpram; // the granted base; the register block sits 0x10000 above it
         uintptr_t regs;
 
@@ -193,15 +188,15 @@ namespace
             uint32_t ev = 0;
             if ((ints & reg::INT_BUS_RESET) != 0u)
             {
-                ev |= kickos::usb::KOS_USB_EV_BUS_RESET;
+                ev |= usb::KOS_USB_EV_BUS_RESET;
             }
             if ((ints & reg::INT_SETUP_REQ) != 0u)
             {
-                ev |= kickos::usb::KOS_USB_EV_SETUP;
+                ev |= usb::KOS_USB_EV_SETUP;
             }
             if ((ints & reg::INT_BUFF_STATUS) != 0u)
             {
-                ev |= kickos::usb::KOS_USB_EV_BUFFER;
+                ev |= usb::KOS_USB_EV_BUFFER;
             }
             return ev;
         }
@@ -369,20 +364,75 @@ namespace
 
     void rpusb_irq_thread(void* arg)
     {
-        kickos::usb::Shared* sh = static_cast<kickos::usb::Shared*>(arg);
+        usb::Shared* sh = static_cast<usb::Shared*>(arg);
         RpUsb dev;
         dev.sh = sh;
         dev.dpram = reg::DPRAM_BASE;
         dev.regs = reg::REGS_BASE;
-        kickos::usb::Cdc<RpUsb> cdc(dev, sh);
+        usb::Cdc<RpUsb> cdc(dev, sh);
         cdc.bring_up();
-        kickos::usb::irq_loop(cdc, sh); // parks in irq_wait; never returns
+        usb::irq_loop(cdc, sh); // parks in irq_wait; never returns
     }
 
     void rpusb_service_thread(void* arg)
     {
-        kickos::usb::console_serve_loop(static_cast<kickos::usb::Shared*>(arg));
+        usb::console_serve_loop(static_cast<usb::Shared*>(arg));
     }
+
+    int block_init(void* blk, struct kos_service_cfg const*)
+    {
+        // A bare Shared, not a Ctx: the CDC class is a template over the device, not a set
+        // of kos_usb_* symbols, so there is no class config to carry.
+        usb::shared_init(static_cast<usb::Shared*>(blk));
+        return 0;
+    }
+
+    constexpr drv::Descriptor k_desc = {
+        .tag = "[rpusb] ",
+        // The register map is hard-wired to the one USB block, and USBCTRL is claimed by
+        // number, so a cfg naming another window would grant one region and poke another.
+        .expected_base = reg::DPRAM_BASE,
+        .block_size = usb::KOS_USB_BLOCK_SIZE,
+        .ready_offset = usb::KOS_USB_READY_OFFSET,
+        // HANDOVER is the WRONG posture here on both boards: the kernel console is a pin
+        // UART, a DIFFERENT peripheral from the one taken here, so the publish blinds a
+        // working UART and reclaim-on-death is not what a disjoint device needs. The ruled
+        // behaviour is a fallback to KERNEL_OWNED, which is a kernel delta and is NOT
+        // implemented; it lands as a third ep_posture, not a flag here.
+        .ep_posture = drv::KOS_DRV_EP_HANDOVER,
+        .svc_kind = KOS_SVC_CONSOLE,
+        .line_count = 1,
+        .thread_count = 2,
+        // The poll does NOT wait for enumeration, and must not, or boot would depend on a
+        // cable being plugged in.
+        .barrier_after = 1,
+        // LEVEL: INTS is a pure OR of sources cleared at the peripheral, and its
+        // BUFF_STATUS bit stays asserted until every BUFF_STATUS bit is clear.
+        .lines = {{rpchip::irq::USBCTRL_IRQ, KOS_IRQ_LEVEL}},
+        .threads = {{.entry = rpusb_irq_thread,
+                     .name = "rpusbirq",
+                     .prio_delta = 1,
+                     .arg = drv::KOS_DRV_ARG_BLOCK,
+                     .mem_grant = true,
+                     .window_grant = true,
+                     .cap_count = 1,
+                     .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT}}},
+                    {.entry = rpusb_service_thread,
+                     .name = nullptr,
+                     .prio_delta = 0,
+                     .arg = drv::KOS_DRV_ARG_BLOCK,
+                     .mem_grant = true,
+                     .window_grant = false,
+                     .cap_count = 2,
+                     // The SAME line as the doorbell, SIGNAL only: a pure post on the
+                     // binding, not a raise at the controller.
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT},
+                              {drv::KOS_DRV_RES_LINE0, KOS_CAP_SIGNAL}}}},
+        .block_init = block_init
+    };
+
+    static_assert(drv::valid(k_desc), "the rpusb descriptor is not a well-formed driver shape");
+    static_assert(usb::desc_ok(k_desc), "the rpusb cap positions do not match KOS_USB_CAP_*");
 }
 
 extern "C"
@@ -390,132 +440,7 @@ extern "C"
 
 int rpusb_console_start(struct kos_service_cfg const* cfg)
 {
-    if (cfg == nullptr or cfg->kind != KOS_SVC_CONSOLE)
-    {
-        kos::print("[rpusb] ERROR: bad or non-console service cfg\n");
-        return -1;
-    }
-    // The register map is hard-wired to the one USB block, so a cfg naming another
-    // window would grant one region and poke another.
-    if (cfg->mmio_base != reg::DPRAM_BASE)
-    {
-        kos::print("[rpusb] ERROR: cfg mmio_base is not the USB controller\n");
-        return -1;
-    }
-
-    void* blk = kos_ram_alloc(kickos::usb::KOS_USB_BLOCK_SIZE);
-    if (blk == nullptr)
-    {
-        kos::print("[rpusb] ERROR: arena cannot spare the ring block\n");
-        return -1;
-    }
-    // Reach it before writing it: kos_ram_alloc hands back arena memory but grants
-    // nothing, and under enforcement root's own region set does not cover the arena.
-    if (kos_mem_self_grant(blk, kickos::usb::KOS_USB_BLOCK_SIZE) != 0)
-    {
-        kos::print("[rpusb] ERROR: mem_self_grant of the ring block refused\n");
-        return -1;
-    }
-    g_shared = static_cast<kickos::usb::Shared*>(blk);
-    kickos::usb::shared_init(g_shared);
-
-    kos_cap_t ep = KOS_CAP_NONE;
-    if (kos_endpoint_create(&ep) != 0)
-    {
-        kos::print("[rpusb] ERROR: endpoint_create failed\n");
-        return -1;
-    }
-
-    // The kernel console is a PIN UART on both boards, a different peripheral from the one
-    // this driver takes, but publishing still darks it because the publish is what routes
-    // stdout here. A disjoint-device console should instead fall back to KERNEL_OWNED on
-    // driver death, and that is NOT implemented (see the service-list provider).
-    if (kos_console_publish(ep) != 0)
-    {
-        kos::print("[rpusb] ERROR: console_publish failed\n");
-        kos_handle_close(ep);
-        return -1;
-    }
-
-    // LEVEL: INTS is a pure OR of sources cleared at the peripheral, and its BUFF_STATUS
-    // bit stays asserted until every BUFF_STATUS bit is clear. It comes back MASKED: the
-    // IRQ thread's first wait arms it, in the thread that consumes it.
-    kos_cap_t irq = KOS_CAP_NONE;
-    if (kos_irq_claim(rpchip::irq::USBCTRL_IRQ, KOS_IRQ_LEVEL, &irq) != 0)
-    {
-        kos_handle_close(ep); // closing reclaims the console, so the tag reaches the wire
-        kos::print("[rpusb] ERROR: irq_claim failed\n");
-        return -1;
-    }
-
-    // The IRQ thread: the register window (R|W|DEV), the line (WAIT) and the shared
-    // block. Strictly ABOVE the service thread: on USB the drain has an enumeration
-    // deadline to meet.
-    kos_cap_grant const irq_caps[1] = {{irq, KOS_CAP_WAIT}};
-    auto const irqt = kos::thread::spawn(rpusb_irq_thread, g_shared, "rpusbirq",
-                                         static_cast<uint8_t>(cfg->prio + 1),
-                                         KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                         /*mem=*/g_shared,
-                                         kickos::usb::KOS_USB_BLOCK_SIZE,
-                                         /*stack=*/nullptr, /*stack_size=*/0,
-                                         /*mmio=*/reinterpret_cast<void*>(cfg->mmio_base),
-                                         cfg->mmio_window, irq_caps, 1);
-    if (not irqt.valid())
-    {
-        kos_handle_close(irq);
-        kos_handle_close(ep); // closing reclaims the console, so the tag reaches the wire
-        kos::print("[rpusb] ERROR: IRQ thread spawn failed\n");
-        return -1;
-    }
-
-    // Wait for the IRQ thread's bring-up BEFORE spawning the service thread, so a timeout
-    // is still REPORTABLE: root is the only WAIT-bearing holder of E until the service
-    // thread exists, so closing E here takes recv_holders to 0, notes the console dead and
-    // gives it back. Waiting after that spawn instead leaves the service thread holding E,
-    // the console published to a driver that is not serving, and the tag unable to reach
-    // the wire. This does NOT wait for enumeration, and must not: that would make boot
-    // depend on a USB cable being plugged in.
-    // Close BEFORE cancelling, so the note is already set when the cancelled thread's exit
-    // runs the reclaim. Cancellation is cooperative, so the one case it cannot rescue is
-    // this timeout with the IRQ thread wedged before its first kos_irq_wait.
-    uint32_t waited = 0;
-    while (g_shared->ready == 0u)
-    {
-        if (waited >= READY_WAIT_MAX)
-        {
-            kos_handle_close(irq);
-            kos_handle_close(ep);
-            (void)irqt.kill();
-            kos::print("[rpusb] ERROR: IRQ thread never reached its loop\n");
-            return -1;
-        }
-        waited++;
-        kos_sleep_ns(READY_WAIT_NS);
-    }
-
-    // The service thread: the endpoint (WAIT) and the SAME line as the DOORBELL (SIGNAL
-    // only). No MMIO window: a DEV window has exactly one holder.
-    kos_cap_grant const svc_caps[2] = {{ep, KOS_CAP_WAIT}, {irq, KOS_CAP_SIGNAL}};
-    auto const svct = kos::thread::spawn(rpusb_service_thread, g_shared, cfg->name,
-                                         cfg->prio, KOS_POLICY_FIFO, 0,
-                                         /*privileged=*/false,
-                                         /*mem=*/g_shared,
-                                         kickos::usb::KOS_USB_BLOCK_SIZE,
-                                         /*stack=*/nullptr, /*stack_size=*/0,
-                                         /*mmio=*/nullptr, 0, svc_caps, 2);
-    if (not svct.valid())
-    {
-        kos_handle_close(irq);
-        kos_handle_close(ep);
-        (void)irqt.kill(); // frees the window, which is what gives the console back
-        kos::print("[rpusb] ERROR: service thread spawn failed\n");
-        return -1;
-    }
-
-    kos_handle_close(irq);
-
-    return kickos::driver::console_handover_finish(
-        ep, "[rpusb] ERROR: driver died during bring-up\n", irqt);
+    return drv::bring_up(k_desc, cfg, nullptr);
 }
 
 }

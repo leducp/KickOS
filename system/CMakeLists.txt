@@ -105,7 +105,7 @@ elseif(KICKOS_CHIP STREQUAL "xmc4800")
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "esp32c6")
   # IRQ-console alternative and the board's ONLY service list, so the default stays
-  # kickos_services_none: the IRQ-driven console has no silicon witness yet. kickos_c6uart
+  # kickos_services_none. Witnessed on silicon 2026-08-07: 1..84 all ok. kickos_c6uart
   # exports no header, so the provider declares the bring-up itself.
   kickos_add_board_provider(services_esp32c6_uartirq
     SOURCE init/esp32c6-wroom/service_list_uartirq.cc
@@ -114,7 +114,7 @@ elseif(KICKOS_CHIP STREQUAL "esp32c6")
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "rx72m")
   # IRQ-console alternative and the board's ONLY service list, so the default stays
-  # kickos_services_none: the IRQ-driven console has no silicon witness yet. rxsci.h comes
+  # kickos_services_none. Witnessed on silicon 2026-08-07: 1..95 all ok. rxsci.h comes
   # from kickos_rxsci's own PUBLIC dir, hence the <rxsci.h> spelling in the provider.
   kickos_add_board_provider(services_rx72m_uartirq
     SOURCE init/rx72m/service_list_uartirq.cc
@@ -123,7 +123,7 @@ elseif(KICKOS_CHIP STREQUAL "rx72m")
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "esp32")
   # IRQ-console alternative and the board's ONLY service list, so the default stays
-  # kickos_services_none: the IRQ-driven console has no silicon witness yet. kickos_lx6uart
+  # kickos_services_none. Witnessed on silicon 2026-08-07: 1..91 all ok. kickos_lx6uart
   # exports no header, so the provider declares the bring-up itself.
   kickos_add_board_provider(services_esp32_uartirq
     SOURCE init/esp32-wroom/service_list_uartirq.cc

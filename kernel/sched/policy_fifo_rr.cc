@@ -96,6 +96,16 @@ namespace kickos
         void policy_on_remove(Thread* t)
         {
             rq_remove(t);
+            // A park or an exit forfeits the slice remainder. The deadline is absolute, so
+            // a park shorter than the quantum resumes on whatever wall time was left and
+            // is rotated away microseconds after waking. Every parking path sets `state`
+            // before detaching, so READY/RUNNING here means the sole re-seating caller
+            // (sched::set_prio), which re-adds at once and must keep the deadline: a
+            // boost/unboost pair would otherwise refund the whole quantum.
+            if (t->state != ThreadState::READY and t->state != ThreadState::RUNNING)
+            {
+                t->slice_deadline_ns = UINT64_MAX;
+            }
         }
 
         void policy_on_yield(Thread* t)
@@ -105,10 +115,21 @@ namespace kickos
 
         void policy_on_slice_expire(Thread* t)
         {
-            // The re-arm is not optional: with no equal-priority peer, reschedule() keeps t
-            // running, and a deadline left in the past re-arms every min-delta.
             rq_rotate(t);
-            arm_slice(t);
+            // Arming HERE is only correct when t keeps the CPU: the deadline is absolute,
+            // and a thread rotated behind a peer does not run again for a whole quantum,
+            // so a now+q written here is already most of the way spent by the time
+            // on_switch_in sees it, and on_switch_in then honours it as a remainder and hands t a
+            // sliver. The sliver shortens the peer's next slice the same way, so the pair
+            // never recovers a full slice. With no peer, reschedule() keeps t running and
+            // no on_switch_in follows, so the arm has to happen here or the deadline stays
+            // in the past and re-fires every min-delta.
+            if (policy_pick_next() == t)
+            {
+                arm_slice(t);
+                return;
+            }
+            t->slice_deadline_ns = UINT64_MAX; // spent: the next switch-in arms a full one
         }
 
         void policy_on_switch_in(Thread* t)

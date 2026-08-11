@@ -26,6 +26,7 @@
     X(KOS_EDEADLK,    "self, recursive, or cycle-closing lock",                       "EDEADLK")  \
     X(KOS_ENOSYS,     "not implemented on this chip",                                 "ENOSYS")   \
     X(KOS_EOVERFLOW,  "a bounded counter is at its ceiling",                          "EOVERFLOW")\
+    X(KOS_ENOTSUP,    "well formed, but this backend cannot express it",             "ENOTSUP")  \
     X(KOS_ETIMEDOUT,  "the deadline passed and nothing happened",                     "ETIMEDOUT")\
     X(KOS_ECANCELED,  "this thread was cancelled and is expected to exit",            "ECANCELED")\
     X(KOS_EOWNERDEAD, "mutex ACQUIRED but the prior owner died holding it",           "EOWNERDEAD")

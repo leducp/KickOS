@@ -236,7 +236,7 @@ Same split `docs/design-m4.6-irq-driver.md` section 1 uses.
 | | TX and RX policy over the two rings, and the drop-versus-block ruling of sec.4.5 | M4.6.2 |
 | **Shared M4.6.1 substrate, reused unchanged** | `user/include/kickos/sys/byte_ring.h` (`kos_byte_ring`) | landed |
 | | the two-thread shape and the doorbell (`user/include/kickos/sys/uart_service.h` (`irq_loop`, `serve_loop`)) | landed |
-| | `user/include/kickos/sys/driver_bringup.h` (`spawn_unprivileged`, `console_handover_finish`) | landed |
+| | `user/include/kickos/sys/driver_service.h` (`spawn_one`, `console_handover_finish`) | landed |
 | | the line capability, spawn-time delegation, reclaim on death | landed |
 | **Per-backend controller half** | endpoint setup and teardown; the "queue this buffer" and "a buffer completed" primitives | 2 backends |
 | | the interrupt-status demux, and the bus-reset / suspend / resume handling | 2 backends |
@@ -443,7 +443,7 @@ prerequisite. The dependency is nonetheless correct, for three reasons that are:
    M4.6.1 nothing released a line on death and nothing flipped the console's ownership state, so
    a dead USB driver left the line armed, its binding slot burned and the board silent. That is
    hole 2 of `docs/design-m4.6-irq-driver.md` section 0 and it is closed.
-2. **The handover ordering.** `user/include/kickos/sys/driver_bringup.h`
+2. **The handover ordering.** `user/include/kickos/sys/driver_service.h`
    (`console_handover_finish`) exists so a bring-up failure is *reportable*. USB enumeration is
    the longest and most failure-prone bring-up in the fleet, so it is the case that most needs a
    failure path that is not a dark board.
@@ -515,9 +515,9 @@ explicitly rather than by inference:
 text: the RP datasheet documents no timeout on an unclaimed buffer, and the RT1062 RM specifies
 no bulk IN timeout at all (its only related statement is that an unserviced ISO dTD "will stay
 primed indefinitely"). With no host there are no IN tokens and the buffer never returns.
-`KICKOS_POLL_SPIN_MAX` is the precedent and it is the right one -- it is already what every
-per-chip bring-up poll uses, and `user/include/kickos/sys/driver_bringup.h` already names it as
-the bound on a hanging bring-up.
+`KICKOS_POLL_SPIN_MAX` is the precedent and it is the right one -- a bring-up wait must be
+bounded, and `user/include/kickos/sys/driver_service.h` bounds both of its own that way
+(`KOS_DRV_READY_WAIT_MAX` on the readiness latch, `KOS_DRV_HANDOVER_PROBE_US` on the probe).
 
 **A fault before the host finishes configuring has no console.** Correct, and sharper than
 `TODO.md` puts it: the window is not bring-up-shaped, it is *host*-shaped, so on an un-cabled

@@ -16,7 +16,10 @@
 
 namespace kickos::esp32::reg::system
 {
-    // Fixed SoC clock rates. APB is 80 MHz on the PLL for both 160 and 240 MHz CPU.
+    // What this chip's own bring-up programs. APB_CLOCK_HZ HOLDS ONLY WHILE SOC_CLK_SEL
+    // SELECTS THE PLL, where it is 80 MHz for every CPUPERIOD_SEL (TRM v5.8 Table 7.2-4
+    // p.169); off the PLL, APB follows the crystal, which no register on this part reports.
+    // Read the select before using it as a rate (arch_periph_clock_hz).
     constexpr uint32_t CPU_CLOCK_HZ = 240000000u;
     constexpr uint32_t APB_CLOCK_HZ = 80000000u;
 

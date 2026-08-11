@@ -489,6 +489,37 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func)
     return 0;
 }
 
+// Branch-clock oracle (arch.h): report the function clock feeding a peripheral block so a
+// userspace driver derives its own divisor. RTC_CNTL and DPORT are reserved blocks, so the
+// holder of a UART window cannot read the tree itself.
+//
+// THIS CHIP PUBLISHES NO APB FREQUENCY AND NO CRYSTAL FREQUENCY. APB is specified only as a
+// function of the CPU clock SOURCE (TRM v5.8 Table 7.2-4 p.169), and on the PLL branch it is
+// 80 MHz for every CPUPERIOD_SEL, independent of the crystal. That branch is a genuine
+// register-derived answer and it is the only one this returns.
+//
+// The XTAL and RC_FAST branches make APB equal to CPU_CLK, whose numerator is the crystal,
+// and the crystal is readable from NO register on this part (TRM section 7.2.2 p.167 gives
+// only a 2..40 MHz range; there is no CLK_XTAL_FREQ field like the C6's). It can only be
+// ESTIMATED against the untrimmed internal RC oscillator through the TIMG calibration unit,
+// which is several percent out and would also collide with the bring-up's use of
+// RTCCALICFG as a clock-domain barrier. APLL sits behind the analog reg-I2C bus. All three
+// answer 0: a wrong branch clock silently garbles the wire.
+uint32_t arch_periph_clock_hz(uintptr_t base)
+{
+    if (base != mmap::UART0_BASE)
+    {
+        return 0;
+    }
+    uint32_t const sel = (r32(reg::rtc_cntl::CLK_CONF) >> reg::rtc_cntl::SOC_CLK_SEL_SHIFT)
+                         & reg::rtc_cntl::SOC_CLK_SEL_MASK;
+    if (sel != reg::rtc_cntl::SOC_CLK_SEL_PLL)
+    {
+        return 0;
+    }
+    return reg::system::APB_CLOCK_HZ;
+}
+
 void arch_init(void)
 {
     // FP: the LX6 single-precision FPU (coprocessor 0) is enabled for all threads

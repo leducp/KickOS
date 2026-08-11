@@ -53,6 +53,24 @@ endif()
 # that cannot grant them stays a target for the rest of the suite. Neither is a sum over the
 # run: every other arm reclaims before the next begins.
 set(_selftest_srcs main.cc "${PROJECT_SOURCE_DIR}/tests/tap/tap.cc")
+# spi_mock.cc is a stand-in SPI backend UNDERNEATH t_bus_device_slots, which is an
+# integration test of kickos::spi::serve_one over a real endpoint: unprivileged spawn,
+# capability grants, reply caps. The mock is the dependency, not the subject, so the arm
+# cannot move off target. Gated exactly like that arm, so a non-selftest image carries it.
+# No BACKEND keyword: it is the suite's own TU, not a library the fleet selects.
+#
+# It therefore DEFINES the public kos_spi_* names, while a selftest image also carries a chip
+# driver whenever the board's service list brings one up (on frdmk64f and xmc4800-relax that
+# is the Kconfig default and needs no -D). Two definitions in one image is legal only because
+# the SPI SERVICE drivers rename their class symbols; this mock holds the public names alone.
+# tests/check_class_backend.sh asserts it per link.
+#
+# There is no uart_mock.cc here on purpose. The UART class contract is measured on the host
+# (tests/uartclass), so no target image defines the public kos_uart_* names and every board
+# links exactly one UART backend.
+if(KICKOS_ENABLE_SELFTEST)
+  list(APPEND _selftest_srcs spi_mock.cc)
+endif()
 kickos_add_application(selftest SOURCES ${_selftest_srcs} BOARD ${KICKOS_BOARD}
   CAPABILITIES 5 CAPABILITIES_OPTIONAL 3)
 set(_selftest_images selftest)
@@ -337,6 +355,26 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
             "${PROJECT_SOURCE_DIR}/tests/weak_allowlist.txt"
             ${_seam_archives})
   set_tests_properties(seam_defaults PROPERTIES TIMEOUT 120)
+
+  # Driver-class shadowing gate, on the SAME inventory: the seam gate asks which member
+  # answered an optional arch/chip seam, this one asks whether a real backend's public
+  # class symbols were answered by the mocks instead. Same failure shape (an archive member
+  # that is never extracted, and no duplicate symbol to report it), different symbol set,
+  # so it is a second script rather than a fifth leg. The last argument before the
+  # inventory is 1 when this image compiles the mocks, which is the gate's positive
+  # control: it must SEE a class definition on the link line.
+  set(_class_expect_app 0)
+  if(KICKOS_ENABLE_SELFTEST)
+    set(_class_expect_app 1)
+  endif()
+  add_test(
+    NAME    class_backend
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_class_backend.sh"
+            "${CMAKE_NM}"
+            "${PROJECT_SOURCE_DIR}/user/include/kickos/driver"
+            "${_selftest_map}" "${_class_expect_app}"
+            ${_seam_archives})
+  set_tests_properties(class_backend PROPERTIES TIMEOUT 120)
 endif()
 
 # RISC-V-under-PMP small-data guard: the gp window sits inside the app grant, so the

@@ -6,10 +6,16 @@
 # owning the endpoint, plus the privileged one-shot bring-up; see k64uartirq.h). The
 # IRQ-driven counterpart of kickos_k64uart, which is polled and TX-only.
 #
+# TWO SOURCES. ../uart_k64.cc is the chip's ONE backend of the raw UART class
+# <kickos/driver/uart.h> and owns every register; k64uartirq.cc is the service composed on
+# it. It sits at chip level because kickos_k64uart compiles the SAME backend, so an image
+# may link only one of the two drivers.
+#
 # REGDIR carries the chip's regs/uart.h bit map and irq.h vector numbers (definitions
 # only, no code). CLASS carries the transmit-ready read, which is shared UART register
 # logic (decision R-A), not a local copy.
-kickos_add_driver(k64uartirq REGDIR arch/arm/chip/mk64f CLASS kickos_class_mk64f)
+kickos_add_driver(k64uartirq SOURCES k64uartirq.cc ../uart_k64.cc
+                  REGDIR arch/arm/chip/mk64f CLASS kickos_class_mk64f)
 
 # The bring-up entry is declared beside the driver rather than in user/include, so a
 # service-list provider that links this target also sees the header.

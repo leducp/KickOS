@@ -242,7 +242,7 @@ Two records outlive them:
 - **The CPU/peripheral clock coupling is over-generalised, and should be a question asked of the chip.
   M4.6 work.** `cpu_clock_set` refuses outright while a userspace driver owns the console, on the
   grounds that the kernel cannot re-derive a baud it no longer owns. That veto generalises from a
-  biased sample: exactly two chips implement `arch_periph_clock_hz` and both are coupled, so the
+  biased sample: five chips implement `arch_periph_clock_hz` and the two this argument rested on are coupled, so the
   decoupled case has never had to be stated. The right shape is a **notification to the affected
   services**, and the console is not the only one.
 - **`arch_reserved_blocks` reasons about addresses, and interrupt routing is not an address.** A

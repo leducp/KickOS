@@ -30,6 +30,6 @@ target_link_libraries(kickos_user PUBLIC kickos_arch_${KICKOS_ARCH} kickos_lib)
 install(TARGETS kickos_user EXPORT KickOSTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 
-# Chip-neutral userspace libraries apps link (kickos_spi_client, ...). The chip
+# Chip-neutral userspace libraries apps link (kickos_spi_proxy, ...). The chip
 # drivers themselves now live under system/driver as board support.
 add_subdirectory(lib)

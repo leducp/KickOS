@@ -185,7 +185,7 @@ false for that board; section 10 carries the sweep.
 - **A contiguous per-task run with a task-relative index.** Required by the reserved index plane,
   and it rests on **one** seated index, not two. `KOS_CAP_STDOUT` is 0 in every task and is genuinely
   seated -- `cap_install_defaults` and `cap_seat_stdout` write it, and
-  `system/init/common/default_init_run.cc`, `user/include/kickos/sys/driver_bringup.h` and
+  `system/init/common/default_init_run.cc`, `user/include/kickos/sys/driver_service.h` and
   `user/apps/common/drvdeath/main.cc` read it. `KOS_CAP_CLOCK` at index 1 has no reader that names
   it by that constant, but it is written: `KOS_SPAWN_DELEGATED_CAP0` is 1 and `cap_install_at`
   rejects only index 0, so every DEFAULTED spawn grant seats index 1 -- which is the aliasing

@@ -2,84 +2,60 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // XMC4800 userspace polled UART TX console driver (see <kickos/driver/xmcuart.h>).
-// An UNPRIVILEGED thread owns the granted USIC0 CH0 (U0C0) register window and
-// serves a console endpoint: kos_recv() a byte batch, then for each byte poll the
-// transmit-buffer status (TCSR.TDV) until the buffer is free and write TBUF0. TDV set
-// means the transmit buffer still holds a word pending transfer, so loading the next
-// byte before it clears overwrites that word and drops or garbles a byte on the wire.
 //
-// The driver does NOT touch clock/pins/baud: the kernel's kickos_xmc_usic_init()
-// configured them at boot and console_tx_deinit() left the channel ASC-mode,
-// pinned, and TX-capable in a polled state. Only registers INSIDE the granted
-// window (TCSR 0x038, TBUF0 0x080) are poked. SCU_CGATCLR0/PRCLR0 (clock) and
-// P1_IOCR4 (pin mux) live in separate privileged peripherals outside the window,
-// unreachable and left intact.
+// The driver does NOT program clock or pins: the kernel's kickos_xmc_usic_init() configured
+// them at boot and console_tx_deinit() left the channel ASC-mode, pinned and TX-capable.
 //
-// HARD RULE (design D7): NO libc stdio. printf/puts route through _write ->
-// kos_send(0, ..) -> this driver's own endpoint, a self-send that deadlocks because
-// the driver holds the sole CAP_WAIT recv cap, so recv_holders never reaches 0 and
-// no EPIPE fires. Diagnostics go direct to the USIC window (poll_put below) or via
-// kos::print, which does NOT route through the endpoint.
-//
-// Register addresses / bit fields are clean-room from the XMC4700/XMC4800 Reference
-// Manual (V1.3, 2016-07); no XMCLib/DAVE/CMSIS vendor source.
+// HARD RULE (design D7): NO libc stdio here. printf/puts route through _write ->
+// kos_send(0, ..) -> this driver's own endpoint, a self-send that deadlocks because the
+// driver holds the sole CAP_WAIT recv cap, so no EPIPE ever fires. Diagnostics go direct to
+// the device (win_puts) or via kos::print.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
 #include <kickos/driver/xmcuart.h>
 
-#include <kickos/sys/service.h>        // kos_service_cfg (base/window/prio as data)
-#include <kickos/sys/driver_bringup.h> // kickos::driver::spawn_unprivileged
-#include <kickos/io/mmio.h>            // r32
-
-#include <usic_class.h> // Rule 6 class-driver leaf: shared USIC transmit-ready read
-
-#include <regs/usic.h> // shared USIC register offsets (off::TBUF0)
+#include <kickos/driver/uart.h>
+#include <kickos/sys/driver_service.h>
+#include <kickos/sys/service.h> // kos_service_cfg
 
 #include <stdint.h>
+#include <stdlib.h>
+
+namespace drv = kickos::driver;
 
 namespace
 {
-    // On ARMv7-M PMSA the granted DEV window IS a genuine per-thread capability, so a 512 B
-    // (0x200) window at the 0x200-aligned channel base is one exact-cover descriptor;
-    // the sibling channel U0C1 (base + 0x200) and the SCU/IOCR peripherals stay outside.
-
-    using namespace kickos::xmc::reg::usic;
-
-    // Bounded so a mis-configured baud/enable never HANGS the driver thread on a
-    // single byte (which would wedge every stdout client parked on send). Far
-    // exceeds any real per-byte wait at 115200 baud; on timeout the byte is dropped
-    // and the loop continues (mirrors the kernel writer's give-up-don't-hang policy).
+    // Per-byte cap on the retry, so a channel that never reports room costs a bounded delay
+    // rather than the driver thread, which would wedge every stdout client parked on send.
+    // On expiry the byte is dropped and the loop continues.
     constexpr uint32_t TX_POLL_TIMEOUT = 1000000u;
 
-    bool poll_put(uintptr_t win, uint8_t v)
+    // Returns false when the budget expired with the byte still unsent.
+    bool poll_put(struct kos_uart* dev, unsigned char v)
     {
         for (uint32_t i = 0; i < TX_POLL_TIMEOUT; i++)
         {
-            if (kickos::xmc::driver::usic_tx_ready(win))
+            if (kos_uart_write(dev, &v, 1u) == 1u)
             {
-                r32(win + off::TBUF0) = v;
                 return true;
             }
         }
         return false;
     }
 
-    // Direct-to-window diagnostic, not stdio and not the endpoint.
-    void win_puts(uintptr_t win, char const* s)
+    // Direct-to-device diagnostic, not stdio and not the endpoint.
+    void win_puts(struct kos_uart* dev, char const* s)
     {
         for (; *s != '\0'; s++)
         {
-            (void)poll_put(win, static_cast<uint8_t>(*s));
+            (void)poll_put(dev, static_cast<unsigned char>(*s));
         }
     }
 
-    // Query the branch clock feeding U0C0 and report it through kos::print, which bypasses
-    // the endpoint (D7). Reporting only: the driver does not touch baud.
-    void print_periph_clock(uintptr_t win)
+    void print_rate(char const* tag, uint32_t hz)
     {
-        uint32_t const hz = kos_periph_clock_hz(win);
         char buf[16];
         size_t i = sizeof(buf);
         buf[--i] = '\0';
@@ -89,10 +65,47 @@ namespace
             buf[--i] = static_cast<char>('0' + (v % 10u));
             v /= 10u;
         } while (v != 0u and i != 0);
-        kos::print("[xmcuart] U0C0 branch clock (Hz): ");
+        kos::print(tag);
         kos::print(&buf[i]);
         kos::print("\n");
     }
+
+    constexpr drv::Descriptor k_desc = {
+        .tag = "[xmcuart] ",
+        // No base guard: no vector is claimed by number and uart_usic.cc is genuinely
+        // base-parameterised across the USIC channels, so there is nothing to pin the cfg
+        // against.
+        .expected_base = 0,
+        .block_size = 0, // polled and TX-only: no ring, no doorbell, no readiness latch
+        .ready_offset = drv::KOS_DRV_READY_NONE,
+        .ep_posture = drv::KOS_DRV_EP_HANDOVER,
+        .svc_kind = KOS_SVC_CONSOLE,
+        .line_count = 0,
+        .thread_count = 1,
+        .barrier_after = 1,
+        .lines = {},
+        // ONE thread, so no readiness latch: it is itself the endpoint's receiver, and no
+        // point exists before it at which a timeout would be reportable. It also releases
+        // the window at its own death, which is what lets the console come back.
+        //
+        // On ARMv7-M PMSA the 512 B (0x200) window at the 0x200-aligned channel base is
+        // one exact-cover descriptor, leaving the sibling channel U0C1 (base + 0x200) and
+        // the SCU/IOCR peripherals outside it.
+        .threads = {{.entry = xmcuart_console_driver,
+                     .name = nullptr,
+                     .prio_delta = 0,
+                     .arg = drv::KOS_DRV_ARG_WINDOW,
+                     .mem_grant = false,
+                     .window_grant = true,
+                     .cap_count = 1,
+                     // caps[0] lands at KOS_SPAWN_DELEGATED_CAP0, which the recv loop
+                     // below names directly; no class substrate checks it.
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+        .block_init = nullptr
+    };
+
+    static_assert(drv::valid(k_desc),
+                  "the xmcuart descriptor is not a well-formed driver shape");
 }
 
 extern "C"
@@ -102,9 +115,28 @@ void xmcuart_console_driver(void* arg)
 {
     uintptr_t const win = reinterpret_cast<uintptr_t>(arg); // U0C0 window base
 
-    print_periph_clock(win);
+    struct kos_uart_stats stats = {};
+    struct kos_uart_config cfg = {};
+    cfg.base = win;
+    cfg.stats = &stats;
+    cfg.baud = 0; // keep the kernel's divisor; open reports what it reads back
+    cfg.data_bits = 8;
+    cfg.parity = KOS_UART_PARITY_NONE;
+    cfg.stop_bits = 1;
+    cfg.rsv = 0;
 
-    win_puts(win, "[xmcuart] driver up (polled TX)\n");
+    struct kos_uart dev;
+    int32_t const rate = kos_uart_open(&dev, &cfg);
+    if (rate < 0)
+    {
+        // kos::print, not the endpoint: this thread's stdout cap IS the console endpoint it
+        // was spawned to serve, so a send would park on an endpoint with no receiver.
+        kos::print("[xmcuart] ERROR: U0C0 open refused\n");
+        exit(-1);
+    }
+    print_rate("[xmcuart] U0C0 measured baud: ", static_cast<uint32_t>(rate));
+
+    win_puts(&dev, "[xmcuart] driver up (polled TX)\n");
 
     int const ep = KOS_SPAWN_DELEGATED_CAP0; // delegated recv cap
     char buf[KOS_EP_MSG_MAX];
@@ -115,64 +147,26 @@ void xmcuart_console_driver(void* arg)
         long const n = kos_recv(ep, buf, sizeof(buf), nullptr);
         if (n < 0)
         {
-            // Endpoint dead / EPIPE (root closed the last non-driver recv holder and
-            // the object tore down, or a bad cap): unrecoverable. Exit and let root
-            // respawn + re-publish (D8). Do NOT diagnose via stdio here.
+            // Endpoint dead / EPIPE or a bad cap: unrecoverable. Exit and let root respawn
+            // + re-publish (D8). Do NOT diagnose via stdio here.
             break;
         }
         for (long i = 0; i < n; i++)
         {
-            (void)poll_put(win, static_cast<uint8_t>(buf[i]));
+            (void)poll_put(&dev, static_cast<unsigned char>(buf[i]));
         }
     }
 
-    kos_exit(0);
+    // FLUSH BEFORE CLOSE: close leaves ASC mode, which truncates a frame still shifting.
+    (void)kos_uart_flush(&dev);
+    (void)kos_uart_close(&dev);
+    exit(0);
 }
 
+// cfg->prio must be >= every stdout client (D9: rendezvous has no PI).
 int xmcuart_console_start(struct kos_service_cfg const* cfg)
 {
-    uintptr_t const win_base = cfg->mmio_base;
-    uint32_t const win_size = cfg->mmio_window;
-    uint8_t const driver_prio = cfg->prio;
-
-    kos_cap_t ep = KOS_CAP_NONE;
-    if (kos_endpoint_create(&ep) != 0)
-    {
-        kos::print("[xmcuart] ERROR: endpoint_create failed\n");
-        return -1;
-    }
-
-    // 2. Relinquish the kernel UART and route stdout to E (privileged syscall 29).
-    //    On return the kernel chip path is dark and any stale chip writer has drained
-    //    (B1), so the UART is safe for the driver to take.
-    if (kos_console_publish(ep) != 0)
-    {
-        kos::print("[xmcuart] ERROR: console_publish failed\n");
-        kos_handle_close(ep);
-        return -1;
-    }
-
-    // 3. Spawn the UNPRIVILEGED driver: granted the U0C0 window (R|W|DEV) and a
-    //    narrowed {E | WAIT} recv cap (lands at the child's table index 1). No
-    //    SIGNAL/TRANSFER on the child cap: the driver receives, it does not send or
-    //    re-delegate. driver_prio must be >= every client (D9: rendezvous has no PI).
-    //    On failure the helper closes ep FIRST, which reclaims the console, and only
-    //    then reports, so the tag reaches the wire.
-    auto const drv = kickos::driver::spawn_unprivileged(
-        xmcuart_console_driver, win_base, win_size, cfg->name, driver_prio, ep,
-        "[xmcuart] ERROR: driver spawn failed\n");
-    if (not drv.valid())
-    {
-        return -1;
-    }
-
-    // 4. Close root's OWN WAIT-bearing cap on E (S4), then PROVE the driver is serving
-    //    before returning: a zero-length rendezvous on cap 0 returns only once the
-    //    driver has received it, which closes the dark window between the publish and
-    //    the driver serving. g_stdout_target survives on the kernel's own ref (S3), so
-    //    the close does not tear the endpoint down.
-    return kickos::driver::console_handover_finish(
-        ep, "[xmcuart] ERROR: driver died during bring-up\n");
+    return drv::bring_up(k_desc, cfg, nullptr);
 }
 
 }

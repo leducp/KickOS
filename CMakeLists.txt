@@ -738,12 +738,30 @@ if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/captable)
 endif()
 
+# Host-only raw-UART-class contract gate. Host-only of necessity: it LINKS a mock backend of
+# the public kos_uart_* names, and a target image doing that would keep its real backend's
+# archive member out of the link (tests/check_class_backend.sh is the gate for that).
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/uartclass/CMakeLists.txt")
+  add_subdirectory(tests/uartclass)
+endif()
+
 # Host-only CAP_REPLY packing gate. Host-only of necessity: the case it exists for is a thread
 # index above 255, which needs more slots than any board in the fleet configures, and no cap
 # entry is observable from userspace.
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capreply/CMakeLists.txt")
   add_subdirectory(tests/capreply)
+endif()
+
+# Host-only driver bring-up failure-path gate. Host-only of necessity: every arm needs a
+# syscall to FAIL on demand, and the readiness poll needs its full sleep budget to cost
+# nothing. No target image can do either, and the sim's two non-bring_up console postures
+# (system/init/sim/service_list.cc) discover their window base by spawning, so they cannot
+# reach this path at all.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/drvbringup/CMakeLists.txt")
+  add_subdirectory(tests/drvbringup)
 endif()
 
 # Aggregate usage-requirement target: "link this and you get the whole OS".

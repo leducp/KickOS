@@ -1,35 +1,22 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// K64F/DSPI0 SPI bus-SERVICE silicon validation (call/reply). The DSPI0 service
-// is brought up by the board service list BEFORE main (k64dspi_spi_start: privileged
-// DSPI config + endpoint + unprivileged driver). This app only drives it as a CLIENT.
-//
-// The client is a SPAWNED thread that receives the service endpoint's SIGNAL cap by
-// spawn-time delegation (positional: child index 1). main (running in the root thread,
-// sharing its cap table) reads the endpoint handle
-// the service recorded (k64dspi_take_endpoint, a one-shot handout) and delegates a
-// SIGNAL-narrowed copy, then
-// closes its own retained cap so the driver is the sole recv holder (driver death
-// then EPIPE-wakes any parked client). The client speaks the neutral wrapper
-// (spi_transfer / spi_transact / spi_config over the bus call/reply ABI); it touches
-// no MMIO, no CS, no grant; the driver owns all of that.
+// K64F/DSPI0 silicon validation through the SPI class <kickos/driver/spi.h>. A CLIENT of the
+// DSPI0 service the board service list brings up before main: SPI_BACKEND is
+// kickos_spi_proxy, so this app touches no MMIO, no CS and no grant.
 //
 // Two build modes over the SAME service:
-//   DEFAULT: LAN9252 BYTE_TEST probe (EasyCAT shield on the Arduino header): a
-//   spi_transact(cmd, rx) reads the ESC byte-order signature 0x8765_4321.
-//   K64DSPI_LOOPBACK: SOUT(PTD2)->SIN(PTD3) loopback self-test (jumper, no shield),
-//   behind CMake option K64DSPI_LOOPBACK=ON.
+//   DEFAULT: LAN9252 BYTE_TEST probe, EasyCAT shield on the Arduino header.
+//   K64DSPI_LOOPBACK=ON: SOUT(PTD2)->SIN(PTD3) loopback (jumper, no shield).
 //
-// Diagnostic app (kickos_add_diagnostic_app): build-only; the operator flashes +
-// validates on silicon. No CTest gate (it answers a HARDWARE question).
+// Build-only diagnostic: the operator flashes and validates on silicon, so no CTest gate.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/libc/fmt.h>
 
-#include <kickos/driver/k64dspi.h>    // k64dspi_take_endpoint()
-#include <kickos/driver/spi_client.h> // spi_transfer / spi_transact / spi_config
+#include <kickos/driver/k64dspi.h> // k64dspi_take_endpoint()
+#include <kickos/driver/spi.h>     // the SPI class: kos_spi_bus_open / device_open / transfer
 
 #include <stdint.h>
 #include <stddef.h>
@@ -41,13 +28,42 @@
 
 namespace
 {
-    // The delegated SPI service endpoint SIGNAL cap lands at the client's child
-    // table index 1 (positional spawn delegation).
-    constexpr int SPI_EP = 1;
+    // The delegated endpoint SIGNAL cap lands at the client's child table index 1.
+    constexpr kos_cap_t SPI_EP = KOS_SPAWN_DELEGATED_CAP0;
 
-    // The single device on the bench's bus. A client with several devices gives each
-    // its own slot (< KOS_BUS_DEV_MAX) and configures each once.
-    constexpr uint8_t SPI_DEV = 0;
+    // The single device on the bench's bus. A client with several devices gives each its own
+    // slot (< KOS_BUS_DEV_MAX) and opens each once.
+    constexpr uint8_t SPI_SLOT = 0;
+
+    // Open the bus over the service endpoint and issue the one device handle this app uses.
+    // Returns the achieved bit clock, or a negative kos_errno; *dev is valid only on success.
+    int32_t open_device(struct kos_spi_bus* bus, struct kos_spi_device* dev, uint32_t hz,
+                        uint8_t cs_policy)
+    {
+        struct kos_spi_bus_config bcfg;
+        bcfg.base = 0u; // a proxy reaches no register window
+        bcfg.ep = SPI_EP;
+        bcfg.irq = KOS_CAP_NONE;
+        int32_t const brc = kos_spi_bus_open(bus, &bcfg);
+        if (brc < 0)
+        {
+            return brc;
+        }
+
+        struct kos_spi_device_config dcfg;
+        dcfg.hz = hz;
+        dcfg.slot = SPI_SLOT;
+        dcfg.mode = 0u; // SPI mode 0, MSB first
+        dcfg.word_bits = 8u;
+        dcfg.cs_policy = cs_policy;
+        // ONE CS pin, PTC4. cs_index names a pin slot, and this engine drives exactly slot 0,
+        // so naming the pin number here would be refused rather than ignored.
+        dcfg.cs_index = 0u;
+        dcfg.rsv[0] = 0u;
+        dcfg.rsv[1] = 0u;
+        dcfg.rsv[2] = 0u;
+        return kos_spi_device_open(dev, bus, &dcfg);
+    }
 
 #if defined(K64DSPI_LOOPBACK)
 
@@ -90,35 +106,30 @@ namespace
         return true;
     }
 
-    // UNPRIVILEGED client: CONFIG (conservative baud, no CS; the loopback jumper
-    // has none) then loopback transfers through the wrapper. SIGNAL cap at index 1.
+    // UNPRIVILEGED client. No CS: the loopback jumper has none.
     void spi_client(void*)
     {
-        struct kos_bus_cfg cfg = {};
-        cfg.hz = 1000000u; // conservative over a jumper
-        cfg.mode = 0u;      // SPI mode 0
-        cfg.word_bits = 8u;
-        cfg.cs_policy = KOS_BUS_CS_NONE;
-        uint32_t achieved = 0u;
-        int const crc = spi_config(SPI_EP, SPI_DEV, &cfg, &achieved);
+        struct kos_spi_bus bus;
+        struct kos_spi_device dev;
+        int32_t const hz = open_device(&bus, &dev, /*hz=*/1000000u, KOS_BUS_CS_NONE);
         {
             char s[80];
-            ksnprintf(s, sizeof(s), "[k64dspi] config rc=%d achieved=%lu Hz\n", crc,
-                      static_cast<unsigned long>(achieved));
+            ksnprintf(s, sizeof(s), "[k64dspi] device open rc=%d achieved=%lu Hz\n",
+                      static_cast<int>(hz), static_cast<unsigned long>(dev.hz));
             kos::print(s);
         }
-        report("config", crc == 0);
+        report("device open", hz > 0);
 
         // 1) Single bytes echo through the loopback.
         {
             unsigned char const pattern[] = {0xA5u, 0x3Cu, 0x00u, 0xFFu};
+            struct kos_bus_seg seg = {1u, 0u, 0u};
             bool ok = true;
             for (unsigned i = 0; i < sizeof(pattern); i++)
             {
-                unsigned char tx = pattern[i];
-                unsigned char rx = 0;
-                long n = spi_transfer(SPI_EP, SPI_DEV, &tx, &rx, 1);
-                if (n != 1 or rx != tx)
+                unsigned char buf[1] = {pattern[i]};
+                int32_t const n = kos_spi_transfer(&dev, &seg, 1u, buf, 1u);
+                if (n != 1 or buf[0] != pattern[i])
                 {
                     ok = false;
                 }
@@ -128,30 +139,33 @@ namespace
 
         // 2) Multi-byte transfer larger than the TX FIFO (exercises the refill loop).
         {
-            unsigned char tx[5] = {0x11u, 0x22u, 0x33u, 0x44u, 0x55u};
-            unsigned char rx[5] = {0};
-            long n = spi_transfer(SPI_EP, SPI_DEV, tx, rx, sizeof(tx));
+            unsigned char const tx[5] = {0x11u, 0x22u, 0x33u, 0x44u, 0x55u};
+            unsigned char buf[5] = {0x11u, 0x22u, 0x33u, 0x44u, 0x55u};
+            struct kos_bus_seg seg = {static_cast<uint16_t>(sizeof(buf)), 0u, 0u};
+            int32_t const n = kos_spi_transfer(&dev, &seg, 1u, buf, sizeof(buf));
             report("multi-byte (>FIFO) loopback",
-                   n == static_cast<long>(sizeof(tx)) and buffers_equal(tx, rx, sizeof(tx)));
+                   n == static_cast<int32_t>(sizeof(buf)) and buffers_equal(tx, buf, sizeof(buf)));
         }
 
-        // 3) Null tx: the driver shifts dummy 0x00, so the loopback returns 0x00.
+        // 3) All-zero tx: the loopback returns 0x00.
         {
-            unsigned char rx[4] = {0xAAu, 0xAAu, 0xAAu, 0xAAu};
-            long n = spi_transfer(SPI_EP, SPI_DEV, nullptr, rx, sizeof(rx));
-            report("null-tx (dummy 0x00) loopback",
-                   n == static_cast<long>(sizeof(rx)) and buffer_is(rx, 0x00u, sizeof(rx)));
+            unsigned char buf[4] = {0u, 0u, 0u, 0u};
+            struct kos_bus_seg seg = {static_cast<uint16_t>(sizeof(buf)), 0u, 0u};
+            int32_t const n = kos_spi_transfer(&dev, &seg, 1u, buf, sizeof(buf));
+            report("zero-tx loopback",
+                   n == static_cast<int32_t>(sizeof(buf)) and buffer_is(buf, 0x00u, sizeof(buf)));
         }
 
-        // 4) Two-phase transact in one CS bracket (cmd+payload shape). Over the
-        //    loopback both phases echo; the wrapper returns only the read-phase bytes.
+        // 4) Two segments in ONE CS bracket. The class returns EVERY full-duplex byte, so
+        //    the read phase is the tail of the same buffer.
         {
-            unsigned char cmd[3] = {0x03u, 0x00u, 0x64u};
-            unsigned char rd[4] = {0};
-            long n = spi_transact(SPI_EP, SPI_DEV, cmd, sizeof(cmd), rd, sizeof(rd));
-            // Read phase shifts dummy 0x00 out over the loopback -> reads back 0x00.
-            report("transact (cmd+read, one CS bracket)",
-                   n == static_cast<long>(sizeof(rd)) and buffer_is(rd, 0x00u, sizeof(rd)));
+            unsigned char const cmd[3] = {0x03u, 0x00u, 0x64u};
+            unsigned char buf[7] = {0x03u, 0x00u, 0x64u, 0u, 0u, 0u, 0u};
+            struct kos_bus_seg seg[2] = {{3u, 0u, 0u}, {4u, 0u, 0u}};
+            int32_t const n = kos_spi_transfer(&dev, seg, 2u, buf, sizeof(buf));
+            report("two-segment transaction (one CS bracket)",
+                   n == static_cast<int32_t>(sizeof(buf)) and buffers_equal(cmd, buf, 3)
+                       and buffer_is(buf + 3, 0x00u, 4));
         }
 
         if (g_fails == 0)
@@ -177,42 +191,41 @@ namespace
     constexpr int PROBE_RETRIES = 8;
     constexpr uint64_t RETRY_DELAY_NS = 10000000ull; // 10 ms ESC settle
 
-    // One BYTE_TEST read: cmd (0x03 + 16-bit addr big-endian) then 4 read bytes, all
-    // under ONE CS bracket (the driver holds PTC4 across both phases). Bytes arrive
-    // LSB-first -> assemble little-endian. *ok gets the transfer success.
-    uint32_t read_byte_test(bool* ok)
+    // One BYTE_TEST read: cmd (0x03 + 16-bit addr big-endian) then 4 read bytes, under ONE
+    // CS bracket. The read phase is the tail of the same buffer, and its bytes arrive
+    // LSB-first.
+    uint32_t read_byte_test(struct kos_spi_device* dev, bool* ok)
     {
-        unsigned char cmd[3];
-        cmd[0] = LAN9252_READ;
-        cmd[1] = static_cast<unsigned char>((BYTE_TEST_ADDR >> 8) & 0xFFu);
-        cmd[2] = static_cast<unsigned char>(BYTE_TEST_ADDR & 0xFFu);
+        unsigned char buf[7];
+        buf[0] = LAN9252_READ;
+        buf[1] = static_cast<unsigned char>((BYTE_TEST_ADDR >> 8) & 0xFFu);
+        buf[2] = static_cast<unsigned char>(BYTE_TEST_ADDR & 0xFFu);
+        buf[3] = 0u;
+        buf[4] = 0u;
+        buf[5] = 0u;
+        buf[6] = 0u;
 
-        unsigned char rx[4] = {0, 0, 0, 0};
-        long n = spi_transact(SPI_EP, SPI_DEV, cmd, sizeof(cmd), rx, sizeof(rx));
-        *ok = (n == static_cast<long>(sizeof(rx)));
+        struct kos_bus_seg seg[2] = {{3u, 0u, 0u}, {4u, 0u, 0u}};
+        int32_t const n = kos_spi_transfer(dev, seg, 2u, buf, sizeof(buf));
+        *ok = (n == static_cast<int32_t>(sizeof(buf)));
 
-        uint32_t val = static_cast<uint32_t>(rx[0]);
-        val |= static_cast<uint32_t>(rx[1]) << 8;
-        val |= static_cast<uint32_t>(rx[2]) << 16;
-        val |= static_cast<uint32_t>(rx[3]) << 24;
+        uint32_t val = static_cast<uint32_t>(buf[3]);
+        val |= static_cast<uint32_t>(buf[4]) << 8;
+        val |= static_cast<uint32_t>(buf[5]) << 16;
+        val |= static_cast<uint32_t>(buf[6]) << 24;
         return val;
     }
 
-    // UNPRIVILEGED client: CONFIG (10 MHz, GPIO CS) then the BYTE_TEST probe.
+    // UNPRIVILEGED client: open the device (10 MHz, GPIO CS) then the BYTE_TEST probe.
     void spi_client(void*)
     {
-        struct kos_bus_cfg cfg = {};
-        cfg.hz = 10000000u;
-        cfg.mode = 0u;
-        cfg.word_bits = 8u;
-        cfg.cs_policy = KOS_BUS_CS_GPIO;
-        cfg.cs_index = 4u; // PTC4 by intent; the driver ignores it and always drives PTC4
-        uint32_t achieved = 0u;
-        int const crc = spi_config(SPI_EP, SPI_DEV, &cfg, &achieved);
+        struct kos_spi_bus bus;
+        struct kos_spi_device dev;
+        int32_t const hz = open_device(&bus, &dev, /*hz=*/10000000u, KOS_BUS_CS_GPIO);
         {
             char s[80];
-            ksnprintf(s, sizeof(s), "[k64dspi] config rc=%d achieved=%lu Hz\n", crc,
-                      static_cast<unsigned long>(achieved));
+            ksnprintf(s, sizeof(s), "[k64dspi] device open rc=%d achieved=%lu Hz\n",
+                      static_cast<int>(hz), static_cast<unsigned long>(dev.hz));
             kos::print(s);
         }
 
@@ -220,7 +233,7 @@ namespace
         for (int attempt = 1; attempt <= PROBE_RETRIES and not pass; attempt++)
         {
             bool ok = false;
-            uint32_t val = read_byte_test(&ok);
+            uint32_t val = read_byte_test(&dev, &ok);
 
             char const* xfer = "OK";
             if (not ok)
@@ -249,7 +262,7 @@ namespace
         }
         else
         {
-            kos::print("[k64dspi] LAN9252 BYTE_TEST FAIL: no valid signature -- check CS "
+            kos::print("[k64dspi] LAN9252 BYTE_TEST FAIL: no valid signature; check CS "
                        "(D9/PTC4), baud/mode, or shield seating\n");
         }
 
@@ -264,8 +277,7 @@ namespace
 
 int main(int, char**)
 {
-    // The board service list already brought DSPI0 up (privileged config + endpoint
-    // + unprivileged driver) before this main. Take the endpoint it recorded.
+    // DSPI0 is already up: take the endpoint the service list recorded.
     kos_cap_t const ep = k64dspi_take_endpoint();
     if (ep == KOS_CAP_NONE)
     {
@@ -274,7 +286,6 @@ int main(int, char**)
     else
     {
         // Delegate a SIGNAL-narrowed copy of E to the spawned client (child index 1).
-        // The client is the caller.
         kos_cap_grant const caps[1] = {
             { .source_cap = ep, .rights_mask = KOS_CAP_SIGNAL },
         };
@@ -286,13 +297,12 @@ int main(int, char**)
         }
         else
         {
-            // Drop root's own cap so the driver is the sole recv holder: its death
-            // then EPIPE-wakes the client instead of leaving it parked (S4-style).
+            // Drop root's own cap so the driver is the sole recv holder: its death then
+            // EPIPE-wakes the client instead of leaving it parked.
             kos_handle_close(ep);
         }
     }
 
-    // Park: fall back to a sleep park if the idle semaphore could not be created.
     kos_cap_t idle = KOS_CAP_NONE;
     (void)kos_sem_create(0, &idle);
     while (true)
