@@ -3,8 +3,9 @@
 
 # M4.8.2: the host unit-test layer has two seams, not one
 
-> **Status: EXPLORATORY** -- a spike. Nothing here licenses a change outside `tests/drvbringup/`,
-> which is the one thing in this document that is implemented, runs, and is mutation-proved.
+> **Status: ACTIVE.** Sections 0 to 6 were written as a spike and are kept as the reasoning;
+> section 7's items 1 to 4 have LANDED and section 8 is the record of what landing them found,
+> including two corrections to this document and one to `TODO.md`. Items 5 to 7 are still owed.
 > See `design/README.md` for the marker taxonomy.
 >
 > This continues an earlier spike that lives on a branch, not in this tree: the M4.9 host
@@ -67,7 +68,9 @@ Restated so this document can be read alone, not to re-argue any of it.
    consequence: a blocking primitive's park STATE is assertable, its RETURN VALUE is a fiction,
    because no waker ever wrote `wait_result`.
 
-All eight stand. Nothing below contradicts them.
+Seven stand. **Item 4's second half does not**: every member of `Kernel` does carry an initialiser,
+but `cap.cc` keeps three data outside that struct, so the assignment is not the entire reset once the
+real capability layer is in the gate. Section 8.1 has the correction.
 
 ## 2. Where this document differs
 
@@ -403,24 +406,26 @@ So the protection is TU granularity, not a gate. Two things follow, and the seco
   set to the syscall headers, or write down that the file is deliberately monolithic. Preference:
   widen the gate, because a comment does not survive a refactor.
 
-## 7. What M4.8.2 still owes, in order
+## 7. The order M4.8.2 took, and what it still owes
 
 This groundwork delivers the U-seam half's mechanism, one real gate on it, and the rulings above.
 What remains:
 
-1. **The `host` ctest label** (6.2). Smallest item, unblocks honest batching, no risk.
-2. **The K-seam fixture, landed.** The prior spike's stub file and `Kernel` fixture, brought into
-   this tree against the current `kernel/` and re-measured. Its 16-function count was taken on a
-   different tree and must be re-derived, not assumed. Deliverable: a fixture header plus a stub TU,
-   with the `arch_switch`-returns limits stated in the header where a fixture author will read them.
-3. **The `sched::wake()` observer enumeration** (4.1). The K-seam fixture's first customer, and the
-   thing the milestone is named for. Note the order: the enumeration is a list a human writes and
-   the gate makes each entry checkable. Do not expect this step to end in "green, therefore safe".
-4. **The dying-guard repair itself**, once 3 has enumerated its observation points: the priority
-   comparison, not the deletion. `TODO.md` also records a coupling that runs the wrong way --
-   narrowing the guard puts MORE traffic through the preemptible window between a fault redirect
-   and its stub, so `fault-record-is-printed-only-by-its-owner` must still hold afterwards. That is
-   a silicon obligation and the host layer does not discharge it.
+1. **The `host` ctest label** (6.2). LANDED, and wider than proposed: the label means "executes no
+   KickOS image", which covers the source-tree checks and the static ELF checks as well as the host
+   programs, and is what makes the second half of 6.2's claim literally true. Root `CMakeLists.txt`
+   defines it once. `oot_export` is the one gate that reads as host and does not qualify, because it
+   RUNS the app it built.
+2. **The K-seam fixture, landed.** `tests/kfixture/`: `kfixture.h` + `kfixture.cc` + `karch_seam.cc`,
+   plus `kickos_add_kseam_gate()`. Re-derived, and the number held: **sixteen**, the same set the
+   prior spike stubbed. See section 8.1 for what that measurement also showed.
+3. **The `sched::wake()` observer enumeration** (4.1). Done; it is section 8.2, and it changed the
+   repair.
+4. **The dying-guard repair itself.** LANDED as `kernel/sched/sched.cc`'s three-clause guard, five
+   mutants killed (8.3). The silicon half of the coupling is still owed: narrowing the guard puts
+   MORE traffic through the preemptible window between a fault redirect and its stub, so
+   `fault-record-is-printed-only-by-its-owner` must still hold afterwards, and the host layer does
+   not discharge that.
 5. **`class_backend` widened to the syscall symbol set** (6.3), or the monolith written down.
 6. **The blocking-call trap needs a mechanism, not a comment.** The prior spike left this open and
    it is still open: under a returning `arch_switch`, an arm that asserts on a blocking primitive's
@@ -432,3 +437,171 @@ What remains:
 
 One thing M4.8.2 should NOT owe: nothing here asks for `KICKOS_MULTI_INSTANCE`, and the prior
 spike's reasoning for that stands. Its real customers are the KickCAT multi-slave sim and AMP.
+
+## 8. What landing steps 1 to 4 found
+
+### 8.1 The K-seam is sixteen, and the REAL capability sweep rides it for free
+
+Re-derived on this tree rather than assumed, with `nm --undefined-only` over the compiled objects
+minus their own definitions. Three source sets, one answer:
+
+| source set | seam width |
+|---|---|
+| `sched.cc` + `policy_fifo_rr.cc` + `instance.cc` | 16 |
+| the above + `sync.cc` (the prior spike's set) | 16 |
+| the above + `syscall/cap.cc` | 16 |
+
+The prior spike's number was right, and two things about it were not visible from where it stood.
+Note what the sixteen is and is not: only seven are `arch_*`, so "the arch boundary" names where the
+seam is CUT, and the count is a property of the chosen SOURCE SET rather than of the boundary. The
+set is also not element-for-element the prior spike's, even at equal cardinality; see the trade
+below.
+**Adding `sync.cc` widens the seam by nothing**: the scheduler core already names all sixteen and
+the synchronisation layer's needs are a subset. **Adding `syscall/cap.cc` also widens it by nothing**,
+because it TRADES: `cap_teardown` and `cap_teardown_active` stop being stubs and
+`console_note_driver_death` and `irq_ref_drop` take their place. That decides the fixture's source
+set on its own. A fixture whose `cap_teardown` is empty cannot host this milestone's subject at all,
+and there was no width to pay for the real one.
+
+**Correction to section 1, item 4.** "`kernel() = Kernel{}` plus `sched::init()` is the entire
+reset" is FALSE once the real `cap.cc` is in the gate. `cap.cc` keeps **three** data in a TU-local
+`constinit`, outside the `Kernel` struct that assignment reaches:
+
+| datum | reachable from outside? | what the fixture does |
+|---|---|---|
+| the chunk free list | yes, `cap_slab_init()` | `reset()` calls it |
+| `teardown_depth` | no | `reset()` REFUSES if `cap_teardown_active()` |
+| `g_stdout_target` | no | documented as a "no arm may" in `kfixture.h` note 4 |
+
+`nm` over the linked gate reports one further TU-local outside `Kernel`, `policy_fifo_rr.cc`'s
+`g_fifo_rr`. It lands in a writable section only because of its function-pointer relocations, is
+`const`-qualified and is never written, so it needs no reset. Named here so the next reader who runs
+`nm` and sees it does not conclude this table is stale.
+
+The refusal turns "an arm abandoned a sweep" from a suite that silently passes into a suite that
+stops. `g_stdout_target` is the sharper one and it has teeth: `reset()` zeroes the endpoint pool, so
+gen-encoded handles REPEAT across arms, and an arm that published a console would leave a stale
+global handle that a later arm's unrelated endpoint close can match, noting a console death in a
+DIFFERENT arm's counter. A comment is the honest stopgap and not a fix, which is why `TODO.md`
+carries it: the fix is a reset entry point beside `cap_slab_init()` on the day an arm needs to
+publish.
+
+`cap_slab_init()` was deliberately not widened to zero the depth: no arm needs it, and widening
+shipped code for a fixture's convenience is the wrong direction.
+
+### 8.2 The enumeration: three wake sites, and only ONE of them is a new preemption
+
+`cap_teardown`'s chunk loop closes each slot in the order *close protocol, copy, empty the entry,
+release to the free list, drop the object reference*, so every wake below fires while slot `i` is
+still LIVE. Exactly three sites, all inside `obj_close_protocol(..., teardown=true)`:
+
+| site | woken thread | can it outrank the dying thread? |
+|---|---|---|
+| `mutex_force_unlock` (`kernel/sync/sync.cc`, from the `CAP_MUTEX` arm) | the highest mutex waiter | **Yes.** See below |
+| the endpoint `recv_holders`-hits-zero EPIPE drain (`kernel/syscall/cap.cc`, `CAP_WAIT` arm) | every parked sender | **Yes**, and this one needs no argument: a **plain** sender (`CALL_NONE`) boosts nothing when it parks |
+| the `CAP_REPLY` arm's EPIPE of the parked caller | that caller | **Yes.** See below |
+
+`CAP_SEM` and `CAP_IRQ` wake nobody, and `irq_ref_drop` masks and detaches without waking.
+
+**All three sites can preempt, and the first draft of this section said two of them could not.** That
+claim was that the mutex and reply sites are bounded "by construction", because the peer donated its
+priority to the dying thread when it parked and the teardown arms deliberately skip the recompute.
+**The bound is a SNAPSHOT taken at park time, and nothing refreshes it**: `sched::set_prio` on a
+BLOCKED thread writes `prio` and walks nothing, and the PI chain walk terminates at any non-mutex
+park by design (`Thread::wait_mutex` answers null there, which is what stops the walk). So
+
+- a mutex waiter parked on a mutex the dying thread owns can be boosted afterwards, by the D2
+  donation in `endpoint_call`'s slow path handing a caller's priority straight to that waiter as a
+  server, and the dying owner never sees it;
+- a caller parked in `CALL_REPLY_WAIT` can be chain-boosted by a third thread wanting a mutex IT
+  owns, and the walk stops at the caller rather than continuing to the dying server.
+
+Neither route needs the timer deflate below, and neither is exotic. The consequence for this
+milestone is that the two sites the first draft dismissed are exactly the ones that had no arm; the
+gate now has one for the mutex site (`tests/schedwake/wake_dying.cc`).
+
+**What this does to the latency claim.** `TODO.md`'s 4x-to-9x figure was measured on the sweep rather
+than on the reachable wake set, and the first correction here replaced it with a count of call
+SITES, which is no better: the endpoint drain is a loop over EVERY parked sender while the other two
+wake at most one thread each, so by woken-thread count the "narrow" site may well dominate. Nothing
+has been measured either way. What is now established is only the direction: the win is available at
+all three sites, not one.
+
+**The interaction that is not independent.** `endpoint_wait_timeout` (`kernel/syscall/syscall_ipc.cc`,
+the `WAIT_EP_SEND` and `WAIT_EP_REPLY` arms) calls `sched::set_prio(server, thread_effective_prio(server))`
+with no `dying` test, from the timer, in the interrupt window between chunks, where `server` may BE the
+dying thread and `thread_effective_prio` walks its half-swept `held_list`, `reply_waiters` and
+`served_head`. That is a live mid-sweep DEFLATE of the very quantity the narrowed guard compares
+against, so it can turn either bounded site into a preemption after all. The deflate and the
+narrowing multiply; they are not two independent changes, which is the sharper form of `TODO.md`'s
+coupling note.
+
+**What was already live before this milestone.** `sched::tick_rr` reschedules with no `dying` test at
+all, and a suppressed `wake` has ALREADY put its peer on the ready structure before the early return,
+so higher-priority preemption of a half-swept table was reachable in the shipped tree. Two bounds the
+`TODO.md` entry did not state: it requires the dying thread to be **RR with a non-zero quantum**, so a
+FIFO dying thread was never preempted mid-sweep and now can be; and `tick_rr` reaches the switch from
+an ISR, which the chunk loop's own `IrqLock` defers to the chunk boundary on every port, whereas a
+wake from thread context is not deferred at all and so switches MID-chunk with slot `i` live wherever
+`arch_switch` is immediate. **That is two of the five backends, and one of them is silicon**: the sim
+swaps with `swapcontext`, and Xtensa/LX6 calls `xtensa_switch` directly whenever it is not in an ISR,
+which is `esp32-wroom`. ARM (PendSV), RISC-V (msip) and RX (SWINT) all pend. Both are new exposure,
+and both are covered by the same construction that covers the old: every protection a woken peer runs into is independent of this
+guard. The reply mint into another thread's table has its own `dying` test, `cap_reply_caller` needs a
+`BLOCKED` thread in `CALL_REPLY_WAIT`, `ThreadPool::alloc` reclaims only an `EXITED` slot, and each
+object reference is pinned by the dying thread's own not-yet-swept cap with a leak-rather-than-strand
+floor beneath it.
+
+### 8.3 The repair is THREE clauses, not one, and the second is why
+
+`exit_current` wakes its join and wait-until-last waiters AFTER its own `on_remove`, and its comment
+names the blanket guard as what keeps that loop from switching. **A guard narrowed on priority alone
+strands those waiters.** The dying thread is off the ready structure by then, so `pick_next` cannot
+return it, `switch_to` preserves `EXITED`, and it is never scheduled again: the waiters the loop has
+not reached yet are never woken and `kickos_terminate` never runs. On ARM, RISC-V and RX the switch is
+deferred to the `IrqLock` release and the loop survives by luck of the port; on the sim and on
+Xtensa/LX6 the switch is taken there and then, so a priority-only guard would have stranded joiners
+on `esp32-wroom` hardware and not merely in a host gate. This is NOT in the already-live set, because
+that whole block holds one `IrqLock` and `tick_rr` cannot reach it.
+
+The discriminator needs no new field: `state == EXITED` IS "past the point of no return", and it is
+already set. So the guard reads, in order: a null `current` (the pre-start asymmetry `tick_rr` already
+guards and this funnel did not), an `EXITED` current (never picked again, so its own final reschedule
+is the switch), and then `dying and t->prio <= c->prio`.
+
+Twelve mutants, each applied alone to `kernel/sched/sched.cc` or `kernel/syscall/cap.cc`, rebuilt,
+run, reverted. **All twelve killed**, and the ones that matter most are those a return-code oracle
+cannot see. Seven of the twelve were proposed by the ten-angle review AFTER the first five, and four
+of those seven SURVIVED the gate as first written, which is what the extra arms exist for:
+
+| # | mutant | how it dies |
+|---|---|---|
+| M1 | the old blanket `if (c->dying)` | 3 arms: the higher-priority peer does not preempt |
+| M2 | the priority clause alone, `EXITED` clause deleted | 2 arms, and only on the TRACE: `exit_current` requests **two** switches instead of one, the first of them mid-loop |
+| M3 | no `dying` clause at all | 3 arms, and only via the arm that rotates the dying thread off its ready-list head. The other two dying arms pass without any guard, because `pick_next` declines an equal-priority peer while the dying thread is still the head |
+| M4 | the null-`current` test deleted | SIGSEGV |
+| M5 | the deadline cancel moved after the run-state test | 1 arm: a wake racing the timer leaves a stale deadline |
+| N1 | the guard compares `base_prio` instead of `prio` | 3 arms. SURVIVED at first: every arm had `prio == base_prio`, so a dying thread's inheritance boost was never seated |
+| N2 | the `CAP_WAIT` right test dropped from the endpoint arm | 2 arms. SURVIVED at first: the only sweep arm's cap carried that right |
+| N3 | `recv_holders == 0` becomes unconditional | 2 arms. SURVIVED at first: one holder means 1 to 0 is the only transition seen |
+| N4 | the EPIPE drain loop becomes a single `if` | 2 arms. SURVIVED at first: one sender was parked |
+| N5 | the exit scan matches ANY waiter, not its own joiners | 2 arms |
+| N6 | the joiner is woken with no `wait_result` | 2 arms, and only because `park_join` POISONS that field: a zeroed TCB already reads 0 |
+| N7 | the mutex force-unlock skipped on teardown | 7 arms |
+
+M3 is the one worth carrying forward as a rule, and N1 is the same lesson a second time. Both
+SURVIVED at first, because the guard's effect on a peer it declines is a `pick_next` call avoided
+rather than a switch avoided, and only a ready list whose head is NOT the dying thread makes the
+decision observable. **A guard that is usually redundant needs an arm that seats the case where it is
+not**, or the gate proves the scheduler and not the guard. N2 to N4 are the same disease one layer
+down: an arm with one holder, one sender and one right cannot fail on a predicate about holders,
+senders or rights.
+
+### 8.4 What this does not discharge
+
+The enumeration is a list a human wrote and the gate makes each entry checkable; a green
+`sched_wake` is not a proof that the interleaving is safe, exactly as 4.1 said it would not be. Two
+obligations are explicitly still open. The **fault-redirect coupling** is silicon work: more traffic
+now flows through the preemptible window between a fault redirect and its stub. And the
+**concurrent-teardown path** (`TODO.md`) still has zero in-tree hits; the K-seam fixture is now the
+instrument that could seat two sweeps at once, and no arm does yet.

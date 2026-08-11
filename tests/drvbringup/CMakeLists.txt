@@ -22,4 +22,4 @@ target_compile_options(drv_bringup PRIVATE ${KICKOS_WARN_FLAGS})
 # 30 s like the other host gates, and three orders of magnitude of headroom: the readiness
 # arm's KOS_DRV_READY_WAIT_MAX sleeps are no-ops here, so the whole suite is sub-millisecond.
 add_test(NAME drv_bringup COMMAND "$<TARGET_FILE:drv_bringup>")
-set_tests_properties(drv_bringup PROPERTIES TIMEOUT 30)
+set_tests_properties(drv_bringup PROPERTIES TIMEOUT 30 LABELS host)

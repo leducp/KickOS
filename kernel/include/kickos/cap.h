@@ -631,9 +631,14 @@ namespace kickos
     // (only an EXITED one is), no peer can mint a cap into the table, and c stays on the
     // ready structure, so a preempted sweep resumes and stays TOTAL.
     //
-    // An RR slice expiring in sched::tick_rr is the only thing that switches a dying thread
-    // out at a chunk boundary, and so the only way two threads are ever in here at once
-    // (g_cap.teardown_depth, cap.cc).
+    // TWO things switch a dying thread out mid-sweep, and either is how two threads come to
+    // be in here at once (g_cap.teardown_depth, cap.cc): an RR slice expiring in
+    // sched::tick_rr, and sched::wake of a strictly higher-priority peer from the teardown
+    // arms in cap.cc and sync.cc. The first lands at a chunk BOUNDARY because the chunk loop
+    // below holds IrqLock and only releases it between chunks, which is what defers the
+    // delivery on every port. The second is thread context and so is not deferred at all: on
+    // a port whose arch_switch is immediate it lands MID-chunk with the slot it is closing
+    // still live. A FIFO dying thread is reachable only by the second.
     void cap_teardown(Thread* c);
 
     // True while any thread is inside cap_teardown. A preempted sweep may still hold an IRQ

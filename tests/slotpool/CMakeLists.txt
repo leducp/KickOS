@@ -10,4 +10,4 @@ target_include_directories(slotpool_policy PRIVATE "${PROJECT_SOURCE_DIR}/kernel
 target_compile_options(slotpool_policy PRIVATE ${KICKOS_WARN_FLAGS})
 
 add_test(NAME slotpool_policy COMMAND "$<TARGET_FILE:slotpool_policy>")
-set_tests_properties(slotpool_policy PROPERTIES TIMEOUT 30)
+set_tests_properties(slotpool_policy PROPERTIES TIMEOUT 30 LABELS host)

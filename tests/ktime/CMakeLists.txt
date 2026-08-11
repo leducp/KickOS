@@ -25,4 +25,5 @@ target_compile_options(ktime_rearm PRIVATE ${KICKOS_WARN_FLAGS})
 # 1015000 is wanted) and fail 11 ways.
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(NAME ktime_rearm COMMAND "$<TARGET_FILE:ktime_rearm>")
+  set_tests_properties(ktime_rearm PROPERTIES TIMEOUT 30 LABELS host)
 endif()

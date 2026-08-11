@@ -44,11 +44,11 @@ namespace kickos
             // cap.h).
             CapEntry chunks[kcap_slab_entries()];
             CapChunkList free_chunks;
-            // Threads inside cap_teardown right now. A count, not a flag: an RR slice
-            // expiring in sched::tick_rr can switch a dying thread out at a chunk boundary
-            // and a second thread can then enter and finish its own sweep first. Gates the
-            // console reclaim, which must not run while ANY dying thread might still hold
-            // an IRQ cap on the line.
+            // Threads inside cap_teardown right now. A count, not a flag: a dying thread can
+            // be switched out mid-sweep and a second thread can then enter and finish its own
+            // sweep first. The two routes that do it are enumerated at cap.h's cap_teardown
+            // declaration. Gates the console reclaim, which must not run while ANY dying
+            // thread might still hold an IRQ cap on the line.
             unsigned teardown_depth;
         };
         constinit CapState g_cap;

@@ -291,6 +291,15 @@ unnecessary; it is a change to the wrong layer.
 The guard itself is the real finding and it is scheduler core-path work that does not ride this
 milestone. It is recorded in `TODO.md` with its numbers and with the proof obligation it still owes.
 
+**RETRACTED IN PART, M4.8.2.** The blanket guard is gone: `sched::wake` now admits a strictly
+higher-priority peer, so a deflate is no longer inert and the paragraph above no longer supports the
+rejection. The MEASUREMENTS stand and the conclusion is now the other way round from the one the
+rejection assumed: deflating the dying thread would lower the very quantity the new guard compares
+against, so it would ADD preemptions rather than buy nothing. The two changes multiply and are not
+independent. What is still true, and is the reason to leave the deflate rejected, is that it is a
+change to the wrong layer. See `design-m4.8.2-host-unit-tests.md` section 8.2, which also records
+that the timer already performs exactly this deflate, mid-sweep and with no `dying` test.
+
 #### The budget this rests on, stated so it can be checked
 
 Against the motivating workload, a 10 kHz control loop on a 100us period tripping its safety at ten

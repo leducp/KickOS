@@ -298,11 +298,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/check_oot_export_mcu.sh"
             "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}"
             "${CMAKE_COMMAND}" "${CMAKE_GENERATOR}")
-  # Registered with a bare add_test rather than through the wrapper, so it needs the
-  # build fixture named here: without it ctest -j runs cmake --install on the build
-  # dir concurrently with kickos_build and fails about one run in ten.
+  # FIXTURES_REQUIRED is named explicitly: without it ctest -j runs cmake --install on the
+  # build dir concurrently with kickos_build and fails about one run in ten. The root
+  # add_test wrapper would supply the same value (a macro defined there is visible in every
+  # later subdirectory), so this is a deliberate restatement rather than a bypass.
   set_tests_properties(oot_export_mcu PROPERTIES TIMEOUT 120
-                       FIXTURES_REQUIRED kickos_build)
+                       FIXTURES_REQUIRED kickos_build LABELS host)
 endif()
 
 # Boot-ctor-split guard: on an enforced armv7m link (.kickos_app_init_array exists),
@@ -318,7 +319,7 @@ if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "armv7m")
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             "$<TARGET_FILE:kickos_lib>")
-  set_tests_properties(kernel_ctor_placement PROPERTIES TIMEOUT 60)
+  set_tests_properties(kernel_ctor_placement PROPERTIES TIMEOUT 60 LABELS host)
 endif()
 
 # Seam-fallback gate: every optional arch/chip seam resolves by archive-member
@@ -354,7 +355,7 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
             "$<TARGET_FILE:selftest>" "${_selftest_map}"
             "${PROJECT_SOURCE_DIR}/tests/weak_allowlist.txt"
             ${_seam_archives})
-  set_tests_properties(seam_defaults PROPERTIES TIMEOUT 120)
+  set_tests_properties(seam_defaults PROPERTIES TIMEOUT 120 LABELS host)
 
   # Driver-class shadowing gate, on the SAME inventory: the seam gate asks which member
   # answered an optional arch/chip seam, this one asks whether a real backend's public
@@ -374,7 +375,7 @@ if(KICKOS_BUILD_TESTS AND TARGET selftest)
             "${PROJECT_SOURCE_DIR}/user/include/kickos/driver"
             "${_selftest_map}" "${_class_expect_app}"
             ${_seam_archives})
-  set_tests_properties(class_backend PROPERTIES TIMEOUT 120)
+  set_tests_properties(class_backend PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
 # RISC-V-under-PMP small-data guard: the gp window sits inside the app grant, so the
@@ -390,5 +391,5 @@ if(KICKOS_BUILD_TESTS AND KICKOS_HAVE_MPU AND KICKOS_ARCH STREQUAL "rv32imac")
             "$<TARGET_FILE:kickos_arch_${KICKOS_ARCH}>"
             "$<TARGET_FILE:kickos_chip_${KICKOS_CHIP}>"
             "$<TARGET_FILE:kickos_lib>")
-  set_tests_properties(riscv_no_smalldata PROPERTIES TIMEOUT 60)
+  set_tests_properties(riscv_no_smalldata PROPERTIES TIMEOUT 60 LABELS host)
 endif()

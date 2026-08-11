@@ -675,6 +675,17 @@ if(KICKOS_BUILD_TESTS)
     endif()
   endmacro()
 
+  # THE `host` LABEL. A test carries it when it executes no KickOS image, and so reads no
+  # clock and cannot be perturbed by load: host programs linking real KickOS sources or
+  # headers, source-tree checks, and static checks that read a built ELF with nm/readelf.
+  # `ctest -L host` is then batchable and `ctest -LE host` is the set that must run standalone,
+  # because the sim and qemu suites have no silicon clock and fail under the load of a
+  # back-to-back run. A gate that RUNS a built image must not carry it; `oot_export` is the one
+  # that reads as host and does not qualify.
+  # Fixtures are resolved AFTER label filtering, so `kickos_build` is deliberately unlabelled
+  # and appears in BOTH partitions. It is a build and not a test, so `-LE host` is the
+  # standalone set plus that one entry, and nothing else.
+
   # Doc-rot gate. It reads the SOURCE tree through `git ls-files` and never opens the
   # build directory, so it is registered on every board rather than behind one: a gate
   # that runs on a single posture is a gate that runs when that posture happens to be
@@ -684,7 +695,7 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME doc_names
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_doc_names.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(doc_names PROPERTIES TIMEOUT 120)
+  set_tests_properties(doc_names PROPERTIES TIMEOUT 120 LABELS host)
 
   # Kconfig generator gate. A source-tree host check like doc_names, so it registers
   # on every board and requires no build. Unconditional: every board is configured from
@@ -694,7 +705,7 @@ if(KICKOS_BUILD_TESTS)
   _add_test(NAME kconfig_gen
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_kconfig_gen.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120)
+  set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
 # Components are added as they land; guarded so every step boundary configures.
@@ -762,6 +773,18 @@ endif()
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/drvbringup/CMakeLists.txt")
   add_subdirectory(tests/drvbringup)
+endif()
+
+# The K-seam host fixture, and its gates. Everything above cuts the seam at the SYSCALL
+# boundary and needs no kernel; these compile the kernel's stateful core for the host and cut
+# at the ARCH boundary instead, so they can seat a kernel state no run reaches and read the
+# whole struct back. Must precede its consumers: they call the function it defines.
+if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/kfixture/CMakeLists.txt")
+  add_subdirectory(tests/kfixture)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/schedwake/CMakeLists.txt")
+    add_subdirectory(tests/schedwake)
+  endif()
 endif()
 
 # Aggregate usage-requirement target: "link this and you get the whole OS".

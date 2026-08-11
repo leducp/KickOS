@@ -799,7 +799,7 @@ debuggability: `MinSizeRel` carries `-g`, so the symbols are all there and only 
 unavailable. No gate builds these boards in `Debug`, deliberately -- the link failure
 already names the overflow in bytes.
 
-**`bluepill-c8-st` has exactly ZERO boot-arena slack**, which makes it the fleet's most
+**`bluepill-c8-st` has 96 BYTES of boot-arena slack** (measured at `6be8220`, up from zero because stage 0 handed back two reserved cap slots), which makes it the fleet's most
 fragile link and the one nothing will catch. Configure prints only the needed side:
 
 ```

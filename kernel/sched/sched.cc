@@ -145,12 +145,34 @@ namespace kickos
             }
             t->state = ThreadState::READY;
             kernel().policy->on_ready(t);
-            // A dying current thread means we are inside its cap_teardown sweep (the mutex
-            // force-unlock and the endpoint EPIPE-wake both wake from there). Switching
-            // away mid-chunk would run the woken thread against a half-released table with
-            // the ready structure still holding the dying thread. exit_current's own final
-            // reschedule, after on_remove, is the switch.
-            if (kernel().current->dying)
+            Thread const* const c = kernel().current;
+            // Null between sched::init and sched::start. No reachable pre-start waker exists
+            // today; the test is here because tick_rr guards the same pointer and one
+            // guarded reader plus one unguarded reader is the defect.
+            if (c == nullptr)
+            {
+                return;
+            }
+            // EXITED means exit_current is past its own on_remove, so this thread will never
+            // be picked again and a switch here would ABANDON the rest of exit_current: the
+            // join waiters it has not reached yet would never be woken and kickos_terminate
+            // would never run. Its own final reschedule is the switch.
+            if (c->state == ThreadState::EXITED)
+            {
+                return;
+            }
+            // Inside the dying thread's cap_teardown sweep. This is a DECISION and not a fast
+            // path: an RR slice expiry rotates the running thread behind its equals, and then
+            // pick_next WOULD take an equal-priority peer. What makes admitting a strictly
+            // higher-priority one safe is that the sweep drops IrqLock between chunks and c is
+            // still on the ready structure, so it resumes and stays total. tick_rr already
+            // switches an RR dying thread out at a chunk boundary with no dying test at all.
+            // Reads kernel().current, which switch_to publishes BEFORE a deferred arch_switch:
+            // after one admitted wake the dying thread keeps running with `c` naming the peer,
+            // so later wakes in the same chunk are unguarded. Harmless today because the EPIPE
+            // drain pops in descending priority, so pick_next returns the published peer and
+            // reschedule early-returns.
+            if (c->dying and t->prio <= c->prio)
             {
                 return;
             }
@@ -228,8 +250,10 @@ namespace kickos
                 // Join and wait-until-last are parked on NO list, so this pool scan IS the
                 // waiter lookup; it runs at a thread exit and nowhere else. The wait edge
                 // and wait_result are the waker's to write BEFORE the wake, as on every
-                // wait queue. `dying` is set, so each wake below returns without switching
-                // and the reschedule further down stays the single switch away.
+                // wait queue. `state` is EXITED by now, which is the clause in wake that
+                // suppresses these switches; `dying` no longer does it, because a joiner may
+                // outrank this thread. The reschedule further down stays the single switch
+                // away, and a switch from inside this loop would abandon the rest of it.
                 bool const last_out = (k.live == 1);
                 for (int s = 0; s < k.threads.next; s++)
                 {

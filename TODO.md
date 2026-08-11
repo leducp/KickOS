@@ -367,35 +367,48 @@ Both items were measured on `23b9abb` and neither is a defect this milestone int
 scheduler and console core-path work, so neither rides M4.7.9. The capture behind both is
 `docs/archive/M4.7.9_teardown_latency_meas.md`.
 
-- [ ] **`sched::wake()` suppresses rescheduling for EVERY thread woken while the current thread is
-      dying, whatever its priority, and that reads as starvation rather than as safety.**
-      `kernel/sched/sched.cc`'s `wake` returns early on `kernel().current->dying`, so a
-      priority-20 peer woken by the `cap_teardown` sweep of a priority-1 thread waits for the rest
-      of the sweep. **The safety claim in that early return's own comment is already contradicted by
-      the tree**: `sched::tick_rr` calls `reschedule()` with no `dying` check at all, so an RR dying
-      thread IS switched out mid-sweep, which is exactly the interleaving the comment says must not
-      happen. `g_cap.teardown_depth` corroborates it from the other side: it is a COUNT, not a flag,
-      and its own comment already states that an RR slice expiry can switch a dying thread out and
-      let a second thread finish its sweep first.
-      Measured: RR at q=20us preempted the sweep on 8/8 deaths; with an equal-priority peer and
-      `KCAP_TEARDOWN_CHUNK` forced to 1, 48/48 deaths took up to 8 (xmc4800-relax) / 13 (frdmk64f)
-      preemptions inside a single sweep. Nothing broke across 1080 silicon plus 488 sim deaths,
-      including a soak whose woken peers churned capabilities and objects on wake.
-      Minimal repair is a priority comparison, `current->dying and t->prio <= current->prio`, not
-      removal of the guard. Estimated benefit: a woken higher-priority peer waits only for the
-      current chunk, 13.2us (xmc4800-relax) / 18.9us (frdmk64f) at the shipped chunk width, a 4x to
-      9x reduction, and `KCAP_TEARDOWN_CHUNK` becomes a thread-latency knob instead of an
-      ISR-latency one.
-      **Open proof obligation, and the reason this is not a one-line change:** enumerate every peer
-      that can observe a dying thread's half-swept capability table. The soak is evidence, not
-      proof, because its woken peers only churned their OWN resources. Until that enumeration
-      exists, the measured 1568 deaths say the interleaving is survivable, not that it is safe.
-      This also decides M4.7.9's rejected priority deflate, which is inert while the blanket guard
-      stands (`docs/design-m4.7.9-fault-isolation.md` section 5.1).
-      **Coupling, and it runs the wrong way:** narrowing the guard puts MORE traffic through the
-      preemptible window between a fault redirect and its stub, so the fault-record race gets more
-      likely, not less. `fault-record-is-printed-only-by-its-owner` is the invariant that then
-      carries the weight, and it must still hold after this change.
+- [x] **FIXED in M4.8.2. `sched::wake()` suppressed rescheduling for EVERY thread woken while the
+      current thread was dying, whatever its priority, which read as starvation rather than as
+      safety.** The guard is now three clauses (`kernel/sched/sched.cc`): a null `current`, an
+      `EXITED` current, then `dying and t->prio <= current->prio`. Gated by `sched_wake`
+      (`tests/schedwake/`) on the new K-seam host fixture, five mutants killed. The record is
+      `docs/design-m4.8.2-host-unit-tests.md` section 8; the enumeration this item asked for is 8.2.
+      What the original entry got wrong, and it took the enumeration to see:
+      - **A priority comparison ALONE strands `exit_current`'s own waiters.** That loop wakes join
+        and wait-until-last waiters after its `on_remove`, when the dying thread can never be picked
+        again, so a higher-priority joiner switching there abandons the rest of the loop: the
+        waiters not yet reached are never woken and `kickos_terminate` never runs. Three of the four
+        ports defer the switch to the `IrqLock` release and survive by luck of the port; the sim
+        does not. Hence the `EXITED` clause, which needs no new field.
+      - **ALL THREE in-sweep wake sites can preempt, and the first reading of this said two could
+        not.** The claim was that the mutex force-unlock and the reply EPIPE leave the dying thread
+        boosted at or above the peer they wake. That bound is a SNAPSHOT taken when the peer parked:
+        `sched::set_prio` on a BLOCKED thread propagates nothing and the PI chain walk terminates at
+        a non-mutex park, so a later boost of the parked peer never reaches the dying thread. The
+        `endpoint_call` D2 donation and an ordinary chain boost are both routes. The 4x to 9x figure
+        was measured on the sweep rather than on the reachable wake set, and counting call SITES was
+        no better: the endpoint drain is a loop over every parked sender while the other two wake one
+        thread each. Nothing has been measured; only the direction is established.
+      - **The deflate and the narrowing multiply.** `endpoint_wait_timeout` already calls
+        `sched::set_prio(server, thread_effective_prio(server))` with no `dying` test, from the
+        timer, in the chunk gap, where `server` may BE the dying thread. It lowers the very quantity
+        the new guard compares, so it can turn either bounded site into a preemption. This is the
+        sharper form of the coupling note below, and it also means M4.7.9's rejected priority
+        deflate is PARTLY live already (`docs/design-m4.7.9-fault-isolation.md` section 5.1).
+      - **The already-live set had two bounds nobody stated.** `tick_rr` preempts a dying sweep only
+        for an **RR** thread with a non-zero quantum, so a FIFO one was never preempted mid-sweep
+        and now can be; and `tick_rr` switches from an ISR, which every hardware port defers to the
+        chunk boundary, where a thread-context wake on the sim switches mid-chunk with the slot
+        still live. Both are new exposure and both fall to the same construction (see 8.2).
+      The measurements the entry carried stand and are not re-run: RR at q=20us preempted the sweep
+      on 8/8 deaths; with `KCAP_TEARDOWN_CHUNK` forced to 1, 48/48 deaths took up to 8
+      (xmc4800-relax) / 13 (frdmk64f) preemptions inside one sweep; nothing broke across 1080
+      silicon plus 488 sim deaths.
+- [ ] **STILL OWED by the fix above, and it is silicon: narrowing the guard puts MORE traffic
+      through the preemptible window between a fault redirect and its stub**, so the fault-record
+      race gets more likely, not less. `fault-record-is-printed-only-by-its-owner` is the invariant
+      that carries the weight now, and no host gate can discharge it. Wants an enforcing board with
+      a fault arm under teardown pressure.
 
 - [ ] **`console_tx_write`'s overflow branch drains a full ring synchronously under `IrqLock`, so
       any kernel print carries an unbounded term.** `kernel/init/console_tx.cc`: once the burst does
@@ -3115,12 +3128,12 @@ was read or measured.
       rather than answer it, which is worth deciding deliberately rather than by side effect.
       **Measured by a subagent with instrumented counters -- the zero-hit figure and the forced-path
       figure are both its numbers, worth re-deriving before acting on them.**
-- [ ] **`sched::wake` dereferences `kernel().current` unguarded.** `kernel/sched/sched.cc:143`
-      reads `kernel().current->dying` with no null test, while `tick_rr` in the same file guards the
-      same pointer (`sched.cc:256-260`). `kernel().current` is null between `sched::init`
-      (`sched.cc:50`) and `sched::start` (`sched.cc:80`). No reachable pre-start waker was found,
-      so this is LATENT rather than live; the asymmetry is the defect -- one of the two readers is
-      guarded and the other is not. Read directly, reachability searched and not demonstrated.
+- [x] **FIXED in M4.8.2. `sched::wake` dereferenced `kernel().current` unguarded** while `tick_rr`
+      in the same file guarded the same pointer, and `kernel().current` is null between
+      `sched::init` and `sched::start`. Latent rather than live (no reachable pre-start waker was
+      found); the asymmetry was the defect. The null test is the first of the guard's three clauses,
+      and deleting it SIGSEGVs the `sched_wake` gate. That arm constructs the null by hand, so it
+      proves the clause is EXERCISED, not that the defect was reachable.
 - [ ] **`KOS_CAP_CLOCK` is aliased by default spawn delegation, so today it reserves nothing.** It
       is index 1, held for "a board's well-known clock/time service cap"
       (`system/include/kickos/sys/cap_index.h:35`) -- the provision a future userspace CPU governor
@@ -5402,3 +5415,124 @@ When the MMU era arrives (`docs/design-mmu-era-exploration.md`), the same seam f
 grows a second mechanism: on a target with processes, `exit()` ends the process and the thread-scope
 primitive stays `kos_exit`.
 
+
+## Found landing the M4.8.2 host unit-test layer (2026-08-11)
+
+The layer's record is `docs/design-m4.8.2-host-unit-tests.md`; section 8 is what landing it found.
+Items 5 to 7 of its section 7 are still owed and are the ones below plus the migration.
+
+- [ ] **`tests/check_class_backend.sh` does not cover the SYSCALL symbol set, and the only thing
+      protecting it is that `user/src/syscall_stubs.cc` is one archive member.** A U-seam gate
+      defines public `kos_*` names (`tests/drvbringup/kos_seam.cc` defines eleven), and a target
+      image linking one would satisfy them from the executable and keep the real stubs' member out
+      of the link. Today a target image uses far more than eleven syscalls, so the linker must
+      extract that member for the rest and the definitions collide loudly. **The day
+      `syscall_stubs.cc` is split per subsystem, which is an ordinary refactor nobody would flag,
+      the protection is gone and the failure is silent.** Widen the gate's symbol set to the syscall
+      headers; a comment does not survive a refactor.
+- [ ] **The blocking-call trap in the K-seam fixture needs a mechanism, not a paragraph.** Under a
+      returning `arch_switch` an arm that asserts on a blocking primitive's RETURN VALUE is
+      asserting on a fiction, because no waker ever wrote `wait_result`. `tests/kfixture/kfixture.h`
+      states it as note 2 and nothing enforces it. It becomes urgent the first time a gate drives
+      `mutex_lock` or `endpoint_recv` rather than the scheduler directly, which `sched_wake` does
+      not.
+- [ ] **The concurrent capability-teardown path now has an instrument and still has no arm.** The
+      K-seam fixture can seat two dying threads and drive one sweep into another, which is what the
+      existing zero-hits entry above wanted and could not get in-env. Two sweeps at once is the one
+      thing `g_cap.teardown_depth` exists to count, and nothing gates it.
+- [ ] **`tests/kfixture/reset()` cannot clear `g_cap.teardown_depth`**, because `cap.cc` keeps its
+      `CapState` in a TU-local `constinit` that the `kernel() = Kernel{}` assignment does not reach.
+      It refuses loudly instead (`cap_teardown_active()` at the top of `reset`), so an arm that
+      abandons a sweep stops the suite rather than poisoning every later arm. Widening
+      `cap_slab_init()` to zero the depth was considered and REFUSED: no arm needs it, and widening
+      shipped code for a fixture's convenience is the wrong direction. Revisit only if an arm
+      legitimately needs to abandon a sweep.
+- [ ] **A guard that is usually redundant needs an arm for the case where it is not.** The M3 mutant
+      (delete the `dying` clause outright) SURVIVED the gate's first version, because the guard's
+      effect on an equal-priority peer is a `pick_next` call avoided rather than a switch avoided,
+      and only a ready list whose head is NOT the dying thread makes the decision observable. Worth
+      applying to every other early return that reads as an optimisation: gate the decision, not the
+      usual outcome.
+- [ ] **`cap.cc`'s `g_stdout_target` is a THIRD TU-local the K-seam fixture cannot reset**, and
+      unlike `teardown_depth` it cannot even be detected: `cap.cc` exports no reader. So
+      `tests/kfixture/kfixture.h` note 4 carries a "no arm may call `cap_console_publish`", and a
+      comment is a stopgap, not a fix. The failure it prevents is nasty: `reset()` zeroes the
+      endpoint pool, so gen-encoded handles REPEAT across arms, and a stale global handle can be
+      matched by a later arm's unrelated endpoint close, noting a console death in a DIFFERENT arm's
+      counter. Fix when an arm needs to publish: a reset entry point beside `cap_slab_init()`.
+
+## Found by the M4.8.2 ten-angle review (2026-08-11)
+
+Five reviewers over ten angles, against `b77a3ef4`+`a2695e08`. No Critical: no isolation or
+memory-safety escape was constructible from the new mid-sweep preemption, and every protection
+`design-m4.8.2-host-unit-tests.md` section 8.2 relies on was verified independent of the guard. What
+follows is what survived that.
+
+- [ ] **`sched::wake`'s guard reads a `kernel().current` that a deferred switch has already moved.**
+      `switch_to` publishes `kernel().current = next` BEFORE `arch_switch`, and on ARM, RISC-V and RX
+      that only pends. So after one admitted wake inside a sweep the dying thread keeps running with
+      `c` naming the PEER, and every later wake in that chunk sees `dying == false` and
+      `state == RUNNING`: both new clauses are dead and `reschedule()` runs unconditionally. No wrong
+      final state was constructible, because the EPIPE drain pops in DESCENDING priority so
+      `pick_next` returns the already-published peer and the extra `reschedule()` early-returns. The
+      residue: the guard's stated premise is defeated for later wakes, and two arms in ONE chunk
+      waking ASCENDING priorities would run `on_switch_in`/`arm_slice` for a peer that never runs, so
+      an RR peer forfeits part of its first quantum. The gate cannot see it (the stub also returns).
+- [ ] **Two name-keyed releases are now observable as not-yet-done by the peer the sweep itself
+      wakes.** A supervisor EPIPE-woken by a dying driver's endpoint arm, at higher priority, now
+      runs BEFORE the `CAP_IRQ` slot is swept, so its respawn's `kos_irq_claim` gets `-KOS_EBUSY`;
+      and `console_on_driver_death` is gated on `cap_teardown_active()`, so a preempted sweep
+      postpones the console reclaim for as long as the peer keeps the CPU, which is unbounded.
+      `domain.h` makes exactly this promise for the DEV window and pays for it with the early
+      `domain_release`; the IRQ line and the console got no equivalent. A READING: no in-tree arm
+      hits it, because `irq_reclaim`'s worker runs ABOVE root so the woken peer is lower-priority.
+      Needs a supervisor above its driver, which is a normal posture with no in-tree instance.
+- [ ] **`Thread::domain` dangles for the whole sweep and the park.** `exit_current` releases without
+      nulling, deliberately and early. Nothing dereferences it today (the only other reader is
+      `thread_create`), but a peer's `domain_for` can recycle that slot while `c->domain` still names
+      it, and the new preemption makes that overlap the sweep rather than follow it. A future second
+      `domain_release(c->domain)` would decrement a LIVE domain to zero.
+- [ ] **`sched::wake` will resurrect an EXITED thread.** The early return covers READY and RUNNING
+      only, so `wake(t)` with `t->state == EXITED` sets it READY and pushes it onto the ready list,
+      after which `ThreadPool::alloc` no longer sees the slot as free. Unreachable today (an exiting
+      thread is on no queue and carries `WAIT_NONE`), and worth closing now that `state == EXITED` is
+      load-bearing two lines below.
+- [ ] **The `teardown_depth` axis is ungated end to end.** Deleting BOTH the increment and the
+      decrement so `cap_teardown_active()` is permanently false SURVIVES the suite, and so does
+      making `console_on_driver_death` unconditional, and so does deleting the fixture's own
+      in-flight-sweep refusal. The K-seam fixture is now the instrument that could seat two sweeps at
+      once, which is what the zero-hits entry above always wanted. Nothing does yet.
+- [ ] **The `host` label has no gate.** Eighteen hand-applied sites, and nothing checks that a new
+      test carries it or that an image-runner does not. `ctest -L host` silently shrinks and
+      `ctest -LE host` silently grows on the next test added, which is exactly the mechanicalness the
+      label was supposed to buy. A `check_labels.sh` over `ctest --show-only=json-v1` is a few lines.
+- [ ] **`f302nucleo`'s skip and partial sets are declared nowhere in the tree.** `microbit` is the
+      only board whose expectations are stated (`user/apps/common/selftest/CMakeLists.txt`), so a
+      hand-run of `check_tap_stream.sh` on f302nucleo has to be handed sets taken from the log being
+      judged, which is self-confirming. Declare them the way microbit's are.
+- [ ] **The K-seam fixture only ever compiles the SIM posture.** It takes `kickos_kernel`'s
+      `COMPILE_DEFINITIONS` verbatim and registers only under `KICKOS_ARCH STREQUAL "sim"`, so a
+      SEGMENTED capability table (`KCAP_RUN_CHUNKS > 1`, which `frdmk64f` runs), `KICKOS_DIAG_TERSE`,
+      and every non-sim cap geometry never reach a K-seam arm. That compounds with the chunk-boundary
+      arm: flat-versus-segmented teardown IS a chunk-boundary property.
+- [ ] **Splitting `user/src/syscall_stubs.cc` per subsystem breaks the U-seam shadow protection
+      silently, and this tree has a PRECEDENT for doing exactly that.** `user/CMakeLists.txt` already
+      splits `sim_exit.cc` and `newlib_sbrk.cc` into TUs of their own precisely to control extraction
+      granularity, so the refactor is the file's own idiom rather than a hypothetical. Secondary
+      condition nobody has stated: the collision is loud only while the image references at least one
+      symbol from that member the shadow does not define, which is true of `selftest` and not
+      established for a minimal image.
+- [ ] **Swapping `Thread::privileged` and `Thread::dying` would save a load on EVERY wake, free.**
+      Measured on armv7em: `state` is at offset 67 and `dying` at 69 with `privileged` between them,
+      so no single `ldrh` covers both and the guard pays two byte loads. Both are `bool` and both sit
+      in the same padding band the header already documents as free, so the swap costs no footprint
+      and the `sizeof(Thread)` asserts would catch a mistake.
+- [ ] **A K-seam gate cannot register a fixture refusal, and cannot print `not ok` when passing.**
+      `kickos_add_kseam_gate` now sets `FAIL_REGULAR_EXPRESSION "not ok"` unconditionally, which is
+      what stops a forged exit code, and the cost is that the fixture's own refusals cannot be gated
+      through that function and no future gate may quote a TAP-shaped expectation in a diff printer.
+      An `EXPECT` parameter that replaces the fail regex would cover both.
+- [ ] **The `PANIC` branch of `kickos_add_kseam_gate` has no caller.** Its `PASS`+`FAIL` interaction
+      was verified out of tree and is correct; in tree it is untested. Either the first death-case arm
+      lands (the ISR-context `kpanic` the fixture header promises is the obvious one, and
+      `arch_in_isr` is already wired to `g_in_isr` for it) or the branch goes.

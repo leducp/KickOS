@@ -116,7 +116,9 @@ namespace kickos
         // own capability teardown. The sweep RELEASES IrqLock between chunks, so `state`
         // cannot serve as the marker (a switch back in rewrites it to RUNNING). Gates the
         // cross-task reply mint, since a half-torn table must not accept a new cap, and the
-        // wake-during-teardown switch deferral.
+        // wake-during-teardown switch deferral, which is PRIORITY-CONDITIONAL: sched::wake
+        // admits a strictly higher-priority peer, and `state == EXITED` is what suppresses
+        // the wakes exit_current issues after its own on_remove.
         bool dying = false;
         // CapAuthority (AUTH_*) bits. Read by cap_check_authority WITHOUT IrqLock, so it
         // must stay a single byte that no path writes concurrently: the parent seats it at
@@ -276,9 +278,7 @@ namespace kickos
         }
     };
 
-    // The TCB budget, enforced per configuration rather than as one number: the three blocks a
-    // target legitimately moves are computed from its own types, and only the scalar remainder
-    // is a literal. Editing that literal is how a deliberate TCB change lands.
+    // The TCB budget. Editing the scalar literal below is how a deliberate TCB change lands.
     //
     // MEASURE ON A 32-BIT TARGET. A uint16_t added to Thread costs 8 bytes on armv6m and 0 on
     // the host: the padding before `domain` is saturated on 32-bit and there is no tail padding.

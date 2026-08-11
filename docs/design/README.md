@@ -69,12 +69,12 @@ Two things follow from this that are easy to get wrong:
 | [`design-kickcat-k64f.md`](../design-kickcat-k64f.md) | Running the KickCAT EtherCAT slave on KickOS. Sim stage landed; the K64F hardware path is still the plan |
 
 | [`design-style-enforcement.md`](../design-style-enforcement.md) | One mechanism enforcing house style across code, markdown and build files: the rule inventory bucketed by decidability, and why a formatter and a count gate both lose |
+| [`design-m4.8.2-host-unit-tests.md`](../design-m4.8.2-host-unit-tests.md) | The host unit-test layer: two seams, one at the syscall boundary and one at the arch boundary, and why the first needs no fixture |
 
 ## EXPLORATORY
 
 | Document | Subject |
 |---|---|
-| [`design-m4.8.2-host-unit-tests.md`](../design-m4.8.2-host-unit-tests.md) | The host unit-test layer: two seams, one at the syscall boundary and one at the arch boundary, and why the first needs no fixture |
 | [`design-task-layer.md`](../design-task-layer.md) | A task as a set of threads, with the address space on Domain rather than Task |
 | [`design-m5-smp.md`](../design-m5-smp.md) | SMP candidate ranking by the one gate that decides it, the big-kernel-lock-first staged model, the per-chip hardware mechanics and the cross-core IPC invariants |
 | [`design-rp2350-hazard3.md`](../design-rp2350-hazard3.md) | Porting to the RP2350's RISC-V Hazard3 cores as a sibling of the M33 port |

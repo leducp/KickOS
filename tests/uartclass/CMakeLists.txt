@@ -12,4 +12,4 @@ target_include_directories(uart_class PRIVATE
   "${PROJECT_SOURCE_DIR}/user/include" "${PROJECT_SOURCE_DIR}/system/include")
 target_compile_options(uart_class PRIVATE ${KICKOS_WARN_FLAGS})
 add_test(NAME uart_class COMMAND "$<TARGET_FILE:uart_class>")
-set_tests_properties(uart_class PROPERTIES TIMEOUT 30)
+set_tests_properties(uart_class PROPERTIES TIMEOUT 30 LABELS host)

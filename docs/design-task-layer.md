@@ -3,7 +3,7 @@
 
 # A task layer: naming the group that already exists
 
-**Status: SPIKE.** Nothing here is implemented. This file records the decisions taken, the ones
+**Status: EXPLORATORY.** Nothing here is implemented. This file records the decisions taken, the ones
 deliberately deferred, the measured cost, and the recommended place in the order. Written against
 `34c5bf7e`.
 
@@ -42,6 +42,13 @@ reading each bring-up tail:
 | `system/driver/mk64f/k64uartirq/k64uartirq.cc` | 2 | `:548` | yes, `irqt` |
 | `system/driver/rp2xxx/rpusb/rpusb.cc` | 2 | `:517` | yes, `irqt` |
 | `system/driver/xmc4800/xmcuartirq/xmcuartirq.cc` | 2 | `:364` | yes, `irqt` |
+
+**THE TABLE ABOVE IS STALE AS OF M4.8.1 AND IS KEPT ONLY AS THE ARGUMENT.** None of those six files
+contains `console_handover_finish` any more and none of those line numbers resolves: the generic
+driver service moved the tail into `user/include/kickos/sys/driver_service.h`, where ONE call site
+passes a `ThreadSet` accumulated from every spawn. A driver can no longer under-report a peer,
+because no driver writes the call. So step 9.1 below is DISCHARGED, not merely eased, and `rxsci`'s
+third thread is expressible too. What survives is the naming argument, not the bug.
 
 A two-thread driver that omits the handle declares itself single-thread. On a failed handover its
 IRQ thread is never cancelled, so the register window it holds is never released, so the console is
@@ -408,7 +415,7 @@ same time.** Adding a field is rejected on the `microbit` number.
 The answer is not "big bang". Four of the five steps are independently gateable, and the first two
 are not even part of the milestone.
 
-**9.1. Fix the three drivers that omit the IRQ handle. Now, and not as part of this.** `rxsci`,
+**9.1. DONE, by M4.8.1's generic driver service rather than by this.** `rxsci`,
 `c6uart` and `lx6uart` leak a live thread and a register window on a failed handover (1.1). This is
 a present bug on shipped drivers, it needs no new kernel concept, and holding it hostage to a task
 layer would be the wrong trade. `rxsci`'s third thread stays unreachable by that mechanism, which is

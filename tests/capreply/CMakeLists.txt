@@ -11,4 +11,4 @@ target_include_directories(capreply_packing PRIVATE
 target_compile_options(capreply_packing PRIVATE ${KICKOS_WARN_FLAGS})
 
 add_test(NAME capreply_packing COMMAND "$<TARGET_FILE:capreply_packing>")
-set_tests_properties(capreply_packing PROPERTIES TIMEOUT 30)
+set_tests_properties(capreply_packing PROPERTIES TIMEOUT 30 LABELS host)

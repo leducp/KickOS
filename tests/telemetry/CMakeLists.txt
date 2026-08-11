@@ -14,7 +14,7 @@ add_test(
           "${PROJECT_SOURCE_DIR}/tests/telemetry/check_golden.py"
           "$<TARGET_FILE:kicktrace_gen_golden>"
           "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
-set_tests_properties(telemetry_golden PROPERTIES TIMEOUT 30)
+set_tests_properties(telemetry_golden PROPERTIES TIMEOUT 30 LABELS host)
 
 # CI gate 3: trace-metadata de-drift. A host program prints the arch/syscall numbers
 # the C++ side actually spells (record.h ArchId + abi.h kos_syscall_nr); check_idmap.py
@@ -34,4 +34,4 @@ add_test(
           "$<TARGET_FILE:kicktrace_gen_idmap>"
           "${PROJECT_SOURCE_DIR}/tools/kicktrace.py"
           "${PROJECT_SOURCE_DIR}/user/include/kickos/sys/abi.h")
-set_tests_properties(telemetry_idmap PROPERTIES TIMEOUT 30)
+set_tests_properties(telemetry_idmap PROPERTIES TIMEOUT 30 LABELS host)

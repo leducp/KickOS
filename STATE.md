@@ -67,6 +67,43 @@ driver seen coming up, and `picopi` gives the project its FIRST clean armv6m enf
 | `esp32-wroom` | LX6, no unit | `1..91` | `lx6uart` |
 | `f302nucleo` | ring-only | `1..51` + `1..40` | -- |
 
+**M4.8.2 is witnessed on SIX boards at `b77a3ef4`**, which is every enforcement class the fleet can
+currently reach: `picopi` is the only gap and it is not on any bus. A scheduler change is shipped
+kernel code on every board, which is why the whole fleet ran rather than one representative. Logs
+`.session/logs/m482-*.log`, and **all seven streams were piped through `tests/check_tap_stream.sh`
+by hand** rather than read off the printed counts. `f302nucleo` is the exception that proves the rule
+and its permission sets are NOT declared anywhere in the tree: they were taken from
+`CONTEXT.local.md`'s provisioning list, so for that board alone the check is only as good as that
+list. `microbit` is the only board whose skip set the tree states.
+
+| board | class | plan | result |
+| --- | --- | --- | --- |
+| `frdmk64f` | SYSMPU | `1..95` | 95 ok, enforce |
+| `esp32c6-wroom` | PMP NAPOT | `1..95` | 95 ok, enforce |
+| `xmc4800-relax` | PMSAv7 | `1..95` | 95 ok, enforce |
+| `rx72m` | RX MPU, and the fleet's only board with no CI gate at all | `1..95` | 95 ok, enforce |
+| `esp32-wroom` | LX6, no unit, and an IMMEDIATE-switch port | `1..91` | 91 ok |
+| `f302nucleo` | ring-only | `1..51` + `1..40` | 51 + 40 ok, 3 + 7 skip, 0 + 4 partial |
+
+**The witness survived the review fixes that followed it.** The primary evidence is the source diff:
+those fixes are comment-only, which `git diff` shows outright. The artifact cross-check is worth
+knowing for its traps. Every kernel object AND the `text` size changed, which looks alarming and is
+not: `-g` embeds the build path in DWARF, and a worktree path is longer than the main checkout's;
+the `text` delta is `tests/tap/tap.h`'s `__FILE__`, which is APP-side. Comparing normalised
+`objdump -d` instead, with an untouched file as the control, every instruction stream is identical.
+**Two limits on that method.** It disassembles no data, so a changed `.rodata` initialiser passes
+silently. And it was run on `frdmk64f`, where `KICKOS_ASSERT` expands to a stringified condition; on
+a `KICKOS_DIAG_TERSE` board (`f302nucleo` is the only one) the same macro emits `__LINE__` as an
+immediate, so inserting a comment line above an assert legitimately moves a constant there and must
+not be read as a code change. An object-size delta alone never means the code moved.
+
+**`f302nucleo`'s second image needed the log SPLIT before the checker would accept it.** Both its
+captures contain TWO plan lines, a board restart inside the capture window that
+`.session/bench-capture.sh` flags itself, and p2's whole-file stream reconciles as "plan claims 40
+but 44 were reported". Feeding the last run alone passes. p2's truncated fragment had reached 4 arms
+with zero failures and p1's had reached none, which is what says restart rather than fault: check the
+fragment before believing a reconciliation failure on this board.
+
 **A DRIVER IS ONLY IN THE IMAGE IF THE SERVICE LIST PUTS IT THERE.** `rx72m-st`, `esp32-wroom-st` and
 `esp32c6-wroom-st` all default to `kickos_services_none`, so a green run on a default preset says
 NOTHING about that board's driver. This was got wrong twice in one session. `bench.sh` takes
@@ -102,7 +139,11 @@ reports an absent board as absent, and handles the two-image boards.
 
 **A batch `ctest` across all suites is not a valid instrument for `sim` and `qemu`.** They have no
 silicon clock, fail under the load of a back-to-back run, and pass standalone. CI runs one board
-per job for that reason, and so must any local sweep.
+per job for that reason, and so must any local sweep. **That constraint is now MECHANICAL rather
+than remembered**: every gate that executes no KickOS image carries `LABELS host`, so `ctest -L host`
+is the batchable set and `ctest -LE host` is exactly the set that must run standalone. The label is
+defined once in the root `CMakeLists.txt`. It is not a synonym for "runs on the build host":
+`oot_export` runs the app it built and deliberately does not carry it.
 
 **`EXPECT_SKIPS` and `EXPECT_PARTIALS` are PERMISSION SETS, not budgets.**
 `tests/check_tap_stream.sh` fails an UNLISTED skip but only NOTEs a listed arm that did not skip.
@@ -121,11 +162,23 @@ rather than producing a plausible-looking wrong log.
 1. **M4.8.1 -- the generic driver service**, MERGED as PR #19 and witnessed on every enforcement
    class the fleet has.
 2. **M4.8.2 -- the host unit-test layer**, and the `sched::wake()` dying-guard repair it is the tool
-   to prove. Its ruling is `docs/design-m4.8.2-host-unit-tests.md`, and its first gate already landed
-   inside M4.8.1 (`tests/drvbringup`) because that is whose coverage gap it closed. The layer has TWO
-   seams, not one: a **U-seam** at the syscall boundary, which needs no kernel and no fixture and is
-   what `drvbringup` uses, and a **K-seam** at the arch boundary, which resets the whole singleton.
-   The U-seam half lands first.
+   to prove. Its record is `docs/design-m4.8.2-host-unit-tests.md`; section 8 is what landing it
+   found. The layer has TWO seams, not one: a **U-seam** at the syscall boundary, which needs no
+   kernel and no fixture (`tests/drvbringup`, landed inside M4.8.1), and a **K-seam** at the arch
+   boundary, which resets the whole singleton (`tests/kfixture`, plus its first gate
+   `tests/schedwake`). **The K-seam is SIXTEEN functions, and the real `cap_teardown` rides it for
+   free**: adding `syscall/cap.cc` trades two stubs for two others and does not widen the seam, so a
+   fixture with a stubbed-out sweep would have been strictly worse for nothing.
+   **The repair is THREE clauses, not the one `TODO.md` proposed.** A priority comparison alone
+   strands `exit_current`'s own waiter loop, which wakes joiners after its `on_remove` when the
+   dying thread can never be picked again; the `EXITED` clause is what keeps that loop's single final
+   reschedule the only switch. **TWO of the five backends take a thread-context switch IMMEDIATELY,
+   and one of them is silicon**: the sim (`swapcontext`) and Xtensa/LX6 (`esp32-wroom`). ARM, RISC-V
+   and RX pend it until the enclosing IrqLock releases and would have survived by luck of the port.
+   The same fact widens the mid-chunk exposure the narrowing introduces from a host curiosity to a
+   silicon one, and `kernel/include/kickos/cap.h` is where it is stated portably.
+   Still owed: the `class_backend` widening, the blocking-call trap's mechanism, an arm for the
+   concurrent sweep, the migration, and one SILICON obligation (below).
 3. **M4.8.3 -- the task layer**, if `docs/design-task-layer.md` rules for it. A task is a set of
    threads; the address space attaches to Domain, not Task. The spike's motivation is now partly
    discharged: the single bring-up tail takes a thread SET, which is what the old one-handle
@@ -227,6 +280,13 @@ privilege axis, but the authority word is software and still bites, which is why
 Per-board chips, cores and the fact that decides each class: `docs/reference/boards.md`.
 
 ## Open blockers
+
+- **OWED BY M4.8.2, AND ONLY SILICON CAN PAY IT: narrowing the dying guard puts MORE traffic through
+  the preemptible window between a fault redirect and its stub.** The coupling runs the wrong way, so
+  `fault-record-is-printed-only-by-its-owner` carries the weight now and no host gate can discharge
+  it. Wants an enforcing board with a fault arm under teardown pressure. Related and NOT independent:
+  `endpoint_wait_timeout` already deflates a dying thread's priority from the timer, in the chunk
+  gap, with no `dying` test, which lowers the very quantity the new guard compares against.
 
 - **FIXED 2026-08-02: `ktime_rearm` re-derived the deadline it programmed.** It applied the
   min-delta floor itself against a fresh clock read, on every context switch, so a deadline inside
