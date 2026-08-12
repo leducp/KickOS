@@ -235,6 +235,58 @@ endif()
 option(CONFIG_SCHED_PERIODIC_TICK "Force a classic periodic scheduler tick" OFF)
 option(KICKOS_BUILD_APPS          "Build in-tree demo applications"          ON)
 option(KICKOS_BUILD_TESTS         "Register CTest cases"                     ON)
+option(KICKOS_BUILD_INTEGRATION_TESTS
+       "Register the CTest cases that RUN a KickOS image (sim, qemu, out-of-tree export)" ON)
+
+# The host unit-test layer is a set of NATIVE executables, so find_package(GTest) is reached
+# on the host arch and nowhere else: a board build never asks for it and so can never need a
+# dependency manager. CONFIG mode on purpose, so Conan, vcpkg and a system install all satisfy
+# it; nothing is fetched at build time.
+set(_kickos_gtest_found OFF)
+if(KICKOS_ARCH STREQUAL "sim")
+  # GTest arrives as an IMPORTED target built for ONE configuration, Release from both Conan
+  # and a distro package, and its interface properties are gated on $<CONFIG:Release>. The sim
+  # presets build MinSizeRel: without this mapping the gate compiles with no include path and
+  # links no library, and the failure reads as a missing gtest/gtest.h rather than as a
+  # configuration mismatch.
+  foreach(_cfg MINSIZEREL RELWITHDEBINFO DEBUG)
+    if(NOT DEFINED CMAKE_MAP_IMPORTED_CONFIG_${_cfg})
+      set(CMAKE_MAP_IMPORTED_CONFIG_${_cfg} ${_cfg} Release "")
+    endif()
+  endforeach()
+  find_package(GTest QUIET CONFIG)
+  if(GTest_FOUND)
+    set(_kickos_gtest_found ON)
+  endif()
+endif()
+option(KICKOS_BUILD_UNIT_TESTS "Build the host unit tests (needs GTest)" ${_kickos_gtest_found})
+if(KICKOS_BUILD_UNIT_TESTS AND NOT _kickos_gtest_found)
+  if(NOT KICKOS_ARCH STREQUAL "sim")
+    message(FATAL_ERROR
+      "KICKOS_BUILD_UNIT_TESTS=ON on board '${KICKOS_BOARD}' (arch ${KICKOS_ARCH}). The host "
+      "unit tests are native executables and are registered on the host arch only; a board "
+      "build must never need GTest. Configure the sim preset to run them.")
+  endif()
+  message(FATAL_ERROR
+    "KICKOS_BUILD_UNIT_TESTS=ON but find_package(GTest CONFIG) found nothing. Install it with "
+    "Conan and point the configure at the generators folder:\n"
+    "  conan install ${CMAKE_CURRENT_SOURCE_DIR}/conan/conanfile.py --output-folder=<gen> "
+    "-s compiler.cppstd=20 --build=missing\n"
+    "  cmake --preset sim -DCMAKE_PREFIX_PATH=<gen>")
+endif()
+if(KICKOS_ARCH STREQUAL "sim" AND NOT _kickos_gtest_found)
+  message(STATUS
+    "KickOS: GTest not found, host unit tests OFF. Get it from Conan "
+    "(conan install conan/conanfile.py --output-folder=<gen>) and add <gen> to CMAKE_PREFIX_PATH.")
+endif()
+# option() writes the cache ONCE, so a directory first configured without GTest keeps
+# KICKOS_BUILD_UNIT_TESTS=OFF after one is installed, and every message above stays silent
+# because the probe now succeeds. Says so instead of shrinking the suite by 124 quietly.
+if(_kickos_gtest_found AND NOT KICKOS_BUILD_UNIT_TESTS)
+  message(STATUS
+    "KickOS: GTest was found but KICKOS_BUILD_UNIT_TESTS is OFF in the cache. Re-run with "
+    "-DKICKOS_BUILD_UNIT_TESTS=ON, or configure a fresh build directory.")
+endif()
 # Test-only: exposes the guard-probe syscall (kos_guard_addr) used by the MPU
 # privilege self-test. Kept out of the production syscall ABI by default.
 option(KICKOS_ENABLE_SELFTEST     "Expose test-only self-test syscalls"      OFF)
@@ -644,6 +696,10 @@ include(GNUInstallDirs)
 if(KICKOS_BUILD_TESTS)
   enable_testing()
 
+  if(KICKOS_BUILD_UNIT_TESTS)
+    include(GoogleTest)
+  endif()
+
   # The panic/fault marker set for the sim FAIL_REGULAR_EXPRESSION registrations, read from
   # the ONE file both consumers read: this and tests/lib/gate.sh. Same ERE dialect, so the
   # string crosses verbatim. It must not contain a `;`: FAIL_REGULAR_EXPRESSION is a CMake
@@ -669,11 +725,36 @@ if(KICKOS_BUILD_TESTS)
   macro(add_test)
     _add_test(${ARGV})
     if("${ARGV0}" STREQUAL "NAME")
-      set_property(TEST "${ARGV1}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
+      set(_kickos_test_name "${ARGV1}")
     else()
-      set_property(TEST "${ARGV0}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
+      set(_kickos_test_name "${ARGV0}")
+    endif()
+    set_property(TEST "${_kickos_test_name}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
+    if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
+      # Deferred to the end of this directory: the earliest point where the site's own
+      # set_tests_properties has run and the `host` label is readable.
+      cmake_language(DEFER CALL kickos_decline_image_test "${_kickos_test_name}")
     endif()
   endmacro()
+
+  # DISABLED rather than unregistered, so ctest reports what was declined.
+  function(kickos_decline_image_test name)
+    get_test_property("${name}" LABELS _labels)
+    if(NOT "host" IN_LIST _labels)
+      set_tests_properties("${name}" PROPERTIES DISABLED TRUE)
+    endif()
+  endfunction()
+
+  # THE `host` LABEL. A test carries it when it executes no KickOS image, and so reads no
+  # clock and cannot be perturbed by load: host programs linking real KickOS sources or
+  # headers, source-tree checks, and static checks that read a built ELF with nm/readelf.
+  # `ctest -L host` is then batchable and `ctest -LE host` is the set that must run standalone,
+  # because the sim and qemu suites have no silicon clock and fail under the load of a
+  # back-to-back run. A gate that RUNS a built image must not carry it; `oot_export` is the one
+  # that reads as host and does not qualify.
+  # Fixtures are resolved AFTER label filtering, so `kickos_build` is deliberately unlabelled
+  # and appears in BOTH partitions. It is a build and not a test, so `-LE host` is the
+  # standalone set plus that one entry, and nothing else.
 
   # Doc-rot gate. It reads the SOURCE tree through `git ls-files` and never opens the
   # build directory, so it is registered on every board rather than behind one: a gate
@@ -682,9 +763,9 @@ if(KICKOS_BUILD_TESTS)
   # has nothing to do with; WORKING_DIRECTORY because the script refuses to run anywhere
   # but the repo root.
   _add_test(NAME doc_names
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_doc_names.sh"
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_doc_names.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(doc_names PROPERTIES TIMEOUT 120)
+  set_tests_properties(doc_names PROPERTIES TIMEOUT 120 LABELS host)
 
   # Kconfig generator gate. A source-tree host check like doc_names, so it registers
   # on every board and requires no build. Unconditional: every board is configured from
@@ -692,9 +773,9 @@ if(KICKOS_BUILD_TESTS)
   # interpreter and this cannot be reached without one.
   kickos_find_kconfig(_kconfig_py _kconfig_found)
   _add_test(NAME kconfig_gen
-            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_kconfig_gen.sh"
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_gen.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
-  set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120)
+  set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
 # Components are added as they land; guarded so every step boundary configures.
@@ -708,50 +789,50 @@ endforeach()
 # it registers on the sim build only. Config-independent (does not need telemetry
 # enabled, since it exercises the pure encoders + the decoder directly).
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/telemetry/CMakeLists.txt")
-  add_subdirectory(tests/telemetry)
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/telemetry/CMakeLists.txt")
+  add_subdirectory(tests/unit/telemetry)
 endif()
 
 # Host-only SlotPool allocation-policy gate. Host-only of necessity, not convenience:
 # no SlotPool handle ever crosses the user/kernel boundary, so no on-target selftest
 # arm can observe which slot an object lands in. slotpool.h is standalone (stdint.h
 # only), so the gate instantiates the real template.
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/slotpool/CMakeLists.txt")
-  add_subdirectory(tests/slotpool)
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slotpool/CMakeLists.txt")
+  add_subdirectory(tests/unit/slotpool)
 endif()
 
 # Host-only next-event-deadline gate. Host-only of necessity too: the deadline the
 # arch backends dedup on never crosses the arch seam, so an on-target arm can only
 # time a wake and race the host scheduler for the answer. Compiles the real
 # kernel/time/time.cc against a fake clock instead.
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ktime/CMakeLists.txt")
-  add_subdirectory(tests/ktime)
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/ktime/CMakeLists.txt")
+  add_subdirectory(tests/unit/ktime)
 endif()
 
 # Host-only capability-table storage + free-list policy gate. Host-only of necessity: the
 # chunk geometry is chosen by an #if, so one build compiles one geometry, and neither a
 # directory mapping nor a free-list length is observable from userspace.
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/captable/CMakeLists.txt")
-  add_subdirectory(tests/captable)
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/captable/CMakeLists.txt")
+  add_subdirectory(tests/unit/captable)
 endif()
 
 # Host-only raw-UART-class contract gate. Host-only of necessity: it LINKS a mock backend of
 # the public kos_uart_* names, and a target image doing that would keep its real backend's
-# archive member out of the link (tests/check_class_backend.sh is the gate for that).
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/uartclass/CMakeLists.txt")
-  add_subdirectory(tests/uartclass)
+# archive member out of the link (tests/static/check_class_backend.sh is the gate for that).
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/uartclass/CMakeLists.txt")
+  add_subdirectory(tests/unit/uartclass)
 endif()
 
 # Host-only CAP_REPLY packing gate. Host-only of necessity: the case it exists for is a thread
 # index above 255, which needs more slots than any board in the fleet configures, and no cap
 # entry is observable from userspace.
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/capreply/CMakeLists.txt")
-  add_subdirectory(tests/capreply)
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/capreply/CMakeLists.txt")
+  add_subdirectory(tests/unit/capreply)
 endif()
 
 # Host-only driver bring-up failure-path gate. Host-only of necessity: every arm needs a
@@ -759,9 +840,21 @@ endif()
 # nothing. No target image can do either, and the sim's two non-bring_up console postures
 # (system/init/sim/service_list.cc) discover their window base by spawning, so they cannot
 # reach this path at all.
-if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/drvbringup/CMakeLists.txt")
-  add_subdirectory(tests/drvbringup)
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/drvbringup/CMakeLists.txt")
+  add_subdirectory(tests/unit/drvbringup)
+endif()
+
+# The K-seam host fixture, and its gates. Everything above cuts the seam at the SYSCALL
+# boundary and needs no kernel; these compile the kernel's stateful core for the host and cut
+# at the ARCH boundary instead, so they can seat a kernel state no run reaches and read the
+# whole struct back. Must precede its consumers: they call the function it defines.
+if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/kfixture/CMakeLists.txt")
+  add_subdirectory(tests/unit/kfixture)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/schedwake/CMakeLists.txt")
+    add_subdirectory(tests/unit/schedwake)
+  endif()
 endif()
 
 # Aggregate usage-requirement target: "link this and you get the whole OS".

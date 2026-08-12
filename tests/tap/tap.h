@@ -55,7 +55,7 @@ namespace tap
     // Run every registered test in order, emit TAP, and return the number that
     // FAILED (0 == all passed). Skips and partials are counted but are not failures;
     // the per-board lists of ALLOWED ones, by name, live in the CTest gate
-    // (EXPECT_SKIPS / EXPECT_PARTIALS, checked by tests/check_tap_stream.sh).
+    // (EXPECT_SKIPS / EXPECT_PARTIALS, checked by tests/integration/check_tap_stream.sh).
     int run_all();
 }
 

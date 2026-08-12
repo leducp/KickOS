@@ -159,7 +159,7 @@ if(KICKOS_ARCH STREQUAL "sim")
   target_include_directories(kickos_services_sim PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
   # Make the console driver DIE after N served messages, so driver-death reclaim has a
-  # witness that needs no board (tests/check_sim_drvdeath.sh). 0 = serve forever, which
+  # witness that needs no board (tests/integration/check_sim_drvdeath.sh). 0 = serve forever, which
   # is every other posture. A knob on the ONE sim console driver rather than a second
   # provider: a divergent copy would stop being the reference the silicon services mirror.
   if(KICKOS_SIMCON_EXIT_AFTER)

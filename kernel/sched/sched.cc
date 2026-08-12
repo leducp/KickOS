@@ -145,12 +145,21 @@ namespace kickos
             }
             t->state = ThreadState::READY;
             kernel().policy->on_ready(t);
-            // A dying current thread means we are inside its cap_teardown sweep (the mutex
-            // force-unlock and the endpoint EPIPE-wake both wake from there). Switching
-            // away mid-chunk would run the woken thread against a half-released table with
-            // the ready structure still holding the dying thread. exit_current's own final
-            // reschedule, after on_remove, is the switch.
-            if (kernel().current->dying)
+            Thread const* const c = kernel().current;
+            // Null between sched::init and sched::start.
+            if (c == nullptr)
+            {
+                return;
+            }
+            // Never picked again, so a switch here abandons the rest of exit_current: its
+            // remaining waiters go unwoken. Its own final reschedule is the switch.
+            if (c->state == ThreadState::EXITED)
+            {
+                return;
+            }
+            // Not an optimisation: an RR slice expiry can rotate the dying thread off its
+            // ready-list head, and pick_next would then take an equal-priority peer.
+            if (c->dying and t->prio <= c->prio)
             {
                 return;
             }
@@ -228,8 +237,10 @@ namespace kickos
                 // Join and wait-until-last are parked on NO list, so this pool scan IS the
                 // waiter lookup; it runs at a thread exit and nowhere else. The wait edge
                 // and wait_result are the waker's to write BEFORE the wake, as on every
-                // wait queue. `dying` is set, so each wake below returns without switching
-                // and the reschedule further down stays the single switch away.
+                // wait queue. `state` is EXITED by now, which is the clause in wake that
+                // suppresses these switches; `dying` no longer does it, because a joiner may
+                // outrank this thread. The reschedule further down stays the single switch
+                // away, and a switch from inside this loop would abandon the rest of it.
                 bool const last_out = (k.live == 1);
                 for (int s = 0; s < k.threads.next; s++)
                 {

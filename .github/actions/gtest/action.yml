@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: CECILL-C
+# GoogleTest for the host unit-test layer, via Conan. Build-time only, and reached by the
+# host arch only: no board job needs this action.
+name: Install GTest via Conan
+description: Provision GTest with Conan and export KICKOS_GTEST_PREFIX for CMAKE_PREFIX_PATH.
+
+inputs:
+  conan-version:
+    description: Conan 2 version to install.
+    required: false
+    default: "2.31.2"
+
+runs:
+  using: composite
+  steps:
+    - name: Conan venv, and the pinned client
+      shell: bash
+      env:
+        CONAN_VERSION: ${{ inputs.conan-version }}
+      # Its own venv, for the same reason the kconfiglib action uses one: its bin/ holds a
+      # python and python3 that would shadow the interpreter the rest of the job runs on.
+      run: |
+        python3 -m venv ~/conan-venv || {
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-venv
+          python3 -m venv ~/conan-venv
+        }
+        ~/conan-venv/bin/pip install --disable-pip-version-check "conan==${CONAN_VERSION}"
+
+    - name: Cache the Conan package cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.conan2/p
+        key: conan2-${{ runner.os }}-gtest-${{ hashFiles('conan/conanfile.py') }}
+
+    - name: Install the dependencies
+      shell: bash
+      # --build=missing so a cache miss builds GTest rather than failing the job. cppstd=20
+      # matches KICKOS_CXX_STANDARD; the package is Release and the root CMakeLists maps the
+      # other configurations onto it.
+      run: |
+        ~/conan-venv/bin/conan profile detect --exist-ok
+        ~/conan-venv/bin/conan install conan/conanfile.py \
+          --output-folder="$HOME/kickos-gtest" \
+          -s compiler.cppstd=20 -s build_type=Release --build=missing
+
+    - name: Export KICKOS_GTEST_PREFIX
+      shell: bash
+      run: echo "KICKOS_GTEST_PREFIX=$HOME/kickos-gtest" >> "$GITHUB_ENV"

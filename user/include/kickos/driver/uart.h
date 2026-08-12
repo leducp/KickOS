@@ -14,7 +14,7 @@
 // proxy marshalling onto a service endpoint. An image carrying a SECOND definition does not
 // report a duplicate symbol; it keeps the real backend's archive member out of the link and
 // drives the other definition instead. That is why the host contract gate's mock
-// (tests/uartclass) is kept off every target image, and tests/check_class_backend.sh is what
+// (tests/unit/uartclass) is kept off every target image, and tests/static/check_class_backend.sh is what
 // enforces it.
 //
 // THE CLASS MOVES BYTES AND NOTHING ELSE. CRLF expansion, retry-on-full and the console's

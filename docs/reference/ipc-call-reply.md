@@ -280,8 +280,12 @@ The cap is consumed exactly once per unpark:
 | server closes / loses its `WAIT` cap while `ep->server == it` | close arm clears `ep->server` + recomputes | any lingering D2 donation dropped |
 
 The `CAP_REPLY` close arm runs the SAME full stale-resolve as `kos_reply` before waking,
-which is load-bearing now that a timed call can leave a stale cap behind. A teardown wake runs with the
-closer `EXITED`; `sched::wake` already defers the switch in that case, so it is safe.
+which is load-bearing now that a timed call can leave a stale cap behind. A teardown wake runs with
+the closer `dying` and still `RUNNING`: `EXITED` is set only after `cap_teardown` returns.
+`sched::wake` defers the switch for a woken caller that does not outrank the closer and ADMITS one
+that does, so what makes this safe is that the sweep is RESUMABLE, not that it is uninterrupted. The
+caller is off `reply_waiters` with its wait edge cleared before the wake, so a peer that runs there
+walks a shorter chain and never a torn one.
 
 ## Documented limits
 

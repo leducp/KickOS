@@ -750,7 +750,7 @@ body added there would have been pure ceremony that reads as coverage.
 
 What was actually dark on the sim is the **ownership state**, not the device: driver death
 never flipped `USER_OWNED`, so `console_emit` kept dropping. That half is the mechanism above,
-and the sim IS the only hardware-free vehicle for it -- `tests/check_sim_drvdeath.sh` turns
+and the sim IS the only hardware-free vehicle for it -- `tests/integration/check_sim_drvdeath.sh` turns
 "driver dies, console still prints" into a CI assertion instead of a bench errand. So the
 coverage claim reads: the **state machine** is gated on the host; a **per-chip reclaim body**
 is effective on mk64f and xmc4800 and silicon-gated there. Every other chip degrades to
@@ -1499,7 +1499,7 @@ Three coverage limits, stated rather than discovered:
   sec.6.3 and sec.9.3 is bench-only from the start.
 
 **Two ctest gates landed for the UART layer**, and what each cannot see is the point.
-`sim_uart_loopback` (`tests/check_sim_uartloop.sh`) runs the REAL two-thread driver over a
+`sim_uart_loopback` (`tests/integration/check_sim_uartloop.sh`) runs the REAL two-thread driver over a
 loopback device: nothing raises that line, so the only thing that can move a byte is the service
 thread's doorbell waking the IRQ thread -- remove the notify and the read returns nothing, which
 is how the doorbell is mutation-proved. It also checks CONTENT, not counts, so a ring mask or
@@ -1510,12 +1510,12 @@ raise, so nothing here would notice a driver that waited for an interrupt to sen
 The `uart_service` selftest case covers the request/reply surface with no driver at all.
 
 **One new console ctest gate, and it is the milestone's most valuable one.** `sim_driver_death`
-(`tests/check_sim_drvdeath.sh`, **LANDED**): the sim publishes a console, its driver exits, and
+(`tests/integration/check_sim_drvdeath.sh`, **LANDED**): the sim publishes a console, its driver exits, and
 the kernel console must come back. It is the **only** vehicle in the fleet that turns
 reclaim-on-death from a bench errand into a CI assertion, because every other console gate
 either keeps the driver alive or ends the system. The existing `sim_published_console` and
-`sim_published_panic` gates are the pattern (`tests/check_sim_published.sh`,
-`tests/check_sim_pubpanic.sh`).
+`sim_published_panic` gates are the pattern (`tests/integration/check_sim_published.sh`,
+`tests/integration/check_sim_pubpanic.sh`).
 
 Two implementation facts worth carrying, both discovered by building it. **The driver has to die
 on its own schedule**: no kernel path wakes a receiver parked in `kos_recv` when the last
@@ -1723,7 +1723,7 @@ with it too. What S1 actually absorbed, and why, is in its row. S2 is now only t
 | **S5** | **LANDED.** spawn-side delegation: the driver-spawn helper carrying N caps plus the shared data region, with the one-cap wrapper kept so the two landed SPI services do not churn | M4.6.1 |
 | **S6** | **LANDED.** console visibility and handover ordering. Root closes its own WAIT cap, then PROVES the driver is serving with a zero-length rendezvous on cap 0 before any client runs; a dead driver EPIPEs that probe, and the death has already reclaimed the console, so the failure is REPORTABLE and boot fails loudly. `handle_close` acts on a pending reclaim note too, so a failed spawn also gives the console back. Second case in `sim_driver_death`. **NOT** reordered to publish-after-spawn: on a chip where the driver takes the UART the kernel was using, the kernel must let go FIRST, so a window in which kernel-console writes are dropped is inherent to a single-owner device -- what the probe removes is any CLIENT running inside it | M4.6.1 |
 | **S7** | **LANDED.** the userspace byte ring (`user/include/kickos/sys/byte_ring.h`), with the `KOS_RING_BARRIER` seam generalised out of the kernel ring -- and NOT the same guarantee: the kernel publishes its head under `IrqLock`, so there the macro only pins compiler order, while here producer and consumer are two THREADS and a weakly-ordered core needs a real release fence. A non-power-of-two size is REFUSED rather than masked wrong. Gated by the `byte_ring` case | M4.6.1 second half |
-| **S8** | **LANDED except the silicon consumer.**: the wire ABI (`sys/uart.h`, size-asserted like `bus.h`) and the two-thread choreography (`sys/uart_service.h`), gated by the `uart_service` case which drives `serve_one` with NO device -- the peripheral belongs to the IRQ thread, so the whole request/reply surface is host-testable. `KOS_SVC_UART` added as a service kind. The first CONSUMER is the sim LOOPBACK port (`system/init/sim/service_list_uart.cc`, gated by `tests/check_sim_uartloop.sh`), so the two-thread split, the doorbell and the wire ABI are all CI-gated against a real driver. **The silicon consumer LANDED too**: `xmcuartirq` took `U0C0` as the console service (sec.11 q.7's recommended route), witnessed on the wire in `m461h-xmc-uartirq.log`, and four sibling drivers followed on `frdmk64f`, `esp32c6-wroom`, `esp32-wroom` and `rx72m` | M4.6.1 second half |
+| **S8** | **LANDED except the silicon consumer.**: the wire ABI (`sys/uart.h`, size-asserted like `bus.h`) and the two-thread choreography (`sys/uart_service.h`), gated by the `uart_service` case which drives `serve_one` with NO device -- the peripheral belongs to the IRQ thread, so the whole request/reply surface is host-testable. `KOS_SVC_UART` added as a service kind. The first CONSUMER is the sim LOOPBACK port (`system/init/sim/service_list_uart.cc`, gated by `tests/integration/check_sim_uartloop.sh`), so the two-thread split, the doorbell and the wire ABI are all CI-gated against a real driver. **The silicon consumer LANDED too**: `xmcuartirq` took `U0C0` as the console service (sec.11 q.7's recommended route), witnessed on the wire in `m461h-xmc-uartirq.log`, and four sibling drivers followed on `frdmk64f`, `esp32c6-wroom`, `esp32-wroom` and `rx72m` | M4.6.1 second half |
 | **S9** | **LANDED.** per-chip rollout in sec.9.2's order: `frdmk64f`, then `rx72m` (the dispatch-hook replacement, the group demux, the group-vector refcount, the reserved-block extension), then `esp32c6` (the missing mask half first), then `esp32-wroom` | M4.6.1 second half |
 
 The RX72M reserved-block extension (sec.6.4) is the one item that may land **earlier than its
@@ -1780,7 +1780,7 @@ found it, and it is already filed on its own in `TODO.md`.
    **RULED 2026-07-31: sim loopback first, LANDED.** `system/init/sim/service_list_uart.cc`
    carries a `KOS_SVC_UART` port whose "device" is host fd 1 plus an internal loopback -- the
    trick `xmcspi` uses on silicon to test a bus with no second party wired -- driven by the real
-   two-thread driver and gated by `tests/check_sim_uartloop.sh`. Its own service-list provider,
+   two-thread driver and gated by `tests/integration/check_sim_uartloop.sh`. Its own service-list provider,
    not a second entry in `kickos_services_sim`, because one list links per image and the existing
    console gates must keep testing the console posture unchanged. **`xmc4800` is now CLOSED too**, by the recommended
    route: both its USIC channels were taken (`U0C0` the kernel console, `U0C1` `xmcssc`'s), so

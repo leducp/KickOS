@@ -856,7 +856,7 @@ feeds the slave app.
 - **Kernel**: freestanding C++ -- `-ffreestanding -fno-exceptions -fno-rtti
   -fno-threadsafe-statics -fno-use-cxa-atexit`. Bring-up: run `.init_array` ctors in startup.
   Of the usual ABI stubs only `__dso_handle` exists (`user/src/newlib_stubs.cc`, and it is in
-  `tests/weak_allowlist.txt`): `-fno-use-cxa-atexit` removes the need for `__cxa_atexit`, and
+  `tests/static/weak_allowlist.txt`): `-fno-use-cxa-atexit` removes the need for `__cxa_atexit`, and
   `__cxa_pure_virtual` is never emitted because nothing declares a pure virtual. **`operator
   new/delete` is not provided at all** -- the kernel links `-nostdlib++`, so a stray `operator new`
   is a LINK ERROR rather than a silent heap allocation (`CMakeLists.txt:746`). No implicitly
@@ -928,7 +928,7 @@ feeds the slave app.
   action and no usage requirement can carry an action. `kickos_add_application(<name> SOURCES...
   BOARD...)` remains **optional sugar** with no powers the plain path lacks; the in-tree fleet uses
   it, downstream projects need not. Switching sim<->MCU is a one-word `BOARD`/toolchain change.
-  First-class acceptance criterion, gated both ways (`tests/check_oot_export{,_mcu}.sh`).
+  First-class acceptance criterion, gated both ways (`tests/integration/check_oot_export{,_mcu}.sh`).
   KickOS's own warning flags are **never** part of that interface -- they are this project's
   hygiene policy, applied `PRIVATE` to targets we own, and a consumer's diagnostics stay theirs.
 - **Declaring a driver / QEMU test / board provider.** Three macros in `cmake/kickos.cmake` give

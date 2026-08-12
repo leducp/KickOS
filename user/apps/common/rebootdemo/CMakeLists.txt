@@ -23,13 +23,13 @@ if(KICKOS_ARCH STREQUAL "sim")
   # exit status, so the refusal line plus a dirty exit would still pass. It runs
   # NATIVELY unless QEMU_MACHINE is set (same shape as check_fault_dump.sh).
   add_test(NAME sim_reboot_declined
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_reboot.sh" "$<TARGET_FILE:rebootdemo>")
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_reboot.sh" "$<TARGET_FILE:rebootdemo>")
   set_tests_properties(sim_reboot_declined PROPERTIES TIMEOUT 20)
 elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_reboot_declined TARGET rebootdemo
     BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_reboot.sh" TIMEOUT 40)
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_reboot.sh" TIMEOUT 40)
 elseif(KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_reboot_declined TARGET rebootdemo BOARD qemu-riscv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_reboot.sh" TIMEOUT 40)
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_reboot.sh" TIMEOUT 40)
 endif()

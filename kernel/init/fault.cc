@@ -15,8 +15,8 @@
 
 namespace
 {
-    // One record rather than per-Thread fields, because sizeof(Thread) is exactly 256 on
-    // armv6m and a new field would grow every TCB. The window between the redirect and
+    // One record rather than per-Thread fields, because Thread carries no tail padding on any
+    // target, so a new field grows every TCB. The window between the redirect and
     // the stub is PREEMPTIBLE (`dying` is not set until exit_current runs), so a second
     // thread's fault can overwrite this before the first stub reads it. `owner` is what
     // keeps that honest: a stub that does not own the record prints no fault facts

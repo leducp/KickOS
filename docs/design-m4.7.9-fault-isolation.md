@@ -291,6 +291,15 @@ unnecessary; it is a change to the wrong layer.
 The guard itself is the real finding and it is scheduler core-path work that does not ride this
 milestone. It is recorded in `TODO.md` with its numbers and with the proof obligation it still owes.
 
+**RETRACTED IN PART, M4.8.2.** The blanket guard is gone: `sched::wake` now admits a strictly
+higher-priority peer, so a deflate is no longer inert and the paragraph above no longer supports the
+rejection. The MEASUREMENTS stand and the conclusion is now the other way round from the one the
+rejection assumed: deflating the dying thread would lower the very quantity the new guard compares
+against, so it would ADD preemptions rather than buy nothing. The two changes multiply and are not
+independent. What is still true, and is the reason to leave the deflate rejected, is that it is a
+change to the wrong layer. See `design-m4.8.2-host-unit-tests.md` section 8.2, which also records
+that the timer already performs exactly this deflate, mid-sweep and with no `dying` test.
+
 #### The budget this rests on, stated so it can be checked
 
 Against the motivating workload, a 10 kHz control loop on a 100us period tripping its safety at ten
@@ -312,7 +321,7 @@ unprivileged root read `SCB->CPUID`, and that BusFault is now a thread kill. Its
 `qemu_ringpriv` is unaffected.
 
 
-`tests/check_fault_dump.sh`, `tests/check_mpu_fault.sh` and `tests/check_rootfault.sh` all assert
+`tests/integration/check_fault_dump.sh`, `tests/integration/check_mpu_fault.sh` and `tests/integration/check_rootfault.sh` all assert
 today that a deliberate fault ends the system. Under this rule that stays true on a flat board and
 becomes false on an enforcing one. Each gate must therefore become posture-aware, and the enforcing
 arm must assert the opposite of what it asserts now.
@@ -404,8 +413,8 @@ The join ABI is not changing for this.
 
 ### 9.3 The fault record can be taken by a later fault, and the print says so
 
-`g_fault` is one record, because `sizeof(Thread)` is exactly 256 on armv6m and a per-thread field
-would grow every TCB. The window between the redirect and the stub is PREEMPTIBLE, since `dying` is
+`g_fault` is one record, because `Thread` carries no tail padding on any target, so a per-thread
+field would grow every TCB (256 bytes where `KCAP_RUN_CHUNKS` is 1, 264 where it is 2). The window between the redirect and the stub is PREEMPTIBLE, since `dying` is
 not set until `exit_current` runs at the end of `kickos_thread_fault_exit`, so a second unrelated
 fault can overwrite the record before the first thread's stub reads it.
 

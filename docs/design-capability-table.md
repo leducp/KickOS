@@ -803,7 +803,7 @@ evidence. The specific ones that matter:
 - **`microbit`'s skip set, checked by hand in the RUN direction.** "The floor holds" is not
   sufficient: freeing `.bss` can flip a currently-skipped arena arm from SKIP to RUN. But the gate
   will not tell you. `EXPECT_SKIPS` and `EXPECT_PARTIALS` are **permission sets, not budgets**
-  (`tests/check_tap_stream.sh` says so and implements it): an unlisted skip FAILS, while a listed
+  (`tests/integration/check_tap_stream.sh` says so and implements it): an unlisted skip FAILS, while a listed
   name that did NOT skip is a `NOTE` and the gate still passes. So a LOSS of slack is caught
   automatically and a GAIN is not. An earlier revision of this list claimed a gain "breaks the gate
   exactly as a loss does"; that was false, and the practical consequence is that any change moving

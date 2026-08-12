@@ -10,7 +10,7 @@ kickos_add_application(tele_flood
 if(KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(
     NAME    telemetry_ring_wrap
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/telemetry/check_flood.py"
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/telemetry/check_flood.py"
             "$<TARGET_FILE:tele_flood>"
             "${PROJECT_SOURCE_DIR}/tools/kicktrace.py")
   set_tests_properties(telemetry_ring_wrap PROPERTIES TIMEOUT 60)

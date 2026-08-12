@@ -23,21 +23,21 @@ set(_absent "root: shutdown refused")
 if(KICKOS_BUILD_TESTS)
   if(KICKOS_ARCH STREQUAL "sim")
     add_test(NAME rootauth
-      COMMAND "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh" "$<TARGET_FILE:rootauth>"
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh" "$<TARGET_FILE:rootauth>"
               rootauth ${_arms} "${_absent}")
     set_tests_properties(rootauth PROPERTIES TIMEOUT 15)
   elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
     kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_rootauth TARGET rootauth
       BOARD ${KICKOS_BOARD}
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh"
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
       ARGS rootauth ${_arms} "${_absent}")
   elseif(KICKOS_BOARD STREQUAL "microbit")
     kickos_add_qemu_test(NAME microbit_rootauth TARGET rootauth BOARD microbit
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh"
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
       ARGS rootauth ${_arms} "${_absent}")
   elseif(KICKOS_BOARD STREQUAL "qemu-riscv")
     kickos_add_qemu_test(NAME qemu_riscv_rootauth TARGET rootauth BOARD qemu-riscv
-      SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_app_arms.sh"
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_app_arms.sh"
       ARGS rootauth ${_arms} "${_absent}")
   endif()
 endif()

@@ -4,7 +4,7 @@
 // Memory-domain isolation gate. Its own binary because it ends the process: an
 // unprivileged domain-A thread writes its own granted region (OK), then writes domain B's
 // region, which must fault. The kernel reports "MPU FAULT" and shuts down.
-// tests/check_mpu_fault.sh owns the verdict.
+// tests/integration/check_mpu_fault.sh owns the verdict.
 //
 // Static-data-free by construction: the worker takes its region base through its thread
 // ARG, by value, and derives both cells from it. The only memory it touches is its code

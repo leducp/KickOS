@@ -19,5 +19,5 @@ kickos_add_application(initdemo
 # reads QEMU's process exit code rather than grepping stdout.
 if(KICKOS_BUILD_TESTS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_initdemo TARGET initdemo BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_qemu_initdemo.sh" TIMEOUT 40)
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_qemu_initdemo.sh" TIMEOUT 40)
 endif()

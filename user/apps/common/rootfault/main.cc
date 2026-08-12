@@ -89,7 +89,7 @@ int main(int, char**)
     *static_cast<volatile int*>(rA) = 0x2222;
 
     // Reached ONLY where nothing is enforced. The "NOT confined" substring is the FAIL
-    // marker in tests/check_rootfault.sh.
+    // marker in tests/integration/check_rootfault.sh.
     emit("[rootfault] cross-domain write completed: root is NOT confined "
          "(no enforcement)\n");
     return 0;

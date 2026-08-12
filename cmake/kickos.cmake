@@ -122,7 +122,7 @@ set(KICKOS_FREESTANDING_CXX_FLAGS
 # Applied PRIVATE, so the C++20 level does not ride out through KickOSTargets.cmake as
 # INTERFACE_COMPILE_FEATURES and compile a consumer's C++17 codebase as C++20. The rule
 # that buys: no INSTALLED header may use a C++20 construct, since a consumer compiles
-# those in their own dialect. tests/check_public_headers.sh is what keeps it true.
+# those in their own dialect. tests/static/check_public_headers.sh is what keeps it true.
 set(KICKOS_CXX_STANDARD cxx_std_20)
 set(KICKOS_CXX_INTERFACE_STANDARD cxx_std_17)
 
@@ -486,6 +486,42 @@ function(kickos_add_qemu_test)
     set(QT_TIMEOUT 60)
   endif()
   set_tests_properties("${QT_NAME}" PROPERTIES TIMEOUT ${QT_TIMEOUT} SKIP_RETURN_CODE 77)
+endfunction()
+
+# ---------------------------------------------------------------------------
+# kickos_add_unit_test(NAME <target> SOURCES <cc...> [INCLUDES <dirs...>]
+#                     [DEFINITIONS <defs...>] [LIBRARIES <libs...>])
+#   One host unit-test executable on GoogleTest, with PER-CASE ctest entries.
+#
+#   gtest_discover_tests writes its add_test calls at BUILD time, so the root CMakeLists
+#   wrapper that appends the build fixture never sees them and both the `host` label and
+#   FIXTURES_REQUIRED have to be passed through PROPERTIES here. On a tree that was
+#   configured and never built, the generated include registers a failing <target>_NOT_BUILT
+#   entry instead of silently shrinking the suite.
+function(kickos_add_unit_test)
+  cmake_parse_arguments(UT "" "NAME" "SOURCES;INCLUDES;DEFINITIONS;LIBRARIES" ${ARGN})
+  if(NOT UT_NAME OR NOT UT_SOURCES)
+    message(FATAL_ERROR "kickos_add_unit_test: NAME and SOURCES are required")
+  endif()
+  add_executable(${UT_NAME} ${UT_SOURCES})
+  target_link_libraries(${UT_NAME} PRIVATE ${UT_LIBRARIES} GTest::gtest_main)
+  target_compile_features(${UT_NAME} PRIVATE ${KICKOS_CXX_STANDARD})
+  target_compile_options(${UT_NAME} PRIVATE ${KICKOS_WARN_FLAGS})
+  if(UT_INCLUDES)
+    target_include_directories(${UT_NAME} PRIVATE ${UT_INCLUDES})
+  endif()
+  if(UT_DEFINITIONS)
+    target_compile_definitions(${UT_NAME} PRIVATE ${UT_DEFINITIONS})
+  endif()
+  kickos_discover_unit_tests(${UT_NAME})
+endfunction()
+
+# kickos_discover_unit_tests(<target>)
+#   The registration half alone, for a gate that builds its own executable.
+function(kickos_discover_unit_tests target)
+  gtest_discover_tests(${target}
+    PROPERTIES TIMEOUT 30 LABELS host FIXTURES_REQUIRED kickos_build
+    DISCOVERY_TIMEOUT 60)
 endfunction()
 
 # ---------------------------------------------------------------------------

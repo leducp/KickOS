@@ -25,7 +25,7 @@ target_compile_definitions(sched_exit PRIVATE
 # the worker markers TOO, and root survives an exit that never happened.
 if(_sched_exit_gateable AND KICKOS_BUILD_TESTS AND KICKOS_ARCH STREQUAL "sim")
   add_test(NAME sim_sched_exit
-    COMMAND "${PROJECT_SOURCE_DIR}/tests/check_sched_exit.sh" "$<TARGET_FILE:sched_exit>")
+    COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sched_exit.sh" "$<TARGET_FILE:sched_exit>")
   set_tests_properties(sim_sched_exit PROPERTIES TIMEOUT 15)
 endif()
 
@@ -34,17 +34,17 @@ endif()
 # exception-return path it rides differs per core.
 if(_sched_exit_gateable AND KICKOS_BUILD_TESTS AND KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS)
   kickos_add_qemu_test(NAME ${KICKOS_QEMU_MPS2_TAG}_sched_exit TARGET sched_exit BOARD ${KICKOS_BOARD}
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_sched_exit.sh")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_sched_exit.sh")
 endif()
 
 # QEMU armv6m gate: same deferred-switch mechanism on Cortex-M0.
 if(_sched_exit_gateable AND KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   kickos_add_qemu_test(NAME microbit_sched_exit TARGET sched_exit BOARD microbit
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_sched_exit.sh")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_sched_exit.sh")
 endif()
 
 # QEMU rv32imac gate: the same exit path over the RISC-V msip deferred switch.
 if(_sched_exit_gateable AND KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "qemu-riscv")
   kickos_add_qemu_test(NAME qemu_riscv_sched_exit TARGET sched_exit BOARD qemu-riscv
-    SCRIPT "${PROJECT_SOURCE_DIR}/tests/check_sched_exit.sh")
+    SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_sched_exit.sh")
 endif()

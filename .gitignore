@@ -36,3 +36,7 @@ compile_commands.json
 
 # agent worktrees and assistant state -- machine-local, holds full stale checkouts
 **/.claude/
+
+# Python bytecode from the telemetry checkers
+__pycache__/
+*.pyc

@@ -40,7 +40,7 @@ extern "C"
     extern char const kickos_build_time[];
     extern char const kickos_build_commit[];
     // Per-app source compile time. Weak REFERENCE: null when no app TU defines it.
-    // See app.h and tests/weak_allowlist.txt.
+    // See app.h and tests/static/weak_allowlist.txt.
     char const* kickos_app_build_stamp(void) __attribute__((weak));
 
     // Non-kernel (app / libstdc++ / newlib / library) global ctors. The linker script
