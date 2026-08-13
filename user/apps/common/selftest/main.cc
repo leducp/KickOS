@@ -864,8 +864,8 @@ namespace
     }
 
     // --- Refcounted close of a DELEGATED sem: object survives while a co-holder is
-    // parked; the last close frees it. Under per-task caps, closing MY cap never
-    // destroys an object another task still holds.
+    // parked; the last close frees it. Under per-thread caps, closing MY cap never
+    // destroys an object another thread still holds.
     kos_cap_t g_dsem = KOS_CAP_NONE;
     void destroy_waiter(void*) // caps: done@1, g_dsem@2 (CH_READY)
     {
@@ -1317,7 +1317,7 @@ namespace
             if (have2 != KOS_CAP_NONE) { kos_sem_destroy(have2); }
             if (goA != KOS_CAP_NONE) { kos_sem_destroy(goA); }
             if (goB != KOS_CAP_NONE) { kos_sem_destroy(goB); }
-            // WHICH supply ran out is the diagnosis: -KOS_EMFILE is this task's capability
+            // WHICH supply ran out is the diagnosis: -KOS_EMFILE is this thread's capability
             // table (a declared-demand fix), anything else is an object pool.
             char const* why = "pool too small";
             if (refused == -KOS_EMFILE)
@@ -5505,6 +5505,188 @@ namespace
         TAP_CHECK(w.join() == 0);
     }
 
+    // --- Tasks: the handle codec, the creator gate, and the group kill ----------
+    //
+    // A task handle carries a generation over a BIASED index, so the all-zero word is
+    // KOS_TASK_NONE and no live task is ever named by it. The gate is CREATORSHIP, which
+    // cannot be witnessed from one thread, so what is checked here is what one thread can
+    // see: every refusal the codec produces, and that a hold, once dropped, names nothing.
+    void t_task_handles()
+    {
+        // The out-pointer is validated BEFORE the group exists: a null one is malformed and a
+        // misaligned one would take a privileged store the kernel must not make. Checked first,
+        // because a mint that cannot deliver its handle leaves a task nothing can name.
+        TAP_CHECK(kos_task_create(nullptr, 0, nullptr) == -KOS_EINVAL);
+        kos_task_t task = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        TAP_CHECK(task != KOS_TASK_NONE); // the bias is what makes this assertion possible
+        // The two words nothing can mint: the sentinel, and a generation the slot never held.
+        TAP_CHECK(kos_task_kill(KOS_TASK_NONE) == -KOS_EBADF);
+        TAP_CHECK(kos_task_kill(task ^ 0xFFFF0000u) == -KOS_EBADF);
+        // An out-of-range index, whatever generation rides it.
+        TAP_CHECK(kos_task_kill(0x0000FFFFu) == -KOS_EBADF);
+        // AN IMPLICIT TASK IS UNNAMEABLE, and this is the arm that matters most here: idle's
+        // task is created first (kmain makes idle before root) and root's second, so slots 0
+        // and 1 hold them and the biased codec names those two handles 1 and 2 at generation
+        // 0. Neither slot is ever freed, so the generation cannot drift. Both carry the KERNEL
+        // domain -- the whole arena, R|W -- so a handle that resolved would let this thread
+        // spawn a child INTO it and hand an unprivileged thread the arena.
+        TAP_CHECK(kos_task_kill(1u) == -KOS_EBADF);
+        TAP_CHECK(kos_task_kill(2u) == -KOS_EBADF);
+        struct kos_thread_params ip = {};
+        ip.entry = join_probe;
+        ip.name = "timp";
+        ip.prio = 10;
+        ip.task = 2u; // root's own implicit task
+        kos_thread_t ih = KOS_THREAD_NONE;
+        TAP_CHECK(kos_thread_spawn(&ip, &ih) == -KOS_EBADF);
+        TAP_CHECK(ih == KOS_THREAD_NONE);
+
+        // A group holding no thread still RESERVES its slot: an implicit task minted by the
+        // spawn below must not be handed the slot `task` is sitting in, or that spawn would
+        // overwrite the creator tag and `task` would stop naming anything.
+        auto probe = kos::thread::spawn(join_probe, nullptr, "trsv", 10);
+        if (probe.valid())
+        {
+            TAP_CHECK(probe.join(JOIN_GENEROUS_US) == 0);
+        }
+        TAP_CHECK(kos_task_kill(task) == 0);
+        // The kill DROPPED the hold, and an empty group with no hold is a free slot, so the
+        // handle now names nothing. Killing twice is not idempotent, and must not be.
+        TAP_CHECK(kos_task_kill(task) == -KOS_EBADF);
+    }
+
+    // The CREATOR GATE, both halves, and it takes a second thread to witness at all: only the
+    // thread that made a group may seat a member into it or end it. Possession of the handle is
+    // deliberately not enough -- the codec is guessable, so a resolvable handle would otherwise
+    // be an authority anyone could forge.
+    //
+    // The stranger reports over an ENDPOINT rather than a shared global, and root receives with
+    // a DEADLINE: a stranger that never answers must fail this arm rather than hang it.
+    void task_stranger(void* arg) // caps: E@1
+    {
+        kos_task_t const t = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
+        unsigned char answer[2] = {0u, 0u};
+        struct kos_thread_params p = {};
+        p.entry = join_probe;
+        p.name = "tsmb";
+        p.prio = 10;
+        p.task = t;
+        kos_thread_t h = KOS_THREAD_NONE;
+        if (kos_thread_spawn(&p, &h) == -KOS_EPERM)
+        {
+            answer[0] = 1u;
+        }
+        if (kos_task_kill(t) == -KOS_EPERM)
+        {
+            answer[1] = 1u;
+        }
+        (void)kos_send(KOS_SPAWN_DELEGATED_CAP0, answer, sizeof(answer));
+        kos_exit(0);
+    }
+
+    void t_task_creator_gate()
+    {
+        kos_cap_t ep = KOS_CAP_NONE;
+        if (kos_endpoint_create(&ep) != 0)
+        {
+            tap::skip("no endpoint slot");
+            return;
+        }
+        kos_task_t task = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        kos_cap_grant const caps[1] = {{ep, CH_FULL}};
+        auto stranger = kos::thread::spawn(
+            task_stranger, reinterpret_cast<void*>(static_cast<uintptr_t>(task)), "tstr", 10,
+            KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0, nullptr, 0, nullptr, 0,
+            caps, 1);
+        if (not stranger.valid())
+        {
+            (void)kos_task_kill(task);
+            (void)kos_handle_close(ep);
+            tap::skip("pool too small");
+            return;
+        }
+        unsigned char answer[2] = {0u, 0u};
+        struct kos_recv_timed_opts opts;
+        opts.timeout_us = JOIN_GENEROUS_US;
+        opts.info.badge = 0u;
+        opts.info.reply_cap = KOS_CAP_NONE;
+        TAP_CHECK(kos_recv_timed(ep, answer, sizeof(answer), &opts) == 2);
+        TAP_CHECK(answer[0] == 1u); // a stranger cannot seat a member
+        TAP_CHECK(answer[1] == 1u); // nor end the group
+        TAP_CHECK(stranger.join(JOIN_GENEROUS_US) == 0);
+        // Still ours, so still killable: the refusals above cost the group nothing.
+        TAP_CHECK(kos_task_kill(task) == 0);
+        TAP_CHECK(kos_handle_close(ep) == 0);
+    }
+
+    // A member's memory is its TASK's, so a member bringing its own data grant is refused
+    // rather than having it silently dropped; and a task nobody created cannot be joined.
+    void t_task_member_refusals()
+    {
+        kos_task_t task = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        void* const blk = kos_ram_alloc(64);
+        TAP_CHECK(blk != nullptr);
+        struct kos_thread_params p = {};
+        p.entry = join_probe;
+        p.name = "tmem";
+        p.prio = 10;
+        p.task = task;
+        p.mem_base = blk;
+        p.mem_size = 64;
+        kos_thread_t h = KOS_THREAD_NONE;
+        TAP_CHECK(kos_thread_spawn(&p, &h) == -KOS_EINVAL);
+        TAP_CHECK(h == KOS_THREAD_NONE);
+        // Same spawn against a handle no slot answers.
+        p.mem_base = nullptr;
+        p.mem_size = 0;
+        p.task = KOS_TASK_NONE ^ 0x0000FFFFu; // a real generation over no index
+        TAP_CHECK(kos_thread_spawn(&p, &h) == -KOS_EBADF);
+        TAP_CHECK(kos_task_kill(task) == 0);
+    }
+
+    // THE group kill, end to end. The member parks on a semaphore nothing ever posts, which
+    // is the shape a cooperative cancel could never reach: sem_wait has no error return to
+    // carry a reason. The kill breaks that park anyway and the kernel ends the thread at its
+    // next syscall, so the JOIN is what proves it died rather than merely being marked.
+    void task_member(void*) // caps: park@1
+    {
+        kos_sem_wait(KOS_SPAWN_DELEGATED_CAP0);
+        // Unreachable: nothing posts that semaphore, and a cancelled thread does not return
+        // from the syscall that follows.
+        kos_exit(1);
+    }
+
+    void t_task_group_kill()
+    {
+        kos_cap_t park = KOS_CAP_NONE;
+        if (kos_sem_create(0, &park) != 0)
+        {
+            tap::skip("no semaphore slot");
+            return;
+        }
+        kos_task_t task = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        kos_cap_grant const caps[1] = {{park, KOS_CAP_WAIT}};
+        auto member = kos::thread::spawn(task_member, nullptr, "tmbr", 10, KOS_POLICY_FIFO, 0,
+                                         /*privileged=*/false, nullptr, 0, nullptr, 0,
+                                         nullptr, 0, caps, 1, /*authority=*/0,
+                                         /*cap_dest=*/nullptr, task);
+        if (not member.valid())
+        {
+            (void)kos_task_kill(task);
+            (void)kos_handle_close(park);
+            tap::skip("pool too small");
+            return;
+        }
+        TAP_CHECK(kos_task_kill(task) == 0);
+        // 0, not ETIMEDOUT: the member has to be GONE, not just marked.
+        TAP_CHECK(member.join(JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(kos_handle_close(park) == 0);
+    }
+
     // --- Self-grant, and the region budget that bounds it ----------------------
     // Exercises the REFUSAL at the region-budget ceiling: the call must fail LOUDLY
     // (-KOS_ENOMEM), not truncate the region set.
@@ -5819,6 +6001,10 @@ int main(int, char**)
     TAP_ADD("thread_join", t_thread_join);   // parked join, unreclaimed exit, the refusals
     TAP_ADD("join_stale_gen", t_join_stale_gen); // a reclaimed slot: the generation branch
     TAP_ADD("join_timeout", t_join_timeout); // a target that outlives its deadline
+    TAP_ADD("task_handles", t_task_handles);  // the task handle codec and the dropped hold
+    TAP_ADD("task_member_refusals", t_task_member_refusals); // a member brings no memory
+    TAP_ADD("task_creator_gate", t_task_creator_gate); // a stranger may neither seat nor kill
+    TAP_ADD("task_group_kill", t_task_group_kill); // a kill that reaches a semaphore park
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     TAP_ADD("irq_thread_ctx", t_irq);

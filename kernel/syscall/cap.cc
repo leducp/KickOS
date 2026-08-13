@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Capability-table manager (see cap.h): the per-task naming+rights layer over the
+// Capability-table manager (see cap.h): the per-thread naming+rights layer over the
 // global object pools, plus the object-side refcount (kernel().sem_refs) that owns
 // destroy-on-last-close. slotpool.h stays generic: refs[] lives here.
 
@@ -955,6 +955,16 @@ namespace kickos
             endpoint_ref_drop(g_stdout_target, /*teardown=*/false);
         }
         g_stdout_target = obj_handle;
+        return true;
+    }
+
+    bool cap_console_target(int* out)
+    {
+        if (g_stdout_target == KCAP_STDOUT_NONE)
+        {
+            return false;
+        }
+        *out = g_stdout_target;
         return true;
     }
 }

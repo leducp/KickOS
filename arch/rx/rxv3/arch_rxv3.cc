@@ -305,13 +305,134 @@ int arch_in_isr(void)
     return g_in_isr;
 }
 
+// --- Fault isolation --------------------------------------------------------
+// What the core hands back to the two seams. The saved pair is [0]=PC, [4]=PSW on the
+// ISP: exception pre-processing writes both to the stack ISP selects, never to the USP
+// (RXv3 ISA UM sec.5.2 + Table 5.2), and RTE pops PC first then PSW (sec.3, RTE).
+// `cause` rides along because no register on this core carries it: the fixed-vector
+// offset is known only to the shim that took the vector.
+struct RxFaultFrame
+{
+    uint32_t* saved;
+    uint32_t cause;
+};
+
+// The five instruction-CANCELING exceptions, the ones whose saved PC is the instruction
+// that generated them (ISA UM sec.5.3.1 Table 5.1). Cause 0 is the _rx_trap catch-all,
+// which carries the NMI and BRK: an NMI is accepted at an instruction boundary with
+// PSW.PM still set, so admitting it here would kill whichever thread happened to be
+// running for a chip-level event.
+//
+// static, not an anonymous namespace: inside this file's extern "C" block an anonymous
+// namespace still emits an unmangled GLOBAL symbol.
+static bool rx_cause_is_thread_fault(uint32_t cause)
+{
+    return cause == 0x50 or cause == 0x54 or cause == 0x5C or cause == 0x60
+           or cause == 0x64;
+}
+
+bool arch_fault_is_user_thread(void* frame)
+{
+    RxFaultFrame const* const ff = static_cast<RxFaultFrame const*>(frame);
+    // PSW.PM is the mode BEFORE the exception, and the copy carrying it sits on the ISP,
+    // which no user thread can reach: there is no stacking abort to detect on this core
+    // and no bounds test to run on the frame itself.
+    if ((ff->saved[1] & PSW_PM) == 0)
+    {
+        return false;
+    }
+    if (not rx_cause_is_thread_fault(ff->cause))
+    {
+        return false;
+    }
+    // The stub does not run on the frame. RTE restores U=1 and it executes on the
+    // thread's USP, exactly where svc_trampoline runs, so the USP is what must lie in
+    // the thread's own stack: a thread that wrecked R0 would otherwise put privileged
+    // code on a stack of its choosing. Length 0 asks for containment alone, since the
+    // stack grows DOWN from here and no frame has been written at this address.
+    uint32_t usp;
+    __asm volatile("mvfc usp, %0" : "=r"(usp));
+    if (not kickos_fault_frame_trusted(reinterpret_cast<void*>(usp), 0))
+    {
+        return false;
+    }
+#if KICKOS_HAVE_MPU
+    // A STACK OVERFLOW does not show in the USP, and this is what the design's section 4.2
+    // did not anticipate for RX: every one of these exceptions CANCELS its instruction and
+    // restores SP (ISA UM sec.5.3.1), so the denied push reads as though it never moved the
+    // USP and the containment test above passes with nothing left below. Only MPDEA says
+    // so. MEASURED on rx72m silicon before this test existed: the stub ran privileged on
+    // the exhausted stack, where supervisor bypasses the RX MPU so nothing trapped the
+    // damage, and it smashed its way to PC=0.
+    if (ff->cause == 0x54 and (reg32(MPU_MPESTS) & MPU_MPESTS_DMPER) != 0)
+    {
+        if (kickos_fault_below_stack(reg32(MPU_MPDEA)))
+        {
+            return false;
+        }
+    }
+#endif
+    return true;
+}
+
+void arch_fault_redirect_to_exit(void* frame)
+{
+    RxFaultFrame* const ff = static_cast<RxFaultFrame*>(frame);
+    char const* status_name = "cause";
+    uint32_t status = ff->cause;
+    uintptr_t addr = 0;
+    int addr_valid = 0;
+#if KICKOS_HAVE_MPU
+    if (ff->cause == 0x54)
+    {
+        // MPESTS carries IMPER/DMPER/DRW, so it says more here than the cause does.
+        status_name = "MPESTS";
+        status = reg32(MPU_MPESTS);
+        if ((status & MPU_MPESTS_DMPER) != 0)
+        {
+            addr = reg32(MPU_MPDEA);
+            addr_valid = 1;
+        }
+        else if ((status & MPU_MPESTS_IMPER) != 0)
+        {
+            addr = ff->saved[0]; // instruction fetch: the address IS the saved PC
+            addr_valid = 1;
+        }
+        // Latched, and cleared only through MPECLR. Unlike the panic path this fault is
+        // not the last, so a bit left set would label the NEXT thread's fault with it.
+        reg32(MPU_MPECLR) = MPU_MPECLR_CLR;
+    }
+#endif
+    kickos_fault_record(status_name, status, ff->saved[0], addr, addr_valid);
+
+    // The syscall trap's own rewrite (switch.S kickos_rx_syscall_trap), for the same
+    // posture: supervisor-on-USP, i.e. privileged in thread mode on the thread's own
+    // stack. U is WRITTEN rather than inherited because RTE forces it only on a
+    // transition to user mode and this transition is the other way. I=1 with IPL=0 is
+    // what lets the stub's exit_current reschedule: it pends SWINT and must see it taken.
+    ff->saved[0] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit);
+    ff->saved[1] = (ff->saved[1] & ~(PSW_PM | PSW_IPL_MASK)) | PSW_U | PSW_I;
+}
+
 // C side of the RX exception handler (startup.S .fvectors shims branch here with
-// r1=cause [the fixed-vector offset], r2=stacked PC, r3=stacked PSW). Dump the
+// r1=cause [the fixed-vector offset], r2=the saved PC/PSW pair on the ISP). Dump the
 // context, then hand off to the shared dead-end (blink on real HW). Runs on the
 // ISP in supervisor mode. kpanic_enter masks IRQs (raises PSW.IPL, never restored;
 // this path does not return), forces the polled writer, and flushes the ring.
-void kickos_rx_fault_report(uint32_t cause, uint32_t pc, uint32_t psw)
+//
+// RETURNING means the fault was redirected: the shim's RTE then lands in
+// kickos_thread_fault_exit instead of resuming the faulting instruction.
+void kickos_rx_fault_report(uint32_t cause, uint32_t* saved)
 {
+    // Nothing may run above this, not even the raw localizer below: kpanic_enter's
+    // console reclaim is permanent and this fault is survivable.
+    RxFaultFrame ff = {saved, cause};
+    if (kickos_fault_kill_thread(&ff))
+    {
+        return;
+    }
+    uint32_t const pc = saved[0];
+    uint32_t const psw = saved[1];
     rx_mpu_mark('F'); // localizer: an exception fired (a FAULT, not a hang), raw, pre-console
     kpanic_enter();
 #if KICKOS_HAVE_MPU

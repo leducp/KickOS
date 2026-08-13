@@ -18,13 +18,12 @@
 //    the CPU: after any call that reschedules, kernel().current is the thread the scheduler
 //    PICKED, and an arm that wants to keep speaking as its old thread must re-seat it.
 //
-// 2. A blocking primitive's park STATE is assertable; its RETURN VALUE is a fiction,
-//    because no waker ever wrote wait_result. mutex_lock ends in wq_confirm_resume, which
-//    spins on the blocker's switch_count until a real switch-in bumps it, so with a
-//    returning arch_switch it would spin to KICKOS_POLL_SPIN_MAX and panic;
-//    g_resume_on_switch collapses "parked, switched away, switched back" into the stub by
-//    crediting the OUTGOING thread. NO ARM DRIVES A BLOCKING PRIMITIVE YET, so this note is
-//    a warning about the first one that does and the mechanism under it is unexercised.
+// 2. A blocking primitive's RETURN VALUE is worth exactly the waker an arm supplies. The
+//    thread that parks gets the CPU straight back, so the fixture stands in for the other
+//    side of the switch: it POISONS wait_result, credits the switch-in wq_confirm_resume
+//    spins for, and calls the waker armed by wake_next_park. A park with none armed ends
+//    the arm, and a waker that writes no result leaves the poison, so an assertion on a
+//    result nobody wrote cannot pass.
 //
 // 3. A switch REQUEST is the observable, not its effect. Every arch_switch lands in the
 //    trace, so an arm asserts which switch happened and WHEN relative to the other calls.
@@ -35,6 +34,9 @@
 //    ends the arm there with a longjmp, which is safe only because the IrqLock scope closes
 //    before that park loop. Never longjmp out of a held IrqLock, and never out of a
 //    capability sweep.
+//
+//    A run_in_chunk_gap action runs INSIDE a sweep for the same reason, so it may not
+//    longjmp either, and run_exit is therefore not available to it.
 //
 //    THE RESET IS NOT TOTAL, because cap.cc keeps THREE data outside the Kernel struct that
 //    `kernel() = Kernel{}` reaches, all in one TU-local constinit:
@@ -54,16 +56,13 @@
 #include <stdint.h>
 
 #include <kickos/endpoint.h>
+#include <kickos/task.h>
 #include <kickos/thread.h>
 
 namespace kickos
 {
     namespace testfix
     {
-        // Answered by the arch_switch stub: credits the OUTGOING thread with the switch-in
-        // that would have brought it back, which is what lets a blocking primitive's
-        // resume barrier complete. See note 2.
-        extern bool g_resume_on_switch;
         // Answered by the arch_in_isr stub. The invariant separating thread context from
         // ISR context is enforced by a kpanic, so a gate for it is a process that dies.
         extern bool g_in_isr;
@@ -100,6 +99,27 @@ namespace kickos
         Thread* thread_of_context(struct arch_context* c);
         void note_switch(Thread* from, Thread* to);
         void note_park();
+        void note_irq_save();
+        void note_irq_restore();
+
+        // --- the waker a real park needs -----------------------------------------------
+        // Called with the parked thread's wait_result already poisoned, as the thread the
+        // scheduler picked: switch_to publishes `current` before arch_switch, so a waker
+        // that speaks for the incoming thread (mutex_unlock, sem_post) is already seated.
+        // MUST NOT itself block: resolve_park clears g_park_waker before calling it, so a
+        // waker that parks re-enters with none armed, misattributing the failure.
+        using ParkWaker = void (*)(Thread* parked);
+        // Arms the ONE waker the next park may consume. See note 2.
+        void wake_next_park(ParkWaker fn);
+
+        // --- the chunk gap -------------------------------------------------------------
+        // Runs `fn` at the `ordinal`th moment no IrqLock is held, counting from the arming
+        // call, and traces every such moment as gap<n>. cap_teardown opens one before its
+        // first chunk and one after each, so an ordinal names a chunk boundary and `fn`
+        // sees a sweep that holds nothing. Gaps `fn` itself opens are neither counted nor
+        // traced. One-shot; disarmed by reset().
+        using GapAction = void (*)();
+        void run_in_chunk_gap(GapAction fn, uint32_t ordinal);
 
         // --- driving -------------------------------------------------------------------
         // Fresh kernel, fresh scheduler, one idle thread, started.
@@ -108,8 +128,8 @@ namespace kickos
         Thread* spawn(int slot, uint8_t prio);
         // A TCB the exit sweep can FIND: exit_current's join lookup IS the ThreadPool scan.
         Thread* seat_pool(int slot, uint8_t prio);
-        // Seated into a parked waiter's wait_result by park_join, so an arm that expects a
-        // waker to have written one cannot be satisfied by a zeroed TCB.
+        // Seated into wait_result by every park below and by the park resolver of note 2, so
+        // an arm that expects a waker to have written one cannot be satisfied by a zeroed TCB.
         constexpr intptr_t WAIT_RESULT_POISON = -424242;
         // WAIT_JOIN is parked on no list at all; the tag is the only edge back.
         void park_join(Thread* w, Thread* target);
@@ -117,6 +137,21 @@ namespace kickos
         // Give `t` a real capability table of `width` slots from the real slab, so an arm can
         // put the REAL cap_teardown through a live entry. Dies if the slab refuses.
         void attach_caps(Thread* t, uint32_t width);
+        // A task slot from the real pool, EXPLICIT (it carries a creator tag), so an arm can
+        // put threads in one group. task_release is a seam stub here, so the refcount is
+        // bookkeeping an arm may read and nothing frees the slot.
+        Task* task(int slot);
+        // `t` joins `tk`. Only the TCB field matters to the group scan: membership is a
+        // pointer comparison over the thread pool, not a list the task holds.
+        void join_task(Thread* t, Task* tk);
+        // A semaphore park: the kind with NO error channel at all, so an arm can show that the
+        // cancel reaches it anyway and that the token count is left alone.
+        // out_handle may be null: an arm that never installs a cap on the semaphore does not
+        // need one, and only the object identity matters to a park.
+        Semaphore* semaphore(int* out_handle);
+        void park_sem_waiter(Thread* w, Semaphore* s);
+        // A sleeper on the timer delta list. On no wait queue, so the tag is the only edge.
+        void park_sleeper(Thread* w, uint64_t deadline_ns);
         // A PLAIN sender (call_state CALL_NONE) parked on ep->send_waiters. Plain is the
         // point: a CALL_SEND_WAIT caller boosts the server, so only this shape can carry a
         // priority the dying server does not already hold.

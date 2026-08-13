@@ -24,7 +24,6 @@ namespace kickos
 {
     namespace testfix
     {
-        bool g_resume_on_switch = false;
         bool g_in_isr = false;
         uint64_t g_now_ns = 0;
 
@@ -43,6 +42,15 @@ namespace kickos
 
             jmp_buf g_park_jmp;
             bool g_park_armed = false;
+
+            ParkWaker g_park_waker = nullptr;
+
+            uint32_t g_irq_depth = 0;
+            bool g_gap_watch = false;
+            bool g_in_gap_action = false;
+            uint32_t g_gap_seen = 0;
+            uint32_t g_gap_at = 0;
+            GapAction g_gap_action = nullptr;
         }
 
         char const* trace()
@@ -95,13 +103,40 @@ namespace kickos
             return KICKOS_CONTAINER_OF(c, Thread, ctx);
         }
 
+        namespace
+        {
+            void resolve_park(Thread* w)
+            {
+                w->wait_result = WAIT_RESULT_POISON;
+                // switch_to credits the INCOMING thread, which under a returning stub is
+                // never the one that parked, so wq_confirm_resume would spin to
+                // KICKOS_POLL_SPIN_MAX and panic.
+                w->switch_count++;
+                if (g_park_waker == nullptr)
+                {
+                    printf("FIXTURE FAIL: no waker armed for the park of thread %u\n", w->id);
+                    exit(1);
+                }
+                ParkWaker const fn = g_park_waker;
+                g_park_waker = nullptr;
+                fn(w);
+            }
+        }
+
+        void wake_next_park(ParkWaker fn)
+        {
+            g_park_waker = fn;
+        }
+
         void note_switch(Thread* from, Thread* to)
         {
             g_switches++;
             trace_add("switch%u>%u", from->id, to->id);
-            if (g_resume_on_switch)
+            // BLOCKED names a thread that parked itself: switch_to demotes a RUNNING
+            // outgoing thread to READY and leaves every other state alone.
+            if (from->state == ThreadState::BLOCKED)
             {
-                from->switch_count++;
+                resolve_park(from);
             }
         }
 
@@ -117,8 +152,58 @@ namespace kickos
             exit(1);
         }
 
+        void note_irq_save()
+        {
+            g_irq_depth++;
+        }
+
+        void note_irq_restore()
+        {
+            if (g_irq_depth > 0)
+            {
+                g_irq_depth--;
+            }
+            if (g_irq_depth != 0 or not g_gap_watch or g_in_gap_action)
+            {
+                return;
+            }
+            g_gap_seen++;
+            trace_add("gap%u", g_gap_seen);
+            if (g_gap_action == nullptr or g_gap_seen != g_gap_at)
+            {
+                return;
+            }
+            GapAction const fn = g_gap_action;
+            g_gap_action = nullptr;
+            g_in_gap_action = true;
+            fn();
+            g_in_gap_action = false;
+        }
+
+        void run_in_chunk_gap(GapAction fn, uint32_t ordinal)
+        {
+            g_gap_watch = true;
+            g_gap_seen = 0;
+            g_gap_at = ordinal;
+            g_gap_action = fn;
+        }
+
         void reset()
         {
+            // Before trace_reset below, and before sched::init's own locks: an armed watch
+            // would otherwise write this arm's first gap into the next arm's trace.
+            g_gap_watch = false;
+            g_in_gap_action = false;
+            g_gap_action = nullptr;
+            g_gap_seen = 0;
+            g_gap_at = 0;
+            g_park_waker = nullptr;
+            if (g_irq_depth != 0)
+            {
+                printf("FIXTURE FAIL: an IrqLock leaked (g_irq_depth=%u)\n", g_irq_depth);
+                exit(1);
+            }
+            g_irq_depth = 0;
             if (cap_teardown_active())
             {
                 printf("FIXTURE FAIL: a capability sweep is still in flight\n");
@@ -126,7 +211,6 @@ namespace kickos
             }
             kernel() = Kernel{};
             g_fx = Fixture{};
-            g_resume_on_switch = false;
             g_in_isr = false;
             g_now_ns = 0;
             g_switches = 0;
@@ -236,6 +320,7 @@ namespace kickos
             w->wait_kind = WAIT_EP_SEND;
             w->wait_obj = ep;
             w->call_state = CALL_NONE;
+            w->wait_result = WAIT_RESULT_POISON;
             ep->send_waiters.push_back(&w->link);
         }
 
@@ -260,6 +345,74 @@ namespace kickos
             return m;
         }
 
+        Task* task(int slot)
+        {
+            if (slot < 0 or slot >= KICKOS_MAX_TASKS)
+            {
+                printf("FIXTURE FAIL: task slot %d out of range\n", slot);
+                exit(1);
+            }
+            Task* tk = &kernel().tasks[slot];
+            *tk = Task{};
+            // Non-zero, because task_resolve and the creator gate both read a zero tag as
+            // "implicit, and so unnameable". The value is not root's: no arm here resolves a
+            // handle, and a real tag would make the gate look tested when it is not.
+            tk->creator_tag = 1;
+            return tk;
+        }
+
+        void join_task(Thread* t, Task* tk)
+        {
+            t->task = tk;
+            tk->refcount++;
+        }
+
+        Semaphore* semaphore(int* out_handle)
+        {
+            int const i = kernel().sems.alloc();
+            if (i < 0)
+            {
+                printf("FIXTURE FAIL: semaphore pool exhausted\n");
+                exit(1);
+            }
+            Semaphore* s = kernel().sems.at(i);
+            sem_init(s, 0);
+            kernel().sem_refs[i] = 1;
+            if (out_handle != nullptr)
+            {
+                *out_handle = kernel().sems.handle_for(i);
+            }
+            return s;
+        }
+
+        void park_sem_waiter(Thread* w, Semaphore* s)
+        {
+            w->state = ThreadState::BLOCKED;
+            kernel().policy->on_remove(w);
+            w->wait_queue = &s->waiters;
+            w->wait_kind = WAIT_SEM;
+            w->wait_obj = s;
+            w->wait_result = WAIT_RESULT_POISON;
+            s->waiters.push_back(&w->link);
+        }
+
+        void park_sleeper(Thread* w, uint64_t deadline_ns)
+        {
+            w->state = ThreadState::BLOCKED;
+            kernel().policy->on_remove(w);
+            w->wait_queue = nullptr;
+            w->wait_kind = WAIT_SLEEP;
+            w->wait_obj = nullptr;
+            w->wait_result = WAIT_RESULT_POISON;
+            // The delta list itself, so ktime_deadline_cancel has something to unlink. One
+            // sleeper per arm is enough for every claim here, so the insert is a head push
+            // rather than a sorted one.
+            w->deadline_ns = deadline_ns;
+            w->tnext = kernel().sleepq;
+            kernel().sleepq = w;
+            w->on_timer = true;
+        }
+
         void park_mutex_waiter(Thread* w, Mutex* m)
         {
             w->state = ThreadState::BLOCKED;
@@ -267,6 +420,7 @@ namespace kickos
             w->wait_queue = &m->waiters;
             w->wait_kind = WAIT_MUTEX;
             w->wait_obj = m;
+            w->wait_result = WAIT_RESULT_POISON;
             m->waiters.push_back(&w->link);
         }
 

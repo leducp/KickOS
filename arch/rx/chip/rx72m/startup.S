@@ -101,8 +101,11 @@ _start:
 
 /* Exception entry shims (fixed vector table). On an RX exception the CPU pushes  */
 /* PC then PSW to the ISP (so [R0]=PC, 4[R0]=PSW) and clears U (R0 = ISP). Each    */
-/* shim tags the cause (its fixed-vector offset) in r1, loads PC/PSW into r2/r3,   */
-/* and tail-branches to the C reporter (dumps context, then never returns).       */
+/* shim tags the cause (its fixed-vector offset) in r1, passes the saved pair in   */
+/* r2, and CALLS the C reporter. bsr, not bra: the reporter RETURNS when it         */
+/* redirected the fault to the thread-exit stub (it rewrote the pair), and the RTE  */
+/* below is what lands there; its panic path never returns at all. bsr's own push   */
+/* sits BELOW the pair, so r2 stays the frame address across the call.              */
     .global _rx_ex_priv
 _rx_ex_priv:
     mov     #0x50, r1
@@ -128,6 +131,6 @@ _rx_ex_fp:
 _rx_trap:
     mov     #0, r1
 1:
-    mov.l   [r0], r2              /* stacked PC  */
-    mov.l   4[r0], r3             /* stacked PSW */
-    bra.a   _kickos_rx_fault_report
+    mov.l   r0, r2                /* r2 = &[PC][PSW] on the ISP */
+    bsr.a   _kickos_rx_fault_report
+    rte                           /* -> kickos_thread_fault_exit, supervisor-on-USP */

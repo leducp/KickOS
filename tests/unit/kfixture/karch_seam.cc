@@ -9,7 +9,9 @@
 //
 // which also reports __gxx_personality_v0 and _Unwind_Resume unless the gate is built
 // -fno-exceptions as the CMakeLists does it. Only seven are arch_*: "the arch boundary" is
-// where the seam is CUT, and the sixteen is a property of the chosen source set.
+// where the seam is CUT, and the sixteen is a property of the chosen source set. The
+// MEMBERSHIP therefore moves under a kernel refactor while the width does not: the task
+// layer traded domain_release for task_release at equal count.
 //
 // kpanic ends the PROCESS with a message matching tests/lib/panic.ere, so a kernel invariant
 // enforced by KICKOS_ASSERT rather than a return code is gated by a gtest death test.
@@ -20,24 +22,28 @@
 #include <stdlib.h>
 
 #include <kickos/console_tx.h>
-#include <kickos/domain.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
+#include <kickos/task.h>
 #include <kickos/time.h>
 
 #include "kfixture.h"
 
 extern "C"
 {
+    // Counted, not merely stubbed: the moment the count reaches zero inside a capability
+    // sweep IS the chunk gap, which is where run_in_chunk_gap seats an interleaving.
     arch_irq_state_t arch_irq_save(void)
     {
+        kickos::testfix::note_irq_save();
         return 0;
     }
 
     void arch_irq_restore(arch_irq_state_t)
     {
+        kickos::testfix::note_irq_restore();
     }
 
     int arch_in_isr(void)
@@ -104,7 +110,7 @@ namespace kickos
         exit(1);
     }
 
-    void domain_release(Domain*)
+    void task_release(Task*)
     {
     }
 

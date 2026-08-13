@@ -98,10 +98,15 @@ namespace kickos
     // Same minting shape as the cap creators above, for the same reason: a thread handle
     // spends all 32 bits. *out_thread is written on EVERY path (KOS_THREAD_NONE on failure).
     int thread_spawn(kos_thread_params const* p, kos_thread_t* out_thread);
-    // Cancels a thread the caller spawned: marks it, and wakes it out of an irq_wait with
-    // -KOS_ECANCELED so the target runs its OWN exit. Returns 0, -KOS_EBADF, -KOS_EPERM or
+    // Cancels a thread the caller spawned: marks it, and breaks whatever park it is in with
+    // -KOS_ECANCELED so it reaches its own death point. Returns 0, -KOS_EBADF, -KOS_EPERM or
     // -KOS_EINVAL. Takes its own IrqLock.
     int thread_kill(kos_thread_t thread);
+    // Creates an empty task holding a shared data region, and cancels a task's whole group.
+    // Both gate on the creator being the caller. *out_task is written on EVERY path
+    // (KOS_TASK_NONE on failure). Each takes its own IrqLock.
+    int task_create_call(void* mem_base, size_t mem_size, kos_task_t* out_task);
+    int task_kill(kos_task_t task);
     // Both BLOCK, so like the endpoint calls they must be reached with no caller-held
     // IrqLock: each takes its own for the gate and the park, then releases it before the
     // resume barrier and the wait_result read.

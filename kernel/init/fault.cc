@@ -18,7 +18,9 @@ namespace
     // One record rather than per-Thread fields, because Thread carries no tail padding on any
     // target, so a new field grows every TCB. The window between the redirect and
     // the stub is PREEMPTIBLE (`dying` is not set until exit_current runs), so a second
-    // thread's fault can overwrite this before the first stub reads it. `owner` is what
+    // thread's fault can overwrite this before the first stub reads it. The print itself is
+    // one such point and not merely an async tick: on a published console kprintf_fault wakes
+    // the console driver, which outranks every stdout client by provisioning rule. `owner` is what
     // keeps that honest: a stub that does not own the record prints no fault facts
     // instead of printing another thread's. Both threads still die correctly; the cost
     // is that the first one's PC is lost.
@@ -69,6 +71,16 @@ extern "C" bool kickos_fault_frame_trusted(void const* frame, size_t bytes)
     return f >= lo and f < hi and bytes <= (hi - f);
 }
 
+extern "C" bool kickos_fault_below_stack(uintptr_t addr)
+{
+    ::kickos::Thread* const c = ::kickos::sched::current();
+    if (c == nullptr or c == ::kickos::sched::idle() or c->stack_base == nullptr)
+    {
+        return true;
+    }
+    return addr < reinterpret_cast<uintptr_t>(c->stack_base);
+}
+
 extern "C" bool kickos_fault_kill_thread(void* frame)
 {
     if (not arch_fault_is_user_thread(frame))
@@ -102,11 +114,14 @@ extern "C" void kickos_thread_fault_exit(void)
     {
         who = c->name;
     }
-    ::kickos::kprintf(KDIAG_F_THREAD_FAULT, who);
+    // kprintf_fault, not kprintf: a published console DROPS the kernel chip path, and this
+    // record is the one line naming the dead thread on the boards whose default service list
+    // carries a console driver.
+    ::kickos::kprintf_fault(KDIAG_F_THREAD_FAULT, who);
     if (g_fault.valid and g_fault.owner != c)
     {
         // Left valid: the record belongs to a thread whose own stub has not run yet.
-        ::kickos::kprintf(KDIAG_F_FAULT_PC_LOST);
+        ::kickos::kprintf_fault(KDIAG_F_FAULT_PC_LOST);
     }
     else if (g_fault.valid)
     {
@@ -116,18 +131,19 @@ extern "C" void kickos_thread_fault_exit(void)
         if (g_fault.status_name == nullptr)
         {
             // v6-M has no fault-status register at all, so there is no word to name.
-            ::kickos::kprintf(KDIAG_F_FAULT_PC, reinterpret_cast<void*>(g_fault.pc));
+            ::kickos::kprintf_fault(KDIAG_F_FAULT_PC, reinterpret_cast<void*>(g_fault.pc));
         }
         else
         {
             // uint32_t is `unsigned long` on ARM and `unsigned` on the host, so the cast
             // is what keeps ONE format string -Wformat-clean on both.
-            ::kickos::kprintf(KDIAG_F_FAULT_PC_STAT, reinterpret_cast<void*>(g_fault.pc),
-                              g_fault.status_name, static_cast<unsigned>(g_fault.status));
+            ::kickos::kprintf_fault(KDIAG_F_FAULT_PC_STAT, reinterpret_cast<void*>(g_fault.pc),
+                                    g_fault.status_name,
+                                    static_cast<unsigned>(g_fault.status));
         }
         if (g_fault.addr_valid)
         {
-            ::kickos::kprintf(KDIAG_F_FAULT_ADDR, reinterpret_cast<void*>(g_fault.addr));
+            ::kickos::kprintf_fault(KDIAG_F_FAULT_ADDR, reinterpret_cast<void*>(g_fault.addr));
         }
     }
     ::kickos::sched::exit_current(KOS_EXIT_FAULT);

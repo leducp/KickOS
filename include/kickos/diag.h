@@ -11,15 +11,9 @@
 // The FAULT BANNERS tests/lib/panic.ere matches are NOT entries here. Four of the five
 // ("KERNEL PANIC: ", "=== HARD FAULT", "=== RISC-V TRAP", "ISOLATION FAULT:") are raw
 // literals at their emit sites and never reach KICKOS_DIAG_PICK, so no terse variant of
-// them exists to go looking for; the fifth, "MPU FAULT: task", is the fixed prefix of
+// them exists to go looking for; the fifth, "MPU FAULT: thread", is the fixed prefix of
 // KDIAG_F_MPU_FAULT and is spelled identically in both its columns.
 //
-// The same rule binds every token a test PARSES rather than merely detects: "CFSR=0x",
-// "MMFAR=0x", "BFAR=0x", "ADDR=0x", "mstatus=0x", "attempted <dir> at 0x", and
-// "=== THREAD FAULT === task '<name>' killed" (tests/lib/gate.sh, check_faultsurvive.sh,
-// check_qemu_ringppb.sh). Those DO have entries below, and both columns carry the token
-// verbatim so this posture stays safe to select on ANY board, not only on the two that
-// carry no such gate today.
 
 #ifndef KICKOS_DIAG_H
 #define KICKOS_DIAG_H
@@ -52,10 +46,11 @@
     X(kPublishNoDrain,  "console_publish: chip-writer drain did not converge",       "P09")       \
     X(kRootExitRefused, "root: exit shutdown refused",                               "P10")       \
     X(kPastExitCurrent, "unreachable: thread continued past exit_current",           "P11")       \
-    X(kTimeoutNotEp,    "unreachable: endpoint_wait_timeout on a non-endpoint park", "P12")       \
+    X(kTimeoutNotEp,    "unreachable: endpoint_wait_abort on a non-endpoint park",   "P12")       \
     X(kRebootRp2040,    "arch_reboot: rp2040 _reset_to_usb_boot returned",           "P13")       \
     X(kRebootRp2350,    "arch_reboot: rp2350 bootrom reboot returned",               "P14")       \
     X(kRebootImxrt,     "arch_reboot: imxrt1062 bkpt resumed (no MKL02?)",           "P15")       \
+    X(kParkNoKind,      "unreachable: park abort on a thread with no wait edge",     "P16")       \
     X(kBannerRule,      "  ==============================================\n",        "\n")
 
 namespace kickos
@@ -88,16 +83,16 @@ namespace kickos
 #define KDIAG_F_BANNER_NOHEAP KICKOS_DIAG_PICK("   heap    none\n", "h 0\n")
 
 // Thread fault (kernel/init/fault.cc).
-#define KDIAG_F_THREAD_FAULT KICKOS_DIAG_PICK("\n=== THREAD FAULT === task '%s' killed, system continues\n", \
-                                              "\n=== THREAD FAULT === task '%s' killed\n")
+#define KDIAG_F_THREAD_FAULT KICKOS_DIAG_PICK("\n=== THREAD FAULT === thread '%s' killed, system continues\n", \
+                                              "\n=== THREAD FAULT === thread '%s' killed\n")
 #define KDIAG_F_FAULT_PC_LOST KICKOS_DIAG_PICK("  PC lost to a later fault\n", "F1\n")
 #define KDIAG_F_FAULT_PC      KICKOS_DIAG_PICK("  PC=%p\n", "F2 %p\n")
 #define KDIAG_F_FAULT_PC_STAT KICKOS_DIAG_PICK("  PC=%p %s=0x%x\n", "F3 %p %s %x\n")
 #define KDIAG_F_FAULT_ADDR    KICKOS_DIAG_PICK("  ADDR=%p\n", "ADDR=%p\n")
 
 // MPU fault report (kernel/init/console.cc).
-#define KDIAG_F_MPU_FAULT KICKOS_DIAG_PICK("\nMPU FAULT: task '%s' attempted %s at %p -- reported\n", \
-                                           "\nMPU FAULT: task '%s' attempted %s at %p\n")
+#define KDIAG_F_MPU_FAULT KICKOS_DIAG_PICK("\nMPU FAULT: thread '%s' attempted %s at %p -- reported\n", \
+                                           "\nMPU FAULT: thread '%s' attempted %s at %p\n")
 
 // ARM fault dumps. The "=== ... ===" banner line is emitted separately, not from here.
 #define KDIAG_F_ARM_REGS1 KICKOS_DIAG_PICK("  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n", "R1 %x %x %x %s\n")

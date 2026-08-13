@@ -19,14 +19,24 @@ did not.
 | 5.1 The latency hazard | MEASURED and DECIDED. The priority deflate was rejected. See below |
 | 6 Gates | implemented. Four existing gates reworked, `faultsurvive` added |
 | 7 `exit()` at kernel level | implemented, landed first as proposed |
-| 8 Proposed order | followed, except that step 6's `lx6` is a decline, not a port |
-| 9 Questions | 1, 2 and 3 are answered, and two rulings taken since are recorded there. 4 and 5 remain open |
+| 8 Proposed order | followed, except that step 6's `lx6` is a decline, not a port. Step 5's `rxv3` half landed in M4.8.3, not here |
+| 9 Questions | 1, 2 and 3 are answered, and three rulings taken since are recorded there, 9.5 being the published-console record route (M4.8.3). 4 and 5 remain open |
 
 **Backends that opted in:** armv7m (and every M33 board through it), armv6m on a core that has the
-privilege extension, rv32imac, sim on x86_64. **Backends that declined:** lx6, which cannot (no
-privilege ring); rxv3, which could but would ship an `rte` no emulator in this tree can execute;
-armv6m on a Cortex-M0, for the same reason as lx6. `docs/reference/porting.md` carries the porter's
-trail and `docs/reference/invariants.md` the contract.
+privilege extension, rv32imac, sim on x86_64, and **rxv3, added in M4.8.3**. **Backends that
+declined:** lx6, which cannot (no privilege ring); armv6m on a Cortex-M0, for the same reason as
+lx6. `docs/reference/porting.md` carries the porter's trail and `docs/reference/invariants.md` the
+contract.
+
+**The rxv3 decline is OVERTURNED, and its reasoning is kept because the reasoning was right.** The
+decline said rxv3 "could but would ship an `rte` no emulator in this tree can execute", and that
+remains true to the letter: there is still no RXv3 emulator anywhere in this tree, and there is
+still no CI gate for it. What changed is not the tree but the bench: `rx72m` was on it, so the
+`rte` was executed on silicon and the port is witnessed there and only there. A future session must
+read this as "witnessed on one board, unfalsifiable off the bench", not as "gated".
+
+Porting it also found the one case section 4.2 does not cover on this ISA, which is recorded in 4.2
+rather than here.
 
 The goal, in the words that set it: a motor-control thread and a communication thread share a
 system. The com thread crashes (MPU fault, divide by zero, undefined behaviour, a wild jump). The
@@ -207,6 +217,33 @@ legitimate user fault.
 Clause 3.3 is still the guard, but for a narrower case than claimed: a stub that re-faults with SP
 still valid. The overflow construction does not reach it.
 
+#### On RXv3 neither test can see the overflow, and that is an ISA property (M4.8.3)
+
+Both guards above read a moved SP: armv7m's because the stacking abort left one, rv32imac's because
+its software prologue wrote the frame at one. **RXv3 has neither, because every one of these
+exceptions is INSTRUCTION-CANCELING** (RXv3 ISA UM sec.5.3.1, Table 5.1): the CPU restores the
+architectural state of the cancelled instruction, so the denied `push` reads as though it never
+moved the USP. The frame is on the kernel ISP, where nothing the thread did can invalidate it, and
+the USP passes a containment test with nothing left below it.
+
+**Measured on `rx72m` before this was understood** (`.session/logs/m483rxovf-*`, and
+`m483rxovft-*` with the `KICKOS_RX_MPU_TRACE` localizer on): the kill was ACCEPTED, the stub ran
+privileged on the exhausted stack, supervisor bypasses the RX MPU so nothing trapped the damage, and
+it smashed its way to `=== RX EXCEPTION (trap) === PC=0x0 PSW=0x0`.
+
+The only evidence left is the faulting ADDRESS, so the port added `kickos_fault_below_stack(addr)`
+and rxv3 refuses an operand-access MPU error beneath the running thread's stack base. A stack grows
+down, so an overflow's first denied access is beneath the base by construction and the test is EXACT
+for that case. It is not exact for the converse, and the cost is measured rather than argued: on
+`rx72m` a cross-domain write to a LOWER address escalates to the panic dump instead of dying alone,
+which `user/apps/common/mpu_fault` demonstrates (`0x13200`, below `domainA`'s stack), while `rxdrv`'s
+peripheral poke (`0x8c068`, above it) still dies alone. Nothing regresses: before this milestone
+every RX fault panicked.
+
+**4.3's reaper is what removes this guard rather than tuning it.** A stub that never runs on the
+dying thread's stack needs no test at all, which is the property 4.3 already claimed and is now
+measured on an ISA that needs it. Filed in `TODO.md`.
+
 Under enforcement an unprivileged thread's stack is an MPU region, so an overflow faults on the
 guard rather than walking into a peer. `faultoverflow` is the witness, and it asserts MSTKERR in
 the dump rather than merely asserting that a panic happened, so it cannot pass by the same accident
@@ -379,6 +416,9 @@ land first because it is small and unblocks M4.8.1's "call `exit()` from the ser
 4. The `faultsurvive` app and gate, plus the posture split in the three existing gates (6.1).
 5. rv32imac and rxv3 opt in. Both already have the bit and already reach a task-naming handler;
    this is wiring, not design.
+   **rv32imac landed here; rxv3 landed in M4.8.3, and "wiring, not design" was wrong about it.** The
+   redirect itself is wiring -- it is the syscall trap's own PSW rewrite -- but the frame-validity
+   half is not, because this ISA cancels the faulting instruction and restores SP (see 4.2).
 6. armv6m, lx6.
 7. Measure the teardown window and decide the priority deflate (5.1).
 
@@ -436,3 +476,99 @@ in `.bss` and one comparison.
    itself keeps whatever the dead driver programmed into it (TE/RE still set, a DMA channel still
    armed). Harmless while the line is masked. Whether a respawned driver must be able to assume a
    quiesced device is a driver-model question, not a kernel one, and belongs with M4.8.1.
+
+### 9.5 A published console swallowed the record, and the fix is a route, not a reclaim (M4.8.3)
+
+The record printed through plain `kickos::kprintf`, and `console_emit` DROPS every kernel chip write
+while a userspace driver owns the console. So on the two boards whose default service list carries a
+console driver -- `frdmk64f` and `xmc4800-relax` -- a survivable fault's record was lost, while a
+PANIC got through, because the panic path funnels through `kpanic_enter` and that reclaims. Proven
+both ways at one tree on `frdmk64f` (`.session/logs/m483-fs-frdmk64f-faultsurvive.log` against
+`m483-fsk-frdmk64f-faultsurvive.log`) and reproducible on the host with `kickos_services_sim`.
+Isolation itself was never affected: the faulter died alone and root survived in every capture. What
+was lost is the one line naming the dead thread, on every realistic image.
+
+**The answer is forced once the question is asked properly.** While the console is published, the
+ONLY agent permitted to put a byte on that device is the driver. So either the record travels to the
+driver, or the kernel takes the device back. There is no third transport.
+
+Taking it back was rejected on register facts. Every one of the four `arch_console_reclaim` bodies
+clears a UART TX interrupt enable and reprograms baud, so a reclaim is not reversible from the kernel
+side and a SCOPED one -- reclaim, print, hand back -- would restore the state variable while leaving
+a live IRQ-driven driver's TX source silenced and its service thread parked forever. That is the
+hazard `console_on_driver_death` already defers around. A PERMANENT reclaim additionally violates
+`fault-kill-path-never-enters-panic` and kills a healthy console driver because one unrelated thread
+faulted, on a system whose whole premise is that it keeps running.
+
+Splitting `kpanic_enter` and taking only its forced-writer half fixes nothing: `console_emit`'s
+`USER_OWNED` arm returns before the writer choice is ever reached. Poking the device polled without
+reclaiming is the cheapest option of all and is rejected on the isolation principle -- it interleaves
+bytes into a frame the driver is shifting out, and on a chip where the driver holds the window as a
+granted capability it is the kernel writing a device it has handed away.
+
+So: **`kprintf_fault`, and only the four fault-record sites use it.** It is `kprintf` plus one thing.
+While the state is `USER_OWNED` it also hands the formatted line to the published endpoint's
+ALREADY-PARKED receiver through `cap_console_deliver`, which is `endpoint_send`'s parked-receiver arm
+and lives beside it so the two cannot drift. It reaches the endpoint through the KERNEL's own
+identity reference (`cap_console_publish`), not the dying thread's cap table, which a thread spawned
+before the publish never had seated.
+
+Three properties are load-bearing:
+
+- **It never parks.** A fault record must not be able to wedge a dying thread on a driver that is
+  mid-write or already gone. This is also why `endpoint_send` could not simply be called with a zero
+  timeout: `park_deadline_arm` floors any deadline other than `KOS_TIMEOUT_NONE` to
+  `KICKOS_TIMER_MIN_DELTA_NS`, so a zero timeout still parks, still switches away, and answers
+  `-KOS_ETIMEDOUT` a tick later.
+- **It is narrow to this one caller.** Routing all of `kconsole_write` would relight the kernel debug
+  console after a handover and retire `check_sim_published.sh`'s negative assertion, which is the
+  only thing proving a handover happened at all.
+- **Order survives, and not by luck.** The delivery pops the driver out of `recv`, so a later user
+  `kos_send` finds no parked receiver and parks in `send_waiters` instead. The driver therefore emits
+  the record, returns to `recv`, and only then takes that line. `check_faultsurvive.sh`'s
+  `survived > killed` assertion holds across a handover, which `check_sim_faultsurvive_pub.sh` pins.
+
+**A record is up to THREE lines from five call sites emitting four kinds of line, and only the first is unconditional.** The
+banner always prints; then exactly one of `PC lost to a later fault` / `PC=` / `PC= STAT=`; then
+`ADDR=` only when the fault latched an address. Each is its own delivery, and the first one POPS the
+driver out of `recv`, so the second finds an empty `recv_waiters` unless the driver has run and
+re-parked in between. That it does is not luck either,
+and it is not new machinery: `cfg->prio` for a console service must already be `>=` every stdout
+client, because a rendezvous carries no priority inheritance (`k64uart.cc`, D9), so the woken driver
+strictly preempts a faulting client and re-parks before the next line. `frdmk64f` provisions its
+console at 12 against a `faulter` at 10, and all four `m484` boards printed the banner AND its
+`PC=`/status line. **The dependency is worth knowing because it is invisible at the call site**: a
+console driver provisioned BELOW one of its clients -- already forbidden, for an unrelated reason --
+would truncate every fault record to its first line. Making the record one message instead of four
+would remove the coupling and is the natural follow-up; the line the defect was filed over is the
+first one.
+
+Two things it still loses, and both are accepted rather than unnoticed:
+
+1. If NO receiver is parked at that instant, the line is dropped with no retry -- the faulter WAS the
+   driver's last receiver, or the driver is mid-write. A bounded park would close this and is refused
+   above.
+2. A line handed over but never drained, because the system shut down before the driver was
+   scheduled. `kickos_terminate` flushes the KERNEL ring only.
+
+Case 1 covers the console driver faulting in its OWN service thread: that thread is running rather
+than parked, so no receiver is found, and the reclaim `console_on_driver_death` then performs arrives
+after the record is already gone. There is no zero-`.bss` repair for that ordering.
+
+One consequence is a widening and is accepted rather than overlooked: a published console driver now
+SEES the faulting thread's name, PC and fault status, where before those bytes were dropped inside
+the kernel. That driver already receives every byte of every thread's stdout, so the record is
+strictly less than what it holds; a posture where it must not is a posture with no published console.
+
+A deferred record -- park it in `.bss` and flush it at the next `kpanic_enter` or driver-death
+reclaim -- was weighed and rejected twice over: `microbit` has zero arena slack, so any `.bss` byte
+costs a selftest arm, and in the case the line exists for (a system that keeps running) the record
+would never arrive at all. Making the record a queryable fact for a userspace supervisor is the right
+long-term shape and is where this invariant's name points, but a default image that does not poll it
+still shows nothing, which is the complaint. Filed in `TODO.md`, not built.
+
+Cost measured: `.bss` byte-identical on every image, `.text` +256 to +272 B.
+
+Witnessed on silicon at TAG `m484` on four boards and four enforcement classes, and MUTATION-PROVEN
+there on two of them -- including one whose console driver is IRQ-driven and buffered, which is
+exactly the case a scoped reclaim would have wedged. The capture table is in `STATE.md`.

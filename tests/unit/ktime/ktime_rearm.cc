@@ -79,13 +79,13 @@ namespace kickos
         abort();
     }
 
-    // ktime_on_timer delegates every endpoint park's unwind to the IPC layer, which this
-    // gate does not link (it compiles time.cc alone against a fake clock). No arm here
-    // stages an endpoint park, so reaching this is a test that staged something it cannot
-    // model; abort rather than return, for the same reason as kpanic above.
-    void endpoint_wait_timeout(Thread*)
+    // ktime_on_timer delegates every endpoint park's unwind to park.cc, which this gate does
+    // not link (it compiles time.cc alone against a fake clock). No arm here stages an
+    // endpoint park, so reaching this is a test that staged something it cannot model; abort
+    // rather than return, for the same reason as kpanic above.
+    void endpoint_wait_abort(Thread*, intptr_t)
     {
-        fprintf(stderr, "endpoint_wait_timeout: no IPC layer in this gate\n");
+        fprintf(stderr, "endpoint_wait_abort: no endpoint layer in this gate\n");
         abort();
     }
 

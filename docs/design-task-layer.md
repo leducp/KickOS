@@ -3,9 +3,10 @@
 
 # A task layer: naming the group that already exists
 
-**Status: EXPLORATORY.** Nothing here is implemented. This file records the decisions taken, the ones
-deliberately deferred, the measured cost, and the recommended place in the order. Written against
-`34c5bf7e`.
+**Status: COMPLETE.** Steps 9.1 through 9.5 have all LANDED; only 9.6 remains and it belongs to
+the MMU era. Section 10's sequencing is superseded. This file records the decisions taken, the ones
+deliberately deferred, the measured cost, and where the ruling turned out to be wrong. Written
+against `34c5bf7e`; the 9.4/9.5 annotations were added at `M4.8.3-task-layer`.
 
 The proposal in the words that set it:
 
@@ -219,9 +220,12 @@ Both are `%s`-substituted with `Thread::name` (`kernel/init/fault.cc:101-105`,
 `kernel/init/console.cc:346-363`), and `diag.h:10-22` declares these tokens frozen. Once a Task
 exists these banners are actively wrong: they name a thread and say "task".
 
-**Decision: the banners change to `thread '%s'` as part of this work.** Cost is `diag.h` plus four
-gate scripts (`tests/integration/check_mpu_fault.sh:58,74`, `check_fault_dump.sh`, `check_rootfault.sh`,
-`check_qemu_ringppb.sh`). This is not optional cleanup: leaving them is a second truth about what
+**Decision: the banners change to `thread '%s'` as part of this work.** Cost is `diag.h` plus the
+token consumers, and **the list of four given here was short**: the real set reached
+`tests/lib/gate.sh` (whose `thread_fault_re` is how four of the scripts see the token),
+`tests/lib/panic.ere`, `check_qemu_panicgate.sh` and three scripts' literal `MPU FAULT: task '...'`,
+plus SIX source comments that quote it verbatim, across two apps, one arch backend and the RISC-V fault reporter. What must NOT change is the same string
+inside an archived silicon capture: editing those would falsify what a past image printed. This is not optional cleanup: leaving them is a second truth about what
 the word means.
 
 ## 5. What a Task owns
@@ -230,7 +234,7 @@ the word means.
 
 | owned by | thing | anchor today | why |
 | --- | --- | --- | --- |
-| **Task** | the `Domain` (the shared region set, later the address space) | `Thread::domain`, `thread.h:151` | This is the "common memory domain" the proposal names, and the level `syscall.cc:824` already refuses to widen per-thread |
+| **Task** | the `Domain` (the shared region set, later the address space) | was `Thread::domain`, now `Thread::task` | This is the "common memory domain" the proposal names, and the level `syscall.cc:824` already refuses to widen per-thread |
 | **Task** | the kill group and the death policy | nothing today | Section 6 |
 | **Task** | the lifetime claim on a DEV window | `dev_window_free`, `domain.cc:172` | A window returns when the **task** dies, not when one thread does |
 | **Thread** | the effective region set (domain regions + private stack + self-grants) | `Thread::regions`, `thread.h:152` | Already correct, already composed at `thread.cc:120-135` |
@@ -252,6 +256,29 @@ grant the narrowest unit, refuse rather than silently widen.
 **Decision: a task owns the window's LIFETIME (it is released when the task dies), and the thread
 that asked owns its ACCESS.** This splits `dev_window_free`'s current conflation, and it is what
 lets `console_handover_finish` drop its handle parameter without widening anything.
+
+**HOW 9.4 delivered that, and the correction the wording needed.** The window is now a region of the
+asking THREAD (`thread_create` composes it beside the private stack) and `domain_for` no longer takes
+an MMIO argument at all, so ACCESS is thread-scoped by construction. The LIFETIME half is not a
+second mechanism: it is 9.5. Nothing in the window's own bookkeeping makes it outlive one thread --
+what makes it come back with the GROUP is that a member's death cancels its peers, so the holder dies
+too. Read as a claim about where the window is STORED, "the task owns the lifetime" would have argued
+for putting it in the domain, which is exactly what 5.2 refuses. The two halves therefore live in
+different steps and the sentence is only true once both have landed.
+
+Three consequences worth stating, because each is a place a reader would expect the opposite:
+
+- `dev_window_free` scans live THREADS now, not domains, and it skips a thread that is `dying`. That
+  reproduces the old timing exactly: `exit_current` used to drop the domain reference before the
+  capability sweep so a supervisor woken by the sweep's EPIPE could respawn into the window at once,
+  and with a thread-scoped window `dying` is the flag that does the same job.
+- the DEV window's Rule 7 admission and its exclusivity check move OUT of `domain_for` and INTO
+  `thread_spawn`, which is where the grant is asked for. `domain_for` keeps only the shared RAM
+  grant, which is the one a task creates.
+- an MMIO-bearing spawn no longer skips the dedup scan, because there is no MMIO in `domain_for` to
+  skip it for. Two threads granting the same block therefore share ONE domain slot where they used to
+  burn two. The regions they see are identical either way, so this is a slot economy and not a
+  behaviour change -- but it does mean `KICKOS_MAX_DOMAINS` is now over-provisioned rather than tight.
 
 ### 5.3 The "main domain": yes, and it is created by task creation
 
@@ -322,6 +349,38 @@ dies. **This is new kernel work, not a refactor, and it is the single largest un
 proposal.** It is also the thing that would make `console_handover_finish`'s cooperative-cancel
 caveat (`driver_bringup.h:108-118`) go away rather than be documented.
 
+### 6.1 What 9.5 built, and the answer to open question 1
+
+The question was whether a real kill needs PREEMPTION, or whether "every blocking primitive is a
+cancellation point" is enough. **Neither, and the framing was the problem: it conflated the place a
+park ENDS with the place a thread DIES.** Separating them costs one test in one function.
+
+- **The park ends wherever it is.** `thread_abort_park` (`kernel/thread/park.cc`) is TOTAL over
+  `WaitKind`. Its arms are not wakes: a mutex waiter does not acquire the mutex and the owner's
+  inherited priority is reverted, a semaphore's count is untouched so a later post still hands its
+  token to a genuine waiter, an endpoint park goes through the same `endpoint_wait_abort` a deadline
+  expiry uses, and a sleeper's deadline is dropped. The result handed over is -KOS_ECANCELED where
+  the primitive has a code to carry one, and IGNORED where it has none -- which is the point: the
+  wake is a nudge towards the death point, not a report.
+- **The thread dies at its next syscall ENTRY.** One test in `syscall_dispatch`. That is what reaches
+  a thread parked in `sem_wait` or `sleep`, which have no error return to cooperate through, and a
+  thread that read the code and carried on anyway.
+- **Entry and deliberately not exit.** On exit it would pre-empt the one window the broken park
+  exists to give: a driver returning from a cancelled `irq_wait` gets to quiet its device over the
+  window it already holds before the next syscall ends it.
+
+**The residual, stated because it is real:** a thread that never enters the kernel again never dies.
+A pure compute loop is unreachable without preemption, and preemption remains a much larger change
+(it needs a safe point at which another thread may run a stranger's teardown). Every thread shape in
+the tree loops through a syscall, so this is a documented floor rather than a live gap -- and 0 from
+`kos_thread_kill` or `kos_task_kill` means the request was ACCEPTED, never that the thread is gone.
+
+**One guard, not two.** `task_cancel_group` deliberately takes no "except this thread" argument. The
+only caller with a thread to spare is `exit_current`, whose thread is already `dying`, and
+`thread_cancel` refuses a dying thread -- which it must anyway, to stop two members that die together
+from marking each other. Mutation-testing found the pair: with both guards in place, removing the
+`except` argument changed no observable at all, which is what a redundant authority looks like.
+
 ## 7. What this does NOT change
 
 Stated explicitly so this cannot be read as a rewrite.
@@ -367,7 +426,7 @@ convenience, it is the difference between a contained change and a tree-wide one
 | surface | sites | note |
 | --- | --- | --- |
 | Domain code sites | 27 (of 54 raw hits; half are prose) | 4 `.cc` and 3 headers total |
-| `Domain*` fields in the tree | 2 (`thread.h:151`, `thread.h:342`) | |
+| `Domain*` fields in the tree | 2, both now `Task*` since 9.3 | |
 | `domain_ref` / `domain_release` pairs | 1 (`thread.cc:87` / `sched.cc:202`) | |
 | Thread-death funnel | **1** (`sched::exit_current`, `sched.cc:186`) | sole caller of `cap_teardown` and `domain_release` |
 | `sched::exit_current` callers | 3 (`thread.cc:165`, `fault.cc:133`, `syscall.cc:536`) | |
@@ -402,6 +461,17 @@ Three findings, all load-bearing.
    **A host-only measurement would have priced this proposal as free.** On `microbit` the true cost
    is +8 per TCB across 4 TCBs (3 pool slots at `KICKOS_MAX_THREADS 2`, plus idle outside the pool
    at `thread.h:389`), so +32 bytes of `.bss` on a 16 KiB part.
+
+**A FOURTH FINDING, added 2026-08-11 when 9.3 landed: this table prices `Thread` and says nothing
+about the POOL.** The pointer swap is genuinely free on all three presets, and the layer is not: a
+`Task` pool costs 32 bytes of `.bss` on microbit and 144 on picopi. On microbit that is decisive for a
+reason no byte count predicts, because `__kickos_ram_start` IS `_ebss` there and the arena granule is
+32 bytes: ANY non-zero `.bss` addition moves the arena base a full granule. Measured both ways, a
+4-byte `Task` and a single-slot pool move it identically. So `mem_self_grant` loses its grain and
+skips, and the `uint16_t task_id` design this table rejects would have flipped the same arm rather
+than a different one. The lesson for the table is that "size-neutral by construction" was a claim
+about a struct being read as a claim about a change.
+
 3. **Nothing enforces the number.** There is no `static_assert` on `sizeof(Thread)` anywhere, and
    the literal `2480` does not appear in the repository at all. Three documents budget against a
    hand-counted comment.
@@ -409,6 +479,54 @@ Three findings, all load-bearing.
 **Decision: the design is `Thread::domain` replaced by `Thread::task`, reaching the domain through
 the task. Size-neutral on every preset by construction, and it collapses the domain surface at the
 same time.** Adding a field is rejected on the `microbit` number.
+
+### 8.3 The 9.4/9.5 mutation run
+
+Twenty-five mutants, each applied alone to the task-scoped death and group-kill path, rebuilt, run,
+reverted. **23 killed, 2 filed.**
+
+| # | mutant | outcome |
+| --- | --- | --- |
+| M1 | no task-scoped death | KILLED (`TaskDeath` x4) |
+| M2 | `except` ignored | SURVIVED -> code deleted |
+| M3 | cancel reaches only `WAIT_IRQ` | KILLED |
+| M4 | no `dying` guard in `thread_cancel` | KILLED |
+| M5 | semaphore park not unlinked | KILLED |
+| M6 | sleeper's deadline kept | KILLED |
+| M7 | mutex boost not reverted | KILLED |
+| M8 | mutex ownership transferred to the cancelled waiter | KILLED |
+| M9 | endpoint park not unwound | KILLED |
+| M10 | cancel mark dropped | KILLED |
+| M11 | no death point at syscall entry | KILLED |
+| M12 | task handle unbiased | KILLED |
+| M13 | `task_resolve` ignores the generation | KILLED |
+| M14 | implicit task nameable | SURVIVED -> arm added -> KILLED |
+| M15 | creator gate open on spawn | SURVIVED -> arm added -> KILLED |
+| M16 | creator gate open on kill | SURVIVED -> arm added -> KILLED |
+| M17 | member may bring its own memory | KILLED |
+| M18 | kill does not drop the hold | KILLED |
+| M19 | reserved slot reusable | SURVIVED -> arm added -> KILLED |
+| M20 | window not composed per thread | KILLED |
+| M21 | window exclusivity dropped | survived on sim -> KILLED on qemu |
+| M22 | `dev_window_free` counts a dying holder | SURVIVED (filed; `TODO.md`) |
+| M23 | window Rule 7 admission dropped | survived on sim/qemu -> KILLED on qemu-riscv |
+| M24 | `bring_up` spawns outside the group | KILLED |
+| M25 | `task_release` moved after the sweep | SURVIVED (filed; the diagnosis for M22, `TODO.md`) |
+
+Two method facts, both traps that would silently invalidate a future run:
+
+- **`shutil.copy2` preserves mtime.** Restoring a baseline file this way leaves it looking OLDER
+  than its object file, so ninja skips the rebuild -- every mutant after the sixth then runs against
+  the previous mutant's binary and reports an identical, meaningless kill set. Restore with an
+  explicit mtime bump, and re-check the baseline between mutants.
+- **A survival on the sim can mean unreachable, not vacuous.** The sim declares no reserved blocks
+  and admits one MMIO window shape, so `dev_window_exclusive` and `grant_reserved` are PARTIAL
+  there. M21 and M23 surviving on the sim said nothing about the arm; both had to be rerun where
+  those arms run in full (`qemu`, and for M23, `qemu-riscv`) before the KILLED verdict stands.
+
+M22 and M25 are the same finding two ways -- a mutant that survives because the choreography the gate
+would need does not exist yet -- and both are filed at the `TODO.md` entry that already carries their
+substance ("Release the DEV window BEFORE the capability sweep" has NO gate).
 
 ## 9. What can land incrementally
 
@@ -431,25 +549,92 @@ the existing domain pool, `Thread::domain` becomes `Thread::task`, the task owns
 syscall, no call-site change, no behaviour change.** The gate is exactly that: the full fleet
 witness is unchanged and `sizeof(Thread)` is unchanged on all three measured presets. This is a
 refactor that can be proven inert, which is the right first step for core-path work.
+**MET EXCEPT ON ONE BOARD, and the exception is the finding.** `sizeof(Thread)` held on all three,
+the ABI and every call site outside the kernel are untouched, and every suite is green. But this
+paragraph prices the STRUCT and the layer also needs a POOL, and on `microbit` the arena base is the
+aligned end of `.bss`, so `mem_self_grant` lost its last allocation grain and is now a declared skip.
+The step is inert everywhere except the one board that had no slack to be inert with. Section 8.2's
+fourth finding has the measurement.
 
-**9.4. Explicit task creation and spawn-into-task.** New syscalls, and the drivers opt in. The six
-multi-thread drivers become one task each. Gateable by a driver-level witness on the boards that
-have those drivers.
+**9.4. Explicit task creation and spawn-into-task. LANDED.** `KOS_SYS_TASK_CREATE = 51` makes an
+EMPTY group holding a domain built from its own grant, and `kos_thread_params::task` seats a member
+into it. The gate is CREATORSHIP, the same non-transferable parenthood `thread_kill` takes, and it is
+enforced twice: on the spawn and on the kill.
 
-**9.5. Task-scoped death and the group kill.** The largest and least certain step (section 6), and
-the one that finally lets `console_handover_finish` drop its handle parameter and the 6
-`Handle::kill()` sites go away. Needs its own design pass; the cooperative-cancellation limit is a
-real obstacle, not a detail.
+**Four things this needed that section 5 did not say.**
+
+1. **A task needs an identity that is not a thread.** Open question 3 asked whether that touches the
+   capability codec. It does not: a `kos_task_t` is a plain word like `kos_thread_t`, generation over
+   a BIASED index, and possession is not authority -- the creator tag is. The bias is what makes the
+   all-zero word unmintable, so `kos_thread_params` zeroed by an app that predates the field means
+   "no task" and every one of the 230 existing spawn sites keeps its meaning with no edit.
+2. **An implicit task must be UNNAMEABLE.** `task_resolve` refuses a slot with no creator tag. Skip
+   that and a guessed handle resolves onto idle's or root's implicit task, whose domain is the
+   KERNEL domain, and an unprivileged spawn joining it is granted the whole arena. The check is one
+   line and it is the difference between a group name and a privilege escalation.
+3. **An empty explicit task has to exist, so a slot needs a state that is neither free nor held by a
+   thread.** The creator tag is that state: a slot with one is not free even at refcount 0. It cost
+   no bytes -- `Task` was repacked to `{Domain*, uint8_t refcount, uint8_t creator_tag, uint16_t
+   gen}`, still 8 bytes on 32-bit and 16 on the host, so `microbit`'s `.bss` did not move and the
+   skip set 9.3 grew did not grow again.
+4. **The bound in question 5 does not cover it.** `KICKOS_MAX_TASKS` budgets one task per live TCB,
+   which an explicit group of N members repays N-1 times over -- but a group holding NO member is a
+   slot on top. `porting.md` says so; the refusal is a clean -KOS_ENOMEM either way.
+
+**The drivers opt in through ONE call site.** `drv::bring_up` creates a task and spawns every thread
+into it, so all twelve drivers are converted by editing the generic service rather than any of them.
+`ThreadSet` is gone: `unwind` and `console_handover_finish` take the task handle, and the reverse-order
+per-thread sweep is one `kos_task_kill`.
+
+**Two honest costs.** The ring block is the TASK's shared region now, so `Thread::mem_grant` in a
+descriptor is read as the GROUP's declaration -- and `rx72m/rxsci`'s relay thread, which declared
+`mem_grant = false` alongside two peers that declared true, SEES the block it did not ask for. That is
+one thread in the fleet, it is that driver's own state, and the grant the isolation principle is about
+-- the register window -- stays its own. The alternative, giving the task no shared region and keeping
+the per-thread grants, would have left 1.2's "two levels of memory authority" a fiction in practice.
+And the sim's WINDOWED console posture deliberately keeps its window thread OUT of the driver's group
+(`system/init/sim/service_list.cc`): it models a FOREIGN holder of the registers, which is the only
+shape in which the deferred console reclaim is observable at all. Coupling it would have deleted that
+gate's subject.
+
+**9.5. Task-scoped death and the group kill. LANDED**, and it was smaller than this paragraph
+feared. Section 6.1 has the mechanism and the answer to open question 1: a total per-`WaitKind` park
+abort, plus ONE test at the syscall entry, and the "own design pass" it asked for turned out to be
+the observation that ending a park and ending a thread are different problems.
+
+`console_handover_finish` has dropped its handle parameter and the hand-rolled group kill is gone.
+What did NOT go away is the caveat: cancellation is still asynchronous and a thread that never
+re-enters the kernel is still unreachable. The claim that changed is the REACH -- from one park to
+every park -- not the guarantee.
+
+**The thing that needed care was the ORDER, not the reach.** The cancel sits in `exit_current`'s first
+IrqLock block, before `task_release`, for two reasons that pull in opposite directions: it must
+precede the release, because the release can free the task slot and leave `c->task` a dangling name;
+and its wake of a strictly higher-priority peer is admitted by the M4.8.2 dying guard, so the switch
+lands BEFORE the rest of the exit. `tests/unit/taskdeath/group_kill.cc` asserts both directions of
+that as ordered traces, because a counter oracle cannot fail on a reordering.
 
 **9.6 (post-M6).** `Domain` gains an `arch_aspace*` and a task whose domain has one is a process.
 Belongs to `design-mmu-era-exploration.md`, not here.
 
-Steps 9.3, 9.4 and 9.5 can be three submilestones or one; they cannot be reordered.
+Steps 9.3, 9.4 and 9.5 can be three submilestones or one; they cannot be reordered. In the event
+9.3 landed alone and 9.4 + 9.5 landed together, and the pairing was right rather than convenient: 9.4
+makes the window thread-scoped, which drops the lifetime guarantee 5.2 wants, and 9.5's coupled death
+is what puts it back. Landing 9.4 alone would have shipped a window that a surviving peer outlives.
 
 ## 10. Sequencing
 
-**Recommendation: not before M4.8.1, and not in M4.8.x at all. Land it after the host unit-test
-layer, as the first submilestone of M4.9 that follows it.**
+> **SUPERSEDED 2026-08-11, and step 9.3 has LANDED in M4.8.3.** Three of the four reasons below are
+> spent: M4.8.1 merged, the numbering collision was resolved by the renumber that moved the driver
+> era to `M4.9.x` (so "M4.8.3..N is the fleet witness pass" now reads `M4.9.2..N`), and reason 3's
+> preferred predecessor, the host unit-test layer, landed as M4.8.2. The survivor is reason 4, and it
+> does not reach step 9.3: it argues that step **9.4**'s per-driver payoff is easier to argue against
+> a witnessed driver tier, which is an argument about argument, not a dependency, and 9.3 changes no
+> driver and no behaviour. The drivers themselves are not what anything is waiting on: all twelve
+> exist and M4.8.1 witnessed them on every enforcement class.
+
+**Original recommendation: not before M4.8.1, and not in M4.8.x at all. Land it after the host
+unit-test layer, as the first submilestone of M4.9 that follows it.**
 
 Four reasons, in order of weight.
 
@@ -479,19 +664,44 @@ this proposal is numbered against them.
 
 ## 11. Open questions
 
-1. **The group kill.** Cooperative cancellation is honoured at one point (`irq.cc:209`). A task-wide
-   kill that is honoured only where threads happen to park is not a kill. Does this need a
-   preemptive kill, which is a much larger change, or is "every blocking primitive is a
-   cancellation point" sufficient and affordable? **This gates 9.5 and nothing before it.**
-2. **Does the `domain_for` dedup survive?** Once grouping is explicit, the scan is no longer an
-   expression of intent, but it still saves `KICKOS_MAX_DOMAINS` slots on identical grants. Keep,
-   restrict to within-task, or delete. Measurable: count the domains a full fleet image actually
-   allocates before deciding.
-3. **What is a task's identity in the handle space?** A `Task` handle would be the natural way to
-   name a group for a kill or a join, but caps are per-thread by 5.4 and adding a task-typed object
-   touches the codec. Deferred until 9.4 needs it.
+1. **The group kill. ANSWERED by 9.5, and the question contained a false dichotomy.** Neither a
+   preemptive kill nor "every blocking primitive is a cancellation point": the park abort is total
+   over `WaitKind` and the DEATH POINT is the syscall entry, which are two mechanisms rather than
+   one. Section 6.1 has it. What survives unanswered is the residual it names -- a thread that never
+   re-enters the kernel -- and that one does need preemption.
+2. **Does the `domain_for` dedup survive? KEPT, and 9.4 widened its reach without meaning to.**
+   With the MMIO window out of `domain_for` an MMIO-bearing spawn no longer skips the scan, so two
+   threads granting the same block now share one domain where they used to burn two. It is a slot
+   economy and it is explicitly NOT an expression of intent any more -- which task a thread is in is
+   what a `Task` says, and two tasks landing on one domain stay two tasks. Deleting it is still
+   available and is now cheap to argue for, because only an explicit task's grant reaches a fresh
+   slot at all and `KICKOS_MAX_DOMAINS` (`MAX_THREADS + 2`) is over-provisioned for that.
+3. **What is a task's identity in the handle space? ANSWERED: a plain word, not a capability.**
+   `kos_task_t` is generation over a biased index, resolved against the task pool, and the cap codec
+   is untouched -- 5.4 holds. Possession is NOT authority, exactly as a thread handle's is not: the
+   gate is the CREATOR tag, so guessing a handle buys nothing. The bias exists so the all-zero word
+   cannot name a live task, which is what lets `kos_thread_params::task` default to "none" for every
+   spawn that predates the field.
 4. **Does `kos_wait_last` become task-scoped?** It is entangled with the reaper-init problem already
-   in `TODO.md`, which is core-path work with its own number. Deliberately not answered here.
-5. **the task-pool sizing symbol.** Under 5.3 the default is one task per thread, so the pool is bound
-   by `KICKOS_THREAD_SLOTS` in the worst case, which on a 16 KiB part is `.bss` that must be
-   accounted before 9.3 lands.
+   in `TODO.md`, which is core-path work with its own number. Deliberately not answered here, and 9.4
+   and 9.5 left it alone: it still means "last thread in the system", backed by `Kernel::live`.
+
+6. **When does an explicit task's slot come back? OPEN, and 9.4 shipped the narrow answer.** A group's
+   slot and its domain are held by the creator's hold until `kos_task_kill` drops it, and there is no
+   sweep at the creator's own death. Root is the creator in every in-tree case and root's death ends
+   the system, so nothing leaks today; a supervisor thread that creates groups and then dies would
+   reserve those slots for the rest of the run. The three candidates: a `kos_task_release` that drops
+   the hold without ending the group (needed anyway to hand a group over), a task-pool sweep at
+   `exit_current` keyed on the creator tag, or declaring the hold to be the creator's for life. The
+   second is the one that composes with `ThreadPool::alloc`'s existing spawner-tag sweep, which
+   exists for the same reason: a recycled slot must not inherit authority over what its predecessor
+   created.
+5. **the task-pool sizing symbol. ANSWERED, and the bound stated here was off by one.** Live TCBs are
+   idle + root + `KICKOS_MAX_THREADS`, which is `KICKOS_THREAD_SLOTS + 1`, not `KICKOS_THREAD_SLOTS`:
+   `KICKOS_THREAD_SLOTS` is itself `KICKOS_MAX_THREADS + 1` and THAT `+1` is root's, so the OUTER
+   one is idle's, idle being the TCB outside the pool. At the smaller figure a microbit would
+   have three task slots for four live threads and `task_for` would refuse the second concurrent
+   spawn. `KICKOS_MAX_TASKS` ships as `(KICKOS_THREAD_SLOTS + 1)` with a `static_assert` on that
+   floor, so `task_for`'s ENOMEM stays COINCIDENT with the thread pool's instead of arriving one
+   spawn earlier. The `.bss` this costs is 32 bytes on microbit and 144 on picopi, and section 8.2
+   has what that did.

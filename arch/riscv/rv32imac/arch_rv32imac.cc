@@ -33,9 +33,9 @@ namespace kickos
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void) __attribute__((noreturn));
-// Kernel MPU-violation reporter (kernel/init/console.cc): names the offending task
+// Kernel MPU-violation reporter (kernel/init/console.cc): names the offending thread
 // and shuts down cleanly (the reported-fault path). A U-mode load/store access fault
-// is a PMP domain violation, so it routes here for the same "MPU FAULT: task '<name>'"
+// is a PMP domain violation, so it routes here for the same "MPU FAULT: thread '<name>'"
 // marker the sim (SIGSEGV over the guard page) and the reference backends emit.
 extern "C" void kickos_isr_fault(uintptr_t addr, int is_write);
 
@@ -559,7 +559,7 @@ bool kickos_rv_fault_report(uint32_t mcause, uint32_t mepc, uint32_t mtval,
     // An access fault taken FROM U-mode (mstatus.MPP==0) is a PMP domain violation by an
     // unprivileged thread, on instruction fetch (mcause 1) as well as load (5) / store
     // (7); a fetch from an ungranted region must report the same as a data access. Route
-    // it to the kernel reporter that names the task and exits via the reported-fault path.
+    // it to the kernel reporter that names the thread and exits via the reported-fault path.
     // mtval holds the faulting address. An
     // access fault from M-mode (MPP!=0) is a genuine kernel bug (M-mode bypasses the
     // unlocked PMP entries), so it falls through to the generic dump + kfault_terminate.

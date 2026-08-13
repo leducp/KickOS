@@ -42,10 +42,24 @@ typedef uint32_t kos_thread_t;
 // with a static_assert), so no generation can mint this word.
 #define KOS_THREAD_NONE 0xFFFFFFFFu
 
+// A task handle: 16 generation bits over a BIASED index into the task pool, whose slots are
+// unrelated to either pool above. The bias is what makes the all-zero word unmintable, so a
+// kos_thread_params zeroed by an app that predates the field means "no task".
+typedef uint32_t kos_task_t;
+
+// "No task", and the spawn default: a thread naming no task gets an implicit one holding
+// itself, which is what every spawn written before tasks existed already meant.
+#define KOS_TASK_NONE 0u
+
 // The exit code a thread killed by a CPU fault reports: what a joiner reads back, and
 // the process status when it was the last thread live. Distinct from kfault_terminate's
 // 132, so a capture tells a survived fault from a panic. A clean kos_exit(139) aliases it.
 #define KOS_EXIT_FAULT 139
+
+// The exit code a CANCELLED thread reports: the kernel ends it at a syscall boundary rather
+// than letting it return, so it never picks a code of its own. 128 + SIGINT, as
+// KOS_EXIT_FAULT is 128 + SIGSEGV.
+#define KOS_EXIT_CANCELLED 130
 
 enum kos_syscall_nr
 {
@@ -145,8 +159,18 @@ enum kos_syscall_nr
                                //   -KOS_EPERM to any thread but root. Takes NO deadline:
                                //   it is the shutdown condition, and no caller can know a
                                //   bound for it.
-    KOS_SYS_SEND_TIMED = 50    // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
+    KOS_SYS_SEND_TIMED = 50,   // (cap, buf, len, timeout_us) -> as KOS_SYS_SEND, plus
                                //   -KOS_ETIMEDOUT
+    KOS_SYS_TASK_CREATE = 51,  // (mem_base, mem_size, kos_task_t* out) -> 0, or -KOS_E*:
+                               //   EPERM (inadmissible shared grant, or a caller no member
+                               //   could name), EINVAL (the window wraps), ENOMEM (task or
+                               //   domain pool full), EFAULT (bad out-pointer). The task is
+                               //   EMPTY: kos_thread_params::task is what seats members.
+    KOS_SYS_TASK_KILL = 52     // (kos_task_t) -> 0, -KOS_EBADF (never created / freed under
+                               //   this handle / an implicit task, which is unnameable),
+                               //   -KOS_EPERM (the caller did not create it). Cancels every
+                               //   live member and drops the creator's hold, so the handle
+                               //   names nothing afterwards.
 };
 
 // Flags for KOS_SYS_IRQ_CLAIM. The trigger type is a property of the SOURCE, so it is
@@ -403,6 +427,12 @@ struct kos_thread_params
     // never widens, like a cap_grant mask. This 8-bit field is what bounds the authority
     // word to 8 bits.
     uint8_t authority;
+    // The task the child JOINS, from kos_task_create, or KOS_TASK_NONE for an implicit task
+    // holding the child alone. Only the task's creator may seat a member. A member shares the
+    // task's data region and dies with the group, so it may bring NO mem_base of its own
+    // (-KOS_EINVAL) and may not be privileged (-KOS_EINVAL); mmio_base is per-thread and is
+    // still its own.
+    kos_task_t task;
 };
 
 #endif

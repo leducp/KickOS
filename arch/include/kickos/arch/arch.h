@@ -583,6 +583,16 @@ bool kickos_fault_kill_thread(void* frame);
 // neither test subsumes the other.
 bool kickos_fault_frame_trusted(void const* frame, size_t bytes);
 
+// Did the faulting access land BELOW the running thread's stack, i.e. did the thread run
+// off the bottom of its own stack? For a backend whose exception CANCELS the faulting
+// instruction and restores SP (RXv3), the SP still reads in-bounds after an overflow and
+// kickos_fault_frame_trusted cannot see one; the faulting ADDRESS is then the only
+// evidence there is. A stack grows down, so an overflow's first denied access is beneath
+// the stack base by construction and this is exact for that case; it also refuses a wild
+// access that happens to be below the stack, which is the safe direction. Fails closed
+// (true) when there is no recorded stack to compare against.
+bool kickos_fault_below_stack(uintptr_t addr);
+
 // The facts arch_fault_redirect_to_exit captured, printed later by
 // kickos_thread_fault_exit in thread context. NOTHING may print from the handler:
 // printing there forces kpanic_enter, which masks interrupts and reclaims the console

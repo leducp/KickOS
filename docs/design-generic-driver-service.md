@@ -459,6 +459,13 @@ statement of `bring_up`, for the reason R1.1 in section 8.1 gives.
 
 ### 3.4 The bring-up
 
+**THE CODE BELOW (AND THE `ThreadSet` STRUCT IN 3.2) IS STALE AS OF M4.8.3 AND IS KEPT ONLY AS
+THE REASONING.** Step 9.4 deleted `ThreadSet`: `bring_up` creates one task per driver and spawns
+every thread into it, and `unwind` and `console_handover_finish` take a `kos_task_t` in place of
+the set -- `unwind`'s `peers.cancel_all()` becomes one `kos_task_kill`. Section 5.1 has the full
+correction. What survives below is the choreography -- what `bring_up` does in what order, what
+`unwind` closes before it cancels -- not the `ThreadSet` type it was written against.
+
 ```cpp
 int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* out_ep);
 ```
@@ -1053,7 +1060,10 @@ this exact defect, found independently.
 
 **Explicitly: the `ThreadSet` is not the Task in embryo. It is the hand-rolled emulation the
 Task later absorbs, completed.** The distinction matters and it is what keeps this design from
-pre-empting that ruling:
+pre-empting that ruling. As 3.4's callout above already flags, M4.8.3's step 9.4 absorbed it
+WHOLE, at the one call site this design had already collapsed it to -- confirming this section's
+prediction rather than contradicting it. The contrast still reads correctly against the shape it
+replaced:
 
 - `ThreadSet` is a userspace array of handles on root's stack. No kernel object stands behind
   it, no syscall takes it, and no thread's fate is coupled to another's. The spike's section 6

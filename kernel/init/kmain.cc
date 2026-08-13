@@ -19,6 +19,7 @@
 #include <kickos/arch/arch.h>
 #include <kickos/config/system.h>
 #include <kickos/ktrace.h>
+#include <kickos/task.h>
 
 extern "C"
 {
@@ -203,6 +204,7 @@ namespace kickos
         kbanner();
         sched::init();
         domain_init(); // build the immortal kernel + default-user domains (arena ready)
+        task_init(); // clear the task pool
         grant_reserved_validate(); // Rule 7: reserved set well-formed + arena/app disjoint
         ktime_init();
         irq_init();          // seed the dispatch table before any driver attaches

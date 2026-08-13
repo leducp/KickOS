@@ -55,8 +55,8 @@ fi
 
 # Pin the trap to the address the app announced. This is what the banner cannot say:
 # the reporters differ (RISC-V and the sim take the kernel-reported path and name the
-# task; ARM's panic dump prints no name and only labels itself "MPU FAULT" when the CFSR
-# MMFSR byte is set; the thread-kill dump names the task and prints ADDR), but all of
+# thread; ARM's panic dump prints no name and only labels itself "MPU FAULT" when the CFSR
+# MMFSR byte is set; the thread-kill dump names the thread and prints ADDR), but all of
 # them record the faulting address.
 want="$(printf '%s\n' "$OUT" \
     | sed -n 's/.*\[domain\] expect fault at 0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
@@ -71,7 +71,7 @@ if [ "$outcome" = "thread-kill" ]; then
     # escalated anyway still shows the banner above, and the system it was meant to keep
     # running is dead.
     assert_no_panic "the domain violation killed the thread AND panicked the system"
-elif ! has_e "MPU FAULT: task 'domainA'|=== MPU FAULT ==="; then
+elif ! has_e "MPU FAULT: thread 'domainA'|=== MPU FAULT ==="; then
     fail "MPU FAULT marker missing (crash / hang / truncated run?)"
 fi
 got="$(reported_fault_addr)"

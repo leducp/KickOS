@@ -3080,6 +3080,11 @@ was read or measured.
       rather than answer it, which is worth deciding deliberately rather than by side effect.
       **Measured by a subagent with instrumented counters -- the zero-hit figure and the forced-path
       figure are both its numbers, worth re-deriving before acting on them.**
+      **NARROWED by `tests/unit/capsweep/`**: the host gate now drives one sweep into another and
+      pins `teardown_depth` as a COUNT plus the deferred console reclaim that reads it, so what is
+      left of this entry is the ON-TARGET hit count, which is still zero. A restructuring that
+      removes the chunked window is the S5 mutant of
+      `docs/design-m4.8.2-host-unit-tests.md` section 8.6 and now fails a named arm.
 - [x] **FIXED in M4.8.2. `sched::wake` dereferenced `kernel().current` unguarded** while `tick_rr`
       in the same file guarded the same pointer, and `kernel().current` is null between
       `sched::init` and `sched::start`. Latent rather than live (no reachable pre-start waker was
@@ -5368,16 +5373,24 @@ Items 5 to 7 of its section 7 are still owed and are the ones below plus the mig
       collides first and `kickos_build` fails before the gate runs, which is the old protection, not
       the new one. Green on seven presets; `rx72m` reports 57 defined rather than 0, so the RX
       underscore-prefix leg is live.
-- [ ] **The blocking-call trap in the K-seam fixture needs a mechanism, not a paragraph.** Under a
-      returning `arch_switch` an arm that asserts on a blocking primitive's RETURN VALUE is
-      asserting on a fiction, because no waker ever wrote `wait_result`. `tests/unit/kfixture/kfixture.h`
-      states it as note 2 and nothing enforces it. It becomes urgent the first time a gate drives
-      `mutex_lock` or `endpoint_recv` rather than the scheduler directly, which `sched_wake` does
-      not.
-- [ ] **The concurrent capability-teardown path now has an instrument and still has no arm.** The
-      K-seam fixture can seat two dying threads and drive one sweep into another, which is what the
-      existing zero-hits entry above wanted and could not get in-env. Two sweeps at once is the one
-      thing `g_cap.teardown_depth` exists to count, and nothing gates it.
+- [x] **The blocking-call trap in the K-seam fixture needs a mechanism, not a paragraph.**
+      **DONE:** a switch whose OUTGOING thread is `BLOCKED` is a park, so `note_switch` poisons
+      `wait_result`, credits the switch-in `wq_confirm_resume` spins for, and calls the waker armed
+      by `wake_next_park` -- or ends the arm with a `FIXTURE FAIL:` naming the thread, asserted by
+      `KICKOS_EXPECT_FIXTURE_REFUSAL`. `tests/unit/parkresult/` drives the real `mutex_lock` and
+      `sem_wait`, 6 arms, 7 mutants all killed
+      (`docs/design-m4.8.2-host-unit-tests.md` section 8.5). `g_resume_on_switch` deleted with it.
+- [x] **The concurrent capability-teardown path now has an instrument and still has no arm.**
+      **DONE:** `tests/unit/capsweep/` puts a second dying thread's whole sweep inside the first
+      one's chunk gap, found by the nesting count `arch_irq_save`/`arch_irq_restore` now keep, and
+      asserts the ordered trace across the boundary. 3 arms, 5 mutants all killed; `outer-live` is
+      the arm that says the depth is a COUNT and not a flag (section 8.6).
+- [ ] **The K-seam fixture's OTHER self-diagnostics have no death case, and now there is a macro for
+      them.** `KICKOS_EXPECT_FIXTURE_REFUSAL` (`tests/unit/kfixture/kseam_test.h`) gates the
+      no-waker refusal; the same shape would gate `reset()`'s in-flight-sweep refusal, `note_park`'s
+      "parked with no arm waiting for it", `kickos_terminate` and the range checks in `spawn` /
+      `seat_pool` / `task`. Each is an `exit(1)` a mutation cannot currently be caught by, and the
+      `reset()` one needs an arm that deliberately abandons a sweep, which is the entry below.
 - [ ] **`tests/unit/kfixture/reset()` cannot clear `g_cap.teardown_depth`**, because `cap.cc` keeps its
       `CapState` in a TU-local `constinit` that the `kernel() = Kernel{}` assignment does not reach.
       It refuses loudly instead (`cap_teardown_active()` at the top of `reset`), so an arm that
@@ -5430,11 +5443,15 @@ follows is what survived that.
       after which `ThreadPool::alloc` no longer sees the slot as free. Unreachable today (an exiting
       thread is on no queue and carries `WAIT_NONE`), and worth closing now that `state == EXITED` is
       load-bearing two lines below.
-- [ ] **The `teardown_depth` axis is ungated end to end.** Deleting BOTH the increment and the
+- [x] **The `teardown_depth` axis is ungated end to end.** Deleting BOTH the increment and the
       decrement so `cap_teardown_active()` is permanently false SURVIVES the suite, and so does
       making `console_on_driver_death` unconditional, and so does deleting the fixture's own
-      in-flight-sweep refusal. The K-seam fixture is now the instrument that could seat two sweeps at
-      once, which is what the zero-hits entry above always wanted. Nothing does yet.
+      in-flight-sweep refusal.
+      **DONE for the first two by `tests/unit/capsweep/`**: the depth-deleted mutant and the
+      unconditional-reclaim mutant are both killed by named arms, and so is a depth that is a FLAG
+      rather than a count. **The fixture's own in-flight-sweep refusal in `reset()` is still
+      ungated**, and gating it needs an arm that deliberately abandons a sweep, which is the
+      `reset()` entry below.
 - [ ] **The `host` label is now LOAD-BEARING, and still has no gate.** Re-derived with
       `git grep -n "LABELS host" -- '*.txt' '*.cmake'`: 11 literal sites (2 in the root
       `CMakeLists.txt`, 1 in the shared `kickos_discover_unit_tests` in `cmake/kickos.cmake`, 1 in
@@ -5480,3 +5497,165 @@ follows is what survived that.
       was verified out of tree and is correct; in tree it is untested. Either the first death-case arm
       lands (the ISR-context `kpanic` the fixture header promises is the obvious one, and
       `arch_in_isr` is already wired to `g_in_isr` for it) or the branch goes.
+
+## Found porting fault isolation to rxv3 (2026-08-12)
+
+- [ ] **`kickos_fault_below_stack` NARROWS WHAT A FAULT REPORT CAN ATTRIBUTE ON rxv3, and design 4.3's
+      reaper is what removes it rather than tuning it.** RXv3 cancels the faulting instruction and
+      restores SP (ISA UM sec.5.3.1), so no SP-based test can see a stack overflow and the faulting
+      ADDRESS is the only evidence. The test is EXACT for the overflow class -- a stack grows down, so
+      the first denied access is beneath the base by construction -- but its converse is not, and the
+      cost is MEASURED on one tree: `mpu_fault`'s cross-domain write to `0x13200`, below `domainA`'s
+      stack, escalates to the panic dump instead of dying alone, while `rxdrv`'s `0x8c068` above the
+      stack dies alone. So on this board an unprivileged operand access to any LOWER address is
+      reported as a system panic and the thread is not credited with dying alone. **Do NOT replace the
+      stack base with a distance threshold**: a frame larger than the threshold puts privileged code
+      back on an exhausted stack, which is the UNSAFE direction and is the exact defect this closed
+      (`.session/logs/m483rxovf-*`, which reached `PC=0x0`). The real fix is a stub that never runs on
+      the dying thread's stack, i.e. `docs/design-m4.7.9-fault-isolation.md` section 4.3, which
+      already recorded that it "would survive 4.2" and is now measured on an ISA that needs it. It
+      would delete the rxv3 test, not tune it.
+
+- [ ] **An anonymous namespace nested inside `extern "C"` emits UNMANGLED GLOBAL symbols, and
+      `arch/rx/rxv3/arch_rxv3.cc` already does it.** Measured with `rx-elf-nm` on a linked image:
+      `_g_pend_regions` and `_g_pend_count` (the MPU deferred-commit stash, in a `namespace { }` inside
+      the file's `extern "C"` block) are `B`, i.e. global, while `g_in_isr` in the file's TOP-level
+      anonymous namespace mangles to `__ZN12_GLOBAL__N_18g_in_isrE` and is local. C language linkage
+      wins over the anonymous namespace, so the namespace reads as internal linkage and is not. Two
+      RX chips or a second backend touching those names would collide at link. This port used an
+      explicit `static` for its own helper to sidestep it; the pre-existing pair was left alone
+      because renaming them is not this change. Audit the other backends for the same shape.
+
+- [ ] **`bench-capture.sh` REFUSES any app that is not the TAP selftest, and its refusal skips the
+      log fetch.** `faultsurvive`, `mpu_fault` and `rxdrv` all end with "has no plan line at all: the
+      suite never announced itself", `bench.sh` exits before its `rsync`, and the capture -- which is
+      complete and correct on the bench host -- has to be fetched by hand. Every fault witness in this
+      pass was collected that way. The refusal is right for a selftest run and wrong as a blanket
+      rule; it needs to key on whether a plan line was EXPECTED. (`bench.sh`'s sibling-image search was
+      fixed in the same session: `faultsurvive_ovf`/`_off` are declared by another directory's
+      CMakeLists, so neither the `<app>/<app>` convention nor the `_p<N>` strip could find them.)
+
+- [ ] **On a FLAT rxv3 board nothing catches a wild SP that faults with a non-MPU cause.** The
+      below-stack test is inside `#if KICKOS_HAVE_MPU` because it reads `MPESTS`/`MPDEA`, and the USP
+      containment test only sees an SP that is out of range, not one that is in range with no room
+      below. So on `rx72m-flat` an address exception taken by a thread whose stack is exhausted would
+      be killed and the stub would run on it. Not witnessed either way -- the flat posture has no arm
+      that reaches this -- and it is the same hole 4.3 closes. Filed so the enforcing-only scope of the
+      guard is on the record rather than implied by an `#if`.
+
+## Found landing task-layer step 9.3 (2026-08-11)
+
+- [x] **A PUBLISHED driver console SWALLOWS the thread-fault RECORD, and the boards it hits are the
+      ones whose default service list carries a driver.** FIXED in M4.8.3 by a ROUTE, not a reclaim:
+      the five record sites call `kprintf_fault`, which while the console is `USER_OWNED` also hands
+      the line to the published endpoint's already-parked receiver (`cap_console_deliver`), so the
+      DRIVER prints it and the healthy driver keeps the device. Ruling, the four options rejected and
+      the two things the fix still loses: `docs/design-m4.7.9-fault-isolation.md` section 9.5. Gated
+      on the host by `sim_published_panic` case 2 and the new `sim_faultsurvive_published` (the
+      ordering claim), and witnessed on silicon under DEFAULT driver-carrying service lists.
+
+- [ ] **`microbit` has ZERO arena slack, so no `.bss` addition is ever inert there again.**
+      `__kickos_ram_start` IS `_ebss` and the granule is 32 bytes, so four bytes cost as much as
+      thirty-two. Step 9.3's task pool took `mem_self_grant`'s last `kos_ram_alloc` grain and that arm
+      is now a declared skip. The structural options, none taken: shrink the board's static demand,
+      give the selftest a microbit-specific arena reservation the way `uart_service` got one, or
+      accept that this board's skip set grows once per milestone. Worth deciding deliberately rather
+      than one arm at a time, because the next `.bss` byte from ANY change takes the next arm.
+- [ ] **`docs/reference/invariants.md` carries the invariant ID `object-access-via-per-task-cap`, and
+      the capability table is per-THREAD.** 5.4 of the task-layer spike rules the table stays per
+      thread, and the prose around `handle-not-pointer-across-boundary` says "per-task capabilities"
+      too. The comments in `cap.h` and friends were reworded when 9.3 landed; renaming an invariant ID
+      is a cross-document change that was deliberately left out of that commit. **9.4 made it worse**:
+      `task` now HAS a referent, so that entry's prose "every SPAWNED task gets"
+      `KICKOS_CAP_CHILD_WIDTH` now reads as a claim about a group and is wrong -- the width is per
+      thread.
+- [ ] **`task_release` frees the task slot BEFORE `cap_teardown`, so `c->task` dangles for the rest of
+      `exit_current`.** Exactly as `c->domain` already did, and for the same deliberate reason: the
+      release must precede the sweep so a supervisor woken by the EPIPE can respawn into the window.
+      Nothing reads it, and the comment at the site says so. A peer's `task_for` can recycle that
+      freed slot while `c->task` still names it, and the M4.8.2 wake preemption now lets that
+      overlap the sweep rather than follow it; a future second `task_release(c->task)` would then
+      decrement a LIVE task to zero. It becomes a real hazard the first time anything downstream of
+      the sweep wants the task.
+- [ ] **M5/SMP: the claim-then-commit shape in `domain_for` and `task_for` is safe only because
+      `IrqLock` is enough on one core.** Both hand out a pool slot at refcount 0 and are committed by
+      a later `domain_ref`/`task_ref`, and what makes the window atomic is that `thread_spawn`
+      declares a FUNCTION-SCOPE `IrqLock` as its first statement, spanning the claim, the thread-slot
+      alloc and `thread_create`. `IrqLock` masks LOCAL interrupts only, so under SMP a peer core can
+      claim the same slot: two threads would then share one task and the loser's domain would sit at
+      refcount 0 as a free slot while a live thread names it. Verified NOT reachable today (no second
+      `IrqLock`, no `arch_irq_restore` and no `reschedule()` between the claim and the commit; the
+      nested lock in `assign_thread_id` restores "masked" rather than "enabled"). Pre-existing in
+      `domain_for` and inherited unchanged by the task layer, so it belongs to the SMP work and not to
+      M4.8.3. The neighbouring comment about snapshotting `p->caps[ci]` is a DIFFERENT seam, about
+      user-memory TOCTOU, and is not evidence either way.
+
+## Found landing the fault-record route, M4.8.3 (2026-08-12)
+
+- [ ] **`check_faultsurvive.sh`'s corroboration table misses TWO of the fleet's enforcement classes,
+      and one of them it would actively MISJUDGE.** The `arch:arm` switch covers only
+      `armv7m:overflow`, `armv7m:offstack`, `rv32imac:overflow` and `rv32imac:offstack`.
+      - **`rxv3` is absent entirely**, so `rx72m` -- the one board that has no emulator and no CI gate
+        -- hits `fail "no corroborating evidence is defined for arch 'rxv3'"` and every escalation
+        verdict for it is a human reading a capture against the same reasoning the script encodes. The
+        evidence exists and is per-arch, measured at `m484`: `MPU FAULT: thread 'faulter' attempted
+        write at 0x121fc` for `overflow`, and `=== RX EXCEPTION (privileged instruction) ===` with
+        `PSW=0x130001` (PM set, so user mode) for `offstack`.
+      - **`armv7m:overflow` assumes the ARM MemManage unit and so does not fit `frdmk64f`.** It
+        requires `CFSR & 0x10` (MSTKERR), which `xmc4800-relax` does produce (`CFSR=0x92`). The K64F's
+        SYSMPU is a BUS-level slave-port MPU, so the same stacking abort latches BusFault `STKERR`
+        (bit 12) with `IMPRECISERR` -- `CFSR=0x1400`, MSTKERR CLEAR -- and the real evidence is the
+        `SYSMPU ISOLATION FAULT: port=3 addr=... W` line. The arm would FAIL on a correct capture. It
+        is latent only because no ctest runner points this gate at a SYSMPU board; the class needs its
+        own corroboration, keyed on the MPU backend rather than on the arch.
+      Both are `case` arms, no new mechanism, and blocked on nothing.
+- [ ] **`docs/design-c6-driver.md:34` cites "open question 3" and that document has no
+      open-questions section at all.** A dangling citation, and the same phrase in
+      `check_sim_pubpanic.sh` pointed at `design-m4.7.9-fault-isolation.md`, which also had no such
+      numbered question (fixed there in M4.8.3 by pointing at the real 9.5). Whatever the C6 timer
+      path's kernel-side blocker is, it is now recorded nowhere. Find it in the C6 spikes or delete
+      the parenthesis; a citation to nothing is worse than no citation, because it reads as evidence.
+
+## Found landing task-layer steps 9.4 and 9.5 (2026-08-12)
+
+- [ ] **An explicit task's slot and its domain are held until `kos_task_kill`, and NOTHING sweeps them
+      at the creator's death.** `task_create` takes a hold that only `task_drop_hold` releases, and the
+      one caller of that is the kill syscall. Root is the creator in every in-tree case and root's
+      death ends the system, so nothing leaks today; a supervisor thread that creates groups and then
+      dies reserves those slots for the rest of the run. Three candidates, in the order they compose:
+      a task-pool sweep in `exit_current` keyed on the creator tag, which is the shape
+      `ThreadPool::alloc` already uses for the spawner tag and for the same reason (a recycled slot
+      must not inherit authority over what its predecessor created); a `kos_task_release` that drops
+      the hold without ending the group, which a hand-over would want anyway; or declaring the hold to
+      be the creator's for life. Open question 6 of `docs/design-task-layer.md`.
+- [ ] **`rx72m/rxsci`'s relay thread now SEES the ring block it declared no grant for.** Under a task
+      the block is the GROUP's shared region and `drv::Thread::mem_grant` is read as the group's
+      declaration, so a thread that said false alongside two peers that said true is widened by it.
+      One thread in the fleet, that driver's own state, and its register window -- the grant the
+      isolation principle is about -- is untouched. The narrow fix, if it is ever wanted, is a
+      per-thread opt-out that spawns that thread into the group with no domain regions, which needs a
+      third memory scope and is not obviously worth it.
+- [ ] **A cancelled thread that never re-enters the kernel is still unreachable.** The death point is
+      the syscall entry, so a pure compute loop survives a `kos_thread_kill` and a `kos_task_kill`
+      indefinitely. Preemptive cancellation is the only fix and it is a much larger change: it needs a
+      point at which one thread may run a stranger's `cap_teardown`. No in-tree thread shape has this
+      problem (all of them loop through a syscall), so this is a documented floor rather than a live
+      gap -- but it is the reason 0 from either call means ACCEPTED and not GONE.
+- [ ] **"Release the DEV window BEFORE the capability sweep" has NO gate, and never had one.**
+      M22 and M25 in the 9.4/9.5 mutation run (`docs/design-task-layer.md` 8.3) are this entry,
+      filed rather than killed. Measured by mutation at the 9.5 tree, both ways. `dev_window_free`
+      skips a `dying` thread so a supervisor woken by the sweep's EPIPE can respawn into the
+      window at once; deleting that arm
+      leaves every suite green on `sim`, `qemu` and `qemu-riscv`. So does the ORDERING it preserves:
+      moving `task_release` from before `cap_teardown` to after it is equally invisible. The second
+      result is what says this is INHERITED and not something 9.4 introduced -- before it, the same
+      exclusion came from the domain reference being dropped at the top of `exit_current`, and that
+      was untested too. What a gate needs is the full choreography: thread A holds window W, A exits,
+      and DURING A's teardown the EPIPE wake reaches a supervisor that respawns into W and must
+      succeed. `sim_driver_death` case 3 has every piece except the respawn. Until then the comments
+      at both sites are the only thing holding the invariant, which is why they say so.
+- [ ] **Nothing witnesses the DEATH POINT on silicon.** `tests/unit/taskdeath` gates that a peer is
+      marked and made runnable, `sim_driver_death` and the `task_group_kill` selftest arm gate that it
+      then dies -- all under a host or emulated clock. The interesting case is a driver cancelled while
+      its IRQ line is armed on real hardware, where the wake races the device. Wants an enforcing board
+      with an IRQ UART service list, which is what makes it a fleet-pass item and not a gate.

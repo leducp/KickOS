@@ -456,9 +456,8 @@ else()
   set(KICKOS_HAVE_PRIV_RING 1)
 endif()
 
-# rxv3 is excluded despite an exact privilege ring (PSW.PM): its redirect is an `rte` no
-# emulator in the tree can execute, so it would ship unwitnessed. lx6 is already refused
-# by KICKOS_HAVE_PRIV_RING.
+# rxv3 has no emulator anywhere in the tree, so its `rte` redirect is witnessed on the
+# rx72m bench board and nowhere else. lx6 is already refused by KICKOS_HAVE_PRIV_RING.
 #
 # sim's seam rewrites the ucontext register file directly, so on a host layout it does not
 # know arch_fault_is_user_thread declines and the gates would assert an outcome the
@@ -469,6 +468,7 @@ if(KICKOS_HAVE_PRIV_RING
     AND (KICKOS_ARCH STREQUAL "armv7m"
       OR KICKOS_ARCH STREQUAL "armv6m"
       OR KICKOS_ARCH STREQUAL "rv32imac"
+      OR KICKOS_ARCH STREQUAL "rxv3"
       OR (KICKOS_ARCH STREQUAL "sim" AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")))
   set(KICKOS_FAULT_ISOLATION 1)
   set(KICKOS_FAULT_OUTCOME thread-kill)
@@ -854,6 +854,15 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   add_subdirectory(tests/unit/kfixture)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/schedwake/CMakeLists.txt")
     add_subdirectory(tests/unit/schedwake)
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/taskdeath/CMakeLists.txt")
+    add_subdirectory(tests/unit/taskdeath)
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/parkresult/CMakeLists.txt")
+    add_subdirectory(tests/unit/parkresult)
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/capsweep/CMakeLists.txt")
+    add_subdirectory(tests/unit/capsweep)
   endif()
 endif()
 

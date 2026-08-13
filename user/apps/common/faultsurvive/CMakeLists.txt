@@ -55,6 +55,17 @@ if(KICKOS_ARCH STREQUAL "sim")
     COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_faultsurvive.sh"
             "$<TARGET_FILE:faultsurvive>" survive ${KICKOS_ARCH})
   set_tests_properties(${_fs_tag}_faultsurvive PROPERTIES TIMEOUT 30)
+  # Same arm across a console HANDOVER, which the arm above never crosses: every other
+  # faultsurvive runner keeps the console kernel-owned, and a published one DROPS the kernel
+  # chip path, so this is the posture where the record used to be lost. The gate builds its
+  # own tree (one service-list provider links per image), hence the services_none guard:
+  # registering it inside the tree it configures would recurse.
+  if(KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
+    add_test(NAME ${_fs_tag}_faultsurvive_published
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_sim_faultsurvive_pub.sh"
+              "${PROJECT_SOURCE_DIR}" "${CMAKE_COMMAND}")
+    set_tests_properties(${_fs_tag}_faultsurvive_published PROPERTIES TIMEOUT 300)
+  endif()
 else()
   kickos_add_qemu_test(NAME ${_fs_tag}_faultsurvive TARGET faultsurvive
     BOARD ${KICKOS_BOARD}

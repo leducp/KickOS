@@ -58,14 +58,14 @@ namespace kickos
         Thread* server = nullptr;
     };
 
-    // Unwind `t`'s expired deadline out of whichever endpoint park it sits under
-    // (WAIT_EP_SEND, WAIT_EP_RECV or WAIT_EP_REPLY), reverting any priority donation that
-    // park had pinned, and wake it with -KOS_ETIMEDOUT. Implemented by the IPC layer
-    // (kernel/syscall/syscall_ipc.cc) so the timer only has to decide THAT a deadline
-    // expired: unlinking the right list and reverting the right boost are endpoint
-    // internals. Caller is ktime_on_timer, holding IrqLock, with `t` already off the delta
-    // list and its wait edge still set.
-    void endpoint_wait_timeout(Thread* t);
+    // Unwind `t` out of whichever endpoint park it sits under (WAIT_EP_SEND, WAIT_EP_RECV or
+    // WAIT_EP_REPLY), reverting any priority donation that park had pinned, and wake it with
+    // `result`. Implemented in kernel/thread/park.cc so a caller only has to decide THAT the
+    // park must end: unlinking the right list and reverting the right boost are endpoint
+    // internals. Two callers, an expired deadline (-KOS_ETIMEDOUT) and a cancel
+    // (-KOS_ECANCELED). Caller holds IrqLock, with `t` already off the timer delta list if it
+    // was on one and its wait edge still set.
+    void endpoint_wait_abort(Thread* t, intptr_t result);
 }
 
 #endif

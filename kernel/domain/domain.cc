@@ -40,35 +40,6 @@ namespace kickos
         }
     }
 
-    bool dev_window_free(uintptr_t base, size_t size)
-    {
-        uintptr_t const last = base + size - 1u;
-        Kernel& k = kernel();
-        for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
-        {
-            Domain const& d = k.domains[i];
-            if (not d.immortal and d.refcount == 0)
-            {
-                continue; // free slot / rollback debris
-            }
-            size_t const n = domain_region_count(&d);
-            for (size_t r = 0; r < n; r++)
-            {
-                arch_mpu_region const* reg = domain_region_at(&d, r);
-                if ((reg->attr & ARCH_MPU_DEV) == 0)
-                {
-                    continue;
-                }
-                if (grant_ranges_overlap(base, last, reg->base,
-                                         reg->base + reg->size - 1u))
-                {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
-
     void domain_init(void)
     {
         Kernel& k = kernel();
@@ -125,85 +96,43 @@ namespace kickos
     }
 
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
-                       void* mmio_base, size_t mmio_size, bool caller_authorized,
-                       int* err)
+                       bool caller_authorized, int* err)
     {
         *err = 0;
         if (privileged)
         {
             return g_kernel;
         }
-        bool const has_data = (mem_base != nullptr and mem_size != 0);
-        // A non-null MMIO base with size 0 is malformed, NOT "no MMIO". Refused here as
-        // well as at the spawn boundary so domain_for stays a complete chokepoint for a
-        // caller that skips the boundary.
-        if (mmio_base != nullptr and mmio_size == 0)
-        {
-            *err = KOS_EINVAL; // malformed window: a base with no extent
-            return nullptr;
-        }
-        bool const has_mmio = (mmio_base != nullptr and mmio_size != 0);
-        if (not has_data and not has_mmio)
+        if (mem_base == nullptr or mem_size == 0)
         {
             return g_default_user;
         }
-        // Rule 7 admits the PROSPECTIVE COMMITTED geometry, and must run before a slot is
-        // allocated so a refusal is a clean spawn failure, not a half-built domain.
-        if (has_data)
-        {
-            uintptr_t const db = reinterpret_cast<uintptr_t>(mem_base);
-            if (not grant_region_admissible(db, arch_ram_region_size(mem_size),
-                                            ARCH_MPU_R | ARCH_MPU_W, caller_authorized))
-            {
-                *err = KOS_EPERM; // out-of-arena / reserved-block hit: never admissible
-                return nullptr;
-            }
-        }
-        if (has_mmio)
-        {
-            uintptr_t const mb = reinterpret_cast<uintptr_t>(mmio_base);
-            if (not grant_region_admissible(mb, mmio_size,
-                                            ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV,
-                                            caller_authorized))
-            {
-                *err = KOS_EPERM; // reserved block / bit-band alias / unauthorized DEV
-                return nullptr;
-            }
-            // ONE HOLDER PER DEVICE WINDOW. Matched on RANGES, not on slots: an encodable
-            // window can span several peripheral sub-units or cover part of one, so
-            // equal, containing and straddling requests must all refuse while an ADJACENT
-            // window stays admissible. "Live" is the inverse of free_slot: an immortal
-            // domain's refcount is not tracked and must not be read as free, while a
-            // refcount-0 mortal domain is rollback debris from a spawn that failed after
-            // domain_for and is never a holder, so a retry is not self-blocked.
-            if (not dev_window_free(mb, mmio_size))
-            {
-                *err = KOS_EBUSY; // already held; no stealing
-                return nullptr;
-            }
-        }
-        Kernel& k = kernel();
         uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
         size_t const rsz = arch_ram_region_size(mem_size);
-        // Threads sharing one region share a domain, so a live unprivileged data-ONLY
-        // domain describing exactly this region is reused. The match is on the ROUNDED
-        // size, so a re-grant of the same block dedups. An MMIO grant is a capability and
-        // is never shared: an MMIO-carrying spawn always takes a fresh slot, which is what
-        // makes one grant == one domain == one thread and the dev_window_free scan above
-        // exact. The attr test also keeps a data-only spawn off an existing DEV domain.
-        if (not has_mmio)
+        // Rule 7 admits the PROSPECTIVE COMMITTED geometry, and must run before a slot is
+        // allocated so a refusal is a clean failure, not a half-built domain.
+        if (not grant_region_admissible(base, rsz, ARCH_MPU_R | ARCH_MPU_W,
+                                        caller_authorized))
         {
-            for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
+            *err = KOS_EPERM; // out-of-arena / reserved-block hit: never admissible
+            return nullptr;
+        }
+        Kernel& k = kernel();
+        // Groups sharing one region share a domain, so a live unprivileged domain describing
+        // exactly this region is reused. The match is on the ROUNDED size, so a re-grant of
+        // the same block dedups. It is a slot economy and NOT an expression of intent: which
+        // threads form a group is what a Task says, and two tasks landing on one domain here
+        // stay two tasks (docs/design-task-layer.md open question 2).
+        for (int i = 0; i < KICKOS_MAX_DOMAINS; i++)
+        {
+            Domain& d = k.domains[i];
+            if (d.refcount > 0 and not d.privileged and domain_region_count(&d) == 1)
             {
-                Domain& d = k.domains[i];
-                if (d.refcount > 0 and not d.privileged and domain_region_count(&d) == 1)
+                arch_mpu_region const* r0 = domain_region_at(&d, 0);
+                if (r0->base == base and r0->size == rsz
+                    and r0->attr == (ARCH_MPU_R | ARCH_MPU_W))
                 {
-                    arch_mpu_region const* r0 = domain_region_at(&d, 0);
-                    if (r0->base == base and r0->size == rsz
-                        and r0->attr == (ARCH_MPU_R | ARCH_MPU_W))
-                    {
-                        return &d;
-                    }
+                    return &d;
                 }
             }
         }
@@ -215,51 +144,38 @@ namespace kickos
         }
         *d = Domain{};
         d->privileged = false;
-        size_t n = 0;
-        if (has_data)
-        {
-            d->regions[n].base = base;
-            d->regions[n].size = rsz;
-            d->regions[n].attr = ARCH_MPU_R | ARCH_MPU_W;
-            n++;
-        }
-        if (has_mmio)
-        {
-            // The exact window, validated encodable at the spawn boundary. NEVER rounded:
-            // rounding would over-grant the neighbouring registers.
-            d->regions[n].base = reinterpret_cast<uintptr_t>(mmio_base);
-            d->regions[n].size = mmio_size;
-            d->regions[n].attr = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV;
-            KICKOS_ASSERT((d->regions[n].attr & ARCH_MPU_X) == 0);
-            n++;
-        }
-        d->region_count = n;
+        d->regions[0].base = base;
+        d->regions[0].size = rsz;
+        d->regions[0].attr = ARCH_MPU_R | ARCH_MPU_W;
+        d->region_count = 1;
         return d;
     }
 
-    // A mortal domain's refcount counts live threads and nothing else: thread_create takes
-    // the single reference, sched::exit_current drops it. The bound is the thread-handle
-    // index field, NOT KICKOS_MAX_THREADS.
-    static_assert((1ull << ThreadPool::INDEX_BITS) - 1ull <= UINT16_MAX,
-                  "Domain::refcount is uint16_t and counts live threads: the thread pool "
-                  "ceiling (1 << ThreadPool::INDEX_BITS) must fit it");
+    // A mortal domain's refcount counts the live TASKS holding it, plus one per explicit
+    // task's creator hold: a task takes one reference when its first thread joins (task_ref)
+    // and drops it when its last leaves (task_release, from sched::exit_current), and
+    // task_create takes one more that task_drop_hold returns. Both are bounded by the task
+    // pool, so two per slot is the ceiling.
+    static_assert(2ull * KICKOS_MAX_TASKS <= UINT16_MAX,
+                  "Domain::refcount is uint16_t and counts live tasks plus creator holds: "
+                  "twice the task pool must fit it");
 
     void domain_ref(Domain* d)
     {
         // An immortal domain's refcount is deliberately NOT tracked: an unbounded,
-        // transient set of threads references it and the counter would wrap.
+        // transient set of tasks references it and the counter would wrap.
         if (d != nullptr and not d->immortal)
         {
-            // Trips on a reference held by something other than a live thread.
-            KICKOS_DEBUG_ASSERT(d->refcount < KICKOS_MAX_THREADS);
+            // Trips on a reference held by something other than a live task or a creator.
+            KICKOS_DEBUG_ASSERT(d->refcount < 2u * KICKOS_MAX_TASKS);
             d->refcount++;
         }
     }
 
     void domain_release(Domain* d)
     {
-        // A mortal domain returns to the pool at refcount 0. Immortal ones never free and
-        // never count.
+        // A mortal domain returns to the pool when its last task drops it. Immortal ones
+        // never free and never count.
         if (d == nullptr or d->immortal)
         {
             return;

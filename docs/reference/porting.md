@@ -138,6 +138,22 @@ believe before it reads them, and this is the part that is easy to get wrong.
   which bypasses the unlocked PMP entries), which is exactly what makes the bounds test
   load-bearing there: an overflowed thread's frame is written SUCCESSFULLY below its own
   stack, and nothing else would say so.
+- **A core whose exception CANCELS the faulting instruction has NO moved SP to read, and needs a
+  third test.** Both tests above rest on an SP that moved: armv7m's on a stacking abort, rv32imac's
+  on a software prologue that wrote the frame at one. RXv3 restores the architectural state of the
+  cancelled instruction (RXv3 ISA UM sec.5.3.1), so after an overflow the USP reads exactly as it did
+  before the denied push and the bounds test passes with nothing left below it. Its frame is on the
+  kernel ISP, which no thread can invalidate, so that test says nothing either. `bool
+  kickos_fault_below_stack(uintptr_t addr)` is the third one: it answers whether the faulting ADDRESS
+  landed beneath the running thread's stack, which a downward-growing stack makes an EXACT test for
+  the overflow class, and it fails closed when there is no recorded stack. rxv3 applies it to `MPDEA`
+  on an operand-access MPU error. **The converse is not exact and the cost is measured, not argued:**
+  a cross-domain access to a LOWER address escalates to the panic dump instead of dying alone
+  (`mpu_fault` on `rx72m`, `0x13200`, below `domainA`'s stack), while one to a higher address dies
+  alone (`rxdrv`, `0x8c068`). A port on any instruction-cancelling ISA inherits this and should read
+  `../design-m4.7.9-fault-isolation.md` section 4.2 before reaching for a distance threshold instead:
+  a threshold fails in the UNSAFE direction, because a frame larger than the threshold puts privileged
+  code back on an exhausted stack.
 - Worth one line of history: an earlier implementation read the stacked IPSR field straight
   out of that stale RAM and declined only BY ACCIDENT, because those bytes happened to be
   non-zero. Had they held zero, the kernel would have rewritten and resumed a fabricated
@@ -164,13 +180,25 @@ believe before it reads them, and this is the part that is easy to get wrong.
   as an enforcing one does. What differs on a flat board is only which accesses fault at all:
   a cross-domain write completes there instead of trapping.
 
-**Why rxv3 and lx6 decline.**
+**Why lx6 declines, and what rxv3's opt-in costs.**
 
 - lx6 CANNOT. `PS.UM` is 1 for kernel and thread alike and `arch_context_init` discards
-  `privileged`, so it has no privilege ring and `KICKOS_HAVE_PRIV_RING` refuses it.
-- rxv3 COULD. It has an exact discriminator (`PSW.PM`) and its exception frame sits on the
-  kernel ISP. It declines because the redirect is an `rte` that has never executed: there is
-  no RXv3 emulator anywhere in the tree, so it would ship unwitnessed.
+  `privileged`, so it has no privilege ring and `KICKOS_HAVE_PRIV_RING` refuses it. This is a
+  HARDWARE fact, not an unported feature: there is no unprivileged thread to kill, so the rule has
+  nothing to discriminate and no amount of backend code would give it something.
+- **rxv3 opted in during M4.8.3 and is witnessed on SILICON ONLY.** It has an exact discriminator
+  (`PSW.PM`), its exception frame sits on the kernel ISP, and the redirect is the syscall trap's own
+  PSW rewrite: clear `PM`, set `U`, so the `rte` lands supervisor-on-USP exactly where
+  `svc_trampoline` runs. It declined until M4.8.3 because that `rte` had never executed -- there is
+  STILL no RXv3 emulator anywhere in this tree and still no CI gate -- and what changed is that
+  `rx72m` was on the bench. Treat every rxv3 claim here as unfalsifiable off that board.
+- rxv3 also needs a cause filter that the register-only backends do not. The fixed-vector offset is
+  the only thing that names the exception, no register carries it, so the backend's `frame` is a
+  small struct pairing the saved PC/PSW with that offset. Only the five instruction-cancelling
+  causes (`0x50` privileged, `0x54` access, `0x5C` undefined, `0x60` address, `0x64` FP) may kill a
+  thread; the `_rx_trap` catch-all is cause `0`, and it carries the NMI, which is accepted at an
+  instruction boundary with `PSW.PM` still set. Without the filter a chip-level NMI would kill
+  whichever thread happened to be running.
 - The sim carries an extra term (an x86_64 host) because its seam rewrites the host
   `ucontext` register file directly. On a host layout it does not know
   `arch_fault_is_user_thread` declines, and the gates would then assert an outcome the
@@ -1049,6 +1077,7 @@ requirement, for a zero-skip run:
 | `KICKOS_MAX_ENDPOINTS` | 4 (`system.h:34`) | `instance.h:83` | >= 1 | 4 |
 | `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h:100`) | `instance.h:99` | >= 1 | 4 (f302) |
 | `KICKOS_MAX_DOMAINS` | `MAX_THREADS + 2` (`system.h:67`) | `instance.h:95` | derived | 4 |
+| `KICKOS_MAX_TASKS` | `THREAD_SLOTS + 1` (`system.h:76`) | `instance.h:95` | derived | one per live thread under the implicit default, so the floor is `KICKOS_THREAD_SLOTS + 1`; a `static_assert` in `kernel/task/task.cc` refuses less. An EXPLICIT task (`kos_task_create`) that holds no thread is a slot this floor does NOT budget, so an app that creates groups and never populates them makes a spawn answer -KOS_ENOMEM one earlier. A group with N members repays N-1 |
 
 The `Tight-board value` column is the chip default. The `f302nucleo` `st` variant
 overrides semaphores to 6 and threads to **3** -- not 4: it was

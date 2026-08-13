@@ -442,10 +442,8 @@ What remains:
    `fault-record-is-printed-only-by-its-owner` must still hold afterwards, and the host layer does
    not discharge that.
 5. **`class_backend` widened to the syscall symbol set** (6.3), or the monolith written down.
-6. **The blocking-call trap needs a mechanism, not a comment.** The prior spike left this open and
-   it is still open: under a returning `arch_switch`, an arm that asserts on a blocking primitive's
-   RETURN VALUE is asserting on a fiction, and nothing would catch that. It becomes urgent at step
-   3, not before.
+6. **The blocking-call trap needs a mechanism, not a comment.** LANDED as the park resolver in
+   `tests/unit/kfixture/kfixture.cc`, gated by `tests/unit/parkresult/`. See section 8.5.
 7. **Migration, and only then.** The prior spike classified the on-target selftest arms and put a
    real number on the win. That work is worth doing and it is worth doing LAST: a migration that
    starts before steps 2 and 6 will move arms onto a fixture whose traps are not yet gated.
@@ -477,6 +475,13 @@ because it TRADES: `cap_teardown` and `cap_teardown_active` stop being stubs and
 `console_note_driver_death` and `irq_ref_drop` take their place. That decides the fixture's source
 set on its own. A fixture whose `cap_teardown` is empty cannot host this milestone's subject at all,
 and there was no width to pay for the real one.
+
+**The membership is not stable across kernel refactors, and the width is.** The task layer
+(`design-task-layer.md` step 9.3) moved `sched::exit_current`'s reference drop from the thread's
+domain to its task, so the seam traded `kickos::domain_release(Domain*)` for
+`kickos::task_release(Task*)`: still sixteen, still seven `arch_*`, one member different. Re-derive
+with the recipe in `tests/unit/kfixture/karch_seam.cc` rather than reading the count off this table, and
+expect the SET to drift where the number does not.
 
 **Correction to section 1, item 4.** "`kernel() = Kernel{}` plus `sched::init()` is the entire
 reset" is FALSE once the real `cap.cc` is in the gate. `cap.cc` keeps **three** data in a TU-local
@@ -615,11 +620,104 @@ senders or rights.
 ### 8.4 What this does not discharge
 
 The enumeration is a list a human wrote and the gate makes each entry checkable; a green
-`sched_wake` is not a proof that the interleaving is safe, exactly as 4.1 said it would not be. Two
-obligations are explicitly still open. The **fault-redirect coupling** is silicon work: more traffic
-now flows through the preemptible window between a fault redirect and its stub. And the
-**concurrent-teardown path** (`TODO.md`) still has zero in-tree hits; the K-seam fixture is now the
-instrument that could seat two sweeps at once, and no arm does yet.
+`sched_wake` is not a proof that the interleaving is safe, exactly as 4.1 said it would not be. One
+obligation is explicitly still open: the **fault-redirect coupling** is silicon work, because more
+traffic now flows through the preemptible window between a fault redirect and its stub. The
+**concurrent-teardown path** was the other, and 8.6 closes it on the host.
+
+### 8.5 The blocking-call trap: a mechanism, and it made a mutant of its own gate
+
+Note 2 of `kfixture.h` used to warn that a blocking primitive's return value is a fiction under a
+returning `arch_switch`, and nothing enforced it. It is now a MECHANISM, in `note_switch`: a switch
+whose OUTGOING thread is `BLOCKED` is a park, because `switch_to` demotes a RUNNING outgoing thread
+to READY and leaves every other state alone. At that point the fixture does the three things the
+thread on the other side of the switch would have done, in order:
+
+1. writes `WAIT_RESULT_POISON` into `wait_result`, so a waker that forgets the field is not read as
+   one that wrote zero;
+2. bumps the parked thread's `switch_count`, which is the switch-in `wq_confirm_resume` spins for.
+   `switch_to` credits the INCOMING thread, so under a returning stub the parked one is never
+   credited and the barrier would reach `KICKOS_POLL_SPIN_MAX` and panic;
+3. calls the waker armed by `wake_next_park`, **or ends the process** with a `FIXTURE FAIL:`
+   diagnostic naming the thread.
+
+The refusal is what makes a bad arm fail rather than pass: an arm that drives `mutex_lock` without
+supplying a waker cannot reach its own assertion at all. `KICKOS_EXPECT_FIXTURE_REFUSAL` in
+`kseam_test.h` is how the catch itself is asserted, a death case beside `KICKOS_EXPECT_PANIC` and
+folding stdout the same way for the same reason.
+
+The waker is a `ParkWaker`, called as the thread the scheduler PICKED: `switch_to` publishes
+`current` before `arch_switch`, so `mutex_unlock` and `sem_post` are already seated on the right
+thread and an arm supplies the REAL waker rather than a hand-written wake. `tests/unit/parkresult/`
+has six arms: three real wakers (`mutex_unlock`, `thread_cancel`, `sem_post`), one waker that ends
+the park and writes nothing, one control for a switch that is not a park, and the death case.
+
+Two consequences worth stating. `g_resume_on_switch` is **GONE**: it existed to credit that same
+switch-in by hand, nothing in the K-seam source set reads `switch_count` except
+`wq_confirm_resume`, and every path that reaches it is now a real park the resolver already
+credits. Verified by deleting its one assignment first, in `tests/unit/taskdeath/group_kill.cc`, and
+watching all ten arms still pass. And the poison, which `park_join` alone used to seat, is now
+written by **every** park helper: `park_plain_sender` and `park_mutex_waiter` did not, and an arm
+asserting zero there would have been satisfied by a fresh TCB.
+
+Seven mutants, each applied alone, rebuilt, run, reverted, with the baseline re-verified between
+mutants. **All seven KILLED.** Four are in the kernel and three are in the mechanism itself, which
+is the half a gate for a fixture has to carry.
+
+| # | mutant | how it dies |
+|---|---|---|
+| P1 | `mutex_lock` returns 0 instead of `c->wait_result` | 2 arms: the cancelled lock and the forgetful waker. The positive arm expects 0 anyway, which is exactly why it is not the whole gate |
+| P2 | `transfer_to` does not write `w->wait_result` | 1 arm: a woken lock returns the poison, not 0 |
+| P3 | `thread_abort_park` does not write `t->wait_result` | 1 arm: the cancel is not what the return carries |
+| P4 | `sem_post` posts the count instead of handing the token to the waiter | 1 arm: the count moved and the waiter is still queued |
+| P5 | the resolver's poison write deleted | 2 arms: the semaphore park and the forgetful waker both read the zero a fresh TCB gives |
+| P6 | the resolver's no-waker refusal returns instead of exiting | 1 arm, the death case: nothing dies |
+| P7 | the resolver's `switch_count` credit deleted | the gate DIES in `a_waker_that_writes_no_result_leaves_the_poison` with `KERNEL PANIC: wq_confirm_resume`. The three real-waker arms survive it, because their wakers cause a genuine second switch that credits the thread the ordinary way -- so only the arm with no switch back needs the credit |
+
+### 8.6 Two sweeps at once, and the depth is a COUNT
+
+`cap_teardown` drops `IrqLock` between chunks so a large table cannot mask interrupts for the whole
+sweep. That gap is the only point at which a second sweep can begin, and `g_cap.teardown_depth`
+exists to count the two. `TODO.md` recorded zero in-tree hits for it.
+
+The instrument is `run_in_chunk_gap(fn, ordinal)`. `arch_irq_save`/`arch_irq_restore` are no longer
+inert stubs: they carry a nesting count, and the moment it reaches zero IS the chunk gap -- the
+sweep holds nothing, exactly as a real interleaving would find it. Each such moment is traced as
+`gap<n>` and the action runs at a chosen one, so the ORDER is the oracle and not a counter. Gaps the
+action itself opens are neither counted nor traced.
+
+Two decisions inside it, both because the alternative is worse:
+
+- **The firing condition does not read `cap_teardown_active()`.** It would have been the obvious
+  qualifier for "a gap inside a sweep", and it would have made the instrument depend on the very
+  counter the arms gate: the "delete both the increment and the decrement" mutant would then have
+  been killed by the hook never firing rather than by the subject. The ordinal counts from the
+  arming call instead, which is why the arms call `cap_teardown` DIRECTLY rather than through
+  `exit_current` -- the subject is the sweep, and an exit's own locked prologue would put
+  unrelated gaps in front of the first chunk.
+- **An action may not longjmp**, so `run_exit` is not available to it. It runs inside a sweep, which
+  is note 4's rule verbatim.
+
+`tests/unit/capsweep/` has three arms. The first seats a dying thread with a live cap on each side
+of a chunk boundary and a SECOND dying thread whose whole sweep runs in the first one's gap; the
+trace `gap1 gap2 nest-in nest-out outer-live gap3 gap4` says the inner sweep ran between chunks and
+the outer one opened another afterwards, and `outer-live` is the reading of `cap_teardown_active()`
+after the inner sweep balanced its own entry -- a flag would have cleared the outer sweep's with it.
+The other two are a pair on the reader that consumes the depth: a voluntary `handle_close` in a
+chunk gap must NOT reclaim the console, and the same close outside a sweep must.
+
+Nothing here leaves `teardown_depth` non-zero, so `reset()`'s refusal never fires and the
+`TODO.md` entry about `reset()` being unable to clear it stays open on its own terms.
+
+Five mutants, each applied alone, rebuilt, run, reverted. **All five KILLED.**
+
+| # | mutant | how it dies |
+|---|---|---|
+| S1 | both the increment and the decrement deleted, so `cap_teardown_active()` is permanently false | 2 arms: `outer-lost` instead of `outer-live`, and the gap close reclaims the console |
+| S2 | the depth becomes a FLAG (`= 1` on entry, `= 0` on exit) | 1 arm: the inner sweep's exit clears the outer sweep's own entry, and the trace says `outer-lost` |
+| S3 | `handle_close`'s `cap_teardown_active()` test dropped | 1 arm: the console is reclaimed inside a live sweep |
+| S4 | the chunk loop's `while` becomes an `if`, so a sweep does one chunk | the gate DIES in the nesting arm on `cap_teardown`'s own debug totality assert, which is half the oracle exactly as `sched_wake` says |
+| S5 | ONE `IrqLock` over the whole loop instead of one per chunk -- the restructuring that would DELETE the question | 2 arms: no gap opens between chunks, so the action fires only after the sweep has ended and both traces are wrong |
 
 ## 9. GoogleTest, and the three rulings it supersedes
 

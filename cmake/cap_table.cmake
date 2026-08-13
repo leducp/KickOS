@@ -17,7 +17,7 @@
 # The inbound-reply term is what the SERVER side of kos_call needs: cap_install_reply mints
 # into the receiver's table and shares its one free list with the receiver's own creates
 # (kernel/syscall/syscall_ipc.cc), so without a term for it the total is not a bound on when
-# a task's own mint can fail. The widest declaration in the tree wins, like the app peak: it
+# a thread's own mint can fail. The widest declaration in the tree wins, like the app peak: it
 # is a peak of CONCURRENTLY parked callers, never a count of calls over a run.
 #
 # The total is then RAISED to the grant-list floor, KICKOS_MAX_SPAWN_GRANTS + 1, whenever it
@@ -346,7 +346,7 @@ function(kickos_cap_table_resolve service_list out_slots out_chunk
                  "chunk(s) guaranteed to each of ${_pool} + ${_off_pool} run holder(s), "
                  "plus ${_root_extra} chunk(s) for root's own widening")
 
-  # Never 0: a task that may hold no inbound reply capability could never serve a kos_call.
+  # Never 0: a thread that may hold no inbound reply capability could never serve a kos_call.
   # It reserves no slot, so raising the floor to 1 costs no width.
   set(_reply_max "${_reply}")
   if(_reply_max LESS 1)

@@ -6,7 +6,7 @@
 // write is the control that must succeed, and ROOT's write is the one that must
 // fault. Root holds only [app code RX, app static data RW, its own stack], so region A
 // is in no region of root's: under enforcement the write traps and the kernel reports
-// "MPU FAULT: task 'root' attempted write at <A>". Without enforcement it completes,
+// "MPU FAULT: thread 'root' attempted write at <A>". Without enforcement it completes,
 // and the run ends with the "not confined" line and a clean exit.
 //
 // Region A is genuinely another DOMAIN's, not merely unmapped: the child is still
@@ -78,7 +78,7 @@ int main(int, char**)
     kos_sem_wait(done); // the child wrote A and parked: the control half passed
 
     // Announce BEFORE the poke, with the address: the armv7m dump reports MMFAR but
-    // no task name (kickos_armv7m_fault_report), so a capture cross-checks this line
+    // no thread name (kickos_armv7m_fault_report), so a capture cross-checks this line
     // against the kernel's fault line. %p, not %x: the sim is a 64-bit host, and a
     // truncated pointer would not match the kernel's address.
     char msg[96];

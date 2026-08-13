@@ -19,6 +19,7 @@ add_library(kickos_kseam OBJECT
   "${PROJECT_SOURCE_DIR}/kernel/sched/sched.cc"
   "${PROJECT_SOURCE_DIR}/kernel/sched/policy_fifo_rr.cc"
   "${PROJECT_SOURCE_DIR}/kernel/sync/sync.cc"
+  "${PROJECT_SOURCE_DIR}/kernel/thread/park.cc"
   "${PROJECT_SOURCE_DIR}/kernel/syscall/cap.cc"
   "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc")
 
