@@ -19,6 +19,7 @@
 #include <kickos/irq.h>
 #include <kickos/list.h>
 #include <kickos/slotpool.h>
+#include <kickos/task.h>
 #include <kickos/thread.h>
 #include <kickos/sync.h>
 
@@ -80,6 +81,10 @@ namespace kickos
         // domains[0] = kernel domain, domains[1] = default-user (both immortal);
         // the rest are refcounted mem_base domains. All access via domain_*().
         Domain domains[KICKOS_MAX_DOMAINS];
+        // Task pool (see task.h): the groups that hold those domains. No immortal slot
+        // and no pinned index; a slot is free iff its refcount is 0. All access via
+        // task_*().
+        Task tasks[KICKOS_MAX_TASKS];
 
         // --- interrupt dispatch + IRQ-as-event bindings (irq.cc) ---
         IrqEntry irq_table[KICKOS_MAX_IRQ]; // line -> handler; ISR reads by index

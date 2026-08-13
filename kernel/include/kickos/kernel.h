@@ -26,6 +26,13 @@ namespace kickos
     void kputs(char const* s);
     void kprintf(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
 
+    // kprintf for the thread-fault record ONLY. A published console makes the kernel chip
+    // path a DROP, so this one additionally hands the line to the console driver
+    // (cap_console_deliver) when a userspace driver owns the device. Widening it to kprintf
+    // would relight the kernel debug console post-handover, which check_sim_published.sh
+    // asserts is dark to prove the handover happened at all.
+    void kprintf_fault(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+
     // Unrecoverable error: report and halt the system.
     void kpanic(char const* msg) __attribute__((noreturn));
 
@@ -50,6 +57,24 @@ namespace kickos
     // by the caller (static allocation first). Adds it as READY.
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
                        void* stack_base, size_t stack_size, ThreadAttr const& attr);
+
+    // True iff NO live thread holds a DEV region overlapping [base, base+size). The
+    // admission test behind the one-holder-per-window rule, and ALSO the console reclaim's
+    // precondition: re-initialising a device whose window a live thread still holds corrupts
+    // it under that thread. A DYING thread is not a holder, which is what lets a supervisor
+    // woken by the teardown's EPIPE respawn into the window at once. Callers pass a
+    // non-wrapping window.
+    bool dev_window_free(uintptr_t base, size_t size);
+
+    // Break `t` out of whatever it is parked on and hand it `result`, without granting it
+    // whatever it was waiting for. Every WaitKind is covered, so a park is never a place a
+    // thread cannot be reached. Caller holds IrqLock and `t` must be BLOCKED.
+    void thread_abort_park(Thread* t, intptr_t result);
+
+    // Mark `t` cancelled and, if it is parked, break that park so it reaches its own death
+    // point (the syscall boundary, syscall.cc). Idempotent, and a no-op on a thread that is
+    // already dead or dying. Caller holds IrqLock.
+    void thread_cancel(Thread* t);
 }
 
 // Enter the panic / fault dead-end. Called FIRST by kpanic and by every arch fault

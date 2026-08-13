@@ -192,9 +192,38 @@ namespace
 #define KTRACE_SYSCALL_SCOPE(nr) do { } while (0)
 #endif
 
+namespace
+{
+    uintptr_t syscall_body(uintptr_t nr, uintptr_t a0, uintptr_t a1,
+                           uintptr_t a2, uintptr_t a3);
+}
+
+// THE death point of a cancelled thread, and the reason a cancel is more than a request. A
+// cancel breaks whatever park the target is in, so it returns to userspace with
+// -KOS_ECANCELED and gets ONE window to clean up over memory it already holds; the next time
+// it asks the kernel for anything, it ends here instead. That covers the primitives with no
+// error channel to report through (a semaphore wait, a sleep) and the target that simply
+// ignores the code, and the only survivor is a thread that never enters the kernel again.
+//
+// Checked on ENTRY and deliberately not on exit: on exit it would pre-empt the cleanup window
+// the broken park exists to give.
 extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                                       uintptr_t a0, uintptr_t a1,
                                       uintptr_t a2, uintptr_t a3)
+{
+    Thread* const caller = sched::current();
+    if (caller != nullptr and caller->cancelled and not caller->dying)
+    {
+        sched::exit_current(KOS_EXIT_CANCELLED); // noreturn
+    }
+    return syscall_body(nr, a0, a1, a2, a3);
+}
+
+namespace
+{
+uintptr_t syscall_body(uintptr_t nr,
+                       uintptr_t a0, uintptr_t a1,
+                       uintptr_t a2, uintptr_t a3)
 {
     KTRACE_SYSCALL_SCOPE(nr);
     switch (nr)
@@ -503,6 +532,27 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
         {
             // UNGATED by authority, gated by parenthood inside (syscall_thread.cc).
             return static_cast<uintptr_t>(thread_kill(static_cast<kos_thread_t>(a0)));
+        }
+        case KOS_SYS_TASK_CREATE:
+        {
+            // Same shape as the cap creators: a task handle spends the whole word, so the
+            // status is the return value and the handle rides an out-parameter -- and the
+            // out-pointer is checked BEFORE the group exists, or a mint that cannot deliver
+            // leaves a task nothing can name and nothing can kill.
+            int rc = cap_out_check(a2);
+            if (rc != 0)
+            {
+                return static_cast<uintptr_t>(rc);
+            }
+            kos_task_t h = KOS_TASK_NONE;
+            rc = task_create_call(reinterpret_cast<void*>(a0), static_cast<size_t>(a1), &h);
+            return cap_out_deliver(a2, rc, h);
+        }
+        case KOS_SYS_TASK_KILL:
+        {
+            // UNGATED by authority, gated by creatorship inside, exactly as the thread
+            // cancel above is gated by parenthood.
+            return static_cast<uintptr_t>(task_kill(static_cast<kos_task_t>(a0)));
         }
         case KOS_SYS_THREAD_JOIN:
         {
@@ -994,4 +1044,5 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
             return static_cast<uintptr_t>(-KOS_EINVAL);
         }
     }
+}
 }

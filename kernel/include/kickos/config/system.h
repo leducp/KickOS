@@ -45,8 +45,8 @@
 // array or a cap-run count from THIS; size a user stack or the boot arena from
 // KICKOS_MAX_THREADS.
 #define KICKOS_THREAD_SLOTS (KICKOS_MAX_THREADS + 1)
-// What this board can BACK: the widest per-task capability table its RAM can spare, and the
-// only capability figure a board may state. The width itself is summed from declared demand
+// What this board can BACK: the widest per-thread capability table its RAM can spare, and
+// the only capability figure a board may state. The width itself is summed from declared demand
 // (cmake/cap_table.cmake) and refused if it exceeds this. It prices ROOT's table alone: the
 // slab backs one CHILD-width run per holder plus root's own widening (KCAP_SLAB_CHUNKS,
 // cap.h), so a slot here does not cost (KICKOS_THREAD_SLOTS + KCAP_RUN_OFF_POOL) of itself.
@@ -65,6 +65,15 @@
 // the two immortal singletons (the kernel domain + the default unprivileged domain).
 #ifndef KICKOS_MAX_DOMAINS
 #define KICKOS_MAX_DOMAINS (KICKOS_MAX_THREADS + 2)
+#endif
+// Task pool (see task.h). One task per LIVE THREAD, since grouping is implicit today, so
+// the bound is every TCB that can exist at once: KICKOS_THREAD_SLOTS (root + the threads
+// a spawn may seat) plus idle, which holds a TCB outside the pool. There is no immortal
+// task, so this needs neither of the two extra slots KICKOS_MAX_DOMAINS spends on its
+// singletons. A slot short and task_for would refuse a spawn the thread pool would still
+// have seated (task.cc static_asserts the floor).
+#ifndef KICKOS_MAX_TASKS
+#define KICKOS_MAX_TASKS (KICKOS_THREAD_SLOTS + 1)
 #endif
 // Stack a spawned thread gets when kos_thread_params carries no caller-owned
 // stack_base/stack_size. A caller-supplied stack is validated against the floor and

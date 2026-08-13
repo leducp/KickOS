@@ -3,7 +3,7 @@
 //
 // The fault-isolation witness: a thread that faults must die alone.
 //
-// KICKOS_FS_MODE 0: an unprivileged worker executes an undefined instruction; root must
+// KICKOS_FS_MODE 0: an unprivileged worker executes a trapping instruction; root must
 // run AFTER it and end the system cleanly. The join is the ordering proof: it returns
 // only once the worker is gone.
 // KICKOS_FS_MODE 1: the worker recurses off its own stack (design 4.2). There is no
@@ -16,6 +16,8 @@
 // only the stack-bounds test can refuse it. It is the witness that a backend actually
 // calls kickos_fault_frame_trusted, and the one mode 1 cannot stand in for: a stacking
 // abort sets a status bit on armv7m, and this sets none anywhere.
+// On RX the frame is not written here at all -- it goes to the ISP -- and what the
+// bounds test reads is the USP the exit stub WOULD have run on.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -28,12 +30,18 @@
 
 using kickos::emit;
 
-// The ISA's undefined-instruction spelling. The sim reaches the rule through SIGILL, not
-// a guest trap.
+// The ISA's spelling for a synchronous fault the running instruction owns. The sim
+// reaches the rule through SIGILL, not a guest trap.
 #if defined(__riscv)
 #define KICKOS_FS_TRAP() __asm volatile(".word 0x00000000") // illegal on RV32
 #elif defined(__arm__) || defined(__thumb__)
 #define KICKOS_FS_TRAP() __asm volatile("udf #0")
+#elif defined(__RX__)
+// A PRIVILEGED instruction, not an undefined one: RX documents no reserved undefined
+// encoding, while MVTIPL in user mode is a defined privileged-instruction exception
+// (RXv3 ISA UM sec.5.1.2, and its own page). IPL is already 0, so an unexpected
+// execution in supervisor mode changes nothing and the app reports its own failure.
+#define KICKOS_FS_TRAP() __asm volatile("mvtipl #0")
 #else
 #define KICKOS_FS_TRAP() __builtin_trap() // host: x86 ud2 -> SIGILL
 #endif
@@ -41,7 +49,7 @@ using kickos::emit;
 namespace
 {
 #if KICKOS_FS_MODE == 2
-#if !defined(__riscv) && !defined(__arm__) && !defined(__thumb__)
+#if !defined(__riscv) && !defined(__arm__) && !defined(__thumb__) && !defined(__RX__)
 #error "KICKOS_FS_MODE 2 needs this ISA's spelling for moving SP; it must not be built here"
 #endif
     // Outside every thread stack by construction, and inside the app's own granted data
@@ -91,6 +99,8 @@ namespace
         uintptr_t const top = reinterpret_cast<uintptr_t>(&g_offstack[sizeof(g_offstack)]);
 #if defined(__riscv)
         __asm volatile("mv sp, %0" ::"r"(top) : "memory");
+#elif defined(__RX__)
+        __asm volatile("mov.l %0, r0" ::"r"(top) : "memory"); // R0 IS the SP on RX
 #else
         __asm volatile("mov sp, %0" ::"r"(top) : "memory");
 #endif

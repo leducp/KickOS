@@ -9,8 +9,8 @@
 #include <kickos/cap.h>
 #include <kickos/console_tx.h> // console_on_driver_death
 #include <kickos/kernel.h>
-#include <kickos/domain.h>
 #include <kickos/instance.h>
+#include <kickos/task.h>
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
 
@@ -202,13 +202,21 @@ namespace kickos
                 // `state` cannot serve as the dying marker because a switch back in
                 // rewrites it to RUNNING.
                 c->dying = true;
+                // TASK-SCOPED DEATH. A thread that joined a task declared itself part of one
+                // unit, so its peers go with it; under the implicit one-thread-per-task
+                // default the scan matches nobody and this is inert, which is what makes the
+                // rule safe for every spawn written before tasks existed
+                // (docs/design-task-layer.md section 6). It must precede task_release, which
+                // may free the slot and leave c->task a dangling name.
+                task_cancel_group(c->task);
                 // BEFORE the sweep, not after. The sweep's endpoint arm EPIPE-wakes a
                 // supervisor parked on this thread's endpoint, and that supervisor may
-                // respawn immediately; the DEV-window exclusivity check (domain.h) refuses
-                // while a live domain still holds the window. Only a refcount drop: the
-                // thread keeps running off its own copied regions[], which no longer name
-                // the Domain object.
-                domain_release(c->domain);
+                // respawn immediately; the DEV-window exclusivity check (kernel.h) refuses
+                // while a live thread still holds the window, and `dying` above is what
+                // takes this one out of that scan. Only a refcount drop: the thread keeps
+                // running off its own copied regions[], which no longer name the Task or the
+                // Domain object.
+                task_release(c->task);
             }
             // Must close every cap the exiting thread holds BEFORE its slot is reclaimable,
             // else object references leak (destroy-on-last-close). Preemptible: it drops

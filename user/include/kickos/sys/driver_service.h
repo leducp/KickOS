@@ -450,29 +450,6 @@ constexpr bool ring_doorbell_shape_ok(Descriptor const& d, uint16_t ready_offset
 }
 
 // ---------------------------------------------------------------------------------
-struct ThreadSet
-{
-    kos::thread::Handle t[KOS_DRV_THREADS_MAX];
-    uint8_t n = 0;
-
-    void add(kos::thread::Handle const& h)
-    {
-        t[n] = h;
-        n++;
-    }
-
-    // Unconditional, and in reverse spawn order: kos_thread_kill is COOPERATIVE and honoured
-    // only in kos_irq_wait, so a refusal on one handle says nothing about the next, and
-    // stopping at the first would leave a live thread holding a line or the window.
-    void cancel_all() const
-    {
-        for (uint8_t i = n; i > 0; i--)
-        {
-            (void)t[i - 1].kill();
-        }
-    }
-};
-
 inline int fail(char const* tag, char const* msg)
 {
     kos::print(tag);
@@ -491,13 +468,13 @@ constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
 // on cap 0, the same route every client uses.
 //
 // -KOS_EPIPE means a SERVICE thread died. The console comes back only once the register
-// window is free, and the window holder may still be alive, so EVERY remaining peer is
-// cancelled before the tag is printed.
+// window is free, and the window holder may still be alive, so the whole GROUP is ended
+// before the tag is printed -- ONE call, because the threads are one task.
 //
 // Any other refusal, -KOS_ETIMEDOUT above all, leaves the service thread ALIVE and still the
 // sole receiver: recv_holders never reaches 0, the console is NOT reclaimed, and nothing here
 // recovers. The code is returned unchanged and no tag is printed.
-inline int console_handover_finish(kos_cap_t ep, char const* tag, ThreadSet const& peers)
+inline int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task)
 {
     kos_handle_close(ep);
     int const rc = kos_send_timed(KOS_CAP_STDOUT, "", 0, KOS_DRV_HANDOVER_PROBE_US);
@@ -509,7 +486,7 @@ inline int console_handover_finish(kos_cap_t ep, char const* tag, ThreadSet cons
     {
         return rc;
     }
-    peers.cancel_all();
+    (void)kos_task_kill(task);
     (void)fail(tag, "ERROR: a driver thread died during bring-up\n");
     return rc;
 }
@@ -555,20 +532,21 @@ inline bool wait_ready(void const* blk, uint16_t off)
 // holder to 0, which notes the console dead and reclaims it, so the tag the caller prints
 // next reaches the wire; and the note must already be set when a cancelled thread's exit
 // runs the reclaim.
-inline void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep,
-                   ThreadSet const& peers)
+inline void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_task_t task)
 {
     for (uint8_t i = 0; i < claimed; i++)
     {
         kos_handle_close(line[i]);
     }
     kos_handle_close(ep);
-    peers.cancel_all();
+    // Ends every member AND drops root's hold, so an abandoned bring-up leaves neither a live
+    // thread nor a reserved task slot. Legal on a group that never got a member.
+    (void)kos_task_kill(task);
 }
 
-inline kos::thread::Handle spawn_one(Descriptor const& d, Thread const& t,
-                                     struct kos_service_cfg const* cfg, void* blk,
-                                     kos_cap_t ep, kos_cap_t const* line)
+inline kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg,
+                                     void* blk, kos_cap_t ep, kos_cap_t const* line,
+                                     kos_task_t task)
 {
     kos_cap_grant grants[KOS_DRV_CAPS_MAX] = {};
     for (uint8_t i = 0; i < t.cap_count; i++)
@@ -594,14 +572,6 @@ inline kos::thread::Handle spawn_one(Descriptor const& d, Thread const& t,
         arg = reinterpret_cast<void*>(cfg->mmio_base);
     }
 
-    void* mem = nullptr;
-    uint32_t mem_size = 0;
-    if (t.mem_grant)
-    {
-        mem = blk;
-        mem_size = d.block_size;
-    }
-
     void* win = nullptr;
     uint32_t win_size = 0;
     if (t.window_grant)
@@ -616,11 +586,16 @@ inline kos::thread::Handle spawn_one(Descriptor const& d, Thread const& t,
         name = cfg->name;
     }
 
+    // No mem grant of its own: the ring block is the TASK's shared region, so every member
+    // sees it and a member bringing one is refused. `Thread::mem_grant` is therefore read as
+    // the GROUP's declaration -- see bring_up.
     return kos::thread::spawn(t.entry, arg, name,
                               static_cast<uint8_t>(cfg->prio + t.prio_delta),
                               KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
-                              mem, mem_size, /*stack=*/nullptr, /*stack_size=*/0,
-                              win, win_size, grants, t.cap_count);
+                              /*mem=*/nullptr, /*mem_size=*/0,
+                              /*stack=*/nullptr, /*stack_size=*/0,
+                              win, win_size, grants, t.cap_count,
+                              /*authority=*/0, /*cap_dest=*/nullptr, task);
 }
 
 // `out_ep` receives the retained endpoint under KOS_DRV_EP_RETAIN and must be null under
@@ -682,9 +657,38 @@ inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_
         }
     }
 
+    // THE GROUP. Every thread of this driver joins it, so a peer's death ends the rest and one
+    // call ends them all -- which is what lets the unwind below name no thread at all. Created
+    // BEFORE the endpoint, so the earliest failure that has a task to give back is the first
+    // one that has anything to give back.
+    //
+    // The shared region is the ring block, iff any thread declared `mem_grant`; a driver whose
+    // threads share nothing gets a group that is only a kill group. The flag is per-thread and
+    // is read here as the GROUP's, so a thread of a block-sharing driver that declared
+    // `mem_grant = false` now SEES the block: one thread in the fleet does (rx72m/rxsci's
+    // relay). Its DEV window is what stays its own, and that is the grant the isolation
+    // principle is about.
+    void* shared = nullptr;
+    uint32_t shared_size = 0;
+    for (uint8_t i = 0; i < d.thread_count; i++)
+    {
+        if (d.threads[i].mem_grant)
+        {
+            shared = blk;
+            shared_size = d.block_size;
+            break;
+        }
+    }
+    kos_task_t task = KOS_TASK_NONE;
+    if (kos_task_create(shared, shared_size, &task) != 0)
+    {
+        return fail(d.tag, "ERROR: task_create failed\n");
+    }
+
     kos_cap_t ep = KOS_CAP_NONE;
     if (kos_endpoint_create(&ep) != 0)
     {
+        (void)kos_task_kill(task);
         return fail(d.tag, "ERROR: endpoint_create failed\n");
     }
 
@@ -695,6 +699,7 @@ inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_
         if (kos_console_publish(ep) != 0)
         {
             kos_handle_close(ep);
+            (void)kos_task_kill(task);
             return fail(d.tag, "ERROR: console_publish failed\n");
         }
     }
@@ -707,13 +712,12 @@ inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_
         // 0. A line comes back MASKED, and the waiting thread's first irq_wait arms it.
         if (kos_irq_claim(d.lines[i].number, d.lines[i].trigger, &line[i]) != 0)
         {
-            unwind(line, claimed, ep, ThreadSet{});
+            unwind(line, claimed, ep, task);
             return fail(d.tag, "ERROR: irq_claim failed\n");
         }
         claimed++;
     }
 
-    ThreadSet peers;
     // thread_count + 1 barrier positions, not thread_count: barrier_after == thread_count
     // polls AFTER the last spawn, the only readiness window a one-thread service has, which
     // L8 admits under RETAIN only.
@@ -723,7 +727,7 @@ inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_
         {
             if (not wait_ready(blk, d.ready_offset))
             {
-                unwind(line, claimed, ep, peers);
+                unwind(line, claimed, ep, task);
                 return fail(d.tag, "ERROR: a driver thread never reached its loop\n");
             }
         }
@@ -731,13 +735,11 @@ inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_
         {
             break;
         }
-        kos::thread::Handle const h = spawn_one(d, d.threads[i], cfg, blk, ep, line);
-        if (not h.valid())
+        if (not spawn_one(d.threads[i], cfg, blk, ep, line, task).valid())
         {
-            unwind(line, claimed, ep, peers);
+            unwind(line, claimed, ep, task);
             return fail(d.tag, "ERROR: driver thread spawn failed\n");
         }
-        peers.add(h);
     }
 
     // With the driver threads the only holders, a line returns to the pool when they die.
@@ -751,7 +753,7 @@ inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_
         *out_ep = ep;
         return 0;
     }
-    return console_handover_finish(ep, d.tag, peers);
+    return console_handover_finish(ep, d.tag, task);
 }
 
 } // namespace driver

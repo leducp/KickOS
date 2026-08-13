@@ -10,7 +10,7 @@
 #   pubpanic2  ud2/SIGILL -> "=== SIM FAULT (illegal instruction)", exactly once
 #
 # Case 2 inverts on a backend with fault isolation: root's illegal instruction kills root
-# alone, so the claim becomes survival rather than reporting. See the case-2 block.
+# alone, so the claim becomes survival AND reporting together. See the case-2 block.
 #
 # Why this needs its own build: KICKOS_SERVICE_LIST selects one provider per image, so
 # the published posture cannot coexist with the default one in a single tree.
@@ -111,17 +111,20 @@ if [ "$OUTCOME" = panic ]; then
 fi
 
 # thread-kill: the illegal instruction is root's own fault, so it is no longer terminal.
-# The claim inverts with it. What must still hold is that the SYSTEM survives: the
-# console driver keeps the wire and the process does not die, which is asserted
-# positively by finding it still alive after the settle.
+# The claim inverts with it. Two things must hold at once, and each is asserted positively:
+# the SYSTEM survives (the process is still alive after the settle, and the driver still
+# owns the wire), AND the kill record still reaches that wire.
 #
-# The dump's ABSENCE is asserted deliberately, not tolerated. console_emit drops kernel
-# writes while the console is USER_OWNED (kernel/init/console.cc), and the thread-kill
-# path must not call kpanic_enter, whose reclaim is permanent and would take the console
-# away from a system that is meant to keep running. So a user-thread fault on a published
-# console is currently reported ONLY through the exit code its joiner reads. That is
-# design-m4.7.9-fault-isolation.md open question 3, still open; pinning it here is what
-# turns this gate red the day the dump is routed over the published console instead.
+# The record arrives over the DRIVER, not over the kernel chip path, which console_emit
+# drops while the console is USER_OWNED (kernel/init/console.cc). kprintf_fault hands it to
+# the published endpoint's parked receiver instead (cap_console_deliver), because the
+# thread-kill path may not call kpanic_enter: that reclaim is permanent and would take the
+# console away from a system that is meant to keep running. See
+# design-m4.7.9-fault-isolation.md section 9.5.
+#
+# Both halves are load-bearing. Without the survival assertion a permanent reclaim would
+# pass; without the record assertion the swallowed-record defect would pass, which is what
+# it did until M4.8.3.
 LOG="$TMP/case2.log"
 "$APP" >"$LOG" 2>&1 &
 APID=$!
@@ -142,8 +145,12 @@ fi
 if has '=== SIM FAULT'; then
     fail "case 2: the fault reporter ran; the thread kill should have claimed this fault"
 fi
-if has 'THREAD FAULT'; then
-    fail "case 2: the kill dump reached a USER_OWNED console; open question 3 moved, retune this gate"
-fi
+# The record names the dead thread, so match the name too: a banner with the wrong thread in
+# it would mean the record was misattributed, not merely routed.
+COUNT="$(count_of "THREAD FAULT === thread 'root' killed")"
+[ "$COUNT" -ne 0 ] \
+  || fail "case 2: the kill record never reached the wire; the published console swallowed it"
+[ "$COUNT" -eq 1 ] \
+  || fail "case 2: the kill record appeared $COUNT times (routed AND emitted by the kernel?)"
 
-echo "PASS: case 1 reaches the wire; case 2 kills root alone and the driver keeps the console"
+echo "PASS: case 1 reaches the wire; case 2 kills root alone, the driver keeps the console, and the record still reaches the wire"

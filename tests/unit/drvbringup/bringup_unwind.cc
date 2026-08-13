@@ -92,8 +92,8 @@ namespace
         .block_init = block_init
     };
 
-    // Three threads leave TWO live peers at a third-spawn failure, and two is the fewest that
-    // tells reverse cancellation from forward.
+    // Three threads leave TWO live peers at a third-spawn failure, which is what shows that
+    // ONE group kill ends them: a per-thread sweep would have to name each.
     constexpr drv::Descriptor k_three = {
         .tag = "[drvfake3] ",
         .expected_base = K_BASE,
@@ -219,9 +219,10 @@ TEST_F(DrvBringup, a_complete_bring_up_touches_no_unwind)
 {
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), 0) << "a complete bring-up returns 0";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 pub10 claim11 claim12 spawn50 spawn51"
-                                   " close11 close12 close10 probe")
-        << "a complete bring-up claims, spawns, drops its lines and probes";
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn51"
+                 " close11 close12 close10 probe")
+        << "a complete bring-up makes the group, claims, spawns, drops its lines and probes";
     EXPECT_STREQ(kos_seam_msg(), "") << "a complete bring-up prints no diagnostic";
 }
 
@@ -258,7 +259,8 @@ TEST_F(DrvBringup, the_first_irq_claim_fails)
     g_seam.irq_claim_fail_at = 1;
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1) << "a refused first line fails bring-up";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 pub10 claim! close10 print print")
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grant taskmem90 ep10 pub10 claim! close10 tkill90 print print")
         << "a refused first line closes the endpoint and no line";
     EXPECT_PRED2(says, kos_seam_msg(), "irq_claim failed")
         << "the diagnostic names the failed claim";
@@ -272,8 +274,8 @@ TEST_F(DrvBringup, the_second_irq_claim_fails)
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1)
         << "a refused second line fails bring-up";
-    EXPECT_STREQ(kos_seam_trace(),
-                 "alloc grant ep10 pub10 claim11 claim! close11 close10 print print")
+    EXPECT_STREQ(kos_seam_trace(), "alloc grant taskmem90 ep10 pub10 claim11 claim!"
+                                   " close11 close10 tkill90 print print")
         << "a refused second line closes the one line it did claim, then the endpoint";
 }
 
@@ -283,8 +285,8 @@ TEST_F(DrvBringup, the_first_spawn_fails)
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1)
         << "a refused first spawn fails bring-up";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 pub10 claim11 claim12 spawn!"
-                                   " close11 close12 close10 print print")
+    EXPECT_STREQ(kos_seam_trace(), "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn!"
+                                   " close11 close12 close10 tkill90 print print")
         << "a refused first spawn closes both lines and cancels nobody";
     EXPECT_PRED2(says, kos_seam_msg(), "spawn failed")
         << "the diagnostic names the failed spawn";
@@ -297,22 +299,37 @@ TEST_F(DrvBringup, a_later_spawn_fails_and_the_peer_is_cancelled)
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1)
         << "a refused later spawn fails bring-up";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 pub10 claim11 claim12 spawn50 spawn!"
-                                   " close11 close12 close10 kill50 print print")
-        << "a refused later spawn closes the endpoint BEFORE cancelling its peer";
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn!"
+                 " close11 close12 close10 tkill90 print print")
+        << "a refused later spawn closes the endpoint BEFORE ending the group";
 }
 
-// Two live peers: reverse cancellation is distinguishable from forward.
-TEST_F(DrvBringup, peers_are_cancelled_in_reverse_spawn_order)
+// TWO live peers, ended by ONE call. The count is the subject: the cancel no longer scales
+// with the number of live threads, and it names no thread at all.
+TEST_F(DrvBringup, two_live_peers_are_ended_by_one_group_kill)
 {
     g_seam.spawn_fail_at = 3;
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_three, &cfg, nullptr), -1)
         << "a refused third spawn fails bring-up";
     EXPECT_STREQ(kos_seam_trace(),
-                 "alloc grant ep10 pub10 claim11 claim12 spawn50 spawn51 spawn!"
-                 " close11 close12 close10 kill51 kill50 print print")
-        << "two live peers are cancelled in reverse spawn order";
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn51 spawn!"
+                 " close11 close12 close10 tkill90 print print")
+        << "two live peers are ended by one kill naming the task, not the threads";
+}
+
+// The group is created BEFORE the endpoint and before any line, so a refused task leaves
+// nothing at all to give back.
+TEST_F(DrvBringup, a_refused_task_takes_nothing_else)
+{
+    g_seam.task_create_fails = true;
+    struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
+    EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1) << "a refused task fails bring-up";
+    EXPECT_STREQ(kos_seam_trace(), "alloc grant task! print print")
+        << "a refused task creates no endpoint, claims no line and spawns nobody";
+    EXPECT_PRED2(says, kos_seam_msg(), "task_create failed")
+        << "the diagnostic names the task";
 }
 
 // The readiness timeout at its real width: KOS_DRV_READY_WAIT_MAX sleeps of
@@ -322,9 +339,10 @@ TEST_F(DrvBringup, a_thread_that_never_reaches_its_loop)
     g_seam.latch_on_spawn = false;
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1) << "an unset latch fails bring-up";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 pub10 claim11 claim12 spawn50 sleep*1000"
-                                   " close11 close12 close10 kill50 print print")
-        << "the readiness poll sleeps its full budget, then unwinds one live peer";
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 sleep*1000"
+                 " close11 close12 close10 tkill90 print print")
+        << "the readiness poll sleeps its full budget, then ends the group";
     EXPECT_PRED2(says, kos_seam_msg(), "never reached its loop")
         << "the diagnostic names the readiness timeout";
 }
@@ -356,7 +374,7 @@ TEST_F(DrvBringup, the_barrier_can_sit_after_the_last_spawn)
     EXPECT_EQ(drv::bring_up(k_tail_barrier, &cfg, &out), 0)
         << "a latch polled after the only spawn completes bring-up";
     EXPECT_NE(out, KOS_CAP_NONE) << "the retained endpoint reaches the caller";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 spawn50")
+    EXPECT_STREQ(kos_seam_trace(), "alloc grant taskmem90 ep10 spawn50")
         << "the poll adds no sleep when the latch is set";
 }
 
@@ -367,7 +385,8 @@ TEST_F(DrvBringup, the_barrier_after_the_last_spawn_times_out)
     kos_cap_t out = KOS_CAP_NONE;
     EXPECT_EQ(drv::bring_up(k_tail_barrier, &cfg, &out), -1)
         << "an unset latch at the last position fails bring-up";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 spawn50 sleep*1000 close10 kill50"
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grant taskmem90 ep10 spawn50 sleep*1000 close10 tkill90"
                                    " print print")
         << "the poll runs AFTER the only spawn, then unwinds it";
     EXPECT_PRED2(says, kos_seam_msg(), "never reached its loop")
@@ -402,7 +421,8 @@ TEST_F(DrvBringup, the_publish_fails)
     g_seam.console_publish_fails = true;
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -1) << "a refused publish fails bring-up";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 pub! close10 print print")
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grant taskmem90 ep10 pub! close10 tkill90 print print")
         << "a refused publish closes the endpoint it could not publish";
 }
 
@@ -414,9 +434,10 @@ TEST_F(DrvBringup, the_handover_probe_reports_a_dead_driver)
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -KOS_EPIPE)
         << "an EPIPE probe returns EPIPE unchanged";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 pub10 claim11 claim12 spawn50 spawn51"
-                                   " close11 close12 close10 probe kill51 kill50 print print")
-        << "an EPIPE probe cancels every peer in reverse order";
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn51"
+                 " close11 close12 close10 probe tkill90 print print")
+        << "an EPIPE probe ends the whole group, after the close and after the probe";
     EXPECT_PRED2(says, kos_seam_msg(), "died during bring-up")
         << "the diagnostic names the dead thread";
 }
@@ -427,8 +448,9 @@ TEST_F(DrvBringup, a_timed_out_handover_probe_cancels_nothing)
     struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
     EXPECT_EQ(drv::bring_up(k_two, &cfg, nullptr), -KOS_ETIMEDOUT)
         << "a timed-out probe returns ETIMEDOUT unchanged";
-    EXPECT_STREQ(kos_seam_trace(), "alloc grant ep10 pub10 claim11 claim12 spawn50 spawn51"
-                                   " close11 close12 close10 probe")
-        << "a timed-out probe cancels nobody and prints nothing";
+    EXPECT_STREQ(kos_seam_trace(),
+                 "alloc grant taskmem90 ep10 pub10 claim11 claim12 spawn50 spawn51"
+                 " close11 close12 close10 probe")
+        << "a timed-out probe leaves the group alone and prints nothing";
     EXPECT_STREQ(kos_seam_msg(), "") << "a timed-out probe prints no diagnostic";
 }

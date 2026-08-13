@@ -27,6 +27,7 @@ namespace
 
     uint32_t g_next_cap;
     uint32_t g_next_thread;
+    uint32_t g_next_task;
     uint32_t g_irq_claims;
     uint32_t g_spawns;
 
@@ -101,6 +102,7 @@ void kos_seam_reset()
     g_msg_len = 0;
     g_next_cap = KOS_SEAM_CAP_BASE;
     g_next_thread = KOS_SEAM_THREAD_BASE;
+    g_next_task = KOS_SEAM_TASK_BASE;
     g_irq_claims = 0;
     g_spawns = 0;
     g_pending_sleeps = 0;
@@ -226,6 +228,35 @@ extern "C"
     int kos_thread_kill(kos_thread_t thread)
     {
         note_id("kill", thread);
+        return 0;
+    }
+
+    int kos_task_create(void* mem_base, uint32_t mem_size, kos_task_t* out_task)
+    {
+        *out_task = KOS_TASK_NONE;
+        if (g_seam.task_create_fails)
+        {
+            note("task!");
+            return -KOS_ENOMEM;
+        }
+        *out_task = g_next_task;
+        g_next_task++;
+        // The SHARED grant is recorded, not just the handle: whether the ring block reaches
+        // the group is the whole of what moved from the spawn to the task.
+        if (mem_base != nullptr and mem_size != 0)
+        {
+            note_id("taskmem", *out_task);
+        }
+        else
+        {
+            note_id("task", *out_task);
+        }
+        return 0;
+    }
+
+    int kos_task_kill(kos_task_t task)
+    {
+        note_id("tkill", task);
         return 0;
     }
 

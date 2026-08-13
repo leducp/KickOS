@@ -174,8 +174,8 @@ reported_fault_addr() {
         | head -n1
 }
 
-# The thread-kill dump's banner for a named task, as an ERE; kernel/init/fault.cc owns
+# The thread-kill dump's banner for a named thread, as an ERE; kernel/init/fault.cc owns
 # the wording, and four gates pin it through here.
-thread_fault_re() { # <task-name>
-    printf "=== THREAD FAULT === task '%s' killed" "$1"
+thread_fault_re() { # <thread-name>
+    printf "=== THREAD FAULT === thread '%s' killed" "$1"
 }

@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: CECILL-C
+// Copyright (c) 2026 Philippe Leduc
+//
+// Task-scoped death and the group kill (docs/design-task-layer.md sections 6 and 9.5).
+//
+// Two claims, and only one of them is a counter:
+//   * the REACH of a cancel. Every park has to end, whatever the primitive under it, or a
+//     group kill is only a kill of the threads that happened to park somewhere cancellable.
+//   * the ORDER of a member's death against its peers'. Asserted through the fixture's
+//     ordered trace, because a counter oracle cannot fail on a reordering, and the thing
+//     that would go wrong here is a wake landing before or after the wrong step.
+//
+// What this gate CANNOT witness: the death POINT. A cancelled thread ends at its next syscall
+// entry (kernel/syscall/syscall.cc), and no syscall boundary exists on the host side of the
+// K-seam. The arms below assert that a peer is marked and made RUNNABLE; that it then dies is
+// the sim's sim_driver_death and the selftest's task arms.
+
+#include <kickos/instance.h>
+#include <kickos/irqlock.h>
+#include <kickos/kernel.h>
+#include <kickos/sched.h>
+#include <kickos/sync.h>
+#include <kickos/task.h>
+
+#include <kickos/sys/errno.h>
+
+#include "kseam_test.h"
+
+namespace kickos
+{
+    namespace testfix
+    {
+        namespace
+        {
+            class TaskDeath : public KSeam
+            {
+            };
+
+            // Pool slots, not fixture storage: the group scan and the exit sweep both walk
+            // kernel().threads, so a member outside the pool is a member nothing can find.
+            constexpr int SLOT_DYING = 0;
+            constexpr int SLOT_PEER = 1;
+            constexpr int SLOT_OTHER = 2;
+
+            // Below the dying thread's, so a wake inside exit_current does NOT switch and the
+            // trace stays about the cancel rather than about scheduling.
+            constexpr uint8_t PRIO_LOW = 4;
+            constexpr uint8_t PRIO_MID = 5;
+            constexpr uint8_t PRIO_HIGH = 6;
+        }
+
+        // The inert-by-default claim, and the reason the rule is safe for every spawn written
+        // before tasks existed: a thread alone in its task takes nobody with it.
+        TEST_F(TaskDeath, a_lone_member_takes_nobody)
+        {
+            Task* const alone = task(0);
+            Task* const other = task(1);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const stranger = seat_pool(SLOT_OTHER, PRIO_LOW);
+            join_task(c, alone);
+            join_task(stranger, other);
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_FALSE(stranger->cancelled)
+                << "a thread in a DIFFERENT task must not be cancelled by this exit";
+            EXPECT_NE(stranger->state, ThreadState::EXITED) << "the stranger keeps running";
+        }
+
+        // Two members, one exit. The peer is marked AND made runnable, which is what carries
+        // it to its own death point.
+        TEST_F(TaskDeath, a_member_exit_cancels_its_peer)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            Semaphore* const s = semaphore(nullptr);
+            park_sem_waiter(peer, s);
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_TRUE(peer->cancelled) << "a task-mate is cancelled by its peer's exit";
+            EXPECT_NE(peer->state, ThreadState::BLOCKED)
+                << "the peer is off its wait queue and runnable, not left parked";
+            EXPECT_EQ(peer->wait_kind, WAIT_NONE) << "the wait edge is cleared by the waker";
+        }
+
+        // A SEMAPHORE park has no error channel at all: sem_wait returns void and reads no
+        // wait_result. The cancel must still reach it, and must leave the count alone so a
+        // later post still hands its token to a genuine waiter.
+        TEST_F(TaskDeath, a_semaphore_park_is_reached_and_its_count_untouched)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            Semaphore* const s = semaphore(nullptr);
+            park_sem_waiter(peer, s);
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_EQ(s->count, 0) << "no token was minted to unpark the waiter";
+            EXPECT_TRUE(s->waiters.head == nullptr) << "the waiter is off the semaphore queue";
+            EXPECT_EQ(peer->wait_result, -KOS_ECANCELED)
+                << "the waker writes the reason even where the primitive cannot report it";
+        }
+
+        // An ENDPOINT park unwinds through the endpoint layer, which is a different code path
+        // from the plain-queue kinds above.
+        TEST_F(TaskDeath, an_endpoint_park_is_reached)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            Endpoint* const ep = endpoint();
+            park_plain_sender(peer, ep);
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_TRUE(ep->send_waiters.head == nullptr)
+                << "the sender is unlinked from send_waiters";
+            EXPECT_EQ(peer->wait_result, -KOS_ECANCELED) << "the sender learns it was cancelled";
+            EXPECT_NE(peer->state, ThreadState::BLOCKED) << "and it is no longer parked";
+        }
+
+        // A SLEEPER is on the timer delta list and on no wait queue, so the deadline is the
+        // thing that has to be dropped. A cancelled sleeper left on the list would be woken a
+        // second time by the timer, into a thread that is already dying.
+        TEST_F(TaskDeath, a_sleeping_peer_leaves_the_timer_list)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            park_sleeper(peer, 1000000u);
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_FALSE(peer->on_timer) << "the cancel drops the sleeper's deadline";
+            EXPECT_NE(peer->state, ThreadState::BLOCKED) << "the sleeper is no longer parked";
+            EXPECT_EQ(peer->wait_kind, WAIT_NONE) << "and its wait edge is cleared";
+        }
+
+        // A MUTEX waiter donated its priority to the owner. Cancelling it must revert that, or
+        // an owner stays boosted by a waiter that is gone -- a priority inversion with no
+        // waiter to justify it, and the kind of leak nothing later corrects.
+        TEST_F(TaskDeath, cancelling_a_mutex_waiter_reverts_the_owners_boost)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_HIGH);
+            Thread* const owner = seat_pool(SLOT_OTHER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            int handle = 0;
+            Mutex* const m = own_mutex(owner, &handle);
+            park_mutex_waiter(peer, m);
+            // The donation the real mutex_lock would have made.
+            sched::set_prio(owner, PRIO_HIGH);
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_EQ(owner->prio, PRIO_LOW)
+                << "the owner falls back to its base priority once the waiter is gone";
+            EXPECT_TRUE(m->owner == owner) << "ownership is NOT transferred to a cancelled waiter";
+            EXPECT_TRUE(m->waiters.head == nullptr) << "the waiter is off the mutex queue";
+        }
+
+        // ORDER, and this is the arm a counter cannot replace. The peer OUTRANKS the dying
+        // thread, so the dying guard admits its wake and the switch lands before the rest of
+        // the exit -- the console reclaim being the next step that leaves a mark. Moving the
+        // group cancel after the capability sweep reorders this string, and so does a guard
+        // that suppresses the wake.
+        TEST_F(TaskDeath, a_higher_priority_peer_is_switched_to_before_the_exit_completes)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_HIGH);
+            join_task(c, group);
+            join_task(peer, group);
+            Semaphore* const s = semaphore(nullptr);
+            park_sem_waiter(peer, s);
+            kernel().current = c;
+            trace_reset();
+
+            run_exit(0);
+
+            EXPECT_STREQ(trace(), "switch10>11 reclaim")
+                << "the cancelled peer runs before the rest of the exit";
+        }
+
+        // The other side of the same guard, and the reason the cancel is safe where it sits: a
+        // peer at or below the dying thread's priority is made ready and NOT switched to, so
+        // the exit's own final reschedule stays the single switch away. An unguarded wake would
+        // put a switch in front of the reclaim here too, and the dying thread would finish its
+        // teardown only when something else happened to yield.
+        TEST_F(TaskDeath, an_equal_priority_peer_does_not_preempt_the_exit)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_MID);
+            join_task(c, group);
+            join_task(peer, group);
+            Semaphore* const s = semaphore(nullptr);
+            park_sem_waiter(peer, s);
+            kernel().current = c;
+            trace_reset();
+
+            run_exit(0);
+
+            EXPECT_STREQ(trace(), "reclaim switch10>11")
+                << "the exit completes first, then hands over once";
+        }
+
+        // The dying test in thread_cancel is the ONLY thing sparing a thread from its own
+        // group's cancel, and it has to cover two directions: the thread whose exit issued the
+        // cancel, and a peer already tearing down when a second member goes. Without it the
+        // two mark each other, and a second task_release on a slot already at zero is how that
+        // becomes a live task decremented to nothing.
+        TEST_F(TaskDeath, a_dying_member_is_not_cancelled_by_its_own_group)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            c->dying = true;
+            kernel().current = peer;
+
+            IrqLock lock;
+            task_cancel_group(group);
+
+            EXPECT_FALSE(c->cancelled) << "a thread already running its own exit is left alone";
+            EXPECT_TRUE(peer->cancelled) << "and the live member IS cancelled by the same scan";
+        }
+
+        // task_cancel_group over a task nothing joined, and over a null task: both are the
+        // shapes an EMPTY explicit task presents, which is what kos_task_kill sees when its
+        // group never got a member.
+        TEST_F(TaskDeath, an_empty_group_cancels_nobody)
+        {
+            Task* const empty = task(0);
+            Thread* const stranger = seat_pool(SLOT_OTHER, PRIO_LOW);
+            kernel().current = stranger;
+
+            IrqLock lock;
+            task_cancel_group(empty);
+            task_cancel_group(nullptr);
+
+            EXPECT_FALSE(stranger->cancelled) << "a thread in no task at all is not a member";
+        }
+    }
+}

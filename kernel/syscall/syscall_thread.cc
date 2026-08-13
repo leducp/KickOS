@@ -8,13 +8,13 @@
 #include <kickos/arch/arch.h>
 #include <kickos/cap.h>
 #include <kickos/config.h>
-#include <kickos/domain.h>
 #include <kickos/grant.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h> // wq_confirm_resume: the two parks below read waker-set state
+#include <kickos/task.h>
 #include <kickos/thread.h>
 #include <kickos/time.h> // ktime_deadline_arm: join's optional bound
 
@@ -167,10 +167,11 @@ namespace kickos
                 return -KOS_EINVAL; // mem_base window wraps the address space
             }
         }
-        // The PRECISE-ERROR boundary for an MMIO grant: authority (EPERM) and exact shape
-        // (EINVAL for zero-size, wrap or non-encodable). The AUTHORITATIVE Rule 7 admission
-        // is domain_for's on the same window; this thin gate exists only because
-        // domain_for's single nullptr sentinel cannot express which malformation it was.
+        // THE admission boundary for a DEV window, because the window is the asking THREAD's
+        // own region and no task or domain ever carries it: authority (EPERM), exact shape
+        // (EINVAL for zero-size, wrap or non-encodable), Rule 7 (EPERM) and exclusivity
+        // (EBUSY). Both this and the commit -- thread_create composing the region -- run
+        // inside this function's IrqLock, so the pair is atomic.
         if (p->mmio_base != nullptr)
         {
             if (not cap_check_authority(sched::current(), AUTH_MEMORY))
@@ -185,6 +186,22 @@ namespace kickos
             if (not arch_mpu_region_encodable(mbase, p->mmio_size))
             {
                 return -KOS_EINVAL; // window one MPU descriptor cannot cover exactly
+            }
+            // A privileged child carries the whole-arena region and the background map, so it
+            // is granted no window descriptor and there is nothing here to admit.
+            if (p->privileged == 0)
+            {
+                if (not grant_region_admissible(mbase, p->mmio_size,
+                                                ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV,
+                                                cap_check_authority(sched::current(),
+                                                                    AUTH_MEMORY)))
+                {
+                    return -KOS_EPERM; // reserved block / bit-band alias / unauthorized DEV
+                }
+                if (not dev_window_free(mbase, p->mmio_size))
+                {
+                    return -KOS_EBUSY; // already held; no stealing
+                }
             }
         }
         // Validated here with the other boundary checks, so a bad request is a clean spawn
@@ -326,22 +343,47 @@ namespace kickos
             }
         }
         Kernel& k = kernel();
-        // Must precede the slot claim, so a domain-pool exhaustion is a clean spawn failure
-        // rather than a leaked thread slot. domain_for takes no reference; a domain it
-        // creates but nobody references stays at refcount 0, which is a free slot.
-        int derr = 0;
-        // AUTH_MEMORY, not raw privilege, is the bit covering a spawn-time MMIO grant.
-        // Resolved here because domain_for must not read sched::current().
-        Domain* const dom = domain_for(p->privileged != 0, p->mem_base, p->mem_size,
-                                       p->mmio_base, p->mmio_size,
-                                       cap_check_authority(sched::current(), AUTH_MEMORY),
-                                       &derr);
-        if (dom == nullptr)
+        // Must precede the slot claim, so a task- or domain-pool exhaustion is a clean spawn
+        // failure rather than a leaked thread slot. Neither arm takes a reference; a task
+        // task_for creates but nobody references stays at refcount 0 with no creator, which
+        // is a free slot, and the domain under it likewise.
+        Task* tk = nullptr;
+        if (p->task != KOS_TASK_NONE)
         {
-            // domain_for already distinguished the refusal, so forward it rather than
-            // flattening it: EPERM inadmissible grant, EBUSY DEV window already held,
-            // ENOMEM domain pool full.
-            return -derr;
+            // JOIN a group the caller created. The memory the group shares is the TASK's, so
+            // a member bringing its own data grant is refused rather than silently ignored:
+            // there would be no domain for it to land in.
+            if (p->privileged != 0)
+            {
+                return -KOS_EINVAL; // a privileged thread holds the kernel domain: no group
+            }
+            if (p->mem_base != nullptr and p->mem_size != 0)
+            {
+                return -KOS_EINVAL; // the task's grant is the group's memory
+            }
+            tk = task_resolve(p->task);
+            if (tk == nullptr)
+            {
+                return -KOS_EBADF; // never created, or the slot was freed under this handle
+            }
+            if (not task_created_by(tk, k.threads.kill_tag_of(spawner)))
+            {
+                return -KOS_EPERM; // only the creator seats members
+            }
+        }
+        else
+        {
+            int derr = 0;
+            // AUTH_MEMORY, not raw privilege, is the bit covering a spawn-time grant.
+            // Resolved here because domain_for must not read sched::current().
+            tk = task_for(p->privileged != 0, p->mem_base, p->mem_size,
+                          cap_check_authority(sched::current(), AUTH_MEMORY), &derr);
+            if (tk == nullptr)
+            {
+                // task_for already distinguished the refusal, so forward it rather than
+                // flattening it: EPERM inadmissible grant, ENOMEM domain or task pool full.
+                return -derr;
+            }
         }
         // Reclaiming an EXITED slot is safe on single core: such a thread parked in
         // exit_current until its switch-away committed, so it is off-CPU and off every
@@ -401,7 +443,7 @@ namespace kickos
         attr.mem_size = p->mem_size;
         attr.mmio_base = p->mmio_base;
         attr.mmio_size = p->mmio_size;
-        attr.domain = dom;
+        attr.task = tk;
         attr.spawner_tag = k.threads.kill_tag_of(spawner);
 
         // With no caller stack, reuse a reclaimed block from the free list, else bump a
@@ -459,7 +501,7 @@ namespace kickos
         // the last fallible step in the spawn (a uint8_t refcount at its ceiling is refused,
         // not wrapped), and at this point the only state to give back is the slot and the
         // demand-allocated stack. Moving this after thread_create would make the unwind
-        // additionally owe the domain reference and the child's already-seated caps.
+        // additionally owe the task reference and the child's already-seated caps.
         for (int ci = 0; ci < ncaps; ci++)
         {
             if (obj_ref_inc(static_cast<CapType>(deleg_type[ci]), deleg_obj[ci],
@@ -497,10 +539,10 @@ namespace kickos
         return 0;
     }
 
-    // NOT a destroy. This only MARKS the target and wakes it out of the one wait it can be
-    // woken from with an error; the target then runs its own exit_current and the existing
-    // cap_teardown does the rest. So it is COOPERATIVE: a target that never reaches a
-    // cancellation point keeps running, and no caller may assume otherwise.
+    // NOT a destroy. This MARKS the target and breaks whatever park it is in; the target then
+    // reaches its own death point (the syscall boundary) and runs its own exit_current, and
+    // the existing cap_teardown does the rest. The only survivor is a thread that never
+    // enters the kernel again, which no caller may assume it will not be.
     //
     // The gate is PARENTHOOD, not an authority bit and not a capability, which makes it
     // NON-TRANSFERABLE: there is no table entry for a cap_grant to copy, so a driver
@@ -528,19 +570,57 @@ namespace kickos
         {
             return -KOS_EPERM;
         }
-        t->cancelled = true; // one-way: honoured at the target's next irq_wait
-        // WAIT_IRQ and no other kind: a wait queue does not say what it delivers, and only
-        // this park reads wait_result. sem_wait ignores it, so an early wake on a plain
-        // semaphore would read as a token that was never handed over.
-        if (t->wait_kind == WAIT_IRQ)
+        thread_cancel(t);
+        return 0;
+    }
+
+    // Create a task: an empty group that exists before any of its threads, holding a domain
+    // built from THIS grant. The creator is the only thread that may seat members into it or
+    // end it, on the same non-transferable parenthood gate as thread_kill.
+    int task_create_call(void* mem_base, size_t mem_size, kos_task_t* out_task)
+    {
+        IrqLock lock;
+        *out_task = KOS_TASK_NONE; // every early return below leaves the sentinel seated
+        Thread* const c = sched::current();
+        if (mem_base != nullptr and mem_size != 0)
         {
-            // sched::wake neither unlinks nor writes wait_result: both are the waker's job,
-            // under this lock, BEFORE the call (see sync.h).
-            t->wait_queue->unlink(&t->link);
-            t->clear_wait_edge();
-            t->wait_result = -KOS_ECANCELED;
-            sched::wake(t);
+            uintptr_t const base = reinterpret_cast<uintptr_t>(mem_base);
+            if (base + mem_size < base)
+            {
+                return -KOS_EINVAL; // the shared window wraps the address space
+            }
         }
+        int derr = 0;
+        Task* const t = task_create(kernel().threads.kill_tag_of(c), mem_base, mem_size,
+                                    cap_check_authority(c, AUTH_MEMORY), &derr);
+        if (t == nullptr)
+        {
+            return -derr; // EPERM inadmissible grant, ENOMEM domain or task pool full
+        }
+        *out_task = task_handle(t);
+        return 0;
+    }
+
+    // End a group: every live member is cancelled, and the creator's hold goes with it so the
+    // handle stops naming anything. COOPERATIVE in exactly the way thread_kill is -- a member
+    // that never enters the kernel again is never reached -- and it is not a destroy: the
+    // members run their own exits, so the slot goes back when the last one is gone.
+    int task_kill(kos_task_t task)
+    {
+        IrqLock lock;
+        Task* const t = task_resolve(task);
+        if (t == nullptr)
+        {
+            return -KOS_EBADF; // never created, or the slot was freed under this handle
+        }
+        if (not task_created_by(t, kernel().threads.kill_tag_of(sched::current())))
+        {
+            return -KOS_EPERM;
+        }
+        // The group cancel runs BEFORE the hold is dropped: dropping it first can free the
+        // slot outright when the group is already empty, and `t` would then be a dangling name.
+        task_cancel_group(t);
+        task_drop_hold(t);
         return 0;
     }
 
@@ -583,7 +663,9 @@ namespace kickos
             sched::reschedule();
         }
         wq_confirm_resume(c, epoch); // the lock is RELEASED across this: see sync.h
-        return static_cast<int>(c->wait_result); // 0, or -KOS_ETIMEDOUT from the timer arm
+        // 0 (target exited), -KOS_ETIMEDOUT (the timer arm), or -KOS_ECANCELED (the joiner
+        // itself was cancelled, e.g. a task group kill; thread_abort_park handles WAIT_JOIN)
+        return static_cast<int>(c->wait_result);
     }
 
     // Park until the CALLER is the last live thread. Takes NO deadline: this is the

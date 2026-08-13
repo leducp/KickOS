@@ -41,7 +41,7 @@ void kos_sleep_ns(uint64_t ns);
 // `*out_cap` is ALWAYS written, KOS_CAP_NONE on every failure, so a caller that ignores the
 // status holds a handle no call will accept rather than an uninitialized one.
 //
-// Counting semaphore. The handle is an OPAQUE per-task CAPABILITY (index + generation in
+// Counting semaphore. The handle is an OPAQUE per-THREAD CAPABILITY (index + generation in
 // THIS thread's table); do not assume it's an array index, and it does NOT name the same
 // object in another thread: share it with a child by delegating it via
 // kos_thread_params.caps (see kos_cap_grant). Create grants the creator a full-rights
@@ -60,7 +60,7 @@ int kos_sem_wait(kos_cap_t sem);
 // not banked.
 int kos_sem_post(kos_cap_t sem);
 
-// Priority-inheritance mutex. Like a semaphore, the handle is an OPAQUE per-task
+// Priority-inheritance mutex. Like a semaphore, the handle is an OPAQUE per-THREAD
 // CAPABILITY: share it with a child by delegating it via kos_thread_params.caps.
 // Possession IS the authority to lock and unlock (no rights split); create grants a
 // CAP_TRANSFER-only cap. While a lower-priority holder is contended by a
@@ -82,7 +82,7 @@ int kos_mutex_lock(kos_cap_t mtx);
 // 0, -KOS_EBADF (bad cap), or -KOS_EPERM (caller is not the owner). Only the owner unlocks.
 int kos_mutex_unlock(kos_cap_t mtx);
 
-// Synchronous IPC rendezvous endpoint. The handle is an OPAQUE per-task CAPABILITY
+// Synchronous IPC rendezvous endpoint. The handle is an OPAQUE per-THREAD CAPABILITY
 // (like a sem/mutex): delegate it to a child via kos_thread_params.caps. create grants
 // a full-rights cap (send needs SIGNAL, recv needs WAIT). send and recv block until the
 // peer arrives; the kernel copies min(sent, capacity) bytes (receiver-side truncation is
@@ -186,13 +186,38 @@ void kos_exit(int code) __attribute__((noreturn));
 // -KOS_EBADF (bad / stale / already-exited handle, KOS_THREAD_NONE included), -KOS_EPERM
 // (you did not spawn it) or -KOS_EINVAL (naming yourself; that is kos_exit).
 //
-// COOPERATIVE, and the caller must treat it that way: it marks the target and, if the
-// target is parked in kos_irq_wait, wakes it there with -KOS_ECANCELED. The target then
-// runs its own exit. A thread parked in kos_recv, sleeping, or looping without ever
-// reaching kos_irq_wait is marked and KEEPS RUNNING: 0 means the request was accepted,
-// never that the thread is gone. A caller that must OBSERVE the death has to wait for it
-// separately, which is what kos_thread_join below does.
+// ASYNCHRONOUS, and the caller must treat it that way: 0 means the request was accepted,
+// never that the thread is gone. The target is marked and broken out of WHATEVER it is
+// parked on -- an irq_wait, a recv, a mutex, a semaphore, a sleep -- with -KOS_ECANCELED
+// where the primitive has a code to carry one. It then gets one window to clean up over
+// memory it already holds, and the KERNEL ends it at its next syscall. The one thread this
+// does not reach is one that never asks the kernel for anything again. A caller that must
+// OBSERVE the death has to wait for it separately, which is what kos_thread_join below does.
 int kos_thread_kill(kos_thread_t thread);
+
+// Create a TASK: a group of threads that share one data region and one fate. `mem_base` /
+// `mem_size` is the shared region, or 0/0 for a group that shares no memory and is only a
+// kill group; it is granted R|W to every member and is admitted exactly as a spawn-time
+// mem_base is (arena-confined, reserved-block-clear, KOS_AUTH_MEMORY where that applies).
+//
+// The task starts EMPTY: kos_thread_params::task is what seats a member, and only THIS
+// thread may seat one. Returns 0 with *out_task seated, or -KOS_EPERM / -KOS_EINVAL /
+// -KOS_ENOMEM / -KOS_EFAULT with *out_task == KOS_TASK_NONE.
+//
+// A member does NOT bring a mem_base of its own (the task's grant is the group's memory) and
+// may not be privileged; an mmio_base still belongs to the one member that asks for it,
+// because a device window has exactly one holder.
+int kos_task_create(void* mem_base, uint32_t mem_size, kos_task_t* out_task);
+
+// End a task YOU created: every live member is cancelled, exactly as kos_thread_kill
+// cancels one thread and with the same asynchrony, and the handle stops naming anything.
+// Returns 0, -KOS_EBADF (bad / stale handle, KOS_TASK_NONE included) or -KOS_EPERM (you did
+// not create it).
+//
+// Any MEMBER's death also ends the group, so a caller does not have to be the one to notice:
+// joining a task is what couples the fates. This call exists for the supervisor that decides
+// to stop a group nothing has gone wrong in yet.
+int kos_task_kill(kos_task_t task);
 
 // Wait for a thread YOU spawned to be gone, giving up after `timeout_us` RELATIVE
 // microseconds, or never if that is KOS_TIMEOUT_NONE. Returns 0 (the target is gone),

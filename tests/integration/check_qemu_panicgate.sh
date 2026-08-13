@@ -29,7 +29,7 @@ fi
 if ! has "\[panicgate\] case"; then
     fail "the app never reached its kos_panic call"
 fi
-if has_e "=== (HARD|MPU|BUS) FAULT|=== RISC-V TRAP|MPU FAULT: task"; then
+if has_e "=== (HARD|MPU|BUS) FAULT|=== RISC-V TRAP|MPU FAULT: thread"; then
     fail "the kernel faulted instead of refusing the message pointer"
 fi
 if ! printf '%s\n' "$OUT" | grep -qF -- "$expect"; then

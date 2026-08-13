@@ -41,4 +41,15 @@ namespace kickos
         },                                                                                        \
         std::string("KERNEL PANIC: ") + (msg))
 
+// The other way an arm ends: a fixture self-diagnostic, which exits rather than returning a
+// state no assertion could interpret. `msg` is a substring of the refusal, so a diagnostic
+// naming a thread id can still be matched.
+#define KICKOS_EXPECT_FIXTURE_REFUSAL(stmt, msg)                                                  \
+    EXPECT_DEATH(                                                                                 \
+        {                                                                                         \
+            ::kickos::testfix::fold_stdout_into_stderr();                                          \
+            stmt;                                                                                 \
+        },                                                                                        \
+        std::string("FIXTURE FAIL: ") + (msg))
+
 #endif

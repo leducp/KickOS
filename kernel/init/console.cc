@@ -7,8 +7,8 @@
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/arch/arch.h>
+#include <kickos/cap.h> // cap_console_deliver (the fault record's route to a published console)
 #include <kickos/console_tx.h>
-#include <kickos/domain.h> // dev_window_free (the reclaim precondition)
 #include <kickos/irqlock.h>
 #include <kickos/libc/string.h>
 #include <kickos/libc/fmt.h>
@@ -231,14 +231,37 @@ namespace kickos
         kconsole_write(s, strlen(s));
     }
 
+    namespace
+    {
+        void kvprintf_route(char const* fmt, va_list ap, bool route)
+        {
+            char buf[256];
+            kvsnprintf(buf, sizeof(buf), fmt, ap);
+            size_t const n = strlen(buf);
+            kconsole_write(buf, n);
+            // USER_OWNED only. RECLAIMED means the kernel has the device back and the driver
+            // is gone, so routing there would send into an endpoint nobody serves.
+            if (route and g_console_state == ConsoleState::USER_OWNED)
+            {
+                (void)cap_console_deliver(buf, n);
+            }
+        }
+    }
+
     void kprintf(char const* fmt, ...)
     {
-        char buf[256];
         va_list ap;
         va_start(ap, fmt);
-        kvsnprintf(buf, sizeof(buf), fmt, ap);
+        kvprintf_route(fmt, ap, false);
         va_end(ap);
-        kconsole_write(buf, strlen(buf));
+    }
+
+    void kprintf_fault(char const* fmt, ...)
+    {
+        va_list ap;
+        va_start(ap, fmt);
+        kvprintf_route(fmt, ap, true);
+        va_end(ap);
     }
 
     void kpanic(char const* msg)

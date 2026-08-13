@@ -18,10 +18,10 @@
 
 namespace kickos
 {
-    // --- Semaphore capabilities (per-task cap table over the global pool) -------
-    // A sem lives in the global generational pool (slotpool.h); a task names it by
-    // a per-task CAP_SEM capability (cap.h). cap_resolve is the single validate-and-
-    // resolve chokepoint (per-task cap-gen guard, then the pool's object-gen guard).
+    // --- Semaphore capabilities (per-thread cap table over the global pool) -----
+    // A sem lives in the global generational pool (slotpool.h); a thread names it by
+    // a per-thread CAP_SEM capability (cap.h). cap_resolve is the single validate-and-
+    // resolve chokepoint (per-thread cap-gen guard, then the pool's object-gen guard).
     // sem_wait needs CAP_WAIT, sem_post needs CAP_SIGNAL.
     int sem_create(int initial, uint32_t* out_cap)
     {
@@ -64,7 +64,7 @@ namespace kickos
     }
 
     // --- PI-mutex capability (mirrors sem_create) ------------------------------
-    // A mutex lives in the global pool (slotpool.h); a task names it by a per-task
+    // A mutex lives in the global pool (slotpool.h); a thread names it by a per-thread
     // CAP_MUTEX capability. Possession IS the lock/unlock authority (no WAIT/SIGNAL
     // split), so the creator cap carries CAP_TRANSFER only and lock/unlock resolve
     // with need == 0. Rollback on a full table mirrors sem_create.

@@ -13,7 +13,12 @@
 // exactly that region. Privileged threads share the immortal kernel domain
 // (the whole arena); unprivileged threads with no granted region share the
 // immortal default-user domain (an empty region set). Non-immortal domains are
-// refcounted by their live threads and returned to the pool at the last exit.
+// refcounted by the live TASKS holding them (task.h), plus one reference per
+// EXPLICIT task's creator hold, and returned to the pool at zero.
+//
+// A granted DEV window is NOT here: it belongs to the one thread that asked for it
+// (thread.cc composes it), because a domain is shared and a window has exactly one
+// holder. docs/design-task-layer.md section 5.2.
 
 #ifndef KICKOS_DOMAIN_H
 #define KICKOS_DOMAIN_H
@@ -35,7 +40,9 @@ namespace kickos
         size_t region_count = 0;
         bool privileged = false;
         bool immortal = false; // kernel + default-user singletons: never freed
-        uint16_t refcount = 0; // live threads; 0 and not immortal => free slot
+        // Live tasks holding this domain, plus one per explicit task's creator hold;
+        // 0 and not immortal => free slot.
+        uint16_t refcount = 0;
     };
 
     // The ONLY sanctioned way to read a domain's regions from outside domain.cc, which
@@ -51,51 +58,27 @@ namespace kickos
     Domain* domain_kernel(void);       // privileged, whole arena
     Domain* domain_default_user(void); // unprivileged, empty region set
 
-    // Resolve the domain a thread belongs to. privileged -> kernel; unprivileged
-    // with a data region -> find-or-create shared by (base,size); otherwise ->
-    // default-user. An MMIO grant (mmio_base != 0) is a capability: it ALWAYS gets a
-    // fresh, unshared domain carrying {data region?, MMIO region R|W|DEV}. Does NOT
-    // take a reference (thread_create does, via domain_ref).
+    // Resolve the domain a group of threads shares. privileged -> kernel; with a data
+    // region -> find-or-create shared by (base,size); otherwise -> default-user. Does NOT
+    // take a reference (task_ref does, from thread_create).
     //
-    // The Rule 7 chokepoint: the PROSPECTIVE COMMITTED geometry (data region rounded to
-    // arch_ram_region_size, R|W; MMIO exact, R|W|DEV) goes through
-    // grant_region_admissible at entry, after the privileged and no-grant short-circuits
-    // and before the dedup. caller_authorized is the SPAWNER's AUTH_MEMORY answer and MUST
-    // be resolved by the caller; it is never read from sched::current() here.
-    //
-    // An MMIO grant is additionally EXCLUSIVE: a DEV window overlapping one a LIVE domain
-    // already holds is refused -KOS_EBUSY, with no stealing. Matched on range overlap,
-    // where adjacency is not overlap, so two flush-but-disjoint windows both admit. The
-    // check and the commit (domain_ref, in thread_create) both sit inside thread_spawn's
-    // function-scope IrqLock, so they are atomic together.
-    //
-    // A respawn issued while the dying holder still references its domain earns
-    // -KOS_EBUSY. sched::exit_current drops the reference BEFORE the cap_teardown sweep
-    // that EPIPE-wakes a respawner, so a woken supervisor always observes the window
-    // already free. A supervisor that learns of the death some OTHER way (a watchdog, a
-    // timeout) must retry on -KOS_EBUSY, or wait the death out with kos_thread_join before
-    // respawning.
+    // The Rule 7 chokepoint for a SHARED grant: the PROSPECTIVE COMMITTED geometry (rounded
+    // to arch_ram_region_size, R|W) goes through grant_region_admissible at entry, after the
+    // privileged and no-grant short-circuits and before the dedup. caller_authorized is the
+    // GRANTING thread's AUTH_MEMORY answer and MUST be resolved by the caller; it is never
+    // read from sched::current() here. A per-THREAD grant is admitted at the spawn boundary
+    // instead, which is where it is asked for.
     //
     // Returns null on refusal and writes the reason to *err (never null; 0 on success):
-    //   KOS_EPERM   the grant is inadmissible (reserved-block hit, out-of-arena data,
-    //               unauthorized DEV). Fix the grant.
-    //   KOS_EINVAL  malformed geometry (an MMIO base with a zero extent).
-    //   KOS_EBUSY   a live domain already holds an overlapping DEV window.
+    //   KOS_EPERM   the grant is inadmissible (reserved-block hit, out-of-arena). Fix it.
     //   KOS_ENOMEM  the domain pool is full. Retry later.
-    // This is the authoritative admission: the spawn boundary forwards *err rather than
-    // re-checking the same predicates.
     Domain* domain_for(bool privileged, void* mem_base, size_t mem_size,
-                       void* mmio_base, size_t mmio_size, bool caller_authorized,
-                       int* err);
+                       bool caller_authorized, int* err);
 
-    void domain_ref(Domain* d);     // a thread joins the domain
-    void domain_release(Domain* d); // a thread leaves; frees the slot at zero
-
-    // True iff NO live domain holds a DEV region overlapping [base, base+size). The
-    // admission test behind the one-holder-per-window rule above, and ALSO the console
-    // reclaim's precondition: re-initialising a device whose window a live thread still
-    // holds corrupts it under that thread. Callers pass a non-wrapping window.
-    bool dev_window_free(uintptr_t base, size_t size);
+    // Held by the TASK, not by each of its threads: task_ref, task_release and the explicit
+    // task's creator hold (task.h) are the only callers outside domain_init.
+    void domain_ref(Domain* d);     // a task joins the domain
+    void domain_release(Domain* d); // a task leaves; frees the slot at zero
 }
 
 #endif

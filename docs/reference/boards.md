@@ -747,7 +747,8 @@ Five things read across the whole table.
   measured 2 -> 1 delta against it.
 - **The report carries a task name on some families and cannot on others.** ARM MemManage goes
   straight to the armv7m reporter, which prints the register dump and labels it `=== MPU FAULT ===`
-  only when the CFSR MMFSR byte is set; the `MPU FAULT: task 'root'` form comes from
+  only when the CFSR MMFSR byte is set; the `MPU FAULT: thread 'root'` form (`task` in every capture
+  on this page, all of them older than M4.8.3) comes from
   `kickos_isr_fault`, the RISC-V / chip-hook route. `tests/integration/check_rootfault.sh` encodes exactly
   that two-family split. On the ARM boards, attribution to root therefore rests on the
   announce-before-poke ordering plus the `MMFAR` match.
@@ -893,6 +894,15 @@ The fault is the **named** reporter, not the nameless `=== RX EXCEPTION (access 
 `kickos_rx_fault_report` routes vector `0x54` to `kickos_isr_fault` only when the faulting `PSW.PM`
 is set, and a flipped root runs in user mode, so it qualifies. That branch had never been reachable
 from root before the flip.
+
+**M4.8.3 moved which branch a user MPU fault takes here.** `rxv3` opted into fault isolation, so the
+same fault now dies THREAD-SCOPED (`=== THREAD FAULT === thread '<name>' killed, system continues`,
+carrying `MPESTS` and `ADDR`) instead of reaching `kickos_isr_fault`, and the `MPU FAULT: thread ...`
+line above is now the ESCALATION path only. Two cases still escalate, both measured on silicon: a
+fault whose operand address lies BELOW the faulting thread's own stack base, which is how a stack
+overflow is caught on an ISA that cancels the faulting instruction, and a fault taken with the USP
+outside that stack. So `mpu_fault` (`0x13200`) escalates and `rxdrv` (`0x8c068`) dies thread-scoped,
+on one tree, from the address alone.
 
 **What had to close first: the mux had no mediation at all.** `rx72m` had no `arch_pinmux_set`
 backend, so the declining fallback (`arch/common/arch_pinmux_set_default.cc`) answered `-KOS_ENOSYS`

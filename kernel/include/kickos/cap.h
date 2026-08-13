@@ -3,9 +3,9 @@
 //
 // Per-task capability table: a typed, rights-bearing, refcounted handle NAMING a global
 // generational object (semaphore, PI mutex, IPC endpoint, IRQ binding). A CapEntry stores
-// (global-object-handle, type, rights) and cap_resolve is two-level: the per-task cap-gen
+// (global-object-handle, type, rights) and cap_resolve is two-level: the per-thread cap-gen
 // guard here, then the object pool's own object-gen guard. Object liveness is a global
-// property (the pool plus its parallel refs[]); capability possession is per-task.
+// property (the pool plus its parallel refs[]); capability possession is per-thread.
 //
 // Locking: none internal. Every entry point's precondition is CALLER HOLDS IrqLock, and a
 // resolved object pointer must be used under the SAME continuous lock. That, with the
@@ -146,7 +146,7 @@ namespace kickos
         AUTH_MEMORY | AUTH_PINMUX | AUTH_PSTATE | AUTH_IRQ | AUTH_SYSTEM | AUTH_CONSOLE);
 
     // Carries the object pool's handle codec verbatim (no re-encoding). gen is bumped on
-    // close: the per-task use-after-close ABA guard.
+    // close: the per-thread use-after-close ABA guard.
     // INVARIANT: a cap names its object ONLY by generational handle, never by a physical
     // address or a region base, and no physaddr is ever stored here or delivered as a
     // badge or payload.
@@ -190,7 +190,7 @@ namespace kickos
     }
 
     // A task's table is up to KCAP_RUN_CHUNKS chunks of KCAP_CHUNK_SLOTS entries with a
-    // task-relative index, taken all-or-nothing at spawn and returned at slot reclaim. How
+    // thread-relative index, taken all-or-nothing at spawn and returned at slot reclaim. How
     // many chunks is PER TASK: root takes KCAP_ROOT_CHUNKS, every child KCAP_CHILD_CHUNKS.
     //
     // cap_install NEVER allocates: a client mints reply capabilities into a SERVER's table
@@ -203,11 +203,11 @@ namespace kickos
     // are held, never on order or history.
     //
     // Only attach (spawn) and detach (reclaim) touch the list; cap_install, cap_lookup and
-    // cap_teardown work entirely inside the task's own run.
+    // cap_teardown work entirely inside the thread's own run.
     //
     // TWO CODE PATHS, selected below. At one chunk there is no directory index, no shift
     // and no mask, and every run is exactly KICKOS_MAX_HANDLES wide with nothing rounded up
-    // and nothing to store: on the flat path a task's capacity IS the ceiling.
+    // and nothing to store: on the flat path a thread's capacity IS the ceiling.
 #if KICKOS_MAX_HANDLES <= KCAP_CHUNK_TARGET
 #define KCAP_RUN_CHUNKS 1
 #define KCAP_CHUNK_SLOTS KICKOS_MAX_HANDLES
@@ -274,7 +274,7 @@ namespace kickos
         CapEntry* chunk[KCAP_RUN_CHUNKS];
     };
 
-    // The entry a task-relative index names. `index` must already be bound-tested.
+    // The entry a thread-relative index names. `index` must already be bound-tested.
     inline CapEntry* cap_slot(CapRun const& run, uint32_t index)
     {
 #if KCAP_RUN_CHUNKS == 1
@@ -284,7 +284,7 @@ namespace kickos
 #endif
     }
 
-    // Does this task hold a run at all? A run is all-or-nothing, so chunk 0 answers for the
+    // Does this thread hold a run at all? A run is all-or-nothing, so chunk 0 answers for the
     // whole directory.
     //
     // The runless set, in full and stated only here: idle, whose directory is created empty,
@@ -540,7 +540,7 @@ namespace kickos
     // exists.
     void cap_slab_init();
 
-    // The one resolve chokepoint: validate a per-task cap handle and return the named
+    // The one resolve chokepoint: validate a per-thread cap handle and return the named
     // global object, or nullptr (bad index, empty, stale cap-gen, wrong type, or
     // missing rights). Returns void* (dispatch-on-type over the object pools); the
     // caller casts to the type it asked for. CAP_SEM/CAP_MUTEX/CAP_ENDPOINT all resolve.
@@ -649,7 +649,7 @@ namespace kickos
     // Seat (or re-seat) thread t's reserved stdout slot (index 0) as a SEND-ONLY
     // (CAP_SIGNAL) copy of console endpoint `target`. Written DIRECTLY (cap_install_at
     // rejects index 0): this and cap_install_defaults are the only paths that SEAT the
-    // reserved slot, and neither bumps its cap-gen. handle_close is not one of them: a task
+    // reserved slot, and neither bumps its cap-gen. handle_close is not one of them: a thread
     // that closes handle 0 itself DOES bump that gen, and a re-seat afterwards no longer
     // answers the KOS_CAP_STDOUT handle userspace names. Takes the new ref BEFORE dropping
     // any prior one (cap_console_publish order) so re-seating the same endpoint never
@@ -672,6 +672,30 @@ namespace kickos
     // False = the endpoint's refcount is at its uint8_t ceiling, or `publisher` holds no
     // capability run; nothing changed either way.
     bool cap_console_publish(Thread* publisher, int obj_handle);
+
+    // The published console endpoint's global handle. False = nothing has been published, and
+    // *out is untouched. The sentinel stays private to cap.cc: it is tested by EQUALITY, never
+    // by sign, because a live handle whose slot generation has reached 32768 is NEGATIVE.
+    bool cap_console_target(int* out);
+
+    // Hand kernel-owned text to the published console endpoint, and ONLY to a receiver that
+    // is already parked: the caller is the thread-fault record path, which must not park, so
+    // there is deliberately no send_waiters arm, no deadline and no retry. Not endpoint_send:
+    // `buf` is KERNEL memory, which that path's user_readable_ok owes its callers a refusal
+    // on. Returns the bytes handed over, or 0 -- nothing published, nobody parked, or the
+    // endpoint has lost every receiver.
+    // `len` is NOT range-checked, and the bound is the RECEIVER's rather than the caller's:
+    // the copy is min(len, w->ipc.len) and endpoint_recv clamps that capacity to
+    // KOS_EP_MSG_MAX, so an oversize line truncates and can never overrun. That is why there
+    // is no -KOS_EINVAL arm here to match endpoint_send's; adding one would be a second truth
+    // about a ceiling the receiver already owns.
+    // Takes its own IrqLock, and may wake a strictly higher-priority receiver, so the caller
+    // must tolerate being switched out mid-record. It must also be in ordinary thread context
+    // with no IrqLock held, which the ONE caller gets structurally rather than by discipline:
+    // arch_fault_is_user_thread admits only an unprivileged frame with a stacked IPSR of 0, so
+    // a fault taken inside a kernel critical section, or in an ISR, escalates to the panic
+    // dump and never reaches the record path at all.
+    int32_t cap_console_deliver(char const* buf, size_t len);
 
     // Bump one reference to the object named by a global handle (delegation and create).
     // The handle MUST resolve: the caller validated it. Caller holds IrqLock. Unknown type

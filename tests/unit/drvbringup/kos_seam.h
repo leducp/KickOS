@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The eleven-symbol syscall seam <kickos/sys/driver_service.h> needs, faked and RECORDING.
+// The syscall seam <kickos/sys/driver_service.h> needs, faked and RECORDING.
 //
 // HOST-ONLY. These are the public kos_* names: a target image linking this TU would satisfy
 // them from the executable, and only the fact that every syscall stub in the tree shares one
@@ -15,10 +15,11 @@
 
 enum
 {
-    // The two ranges must stay disjoint: every expected trace string in the arms names caps
-    // and thread ids by their literal value.
+    // The three ranges must stay disjoint: every expected trace string in the arms names caps,
+    // thread ids and task ids by their literal value.
     KOS_SEAM_CAP_BASE = 10,
     KOS_SEAM_THREAD_BASE = 50,
+    KOS_SEAM_TASK_BASE = 90,
     KOS_SEAM_TRACE_MAX = 512,
     KOS_SEAM_MSG_MAX = 512
 };
@@ -33,6 +34,7 @@ struct kos_seam_control
     uint32_t irq_claim_fail_at;
     uint32_t spawn_fail_at;
 
+    bool task_create_fails;
     bool ram_alloc_fails;
     bool self_grant_fails;
     bool endpoint_create_fails;

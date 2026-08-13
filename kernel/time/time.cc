@@ -8,7 +8,7 @@
 // CONFIG_SCHED_PERIODIC_TICK forces a classic periodic tick instead.
 
 #include <kickos/time.h>
-#include <kickos/endpoint.h> // endpoint_wait_timeout: the IPC layer owns every EP unwind
+#include <kickos/endpoint.h> // endpoint_wait_abort: park.cc owns every EP unwind
 #include <kickos/sched.h>
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
@@ -219,8 +219,8 @@ namespace kickos
                 {
                     // Delegated whole: which list to unlink from and which priority
                     // donation to revert are endpoint internals, and this file must not
-                    // learn them. See endpoint_wait_timeout (kickos/endpoint.h).
-                    endpoint_wait_timeout(t);
+                    // learn them. See endpoint_wait_abort (kickos/endpoint.h).
+                    endpoint_wait_abort(t, -KOS_ETIMEDOUT);
                     break;
                 }
                 default:

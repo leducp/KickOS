@@ -21,7 +21,7 @@
 // (PIDR), then pokes UNGRANTED PORT8.PMR (0008_C068h): the mux escalation surface
 // arch_pinmux_set now owns, OUTSIDE the window -> RX access exception (fixed vector
 // +0x54) with MPESTS.DMPER set and MPDEA holding the address -> the kernel names the
-// task ("MPU FAULT: task 'rxdrv'"). So the negative test proves the driver cannot
+// thread ("MPU FAULT: thread 'rxdrv'"). So the negative test proves the driver cannot
 // re-mux its own pin behind pinmux's back.
 //
 // LED6 (P80, active-low, board UM r12uz0098ej0110 Table 5-9) is the CPU Card's only
@@ -172,9 +172,11 @@ namespace
         // Negative test (the per-thread isolation proof): poke UNGRANTED PORT8.PMR:
         // the pin-function switch, OUTSIDE the 80 B window. The RX MPU is CPU-side and
         // checked on every user access, so this operand write faults BEFORE the bus ->
-        // access exception (fixed vector +0x54), MPESTS.DMPER set, MPDEA=0008_C068h ->
-        // kickos_rx_fault_report routes it (cause 0x54 and PSW.PM set) to "MPU FAULT:
-        // task 'rxdrv'". A plain store, not a read-modify-write: an RMW faults on its
+        // access exception (fixed vector +0x54), MPESTS.DMPER set, MPDEA=0008_C068h. Since
+        // rxv3 opted into fault isolation this KILLS the thread ("=== THREAD FAULT ===
+        // thread 'rxdrv' killed") rather than reaching kickos_isr_fault: the address is
+        // ABOVE this thread's stack base, so it is not the overflow case that escalates.
+        // A plain store, not a read-modify-write: an RMW faults on its
         // READ half and the report would name a read rather than the escalation.
         // Announce-before-poke; terminal, so it is LAST.
         kos::print("[rxdrv] poking UNGRANTED PORT8.PMR @ 0x0008C068 (expect MPU FAULT)\n");

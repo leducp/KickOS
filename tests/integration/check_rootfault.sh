@@ -68,7 +68,7 @@ if [ "$outcome" = "thread-kill" ]; then
     assert_no_panic "root's violation killed the thread AND panicked the system"
     # Root died, so the "ERROR: child unparked" line the app prints if its wait ever
     # returns must still be absent. Checked above with the other ERROR markers.
-elif ! has_e "MPU FAULT: task 'root'|=== MPU FAULT ==="; then
+elif ! has_e "MPU FAULT: thread 'root'|=== MPU FAULT ==="; then
     fail "MPU FAULT marker missing (crash / hang / truncated run?)"
 fi
 got="$(reported_fault_addr)"

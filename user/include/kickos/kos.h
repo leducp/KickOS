@@ -382,7 +382,11 @@ namespace kos::thread
     // `stack`/`stack_size` are optional: pass a caller-owned buffer to size a thread's
     // stack to its need, or leave them 0 to get the kernel default (KICKOS_USER_STACK_SIZE).
     // `mmio`/`mmio_size` grant a device register block (R|W|DEV); the caller needs
-    // AUTH_MEMORY (privilege implies every authority).
+    // AUTH_MEMORY (privilege implies every authority). It is the new thread's ALONE, whatever
+    // group it joins.
+    // `task` names a group from kos_task_create for the thread to JOIN, coupling its fate and
+    // its shared memory to its peers'; the default leaves it in a group of its own, which is
+    // what every spawn meant before tasks existed.
     inline Handle spawn(void (*entry)(void*), void* arg, char const* name,
                         uint8_t prio, uint8_t policy = KOS_POLICY_FIFO,
                         uint32_t quantum_ns = 0, bool privileged = false,
@@ -390,7 +394,8 @@ namespace kos::thread
                         void* stack = nullptr, uint32_t stack_size = 0,
                         void* mmio = nullptr, uint32_t mmio_size = 0,
                         kos_cap_grant const* caps = nullptr, uint8_t cap_count = 0,
-                        uint8_t authority = 0, uint16_t const* cap_dest = nullptr)
+                        uint8_t authority = 0, uint16_t const* cap_dest = nullptr,
+                        kos_task_t task = KOS_TASK_NONE)
     {
         kos_thread_params p{};
         p.entry = entry;
@@ -410,6 +415,7 @@ namespace kos::thread
         p.cap_count = cap_count;
         p.authority = authority;
         p.cap_dest = cap_dest;
+        p.task = task;
         kos_thread_t h = KOS_THREAD_NONE;
         int const rc = kos_thread_spawn(&p, &h);
         return Handle(h, rc);
@@ -421,10 +427,11 @@ namespace kos::thread
                              kos_cap_grant const* caps, uint8_t cap_count,
                              uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
                              bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
-                             uint8_t authority = 0, uint16_t const* cap_dest = nullptr)
+                             uint8_t authority = 0, uint16_t const* cap_dest = nullptr,
+                             kos_task_t task = KOS_TASK_NONE)
     {
         return spawn(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
-                     nullptr, 0, nullptr, 0, caps, cap_count, authority, cap_dest);
+                     nullptr, 0, nullptr, 0, caps, cap_count, authority, cap_dest, task);
     }
 }
 

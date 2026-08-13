@@ -17,9 +17,9 @@
 
 namespace kickos
 {
-    struct Domain;   // kickos/domain.h: the shared region set a thread belongs to
     struct Endpoint; // kickos/endpoint.h: the object a WAIT_EP_SEND/RECV edge names
     struct Mutex;    // kickos/sync.h: PI bookkeeping (the wait edge and the held list)
+    struct Task;     // kickos/task.h: the thread group that owns the shared region set
 
     enum class ThreadState : uint8_t
     {
@@ -115,7 +115,7 @@ namespace kickos
         // Set once at the top of exit_current, never cleared: this thread is running its
         // own capability teardown. The sweep RELEASES IrqLock between chunks, so `state`
         // cannot serve as the marker (a switch back in rewrites it to RUNNING). Gates the
-        // cross-task reply mint, since a half-torn table must not accept a new cap, and the
+        // cross-thread reply mint, since a half-torn table must not accept a new cap, and the
         // wake-during-teardown switch deferral, which is PRIORITY-CONDITIONAL: sched::wake
         // admits a strictly higher-priority peer, and `state == EXITED` is what suppresses
         // the wakes exit_current issues after its own on_remove.
@@ -145,12 +145,15 @@ namespace kickos
         // kill_tag_of and the clear in ThreadPool::alloc. ThreadPool::KILL_TAG_NONE is 0,
         // spelled out here because ThreadPool is declared below this struct.
         uint16_t spawner_tag = 0;
-        // These three fit the padding before `domain`; moving them grows every TCB.
+        // These three fit the padding before `task`; moving them grows every TCB.
 
-        // The memory domain this thread belongs to (shared region set + privilege).
-        // Its regions are copied into regions[] below at create, plus this thread's
-        // private stack; the effective set is what arch_mpu_apply loads per switch-in.
-        Domain* domain = nullptr;
+        // The task this thread belongs to (task.h), which owns the memory domain the
+        // group shares. That domain's regions are copied into regions[] below at create,
+        // plus this thread's OWN private regions -- its stack and any DEV window it asked
+        // for; the effective set is what arch_mpu_apply loads per switch-in. A POINTER,
+        // deliberately not an index: an index beside it would land past the saturated
+        // padding above and cost 8 bytes on every 32-bit TCB.
+        Task* task = nullptr;
         arch_mpu_region regions[KICKOS_MPU_MAX_REGIONS] = {};
         size_t region_count = 0;
 
@@ -199,13 +202,14 @@ namespace kickos
 
         uint64_t switch_count = 0; // introspection
 
-        // Per-task capability table (cap.h). The run is reserved from the slab by the CALLER
-        // before thread_create, as `domain` is, so an exhausted slab fails the spawn instead
-        // of leaving a half-built thread. thread_create's memset would zero the directory, so
-        // it re-establishes it from ThreadAttr afterwards.
+        // Per-THREAD capability table (cap.h), and it stays per-thread under the task layer
+        // (docs/design-task-layer.md section 5.4). The run is reserved from the slab by the
+        // CALLER before thread_create, as `task` is, so an exhausted slab fails the spawn
+        // instead of leaving a half-built thread. thread_create's memset would zero the
+        // directory, so it re-establishes it from ThreadAttr afterwards.
         //
         // Every scan site must be bounded by thread_cap_capacity and never by
-        // KICKOS_MAX_HANDLES: capacities differ per task, a capacity of 0 is legal, and
+        // KICKOS_MAX_HANDLES: capacities differ per thread, a capacity of 0 is legal, and
         // cap_run_held (cap.h) enumerates the threads that have none.
         CapRun caps = {};
         // Head of the run's free-slot list (cap.h), a slot index biased by one. KCAP_FREE_NONE
@@ -213,7 +217,7 @@ namespace kickos
         // list was never threaded refuses every mint rather than handing out a reserved index.
         uint16_t cap_free_head = KCAP_FREE_NONE;
 #if KCAP_RUN_CHUNKS > 1
-        // This task's addressable capacity, 0 when it holds no run. Root's is
+        // This thread's addressable capacity, 0 when it holds no run. Root's is
         // KICKOS_MAX_HANDLES and a spawned child's is narrower, so no reader may assume
         // either.
         uint16_t cap_width = 0;
@@ -281,7 +285,7 @@ namespace kickos
     // The TCB budget. Editing the scalar literal below is how a deliberate TCB change lands.
     //
     // MEASURE ON A 32-BIT TARGET. A uint16_t added to Thread costs 8 bytes on armv6m and 0 on
-    // the host: the padding before `domain` is saturated on 32-bit and there is no tail padding.
+    // the host: the padding before `task` is saturated on 32-bit and there is no tail padding.
 
     // ctx through tnext, which is where the target's context size stops shifting the layout.
     constexpr size_t thread_head_bytes()
@@ -381,13 +385,15 @@ namespace kickos
         void* mem_base = nullptr;
         size_t mem_size = 0;
         // Optional device/MMIO region granted to an unprivileged thread (R|W|DEV,
-        // never executable). Privileged-only at the spawn boundary; a domain that
-        // carries one is a capability and is never shared. base==0 => none.
+        // never executable). AUTH_MEMORY-only at the spawn boundary, and PER-THREAD: it
+        // lands in this thread's own region set and never in its task's domain, because a
+        // window has exactly one holder. base==0 => none.
         void* mmio_base = nullptr;
         size_t mmio_size = 0;
-        // Pre-resolved domain (thread_spawn sets this so pool exhaustion fails the
-        // spawn cleanly). null => thread_create resolves from privileged + mem_base.
-        Domain* domain = nullptr;
+        // Pre-resolved task (thread_spawn sets this so a task- or domain-pool exhaustion
+        // fails the spawn cleanly). null => thread_create resolves from privileged +
+        // mem_base, which only idle and root do.
+        Task* task = nullptr;
         // Who is allowed to cancel the new thread (a kill tag). thread_spawn seats the
         // caller's; idle and root leave it NONE and are so un-killable. A handle DOES name
         // root, so this is the whole of its protection: kill_tag_of never answers NONE.

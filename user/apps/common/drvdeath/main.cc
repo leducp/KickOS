@@ -44,6 +44,7 @@ namespace
         static_cast<uint8_t>(KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER);
     constexpr int NEST_DONE = KOS_SPAWN_DELEGATED_CAP0;     // the child's gate back to root
     constexpr int NEST_PARK = KOS_SPAWN_DELEGATED_CAP0 + 1; // what the grandchild waits on
+    constexpr int NEST_PROBE = KOS_SPAWN_DELEGATED_CAP0 + 2; // root's gate back to the child
 
     volatile kos_thread_t g_grandchild = KOS_THREAD_NONE;
     volatile int g_child_kill_rc = 1; // 1 == the child never got that far
@@ -60,7 +61,7 @@ namespace
         kos_exit(0);
     }
 
-    void nest_child(void*) // caps: done@1, park@2
+    void nest_child(void*) // caps: done@1, park@2, probe@3
     {
         kos_cap_grant const caps[1] = {{NEST_PARK, KOS_CAP_WAIT}};
         g_grandchild = kos::thread::spawn(nest_grandchild, nullptr, "nestgc", 9,
@@ -72,6 +73,10 @@ namespace
         // (that is kos_exit's path) and would witness nothing about the parenthood gate.
         g_root_kill_rc = kos_thread_kill(ROOT_THREAD);
         kos_sem_post(NEST_DONE);
+        // Root's refuse-half probe needs the grandchild ALIVE, and a cancel reaches a
+        // semaphore park, so the accept half below would otherwise race it dead. The gate
+        // makes the order explicit instead of resting on cancellation being toothless.
+        kos_sem_wait(NEST_PROBE);
         // The accept half of the gate: a spawner may cancel its own child. Root's
         // -KOS_EPERM below is the refuse half.
         if (g_grandchild != KOS_THREAD_NONE)
@@ -93,16 +98,18 @@ namespace
         *stranger_rc = 0; // 0 is never a legal answer here, so an unrun matrix fails
         kos_cap_t park = KOS_CAP_NONE;
         kos_cap_t done = KOS_CAP_NONE;
+        kos_cap_t probe = KOS_CAP_NONE;
         int const park_rc = kos_sem_create(0, &park);
         int const done_rc = kos_sem_create(0, &done);
-        if (park_rc != 0 or done_rc != 0)
+        int const probe_rc = kos_sem_create(0, &probe);
+        if (park_rc != 0 or done_rc != 0 or probe_rc != 0)
         {
             return;
         }
-        kos_cap_grant const caps[2] = {{done, CAP_FULL}, {park, CAP_FULL}};
+        kos_cap_grant const caps[3] = {{done, CAP_FULL}, {park, CAP_FULL}, {probe, CAP_FULL}};
         auto const child = kos::thread::spawn(nest_child, nullptr, "nestch", 9,
                                               KOS_POLICY_FIFO, 0, /*privileged=*/false,
-                                              nullptr, 0, nullptr, 0, nullptr, 0, caps, 2);
+                                              nullptr, 0, nullptr, 0, nullptr, 0, caps, 3);
         if (not child.valid())
         {
             return;
@@ -112,7 +119,8 @@ namespace
         {
             *stranger_rc = kos_thread_kill(g_grandchild);
         }
-        kos_sem_wait(done); // the child has tried its own cancel
+        kos_sem_post(probe); // probed: the child may now cancel it for real
+        kos_sem_wait(done);  // the child has tried its own cancel
     }
 }
 #endif

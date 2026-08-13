@@ -8,6 +8,7 @@
 #include <kickos/instance.h>
 #include <kickos/irqlock.h>
 #include <kickos/libc/string.h>
+#include <kickos/task.h>
 
 namespace kickos
 {
@@ -29,6 +30,44 @@ namespace kickos
             k.next_tid = static_cast<uint16_t>(n);
             return id;
         }
+    }
+
+    // ONE HOLDER PER DEVICE WINDOW. Matched on RANGES, not on region slots: an encodable
+    // window can span several peripheral sub-units or cover part of one, so equal, containing
+    // and straddling requests must all refuse while an ADJACENT window stays admissible.
+    //
+    // Scans THREADS, because a window is a thread's own region and never its task's domain. A
+    // thread that has not started yet (INACTIVE) has no regions composed, and one that is
+    // EXITED or DYING is not a holder: the dying arm is what keeps a respawn issued from the
+    // teardown's EPIPE wake from being refused by the very thread whose death freed the
+    // device. Both the check and the commit (thread_create's composition) sit inside
+    // thread_spawn's function-scope IrqLock, so they are atomic together.
+    bool dev_window_free(uintptr_t base, size_t size)
+    {
+        uintptr_t const last = base + size - 1u;
+        Kernel& k = kernel();
+        for (int i = 0; i < k.threads.next; i++)
+        {
+            Thread const& t = k.threads.slots[i];
+            if (t.state == ThreadState::EXITED or t.state == ThreadState::INACTIVE
+                or t.dying)
+            {
+                continue;
+            }
+            for (size_t r = 0; r < t.region_count; r++)
+            {
+                if ((t.regions[r].attr & ARCH_MPU_DEV) == 0)
+                {
+                    continue;
+                }
+                if (grant_ranges_overlap(base, last, t.regions[r].base,
+                                         t.regions[r].base + t.regions[r].size - 1u))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     void thread_create(Thread* t, void (*entry)(void*), void* arg,
@@ -70,28 +109,30 @@ namespace kickos
         // slice_deadline_ns is policy-owned: the RR policy arms it on switch-in,
         // before the thread runs; the core carries no slice sentinel.
 
-        // The memory domain: pre-resolved by thread_spawn (so pool exhaustion fails
-        // the spawn), else resolved here (idle/root), where it never fails. A reference
-        // is held for the thread's lifetime and released at exit (sched::exit_current).
-        t->domain = attr.domain;
-        if (t->domain == nullptr)
+        // The task, which owns the memory domain: pre-resolved by thread_spawn (so a pool
+        // exhaustion fails the spawn), else resolved here (idle/root), where it never
+        // fails. A reference is held for the thread's lifetime and released at exit
+        // (sched::exit_current).
+        t->task = attr.task;
+        if (t->task == nullptr)
         {
-            // idle/root only (thread_spawn pre-resolves the domain). Neither requests
-            // a data or MMIO grant, so domain_for short-circuits before the grant
-            // predicate and caller_authorized=true is inert, not a waiver. No failure
-            // arm here, so derr cannot be set.
+            // idle/root only (thread_spawn pre-resolves the task). Neither requests a data
+            // or MMIO grant, so domain_for short-circuits before the grant predicate and
+            // caller_authorized=true is inert, not a waiver; and both are among the first
+            // task-pool slots, so the pool arm cannot fire either. No failure arm here, so
+            // derr cannot be set.
             int derr = 0;
-            t->domain = domain_for(attr.privileged, attr.mem_base, attr.mem_size,
-                                   attr.mmio_base, attr.mmio_size, true, &derr);
+            t->task = task_for(attr.privileged, attr.mem_base, attr.mem_size, true, &derr);
         }
-        domain_ref(t->domain);
+        task_ref(t->task);
 
         // MPU region set (reloaded on every switch-in). A privileged (kernel-domain)
         // thread gets the whole arena, and the background region covers its code, kernel
         // data and stack, so one region suffices. An unprivileged thread has NO background
         // default, so its set is assembled explicitly:
         //   [app code (RX) + app static-data (RW-NX)]  so it can run at all
-        //   + [domain data region(s)]                  what it shares / was granted
+        //   + [domain data region(s)]                  what its TASK shares
+        //   + [its own DEV window, if it asked]        one holder per window
         //   + [its own private stack]                  a sibling can't scribble it
         // Region sizes round to the shape this MPU can describe: a pow2 or a granule
         // multiple, per arch_mpu_region_pow2 (arch_ram_region_size).
@@ -108,25 +149,41 @@ namespace kickos
         }
         bool const wants_stack =
             (not attr.privileged and stack_base != nullptr and stack_size != 0);
+        bool const wants_window =
+            (not attr.privileged and attr.mmio_base != nullptr and attr.mmio_size != 0);
         // The whole set MUST fit: a truncated set (especially one that drops the thread's
         // OWN stack) would fault the thread on its own memory, or hand it a hardware
         // window snapped to the wrong span. Worst case today is 5 of 8 (code + appdata +
-        // domain data + granted MMIO + stack).
-        unsigned stack_regions = 0u;
+        // task-domain data + own DEV window + stack).
+        unsigned own_regions = 0u;
         if (wants_stack)
         {
-            stack_regions = 1u;
+            own_regions++;
         }
-        KICKOS_ASSERT(nr + domain_region_count(t->domain)
-                          + stack_regions
-                      <= KICKOS_MPU_MAX_REGIONS);
-        if (t->domain != nullptr)
+        if (wants_window)
         {
-            size_t const dn = domain_region_count(t->domain);
+            own_regions++;
+        }
+        Domain const* const dom = task_domain(t->task);
+        KICKOS_ASSERT(nr + domain_region_count(dom) + own_regions <= KICKOS_MPU_MAX_REGIONS);
+        if (dom != nullptr)
+        {
+            size_t const dn = domain_region_count(dom);
             for (size_t i = 0; i < dn; i++)
             {
-                t->regions[nr++] = *domain_region_at(t->domain, i);
+                t->regions[nr++] = *domain_region_at(dom, i);
             }
+        }
+        if (wants_window)
+        {
+            // The EXACT window, validated encodable and exclusive at the spawn boundary.
+            // NEVER rounded: rounding would over-grant the neighbouring registers. It is
+            // this thread's alone -- a task-wide window would hand registers to a peer that
+            // never asked (docs/design-task-layer.md section 5.2).
+            t->regions[nr].base = reinterpret_cast<uintptr_t>(attr.mmio_base);
+            t->regions[nr].size = attr.mmio_size;
+            t->regions[nr].attr = ARCH_MPU_R | ARCH_MPU_W | ARCH_MPU_DEV;
+            nr++;
         }
         if (wants_stack)
         {

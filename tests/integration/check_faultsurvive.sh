@@ -108,7 +108,7 @@ case "$arm" in
                 # M-mode bypasses the unlocked PMP entries, so the trap prologue writes
                 # the frame below the stack and nothing latches. What the recursion's OWN
                 # push did is the evidence, and it is a U-mode store the PMP denied.
-                if ! has "MPU FAULT: task 'faulter' attempted write"; then
+                if ! has "MPU FAULT: thread 'faulter' attempted write"; then
                     fail "no denied write credited to 'faulter': the recursion never ran off its granted stack"
                 fi
                 why="PMP-denied write by 'faulter'"
@@ -130,11 +130,11 @@ case "$arm" in
                 fail "$arm: no corroborating evidence is defined for arch '$arch'"
                 ;;
         esac
-        # Which dead-end ran: the task-naming reporter ends the system with 0, the shared
+        # Which dead-end ran: the thread-naming reporter ends the system with 0, the shared
         # kfault_terminate with 132. Both are the unchanged pre-isolation behaviour for
         # their backend, so the arm pins whichever one this fault reached.
         want=132
-        if has "MPU FAULT: task"; then
+        if has "MPU FAULT: thread"; then
             want=0
         fi
         if [ "$RC" -ne "$want" ]; then
