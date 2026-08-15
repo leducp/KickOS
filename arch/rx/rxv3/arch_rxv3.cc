@@ -215,6 +215,10 @@ namespace
 extern "C"
 {
 
+// Anything file-local below is `static`, never an anonymous namespace: C language
+// linkage overrides the namespace, so an anonymous namespace nested in this block
+// emits an unmangled GLOBAL symbol.
+
 // --- Context init: fabricate a full switch-in frame (see switch.S layout) ---
 // The frame is identical to what the SWINT switcher saves, so the first switch-in
 // (arch_start) restores it and RTEs into entry(arg). Low->high on the USP:
@@ -322,9 +326,6 @@ struct RxFaultFrame
 // which carries the NMI and BRK: an NMI is accepted at an instruction boundary with
 // PSW.PM still set, so admitting it here would kill whichever thread happened to be
 // running for a chip-level event.
-//
-// static, not an anonymous namespace: inside this file's extern "C" block an anonymous
-// namespace still emits an unmangled GLOBAL symbol.
 static bool rx_cause_is_thread_fault(uint32_t cause)
 {
     return cause == 0x50 or cause == 0x54 or cause == 0x5C or cause == 0x60
@@ -592,11 +593,8 @@ void arch_timer_disarm(void)
 // swap. Eager apply on RX's deferred SWINT switch would load the incoming region set while
 // the OUTGOING user thread is still physically running -> it faults on its own stack.
 #if KICKOS_HAVE_MPU
-namespace
-{
-    struct arch_mpu_region g_pend_regions[MPU_REGION_COUNT];
-    size_t g_pend_count = 0;
-}
+static struct arch_mpu_region g_pend_regions[MPU_REGION_COUNT];
+static size_t g_pend_count = 0;
 
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {

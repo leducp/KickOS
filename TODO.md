@@ -1869,7 +1869,16 @@ duplicated.
       and the `.appdata` enforcement window eats 110,748 B.
       `bluepill-c8-st` has EXACTLY zero boot-arena slack besides (2,560 needed, 2,560 available) --
       the only image in the 921-image fleet at or below zero.
-- [ ] **`f302nucleo`'s fault reporter produces NO dump, root cause OPEN.** Not the new probers' bug:
+- [x] **`f302nucleo`'s fault reporter produces NO dump. CLOSED 2026-08-13: THE FLASH COMMAND, not
+      the firmware.** `st-flash --connect-under-reset --reset write` leaves the core under halting
+      debug with `DEMCR.VC_HARDERR` armed, so the fault reaches HardFault and the core HALTS at the
+      handler's first instruction instead of running it -- `DFSR.VCATCH` set, `DHCSR.S_LOCKUP` clear,
+      `HFSR` FORCED with `VECTTBL` clear, and a stacked frame carrying the faulting PC. Proved by a
+      single change on ONE boot with no reset or reflash: writing `DEMCR=0x01000000` made the stalled
+      boot print its report. `tools/flash-stlink.sh` no longer pairs the two flags. The section below
+      titled "the defect is MISFRAMED" was right about the reporter being innocent and wrong about
+      where to look next. Original notes follow.
+      **Superseded reading:** Not the new probers' bug:
       the pre-existing `fault` app truncates at `[f` (338 bytes, `.session/m456-silicon/b4-fault.log`)
       exactly as `ringppb` does.
       **DEFERRED until after M4.6.2**: no board access before then.
@@ -2301,8 +2310,8 @@ bench sessions closed most of what this list used to hold**; what remains is:
   board of that set still unavailable.
 - M4.5.5's general `MinSizeRel` re-witness pass, for the fault addresses, disassembly offsets, symbol
   sizes, stack-depth observations and timing figures that a `Debug` capture cannot carry forward.
-- `f302nucleo`'s fault-reporter root cause, blocked on a physical ST-Link replug rather than on the
-  pass itself -- so it may close earlier and independently.
+- ~~`f302nucleo`'s fault-reporter root cause~~ CLOSED 2026-08-13: it was the flash command's
+  `--reset`, and it never needed a replug.
 - Right-sizing `frdmk64f` and `bluepill-c8` so `KICKOS_POOL_ARENA_ASSERT` can go fleet-wide.
 
 **CLOSED by M4.5.6, listed so the ledger is not re-opened by habit:** `rx72m`'s one visit (all three
@@ -5355,6 +5364,89 @@ When the MMU era arrives (`docs/design-mmu-era-exploration.md`), the same seam f
 grows a second mechanism: on a target with processes, `exit()` ends the process and the thread-scope
 primitive stays `kos_exit`.
 
+
+## THE DOC AUDIT (anytime coherence, runs parallel to M4.8.4 and the driver era)
+
+**Why now.** The f302 close showed the failure mode: `docs/reference/boards.md` carried a WRONG root
+cause in four places for weeks, and it had never been updated for the 2026-08-01 reframing either, so
+it held TWO superseded stories at once while the bench quietly disagreed with both. A doc that is
+wrong is worse than a doc that is missing, because it retires the question. `doc_names` cannot catch
+any of this -- it validates that a path and an identifier RESOLVE, never that a claim is still TRUE,
+and it reads TRACKED MARKDOWN ONLY, so the same citations in source comments, CMake strings and
+workflow YAML rot invisibly.
+
+- [ ] **Sweep every doc for a claim the tree has since falsified**, boards.md first and hardest: it
+      is the biggest, the most measurement-dense, and the one that just failed. A "measurement is
+      never renamed" line is fine; a superseded VERDICT presented as current is the defect. Where two
+      stories coexist, the newer one wins and the older is deleted, not annotated -- an archive entry
+      is for a measurement, not for a wrong conclusion.
+- [ ] **`docs/reference/architecture.md` reads as an architecture PLAN rather than the architecture.**
+      Keep it in sync because drift is a bug, but do not over-polish: a from-scratch rewrite is
+      coming, so the audit's job here is to delete what is false, not to restructure.
+- [ ] **`TODO.md` itself is 5,600 lines with 200 open items and several sections marked STALE.** The
+      triage below is the model: sort, then either fix, ask, or file as backlog. Sections describing
+      unmerged branches that have since merged are pure noise and go.
+- [ ] **`docs/design-c6-driver.md:34` cites "open question 3" in a document that has no numbered
+      questions.** One instance of a class: a cross-reference that resolves as a PATH and is
+      nonsense as a CLAIM. `doc_names` passes it, so only reading catches it.
+- [ ] **Decide whether the audit ends in a gate or in a habit**, and be honest that a gate cannot
+      check truth. Candidates: a staleness convention (every measured claim carries the tree it was
+      measured at, which most already do), or widening `doc_names` to source comments and CMake
+      strings so at least the resolvable half stops rotting. Do not pretend either one closes the
+      class.
+
+## M4.8.x TRIAGE: the 30 items the three milestones left, sorted by what they actually are
+
+**Why this section exists.** A review finding has exactly TWO honest dispositions: **FIX IT, or ASK
+FOR A DECISION.** Filing is not a third one -- it is what you do with class D below, and nothing else.
+Across this file the practice was the opposite: 200 open against 207 closed, every review filing 10-18
+while closing 1-3, and the pile is undifferentiated so an accepted trade and a latent defect read
+identically at a glance.
+
+**And do not reach for "no mechanism blocked the merge" -- there is no such mechanism to have.** A
+gate is not an artifact: a ctest entry, a static check, even the arm that proves a fix can all be
+DELETED, which is precisely why the gates in this tree are mutation-tested rather than trusted. The
+discipline is the gate. Recording a defect in this file and merging anyway is a choice, never a
+process outcome.
+
+**So the rule for a future review: fix each finding, or raise it as a decision, before the merge.**
+Only class D is filable.
+
+**A -- LATENT DEFECT in shipped code (6).** The stated mechanism is broken or leaks; no wrong
+behaviour is constructible today, and each carries the argument for why:
+`sched::wake`'s guard reading a moved `kernel().current` (which defeats the premise of TWO of the
+three clauses M4.8.2 shipped as its headline repair); the `CAP_IRQ` slot and console reclaim having no
+equivalent of the DEV window's early release; `sched::wake` resurrecting an `EXITED` thread; the
+`extern "C"` anonymous namespace emitting UNMANGLED GLOBALS in `arch_rxv3.cc`, whose backend audit was
+never done; `task_release` freeing the slot before `cap_teardown` so `c->task` dangles; an explicit
+task's slot and domain never swept at the creator's death.
+
+**B -- ACCEPTED WITH A MEASURED COST (3), and these are the ones that should have been raised as
+decisions rather than filed.** `kickos_fault_below_stack` means an unprivileged operand access to any
+address BELOW a stack escalates to the panic dump instead of dying alone on rxv3 -- MEASURED, so rxv3
+fault isolation is weaker than the other four backends in a known way, pending design 4.3's reaper.
+`rx72m/rxsci`'s relay thread sees the ring block it declared no grant for, because a per-thread
+`mem_grant` is read as the group's. No preemptive cancellation, which is why 0 from a kill means
+ACCEPTED and not GONE.
+
+**C -- GATE AND TOOLING DEFECTS (4).** A gate that misjudges is worse than no gate:
+`check_faultsurvive.sh`'s corroboration table misses two enforcement classes and MISJUDGES one; the
+`host` ctest label is load-bearing with no gate; `bench-capture.sh` refuses every non-TAP app and its
+refusal skips the log fetch. And the fourth, found closing the f302 defect:
+
+- [ ] **TWO DIVERGENT FLASH RECIPES EXIST FOR THE SAME BOARD, and that is what hid the f302 bug for
+      weeks.** `bench-capture.sh` calls `tools/flash.sh` for most boards, but its STM32 branch inlines
+      its OWN `st-flash --connect-under-reset write` instead. That inlined copy was always correct,
+      while the shipped `tools/flash-stlink.sh` carried the `--reset` that halts the core at
+      `HardFault_Handler` -- so every bench capture was healthy and every hand flash looked like a dead
+      board, which is precisely the shape that sent three hardware hypotheses chasing nothing. The
+      recipe a human runs and the recipe the bench runs must be ONE path. **This is an ASK, not a
+      silent fix**: routing the STM32 branch through `tools/flash.sh` changes the capture protocol on
+      the one board with no automated gate of its own, so it needs a decision and a witness, not a
+      patch slipped in beside a doc pass.
+
+**D -- COVERAGE, TEST-INFRA, DOCS, PERF, FUTURE (17).** Ordinary backlog. Includes the whole M5/SMP
+group and every "no arm for this yet" item.
 
 ## Found landing the M4.8.2 host unit-test layer (2026-08-11)
 

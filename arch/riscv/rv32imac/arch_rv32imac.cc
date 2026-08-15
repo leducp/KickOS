@@ -104,6 +104,10 @@ extern "C"
 extern "C"
 {
 
+// Anything file-local below is `static`, never an anonymous namespace: C language
+// linkage overrides the namespace, so an anonymous namespace nested in this block
+// emits an unmangled GLOBAL symbol.
+
 // CMSIS core clock, defined + maintained by the chip at PLL bring-up.
 extern uint32_t SystemCoreClock;
 uint32_t arch_cpu_clock_hz(void)
@@ -195,53 +199,49 @@ uint32_t arch_trace_now(void)
 
 // --- MPU: RISC-V PMP backend (NAPOT per region) ------------------------------
 #if KICKOS_HAVE_MPU
-namespace
+// NAPOT encoding: for a region of size 2^k (k>=3) aligned to its size,
+// pmpaddr = (base>>2) | ((size>>3)-1); the trailing 1s encode the size.
+static uint32_t pmp_napot_addr(uintptr_t base, size_t size)
 {
-    // NAPOT encoding: for a region of size 2^k (k>=3) aligned to its size,
-    // pmpaddr = (base>>2) | ((size>>3)-1); the trailing 1s encode the size.
-    uint32_t pmp_napot_addr(uintptr_t base, size_t size)
+    return (static_cast<uint32_t>(base) >> 2)
+         | ((static_cast<uint32_t>(size) >> 3) - 1u);
+}
+
+// cfg byte: A=NAPOT (0b11<<3) | R | W? | X?  (attr = the U-mode rights; M-mode
+// bypasses these unlocked entries, which is the privileged-background analog).
+static uint8_t pmp_cfg(uint32_t attr)
+{
+    uint32_t c = 0x18u | 0x1u; // NAPOT | R
+    if (attr & ARCH_MPU_W)
     {
-        return (static_cast<uint32_t>(base) >> 2)
-             | ((static_cast<uint32_t>(size) >> 3) - 1u);
+        c |= 0x2u;
     }
-    // cfg byte: A=NAPOT (0b11<<3) | R | W? | X?  (attr = the U-mode rights; M-mode
-    // bypasses these unlocked entries, which is the privileged-background analog).
-    uint8_t pmp_cfg(uint32_t attr)
+    if (attr & ARCH_MPU_X)
     {
-        uint32_t c = 0x18u | 0x1u; // NAPOT | R
-        if (attr & ARCH_MPU_W)
-        {
-            c |= 0x2u;
-        }
-        if (attr & ARCH_MPU_X)
-        {
-            c |= 0x4u;
-        }
-        return static_cast<uint8_t>(c);
+        c |= 0x4u;
     }
-    // csrw takes an immediate CSR number, so the 8 pmpaddr writes are unrolled.
-    void write_pmpaddr(size_t i, uint32_t v)
+    return static_cast<uint8_t>(c);
+}
+
+// csrw takes an immediate CSR number, so the 8 pmpaddr writes are unrolled.
+static void write_pmpaddr(size_t i, uint32_t v)
+{
+    switch (i)
     {
-        switch (i)
-        {
-            case 0: { __asm volatile("csrw pmpaddr0, %0" ::"r"(v) : "memory"); break; }
-            case 1: { __asm volatile("csrw pmpaddr1, %0" ::"r"(v) : "memory"); break; }
-            case 2: { __asm volatile("csrw pmpaddr2, %0" ::"r"(v) : "memory"); break; }
-            case 3: { __asm volatile("csrw pmpaddr3, %0" ::"r"(v) : "memory"); break; }
-            case 4: { __asm volatile("csrw pmpaddr4, %0" ::"r"(v) : "memory"); break; }
-            case 5: { __asm volatile("csrw pmpaddr5, %0" ::"r"(v) : "memory"); break; }
-            case 6: { __asm volatile("csrw pmpaddr6, %0" ::"r"(v) : "memory"); break; }
-            case 7: { __asm volatile("csrw pmpaddr7, %0" ::"r"(v) : "memory"); break; }
-            default: { break; }
-        }
+        case 0: { __asm volatile("csrw pmpaddr0, %0" ::"r"(v) : "memory"); break; }
+        case 1: { __asm volatile("csrw pmpaddr1, %0" ::"r"(v) : "memory"); break; }
+        case 2: { __asm volatile("csrw pmpaddr2, %0" ::"r"(v) : "memory"); break; }
+        case 3: { __asm volatile("csrw pmpaddr3, %0" ::"r"(v) : "memory"); break; }
+        case 4: { __asm volatile("csrw pmpaddr4, %0" ::"r"(v) : "memory"); break; }
+        case 5: { __asm volatile("csrw pmpaddr5, %0" ::"r"(v) : "memory"); break; }
+        case 6: { __asm volatile("csrw pmpaddr6, %0" ::"r"(v) : "memory"); break; }
+        case 7: { __asm volatile("csrw pmpaddr7, %0" ::"r"(v) : "memory"); break; }
+        default: { break; }
     }
 }
 
-namespace
-{
-    struct arch_mpu_region g_pend_regions[8];
-    size_t g_pend_count = 0;
-}
+static struct arch_mpu_region g_pend_regions[8];
+static size_t g_pend_count = 0;
 
 // STASH-ONLY apply (deferred-commit seam, docs/design-mpu-commit-deferred.md): record
 // the incoming set; kickos_arch_mpu_commit writes the PMP CSRs from the .Lswitch switch
@@ -359,19 +359,18 @@ int arch_bitband_present(void)
 // controller, from a FROM_CPU source routed to a dedicated CPU interrupt ID. That ID
 // vectors here as mcause=<ID> (the C6 reports mcause = interrupt ID, not the standard
 // mcause=11), demuxed to .Lext in switch.S -> kickos_rv_ext_dispatch below.
-namespace
-{
-    constexpr uint32_t MIP_SSIP = 1u << 1;
-    // bit set = line masked. All lines start MASKED at reset (the arch.h reset
-    // contract, matching the NVIC/RX silicon posture); a driver unmasks its line
-    // (arch_irq_unmask, or irq_claim) before use.
-    volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
-    volatile int g_inject_line = -1;     // the pending software-injected line
-    // bit set = a raise landed on this software line while masked (latched one-
-    // deep, coalesced). Redelivered through the doorbell at unmask. Scoped to the
-    // software-inject lines; a real PLIC line holds its own pending in hardware.
-    volatile uint32_t g_irq_pending = 0;
-}
+static constexpr uint32_t MIP_SSIP = 1u << 1;
+
+// bit set = line masked. All lines start MASKED at reset (the arch.h reset
+// contract, matching the NVIC/RX silicon posture); a driver unmasks its line
+// (arch_irq_unmask, or irq_claim) before use.
+static volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
+static volatile int g_inject_line = -1; // the pending software-injected line
+
+// bit set = a raise landed on this software line while masked (latched one-
+// deep, coalesced). Redelivered through the doorbell at unmask. Scoped to the
+// software-inject lines; a real PLIC line holds its own pending in hardware.
+static volatile uint32_t g_irq_pending = 0;
 
 // The rv32imac chip hooks. Every fallback body lives in its own TU
 // (<symbol>_default.cc); this TU only calls them, so it needs the declarations.

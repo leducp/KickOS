@@ -150,12 +150,19 @@ int arch_pinmux_set(uint32_t port, uint32_t pin, uint32_t func);
 // and chip-specific; the truthful landed Hz is the RETURN value, not this selector.
 uint32_t arch_cpu_clock_set(uint32_t target);
 
-// Console coherence hooks for a clock retune (both no-op fallbacks; only a chip
-// whose console peripheral clock moves with the core clock overrides them):
+// Console coherence hooks (both no-op fallbacks):
 //   arch_console_flush_sync: block until the TX shift register is fully idle
-//     (transmission-complete, NOT merely buffer-empty), so no in-flight byte is still
-//     clocking out at the OLD baud when the peripheral clock moves (S6). Called under
-//     the caller's IrqLock, BEFORE the rate change.
+//     (transmission-complete, NOT merely buffer-empty). TWO callers need exactly this one
+//     act, so it is one seam rather than two names for it:
+//       - a clock retune, so no in-flight byte is still clocking out at the OLD baud when
+//         the peripheral clock moves (S6). Called under the caller's IrqLock, BEFORE the
+//         rate change. Only a chip whose console clock moves with the core clock cares.
+//       - kickos_terminate, so arch_shutdown does not stop the core with a byte still in
+//         the FIFO. EVERY chip whose console can outrun a shutdown cares about this one,
+//         which is why the retune-only framing this comment used to carry was wrong: it
+//         read as "no retune, no body needed" and left the terminal path truncating.
+//     Must be BOUNDED. It is on the panic and shutdown paths, where a wedged UART must
+//     cost a dropped tail rather than a hang.
 //   arch_console_retune: re-derive + reprogram the console baud from the CURRENT
 //     SystemCoreClock, AFTER the clock has landed. Called only when the clock actually
 //     moved (achieved != previous).

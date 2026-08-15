@@ -119,6 +119,7 @@ namespace
     constexpr uintptr_t USART2_ISR = USART2_BASE + 0x1C;
     constexpr uintptr_t USART2_TDR = USART2_BASE + 0x28;
     constexpr uint32_t ISR_TXE = 1u << 7;
+    constexpr uint32_t ISR_TC = 1u << 6; // transmission complete: shift register idle too
     constexpr uint32_t CR1_UE = 1u << 0;
     constexpr uint32_t CR1_TE = 1u << 3;
     constexpr uint32_t CR1_RE = 1u << 2;
@@ -359,6 +360,22 @@ void arch_console_write_sync(char const* buf, size_t n)
             }
         }
         r32(USART2_TDR) = static_cast<uint8_t>(buf[i]);
+    }
+}
+
+// ISR.TC, not ISR.TXE: TXE says the data register took the byte, TC says the shift register
+// finished clocking it out. kickos_terminate stops the core right after this, so waiting on
+// TXE would still lose the last character -- which is exactly what f302nucleo did, cutting
+// its survivor line mid-word in every faultsurvive capture.
+void arch_console_flush_sync(void)
+{
+    uint32_t spin = 0;
+    while ((r32(USART2_ISR) & ISR_TC) == 0)
+    {
+        if (++spin > KICKOS_POLL_SPIN_MAX)
+        {
+            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
+        }
     }
 }
 

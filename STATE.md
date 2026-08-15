@@ -8,7 +8,13 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.8.2 is MERGED (PR #20).** The host unit-test layer: GoogleTest via Conan behind
+**M4.8.3 is MERGED (PR #21).** The task layer: a task is a set of threads that dies as one unit, the
+address space stays on `Domain`, and the group gate is CREATORSHIP rather than possession. It also
+carries the two things its own captures found -- `rxv3` fault isolation, and a published console no
+longer swallowing the fault record. **It is merged, so anything found against it from here is a MISS
+and gets filed as one, not folded back into the milestone.**
+
+Behind it, **M4.8.2 (PR #20)**: the host unit-test layer, GoogleTest via Conan behind
 `find_package(GTest QUIET CONFIG)` so vcpkg or a distro package satisfies it too, per-case ctest
 entries under the `host` label, and the two substitution seams (U-seam at `extern "C" kos_*`, K-seam
 at `arch_*` with a whole-`Kernel` reset). It is the tool that proved the `sched::wake()` dying-guard
@@ -169,12 +175,59 @@ evidence is the `SYSMPU ISOLATION FAULT` line naming the denied write. The claim
 holds on that board; the GATE's per-arch table does not cover it, and no ctest runner ever points it
 at a SYSMPU board, so this is latent rather than red. Filed in `TODO.md`.
 
-**`picopi` and `f302nucleo` are the two enforcement classes `m484` does NOT cover.** `picopi` is on no
-bus (a running KickOS image exposes no USB device, so absence is not evidence either way) and it is
-the fleet's only armv6m enforcement unit. `f302nucleo` is present on GlaDOS but cannot witness ANY
-faultsurvive arm: its `udf` never enters `HardFault_Handler` at all, an open defect that predates
-this work, and it has no MPU and no publishing service list, so it could not witness the record route
-either. Neither gap is new and neither is closable from this bench.
+**`picopi` IS WITNESSED, at the squashed commit itself and not at a pre-squash tip** (TAG `m483pi`,
+four captures, `commit bb8fae24` on every banner). It is the fleet's only armv6m enforcement unit and
+it now carries all three fault modes, where every other board's escalation capture truncates before
+its dump:
+
+| arm | frame | outcome |
+| --- | --- | --- |
+| `selftest` | -- | `1..99`, 99 ok, 0 skip, 0 partial, enforce |
+| `faultsurvive` | `PC=0x1000029c`, no CFSR to print on armv6m | `=== THREAD FAULT === thread 'faulter' killed`, THEN `[fs] survivor ran after the fault` |
+| `faultsurvive_ovf` | `PC=0xffffffff xPSR=0x0` | escalates, `=== HARD FAULT ===` |
+| `faultsurvive_off` | `PC=0x100002a0 R3=0x20008200` | escalates, `=== HARD FAULT ===` |
+
+**The two escalation frames differ for a reason worth keeping.** `_ovf` recurses off the stack, so the
+hardware stacking writes into the overflowed region and the frame it reports is GARBAGE -- a
+`PC` of `0xffffffff` and a zero `xPSR` are the signature, not a capture defect. `_off` moves SP
+outside the stack instead, faults on the first access, and its frame is intact. An arm asserting a
+plausible PC on `_ovf` would be asserting something armv6m cannot deliver.
+
+**What armv6m still cannot witness is the RECORD ROUTE, and that is a USB defect rather than a fault
+one.** `picopi`'s only publishing service is `kickos_services_picopi_usbcdc`, and publishing blinds
+UART0 by design (the kernel console is a different peripheral from the one the driver takes). Captured
+that way the UART carries the banner and nothing after it, and no `ttyACM` appeared within a
+0.2 s-resolution poll armed before the flash. That is CONSISTENT with the already-filed blocker --
+under the production service list the device reaches `[rpusb] host configured the device` and then not
+one byte reaches the ACM tty -- and it does NOT establish the stronger claim that enumeration never
+happened: `faultsurvive` lives a few hundred ms, and `dmesg_restrict` is 1 on this box so the kernel
+log was not available to discriminate. Log `.session/logs/m483picdc-picopi-faultsurvive.log`.
+
+**`f302nucleo`'S FAULT REPORTER WAS NEVER BROKEN -- THE FLASH COMMAND WAS.** `st-flash
+--connect-under-reset --reset write` leaves the core under halting debug with `DEMCR.VC_HARDERR`
+armed, so the `udf` escalates to HardFault normally and the core then enters Debug state AT
+`HardFault_Handler`'s first instruction instead of executing it. CPU stopped, so no LED, no dump, and
+a board that looks locked up forever. Fixed in `tools/flash-stlink.sh`: `--reset` is dropped wherever
+`--connect-under-reset` is used, because releasing NRST already starts the image.
+
+**The old reading -- "exception entry itself fails, a bad vector fetch or LOCKUP during hardware
+stacking" -- is FALSIFIED, and by two independent instruments.** On the live board: `DFSR=0x9`
+(`VCATCH`), `DEMCR=0x01000501`, `HFSR=0x40000000` (`FORCED` with `VECTTBL` CLEAR, so not a vector
+fetch), `DHCSR` `S_LOCKUP` CLEAR at a real instruction address rather than `0xFFFFFFFE`, `CFSR=0x10000`
+(`UNDEFINSTR` alone, no `STKERR`, so not a stacking fault), and a stacked frame at `PSP` carrying the
+`udf`'s own PC. The single-change proof is a gdb write of `DEMCR=0x01000000` on the SAME boot with no
+reset and no reflash, after which the stalled boot finished its queued line and printed its fault
+report. Control: the same image under `--connect-under-reset write` with NO `--reset` reports unaided.
+
+**It was already visible in the archive and nobody read it.**
+`.session/logs/m483-fs-f302nucleo-faultsurvive.log` (2026-08-12, `f8cc32bd`) holds TWO boots, and the
+FIRST one prints `[fs] spawning the faulter`, `[fs] worker about to fault`, then `=== THREAD FAUL` --
+the reporter running, truncated by the reset that produced the second boot. A `tail` of that file
+shows only the second boot, which is how it stayed unread. **`bench-capture.sh` uses the safe order,
+which is why the bench never saw the defect and only the recovery path did.**
+
+The board still has NO MPU, so the MPU-fault arms remain genuinely out of reach there -- that part was
+always a hardware fact. Fault isolation via `udf` needs none of it.
 
 **`rxv3` NOW HAS FAULT ISOLATION AND IT IS WITNESSED ON SILICON. `lx6` still cannot have it.** The
 `rte` the old decline named as never-executed has now executed, on `rx72m`, at TAG `m483rxg` -- and
@@ -296,14 +349,34 @@ rather than producing a plausible-looking wrong log.
 
 ## What is next (locked order)
 
-**M4.8.2 is DONE and merged (PR #20), and its silicon obligation was paid in the same pass as
-M4.8.3's -- the fleet tables above. ONE thing has LANDED ON THIS BRANCH AND IS NOT MERGED: ALL of
-M4.8.3** -- step 9.3, then 9.4 and 9.5 together, then the fault record 9.5's own capture caught a
-published console swallowing. The whole M4.8.2 record, including the framework ruling that superseded
-"no framework yet", is `docs/design-m4.8.2-host-unit-tests.md` sections 8 and 9. What follows is what
-remains, in order.
+**M4.8.2 (PR #20) and M4.8.3 (PR #21) are both MERGED, and both silicon obligations are paid** -- the
+fleet tables above, plus the `m483pi` armv6m set. NOTHING is landed-but-unmerged. The two milestone
+records are `docs/design-m4.8.2-host-unit-tests.md` sections 8 and 9, and `docs/design-task-layer.md`.
+What follows is what remains, in order.
 
-1. **M4.8.3 -- the task layer, COMPLETE**, `docs/design-task-layer.md`. A task is a set of threads;
+**M4.8.4 IS THE TAIL OF THE THREE MERGED MILESTONES, AND IT RUNS IN PARALLEL WITH THE DRIVER ERA AND
+A DOC AUDIT -- THREE TRACKS, SEPARATE WORKTREES.** The locked order below is a DEPENDENCY order, not a
+schedule: nothing in M4.9.1 waits on the tail, so serialising them buys nothing. `TODO.md`'s
+*M4.8.x triage* section sorts the 30 open items; M4.8.4 takes class A (six latent defects, headed by
+the `sched::wake` guard whose premise a deferred switch defeats for every later wake in a chunk -- two
+of the three clauses M4.8.2 shipped as its repair), class B (three accepted costs, headed by rxv3
+escalating on any below-stack address where four other backends kill the thread alone), and class C
+(the four instruments that let them through, one of which MISJUDGES rather than merely missing).
+**The order INSIDE M4.8.4 is class C first**: a gate that misjudges cannot witness a fix to anything
+else. This number was assigned in `roadmap.md` BEFORE the work, which is the whole difference from
+parking bugs behind a fresh number -- and the work is the tail of merged milestones, so each item is a
+MISS, already filed as one.
+
+**What parallelism costs, and it is not nothing.** The bench is SERIAL -- one board, one reader, one
+capture -- so a witness belongs to whichever tree was actually flashed, and `-dirty` in a banner is
+the capture telling the truth. The `sched::wake` fix in class A is scheduler code every driver capture
+exercises, so a driver witness taken while it is in flight dates to the tree that carried it. And all
+three tracks write `STATE.md` and `TODO.md`: the tail owns the triage section and the blockers list,
+the driver track appends its own, the doc audit touches everything and therefore goes LAST into any
+file the other two are still editing.
+
+1. **M4.8.3 -- MERGED (PR #21), kept here for the tail M4.8.4 closes**,
+   `docs/design-task-layer.md`. A task is a set of threads;
    the address space attaches to Domain, not Task. `sizeof(Thread)` is unchanged across the WHOLE
    milestone -- 256 microbit, 264 picopi, 2480 sim, re-measured at the 9.5 tree -- and so is
    `microbit`'s `.bss`: `Task` was REPACKED for 9.4 rather than grown, so the skip set 9.3 cost that
@@ -510,17 +583,15 @@ Per-board chips, cores and the fact that decides each class: `docs/reference/boa
   reaches the ACM tty** across three attempts. Bulk OUT has never been exercised at all, `teensy41`
   is a marked seam rather than a half-built backend, and `Shared::configured` does not clear on
   unplug because no backend arms a disconnect or suspend source.
-- **`f302nucleo`: the `udf` EXECUTES and the HardFault handler is NEVER ENTERED.** Answered on the
-  bench with an LED probe after the UART markers proved to be a confounded instrument -- every
-  marker that fires runs with `CR1.TXEIE` clear, so every reading past that point was a false
-  negative. LD2 driven by a raw `GPIOB->BSRR` store with cycle-counted dwells shows one short flash,
-  solid ~2 s, then dark forever: the app ran, `kos_print` returned, the `udf` was reached, and the
-  fault-reporter entry -- which lights LD2 before any UART store -- never ran. **Exception entry
-  itself fails**: a bad vector fetch, or LOCKUP during hardware stacking. The `[faul` truncation is
-  explained and is not a defect. The panic path is separately witnessed healthy on a
-  debugger-resumed boot. The `CFSR=0x00008200`/`BFAR=0xE000ED00` reading quoted as this defect's
-  evidence since filing belongs to `ringpriv`, not to `fault`. Root cause is open;
-  `arch_console_reclaim` is the empty default here and was never a candidate.
+- **CLOSED -- `f302nucleo`'s silent fault report was the FLASH COMMAND, not the firmware**, root cause
+  and evidence in *Where we are* above. The LED probe that read "dark forever, the reporter entry
+  never ran" was correct and is EXPLAINED by it: the core was halted at the handler's first
+  instruction, so nothing downstream of it could run. Two instrument lessons outlive the bug. The UART
+  markers were CONFOUNDED -- every marker that fires runs with `CR1.TXEIE` clear, so every reading
+  past that point was a false negative; use a raw `GPIOB->BSRR` LED store with cycle-counted dwells
+  instead. And the `CFSR=0x00008200`/`BFAR=0xE000ED00` reading quoted as this defect's evidence for
+  weeks belongs to `ringpriv`, not to `fault`. **A debugger left armed is a legitimate suspect before
+  the silicon is**: three hardware hypotheses were carried for weeks and all three were dead.
 - **No emulated gate can exercise a buffered-ring panic flush, and the sim cannot substitute** (its
   ring is provably empty at panic time; deleting `console_tx_flush_sync()` leaves the sim suite
   green). The drain is witnessed on `pizero2350` with a measured non-empty ring (`used_at_panic=419`

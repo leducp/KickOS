@@ -47,9 +47,11 @@
 #
 # THEREFORE NOT CAUGHT. Know these before trusting a green run:
 #   - the `:N` in `path:N` is STRIPPED, never verified. The corpus carries ~270 such
-#     citations and they rot silently and badly: `abi.h:36` was written when line 36
-#     was the clock syscall and now lands on an unrelated one. Verifying a line
-#     number needs the doc to say WHAT it expects to find there; nothing here can.
+#     citations and they rot silently and badly: a citation into the syscall enum of
+#     user/include/kickos/sys/abi.h keeps resolving after the enum has moved down the
+#     file, and lands on unrelated prose. Verifying a line number needs the doc to say
+#     WHAT it expects to find there; nothing here can. Do not pin this example to a
+#     line -- it rotted once already, being the thing it warns about.
 #   - a directory reference with NO trailing slash (`kernel/domain`), because it is
 #     shape-identical to the prose alternations this corpus uses constantly
 #     (`kernel/app` split, `user/kernel` boundary, `arch/chip` seam). Write directory
@@ -89,7 +91,12 @@ DOCS=$(wc -l < "$TMP/docs.txt" | tr -d ' ')
 # This script is excluded from its own scan: its comments quote mis-spellings and dead
 # names as EXAMPLES, and once it is tracked those examples would enter the valid set and
 # mask the very findings they describe.
-git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^tests/static/check_doc_names\.sh$' > "$TMP/src.txt"
+# docs/ is excluded for the same reason and it is NOT redundant with the *.md filter:
+# docs/audit/*.html is a DOCUMENT tracked under a non-markdown extension, so every name
+# it records stayed valid to this gate forever after the build dropped it. Two knobs
+# (KICKOS_ROOT_PRIVILEGED, KICKOS_SERVICE_LIST_ROOT_MMIO) were masked that way. The
+# corpus being CHECKED is unaffected: docs/*.md is still every bit of it.
+git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^docs/' | grep -v '^tests/static/check_doc_names\.sh$' > "$TMP/src.txt"
 [ -s "$TMP/src.txt" ] || fail "no tracked non-markdown sources -- cannot build the valid identifier set"
 # The alphabet here MUST match the one the doc scan below uses, lowercase included:
 # a source-side scan that stopped at the first lowercase letter would put `KOS_E` in

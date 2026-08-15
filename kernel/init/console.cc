@@ -360,6 +360,13 @@ extern "C" void kickos_bootloader_handover(void)
 extern "C" void kickos_terminate(int status)
 {
     console_tx_flush_sync();
+    // The RING being empty is not the DEVICE being idle, and arch_shutdown can stop the core
+    // with a byte still in the UART FIFO or shift register. That truncated the last line of
+    // every capture on a board without KICKOS_SHUTDOWN_TO_BOOTLOADER, because the drain lived
+    // inside kickos_bootloader_handover, which compiles to an empty body without the knob --
+    // measured on f302nucleo as a survivor line cut mid-word. Idempotent, and a no-op on a
+    // chip with no body, so it costs nothing where nothing is queued.
+    arch_console_flush_sync();
     kickos_bootloader_handover();
     arch_shutdown(status);
 }

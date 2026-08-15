@@ -731,18 +731,31 @@ if(KICKOS_BUILD_TESTS)
     endif()
     set_property(TEST "${_kickos_test_name}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
     if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
-      # Deferred to the end of this directory: the earliest point where the site's own
-      # set_tests_properties has run and the `host` label is readable.
-      cmake_language(DEFER CALL kickos_decline_image_test "${_kickos_test_name}")
+      # cmake_language(DEFER CALL) expands its arguments when the call RUNS, so a per-test
+      # defer carrying "${_kickos_test_name}" sees the LAST name registered in the directory
+      # and declines only that one. Hence a directory property plus one deferred reader.
+      set_property(DIRECTORY APPEND PROPERTY kickos_declinable "${_kickos_test_name}")
+      get_property(_kickos_armed DIRECTORY PROPERTY kickos_decline_armed)
+      if(NOT _kickos_armed)
+        set_property(DIRECTORY PROPERTY kickos_decline_armed ON)
+        # End of this directory: the earliest point where every site's own
+        # set_tests_properties has run and the `host` label is readable.
+        cmake_language(DEFER CALL kickos_decline_image_tests)
+      endif()
     endif()
   endmacro()
 
-  # DISABLED rather than unregistered, so ctest reports what was declined.
-  function(kickos_decline_image_test name)
-    get_test_property("${name}" LABELS _labels)
-    if(NOT "host" IN_LIST _labels)
-      set_tests_properties("${name}" PROPERTIES DISABLED TRUE)
-    endif()
+  # DISABLED rather than unregistered, so ctest reports what was declined. Reads only the
+  # names the wrapper collected: kickos_build is registered above the wrapper and unlabelled,
+  # and has to stay enabled to rebuild the tree.
+  function(kickos_decline_image_tests)
+    get_property(_names DIRECTORY PROPERTY kickos_declinable)
+    foreach(_name IN LISTS _names)
+      get_test_property("${_name}" LABELS _labels)
+      if(NOT "host" IN_LIST _labels)
+        set_tests_properties("${_name}" PROPERTIES DISABLED TRUE)
+      endif()
+    endforeach()
   endfunction()
 
   # THE `host` LABEL. A test carries it when it executes no KickOS image, and so reads no
@@ -751,7 +764,8 @@ if(KICKOS_BUILD_TESTS)
   # `ctest -L host` is then batchable and `ctest -LE host` is the set that must run standalone,
   # because the sim and qemu suites have no silicon clock and fail under the load of a
   # back-to-back run. A gate that RUNS a built image must not carry it; `oot_export` is the one
-  # that reads as host and does not qualify.
+  # that reads as host and does not qualify. Which side each test program falls on is DECLARED,
+  # in tests/static/test_classes.txt, and gated by test_labels below.
   # Fixtures are resolved AFTER label filtering, so `kickos_build` is deliberately unlabelled
   # and appears in BOTH partitions. It is a build and not a test, so `-LE host` is the
   # standalone set plus that one entry, and nothing else.
@@ -767,6 +781,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(doc_names PROPERTIES TIMEOUT 120 LABELS host)
 
+  _add_test(NAME extern_c_linkage
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_extern_c_linkage.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(extern_c_linkage PROPERTIES TIMEOUT 120 LABELS host)
+
   # Kconfig generator gate. A source-tree host check like doc_names, so it registers
   # on every board and requires no build. Unconditional: every board is configured from
   # Kconfig, so kickos_kconfig_generate above already FATALed on a box without the
@@ -776,6 +795,22 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_gen.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120 LABELS host)
+
+  # The gate on the label above, both directions. Registered on every board, because the
+  # set of tests a mislabel can hide in is per-configuration. Unlike the two gates above it
+  # DOES require the build fixture: it classifies each test by the program ctest resolved
+  # for it, and ctest emits no command at all for a program that is not on disk yet.
+  set(_kickos_declined no)
+  if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
+    set(_kickos_declined yes)
+  endif()
+  _add_test(NAME test_labels
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_test_labels.sh"
+                    "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}"
+                    "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+                    "${_kickos_declined}")
+  set_tests_properties(test_labels PROPERTIES TIMEOUT 60 LABELS host
+                       FIXTURES_REQUIRED kickos_build)
 endif()
 
 # Components are added as they land; guarded so every step boundary configures.

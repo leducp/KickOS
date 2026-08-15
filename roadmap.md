@@ -151,8 +151,9 @@ what is next; this carries the numbering.
 | M4.7.8 | the timed wait: an abortable/timed call, thread join, wait-until-last | landed |
 | M4.7.9 | fault isolation: a thread that faults dies alone, `exit()` reaches the kernel on every port, diagnostics carry a short column | landed |
 | M4.8.1 | the class layer the driver-model ruling requires, plus the one generic service over (class x chip) that replaced twelve bring-ups | merged, PR 19 |
-| M4.8.2 | the host unit-test layer, and the `sched::wake()` dying-guard repair it is the tool to prove | merged |
-| M4.8.3 | the task layer: a set of threads that is one unit, plus the fault record a published console swallowed | landed (9.3, 9.4, 9.5) |
+| M4.8.2 | the host unit-test layer, and the `sched::wake()` dying-guard repair it is the tool to prove | merged, PR 20 |
+| M4.8.3 | the task layer: a set of threads that is one unit, plus the fault record a published console swallowed | merged, PR 21 |
+| M4.8.4 | close the 4.8.x tail: the wake-guard premise, the release ordering the narrowing left, rxv3's measured below-stack cost, and the three instruments that let them through | planned |
 | M4.9.1 | the USB CDC console, continuing M4.6.2 | planned |
 | M4.9.2..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
 

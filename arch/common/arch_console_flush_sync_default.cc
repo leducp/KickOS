@@ -4,8 +4,10 @@
 // Lone-TU fallback (arch/CMakeLists.txt states the rule): exactly one symbol, so a
 // backend definition keeps this archive member unextracted.
 //
-// A board whose console peripheral clock does not move with the core clock, or that
-// cannot retune at all, needs no shift-register drain. See arch.h for the contract.
+// Taking this fallback means the chip's console cannot outrun EITHER caller: not a clock
+// retune, and not arch_shutdown. The second half is the easy one to get wrong -- a chip
+// that never retunes still truncates its last line at shutdown if its FIFO outlives the
+// core, which is what f302nucleo did. See arch.h for the contract.
 
 #include <kickos/arch/arch.h>
 

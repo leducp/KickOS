@@ -456,7 +456,7 @@ void arch_rv_ext_eoi(void)
 // interrupt, routed through the interrupt matrix to a real CPU int (KICKOS_RV_DEV_CPU_INT,
 // distinct from the software-inject doorbell). The source is a latch, dropped by the
 // INT_CLR write in c6_tx_push.
-int c6_tx_slot_free(void)
+static int c6_tx_slot_free(void)
 {
     if (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) <
         reg::uart::TXFIFO_LIMIT)
@@ -465,7 +465,7 @@ int c6_tx_slot_free(void)
     }
     return 0;
 }
-void c6_tx_push(uint8_t b)
+static void c6_tx_push(uint8_t b)
 {
     r32(reg::uart::FIFO) = b;
     // Drop the TX-empty latch after every push. UART_INT_RAW is self-set and cleared only
@@ -476,17 +476,17 @@ void c6_tx_push(uint8_t b)
     // ring empties.
     r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;
 }
-void c6_tx_irq_enable(void)
+static void c6_tx_irq_enable(void)
 {
     r32(reg::uart::INT_CLR) = reg::uart::TXFIFO_EMPTY_INT;                              // clear any stale latch
     r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) | reg::uart::TXFIFO_EMPTY_INT;   // enable TX-empty
 }
-void c6_tx_irq_disable(void)
+static void c6_tx_irq_disable(void)
 {
     r32(reg::uart::INT_ENA) = r32(reg::uart::INT_ENA) & ~reg::uart::TXFIFO_EMPTY_INT;
 }
 
-char console_tx_buf[CONSOLE_TX_SIZE];
+static char console_tx_buf[CONSOLE_TX_SIZE];
 console_tx_backend const c6_console_backend = {
     c6_tx_slot_free, c6_tx_push, c6_tx_irq_enable, c6_tx_irq_disable};
 
