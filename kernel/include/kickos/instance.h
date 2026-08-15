@@ -106,13 +106,13 @@ namespace kickos
     // 32-bit target leaves before `sleepq`. Thread and Task pin their footprint with a
     // sizeof assert that fails the BUILD on every board; Kernel has no such assert, so a
     // field inserted on either side of `task_holds` would move the arena base and be caught
-    // only by re-running a microbit capture and diffing .bss by hand -- which is not routine.
+    // only by re-running a microbit capture and diffing .bss by hand, which is not routine.
     // This pins the adjacency the whole free-padding argument rests on. It does not prove
     // zero padding; it fails the moment the claim stops being checkable by inspection.
     // 32-BIT ONLY, and the assert caught that itself the first time it was written without the
     // guard: a 64-bit host aligns `sleepq` to 8, so six bytes follow `task_holds` there and the
     // adjacency is false by construction. The claim is about the boards. Same trap
-    // task_scalar_bytes() documents for sizeof(Task) -- a host build prices the tail differently.
+    // task_scalar_bytes() documents for sizeof(Task). A host build prices the tail differently.
     static_assert(sizeof(void*) != 4
                       or offsetof(Kernel, sleepq)
                              == offsetof(Kernel, task_holds) + sizeof(Kernel::task_holds),

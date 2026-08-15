@@ -154,7 +154,7 @@ namespace kickos
         }
 
         // A MUTEX waiter donated its priority to the owner. Cancelling it must revert that, or
-        // an owner stays boosted by a waiter that is gone -- a priority inversion with no
+        // an owner stays boosted by a waiter that is gone, a priority inversion with no
         // waiter to justify it, and the kind of leak nothing later corrects.
         TEST_F(TaskDeath, cancelling_a_mutex_waiter_reverts_the_owners_boost)
         {
@@ -181,7 +181,7 @@ namespace kickos
 
         // ORDER, and this is the arm a counter cannot replace. The peer OUTRANKS the dying
         // thread, so the dying guard admits its wake and the switch lands before the rest of
-        // the exit -- the console reclaim being the next step that leaves a mark. Moving the
+        // the exit, the console reclaim being the next step that leaves a mark. Moving the
         // group cancel after the capability sweep reorders this string, and so does a guard
         // that suppresses the wake.
         TEST_F(TaskDeath, a_higher_priority_peer_is_switched_to_before_the_exit_completes)

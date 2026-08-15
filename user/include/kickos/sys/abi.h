@@ -173,8 +173,8 @@ enum kos_syscall_nr
                                //   names nothing afterwards.
     KOS_SYS_THREAD_SLAY = 53,  // (kos_thread_t, timeout_us) -> 0 (GONE: the target is EXITED
                                //   and its capability table is swept), -KOS_ETIMEDOUT (the
-                               //   redirect is armed and IRREVOCABLE -- the target executes no
-                               //   further unprivileged instruction -- and the sweep has not
+                               //   redirect is armed and irrevocable, the target executes no
+                               //   further unprivileged instruction, and the sweep has not
                                //   finished), -KOS_ECANCELED (the CALLER was cancelled while
                                //   waiting; the target is still condemned), -KOS_EBADF,
                                //   -KOS_EPERM (the caller did not spawn it), -KOS_EINVAL

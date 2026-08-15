@@ -4,7 +4,7 @@
 // The redirect hook in switch_to (docs/design-kill-and-slay.md sections 3.2 and 3.5). Four
 // claims, and the second is the one no other gate in the tree can make:
 //   * a CANCEL_SLAY thread's context is rebuilt into kickos_thread_slay_exit at the top of
-//     its OWN stack, and a CANCEL_KILL one's is not -- the two verbs must stay distinct at
+//     its own stack, and a CANCEL_KILL one's is not, so the two verbs must stay distinct at
 //     the point they diverge, or a kill silently loses its cleanup window.
 //   * the rebuild names the INCOMING thread and happens BEFORE arch_switch. Every backend
 //     that pends saves the outgoing thread's live registers over prev->ctx and restores

@@ -156,7 +156,7 @@ namespace kickos
         // stack (app-supplied) is never harvested: the app owns that memory.
         bool kstack_owned = false;
         // Cancellation request (KOS_SYS_THREAD_KILL), a CancelKind. One-way: set by the
-        // killer, never cleared, honoured at the target's own death point -- its next syscall
+        // killer, never cleared, honoured at the target's own death point, its next syscall
         // ENTRY. A thread that never re-enters the kernel keeps running.
         uint8_t cancel_kind = CANCEL_NONE;
         // Who may cancel this thread: the KILL TAG of the thread that spawned it, or
@@ -168,7 +168,7 @@ namespace kickos
 
         // The task this thread belongs to (task.h), which owns the memory domain the
         // group shares. That domain's regions are copied into regions[] below at create,
-        // plus this thread's OWN private regions -- its stack and any DEV window it asked
+        // plus this thread's own private regions, its stack and any DEV window it asked
         // for; the effective set is what arch_mpu_apply loads per switch-in. A POINTER,
         // deliberately not an index: an index beside it would land past the saturated
         // padding above and cost 8 bytes on every 32-bit TCB.

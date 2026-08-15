@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# TEMPLATE for the bench rig config. Copy to <tree>/.session/rig.conf, which is
+# gitignored, and fill in YOUR values -- every one below is a placeholder.
+#
+#     cp tools/bench/rig.conf.example .session/rig.conf
+#
+# From a git worktree, which has no .session/ of its own, point KICKOS_RIG at the
+# main checkout's copy instead:
+#
+#     KICKOS_RIG=/path/to/main/checkout/.session/rig.conf tools/bench/bench.sh <board>
+#
+# Sourced by /bin/sh: plain KEY=value, no expansion you do not want taken literally.
+
+# --- this box -----------------------------------------------------------------
+# The session directory: it holds env.sh (the cross-toolchain environment the build
+# needs) and receives logs/. Absolute, because a run started from a worktree must
+# still find the one real session directory.
+RIG_SESSION=/path/to/checkout/.session
+
+# The tree built and flashed when the caller sets no TREE. Absolute.
+RIG_TREE=/path/to/checkout
+
+# A python carrying pyserial, for the Espressif capture on THIS box. Optional:
+# empty means fall back to $PY as exported by env.sh.
+RIG_PYBIN=
+
+# --- consoles -----------------------------------------------------------------
+# ONE entry per board whose console cable cannot be named from the board alone,
+# spelled as the by-id path or glob that resolves it. Address a cable by its own
+# SERIAL, never by a ttyUSB/ttyACM number and never by the vendor pattern: numbers
+# renumber across a flash, and this bus carries FTDIs and CP210x cables belonging to
+# other work, so `the first FT232` is a different device on a different day.
+#
+# A board with no entry here and no unambiguous tracked default REFUSES by name
+# rather than picking a cable. Any board's row may be pinned here, including the
+# ones that do have a tracked default -- do that as soon as a second ST-Link or a
+# second CH34x joins the bus.
+#
+# The key is the board name uppercased with dashes turned into underscores, e.g.
+# esp32c6-wroom -> RIG_CONSOLE_ESP32C6_WROOM.
+RIG_CONSOLE_RX72M=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_XXXXXXXX*
+RIG_CONSOLE_PICOPI=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
+RIG_CONSOLE_PIZERO2350=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
+
+# --- the bench host, when the boards are not on this box -----------------------
+# BENCH_HOST in the environment is what SELECTS remote mode; leave it unset and the
+# boards are taken to be here. These only say how to reach the host once it is
+# selected, and what it is called is deliberately not a tracked fact.
+RIG_BENCH_PORT=22
+
+# The remote directory holding the shipped tree and the run outputs, relative to the
+# remote $HOME. Required in remote mode.
+RIG_REMOTE_ROOT=kickos_bench
+
+# A python carrying pyserial ON THE BENCH HOST, absolute and NOT $HOME-relative: it
+# is passed through as a literal, so a `$HOME` here would not expand. Required there
+# for the Espressif boards only.
+RIG_REMOTE_PYBIN=/home/USER/.local/share/uv/tools/esptool/bin/python

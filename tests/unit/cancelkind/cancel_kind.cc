@@ -74,7 +74,7 @@ namespace kickos
             }
 
             // The waiter is CURRENT because irq_wait parks whoever calls it, and the second
-            // thread is the only other runnable one so the scheduler must pick it -- which is
+            // thread is the only other runnable one so the scheduler must pick it, which is
             // what resolves the park (kfixture.h note 2).
             Thread* seat_waiter_over_a_peer()
             {

@@ -256,8 +256,8 @@ namespace kickos
                 //
                 // THE KIND TRAVELS WITH THE DEATH. A member that was slain slays its peers,
                 // or the group dies by two rules and a peer keeps a cleanup window the
-                // supervisor already denied its sibling. Any other exit -- a return from
-                // main, a fault, a cooperative kill -- ends the group cooperatively, which is
+                // supervisor already denied its sibling. Any other exit, a return from
+                // main, a fault or a cooperative kill, ends the group cooperatively, which is
                 // what the floor at CANCEL_KILL says.
                 uint8_t group_kind = CANCEL_KILL;
                 if (c->cancel_kind > group_kind)
@@ -282,7 +282,7 @@ namespace kickos
                 // RETIRE THE NAME WITH THE REFERENCE. The slot may be free now, and
                 // free_slot() can re-hand it in the sweep's first chunk gap. Membership in
                 // task_cancel_group is a POINTER COMPARISON, so a stale c->task would make
-                // this thread a phantom member of whatever group lands here next -- caught
+                // this thread a phantom member of whatever group lands here next, caught
                 // today only by thread_cancel's `dying` test, whose documented job is
                 // stopping two co-dying members from marking each other, not covering slot
                 // reuse. task_cancel_group(nullptr) and task_domain(nullptr) are both total.
@@ -290,7 +290,7 @@ namespace kickos
                 // The creator's hold ends with the creator. Keyed on the TAG, because the tag
                 // IS the gate: a recycled pool slot answers kill_tag_of with its predecessor's,
                 // so a hold left behind is creator authority its successor never earned. The
-                // group is NOT cancelled -- a spawner's death does not kill its children, and a
+                // group is not cancelled: a spawner's death does not kill its children, and a
                 // member's own exit already ends the group.
                 task_orphan_created_by(kernel().threads.kill_tag_of(c));
             }

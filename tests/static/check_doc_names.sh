@@ -51,7 +51,7 @@
 #     user/include/kickos/sys/abi.h keeps resolving after the enum has moved down the
 #     file, and lands on unrelated prose. Verifying a line number needs the doc to say
 #     WHAT it expects to find there; nothing here can. Do not pin this example to a
-#     line -- it rotted once already, being the thing it warns about.
+#     line, which rotted once already by being the thing it warns about.
 #   - a directory reference with NO trailing slash (`kernel/domain`), because it is
 #     shape-identical to the prose alternations this corpus uses constantly
 #     (`kernel/app` split, `user/kernel` boundary, `arch/chip` seam). Write directory
@@ -101,7 +101,58 @@ git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^docs/' | grep -v '^
 # The alphabet here MUST match the one the doc scan below uses, lowercase included:
 # a source-side scan that stopped at the first lowercase letter would put `KOS_E` in
 # the valid set and then report the tree's own `KOS_Exxx` metasyntax as dangling.
-tr '\n' '\0' < "$TMP/src.txt" | xargs -0 grep -aohE '(KICKOS|KOS|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]' 2>/dev/null \
+#
+# The left boundary is load-bearing. Without it `grep -o` cuts a CAP_ prefixed tail out of
+# a KCAP_ prefixed name, so 26 identifiers that exist nowhere enter the valid set as
+# substrings and a doc may drop the K from any KCAP_ name and pass. KCAP is listed
+# explicitly because with the boundary and without it here, those names match on neither
+# side and go unchecked.
+# Comments do not confer validity. A name mentioned only in prose is a name nothing
+# builds, and admitting it let a removed knob validate itself: a comment in
+# tools/bench/bench.sh named a deleted knob, and tracking that file would have made the
+# dead name valid in every doc. A green run cannot show this, because the masking is the
+# green.
+#
+# Type-aware, because the marker is not: `#` opens a comment in sh, CMake and Kconfig, and
+# opens the preprocessor in C where `#define` is the definition site. An unrecognised
+# extension passes through unstripped, which errs toward the old behaviour.
+#
+# NOT CAUGHT: a name appearing only inside a shell string that contains `#` is stripped
+# with the comment and loses validity. A name used in dead code is code, not prose, and
+# still counts.
+tr '\n' '\0' < "$TMP/src.txt" | xargs -0 awk '
+FNR == 1 {
+    inblk = 0
+    ctype = 0
+    if (FILENAME ~ /\.(c|cc|h|hpp|S|ld|lds)$/)                              { ctype = 1 }
+    else if (FILENAME ~ /\.(sh|py|cmake|txt|json|yml|yaml|cfg|conf|ere)$/)  { ctype = 2 }
+    else if (FILENAME ~ /Kconfig/)                                          { ctype = 2 }
+}
+{
+    line = $0
+    if (ctype == 1) {
+        out = ""
+        while (length(line) > 0) {
+            if (inblk) {
+                i = index(line, "*/")
+                if (i == 0) { line = ""; break }
+                line = substr(line, i + 2)
+                inblk = 0
+            } else {
+                i = index(line, "/*")
+                if (i == 0) { out = out line; line = ""; break }
+                out = out substr(line, 1, i - 1)
+                line = substr(line, i + 2)
+                inblk = 1
+            }
+        }
+        line = out
+        sub(/\/\/.*/, "", line)
+    } else if (ctype == 2) {
+        sub(/#.*/, "", line)
+    }
+    print line
+}' 2>/dev/null | grep -aohE '\b(KICKOS|KOS|KCAP|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]' 2>/dev/null \
   | sort -u > "$TMP/valid_ids.txt"
 IDS=$(wc -l < "$TMP/valid_ids.txt" | tr -d ' ')
 [ "$IDS" -gt 100 ] || fail "only $IDS identifiers collected from the tree -- scan is broken, findings would be noise"
@@ -206,11 +257,21 @@ BEGIN {
   # Lowercase is admitted after the prefix ON PURPOSE: `KOS_SYS_cpu_clock_hz` is not a
   # symbol, it is an ungreppable mis-spelling of one, and the enum is exactly where a
   # mis-spelling is expensive.
+  # awk has no portable \b, so the left boundary the source scan gets from grep is done
+  # by hand here: a match whose preceding character is an identifier character is a
+  # SUBSTRING of a longer name (CAP_INDEX_BITS inside KCAP_INDEX_BITS), not a citation.
+  # Both sides must agree, or every KCAP_ name in a doc reads as an unknown CAP_ one.
   rest = text
-  while (match(rest, /(KICKOS|KOS|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]/)) {
+  off  = 0
+  while (match(rest, /(KICKOS|KOS|KCAP|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]/)) {
+    abs  = off + RSTART
+    prev = ""
+    if (abs > 1) { prev = substr(text, abs - 1, 1) }
     tok  = substr(rest, RSTART, RLENGTH)
     tail = substr(rest, RSTART + RLENGTH, 1)
+    off  = abs + RLENGTH - 1
     rest = substr(rest, RSTART + RLENGTH)
+    if (prev ~ /[A-Za-z0-9_]/) { continue }
     if (tail == "*" || tail == "_") { continue }                # wildcard family / bare prefix
     if (tok ~ /_[A-Za-z0-9]$/) { continue }                     # placeholder (CAP_X) / include guard (..._H)
 

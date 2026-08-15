@@ -533,7 +533,7 @@ catchers for every misuse when a proper framework is coming.** 22 lines deleted;
 configurations still build, including `frdmk64f` on its full service list, which is the board the
 gate used to police.
 
-**A gate blind spot found while doing it -- FIXED 2026-08-13 (`89b8e3d4`).** The gate built its
+**A gate blind spot found while doing it -- FIXED 2026-08-13 in M4.8.4.** The gate built its
 valid-identifier set from every tracked NON-markdown file, and `docs/audit/kickos-codebase-audit.html`
 records this name, so **any name that audit records stayed permanently valid** even after the build
 dropped it -- an audit HTML being a DOCUMENT behaving as a source, which is wider than the stale
@@ -5398,7 +5398,7 @@ workflow YAML rot invisibly.
 - [x] **Gate or habit -- DECIDED 2026-08-13: the habit, plus one narrow gate fix, and NO widening.**
       The evidence for refusing the widening is measured. Identifiers: with `docs/` out of the
       oracle only TWO dead names surface tree-wide, both masked for one reason, and that is the
-      one-line fix that landed (`89b8e3d4`). Paths: swapping the corpus to source files resolves 544
+      one-line fix that landed in M4.8.4. Paths: swapping the corpus to source files resolves 544
       repo-rooted citations but leaves 269 file-relative ones and 51 unexpanded shell/CMake
       variables reporting, i.e. about 3% precision before any resolution work -- and the gate lives
       by "a checker that cries wolf gets disabled". Line numbers stay uncheckable by the gate's own
@@ -5489,7 +5489,7 @@ CLEARS sticky fault status, so calling it off a fault destroys the reporter's ev
 TICKLESS and an all-FIFO image with no sleeper has no periodic interrupt at all. The real argument:
 on one core a target that is not the caller is never RUNNING, so READY and BLOCKED are total.
 Four non-reorderable steps, zero `.bss` on each. Design record still owed to `docs/`.
-- [x] **S1 DONE AND WITNESSED (`ed19cc50`, TAG `m484s1`). `kickos_fault_below_stack` narrowed to a
+- [x] **S1 DONE AND WITNESSED (M4.8.4 S1, TAG `m484s1`). `kickos_fault_below_stack` narrowed to a
       16-byte guard band (one RXv3 MPU region page) and the fault stub relocated to the top of the
       dying thread's own stack on all five backends.** The width WAS settled on the bench, as
       required: `mpu_fault`'s `0x13200` went from escalating to dying thread-scoped, and
@@ -5579,7 +5579,7 @@ own proof shape.
 - [x] **Every K-seam gate failed to LINK under `sim-telem`, and had since M4.8.2.** `ktrace.h` is
       header-inline and `kernel/irq/irq.cc` reaches it, so with telemetry on the whole directory had
       two undefined references (`arch_trace_now`, `kickos_rtt_write_record_ch1`). The preset went
-      from 2% of 146 to 100% of 216. Verified PRE-EXISTING both ways against a pristine `85592b6c`
+      from 2% of 146 to 100% of 216. Verified PRE-EXISTING both ways against a pristine pre-S1
       archive tree. `karch_seam.cc`'s own header comment had a symbol count that had stopped being
       true, which is the tell: **the seam's size is a property of the PRESET as well as of the
       source set, and a preset nothing routinely runs is a preset whose seam nothing re-derives.**
@@ -5646,13 +5646,13 @@ same app, TAGs `m484rx*`:
 | tree | list | result |
 | --- | --- | --- |
 | `c87f84ed` (master, M4.8.3) | `_uartirq` | 0 of 3 fail -- `rr order: ABABAB` |
-| `82cde497` | `_uartirq` | 0 of 3 fail |
-| **`dc92c8e3`** | `_uartirq` | **3 of 3 fail -- `rr order: AABBAB`** |
-| `3bf22231` (S2) | `_uartirq` | 3 of 3 fail |
-| `2ce4c1c4` (tip) | `_uartirq` | 3 of 4 fail |
-| `2ce4c1c4` (tip) | DEFAULT | 0 of 3 fail |
+| its parent | `_uartirq` | 0 of 3 fail |
+| **the creator-hold commit** | `_uartirq` | **3 of 3 fail -- `rr order: AABBAB`** |
+| S2 | `_uartirq` | 3 of 3 fail |
+| the branch tip | `_uartirq` | 3 of 4 fail |
+| the branch tip | DEFAULT | 0 of 3 fail |
 
-`dc92c8e3`'s parent is green and `dc92c8e3` is red, so the regression is that commit. ISOLATED to
+The parent is green and the creator-hold commit is red, so the regression is that commit. ISOLATED to
 one line by building it with the other line kept: removing `task_orphan_created_by` and keeping
 `c->task = nullptr` is green 3 of 3. So the cause is the creator-hold sweep, which is
 `KICKOS_MAX_TASKS` (= `KICKOS_MAX_THREADS` + 1, so 17 on rx72m) byte compares MASKED, on EVERY
@@ -5693,7 +5693,7 @@ thread exit.
       line cap's own chunk boundary; five mutants killed.
 - [x] **RE-MEASURED on `rx72m` under `kickos_services_rx72m_uartirq`, TAGs `m484rxfix1..3`:
       0 failures in 3 runs, `rr order: ABABAB` on every one**, matching master. Banner
-      `commit f5df9165` with no `-dirty`, and the stream hand-validated through
+      a banner with no `-dirty`, and the stream hand-validated through
       `check_tap_stream.sh` at 104 arms, 0 skipped, 0 partial. The bisect that found it and the
       isolation that named the line are above; both stay, because the instrument lesson outlives
       the bug: only the `_uartirq` list showed it, on the one board with no emulator and no CI
@@ -5705,7 +5705,7 @@ exit -- the same shape as the `task_orphan_created_by` regression this milestone
 and its own comment conceded it ("the scan by the table's own width"). It could not simply be
 chunked: a gap inside that pass is a moment when a thread with a counted teardown depth still holds
 an IRQ line, and both console-reclaim sites rely on that being impossible.
-- [x] **FIXED (`746cda80`) with `Thread::cap_irq_live`, a `uint8_t` in the LAST padding byte before
+- [x] **FIXED in M4.8.4 with `Thread::cap_irq_live`, a `uint8_t` in the LAST padding byte before
       `quantum_ns`**, so the pass reads no entry when it is owed none. `sizeof(Thread)` unmoved at
       256/264/2480 and `microbit`'s `.bss`, `.data` and both arena symbols byte-identical.
       Rejected, with reasons: a kernel-wide count (one binding anywhere makes every other exit scan
@@ -5713,7 +5713,7 @@ an IRQ line, and both console-reclaim sites rely on that being impossible.
       matters); `authority & AUTH_IRQ` as the predicate (FAIL-OPEN and unsound -- `irq_claim`
       installs with `CAP_TRANSFER`, so a child that never held `AUTH_IRQ` can hold the cap); and a
       sticky bool (`handle_close` cannot clear it without knowing whether another line remains).
-      **WITNESSED**, TAG `m484capirq` at `746cda80` on `rx72m` under `kickos_services_rx72m_uartirq`
+      **WITNESSED**, TAG `m484capirq` on `rx72m` under `kickos_services_rx72m_uartirq`
       -- the one reachable board where `CAP_IRQ` entries genuinely exist: `1..104`, 104 ok, 0 skip,
       0 partial, 11 IRQ arms present, `rr order: ABABAB`, banner clean, and the banner's `app`
       tracking `build` so the cached-`SERVICE_LIST` trap did not fire. Stream hand-validated.

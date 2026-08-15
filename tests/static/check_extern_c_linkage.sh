@@ -13,7 +13,7 @@
 #
 # The damage is not a miscompile, it is a claim on a generic identifier in the global C
 # namespace of a KickOS archive: `g_pend_count`, `g_fixed_count`, `mpu_rasr`, `s_count`.
-# A consumer app -- a pure C main linking libkickos -- that defines any of those names then
+# A consumer app, a pure C main linking libkickos, that defines any of those names then
 # fails to link, in the consumer's tree, over a symbol it never asked for.
 #
 # No allowlist, because the construct has no legitimate use. A seam symbol that MUST have C
@@ -51,7 +51,7 @@ require_nonempty "$TMP/all" "git ls-files matched no C/C++ file; every check bel
 while IFS= read -r f; do
     [ -f "$f" ] || fail "tracked file is missing from the worktree: $f"
     # NEWLINE-AGNOSTIC, because the awk scanner below is: it accumulates across lines, so it
-    # would flag `extern` and `"C"` split over two lines -- but a single-line grep would never
+    # would flag `extern` and `"C"` split over two lines, but a single-line grep would never
     # hand it the file, and the header claims this scan is exhaustive. A clang-format re-wrap
     # is enough to produce that spelling and silently re-open the hazard.
     if tr '\n' ' ' < "$f" | grep -q 'extern[[:space:]]*"C' && grep -q 'namespace' "$f"; then

@@ -536,7 +536,7 @@ uintptr_t syscall_body(uintptr_t nr,
         case KOS_SYS_TASK_CREATE:
         {
             // Same shape as the cap creators: a task handle spends the whole word, so the
-            // status is the return value and the handle rides an out-parameter -- and the
+            // status is the return value and the handle rides an out-parameter, and the
             // out-pointer is checked BEFORE the group exists, or a mint that cannot deliver
             // leaves a task nothing can name and nothing can kill.
             int rc = cap_out_check(a2);

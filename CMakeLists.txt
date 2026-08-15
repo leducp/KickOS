@@ -786,6 +786,15 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(extern_c_linkage PROPERTIES TIMEOUT 120 LABELS host)
 
+  # The KICKOS_SERVICE_LIST axis. A provider is created inside its chip's branch of
+  # system/CMakeLists.txt, so THIS board compiles at most its own and can say nothing
+  # about the rest; the gate reads the source tree and the preset files instead of the
+  # build, and so registers on every board and requires no build.
+  _add_test(NAME service_lists
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_service_lists.sh"
+                    "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(service_lists PROPERTIES TIMEOUT 120 LABELS host)
+
   # Kconfig generator gate. A source-tree host check like doc_names, so it registers
   # on every board and requires no build. Unconditional: every board is configured from
   # Kconfig, so kickos_kconfig_generate above already FATALed on a box without the

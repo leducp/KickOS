@@ -185,7 +185,7 @@ extern "C"
 
     // `static`, NOT an anonymous namespace: extern "C" gives these C language linkage, which
     // OVERRIDES the namespace and emits them as unmangled GLOBALS in libkickos's public C
-    // surface. static is what survives it -- the name stays unmangled, the binding goes local.
+    // surface. static survives it: the name stays unmangled, the binding goes local.
     static constinit uint32_t s_min = 0xFFFFFFFFu;
     static constinit uint32_t s_max = 0;
     static constinit uint32_t s_count = 0;

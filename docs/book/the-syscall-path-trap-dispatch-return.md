@@ -205,7 +205,7 @@ pointer the caller chose -- which is where the kernel's real work begins.
 
 ## The return convention: a negated errno, and where it cannot reach
 
-A syscall that can fail returns its error as the **negated** code, `-KOS_Exxx`; a
+A syscall that can fail returns its error as the **negated** code, `-KOS_E*`; a
 success is non-negative, being a handle, a count, or a byte count (invariant
 `syscall-return-abi`). So `rc < 0` is unambiguously an error and can never alias a
 valid result. The magnitudes mirror POSIX errno where a POSIX reading exists, which

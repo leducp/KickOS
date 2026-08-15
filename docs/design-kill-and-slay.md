@@ -3,7 +3,7 @@
 
 # Kill and slay: a death the scheduler grants, not a stranger's teardown
 
-Design gate. Written against `e4d1e3a4` on `M4.8.4-tail`, reading only.
+Design gate. Written against `M4.8.4-tail`, reading only.
 
 **S1 through S4 have since LANDED.** Sections 1 to 13 are kept as written, because the
 reasoning is what the implementation was judged against and an edited premise cannot be
@@ -838,7 +838,7 @@ Named rather than smoothed over.
 
 ## 14. As landed
 
-S1 (`ed19cc50`), S2 (`3bf22231`), S3 and S4. What follows is the delta against sections 1
+S1, S2, S3 and S4. What follows is the delta against sections 1
 to 13, not a restatement of them.
 
 ### 14.1 Three claims above that are WRONG

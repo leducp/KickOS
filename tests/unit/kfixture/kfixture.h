@@ -163,7 +163,7 @@ namespace kickos
         void attach_caps(Thread* t, uint32_t width);
         // The creator tag task() mints with. It names NO pool slot and is not the boot tag
         // that kill_tag_of answers for a thread outside the pool, so no arm's exiting thread
-        // orphans a hand-made group by accident -- which it would at tag 1, the tag of pool
+        // orphans a hand-made group by accident, which it would at tag 1, the tag of pool
         // slot 0 that half the arms here seat their dying thread into.
         constexpr uint16_t FIXTURE_TASK_TAG = KICKOS_THREAD_SLOTS + 1;
         static_assert(FIXTURE_TASK_TAG < 0xFFu,

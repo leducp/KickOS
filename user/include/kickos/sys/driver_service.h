@@ -481,7 +481,7 @@ constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
 //
 // -KOS_EPIPE means a SERVICE thread died. The console comes back only once the register
 // window is free, and the window holder may still be alive, so the whole GROUP is ended
-// before the tag is printed -- ONE call, because the threads are one task.
+// before the tag is printed. One call, because the threads are one task.
 //
 // Any other refusal, -KOS_ETIMEDOUT above all, leaves the service thread ALIVE and still the
 // sole receiver: recv_holders never reaches 0, the console is NOT reclaimed, and nothing here
@@ -669,7 +669,7 @@ inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_
     }
 
     // THE GROUP. Every thread of this driver joins it, so a peer's death ends the rest and one
-    // call ends them all -- which is what lets the unwind below name no thread at all. Created
+    // call ends them all, which is what lets the unwind below name no thread at all. Created
     // BEFORE the endpoint, so the earliest failure that has a task to give back is the first
     // one that has anything to give back.
     //

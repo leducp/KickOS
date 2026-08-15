@@ -2151,7 +2151,7 @@ only `CONTROL` can carry the read-back, and the `resting_npriv` hazard -- live i
 them there rather than expecting them restated here.
 
 **`f302nucleo` -- the captures that stop short were stopped by the FLASH COMMAND, not by the fault
-reporter. CLOSED 2026-08-13 (`e57241c5`).** `st-flash --connect-under-reset --reset write` leaves the
+reporter. CLOSED 2026-08-13 in M4.8.4.** `st-flash --connect-under-reset --reset write` leaves the
 core under halting debug with `DEMCR.VC_HARDERR` armed, so a fault escalates to HardFault normally and
 the core then enters Debug state AT `HardFault_Handler`'s first instruction instead of executing it.
 The CPU is stopped: no LED, no dump, and a board that reads as locked up forever.

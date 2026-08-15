@@ -365,7 +365,7 @@ void arch_console_write_sync(char const* buf, size_t n)
 
 // ISR.TC, not ISR.TXE: TXE says the data register took the byte, TC says the shift register
 // finished clocking it out. kickos_terminate stops the core right after this, so waiting on
-// TXE would still lose the last character -- which is exactly what f302nucleo did, cutting
+// TXE would still lose the last character, as f302nucleo did, cutting
 // its survivor line mid-word in every faultsurvive capture.
 void arch_console_flush_sync(void)
 {

@@ -3,8 +3,8 @@
 //
 // Breaking a park from OUTSIDE the parked thread: a deadline that expired, or a
 // cancellation. Both hand the sleeper a result it did not wait for and neither grants it
-// whatever it was parked on, so both need the same per-WaitKind unwind -- which list to
-// unlink, which priority donation to revert -- and that is why they live together.
+// whatever it was parked on, so both need the same per-WaitKind unwind: which list to
+// unlink and which priority donation to revert. That is why they live together.
 //
 // The park unwind is TOTAL over WaitKind. A cancel that reached only the kinds a thread
 // happens to park on would not be a kill (docs/design-task-layer.md open question 1).
@@ -152,7 +152,7 @@ namespace kickos
         // ESCALATION ONLY, and it reads as a comparison because the enum's values are
         // ordered NONE < KILL < SLAY. A kill arriving after a slay must not hand back the
         // cleanup window the slay took away, and a kind at or below the recorded one has
-        // nothing to add -- so the park below is not broken a second time either.
+        // nothing to add, so the park below is not broken a second time either.
         if (kind <= t->cancel_kind)
         {
             return;
@@ -172,7 +172,7 @@ namespace kickos
         // Reaching the death point needs it RUNNABLE, so the park ends here. The result is
         // what a primitive with an error channel reports; one without (sem_wait, sleep)
         // simply returns, and the death point is what stops it going round again. A SLAIN
-        // thread never reads it -- its resume is claimed before it returns to userspace --
+        // thread never reads it, its resume being claimed before it returns to userspace,
         // but the unwind the abort performs is the OTHER side of each park's bookkeeping and
         // must still run, so this is not a branch to skip.
         thread_abort_park(t, -KOS_ECANCELED);

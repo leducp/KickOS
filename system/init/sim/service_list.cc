@@ -266,7 +266,7 @@ extern "C"
     static int simconsole_start_wedge(struct kos_service_cfg const* cfg)
     {
         // Both threads are ONE driver, so one task: the group kill below names no thread, and
-        // either thread's death ends the other. No shared region -- the sim's "device" is
+        // either thread's death ends the other. No shared region, because the sim's "device" is
         // fd 1 and there is no ring block.
         kos_task_t task = KOS_TASK_NONE;
         int const task_rc = kos_task_create(nullptr, 0, &task);

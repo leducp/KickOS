@@ -5530,7 +5530,7 @@ namespace
         // task is created first (kmain makes idle before root) and root's second, so slots 0
         // and 1 hold them and the biased codec names those two handles 1 and 2 at generation
         // 0. Neither slot is ever freed, so the generation cannot drift. Both carry the KERNEL
-        // domain -- the whole arena, R|W -- so a handle that resolved would let this thread
+        // domain, the whole arena at R|W, so a handle that resolved would let this thread
         // spawn a child INTO it and hand an unprivileged thread the arena.
         TAP_CHECK(kos_task_kill(1u) == -KOS_EBADF);
         TAP_CHECK(kos_task_kill(2u) == -KOS_EBADF);
@@ -5559,7 +5559,7 @@ namespace
 
     // The CREATOR GATE, both halves, and it takes a second thread to witness at all: only the
     // thread that made a group may seat a member into it or end it. Possession of the handle is
-    // deliberately not enough -- the codec is guessable, so a resolvable handle would otherwise
+    // deliberately not enough, because the codec is guessable and a resolvable handle would
     // be an authority anyone could forge.
     //
     // The stranger reports over an ENDPOINT rather than a shared global, and root receives with
@@ -5800,7 +5800,7 @@ namespace
 
     // --- Slay: the group form ---------------------------------------------------
     // 0 here means a condition no other call in the ABI waits on: the group is EMPTY. That
-    // is what makes the task form worth having at all -- a group slay that could only ever
+    // is what makes the task form worth having, since a group slay that could only ever
     // answer -KOS_ETIMEDOUT would have an unreachable success case.
     void t_task_slay_group()
     {
@@ -5875,12 +5875,37 @@ namespace
     constexpr uint32_t SLAY_TIMEOUT_US = 4000;
     constexpr uint64_t SLAY_HOG_NS = 60000000ull; // 15x the deadline
 
+    // Published so the caller can tell a window it still holds from one it has already
+    // spent; 0 until the hog has actually run, which a spawn does not guarantee.
+    volatile uint64_t g_hog_until = 0;
+
     void slay_hog(void*) // caps: none
     {
         uint64_t const until = kos_clock_now() + SLAY_HOG_NS;
+        g_hog_until = until;
         while (kos_clock_now() < until)
         {
         }
+    }
+
+    // The hog must have more window left than the deadline the caller is about to arm, or
+    // the slay measures nothing. Twice the deadline, so the margin is not itself the race.
+    bool hog_window_open()
+    {
+        uint64_t const until = g_hog_until;
+        if (until == 0)
+        {
+            // Not yet run is the healthy case and the opposite of spent: the caller
+            // outranks the hog, which first runs when this thread parks inside the slay,
+            // so the whole window is still ahead.
+            return true;
+        }
+        uint64_t const now = kos_clock_now();
+        if (until <= now)
+        {
+            return false;
+        }
+        return (until - now) > (2ull * SLAY_TIMEOUT_US * 1000ull);
     }
 
     void t_thread_slay_timeout()
@@ -5902,6 +5927,7 @@ namespace
         // Outranks the victim, so nothing the slay does can get the victim onto the CPU
         // until this thread is finished. Spawned AFTER the victim is staged, because a
         // spawn is not a barrier and this one would otherwise hog the staging itself.
+        g_hog_until = 0; // a previous arm's window must not read as this one's
         auto hog = kos::thread::spawn(slay_hog, nullptr, "shog", 11);
         if (not hog.valid())
         {
@@ -5912,6 +5938,35 @@ namespace
         }
         // CONDEMNED, not gone: the redirect is armed and irrevocable, and the sweep has not
         // run because the victim has not been given the CPU to run it on.
+        // The window runs from the hog's first run, not from this call, and the caller can
+        // lose all of it between the two. Under an interrupt-driven console it does: the
+        // caller blocks in the console, the hog spends its window, and the victim then dies
+        // at once because nothing outranks it. slay returning 0 there is correct, so
+        // asserting the timeout without this check measures nothing.
+        // A spent window is recoverable, and skipping instead would leave the starvation
+        // guarantee unexercised under the console that broke it. The hog has exited, so join
+        // it and stage a fresh one.
+        for (int attempt = 0; attempt < 2 and not hog_window_open(); attempt++)
+        {
+            (void)hog.join(JOIN_GENEROUS_US);
+            g_hog_until = 0;
+            hog = kos::thread::spawn(slay_hog, nullptr, "shog", 11);
+            if (not hog.valid())
+            {
+                break;
+            }
+        }
+        if (not hog.valid() or not hog_window_open())
+        {
+            if (hog.valid())
+            {
+                (void)hog.join(JOIN_GENEROUS_US);
+            }
+            (void)victim.slay(JOIN_GENEROUS_US);
+            (void)kos_handle_close(park);
+            tap::skip("hog window spent before the slay -- starvation not established");
+            return;
+        }
         TAP_CHECK(victim.slay(SLAY_TIMEOUT_US) == -KOS_ETIMEDOUT);
         TAP_CHECK(g_slay_window == 0); // and it never got its window either
         // IRREVOCABLE is the claim, so the same handle must reach GONE with no second

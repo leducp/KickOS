@@ -701,7 +701,7 @@ namespace kickos
     // is already parked: the caller is the thread-fault record path, which must not park, so
     // there is deliberately no send_waiters arm, no deadline and no retry. Not endpoint_send:
     // `buf` is KERNEL memory, which that path's user_readable_ok owes its callers a refusal
-    // on. Returns the bytes handed over, or 0 -- nothing published, nobody parked, or the
+    // on. Returns the bytes handed over, or 0 when nothing was published, nobody parked, or the
     // endpoint has lost every receiver.
     // `len` is NOT range-checked, and the bound is the RECEIVER's rather than the caller's:
     // the copy is min(len, w->ipc.len) and endpoint_recv clamps that capacity to

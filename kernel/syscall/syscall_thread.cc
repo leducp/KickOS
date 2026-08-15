@@ -170,7 +170,7 @@ namespace kickos
         // THE admission boundary for a DEV window, because the window is the asking THREAD's
         // own region and no task or domain ever carries it: authority (EPERM), exact shape
         // (EINVAL for zero-size, wrap or non-encodable), Rule 7 (EPERM) and exclusivity
-        // (EBUSY). Both this and the commit -- thread_create composing the region -- run
+        // (EBUSY). Both this and the commit, thread_create composing the region, run
         // inside this function's IrqLock, so the pair is atomic.
         if (p->mmio_base != nullptr)
         {
@@ -586,7 +586,7 @@ namespace kickos
     // The termination argument, and why no timer is needed to reach a spinning victim: on one
     // core, switch_to writes RUNNING for exactly one thread and a thread executing a syscall
     // IS that thread. A target distinct from the caller is therefore READY, BLOCKED, or
-    // refused below -- and both live states are claimed at the resume rather than at the
+    // refused below, and both live states are claimed at the resume rather than at the
     // request. The victim being off-CPU is a PRECONDITION of this request existing.
     int thread_slay(kos_thread_t thread, uint32_t timeout_us)
     {
@@ -609,7 +609,7 @@ namespace kickos
             }
             // REFUSED rather than masked, and idle for the plainer reason that killing it
             // ends the scheduler's fallback. A privileged thread is not a privilege
-            // escalation to rebuild -- it is already privileged -- but it may be inside
+            // escalation to rebuild, since it is already privileged, but it may be inside
             // kernel work holding kernel invariants, and discarding its frames discards
             // them mid-flight. Same rule kickos_fault_kill_thread states for itself.
             if (t == sched::idle() or t->privileged)
@@ -623,8 +623,8 @@ namespace kickos
             // THE CALLER PARKS FIRST, and the order is load-bearing. thread_cancel_kind
             // breaks the victim's park, and a victim that outranks the caller is switched to
             // from inside that call; on a backend that swaps inline it can reach EXITED
-            // before this line would otherwise have run, and its exit sweep -- the ONLY thing
-            // that wakes a WAIT_JOIN waiter -- would find nobody parked on it. park_queueless
+            // before this line would otherwise have run, and its exit sweep, the only thing
+            // that wakes a WAIT_JOIN waiter, would find nobody parked on it. park_queueless
             // also detaches `current`, which the cancel may already have republished.
             park_queueless(c, WAIT_JOIN, t);
             if (timeout_us != KOS_TIMEOUT_NONE)
@@ -678,8 +678,8 @@ namespace kickos
     }
 
     // End a group: every live member is cancelled, and the creator's hold goes with it so the
-    // handle stops naming anything. COOPERATIVE in exactly the way thread_kill is -- a member
-    // that never enters the kernel again is never reached -- and it is not a destroy: the
+    // handle stops naming anything. Cooperative in exactly the way thread_kill is, so a member
+    // that never enters the kernel again is never reached, and it is not a destroy: the
     // members run their own exits, so the slot goes back when the last one is gone.
     int task_kill(kos_task_t task)
     {
@@ -701,7 +701,7 @@ namespace kickos
     }
 
     // The group form. Every live member is SLAIN rather than cancelled, and the caller waits
-    // for the group to be EMPTY -- which is a different condition from any member's death and
+    // for the group to be empty, a different condition from any member's death and
     // is why this park has its own kind.
     //
     // The creator's hold is dropped only on the way out of a successful wait, and never

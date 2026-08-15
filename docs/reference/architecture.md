@@ -495,7 +495,7 @@ the kernel is unreachable without preemption. `docs/design-task-layer.md` is the
   arch-independent **syscall table**, returns in r0. Sim: a trampoline flips an emulated-
   privilege flag (+ `mprotect` toggles kernel-mem accessibility) and calls `syscall_dispatch()`.
 - **Syscall return ABI (`system/include/kickos/sys/errno.h`).** A syscall that can fail returns its
-  error as the **negated** code `-KOS_Exxx`; a success -- a count, a byte-count -- is
+  error as the **negated** code `-KOS_E*`; a success -- a count, a byte-count -- is
   **non-negative**, so `rc < 0` is unambiguously an error and never aliases a valid count (counts
   and byte-counts stay small). **A handle is never a return value**, and that is what buys the
   handle word its full width: every minting syscall -- `KOS_SYS_SEM_CREATE`, `KOS_SYS_MUTEX_CREATE`,

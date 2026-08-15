@@ -129,8 +129,8 @@ case "$arm" in
                 # TWO stacking-abort shapes, because armv7m does not imply the ARM MemManage
                 # unit. xmc4800-relax faults through it and latches MSTKERR (CFSR=0x92). The
                 # K64F's SYSMPU is a BUS-level slave-port unit, so the same stacking abort
-                # comes back as BusFault STKERR with IMPRECISERR -- CFSR=0x1400, MSTKERR CLEAR
-                # -- and requiring MSTKERR alone FAILED a correct capture. The SYSMPU line is
+                # comes back as BusFault STKERR with IMPRECISERR, CFSR=0x1400 and MSTKERR clear,
+                # so requiring MSTKERR alone failed a correct capture. The SYSMPU line is
                 # what keeps the second shape from accepting a bare BusFault: it names the
                 # denied write, and only a SYSMPU board can print it.
                 cfsr="$(printf '%s\n' "$OUT" | sed -n 's/.*CFSR=0x\([0-9a-fA-F]*\).*/\1/p' | head -n1)"
@@ -147,7 +147,7 @@ case "$arm" in
                 # armv6m has NO CFSR and no MMFAR, so there is no status bit to key on and
                 # this arm is WEAKER than its armv7m twin by hardware, not by omission. What
                 # is left is real: the reporter names the stack the frame came from, and a
-                # user thread's frame is on PSP -- an MSP frame would mean the fault was taken
+                # user thread's frame is on PSP. An MSP frame would mean the fault was taken
                 # in kernel context and the arm would prove nothing about a user thread.
                 # Requiring the CFSR to be ABSENT is the positive control: it refuses an
                 # armv7m capture handed to this arm by mistake.
@@ -156,15 +156,15 @@ case "$arm" in
                 fi
                 has "(PSP)" || fail "the dump does not name PSP: the frame was not taken from a thread stack"
                 why="frame on PSP, no CFSR to latch (armv6m has none)"
-                # The overflow frame is GARBAGE by construction -- the hardware stacking writes
-                # into the region that overflowed -- so nothing here asserts a plausible PC.
+                # The overflow frame is garbage by construction, the hardware stacking writing
+                # into the region that overflowed, so nothing here asserts a plausible PC.
                 # A PC of 0xffffffff with a zero xPSR is the signature, not a capture defect;
                 # asserting it exactly would assert what the ISA cannot promise.
                 ;;
             rxv3:overflow)
                 # Same shape as rv32imac: the RX MPU denies the recursion's own push and the
                 # report credits it to the thread. Supervisor bypasses the RX MPU, so the
-                # frame itself is not what refuses this -- kickos_fault_below_stack is.
+                # frame itself is not what refuses this. kickos_fault_below_stack is.
                 if ! has "MPU FAULT: thread 'faulter' attempted write"; then
                     fail "no denied write credited to 'faulter': the recursion never ran off its granted stack"
                 fi

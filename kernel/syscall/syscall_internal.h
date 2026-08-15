@@ -120,8 +120,8 @@ namespace kickos
     int thread_wait_last();
 
     // The FORCIBLE half of the pair above, and both BLOCK on the same terms as thread_join:
-    // no caller-held IrqLock. Each marks its target CANCEL_SLAY -- whose resume switch_to
-    // then claims, so it executes no further unprivileged instruction -- and waits for it to
+    // no caller-held IrqLock. Each marks its target CANCEL_SLAY, whose resume switch_to
+    // then claims so it executes no further unprivileged instruction, and waits for it to
     // be gone. 0 means GONE; -KOS_ETIMEDOUT means the redirect is armed and irrevocable with
     // the capability sweep unfinished, which is the one ABI return weaker than "gone" and
     // strictly stronger than "accepted".

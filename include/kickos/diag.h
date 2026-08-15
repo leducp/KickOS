@@ -93,7 +93,7 @@ namespace kickos
                                                 "F4 %u\n")
 
 // MPU fault report (kernel/init/console.cc).
-#define KDIAG_F_MPU_FAULT KICKOS_DIAG_PICK("\nMPU FAULT: thread '%s' attempted %s at %p -- reported\n", \
+#define KDIAG_F_MPU_FAULT KICKOS_DIAG_PICK("\nMPU FAULT: thread '%s' attempted %s at %p, reported\n", \
                                            "\nMPU FAULT: thread '%s' attempted %s at %p\n")
 #define KDIAG_F_MPU_FAULT_STACK KICKOS_DIAG_PICK("  its stack %p-%p\n", "st %p %p\n")
 

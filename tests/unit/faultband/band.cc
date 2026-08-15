@@ -47,7 +47,7 @@ namespace kickos
 
             // MEASURED off the predicate, never read from the constant. The width is a ruling
             // that the bench retunes, and an arm carrying the literal would have to be edited
-            // every time it moved -- pinning the tuning instead of the rule. The constant is
+            // every time it moved, pinning the tuning instead of the rule. The constant is
             // also file-local to fault.cc, and widening shipped code so a fixture can see it
             // is the wrong direction (TODO.md records that ruling for cap_slab_init).
             //
@@ -121,7 +121,7 @@ namespace kickos
 
             // THE SPELLING ARM. `addr >= base - BAND` and `addr + BAND >= base` agree
             // everywhere except where the arithmetic wraps, so only a stack based within BAND
-            // of the TOP of the address space tells them apart -- and the second spelling then
+            // of the top of the address space tells them apart, and the second spelling then
             // reports a genuine overflow as a cross-domain write, killing a thread whose real
             // problem is that the image under-provisioned its stack.
             //
@@ -170,7 +170,7 @@ namespace kickos
             }
 
             // Both predicates read sched::current(), so both owe an answer when there is none
-            // -- a fault before the first thread runs is a real boot case -- and they answer
+            // (a fault before the first thread runs is a real boot case) and they answer
             // in OPPOSITE directions because they are asked different questions. Each answers
             // the SAFE way for its own question, and this arm is what stops either from being
             // "simplified" into the other's default.

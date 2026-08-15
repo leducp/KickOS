@@ -188,7 +188,7 @@ void kos_exit(int code) __attribute__((noreturn));
 //
 // ASYNCHRONOUS, and the caller must treat it that way: 0 means the request was accepted,
 // never that the thread is gone. The target is marked and broken out of WHATEVER it is
-// parked on -- an irq_wait, a recv, a mutex, a semaphore, a sleep -- with -KOS_ECANCELED
+// parked on, whether an irq_wait, recv, mutex, semaphore or sleep, with -KOS_ECANCELED
 // where the primitive has a code to carry one. It then gets one window to clean up over
 // memory it already holds, and the KERNEL ends it at its next syscall. The one thread this
 // does not reach is one that never asks the kernel for anything again. A caller that must
@@ -206,11 +206,11 @@ int kos_thread_kill(kos_thread_t thread);
 //   -KOS_ETIMEDOUT     CONDEMNED, and irrevocably: the target will never execute another
 //                      unprivileged instruction, because the kernel has claimed the resume
 //                      it has not yet been given. Its capability table is not yet swept, so
-//                      a name it holds is not yet released. There is nothing to retry -- the
+//                      a name it holds is not yet released. There is nothing to retry, since the
 //                      death is already decided; only the cleanup is outstanding.
 //   -KOS_ECANCELED     the CALLER was cancelled while waiting. The target is still condemned.
 // Plus -KOS_EBADF (bad / stale / already-exited handle), -KOS_EPERM (you did not spawn it)
-// and -KOS_EINVAL (naming yourself, idle, or a privileged thread -- refused, never masked).
+// and -KOS_EINVAL (naming yourself, idle, or a privileged thread, refused and never masked).
 //
 // The cost, stated because the failure is a live peripheral with no owner rather than a
 // kernel fault: a slain DRIVER thread never gets the window in which it would have quieted
@@ -248,14 +248,14 @@ int kos_task_kill(kos_task_t task);
 // FORCIBLY end a task YOU created: every live member is SLAIN rather than cancelled, so not
 // one of them gets the cleanup window kos_task_kill leaves open. Waits up to `timeout_us`
 // RELATIVE microseconds (KOS_TIMEOUT_NONE: no bound; 0: arm and return) for the group to be
-// EMPTY -- a condition no other call in the ABI waits on, and a different one from any single
+// empty, a condition no other call in the ABI waits on and a different one from any single
 // member's death.
 //
 // Returns 0 (the group is empty and its slot released, so the handle names nothing),
 // -KOS_ETIMEDOUT (every member is condemned and irrevocably so, and the handle STILL names
 // the group so this can be asked again), -KOS_ECANCELED (the caller was cancelled while
 // waiting), -KOS_EBADF (bad / stale handle, or an implicit task, which is unnameable),
-// -KOS_EPERM (you did not create it) or -KOS_EINVAL (the caller is itself a member -- that
+// -KOS_EPERM (you did not create it) or -KOS_EINVAL (the caller is itself a member, which
 // would be waiting for its own death, and kos_exit is how a member ends its group).
 //
 // An EMPTY group returns 0 at once: there is nothing to slay, and dropping the creator's

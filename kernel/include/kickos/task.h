@@ -128,7 +128,7 @@ namespace kickos
     // Drop the hold of EVERY task a dying creator holds. Keyed on the tag rather than on
     // identity, because the tag is the whole gate: kill_tag_for_index derives it from the pool
     // slot, so a recycled slot answers kill_tag_of with its predecessor's tag and would inherit
-    // creator authority over groups it never made -- enough to kill them, and to spawn a child
+    // creator authority over groups it never made, enough to kill them and to spawn a child
     // into one and hand that child the group's domain regions. Called from exit_current, which
     // is total over deaths; ThreadPool::alloc's reclaim point is not, and task_for runs before
     // threads.alloc() so a task-pool exhaustion would refuse before ever reaching it.

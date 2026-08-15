@@ -5,7 +5,7 @@
 // backend definition keeps this archive member unextracted.
 //
 // Taking this fallback means the chip's console cannot outrun EITHER caller: not a clock
-// retune, and not arch_shutdown. The second half is the easy one to get wrong -- a chip
+// retune, and not arch_shutdown. The second half is the easy one to get wrong: a chip
 // that never retunes still truncates its last line at shutdown if its FIFO outlives the
 // core, which is what f302nucleo did. See arch.h for the contract.
 

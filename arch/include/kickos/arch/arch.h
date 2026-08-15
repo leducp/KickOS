@@ -57,7 +57,7 @@ void arch_context_init(struct arch_context* ctx,
 // PRIVILEGED, in thread mode, at the top of [stack_base, stack_base + stack_size).
 // `ctx` must NOT be the running context: this writes a saved context, and the fault
 // path's arch_fault_redirect_to_exit is what rewrites a live one (the two share no
-// code -- a live frame cannot be rebuilt, and the fault seam additionally reads and
+// code, because a live frame cannot be rebuilt, and the fault seam additionally reads and
 // clears sticky status registers that a scheduler-driven redirect must not touch).
 //
 // Idempotent in its values: `entry` and the stack top are absolute, so applying it

@@ -872,8 +872,8 @@ namespace kickos
             g_cap.teardown_depth++;
             // NAME-KEYED FIRST, and in ONE masked window: an IRQ line is named by NUMBER, so
             // until this thread's binding is detached a peer's irq_claim of the same line
-            // answers -KOS_EBUSY. The chunked loop below hands the CPU to peers -- including
-            // the supervisor its own EPIPE wake releases -- so a line swept there is
+            // answers -KOS_EBUSY. The chunked loop below hands the CPU to peers, including
+            // the supervisor its own EPIPE wake releases, so a line swept there is
             // observable as not-yet-released by the very thread that asked for it.
             // Deliberately NOT chunked: a gap inside this pass is a moment when a thread with
             // a counted teardown depth still holds a line, and both console reclaim sites

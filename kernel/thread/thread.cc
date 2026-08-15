@@ -178,7 +178,7 @@ namespace kickos
         {
             // The EXACT window, validated encodable and exclusive at the spawn boundary.
             // NEVER rounded: rounding would over-grant the neighbouring registers. It is
-            // this thread's alone -- a task-wide window would hand registers to a peer that
+            // this thread's alone, since a task-wide window would hand registers to a peer that
             // never asked (docs/design-task-layer.md section 5.2).
             t->regions[nr].base = reinterpret_cast<uintptr_t>(attr.mmio_base);
             t->regions[nr].size = attr.mmio_size;

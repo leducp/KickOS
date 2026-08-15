@@ -271,7 +271,7 @@ TEST_F(DrvBringup, a_complete_bring_up_touches_no_unwind)
 }
 
 // WHAT THE GROUP SHARES, and it is `taskmem` versus `task` in one token. A driver with a
-// block hands the WHOLE of it to the task, so every member's region set covers it -- k_three's
+// block hands the whole of it to the task, so every member's region set covers it. k_three's
 // worker takes no block argument and is a member all the same. There is no per-thread subset
 // to declare: a task owns one Domain and a member may bring no grant of its own.
 TEST_F(DrvBringup, a_block_reaches_the_group_even_where_a_thread_takes_no_block_argument)

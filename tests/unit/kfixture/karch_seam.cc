@@ -84,7 +84,7 @@ extern "C"
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     // The telemetry sink, which the seam otherwise has no answer for: ktrace.h is
     // header-inline and reaches BOTH of these from kernel/irq/irq.cc. Silent and accepting,
-    // because no arm here reads a trace record -- the fixture has its own ordered trace, and
+    // because no arm here reads a trace record. The fixture has its own ordered trace, and
     // the encoder is tests/unit/telemetry's subject.
     uint32_t arch_trace_now(void)
     {

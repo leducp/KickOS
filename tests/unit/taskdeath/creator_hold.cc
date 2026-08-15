@@ -7,7 +7,7 @@
 // WHY THIS IS AN AUTHORITY GATE AND NOT A SLOT-LEAK ONE. A kill tag is DERIVED from the pool
 // slot (kill_tag_for_index, thread.h), so the thread that next occupies a dead creator's slot
 // answers kill_tag_of with the dead creator's tag. Every gate over an explicit task reads
-// task_created_by against that tag -- killing it, slaying it, and seating a member, which
+// task_created_by against that tag: killing it, slaying it, and seating a member, which
 // hands that member the group's domain regions. A hold left behind is therefore authority the
 // successor never earned, and the generation bump that kills a stale handle does not reach it:
 // a slot with a live member is not freed.
@@ -181,7 +181,7 @@ namespace kickos
 
         // THE PRECONDITION, from the side that can only fail. task_orphan_created_by is
         // skipped outright while no hold is live (Kernel::task_holds), so what needs a gate is
-        // that a sweep which IS owed still runs -- and for the second creator as much as the
+        // that a sweep which is owed still runs, and for the second creator as much as the
         // first. A boolean, or a count the sweep clears rather than task_drop_hold, orphans
         // the first group and strands the second with its dead creator's tag.
         TEST_F(CreatorHold, a_second_creators_hold_outlives_the_first_creators_sweep)

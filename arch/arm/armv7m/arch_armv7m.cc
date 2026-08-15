@@ -303,8 +303,8 @@ void arch_fault_redirect_to_exit(void* frame)
     // in the handler's LR decides whether the CPU unstacks a basic 8-word or an extended
     // 26-word frame (ARMv7-M ARM B1.5.7), and a frame moved to a place that EXC_RETURN
     // disagrees with is popped at the wrong size out of the wrong memory. So the hardware
-    // pops from where it stacked, and the first instruction of the reset shim -- reached
-    // only after that pop -- moves SP. r0 carries the new SP because it is the frame's own
+    // pops from where it stacked, and the reset shim's first instruction, reached only
+    // after that pop, moves SP. r0 carries the new SP because it is the frame's own
     // first word and this thread is dying.
     //
     // The 8-byte alignment the AAPCS wants at a public interface is the mask below, and

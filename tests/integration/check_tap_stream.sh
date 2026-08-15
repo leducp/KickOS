@@ -42,7 +42,7 @@ if ! echo "$out" | grep -q "# all tests passed"; then
 fi
 # THE SELFTEST NEVER FAULTS. The deliberate cross-domain fault is a separate binary
 # (faultsurvive), so a thread-fault record in this stream is an arm whose thread died the
-# wrong way -- and thread-scoped isolation means it dies anyway, so every plan, case and
+# wrong way, and thread-scoped isolation means it dies anyway, so every plan, case and
 # directive check above still reconciles and the run reads green. A slay redirect that
 # rebuilds an UNPRIVILEGED context faults the stub on its first kernel access, is caught
 # by kickos_fault_kill_thread, and reaches the same observable end state as a correct one.

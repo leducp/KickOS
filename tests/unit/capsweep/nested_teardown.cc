@@ -47,7 +47,7 @@ namespace kickos
             constexpr uint32_t SWEEP_WIDTH = KICKOS_CAP_FIRST_DYNAMIC + KCAP_TEARDOWN_CHUNK + 1;
             // gap 1 is the release cap_teardown opens before its first chunk, so gap 2 is the
             // boundary after it. A new IrqLock anywhere in the sweep renumbers these, and the
-            // trace assertions are what say so -- do not renumber the expected string without
+            // trace assertions are what say so. Do not renumber the expected string without
             // checking which gap the action now lands in.
             constexpr uint32_t GAP_AFTER_FIRST_CHUNK = 2;
             constexpr uint32_t GAP_BEFORE_FIRST_CHUNK = 1;
@@ -203,7 +203,7 @@ namespace kickos
         // --- two sweeps at once --------------------------------------------------------
 
         // The arm the depth counter exists for. The inner sweep runs where a real one would
-        // start -- between chunks, with the outer sweep holding no lock -- and the outer
+        // start, between chunks with the outer sweep holding no lock, and the outer
         // sweep's own last chunk is what proves it resumed.
         TEST_F(CapSweep, a_second_sweep_nests_in_a_chunk_gap_and_the_first_resumes)
         {
@@ -246,7 +246,7 @@ namespace kickos
         // The name-keyed half: an IRQ line is named by NUMBER, so until the dying thread's
         // binding is detached the same line answers -KOS_EBUSY. The sweep's own endpoint arm
         // releases a parked supervisor, and on target that supervisor outranks its driver and
-        // runs at the very next boundary -- before a line cap seated past it is swept.
+        // runs at the very next boundary, before a line cap seated past it is swept.
         TEST_F(CapSweep, a_peer_the_sweep_wakes_can_claim_the_dying_threads_line)
         {
             Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
@@ -271,7 +271,7 @@ namespace kickos
         }
 
         // The pre-pass is gated on a COUNT, so the arm that says the gate never skips a pass
-        // that is owed has to date the release against the FIRST gap of all -- not against the
+        // that is owed has to date the release against the first gap of all, not against the
         // boundary the line cap's own chunk would reach anyway. A thread holding one line is
         // exactly the case the count does not let through.
         TEST_F(CapSweep, a_held_line_is_released_before_the_sweep_opens_any_gap)
