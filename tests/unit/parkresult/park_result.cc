@@ -114,7 +114,8 @@ namespace kickos
             int const rc = mutex_lock(g_mutex);
 
             EXPECT_EQ(rc, -KOS_ECANCELED) << "the cancel is what the return carries";
-            EXPECT_TRUE(waiter->cancelled) << "and the waiter is marked for its death point";
+            EXPECT_NE(waiter->cancel_kind, CANCEL_NONE)
+                << "and the waiter is marked for its death point";
             EXPECT_EQ(g_mutex->owner, holder) << "a cancelled waiter does not acquire the mutex";
             EXPECT_EQ(holder->prio, PRIO_HOLDER) << "the owner's boost is reverted with the wait";
         }

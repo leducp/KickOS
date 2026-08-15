@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // Host fixture for the kernel's own state machines: a real Kernel instance, the real
-// scheduler, the real FIFO/RR policy, the real capability teardown, with karch_seam.cc
-// standing in for the arch boundary and the four subsystems those sources call out to.
+// scheduler, the real FIFO/RR policy, the real capability teardown, the real task pool, with
+// karch_seam.cc standing in for the arch boundary and the subsystems those sources call out to.
 //
 // This header is deliberately GTEST-FREE, and kseam_test.h is the GoogleTest layer over it.
 // The fixture library is compiled -fno-exceptions -fno-rtti, gtest's headers configure
@@ -38,23 +38,24 @@
 //    A run_in_chunk_gap action runs INSIDE a sweep for the same reason, so it may not
 //    longjmp either, and run_exit is therefore not available to it.
 //
-//    THE RESET IS NOT TOTAL, because cap.cc keeps THREE data outside the Kernel struct that
+//    THE RESET IS TOTAL FOR TWO OF THE THREE data cap.cc keeps outside the Kernel struct that
 //    `kernel() = Kernel{}` reaches, all in one TU-local constinit:
 //      - the chunk free list: reset() restores it with cap_slab_init().
+//      - g_stdout_target: reset() clears it with cap_console_reset(), which is what lets an
+//        arm publish a console at all. Without that, a stale global handle survives into an
+//        arm whose endpoint pool has been zeroed and whose gen-encoded handles therefore
+//        REPEAT, and an unrelated endpoint close matches it and notes a console death in
+//        ANOTHER arm's counter.
 //      - teardown_depth: unreachable from outside cap.cc. An arm that abandons a sweep would
 //        leave cap_teardown_active() true for every later arm, which reads as a suite that
 //        passes, so reset() REFUSES rather than continuing.
-//      - g_stdout_target: also unreachable, and the trap has teeth. No arm may call
-//        cap_console_publish today: it leaves a global endpoint handle set, reset() zeroes the
-//        endpoint pool so gen-encoded handles REPEAT across arms, and a later arm's dying
-//        thread closing an unrelated endpoint cap can then match the stale value and note a
-//        console death. The symptom surfaces in a DIFFERENT arm's counter.
 
 #ifndef KICKOS_KFIXTURE_H
 #define KICKOS_KFIXTURE_H
 
 #include <stdint.h>
 
+#include <kickos/domain.h>
 #include <kickos/endpoint.h>
 #include <kickos/task.h>
 #include <kickos/thread.h>
@@ -67,6 +68,17 @@ namespace kickos
         // ISR context is enforced by a kpanic, so a gate for it is a process that dies.
         extern bool g_in_isr;
         extern uint64_t g_now_ns;
+
+        // The fake domain pool the seam's domain_for/ref/release work over. Exposed because
+        // the creator hold and the members' hold are TWO references on one domain, and
+        // telling them apart is the only way to gate which of them a death drops.
+        extern Domain g_domains[KICKOS_MAX_TASKS];
+        extern uint16_t g_domain_refs[KICKOS_MAX_TASKS];
+        extern bool g_domain_live[KICKOS_MAX_TASKS];
+        // -1 for null and for anything outside the pool, so a release of a task with no
+        // domain is inert exactly as the real one is.
+        int domain_index(Domain const* d);
+        uint16_t domain_refs(Domain const* d);
 
         extern uint32_t g_switches;
         extern uint32_t g_console_noted;
@@ -98,6 +110,18 @@ namespace kickos
         // --- the seam's recorders ------------------------------------------------------
         Thread* thread_of_context(struct arch_context* c);
         void note_switch(Thread* from, Thread* to);
+        // The context rebuild, recorded rather than performed: there is no real context to
+        // rebuild here and arch_switch does not switch either, so what an arm can see is
+        // WHICH thread's context was named and WITH WHAT. Its position in the trace is what
+        // pins the rebuild before the switch, which is the placement rule the pended
+        // backends need.
+        void note_ctx_redirect(Thread* t, void (*entry)(void* arg), void* base, size_t size);
+        // The last rebuild's arguments, for an arm that asserts the stub and the stack top
+        // rather than only the ordering. Null / 0 until one happens; cleared by reset().
+        extern Thread* g_redirect_target;
+        extern void (*g_redirect_entry)(void* arg);
+        extern uintptr_t g_redirect_stack_top;
+        extern uint32_t g_redirects;
         void note_park();
         void note_irq_save();
         void note_irq_restore();
@@ -137,12 +161,23 @@ namespace kickos
         // Give `t` a real capability table of `width` slots from the real slab, so an arm can
         // put the REAL cap_teardown through a live entry. Dies if the slab refuses.
         void attach_caps(Thread* t, uint32_t width);
-        // A task slot from the real pool, EXPLICIT (it carries a creator tag), so an arm can
-        // put threads in one group. task_release is a seam stub here, so the refcount is
-        // bookkeeping an arm may read and nothing frees the slot.
+        // The creator tag task() mints with. It names NO pool slot and is not the boot tag
+        // that kill_tag_of answers for a thread outside the pool, so no arm's exiting thread
+        // orphans a hand-made group by accident -- which it would at tag 1, the tag of pool
+        // slot 0 that half the arms here seat their dying thread into.
+        constexpr uint16_t FIXTURE_TASK_TAG = KICKOS_THREAD_SLOTS + 1;
+        static_assert(FIXTURE_TASK_TAG < 0xFFu,
+                      "the fixture's creator tag would alias idle's boot tag once truncated "
+                      "into Task::creator_tag, and every arm's exiting thread would orphan "
+                      "the groups task() minted");
+
+        // An EXPLICIT task minted by the REAL task_create, so its creator hold, its domain
+        // reference and its slot reservation are the shipping ones. Dies unless the mint
+        // lands in `slot`: free_slot() scans upward, so call these in slot order.
         Task* task(int slot);
-        // `t` joins `tk`. Only the TCB field matters to the group scan: membership is a
-        // pointer comparison over the thread pool, not a list the task holds.
+        // `t` joins `tk` through the real task_ref, which is what takes the members' domain
+        // reference. Only the TCB field matters to the group scan: membership is a pointer
+        // comparison over the thread pool, not a list the task holds.
         void join_task(Thread* t, Task* tk);
         // A semaphore park: the kind with NO error channel at all, so an arm can show that the
         // cancel reaches it anyway and that the token count is left alone.

@@ -53,6 +53,22 @@ void arch_context_init(struct arch_context* ctx,
                        void* stack_base, size_t stack_size,
                        int privileged);
 
+// Discard every frame `ctx` holds and rebuild it so the thread resumes at `entry`,
+// PRIVILEGED, in thread mode, at the top of [stack_base, stack_base + stack_size).
+// `ctx` must NOT be the running context: this writes a saved context, and the fault
+// path's arch_fault_redirect_to_exit is what rewrites a live one (the two share no
+// code -- a live frame cannot be rebuilt, and the fault seam additionally reads and
+// clears sticky status registers that a scheduler-driven redirect must not touch).
+//
+// Idempotent in its values: `entry` and the stack top are absolute, so applying it
+// twice before the thread resumes changes nothing.
+//
+// Total, deliberately: there is no failure return. A backend that cannot express a
+// privileged thread-mode resume at a given stack top cannot host a thread either, and
+// a silent decline here would downgrade a slay to a cooperative kill without saying so.
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size);
+
 // Switch the running context from `from` to `to`. MAY be deferred: on ARM this
 // pends PendSV and the register swap happens on exception return; on the sim it
 // happens now, or on interrupt-exit when called from ISR context. The scheduler
@@ -552,10 +568,11 @@ void arch_fault_report_extra(void);
 bool arch_fault_is_user_thread(void* frame);
 
 // Rewrite `frame` so the exception return lands in kickos_thread_fault_exit,
-// privileged, in thread mode, on the faulting thread's own stack, and hand the fault
-// facts to kickos_fault_record for the stub to print in thread context. The thread is
-// dying, so its register values need not be preserved. Called ONLY when
-// arch_fault_is_user_thread returned true; fallback-TU default: empty.
+// privileged, in thread mode, at the TOP of the faulting thread's own stack
+// (kickos_fault_stack_top), and hand the fault facts to kickos_fault_record for the stub
+// to print in thread context. The thread is dying, so its register values need not be
+// preserved. Called ONLY when arch_fault_is_user_thread returned true; fallback-TU
+// default: empty.
 void arch_fault_redirect_to_exit(void* frame);
 
 // --- Idle -------------------------------------------------------------------
@@ -590,14 +607,22 @@ bool kickos_fault_kill_thread(void* frame);
 // neither test subsumes the other.
 bool kickos_fault_frame_trusted(void const* frame, size_t bytes);
 
-// Did the faulting access land BELOW the running thread's stack, i.e. did the thread run
-// off the bottom of its own stack? For a backend whose exception CANCELS the faulting
-// instruction and restores SP (RXv3), the SP still reads in-bounds after an overflow and
-// kickos_fault_frame_trusted cannot see one; the faulting ADDRESS is then the only
-// evidence there is. A stack grows down, so an overflow's first denied access is beneath
-// the stack base by construction and this is exact for that case; it also refuses a wild
-// access that happens to be below the stack, which is the safe direction. Fails closed
-// (true) when there is no recorded stack to compare against.
+// Top (exclusive) of the RUNNING thread's own stack, or 0 when there is none to name (no
+// current thread, idle, or no recorded stack). Where a backend's redirect puts the SP, so
+// the stub runs with the whole stack under it rather than at the depth the thread had
+// reached: exit_current, cap_teardown and the fault print all need headroom there. A
+// backend must still establish that these fields describe the stack the stub will run on
+// (kickos_fault_frame_trusted on the fault's own SP) before it uses this value.
+uintptr_t kickos_fault_stack_top(void);
+
+// Did the faulting access land in the GUARD BAND immediately below the running thread's
+// stack, i.e. did the thread run off the bottom of its own stack? For a backend whose
+// exception CANCELS the faulting instruction and restores SP (RXv3), the SP still reads
+// in-bounds after an overflow and kickos_fault_frame_trusted cannot see one; the faulting
+// ADDRESS is then the only evidence there is. What it buys is ATTRIBUTION, not safety: the
+// stack reset is what keeps the stub off an exhausted stack, and an access far below the
+// stack is a wild write that belongs to the thread alone. Fails closed (true) when there is
+// no recorded stack to compare against. KICKOS_FAULT_STACK_GUARD_BAND is the width.
 bool kickos_fault_below_stack(uintptr_t addr);
 
 // The facts arch_fault_redirect_to_exit captured, printed later by
@@ -612,6 +637,12 @@ void kickos_fault_record(char const* status_name, uint32_t status,
 // Where arch_fault_redirect_to_exit points the faulting thread. Runs privileged, in
 // thread mode, on that thread's own stack.
 void kickos_thread_fault_exit(void) __attribute__((noreturn));
+
+// Where arch_ctx_redirect points a SLAIN thread. Runs privileged, in thread mode, at
+// the top of that thread's own stack, and prints nothing: a slay was asked for by a
+// thread that already knows. `arg` is always null and exists only to match the entry
+// signature arch_ctx_redirect fabricates against.
+void kickos_thread_slay_exit(void* arg) __attribute__((noreturn));
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
 // A context switch physically completed: emit a SWITCH record {from_tid, to_tid}.

@@ -236,4 +236,4 @@ of the companion chapter
   [`whats-under-include-libc-and-the-cxx-runtime.md`](whats-under-include-libc-and-the-cxx-runtime.md).
 - Where the writable floor comes from and how the linker partitions one image:
   [*Where your RAM goes*](where-your-ram-goes-full-cxx-memory-floor-and-the-linker-split.md).
-- Memory protection itself: Chapter 7, *Memory protection (M2)*.
+- Memory protection itself: Chapter 7, *Memory protection*.

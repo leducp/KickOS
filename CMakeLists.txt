@@ -350,7 +350,7 @@ else()
   add_compile_definitions(KICKOS_DEBUG=0)
 endif()
 
-# --- Console backend selection (docs/console-design.md) --------------------
+# --- Console backend selection (docs/reference/console.md) -----------------
 # KICKOS_CONSOLE = chip | rtt | both | none. `chip` = the board's native transport
 # (UART / semihosting / USIC); `rtt` = SEGGER RTT (needs a debug probe); resolved
 # to compile-time KICKOS_CONSOLE_CHIP/RTT for the kernel console core. The fragment
@@ -899,6 +899,15 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/capsweep/CMakeLists.txt")
     add_subdirectory(tests/unit/capsweep)
   endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/cancelkind/CMakeLists.txt")
+    add_subdirectory(tests/unit/cancelkind)
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/faultband/CMakeLists.txt")
+    add_subdirectory(tests/unit/faultband)
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slayhook/CMakeLists.txt")
+    add_subdirectory(tests/unit/slayhook)
+  endif()
 endif()
 
 # Aggregate usage-requirement target: "link this and you get the whole OS".
@@ -948,7 +957,7 @@ if(TARGET kickos_kernel)
   # RESCAN group; link it separately. This is what propagates the relocated system
   # headers (init.h, errno.h, cap_index.h) to every app.
   target_link_libraries(kickos_core INTERFACE kickos_system)
-  # OS-agnostic app entry (architecture.md 8j): the app writes a plain `int main`,
+  # OS-agnostic app entry (docs/reference/architecture.md, invariant 8): the app writes `int main`,
   # renamed to the kernel-called symbol; app.h is force-included so the renamed C++
   # main gets C linkage (unmangled).
   target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)

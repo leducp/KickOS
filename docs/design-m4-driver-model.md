@@ -3,8 +3,9 @@
 
 # M4 driver model -- the class/service duality
 
-> **Status: ACTIVE** -- the packaging RULING is settled and the driver libs under
-> `system/driver/<chip>/` follow it; the framework it describes is the work in flight for M4.
+> **Status: LANDED** -- the packaging RULING is settled and the driver libs under
+> `system/driver/<chip>/` follow it; the framework it describes shipped in M4.8.1,
+> `design-generic-driver-service.md`.
 > The ruling itself now has a Reference home: `reference/architecture.md`, *Driver packaging: class
 > versus service*, which is code-synced and is what a reader should cite. This document is kept as
 > the decision record and for the numbered rules below, which source comments and sibling design

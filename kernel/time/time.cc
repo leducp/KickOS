@@ -205,9 +205,10 @@ namespace kickos
                     break;
                 }
                 case WAIT_JOIN:
+                case WAIT_TASK_EMPTY:
                 {
                     // On no list at all, so clearing the tag IS the whole unwind. It also
-                    // makes exit_current's sweep miss a joiner that has already given up.
+                    // makes exit_current's sweep miss a waiter that has already given up.
                     t->clear_wait_edge();
                     t->wait_result = -KOS_ETIMEDOUT;
                     sched::wake(t);

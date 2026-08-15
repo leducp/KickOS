@@ -4,7 +4,7 @@
 > **Status: ACTIVE** -- the live prioritized backlog for the milestone in flight (M4).
 > See `design/README.md` for the marker taxonomy.
 
-**EXPLORATORY -- NOT A CONTRACT.** The complement of `docs/design-driver-era-scope.md`
+**NOT A CONTRACT.** The complement of `docs/design-driver-era-scope.md`
 (the WORK) and `roadmap.md` (the milestone): this doc is the SURVEY -- what each of the
 four neutrality boards actually carries on silicon, what KickOS already drives, and a
 complexity-vs-gain weighting that turns "full per-board coverage" from an unbounded wish

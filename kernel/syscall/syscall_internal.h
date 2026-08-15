@@ -118,6 +118,15 @@ namespace kickos
     // Waits until the caller is the last live thread. ROOT ONLY: returns 0, or -KOS_EPERM
     // to any other caller.
     int thread_wait_last();
+
+    // The FORCIBLE half of the pair above, and both BLOCK on the same terms as thread_join:
+    // no caller-held IrqLock. Each marks its target CANCEL_SLAY -- whose resume switch_to
+    // then claims, so it executes no further unprivileged instruction -- and waits for it to
+    // be gone. 0 means GONE; -KOS_ETIMEDOUT means the redirect is armed and irrevocable with
+    // the capability sweep unfinished, which is the one ABI return weaker than "gone" and
+    // strictly stronger than "accepted".
+    int thread_slay(kos_thread_t thread, uint32_t timeout_us);
+    int task_slay(kos_task_t task, uint32_t timeout_us);
 }
 
 #endif

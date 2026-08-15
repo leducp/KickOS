@@ -414,6 +414,8 @@ dropped and the J-Link/ST-Link/ESP-ROM boot preamble (and any ANSI escapes) trim
 ### selftest -- UNDER ENFORCEMENT
 Build: preset `f411disco-st` + `-DKICKOS_HAVE_MPU=1`, target `selftest`.
 Flash: ST-Link `st-flash --connect-under-reset --reset write <bin> 0x08000000` -> OK.
+(Recorded as RUN, not as recommended: that flag pair arms `DEMCR.VC_HARDERR` and halts the core at
+`HardFault_Handler`'s first instruction. See `reference/boards.md`, *M4.5.6*, and `flashing.md`.)
 Console: FTDI on PA2, `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BH001J9H-if00-port0` @115200.
 Result: **42/42 pass, 0 fail** (source log `.session/logs/f411-sel-BH001J9H.log`).
 ```

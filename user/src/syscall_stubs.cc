@@ -176,6 +176,13 @@ int kos_thread_kill(kos_thread_t thread)
                                          static_cast<uintptr_t>(thread), 0, 0, 0));
 }
 
+int kos_thread_slay(kos_thread_t thread, uint32_t timeout_us)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_THREAD_SLAY,
+                                         static_cast<uintptr_t>(thread),
+                                         static_cast<uintptr_t>(timeout_us), 0, 0));
+}
+
 int kos_task_create(void* mem_base, uint32_t mem_size, kos_task_t* out_task)
 {
     // Seated BEFORE the trap, so the "always written" guarantee holds even for a refusal the
@@ -194,6 +201,13 @@ int kos_task_kill(kos_task_t task)
 {
     return static_cast<int>(arch_syscall(KOS_SYS_TASK_KILL,
                                          static_cast<uintptr_t>(task), 0, 0, 0));
+}
+
+int kos_task_slay(kos_task_t task, uint32_t timeout_us)
+{
+    return static_cast<int>(arch_syscall(KOS_SYS_TASK_SLAY,
+                                         static_cast<uintptr_t>(task),
+                                         static_cast<uintptr_t>(timeout_us), 0, 0));
 }
 
 int kos_thread_join(kos_thread_t thread, uint32_t timeout_us)

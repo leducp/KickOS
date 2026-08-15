@@ -103,6 +103,14 @@ void arch_context_init(struct arch_context* ctx,
     ctx->resting_npriv = npriv;
 }
 
+// The whole seam on this backend: the fabricated first frame already lands at the stack
+// top with CONTROL.nPRIV expressing privilege, so a rebuild is that same fabrication.
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+}
+
 // --- Critical section: PRIMASK (mask all configurable interrupts) -----------
 arch_irq_state_t arch_irq_save(void)
 {

@@ -17,8 +17,9 @@ one cross-arch label drift + the HW-unproven RX register risk.
       ASSERT added to all 6 scripts (RISC-V brackets the closed-set .bss only).
 - [x] #4 RISC-V U-mode instruction-access fault (mcause=1) not labelled MPU FAULT -- FIXED.
 - [x] #5 RX backend rounds (masks) misaligned regions instead of skipping -- FIXED: skip
-      an unrepresentable region (slot V=0), fail-closed like ARM/PMP. RX HW re-run pending
-      (board not on the bench).
+      an unrepresentable region (slot V=0), fail-closed like ARM/PMP. RX HW re-run witnessed:
+      rx72m `1..78` under MPU ENFORCEMENT at `9a00e73` (2026-08-02, `reference/boards.md`
+      capture-provenance table).
 - [x] #6 K64F peripheral-gating -- RESOLVED on silicon (see below): SYSMPU does NOT gate
       peripherals; the AIPS bridge does (coarse, per-slot, not per-thread).
 - [ ] nits (below)
@@ -31,10 +32,9 @@ app + libkickos_user.a containing "user". A build under a path containing "user"
 kernel/lib `.data/.bss` into the unprivileged-granted region. Over-match overflows
 `_appdata_size` -> the pow2 ASSERT trips -> loud (path-dependent) build break; a small
 foreign object that fits 4K would silently widen U-mode reach (not a kernel-data
-escape -- libkickos_kernel.a has no "user"). Fix: select by an explicit section tag,
-not path substring -- compile user objects into a named section (e.g. `.user.data`/
-`.user.bss` via a section attribute or a per-TU flag) and group THAT; path-independent
-+ intentional. At minimum, document the build-path constraint.
+escape -- libkickos_kernel.a has no "user"). Fixed: the 6 enforcement chip linker
+scripts select by archive:member colon-inversion (mk64f's approach), not path
+substring -- path-independent. Silicon-confirmed on xmc4800/esp32c6, selftest 20/20.
 
 ## #2 -- the empty-match case is claimed-guarded but is not (Major, CONFIRMED)
 Every chip .ld's ASSERT is only the overflow check
@@ -42,16 +42,15 @@ Every chip .ld's ASSERT is only the overflow check
 zero-match is caught, but empty -> `used_end == start` -> `start <= start+4K` passes
 silently. If a refactor makes `*user*` match nothing, app globals fall to the kernel
 catch-all and every unprivileged thread faults on its first global (fail-closed, but
-NO build signal, and the comment misleads). Fix: gate an
-`ASSERT(_appdata_used_end > __kickos_appdata_start, ...)` on "app declares globals",
-or delete the misleading half of the comment. (A global-free app must not trip it.)
+NO build signal, and the comment misleads). Fixed: a kernel-side selector-death
+ASSERT was added to all 6 linker scripts (RISC-V brackets the closed-set .bss only).
 
 ## #4 -- RISC-V U-mode instruction-access fault not labelled MPU FAULT (Minor, CONFIRMED)
 `arch/riscv/rv32imac/arch_rv32imac.cc:432-436` routes only mcause 5 (load) + 7 (store)
 from U-mode to `kickos_isr_fault` ("MPU FAULT: task ..."). A U-mode instruction-fetch
 violation is mcause 1, which falls through to the generic dump. ARM labels IACCVIOL as
-MPU FAULT too. Fix: include `mcause == 1` in the from_user routing (mtval = faulting
-PC, matches the contract). Safe either way (terminates); presentation/consistency.
+MPU FAULT too. Fixed: `mcause == 1` was included in the from_user routing (mtval =
+faulting PC, matches the contract).
 
 ## #5 -- RX backend rounds misaligned regions instead of skipping (Minor, PLAUSIBLE, build-only)
 `arch/rx/rxv3/arch_rxv3.cc:486-511` admits a region on `size >= 16` then MASKs

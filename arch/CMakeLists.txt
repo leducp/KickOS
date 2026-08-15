@@ -3,7 +3,7 @@
 
 # ISA family routes the chip glob + per-arch include path. The arm toolchain
 # predates the seam and does not set it, so default to "arm"; the rx toolchain
-# (and, separately, an xtensa one) set it explicitly (spike section 1).
+# (and, separately, an xtensa one) set it explicitly.
 if(NOT KICKOS_ARCH_FAMILY)
   set(KICKOS_ARCH_FAMILY "arm")
 endif()

@@ -14,11 +14,20 @@
 #include <kickos/time.h>
 #include <kickos/irqlock.h>
 
+#include <kickos/sys/abi.h> // KOS_EXIT_CANCELLED: the slay stub's exit code
+
 namespace kickos
 {
     namespace
     {
         // The one place a switch happens. Caller holds IrqLock.
+        //
+        // `prev` is the PUBLISHED thread, which a switch pended earlier under this same lock
+        // has already moved off the executing one. `from` is right either way: the backends
+        // that pend ignore it and save whatever the switcher finds, and the two that swap
+        // inline cannot have a pend outstanding. A publication superseded that way keeps the
+        // switch_count and the RR slice armed here; whether a pend has fired is knowable only
+        // to the arch.
         void switch_to(Thread* next)
         {
             Thread* prev = kernel().current;
@@ -35,6 +44,20 @@ namespace kickos
             // not return here until it is itself resumed, so nothing else will program the
             // incoming thread's policy deadline (RR slice).
             ktime_rearm();
+            // CLAIM THE RESUME of a slain thread. Only the INCOMING context, and only
+            // before arch_switch: the deferred switchers (PendSV, .Lswitch, _kickos_rx_pendsw,
+            // _kickos_int_level1) SAVE the outgoing thread's live registers over prev->ctx and
+            // RESTORE next->ctx, so a rebuild of prev->ctx here would be overwritten and
+            // silently lost. `dying` is the restart guard and not a second flag: cap_teardown
+            // releases IrqLock between chunks, so a half-swept thread is preemptible and
+            // re-entering the stub from the top would restart a sweep over a table that is
+            // already partly empty. Idempotent in its values, so a rebuild repeated before the
+            // stub runs changes nothing.
+            if (next->cancel_kind == CANCEL_SLAY and not next->dying)
+            {
+                arch_ctx_redirect(&next->ctx, kickos_thread_slay_exit, next->stack_base,
+                                  next->stack_size);
+            }
             arch_switch(&prev->ctx, &next->ctx);
         }
     }
@@ -139,7 +162,10 @@ namespace kickos
             {
                 ktime_deadline_cancel(t);
             }
-            if (t->state == ThreadState::READY or t->state == ThreadState::RUNNING)
+            // BLOCKED is the only state a park leaves behind, and every other one has to be
+            // refused rather than readied: EXITED is what ThreadPool::alloc reads as a free
+            // slot, so readying an exited thread takes that slot out of the pool for good.
+            if (t->state != ThreadState::BLOCKED)
             {
                 return;
             }
@@ -151,8 +177,15 @@ namespace kickos
             {
                 return;
             }
+            // `c` is what runs when the mask lifts, which is this thread only until one of the
+            // switches below is admitted: on a backend that pends, the sweep keeps running with
+            // `current` naming its peer, so a later wake under the same IrqLock reads that peer
+            // and both clauses decline. What holds the decision is pick_next, which still
+            // returns that peer: it outranks the sweep and heads the highest ready list.
+            //
             // Never picked again, so a switch here abandons the rest of exit_current: its
-            // remaining waiters go unwoken. Its own final reschedule is the switch.
+            // remaining waiters go unwoken. Its own final reschedule is the switch. That
+            // abandonment needs a backend that swaps inline, where `c` is never a peer.
             if (c->state == ThreadState::EXITED)
             {
                 return;
@@ -195,6 +228,18 @@ namespace kickos
         void exit_current(int code)
         {
             Thread* const c = kernel().current;
+            // The group this thread leaves, and whether leaving it EMPTIED the group.
+            // Function-scoped because the WAIT_TASK_EMPTY sweep that reads them runs in the
+            // second locked block, on the far side of a preemptible cap_teardown.
+            //
+            // `left_task` survives that gap as a bare POINTER, and what makes the compare
+            // there unambiguous lives in another file: an IMPLICIT task's slot is freed by
+            // the release below and could be re-handed mid-sweep, but task_resolve refuses a
+            // creator-less slot (task.cc), so no caller can ever hold a handle to park
+            // WAIT_TASK_EMPTY against one. An EXPLICIT task's slot is held by its creator
+            // until the wait resolves. Do not weaken either half without revisiting this.
+            Task* left_task = nullptr;
+            bool emptied_task = false;
             {
                 IrqLock lock;
                 // Deliberately not EXITED yet: EXITED is what makes the slot reclaimable,
@@ -208,7 +253,18 @@ namespace kickos
                 // rule safe for every spawn written before tasks existed
                 // (docs/design-task-layer.md section 6). It must precede task_release, which
                 // may free the slot and leave c->task a dangling name.
-                task_cancel_group(c->task);
+                //
+                // THE KIND TRAVELS WITH THE DEATH. A member that was slain slays its peers,
+                // or the group dies by two rules and a peer keeps a cleanup window the
+                // supervisor already denied its sibling. Any other exit -- a return from
+                // main, a fault, a cooperative kill -- ends the group cooperatively, which is
+                // what the floor at CANCEL_KILL says.
+                uint8_t group_kind = CANCEL_KILL;
+                if (c->cancel_kind > group_kind)
+                {
+                    group_kind = c->cancel_kind;
+                }
+                task_cancel_group(c->task, group_kind);
                 // BEFORE the sweep, not after. The sweep's endpoint arm EPIPE-wakes a
                 // supervisor parked on this thread's endpoint, and that supervisor may
                 // respawn immediately; the DEV-window exclusivity check (kernel.h) refuses
@@ -216,7 +272,27 @@ namespace kickos
                 // takes this one out of that scan. Only a refcount drop: the thread keeps
                 // running off its own copied regions[], which no longer name the Task or the
                 // Domain object.
-                task_release(c->task);
+                // Captured BEFORE the name is retired below, because the WAIT_TASK_EMPTY
+                // sweep further down runs after cap_teardown and needs the group this
+                // thread LEFT. Reading the refcount there instead would be wrong twice: an
+                // implicit task's slot is freed inside this call, and a slot at zero cannot
+                // say whether THIS death is what took it there.
+                left_task = c->task;
+                emptied_task = task_release(c->task);
+                // RETIRE THE NAME WITH THE REFERENCE. The slot may be free now, and
+                // free_slot() can re-hand it in the sweep's first chunk gap. Membership in
+                // task_cancel_group is a POINTER COMPARISON, so a stale c->task would make
+                // this thread a phantom member of whatever group lands here next -- caught
+                // today only by thread_cancel's `dying` test, whose documented job is
+                // stopping two co-dying members from marking each other, not covering slot
+                // reuse. task_cancel_group(nullptr) and task_domain(nullptr) are both total.
+                c->task = nullptr;
+                // The creator's hold ends with the creator. Keyed on the TAG, because the tag
+                // IS the gate: a recycled pool slot answers kill_tag_of with its predecessor's,
+                // so a hold left behind is creator authority its successor never earned. The
+                // group is NOT cancelled -- a spawner's death does not kill its children, and a
+                // member's own exit already ends the group.
+                task_orphan_created_by(kernel().threads.kill_tag_of(c));
             }
             // Must close every cap the exiting thread holds BEFORE its slot is reclaimable,
             // else object references leak (destroy-on-last-close). Preemptible: it drops
@@ -227,12 +303,10 @@ namespace kickos
                 IrqLock lock;
                 Kernel& k = kernel();
                 c->state = ThreadState::EXITED;
-                // Must follow the whole teardown loop: every IRQ cap this thread held has
-                // to be dropped, and every line it owned masked and detached, before the
-                // device is re-initialised. A no-op unless this thread was the last
-                // receiver on the PUBLISHED console endpoint (see console_tx.h). Deferred
-                // again while a CONCURRENT sweep is in flight; the note is sticky, so that
-                // thread's own exit runs it.
+                // The RETRY, and the only site that needs one: the reclaim already ran at the
+                // note (cap.cc), in the window that EPIPEd the peer. A refusal there means a
+                // live thread still held the register window, and only a death frees it.
+                // Deferred while a CONCURRENT sweep is in flight; the note is sticky.
                 if (not cap_teardown_active())
                 {
                     console_on_driver_death();
@@ -242,8 +316,9 @@ namespace kickos
                 {
                     k.live--;
                 }
-                // Join and wait-until-last are parked on NO list, so this pool scan IS the
-                // waiter lookup; it runs at a thread exit and nowhere else. The wait edge
+                // Join, wait-until-last and wait-for-the-group-to-empty are parked on NO
+                // list, so this pool scan IS the waiter lookup; it runs at a thread exit and
+                // nowhere else. The wait edge
                 // and wait_result are the waker's to write BEFORE the wake, as on every
                 // wait queue. `state` is EXITED by now, which is the clause in wake that
                 // suppresses these switches; `dying` no longer does it, because a joiner may
@@ -254,6 +329,16 @@ namespace kickos
                 {
                     Thread* const w = &k.threads.slots[s];
                     if (w->wait_join_target() == c)
+                    {
+                        w->clear_wait_edge();
+                        w->wait_result = 0;
+                        wake(w);
+                        continue;
+                    }
+                    // Only when THIS death emptied the group, so a member leaving a group
+                    // that still has peers wakes nobody. The waiter's own group is compared
+                    // by pointer, exactly as membership is.
+                    if (emptied_task and w->wait_task_target() == left_task)
                     {
                         w->clear_wait_edge();
                         w->wait_result = 0;
@@ -324,4 +409,19 @@ namespace kickos
         }
 
     }
+}
+
+// Reached only through a context arch_ctx_redirect rebuilt, so `current` IS the slain
+// thread and this runs privileged at the top of its own stack. The window before
+// exit_current's first IrqLock is a handful of instructions with interrupts on; a
+// preemption there costs one idempotent rebuild of work that has not happened.
+//
+// Prints nothing, unlike kickos_thread_fault_exit: a fault is an event a supervisor cannot
+// otherwise learn about, and a slay was asked for by a thread that already knows. A banner
+// would also route this path through kprintf_fault's published-console delivery, whose
+// ordering guarantee rests on a console driver provisioned at or above every stdout client.
+extern "C" void kickos_thread_slay_exit(void* arg)
+{
+    (void)arg;
+    ::kickos::sched::exit_current(KOS_EXIT_CANCELLED);
 }

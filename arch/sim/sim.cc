@@ -906,6 +906,40 @@ void arch_context_init(struct arch_context* ctx,
     makecontext(&c->uc, reinterpret_cast<void (*)()>(trampoline), 2, hi, lo);
 }
 
+// The seam, and the ONE backend where the shared body alone is wrong twice over.
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    SimContext* c = sc(ctx);
+    // (1) REUSE the host stack this context already runs on. arch_context_init mallocs a
+    // 64 KiB substitute for a caller buffer below SIM_HOST_MIN_STACK and never frees it,
+    // so re-deriving from the caller's fields would leak one per rebuild.
+    void* const host_base = c->uc.uc_stack.ss_sp;
+    size_t const host_size = c->uc.uc_stack.ss_size;
+    if (host_base != nullptr and host_size != 0)
+    {
+        stack_base = host_base;
+        stack_size = host_size;
+    }
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // arch_context_init memsets the whole SimContext, and the trace id is stamped once at
+    // thread_create; without this the rebuilt thread switches in as an unknown tid.
+    uint16_t const tid = c->tid;
+#endif
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    c->tid = tid;
+#endif
+    // (2) RAISE. Privilege here is not in the context at all: it is the guard-page posture,
+    // and arch_context_init discards its `privileged` argument. arch_switch programs the
+    // thread's RESTING grant on switch-in, so a stub resumed through the shared body alone
+    // would SIGSEGV on its first read of kernel state. The count is what makes
+    // guard_apply_current hold the arena up, including across the teardown's blocking
+    // points; never unwound, because the stub never returns. arena_raise_all() is NOT
+    // called here: this context is not the running one, and its switch-in will raise.
+    c->raised = c->raised + 1;
+}
+
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
     SimContext* t = sc(to);
@@ -1117,6 +1151,21 @@ void arch_fault_redirect_to_exit(void* frame)
     }
     uc->uc_mcontext.gregs[REG_RIP] =
         static_cast<greg_t>(reinterpret_cast<uintptr_t>(&kickos_thread_fault_exit));
+    // The stub runs at the top of the dying thread's stack, not at the depth the fault
+    // reached. Guarded on the faulting RSP lying inside the Thread's recorded stack,
+    // because arch_context_init substitutes a host stack for a caller buffer below
+    // SIM_HOST_MIN_STACK and those fields then do not describe the stack in use.
+    // System V AMD64 wants rsp+8 16-byte aligned at the callee's first instruction, and
+    // this jump skips the call that would have pushed the return address, so the slot is
+    // reserved here and filled with a return address that cannot be taken.
+    uintptr_t const rsp = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RSP]);
+    uintptr_t const top = kickos_fault_stack_top();
+    if (top != 0 and kickos_fault_frame_trusted(reinterpret_cast<void const*>(rsp), 0))
+    {
+        uintptr_t const sp = (top & ~static_cast<uintptr_t>(15)) - 8;
+        *reinterpret_cast<uintptr_t*>(sp) = 0;
+        uc->uc_mcontext.gregs[REG_RSP] = static_cast<greg_t>(sp);
+    }
 #else
     (void)frame;
 #endif

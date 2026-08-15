@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 <!-- Copyright (c) 2026 Philippe Leduc -->
-# Style enforcement across code, docs and build files -- ACTIVE
+# Style enforcement across code, docs and build files
 
-**ACTIVE**, because the M4.5.9 item asking for this pass is open and the mechanism is proposed for build.
+> **Status: ACTIVE** -- because the M4.5.9 item asking for this pass is open and the mechanism is proposed for build.
 
 ## 1. The problem
 

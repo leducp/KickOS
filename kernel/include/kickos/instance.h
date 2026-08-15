@@ -52,6 +52,12 @@ namespace kickos
         uint16_t trace_probe_overhead = 0; // measured once at ktrace_init (SESSION)
 #endif
 
+        // Tasks currently holding a creator hold (task.cc). Declared HERE, away from the
+        // task pool below, because the two bytes before `sleepq` are padding on every
+        // 32-bit target in BOTH telemetry postures: microbit's `_ebss` is its arena base,
+        // so a byte that grows the struct costs a whole allocation granule.
+        uint16_t task_holds = 0;
+
         // --- tickless time (time.cc) ---
         Thread* sleepq = nullptr; // sorted ascending by deadline_ns
 

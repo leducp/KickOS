@@ -71,6 +71,38 @@ extern "C" bool kickos_fault_frame_trusted(void const* frame, size_t bytes)
     return f >= lo and f < hi and bytes <= (hi - f);
 }
 
+// How far below a thread's stack base kickos_fault_below_stack still reads an access as that
+// thread running off the bottom of its own stack. ONE RXv3 MPU region page (16 bytes:
+// RSPAGEn/REPAGEn hold addr[31:4], RX72M UM sec.17.1.2), because the page is the unit the
+// hardware itself denies in.
+//
+// The width is a RULING, not a derivation, and its ceiling is a MEASUREMENT: it must stay
+// below the distance from a thread's stack base to the nearest legitimate cross-domain target
+// beneath it. Widening it past that gap re-creates the false positive the narrowing removes;
+// narrowing it below 4 stops attributing overflows at all, since the denied push an RXv3
+// overflow leaves behind lands at base - 4. One line, deliberately.
+#ifndef KICKOS_FAULT_STACK_GUARD_BAND
+#define KICKOS_FAULT_STACK_GUARD_BAND 16u
+#endif
+
+// Where a backend's redirect puts the SP, so the stub runs with the whole stack under it
+// rather than at the depth the fault reached. 0 means DO NOT RELOCATE: there is no stack
+// established as this thread's own, so a reset would aim the stub at memory nobody says it
+// may use. See arch.h for the contract the five backends implement against.
+extern "C" uintptr_t kickos_fault_stack_top(void)
+{
+    ::kickos::Thread* const c = ::kickos::sched::current();
+    if (c == nullptr or c == ::kickos::sched::idle())
+    {
+        return 0;
+    }
+    if (c->stack_base == nullptr or c->stack_size == 0)
+    {
+        return 0;
+    }
+    return reinterpret_cast<uintptr_t>(c->stack_base) + c->stack_size;
+}
+
 extern "C" bool kickos_fault_below_stack(uintptr_t addr)
 {
     ::kickos::Thread* const c = ::kickos::sched::current();
@@ -78,7 +110,19 @@ extern "C" bool kickos_fault_below_stack(uintptr_t addr)
     {
         return true;
     }
-    return addr < reinterpret_cast<uintptr_t>(c->stack_base);
+    uintptr_t const base = reinterpret_cast<uintptr_t>(c->stack_base);
+    if (addr >= base)
+    {
+        return false;
+    }
+    // Subtracted from the BASE rather than added to the address: the other spelling wraps, and
+    // a stack based inside the first band of the address space would then admit a wild HIGH
+    // address as an overflow.
+    if (base < KICKOS_FAULT_STACK_GUARD_BAND)
+    {
+        return true;
+    }
+    return addr >= base - KICKOS_FAULT_STACK_GUARD_BAND;
 }
 
 extern "C" bool kickos_fault_kill_thread(void* frame)

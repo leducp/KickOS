@@ -89,10 +89,13 @@ namespace kickos
 #define KDIAG_F_FAULT_PC      KICKOS_DIAG_PICK("  PC=%p\n", "F2 %p\n")
 #define KDIAG_F_FAULT_PC_STAT KICKOS_DIAG_PICK("  PC=%p %s=0x%x\n", "F3 %p %s %x\n")
 #define KDIAG_F_FAULT_ADDR    KICKOS_DIAG_PICK("  ADDR=%p\n", "ADDR=%p\n")
+#define KDIAG_F_FAULT_STUB_DEEP KICKOS_DIAG_PICK("  STUB DEEP: %u bytes below the stack top\n", \
+                                                "F4 %u\n")
 
 // MPU fault report (kernel/init/console.cc).
 #define KDIAG_F_MPU_FAULT KICKOS_DIAG_PICK("\nMPU FAULT: thread '%s' attempted %s at %p -- reported\n", \
                                            "\nMPU FAULT: thread '%s' attempted %s at %p\n")
+#define KDIAG_F_MPU_FAULT_STACK KICKOS_DIAG_PICK("  its stack %p-%p\n", "st %p %p\n")
 
 // ARM fault dumps. The "=== ... ===" banner line is emitted separately, not from here.
 #define KDIAG_F_ARM_REGS1 KICKOS_DIAG_PICK("  PC=0x%x LR=0x%x xPSR=0x%x (%s)\n", "R1 %x %x %x %s\n")

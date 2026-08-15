@@ -8,7 +8,7 @@
 // service: if the CS drops between software-paced words the slave sees N frames
 // instead of one, so a held CS must be proven, not assumed.
 //
-// Modelled on user/apps/xmcspi (same U0C1 = 0x4003_0200 512 B window, same
+// Modelled on user/apps/xmc4800-relax/xmcspi (same U0C1 = 0x4003_0200 512 B window, same
 // unprivileged-driver-brings-itself-up + spawn-with-MMIO-grant pattern, with
 // FDR/BRG/CCR going through kos_periph_reg_write). It is NOT the enforcement proof:
 // no negative test, no MPU-fault poke; this bench answers only the functional CS-hold

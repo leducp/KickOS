@@ -422,4 +422,4 @@ not a silent leak.
 - The region-set model and the C++-under-MPU budget:
   [`../reference/architecture.md`](../reference/architecture.md) ("Memory domains", "C++ decisions").
 - The RISC-V `gp` anchor contract: [`../reference/porting.md`](../reference/porting.md) (RISC-V arch).
-- Memory protection and how regions are granted at spawn: Chapter 7, *Memory protection (M2)*.
+- Memory protection and how regions are granted at spawn: Chapter 7, *Memory protection*.

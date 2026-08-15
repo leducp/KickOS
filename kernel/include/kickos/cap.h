@@ -540,6 +540,14 @@ namespace kickos
     // exists.
     void cap_slab_init();
 
+    // Forget the published stdout target, so no cap_install_defaults seat and no note-site
+    // comparison can match a handle from a previous life. RESET, not unpublish: it drops the
+    // NAME and not the kernel's reference on that endpoint, so the only sound caller is one
+    // that is resetting the endpoint pool with it. Deliberately beside cap_slab_init rather
+    // than folded into it: this TU's OTHER un-resettable datum, g_cap.teardown_depth, was
+    // refused that widening (TODO), and the same reasoning applies to a function kmain calls.
+    void cap_console_reset();
+
     // The one resolve chokepoint: validate a per-thread cap handle and return the named
     // global object, or nullptr (bad index, empty, stale cap-gen, wrong type, or
     // missing rights). Returns void* (dispatch-on-type over the object pools); the
@@ -631,6 +639,13 @@ namespace kickos
     // (only an EXITED one is), no peer can mint a cap into the table, and c stays on the
     // ready structure, so a preempted sweep resumes and stays TOTAL.
     //
+    // EVERY CAP_IRQ ENTRY IS RELEASED BEFORE THE FIRST GAP, in the same masked window as the
+    // depth bump. An IRQ line is named by number and a peer's claim of a still-bound line is
+    // refused -KOS_EBUSY, so a line released inside the chunked loop would be observable as
+    // not-yet-released by the supervisor that loop's own EPIPE wake releases. Two things read
+    // that ordering: the console reclaim at the endpoint arm, and any peer respawning into the
+    // dead driver's line.
+    //
     // TWO things switch a dying thread out mid-sweep, and either is how two threads come to
     // be in here at once (g_cap.teardown_depth, cap.cc): an RR slice expiring in
     // sched::tick_rr, and sched::wake of a strictly higher-priority peer from the teardown
@@ -641,9 +656,9 @@ namespace kickos
     // still live. A FIFO dying thread is reachable only by the second.
     void cap_teardown(Thread* c);
 
-    // True while any thread is inside cap_teardown. A preempted sweep may still hold an IRQ
-    // cap on the published line, so the console reclaim defers re-initialising the UART
-    // until the last sweep finishes. See console_tx.h.
+    // True while any thread is inside cap_teardown. NOT a statement about IRQ ownership: a
+    // counted sweep has already released every line it held (cap_teardown above), so the
+    // exit_current retry it still gates is conservative rather than load-bearing.
     bool cap_teardown_active();
 
     // Seat (or re-seat) thread t's reserved stdout slot (index 0) as a SEND-ONLY

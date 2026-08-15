@@ -40,6 +40,16 @@ fi
 if ! echo "$out" | grep -q "# all tests passed"; then
     fail "TAP completion marker missing (crash / hang / truncated run?)"
 fi
+# THE SELFTEST NEVER FAULTS. The deliberate cross-domain fault is a separate binary
+# (faultsurvive), so a thread-fault record in this stream is an arm whose thread died the
+# wrong way -- and thread-scoped isolation means it dies anyway, so every plan, case and
+# directive check above still reconciles and the run reads green. Measured: a slay redirect
+# that rebuilds an UNPRIVILEGED context faults the stub on its first kernel access, is caught
+# by kickos_fault_kill_thread, and reaches the same observable end state as a correct one.
+if echo "$out" | grep -q "=== THREAD FAULT ==="; then
+    echo "$out" | grep "=== THREAD FAULT ==="
+    fail "a thread faulted during the suite: this stream's arms must never fault"
+fi
 
 # Parsed after the completion marker so a truncated run is reported as truncated.
 plan="$(echo "$out" | sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' | tail -1)"

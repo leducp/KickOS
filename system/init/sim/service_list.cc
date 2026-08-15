@@ -60,7 +60,6 @@ namespace
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_NONE,
-                     .mem_grant = false,
                      .window_grant = false,
                      .cap_count = 1,
                      .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},

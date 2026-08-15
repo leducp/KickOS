@@ -3,8 +3,10 @@
 
 # A task layer: naming the group that already exists
 
-**Status: COMPLETE.** Steps 9.1 through 9.5 have all LANDED; only 9.6 remains and it belongs to
-the MMU era. Section 10's sequencing is superseded. This file records the decisions taken, the ones
+> **Status: LANDED**
+
+Steps 9.1 through 9.5 have all LANDED; only 9.6 remains and it belongs to
+the MMU era. This file records the decisions taken, the ones
 deliberately deferred, the measured cost, and where the ruling turned out to be wrong. Written
 against `34c5bf7e`; the 9.4/9.5 annotations were added at `M4.8.3-task-layer`.
 
@@ -586,12 +588,12 @@ into it, so all twelve drivers are converted by editing the generic service rath
 `ThreadSet` is gone: `unwind` and `console_handover_finish` take the task handle, and the reverse-order
 per-thread sweep is one `kos_task_kill`.
 
-**Two honest costs.** The ring block is the TASK's shared region now, so `Thread::mem_grant` in a
-descriptor is read as the GROUP's declaration -- and `rx72m/rxsci`'s relay thread, which declared
-`mem_grant = false` alongside two peers that declared true, SEES the block it did not ask for. That is
-one thread in the fleet, it is that driver's own state, and the grant the isolation principle is about
--- the register window -- stays its own. The alternative, giving the task no shared region and keeping
-the per-thread grants, would have left 1.2's "two levels of memory authority" a fiction in practice.
+**Two honest costs.** The ring block is the TASK's shared region now, so a driver's per-thread
+memory declaration became the GROUP's -- and `rx72m/rxsci`'s relay thread, which declared no block
+alongside two peers that declared one, SEES the block it did not ask for. That is one thread in the
+fleet, it is that driver's own state, and the grant the isolation principle is about -- the register
+window -- stays its own. The alternative, giving the task no shared region and keeping the per-thread
+grants, would have left 1.2's "two levels of memory authority" a fiction in practice.
 And the sim's WINDOWED console posture deliberately keeps its window thread OUT of the driver's group
 (`system/init/sim/service_list.cc`): it models a FOREIGN holder of the registers, which is the only
 shape in which the deferred console reclaim is observable at all. Coupling it would have deleted that
@@ -622,46 +624,6 @@ Steps 9.3, 9.4 and 9.5 can be three submilestones or one; they cannot be reorder
 makes the window thread-scoped, which drops the lifetime guarantee 5.2 wants, and 9.5's coupled death
 is what puts it back. Landing 9.4 alone would have shipped a window that a surviving peer outlives.
 
-## 10. Sequencing
-
-> **SUPERSEDED 2026-08-11, and step 9.3 has LANDED in M4.8.3.** Three of the four reasons below are
-> spent: M4.8.1 merged, the numbering collision was resolved by the renumber that moved the driver
-> era to `M4.9.x` (so "M4.8.3..N is the fleet witness pass" now reads `M4.9.2..N`), and reason 3's
-> preferred predecessor, the host unit-test layer, landed as M4.8.2. The survivor is reason 4, and it
-> does not reach step 9.3: it argues that step **9.4**'s per-driver payoff is easier to argue against
-> a witnessed driver tier, which is an argument about argument, not a dependency, and 9.3 changes no
-> driver and no behaviour. The drivers themselves are not what anything is waiting on: all twelve
-> exist and M4.8.1 witnessed them on every enforcement class.
-
-**Original recommendation: not before M4.8.1, and not in M4.8.x at all. Land it after the host
-unit-test layer, as the first submilestone of M4.9 that follows it.**
-
-Four reasons, in order of weight.
-
-1. **M4.8.1 is finished, reviewed and silicon-witnessed on six boards, awaiting merge.** A witness is
-   valid for a tree. Inserting kernel-core work that touches `Thread`, `Domain`, spawn and teardown
-   ahead of that merge invalidates six board captures to gain nothing, and buys a second fleet pass.
-2. **M4.8.2 and M4.8.3..N are already allocated**, to the USB CDC console and to the fleet witness
-   pass plus the per-chip `arch_console_reclaim` bodies (`roadmap.md:153-154`). Banner and package
-   versions are `0.<milestone>.<submilestone>` and must stay monotonic (`roadmap.md:157`), so
-   numbering this into M4.8.x means renumbering allocated work. That is the exact mistake
-   `roadmap.md:130-134` records having already been paid for once.
-3. **A host unit-test layer is the right predecessor, not an unrelated neighbour.** This proposal
-   re-plumbs thread create and thread teardown: the paths that are most expensive to witness on
-   silicon and cheapest to test on a host. Step 9.3's whole claim is "provably inert", and a host
-   test layer is what makes that claim cheap to prove. Landing in the other order means proving it
-   with fleet passes.
-4. **The driver era should finish first, because the drivers are the evidence.** M4.8.3..N is the
-   fleet witness pass over the driver tier. The task layer's per-driver payoff (9.4) is much easier
-   to argue against a driver tier that is complete and witnessed than against one in motion.
-
-**Two ledger corrections this needs.** `roadmap.md`'s table carries no `M4.7.9` row despite that
-milestone being merged, and no `M4.9` row at all, so the host unit-test layer has no number in the
-file that `roadmap.md:130-134` designates as the numbering authority. Both should be added before
-this proposal is numbered against them.
-
-**What should not wait for any of it:** 9.1 and 9.2.
-
 ## 11. Open questions
 
 1. **The group kill. ANSWERED by 9.5, and the question contained a false dichotomy.** Neither a
@@ -686,16 +648,18 @@ this proposal is numbered against them.
    in `TODO.md`, which is core-path work with its own number. Deliberately not answered here, and 9.4
    and 9.5 left it alone: it still means "last thread in the system", backed by `Kernel::live`.
 
-6. **When does an explicit task's slot come back? OPEN, and 9.4 shipped the narrow answer.** A group's
-   slot and its domain are held by the creator's hold until `kos_task_kill` drops it, and there is no
-   sweep at the creator's own death. Root is the creator in every in-tree case and root's death ends
-   the system, so nothing leaks today; a supervisor thread that creates groups and then dies would
-   reserve those slots for the rest of the run. The three candidates: a `kos_task_release` that drops
-   the hold without ending the group (needed anyway to hand a group over), a task-pool sweep at
-   `exit_current` keyed on the creator tag, or declaring the hold to be the creator's for life. The
-   second is the one that composes with `ThreadPool::alloc`'s existing spawner-tag sweep, which
-   exists for the same reason: a recycled slot must not inherit authority over what its predecessor
-   created.
+6. **When does an explicit task's slot come back? ANSWERED, and the question was filed as the wrong
+   KIND of problem.** It is not a slot leak: `kill_tag_for_index` derives a tag from the pool slot,
+   so the SUCCESSOR of a dead creator's thread slot passes `task_created_by` for the predecessor's
+   groups -- it can kill them, and it can seat a child in one and hand that child the group's domain
+   regions. **That also refutes the third candidate below: declaring the hold the creator's for life
+   IS the escape.** The second candidate landed -- `task_orphan_created_by`, a task-pool sweep at
+   `exit_current` keyed on the creator tag, which is the one that composes with `ThreadPool::alloc`'s
+   spawner-tag sweep because both exist for the same reason. `exit_current` is TOTAL over deaths where
+   `alloc`'s reclaim point is not, which is why the sweep sits there and not at reuse. Gated by
+   `tests/unit/taskdeath/creator_hold.cc` over the real `kernel/task/task.cc`, now in the K-seam
+   source set; the syscall refusals it feeds (`-KOS_EPERM` for a stranger, `-KOS_EBADF` for a dead
+   group's handle) are outside that set and remain the selftest's to show.
 5. **the task-pool sizing symbol. ANSWERED, and the bound stated here was off by one.** Live TCBs are
    idle + root + `KICKOS_MAX_THREADS`, which is `KICKOS_THREAD_SLOTS + 1`, not `KICKOS_THREAD_SLOTS`:
    `KICKOS_THREAD_SLOTS` is itself `KICKOS_MAX_THREADS + 1` and THAT `+1` is root's, so the OUTER
@@ -705,3 +669,23 @@ this proposal is numbered against them.
    floor, so `task_for`'s ENOMEM stays COINCIDENT with the thread pool's instead of arriving one
    spawn earlier. The `.bss` this costs is 32 bytes on microbit and 144 on picopi, and section 8.2
    has what that did.
+
+7. **May a member decline the group's memory? REFUSED, and the declaration that implied it is
+   gone.** A driver descriptor carried a per-thread memory flag whose only reader was an
+   OR-reduction into the group's grant, so a thread declaring `false` beside peers declaring `true`
+   was widened by them -- `rx72m/rxsci`'s relay, the fleet's one instance. The filed fix was a third
+   memory scope: seat a member in the group with NO domain regions. It is refused, because a task is
+   DEFINED here as the set of threads that share one memory domain (section 5.1), and a member that
+   shares the task but not its domain makes that definition false -- two answers to "what memory do
+   this task's threads see" is exactly the second truth the tiebreaker forbids. The right
+   decomposition for a thread that must not reach the block is a task of its own, and the only thing
+   stopping that is that a task is also the kill group; separating "shares memory" from "dies
+   together" is an M5-scale change to the model, not a bring-up tweak.
+   **What landed instead is the collapse.** The flag equalled `arg == KOS_DRV_ARG_BLOCK` in every
+   descriptor in the tree, so it was a second truth for that too, and it is deleted: the group's
+   shared region is the block whenever there is one. Validator leg L4 grew the converse arm, refusing
+   a block no thread reads, so the widest ask a descriptor can make is now a compile error rather
+   than a silent grant.
+   **The residual, stated once:** every thread of a block-owning driver sees the whole block,
+   whatever its argument, because a task owns exactly one `Domain` and a member may bring no grant of
+   its own. The register window, which is what 5.2 is about, stays per-thread.

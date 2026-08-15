@@ -297,14 +297,14 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 <p class="problem">Every emulator gate runs with --repeat until-pass:4, so a test that fails three times and passes once is reported green. The coarse mps2 semihosting clock is a real justification, but it masks genuine flakiness across every gate.</p>
 <p class="fix"><span class="fixlabel">Fix: </span>Wider than when it was written: the four new MPS2 run gates and the ARM enforcement loop inherited the flag, so 11 ctest invocations now carry it. Reduce to until-pass:2, log the retry count, and address the timing root cause.</p></td>
 </tr>
-<tr class="tone-warning" data-status="Open" data-sev="Medium" data-area="Tests &amp; CI">
+<tr class="tone-success" data-status="Fixed" data-sev="Medium" data-area="Tests &amp; CI">
 <td class="c-id"><span class="fid">T8</span></td>
-<td class="c-status"><span class="st st-open">Open</span></td>
+<td class="c-status"><span class="st st-fixed">Fixed</span><div class="commits">m4.5.7 + m4.5.8: gates that fail, PARTIAL as a verdict, doc_names wired</div></td>
 <td class="c-sev">Medium</td>
 <td class="c-area">Tests &amp; CI</td>
-<td class="c-body"><code class="loc">mpu_fault/CMakeLists.txt:19</code>
-<p class="problem">The sim registration has a weaker failure regex than the QEMU script: FAIL_REGULAR_EXPRESSION is 'ERROR|did not fault', while check_qemu_mpu_fault.sh also greps 'cross-domain write completed' &#8212; the exact string printed when enforcement is inactive. A sim build that silently stopped enforcing would still pass.</p>
-<p class="fix"><span class="fixlabel">Fix: </span>Add the phrase, so both paths fail identically. Still one string; the two paths have now diverged for longer, and the ARM gates added in 4ea0459 all use the stricter script.</p></td>
+<td class="c-body"><code class="loc">user/apps/common/mpu_fault/CMakeLists.txt</code>
+<p class="problem">The sim registration had a weaker failure regex than the QEMU script: FAIL_REGULAR_EXPRESSION was 'ERROR|did not fault', while the separate QEMU script also grepped 'cross-domain write completed' &#8212; the exact string printed when enforcement is inactive. A sim build that silently stopped enforcing would still pass.</p>
+<p class="fix"><span class="fixlabel">What landed: </span>The divergence was removed rather than patched: there is no second script. All three registrations &#8212; sim, qemu-riscv and the mps2 ARM boards &#8212; now run the one <code>tests/integration/check_mpu_fault.sh</code>, which refuses <code>did not fault|cross-domain write completed</code> and pins the fault address to the one the app announced. A PASS/FAIL regex pair cannot do both, which is why the script exists at all.</p></td>
 </tr>
 <tr class="tone-info" data-status="Open" data-sev="Low" data-area="Docs &amp; book">
 <td class="c-id"><span class="fid">D14</span></td>
@@ -581,7 +581,7 @@ td.c-body .fix { color: var(--muted); max-width: 110ch; }
 <td class="c-status"><span class="st st-fixed">Fixed</span><div class="commits">m4.5.1: recast book 7.4 around the three axes of privilege</div></td>
 <td class="c-sev">High</td>
 <td class="c-area">Docs &amp; book</td>
-<td class="c-body"><code class="loc">docs/book/proving-memory-protection-coexistence-vs-confinement.md</code>
+<td class="c-body"><code class="loc">docs/book/privilege-is-three-axes-not-one-bit.md</code>
 <p class="problem">The chapter taught 'the privileged root thread runs your main()' as a design fact. That fuses three separable powers into one flag &#8212; the CPU mode, the memory posture, and the authority to ask the kernel for privileged things &#8212; and it rested the whole validation argument on a per-board boot posture that stage 2 was in the middle of changing. A reader would have learned the wrong model from the chapter whose subject is how to prove the model.</p>
 <p class="fix"><span class="fixlabel">What landed: </span>Retitled 'Privilege is three axes, not one bit' and rewritten around the split. The validation lesson survives and is stronger for being re-derived from the protection unit's bypass side rather than from who happens to run main: coexistence is not confinement, and proving the negative still needs a wild access that FAULTS. The three axes are now the chapter's spine, so the boot posture is an instance rather than the premise.</p></td>
 </tr>

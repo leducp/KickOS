@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // xmc4800-relax IRQ-CONSOLE service-list provider: USIC0 CH0 handover to the two-thread
-// buffered driver. The polled alternatives are service_list_xmc4800relax_console.cc and
-// service_list_xmc4800relax.cc; EXACTLY ONE kickos_board_services links per image, and
+// buffered driver. The polled alternatives are this directory's service_list_console.cc and
+// service_list.cc; EXACTLY ONE kickos_board_services links per image, and
 // this one is selected only by
 // -DKICKOS_SERVICE_LIST=kickos_services_xmc4800relax_uartirq.
 //

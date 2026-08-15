@@ -3,7 +3,7 @@
 //
 // frdmk64f IRQ-CONSOLE service-list provider: one entry, KOS_SVC_CONSOLE ->
 // k64uartirq_console_start (UART0 handover to the two-thread buffered driver). The
-// shipping list is service_list_frdmk64f.cc (polled UART0 console + DSPI0 bus); EXACTLY
+// shipping list is this directory's service_list.cc (polled UART0 console + DSPI0 bus); EXACTLY
 // ONE kickos_board_services links per image.
 //
 // Selected ONLY by an explicit -DKICKOS_SERVICE_LIST=kickos_services_frdmk64f_uartirq;

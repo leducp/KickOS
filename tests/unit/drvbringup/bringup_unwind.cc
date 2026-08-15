@@ -76,7 +76,6 @@ namespace
                      .name = "drvirq",
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .mem_grant = true,
                      .window_grant = true,
                      .cap_count = 2,
                      .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT},
@@ -85,7 +84,6 @@ namespace
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .mem_grant = true,
                      .window_grant = false,
                      .cap_count = 1,
                      .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
@@ -109,7 +107,6 @@ namespace
                      .name = "drvirq",
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .mem_grant = true,
                      .window_grant = true,
                      .cap_count = 2,
                      .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT},
@@ -118,7 +115,6 @@ namespace
                      .name = "drvwork",
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_NONE,
-                     .mem_grant = false,
                      .window_grant = false,
                      .cap_count = 0,
                      .caps = {}},
@@ -126,7 +122,6 @@ namespace
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .mem_grant = true,
                      .window_grant = false,
                      .cap_count = 1,
                      .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
@@ -151,8 +146,55 @@ namespace
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .mem_grant = true,
                      .window_grant = false,
+                     .cap_count = 1,
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+        .block_init = block_init
+    };
+
+    // No block at all: the polled shape (k64uart, xmcuart, xmcssc, k64dspi, simcon). It is
+    // the ONLY way a driver's threads share no memory, because a block that exists reaches
+    // every member of the group.
+    constexpr drv::Descriptor k_blockless = {
+        .tag = "[drvbare] ",
+        .expected_base = 0,
+        .block_size = 0,
+        .ready_offset = drv::KOS_DRV_READY_NONE,
+        .ep_posture = drv::KOS_DRV_EP_HANDOVER,
+        .svc_kind = KOS_SVC_CONSOLE,
+        .line_count = 0,
+        .thread_count = 1,
+        .barrier_after = 1,
+        .lines = {},
+        .threads = {{.entry = t_console,
+                     .name = nullptr,
+                     .prio_delta = 0,
+                     .arg = drv::KOS_DRV_ARG_WINDOW,
+                     .window_grant = true,
+                     .cap_count = 1,
+                     .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
+        .block_init = nullptr
+    };
+
+    // The same shape carrying a block no thread ever takes. L4 refuses it: the block would
+    // land as a region on every member for nobody to read, which is the widest grant a
+    // descriptor can ask for and the one nothing else would catch.
+    constexpr drv::Descriptor k_unread_block = {
+        .tag = "[drvunread] ",
+        .expected_base = 0,
+        .block_size = K_BLOCK,
+        .ready_offset = drv::KOS_DRV_READY_NONE,
+        .ep_posture = drv::KOS_DRV_EP_HANDOVER,
+        .svc_kind = KOS_SVC_CONSOLE,
+        .line_count = 0,
+        .thread_count = 1,
+        .barrier_after = 1,
+        .lines = {},
+        .threads = {{.entry = t_console,
+                     .name = nullptr,
+                     .prio_delta = 0,
+                     .arg = drv::KOS_DRV_ARG_WINDOW,
+                     .window_grant = true,
                      .cap_count = 1,
                      .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
         .block_init = block_init
@@ -162,6 +204,9 @@ namespace
     static_assert(drv::valid(k_three), "the three-thread gate descriptor is not a driver shape");
     static_assert(drv::valid(k_tail_barrier),
                   "the tail-barrier gate descriptor is not a driver shape");
+    static_assert(drv::valid(k_blockless), "the block-less gate descriptor is not a driver shape");
+    static_assert(not drv::valid_l4(k_unread_block),
+                  "L4 must refuse a block granted to the whole group that no thread reads");
 
     // A descriptor no static_assert vetted: the belt at the top of bring_up is what keeps the
     // spawn loop from writing past ThreadSet::t[]. Not constexpr, so no leg runs at compile
@@ -181,7 +226,6 @@ namespace
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_NONE,
-                     .mem_grant = false,
                      .window_grant = false,
                      .cap_count = 1,
                      .caps = {{drv::KOS_DRV_RES_EP, KOS_CAP_WAIT}}}},
@@ -224,6 +268,38 @@ TEST_F(DrvBringup, a_complete_bring_up_touches_no_unwind)
                  " close11 close12 close10 probe")
         << "a complete bring-up makes the group, claims, spawns, drops its lines and probes";
     EXPECT_STREQ(kos_seam_msg(), "") << "a complete bring-up prints no diagnostic";
+}
+
+// WHAT THE GROUP SHARES, and it is `taskmem` versus `task` in one token. A driver with a
+// block hands the WHOLE of it to the task, so every member's region set covers it -- k_three's
+// worker takes no block argument and is a member all the same. There is no per-thread subset
+// to declare: a task owns one Domain and a member may bring no grant of its own.
+TEST_F(DrvBringup, a_block_reaches_the_group_even_where_a_thread_takes_no_block_argument)
+{
+    struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
+    g_seam.spawn_fail_at = 3;
+    EXPECT_EQ(drv::bring_up(k_three, &cfg, nullptr), -1);
+    EXPECT_PRED2(says, kos_seam_trace(), "taskmem90")
+        << "the block is the group's region, whatever any one thread's arg says";
+}
+
+// The other direction, and without it the token above would be satisfied by a bring-up that
+// always shares: a driver with no block creates a group that is only a kill group.
+TEST_F(DrvBringup, a_driver_with_no_block_creates_a_group_that_shares_nothing)
+{
+    struct kos_service_cfg const cfg = cfg_of(KOS_SVC_CONSOLE, K_BASE);
+    EXPECT_EQ(drv::bring_up(k_blockless, &cfg, nullptr), 0);
+    EXPECT_STREQ(kos_seam_trace(), "task90 ep10 pub10 spawn50 close10 probe")
+        << "no alloc, no grant, and a task with no shared region";
+}
+
+// L4's narrowing arm, as a ctest entry beside the static_assert on it: a descriptor may not
+// carry a block nobody reads, because the region lands on every member regardless.
+TEST_F(DrvBringup, a_block_no_thread_reads_is_not_a_driver_shape)
+{
+    EXPECT_FALSE(drv::valid(k_unread_block))
+        << "a group-wide grant with no reader is the widest ask a descriptor can make";
+    EXPECT_TRUE(drv::valid(k_blockless)) << "and dropping the block is what makes it valid";
 }
 
 // A refusal must leave NO trace at all: no arena block, no endpoint, no publish. The rc

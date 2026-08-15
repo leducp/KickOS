@@ -280,6 +280,15 @@ void arch_context_init(struct arch_context* ctx,
     ctx->sp = reinterpret_cast<uint32_t>(sp);
 }
 
+// The whole seam on this backend: the fabricated frame's PSW word is PSW_THREAD_KERNEL,
+// which the RTE pops. The MPU_MPECLR latch arch_fault_redirect_to_exit clears is global
+// and belongs to a fault, so a rebuild must not touch it.
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+}
+
 // --- Critical section: raise PSW.IPL to the kernel lock level ---------------
 arch_irq_state_t arch_irq_save(void)
 {
@@ -413,6 +422,20 @@ void arch_fault_redirect_to_exit(void* frame)
     // what lets the stub's exit_current reschedule: it pends SWINT and must see it taken.
     ff->saved[0] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit);
     ff->saved[1] = (ff->saved[1] & ~(PSW_PM | PSW_IPL_MASK)) | PSW_U | PSW_I;
+
+    // The stub runs at the TOP of the dying thread's stack, not at the depth the fault
+    // reached. This is the backend that needs it: an access exception CANCELS the faulting
+    // instruction and restores SP (ISA UM sec.5.3.1), so an overflowed thread hands over a
+    // USP that reads in-bounds and the stub would run privileged on an exhausted stack --
+    // measured on rx72m as a smash to PC=0 (.session/logs/m483rxovf-*). Written here rather
+    // than after the RTE because the handler runs on the ISP, so there is no window: R0 in
+    // supervisor mode is the ISP, and USP is a separate control register.
+    uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
+    if (top != 0)
+    {
+        uint32_t const sp = top & ~3u;
+        __asm volatile("mvtc %0, usp" ::"r"(sp));
+    }
 }
 
 // C side of the RX exception handler (startup.S .fvectors shims branch here with

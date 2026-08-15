@@ -309,7 +309,8 @@ bring-up in `book/peripheral-isolation-and-the-hardware-ceiling.md`):
   but this app was not. Its privileged bring-up shim is gone -- the `c6blink`/`rxdrv` treatment: root
   muxes the pins through `arch_pinmux_set` and the unprivileged driver reaches its clock gate through
   `arch_periph_enable` as its first act. (Historical measurement, taken before that rework on a
-  build configured with the since-deleted `KICKOS_ROOT_PRIVILEGED=OFF`: the shim ran from `main`,
+  build configured to start root UNPRIVILEGED, then a knob and now the
+  only posture: the shim ran from `main`,
   i.e. from root, and faulted MemManage on
   its first store, `RCC_AHB1ENR` @ `0x40023830`.) What remains open is the silicon witness plus the
   loopback arm's PA7->PA6 jumper. Redundant with xmcspi for the PMSA proof (both ARM v7-M PMSA);

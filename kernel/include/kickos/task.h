@@ -50,8 +50,8 @@ namespace kickos
         uint16_t gen = 0;
     };
 
-    // 8 bytes on 32-bit, which design-task-layer.md, invariants.md and porting.md all
-    // budget against. MEASURE ON A 32-BIT TARGET if this fires: a host build prices the
+    // 8 bytes on 32-bit, which design-task-layer.md and porting.md's KICKOS_MAX_TASKS row
+    // both budget against. MEASURE ON A 32-BIT TARGET if this fires: a host build prices the
     // tail differently, so a host measurement cannot settle it.
     constexpr size_t task_scalar_bytes()
     {
@@ -125,20 +125,46 @@ namespace kickos
     // domain go back as soon as the last member leaves (at once, if there is none).
     void task_drop_hold(Task* t);
 
+    // Drop the hold of EVERY task a dying creator holds. Keyed on the tag rather than on
+    // identity, because the tag is the whole gate: kill_tag_for_index derives it from the pool
+    // slot, so a recycled slot answers kill_tag_of with its predecessor's tag and would inherit
+    // creator authority over groups it never made -- enough to kill them, and to spawn a child
+    // into one and hand that child the group's domain regions. Called from exit_current, which
+    // is total over deaths; ThreadPool::alloc's reclaim point is not, and task_for runs before
+    // threads.alloc() so a task-pool exhaustion would refuse before ever reaching it.
+    //
+    // O(1) when Kernel::task_holds is zero, which is every image that never calls
+    // kos_task_create. The scan is otherwise KICKOS_MAX_TASKS compares interrupt-masked on
+    // EVERY thread exit, which measurably moved an RR slice boundary on rx72m.
+    void task_orphan_created_by(uint16_t tag);
+
+    // Live members. Null-safe (0). The ONLY reader outside task.cc is the already-empty
+    // early return in kos_task_slay, where a park would never be woken.
+    uint8_t task_member_count(Task const* t);
+
     void task_ref(Task* t); // a thread joins; the first one acquires the domain
     // A thread leaves. For an implicit task the last one out releases the domain and frees
     // the slot, so the caller's Task* is a dangling name from here on, exactly as its
     // Domain* was. An explicit task outlives its members until its creator drops the hold.
-    void task_release(Task* t);
-
-    // Cancel every live member: each is marked and woken out of whatever it is parked on, so
-    // it reaches its own death point (thread_cancel, kernel.h). Cooperative only in that a
-    // member which never enters the kernel again never dies.
     //
-    // Takes no "except" argument, and must not grow one: the caller that has a thread to spare
-    // is exit_current, whose thread is `dying` by then, and thread_cancel already refuses a
-    // dying thread. A second guard for the same fact would be the one that goes stale.
-    void task_cancel_group(Task* t);
+    // TRUE when THIS call emptied the group, which is what a WAIT_TASK_EMPTY waiter is
+    // waiting for. Reported rather than re-derived from the refcount afterwards: the
+    // transition happens exactly once and only its cause can see it, and on an implicit
+    // task the slot is freed here so there is nothing left to ask.
+    bool task_release(Task* t);
+
+    // Cancel every live member at `kind` (a CancelKind): each is marked and woken out of
+    // whatever it is parked on, so it reaches its own death point (thread_cancel_kind,
+    // kernel.h). Cooperative at CANCEL_KILL only in that a member which never enters the
+    // kernel again never dies; at CANCEL_SLAY every member's resume is claimed instead.
+    //
+    // `kind` is information the callee cannot derive, which is what makes it unlike the
+    // "except" argument this deliberately does NOT take: the group must die by ONE rule, so
+    // a member slain slays its peers rather than leaving them their windows. The caller that
+    // has a thread to spare is exit_current, whose thread is `dying` by then, and
+    // thread_cancel_kind already refuses a dying thread; a second guard for that fact would
+    // be the one that goes stale.
+    void task_cancel_group(Task* t, uint8_t kind);
 }
 
 #endif

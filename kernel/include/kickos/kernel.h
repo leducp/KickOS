@@ -71,9 +71,18 @@ namespace kickos
     // thread cannot be reached. Caller holds IrqLock and `t` must be BLOCKED.
     void thread_abort_park(Thread* t, intptr_t result);
 
-    // Mark `t` cancelled and, if it is parked, break that park so it reaches its own death
-    // point (the syscall boundary, syscall.cc). Idempotent, and a no-op on a thread that is
-    // already dead or dying. Caller holds IrqLock.
+    // Raise `t`'s cancellation to `kind` and, if it is parked, break that park so it becomes
+    // runnable. `kind` is a CancelKind and decides what happens then: CANCEL_KILL leaves the
+    // thread its cleanup window and ends it at its next syscall entry, CANCEL_SLAY claims its
+    // next resume in switch_to and it executes no further unprivileged instruction.
+    //
+    // MONOTONIC in the enum's VALUES: a kind at or below the one already recorded is
+    // discarded, so a later kill can never demote a slay. That is what keeps ONE authority
+    // answering "has this thread been asked to die, and how" instead of a second flag.
+    //
+    // Idempotent, and a no-op on a thread that is already dead or dying. Caller holds IrqLock.
+    void thread_cancel_kind(Thread* t, uint8_t kind);
+    // thread_cancel_kind(t, CANCEL_KILL): the cooperative form, and the only one before slay.
     void thread_cancel(Thread* t);
 }
 

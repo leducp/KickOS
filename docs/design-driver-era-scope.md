@@ -51,7 +51,7 @@ and no-isolation parts (STM32 family, RP2040) where the driver still buys functi
 polled-family reference. Rejected: easiest-first, which spends the era re-proving the mechanism on
 boards that cannot enforce it.
 
-### G2. Per-chip `arch_console_reclaim` (OPEN; only XMC + K64F have a body)
+### G2. Per-chip `arch_console_reclaim` (OPEN; XMC, K64F, esp32c6 and esp32 have a body)
 Every board that ENABLES the handover needs a body or it violates the porting invariant. The contract
 is `invariants.md` (`panic-console-probe-independent`) and `console.md`; the two shipped bodies are
 the worked examples (`arch/arm/chip/xmc4800/usic_uart.cc`, `arch/arm/chip/mk64f/chip_mk64f.cc`).

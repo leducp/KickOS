@@ -13,6 +13,7 @@
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
+#include <kickos/irq.h>
 #include <kickos/kernel.h>
 #include <kickos/list.h>
 #include <kickos/sched.h>
@@ -27,7 +28,37 @@ namespace kickos
         bool g_in_isr = false;
         uint64_t g_now_ns = 0;
 
+        Domain g_domains[KICKOS_MAX_TASKS] = {};
+        uint16_t g_domain_refs[KICKOS_MAX_TASKS] = {};
+        bool g_domain_live[KICKOS_MAX_TASKS] = {};
+
+        int domain_index(Domain const* d)
+        {
+            for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+            {
+                if (&g_domains[i] == d)
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        uint16_t domain_refs(Domain const* d)
+        {
+            int const i = domain_index(d);
+            if (i < 0)
+            {
+                return 0;
+            }
+            return g_domain_refs[i];
+        }
+
         uint32_t g_switches = 0;
+        Thread* g_redirect_target = nullptr;
+        void (*g_redirect_entry)(void* arg) = nullptr;
+        uintptr_t g_redirect_stack_top = 0;
+        uint32_t g_redirects = 0;
         uint32_t g_console_noted = 0;
         uint32_t g_console_reclaimed = 0;
         uint32_t g_parked = 0;
@@ -140,6 +171,15 @@ namespace kickos
             }
         }
 
+        void note_ctx_redirect(Thread* t, void (*entry)(void* arg), void* base, size_t size)
+        {
+            g_redirects++;
+            g_redirect_target = t;
+            g_redirect_entry = entry;
+            g_redirect_stack_top = reinterpret_cast<uintptr_t>(base) + size;
+            trace_add("redirect%u", t->id);
+        }
+
         void note_park()
         {
             g_parked++;
@@ -213,15 +253,30 @@ namespace kickos
             g_fx = Fixture{};
             g_in_isr = false;
             g_now_ns = 0;
+            for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+            {
+                g_domains[i] = Domain{};
+                g_domain_refs[i] = 0;
+                g_domain_live[i] = false;
+            }
             g_switches = 0;
+            g_redirect_target = nullptr;
+            g_redirect_entry = nullptr;
+            g_redirect_stack_top = 0;
+            g_redirects = 0;
             g_console_noted = 0;
             g_console_reclaimed = 0;
             g_parked = 0;
             trace_reset();
 
-            // The chunk free list lives in cap.cc's own CapState, which the Kernel
-            // assignment above does not reach.
+            // The chunk free list and the published stdout target live in cap.cc's own
+            // constinit state, which the Kernel assignment above does not reach.
             cap_slab_init();
+            cap_console_reset();
+            // Every dispatch slot back to the null-object default. The Kernel assignment
+            // above zeroed the table, and a NULL handler is not the state irq_claim reads as
+            // a free line: without this every claim in every arm answers -KOS_EBUSY.
+            irq_init();
             sched::init();
             g_fx.idle.base_prio = KICKOS_PRIO_IDLE;
             g_fx.idle.prio = KICKOS_PRIO_IDLE;
@@ -352,19 +407,26 @@ namespace kickos
                 printf("FIXTURE FAIL: task slot %d out of range\n", slot);
                 exit(1);
             }
-            Task* tk = &kernel().tasks[slot];
-            *tk = Task{};
-            // Non-zero, because task_resolve and the creator gate both read a zero tag as
-            // "implicit, and so unnameable". The value is not root's: no arm here resolves a
-            // handle, and a real tag would make the gate look tested when it is not.
-            tk->creator_tag = 1;
+            int err = 0;
+            Task* const tk =
+                task_create(FIXTURE_TASK_TAG, nullptr, 0, /*caller_authorized=*/false, &err);
+            if (tk == nullptr)
+            {
+                printf("FIXTURE FAIL: task_create refused (%d)\n", err);
+                exit(1);
+            }
+            if (tk != &kernel().tasks[slot])
+            {
+                printf("FIXTURE FAIL: task_create landed off slot %d\n", slot);
+                exit(1);
+            }
             return tk;
         }
 
         void join_task(Thread* t, Task* tk)
         {
             t->task = tk;
-            tk->refcount++;
+            task_ref(tk);
         }
 
         Semaphore* semaphore(int* out_handle)

@@ -126,6 +126,7 @@ namespace kickos
             case WAIT_SLEEP:
             case WAIT_JOIN:
             case WAIT_LIVE_LAST:
+            case WAIT_TASK_EMPTY:
             {
                 // On no wait queue at all. A sleeper is on the timer delta list, and
                 // sched::wake below is what takes it off.
@@ -141,16 +142,25 @@ namespace kickos
         sched::wake(t);
     }
 
-    void thread_cancel(Thread* t)
+    void thread_cancel_kind(Thread* t, uint8_t kind)
     {
         if (t == nullptr or t->state == ThreadState::EXITED
             or t->state == ThreadState::INACTIVE or t->dying)
         {
             return;
         }
-        // One-way, and set before anything else: the thread's own death point reads it, and a
-        // thread that is READY right now must find it there rather than be woken for it.
-        t->cancelled = true;
+        // ESCALATION ONLY, and it reads as a comparison because the enum's values are
+        // ordered NONE < KILL < SLAY. A kill arriving after a slay must not hand back the
+        // cleanup window the slay took away, and a kind at or below the recorded one has
+        // nothing to add -- so the park below is not broken a second time either.
+        if (kind <= t->cancel_kind)
+        {
+            return;
+        }
+        // Set before anything else: the thread's own death point reads it, and a thread that
+        // is READY right now must find it there rather than be woken for it. A CANCEL_SLAY
+        // written here is what switch_to reads when the scheduler next lists this thread.
+        t->cancel_kind = kind;
         if (t == sched::current())
         {
             return; // it is inside the kernel already and will see this on its way out
@@ -161,11 +171,19 @@ namespace kickos
         }
         // Reaching the death point needs it RUNNABLE, so the park ends here. The result is
         // what a primitive with an error channel reports; one without (sem_wait, sleep)
-        // simply returns, and the death point is what stops it going round again.
+        // simply returns, and the death point is what stops it going round again. A SLAIN
+        // thread never reads it -- its resume is claimed before it returns to userspace --
+        // but the unwind the abort performs is the OTHER side of each park's bookkeeping and
+        // must still run, so this is not a branch to skip.
         thread_abort_park(t, -KOS_ECANCELED);
     }
 
-    void task_cancel_group(Task* t)
+    void thread_cancel(Thread* t)
+    {
+        thread_cancel_kind(t, CANCEL_KILL);
+    }
+
+    void task_cancel_group(Task* t, uint8_t kind)
     {
         if (t == nullptr)
         {
@@ -173,9 +191,9 @@ namespace kickos
         }
         Kernel& k = kernel();
         // Bounded by the pool cursor, the same scan exit_current already makes to find its
-        // joiners. A task holding one thread matches only itself, and thread_cancel refuses a
-        // dying one, which is what makes the implicit grouping cost a comparison and nothing
-        // else.
+        // joiners. A task holding one thread matches only itself, and thread_cancel_kind
+        // refuses a dying one, which is what makes the implicit grouping cost a comparison
+        // and nothing else.
         for (int s = 0; s < k.threads.next; s++)
         {
             Thread* const p = &k.threads.slots[s];
@@ -183,7 +201,7 @@ namespace kickos
             {
                 continue;
             }
-            thread_cancel(p);
+            thread_cancel_kind(p, kind);
         }
     }
 }

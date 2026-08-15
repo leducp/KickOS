@@ -31,7 +31,7 @@ kconsole_write                 -- frontend, fans out to compile-time backends
 console_emit                   -- THE routing guard
    |   g_console_state ?                            (ownership axis, checked FIRST)
    +- USER_OWNED  -> DROP  (a userspace driver owns the UART; RTT still carries it)
-   +- RECLAIMED   -> arch_console_write_sync        (panic took it back; polled)
+   +- RECLAIMED   -> arch_console_write_sync        (panic OR a driver death took it back; polled)
    \- KERNEL_OWNED:
         |   armed && !arch_in_isr() && !panicking ?
         +- YES -> arch_console_write        (buffered)
@@ -74,7 +74,7 @@ because in the middle value the kernel must touch the device on *no* path at all
 
 ```
 USER_OWNED    ->  DROP: the kernel touches nothing (RTT still carries the bytes)
-RECLAIMED     ->  arch_console_write_sync (panic reclaimed the UART -> polled only)
+RECLAIMED     ->  arch_console_write_sync (panic or driver death reclaimed the UART -> polled only)
 KERNEL_OWNED  ->  the buffered-vs-sync sub-decision below
 ```
 
@@ -259,6 +259,14 @@ before publish returns (it lowers its own priority and yields so a lower-priorit
 can finish -- the scheduler is strict-priority). The panic path funnels through
 `kpanic_enter`, which flips the UART to `RECLAIMED` and polled-prints.
 
+**A DRIVER DEATH is the second route to `RECLAIMED`.** `cap_teardown` only NOTES it, when the
+published endpoint's `recv_holders` reaches 0, and `console_on_driver_death` then asks the DEVICE:
+it defers while any live domain still holds `arch_console_reclaim_window()`. A driver is a THREAD
+GROUP, so the endpoint's last RECEIVER is the service thread rather than the thread holding the
+registers -- reclaiming on the note alone reprogrammed the UART under a live IRQ thread and silenced
+its own source. The note stays SET across a refusal and every `exit_current` and voluntary close
+re-runs the check, so the LAST holder's own exit reclaims.
+
 **The reclaim is unconditional-once, not handover-conditional.** `kpanic_enter` reclaims
 whenever the state is not already `RECLAIMED`, and it stores `RECLAIMED` *before* calling
 the body. Two properties follow. It runs exactly once, so a body that truncates the byte
@@ -266,18 +274,19 @@ in the shift register cannot cut the banner it just printed; and a synchronous f
 *inside* the body re-enters `kpanic_enter` and stops rather than recursing with the old
 state -- a pre-existing recursion hazard that the widening closed. The safety of reclaiming
 a device no driver ever touched rests entirely on every chip body being **idempotent
-absolute stores**, which `arch.h` requires; all three implementations were audited against
-it (`xmc4800` `usic_uart.cc`, `mk64f` `chip_mk64f.cc`, and the no-op fallback
-`arch/common/arch_console_reclaim_default.cc`).
+absolute stores**, which `arch.h` requires; every implementation was audited against
+it (`xmc4800` `usic_uart.cc`, `mk64f` `chip_mk64f.cc`, `esp32c6` `chip_esp32c6.cc`,
+`esp32` `chip_esp32.cc`, and the no-op fallback `arch/common/arch_console_reclaim_default.cc`).
 
 Known artifact (XMC4800 ASC): if the crashed driver cleared `SCTR.PDL`, the TX pin is
 held low across the fault, and reclaim's return to idle-high frames exactly one spurious
 leading byte (~`0xC0`) before the panic banner. It is a physical UART line-recovery
 transient (not lost/garbled output); the banner and fault dump that follow are byte-clean.
 
-Still **not built**: a real `arch_console_reclaim` body on the chips that have none. Two
-exist (`xmc4800` `usic_uart.cc`, `mk64f` `chip_mk64f.cc`); every other chip keeps the no-op
-fallback, so on those boards the reclaim is wiring with nothing behind it. The two real bodies
+Still **not built**: a real `arch_console_reclaim` body on the chips that have none. Four
+exist (`xmc4800` `usic_uart.cc`, `mk64f` `chip_mk64f.cc`, `esp32c6` `chip_esp32c6.cc`,
+`esp32` `chip_esp32.cc`); every other chip keeps the no-op
+fallback, so on those boards the reclaim is wiring with nothing behind it. The real bodies
 are silicon-only -- no emulated board carries one -- and the `xmc4800` one is witnessed by
 `conreclaim` (`c5d9b0d`). See
 [architecture.md](architecture.md), "Object model, capabilities & IPC" ->

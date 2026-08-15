@@ -84,21 +84,20 @@ void console_chip_writer_enter(void); // bracket a kernel-owned device poke (cou
 void console_chip_writer_leave(void); // (count--)
 int console_chip_writers(void);      // in-flight kernel chip writers (publish drain spin)
 
-// Driver-death reclaim, split in two so the ordering cannot be collapsed.
+// Driver-death reclaim, split in two so a REFUSAL survives the call that made it.
 //
 // Called from the cap layer, this only RECORDS that the published console endpoint lost
-// its last WAIT-bearing cap. It must not reclaim: it runs at an arbitrary point in
-// cap_teardown's loop, where the dying driver's IRQ cap can still be live and its TX
-// line still armed, so re-initialising the UART here could race an interrupt still
-// firing into irq_event_isr.
+// its last WAIT-bearing cap. Sticky: nothing clears it but a reclaim that goes through.
 void console_note_driver_death(void);
-// The reclaim itself, and only from exit_current after the whole teardown loop and after
-// domain_release: every cap dropped means every line masked and detached, and the
-// exiting thread's claim on the window released. Puts the UART back in a known polled
-// state so panic and ordinary kprintf still reach the wire. Idempotent, and a no-op if
-// the console was never published, if the dead thread was not its last receiver, or
-// while ANY live thread still holds arch_console_reclaim_window(). The note is sticky across
-// such a refusal, so the last window holder's exit is what reclaims.
+// The reclaim itself. Puts the UART back in a known polled state so panic and ordinary
+// kprintf still reach the wire. Idempotent, and a no-op if the console was never
+// published, if the dead thread was not its last receiver, or while ANY live thread still
+// holds arch_console_reclaim_window().
+//
+// Called at the note, in the same masked window (cap.cc), which is sound because
+// cap_teardown releases every IRQ cap the dying thread held before it can be preempted at
+// all: no line it owned is still armed into irq_event_isr. Only a thread DEATH can free
+// the register window, so exit_current is the one site that RETRIES a refusal.
 void console_on_driver_death(void);
 
 #ifdef __cplusplus

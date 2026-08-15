@@ -20,7 +20,7 @@ kernel stores the result there. `clock_now` is the canonical example -- the user
 
 ```
 uint64_t out = 0;
-arch_syscall(KOS_SYS_clock_now, (uintptr_t)&out, ...);
+arch_syscall(KOS_SYS_CLOCK_NOW, (uintptr_t)&out, ...);
 return out;
 ```
 

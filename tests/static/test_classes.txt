@@ -42,6 +42,7 @@ host   src    tests/unit/telemetry/check_golden.py
 host   src    tests/unit/telemetry/check_idmap.py
 
 # --- host unit-test binaries (GoogleTest, one ctest entry per case) ----------
+host   build  tests/unit/cancelkind/cancel_kind
 host   build  tests/unit/capreply/capreply_packing
 host   build  tests/unit/capsweep/cap_sweep
 host   build  tests/unit/captable/captable_deep
@@ -49,9 +50,11 @@ host   build  tests/unit/captable/captable_deeptail
 host   build  tests/unit/captable/captable_flat
 host   build  tests/unit/captable/captable_segmented
 host   build  tests/unit/drvbringup/drv_bringup
+host   build  tests/unit/faultband/fault_band
 host   build  tests/unit/ktime/ktime_rearm
 host   build  tests/unit/parkresult/park_result
 host   build  tests/unit/schedwake/sched_wake
+host   build  tests/unit/slayhook/slay_hook
 host   build  tests/unit/slotpool/slotpool_policy
 host   build  tests/unit/taskdeath/task_death
 host   build  tests/unit/uartclass/uart_class

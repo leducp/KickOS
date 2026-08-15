@@ -47,8 +47,7 @@ namespace kickos
             // Threads inside cap_teardown right now. A count, not a flag: a dying thread can
             // be switched out mid-sweep and a second thread can then enter and finish its own
             // sweep first. The two routes that do it are enumerated at cap.h's cap_teardown
-            // declaration. Gates the console reclaim, which must not run while ANY dying
-            // thread might still hold an IRQ cap on the line.
+            // declaration.
             unsigned teardown_depth;
         };
         constinit CapState g_cap;
@@ -288,19 +287,26 @@ namespace kickos
                                 sched::wake(s);
                             }
                             // If that endpoint was the published console, no userspace
-                            // driver can ever serve it again: NOTE it, and let
-                            // exit_current run the reclaim after the whole teardown loop
-                            // (console_tx.h explains why not here).
+                            // driver can ever serve it again. The reclaim runs HERE, in the
+                            // same masked window as the EPIPE wake above, so the peer that
+                            // wake releases cannot observe a console still dark: on a
+                            // teardown path cap_teardown has already released every IRQ cap
+                            // this thread held (its name-keyed pass), which is the only
+                            // precondition that used to want the rest of the sweep.
                             //
-                            // The note is NOT the reclaim decision. recv_holders counts
+                            // The note is NOT the reclaim decision, and it is STICKY because
+                            // this attempt can legitimately refuse. recv_holders counts
                             // WAIT-bearing caps, so on a two-thread driver it reaches 0 when
                             // the SERVICE thread dies, while the registers belong to the IRQ
                             // thread, which parks on a line cap and is not counted here at
                             // all. console_on_driver_death asks the device separately and
-                            // defers while any live domain still holds the register window.
+                            // defers while any live thread still holds the register window;
+                            // only a thread DEATH can free that window, so exit_current is
+                            // the one site that retries.
                             if (e.obj == g_stdout_target)
                             {
                                 console_note_driver_death();
+                                console_on_driver_death();
                             }
                         }
                     }
@@ -592,6 +598,11 @@ namespace kickos
         return 0;
     }
 
+    void cap_console_reset()
+    {
+        g_stdout_target = KCAP_STDOUT_NONE;
+    }
+
     void cap_slab_init()
     {
         g_cap.free_chunks.head = nullptr;
@@ -803,17 +814,6 @@ namespace kickos
             cap_reply_released(c); // the close-instead-of-reply path kos_reply does not cover
         }
         obj_ref_drop(detached, /*teardown=*/false);
-        // A VOLUNTARY close can also be the published console's last receiver going away, so
-        // the reclaim runs HERE and not as a note for whichever thread exits next: there is
-        // no teardown loop to finish first, and a pending note would reclaim the console at
-        // an unrelated moment. A no-op unless the note is set.
-        //
-        // Skipped while a teardown sweep is in flight: that thread may still hold an IRQ cap
-        // on the line. The note is sticky, so its own exit_current runs the reclaim.
-        if (not cap_teardown_active())
-        {
-            console_on_driver_death();
-        }
         return 0;
     }
 
@@ -822,38 +822,65 @@ namespace kickos
         return g_cap.teardown_depth > 0;
     }
 
+    namespace
+    {
+        // Release ONE live entry of a dying thread's table: protocol, stale the handle, empty
+        // the slot, then drop the object reference. Both teardown passes go through it, so
+        // neither can drift from the other. Caller holds IrqLock and c->dying is set.
+        void teardown_entry(Thread* c, uint32_t i)
+        {
+            CapEntry& e = *cap_slot(c->caps, i);
+            obj_close_protocol(c, e, /*teardown=*/true);
+            CapEntry const detached = e;
+            e.gen++;
+            e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
+            e.rights = 0;
+            cap_run_free_release(c->caps, i, &c->cap_free_head);
+            if (detached.type == static_cast<uint8_t>(CapType::CAP_REPLY))
+            {
+                cap_reply_released(c);
+            }
+            obj_ref_drop(detached, /*teardown=*/true);
+        }
+    }
+
     void cap_teardown(Thread* c)
     {
         // Preconditions differ from every other entry point here: the caller must NOT
         // hold IrqLock, and must have set c->dying first.
         KICKOS_ASSERT(c->dying);
+        uint32_t const cap_end = thread_cap_capacity(c);
         {
             IrqLock lock;
             g_cap.teardown_depth++;
+            // NAME-KEYED FIRST, and in ONE masked window: an IRQ line is named by NUMBER, so
+            // until this thread's binding is detached a peer's irq_claim of the same line
+            // answers -KOS_EBUSY. The chunked loop below hands the CPU to peers -- including
+            // the supervisor its own EPIPE wake releases -- so a line swept there is
+            // observable as not-yet-released by the very thread that asked for it.
+            // Deliberately NOT chunked: a gap inside this pass is a moment when a thread with
+            // a counted teardown depth still holds a line, and both console reclaim sites
+            // rely on that being impossible. The masked work is bounded by the IRQ caps held,
+            // the scan by the table's own width.
+            for (uint32_t k = 0; k < cap_end; k++)
+            {
+                if (cap_slot(c->caps, k)->type == static_cast<uint8_t>(CapType::CAP_IRQ))
+                {
+                    teardown_entry(c, k);
+                }
+            }
         }
-        uint32_t const cap_end = thread_cap_capacity(c);
         uint32_t i = 0;
         while (i < cap_end)
         {
             IrqLock lock; // released at the bottom of every chunk: that is the point
             for (int n = 0; n < KCAP_TEARDOWN_CHUNK and i < cap_end; n++, i++)
             {
-                CapEntry& e = *cap_slot(c->caps, i);
-                if (e.type == static_cast<uint8_t>(CapType::CAP_EMPTY))
+                if (cap_slot(c->caps, i)->type == static_cast<uint8_t>(CapType::CAP_EMPTY))
                 {
                     continue;
                 }
-                obj_close_protocol(c, e, /*teardown=*/true);
-                CapEntry const detached = e;
-                e.gen++;
-                e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
-                e.rights = 0;
-                cap_run_free_release(c->caps, i, &c->cap_free_head);
-                if (detached.type == static_cast<uint8_t>(CapType::CAP_REPLY))
-                {
-                    cap_reply_released(c);
-                }
-                obj_ref_drop(detached, /*teardown=*/true);
+                teardown_entry(c, i);
             }
         }
         IrqLock lock;

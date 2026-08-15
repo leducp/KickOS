@@ -52,7 +52,7 @@ KickOS aims to be a **minimal microkernel RTOS in the seL4 tradition**: the smal
 privileged kernel -- threads, protection domains, IPC, capabilities, IRQ routing -- with
 *everything else* (filesystems, networking, console, device drivers) as **unprivileged userspace
 servers reached by IPC**. The design choices already made are downstream of this goal, not
-incidental: **capabilities, not fds or global ids** for object access (a per-task typed handle
+incidental: **capabilities, not fds or global ids** for object access (a per-thread typed handle
 table -- ambient authority contradicts the isolation pillar; see "Object model, capabilities &
 IPC" below); a **deliberately minimal
 syscall surface** (`read`/`open`/`socket` are userspace stubs over IPC to servers, never kernel
@@ -102,8 +102,8 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   Hierarchical CSpace exists to address a
   space too large to index directly; at that size the guard/radix machinery would cost more than
   the space it organises. What actually keeps tables small is not the field width but the
-  **static** allocation: one slab holds a run per possible task. A run is NOT one width -- root
-  gets the summed `KICKOS_MAX_HANDLES`, every spawned task gets `KICKOS_CAP_CHILD_WIDTH` -- so the
+  **static** allocation: one slab holds a run per possible thread. A run is NOT one width -- root
+  gets the summed `KICKOS_MAX_HANDLES`, every spawned thread gets `KICKOS_CAP_CHILD_WIDTH` -- so the
   slab is `((KICKOS_MAX_THREADS + 2) x child chunks + root's extra chunks) x 8 x 8` bytes of
   `.bss`. Re-derive it from the `KickOS: cap table =` line at configure rather than from this
   formula.
@@ -117,9 +117,9 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   worse rather than better.
 - **No per-instance (per-pin, per-clock, per-line) capabilities.** Roughly **100 muxable pins** on
   the larger parts, and the cost is not addressing -- the index field would reach them -- it is
-  that a run is **statically reserved for every possible task**, in whole chunks: 100 slots rounds
-  to 13 chunks = 104 reserved slots per run. Per-task width does not rescue this -- the pins would
-  be held by a driver task, and a task that holds them needs the width -- so at
+  that a run is **statically reserved for every possible thread**, in whole chunks: 100 slots rounds
+  to 13 chunks = 104 reserved slots per run. Per-thread width does not rescue this -- the pins would
+  be held by a driver thread, and a thread that holds them needs the width -- so at
   `(KICKOS_MAX_THREADS + 2) x 104 x 8` bytes the table is **14,976 bytes** of
   `.bss` at the fleet's `KICKOS_MAX_THREADS` of 16, and still 3,328 bytes on the two-thread tiny
   boards, against a measured boot arena of 6,560 bytes on `bluepill-c8` -- which those boards would
@@ -131,10 +131,10 @@ because "we are seL4-like" otherwise reads as a promise that these are coming.
   `AUTH_PSTATE`, `AUTH_IRQ`, `AUTH_SYSTEM`, `AUTH_CONSOLE` -- rather than per instance. The
   consequence is honest and worth stating: a holder of `AUTH_PINMUX` may mux **any** pin.
 
-The common thread is that a run is statically reserved for every possible task -- the TCB holds only
+The common thread is that a run is statically reserved for every possible thread -- the TCB holds only
 the chunk *directory*, and the entries live in one slab carved at boot -- which is what holds the
 fleet's three configured ROOT widths at 7, 10 and 11 slots regardless of what the handle codec
-could address. A spawned task is narrower still: it gets `KICKOS_CAP_CHILD_WIDTH`. If that ever changes, two
+could address. A spawned thread is narrower still: it gets `KICKOS_CAP_CHILD_WIDTH`. If that ever changes, two
 of the four deserve revisiting -- the CNode and per-instance bullets. The untyped-memory bullet
 never depended on table size at all, and the derivation-tree bullet gets *stronger* as tables
 grow. But the
@@ -162,7 +162,7 @@ place by proving a distinct point about the arch/chip seam:
 - **Renesas RX72M** -- RXv3, *non-ARM*, has an MPU: the architecture-honesty check that `arch.h`
   carries no ARM-isms, and a second, independent MPU backend for M2.
 - **ESP32 (Xtensa LX6)** and **ESP32-C6 (RV32IMAC)** -- two more non-ARM ISAs. The C6 has RISC-V
-  **PMP** (an M2 backend, shared with QEMU `virt`); the Xtensa part has neither a per-task MPU nor
+  **PMP** (an M2 backend, shared with QEMU `virt`); the Xtensa part has neither a per-thread MPU nor
   a privilege split, which forces the isolation model to treat both as *optional* per-arch
   capabilities (best-effort where absent).
 
@@ -215,7 +215,7 @@ declarations ever disagree -- rather than becoming a silent no-op.
 6. **Dual API in userspace.** A plain C syscall layer with ergonomic C++ RAII wrappers on top.
 7. **Instance-scoped state, no hard singletons.** Kernel + sim state hangs off an instance
    handle, so multiple `kernel+userspace` instances can run in one host process (the KickCAT
-   sim end-goal). Kernel **objects** (TCBs, semaphores) are caller-owned, and the **runtime core**
+   sim end-goal). Kernel **objects** (TCBs, semaphores) live in generational pools inside the instance, and the **runtime core**
    (scheduler/time/syscall pools/sim arch) is aggregated into a `Kernel`/`Instance` struct reached
    via a compile-time-selectable `kernel()` accessor (a static singleton on MCU / for size;
    thread-local per instance for the multi-slave sim). Full multi-instance in the sim additionally
@@ -264,7 +264,7 @@ Key borrowed ideas, attributed:
 - **ThreadX** -- preemption-threshold; Modules -> loadable MPU-isolated user modules.
 - **RT-Thread** -- scalable/config-gated footprint; optional POSIX/CMSIS-RTOS2 compat.
 
-### Toolchain-libc lesson from NuttX (fix for its C++/sim pain)
+### Toolchain-libc lesson from NuttX (and the cross-libc C++/sim pain it documents)
 
 NuttX ships its **own** libc (`libs/libc/`) whose headers are **deliberately not
 newlib-compatible** -- its own docs warn that mixing them with another libc's headers "is bound to
@@ -327,7 +327,7 @@ KickOS/
     riscv/ rv32imac/ chip/{virt,esp32c6}/  # RV32IMAC (mtvec demux, CLINT/PLIC, PMP)
   kernel/
     include/kickos/                 # public kernel + syscall-number headers
-    sched/  thread/  sync/  time/  irq/  syscall/  init/  ktrace/  bench/  domain/  grant/
+    sched/  thread/  task/  sync/  time/  irq/  syscall/  init/  ktrace/  bench/  domain/  grant/
   lib/
     libc/                           # freestanding: mem/str (string.cc) + a small vsnprintf (fmt.cc)
     include/kickos/                 # libc/{fmt,string}.h, console_tx.h, rtt.h
@@ -407,7 +407,7 @@ RX MPU) must fit the same seam with no signature changes.
 ## Scheduler (the core constraint)
 
 **TCB:** saved SP/context ptr, `state` (INACTIVE/READY/RUNNING/BLOCKED/EXITED, where BLOCKED covers a wait queue, the timer delta list and a queue-less park alike -- `wait_kind` is what says which), `prio`
-(+ `base_prio` for later prio-inheritance), `policy` (FIFO|RR), `quantum_ns` +
+(+ `base_prio`, the assignment anchor PI raises `prio` above), `policy` (FIFO|RR), `quantum_ns` +
 `slice_deadline_ns` (an ABSOLUTE deadline: the RR quantum is wall-clock, see
 `invariants.md` `rr-quantum-is-wall-clock`), intrusive
 links (ready/wait/timer lists), stack bounds, **MPU region descriptors**, privilege flag.
@@ -425,8 +425,7 @@ arms the incoming thread and `next_timed_event()` reports the earliest policy de
 (`UINT64_MAX` = none), so the core owns the clock and the policy owns the deadline.
 **FIFO + RR ship first**
 (priority bitmap + per-priority FIFO, optional per-task quantum); **EDF / rate-monotonic** drop
-in later without touching `reschedule()`, IPC, or the arch layer. Optional per-thread
-**preemption-threshold** (ThreadX) is a policy attribute. Runqueues are kept **SMP-ready**
+in later without touching `reschedule()`, IPC, or the arch layer. Runqueues are kept **SMP-ready**
 (per-core) for RP2040 core1 later.
 
 **`sched::reschedule()`** -- the single decision point: ask the active policy for `pick_next()`;
@@ -435,7 +434,7 @@ is not special.**
 
 **Triggers (all equal):**
 1. `thread_yield()` -- voluntary.
-2. Block on empty `sem_wait`/`mutex_lock`/`msg_recv` -> wait queue -> reschedule.
+2. Block on empty `sem_wait`/`mutex_lock`/endpoint recv -> wait queue -> reschedule.
 3. Wake from **thread** ctx: `sem_post` readies a waiter; if higher prio, reschedule now.
 4. Wake from **IRQ** ctx: an ISR posts -> mark reschedule-needed -> PendSV switches on IRQ exit.
    **The headline "not the tick" path -- a device interrupt drives scheduling directly.**
@@ -443,7 +442,7 @@ is not special.**
 6. RR slice expiry (RR only) -> reschedule among equal priority; each RR task has its own
    configurable **time quantum** + a yield-remaining-quantum call.
 
-**Task-switch hook.** The single switch-in path reprograms per-task MPU regions and updates
+**Task-switch hook.** The single switch-in path reprograms per-thread MPU regions and updates
 introspection counters in one place, so MPU + stats can't drift from the actual switch. ISR
 posts may run direct (scheduler-locked) or, later, deferred to a handler task.
 
@@ -455,8 +454,9 @@ zero timer interrupts. `CONFIG_SCHED_PERIODIC_TICK` (opt-in) forces a classic pe
 Idle thread at lowest prio: ARM `WFI`; sim `sigsuspend`.
 
 **Thread lifecycle past the exit -- cancel, join, wait-until-last.** `KOS_SYS_THREAD_KILL` is a
-COOPERATIVE cancel: it marks the target and wakes it out of the one park it can be woken from
-with an error (`irq_wait`, `-KOS_ECANCELED`); the target then runs its own `sched::exit_current`.
+COOPERATIVE cancel: it marks the target and wakes it out of WHATEVER park it is in -- the abort is
+TOTAL over `WaitKind` (`kernel/thread/park.cc`, `thread_abort_park`) and reports `-KOS_ECANCELED`
+where the primitive has a channel to report one; the target then runs its own `sched::exit_current`.
 `KOS_SYS_THREAD_JOIN` OBSERVES the death, bounded by an optional `timeout_us`
 (`KOS_TIMEOUT_NONE` = none). The joiner parks **queue-less** tagged `WAIT_JOIN` with `wait_obj`
 naming the target TCB, and `sched::exit_current` sweeps the thread pool for that tag at every
@@ -477,6 +477,13 @@ refuse. It is the only way to await a thread
 the caller cannot NAME: a spawn hands back a handle to the child alone, so a `main`'s
 grandchildren are unnameable. Its condition is GLOBAL, so it never returns in an image whose
 service list holds a driver thread that does not exit.
+
+**Group death is the TASK layer's, not the thread's.** `KOS_SYS_TASK_CREATE` makes an EMPTY group
+holding a domain built from its own grant and `kos_thread_params::task` seats a member;
+`KOS_SYS_TASK_KILL` ends the whole group from a supervisor, and a member's own death ends it too.
+The gate there is CREATORSHIP rather than possession, the address space stays on `Domain`, and 0
+means the request was ACCEPTED and never that the thread is gone -- a thread that never re-enters
+the kernel is unreachable without preemption. `docs/design-task-layer.md` is the record.
 
 ---
 
@@ -506,11 +513,11 @@ service list holds a driver thread that does not exit.
   **`ESRCH`** is a one-shot reply cap whose parked caller is gone (aborted or reused);
   **`ENOSYS`** is an arch backend that does not implement the call on this chip -- the
   declining fallback TU (e.g. `arch/common/arch_pinmux_set_default.cc`), so an unported syscall
-  is a clean refusal rather than a silent no-op; **`EMFILE`** is ONE task's capability table
+  is a clean refusal rather than a silent no-op; **`EMFILE`** is ONE thread's capability table
   refusing a mint, and it is deliberately not `ENOMEM` because the fix is a wider declaration
   rather than more RAM (from `KOS_SYS_CALL` it names the SERVER's table, since the reply cap is
   minted into the receiver). TWO conditions produce it, and the second has free slots: the run's
-  free list is empty, or the task already holds `KICKOS_CAP_REPLY_MAX` live `CAP_REPLY` entries;
+  free list is empty, or the thread already holds `KICKOS_CAP_REPLY_MAX` live `CAP_REPLY` entries;
   **`EOVERFLOW`** is a bounded counter already at its ceiling, refused rather than wrapped --
   `sem_post` with no waiter at `KOS_SEM_COUNT_MAX` and the object-refcount ceiling behind
   `KOS_SYS_CONSOLE_PUBLISH` and a spawn's delegation batch (`kernel/syscall/syscall.cc`,
@@ -529,8 +536,9 @@ service list holds a driver thread that does not exit.
   and
   **`ECANCELED`** is *this* thread having been cancelled by `KOS_SYS_THREAD_KILL` -- the wait it was
   in, or was about to enter, is abandoned and the thread is expected to exit itself
-  (`kernel/syscall/syscall_thread.cc` sets `wait_result`, `kernel/irq/irq.cc` refuses to re-block an
-  already-cancelled thread). Five syscalls
+  (`kernel/thread/park.cc`'s `thread_cancel`/`thread_abort_park` sets `wait_result`, the death point
+  is the next syscall ENTRY in `kernel/syscall/syscall.cc`, and `kernel/irq/irq.cc` refuses to
+  re-block an already-cancelled thread). Five syscalls
   stay OUT of this scheme by return type: `ram_alloc` returns a pointer (every failure is NULL -- a
   negated errno cast to a pointer would be non-NULL); `cpu_clock_hz`/`cpu_clock_set` and
   `KOS_SYS_PERIPH_CLOCK_HZ` return a u32 Hz whose 0 already means unknown / no-silicon-clock; and
@@ -561,8 +569,8 @@ memory-boundary sense only (no MMU, no virtual memory, no `fork`/`exec`). Model 
 implied); ThreadX Modules and ChibiOS/SB are the loadable-code cousins.
 
 - **A domain owns a region set** -- code (RX), data/heap (RW-NX), and any granted MMIO -- plus a
-  **privilege posture** (privilege is a property of the *domain*, not of an individual thread).
-- **Threads belong to a domain and share its memory** (cooperative within a domain), **but each
+  **privilege posture**.
+- **Threads belong to a TASK, which owns the domain they share** (cooperative within a domain), **but each
   thread keeps its own private stack region** -- a sibling cannot scribble another thread's stack.
   So a domain switch reloads the domain regions and every switch-in also loads the incoming
   thread's stack region; the MPU is therefore reprogrammed on **every** context switch (there is
@@ -750,7 +758,7 @@ API. Two flavors:
   bring-up path holding `AUTH_IRQ` (`irq_claim`) and DELEGATED to the driver at spawn, which
   then loops `irq_wait(cap)` / service.
   The kernel's generic ISR stub masks the line, posts the driver's notification
-  (sem/thread-flag), flags reschedule -> PendSV switches to the now-ready driver task; the next
+  (a semaphore), flags reschedule -> PendSV switches to the now-ready driver task; the next
   `irq_wait` auto-re-arms the consumed line, so no explicit ack is needed (`irq_ack(h)` stays an
   OPTIONAL early re-arm that reacts sooner to a latched raise; the latch-and-coalesce contract
   keeps the event either way). The
@@ -859,7 +867,7 @@ feeds the slave app.
   `tests/static/weak_allowlist.txt`): `-fno-use-cxa-atexit` removes the need for `__cxa_atexit`, and
   `__cxa_pure_virtual` is never emitted because nothing declares a pure virtual. **`operator
   new/delete` is not provided at all** -- the kernel links `-nostdlib++`, so a stray `operator new`
-  is a LINK ERROR rather than a silent heap allocation (`CMakeLists.txt:746`). No implicitly
+  is a LINK ERROR rather than a silent heap allocation (`CMakeLists.txt`, the `-nostdlib++` link options). No implicitly
   heap-allocating STL. `extern "C"` at asm/startup/syscall seams.
 - **Userspace**: default freestanding subset; **each app may opt into full C++**
   (`-fexceptions -frtti`) by linking the toolchain's `libstdc++`/`libsupc++` over the **toolchain's
@@ -956,7 +964,7 @@ minted by `cap_install_reply`) are equally live. Each object pool was added addi
 recipe in Book ch.8.2. The contract below is code-synced to `kernel/include/kickos/cap.h`,
 `kernel/syscall/cap.cc`, `kernel/syscall/syscall.cc`.
 
-- **Per-task typed handle table, not global ids or fds.** A global object id every task can name
+- **Per-thread typed handle table, not global ids or fds.** A global object id every thread can name
   is ambient authority -- the opposite of the isolation pillar. Each `Thread` holds a `CapRun`,
   a directory of fixed-size `CapEntry` chunks reserved from one static slab AT SPAWN -- every
   chunk or the spawn fails, and `cap_install` never allocates, which is what keeps a client
@@ -964,13 +972,13 @@ recipe in Book ch.8.2. The contract below is code-synced to `kernel/include/kick
   (`KCAP_CHUNK_TARGET`, 8) compiles a FLAT path with no directory, no shift and no mask, and its
   run is exactly the declared width; wider tables reserve a ceiling count of chunks, so the last
   chunk's tail is paid for and unaddressable. **The width is per TASK, not per image**: root gets
-  the sum below, every spawned task gets `KICKOS_CAP_CHILD_WIDTH`, and the slab is carved from both
+  the sum below, every spawned thread gets `KICKOS_CAP_CHILD_WIDTH`, and the slab is carved from both
   classes rather than from the widest. Root's width is a configure-time SUM of
   four declarations -- the kernel's reserved range, the chosen service list's `RETAINED_CAPS`, the
-  app's declared `CAPABILITIES` peak, and the peak concurrent INBOUND reply capabilities a task's
+  app's declared `CAPABILITIES` peak, and the peak concurrent INBOUND reply capabilities a thread's
   table must hold (`INBOUND_REPLY_CAPS` on the service list, `CAPABILITIES_INBOUND_REPLY` on the
   app, combined as the widest, and **0 by default** -- nothing in tree declares it). A client mints
-  into the SERVER's table, so without that fourth term the sum is not a bound on when a task's own
+  into the SERVER's table, so without that fourth term the sum is not a bound on when a thread's own
   mint can fail. Beneath the sum sits a floor that is nobody's declaration, the grant-list floor
   `KICKOS_MAX_SPAWN_GRANTS + 1`: it RAISES a width that falls below it rather than refusing it, so
   no app is asked to declare capabilities it does not hold, and it refuses only when the floor
@@ -979,10 +987,12 @@ recipe in Book ch.8.2. The contract below is code-synced to `kernel/include/kick
   **computed, and no board declares one**; three values come out across the fleet. **7** on the
   three supply-7 boards (`bluepill-c8`, `microbit`, `f302nucleo`), whose supply clamps the
   selftest's optional peak away, so the arms that wanted it reclaim and skip -- one flat chunk,
-  224 B of `.bss`. **10** on every supply-16 board at its preset default, and equally under any
-  `*_uartirq` service list, since those retain nothing: root takes two chunks of 8 with a 6-slot
-  unaddressable tail while every spawned task takes one, 1280 B where `KICKOS_MAX_THREADS` is 16
-  and 768 B where it is 8. Those are the widths ROOT is configured at; a spawned task gets
+  224 B of `.bss`. **10** on a supply-16 board whose list retains nothing -- every preset default
+  except `frdmk64f`'s and `xmc4800-relax`'s, and equally under any `*_uartirq` list: root takes two
+  chunks of 8 with a 6-slot unaddressable tail while every spawned thread takes one, 1216 B where
+  `KICKOS_MAX_THREADS` is 16 and 704 B where it is 8. **Do not recompute these -- read the
+  `KickOS: cap table =` configure line, which is the authority.** Those are the widths ROOT is
+  configured at; a spawned thread gets
   `KICKOS_CAP_CHILD_WIDTH` whatever the row says. **11** only when a
   RETAINING service list is selected -- exactly three declare `RETAINED_CAPS 1`
   (`system/CMakeLists.txt`): the two SPI lists `services_frdmk64f` and `services_xmc4800relax`, and
@@ -992,16 +1002,16 @@ recipe in Book ch.8.2. The contract below is code-synced to `kernel/include/kick
   sequence (`KCAP_REPLY_SEQ_LO_BITS` / `KCAP_REPLY_SEQ_HI_BITS`, seated by `cap_reply_seq_seat`).
   Even an empty slot's spare word is spoken for: a DEAD entry's `obj` holds the run's free-list
   links. That is why there is nowhere to put a parent link. Handles are **opaque** to
-  userspace (never assume an array index). The table is a pure per-task naming+rights layer that
+  userspace (never assume an array index). The table is a pure per-thread naming+rights layer that
   WRAPs the unchanged global object pools (`slotpool.h`), it does not replace them: object
-  liveness is a global property (the pool + its refcount), capability possession is per-task. Cost,
-  stated honestly: per-task table RAM + a resolve indirection per syscall + refcount traffic -- an
+  liveness is a global property (the pool + its refcount), capability possession is per-thread. Cost,
+  stated honestly: per-thread table RAM + a resolve indirection per syscall + refcount traffic -- an
   isolation trade, not a free win.
 - **One resolve chokepoint (`cap_resolve`).** It validates index / liveness / type / rights
   (`(rights & need) == need`), then WRAPs to the object pool, which re-checks the object-gen. Its
   precondition is the resolve contract: **the caller holds `IrqLock`, and the resolved pointer is
   used under the SAME continuous lock** -- so a concurrent `handle_close` cannot free the object
-  between resolve and use. Two independent generations guard it: per-task **cap-gen**
+  between resolve and use. Two independent generations guard it: per-thread **cap-gen**
   (use-after-close) plus global **object-gen** (use-after-destroy), both `uint16_t`.
 - **Rights are three bits, each enforced at a real site (no dead field):** `CAP_WAIT` (`sem_wait`),
   `CAP_SIGNAL` (`sem_post`), `CAP_TRANSFER` (may be delegated). Memory R/W/X is NOT a cap right --
@@ -1102,9 +1112,10 @@ writer can finish) before publish returns. The **field panic path reclaims** the
 funnels through `kpanic_enter` so a terminal fault in the driver still reclaims and polled-prints;
 the diag LED stays the always-present 1-bit last resort. A chip `arch_console_reclaim` body
 force-retakes the peripheral and rewrites every in-window register to a known baud/state, since
-userspace config is untrusted; two exist (`arch/arm/chip/xmc4800/usic_uart.cc`,
-`arch/arm/chip/mk64f/chip_mk64f.cc`, the first silicon-witnessed) and every other chip keeps the
-no-op fallback TU, so on those the reclaim is wiring with nothing behind it (see
+userspace config is untrusted; four exist (`arch/arm/chip/xmc4800/usic_uart.cc`,
+`arch/arm/chip/mk64f/chip_mk64f.cc`, `arch/riscv/chip/esp32c6/chip_esp32c6.cc` and
+`arch/xtensa/chip/esp32/chip_esp32.cc`; the xmc4800 one is silicon-witnessed) and the remaining
+chips keep the no-op fallback TU, so on those the reclaim is wiring with nothing behind it (see
 [console.md](console.md)). Routing userspace output through a kernel syscall to "share" the device is
 rejected -- an ambient-authority console service contradicts the microkernel split.
 
@@ -1135,7 +1146,7 @@ structs or a tiny IDL.
 
 - **Privilege boundary** -- flash; UART output matches the sim. GDB confirms the MSP/PSP split,
   unprivileged `CONTROL`, and SVC syscalls crossing the boundary.
-- **Enforcement** -- per-task MPU regions are loaded on every switch-in, and a wild
+- **Enforcement** -- per-thread MPU regions are loaded on every switch-in, and a wild
   cross-domain user write **traps**: MemManage on the ARM PMSA parts (XMC4800, i.MX RT1062,
   RP2040 v6-M, RP2350 v8-M), a SYSMPU-reported bus fault on K64F, the access exception via
   MPESTS/MPDEA on RX72M, and `mcause=7` under PMP on ESP32-C6. Proving the *negative* is the

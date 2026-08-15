@@ -56,6 +56,8 @@ struct Line
     uint8_t trigger; // KOS_IRQ_EDGE or KOS_IRQ_LEVEL
 };
 
+// WHICH POINTER THE ENTRY RECEIVES, and nothing about reach: the block is the GROUP's
+// region (Descriptor::block_size), so ARG_NONE buys a thread no isolation from it.
 enum kos_drv_arg
 {
     KOS_DRV_ARG_NONE = 0,
@@ -69,7 +71,6 @@ struct Thread
     char const* name; // null takes cfg->name
     int8_t prio_delta;
     uint8_t arg;       // enum kos_drv_arg
-    bool mem_grant;    // a spawn-time grant of the whole ring block
     bool window_grant; // cfg->mmio_base + cfg->mmio_window; a DEV window has one holder
     uint8_t cap_count;
     struct Cap caps[KOS_DRV_CAPS_MAX];
@@ -95,7 +96,11 @@ struct Descriptor
 {
     char const* tag;         // "[c6uart] ", prefixed to every diagnostic this bring-up prints
     uintptr_t expected_base; // 0 = no guard; no granted window has base 0
-    uint32_t block_size;     // 0 = no ring block, no arena allocation, no self-grant
+    // 0 = no ring block, no arena allocation, no self-grant. THE BLOCK IS THE GROUP'S SHARED
+    // REGION AND EVERY THREAD OF THIS DRIVER SEES ALL OF IT, whatever its arg: a task owns
+    // exactly one Domain and a member may bring no grant of its own. Keep here only state the
+    // whole driver may touch; a DEV window, which has one holder, is per-thread instead.
+    uint32_t block_size;
     uint16_t ready_offset;   // byte offset of a `volatile uint32_t` latch inside the block
     uint8_t ep_posture;      // enum kos_drv_ep
     uint8_t svc_kind;        // enum kos_svc_kind
@@ -226,22 +231,31 @@ constexpr bool valid_l3(Descriptor const& d)
     return true;
 }
 
-// L4. A thread handed a block nobody allocated, a block nothing lays out, or a block pointer
-// the receiving thread has no grant to read.
+// L4. A thread handed a block nobody allocated, a block nothing lays out, or a block granted
+// to the group that no thread ever reads.
+//
+// The second arm is the one that keeps the grant narrow: the block becomes a region on every
+// member, so a descriptor carrying one nobody takes would hand the whole group memory for
+// nothing. It is the only remaining statement a descriptor can make about the group's memory,
+// the per-thread flag that used to sit beside it having been a second truth for this same
+// fact -- and one that read as an opt-out it could not deliver.
 constexpr bool valid_l4(Descriptor const& d)
 {
+    bool reader = false;
     for (uint8_t i = 0; i < d.thread_count; i++)
     {
-        bool const wants_block =
-            d.threads[i].mem_grant or d.threads[i].arg == KOS_DRV_ARG_BLOCK;
-        if (wants_block and d.block_size == 0u)
+        if (d.threads[i].arg == KOS_DRV_ARG_BLOCK)
         {
-            return false;
+            if (d.block_size == 0u)
+            {
+                return false;
+            }
+            reader = true;
         }
-        if (d.threads[i].arg == KOS_DRV_ARG_BLOCK and not d.threads[i].mem_grant)
-        {
-            return false;
-        }
+    }
+    if (d.block_size != 0u and not reader)
+    {
+        return false;
     }
     return (d.block_size == 0u) == (d.block_init == nullptr);
 }
@@ -586,9 +600,8 @@ inline kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg con
         name = cfg->name;
     }
 
-    // No mem grant of its own: the ring block is the TASK's shared region, so every member
-    // sees it and a member bringing one is refused. `Thread::mem_grant` is therefore read as
-    // the GROUP's declaration -- see bring_up.
+    // No mem grant of its own: the ring block is the TASK's shared region, and a member
+    // bringing one is refused -KOS_EINVAL. The window is the per-thread grant.
     return kos::thread::spawn(t.entry, arg, name,
                               static_cast<uint8_t>(cfg->prio + t.prio_delta),
                               KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
@@ -662,25 +675,13 @@ inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_
     // BEFORE the endpoint, so the earliest failure that has a task to give back is the first
     // one that has anything to give back.
     //
-    // The shared region is the ring block, iff any thread declared `mem_grant`; a driver whose
-    // threads share nothing gets a group that is only a kill group. The flag is per-thread and
-    // is read here as the GROUP's, so a thread of a block-sharing driver that declared
-    // `mem_grant = false` now SEES the block: one thread in the fleet does (rx72m/rxsci's
-    // relay). Its DEV window is what stays its own, and that is the grant the isolation
-    // principle is about.
-    void* shared = nullptr;
-    uint32_t shared_size = 0;
-    for (uint8_t i = 0; i < d.thread_count; i++)
-    {
-        if (d.threads[i].mem_grant)
-        {
-            shared = blk;
-            shared_size = d.block_size;
-            break;
-        }
-    }
+    // ITS SHARED REGION IS THE WHOLE BLOCK, FOR EVERY MEMBER. A task owns exactly one Domain
+    // and a member may bring no grant of its own, so there is no per-thread subset to declare:
+    // a thread that must not reach the block needs a task of its own, which today would also
+    // take it out of the kill group. A driver with no block gets a group that is only a kill
+    // group. L4 is what keeps this narrow, by refusing a block no thread reads.
     kos_task_t task = KOS_TASK_NONE;
-    if (kos_task_create(shared, shared_size, &task) != 0)
+    if (kos_task_create(blk, d.block_size, &task) != 0)
     {
         return fail(d.tag, "ERROR: task_create failed\n");
     }

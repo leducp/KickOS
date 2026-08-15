@@ -670,11 +670,10 @@ tree. What it drops is the `PC`/`LR`/`xPSR` and `R0..R12` lines of a fault dump,
 checkable -- except in the two exemplars kept verbatim below to show the shape.
 
 **Root is unprivileged on every board by construction, as of 2026-07-30.** It holds an authority
-word rather than the whole arena, and there is no second posture: `KICKOS_ROOT_PRIVILEGED`
-is **deleted from the tree** -- no knob, no default, nothing to flip. The name has **zero hits in
-every code and build file**, including `cmake/KickOSConfig.cmake.in`; only docs still discuss it,
-historically. So a build passing the `-D` gets nothing louder than CMake's unused-variable warning,
-in tree or out of it. The banner suffix went with it: every board now prints
+word rather than the whole arena, and there is no second posture: the knob that used to select one
+is **deleted from the tree** -- no knob, no default, nothing to flip, and no configure-time refusal
+left either, not even in `cmake/KickOSConfig.cmake.in`. So a build passing the old `-D` gets nothing
+louder than CMake's unused-variable warning, in tree or out of it. The banner suffix went with it: every board now prints
 `mpu enforce` and says nothing about the posture, because under a single posture the suffix carried
 no information.
 
@@ -861,10 +860,14 @@ fault's shape. Do not condense it.**
 flash at `0x10000530`, which is where root's code executes from on this part.
 
 **The privileged control was measured, so the trap is attributable to the posture.** The same binary
-on the same tip and board, built with `KICKOS_ROOT_PRIVILEGED` at what was then its default ON,
-printed banner `mpu enforce` and then
-`[rootfault] cross-domain write completed: root is NOT confined (expected with KICKOS_ROOT_PRIVILEGED=1 or no enforcement)`
--- no fault, no dump, at the same announced `0x20026000`. So the two runs put root's write at the
+on the same tip and board, built with the root-privilege knob at what was then its default ON,
+printed banner `mpu enforce` and then, verbatim off the wire:
+
+```
+[rootfault] cross-domain write completed: root is NOT confined (expected with KICKOS_ROOT_PRIVILEGED=1 or no enforcement)
+```
+
+No fault, no dump, at the same announced `0x20026000`. So the two runs put root's write at the
 same place and differed only in the knob.
 
 **`mpu_fault` adds a second, independent PMSAv8 denial under the flip** -- child-to-child rather than
@@ -1035,9 +1038,9 @@ this board at all.** The other five got flipped by taking the peripheral work ou
 seam instead. `k64uart` and `k64dspi` each call `kos_periph_enable(win)` as their own first act, so
 the `SIM_SCGC*` clock ungate and the `AIPS0` PACR unprotect happen inside the unprivileged window
 holder rather than in root, and the four DSPI pins moved into the board pin map, which root applies
-through `kos_pinmux_set` before any service starts. `kickos_services_frdmk64f` is therefore no longer
-listed in `KICKOS_SERVICE_LIST_ROOT_MMIO`, so the configure-time refusal that used to fire for this
-board no longer applies. The run also witnessed the console handover to `k64uart` (TAP via the
+through `kos_pinmux_set` before any service starts. `kickos_services_frdmk64f` therefore came off the
+root-MMIO refusal list, so the configure-time refusal that used to fire for this board stopped
+applying; that list and its gate have since been deleted outright. The run also witnessed the console handover to `k64uart` (TAP via the
 driver), `k64dspi` up in the same image, and `ok 47 - periph_enable_unheld`.
 
 **There is no control column at this tip**, so read this board's row as one arm, not an A/B. Its
@@ -1214,7 +1217,7 @@ own granted region first. The K64F's is an imprecise bus fault, so the SYSMPU `E
 
 **`rootauth` on `frdmk64f`, root unprivileged** -- the first silicon run of the ROOT-narrow gate, in
 the posture where it bites: `PASS`, five arms, banner `mpu enforce, root unprivileged`. (That tip
-still had the `KICKOS_ROOT_PRIVILEGED` knob and this image set it `OFF`; the knob and the banner
+still had the root-privilege knob and this image set it OFF; the knob and the banner
 suffix are both gone as of 2026-07-30, and the same gate was re-run at the new tip -- see *M4.5.6*
 below.) Its declared-bit arm answered `rc=-22` (`-KOS_EINVAL`) from the REAL mk64f
 `arch_pinmux_set`, where `qemu`/`sim` see `-38` (`-KOS_ENOSYS`) from the declining fallback
@@ -1286,7 +1289,7 @@ three: the privileged-write seam `KOS_SYS_PERIPH_REG_WRITE` /
 also bounded so the region CONTAINS the target word, and narrowed further by an exact
 `(base, offset)` allowlist per chip; on the XMC4800 that allowlist is U0C1 `FDR` `0x010`,
 `BRG` `0x014` and `CCR` `0x040`, the registers the XMC4800 reference manual marks `Write = PV`
-(RM V1.3 Table 18-20). Then the deletion of `KICKOS_ROOT_PRIVILEGED`, of its banner suffix, and of
+(RM V1.3 Table 18-20). Then the deletion of the root-privilege knob, of its banner suffix, and of
 the `mpu_privileged_guard` test case. Then the widening of the panic-path console reclaim.
 
 The five from the second half: the **ring arm**, both as a new permanent gate and as its first
@@ -1322,8 +1325,8 @@ which close here. One thing came out OPEN here and stayed open for weeks: the `f
 | `f302nucleo` | `selftest` BEFORE | `270b6fa` | 63 cases, `not ok 46 - periph_enable_unheld`, `# skipped: 9`, `# 1 test(s) failed` |
 | `f302nucleo` | `selftest` AFTER (two identical runs) | `2fc7799-dirty` | 63 cases, `ok 46`, `# skipped: 5`, `# all tests passed (5 skipped)` -- FOUR real arms un-skipped |
 | `f302nucleo` | `ringpriv` | `270b6fa-dirty` | `PASS (5 arms)` -- the project's FIRST ring-arm silicon witness |
-| `f302nucleo` | `ringppb` | `124b68c` | BusFault CONFIRMED by live debugger (`CFSR=0x00008200`, `BFAR=0xe000ed00`), but **NO fault dump reaches the wire** -- OPEN |
-| `f302nucleo` | `fault` | `124b68c` | truncates at `[f`, 338 bytes -- the same reporter hole, so it is not a `ringppb` bug |
+| `f302nucleo` | `ringppb` | `124b68c` | BusFault CONFIRMED by live debugger (`CFSR=0x00008200`, `BFAR=0xe000ed00`); no dump reached the wire, which was the flash command's `DEMCR.VC_HARDERR` halt (CLOSED 2026-08-13) |
+| `f302nucleo` | `fault` | `124b68c` | truncates at `[f`, 338 bytes -- the same halt, so it is not a `ringppb` bug |
 
 Six boards, 27 rows, 31 files. Both `pizero2350` arms were owed by an earlier revision of this
 subsection and are now TAKEN. The
@@ -1682,7 +1685,8 @@ reasons, and this one has since MOVED to 67 (`privileged_spawn_refused` was adde
 captures). Compare the named transcripts, never the numbers.
 
 That also settles a question M4.5.5 left open, where three skip counts across boards looked mutually
-inconsistent. `master` defaults `KICKOS_ROOT_PRIVILEGED=ON`, so the M4.5.5 selftest rows ran
+inconsistent. `master` THEN defaulted root PRIVILEGED (that knob is since deleted; see
+*Unprivileged root* above), so the M4.5.5 selftest rows ran
 **privileged** and `mpu_privileged_guard` therefore RAN instead of skipping. All three counts
 reconcile on that, and the open question is closed.
 
@@ -1847,9 +1851,9 @@ enforcement:
 [xmcssc] SPI service up (USIC0-CH1 SSC, IRQ-paced, HW CS on SELO0)
 ```
 
-Two lines, and both of them matter. `KICKOS_SERVICE_LIST_ROOT_MMIO` is now **EMPTY**
-(`CMakeLists.txt:380`) and `xmc4800-relax` defaults to its full list at `KICKOS_HAVE_MPU=1`, so this
-image is the configuration the refusal used to forbid. **The board did not go dark**, which is
+Two lines, and both of them matter. The root-MMIO refusal list was **EMPTY** at this tip and
+`xmc4800-relax` defaults to its full list at `KICKOS_HAVE_MPU=1`, so this image is the configuration
+the refusal used to forbid. (That list and its gate were deleted outright on 2026-08-05.) **The board did not go dark**, which is
 exactly the outcome that refusal guarded: bring-up MMIO from an unprivileged root after the console
 handover fails silently and totally, with no diagnostic to read. Anything elsewhere in this file
 claiming that list is still refused, or that `xmcssc` as a SERVICE is unwitnessed, is stale.
@@ -2146,8 +2150,26 @@ would assert the wrong thing. The deeper design facts -- why a fault is the wron
 only `CONTROL` can carry the read-back, and the `resting_npriv` hazard -- live in `porting.md`; read
 them there rather than expecting them restated here.
 
-**`f302nucleo` -- the fault reporter produces NO dump. RECORD THIS AS OPEN.** `ringppb` exposed it
-and it is not `ringppb`'s bug. At `124b68c` that capture stops after two lines:
+**`f302nucleo` -- the captures that stop short were stopped by the FLASH COMMAND, not by the fault
+reporter. CLOSED 2026-08-13 (`e57241c5`).** `st-flash --connect-under-reset --reset write` leaves the
+core under halting debug with `DEMCR.VC_HARDERR` armed, so a fault escalates to HardFault normally and
+the core then enters Debug state AT `HardFault_Handler`'s first instruction instead of executing it.
+The CPU is stopped: no LED, no dump, and a board that reads as locked up forever.
+`tools/flash-stlink.sh` no longer pairs `--reset` with `--connect-under-reset` -- releasing NRST
+already starts the image, so `--reset` bought nothing. The measurements below stand as taken; only the
+reading of them was wrong.
+
+**A SECOND cut had a SECOND cause, and it was also not the firmware: `bench-capture.sh`'s separate
+`st-flash reset` step.** That step cut the correct boot off mid-line and started another one, which
+stalled -- so a capture taken that way holds two boots and a truncated first. Flashing WRITE-ONLY and
+taking no separate reset gives ONE boot, 300 bytes, and a complete `[fs] survivor ran after the
+fault`. The proof that this is the capture protocol and not the image: a write-only capture of the
+**PRE-fix** image reproduces that clean result byte for byte. `f302nucleo` therefore has a
+gate-verified fault-isolation witness (TAG `m484p2`), and **its post-fault console is NOT an
+unreliable instrument** -- a claim this file and `STATE.md` both used to carry. Expecting two plan
+lines here, and slicing from the last one, is the older story: take the capture write-only instead.
+
+At `124b68c` the `ringppb` capture stops after two lines:
 
 ```
 [ringppb] ok - control: a 32-bit volatile load of held memory succeeded
@@ -2155,9 +2177,22 @@ and it is not `ringppb`'s bug. At `124b68c` that capture stops after two lines:
 ```
 
 and the pre-existing `fault` app, which touches no privileged register at all, truncates identically
-at `[f` -- 338 bytes, same tip. So the hole is the reporter, on this board, for any fault.
+at `[f` -- 338 bytes, same tip. A line cut mid-token is the signature of the halt rather than of a
+reporter: the 2026-08-13 recovery resumed exactly such a stalled boot and it finished the queued line
+before printing its report.
 
-A live debugger attach at `HardFault_Handler` entry CONFIRMS the hardware:
+The root cause is measured on the live board, and the reading is `DFSR=0x9` (`VCATCH`),
+`DEMCR=0x01000501`, `HFSR=0x40000000` (`FORCED` with `VECTTBL` CLEAR, so not a vector fetch), `DHCSR`
+with `S_LOCKUP` CLEAR at a real instruction address rather than `0xFFFFFFFE`, `CFSR=0x10000`
+(`UNDEFINSTR` alone, no `STKERR`, so not a stacking fault), and a stacked frame at `PSP` carrying the
+faulting instruction's own PC. **The single-change proof is a gdb write of `DEMCR=0x01000000` on the
+SAME boot with no reset and no reflash**, after which the stalled boot finished its queued line and
+printed its fault report. Control: the same image flashed with `--connect-under-reset write` and NO
+`--reset` reports unaided.
+
+A live debugger attach at `HardFault_Handler` entry, taken at `124b68c`, CONFIRMS the hardware -- and
+because a debugger steps past the vector catch, it is also why the reporter was seen to run there and
+not on a bare boot:
 
 ```
 ***** HardFault_Handler ENTERED *****
@@ -2174,25 +2209,29 @@ Reading it: `CFSR=0x00008200` is BFSR byte `0x82` = `PRECISERR | BFARVALID`, and
 the exact address `ringppb` announced. `HFSR=0x40000000` is FORCED because `BUSFAULTENA` is never set
 in-tree, so the BusFault escalates. **ARM ARM B3.1.1 is therefore CONFIRMED on hardware -- an
 unprivileged PPB read does fault -- and `ringppb` stays REGISTERED, not skipped.** The reporter IS
-entered and executes at least the 120 traced instructions; `MSP` moves `0x20003f60` -> `0x20003de8`,
-at least 376 B of the 2 KiB kernel stack with no overflow. `DHCSR` bit 19 is clear, so the core is
-not locked up. And the UART is READY at fault time: `CR1=0x0d` (UE/TE/RE), `ISR=0x006000d0` with TXE
-and TC both set.
+entered and runs normally: at the end of the trace's fixed 120-instruction budget it was inside
+`kvsnprintf` storing the first character of the fault banner. And the UART is READY at fault time:
+`CR1=0x0d` (UE/TE/RE), `ISR=0x006000d0` with TXE and TC both set.
 
-Hypotheses KILLED, listed so nobody re-runs them: hardware-does-not-fault (the `CFSR`/`BFAR` above);
-vector unwired (the breakpoint hit); null backend pointer; output stuck in the ring
-(`kpanic_enter` stores `RECLAIMED` first, and f302 DOES define its own `arch_console_write_sync`);
-`KICKOS_POLL_SPIN_MAX` (it is 1,000,000); and "buffered ring plus a missing
-`arch_console_reclaim`" -- because `stm32f411` is ALSO buffered and ALSO lacks one, yet dumps. The
-only per-board number still differing is `_kernel_stack_size`, 2 KiB here against 8 KiB elsewhere,
-and the 376 B measurement argues against it, so it is NOT the answer.
+**Two figures once quoted off this trace are NOT evidence about the silent boot, and both were read
+that way.** `DHCSR`, `HFSR` and `CFSR` are sampled at the END of the budget, i.e. off a healthy
+machine mid-dump, so "bit 19 clear, no lockup" says nothing about the failure. And `MSP` reaching
+`0x20003de8` is not a stack PEAK of 376 B: it is exactly the bottom of `kvsnprintf`'s frame, which is
+where the trace stopped.
 
-**UNRESOLVED SPAN**, stated narrowly: between "the reporter is running inside `kpanic_enter`" and "a
-byte reaches `USART2_TDR` (`0x40004428`)". Nothing in between is measured. Blocked on a physical
-ST-Link replug -- that unit currently fails `Failed to enter SWD mode`.
+**Three instrument lessons outlive the bug**, and they are the reason it took weeks:
 
-**And the STRUCTURAL coverage hole that let this survive to silicon.** Every fault-dump gate in the
-fleet runs on an UNBUFFERED-console board: `mps2` semihosting, `microbit`, `virt`. So no emulated
+- **A debugger left armed is a legitimate suspect before the silicon is.** Three hardware hypotheses
+  were carried here and all three were dead.
+- **The UART markers used to bracket the reporter were CONFOUNDED.** Every marker that fires runs
+  with `CR1.TXEIE` clear, so every reading past that point was a false negative. Probe with a raw
+  `GPIOB->BSRR` LED store and cycle-counted dwells instead.
+- **The `CFSR=0x00008200` / `BFAR=0xe000ed00` transcript above belongs to `ringppb`, not to
+  `fault`.** It was quoted as the `fault` silence's evidence for weeks; it is the PPB read's own
+  BusFault and says nothing about a reporter.
+
+**A structural coverage gap remains, and it is independent of this board.** Every fault-dump gate in
+the fleet runs on an UNBUFFERED-console board: `mps2` semihosting, `microbit`, `virt`. So no emulated
 gate can exercise a **buffered-ring panic flush** at all -- the code path that only exists when the
 console has a ring behind it is gated nowhere. That is not a missing test on one board; it is a class
 of path with no runnable target, and it belongs in *Coverage boundary* below as well as here.
@@ -2326,7 +2365,7 @@ is closed for everything at or before `270b6fa`, and PARTIALLY at `124b68c` -- o
 | 2026-07-30 | `270b6fa` | Three boards not on the earlier passes, all off a CLEAN committed tip: `rx72m` `selftest` / `rootauth` / `rxdrv` (all three owed items closed in one visit, including the fleet's first mux WRITE that lands), `xmc4800-relax` `pvprobe` on a SECOND physical unit (adding the mask-refusal arm) and `xmcssc` as a SERVICE on the full default list, and the `f302nucleo` `selftest` BEFORE capture. Six captures. |
 | 2026-07-30 | `270b6fa-dirty` | The committed tip plus uncommitted work, nine captures: the `esp32c6-wroom` `.data` LMA diagnosis and its post-fix `c6blink` / `selftest` (closing the C6 mux-write debt and making the 2026-07-28 C6 witness retrospectively a pass by LUCK), `f302nucleo` `ringpriv` (the project's FIRST ring-arm silicon witness), and `inprstorm` at THREE rate profiles (closing the TX-FIFO residual). Dirty again, after the rule; see the M4.5.6 provenance note. |
 | 2026-07-30 | `124b68c` | Two captures only, and they are the milestone's sole clean-tip witnesses: `f302nucleo` `ringppb` and `fault`. The `fault` silence read as an OPEN defect here for weeks and was the FLASH COMMAND rather than the firmware (CLOSED 2026-08-13, `tools/flash-stlink.sh`); the BusFault `ringppb` announced is separate and was confirmed by a live debugger attach. Everything else in M4.5.6 predates this tip. |
-| 2026-08-01 | `97a85e4` | The M4.6.1 IRQ-capability pass: `irq_claim_gate` and `irq_reclaim` on all five bench boards -- four ISAs, four enforcement backends (PMSAv7, SYSMPU, RX-MPU, PMP) plus one no-MPU part -- and the first silicon confirmation of both plan counts, `1..71` under enforcement and `1..67` without. Also the `f302nucleo` fault-reporter LED pass, which is what reframed that defect. |
+| 2026-08-01 | `97a85e4` | The M4.6.1 IRQ-capability pass: `irq_claim_gate` and `irq_reclaim` on all five bench boards -- four ISAs, four enforcement backends (PMSAv7, SYSMPU, RX-MPU, PMP) plus one no-MPU part -- and the first silicon confirmation of both plan counts, `1..71` under enforcement and `1..67` without. Also the `f302nucleo` fault-reporter LED pass, whose dark-LED reading is CORRECT and is what the 2026-08-13 close explains: the core was halted at the handler's first instruction, so nothing downstream of it could run. |
 | 2026-08-01 | `2511e20`-dirty .. `182e0dd`-dirty | The first M4.6.1 UART-console pass, four boards green and one short. Four of five images uncommitted, one with no git identity, and all five three arms behind the tree. SUPERSEDED by the row below. |
 | 2026-08-02 | `cb5f2a4` | The M4.6.1 UART-console pass: all five boards, one CLEAN committed tip, `1..74` enforcing / `1..70` not, zero failures, skips and partials. Closes the three-arm gap the previous row opened and the `rx72m` stop, with a reverting A/B that reproduces the stop three times. |
 | 2026-08-02 | `0f5a5bd-dirty` | Stage 3's capability slab, the CRLF cook and the five first-light markers, at `1..76` / `1..72`. The `m461d-*` banners stamp `0f5a5bd-dirty`, an ANCESTOR of `c82cc63` -- credit these captures to the banner, not to the branch tip they were taken from. Not a committed-tip pass. |
@@ -2347,15 +2386,13 @@ each caught by a distinct check. What stays silicon-only is the bus's PV CLASSIF
 discard remains a `pvprobe`-only fact), that a tabled block is CLOCKED, and any real chip's mask
 column. **No emulated gate can exercise a buffered-ring panic flush**, because every fault-dump gate
 in the fleet runs on an unbuffered console (`mps2` semihosting, `microbit`, `virt`) -- a class of path
-with no runnable target, and the reason the `f302nucleo` reporter hole survived to silicon.
-`esp32-wroom` can carry no run gate at all (upstream QEMU has no ESP32 machine).
+with no runnable target. `esp32-wroom` can carry no run gate at all (upstream QEMU has no ESP32
+machine).
 
-**The owed list, in full, so it can be read in one place.** Three items and no more:
+**The owed list, in full, so it can be read in one place.** Two items and no more:
 
 - **`f411spi` on `f411disco`** -- the ONE remaining mux-write debt. That board was not on the
   2026-07-30 bench; `rxdrv` and `c6blink` both closed there.
-- **The `f302nucleo` fault-reporter root cause** -- the reporter runs and the UART is ready, yet no
-  dump reaches the wire. Blocked on an ST-Link replug (*M4.5.6* above).
 - **Right-sizing `frdmk64f` and `bluepill-c8` against MEASURED watermarks**, the way `f302nucleo` was
   at `124b68c`. The K64F's one remaining full-list skip is provisioning and nothing else, and
   `bluepill-c8`'s 96-byte shortfall is still arithmetic rather than a measurement (*Per-board
@@ -2363,8 +2400,9 @@ with no runnable target, and the reason the `f302nucleo` reporter hole survived 
   exist at all.
 
 Everything else this subsection previously listed as owed is closed: `rxdrv`, `c6blink`, the RING
-arm, `xmcssc` as a service, the TX-FIFO storm vector, both `pizero2350` arms, and the `rx72m`
-region-shaping mode.
+arm, `xmcssc` as a service, the TX-FIFO storm vector, both `pizero2350` arms, the `rx72m`
+region-shaping mode, and the `f302nucleo` fault-reporter root cause (it was the flash command,
+2026-08-13).
 
 | Commit | Touches the enforcement path? | Silicon |
 | --- | --- | --- |

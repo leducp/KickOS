@@ -361,6 +361,14 @@ namespace kos::thread
         {
             return kos_thread_kill(id_);
         }
+        // FORCIBLE, where kill() is cooperative, and it WAITS (see kos_thread_slay): 0 means
+        // gone, -KOS_ETIMEDOUT means condemned and irrevocably so with the capability sweep
+        // still outstanding. Unbounded by default, because a caller that wanted "accepted"
+        // rather than "gone" wanted kill().
+        int slay(uint32_t timeout_us = KOS_TIMEOUT_NONE) const
+        {
+            return kos_thread_slay(id_, timeout_us);
+        }
         // Wait for the thread to be gone (see kos_thread_join): 0 also for a thread that
         // had already exited, and -KOS_EBADF on a failed spawn. Unbounded by default, which
         // is what a caller wants when it has just kill()ed a cooperative target.

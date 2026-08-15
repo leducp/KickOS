@@ -151,6 +151,15 @@ void arch_context_init(struct arch_context* ctx,
     ctx->sp = reinterpret_cast<uint32_t>(f);
 }
 
+// The whole seam on this backend: the fabricated frame's F_MSTATUS carries MPP=M, so
+// the mret that resumes it lands in M-mode. Nothing here touches a live CSR, which is
+// the half of arch_fault_redirect_to_exit that is not relocatable to a saved context.
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+}
+
 // --- Switch: record the target + pend the msip switcher (never swaps inline) ---
 // Always deferred: the physical swap happens in the msip trap. Called under the kernel
 // IrqLock (mstatus.MIE=0), so the pended msip fires only once the lock releases (thread

@@ -85,6 +85,10 @@ namespace kickos
     static_assert(KICKOS_MAX_TASKS < (1 << TASK_INDEX_BITS),
                   "task handle index field too small for KICKOS_MAX_TASKS");
 
+    static_assert(KICKOS_MAX_TASKS <= UINT16_MAX,
+                  "Kernel::task_holds is uint16_t and counts the slots carrying a creator "
+                  "tag: every task that can hold one at once must fit it");
+
     void task_init(void)
     {
         Kernel& k = kernel();
@@ -92,6 +96,7 @@ namespace kickos
         {
             k.tasks[i] = Task{};
         }
+        k.task_holds = 0;
     }
 
     // Every reader OUTSIDE this file must come through here, so the representation stays
@@ -159,6 +164,7 @@ namespace kickos
         // domain pool re-handing the slot underneath it.
         domain_ref(d);
         t->creator_tag = static_cast<uint8_t>(creator_tag);
+        kernel().task_holds++;
         return t;
     }
 
@@ -207,6 +213,27 @@ namespace kickos
         return t->creator_tag == static_cast<uint8_t>(tag);
     }
 
+    void task_orphan_created_by(uint16_t tag)
+    {
+        Kernel& k = kernel();
+        // At zero no slot carries a creator tag, so the scan below could only find nothing.
+        // It runs interrupt-masked at EVERY thread exit, and on rx72m under an IRQ-driven
+        // UART it was enough to move an RR slice boundary (`rr order: AABBAB`), so the
+        // early return is load-bearing and not a micro-optimisation.
+        if (k.task_holds == 0 or tag == ThreadPool::KILL_TAG_NONE)
+        {
+            return;
+        }
+        for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+        {
+            Task* const t = &k.tasks[i];
+            if (t->creator_tag == static_cast<uint8_t>(tag))
+            {
+                task_drop_hold(t);
+            }
+        }
+    }
+
     void task_drop_hold(Task* t)
     {
         if (t == nullptr or t->creator_tag == ThreadPool::KILL_TAG_NONE)
@@ -214,6 +241,12 @@ namespace kickos
             return;
         }
         t->creator_tag = ThreadPool::KILL_TAG_NONE;
+        // The ONLY site that clears a LIVE creator tag, which is what keeps the count in step
+        // with the pool: free_task's clear is reached from here, where the tag is already
+        // NONE, and from task_release, which takes that arm only when there was no hold.
+        Kernel& k = kernel();
+        KICKOS_DEBUG_ASSERT(k.task_holds > 0);
+        k.task_holds--;
         if (t->refcount == 0)
         {
             free_task(t);
@@ -240,24 +273,34 @@ namespace kickos
         t->refcount++;
     }
 
-    void task_release(Task* t)
+    uint8_t task_member_count(Task const* t)
+    {
+        if (t == nullptr)
+        {
+            return 0;
+        }
+        return t->refcount;
+    }
+
+    bool task_release(Task* t)
     {
         if (t == nullptr or t->refcount == 0)
         {
-            return;
+            return false;
         }
         t->refcount--;
         if (t->refcount != 0)
         {
-            return;
+            return false;
         }
         if (t->creator_tag != ThreadPool::KILL_TAG_NONE)
         {
             // Emptied, not dead: the creator can still spawn into it. Its domain reference
             // is the creator's now, so the members' is the one released here.
             domain_release(t->domain);
-            return;
+            return true;
         }
         free_task(t);
+        return true;
     }
 }

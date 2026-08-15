@@ -93,9 +93,18 @@ tools/flash.sh esp32c6-wroom                # -> flash-esptool.sh: esptool --chi
 ### STM32 with an onboard ST-Link -- `f411disco`, `f302nucleo`
 
 ```sh
-st-flash --connect-under-reset --reset write \
+st-flash --connect-under-reset write \
   build/<preset>/user/apps/common/hello/hello.bin 0x08000000
 ```
+**NEVER add `--reset` to a `--connect-under-reset` write.** That pair leaves the
+core under halting debug with `DEMCR.VC_HARDERR` armed, so the FIRST HardFault
+halts the CPU at `HardFault_Handler`'s first instruction instead of running it:
+no LED, no fault dump, and a board that reads as locked up forever. It cost weeks
+of hunting a phantom `f302nucleo` firmware bug (measured 2026-08-13,
+`DFSR.VCATCH` set, `DHCSR.S_LOCKUP` clear -- `reference/boards.md`, *M4.5.6*).
+Releasing NRST already starts the image, so `--reset` buys nothing here.
+`tools/flash-stlink.sh` no longer emits the pair.
+
 `--connect-under-reset` is needed to re-flash a *running* board: the idle thread
 sits in `WFI`, so SWD can't halt a live core (a plain `write` on a fresh/erased
 chip works without it). It needs NRST reaching the probe, which the onboard debuggers

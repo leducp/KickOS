@@ -206,7 +206,7 @@ namespace kickos
             {
                 return -err; // EBADF (bad/closed cap, freed slot) or EPERM (no WAIT right)
             }
-            if (c->cancelled)
+            if (c->cancel_kind != CANCEL_NONE)
             {
                 return -KOS_ECANCELED; // refuse to RE-block a thread already cancelled
             }

@@ -574,6 +574,82 @@ namespace kickos
         return 0;
     }
 
+    // The FORCIBLE half. Same gate, same reach, different thing done along the edge: the
+    // target's resume is CLAIMED (switch_to rebuilds its context into kickos_thread_slay_exit
+    // before arch_switch), so unlike a kill it never returns to userspace at all and never
+    // gets the window in which a driver would have quieted its device. That is the meaning of
+    // the call, and the caller chose it over kill.
+    //
+    // Nobody runs a stranger's cap_teardown: the victim runs its own, in its own context,
+    // through the exit_current every other death already uses.
+    //
+    // The termination argument, and why no timer is needed to reach a spinning victim: on one
+    // core, switch_to writes RUNNING for exactly one thread and a thread executing a syscall
+    // IS that thread. A target distinct from the caller is therefore READY, BLOCKED, or
+    // refused below -- and both live states are claimed at the resume rather than at the
+    // request. The victim being off-CPU is a PRECONDITION of this request existing.
+    int thread_slay(kos_thread_t thread, uint32_t timeout_us)
+    {
+        Thread* const c = sched::current();
+        uint64_t epoch = 0;
+        {
+            IrqLock lock;
+            Thread* const t = thread_resolve(thread);
+            if (t == nullptr)
+            {
+                return -KOS_EBADF; // never allocated, or the slot was reclaimed under this handle
+            }
+            if (t->state == ThreadState::EXITED or t->state == ThreadState::INACTIVE)
+            {
+                return -KOS_EBADF; // as thread_kill: nothing left in the slot to condemn
+            }
+            if (t == c)
+            {
+                return -KOS_EINVAL; // ending yourself is kos_exit; this path must return
+            }
+            // REFUSED rather than masked, and idle for the plainer reason that killing it
+            // ends the scheduler's fallback. A privileged thread is not a privilege
+            // escalation to rebuild -- it is already privileged -- but it may be inside
+            // kernel work holding kernel invariants, and discarding its frames discards
+            // them mid-flight. Same rule kickos_fault_kill_thread states for itself.
+            if (t == sched::idle() or t->privileged)
+            {
+                return -KOS_EINVAL;
+            }
+            if (not caller_spawned(t, c))
+            {
+                return -KOS_EPERM;
+            }
+            // THE CALLER PARKS FIRST, and the order is load-bearing. thread_cancel_kind
+            // breaks the victim's park, and a victim that outranks the caller is switched to
+            // from inside that call; on a backend that swaps inline it can reach EXITED
+            // before this line would otherwise have run, and its exit sweep -- the ONLY thing
+            // that wakes a WAIT_JOIN waiter -- would find nobody parked on it. park_queueless
+            // also detaches `current`, which the cancel may already have republished.
+            park_queueless(c, WAIT_JOIN, t);
+            if (timeout_us != KOS_TIMEOUT_NONE)
+            {
+                // 0 is the arm-and-return form: the deadline is already behind the min-delta
+                // floor, so the timer releases this park at the first opportunity and the
+                // answer is -KOS_ETIMEDOUT unless the victim got there first.
+                ktime_deadline_arm(c, timeout_us);
+            }
+            // SAMPLED BEFORE THE CANCEL, unlike thread_join's, and that is not cosmetic: the
+            // cancel can switch, and on a backend that swaps INLINE the victim may run, die
+            // and wake this thread back up inside that call. An epoch read afterwards would
+            // already carry the resume it is meant to wait for, and wq_confirm_resume would
+            // spin to KICKOS_POLL_SPIN_MAX and panic.
+            epoch = c->switch_count;
+            thread_cancel_kind(t, CANCEL_SLAY);
+            sched::reschedule();
+        }
+        wq_confirm_resume(c, epoch); // the lock is RELEASED across this: see sync.h
+        // 0 (the target is gone and swept), -KOS_ETIMEDOUT (the timer arm: condemned but not
+        // yet gone), or -KOS_ECANCELED (the caller was itself cancelled, e.g. because the
+        // victim's group cancel reached it).
+        return static_cast<int>(c->wait_result);
+    }
+
     // Create a task: an empty group that exists before any of its threads, holding a domain
     // built from THIS grant. The creator is the only thread that may seat members into it or
     // end it, on the same non-transferable parenthood gate as thread_kill.
@@ -619,9 +695,70 @@ namespace kickos
         }
         // The group cancel runs BEFORE the hold is dropped: dropping it first can free the
         // slot outright when the group is already empty, and `t` would then be a dangling name.
-        task_cancel_group(t);
+        task_cancel_group(t, CANCEL_KILL);
         task_drop_hold(t);
         return 0;
+    }
+
+    // The group form. Every live member is SLAIN rather than cancelled, and the caller waits
+    // for the group to be EMPTY -- which is a different condition from any member's death and
+    // is why this park has its own kind.
+    //
+    // The creator's hold is dropped only on the way out of a successful wait, and never
+    // before it: dropping it first frees the slot the moment the group empties, and `t` is
+    // then a dangling name in a wait edge. On a timeout the hold survives with the group, so
+    // the handle still names something and a second call is possible.
+    int task_slay(kos_task_t task, uint32_t timeout_us)
+    {
+        Thread* const c = sched::current();
+        uint64_t epoch = 0;
+        Task* t = nullptr;
+        {
+            IrqLock lock;
+            t = task_resolve(task);
+            if (t == nullptr)
+            {
+                return -KOS_EBADF; // never created, or the slot was freed under this handle
+            }
+            if (not task_created_by(t, kernel().threads.kill_tag_of(c)))
+            {
+                return -KOS_EPERM;
+            }
+            if (c->task == t)
+            {
+                // A member slaying its own group would be waiting for its own death, and the
+                // group cancel below would claim ITS resume too. kos_exit ends a member and
+                // takes the group with it.
+                return -KOS_EINVAL;
+            }
+            // Already empty, so there is nothing to wait for and nothing that could wake a
+            // park here. The hold is what still names the slot; dropping it IS the whole job.
+            if (task_member_count(t) == 0)
+            {
+                task_drop_hold(t);
+                return 0;
+            }
+            // Parked before the group cancel, and the epoch sampled before it, for the two
+            // reasons thread_slay above states: a member that outranks this thread can reach
+            // its own exit from inside that call on a backend that swaps inline.
+            park_queueless(c, WAIT_TASK_EMPTY, t);
+            if (timeout_us != KOS_TIMEOUT_NONE)
+            {
+                ktime_deadline_arm(c, timeout_us);
+            }
+            epoch = c->switch_count;
+            task_cancel_group(t, CANCEL_SLAY);
+            sched::reschedule();
+        }
+        wq_confirm_resume(c, epoch);
+        int const rc = static_cast<int>(c->wait_result);
+        if (rc == 0)
+        {
+            // The group is empty and the hold is the only thing left holding the slot.
+            IrqLock lock;
+            task_drop_hold(t);
+        }
+        return rc;
     }
 
     // Park until the named thread is gone, bounded by `timeout_us` unless that is
