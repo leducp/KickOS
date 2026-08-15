@@ -98,6 +98,11 @@ Three guarantee levels, and the middle one is new.
 | `kos_thread_slay` returning `-KOS_ETIMEDOUT` | the target will never execute another unprivileged instruction; its resume is CLAIMED | its capability table is not yet swept, so a name it holds is not yet released |
 | `kos_thread_slay` returning 0 | GONE: `state == EXITED`, `cap_teardown` ran to its totality asserts, the domain reference is dropped | the pool slot itself is reclaimed lazily at the next spawn, as today (`ThreadPool::alloc`) |
 
+**Three LEVELS, not three returns.** Every row above is a statement about the TARGET, and there is
+a fourth return that is not: `-KOS_ECANCELED` says the CALLER was cancelled while parked and says
+nothing at all about the victim, which stays condemned. It is listed in 14.2 with the reason it is
+absent here. A caller that reads any non-zero return as "the slay did not take" is wrong.
+
 The kill semantics are preserved bit for bit and must be: the death point at the next syscall ENTRY
 and not exit is what gives a driver returning from a cancelled `irq_wait` one window to quiet its
 device over memory it already holds (`kernel/syscall/syscall.cc:201-219`). Slay's whole content is
@@ -820,10 +825,13 @@ Named rather than smoothed over.
    (`sim.cc:876-889`) describes a delivery window between `swapcontext` installing the target mask and
    loading its `rsp` that I do not fully understand the interaction of with a rebuilt context. Read
    that comment before writing the sim wrapper.
-4. **The armv7m FP-frame interaction with a relocated exception frame** (section 6.2). Whether this
-   tree ever enables the FPU, and therefore whether lazy stacking can make `EXC_RETURN` expect an
-   extended frame, I did not establish. If it can, a relocated 8-word frame is a 26-word pop off
-   8 words of memory.
+4. **RESOLVED BY THE LANDED CODE, and not the way this question expected.** The hazard was posed
+   for a RELOCATED exception frame; `arch_ctx_redirect` never relocates one. `arch_context_init`
+   fabricates the frame with `EXC_RETURN = 0xFFFFFFFD` (thread mode, PSP, NON-FP), so a rebuild
+   RESETS the frame format rather than moving a frame whose format it would have to match: a
+   thread that had an extended FP frame stacked resumes on a plain 8-word one, which is exactly
+   what the new `EXC_RETURN` says. The 26-word-pop-off-8-words failure needs a frame format the
+   rebuild cannot produce. The fault path is the one that must not relocate, and it does not.
 5. **Whether `check_faultsurvive.sh`'s corroboration table can express the narrowed rxv3 arm at all.**
    It is filed as MISJUDGING one class, and I did not read it. S1 is gated on that repair and I
    cannot say how large the repair is.
@@ -893,6 +901,15 @@ and the estimate did not have them. The `.bss` cost is still zero.
   sweep, which is the ONLY thing that wakes a `WAIT_JOIN` waiter, finds nobody parked;
   sampling the epoch afterwards means it already carries the resume it is meant to wait for
   and `wq_confirm_resume` spins to `KICKOS_POLL_SPIN_MAX` and panics.
+- **A FOURTH return exists that section 2.1 does not list: `-KOS_ECANCELED`**, on both calls.
+  It is CALLER-SIDE and says nothing about the target: the caller was itself cancelled while
+  parked on its `WAIT_JOIN` / `WAIT_TASK_EMPTY` edge, and the victim stays condemned. Thread A
+  slays B, thread C then kills or slays A while A waits, and A wakes with that in
+  `wait_result` -- so a caller must not read a non-zero return as "the slay did not take".
+  It is not a divergence anybody chose: it falls out of the caller parking at all, which is
+  the entry above, and the parked-caller cancellation path predates this work. `abi.h` and
+  `sys.h` document it on both calls; section 2.1's table was written before the park existed
+  and is the thing that is incomplete.
 - **`timeout_us == 0` is the arm-and-return form** and is not special-cased. Section 2.1
   spells it `KOS_TIMEOUT_NONE`, which cannot be right: that value means "no bound" for
   `KOS_SYS_THREAD_JOIN` and slay keeps that convention bit for bit. A zero deadline lands

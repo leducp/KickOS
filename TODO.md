@@ -5563,9 +5563,10 @@ Four non-reorderable steps, zero `.bss` on each. Design record still owed to `do
       pended switch completed, or `need_resched` consumed at the mask boundary: five backends plus the
       K-seam stub. Cost of leaving it: bounded by one quantum, self-limiting, fairness only.
 
-**C -- GATE AND TOOLING DEFECTS. FILED AS 4, CLOSED AS 9** -- the filings under-counted, and every
-one of the five extras was a gate that had silently stopped gating. The first seven are
-mutation-proven; the two S3/S4 found are below them and each has its own proof shape.
+**C -- GATE AND TOOLING DEFECTS. FILED AS 4, CLOSED AS 10** -- the filings under-counted, and every
+one of the six extras was a gate that had silently stopped gating or had disclosed a hole it never
+closed. The first seven are mutation-proven; the two S3/S4 found are below them and each has its
+own proof shape.
 - [x] **`check_tap_stream.sh` could not see a thread that died the WRONG WAY.** Found by mutation
       during S3, and the mutant survived a fully green run. An unprivileged context rebuild faults
       the exit stub on its first kernel access; thread-scoped fault isolation catches it, so the
@@ -5612,6 +5613,19 @@ mutation-proven; the two S3/S4 found are below them and each has its own proof s
       live defect: a per-test `cmake_language(DEFER CALL f "${var}")` expands LATE, so only one image
       test per directory was ever declined since M4.8.2, and no CI job uses the knob so nothing
       noticed.
+- [x] **`test_classes.txt`'s own disclosure: a `build` declaration rotted silently.** The `src` half
+      was pinned to a file, the `build` half to nothing, and 22 lines carried the gap. Symmetry is
+      not the fix -- a `build` path is relative to the BINARY directory and every MCU board
+      legitimately has none of them, so `[ -f ]` would red the fleet. CMake now passes `<complete>`,
+      yes only where the tree registers the whole build-rooted set (sim arch plus the host unit
+      binaries), and there each declaration must be the program of some registered test. Elsewhere
+      the sweep stands down, and the header says so: an unrun `build` declaration on a
+      `<complete> no` tree is indistinguishable from a program that board does not build, and a
+      fleet run that never includes the complete configuration checks the `build` half NOWHERE.
+      The wrong-way flag is the safe one -- claiming `yes` falsely names all 16 unit lines at once.
+      Mutation-proven both directions: the dead line reds only the complete tree, and a renamed
+      binary under a registered test -- which the pre-existing `@none` arm already reddened as
+      "build the tree first" -- is now NAMED as the declaration it orphaned.
 - [x] **`bench-capture.sh` refused every non-TAP app and the refusal skipped the log FETCH.** A TAP
       verdict is owed only by `selftest*`; `bench.sh` fetches before propagating a refusal, because
       the log is the artifact and the verdict is separate.
@@ -5658,6 +5672,25 @@ thread exit.
       **This is also a finding about the INSTRUMENT**: only the `_uartirq` list shows it, and only
       on the one board with no emulator and no CI gate, so the default-list fleet pass this
       milestone ran would never have caught it.
+- [x] **The `CAP_IRQ` teardown pre-pass is O(1) on the exits that hold no line.** Same class as the
+      creator-hold sweep above, same milestone, and it runs on EVERY thread exit: the pass that
+      releases a dying thread's IRQ caps before the chunked loop opens its first gap scanned the
+      whole table under ONE unbroken `IrqLock`, which is the shape `docs/archive/M4.7.9_teardown_latency_meas.md`
+      measured as a real interrupt-latency cost. `Thread::cap_irq_live` counts the `CAP_IRQ`
+      entries a thread holds -- `cap_install_at` is the one install funnel (`irq_claim` and the
+      spawn grant list both reach it) and `cap_slot_released` the one release funnel, shared by
+      `handle_close` and the sweep -- so the pass returns having read no entry while the count is
+      zero. **The no-chunking property is untouched**: the loop is still inside the one masked
+      window that bumps the teardown depth, which is what both console reclaim sites rely on.
+      **The footprint is free**: the counter takes the LAST padding byte before
+      `Thread::quantum_ns`, so `sizeof(Thread)` is unmoved at 256 / 264 / 2480 and `microbit`'s
+      `.bss`, `.data`, `_ebss` and `__kickos_ram_start` are all unchanged.
+      **A per-KERNEL count was rejected on precision**, not on cost: one IRQ driver anywhere makes
+      every other thread's exit scan again, and `rx72m` under `kickos_services_rx72m_uartirq` is
+      exactly that image. **`c->authority & AUTH_IRQ` was rejected as fail-OPEN**: a `CAP_IRQ` with
+      `CAP_TRANSFER` can be delegated at spawn to a child that never held the bit.
+      Gated by a ninth `cap_sweep` arm that dates the release against gap 1 rather than against the
+      line cap's own chunk boundary; five mutants killed.
 - [x] **RE-MEASURED on `rx72m` under `kickos_services_rx72m_uartirq`, TAGs `m484rxfix1..3`:
       0 failures in 3 runs, `rr order: ABABAB` on every one**, matching master. Banner
       `commit f5df9165` with no `-dirty`, and the stream hand-validated through
@@ -5665,6 +5698,27 @@ thread exit.
       isolation that named the line are above; both stay, because the instrument lesson outlives
       the bug: only the `_uartirq` list showed it, on the one board with no emulator and no CI
       gate, so the default-list fleet pass this milestone ran could never have caught it.
+
+**THE CAP_IRQ PRE-PASS, the last code finding of the ten-angle review, FIXED AND WITNESSED.**
+`cap_teardown`'s IRQ pre-pass scanned the whole capability table interrupt-masked on EVERY thread
+exit -- the same shape as the `task_orphan_created_by` regression this milestone shipped and fixed,
+and its own comment conceded it ("the scan by the table's own width"). It could not simply be
+chunked: a gap inside that pass is a moment when a thread with a counted teardown depth still holds
+an IRQ line, and both console-reclaim sites rely on that being impossible.
+- [x] **FIXED (`746cda80`) with `Thread::cap_irq_live`, a `uint8_t` in the LAST padding byte before
+      `quantum_ns`**, so the pass reads no entry when it is owed none. `sizeof(Thread)` unmoved at
+      256/264/2480 and `microbit`'s `.bss`, `.data` and both arena symbols byte-identical.
+      Rejected, with reasons: a kernel-wide count (one binding anywhere makes every other exit scan
+      again -- and `rx72m` under `_uartirq` IS that image, so it would not fix the one board that
+      matters); `authority & AUTH_IRQ` as the predicate (FAIL-OPEN and unsound -- `irq_claim`
+      installs with `CAP_TRANSFER`, so a child that never held `AUTH_IRQ` can hold the cap); and a
+      sticky bool (`handle_close` cannot clear it without knowing whether another line remains).
+      **WITNESSED**, TAG `m484capirq` at `746cda80` on `rx72m` under `kickos_services_rx72m_uartirq`
+      -- the one reachable board where `CAP_IRQ` entries genuinely exist: `1..104`, 104 ok, 0 skip,
+      0 partial, 11 IRQ arms present, `rr order: ABABAB`, banner clean, and the banner's `app`
+      tracking `build` so the cached-`SERVICE_LIST` trap did not fire. Stream hand-validated.
+      The no-chunking property is machine-checked: the gap-dating arms count 4 gaps, and 12 under a
+      chunk-the-pre-pass mutant.
 
 **D -- COVERAGE, TEST-INFRA, DOCS, PERF, FUTURE (17).** Ordinary backlog. Includes the whole M5/SMP
 group and every "no arm for this yet" item. Added while closing A, B and C -- all genuinely class D,

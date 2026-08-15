@@ -13,9 +13,11 @@
 #     survives the knob meant to skip it.
 #
 # Usage:
-#   check_test_labels.sh <ctest> <cmake> <build-dir> <src-dir> <declined:yes|no>
+#   check_test_labels.sh <ctest> <cmake> <build-dir> <src-dir> <declined:yes|no> <complete:yes|no>
 # <declined> is `yes` when KICKOS_BUILD_INTEGRATION_TESTS is OFF; it is what makes the
-# DISABLED leg decidable.
+# DISABLED leg decidable. <complete> is `yes` on a tree that registers every build-rooted
+# program declared, and only there does "no test runs it" mean the declaration is dead
+# rather than that this board does not build it.
 #
 # The classification is DECLARED, in tests/static/test_classes.txt, and cannot be derived:
 # no property of a ctest command line separates the two sets. The gate maps each entry to
@@ -25,8 +27,12 @@
 # THEREFORE NOT CAUGHT. Know these before trusting a green run:
 #   - a program declared with the WRONG class is ratified, not questioned. This pins the
 #     declaration against the labels; a human pins the declaration against the script.
-#   - a declaration line no board registers any more is dead, and only its `src` half rots
-#     visibly (the file check below). One board's run cannot see the fleet's union.
+#   - a declaration no board registers any more is dead. Its `src` half rots visibly on
+#     every board (the file check below). Its `build` half is swept only when <complete>
+#     is yes, so a fleet whose runs are all <complete> no checks that half NOWHERE and the
+#     rot returns silently. One board's run still cannot see the fleet's union: on a
+#     <complete> no tree an unrun build declaration is indistinguishable from a program
+#     the board legitimately does not build, and nothing is asserted about it.
 #   - a gate that reads a clock WITHOUT running an image would be `host` here and still
 #     unbatchable. None exists today.
 
@@ -34,8 +40,8 @@ set -u
 . "$(dirname "$0")/../lib/gate.sh"
 # NOT set -e: the point is to collect EVERY finding in one run, not to stop at the first.
 
-if [ "$#" -ne 5 ]; then
-    fail "usage: check_test_labels.sh <ctest> <cmake> <build-dir> <src-dir> <declined:yes|no>"
+if [ "$#" -ne 6 ]; then
+    fail "usage: check_test_labels.sh <ctest> <cmake> <build-dir> <src-dir> <declined:yes|no> <complete:yes|no>"
 fi
 CTEST="$1"
 CMAKE="$2"
@@ -44,6 +50,7 @@ CMAKE="$2"
 BUILD="${3%/}"
 SRC="${4%/}"
 DECLINED="$5"
+COMPLETE="$6"
 
 [ -x "$CTEST" ] || fail "no ctest at $CTEST"
 [ -x "$CMAKE" ] || fail "no cmake at $CMAKE"
@@ -51,6 +58,10 @@ DECLINED="$5"
 case "$DECLINED" in
     yes | no) ;;
     *) fail "<declined> is 'yes' or 'no', not '$DECLINED'" ;;
+esac
+case "$COMPLETE" in
+    yes | no) ;;
+    *) fail "<complete> is 'yes' or 'no', not '$COMPLETE'" ;;
 esac
 
 DECL="$SRC/tests/static/test_classes.txt"
@@ -94,11 +105,13 @@ while read -r cls root rel extra; do
     esac
 done < "$TMP/decl.txt"
 
-DUP="$(cat "$TMP/host.txt" "$TMP/image.txt" | sort | uniq -d)"
+cat "$TMP/host.txt" "$TMP/image.txt" > "$TMP/all.txt"
+DUP="$(sort "$TMP/all.txt" | uniq -d)"
 [ -z "$DUP" ] || fail "$DECL declares a program twice: $DUP"
 
 # --- one pass over the suite --------------------------------------------------
 : > "$TMP/findings.txt"
+: > "$TMP/seen.txt"
 report() { echo "$1" >> "$TMP/findings.txt"; }
 
 N_HOST=0
@@ -142,6 +155,7 @@ while IFS="$TAB" read -r name labels disabled prog; do
             continue
             ;;
     esac
+    echo "$root $rel" >> "$TMP/seen.txt"
 
     if grep -qxF "$root $rel" "$TMP/host.txt"; then
         N_HOST=$((N_HOST + 1))
@@ -175,13 +189,27 @@ done < "$TMP/table"
 [ "$SAW_FIXTURE" = 1 ] || fail "no $FIXTURE fixture in this suite, so every test here may have run a stale binary"
 [ "$N_HOST" -gt 0 ] || fail "not one host test in this suite -- the source-tree gates register on every board, so the mapping is broken"
 
-echo "== $N_TOTAL test(s): $N_HOST host, $N_IMAGE image, 1 build fixture; $(wc -l < "$TMP/decl.txt" | tr -d ' ') program(s) declared, integration declined: $DECLINED =="
+# --- the other direction, on the one tree that can read it --------------------
+# A `src` declaration is pinned to a file above and rots visibly on every board. A `build`
+# one names a program only some configurations produce, so an unrun declaration is a
+# finding only where <complete> says the whole set was expected.
+if [ "$COMPLETE" = yes ]; then
+    while read -r root rel; do
+        [ "$root" = build ] || continue
+        if ! grep -qxF "build $rel" "$TMP/seen.txt"; then
+            report "$DECL declares build/$rel, which no test in this tree runs"
+        fi
+    done < "$TMP/all.txt"
+fi
+
+echo "== $N_TOTAL test(s): $N_HOST host, $N_IMAGE image, 1 build fixture; $(wc -l < "$TMP/decl.txt" | tr -d ' ') program(s) declared, integration declined: $DECLINED, build set complete: $COMPLETE =="
 
 if [ -s "$TMP/findings.txt" ]; then
     cat "$TMP/findings.txt" >&2
     echo "" >&2
-    echo "FAIL: $(wc -l < "$TMP/findings.txt" | tr -d ' ') test(s) disagree with $DECL." >&2
-    echo "      Fix the label, or declare the program's class. Both directions are silent without this gate." >&2
+    echo "FAIL: $(wc -l < "$TMP/findings.txt" | tr -d ' ') finding(s) against $DECL." >&2
+    echo "      Fix the label, declare the program's class, or drop a declaration nothing runs." >&2
+    echo "      Every direction here is silent without this gate." >&2
     exit 1
 fi
 

@@ -158,8 +158,8 @@ case "$arm" in
                 why="frame on PSP, no CFSR to latch (armv6m has none)"
                 # The overflow frame is GARBAGE by construction -- the hardware stacking writes
                 # into the region that overflowed -- so nothing here asserts a plausible PC.
-                # Measured on picopi as PC=0xffffffff xPSR=0x0, which is the signature and not
-                # a capture defect; asserting it exactly would assert what the ISA cannot promise.
+                # A PC of 0xffffffff with a zero xPSR is the signature, not a capture defect;
+                # asserting it exactly would assert what the ISA cannot promise.
                 ;;
             rxv3:overflow)
                 # Same shape as rv32imac: the RX MPU denies the recursion's own push and the

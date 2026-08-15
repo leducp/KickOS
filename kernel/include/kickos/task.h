@@ -135,7 +135,7 @@ namespace kickos
     //
     // O(1) when Kernel::task_holds is zero, which is every image that never calls
     // kos_task_create. The scan is otherwise KICKOS_MAX_TASKS compares interrupt-masked on
-    // EVERY thread exit, which measurably moved an RR slice boundary on rx72m.
+    // EVERY thread exit; task.cc owns why that matters.
     void task_orphan_created_by(uint16_t tag);
 
     // Live members. Null-safe (0). The ONLY reader outside task.cc is the already-empty

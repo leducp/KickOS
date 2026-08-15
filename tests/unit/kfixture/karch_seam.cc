@@ -2,23 +2,17 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The WHOLE seam between the kernel sources a K-seam gate compiles and the rest of the
-// image: every symbol here is one those sources name and none of them define. Twenty-four with
-// telemetry off and twenty-six with it on, re-derived on this tree with
+// image: every symbol here is one those sources name and none of them define.
 //
-//   nm --undefined-only <the nine objects> | comm -23 - <their defined symbols>
+// RE-DERIVE IT, never assume a total. The set is a property of the chosen sources AND of the
+// preset, and both move: adding a source trades one group of symbols for another, and
+// ktrace.h is header-inline, so under sim-telem irq.cc reaches the trace sink and needs two
+// stubs that no other posture does.
+//
+//   nm --undefined-only <the objects> | comm -23 - <their defined symbols>
 //
 // which also reports __gxx_personality_v0 and _Unwind_Resume unless the gate is built
-// -fno-exceptions as the CMakeLists does it. Thirteen are arch_*: "the arch boundary" is where
-// the seam is CUT, and the count is a property of the chosen source set, which is why it
-// MOVES: taking irq.cc into the set (so a gate can witness a real irq_claim rather than a
-// stubbed ref drop) traded one kickos:: symbol for the three controller pokes, and taking
-// task.cc in (so the creator hold reaches a gate at all) traded two kickos:: symbols for the
-// three domain ones.
-//
-// THE COUNT IS ALSO A PROPERTY OF THE PRESET, which is how two of these went missing for a
-// whole milestone: ktrace.h is header-inline, so under sim-telem irq.cc reaches the trace
-// sink and every gate in the directory failed to LINK. A preset nothing routinely runs is a
-// preset whose seam nothing routinely re-derives.
+// -fno-exceptions as the CMakeLists does it.
 //
 // kpanic ends the PROCESS with a message matching tests/lib/panic.ere, so a kernel invariant
 // enforced by KICKOS_ASSERT rather than a return code is gated by a gtest death test.
@@ -89,10 +83,9 @@ extern "C"
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     // The telemetry sink, which the seam otherwise has no answer for: ktrace.h is
-    // header-inline and reaches BOTH of these from kernel/irq/irq.cc, so every K-seam gate
-    // failed to LINK under the sim-telem preset. Silent and accepting, because no arm here
-    // reads a trace record -- the fixture has its own ordered trace, and the encoder is
-    // tests/unit/telemetry's subject.
+    // header-inline and reaches BOTH of these from kernel/irq/irq.cc. Silent and accepting,
+    // because no arm here reads a trace record -- the fixture has its own ordered trace, and
+    // the encoder is tests/unit/telemetry's subject.
     uint32_t arch_trace_now(void)
     {
         return static_cast<uint32_t>(kickos::testfix::g_now_ns);

@@ -446,14 +446,32 @@ what the de-poisoned oracle had exposed. Both were transient and both were caugh
 track's build rather than by its own -- which is the argument for keeping the fleet build in the
 loop, not for serialising.
 
-**CLASS C IS CLOSED, AND IT KEPT GROWING WHILE BEING CLOSED.** Four filed items became seven
-defects, because the filings under-counted: `check_faultsurvive.sh` was missing THREE enforcement
-classes rather than two (`armv6m` is one, and `picopi` is the fleet's only armv6m enforcement unit),
-and three more gates turned out not to be gating at all -- `panic.ere`'s two missing reporters, the
-`IFS=$'\t'` bashism in three record parsers, and `doc_names`' poisoned oracle. All seven are in
-*Gates* above with what proves each. **Every one was proven by mutation**, and one mutation landed
-for free: the archived `m484mut` record-route mutant is REFUSED by the repaired
-`check_faultsurvive.sh`, so that gate now kills a mutant it was blind to when the mutant was made.
+**CLASS C IS CLOSED, AND IT KEPT GROWING WHILE BEING CLOSED.** **Do not carry a count from here
+either** -- this paragraph said "eight" while `TODO.md` said "ten" for the same work, which is the
+tally rot this file warns about, one section up, happening to itself. `TODO.md`'s class C
+ENUMERATES them; that list is the authority and this is the shape:
+- `check_faultsurvive.sh` MISJUDGED one enforcement class and missed two more. Filed as missing
+  two; `armv6m` was the third, and `picopi` is the fleet's only armv6m enforcement unit.
+- `panic.ere` never matched the RX or Xtensa terminal reporters, so every ctest
+  `FAIL_REGULAR_EXPRESSION` and every `assert_no_panic` was blind to both.
+- Three record parsers used `IFS=$'\t'`, a bashism, and `/bin/sh` IS dash here, so they split on
+  the letter `t` and `check_seam_defaults` leg 1 was VACUOUS.
+- `doc_names`' identifier oracle included a tracked non-markdown file, so any name it mentioned
+  stayed valid forever.
+- `check_tap_stream.sh` could not see a thread that died the wrong way.
+- Every K-seam gate failed to LINK under `sim-telem`, and had since M4.8.2.
+- `check_extern_c_linkage.sh`'s prefilter needed `extern` and `"C` on ONE line while the scanner it
+  feeds is newline-agnostic, so a wrapped spelling was never handed over.
+- `test_classes.txt` pinned its `src` declarations to a file and its `build` ones to nothing. That
+  one the gate DISCLOSED rather than hid, and closing it needed a tree-level `<complete>` claim from
+  CMake rather than symmetry, since an MCU board legitimately builds none of them.
+
+**EVERY ONE WAS PROVEN BY MUTATION**, and two results are worth keeping for what they say about
+mutation itself. The archived `m484mut` record-route mutant is now REFUSED by the repaired
+`check_faultsurvive.sh`, so that gate kills a mutant it was blind to when the mutant was made. And
+an always-skip mutant on the `task_holds` precondition kills exactly what DELETING the call kills,
+so it proves nothing about the guard's shape -- the mutant that earns a count over a boolean is the
+sweep clearing its own count.
 
 **CLASS A: five of six closed, and two were mis-filed in ways that mattered.**
 - The `sched::wake` guard's MECHANISM is real but "the guard is broken" is NOT: the DECISION is
@@ -576,6 +594,23 @@ argument**: all nineteen `microbit` images and `qemu-telem`'s selftest are byte-
 `.data`, `.bss`, `_ebss` and `__kickos_ram_start` against a pristine `git archive` tree, because two
 bytes of padding sit before `Kernel::sleepq` in both telemetry postures on a 32-bit target.
 
+**The same shape one layer down is now fixed too, and it runs on EVERY thread exit.** `cap_teardown`'s
+`CAP_IRQ` pre-pass -- the one that must release every line before the chunked loop opens its first gap
+-- scanned the whole capability table under ONE unbroken `IrqLock`. `Thread::cap_irq_live` counts the
+entries a thread holds, so the pass reads none at zero, which is every thread but a driver's IRQ
+thread. **The no-chunking property is what made a per-thread count the only acceptable answer**: the
+loop still sits inside the single masked window that bumps the teardown depth, because a gap inside it
+would be a moment when a thread with a counted depth still holds a line, and both console reclaim
+sites read that. A per-KERNEL count would have been cheaper to place and WRONG here -- one IRQ driver
+anywhere makes every other thread's exit scan again, and `kickos_services_rx72m_uartirq` is that
+image. The byte is free: it takes the last padding byte before `Thread::quantum_ns`, so
+`sizeof(Thread)` is unmoved at 256 / 264 / 2480 and `microbit`'s selftest is unchanged in `.bss`
+(6512), `.data` (396), `_ebss` and `__kickos_ram_start` (both `0x20001b00`). Gates at this tree:
+`sim` 225/225, `sim-telem` 227/227, `qemu` 31/31, `qemu-riscv` 25/25, fleet builds 10/10. Five
+mutants killed, including the pre-existing chunk-it and delete-it pair. **SILICON OWED, and it is the
+same capture as the creator-hold fix**: `rr_interleave` on `rx72m` under
+`kickos_services_rx72m_uartirq` is the only instrument that has ever shown this class.
+
 **Gates at the slay tree**: `sim` 214/214, `sim-telem` 216/216, `qemu` 31/31, `qemu-riscv` 25/25,
 `microbit` 19/19, fleet builds 10/10. All TEN fleet images carry both `arch_ctx_redirect` and
 `kickos_thread_slay_exit` by `nm`, which is the only corroboration available for the six boards
@@ -694,11 +729,23 @@ Two facts a re-derive will not tell you:
   `tests/static/test_classes.txt`, because no sound derived discriminator exists --
   `check_oot_export.sh` and `check_oot_export_mcu.sh` sit in one directory with one argument shape
   and opposite classes, so an undeclared program is REFUSED rather than guessed.
+- **The other direction of that gate runs on ONE tree, by design.** A declaration that no board runs
+  any more is dead, and CMake passes `<complete> yes` only where the tree registers the whole
+  build-rooted set -- the sim arch with the host unit binaries, so ONLY a sim run with
+  `-DCMAKE_PREFIX_PATH` pointing at a GTest checks it. A fleet pass that skips that configuration
+  checks the `build` half nowhere, and no board reports a skip saying so.
 - **A per-test `cmake_language(DEFER CALL f "${var}")` expands its argument WHEN THE CALL RUNS, not
   when it is issued.** So every per-directory defer received the last name `add_test` had set there
   and only ONE image test per directory was ever declined: broken since M4.8.2, and nothing noticed
   because no CI job uses that knob. `kickos_decline_image_tests` now accumulates names on a
   DIRECTORY property and reads them once. The declined sim tree went from 14 disabled to 22.
+
+**RE-MEASURED 2026-08-15, because a delegated run hit it twice and could not name it.** Batched
+`ctest -j8` over the whole `sim-telem` suite fails **2 of 6 under CPU load** and **0 of 3 unloaded**;
+standalone it has never failed. The failures are always IMAGE tests -- `selftest` and
+`sim_published_console` -- i.e. exactly the `-LE host` set this file already says must run
+standalone. So this is the documented sensitivity reproducing, not a new defect and not a flake:
+the instrument is invalid, and `test_classes.txt` is what names which tests it is invalid for.
 
 **The sim has no virtual time and its gates are not deterministic**: `arch_clock_now` reads
 `CLOCK_MONOTONIC` and the tickless one-shot is a real `timer_create` delivering SIGALRM, so
@@ -772,6 +819,27 @@ privilege axis, but the authority word is software and still bites, which is why
 - **no-ring** (3): `microbit`, `esp32-wroom`, `sim`.
 
 Per-board chips, cores and the fact that decides each class: `docs/reference/boards.md`.
+
+**WHERE M4.8.4 ACTUALLY STANDS.** Classes A, B and C are closed, the ten-angle review ran and its
+findings are dispositioned, and the comment-narration trim is done. What remains is COVERAGE, and
+none of it is a defect:
+- **`picopi` and `frdmk64f` owe slay captures.** Neither was on a bus for the pass; `esp32-wroom`
+  (lx6) and `rx72m` (rxv3) were captured because they are the two backends with no emulator and no
+  CI gate, and lx6's seam claim was a reading of the code rather than a run.
+- **`KCAP_RUN_CHUNKS > 1` reaches no host arm.** The K-seam fixture compiles the SIM posture only,
+  so `frdmk64f`'s segmented capability table is silicon-only, unchanged by this milestone.
+- **The `<complete>` flag's silent direction.** If no run in a pass claims it, the `build` half of
+  `test_classes.txt` is checked NOWHERE and nothing reports a skip -- a CI matrix that drops the
+  GTest-bearing sim job loses that check without a red.
+- **The f302 capture-protocol fix lives in gitignored `.session/`**, so the repo carries none of it.
+- **`kickos_terminate`'s device drain has no witness**, and only three chips have a body.
+
+**AND THE INSTRUMENT LESSON THIS MILESTONE KEEPS REPEATING**, because it cost real time three
+separate times: a configuration nothing routinely runs is one nothing routinely checks. The K-seam
+had not linked under `sim-telem` since M4.8.2. The `rr_interleave` regression showed only under the
+`_uartirq` list, on the one board with no emulator and no CI gate, so the default-list fleet pass
+could never have caught it. And `rxsci.cc` produced no object at all in a ten-board fleet build,
+because three of those boards default to `kickos_services_none`.
 
 ## Open blockers
 

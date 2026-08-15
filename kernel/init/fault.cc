@@ -15,9 +15,7 @@
 
 namespace
 {
-    // One record rather than per-Thread fields, because Thread carries no tail padding on any
-    // target, so a new field grows every TCB. The window between the redirect and
-    // the stub is PREEMPTIBLE (`dying` is not set until exit_current runs), so a second
+    // The window between the redirect and the stub is PREEMPTIBLE (`dying` is not set until exit_current runs), so a second
     // thread's fault can overwrite this before the first stub reads it. The print itself is
     // one such point and not merely an async tick: on a published console kprintf_fault wakes
     // the console driver, which outranks every stdout client by provisioning rule. `owner` is what
@@ -80,7 +78,7 @@ extern "C" bool kickos_fault_frame_trusted(void const* frame, size_t bytes)
 // below the distance from a thread's stack base to the nearest legitimate cross-domain target
 // beneath it. Widening it past that gap re-creates the false positive the narrowing removes;
 // narrowing it below 4 stops attributing overflows at all, since the denied push an RXv3
-// overflow leaves behind lands at base - 4. One line, deliberately.
+// overflow leaves behind lands at base - 4.
 #ifndef KICKOS_FAULT_STACK_GUARD_BAND
 #define KICKOS_FAULT_STACK_GUARD_BAND 16u
 #endif

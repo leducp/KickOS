@@ -218,8 +218,8 @@ namespace kickos
         Kernel& k = kernel();
         // At zero no slot carries a creator tag, so the scan below could only find nothing.
         // It runs interrupt-masked at EVERY thread exit, and on rx72m under an IRQ-driven
-        // UART it was enough to move an RR slice boundary (`rr order: AABBAB`), so the
-        // early return is load-bearing and not a micro-optimisation.
+        // UART that was enough to move an RR slice boundary, so the early return is
+        // load-bearing and not a micro-optimisation.
         if (k.task_holds == 0 or tag == ThreadPool::KILL_TAG_NONE)
         {
             return;

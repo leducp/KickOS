@@ -671,6 +671,10 @@ namespace kickos
         e.obj = obj_handle;
         e.type = static_cast<uint8_t>(type);
         e.rights = rights;
+        if (type == CapType::CAP_IRQ)
+        {
+            c->cap_irq_live++;
+        }
     }
 
     int cap_install(Thread* c, int obj_handle, CapType type, uint8_t rights, uint32_t* out_cap)
@@ -789,6 +793,24 @@ namespace kickos
         return t;
     }
 
+    namespace
+    {
+        // The per-type accounting a slot release owes, at the ONE place both release sites
+        // reach, so neither can drift from the other.
+        void cap_slot_released(Thread* c, CapEntry const& detached)
+        {
+            if (detached.type == static_cast<uint8_t>(CapType::CAP_REPLY))
+            {
+                cap_reply_released(c);
+            }
+            else if (detached.type == static_cast<uint8_t>(CapType::CAP_IRQ))
+            {
+                KICKOS_DEBUG_ASSERT(c->cap_irq_live > 0);
+                c->cap_irq_live--;
+            }
+        }
+    }
+
     int handle_close(Thread* c, uint32_t cap_handle)
     {
         CapEntry* e = cap_lookup(c, cap_handle);
@@ -809,10 +831,8 @@ namespace kickos
         e->type = static_cast<uint8_t>(CapType::CAP_EMPTY);
         e->rights = 0;
         cap_run_free_release(c->caps, cap_handle & KCAP_INDEX_MASK, &c->cap_free_head);
-        if (detached.type == static_cast<uint8_t>(CapType::CAP_REPLY))
-        {
-            cap_reply_released(c); // the close-instead-of-reply path kos_reply does not cover
-        }
+        // The CAP_REPLY half of this is the close-instead-of-reply path kos_reply does not cover.
+        cap_slot_released(c, detached);
         obj_ref_drop(detached, /*teardown=*/false);
         return 0;
     }
@@ -836,10 +856,7 @@ namespace kickos
             e.type = static_cast<uint8_t>(CapType::CAP_EMPTY);
             e.rights = 0;
             cap_run_free_release(c->caps, i, &c->cap_free_head);
-            if (detached.type == static_cast<uint8_t>(CapType::CAP_REPLY))
-            {
-                cap_reply_released(c);
-            }
+            cap_slot_released(c, detached);
             obj_ref_drop(detached, /*teardown=*/true);
         }
     }
@@ -860,15 +877,28 @@ namespace kickos
             // observable as not-yet-released by the very thread that asked for it.
             // Deliberately NOT chunked: a gap inside this pass is a moment when a thread with
             // a counted teardown depth still holds a line, and both console reclaim sites
-            // rely on that being impossible. The masked work is bounded by the IRQ caps held,
-            // the scan by the table's own width.
-            for (uint32_t k = 0; k < cap_end; k++)
+            // rely on that being impossible. So the masked window may not scale with the
+            // table's width: at zero the pass is owed nothing and reads no entry, which is
+            // every thread in an image except a driver's IRQ thread.
+            if (c->cap_irq_live != 0)
             {
-                if (cap_slot(c->caps, k)->type == static_cast<uint8_t>(CapType::CAP_IRQ))
+                for (uint32_t k = 0; k < cap_end; k++)
                 {
-                    teardown_entry(c, k);
+                    if (cap_slot(c->caps, k)->type == static_cast<uint8_t>(CapType::CAP_IRQ))
+                    {
+                        teardown_entry(c, k);
+                    }
                 }
             }
+#if KICKOS_DEBUG
+            // The other direction, and the only one the count cannot catch itself: an install
+            // site that forgot to count leaves a line held past the first gap.
+            for (uint32_t k = 0; k < cap_end; k++)
+            {
+                KICKOS_DEBUG_ASSERT(cap_slot(c->caps, k)->type
+                                    != static_cast<uint8_t>(CapType::CAP_IRQ));
+            }
+#endif
         }
         uint32_t i = 0;
         while (i < cap_end)
@@ -891,6 +921,9 @@ namespace kickos
         //     cap_reply_released, which would make the slot's next occupant refuse its first
         //     caller). SEGMENTED BOARDS ONLY: on the flat path cap_reply_live rescans the
         //     table the loop above just emptied, so it restates the check above it,
+        //   - the IRQ count agrees with the emptied table (a release arm that forgot to count
+        //     one down, which would make the next sweep of this SLOT run a pre-pass it is not
+        //     owed; the opposite drift is the debug scan after the pre-pass above),
         //   - nobody is still parked on this thread (a CAP_REPLY arm that woke a caller
         //     without unlinking it, which also walks a dead queue into the ready list), and
         //   - this thread serves no endpoint (an endpoint arm that cleared Endpoint::server
@@ -905,6 +938,7 @@ namespace kickos
         }
 #endif
         KICKOS_ASSERT(cap_reply_live(c) == 0);
+        KICKOS_ASSERT(c->cap_irq_live == 0);
         KICKOS_ASSERT(c->reply_waiters.empty());
         KICKOS_ASSERT(c->served_head == EP_SERVED_NONE);
         g_cap.teardown_depth--;

@@ -646,6 +646,10 @@ namespace kickos
     // that ordering: the console reclaim at the endpoint arm, and any peer respawning into the
     // dead driver's line.
     //
+    // That pass may not be chunked, so it may not scan either: Thread::cap_irq_live gates it,
+    // and a thread holding no line reads no entry under the mask. Every writer of a CAP_IRQ
+    // entry must move that count, or a line is held past the first gap.
+    //
     // TWO things switch a dying thread out mid-sweep, and either is how two threads come to
     // be in here at once (g_cap.teardown_depth, cap.cc): an RR slice expiring in
     // sched::tick_rr, and sched::wake of a strictly higher-priority peer from the teardown

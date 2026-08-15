@@ -804,11 +804,20 @@ if(KICKOS_BUILD_TESTS)
   if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
     set(_kickos_declined yes)
   endif()
+  # <complete> asserts this tree registers EVERY build-rooted program test_classes.txt
+  # names, which is what lets the gate read "no test runs it" as a dead declaration rather
+  # than as a program this board does not build. Only the sim arch registers build-rooted
+  # programs at all and the host unit binaries need GTest; every other knob those programs
+  # depend on is left to the gate, which names whatever this configuration dropped.
+  set(_kickos_complete no)
+  if(KICKOS_ARCH STREQUAL "sim" AND KICKOS_BUILD_UNIT_TESTS)
+    set(_kickos_complete yes)
+  endif()
   _add_test(NAME test_labels
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_test_labels.sh"
                     "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}"
                     "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
-                    "${_kickos_declined}")
+                    "${_kickos_declined}" "${_kickos_complete}")
   set_tests_properties(test_labels PROPERTIES TIMEOUT 60 LABELS host
                        FIXTURES_REQUIRED kickos_build)
 endif()

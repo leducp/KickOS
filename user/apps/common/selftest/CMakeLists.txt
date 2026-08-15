@@ -268,13 +268,12 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BOARD STREQUAL "microbit")
   # mem_self_grant between running and skipped. Before changing any static demand here, diff
   # the whole TAP output and not the verdict: the arm that flips is the cause.
   #
-  # "CLOSE TO THE EDGE" IS AN UNDERSTATEMENT, measured 2026-08-11: `__kickos_ram_start` IS
-  # `_ebss` on this board, both at 0x20001AE0, so the arena begins exactly where .bss ends and
-  # there is NO slack at all. The granule is 32 bytes, so ANY non-zero .bss addition, even four
-  # bytes, moves the arena base a full granule and costs one kos_ram_alloc grain. That is not a
-  # budget a change can fit inside: on this board the question is never "how many bytes" but
-  # "any bytes at all". mem_self_grant is the arm that grain belongs to, and M4.8.3's task pool
-  # is what took it.
+  # "CLOSE TO THE EDGE" IS AN UNDERSTATEMENT: `__kickos_ram_start` IS `_ebss` on this board, so
+  # the arena begins exactly where .bss ends and there is NO slack at all. The granule is 32
+  # bytes, so ANY non-zero .bss addition, even four bytes, moves the arena base a full granule
+  # and costs one kos_ram_alloc grain. That is not a budget a change can fit inside: on this
+  # board the question is never "how many bytes" but "any bytes at all". mem_self_grant is the
+  # arm that grain belongs to.
   #
   # LETTING IT SKIP IS THE RULING, not an omission: picopi runs mem_self_grant on a real RP2040
   # under PMSAv6, so the armv6m enforcement class is witnessed on silicon and this board would

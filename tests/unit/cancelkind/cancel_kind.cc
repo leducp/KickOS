@@ -260,10 +260,10 @@ namespace kickos
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "it never took a wait edge";
         }
 
-        // The arm that keeps the next step honest. Nothing in the tree writes CANCEL_SLAY, so
-        // the value is seated by hand here -- that is the only way to show the reader tests
-        // against CANCEL_NONE rather than for one kind, and a reader that reads == CANCEL_KILL
-        // passes every other arm in the tree while parking a thread whose resume is claimed.
+        // Seated by hand rather than through thread_cancel_kind, so the refusal is tested in
+        // isolation from the escalation the arms above drive: a reader spelled
+        // `== CANCEL_KILL` passes every other arm here while parking a thread whose resume is
+        // already claimed.
         TEST_F(CancelWiring, the_reblock_refusal_is_total_over_the_kinds)
         {
             Thread* const waiter = seat_waiter_over_a_peer();
@@ -272,7 +272,7 @@ namespace kickos
             wake_next_park(hand_the_waiter_its_event); // as above: keep the failure an assertion
 
             EXPECT_EQ(irq_wait(waiter, cap), -KOS_ECANCELED)
-                << "every non-zero kind is refused, including the one no path writes yet";
+                << "every non-zero kind is refused, not just the cooperative one";
             EXPECT_EQ(g_switches, 0u) << "and refused before parking";
             EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "it never took a wait edge";
         }

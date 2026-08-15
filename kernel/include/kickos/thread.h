@@ -77,9 +77,8 @@ namespace kickos
     {
         CANCEL_NONE = 0,
         CANCEL_KILL = 1, // cooperative: dies at its next syscall entry, keeps its window
-        // Its resume is claimed: it executes no further unprivileged instruction. NOTHING
-        // WRITES IT YET -- the syscall that will is not landed (docs/design-kill-and-slay.md
-        // section 3.5), and tests/unit/cancelkind asserts that absence.
+        // Its resume is claimed: it executes no further unprivileged instruction, because
+        // switch_to rebuilds the incoming context before arch_switch rather than resuming it.
         CANCEL_SLAY = 2
     };
 
@@ -141,6 +140,10 @@ namespace kickos
         // spawn before the child runs, and only the thread itself narrows it. Ignored when
         // `privileged`. Fits the padding before quantum_ns; moving it grows every TCB.
         uint8_t authority = 0;
+        // CAP_IRQ entries live in this thread's table. cap_teardown's pre-pass is the only
+        // reader and it releases nothing at zero, which is every thread but a driver's IRQ
+        // thread. Takes the LAST padding byte before quantum_ns; moving it grows every TCB.
+        uint8_t cap_irq_live = 0;
 
         // Round-robin: quantum_ns == 0 means no slicing (pure FIFO within prio).
         uint32_t quantum_ns = 0;
@@ -351,6 +354,12 @@ namespace kickos
     static_assert(offsetof(Thread, served_head) + sizeof(Thread::served_head) == sizeof(Thread),
                   "Thread grew tail padding: the last member no longer closes the struct, so the "
                   "TCB now has slack a new member would land in for free");
+    // One CAP_IRQ entry occupies one slot, so a thread's count is bounded by its own table and
+    // the widest table in the image is root's.
+    static_assert(KICKOS_MAX_HANDLES <= UINT8_MAX,
+                  "a thread could hold more CAP_IRQ entries than Thread::cap_irq_live can "
+                  "count, and cap_teardown's pre-pass would skip a release it owes. The field "
+                  "is a byte because that is what the TCB padding holds");
 
     // A thread's capability-table capacity: the width it was seated with if it holds a run,
     // else 0.

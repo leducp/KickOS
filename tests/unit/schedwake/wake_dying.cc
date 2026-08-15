@@ -559,8 +559,7 @@ TEST_F(SchedWake, the_exit_sweep_reclaims_the_console_once)
 
 // detach_current is the whole blocking funnel's entry, and from ISR context arch_switch
 // defers while the supposedly blocked thread keeps running, so the kernel refuses with a
-// kpanic instead of a return code. g_in_isr exists for exactly this and had no case until
-// the death-test mechanism landed.
+// kpanic instead of a return code. g_in_isr exists for exactly this.
 TEST_F(SchedWakeDeathTest, blocking_from_isr_context_panics)
 {
     running_thread();

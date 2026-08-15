@@ -50,6 +50,7 @@ namespace kickos
             // trace assertions are what say so -- do not renumber the expected string without
             // checking which gap the action now lands in.
             constexpr uint32_t GAP_AFTER_FIRST_CHUNK = 2;
+            constexpr uint32_t GAP_BEFORE_FIRST_CHUNK = 1;
             static_assert(KICKOS_CAP_FIRST_DYNAMIC < KCAP_TEARDOWN_CHUNK,
                           "the first dynamic slot must fall in the FIRST chunk, or the "
                           "ordinal above names a different boundary");
@@ -70,6 +71,8 @@ namespace kickos
             uint32_t g_closer_cap = 0;
             Thread* g_supervisor = nullptr;
             int g_claim_rc = 0;
+            Thread* g_line_owner = nullptr;
+            uint8_t g_line_slot_type = 0xFFu;
 
             void sweep_the_inner_thread()
             {
@@ -100,6 +103,17 @@ namespace kickos
             void supervisor_claims_the_line()
             {
                 trace_add("claim");
+                uint32_t cap = 0;
+                g_claim_rc = irq_claim(g_supervisor, CONSOLE_LINE, 0, &cap);
+            }
+
+            // Reads the line cap's own slot as well as claiming the line: the slot is what the
+            // pre-pass empties, and a claim alone would also answer 0 for a line the sweep had
+            // detached while leaving the entry live.
+            void inspect_the_line_before_the_first_chunk()
+            {
+                trace_add("look");
+                g_line_slot_type = cap_slot(g_line_owner->caps, IRQ_CAP_INDEX)->type;
                 uint32_t cap = 0;
                 g_claim_rc = irq_claim(g_supervisor, CONSOLE_LINE, 0, &cap);
             }
@@ -254,6 +268,33 @@ namespace kickos
                 << "and it is a peer THIS sweep released, not an unrelated thread";
             EXPECT_EQ(g_claim_rc, 0) << "the line was already detached when the peer asked";
             EXPECT_FALSE(cap_teardown_active()) << "the sweep balanced its depth";
+        }
+
+        // The pre-pass is gated on a COUNT, so the arm that says the gate never skips a pass
+        // that is owed has to date the release against the FIRST gap of all -- not against the
+        // boundary the line cap's own chunk would reach anyway. A thread holding one line is
+        // exactly the case the count does not let through.
+        TEST_F(CapSweep, a_held_line_is_released_before_the_sweep_opens_any_gap)
+        {
+            Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
+            claim_the_line_past_the_boundary(outer);
+            g_line_owner = outer;
+
+            g_supervisor = spawn(1, PRIO_PEER);
+            attach_caps(g_supervisor, KICKOS_CAP_FIRST_DYNAMIC + 1);
+            g_claim_rc = -1;
+            g_line_slot_type = 0xFFu;
+
+            trace_reset();
+            run_in_chunk_gap(inspect_the_line_before_the_first_chunk, GAP_BEFORE_FIRST_CHUNK);
+
+            cap_teardown(outer);
+
+            EXPECT_STREQ(trace(), "gap1 look gap2 gap3 gap4")
+                << "the look lands in the sweep's very first gap";
+            EXPECT_EQ(g_line_slot_type, static_cast<uint8_t>(CapType::CAP_EMPTY))
+                << "the line cap's slot was already emptied, chunks away from its own boundary";
+            EXPECT_EQ(g_claim_rc, 0) << "and the line itself was detached, not merely unnamed";
         }
 
         // --- the console the same wake exposes ------------------------------------------

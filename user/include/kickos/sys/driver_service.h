@@ -236,9 +236,7 @@ constexpr bool valid_l3(Descriptor const& d)
 //
 // The second arm is the one that keeps the grant narrow: the block becomes a region on every
 // member, so a descriptor carrying one nobody takes would hand the whole group memory for
-// nothing. It is the only remaining statement a descriptor can make about the group's memory,
-// the per-thread flag that used to sit beside it having been a second truth for this same
-// fact -- and one that read as an opt-out it could not deliver.
+// nothing. It is the only statement a descriptor makes about the group's memory.
 constexpr bool valid_l4(Descriptor const& d)
 {
     bool reader = false;

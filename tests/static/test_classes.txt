@@ -25,8 +25,12 @@
 # it is the one arch whose images and whose GoogleTest binaries are native programs.
 #
 # One board's ctest run sees only the subset of these its own configuration registers, so a
-# line naming a program NO board registers any more is dead and only the `src` half of that
-# rot is caught (the gate checks that the file still exists).
+# line naming a program NO board registers any more is dead. The `src` half of that rot is
+# caught on every board (the gate checks the file still exists). The `build` half is caught
+# only on a sim tree with the host unit binaries built, which is the one configuration that
+# registers every build path here: an MCU board registers none of them and cannot tell a
+# dead line from one it simply does not build, so a run of the fleet that never includes
+# that configuration checks the `build` half nowhere.
 
 # --- source-tree and host-program gates --------------------------------------
 host   src    tests/integration/check_oot_export_mcu.sh
