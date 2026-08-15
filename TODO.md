@@ -454,10 +454,11 @@ instance -- each names something that still exists.
 Every symbol, ctest case name, doc path and preset name it references resolves.
 
 - [x] **Class 4, the Reference tier contradicting itself.** `docs/reference/boards.md:670-673` says a **DONE:** it now says the name has zero hits in every code and build file, matching `invariants.md`.
-      `KICKOS_ROOT_PRIVILEGED` `FATAL_ERROR` survives in `cmake/KickOSConfig.cmake.in`. No such
+      a root-privilege-knob `FATAL_ERROR` survives in `cmake/KickOSConfig.cmake.in`. No such
       refusal exists and the name greps to zero in every build file;
-      `docs/reference/invariants.md:106` says correctly that it was deleted and a stale `-D` is now
-      silently ignored. Two Reference docs disagree and `boards.md` is the stale one.
+      `docs/reference/invariants.md`'s `root-unprivileged-idle-alone-privileged` says correctly that
+      it was deleted and a stale `-D` is now silently ignored. Two Reference docs disagree and
+      `boards.md` is the stale one.
 - [x] **Class 4, `architecture.md`'s live repo-layout tree.** `:320` lists `libcxx/  # __cxa_* stubs, **DONE:** the layout names the real `lib/` tree, and the C++ section states what actually exists (`__dso_handle` only, `operator new` a link error).
       guards, operator new/delete`; `lib/` has no such directory and none of those symbols exists
       tree-wide -- `CMakeLists.txt:743` says "a stray operator new stays a link error". `:319`
@@ -523,8 +524,8 @@ Every symbol, ctest case name, doc path and preset name it references resolves.
   `KICKOS_ARCH` matches none of the six ladder arms, which is a NEW PORT and a mistake somebody can
   still make today.
 
-**One maintainer decision, not an evidence gap -- DECIDED 2026-08-05: DELETE.** The gate on
-`KICKOS_SERVICE_LIST_ROOT_MMIO` was an empty list plus a `FATAL_ERROR` that could not fire on any
+**One maintainer decision, not an evidence gap -- DECIDED 2026-08-05: DELETE.** The gate on the
+root-MMIO service list was an empty list plus a `FATAL_ERROR` that could not fire on any
 configure in the tree. Its comment argued it should stay for the next board whose bring-up writes
 MMIO from root. **The maintainer's ruling: that class of misconfiguration cannot arise under the
 M4.7.5 mechanism unless a user genuinely asks for it, and the tree will not carry hand-rolled
@@ -532,36 +533,25 @@ catchers for every misuse when a proper framework is coming.** 22 lines deleted;
 configurations still build, including `frdmk64f` on its full service list, which is the board the
 gate used to police.
 
-**A gate blind spot found while doing it, worth knowing before it is trusted.** Eleven tracked
-markdown references still spell that name, and `doc_names` passes anyway. The reason is not that the
-name still exists: the gate builds its valid-identifier set from every tracked NON-markdown file, and
-`docs/audit/kickos-codebase-audit.html` mentions it. So **any name recorded in `docs/audit/*.html`
-stays permanently valid to this gate**, even after it is deleted from the build. That is consistent
-with the gate's stated behaviour for stale source comments, but an audit HTML is a DOCUMENT behaving
-as a source, which is a wider hole than the comment case it was designed around.
+**A gate blind spot found while doing it -- FIXED 2026-08-13 in M4.8.4.** The gate built its
+valid-identifier set from every tracked NON-markdown file, and `docs/audit/kickos-codebase-audit.html`
+records this name, so **any name that audit records stayed permanently valid** even after the build
+dropped it -- an audit HTML being a DOCUMENT behaving as a source, which is wider than the stale
+source comment the behaviour was designed around. The fix excludes `docs/` from the identifier scan
+only; the corpus being CHECKED is unchanged at every tracked `*.md`. It turned 39 markdown references
+to this knob and to the privileged-root one RED, and the doc audit repaired all 39 by rewriting the
+claim without spelling the dead name -- fencing the one that is a verbatim capture line.
 
-## Where the branch is (READ THIS FIRST IF RESUMING)
+## How to read this file
 
-`M4.6.1-irq`, off `master` at `b56ceff`. Linear, no merges, unpushed. Re-derive the commit count
-with `git rev-list --count master..HEAD` rather than trusting a figure here; no upstream is
-configured, so `git push` needs the refspec named.
+The sections below are the granular ledger, newest strata first; older strata are kept for the
+measurements in them, not for their framing. `STATE.md` holds the one-screen version.
 
-**M4.6.1 is complete in both halves and four of its five UART drivers are green on silicon.**
-`STATE.md` holds the one-screen version, including the per-board capture table and the three
-selftest arms no hardware has run yet. The sections below are the granular ledger, newest strata
-first; older strata are kept for the measurements in them, not for their framing.
-
-**`c296feb` must survive**, and it is reachable only from the local unpushed branch
-`m4.2-presquash` -- `docs/design-m4.6-irq-driver.md` section 6 cites
-`git show c296feb:docs/design-m4-rx-irq-demux.md` rather than reproducing it. One
-`git branch -D m4.2-presquash` destroys an M4.6.1 prerequisite.
-
-Older commit hashes cited in this file and in `docs/audit/` resolve against
+**Older commit hashes cited in this file and in `docs/audit/` resolve against**
 `backup/m4.5.1-pre-squash`, `backup/m4.5.1-pre-msg-trim` and the `refs/backup/integration-*` refs.
 **These refs are local-only**; pushing them is what makes the citations resolvable for anyone else.
-
-**One branch only.** Worktree branches are transport: replay them, delete the branch, remove the
-worktree with `git worktree remove`.
+The hashes that reach no branch at all, and why they still stand as witnesses, are in `STATE.md`
+under *History that must not be garbage-collected*.
 
 ### Decisions taken (do not re-open without new information)
 
@@ -599,7 +589,8 @@ worktree with `git worktree remove`.
   fleet that at the time still defaulted to privileged root, so doing them first would have widened
   the surface that goal 1 then has to confine. **LANDED** in `roadmap.md` under `## Next`
   (`m4.5.1: put M4 driver breadth and M5 SMP behind goal 1`, a5fc422). The premise is now DISCHARGED
-  rather than pending: M4.5.6 deleted `KICKOS_ROOT_PRIVILEGED`, so goal 1 holds unconditionally and
+  rather than pending: M4.5.6 deleted the privileged-root posture knob, so goal 1 holds
+  unconditionally and
   M4.6's driver work is what comes next.
 - **Selftest tiering (core tier + optional tiers) was to be considered for the two 64 KiB boards --
   but MEASURE FIRST, and the measurement says it is not needed today.** See below.
@@ -689,8 +680,8 @@ number: the record and the XMC entry under Blockers below both point at **item 5
    `xmc_spi0_start` now contains zero register access. The three PV-write-only stores were a measured
    hardware refusal and the seam is witnessed discriminating against them on silicon -- see the entry
    under Blockers below. It closes the consequence too: `xmcssc` AS A SERVICE is witnessed at
-   `commit 270b6fa` and `kickos_services_xmc4800relax` came off `KICKOS_SERVICE_LIST_ROOT_MMIO`, which
-   is now empty.
+   `commit 270b6fa` and `kickos_services_xmc4800relax` came off the root-MMIO
+   refusal list, which was emptied then and has since been deleted outright.
 6. **`stm32f103` `arch_mpu_min_region()` override.**
 7. **Re-point `kernel_ctor_placement` at the `cxxtest` ELF** (it is vacuous where it is now; see
    the finding above -- these two are the same problem and can land together).
@@ -1063,14 +1054,14 @@ on frdmk64f+blink, no `.bss`).
       FAIL with the grant removed, which is what makes it cover the arm that would otherwise ship
       unexercised until stage 2 (the `kernel_ctor_placement` vacuity trap).
 
-**Stage 2 -- flip per board**, behind a build-enforced `KICKOS_ROOT_PRIVILEGED` knob (default ON,
+**Stage 2 -- flip per board**, behind a build-enforced posture knob (default ON,
 **NOT a weak symbol**: opting out of the boundary had to be visible in the board's build, not
 silently satisfied by a link-time override).
 **The knob NO LONGER EXISTS -- M4.5.6 deleted it and root is now unconditionally
-unprivileged.** Everything in this stage record is dated history: it keeps the name because the name
-is what the stage built, and no item under it describes a posture that is still selectable.
-- [x] **The knob** -- see `m4.5.1: add KICKOS_ROOT_PRIVILEGED, and seat root's authority cap when it
-      is off`. **SUPERSEDED by M4.5.6, which deleted all of it**; recorded as built.
+unprivileged.** Everything in this stage record is dated history, and no item under it describes a
+posture that is still selectable.
+- [x] **The knob** -- see the `m4.5.1` commit that added it and seated root's authority cap when it
+      was off. **SUPERSEDED by M4.5.6, which deleted all of it**; recorded as built.
       CMake option, always emitted as `0`/`1` (so `#if` was `-Wundef`-clean), printed at
       configure time and carried to out-of-tree consumers as a usage requirement of `kickos_core`.
       OFF created root unprivileged and seated `CAP_AUTH_ALL` at the reserved authority index after
@@ -1091,9 +1082,10 @@ is what the stage built, and no item under it describes a posture that is still 
       `caller_authorized`, resolved at both call sites as `cap_check_authority(current, AUTH_MEMORY)`.
 - [x] **`xmc4800-relax` FLIPPED and witnessed on silicon.** Console-only service list added
       (`kickos_services_xmc4800relax_console`), selected automatically for the flipped posture;
-      `KICKOS_SERVICE_LIST_ROOT_MMIO` makes the combined list a **configure-time `FATAL_ERROR`** in
+      the root-MMIO refusal list makes the combined list a **configure-time `FATAL_ERROR`** in
       that posture rather than a dark board. (M4.5.6 lifted that listing: the combined list is the
-      default again and the board is witnessed running it. The list itself stays, empty.)
+      default again and the board is witnessed running it. The list itself was emptied, and deleted
+      outright on 2026-08-05.)
       Evidence in `docs/reference/boards.md`. The A/B was
       **re-captured post-rebase at `22e1c5a`**, so it witnesses the rebased combination of stage 2
       with the kernel-audit batch, not just the pre-rebase branch.
@@ -1177,7 +1169,7 @@ is what the stage built, and no item under it describes a posture that is still 
       boot-time act in `arch_init`. Each backend is a hand-curated table keyed on the **exact** block
       base, never a range, and both writes are DERIVED from `base`, so no caller can name a shared
       block's register or the bit inside it. Retires `k64uart` and `k64dspi`'s root MMIO entirely, so
-      `kickos_services_frdmk64f` came off `KICKOS_SERVICE_LIST_ROOT_MMIO`.
+      `kickos_services_frdmk64f` came off the root-MMIO refusal list.
 - [x] **NOT gated on a device authority bit, which is what this checklist previously said. The
       gate is possession.** `caller_holds_mmio_block(base)` (`kernel/syscall/syscall_mem.cc`)
       requires a live `ARCH_MPU_DEV` region whose base matches exactly; privileged callers bypass,
@@ -1264,13 +1256,14 @@ is what the stage built, and no item under it describes a posture that is still 
       `kos_sleep_ns` are ungated; the globals are ordinary `.appdata`), none of them spawns anything,
       and `sleeper` -- unprivileged in that same app, same round -- already does a superset of
       `churner`. Same origin commit as `selftest`'s two. Now unprivileged, and this **fixed a real
-      failure**: under `KICKOS_ROOT_PRIVILEGED=OFF` the old flags were refused `-KOS_EPERM`, so
+      failure**: with root UNPRIVILEGED the old flags were refused `-KOS_EPERM`, so
       `sim_stress` FAILED there on master and passes now.
 - [x] **Gate: the selftest `authority_cap` narrow arms** -- the worker drops its only authority and
       the gate that had just answered for it returns `-KOS_EPERM`, plus the non-authority-cap
       refusal. In-env on every target, sim included. The ROOT narrow has no in-env carrier, so it was
       witnessed by deleting `AUTH_CONSOLE` from `initdemo`'s declaration: `console_publish` then failed
-      from root on `qemu` at `KICKOS_ROOT_PRIVILEGED=OFF`, and the identical source passed at `ON`.
+      from root on `qemu` with root UNPRIVILEGED, and the identical source passed with root
+      privileged.
       That pair is also what proves the per-app override actually overrides. **Not re-runnable as
       described**: M4.5.6 deleted the knob, so the `ON` half of that A/B no longer builds; `rootauth`
       below is the carrier that replaced it.
@@ -1278,7 +1271,7 @@ is what the stage built, and no item under it describes a posture that is still 
 Opened by stage 4:
 - [x] **The ROOT narrow has an automated test: `user/apps/common/rootauth`** (M4.5.5). A diagnostic
       app declaring `AUTH_MEMORY | AUTH_SYSTEM | AUTH_PINMUX`. As written for M4.5.5 it registered in
-      BOTH postures and discriminated on identical source via `#if KICKOS_ROOT_PRIVILEGED` -- four arms
+      BOTH postures and discriminated on identical source via an `#if` on the posture knob -- four arms
       flipped, three privileged. **M4.5.6 deleted that condition with the knob**: there is one posture,
       so the app is now five arms on one path, and it gained a `microbit` gate.
       The arm that matters is still the first -- it asserts `pinmux_set` is NOT `-KOS_EPERM`,
@@ -1336,8 +1329,8 @@ Carried over from the old plan, untouched by this design:
 Blockers and limits:
 - **One service bring-up body used to poke MMIO directly from root -- CLOSED by M4.5.6's
   `arch_periph_reg_write` seam, and `xmc_spi0_start` now contains zero register access.** The
-  consequence is discharged too: `kickos_services_xmc4800relax` came OFF
-  `KICKOS_SERVICE_LIST_ROOT_MMIO` (which is now empty), `xmc4800-relax` defaults to its full service
+  consequence is discharged too: `kickos_services_xmc4800relax` came OFF the root-MMIO refusal
+  list (emptied then, deleted outright since), `xmc4800-relax` defaults to its full service
   list under enforcement, and `xmcssc` AS A SERVICE is WITNESSED -- both driver banners on the wire
   at `commit 270b6fa`, no dark board. Recorded in full under M4.5.6. The analysis below is kept
   because it is what the seam had to satisfy.
@@ -1364,7 +1357,7 @@ Blockers and limits:
   gates `KSCFG`, any one of which garbles the UART on its own. Also corrected: Table 18-20 marks
   exactly three registers `Write = PV` (FDR, BRG, CCR); `INPR` is `U,PV` and its earlier inclusion
   was a transcription slip (untested here). It was **enforced
-  at configure time** (`KICKOS_SERVICE_LIST_ROOT_MMIO`) rather than left to fail on the hardware,
+  at configure time** (the root-MMIO service-list refusal) rather than left to fail on the hardware,
   because the runtime failure is a fault mid-bring-up *after* the console has been relinquished, i.e.
   a silent dark board. **The condition is now `KICKOS_HAVE_MPU`, not the posture** -- M4.5.6 deleted
   the posture, and the substitution is the right one on its own merits: with the MPU off an
@@ -1431,7 +1424,7 @@ Blockers and limits:
 
 ## M4.5.5 -- MPU region-encoding classes
 
-Ordered after stage 4 (`kos_cap_narrow`) and before the `KICKOS_ROOT_PRIVILEGED` deletion, but
+Ordered after stage 4 (`kos_cap_narrow`) and before the posture-knob deletion, but
 **not a blocker for it** -- the knob went away on the strength of the flip, not of region shaping,
 and it is gone as of M4.5.6. One general fleet re-witness pass closes the step; it comes due with
 the rest of the bench debt under M4.6.3..N.
@@ -1568,19 +1561,19 @@ the rest of the bench debt under M4.6.3..N.
           declared objective of the pass, not a by-product. It is NOT the stage-2 enforcement gate,
           which no MPU-less part can meet (see the `bluepill-c8` / `f302nucleo` bullet above).
           **Taken early, in M4.5.6**: `f302nucleo` witnessed the no-MPU claim (`selftest` `1..63` all
-          passing) and the RING arm besides. What it still owes this pass is its fault-reporter root
-          cause, which is a separate open item and blocked on a replug.
+          passing) and the RING arm besides. Its fault-reporter root cause was the last thing it
+          owed this pass, and that is CLOSED (2026-08-13): the flash command, not the firmware.
 
-## M4.5.6 -- delete `KICKOS_ROOT_PRIVILEGED` -- and M4.5.7 -- remove the weak-symbol seam mechanism -- BOTH COMPLETE (2026-07-31)
+## M4.5.6 -- delete the privileged-root posture knob -- and M4.5.7 -- remove the weak-symbol seam mechanism -- BOTH COMPLETE (2026-07-31)
 
 **TWO cleanup sub-milestones, in this order. BOTH ARE DONE** and merged, squashed into `dde73ca`
-(PR #6): M4.5.6 deleted the `KICKOS_ROOT_PRIVILEGED` posture knob, M4.5.7 removed the weak-symbol
+(PR #6): M4.5.6 deleted the privileged-root posture knob, M4.5.7 removed the weak-symbol
 seam mechanism. The order was
 not a preference: the knob deletion removes a posture and every `#if` branch behind it, so the seam
 pass edited a one-posture tree instead of two. Both are foundation work ahead of M4.6 and
 neither is a driver feature. Next is **M4.6.1 -- IRQ + console visibility**.
 
-**Half one -- delete the `KICKOS_ROOT_PRIVILEGED` knob. COMPLETE** (2026-07-30/31, MinSizeRel,
+**Half one -- delete the privileged-root posture knob. COMPLETE** (2026-07-30/31, MinSizeRel,
 merged in `dde73ca`; developed as `c5d9b0d` -> `270b6fa` -> `124b68c`, which the captures
 stamp). The first
 inventory below was written at `c5d9b0d` and has been corrected against the two later commits.
@@ -1590,7 +1583,7 @@ instead of at a committed tip. Only `b4-fault.log` and `b4-ringppb.log` stamp `1
 set stamps a clean `270b6fa`. A `-dirty` stamp names the tree it was taken from, not a reproducible
 one, so those captures cannot be re-derived from history.
 
-- [x] **`KICKOS_ROOT_PRIVILEGED` is DELETED, not defaulted OFF.** Root is unconditionally
+- [x] **The posture knob is DELETED, not defaulted OFF.** Root is unconditionally
       unprivileged on every board: `ThreadAttr::privileged` now defaults `false`, and the
       `cap_seat_authority(&g_root_tcb, CAP_AUTH_ALL)` seat in `kmain` is UNCONDITIONAL rather than
       sitting behind an `#if` -- with no ring to short-circuit `cap_check_authority`, an unseated
@@ -1609,7 +1602,7 @@ one, so those captures cannot be re-derived from history.
       **The name appears in NO code or build file at all.** `270b6fa` deleted the removed-knob
       configure guards along with the scramble-test option's, so a `grep` over
       `*.txt *.cmake *.h *.cc *.json *.in *.sh` returns zero hits. Consequence, and it is a
-      deliberate trade rather than an oversight: a stale `-DKICKOS_ROOT_PRIVILEGED=...` is
+      deliberate trade rather than an oversight: a stale `-D` for the removed knob is
       **silently ignored** on an in-tree configure AND on an out-of-tree consumer configure, with
       nothing but CMake's generic unused-variable warning to show for it. There is no recovery
       incantation to run, because there is no guard left to clear. The docs still discuss the name
@@ -1644,7 +1637,7 @@ one, so those captures cannot be re-derived from history.
       that both runs NAME their skips on the wire, not the totals**: the plan count held at 66 for an
       unrelated reason (a case was added in the same milestone) and has since moved to 67, so compare
       the named transcripts and never the numbers. This also resolves the M4.5.5 open question --
-      `master` defaults `KICKOS_ROOT_PRIVILEGED=ON`, so those rows ran PRIVILEGED and the guard RAN
+      `master` THEN defaulted root PRIVILEGED, so those rows ran PRIVILEGED and the guard RAN
       rather than skipping, which reconciles all three counts. The `EXPECT_SKIPS` list loses its
       posture-dependent entry too.
 - [x] **`rootfault` is now an always-built gate on SIX in-env images** -- `sim`, `qemu`, `qemu-m3`,
@@ -1659,7 +1652,7 @@ one, so those captures cannot be re-derived from history.
       authority gap.** `Thread::privileged` is a software field, so `cap_check_authority` stops
       short-circuiting on a part with no ring split -- the authority logic is testable there even
       though the CPU-mode boundary is inert. With the knob gone the app also loses its
-      `#if KICKOS_ROOT_PRIVILEGED` discrimination and is one posture's five arms on identical
+      posture `#if` discrimination and is one posture's five arms on identical
       source; it reports `PASS` on `frdmk64f` silicon.
       **REMAINING GAP, recorded rather than papered over: `esp32-wroom` could NOT get a run gate.**
       Upstream QEMU models no ESP32 machine, so no board-to-machine mapping is constructible and the
@@ -1669,7 +1662,7 @@ one, so those captures cannot be re-derived from history.
       test they carried that the base arms lacked, and the base `KICKOS_HAVE_MPU=1` arms now
       register it themselves, so the arms were paying two extra toolchain builds for nothing. The
       same pass gives `qemu-riscv-mpu` a `qemu_riscv_rootfault` -- **a gate CI had never run.**
-- [x] **`KICKOS_SERVICE_LIST_ROOT_MMIO`'s `FATAL_ERROR` is re-conditioned on `KICKOS_HAVE_MPU`, not
+- [x] **The root-MMIO service-list `FATAL_ERROR` is re-conditioned on `KICKOS_HAVE_MPU`, not
       on the posture.** With the knob gone the posture is no longer a variable, but the substitution
       is deliberate and not mechanical: **with the MPU off, an unprivileged root DOES reach MMIO** --
       a cross-domain write completed on a non-MPU qemu image, measured -- so the gate's real subject
@@ -1766,8 +1759,8 @@ one, so those captures cannot be re-derived from history.
       timing figure); these captures were taken `MinSizeRel`, so what they replace is the operating
       point, not the toolchain caveat.
       **`xmcssc` AS A SERVICE is now WITNESSED and the decision is MADE.**
-      `KICKOS_SERVICE_LIST_ROOT_MMIO` is EMPTY (`CMakeLists.txt:380`) -- the list and its
-      `FATAL_ERROR` stay for the next board whose bring-up writes MMIO from root -- and
+      the root-MMIO refusal list is EMPTY here -- it and its `FATAL_ERROR` were deleted outright on
+      2026-08-05 -- and
       `xmc4800-relax` defaults to its FULL service list under enforcement. The wire at
       `commit 270b6fa` (`.session/m456-silicon/b2-xmcssc-vcom.log`) is
       `[xmcuart] driver up (polled TX)` followed by
@@ -1869,10 +1862,28 @@ duplicated.
       and the `.appdata` enforcement window eats 110,748 B.
       `bluepill-c8-st` has EXACTLY zero boot-arena slack besides (2,560 needed, 2,560 available) --
       the only image in the 921-image fleet at or below zero.
-- [ ] **`f302nucleo`'s fault reporter produces NO dump, root cause OPEN.** Not the new probers' bug:
+- [x] **`f302nucleo`'s fault reporter produces NO dump. CLOSED 2026-08-13: THE FLASH COMMAND, not
+      the firmware.** `st-flash --connect-under-reset --reset write` leaves the core under halting
+      debug with `DEMCR.VC_HARDERR` armed, so the fault reaches HardFault and the core HALTS at the
+      handler's first instruction instead of running it -- `DFSR.VCATCH` set, `DHCSR.S_LOCKUP` clear,
+      `HFSR` FORCED with `VECTTBL` clear, and a stacked frame carrying the faulting PC. Proved by a
+      single change on ONE boot with no reset or reflash: writing `DEMCR=0x01000000` made the stalled
+      boot print its report. `tools/flash-stlink.sh` no longer pairs the two flags. The section below
+      titled "the defect is MISFRAMED" was right about the reporter being innocent and wrong about
+      where to look next.
+      **AND A SECOND CUT HAD A SECOND CAUSE, ALSO NOT THE FIRMWARE: `bench-capture.sh`'s separate
+      `st-flash reset` step**, which cut the correct boot off mid-line and started another one that
+      stalled -- which is why a capture taken that way holds two boots and a truncated first. Flashing
+      WRITE-ONLY and taking no separate reset gives ONE boot, 300 bytes and a complete
+      `[fs] survivor ran after the fault`, and a write-only capture of the PRE-fix image reproduces
+      that byte for byte, which is what proves it is the capture protocol rather than the image. The
+      board now has a gate-verified fault-isolation witness, TAG `m484p2`. **So its post-fault console
+      is NOT an unreliable instrument**, and expecting two plan lines there and slicing from the last
+      one is retired: take the capture write-only.
+      Original notes follow.
+      **Superseded reading:** Not the new probers' bug:
       the pre-existing `fault` app truncates at `[f` (338 bytes, `.session/m456-silicon/b4-fault.log`)
       exactly as `ringppb` does.
-      **DEFERRED until after M4.6.2**: no board access before then.
       **The hardware faults correctly** -- debugger attach confirms what ARM ARM B3.1.1 requires:
       `CFSR=0x00008200` (BFSR `0x82` = `PRECISERR|BFARVALID`), `BFAR=0xe000ed00` (the exact probed
       address), `HFSR=0x40000000` (`FORCED`, because `BUSFAULTENA` is never set in-tree), and the
@@ -1909,21 +1920,14 @@ duplicated.
       `kpanic_enter`, the fault dump STILL reached the wire: the reporter writes through
       `arch_console_write_sync` regardless of ring state, so a broken drain strands PRE-fault output
       and corrupts ordering but never silences the dump. So whatever f302 has, it is not a ring or
-      flush fault. Remaining candidates: its own `arch_console_write_sync` / USART2 polled path, the
-      vector routing, or the fault never reaching `HardFault_Handler` at all.
-      **FIRST ACTION when the board returns, and it needs NO probe: look at LD2 (PB13).**
-      `kfault_terminate` drives 3 x 0.2 s blinks then 2 s dark, forever, and the path is armed
-      (`kdiag_led_init()` at `kmain.cc:201` precedes the banner; `arch_diag_led_init`/`_set` both
-      resolve to `chip_stm32f302`). Blinking three-and-pause means the reporter ran to completion and
-      every `kprintf` executed, so the loss is downstream of TDR and the firmware is not at fault.
-      Dark or static means execution never reached `kfault_terminate` and the fault is inside the
-      span. One bit, no tooling, and it dominates both experiments queued earlier.
-      **When a probe is available, do NOT repeat the step-capped trace.** Use breakpoints plus
-      `continue`: `break *arch_console_write_sync`, `break *kfault_terminate`. A write_sync hit means
-      the firmware reached the writer, so step the TDR store and read `r0`/`r1`; only
-      `kfault_terminate` hitting means the dump was skipped upstream; neither hitting means halt and
-      read PC and `DHCSR` bit 19 THEN. Derive addresses from your own build. This dominates the TDR
-      watchpoint, which conflates "never reached the writer" with "reached it with n == 0".
+      flush fault. That measurement stands; the candidate list it fed is spent, the cause being
+      outside the firmware entirely.
+      **The LED probe queued here was RUN, and its dark-LED reading was correct**: the core was
+      halted at the handler's first instruction, so nothing downstream of it could run. The
+      step-capped-trace warning outlived the defect and is kept as method: prefer breakpoints plus
+      `continue` over `stepi N`, because a fixed budget samples `DHCSR`/`HFSR`/`CFSR` wherever it
+      happens to stop -- which is how a healthy mid-dump machine got read as evidence about a silent
+      one, twice.
 - [ ] **The structural coverage hole behind it: no emulated gate can exercise a buffered-ring panic
       flush, and the sim CANNOT substitute.** Every fault-dump gate in the fleet runs on an
       UNBUFFERED-console board (mps2 semihosting, `microbit`, `virt`), so "the panic path must drain
@@ -2301,13 +2305,13 @@ bench sessions closed most of what this list used to hold**; what remains is:
   board of that set still unavailable.
 - M4.5.5's general `MinSizeRel` re-witness pass, for the fault addresses, disassembly offsets, symbol
   sizes, stack-depth observations and timing figures that a `Debug` capture cannot carry forward.
-- `f302nucleo`'s fault-reporter root cause, blocked on a physical ST-Link replug rather than on the
-  pass itself -- so it may close earlier and independently.
+- ~~`f302nucleo`'s fault-reporter root cause~~ CLOSED 2026-08-13: it was the flash command's
+  `--reset`, and it never needed a replug.
 - Right-sizing `frdmk64f` and `bluepill-c8` so `KICKOS_POOL_ARENA_ASSERT` can go fleet-wide.
 
 **CLOSED by M4.5.6, listed so the ledger is not re-opened by habit:** `rx72m`'s one visit (all three
 items, `commit 270b6fa`), `esp32c6-wroom`'s `c6blink`, `pizero2350`'s `rootfault` and `rootauth`,
-`xmcssc` as a service (the decision is made and `KICKOS_SERVICE_LIST_ROOT_MMIO` is empty), and the
+`xmcssc` as a service (the decision is made and the root-MMIO refusal list is gone), and the
 RING-ARM witness -- the prober now exists (`user/apps/common/ringpriv`) and `f302nucleo` took it.
 Numbered `..N` because a witness pass is expected to OPEN items as well as close them, and M4.5.6's
 sessions did exactly that.
@@ -3536,7 +3540,7 @@ against the TRMs in the local reference set, not against HAL headers or the web.
       `regs/intpri.h`, `regs/intmtx.h` (a "Table 10.4.2" that is not a table -> sec.10.4.1),
       `chip_esp32c6.cc` (dropped an esp-idf quote presented as authority), and rx72m `regs/icu.h`.
 
-## f302nucleo: the defect is MISFRAMED -- the fault reporter is innocent
+## f302nucleo: the defect is MISFRAMED -- the fault reporter is innocent (CLOSED 2026-08-13)
 
 Second bench pass of 2026-08-01, at `ab2a52d`(-dirty), by direct-to-`USART2->TDR` marker
 instrumentation on the panic path, uncommitted scratch behind a default-off build option.
@@ -3733,7 +3737,7 @@ for this: it resets and captures on ONE serial handle. With it the same board re
 as binary and prints nothing at all -- not even "Binary file matches". Use `grep -a`, or a skim of
 `tail` will disagree with a `grep` of the same file and the `grep` will look authoritative.
 
-## f302nucleo fault-reporter bench pass (2026-08-01, at commit 97a85e4)
+## f302nucleo fault-reporter bench pass (2026-08-01, at commit 97a85e4) -- CLOSED 2026-08-13
 
 First bench measurements on this defect since it was filed. They NARROW it substantially and kill
 the framing it was filed under. Captures in `.session/logs/f302-*`; the banner stamps `97a85e4`, a
@@ -4015,7 +4019,8 @@ here because they are pre-existing isolation facts, not things that pass created
       preset: with the heap carve at zero the `-st` gate on that board no longer exercises the heap
       at all, so a heap regression on a 16 KiB part would go unseen.
 - [x] **CI exercises an unprivileged root** (M4.5.5). Three new arms: `qemu` and `qemu-m33` at
-      `KICKOS_HAVE_MPU=1 -DKICKOS_ROOT_PRIVILEGED=OFF` (a real armv7m/v8m `npriv` boundary over both
+      `KICKOS_HAVE_MPU=1` with root UNPRIVILEGED, then a `-D` and now the only posture (a real
+      armv7m/v8m `npriv` boundary over both
       PMSA revisions), plus a flipped **sim** arm which witnessed the authority logic and region
       composition but never a CPU-mode boundary. The flipped ARM arm registered two gates the
       privileged posture could not host -- `rootfault` and `rootauth`'s flipped arm -- and a `selftest`
@@ -4190,7 +4195,7 @@ here because they are pre-existing isolation facts, not things that pass created
       This is the opposite case from `f411spi`, which a seam did fix. `k64drv` is a diagnostic app
       (`KICKOS_ENABLE_SELFTEST` only, no CTest gate), so nothing goes red; decide whether it is
       retired or reworked onto a block whose slot is containable. **The third option is gone**: with
-      `KICKOS_ROOT_PRIVILEGED` deleted in M4.5.6 there is no privileged-root posture to keep it as a
+      the posture knob deleted in M4.5.6 there is no privileged-root posture to keep it as a
       diagnostic in, so this is now a two-way decision. `arch_periph_reg_write` does not help either
       -- an allowlisted `(base, offset)` still has to sit inside a window the caller holds, and the
       obstacle here is the bus gate's granularity, not the register's.
@@ -5356,6 +5361,416 @@ grows a second mechanism: on a target with processes, `exit()` ends the process 
 primitive stays `kos_exit`.
 
 
+## THE DOC AUDIT (anytime coherence, runs parallel to M4.8.4 and the driver era)
+
+**Why now.** The f302 close showed the failure mode: `docs/reference/boards.md` carried a WRONG root
+cause in four places for weeks, and it had never been updated for the 2026-08-01 reframing either, so
+it held TWO superseded stories at once while the bench quietly disagreed with both. A doc that is
+wrong is worse than a doc that is missing, because it retires the question. `doc_names` cannot catch
+any of this -- it validates that a path and an identifier RESOLVE, never that a claim is still TRUE,
+and it reads TRACKED MARKDOWN ONLY, so the same citations in source comments, CMake strings and
+workflow YAML rot invisibly.
+
+- [x] **Sweep every doc for a claim the tree has since falsified. DONE.** The f302 reading was
+      deleted from `boards.md` in all four places plus `flashing.md`, `design-m4.7.9`,
+      `design-m4.6-irq-driver` and `roadmap.md`; every measurement kept as taken, and the one
+      verbatim capture line fenced rather than edited. Three more superseded verdicts came out with
+      it: `invariants.md` and `console.md` stated the PRE-2026-08-02 console reclaim (keyed on the
+      endpoint's last receiver) as the contract, `design-m5-smp.md` asserted the retracted
+      both-cores-WFI debug-bus story as chip fact, and the `arch_console_reclaim` body count was
+      wrong in six files. `architecture.md`'s cap-slab figures were both one chunk high, and are now
+      read off the `KickOS: cap table =` configure line instead of a formula.
+- [x] **`docs/reference/architecture.md`: delete what is false, do not restructure. DONE.** The
+      cancel reaching one park, privilege as a domain property, caller-owned kernel objects,
+      `msg_recv`, the ThreadX preemption threshold, a thread-flag notification, PI as future work, a
+      missing `kernel/task/`, and the per-task capability table at 24 sites. The task syscalls joined
+      the thread-lifecycle surface. **Deliberate residue, left for the rewrite**: six positioning and
+      prior-art sentences still say "per-task isolation" where the mechanism ones now say per-thread.
+- [x] **`TODO.md`'s own stale strata. DONE for the class that was pure noise**: the section
+      describing `M4.6.1-irq` as an unpushed unmerged branch is gone, replaced by a how-to-read
+      header that keeps its one non-re-derivable fact: which backup refs the older hashes resolve
+      against. The remaining STALE markers are self-annotated backlog and stay.
+- [x] **`docs/design-c6-driver.md:34` -- NOT A DEFECT, and the finding itself was the false one.**
+      That document DOES carry numbered open questions (`## Open questions / risks`, items 1-3), and
+      item 3 is exactly "a timer-IRQ follow-on needs an arch/chip change", which is what line 34
+      claims. The parenthesis stays. Worth keeping as the lesson: this audit's own named exemplar was
+      a misreading, so a finding about a citation gets the cited document opened before it is filed.
+- [x] **Gate or habit -- DECIDED 2026-08-13: the habit, plus one narrow gate fix, and NO widening.**
+      The evidence for refusing the widening is measured. Identifiers: with `docs/` out of the
+      oracle only TWO dead names surface tree-wide, both masked for one reason, and that is the
+      one-line fix that landed in M4.8.4. Paths: swapping the corpus to source files resolves 544
+      repo-rooted citations but leaves 269 file-relative ones and 51 unexpanded shell/CMake
+      variables reporting, i.e. about 3% precision before any resolution work -- and the gate lives
+      by "a checker that cries wolf gets disabled". Line numbers stay uncheckable by the gate's own
+      argument. What actually caught everything above was READING, so the habit is: the per-milestone
+      review gains one angle that re-reads every doc the milestone's diff touched and asks whether
+      anything now says two things. The staleness convention was NOT adopted: most measured claims
+      already carry their tree, and every failure here was a verdict with no tree to carry.
+
+## M4.8.x TRIAGE: the 30 items the three milestones left, sorted by what they actually are
+
+**Why this section exists.** A review finding has exactly TWO honest dispositions: **FIX IT, or ASK
+FOR A DECISION.** Filing is not a third one -- it is what you do with class D below, and nothing else.
+Across this file the practice was the opposite: 200 open against 207 closed, every review filing 10-18
+while closing 1-3, and the pile is undifferentiated so an accepted trade and a latent defect read
+identically at a glance.
+
+**And do not reach for "no mechanism blocked the merge" -- there is no such mechanism to have.** A
+gate is not an artifact: a ctest entry, a static check, even the arm that proves a fix can all be
+DELETED, which is precisely why the gates in this tree are mutation-tested rather than trusted. The
+discipline is the gate. Recording a defect in this file and merging anyway is a choice, never a
+process outcome.
+
+**So the rule for a future review: fix each finding, or raise it as a decision, before the merge.**
+Only class D is filable.
+
+**A -- LATENT DEFECT in shipped code (6). ALL SIX ARE NOW ADDRESSED, and TWO WERE MIS-FILED in ways
+that changed the answer.** Kept in full because the mis-filings are the lesson:
+- [x] **`sched::wake`'s guard reading a moved `kernel().current`.** Mechanism CONFIRMED, conclusion
+      REFUTED: the DECISION is provably unchanged in every constructible case, because admission
+      required `t->prio > sweeper->prio`, so the stale publication is `pick_next`'s own answer and
+      `reschedule()` early-returns on it. Verified BOTH ways -- deleting the `dying` clause reds only
+      the fresh-window arms, which is the machine-checked form of "dead in that window, and nothing
+      depends on it there". Residue reclassified to class B below. Two things no filing said:
+      `arch_switch`'s `from` is IGNORED by all three pending backends, so no context corruption is
+      constructible; and the same double publication is reachable from a LIVE thread through
+      `task_cancel_group` and the endpoint drain, with no dying guard involved -- the MORE reachable
+      path.
+- [x] **`sched::wake` resurrecting an `EXITED` thread.** `wake` now readies only a `BLOCKED` thread.
+      Total form, because `EXITED` is `ThreadPool::alloc`'s free marker; all 14 call sites verified to
+      pass a queue-popped or park-resolved thread. Gated, and the mutant leaks the slot visibly.
+- [x] **The `CAP_IRQ` slot and console reclaim having no equivalent of the DEV window's early
+      release.** Fixed: every `CAP_IRQ` entry is released in ONE masked window before the chunked loop
+      opens its first gap, and `console_on_driver_death` now runs at the note inside that same window.
+      Six mutants, all killed. **The filed reading was incomplete**: inertness needed priority AND
+      chunk alignment, and on `esp32-wroom` the alignment condition does not exist at all because
+      `arch_switch` is synchronous in thread context -- one grant-list line from live.
+- [x] **The `extern "C"` anonymous namespace emitting UNMANGLED GLOBALS**, and the backend audit that
+      was never done IS done: all 6 arch cores, all 15 chips, by construct scan AND by an `nm` class
+      sweep. 19 symbols across four backends; the SEVENTH site (`chip_esp32c6.cc`, a plain missing
+      `static`) is one only the `nm` sweep could see. Gated by `extern_c_linkage` on every board.
+      One correction: under `-fno-common` a duplicate is a HARD ERROR, not a silent collision -- the
+      real cost is a consumer's pure-C `main` breaking over a symbol it never asked for.
+- [x] **`task_release` freeing the slot before `cap_teardown` so `c->task` dangles.** `exit_current`
+      retires the name with the reference. The early release STAYS: `domain.h` depends on it.
+- [x] **An explicit task's slot and domain never swept at the creator's death. FILED AS A LEAK; IT IS
+      AN AUTHORITY ESCAPE.** `kill_tag_for_index` derives the tag from the pool slot, nothing clears
+      `Task::creator_tag` at the creator's death, and a never-freed task has `gen == 0` so its handle
+      is `index + 1` -- which the selftest itself notes is guessable. So the SUCCESSOR of a dead
+      creator's thread slot passes `task_created_by` for the predecessor's groups: it can kill them,
+      and it can `kos_thread_spawn` a child into one and hand that child the group's domain regions.
+      `t_task_creator_gate` covers only a concurrently-live stranger. **This refutes the filed option
+      "declare the hold the creator's for life" -- that IS the escape.** Fixed by
+      `task_orphan_created_by` from `exit_current`, which is total over deaths where
+      `ThreadPool::alloc`'s reclaim point is not.
+      **GATED, and the gate is the HOST one rather than the selftest arm that was proposed.**
+      `kernel/task/task.cc` joined `kickos_kseam`: it cost dropping two stubs and adding three
+      (`domain_for`, `domain_ref`, `domain_release`) over a fake domain pool, and NOT the arena
+      or granule seam, which only `kernel/domain/domain.cc` would have dragged in.
+      `Fixture::task()` mints through the real `task_create` and `join_task` through the real
+      `task_ref`, so the refcount, the hold and the slot free are the shipping ones.
+      `tests/unit/taskdeath/creator_hold.cc`, 6 arms; three mutants killed -- deleting the sweep
+      reds 5 of the 6, dropping its tag test reds the two that say a stranger's death changes
+      nothing, and a `task_drop_hold` that never frees an empty slot reds the third.
+      **What it does NOT reach:** the syscall refusals themselves, `syscall_thread.cc` being
+      outside the seam. The `-KOS_EPERM` wiring is already on silicon through
+      `t_task_creator_gate`, which differs from the successor case only in what the predicate is
+      handed, so the composition is covered and only an end-to-end successor arm is not.
+
+**B -- ACCEPTED WITH A MEASURED COST (3), and these are the ones that should have been raised as
+decisions rather than filed. RAISED, and the ruling is that ALL THREE GET FIXED.** The ABI grows a
+second verb: kill stays cooperative (0 = ACCEPTED, death at the next syscall ENTRY) and **SLAY** is
+the forcible half, SIGTERM/SIGKILL. **The mechanism is NOT a reaper** -- no stranger ever runs another
+thread's `cap_teardown`; the victim runs its own, because the seam rebuilds `next->ctx` inside
+`switch_to` before `arch_switch`. Two premises died on the way: `arch_fault_redirect_to_exit` cannot
+be reused (not relocatable to a saved context on any backend, and on armv7m and rxv3 it reads AND
+CLEARS sticky fault status, so calling it off a fault destroys the reporter's evidence -- the seam is
+`arch_context_init`), and the termination argument is NOT the RR slice timer, because the clock is
+TICKLESS and an all-FIFO image with no sleeper has no periodic interrupt at all. The real argument:
+on one core a target that is not the caller is never RUNNING, so READY and BLOCKED are total.
+Four non-reorderable steps, zero `.bss` on each. Design record still owed to `docs/`.
+- [x] **S1 DONE AND WITNESSED (M4.8.4 S1, TAG `m484s1`). `kickos_fault_below_stack` narrowed to a
+      16-byte guard band (one RXv3 MPU region page) and the fault stub relocated to the top of the
+      dying thread's own stack on all five backends.** The width WAS settled on the bench, as
+      required: `mpu_fault`'s `0x13200` went from escalating to dying thread-scoped, and
+      `faultsurvive_ovf`'s `0x121fc` still escalates. The two addresses proved separable, so the
+      fallback (keep the stack-base test, accept the false positive) was not needed.
+      `kernel/init/console.cc` now prints the faulting thread's stack range, which is what made the
+      gap measurable; `faultsurvive_ovf` reports `its stack 0x12200-0x14200`, so the denied push is
+      `stack_base - 4` and the band's 4-byte floor is a measured shape.
+      Gated by `tests/unit/faultband`, 11 arms, band MEASURED off the predicate so retuning it does
+      not rewrite them. Three mutants killed, including the `addr + BAND >= base` spelling, whose
+      first arm was VACUOUS -- the discriminating case is a stack near the TOP of the address
+      space, not the bottom, because the `addr >= base` early return fires first.
+      Two defects found in the work itself: armv6m reached the stub with `b` (T2, +/-2 KB) and
+      every picopi image failed to link (`R_ARM_THM_JUMP11` truncated), now a PC-relative literal
+      plus `bx`; and the new program was refused by `test_labels` until declared, which is that
+      gate working.
+- [x] **S2: `bool cancelled` becomes `uint8_t cancel_kind` {NONE, KILL, SLAY}**, same offset, so
+      `sizeof(Thread)` is unchanged by construction. Provably inert on its own.
+- [x] **S3: the seam, the hook and the thread-slay syscall.** `KOS_SYS_THREAD_SLAY = 53`.
+      `arch_ctx_redirect` on six backends, VOID rather than the design's `bool`: no backend can
+      fail, and a silent decline would downgrade a slay to a cooperative kill with nothing able to
+      report it. The gate on the `sched::wake` work turned out to be a gate on nothing -- the
+      moved-`current` window is inside the kernel under an `IrqLock`, so no syscall can be issued
+      from it and the self refusal is exact. Mutation confirms it (the design predicted that
+      mutant would survive). `lx6` needs no extra line and the design's instruction for it is
+      INVERTED. Two orderings the design does not have are load-bearing and mutation-proved: the
+      caller parks BEFORE the victim's cancel, and samples its resume epoch before it too, because
+      an inline-swap backend can run the victim to `EXITED` from inside that call.
+- [x] **S4: the group form, the task-slay syscall.** `KOS_SYS_TASK_SLAY = 54` with
+      `WAIT_TASK_EMPTY`, which costs FOUR arms and not the one the design prices (the exit sweep,
+      `thread_abort_park`, `ktime_on_timer`, the enum value). `task_release` REPORTS the emptying
+      rather than the caller re-deriving it: the transition happens once, only its cause can see
+      it, and an implicit task's slot is freed inside that call.
+- [ ] **SILICON OWED FOR S3/S4.** Everything so far is emulated or host. `rx72m` (rxv3, no
+      emulator and no CI gate at all), `esp32-wroom` (`lx6` -- the immediate-switch backend with
+      two resume formats, and the ONE backend whose seam claim is a reading of the code rather
+      than a run) and `picopi` (the only armv6m enforcement unit) are the three that matter. The
+      five arms to look for in a selftest stream are `thread_slay_window`, `thread_slay_gate`,
+      `thread_slay_timeout`, `task_slay_group`, `task_slay_gate`.
+- [ ] **Two fail-closed guards in slay are UNREACHABLE from userspace and their mutants SURVIVE**
+      (`docs/design-kill-and-slay.md` section 14.5): the idle/privileged target refusal, because
+      idle is a static TCB outside the `ThreadPool` and root is unprivileged, so no privileged
+      thread is resolvable by handle at all; and `kos_task_slay`'s caller-is-a-member refusal,
+      because a member cannot be its own group's creator. Both become reachable in the driver era
+      or under M5. `kickos_fault_kill_thread` carries the identical rule with the identical
+      reachability status, so this is a pre-existing shape rather than a new one.
+- [x] **`rx72m/rxsci`'s relay thread sees the ring block it declared no grant for. RAISED AND
+      RULED: the third memory scope is REFUSED, and the declaration that implied it is DELETED.**
+      A task is defined as the set of threads sharing one memory domain, so a member that shares
+      the task but not its domain makes the definition false -- two answers to "what memory do this
+      task's threads see" is the second truth the tiebreaker forbids, and the right decomposition
+      for a thread that must not reach the block is a task of its own, which today would also take
+      it out of the kill group. Separating "shares memory" from "dies together" is M5-scale.
+      **The collapse landed instead.** The per-thread flag's only reader was an OR-reduction into
+      the group's grant, and it equalled `arg == KOS_DRV_ARG_BLOCK` in all TWELVE production descriptors, so it was
+      a second truth twice over; `bring_up` now hands the task the block whenever there is one. Leg
+      L4 grew the converse arm, refusing a block no thread reads -- the widest ask a descriptor can
+      make, and nothing else would have caught it. Three mutants killed, one of them at COMPILE time
+      by the `static_assert` beside the fixture.
+      **The residual, stated at `Descriptor::block_size`, at `kos_drv_arg` and at the relay itself:**
+      every thread of a block-owning driver sees the whole block whatever its argument, because a
+      task owns exactly one `Domain` and a member may bring no grant of its own. The ruling is
+      `docs/design-task-layer.md` open question 7.
+      **`rx72m` has no emulator and no CI gate**, so the rxsci edit is build-verified only.
+- [ ] **The `sched::wake` residue, moved here from class A because it is an ACCEPTED COST and needs a
+      ruling.** A superseded publication keeps a `switch_count` it never earned and an RR slice armed
+      before it ran. **It is UNDETECTABLE IN C**: no state separates "published, switch pended, not
+      fired" from "fired and running", and any marker written at the pend is stale from the fire
+      onward, so it cannot recognise the supersede it would have to undo -- on the sim/lx6 inline-swap
+      path a stale marker is WORSE than the current code. Removing it needs the arch to report that a
+      pended switch completed, or `need_resched` consumed at the mask boundary: five backends plus the
+      K-seam stub. Cost of leaving it: bounded by one quantum, self-limiting, fairness only.
+
+**C -- GATE AND TOOLING DEFECTS. FILED AS 4, CLOSED AS 10** -- the filings under-counted, and every
+one of the six extras was a gate that had silently stopped gating or had disclosed a hole it never
+closed. The first seven are mutation-proven; the two S3/S4 found are below them and each has its
+own proof shape.
+- [x] **`check_tap_stream.sh` could not see a thread that died the WRONG WAY.** Found by mutation
+      during S3, and the mutant survived a fully green run. An unprivileged context rebuild faults
+      the exit stub on its first kernel access; thread-scoped fault isolation catches it, so the
+      victim still dies, the guarantee still looks honoured, and every plan / case / skip / partial
+      check reconciles. The only trace was a `=== THREAD FAULT ===` line nothing read. The selftest
+      never faults by design, so that record is now a refusal in the SHARED verdict script rather
+      than in one arm -- it catches any future arm that quietly takes the degraded path. **The
+      general lesson: a gate built on reconciliation cannot see a mechanism that failed into a safe
+      fallback, because the fallback restores the observable end state.**
+- [x] **Every K-seam gate failed to LINK under `sim-telem`, and had since M4.8.2.** `ktrace.h` is
+      header-inline and `kernel/irq/irq.cc` reaches it, so with telemetry on the whole directory had
+      two undefined references (`arch_trace_now`, `kickos_rtt_write_record_ch1`). The preset went
+      from 2% of 146 to 100% of 216. Verified PRE-EXISTING both ways against a pristine pre-S1
+      archive tree. `karch_seam.cc`'s own header comment had a symbol count that had stopped being
+      true, which is the tell: **the seam's size is a property of the PRESET as well as of the
+      source set, and a preset nothing routinely runs is a preset whose seam nothing re-derives.**
+- [x] **`check_faultsurvive.sh` missed THREE enforcement classes, not two, and MISJUDGED one.**
+      `armv6m` was absent as well, and `picopi` is the fleet's only armv6m enforcement unit. The
+      misjudgement: `armv7m:overflow` demanded MemManage `MSTKERR`, and `frdmk64f`'s BUS-level SYSMPU
+      latches BusFault `STKERR` with `MSTKERR` CLEAR, so it would have FAILED a correct capture.
+      Now takes the SYSMPU shape (corroborated by the `SYSMPU ISOLATION FAULT` line so a bare
+      BusFault cannot pass), plus `armv6m` and `rxv3` arms. `FS_CAPTURE=<log>` judges a captured
+      stream, because those two classes have NO runner and their clauses would otherwise have shipped
+      never once executed; the exit clauses report `NOT EVALUATED` rather than passing on an absent
+      value. **Free mutation:** the archived `m484mut` record-route mutant is now REFUSED by this gate.
+- [x] **`tests/lib/panic.ere` never matched `=== RX EXCEPTION` or `=== XTENSA EXCEPTION`.** It backs
+      every ctest `FAIL_REGULAR_EXPRESSION` and `assert_no_panic`, so both were blind to the rxv3 and
+      lx6 reporters -- exactly the "a system that panicked after printing both lines would look the
+      same" case that script's own header warns about.
+- [x] **Three gates parsed tab-separated records with `IFS=$'\t'`, a bashism, and `/bin/sh` IS dash
+      here as well as on CI.** dash sets `IFS` to `$ \ t`, so records split on the letter `t`:
+      `/var/tmp/libkickos_kernel.a` came back as `/var/` and `mp/libkickos_kernel.a`.
+      `check_seam_defaults.sh` leg 1 tests `case "$arch" in *libkickos_kernel.a)`, which a truncated
+      value can never match, so **that leg was VACUOUS**. `dash -n` passes the bashism, so nothing
+      catches it. `gate.sh` owns `TAB` now.
+- [x] **`doc_names`' identifier ORACLE included `docs/`**, and `docs/audit/kickos-codebase-audit.html`
+      is TRACKED and not markdown, so every name it mentioned stayed valid forever -- masking 39
+      references to two deliberately-deleted knobs. Widening the gate further was measured and
+      REFUSED at ~3% precision; the answer to this class is the habit, not the gate.
+- [x] **The `host` ctest label, load-bearing with no gate.** `test_labels` on every board, both
+      directions. Classification is DECLARED, because no sound derived discriminator exists:
+      `check_oot_export.sh` and `check_oot_export_mcu.sh` share a directory and an argument shape and
+      have OPPOSITE classes. An undeclared program is REFUSED rather than guessed. It also found a
+      live defect: a per-test `cmake_language(DEFER CALL f "${var}")` expands LATE, so only one image
+      test per directory was ever declined since M4.8.2, and no CI job uses the knob so nothing
+      noticed.
+- [x] **`test_classes.txt`'s own disclosure: a `build` declaration rotted silently.** The `src` half
+      was pinned to a file, the `build` half to nothing, and 22 lines carried the gap. Symmetry is
+      not the fix -- a `build` path is relative to the BINARY directory and every MCU board
+      legitimately has none of them, so `[ -f ]` would red the fleet. CMake now passes `<complete>`,
+      yes only where the tree registers the whole build-rooted set (sim arch plus the host unit
+      binaries), and there each declaration must be the program of some registered test. Elsewhere
+      the sweep stands down, and the header says so: an unrun `build` declaration on a
+      `<complete> no` tree is indistinguishable from a program that board does not build, and a
+      fleet run that never includes the complete configuration checks the `build` half NOWHERE.
+      The wrong-way flag is the safe one -- claiming `yes` falsely names all 16 unit lines at once.
+      Mutation-proven both directions: the dead line reds only the complete tree, and a renamed
+      binary under a registered test -- which the pre-existing `@none` arm already reddened as
+      "build the tree first" -- is now NAMED as the declaration it orphaned.
+- [x] **`bench-capture.sh` refused every non-TAP app and the refusal skipped the log FETCH.** A TAP
+      verdict is owed only by `selftest*`; `bench.sh` fetches before propagating a refusal, because
+      the log is the artifact and the verdict is separate.
+- [x] **TWO DIVERGENT FLASH RECIPES FOR ONE BOARD.** Resolved as ASKED rather than patched: the write
+      routes through `tools/flash.sh` with `FLASH_TOOL` PINNED to `stlink`, since `candidates_for`
+      offers "stlink jlink" for stm32f302 and would silently become a J-Link flash on a host without
+      stlink-tools. **And closing it found the bigger thing: the separate `st-flash reset` was the
+      f302 "unreliable instrument" all along** -- it cut the correct boot off mid-line and started one
+      that stalled. Removed. Witnessed at TAG `m484p2`, gate-verified, and the single-variable control
+      is a write-only capture of the PRE-fix image reproducing the complete line byte for byte.
+      **The fix lives in gitignored `.session/`, so the repo carries none of it and no gate protects
+      it** -- that is the residual hole, filed below.
+
+**A REGRESSION M4.8.4 INTRODUCED, BISECTED ON SILICON, FIXED, AND RE-MEASURED THERE. CLOSED.**
+`rr_interleave` fails on `rx72m` under `kickos_services_rx72m_uartirq`. Measured rates, one board,
+same app, TAGs `m484rx*`:
+
+| tree | list | result |
+| --- | --- | --- |
+| `c87f84ed` (master, M4.8.3) | `_uartirq` | 0 of 3 fail -- `rr order: ABABAB` |
+| its parent | `_uartirq` | 0 of 3 fail |
+| **the creator-hold commit** | `_uartirq` | **3 of 3 fail -- `rr order: AABBAB`** |
+| S2 | `_uartirq` | 3 of 3 fail |
+| the branch tip | `_uartirq` | 3 of 4 fail |
+| the branch tip | DEFAULT | 0 of 3 fail |
+
+The parent is green and the creator-hold commit is red, so the regression is that commit. ISOLATED to
+one line by building it with the other line kept: removing `task_orphan_created_by` and keeping
+`c->task = nullptr` is green 3 of 3. So the cause is the creator-hold sweep, which is
+`KICKOS_MAX_TASKS` (= `KICKOS_MAX_THREADS` + 1, so 17 on rx72m) byte compares MASKED, on EVERY
+thread exit.
+
+- [x] **The creator-hold sweep is O(1) on the exits that cannot owe a drop.** `Kernel::task_holds`
+      counts the slots carrying a creator tag: `task_create` takes one, `task_drop_hold` returns it
+      (the only site that clears a LIVE tag -- `free_task`'s clear is reached from there, already
+      NONE, and from `task_release`, which takes that arm only when there was no hold), and
+      `task_orphan_created_by` returns at once while the count is zero. That is every production
+      driver list and every selftest arm before the task arms, `rr_interleave` included. **The
+      footprint is free**: the counter is a `uint16_t` declared before `Kernel::sleepq`, where a
+      32-bit target has two bytes of padding in BOTH telemetry postures, so every `microbit` image
+      is byte-identical in `.data`, `.bss`, `_ebss` and `__kickos_ram_start` across the change, and
+      so is `qemu-telem`. Gated by a seventh `creator_hold` arm that a count-cleared-by-the-sweep
+      mutant kills while the other six stay green.
+      **This is also a finding about the INSTRUMENT**: only the `_uartirq` list shows it, and only
+      on the one board with no emulator and no CI gate, so the default-list fleet pass this
+      milestone ran would never have caught it.
+- [x] **The `CAP_IRQ` teardown pre-pass is O(1) on the exits that hold no line.** Same class as the
+      creator-hold sweep above, same milestone, and it runs on EVERY thread exit: the pass that
+      releases a dying thread's IRQ caps before the chunked loop opens its first gap scanned the
+      whole table under ONE unbroken `IrqLock`, which is the shape `docs/archive/M4.7.9_teardown_latency_meas.md`
+      measured as a real interrupt-latency cost. `Thread::cap_irq_live` counts the `CAP_IRQ`
+      entries a thread holds -- `cap_install_at` is the one install funnel (`irq_claim` and the
+      spawn grant list both reach it) and `cap_slot_released` the one release funnel, shared by
+      `handle_close` and the sweep -- so the pass returns having read no entry while the count is
+      zero. **The no-chunking property is untouched**: the loop is still inside the one masked
+      window that bumps the teardown depth, which is what both console reclaim sites rely on.
+      **The footprint is free**: the counter takes the LAST padding byte before
+      `Thread::quantum_ns`, so `sizeof(Thread)` is unmoved at 256 / 264 / 2480 and `microbit`'s
+      `.bss`, `.data`, `_ebss` and `__kickos_ram_start` are all unchanged.
+      **A per-KERNEL count was rejected on precision**, not on cost: one IRQ driver anywhere makes
+      every other thread's exit scan again, and `rx72m` under `kickos_services_rx72m_uartirq` is
+      exactly that image. **`c->authority & AUTH_IRQ` was rejected as fail-OPEN**: a `CAP_IRQ` with
+      `CAP_TRANSFER` can be delegated at spawn to a child that never held the bit.
+      Gated by a ninth `cap_sweep` arm that dates the release against gap 1 rather than against the
+      line cap's own chunk boundary; five mutants killed.
+- [x] **RE-MEASURED on `rx72m` under `kickos_services_rx72m_uartirq`, TAGs `m484rxfix1..3`:
+      0 failures in 3 runs, `rr order: ABABAB` on every one**, matching master. Banner
+      a banner with no `-dirty`, and the stream hand-validated through
+      `check_tap_stream.sh` at 104 arms, 0 skipped, 0 partial. The bisect that found it and the
+      isolation that named the line are above; both stay, because the instrument lesson outlives
+      the bug: only the `_uartirq` list showed it, on the one board with no emulator and no CI
+      gate, so the default-list fleet pass this milestone ran could never have caught it.
+
+**THE CAP_IRQ PRE-PASS, the last code finding of the ten-angle review, FIXED AND WITNESSED.**
+`cap_teardown`'s IRQ pre-pass scanned the whole capability table interrupt-masked on EVERY thread
+exit -- the same shape as the `task_orphan_created_by` regression this milestone shipped and fixed,
+and its own comment conceded it ("the scan by the table's own width"). It could not simply be
+chunked: a gap inside that pass is a moment when a thread with a counted teardown depth still holds
+an IRQ line, and both console-reclaim sites rely on that being impossible.
+- [x] **FIXED in M4.8.4 with `Thread::cap_irq_live`, a `uint8_t` in the LAST padding byte before
+      `quantum_ns`**, so the pass reads no entry when it is owed none. `sizeof(Thread)` unmoved at
+      256/264/2480 and `microbit`'s `.bss`, `.data` and both arena symbols byte-identical.
+      Rejected, with reasons: a kernel-wide count (one binding anywhere makes every other exit scan
+      again -- and `rx72m` under `_uartirq` IS that image, so it would not fix the one board that
+      matters); `authority & AUTH_IRQ` as the predicate (FAIL-OPEN and unsound -- `irq_claim`
+      installs with `CAP_TRANSFER`, so a child that never held `AUTH_IRQ` can hold the cap); and a
+      sticky bool (`handle_close` cannot clear it without knowing whether another line remains).
+      **WITNESSED**, TAG `m484capirq` on `rx72m` under `kickos_services_rx72m_uartirq`
+      -- the one reachable board where `CAP_IRQ` entries genuinely exist: `1..104`, 104 ok, 0 skip,
+      0 partial, 11 IRQ arms present, `rr order: ABABAB`, banner clean, and the banner's `app`
+      tracking `build` so the cached-`SERVICE_LIST` trap did not fire. Stream hand-validated.
+      The no-chunking property is machine-checked: the gap-dating arms count 4 gaps, and 12 under a
+      chunk-the-pre-pass mutant.
+
+**D -- COVERAGE, TEST-INFRA, DOCS, PERF, FUTURE (17).** Ordinary backlog. Includes the whole M5/SMP
+group and every "no arm for this yet" item. Added while closing A, B and C -- all genuinely class D,
+which is the only reason they are filed rather than fixed:
+- [ ] **The f302 capture-protocol fix is untracked.** `.session/bench-capture.sh` is gitignored, so
+      the one repo-visible trace is a comment in `tools/flash-stlink.sh`. Nothing gates it and a fresh
+      checkout does not have it. Either the bench scripts become tracked tooling or the knowledge
+      stays a comment plus `CONTEXT.local.md`.
+- [ ] **The `kickos_terminate` device drain has NO witness.** Contract and plumbing only, argued from
+      the seam. `arch_console_flush_sync` has a body on `mk64f` and `xmc4800` only, plus `stm32f302`
+      now, so on every other board the drain is still a no-op and the terminal path can still cut its
+      last line. Per-chip bodies are fleet work.
+- [ ] **`kernel/bench/bench.cc`'s `s_*` fix is gated but unwitnessed under `KICKOS_BENCH`** -- the
+      gate is a source scan, and no bench image was run.
+- [ ] **`task_cancel_group` and the endpoint drain publish twice under one `IrqLock` from a LIVE
+      thread**, the same residue as the `sched::wake` supersede but with no dying guard involved, and
+      more reachable. Not filed anywhere before.
+- [ ] **A sticky driver-death note can steal a RE-PUBLISHED console.** `cap_console_publish` does not
+      clear `g_console_driver_died`, and `console_on_driver_death` treats `USER_OWNED` as proof the
+      note is still valid: two-thread driver dies, supervisor respawns and publishes a NEW endpoint,
+      the old IRQ thread finally exits, and the retry reclaims the NEW driver's UART. Pre-existing;
+      the note-site reclaim narrows the window without closing it. The one-line fix is for
+      `cap_console_publish` to void the note, but it changes the publish protocol and its honest gate
+      needs the respawn `sim_driver_death` case 3 lacks.
+- [ ] **`teardown_depth` now has one production consumer and one fixture consumer**, so the
+      `cap_teardown_active()` gate in `exit_current` is premise-less. Kept as conservative retry
+      throttling; revisit when the DEV-window respawn gate lands.
+- [ ] **`console_crlf` now also gates console write POLICY** and should be renamed; deferred
+      deliberately to avoid fleet record churn mid-milestone.
+- [ ] **No reply-bearing flush op**, so the default init cannot read the residual `flush()` returns.
+- [ ] **CDC console throughput is ~167 B/s** under many small writes (2008 bytes in 12 s). A console
+      you cannot read a suite through is marginal.
+- [ ] **Blocking console mode makes the fault-record route LOSSY while the console is wedged**: a
+      driver sitting in an unbounded `push_all` is not in `kos_recv`, so `cap_console_deliver` finds
+      no parked receiver and drops the record. Bounded on a UART (a guaranteed consumer), which is
+      why USB REQUIRES non-blocking and refuses `-KOS_ENOTSUP` to clear it.
+- [ ] **`docs/design-m4.8.2-host-unit-tests.md:435` says the K-seam is sixteen symbols; it is
+      eighteen**, ten of them `arch_*`.
+- [ ] **`invariants.md`'s nine `file:line` citations are verified WRONG**, and each needs the fact
+      re-located rather than the number nudged. `doc_names` never checks a line number.
+- [ ] **`architecture.md` still says "per-task isolation" in six positioning sentences.** Left for
+      the from-scratch rewrite; the mechanism statements are corrected.
+- [ ] **`docs/audit/kickos-codebase-audit.html:1023` still says a deleted knob "defaults ON" in the
+      present tense.** Now excluded from the oracle and checked by nothing, and its own README
+      declares the file superseded, so editing its narrative is the annotate-an-archive trap. Holding
+      it to the Reference's standard is a separate pass over ~1,100 finding rows.
+- [x] **The design record for kill/slay is landed: `docs/design-kill-and-slay.md`** -- the ABI, the
+      mechanism, the reaper as the REJECTED alternative, and six open questions each with a
+      recommendation. **`doc_names` cannot express "an identifier this document PROPOSES"**, so the
+      three names S3 and S4 introduce live in a fenced block (the gate skips fences) and the prose
+      describes them instead. That is a limit of the gate, not of the doc.
+
 ## Found landing the M4.8.2 host unit-test layer (2026-08-11)
 
 The layer's record is `docs/design-m4.8.2-host-unit-tests.md`; section 8 is what landing it found.
@@ -5618,8 +6033,10 @@ follows is what survived that.
 
 ## Found landing task-layer steps 9.4 and 9.5 (2026-08-12)
 
-- [ ] **An explicit task's slot and its domain are held until `kos_task_kill`, and NOTHING sweeps them
-      at the creator's death.** `task_create` takes a hold that only `task_drop_hold` releases, and the
+- [x] **An explicit task's slot and its domain are held until `kos_task_kill`, and NOTHING sweeps them
+      at the creator's death. CLOSED IN M4.8.4, and re-read as an AUTHORITY ESCAPE rather than a leak
+      -- see class A of the triage section above, which also records why the third candidate below is
+      the escape itself.** `task_create` takes a hold that only `task_drop_hold` releases, and the
       one caller of that is the kill syscall. Root is the creator in every in-tree case and root's
       death ends the system, so nothing leaks today; a supervisor thread that creates groups and then
       dies reserves those slots for the rest of the run. Three candidates, in the order they compose:
@@ -5628,13 +6045,9 @@ follows is what survived that.
       must not inherit authority over what its predecessor created); a `kos_task_release` that drops
       the hold without ending the group, which a hand-over would want anyway; or declaring the hold to
       be the creator's for life. Open question 6 of `docs/design-task-layer.md`.
-- [ ] **`rx72m/rxsci`'s relay thread now SEES the ring block it declared no grant for.** Under a task
-      the block is the GROUP's shared region and `drv::Thread::mem_grant` is read as the group's
-      declaration, so a thread that said false alongside two peers that said true is widened by it.
-      One thread in the fleet, that driver's own state, and its register window -- the grant the
-      isolation principle is about -- is untouched. The narrow fix, if it is ever wanted, is a
-      per-thread opt-out that spawns that thread into the group with no domain regions, which needs a
-      third memory scope and is not obviously worth it.
+- [x] **`rx72m/rxsci`'s relay thread now SEES the ring block it declared no grant for. RULED IN
+      M4.8.4: the third memory scope is refused and the per-thread flag is deleted rather than
+      honoured** -- class B of the triage section above has the reasoning and the residual.
 - [ ] **A cancelled thread that never re-enters the kernel is still unreachable.** The death point is
       the syscall entry, so a pure compute loop survives a `kos_thread_kill` and a `kos_task_kill`
       indefinitely. Preemptive cancellation is the only fix and it is a much larger change: it needs a

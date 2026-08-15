@@ -127,9 +127,9 @@ The lesson from the drop story is *why* this discard must be a separate primitiv
 than a behavior folded into `unmask`. The moment discard hides inside `unmask`, every
 re-arm silently destroys masked-window events, and you are back to drop-on-masked with a
 nicer name. So the discard is its own explicit call -- clear the pending, *then* enable
--- used at exactly the two places it belongs: first-arm garbage, and (a future refinement
-for level sources) a driver that has serviced its device and wants to drop the
-controller's now-stale latch before re-arming. Splitting the discard out is what lets
+-- used at exactly the two places it belongs: first-arm garbage, and a driver that has
+serviced its device and wants to drop the controller's now-stale latch before re-arming.
+Splitting the discard out is what lets
 `unmask` mean *preserve* everywhere else, which is the whole point. See
 `../reference/porting.md` for the primitive's per-controller shape and the exact
 first-arm ordering (arm the consumer, discard, then enable -- in that order, so a

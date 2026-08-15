@@ -3,7 +3,9 @@
 
 # M4.7.9 fault isolation: a thread dies, the system does not
 
-**Status: IMPLEMENTED**, in four commits ending at `23b9abb`. This file was written as a spike and
+> **Status: LANDED**, in four commits ending at `23b9abb`.
+
+This file was written as a spike and
 is kept as the record of the reasoning; the sections below say where the shape held and where it
 did not.
 
@@ -380,9 +382,11 @@ fault. Mutation proof: break the discriminator and confirm the gate fails.
 - **sim** has no real privilege, so 3.1 has no bit to read. Either leave it panicking (honest) or
   give it a synthetic posture. Leaving it panicking costs the fastest test loop, which is a real
   cost; this is an open question.
-- **f302nucleo** has an open defect where `udf` never enters `HardFault_Handler` at all
-  (`STATE.md:257`). Fault isolation cannot be witnessed there until that is root-caused, and this
-  milestone must not be the thing that discovers it.
+- **f302nucleo** was believed to have an open defect where `udf` never entered `HardFault_Handler`.
+  It was the FLASH COMMAND: `--connect-under-reset --reset` armed `DEMCR.VC_HARDERR` and the core
+  halted at the handler's first instruction. `tools/flash-stlink.sh` no longer pairs the two, the
+  `udf` escalates normally, and the board can carry the witness. It has no MPU, so the MPU-fault
+  arms stay out of reach there; `udf` fault isolation needs none of it.
 
 ## 7. `exit()` at kernel level
 

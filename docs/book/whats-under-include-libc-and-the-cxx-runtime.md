@@ -156,9 +156,9 @@ misspelled leaf is a hard link error, not a silent freestanding downgrade. The k
 libs are clamped freestanding directly via `kickos_apply_freestanding()` and are never
 consumers. (`kickos_add_application(... FULL_CXX)` remains as sugar and just selects the leaf.)
 
-## The NuttX trap: never host toolchain C++ on your own libc
+## The cross-libc trap: never host toolchain C++ on your own libc
 
-Here is the mistake KickOS is built to avoid. It is tempting to write your *own* small
+Here is the mistake this layering is built to avoid. It is tempting to write your *own* small
 libc (KickOS has one, for the freestanding default) and then link the *toolchain's*
 `libstdc++` on top of it -- one libc to maintain, full C++ for free. It does not work,
 and the reason is instructive.
@@ -170,8 +170,9 @@ Its headers and the libc's headers agree on subtle shared types and declarations
 a *different* libc whose headers disagree even slightly, and you get a steady stream of
 **header/type/namespace ABI mismatches** -- `<cstdlib>` fighting your `<stdlib.h>` over
 `div_t`, `<cmath>` failing to find the C math it expects. NuttX ships its own
-deliberately-non-newlib libc and still offers `CONFIG_LIBCXXTOOLCHAIN`; the mismatch
-tax is exactly what that path pays. (This is the "Toolchain-libc lesson from NuttX" in
+deliberately-non-newlib libc and offers `CONFIG_LIBCXXTOOLCHAIN` for the toolchain
+runtime; that configuration is where the mismatch class shows up, which is how it is
+documented. (This is the "Toolchain-libc lesson from NuttX" in
 `../reference/architecture.md`.)
 
 **KickOS's rule: never put toolchain C++ on our own libc.** A full-C++ app links
@@ -335,4 +336,4 @@ Two arch wrinkles worth naming:
 - The libc strategy and the newlib seam: `../reference/architecture.md` ("C++ decisions").
 - The actual bottom-edge stubs: `../../user/src/newlib_stubs.cc`.
 - Memory protection, which decides where the runtime's writable state must live:
-  Chapter 7, *Memory protection (M2)*.
+  Chapter 7, *Memory protection*.

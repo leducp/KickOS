@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# ONE board, ONE already-built image: flash it, capture the console, and refuse rather
+# than produce a plausible-looking wrong log. No build step and no ssh knowledge here.
+#
+#   bench-capture.sh <board> <app> <image-base> <log> [jlink-sn]
+#
+# <image-base> is the emitted image WITHOUT extension; .hex/.bin/.app.bin derive from it.
+#
+# THIS SCRIPT IS THE ONE THAT RUNS ON THE BENCH. bench.sh runs it here when the boards
+# are here and ships it to the bench host when they are not, so every refusal below
+# happens where the hardware is and travels back as output plus an exit code. Splitting
+# the sequence across ssh invocations would break it two ways: the armed reader is a
+# child of its shell and does not survive to the next invocation, and a remote step that
+# refuses while the local script keeps going reads as a pass.
+#
+# Env:
+#   ROOT        directory holding tools/ and boards/ (the flash recipes). Default: this
+#               script's grandparent.
+#   KICKOS_RIG  the rig config naming the console cables. Default: $ROOT/.session/rig.conf.
+#   PYBIN       a python carrying pyserial. Espressif capture only.
+#   CAP_SECS    capture window override.
+set -u
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT="${ROOT:-$(cd "$HERE/../.." && pwd)}"
+
+BOARD="${1:?usage: bench-capture.sh <board> <app> <image-base> <log> [jlink-sn]}"
+APP="${2:?}"
+IMG="${3:?}"
+LOG="${4:?}"
+SN="${5:-}"
+
+# Sourced SOFT: only the cable rows below need it, and a board whose by-id prefix names
+# its probe unambiguously must not be held hostage to a config it takes nothing from.
+# RIG_CONF is set either way, so the refusal can name the file it looked in.
+. "$HERE/rig.sh"
+rig_find "$ROOT" || true
+
+# The bench host keeps uv's esptool and the rfp-cli wrapper in ~/.local/bin, which a
+# non-interactive ssh does not put on PATH. APPENDED, not prepended: on a box with real
+# toolchains those must keep winning.
+PATH="$PATH:$HOME/.local/bin"
+export PATH
+
+refuse() { printf 'REFUSING: %s\n' "$*" >&2; exit 1; }
+
+[ -x "$ROOT/tools/flash.sh" ] || refuse "no $ROOT/tools/flash.sh -- ROOT does not hold the flash recipes"
+[ -f "$ROOT/boards/$BOARD/board.cmake" ] || refuse "no $ROOT/boards/$BOARD/board.cmake"
+[ -e "$IMG" ] || [ -e "$IMG.hex" ] || refuse "no image at $IMG or $IMG.hex"
+
+mkdir -p "$(dirname "$LOG")" || refuse "cannot create the log directory for $LOG"
+
+# Resolve the console by SERIAL, never by a ttyACM/ttyUSB number: flashing re-enumerates
+# a probe, so a number resolved before the flash can name a different device after it.
+#
+# WHICH DEVICE, AND WHERE THAT COMES FROM. A J-Link VCOM carries the probe serial the
+# caller resolved live, so the row derives the path outright. The others are cables, and
+# a cable is rig data. A row states a by-id pattern only where the prefix names the probe
+# on its own; the FTDI consoles have NO pattern, because this bench carries a second
+# FT232 and a CP210x belonging to other work and a vendor-keyed glob picks whichever
+# enumerated first, so the capture that follows is complete, plausible, and the wrong
+# board. Those refuse by name until rig.conf says which cable. Any row can be pinned
+# there, and a pin always wins: do that the day a second ST-Link or CH34x joins the bus.
+PORT=""
+PATTERN=""
+case $BOARD in
+  xmc4800-relax|frdmk64f) PORT="/dev/serial/by-id/usb-SEGGER_J-Link_${SN}-if00" ;;
+  f302nucleo)             PATTERN="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_*-if02" ;;
+  esp32c6-wroom)          PATTERN="/dev/serial/by-id/usb-1a86_USB_Single_Serial_*" ;;
+  esp32-wroom)            PATTERN="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0" ;;
+  rx72m|picopi|pizero2350) ;;
+  *) refuse "no console row for $BOARD; add one rather than guessing its probe" ;;
+esac
+RIGKEY="RIG_CONSOLE_$(printf '%s' "$BOARD" | tr 'a-z-' 'A-Z_')"
+if [ -n "${!RIGKEY:-}" ]; then
+  PATTERN="${!RIGKEY}"
+  PORT=""
+fi
+if [ -z "$PORT" ]; then
+  [ -n "$PATTERN" ] || refuse "$BOARD's console cable is not named: set $RIGKEY in $RIG_CONF
+  (see tools/bench/rig.conf.example). There is deliberately no vendor-pattern fallback
+  here -- it resolves to somebody else's cable and the capture still looks right."
+  shopt -s nullglob
+  MATCHES=($PATTERN)
+  shopt -u nullglob
+  # More than one match is the same wrong-cable failure wearing a different hat, so it is
+  # refused rather than resolved by taking the first.
+  if [ "${#MATCHES[@]}" -gt 1 ]; then
+    printf 'REFUSING: %s matches %d devices, so which one is this board is a guess:\n' \
+           "$PATTERN" "${#MATCHES[@]}" >&2
+    printf '  %s\n' "${MATCHES[@]}" >&2
+    echo "  Pin $RIGKEY in $RIG_CONF to the one that is the console." >&2
+    exit 1
+  fi
+  PORT="${MATCHES[0]:-}"
+fi
+[ -n "$PORT" ] && [ -e "$PORT" ] || refuse "no console for $BOARD (looked for ${PATTERN:-$PORT})"
+
+# Nothing else may hold the port. An orphaned reader from an earlier run writes at its own
+# offset and the two logs interleave into something that still looks complete.
+if fuser "$PORT" 2>/dev/null; then
+  refuse "$PORT is held. Kill the PID fuser reports, never pkill on the port."
+fi
+
+echo "=== $BOARD  console $PORT  image $IMG"
+: > "$LOG" || refuse "cannot write $LOG"
+
+READER=""
+# A reader armed before the flash must still be alive after it. An FTDI reverts min/time
+# when the last opener closes, and a dead reader leaves a 0-byte log that reads exactly
+# like a board that printed nothing.
+check_reader() {
+  [ -n "$READER" ] || return 0
+  ps -p "$READER" > /dev/null || refuse "the reader died $1"
+}
+
+# AFTER the capture window a dead reader is NOT a failure, and refusing on it is a false
+# negative: a bare cat exits at EOF when the board goes quiet and the VCOM hangs up, which on
+# the K64F happens once the suite has finished and every byte is already in the log. What
+# actually matters is whether the LOG is complete, and the plan and count checks at the bottom
+# decide that. Measured 2026-08-10: a complete 95-ok K64F capture was refused this way.
+note_reader() {
+  [ -n "$READER" ] || return 0
+  ps -p "$READER" > /dev/null && return 0
+  echo "NOTE: the reader exited before the window closed (EOF on a quiet port). The counts" >&2
+  echo "  below decide whether the capture is complete." >&2
+}
+
+# The FTDI-style reader is a LOOP around cat, so killing the loop leaves the running cat
+# alive and REPARENTED, still holding the port. Three such orphans accumulated on 2026-08-10
+# and split the bytes of the next capture between them, which is the silent-clobber trap:
+# `pkill -P` does not reap it and a pattern kill would match its own command line. So the
+# loop runs in its OWN PROCESS GROUP and the whole group is signalled.
+arm_wrapped_reader() {
+  setsid bash -c 'while true; do cat "$1"; sleep 0.2; done' _ "$1" >> "$LOG" &
+  READER=$!
+}
+stop_wrapped_reader() {
+  [ -n "$READER" ] || return 0
+  kill -- "-$READER" 2>/dev/null
+  sleep 1
+  if fuser "$PORT" 2>/dev/null; then
+    echo "WARNING: $PORT is STILL held after the reader teardown. Kill the PID fuser" >&2
+    echo "  reports before the next capture, or it will split the bytes." >&2
+  fi
+}
+
+case $BOARD in
+  esp32c6-wroom|esp32-wroom)
+    # esptool finishes by resetting into the app, so the run is over before a separate
+    # reader could be armed. cap_esp.py opens the port ONCE, pulses RTS itself and reads.
+    # FLASH_PORT is not optional: the backend otherwise picks the first ttyACM it finds,
+    # which on this bench is another board's probe VCOM.
+    [ -n "${PYBIN:-}" ] || refuse "PYBIN is unset: the Espressif capture needs a python carrying pyserial (RIG_PYBIN here, RIG_REMOTE_PYBIN on the bench host)"
+    [ -x "${PYBIN}" ] || refuse "PYBIN=$PYBIN is not executable"
+    [ -f "$HERE/cap_esp.py" ] || refuse "no $HERE/cap_esp.py"
+    FLASH_PORT="$PORT" FLASH_IMAGE="$IMG" "$ROOT/tools/flash.sh" "$BOARD" "$APP" || refuse "the flash failed"
+    "$PYBIN" "$HERE/cap_esp.py" "$PORT" "$LOG" "${CAP_SECS:-40}" '^1\.\.[0-9]+' > /dev/null 2>&1
+    ;;
+  f302nucleo)
+    # THERE IS NO SEPARATE RESET STEP, AND REMOVING IT IS WHAT MADE THIS BOARD A RELIABLE
+    # INSTRUMENT (measured 2026-08-13). Releasing NRST at the end of the write already starts
+    # the image, so the write's own boot IS the authoritative run. This branch used to follow
+    # the write with `st-flash reset` to guarantee a single boot; what that actually did was cut
+    # the correct boot off MID-LINE and start a second one that then STALLED at the first
+    # `[fs]`. Every capture came back truncated at a different point, and the board was written
+    # up for weeks as having an unreliable post-fault console. It never did.
+    #   with the reset:    2 boots, 355-412 bytes, survivor line cut ("...after the fa")
+    #   without it:        1 boot,  300 bytes, "[fs] survivor ran after the fault" complete
+    # Proven not to be firmware by a write-only capture of the PRE-drain-fix image (c0e3c835),
+    # which carries its survivor line complete: same 300 bytes, same single boot.
+    #
+    # The reader is a passive cat on the ST-Link's own VCOM and does not touch SWD, so arming
+    # it FIRST is harmless here and is what captures the head of the banner. That is an
+    # ST-Link property, not a general one: on a J-Link, arming before the flash yields an empty
+    # log or one missing its head.
+    #
+    # THE WRITE GOES THROUGH tools/flash.sh, SO THE RECIPE A HUMAN RUNS AND THE ONE THE BENCH
+    # Runs are one path: with no reset step left here, the two are now literally the same
+    # command. They were two, and the divergence is what hid the f302 bug for weeks: this
+    # branch inlined a correct `--connect-under-reset write` while the shipped
+    # tools/flash-stlink.sh carried a `--reset` alongside it that halts the core at
+    # HardFault_Handler, so every bench capture was healthy and every hand flash looked like a
+    # dead board.
+    #
+    # FLASH_TOOL IS PINNED, not left to the dispatcher: candidates_for() offers "stlink jlink"
+    # for stm32f302 and takes the first on PATH, so on a host without stlink-tools this would
+    # silently become a J-Link SWD flash, a different recipe reached by accident. Pinning it
+    # keeps the missing-tool case a named refusal.
+    command -v st-flash > /dev/null || refuse "st-flash not on PATH (apt install stlink-tools)"
+    [ -e "$IMG.bin" ] || refuse "no $IMG.bin (st-flash loads the raw binary)"
+    stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
+    cat "$PORT" >> "$LOG" &
+    READER=$!
+    sleep 1
+    check_reader "on arming"
+    # CHECKED, and its output kept: a failed write leaves the PREVIOUS image running, which is
+    # the failure that most looks like a pass.
+    if ! WOUT=$(FLASH_TOOL=stlink FLASH_IMAGE="$IMG" "$ROOT/tools/flash.sh" "$BOARD" "$APP" 2>&1); then
+      kill $READER 2>/dev/null
+      printf '%s\n' "$WOUT" | tail -8 >&2
+      refuse "the $BOARD write failed (tools/flash.sh -> flash-stlink.sh on $IMG.bin)"
+    fi
+    sleep "${CAP_SECS:-25}"
+    note_reader
+    kill $READER 2>/dev/null
+    ;;
+  picopi|pizero2350)
+    # picotool load -x reboots straight into the app, so the run is over before a reader armed
+    # afterwards would exist. The console is a SEPARATE FTDI from the RP2 Boot interface, so
+    # arming it first cannot disturb programming. Same FTDI re-arm as rx72m: the driver reverts
+    # min/time when the last opener closes, and a bare cat then takes the next 0-byte read as EOF.
+    command -v picotool > /dev/null || refuse "picotool not on PATH"
+    stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
+    arm_wrapped_reader "$PORT"
+    sleep 1
+    check_reader "on arming"
+    # A board that has already run KickOS once needs a POWER CYCLE, not a reset: J-Link finds the
+    # SW-DP and then fails to power up the DAP, and BOOTSEL is the only way back. So a second run
+    # in one session fails HERE, and picotool's own words are what say so.
+    if ! POUT=$(FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
+      kill $READER 2>/dev/null
+      printf '%s\n' "$POUT" | tail -8 >&2
+      refuse "picotool could not flash $BOARD. Already ran KickOS? Power-cycle it into BOOTSEL."
+    fi
+    sleep "${CAP_SECS:-25}"
+    note_reader
+    stop_wrapped_reader
+    ;;
+  rx72m)
+    # rfp-cli -run releases reset and the suite is over in about a second, so a reader
+    # armed after the flash captures nothing. The console is an FTDI on a DIFFERENT USB
+    # device from the E2 Lite, so arming it first cannot disturb programming.
+    # The reader is wrapped: when the last opener closes the port the FTDI driver reverts
+    # min/time to 0, the next read returns 0 bytes and a bare cat takes that as EOF.
+    command -v rfp-cli > /dev/null || refuse "rfp-cli not on PATH"
+    stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
+    arm_wrapped_reader "$PORT"
+    sleep 1
+    check_reader "on arming"
+    if ! FLASH_PORT="$PORT" FLASH_IMAGE="$IMG" "$ROOT/tools/flash.sh" rx72m "$APP"; then
+      stop_wrapped_reader
+      # The E2 Lite is a libusb device, not a tty, so dialout does not reach it. Its udev
+      # rule guards on ACTION=="add", which a plain `udevadm trigger` (a change event)
+      # skips outright, which is why the rule can be installed and the node still be
+      # root:root 664.
+      refuse "the rx72m flash failed. If rfp-cli could not open the programmer, its USB
+  node is not writable: sudo udevadm trigger --action=add --attr-match=idVendor=045b"
+    fi
+    sleep "${CAP_SECS:-30}"
+    note_reader
+    stop_wrapped_reader
+    ;;
+  *)
+    case $BOARD in
+      frdmk64f)      DEV=MK64FN1M0xxx12 ;;
+      xmc4800-relax) DEV=XMC4800-2048 ;;
+      *) refuse "no -device row for $BOARD; add one rather than passing an empty -device" ;;
+    esac
+    [ -n "$SN" ] || refuse "$BOARD needs its probe serial: two J-Links on one bench and JLinkExe grabs whichever it likes"
+    command -v JLinkExe > /dev/null || refuse "JLinkExe not on PATH"
+    # SEGGER's J-Link OpenSDA firmware shows a licence notice ONCE PER CALENDAR DAY, and
+    # the acknowledgement is date-stamped in
+    # ~/.config/SEGGER/SEGGER_REG_HKEY_CURRENT_USER.xml as LicenseOpenSDA_DontShowAgainToday.
+    # The first JLinkExe of a day waits on it, and every J-Link call here sends output to
+    # /dev/null, so it surfaces as a hang or as "Failed to halt CPU" and reads as dead
+    # silicon. Two seconds of probing turns that into a refusal that names the cure, and
+    # catches a genuinely absent probe BEFORE the flash instead of after the capture is spent.
+    # SPEED IS TRIED DESCENDING, and 4000 alone was a MISDIAGNOSIS ENGINE. Measured
+    # 2026-08-13 on frdmk64f SN 000621000000: at `-speed 4000` the connect stops right after
+    # InitTarget() and never prints "identified.", while at 1000 the SAME probe on the SAME
+    # boot identifies the core. The old refusal blamed the licence notice for that, which is a
+    # tool asserting a cause it had not established, and it would have cost a
+    # physically-present operator for a board that was working. There is more than one
+    # physical K64F across desks, so treat the usable speed as a per-UNIT fact, not a constant.
+    JOUT=""
+    SWD_SPEED=""
+    PROBE=$(mktemp)
+    printf 'connect\nq\n' > "$PROBE"
+    for _sp in 4000 1000 400; do
+      JOUT=$(timeout 30 JLinkExe -nogui 1 -SelectEmuBySN "$SN" -device "$DEV" -if SWD -speed "$_sp" \
+                      -CommanderScript "$PROBE" < /dev/null 2>&1)
+      if printf '%s\n' "$JOUT" | grep -q 'identified\.'; then
+        SWD_SPEED=$_sp
+        break
+      fi
+    done
+    rm -f "$PROBE"
+    if [ -z "$SWD_SPEED" ]; then
+      {
+        echo "REFUSING: no SWD speed in 4000/1000/400 reached a halted core on SN $SN."
+        echo "  Speed is already ruled out, so the cause is one of these and the output below"
+        echo "  is what separates them:"
+        echo "  - no 1366:* in lsusb at all -> the wedge. Replug, or hold the reset button"
+        echo "    through a connect-under-reset."
+        echo "  - present but no 'identified.' and the run HUNG -> the OpenSDA licence notice."
+        echo "    Run JLinkExe once interactively, accept it, retry. Not a wedge."
+        printf '%s\n' "$JOUT" | grep -vE '^[[:space:]]*$' | tail -5
+      } >&2
+      exit 1
+    fi
+    if [ "$SWD_SPEED" != 4000 ]; then
+      echo "note: SWD at $SWD_SPEED kHz; 4000 did not identify the core on this unit." >&2
+    fi
+    JLINK_SN=$SN JLINK_SPEED=$SWD_SPEED FLASH_IMAGE="$IMG" "$ROOT/tools/flash-jlink.sh" "$BOARD" "$APP" > /dev/null 2>&1
+    sleep 12
+    [ -e "$PORT" ] || refuse "$PORT vanished after the flash (the probe re-enumerated)"
+    stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
+    # Wrapped, like the FTDI readers: the JLinkExe reset makes the OpenSDA VCOM hang up, a bare
+    # cat then takes that as EOF and ends the capture mid-run. One cat is alive at a time, so
+    # this is not the two-readers clobber.
+    arm_wrapped_reader "$PORT"
+    sleep 1
+    check_reader "on arming"
+    RESET=$(mktemp)
+    printf 'r\ng\nq\n' > "$RESET"
+    JLinkExe -nogui 1 -SelectEmuBySN "$SN" -device "$DEV" -if SWD -speed "$SWD_SPEED" \
+             -CommanderScript "$RESET" > /dev/null 2>&1 || true
+    rm -f "$RESET"
+    sleep "${CAP_SECS:-25}"
+    note_reader
+    stop_wrapped_reader
+    ;;
+esac
+
+# A capture that produced nothing must FAIL. An empty log and a board that printed
+# nothing are indistinguishable, and an exit code of 0 turns either into a pass.
+BYTES=$(wc -c < "$LOG")
+[ "$BYTES" -gt 0 ] || refuse "$LOG is 0 bytes -- the capture produced nothing"
+
+# NEVER count across plan lines. A log holding two runs sums into something that reads as one
+# clean pass, measured on f302nucleo as 51 ok against a 1..51 plan, which is exactly right for
+# ONE run and was in fact a truncated boot plus a complete one. So the authoritative run is the
+# LAST plan line to end of file, and a precursor is reported rather than added. The two-image
+# boards run their images as separate invocations into separate logs, so one log normally owes
+# exactly one plan line, and more than one means the board restarted inside the window.
+RUNS=$(grep -acE '^1\.\.[0-9]+' "$LOG")
+LAST=$(grep -anE '^1\.\.[0-9]+' "$LOG" | tail -1 | cut -d: -f1)
+RUN="$LOG"
+if [ -n "$LAST" ] && [ "$RUNS" -gt 1 ]; then
+  RUN=$(mktemp)
+  sed -n "${LAST},\$p" "$LOG" > "$RUN"
+fi
+
+OKC=$(grep -acE '^ok ' "$RUN")
+NOTOKC=$(grep -acE '^not ok ' "$RUN")
+# Banner and posture are taken from the WHOLE log with tail, not from the run slice: they are
+# printed BEFORE the plan line, so slicing from the last plan line cuts them off. The LAST banner
+# in the file belongs to the last boot, which is the run being counted.
+#
+# The label itself can arrive damaged: the f302nucleo VCOM drops bytes, and "commit a1220233"
+# reached the log as "c a1220233". A lone 8-hex token in a KickOS banner IS the commit, so recover
+# it rather than reporting no banner on a capture that carries one.
+# `-dirty` is part of the label and MUST survive: without it a capture taken from a tree with
+# uncommitted edits reports as if it were taken at the commit, and the witness is unfalsifiable.
+BANNER=$(grep -aoE 'commit +[0-9a-f]{7,}(-dirty)?' "$LOG" | tail -1)
+if [ -z "$BANNER" ]; then
+  # THE SUFFIX MUST BE RECOVERED WITH THE HASH, and its absence must not read as clean.
+  # Damage is byte LOSS, so a banner that reached the log as "c 06ffd64f" may have been
+  # "commit 06ffd64f-dirty" with the suffix eaten. Measured on f302nucleo 2026-08-15: a
+  # dirty-tree pass reported `commit 06ffd64f` while all seven other captures in the same
+  # run reported `-dirty`, so a modified tree produced a capture that read as a witness.
+  # Recovering a bare hash therefore says UNVERIFIED rather than nothing.
+  RECOVERED=$(grep -aoE '(^|[^0-9a-z])[0-9a-f]{8}(-dirty)?([^0-9a-z]|$)' "$LOG" \
+    | grep -oE '[0-9a-f]{8}(-dirty)?' | tail -1)
+  if [ -n "$RECOVERED" ]; then
+    case "$RECOVERED" in
+      *-dirty) BANNER="commit $RECOVERED (banner damaged in transit)" ;;
+      *) BANNER="commit $RECOVERED-UNVERIFIED (banner damaged in transit; -dirty could not be confirmed)" ;;
+    esac
+  fi
+fi
+# Same damage, same recovery: the posture line reaches the f302nucleo log as "m off".
+# NO `$` ANCHOR. Every console line here ends CRLF, and GNU grep counts the CR as part of the
+# line while this box's grep (ugrep) does not, so an anchored pattern passes a local test and
+# fails on the bench host against byte-identical input.
+MPU=$(grep -aoE 'mpu +(enforce|off)' "$LOG" | tail -1)
+if [ -z "$MPU" ]; then
+  MPU=$(grep -aoE '^m (enforce|off)' "$LOG" | tail -1)
+fi
+
+printf 'bytes:  %s\n' "$BYTES"
+printf 'runs:   %s\n' "$RUNS"
+printf 'ok:     %s\n' "$OKC"
+printf 'not ok: %s\n' "$NOTOKC"
+printf 'plan:   %s\n' "$(grep -aoE '^1\.\.[0-9]+' "$RUN" | tail -1)"
+printf 'skip:   %s\n' "$(grep -acE '# SKIP' "$RUN")"
+printf 'part:   %s\n' "$(grep -acE '# PARTIAL' "$RUN")"
+printf 'banner: %s\n' "$BANNER"
+printf 'mpu:    %s\n' "$MPU"
+echo "log: $LOG"
+
+if [ "$RUNS" -gt 1 ]; then
+  echo "NOTE: $RUNS plan lines. The counts above are the LAST run only; the earlier one(s)" >&2
+  echo "  are a board restart inside the capture window, not extra arms." >&2
+fi
+# A TAP VERDICT IS OWED ONLY BY A TAP APP. faultsurvive, faultsurvive_ovf/_off, mpu_fault and
+# rxdrv announce no plan by design, so demanding one refused every one of them, and the
+# refusal propagated far enough to skip the caller's log FETCH, throwing away a capture that
+# was complete and correct. The EXPECTATION comes from the app name; the verdict still comes
+# from the log, so a non-TAP app that does emit a plan is judged on it anyway.
+case $APP in
+  selftest*) WANT_TAP=1 ;;
+  *)         WANT_TAP=0 ;;
+esac
+if [ -z "$LAST" ]; then
+  if [ "$WANT_TAP" -eq 1 ]; then
+    refuse "$LOG has no plan line at all: the suite never announced itself"
+  fi
+  echo "note: $APP announces no TAP plan, so no arm counts are owed. Read the log." >&2
+elif [ "$OKC" -eq 0 ]; then
+  refuse "the last run in $LOG carries a plan line but no ok lines"
+fi

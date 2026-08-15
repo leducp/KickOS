@@ -50,9 +50,9 @@ namespace kickos
     // What a parked thread waits FOR, and the object owning the list it is on. Set at
     // every park and cleared at every unpark: thread_kill dispatches on it, and a
     // mis-tagged park unwinds the wrong list. A caller parked on a server's reply_waiters
-    // has no wait_queue, so the tag is its only edge back to that server. WAIT_JOIN and
-    // WAIT_LIVE_LAST are on no list of any kind: the tag is the ONLY thing that finds
-    // them, and sched::exit_current sweeps the pool for it at every thread exit.
+    // has no wait_queue, so the tag is its only edge back to that server. WAIT_JOIN,
+    // WAIT_LIVE_LAST and WAIT_TASK_EMPTY are on no list of any kind: the tag is the ONLY
+    // thing that finds them, and sched::exit_current sweeps the pool for it at every exit.
     enum WaitKind : uint8_t
     {
         WAIT_NONE = 0,
@@ -64,7 +64,22 @@ namespace kickos
         WAIT_EP_REPLY,  // wait_obj: the SERVER thread; queue-less on its reply_waiters
         WAIT_SLEEP,     // wait_obj: none; on the timer delta list
         WAIT_JOIN,      // wait_obj: the TARGET thread; queue-less on no list at all
-        WAIT_LIVE_LAST, // wait_obj: none; queue-less. Carries no deadline, ever.
+        WAIT_LIVE_LAST,  // wait_obj: none; queue-less. Carries no deadline, ever.
+        WAIT_TASK_EMPTY, // wait_obj: the TASK; queue-less on no list at all
+    };
+
+    // Has this thread been asked to die, and how. Zero == CANCEL_NONE, so the thread_create
+    // memset leaves a fresh TCB un-cancelled. A reader asking only "has it been asked" tests
+    // against CANCEL_NONE and never for one kind: both readers (the death point in
+    // kernel/syscall/syscall.cc and the re-block refusal in kernel/irq/irq.cc) are total over
+    // the non-zero values, which is what a later kind inherits instead of being wired in.
+    enum CancelKind : uint8_t
+    {
+        CANCEL_NONE = 0,
+        CANCEL_KILL = 1, // cooperative: dies at its next syscall entry, keeps its window
+        // Its resume is claimed: it executes no further unprivileged instruction, because
+        // switch_to rebuilds the incoming context before arch_switch rather than resuming it.
+        CANCEL_SLAY = 2
     };
 
     // Kernel-owned bounded copy of a thread name (never aliases a user pointer).
@@ -125,6 +140,10 @@ namespace kickos
         // spawn before the child runs, and only the thread itself narrows it. Ignored when
         // `privileged`. Fits the padding before quantum_ns; moving it grows every TCB.
         uint8_t authority = 0;
+        // CAP_IRQ entries live in this thread's table. cap_teardown's pre-pass is the only
+        // reader and it releases nothing at zero, which is every thread but a driver's IRQ
+        // thread. Takes the LAST padding byte before quantum_ns; moving it grows every TCB.
+        uint8_t cap_irq_live = 0;
 
         // Round-robin: quantum_ns == 0 means no slicing (pure FIFO within prio).
         uint32_t quantum_ns = 0;
@@ -136,10 +155,10 @@ namespace kickos
         // be harvested onto the free list when this slot is reclaimed. A caller-owned
         // stack (app-supplied) is never harvested: the app owns that memory.
         bool kstack_owned = false;
-        // Cancellation request (KOS_SYS_THREAD_KILL). One-way: set by the spawner, never
-        // cleared, honoured only at the target's own cancellation points, of which irq_wait
-        // is the only one. A thread that never reaches one keeps running.
-        bool cancelled = false;
+        // Cancellation request (KOS_SYS_THREAD_KILL), a CancelKind. One-way: set by the
+        // killer, never cleared, honoured at the target's own death point, its next syscall
+        // ENTRY. A thread that never re-enters the kernel keeps running.
+        uint8_t cancel_kind = CANCEL_NONE;
         // Who may cancel this thread: the KILL TAG of the thread that spawned it, or
         // KILL_TAG_NONE. It is the whole of the kill gate, so it must never alias; see
         // kill_tag_of and the clear in ThreadPool::alloc. ThreadPool::KILL_TAG_NONE is 0,
@@ -149,7 +168,7 @@ namespace kickos
 
         // The task this thread belongs to (task.h), which owns the memory domain the
         // group shares. That domain's regions are copied into regions[] below at create,
-        // plus this thread's OWN private regions -- its stack and any DEV window it asked
+        // plus this thread's own private regions, its stack and any DEV window it asked
         // for; the effective set is what arch_mpu_apply loads per switch-in. A POINTER,
         // deliberately not an index: an index beside it would land past the saturated
         // padding above and cost 8 bytes on every 32-bit TCB.
@@ -280,6 +299,14 @@ namespace kickos
             }
             return static_cast<Thread*>(wait_obj);
         }
+        Task* wait_task_target() const
+        {
+            if (wait_kind != WAIT_TASK_EMPTY)
+            {
+                return nullptr;
+            }
+            return static_cast<Task*>(wait_obj);
+        }
     };
 
     // The TCB budget. Editing the scalar literal below is how a deliberate TCB change lands.
@@ -327,6 +354,12 @@ namespace kickos
     static_assert(offsetof(Thread, served_head) + sizeof(Thread::served_head) == sizeof(Thread),
                   "Thread grew tail padding: the last member no longer closes the struct, so the "
                   "TCB now has slack a new member would land in for free");
+    // One CAP_IRQ entry occupies one slot, so a thread's count is bounded by its own table and
+    // the widest table in the image is root's.
+    static_assert(KICKOS_MAX_HANDLES <= UINT8_MAX,
+                  "a thread could hold more CAP_IRQ entries than Thread::cap_irq_live can "
+                  "count, and cap_teardown's pre-pass would skip a release it owes. The field "
+                  "is a byte because that is what the TCB padding holds");
 
     // A thread's capability-table capacity: the width it was seated with if it holds a run,
     // else 0.

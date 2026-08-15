@@ -4404,7 +4404,8 @@ namespace
     // still passes. docs/design-capability-table.md section on the chunk boundary has the case.
     void t_cap_chunk_span()
     {
-        // config/cap_geometry.h's KCAP_CHUNK_TARGET, via config/cap_width.h. A table no wider
+        // cmake/cap_geometry.cmake's target, reaching here as config/cap_width.h's
+        // KCAP_CHUNK_TARGET. A table no wider
         // than this compiles the FLAT decode and has no segmented slot to reach, so a hardcoded
         // mirror of the granule would make this arm claim the segmented path on a board that
         // never compiled it.
@@ -5529,7 +5530,7 @@ namespace
         // task is created first (kmain makes idle before root) and root's second, so slots 0
         // and 1 hold them and the biased codec names those two handles 1 and 2 at generation
         // 0. Neither slot is ever freed, so the generation cannot drift. Both carry the KERNEL
-        // domain -- the whole arena, R|W -- so a handle that resolved would let this thread
+        // domain, the whole arena at R|W, so a handle that resolved would let this thread
         // spawn a child INTO it and hand an unprivileged thread the arena.
         TAP_CHECK(kos_task_kill(1u) == -KOS_EBADF);
         TAP_CHECK(kos_task_kill(2u) == -KOS_EBADF);
@@ -5558,7 +5559,7 @@ namespace
 
     // The CREATOR GATE, both halves, and it takes a second thread to witness at all: only the
     // thread that made a group may seat a member into it or end it. Possession of the handle is
-    // deliberately not enough -- the codec is guessable, so a resolvable handle would otherwise
+    // deliberately not enough, because the codec is guessable and a resolvable handle would
     // be an authority anyone could forge.
     //
     // The stranger reports over an ENDPOINT rather than a shared global, and root receives with
@@ -5684,6 +5685,295 @@ namespace
         TAP_CHECK(kos_task_kill(task) == 0);
         // 0, not ETIMEDOUT: the member has to be GONE, not just marked.
         TAP_CHECK(member.join(JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(kos_handle_close(park) == 0);
+    }
+
+    // --- Slay: the cleanup window a kill leaves and a slay denies ---------------
+    // THE arm for docs/design-kill-and-slay.md, and the only one in the tree that witnesses
+    // the death point on real silicon: everything the host seam can see is the seam's
+    // ARGUMENTS, never a resumed context.
+    //
+    // The window is a PLAIN MEMORY WRITE and it has to be: the cooperative death point is
+    // the next syscall ENTRY, so any syscall placed here would BE that point and a killed
+    // thread would look exactly like a slain one.
+    volatile int g_slay_window = 0;
+
+    // caps: done@1, park@2. Announces itself, then parks on a semaphore NOTHING ever posts,
+    // so the only way past that wait is a cancellation breaking the park.
+    void slay_window_worker(void*)
+    {
+        kos_sem_post(CH_DONE);
+        kos_sem_wait(2);
+        g_slay_window = g_slay_window + 1;
+        kos_exit(0); // never returns: the kernel ends the thread at this syscall's entry
+    }
+
+    // The worker outranks root (prio 10 against KICKOS_PRIO_MIN + 1), so its post wakes root
+    // without preempting it and root cannot run again until the worker PARKS. That is what
+    // makes "the target was parked when the request was made" a fact rather than a hope --
+    // and without it both arms below pass vacuously, the worker having died at the entry to
+    // a wait it never reached.
+    bool stage_a_parked_slay_worker(kos::thread::Handle* out, kos_cap_t park)
+    {
+        kos_cap_grant const caps[2] = {{g_done, CH_FULL}, {park, CH_FULL}};
+        *out = kos::thread::spawn_caps(slay_window_worker, nullptr, "slay", 10, caps, 2);
+        if (not out->valid())
+        {
+            return false;
+        }
+        wait_n(1);
+        return true;
+    }
+
+    void t_thread_slay_window()
+    {
+        kos_cap_t park = KOS_CAP_NONE;
+        if (kos_sem_create(0, &park) != 0)
+        {
+            tap::skip("no semaphore slot");
+            return;
+        }
+        g_slay_window = 0;
+        // LEG 1, the control. A kill breaks the park and the target returns to userspace for
+        // exactly as long as it takes to reach its next syscall.
+        kos::thread::Handle killed;
+        if (not stage_a_parked_slay_worker(&killed, park))
+        {
+            (void)kos_handle_close(park);
+            tap::skip("pool too small");
+            return;
+        }
+        TAP_CHECK(killed.kill() == 0);
+        TAP_CHECK(killed.join(JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(g_slay_window == 1); // the window is real, so leg 2 is not vacuous
+
+        // LEG 2, the subject. Same body, same park, same parent: only the verb differs.
+        kos::thread::Handle slain;
+        if (not stage_a_parked_slay_worker(&slain, park))
+        {
+            (void)kos_handle_close(park);
+            tap::skip("pool too small");
+            return;
+        }
+        // 0, not -KOS_ETIMEDOUT: the call WAITS, and gone is what it returns.
+        TAP_CHECK(slain.slay(JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(g_slay_window == 1); // unchanged: it executed no further user instruction
+        // Gone means gone, and the join is the independent witness of it.
+        TAP_CHECK(kos_thread_join(slain.id(), JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(kos_handle_close(park) == 0);
+    }
+
+    // The gate, which is the kill gate unchanged: slay reaches exactly the set kill reaches.
+    void slay_gate_probe(void*) // caps: done@1
+    {
+        // Root is nobody's child (kill_tag_of never answers KILL_TAG_NONE), so this is the
+        // parenthood arm and not the self arm.
+        char c = 'x';
+        if (kos_thread_slay(ROOT_THREAD, JOIN_GENEROUS_US) == -KOS_EPERM)
+        {
+            c = 'P';
+        }
+        log_put(c);
+        kos_sem_post(CH_DONE);
+    }
+
+    void t_thread_slay_gate()
+    {
+        log_reset();
+        TAP_CHECK(kos_thread_slay(KOS_THREAD_NONE, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(kos_thread_slay(0x7fffffffu, JOIN_GENEROUS_US) == -KOS_EBADF);
+        // Not -KOS_EDEADLK as join answers: ending yourself is kos_exit, and this call has
+        // to be able to return to its caller.
+        TAP_CHECK(kos_thread_slay(ROOT_THREAD, JOIN_GENEROUS_US) == -KOS_EINVAL);
+        // An EXITED-but-unreclaimed slot, which join deliberately ACCEPTS and every cancel
+        // deliberately refuses: there is nothing left in it to condemn.
+        auto probe = kos::thread::spawn(join_probe, nullptr, "slgn", 10);
+        TAP_CHECK(probe.valid());
+        TAP_CHECK(probe.join(JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(kos_thread_slay(probe.id(), JOIN_GENEROUS_US) == -KOS_EBADF);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}}; // done@1, lock@2
+        auto s = kos::thread::spawn_caps(slay_gate_probe, nullptr, "slst", 10, caps, 2);
+        TAP_CHECK(s.valid());
+        wait_n(1);
+        TAP_CHECK(log_eq("P")); // parenthood, and there is no capability to delegate it with
+    }
+
+    // --- Slay: the group form ---------------------------------------------------
+    // 0 here means a condition no other call in the ABI waits on: the group is EMPTY. That
+    // is what makes the task form worth having, since a group slay that could only ever
+    // answer -KOS_ETIMEDOUT would have an unreachable success case.
+    void t_task_slay_group()
+    {
+        kos_cap_t park = KOS_CAP_NONE;
+        if (kos_sem_create(0, &park) != 0)
+        {
+            tap::skip("no semaphore slot");
+            return;
+        }
+        kos_task_t task = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        g_slay_window = 0;
+        kos_cap_grant const caps[2] = {{g_done, CH_FULL}, {park, CH_FULL}};
+        auto member = kos::thread::spawn(slay_window_worker, nullptr, "tsly", 10,
+                                         KOS_POLICY_FIFO, 0, /*privileged=*/false, nullptr, 0,
+                                         nullptr, 0, nullptr, 0, caps, 2, /*authority=*/0,
+                                         /*cap_dest=*/nullptr, task);
+        if (not member.valid())
+        {
+            (void)kos_task_kill(task);
+            (void)kos_handle_close(park);
+            tap::skip("pool too small");
+            return;
+        }
+        wait_n(1); // the member outranks root, so it is PARKED once this returns
+        TAP_CHECK(kos_task_slay(task, JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(g_slay_window == 0);          // no member got a cleanup window
+        TAP_CHECK(member.join(JOIN_GENEROUS_US) == 0); // and the member really is gone
+        // The hold went with the wait, so the handle names nothing: a second call cannot
+        // resolve it, which is the same shape kos_task_kill leaves behind.
+        TAP_CHECK(kos_task_slay(task, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(kos_handle_close(park) == 0);
+    }
+
+    void task_slay_stranger(void* arg) // caps: done@1, lock@2
+    {
+        kos_task_t const task = static_cast<kos_task_t>(reinterpret_cast<uintptr_t>(arg));
+        char c = 'x';
+        if (kos_task_slay(task, JOIN_GENEROUS_US) == -KOS_EPERM)
+        {
+            c = 'P';
+        }
+        log_put(c);
+        kos_sem_post(CH_DONE);
+    }
+
+    void t_task_slay_gate()
+    {
+        log_reset();
+        TAP_CHECK(kos_task_slay(KOS_TASK_NONE, JOIN_GENEROUS_US) == -KOS_EBADF);
+        kos_task_t task = KOS_TASK_NONE;
+        TAP_CHECK(kos_task_create(nullptr, 0, &task) == 0);
+        kos_cap_grant caps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
+        auto s = kos::thread::spawn_caps(task_slay_stranger,
+                                         reinterpret_cast<void*>(static_cast<uintptr_t>(task)),
+                                         "tsst", 10, caps, 2);
+        TAP_CHECK(s.valid());
+        wait_n(1);
+        TAP_CHECK(log_eq("P")); // creatorship, exactly as kos_task_kill takes it
+        // An EMPTY group answers 0 with nothing to slay: dropping the creator's hold is the
+        // whole of the work, and a park here would never be woken.
+        TAP_CHECK(kos_task_slay(task, JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(kos_task_slay(task, JOIN_GENEROUS_US) == -KOS_EBADF);
+        TAP_CHECK(s.join(JOIN_GENEROUS_US) == 0);
+    }
+
+    // --- Slay: condemned is not yet gone ----------------------------------------
+    // The middle guarantee level, which is the whole reason there are two calls and three
+    // returns. It needs a victim that CANNOT be scheduled while the deadline runs, so a
+    // higher-priority thread holds the CPU across it: that is the starvation hazard the
+    // timeout exists to make visible instead of hiding in an unbounded park.
+    constexpr uint32_t SLAY_TIMEOUT_US = 4000;
+    constexpr uint64_t SLAY_HOG_NS = 60000000ull; // 15x the deadline
+
+    // Published so the caller can tell a window it still holds from one it has already
+    // spent; 0 until the hog has actually run, which a spawn does not guarantee.
+    volatile uint64_t g_hog_until = 0;
+
+    void slay_hog(void*) // caps: none
+    {
+        uint64_t const until = kos_clock_now() + SLAY_HOG_NS;
+        g_hog_until = until;
+        while (kos_clock_now() < until)
+        {
+        }
+    }
+
+    // The hog must have more window left than the deadline the caller is about to arm, or
+    // the slay measures nothing. Twice the deadline, so the margin is not itself the race.
+    bool hog_window_open()
+    {
+        uint64_t const until = g_hog_until;
+        if (until == 0)
+        {
+            // Not yet run is the healthy case and the opposite of spent: the caller
+            // outranks the hog, which first runs when this thread parks inside the slay,
+            // so the whole window is still ahead.
+            return true;
+        }
+        uint64_t const now = kos_clock_now();
+        if (until <= now)
+        {
+            return false;
+        }
+        return (until - now) > (2ull * SLAY_TIMEOUT_US * 1000ull);
+    }
+
+    void t_thread_slay_timeout()
+    {
+        kos_cap_t park = KOS_CAP_NONE;
+        if (kos_sem_create(0, &park) != 0)
+        {
+            tap::skip("no semaphore slot");
+            return;
+        }
+        g_slay_window = 0;
+        kos::thread::Handle victim;
+        if (not stage_a_parked_slay_worker(&victim, park))
+        {
+            (void)kos_handle_close(park);
+            tap::skip("pool too small");
+            return;
+        }
+        // Outranks the victim, so nothing the slay does can get the victim onto the CPU
+        // until this thread is finished. Spawned AFTER the victim is staged, because a
+        // spawn is not a barrier and this one would otherwise hog the staging itself.
+        g_hog_until = 0; // a previous arm's window must not read as this one's
+        auto hog = kos::thread::spawn(slay_hog, nullptr, "shog", 11);
+        if (not hog.valid())
+        {
+            TAP_CHECK(victim.slay(JOIN_GENEROUS_US) == 0);
+            (void)kos_handle_close(park);
+            tap::skip("pool too small");
+            return;
+        }
+        // CONDEMNED, not gone: the redirect is armed and irrevocable, and the sweep has not
+        // run because the victim has not been given the CPU to run it on.
+        // The window runs from the hog's first run, not from this call, and the caller can
+        // lose all of it between the two. Under an interrupt-driven console it does: the
+        // caller blocks in the console, the hog spends its window, and the victim then dies
+        // at once because nothing outranks it. slay returning 0 there is correct, so
+        // asserting the timeout without this check measures nothing.
+        // A spent window is recoverable, and skipping instead would leave the starvation
+        // guarantee unexercised under the console that broke it. The hog has exited, so join
+        // it and stage a fresh one.
+        for (int attempt = 0; attempt < 2 and not hog_window_open(); attempt++)
+        {
+            (void)hog.join(JOIN_GENEROUS_US);
+            g_hog_until = 0;
+            hog = kos::thread::spawn(slay_hog, nullptr, "shog", 11);
+            if (not hog.valid())
+            {
+                break;
+            }
+        }
+        if (not hog.valid() or not hog_window_open())
+        {
+            if (hog.valid())
+            {
+                (void)hog.join(JOIN_GENEROUS_US);
+            }
+            (void)victim.slay(JOIN_GENEROUS_US);
+            (void)kos_handle_close(park);
+            tap::skip("hog window spent before the slay -- starvation not established");
+            return;
+        }
+        TAP_CHECK(victim.slay(SLAY_TIMEOUT_US) == -KOS_ETIMEDOUT);
+        TAP_CHECK(g_slay_window == 0); // and it never got its window either
+        // IRREVOCABLE is the claim, so the same handle must reach GONE with no second
+        // request: the timeout gave up on the wait, never on the death.
+        TAP_CHECK(kos_thread_join(victim.id(), JOIN_GENEROUS_US) == 0);
+        TAP_CHECK(g_slay_window == 0);
+        TAP_CHECK(hog.join(JOIN_GENEROUS_US) == 0);
         TAP_CHECK(kos_handle_close(park) == 0);
     }
 
@@ -6005,6 +6295,11 @@ int main(int, char**)
     TAP_ADD("task_member_refusals", t_task_member_refusals); // a member brings no memory
     TAP_ADD("task_creator_gate", t_task_creator_gate); // a stranger may neither seat nor kill
     TAP_ADD("task_group_kill", t_task_group_kill); // a kill that reaches a semaphore park
+    TAP_ADD("thread_slay_window", t_thread_slay_window); // kill leaves the window, slay denies it
+    TAP_ADD("thread_slay_gate", t_thread_slay_gate);     // parenthood, self, and a spent slot
+    TAP_ADD("thread_slay_timeout", t_thread_slay_timeout); // condemned is not yet gone
+    TAP_ADD("task_slay_group", t_task_slay_group); // 0 means the GROUP is empty
+    TAP_ADD("task_slay_gate", t_task_slay_gate);   // creatorship, and an already-empty group
 #if defined(KICKOS_ENABLE_SELFTEST)
     // Need the software-inject syscall (compiled out of the production ABI).
     TAP_ADD("irq_thread_ctx", t_irq);

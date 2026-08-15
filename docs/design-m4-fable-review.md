@@ -72,7 +72,7 @@ the cap as the model and the ceiling as a footnote.
 ### 3. "Runtime minting of an MMIO cap" is a kernel object-model change, not an extension
 **Principle:** GPIO (scope 3.5 "keystone"). **Severity: MAJOR (needs-a-spike-before-M4).**
 Today MMIO is an MPU region fixed at spawn (task #9 grant-at-spawn); `invariants.md`
-`object-access-via-per-task-cap` is explicit that memory R/W/X stays in the MPU descriptor, not the
+`object-access-via-per-thread-cap` is explicit that memory R/W/X stays in the MPU descriptor, not the
 cap. There is no MMIO cap object, no generation, no teardown. Minting at runtime mutates a LIVE
 thread's region set (invisible until the next switch-in; a revoke leaves the window writable until
 then). Region budget: PMSA has 8, SPI already spends 4, each pin cap is +1 -- a driver with an SPI

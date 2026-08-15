@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
@@ -168,7 +168,7 @@ sort -u "$TMP/app_kos" -o "$TMP/app_kos"
 # kos_* is the KickOS public API namespace, so an app TU defining a symbol in it is
 # supplying a driver class. A miss here is a class header this gate did not read, or an app
 # squatting on the namespace; either lets a backend be shadowed with the gate still green.
-while IFS=$'\t' read -r sym member; do
+while IFS="$TAB" read -r sym member; do
     [ -n "$sym" ] || continue
     if ! grep -qxF "$sym" "$TMP/class_syms"; then
         bad "leg 3: $member defines the public symbol $sym, which is not declared by any header in $HEADERDIRS; the class symbol set this gate derives is incomplete"

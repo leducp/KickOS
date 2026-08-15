@@ -20,4 +20,17 @@ case "$FL_BOARD" in
 esac
 [ "${STLINK_UNDER_RESET:-}" = "1" ] && FL_UR=(--connect-under-reset)
 [ "${STLINK_UNDER_RESET:-}" = "0" ] && FL_UR=()
-run st-flash "${FL_UR[@]}" --reset write "$FL_BIN" 0x08000000
+# NEVER add --reset to a --connect-under-reset write: it leaves the core under halting debug
+# with DEMCR.VC_HARDERR armed, so the first HardFault halts the CPU at the handler's first
+# instruction and the fault reporter is silent while the board looks locked up. Measured on
+# f302nucleo 2026-08-13, DFSR.VCATCH set and DHCSR.S_LOCKUP clear. Releasing NRST already
+# starts the image, so --reset buys nothing here.
+#
+# The bench capture path calls this script for the f302nucleo write and then issues its own
+# `st-flash reset` to start exactly one boot, so this branch must WRITE ONLY and must leave
+# the core halted. Adding a reset here would give that path two.
+if [ ${#FL_UR[@]} -gt 0 ]; then
+    run st-flash "${FL_UR[@]}" write "$FL_BIN" 0x08000000
+else
+    run st-flash --reset write "$FL_BIN" 0x08000000
+fi

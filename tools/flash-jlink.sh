@@ -8,7 +8,7 @@
 #
 # Loads the .hex (its addresses are embedded -> `loadfile`, no per-board base). The
 # J-Link -device string MUST match the exact silicon: the k64f/xmc rows are
-# HW-verified; the others are the expected part for each KickOS board -- adjust if
+# HW-verified; the others are the expected part for each KickOS board. Adjust if
 # your specific chip variant differs. Add a board: one row in the case below.
 set -euo pipefail
 FL_ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$FL_ROOT/tools/flash-common.sh"
@@ -38,4 +38,9 @@ sn_arg=""
 say "$FL_BOARD [$dev]${JLINK_SN:+ SN=$JLINK_SN} <- $FL_HEX (loadfile; addresses embedded)"
 # -nogui 1 is NOT optional on a headless bench: V9.58 otherwise forks a
 # JLinkGUIServerExe and hangs there instead of running the CommanderScript.
-run JLinkExe -device "$dev" -if SWD -speed 4000 -autoconnect 1 -nogui 1 ${sn_arg} -CommanderScript "$script"
+# JLINK_SPEED overrides the SWD clock. NOT cosmetic: measured 2026-08-13 on an frdmk64f whose
+# core is identified at 1000 kHz and not at 4000, on the same boot, and a probe that fails
+# this way stops after InitTarget() without saying why, so it reads as a wedge or as the
+# OpenSDA licence notice. There is more than one physical K64F across desks, so the usable
+# speed is a per-unit fact.
+run JLinkExe -device "$dev" -if SWD -speed "${JLINK_SPEED:-4000}" -autoconnect 1 -nogui 1 ${sn_arg} -CommanderScript "$script"

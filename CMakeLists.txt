@@ -350,7 +350,7 @@ else()
   add_compile_definitions(KICKOS_DEBUG=0)
 endif()
 
-# --- Console backend selection (docs/console-design.md) --------------------
+# --- Console backend selection (docs/reference/console.md) -----------------
 # KICKOS_CONSOLE = chip | rtt | both | none. `chip` = the board's native transport
 # (UART / semihosting / USIC); `rtt` = SEGGER RTT (needs a debug probe); resolved
 # to compile-time KICKOS_CONSOLE_CHIP/RTT for the kernel console core. The fragment
@@ -731,18 +731,31 @@ if(KICKOS_BUILD_TESTS)
     endif()
     set_property(TEST "${_kickos_test_name}" APPEND PROPERTY FIXTURES_REQUIRED kickos_build)
     if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
-      # Deferred to the end of this directory: the earliest point where the site's own
-      # set_tests_properties has run and the `host` label is readable.
-      cmake_language(DEFER CALL kickos_decline_image_test "${_kickos_test_name}")
+      # cmake_language(DEFER CALL) expands its arguments when the call RUNS, so a per-test
+      # defer carrying "${_kickos_test_name}" sees the LAST name registered in the directory
+      # and declines only that one. Hence a directory property plus one deferred reader.
+      set_property(DIRECTORY APPEND PROPERTY kickos_declinable "${_kickos_test_name}")
+      get_property(_kickos_armed DIRECTORY PROPERTY kickos_decline_armed)
+      if(NOT _kickos_armed)
+        set_property(DIRECTORY PROPERTY kickos_decline_armed ON)
+        # End of this directory: the earliest point where every site's own
+        # set_tests_properties has run and the `host` label is readable.
+        cmake_language(DEFER CALL kickos_decline_image_tests)
+      endif()
     endif()
   endmacro()
 
-  # DISABLED rather than unregistered, so ctest reports what was declined.
-  function(kickos_decline_image_test name)
-    get_test_property("${name}" LABELS _labels)
-    if(NOT "host" IN_LIST _labels)
-      set_tests_properties("${name}" PROPERTIES DISABLED TRUE)
-    endif()
+  # DISABLED rather than unregistered, so ctest reports what was declined. Reads only the
+  # names the wrapper collected: kickos_build is registered above the wrapper and unlabelled,
+  # and has to stay enabled to rebuild the tree.
+  function(kickos_decline_image_tests)
+    get_property(_names DIRECTORY PROPERTY kickos_declinable)
+    foreach(_name IN LISTS _names)
+      get_test_property("${_name}" LABELS _labels)
+      if(NOT "host" IN_LIST _labels)
+        set_tests_properties("${_name}" PROPERTIES DISABLED TRUE)
+      endif()
+    endforeach()
   endfunction()
 
   # THE `host` LABEL. A test carries it when it executes no KickOS image, and so reads no
@@ -751,7 +764,8 @@ if(KICKOS_BUILD_TESTS)
   # `ctest -L host` is then batchable and `ctest -LE host` is the set that must run standalone,
   # because the sim and qemu suites have no silicon clock and fail under the load of a
   # back-to-back run. A gate that RUNS a built image must not carry it; `oot_export` is the one
-  # that reads as host and does not qualify.
+  # that reads as host and does not qualify. Which side each test program falls on is DECLARED,
+  # in tests/static/test_classes.txt, and gated by test_labels below.
   # Fixtures are resolved AFTER label filtering, so `kickos_build` is deliberately unlabelled
   # and appears in BOTH partitions. It is a build and not a test, so `-LE host` is the
   # standalone set plus that one entry, and nothing else.
@@ -767,6 +781,20 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(doc_names PROPERTIES TIMEOUT 120 LABELS host)
 
+  _add_test(NAME extern_c_linkage
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_extern_c_linkage.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(extern_c_linkage PROPERTIES TIMEOUT 120 LABELS host)
+
+  # The KICKOS_SERVICE_LIST axis. A provider is created inside its chip's branch of
+  # system/CMakeLists.txt, so THIS board compiles at most its own and can say nothing
+  # about the rest; the gate reads the source tree and the preset files instead of the
+  # build, and so registers on every board and requires no build.
+  _add_test(NAME service_lists
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_service_lists.sh"
+                    "${CMAKE_COMMAND}" "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(service_lists PROPERTIES TIMEOUT 120 LABELS host)
+
   # Kconfig generator gate. A source-tree host check like doc_names, so it registers
   # on every board and requires no build. Unconditional: every board is configured from
   # Kconfig, so kickos_kconfig_generate above already FATALed on a box without the
@@ -776,6 +804,31 @@ if(KICKOS_BUILD_TESTS)
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_kconfig_gen.sh"
                     "${_kconfig_py}" "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(kconfig_gen PROPERTIES TIMEOUT 120 LABELS host)
+
+  # The gate on the label above, both directions. Registered on every board, because the
+  # set of tests a mislabel can hide in is per-configuration. Unlike the two gates above it
+  # DOES require the build fixture: it classifies each test by the program ctest resolved
+  # for it, and ctest emits no command at all for a program that is not on disk yet.
+  set(_kickos_declined no)
+  if(NOT KICKOS_BUILD_INTEGRATION_TESTS)
+    set(_kickos_declined yes)
+  endif()
+  # <complete> asserts this tree registers EVERY build-rooted program test_classes.txt
+  # names, which is what lets the gate read "no test runs it" as a dead declaration rather
+  # than as a program this board does not build. Only the sim arch registers build-rooted
+  # programs at all and the host unit binaries need GTest; every other knob those programs
+  # depend on is left to the gate, which names whatever this configuration dropped.
+  set(_kickos_complete no)
+  if(KICKOS_ARCH STREQUAL "sim" AND KICKOS_BUILD_UNIT_TESTS)
+    set(_kickos_complete yes)
+  endif()
+  _add_test(NAME test_labels
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_test_labels.sh"
+                    "${CMAKE_CTEST_COMMAND}" "${CMAKE_COMMAND}"
+                    "${PROJECT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+                    "${_kickos_declined}" "${_kickos_complete}")
+  set_tests_properties(test_labels PROPERTIES TIMEOUT 60 LABELS host
+                       FIXTURES_REQUIRED kickos_build)
 endif()
 
 # Components are added as they land; guarded so every step boundary configures.
@@ -864,6 +917,15 @@ if(KICKOS_BUILD_TESTS AND KICKOS_BUILD_UNIT_TESTS AND KICKOS_ARCH STREQUAL "sim"
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/capsweep/CMakeLists.txt")
     add_subdirectory(tests/unit/capsweep)
   endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/cancelkind/CMakeLists.txt")
+    add_subdirectory(tests/unit/cancelkind)
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/faultband/CMakeLists.txt")
+    add_subdirectory(tests/unit/faultband)
+  endif()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/slayhook/CMakeLists.txt")
+    add_subdirectory(tests/unit/slayhook)
+  endif()
 endif()
 
 # Aggregate usage-requirement target: "link this and you get the whole OS".
@@ -913,7 +975,7 @@ if(TARGET kickos_kernel)
   # RESCAN group; link it separately. This is what propagates the relocated system
   # headers (init.h, errno.h, cap_index.h) to every app.
   target_link_libraries(kickos_core INTERFACE kickos_system)
-  # OS-agnostic app entry (architecture.md 8j): the app writes a plain `int main`,
+  # OS-agnostic app entry (docs/reference/architecture.md, invariant 8): the app writes `int main`,
   # renamed to the kernel-called symbol; app.h is force-included so the renamed C++
   # main gets C linkage (unmangled).
   target_compile_definitions(kickos_core INTERFACE main=kickos_app_main)

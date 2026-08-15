@@ -134,7 +134,7 @@ namespace
     // CEILING: the kernel time base (ch0/ch1) and PIT_MCR share ONE AIPS peripheral
     // slot, so a userspace PIT driver that opens that slot to U-mode (k64drv clears
     // PACR55.SP) reaches ch0/ch1 and MCR; a rogue MCR=MDIS write freezes the kernel
-    // clock. See reference/architecture.md.
+    // clock. See docs/reference/architecture.md.
     void pit_clock_init()
     {
         // Boot-order constraint: arch_clock_now MUST NOT run before this. The PIT is

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: CECILL-C
 # Copyright (c) 2026 Philippe Leduc
 #
@@ -241,8 +241,8 @@ awk -F'\t' '{ print $1 "\t" $2 }' "$TMP/fb_defs" | sort -u > "$TMP/fb_members"
 if [ ! -s "$TMP/fb_members" ]; then
     bad "no <symbol>_default.cc member found in any archive; the gate would be vacuous"
 fi
-while IFS=$'\t' read -r arch member; do
-    # kickos_kernel is scanned BEFORE kickos_chip in the rescan group, so a fallback
+while IFS="$TAB" read -r arch member; do
+    # kickos_kernel is scanned BEFORE kickos_chip_${KICKOS_CHIP} in the rescan group, so a fallback
     # placed there is extracted in the pass that first makes the symbol undefined and then
     # collides with the chip's definition. It belongs in the arch library.
     case "$arch" in
@@ -357,7 +357,7 @@ for a in $ARCHIVES; do
             next
         }
         $5 == "WEAK" { print A "\t" m "\t" $7 "\t" $8 }' "$TMP/syms" > "$TMP/weak_arch"
-    while IFS=$'\t' read -r arch member ndx sym; do
+    while IFS="$TAB" read -r arch member ndx sym; do
         [ -n "$sym" ] || continue
         if allowed "$sym"; then
             continue

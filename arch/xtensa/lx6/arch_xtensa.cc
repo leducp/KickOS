@@ -298,6 +298,21 @@ void arch_context_init(struct arch_context* ctx,
     ctx->resume_kind = KICKOS_RESUME_IRQ;              // enters via rfe (irq_restore)
 }
 
+// The whole seam on this backend, and the resume_kind write above is what makes it whole:
+// a thread that blocked cooperatively is saved as KICKOS_RESUME_COOP, so a rebuild that
+// left resume_kind alone would send the switcher down the retw path onto a fabricated
+// INTERRUPT frame. arch_context_init overwrites it, which is exactly what is wanted --
+// forcing COOP here would be the bug, since a retw start leaves the trampoline a phantom
+// windowed frame (see the note above arch_context_init).
+//
+// `privileged` is discarded on this core: PS.UM is 1 for kernel and thread alike, so
+// there is no ring to restore and none to escalate through.
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+}
+
 // --- Switch: synchronous in thread context; deferred in ISR context ----------
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {

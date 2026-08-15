@@ -189,8 +189,8 @@ State it once, for every resource the hardware keys to "the current context":
 > which the running code is governed by the next thread's context while it is still the
 > previous thread executing.
 
-The forward tie is direct. When an MMU arrives (the roadmap's MPU-*and*-MMU horizon),
-the page-table root is exactly such a resource: swap it a few instructions too early and
+The forward tie is direct. When an MMU arrives, the page-table root is exactly such
+a resource: swap it a few instructions too early and
 the outgoing thread runs against the incoming thread's address space, with faults or
 silent cross-space access of precisely the shape above. The rule established here for
 the MPU region set is the rule the page-table-root switch will inherit -- protection

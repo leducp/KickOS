@@ -95,7 +95,6 @@ namespace
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_WINDOW,
-                     .mem_grant = false,
                      .window_grant = true,
                      .cap_count = 1,
                      // caps[0] lands at KOS_SPAWN_DELEGATED_CAP0, which the recv loop

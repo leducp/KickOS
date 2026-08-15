@@ -413,7 +413,6 @@ namespace
                      .name = "rpusbirq",
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .mem_grant = true,
                      .window_grant = true,
                      .cap_count = 1,
                      .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT}}},
@@ -421,7 +420,6 @@ namespace
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .mem_grant = true,
                      .window_grant = false,
                      .cap_count = 2,
                      // The SAME line as the doorbell, SIGNAL only: a pure post on the

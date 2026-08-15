@@ -358,9 +358,15 @@ svc_trampoline:
 /* vector), so read them straight into the args. The saved frame is at sp (a valid   */
 /* stack for the call) and is also a4, the frame-validity argument. A NON-ZERO       */
 /* return means fault isolation claimed this fault: mepc/mstatus already point at    */
-/* kickos_thread_fault_exit (M-mode, this thread's own stack, sp still on the frame, */
-/* exactly as .Lecall enters svc_trampoline), so mret rather than dump. On zero the  */
-/* reporter never returns; the spin is a backstop.                                   */
+/* kickos_thread_fault_exit (M-mode, this thread's own thread-mode stack, exactly as */
+/* .Lecall enters svc_trampoline), so mret rather than dump. On zero the reporter     */
+/* never returns; the spin is a backstop.                                            */
+/* The frame is NOT popped on the isolation path and sp is NOT left on it: the stub   */
+/* runs at the TOP of the dying thread's stack so exit_current, cap_teardown and the  */
+/* fault print have the whole stack under them instead of whatever depth the thread   */
+/* had reached. It must be done HERE and not in the C seam, whose own frame lives on  */
+/* the very sp being replaced. Zero means no stack to name; sp then stays on the      */
+/* frame, which is what the C seam alone used to give.                                */
 .Lfault:
     csrr    a0, mcause
     csrr    a1, mepc
@@ -370,7 +376,11 @@ svc_trampoline:
     call    kickos_rv_fault_report
     bnez    a0, 2f
 1:  j       1b
-2:  mret
+2:  call    kickos_fault_stack_top
+    beqz    a0, 3f
+    andi    a0, a0, -16             /* psABI: sp is 16-byte aligned at a call boundary */
+    mv      sp, a0
+3:  mret
 
 /* ------------------------------------------------------------------------- */
 /* arch_start(boot, first): a0=boot (ignored), a1=first. No outgoing to save;   */

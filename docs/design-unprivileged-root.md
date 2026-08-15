@@ -56,7 +56,7 @@ sequencing are **deleted, not deferred**: carrying transition machinery as "late
 wanted. `drop_priv` survives as a contingent, much smaller item, in scope only if the privileged-write
 seam family (section 9) proved insufficient for the blocked bring-up bodies. It did not.
 
-### `KICKOS_ROOT_PRIVILEGED` went too, with no replacement
+### The root-privilege knob went too, with no replacement
 
 - **REJECTED: keeping the knob in any form** (bypass, porting helper, tier, or a consumer-refusing
   tombstone guard, which is not in the tree). A knob is a posture someone can ship by accident, and
@@ -71,8 +71,9 @@ seam family (section 9) proved insufficient for the blocked bring-up bodies. It 
 - **The root-MMIO service-list refusal was re-subjected from posture to enforcement**
   (`KICKOS_HAVE_MPU`, `CMakeLists.txt`), and the change of subject is the decision. Measured, not
   tidy-minded: with the MPU off an unprivileged root **does** reach MMIO, so refusing an unenforcing
-  build would refuse a configuration that demonstrably works. `KICKOS_SERVICE_LIST_ROOT_MMIO` is now
-  EMPTY; list and gate stay for the next board whose bring-up writes MMIO from root.
+  build would refuse a configuration that demonstrably works. The root-MMIO list was EMPTIED
+  here, and on 2026-08-05 the list and its gate were DELETED outright: a refusal that cannot fire on
+  any configure in the tree is not a guard.
 - **`root-unprivileged-idle-alone-privileged` became statable**, a build under the knob having always
   been able to answer "two, and one of them is root". Contract and consequences live in
   `reference/invariants.md`, not here.

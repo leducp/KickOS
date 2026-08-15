@@ -83,7 +83,8 @@ SYSCALL_NAME = {
     42: "periph_reg_write", 43: "irq_notify", 44: "irq_discard",
     45: "thread_kill", 46: "call_timed", 47: "recv_timed",
     48: "thread_join", 49: "wait_last", 50: "send_timed",
-    51: "task_create", 52: "task_kill",
+    51: "task_create", 52: "task_kill", 53: "thread_slay",
+    54: "task_slay",
 }
 
 TRACE_MAGIC = 0x4B545243

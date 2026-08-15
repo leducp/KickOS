@@ -47,6 +47,10 @@ extern "C"
 extern "C"
 {
 
+// Anything file-local below is `static`, never an anonymous namespace: C language
+// linkage overrides the namespace, so an anonymous namespace nested in this block
+// emits an unmangled GLOBAL symbol.
+
 // --- Switch: always deferred to PendSV (the outgoing ctx is g_arch_current) --
 void arch_switch(struct arch_context* from, struct arch_context* to)
 {
@@ -150,42 +154,39 @@ void arch_timer_disarm(void)
 
 // --- MPU: ARM PMSA backend (v6-M/v7-M share the register map) ----------------
 #if KICKOS_HAVE_MPU
-namespace
+// Max per-thread regions the deferred-commit stash carries (must be >= the kernel's
+// KICKOS_MPU_MAX_REGIONS; both are 8). Hoisted here so the fixed-region init can
+// bound-check against it. Sizes g_pend_regions below.
+static constexpr size_t MAX_PEND_REGIONS = 8; // == KICKOS_MPU_MAX_REGIONS (kernel config)
+
+// Count of chip fixed regions occupying the LOW MPU slots [0, g_fixed_count).
+// Set once by kickos_arm_mpu_fixed_init; per-thread grants are programmed ABOVE it.
+// 0 for every chip without a fixed-region hook -> those chips are byte-identical.
+static size_t g_fixed_count = 0;
+
+// Encode one region into an MPU_RASR value. attr is the UNPRIVILEGED access
+// (supervisor comes from the PRIVDEFENA background region): a code region is
+// R+X (RO, executable); data / stack / device is RW + execute-never. Device
+// memory gets the ordered device type. `size` is a power of two >= 32, and the
+// region base is naturally aligned to it (arch_ram_region_size / the linker).
+static uint32_t mpu_rasr(size_t size, uint32_t attr)
 {
-    // Max per-thread regions the deferred-commit stash carries (must be >= the kernel's
-    // KICKOS_MPU_MAX_REGIONS; both are 8). Hoisted here so the fixed-region init can
-    // bound-check against it. Sizes g_pend_regions below.
-    constexpr size_t MAX_PEND_REGIONS = 8; // == KICKOS_MPU_MAX_REGIONS (kernel config)
-
-    // Count of chip fixed regions occupying the LOW MPU slots [0, g_fixed_count).
-    // Set once by kickos_arm_mpu_fixed_init; per-thread grants are programmed ABOVE it.
-    // 0 for every chip without a fixed-region hook -> those chips are byte-identical.
-    size_t g_fixed_count = 0;
-
-    // Encode one region into an MPU_RASR value. attr is the UNPRIVILEGED access
-    // (supervisor comes from the PRIVDEFENA background region): a code region is
-    // R+X (RO, executable); data / stack / device is RW + execute-never. Device
-    // memory gets the ordered device type. `size` is a power of two >= 32, and the
-    // region base is naturally aligned to it (arch_ram_region_size / the linker).
-    uint32_t mpu_rasr(size_t size, uint32_t attr)
+    using namespace kickos::arm;
+    uint32_t const size_field = static_cast<uint32_t>(std::countr_zero(size)) - 1u;
+    uint32_t rasr = MPU_RASR_ENABLE | (size_field << 1);
+    if (attr & ARCH_MPU_X)
     {
-        using namespace kickos::arm;
-        uint32_t const size_field = static_cast<uint32_t>(std::countr_zero(size)) - 1u;
-        uint32_t rasr = MPU_RASR_ENABLE | (size_field << 1);
-        if (attr & ARCH_MPU_X)
-        {
-            rasr |= MPU_RASR_AP_RO | MPU_RASR_MEM_NORMAL; // code: RO + executable
-        }
-        else if (attr & ARCH_MPU_DEV)
-        {
-            rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_DEVICE; // MMIO
-        }
-        else
-        {
-            rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_NORMAL; // data/stack
-        }
-        return rasr;
+        rasr |= MPU_RASR_AP_RO | MPU_RASR_MEM_NORMAL; // code: RO + executable
     }
+    else if (attr & ARCH_MPU_DEV)
+    {
+        rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_DEVICE; // MMIO
+    }
+    else
+    {
+        rasr |= MPU_RASR_AP_RW | MPU_RASR_XN | MPU_RASR_MEM_NORMAL; // data/stack
+    }
+    return rasr;
 }
 
 // The MPU hardware-programming step (disable / reprogram descriptors / re-enable).
@@ -284,11 +285,8 @@ void kickos_arm_mpu_fixed_init(void)
 // region set here; kickos_arch_mpu_commit programs the hardware, called from each
 // deferred arch's PendSV epilogue AFTER the physical swap. A private copy (not a
 // pointer) means the commit never chases a TCB whose region set changed after the stash.
-namespace
-{
-    arch_mpu_region g_pend_regions[MAX_PEND_REGIONS]; // MAX_PEND_REGIONS hoisted above
-    size_t g_pend_count = 0;
-}
+static arch_mpu_region g_pend_regions[MAX_PEND_REGIONS]; // MAX_PEND_REGIONS hoisted above
+static size_t g_pend_count = 0;
 
 // Read the pending stash. Lets a chip whose MPU is NOT PMSAv7 (K64F SYSMPU) program
 // its own hardware from the SAME stash by defining only the commit.

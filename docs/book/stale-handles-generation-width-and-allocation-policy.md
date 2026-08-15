@@ -12,7 +12,7 @@ Copyright (c) 2026 Philippe Leduc
 > exact widths, the handle codec and the contract they enforce, link into
 > `../reference/architecture.md` ("Object model, capabilities & IPC"),
 > `../reference/invariants.md` (`handle-not-pointer-across-boundary`,
-> `object-access-via-per-task-cap`), and the code they describe --
+> `object-access-via-per-thread-cap`), and the code they describe --
 > `kernel/include/kickos/slotpool.h`, `kernel/include/kickos/cap.h` and
 > `kernel/include/kickos/thread.h`.
 

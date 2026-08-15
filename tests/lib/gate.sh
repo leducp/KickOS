@@ -24,6 +24,13 @@ fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# A literal tab, for `while IFS="$TAB" read -r ...` over tab-separated records. NOT $'\t':
+# that is a bashism, and dash does not expand it: it sets IFS to the three characters $ \ t,
+# so every field splits on those instead of on a tab. It reads as correct, `dash -n` passes it,
+# and a gate whose records mis-split goes VACUOUS rather than loud. /bin/sh is dash on the CI
+# images, so the failure lands there and not here.
+TAB="$(printf '\t')"
+
 # TMP: a fresh directory, removed on exit.
 scratch_dir() {
     TMP="$(mktemp -d)" || fail "mktemp -d failed"

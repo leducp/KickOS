@@ -231,11 +231,11 @@ hole in that claim, and the honest summary is the maintainer's own: *we can do i
 probably a wrong idea for a microkernel though.*
 
 This is a compromise, not a design goal, and it is worth naming as one. A privileged
-thread is an escape hatch for bring-up work that has not yet been expressed as an
+thread is an escape hatch for bring-up work that is not expressed as an
 authority the kernel can grant -- a peripheral block that must be ungated before any
 driver can reach it, a register that the silicon makes reachable only from the
-privileged level. Each one is a piece of the isolation story that has not been written
-yet, sitting in the kernel's domain in the meantime.
+privileged level. Each one is a piece of the isolation story not yet expressed as
+authority, sitting in the kernel's domain in the meantime.
 
 ### But at least one is forced by hardware
 

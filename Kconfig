@@ -291,7 +291,7 @@ config KICKOS_DIAG_TERSE
 	default 0
 	range 0 1
 	help
-	  Trades the kernel's prose for the short column of kernel/include/kickos/diag.h
+	  Trades the kernel's prose for the short column of include/kickos/diag.h
 	  and reduces an assert to its file and line. Fault banners are unchanged in
 	  either posture, so panic detection is unaffected; the prose a test script
 	  matches BELOW a banner is not, which is why this is a board's choice and the

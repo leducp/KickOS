@@ -215,6 +215,10 @@ namespace
 extern "C"
 {
 
+// Anything file-local below is `static`, never an anonymous namespace: C language
+// linkage overrides the namespace, so an anonymous namespace nested in this block
+// emits an unmangled GLOBAL symbol.
+
 // --- Context init: fabricate a full switch-in frame (see switch.S layout) ---
 // The frame is identical to what the SWINT switcher saves, so the first switch-in
 // (arch_start) restores it and RTEs into entry(arg). Low->high on the USP:
@@ -276,6 +280,15 @@ void arch_context_init(struct arch_context* ctx,
     ctx->sp = reinterpret_cast<uint32_t>(sp);
 }
 
+// The whole seam on this backend: the fabricated frame's PSW word is PSW_THREAD_KERNEL,
+// which the RTE pops. The MPU_MPECLR latch arch_fault_redirect_to_exit clears is global
+// and belongs to a fault, so a rebuild must not touch it.
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+}
+
 // --- Critical section: raise PSW.IPL to the kernel lock level ---------------
 arch_irq_state_t arch_irq_save(void)
 {
@@ -322,9 +335,6 @@ struct RxFaultFrame
 // which carries the NMI and BRK: an NMI is accepted at an instruction boundary with
 // PSW.PM still set, so admitting it here would kill whichever thread happened to be
 // running for a chip-level event.
-//
-// static, not an anonymous namespace: inside this file's extern "C" block an anonymous
-// namespace still emits an unmangled GLOBAL symbol.
 static bool rx_cause_is_thread_fault(uint32_t cause)
 {
     return cause == 0x50 or cause == 0x54 or cause == 0x5C or cause == 0x60
@@ -412,6 +422,20 @@ void arch_fault_redirect_to_exit(void* frame)
     // what lets the stub's exit_current reschedule: it pends SWINT and must see it taken.
     ff->saved[0] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit);
     ff->saved[1] = (ff->saved[1] & ~(PSW_PM | PSW_IPL_MASK)) | PSW_U | PSW_I;
+
+    // The stub runs at the TOP of the dying thread's stack, not at the depth the fault
+    // reached. This is the backend that needs it: an access exception CANCELS the faulting
+    // instruction and restores SP (ISA UM sec.5.3.1), so an overflowed thread hands over a
+    // USP that reads in-bounds and the stub would run privileged on an exhausted stack --
+    // measured on rx72m as a smash to PC=0 (.session/logs/m483rxovf-*). Written here rather
+    // than after the RTE because the handler runs on the ISP, so there is no window: R0 in
+    // supervisor mode is the ISP, and USP is a separate control register.
+    uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
+    if (top != 0)
+    {
+        uint32_t const sp = top & ~3u;
+        __asm volatile("mvtc %0, usp" ::"r"(sp));
+    }
 }
 
 // C side of the RX exception handler (startup.S .fvectors shims branch here with
@@ -592,11 +616,8 @@ void arch_timer_disarm(void)
 // swap. Eager apply on RX's deferred SWINT switch would load the incoming region set while
 // the OUTGOING user thread is still physically running -> it faults on its own stack.
 #if KICKOS_HAVE_MPU
-namespace
-{
-    struct arch_mpu_region g_pend_regions[MPU_REGION_COUNT];
-    size_t g_pend_count = 0;
-}
+static struct arch_mpu_region g_pend_regions[MPU_REGION_COUNT];
+static size_t g_pend_count = 0;
 
 void arch_mpu_apply(struct arch_mpu_region const* regions, size_t n)
 {

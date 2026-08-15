@@ -2,16 +2,17 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // The WHOLE seam between the kernel sources a K-seam gate compiles and the rest of the
-// image: every symbol here is one those sources name and none of them define. Sixteen,
-// re-derived on this tree with
+// image: every symbol here is one those sources name and none of them define.
 //
-//   nm --undefined-only <the five objects> | comm -23 - <their defined symbols>
+// RE-DERIVE IT, never assume a total. The set is a property of the chosen sources AND of the
+// preset, and both move: adding a source trades one group of symbols for another, and
+// ktrace.h is header-inline, so under sim-telem irq.cc reaches the trace sink and needs two
+// stubs that no other posture does.
+//
+//   nm --undefined-only <the objects> | comm -23 - <their defined symbols>
 //
 // which also reports __gxx_personality_v0 and _Unwind_Resume unless the gate is built
-// -fno-exceptions as the CMakeLists does it. Only seven are arch_*: "the arch boundary" is
-// where the seam is CUT, and the sixteen is a property of the chosen source set. The
-// MEMBERSHIP therefore moves under a kernel refactor while the width does not: the task
-// layer traded domain_release for task_release at equal count.
+// -fno-exceptions as the CMakeLists does it.
 //
 // kpanic ends the PROCESS with a message matching tests/lib/panic.ere, so a kernel invariant
 // enforced by KICKOS_ASSERT rather than a return code is gated by a gtest death test.
@@ -22,6 +23,7 @@
 #include <stdlib.h>
 
 #include <kickos/console_tx.h>
+#include <kickos/domain.h>
 #include <kickos/instance.h>
 #include <kickos/irq.h>
 #include <kickos/kernel.h>
@@ -59,10 +61,41 @@ extern "C"
     {
     }
 
+    // The interrupt controller. Silent, because what a gate reads is the DISPATCH TABLE
+    // irq.cc keeps in Kernel: a line is free iff it holds the null-object default, which is
+    // the state a claim tests and a detach restores.
+    void arch_irq_mask(int)
+    {
+    }
+
+    void arch_irq_unmask(int)
+    {
+    }
+
+    void arch_irq_clear_pending(int)
+    {
+    }
+
     void arch_idle_wait(void)
     {
         kickos::testfix::note_park();
     }
+
+#if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
+    // The telemetry sink, which the seam otherwise has no answer for: ktrace.h is
+    // header-inline and reaches BOTH of these from kernel/irq/irq.cc. Silent and accepting,
+    // because no arm here reads a trace record. The fixture has its own ordered trace, and
+    // the encoder is tests/unit/telemetry's subject.
+    uint32_t arch_trace_now(void)
+    {
+        return static_cast<uint32_t>(kickos::testfix::g_now_ns);
+    }
+
+    int kickos_rtt_write_record_ch1(uint8_t const*, size_t)
+    {
+        return 1; // accepted: a 0 here would count a drop on every record
+    }
+#endif
 
     void arch_start(struct arch_context*, struct arch_context*)
     {
@@ -73,6 +106,27 @@ extern "C"
     {
         kickos::testfix::note_switch(kickos::testfix::thread_of_context(from),
                                      kickos::testfix::thread_of_context(to));
+    }
+
+    // Records rather than rebuilds. Leaving the context alone is not a shortcut: the
+    // fixture never resumes one, so a real rebuild would be unobservable, while WHICH
+    // context was named and WHEN are exactly the two facts the pended backends turn on.
+    void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                           void* stack_base, size_t stack_size)
+    {
+        kickos::testfix::note_ctx_redirect(kickos::testfix::thread_of_context(ctx), entry,
+                                           stack_base, stack_size);
+    }
+
+    // Never called: no arm here drives kickos_fault_kill_thread, so the two calls it would
+    // make never happen either. Present only to satisfy the link.
+    bool arch_fault_is_user_thread(void*)
+    {
+        return false;
+    }
+
+    void arch_fault_redirect_to_exit(void*)
+    {
     }
 
     // Traced as well as counted: the reclaim runs after the whole sweep, so its position in
@@ -110,12 +164,62 @@ namespace kickos
         exit(1);
     }
 
-    void task_release(Task*)
+    // Never called: no arm here drives kickos_thread_fault_exit, which is the only caller.
+    void kprintf_fault(char const*, ...)
     {
     }
 
-    void irq_ref_drop(int, bool)
+    // The domain pool, cut here rather than at kernel/domain/domain.cc so the seam stays clear
+    // of the arena and the MPU granule. task.cc stores the pointer, counts references and
+    // frees at zero; the geometry rules behind grant_region_admissible are domain.cc's own
+    // subject and reaching them would drag arch_ram_region_size and the arena bounds in.
+    //
+    // NO DEDUP, so every call hands back a distinct domain where the real domain_for would
+    // return the shared default-user singleton for a no-grant unprivileged task. That is
+    // deliberate: it is what lets an arm read one task's reference count without another
+    // task's holds in it.
+    Domain* domain_for(bool, void*, size_t, bool, int* err)
     {
+        *err = 0;
+        for (int i = 0; i < KICKOS_MAX_TASKS; i++)
+        {
+            if (testfix::g_domain_refs[i] == 0 and not testfix::g_domain_live[i])
+            {
+                testfix::g_domain_live[i] = true;
+                return &testfix::g_domains[i];
+            }
+        }
+        printf("FIXTURE FAIL: fake domain pool exhausted\n");
+        exit(1);
+    }
+
+    void domain_ref(Domain* d)
+    {
+        int const i = testfix::domain_index(d);
+        if (i < 0)
+        {
+            return;
+        }
+        testfix::g_domain_refs[i]++;
+    }
+
+    void domain_release(Domain* d)
+    {
+        int const i = testfix::domain_index(d);
+        if (i < 0)
+        {
+            return;
+        }
+        if (testfix::g_domain_refs[i] == 0)
+        {
+            printf("FIXTURE FAIL: domain_release below zero\n");
+            exit(1);
+        }
+        testfix::g_domain_refs[i]--;
+        if (testfix::g_domain_refs[i] == 0)
+        {
+            testfix::g_domain_live[i] = false;
+        }
     }
 
     uint64_t ktime_now()

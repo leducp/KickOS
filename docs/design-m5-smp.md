@@ -134,9 +134,11 @@ an arch marker. A RISC-V platform timer is added (DS 3.1.8).
 atomic-memory workaround. Prefer native atomics over SIO spinlocks on M33 and Hazard3
 regardless of stepping.
 
-**Chip-wide SLEEP gates the debug bus, and only when BOTH cores idle in WFI or WFE**,
-which detaches SWD until a power cycle. A build where both cores idle in WFI loses
-debug access mid-run; one core's idle policy can busy-spin instead.
+**A RUNNING KickOS image detaches SWD, and the CAUSE IS NOT ESTABLISHED.** The symptom is
+measured on both RP parts: J-Link finds the SW-DP and then fails to power up the DAP, so a
+reflash needs BOOTSEL or a power cycle. The chip-wide-SLEEP-when-both-cores-idle explanation
+was a HYPOTHESIS and was never confirmed, and no busy-idle knob has ever existed in this tree,
+so do not derive an SMP idle policy from either. Measure it before designing against it.
 
 ## Cross-core IPC invariants
 

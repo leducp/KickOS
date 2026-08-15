@@ -65,18 +65,21 @@ namespace
                      .name = "rxsciirq",
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .mem_grant = true,
                      .window_grant = true,
                      .cap_count = 1,
                      .caps = {{drv::KOS_DRV_RES_LINE0, KOS_CAP_WAIT}}},
                     // barrier_after = 2 spawns this one BEFORE the readiness poll, which is
                     // sound only because it holds no WAIT cap on the endpoint: root stays the
                     // sole receiver, so a readiness timeout is still reportable.
+                    //
+                    // It takes no block argument and touches no ring, but it is a member of
+                    // this driver's task and so its region set covers the whole block anyway.
+                    // The fleet's only thread in that position; the DEV window, which is what
+                    // isolation here is about, it does not have.
                     {.entry = drv::edge_relay_thread,
                      .name = "rxscirx",
                      .prio_delta = 1,
                      .arg = drv::KOS_DRV_ARG_NONE,
-                     .mem_grant = false,
                      .window_grant = false,
                      .cap_count = 2,
                      .caps = {{drv::KOS_DRV_RES_LINE1, KOS_CAP_WAIT},
@@ -85,7 +88,6 @@ namespace
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_BLOCK,
-                     .mem_grant = true,
                      .window_grant = false,
                      .cap_count = 2,
                      // SIGNAL is a pure post on the binding, not a raise at the controller.

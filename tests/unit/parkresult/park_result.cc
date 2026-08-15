@@ -69,7 +69,7 @@ namespace kickos
 
             // The waiter is CURRENT, because a blocking primitive parks whoever calls it,
             // and the holder is the only other runnable thread so the scheduler must pick
-            // it -- which is what puts the waker's `current` on the holder.
+            // it, which is what puts the waker's `current` on the holder.
             Thread* seat_waiter_over_holder(Thread** out_holder)
             {
                 Thread* const holder = spawn(0, PRIO_HOLDER);
@@ -114,7 +114,8 @@ namespace kickos
             int const rc = mutex_lock(g_mutex);
 
             EXPECT_EQ(rc, -KOS_ECANCELED) << "the cancel is what the return carries";
-            EXPECT_TRUE(waiter->cancelled) << "and the waiter is marked for its death point";
+            EXPECT_NE(waiter->cancel_kind, CANCEL_NONE)
+                << "and the waiter is marked for its death point";
             EXPECT_EQ(g_mutex->owner, holder) << "a cancelled waiter does not acquire the mutex";
             EXPECT_EQ(holder->prio, PRIO_HOLDER) << "the owner's boost is reverted with the wait";
         }
@@ -138,7 +139,7 @@ namespace kickos
         }
 
         // A waker that ends the park without writing a result leaves the poison, so the
-        // fiction is a value no assertion accepts -- where a zeroed TCB would have read as
+        // fiction is a value no assertion accepts, where a zeroed TCB would have read as
         // a lock cleanly acquired.
         TEST_F(ParkResult, a_waker_that_writes_no_result_leaves_the_poison)
         {

@@ -113,6 +113,17 @@ void arch_context_init(struct arch_context* ctx,
     ctx->resting_npriv = npriv;
 }
 
+// The whole seam on this backend. The fabricated frame carries EXC_RETURN 0xFFFFFFFD
+// (thread mode, PSP, NON-FP frame), so the rebuild also RESETS the frame format: a
+// thread that had an extended FP frame stacked resumes on a plain 8-word one, which is
+// what the new EXC_RETURN says. That is only sound because every frame it had is
+// discarded here.
+void arch_ctx_redirect(struct arch_context* ctx, void (*entry)(void* arg),
+                       void* stack_base, size_t stack_size)
+{
+    arch_context_init(ctx, entry, nullptr, stack_base, stack_size, 1);
+}
+
 // --- Critical section: raise BASEPRI to the kernel lock threshold -----------
 arch_irq_state_t arch_irq_save(void)
 {
@@ -252,6 +263,16 @@ bool arch_fault_is_user_thread(void* frame)
     return (f[7] & 0x1FFu) == 0u; // stacked xPSR IPSR field
 }
 
+// Entered by the exception return with r0 = the SP the stub must run on. Naked, and the
+// SP move is the first instruction: anything the compiler put before it would run on the
+// stack this exists to leave. Thread mode does not change SPSEL, so this writes the PSP
+// the switcher gave the thread, which is where svc_trampoline runs privileged too.
+__attribute__((naked, noreturn)) void kickos_armv7m_fault_stack_reset(void)
+{
+    __asm volatile("mov sp, r0\n\t"
+                   "b   kickos_thread_fault_exit");
+}
+
 void arch_fault_redirect_to_exit(void* frame)
 {
     uint32_t const cfsr = kickos::arm::reg32(0xE000ED28);
@@ -277,7 +298,28 @@ void arch_fault_redirect_to_exit(void* frame)
     kickos::arm::reg32(0xE000ED28) = cfsr;
     kickos::arm::reg32(0xE000ED2C) = hfsr;
 
-    f[6] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit) & ~1u; // drop the Thumb bit
+    // The stub runs at the top of this thread's stack, not at the depth the fault reached.
+    // The frame is NOT relocated to get there: with lazy FP stacking the EXC_RETURN still
+    // in the handler's LR decides whether the CPU unstacks a basic 8-word or an extended
+    // 26-word frame (ARMv7-M ARM B1.5.7), and a frame moved to a place that EXC_RETURN
+    // disagrees with is popped at the wrong size out of the wrong memory. So the hardware
+    // pops from where it stacked, and the reset shim's first instruction, reached only
+    // after that pop, moves SP. r0 carries the new SP because it is the frame's own
+    // first word and this thread is dying.
+    //
+    // The 8-byte alignment the AAPCS wants at a public interface is the mask below, and
+    // the stack-realign bit 9 is left alone: it belongs to the pop, which still happens at
+    // the original SP.
+    uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
+    if (top != 0)
+    {
+        f[0] = top & ~7u;
+        f[6] = reinterpret_cast<uint32_t>(&kickos_armv7m_fault_stack_reset) & ~1u;
+    }
+    else
+    {
+        f[6] = reinterpret_cast<uint32_t>(&kickos_thread_fault_exit) & ~1u; // drop the Thumb bit
+    }
     // Keep T (bit 24) and the stack-realign bit 9, clear IT/ICI (bits 26:25 and 15:10):
     // a fault inside an IT block would otherwise resume with stale condition state and
     // conditionally skip the stub's first instructions.

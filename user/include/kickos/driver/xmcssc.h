@@ -8,7 +8,7 @@
 // several mutually-untrusting clients are not.
 //
 // Chip select is the controller's own HARDWARE line (KOS_BUS_CS_HW), held across the
-// software-paced words by PCR.FEM=1 (RM 18.4.5.1; proven by user/apps/xmccshold). SCTR.FLE=63
+// software-paced words by PCR.FEM=1 (RM 18.4.5.1; proven by user/apps/xmc4800-relax/xmccshold). SCTR.FLE=63
 // hands the frame end to the software TCSR.SOF/EOF markers, so MSLS asserts on the first word
 // and releases only after the last.
 //

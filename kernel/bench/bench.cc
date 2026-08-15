@@ -183,13 +183,13 @@ extern "C"
 
     uint32_t kickos_bench_core_hz(void) { return SystemCoreClock; }
 
-    namespace
-    {
-        constinit uint32_t s_min = 0xFFFFFFFFu;
-        constinit uint32_t s_max = 0;
-        constinit uint32_t s_count = 0;
-        constinit uint64_t s_sum = 0;
-    }
+    // `static`, NOT an anonymous namespace: extern "C" gives these C language linkage, which
+    // OVERRIDES the namespace and emits them as unmangled GLOBALS in libkickos's public C
+    // surface. static survives it: the name stays unmangled, the binding goes local.
+    static constinit uint32_t s_min = 0xFFFFFFFFu;
+    static constinit uint32_t s_max = 0;
+    static constinit uint32_t s_count = 0;
+    static constinit uint64_t s_sum = 0;
 
     void kickos_bench_switch_done(uint32_t delta)
     {

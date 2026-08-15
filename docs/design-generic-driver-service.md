@@ -11,6 +11,13 @@
 > HANDOVER-only reasoning to RETAIN** and refused two legitimate shapes (section 3.3.1); and the
 > validator accepted thirteen defective shapes an adversarial pass proved by compilation, closed as
 > two new legs plus new arms on L3, L4 and L8 and a rewritten class-side check (section 3.3.2).
+> **THE CODE LISTINGS BELOW ARE THE M4.8.1 SHAPE AND ARE NOT THE LIVE CONTRACT.** M4.8.3 put every
+> driver thread in a task, so `spawn_one` gained the task handle and stopped passing a per-thread
+> memory grant at all; M4.8.4 then DELETED the per-thread memory flag these listings show, because
+> its only reader was an OR-reduction into the group's grant. Read
+> `user/include/kickos/sys/driver_service.h` for the field set and
+> `docs/design-task-layer.md` open question 7 for the ruling. The listings stay as they are: they
+> record what M4.8.1 decided.
 > See `design/README.md` for the marker taxonomy, and `design-m4-driver-model.md` for the
 > numbered rules this builds on.
 
@@ -106,7 +113,7 @@ descriptor field or a validator leg, not a special case.
 | Two lines with different roles and different triggers | `rxsci.cc:225,232` | a `lines[]` array with a per-line `trigger` |
 | Per-thread rights on the same line (WAIT here, SIGNAL there) | `rxsci.cc:241,259,295` | a per-thread `caps[]` of `{resource, rights}` |
 | Cap ROLES are per-thread: the same two child indices mean different objects | `rxsci.cc:49-53` vs `uart_service.h:45-48` | `caps[]` index IS the child index; roles are per-thread by construction |
-| A thread with NO ring grant and NO thread arg | `rxsci.cc:260,263` | per-thread `mem_grant` and `arg` |
+| A thread with NO ring grant and NO thread arg | `rxsci.cc:260,263` | a per-thread memory flag beside `arg`. **RETIRED IN M4.8.4**: under a task the block is the GROUP's region, so the flag could not deliver the opt-out it read as. It equalled `arg == KOS_DRV_ARG_BLOCK` in every descriptor and is deleted; the ruling is `docs/design-task-layer.md` open question 7 |
 | Which side of the readiness barrier a thread is spawned on | `rxsci.cc:242,260,278,296` | `barrier_after`, a count |
 | A relayed line must be EDGE | `rxsci.cc:103-105` | validator leg L5, at compile time |
 | The thread arg is the window base as a VALUE | `driver_bringup.h:52`, `k64dspi.cc:50` | `arg = KOS_DRV_ARG_WINDOW` |
@@ -292,7 +299,7 @@ constexpr bool valid(Descriptor const& d);
 | L1 | `thread_count <= KOS_DRV_THREADS_MAX`, `line_count <= KOS_DRV_LINES_MAX` | array overrun in a descriptor. **CORRECTED:** the `thread_count >= 1` arm it also carried is redundant, implied by L6, and is gone; the upper bounds are what keep L2..L12 in range and stay |
 | L2 | every thread: `cap_count <= KOS_DRV_CAPS_MAX`, every `caps[i].resource < 1 + line_count`, every `caps[i].rights != 0` | a cap naming a line the descriptor does not claim |
 | L3 | at most one thread has `window_grant`; **`arg == ARG_WINDOW` implies `window_grant`** | a DEV window has exactly one holder; a second spawn is refused `-KOS_EBUSY` at runtime today. The second arm is new: `spawn_one` hands `cfg->mmio_base` to an `ARG_WINDOW` thread whether or not the window was granted, so one without it faults on its first register touch |
-| L4 | any `mem_grant` or `arg == ARG_BLOCK` implies `block_size != 0`; **`arg == ARG_BLOCK` implies `mem_grant`**; **`block_size == 0` IFF `block_init == nullptr`** | a thread handed a block nobody allocated. Both new arms close one direction each: `wants_block` was an OR, so it asked only whether a block EXISTS and never whether the thread receiving the pointer can read it; and the `Null iff` the field's own comment claims was checked one way only |
+| L4 | `arg == ARG_BLOCK` implies `block_size != 0`; **`block_size != 0` implies some thread takes `ARG_BLOCK`**; **`block_size == 0` IFF `block_init == nullptr`** | a thread handed a block nobody allocated, and a block granted to the whole group that nothing reads. **RESTATED IN M4.8.4**: the two arms about the per-thread memory flag went with the flag, and the converse arm replaced them -- the block lands as a region on every member, so a descriptor carrying one no thread takes is the widest ask it can make and nothing else would catch it |
 | **L5** | a thread holding `WAIT` on a line and having no `window_grant` implies that line is `KOS_IRQ_EDGE` | **the relay rule.** Only the window holder can clear a peripheral flag, so a thread that waits without a window cannot serve a LEVEL source and would rearm into a still-asserted line and spin (`rxsci.cc:103-105`) |
 | L6 | exactly one thread holds `{EP, WAIT}` | two receivers, or none |
 | **L7** | `ep_posture == HANDOVER` implies `thread_count == 1` or `ready_offset != KOS_DRV_READY_NONE` | a console handover with no readiness latch has no reportable window, UNLESS there is only one thread |
@@ -906,9 +913,10 @@ Read the four claims off it:
 1. **Two lines, different roles.** `lines[0]` (TXI 87) is WAIT for the IRQ thread and SIGNAL for
    two others; `lines[1]` (RXI 86) is WAIT for the relay only. Per-line trigger, per-thread
    rights mask, both present.
-2. **The relay carries no grant and no arg.** `arg = ARG_NONE`, `mem_grant = false`. The
-   sharing set is not silently widened to a thread that provably does not need it, and leg L3
-   keeps the window where it belongs.
+2. **The relay carries no grant and no arg.** `arg = ARG_NONE`, and at M4.8.1 a per-thread memory
+   flag saying the same. **That second half did not survive the task layer** and the flag is gone as
+   of M4.8.4: the block is the group's region and every member sees it, the relay included. Leg L3
+   still keeps the window where it belongs, and the window is the grant that matters here.
 3. **A third private cap-role set.** The relay's `caps[0]`/`caps[1]` are child indices 1 and 2,
    the same two indices the service thread uses, naming different objects. Because `caps[]` is
    per thread, this is not a special case; it is the ordinary reading of the field.
@@ -1055,7 +1063,7 @@ once instead of three times.
 
 `design-task-layer.md` rules that a `Task` type should exist (a set of threads), that the
 address space attaches to `Domain` rather than to `Task`, that a thread naming no task gets an
-implicit task of one, and that it lands **after** the host unit-test layer. Its section 1.1 is
+implicit task of one, and that it landed **after** the host unit-test layer. Its section 1.1 is
 this exact defect, found independently.
 
 **Explicitly: the `ThreadSet` is not the Task in embryo. It is the hand-rolled emulation the
@@ -1072,9 +1080,10 @@ replaced:
   an implicit one-thread task, bit for bit. This change alters no spawn call site's meaning.
 - The spike's 5.2 refusal is **preserved structurally rather than by discipline**: a task owns
   the window's lifetime, the thread that asked owns its access. Leg L3 permits exactly one
-  `window_grant`, and `mem_grant` is per thread, so nothing here widens a grant to fix a
-  lifetime problem. The relay still gets no ring block and the service thread still gets no
-  window, and now a descriptor that changed that would fail to compile.
+  `window_grant`, so nothing here widens a WINDOW to fix a lifetime problem. **The memory half of
+  this bullet is false from M4.8.3 on**: the block became the group's region, so the relay does get
+  it. The service thread still gets no window, and a descriptor that changed that still fails to
+  compile.
 - **What the Task later deletes:** `ThreadSet`, `cancel_all`, the tail's `peers` parameter and
   the `Handle::kill()` sites. Under a Task, `bring_up` creates one task, spawns the descriptor's
   N threads into it, and the tail names the task instead of the set. The spike's 9.4 ("the six

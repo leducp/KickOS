@@ -212,7 +212,7 @@ extern "C" uintptr_t syscall_dispatch(uintptr_t nr,
                                       uintptr_t a2, uintptr_t a3)
 {
     Thread* const caller = sched::current();
-    if (caller != nullptr and caller->cancelled and not caller->dying)
+    if (caller != nullptr and caller->cancel_kind != CANCEL_NONE and not caller->dying)
     {
         sched::exit_current(KOS_EXIT_CANCELLED); // noreturn
     }
@@ -536,7 +536,7 @@ uintptr_t syscall_body(uintptr_t nr,
         case KOS_SYS_TASK_CREATE:
         {
             // Same shape as the cap creators: a task handle spends the whole word, so the
-            // status is the return value and the handle rides an out-parameter -- and the
+            // status is the return value and the handle rides an out-parameter, and the
             // out-pointer is checked BEFORE the group exists, or a mint that cannot deliver
             // leaves a task nothing can name and nothing can kill.
             int rc = cap_out_check(a2);
@@ -560,6 +560,19 @@ uintptr_t syscall_body(uintptr_t nr,
             // inside, like the cancel above.
             return static_cast<uintptr_t>(
                 thread_join(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
+        }
+        case KOS_SYS_THREAD_SLAY:
+        {
+            // Blocks, so no dispatch IrqLock. Same parenthood gate as the cancel above: slay
+            // reaches exactly the set kill reaches and adds no edge to the authority graph.
+            return static_cast<uintptr_t>(
+                thread_slay(static_cast<kos_thread_t>(a0), static_cast<uint32_t>(a1)));
+        }
+        case KOS_SYS_TASK_SLAY:
+        {
+            // Blocks. Creatorship-gated inside, exactly as the group cancel above is.
+            return static_cast<uintptr_t>(
+                task_slay(static_cast<kos_task_t>(a0), static_cast<uint32_t>(a1)));
         }
         case KOS_SYS_WAIT_LAST:
         {

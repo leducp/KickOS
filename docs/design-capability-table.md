@@ -5,16 +5,11 @@ Copyright (c) 2026 Philippe Leduc
 
 # Design -- the capability table, from a clean sheet
 
-> **Status: ACTIVE** -- landed on `master`. Every section below has landed except where the text
+> **Status: LANDED** -- landed on `master`. Every section below has landed except where the text
 > says otherwise. See `design/README.md` for the marker taxonomy.
 >
-> **NOT WITNESSED ON HARDWARE, and the earlier pass does not close that.** A two-board run on
-> `xmc4800-relax` (PMSAv7) and `frdmk64f` (SYSMPU) was taken on a PRE-SQUASH state of the branch
-> that is not an ancestor of what merged: 26 code files changed after it, `cap.h`, `cap.cc`,
-> `thread.h`, `syscall_thread.cc`, `sync.cc`, `slotpool.h`, `cmake/cap_table.cmake` and the
-> selftest among them. That run is evidence the design boots and runs under two MPU classes; it is
-> not a witness of the merged tree, and no record may quote it as one. The capture that stamps a
-> tip reachable from `master` is the first real witness this document has.
+> Witnessed at `da716a8` (2026-08-04, `docs/reference/boards.md`'s capture-provenance table):
+> two captures, `m472-{xmc,k64}-st`, both `1..79`. Two boards, one ISA, one geometry.
 
 The capability table landed in stages during M4.5/M4.6 and works. This document re-derives it from
 scratch, because the mechanism that grew around it costs more than it buys: a three-class slab of

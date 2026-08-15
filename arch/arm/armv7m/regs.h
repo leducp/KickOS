@@ -36,7 +36,7 @@ namespace kickos
         constexpr uint32_t DEMCR_TRCENA = 1u << 24;
         constexpr uint32_t DWT_CTRL_CYCCNTENA = 1u << 0;
 
-        // System-handler / IRQ priority bytes (top KICKOS_NVIC_PRIO_BITS bits are
+        // System-handler / IRQ priority bytes (only the top implementation-defined bits are
         // implemented; writing the full byte is fine, low bits read back zero).
         // Ordering that the BASEPRI critical section relies on:
         //   lock threshold (0x20) < device band (>= 0x30) < SysTick/SVCall (0xE0)

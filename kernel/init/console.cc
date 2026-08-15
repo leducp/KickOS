@@ -52,9 +52,9 @@ namespace
     };
     constinit volatile ConsoleState g_console_state = ConsoleState::KERNEL_OWNED;
 
-    // Set by the cap layer when the published console endpoint loses its last
-    // WAIT-bearing cap; consumed by console_on_driver_death at the end of exit_current.
-    // A flag rather than an immediate reclaim; see console_tx.h.
+    // Set by the cap layer when the published console endpoint loses its last WAIT-bearing
+    // cap. Sticky across a refused reclaim, which is the only reason it is a flag and not the
+    // reclaim itself; see console_tx.h.
     constinit volatile bool g_console_driver_died = false;
 
     // In-flight kernel chip writers: incremented under the same state read that decided
@@ -106,9 +106,9 @@ extern "C" void console_on_driver_death(void)
     // Reclaiming on the note alone would reprogram the UART under a live IRQ thread that
     // owns those registers and silence its source (INT_ENA=0), parking it forever. So the
     // precondition is asked of the DEVICE: nobody may still hold the window
-    // arch_console_reclaim is about to write. The note stays SET across a refusal and
-    // every exit_current and voluntary close re-runs this, so the LAST holder's own exit
-    // reclaims.
+    // arch_console_reclaim is about to write. A cancelled peer is still a holder here --
+    // thread_cancel marks it, and only its own exit sets `dying`, so the note stays set
+    // across the refusal and the LAST holder's own exit_current reclaims.
     uintptr_t win_base = 0;
     size_t win_size = 0;
     arch_console_reclaim_window(&win_base, &win_size);
@@ -360,6 +360,13 @@ extern "C" void kickos_bootloader_handover(void)
 extern "C" void kickos_terminate(int status)
 {
     console_tx_flush_sync();
+    // The RING being empty is not the DEVICE being idle, and arch_shutdown can stop the core
+    // with a byte still in the UART FIFO or shift register. That truncated the last line of
+    // every capture on a board without KICKOS_SHUTDOWN_TO_BOOTLOADER, because the drain lived
+    // inside kickos_bootloader_handover, which compiles to an empty body without the knob --
+    // measured on f302nucleo as a survivor line cut mid-word. Idempotent, and a no-op on a
+    // chip with no body, so it costs nothing where nothing is queued.
+    arch_console_flush_sync();
     kickos_bootloader_handover();
     arch_shutdown(status);
 }
@@ -383,5 +390,15 @@ extern "C" void kickos_isr_fault(uintptr_t addr, int is_write)
         dir = "write";
     }
     ::kickos::kprintf(KDIAG_F_MPU_FAULT, who, dir, reinterpret_cast<void*>(addr));
+    // The denied address alone cannot say whether this thread ran off its own stack or wrote
+    // somewhere it has no business being, and that is the difference between a provisioning
+    // bug in the image and one thread misbehaving. It is also what sizes
+    // KICKOS_FAULT_STACK_GUARD_BAND, which no capture in the tree recorded before this line.
+    if (c != nullptr and c->stack_base != nullptr)
+    {
+        uintptr_t const lo = reinterpret_cast<uintptr_t>(c->stack_base);
+        ::kickos::kprintf(KDIAG_F_MPU_FAULT_STACK, reinterpret_cast<void*>(lo),
+                          reinterpret_cast<void*>(lo + c->stack_size));
+    }
     kickos_terminate(0);
 }

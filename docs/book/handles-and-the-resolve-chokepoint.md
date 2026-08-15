@@ -416,7 +416,7 @@ confusing two of its own objects, and the kernel never so much as blinks.
 - What the generation is worth, why its width is not the criterion it looks like, and why the
   three counters in the system do not share a bit budget: Chapter 8.7,
   *[A stale handle must not be usable](stale-handles-generation-width-and-allocation-policy.md)*.
-- The isolation this completes on the memory side: Chapter 7, *Memory protection (M2)*.
+- The isolation this completes on the memory side: Chapter 7, *Memory protection*.
 - Further reading: Tanenbaum, *Modern Operating Systems*, ch.1 (the protection boundary)
   and the capability-systems literature (Dennis and Van Horn; the seL4 and Zircon handle
   models) for the lineage of per-task, rights-bearing object references.

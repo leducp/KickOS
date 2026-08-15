@@ -166,11 +166,26 @@ enum kos_syscall_nr
                                //   could name), EINVAL (the window wraps), ENOMEM (task or
                                //   domain pool full), EFAULT (bad out-pointer). The task is
                                //   EMPTY: kos_thread_params::task is what seats members.
-    KOS_SYS_TASK_KILL = 52     // (kos_task_t) -> 0, -KOS_EBADF (never created / freed under
+    KOS_SYS_TASK_KILL = 52,    // (kos_task_t) -> 0, -KOS_EBADF (never created / freed under
                                //   this handle / an implicit task, which is unnameable),
                                //   -KOS_EPERM (the caller did not create it). Cancels every
                                //   live member and drops the creator's hold, so the handle
                                //   names nothing afterwards.
+    KOS_SYS_THREAD_SLAY = 53,  // (kos_thread_t, timeout_us) -> 0 (GONE: the target is EXITED
+                               //   and its capability table is swept), -KOS_ETIMEDOUT (the
+                               //   redirect is armed and irrevocable, the target executes no
+                               //   further unprivileged instruction, and the sweep has not
+                               //   finished), -KOS_ECANCELED (the CALLER was cancelled while
+                               //   waiting; the target is still condemned), -KOS_EBADF,
+                               //   -KOS_EPERM (the caller did not spawn it), -KOS_EINVAL
+                               //   (self, idle, or a privileged target).
+                               //   FORCIBLE, where KOS_SYS_THREAD_KILL is cooperative: this
+                               //   denies the target the cleanup window a kill leaves it.
+    KOS_SYS_TASK_SLAY = 54     // (kos_task_t, timeout_us) -> 0 (the group is EMPTY and its
+                               //   slot released), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF,
+                               //   -KOS_EPERM (the caller did not create it), -KOS_EINVAL (the
+                               //   caller is itself a member, which would wait on its own
+                               //   death). The group form of the above, member for member.
 };
 
 // Flags for KOS_SYS_IRQ_CLAIM. The trigger type is a property of the SOURCE, so it is

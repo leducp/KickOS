@@ -12,6 +12,7 @@
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
+#include <kickos/irq.h>
 #include <kickos/kernel.h>
 #include <kickos/sched.h>
 #include <kickos/sync.h>
@@ -46,16 +47,32 @@ namespace kickos
             constexpr uint32_t SWEEP_WIDTH = KICKOS_CAP_FIRST_DYNAMIC + KCAP_TEARDOWN_CHUNK + 1;
             // gap 1 is the release cap_teardown opens before its first chunk, so gap 2 is the
             // boundary after it. A new IrqLock anywhere in the sweep renumbers these, and the
-            // trace assertions are what say so -- do not renumber the expected string without
+            // trace assertions are what say so. Do not renumber the expected string without
             // checking which gap the action now lands in.
             constexpr uint32_t GAP_AFTER_FIRST_CHUNK = 2;
+            constexpr uint32_t GAP_BEFORE_FIRST_CHUNK = 1;
             static_assert(KICKOS_CAP_FIRST_DYNAMIC < KCAP_TEARDOWN_CHUNK,
                           "the first dynamic slot must fall in the FIRST chunk, or the "
                           "ordinal above names a different boundary");
 
+            // Free on every board the fixture compiles for, and not one the arms below ever
+            // arm: what a claim reads is the dispatch slot, so any in-range number does.
+            constexpr int CONSOLE_LINE = 14;
+            // The dying thread's line cap must land in a LATER chunk than the endpoint cap
+            // whose EPIPE releases the peer. Below the boundary both fall in one masked
+            // window and no ordering is observable at all, which is the second reason no
+            // in-tree driver exhibits this (its grant list seats ep@2, line@3).
+            constexpr uint32_t IRQ_CAP_INDEX = KCAP_TEARDOWN_CHUNK;
+            static_assert(IRQ_CAP_INDEX < SWEEP_WIDTH,
+                          "the line cap must still fit the sweeper's table");
+
             Thread* g_inner = nullptr;
             Thread* g_closer = nullptr;
             uint32_t g_closer_cap = 0;
+            Thread* g_supervisor = nullptr;
+            int g_claim_rc = 0;
+            Thread* g_line_owner = nullptr;
+            uint8_t g_line_slot_type = 0xFFu;
 
             void sweep_the_inner_thread()
             {
@@ -78,6 +95,27 @@ namespace kickos
             {
                 trace_add("close");
                 EXPECT_EQ(handle_close(g_closer, g_closer_cap), 0) << "the close was accepted";
+            }
+
+            // Stands in for the SUPERVISOR the sweep's own EPIPE released: on target it is a
+            // thread above the dying driver, which is what makes it run before the sweep
+            // finishes; here the gap action is that scheduling.
+            void supervisor_claims_the_line()
+            {
+                trace_add("claim");
+                uint32_t cap = 0;
+                g_claim_rc = irq_claim(g_supervisor, CONSOLE_LINE, 0, &cap);
+            }
+
+            // Reads the line cap's own slot as well as claiming the line: the slot is what the
+            // pre-pass empties, and a claim alone would also answer 0 for a line the sweep had
+            // detached while leaving the entry live.
+            void inspect_the_line_before_the_first_chunk()
+            {
+                trace_add("look");
+                g_line_slot_type = cap_slot(g_line_owner->caps, IRQ_CAP_INDEX)->type;
+                uint32_t cap = 0;
+                g_claim_rc = irq_claim(g_supervisor, CONSOLE_LINE, 0, &cap);
             }
 
             // called directly rather than through exit_current: the subject is the sweep, and
@@ -106,22 +144,66 @@ namespace kickos
                 return sender;
             }
 
-            uint32_t seat_a_closable_cap(Thread* t)
+            // The published console, served by `owner`. A publisher of its own, so `owner`
+            // holds exactly ONE cap on the endpoint and the sweep's recv_holders arithmetic is
+            // the arm's subject rather than the seat in slot 0. reset() calls
+            // cap_console_reset (kfixture.h note 4), so the global cannot reach a later arm.
+            int publish_console_served_by(Thread* owner, int index, int publisher_slot)
             {
-                attach_caps(t, KICKOS_CAP_FIRST_DYNAMIC + 1);
-                int sem_handle = 0;
-                (void) semaphore(&sem_handle);
+                Thread* const publisher = spawn(publisher_slot, PRIO_PEER);
+                attach_caps(publisher, KICKOS_CAP_FIRST_DYNAMIC + 1);
+                Endpoint* const ep = endpoint();
+                int const handle = kernel().endpoints.handle_for(kernel().endpoints.index_of(ep));
+                EXPECT_TRUE(cap_console_publish(publisher, handle))
+                    << "fixture: the console endpoint was published";
+                cap_install_at(owner, index, handle, CapType::CAP_ENDPOINT, CAP_WAIT);
+                // Through the real counter locator, so recv_holders and endpoint_refs move
+                // together: a hand-written 1 in recv_holders would make the sweep's drop the
+                // last reference and take a leak-never-strand branch instead of this arm.
+                EXPECT_TRUE(obj_ref_inc(CapType::CAP_ENDPOINT, handle, CAP_WAIT))
+                    << "fixture: the receiver cap took its references";
+                return handle;
+            }
+
+            // The real irq_claim mints into the FIRST free slot, so the slots below the chunk
+            // boundary are taken out of the free list to place the cap where the sweep reaches
+            // it only after a gap. An unlinked slot stays EMPTY, which the sweep skips.
+            void claim_the_line_past_the_boundary(Thread* owner)
+            {
+                for (uint32_t i = KICKOS_CAP_FIRST_DYNAMIC; i < IRQ_CAP_INDEX; i++)
+                {
+                    if (cap_slot(owner->caps, i)->type
+                        == static_cast<uint8_t>(CapType::CAP_EMPTY))
+                    {
+                        cap_run_free_unlink(owner->caps, i, &owner->cap_free_head);
+                    }
+                }
                 uint32_t cap = 0;
-                EXPECT_EQ(cap_install(t, sem_handle, CapType::CAP_SEM, CAP_WAIT, &cap), 0)
-                    << "fixture: the closable cap was installed";
-                return cap;
+                EXPECT_EQ(irq_claim(owner, CONSOLE_LINE, 0, &cap), 0)
+                    << "fixture: the dying thread owns the line";
+                EXPECT_EQ(cap & KCAP_INDEX_MASK, IRQ_CAP_INDEX)
+                    << "fixture: the line cap landed past the first chunk";
+            }
+
+            // The handle userspace would name for a cap the fixture seated by INDEX.
+            uint32_t cap_handle_at(Thread* t, uint32_t index)
+            {
+                return (static_cast<uint32_t>(cap_slot(t->caps, index)->gen) << KCAP_INDEX_BITS)
+                       | index;
+            }
+
+            // The gap tokens come from the watch, not from an action: an arm that only needs
+            // to DATE events against the chunk boundaries arms it with no interleaving.
+            void watch_chunk_gaps()
+            {
+                run_in_chunk_gap(nullptr, 0);
             }
         }
 
         // --- two sweeps at once --------------------------------------------------------
 
         // The arm the depth counter exists for. The inner sweep runs where a real one would
-        // start -- between chunks, with the outer sweep holding no lock -- and the outer
+        // start, between chunks with the outer sweep holding no lock, and the outer
         // sweep's own last chunk is what proves it resumed.
         TEST_F(CapSweep, a_second_sweep_nests_in_a_chunk_gap_and_the_first_resumes)
         {
@@ -159,41 +241,143 @@ namespace kickos
             EXPECT_FALSE(cap_teardown_active()) << "both sweeps balanced their depth";
         }
 
+        // --- the line a peer respawns into ---------------------------------------------
+
+        // The name-keyed half: an IRQ line is named by NUMBER, so until the dying thread's
+        // binding is detached the same line answers -KOS_EBUSY. The sweep's own endpoint arm
+        // releases a parked supervisor, and on target that supervisor outranks its driver and
+        // runs at the very next boundary, before a line cap seated past it is swept.
+        TEST_F(CapSweep, a_peer_the_sweep_wakes_can_claim_the_dying_threads_line)
+        {
+            Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
+            Thread* const sender = endpoint_cap_with_sender(outer, KICKOS_CAP_FIRST_DYNAMIC, 1);
+            claim_the_line_past_the_boundary(outer);
+
+            g_supervisor = spawn(2, PRIO_PEER);
+            attach_caps(g_supervisor, KICKOS_CAP_FIRST_DYNAMIC + 1);
+            g_claim_rc = -1;
+
+            trace_reset();
+            run_in_chunk_gap(supervisor_claims_the_line, GAP_AFTER_FIRST_CHUNK);
+
+            cap_teardown(outer);
+
+            EXPECT_STREQ(trace(), "gap1 gap2 claim gap3 gap4")
+                << "the claim lands between chunks, with the line cap still to be swept";
+            EXPECT_EQ(sender->wait_result, -KOS_EPIPE)
+                << "and it is a peer THIS sweep released, not an unrelated thread";
+            EXPECT_EQ(g_claim_rc, 0) << "the line was already detached when the peer asked";
+            EXPECT_FALSE(cap_teardown_active()) << "the sweep balanced its depth";
+        }
+
+        // The pre-pass is gated on a COUNT, so the arm that says the gate never skips a pass
+        // that is owed has to date the release against the first gap of all, not against the
+        // boundary the line cap's own chunk would reach anyway. A thread holding one line is
+        // exactly the case the count does not let through.
+        TEST_F(CapSweep, a_held_line_is_released_before_the_sweep_opens_any_gap)
+        {
+            Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
+            claim_the_line_past_the_boundary(outer);
+            g_line_owner = outer;
+
+            g_supervisor = spawn(1, PRIO_PEER);
+            attach_caps(g_supervisor, KICKOS_CAP_FIRST_DYNAMIC + 1);
+            g_claim_rc = -1;
+            g_line_slot_type = 0xFFu;
+
+            trace_reset();
+            run_in_chunk_gap(inspect_the_line_before_the_first_chunk, GAP_BEFORE_FIRST_CHUNK);
+
+            cap_teardown(outer);
+
+            EXPECT_STREQ(trace(), "gap1 look gap2 gap3 gap4")
+                << "the look lands in the sweep's very first gap";
+            EXPECT_EQ(g_line_slot_type, static_cast<uint8_t>(CapType::CAP_EMPTY))
+                << "the line cap's slot was already emptied, chunks away from its own boundary";
+            EXPECT_EQ(g_claim_rc, 0) << "and the line itself was detached, not merely unnamed";
+        }
+
+        // --- the console the same wake exposes ------------------------------------------
+
+        // The other name-keyed release, and the reason the pass above must precede the loop:
+        // the reclaim runs at the NOTE, in the masked window that EPIPEs the peer, so no peer
+        // can observe a console the sweep has already decided is dead. Dated by the trace,
+        // which is the only oracle that can fail on this being moved after the loop.
+        TEST_F(CapSweep, the_endpoint_arm_reclaims_the_console_before_it_drops_the_lock)
+        {
+            Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
+            Thread* const sender = spawn(1, PRIO_PEER);
+            int const handle = publish_console_served_by(outer, KICKOS_CAP_FIRST_DYNAMIC, 2);
+            park_plain_sender(sender, kernel().endpoints.resolve(handle));
+
+            trace_reset();
+            watch_chunk_gaps();
+
+            cap_teardown(outer);
+
+            EXPECT_STREQ(trace(), "gap1 note reclaim gap2 gap3 gap4")
+                << "note and reclaim both land inside the chunk that EPIPEd the sender";
+            EXPECT_EQ(sender->wait_result, -KOS_EPIPE) << "the sender was released by that arm";
+            EXPECT_EQ(g_console_noted, 1u) << "the published endpoint lost its last receiver";
+            EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";
+        }
+
+        // The control: the same sweep over an UNPUBLISHED endpoint decides nothing about the
+        // console, so the arm above cannot pass on a reclaim that fires for any dying thread.
+        TEST_F(CapSweep, a_sweep_over_an_unpublished_endpoint_reclaims_nothing)
+        {
+            Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
+            Thread* const sender = endpoint_cap_with_sender(outer, KICKOS_CAP_FIRST_DYNAMIC, 1);
+
+            trace_reset();
+            watch_chunk_gaps();
+
+            cap_teardown(outer);
+
+            EXPECT_EQ(sender->wait_result, -KOS_EPIPE) << "the endpoint arm still ran";
+            EXPECT_EQ(g_console_noted, 0u) << "nothing was published, so nothing was noted";
+            EXPECT_EQ(g_console_reclaimed, 0u) << "and nothing was reclaimed";
+        }
+
         // --- what a live sweep does to a concurrent voluntary close --------------------
 
-        // handle_close reclaims the console for the caller, because a voluntary close has no
-        // teardown loop to finish first. Not while a sweep is in flight: that sweeper may
-        // still hold an IRQ cap on the line, and its own exit runs the sticky note instead.
-        // The sweep here needs no live cap at all -- the depth is what the reader tests.
-        TEST_F(CapSweep, a_close_in_a_chunk_gap_defers_the_console_reclaim)
+        // A close that takes the published endpoint's last receiver away reclaims for the
+        // CALLER, at the same site the sweep uses, and a sweep in flight elsewhere does not
+        // postpone it: a counted sweep has already released every line it held.
+        TEST_F(CapSweep, a_close_in_a_chunk_gap_reclaims_the_console_at_once)
         {
             Thread* const outer = dying_sweeper(0, SWEEP_WIDTH);
             g_closer = spawn(1, PRIO_PEER);
-            g_closer_cap = seat_a_closable_cap(g_closer);
+            attach_caps(g_closer, KICKOS_CAP_FIRST_DYNAMIC + 1);
+            (void) publish_console_served_by(g_closer, KICKOS_CAP_FIRST_DYNAMIC, 2);
+            g_closer_cap = cap_handle_at(g_closer, KICKOS_CAP_FIRST_DYNAMIC);
 
             trace_reset();
             run_in_chunk_gap(close_the_closers_cap, GAP_AFTER_FIRST_CHUNK);
 
             cap_teardown(outer);
 
-            EXPECT_STREQ(trace(), "gap1 gap2 close gap3 gap4")
-                << "the close lands between chunks, with the sweep still to finish";
-            EXPECT_EQ(g_console_reclaimed, 0u)
-                << "a close inside a live sweep leaves the reclaim to the sweeper";
+            EXPECT_STREQ(trace(), "gap1 gap2 close note reclaim gap3 gap4")
+                << "the close lands between chunks and decides the console there";
+            EXPECT_EQ(g_console_reclaimed, 1u)
+                << "a live sweep elsewhere does not postpone the closer's reclaim";
             EXPECT_FALSE(cap_teardown_active()) << "the sweep balanced its depth";
         }
 
-        // The control for the arm above, and it is what makes that one a claim about the
-        // sweep rather than about handle_close never reclaiming.
+        // The control for the arm above: the same close with no sweep in flight, which is what
+        // makes that one a claim about the sweep rather than about the close site itself.
         TEST_F(CapSweep, the_same_close_outside_a_sweep_reclaims_at_once)
         {
             g_closer = spawn(0, PRIO_PEER);
-            g_closer_cap = seat_a_closable_cap(g_closer);
+            attach_caps(g_closer, KICKOS_CAP_FIRST_DYNAMIC + 1);
+            (void) publish_console_served_by(g_closer, KICKOS_CAP_FIRST_DYNAMIC, 1);
+            g_closer_cap = cap_handle_at(g_closer, KICKOS_CAP_FIRST_DYNAMIC);
 
             trace_reset();
             close_the_closers_cap();
 
-            EXPECT_STREQ(trace(), "close reclaim") << "the closer reclaims the console itself";
+            EXPECT_STREQ(trace(), "close note reclaim")
+                << "the closer notes and reclaims the console itself";
             EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";
         }
 

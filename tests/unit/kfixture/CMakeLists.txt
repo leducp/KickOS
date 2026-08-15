@@ -21,7 +21,10 @@ add_library(kickos_kseam OBJECT
   "${PROJECT_SOURCE_DIR}/kernel/sync/sync.cc"
   "${PROJECT_SOURCE_DIR}/kernel/thread/park.cc"
   "${PROJECT_SOURCE_DIR}/kernel/syscall/cap.cc"
-  "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc")
+  "${PROJECT_SOURCE_DIR}/kernel/task/task.cc"
+  "${PROJECT_SOURCE_DIR}/kernel/irq/irq.cc"
+  "${PROJECT_SOURCE_DIR}/kernel/init/instance.cc"
+  "${PROJECT_SOURCE_DIR}/kernel/init/fault.cc")
 
 # PUBLIC so a gate inherits them: it includes kernel headers itself. cxx_std is NOT
 # inherited with the include path, and instance.cc's constinit does not parse without it.

@@ -63,7 +63,7 @@ namespace kickos
 
             run_exit(0);
 
-            EXPECT_FALSE(stranger->cancelled)
+            EXPECT_EQ(stranger->cancel_kind, CANCEL_NONE)
                 << "a thread in a DIFFERENT task must not be cancelled by this exit";
             EXPECT_NE(stranger->state, ThreadState::EXITED) << "the stranger keeps running";
         }
@@ -83,7 +83,8 @@ namespace kickos
 
             run_exit(0);
 
-            EXPECT_TRUE(peer->cancelled) << "a task-mate is cancelled by its peer's exit";
+            EXPECT_NE(peer->cancel_kind, CANCEL_NONE)
+                << "a task-mate is cancelled by its peer's exit";
             EXPECT_NE(peer->state, ThreadState::BLOCKED)
                 << "the peer is off its wait queue and runnable, not left parked";
             EXPECT_EQ(peer->wait_kind, WAIT_NONE) << "the wait edge is cleared by the waker";
@@ -153,7 +154,7 @@ namespace kickos
         }
 
         // A MUTEX waiter donated its priority to the owner. Cancelling it must revert that, or
-        // an owner stays boosted by a waiter that is gone -- a priority inversion with no
+        // an owner stays boosted by a waiter that is gone, a priority inversion with no
         // waiter to justify it, and the kind of leak nothing later corrects.
         TEST_F(TaskDeath, cancelling_a_mutex_waiter_reverts_the_owners_boost)
         {
@@ -180,7 +181,7 @@ namespace kickos
 
         // ORDER, and this is the arm a counter cannot replace. The peer OUTRANKS the dying
         // thread, so the dying guard admits its wake and the switch lands before the rest of
-        // the exit -- the console reclaim being the next step that leaves a mark. Moving the
+        // the exit, the console reclaim being the next step that leaves a mark. Moving the
         // group cancel after the capability sweep reorders this string, and so does a guard
         // that suppresses the wake.
         TEST_F(TaskDeath, a_higher_priority_peer_is_switched_to_before_the_exit_completes)
@@ -240,10 +241,83 @@ namespace kickos
             kernel().current = peer;
 
             IrqLock lock;
-            task_cancel_group(group);
+            task_cancel_group(group, CANCEL_KILL);
 
-            EXPECT_FALSE(c->cancelled) << "a thread already running its own exit is left alone";
-            EXPECT_TRUE(peer->cancelled) << "and the live member IS cancelled by the same scan";
+            EXPECT_EQ(c->cancel_kind, CANCEL_NONE)
+                << "a thread already running its own exit is left alone";
+            EXPECT_NE(peer->cancel_kind, CANCEL_NONE)
+                << "and the live member IS cancelled by the same scan";
+        }
+
+        // --- the group-empty wake (WAIT_TASK_EMPTY) -----------------------------------
+        // "The group is empty" is a different condition from any member's death, and it is
+        // reported by the release that CAUSED it rather than re-derived afterwards: an
+        // implicit task's slot is freed inside that call, and a refcount already at zero
+        // cannot say whose departure took it there.
+        TEST_F(TaskDeath, the_last_member_out_wakes_a_group_waiter)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
+            join_task(c, group);
+            kernel().policy->on_remove(waiter);
+            waiter->state = ThreadState::BLOCKED;
+            waiter->wait_kind = WAIT_TASK_EMPTY;
+            waiter->wait_obj = group;
+            waiter->wait_result = WAIT_RESULT_POISON;
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_EQ(waiter->wait_kind, WAIT_NONE) << "the wait edge is the waker's to clear";
+            EXPECT_EQ(waiter->wait_result, 0) << "0 is GONE: the group is empty";
+            EXPECT_NE(waiter->state, ThreadState::BLOCKED) << "and it is runnable again";
+        }
+
+        // The other half, and the mutant it kills is a wake keyed on the death rather than on
+        // the emptying: a member leaving a group that still holds peers wakes nobody, or
+        // kos_task_slay would answer "empty" with members still alive.
+        TEST_F(TaskDeath, a_death_that_leaves_peers_wakes_no_group_waiter)
+        {
+            Task* const group = task(0);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const peer = seat_pool(SLOT_PEER, PRIO_LOW);
+            Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
+            join_task(c, group);
+            join_task(peer, group);
+            kernel().policy->on_remove(waiter);
+            waiter->state = ThreadState::BLOCKED;
+            waiter->wait_kind = WAIT_TASK_EMPTY;
+            waiter->wait_obj = group;
+            waiter->wait_result = WAIT_RESULT_POISON;
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_EQ(waiter->wait_kind, WAIT_TASK_EMPTY) << "still parked on its group";
+            EXPECT_EQ(waiter->wait_result, WAIT_RESULT_POISON) << "and nobody wrote it a result";
+        }
+
+        // The waiter names a DIFFERENT group, so an emptying it did not ask about must not
+        // reach it. Without the pointer compare the sweep would wake every group waiter.
+        TEST_F(TaskDeath, an_emptying_wakes_only_the_waiter_on_that_group)
+        {
+            Task* const group = task(0);
+            Task* const other = task(1);
+            Thread* const c = seat_pool(SLOT_DYING, PRIO_MID);
+            Thread* const waiter = seat_pool(SLOT_OTHER, PRIO_LOW);
+            join_task(c, group);
+            kernel().policy->on_remove(waiter);
+            waiter->state = ThreadState::BLOCKED;
+            waiter->wait_kind = WAIT_TASK_EMPTY;
+            waiter->wait_obj = other;
+            waiter->wait_result = WAIT_RESULT_POISON;
+            kernel().current = c;
+
+            run_exit(0);
+
+            EXPECT_EQ(waiter->wait_kind, WAIT_TASK_EMPTY) << "another group's emptying is not its";
+            EXPECT_EQ(waiter->wait_result, WAIT_RESULT_POISON) << "and wrote it no result";
         }
 
         // task_cancel_group over a task nothing joined, and over a null task: both are the
@@ -256,10 +330,11 @@ namespace kickos
             kernel().current = stranger;
 
             IrqLock lock;
-            task_cancel_group(empty);
-            task_cancel_group(nullptr);
+            task_cancel_group(empty, CANCEL_KILL);
+            task_cancel_group(nullptr, CANCEL_KILL);
 
-            EXPECT_FALSE(stranger->cancelled) << "a thread in no task at all is not a member";
+            EXPECT_EQ(stranger->cancel_kind, CANCEL_NONE)
+                << "a thread in no task at all is not a member";
         }
     }
 }

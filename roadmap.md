@@ -40,8 +40,7 @@ Make per-task isolation real on silicon. **Status:** the enforcement mechanism h
 silicon across the reference set -- K64F SYSMPU, XMC PMSA, RX72M MPU, ESP32-C6 PMP -- each with
 selftest under enforcement plus a cross-domain `mpu_fault` trap; the arch-independent floor
 (memory domains, per-thread private stacks, pow2 region placement, confused-deputy out-pointer
-copy-in) is in. Remaining tail (STM32/RP2040 silicon, C6 peripheral APM open, RX region-skip
-fail-closed fix, the deferred syscall-buffer bounds) is tracked in `TODO.md` / `docs/m2-readiness.md`.
+copy-in) is in. Remaining tail (C6 peripheral APM open, the deferred syscall-buffer bounds) is tracked in `TODO.md` / `docs/m2-readiness.md`.
 Two halves:
 - **Mechanism, per chip** -- `arch_mpu_apply()` backends wired into the task-switch hook, one
   distinct mechanism class at a time (the discipline: prove `{base,size,attr}` is sufficient,
@@ -67,7 +66,7 @@ The object/credential model on top of M2's enforcement:
 - **Console *device* handover** -- a userspace UART driver takes the peripheral as a capability;
   the kernel relinquishes it and the panic path reclaims + re-inits it.
   **LANDED**, silicon-proven on XMC: `docs/design-m3-console-handover-stageii.md`. What remains is
-  fleet coverage, not the mechanism -- a per-chip `arch_console_reclaim` body exists on three chips.
+  fleet coverage, not the mechanism -- a per-chip `arch_console_reclaim` body exists on four chips.
 - **Low-barrier hard constraint** -- a plain app never writes a capability manifest; the runtime
   wires a sane default cap set (never resurrect CapDL-to-boot friction).
 - **User-selectable CPU clock / low-power mode.** **LANDED, both sides**: the read is
@@ -104,14 +103,14 @@ a driver framework on top. Single-core throughout. Full gap list + sequencing in
   have NO usable debug probe, so bring-up there is print-debug only. The services must therefore
   be console-observable, or two of the four matrix boards cannot be brought up at all.
 - **Fleet userspace UART / console drivers + per-chip `arch_console_reclaim` + handover
-  validation** -- two console drivers exist, `system/driver/xmc4800/xmcuart` and
-  `system/driver/mk64f/k64uart`; every other board is still kernel-owned, and those same two chips
-  are the only ones shipping a reclaim body (the fault-funnel porting invariant: no real reclaim
+  validation** -- UART console drivers exist for xmc4800, mk64f, esp32c6, esp32 and rx72m (the
+  polled pair plus the `*uartirq` set, `system/driver/<chip>/`); every other board is still
+  kernel-owned, and FOUR chips ship a reclaim body -- mk64f, xmc4800, esp32c6 and esp32 (the fault-funnel porting invariant: no real reclaim
   => a driver-garbled UART silently eats the panic banner). The panic path now reclaims from ANY
   state rather than only after a handover, which widened that invariant rather than retiring it:
   every chip body must be idempotent absolute stores. A board can still lose its dump for some
-  other reason -- one such case is open on `f302nucleo` -- and **no emulated gate can catch that
-  class, because every fault-dump gate in the fleet runs on an unbuffered console.** One driver per
+  other reason, and **no emulated gate can catch that class, because every fault-dump gate in the
+  fleet runs on an unbuffered console.** One driver per
   chip family, silicon-available first; isolation is real only where the MPU gates peripherals.
 - **Clock-select fleet-wide** -- extend `arch_cpu_clock_set` per opt-in chip, or keep the declining
   fallback explicitly.
@@ -151,8 +150,9 @@ what is next; this carries the numbering.
 | M4.7.8 | the timed wait: an abortable/timed call, thread join, wait-until-last | landed |
 | M4.7.9 | fault isolation: a thread that faults dies alone, `exit()` reaches the kernel on every port, diagnostics carry a short column | landed |
 | M4.8.1 | the class layer the driver-model ruling requires, plus the one generic service over (class x chip) that replaced twelve bring-ups | merged, PR 19 |
-| M4.8.2 | the host unit-test layer, and the `sched::wake()` dying-guard repair it is the tool to prove | merged |
-| M4.8.3 | the task layer: a set of threads that is one unit, plus the fault record a published console swallowed | landed (9.3, 9.4, 9.5) |
+| M4.8.2 | the host unit-test layer, and the `sched::wake()` dying-guard repair it is the tool to prove | merged, PR 20 |
+| M4.8.3 | the task layer: a set of threads that is one unit, plus the fault record a published console swallowed | merged, PR 21 |
+| M4.8.4 | close the 4.8.x tail: the wake-guard premise, the release ordering the narrowing left, rxv3's measured below-stack cost, and the three instruments that let them through | planned |
 | M4.9.1 | the USB CDC console, continuing M4.6.2 | planned |
 | M4.9.2..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
 

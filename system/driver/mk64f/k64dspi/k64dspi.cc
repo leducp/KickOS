@@ -85,7 +85,6 @@ namespace
                      .name = nullptr,
                      .prio_delta = 0,
                      .arg = drv::KOS_DRV_ARG_WINDOW,
-                     .mem_grant = false,
                      .window_grant = true,
                      .cap_count = 1,
                      // WAIT only: the driver receives, it does not send or re-delegate.

@@ -11,7 +11,7 @@ kickos_add_application(gpioblink
   SOURCES main.cc
   BOARD   ${KICKOS_BOARD})
 
-# Demo pin per board (matches the board pin-map in system/init/pinmap_*.cc): the demo
+# Demo pin per board (matches the board pin-map in system/init/<board>/pinmap.cc): the demo
 # LED, NOT the kernel diag LED. Default 5,8 is harmless on a board with no layout.
 if(KICKOS_BOARD STREQUAL "frdmk64f")
   set(_gpioblink_port 1)   # PTB21 = blue LED (muxed ALT1 = GPIO by the K64F pin-map)

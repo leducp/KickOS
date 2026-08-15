@@ -97,9 +97,8 @@ fragmentation-free. It is a few lines -- because the constraint (one size class)
 the work the general allocator's machinery would have.
 
 The general freeing allocator is still the right tool for *arbitrary* allocations
-(`ram_alloc`), and remains future work (M4). But the kernel does not need it to own
-stacks well -- and shipping the small, scoped version instead of the big, general one
-is the KISS move.
+(`ram_alloc`). But the kernel does not need it to own stacks well -- and shipping the
+small, scoped version instead of the big, general one is the KISS move.
 
 ## And the escape hatch: userspace owns its stacks
 

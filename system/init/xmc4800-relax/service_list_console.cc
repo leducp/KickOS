@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Philippe Leduc
 //
 // xmc4800-relax CONSOLE-ONLY service-list provider: one entry, KOS_SVC_CONSOLE ->
-// xmcuart_console_start (USIC0 CH0 handover). service_list_xmc4800relax.cc also brings
+// xmcuart_console_start (USIC0 CH0 handover). This directory's service_list.cc also brings
 // the USIC0 CH1 SSC bus up; the two are alternatives, never both linked (EXACTLY ONE
 // kickos_board_services per image).
 //

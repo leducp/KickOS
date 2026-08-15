@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+#
+# Every kickos_services_* provider in this tree, and ONE configure preset that compiles
+# it. tests/static/check_service_lists.sh reads this and refuses a provider that is not
+# here, exactly as test_classes.txt refuses an unclassified test program.
+#
+#   <provider>  <preset>  <default|select>
+#
+# default = that preset's BOARD names this provider as its KICKOS_SERVICE_LIST default
+#           in Kconfig, so configuring the preset both compiles it and links it into
+#           every image.
+# select  = no board defaults to it. Configuring the preset COMPILES it (the provider is
+#           an ordinary target under its chip's branch of system/CMakeLists.txt and is in
+#           `all`), but reaching an IMAGE needs -DKICKOS_SERVICE_LIST=<provider>.
+#
+# The preset is not free choice: a provider's source lives under system/init/<board>/,
+# and the gate requires the declared preset to be a preset OF THAT BOARD. Only
+# system/init/common/ is universal, which is what lets kickos_services_none name any
+# preset. That provider is NOT special-cased away: it is the default on every board that
+# ships no service list, so it is the one provider most images actually link, and
+# exempting it would leave the common case the only undeclared one.
+#
+# WHY THIS FILE EXISTS. Three defects this milestone found share one shape -- a
+# configuration axis whose values are never all exercised, so "not covered" and "covered
+# and passing" are indistinguishable. A provider nothing names is a provider whose
+# compile failure surfaces on a bench pass months later.
+
+# --- the universal default ---------------------------------------------------
+kickos_services_none                microbit            default
+
+# --- mk64f (frdmk64f) --------------------------------------------------------
+kickos_services_frdmk64f            frdmk64f            default
+kickos_services_frdmk64f_uartirq    frdmk64f            select
+
+# --- xmc4800 (xmc4800-relax) -------------------------------------------------
+kickos_services_xmc4800relax        xmc4800-relax       default
+kickos_services_xmc4800relax_console xmc4800-relax      select
+kickos_services_xmc4800relax_uartirq xmc4800-relax      select
+
+# --- the boards whose only list is an alternative ----------------------------
+kickos_services_esp32c6_uartirq     esp32c6-wroom       select
+kickos_services_rx72m_uartirq       rx72m               select
+kickos_services_esp32_uartirq       esp32-wroom         select
+kickos_services_pizero2350_usbcdc   pizero2350          select
+kickos_services_picopi_usbcdc       picopi              select
+
+# --- sim -----------------------------------------------------------------------
+kickos_services_sim                 sim                 select
+kickos_services_simuart             sim                 select

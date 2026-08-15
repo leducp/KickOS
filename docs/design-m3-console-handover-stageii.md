@@ -251,13 +251,6 @@ respawn still hold the DEAD endpoint at index 0, so they stay on the fallback (d
 lifetime, and only apps spawned AFTER get the new target. That is the honest price of not mutating
 live tables (D4). Full recovery of old clients is ruling 3.
 
-**NOT SHIPPED, do not read as contract: the driver-death console state machine.**
-`docs/design-m4.6-irq-driver.md` PROPOSES landing the console in `RECLAIMED` on driver death via a
-hook called after `cap_teardown` and before `domain_release`, keyed on `recv_holders` reaching zero
-so a multi-threaded driver reclaims only on its LAST receiver. No such symbol exists anywhere in
-the tree: `RECLAIMED` is reached ONLY from the panic path today, which is exactly what
-`reference/console.md` documents. The proposal stays in that note until it lands.
-
 ### D9 -- priority
 
 **DECIDED: driver priority >= its clients is a stated convention, NOT a spawn-time check.**

@@ -168,6 +168,77 @@ TEST_F(SchedWake, a_dying_thread_yields_to_a_higher_priority_peer)
     EXPECT_TRUE(c->dying) << "the dying marker survives the preemption";
 }
 
+// --- what a PENDED switch does to the two reads above -------------------------------------
+
+// On ARM, RISC-V and RX arch_switch only PENDS, so the sweep keeps the CPU with `current`
+// already naming the peer, to the end of the chunk holding the lock. The stub here returns for
+// the same reason, so these arms sit in that state exactly: a second wake in it reads the PEER,
+// both guard clauses are dead, and what holds the decision is pick_next rather than the
+// clauses. These pin that, in both directions, and the price paid for it.
+
+TEST_F(SchedWake, a_second_wake_under_the_pended_peer_does_not_switch_again)
+{
+    Thread* c = running_thread();
+    Thread* first = blocked_peer(1, PRIO_DYING + 2);
+    Thread* under = blocked_peer(2, PRIO_DYING);
+    // Rotated off the ready head, as in the guard arms above: without it pick_next declines
+    // an equal-priority peer on its own and the second wake proves nothing.
+    Thread* ahead = spawn(3, PRIO_DYING);
+    kernel().policy->on_slice_expire(c);
+    c->dying = true;
+
+    sched::wake(first);
+    sched::wake(under);
+
+    EXPECT_STREQ(trace(), "switch1>2") << "the pended switch is not superseded from below it";
+    EXPECT_EQ(kernel().current, first) << "the peer published first is still what will run";
+    EXPECT_EQ(under->state, ThreadState::READY) << "the second peer is made READY all the same";
+    EXPECT_EQ(ahead->state, ThreadState::READY) << "the peer at the sweep's priority did not run";
+    EXPECT_EQ(c->state, ThreadState::READY) << "the sweep stays runnable";
+    EXPECT_TRUE(c->dying) << "and still marked";
+}
+
+TEST_F(SchedWake, a_second_wake_above_the_pended_peer_supersedes_it)
+{
+    Thread* c = running_thread();
+    Thread* first = blocked_peer(1, PRIO_DYING + 1);
+    Thread* above = blocked_peer(2, PRIO_DYING + 2);
+    c->dying = true;
+
+    sched::wake(first);
+    sched::wake(above);
+
+    // The outgoing side of the second switch is the peer, not the sweep whose stack this runs
+    // on. Every backend that can be in this state ignores that argument and saves the thread
+    // its own switcher finds, so the token below is not a lost context.
+    EXPECT_STREQ(trace(), "switch1>2 switch2>3") << "the higher peer supersedes the pended one";
+    EXPECT_EQ(kernel().current, above) << "the switch lands on the highest-priority thread";
+    EXPECT_EQ(first->state, ThreadState::READY) << "the superseded peer is runnable, not RUNNING";
+    EXPECT_EQ(c->state, ThreadState::READY) << "the sweep is still runnable";
+}
+
+// The price of that supersede, pinned rather than asserted away: a peer that never ran keeps the
+// switch_count and the RR slice its publication armed, so its first quantum starts short.
+// Undoing either needs the one fact kernel C cannot have, whether the pended switch has fired,
+// so REWRITE this arm rather than delete it on the day the arch reports that.
+TEST_F(SchedWake, a_superseded_peer_keeps_the_switch_in_it_never_ran)
+{
+    Thread* c = running_thread();
+    g_now_ns = 1000;
+    Thread* first = blocked_peer(1, PRIO_DYING + 1);
+    first->policy = Policy::RR;
+    first->quantum_ns = 10 * 1000 * 1000;
+    Thread* above = blocked_peer(2, PRIO_DYING + 2);
+    c->dying = true;
+
+    sched::wake(first);
+    sched::wake(above);
+
+    EXPECT_EQ(first->switch_count, 1u) << "charged a switch-in it never ran";
+    EXPECT_EQ(first->slice_deadline_ns, g_now_ns + first->quantum_ns)
+        << "and holding a slice armed before it ran";
+}
+
 // --- the early returns --------------------------------------------------------------------
 
 TEST_F(SchedWake, an_already_ready_peer_is_left_alone_but_loses_its_deadline)
@@ -198,6 +269,27 @@ TEST_F(SchedWake, a_wake_before_the_first_pick_does_not_switch)
 
     EXPECT_EQ(p->state, ThreadState::READY) << "the peer becomes READY with no current thread";
     EXPECT_EQ(g_switches, 0u) << "a pre-start wake does not switch";
+}
+
+// EXITED is the ThreadPool's free marker (thread.h): the slot is reclaimable BECAUSE the state
+// says so, and nothing else records it. So readying an exited thread does not merely resurrect
+// it, it takes the slot out of the pool with no way back. No caller reaches this today, since an
+// exiting thread is on no queue and carries WAIT_NONE, and the funnel is where it is closed
+// because `state == EXITED` is load-bearing two lines further down.
+TEST_F(SchedWake, an_exited_thread_is_not_woken_and_its_slot_stays_free)
+{
+    Thread* c = running_thread();
+    Thread* dead = seat_pool(0, PRIO_DYING + 1);
+    kernel().policy->on_remove(dead);
+    dead->state = ThreadState::EXITED;
+
+    sched::wake(dead);
+
+    EXPECT_EQ(dead->state, ThreadState::EXITED) << "an exited thread is not made READY";
+    EXPECT_EQ(kernel().ready_bitmap & (1u << dead->prio), 0u) << "and no ready list holds it";
+    EXPECT_EQ(g_switches, 0u) << "nothing switched to it";
+    EXPECT_EQ(kernel().current, c) << "current is unchanged";
+    EXPECT_EQ(kernel().threads.alloc(), 0) << "the pool still reads the slot as free";
 }
 
 // The guard compares the EFFECTIVE priority, and nothing else would do: a dying thread
@@ -467,8 +559,7 @@ TEST_F(SchedWake, the_exit_sweep_reclaims_the_console_once)
 
 // detach_current is the whole blocking funnel's entry, and from ISR context arch_switch
 // defers while the supposedly blocked thread keeps running, so the kernel refuses with a
-// kpanic instead of a return code. g_in_isr exists for exactly this and had no case until
-// the death-test mechanism landed.
+// kpanic instead of a return code. g_in_isr exists for exactly this.
 TEST_F(SchedWakeDeathTest, blocking_from_isr_context_panics)
 {
     running_thread();

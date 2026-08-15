@@ -16,7 +16,7 @@
 // only the stack-bounds test can refuse it. It is the witness that a backend actually
 // calls kickos_fault_frame_trusted, and the one mode 1 cannot stand in for: a stacking
 // abort sets a status bit on armv7m, and this sets none anywhere.
-// On RX the frame is not written here at all -- it goes to the ISP -- and what the
+// On RX the frame is not written here at all, it goes to the ISP, and what the
 // bounds test reads is the USP the exit stub WOULD have run on.
 
 #include <kickos/kos.h>

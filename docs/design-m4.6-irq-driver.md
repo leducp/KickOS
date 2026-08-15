@@ -5,7 +5,7 @@ Copyright (c) 2026 Philippe Leduc
 
 # M4.6 design -- the IRQ-driven driver pattern, and the buffered userspace UART on top
 
-> **Status: ACTIVE** -- the M4.6 step-0 design gate, no code written yet. See
+> **Status: LANDED** -- the M4.6 step-0 design gate. See
 > `design/README.md` for the marker taxonomy.
 
 This document is the M4.6 step-0 gate: the general
@@ -716,15 +716,19 @@ Mechanism, in two pieces:
 
 1. In `obj_close_protocol`'s existing `CAP_ENDPOINT` arm, at the point where
    `recv_holders` reaches 0 (`kernel/syscall/cap.cc` (`obj_close_protocol`, the `CAP_ENDPOINT`
-   arm)), additionally set a kernel flag if `e.obj` is the currently published console target.
-   `cap_console_publish` already stores that handle (`kernel/syscall/cap.cc`
-   (`cap_console_publish` / `g_stdout_target`)), so no new identity tracking is needed -- and
-   keying on *recv_holders reaching 0* rather than on a thread identity means a
-   **multi-threaded driver reclaims only when its LAST receiver dies**, which is exactly right
-   for the two-thread shape.
+   arm)), additionally call `console_note_driver_death()` if `e.obj` is the currently published
+   console target. `cap_console_publish` already stores that handle (`kernel/syscall/cap.cc`
+   (`cap_console_publish` / `g_stdout_target`)), so no new identity tracking is needed.
+   `recv_holders` counts WAIT-bearing caps, so on a two-thread driver it reaches 0 when the
+   SERVICE thread dies, while the registers belong to the IRQ thread, which is not counted here
+   at all. **DISPROVED 2026-08-02**: keying the reclaim on the note alone reprograms the UART
+   under a live IRQ thread that still owns the register window, silencing its source. The fix
+   asks the DEVICE instead: `console_on_driver_death` defers while any live domain still holds
+   `arch_console_reclaim_window()`, the note stays SET across a refusal, and every
+   `exit_current` and voluntary close re-runs the check, so the LAST holder's own exit reclaims.
 2. `sched::exit_current` calls `console_on_driver_death()` **after** `cap_teardown` and
-   before `domain_release`. `console_on_driver_death` checks the flag and, if set, runs
-   `arch_console_reclaim(); g_console_state = RECLAIMED;`.
+   before `domain_release`. `console_on_driver_death` checks the note and, if the device window
+   is free, runs `arch_console_reclaim(); g_console_state = RECLAIMED;`.
 
 **Ordering is the whole point.** Doing the reclaim inside a cap arm would run it at an
 arbitrary index in `cap_teardown`'s loop (`kernel/syscall/cap.cc` (`cap_teardown`)) -- possibly
@@ -735,9 +739,10 @@ guarantees: every IRQ cap dropped -> every line masked and detached -> *then* th
 re-initialised. Deterministic.
 
 `arch_console_reclaim` falls back to a no-op (`arch/common/arch_console_reclaim_default.cc`)
-and is defined today by exactly three chips: **mk64f**
+and is defined today by exactly four chips: **mk64f**
 (`arch/arm/chip/mk64f/chip_mk64f.cc` (`arch_console_reclaim`)), **xmc4800**
-(`arch/arm/chip/xmc4800/usic_uart.cc` (`arch_console_reclaim`)) and **esp32**
+(`arch/arm/chip/xmc4800/usic_uart.cc` (`arch_console_reclaim`)), **esp32c6**
+(`arch/riscv/chip/esp32c6/chip_esp32c6.cc` (`arch_console_reclaim`)) and **esp32**
 (`arch/xtensa/chip/esp32/chip_esp32.cc` (`arch_console_reclaim`)).
 
 **Three providers ship a console service list, not two**: `system/init/sim/service_list.cc`
@@ -1218,7 +1223,7 @@ struct kos_uart_stats
 Payload rides in the same `KOS_EP_MSG_MAX = 256` buffer as `bus.h`, so `WRITE` carries up to
 `256 - sizeof(kos_uart_req)` bytes per call. The `region_cap`-based large-transfer path stays
 reserved and `-KOS_ENOSYS`, exactly as in `bus.h` -- the offset-based discipline
-(`docs/design-driver-era-scope.md`, finding 10) is honoured by *not* putting a raw pointer in
+(`docs/design-m4-fable-review.md`, finding 10) is honoured by *not* putting a raw pointer in
 this struct.
 
 **Taxonomy check.** `docs/design-driver-era-scope.md` (section 3.2, "Driver API taxonomy by I/O
@@ -1434,7 +1439,7 @@ Two hard numeric ceilings to design against, both confirmed:
   `arch/xtensa/chip/esp32/irq.h` (`enum kernel_line`, and the reserved-line note above it)).
   This is a second, independent argument for the C6/LX6 UART being **one grouped line** rather
   than three.
-- **`arch_console_reclaim` exists on only three chips** (mk64f, xmc4800, esp32) while eleven
+- **`arch_console_reclaim` exists on only four chips** (mk64f, xmc4800, esp32c6, esp32) while eleven
   `system/init/` service lists now reference `KOS_SVC_CONSOLE`. The sim needs no body (sec.4.4:
   fd 1 holds no state), so what it uniquely closes is the ownership half, and it does -- that is
   `sim_driver_death`. The remaining gap is per-chip bodies on the rest of the fleet, M4.7 work,
@@ -1543,7 +1548,7 @@ could show, and so nothing silicon runs before the hardware-free half is green.
 | 3 | `rx72m` | the largest single piece of arch work in the milestone and the only group-demux witness in the fleet. Its own subsection below | present |
 | 4 | `esp32c6` | the half-defined mask pair. **Must not be attempted before the `arch_rv_hw_mask` half exists** (sec.8): claiming a level source whose mask is a software bit is an interrupt storm, not a failed test | present |
 | 5 | `esp32-wroom` (LX6) | the absent pair, worst case, one physical device line in total. Last of the real-device targets because it needs everything the C6 needed plus the hook that does not exist | present |
-| 6 | `f302nucleo` | not a UART target: it is the binding-pool ceiling witness, `KICKOS_MAX_IRQ_HANDLES = 4`, and the ring-only arm. Its fault reporter is still open and DEFERRED past M4.6.2, so read LD2 first and do not spend the session on it | present |
+| 6 | `f302nucleo` | not a UART target: it is the binding-pool ceiling witness, `KICKOS_MAX_IRQ_HANDLES = 4`, and the ring-only arm | present |
 
 `f411disco` is deliberately absent: it is not on the bench, and its outstanding `f411spi`
 witness is M4.6.3..N debt that this milestone must not wait on.
@@ -1814,7 +1819,7 @@ thing rather than on priority.
 - **Re-arming the kernel TX ring after driver death.** Sec.4.4: the reclaim path leaves the
   console polled, which is honest and already implemented. Ring re-arm needs a per-chip
   "restore the ring's assumptions" step that does not exist. M4.7+.
-- **`arch_console_reclaim` fleet-wide.** Sec.4.4 and sec.8: three chips have a body, the sim
+- **`arch_console_reclaim` fleet-wide.** Sec.4.4 and sec.8: four chips have a body, the sim
   needs none (fd 1 holds no state -- S2 and q8 both say so), and every other board degrades to
   "console dark after driver death" -- unchanged from today. M4.7.
 - **Several subscribers on one line.** Sec.6.1: two consumers of one source is a service with two
