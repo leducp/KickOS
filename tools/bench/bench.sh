@@ -88,6 +88,14 @@ if [ -n "${SERVICE_LIST:-}" ]; then
   EXTRA+=(-DKICKOS_SERVICE_LIST="$SERVICE_LIST")
 fi
 
+# A _usbcdc list publishes the console onto the board's own USB and blinds the pin UART, so
+# the route is the device's own ACM. Derived from the list, not asked for: the provider is
+# what moves the console.
+CONSOLE_USB_CDC=0
+case "${SERVICE_LIST:-}" in
+  *_usbcdc) CONSOLE_USB_CDC=1 ;;
+esac
+
 # A TAG can COLLIDE with a build dir an earlier session left behind, and then the generator loads
 # that dir's stale generated/.config and refuses a symbol this tree does not declare. It reads as a
 # broken preset. Measured 2026-08-10: TAG=m481r hit a 2026-08-07 dir whose .config still carried a
@@ -134,6 +142,7 @@ if [ -z "${BENCH_HOST:-}" ]; then
   # KICKOS_RIG is passed explicitly rather than left to the capture script's own
   # discovery: TREE may be a worktree, which has no .session/ to discover.
   ROOT="$PWD" KICKOS_RIG="$RIG_CONF" PYBIN="${RIG_PYBIN:-${PY:-}}" \
+    CONSOLE_USB_CDC="$CONSOLE_USB_CDC" \
     exec "$HERE/bench-capture.sh" "$BOARD" "$APP" "$IMG" "$LOG" "$SN"
 fi
 
@@ -181,7 +190,7 @@ rsync -a -e "$RSH" "${IMGS[@]}" "$BENCH_HOST:$RRUN/" || { echo "REFUSING: could 
 # would hand the capture script a shifted argument list on exactly those boards.
 ROUT=$(mktemp)
 "${SSH[@]}" bash -s -- "$BOARD" "$APP" "$RRUN/$APP" "$RLOG" "${SN:--}" "${CAP_SECS:--}" \
-    "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" <<'REMOTE' 2>&1 | tee "$ROUT"
+    "$RIG_REMOTE_ROOT" "${RIG_REMOTE_PYBIN:--}" "$CONSOLE_USB_CDC" <<'REMOTE' 2>&1 | tee "$ROUT"
 set -u
 # uv's esptool and the rfp-cli wrapper live in ~/.local/bin, which a non-interactive ssh
 # does not put on PATH. The Espressif capture needs a python carrying pyserial, and the
@@ -196,6 +205,7 @@ PYBIN=$8
 [ "$SN" = "-" ] && SN=""
 [ "$CAP" != "-" ] && export CAP_SECS="$CAP"
 [ "$PYBIN" != "-" ] && export PYBIN
+export CONSOLE_USB_CDC="$9"
 exec bash "$ROOT/tools/bench/bench-capture.sh" "$1" "$2" "$HOME/$3" "$HOME/$4" "$SN"
 REMOTE
 RC=${PIPESTATUS[0]}
