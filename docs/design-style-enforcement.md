@@ -6,7 +6,8 @@
 
 ## 1. The problem
 
-Layout does not drift; `.clang-format` handles it per file as a starting point. What drifts is the set
+Layout is written by hand now, `.clang-format` having been removed as a config the tree never
+converged on; `reference/style.md` states it. What drifts is the set
 of rules no formatter can see: an ASCII-only corpus, an SPDX header, a spelled logical operator, a
 braced `case` arm, a guard macro instead of `#pragma once`, `set -u` in a gate script. Two thirds of
 the files those rules cover are markdown, CMake, YAML and shell, which a C++ formatter does not read at
@@ -43,7 +44,7 @@ classified first; two also need paren-depth tracking. The naive column is a raw 
 | Brace on every `if` / `for` / `while` body | C | 3 hits, **3 false** | a wrapped condition ends its first line in `)` |
 | Brace on every `case` and `default` arm | C | 1 hit, **1 false** | stacked `case 'd': case 'i': {` is one arm, not two |
 | Guard spelling matches project prefix + path | C headers | n/a | `include/kickos/` is elided, and two seam headers deliberately share `KICKOS_ARCH_CONTEXT_H` |
-| East `char const*`, west `volatile T` | C | n/a | needs type parsing; `.clang-format` already records it as not auto-enforceable |
+| East `char const*`, west `volatile T` | C | n/a | needs type parsing; stated in `reference/style.md`, held by review |
 
 ### Bucket 3 -- not mechanically decidable, never gated
 
@@ -69,7 +70,7 @@ any rebase or bulk move walks through. Bucket 2 is advisory on the touched set o
 supports sweep-on-touch rather than replacing it: it tells whoever is already in the file what to fix on
 the way past, and cannot block a third party over a heuristic.
 
-It never rewrites a file (no `--fix`), owns no rule `.clang-format` owns (Allman, indent, pointer
+It never rewrites a file (no `--fix`), owns no layout rule (Allman, indent, pointer
 alignment, wrapping), keeps no baseline or count file, and takes no in-file suppression marker. Two
 exemptions only, each named in the source with its reason, both unauthored: `LICENSE` (upstream text,
 Latin-1 bytes, byte-exact) and `docs/archive/` (captures the archive convention forbids editing); an

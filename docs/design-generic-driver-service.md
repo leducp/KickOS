@@ -18,8 +18,7 @@
 > `user/include/kickos/sys/driver_service.h` for the field set and
 > `docs/design-task-layer.md` open question 7 for the ruling. The listings stay as they are: they
 > record what M4.8.1 decided.
-> See `design/README.md` for the marker taxonomy, and `design-m4-driver-model.md` for the
-> numbered rules this builds on.
+> See `design-m4-driver-model.md` for the numbered rules this builds on.
 
 ## 0. What is actually duplicated
 

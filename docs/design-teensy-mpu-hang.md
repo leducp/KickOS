@@ -6,7 +6,6 @@
 > **Status: LANDED** -- the fix shipped (`c072712`) and the enforcement selftest passes with a
 > clean soak. The durable teaching is Book ch.7.6 (memory types and speculative access); the
 > shared seam it added is `kickos_arm_mpu_fixed` in `arch/arm/common/`.
-> See `design/README.md` for the marker taxonomy.
 
 Decision record for a first-silicon defect on the fleet's first M7 under MPU enforcement: its root
 cause (Cortex-M7 speculative access to Normal memory, NXP ERR011573 / Arm 1013783-B) and the

@@ -3,13 +3,13 @@
 
 > **Status: LANDED** -- the port shipped and runs on silicon. Kept as the DECISION record; the
 > field values it used to carry -- the FCB/IVT/Boot-Data words and the LPUART6 wiring addresses --
-> now live in `reference/boards.md` (*Per-board hardware facts*), which is code-synced. Two of the
-> deferrals below have since closed: **MPU enforcement** works (and required a chip fixed-region
-> wrap for the M7's speculative access -- `design-teensy-mpu-hang.md`) and the **L1 I-cache** is
-> enabled as part of that fix. Still deferred: the 600 MHz PLL tree (`SystemCoreClock` is the
-> ROM-default 396 MHz), the FlexRAM ITCM/DTCM split, and the D-cache (built, opt-in behind
-> `-DKICKOS_IMXRT_DCACHE=1`).
-> See `design/README.md` for the marker taxonomy.
+> now live in `reference/boards.md` (*Per-board hardware facts*), which is code-synced. Three of
+> the deferrals below have since closed: **MPU enforcement** works (and required a chip
+> fixed-region wrap for the M7's speculative access -- `design-teensy-mpu-hang.md`), the **L1
+> I-cache** is enabled as part of that fix, and the **L1 D-cache** is silicon-validated and now the
+> imxrt default (`KICKOS_IMXRT_DCACHE` is ON in `arch/CMakeLists.txt`; the DMA coherency obligation
+> arrives with M4-era DMA). Still deferred: the 600 MHz PLL tree (`SystemCoreClock` is the
+> ROM-default 396 MHz) and the FlexRAM ITCM/DTCM split.
 
 First-pass port to the PJRC Teensy 4.1 (NXP i.MX RT1062, Cortex-M7). Bounded scope: design plus
 scaffold to a clean compile and link of a minimal image, with no bench available. Sources are

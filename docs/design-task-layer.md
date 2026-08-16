@@ -4,7 +4,6 @@
 # A task layer: naming the group that already exists
 
 > **Status: LANDED**
-
 Steps 9.1 through 9.5 have all LANDED; only 9.6 remains and it belongs to
 the MMU era. This file records the decisions taken, the ones
 deliberately deferred, the measured cost, and where the ruling turned out to be wrong. Written

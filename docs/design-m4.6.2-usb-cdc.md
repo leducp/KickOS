@@ -5,8 +5,7 @@ Copyright (c) 2026 Philippe Leduc
 
 # M4.6.2 design -- a USB CDC-ACM console on picopi, pizero2350 and teensy41
 
-> **Status: ACTIVE** -- the M4.6.2 step-0 design gate, no code written yet. See
-> `design/README.md` for the marker taxonomy.
+> **Status: ACTIVE** -- continued as M4.9.1; the code shipped.
 
 M4.6.2 gives the three boards whose console needs an external USB-serial adapter a console
 over the USB device controller each part already carries. It consumes M4.6.1's substrate --

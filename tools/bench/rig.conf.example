@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Philippe Leduc
 #
 # TEMPLATE for the bench rig config. Copy to <tree>/.session/rig.conf, which is
-# gitignored, and fill in YOUR values -- every one below is a placeholder.
+# gitignored, and fill in YOUR values. Every one below is a placeholder.
 #
 #     cp tools/bench/rig.conf.example .session/rig.conf
 #
@@ -35,7 +35,7 @@ RIG_PYBIN=
 #
 # A board with no entry here and no unambiguous tracked default REFUSES by name
 # rather than picking a cable. Any board's row may be pinned here, including the
-# ones that do have a tracked default -- do that as soon as a second ST-Link or a
+# ones that do have a tracked default. Do that as soon as a second ST-Link or a
 # second CH34x joins the bus.
 #
 # The key is the board name uppercased with dashes turned into underscores, e.g.
@@ -43,6 +43,15 @@ RIG_PYBIN=
 RIG_CONSOLE_RX72M=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_XXXXXXXX*
 RIG_CONSOLE_PICOPI=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
 RIG_CONSOLE_PIZERO2350=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
+# teensy41's console is LPUART6 ("Serial1"): the FTDI's RX goes to the board's TX, PIN 1.
+# Pin 0 is the board's own RX and reading it captures nothing. The swap is silent, and
+# an empty log looks exactly like a board that printed nothing.
+RIG_CONSOLE_TEENSY41=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_YYYYYYYY*
+#
+# SEVERAL ROWS MAY NAME ONE CABLE, as the two above do: a bench with fewer FTDIs than
+# boards moves one between them. That is fine while only one of those boards is attached,
+# and wrong the moment two are: the pattern resolves for both and the capture is of
+# whichever board happens to be wired. Re-point the row when the cable moves.
 
 # --- the bench host, when the boards are not on this box -----------------------
 # BENCH_HOST in the environment is what SELECTS remote mode; leave it unset and the

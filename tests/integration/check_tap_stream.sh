@@ -51,17 +51,54 @@ if echo "$out" | grep -q "=== THREAD FAULT ==="; then
     fail "a thread faulted during the suite: this stream's arms must never fault"
 fi
 
+cases="$(echo "$out" | grep -c '^\(not \)\?ok [0-9]')"
 # Parsed after the completion marker so a truncated run is reported as truncated.
 plan="$(echo "$out" | sed -n 's/^1\.\.\([0-9][0-9]*\)$/\1/p' | tail -1)"
-if [ -z "$plan" ]; then
-    fail "no '1..N' plan line in the TAP stream (the whole stream was dropped?)"
-fi
-cases="$(echo "$out" | grep -c '^\(not \)\?ok [0-9]')"
-if [ "$plan" -ne "$cases" ]; then
-    fail "TAP plan claims $plan case(s) but $cases were reported"
-fi
-if [ "$plan" -ne "$want_arms" ]; then
-    fail "TAP plan is $plan, expected exactly $want_arms: an arm was added or deleted"
+
+if [ -n "${TAP_HEADLESS_LAST:-}" ]; then
+    # A console that IS the device cannot deliver its own head, so the plan line is gone.
+    # The caller naming the LAST arm replaces it as the anti-truncation guard: that plus the
+    # completion marker brackets the tail, and contiguity closes the middle. An arm deleted
+    # before the first captured line stays invisible, which is why this is opt-in.
+    if [ -n "$plan" ]; then
+        fail "TAP_HEADLESS_LAST is set but the stream HAS a plan line ($plan): drop the
+  variable and let the ordinary reconciliation run, which is strictly stronger"
+    fi
+    last="$(echo "$out" | sed -n 's/^\(not \)\?ok \([0-9][0-9]*\).*/\2/p' | tail -1)"
+    first="$(echo "$out" | sed -n 's/^\(not \)\?ok \([0-9][0-9]*\).*/\2/p' | head -1)"
+    [ -n "$last" ] || fail "no ok/not-ok lines at all: the whole stream was dropped"
+    if [ "$last" -ne "$TAP_HEADLESS_LAST" ]; then
+        fail "the last arm is $last, expected $TAP_HEADLESS_LAST: the run was cut short"
+    fi
+    if [ "$cases" -ne "$want_arms" ]; then
+        fail "$cases case(s) captured, expected exactly $want_arms"
+    fi
+    # Contiguous, so a gap in the middle cannot pass by reconciling against the ends.
+    if [ "$((last - first + 1))" -ne "$cases" ]; then
+        fail "arms $first..$last span $((last - first + 1)) numbers but $cases were reported:
+  the stream has a HOLE, which a head-truncated capture must never have"
+    fi
+    # STRICTLY +1 EACH: the span test counts LINES, so one duplicated number paired with one
+    # missing number leaves both count and span untouched.
+    seq_bad="$(printf '%s\n' "$out" | sed -n 's/^\(not \)\?ok \([0-9][0-9]*\).*/\2/p' \
+        | awk 'NR == 1 { prev = $1; next } { if ($1 != prev + 1) { print prev "->" $1; exit } prev = $1 }')"
+    if [ -n "$seq_bad" ]; then
+        fail "arm numbers are not strictly consecutive at $seq_bad: a repeat or an
+  out-of-order line, either of which a span test cannot see"
+    fi
+    plan="$last"
+    echo "NOTE: no plan line -- head-truncated transport. Arms 1..$((first - 1)) are NOT" >&2
+    echo "  covered by this verdict; $first..$last are." >&2
+else
+    if [ -z "$plan" ]; then
+        fail "no '1..N' plan line in the TAP stream (the whole stream was dropped?)"
+    fi
+    if [ "$plan" -ne "$cases" ]; then
+        fail "TAP plan claims $plan case(s) but $cases were reported"
+    fi
+    if [ "$plan" -ne "$want_arms" ]; then
+        fail "TAP plan is $plan, expected exactly $want_arms: an arm was added or deleted"
+    fi
 fi
 
 # One directive class. The harness spells both as a passing case carrying a directive,

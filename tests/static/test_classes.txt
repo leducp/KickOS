@@ -82,6 +82,7 @@ image  src    tests/integration/check_qemu_selftest.sh
 image  src    tests/integration/check_reboot.sh
 image  src    tests/integration/check_rootfault.sh
 image  src    tests/integration/check_sched_exit.sh
+image  src    tests/integration/check_sim_conabi.sh
 image  src    tests/integration/check_sim_drvdeath.sh
 image  src    tests/integration/check_sim_faultsurvive_pub.sh
 image  src    tests/integration/check_sim_published.sh

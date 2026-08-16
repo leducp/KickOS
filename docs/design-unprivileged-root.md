@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Unprivileged root: start unprivileged holding capabilities
 
-**Status: LANDED.** Why root starts unprivileged holding capabilities instead of starting privileged
-and demoting, plus the boards where that does not work.
+> **Status: LANDED.** Why root starts unprivileged holding capabilities instead of starting
+> privileged and demoting, plus the boards where that does not work. All five stages merged.
 
 Decisions only. The contract is `reference/invariants.md` and `reference/porting.md`; captures are
 `reference/boards.md`; footprint numbers are `archive/M4.5_footprint_meas.md` section 7. Section

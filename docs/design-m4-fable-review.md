@@ -3,13 +3,13 @@
 
 > **Status: LANDED** -- the review happened (2026-07-20) and its findings were checked; the
 > VERIFICATION notes are the outcomes. Kept as the record of what was challenged and what
-> survived. See `design/README.md` for the marker taxonomy.
->
+> survived.
 > **It is also the driver era's risk register, so each finding that events have since tested carries
 > an OUTCOME line** (added 2026-07-30, at the M4.5.6 boundary). Findings **5** and **12** have
-> MATERIALISED as real defects. Finding **4** is CLOSED. Findings **6** and **8** are OPEN and are
-> squarely M4.6.1 (IRQ) work -- **re-read this document at the top of that milestone** rather than
-> shelving it.
+> MATERIALISED as real defects. Finding **4** is CLOSED. Findings **6** and **8** are OPEN, and
+> **M4.6.1 closed neither**: the tree still carries no standing clock-tree service and no
+> shared-IRQ demux service, so each finding bites the first service that needs one. Re-read this
+> document at the top of whichever milestone builds it rather than shelving it.
 > Finding **10** stays OPEN as the M6 landmine. A finding with no OUTCOME line is untested by
 > events, not dismissed.
 

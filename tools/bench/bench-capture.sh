@@ -22,6 +22,7 @@
 #   KICKOS_RIG  the rig config naming the console cables. Default: $ROOT/.session/rig.conf.
 #   PYBIN       a python carrying pyserial. Espressif capture only.
 #   CAP_SECS    capture window override.
+#   TEENSY_LOAD_SECS  per-load bound for teensy41's HalfKay flash. Default 60.
 set -u
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -71,7 +72,7 @@ case $BOARD in
   f302nucleo)             PATTERN="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_*-if02" ;;
   esp32c6-wroom)          PATTERN="/dev/serial/by-id/usb-1a86_USB_Single_Serial_*" ;;
   esp32-wroom)            PATTERN="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0" ;;
-  rx72m|picopi|pizero2350) ;;
+  rx72m|picopi|pizero2350|teensy41) ;;
   *) refuse "no console row for $BOARD; add one rather than guessing its probe" ;;
 esac
 RIGKEY="RIG_CONSOLE_$(printf '%s' "$BOARD" | tr 'a-z-' 'A-Z_')"
@@ -79,7 +80,27 @@ if [ -n "${!RIGKEY:-}" ]; then
   PATTERN="${!RIGKEY}"
   PORT=""
 fi
-if [ -z "$PORT" ]; then
+
+# THE CONSOLE IS THE BOARD'S OWN USB: a _usbcdc list blinds the pin UART, so the cable the
+# row above names goes quiet and resolving it would capture a silent cable.
+#
+# Keyed on our OWN product strings, not on 1209:0001, which is pid.codes' shared test pair
+# (user/include/kickos/sys/usb_cdc.h) and matches anyone's prototype.
+if [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
+  case $BOARD in
+    picopi|pizero2350) ;;
+    *) refuse "CONSOLE_USB_CDC is set but $BOARD has no USB device controller backend" ;;
+  esac
+  PATTERN="/dev/serial/by-id/usb-KickOS_KickOS_console_*-if00"
+  PORT=""
+fi
+
+# Resolve $PATTERN to exactly one device. Split out because a self-USB console does not
+# exist until the image boots, so that route calls this after the flash.
+resolve_console() {
+  if [ -n "$PORT" ]; then
+    return 0
+  fi
   [ -n "$PATTERN" ] || refuse "$BOARD's console cable is not named: set $RIGKEY in $RIG_CONF
   (see tools/bench/rig.conf.example). There is deliberately no vendor-pattern fallback
   here -- it resolves to somebody else's cable and the capture still looks right."
@@ -96,16 +117,61 @@ if [ -z "$PORT" ]; then
     exit 1
   fi
   PORT="${MATCHES[0]:-}"
-fi
-[ -n "$PORT" ] && [ -e "$PORT" ] || refuse "no console for $BOARD (looked for ${PATTERN:-$PORT})"
+  [ -n "$PORT" ] && [ -e "$PORT" ] || refuse "no console for $BOARD (looked for ${PATTERN:-$PORT})"
+  # Nothing else may hold the port. An orphaned reader from an earlier run writes at its own
+  # offset and the two logs interleave into something that still looks complete.
+  if fuser "$PORT" 2>/dev/null; then
+    refuse "$PORT is held. Kill the PID fuser reports, never pkill on the port."
+  fi
+}
 
-# Nothing else may hold the port. An orphaned reader from an earlier run writes at its own
-# offset and the two logs interleave into something that still looks complete.
-if fuser "$PORT" 2>/dev/null; then
-  refuse "$PORT is held. Kill the PID fuser reports, never pkill on the port."
-fi
+# A reader for a console that DOES NOT EXIST YET, spinning on the path from before the
+# flash. The device appears when the image boots and leaves when it ends, and with
+# KICKOS_SHUTDOWN_TO_BOOTLOADER=ON that is about as long as a poll loop takes to notice:
+# there is no window to arm inside, so the reader must already be waiting.
+#
+# The glob resolves per open, the path not existing to pin when this is armed.
+arm_waiting_reader() {
+  setsid bash -c '
+    shopt -s nullglob
+    while true; do
+      m=($1)
+      # AMBIGUITY IS REFUSED HERE TOO, not just in resolve_console. Two boards enumerating
+      # this product string at once (a fleet pass with two _usbcdc boards, or a node from
+      # the previous capture not yet gone) would otherwise be read in glob order and the
+      # capture would be of whichever came first, silently and plausibly.
+      if [ "${#m[@]}" -gt 1 ]; then
+        printf "REFUSING: %d KickOS consoles match %s; which one is this board is a guess:\n" \
+               "${#m[@]}" "$1" >&2
+        printf "  %s\n" "${m[@]}" >&2
+        exit 1
+      fi
+      if [ "${#m[@]}" -eq 1 ]; then
+        stty -F "${m[0]}" 115200 raw -echo -hupcl clocal min 1 time 0 2>/dev/null
+        cat "${m[0]}" 2>/dev/null
+      fi
+      sleep 0.05
+    done' _ "$PATTERN" >> "$LOG" &
+  READER=$!
+}
 
-echo "=== $BOARD  console $PORT  image $IMG"
+# Answered from the LOG, the device having usually gone by now. The refusal names the two
+# failures it cannot separate; dmesg_restrict is 1 here, so the kernel log cannot either.
+check_cdc_capture() {
+  if [ -s "$LOG" ]; then
+    return 0
+  fi
+  refuse "the USB CDC console produced nothing (looked for $PATTERN).
+  Either it never enumerated, or it enumerated and said nothing, and this bench cannot
+  tell those apart. Check the image really links a _usbcdc service list."
+}
+
+if [ "${CONSOLE_USB_CDC:-0}" != "1" ]; then
+  resolve_console
+  echo "=== $BOARD  console $PORT  image $IMG"
+else
+  echo "=== $BOARD  console <its own USB CDC, after the flash>  image $IMG"
+fi
 : > "$LOG" || refuse "cannot write $LOG"
 
 READER=""
@@ -142,6 +208,9 @@ stop_wrapped_reader() {
   [ -n "$READER" ] || return 0
   kill -- "-$READER" 2>/dev/null
   sleep 1
+  # A self-USB console has no pinned $PORT and is usually off the bus by now, so there is
+  # no port to find a holder on.
+  [ -n "$PORT" ] || return 0
   if fuser "$PORT" 2>/dev/null; then
     echo "WARNING: $PORT is STILL held after the reader teardown. Kill the PID fuser" >&2
     echo "  reports before the next capture, or it will split the bytes." >&2
@@ -209,24 +278,76 @@ case $BOARD in
     kill $READER 2>/dev/null
     ;;
   picopi|pizero2350)
-    # picotool load -x reboots straight into the app, so the run is over before a reader armed
-    # afterwards would exist. The console is a SEPARATE FTDI from the RP2 Boot interface, so
-    # arming it first cannot disturb programming. Same FTDI re-arm as rx72m: the driver reverts
-    # min/time when the last opener closes, and a bare cat then takes the next 0-byte read as EOF.
     command -v picotool > /dev/null || refuse "picotool not on PATH"
+    # A board that has already run KickOS once needs a POWER CYCLE, not a reset: J-Link finds the
+    # SW-DP and then fails to power up the DAP, and BOOTSEL is the only way back. So a second run
+    # in one session fails HERE, and picotool's own words are what say so.
+    if [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
+      # Armed FIRST, though what it reads does not exist yet (see arm_waiting_reader).
+      # BOOTSEL and the image's console are different devices, never on the bus together.
+      # The HEAD of the stream is unrecoverable: the banner is out before the host finishes
+      # enumerating, so a capture from this route is read for its body.
+      arm_waiting_reader
+      sleep 1
+      check_reader "on arming"
+      if ! POUT=$(FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
+        stop_wrapped_reader
+        printf '%s\n' "$POUT" | tail -8 >&2
+        refuse "picotool could not flash $BOARD. Already ran KickOS? Power-cycle it into BOOTSEL."
+      fi
+    else
+      # picotool load -x reboots straight into the app, so the run is over before a reader armed
+      # afterwards would exist. The console is a SEPARATE FTDI from the RP2 Boot interface, so
+      # arming it first cannot disturb programming. Same FTDI re-arm as rx72m: the driver reverts
+      # min/time when the last opener closes, and a bare cat then takes the next 0-byte read as EOF.
+      stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
+      arm_wrapped_reader "$PORT"
+      sleep 1
+      check_reader "on arming"
+      if ! POUT=$(FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
+        kill $READER 2>/dev/null
+        printf '%s\n' "$POUT" | tail -8 >&2
+        refuse "picotool could not flash $BOARD. Already ran KickOS? Power-cycle it into BOOTSEL."
+      fi
+    fi
+    sleep "${CAP_SECS:-25}"
+    note_reader
+    stop_wrapped_reader
+    if [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
+      check_cdc_capture
+    fi
+    ;;
+  teensy41)
+    # HalfKay reboots into the app the moment the load completes, so a reader armed
+    # afterwards misses the run. The console is an FTDI on LPUART6 (Serial1), a different
+    # USB device from the HalfKay HID, so arming it first cannot disturb programming and
+    # is what captures the banner. Same FTDI re-arm as rx72m.
+    command -v teensy_loader_cli > /dev/null || refuse "teensy_loader_cli not on PATH"
     stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
     arm_wrapped_reader "$PORT"
     sleep 1
     check_reader "on arming"
-    # A board that has already run KickOS once needs a POWER CYCLE, not a reset: J-Link finds the
-    # SW-DP and then fails to power up the DAP, and BOOTSEL is the only way back. So a second run
-    # in one session fails HERE, and picotool's own words are what say so.
-    if ! POUT=$(FLASH_IMAGE="$IMG" "$ROOT/tools/flash-picotool.sh" "$BOARD" "$APP" 2>&1); then
-      kill $READER 2>/dev/null
-      printf '%s\n' "$POUT" | tail -8 >&2
-      refuse "picotool could not flash $BOARD. Already ran KickOS? Power-cycle it into BOOTSEL."
+    # THE FIRST LOAD FAILS AND THE SECOND SUCCEEDS, reliably enough that the operator had
+    # been doing it by hand every time. Retried here rather than left to a human, because a
+    # bench step that needs a known second try is a step an unattended pass cannot take.
+    # Cause NOT established; do not infer one from the retry working.
+    # BOTH LOADS BOUNDED: -w blocks until a HalfKay device appears, and a load that lands
+    # takes HalfKay away. A first attempt failing cosmetically on a flash that worked would
+    # leave the retry waiting on a device only a button press brings back.
+    if ! timeout "${TEENSY_LOAD_SECS:-60}" env FLASH_IMAGE="$IMG" \
+           "$ROOT/tools/flash.sh" teensy41 "$APP" > /dev/null 2>&1; then
+      echo "note: the first HalfKay load failed, which is usual on this board; retrying" >&2
+      sleep 2
+      if ! TOUT=$(timeout "${TEENSY_LOAD_SECS:-60}" env FLASH_IMAGE="$IMG" \
+                    "$ROOT/tools/flash.sh" teensy41 "$APP" 2>&1); then
+        stop_wrapped_reader
+        printf '%s\n' "$TOUT" | tail -8 >&2
+        refuse "the teensy41 load failed TWICE. Is the board in HalfKay? Tap its button:
+  teensy_loader_cli cannot enter it (-s needs the Teensyduino serial stack, -r the
+  rebootor hardware), so a board running KickOS has to be put there by hand."
+      fi
     fi
-    sleep "${CAP_SECS:-25}"
+    sleep "${CAP_SECS:-30}"
     note_reader
     stop_wrapped_reader
     ;;
@@ -407,10 +528,22 @@ case $APP in
   *)         WANT_TAP=0 ;;
 esac
 if [ -z "$LAST" ]; then
-  if [ "$WANT_TAP" -eq 1 ]; then
+  if [ "$WANT_TAP" -eq 1 ] && [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
+    # A console that IS the device cannot deliver its own head, so the plan line is gone
+    # and demanding one refuses every capture taken this way. The verdict falls back to the
+    # completion marker and the not-ok count; reconcile the arm total by eye against
+    # user/apps/common/selftest/CMakeLists.txt.
+    if [ "$OKC" -eq 0 ]; then
+      refuse "$LOG carries no plan line AND no ok lines: nothing of the suite arrived"
+    fi
+    echo "NOTE: no plan line -- a USB CDC console loses the head of every capture, this one" >&2
+    echo "  included. $OKC ok line(s) and the arms below the first one are NOT accounted for;" >&2
+    echo "  derive the expected count and check it by hand." >&2
+  elif [ "$WANT_TAP" -eq 1 ]; then
     refuse "$LOG has no plan line at all: the suite never announced itself"
+  else
+    echo "note: $APP announces no TAP plan, so no arm counts are owed. Read the log." >&2
   fi
-  echo "note: $APP announces no TAP plan, so no arm counts are owed. Read the log." >&2
 elif [ "$OKC" -eq 0 ]; then
   refuse "the last run in $LOG carries a plan line but no ok lines"
 fi

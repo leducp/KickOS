@@ -3,7 +3,6 @@
 
 > **Status: LANDED** -- the current contract is `reference/architecture.md` (Memory domains) and
 > `reference/invariants.md` (`grant-refuses-kernel-reserved-blocks`).
-> See `design/README.md` for the marker taxonomy.
 
 Decision record. Grant admissibility, the encodability seam and the peripheral-MMIO matrix belong
 to the Reference. The driver briefs (`design-spi-driver*.md`) build on the same seam.

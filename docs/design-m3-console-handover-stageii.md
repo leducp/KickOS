@@ -3,16 +3,16 @@
 
 > **Status: LANDED** -- console device handover shipped and is silicon-proven on XMC: an app
 > `printf` reaches the wire through IPC and an unprivileged userspace driver, under enforcement,
-> and the panic path reclaims a driver-garbled UART so the banner survives. Two console drivers
-> exist (`system/driver/xmc4800/xmcuart`, `system/driver/mk64f/k64uart`); fleet-wide rollout is
-> M4 work (`design-driver-era-scope.md` G1).
->
+> and the panic path reclaims a driver-garbled UART so the banner survives. UART console drivers
+> exist for five chips under `system/driver/<chip>/` -- the polled pair (`xmcuart`, `k64uart`)
+> plus the IRQ-driven set (`xmcuartirq`, `k64uartirq`, `c6uart`, `lx6uart`, `rxsci`) -- and four
+> chips ship an `arch_console_reclaim` body; fleet-wide rollout is M4 work
+> (`design-driver-era-scope.md` G1).
 > **The contract now lives in the Reference**: `reference/console.md` (the routing guard, the
 > handover mechanism, the reclaim, and "The publisher's obligations" for the root-side rules) plus
 > `reference/invariants.md` (the three `console-*` invariants). This note is the decision record
 > behind them, and three of its decisions have been SUPERSEDED by what shipped: the reclaim gate
 > (D6), the racing-writer drain (D3), and the index-0 reservation (D4). Each says so in place.
-> See `design/README.md` for the marker taxonomy.
 
 Stage (i) (the endpoint object plus `send`/`recv`/`create`, root-only caps, the `recv_holders`
 dead-gate and EPIPE) landed first; its how/why is

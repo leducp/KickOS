@@ -6,7 +6,7 @@ Copyright (c) 2026 Philippe Leduc
 # KickOS -- Architecture
 
 KickOS is a small **microkernel** RTOS with a clear userspace/kernel separation, MPU-first
-per-task isolation, an event-driven **tickless** scheduler, and a **first-class x86 host
+per-domain isolation, an event-driven **tickless** scheduler, and a **first-class x86 host
 "sim"** that runs the real kernel + userspace as one Linux process.
 
 It draws design ideas (studied, never copied -- see *Licensing*) from
@@ -68,7 +68,7 @@ backend can slot in one day for application-class cores -- e.g. **Cortex-A72 / R
 (GICv2, EL0/EL1, generic timer). This is *aspirational, not roadmapped*; its only claim on
 present design is a discipline we already hold -- keep MPU/PMSA specifics in the **arch/chip
 layer**, never leaked into the core or the syscall ABI (the same arch-neutrality the non-ARM
-**RX72M** target exists to prove). "MPU-first per-task isolation" is the M0-M2 reality; "one
+**RX72M** target exists to prove). "MPU-first per-domain isolation" is the M0-M2 reality; "one
 address-space abstraction, MPU *or* MMU behind it" is the horizon.
 
 ### Non-goals -- seL4 machinery deliberately NOT adopted
@@ -235,16 +235,14 @@ declarations ever disagree -- rather than becoming a silent no-op.
    narrows root's authority to `kickos_app_authority()` before the app main, so a custom provider that
    delegates to it inherits the confinement. A bad/missing provider is a build-time FATAL_ERROR, never
    a silent fallback (CMake target selection, not a link-time fallback).
-9. **Conventions.** Traditional include guards `KICKOS_<PATH>_H` (no `#pragma once`); no ternary
-   operators; comments only for hidden constraints/invariants. **Allman brace style**, enforced by
-   the checked-in `.clang-format`, matched to the sibling projects `../KickCAT` / `../kickmsg`
-   (4-space indent, indented namespaces + case labels, left-aligned pointers, leading-comma ctor
-   init, east-const/west-volatile, `ColumnLimit: 0`) -- Allman *everywhere*, no one-liners; run
-   `clang-format -i` on changed sources.
+9. **Conventions.** `style.md` is the contract: Allman everywhere, 4-space indent, traditional
+   include guards, no ternary, spelled logical operators, fixed-width types, and comments only for
+   hidden constraints. Shared in shape with the sibling projects `../KickCAT` / `../kickmsg`.
+   There is no formatter; the rules are held by review.
 
 ### How KickOS differs from its inspirations
 
-None of them combine MPU-first per-task isolation + a microkernel SVC boundary + a first-class
+None of them combine MPU-first per-domain isolation + a microkernel SVC boundary + a first-class
 x86 sim. Most (RTEMS, microC/OS, RT-Thread core) are flat-memory. **ThreadX Modules** and
 **ChibiOS/SB** are the closest prior art and the references we lean on for the isolation model.
 
@@ -424,7 +422,7 @@ switch, ready structure); the *policy* (which thread runs next) sits behind a sm
 arms the incoming thread and `next_timed_event()` reports the earliest policy deadline
 (`UINT64_MAX` = none), so the core owns the clock and the policy owns the deadline.
 **FIFO + RR ship first**
-(priority bitmap + per-priority FIFO, optional per-task quantum); **EDF / rate-monotonic** drop
+(priority bitmap + per-priority FIFO, optional per-thread quantum); **EDF / rate-monotonic** drop
 in later without touching `reschedule()`, IPC, or the arch layer. Runqueues are kept **SMP-ready**
 (per-core) for RP2040 core1 later.
 

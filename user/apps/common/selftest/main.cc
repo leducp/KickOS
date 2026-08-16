@@ -27,6 +27,13 @@
 #include <kickos/chip_limits.h>
 #endif
 
+// Start of the IRQ arms' block of nine consecutive lines. They need lines no other holder
+// in this image claims, which is weaker than KICKOS_IRQ_SOFT_ONLY_BASE's no-source
+// property. A chip whose own drivers sit in the default block must move it.
+#ifndef KICKOS_SELFTEST_IRQ_BASE
+#define KICKOS_SELFTEST_IRQ_BASE 6
+#endif
+
 // Which region of the registration list at the bottom of this file to register: 0 (the
 // default) is all of it, 1 and 2 are the two contiguous regions the 64 KiB FLASH parts
 // build as separate images. TAP_ADD is REDEFINED at the region boundary, so an arm
@@ -383,6 +390,14 @@ namespace
     // registrations in main.
     // --- IRQ-context post (tier 2) ---------------------------------------------
     kos_cap_t g_irq = KOS_CAP_NONE;
+
+    // Needs a line with NO HARDWARE SOURCE, not merely an unclaimed one: kos_irq_attach
+    // unmasks, so a wired line would deliver a real interrupt into a test binding.
+#if defined(KICKOS_IRQ_SOFT_ONLY_BASE)
+    constexpr int IRQ_CTX_LINE = KICKOS_IRQ_SOFT_ONLY_BASE + 1;
+#else
+    constexpr int IRQ_CTX_LINE = KICKOS_SELFTEST_IRQ_BASE + 10;
+#endif
     void irq_waiter(void*)
     {
         kos_sem_wait(CH_AUX); // g_irq
@@ -392,7 +407,7 @@ namespace
     void irq_injector(void*)
     {
         log_put('i');
-        kos_irq_inject(5); // ISR posts g_irq -> higher-prio waiter preempts
+        kos_irq_inject(IRQ_CTX_LINE); // ISR posts g_irq -> higher-prio waiter preempts
         log_put('r');
         kos_sem_post(CH_DONE);
     }
@@ -400,7 +415,9 @@ namespace
     {
         log_reset();
         kos_sem_create(0, &g_irq);
-        kos_irq_attach(5, g_irq); // attach resolves MAIN's cap (needs CAP_SIGNAL), stores global
+        // MUST be checked: unchecked, a refused line leaves no ISR bound, irq_waiter parks
+        // forever and wait_n(2) below deadlocks root. TAP_CHECK returns before the spawns.
+        TAP_CHECK(kos_irq_attach(IRQ_CTX_LINE, g_irq) == 0); // resolves MAIN's cap (CAP_SIGNAL)
         kos_cap_grant wcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_irq, CH_FULL}};
         kos_cap_grant icaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
         auto w = kos::thread::spawn_caps(irq_waiter, nullptr, "irqW", 15, wcaps, 3);
@@ -550,7 +567,7 @@ namespace
     kos_cap_t g_irq_ready = KOS_CAP_NONE;
     void* g_mmio = nullptr; // fake device MMIO word, granted to the driver
     int g_seen[3] = {0, 0, 0};
-    constexpr int IRQ_LINE = 7;
+    constexpr int IRQ_LINE = KICKOS_SELFTEST_IRQ_BASE + 1;
 
     void irq_driver(void*)
     {
@@ -622,7 +639,7 @@ namespace
     // delivers and masks the line; #2 and #3 land masked and COALESCE one-deep, so the
     // driver services EXACTLY twice, never a phantom third.
     int g_mask_serviced = 0;
-    constexpr int MASK_LINE = 6;
+    constexpr int MASK_LINE = KICKOS_SELFTEST_IRQ_BASE + 0;
 
     void mask_driver(void*)
     {
@@ -680,13 +697,25 @@ namespace
     // and a peripheral line only passes while nothing drives it. RP2040 IRQ15 is
     // SIO_IRQ_PROC0, which re-asserts from the core-local FIFO level with no enable bit,
     // and the retired latch redelivers.
-    // Not 11: t_irq_ownership deliberately leaves that line bound to a stale handle, so
-    // sharing it would make this arm depend on registration order to still be claimable.
+    // Not the ownership arm's line: t_irq_ownership deliberately leaves that one bound to a
+    // stale handle, so sharing it would make this arm depend on registration order to still
+    // be claimable.
 #if defined(KICKOS_IRQ_SOFT_ONLY_BASE)
     constexpr int DISCARD_LINE = KICKOS_IRQ_SOFT_ONLY_BASE;
 #else
-    constexpr int DISCARD_LINE = 15;
+    constexpr int DISCARD_LINE = KICKOS_SELFTEST_IRQ_BASE + 9;
 #endif
+
+    // A base that moved over either would hand two arms one line, surfacing as an
+    // unrelated arm failing.
+    static_assert(DISCARD_LINE < KICKOS_SELFTEST_IRQ_BASE
+                      or DISCARD_LINE > KICKOS_SELFTEST_IRQ_BASE + 8,
+                  "the discard line falls inside the selftest's nine-line IRQ block");
+    static_assert(IRQ_CTX_LINE < KICKOS_SELFTEST_IRQ_BASE
+                      or IRQ_CTX_LINE > KICKOS_SELFTEST_IRQ_BASE + 8,
+                  "the irq-context line falls inside the selftest's nine-line IRQ block");
+    static_assert(IRQ_CTX_LINE != DISCARD_LINE,
+                  "the irq-context and discard arms would share a line");
 
     void discard_driver(void*)
     {
@@ -740,7 +769,7 @@ namespace
     // still receives every subsequent IRQ. Driver MUST run above root, so it reaches its
     // next wait before root injects again.
     int g_autorearm_seen = 0;
-    constexpr int AUTO_REARM_LINE = 8;
+    constexpr int AUTO_REARM_LINE = KICKOS_SELFTEST_IRQ_BASE + 2;
 
     void autorearm_driver(void*)
     {
@@ -783,7 +812,7 @@ namespace
     // service an event that never came. Driver MUST run below root so root sequences each
     // step, and every inject below must target an ARMED line.
     int g_phantom_seen = 0;
-    constexpr int PHANTOM_LINE = 10;
+    constexpr int PHANTOM_LINE = KICKOS_SELFTEST_IRQ_BASE + 4;
 
     void phantom_driver(void*)
     {
@@ -1610,10 +1639,11 @@ namespace
     }
 
     // --- The published console's CRLF expansion --------------------------------
-    // Must run on EVERY board, including the ones that do not cook: console_write_all's
+    // Must run on EVERY board, including the ones that do not cook: write_console's cook
     // call site is #if KICKOS_CONSOLE_CRLF, so otherwise the expansion ships with in-env
-    // coverage on no board at all. Keep it pure stack: microbit's arena is 16 KiB and a
-    // `static` comes straight out of it.
+    // coverage on no board at all. The write-policy legs below are here for the same
+    // reason, both being pure functions no transport gate reaches. Keep it pure stack:
+    // microbit's arena is 16 KiB and a `static` comes straight out of it.
     void t_console_crlf()
     {
         unsigned char out[16];
@@ -1621,13 +1651,13 @@ namespace
 
         // Identity when there is nothing to expand.
         unsigned char const plain[3] = {'a', 'b', 'c'};
-        TAP_CHECK(kickos::uart::cook_crlf(plain, 3, out, sizeof(out), &taken) == 3);
+        TAP_CHECK(kickos::console::cook_crlf(plain, 3, out, sizeof(out), &taken) == 3);
         TAP_CHECK(taken == 3);
         TAP_CHECK(out[0] == 'a' and out[1] == 'b' and out[2] == 'c');
 
         // Every '\n' gains a '\r' before it.
         unsigned char const nl[3] = {'a', '\n', 'b'};
-        TAP_CHECK(kickos::uart::cook_crlf(nl, 3, out, sizeof(out), &taken) == 4);
+        TAP_CHECK(kickos::console::cook_crlf(nl, 3, out, sizeof(out), &taken) == 4);
         TAP_CHECK(taken == 3);
         TAP_CHECK(out[0] == 'a' and out[1] == '\r' and out[2] == '\n' and out[3] == 'b');
 
@@ -1635,23 +1665,74 @@ namespace
         // carries "\r\n" becomes "\r\r\n". A doubled CR is a no-op on the wire, and
         // matching kconsole_write exactly is what keeps the two console routes agreeing.
         unsigned char const crnl[2] = {'\r', '\n'};
-        TAP_CHECK(kickos::uart::cook_crlf(crnl, 2, out, sizeof(out), &taken) == 3);
+        TAP_CHECK(kickos::console::cook_crlf(crnl, 2, out, sizeof(out), &taken) == 3);
         TAP_CHECK(out[0] == '\r' and out[1] == '\r' and out[2] == '\n');
 
         // A '\n' is never split from its '\r' at the chunk boundary: with room for one
         // more byte the expansion stops BEFORE it, so `taken` is a clean resume point.
         unsigned char const tight[2] = {'x', '\n'};
-        TAP_CHECK(kickos::uart::cook_crlf(tight, 2, out, 2, &taken) == 1);
+        TAP_CHECK(kickos::console::cook_crlf(tight, 2, out, 2, &taken) == 1);
         TAP_CHECK(taken == 1);
         TAP_CHECK(out[0] == 'x');
         // Resuming from there emits the pair whole.
-        TAP_CHECK(kickos::uart::cook_crlf(tight + taken, 1, out, 2, &taken) == 2);
+        TAP_CHECK(kickos::console::cook_crlf(tight + taken, 1, out, 2, &taken) == 2);
         TAP_CHECK(taken == 1);
         TAP_CHECK(out[0] == '\r' and out[1] == '\n');
 
         // No output room at all consumes nothing rather than dropping an input byte.
-        TAP_CHECK(kickos::uart::cook_crlf(plain, 3, out, 0, &taken) == 0);
+        TAP_CHECK(kickos::console::cook_crlf(plain, 3, out, 0, &taken) == 0);
         TAP_CHECK(taken == 0);
+
+        // The write policy KOS_UART_SET_MODE carries. One pure function decides it for
+        // every transport, so both service layers refuse and accept identically.
+        uint32_t mode = 0;
+        // A service with no unframed console arm REFUSES: a stored mode nothing reads would
+        // tell a caller byte loss was enabled while its writes still blocked.
+        TAP_CHECK(kickos::console::mode_apply(nullptr, KOS_UART_F_NONBLOCK, 0u)
+                  == -KOS_ENOSYS);
+        // An unknown bit is refused whole rather than masked, and stores nothing.
+        TAP_CHECK(kickos::console::mode_apply(&mode, 0x80u, 0u) == -KOS_EINVAL);
+        TAP_CHECK(mode == 0);
+        // Accepted and readable back, which is what the console arm consults per write.
+        TAP_CHECK(kickos::console::mode_apply(&mode, KOS_UART_F_NONBLOCK, 0u) == 0);
+        TAP_CHECK(mode == KOS_UART_F_NONBLOCK);
+        // Clearing it restores the paced default; the flag is not a one-way latch.
+        TAP_CHECK(kickos::console::mode_apply(&mode, 0u, 0u) == 0);
+        TAP_CHECK(mode == 0);
+        // A transport that cannot honour a blocking write REQUIRES the flag and refuses to
+        // clear it, so a caller is told it cannot have back-pressure instead of being handed
+        // an unbounded wait. The refusal stores nothing.
+        mode = KOS_UART_F_NONBLOCK;
+        TAP_CHECK(kickos::console::mode_apply(&mode, 0u, KOS_UART_F_NONBLOCK)
+                  == -KOS_ENOTSUP);
+        TAP_CHECK(mode == KOS_UART_F_NONBLOCK);
+        TAP_CHECK(kickos::console::mode_apply(&mode, KOS_UART_F_NONBLOCK,
+                                             KOS_UART_F_NONBLOCK) == 0);
+
+        // A non-blocking write REPORTS its short accept, which is the whole difference
+        // between this mode and dropping in silence: the service arm turns the shortfall
+        // into stats.tx_dropped, the only channel an unframed writer can read.
+        unsigned char rbuf[8];
+        struct kos_byte_ring ring;
+        kos_byte_ring_init(&ring, rbuf, sizeof(rbuf));
+        struct kos_uart_stats st;
+        memset(&st, 0, sizeof(st));
+        unsigned char twelve[12];
+        memset(twelve, 'z', sizeof(twelve));
+        // Eight bytes of room for twelve offered: a short accept, not a refusal and not a
+        // wait. The blocking arm cannot be exercised here, having no consumer to terminate.
+        uint32_t const nb = kickos::console::write_console(&ring, &st, twelve, 12,
+                                                          KOS_UART_F_NONBLOCK);
+        TAP_CHECK(nb < 12);       // short accept
+        TAP_CHECK(12u - nb > 0u); // the shortfall the service arm charges to tx_dropped
+        TAP_CHECK(st.tx_bytes > 0u and st.tx_bytes <= sizeof(rbuf));
+        // The return is INPUT bytes and the counter is COOKED bytes, so these differ under
+        // KICKOS_CONSOLE_CRLF: a partially accepted cooked chunk reports no input progress
+        // at all. That makes the charge OVER-count by up to one chunk, never under-count,
+        // and over-counting is the safe direction: a caller is told it lost at least what it
+        // lost. Asserting equality here would pass on the sim, the ONLY crlf=0 tree, and
+        // fail on all thirteen boards.
+        TAP_CHECK(st.tx_bytes >= nb);
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -1660,7 +1741,7 @@ namespace
     {
         // This arm POISONS the line (below), so it must not be shared with any other arm
         // whatever the registration order.
-        constexpr int LINE = 11;
+        constexpr int LINE = KICKOS_SELFTEST_IRQ_BASE + 5;
         kos_cap_t sem = KOS_CAP_NONE;
         kos_sem_create(0, &sem);
         TAP_CHECK(kos_irq_attach(LINE, sem) == 0);          // first claim wins
@@ -1679,7 +1760,7 @@ namespace
     // Keep this to ONE new static: on a 16 KiB part the user arena is what is left after
     // static RAM, so .bss added here shrinks the arena for every later arm.
     int g_claimgate_rc = 0;
-    constexpr int CLAIM_GATE_LINE = 13;
+    constexpr int CLAIM_GATE_LINE = KICKOS_SELFTEST_IRQ_BASE + 7;
 
     void claimgate_worker(void*) // UNPRIVILEGED, authority 0; caps: g_done@1 (CH_DONE)
     {
@@ -1713,7 +1794,7 @@ namespace
     // cap_teardown drops the dying thread's line cap and irq_ref_drop detaches the line
     // and frees the binding slot, so the SAME line is claimable again. Without that
     // release the line keeps the dead driver's handler and returns -KOS_EBUSY forever.
-    constexpr int RECLAIM_LINE = 14;
+    constexpr int RECLAIM_LINE = KICKOS_SELFTEST_IRQ_BASE + 8;
 
     // Arms the line via ack rather than parking in wait: the release path must be exercised
     // from the ARMED state, and an ack reaches it without needing an event. Do NOT rewrite
@@ -1757,7 +1838,7 @@ namespace
     // --- Spurious IRQ: an unbound line is masked + counted, never dropped -------
     void t_irq_spurious()
     {
-        constexpr int FREE_LINE = 9; // no driver bound to this line
+        constexpr int FREE_LINE = KICKOS_SELFTEST_IRQ_BASE + 3; // no driver bound to this line
         // Enable the line so the injected raise reaches the default handler on
         // masked-by-default controllers (ARM NVIC, RX); sim/riscv are unmasked by
         // default, so this is a no-op there.
@@ -1779,7 +1860,7 @@ namespace
     // this is the ONE tier-1 arm where root must NOT pre-arm the line: pre-arming moves
     // the discard into root and stops testing the driver's own first arm.
     int g_stale_seen = 0;
-    constexpr int STALE_LINE = 12;
+    constexpr int STALE_LINE = KICKOS_SELFTEST_IRQ_BASE + 6;
 
     void stale_driver(void*)
     {
@@ -4016,6 +4097,9 @@ namespace
         int block;     // a blocking read
         int rd;        // bytes returned by READ
         int stats_tx;  // tx_bytes the driver counted
+        int mode_bad;  // SET_MODE carrying an unknown bit
+        int mode_clr;  // SET_MODE clearing the policy
+        int mode_set;  // SET_MODE seating KOS_UART_F_NONBLOCK
         unsigned char rdbuf[4];
     };
 
@@ -4076,6 +4160,12 @@ namespace
             memcpy(&s, st, sizeof(s));
             r.stats_tx = static_cast<int>(s.tx_bytes);
         }
+        // Over the WIRE, not against console::mode_apply directly, so serve_one's dispatch
+        // is covered. Accept LAST, so the server can assert the mode was stored.
+        r.mode_bad = uart_call(KOS_UART_SET_MODE, 0x80, 0, nullptr, nullptr, 0);
+        r.mode_clr = uart_call(KOS_UART_SET_MODE, 0, 0, nullptr, nullptr, 0);
+        r.mode_set = uart_call(KOS_UART_SET_MODE, KOS_UART_F_NONBLOCK, 0, nullptr,
+                               nullptr, 0);
         // A PLAIN send (no reply cap), which is how the server tells this frame apart
         // from a request.
         (void)kos_send(2, &r, sizeof(r));
@@ -4121,7 +4211,9 @@ namespace
         UartResults got;
         memset(&got, 0, sizeof(got));
         unsigned char msg[KOS_EP_MSG_MAX];
-        for (int i = 0; i < 8; i++)
+        // Bounded so a client dying mid-sequence cannot park root here. MUST cover every
+        // request uart_client makes plus its results frame; too low deadlocks wait_n below.
+        for (int i = 0; i < 12; i++)
         {
             struct kos_recv_info info = {0u, KOS_CAP_NONE};
             long const n = kos_recv(g_ep, msg, sizeof(msg), &info);
@@ -4137,7 +4229,9 @@ namespace
                 }
                 break; // the results frame is the client's last word
             }
-            kickos::uart::serve_one(sh, msg, static_cast<size_t>(n), info.reply_cap);
+            // The CONSOLE posture every silicon driver runs. A null here refuses SET_MODE.
+            kickos::uart::serve_one(sh, &sh->mode, msg, static_cast<size_t>(n),
+                                    info.reply_cap);
         }
         wait_n(1);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
@@ -4151,6 +4245,11 @@ namespace
         TAP_CHECK(got.rdbuf[2] == 'o' and got.rdbuf[3] == 'k');
         // Counted, not merely present: 4 + 200 accepted bytes.
         TAP_CHECK(got.stats_tx == 204);
+        TAP_CHECK(got.mode_bad == -KOS_EINVAL); // unknown bit refused whole
+        TAP_CHECK(got.mode_clr == 0);
+        TAP_CHECK(got.mode_set == 0);
+        // Server-side read: the write serve_one made, not the reply it sent.
+        TAP_CHECK(sh->mode == KOS_UART_F_NONBLOCK);
     }
 #endif
 

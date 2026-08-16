@@ -92,9 +92,11 @@ DOCS=$(wc -l < "$TMP/docs.txt" | tr -d ' ')
 # names as EXAMPLES, and once it is tracked those examples would enter the valid set and
 # mask the very findings they describe.
 # docs/ is excluded for the same reason and it is NOT redundant with the *.md filter:
-# docs/audit/*.html is a DOCUMENT tracked under a non-markdown extension, so every name
-# it records stayed valid to this gate forever after the build dropped it. Two knobs
-# (KICKOS_ROOT_PRIVILEGED, KICKOS_SERVICE_LIST_ROOT_MMIO) were masked that way. The
+# a DOCUMENT tracked under a non-markdown extension behaves as a source here, so every
+# name it records would stay valid to this gate forever after the build dropped it. An
+# audit ledger tracked as .html did exactly that and masked two knobs
+# (KICKOS_ROOT_PRIVILEGED, KICKOS_SERVICE_LIST_ROOT_MMIO). That file is gone, and this
+# exclusion is NOT: the next .html, .svg or .json committed under docs/ reopens it. The
 # corpus being CHECKED is unaffected: docs/*.md is still every bit of it.
 git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^docs/' | grep -v '^tests/static/check_doc_names\.sh$' > "$TMP/src.txt"
 [ -s "$TMP/src.txt" ] || fail "no tracked non-markdown sources -- cannot build the valid identifier set"

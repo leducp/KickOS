@@ -436,7 +436,7 @@ the board".
 | rv32imac | `qemu-riscv`, `esp32c6-wroom` | `qemu-riscv` run gate; C6 + bench build-only | **runtime** (PMP, the `qemu-riscv-mpu` job) |
 | armv7m | `qemu`, `qemu-m33`, `qemu-m7`, `qemu-m3`, and the board sweep | four MPS2 run gates (an386/an505/an500/an385) + build sweep | **runtime** (PMSAv7 on M4/M7/M3, **PMSAv8** on the M33) |
 | armv6m | `microbit`, `picopi` | `microbit` run gate + `picopi` build | **build only** |
-| Xtensa LX6 | `esp32-wroom` | build only, plain and `-st` | -- (no per-task unit) |
+| Xtensa LX6 | `esp32-wroom` | build only, plain and `-st` | -- (no per-domain unit) |
 | RXv3 | `rx72m` | **none** | -- |
 
 - **ARM enforcement is now a run gate too, on both PMSA revisions.** It was build-only for a

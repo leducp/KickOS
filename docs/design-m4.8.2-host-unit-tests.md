@@ -3,19 +3,17 @@
 
 # M4.8.2: the host unit-test layer has two seams, not one
 
-> **Status: ACTIVE.** Sections 0 to 6 were written as a spike and are kept as the reasoning;
-> section 7's items 1 to 4 have LANDED and section 8 is the record of what landing them found,
-> including two corrections to this document and one to `TODO.md`. Items 5 to 7 are still owed.
-> Section 9 is the framework decision, which is GoogleTest via Conan and which SUPERSEDES item 5
-> of section 1 and two of section 4.3's three bullets. See `design/README.md` for the marker
-> taxonomy.
->
+> **Status: LANDED** -- M4.8.2 merged as PR #20. Sections 0 to 6 were written as a spike and are
+> kept as the reasoning; section 7's items 1 to 6 have LANDED and section 8 is the record of what
+> landing them found, including two corrections to this document and one to `TODO.md`. Item 7, the
+> selftest-arm migration, is the one still owed, and the fixture follow-ups it needs are in
+> `../TODO.md`. Section 9 is the framework decision, which is GoogleTest via Conan and which
+> SUPERSEDES item 5 of section 1 and two of section 4.3's three bullets.
 > This continues an earlier spike that lives on a branch, not in this tree: the M4.9 host
 > unit-test record and its `pidonation` proof of concept, written when the layer was still
 > numbered M4.9. It is cited below as **the prior spike**, without an in-repo path, because
 > writing one would be a claim about a tree that does not contain it. Where this document
 > differs from it, the difference is named.
->
 > Contract references: `reference/invariants.md`, `reference/porting.md`. The bring-up contract
 > itself is `user/include/kickos/sys/driver_service.h`.
 

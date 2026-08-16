@@ -21,9 +21,9 @@
 //     ALL endpoints once it is set, and the workaround is to never touch it. Nothing
 //     here cancels a transfer.
 //
-// The console is a DROP-ON-FULL sink and never blocks on the link. A USB device with no
-// host attached is un-enumerated indefinitely, so a console that waited for enumeration
-// would hang an un-cabled board at its first printf.
+// A USB device with no host attached is un-enumerated indefinitely, and a blocking console
+// write is unbounded, so this console's endpoint starts NON-BLOCKING: an un-cabled board
+// loses output rather than hanging at its first printf. usb::shared_init states it.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -77,7 +77,7 @@ namespace
             r32(buf_ctrl) = word | reg::BUF_AVAILABLE;
         }
 
-        static void dpram_write(uintptr_t dst, unsigned char const* src, uint32_t n)
+        static void dpram_write(uintptr_t dst, uint8_t const* src, uint32_t n)
         {
             for (uint32_t i = 0; i < n; i++)
             {
@@ -85,7 +85,7 @@ namespace
             }
         }
 
-        static void dpram_read(unsigned char* dst, uintptr_t src, uint32_t n)
+        static void dpram_read(uint8_t* dst, uintptr_t src, uint32_t n)
         {
             for (uint32_t i = 0; i < n; i++)
             {
@@ -233,7 +233,7 @@ namespace
             r32(regs + reg::ADDR_ENDP) = addr;
         }
 
-        void ep0_in(unsigned char const* p, uint32_t n, uint8_t pid)
+        void ep0_in(uint8_t const* p, uint32_t n, uint8_t pid)
         {
             if (n > KOS_USB_CDC_EP0_MAX_PACKET)
             {
@@ -265,7 +265,7 @@ namespace
             arm_buffer(dpram + reg::dp_buf_ctrl_out(0), word);
         }
 
-        uint32_t ep0_out_read(unsigned char* out, uint32_t max)
+        uint32_t ep0_out_read(uint8_t* out, uint32_t max)
         {
             uint32_t n = r32(dpram + reg::dp_buf_ctrl_out(0)) & reg::BUF_LEN_MASK;
             if (n > max)
@@ -293,7 +293,7 @@ namespace
             r32(dpram + reg::dp_buf_ctrl_out(0)) = reg::BUF_STALL;
         }
 
-        void ep_in(uint8_t ep, unsigned char const* p, uint32_t n, uint8_t pid)
+        void ep_in(uint8_t ep, uint8_t const* p, uint32_t n, uint8_t pid)
         {
             if (ep != KOS_USB_CDC_EP_DATA)
             {
@@ -323,7 +323,7 @@ namespace
             arm_buffer(dpram + reg::dp_buf_ctrl_out(ep), word);
         }
 
-        uint32_t ep_out_read(uint8_t ep, unsigned char* out, uint32_t max)
+        uint32_t ep_out_read(uint8_t ep, uint8_t* out, uint32_t max)
         {
             uint32_t n = r32(dpram + reg::dp_buf_ctrl_out(ep)) & reg::BUF_LEN_MASK;
             if (n > max)

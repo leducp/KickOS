@@ -6,8 +6,7 @@ Copyright (c) 2026 Philippe Leduc
 # Design -- the capability table, from a clean sheet
 
 > **Status: LANDED** -- landed on `master`. Every section below has landed except where the text
-> says otherwise. See `design/README.md` for the marker taxonomy.
->
+> says otherwise.
 > Witnessed at `da716a8` (2026-08-04, `docs/reference/boards.md`'s capture-provenance table):
 > two captures, `m472-{xmc,k64}-st`, both `1..79`. Two boards, one ISA, one geometry.
 
