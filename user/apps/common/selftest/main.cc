@@ -1610,10 +1610,11 @@ namespace
     }
 
     // --- The published console's CRLF expansion --------------------------------
-    // Must run on EVERY board, including the ones that do not cook: console_write_all's
+    // Must run on EVERY board, including the ones that do not cook: write_console's cook
     // call site is #if KICKOS_CONSOLE_CRLF, so otherwise the expansion ships with in-env
-    // coverage on no board at all. Keep it pure stack: microbit's arena is 16 KiB and a
-    // `static` comes straight out of it.
+    // coverage on no board at all. The write-policy legs below are here for the same
+    // reason, both being pure functions no transport gate reaches. Keep it pure stack:
+    // microbit's arena is 16 KiB and a `static` comes straight out of it.
     void t_console_crlf()
     {
         unsigned char out[16];
@@ -1621,13 +1622,13 @@ namespace
 
         // Identity when there is nothing to expand.
         unsigned char const plain[3] = {'a', 'b', 'c'};
-        TAP_CHECK(kickos::uart::cook_crlf(plain, 3, out, sizeof(out), &taken) == 3);
+        TAP_CHECK(kickos::console::cook_crlf(plain, 3, out, sizeof(out), &taken) == 3);
         TAP_CHECK(taken == 3);
         TAP_CHECK(out[0] == 'a' and out[1] == 'b' and out[2] == 'c');
 
         // Every '\n' gains a '\r' before it.
         unsigned char const nl[3] = {'a', '\n', 'b'};
-        TAP_CHECK(kickos::uart::cook_crlf(nl, 3, out, sizeof(out), &taken) == 4);
+        TAP_CHECK(kickos::console::cook_crlf(nl, 3, out, sizeof(out), &taken) == 4);
         TAP_CHECK(taken == 3);
         TAP_CHECK(out[0] == 'a' and out[1] == '\r' and out[2] == '\n' and out[3] == 'b');
 
@@ -1635,23 +1636,74 @@ namespace
         // carries "\r\n" becomes "\r\r\n". A doubled CR is a no-op on the wire, and
         // matching kconsole_write exactly is what keeps the two console routes agreeing.
         unsigned char const crnl[2] = {'\r', '\n'};
-        TAP_CHECK(kickos::uart::cook_crlf(crnl, 2, out, sizeof(out), &taken) == 3);
+        TAP_CHECK(kickos::console::cook_crlf(crnl, 2, out, sizeof(out), &taken) == 3);
         TAP_CHECK(out[0] == '\r' and out[1] == '\r' and out[2] == '\n');
 
         // A '\n' is never split from its '\r' at the chunk boundary: with room for one
         // more byte the expansion stops BEFORE it, so `taken` is a clean resume point.
         unsigned char const tight[2] = {'x', '\n'};
-        TAP_CHECK(kickos::uart::cook_crlf(tight, 2, out, 2, &taken) == 1);
+        TAP_CHECK(kickos::console::cook_crlf(tight, 2, out, 2, &taken) == 1);
         TAP_CHECK(taken == 1);
         TAP_CHECK(out[0] == 'x');
         // Resuming from there emits the pair whole.
-        TAP_CHECK(kickos::uart::cook_crlf(tight + taken, 1, out, 2, &taken) == 2);
+        TAP_CHECK(kickos::console::cook_crlf(tight + taken, 1, out, 2, &taken) == 2);
         TAP_CHECK(taken == 1);
         TAP_CHECK(out[0] == '\r' and out[1] == '\n');
 
         // No output room at all consumes nothing rather than dropping an input byte.
-        TAP_CHECK(kickos::uart::cook_crlf(plain, 3, out, 0, &taken) == 0);
+        TAP_CHECK(kickos::console::cook_crlf(plain, 3, out, 0, &taken) == 0);
         TAP_CHECK(taken == 0);
+
+        // The write policy KOS_UART_SET_MODE carries. One pure function decides it for
+        // every transport, so both service layers refuse and accept identically.
+        uint32_t mode = 0;
+        // A service with no unframed console arm REFUSES: a stored mode nothing reads would
+        // tell a caller byte loss was enabled while its writes still blocked.
+        TAP_CHECK(kickos::console::mode_apply(nullptr, KOS_UART_F_NONBLOCK, 0u)
+                  == -KOS_ENOSYS);
+        // An unknown bit is refused whole rather than masked, and stores nothing.
+        TAP_CHECK(kickos::console::mode_apply(&mode, 0x80u, 0u) == -KOS_EINVAL);
+        TAP_CHECK(mode == 0);
+        // Accepted and readable back, which is what the console arm consults per write.
+        TAP_CHECK(kickos::console::mode_apply(&mode, KOS_UART_F_NONBLOCK, 0u) == 0);
+        TAP_CHECK(mode == KOS_UART_F_NONBLOCK);
+        // Clearing it restores the paced default; the flag is not a one-way latch.
+        TAP_CHECK(kickos::console::mode_apply(&mode, 0u, 0u) == 0);
+        TAP_CHECK(mode == 0);
+        // A transport that cannot honour a blocking write REQUIRES the flag and refuses to
+        // clear it, so a caller is told it cannot have back-pressure instead of being handed
+        // an unbounded wait. The refusal stores nothing.
+        mode = KOS_UART_F_NONBLOCK;
+        TAP_CHECK(kickos::console::mode_apply(&mode, 0u, KOS_UART_F_NONBLOCK)
+                  == -KOS_ENOTSUP);
+        TAP_CHECK(mode == KOS_UART_F_NONBLOCK);
+        TAP_CHECK(kickos::console::mode_apply(&mode, KOS_UART_F_NONBLOCK,
+                                             KOS_UART_F_NONBLOCK) == 0);
+
+        // A non-blocking write REPORTS its short accept, which is the whole difference
+        // between this mode and dropping in silence: the service arm turns the shortfall
+        // into stats.tx_dropped, the only channel an unframed writer can read.
+        unsigned char rbuf[8];
+        struct kos_byte_ring ring;
+        kos_byte_ring_init(&ring, rbuf, sizeof(rbuf));
+        struct kos_uart_stats st;
+        memset(&st, 0, sizeof(st));
+        unsigned char twelve[12];
+        memset(twelve, 'z', sizeof(twelve));
+        // Eight bytes of room for twelve offered: a short accept, not a refusal and not a
+        // wait. The blocking arm cannot be exercised here, having no consumer to terminate.
+        uint32_t const nb = kickos::console::write_console(&ring, &st, twelve, 12,
+                                                          KOS_UART_F_NONBLOCK);
+        TAP_CHECK(nb < 12);       // short accept
+        TAP_CHECK(12u - nb > 0u); // the shortfall the service arm charges to tx_dropped
+        TAP_CHECK(st.tx_bytes > 0u and st.tx_bytes <= sizeof(rbuf));
+        // The return is INPUT bytes and the counter is COOKED bytes, so these differ under
+        // KICKOS_CONSOLE_CRLF: a partially accepted cooked chunk reports no input progress
+        // at all. That makes the charge OVER-count by up to one chunk, never under-count,
+        // and over-counting is the safe direction: a caller is told it lost at least what it
+        // lost. Asserting equality here would pass on the sim, the ONLY crlf=0 tree, and
+        // fail on all thirteen boards.
+        TAP_CHECK(st.tx_bytes >= nb);
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -4137,7 +4189,8 @@ namespace
                 }
                 break; // the results frame is the client's last word
             }
-            kickos::uart::serve_one(sh, msg, static_cast<size_t>(n), info.reply_cap);
+            kickos::uart::serve_one(sh, nullptr, msg, static_cast<size_t>(n),
+                                    info.reply_cap);
         }
         wait_n(1);
         TAP_CHECK(kos_handle_close(g_ep) == 0);

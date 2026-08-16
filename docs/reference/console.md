@@ -327,3 +327,54 @@ exists yet. Output is not lost in it: a client `send` parks on `send_waiters` an
 absorbs the gap, which is why there is no "handover in progress" state to size. What the window
 does mean is that the console is dark on the wire for its duration, and that a failure inside it
 is the case the atomicity rule above exists to forbid.
+
+## The two protocols a published console endpoint carries
+
+A published console endpoint carries **two** protocols on one capability, told apart by
+whether the message arrived with a reply capability:
+
+- a **plain send** is raw console bytes (this is the route `kos_console_publish` puts libc
+  stdout on), and
+- a **`kos_call`** is a `struct kos_uart_req` frame from `<kickos/sys/uart.h>`.
+
+A driver must therefore `kos_recv` with a `struct kos_recv_info` and branch on
+`info.reply_cap`. **A driver that drains the endpoint without separating them writes the
+request frame to the wire as though it were text AND never replies, so the caller parks
+forever on a reply that cannot come.** An unimplemented op is refused, never ignored:
+refusing costs the caller an error, ignoring costs it the system.
+
+| op | answer |
+| --- | --- |
+| `KOS_UART_WRITE` | queues bytes; `rsp.len` is the count ACCEPTED, which may be short, and the client retries the remainder |
+| `KOS_UART_READ` | up to `req.len` bytes; `KOS_UART_F_BLOCK` is refused `-KOS_ENOSYS` rather than answered with 0 |
+| `KOS_UART_STATS` | the driver's `struct kos_uart_stats` counters |
+| `KOS_UART_SET_MODE` | the write policy below |
+| `KOS_UART_CONFIGURE` | refused `-KOS_ENOSYS` where the device belongs to another thread |
+
+### `KOS_UART_SET_MODE` and the write policy
+
+`req.flags` carries `kos_uart_flags`. `KOS_UART_F_NONBLOCK` is `O_NONBLOCK` **for the
+unframed console arm only**: clear, a write waits for ring room and does not give up; set, it
+takes what fits and returns. An unknown bit is refused `-KOS_EINVAL` whole rather than masked,
+so a flag this build does not know cannot read back as accepted, and nothing is stored on a
+refusal.
+
+Two refusals are contract rather than omission:
+
+- **A service with no unframed console arm refuses with `-KOS_ENOSYS`.** A mode it stored
+  would never be read, and the caller would believe byte loss was enabled while its writes
+  still blocked.
+- **A transport whose ring may have no consumer at all REQUIRES the flag and refuses
+  `-KOS_ENOTSUP` on a request to clear it.** A blocking write there is unbounded: the USB CDC
+  console issues no IN token until a host both enumerates the device and opens the tty, so a
+  paced write would hang an un-cabled board at the first `printf` that fills the ring. A
+  caller asking for back-pressure it cannot have is told so instead of being given a hang.
+
+**Where the lost count is reported, and why it is not a return value.** The unframed arm is a
+plain send, and a plain send is released the moment the receiver takes the message, in the
+sender's own context; the ring accept happens afterwards in the driver's, so the accepted
+count does not yet exist when the sender resumes. Loss on that path is reported through
+`stats.tx_dropped`, read off the hot path with `KOS_UART_STATS`. **That supports pacing, not
+retry**: a writer can see its own loss but not learn which bytes went missing. A caller needing
+an exact per-call count with retry uses the framed `KOS_UART_WRITE`, which already reports a
+short accept in `rsp.len`.

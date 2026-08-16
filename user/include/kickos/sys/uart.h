@@ -6,8 +6,10 @@
 // fields, no pointers, no padding holes, payload inline in the KOS_EP_MSG_MAX buffer.
 // Sized by asserts at the bottom, because a silent layout change is a wire break.
 //
-// A 1:1 serialization of the Uart class methods (design-m4-driver-model.md): four ops,
-// four methods, no op that is not a method and no method that is not an op.
+// A 1:1 serialization of the Uart class methods (design-m4-driver-model.md): four DEVICE
+// ops, four methods, no device op that is not a method and no method that is not an op.
+// SET_MODE is the one op that is NOT a device method: it sets ring-side write policy and
+// touches no register.
 //
 // Call/reply rather than a bare rendezvous because a WRITE must return HOW MANY bytes were
 // accepted (the ring may be full) and a READ must return bytes plus a count. No BLOCKING
@@ -29,7 +31,11 @@ enum kos_uart_op
     KOS_UART_CONFIGURE = 0, // baud + frame format
     KOS_UART_WRITE = 1,     // queue bytes for TX; may accept fewer than offered
     KOS_UART_READ = 2,      // take up to len bytes from RX; may return 0
-    KOS_UART_STATS = 3      // the driver's counters, including what it dropped
+    KOS_UART_STATS = 3,     // the driver's counters, including what it dropped
+    // Set write policy for the UNFRAMED console arm, from kos_uart_flags. Refused with
+    // -KOS_ENOSYS by a service that has no unframed arm, so a mode can never be accepted
+    // and then not applied.
+    KOS_UART_SET_MODE = 4
 };
 
 // Frame format for KOS_UART_CONFIGURE. Chip-neutral by SHAPE: the driver maps these onto
@@ -48,7 +54,26 @@ enum kos_uart_flags
     // 0 bytes, so a client cannot mistake "not supported" for "no data". Blocking needs a
     // receive-from-either-of-two-sources primitive the kernel does not have
     // (design-m4.6-irq-driver.md section 7.5).
-    KOS_UART_F_BLOCK = 1 << 0
+    KOS_UART_F_BLOCK = 1 << 0,
+    // KOS_UART_SET_MODE: O_NONBLOCK for the unframed console arm. Clear, a write waits for
+    // ring room and does not give up; set, it takes what fits and returns.
+    //
+    // WHERE THE LOST COUNT IS REPORTED, and why it is not a return value. The unframed arm
+    // is a plain send, and a plain send is released the moment the receiver TAKES the
+    // message (endpoint_send copies into the parked receiver and wakes it, in the sender's
+    // own context). The ring accept happens afterwards, in the driver's context, so the
+    // accepted count does not yet exist when the sender resumes. No per-call report is
+    // possible on this path without making the hot console write a call/reply.
+    // The loss is therefore reported through the COUNTERS: every unframed short accept adds
+    // its remainder to stats.tx_dropped, which any holder of the endpoint reads with the
+    // framed KOS_UART_STATS, off the hot path. A writer can see its own loss and pace
+    // itself; it CANNOT learn which bytes went missing, so this path supports pacing and
+    // not retry. A caller needing an exact per-call count with retry uses KOS_UART_WRITE,
+    // which is framed and already reports a short accept in rsp.len.
+    //
+    // A transport whose ring may have no consumer at all REQUIRES this flag and refuses a
+    // request to clear it with -KOS_ENOTSUP, since a blocking write there is unbounded.
+    KOS_UART_F_NONBLOCK = 1 << 1
 };
 
 struct kos_uart_req

@@ -10,9 +10,9 @@
 // overflow is silently counted as tx_dropped by the driver instead. A cap 0 that refuses
 // the call is reported as itself, never as a measurement that cannot fail.
 //
-// Every line goes to the console under test. On a board whose kernel console is a
-// different peripheral the pin UART is dark from the handover on, so silence there plus
-// no [rpusb] tag means bring-up SUCCEEDED and the output is on the CDC tty.
+// Every line goes out through STDIO, never `kos::print`: this app only ever runs in an
+// image where a userspace driver owns the console, and `console_emit` drops a kernel-console
+// write in that state. A report written with `kos::print` reaches no reader at all.
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
@@ -20,6 +20,11 @@
 #include <kickos/libc/fmt.h>
 
 #include <stdint.h>
+#include <stdio.h>
+
+// Emitted by cmake/build_stamp.cmake and carried by every image; the kernel banner prints
+// this same array.
+extern "C" char const kickos_build_commit[];
 
 namespace
 {
@@ -30,24 +35,31 @@ namespace
     // forced onto the short-accept retry path. One lap would not reach it.
     constexpr uint32_t TOTAL = 8192;
     constexpr uint32_t CHUNK = 200;
-    // A zero accept is ordinary back-pressure; only a RUN of them with no progress is a
-    // stall. Each carries a 0.2 ms sleep, so this bound is ~400 ms, ~400 USB frames.
-    constexpr uint32_t STALL_MAX = 2000;
+    // How long a run of zero-accepts is tolerated before the channel is called stalled. A
+    // zero accept is ordinary back-pressure; only a RUN of them with no progress is not.
+    //
+    // The bound is set by the HOST, not the wire: no IN token is issued until something
+    // OPENS the tty, and that node appears about a second after boot, so a budget under
+    // that reports an idle reader as a stalled channel.
+    constexpr uint64_t RETRY_SLEEP_NS = 200000;  // 0.2 ms, well under a USB frame
+    constexpr uint32_t STALL_BUDGET_MS = 2000;
+    constexpr uint32_t STALL_MAX =
+        static_cast<uint32_t>((STALL_BUDGET_MS * 1000000ull) / RETRY_SLEEP_NS);
 
-    int uart_call(uint8_t op, uint16_t len, unsigned char const* payload,
-                  unsigned char* out, unsigned out_max)
+    int uart_call(uint8_t op, uint16_t len, uint8_t const* payload,
+                  uint8_t* out, uint16_t out_max)
     {
-        unsigned char buf[KOS_EP_MSG_MAX];
+        uint8_t buf[KOS_EP_MSG_MAX];
         struct kos_uart_req req;
         req.op = op;
         req.flags = 0;
         req.len = len;
-        unsigned char const* rp = reinterpret_cast<unsigned char const*>(&req);
-        for (unsigned i = 0; i < sizeof(req); i++)
+        uint8_t const* rp = reinterpret_cast<uint8_t const*>(&req);
+        for (size_t i = 0; i < sizeof(req); i++)
         {
             buf[i] = rp[i];
         }
-        unsigned send_len = sizeof(req);
+        size_t send_len = sizeof(req);
         if (payload != nullptr)
         {
             for (uint16_t i = 0; i < len; i++)
@@ -56,14 +68,14 @@ namespace
             }
             send_len += len;
         }
-        long const rc = kos_call(CH_EP, buf, send_len, sizeof(buf));
+        int32_t const rc = kos_call(CH_EP, buf, send_len, sizeof(buf));
         if (rc < 0)
         {
             return static_cast<int>(rc);
         }
         struct kos_uart_rsp rsp;
-        unsigned char* dp = reinterpret_cast<unsigned char*>(&rsp);
-        for (unsigned i = 0; i < sizeof(rsp); i++)
+        uint8_t* dp = reinterpret_cast<uint8_t*>(&rsp);
+        for (size_t i = 0; i < sizeof(rsp); i++)
         {
             dp[i] = buf[i];
         }
@@ -81,9 +93,22 @@ namespace
         return static_cast<int>(rsp.len);
     }
 
+    // Flushed per line: the run ends in a reboot that takes the USB device away, and a
+    // stdio buffer would go with it.
     void say(char const* s)
     {
-        kos::print(s);
+        fputs(s, stdout);
+        fflush(stdout);
+    }
+
+    // A zero-length plain send on the console endpoint means FLUSH. TWICE, because a plain
+    // send is released when the receiver TAKES it: the first only starts the drain, and the
+    // second cannot be taken until the driver is back in kos_recv, which it reaches only
+    // after that drain returned.
+    void drain_console()
+    {
+        (void)kos_send(CH_EP, "", 0);
+        (void)kos_send(CH_EP, "", 0);
     }
 }
 
@@ -91,10 +116,10 @@ int main(int, char**)
 {
     say("\n[usbcdcwit] start\n");
 
-    unsigned char chunk[CHUNK];
+    uint8_t chunk[CHUNK];
     for (uint32_t i = 0; i < CHUNK; i++)
     {
-        chunk[i] = static_cast<unsigned char>('a' + (i % 26));
+        chunk[i] = static_cast<uint8_t>('a' + (i % 26));
     }
 
     // Probed before the loop: a refused cap must be reported as itself, not counted as a
@@ -141,31 +166,42 @@ int main(int, char**)
         {
             break;
         }
-        kos_sleep_ns(200000ull); // 0.2 ms, well under a USB frame
+        kos_sleep_ns(RETRY_SLEEP_NS);
     }
 
-    unsigned char st[sizeof(struct kos_uart_stats)];
+    // Before the counters are read, so tx_dropped has stopped moving.
+    drain_console();
+
+    uint8_t st[sizeof(struct kos_uart_stats)];
     struct kos_uart_stats stats;
-    unsigned char* sp = reinterpret_cast<unsigned char*>(&stats);
-    for (unsigned i = 0; i < sizeof(stats); i++)
+    uint8_t* sp = reinterpret_cast<uint8_t*>(&stats);
+    for (size_t i = 0; i < sizeof(stats); i++)
     {
         sp[i] = 0;
     }
     if (uart_call(KOS_UART_STATS, 0, nullptr, st, sizeof(st))
         == static_cast<int>(sizeof(st)))
     {
-        for (unsigned i = 0; i < sizeof(stats); i++)
+        for (size_t i = 0; i < sizeof(stats); i++)
         {
             sp[i] = st[i];
         }
     }
 
     char b[128];
-    ksnprintf(b, sizeof(b), "\n[usbcdcwit] accepted=%u of %u err=%d maxzero=%u\n",
+    // The kernel banner is unreachable on this transport: nothing can listen until the
+    // image has booted, so the head of every capture is lost. Reprinted here, `-dirty`
+    // included, where the host is certain to be listening.
+    ksnprintf(b, sizeof(b), "\n[usbcdcwit] commit %s\n", kickos_build_commit);
+    say(b);
+    ksnprintf(b, sizeof(b), "[usbcdcwit] accepted=%u of %u err=%d maxzero=%u\n",
               static_cast<unsigned>(sent), static_cast<unsigned>(TOTAL), err,
               static_cast<unsigned>(max_zero_run));
     say(b);
-    ksnprintf(b, sizeof(b), "[usbcdcwit] tx=%u drop=%u used=%u wakes=%u spurious=%u\n",
+    // `queued` is bytes the ring TOOK and did not lose. It is NOT ring occupancy: the wire
+    // ABI carries no field for that. Delivery is proven by the byte count on the HOST,
+    // against `queued` here.
+    ksnprintf(b, sizeof(b), "[usbcdcwit] tx=%u drop=%u queued=%u wakes=%u spurious=%u\n",
               static_cast<unsigned>(stats.tx_bytes),
               static_cast<unsigned>(stats.tx_dropped),
               static_cast<unsigned>(stats.tx_bytes - stats.tx_dropped),
