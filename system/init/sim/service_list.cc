@@ -16,13 +16,17 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/bytes.h> // mem_copy, mem_zero
+#include <kickos/sys/console_ring.h>
 #include <kickos/sys/driver_service.h>
 #include <kickos/sys/errno.h>
+#include <kickos/sys/uart.h>
 
 #include <stdint.h>
 
 // The host write(2), declared rather than included: this TU is built freestanding
-// (kickos_apply_freestanding) and must not pull host headers. fd 1 is "the wire".
+// (kickos_apply_freestanding) and must not pull host headers. fd 1 is "the wire". Its
+// long/unsigned long are the libc ABI, and are the only ones in this file.
 extern "C" long write(int, void const*, unsigned long);
 
 // Defined at the bottom of this file; the descriptor below names it.
@@ -199,6 +203,86 @@ namespace
 #endif
 }
 
+namespace
+{
+    // Returns kos_reply's result: a reply can fail on a dead cap, and a caller that has
+    // gone is the one thing this arm cannot see from its own state.
+    int simcon_reply_status(kos_cap_t reply_cap, int32_t status, uint16_t len)
+    {
+        struct kos_uart_rsp rsp;
+        rsp.status = status;
+        rsp.len = len;
+        rsp.rsv = 0;
+        return kos_reply(reply_cap, &rsp, sizeof(rsp));
+    }
+
+    // The framed arm of the console endpoint, answered out of this thread's own state:
+    // there is no ring and no device here. Every op must ANSWER, refusal included: a
+    // kos_call left unanswered parks the caller forever.
+    int simcon_serve_one(struct kos_uart_stats* stats, volatile uint32_t* mode,
+                         uint8_t const* msg, size_t n, kos_cap_t reply_cap)
+    {
+        if (n < sizeof(struct kos_uart_req))
+        {
+            return simcon_reply_status(reply_cap, -KOS_EINVAL, 0);
+        }
+        struct kos_uart_req req;
+        mem_copy(&req, msg, sizeof(req));
+        uint8_t const* payload = msg + sizeof(req);
+        size_t const payload_len = n - sizeof(req);
+
+        switch (req.op)
+        {
+            case KOS_UART_WRITE:
+            {
+                if (req.len > payload_len)
+                {
+                    return simcon_reply_status(reply_cap, -KOS_EINVAL, 0);
+                }
+                // The ACTUAL count: fd 1 is a pipe under a harness, where a short write is
+                // constructible, and req.len would report bytes that never reached the wire.
+                long const put = write(1, payload, req.len);
+                if (put < 0)
+                {
+                    return simcon_reply_status(reply_cap, -KOS_EPIPE, 0);
+                }
+                stats->tx_bytes += static_cast<uint32_t>(put);
+                return simcon_reply_status(reply_cap, 0, static_cast<uint16_t>(put));
+            }
+            case KOS_UART_READ:
+            {
+                // No RX arm at all: a 0-byte reply would read as "nothing yet".
+                return simcon_reply_status(reply_cap, -KOS_ENOSYS, 0);
+            }
+            case KOS_UART_STATS:
+            {
+                uint8_t out[sizeof(struct kos_uart_rsp) + sizeof(struct kos_uart_stats)];
+                struct kos_uart_rsp rsp;
+                rsp.status = 0;
+                rsp.len = static_cast<uint16_t>(sizeof(struct kos_uart_stats));
+                rsp.rsv = 0;
+                mem_copy(out, &rsp, sizeof(rsp));
+                mem_copy(out + sizeof(rsp), stats, sizeof(*stats));
+                return kos_reply(reply_cap, out, sizeof(out));
+            }
+            case KOS_UART_SET_MODE:
+            {
+                // Nothing required: a host fd write always completes.
+                return simcon_reply_status(
+                    reply_cap, kickos::console::mode_apply(mode, req.flags, 0u), 0);
+            }
+            case KOS_UART_CONFIGURE:
+            {
+                return simcon_reply_status(reply_cap, -KOS_ENOSYS, 0);
+            }
+            default:
+            {
+                return simcon_reply_status(reply_cap, -KOS_EINVAL, 0);
+            }
+        }
+    }
+}
+
 extern "C"
 {
     // Unprivileged console driver: drain the published endpoint to the "wire". The
@@ -223,18 +307,46 @@ extern "C"
         kos_exit(1);
 #endif
         int const ep = KOS_SPAWN_DELEGATED_CAP0; // delegated {E | WAIT} recv cap
-        char buf[KOS_EP_MSG_MAX];
+        uint8_t buf[KOS_EP_MSG_MAX];
+        // In this thread's frame: no shared block, no second thread. They DIE WITH THE
+        // THREAD, so the survives-a-restart property <kickos/sys/uart.h> states does not hold.
+        struct kos_uart_stats stats;
+        mem_zero(&stats, sizeof(stats));
+        volatile uint32_t mode = 0;
 #if defined(KICKOS_SIMCON_EXIT_AFTER) && KICKOS_SIMCON_EXIT_AFTER > 0
         unsigned served = 0;
 #endif
         while (true)
         {
-            long const n = kos_recv(ep, buf, sizeof(buf), nullptr);
+            struct kos_recv_info info;
+            int32_t const n = kos_recv(ep, buf, sizeof(buf), &info);
             if (n < 0)
             {
                 break;
             }
-            (void)write(1, buf, static_cast<unsigned long>(n));
+            if (info.reply_cap != KOS_CAP_NONE)
+            {
+                // A failed reply leaves a caller parked on one, so it is said rather than
+                // swallowed; the loop continues, one dead caller not being the console's end.
+                if (simcon_serve_one(&stats, &mode, buf, static_cast<size_t>(n),
+                                     info.reply_cap) < 0)
+                {
+                    wire_puts("[simcon] reply failed\n");
+                }
+            }
+            else
+            {
+                // Zero length means FLUSH, and nothing is buffered to drain. A plain send
+                // has no reply, so a short write can only be counted, not reported.
+                long const put = write(1, buf, static_cast<unsigned long>(n)); // libc ABI
+                long took = put;
+                if (took < 0)
+                {
+                    took = 0;
+                }
+                stats.tx_bytes += static_cast<uint32_t>(took);
+                stats.tx_dropped += static_cast<uint32_t>(n - took);
+            }
 #if defined(KICKOS_SIMCON_EXIT_AFTER) && KICKOS_SIMCON_EXIT_AFTER > 0
             served++;
             if (served >= KICKOS_SIMCON_EXIT_AFTER)

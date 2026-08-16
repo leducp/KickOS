@@ -30,6 +30,10 @@ add_subdirectory(pubpanic)
 # The same wire again, when the DRIVER dies rather than the system: the console must come
 # back to the kernel instead of going permanently mute. Sim-only and self-gated.
 add_subdirectory(drvdeath)
+# The FRAMED arm of that same endpoint: a console driver must answer a kos_call rather
+# than write the request frame out as text and leave the caller parked. Sim-only and
+# self-gated; its gate builds its own published tree.
+add_subdirectory(simconabi)
 # The buffered UART end to end against the real two-thread driver, over the sim's loopback
 # device. Sim-only and self-gated; its gate builds its own tree.
 add_subdirectory(uartloop)
