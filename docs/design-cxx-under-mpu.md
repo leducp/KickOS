@@ -5,7 +5,6 @@
 > run-proven in CI on qemu-riscv (PMP) and on silicon on K64F (SYSMPU/EHABI), XMC4800
 > (PMSAv7/EHABI), RX72M (RX-MPU/SjLj) and ESP32-C6 (PMP/DWARF) -- four EH models across four
 > protection units. The durable teaching is Book ch.7.2 and 7.3; this is the design record.
-> See `design/README.md` for the marker taxonomy.
 
 Scope: make the full-C++ opt-in (exceptions + STL + RTTI, commit dc632bd [DEAD HASH: resolves nowhere -- lost to an earlier history rewrite]) work for an
 UNPRIVILEGED, MPU-isolated userspace thread -- the convergence the north star needs

@@ -7,11 +7,10 @@
 > ratio-correct timing, no fault. XMC does a full retune, K64F a staged one; every other
 > chip keeps the explicit fallback. Fleet-wide rollout and the userspace power-manager /
 > clock-tree policy service stay open (`../roadmap.md`).
->
 > **The contract now lives in `reference/invariants.md`**: `clock-retune-coherence-tail` (the
 > ordered sequence and the "run the tail on an actual move" gate),
 > `clock-anchor-sole-writer-at-rate-edge` (the epoch anchor), `timer-arm-dedup-needs-disarm`.
-> This note is the decision record behind them. See `design/README.md` for the marker taxonomy.
+> This note is the decision record behind them.
 
 The READ side landed first: `sys_cpu_clock_hz()` (`KOS_SYS_CPU_CLOCK_HZ`,
 `user/include/kickos/sys/abi.h`) returns `arch_cpu_clock_hz()`, each backend reporting its CMSIS

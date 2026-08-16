@@ -9,7 +9,6 @@
 > `reference/bus-service.md` (K64F DSPI0) and `reference/architecture.md` (the PACR derivation,
 > under Memory domains), both code-synced. Where this brief and the shipped driver differ,
 > `bus-service.md` names the differences and the CODE wins.
-> See `design/README.md` for the marker taxonomy.
 
 The SPI driver KickCAT actually needs: a DSPI master on the FRDM-K64F driving an EtherCAT Slave
 Controller over its SPI PDI. Counterpart of `design-spi-driver.md` (XMC/USIC-SSC). Register facts

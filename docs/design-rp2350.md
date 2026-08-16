@@ -9,7 +9,6 @@
 > APB bases, the clock recipe, the `PADS.ISO` gotcha and the IRQ numbers -- now live in
 > `reference/boards.md` (*Per-board hardware facts*), which is code-synced. The **Hazard3
 > RV32IMAC(B)** core remains unimplemented (`design-rp2350-hazard3.md`, EXPLORATORY).
-> See `design/README.md` for the marker taxonomy.
 
 Register facts were derived clean-room from the RP2350 datasheet RP-008373-DS-2 (section numbers
 cited in the chip source). This pass brought up the **Cortex-M33** only; the Hazard3 core and the

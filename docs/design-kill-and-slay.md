@@ -3,6 +3,10 @@
 
 # Kill and slay: a death the scheduler grants, not a stranger's teardown
 
+> **Status: LANDED** -- S1 through S4 shipped in M4.8.4 and the ABI is silicon-witnessed
+> (TAG `m484sl`, `../STATE.md`). Read section 14 before section 3: it carries the ruling on
+> each open question and the three claims that did not survive the tree.
+
 Design gate. Written against `M4.8.4-tail`, reading only.
 
 **S1 through S4 have since LANDED.** Sections 1 to 13 are kept as written, because the

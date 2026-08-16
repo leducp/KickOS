@@ -4,7 +4,7 @@
 # SMP candidates and the staged model (M5)
 
 > **Status: EXPLORATORY** -- a spike, not a contract. Nothing here is implemented. M5 is the
-> milestone after the M4 driver era. See `design/README.md` for the marker taxonomy.
+> milestone after the M4 driver era.
 
 Status: DESIGN SPIKE. Forward-looking. This is M5. No build/runtime code change
 here -- it ranks the multi-core parts in hand by the ONE gate that actually decides
@@ -180,6 +180,19 @@ happens-before edge, so the secondary must NOT re-init them.
     quiescing the one and only timer. An SMP port needs a cross-core quiesce: a
     per-core SysTick re-arm plus a barrier so no other core reads a half-updated
     anchor. Flagged there, not solved there.
+  - **Every cross-thread field in the tree is `volatile`, and `volatile` is the WRONG TOOL.**
+    It stops the compiler caching a value in a register. It gives no atomicity, no ordering
+    against other objects, and emits no barrier, so it says nothing a second core will
+    honour. What makes the tree correct today is the uniprocessor: one writer per field,
+    aligned words, and readers that tolerate a stale value. SMP removes all three at once.
+    The tree has ZERO `std::atomic`; `volatile` carries this in `kernel/bench/bench.cc`,
+    `kernel/init/console.cc`, `kernel/init/console_tx.cc`, `user/include/kickos/sys/byte_ring.h`,
+    both service headers and the sim console, among others. Relaxed `std::atomic<uint32_t>`
+    is the replacement and is FREE for the pure load/store cases, compiling to a plain
+    load and store even on Cortex-M0+, which has no LDREX/STREX; only a genuine
+    read-modify-write would need more, and the single-writer fields here do not.
+    **This is a correctness fix, not a performance one, and nothing in M4 can witness it**:
+    a uniprocessor cannot fail the way it will fail.
   - **Console reclaim, `docs/design-m3-console-handover-stageii.md` ruling 7.** No
     hook is reserved for it. Under AMP or SMP the other core's console driver must be
     stopped or fenced before reclaim, or it races the polled panic writer. Reclaim is

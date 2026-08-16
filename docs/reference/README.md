@@ -13,6 +13,8 @@ and, for hardware facts, the TRM section.)
   scheduler model, user/kernel split, memory domains, driver/interrupt model, C++ and
   build decisions. The structural contract the per-ISA/per-chip pages instantiate.
 - **`invariants.md`** -- the invariants a change must not break (the checklist a review runs).
+- **`style.md`** -- the house style: layout, language rules, corpus rules and what earns a
+  comment. There is no formatter; this page is the contract.
 - **`porting.md`** -- the arch-seam contract: how to add a board / chip / ISA, and what each
   `arch_*` entry point must guarantee.
 - **`console.md`** -- the console model: polled vs buffered ring, the sync (panic) path, the

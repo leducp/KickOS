@@ -1,13 +1,11 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # EXPLORATORY: the MMU / new-platform horizon (post-M6)
 
-> **Status: EXPLORATORY** -- see `design/README.md` for the marker taxonomy.
->
+> **Status: EXPLORATORY**
 > Status: EXPLORATION ONLY. This is a research + design-thinking spike, NOT a
 > contract and NOT a milestone plan. Nothing here is implemented; nothing here
 > licenses a code change. The only actionable output is section 5 (QUICK WINS),
 > and even those are PROPOSALS to be scheduled, never done from this doc.
->
 > Scope: what it would take to grow KickOS from an MPU RTOS (one physical
 > address space, per-thread region sets) into (a) an MMU OS with real virtual
 > address spaces -- concretely an x86_64 PC target -- and (b) a heterogeneous

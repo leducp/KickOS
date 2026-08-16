@@ -2,7 +2,6 @@
 # M4 driver-coverage matrix -- per-board peripheral survey + complexity/gain backlog
 
 > **Status: ACTIVE** -- the live prioritized backlog for the milestone in flight (M4).
-> See `design/README.md` for the marker taxonomy.
 
 **NOT A CONTRACT.** The complement of `docs/design-driver-era-scope.md`
 (the WORK) and `roadmap.md` (the milestone): this doc is the SURVEY -- what each of the

@@ -5,8 +5,7 @@ Copyright (c) 2026 Philippe Leduc
 
 # M4.6 design -- the IRQ-driven driver pattern, and the buffered userspace UART on top
 
-> **Status: LANDED** -- the M4.6 step-0 design gate. See
-> `design/README.md` for the marker taxonomy.
+> **Status: LANDED** -- the M4.6 step-0 design gate.
 
 This document is the M4.6 step-0 gate: the general
 mechanism by which an **unprivileged userspace driver owns an interrupt line** -- claimed by

@@ -10,7 +10,6 @@
 > versus service*, which is code-synced and is what a reader should cite. This document is kept as
 > the decision record and for the numbered rules below, which source comments and sibling design
 > records cite BY NUMBER -- do not renumber them.
-> See `design/README.md` for the marker taxonomy.
 
 Records the M4 decision on HOW a driver is packaged: as an in-process CLASS (driver-lib), as a
 shared SERVICE (a thread behind an endpoint), or -- the ruling -- as BOTH, with the service composed

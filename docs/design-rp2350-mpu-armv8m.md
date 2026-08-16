@@ -9,7 +9,6 @@
 > encodings, per backend*), which is code-synced; the runtime contract is
 > `reference/architecture.md` (Memory domains) and `reference/invariants.md`
 > (`mpu-apply-on-every-switch-in`). The four review advisories A-D remain open in `../TODO.md`.
-> See `design/README.md` for the marker taxonomy.
 
 This scoped the memory-protection backend for the RP2350's Cortex-M33, written after inspecting
 the shared ARM PMSA backend to answer one question: does the already-landed v7-M `arch_mpu_apply`

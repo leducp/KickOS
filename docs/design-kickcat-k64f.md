@@ -1,10 +1,12 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 # Design brief: running the KickCAT slave on KickOS/K64F
 
-> **Status: ACTIVE** -- Stage A (the sim slave over `EmulatedESC`) has LANDED as a CI test; the
-> K64F hardware path below is still the plan, though the transport it needs
-> (`system/driver/mk64f/k64dspi`) has since landed and reached OPERATIONAL against a real
-> LAN9252. See `design/README.md` for the marker taxonomy.
+> **Status: ACTIVE** -- the K64F hardware path below is still the plan, and KickCAT is set aside
+> for the duration of the driver era rather than tracked in lockstep with it.
+> **The tree links no KickCAT app**: the Stage A sim slave over `EmulatedESC` is not in
+> `user/apps/`, so read every "Stage A has LANDED as a CI test" claim below against that. The
+> transport the hardware path needs (`system/driver/mk64f/k64dspi`) did land and reached
+> OPERATIONAL against a real LAN9252.
 
 Scoping for the north-star integration (see `reference/architecture.md`, "Sim end-goal"):
 run KickCAT's `freedom-k64f` EtherCAT slave example on KickOS -- first on the sim over

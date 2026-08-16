@@ -2,9 +2,11 @@
 # Design brief: STM32F411 SPI1 loopback driver -- the canonical PMSA per-thread MMIO isolation reference
 
 > **Status: LANDED** (silicon-pending) -- `f411spi` shipped as `user/apps/f411disco/f411spi/` and
-> is fable-reviewed, but it has never run on silicon: it needs a bench swap to the 32F411E-DISCO.
-> It is redundant with `xmcspi` for the PMSA proof, which IS silicon-proven, so this is kept as
-> the STM32-family reference rather than a gap. See `design/README.md` for the marker taxonomy.
+> is fable-reviewed, but it has never run on silicon. **The board is not the gap**: `f411disco` is
+> witnessed under PMSAv7 enforcement (`reference/boards.md`, *`f411disco` -- PMSAv7*). What this
+> app still needs is bench time in either posture plus the PA7->PA6 loopback jumper. It is
+> redundant with `xmcspi` for the PMSA proof, which IS silicon-proven, so this is kept as the
+> STM32-family reference rather than a gap.
 
 Design + build-only (F411 not on the bench; K64F is). The CANONICAL per-thread
 peripheral-MMIO isolation reference on ARMv7-M PMSA -- the result the fleet was missing.

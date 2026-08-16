@@ -7,7 +7,6 @@
 > `reference/architecture.md` (Memory domains, the peripheral-MMIO matrix), which is code-synced.
 > The APM open no longer lives in this app either: `arch_init` (`chip_esp32c6.cc`) programs the
 > REE0 background permit at boot for every board, so it covers apps other than this demo.
-> See `design/README.md` for the marker taxonomy.
 
 IMPLEMENTED + PROVEN on silicon (2026-07-17): `user/apps/esp32c6-wroom/c6blink` blinks GPIO10
 through the granted PMP window (APM opened) then an ungranted `GPIO_ENABLE` poke PMP-faults

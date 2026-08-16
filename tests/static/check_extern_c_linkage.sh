@@ -52,8 +52,8 @@ while IFS= read -r f; do
     [ -f "$f" ] || fail "tracked file is missing from the worktree: $f"
     # NEWLINE-AGNOSTIC, because the awk scanner below is: it accumulates across lines, so it
     # would flag `extern` and `"C"` split over two lines, but a single-line grep would never
-    # hand it the file, and the header claims this scan is exhaustive. A clang-format re-wrap
-    # is enough to produce that spelling and silently re-open the hazard.
+    # hand it the file, and the header claims this scan is exhaustive. A hand re-wrap is
+    # enough to produce that spelling and silently re-open the hazard.
     if tr '\n' ' ' < "$f" | grep -q 'extern[[:space:]]*"C' && grep -q 'namespace' "$f"; then
         printf '%s\n' "$f" >> "$TMP/cand"
     fi

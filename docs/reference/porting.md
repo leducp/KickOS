@@ -379,7 +379,7 @@ where it does, cross-domain trapping is silicon-proven unless the row says other
 | `mk64f` | frdmk64f | M4F | SYSMPU | **hardware** (revalidated 2026-07-15: full selftest + buffered console ring; **unprivileged root on the FULL service list**, 2026-07-29). SYSMPU enforces SRAM/domains but is bus-slave-side, so it cannot gate peripherals; the `AIPS0` PACR half of that is `arch_periph_enable`'s, below |
 | `imxrt1062` | teensy41 | **M7** | PMSAv7 + fixed | **hardware** (enforcement selftest + soak). The only speculating core: needs the fixed-region wrap (`../design-teensy-mpu-hang.md`) |
 | `rx72m` | rx72m | RXv3 | RX MPU | **hardware** (selftest + SCI6 console; DPFPU switch; enforcement + a granted peripheral window). **No CI gate** -- see below |
-| `esp32` | esp32-wroom | Xtensa LX6 | -- | **hardware** (selftest + console, 240 MHz). No per-task MPU and no privilege split |
+| `esp32` | esp32-wroom | Xtensa LX6 | -- | **hardware** (selftest + console, 240 MHz). No per-domain MPU and no privilege split |
 | `esp32c6` | esp32c6-wroom | RV32IMAC | PMP | **hardware** (selftest + buffered ring console; first real peripheral IRQ; enforcement + peripheral isolation). Peripheral access also needs the one-time bus-side APM open, which `arch_init` programs at boot |
 | `sam3x8e` | due | M3 | -- | port proven on silicon (2026-07-09); test unit retired (peripheral-I/O fault) |
 
@@ -1072,7 +1072,7 @@ requirement, for a zero-skip run:
 | --- | --- | --- | --- | --- |
 | `KICKOS_MAX_THREADS` | 16 (`config/system.h:41`) | `thread.h:332` | **>= 4** | 2 |
 | `KICKOS_MAX_SEMAPHORES` | 16 (`system.h:22`) | `instance.h:65` | **>= 6** | 4 (f302) |
-| `KICKOS_CAP_TABLE_SUPPLY` | 16 (`system.h`) | per-task cap table | **>= 10** | 7 |
+| `KICKOS_CAP_TABLE_SUPPLY` | 16 (`system.h`) | per-thread cap table | **>= 10** | 7 |
 | `KICKOS_MAX_MUTEXES` | 8 (`system.h:27`) | `instance.h:75` | >= 2 | 4 (c8) |
 | `KICKOS_MAX_ENDPOINTS` | 4 (`system.h:34`) | `instance.h:83` | >= 1 | 4 |
 | `KICKOS_MAX_IRQ_HANDLES` | 8 (`system.h:100`) | `instance.h:99` | >= 1 | 4 (f302) |
@@ -1483,7 +1483,7 @@ abandoned (the system never returns to boot).
   masked (disabled) line (ISPR holds pending independent of ISER): it coalesces
   one-deep and fires at the next `unmask`. `arch_irq_clear_pending` (ICPR) is the
   explicit discard, used at first-arm to drop pre-registration garbage.
-- **MPU** -- the shared ARMv7-M **PMSA** backend (`arch_arm_common.cc`) provides per-task
+- **MPU** -- the shared ARMv7-M **PMSA** backend (`arch_arm_common.cc`) provides per-domain
   enforcement at M2. `arch_mpu_apply` only **stashes** the incoming region set and is a PLAIN,
   non-overridable definition shared by every ARM backend; `kickos_arch_mpu_commit` (fallback TU
   `arch/arm/common/kickos_arch_mpu_commit_default.cc`) / `kickos_arm_mpu_program` **program the
@@ -1771,7 +1771,7 @@ save-frame, deferred switch.
   and a separate APM/PMS bus permission unit) are still **blocked**, see
   `m2-readiness.md`. No F/D extension -> soft-float, so the switch banks no FP.
 - **`gp` anchor for full-C++ under MPU** -- RISC-V small-data addresses globals as
-  `gp + imm` from one `__global_pointer$`. For a full-C++ app under per-task
+  `gp + imm` from one `__global_pointer$`. For a full-C++ app under per-domain
   enforcement the anchor MUST sit **inside the app's granted data region**: the
   runtime's small globals (`eh_globals`, `_impure_ptr`, the FDE registry heads) and a
   `-fexceptions` TU's `gp`-relative EH references (`DW.ref.*`, LSDA datarel) all live
