@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Priority inheritance: lending a thread its blocker's urgency
 
 > Why KickOS has a mutex at all when it already has a semaphore, and what the mutex

@@ -4,8 +4,8 @@
 // The model a mocked UART channel runs on, reached through kos_uart_config::base: on silicon
 // that is the granted register window, here the address of one of these.
 
-#ifndef KICKOS_SELFTEST_UART_MOCK_H
-#define KICKOS_SELFTEST_UART_MOCK_H
+#ifndef KICKOS_TESTS_UNIT_UARTCLASS_UART_MOCK_H
+#define KICKOS_TESTS_UNIT_UARTCLASS_UART_MOCK_H
 
 #include <stdint.h>
 

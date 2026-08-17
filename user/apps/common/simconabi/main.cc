@@ -17,7 +17,9 @@
 #include <kickos/sys.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
+#include <kickos/sys/console_ring.h> // stats_unpack
 
+#include <atomic>
 #include <stdint.h>
 
 #include "tap.h"
@@ -160,12 +162,8 @@ namespace
         TAP_CHECK(uart_call(KOS_UART_STATS, 0, 0, nullptr, st, sizeof(st), &stlen) == 0);
         TAP_CHECK(stlen == sizeof(struct kos_uart_stats));
         struct kos_uart_stats s;
-        uint8_t* dp = reinterpret_cast<uint8_t*>(&s);
-        for (size_t i = 0; i < sizeof(s); i++)
-        {
-            dp[i] = st[i];
-        }
-        TAP_CHECK(s.tx_bytes >= WIRE_LEN);
+        kickos::console::stats_unpack(&s, st);
+        TAP_CHECK(s.tx_bytes.load(std::memory_order_relaxed) >= WIRE_LEN);
     }
 }
 

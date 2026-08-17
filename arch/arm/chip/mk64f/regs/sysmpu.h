@@ -43,4 +43,4 @@ namespace kickos::mk64f::reg::sysmpu
     constexpr uint32_t WORD2_M1SM = 0x3u << 9;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_SYSMPU_H
+#endif

@@ -24,7 +24,12 @@
 #include "regs/ccm.h"
 #include "regs/gpt.h"
 #include "regs/iomuxc.h"
+#include "regs/gpio.h"
+#include "regs/aipstz.h"
 #include "regs/lpuart.h"
+#if defined(KICKOS_USB_CONSOLE)
+#include "regs/usbphy.h"
+#endif
 #include "regs/wdog.h"
 
 #include <stddef.h>
@@ -297,6 +302,10 @@ namespace
     // 600 MHz CCM/ARM-PLL config is a follow-up; see the design doc.
     void clock_init() {}
 
+#if defined(KICKOS_USB_CONSOLE)
+    constexpr uint32_t POLL_TIMEOUT_USB = 1000000u;
+#endif
+
     // --- Monotonic clock: GPT1 free-running off the 24 MHz crystal oscillator ----
     // (RM ch.52). The armv7m arch provides NO clock fallback: the DWT is debug-domain
     // and unreliable on the M7 (lockable, absent under a debugger reset). We source
@@ -356,21 +365,56 @@ namespace
         r32(reg::lpuart::LPUART6_GLOBAL) = reg::lpuart::GLOBAL_RST; // module software reset
         r32(reg::lpuart::LPUART6_GLOBAL) = 0;
 
-        // baud = uart_clk / ((OSR+1) * SBR). OSR=15 (16x oversample).
-        // Round SBR to nearest, NOT truncate: at the 20 MHz root the ideal divisor is
-        // 10.85, and truncation (->10 = 125000 baud, +8.5%) blows past receiver
-        // tolerance; nearest (->11 = 113636 baud, -1.36%) is in tolerance.
-        uint32_t const baud = 115200u;
-        uint32_t const osr = 15u;
-        uint32_t const div = baud * (osr + 1u);
-        uint32_t sbr = (reg::lpuart::UART_CLK_ROOT_HZ + (div / 2u)) / div;
-        if (sbr == 0)
-        {
-            sbr = 1;
-        }
-        r32(reg::lpuart::LPUART6_BAUD) = (osr << 24) | (sbr & 0x1FFFu);
+        r32(reg::lpuart::LPUART6_BAUD) = reg::lpuart::BAUD_CONSOLE;
         r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE; // TIE stays clear; the ring primes it
     }
+
+#if defined(KICKOS_USB_CONSOLE)
+    // The USB1 clock tree and PHY: the CCGR6 gate, PLL_USB1 and USBPHY1, none of which the
+    // unprivileged driver can reach (CCM is in arch_reserved_blocks, the PHY is outside the
+    // granted window). RM Table 9-6 lists CCM_CCGR6_CG0 among the gates the boot ROM leaves
+    // DISABLED, so without the first write below every register in the driver's window is
+    // dead.
+    void usb_clock_init()
+    {
+        r32(reg::usbphy::CCGR6) |= reg::usbphy::CCGR6_USBOH3;
+
+        // PLL_USB1 to 480 MHz. DIV_SELECT stays 0 (Fref * 20). RM Table 9-7 says the boot
+        // ROM already leaves this at PLL_ROM_SETTING, so the lock wait normally falls
+        // straight through.
+        r32(reg::usbphy::PLL_USB1_SET) = reg::usbphy::PLL_POWER | reg::usbphy::PLL_ENABLE
+                                         | reg::usbphy::PLL_EN_USB_CLKS;
+        for (uint32_t spin = 0; spin < POLL_TIMEOUT_USB; spin++)
+        {
+            if ((r32(reg::usbphy::PLL_USB1) & reg::usbphy::PLL_LOCK) != 0u)
+            {
+                break;
+            }
+        }
+        r32(reg::usbphy::PLL_USB1_CLR) = reg::usbphy::PLL_BYPASS;
+
+        // USBPHY1 (RM 43.4.4): out of soft reset, then ungate the UTMI clocks, then power the
+        // analog blocks up. RM 43.4.1 requires the PHY clocks to be running BEFORE PWD is
+        // programmed, which is why that write is last.
+        r32(reg::usbphy::PHY1_CTRL_CLR) = reg::usbphy::CTRL_SFTRST;
+        r32(reg::usbphy::PHY1_CTRL_CLR) = reg::usbphy::CTRL_CLKGATE;
+        r32(reg::usbphy::PHY1_PWD) = reg::usbphy::PWD_ALL_UP;
+
+        // Over-current detection off: the RT1062 gates the port on that input and the Teensy
+        // 4.1 routes no over-current sense to it, so a floating pad could hold the port down.
+        // Read-modify-write, not an absolute store: RM 42.6 says to preserve reserved bits.
+        r32(reg::usbphy::USBNC_OTG1_CTRL) |= reg::usbphy::OTG_CTRL_OVER_CUR_DIS;
+
+        // Read back, because a gate that did not take is indistinguishable from one that did
+        // until the driver's first register access bus-errors. Want: ccgr6 low 2 bits set,
+        // pll1 bit31 LOCK set and bit16 BYPASS clear, phyctrl bits 31/30 (SFTRST/CLKGATE)
+        // clear, phypwd zero, id 0xE4A1FA05 (the read-only USB1 ID register, RM 42.7.1).
+        kickos::kprintf("[usbclk] ccgr6=%x pll1=%x phyctrl=%x phypwd=%x id=%x\n",
+                        r32(reg::usbphy::CCGR6), r32(reg::usbphy::PLL_USB1),
+                        r32(reg::usbphy::PHY1_CTRL), r32(reg::usbphy::PHY1_PWD),
+                        r32(kickos::imxrt1062::mmap::USB1_BASE));
+    }
+#endif
 
 #ifdef KICKOS_UART_BEACON
     // Baud-beacon diagnostic (docs/design-teensy-rt1062.md bring-up note). Programs
@@ -406,6 +450,22 @@ namespace
     char console_tx_buf[CONSOLE_TX_SIZE];
     console_tx_backend const lp6_console_backend = {
         lp6_tx_slot_free, lp6_tx_push, lp6_tx_irq_enable, lp6_tx_irq_disable};
+
+    // The window arch_console_reclaim reports: LPUART6's whole AIPS-2 slot, 4019_8000 to
+    // 4019_BFFF (RM Table 3-3), not its 0x30 register block.
+    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::LPUART6_BASE;
+    constexpr size_t CONSOLE_WIN_SIZE = reg::lpuart::LPUART6_WINDOW;
+
+    static_assert((CONSOLE_WIN_SIZE & (CONSOLE_WIN_SIZE - 1u)) == 0u
+                      and (CONSOLE_WIN_BASE % CONSOLE_WIN_SIZE) == 0u,
+                  "PMSAv7 needs a power-of-two size on a naturally aligned base");
+
+    static_assert(reg::lpuart::LPUART6_CTRL >= CONSOLE_WIN_BASE
+                      and reg::lpuart::LPUART6_CTRL < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and reg::lpuart::LPUART6_GLOBAL < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and reg::lpuart::LPUART6_BAUD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and reg::lpuart::LPUART6_STAT < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
+                  "arch_console_reclaim writes outside the window it reports");
 }
 
 extern "C"
@@ -430,6 +490,9 @@ void arch_init(void)
     clock_init();
     gpt_clock_init(); // monotonic clock up before the scheduler reads it
     uart6_init();
+#if defined(KICKOS_USB_CONSOLE)
+    usb_clock_init(); // after uart6_init: a refusal here must still be able to print
+#endif
 #ifdef KICKOS_UART_BEACON
     uart6_beacon(); // never returns: raw 0x55 stream for host baud sweep
 #endif
@@ -504,6 +567,82 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     return &lp6_console_backend;
 }
 
+void arch_console_reclaim_window(uintptr_t* base, size_t* size)
+{
+    *base = CONSOLE_WIN_BASE;
+    *size = CONSOLE_WIN_SIZE;
+}
+
+// Panic-path reclaim (console.cc D6): force LPUART6 back to a polled-ready 8N1 TX channel
+// after a userspace driver may have garbled every writable register in the window. Runs with
+// IRQs masked, privileged; MUST be idempotent and re-entrant, so straight-line ABSOLUTE
+// stores only, no read-modify-write and no loops.
+// RM 49.6.1.4: GLOBAL[RST] "resets all internal logic and registers, except the Global
+// Register", immediately and with "no minimum delay required before clearing", so one store
+// restores the whole register file and discards whatever a dead driver left queued.
+// The pin mux (arch_pinmux_set refuses GPIO1.IO02/03) and the CCGR3 gate in CCM are both out
+// of any driver's reach, so neither needs restoring.
+void arch_console_reclaim(void)
+{
+    // Silence and stop first: a stale TIE storms the console IRQ through the whole dump, and
+    // RM 49.6.1.8 requires CTRL to be altered only with transmitter and receiver disabled.
+    r32(reg::lpuart::LPUART6_CTRL) = 0;
+
+    r32(reg::lpuart::LPUART6_GLOBAL) = reg::lpuart::GLOBAL_RST;
+    r32(reg::lpuart::LPUART6_GLOBAL) = 0;
+
+    // Reset leaves BAUD at 0x0F00_0004: the right OSR and the wrong divisor, so the rate has
+    // to be restored explicitly.
+    r32(reg::lpuart::LPUART6_BAUD) = reg::lpuart::BAUD_CONSOLE;
+
+    // Last, and TIE stays clear: the reclaimed console is polled, and the ring re-primes the
+    // interrupt itself.
+    r32(reg::lpuart::LPUART6_CTRL) = reg::lpuart::CTRL_TE | reg::lpuart::CTRL_RE;
+}
+
+// Console coherence (arch.h): block until LPUART6 is transmission-complete. STAT[TDRE]
+// clear only means the holding register took the byte; STAT[TC] stays clear until the last
+// stop bit has left the shift register and the pin has gone idle (RM 49.6.1.7).
+void arch_console_flush_sync(void)
+{
+    uint32_t spin = 0;
+    while ((r32(reg::lpuart::LPUART6_STAT) & reg::lpuart::STAT_TC) == 0)
+    {
+        if (++spin > KICKOS_POLL_SPIN_MAX)
+        {
+            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
+        }
+    }
+}
+
+// Kernel diagnostic LED: GPIO2.IO03, pad GPIO_B0_03 at ALT5, active-high.
+void arch_diag_led_init(void)
+{
+    r32(reg::ccm::CCGR0) |= reg::ccm::CCGR0_GPIO2;
+    // GPIO2 and GPIO7 drive the SAME pad and GPR27 bit n picks which (RM 11.3.28); a write
+    // to the instance that does not own the bit is silently ignored. Bit clear = GPIO2, the
+    // instance regs/gpio.h maps.
+    r32(reg::iomuxc::GPR27) &= ~reg::gpio::DIAG_LED_BIT;
+    r32(reg::iomuxc::SW_MUX_B0_03) = reg::iomuxc::MUX_ALT5;
+    // Dark BEFORE the pin becomes an output, so bring-up never flashes it.
+    r32(reg::gpio::GPIO2_DR_CLEAR) = reg::gpio::DIAG_LED_BIT;
+    r32(reg::gpio::GPIO2_GDIR) |= reg::gpio::DIAG_LED_BIT;
+}
+
+// One absolute store to a write-only register: re-entrant, so it is callable from the dead
+// end kfault_terminate reaches after a fault.
+void arch_diag_led_set(int on)
+{
+    if (on != 0)
+    {
+        r32(reg::gpio::GPIO2_DR_SET) = reg::gpio::DIAG_LED_BIT;
+    }
+    else
+    {
+        r32(reg::gpio::GPIO2_DR_CLEAR) = reg::gpio::DIAG_LED_BIT;
+    }
+}
+
 // Pad-mux table for KOS_SYS_PINMUX_SET. Selector is the datasheet-natural pair
 // (port = GPIO bank 1..5, pin = bit within the bank); a 1:1 pad<->GPIO position.
 // Value = the pad's SW_MUX_CTL_PAD address. 0 = hole (unbonded / not tabled) ->
@@ -528,11 +667,16 @@ static uintptr_t const imxrt_daisy[] = {
     reg::iomuxc::LPUART6_RX_SELECT_INPUT, // index 0
 };
 
-// GPIO1.IO02/03 (= GPIO_AD_B0_02/03) are the LPUART6 console pads: refuse so a
-// board map cannot dark the console.
+// Kernel-owned pads arch_pinmux_set refuses for life, so a board map cannot dark the console
+// or steal the diagnostic LED. GPIO1.IO02/03 (= GPIO_AD_B0_02/03) are the LPUART6 console
+// pads; GPIO2.IO03 (= GPIO_B0_03) is the diag LED.
 static bool imxrt_pin_kernel_owned(uint32_t port, uint32_t pin)
 {
-    return port == 1u and (pin == 2u or pin == 3u);
+    if (port == 1u and (pin == 2u or pin == 3u))
+    {
+        return true;
+    }
+    return port == 2u and pin == 3u;
 }
 
 // One-shot pin-function config (KOS_SYS_PINMUX_SET). func encoding:
@@ -594,11 +738,30 @@ void arch_idle_wait(void)
     __asm volatile("nop");
 }
 
+// See arch.h. Bridge access only; usb_clock_init already did USB1's clock half. Exact base
+// match, never a range: a base earns an entry only once the rest of its 16 KiB AIPS slot is
+// reserved in arch_reserved_blocks.
+int arch_periph_enable(uintptr_t base)
+{
+    if (base != mmap::USB1_BASE)
+    {
+        return -KOS_EINVAL;
+    }
+    uintptr_t const bridge = reg::aipstz::bridge_of(base);
+    if (bridge == 0u)
+    {
+        return -KOS_EINVAL; // outside all four AIPS regions: refuse rather than pick a word
+    }
+    r32(reg::aipstz::opacr_of(bridge, reg::aipstz::USB1_SLOT)) &=
+        ~reg::aipstz::sp_bit_of(reg::aipstz::USB1_SLOT);
+    return 0;
+}
+
 #if defined(KICKOS_ENABLE_SELFTEST)
 // Reboot into HalfKay (Teensy firmware-download mode): the MKL02 companion owns this
 // chip's SWD port, catches the halt, reprograms the flash and presents HalfKay itself.
-// BENCH-UNWITNESSED, and not vendor-documented (evidence: PJRC's _reboot_Teensyduino_
-// plus a third-party bare-metal Rust port).
+// Not vendor-documented (evidence: PJRC's _reboot_Teensyduino_ plus a third-party
+// bare-metal Rust port).
 // On non-Teensy RT1062 hardware (no MKL02, no armed debug host) the bkpt escalates to a
 // fault instead of rebooting.
 int arch_reboot(void)
@@ -618,6 +781,15 @@ size_t arch_reserved_blocks(struct arch_reserved_block* out, size_t max)
     static struct arch_reserved_block const blocks[] = {
         {mmap::GPT1_BASE, 0x1000u}, // GPT1: monotonic time base (RM ch.52, Table 3-3)
         {mmap::CCM_BASE, 0x1000u},  // CCM: CCGR clock-gate roots (RM ch.14)
+        // One cleared Supervisor-Protect nibble opens a whole 16 KiB peripheral slot to every
+        // unprivileged thread, and these config blocks are not themselves OPAC-gated.
+        {mmap::AIPSTZ1_BASE, 0x1000u}, // AIPS-1: MPR + OPACR0..4 (RM ch.32)
+        {mmap::AIPSTZ2_BASE, 0x1000u}, // AIPS-2
+        {mmap::AIPSTZ3_BASE, 0x1000u}, // AIPS-3, the bridge USB1 sits behind
+        {mmap::AIPSTZ4_BASE, 0x1000u}, // AIPS-4
+        // The rest of USB1's AIPS slot: the bridge's unit is 16 KiB and holds OTG2 at +0x200
+        // and USBNC at +0x800, so arch_periph_enable necessarily opens those too.
+        {mmap::USB1_BASE + 0x200u, 0x3E00u},
     };
     size_t n = sizeof(blocks) / sizeof(blocks[0]);
     if (n > max)

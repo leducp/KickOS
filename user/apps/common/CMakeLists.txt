@@ -30,6 +30,9 @@ add_subdirectory(pubpanic)
 # The same wire again, when the DRIVER dies rather than the system: the console must come
 # back to the kernel instead of going permanently mute. Sim-only and self-gated.
 add_subdirectory(drvdeath)
+# The same property on SILICON, plus the terminate drain: the app publishes the console to a
+# driver it spawns itself, so it needs no service list. Diagnostic and self-gated.
+add_subdirectory(reclaimwit)
 # The FRAMED arm of that same endpoint: a console driver must answer a kos_call rather
 # than write the request frame out as text and leave the caller parked. Sim-only and
 # self-gated; its gate builds its own published tree.
@@ -158,7 +161,8 @@ if(KICKOS_BOARD STREQUAL "picopi"
    OR KICKOS_BOARD STREQUAL "f302nucleo"
    OR KICKOS_BOARD STREQUAL "due"
    OR KICKOS_BOARD STREQUAL "xmc4800-relax"
-   OR KICKOS_BOARD STREQUAL "esp32-wroom")
+   OR KICKOS_BOARD STREQUAL "esp32-wroom"
+   OR KICKOS_BOARD STREQUAL "teensy41")
   add_subdirectory(blink)
 endif()
 add_subdirectory(usbcdcwit)

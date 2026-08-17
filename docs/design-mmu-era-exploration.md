@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # EXPLORATORY: the MMU / new-platform horizon (post-M6)
 
 > **Status: EXPLORATORY**

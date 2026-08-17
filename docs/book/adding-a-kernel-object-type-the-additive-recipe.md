@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Adding a kernel object type: the additive recipe
 
 > Chapter 8.1 taught how a task *names* a kernel object -- the per-task handle and the

@@ -26,9 +26,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-namespace kickos
-{
-namespace spi
+namespace kickos::spi
 {
 
 // Child cap indices the driver thread reads. A bus whose engine polls its FIFOs is delegated
@@ -38,6 +36,11 @@ enum
     KOS_SPI_CAP_EP = KOS_SPAWN_DELEGATED_CAP0,      // the request endpoint (WAIT)
     KOS_SPI_CAP_LINE = KOS_SPAWN_DELEGATED_CAP0 + 1 // the tier-1 line, when the bus has one
 };
+
+// THE BODIES BELOW STAY IN THIS HEADER. A SPI service target renames the class symbols it
+// calls with a private -D (kos_spi_device_open=k64dspi_device_open), so the rename applies
+// only where the caller is compiled: one body in libkickos_user.a would call the PUBLIC name,
+// which such a service never defines.
 
 // Build a service-level error reply (no rx) and complete the call. ALWAYS consumes the reply
 // cap.
@@ -281,7 +284,6 @@ constexpr bool desc_ok(driver::Descriptor const& d)
     return true;
 }
 
-} // namespace spi
-} // namespace kickos
+}
 
 #endif

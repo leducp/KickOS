@@ -27,4 +27,4 @@ namespace kickos::rp2040::reg::pads
     constexpr uint32_t IE = 1u << 6; // input enable
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_PADS_H
+#endif

@@ -25,4 +25,4 @@ namespace kickos::rp2040::reg::atomic
     constexpr uintptr_t as_clr(uintptr_t addr) { return addr + CLR_ALIAS; }
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_ATOMIC_H
+#endif

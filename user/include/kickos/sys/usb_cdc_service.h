@@ -8,7 +8,7 @@
 // (<kickos/sys/uart.h>) and its counters.
 //
 // The UsbDev class supplies the implicit interface (design-m4.6.2-usb-cdc.md sec 3.1):
-//     void     bring_up();
+//     int      bring_up();                    // 0, or negative: nothing else may be called
 //     void     attach();                      // present the device to the bus, LAST
 //     uint32_t take_events();                 // KOS_USB_EV_* ; clears what it reports
 //     uint32_t take_buff_status();            // bit 2n = EPn IN, 2n+1 = EPn OUT
@@ -27,9 +27,11 @@
 // EVERY method touches the granted register window, so all of them may be called ONLY
 // from the IRQ thread.
 //
-// The i.MX RT1062 backend teensy41 needs is absent rather than stubbed: its controller
-// walks software-built descriptor lists as a bus master and needs a cache posture this
-// tree does not have (design-m4.6.2-usb-cdc.md sections 2 and 4.3).
+// The RP block owns DPRAM and hands the DATA PID to software. The i.MX RT1062 owns the PID,
+// so its `pid` arguments are ignored, and it reads software-built descriptor lists out of
+// system RAM as a BUS MASTER, so its shared block must stay coherent with a device that never
+// looks at the D-cache; teensy41 gets that from KICKOS_IMXRT_DCACHE=OFF, which the build
+// derives from the service list (design-m4.6.2-usb-cdc.md sections 2 and 4.3).
 //
 // The link is host-controlled and may never come up, so `configured` is a SEPARATE,
 // NON-LATCHING flag beside the UART's `ready` latch (design sec 4.5) and a bus reset
@@ -56,6 +58,9 @@
 #include <kickos/sys/uart.h>
 #include <kickos/sys/usb_cdc.h>
 
+#include <kickos/sys/atomic.h>
+
+#include <atomic>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -96,21 +101,21 @@ struct Shared
     struct kos_byte_ring rx;
     struct kos_uart_stats stats;
     // One-way latch: the IRQ thread reached its loop. Written once by one thread.
-    volatile uint32_t ready;
+    Atomic<uint32_t, Order::RELAXED> ready;
     // NOT a latch: a bus reset clears it. It does NOT catch a bare unplug, because no
     // backend arms a disconnect or suspend source and the RP backend forces
     // VBUS-detected, so a host that goes away without a later reset leaves this at 1.
-    volatile uint32_t configured;
+    Atomic<uint32_t, Order::RELAXED> configured;
     // Bytes taken OUT of the tx ring and handed to the controller, not yet completed. The
     // IRQ thread is its only writer. It sits in the shared block because the flush protocol
     // runs on the SERVICE thread, which cannot see the Cdc class.
-    volatile uint32_t tx_inflight;
+    Atomic<uint32_t, Order::RELAXED> tx_inflight;
     // Write policy for the unframed console arm, from kos_uart_flags. The service thread is
     // its only writer.
-    volatile uint32_t mode;
+    Atomic<uint32_t, Order::RELAXED> mode;
     // Link-loss bytes, IRQ THREAD ONLY. Separate from stats.tx_dropped, which the service
     // thread owns: `+=` on one field from both threads is a lost update. STATS sums them.
-    volatile uint32_t tx_lost_link;
+    Atomic<uint32_t, Order::RELAXED> tx_lost_link;
     uint8_t tx_buf[KOS_USB_TX_SIZE];
     uint8_t rx_buf[KOS_USB_RX_SIZE];
 };
@@ -125,26 +130,16 @@ static_assert(KOS_USB_TX_SIZE >= 2 and (KOS_USB_TX_SIZE & (KOS_USB_TX_SIZE - 1))
               "the TX ring size must be a power of two >= 2 or it never accepts a byte");
 
 // Called by the BRING-UP, before either thread exists, so it races nothing.
-inline void shared_init(Shared* s)
-{
-    mem_zero(s, sizeof(*s));
-    kos_byte_ring_init(&s->tx, s->tx_buf, KOS_USB_TX_SIZE);
-    kos_byte_ring_init(&s->rx, s->rx_buf, KOS_USB_RX_SIZE);
-    // NON-BLOCKING by default, unlike the UART, and this is the one place the difference
-    // between the two transports is expressible: no IN token is issued until a host both
-    // enumerates the device AND opens the tty, so this ring's consumer may never exist. A
-    // blocking write is unbounded, so the paced default would hang an un-cabled board at
-    // the first printf that fills the ring, and hang shutdown behind it.
-    //
-    // This is a static property of the transport, NOT a reading of link state: it must not
-    // be keyed on Shared::configured, which never clears on unplug. A caller that wants
-    // back-pressure asks for it with KOS_UART_SET_MODE.
-    s->mode = KOS_UART_F_NONBLOCK;
-}
+//
+// Seats NON-BLOCKING, unlike the UART: no IN token is issued until a host both enumerates the
+// device AND opens the tty, so this ring's consumer may never exist and a blocking write here
+// is unbounded. That is a static property of the transport, so it must NOT be keyed on
+// Shared::configured, which never clears on unplug.
+void shared_init(Shared* s);
 
 // The offset a generic bring-up polls the readiness latch through, it being unable to name
-// Shared. Never write the offset as a literal in a descriptor: the latch must be the volatile
-// uint32_t this expression locates, and `configured` sits beside it.
+// Shared. Never write the offset as a literal in a descriptor: the latch must be the atomic
+// this expression locates, and `configured` sits beside it.
 constexpr uint16_t KOS_USB_READY_OFFSET = static_cast<uint16_t>(offsetof(Shared, ready));
 
 // ---------------------------------------------------------------------------------
@@ -161,14 +156,21 @@ public:
         line_coding_.bDataBits = 8;
     }
 
-    void bring_up()
+    // 0, or the backend's negative code. A refusal must NOT fall through to ep_open_all:
+    // the window may still be unreachable, and its first read is what faults.
+    int bring_up()
     {
-        dev_.bring_up();
+        int const rc = dev_.bring_up();
+        if (rc != 0)
+        {
+            return rc;
+        }
         reset_state();
         dev_.ep_open_all();
         // The bus pull-up goes on LAST. A host that sees the device before EP0 can
         // answer starts enumerating into a controller that is not armed.
         dev_.attach();
+        return 0;
     }
 
     // One pass. A wake is NOT proof of a hardware event (the doorbell is a pure post),
@@ -229,7 +231,8 @@ private:
     void drop_in_flight()
     {
         // Not stats.tx_dropped: that is the service thread's, and this would race it.
-        sh_->tx_lost_link += sh_->tx_inflight;
+        uint32_t const lost = sh_->tx_lost_link + sh_->tx_inflight;
+        sh_->tx_lost_link = lost;
         sh_->tx_inflight = 0;
     }
 
@@ -578,11 +581,11 @@ private:
             // A full RX ring drops the NEWEST byte and counts it, as on the UART.
             if (kos_byte_ring_push(&sh_->rx, &buf[i], 1u) == 0u)
             {
-                sh_->stats.rx_dropped++;
+                kos_counter_increment(&sh_->stats.rx_dropped, 1u);
             }
             else
             {
-                sh_->stats.rx_bytes++;
+                kos_counter_increment(&sh_->stats.rx_bytes, 1u);
             }
         }
         bulk_out_pid_ = static_cast<uint8_t>(bulk_out_pid_ ^ 1u);
@@ -645,13 +648,14 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
         {
             break; // the cap went away: the line is gone, so this thread has no work
         }
-        sh->stats.irq_wakes++;
-        uint32_t const rx_before = sh->stats.rx_bytes;
+        kos_counter_increment(&sh->stats.irq_wakes, 1u);
+        uint32_t const rx_before = sh->stats.rx_bytes.load(std::memory_order_relaxed);
         bool const tx_had_work = (kos_byte_ring_used(&sh->tx) != 0u);
         cdc.service_irq();
-        if (sh->stats.rx_bytes == rx_before and not tx_had_work)
+        if (sh->stats.rx_bytes.load(std::memory_order_relaxed) == rx_before
+            and not tx_had_work)
         {
-            sh->stats.irq_spurious++;
+            kos_counter_increment(&sh->stats.irq_spurious, 1u);
         }
     }
     exit(0);
@@ -666,157 +670,31 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
 //
 // PRECONDITION: KOS_USB_CAP_DOORBELL is the line's SIGNAL cap, which the two-thread
 // spawn provides. Any other caller has the notify refused on the cap TYPE check.
-inline uint32_t tx_write(Shared* sh, uint8_t const* p, uint32_t n)
-{
-    return console::tx_write(&sh->tx, &sh->stats, p, n);
-}
+uint32_t tx_write(Shared* sh, uint8_t const* p, uint32_t n);
 
 // An empty ring is NOT an empty channel here: up to one bulk packet still sits in the
 // controller's DPRAM buffer, holding the tail of the stream.
-inline uint32_t console_flush(Shared* sh)
-{
-    return console::flush(&sh->tx, &sh->tx_inflight);
-}
+uint32_t console_flush(Shared* sh);
 
-inline uint32_t console_write(Shared* sh, uint8_t const* p, uint32_t n)
-{
-    return console::write_console(&sh->tx, &sh->stats, p, n, sh->mode);
-}
+uint32_t console_write(Shared* sh, uint8_t const* p, uint32_t n);
 
 // ---------------------------------------------------------------------------------
 // The service thread. Parks in recv, replies out of ring state, never touches the device.
 // A kos_call is a <kickos/sys/uart.h> frame; a plain send is a raw console write.
 // Returns kos_reply's result: a reply can fail on a dead cap, and a caller that has
 // gone is the one thing this arm cannot see from its own state.
-inline int reply_status(kos_cap_t reply_cap, int32_t status, uint16_t len)
-{
-    struct kos_uart_rsp rsp;
-    rsp.status = status;
-    rsp.len = len;
-    rsp.rsv = 0;
-    return kos_reply(reply_cap, &rsp, sizeof(rsp));
-}
+int reply_status(kos_cap_t reply_cap, int32_t status, uint16_t len);
 
+// Parse + run one request frame; the reply is this function's, on every path.
+//
 // `mode` is null for a service with no unframed console arm, which is what makes
 // KOS_UART_SET_MODE refuse there instead of storing a mode nothing reads.
-inline int serve_one(Shared* sh, volatile uint32_t* mode, uint8_t const* msg,
-                      size_t n, kos_cap_t reply_cap)
-{
-    if (reply_cap == KOS_CAP_NONE)
-    {
-        return 0; // a plain send, not a call: nothing to reply to
-    }
-    if (n < sizeof(struct kos_uart_req))
-    {
-        return reply_status(reply_cap, -KOS_EINVAL, 0);
-    }
-    struct kos_uart_req req;
-    mem_copy(&req, msg, sizeof(req));
-    uint8_t const* payload = msg + sizeof(req);
-    size_t const payload_len = n - sizeof(req);
-
-    switch (req.op)
-    {
-    case KOS_UART_WRITE:
-    {
-        if (req.len > payload_len)
-        {
-            return reply_status(reply_cap, -KOS_EINVAL, 0);
-        }
-        // A short accept, zero included, is not an error: the client sees len < req.len
-        // and retries, and every retry must re-run the consumer. See tx_write.
-        uint32_t const took = tx_write(sh, payload, req.len);
-        return reply_status(reply_cap, 0, static_cast<uint16_t>(took));
-    }
-    case KOS_UART_READ:
-    {
-        if ((req.flags & KOS_UART_F_BLOCK) != 0)
-        {
-            return reply_status(reply_cap, -KOS_ENOSYS, 0);
-        }
-        uint8_t out[KOS_EP_MSG_MAX];
-        uint32_t want = req.len;
-        if (want > KOS_EP_MSG_MAX - sizeof(struct kos_uart_rsp))
-        {
-            want = KOS_EP_MSG_MAX - sizeof(struct kos_uart_rsp);
-        }
-        struct kos_uart_rsp rsp;
-        rsp.status = 0;
-        rsp.rsv = 0;
-        uint32_t const got = kos_byte_ring_pop(&sh->rx, out + sizeof(rsp), want);
-        rsp.len = static_cast<uint16_t>(got);
-        mem_copy(out, &rsp, sizeof(rsp));
-        return kos_reply(reply_cap, out, sizeof(rsp) + got);
-    }
-    case KOS_UART_STATS:
-    {
-        uint8_t out[sizeof(struct kos_uart_rsp) + sizeof(struct kos_uart_stats)];
-        struct kos_uart_rsp rsp;
-        rsp.status = 0;
-        rsp.len = static_cast<uint16_t>(sizeof(struct kos_uart_stats));
-        rsp.rsv = 0;
-        mem_copy(out, &rsp, sizeof(rsp));
-        // Summed on the service thread, the only writer of stats.tx_dropped. A reader can
-        // be one increment stale, which a counter tolerates; a lost update it does not.
-        struct kos_uart_stats snap;
-        mem_copy(&snap, &sh->stats, sizeof(snap));
-        snap.tx_dropped += sh->tx_lost_link;
-        mem_copy(out + sizeof(rsp), &snap, sizeof(snap));
-        return kos_reply(reply_cap, out, sizeof(out));
-    }
-    case KOS_UART_SET_MODE:
-    {
-        return reply_status(reply_cap,
-                     console::mode_apply(mode, req.flags, KOS_UART_F_NONBLOCK), 0);
-    }
-    case KOS_UART_CONFIGURE:
-    {
-        // A CDC line coding is set by the HOST, over the control endpoint, in the IRQ
-        // thread. There is nothing here for a client to program.
-        return reply_status(reply_cap, -KOS_ENOSYS, 0);
-    }
-    default:
-    {
-        return reply_status(reply_cap, -KOS_EINVAL, 0);
-    }
-    }
-}
+int serve_one(Shared* sh, Atomic<uint32_t, Order::RELAXED>* mode, uint8_t const* msg, size_t n,
+              kos_cap_t reply_cap);
 
 // Recv/dispatch loop for a CONSOLE endpoint: a kos_call is a request frame, a plain
 // send is raw console bytes. Returns only when the endpoint dies.
-inline void console_serve_loop(Shared* sh)
-{
-    uint8_t msg[KOS_EP_MSG_MAX];
-    while (true)
-    {
-        struct kos_recv_info info;
-        int32_t const n = kos_recv(KOS_USB_CAP_EP, msg, sizeof(msg), &info);
-        if (n < 0)
-        {
-            break; // endpoint dead: let the bring-up respawn us
-        }
-        if (info.reply_cap != KOS_CAP_NONE)
-        {
-            (void)serve_one(sh, &sh->mode, msg, static_cast<size_t>(n), info.reply_cap);
-            continue;
-        }
-        if (n == 0)
-        {
-            (void)console_flush(sh); // zero-length plain send == flush
-            continue;
-        }
-        // Raw console write. A plain send cannot report a short accept, so the tail is
-        // WAITED for rather than dropped; staying out of kos_recv until the ring took it
-        // all is also what paces the next sender. On USB the wait is what makes the
-        // channel usable at all: no IN token is issued until a host opens the tty, so the
-        // ring is full and static for as long as nobody is listening.
-        uint32_t const took = console_write(sh, msg, static_cast<uint32_t>(n));
-        // Refused at the ring even after the wait, so these bytes never entered tx_bytes;
-        // disjoint from the in-flight loss drop_in_flight() counts.
-        sh->stats.tx_dropped += static_cast<uint32_t>(n) - took;
-    }
-    exit(0);
-}
+void console_serve_loop(Shared* sh);
 
 // ---------------------------------------------------------------------------------
 // The class-side half of the descriptor check. The generic validator cannot know that the

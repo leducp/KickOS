@@ -8,8 +8,8 @@
 // archive member (user/src/syscall_stubs.cc) makes that a duplicate-symbol error instead of a
 // silent shadow. Nothing gates it: check_class_backend.sh covers the driver classes only.
 
-#ifndef KICKOS_DRVBRINGUP_KOS_SEAM_H
-#define KICKOS_DRVBRINGUP_KOS_SEAM_H
+#ifndef KICKOS_TESTS_UNIT_DRVBRINGUP_KOS_SEAM_H
+#define KICKOS_TESTS_UNIT_DRVBRINGUP_KOS_SEAM_H
 
 #include <stdint.h>
 

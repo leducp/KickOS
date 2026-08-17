@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The bench chain
 
 How a silicon capture is taken, and what a capture is allowed to claim. The scripts are

@@ -19,4 +19,4 @@ namespace kickos::rp2350::reg::timer
     constexpr uintptr_t TIMERAWL = mmap::TIMER0_BASE + 0x28u; // raw low half
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_TIMER_H
+#endif

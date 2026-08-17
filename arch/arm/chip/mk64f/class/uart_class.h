@@ -34,4 +34,4 @@ namespace driver
 }
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_CLASS_UART_CLASS_H
+#endif

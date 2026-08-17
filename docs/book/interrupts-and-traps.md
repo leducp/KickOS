@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Interrupts and traps: how the CPU stops what it is doing
 
 > A front-of-book primer on the one mechanism the whole rest of the interrupt

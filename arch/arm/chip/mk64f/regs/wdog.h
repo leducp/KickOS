@@ -24,4 +24,4 @@ namespace kickos::mk64f::reg::wdog
     constexpr uint16_t STCTRLH_DISABLE = 0x01D2u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_WDOG_H
+#endif

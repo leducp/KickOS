@@ -22,4 +22,4 @@ namespace kickos::rp2350::reg::sio
     constexpr uintptr_t GPIO_OE_SET = BASE + 0x038u;  // set 1s in GPIO_OE (output enable, bank 0)
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_SIO_H
+#endif

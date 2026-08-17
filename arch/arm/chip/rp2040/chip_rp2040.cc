@@ -272,6 +272,31 @@ namespace
     char console_tx_buf[CONSOLE_TX_SIZE];
     console_tx_backend const rp_console_backend = {
         rp_tx_slot_free, rp_tx_push, rp_tx_irq_enable, rp_tx_irq_disable};
+
+    // The window arch_console_reclaim rewrites: UART0's whole APB slot, 0x40034000 to
+    // 0x40037fff with UART1 starting at 0x40038000 (DS 4.2.8), which is the register block
+    // plus the XOR/SET/CLR aliases at +0x1000/+0x2000/+0x3000 (regs/atomic.h). The aliases
+    // must be inside it: a holder granted only an alias writes the very same registers.
+    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
+    constexpr size_t CONSOLE_WIN_SIZE = 0x4000u;
+
+    static_assert(reg::uart::IBRD >= CONSOLE_WIN_BASE
+                      and reg::uart::IBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and reg::uart::FBRD < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and reg::uart::LCR_H < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and reg::uart::CR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and reg::uart::IFLS < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and reg::uart::IMSC < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                      and reg::uart::DMACR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
+                  "arch_console_reclaim writes outside the window it reports");
+
+    // Which of the two divisor pairs clk_peri needs. clocks_init leaves clk_peri on either
+    // PLL_SYS at 125 MHz or a 12 MHz-class fallback, and CLK_SYS_SELECTED is the hardware's
+    // own one-hot record of which.
+    bool console_clk_on_pll()
+    {
+        return (r32(reg::clocks::CLK_SYS_SELECTED) & reg::clocks::CLK_SYS_SELECTED_AUX) != 0;
+    }
 }
 
 extern "C"
@@ -321,6 +346,69 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     *size = CONSOLE_TX_SIZE;
     *irq_line = irq::UART0_IRQ;
     return &rp_console_backend;
+}
+
+void arch_console_reclaim_window(uintptr_t* base, size_t* size)
+{
+    *base = CONSOLE_WIN_BASE;
+    *size = CONSOLE_WIN_SIZE;
+}
+
+// Panic-path reclaim (console.cc D6): force UART0 back to a polled-ready 8N1 TX channel after
+// a userspace driver may have garbled every writable register in the window. Runs with IRQs
+// masked, privileged; MUST be idempotent and re-entrant, so it is straight-line ABSOLUTE
+// stores only, no read-modify-write.
+// Bytes a dead driver left queued in the TX FIFO are NOT dropped: clearing LCR_H.FEN does not
+// physically empty the FIFO, it only makes the flags read as a 1-byte holding register
+// (DS 4.2.3.2.5), so those words still shift out ahead of the dump.
+// The pin mux and pads are outside the window (arch_pinmux_set refuses GP0/GP1); RESETS and
+// CLOCKS are reserved blocks.
+void arch_console_reclaim(void)
+{
+    // Silence first: a stale TXIM storms the console IRQ through the dump. Absolute store, not
+    // the as_clr alias rp_tx_irq_disable uses, which would leave every other source as found.
+    r32(reg::uart::IMSC) = 0;
+
+    // Stop the UART before the LCR writes below: every LCR write must precede enabling the
+    // UART (DS 4.2.7).
+    r32(reg::uart::CR) = 0;
+
+    // IBRD, FBRD, then LCR_H: the three are one internal 30-bit register that latches only on
+    // the LCR_H write (DS 4.2.3.2), so this order is load-bearing.
+    if (console_clk_on_pll())
+    {
+        r32(reg::uart::IBRD) = reg::uart::IBRD_125MHZ;
+        r32(reg::uart::FBRD) = reg::uart::FBRD_125MHZ;
+    }
+    else
+    {
+        r32(reg::uart::IBRD) = reg::uart::IBRD_115200;
+        r32(reg::uart::FBRD) = reg::uart::FBRD_115200;
+    }
+    // 8N1, FEN off. Also clears BRK, which pins UARTTXD low and sends nothing.
+    r32(reg::uart::LCR_H) = reg::uart::LCR_H_8N1;
+
+    r32(reg::uart::DMACR) = 0; // a DMA channel still armed on TXDMAE interleaves its own bytes
+    r32(reg::uart::IFLS) = reg::uart::IFLS_RESET; // inert while FEN is off; not worth depending on that
+
+    // LAST, and absolute: CTSEN gates every byte on a CTS this board does not wire, LBE feeds
+    // UARTTXD back into UARTRXD, SIREN turns the pin into IrDA pulses.
+    r32(reg::uart::CR) = reg::uart::CR_ENABLE;
+}
+
+// Console coherence (arch.h): block until UART0 is transmission-complete. FR.TXFF clear only
+// means the holding register took the byte; FR.BUSY stays set until the last stop bit has left
+// the shift register (DS 4.2.8, UARTFR).
+void arch_console_flush_sync(void)
+{
+    uint32_t spin = 0;
+    while ((r32(reg::uart::FR) & reg::uart::FR_BUSY) != 0)
+    {
+        if (++spin > KICKOS_POLL_SPIN_MAX)
+        {
+            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
+        }
+    }
 }
 
 // Kernel diagnostic LED: GP25 via SIO, active-high (NOT the Pico W CYW43 LED).

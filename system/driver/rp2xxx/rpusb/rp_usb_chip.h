@@ -25,4 +25,4 @@ namespace rpchip = kickos::rp2040;
 #error "rpusb: no KICKOS_RPUSB_CHIP_* selected; the driver CMakeLists sets it from KICKOS_CHIP"
 #endif
 
-#endif // KICKOS_DRIVER_RP2XXX_RP_USB_CHIP_H
+#endif

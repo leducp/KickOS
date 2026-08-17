@@ -10,8 +10,8 @@
 // is tiny and clean-room (register offsets from the ARMv7-M Architecture
 // Reference Manual, not vendor headers).
 
-#ifndef KICKOS_ARCH_ARMV7M_REGS_H
-#define KICKOS_ARCH_ARMV7M_REGS_H
+#ifndef KICKOS_ARCH_ARM_ARMV7M_REGS_H
+#define KICKOS_ARCH_ARM_ARMV7M_REGS_H
 
 #include <stdint.h>
 

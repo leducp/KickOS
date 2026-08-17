@@ -23,6 +23,7 @@ namespace kickos::esp32c6::reg::uart
     constexpr uintptr_t OFF_STATUS = 0x1Cu;      // RXFIFO_CNT [7:0], TXFIFO_CNT [23:16]
     constexpr uintptr_t OFF_CONF0_SYNC = 0x20u;  // framing (Register 27.9)
     constexpr uintptr_t OFF_CONF1 = 0x24u;       // RXFIFO_FULL_THRHD, TXFIFO_EMPTY_THRHD
+    constexpr uintptr_t OFF_FSM_STATUS = 0x70u;  // Register 27.24; TX/RX state machines
     constexpr uintptr_t OFF_REG_UPDATE = 0x98u;  // Register 27.36; see REG_UPDATE_BIT below
 
     // A _SYNC register (TRM section 27.5.1) is read in the UART core's clock domain and
@@ -42,6 +43,7 @@ namespace kickos::esp32c6::reg::uart
     constexpr uintptr_t INT_ENA = mmap::UART0_BASE + OFF_INT_ENA;
     constexpr uintptr_t INT_CLR = mmap::UART0_BASE + OFF_INT_CLR;
     constexpr uintptr_t STATUS = mmap::UART0_BASE + OFF_STATUS;
+    constexpr uintptr_t FSM_STATUS = mmap::UART0_BASE + OFF_FSM_STATUS;
     constexpr uintptr_t CONF1 = mmap::UART0_BASE + OFF_CONF1;
     constexpr uintptr_t CLKDIV = mmap::UART0_BASE + OFF_CLKDIV;
     constexpr uintptr_t CONF0 = mmap::UART0_BASE + OFF_CONF0;
@@ -57,6 +59,13 @@ namespace kickos::esp32c6::reg::uart
     constexpr uint32_t TXFIFO_CNT_MASK = 0xFFu;
     constexpr uint32_t TXFIFO_LEN = 128u;
     constexpr uint32_t TXFIFO_LIMIT = TXFIFO_LEN - 2u;      // push stops here, 2 spare entries
+
+    // FSM_STATUS (TRM Register 27.24): ST_UTX_OUT [3:0] is the transmitter state machine,
+    // ST_URX_OUT [7:4] the receiver's. The TRM prints the fields but not their encodings;
+    // idle is taken to be the reset value 0.
+    constexpr uint32_t ST_UTX_OUT_S = 0u;
+    constexpr uint32_t ST_UTX_OUT_MASK = 0xFu;
+    constexpr uint32_t ST_UTX_OUT_IDLE = 0u;
 
     // INT_RAW / INT_ST / INT_ENA / INT_CLR share one bit layout (TRM Registers 27.3 - 27.6);
     // only the sub-sources KickOS routes are named. An INT_RAW bit is self-SET by its

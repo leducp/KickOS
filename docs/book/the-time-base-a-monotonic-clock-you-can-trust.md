@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The time base: a monotonic clock you can trust
 
 > The conceptual chapter behind the "time" facet of the kernel model (Chapter 2).

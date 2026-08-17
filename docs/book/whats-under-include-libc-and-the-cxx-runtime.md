@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # What's under #include: the C library and the C++ runtime
 
 > A Part-0 concept chapter (prereq: minimal C/C++ + the

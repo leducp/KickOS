@@ -17,4 +17,4 @@ namespace kickos::rp2350::irq
     };
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_IRQ_H
+#endif

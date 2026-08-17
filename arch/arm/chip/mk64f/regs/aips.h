@@ -76,4 +76,4 @@ namespace kickos::mk64f::reg::aips
     static_assert(slot_of(mmap::GPIOA_BASE) == SLOT_NONE);
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_AIPS_H
+#endif

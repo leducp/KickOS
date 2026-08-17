@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The kernel console
 
 > Reference (code-synced): how the console works *as built* and the invariants a

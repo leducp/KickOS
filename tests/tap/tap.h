@@ -13,8 +13,8 @@
 // tap::diag/tap::skip, NOT kos::print: the kernel console drops everything once a
 // board's service list hands the UART to a userspace driver.
 
-#ifndef KICKOS_TAP_H
-#define KICKOS_TAP_H
+#ifndef KICKOS_TESTS_TAP_TAP_H
+#define KICKOS_TESTS_TAP_TAP_H
 
 namespace tap
 {

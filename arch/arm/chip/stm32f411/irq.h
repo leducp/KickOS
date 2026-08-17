@@ -15,4 +15,4 @@ namespace kickos::stm32f411::irq
     };
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_STM32F411_IRQ_H
+#endif

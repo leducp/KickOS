@@ -45,4 +45,4 @@ namespace kickos::esp32::reg::gpio
     };
 }
 
-#endif // KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_GPIO_H
+#endif

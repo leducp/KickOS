@@ -23,6 +23,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/atomic.h>
 #include <kickos/libc/fmt.h>
 
 extern "C"
@@ -37,6 +38,9 @@ extern "C"
 
 namespace
 {
+    using kickos::Atomic;
+    using kickos::Order;
+
     // Any line the bench does not otherwise use (NOT a console TX drain line); the
     // bench enables no other IRQ source, so it only ever fires when we inject it.
     constexpr int BENCH_IRQ_LINE = 20;
@@ -49,7 +53,7 @@ namespace
     kos::Semaphore* g_a = nullptr;    // MAIN's caps; the ping-pong sems (reporter side)
     kos::Semaphore* g_b = nullptr;
     kos::Semaphore* g_gate = nullptr;
-    volatile uint32_t g_rounds = 0;
+    Atomic<uint32_t, Order::RELAXED> g_rounds{0};
 
     // B1 well-known child cap indices (fresh child table => handle == index). MAIN
     // delegates the sems per spawn in a fixed order; the players name them by these.
@@ -72,7 +76,6 @@ namespace
         {
             kos_sem_wait(CH_B);
             kos_sem_post(CH_A);
-            // Explicit RMW through a local: '++' on a volatile is deprecated (C++20).
             uint32_t const round = g_rounds + 1;
             g_rounds = round;
             if ((round % ROUNDS_PER_REPORT) == 0)
@@ -241,7 +244,7 @@ namespace
 
     // The payload one sweep step measures. Written by measure_callreply BEFORE it spawns
     // either peer, so neither thread races the write.
-    volatile uint32_t g_cr_len = 16;
+    Atomic<uint32_t, Order::RELAXED> g_cr_len{16};
 
     void callreply_server(void*) // caps: E(WAIT)@1, done@2
     {

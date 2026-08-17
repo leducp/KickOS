@@ -94,11 +94,11 @@ namespace
                 // plus a stuck level interrupt: a storm rather than a loss.
                 if (kos_byte_ring_push(&sh->rx, &b, 1) == 0u)
                 {
-                    sh->stats.rx_dropped++;
+                    kos_counter_increment(&sh->stats.rx_dropped, 1u);
                 }
                 else
                 {
-                    sh->stats.rx_bytes++;
+                    kos_counter_increment(&sh->stats.rx_bytes, 1u);
                 }
             }
         }

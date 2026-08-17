@@ -35,4 +35,4 @@ namespace kickos::mk64f::reg::mcg
     constexpr uint8_t S_LOCK0 = 1u << 6;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_MCG_H
+#endif

@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # KickOS roadmap
 
 The milestone-level plan: the general idea to tackle per milestone. **No granular items** --

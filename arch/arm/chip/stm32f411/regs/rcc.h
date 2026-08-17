@@ -52,4 +52,4 @@ namespace kickos::stm32f411::reg::rcc
     constexpr uint32_t PLLQ = 7u;   // PLL48 = 336 / 7 = 48 MHz
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_STM32F411_REGS_RCC_H
+#endif

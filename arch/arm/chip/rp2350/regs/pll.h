@@ -46,4 +46,4 @@ namespace kickos::rp2350::reg::pll_usb
     constexpr uint32_t PRIM_POSTDIV = (5u << 16) | (5u << 12); // POSTDIV1=5, POSTDIV2=5
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_PLL_H
+#endif

@@ -31,4 +31,4 @@ namespace kickos::stm32f411::mmap
     constexpr uintptr_t SCB_CPACR = 0xE000ED88u;
 }
 
-#endif // KICKOS_CHIP_MMAP_H
+#endif

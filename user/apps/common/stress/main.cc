@@ -366,8 +366,7 @@ int main(int, char**)
     // Endurance soak: repeat the round forever. A clean round prints a compact
     // heartbeat; the first failing round prints it and FREEZES so the FAIL is the
     // last thing on the wire and the iter counter stops advancing (a silent hang
-    // shows the same frozen counter). The freeze reads a volatile so the empty loop
-    // is not elided.
+    // shows the same frozen counter).
     for (long iter = 1;; iter++)
     {
         int fails = run_stress_round(pairs, sleepers, live);
@@ -382,7 +381,7 @@ int main(int, char**)
         {
             ksnprintf(s, sizeof(s), "[soak] iter %ld STRESS FAIL (%d)\n# soak halted\n", iter, fails);
             kos::print(s);
-            volatile bool halt = true;
+            volatile bool halt = true; // optimization barrier: the empty loop must not be elided
             while (halt)
             {
             }

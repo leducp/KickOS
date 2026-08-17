@@ -11,8 +11,11 @@ namespace kickos::imxrt1062::irq
 {
     enum irq_num
     {
-        LPUART6_IRQ = 25, // LPUART6 combined TX/RX (RM Table 4-2)
+        LPUART6_IRQ = 25,   // LPUART6 combined TX/RX (RM Table 4-2)
+        USBPHY1_IRQ = 65,   // USBPHY (UTMI0) (RM Table 4-2)
+        USB_OTG2_IRQ = 112, // USBO2 USB OTG2 (RM Table 4-2)
+        USB_OTG1_IRQ = 113, // USBO2 USB OTG1 (RM Table 4-2)
     };
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_IMXRT1062_IRQ_H
+#endif

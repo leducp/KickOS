@@ -7,8 +7,8 @@
 // counter (the monotonic clock is chip-provided), and SHPR/NVIC-IPR are
 // word-access only (no byte writes).
 
-#ifndef KICKOS_ARCH_ARMV6M_REGS_H
-#define KICKOS_ARCH_ARMV6M_REGS_H
+#ifndef KICKOS_ARCH_ARM_ARMV6M_REGS_H
+#define KICKOS_ARCH_ARM_ARMV6M_REGS_H
 
 #include <stdint.h>
 

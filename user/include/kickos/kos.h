@@ -452,4 +452,4 @@ namespace kos
     }
 }
 
-#endif // KICKOS_KOS_H
+#endif

@@ -28,4 +28,4 @@ namespace kickos::imxrt1062::reg::wdog
     constexpr uint32_t RTWDOG_CS_RCS = 1u << 10; // reconfig-success flag
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_WDOG_H
+#endif

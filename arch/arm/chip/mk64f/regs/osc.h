@@ -17,4 +17,4 @@ namespace kickos::mk64f::reg::osc
     constexpr uint8_t CR_ERCLKEN = 1u << 7;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_OSC_H
+#endif

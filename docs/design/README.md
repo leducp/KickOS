@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design records -- index by status
 
 The `design-*.md` documents are per-topic design records: the reasoning behind a decision, the

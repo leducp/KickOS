@@ -57,4 +57,4 @@ extern "C"
 }
 #endif
 
-#endif // KICKOS_DRIVER_XMCUART_H
+#endif

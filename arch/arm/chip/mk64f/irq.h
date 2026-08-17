@@ -16,4 +16,4 @@ namespace kickos::mk64f::irq
     };
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_IRQ_H
+#endif

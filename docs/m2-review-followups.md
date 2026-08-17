@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # M2 review follow-ups (fable 10-angle review, this session)
 
 Verdict: **needs minor fixes** -- NO confirmed isolation escape (fail-closed

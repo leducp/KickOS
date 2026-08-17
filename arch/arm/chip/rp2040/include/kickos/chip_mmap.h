@@ -43,4 +43,4 @@ namespace kickos::rp2040::mmap
     constexpr uintptr_t XIP_SSI_BASE = 0x18000000u; // XIP SSI (DS 4.10.13)
 }
 
-#endif // KICKOS_CHIP_MMAP_H
+#endif

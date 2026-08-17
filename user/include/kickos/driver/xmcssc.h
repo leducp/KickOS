@@ -43,4 +43,4 @@ extern "C"
 }
 #endif
 
-#endif // KICKOS_DRIVER_XMCSSC_H
+#endif

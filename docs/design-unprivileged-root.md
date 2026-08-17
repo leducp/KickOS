@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Unprivileged root: start unprivileged holding capabilities
 
 > **Status: LANDED.** Why root starts unprivileged holding capabilities instead of starting

@@ -27,4 +27,4 @@ namespace kickos::rp2040::reg::resets
     constexpr uint32_t USBCTRL = 1u << 24;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_RESETS_H
+#endif

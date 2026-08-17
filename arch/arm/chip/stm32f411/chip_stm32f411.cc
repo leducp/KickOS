@@ -34,6 +34,7 @@
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
+
 #include <stdint.h>
 
 namespace mmap = kickos::stm32f411::mmap;
@@ -61,6 +62,7 @@ extern "C"
 
 namespace
 {
+
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
     // Main PLL from HSE -> 84 MHz (RM lines 5232-5324). PLLM is chosen per board
@@ -170,8 +172,10 @@ namespace
     // the TIM2 overflow ISR below, exactly once: whoever reads first advances
     // g_clk_last, so the other sees no backward step. Without that ISR a wrap
     // across a fully-quiescent >51 s idle would be lost (a slow DWT-style leap).
-    volatile uint32_t g_clk_high = 0;
-    volatile uint32_t g_clk_last = 0;
+    // The two words are ONE value: the IrqLock in tim2_ticks is what keeps them
+    // coherent against the TIM2 overflow ISR, not the atomicity of either word.
+    uint32_t g_clk_high = 0;
+    uint32_t g_clk_last = 0;
 
     // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Sole writer
     // is init() in arch_init; this chip never retunes at runtime. A retune added later
@@ -207,7 +211,7 @@ namespace
         uint32_t cur = r32(tim::CNT);
         if (cur < g_clk_last)
         {
-            g_clk_high = g_clk_high + 1;
+            ++g_clk_high;
         }
         g_clk_last = cur;
         uint64_t hi = g_clk_high;

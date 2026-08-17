@@ -20,28 +20,37 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/atomic.h>
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
+#include <kickos/sys/console_ring.h> // stats_unpack
 #include <kickos/libc/fmt.h>
 
 #include <stdint.h>
+
+#include <atomic>
 
 extern "C" kos_cap_t kickos_sim_uart_take_endpoint(void);
 
 namespace
 {
+    using kickos::Atomic;
+    using kickos::Order;
+    using std::memory_order_relaxed;
+
     constexpr int CH_DONE = 1; // delegated completion sem
     constexpr int CH_EP = 2;   // delegated SIGNAL-only cap on the service endpoint
 
     kos_cap_t g_done = KOS_CAP_NONE;
     // Root is the only reader and reads after the CH_DONE handshake, so no barrier beyond
     // the semaphore is needed.
-    volatile int g_wrote = -99;
-    volatile int g_read = -99;
-    volatile int g_match = -99;
-    volatile int g_wakes = -99;
-    volatile int g_sustained = -99; // bytes accepted by the SUSTAINED arm, or a negative error
+    Atomic<int, Order::RELAXED> g_wrote{-99};
+    Atomic<int, Order::RELAXED> g_read{-99};
+    Atomic<int, Order::RELAXED> g_match{-99};
+    Atomic<int, Order::RELAXED> g_wakes{-99};
+    // bytes accepted by the SUSTAINED arm, or a negative error
+    Atomic<int, Order::RELAXED> g_sustained{-99};
 
     // Several laps of the 512-byte TX ring, so it reaches FULL repeatedly and the client
     // is forced onto the short-accept retry path. One lap would not reach it, and the
@@ -219,12 +228,8 @@ namespace
             == static_cast<int>(sizeof(st)))
         {
             struct kos_uart_stats s;
-            unsigned char* dp = reinterpret_cast<unsigned char*>(&s);
-            for (unsigned i = 0; i < sizeof(s); i++)
-            {
-                dp[i] = st[i];
-            }
-            g_wakes = static_cast<int>(s.irq_wakes);
+            kickos::console::stats_unpack(&s, st);
+            g_wakes = static_cast<int>(s.irq_wakes.load(memory_order_relaxed));
         }
         kos_sem_post(CH_DONE);
     }
@@ -256,19 +261,23 @@ int main(int, char**)
     kos_sem_wait(g_done);
 
     int const n = payload_len();
+    int const n_wrote = g_wrote;
+    int const n_read = g_read;
+    int const matched = g_match;
+    int const sustained = g_sustained;
     char line[96];
     ksnprintf(line, sizeof(line), "[uartloop] wrote=%d read=%d match=%d wakes=%d\n",
-              g_wrote, g_read, g_match, g_wakes);
+              n_wrote, n_read, matched, g_wakes.load());
     kos_print(line);
-    ksnprintf(line, sizeof(line), "[uartloop] sustained=%d of %u\n", g_sustained,
+    ksnprintf(line, sizeof(line), "[uartloop] sustained=%d of %u\n", sustained,
               static_cast<unsigned>(SUSTAIN_TOTAL));
     kos_print(line);
-    if (g_wrote != n or g_read != n or g_match != 1)
+    if (n_wrote != n or n_read != n or matched != 1)
     {
         kos_print("[uartloop] FAIL (loopback)\n");
         return 1;
     }
-    if (g_sustained != static_cast<int>(SUSTAIN_TOTAL))
+    if (sustained != static_cast<int>(SUSTAIN_TOTAL))
     {
         kos_print("[uartloop] FAIL (sustained: the channel stopped and did not recover)\n");
         return 1;

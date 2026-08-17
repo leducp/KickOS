@@ -64,7 +64,7 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
         m->rx_pos++;
         got++;
     }
-    u->stats->rx_bytes += got;
+    kos_counter_increment(&u->stats->rx_bytes, got);
     return got;
 }
 

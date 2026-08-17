@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
 CONFIG_BOARD_F302NUCLEO=y
 
 # 16 KiB of SRAM, and the root stack is one notch above the user default because the

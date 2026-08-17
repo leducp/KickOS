@@ -38,6 +38,7 @@
 #include "rp_usb_regs.h"
 
 #include <stdint.h>
+#include <stdlib.h> // exit
 
 namespace drv = kickos::driver;
 namespace reg = kickos::rpusb::reg;
@@ -93,7 +94,8 @@ namespace
             }
         }
 
-        void bring_up()
+        // Always 0: nothing on this block is gated behind a syscall that can refuse.
+        int bring_up()
         {
             // The block is already out of reset and clk_usb already runs: both live in
             // RESETS and CLOCKS, which the kernel owns for life.
@@ -118,6 +120,7 @@ namespace
             r32(regs + reg::SIE_CTRL) = reg::SIE_CTRL_EP0_INT_1BUF;
             r32(regs + reg::INTE) =
                 reg::INT_BUFF_STATUS | reg::INT_BUS_RESET | reg::INT_SETUP_REQ;
+            return 0;
         }
 
         void attach()
@@ -160,24 +163,24 @@ namespace
             uint32_t err_clr = 0;
             if ((st & reg::SIE_STATUS_CRC_ERROR) != 0u)
             {
-                sh->stats.rx_framing++;
+                kos_counter_increment(&sh->stats.rx_framing, 1u);
                 err_clr |= reg::SIE_STATUS_CRC_ERROR;
             }
             if ((st & reg::SIE_STATUS_BIT_STUFF_ERROR) != 0u)
             {
-                sh->stats.rx_framing++;
+                kos_counter_increment(&sh->stats.rx_framing, 1u);
                 err_clr |= reg::SIE_STATUS_BIT_STUFF_ERROR;
             }
             if ((st & reg::SIE_STATUS_RX_OVERFLOW) != 0u)
             {
-                sh->stats.rx_overrun++;
+                kos_counter_increment(&sh->stats.rx_overrun, 1u);
                 err_clr |= reg::SIE_STATUS_RX_OVERFLOW;
             }
             if ((st & reg::SIE_STATUS_DATA_SEQ_ERROR) != 0u)
             {
                 // A data-PID mismatch, counted under framing because the wire ABI has no
                 // PID counter.
-                sh->stats.rx_framing++;
+                kos_counter_increment(&sh->stats.rx_framing, 1u);
                 err_clr |= reg::SIE_STATUS_DATA_SEQ_ERROR;
             }
             if (err_clr != 0u)
@@ -370,7 +373,12 @@ namespace
         dev.dpram = reg::DPRAM_BASE;
         dev.regs = reg::REGS_BASE;
         usb::Cdc<RpUsb> cdc(dev, sh);
-        cdc.bring_up();
+        if (cdc.bring_up() != 0)
+        {
+            // Leaving the ready latch clear is the report: drv::bring_up gives up on it
+            // and unwinds.
+            exit(0);
+        }
         usb::irq_loop(cdc, sh); // parks in irq_wait; never returns
     }
 

@@ -23,9 +23,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-namespace kickos
-{
-namespace driver
+namespace kickos::driver
 {
 
 enum
@@ -101,7 +99,7 @@ struct Descriptor
     // exactly one Domain and a member may bring no grant of its own. Keep here only state the
     // whole driver may touch; a DEV window, which has one holder, is per-thread instead.
     uint32_t block_size;
-    uint16_t ready_offset;   // byte offset of a `volatile uint32_t` latch inside the block
+    uint16_t ready_offset;   // byte offset of the readiness latch inside the block
     uint8_t ep_posture;      // enum kos_drv_ep
     uint8_t svc_kind;        // enum kos_svc_kind
     uint8_t line_count;
@@ -308,8 +306,8 @@ constexpr bool valid_l7(Descriptor const& d)
 // L8, THE BARRIER RULE, and the latch's own arithmetic.
 //
 // POSTURELESS arms: barrier_after == 0 would poll before any thread could have latched, and
-// barrier_after > thread_count names no barrier position at all. An unaligned
-// `volatile uint32_t` load is tolerated on ARMv7-M and FAULTS on RX and Xtensa.
+// barrier_after > thread_count names no barrier position at all. An unaligned 32-bit load is
+// tolerated on ARMv7-M and FAULTS on RX and Xtensa.
 //
 // HANDOVER-ONLY arms: the poll must sit STRICTLY between the spawns, because once the
 // endpoint's receiver exists recv_holders never reaches 0, nothing reclaims the console, and
@@ -462,300 +460,49 @@ constexpr bool ring_doorbell_shape_ok(Descriptor const& d, uint16_t ready_offset
 }
 
 // ---------------------------------------------------------------------------------
-inline int fail(char const* tag, char const* msg)
-{
-    kos::print(tag);
-    kos::print(msg);
-    return -1;
-}
+// Print `tag` then `msg` and return -1, the bring-up failure code.
+int fail(char const* tag, char const* msg);
 
 constexpr uint32_t KOS_DRV_HANDOVER_PROBE_US = 1000000;
 
-// The LAST two steps of a console handover, in this order because either order wrong fails
-// silently. Closes the caller's own WAIT-bearing cap on E, then PROVES a driver is serving
-// before any console client runs. Returns 0, or the probe's negative rc.
+// The last two steps of a console handover: close the caller's own WAIT-bearing cap on E,
+// then probe with a zero-length rendezvous on cap 0. Returns 0, or the probe's negative rc.
 //
-// Closing FIRST leaves the driver as the SOLE receiver, so its death takes recv_holders to 0,
-// which both EPIPEs the probe AND reclaims the console. The probe is a ZERO-LENGTH rendezvous
-// on cap 0, the same route every client uses.
-//
-// -KOS_EPIPE means a SERVICE thread died. The console comes back only once the register
-// window is free, and the window holder may still be alive, so the whole GROUP is ended
-// before the tag is printed. One call, because the threads are one task.
-//
-// Any other refusal, -KOS_ETIMEDOUT above all, leaves the service thread ALIVE and still the
-// sole receiver: recv_holders never reaches 0, the console is NOT reclaimed, and nothing here
-// recovers. The code is returned unchanged and no tag is printed.
-inline int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task)
-{
-    kos_handle_close(ep);
-    int const rc = kos_send_timed(KOS_CAP_STDOUT, "", 0, KOS_DRV_HANDOVER_PROBE_US);
-    if (rc >= 0)
-    {
-        return 0;
-    }
-    if (rc != -KOS_EPIPE)
-    {
-        return rc;
-    }
-    (void)kos_task_kill(task);
-    (void)fail(tag, "ERROR: a driver thread died during bring-up\n");
-    return rc;
-}
+// THE ORDER MATTERS: closing first leaves the driver the SOLE receiver, so its death takes
+// recv_holders to 0, which both EPIPEs the probe and reclaims the console. On any refusal but
+// -KOS_EPIPE the service thread is still alive and still holds the console, and nothing here
+// recovers.
+int console_handover_finish(kos_cap_t ep, char const* tag, kos_task_t task);
 
 // A cap-to-cap edge converter: wait on one line, post another. PRECONDITION, enforced by leg
-// L5: the waited line must be EDGE. This thread holds no window, so it cannot clear a
-// peripheral flag, and on a LEVEL source it would rearm into a still-asserted line and spin.
-inline void edge_relay_thread(void*)
-{
-    while (true)
-    {
-        if (kos_irq_wait(KOS_SPAWN_DELEGATED_CAP0) != 0)
-        {
-            break; // the cap went away: no line left to relay
-        }
-        (void)kos_irq_notify(KOS_SPAWN_DELEGATED_CAP0 + 1);
-    }
-    exit(0);
-}
+// L5: the waited line must be EDGE.
+void edge_relay_thread(void*);
 
 constexpr uint32_t KOS_DRV_READY_WAIT_NS = 1000000u; // 1 ms
 constexpr uint32_t KOS_DRV_READY_WAIT_MAX = 1000u;   // ~1 s total
 
-// The latch MUST be a `volatile uint32_t` at this offset, so the offset comes from a
-// class-substrate constant and never from a descriptor literal.
-inline bool wait_ready(void const* blk, uint16_t off)
-{
-    volatile uint32_t const* const flag = reinterpret_cast<volatile uint32_t const*>(
-        static_cast<unsigned char const*>(blk) + off);
-    // Sleeping, not spinning: the IRQ thread may sit below root's priority.
-    for (uint32_t i = 0; i < KOS_DRV_READY_WAIT_MAX; i++)
-    {
-        if (*flag != 0u)
-        {
-            return true;
-        }
-        kos_sleep_ns(KOS_DRV_READY_WAIT_NS);
-    }
-    return *flag != 0u;
-}
+// Poll the readiness latch at `off` inside `blk` until it is set or the budget runs out. The
+// latch MUST be an Atomic<uint32_t, Order::RELAXED>, so `off` comes from a class-substrate
+// constant and never from a descriptor literal.
+bool wait_ready(void const* blk, uint16_t off);
 
-// CLOSE BEFORE CANCELLING AND BEFORE PRINTING. Closing takes the endpoint's last receiver
+// Give back everything a failed bring-up took: the claimed lines, the endpoint, the group.
+// CLOSE BEFORE CANCELLING AND BEFORE PRINTING: closing takes the endpoint's last receiver
 // holder to 0, which notes the console dead and reclaims it, so the tag the caller prints
-// next reaches the wire; and the note must already be set when a cancelled thread's exit
-// runs the reclaim.
-inline void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_task_t task)
-{
-    for (uint8_t i = 0; i < claimed; i++)
-    {
-        kos_handle_close(line[i]);
-    }
-    kos_handle_close(ep);
-    // Ends every member AND drops root's hold, so an abandoned bring-up leaves neither a live
-    // thread nor a reserved task slot. Legal on a group that never got a member.
-    (void)kos_task_kill(task);
-}
+// next reaches the wire.
+void unwind(kos_cap_t const* line, uint8_t claimed, kos_cap_t ep, kos_task_t task);
 
-inline kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg,
-                                     void* blk, kos_cap_t ep, kos_cap_t const* line,
-                                     kos_task_t task)
-{
-    kos_cap_grant grants[KOS_DRV_CAPS_MAX] = {};
-    for (uint8_t i = 0; i < t.cap_count; i++)
-    {
-        if (t.caps[i].resource == KOS_DRV_RES_EP)
-        {
-            grants[i].source_cap = ep;
-        }
-        else
-        {
-            grants[i].source_cap = line[t.caps[i].resource - KOS_DRV_RES_LINE0];
-        }
-        grants[i].rights_mask = t.caps[i].rights;
-    }
+// Spawn one descriptor thread into `task` with its per-thread grants and cap roles.
+kos::thread::Handle spawn_one(Thread const& t, struct kos_service_cfg const* cfg, void* blk,
+                              kos_cap_t ep, kos_cap_t const* line, kos_task_t task);
 
-    void* arg = nullptr;
-    if (t.arg == KOS_DRV_ARG_BLOCK)
-    {
-        arg = blk;
-    }
-    else if (t.arg == KOS_DRV_ARG_WINDOW)
-    {
-        arg = reinterpret_cast<void*>(cfg->mmio_base);
-    }
-
-    void* win = nullptr;
-    uint32_t win_size = 0;
-    if (t.window_grant)
-    {
-        win = reinterpret_cast<void*>(cfg->mmio_base);
-        win_size = cfg->mmio_window;
-    }
-
-    char const* name = t.name;
-    if (name == nullptr)
-    {
-        name = cfg->name;
-    }
-
-    // No mem grant of its own: the ring block is the TASK's shared region, and a member
-    // bringing one is refused -KOS_EINVAL. The window is the per-thread grant.
-    return kos::thread::spawn(t.entry, arg, name,
-                              static_cast<uint8_t>(cfg->prio + t.prio_delta),
-                              KOS_POLICY_FIFO, /*quantum_ns=*/0, /*privileged=*/false,
-                              /*mem=*/nullptr, /*mem_size=*/0,
-                              /*stack=*/nullptr, /*stack_size=*/0,
-                              win, win_size, grants, t.cap_count,
-                              /*authority=*/0, /*cap_dest=*/nullptr, task);
-}
-
+// The whole choreography. Returns 0, or a negative failure code: a bad descriptor or a failed
+// step prints its own diagnostic; a handover probe refusal is returned unchanged.
+//
 // `out_ep` receives the retained endpoint under KOS_DRV_EP_RETAIN and must be null under
 // HANDOVER. valid() cannot check that pairing, out_ep being a runtime pointer.
-inline int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* out_ep)
-{
-    // Every index below is bounded by a leg of valid(): a driver that omits its
-    // static_assert, or a descriptor whose line number stops being constexpr, would
-    // otherwise write past line[] or ThreadSet::t[] on ROOT's stack. d.tag is L10's own
-    // subject, so a descriptor that failed only L10 would reach fail() with a null tag.
-    if (not valid(d))
-    {
-        char const* tag = d.tag;
-        if (tag == nullptr)
-        {
-            tag = "[driver] ";
-        }
-        return fail(tag, "ERROR: the descriptor is not a well-formed driver shape\n");
-    }
-    for (uint8_t i = 0; i < d.thread_count; i++)
-    {
-        if (d.threads[i].entry == nullptr)
-        {
-            return fail(d.tag, "ERROR: a thread in the descriptor has no entry\n");
-        }
-    }
-    if (cfg == nullptr or cfg->kind != d.svc_kind)
-    {
-        return fail(d.tag, "ERROR: bad or wrong-kind service cfg\n");
-    }
-    if (d.expected_base != 0u and cfg->mmio_base != d.expected_base)
-    {
-        return fail(d.tag, "ERROR: cfg mmio_base is not this driver's block\n");
-    }
-    if ((d.ep_posture == KOS_DRV_EP_RETAIN) != (out_ep != nullptr))
-    {
-        return fail(d.tag, "ERROR: out_ep does not match the endpoint posture\n");
-    }
+int bring_up(Descriptor const& d, struct kos_service_cfg const* cfg, kos_cap_t* out_ep);
 
-    void* blk = nullptr;
-    if (d.block_size != 0u)
-    {
-        // ONE power-of-two, naturally aligned: the RAM arm of the grant predicate demands it
-        // of root too.
-        blk = kos_ram_alloc(d.block_size);
-        if (blk == nullptr)
-        {
-            return fail(d.tag, "ERROR: arena cannot spare the ring block\n");
-        }
-        // Reach it before writing it: kos_ram_alloc grants nothing, and under enforcement
-        // root's own region set does not cover the arena.
-        if (kos_mem_self_grant(blk, d.block_size) != 0)
-        {
-            return fail(d.tag, "ERROR: mem_self_grant of the ring block refused\n");
-        }
-        if (d.block_init(blk, cfg) != 0)
-        {
-            return fail(d.tag, "ERROR: block_init refused the cfg\n");
-        }
-    }
-
-    // THE GROUP. Every thread of this driver joins it, so a peer's death ends the rest and one
-    // call ends them all, which is what lets the unwind below name no thread at all. Created
-    // BEFORE the endpoint, so the earliest failure that has a task to give back is the first
-    // one that has anything to give back.
-    //
-    // ITS SHARED REGION IS THE WHOLE BLOCK, FOR EVERY MEMBER. A task owns exactly one Domain
-    // and a member may bring no grant of its own, so there is no per-thread subset to declare:
-    // a thread that must not reach the block needs a task of its own, which today would also
-    // take it out of the kill group. A driver with no block gets a group that is only a kill
-    // group. L4 is what keeps this narrow, by refusing a block no thread reads.
-    kos_task_t task = KOS_TASK_NONE;
-    if (kos_task_create(blk, d.block_size, &task) != 0)
-    {
-        return fail(d.tag, "ERROR: task_create failed\n");
-    }
-
-    kos_cap_t ep = KOS_CAP_NONE;
-    if (kos_endpoint_create(&ep) != 0)
-    {
-        (void)kos_task_kill(task);
-        return fail(d.tag, "ERROR: endpoint_create failed\n");
-    }
-
-    // PUBLISH BEFORE CLAIM: irq_claim refuses a line while any handler but the default is
-    // attached, and only the publish detaches the kernel's own ring from that vector.
-    if (d.ep_posture == KOS_DRV_EP_HANDOVER)
-    {
-        if (kos_console_publish(ep) != 0)
-        {
-            kos_handle_close(ep);
-            (void)kos_task_kill(task);
-            return fail(d.tag, "ERROR: console_publish failed\n");
-        }
-    }
-
-    kos_cap_t line[KOS_DRV_LINES_MAX] = {KOS_CAP_NONE, KOS_CAP_NONE};
-    uint8_t claimed = 0;
-    for (uint8_t i = 0; i < d.line_count; i++)
-    {
-        // Claimed HERE: minting needs KOS_AUTH_IRQ and every driver thread runs at authority
-        // 0. A line comes back MASKED, and the waiting thread's first irq_wait arms it.
-        if (kos_irq_claim(d.lines[i].number, d.lines[i].trigger, &line[i]) != 0)
-        {
-            unwind(line, claimed, ep, task);
-            return fail(d.tag, "ERROR: irq_claim failed\n");
-        }
-        claimed++;
-    }
-
-    // thread_count + 1 barrier positions, not thread_count: barrier_after == thread_count
-    // polls AFTER the last spawn, the only readiness window a one-thread service has, which
-    // L8 admits under RETAIN only.
-    for (uint8_t i = 0; i <= d.thread_count; i++)
-    {
-        if (d.ready_offset != KOS_DRV_READY_NONE and i == d.barrier_after)
-        {
-            if (not wait_ready(blk, d.ready_offset))
-            {
-                unwind(line, claimed, ep, task);
-                return fail(d.tag, "ERROR: a driver thread never reached its loop\n");
-            }
-        }
-        if (i == d.thread_count)
-        {
-            break;
-        }
-        if (not spawn_one(d.threads[i], cfg, blk, ep, line, task).valid())
-        {
-            unwind(line, claimed, ep, task);
-            return fail(d.tag, "ERROR: driver thread spawn failed\n");
-        }
-    }
-
-    // With the driver threads the only holders, a line returns to the pool when they die.
-    for (uint8_t i = 0; i < claimed; i++)
-    {
-        kos_handle_close(line[i]);
-    }
-
-    if (d.ep_posture == KOS_DRV_EP_RETAIN)
-    {
-        *out_ep = ep;
-        return 0;
-    }
-    return console_handover_finish(ep, d.tag, task);
 }
-
-} // namespace driver
-} // namespace kickos
 
 #endif

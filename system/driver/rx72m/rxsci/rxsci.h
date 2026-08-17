@@ -42,4 +42,4 @@ extern "C"
 }
 #endif
 
-#endif // KICKOS_DRIVER_RX72M_RXSCI_H
+#endif

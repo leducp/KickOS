@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design brief: K64F/DSPI unprivileged userspace SPI driver
 
 > **Status: LANDED** -- `k64dspi` shipped and is silicon-proven (2026-07-17): a 4-word SOUT->SIN

@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design brief: ESP32-C6 unprivileged GPIO driver -- the canonical PMP + APM per-thread peripheral-isolation reference
 
 > **Status: LANDED** -- kept as the DECISION record. The register-level facts it used to carry --

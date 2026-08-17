@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Authority comes from possession, or from identity: capabilities and access lists
 
 > Every protection system answers one question: *this subject is asking to do this thing to

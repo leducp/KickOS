@@ -18,4 +18,4 @@ namespace kickos::rp2040::irq
     };
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_IRQ_H
+#endif

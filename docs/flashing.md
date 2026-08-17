@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Flashing KickOS to hardware
 
 > **This page holds every flash recipe.** For the board matrix -- per-board LED / console /

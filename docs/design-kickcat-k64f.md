@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design brief: running the KickCAT slave on KickOS/K64F
 
 > **Status: ACTIVE** -- the K64F hardware path below is still the plan, and KickCAT is set aside

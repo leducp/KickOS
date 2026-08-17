@@ -47,4 +47,4 @@ namespace kickos::esp32::irq
     };
 }
 
-#endif // KICKOS_ARCH_XTENSA_CHIP_ESP32_IRQ_H
+#endif

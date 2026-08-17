@@ -19,4 +19,4 @@ namespace kickos::rp2040::reg::timer
     constexpr uintptr_t TIMERAWL = mmap::TIMER_BASE + 0x28u; // raw low half (1 MHz)
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_TIMER_H
+#endif

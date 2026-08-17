@@ -29,4 +29,4 @@ namespace kickos::stm32f411::reg::usart
     constexpr uint32_t BAUD_115200 = 115200u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_STM32F411_REGS_USART_H
+#endif

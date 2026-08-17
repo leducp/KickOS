@@ -55,4 +55,4 @@ namespace kickos::rp2350::reg::clocks
     constexpr uint32_t ROSC_NOMINAL_HZ = 6500000u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_CLOCKS_H
+#endif

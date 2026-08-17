@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design note: M3 -- user-selectable CPU clock / low-power mode (WRITE side)
 
 > **Status: LANDED** -- the write side shipped: `arch_cpu_clock_set` plus the coherence tail

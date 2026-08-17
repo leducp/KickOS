@@ -15,9 +15,12 @@
 #include <kickos/sys/byte_ring.h>
 #include <kickos/sys/uart_service.h>
 #include <kickos/sys/spi_service.h>
+#include <kickos/sys/atomic.h>
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/errno.h>
 #include <kickos/libc/string.h>
+
+#include <atomic>
 
 #include "tap.h"
 
@@ -48,6 +51,9 @@
 
 namespace
 {
+    using kickos::Atomic;
+    using kickos::Order;
+
     kos_cap_t g_done = KOS_CAP_NONE; // shared completion counter (MAIN's cap; delegated to workers)
     kos_cap_t g_lock = KOS_CAP_NONE; // binary semaphore = mutex over the event log (MAIN's cap)
 
@@ -242,13 +248,13 @@ namespace
     {
         char const* s = "# [svc] kconsole_write arg/return roundtrip (not a delivery check)\n";
         size_t const n = strlen(s);
-        TAP_CHECK(kos_kconsole_write(s, n) == static_cast<long>(n));
+        TAP_CHECK(kos_kconsole_write(s, n) == static_cast<int32_t>(n));
         TAP_CHECK(kos_kconsole_write(s, 0) == 0); // a len-0 write is a legitimate 0 (sys.h)
         // len is honoured: pass a PREFIX (itself a whole line, so the TAP stream stays
         // well formed) and require the short count back; a kernel that strlen'd the
         // buffer would return more and spill the tail marker.
         char const* pfx = "# [svc] len-honoured prefix\nTRAILING-MUST-NOT-APPEAR";
-        long const cut = static_cast<long>(strlen("# [svc] len-honoured prefix\n"));
+        int32_t const cut = static_cast<int32_t>(strlen("# [svc] len-honoured prefix\n"));
         TAP_CHECK(kos_kconsole_write(pfx, static_cast<size_t>(cut)) == cut);
     }
 
@@ -331,8 +337,8 @@ namespace
     // silently lost the bit, and this test would then witness nothing.
     void t_pinmux_set()
     {
-        long const bad_port = kos_pinmux_set(99u, 0u, 0x10u);
-        long const bad_pin = kos_pinmux_set(0u, 99u, 0x10u);
+        int32_t const bad_port = kos_pinmux_set(99u, 0u, 0x10u);
+        int32_t const bad_pin = kos_pinmux_set(0u, 99u, 0x10u);
         TAP_CHECK(bad_port < 0 and bad_port != -KOS_EPERM); // port out of range
         TAP_CHECK(bad_pin < 0 and bad_pin != -KOS_EPERM);   // pin out of range
     }
@@ -1140,47 +1146,69 @@ namespace
 
     // --- Chained/nested boost across two mutexes (H5) ---------------------------
     // A(20) waits on M1 owned by B(10); B waits on M2 owned by C(5). The boost must
-    // PROPAGATE two hops, raising C to A's priority. D(15) wakes while C spins, so 'e'
+    // PROPAGATE two hops, raising C to A's priority. D is ready while C spins, so 'e'
     // before 'd' can only hold if the boost travelled B -> C.
-    void ch_c(void*) // caps: done@1, lock@2, M2@3, gate@4
+    //
+    // Handed along C -> B -> C -> A -> D by semaphore, so the arm holds no sleep deadline.
+    // Two semaphores, not one: a post is popped by the HIGHEST-priority waiter, so a token
+    // B needs cannot be posted anywhere A and D are also waiting.
+    //
+    // A is released by C, not by B: a release from B would reach A while B still merely HOLDS
+    // M1, and the arm would then witness two single-hop walks a one-hop kernel reproduces.
+    kos_cap_t g_ch_up = KOS_CAP_NONE; // C <-> B: M2 is held, then M1 is held and B is about to block
+    kos_cap_t g_ch_on = KOS_CAP_NONE; // C -> A -> D: B is blocked on M2, then the chain has formed
+    void ch_c(void*) // caps: done@1, lock@2, M2@3, gate@4, up@5, on@6
     {
         stage_wait(4);
         kos_mutex_lock(3); // M2
         log_put('c');
-        mtx_spin(g_mtx_unit * 8); // hold past D's wake at 4u, with margin
+        kos_sem_post(5);   // M2 is held: B may take M1
+        // B hands 5 back before blocking on M2, and B's block is what boosts us onto the CPU,
+        // so getting past this wait means B is ALREADY a waiter on M2.
+        kos_sem_wait(5);
+        kos_sem_post(6);          // only now may A block on M1
+        mtx_spin(g_mtx_unit * 8); // A blocks on M1 inside this
         log_put('e');
         kos_mutex_unlock(3);
         log_put('C');
         kos_sem_post(CH_DONE);
     }
-    void ch_b(void*) // caps: done@1, lock@2, M1@3, M2@4, gate@5
+    void ch_b(void*) // caps: done@1, lock@2, M1@3, M2@4, up@5
     {
-        stage_wait(5);
-        kos_sleep_ns(g_mtx_unit * 1);
+        kos_sem_wait(5);
         kos_mutex_lock(3); // M1 (before A tries it)
         log_put('b');
-        kos_mutex_lock(4); // M2: C holds it -> block, boost C to 10
+        kos_sem_post(5);   // C is the only waiter and it is below us, so this does not preempt
+        kos_mutex_lock(4); // M2: C holds it -> block, boost C to 10, which resumes C's wait
         kos_mutex_unlock(4);
         kos_mutex_unlock(3);
         kos_sem_post(CH_DONE);
     }
-    void ch_a(void*) // caps: done@1, lock@2, M1@3, gate@4
+    void ch_a(void*) // caps: done@1, lock@2, M1@3, on@4
     {
-        stage_wait(4);
-        kos_sleep_ns(g_mtx_unit * 2);
-        kos_mutex_lock(3); // M1: B holds it -> block, boost B to 20, chain-boost C to 20
+        kos_sem_wait(4);
+        kos_sem_post(4);   // releases D, which we outrank, so the chain forms before it runs
+        kos_mutex_lock(3); // M1: B holds it AND waits on M2 -> boost B to 20, then C to 20
         kos_mutex_unlock(3);
         kos_sem_post(CH_DONE);
     }
-    void ch_d(void*) // caps: done@1, lock@2, gate@3
+    void ch_d(void*) // caps: done@1, lock@2, on@3
     {
-        stage_wait(3);
-        kos_sleep_ns(g_mtx_unit * 4); // wake well after the chain has fully formed (~2u)
+        // Index 3, not the 4 A posts on: holding no mutex cap shifts the same semaphore one
+        // slot down. Waiting on the wrong index returns at once and 'd' precedes 'e'.
+        kos_sem_wait(3);
         log_put('d');
         kos_sem_post(CH_DONE);
     }
     void t_mutex_chain()
     {
+        // Ask the pool BEFORE creating anything: the three staging semaphores exceed the
+        // supply on the small boards, so this stays a skip there instead of a create failure.
+        if (not pool_can_host(4))
+        {
+            tap::skip("pool too small (4 interdependent workers)");
+            return;
+        }
         log_reset();
         g_mtx_unit = mtx_time_unit();
         kos_cap_t m1 = KOS_CAP_NONE;
@@ -1189,36 +1217,28 @@ namespace
         int const rc2 = kos_mutex_create(&m2);
         TAP_CHECK(rc1 == 0 and rc2 == 0);
         TAP_CHECK(kos_sem_create(0, &g_gate) == 0);
+        TAP_CHECK(kos_sem_create(0, &g_ch_up) == 0);
+        TAP_CHECK(kos_sem_create(0, &g_ch_on) == 0);
+        // Six grants, exactly KICKOS_MAX_SPAWN_GRANTS.
         kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {m2, CH_MTX},
-                                 {g_gate, CH_FULL}};
+                                 {g_gate, CH_FULL}, {g_ch_up, CH_FULL}, {g_ch_on, CH_FULL}};
         kos_cap_grant bcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL},
-                                 {m1, CH_MTX}, {m2, CH_MTX}, {g_gate, CH_FULL}};
+                                 {m1, CH_MTX}, {m2, CH_MTX}, {g_ch_up, CH_FULL}};
         kos_cap_grant acaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {m1, CH_MTX},
-                                 {g_gate, CH_FULL}};
-        kos_cap_grant dcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_gate, CH_FULL}};
-        auto c = kos::thread::spawn_caps(ch_c, nullptr, "chC", 5, ccaps, 4);
+                                 {g_ch_on, CH_FULL}};
+        kos_cap_grant dcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ch_on, CH_FULL}};
+        auto c = kos::thread::spawn_caps(ch_c, nullptr, "chC", 5, ccaps, 6);
         auto b = kos::thread::spawn_caps(ch_b, nullptr, "chB", 10, bcaps, 5);
         auto a = kos::thread::spawn_caps(ch_a, nullptr, "chA", 20, acaps, 4);
         auto d = kos::thread::spawn_caps(ch_d, nullptr, "chD", 15, dcaps, 3);
         stage_release();
-        if (not c.valid() or not b.valid() or not a.valid() or not d.valid())
-        {
-            // A 2-slot pool cannot host 4 workers. The partial batch MUST be drained (they
-            // post the shared g_done) and both mutexes closed, or a later wait_n desyncs.
-            int n = 0;
-            if (c.valid()) { n++; }
-            if (b.valid()) { n++; }
-            if (a.valid()) { n++; }
-            if (d.valid()) { n++; }
-            wait_n(n);
-            kos_handle_close(m1);
-            kos_handle_close(m2);
-            kos_handle_close(g_gate);
-            tap::skip("pool too small");
-            return;
-        }
+        // The probe above just held four slots and four stacks, so a failure now is a pool
+        // bug, not a small board.
+        TAP_CHECK(c.valid() and b.valid() and a.valid() and d.valid());
         wait_n(4);
         kos_handle_close(g_gate);
+        kos_handle_close(g_ch_up);
+        kos_handle_close(g_ch_on);
         TAP_CHECK(kos_handle_close(m1) == 0 and kos_handle_close(m2) == 0);
         TAP_CHECK(count('c') == 1 and count('e') == 1 and count('d') == 1
                   and count('b') == 1 and count('C') == 1);
@@ -1685,7 +1705,7 @@ namespace
 
         // The write policy KOS_UART_SET_MODE carries. One pure function decides it for
         // every transport, so both service layers refuse and accept identically.
-        uint32_t mode = 0;
+        kickos::Atomic<uint32_t, kickos::Order::RELAXED> mode{0};
         // A service with no unframed console arm REFUSES: a stored mode nothing reads would
         // tell a caller byte loss was enabled while its writes still blocked.
         TAP_CHECK(kickos::console::mode_apply(nullptr, KOS_UART_F_NONBLOCK, 0u)
@@ -1715,8 +1735,7 @@ namespace
         unsigned char rbuf[8];
         struct kos_byte_ring ring;
         kos_byte_ring_init(&ring, rbuf, sizeof(rbuf));
-        struct kos_uart_stats st;
-        memset(&st, 0, sizeof(st));
+        struct kos_uart_stats st = {};
         unsigned char twelve[12];
         memset(twelve, 'z', sizeof(twelve));
         // Eight bytes of room for twelve offered: a short accept, not a refusal and not a
@@ -1725,14 +1744,15 @@ namespace
                                                           KOS_UART_F_NONBLOCK);
         TAP_CHECK(nb < 12);       // short accept
         TAP_CHECK(12u - nb > 0u); // the shortfall the service arm charges to tx_dropped
-        TAP_CHECK(st.tx_bytes > 0u and st.tx_bytes <= sizeof(rbuf));
+        uint32_t const cooked = st.tx_bytes.load(std::memory_order_relaxed);
+        TAP_CHECK(cooked > 0u and cooked <= sizeof(rbuf));
         // The return is INPUT bytes and the counter is COOKED bytes, so these differ under
         // KICKOS_CONSOLE_CRLF: a partially accepted cooked chunk reports no input progress
         // at all. That makes the charge OVER-count by up to one chunk, never under-count,
         // and over-counting is the safe direction: a caller is told it lost at least what it
         // lost. Asserting equality here would pass on the sim, the ONLY crlf=0 tree, and
         // fail on all thirteen boards.
-        TAP_CHECK(st.tx_bytes >= nb);
+        TAP_CHECK(cooked >= nb);
     }
 
 #if defined(KICKOS_ENABLE_SELFTEST)
@@ -2501,10 +2521,10 @@ namespace
     constexpr uint8_t EP_WAIT_ONLY = KOS_CAP_WAIT;     // recv right only
     kos_cap_t g_ep = KOS_CAP_NONE; // main's endpoint cap (created per test)
     char g_ep_rbuf[64];
-    volatile long g_ep_rn = -99;         // worker recv return
-    volatile uint32_t g_ep_rbadge = 0xffffffffu;
-    volatile int g_ep_rcap = 64;         // capacity the recv worker passes
-    volatile long g_ep_sn = -99;         // worker send return
+    Atomic<int32_t, Order::RELAXED> g_ep_rn{-99};         // worker recv return
+    Atomic<uint32_t, Order::RELAXED> g_ep_rbadge{0xffffffffu};
+    Atomic<int, Order::RELAXED> g_ep_rcap{64}; // capacity the recv worker passes
+    Atomic<int32_t, Order::RELAXED> g_ep_sn{-99}; // worker send return
 
     void ep_recv_worker(void*) // caps: done@1, E@2 (unpriv)
     {
@@ -2513,7 +2533,7 @@ namespace
         // would make this arm about the writable check instead of the rendezvous.
         char buf[64];
         struct kos_recv_info info = {0xdeadu, 0x55};
-        long n = kos_recv(2, buf, static_cast<size_t>(g_ep_rcap), &info);
+        int32_t n = kos_recv(2, buf, static_cast<size_t>(g_ep_rcap), &info);
         g_ep_rn = n;
         g_ep_rbadge = info.badge;
         size_t k = 0;
@@ -2546,11 +2566,13 @@ namespace
                                          KOS_POLICY_FIFO, 0, /*privileged=*/false);
         TAP_CHECK(w.valid());
         kos_sleep_ns(3000000ull); // let the worker park in recv
-        long sc = kos_send(g_ep, EP_MSG, mlen);
-        TAP_CHECK(sc == static_cast<long>(mlen)); // sender delivered n bytes
+        int32_t sc = kos_send(g_ep, EP_MSG, mlen);
+        TAP_CHECK(sc == static_cast<int32_t>(mlen)); // sender delivered n bytes
         wait_n(1);
-        TAP_CHECK(g_ep_rn == static_cast<long>(mlen) and memcmp(g_ep_rbuf, EP_MSG, mlen) == 0);
-        TAP_CHECK(g_ep_rbadge == 0); // badge always written on success (stage i: 0)
+        int32_t const ep_rn_a = g_ep_rn;
+        TAP_CHECK(ep_rn_a == static_cast<int32_t>(mlen) and memcmp(g_ep_rbuf, EP_MSG, mlen) == 0);
+        uint32_t const ep_rbadge = g_ep_rbadge;
+        TAP_CHECK(ep_rbadge == 0); // badge always written on success (stage i: 0)
 
         // (B) sender parks first; receiver (main) takes from the parked buffer.
         g_ep_sn = -99;
@@ -2560,11 +2582,12 @@ namespace
         kos_sleep_ns(3000000ull); // let the worker park in send
         char rbuf[64];
         struct kos_recv_info info = {0xdeadu, 0x55};
-        long rc = kos_recv(g_ep, rbuf, sizeof(rbuf), &info);
-        TAP_CHECK(rc == static_cast<long>(mlen) and memcmp(rbuf, EP_MSG, mlen) == 0);
+        int32_t rc = kos_recv(g_ep, rbuf, sizeof(rbuf), &info);
+        TAP_CHECK(rc == static_cast<int32_t>(mlen) and memcmp(rbuf, EP_MSG, mlen) == 0);
         TAP_CHECK(info.badge == 0);
         wait_n(1);
-        TAP_CHECK(g_ep_sn == static_cast<long>(mlen));
+        int32_t const ep_sn = g_ep_sn;
+        TAP_CHECK(ep_sn == static_cast<int32_t>(mlen));
 
         // (C) zero-length is a valid signal (n == 0 on both sides, NOT -1).
         g_ep_rn = -99; g_ep_rcap = 64;
@@ -2574,7 +2597,8 @@ namespace
         kos_sleep_ns(3000000ull);
         TAP_CHECK(kos_send(g_ep, EP_MSG, 0) == 0);
         wait_n(1);
-        TAP_CHECK(g_ep_rn == 0);
+        int32_t const ep_rn_c = g_ep_rn;
+        TAP_CHECK(ep_rn_c == 0);
 
         // (D) truncation: send mlen into a 4-byte capacity -> both return 4.
         g_ep_rn = -99; g_ep_rcap = 4;
@@ -2584,7 +2608,8 @@ namespace
         kos_sleep_ns(3000000ull);
         TAP_CHECK(kos_send(g_ep, EP_MSG, mlen) == 4);
         wait_n(1);
-        TAP_CHECK(g_ep_rn == 4 and memcmp(g_ep_rbuf, EP_MSG, 4) == 0);
+        int32_t const ep_rn_d = g_ep_rn;
+        TAP_CHECK(ep_rn_d == 4 and memcmp(g_ep_rbuf, EP_MSG, 4) == 0);
 
         TAP_CHECK(kos_handle_close(g_ep) == 0); // last cap -> endpoint freed
     }
@@ -2606,12 +2631,12 @@ namespace
     }
 
     // --- Rights denial: send needs SIGNAL, recv needs WAIT -----------------------
-    volatile int g_ep_wait_send_rc = -99;   // WAIT-only cap send -> -1
-    volatile int g_ep_signal_recv_rc = -99; // SIGNAL-only cap recv -> -1
+    Atomic<int, Order::RELAXED> g_ep_wait_send_rc{-99};   // WAIT-only cap send -> -1
+    Atomic<int, Order::RELAXED> g_ep_signal_recv_rc{-99}; // SIGNAL-only cap recv -> -1
     void ep_rights_worker(void*) // caps: done@1, E(WAIT)@2, E(SIGNAL)@3
     {
         char b[8] = {0};
-        g_ep_wait_send_rc = static_cast<int>(kos_send(2, b, 1));   // WAIT-only -> no SIGNAL -> -KOS_EPERM
+        g_ep_wait_send_rc = static_cast<int>(kos_send(2, b, 1)); // WAIT-only -> no SIGNAL -> -KOS_EPERM
         g_ep_signal_recv_rc = static_cast<int>(kos_recv(3, b, sizeof(b), nullptr)); // no WAIT -> -KOS_EPERM
         kos_sem_post(CH_DONE);
     }
@@ -2625,15 +2650,17 @@ namespace
                                          KOS_POLICY_FIFO, 0, /*privileged=*/false);
         TAP_CHECK(w.valid());
         wait_n(1);
-        TAP_CHECK(g_ep_wait_send_rc == -KOS_EPERM);   // send refused without SIGNAL
-        TAP_CHECK(g_ep_signal_recv_rc == -KOS_EPERM); // recv refused without WAIT
+        int const ep_wait_send_rc = g_ep_wait_send_rc;
+        int const ep_signal_recv_rc = g_ep_signal_recv_rc;
+        TAP_CHECK(ep_wait_send_rc == -KOS_EPERM);   // send refused without SIGNAL
+        TAP_CHECK(ep_signal_recv_rc == -KOS_EPERM); // recv refused without WAIT
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
 
     // --- EPIPE: a parked sender is woken -1 when the last WAIT-cap holder drops it -
     // A SIGNAL-only delegation does NOT bump recv_holders, so main's cap is the sole
     // WAIT holder: closing it takes recv_holders 1->0 and EPIPEs the parked sender.
-    volatile long g_ep_epipe_rc = -99;
+    Atomic<int32_t, Order::RELAXED> g_ep_epipe_rc{-99};
     void ep_epipe_worker(void*) // caps: done@1, E(SIGNAL)@2
     {
         g_ep_epipe_rc = kos_send(2, EP_MSG, strlen(EP_MSG)); // parks; woken -KOS_EPIPE on EPIPE
@@ -2650,12 +2677,13 @@ namespace
         kos_sleep_ns(3000000ull);              // let the sender park (recv_holders == 1 == main)
         TAP_CHECK(kos_handle_close(g_ep) == 0); // last WAIT cap -> EPIPE the parked sender
         wait_n(1);
-        TAP_CHECK(g_ep_epipe_rc == -KOS_EPIPE); // sender woken with EPIPE, not a byte count
+        int32_t const ep_epipe_rc = g_ep_epipe_rc;
+        TAP_CHECK(ep_epipe_rc == -KOS_EPIPE); // sender woken with EPIPE, not a byte count
     }
 
     // --- Dead endpoint (unparked): send after the last WAIT cap is gone -> -1 -----
     // Distinct from the parked-then-EPIPE case: the sender never parks (F1 dead-check).
-    volatile long g_ep_dead_rc = -99;
+    Atomic<int32_t, Order::RELAXED> g_ep_dead_rc{-99};
     kos_cap_t g_ep_go = KOS_CAP_NONE;
     void ep_dead_worker(void*) // caps: done@1, E(SIGNAL)@2, go@3
     {
@@ -2677,7 +2705,8 @@ namespace
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         kos_sem_post(g_ep_go); // now the worker sends into the dead endpoint
         wait_n(1);
-        TAP_CHECK(g_ep_dead_rc == -KOS_EPIPE); // dead endpoint rejected immediately, never parked
+        int32_t const ep_dead_rc = g_ep_dead_rc;
+        TAP_CHECK(ep_dead_rc == -KOS_EPIPE); // dead endpoint rejected immediately, never parked
         kos_sem_destroy(g_ep_go);
     }
 
@@ -2723,8 +2752,8 @@ namespace
         kos_sleep_ns(EP_SEND_TIMEOUT_WAIT_NS); // outlast the deadline without ever recv'ing
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
-        long const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
-        TAP_CHECK(n == static_cast<long>(sizeof(r))); // the untimed report parked and landed
+        int32_t const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
+        TAP_CHECK(n == static_cast<int32_t>(sizeof(r))); // the untimed report parked and landed
         TAP_CHECK(r.rc == -KOS_ETIMEDOUT);            // expired, and no bytes crossed
         // Both clock reads bracket the syscall, so this cannot pass on a deadline the
         // kernel fired immediately.
@@ -2783,8 +2812,8 @@ namespace
         kos_sleep_ns(EP_CALL_TIMEOUT_WAIT_NS); // outlast the deadline without ever recv'ing
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
-        long const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
-        TAP_CHECK(n == static_cast<long>(sizeof(r))); // the untimed report parked and landed
+        int32_t const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
+        TAP_CHECK(n == static_cast<int32_t>(sizeof(r))); // the untimed report parked and landed
         TAP_CHECK(r.rc == -KOS_ETIMEDOUT);            // expired on send_waiters, never taken
         // Both clock reads bracket the syscall, so this cannot pass on a deadline the
         // kernel fired immediately.
@@ -2835,7 +2864,7 @@ namespace
         opts.info.badge = 0;
         opts.info.reply_cap = KOS_CAP_NONE;
         uint64_t const before_recv = kos_clock_now();
-        long const got = kos_recv_timed(g_ep, req, sizeof(req), &opts); // slow-path pop + migration
+        int32_t const got = kos_recv_timed(g_ep, req, sizeof(req), &opts); // slow-path pop + migration
         TAP_CHECK(got == 4);
         TAP_CHECK(opts.info.reply_cap != KOS_CAP_NONE); // we hold the reply cap, and never use it
         TAP_CHECK(opts.timeout_us == EP_RECV_GENEROUS_US);
@@ -2843,8 +2872,8 @@ namespace
         kos_sleep_ns(EP_CALL_REPLY_WAIT_NS); // outlast the deadline without replying
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
-        long const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
-        TAP_CHECK(n == static_cast<long>(sizeof(r)));
+        int32_t const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
+        TAP_CHECK(n == static_cast<int32_t>(sizeof(r)));
         // THE staging witness. The caller read its clock before entering the call; that
         // reading precedes main's own pre-recv reading, and main was running when it took
         // that reading, so the caller was already off-CPU inside the call. The recv above
@@ -2890,7 +2919,7 @@ namespace
         char req[8];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
         uint64_t const before_recv = kos_clock_now();
-        long const got = kos_recv(g_ep, req, sizeof(req), &info); // parks, then the call fills it
+        int32_t const got = kos_recv(g_ep, req, sizeof(req), &info); // parks, then the call fills it
         TAP_CHECK(got == 4 and info.reply_cap != KOS_CAP_NONE);
         kos_sleep_ns(EP_CALL_TIMEOUT_WAIT_NS); // the caller's deadline expires under us
         char rep[4] = {0};
@@ -2903,8 +2932,8 @@ namespace
         TAP_CHECK(kos_handle_close(info.reply_cap) == -KOS_EBADF);
         EpTimedSend r;
         memset(&r, 0, sizeof(r));
-        long const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
-        TAP_CHECK(n == static_cast<long>(sizeof(r)));
+        int32_t const n = kos_recv(g_ep, &r, sizeof(r), nullptr);
+        TAP_CHECK(n == static_cast<int32_t>(sizeof(r)));
         // The mirror of the reply-wait arm's witness: the caller entered its call AFTER
         // main took the reading above and then stopped running, so main was parked in the
         // recv when the call landed. That is the FAST path, and a slow-path staging fails
@@ -3011,12 +3040,12 @@ namespace
         TAP_CHECK(cl.valid() and s2.valid());
         char req[8];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
-        long const got = kos_recv(g_ep, req, sizeof(req), &info); // the FIRST call
+        int32_t const got = kos_recv(g_ep, req, sizeof(req), &info); // the FIRST call
         TAP_CHECK(got == 4 and info.reply_cap != KOS_CAP_NONE);
         // Never replied, and never touched again until the token arrives: the deadline
         // expires under us and this cap is abandoned for the rest of the arm.
         char tok[8];
-        long const rdy = kos_recv(ep2, tok, sizeof(tok), nullptr);
+        int32_t const rdy = kos_recv(ep2, tok, sizeof(tok), nullptr);
         TAP_CHECK(rdy == 3 and memcmp(tok, "rdy", 3) == 0); // the aliasing call is parked
         // Every resolve test but the reply-waiter unlink now passes on this cap.
         TAP_CHECK(kos_reply(info.reply_cap, SR_BAD, 4) == -KOS_ESRCH);
@@ -3042,7 +3071,7 @@ namespace
         opts.info.badge = 0;
         opts.info.reply_cap = KOS_CAP_NONE;
         uint64_t const t0 = kos_clock_now();
-        long const n = kos_recv_timed(g_ep, buf, sizeof(buf), &opts);
+        int32_t const n = kos_recv_timed(g_ep, buf, sizeof(buf), &opts);
         uint32_t const waited_us = static_cast<uint32_t>((kos_clock_now() - t0) / 1000ull);
         TAP_CHECK(n == -KOS_ETIMEDOUT); // expired, and no bytes arrived
         TAP_CHECK(waited_us >= EP_CALL_TIMEOUT_US);
@@ -3166,30 +3195,40 @@ namespace
     // revert that boost. Observables as in the PI donation arm: 'u' before 'm' while
     // boosted, 'm' before 'z' after the revert. Without the revert the server stays pinned
     // above the spoiler and 'z' precedes 'm'.
-    volatile long g_ci_rc = -99;
-    void ci_server(void*) // caps: done@1, lock@2, E(WAIT)@3
+    //
+    // Staged by one semaphore, not by sleeps: the server posts it once the recv has seated it,
+    // the caller re-posts for the spoiler just before calling. Every ordering the arm asserts
+    // therefore falls out of priority alone.
+    Atomic<int32_t, Order::RELAXED> g_ci_rc{-99};
+    void ci_server(void*) // caps: done@1, lock@2, E(WAIT)@3, stage@4
     {
         char buf[16];
-        kos_sleep_ns(g_call_unit * 1);         // let the two plain senders park first
         kos_recv(3, buf, sizeof(buf), nullptr); // recv#1 (info-less): eats one plain sender; ep->server = us
         log_put('a');
-        mtx_spin(g_call_unit * 4);             // hold the CPU: the caller wakes + D2-boosts us here
+        // Only now is the caller released: the D2 boost is conditional on ep->server, which
+        // recv#1 above is what seats, so a caller that ran first would boost nothing.
+        kos_sem_post(4);
+        mtx_spin(g_call_unit * 4);              // the caller D2-boosted us inside this
         log_put('u');
         kos_recv(3, buf, sizeof(buf), nullptr); // recv#2: reject the parked call (deflate us), eat the 2nd sender
         log_put('z');                          // reached at base prio: spoiler ran first IFF we reverted
         kos_sem_post(CH_DONE);
     }
-    void ci_caller(void*) // caps: done@1, lock@2, E(SIGNAL)@3
+    void ci_caller(void*) // caps: done@1, lock@2, E(SIGNAL)@3, stage@4
     {
         char buf[8] = {0};
-        kos_sleep_ns(g_call_unit * 2);         // wake mid-spin: slow-path call D2-boosts the server
+        kos_sem_wait(4);                       // the server is seated
+        kos_sem_post(4);                       // the spoiler is ready from here, and we outrank it
         g_ci_rc = kos_call(3, buf, 4, sizeof(buf));
         log_put('c');
         kos_sem_post(CH_DONE);
     }
-    void ci_spoiler(void*) // caps: done@1, lock@2 (medium prio)
+    void ci_spoiler(void*) // caps: done@1, lock@2, stage@3 (medium prio)
     {
-        kos_sleep_ns(g_call_unit * 3);         // ready before recv#2; blocked while the server is boosted
+        // Index 3, not the 4 its posters use: holding no endpoint cap shifts the same
+        // semaphore one slot down. The wrong index returns at once and this logs first,
+        // which reads as a lost boost.
+        kos_sem_wait(3);
         log_put('m');
         kos_sem_post(CH_DONE);
     }
@@ -3213,21 +3252,30 @@ namespace
         g_call_unit = mtx_time_unit();
         g_ci_rc = -99;
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
-        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_WAIT_ONLY}};
-        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
-        kos_cap_grant mcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}};
-        auto sv = kos::thread::spawn_caps(ci_server, nullptr, "ciS", 8, scaps, 3);
-        auto cl = kos::thread::spawn_caps(ci_caller, nullptr, "ciC", 20, ccaps, 3);
-        auto sp = kos::thread::spawn_caps(ci_spoiler, nullptr, "ciM", 12, mcaps, 2);
-        auto fl = kos::thread::spawn_caps(ci_filler, nullptr, "ciF", 6, ccaps, 3);
-        // The probe above just held four slots and four stacks, and nothing else runs
-        // between it and here, so a failure now is a pool bug, not a small board.
+        TAP_CHECK(kos_sem_create(0, &g_gate) == 0);
+        kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_WAIT_ONLY},
+                                 {g_gate, CH_FULL}};
+        kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY},
+                                 {g_gate, CH_FULL}};
+        kos_cap_grant fcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+        kos_cap_grant mcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_gate, CH_FULL}};
+        auto sv = kos::thread::spawn_caps(ci_server, nullptr, "ciS", 8, scaps, 4);
+        auto cl = kos::thread::spawn_caps(ci_caller, nullptr, "ciC", 20, ccaps, 4);
+        auto sp = kos::thread::spawn_caps(ci_spoiler, nullptr, "ciM", 12, mcaps, 3);
+        // Above the server, so its send is already parked when recv#2 runs. Below it, recv#2
+        // BLOCKS for a sender and 'm' precedes 'z' whether or not the reject reverted the
+        // boost, leaving the arm reporting ok with half of it disarmed.
+        auto fl = kos::thread::spawn_caps(ci_filler, nullptr, "ciF", 10, fcaps, 3);
+        // The probe above just held four slots and four stacks, so a failure now is a pool
+        // bug, not a small board.
         TAP_CHECK(sv.valid() and cl.valid() and sp.valid() and fl.valid());
         char warm[4] = {0};
-        kos_send(g_ep, warm, 4); // second plain sender; recv#1 eats the filler, recv#2 eats this
+        kos_send(g_ep, warm, 4); // recv#1 eats the filler's send, recv#2 eats this one
         wait_n(4);
+        TAP_CHECK(kos_handle_close(g_gate) == 0);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
-        TAP_CHECK(g_ci_rc == -KOS_ENOSYS); // the call bounced off the info-less receiver
+        int32_t const ci_rc = g_ci_rc;
+        TAP_CHECK(ci_rc == -KOS_ENOSYS); // the call bounced off the info-less receiver
         TAP_CHECK(count('a') == 1 and count('u') == 1 and count('m') == 1 and count('z') == 1);
         TAP_CHECK(nth('u', 1) < nth('m', 1)); // BOOST held: boosted server outran the spoiler's wake
         TAP_CHECK(nth('m', 1) < nth('z', 1)); // REVERT: server back at base, spoiler ran before it resumed
@@ -3238,7 +3286,7 @@ namespace
     // the reply cap instead of replying. The close arm must (a) wake the caller -KOS_EPIPE
     // and (b) deflate the server BEFORE waking, so the higher caller runs before the server
     // proceeds: 'c' strictly before 's'.
-    volatile long g_cc_rc = -99;
+    Atomic<int32_t, Order::RELAXED> g_cc_rc{-99};
     void cc_server(void*) // caps: done@1, lock@2, E(WAIT)@3
     {
         char buf[16];
@@ -3277,7 +3325,8 @@ namespace
         }
         wait_n(2);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
-        TAP_CHECK(g_cc_rc == -KOS_EPIPE);   // (a) caller woken with EPIPE, not a byte count
+        int32_t const cc_rc = g_cc_rc;
+        TAP_CHECK(cc_rc == -KOS_EPIPE);   // (a) caller woken with EPIPE, not a byte count
         TAP_CHECK(nth('c', 1) < nth('s', 1)); // (b) caller ran before the server proceeded
     }
 
@@ -3286,15 +3335,15 @@ namespace
     // the caller's kos_call returns the reply byte count and the reply OVERWRITES its send
     // buffer (in-place). Both paths are covered: (A) server parked in recv first (fastpath),
     // (B) caller parked in SEND_WAIT first, server recvs later (slowpath).
-    volatile long g_echo_reqn = -99; // request bytes the server observed
+    Atomic<int32_t, Order::RELAXED> g_echo_reqn{-99}; // request bytes the server observed
     char g_echo_reqbuf[8];           // request content the server observed
-    volatile long g_echo_rc = -99;   // caller's kos_call return
+    Atomic<int32_t, Order::RELAXED> g_echo_rc{-99};   // caller's kos_call return
     char g_echo_rplbuf[8];           // reply content the caller received in-place
     void echo_server(void*)          // caps: done@1, E(WAIT)@2
     {
         char buf[16];
         struct kos_recv_info info = {0, KOS_CAP_NONE};
-        long n = kos_recv(2, buf, sizeof(buf), &info);
+        int32_t n = kos_recv(2, buf, sizeof(buf), &info);
         g_echo_reqn = n;
         if (n > 0)
         {
@@ -3353,8 +3402,10 @@ namespace
         }
         wait_n(2);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
-        TAP_CHECK(g_echo_reqn == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0); // request delivered
-        TAP_CHECK(g_echo_rc == 5 and memcmp(g_echo_rplbuf, "pong!", 5) == 0);  // reply back in-place
+        int32_t const echo_reqn_a = g_echo_reqn;
+        int32_t const echo_rc_a = g_echo_rc;
+        TAP_CHECK(echo_reqn_a == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0); // request delivered
+        TAP_CHECK(echo_rc_a == 5 and memcmp(g_echo_rplbuf, "pong!", 5) == 0);  // reply back in-place
 
         // (B) slowpath: caller parks in SEND_WAIT first, server recvs later.
         g_echo_reqn = -99; g_echo_rc = -99;
@@ -3381,8 +3432,10 @@ namespace
         }
         wait_n(2);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
-        TAP_CHECK(g_echo_reqn == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
-        TAP_CHECK(g_echo_rc == 5 and memcmp(g_echo_rplbuf, "pong!", 5) == 0);
+        int32_t const echo_reqn_b = g_echo_reqn;
+        int32_t const echo_rc_b = g_echo_rc;
+        TAP_CHECK(echo_reqn_b == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
+        TAP_CHECK(echo_rc_b == 5 and memcmp(g_echo_rplbuf, "pong!", 5) == 0);
     }
 
     // --- Call/reply: root calls like any other thread --------------------------------
@@ -3416,10 +3469,11 @@ namespace
         }
         kos_sleep_ns(3000000ull); // root yields: the server runs and parks in recv (fastpath)
         memcpy(buf, "ping", 4);
-        long rc = kos_call(g_ep, buf, 4, sizeof(buf)); // reply lands back in buf
+        int32_t rc = kos_call(g_ep, buf, 4, sizeof(buf)); // reply lands back in buf
         wait_n(1);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
-        TAP_CHECK(g_echo_reqn == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
+        int32_t const echo_reqn_a = g_echo_reqn;
+        TAP_CHECK(echo_reqn_a == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
         TAP_CHECK(rc == 5 and memcmp(buf, "pong!", 5) == 0);
         kos_sleep_ns(3000000ull); // the server reaches EXITED, so its slot is reclaimable
 
@@ -3438,7 +3492,8 @@ namespace
         rc = kos_call(g_ep, buf, 4, sizeof(buf)); // no receiver parked yet: root blocks first
         wait_n(1);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
-        TAP_CHECK(g_echo_reqn == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
+        int32_t const echo_reqn_b = g_echo_reqn;
+        TAP_CHECK(echo_reqn_b == 4 and memcmp(g_echo_reqbuf, "ping", 4) == 0);
         TAP_CHECK(rc == 5 and memcmp(buf, "pong!", 5) == 0);
         kos_sleep_ns(3000000ull); // the server reaches EXITED, so its slot is reclaimable
     }
@@ -3447,15 +3502,15 @@ namespace
     // One call exercises BOTH clamps: the caller sends 8 bytes into a server recv buffer of
     // 3 (request truncated to 3), and the server replies 8 bytes into a caller recv_cap of 3
     // (reply truncated to 3). Neither is an error: the byte counts just clamp.
-    volatile long g_trunc_reqn = -99; // request bytes the server saw (its buffer < send_len)
+    Atomic<int32_t, Order::RELAXED> g_trunc_reqn{-99}; // request bytes the server saw (its buffer < send_len)
     char g_trunc_reqbuf[4];
-    volatile long g_trunc_rc = -99; // caller's kos_call return (clamped to recv_cap)
+    Atomic<int32_t, Order::RELAXED> g_trunc_rc{-99}; // caller's kos_call return (clamped to recv_cap)
     char g_trunc_rplbuf[4];
     void trunc_server(void*) // caps: done@1, E(WAIT)@2
     {
         char buf[3]; // smaller than the 8-byte request
         struct kos_recv_info info = {0, KOS_CAP_NONE};
-        long n = kos_recv(2, buf, sizeof(buf), &info); // request clamps to 3
+        int32_t n = kos_recv(2, buf, sizeof(buf), &info); // request clamps to 3
         g_trunc_reqn = n;
         if (n > 0)
         {
@@ -3507,15 +3562,17 @@ namespace
         }
         wait_n(2);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
-        TAP_CHECK(g_trunc_reqn == 3 and memcmp(g_trunc_reqbuf, "ABC", 3) == 0); // request clamped
-        TAP_CHECK(g_trunc_rc == 3 and memcmp(g_trunc_rplbuf, "123", 3) == 0);   // reply clamped
+        int32_t const trunc_reqn = g_trunc_reqn;
+        int32_t const trunc_rc = g_trunc_rc;
+        TAP_CHECK(trunc_reqn == 3 and memcmp(g_trunc_reqbuf, "ABC", 3) == 0); // request clamped
+        TAP_CHECK(trunc_rc == 3 and memcmp(g_trunc_rplbuf, "123", 3) == 0);   // reply clamped
     }
 
     // --- Call/reply: a second reply on a consumed cap is rejected -----------------
     // The reply cap is one-shot: the first kos_reply consumes it (empty slot + gen bump), so
     // a second kos_reply on the same handle fails resolve with -KOS_EBADF.
-    volatile int g_dr_second = -99; // second kos_reply rc
-    volatile long g_dr_callrc = -99;
+    Atomic<int, Order::RELAXED> g_dr_second{-99}; // second kos_reply rc
+    Atomic<int32_t, Order::RELAXED> g_dr_callrc{-99};
     void dr_server(void*) // caps: done@1, E(WAIT)@2
     {
         char buf[16];
@@ -3557,15 +3614,17 @@ namespace
         }
         wait_n(2);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
-        TAP_CHECK(g_dr_callrc == 2);            // caller got the (single) reply
-        TAP_CHECK(g_dr_second == -KOS_EBADF);   // the second reply was rejected
+        int32_t const dr_callrc = g_dr_callrc;
+        int const dr_second = g_dr_second;
+        TAP_CHECK(dr_callrc == 2); // caller got the (single) reply
+        TAP_CHECK(dr_second == -KOS_EBADF); // the second reply was rejected
     }
 
     // --- Call/reply: server dies mid-transaction -> caller EPIPE (teardown arm) ---
     // The server takes the call (REPLY_WAIT, holding the reply cap) then exits WITHOUT
     // replying. cap_teardown walks its table, hits the CAP_REPLY arm, and wakes the parked
     // caller with -KOS_EPIPE.
-    volatile long g_sd_callrc = -99;
+    Atomic<int32_t, Order::RELAXED> g_sd_callrc{-99};
     void sd_server(void*) // caps: done@1, E(WAIT)@2
     {
         char buf[16];
@@ -3601,14 +3660,15 @@ namespace
         }
         wait_n(2);
         TAP_CHECK(kos_handle_close(g_ep) == 0); // server's WAIT cap already gone -> main's is the last
-        TAP_CHECK(g_sd_callrc == -KOS_EPIPE);   // caller woken EPIPE by the reply-cap teardown
+        int32_t const sd_callrc = g_sd_callrc;
+        TAP_CHECK(sd_callrc == -KOS_EPIPE);   // caller woken EPIPE by the reply-cap teardown
     }
 
     // --- Call/reply: server dies pre-pop -> caller EPIPE (recv_holders -> 0) ------
     // The caller parks in SEND_WAIT (no receiver has popped it yet). MAIN holds the sole
     // WAIT cap; closing it drives recv_holders to 0, which drains send_waiters and EPIPEs
     // the parked call: the pre-pop counterpart to the mid-transaction teardown above.
-    volatile long g_pp_callrc = -99;
+    Atomic<int32_t, Order::RELAXED> g_pp_callrc{-99};
     void pp_caller(void*) // caps: done@1, E(SIGNAL)@2
     {
         char buf[8] = {0};
@@ -3626,7 +3686,8 @@ namespace
         kos_sleep_ns(3000000ull);               // let the caller park in SEND_WAIT
         TAP_CHECK(kos_handle_close(g_ep) == 0);  // last WAIT cap -> recv_holders 0 -> EPIPE the call
         wait_n(1);
-        TAP_CHECK(g_pp_callrc == -KOS_EPIPE);
+        int32_t const pp_callrc = g_pp_callrc;
+        TAP_CHECK(pp_callrc == -KOS_EPIPE);
     }
 
     // --- Call/reply: donation ordering (positive) --------------------------------
@@ -3636,7 +3697,7 @@ namespace
     // spoiler runs ('m'). The positive counterpart to call_infoless_revert. Without donation
     // the medium spoiler would preempt the low server mid-transaction and 'm' would precede 'c'.
     uint64_t g_don_unit = 1000000ull;
-    volatile long g_don_rc = -99;
+    Atomic<int32_t, Order::RELAXED> g_don_rc{-99};
     char g_don_rpl[8];
     void don_server(void*) // caps: done@1, lock@2, E(WAIT)@3
     {
@@ -3704,7 +3765,8 @@ namespace
         wait_n(3);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         TAP_CHECK(count('a') == 1 and count('r') == 1 and count('c') == 1 and count('m') == 1);
-        TAP_CHECK(g_don_rc == 5 and memcmp(g_don_rpl, "pong!", 5) == 0); // the transaction completed
+        int32_t const don_rc = g_don_rc;
+        TAP_CHECK(don_rc == 5 and memcmp(g_don_rpl, "pong!", 5) == 0); // the transaction completed
         TAP_CHECK(nth('r', 1) < nth('c', 1)); // reply delivered: the caller ran after the server replied
         TAP_CHECK(nth('c', 1) < nth('m', 1)); // DONATION: the reply reached the caller before the spoiler ran
     }
@@ -3719,7 +3781,7 @@ namespace
     //   pending: a caller parked in SEND_WAIT on an endpoint this thread serves
     // Same low(8)/high(20)/medium(12) shape as t_call_donation: if the recompute deflates
     // the server to 8, the already-awake spoiler (12) preempts it and 'm' precedes 'r'.
-    volatile long g_dh_rc = -99;
+    Atomic<int32_t, Order::RELAXED> g_dh_rc{-99};
     void dh_server(void*) // caps: done@1, lock@2, E(WAIT)@3, mutex@4
     {
         char buf[16];
@@ -3783,7 +3845,8 @@ namespace
         wait_n(3);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         TAP_CHECK(kos_handle_close(m) == 0);
-        TAP_CHECK(g_dh_rc == 5); // the transaction completed
+        int32_t const dh_rc = g_dh_rc;
+        TAP_CHECK(dh_rc == 5); // the transaction completed
         TAP_CHECK(count('a') == 1 and count('r') == 1 and count('m') == 1);
         // The whole arm: the unlock's recompute did NOT deflate the server.
         TAP_CHECK(nth('r', 1) < nth('m', 1));
@@ -3857,7 +3920,8 @@ namespace
         wait_n(3);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         TAP_CHECK(kos_handle_close(m) == 0);
-        TAP_CHECK(g_dh_rc == 5);
+        int32_t const dh_rc = g_dh_rc;
+        TAP_CHECK(dh_rc == 5);
         TAP_CHECK(count('a') == 1 and count('r') == 1 and count('m') == 1);
         TAP_CHECK(nth('r', 1) < nth('m', 1));
     }
@@ -3896,9 +3960,9 @@ namespace
         char buf[8];
         kos_sleep_ns(g_don_unit * 2); // call #1 after the server has parked in recv
         memcpy(buf, "a", 1);
-        long const r1 = kos_call(3, buf, 1, sizeof(buf));
+        int32_t const r1 = kos_call(3, buf, 1, sizeof(buf));
         memcpy(buf, "b", 1);
-        long const r2 = kos_call(3, buf, 1, sizeof(buf)); // server is awake -> slowpath
+        int32_t const r2 = kos_call(3, buf, 1, sizeof(buf)); // server is awake -> slowpath
         g_dh_rc = r1 + r2;
         log_put('c');
         kos_sem_post(CH_DONE);
@@ -3933,7 +3997,8 @@ namespace
         wait_n(3);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         TAP_CHECK(kos_handle_close(m) == 0);
-        TAP_CHECK(g_dh_rc == 2); // both transactions completed
+        int32_t const dh_rc = g_dh_rc;
+        TAP_CHECK(dh_rc == 2); // both transactions completed
         TAP_CHECK(count('a') == 1 and count('r') == 1 and count('m') == 1);
         TAP_CHECK(nth('r', 1) < nth('m', 1));
     }
@@ -3954,18 +4019,18 @@ namespace
     // 2-slot pool cannot host, so the client is the one thread spawned.
 
     // What the client observed, in call order.
-    volatile int g_slot_cfg0 = -99;
-    volatile int g_slot_cfg1 = -99;
-    volatile long g_slot_rx0 = -99;
-    volatile long g_slot_rx1 = -99;
-    volatile long g_slot_unconf = -99;
-    volatile long g_slot_oor = -99;
+    Atomic<int, Order::RELAXED> g_slot_cfg0{-99};
+    Atomic<int, Order::RELAXED> g_slot_cfg1{-99};
+    Atomic<int32_t, Order::RELAXED> g_slot_rx0{-99};
+    Atomic<int32_t, Order::RELAXED> g_slot_rx1{-99};
+    Atomic<int32_t, Order::RELAXED> g_slot_unconf{-99};
+    Atomic<int32_t, Order::RELAXED> g_slot_oor{-99};
     unsigned char g_slot_b0[2] = {0, 0};
     unsigned char g_slot_b1[2] = {0, 0};
 
     // Frame + kos_call one XFER of `len` dummy bytes on slot `dev`; copies the reply's
     // rx bytes into `rx`. Returns the service's rx length, or a negative -KOS_E*.
-    long slot_xfer(uint8_t dev, size_t len, unsigned char* rx)
+    int32_t slot_xfer(uint8_t dev, size_t len, unsigned char* rx)
     {
         unsigned char buf[32];
         size_t const framing = sizeof(struct kos_bus_req) + sizeof(struct kos_bus_seg);
@@ -3983,7 +4048,7 @@ namespace
         seg->rsv = 0;
         memset(buf + framing, 0, len);
 
-        long const rc = kos_call(2, buf, framing + len, sizeof(buf));
+        int32_t const rc = kos_call(2, buf, framing + len, sizeof(buf));
         if (rc < 0)
         {
             return rc;
@@ -4015,7 +4080,7 @@ namespace
         cfg.cs_policy = KOS_BUS_CS_NONE;
         memcpy(buf + sizeof(struct kos_bus_req), &cfg, sizeof(cfg));
 
-        long const rc = kos_call(2, buf, sizeof(struct kos_bus_req) + sizeof(cfg), sizeof(buf));
+        int32_t const rc = kos_call(2, buf, sizeof(struct kos_bus_req) + sizeof(cfg), sizeof(buf));
         if (rc < 0)
         {
             return static_cast<int>(rc);
@@ -4031,8 +4096,8 @@ namespace
         g_slot_rx0 = slot_xfer(0, sizeof(g_slot_b0), g_slot_b0);
         g_slot_rx1 = slot_xfer(1, sizeof(g_slot_b1), g_slot_b1);
         unsigned char sink[2];
-        g_slot_unconf = slot_xfer(2, sizeof(sink), sink);               // in range, never configured
-        g_slot_oor = slot_xfer(KOS_BUS_DEV_MAX, sizeof(sink), sink);    // out of range
+        g_slot_unconf = slot_xfer(2, sizeof(sink), sink); // in range, never configured
+        g_slot_oor = slot_xfer(KOS_BUS_DEV_MAX, sizeof(sink), sink); // out of range
         kos_sem_post(CH_DONE);
     }
     void t_bus_device_slots()
@@ -4056,7 +4121,7 @@ namespace
         for (int i = 0; i < 6; i++)
         {
             struct kos_recv_info info = {0u, KOS_CAP_NONE};
-            long const n = kos_recv(g_ep, msg, sizeof(msg), &info);
+            int32_t const n = kos_recv(g_ep, msg, sizeof(msg), &info);
             if (n < 0 or info.reply_cap == KOS_CAP_NONE)
             {
                 break;
@@ -4066,11 +4131,17 @@ namespace
         wait_n(1);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
 
-        TAP_CHECK(g_slot_cfg0 == 0 and g_slot_cfg1 == 0);
-        TAP_CHECK(g_slot_rx0 == 2 and g_slot_b0[0] == 8 and g_slot_b0[1] == 8);   // slot 0 kept its own
-        TAP_CHECK(g_slot_rx1 == 2 and g_slot_b1[0] == 16 and g_slot_b1[1] == 16); // slot 1 too
-        TAP_CHECK(g_slot_unconf == -KOS_EINVAL); // no CONFIG for that slot: refused
-        TAP_CHECK(g_slot_oor == -KOS_EINVAL);    // slot >= KOS_BUS_DEV_MAX: refused
+        int const slot_cfg0 = g_slot_cfg0;
+        int const slot_cfg1 = g_slot_cfg1;
+        TAP_CHECK(slot_cfg0 == 0 and slot_cfg1 == 0);
+        int32_t const slot_rx0 = g_slot_rx0;
+        int32_t const slot_rx1 = g_slot_rx1;
+        int32_t const slot_unconf = g_slot_unconf;
+        int32_t const slot_oor = g_slot_oor;
+        TAP_CHECK(slot_rx0 == 2 and g_slot_b0[0] == 8 and g_slot_b0[1] == 8); // slot 0 kept its own
+        TAP_CHECK(slot_rx1 == 2 and g_slot_b1[0] == 16 and g_slot_b1[1] == 16); // slot 1 too
+        TAP_CHECK(slot_unconf == -KOS_EINVAL); // no CONFIG for that slot: refused
+        TAP_CHECK(slot_oor == -KOS_EINVAL); // slot >= KOS_BUS_DEV_MAX: refused
     }
 #endif
 
@@ -4120,7 +4191,7 @@ namespace
             memcpy(buf + sizeof(req), payload, len);
             send_len += len;
         }
-        long const rc = kos_call(2, buf, send_len, sizeof(buf));
+        int32_t const rc = kos_call(2, buf, send_len, sizeof(buf));
         if (rc < 0)
         {
             return static_cast<int>(rc);
@@ -4157,8 +4228,8 @@ namespace
             == static_cast<int>(sizeof(st)))
         {
             struct kos_uart_stats s;
-            memcpy(&s, st, sizeof(s));
-            r.stats_tx = static_cast<int>(s.tx_bytes);
+            kickos::console::stats_unpack(&s, st);
+            r.stats_tx = static_cast<int>(s.tx_bytes.load(std::memory_order_relaxed));
         }
         // Over the WIRE, not against console::mode_apply directly, so serve_one's dispatch
         // is covered. Accept LAST, so the server can assert the mode was stored.
@@ -4216,7 +4287,7 @@ namespace
         for (int i = 0; i < 12; i++)
         {
             struct kos_recv_info info = {0u, KOS_CAP_NONE};
-            long const n = kos_recv(g_ep, msg, sizeof(msg), &info);
+            int32_t const n = kos_recv(g_ep, msg, sizeof(msg), &info);
             if (n < 0)
             {
                 break;
@@ -4257,23 +4328,22 @@ namespace
     // --- Bound-check: a recv/send pointer outside the caller's regions -> -1 ------
     // The write-oracle / cross-domain-read is closed the same way as the console
     // buffer: an unprivileged caller cannot launder an un-owned page through IPC.
-    volatile long g_ep_badrecv_rc = -99;
-    volatile long g_ep_badsend_rc = -99;
-    volatile long g_ep_badopts_rc = -99;
+    Atomic<int32_t, Order::RELAXED> g_ep_badrecv_rc{-99};
+    Atomic<int32_t, Order::RELAXED> g_ep_badsend_rc{-99};
+    Atomic<int32_t, Order::RELAXED> g_ep_badopts_rc{-99};
     int g_ep_bnd_neg_ran = 0;
     void ep_bound_worker(void*) // caps: done@1, E@2 (unpriv)
     {
         void* bad = kos_guard_addr(); // an arena page granted to no domain
         if (bad != nullptr)
         {
-            g_ep_badrecv_rc = kos_recv(2, bad, 8, nullptr);           // write oracle -> -KOS_EFAULT
+            g_ep_badrecv_rc = kos_recv(2, bad, 8, nullptr); // write oracle -> -KOS_EFAULT
             g_ep_badsend_rc = kos_send(2, static_cast<char const*>(bad), 8); // cross-domain read -> -KOS_EFAULT
             // The opts struct is IN-OUT, and an arena page is granule-aligned, so this
             // clears the alignment gate above and lands on the readable+writable check.
             // The message buffer is a valid stack local: the refusal is about opts alone.
             char obuf[8];
-            g_ep_badopts_rc =
-                kos_recv_timed(2, obuf, sizeof(obuf),
+            g_ep_badopts_rc = kos_recv_timed(2, obuf, sizeof(obuf),
                                static_cast<struct kos_recv_timed_opts*>(bad));
             g_ep_bnd_neg_ran = 1;
         }
@@ -4292,9 +4362,12 @@ namespace
         wait_n(1);
         if (g_ep_bnd_neg_ran)
         {
-            TAP_CHECK(g_ep_badrecv_rc == -KOS_EFAULT); // bad recv buffer rejected, never parked
-            TAP_CHECK(g_ep_badsend_rc == -KOS_EFAULT); // bad send buffer rejected, never parked
-            TAP_CHECK(g_ep_badopts_rc == -KOS_EFAULT); // un-owned opts rejected, no deadline read
+            int32_t const ep_badrecv_rc = g_ep_badrecv_rc;
+            int32_t const ep_badsend_rc = g_ep_badsend_rc;
+            int32_t const ep_badopts_rc = g_ep_badopts_rc;
+            TAP_CHECK(ep_badrecv_rc == -KOS_EFAULT); // bad recv buffer rejected, never parked
+            TAP_CHECK(ep_badsend_rc == -KOS_EFAULT); // bad send buffer rejected, never parked
+            TAP_CHECK(ep_badopts_rc == -KOS_EFAULT); // un-owned opts rejected, no deadline read
         }
         TAP_CHECK(kos_handle_close(g_ep) == 0);
     }
@@ -4306,9 +4379,9 @@ namespace
     // regions), exercising the privileged background write. The payload buffers live
     // in each worker's own granted domain region. Delegation accounting is validated
     // by the clean endpoint free at the end (both a WAIT and a SIGNAL cap delegated).
-    volatile long g_xd_send_rc = -99;
-    volatile long g_xd_recv_rc = -99;
-    volatile int g_xd_match = 0;
+    Atomic<int32_t, Order::RELAXED> g_xd_send_rc{-99};
+    Atomic<int32_t, Order::RELAXED> g_xd_recv_rc{-99};
+    Atomic<int, Order::RELAXED> g_xd_match{0};
     kos_cap_t g_xd_done = KOS_CAP_NONE; // PRIVATE completion sem: workers post it at CH_DONE, not the shared g_done
     void xd_send_worker(void* arg) // caps: done@1, E(SIGNAL)@2; arg = domain buffer
     {
@@ -4323,7 +4396,7 @@ namespace
     void xd_recv_worker(void* arg) // caps: done@1, E(WAIT)@2; arg = domain buffer
     {
         char* b = static_cast<char*>(arg);
-        long n = kos_recv(2, b, 8, nullptr);
+        int32_t n = kos_recv(2, b, 8, nullptr);
         g_xd_recv_rc = n;
         int ok = 1;
         for (int i = 0; i < 8; i++)
@@ -4369,8 +4442,11 @@ namespace
         {
             kos_sem_wait(g_xd_done); // this test's own completion sem, not the shared g_done
         }
-        TAP_CHECK(g_xd_send_rc == 8 and g_xd_recv_rc == 8);
-        TAP_CHECK(g_xd_match == 1); // the byte-exact payload crossed domains
+        int32_t const xd_send_rc = g_xd_send_rc;
+        int32_t const xd_recv_rc = g_xd_recv_rc;
+        TAP_CHECK(xd_send_rc == 8 and xd_recv_rc == 8);
+        int const xd_match = g_xd_match;
+        TAP_CHECK(xd_match == 1); // the byte-exact payload crossed domains
         TAP_CHECK(kos_handle_close(g_ep) == 0); // both delegated caps already torn down -> freed
         kos_sem_destroy(g_xd_done);
     }
@@ -4446,7 +4522,7 @@ namespace
         // The discriminator is a ZERO-length send: a valid zero-length signal per
         // <kickos/sys.h>, so unlike the 1-byte probe below it puts NO byte on the wire
         // in either posture.
-        long const stdout_seated = kos_send(0, "", 0);
+        int32_t const stdout_seated = kos_send(0, "", 0);
         if (stdout_seated == -KOS_EBADF)
         {
             // Pre-publish (g_stdout_target < 0): cap_install_defaults seats NOTHING at
@@ -4841,7 +4917,7 @@ namespace
     {
         char b[8] = {0};
         kos_sleep_ns(unit_delay(arg));
-        long const rc = kos_call(CH_AUX, b, 4, sizeof(b));
+        int32_t const rc = kos_call(CH_AUX, b, 4, sizeof(b));
         if (rc == -KOS_EPIPE)
         {
             log_put('P');
@@ -5002,7 +5078,7 @@ namespace
     // cap separates the two answers with no rendezvous and no sender: EBADF means the
     // buffer was admitted, EFAULT means it was not.
     char g_wrbuf[16];
-    long g_wrbuf_rc = -99;
+    int32_t g_wrbuf_rc = -99;
     void wrbuf_worker(void*) // caps: done@1
     {
         g_wrbuf_rc = kos_recv(0x7fffffff, g_wrbuf, sizeof(g_wrbuf), nullptr);
@@ -5028,17 +5104,17 @@ namespace
     // (-KOS_ENOSYS on a declining-fallback target like the sim, -KOS_EINVAL where a chip owns
     // the block).
     void auth_noop(void*) {}
-    volatile long g_auth_pinmux = -99;   // AUTH_PINMUX held    -> anything but -KOS_EPERM
-    volatile long g_auth_shutdown = -99; // AUTH_SYSTEM absent  -> -KOS_EPERM
-    volatile long g_auth_regrant = -99;  // may not hand on a bit it does not hold
-    volatile long g_auth_toomany = -99;  // cap_count above the spawn-grant bound
-    volatile long g_auth_badbits = -99;  // a bit that is no authority at all
-    volatile long g_auth_capsarr = -99;  // the grant ARRAY read, reached past the early refusals
-    volatile long g_auth_narrowbad = -99; // kos_cap_narrow on a cap that is not the authority
-    volatile long g_auth_narrowup = -99;  // a mask naming an unheld bit intersects, never grants
-    volatile long g_auth_notgained = -99; // so the gate for that bit still refuses
-    volatile long g_auth_narrow = -99;   // giving up the held bit succeeds, needing no authority
-    volatile long g_auth_dropped = -99;  // and the gate that accepted it now refuses
+    Atomic<int32_t, Order::RELAXED> g_auth_pinmux{-99};    // AUTH_PINMUX held    -> anything but -KOS_EPERM
+    Atomic<int32_t, Order::RELAXED> g_auth_shutdown{-99};  // AUTH_SYSTEM absent  -> -KOS_EPERM
+    Atomic<int32_t, Order::RELAXED> g_auth_regrant{-99};   // may not hand on a bit it does not hold
+    Atomic<int32_t, Order::RELAXED> g_auth_toomany{-99};   // cap_count above the spawn-grant bound
+    Atomic<int32_t, Order::RELAXED> g_auth_badbits{-99};   // a bit that is no authority at all
+    Atomic<int32_t, Order::RELAXED> g_auth_capsarr{-99};   // the grant ARRAY read, reached past the early refusals
+    Atomic<int32_t, Order::RELAXED> g_auth_narrowbad{-99}; // kos_cap_narrow on a cap that is not the authority
+    Atomic<int32_t, Order::RELAXED> g_auth_narrowup{-99};  // a mask naming an unheld bit intersects, never grants
+    Atomic<int32_t, Order::RELAXED> g_auth_notgained{-99}; // so the gate for that bit still refuses
+    Atomic<int32_t, Order::RELAXED> g_auth_narrow{-99};    // giving up the held bit succeeds, needing no authority
+    Atomic<int32_t, Order::RELAXED> g_auth_dropped{-99};   // and the gate that accepted it now refuses
     kos_thread_params g_auth_kid;  // deliberately static: see auth_worker
     kos_cap_grant g_auth_two[2];   // ditto
     void auth_worker(void*) // UNPRIVILEGED, authority = AUTH_PINMUX; caps: done@1
@@ -5119,13 +5195,24 @@ namespace
         wait_n(1);
         // Grouped: each TAP_CHECK carries __FILE__ and its stringified condition as
         // rodata.
-        TAP_CHECK(g_auth_pinmux != -KOS_EPERM and g_auth_pinmux < 0);
-        TAP_CHECK(g_auth_shutdown == -KOS_EPERM);
-        TAP_CHECK(g_auth_regrant == -KOS_EPERM and g_auth_toomany == -KOS_EINVAL
-                  and g_auth_badbits == -KOS_EINVAL and g_auth_capsarr == -KOS_EBADF);
-        TAP_CHECK(g_auth_narrowbad == -KOS_EINVAL and g_auth_narrow == 0
-                  and g_auth_dropped == -KOS_EPERM);
-        TAP_CHECK(g_auth_narrowup == 0 and g_auth_notgained == -KOS_EPERM);
+        int32_t const auth_pinmux = g_auth_pinmux;
+        TAP_CHECK(auth_pinmux != -KOS_EPERM and auth_pinmux < 0);
+        int32_t const auth_shutdown = g_auth_shutdown;
+        TAP_CHECK(auth_shutdown == -KOS_EPERM);
+        int32_t const auth_regrant = g_auth_regrant;
+        int32_t const auth_toomany = g_auth_toomany;
+        int32_t const auth_badbits = g_auth_badbits;
+        int32_t const auth_capsarr = g_auth_capsarr;
+        TAP_CHECK(auth_regrant == -KOS_EPERM and auth_toomany == -KOS_EINVAL
+                  and auth_badbits == -KOS_EINVAL and auth_capsarr == -KOS_EBADF);
+        int32_t const auth_narrowbad = g_auth_narrowbad;
+        int32_t const auth_narrow = g_auth_narrow;
+        int32_t const auth_dropped = g_auth_dropped;
+        TAP_CHECK(auth_narrowbad == -KOS_EINVAL and auth_narrow == 0
+                  and auth_dropped == -KOS_EPERM);
+        int32_t const auth_narrowup = g_auth_narrowup;
+        int32_t const auth_notgained = g_auth_notgained;
+        TAP_CHECK(auth_narrowup == 0 and auth_notgained == -KOS_EPERM);
     }
 
     // --- Peripheral enable: possession is the whole gate ------------------------
@@ -5149,9 +5236,9 @@ namespace
     // board: the one DEV window the sim mints is at its fake register block, and
     // arch_periph_enable has no sim backend to reach.
     constexpr uintptr_t PE_BASE = 0x40000000u; // peripheral space, never a code/data/stack base
-    volatile long g_pe_unheld = 1; // sentinel: the contract returns 0 or a negative code
-    volatile long g_pe_ram = 1;
-    volatile int g_pe_ram_ran = 0;
+    Atomic<int32_t, Order::RELAXED> g_pe_unheld{1}; // sentinel: the contract returns 0 or a negative code
+    Atomic<int32_t, Order::RELAXED> g_pe_ram{1};
+    Atomic<int, Order::RELAXED> g_pe_ram_ran{0};
     void periph_enable_worker(void*) // caps: g_done@1 (CH_DONE)
     {
         g_pe_unheld = kos_periph_enable(PE_BASE);
@@ -5177,13 +5264,16 @@ namespace
             return;
         }
         wait_n(1);
-        TAP_CHECK(g_pe_unheld == -KOS_EPERM);
+        int32_t const pe_unheld = g_pe_unheld;
+        TAP_CHECK(pe_unheld == -KOS_EPERM);
         // Arm 2 needs one arch_ram_region_size(1) block, so it runs only on a board whose
         // arena still has one past kmain's two boot stacks and the default stack the
         // thread pool bump-allocates per concurrently-live slot. That pool, not a test
         // registered later, is the dominant arena consumer by this point.
-        TAP_CHECK(g_pe_ram_ran == 1);
-        TAP_CHECK(g_pe_ram == -KOS_EPERM);
+        int const pe_ram_ran = g_pe_ram_ran;
+        TAP_CHECK(pe_ram_ran == 1);
+        int32_t const pe_ram = g_pe_ram;
+        TAP_CHECK(pe_ram == -KOS_EPERM);
     }
 
     // --- Privileged register write: the same possession gate, plus the refusal ------
@@ -5207,7 +5297,7 @@ namespace
     // plus a 2048 B root stack exactly), so any app static RAM this file adds fails the
     // boot-arena link ASSERT, and microbit's 16 KiB arena starves mem_self_grant. The
     // two workers write it in sequence (each is joined on CH_DONE before the next
-    // spawns), so the |= needs no atomicity.
+    // spawns), so the load/store pair below needs no atomicity.
     constexpr unsigned PRW_UNHELD_OK = 1u << 0;     // arm 1: unheld base refused
     constexpr unsigned PRW_HELD_RAN = 1u << 1;      // arm 2: a window was minted
     constexpr unsigned PRW_HELD_OK = 1u << 2;       // arm 2: declined by the chip layer
@@ -5215,12 +5305,12 @@ namespace
     constexpr unsigned PRW_WRAP_OK = 1u << 4;       // arm 3: base + offset wraps
     constexpr unsigned PRW_PAST_END_OK = 1u << 5;   // arm 4: first word beyond the window
     constexpr unsigned PRW_FAR_OK = 1u << 6;        // arm 4: 4 KiB beyond the window
-    volatile unsigned char g_prw = 0;
+    Atomic<unsigned char, Order::RELAXED> g_prw{0};
     void periph_reg_write_held_worker(void* arg) // caps: g_done@1 (CH_DONE)
     {
         uintptr_t const win = reinterpret_cast<uintptr_t>(arg);
         unsigned seen = PRW_HELD_RAN;
-        long const held = kos_periph_reg_write(win, PRW_OFFSET, 0);
+        int32_t const held = kos_periph_reg_write(win, PRW_OFFSET, 0);
         if (held == -KOS_ENOSYS or held == -KOS_EINVAL)
         {
             seen |= PRW_HELD_OK;
@@ -5275,11 +5365,12 @@ namespace
             return;
         }
         wait_n(1);
-        TAP_CHECK((g_prw & PRW_UNHELD_OK) != 0);
+        unsigned char const prw = g_prw;
+        TAP_CHECK((prw & PRW_UNHELD_OK) != 0);
         // Arm 3: no DEV window needed, so these run on EVERY board including the ones
         // that mint none.
-        TAP_CHECK((g_prw & PRW_MISALIGNED_OK) != 0);
-        TAP_CHECK((g_prw & PRW_WRAP_OK) != 0);
+        TAP_CHECK((prw & PRW_MISALIGNED_OK) != 0);
+        TAP_CHECK((prw & PRW_WRAP_OK) != 0);
 
         // Arms 2 and 4 share one window.
         kos::thread::Handle holder;
@@ -5312,12 +5403,13 @@ namespace
             return;
         }
         wait_n(1);
-        TAP_CHECK((g_prw & PRW_HELD_RAN) != 0);
-        TAP_CHECK((g_prw & PRW_HELD_OK) != 0);
+        unsigned char const prw_held = g_prw;
+        TAP_CHECK((prw_held & PRW_HELD_RAN) != 0);
+        TAP_CHECK((prw_held & PRW_HELD_OK) != 0);
         // Arm 4. -KOS_ENOSYS on either of these would mean the offset reached the chip
         // layer, so they discriminate on a board with a backend AND on one without.
-        TAP_CHECK((g_prw & PRW_PAST_END_OK) != 0);
-        TAP_CHECK((g_prw & PRW_FAR_OK) != 0);
+        TAP_CHECK((prw_held & PRW_PAST_END_OK) != 0);
+        TAP_CHECK((prw_held & PRW_FAR_OK) != 0);
     }
 
     // --- The allowlist and its VALUE MASK, reached on the host ---------------------
@@ -5361,7 +5453,7 @@ namespace
     constexpr unsigned PVS_UNLISTED_OK = 1u << 6;   // untabled offset refused, no store
     constexpr unsigned PVS_BEYOND_OK = 1u << 7;     // tabled but uncontained: -KOS_EPERM
     // Sim-only, so this byte costs no static RAM on a board with an arena floor.
-    volatile unsigned char g_pvs = 0;
+    Atomic<unsigned char, Order::RELAXED> g_pvs{0};
     void pvs_worker(void* arg) // caps: g_done@1 (CH_DONE)
     {
         uintptr_t const PVS_BASE = reinterpret_cast<uintptr_t>(arg);
@@ -5443,14 +5535,15 @@ namespace
             return;
         }
         wait_n(1);
-        TAP_CHECK((g_pvs & PVS_RAN) != 0);
-        TAP_CHECK((g_pvs & PVS_STORE_OK) != 0);
-        TAP_CHECK((g_pvs & PVS_STORE_LANDED) != 0);
-        TAP_CHECK((g_pvs & PVS_FULLMASK_OK) != 0);
-        TAP_CHECK((g_pvs & PVS_OFF_REFUSED) != 0);
-        TAP_CHECK((g_pvs & PVS_OFF_NOTRIM) != 0);
-        TAP_CHECK((g_pvs & PVS_UNLISTED_OK) != 0);
-        TAP_CHECK((g_pvs & PVS_BEYOND_OK) != 0);
+        unsigned char const pvs = g_pvs;
+        TAP_CHECK((pvs & PVS_RAN) != 0);
+        TAP_CHECK((pvs & PVS_STORE_OK) != 0);
+        TAP_CHECK((pvs & PVS_STORE_LANDED) != 0);
+        TAP_CHECK((pvs & PVS_FULLMASK_OK) != 0);
+        TAP_CHECK((pvs & PVS_OFF_REFUSED) != 0);
+        TAP_CHECK((pvs & PVS_OFF_NOTRIM) != 0);
+        TAP_CHECK((pvs & PVS_UNLISTED_OK) != 0);
+        TAP_CHECK((pvs & PVS_BEYOND_OK) != 0);
     }
 #endif // KICKOS_ARCH_SIM
 
@@ -5795,7 +5888,7 @@ namespace
     // The window is a PLAIN MEMORY WRITE and it has to be: the cooperative death point is
     // the next syscall ENTRY, so any syscall placed here would BE that point and a killed
     // thread would look exactly like a slain one.
-    volatile int g_slay_window = 0;
+    Atomic<int, Order::RELAXED> g_slay_window{0};
 
     // caps: done@1, park@2. Announces itself, then parks on a semaphore NOTHING ever posts,
     // so the only way past that wait is a cancellation breaking the park.
@@ -5844,7 +5937,8 @@ namespace
         }
         TAP_CHECK(killed.kill() == 0);
         TAP_CHECK(killed.join(JOIN_GENEROUS_US) == 0);
-        TAP_CHECK(g_slay_window == 1); // the window is real, so leg 2 is not vacuous
+        int const slay_window = g_slay_window;
+        TAP_CHECK(slay_window == 1); // the window is real, so leg 2 is not vacuous
 
         // LEG 2, the subject. Same body, same park, same parent: only the verb differs.
         kos::thread::Handle slain;
@@ -5856,7 +5950,8 @@ namespace
         }
         // 0, not -KOS_ETIMEDOUT: the call WAITS, and gone is what it returns.
         TAP_CHECK(slain.slay(JOIN_GENEROUS_US) == 0);
-        TAP_CHECK(g_slay_window == 1); // unchanged: it executed no further user instruction
+        int const slay_window_after = g_slay_window;
+        TAP_CHECK(slay_window_after == 1); // unchanged: it executed no further user instruction
         // Gone means gone, and the join is the independent witness of it.
         TAP_CHECK(kos_thread_join(slain.id(), JOIN_GENEROUS_US) == 0);
         TAP_CHECK(kos_handle_close(park) == 0);
@@ -5926,7 +6021,8 @@ namespace
         }
         wait_n(1); // the member outranks root, so it is PARKED once this returns
         TAP_CHECK(kos_task_slay(task, JOIN_GENEROUS_US) == 0);
-        TAP_CHECK(g_slay_window == 0);          // no member got a cleanup window
+        int const slay_window = g_slay_window;
+        TAP_CHECK(slay_window == 0);          // no member got a cleanup window
         TAP_CHECK(member.join(JOIN_GENEROUS_US) == 0); // and the member really is gone
         // The hold went with the wait, so the handle names nothing: a second call cannot
         // resolve it, which is the same shape kos_task_kill leaves behind.
@@ -5976,12 +6072,15 @@ namespace
 
     // Published so the caller can tell a window it still holds from one it has already
     // spent; 0 until the hog has actually run, which a spawn does not guarantee.
-    volatile uint64_t g_hog_until = 0;
+    // The stamp is the low 32 bits of the start, never the 64-bit deadline: a 60 ms window
+    // inside the 4.29 s wrap leaves the elapsed arithmetic unambiguous.
+    Atomic<uint32_t, Order::RELAXED> g_hog_start_ns{0};
 
     void slay_hog(void*) // caps: none
     {
-        uint64_t const until = kos_clock_now() + SLAY_HOG_NS;
-        g_hog_until = until;
+        uint64_t const start = kos_clock_now();
+        uint64_t const until = start + SLAY_HOG_NS;
+        g_hog_start_ns = static_cast<uint32_t>(start);
         while (kos_clock_now() < until)
         {
         }
@@ -5991,20 +6090,21 @@ namespace
     // the slay measures nothing. Twice the deadline, so the margin is not itself the race.
     bool hog_window_open()
     {
-        uint64_t const until = g_hog_until;
-        if (until == 0)
+        uint32_t const start = g_hog_start_ns;
+        if (start == 0)
         {
             // Not yet run is the healthy case and the opposite of spent: the caller
             // outranks the hog, which first runs when this thread parks inside the slay,
             // so the whole window is still ahead.
             return true;
         }
-        uint64_t const now = kos_clock_now();
-        if (until <= now)
+        uint32_t const window = static_cast<uint32_t>(SLAY_HOG_NS);
+        uint32_t const elapsed = static_cast<uint32_t>(kos_clock_now()) - start;
+        if (elapsed >= window)
         {
             return false;
         }
-        return (until - now) > (2ull * SLAY_TIMEOUT_US * 1000ull);
+        return (window - elapsed) > (2u * SLAY_TIMEOUT_US * 1000u);
     }
 
     void t_thread_slay_timeout()
@@ -6026,7 +6126,7 @@ namespace
         // Outranks the victim, so nothing the slay does can get the victim onto the CPU
         // until this thread is finished. Spawned AFTER the victim is staged, because a
         // spawn is not a barrier and this one would otherwise hog the staging itself.
-        g_hog_until = 0; // a previous arm's window must not read as this one's
+        g_hog_start_ns = 0; // a previous arm's window must not read as this one's
         auto hog = kos::thread::spawn(slay_hog, nullptr, "shog", 11);
         if (not hog.valid())
         {
@@ -6048,7 +6148,7 @@ namespace
         for (int attempt = 0; attempt < 2 and not hog_window_open(); attempt++)
         {
             (void)hog.join(JOIN_GENEROUS_US);
-            g_hog_until = 0;
+            g_hog_start_ns = 0;
             hog = kos::thread::spawn(slay_hog, nullptr, "shog", 11);
             if (not hog.valid())
             {
@@ -6067,11 +6167,13 @@ namespace
             return;
         }
         TAP_CHECK(victim.slay(SLAY_TIMEOUT_US) == -KOS_ETIMEDOUT);
-        TAP_CHECK(g_slay_window == 0); // and it never got its window either
+        int const slay_window = g_slay_window;
+        TAP_CHECK(slay_window == 0); // and it never got its window either
         // IRREVOCABLE is the claim, so the same handle must reach GONE with no second
         // request: the timeout gave up on the wait, never on the death.
         TAP_CHECK(kos_thread_join(victim.id(), JOIN_GENEROUS_US) == 0);
-        TAP_CHECK(g_slay_window == 0);
+        int const slay_window_after_join = g_slay_window;
+        TAP_CHECK(slay_window_after_join == 0);
         TAP_CHECK(hog.join(JOIN_GENEROUS_US) == 0);
         TAP_CHECK(kos_handle_close(park) == 0);
     }
@@ -6089,10 +6191,10 @@ namespace
     // blocks are not reclaimed (arch_ram_alloc is a bump allocator with no free), so
     // the bound below is also what keeps the leak small.
     constexpr int SG_MAX = 12; // > KICKOS_MPU_MAX_REGIONS, so the loop must end refused
-    volatile int g_sg_ok = 0;      // descriptors accepted before the ceiling
-    volatile long g_sg_refusal = 0; // the code that ended the loop
-    volatile long g_sg_badsize = 0;
-    volatile int g_sg_readback = -1;
+    Atomic<int, Order::RELAXED> g_sg_ok{0};       // descriptors accepted before the ceiling
+    Atomic<int32_t, Order::RELAXED> g_sg_refusal{0}; // the code that ended the loop
+    Atomic<int32_t, Order::RELAXED> g_sg_badsize{0};
+    Atomic<int, Order::RELAXED> g_sg_readback{-1};
 
     void selfgrant_worker(void*)
     {
@@ -6108,7 +6210,7 @@ namespace
                 g_sg_refusal = 0; // arena, not budget: the parent skips rather than fails
                 break;
             }
-            long const rc = kos_mem_self_grant(p, 1);
+            int32_t const rc = kos_mem_self_grant(p, 1);
             if (rc != 0)
             {
                 g_sg_refusal = rc;
@@ -6118,7 +6220,7 @@ namespace
             // thread faults, so reaching the readback is the positive half.
             *static_cast<volatile int*>(p) = 0x5A5A + i;
             g_sg_readback = *static_cast<volatile int*>(p) - i;
-            g_sg_ok = g_sg_ok + 1; // not ++: -Werror=volatile rejects it from C++20
+            g_sg_ok = g_sg_ok + 1;
         }
         kos_sem_post(CH_DONE);
     }
@@ -6141,8 +6243,12 @@ namespace
         }
         // Grouped: each TAP_CHECK carries __FILE__ plus its stringified condition as
         // rodata.
-        TAP_CHECK(g_sg_ok > 0 and g_sg_refusal == -KOS_ENOMEM);
-        TAP_CHECK(g_sg_readback == 0x5A5A and g_sg_badsize == -KOS_EINVAL);
+        int const sg_ok = g_sg_ok;
+        int32_t const sg_refusal = g_sg_refusal;
+        TAP_CHECK(sg_ok > 0 and sg_refusal == -KOS_ENOMEM);
+        int const sg_readback = g_sg_readback;
+        int32_t const sg_badsize = g_sg_badsize;
+        TAP_CHECK(sg_readback == 0x5A5A and sg_badsize == -KOS_EINVAL);
     }
 
     // --- Self-grant of a non-power-of-two region ------------------------------
@@ -6159,8 +6265,8 @@ namespace
     // Registered BEFORE domain_share, not with mem_self_grant: on microbit the
     // pool cannot host a worker by the time the budget test runs, and this probe
     // is only discriminating on exactly such a no-MPU board.
-    volatile long g_sgnp_rc = -1;
-    volatile int g_sgnp_ran = 0;
+    Atomic<int32_t, Order::RELAXED> g_sgnp_rc{-1};
+    Atomic<int, Order::RELAXED> g_sgnp_ran{0};
     void sgnp_worker(void*)
     {
         size_t const g = discover_granule();
@@ -6272,7 +6378,8 @@ namespace
             tap::skip("arena too small for the probe blocks");
             return;
         }
-        TAP_CHECK(g_sgnp_rc == 0);
+        int32_t const sgnp_rc = g_sgnp_rc;
+        TAP_CHECK(sgnp_rc == 0);
     }
 }
 

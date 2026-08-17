@@ -5,6 +5,9 @@
 #include <kickos/arch/xtensa_frame.h> // F_* interrupt-frame offsets, shared with startup.S
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the cycle<->ns conversions
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
+#include <kickos/sys/atomic.h>
+
+#include <atomic>
 
 #include <stddef.h> // offsetof
 
@@ -49,6 +52,11 @@ static_assert(offsetof(struct arch_context, trace_tid) == 16,
 
 namespace
 {
+    using std::memory_order_relaxed;
+
+    using kickos::Atomic;
+    using kickos::Order;
+
     // PS fields (Xtensa ISA / corebits.h): EXCM=bit4, UM=bit5, CALLINC=bits[17:16],
     // WOE=bit18. A resumed thread runs windowed (WOE=1) with interrupts enabled
     // (INTLEVEL=0).
@@ -84,8 +92,9 @@ namespace
 
     // Wrap extension of the 32-bit CCOUNT cycle counter. LIMITATION: at 240 MHz CCOUNT
     // wraps every ~17.9 s, and a wrap not observed within one 2^32-cycle period is missed.
-    volatile uint32_t g_cyc_high = 0;
-    volatile uint32_t g_cyc_last = 0;
+    // The two words are ONE value, kept coherent by the IrqLock in now_cycles.
+    uint32_t g_cyc_high = 0;
+    uint32_t g_cyc_last = 0;
 
     inline uint32_t rd_ccount()
     {
@@ -133,8 +142,8 @@ namespace
     // The mask is COARSE: several lines may name the same cpu_int, and masking one of
     // them masks its siblings.
     constexpr unsigned LX6_DEV_ROUTES = 4;
-    volatile int8_t g_dev_cpu_int[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
-    volatile int8_t g_dev_line[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
+    Atomic<int8_t, Order::RELAXED> g_dev_cpu_int[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
+    Atomic<int8_t, Order::RELAXED> g_dev_line[LX6_DEV_ROUTES] = {-1, -1, -1, -1};
 
     // The CPU interrupt a logical line's mask targets, or -1 for a line with no route
     // (every injected software line, whose mask is the g_irq_masked bit alone).
@@ -170,24 +179,33 @@ extern "C"
     void kickos_lx6_dispatch_dev(int cpu_int);
 
     // Shared with switch.S/arch_start/startup.S: the ctx of the running thread, and
-    // the deferred-switch target when arch_switch is called from ISR context.
-    // volatile: written by C and by asm across a seam the compiler cannot see.
-    struct arch_context* volatile g_arch_current = nullptr;
-    struct arch_context* volatile g_arch_next = nullptr;
+    // the deferred-switch target when arch_switch is called from ISR context. Written
+    // by C and by asm.
+    kickos::Atomic<struct arch_context*, kickos::Order::RELAXED> g_arch_current = nullptr;
+    kickos::Atomic<struct arch_context*, kickos::Order::RELAXED> g_arch_next = nullptr;
+
+    // switch.S and the chip startup.S load each as a plain word at offset 0. Nothing else
+    // enforces the layout.
+    static_assert(sizeof(g_arch_current) == sizeof(struct arch_context*), "asm reads one word");
+    static_assert(sizeof(g_arch_next) == sizeof(struct arch_context*), "asm reads one word");
+    static_assert(alignof(decltype(g_arch_current)) == alignof(struct arch_context*), "asm reads it naturally aligned");
 
     // Set by arch_switch when it defers a switch from ISR context; consumed (and
     // cleared) by the level-1 interrupt exit (startup.S _kickos_int_level1), which
     // completes the swap on the way back to thread level. Distinct from comparing
     // g_arch_current vs g_arch_next: the cooperative path advances g_arch_current
     // without touching g_arch_next, so a stale g_arch_next must NOT be mistaken for
-    // a pending preemption; this flag is the unambiguous request. u32 so the asm load
-    // and store stay trivial.
-    volatile uint32_t g_arch_switch_pending = 0;
+    // a pending preemption; this flag is the unambiguous request.
+    std::atomic<uint32_t> g_arch_switch_pending = 0;
 
     // In-ISR depth (the IPSR!=0 analog). Maintained by the level-1 interrupt entry
     // (startup.S). arch_in_isr() reads it; the kernel uses it to forbid blocking
     // from ISR context and to defer a switch to interrupt exit.
-    volatile uint32_t g_isr_depth = 0;
+    uint32_t g_isr_depth = 0;
+
+    // startup.S carries both with l32i/s32i at offset 0. Nothing else enforces the width.
+    static_assert(sizeof(g_arch_switch_pending) == 4, "asm reads one word");
+    static_assert(sizeof(g_isr_depth) == 4, "asm reads one word");
 
     // Software interrupt controller for the LOGICAL device lines (arch.h inject/
     // mask contract), decoupled from the physical Xtensa interrupts. Xtensa INTSET
@@ -197,11 +215,12 @@ extern "C"
     // and the int-7 doorbell are the only PHYSICAL lines, driven via INTENABLE directly.
     // 1 = masked. All lines start MASKED at reset (the arch.h reset contract); a driver
     // unmasks its line (arch_irq_unmask, or irq_claim) before use.
-    static volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
-    static volatile int g_inject_line = -1;    // pending software-injected logical line
+    static uint32_t g_irq_masked = 0xFFFFFFFFu;
+    // pending software-injected logical line
+    static kickos::Atomic<int, kickos::Order::RELAXED> g_inject_line = -1;
     // bit set = a raise landed on this logical line while masked (latched one-deep,
     // coalesced). Redelivered through the int-7 doorbell at unmask.
-    static volatile uint32_t g_irq_pending = 0;
+    static uint32_t g_irq_pending = 0;
 
 }
 
@@ -217,7 +236,7 @@ namespace
         uint32_t cur = rd_ccount();
         if (cur < g_cyc_last)
         {
-            g_cyc_high = g_cyc_high + 1; // plain read+write (avoid deprecated volatile ++)
+            ++g_cyc_high;
         }
         g_cyc_last = cur;
         uint64_t hi = g_cyc_high;
@@ -323,7 +342,7 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
         // saves the interruptee (g_arch_current) in the interrupt-frame format and
         // resumes `to`.
         g_arch_next = to;
-        g_arch_switch_pending = 1;
+        g_arch_switch_pending.store(1, memory_order_relaxed);
         return;
     }
     g_arch_current = to;
@@ -373,7 +392,7 @@ void kickos_lx6_dispatch_l1(void)
     // line stays masked forever after one delivery.
     if ((pending & (1u << SW_INT_L1)) != 0)
     {
-        uint32_t bit = 1u << static_cast<unsigned>(SW_INT_L1);
+        uint32_t bit = 1u << SW_INT_L1;
         __asm volatile("wsr.intclear %0; rsync" ::"a"(bit) : "memory");
         phys_int_disable(bit); // doorbell consumed: off until the next inject re-arms it
         int line = g_inject_line;
@@ -656,15 +675,15 @@ void arch_irq_unmask(int line)
     }
     unsigned l = static_cast<unsigned>(line) & 31u;
     arch_irq_state_t s = arch_irq_save();
-    g_irq_masked = g_irq_masked & ~(1u << l);
+    g_irq_masked &= ~(1u << l);
     kickos_lx6_hw_unmask(line);
     // Latch-and-coalesce: a raise taken while this line was masked redelivers now
     // through the int-7 doorbell, on the normal ISR path rather than as a direct post.
     if ((g_irq_pending & (1u << l)) != 0)
     {
-        g_irq_pending = g_irq_pending & ~(1u << l);
+        g_irq_pending &= ~(1u << l);
         g_inject_line = static_cast<int>(l);
-        uint32_t bit = 1u << static_cast<unsigned>(SW_INT_L1);
+        uint32_t bit = 1u << SW_INT_L1;
         phys_int_enable(bit);
         __asm volatile("wsr.intset %0; rsync" ::"a"(bit) : "memory");
     }
@@ -688,19 +707,26 @@ void arch_irq_inject(int irq)
     {
         return;
     }
+    // Bracketed like arch_irq_mask/unmask: an ISR reaching those read-modify-writes the
+    // same words.
+    arch_irq_state_t s = arch_irq_save();
     // Latch-and-coalesce: a raise on a masked line latches one-deep (redelivered at
     // unmask), it is NOT dropped.
     if ((g_irq_masked & (1u << (static_cast<unsigned>(irq) & 31u))) != 0)
     {
         g_irq_pending = g_irq_pending | (1u << (static_cast<unsigned>(irq) & 31u));
-        return;
     }
-    g_inject_line = irq; // recorded BEFORE ringing the doorbell (the dispatcher reads it)
-    uint32_t bit = 1u << static_cast<unsigned>(SW_INT_L1);
-    // Enable the doorbell JUST-IN-TIME (the dispatcher disables it again). Leaving it
-    // enabled at rest storms the level-1 handler: the ROM boots with int 7 pending.
-    phys_int_enable(bit);
-    __asm volatile("wsr.intset %0; rsync" ::"a"(bit) : "memory");
+    else
+    {
+        // recorded BEFORE ringing the doorbell (the dispatcher reads it)
+        g_inject_line = irq;
+        uint32_t bit = 1u << SW_INT_L1;
+        // Enable the doorbell JUST-IN-TIME (the dispatcher disables it again). Leaving it
+        // enabled at rest storms the level-1 handler: the ROM boots with int 7 pending.
+        phys_int_enable(bit);
+        __asm volatile("wsr.intset %0; rsync" ::"a"(bit) : "memory");
+    }
+    arch_irq_restore(s);
 }
 
 // --- Device-route bind (chip layer) -----------------------------------------

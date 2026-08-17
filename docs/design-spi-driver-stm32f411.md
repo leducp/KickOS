@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design brief: STM32F411 SPI1 loopback driver -- the canonical PMSA per-thread MMIO isolation reference
 
 > **Status: LANDED** (silicon-pending) -- `f411spi` shipped as `user/apps/f411disco/f411spi/` and

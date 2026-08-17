@@ -18,10 +18,9 @@
 // the arch). Resolved to arch/<arch>/include/kickos/arch/context.h.
 #include <kickos/arch/context.h>
 
-#ifdef __cplusplus
+// C++ ONLY: the extern "C" below is deliberately UNGUARDED, so a C includer breaks here.
 extern "C"
 {
-#endif
 
 // --- One-time backend bring-up ---------------------------------------------
 // sim: install signal handlers, create the interval timer, map the RAM arena.
@@ -115,9 +114,11 @@ uint32_t arch_periph_clock_hz(uintptr_t base);
 // table EXACTLY; backends never range-match. Both bits are derived from `base`, so a
 // caller cannot name a shared block's register or bit. Idempotent. Returns 0,
 // -KOS_EINVAL (no entry for that base), or -KOS_ENOSYS (the fallback TU, no backend).
-// A base has an entry only where the bus gate's granularity is contained by the
-// block; where a coarser gate would also open kernel-reserved registers, the base is
-// refused instead (K64F PIT).
+// A base has an entry only where the bus gate cannot open a kernel-reserved register:
+// either the gate's granularity is contained by the block (K64F UART0), or the
+// uncontained remainder is itself an arch_reserved_blocks entry (RT1062 USB1, whose AIPS
+// slot also holds OTG2 and USBNC). The K64F PIT slot carries the kernel's own time base,
+// so that base is refused.
 int arch_periph_enable(uintptr_t base);
 
 // Write `value` to the register at `base + offset` on the caller's behalf, PRIVILEGED.
@@ -661,8 +662,6 @@ void kickos_trace_final_session(void);
 void kickos_trace_report_counters(void);
 #endif
 
-#ifdef __cplusplus
-}
-#endif
+} // extern "C"
 
 #endif

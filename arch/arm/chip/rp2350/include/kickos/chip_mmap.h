@@ -49,4 +49,4 @@ namespace kickos::rp2350::mmap
     constexpr uintptr_t USBCTRL_WINDOW = 0x20000u;
 }
 
-#endif // KICKOS_CHIP_MMAP_H
+#endif

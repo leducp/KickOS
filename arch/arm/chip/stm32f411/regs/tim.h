@@ -28,4 +28,4 @@ namespace kickos::stm32f411::reg::tim
     constexpr uint32_t SR_UIF = 1u << 0;   // update (overflow) flag, rc_w0
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_STM32F411_REGS_TIM_H
+#endif

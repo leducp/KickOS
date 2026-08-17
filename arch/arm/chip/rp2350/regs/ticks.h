@@ -27,4 +27,4 @@ namespace kickos::rp2350::reg::ticks
     constexpr uint32_t CYCLES_ROSC = 7u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_TICKS_H
+#endif

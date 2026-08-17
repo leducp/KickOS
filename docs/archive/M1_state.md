@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # M1 validation -- final state
 
 M1 is the uniformity / bring-up milestone: **every board boots, has a console, runs the

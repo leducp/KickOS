@@ -22,4 +22,4 @@ namespace kickos::rp2040::reg::watchdog
     constexpr uint32_t TICK_CFG_ROSC = (1u << 9) | 7u; // ~6.5 MHz / 7 ~= 1 MHz
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_WATCHDOG_H
+#endif

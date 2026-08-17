@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
 CONFIG_BOARD_F411DISCO=y
 
 # Adds the test-only self-test syscalls the TAP suite calls.

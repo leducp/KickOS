@@ -80,6 +80,24 @@ namespace
     // own through kos_uart_config and is told what it actually got.
     constexpr uint32_t CONSOLE_BAUD = 115200u;
 
+    // The window arch_console_reclaim reports. 16 bytes is the RX MPU minimum region
+    // (arch_mpu_min_region), and it stops short of SPTR at +0x1C, whose SPB2IO/SPB2DT pair
+    // drives TXD6 low while SCR.TE is 0 (UM Table 42.30 p.2212).
+    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::SCI6;
+    constexpr size_t CONSOLE_WIN_SIZE = 16u;
+
+    static_assert(sci::SCR >= CONSOLE_WIN_BASE and sci::SCR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and sci::SMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and sci::BRR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and sci::SCMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and sci::SEMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and sci::SNFR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and sci::SIMR1 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and sci::SIMR2 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and sci::SIMR3 < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE
+                  and sci::SPMR < CONSOLE_WIN_BASE + CONSOLE_WIN_SIZE,
+                  "arch_console_reclaim writes outside the window it reports");
+
     void unlock_registers(bool on)
     {
         if (on)
@@ -487,6 +505,15 @@ void arch_console_write_sync(char const* buf, size_t n)
     }
 }
 
+// Block until the shift register is idle, not merely the holding register: SSR.TEND is set
+// only when a character's tail-end bit goes out with TDR not reloaded, and clearing SCR.TE
+// also sets it (UM sec.42.2.11 p.2171).
+void arch_console_flush_sync(void)
+{
+    // A wedged SCI costs the tail of a line, not a hang.
+    (void)poll_flag(sci::SSR, sci::SSR_TEND, CONSOLE_POLL_LIMIT);
+}
+
 // Arch seam (console_tx.h): hand the kernel the SCI6 backend + ring storage + the
 // TXI6 line. console_buffer_init binds the drain ISR, unmasks the line (IPR087 +
 // IER0A.IEN7 via arch_irq_unmask), and arms the ring.
@@ -496,6 +523,61 @@ console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size
     *size = CONSOLE_TX_SIZE;
     *irq_line = irq::SCI6_TXI;
     return &rx_console_backend;
+}
+
+void arch_console_reclaim_window(uintptr_t* base, size_t* size)
+{
+    *base = CONSOLE_WIN_BASE;
+    *size = CONSOLE_WIN_SIZE;
+}
+
+// Panic-path reclaim: force SCI6 back to a polled-ready 8N1 TX channel after a driver may
+// have garbled every writable register in its granted window. Must be re-entrant from a
+// nested fault, so it is straight-line ABSOLUTE stores only, never a read-modify-write.
+// SCR.CKE = 1x points the transfer clock at the unwired SCK6 pin and starves the shifter
+// (UM sec.42.2.10 p.2167 Note 2); both SCR stores here put CKE back to 00b.
+void arch_console_reclaim(void)
+{
+    // SMR, SCMR, SEMR, BRR, SNFR, SIMR1 and SPMR are writable ONLY with TE and RE both 0
+    // (notes on UM sec.42.2.9/.12/.13/.15/.16/.17/.21), so nothing below lands unless this
+    // store comes first.
+    r8(sci::SCR) = 0;
+
+    // Ahead of SMR, because SMIF picks SMR's field layout.
+    r8(sci::SCMR) = sci::SCMR_UART;
+
+    // IICM = 0 leaves simple I2C mode, in which the TXD6/SSDA6/SMOSI6 pin frames I2C data
+    // rather than an async character (UM sec.42.2.17 p.2199); IICDL = 0.
+    r8(sci::SIMR1) = 0;
+    r8(sci::SIMR2) = 0; // I2C interrupt mode, clock synchronization, ACK transmission data
+
+    // IICSDAS = 00b restores serial data output on the pin: 10b PINS IT LOW and 11b puts it
+    // in high impedance (UM sec.42.2.19 p.2201).
+    r8(sci::SIMR3) = 0;
+
+    // CTSE set gates every byte on a CTS input this board does not wire (UM sec.42.2.21
+    // p.2204). SSE, MSS, CKPOL and CKPH = 0 leave simple SPI mode.
+    r8(sci::SPMR) = 0;
+
+    // NFCS = 000b, the asynchronous-mode setting (UM sec.42.2.16 p.2198).
+    r8(sci::SNFR) = 0;
+
+    // Priced off the LIVE clock tree, NOT folded to a 60 MHz constant: clock_to_pll_240mhz
+    // can fail and leave the part on the ~240 kHz LOCO.
+    sci::BaudSetting bs;
+    if (not sci::baud_select(pclkb_hz(), CONSOLE_BAUD, &bs))
+    {
+        // A clock tree baud_select cannot price gets the reset triple.
+        bs.cks = 0;
+        bs.semr = 0;
+        bs.brr = sci::BRR_RESET;
+    }
+    r8(sci::SMR) = bs.cks;   // CM 0 async, CHR 0 for 8 bits with SCMR.CHR1, PE/PM/STOP/MP 0
+    r8(sci::SEMR) = bs.semr; // NFEN, RXDESEL, ABCSE, ACS0 and BRME all 0
+    r8(sci::BRR) = bs.brr;
+
+    // TX only, TIE off, and LAST.
+    r8(sci::SCR) = sci::SCR_TE;
 }
 
 void arch_diag_led_init(void)

@@ -18,6 +18,8 @@
 #define KICKOS_SYS_USB_CDC_H
 
 #include <stdint.h>
+#include <stddef.h> // NULL, spelled instead of nullptr so the bodies below compile as C
+#include <iso646.h> // and / or / not are macros in C, not keywords
 
 #ifdef __cplusplus
 extern "C"
@@ -126,10 +128,10 @@ enum
 static inline void kos_cdc_line_coding_pack(uint8_t* out,
                                             struct kos_cdc_line_coding const* lc)
 {
-    out[0] = static_cast<uint8_t>(lc->dwDTERate & 0xFFu);
-    out[1] = static_cast<uint8_t>((lc->dwDTERate >> 8) & 0xFFu);
-    out[2] = static_cast<uint8_t>((lc->dwDTERate >> 16) & 0xFFu);
-    out[3] = static_cast<uint8_t>((lc->dwDTERate >> 24) & 0xFFu);
+    out[0] = (uint8_t)(lc->dwDTERate & 0xFFu);
+    out[1] = (uint8_t)((lc->dwDTERate >> 8) & 0xFFu);
+    out[2] = (uint8_t)((lc->dwDTERate >> 16) & 0xFFu);
+    out[3] = (uint8_t)((lc->dwDTERate >> 24) & 0xFFu);
     out[4] = lc->bCharFormat;
     out[5] = lc->bParityType;
     out[6] = lc->bDataBits;
@@ -138,9 +140,8 @@ static inline void kos_cdc_line_coding_pack(uint8_t* out,
 static inline void kos_cdc_line_coding_unpack(struct kos_cdc_line_coding* lc,
                                               uint8_t const* in)
 {
-    lc->dwDTERate = static_cast<uint32_t>(in[0]) | (static_cast<uint32_t>(in[1]) << 8)
-                    | (static_cast<uint32_t>(in[2]) << 16)
-                    | (static_cast<uint32_t>(in[3]) << 24);
+    lc->dwDTERate = (uint32_t)in[0] | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16)
+                    | ((uint32_t)in[3] << 24);
     lc->bCharFormat = in[4];
     lc->bParityType = in[5];
     lc->bDataBits = in[6];
@@ -262,8 +263,8 @@ static uint8_t const kos_usb_cdc_string3[10] = {
 // short reply: a host reads a zero-length answer as a malformed device.
 static inline uint32_t kos_usb_cdc_descriptor(uint16_t wValue, uint8_t const** out)
 {
-    uint8_t const type = static_cast<uint8_t>(wValue >> 8);
-    uint8_t const index = static_cast<uint8_t>(wValue & 0xFFu);
+    uint8_t const type = (uint8_t)(wValue >> 8);
+    uint8_t const index = (uint8_t)(wValue & 0xFFu);
     if (type == KOS_USB_DT_DEVICE)
     {
         *out = kos_usb_cdc_device_desc;
@@ -301,7 +302,7 @@ static inline uint32_t kos_usb_cdc_descriptor(uint16_t wValue, uint8_t const** o
     }
     // DEVICE_QUALIFIER included: a full-speed-only device must STALL it, and a host that
     // asks is probing for high-speed support rather than malfunctioning.
-    *out = nullptr;
+    *out = NULL;
     return 0u;
 }
 
@@ -309,6 +310,10 @@ static inline uint32_t kos_usb_cdc_descriptor(uint16_t wValue, uint8_t const** o
 static_assert(sizeof(struct kos_usb_setup) == 8, "the SETUP packet is 8 wire bytes");
 static_assert(sizeof(kos_usb_cdc_config_desc) == KOS_USB_CDC_CONFIG_DESC_LEN,
               "wTotalLength in the configuration descriptor must equal the table size");
+#else
+_Static_assert(sizeof(struct kos_usb_setup) == 8, "the SETUP packet is 8 wire bytes");
+_Static_assert(sizeof(kos_usb_cdc_config_desc) == KOS_USB_CDC_CONFIG_DESC_LEN,
+               "wTotalLength in the configuration descriptor must equal the table size");
 #endif
 
 #ifdef __cplusplus

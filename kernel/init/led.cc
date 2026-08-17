@@ -1,18 +1,11 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// Kernel diagnostic LED: the board's single status LED, owned by the kernel as a
-// sibling of the console (kernel/init/console.cc). It is a last-resort self-debug
-// facility that works with no UART wired, inside a fault, before any driver
-// exists. NOT a general device driver. The kernel drives it directly for
-// self-debug (a solid LED on panic); userspace borrows it through a syscall
-// (kos_kernel_diag_led_*). That userspace path is PROVISIONAL: once the M2
-// capability model lands, an app that blinks an LED becomes a userspace GPIO
-// driver holding a device-memory capability, and only the kernel-side use stays.
-//
-// One physical pin, one owner: the kernel arbitrates so a panic indicator and a
-// userspace heartbeat cannot fight over it. State is tracked here, so toggle()
-// costs one XOR and the arch backend only has to implement a raw set().
+// Kernel diagnostic LED: the board's single status LED. Usable with no UART wired,
+// inside a fault, and before any driver exists, which is why it is not a device driver.
+// One physical pin, one owner: the kernel arbitrates, so a panic indicator and a
+// userspace heartbeat (kos_kernel_diag_led_*) cannot fight over it. State is tracked
+// here, so the arch backend implements only a raw set().
 
 #include <kickos/kernel.h>
 #include <kickos/arch/arch.h>

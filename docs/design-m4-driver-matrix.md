@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # M4 driver-coverage matrix -- per-board peripheral survey + complexity/gain backlog
 
 > **Status: ACTIVE** -- the live prioritized backlog for the milestone in flight (M4).

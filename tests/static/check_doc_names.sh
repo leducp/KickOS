@@ -122,8 +122,11 @@ git ls-files -z | tr '\0' '\n' | grep -v '\.md$' | grep -v '^docs/' | grep -v '^
 # NOT CAUGHT: a name appearing only inside a shell string that contains `#` is stripped
 # with the comment and loses validity. A name used in dead code is code, not prose, and
 # still counts.
-tr '\n' '\0' < "$TMP/src.txt" | xargs -0 awk '
+# The program goes to a FILE and the harvest to a function, so the self-test below runs the
+# SAME scan the corpus does.
+cat > "$TMP/harvest.awk" <<'AWK'
 FNR == 1 {
+    print FILENAME >> SEEN
     inblk = 0
     ctype = 0
     if (FILENAME ~ /\.(c|cc|h|hpp|S|ld|lds)$/)                              { ctype = 1 }
@@ -141,23 +144,124 @@ FNR == 1 {
                 line = substr(line, i + 2)
                 inblk = 0
             } else {
-                i = index(line, "/*")
-                if (i == 0) { out = out line; line = ""; break }
-                out = out substr(line, 1, i - 1)
-                line = substr(line, i + 2)
+                b = index(line, "/*")
+                l = index(line, "//")
+                # A `//` reached FIRST consumes the rest of the line, so a `/*` after it
+                # opens nothing. Strip `//` after the block scan instead and a path glob in
+                # a line comment opens a block that never closes, dropping every identifier
+                # below it from the valid set while the gate still passes.
+                if (l > 0 && (b == 0 || l < b)) {
+                    out = out substr(line, 1, l - 1)
+                    line = ""
+                    break
+                }
+                if (b == 0) { out = out line; line = ""; break }
+                out = out substr(line, 1, b - 1)
+                line = substr(line, b + 2)
                 inblk = 1
             }
         }
         line = out
-        sub(/\/\/.*/, "", line)
     } else if (ctype == 2) {
         sub(/#.*/, "", line)
     }
     print line
-}' 2>/dev/null | grep -aohE '\b(KICKOS|KOS|KCAP|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]' 2>/dev/null \
-  | sort -u > "$TMP/valid_ids.txt"
+}
+AWK
+
+# The one alphabet, as one ERE, so the self-test and the corpus scan cannot disagree.
+ID_ERE='\b(KICKOS|KOS|KCAP|CAP|AUTH)_[A-Za-z0-9_]*[A-Za-z0-9]'
+
+# Refuses by name instead of reading less. xargs splits the list across SEVERAL awk
+# invocations, and awk exits FATALLY on a file it cannot open, dropping every remaining file
+# of THAT batch; the pipeline status comes from `sort`, so the loss reads as a smaller tree.
+# The usual way in is a path `git ls-files` reports whose file is gone: a rename whose
+# deletion is not staged yet.
+# A return, not a fail(), so the self-test can assert the refusal.
+harvest_ids() { # <file-list> <outfile>; 0 ok, 1 a member went unread (named in $TMP/unread)
+    : > "$TMP/unread"
+    : > "$TMP/seen"
+    : > "$TMP/harvest.err"
+    while IFS= read -r _f; do
+        [ -r "$_f" ] || printf '%s\n' "$_f" >> "$TMP/unread"
+    done < "$1"
+    if [ ! -s "$TMP/unread" ]; then
+        tr '\n' '\0' < "$1" | xargs -0 awk -v SEEN="$TMP/seen" -f "$TMP/harvest.awk" \
+            2>"$TMP/harvest.err" | grep -aohE "$ID_ERE" | sort -u > "$2"
+        # COVERAGE, the general form of the failure above: awk must have OPENED every
+        # member. A count floor cannot tell a smaller tree from an unread batch; the
+        # per-file marker can, and it names what was missed.
+        sort -u "$1" > "$TMP/want.s"
+        sort -u "$TMP/seen" > "$TMP/seen.s"
+        comm -23 "$TMP/want.s" "$TMP/seen.s" >> "$TMP/unread"
+    fi
+    [ ! -s "$TMP/unread" ] || return 1
+    # A pipeline hides awk's status, and an awk failure here costs part of the corpus rather
+    # than the run.
+    [ ! -s "$TMP/harvest.err" ] || return 1
+    return 0
+}
+
+# --- self-test: prove the harvest both ways before reading the tree ------------
+# A stripper that ate everything, or an alphabet that matched nothing, would each leave the
+# valid set empty and report every name in every doc as dangling.
+mkdir -p "$TMP/st"
+cat > "$TMP/st/code.c" <<'EOF'
+#define KICKOS_ST_DEFINED 1
+enum { KOS_ST_ENUM = 2 };
+// KICKOS_ST_LINE_COMMENT is prose, not a definition
+/* KICKOS_ST_BLOCK_COMMENT spans
+   KICKOS_ST_BLOCK_SECOND_LINE too */
+EOF
+cat > "$TMP/st/code.cmake" <<'EOF'
+option(KICKOS_ST_OPTION "a knob" OFF)
+# KICKOS_ST_HASH_COMMENT is prose here
+EOF
+printf '%s\n' "$TMP/st/code.c" "$TMP/st/code.cmake" > "$TMP/st/list"
+
+harvest_ids "$TMP/st/list" "$TMP/st/ids" \
+    || fail "the harvest refused its own self-test corpus, so it cannot judge the tree"
+for _want in KICKOS_ST_DEFINED KOS_ST_ENUM KICKOS_ST_OPTION; do
+    grep -qx "$_want" "$TMP/st/ids" \
+        || fail "the harvest missed $_want, planted in CODE; it would report live names dangling"
+done
+for _no in KICKOS_ST_LINE_COMMENT KICKOS_ST_BLOCK_COMMENT KICKOS_ST_BLOCK_SECOND_LINE \
+           KICKOS_ST_HASH_COMMENT; do
+    ! grep -qx "$_no" "$TMP/st/ids" \
+        || fail "the harvest took $_no out of a COMMENT; a name nothing builds would validate itself"
+done
+
+# The mutation, in both directions: ONE unreadable member must make the harvest refuse and
+# name it, and removing that member must restore the pass.
+ST_PHANTOM="$TMP/st/deleted_by_an_unstaged_rename.cc"
+printf '%s\n' "$ST_PHANTOM" >> "$TMP/st/list"
+if harvest_ids "$TMP/st/list" "$TMP/st/ids.mut"; then
+    fail "the harvest accepted a corpus member that does not exist, so a tracked-but-deleted
+      file would silently shrink the valid set again"
+fi
+grep -Fxq "$ST_PHANTOM" "$TMP/unread" \
+    || fail "the harvest refused but did not name the missing file; the report has to say which"
+grep -Fxv "$ST_PHANTOM" "$TMP/st/list" > "$TMP/st/list.ok"
+harvest_ids "$TMP/st/list.ok" "$TMP/st/ids.back" \
+    || fail "the harvest still refuses once the phantom is gone, so the refusal was not its"
+cmp -s "$TMP/st/ids" "$TMP/st/ids.back" \
+    || fail "the harvest read a different valid set before and after the phantom; not deterministic"
+
+# --- the valid identifier set of the real tree --------------------------------
+if ! harvest_ids "$TMP/src.txt" "$TMP/valid_ids.txt"; then
+    if [ -s "$TMP/unread" ]; then
+        echo "" >&2
+        sed 's/^/      /' "$TMP/unread" >&2
+        fail "the file(s) above are listed by git ls-files but the identifier scan did not read
+      them, so it covers LESS of the tree than it reports and would call live names dangling.
+      A rename whose deletion is not staged yet is the usual cause: stage it (git add -A)
+      and re-run. If the file is present and readable, the scan skipped it and that is a bug
+      in this gate, not in the tree."
+    fi
+    sed -n '1,4p' "$TMP/harvest.err" >&2
+    fail "awk objected while scanning the tree for identifiers, so the valid set is incomplete"
+fi
 IDS=$(wc -l < "$TMP/valid_ids.txt" | tr -d ' ')
-[ "$IDS" -gt 100 ] || fail "only $IDS identifiers collected from the tree -- scan is broken, findings would be noise"
 
 # --- valid path set: tracked files plus every ancestor directory ---------------
 # Built from git, never from the filesystem, so an untracked build/ or .session/
@@ -178,6 +282,7 @@ ABI="user/include/kickos/sys/abi.h"
 [ -f "$ABI" ] || fail "$ABI not found -- cannot cross-check syscall numbers"
 sed -n 's/^ *\(KOS_SYS_[A-Z0-9_]*\) *= *\([0-9][0-9]*\).*/\1 \2/p' "$ABI" > "$TMP/sysnum.txt"
 [ -s "$TMP/sysnum.txt" ] || fail "parsed zero syscall numbers out of $ABI -- number cross-check is broken"
+
 
 # =============================================================================
 # One pass over the corpus. Output is file-ordered then line-ordered, so the

@@ -271,4 +271,16 @@ extern "C"
         note("probe");
         return g_seam.send_timed_rc;
     }
+
+    // edge_relay_thread's two. No arm here runs that thread body; these exist so the TU
+    // carrying bring_up links.
+    int kos_irq_wait(kos_cap_t)
+    {
+        return -KOS_EBADF;
+    }
+
+    int kos_irq_notify(kos_cap_t)
+    {
+        return -KOS_EBADF;
+    }
 }

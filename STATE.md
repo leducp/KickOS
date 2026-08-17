@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # KickOS -- current state
 
 One screen, and the only file that changes every milestone: read it to re-ground, then go

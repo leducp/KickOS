@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The driver era -- scope / gap analysis
 
 > **Status: ACTIVE.** The M4 gap list, reduced to the gaps still OPEN and the decisions that bound

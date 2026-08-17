@@ -18,6 +18,7 @@
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* codes for arch_pinmux_set
 
+
 #include <stdint.h>
 
 namespace kickos
@@ -38,6 +39,7 @@ extern "C"
 
 namespace
 {
+
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
     // RCC (RM0008 sec.7).
@@ -239,9 +241,10 @@ namespace
     // disarmed, by the TIM3 (high-half) overflow ISR below, exactly once: whoever
     // reads first advances g_clk_last, so the other sees no backward step. Without
     // that ISR a wrap across a fully-quiescent >59 s idle would be lost (a slow
-    // DWT-style leap).
-    volatile uint32_t g_clk_high = 0;
-    volatile uint32_t g_clk_last = 0;
+    // DWT-style leap). The two words are ONE value: the IrqLock in timer_ticks is what
+    // keeps them coherent against the TIM3 overflow ISR, not the atomicity of either word.
+    uint32_t g_clk_high = 0;
+    uint32_t g_clk_last = 0;
 
     // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Sole writer
     // is init() in arch_init; this chip never retunes at runtime. A retune added later
@@ -307,15 +310,16 @@ namespace
         // that tear from a genuine 32-bit wrap (gap ~2^32): only a large gap bumps
         // the high half; a small backward tear is clamped so the clock stays
         // monotonic (misreading the tear as a wrap would leap the clock +59.6 s).
-        if (cur < g_clk_last)
+        uint32_t const last = g_clk_last;
+        if (cur < last)
         {
-            if (g_clk_last - cur > 0x80000000u)
+            if (last - cur > 0x80000000u)
             {
-                g_clk_high = g_clk_high + 1;       // genuine chain wrap
+                ++g_clk_high; // genuine chain wrap
             }
             else
             {
-                cur = g_clk_last;   // torn chained read: clamp, stay monotonic
+                cur = last;   // torn chained read: clamp, stay monotonic
             }
         }
         g_clk_last = cur;

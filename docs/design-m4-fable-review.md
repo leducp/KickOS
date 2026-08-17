@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # M4 driver-era -- adversarial design review
 
 > **Status: LANDED** -- the review happened (2026-07-20) and its findings were checked; the

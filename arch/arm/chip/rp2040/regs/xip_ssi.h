@@ -38,4 +38,4 @@ namespace kickos::rp2040::reg::xip_ssi
     constexpr uintptr_t APP_VECTORS = 0x10000100u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_XIP_SSI_H
+#endif

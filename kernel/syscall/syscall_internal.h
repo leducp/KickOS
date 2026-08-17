@@ -7,8 +7,8 @@
 // NOT a public kernel header; the userspace-facing contract is <kickos/arch/arch.h> and the
 // object naming layer is <kickos/cap.h>.
 
-#ifndef KICKOS_SYSCALL_INTERNAL_H
-#define KICKOS_SYSCALL_INTERNAL_H
+#ifndef KICKOS_KERNEL_SYSCALL_SYSCALL_INTERNAL_H
+#define KICKOS_KERNEL_SYSCALL_SYSCALL_INTERNAL_H
 
 #include <stddef.h>
 #include <stdint.h>

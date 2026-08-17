@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The KickOS Reference
 
 The **code-synced technical reference**: what KickOS does, exactly. Terse, invariant-first.

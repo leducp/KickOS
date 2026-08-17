@@ -11,6 +11,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/diag.h>
+#include <kickos/sys/atomic.h>
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 
 #include <bit>
@@ -69,15 +70,22 @@ namespace
 
 extern "C"
 {
-    // Shared with switch.S. volatile: written by C and by asm across a seam the
-    // compiler cannot see. No leading underscore (RISC-V ELF symbol convention).
-    struct arch_context* volatile g_arch_current = nullptr;
-    struct arch_context* volatile g_arch_next = nullptr;
+    // Shared with switch.S: written by C and by asm. No leading underscore (RISC-V ELF
+    // symbol convention).
+    kickos::Atomic<struct arch_context*, kickos::Order::RELAXED> g_arch_current = nullptr;
+    kickos::Atomic<struct arch_context*, kickos::Order::RELAXED> g_arch_next = nullptr;
 
-    // In-ISR depth: bumped by the timer/external trap paths (switch.S), NOT by the ecall
-    // or msip-switch paths, so arch_in_isr() reads false throughout syscall_dispatch
-    // (arch.h contract).
-    volatile uint32_t g_isr_depth = 0;
+    // switch.S loads each as a plain word at offset 0. Nothing else enforces the layout.
+    static_assert(sizeof(g_arch_current) == sizeof(struct arch_context*), "asm reads one word");
+    static_assert(sizeof(g_arch_next) == sizeof(struct arch_context*), "asm reads one word");
+    static_assert(alignof(decltype(g_arch_current)) == alignof(struct arch_context*), "asm reads it naturally aligned");
+
+    // In-ISR depth: bumped by the timer/soft/external trap paths (switch.S), NOT by the
+    // ecall or msip-switch paths, so arch_in_isr() reads false throughout syscall_dispatch.
+    uint32_t g_isr_depth = 0;
+
+    // switch.S bumps it with lw/sw at offset 0. Nothing else enforces the width.
+    static_assert(sizeof(g_isr_depth) == 4, "asm reads one word");
 
     // CLINT machine-software-interrupt-pending register for this hart, set by the
     // chip's arch_init. arch_switch writes 1 to pend the deferred switch; the msip
@@ -373,13 +381,14 @@ static constexpr uint32_t MIP_SSIP = 1u << 1;
 // bit set = line masked. All lines start MASKED at reset (the arch.h reset
 // contract, matching the NVIC/RX silicon posture); a driver unmasks its line
 // (arch_irq_unmask, or irq_claim) before use.
-static volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
-static volatile int g_inject_line = -1; // the pending software-injected line
+static uint32_t g_irq_masked = 0xFFFFFFFFu;
+// the pending software-injected line
+static kickos::Atomic<int, kickos::Order::RELAXED> g_inject_line = -1;
 
 // bit set = a raise landed on this software line while masked (latched one-
 // deep, coalesced). Redelivered through the doorbell at unmask. Scoped to the
 // software-inject lines; a real PLIC line holds its own pending in hardware.
-static volatile uint32_t g_irq_pending = 0;
+static uint32_t g_irq_pending = 0;
 
 // The rv32imac chip hooks. Every fallback body lives in its own TU
 // (<symbol>_default.cc); this TU only calls them, so it needs the declarations.
@@ -401,7 +410,7 @@ void arch_irq_mask(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    g_irq_masked = g_irq_masked | (1u << line);
+    g_irq_masked |= (1u << line);
     // Reach the controller to mask a REAL line inside the critical section (mstatus.MIE=0),
     // mirroring arch_irq_unmask. No-op for injected lines.
     arch_rv_hw_mask(line);
@@ -415,7 +424,7 @@ void arch_irq_unmask(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    g_irq_masked = g_irq_masked & ~(1u << line);
+    g_irq_masked &= ~(1u << line);
     // Chip HW routing runs INSIDE the critical section (mstatus.MIE=0) so an INTMTX/PLIC
     // reconfigure can't glitch in the controller's transient state (C6 TRM section 1.6.3.2:
     // configure with MIE cleared + a FENCE). No-op for injected lines.
@@ -425,7 +434,7 @@ void arch_irq_unmask(int line)
     // at arch_irq_restore, on the normal ISR path rather than as a direct post.
     if ((g_irq_pending & (1u << line)) != 0)
     {
-        g_irq_pending = g_irq_pending & ~(1u << line);
+        g_irq_pending &= ~(1u << line);
         g_inject_line = line;
         arch_rv_inject_deliver(line);
     }
@@ -441,7 +450,7 @@ void arch_irq_clear_pending(int line)
     // Software-inject lines only: drop the latched raise. A real PLIC line has no
     // software pending to clear here (native no-op).
     arch_irq_state_t s = arch_irq_save();
-    g_irq_pending = g_irq_pending & ~(1u << line);
+    g_irq_pending &= ~(1u << line);
     arch_irq_restore(s);
 }
 
@@ -451,15 +460,21 @@ void arch_irq_inject(int irq)
     {
         return;
     }
+    // Bracketed like arch_irq_mask/unmask: an ISR reaching those read-modify-writes the
+    // same words.
+    arch_irq_state_t s = arch_irq_save();
     if ((g_irq_masked & (1u << irq)) != 0)
     {
         // Latch-and-coalesce: a masked line latches the raise one-deep; it
         // redelivers through the doorbell at unmask, it is NOT dropped.
-        g_irq_pending = g_irq_pending | (1u << irq);
-        return;
+        g_irq_pending |= (1u << irq);
     }
-    g_inject_line = irq; // set BEFORE the raise, so the trap sees it
-    arch_rv_inject_deliver(irq);
+    else
+    {
+        g_inject_line = irq; // set BEFORE the raise, so the trap sees it
+        arch_rv_inject_deliver(irq);
+    }
+    arch_irq_restore(s);
 }
 
 // SSIP dispatch (switch.S .Lssoft, virt), ISR context. Clear the software interrupt,

@@ -786,6 +786,28 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(extern_c_linkage PROPERTIES TIMEOUT 120 LABELS host)
 
+  # The house-style gates read the tree through `git ls-files`, so they open no build
+  # directory and need no fixture, and each registers on every board.
+  _add_test(NAME ascii
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_ascii.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(ascii PROPERTIES TIMEOUT 120 LABELS host)
+
+  _add_test(NAME spdx
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_spdx.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(spdx PROPERTIES TIMEOUT 120 LABELS host)
+
+  _add_test(NAME include_guards
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_include_guards.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(include_guards PROPERTIES TIMEOUT 120 LABELS host)
+
+  _add_test(NAME forever_loop
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_forever_loop.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(forever_loop PROPERTIES TIMEOUT 120 LABELS host)
+
   # The KICKOS_SERVICE_LIST axis. A provider is created inside its chip's branch of
   # system/CMakeLists.txt, so THIS board compiles at most its own and can say nothing
   # about the rest; the gate reads the source tree and the preset files instead of the

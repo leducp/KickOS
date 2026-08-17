@@ -27,4 +27,4 @@ namespace kickos::rp2350::reg::resets
     constexpr uint32_t USBCTRL = 1u << 28;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_RESETS_H
+#endif

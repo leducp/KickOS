@@ -55,4 +55,4 @@ namespace kickos
     }
 }
 
-#endif // KICKOS_ARCH_ARM_COMMON_REGS_V8M_H
+#endif
