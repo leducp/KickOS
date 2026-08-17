@@ -29,7 +29,8 @@ int32_t mode_apply(Atomic<uint32_t, Order::RELAXED>* mode, uint32_t flags, uint3
     return 0;
 }
 
-// The word array is the wire image: same order, same width.
+// The struct IS the wire image: same order, same width, and the assert leaves it no padding
+// to hide. That is what lets the unpack below be one copy.
 constexpr uint32_t KOS_UART_STATS_WORDS = 9;
 static_assert(KOS_UART_STATS_WORDS * sizeof(uint32_t) == sizeof(struct kos_uart_stats),
               "kos_uart_stats gained or lost a field; pack and unpack must follow");
@@ -37,31 +38,21 @@ static_assert(KOS_UART_STATS_WORDS * sizeof(uint32_t) == sizeof(struct kos_uart_
 void stats_pack(uint8_t* wire, struct kos_uart_stats const* live, uint32_t tx_lost)
 {
     uint32_t f[KOS_UART_STATS_WORDS];
-    f[0] = live->tx_bytes.load(std::memory_order_relaxed);
-    f[1] = live->rx_bytes.load(std::memory_order_relaxed);
-    f[2] = live->tx_dropped.load(std::memory_order_relaxed) + tx_lost;
-    f[3] = live->rx_dropped.load(std::memory_order_relaxed);
-    f[4] = live->rx_overrun.load(std::memory_order_relaxed);
-    f[5] = live->rx_framing.load(std::memory_order_relaxed);
-    f[6] = live->rx_parity.load(std::memory_order_relaxed);
-    f[7] = live->irq_wakes.load(std::memory_order_relaxed);
-    f[8] = live->irq_spurious.load(std::memory_order_relaxed);
+    f[0] = kos_counter_load(&live->tx_bytes);
+    f[1] = kos_counter_load(&live->rx_bytes);
+    f[2] = kos_counter_load(&live->tx_dropped) + tx_lost;
+    f[3] = kos_counter_load(&live->rx_dropped);
+    f[4] = kos_counter_load(&live->rx_overrun);
+    f[5] = kos_counter_load(&live->rx_framing);
+    f[6] = kos_counter_load(&live->rx_parity);
+    f[7] = kos_counter_load(&live->irq_wakes);
+    f[8] = kos_counter_load(&live->irq_spurious);
     mem_copy(wire, f, sizeof(f));
 }
 
 void stats_unpack(struct kos_uart_stats* dst, uint8_t const* wire)
 {
-    uint32_t f[KOS_UART_STATS_WORDS];
-    mem_copy(f, wire, sizeof(f));
-    dst->tx_bytes.store(f[0], std::memory_order_relaxed);
-    dst->rx_bytes.store(f[1], std::memory_order_relaxed);
-    dst->tx_dropped.store(f[2], std::memory_order_relaxed);
-    dst->rx_dropped.store(f[3], std::memory_order_relaxed);
-    dst->rx_overrun.store(f[4], std::memory_order_relaxed);
-    dst->rx_framing.store(f[5], std::memory_order_relaxed);
-    dst->rx_parity.store(f[6], std::memory_order_relaxed);
-    dst->irq_wakes.store(f[7], std::memory_order_relaxed);
-    dst->irq_spurious.store(f[8], std::memory_order_relaxed);
+    mem_copy(dst, wire, sizeof(*dst));
 }
 
 uint32_t tx_write(struct kos_byte_ring* tx, struct kos_uart_stats* stats,

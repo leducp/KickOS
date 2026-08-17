@@ -20,7 +20,6 @@
 #include <kickos/sys/console_ring.h> // stats_unpack
 #include <kickos/libc/fmt.h>
 
-#include <atomic>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -195,13 +194,13 @@ int main(int, char**)
     // `queued` is bytes the ring TOOK and did not lose. It is NOT ring occupancy: the wire
     // ABI carries no field for that. Delivery is proven by the byte count on the HOST,
     // against `queued` here.
-    uint32_t const tx = stats.tx_bytes.load(std::memory_order_relaxed);
-    uint32_t const drop = stats.tx_dropped.load(std::memory_order_relaxed);
+    uint32_t const tx = kos_counter_load(&stats.tx_bytes);
+    uint32_t const drop = kos_counter_load(&stats.tx_dropped);
     ksnprintf(b, sizeof(b), "[usbcdcwit] tx=%u drop=%u queued=%u wakes=%u spurious=%u\n",
               static_cast<unsigned>(tx), static_cast<unsigned>(drop),
               static_cast<unsigned>(tx - drop),
-              static_cast<unsigned>(stats.irq_wakes.load(std::memory_order_relaxed)),
-              static_cast<unsigned>(stats.irq_spurious.load(std::memory_order_relaxed)));
+              static_cast<unsigned>(kos_counter_load(&stats.irq_wakes)),
+              static_cast<unsigned>(kos_counter_load(&stats.irq_spurious)));
     say(b);
 
     if (err != 0 or sent != TOTAL)

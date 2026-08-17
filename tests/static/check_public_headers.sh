@@ -221,10 +221,9 @@ if [ -s "$TMP/cbad" ]; then
   echo "" >&2
   fail "$(wc -l < "$TMP/cbad" | tr -d ' ') C-facing installed header(s) are not valid C11.
       Each guards an extern \"C\" block with __cplusplus, or is included by one that does,
-      which tells a consumer their C translation unit may include it. Either write both
-      spellings under the guard, as kickos/sys/byte_ring.h does for std::atomic<uint32_t>
-      and _Atomic uint32_t, or DROP the guard so the header declares itself C++ only and
-      leaves this corpus."
+      which tells a consumer their C translation unit may include it. Either write the
+      C-valid spelling of what it needs, or DROP the guard so the header declares itself
+      C++ only and leaves this corpus."
 fi
 
 echo "PASS: $CN C-facing installed header(s) compile standalone at $CFLAGS"

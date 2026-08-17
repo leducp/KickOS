@@ -20,8 +20,6 @@
 #include <kickos/sys/errno.h>
 #include <kickos/libc/string.h>
 
-#include <atomic>
-
 #include "tap.h"
 
 // The chip's own constants. A sim build ships none (same guard as config/board.h), so
@@ -1744,7 +1742,7 @@ namespace
                                                           KOS_UART_F_NONBLOCK);
         TAP_CHECK(nb < 12);       // short accept
         TAP_CHECK(12u - nb > 0u); // the shortfall the service arm charges to tx_dropped
-        uint32_t const cooked = st.tx_bytes.load(std::memory_order_relaxed);
+        uint32_t const cooked = kos_counter_load(&st.tx_bytes);
         TAP_CHECK(cooked > 0u and cooked <= sizeof(rbuf));
         // The return is INPUT bytes and the counter is COOKED bytes, so these differ under
         // KICKOS_CONSOLE_CRLF: a partially accepted cooked chunk reports no input progress
@@ -4229,7 +4227,7 @@ namespace
         {
             struct kos_uart_stats s;
             kickos::console::stats_unpack(&s, st);
-            r.stats_tx = static_cast<int>(s.tx_bytes.load(std::memory_order_relaxed));
+            r.stats_tx = static_cast<int>(kos_counter_load(&s.tx_bytes));
         }
         // Over the WIRE, not against console::mode_apply directly, so serve_one's dispatch
         // is covered. Accept LAST, so the server can assert the mode was stored.

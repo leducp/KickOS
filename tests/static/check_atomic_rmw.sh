@@ -33,11 +33,18 @@
 #              `.fetch_add(` and its siblings, `.exchange(`, `.compare_exchange_weak(` and
 #              `_strong(`, `.test_and_set(`, over `.` and `->` alike; the C11 generics
 #              `atomic_fetch_add[_explicit]`, `atomic_exchange`, `atomic_compare_exchange_*`,
-#              `atomic_flag_test_and_set`; and the `__atomic_` / `__sync_` builtins.
-#              `atomic_load_explicit` and `atomic_store_explicit` are NOT RMWs and are how
-#              user/include/kickos/sys/byte_ring.h spells every access it makes, so they are
-#              absent from the patterns and pinned absent by the self-test. So are
-#              `atomic_thread_fence` and `__sync_synchronize`, which are fences.
+#              `atomic_flag_test_and_set`; and the RMW builtins, listed one by one:
+#              `__atomic_fetch_*`, `__atomic_*_fetch`, `__atomic_exchange[_n]`,
+#              `__atomic_compare_exchange[_n]`, `__atomic_test_and_set` and the `__sync_`
+#              read-modify-writes.
+#              The rule is READ-MODIFY-WRITE, never the `__atomic_` prefix. `__atomic_load_n`
+#              and `__atomic_store_n` are a plain load and a plain store, they are how
+#              <kickos/sys/uart.h> gives a counter a defined concurrent read, and a prefix
+#              ban would refuse them; so are `atomic_load_explicit` and
+#              `atomic_store_explicit`. All four are absent from the patterns and pinned
+#              absent by the self-test's negative corpus, which is what stops the next hand
+#              widening `__atomic_(...)` back into a prefix. So are `atomic_thread_fence`
+#              and `__sync_synchronize`, which are fences.
 #
 #   operator   `++ -- += -= &= |= ^=` applied to an atomic. THE HARD HALF: the use site
 #              carries no atomic spelling, so `count++` on a std::atomic and `count++` on a
@@ -64,9 +71,11 @@
 #     `stats_block()->stats.f++`-shaped PREFIX increments (the postfix ones DO hit; only
 #     `++` written to the LEFT of a call in the chain is missed).
 #   - a bare atomic declared `extern` in a header and incremented in a third file, per the
-#     bare-scope decision above. A member declared through a macro other than
-#     KOS_ATOMIC_U32, or on a line the type does not share (`std::atomic<uint32_t>` alone,
-#     name on the next line), is not harvested and so not covered by either shape.
+#     bare-scope decision above. A member declared through a macro, or on a line the type
+#     does not share (`std::atomic<uint32_t>` alone, name on the next line), is not
+#     harvested and so not covered by either shape.
+#   - a field of the house wrapper `kickos::Atomic`, which the harvester does not know. That
+#     type exposes no RMW at all, so its sites are refused by the compiler instead.
 #   - `std::atomic<int> x(0);` is not harvested: `(` is excluded from the declarator
 #     terminators, because a function RETURNING an atomic would otherwise donate its own name.
 #   - an RMW assembled by the preprocessor, and one inside a macro argument that only becomes
@@ -111,9 +120,12 @@ member_exempt_names() { # <file> -> names this file uses non-atomically, one per
 # `.exchange(`, so the two alternatives cannot double-report one call.
 RMW_METHOD='(\.|->)[[:space:]]*(fetch_(add|sub|and|or|xor|nand|max|min)|exchange|compare_exchange_(weak|strong)|test_and_set)[[:space:]]*\('
 
-# The free-function and builtin spellings. Every RMW is listed BY NAME rather than by a
-# `__sync_[a-z_]*` wildcard: `__sync_synchronize` is a fence and banning it would be a
-# different rule this gate has no business asserting.
+# The free-function and builtin spellings. Every RMW is listed BY NAME rather than by an
+# `__atomic_[a-z_]*` / `__sync_[a-z_]*` wildcard, and the names are the whole rule: a prefix
+# would also refuse `__atomic_load_n` and `__atomic_store_n`, which are a plain load and a
+# plain store and are what kos_counter_load / kos_counter_increment are built out of, and
+# `__sync_synchronize`, which is a fence. Neither is a read-modify-write and this gate has no
+# business asserting a rule about either.
 RMW_FUNC='(^|[^A-Za-z0-9_])(atomic_(fetch_(add|sub|and|or|xor|nand)|exchange|compare_exchange_(weak|strong)|flag_test_and_set)(_explicit)?|__atomic_((add|sub|and|or|xor|nand)_fetch|fetch_(add|sub|and|or|xor|nand)|exchange(_n)?|compare_exchange(_n)?|test_and_set)|__sync_(fetch_and_(add|sub|and|or|xor|nand)|(add|sub|and|or|xor|nand)_and_fetch|bool_compare_and_swap|val_compare_and_swap|lock_test_and_set))[[:space:]]*\('
 
 # The compound-assign and increment operators, and an optional subscript before them so
@@ -201,8 +213,8 @@ detect() {
         } | sort -t: -k1,1n -u | awk -v F="$f" '{ print F ":" $0 }' >> "$_w/findings"
 
         # The positive control, accumulated as it goes: the legitimate non-RMW atomic
-        # accesses. See the check on the total below.
-        grep -cE "(\.|->)[[:space:]]*(load|store)[[:space:]]*\(|atomic_(load|store)_explicit[[:space:]]*\(" \
+        # accesses, builtin spellings included. See the check on the total below.
+        grep -cE "(\.|->)[[:space:]]*(load|store)[[:space:]]*\(|atomic_(load|store)_explicit[[:space:]]*\(|__atomic_(load|store)_n[[:space:]]*\(" \
             "$_w/s/$n" >> "$_w/kept"
     done < "$_w/idx"
 }
@@ -214,10 +226,8 @@ detect() {
 # and a single-file self-test would pass while that scope was broken.
 mkdir -p "$TMP/st"
 cat > "$TMP/st/decl.h" <<'EOF'
-#define KOS_ATOMIC_U32 std::atomic<uint32_t>
 struct probe_stats
 {
-    KOS_ATOMIC_U32 probe_field;
     std::atomic<uint32_t> probe_other;
     atomic_uint32_t probe_c11;
     _Atomic uint32_t probe_c;
@@ -266,11 +276,9 @@ EOF
 cat > "$TMP/st/use.cc" <<'EOF'
 void member(struct probe_stats* q, struct probe_stats& s)
 {
-    q->probe_field++;
     s.probe_other++;
     q->probe_c11 += 1u;
     s.probe_c |= 1u;
-    ++q->probe_field;
     stats_block()->stats.probe_other++;
     // NOT a finding: `p` is a PARAMETER in pos.cc, so it never enters the corpus-wide member
     // set. If it ever did, this line makes the count below wrong instead of letting a
@@ -284,23 +292,23 @@ for f in decl.h pos.cc use.cc; do
 done
 detect "$TMP/st/pos.list" "$TMP/st/pw"
 
-# 19 named + 10 bare in pos.cc, and 6 member in use.cc. Counted as LINES, because the scan
+# 19 named + 10 bare in pos.cc, and 4 member in use.cc. Counted as LINES, because the scan
 # deduplicates per line: a real RMW is one finding wherever two shapes both see it.
 POS="$(wc -l < "$TMP/st/pw/findings" | tr -d ' ')"
-[ "$POS" -eq 35 ] || {
+[ "$POS" -eq 33 ] || {
     cat "$TMP/st/pw/findings" >&2
-    fail "the scanner found $POS of 35 planted RMWs; it would miss real ones"
+    fail "the scanner found $POS of 33 planted RMWs; it would miss real ones"
 }
 # The member shape specifically, in the file that declares NONE of the names it uses. This is
 # the shape that is cross-file on purpose, and a scope regression here is otherwise silent.
 MEM="$(grep -c '/use\.cc:' "$TMP/st/pw/findings" | tr -d ' ')"
-[ "$MEM" -eq 6 ] || fail "the member shape found $MEM of 6 planted RMWs across a file boundary"
+[ "$MEM" -eq 4 ] || fail "the member shape found $MEM of 4 planted RMWs across a file boundary"
 # The harvest itself. An empty one disables the whole operator half and takes 16 of the 35
 # above with it, so this is belt and braces on a number that has to be right.
 HM="$(awk -F"$TAB" '$4 == "member" { print $3 }' "$TMP/st/pw/names" | sort -u | wc -l | tr -d ' ')"
-[ "$HM" -eq 7 ] || {
+[ "$HM" -eq 6 ] || {
     sort -u "$TMP/st/pw/names" >&2
-    fail "the harvest learned $HM member names, not the 7 planted (probe_field probe_other probe_c11 probe_c g_probe g_arr g_flag)"
+    fail "the harvest learned $HM member names, not the 6 planted (probe_other probe_c11 probe_c g_probe g_arr g_flag)"
 }
 # The member/param split, which is the whole reason a struct field name can be matched across
 # the corpus at all. `p` is a parameter of named() and must be classified as one; if the
@@ -311,22 +319,23 @@ HP="$(awk -F"$TAB" '$4 == "param" { print $3 }' "$TMP/st/pw/names" | sort -u | t
 cat > "$TMP/st/neg.cc" <<'EOF'
 // The rule itself: never fetch_add, and never x.fetch_add(1) or p->exchange(v).
 /* A block comment naming .compare_exchange_weak( and g_probe++ over
-   two lines, and probe_field += 1u as well. */
+   two lines, and probe_other += 1u as well. */
 char const* s = "fetch_add";
 char const* t = ".exchange(";
 // A client and a driver exchange 1:1 over an endpoint; the exchange is a request/reply.
 void legit(struct kos_byte_ring* r, std::atomic<uint32_t>& x, uint32_t v)
 {
-    atomic_store_explicit(&r->head, 0u, KOS_MO_RELAXED);
-    uint32_t const head = atomic_load_explicit(&r->head, KOS_MO_RELAXED);
-    atomic_store_explicit(&r->tail, (head + 1u) & r->mask, KOS_MO_RELAXED);
+    atomic_store_explicit(&r->head, 0u, memory_order_relaxed);
+    uint32_t const head = atomic_load_explicit(&r->head, memory_order_relaxed);
+    atomic_store_explicit(&r->tail, (head + 1u) & r->mask, memory_order_relaxed);
     x.store(x.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
+    __atomic_store_n(&r->tail, __atomic_load_n(&r->head, __ATOMIC_RELAXED) + 1u, __ATOMIC_RELAXED);
     atomic_thread_fence(std::memory_order_release);
     __sync_synchronize();
     bus_exchange(&v);
-    uint32_t probe_field = 0;
-    probe_field++;
-    probe_field += 2u;
+    uint32_t probe_other = 0;
+    probe_other++;
+    probe_other += 2u;
     uint32_t g_probe_local = v;
     g_probe_local++;
     if (v <= 1u and v != 0u) { v = v - 1u; }
@@ -341,7 +350,7 @@ NEG="$(grep -c '/neg\.cc:' "$TMP/st/nw/findings" | tr -d ' ')"
     grep '/neg\.cc:' "$TMP/st/nw/findings" >&2
     fail "the scanner reported $NEG hit(s) on comments, literals, prose, load/store pairs and non-atomic locals; every finding would be noise"
 }
-# `probe_field` above is a plain uint32_t LOCAL in neg.cc while decl.h declares an atomic of
+# `probe_other` above is a plain uint32_t LOCAL in neg.cc while decl.h declares an atomic of
 # that name, so the line proves the bare shape stayed file-scoped. If that ever widens to the
 # corpus, NEG goes to 2 and this fails rather than the tree filling with noise.
 NEGK="$(awk '{ s += $1 } END { print s + 0 }' "$TMP/st/nw/kept")"

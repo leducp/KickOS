@@ -25,11 +25,11 @@ BEGIN {
     # NO trailing `[ \t]*` on any alternative. The match is leftmost-LONGEST, so a greedy
     # trailing space would be eaten by the type token and the identifier-run guard below would
     # then see the NAME character and reject the declaration it was meant to protect.
-    AT = "(std::atomic(_flag)?(<[^<>]*>)?|_Atomic[ \t]+[A-Za-z_][A-Za-z0-9_]*|KOS_ATOMIC_U32|atomic_(flag|bool|char|short|int|long|llong|u?int(_least|_fast)?(8|16|32|64)_t|size_t|uintptr_t|ptrdiff_t))"
+    AT = "(std::atomic(_flag)?(<[^<>]*>)?|_Atomic[ \t]+[A-Za-z_][A-Za-z0-9_]*|atomic_(flag|bool|char|short|int|long|llong|u?int(_least|_fast)?(8|16|32|64)_t|size_t|uintptr_t|ptrdiff_t))"
     KEYWORD = "^(const|volatile|restrict|static|extern|inline|constinit|constexpr|mutable|register|thread_local|struct|class|union|enum|signed|unsigned|_Atomic|operator|return|sizeof|alignas|alignof)$"
 }
-# A preprocessor line states the SPELLING of the type, not an object: byte_ring.h's
-# `#define KOS_ATOMIC_U32 std::atomic<uint32_t>` would otherwise donate `_Atomic` as a name.
+# A preprocessor line states the SPELLING of the type, not an object: a #define whose
+# replacement text names an atomic type would otherwise donate whatever follows it.
 /^[ \t]*#/ { next }
 # A type alias names a TYPE. Harvesting it teaches a name no object bears.
 /(^|[^A-Za-z0-9_])(typedef|using)([^A-Za-z0-9_]|$)/ { next }

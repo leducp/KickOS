@@ -10,7 +10,6 @@
 
 #include "uart_mock.h"
 
-#include <atomic>
 #include <stdint.h>
 
 #include <gtest/gtest.h>
@@ -116,7 +115,7 @@ TEST(UartClass, read_on_an_idle_device_is_zero)
     // wake was a doorbell, because it is also where the error latches get cleared.
     unsigned char in[8];
     EXPECT_EQ(kos_uart_read(&dev, in, sizeof(in)), 0u) << "an idle read returns 0";
-    EXPECT_EQ(stats.rx_bytes.load(std::memory_order_relaxed), 0u)
+    EXPECT_EQ(kos_counter_load(&stats.rx_bytes), 0u)
         << "an idle read counted nothing";
 }
 
@@ -150,7 +149,7 @@ TEST(UartClass, write_is_short_and_owns_the_tx_arm)
 
     // The class does NOT touch tx_bytes: the producer that queued the bytes owns that
     // counter, and a second writer would break the shared block's single-writer rule.
-    EXPECT_EQ(stats.tx_bytes.load(std::memory_order_relaxed), 0u)
+    EXPECT_EQ(kos_counter_load(&stats.tx_bytes), 0u)
         << "write does not touch tx_bytes";
 }
 
@@ -173,7 +172,7 @@ TEST(UartClass, read_reports_and_counts_what_arrived)
     EXPECT_TRUE(in[0] == 'R' and in[1] == 'X') << "read delivered the first two bytes";
     EXPECT_EQ(kos_uart_read(&dev, in, sizeof(in)), 1u) << "read returns the remainder";
     EXPECT_EQ(in[0], '!') << "read delivered the last byte";
-    EXPECT_EQ(stats.rx_bytes.load(std::memory_order_relaxed), 3u)
+    EXPECT_EQ(kos_counter_load(&stats.rx_bytes), 3u)
         << "read counted every delivered byte";
 }
 

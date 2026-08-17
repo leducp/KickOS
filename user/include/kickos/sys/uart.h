@@ -21,8 +21,6 @@
 
 #include <stdint.h>
 
-#include <kickos/sys/byte_ring.h> // KOS_ATOMIC_U32, kos_counter_increment
-
 #ifdef __cplusplus
 extern "C"
 {
@@ -97,36 +95,73 @@ struct kos_uart_rsp
     uint16_t rsv;
 };
 
+// A counter is a one-member struct and not a bare uint32_t so that `++`, `--` and `+=` do
+// not COMPILE on one, in either language. Same move as nesting kos_recv_info inside
+// kos_recv_timed_opts in <kickos/sys/abi.h>: put the field out of reach of the type system,
+// rather than out of reach of a by-name list that the next rename would rot.
+typedef struct
+{
+    uint32_t v;
+} kos_counter_t;
+
+// EVERY counter below has exactly ONE writer, which is what makes a load-add-store the whole
+// mechanism. A second writer of any field loses updates, and nothing here can check that.
+//
+// The READER is a different thread, so the access is spelled with the builtins: a plain read
+// racing a plain write is undefined however single-writer the write is. Four bytes naturally
+// aligned is inline on every backend, so no libcall appears at this width; a 64-bit counter
+// would be a different question. What it is NOT everywhere is free: gcc's xtensa default
+// -mserialize-volatile emits a MEMW per atomic access that RELAXED does not require, so the
+// ESP32 IRQ path pays a few of those. Both spellings live in these two bodies and nowhere
+// else; a call site that spells a load, a store or an order has moved the mechanism out of
+// the one place it can be changed.
+static inline __attribute__((always_inline)) void kos_counter_increment(kos_counter_t* c,
+                                                                        uint32_t delta)
+{
+    __atomic_store_n(&c->v, __atomic_load_n(&c->v, __ATOMIC_RELAXED) + delta,
+                     __ATOMIC_RELAXED);
+}
+
+static inline __attribute__((always_inline)) uint32_t kos_counter_load(kos_counter_t const* c)
+{
+    return __atomic_load_n(&c->v, __ATOMIC_RELAXED);
+}
+
 // Read by KOS_UART_STATS, and ALSO the driver's own live counters: they live in the shared
 // ring block, which is arena memory the bring-up allocated, so they OUTLIVE the driver
 // thread and a supervisor can read the final tally after a restart.
 //
-// The live copy is read and written by two threads, so the STATS reply is built field by
-// field: a block copy of the struct is not a read of its atomics at all.
-//
-// KOS_ATOMIC_U32, not <kickos/sys/atomic.h>: a pure C main linking libkickos names this
-// struct to read the STATS reply.
+// Every field is a kos_counter_t, so the two helpers are the only way to reach one and stay
+// compiling. That is what makes them the single seam where the access changes.
 struct kos_uart_stats
 {
-    KOS_ATOMIC_U32 tx_bytes;
-    KOS_ATOMIC_U32 rx_bytes;
-    KOS_ATOMIC_U32 tx_dropped;   // lost on driver death, or by a client that gave up retrying
-    KOS_ATOMIC_U32 rx_dropped;   // RX ring full at IRQ time (a SOFTWARE overrun)
-    KOS_ATOMIC_U32 rx_overrun;   // hardware overrun flag seen (ORER / OR / RXFIFO_OVF)
-    KOS_ATOMIC_U32 rx_framing;   // FER / FE / FRM_ERR
-    KOS_ATOMIC_U32 rx_parity;    // PER / PF / PARITY_ERR
-    KOS_ATOMIC_U32 irq_wakes;    // irq_wait returns, hardware raises AND doorbell notifies
-    KOS_ATOMIC_U32 irq_spurious; // of those, the ones that found nothing asserted
+    kos_counter_t tx_bytes;
+    kos_counter_t rx_bytes;
+    kos_counter_t tx_dropped;   // lost on driver death, or by a client that gave up retrying
+    kos_counter_t rx_dropped;   // RX ring full at IRQ time (a SOFTWARE overrun)
+    kos_counter_t rx_overrun;   // hardware overrun flag seen (ORER / OR / RXFIFO_OVF)
+    kos_counter_t rx_framing;   // FER / FE / FRM_ERR
+    kos_counter_t rx_parity;    // PER / PF / PARITY_ERR
+    kos_counter_t irq_wakes;    // irq_wait returns, hardware raises AND doorbell notifies
+    kos_counter_t irq_spurious; // of those, the ones that found nothing asserted
 };
 
 // 12 B of request framing leaves 244 B of inline payload under KOS_EP_MSG_MAX (256). The
 // region-cap path for larger transfers stays reserved and -KOS_ENOSYS as in bus.h, so no
 // raw pointer belongs in these structs.
+//
+// kos_counter_t is pinned to the word it wraps: nine of them ARE the 36-byte wire image,
+// and stats_pack / stats_unpack copy the struct whole. A counter that grew a byte or an
+// alignment would break the wire and the copy at once.
 #ifdef __cplusplus
+static_assert(sizeof(kos_counter_t) == 4, "kos_counter_t must stay one uint32_t wide");
+static_assert(alignof(kos_counter_t) == 4, "kos_counter_t must stay 4-aligned");
 static_assert(sizeof(struct kos_uart_req) == 12, "kos_uart_req must stay 12 bytes (wire ABI)");
 static_assert(sizeof(struct kos_uart_rsp) == 8, "kos_uart_rsp must stay 8 bytes (wire ABI)");
 static_assert(sizeof(struct kos_uart_stats) == 36, "kos_uart_stats must stay 36 bytes (wire ABI)");
 #else
+_Static_assert(sizeof(kos_counter_t) == 4, "kos_counter_t must stay one uint32_t wide");
+_Static_assert(_Alignof(kos_counter_t) == 4, "kos_counter_t must stay 4-aligned");
 _Static_assert(sizeof(struct kos_uart_req) == 12, "kos_uart_req must stay 12 bytes (wire ABI)");
 _Static_assert(sizeof(struct kos_uart_rsp) == 8, "kos_uart_rsp must stay 8 bytes (wire ABI)");
 _Static_assert(sizeof(struct kos_uart_stats) == 36, "kos_uart_stats must stay 36 bytes (wire ABI)");

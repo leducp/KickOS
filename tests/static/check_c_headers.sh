@@ -6,9 +6,8 @@
 #
 # The tree tracks no .c file and CMake compiles none, so until this gate existed the C claim
 # those headers make was honoured by discipline: break it and it surfaces in a consumer's
-# tree, not in ours. The claim costs real complexity here, the KOS_ATOMIC_U32 two-spelling
-# shim in <kickos/sys/byte_ring.h> and the split conditions written around C++-only syntax,
-# so it is either enforced or dropped.
+# tree, not in ours. The claim costs real complexity here, every split condition written
+# around C++-only syntax, so it is either enforced or dropped.
 #
 # Run from the repo root:
 #   tests/static/check_c_headers.sh <c-compiler> <include-root>...
@@ -428,10 +427,9 @@ if [ -s "$TMP/bad" ]; then
     echo "" >&2
     echo "FAIL: $(wc -l < "$TMP/bad" | tr -d ' ') C-facing header(s) are not valid C11." >&2
     echo "      Each guards an extern \"C\" block with __cplusplus, or is included by one that" >&2
-    echo "      does, which states that a consumer's C TU may include it. Either write both" >&2
-    echo "      spellings under the guard, as byte_ring.h does for std::atomic<uint32_t> and" >&2
-    echo "      _Atomic uint32_t, or drop the guard so the header declares itself C++ only and" >&2
-    echo "      leaves this corpus." >&2
+    echo "      does, which states that a consumer's C TU may include it. Either write the" >&2
+    echo "      C-valid spelling of what it needs, or drop the guard so the header declares" >&2
+    echo "      itself C++ only and leaves this corpus." >&2
     RC=1
 fi
 

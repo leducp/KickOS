@@ -7,8 +7,6 @@
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
 #include <kickos/sys/atomic.h>
 
-#include <atomic>
-
 #include <stddef.h> // offsetof
 
 // The trace-arch id (CMake ladder / this chip's caps.cmake) must equal the ArchId
@@ -52,8 +50,6 @@ static_assert(offsetof(struct arch_context, trace_tid) == 16,
 
 namespace
 {
-    using std::memory_order_relaxed;
-
     using kickos::Atomic;
     using kickos::Order;
 
@@ -196,7 +192,7 @@ extern "C"
     // g_arch_current vs g_arch_next: the cooperative path advances g_arch_current
     // without touching g_arch_next, so a stale g_arch_next must NOT be mistaken for
     // a pending preemption; this flag is the unambiguous request.
-    std::atomic<uint32_t> g_arch_switch_pending = 0;
+    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_arch_switch_pending = 0;
 
     // In-ISR depth (the IPSR!=0 analog). Maintained by the level-1 interrupt entry
     // (startup.S). arch_in_isr() reads it; the kernel uses it to forbid blocking
@@ -342,7 +338,7 @@ void arch_switch(struct arch_context* from, struct arch_context* to)
         // saves the interruptee (g_arch_current) in the interrupt-frame format and
         // resumes `to`.
         g_arch_next = to;
-        g_arch_switch_pending.store(1, memory_order_relaxed);
+        g_arch_switch_pending.store(1);
         return;
     }
     g_arch_current = to;
@@ -764,10 +760,19 @@ void arch_idle_wait(void)
 // The contract is satisfied trivially: dispatch already runs privileged (the only
 // mode), in thread context, on the caller's stack; arch_in_isr() reads false; a
 // blocking syscall blocks by an ordinary synchronous arch_switch.
+// The windowed ABI is not a concern here: with no trap, both entry points are
+// ordinary calls, so the compiler places the 64-bit result in the caller's window
+// exactly as it does for any long long.
+uint64_t arch_syscall64(uintptr_t nr,
+                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
+{
+    return syscall_dispatch(nr, a0, a1, a2, a3);
+}
+
 uintptr_t arch_syscall(uintptr_t nr,
                        uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3)
 {
-    return syscall_dispatch(nr, a0, a1, a2, a3);
+    return static_cast<uintptr_t>(syscall_dispatch(nr, a0, a1, a2, a3));
 }
 
 // --- One-time core bring-up, called by the chip's arch_init -----------------

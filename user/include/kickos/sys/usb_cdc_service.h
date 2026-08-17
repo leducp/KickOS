@@ -60,7 +60,6 @@
 
 #include <kickos/sys/atomic.h>
 
-#include <atomic>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -649,11 +648,10 @@ void irq_loop(Cdc<UsbDev>& cdc, Shared* sh)
             break; // the cap went away: the line is gone, so this thread has no work
         }
         kos_counter_increment(&sh->stats.irq_wakes, 1u);
-        uint32_t const rx_before = sh->stats.rx_bytes.load(std::memory_order_relaxed);
+        uint32_t const rx_before = kos_counter_load(&sh->stats.rx_bytes);
         bool const tx_had_work = (kos_byte_ring_used(&sh->tx) != 0u);
         cdc.service_irq();
-        if (sh->stats.rx_bytes.load(std::memory_order_relaxed) == rx_before
-            and not tx_had_work)
+        if (kos_counter_load(&sh->stats.rx_bytes) == rx_before and not tx_had_work)
         {
             kos_counter_increment(&sh->stats.irq_spurious, 1u);
         }

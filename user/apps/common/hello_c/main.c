@@ -3,8 +3,7 @@
 //
 // The tree's only .c, so the only build that compiles the C-facing headers as C.
 // Rewriting it as C++, or including a C++-only header from it, leaves
-// check_extern_c_linkage.sh and the KOS_ATOMIC_U32 two-spelling shim with no
-// exercised instance.
+// check_extern_c_linkage.sh with no exercised instance.
 
 #include <stdbool.h>
 

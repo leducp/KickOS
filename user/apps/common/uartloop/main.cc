@@ -29,15 +29,12 @@
 
 #include <stdint.h>
 
-#include <atomic>
-
 extern "C" kos_cap_t kickos_sim_uart_take_endpoint(void);
 
 namespace
 {
     using kickos::Atomic;
     using kickos::Order;
-    using std::memory_order_relaxed;
 
     constexpr int CH_DONE = 1; // delegated completion sem
     constexpr int CH_EP = 2;   // delegated SIGNAL-only cap on the service endpoint
@@ -229,7 +226,7 @@ namespace
         {
             struct kos_uart_stats s;
             kickos::console::stats_unpack(&s, st);
-            g_wakes = static_cast<int>(s.irq_wakes.load(memory_order_relaxed));
+            g_wakes = static_cast<int>(kos_counter_load(&s.irq_wakes));
         }
         kos_sem_post(CH_DONE);
     }
