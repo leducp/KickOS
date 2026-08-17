@@ -828,24 +828,27 @@ debuggability: `MinSizeRel` carries `-g`, so the symbols are all there and only 
 unavailable. No gate builds these boards in `Debug`, deliberately -- the link failure
 already names the overflow in bytes.
 
-**`bluepill-c8-st` has 96 BYTES of boot-arena slack** (measured at `6be8220`, up from zero because stage 0 handed back two reserved cap slots), which makes it the fleet's most
-fragile link and the one nothing will catch. Configure prints only the needed side:
+**The tightest link in the fleet is now the POOL term, not the boot term, and it is
+`f302nucleo` at 608 B.** Configure prints only the needed side:
 
 ```
 -- KickOS: boot stacks idle=512->512/16 root=2048->2048/16 (mpu granule 0 pow2=1)
+-- KickOS: arena model idle=512/16 root=2048/16 pool=2x2048/16
 ```
 
-512 + 2048 = **2,560 B needed** against **2,560 B available**
-(`__kickos_ram_end - __kickos_ram_start` = `0x20004800 - 0x20003e00`). The
-`KICKOS_BOOT_ARENA_ASSERT` is `<=`, so the exact fit passes and one byte of static-RAM
-growth in a SHARED test breaks the link. It is the ONLY image in the 921-image fleet at or
-below zero (measured at `124b68c`); the next tightest are `bluepill-c8` / `selftest` at
-96 B and `f302nucleo` / `selftest` at 2,496 B. There is no available-vs-needed pair anywhere in
-the build output and the `ASSERT` message carries no numbers, so the failure is loud but
-mute. The board has **no ctest gate** (`ctest -N` in its build dir lists only the
-universal `kickos_build` fixture) and **no physical unit**, so neither CI nor a bench run
-can catch it -- only a full-fleet build. A regression on this branch was exactly that: an
-arena starvation fixed at the source rather than by raising a limit.
+Worst-image margin against `KICKOS_POOL_ARENA_ASSERT`, tightest first: `f302nucleo` **608 B**,
+`f302nucleo-st` 704 B, `microbit` 768 B, `bluepill-c8` 2,560 B, `bluepill-c8-st` 4,096 B,
+`frdmk64f{,-st} +MPU` 7,072 B. Nothing in the fleet is at or below zero on either assert, and
+the tightest BOOT margin is `f302nucleo`'s 2,656 B. **`bluepill-c8-st` used to hold this title
+at exactly zero boot slack** (2,560 needed against 2,560 available); surrendering its 8 KiB
+heap carve in M4.9.3 took it to 8,192 B and moved the fleet's fragile edge to the 16 KiB part.
+
+Both asserts are `<=`, so an exact fit passes and the next byte of static RAM in a SHARED
+test breaks the link. There is no available-vs-needed pair anywhere in the build output and
+neither `ASSERT` message carries numbers, so the failure is loud but mute: to get the margin
+you re-link and subtract the symbols yourself. `bluepill-c8` in particular has **no ctest
+gate** (`ctest -N` in its build dir lists only the universal `kickos_build` fixture) and **no
+physical unit**, so neither CI nor a bench run can catch it -- only a full-fleet build.
 
 ### The program-memory floor
 
@@ -934,48 +937,56 @@ takes a block back**. An exited thread's default stack returns to a single-size-
 free list on the thread pool instead (`kernel/include/kickos/thread.h:203-207`), which
 is why N is a peak-concurrency figure while every `kos_ram_alloc` is permanent.
 
-**The idle + root terms are checked at link time on every board, and the thread-stack POOL
-where a chip opts in.** `KICKOS_BOOT_ARENA_ASSERT` (`arch/common/boot_arena.ld.h`, fed by
-`cmake/boot_arena.cmake`) replays those two allocations including alignment padding, and no
-chip may opt out by omission: a `<chip>.ld` carrying no invocation is a configure
-`FATAL_ERROR`. `KICKOS_POOL_ARENA_ASSERT` (same header) carries the same replay one step
-further, over `KICKOS_MAX_THREADS` blocks of `align(KICKOS_USER_STACK_SIZE)` -- but it is
-**OPT-IN per chip `.ld`**, and exactly ONE script invokes it today,
-`arch/arm/chip/stm32f302/stm32f302.ld`, so it covers `f302nucleo` and `f302nucleo-st` only.
-Configure prints the demand terms the assert replays, and only the demand side:
+**The idle + root terms AND the thread-stack pool are checked at link time on every
+board.** `KICKOS_BOOT_ARENA_ASSERT` (`arch/common/boot_arena.ld.h`, fed by
+`cmake/boot_arena.cmake`) replays those two allocations including alignment padding.
+`KICKOS_POOL_ARENA_ASSERT` (same header) carries the same replay one step further, over
+`KICKOS_MAX_THREADS` blocks of `align(KICKOS_USER_STACK_SIZE)`. Neither may be opted out
+of by omission: a linker script carrying no invocation is a configure `FATAL_ERROR`, and
+that check reads the script this board actually links, so a BOARD-LOCAL override
+(`boards/qemu-m33/mps2.ld` is the one in tree) is covered like any chip script.
+Configure prints the demand terms the asserts replay, and only the demand side:
 
 ```
 -- KickOS: arena model idle=<size>/<align> root=<size>/<align> pool=<count>x<size>/<align>
 ```
 
-Where a board does NOT opt in, an image whose arena cannot back every advertised slot's
-stack links clean and fails per-spawn at runtime with `-KOS_ENOMEM` -- the same code as a
-full slot table, so the shortfall is indistinguishable from a legitimate limit. That
-asymmetry is why the two floors are indistinguishable from the build system and obvious on
-silicon.
+Without that assert, an image whose arena cannot back every advertised slot's stack links
+clean and fails per-spawn at runtime with `-KOS_ENOMEM` -- the same code as a full slot
+table, so the shortfall is indistinguishable from a legitimate limit. That asymmetry is
+why the two floors are indistinguishable from the build system and obvious on silicon, and
+why the honest place to answer the question is the link.
 
-**Why the pool assert is not fleet-wide.** `frdmk64f` (at `KICKOS_HAVE_MPU=1`),
-`bluepill-c8` and `bluepill-c8-st` still advertise more slots than their arena backs, so a
-fleet-wide assert would break those links today. Worst image per config, measured at
-`124b68c`: `frdmk64f-st +MPU` **-28,992 B**, `frdmk64f +MPU` -28,960 B, `bluepill-c8-st`
--4,096 B, `bluepill-c8` -4,000 B.
+**Headroom is a LINK-TIME quantity, and whether it is also PER-IMAGE depends on the
+board.** Where `__kickos_ram_start` follows `.bss`, each app's static footprint moves the
+arena base and the FATTEST image is what caps `KICKOS_MAX_THREADS`: on `bluepill-c8-st`
+the images span 4,224 B of base, and the split `selftest_p2` is the binding one. Where an
+alignment window pins the base instead, every image on the board reports the SAME headroom
+-- that is `frdmk64f` at `KICKOS_HAVE_MPU=1`, where all images sit at `0x20012940`. Check
+which shape a board has before quoting a number, and never quote a board-wide figure for
+the first shape. Only the linker knows the arena base, which is exactly why the assert
+lives in the linker script and not in CMake.
 
-**Headroom is a LINK-TIME, PER-IMAGE quantity -- not per-preset and not per-board.** Each
-app's static footprint moves the arena base, and `bluepill-c8-st` alone spans -4,096 to
--96 B across its images. So a porter must never quote one headroom number for a board; the
-figure is per image or it is meaningless. Only the linker knows the arena base, which is
-exactly why the assert lives in the linker script and not in CMake.
+**Before trimming the demand, price the sections carved between `.bss` and the arena
+base.** Each has a different owner and the demand side may be blameless:
 
-One mechanism worth recording, because it names the real culprit on the worst board:
-`frdmk64f` WITHOUT the MPU has **+81,856 B** of headroom. Turning `KICKOS_HAVE_MPU=1` on
-moves `__kickos_ram_start` from `0x1fff78a0` to `0x20012940` -- the `.appdata` enforcement
-window eats 110,748 B of arena. So it is ENFORCEMENT, not the pool, that makes that board
-overcommitted.
+- `.userheap`, sized by `KICKOS_USER_HEAP_SIZE`, sits immediately below
+  `__kickos_ram_start`, so every byte of heap is a byte of arena. This was the WHOLE
+  deficit on `bluepill-c8`: the `CHIP_STM32F103` default was 8192, inherited from its
+  128 KiB `stm32f411` sibling, on a part with 20 KiB of SRAM. Its thread provisioning
+  (`KICKOS_MAX_THREADS 2` x 2048) was never the problem.
+- the `.appdata` enforcement window on an enforcing chip. `frdmk64f` WITHOUT the MPU has
+  **+83,328 B** of headroom at `KICKOS_MAX_THREADS 16`; `KICKOS_HAVE_MPU=1` moves
+  `__kickos_ram_start` to `0x20012940` and the window eats ~110 KiB of arena. There the
+  demand side genuinely had to come down, which is why the enforcing variants provision
+  12 and `flat` keeps 16.
 
-The model is validated against the real linker rather than by inspection: `f302nucleo-st`
-at `KICKOS_MAX_THREADS=3` predicts **+928 B** and links, and at `-DKICKOS_MAX_THREADS=4` it
-predicts **-96 B** and the link FAILS with the `KICKOS_POOL_ARENA_ASSERT` message. The sign
-flip lands where the model says it does.
+The model is validated against the real linker rather than by inspection, on both arena
+shapes. `f302nucleo-st` at `KICKOS_MAX_THREADS=3` measures **+704 B** and links, and at
+`-DKICKOS_MAX_THREADS=4` FAILS. `frdmk64f-st +MPU` at 12 measures
+**+7,072 B** and links, and at `-DKICKOS_MAX_THREADS=13` it FAILS. `bluepill-c8-st` at
+heap 0 measures **+4,096 B** and links, and at `-DKICKOS_USER_HEAP_SIZE=8192` it FAILS.
+The sign flip lands where the model says it does in all three.
 
 ### The heap is a per-board profile, not a requirement
 
@@ -1013,8 +1024,9 @@ the first check a porter should run.
 | `f302nucleo` | 16,384 | `hello` | 3,776 | 2,048 | **8,512** | 2,048 |
 | `f302nucleo` | 16,384 | `selftest`, chip defaults | 7,760 | 2,064 | **4,512** | 2,048 |
 | `f302nucleo` | 16,384 | `selftest`, `f302nucleo-st` | 8,672 | 0 | **5,664** | 2,048 |
-| `bluepill-c8` | 20,480 | `hello` | 3,656 | 8,216 | **6,560** | 2,048 |
-| `bluepill-c8` | 20,480 | `selftest` | 7,640 | 8,200 | **2,592** | 2,048 |
+| `bluepill-c8` | 20,480 | `hello` | 3,456 | 2,048 | **12,928** | 2,048 |
+| `bluepill-c8` | 20,480 | `selftest`, chip defaults | 5,096 | 2,072 | **11,264** | 2,048 |
+| `bluepill-c8` | 20,480 | `selftest`, `bluepill-c8-st` | 5,096 | 24 | **13,312** | 2,048 |
 | `microbit` | 16,384 | `hello` | 2,840 | 8 | **11,488** | 2,048 |
 | `microbit` | 16,384 | `selftest` | 6,824 | 24 | **7,488** | 2,048 |
 | `f411disco` | 131,072 | `hello` | 6,872 | 8,200 | **107,808** | 8,192 |
@@ -1027,15 +1039,18 @@ Thread capacity that follows, each board with its own stack sizes:
 | `f302nucleo` `hello` | 512 | 2,048 | 2,048 | 5,952 | 2 | 2 | **2** |
 | `f302nucleo` `selftest`, chip defaults | 512 | 2,048 | 2,048 | 1,952 | **0** | 2 | **0** |
 | `f302nucleo` `selftest`, `f302nucleo-st` (pre-`124b68c`) | 512 | 2,048 | 1,024 | 3,104 | 3 | 4 | **3** |
-| `bluepill-c8` `hello` | 512 | 2,048 | 2,048 | 4,000 | **1** | 2 | **1** |
-| `bluepill-c8` `selftest` | 512 | 2,048 | 2,048 | 32 | **0** | 2 | **0** |
+| `bluepill-c8` `hello` | 512 | 2,048 | 2,048 | 10,368 | 5 | 2 | **2** |
+| `bluepill-c8` `selftest`, chip defaults | 512 | 2,048 | 2,048 | 8,704 | 4 | 2 | **2** |
+| `bluepill-c8` `selftest`, `bluepill-c8-st` | 512 | 2,048 | 2,048 | 10,752 | 5 | 2 | **2** |
 | `microbit` `hello` | 512 | 2,048 | 2,048 | 8,928 | 4 | 2 | **2** |
 | `f411disco` `hello` | 2,048 | 4,096 | 4,096 | 101,664 | 24 | 8 | **8** |
 
-The `f302nucleo-st` row and the two tables above it predate the `124b68c` right-size, which
-took `KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_MAX_THREADS` to 3; N stayed **3**, so the
-reading holds while the byte columns do not. Re-link and re-read them rather than quoting
-them (step 5 of the checklist below is that measurement).
+**The `f302nucleo`, `microbit` and `f411disco` rows predate the `124b68c` right-size** (which
+took `KICKOS_ROOT_STACK_SIZE` to 1,536 and `KICKOS_MAX_THREADS` to 3; N stayed **3**, so
+those readings hold while their byte columns do not). The `bluepill-c8` rows were re-linked
+at the M4.9.3 heap right-size and are current. Either way, re-link and re-read rather than
+quoting (step 5 of the checklist below is that measurement) -- a stale byte column here is
+what made this board look like a thread-provisioning problem for a whole milestone.
 
 Four readings, and they are the point of the section:
 
@@ -1049,13 +1064,15 @@ Four readings, and they are the point of the section:
   at all: the arena bound, not the pool. Surrendering the 2K heap carve and halving
   `KICKOS_USER_STACK_SIZE` to 1,024 takes the arena to 5,664 and N to 3, and the same
   part then runs the suite at 63 ok / 0 not ok / 5 skipped. Silicon-witnessed both ways.
-- **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than
-  `f302nucleo` and hosts *fewer* threads, missing `hello`'s second stack by 96 bytes,
-  because its heap carve is 8K against f302's 2K (both chip defaults, `Kconfig`,
-  `KICKOS_USER_HEAP_SIZE`). `microbit`, the same 16 KiB part class,
-  carves heap 0 and has the roomiest small-board
-  arena in the fleet. **The heap carve, not the part's SRAM, is usually what binds.**
-  (`bluepill-c8` is build-only, so its N=1 is a model prediction, not a witness.)
+- **SRAM size is not the ranking.** `bluepill-c8` has 4 KiB *more* SRAM than `f302nucleo`
+  and used to host *fewer* threads, missing `hello`'s second stack by 96 bytes, purely
+  because its heap carve was 8K against f302's 2K. That 8K was the `CHIP_STM32F103`
+  default inherited from its 128 KiB `stm32f411` sibling; at 2K (and 0 on the `st`
+  variant, which carries the fleet's heaviest static image) the same part seats both of
+  `hello`'s threads with room over. `microbit`, the same 16 KiB part class, carves heap 0
+  and has the roomiest small-board arena in the fleet. **The heap carve, not the part's
+  SRAM, is usually what binds.** (`bluepill-c8` is build-only, so every N here is a model
+  prediction, not a witness.)
 - On a comfortable board the constraint **inverts**: `f411disco`'s arena would hold 24
   user stacks and `KICKOS_MAX_THREADS 8` is what caps it
   (`../../boards/f411disco/configs/base/defconfig`). Above roughly 32 KiB of
@@ -1065,7 +1082,7 @@ Four readings, and they are the point of the section:
 
 The arena is one of two independent constraints on a spawn; the other is object-pool
 capacity, all of it inside `g_instance` and all `-D`-overridable. **Only the thread pool is
-checked at link time, and only where a chip opts in** -- `KICKOS_POOL_ARENA_ASSERT`, see
+checked at link time, on every board** -- `KICKOS_POOL_ARENA_ASSERT`, see
 *The SRAM model*. Every other pool below is unchecked at build time. The suite's own
 requirement, for a zero-skip run:
 
@@ -1245,7 +1262,7 @@ label is not sloppiness in the cases: `kos_thread_spawn` returns `-KOS_ENOMEM` f
 case that only sees a negative spawn return cannot tell which limit it hit. This is the
 same trap *What binds beyond memory* states from the other end -- a spawn failure is not
 evidence that the thread pool is the limit -- and it is why the pool term is now checked at
-LINK time on boards that opt in (see *The SRAM model*). At the current
+LINK time on every board (see *The SRAM model*). At the current
 `KICKOS_MAX_THREADS 3` against an arena that backs exactly three stacks, the two remaining
 4th-worker skips are honest under either reading.
 
@@ -1297,11 +1314,11 @@ Given a new part's flash and SRAM, in order:
    then the other pools. Do **not** raise `KICKOS_MAX_THREADS` to fix a spawn failure
    without checking the arena: on a tight part the arena is usually the binding term,
    and the raise spends static RAM to make the arena smaller.
-8. **A clean link proves that the boot stacks fit, and the thread-stack pool only if your
-   `<chip>.ld` opted in** to `KICKOS_POOL_ARENA_ASSERT`. Opt in: the alternative is a
-   board that advertises slots it cannot seat, and `-KOS_ENOMEM` will not tell you which
-   limit you hit. Nothing checks the other pools at build time, so an object create
-   returning a negative handle is still a hardware-first sign.
+8. **A clean link proves that the boot stacks fit AND that the thread-stack pool fits**,
+   on every board: both `KICKOS_BOOT_ARENA_ASSERT` and `KICKOS_POOL_ARENA_ASSERT` are
+   mandatory, and a linker script missing either is a configure `FATAL_ERROR`. Nothing
+   checks the other pools at build time, so an object create returning a negative handle
+   is still a hardware-first sign.
 9. **If your `<chip>.ld` writes an `AT` clause, decide whether the LOADER honours LMA**
    before writing it, and pin the decision with an `ASSERT` either way -- see *An `AT`
    clause in `<chip>.ld` is only valid if the LOADER honours LMA* above. An unhonoured LMA

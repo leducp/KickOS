@@ -5293,9 +5293,10 @@ namespace
     // candidate base stays WIN-aligned (PMSA masks an unaligned base down).
     constexpr uint32_t PRW_WIN = 0x100u;
     // ONE byte of .bss carries every arm's verdict, not a result word per arm. Sizing
-    // matters here: bluepill-c8's boot arena has ZERO slack (2560 B holds a 512 B idle
-    // plus a 2048 B root stack exactly), so any app static RAM this file adds fails the
-    // boot-arena link ASSERT, and microbit's 16 KiB arena starves mem_self_grant. The
+    // matters here: this file's static RAM is shared by every board, and the tightest
+    // margins against the pool-arena link ASSERT are f302nucleo's 608 B and microbit's
+    // 768 B, so a result word per arm fails those links. microbit's 16 KiB arena also
+    // starves mem_self_grant. The
     // two workers write it in sequence (each is joined on CH_DONE before the next
     // spawns), so the load/store pair below needs no atomicity.
     constexpr unsigned PRW_UNHELD_OK = 1u << 0;     // arm 1: unheld base refused

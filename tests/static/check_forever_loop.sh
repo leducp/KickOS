@@ -38,8 +38,8 @@ command -v git >/dev/null 2>&1 || fail "git not found; the corpus cannot be buil
 
 scratch_dir
 
-# One copy of the scanner, shared with check_public_headers.sh: a second copy here is how a
-# scanner bug gets fixed in one reader and left standing in the other.
+# One copy of the scanner in tests/lib, shared with every gate that reads it: a second copy
+# here is how a scanner bug gets fixed in one reader and left standing in the others.
 STRIP="$(dirname "$0")/../lib/strip_comments.awk"
 [ -r "$STRIP" ] || fail "tests/lib/strip_comments.awk is unreadable; nothing below can tell code from prose"
 

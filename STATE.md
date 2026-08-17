@@ -1385,15 +1385,21 @@ nothing to land.
   until something structural changes. M4.8.3's task pool took `mem_self_grant`'s grain, which is now
   a declared skip; the arm still runs on 13 other boards including `picopi`, the other armv6m part.
   **This is NOT a fleet property, and reading it as one would be the wrong lesson.** It is where that
-  board's arena base comes from. On `bluepill-c8` the base is a fixed `0x20003400` against an `_ebss`
-  of `0x200013E4`, so `.bss` growth lands in the gap and its 96 bytes of boot-arena slack are
-  untouched. Check the two symbols before assuming either shape.
-- **Two boards advertise thread slots their arena cannot back**, which is why
-  `KICKOS_POOL_ARENA_ASSERT` stays opt-in. Headroom is PER-IMAGE, not per-preset -- each app's
-  static footprint moves the arena base, so never quote one number per board.
-- **`bluepill-c8-st` has 96 B of boot-arena slack** (measured at `6be8220`, up from zero because
-  stage 0 handed back two reserved cap slots), so any static-RAM growth in a SHARED test still
-  breaks its link -- and it has no ctest gate and no unit, so only a full-fleet build catches it.
+  board's arena base comes from. Check the two symbols before assuming either shape.
+- **The gap between `_ebss` and the arena base is NOT slack that absorbs `.bss` growth.** An earlier
+  note read `bluepill-c8`'s base as a fixed `0x20003400` against an `_ebss` of `0x200013E4` and
+  concluded growth lands in the gap: wrong. That gap was the fixed-size `.userheap` carve, which
+  SLIDES UP with `_ebss`, so the base tracks `.bss` granule-for-granule like everywhere else. Across
+  `bluepill-c8-st`'s images the base spans 4,224 B. **The shape that really is pinned is an
+  enforcement window**: on `frdmk64f +MPU` every image starts at the same address, so there one
+  number per board is legitimate.
+- **`KICKOS_POOL_ARENA_ASSERT` is mandatory on all 16 linker scripts** (M4.9.3), so a board can no
+  longer ship thread slots its arena cannot seat. Two things worth keeping: `boards/qemu-m33/mps2.ld`
+  is a BOARD-LOCAL script, so any sweep over `arch/*/chip/` alone misses a linker script; and the
+  worst-image margins are thin on the small parts (`bluepill-c8` +2,560 B, `bluepill-c8-st`
+  +4,096 B, `frdmk64f{,-st} +MPU` +7,072 B), so static-RAM growth in a SHARED test now breaks those
+  links on the POOL assert rather than the boot one. `bluepill-c8` has no ctest gate and no unit, so
+  only a full-fleet build catches it. **Neither board is silicon-witnessed.**
 - **A per-chip `arch_console_reclaim` body exists only on `mk64f`, `xmc4800`, `esp32` and
   `esp32c6`** -- FOUR, not three -- so elsewhere a driver death flips the state and the polled
   route works but the DEVICE is whatever the dead driver left. Per-chip bodies are fleet work;

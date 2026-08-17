@@ -46,6 +46,17 @@ because they are written here and read in review.
 - **A header holds what must be a header**: templates, `constexpr`, and declarations. A
   non-template function body goes in a `.cc` -- `user/src/` for the user substrate -- so the
   tree carries one definition rather than a copy per including TU for the linker to fold.
+- **A C-facing header compiles as C11.** **gated** Guarding `extern "C"` with `#ifdef
+  __cplusplus` is what declares a header C-facing, and `tests/static/check_c_headers.sh`
+  compiles every such header, plus every header one of them includes, as a standalone
+  `-std=c11` TU with the board's own C compiler. So `static_cast`, `nullptr`, `alignas`,
+  `static_assert`, a `bool` without `<stdbool.h>`, and the spelled `and`/`or`/`not` of the rule
+  above are all errors there: write both spellings under the guard, as
+  `<kickos/sys/byte_ring.h>` does for `std::atomic<uint32_t>` and `_Atomic uint32_t` and
+  `<kickos/sys/uart.h>` does for `static_assert` and `_Static_assert`, or split the condition.
+  A header with no C consumer says so by leaving the guard off, as `<kickos/kernel.h>` and
+  `arch/include/kickos/arch/arch.h` do: `extern "C"` alone is a C syntax error, so the gate
+  never selects it.
 - **`volatile` is not a concurrency tool, and the tree no longer uses it as one.** A field
   one thread or an ISR writes and another reads is a `kickos::Atomic<T, Order>` from
   `kickos/sys/atomic.h`, which carries the ordering in the TYPE: declare
@@ -58,12 +69,23 @@ because they are written here and read in review.
     correctness depends on spelling `std::memory_order_relaxed` at **every** access and one
     omission is silent. The wrapper has no spelling for seq_cst, and no way to override the
     declared order at a call site.
-  - **No `fetch_add` or any other read-modify-write.** An atomic RMW is a libcall on
-    armv6m and rxv3, and a freestanding link has no libatomic. The wrapper exposes no RMW
+  - **No `fetch_add` or any other read-modify-write.** **gated** The wrapper exposes no RMW
     surface at all, so `x++`, `x += 1`, `fetch_add` and `compare_exchange` do not compile.
-    Every such field here has a single writer, so `x = x + 1` under the lock that was
-    already there is what replaces a `++`. A site with two real writers needs the lock
-    fixed, not an RMW.
+    Every field here has a single writer, and a single writer needs neither a lock nor an
+    RMW: `x = x + 1` is the same work and a plain word on every backend. **A site with two
+    real writers is a lock problem**, and the lock is the mechanism.
+    The reason this surface is closed is NOT that an RMW is impossible. A `_4` RMW is a
+    libcall on armv6m and rxv3 that a freestanding link cannot resolve, but that only rules
+    out taking one from the toolchain -- a lock-bracketed RMW is implementable everywhere.
+    It stays closed because the cheapest CORRECT mechanism differs per backend, so an RMW
+    belongs behind a per-arch seam like the MPU backends, and no such seam exists yet.
+    `../design-m5-smp.md` carries the measured costs and the one correctness rule such a
+    seam would have to enforce, namely that `IrqLock`-bracketing is wrong on a dual-core part.
+    The gate catches the named spellings (`.fetch_add(`, `.exchange(`,
+    `.compare_exchange_*(`, the C11 generics, the `__atomic_` and `__sync_` builtins)
+    outright; it catches the operator forms (`++ -- += -= &= |= ^=`) by harvesting which
+    identifiers were declared atomic, so read the header of
+    `tests/static/check_atomic_rmw.sh` for the shapes that harvest cannot reach.
   - **No `static_assert(is_always_lock_free)`.** It is 0 on armv6m and rxv3 even where the
     load and store are inline plain instructions, because RMW is not. The wrapper bounds
     the width with `sizeof(T) <= 4` instead, there being no standard trait for "a plain

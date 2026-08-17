@@ -1876,17 +1876,29 @@ duplicated.
       semaphore exhaustion, not stack arena and not thread count, so no amount of arena work will
       EVER un-skip it -- yet it reads as a pool-size
       skip, identical in wording to the eight that were real. Give it its own reason string.
-- [ ] **Two boards block the fleet-wide boot-arena assert.** `KICKOS_POOL_ARENA_ASSERT`
-      (`arch/common/boot_arena.ld.h:57`) is opt-in and only `arch/arm/chip/stm32f302/stm32f302.ld:127`
-      invokes it, because `frdmk64f` and `bluepill-c8` still advertise slots their arena cannot back.
-      Worst image per config, measured at `124b68c`: `frdmk64f-st +MPU` **-28,992 B**,
-      `frdmk64f +MPU` **-28,960 B**, `bluepill-c8-st` **-4,096 B**, `bluepill-c8` **-4,000 B**.
-      Headroom is per-IMAGE, not per-preset, so right-sizing has to be checked against each.
-      **Mechanism for the K64F, which is why it is not a small trim:** without the MPU it has
-      **+81,856 B**; `KICKOS_HAVE_MPU=1` moves `__kickos_ram_start` from `0x1fff78a0` to `0x20012940`
-      and the `.appdata` enforcement window eats 110,748 B.
-      `bluepill-c8-st` has EXACTLY zero boot-arena slack besides (2,560 needed, 2,560 available) --
-      the only image in the 921-image fleet at or below zero.
+- [x] **Two boards block the fleet-wide boot-arena assert. CLOSED 2026-08-17: the assert is now
+      mandatory on every linker script, and only ONE of the two boards was a thread-provisioning
+      problem.** `KICKOS_POOL_ARENA_ASSERT` is invoked by all 16 scripts and omitting it is a
+      configure `FATAL_ERROR` like its boot-stack twin. What the two deficits actually were:
+      - **`bluepill-c8` was never over-advertising threads.** Its whole deficit was the
+        `CHIP_STM32F103` `KICKOS_USER_HEAP_SIZE` default of 8192, inherited from the 128 KiB
+        `stm32f411` sibling on a 20 KiB part, and `.userheap` is carved immediately below
+        `__kickos_ram_start`. Chip default is now 2048 and the `st` variant carries 0, which is
+        what `f302nucleo-st` already did. `MAX_THREADS 2` x 2048 was correct all along, and
+        `docs/reference/porting.md` had already written down that the heap carve was what bound
+        this board while this item blamed the thread pool.
+      - **`frdmk64f` genuinely needed the demand cut**, because enforcement pins its arena base
+        above the `.appdata` window. Enforcing variants now provision `KICKOS_MAX_THREADS 12`
+        (was the fleet default 16); `flat` keeps 16, which its arena really does back.
+      Also **corrected: headroom is per-image only where `__kickos_ram_start` follows `.bss`.** On
+      `frdmk64f +MPU` the base is pinned and EVERY image reports the identical figure, so the
+      "check it against each" advice was right for `bluepill-c8` and wrong for the K64F.
+      Post-change worst-image headroom: `frdmk64f{,-st} +MPU` **+7,072 B**, `frdmk64f-flat`
+      **+83,328 B**, `bluepill-c8-st` **+4,096 B**, `bluepill-c8` **+2,560 B**. Sign flip proven
+      both ways on both shapes (`-DKICKOS_MAX_THREADS=13` and `-DKICKOS_USER_HEAP_SIZE=8192` each
+      fail the link). **`boards/qemu-m33/mps2.ld` is a BOARD-LOCAL linker script**, which the new
+      mandatory check caught on its first run; a chip-directory sweep alone would have missed it.
+      **NOT witnessed on silicon:** `bluepill-c8` is build-only and `frdmk64f` needs an operator.
 - [x] **`f302nucleo`'s fault reporter produces NO dump. CLOSED 2026-08-13: THE FLASH COMMAND, not
       the firmware.** `st-flash --connect-under-reset --reset write` leaves the core under halting
       debug with `DEMCR.VC_HARDERR` armed, so the fault reaches HardFault and the core HALTS at the
@@ -2684,7 +2696,10 @@ bench sessions closed most of what this list used to hold**; what remains is:
   sizes, stack-depth observations and timing figures that a `Debug` capture cannot carry forward.
 - ~~`f302nucleo`'s fault-reporter root cause~~ CLOSED 2026-08-13: it was the flash command's
   `--reset`, and it never needed a replug.
-- Right-sizing `frdmk64f` and `bluepill-c8` so `KICKOS_POOL_ARENA_ASSERT` can go fleet-wide.
+- ~~Right-sizing `frdmk64f` and `bluepill-c8` so `KICKOS_POOL_ARENA_ASSERT` can go fleet-wide.~~
+  CLOSED 2026-08-17: the assert is mandatory fleet-wide. Only `frdmk64f` was a right-sizing
+  question; `bluepill-c8`'s deficit was entirely its 8K heap carve. Neither board is
+  silicon-witnessed, so both remain a MODEL result until an operator takes the K64F.
 
 **CLOSED by M4.5.6, listed so the ledger is not re-opened by habit:** `rx72m`'s one visit (all three
 items, `commit 270b6fa`), `esp32c6-wroom`'s `c6blink`, `pizero2350`'s `rootfault` and `rootauth`,
@@ -5140,14 +5155,22 @@ below where they were previously mislabeled.
   of this family LANDED (M4.3): the `_write` stdout re-probe -- deleted the process-global sticky
   `g_stdout_probe` (per-invocation classify against the calling thread's own cap 0; no per-thread
   storage needed for it).
-- **M5 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spike:
-  `docs/design-m5-smp.md` carries the AMP-vs-SMP feasibility, the cross-core IPC invariants, the
+- **M5 -- multicore (AMP versus a shared kernel is OPEN; see the OPEN section of the spike).**
+  This heading previously read "AMP first on RP2040, SMP-BKL endgame on RP2350" and attributed
+  that verdict to the spike. The spike does not contain it and `roadmap.md` says the opposite
+  ("not two AMP instances"), so the three records disagreed. Settle it before writing SMP code.
+  The deciding measurement is the in-kernel fraction of a call/reply round-trip, single-core on
+  the bench, since a shared kernel's payoff is Amdahl-bounded by it. Design spike:
+  `docs/design-m5-smp.md` carries the cross-core IPC invariants, the
   per-chip hardware mechanics, the SMP candidate ranking + staged model and the
   SMP-is-per-chip-capability constraint. Candidate
   ranking by the real gate (inter-core atomic + arch-switch maturity): **RP2350 BEST** (M33
   LDREX/STREX enable fine-grained; also 2x Hazard3 -> prove SMP on ARM and RISC-V of one chip),
-  **RP2040 big-lock-only** (armv6m has no exclusives; SIO hardware spinlocks -> single big kernel
-  lock forever), **ESP32 LX6 last** (S32C1I CAS exists but windowed ABI is hardest; unblocked now
+  **RP2040 big lock FIRST but not capped there** (armv6m has no exclusives, but FreeRTOS V11 ships
+  a dual-core RP2040 port carrying TWO locks over two SIO spinlocks and no atomic RMW at all, so
+  spinlock COUNT and hold time are the real bounds, not exclusives; what IS unreachable there is
+  any lock algorithm needing atomic exchange, so no CLH-style FIFO fairness),
+  **ESP32 LX6 last** (S32C1I CAS exists but windowed ABI is hardest; unblocked now
   that the fresh-thread-start bug is fixed at 700ec98, still gated on the model proven on M-profile
   first). Staged: (1) big-kernel-lock SMP first (correct on every dual-core, single-core build
   byte-identical), (2) fine-grained only where exclusives exist (RP2350), (3) LX6 after. The spike REVISED the earlier
@@ -5174,10 +5197,15 @@ below where they were previously mislabeled.
     fence-injection points -- flip to real fences on the SMP build. Keep centralising `IrqLock`,
     structs-over-globals, no ad-hoc masking -> keeps this a redefinition, not a rewrite.
   - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M5).
-  - **AMP-first on RP2040 (spike verdict, the recommended near-term step).** Two core-private
-    `Kernel` instances -- the `KICKOS_MULTI_INSTANCE` per-instance seam (`instance.h:89`, built
-    for the KickCAT multi-slave sim) is the ~80% substrate; re-key it on SIO CPUID instead of
-    host-TLS. Each core keeps its own run queue + `IrqLock`==PRIMASK, so NO mutual-exclusion
+  - **AMP-first on RP2040 (an OPTION, not a spike verdict -- the spike does not contain one).**
+    Two core-private `Kernel` instances. The `KICKOS_MULTI_INSTANCE` per-instance seam in
+    `instance.h` was described here as "the ~80% substrate"; it is not. It is a dead hole:
+    `detail::g_instance_tls` and `arch/sim/sim.cc`'s `g_sim_tls` are USED inside the branch and
+    declared nowhere in the tree, and no build file defines the macro, so it would not compile if
+    enabled. `docs/design-m4.8.2-host-unit-tests.md` already says it is not a prerequisite for a
+    Kernel fixture. Fix it or delete it; either way it is single-core work. What IS real substrate
+    is that all shared state already sits in one `struct Kernel` behind one accessor, `kernel()`.
+    Re-key on SIO CPUID instead of host-TLS. Each core keeps its own run queue + `IrqLock`==PRIMASK, so NO mutual-exclusion
     refactor: AMP de-risks the shared mechanics (core-1 launch, IPC, console arbitration) that
     SMP also needs, and sidesteps the no-atomics problem entirely.
   - **Cross-core IPC -- required for AMP; none exists today** (`Semaphore`/`Mutex` are intra-core
