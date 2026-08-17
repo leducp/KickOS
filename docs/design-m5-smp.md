@@ -7,11 +7,10 @@
 > milestone after the M4 driver era.
 
 Status: DESIGN SPIKE. Forward-looking. This is M5. No build/runtime code change
-here -- it ranks the multi-core parts in hand by the ONE gate that actually decides
-SMP feasibility, and fixes the staged model (big-kernel-lock first, fine-grained
-only where the hardware earns it). It also carries the AMP-vs-SMP feasibility
-verdict and the cross-core IPC ring plus doorbell design, both folded in here. The
-SMP-BKL endgame referenced in `roadmap.md` (M5) is detailed here.
+here -- it ranks the multi-core parts in hand by the gate that decides whether a
+shared kernel is reachable at all, and it carries the cross-core IPC ring plus
+doorbell design. It does NOT decide AMP versus a shared kernel: see the OPEN section
+below, which is the one thing to settle before any SMP code is written.
 
 ## The real gate
 
@@ -21,8 +20,12 @@ coupled facts:
 1. **The inter-core atomic primitive.** A shared kernel needs mutual exclusion
    that holds ACROSS cores -- masking local interrupts does nothing to another
    core. That requires either an architectural atomic (LDREX/STREX exclusives, a
-   compare-and-swap) or a hardware spinlock block. Which one the silicon has caps
-   how fine the locking can ever get.
+   compare-and-swap) or a hardware spinlock block. Either one is sufficient, and
+   WHICH one the silicon has does not cap how fine the locking can get: it caps
+   how a lock is IMPLEMENTED, and which lock ALGORITHMS are reachable. A part with
+   32 hardware spinlocks and no exclusives can carry 32 independent locks; what it
+   cannot carry is an algorithm needing atomic exchange or fetch-add, such as a CLH
+   queue lock or a sense-reversing barrier.
 2. **Arch-switch maturity in KickOS.** SMP reworks the switch and lock paths, so a
    part whose single-core switch path is already solid and well-understood is a far
    safer SMP vehicle than one whose switch path is still fragile.
@@ -42,13 +45,37 @@ That is a gift: it demonstrates that the SMP model is a uniform goal with a
 per-arch mechanism (exclusives on M33, A-extension atomics on Hazard3), on
 identical silicon.
 
-### RP2040 (2x Cortex-M0+) -- BIG-LOCK ONLY
-armv6-M has NO LDREX/STREX and the SIO bus is non-atomic, so there is no path to
-fine-grained locking here -- ever. The only cross-core primitive is the SIO
-hardware spinlock block (32 spinlocks). That is enough for a single big kernel
-lock and nothing finer. Value: cheap bring-up of the SMP MODEL (core-1 launch,
-per-core run-queue, per-core tickless state, the BKL discipline) on the simplest
-possible dual-core part, capped structurally at one lock.
+One inversion to hold onto, because it runs opposite to the intuition that ranks
+this part first. Erratum RP2350-E2 aliases the SIO spinlocks, so pico-sdk DEFAULTS
+`PICO_USE_SW_SPIN_LOCKS` to 1 on this part and emulates a spinlock with
+`ldaexb`/`strexb`, needing `ACTLR.EXTEXCLALL` force-set per core before exclusives
+are even observed across cores. On RP2040 the same SIO block works natively. So the
+exclusives here are a WORKAROUND for a silicon defect in the primitive RP2040 uses
+successfully -- not a capability upgrade that unlocks finer locking. RP2350 still
+ranks first, on documentation, PMSAv8 maturity and the dual-ISA proof, but not
+because its atomics buy locking granularity.
+
+### RP2040 (2x Cortex-M0+) -- BIG LOCK FIRST, AND NOT CAPPED THERE
+armv6-M has NO LDREX/STREX and the SIO bus is non-atomic, so the SIO hardware
+spinlock block (32 spinlocks) is the only cross-core primitive. That is enough for
+a single big kernel lock and, contrary to what this document previously claimed, it
+is also enough for more than one: FreeRTOS V11 ships a dual-core RP2040 port
+(`portable/ThirdParty/GCC/RP2040` in the local FreeRTOS-LTS tree) that builds TWO
+kernel locks from two distinct SIO spinlocks, `PICO_SPINLOCK_ID_OS1` and `OS2`,
+claimed at startup. The kernel above them performs no atomic read-modify-write at
+all, so a plain test-and-set by peripheral read is the whole hardware requirement.
+
+So what actually bounds RP2040 is the SIO spinlock COUNT and hold-time discipline,
+not the absence of exclusives. Two independent limits do apply, and they are the
+honest reasons to keep this part conservative: its critical sections mask with
+PRIMASK (all interrupts off) rather than a graded BASEPRI, which a copy under the
+lock will feel; and no lock ALGORITHM needing atomic exchange is reachable, so a
+CLH-style FIFO queue lock is not available and a lock here cannot offer bounded
+FIFO fairness.
+
+Value: cheap bring-up of the SMP MODEL (core-1 launch, per-core run-queue,
+per-core tickless state, the lock discipline) on the simplest possible dual-core
+part.
 
 ### ESP32 WROOM (2x Xtensa LX6) -- DOABLE BUT HARDEST, DEFERRED
 It HAS S32C1I (a compare-and-swap), so cross-core locking is possible in
@@ -75,19 +102,56 @@ and none of which regresses the single-core builds.
    code in parallel and serialize whenever they are in-kernel. This is correct on
    EVERY dual-core part regardless of its atomic primitive -- SIO spinlock on
    RP2040, exclusives on RP2350, S32C1I CAS on Xtensa -- because it needs only ONE
-   working cross-core lock. The critical invariant: a SINGLE-CORE build stays
-   BYTE-IDENTICAL, because the big lock is always uncontended there (redefine
-   `IrqLock` as local-IRQ-off + one global lock; on a one-core build the lock is
-   never contended and folds away). Bring this up on RP2040 or RP2350 -- whichever
-   is on the bench -- since the BKL runs on both. This matches the seL4 big-lock
-   SMP lineage.
+   working cross-core lock. Bring this up on RP2040 or RP2350 -- whichever is on the
+   bench -- since the BKL runs on both.
 
-2. **Fine-grained SMP only where exclusives exist.** Per-core run-queues,
-   lock-free fast paths, and finer locks -- introduced ONLY on parts with real
-   atomics, i.e. RP2350 (M33 exclusives, or Hazard3 A-extension). This is an
-   OPTIMIZATION layered on top of the correct BKL, never a rewrite of it. RP2040
-   never advances past stage 1 (no atomics), and that is fine -- the BKL is its
-   permanent ceiling.
+   The critical invariant: a SINGLE-CORE build stays BYTE-IDENTICAL. It does NOT
+   get there by the lock being uncontended, which was this document's earlier
+   reasoning and is wrong: an uncontended lock still costs its acquire, its fences
+   and its storage. It gets there by the lock COMPILING TO NOTHING. Both reference
+   kernels on this box do it that way and neither relies on the optimiser -- seL4
+   expands `NODE_LOCK` to `do {} while (0)` and folds `CURRENT_CPU_INDEX()` to a
+   literal 0, declaring its per-core struct only under `ENABLE_SMP_SUPPORT`;
+   FreeRTOS gives `portGET_TASK_LOCK` an empty macro body at one core and carries
+   the bifurcation up into function signatures. Copy the mechanism, not the
+   uncontendedness argument. This matters here specifically because
+   `system/include/kickos/sys/atomic.h` already records GCC out-lining an
+   `always_inline` candidate at -Os.
+
+   On the lineage: this matches seL4's big-lock SMP lineage in the LOCK and not yet
+   in the HOLD TIME, and in seL4 the two are one design. seL4's lock is taken on the
+   first line of every trap handler and released only at user return, so what keeps
+   it cheap is the FASTPATH -- a wall of bail-out guards that refuses a message over
+   four words, any extra capability, an ASID allocation, and a partner on another
+   core, leaving a critical section of one capability lookup, a queue pop, four
+   REGISTER moves and one address-space register write. There is no memory copy in
+   its fastpath at all. KickOS today has one IPC path that copies up to
+   `KOS_EP_MSG_MAX` bytes, mints a reply capability into a PEER task's table and
+   reinserts into the ready queue -- the shape of seL4's SLOWPATH. Adopting the lock
+   without the fastpath/slowpath split adopts the serialisation and none of the
+   mitigation. Note also that a CLH queue lock, the algorithm seL4 chose for bounded
+   FIFO fairness, needs atomic exchange and so is not reachable on RP2040 at all.
+
+2. **Fewer things inside the lock, before more locks.** Per-core run-queues and a
+   shorter critical section, as an OPTIMIZATION layered on the correct BKL, never a
+   rewrite of it. Two cautions on scope, both from reading the reference kernels
+   rather than from first principles.
+
+   First, more locks is not where the win is. Every SMP port in the local FreeRTOS
+   tree stops at TWO locks -- including the armv8-M ones, which have exclusives and
+   decline to use them -- and seL4 stops at one. Two looks like the endgame in this
+   class of kernel, not a way station, so a plan whose stage 2 is "many fine-grained
+   locks on RP2350" is chasing something neither reference kernel attempts.
+
+   Second, the payoff is bounded by hold time, not by lock count. FreeRTOS's split
+   is instructive because the two locks have deliberately different hold profiles: a
+   long-held task lock covering a scheduler-suspension region, and a short ISR lock
+   that is the ONLY lock interrupt context may take, so an ISR on one core makes
+   progress while another core blocks inside a queue operation. That asymmetry, not
+   the count, is what buys concurrency. Note FreeRTOS holds its locks across an
+   unbounded `memcpy` and across the scheduler's CHOICE, but never across the
+   register switch or the block -- which is the line to aim at, and a weaker
+   constraint than "never hold a lock across a switch".
 
 3. **ESP32 LX6 SMP after.** Once the model is proven on M-profile, port it to the
    Xtensa windowed ABI (CAS-backed lock, windowed-context SMP save/restore), the
@@ -99,8 +163,107 @@ SMP is a PER-CHIP CAPABILITY, not a uniform kernel property. The design goal is 
 SMP-AWARE kernel whose single-core build is UNCHANGED -- the same discipline the
 MPU backend follows (a chip either has the mechanism or it does not; the kernel
 above the seam is uniform). A part gets exactly the SMP tier its silicon earns:
-none (single-core), big-lock (any dual-core), or fine-grained (atomics present).
-This is M5.
+none (single-core), or shared-kernel (any dual-core, since one working cross-core
+lock is the whole entry requirement). What the silicon does NOT decide is lock
+granularity -- see the gate above. This is M5.
+
+## OPEN: AMP or a shared kernel first
+
+This is unresolved, and the three records disagree, so nothing here should be read
+as a verdict. `roadmap.md` says "not two AMP instances"; `TODO.md`'s M5 heading says
+AMP first on RP2040 and attributes that verdict to this document, which has never
+contained it. Resolve it before writing SMP code, because it decides where the
+M4.9.x groundwork points.
+
+Evidence that arrived after the original ranking, and it cuts toward AMP being
+respectable rather than a retreat: seL4's own `CAVEATS.md` states that its SMP
+configuration is unverified, every verified configuration in its tree pins one node,
+and its stated route to higher assurance for multicore is a STATIC MULTI-KERNEL --
+one kernel instance per core over disjoint memory -- "because they are simpler and
+closer to the current sequential seL4 proofs." The project this document cites as
+the big-lock precedent has aimed its own assurance roadmap away from the big lock.
+
+The number that should decide it is not in this document and is cheap to get: what
+fraction of a call/reply round-trip is spent inside `IrqLock` today, measured
+single-core on the bench. A shared kernel's payoff is Amdahl-bounded by exactly that
+fraction, and the "about 2x" figure below is unproven.
+
+## M6 lands the MMU, so do not design M5 into a corner
+
+`roadmap.md` makes M6 the MMU / new-platform milestone. That has three consequences
+for the choices above, and they cut against treating MPU-only as permanent.
+
+- **Cross-core TLB maintenance is deferred, not inapplicable.** An MPU has no
+  translation cache, so today there is nothing to shoot down. Under an MMU there is,
+  and both reference kernels answer it the same way: a BLOCKING all-core rendezvous
+  (seL4's `doRemoteMaskOp` plus `ipi_wait`, or firmware `sbi_remote_sfence_vma` on
+  RISC-V). So an M5 cross-core transport that can carry ONLY asynchronous
+  fire-and-forget notification will need extending in M6. Design the doorbell so a
+  blocking rendezvous can be layered on it.
+- **The primitive gap closes exactly where the MMU appears.** A blocking rendezvous
+  needs fetch-add, which armv6m and rxv3 cannot emit -- but no MMU-class target is
+  armv6m. The parts that force the no-RMW constraint are not the parts that will
+  carry M6.
+- **Object reclamation gets harder, so pick an answer that survives translation.**
+  Holding one lock across the whole resolve-to-use span (seL4's answer) works with
+  or without an MMU. A timestamp-quiescence scheme (Composite's) additionally
+  becomes the mechanism M6 needs for retyping mapped memory. Either survives; a
+  design that leans on "no address translation exists" does not.
+
+`docs/design-mmu-era-exploration.md` enumerates the five places the single-physical-
+address-space assumption is baked in. It is the companion to this document, and its
+title still says post-M6 while `roadmap.md` says M6.
+
+## The hazard catalogue this document does not carry
+
+`docs/design-capability-table.md` section 8 holds the real M5 work: a catalogue of
+uniprocessor assumptions in the capability path, longer and sharper than anything
+here, ending on the blocker underneath -- that a pointer `cap_resolve` has just
+resolved can be freed by another core. Read the two together; neither is complete
+alone. Note that a third answer to that blocker exists beside RCU and hazard
+pointers: seL4 carries no reclamation machinery at all, because a lock spanning the
+whole resolve-to-use window makes a concurrently-resolved pointer impossible. Its
+residue is the handful of places a lock cannot reach -- another core's current
+thread, its current scheduling context, its FPU owner -- and it clears those with a
+blocking stall IPI.
+
+## If an atomic RMW is ever added, it is a per-arch seam, not one mechanism
+
+`system/include/kickos/sys/atomic.h` exposes no read-modify-write surface today, and
+`docs/reference/style.md` carries the rule. What that rule should NOT be read as is
+"an RMW is impossible here": a lock-bracketed RMW is implementable on every backend,
+and the libatomic argument only rules out getting one from the toolchain. If one is
+ever wanted, the shape is the same shape the MPU backends already use -- one seam,
+one contract, a per-arch implementation -- because the cheapest correct mechanism
+genuinely differs per part.
+
+Measured cost of taking a lock, which is what a uniform-lock design would pay
+everywhere:
+
+| Backend | Lock mechanism | Acquire cost |
+|---|---|---|
+| single-core: armv7m, rxv3, xtensa LX6, armv6m microbit | `IrqLock` | one BASEPRI / PSW / `mstatus` write, no retry loop |
+| RP2040, dual, no exclusives | SIO HARDWARE spinlock | one peripheral read to claim, plus a fence |
+| RP2350, dual, SIO aliased by E2 | `ldaexb`/`strexb` SOFTWARE spinlock | a 6-instruction retry loop plus two fences |
+
+Two consequences, and the second is a correctness rule rather than a cost.
+
+- **A uniform lock would tax the parts that do not need one.** On RP2350 a direct
+  exclusive RMW is about half the instructions of a lock-bracketed one and needs no
+  fence at relaxed ordering, and E2 does not touch the exclusives -- only the SIO
+  spinlock registers. So the RP2350 backend should use the exclusives directly and
+  the spinlock not at all. Note the inversion this produces: a spinlock is CHEAPER
+  on RP2040, which has the working peripheral, than on RP2350, which emulates it.
+- **On a dual-core armv6m build, `IrqLock`-bracketing an RMW is WRONG, not merely
+  slow.** Masking local interrupts does nothing to the other core. That backend must
+  be the SIO spinlock specifically. A build that can select the cheap masking form on
+  a dual-core part is a silent correctness bug, so the seam should refuse it at
+  compile time rather than trust the selection.
+
+A single-writer counter needs none of this and keeps a plain load, add and store on
+every backend. The seam question only arises for a field with two real writers, and
+`docs/reference/invariants.md` records the fields whose serialisation is a critical
+section rather than an atomic.
 
 ## Hardware mechanics that decide the design
 

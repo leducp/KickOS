@@ -134,14 +134,27 @@ for threads and it is not interrupt-safe. On a single core, an ISR whose atomic
 hashes to a bucket the interrupted thread is already holding can never acquire
 it, and the thread can never release it because the ISR will not return. The
 deadlock has no timeout and no diagnostic. So the answer to "can an atomic just
-fall back on a mutex" is: only if somebody supplies one, and supplying one is
-the bug.
+fall back on a mutex" is: not on THAT mutex. What makes the lock table unusable
+is not that it is a lock, it is that the lock is chosen by hashing an address, so
+an ISR can collide with a bucket the thread it interrupted already holds. A lock
+the kernel picks deliberately -- the one already covering the field, or a
+dedicated cross-core one -- has no such collision, because the code that takes it
+knows what else takes it. Generic fallback is the bug; a chosen lock is a design.
 
-The design conclusion is to keep the read-modify-write out of the surface
-entirely rather than to allow it where it happens to be cheap. A counter with a
-single writer does not need one: a load, an add and a store is the same work,
-and it is a plain word on every backend. A counter with two writers needed a
-lock anyway, which is the next section.
+That is also why the read-modify-write stays out of the surface, and the reason is
+worth stating precisely, because the obvious one is wrong. It is not that an RMW
+cannot be built: bracket it with the lock and it exists on every backend. It is
+that the cheapest CORRECT mechanism is different on each one -- an inline
+instruction pair where the ISA has exclusives, a hardware spinlock on a part whose
+peripheral offers a test-and-set, plain interrupt masking where there is only one
+core to exclude. A facility whose implementation differs per ISA belongs behind a
+seam, the same way a memory-protection backend does, rather than in a header that
+pretends one mechanism fits.
+
+And the case that motivates reaching for an RMW usually dissolves on inspection.
+A counter with a single writer does not need one: a load, an add and a store is
+the same work, and a plain word on every backend. A counter with two writers
+needed a lock anyway, which is the next section.
 
 ## Why the obvious guard is the wrong one
 

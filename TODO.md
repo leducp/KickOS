@@ -5155,14 +5155,22 @@ below where they were previously mislabeled.
   of this family LANDED (M4.3): the `_write` stdout re-probe -- deleted the process-global sticky
   `g_stdout_probe` (per-invocation classify against the calling thread's own cap 0; no per-thread
   storage needed for it).
-- **M5 -- multicore (AMP first on RP2040, SMP-BKL endgame on RP2350).** Design spike:
-  `docs/design-m5-smp.md` carries the AMP-vs-SMP feasibility, the cross-core IPC invariants, the
+- **M5 -- multicore (AMP versus a shared kernel is OPEN; see the OPEN section of the spike).**
+  This heading previously read "AMP first on RP2040, SMP-BKL endgame on RP2350" and attributed
+  that verdict to the spike. The spike does not contain it and `roadmap.md` says the opposite
+  ("not two AMP instances"), so the three records disagreed. Settle it before writing SMP code.
+  The deciding measurement is the in-kernel fraction of a call/reply round-trip, single-core on
+  the bench, since a shared kernel's payoff is Amdahl-bounded by it. Design spike:
+  `docs/design-m5-smp.md` carries the cross-core IPC invariants, the
   per-chip hardware mechanics, the SMP candidate ranking + staged model and the
   SMP-is-per-chip-capability constraint. Candidate
   ranking by the real gate (inter-core atomic + arch-switch maturity): **RP2350 BEST** (M33
   LDREX/STREX enable fine-grained; also 2x Hazard3 -> prove SMP on ARM and RISC-V of one chip),
-  **RP2040 big-lock-only** (armv6m has no exclusives; SIO hardware spinlocks -> single big kernel
-  lock forever), **ESP32 LX6 last** (S32C1I CAS exists but windowed ABI is hardest; unblocked now
+  **RP2040 big lock FIRST but not capped there** (armv6m has no exclusives, but FreeRTOS V11 ships
+  a dual-core RP2040 port carrying TWO locks over two SIO spinlocks and no atomic RMW at all, so
+  spinlock COUNT and hold time are the real bounds, not exclusives; what IS unreachable there is
+  any lock algorithm needing atomic exchange, so no CLH-style FIFO fairness),
+  **ESP32 LX6 last** (S32C1I CAS exists but windowed ABI is hardest; unblocked now
   that the fresh-thread-start bug is fixed at 700ec98, still gated on the model proven on M-profile
   first). Staged: (1) big-kernel-lock SMP first (correct on every dual-core, single-core build
   byte-identical), (2) fine-grained only where exclusives exist (RP2350), (3) LX6 after. The spike REVISED the earlier
@@ -5189,10 +5197,15 @@ below where they were previously mislabeled.
     fence-injection points -- flip to real fences on the SMP build. Keep centralising `IrqLock`,
     structs-over-globals, no ad-hoc masking -> keeps this a redefinition, not a rewrite.
   - Fits the seL4 endgame (seL4 ships a big-lock SMP variant). See `roadmap.md` (M5).
-  - **AMP-first on RP2040 (spike verdict, the recommended near-term step).** Two core-private
-    `Kernel` instances -- the `KICKOS_MULTI_INSTANCE` per-instance seam (`instance.h:89`, built
-    for the KickCAT multi-slave sim) is the ~80% substrate; re-key it on SIO CPUID instead of
-    host-TLS. Each core keeps its own run queue + `IrqLock`==PRIMASK, so NO mutual-exclusion
+  - **AMP-first on RP2040 (an OPTION, not a spike verdict -- the spike does not contain one).**
+    Two core-private `Kernel` instances. The `KICKOS_MULTI_INSTANCE` per-instance seam in
+    `instance.h` was described here as "the ~80% substrate"; it is not. It is a dead hole:
+    `detail::g_instance_tls` and `arch/sim/sim.cc`'s `g_sim_tls` are USED inside the branch and
+    declared nowhere in the tree, and no build file defines the macro, so it would not compile if
+    enabled. `docs/design-m4.8.2-host-unit-tests.md` already says it is not a prerequisite for a
+    Kernel fixture. Fix it or delete it; either way it is single-core work. What IS real substrate
+    is that all shared state already sits in one `struct Kernel` behind one accessor, `kernel()`.
+    Re-key on SIO CPUID instead of host-TLS. Each core keeps its own run queue + `IrqLock`==PRIMASK, so NO mutual-exclusion
     refactor: AMP de-risks the shared mechanics (core-1 launch, IPC, console arbitration) that
     SMP also needs, and sidesteps the no-atomics problem entirely.
   - **Cross-core IPC -- required for AMP; none exists today** (`Semaphore`/`Mutex` are intra-core

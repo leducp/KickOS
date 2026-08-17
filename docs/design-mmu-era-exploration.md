@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 <!-- Copyright (c) 2026 Philippe Leduc -->
-# EXPLORATORY: the MMU / new-platform horizon (post-M6)
+# EXPLORATORY: the MMU / new-platform horizon (M6)
 
 > **Status: EXPLORATORY**
 > Status: EXPLORATION ONLY. This is a research + design-thinking spike, NOT a

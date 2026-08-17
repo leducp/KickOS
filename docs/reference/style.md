@@ -69,12 +69,19 @@ because they are written here and read in review.
     correctness depends on spelling `std::memory_order_relaxed` at **every** access and one
     omission is silent. The wrapper has no spelling for seq_cst, and no way to override the
     declared order at a call site.
-  - **No `fetch_add` or any other read-modify-write.** **gated** An atomic RMW is a libcall on
-    armv6m and rxv3, and a freestanding link has no libatomic. The wrapper exposes no RMW
+  - **No `fetch_add` or any other read-modify-write.** **gated** The wrapper exposes no RMW
     surface at all, so `x++`, `x += 1`, `fetch_add` and `compare_exchange` do not compile.
-    Every such field here has a single writer, so `x = x + 1` under the lock that was
-    already there is what replaces a `++`. A site with two real writers needs the lock
-    fixed, not an RMW. The gate catches the named spellings (`.fetch_add(`, `.exchange(`,
+    Every field here has a single writer, and a single writer needs neither a lock nor an
+    RMW: `x = x + 1` is the same work and a plain word on every backend. **A site with two
+    real writers is a lock problem**, and the lock is the mechanism.
+    The reason this surface is closed is NOT that an RMW is impossible. A `_4` RMW is a
+    libcall on armv6m and rxv3 that a freestanding link cannot resolve, but that only rules
+    out taking one from the toolchain -- a lock-bracketed RMW is implementable everywhere.
+    It stays closed because the cheapest CORRECT mechanism differs per backend, so an RMW
+    belongs behind a per-arch seam like the MPU backends, and no such seam exists yet.
+    `../design-m5-smp.md` carries the measured costs and the one correctness rule such a
+    seam would have to enforce, namely that `IrqLock`-bracketing is wrong on a dual-core part.
+    The gate catches the named spellings (`.fetch_add(`, `.exchange(`,
     `.compare_exchange_*(`, the C11 generics, the `__atomic_` and `__sync_` builtins)
     outright; it catches the operator forms (`++ -- += -= &= |= ^=`) by harvesting which
     identifiers were declared atomic, so read the header of
