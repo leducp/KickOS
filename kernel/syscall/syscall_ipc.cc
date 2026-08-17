@@ -6,6 +6,7 @@
 // resolve/deliver/park then releases it before the resume barrier, and a spanning caller
 // lock would keep BASEPRI raised across wq_confirm_resume and livelock ARM.
 
+#include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
@@ -104,7 +105,7 @@ namespace kickos
         {
             return -KOS_EPERM; // no caller context (defensive)
         }
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
             int err = 0;
@@ -257,7 +258,7 @@ namespace kickos
         {
             return -KOS_EPERM; // no caller context (defensive)
         }
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
             int err = 0;
@@ -371,6 +372,7 @@ namespace kickos
     int32_t endpoint_call(uint32_t cap, uintptr_t buf, size_t send_len, size_t recv_cap,
                           uint32_t timeout_us)
     {
+        KICKOS_BENCH_MARK(bm_total);
         if (send_len > KOS_EP_MSG_MAX)
         {
             return -KOS_EINVAL; // reject oversize request, like send
@@ -379,23 +381,32 @@ namespace kickos
         {
             recv_cap = KOS_EP_MSG_MAX; // reply capacity clamp is harmless
         }
+        KICKOS_BENCH_MARK(bm_validate);
         // The one buffer is read (request) then written (reply): validate both here,
         // in caller context, once.
         if (not user_readable_ok(buf, send_len) or not user_writable_ok(buf, recv_cap))
         {
             return -KOS_EFAULT;
         }
+        KICKOS_BENCH_SPAN(PH_CALL_VALIDATE, bm_validate);
         Thread* c = sched::current();
         if (c == nullptr)
         {
             return -KOS_EPERM; // no caller context (defensive)
         }
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
+            KICKOS_BENCH_MARK(bm_locked);
+            // The empty bracket: taken once per round trip, and under the same interrupt
+            // mask as the brackets it calibrates.
+            KICKOS_BENCH_MARK(bm_null);
+            KICKOS_BENCH_SPAN(PH_NULL, bm_null);
             int err = 0;
+            KICKOS_BENCH_MARK(bm_resolve);
             Endpoint* e = static_cast<Endpoint*>(
                 cap_resolve_e(c, cap, CapType::CAP_ENDPOINT, CAP_SIGNAL, &err));
+            KICKOS_BENCH_SPAN(PH_CALL_RESOLVE, bm_resolve);
             if (e == nullptr)
             {
                 return -err; // EBADF (bad cap) or EPERM (no SIGNAL right)
@@ -423,24 +434,30 @@ namespace kickos
                     // keeps it unreachable.
                     return -KOS_EPIPE;
                 }
+                KICKOS_BENCH_MARK(bm_probe);
                 if (not cap_can_take_reply(w))
                 {
                     // The RECEIVER's table or its reply bound, not ours: no side effects yet.
                     return -KOS_EMFILE;
                 }
+                KICKOS_BENCH_SPAN(PH_CALL_PROBE, bm_probe);
                 (void)wq_pop_highest(e->recv_waiters); // == w (nothing mutates under the lock)
                 size_t n = send_len;
                 if (w->ipc.len < n)
                 {
                     n = w->ipc.len; // receiver-side request truncation
                 }
+                KICKOS_BENCH_MARK(bm_copy);
                 ep_copy(w->ipc.buf, buf, n);
+                KICKOS_BENCH_SPAN(PH_CALL_COPY, bm_copy);
                 c->call_seq++; // new epoch BEFORE packing (the reply cap rides this seq)
                 uint32_t rcap = KCAP_INVALID;
+                KICKOS_BENCH_MARK(bm_mint);
                 // Not inside the assert: a compiled-out condition would drop the mint.
                 int const minted = cap_install_reply(w, c, &rcap);
                 KICKOS_ASSERT(minted == 0); // cap_can_take_reply probed w above
                 write_recv_info(w->ipc.badge_out, KOS_BADGE_NONE, rcap);
+                KICKOS_BENCH_SPAN(PH_CALL_MINT, bm_mint);
                 w->wait_result = static_cast<intptr_t>(n);
                 // Repurpose our own ipc to the reply target (in-place buffer); the
                 // request was fully copied above, so overwriting buf with the reply
@@ -453,15 +470,21 @@ namespace kickos
                 // D1: donate to the server so the CPU goes straight to it.
                 if (c->prio > w->prio)
                 {
+                    KICKOS_BENCH_MARK(bm_donate);
                     sched::set_prio(w, c->prio);
+                    KICKOS_BENCH_SPAN(PH_CALL_DONATE, bm_donate);
                 }
                 epoch = c->switch_count;
+                KICKOS_BENCH_MARK(bm_park);
                 park_queueless(c, WAIT_EP_REPLY, w);
                 reply_donor_park(w, c); // off the ready set: `link` is free to re-use
                 // The fastpath skips the send-side park entirely, so the deadline is armed
                 // straight onto the reply wait. Must precede the wake: that switches away.
                 park_deadline_arm(c, timeout_us);
+                KICKOS_BENCH_SPAN(PH_CALL_PARK, bm_park);
+                KICKOS_BENCH_MARK(bm_wake);
                 sched::wake(w);
+                KICKOS_BENCH_SPAN(PH_CALL_WAKE, bm_wake);
             }
             else
             {
@@ -476,9 +499,12 @@ namespace kickos
                 // D2: boost the conventional server NOW if this caller outranks it.
                 if (e->server != nullptr and c->prio > e->server->prio)
                 {
+                    KICKOS_BENCH_MARK(bm_sdonate);
                     sched::set_prio(e->server, c->prio);
+                    KICKOS_BENCH_SPAN(PH_CALL_SLOW_DONATE, bm_sdonate);
                 }
                 epoch = c->switch_count;
+                KICKOS_BENCH_MARK(bm_spark);
                 // Armed ONCE, here, and never re-armed: when a server later pops this
                 // caller onto its reply_waiters the deadline rides along untouched, and it
                 // then bounds the reply wait.
@@ -486,10 +512,17 @@ namespace kickos
                 // Same kind as a plain sender: call_state already separates the two, and
                 // the wait edge answers only which list and which object.
                 wq_block(e->send_waiters, WAIT_EP_SEND, e);
+                KICKOS_BENCH_SPAN(PH_CALL_SLOW_PARK, bm_spark);
             }
+            // Both close INSIDE the lock. The brace below is where the lock releases and a
+            // pended switch fires, so a span reaching past it would time the round trip.
+            KICKOS_BENCH_SPAN(PH_CALL_LOCKED, bm_locked);
+            KICKOS_BENCH_SPAN(PH_CALL_TOTAL, bm_total);
         }
+        KICKOS_BENCH_MARK(bm_resume);
         wq_confirm_resume(c, epoch);
         c->call_state = CALL_NONE; // B1: single-writer-clean on EVERY return path
+        KICKOS_BENCH_SPAN(PH_CALL_RESUME, bm_resume);
         // reply bytes, or -KOS_EPIPE/-KOS_EMFILE/-KOS_ENOSYS/-KOS_ETIMEDOUT/-KOS_ECANCELED
         return static_cast<int32_t>(c->wait_result);
     }
@@ -499,20 +532,25 @@ namespace kickos
     // reply buffer, ESRCH the caller is gone or aborted).
     int endpoint_reply(uint32_t reply_cap, uintptr_t buf, size_t len)
     {
+        KICKOS_BENCH_MARK(bm_total);
         if (len > KOS_EP_MSG_MAX)
         {
             len = KOS_EP_MSG_MAX; // the caller's capacity clamps it anyway
         }
+        KICKOS_BENCH_MARK(bm_validate);
         if (not user_readable_ok(buf, len))
         {
             return -KOS_EFAULT;
         }
+        KICKOS_BENCH_SPAN(PH_REPLY_VALIDATE, bm_validate);
         Thread* c = sched::current();
         if (c == nullptr)
         {
             return -KOS_EPERM; // no caller context (defensive)
         }
         IrqLock lock;
+        KICKOS_BENCH_MARK(bm_locked);
+        KICKOS_BENCH_MARK(bm_lookup);
         CapEntry* e = cap_lookup(c, reply_cap);
         if (e == nullptr or e->type != static_cast<uint8_t>(CapType::CAP_REPLY))
         {
@@ -534,6 +572,7 @@ namespace kickos
         {
             caller = nullptr;
         }
+        KICKOS_BENCH_SPAN(PH_REPLY_LOOKUP, bm_lookup);
         if (caller == nullptr)
         {
             // Cap consumed but no caller to complete. A timed call whose deadline expired
@@ -549,13 +588,22 @@ namespace kickos
         {
             n = caller->call_rx_cap; // reply truncation into the caller's capacity
         }
+        KICKOS_BENCH_MARK(bm_copy);
         ep_copy(caller->ipc.buf, buf, n);
+        KICKOS_BENCH_SPAN(PH_REPLY_COPY, bm_copy);
         caller->wait_result = static_cast<intptr_t>(n);
         caller->call_state = CALL_NONE;
+        KICKOS_BENCH_MARK(bm_funnel);
         // D3: revert our donation through the single funnel (the cap is already gone
         // and the caller left REPLY_WAIT, so neither counts anymore).
         sched::set_prio(c, thread_effective_prio(c));
+        KICKOS_BENCH_SPAN(PH_REPLY_FUNNEL, bm_funnel);
+        KICKOS_BENCH_MARK(bm_wake);
         sched::wake(caller); // D4: the caller >= us whenever it donated, so it runs now
+        KICKOS_BENCH_SPAN(PH_REPLY_WAKE, bm_wake);
+        // Both close before the return, where `lock` releases and a pended switch fires.
+        KICKOS_BENCH_SPAN(PH_REPLY_LOCKED, bm_locked);
+        KICKOS_BENCH_SPAN(PH_REPLY_TOTAL, bm_total);
         return 0;
     }
 }

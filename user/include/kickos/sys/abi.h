@@ -181,11 +181,18 @@ enum kos_syscall_nr
                                //   (self, idle, or a privileged target).
                                //   FORCIBLE, where KOS_SYS_THREAD_KILL is cooperative: this
                                //   denies the target the cleanup window a kill leaves it.
-    KOS_SYS_TASK_SLAY = 54     // (kos_task_t, timeout_us) -> 0 (the group is EMPTY and its
+    KOS_SYS_TASK_SLAY = 54,    // (kos_task_t, timeout_us) -> 0 (the group is EMPTY and its
                                //   slot released), -KOS_ETIMEDOUT, -KOS_ECANCELED, -KOS_EBADF,
                                //   -KOS_EPERM (the caller did not create it), -KOS_EINVAL (the
                                //   caller is itself a member, which would wait on its own
                                //   death). The group form of the above, member for member.
+    KOS_SYS_BENCH = 55         // (kos_bench_op, a0, a1) -> per-op (see enum kos_bench_op),
+                               //   or -KOS_EINVAL (bad op). The microbenchmark's own
+                               //   scaffolding: the dispatch arm is compiled out unless
+                               //   KICKOS_BENCH, so a normal image returns -KOS_EINVAL.
+                               //   UNGATED by authority, like KOS_SYS_IRQ_INJECT: the app
+                               //   that drives it is root, which is unprivileged on every
+                               //   board, and every op is kernel-local scaffolding.
 };
 
 // Flags for KOS_SYS_IRQ_CLAIM. The trigger type is a property of the SOURCE, so it is
@@ -209,6 +216,27 @@ enum kos_grant_op
     KOS_GRANT_OP_RESERVED_COUNT = 5,  // count of arch_reserved_blocks
     KOS_GRANT_OP_RESERVED_BASE = 6,   // reserved block[base].base (base indexes the block)
     KOS_GRANT_OP_RESERVED_SIZE = 7    // reserved block[base].size (base indexes the block)
+};
+
+// `op` selector for KOS_SYS_BENCH (KICKOS_BENCH images only). Values are a frozen
+// contract: append, never reorder. A BAD op returns -KOS_EINVAL.
+//
+// The two PRINT ops make the KERNEL write the line. That is what keeps the syscall to
+// three scalar arguments: no out-pointer to validate, no result struct to copy across the
+// boundary, and no ABI to keep in step as phases are added. It costs nothing here because
+// the bench posture keeps the kernel console (kickos_services_none), so kprintf reaches
+// the wire; under a published userspace console driver it would reach nothing.
+enum kos_bench_op
+{
+    KOS_BENCH_OP_RESET = 0,       // ()          -> 0. Switch AND phase accumulators.
+    KOS_BENCH_OP_CORE_HZ = 1,     // ()          -> SystemCoreClock in Hz, 0 if unknown
+    KOS_BENCH_OP_SWITCH_PRINT = 2, // ()         -> switch sample count (kernel prints the line)
+    KOS_BENCH_OP_IRQ_SETUP = 3,   // (line)      -> 0
+    KOS_BENCH_OP_IRQ_ONCE = 4,    // (line)      -> best-case inject->entry cycles, 0 = did
+                                  //   not fire (no injectable line, or no cycle counter)
+    KOS_BENCH_OP_IRQ_MASKED_ONCE = 5, // (line, span_bytes) -> worst-case inject->entry
+                                  //   cycles across a masked span, 0 = did not fire
+    KOS_BENCH_OP_PHASE_PRINT = 6  // ()          -> 0 (kernel prints the phase table)
 };
 
 // Widened KOS_SYS_RECV out-pointer (was a bare u32 badge). 8 bytes, 4-aligned. A

@@ -52,16 +52,15 @@ namespace kickos
     // wq_block. On ARM the pended PendSV has not fired when that lock is released
     // (arch_irq_restore has no ISB), so the caller is still executing pre-switch and must
     // not trust anything a waker wrote. switch_to bumps the INCOMING thread's
-    // switch_count, so an advance is proof of a real switch-in. Volatile, not atomic: the
-    // value moves via the exception-mode switch, invisibly to this function, and it is 64
-    // bits wide (sys/atomic.h refuses those). Zero iterations on the sim, where wq_block
-    // switches synchronously.
-    void wq_confirm_resume(Thread* c, uint64_t epoch)
+    // switch_count, so an advance is proof of a real switch-in, and the acquire on this
+    // load is what lets the caller read the waker's writes once it sees one. Zero
+    // iterations on the sim, where wq_block switches synchronously.
+    void wq_confirm_resume(Thread* c, uint32_t epoch)
     {
         // Reaching the cap means the switch is never coming (a masked or lost PendSV);
         // the pended switch otherwise fires as soon as the caller's IrqLock drops.
         uint32_t spin = 0;
-        while (*static_cast<uint64_t volatile*>(&c->switch_count) == epoch)
+        while (c->switch_count.load() == epoch)
         {
             if (++spin > KICKOS_POLL_SPIN_MAX)
             {
@@ -349,7 +348,7 @@ namespace kickos
     int mutex_lock(Mutex* m)
     {
         Thread* c = sched::current();
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
             if (m->owner == nullptr)

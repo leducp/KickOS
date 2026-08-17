@@ -9,6 +9,7 @@
 // boundary.
 
 #include <kickos/arch/arch.h>
+#include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/config.h>
 #include <kickos/grant.h>
@@ -1038,6 +1039,71 @@ uintptr_t syscall_body(uintptr_t nr,
         {
             return static_cast<uintptr_t>(irq_discard(sched::current(), static_cast<uint32_t>(a0)));
         }
+#if KICKOS_BENCH
+        case KOS_SYS_BENCH:
+        {
+            // Bench scaffolding, and the ONLY route to it from the app: every helper here
+            // reads kernel .data or a peripheral, so an app calling them directly runs
+            // them at ITS privilege and faults (root is unprivileged on every board).
+            // Ungated, like KOS_SYS_IRQ_INJECT: nothing here changes state a production
+            // image has, because no production image has this arm at all.
+            //
+            // Both prints run HERE, in thread context and holding no IrqLock.
+            switch (a0)
+            {
+                case KOS_BENCH_OP_RESET:
+                {
+                    bench_reset();
+                    return 0;
+                }
+                case KOS_BENCH_OP_CORE_HZ:
+                {
+                    return bench_core_hz();
+                }
+                case KOS_BENCH_OP_SWITCH_PRINT:
+                {
+                    return bench_switch_print();
+                }
+                case KOS_BENCH_OP_IRQ_SETUP:
+                {
+                    int const line = static_cast<int>(a1);
+                    if (line < 0 or line >= KICKOS_MAX_IRQ)
+                    {
+                        return static_cast<uintptr_t>(-KOS_EINVAL);
+                    }
+                    bench_irq_setup(line);
+                    return 0;
+                }
+                case KOS_BENCH_OP_IRQ_ONCE:
+                {
+                    int const line = static_cast<int>(a1);
+                    if (line < 0 or line >= KICKOS_MAX_IRQ)
+                    {
+                        return static_cast<uintptr_t>(-KOS_EINVAL);
+                    }
+                    return bench_irq_once(line);
+                }
+                case KOS_BENCH_OP_IRQ_MASKED_ONCE:
+                {
+                    int const line = static_cast<int>(a1);
+                    if (line < 0 or line >= KICKOS_MAX_IRQ)
+                    {
+                        return static_cast<uintptr_t>(-KOS_EINVAL);
+                    }
+                    return bench_irq_masked_once(line, static_cast<uint32_t>(a2));
+                }
+                case KOS_BENCH_OP_PHASE_PRINT:
+                {
+                    bench_phase_print();
+                    return 0;
+                }
+                default:
+                {
+                    return static_cast<uintptr_t>(-KOS_EINVAL);
+                }
+            }
+        }
+#endif
         case KOS_SYS_DIAG_LED_SET:
         {
             // Benign single LED (the kernel's diagnostic pin, borrowed): left

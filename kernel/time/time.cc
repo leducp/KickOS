@@ -8,6 +8,7 @@
 // CONFIG_SCHED_PERIODIC_TICK forces a classic periodic tick instead.
 
 #include <kickos/time.h>
+#include <kickos/bench.h>
 #include <kickos/endpoint.h> // endpoint_wait_abort: park.cc owns every EP unwind
 #include <kickos/sched.h>
 #include <kickos/instance.h>
@@ -70,6 +71,11 @@ namespace kickos
     void ktime_rearm()
     {
         IrqLock lock;
+#if KICKOS_BENCH
+        // AFTER the lock, so it is destroyed BEFORE it: a span outliving the release would
+        // include whatever the unmask lets in.
+        BenchScope const bench_body(PH_KTIME_REARM);
+#endif
         uint64_t next = UINT64_MAX;
         if (kernel().sleepq != nullptr)
         {

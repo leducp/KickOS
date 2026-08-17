@@ -8,14 +8,17 @@
 // rv32imac rdcycle/MTIME, xtensa CCOUNT; absent on M0/sim/frozen-QEMU).
 //
 // The call/reply round-trip sweep measures the real syscall path, so the copy it times is
-// the one under the kernel's own IrqLock.
+// the one under the kernel's own IrqLock. The phase table printed after it breaks that
+// round trip's FIXED cost down by kernel phase (kernel/bench/bench.cc).
 //
-// EVERY kickos_bench_* helper below is a KERNEL function called directly, not a syscall, so
-// it runs at the CALLER's privilege, and this app's main is root, which is unprivileged on
-// every board. Each one reads kernel .data or a peripheral, so on a board with an MPU or
-// PMP the first call faults; where there is no such unit it returns a number instead. The
-// reporter's cycle metrics are therefore reachable only on the no-unit boards. The sweep
-// above is the one measurement here that goes through the syscall ABI and holds everywhere.
+// Every cycle metric here goes through kos_bench, one syscall. The helpers behind it read
+// kernel .data and core peripherals, so an app calling them directly would run them at ITS
+// privilege, and root is unprivileged on every board: the direct form faulted on all but
+// the LX6, which has no privilege ring.
+//
+// The KERNEL prints the switch line and the phase table (the syscall returns a scalar and
+// carries no out-pointer), so this app must run with the kernel console, which is what the
+// `bench` config variant pins with kickos_services_none.
 //
 // The reporter is woken by the workload itself, NOT by a timer, so it cannot be
 // starved by the players saturating the CPU (see docs/archive/M1_state.md).
@@ -25,16 +28,6 @@
 #include <kickos/sys.h>
 #include <kickos/sys/atomic.h>
 #include <kickos/libc/fmt.h>
-
-extern "C"
-{
-    void kickos_bench_switch_reset(void);
-    void kickos_bench_switch_report(uint32_t*, uint32_t*, uint32_t*, uint32_t*);
-    uint32_t kickos_bench_core_hz(void);
-    void kickos_bench_irq_setup(int line);
-    uint32_t kickos_bench_irq_once(int line);
-    uint32_t kickos_bench_irq_masked_once(int line, uint32_t span_bytes);
-}
 
 namespace
 {
@@ -49,6 +42,10 @@ namespace
     // window is a fraction of a second on fast silicon and a few seconds on a slow
     // M0; the report prints the actual window (ms) so it is self-documenting.
     constexpr uint32_t ROUNDS_PER_REPORT = 20000;
+    // Then main RETURNS, so root's exit reaches kickos_terminate and a board built with
+    // KICKOS_SHUTDOWN_TO_BOOTLOADER re-enters its bootloader. A loop here is what used to
+    // make every capture on teensy41 and the RP boards cost a physical button press.
+    constexpr unsigned THROUGHPUT_REPORTS = 3;
 
     kos::Semaphore* g_a = nullptr;    // MAIN's caps; the ping-pong sems (reporter side)
     kos::Semaphore* g_b = nullptr;
@@ -61,6 +58,18 @@ namespace
     constexpr int CH_B = 2;    // ping-pong sem B (delegated second)
     constexpr int CH_GATE = 3; // reporter-wake gate (delegated third to player_b only)
     constexpr uint8_t CH_FULL = KOS_CAP_WAIT | KOS_CAP_SIGNAL | KOS_CAP_TRANSFER;
+
+    // A refused op returns -KOS_E*; the cycle ops answer 0 for "did not fire", which is
+    // what a refusal has to collapse to so a caller's `!= 0` fired-check still holds.
+    uint32_t bench_u32(uint32_t op, uint32_t a0, uint32_t a1)
+    {
+        int32_t const rc = kos_bench(op, a0, a1);
+        if (rc < 0)
+        {
+            return 0;
+        }
+        return static_cast<uint32_t>(rc);
+    }
 
     void player_a(void*) // caps: A@1, B@2
     {
@@ -98,19 +107,17 @@ namespace
     // needs only 2 pool slots (the two players) and fits boards with KICKOS_MAX_THREADS
     // as low as 2 (nrf51, stm32f103/f302). Root is prio KICKOS_PRIO_MIN+1 == 2 and the
     // players run at prio 1, so a gate post from player_b preempts straight into the
-    // reporter. The DWT/STIR/CCOUNT reads below need PRIVILEGE, which root does not
-    // have, so they reach only the boards with no unit to refuse them.
-    void reporter_loop()
+    // reporter.
+    void reporter_loop(uint32_t hz)
     {
-        uint32_t hz = kickos_bench_core_hz();
-        kickos_bench_irq_setup(BENCH_IRQ_LINE);
+        (void)kos_bench(KOS_BENCH_OP_IRQ_SETUP, BENCH_IRQ_LINE, 0); // no-op if refused
         uint32_t prev_rounds = g_rounds;
         uint64_t prev_ns = kos::clock_now();
         g_a->post(); // kick off the ping-pong
 
-        while (true)
+        for (unsigned rep = 0; rep < THROUGHPUT_REPORTS; rep++)
         {
-            kickos_bench_switch_reset();
+            (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0);
             g_gate->wait(); // woken by the workload after ROUNDS_PER_REPORT rounds
 
             // Window = the interval the reporter was blocked on the gate = exactly the
@@ -142,8 +149,8 @@ namespace
             kos::print(s);
 
             // Per-switch cost + IRQ latency only where switch.S bracketed real cycles.
-            uint32_t smin, savg, smax, scnt;
-            kickos_bench_switch_report(&smin, &savg, &smax, &scnt);
+            // The kernel writes the switch line itself and hands back the sample count.
+            uint32_t const scnt = bench_u32(KOS_BENCH_OP_SWITCH_PRINT, 0, 0);
             if (scnt == 0)
             {
                 // no cycle counter on this arch; throughput is the metric
@@ -156,7 +163,7 @@ namespace
             uint64_t isum = 0;
             for (int i = 0; i < IRQ_SAMPLES; i++)
             {
-                uint32_t c = kickos_bench_irq_once(BENCH_IRQ_LINE);
+                uint32_t c = bench_u32(KOS_BENCH_OP_IRQ_ONCE, BENCH_IRQ_LINE, 0);
                 if (c != 0)
                 {
                     if (c < imin) { imin = c; }
@@ -175,12 +182,6 @@ namespace
                 imin = 0;
             }
 
-            ksnprintf(s, sizeof(s), "  switch: %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n",
-                      static_cast<unsigned>(smin), static_cast<unsigned>(savg),
-                      static_cast<unsigned>(smax), static_cast<unsigned>(to_ns(smin, hz)),
-                      static_cast<unsigned>(to_ns(savg, hz)),
-                      static_cast<unsigned>(to_ns(smax, hz)), static_cast<unsigned>(scnt));
-            kos::print(s);
             ksnprintf(s, sizeof(s), "  irq:    %u/%u/%u cyc  %u/%u/%u ns  (min/avg/max, n=%u)\n",
                       static_cast<unsigned>(imin), static_cast<unsigned>(iavg),
                       static_cast<unsigned>(imax), static_cast<unsigned>(to_ns(imin, hz)),
@@ -199,7 +200,8 @@ namespace
                 uint64_t wsum = 0;
                 for (int k = 0; k < IRQ_SAMPLES; k++)
                 {
-                    uint32_t c = kickos_bench_irq_masked_once(BENCH_IRQ_LINE, wspans[si]);
+                    uint32_t c =
+                        bench_u32(KOS_BENCH_OP_IRQ_MASKED_ONCE, BENCH_IRQ_LINE, wspans[si]);
                     if (c != 0)
                     {
                         if (c < wmin) { wmin = c; }
@@ -245,6 +247,12 @@ namespace
     // The payload one sweep step measures. Written by measure_callreply BEFORE it spawns
     // either peer, so neither thread races the write.
     Atomic<uint32_t, Order::RELAXED> g_cr_len{16};
+
+    // Non-zero when the caller was spawned ABOVE the server, which is the only shape that
+    // makes endpoint_call take the D1 donation branch: it is guarded on caller prio strictly
+    // greater than server prio, so an equal-priority sweep never executes it and never prices
+    // it. Same write discipline as g_cr_len.
+    Atomic<uint32_t, Order::RELAXED> g_cr_donating{0};
 
     void callreply_server(void*) // caps: E(WAIT)@1, done@2
     {
@@ -295,20 +303,33 @@ namespace
                     static_cast<uint64_t>(CALLREPLY_REPS) * 1000000000ull / d_ns);
                 ns_per_rt = static_cast<uint32_t>(d_ns / CALLREPLY_REPS);
             }
-            char s[160];
+            char const* shape = "";
+            if (g_cr_donating != 0)
+            {
+                shape = " [caller outranks server, D1 donates]";
+            }
+            char s[192];
             ksnprintf(
                 s, sizeof(s),
-                "  call/reply: %u B  %u ns/round-trip  (%u round-trips/s over %u calls / %u ms)\n",
+                "  call/reply: %u B  %u ns/round-trip  (%u round-trips/s over %u calls / %u ms)%s\n",
                 static_cast<unsigned>(len), static_cast<unsigned>(ns_per_rt),
                 static_cast<unsigned>(rt_per_s), static_cast<unsigned>(CALLREPLY_REPS),
-                static_cast<unsigned>(d_ns / 1000000ull));
+                static_cast<unsigned>(d_ns / 1000000ull), shape);
             kos::print(s);
         }
         kos_sem_post(2);
     }
-    void measure_callreply(uint32_t len)
+    // caller_prio strictly above server_prio drives the donation branch; equal leaves it
+    // unexecuted. Both must stay ABOVE root for the slot-reclaim reason CR_PRIO documents.
+    void measure_callreply(uint32_t len, uint8_t caller_prio, uint8_t server_prio)
     {
         g_cr_len = len;
+        uint32_t donating = 0;
+        if (caller_prio > server_prio)
+        {
+            donating = 1;
+        }
+        g_cr_donating = donating;
         kos_cap_t ep = KOS_CAP_NONE;
         if (kos_endpoint_create(&ep) != 0)
         {
@@ -318,8 +339,8 @@ namespace
         kos::Semaphore done(0);
         kos_cap_grant scaps[] = {{ep, KOS_CAP_WAIT}, {done.id(), CH_FULL}};   // E(WAIT)@1, done@2
         kos_cap_grant ccaps[] = {{ep, KOS_CAP_SIGNAL}, {done.id(), CH_FULL}}; // E(SIGNAL)@1, done@2
-        auto sv = kos::thread::spawn_caps(callreply_server, nullptr, "cr_srv", CR_PRIO, scaps, 2);
-        auto cl = kos::thread::spawn_caps(callreply_caller, nullptr, "cr_cl", CR_PRIO, ccaps, 2);
+        auto sv = kos::thread::spawn_caps(callreply_server, nullptr, "cr_srv", server_prio, scaps, 2);
+        auto cl = kos::thread::spawn_caps(callreply_caller, nullptr, "cr_cl", caller_prio, ccaps, 2);
         if (not sv.valid() or not cl.valid())
         {
             // Neither peer can make progress alone, and a lone one holds its slot for the whole
@@ -348,20 +369,42 @@ namespace
     // The slope across them is TWICE the per-byte cost of the endpoint copy, because a
     // round trip copies the request in and the reply back, both under one IrqLock.
     constexpr uint32_t CR_SPANS[] = {8, 16, 32, 64, 128, 256};
+
+    // The payload the donating step measures. One size is enough: D1 raises the server's
+    // effective priority and that cost does not scale with the message, so a sweep would
+    // re-measure the copy slope the equal-priority sweep already gives.
+    constexpr uint32_t CR_DONATE_SPAN = 32;
 }
 
 int main(int, char**)
 {
     kos::print("microbenchmark: context-switch throughput (all arches) + per-switch cost\n");
     kos::print("+ IRQ-entry latency where a cycle counter exists. Reporter woken by the\n");
-    kos::print("workload, not a timer. Telemetry OFF for clean numbers.\n\n");
+    kos::print("workload, not a timer. Telemetry OFF for clean numbers.\n");
+
+    // Stated, not left to be derived: every cycle figure below is in core clocks, and a
+    // capture that does not carry the clock cannot be converted to time after the fact.
+    uint32_t const hz = bench_u32(KOS_BENCH_OP_CORE_HZ, 0, 0);
+    char hzline[80];
+    ksnprintf(hzline, sizeof(hzline), "core clock: %u Hz (0 = the chip backend does not say)\n\n",
+              static_cast<unsigned>(hz));
+    kos::print(hzline);
+
+    (void)kos_bench(KOS_BENCH_OP_RESET, 0, 0); // the phase table below covers the sweep only
 
     // Runs before the players spawn, and each step joins BOTH its peers before the next
     // starts, so two pool slots beside root's carry the whole sweep.
     for (unsigned i = 0; i < sizeof(CR_SPANS) / sizeof(CR_SPANS[0]); i++)
     {
-        measure_callreply(CR_SPANS[i]);
+        measure_callreply(CR_SPANS[i], CR_PRIO, CR_PRIO);
     }
+
+    // The same round trip with the caller one level ABOVE the server, which is what makes
+    // endpoint_call run its D1 donation and endpoint_reply shed it. Read the phase table's
+    // donate row against the equal-priority rows above: with equal peers that row reports no
+    // samples at all, so the branch is unpriced without this step. Both peers stay above root.
+    measure_callreply(CR_DONATE_SPAN, CR_PRIO + 1u, CR_PRIO);
+    (void)kos_bench(KOS_BENCH_OP_PHASE_PRINT, 0, 0); // the kernel writes the table
     kos::print("\n");
 
     kos::Semaphore a(0), b(0), gate(0);
@@ -378,14 +421,13 @@ int main(int, char**)
     auto rb = kos::thread::spawn_caps(player_b, nullptr, "bench_b", 1, bcaps, 3);
     if (not ra.valid() or not rb.valid())
     {
+        // Returns rather than parks: a park here would cost the same physical button press
+        // on a bootloader-handover board that the bounded reporter exists to avoid.
         kos::print("bench: FAILED to spawn players (thread pool too small?)\n");
-        kos::Semaphore park(0);
-        while (true)
-        {
-            park.wait();
-        }
+        return 1;
     }
 
-    reporter_loop(); // never returns
+    reporter_loop(hz);
+    kos::print("bench: done\n");
     return 0;
 }

@@ -68,7 +68,7 @@ namespace kickos
 
     // Resume barrier, MANDATORY for any blocking primitive that reads waker-set TCB state
     // (wait_result) after resuming:
-    //     Thread* c = sched::current(); uint64_t epoch;
+    //     Thread* c = sched::current(); uint32_t epoch;
     //     { IrqLock lock; ...predicate + set up state...; epoch = c->switch_count;
     //       wq_block(q, kind, obj); }              // lock RELEASED here
     //     wq_confirm_resume(c, epoch);              // <- barrier, OUTSIDE the lock
@@ -78,7 +78,7 @@ namespace kickos
     // drops, and a wait_result read there returns the PRE-block value. No-op on the sim,
     // whose switch is synchronous. The waker, never the sleeper, must write wait_result
     // and clear the wait edge under the lock.
-    void wq_confirm_resume(Thread* c, uint64_t epoch);
+    void wq_confirm_resume(Thread* c, uint32_t epoch);
 
     void sem_init(Semaphore* s, int initial);
     void sem_wait(Semaphore* s);

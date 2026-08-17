@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <new> // Thread holds a kickos::Atomic, so a reset is a re-construction, not an assignment
+
 #include <kickos/cap.h>
 #include <kickos/endpoint.h>
 #include <kickos/instance.h>
@@ -142,7 +144,7 @@ namespace kickos
                 // switch_to credits the INCOMING thread, which under a returning stub is
                 // never the one that parked, so wq_confirm_resume would spin to
                 // KICKOS_POLL_SPIN_MAX and panic.
-                w->switch_count++;
+                w->switch_count.store(w->switch_count.load() + 1u);
                 if (g_park_waker == nullptr)
                 {
                     printf("FIXTURE FAIL: no waker armed for the park of thread %u\n", w->id);
@@ -249,8 +251,8 @@ namespace kickos
                 printf("FIXTURE FAIL: a capability sweep is still in flight\n");
                 exit(1);
             }
-            kernel() = Kernel{};
-            g_fx = Fixture{};
+            new (&kernel()) Kernel{};
+            new (&g_fx) Fixture{};
             g_in_isr = false;
             g_now_ns = 0;
             for (int i = 0; i < KICKOS_MAX_TASKS; i++)
@@ -293,8 +295,7 @@ namespace kickos
                 printf("FIXTURE FAIL: spawn slot %d out of range\n", slot);
                 exit(1);
             }
-            Thread* th = &g_fx.t[slot];
-            *th = Thread{};
+            Thread* th = new (&g_fx.t[slot]) Thread{};
             th->base_prio = prio;
             th->prio = prio;
             th->id = static_cast<uint16_t>(slot + 1);
@@ -314,8 +315,7 @@ namespace kickos
                 exit(1);
             }
             Kernel& k = kernel();
-            Thread* w = &k.threads.slots[slot];
-            *w = Thread{};
+            Thread* w = new (&k.threads.slots[slot]) Thread{};
             w->base_prio = prio;
             w->prio = prio;
             w->id = static_cast<uint16_t>(10 + slot);

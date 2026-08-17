@@ -591,7 +591,7 @@ namespace kickos
     int thread_slay(kos_thread_t thread, uint32_t timeout_us)
     {
         Thread* const c = sched::current();
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
             Thread* const t = thread_resolve(thread);
@@ -711,7 +711,7 @@ namespace kickos
     int task_slay(kos_task_t task, uint32_t timeout_us)
     {
         Thread* const c = sched::current();
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         Task* t = nullptr;
         {
             IrqLock lock;
@@ -767,7 +767,7 @@ namespace kickos
     int thread_join(kos_thread_t thread, uint32_t timeout_us)
     {
         Thread* const c = sched::current();
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
             Thread* const t = thread_resolve(thread);
@@ -817,7 +817,7 @@ namespace kickos
     int thread_wait_last()
     {
         Thread* const c = sched::current();
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
             if (not kernel().threads.is_root(c))

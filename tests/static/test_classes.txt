@@ -54,6 +54,7 @@ host   src    tests/unit/telemetry/check_idmap.py
 
 # --- host unit-test binaries (GoogleTest, one ctest entry per case) ----------
 host   build  tests/unit/cancelkind/cancel_kind
+host   build  tests/unit/capprobe/cap_probe
 host   build  tests/unit/capreply/capreply_packing
 host   build  tests/unit/capsweep/cap_sweep
 host   build  tests/unit/captable/captable_deep

@@ -6,6 +6,7 @@
 // policy, never to this file; the default policy is in policy_fifo_rr.cc.
 
 #include <kickos/sched.h>
+#include <kickos/bench.h>
 #include <kickos/cap.h>
 #include <kickos/console_tx.h> // console_on_driver_death
 #include <kickos/kernel.h>
@@ -37,9 +38,11 @@ namespace kickos
             }
             kernel().current = next;
             next->state = ThreadState::RUNNING;
-            next->switch_count++;
+            next->switch_count.store(next->switch_count.load() + 1u);
             kernel().policy->on_switch_in(next);
+            KICKOS_BENCH_MARK(bm_mpu);
             arch_mpu_apply(next->regions, next->region_count);
+            KICKOS_BENCH_SPAN(PH_MPU_APPLY, bm_mpu);
             // Must arm for the INCOMING thread before the jump: the outgoing thread does
             // not return here until it is itself resumed, so nothing else will program the
             // incoming thread's policy deadline (RR slice).
@@ -116,7 +119,12 @@ namespace kickos
             {
                 return;
             }
+            // Backends that PEND (armv7m, rv32imac, rxv3) return from arch_switch at once,
+            // so this brackets the bookkeeping only. The LX6 and the sim swap inline from
+            // thread context, where it instead ends when this thread is next resumed.
+            KICKOS_BENCH_MARK(bm_switch);
             switch_to(next);
+            KICKOS_BENCH_SPAN(PH_SWITCH_TO, bm_switch);
         }
 
         void yield()

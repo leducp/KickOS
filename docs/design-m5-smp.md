@@ -355,14 +355,21 @@ happens-before edge, so the secondary must NOT re-init them.
     honour, so every ordering question this design raises is still open; what changed is
     that the accesses are now defined rather than UB, and each one is a named place for the
     acquire or release to go. Three residues land here:
-    - the 64-bit fields that stayed `volatile`, chiefly `Thread::switch_count` read through
-      a cast in `kernel/sync/sync.cc` and the selftest's hog deadline;
-    - the six per-chip clock anchors, a `_high`/`_low` word pair made coherent by `IrqLock`
-      alone. Two relaxed atomics still tear against each other, and on SMP an `IrqLock` on
-      one core excludes nothing on another, so this pair needs a seqlock or a per-core
-      anchor whatever type the words have;
-    - `KOS_RING_BARRIER` in `user/include/kickos/sys/byte_ring.h`, still a consumer `-D`
-      escape hatch rather than a release store on the now-atomic index.
+    - the 64-bit fields that stayed `volatile`. None remain: the two that mattered were
+      each narrower than their width said, so both were narrowed to a 32-bit atomic and
+      given the ordering the width had been denying them;
+    - the seven per-chip clock extenders, a `_high`/`_last` word pair made coherent by
+      `arch_irq_save` alone: `stm32f103`, `stm32f302`, `stm32f411`, `sam3x8e`, `imxrt1062`,
+      `rx72m` and the lx6 CCOUNT fallback. On SMP an interrupt mask on one core excludes
+      nothing on another, so the pair needs a seqlock or a per-core anchor whatever type the
+      words have. Note what a seqlock costs here first: the fold is done BY THE READER, so
+      every reader is a writer and there is no single writer to seqlock behind. The four
+      parts with a wrap ISR can move the fold into it and gain one; `imxrt1062`, `rx72m` and
+      the lx6 fallback poll only and would have to grow one. The wrapper carries no fence
+      surface either, and a seqlock reader needs an acquire FENCE that an acquire load does
+      not supply;
+    - the publication barrier in `user/include/kickos/sys/byte_ring.h`, which was a
+      consumer `-D` escape hatch rather than a release store on the now-atomic index.
   - **Console reclaim, `docs/design-m3-console-handover-stageii.md` ruling 7.** No
     hook is reserved for it. Under AMP or SMP the other core's console driver must be
     stopped or fenced before reclaim, or it races the polled panic writer. Reclaim is

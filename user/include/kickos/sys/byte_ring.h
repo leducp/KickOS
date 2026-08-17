@@ -12,23 +12,23 @@
 
 #include <kickos/sys/atomic.h>
 
-// Publication barrier between a payload store and the index update that exposes it.
-// Compiler-only by default: on a weakly-ordered core -DKOS_RING_BARRIER=... must supply a
-// real RELEASE fence. The -D reaches only the TUs it is compiled into, never the ring
-// operations already built into libkickos_user.
-#ifndef KOS_RING_BARRIER
-#define KOS_RING_BARRIER() __asm volatile("" ::: "memory")
-#endif
-
 // `size` MUST be a power of two; usable capacity is size-1, because one slot is reserved
 // so that head == tail means EMPTY unambiguously rather than either empty or full.
+//
+// Both indexes carry the publication: each is stored by the side that advances it and read
+// by the other, so the store releases the payload it exposes and the load acquires it. That
+// is what makes a byte written before `head` moves readable after the consumer has seen the
+// move; a compiler barrier only orders the emitted code and says nothing a second core
+// honours. One access per operation pays for an ordering it does not need (the producer's
+// read of its own head, the consumer's of its own tail), which is the price of the ordering
+// living in the type rather than at the call site.
 struct kos_byte_ring
 {
     unsigned char* buf;
     uint32_t size;
     uint32_t mask;
-    kickos::Atomic<uint32_t, kickos::Order::RELAXED> head;
-    kickos::Atomic<uint32_t, kickos::Order::RELAXED> tail;
+    kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE> head;
+    kickos::Atomic<uint32_t, kickos::Order::ACQUIRE | kickos::Order::RELEASE> tail;
 };
 
 // A non-power-of-two size would make the mask wrap wrong and silently corrupt the ring, so
@@ -83,8 +83,7 @@ static inline uint32_t kos_byte_ring_push(struct kos_byte_ring* r,
         r->buf[idx] = src[i];
         idx = (idx + 1u) & r->mask;
     }
-    KOS_RING_BARRIER(); // every payload byte is visible before the head that exposes it
-    r->head.store(idx);
+    r->head.store(idx); // releases every payload byte the new head exposes
     return n;
 }
 
@@ -103,8 +102,7 @@ static inline uint32_t kos_byte_ring_pop(struct kos_byte_ring* r, unsigned char*
         dst[i] = r->buf[idx];
         idx = (idx + 1u) & r->mask;
     }
-    KOS_RING_BARRIER(); // the payload is consumed before the tail frees the slots
-    r->tail.store(idx);
+    r->tail.store(idx); // releases the reads above, so no slot is freed before it is copied
     return n;
 }
 
@@ -137,8 +135,8 @@ static inline void kos_byte_ring_drop(struct kos_byte_ring* r, uint32_t n)
     {
         n = used;
     }
-    KOS_RING_BARRIER(); // the peeked payload is consumed before the tail frees the slots
     uint32_t const tail = r->tail.load();
+    // Releases the preceding peek's reads, so no slot is freed before it is copied.
     r->tail.store((tail + n) & r->mask);
 }
 
@@ -151,8 +149,7 @@ static inline int kos_byte_ring_pop_one(struct kos_byte_ring* r, unsigned char* 
     }
     uint32_t const tail = r->tail.load();
     *out = r->buf[tail];
-    KOS_RING_BARRIER();
-    r->tail.store((tail + 1u) & r->mask);
+    r->tail.store((tail + 1u) & r->mask); // releases the read above
     return 1;
 }
 

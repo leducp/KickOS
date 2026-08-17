@@ -2428,7 +2428,8 @@ rule.
       line comment opened a block that never closed and every identifier after it dropped out of
       the valid set. Silent under-coverage: the gate still passes, on fewer names. It bit twice in
       one session, both times on a comment naming a path glob. Proven both ways -- planting the
-      shape ahead of `KOS_RING_BARRIER`, the only definition of that name, takes the old stripper
+      shape ahead of the ring publication barrier, then the only definition of that name, takes the
+      old stripper
       from 697 identifiers to 696 and leaves the fixed one at 697, and both agree on a clean tree.
       The scan now takes whichever marker comes FIRST.
 
@@ -2453,7 +2454,7 @@ rule.
       call the link-chosen `kos_uart_*`: in one TU with the ring side they made the ring member
       undefined on any board with no UART backend, and the sim's `selftest` calls
       `uart::shared_init`.
-- [x] **`KOS_RING_BARRIER` is the one build knob that is not global**, an out-of-tree `-D` escape
+- [x] **The ring publication barrier was the one build knob that is not global**, an out-of-tree `-D` escape
       hatch no CMake file sets. A ring body compiled into `libkickos_user.a` bakes the default
       compiler-only barrier while a consumer's own TU still gets their `-D`.
       `user/src/console_ring.cc` already carries that exposure from M4.9.1, so the class is not new.
@@ -5624,8 +5625,8 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
       acquire or a release belongs. Three known residues: the 64-bit fields that had to stay
       `volatile` (a relaxed 64-bit load is a `__atomic_load_8` libcall), the six per-chip
       `_high`/`_last` clock anchors that `IrqLock` alone makes coherent, and
-      `KOS_RING_BARRIER`, still a consumer `-D` rather than a release store on the ring's
-      now-atomic index. `docs/design-m5-smp.md` carries the reasoning.
+      the ring publication barrier, then still a consumer `-D` rather than a release
+      store on the ring's now-atomic index. `docs/design-m5-smp.md` carries the reasoning.
 
 ## M6
 

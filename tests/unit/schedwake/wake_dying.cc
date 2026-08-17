@@ -234,7 +234,7 @@ TEST_F(SchedWake, a_superseded_peer_keeps_the_switch_in_it_never_ran)
     sched::wake(first);
     sched::wake(above);
 
-    EXPECT_EQ(first->switch_count, 1u) << "charged a switch-in it never ran";
+    EXPECT_EQ(first->switch_count.load(), 1u) << "charged a switch-in it never ran";
     EXPECT_EQ(first->slice_deadline_ns, g_now_ns + first->quantum_ns)
         << "and holding a slice armed before it ran";
 }

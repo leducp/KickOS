@@ -14,6 +14,7 @@
 #include <kickos/list.h>
 
 #include <kickos/sys/abi.h> // KOS_THREAD_NONE: the handle codec's reserved index
+#include <kickos/sys/atomic.h>
 
 namespace kickos
 {
@@ -111,6 +112,19 @@ namespace kickos
         // timer delta-list membership (singly linked, sorted by deadline); SEPARATE
         // from `link` so a timed wait can be on the timer list AND a wait queue at once.
         Thread* tnext = nullptr;
+
+        // Sits here, not with the scalars below, because on a target that aligns uint64_t to
+        // 8 this is the padding word before deadline_ns and the field is free.
+        //
+        // Advanced by switch_to for the INCOMING thread; read by wq_confirm_resume on the
+        // thread itself as proof its switch-in happened. The RELEASE publishes everything a
+        // waker wrote under the block lock (wait_result, the cleared wait edge) and the
+        // ACQUIRE is what makes it readable once the spin has seen the advance. 32 bits and a
+        // bare inequality: 2^32 switches cannot retire inside the handful of instructions
+        // between the block lock dropping and the pended switch firing, so a wrap back onto
+        // the sampled epoch is not reachable.
+        Atomic<uint32_t, Order::ACQUIRE | Order::RELEASE> switch_count = 0;
+
         uint64_t deadline_ns = 0;
         bool on_timer = false;
 
@@ -219,8 +233,6 @@ namespace kickos
         // and teardown arms all empty it, so a dying server never strands a donor.
         HeadList reply_waiters;
 
-        uint64_t switch_count = 0; // introspection
-
         // Per-THREAD capability table (cap.h), and it stays per-thread under the task layer
         // (docs/design-task-layer.md section 5.4). The run is reserved from the slab by the
         // CALLER before thread_create, as `task` is, so an exhausted slab fails the spawn
@@ -314,11 +326,12 @@ namespace kickos
     // MEASURE ON A 32-BIT TARGET. A uint16_t added to Thread costs 8 bytes on armv6m and 0 on
     // the host: the padding before `task` is saturated on 32-bit and there is no tail padding.
 
-    // ctx through tnext, which is where the target's context size stops shifting the layout.
+    // ctx through switch_count, which is where the target's context size stops shifting the
+    // layout. switch_count is the word that saturates the pre-deadline_ns padding.
     constexpr size_t thread_head_bytes()
     {
-        size_t const members =
-            sizeof(arch_context) + sizeof(ListNode) + sizeof(List*) + sizeof(Thread*);
+        size_t const members = sizeof(arch_context) + sizeof(ListNode) + sizeof(List*)
+                               + sizeof(Thread*) + sizeof(uint32_t);
         return members + (alignof(uint64_t) - members % alignof(uint64_t)) % alignof(uint64_t);
     }
 
@@ -326,14 +339,14 @@ namespace kickos
     // uint64_t to 4 and so spends less padding here than every other 32-bit target.
     constexpr size_t thread_scalar_bytes()
     {
-        size_t bytes = 124;
+        size_t bytes = 116;
         if (sizeof(void*) == 8)
         {
-            bytes = 188;
+            bytes = 180;
         }
         else if (alignof(uint64_t) == 4)
         {
-            bytes = 120;
+            bytes = 112;
         }
 #if KCAP_RUN_CHUNKS > 1
         bytes = bytes + 2 * sizeof(uint16_t); // cap_width + cap_reply_live

@@ -9,11 +9,142 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
-**M4.9.2 IS IN PROGRESS on branch `M4.9.2`, UNMERGED and unpushed.** It converts `volatile` to
-relaxed `std::atomic` on every cross-thread field, moves the non-template service-header bodies
-into `user/src/`, and writes the four gates `style.md` already claimed. What it is NOT is an
-ordering change: relaxed says nothing a second core will honour, so M5 still owns every acquire
-and release. `TODO.md`'s M4.9.2 section enumerates what the sweep found.
+**M5 IS OPEN AND UNCOMMITTED. `master` is `3c3967e3` (PR 25); everything below sits in the
+WORKING TREE.** M4 is closed: M4.9.2 (PR 24) and M4.9.3 (PR 25) are both merged, and the ledger in
+`roadmap.md` says so now rather than "in progress".
+
+**THE NUMBERS ARE RENUMBERED. M5 = the driver era completed plus everything for SMP that is not
+SMP; M6 = SMP; M7 = MMU; M8 = beyond, and M8 is where the ABI FREEZES.** Every record that said
+M5 meaning SMP or M6 meaning MMU is corrected, the SMP spike is renamed to
+`docs/design-m6-smp.md` (28 citations chased), and the ABI-freeze rule is restated BY NAME at all seven of its sites
+because keying it to a digit is what let it drift onto the wrong milestone in the first place.
+
+**THE IPC BASELINE EXISTS NOW, AND IT REDIRECTED THE MILESTONE'S HEADLINE ITEM.** There was no
+call/reply figure anywhere before this; there is one in `docs/design-m5-ipc-fastpath.md`, and the
+next session should read that page before touching the fastpath. The short version:
+
+- A round trip is a FIXED term plus 18 cycles per byte, and the fixed term is **~4640 cycles on
+  armv7m M4, armv7m M7 and Xtensa LX6 alike**, within 1.5 percent across three ISAs and three
+  clocks. An invariant like that is an instruction count, not silicon and not memory.
+- **Of the four costs the milestone set out to rank: the reply MINT is 400 cycles and is the
+  biggest AND the only constant one; the COPY is 218 at real driver traffic; the SWITCH is 290;
+  and the D1 DONATION IS ZERO BECAUSE IT NEVER FIRES** -- the bench runs equal-priority peers, so
+  that branch is dead and donation has never been measured by anyone. Pricing it needs a new arm.
+- **All four together are about 10 percent.** A semaphore ping-pong round, which does none of
+  them, costs the same as a call/reply round trip. The other 90 percent is generic syscall entry
+  and exit and the scheduler, shared with `kos_sem_post`. **So a register-payload fastpath that
+  only removes the copy is worth about 4 percent**, and an seL4-shaped fastpath has to be a
+  SEPARATE ENTRY PATH that never enters the generic one, which is what seL4's actually is.
+- **At least 31 percent of a round trip is inside `IrqLock`**, which is the Amdahl input
+  `design-m6-smp.md` says is missing. It bounds a two-core big-lock speedup at about **1.45x**,
+  materially under the unproven "about 2x" in that spike. The AMP-versus-shared-kernel decision
+  stays OPEN, but it now has a number.
+
+**THE BENCH APP WAS BROKEN AND NOBODY KNEW, WHICH IS WHY THERE WAS NO BASELINE.** Its
+`kickos_bench_*` helpers were DIRECT kernel calls, so with root unprivileged on every board the
+first call faulted and killed the reporter: the throughput and cycle half had been dead on every
+board with a privilege ring since the root flip, and only `esp32-wroom` (no ring at all) ever ran
+it. It also never returned from `main`, so `KICKOS_SHUTDOWN_TO_BOOTLOADER` was inert for it and
+every bench capture cost a button press. Both are fixed behind a new `KOS_SYS_BENCH` syscall, and
+the second is **witnessed**: `pizero2350` re-enumerated into BOOTSEL by itself after an
+instrumented run.
+
+**TWO BOARDS CANNOT MEASURE CYCLES AND ONE CANNOT MEASURE TIME. Do not spend a pass rediscovering
+this.** `xmc4800-relax`'s DWT CYCCNT is DEAD (every delta zero over 120000 samples; the chip
+comment's "observed returning DWT_CTRL's value" is exactly it), so that board is wall-clock only.
+`esp32-wroom`'s monotonic clock intermittently returns EQUAL values across hundreds of
+milliseconds, and instrumenting it made the failure rate rise from 2-of-6 to 5-of-6 -- a rate that
+moves with timing is a RACE, which points at the TIMG0 `T0UPDATE` shadow being read before it
+latches rather than at the other candidate. Its CCOUNT figures are fine. **`teensy41` is the board
+that can give the full nested decomposition**: proven-live DWT, and a deferred switch, so unlike
+the LX6 its composite spans are honest.
+
+**A SECOND DEFECT SHARED THAT SYMPTOM AND IS NOW UNREACHABLE BY CONSTRUCTION.** `kos_clock_now()`
+returned **0** on failure, indistinguishable from a valid timestamp, while its own comment said the
+status "must be checked" -- the same class as the discarded `kos_irq_attach` return that became a
+silent `picopi` deadlock. **FIXED, and not by asserting**: the syscall path gained a 64-bit return,
+so the clock hands its value back in the ABI's register pair and there is no out-pointer left to
+reject. The public `uint64_t kos_clock_now(void)` is unchanged; only the private syscall ABI moved,
+which was free because the out-pointer had exactly one call site and no user could supply one.
+**It is a NET SHRINK, not a cost**: zero added instructions on ARM and RX, one 2-byte compressed
+store on RISC-V, and `syscall.cc` on armv7m fell 2425 to 2357 bytes because GCC tail-merges every
+return into one epilogue. That matters beyond this fix, because the generic syscall path is ~1700
+of the 4640 cycles a fastpath has to attack, and widening it cost nothing.
+**Per backend the answers differed and that is the interesting part**: armv7m moved its `CONTROL`
+restore off `r1`; armv6m could NOT mirror it (with the pair reserved, only two scratch registers
+remain, one short of the old bit-clear) and uses a shift pair instead; rv32imac needed a frame
+store because `mret` restores the frame; **rxv3 needed NO change at all**, since `rte` pops only PC
+and PSW; and lx6 needed none either, having no trap and no ring split. **`rxv3` and `lx6` are
+BUILD-VERIFIED ONLY and owe silicon.**
+
+**WHAT M5 HAS LANDED IN THE WORKING TREE, all uncommitted.** Static gates are green over the
+whole of it (`doc_names` 92 docs / 1237 paths, `ascii`, `spdx` 877 files, `atomic_rmw` 453 files,
+`include_guards` 207 headers, `forever_loop`, `extern_c_linkage`, `seam_defaults` per board) and
+`sim` is 235/235.
+
+- The renumber, the ledger sync, and three tree-derived corrections to records that had rotted:
+  the console-seam counts here and in `roadmap.md` (**EIGHT** chips carry `arch_console_reclaim`
+  and `_reclaim_window`, **NINE** carry `arch_console_flush_sync`, where both files said four and
+  two), and G5 in `design-driver-era-scope.md`, which named `kickos_rx_dev_pending_line` -- a
+  symbol that exists in no source file and was replaced by `kickos_rx_dev_dispatch`.
+- **ONE atomic mechanism.** `<atomic>` now appears in EXACTLY ONE FILE. The two C-facing atomic
+  macros are gone (not spelled here, because they no longer exist in the tree),
+  `kos_uart_stats` is nine plain `uint32_t` behind `kos_counter_*`,
+  `stats_unpack` is one `mem_copy`, and it is proven C-callable with real codegen.
+- The bench syscall, the phase instrument, and `arch_cpu_id()` folding to a literal by
+  PREPROCESSOR, with byte-identity proven object-by-object rather than asserted.
+- Three new records: `design-m5-ipc-fastpath.md`, `design-m5-kickcat-reality-check.md`,
+  `design-m6-state-inventory.md`.
+
+**THE ATOMICS COLLAPSE TRADED TWO THINGS AND BOTH ARE NOW CLOSED, by ruling.** It first gave up
+DEFINEDNESS on the reader side (`stats_pack` reads while the IRQ thread writes) and lost the RMW
+gate's guard on those fields (its harvest fell from 14 identifiers to 1, so `stats.tx_bytes++`
+compiled). Both are fixed:
+- the nine fields are `kos_counter_t`, a ONE-MEMBER STRUCT, so `++`, `+=`, a bare read and a bare
+  write are COMPILE errors in C11 and C++20 alike. The type enforces it, not a gate and not a
+  convention, which is the same move as nesting `kos_recv_info` inside `kos_recv_timed_opts`;
+- the two helper BODIES use `__atomic_load_n` / `__atomic_store_n` at RELAXED, so the read is
+  defined. An abstraction exists exactly so the mechanism can be swapped without spreading the
+  change, and no call site spells a load, a store or an order.
+**Two codegen costs to know before anyone simplifies it back**: on Xtensa GCC's default
+`-mserialize-volatile` emits a `MEMW` before every atomic access whatever the order (and
+`-mno-serialize-volatile` is not a free fix, it would also drop `MEMW` before `volatile` MMIO), and
+an atomic access is an OPTIMISATION BARRIER that can flip an inlining decision. A minimal probe TU
+is byte-identical; real drivers grow by 0 to 52 bytes of `.text`, rxv3 being the 0.
+**And the premise that the RMW gate banned `__atomic_` by PREFIX was FALSE** -- only the prose said
+so, in the gate header and `style.md`. The gate always listed the RMW builtins by name. That is now
+a checked property rather than an accident: a plain-access line sits in the gate's own NEGATIVE
+self-test corpus, so widening the alternation to a wildcard fails the gate's self-test.
+
+**WHAT M5 STILL OWES**, in the order the milestone states it: the driver set (the tree-derived gap
+is 3 STM32 UART drivers, a UART driver for the RP parts, SPI on rx72m and esp32c6, and
+`arch_console_retune` on the six chips that gained a driver but have only 2 bodies fleet-wide);
+KickCAT (SURVEYED and RULED, not ported -- see below); `KICKOS_MULTI_INSTANCE`; the fastpath;
+ACQUIRE and RELEASE orders; the section-8 uniprocessor bugs; and the fleet re-witness, which
+should be LAST because everything above moves shipped code.
+
+**THE KICKCAT RULING, and it is the inverse of what the reality check was set up to produce.**
+KickCAT's `AbstractSPI` holds chip select across two `transfer()` calls and KickOS refuses that at
+two levels on purpose. **KickOS is right and the demand is DECLINED**: `nseg` under one CS bracket
+already expresses the LAN9252 shape, and the split form only suits a memory-mapped
+single-address-space backend -- KickCAT's own NuttX and Linux backends would both be better served
+by the segmented form. `KOS_EP_MSG_MAX` is NOT a constraint (every LAN9252 transfer is at most
+about 35 bytes against a 212-byte limit), so nobody should widen it for this. The open question is
+LATENCY, not shape, and it needs a measurement.
+
+**RECOVERED, and it was one day from being unrecoverable.** The two KickCAT commits this file
+credits with the master-relaunch fix (`8bc3d63`, `cf7ec6f`) were reachable from ZERO branches --
+the `kickos-backend` branch was rewritten and squashed them away -- surviving only in a reflog
+whose unreachable expiry is 30 days, at exactly 30 days old. They are now held by
+`backup/k64f-master-relaunch-20260817` in the KickCAT repo, local and unpushed. The behaviour is
+back in KickCAT HEAD: all three `freedom_k64f_*_map_example.cc` call a bare `bus.init(100ms)` with
+no retry wrapper.
+**DO NOT RESTORE THEM, and this is a ruling rather than a deferral.** A retry around `bus.init` on
+the MASTER, and widening its link timeout, are both workarounds for a defect that lives in the
+SLAVE: the standard requires a slave to handle a return to INIT properly, and one raising
+`INVALID_MAILBOX_CONFIGURATION` because it validated its mailbox SyncManager mid-reset is not doing
+that. The two commits are kept as EVIDENCE of the failure mode and of what was measured, not as the
+fix. The real work is slave-side ESM, it is KickCAT's, and it is out of scope here.
 
 **`pizero2350` IS RE-WITNESSED AT `ce34ac66`, BOTH ARMS, and it is the only board reachable
 without an operator** (BOOTSEL in, `KICKOS_SHUTDOWN_TO_BOOTLOADER` out, so the loop is unattended).
@@ -852,7 +983,7 @@ regions. Refused, because `docs/design-task-layer.md` defines a task as the set 
 ONE memory domain, so a member that shares the task but not its domain makes the definition false --
 two answers to "what memory do this task's threads see" is precisely the second truth the tiebreaker
 forbids. The right decomposition is a task of its own, and the only thing stopping that is that a
-task is also the kill group; separating "shares memory" from "dies together" is M5-scale.
+task is also the kill group; separating "shares memory" from "dies together" is M6-scale.
 **What landed is the deletion of the declaration that lied.** `drv::Thread::mem_grant`'s only reader
 was an OR-reduction into the group's grant, and it equalled `arg == KOS_DRV_ARG_BLOCK` in all
 TWELVE production descriptors, so it was a second truth twice over. `bring_up` now hands the task the block
@@ -1122,6 +1253,15 @@ artifact that can be deleted, which is why this tree mutation-tests them:
   namespace and emits unmangled GLOBALS into libkickos's public C surface; `static` is what survives
   it. 19 symbols across four backends, and the seventh site was found by an `nm` CLASS sweep that a
   construct scan cannot see. The gate refuses a file it cannot count rather than reading it clean.
+
+**`check_c_headers.sh` COMPILES WITH NO `-D` AT ALL, so a C-facing header is only ever checked in
+its DEFAULT branch.** Found in M5 while adding a Kconfig-driven seam. Any C-facing header that
+grows a `#if KICKOS_<knob>` has its other arm compiled by nothing, on any board, and the gate still
+reports PASS over its full corpus. Not triggered yet: the seam that found it lives in
+`arch/include/kickos/arch/arch.h`, which is deliberately C++-only and correctly outside that
+corpus. **Not fixed on purpose** -- widening it means compiling every header under a matrix of knob
+values, which wants measuring before it is built, the same way the doc gate's path half was
+measured at roughly 3 percent precision and REFUSED.
 
 **The selftest arm count is an EXACT FLOOR per posture** in `user/apps/common/selftest/CMakeLists.txt`
 (`_tap_arms`, plus the independent partition `_tap_arms_p1` + `_tap_arms_p2` for the two-image split,
@@ -1400,13 +1540,22 @@ nothing to land.
   +4,096 B, `frdmk64f{,-st} +MPU` +7,072 B), so static-RAM growth in a SHARED test now breaks those
   links on the POOL assert rather than the boot one. `bluepill-c8` has no ctest gate and no unit, so
   only a full-fleet build catches it. **Neither board is silicon-witnessed.**
-- **A per-chip `arch_console_reclaim` body exists only on `mk64f`, `xmc4800`, `esp32` and
-  `esp32c6`** -- FOUR, not three -- so elsewhere a driver death flips the state and the polled
-  route works but the DEVICE is whatever the dead driver left. Per-chip bodies are fleet work;
-  `roadmap.md`'s sub-milestone ledger says which number that is.
-- **`arch_console_flush_sync` is a DEVICE drain and only `mk64f` and `xmc4800` have a body**, so on
-  every other board `kickos_terminate` empties the console RING and then stops the core with
-  whatever is still in the UART FIFO. `arch.h` used to document the seam as a clock-retune hook
+- **CLOSED IN M4.9.2, and this entry said FOUR until the count was re-derived from the tree:
+  EIGHT chips carry `arch_console_reclaim` and the same eight carry
+  `arch_console_reclaim_window`** -- `mk64f`, `xmc4800`, `esp32`, `esp32c6`, `rp2040`, `rp2350`,
+  `imxrt1062` and `rx72m`, plus the sim's window. The four without either are
+  `stm32f302`, `stm32f411`, `stm32f103` and `sam3x8e`, which are exactly the four
+  console-publishing chips with NO userspace console driver, so a reclaim there has nothing to
+  reclaim from and the debt is the DRIVER's, not the seam's.
+  **Derive this count, never quote it**: the first sweep written for it missed every
+  `_window` body because the pattern was anchored too tightly, and returned zero.
+- **`arch_console_flush_sync` is a DEVICE drain and NINE chips have a body** (the eight above plus
+  `stm32f302`), where this entry claimed two. The three still on the fallback are `stm32f411`,
+  `stm32f103` and `sam3x8e`, so on those `kickos_terminate` empties the console RING and then
+  stops the core with whatever is still in the UART FIFO.
+  **What IS still thin is `arch_console_retune`, which has exactly TWO bodies**, `mk64f` and
+  `xmc4800`: the six chips that gained a console driver during the driver era have a flush and no
+  retune, so a clock change under a userspace console on any of them re-derives no baud. `arch.h` used to document the seam as a clock-retune hook
   only, which is HOW the terminal path ended up with no drain: it read as "no retune, no body
   needed". The seam now states both callers and the bound the panic path needs, `kickos_terminate`
   calls it, and `stm32f302` has a body waiting on `ISR.TC`. **NO WITNESS** -- this is argued from

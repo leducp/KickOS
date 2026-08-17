@@ -429,4 +429,15 @@ void kos_kernel_diag_led_toggle(void)
 {
     arch_syscall(KOS_SYS_DIAG_LED_TOGGLE, 0, 0, 0, 0);
 }
+
+#if defined(KICKOS_BENCH) && KICKOS_BENCH
+static_assert(sizeof(kos_bench(0, 0, 0)) == 4, "must be exactly 4 bytes");
+
+int32_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1)
+{
+    return static_cast<int32_t>(arch_syscall(KOS_SYS_BENCH, static_cast<uintptr_t>(op),
+                                             static_cast<uintptr_t>(a0),
+                                             static_cast<uintptr_t>(a1), 0));
+}
+#endif
 }

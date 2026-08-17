@@ -9,6 +9,8 @@
 #ifndef KICKOS_SYS_ATOMIC_H
 #define KICKOS_SYS_ATOMIC_H
 
+#include <stdint.h>
+
 #include <atomic>
 
 #define KICKOS_ATOMIC_INLINE inline __attribute__((always_inline))
@@ -17,21 +19,48 @@ namespace kickos
 {
 
 // No default: every declaration names its ordering.
-enum class Order
+//
+// ACQUIRE and RELEASE are separate bits because they order OPPOSITE ACCESSES of the same
+// field: ACQUIRE is spent by the load, RELEASE by the store. A field one thread publishes
+// and another consumes needs BOTH, and names both. Either alone is legal and buys nothing
+// on its own, since an acquire with no release behind it synchronizes with nothing; the
+// split exists so a declaration cannot pay for the half it does not use.
+//
+// There is no spelling for seq_cst, and no way to override the ordering at a call site: an
+// order omitted at one access out of ten is silent, so it is fixed by the TYPE.
+enum class Order : uint8_t
 {
-    RELAXED
+    RELAXED = 0u,
+    ACQUIRE = 1u, // the load
+    RELEASE = 2u  // the store
 };
 
-constexpr std::memory_order std_order(Order order)
+constexpr Order operator|(Order a, Order b)
 {
-    std::memory_order mo = std::memory_order_seq_cst; // an unmapped ordering must not weaken
-    switch (order)
+    return static_cast<Order>(static_cast<uint8_t>(a) | static_cast<uint8_t>(b));
+}
+
+constexpr bool order_has(Order order, Order bit)
+{
+    return (static_cast<uint8_t>(order) & static_cast<uint8_t>(bit)) != 0u;
+}
+
+constexpr std::memory_order std_load_order(Order order)
+{
+    std::memory_order mo = std::memory_order_acquire;
+    if (not order_has(order, Order::ACQUIRE))
     {
-        case Order::RELAXED:
-        {
-            mo = std::memory_order_relaxed;
-            break;
-        }
+        mo = std::memory_order_relaxed;
+    }
+    return mo;
+}
+
+constexpr std::memory_order std_store_order(Order order)
+{
+    std::memory_order mo = std::memory_order_release;
+    if (not order_has(order, Order::RELEASE))
+    {
+        mo = std::memory_order_relaxed;
     }
     return mo;
 }
@@ -45,16 +74,16 @@ public:
 
     // always_inline is load-bearing, not a hint: at -Os GCC emits an out-of-line copy and
     // every access becomes a call.
-    KICKOS_ATOMIC_INLINE operator T() const { return v_.load(MO); }
+    KICKOS_ATOMIC_INLINE operator T() const { return v_.load(LOAD_MO); }
 
     KICKOS_ATOMIC_INLINE Atomic& operator=(T v)
     {
-        v_.store(v, MO);
+        v_.store(v, STORE_MO);
         return *this;
     }
 
-    KICKOS_ATOMIC_INLINE T load() const { return v_.load(MO); }
-    KICKOS_ATOMIC_INLINE void store(T v) { v_.store(v, MO); }
+    KICKOS_ATOMIC_INLINE T load() const { return v_.load(LOAD_MO); }
+    KICKOS_ATOMIC_INLINE void store(T v) { v_.store(v, STORE_MO); }
 
 private:
     static_assert(sizeof(T) <= 4, "wider than a word: keep the field volatile, not atomic");
@@ -64,7 +93,12 @@ private:
                       and alignof(std::atomic<T>) == alignof(T),
                   "std::atomic must be a drop-in for the plain field");
 
-    static constexpr std::memory_order MO = std_order(ORDER);
+    static_assert(static_cast<uint8_t>(ORDER)
+                      <= (static_cast<uint8_t>(Order::ACQUIRE) | static_cast<uint8_t>(Order::RELEASE)),
+                  "Order carries a bit that names no ordering");
+
+    static constexpr std::memory_order LOAD_MO = std_load_order(ORDER);
+    static constexpr std::memory_order STORE_MO = std_store_order(ORDER);
 
     std::atomic<T> v_;
 };

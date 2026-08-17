@@ -481,6 +481,19 @@ int kos_mem_self_grant(void* base, size_t size);
 void kos_kernel_diag_led_set(int on);
 void kos_kernel_diag_led_toggle(void);
 
+#if defined(KICKOS_BENCH) && KICKOS_BENCH
+// The microbenchmark's own scaffolding, and the ONLY way an app reaches it: every helper
+// behind it reads kernel .data or a core peripheral, so calling one directly runs it at
+// the APP's privilege and faults (root is unprivileged on every board with a unit).
+// `op` is an enum kos_bench_op (abi.h); the meaning of a0/a1 and of the return is per-op
+// and documented there. Returns -KOS_EINVAL for an unknown op or a bad IRQ line.
+//
+// int32_t, not `long`: this crosses the trap boundary, where `long` is 4 bytes on the
+// cross toolchains and 8 on the host. Same rule as the byte-count returns above, and the
+// static_assert in user/src/syscall_stubs.cc pins it.
+int32_t kos_bench(uint32_t op, uint32_t a0, uint32_t a1);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

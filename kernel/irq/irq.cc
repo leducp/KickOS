@@ -197,7 +197,7 @@ namespace kickos
     int irq_wait(Thread* c, uint32_t cap_handle)
     {
         IrqBinding* b = nullptr;
-        uint64_t epoch = 0;
+        uint32_t epoch = 0;
         {
             IrqLock lock;
             int err = 0;
