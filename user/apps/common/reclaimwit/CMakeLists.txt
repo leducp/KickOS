@@ -39,4 +39,31 @@ if(KICKOS_CONSOLE STREQUAL "both")
   target_compile_definitions(reclaimwit_drain PRIVATE KICKOS_RW_RTT=1)
 endif()
 
-# No CTest gate: PASS is an operator reading a silicon wire.
+# These gate the ownership state machine, not a per-chip reclaim body rewriting real UART
+# registers, which stays an operator reading a silicon wire.
+# The service list must be kickos_services_none or the app refuses at run time, so the gate
+# would fail by construction instead of witnessing anything.
+if(KICKOS_BUILD_TESTS AND KICKOS_SERVICE_LIST STREQUAL "kickos_services_none")
+  if(KICKOS_ARCH STREQUAL "sim")
+    add_test(NAME sim_reclaimwit_park
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh"
+              "$<TARGET_FILE:reclaimwit>" park)
+    add_test(NAME sim_reclaimwit_drain
+      COMMAND "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh"
+              "$<TARGET_FILE:reclaimwit_drain>" drain)
+    set_tests_properties(sim_reclaimwit_park sim_reclaimwit_drain PROPERTIES TIMEOUT 120)
+  elseif(KICKOS_BOARD IN_LIST KICKOS_QEMU_MPS2_BOARDS
+         OR KICKOS_BOARD STREQUAL "microbit"
+         OR KICKOS_BOARD STREQUAL "qemu-riscv")
+    # Board name as a CTest-name prefix, as the qemu gates spell it.
+    string(REPLACE "-" "_" _rw_tag "${KICKOS_BOARD}")
+    # The park arm is polled and killed, so its TIMEOUT must clear the poll bound
+    # (QEMU_TIMEOUT * 5 polls at 0.2 s) rather than the boot.
+    kickos_add_qemu_test(NAME ${_rw_tag}_reclaimwit_park TARGET reclaimwit
+      BOARD ${KICKOS_BOARD} TIMEOUT 120
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh" ARGS park)
+    kickos_add_qemu_test(NAME ${_rw_tag}_reclaimwit_drain TARGET reclaimwit_drain
+      BOARD ${KICKOS_BOARD} TIMEOUT 120
+      SCRIPT "${PROJECT_SOURCE_DIR}/tests/integration/check_reclaimwit.sh" ARGS drain)
+  endif()
+endif()

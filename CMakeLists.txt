@@ -808,6 +808,11 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(forever_loop PROPERTIES TIMEOUT 120 LABELS host)
 
+  _add_test(NAME atomic_rmw
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_atomic_rmw.sh"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(atomic_rmw PROPERTIES TIMEOUT 120 LABELS host)
+
   # The KICKOS_SERVICE_LIST axis. A provider is created inside its chip's branch of
   # system/CMakeLists.txt, so THIS board compiles at most its own and can say nothing
   # about the rest; the gate reads the source tree and the preset files instead of the
@@ -1187,6 +1192,31 @@ if(TARGET kickos_core)
   target_include_directories(kickos_core INTERFACE
     "$<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/generated/include>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+endif()
+
+# The C-facing header gate, registered HERE and not beside the static gates above because it
+# needs KICKOS_ARCH_INCLUDE_DIR (set by add_subdirectory(arch)) and the header generated just
+# above. Everything else it reads is the source tree, so no build fixture; and it runs on every
+# board with THAT board's C compiler and arch header, which is what a consumer's C main gets.
+if(KICKOS_BUILD_TESTS)
+  if(NOT CMAKE_C_COMPILER)
+    message(FATAL_ERROR "No CMAKE_C_COMPILER, so the C-facing headers cannot be compiled as C "
+                        "and check_c_headers.sh would have nothing to run. project() declares "
+                        "LANGUAGES C; a toolchain file that unsets the C compiler must be fixed.")
+  endif()
+  set(_kos_c_hdr_roots "${PROJECT_BINARY_DIR}/generated/include")
+  # The per-arch, per-chip and per-board roots: several arch directories provide the same
+  # kickos/arch/context.h, so the gate takes the one this board builds instead of deriving all.
+  foreach(_d KICKOS_ARCH_INCLUDE_DIR KICKOS_CHIP_INCLUDE_DIR KICKOS_BOARD_INCLUDE_DIR)
+    if(${_d})
+      list(APPEND _kos_c_hdr_roots "${${_d}}")
+    endif()
+  endforeach()
+  _add_test(NAME c_headers
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_c_headers.sh"
+                    "${CMAKE_C_COMPILER}" ${_kos_c_hdr_roots}
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(c_headers PROPERTIES TIMEOUT 120 LABELS host)
 endif()
 
 # --- Install / export: the dependency-inversion package --------------------

@@ -35,6 +35,8 @@
 # --- source-tree and host-program gates --------------------------------------
 host   src    tests/integration/check_oot_export_mcu.sh
 host   src    tests/static/check_ascii.sh
+host   src    tests/static/check_atomic_rmw.sh
+host   src    tests/static/check_c_headers.sh
 host   src    tests/static/check_class_backend.sh
 host   src    tests/static/check_doc_names.sh
 host   src    tests/static/check_extern_c_linkage.sh
@@ -84,6 +86,7 @@ image  src    tests/integration/check_qemu_panicgate.sh
 image  src    tests/integration/check_qemu_ringppb.sh
 image  src    tests/integration/check_qemu_selftest.sh
 image  src    tests/integration/check_reboot.sh
+image  src    tests/integration/check_reclaimwit.sh
 image  src    tests/integration/check_rootfault.sh
 image  src    tests/integration/check_sched_exit.sh
 image  src    tests/integration/check_sim_conabi.sh
