@@ -120,18 +120,28 @@ to all 20.
       content hash would answer without perturbing code size. While it stands, **"byte-identical
       image" is not a claim this tree can make** -- and `docs/reference/boards.md:2199` makes it,
       correct in intent ("Tree identity is the test, not hash identity") but wrong in wording.
-- [ ] **The package ships a C ABI whose C-ness nothing checks.**
-      `tests/static/check_public_headers.sh:45` compiles every installed header with `-x c++` at the
-      standard its one caller passes (`c++17`, `check_oot_export.sh:47`); there is no C leg
-      anywhere. The tree contains zero `.c` files, `user/apps/common/hello_c` is `main.cc`, and
-      both `examples/oot-app` and `examples/oot-mcu-app` are C++. Re-measured 2026-08-06:
-      `gcc -std=c11` over the 58 installed headers passes **25** and fails **33**. Some are C++ by
-      design and should be EXCLUDED rather than fixed (`kos.h` is the RAII wrapper, `list.h` the
-      intrusive template); the `sys/` ones are not, and `sys/` IS the C ABI surface --
-      `sys/bytes.h:18-19,28` uses `static_cast`, while `sys/uart_service.h:37` and
-      `sys/spi_service.h:24` fail for a different reason, including the C++ `<kickos/kos.h>`. Fix
-      is a C gate beside the C++ one with an explicit exclusion list, so the split is stated
-      rather than discovered. API-surface work, not M4.7.
+- [ ] **The C surface is gated on the INSTALLED package only, not per board.**
+      `tests/static/check_public_headers.sh` now carries a C11 arm beside the c++17 one. Its
+      corpus is DERIVED, not listed: a header whose code guards `extern "C"` with
+      `__cplusplus`, plus that header's include closure (24 of 63 headers on a sim package).
+      No exclusion list to rot -- `sys/bytes.h`, `sys/spi_service.h` and `kos.h` carry no
+      guard at all, so they never claimed C and the rule drops them by itself. `arch/include/kickos/arch/arch.h`
+      now states C++-only with an UNGUARDED `extern "C"`, which also takes the per-arch
+      `context.h` (`alignas`) out of the corpus with it.
+      What is left: the one caller (`check_oot_export.sh`) installs ONE board's package and
+      uses the host `gcc`, so the per-arch `context.h` of the other five arches and every chip
+      header are unchecked as C. A sibling branch's `check_c_headers.sh` walks the SOURCE tree
+      per board with that board's own cross compiler; the two are complementary, and the
+      shared derivation should end up in one place instead of two.
+- [ ] **`abi.h`'s p-state enum is C++11/C23, not C11.** `user/include/kickos/sys/abi.h`
+      declares `typedef enum kos_pstate_e : uint32_t`, and a fixed underlying type is
+      something C did not adopt until C23. GCC accepts it as an extension and says nothing
+      without `-pedantic`, which `KICKOS_WARN_FLAGS` does not set, so it is invisible to both
+      of the things that now compile C: `hello_c` (the tree's only `.c`) and the C11 arm
+      above. It breaks the day anyone adds `-pedantic` to a C app, or a stricter C compiler
+      reads the header. Recorded, not fixed, on purpose: nothing is broken today. The fixed
+      32-bit width IS the stable ABI here, so the fix keeps it -- an unnamed `enum` for the
+      three values plus a plain `typedef uint32_t kos_pstate_t`, not a narrower enum.
 
 ## M4.7.8 -- the timed wait and the reaper init
 
@@ -2317,11 +2327,356 @@ vendor reset interface.
       the USB design on an unproven premise. Answer it from the datasheet, and confirm it by
       measurement on the part.
 
-## M4.9.2..N (was M4.6.3..N) -- the fleet-wide witness pass, and whatever it turns up
+## M4.9.2 -- the substrate says what it means
+
+Three strands, the first two of which need no board.
+
+### The `volatile` -> relaxed `std::atomic` conversion
+
+Moved here from M5 rather than left recorded in three places. `docs/design-m5-smp.md` carries the
+reasoning and now records what is DONE and what is residue; `docs/reference/style.md` states the
+rule.
+
+- [x] **The codegen claim was VERIFIED, not trusted, and it held on all five backends.** A relaxed
+      32-bit load and store compile to the same single instruction as `volatile` on armv6m
+      (`cortex-m0plus`), armv7m, `rv32imac`, rxv3 and Xtensa LX6. Two things the claim did NOT
+      cover, both measured:
+      - **64-bit is a libcall everywhere**, `__atomic_load_8`, including on Cortex-M4, and a
+        freestanding link has no libatomic. So a 64-bit cross-thread field stays `volatile` with the
+        reason at the site: `Thread::switch_count` through the cast in `kernel/sync/sync.cc`,
+        `kernel/bench/bench.cc`'s `g_irq_entry_ns`, and the selftest's hog deadline.
+      - **`is_always_lock_free` is 0 on armv6m and rxv3** even though the load and the store are
+        inline plain instructions there, because RMW is not. So no `static_assert` on it, and no
+        `fetch_add` anywhere: every converted field has one writer.
+      Byte-wide atomics cost one redundant `uxtb` per load on ARM. Accepted.
+- [x] **`byte_ring.h` keeps its C validity through a two-spelling shim.** It is the one shared-memory
+      struct a C driver may have to name, so `KOS_ATOMIC_U32` is `std::atomic<uint32_t>` in C++ and
+      `_Atomic uint32_t` in C. Both spellings agree on layout, checked on armv6m: 20 bytes, 4-aligned.
+      Every other header spells the C++ type directly.
+
+### What the conversion's sweep FOUND, none of it about atomics
+
+- [x] **`arch_irq_inject` had no `IrqLock` on riscv and xtensa, and now does.** An unbracketed read-modify-write on
+      `g_irq_pending` plus an unlocked read of `g_irq_masked`, while an ISR reaching `arch_irq_mask`
+      or `arch_irq_clear_pending` RMWs the same words. `arch/rx/rxv3/arch_rxv3.cc` and
+      `arch/sim/sim.cc` bracket theirs correctly and are the shape to copy. A MISSING LOCK, not a
+      missing atomic.
+- [x] **`esp32` had an `arch_console_reclaim` body and NO `arch_console_reclaim_window`.** It was the
+      only chip in the fleet with that pairing missing, and `console_on_driver_death` skips the
+      `dev_window_free` precondition ENTIRELY when `win_size` is 0. So on `esp32-wroom` the reclaim
+      could fire on the service thread's death while the IRQ thread still held UART0 and silence its
+      source, parking it forever -- the exact failure `kernel/init/console.cc` describes and that the
+      paired chips are paired to prevent. **The fix does bite on that board**: `lx6uart` gives the
+      IRQ thread `window_grant` and the service thread none, both spawned unprivileged, so the
+      composition records the DEV region and `dev_window_free` really does see a holder and refuse.
+      The window is `UART0_BASE` + `0x1000`, which the grant and TRM Table 3.3-6 agree on.
+- [x] **`esp32c6` and `esp32` had no `arch_console_flush_sync`**, so `kickos_terminate` emptied the
+      console ring and stopped the core with whatever was still in the UART FIFO. Both bodies poll
+      FIFO-empty AND the transmitter state machine idle, never FIFO-empty alone, which is the
+      mistake `arch/include/kickos/arch/arch.h` calls out. The two chips differ in what the manual
+      gives you: the classic ESP32 TRM enumerates `UART_ST_UTX_OUT` outright (`0: TX_IDLE`), while
+      the C6 TRM names the field and not its encodings, so THAT one rests on the reset value and
+      says so at the constant rather than claiming documentation it does not have.
+- [x] **`rp2040`, `rp2350` and `rx72m` had NONE of the three seams**, and all three have a real
+      publishing driver, so a console-driver death left the DEVICE however the dead driver left it.
+      **Every chip that publishes is now three of three**: mk64f, xmc4800, esp32c6, esp32, rp2040,
+      rp2350, rx72m. `stm32f302` stays flush-only, having no userspace console driver.
+      Three things the writing turned up that the survey had wrong or missed:
+      - **rp2350's console is UART1 on GP4/GP5, not UART0.** Only UART1 muxes to those pins.
+      - **The RP window is the whole `0x4000` APB slot, not the `0x1000` register block**, because
+        the SET/CLR/XOR atomic aliases at `+0x1000/+0x2000/+0x3000` write the SAME registers under a
+        different address. A holder granted only an alias would not overlap a `0x1000` report.
+      - **`rx72m` has levers no other chip has.** `SIMR3.IICSDAS = 10b` drives TXD6 LOW, and
+        `SIMR1.IICM` puts the channel in simple I2C mode on the same pin. Either leaves a correct
+        UART configuration talking to a dead wire.
+- [x] **The reclaim window invariant is ONE-WAY, and saying otherwise would have added a second
+      truth.** It must COVER every register the reclaim writes, which each chip's `static_assert`
+      enforces locally. It does NOT have to equal the service-list grant: `dev_window_free` tests
+      OVERLAP, so any holder able to reach a register the reclaim writes has a grant overlapping
+      that register and therefore overlapping the window. Widening a grant alone can never open a
+      hole, and coupling the two literals across `arch/` and `system/init/` would buy nothing.
+- [x] **`kernel/bench/bench.cc`'s `g_irq_entry_ns` was written and never read, and DELETED.** Its
+      comment claimed it served "the frozen-counter arches", but there is no `t0_ns` anywhere to
+      subtract it from, so that path was never built rather than a reader having been lost -- which
+      is what the sweep had to establish before touching it.
+      **IT MOVES A MEASURED NUMBER, so do not compare an IRQ-latency figure across this commit.**
+      The write was an `arch_clock_now()` call sitting INSIDE the bench handler, between the cheap
+      cycle stamp and the seen flag, so it inflated every IRQ-entry sample on every arch, including
+      the ones that had a cycle counter and never needed it. Removing it makes the number smaller,
+      and that is an instrument change, not a system improvement. Any archived bench figure was
+      taken with the extra call in the handler.
+      Adding a wall-clock path later means sampling the same clock on BOTH sides of the raise; a
+      stamp at one end alone can never yield an interval.
+- [x] **`docs/reference/style.md` marked FOUR rules `gated` and not one gate existed** -- `while
+      (true)`, include guards, ASCII-only and the SPDX header. Nothing in `tests/static/`,
+      `CMakeLists.txt`, `cmake/` or `ci.yml` checked any of them. It is the document that replaced
+      `.clang-format`, so the false mark is what would stop a reviewer looking. Writing the four
+      gates found 131 pre-existing violations, which says the marks had never been true.
+- [x] **`check_doc_names.sh`'s comment stripper scanned `/* */` BEFORE `//`**, so a `/*` inside a
+      line comment opened a block that never closed and every identifier after it dropped out of
+      the valid set. Silent under-coverage: the gate still passes, on fewer names. It bit twice in
+      one session, both times on a comment naming a path glob. Proven both ways -- planting the
+      shape ahead of `KOS_RING_BARRIER`, the only definition of that name, takes the old stripper
+      from 697 identifiers to 696 and leaves the fixed one at 697, and both agree on a clean tree.
+      The scan now takes whichever marker comes FIRST.
+
+### One definition per non-template body
+
+- [x] Non-template bodies moved out of `driver_service.h`, `uart_service.h` and
+      `usb_cdc_service.h` into `user/src/`, as M4.9.1 did for `console_ring.h`. Two hazards the
+      survey predicted, both real: `irq_pass` and `dev_shutdown` are each a non-template plus
+      template overload pair, so a declaration must stay in the header or the template silently
+      wins (proven both ways, by the `nm` mangling and by deleting the declaration); and
+      `tests/unit/drvbringup` deliberately does NOT link `kickos_user`, so it needed the new `.cc`
+      in its own `SOURCES`.
+      **`spi_service.h` CANNOT move and stays inline**, which the survey did not predict.
+      `system/driver/mk64f/k64dspi/CMakeLists.txt` compiles the service with
+      `-Dkos_spi_device_open=k64dspi_device_open` and three more: two targets over one engine, the
+      class symbols renamed so a consumer reaching the public names through `kickos_spi_proxy` does
+      not collide. A `-D` rename applies only where the CALLER is compiled, so one body in
+      `libkickos_user.a` would call a public name the service never defines. It failed to link on
+      `frdmk64f` and `xmc4800-relax`, and the header now says why it is exempt so the next reader
+      does not repeat the move.
+      **The UART needed a second TU**, `user/src/uart_service_dev.cc`, for the three bodies that
+      call the link-chosen `kos_uart_*`: in one TU with the ring side they made the ring member
+      undefined on any board with no UART backend, and the sim's `selftest` calls
+      `uart::shared_init`.
+- [x] **`KOS_RING_BARRIER` is the one build knob that is not global**, an out-of-tree `-D` escape
+      hatch no CMake file sets. A ring body compiled into `libkickos_user.a` bakes the default
+      compiler-only barrier while a consumer's own TU still gets their `-D`.
+      `user/src/console_ring.cc` already carries that exposure from M4.9.1, so the class is not new.
+      The real answer is a release store on the now-atomic index, which is M5.
+
+### The i.MX RT1062 USB backend, IN this milestone and NOT working yet
+
+A new chip backend, folded in by ruling rather than split off. It is written, build-verified
+fleet-wide, and it FAILS ON SILICON at a known point. Do not read it as landed.
+
+- [x] The backend exists: `system/driver/imxrt1062/rt1062usb/` (~721 lines, EHCI-derived dQH/dTD
+      lists, RM ch. 42 cited at every register), a `kickos_services_teensy41_usbcdc` list, and the
+      `KICKOS_IMXRT_DCACHE=OFF` posture that `design-m4.6.2-usb-cdc.md` section 4.3 chose as
+      stage 1. Stage 3, the non-cacheable MPU attribute, is NOT attempted and still needs the
+      grant encoder to express it.
+- [x] `imxrt1062` gained the three console seams and the diag LED, all of which it lacked. The
+      LED matters more than it sounds: `kfault_terminate`'s 3-blink pattern already existed and
+      was board-agnostic, so the chip was simply throwing it away. **`docs/reference/boards.md`
+      was wrong in three places** about this board having no LED; `regs/iomuxc.h` had named the
+      pad all along, and a `blink` capture confirmed it.
+- [ ] **THE THREAD STOPS MAKING PROGRESS, AND WHAT STOPS IT IS STILL OPEN.** Read the
+      paragraph below for what the clock and window measurements establish, and then the
+      one after it for why "the grant" is NOT the settled answer it was written up as.
+      (`m492te`, banner `7040afe7`, log `.session/logs/m492te-teensy41-selftest.log`).
+      The `[usbclk]` line reads `ccgr6=fc3fc3 pll1=80003040 phyctrl=28200000 phypwd=0
+      id=e4a1fa05`. Every clock precondition is met -- CCGR6[CG0] usboh3 gated on, PLL_USB1
+      LOCK set and BYPASS clear, the PHY fully powered -- and `id` is exactly `ID_RESET`.
+      **The kernel reads USB1 at 0x402E0000 and the controller answers. The unprivileged
+      driver thread reads the same address and dies on it**, its breadcrumb stopping at
+      `STAGE_PROBE`, which is set immediately before that read. The two accesses differ in
+      one thing only, the MPU, so the bus, the clock, the PHY and the reset sequence are all
+      out. The controller sequence has never yet been reached, let alone tried.
+- [ ] **"DIED AT STAGE X" IS THE DRIVER'S WORD, NOT A MEASUREMENT, AND READING IT AS ONE IS
+      WHAT PUT THE GRANT IN THE DOCK.** Root prints `a driver thread never reached its loop`
+      after `drv::bring_up` times out waiting for the ready latch; the breadcrumb records
+      where the thread HAD GOT TO when that timeout fired. Every stage report in this
+      investigation means "was still at stage X when bring_up gave up", never "died there".
+      **NEITHER SILENCE IS EVIDENCE, and reading them as evidence was the third wrong
+      inference of this chase.** The missing `=== THREAD FAULT ===` line is DESIGNED
+      behaviour on this path: `kvprintf_route` does call `kconsole_write` unconditionally,
+      but `console_emit` DROPS in `ConsoleState::USER_OWNED` (`kernel/init/console.cc`),
+      and `user/src/driver_service.cc` publishes the console BEFORE it spawns the driver
+      threads. So from the spawn to the unwind every kernel-console write is dropped, fault
+      reports included -- which `rt1062usb.cc` already states in its own header comment.
+      `faultsurvive` prints on the other four boards because those runs never publish: the
+      STATE differs, not the code path. And a steady dark LED rules out a kernel PANIC only,
+      because `kickos_thread_fault_exit` ends at `sched::exit_current(KOS_EXIT_FAULT)` and
+      the 3-blink `kfault_terminate` is reached from the panic path alone.
+      **So the fault path is back, and in the normal build it is the ONLY survivor.** The
+      window between `STAGE_PROBE` and `STAGE_RST_WRITE` is a `set_stage`, one `r32` load, a
+      relaxed store and a `set_stage`: no syscall, no loop, nothing that can block or yield.
+      The thread there can only fault, stall the bus, or still be running, and the last two
+      at a single load would take the core with them -- root printed afterwards.
+      **The `KICKOS_RTUSB_UNGRANTED_PROBE` control does NOT discriminate, for a second
+      reason on top of its `kos::print`:** `USBPHY1` is itself an off-platform AIPS
+      peripheral, so the bridge hypothesis below and the MPU hypothesis predict the same
+      death. A discriminating control needs an ungranted RAM address, which only the MPU
+      can refuse.
+- [x] **THE MPU GRANT IS PROGRAMMED, AND THAT IS A CLEAN NEGATIVE.** Region budget is not it
+      (`imxrt1062` installs 3 fixed rows, worst case per-thread is 5, and the board booting
+      proves DREGION is 16). No static row overlaps `0x40000000-0x5FFFFFFF`. The shape is
+      legal: 512 B, power of two, 512-aligned. Nothing drops silently -- the syscall refuses
+      with a distinct errno and the one drop in `kickos_arm_mpu_program` is fail-closed and
+      cannot fire for this region. And decisively, `kernel/thread/thread.cc` writes
+      `[code, appdata, task-domain, window, stack]` into consecutive slots in one loop, and
+      silicon already witnesses the entries on BOTH sides of the window: the `blk->stage`
+      stores landed, which is why there is a breadcrumb at all, and the thread runs C++ with
+      locals on its own stack. The loop reached the far side, so the window went in.
+- [ ] **THE STANDING HYPOTHESIS IS THE AIPSTZ BRIDGE, NOT THE MPU, AND THE TREE ALREADY HAS
+      THE SEAM FOR IT.** `AIPSTZn_OPACR0..4` reset to `0x4444_4444`, which is Supervisor
+      Protect SET for every off-platform peripheral, and `MPR` resets so the bridge honours
+      the core's real `hprot[1]`. An unprivileged access to a SP=1 slot is terminated at the
+      bridge with an error response and never reaches the peripheral. That fits every
+      measurement: privileged kernel read answers, unprivileged read does not, MPU
+      irrelevant. `arch.h` already defines `arch_periph_enable` as "ungate the clock AND
+      drop the bus-side supervisor-protect", and `system/driver/mk64f/uart_k64.cc` is the
+      working precedent on the same vendor's bridge. `imxrt1062` defines no backend, so it
+      links the `-KOS_ENOSYS` default and `rt1062usb.cc` never calls it. The RP boards need
+      none, which is why nobody hit this before.
+- [ ] **IT FORCES A DESIGN DECISION AND THE ANSWER IS NOT OBVIOUS.** The AIPSTZ unit is a
+      16 KiB SLOT, and slot 24 holds USB1, USB2 at +0x200 and USBNC at +0x800 -- exactly the
+      three the 512 B window was chosen to exclude. `arch.h` grants a base an entry only
+      where the bus gate's granularity is CONTAINED by the block and refuses otherwise. On
+      this chip it is not contained, so `docs/design-m4.6.2-usb-cdc.md`'s "narrowest unit
+      that is its own" does not survive the RT1062. Either accept a coarse AIPS ceiling and
+      say so where the design doc claims otherwise, as `frdmk64f` already does, or keep the
+      driver privileged. NOT to be settled by whichever is easier to type.
+- [x] **SETTLED ON SILICON: IT IS A PRECISE BUS FAULT, SO IT IS THE BRIDGE.** `m492tg`,
+      banner `a47e3cc8`, log `.session/logs/m492tg-teensy41-selftest.log`:
+
+          === THREAD FAULT === thread 'rtusbirq' killed, system continues
+            PC=0x60014cf8 CFSR=0x8200
+            ADDR=0x402e0000
+
+      `CFSR=0x8200` is entirely the BusFault byte: BFSR `0x82` is PRECISERR plus BFARVALID,
+      and `BFAR` is the USB1 base. The MemManage byte is `0x00`, where an MPU denial would
+      have read DACCVIOL plus MMARVALID. So the AIPSTZ Supervisor-Protect hypothesis is
+      CONFIRMED and the MPU grant is exonerated by measurement as well as by code.
+      The line that carries this verdict did not exist until the console fallback landed in
+      the same session: three captures of inference could not settle what one word did.
+- [x] **RESOLVED, AND THE FRAMING BELOW WAS WRONG: THE TWO BARRIERS ARE INDEPENDENT.** The bus
+      gate and the MPU answer the same need by different means, and the MPU stays the
+      fine-grained authority. Opening the AIPS slot hands the driver nothing, because its
+      window is still 512 B and OTG2 and USBNC are outside it. What the containment rule
+      actually protects against is a coarse gate over KERNEL-RESERVED registers, and that is
+      satisfiable a second way: reserve the slot's remainder, and
+      `grant_region_admissible` refuses any window over it for every caller, privileged
+      included. So `arch_reserved_blocks` gained `USB1_BASE + 0x200` for `0x3E00`,
+      `arch_periph_enable` gained USB1, and `arch.h` now states both ways of satisfying the
+      rule instead of only containment. No policy was relaxed.
+      **WITNESSED: `m492tw`, arms 12..104, 93 captured, 0 skipped, 0 partial, over the
+      board's own USB CDC with no cable, unprivileged and under MPU enforcement.** The
+      RT1062 USB device backend WORKS.
+- [x] **The framing that was wrong, kept because it was written up as a decision for the
+      user and it was not one.** `arch.h` gives a base an `arch_periph_enable` entry ONLY where the
+      bus gate's granularity is CONTAINED by the block, and refuses otherwise. On `mk64f`
+      an AIPS slot is 4 KB and holds one peripheral, so `uart_k64.cc` is contained and
+      works. On the RT1062 the AIPSTZ unit is a 16 KiB SLOT holding USB1, USB2 at +0x200
+      and USBNC at +0x800 -- the three blocks the 512 B window was deliberately chosen to
+      exclude. Dropping SP for USB1 necessarily drops it for the other two.
+      Three ways out, and they trade different things:
+        1. Accept a coarse AIPS ceiling for this chip, say so where
+           `docs/design-m4.6.2-usb-cdc.md` section 6.4 claims "the narrowest unit that is
+           its own", and note that the MPU window stays 512 B so the driver still cannot
+           ADDRESS the neighbours -- the bridge is open, the MPU is not.
+        2. Keep the USB driver privileged, which honours the rule and gives up the
+           unprivileged-driver claim on this board alone.
+        3. Refuse the board for USB CDC and leave `teensy41` on its pin UART.
+      Option 1 is the smallest change and 2 is the most honest to the rule. NOT to be
+      settled by whichever is easier to type, and not settled here.
+- [x] **The two wrong inferences that preceded this, kept because both were argued
+      confidently.** The MMIO grant was called exonerated on the strength of a breadcrumb
+      stage that touches no register at all, and a dark LED was read as ruling out a fault
+      when a faulting driver thread is killed thread-scoped and its report DROPPED,
+      `drv::bring_up` having published the console before the spawn -- only a kernel PANIC
+      reaches the 3-blink path. What settled it was not a better argument but making the
+      kernel take the SAME read the driver dies on, so the two differ in one variable.
+- [ ] **The instrument is the lesson.** Two flashes with a breadcrumb in the driver's own block
+      localised this from "somewhere in a 721-line file" to one register, where the two flashes
+      before it produced only silence. The block is the only channel that survives the publish,
+      needing no console.
+
+### What the teensy41 bench measured, and the two defects it exposed
+
+- [x] **THE USB CONSOLE POSTURE COSTS ABOUT 6x ON IPC, MEASURED.** `m493dcon` versus
+      `m493dcoff` at `38e8122c`, teensy41 `bench`, `mpu enforce`: 61,124 ns per call/reply
+      round-trip with `KICKOS_IMXRT_DCACHE=ON`, 363,005 ns with it OFF, at 32 B. The ratio
+      runs 5.3x at 8 B to 6.3x at 256 B. Selecting a `_usbcdc` service list flips that knob
+      OFF by default, so the console choice silently buys the slowdown.
+      **The mechanism is XIP, not the arena.** The I-cache still covers instruction fetch,
+      but literal pools and `.rodata` are DATA reads, and with the D-cache off they reach
+      external QSPI flash, which the boot config block drives single-pad at 30 MHz. The
+      earlier reading that on-chip OCRAM2 bounds the damage was WRONG and is why this was
+      left unmeasured. With the cache on the figure is FLAT across payloads and with it off
+      it climbs, which is the tell that memory became the bottleneck.
+      So S7, a non-cacheable attribute on a dynamic grant, is a priority and not a nicety.
+- [ ] **`bench` DIES ON teensy41 BEFORE ITS SWITCH AND IRQ SECTIONS.** Both runs end with
+      `=== THREAD FAULT === thread 'root' killed`, `CFSR=0x82` (DACCVIOL plus MMARVALID),
+      `ADDR=0x20200038`, which is OCRAM2. The app's own header advertises context-switch
+      cost and IRQ-entry latency; neither ever prints. Not fallout from the MPU enable fix:
+      `imxrt1062` is the one chip that calls `kickos_arm_mpu_fixed_init`, so it enforced
+      before and after. So the D-cache figures above cover call/reply ONLY.
+- [ ] **A call/reply round-trip is about 24,000 cycles at 396 MHz and nothing explains it.**
+      61,124 ns with the cache ON, flat from 16 B to 256 B, so it is per-round-trip overhead
+      rather than copy cost: two switches, each with a full MPU reprogram. No other board has
+      a recorded call/reply figure to compare against, which is itself the gap.
+
+- [ ] **A DISJOINT-DEVICE CONSOLE SHOULD FALL BACK TO `KERNEL_OWNED` ON DRIVER DEATH, and that
+      kernel delta is unimplemented.** `docs/design-m4.6.2-usb-cdc.md` section 6.2 rules it.
+      Today the state goes `RECLAIMED` instead, which on a board whose reclaim target is a
+      different device from the published console yields a working channel anyway, so the two
+      differ in bookkeeping rather than in whether the board can speak. That is why it has
+      not bitten. Recorded here rather than in a per-board service list, which neither
+      implements nor depends on it.
+
+### What the selftest atomics pass left open
+
+- [ ] **`g_cd_lit_rc` and `g_cd_bad_rc` are PLAIN `long` globals with the worker-to-main shape
+      of the 56 cells that were just converted** (`selftest/main.cc` around 2408). Their
+      siblings `g_cd_goodspawn`, `g_cd_goodname_ran`, `g_cd_neg_ran`, `g_cd_badname_spawn`
+      and `g_cd_badname_ran` are plain `int` in the same pattern, and nothing in the file
+      says why these are plain while their neighbours are atomic. Either the semaphore
+      rendezvous is what serialises them, in which case ONE line at the declaration stops
+      the next sweep re-atomising them, or it is a gap. Deciding it also decides whether the
+      other 58 needed to be atomic at all, so it is not a local question.
+- [ ] **`g_prw` has two writer functions and nothing defends the accumulate.**
+      `periph_reg_write_worker` and `periph_reg_write_held_worker` both write it. They cannot
+      overlap today because the arm spawns one, waits, reads, then spawns the other. But the
+      `load | seen` accumulate is NOT load-bearing (the second read asserts only on bits the
+      second worker sets), so a plain store would pass too, and nothing records why it is an
+      accumulate.
+- [ ] **The two `unsigned char` accumulators should be `uint8_t`** under the fixed-width rule
+      in `docs/reference/style.md`. Left as-is because changing them also touches a cast at
+      each site.
+
+### Atomic manipulation goes behind kos helpers, never at a call site
+
+- [ ] **THE RULE, and it is broader than the counters:** a call site never spells a load, a
+      store or a memory order. Every atomic access is behind a `kos_` helper whose NAME
+      carries its contract. `Atomic<T, Order>` does this for the C++-only fields by putting
+      the ordering in the type; the C-facing `KOS_ATOMIC_U32` fields still need helpers.
+- [ ] **The counter helper, 21 sites.** Every increment in the tree is a load-then-store pair
+      on a `kos_uart_stats` field, across `uart_c6.cc`, `uart_lx6.cc`, `uart_k64.cc`,
+      `uart_sci.cc`, `rpusb.cc`, `rt1062usb.cc` and the sim service lists. Those fields are
+      `KOS_ATOMIC_U32` because `uart.h` is C-facing and includes `byte_ring.h`, so a C++
+      template cannot reach them: the helper must be a free function valid in both languages.
+      The name must state the SINGLE-WRITER precondition, because the pair is not atomic and a
+      second writer loses an update with no gate able to see it. NAME IT
+      `kos_counter_increment`, not `bump`, which is jargon and says nothing, and not
+      `kos_atomic_*`, which would claim an atomicity a load-store pair does not have.
+      `rt1062usb.cc` has a local `bump`; promote and rename rather than duplicate.
+- [x] **WHY THESE FIELDS ARE ATOMIC AT ALL, since the hardware does not need it.** A 32-bit
+      aligned load or store is a single instruction on all five backends, so single-writer
+      SPMC has no tearing to prevent. The reason is the LANGUAGE: plain concurrent access is
+      a data race and therefore UB, which licenses the optimiser to cache a value in a
+      register across a reader's loop, elide a store, or split an access. `volatile` blocks
+      elision but has NO defined concurrency semantics and does not order against
+      non-volatile accesses. A relaxed atomic is the minimal spelling that is DEFINED, and it
+      emits the same instruction, so the choice costs nothing. Relaxed is also SUFFICIENT
+      here: a reader sees the old or the new value and both are valid for an independent
+      counter. That stops being true the moment a counter's value implies something about
+      other data, which is M5's problem, not this one.
+- [ ] **Retire "a C driver" as a justification.** It is no longer a goal, so the comments in
+      `byte_ring.h` and `uart.h` that cite it must cite the C consumer APP surface instead.
+      This does NOT free the shim: `uart.h` carries the `kos_uart_stats` reply a C app names
+      and includes `byte_ring.h`, so both stay C-valid on the surviving reason.
+
+### The fleet-wide witness pass, and whatever it turns up
 
 **Last, because it is the only step that needs boards.** It is where every bench-gated item this file
 records comes due at once, and each of them is already written down where it was found. **M4.5.6's
 bench sessions closed most of what this list used to hold**; what remains is:
+
+- The three M4.9.1 captures predate the merged tree and want retaking: `usbcdcwit` on `pizero2350`,
+  the `picopi` `1..104` and the `teensy41` `1..104`. A witness belongs to a TREE.
 
 - `f411disco`'s `f411spi` stage-4 per-app authority witness -- the LAST of the three, and the only
   board of that set still unavailable.
@@ -2345,6 +2700,114 @@ M4.5.5, whose `rx72m` visit was booked as debt rather than allowed to hold the r
 open, and which M4.5.6 then paid. `f411spi` is already WITNESS-READY (it builds from this tree,
 declares its mask, parks rather than returns, prints an explicit PASS/FAIL, and its flash tooling is
 installed), so the pass needs no preparation beyond the board itself.
+
+## An ordering assertion may not rest on a sleep (2026-08-17)
+
+Opened by ONE `call_infoless_revert` failure, seen once in a parallel `ctest` and not reproduced
+by 5 standalone and 3 parallel re-runs. It was neither a kernel bug nor a flake to wait out: two
+arms staged their choreography on sleep deadlines, and a sleep orders nothing.
+
+**The mechanism, and it is not sim-specific.** `ktime_on_timer` (`kernel/time/time.cc`) drains
+EVERY thread whose deadline has passed in one pass, and `policy_pick_next`
+(`kernel/sched/policy_fifo_rr.cc`) then takes the strictly highest-priority runnable thread. So
+when one stall outlasts the gap between two deadlines, those two wake in PRIORITY order, not
+deadline order. The sim runs the whole guest in one host thread, so any host deschedule does it;
+on QEMU a loaded host does it; on silicon a long ISR or a slow tickless path does it.
+`mtx_time_unit()` does not save an arm: it grows the unit under STEADY load, but a spike arriving
+after the calibration defeats it, and its 30 ms glitch cap is a ceiling no calibration can pass.
+
+**THE RULE, which is the part that generalises: an assertion on the relative ORDER of two logged
+characters is sound only when the ordering it depends on is established by a rendezvous -- a
+semaphore post, a mutex hand-off, a park -- taken by a thread the consumer OUTRANKS, so the
+consumer preempts at the post itself. Never by a sleep.** A sleep-staged order assertion is an
+instrument whose failure is indistinguishable from the regression it exists to catch. That is
+measured, not feared: deleting the D2 boost in `endpoint_call` makes `call_infoless_revert` fail
+on `nth('u', 1) < nth('m', 1)`, the SAME assertion the staging race failed. Where a sleep is
+unavoidable, every sleeper must satisfy "higher priority implies the earlier deadline", so that a
+coalesced drain reproduces the intended order instead of inverting it.
+
+- [x] **FIXED: `call_infoless_revert` staged the D2 boost's own precondition on a race.** The
+      boost is conditional on `e->server`, which the server's info-less `kos_recv` is what seats;
+      the server reached that recv on a 1-unit sleep and the prio-20 caller called on a 2-unit
+      one. Coalesce the two and the caller runs FIRST, finds no server seated, gets no boost, and
+      the prio-12 spoiler then outranks the unboosted prio-8 server. Reproduced at **37/50** with
+      the unit pinned to 5 ms under 20 ms host stalls, **2/60** under 40/8 ms stalls at the 1 ms
+      floor, and **1/200** on a pristine `master` build with the reported assertion verbatim. The
+      log inverts `aucmz` -> `mcauz`, and every `count()` and the `-KOS_ENOSYS` check still pass,
+      which is why it reads as a one-off. Now staged on one semaphore, no sleep deadline left:
+      **0/50** at the profile that gave 37/50.
+- [x] **FIXED: `mutex_chain_boost` had the same defect, twice over.** `ch_b` (prio 10) established
+      M1 ownership on a 1-unit sleep, consumed by `ch_a` (prio 20) on a 2-unit sleep AND raced by
+      `ch_d` (prio 15) on a 4-unit sleep -- two inverting pairs, both with the provider below its
+      consumer. Measured **7/60** under 40/8 ms stalls. Now handed along C -> B -> C -> A -> D by
+      two semaphores, no sleep deadline left.
+- [x] **Two semaphores, not one, and the reason is a real constraint on this pattern.** A post is
+      popped by the HIGHEST-priority waiter (`wq_pop_highest`), so a hop that runs UP the priority
+      order cannot share a semaphore with any higher-priority waiter. C -> B needs its own;
+      A -> D can share, because A outranks D. `ch_c` now carries **6 grants, exactly
+      `KICKOS_MAX_SPAWN_GRANTS`**; the limit was NOT raised. No board overrides that knob, and
+      `cap.h`'s `KICKOS_MAX_SPAWN_GRANTS < KICKOS_CAP_CHILD_WIDTH` still holds on the three
+      `KICKOS_CAP_TABLE_SUPPLY=7` boards.
+- [x] **`t_mutex_chain` now asks `pool_can_host(4)` before it creates anything**, which is also
+      what keeps the small boards reporting a skip: they cap at 2 or 3 threads and cannot supply
+      the staging semaphores either, so probing first is the difference between a skip and a
+      create failure. `porting.md` said `call_infoless_revert` was the file's only pool guard;
+      corrected.
+- [x] **The fix was mutation-tested, and the FIRST ATTEMPT AT IT SILENTLY COST COVERAGE.** In that
+      first version B posted A's release itself, before blocking on M2, so the release reached A
+      while B still merely HELD M1: A's walk boosted B and stopped, B boosted C later from its own
+      block, and the transitive result was two successive ONE-hop walks -- which a one-hop kernel
+      reproduces exactly. Truncating the walk to a single hop left arm 19 green, and a
+      `KICKOS_ASSERT(depth == 0)` after the `depth++` in Pass 2 never fired. Routing A's release
+      back through C, which only runs again BECAUSE B blocked, restores it: the truncating mutant
+      now kills arm 19 4/4 on `nth('e', 1) < nth('d', 1)`, and the probe panics inside arm 19.
+      **The provenance matters and was checked rather than assumed: the same mutant also kills arm
+      19 on `master`, and the probe also panics there, so the two-hop coverage was NEVER absent
+      from the committed tree.** The loss was introduced and repaired entirely inside this
+      uncommitted work. **The lesson is the method, not the bug: a staging change can leave every
+      assertion passing and still stop witnessing what its own comment claims, so a staging edit
+      needs its mutant re-run and not just a green suite.**
+
+- [ ] **The `depth > KICKOS_MAX_MUTEXES` bound in `mutex_lock` Pass 2 (`kernel/sync/sync.cc`) is
+      unexercised.** Arm 19 now reaches hop two; nothing reaches the bound. A third mutex and a
+      fifth worker would do it, and the arm is already at the 4-worker pool ceiling, so this wants
+      its own arm rather than an extension of that one.
+- [ ] **Arms whose order assertion still rests on a DURATION MARGIN, not on a deadline
+      ordering.** These do not invert under a coalesced drain -- every one of them satisfies
+      "higher priority implies earlier deadline", which is why they are not the defect above --
+      but each still needs one wall-clock span to outlast another, so a host stall past the 30 ms
+      unit cap breaks them, and the failure again looks like the regression they exist to catch.
+      Measured over 60 runs under 40/8 ms injected host stalls, in the same runs where the two
+      fixed arms scored 0: `call_timeout_revert` **37/60**, `cap_reply_bound_slow` **32/60**,
+      `cap_reply_bound_fast` **32/60**, `call_donation_slow` **23/60**, `call_donation_hold`
+      **1/60**; at a 5 ms pinned unit under 20/5 ms stalls `call_donation_slow` fails **48/48**.
+      None of these is a kernel defect -- they are the instruments losing their margin. The full
+      set, with the span each compares:
+      - `call_timeout_revert`: server spins 6u then 8u against the spoiler's 4u wake and a call
+        deadline of 8u armed at 2u.
+      - `call_donation`, `call_donation_hold`, `call_donation_pending`: a 4u server spin against a
+        3u spoiler wake -- a **1-unit** margin.
+      - `call_donation_slow`: two margins, a 3u pre-recv spin that must still be running at the
+        caller's 1u wake (nothing asserts it, so losing it makes the arm VACUOUS rather than red),
+        and a 4u post-recv spin against a 5u spoiler wake.
+      - `mutex_pi_donation`, `mutex_multi_held`, `mutex_owner_died`: a low holder's spin against a
+        higher waiter's wake.
+      - `cap_reply_bound_fast` / `_slow`: a second caller's call must land inside the window a
+        first reply cap is live.
+      - `rr_interleave`: the per-iteration burn is `2 x quantum`; a burn shorter than the slice
+        never gets preempted and the interleave vanishes.
+      Preferred repair is the same as above, a handoff; where a span is genuinely the subject,
+      the arm should at least detect its own vacuity instead of passing.
+
+**Why the remaining arms are safe, so the next reader can re-derive it rather than re-audit.**
+Every arm was checked against the inverting shape "a lower-priority worker establishes a
+precondition on an EARLIER deadline than the higher-priority worker that consumes it". None is
+left. Three structural facts do most of the work: `ktime_sleep_ns(0)` YIELDS instead of parking,
+so a 0-unit stage holds no deadline at all; `wq_pop_highest` pops parked senders by priority and
+not by arrival, so "who parked first" never decides who is served; and in the sleep-staged arms
+that remain, the highest-priority sleeper always holds the earliest deadline, so coalescing
+reproduces the intended order. The two-sleeper arms with equal priorities (`sleep_order`) are
+saved instead by the ready list being FIFO and the sleep queue deadline-sorted.
 
 ## M4.6.1 IRQ consoles on silicon: ALL FIVE run the whole suite (2026-08-02)
 
@@ -5127,17 +5590,14 @@ force a breaking rewrite. Ordered by leverage, as recorded. QW-2 has LANDED (`ka
 
 ## M5 -- SMP
 
-- [ ] **Replace `volatile` with relaxed `std::atomic` on every cross-thread field.**
-      `volatile` is not a concurrency tool: no atomicity, no ordering against other objects,
-      no barrier. The tree is correct today only because it is a uniprocessor with one writer
-      per field, aligned words, and readers that tolerate staleness; SMP removes all three.
-      Zero `std::atomic` exists in the tree. Relaxed `std::atomic<uint32_t>` is free for the
-      pure load/store cases even on Cortex-M0+, which has no LDREX/STREX. Sites include
-      `kernel/bench/bench.cc`, `kernel/init/console.cc`, `kernel/init/console_tx.cc`,
-      `user/include/kickos/sys/byte_ring.h`, `uart_service.h`, `usb_cdc_service.h` and
-      `system/init/sim/service_list.cc`. **No M4 gate can witness this**, which is why it is
-      recorded rather than fixed: a uniprocessor cannot fail the way it will.
-      `docs/design-m5-smp.md` carries the reasoning.
+- [ ] **Give the converted fields their real ORDER.** M4.9.2 turned every cross-thread field
+      into a relaxed `std::atomic`, which is a type change and nothing more: relaxed says
+      nothing a second core will honour. What is left is deciding, per site, where an
+      acquire or a release belongs. Three known residues: the 64-bit fields that had to stay
+      `volatile` (a relaxed 64-bit load is a `__atomic_load_8` libcall), the six per-chip
+      `_high`/`_last` clock anchors that `IrqLock` alone makes coherent, and
+      `KOS_RING_BARRIER`, still a consumer `-D` rather than a release store on the ring's
+      now-atomic index. `docs/design-m5-smp.md` carries the reasoning.
 
 ## M6
 

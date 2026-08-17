@@ -1109,12 +1109,14 @@ width the sum never produces. A build that misses the generated `kickos/config/c
 does not reach them: it fails on the missing include. The suite's own floor is measured off the suite's own call sites. **Two** of the 63 cases need a 4th concurrent
 worker: `call_infoless_revert`, four mutually-dependent workers spawned before any join
 (`../../user/apps/common/selftest/main.cc:2212-2215`), and `mutex_chain_boost`, a four-link
-boost chain (`main.cc:1010-1013`). `call_infoless_revert` is the only case that asks first
--- `pool_can_host(4)` at `:2199` is the file's **only** pool-capacity guard, and since it
-spawns four real threads it tests the arena as much as the pool; `mutex_chain_boost`
-detects the same shortfall from a negative spawn return (`:1014`) -- and a negative spawn
-return CANNOT say which of the two limits it hit, because `kos_thread_spawn` answers
-`-KOS_ENOMEM` for a full slot table and for a missing stack block alike. The other 61 cases
+boost chain (`main.cc:1010-1013`). **Both** ask first, with `pool_can_host(4)`, and since
+that probe spawns four real threads it tests the arena as much as the pool. Asking first is
+not only about the message: each of the two now creates staging semaphores before its
+spawns, and a board too small to host the workers is also too small to supply those, so a
+probe is what keeps the outcome a skip rather than a create failure. Detecting the shortfall
+from a negative spawn return instead would not say which limit was hit, because
+`kos_thread_spawn` answers `-KOS_ENOMEM` for a full slot table and for a missing stack block
+alike. The other 61 cases
 need no 4th worker, so a small part loses one chained-priority-inheritance case and
 one call/reply case, not the suite. The 6-semaphore peak is `mutex_deadlock`: two permanent
 plus four live (`main.cc:1126-1129`) -- but on a 7-handle board the **cap table** binds
@@ -1225,7 +1227,7 @@ Four are the concurrent-worker ceiling or the arena; one is the cap table:
 
 | Case | TAP skip reason | What actually binds | Site |
 | --- | --- | --- | --- |
-| `mutex_chain_boost` | pool too small | 4th worker against N = 3 | `main.cc` (`t_mutex_chain`) |
+| `mutex_chain_boost` | pool too small (4 interdependent workers) | 4th worker against N = 3 | `main.cc` (`t_mutex_chain`) |
 | `call_infoless_revert` | pool too small (4 interdependent workers) | 4th worker against N = 3 | `main.cc` (`t_call_infoless_revert`) |
 | `mutex_deadlock` | pool too small | 6 live caps against the 3 free the 7-slot supply leaves; the suite's 3 OPTIONAL slots are not granted | `main.cc` (`t_mutex_deadlock`) |
 | `irq_as_event` | 4 KiB MMIO-page alloc failed -- board too small | one 4,096 B block | `main.cc` (`t_irqdrv`) |

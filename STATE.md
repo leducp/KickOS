@@ -9,6 +9,260 @@ straight to the record you need. No history and no task lists -- granular items 
 
 ## Where we are
 
+**M4.9.2 IS IN PROGRESS on branch `M4.9.2`, UNMERGED and unpushed.** It converts `volatile` to
+relaxed `std::atomic` on every cross-thread field, moves the non-template service-header bodies
+into `user/src/`, and writes the four gates `style.md` already claimed. What it is NOT is an
+ordering change: relaxed says nothing a second core will honour, so M5 still owns every acquire
+and release. `TODO.md`'s M4.9.2 section enumerates what the sweep found.
+
+**`pizero2350` IS RE-WITNESSED AT `ce34ac66`, BOTH ARMS, and it is the only board reachable
+without an operator** (BOOTSEL in, `KICKOS_SHUTDOWN_TO_BOOTLOADER` out, so the loop is unattended).
+`usbcdcwit` twice: `accepted=8192 of 8192 err=0`, `drop=0`, PASS, banner `ce34ac66` clean.
+`selftest` twice: arms `10..104`, 95 captured, 0 not ok, 0 skip, 0 partial, validated by hand
+through `check_tap_stream.sh` with `TAP_HEADLESS_LAST=104` DERIVED from
+`user/apps/common/selftest/CMakeLists.txt` (86 + 14 + 3 + 1).
+**The selftest arm carries NO banner and its tree attribution is therefore WEAKER than the
+usbcdcwit arm's**: the suite floods immediately after the banner, so the USB CDC head loss eats it
+every time, where `usbcdcwit`'s slower start lets it through. Both captures in a run come from one
+build, so the attribution is sound, but it rests on the sibling capture's bytes and not its own.
+
+**`maxzero` SHIFTED, 569 DOWN TO A 542-549 BAND, AND IT IS NOT THE EXACT INSTRUMENT M4.9.1 TOOK
+IT FOR.** Five samples: 569 and 569 before `b40fbefc`, then 549, 549 and 542 after, the last two
+at trees whose only difference is a COMMENT, so the image is the same across them. The two
+clusters do not overlap, so the downward shift is real and `b40fbefc`'s relaxed-atomic counters
+in each driver's IRQ path are what moved it. But the value has a run-to-run spread of at least 7,
+so "an identical `maxzero` shows the conversion is inert" was never a sound test, and calling it
+stable per TREE on two samples overstated it the same way. What holds is the weaker and
+sufficient claim: `drop=0` and `accepted=8192 of 8192` on every run, so nothing is lost, and the
+ring stays full for a measurably different span. `wakes` and `spurious` carry nothing.
+
+**TWO ARMV7M FAULT-PATH DEFECTS ARE FIXED HERE, and the reason they are not deferred is that the
+fleet re-witness was ALREADY owed.** Deferring them to protect witnesses that `b40fbefc` had
+already invalidated would have bought nothing.
+- `kickos_arm_mpu_program` no longer zeroes `MPU_CTRL`. That also stopped the chip FIXED rows
+  applying, and on `imxrt1062` those carry the ERR011573 anti-speculation wrap over the FlexSPI
+  band the code is itself executing from. Each per-thread descriptor is disabled individually
+  before its base moves instead, and the half-updated set is unobservable because only privileged
+  handler code runs until the exception return. `fixed_init` still zeroes it, where no fixed row
+  exists yet to lose.
+- `SHCSR_BUSFAULTENA` is set, so a bus abort no longer escalates, and the reporter labels a set
+  BFSR byte `BUS FAULT`. Safe because `core_vectors.inc` already points all four fault vectors at
+  the same reporter.
+**Witnessed on both PMSA generations:** `teensy41` `selftest` 1..104 all ok and `pizero2350`
+(PMSAv8) arms 10..104, both clean at `4f8d6ab2`, plus `teensy41` `rootfault` still denying a
+cross-domain write as a clean MemManage (`CFSR=0x82`, `ADDR=0x20244000`). **NOT witnessed: the
+`BUS FAULT` label itself**, which prints only on the panic path, while every bus fault this
+milestone produced was in an unprivileged driver thread killed thread-scoped.
+
+**THE WITNESS LEDGER AT HEAD, which is the first thing to read before crediting anything below.**
+
+| board | state at HEAD | why |
+| --- | --- | --- |
+| `teensy41` | **CURRENT** | `selftest` 1..104 and `rootfault`, both at the MPU commit |
+| `pizero2350` | **CURRENT** | `selftest` 10..104 at the MPU commit |
+| `teensy41` USB CDC, `teensy41` `reclaimwit_drain`, `pizero2350` `usbcdcwit` | **STALE** | taken BEFORE the MPU commit, which changes every armv7m image |
+| `picopi` `frdmk64f` `rx72m` `xmc4800-relax` `esp32-wroom` `esp32c6-wroom` `f302nucleo` | **STALE, OWED** | all predate `b40fbefc`; none was on the bus this session |
+
+**THE MPU COMMIT SHIPPED A REGRESSION AND THE WITNESSES COULD NOT HAVE CAUGHT IT.** Dropping the
+trailing `MPU_CTRL = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA` from `kickos_arm_mpu_program` rested on
+`kickos_arm_mpu_fixed_init` having enabled the MPU already. That function is called from ONE chip,
+`imxrt1062`. On every other PMSAv7 chip the MPU was then never enabled at all while the banner
+still printed `mpu enforce`: mps2, stm32f411, rp2040, xmc4800. PMSAv8 was unaffected, keeping its
+own enable in `arch_arm_pmsav8.cc`.
+**The two boards witnessed are exactly the two immune to it** -- `teensy41` calls `fixed_init`,
+`pizero2350` is PMSAv8 -- so a green fleet pass on those two said nothing. What caught it was the
+new `-LE host` image-gate sweep, on `qemu_mpu_fault`, `qemu_rootfault` and `qemu_faultoverflow`,
+three gates no automation had ever run. The trailing write is restored, and it only SETS bits, so
+unlike a leading `MPU_CTRL = 0` it never stops the fixed rows applying. All four MPS2 presets now
+pass their whole image half (23, 22, 23, 23 gates).
+**The lesson is about coverage, not about the line:** the three silicon boards in the blast radius
+have no automated image gate at all, so only a bench visit or that sweep could ever have found it.
+
+**THE SURVIVING WITNESSES WERE PROVEN, NOT ASSUMED.** Everything committed after the MPU commit
+is comment-only for an armv7m image except `regs/aipstz.h`, whose change is `static_assert` lines
+alone. Checked by disassembling `chip_imxrt1062.cc.obj` at both trees: 345 instructions,
+byte-identical. A capture taken BEFORE that commit is stale on every armv7m board, since
+`arch_arm_common.cc` is in all of them.
+
+**`teensy41` NO LONGER NEEDS AN OPERATOR**, which changes what a future pass can do unattended:
+`arch_reboot`'s `bkpt #251` is caught by the MKL02 companion and the board re-enumerates as
+HalfKay by itself, so `tools/bench/bench.sh` now gives it `KICKOS_SHUTDOWN_TO_BOOTLOADER` for the
+reason the RP boards have it. Two consecutive captures were taken with no button press.
+**`pizero2350` LEFT THE USB BUS after its third run** and answers as neither BOOTSEL nor a CDC
+console, so it wants a power-cycle before it is reachable again. Its witnesses were taken first.
+
+**EVERY OTHER CAPTURE BELOW IS STALE, AND READ THE REST OF THIS FILE WITH THAT IN FRONT OF IT.** All six
+witness-recording commits precede `b40fbefc`, which rewrote the `kos_uart_stats` counter accesses
+inside the IRQ path of every driver -- `rpusb.cc`, `uart_lx6.cc`, `uart_c6.cc`, `uart_k64.cc`,
+`uart_sci.cc` -- plus `user/src/console_ring.cc` and `user/include/kickos/sys/uart.h`. That is
+shipped code, so a witness taken before it describes a different image and the paragraphs below
+over-claim. **They are deliberately NOT retaken yet**: the RT1062 MMIO-grant defect is still open,
+and a fix landing in the shared armv7m MPU path rather than in `imxrt1062` alone would move the
+image for every armv7m board and throw the pass away. One pass, at the final tree, after that fix.
+
+**The codegen claim was MEASURED, not trusted, and two of its corollaries were false.** A relaxed
+32-bit load and store are the same single instruction as `volatile` on all five backends. But a
+64-bit relaxed load is a `__atomic_load_8` LIBCALL on every backend including armv7m, and a
+freestanding link has no libatomic -- so the 64-bit cross-thread fields stay `volatile` and say why
+at the site. And `is_always_lock_free` is **0** on armv6m and rxv3 even where the load and store ARE
+inline plain instructions, because RMW is not, so no `static_assert` may rest on it.
+
+**`picopi` IS RE-WITNESSED AT THE FINAL TREE, TAG `m492b`**, `dcd5e21f`, clean rather than
+`-dirty`: `kickos_services_picopi_usbcdc`, over the board's own USB CDC with no cable, arms
+**20..104**, 85 lines, 0 not ok, 0 skip, 0 partial. Validated by hand through
+`check_tap_stream.sh` with `TAP_HEADLESS_LAST=104`, the 104 DERIVED from
+`user/apps/common/selftest/CMakeLists.txt` (86 + 14 + 3 + 1) and never read off the stream.
+**Arms 1..19 are outside the verdict by construction** -- a console that IS the device cannot
+deliver its own head -- and the checker prints that itself. The board returned to BOOTSEL unaided.
+Log `.session/logs/m492b-picopi-selftest.log`.
+
+**`m492` is the SUPERSEDED capture of the same board** and its log is kept. It banners `10175a7d`,
+which is the atomics commit BEFORE the console seams landed, and `chip_rp2040.cc` gained three
+functions after it -- so that witness stopped describing the tree and was retaken rather than
+carried. Where each capture starts differs (21 versus 20) because the head loss is a race with USB
+enumeration, not a fixed cut.
+
+**`pizero2350` IS PAID, BOTH WITNESSES, at `f536d084`** -- the board was swapped in for the picopi
+mid-session. `usbcdcwit` REPRODUCES THE M4.9.1 FIGURES EXACTLY: `accepted=8192 of 8192 err=0
+maxzero=569`, `drop=0`, PASS, where M4.9.1 at `e0ab9cf9` recorded 8192 of 8192, `drop=0`,
+`maxzero=569`. The identical `maxzero` is the load-bearing part: the ring goes full and the
+short-accept retry recovers it in exactly the same shape after every index in that ring became a
+relaxed atomic, so the conversion is observably inert on the path that stresses it hardest.
+`tx`, `wakes` and `spurious` have NO M4.9.1 baseline, so read nothing into `spurious=1`.
+Its `selftest` under the same list is arms 10..104, 95 captured, 0 not ok, 0 skip, 0 partial --
+and that image LINKS AND BOOTS the new rp2350 reclaim body, which retires the risk that the body
+breaks the board without being a witness of the reclaim firing.
+
+**BOTH ESP BOARDS ARE WITNESSED UNDER THEIR `_uartirq` LISTS at `32470528`**: `esp32-wroom`
+`1..100` and `esp32c6-wroom` `1..104`, 100 and 104 ok, 0 skip, 0 partial, the C6 enforcing. Both
+defaulted to `kickos_services_none`, so the DRIVER being in the image is what makes the run
+non-vacuous, and both streams say so themselves: `[lx6uart] device up (IRQ TX/RX)` and
+`[c6uart] device up (IRQ TX/RX)`, each with `# tap route: stdout endpoint -> console driver`.
+
+**CLOSED: A RECLAIM FIRING AND A TERMINATE DRAINING ARE BOTH WITNESSED ON SILICON**, by
+`user/apps/common/reclaimwit`, on `teensy41` at `21306644`, log
+`.session/logs/m492tr-teensy41-reclaimwit_drain.log`. Counted on the EXACT emission strings and
+not on the word, because the app's own reading key contains it four times:
+
+| discriminator | wanted | got |
+| --- | --- | --- |
+| `MUTE kernel console while the driver holds it` | 0 | 0 |
+| `LIVE kernel console after the driver died` | 1 | 1 |
+| `routed through the driver` | 0 | 0 |
+| `DRAINTAIL ... <<<DRAIN-END>>>` | intact | intact |
+
+plus `slay rc=0` and a post-death send of `-32` (`-KOS_EPIPE`). The sink driver writes to no
+console on any board, so the LIVE bytes can only have come from `arch_console_write_sync` in
+`RECLAIMED`; and the sentinel survives, so `arch_console_flush_sync` held the core until the shift
+register emptied. The paragraph below is what this replaces, and is kept for the reasoning.
+
+**WHAT NO CAPTURE IN THIS MILESTONE WITNESSED UNTIL `reclaimwit` EXISTED: a reclaim FIRING or a terminate DRAINING.**
+The seven selftests prove the four new console-seam bodies link, boot and leave their drivers
+working. They cannot prove more, and the reason is a missing instrument rather than a missing
+run: **`drvdeath` is a SIM app**, sequenced by `KICKOS_SIMCON_EXIT_AFTER=1` in
+`system/init/sim/service_list.cc`, and the only silicon driver-death prober in the tree is
+`user/apps/xmc4800-relax/conreclaim`, which is board-specific. So `esp32`'s reclaim-window fix --
+a real defect, where the reclaim could fire while the IRQ thread still held UART0 -- is argued
+from `dev_window_free`'s overlap test and witnessed only as far as "the board still boots".
+Closing this properly wants a BOARD-AGNOSTIC driver-death prober, the way `faultsurvive` is the
+board-agnostic fault prober. That is its own piece of work and it is what the four flush_sync
+bodies need too.
+
+**`teensy41` IS PAID TOO, TAG `m492t`**, once an FTDI went onto pin 1: `1..104`, 104 ok, 0 skip,
+0 partial, enforce, banner `aafb143f` clean, validated by hand. The first HalfKay load failed and
+the retry took it, which is this board's documented behaviour and is handled automatically.
+**So all three stale M4.9.1 captures are retaken**, and EIGHT boards across five ISAs witnessed the
+tree AS IT STOOD -- see the staleness note at the top before crediting any of them to HEAD.
+
+**THE RT1062 USB BACKEND STOPS MAKING PROGRESS, AND WHAT STOPS IT IS OPEN.** `m492te`,
+banner `7040afe7`, log `.session/logs/m492te-teensy41-selftest.log`: the kernel reads USB1's
+read-only `ID` at `0x402E0000` and gets `0xE4A1FA05`, its reset constant, on the same line that
+shows CCGR6's usboh3 gate on, PLL_USB1 locked and unbypassed, and the PHY fully powered. The
+unprivileged driver thread's breadcrumb stops at `STAGE_PROBE`, which is set immediately before
+that same read. So the bus, the clock and the PHY are out.
+**ROOT-CAUSED ON SILICON: THE AIPSTZ BRIDGE, NOT THE MPU.** `m492tg` prints
+`CFSR=0x8200 ADDR=0x402e0000` -- BFSR `0x82`, PRECISERR plus BFARVALID, with a `0x00` MemManage
+byte. A precise BUS fault at the USB1 base is what `OPACR`'s Supervisor-Protect does to an
+unprivileged access; an MPU denial would have set DACCVIOL and MMARVALID instead. The MPU window
+is programmed and innocent.
+**FIXED AND WITNESSED: the backend WORKS.** `m492tw`, arms 12..104, 93 captured, 0 skipped, 0
+partial, over the board's OWN USB CDC with no cable, unprivileged and under MPU enforcement.
+`arch_periph_enable` gained a USB1 entry that clears the slot's supervisor-protect bit, and the
+slot's remainder (OTG2, USBNC) went into `arch_reserved_blocks`.
+**The bus gate and the MPU are INDEPENDENT barriers, and treating them as one cost a wrong
+write-up.** This file previously called the coarse AIPS slot a policy crisis needing a decision.
+It is not: the MPU stays the fine-grained authority, the driver's window is still 512 B, and what
+the containment rule protects is a coarse gate over KERNEL-RESERVED registers. Reserving the
+remainder satisfies that a second way, so `arch.h` now states both ways instead of only
+containment. No policy was relaxed.
+**Three confident inferences in this chase have been wrong, none caught by a gate**, the last
+being mine: that no fault was involved, argued from two silences that are both DESIGNED. A
+published console drops kernel writes including fault reports, and `drv::bring_up` publishes
+before it spawns; a dark LED rules out a panic and nothing else. `TODO.md` keeps all three.
+
+**THREE MORE BOARDS ARE WITNESSED AT THIS TREE, and two of them reopen coverage that had none.**
+All three banner `commit c8671356` clean, all three validated by hand through
+`check_tap_stream.sh` against a count DERIVED from `user/apps/common/selftest/CMakeLists.txt`.
+
+| board | tag | list | result |
+| --- | --- | --- | --- |
+| `rx72m` | `m492r` | `kickos_services_rx72m_uartirq` | `1..104`, 104 ok, 0 skip, 0 partial, enforce |
+| `frdmk64f` | `m492k` | default (polled `k64uart` + DSPI) | `1..104`, 104 ok, 0 skip, 0 partial, enforce |
+| `picopi` | `m492b` | `kickos_services_picopi_usbcdc` | arms 20..104, 0 not ok, 0 skip, 0 partial |
+
+**`rx72m` is the one that matters most**: no emulator and no CI gate anywhere, so silicon is the
+only check that exists for the rxv3 atomics conversion, its clock anchors and the
+`arch_irq_inject` lock fix. Its image carries the new reclaim body too, `rxsci` being linked
+under that list.
+
+**`frdmk64f` CLOSED THE TWO HOLES ITS OWN FLEET RULING OPENED**, because a person was present to
+clear the once-a-day OpenSDA licence dialog. The segmented capability table is exercised, and the
+proof is by-name rather than by count: `cap_chunk_span` and `cap_child_width` report a bare `ok`
+here, where `microbit` reports `ok ... # PARTIAL table is 7 slot(s): the flat decode, no index
+reaches the granule`. A PARTIAL is an arm that ran its invariant and left a sub-case unreached, so
+its ABSENCE is what says `KCAP_RUN_CHUNKS > 1` was decoded. The same capture is the SYSMPU
+enforcement class. Both are listed below as having no instrument; at this tree they have one, and
+it needs a human each calendar day.
+
+**The `picopi` witness was PROVEN to still describe HEAD rather than argued to.** It was taken at
+`dcd5e21f` and three commits landed after it. Rebuilding the same image at the same build PATH at
+HEAD leaves exactly 11 differing bytes, every one inside the two copies of the embedded commit
+string, with `text`/`data`/`bss` identical. Rebuilding at a DIFFERENT path instead shows a 4-byte
+`text` delta and 58 normalised instruction differences, all of it `tests/tap/tap.h`'s `__FILE__`
+shifting the literal pools -- which is why the same-path rebuild is the test and a normalised
+`objdump` across two paths is not.
+
+**THE 51-PRESET HOST SWEEP IS GREEN AT THIS TREE**: `DONE 51 preset(s): 51 pass (0 reused),
+0 fail`. `0 reused` is load-bearing, `SWEEP_FORCE=1` having made every preset re-run rather than
+be skipped as already-passed. `sim` and `sim-telem` both register **208**, which is M4.8.4's 204
+plus exactly the four new gates, so the K-seam still links under `sim-telem` and the new gates
+registered fleet-wide rather than on the sim alone. The board spread is 12/13/14 and is ACCOUNTED
+FOR, not tolerated: 12 is the base, `kernel_ctor_placement` adds one on armv7m AND MPU,
+`riscv_no_smalldata` adds one on the RISC-V presets, `oot_export_mcu` adds one on the qemu family,
+and `qemu` alone qualifies for two. Checked the inverse way too -- of the presets that qualify for
+the ctor gate, none is missing it. `qemu-telem` looks like a miss and is not: it is
+`CONFIG_KICKOS_HAVE_MPU=0`, so it correctly has no ctor gate and reaches 13 by `oot_export_mcu`.
+
+**EVERY CHIP THAT PUBLISHES A CONSOLE NOW CARRIES ALL THREE SEAMS**, where four of seven carried a
+partial set and three carried none. `arch_console_reclaim`, `arch_console_reclaim_window` and
+`arch_console_flush_sync` are complete on mk64f, xmc4800, esp32c6, esp32, rp2040, rp2350 and rx72m;
+`stm32f302` stays flush-only because no userspace console driver exists for it. **All of it is
+BUILD-VERIFIED ONLY** -- `nm` plus the link map proving the weak `arch/common/` member is no longer
+extracted, and `check_seam_defaults` -- and `TODO.md` records the witness each one owes. Only
+`picopi` of the seven is on a bus here.
+
+**The reclaim window invariant is ONE-WAY**, and this is the thing to not re-derive wrongly: the
+window must COVER what the reclaim WRITES, which each chip's `static_assert` enforces locally, and
+it does NOT have to match the service-list grant. `dev_window_free` tests OVERLAP, so a holder able
+to reach any register the reclaim writes necessarily overlaps the window. It reads like a coupling
+that wants enforcing across `arch/` and `system/init/`; it is not one.
+
+**`microbit`'s arena GAINED a granule here, which is the direction nothing checks automatically.**
+`.bss` 6528 -> 6512 and `_ebss` == `__kickos_ram_start` == `0x20001b00` again, where they had drifted
+16 bytes apart. One symbol moved: `g_hog_until` (8 B) out, `g_hog_start_ns` (4 B) in. The skip set
+was therefore diffed BY EYE as this file requires: **18 reported, 18 declared, exact match**, so the
+extra grain freed nothing. `microbit_selftest` 24/24.
+
 **M4.8.4 IS MERGED (PR #22), and it closes the tail of the three milestones before it.** Classes A,
 B and C are all done -- the six latent defects, the three accepted costs (FIXED rather than accepted:
 the kill/slay ABI is what came out of that), and the instruments that let them through. **Everything
@@ -447,9 +701,15 @@ rather than producing a plausible-looking wrong log.
 
 ## What is next (locked order)
 
+**M4.9.1 IS MERGED (PR #23) and M4.9.2 IS THE LIVE TRACK**, landed-but-unmerged at `10175a7d`.
+Its remaining work is the per-chip `arch_console_reclaim` and `arch_console_flush_sync` bodies and
+the fleet-wide witness pass; `TODO.md`'s M4.9.2 section is the list. Two of its findings are DEFECTS
+rather than gaps, and both are in that list: `esp32` carries a reclaim body with no window body, and
+`arch_irq_inject` was missing its `IrqLock` on two backends.
+
 **M4.8.2 (PR #20), M4.8.3 (PR #21) and M4.8.4 (PR #22) are all MERGED, and every silicon obligation
 is paid** -- the fleet tables above, the `m483pi` armv6m set, and `m485sq` at the merged tree.
-NOTHING is landed-but-unmerged. The milestone records are
+The milestone records are
 `docs/design-m4.8.2-host-unit-tests.md` sections 8 and 9, `docs/design-task-layer.md`, and
 `docs/design-kill-and-slay.md` (read its section 14, what the design got WRONG, before its section 3).
 **The single open item M4.8.4 leaves behind is `rr_interleave` on `rx72m` under
@@ -457,7 +717,7 @@ NOTHING is landed-but-unmerged. The milestone records are
 fix is no longer merely argued.
 What follows is what remains, in order.
 
-**M4.9.1 IS THE ONLY LIVE TRACK.** The three-track split -- the M4.8.4 tail, the driver era, a doc
+**The three-track split** -- the M4.8.4 tail, the driver era, a doc
 audit, each in its own worktree -- is over on the tail's side. What that experiment taught is worth
 keeping, because the next parallel stretch will hit it again: the bench is SERIAL, so a witness
 belongs to whichever tree was actually flashed and `-dirty` in a banner is the capture telling the
@@ -897,22 +1157,23 @@ Per-board chips, cores and the fact that decides each class: `docs/reference/boa
 
 **WHAT M4.8.4 LEFT UNCOVERED, carried past the merge.** None of it is a defect and none of it blocks
 anything; it is the list of things nothing currently measures.
-- **`KCAP_RUN_CHUNKS > 1` reaches no host arm, AND NO LONGER REACHES SILICON EITHER.** The K-seam
-  fixture compiles the SIM posture only, so the segmented capability table was `frdmk64f`-only --
-  and that board is now out of the bench fleet by ruling. This is the one coverage hole the
-  `frdmk64f` decision actually widened, and closing it means teaching the K-seam fixture the
-  segmented posture rather than finding another board.
-- **The SYSMPU enforcement class has no instrument** for the same reason. It is a supported port and
-  a build target; nothing runs it.
+- **`KCAP_RUN_CHUNKS > 1` reaches no host arm.** The K-seam fixture compiles the SIM posture only,
+  so the segmented capability table is `frdmk64f`-only. **It is witnessed again at `m492k`** (see
+  above), because the fleet ruling is about UNATTENDED passes and a person can clear the OpenSDA
+  dialog in ten seconds. So the instrument exists whenever someone is at the desk, and the durable
+  fix is still to teach the K-seam fixture the segmented posture rather than to find another board.
+- **The SYSMPU enforcement class has an instrument only while someone is present**, for the same
+  reason, and `m492k` is one.
 - **`picopi` owes a slay capture.** It is the fleet's only armv6m enforcement unit, and it was on no
   bus for the `m484sl` pass. `esp32-wroom` (lx6) and `rx72m` (rxv3) were captured there because they
   are the two backends with no emulator and no CI gate at all.
 - **The `<complete>` flag's silent direction.** If no run in a pass claims it, the `build` half of
   `test_classes.txt` is checked NOWHERE and nothing reports a skip -- a CI matrix that drops the
   GTest-bearing sim job loses that check without a red.
-- **`ctest -LE host` has never been swept.** `tools/sweep_host_gates.sh` covers `-L host` over all 51
-  presets and says nothing about the other half BY CONSTRUCTION, because that half must run
-  standalone (see *Gates*). There is no tool for it yet.
+- **`ctest -LE host` has STILL never been swept.** `tools/sweep_host_gates.sh` covers `-L host`
+  over all 51 presets, and did so green at the M4.9.2 tree, but it says nothing about the other
+  half BY CONSTRUCTION, because that half must run standalone (see *Gates*). There is no tool for
+  it yet, and M4.9.2 neither closed this nor made it worse.
 - **`kickos_terminate`'s device drain has no witness**, and only three chips have a body.
 - **`user/apps/common/usbcdcwit` is built by no default configuration of any board.** It is gated on
   `KICKOS_SERVICE_LIST MATCHES "_usbcdc$"`, so only an explicit `-DKICKOS_SERVICE_LIST` reaches it --
