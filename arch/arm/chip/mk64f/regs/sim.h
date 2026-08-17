@@ -29,4 +29,4 @@ namespace kickos::mk64f::reg::sim
     // OUTDIV2[27:24] bus, OUTDIV3[23:20] FlexBus, OUTDIV4[19:16] flash.
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_SIM_H
+#endif

@@ -14,6 +14,8 @@
 
 #include <kickos/arch/arch.h>
 
+#include <kickos/sys/atomic.h>
+
 #include <bit>
 
 #include <kickos/units.h> // _s literal (== 1e9 ns) for the ns/cycle conversions
@@ -28,6 +30,8 @@ namespace
     using namespace kickos::arm;
     using namespace kickos::units; // _s == 1e9 ns
 
+    using kickos::Atomic;
+    using kickos::Order;
 }
 
 extern "C"
@@ -36,11 +40,15 @@ extern "C"
     // CMSIS convention: the core clock in Hz, defined + maintained by the chip.
     extern uint32_t SystemCoreClock;
 
-    // Shared with switch.S (the PendSV/arch_start switch targets). volatile:
-    // written by C (arch_switch) and by asm (PendSV); the compiler must not
-    // cache or elide the accesses it can't see across the asm seam.
-    struct arch_context* volatile g_arch_current = nullptr;
-    struct arch_context* volatile g_arch_next = nullptr;
+    // Shared with switch.S (the PendSV/arch_start switch targets): written by C
+    // (arch_switch) and by asm (PendSV).
+    Atomic<struct arch_context*, Order::RELAXED> g_arch_current = nullptr;
+    Atomic<struct arch_context*, Order::RELAXED> g_arch_next = nullptr;
+
+    // switch.S loads each as a plain word at offset 0. Nothing else enforces the layout.
+    static_assert(sizeof(g_arch_current) == sizeof(struct arch_context*), "asm reads one word");
+    static_assert(sizeof(g_arch_next) == sizeof(struct arch_context*), "asm reads one word");
+    static_assert(alignof(decltype(g_arch_current)) == alignof(struct arch_context*), "asm reads it naturally aligned");
 }
 
 // ===========================================================================
@@ -197,26 +205,29 @@ static uint32_t mpu_rasr(size_t size, uint32_t attr)
 extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, size_t n)
 {
     using namespace kickos::arm;
-    // A domain switch / privilege change can only take effect atomically, so
-    // disable the MPU while reprogramming, then re-enable with the PRIVDEFENA
-    // background (privileged code keeps the default map; unprivileged code sees
-    // only the programmed regions). MEMFAULTENA makes a violation a clean
-    // MemManage rather than an escalated HardFault.
-    reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA;
-    reg32(MPU_CTRL) = 0;
-    __asm volatile("dsb" ::: "memory");
+    // MEMFAULTENA and BUSFAULTENA keep an isolation violation and a bus abort as MemManage and
+    // BusFault instead of letting either escalate to HardFault.
+    //
+    // MPU_CTRL IS DELIBERATELY NOT ZEROED HERE. Disabling the MPU also stops the CHIP FIXED
+    // rows applying, and on imxrt1062 those carry the ERR011573 anti-speculation wrap over the
+    // FlexSPI band this code is itself executing from (docs/design-teensy-mpu-hang.md). Each
+    // descriptor is instead disabled individually just before it is rewritten, which leaves
+    // [0, k) in force throughout.
+    reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA | SHCSR_BUSFAULTENA;
+    __asm volatile("dmb" ::: "memory");
     // Chip fixed regions own the LOW slots [0, k), programmed once by
-    // kickos_arm_mpu_fixed_init and NEVER touched here (disabling the MPU above does
-    // not clear descriptors, so they survive the reprogram). Per-thread grants go in
+    // kickos_arm_mpu_fixed_init and NEVER touched here. Per-thread grants go in
     // [k, hw), so a grant sits ABOVE the fixed background and correctly overrides it
-    // (PMSAv7: highest-numbered region wins). k == 0 on every chip without a fixed
-    // hook, making the emitted sequence byte-identical to the pre-seam behavior.
+    // (PMSAv7: highest-numbered region wins). k == 0 on every chip without a fixed hook.
     size_t const hw_regions = (reg32(MPU_TYPE) >> 8) & 0xFFu;
     size_t const k = g_fixed_count;
     for (size_t i = k; i < hw_regions; i++)
     {
         size_t const j = i - k; // per-thread region index
         reg32(MPU_RNR) = static_cast<uint32_t>(i);
+        // Disable THIS descriptor before its base moves, or it would briefly pair the new
+        // base with the old size and attributes.
+        reg32(MPU_RASR) = 0;
         // PMSA requires a power-of-two size with a naturally-aligned base. Encode
         // ONLY such regions; a non-pow2 region is fail-closed (descriptor disabled),
         // never silently mis-encoded (ctz would under-size it and the base would
@@ -230,12 +241,12 @@ extern "C" void kickos_arm_mpu_program(struct arch_mpu_region const* regions, si
             reg32(MPU_RBAR) = static_cast<uint32_t>(regions[j].base) & ~0x1Fu;
             reg32(MPU_RASR) = mpu_rasr(regions[j].size, regions[j].attr);
         }
-        else
-        {
-            reg32(MPU_RASR) = 0; // unused / non-pow2: disable the descriptor
-        }
+        // No else: an unused or non-pow2 slot keeps the RASR = 0 written above.
     }
     __asm volatile("dsb" ::: "memory");
+    // Do not drop this because kickos_arm_mpu_fixed_init also enables the MPU: only imxrt1062
+    // calls that, so on every other PMSAv7 chip this is the ONLY write that enables it. It
+    // enables, so unlike a leading MPU_CTRL = 0 it cannot stop the chip fixed rows applying.
     reg32(MPU_CTRL) = MPU_CTRL_ENABLE | MPU_CTRL_PRIVDEFENA;
     __asm volatile("dsb" ::: "memory");
     __asm volatile("isb" ::: "memory");
@@ -260,7 +271,9 @@ void kickos_arm_mpu_fixed_init(void)
             __asm volatile("wfi");
         }
     }
-    reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA;
+    // Zeroing MPU_CTRL is correct HERE and only here: this runs at boot, before the caches and
+    // before any thread, so there is no fixed row yet to lose.
+    reg32(SCB_SHCSR) |= SHCSR_MEMFAULTENA | SHCSR_BUSFAULTENA;
     reg32(MPU_CTRL) = 0;
     __asm volatile("dsb" ::: "memory");
     for (size_t i = 0; i < k; i++)

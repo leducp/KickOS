@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The SPI / I2C bus-service contract
 
 The exact wire contract a client and an unprivileged bus driver exchange 1:1 over a

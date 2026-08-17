@@ -4,6 +4,9 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/console_tx.h>
+#include <kickos/sys/atomic.h>
+
+#include <new> // placement new (arch_context_init)
 
 #include <ucontext.h>
 #include <signal.h>
@@ -41,6 +44,8 @@ extern "C" void kfault_terminate(void);
 
 namespace
 {
+    using kickos::Atomic;
+    using kickos::Order;
 
     // --- Internal context layout over the opaque arch_context storage ----------
     struct SimContext
@@ -48,7 +53,7 @@ namespace
         ucontext_t uc;
         void (*entry)(void*);
         void* arg;
-        volatile int raised; // >0 while mid-syscall (read from signal-driven switch)
+        Atomic<int, Order::RELAXED> raised; // >0 while mid-syscall (read from signal-driven switch)
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
         uint16_t tid; // owning thread's trace id (arch_trace_stamp_id)
 #endif
@@ -77,7 +82,7 @@ namespace
     {
         // --- running-context tracking + deferred-switch state ---
         SimContext* current = nullptr; // arch's view of the running ctx
-        volatile sig_atomic_t isr_depth = 0;
+        Atomic<sig_atomic_t, Order::RELAXED> isr_depth = 0;
 
         // --- signal set covering all "interrupt" sources (crit-section mask) ---
         sigset_t irq_signals;
@@ -105,15 +110,15 @@ namespace
         size_t applied_n = 0;
 
         // --- emulated device IRQ hand-off (async-signal to ISR) ---
-        volatile sig_atomic_t pending_irq = -1;
+        Atomic<sig_atomic_t, Order::RELAXED> pending_irq = -1;
         // bit L set => line L masked (a raise latches, see irq_pending). All lines
         // start MASKED at reset (the
         // arch.h reset contract, matching the NVIC/RX silicon posture); a driver
         // unmasks its line (arch_irq_unmask, or irq_claim) before use.
-        volatile sig_atomic_t irq_masked = static_cast<sig_atomic_t>(0xFFFFFFFFu);
+        Atomic<sig_atomic_t, Order::RELAXED> irq_masked = static_cast<sig_atomic_t>(0xFFFFFFFFu);
         // bit L set => a raise landed on line L while it was masked (latched one-
         // deep, coalesced). Redelivered through the ISR path at unmask.
-        volatile sig_atomic_t irq_pending = 0;
+        Atomic<sig_atomic_t, Order::RELAXED> irq_pending = 0;
 
         // --- emulated buffered-console TX-empty interrupt source ---
         // The console ring drains through a real SIGUSR1 delivery (isr_depth++ ->
@@ -124,9 +129,9 @@ namespace
         // in one shot and never fill/wrap). It constrains slot_free ONLY inside the
         // drain ISR, so the synchronous prime/flush/overflow paths still see an
         // always-free channel and never stall.
-        volatile sig_atomic_t tx_enabled = 0;
-        volatile sig_atomic_t tx_asserted = 0;
-        volatile sig_atomic_t in_tx_isr = 0; // scopes the synthetic budget to the ISR
+        Atomic<sig_atomic_t, Order::RELAXED> tx_enabled = 0;
+        Atomic<sig_atomic_t, Order::RELAXED> tx_asserted = 0;
+        Atomic<sig_atomic_t, Order::RELAXED> in_tx_isr = 0; // scopes the synthetic budget to the ISR
         int tx_budget = 0;
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -134,7 +139,7 @@ namespace
         // just before each ucontext swap; whichever context RESUMES (an existing
         // one right after its swapcontext, or a new one at the trampoline) consumes
         // it and emits the SWITCH record for {from -> current}.
-        volatile sig_atomic_t switch_pending = 0;
+        Atomic<sig_atomic_t, Order::RELAXED> switch_pending = 0;
         uint16_t switch_from = 0xFFFF;
 #endif
     };
@@ -397,7 +402,8 @@ namespace
     // the last arch_mpu_apply() programmed for it already stands.
     void guard_apply_current()
     {
-        if (sim().arena != nullptr and sim().current != nullptr and sim().current->raised > 0)
+        if (sim().arena != nullptr and sim().current != nullptr
+            and sim().current->raised > 0)
         {
             arena_raise_all();
         }
@@ -871,7 +877,8 @@ void arch_context_init(struct arch_context* ctx,
         stack_base = malloc(SIM_HOST_MIN_STACK);
         stack_size = SIM_HOST_MIN_STACK;
     }
-    memset(c, 0, sizeof(*c));
+    // Value-initialised in place, not memset: SimContext holds atomics.
+    new (static_cast<void*>(c)) SimContext{};
     context_capture(&c->uc);
     // Start from an empty mask, not the creating thread's (which may be inside a
     // critical section), so a new thread's posture never depends on its spawner.
@@ -967,7 +974,7 @@ void arch_start(struct arch_context* boot, struct arch_context* first)
 {
     SimContext* b = sc(boot);
     SimContext* f = sc(first);
-    memset(b, 0, sizeof(*b));
+    new (static_cast<void*>(b)) SimContext{};
     getcontext(&b->uc);
     sim().current = f;
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -1427,7 +1434,7 @@ void arch_irq_mask(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    sim().irq_masked |= static_cast<int>(1u << line);
+    sim().irq_masked = sim().irq_masked | static_cast<sig_atomic_t>(1u << line);
     arch_irq_restore(s);
 }
 
@@ -1438,7 +1445,7 @@ void arch_irq_unmask(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    sim().irq_masked &= static_cast<int>(~(1u << line));
+    sim().irq_masked = sim().irq_masked & static_cast<sig_atomic_t>(~(1u << line));
     // Latch-and-coalesce: a raise taken while the line was masked redelivers now,
     // through the ISR path (raise(SIGUSR1) -> on_sigusr1 -> kickos_isr_irq). The raise
     // pends under this bracket (SIGUSR1 blocked) and lands at its release, i.e. the
@@ -1446,7 +1453,7 @@ void arch_irq_unmask(int line)
     // direct post here.
     if (static_cast<unsigned>(sim().irq_pending) & (1u << line))
     {
-        sim().irq_pending &= static_cast<int>(~(1u << line));
+        sim().irq_pending = sim().irq_pending & static_cast<sig_atomic_t>(~(1u << line));
         sim().pending_irq = line;
         raise(SIGUSR1);
     }
@@ -1460,7 +1467,7 @@ void arch_irq_clear_pending(int line)
         return;
     }
     arch_irq_state_t s = arch_irq_save();
-    sim().irq_pending &= static_cast<int>(~(1u << line));
+    sim().irq_pending = sim().irq_pending & static_cast<sig_atomic_t>(~(1u << line));
     arch_irq_restore(s);
 }
 
@@ -1471,9 +1478,10 @@ void arch_irq_inject(int irq)
     // bit (redelivered at unmask), NOT dropped. An unmasked line, or a never-maskable
     // line >= SIM_IRQ_LINES, delivers now (the raise pends under this bracket and lands
     // at its release, in ISR context).
-    if (irq >= 0 and irq < SIM_IRQ_LINES and (static_cast<unsigned>(sim().irq_masked) & (1u << irq)))
+    if (irq >= 0 and irq < SIM_IRQ_LINES
+        and (static_cast<unsigned>(sim().irq_masked) & (1u << irq)))
     {
-        sim().irq_pending |= static_cast<int>(1u << irq);
+        sim().irq_pending = sim().irq_pending | static_cast<sig_atomic_t>(1u << irq);
     }
     else
     {

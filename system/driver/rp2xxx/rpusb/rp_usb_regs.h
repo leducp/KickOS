@@ -130,4 +130,4 @@ namespace kickos::rpusb::reg
     constexpr uint32_t STALL_ARM_EP0_OUT = 1u << 1;
 }
 
-#endif // KICKOS_DRIVER_RP2XXX_RP_USB_REGS_H
+#endif

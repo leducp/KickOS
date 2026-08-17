@@ -24,4 +24,4 @@ namespace kickos::rp2350::reg::xosc
     constexpr uint32_t STARTUP_DELAY = 47u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_XOSC_H
+#endif

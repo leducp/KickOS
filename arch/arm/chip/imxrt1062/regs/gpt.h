@@ -34,4 +34,4 @@ namespace kickos::imxrt1062::reg::gpt
     constexpr uint32_t GPT_HZ = 24000000u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_GPT_H
+#endif

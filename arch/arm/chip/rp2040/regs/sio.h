@@ -26,4 +26,4 @@ namespace kickos::rp2040::reg::sio
     constexpr uintptr_t GPIO_OE_XOR = mmap::SIO_BASE + 0x2cu;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_SIO_H
+#endif

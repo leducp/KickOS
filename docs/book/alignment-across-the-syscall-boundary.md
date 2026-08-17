@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Alignment across the syscall boundary
 
 A syscall is the one place unprivileged code hands the kernel a value the kernel then acts on

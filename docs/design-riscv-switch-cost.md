@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # RISC-V context-switch cost: Zcmp vs the cooperative fast-path
 
 > **Status: EXPLORATORY** -- an analysis spike; no `switch.S` or kernel change. Both levers are

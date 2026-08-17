@@ -9,10 +9,7 @@
 //
 // The kernel console on this board is UART1 on GP4/GP5, a DIFFERENT peripheral from the
 // one the driver takes, so publishing blinds a working pin UART and the board is silent
-// with no USB host attached. docs/design-m4.6.2-usb-cdc.md section 6.2 rules that a
-// disjoint-device console must fall back to KERNEL_OWNED on driver death instead of
-// RECLAIMED; that kernel delta is NOT implemented, so expect the FTDI on GP4/GP5 to go
-// quiet at the handover.
+// with no USB host attached.
 //
 // The bring-up needs AUTH_MEMORY + AUTH_CONSOLE + AUTH_IRQ, which root still holds
 // because it runs from kickos_init_entry BEFORE kickos_default_init_run narrows root's

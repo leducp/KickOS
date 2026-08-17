@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # KickOS documentation -- map & conventions
 
 Entry point for the docs. Read this first to know **where things live**. The docs are two

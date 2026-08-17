@@ -17,8 +17,10 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 #include <kickos/sys/uart.h>
+#include <kickos/sys/console_ring.h> // stats_unpack
 #include <kickos/libc/fmt.h>
 
+#include <atomic>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -173,19 +175,11 @@ int main(int, char**)
     drain_console();
 
     uint8_t st[sizeof(struct kos_uart_stats)];
-    struct kos_uart_stats stats;
-    uint8_t* sp = reinterpret_cast<uint8_t*>(&stats);
-    for (size_t i = 0; i < sizeof(stats); i++)
-    {
-        sp[i] = 0;
-    }
+    struct kos_uart_stats stats = {};
     if (uart_call(KOS_UART_STATS, 0, nullptr, st, sizeof(st))
         == static_cast<int>(sizeof(st)))
     {
-        for (size_t i = 0; i < sizeof(stats); i++)
-        {
-            sp[i] = st[i];
-        }
+        kickos::console::stats_unpack(&stats, st);
     }
 
     char b[128];
@@ -201,12 +195,13 @@ int main(int, char**)
     // `queued` is bytes the ring TOOK and did not lose. It is NOT ring occupancy: the wire
     // ABI carries no field for that. Delivery is proven by the byte count on the HOST,
     // against `queued` here.
+    uint32_t const tx = stats.tx_bytes.load(std::memory_order_relaxed);
+    uint32_t const drop = stats.tx_dropped.load(std::memory_order_relaxed);
     ksnprintf(b, sizeof(b), "[usbcdcwit] tx=%u drop=%u queued=%u wakes=%u spurious=%u\n",
-              static_cast<unsigned>(stats.tx_bytes),
-              static_cast<unsigned>(stats.tx_dropped),
-              static_cast<unsigned>(stats.tx_bytes - stats.tx_dropped),
-              static_cast<unsigned>(stats.irq_wakes),
-              static_cast<unsigned>(stats.irq_spurious));
+              static_cast<unsigned>(tx), static_cast<unsigned>(drop),
+              static_cast<unsigned>(tx - drop),
+              static_cast<unsigned>(stats.irq_wakes.load(std::memory_order_relaxed)),
+              static_cast<unsigned>(stats.irq_spurious.load(std::memory_order_relaxed)));
     say(b);
 
     if (err != 0 or sent != TOTAL)

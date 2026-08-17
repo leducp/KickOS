@@ -5,8 +5,8 @@
 // stated there: the fixture library is built -fno-exceptions -fno-rtti and gtest's headers
 // configure themselves from those flags.
 
-#ifndef KICKOS_KSEAM_TEST_H
-#define KICKOS_KSEAM_TEST_H
+#ifndef KICKOS_TESTS_UNIT_KFIXTURE_KSEAM_TEST_H
+#define KICKOS_TESTS_UNIT_KFIXTURE_KSEAM_TEST_H
 
 #include <string>
 

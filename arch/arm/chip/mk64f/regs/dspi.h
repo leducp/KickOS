@@ -17,4 +17,4 @@ namespace kickos::mk64f::reg::dspi
     constexpr uint32_t SR_RXCTR_MASK = 0xFu;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_DSPI_H
+#endif

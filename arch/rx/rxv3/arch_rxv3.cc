@@ -6,7 +6,9 @@
 
 #include "regs.h"
 #include <kickos/console_tx.h> // console_tx_isr: drained by the TXI ISR below
+#include <kickos/sys/atomic.h>
 #include <kickos/trace/record.h> // ArchId: pin this build's trace-arch id to this backend
+
 
 #include <stddef.h> // offsetof
 
@@ -46,16 +48,20 @@ namespace
 {
     using namespace kickos::rxv3;
 
+    using kickos::Atomic;
+    using kickos::Order;
+
     // Free-running CMTW1 is 32-bit; extend to a monotonic 64-bit count in software by
     // catching wraps on each read. LIMITATION (M1): a wrap not observed within one
     // 2^32-cycle period is missed; a counter-overflow interrupt is the refinement.
-    volatile uint32_t g_cyc_high = 0;
-    volatile uint32_t g_cyc_last = 0;
+    // The two words are ONE value, kept coherent by the IrqLock in now_cycles.
+    uint32_t g_cyc_high = 0;
+    uint32_t g_cyc_last = 0;
 
     // Software in-ISR nesting counter (RX has no IPSR-equivalent). Bumped only by
     // the first-level DEVICE-IRQ dispatchers, never by the syscall INT path, so
     // arch_in_isr() reads false throughout syscall_dispatch (arch.h contract).
-    volatile int g_in_isr = 0;
+    Atomic<int, Order::RELAXED> g_in_isr = 0;
 
     // Software IRQ controller for INJECTED logical lines. The RX ICU cannot pend an
     // arbitrary peripheral line from software (only the two software interrupts are
@@ -67,11 +73,11 @@ namespace
     // through the arch_irq_* seam, so they do not collide. Masked-by-default: a line is
     // armed only by arch_irq_unmask (kernel irq_claim/irq_ack).
     constexpr int SOFT_IRQ_LINES = 32;
-    volatile uint32_t g_irq_masked = 0xFFFFFFFFu;
-    volatile int g_inject_line = -1;
+    uint32_t g_irq_masked = 0xFFFFFFFFu;
+    Atomic<int, Order::RELAXED> g_inject_line = -1;
     // bit set = a raise landed on this soft line while masked (latched one-deep,
     // coalesced). Redelivered through the SWINT2 doorbell at unmask.
-    volatile uint32_t g_irq_pending = 0;
+    uint32_t g_irq_pending = 0;
 
 #ifndef KICKOS_RX_MPU_TRACE
 #define KICKOS_RX_MPU_TRACE 0
@@ -108,10 +114,14 @@ extern "C"
     // chip. Drives the ns<->cycle conversions for the clock + one-shot timer.
     extern uint32_t kickos_rx_timer_hz;
 
-    // Shared with switch.S. volatile: written by C and by asm across a seam the
-    // compiler cannot see.
-    struct arch_context* volatile g_arch_current = nullptr;
-    struct arch_context* volatile g_arch_next = nullptr;
+    // Shared with switch.S: written by C and by asm.
+    kickos::Atomic<struct arch_context*, kickos::Order::RELAXED> g_arch_current = nullptr;
+    kickos::Atomic<struct arch_context*, kickos::Order::RELAXED> g_arch_next = nullptr;
+
+    // switch.S loads each as a plain word at offset 0. Nothing else enforces the layout.
+    static_assert(sizeof(g_arch_current) == sizeof(struct arch_context*), "asm reads one word");
+    static_assert(sizeof(g_arch_next) == sizeof(struct arch_context*), "asm reads one word");
+    static_assert(alignof(decltype(g_arch_current)) == alignof(struct arch_context*), "asm reads it naturally aligned");
 
     // CMSIS core clock (ICLK), defined + maintained by the chip at PLL lock.
     extern uint32_t SystemCoreClock;
@@ -133,7 +143,7 @@ namespace
         uint32_t cur = reg32(CMTW1_BASE + CMTW_CMWCNT);
         if (cur < g_cyc_last)
         {
-            g_cyc_high = g_cyc_high + 1;
+            ++g_cyc_high;
         }
         g_cyc_last = cur;
         uint64_t hi = g_cyc_high;
@@ -426,10 +436,10 @@ void arch_fault_redirect_to_exit(void* frame)
     // The stub runs at the TOP of the dying thread's stack, not at the depth the fault
     // reached. This is the backend that needs it: an access exception CANCELS the faulting
     // instruction and restores SP (ISA UM sec.5.3.1), so an overflowed thread hands over a
-    // USP that reads in-bounds and the stub would run privileged on an exhausted stack --
-    // measured on rx72m as a smash to PC=0 (.session/logs/m483rxovf-*). Written here rather
-    // than after the RTE because the handler runs on the ISP, so there is no window: R0 in
-    // supervisor mode is the ISP, and USP is a separate control register.
+    // USP that reads in-bounds, and the stub would then run privileged on an exhausted stack
+    // and smash its way out. Written here rather than after the RTE because the handler runs
+    // on the ISP, so there is no window: R0 in supervisor mode is the ISP, and USP is a
+    // separate control register.
     uint32_t const top = static_cast<uint32_t>(kickos_fault_stack_top());
     if (top != 0)
     {
@@ -801,7 +811,7 @@ void arch_irq_mask(int line)
     arch_irq_state_t s = arch_irq_save();
     if (line < SOFT_IRQ_LINES)
     {
-        g_irq_masked |= (1u << static_cast<unsigned>(line));
+        g_irq_masked |= (1u << line);
     }
     else if (line >= GROUP_LINE_BASE)
     {
@@ -823,12 +833,12 @@ void arch_irq_unmask(int line)
     arch_irq_state_t s = arch_irq_save();
     if (line < SOFT_IRQ_LINES)
     {
-        g_irq_masked &= ~(1u << static_cast<unsigned>(line));
+        g_irq_masked &= ~(1u << line);
         // Latch-and-coalesce: a raise taken on this soft line while masked
         // redelivers now through SWINT2: the normal ISR path, not a direct post.
         if ((g_irq_pending & (1u << static_cast<unsigned>(line))) != 0)
         {
-            g_irq_pending &= ~(1u << static_cast<unsigned>(line));
+            g_irq_pending &= ~(1u << line);
             g_inject_line = line;
             reg8(ICU_SWINT2R) = SWINT2R_SWINT2;
         }
@@ -863,7 +873,7 @@ void arch_irq_clear_pending(int line)
     arch_irq_state_t s = arch_irq_save();
     if (line < SOFT_IRQ_LINES)
     {
-        g_irq_pending &= ~(1u << static_cast<unsigned>(line));
+        g_irq_pending &= ~(1u << line);
     }
     else if (line >= GROUP_LINE_BASE)
     {
@@ -897,11 +907,11 @@ void arch_irq_inject(int irq)
     // (redelivered at unmask), it is NOT dropped.
     if ((g_irq_masked & (1u << static_cast<unsigned>(irq))) != 0)
     {
-        g_irq_pending |= (1u << static_cast<unsigned>(irq));
+        g_irq_pending |= (1u << irq);
     }
     else
     {
-        g_inject_line = irq;                // recorded BEFORE the doorbell (the ISR reads it)
+        g_inject_line = irq; // recorded BEFORE the doorbell (the ISR reads it)
         reg8(ICU_SWINT2R) = SWINT2R_SWINT2; // ring SWINT2 -> kickos_rx_swint2 dispatches it
     }
     arch_irq_restore(s);

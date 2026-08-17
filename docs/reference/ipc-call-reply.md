@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Synchronous call/reply IPC -- the reply capability
 
 The exact contract for the L4-style call/reply fastpath layered on the endpoint

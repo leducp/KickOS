@@ -354,12 +354,15 @@ void kickos_armv7m_fault_report(uint32_t* frame, uint32_t exc_return)
     {
         stk = "PSP";
     }
-    // A set MMFSR byte (CFSR[7:0]) means the MemManage (MPU) fault took it, so label
-    // it as such so an isolation trap reads clearly; otherwise the generic label.
+    // Label from the CFSR byte that is set: MMFSR is CFSR[7:0], BFSR is CFSR[15:8].
     char const* label = "HARD FAULT";
     if (cfsr & 0xFFu)
     {
         label = "MPU FAULT";
+    }
+    else if (cfsr & 0xFF00u)
+    {
+        label = "BUS FAULT";
     }
     ::kickos::kprintf("\n=== %s ===\n", label);
     ::kickos::kprintf(KDIAG_F_ARM_REGS1, frame[6], frame[5], frame[7], stk);

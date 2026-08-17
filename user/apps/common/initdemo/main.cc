@@ -25,10 +25,15 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
+#include <kickos/sys/atomic.h>
+
 #include <stdio.h>
 
 namespace
 {
+    using kickos::Atomic;
+    using kickos::Order;
+
     constexpr uint8_t DRIVER_PRIO = 12; // >= WORKER_PRIO (D9: rendezvous has no PI)
     constexpr uint8_t WORKER_PRIO = 10;
 
@@ -43,8 +48,8 @@ namespace
     // Cross-thread channel (shared address space on this non-enforcement board).
     // g_driver_bytes: total bytes the counting driver pulled off the endpoint.
     // g_worker_done: set by the worker after its final fflush, before it exits.
-    volatile long g_driver_bytes = 0;
-    volatile int g_worker_done = 0;
+    Atomic<int32_t, Order::RELAXED> g_driver_bytes{0};
+    Atomic<int, Order::RELAXED> g_worker_done{0};
 
     // Software console driver: a no-hardware sink. Recv on the delegated endpoint cap
     // (B1: first delegated cap lands at child table index 1) and count bytes. It never
@@ -58,12 +63,12 @@ namespace
         {
             // Info-less recv: this sink counts plain sends only (a client kos_call
             // bounces -KOS_ENOSYS rather than minting a reply cap here).
-            long const n = kos_recv(ep, buf, sizeof(buf), nullptr);
+            int32_t const n = kos_recv(ep, buf, sizeof(buf), nullptr);
             if (n < 0)
             {
                 break;
             }
-            g_driver_bytes += n;
+            g_driver_bytes = g_driver_bytes + n;
         }
         kos_exit(0);
     }
@@ -145,7 +150,7 @@ int main(int, char**)
     }
     for (int i = 0; i < 50; i++)
     {
-        if (g_driver_bytes >= static_cast<long>(PAYLOAD_LEN))
+        if (g_driver_bytes >= static_cast<int32_t>(PAYLOAD_LEN))
         {
             break;
         }
@@ -154,7 +159,7 @@ int main(int, char**)
 
     // Verdict rides the exit status. Console is dark, so this is the only signal.
     int rc = 1;
-    if (g_driver_bytes == static_cast<long>(PAYLOAD_LEN))
+    if (g_driver_bytes == static_cast<int32_t>(PAYLOAD_LEN))
     {
         rc = 0;
     }

@@ -49,4 +49,4 @@ namespace kickos::rp2040::reg::clocks
     constexpr uint32_t CLK_SYS_MIN_FOR_USB_HZ = 53000000u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2040_REGS_CLOCKS_H
+#endif

@@ -26,6 +26,8 @@
 #ifndef KICKOS_APP_H
 #define KICKOS_APP_H
 
+#include <iso646.h> // and / or / not are macros in C, not keywords
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -44,8 +46,7 @@ char const* kickos_app_build_stamp(void) __attribute__((weak));
 // Defined ONLY in an app TU (the build force-includes this header with
 // -Dmain=kickos_app_main, so __DATE__/__TIME__ capture the APP's compile time, not the
 // kernel's). Reformats C's "Mmm dd yyyy" + "HH:MM:SS" to "yyyy-mm-dd HH:MM:SS" so it
-// ALIGNS with the CMake build stamp. C-compatible (this header is included by C apps):
-// no &&/ternary (nested ifs), C casts.
+// ALIGNS with the CMake build stamp. C casts, never static_cast: C apps include this header.
 #ifdef main
 __attribute__((weak)) char const* kickos_app_build_stamp(void)
 {
@@ -56,15 +57,9 @@ __attribute__((weak)) char const* kickos_app_build_stamp(void)
     int m = 1;
     for (int i = 0; i < 12; i++)
     {
-        if (d[0] == mon[i * 3])
+        if (d[0] == mon[i * 3] and d[1] == mon[i * 3 + 1] and d[2] == mon[i * 3 + 2])
         {
-            if (d[1] == mon[i * 3 + 1])
-            {
-                if (d[2] == mon[i * 3 + 2])
-                {
-                    m = i + 1;
-                }
-            }
+            m = i + 1;
         }
     }
     b[0] = d[7]; b[1] = d[8]; b[2] = d[9]; b[3] = d[10]; // yyyy

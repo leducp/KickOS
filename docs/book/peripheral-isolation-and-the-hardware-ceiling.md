@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Peripheral isolation and the hardware ceiling
 
 > A worked example of the rule that governs every isolation

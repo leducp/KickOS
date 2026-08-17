@@ -1055,6 +1055,9 @@ A new `byte_ring.h`, in the public `sys` include directory next to `bus.h`:
 // kernel ring. Compiler-only by default, a real fence on a weakly-ordered core.
 #define KOS_RING_BARRIER() /* per-arch seam */
 
+// `std::atomic<uint32_t>` in C++, `_Atomic uint32_t` in C: this header must stay valid in both.
+#define KOS_ATOMIC_U32 /* per-language shim */
+
 // Single-producer / single-consumer byte ring. `size` MUST be a power of two; usable
 // capacity is size-1 (one slot reserved so head==tail is unambiguously empty).
 // head is written ONLY by the producer, tail ONLY by the consumer -- that is what makes
@@ -1065,8 +1068,8 @@ struct kos_byte_ring
     unsigned char* buf;
     uint32_t size;
     uint32_t mask;
-    volatile uint32_t head;
-    volatile uint32_t tail;
+    KOS_ATOMIC_U32 head; // producer only
+    KOS_ATOMIC_U32 tail; // consumer only
 };
 
 void   kos_byte_ring_init(struct kos_byte_ring* r, unsigned char* buf, uint32_t size);

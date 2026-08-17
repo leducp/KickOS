@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Thread stacks: who owns the memory?
 
 > A worked example of a design where BOTH trivial answers are

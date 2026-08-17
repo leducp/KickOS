@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # KickOS invariants
 
 > Reference (code-synced). The cross-cutting properties a change must not break,

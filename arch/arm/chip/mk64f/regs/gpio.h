@@ -18,4 +18,4 @@ namespace kickos::mk64f::reg::gpio
     constexpr uintptr_t PDDR_OFFSET = 0x14u; // 1 = output
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_GPIO_H
+#endif

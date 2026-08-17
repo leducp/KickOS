@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Context switching and the silicon contract
 
 > The conceptual chapter behind the per-ISA context-switch

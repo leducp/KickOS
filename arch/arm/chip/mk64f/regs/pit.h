@@ -25,4 +25,4 @@ namespace kickos::mk64f::reg::pit
     constexpr uint32_t TCTRL_CHN = 1u << 2; // chain to the previous channel
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_PIT_H
+#endif

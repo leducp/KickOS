@@ -84,4 +84,4 @@ namespace kickos::mk64f::reg::uart
     constexpr uint8_t MODEM_TXCTSE = 1u << 0;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_UART_H
+#endif

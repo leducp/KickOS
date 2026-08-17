@@ -48,4 +48,4 @@ extern "C"
 }
 #endif
 
-#endif // KICKOS_DRIVER_XMCUARTIRQ_H
+#endif

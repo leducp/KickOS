@@ -20,4 +20,4 @@ namespace kickos::mk64f::reg::port
     constexpr uint32_t PCR_MUX_ALT3 = 3u << 8; // MUX=011 = ALT3
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_MK64F_REGS_PORT_H
+#endif

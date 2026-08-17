@@ -33,4 +33,4 @@ namespace kickos::esp32::reg::system
     constexpr uint8_t I2C_BBPLL_HOSTID = 4;
 }
 
-#endif // KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_SYSTEM_H
+#endif

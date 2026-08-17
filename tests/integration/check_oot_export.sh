@@ -43,8 +43,9 @@ echo "== installing KickOS package to $TMP/prefix =="
   || fail "cmake --install failed"
 
 # The package ADVERTISES cxx_std_17 while the kernel is built at C++20, so every header
-# it ships has to compile at the advertised level.
-"$(dirname "$0")/../static/check_public_headers.sh" "$TMP/prefix" "${CXX:-g++}" c++17 \
+# it ships has to compile at the advertised level. The fourth argument is the C compiler for
+# the C-facing half of the same package.
+"$(dirname "$0")/../static/check_public_headers.sh" "$TMP/prefix" "${CXX:-g++}" c++17 "${CC:-gcc}" \
   || fail "the installed headers do not compile at the level the package advertises"
 
 

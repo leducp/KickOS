@@ -71,7 +71,7 @@ kickos_add_board_provider(pinmap_f302nucleo SOURCE init/f302nucleo/pinmap.cc)
 # carry user/include (kos.h/sys.h + the driver headers) transitively.
 if(KICKOS_CHIP STREQUAL "mk64f")
   # RETAINED_CAPS 1: k64dspi keeps its SPI request endpoint (g_spi0_ep) in root's table for
-  # the life of the image. The console entry retains nothing -- console_handover_finish
+  # the life of the image. The console entry retains nothing; console_handover_finish
   # closes root's cap, and the published route lives at the reserved index 0.
   kickos_add_board_provider(services_frdmk64f SOURCE init/frdmk64f/service_list.cc
     LINK kickos_k64dspi kickos_k64uart RETAINED_CAPS 1)
@@ -131,29 +131,28 @@ elseif(KICKOS_CHIP STREQUAL "esp32")
   target_include_directories(kickos_services_esp32_uartirq PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "rp2350")
-  # USB-CDC-console alternative and the board's ONLY service list, so the default stays
-  # kickos_services_none: no part of the USB driver has a silicon witness. It also blinds
-  # the pin UART the kernel console uses, which is a second reason it must never be a
-  # board default (docs/design-m4.6.2-usb-cdc.md section 6.2).
+  # Never a board default: it blinds the pin UART the kernel console uses.
   kickos_add_board_provider(services_pizero2350_usbcdc
     SOURCE init/pizero2350/service_list_usbcdc.cc
     LINK kickos_rpusb)
   target_include_directories(kickos_services_pizero2350_usbcdc PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
 elseif(KICKOS_CHIP STREQUAL "rp2040")
-  # Same driver, same posture, one board down. See the rp2350 branch above.
+  # Never a board default: it blinds the pin UART the kernel console uses.
   kickos_add_board_provider(services_picopi_usbcdc
     SOURCE init/picopi/service_list_usbcdc.cc
     LINK kickos_rpusb)
   target_include_directories(kickos_services_picopi_usbcdc PRIVATE
     "${PROJECT_SOURCE_DIR}/user/include")
+elseif(KICKOS_CHIP STREQUAL "imxrt1062")
+  kickos_add_board_provider(services_teensy41_usbcdc
+    SOURCE init/teensy41/service_list_usbcdc.cc
+    LINK kickos_rt1062usb)
+  target_include_directories(kickos_services_teensy41_usbcdc PRIVATE
+    "${PROJECT_SOURCE_DIR}/user/include")
 endif()
-# The sim's publishing posture, so the console-handover route the silicon boards ship
-# is reachable in CI (see init/sim/service_list.cc). Its "driver" is a host write(2),
-# hence sim-only. NOT the sim default: selected explicitly with
-# -DKICKOS_SERVICE_LIST=kickos_services_sim, so the ordinary sim gate keeps covering
-# the pre-publish route. Unlike the pure-data providers above it calls kos_* + the
-# shared driver bring-up tail, so it needs user/include.
+# Not the sim default: the ordinary sim gate must keep covering the pre-publish route.
+# Unlike the pure-data providers above it calls kos_*, so it needs user/include.
 if(KICKOS_ARCH STREQUAL "sim")
   kickos_add_board_provider(services_sim SOURCE init/sim/service_list.cc)
   target_include_directories(kickos_services_sim PRIVATE

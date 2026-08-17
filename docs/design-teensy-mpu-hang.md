@@ -42,10 +42,10 @@ the core stalled forever, with no fault because no access completed to fault on.
 Cross-checked against three independent references that all wrap these apertures before enabling
 caches on the RT106x:
 
-- NuttX `arch/arm/src/imxrt/imxrt_mpuinit.c` (FlexSPI region typed for the populated size,
-  remainder wrapped).
-- NXP MCUXpresso SDK `boards/evkmimxrt1060/board.c`, `BOARD_ConfigMPU` (the reference MPU table:
-  bounded XIP region, Device/no-access wrap).
+- NuttX, `imxrt_mpuinit` under its `arch/arm/src/imxrt` (FlexSPI region typed for the populated
+  size, remainder wrapped).
+- NXP MCUXpresso SDK, `BOARD_ConfigMPU` in the evkmimxrt1060 board support (the reference MPU
+  table: bounded XIP region, Device/no-access wrap).
 - The i.MX RT1060 errata sheet, ERR011573.
 
 ## The fix (Option A -- shipped)

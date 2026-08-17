@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # KickOS board support
 
 Status of every board target: what works, what only builds, how to flash it, and
@@ -50,7 +51,7 @@ code wins, then this file.
 | `picopi` | RP2040 / M0+ | GP25 | UART0, GP0/GP1, 115200 | `picotool` (BOOTSEL) | [x] LED + UART0 + full selftest with `sched_exit` (2026-07-09, 125 MHz PLL); PMSAv6 cross-domain denial silicon-proven 2026-07-19 (M0+ has no MemManage -- it escalates to HardFault) -- the fleet's only armv6m enforcement proof; U-mode `cxxtest` still awaits a bench re-flash |
 | `bluepill-c8` | STM32F103C8 / M3 (64 K/20 K genuine) | PC13 (active-low) | USART1, PA9/PA10, 115200 | external ST-Link (SWD) | (!) build-only, and **no unit exists** -- there is no genuine F103C8 on the bench, so nothing here can be silicon-witnessed at all (64 K/20 K linker; links the full app set incl selftest + stress) |
 | `frdmk64f` | MK64FN1M0 / M4F | PTB22 (RGB red, active-low) | UART0, PTB16/PTB17, 115200 -> OpenSDA VCOM | J-Link (OpenSDA) | [x] HW 2026-07-15 (full selftest over the buffered console ring, 120 MHz); SYSMPU enforcement + `mpu_fault` trap silicon-proven at M2. **Sixth board to witness an UNPRIVILEGED root, the only one on SYSMPU, and the only one witnessed on its FULL service list** (2026-07-29; re-taken 2026-07-30) -- see *Unprivileged root* below |
-| `teensy41` | i.MX RT1062 / M7 @396 MHz | -- (none wired) | LPUART6 ("Serial1", pins 0/1), 115200 | `teensy_loader_cli` (HalfKay, `.hex`) | [x] full selftest + soak under PMSAv7 enforcement, after the M7 anti-speculation fix (ERR011573; `../design-teensy-mpu-hang.md`) |
+| `teensy41` | i.MX RT1062 / M7 @396 MHz | pin 13 (GPIO2.IO03) | LPUART6 ("Serial1", pins 0/1), 115200 | `teensy_loader_cli` (HalfKay, `.hex`) | [x] full selftest + soak under PMSAv7 enforcement, after the M7 anti-speculation fix (ERR011573; `../design-teensy-mpu-hang.md`) |
 | `pizero2350` | RP2350 / M33 @150 MHz (armv7m backend) | -- (none on the Pi-Zero header) | UART1, GP4/GP5, 115200 | `picotool` (BOOTSEL) | [x] full selftest under PMSAv8 enforcement + `mpu_fault` cross-domain MemManage denial + bench/soak. **Third board with an UNPRIVILEGED root, and the first on PMSAv8** (2026-07-28) -- see *Unprivileged root* below. Also the first silicon witness for `kos_reboot` (BOOTSEL handover) and for `KICKOS_SHUTDOWN_TO_BOOTLOADER` on both terminal dead-ends -- see *Terminal dead-ends and BOOTSEL handover* below |
 
 **"Full selftest" rather than N/N.** The TAP suite emits its own plan line (`1..N`) and a closing
@@ -169,7 +170,7 @@ and gates on CDC host-drain, so app/boot output is dropped; UART0 does not.
 - **RTT backend** -- generic and wired on the XMC (`KICKOS_CONSOLE=both`); the
   UART VCOM path is the one confirmed on hardware.
 - The diagnostic LED is a kernel-owned facility (`kdiag_led_*`, over the chip's
-  `arch_diag_led_*`); a chip with no known LED (`qemu`, `microbit`, `teensy41`,
+  `arch_diag_led_*`); a chip with no known LED (`qemu`, `microbit`,
   `pizero2350`) links the no-op fallback (`arch/common/arch_diag_led_set_default.cc`) and the LED
   silently does nothing -- not a failure.
   `blink` is built for every board regardless, so on those it is a legitimate no-op.

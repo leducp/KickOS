@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # RP2350 (Cortex-M33) MPU: the ARMv8-M PMSAv8 backend
 
 > **Status: LANDED** -- the PMSAv8 backend shipped (`e2179da`) and is silicon-validated on the

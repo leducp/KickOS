@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design brief: task #9 -- unprivileged userspace driver + MMIO grant
 
 > **Status: LANDED** -- the current contract is `reference/architecture.md` (Memory domains) and

@@ -33,4 +33,4 @@ extern "C"
     void kickos_arm_mpu_fixed_init(void);
 }
 
-#endif // KICKOS_ARCH_ARM_COMMON_MPU_H
+#endif

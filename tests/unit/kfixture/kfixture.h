@@ -50,8 +50,8 @@
 //        leave cap_teardown_active() true for every later arm, which reads as a suite that
 //        passes, so reset() REFUSES rather than continuing.
 
-#ifndef KICKOS_KFIXTURE_H
-#define KICKOS_KFIXTURE_H
+#ifndef KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
+#define KICKOS_TESTS_UNIT_KFIXTURE_KFIXTURE_H
 
 #include <stdint.h>
 

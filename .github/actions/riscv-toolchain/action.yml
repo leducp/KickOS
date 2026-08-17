@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
 # The SAME pinned vendor tarball used locally (reproducibility): the RISCstar toolchain
 # (riscv32-none-elf, newlib, rv32imac soft-float multilib).
 name: RISCstar toolchain

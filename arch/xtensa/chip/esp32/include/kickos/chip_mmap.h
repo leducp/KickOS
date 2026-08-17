@@ -34,4 +34,4 @@ namespace kickos::esp32::mmap
     constexpr uintptr_t ROM_REGI2C_WRITE = 0x400041A4u;
 }
 
-#endif // KICKOS_CHIP_MMAP_H
+#endif

@@ -20,10 +20,18 @@ namespace kickos::rp2350::reg::uart
     constexpr uintptr_t FBRD = mmap::UART1_BASE + 0x28u;
     constexpr uintptr_t LCR_H = mmap::UART1_BASE + 0x2cu;
     constexpr uintptr_t CR = mmap::UART1_BASE + 0x30u;
+    constexpr uintptr_t IFLS = mmap::UART1_BASE + 0x34u; // interrupt FIFO level select
     constexpr uintptr_t IMSC = mmap::UART1_BASE + 0x38u; // interrupt mask set/clear
+    constexpr uintptr_t DMACR = mmap::UART1_BASE + 0x48u; // DMA control
 
     constexpr uint32_t FR_TXFF = 1u << 5;   // TX (single holding location) full
+    // Covers the shift register too, and is set from the moment the TX FIFO goes
+    // non-empty whether or not the UART is enabled (DS 12.1.8, UARTFR).
+    constexpr uint32_t FR_BUSY = 1u << 3;
     constexpr uint32_t IMSC_TXIM = 1u << 5; // transmit interrupt mask
+
+    // RXIFLSEL and TXIFLSEL both reset to b010 (DS 12.1.8, UARTIFLS).
+    constexpr uint32_t IFLS_RESET = (0x2u << 3) | 0x2u;
 
     // baud = clk_peri / (16 x (IBRD + FBRD/64)), FBRD = round(frac x 64). clk_peri
     // 12 MHz, 115200 -> IBRD 6, FBRD 33; clk_peri 150 MHz -> IBRD 81, FBRD 24
@@ -39,4 +47,4 @@ namespace kickos::rp2350::reg::uart
     constexpr uint32_t CR_ENABLE = (1u << 0) | (1u << 8) | (1u << 9); // UARTEN,TXE,RXE
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_RP2350_REGS_UART_H
+#endif

@@ -45,4 +45,4 @@ namespace kickos::mk64f::mmap
     constexpr uintptr_t GPIO_STRIDE = 0x40u;
 }
 
-#endif // KICKOS_CHIP_MMAP_H
+#endif

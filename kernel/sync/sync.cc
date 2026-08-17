@@ -52,9 +52,10 @@ namespace kickos
     // wq_block. On ARM the pended PendSV has not fired when that lock is released
     // (arch_irq_restore has no ISB), so the caller is still executing pre-switch and must
     // not trust anything a waker wrote. switch_to bumps the INCOMING thread's
-    // switch_count, so an advance is proof of a real switch-in. Volatile: the value moves
-    // via the exception-mode switch, invisibly to this function. Zero iterations on the
-    // sim, where wq_block switches synchronously.
+    // switch_count, so an advance is proof of a real switch-in. Volatile, not atomic: the
+    // value moves via the exception-mode switch, invisibly to this function, and it is 64
+    // bits wide (sys/atomic.h refuses those). Zero iterations on the sim, where wq_block
+    // switches synchronously.
     void wq_confirm_resume(Thread* c, uint64_t epoch)
     {
         // Reaching the cap means the switch is never coming (a masked or lost PendSV);

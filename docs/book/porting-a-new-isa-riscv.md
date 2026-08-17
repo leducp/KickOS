@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Porting an RTOS to a New ISA: a RISC-V Worked Example
 
 > *KickOS Book -- a per-ISA teaching chapter: how a small preemptive

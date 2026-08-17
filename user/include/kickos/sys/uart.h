@@ -21,6 +21,8 @@
 
 #include <stdint.h>
 
+#include <kickos/sys/byte_ring.h> // KOS_ATOMIC_U32, kos_counter_increment
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -98,17 +100,23 @@ struct kos_uart_rsp
 // Read by KOS_UART_STATS, and ALSO the driver's own live counters: they live in the shared
 // ring block, which is arena memory the bring-up allocated, so they OUTLIVE the driver
 // thread and a supervisor can read the final tally after a restart.
+//
+// The live copy is read and written by two threads, so the STATS reply is built field by
+// field: a block copy of the struct is not a read of its atomics at all.
+//
+// KOS_ATOMIC_U32, not <kickos/sys/atomic.h>: a pure C main linking libkickos names this
+// struct to read the STATS reply.
 struct kos_uart_stats
 {
-    uint32_t tx_bytes;
-    uint32_t rx_bytes;
-    uint32_t tx_dropped;   // lost on driver death, or by a client that gave up retrying
-    uint32_t rx_dropped;   // RX ring full at IRQ time (a SOFTWARE overrun)
-    uint32_t rx_overrun;   // hardware overrun flag seen (ORER / OR / RXFIFO_OVF)
-    uint32_t rx_framing;   // FER / FE / FRM_ERR
-    uint32_t rx_parity;    // PER / PF / PARITY_ERR
-    uint32_t irq_wakes;    // irq_wait returns, hardware raises AND doorbell notifies
-    uint32_t irq_spurious; // of those, the ones that found nothing asserted
+    KOS_ATOMIC_U32 tx_bytes;
+    KOS_ATOMIC_U32 rx_bytes;
+    KOS_ATOMIC_U32 tx_dropped;   // lost on driver death, or by a client that gave up retrying
+    KOS_ATOMIC_U32 rx_dropped;   // RX ring full at IRQ time (a SOFTWARE overrun)
+    KOS_ATOMIC_U32 rx_overrun;   // hardware overrun flag seen (ORER / OR / RXFIFO_OVF)
+    KOS_ATOMIC_U32 rx_framing;   // FER / FE / FRM_ERR
+    KOS_ATOMIC_U32 rx_parity;    // PER / PF / PARITY_ERR
+    KOS_ATOMIC_U32 irq_wakes;    // irq_wait returns, hardware raises AND doorbell notifies
+    KOS_ATOMIC_U32 irq_spurious; // of those, the ones that found nothing asserted
 };
 
 // 12 B of request framing leaves 244 B of inline payload under KOS_EP_MSG_MAX (256). The

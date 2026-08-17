@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Teensy 4.1 / i.MX RT1062 bring-up (spike)
 
 > **Status: LANDED** -- the port shipped and runs on silicon. Kept as the DECISION record; the

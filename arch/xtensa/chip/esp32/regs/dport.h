@@ -23,4 +23,4 @@ namespace kickos::esp32::reg::dport
     constexpr uint32_t CPUPERIOD_SEL_240 = 2;
 }
 
-#endif // KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_DPORT_H
+#endif

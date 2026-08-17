@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Protection follows the CPU, not the scheduler's intent
 
 > Where the per-thread MPU region set must be committed to hardware, and why that

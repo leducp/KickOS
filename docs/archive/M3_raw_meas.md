@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # M3 raw measurement captures
 
 Raw console captures, M3 HW validation pass on the two boards physically on the bench:

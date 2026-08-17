@@ -88,7 +88,7 @@ fi
 # (user/include/kickos/sys/usb_cdc.h) and matches anyone's prototype.
 if [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
   case $BOARD in
-    picopi|pizero2350) ;;
+    picopi|pizero2350|teensy41) ;;
     *) refuse "CONSOLE_USB_CDC is set but $BOARD has no USB device controller backend" ;;
   esac
   PATTERN="/dev/serial/by-id/usb-KickOS_KickOS_console_*-if00"
@@ -323,10 +323,19 @@ case $BOARD in
     # USB device from the HalfKay HID, so arming it first cannot disturb programming and
     # is what captures the banner. Same FTDI re-arm as rx72m.
     command -v teensy_loader_cli > /dev/null || refuse "teensy_loader_cli not on PATH"
-    stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
-    arm_wrapped_reader "$PORT"
-    sleep 1
-    check_reader "on arming"
+    if [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
+      # The console does not exist until the image boots, so the reader polls for it.
+      # HalfKay and the image's CDC are never on the bus together. The banner is lost:
+      # it is out before the host finishes enumerating.
+      arm_waiting_reader
+      sleep 1
+      check_reader "on arming"
+    else
+      stty -F "$PORT" 115200 raw -echo -hupcl clocal min 1 time 0 || refuse "stty failed on $PORT"
+      arm_wrapped_reader "$PORT"
+      sleep 1
+      check_reader "on arming"
+    fi
     # THE FIRST LOAD FAILS AND THE SECOND SUCCEEDS, reliably enough that the operator had
     # been doing it by hand every time. Retried here rather than left to a human, because a
     # bench step that needs a known second try is a step an unattended pass cannot take.
@@ -350,6 +359,9 @@ case $BOARD in
     sleep "${CAP_SECS:-30}"
     note_reader
     stop_wrapped_reader
+    if [ "${CONSOLE_USB_CDC:-0}" = "1" ]; then
+      check_cdc_capture
+    fi
     ;;
   rx72m)
     # rfp-cli -run releases reset and the suite is over in about a second, so a reader

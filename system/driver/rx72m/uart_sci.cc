@@ -241,15 +241,15 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
         {
             if ((seen & rs::SSR_ORER) != 0u)
             {
-                u->stats->rx_overrun++;
+                kos_counter_increment(&u->stats->rx_overrun, 1u);
             }
             if ((seen & rs::SSR_FER) != 0u)
             {
-                u->stats->rx_framing++;
+                kos_counter_increment(&u->stats->rx_framing, 1u);
             }
             if ((seen & rs::SSR_PER) != 0u)
             {
-                u->stats->rx_parity++;
+                kos_counter_increment(&u->stats->rx_parity, 1u);
             }
             // Read RDR FIRST (Fig.42.21 step [6] p.2243) or the overrun is unrecoverable.
             // Through a named copy: `(void)r8(...)` would not perform the volatile access.
@@ -268,7 +268,7 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
         // Reading RDR is what clears RDRF, so the loop makes its own progress.
         dst[got] = r8(u->base + rs::RDR_OFFSET);
         got++;
-        u->stats->rx_bytes++;
+        kos_counter_increment(&u->stats->rx_bytes, 1u);
     }
     return got;
 }

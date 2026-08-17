@@ -8,6 +8,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // shared Q32 tickless-clock reciprocal + multiply
+#include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
@@ -304,6 +305,18 @@ namespace
     console_tx_backend const esp32_console_backend = {
         esp32_tx_slot_free, esp32_tx_push, esp32_tx_irq_enable, esp32_tx_irq_disable};
 
+    // The window arch_console_reclaim rewrites. UART0 owns 0x3FF4_0000 to 0x3FF4_0FFF
+    // (TRM Table 3.3-6); UART1 starts at 0x3FF5_0000.
+    constexpr uintptr_t CONSOLE_WIN_BASE = mmap::UART0_BASE;
+    constexpr size_t CONSOLE_WIN_SIZE = 0x1000u;
+
+    static_assert(reg::uart::OFF_INT_ENA < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_INT_CLR < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_CONF0 < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_CONF1 < CONSOLE_WIN_SIZE
+                      and reg::uart::OFF_CLKDIV < CONSOLE_WIN_SIZE,
+                  "arch_console_reclaim writes outside the window it reports");
+
     // UART0 sub-source -> logical line. Every entry currently names the ONE grouped line
     // (design-m4.6-irq-driver.md sections 5.1 and 7.7): the kernel-owned mask is CPU int
     // 13's INTENABLE bit, which cannot separate sub-sources, so splitting them across
@@ -394,6 +407,12 @@ void kickos_lx6_dispatch_dev(int cpu_int)
 }
 
 // --- Console reclaim: force UART0 back to a polled-ready channel --------------
+void arch_console_reclaim_window(uintptr_t* base, size_t* size)
+{
+    *base = CONSOLE_WIN_BASE;
+    *size = CONSOLE_WIN_SIZE;
+}
+
 // Runs from kpanic_enter, possibly in a partial nested-fault state, after a userspace
 // driver has owned the whole UART0 window. Straight-line ABSOLUTE stores only: no reads
 // of driver-mutable state, no loops, no baud derived from a clock the fault may have
@@ -564,12 +583,37 @@ void arch_console_write_sync(char const* buf, size_t n)
         while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK) >=
                reg::uart::TXFIFO_LIMIT)
         {
+            // A local bound, not KICKOS_POLL_SPIN_MAX: this is a per-byte loop on the
+            // panic path.
             if (++spin > 200000u)
             {
                 return; // bounded: a wedged UART must not hang the panic path (drop)
             }
         }
         r32(reg::uart::FIFO) = static_cast<uint8_t>(buf[i]);
+    }
+}
+
+// Block until UART0 is transmission-complete. STATUS.TXFIFO_CNT reaching 0 is only
+// buffer-empty and leaves up to one frame still clocking out of the shifter;
+// STATUS.ST_UTX_OUT is the transmitter state machine itself, idle only at its TX_IDLE
+// encoding (TRM Register 19.8).
+void arch_console_flush_sync(void)
+{
+    uint32_t spin = 0;
+    while (true)
+    {
+        uint32_t const status = r32(reg::uart::STATUS);
+        uint32_t const queued = (status >> reg::uart::TXFIFO_CNT_SHIFT) & reg::uart::TXFIFO_CNT_MASK;
+        uint32_t const tx_fsm = (status >> reg::uart::ST_UTX_OUT_SHIFT) & reg::uart::ST_UTX_OUT_MASK;
+        if (queued == 0 and tx_fsm == reg::uart::ST_UTX_OUT_TX_IDLE)
+        {
+            return;
+        }
+        if (++spin > KICKOS_POLL_SPIN_MAX)
+        {
+            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
+        }
     }
 }
 

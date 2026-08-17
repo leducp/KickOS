@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design: RISC-V gp small-data kernel/app split -- full-C++-under-PMP feasibility
 
 > **Status: LANDED** -- the split shipped and is CI-gated: `riscv_no_smalldata`,

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
 # kconfiglib for the KickOS build, in a venv of its own so its bin/ never lands on
 # PATH and shadows the interpreter the flash tools run on. Build-time only.
 name: Install kconfiglib

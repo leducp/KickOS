@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The machine underneath: CPU, memory, and peripherals
 
 > Before any chapter can talk about saving a thread's state, protecting a

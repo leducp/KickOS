@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
 CONFIG_BOARD_XMC4800_RELAX=y
 
 # The call/reply payload sweep, on the board its numbers were taken on. This mirrors the

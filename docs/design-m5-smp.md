@@ -180,19 +180,26 @@ happens-before edge, so the secondary must NOT re-init them.
     quiescing the one and only timer. An SMP port needs a cross-core quiesce: a
     per-core SysTick re-arm plus a barrier so no other core reads a half-updated
     anchor. Flagged there, not solved there.
-  - **Every cross-thread field in the tree is `volatile`, and `volatile` is the WRONG TOOL.**
-    It stops the compiler caching a value in a register. It gives no atomicity, no ordering
-    against other objects, and emits no barrier, so it says nothing a second core will
-    honour. What makes the tree correct today is the uniprocessor: one writer per field,
-    aligned words, and readers that tolerate a stale value. SMP removes all three at once.
-    The tree has ZERO `std::atomic`; `volatile` carries this in `kernel/bench/bench.cc`,
-    `kernel/init/console.cc`, `kernel/init/console_tx.cc`, `user/include/kickos/sys/byte_ring.h`,
-    both service headers and the sim console, among others. Relaxed `std::atomic<uint32_t>`
-    is the replacement and is FREE for the pure load/store cases, compiling to a plain
-    load and store even on Cortex-M0+, which has no LDREX/STREX; only a genuine
-    read-modify-write would need more, and the single-writer fields here do not.
-    **This is a correctness fix, not a performance one, and nothing in M4 can witness it**:
-    a uniprocessor cannot fail the way it will fail.
+  - **The `volatile`-to-`std::atomic` conversion is DONE, in M4.9.2, and does not wait for
+    this design.** Every cross-thread field is now a relaxed `std::atomic` with the order
+    spelled at each access; `volatile` is left only for MMIO, for an object the compiler
+    must not elide, and for a 64-bit cross-thread field, a relaxed 64-bit atomic load being
+    a `__atomic_load_8` libcall on every backend and a freestanding link carrying no
+    libatomic. `../reference/style.md` states the rule. Measured on all five backends: a
+    relaxed 32-bit load and store are the same single instruction as `volatile`, so the
+    conversion was free where it applied.
+    **What this bought is a type, not ordering.** Relaxed says nothing a second core will
+    honour, so every ordering question this design raises is still open; what changed is
+    that the accesses are now defined rather than UB, and each one is a named place for the
+    acquire or release to go. Three residues land here:
+    - the 64-bit fields that stayed `volatile`, chiefly `Thread::switch_count` read through
+      a cast in `kernel/sync/sync.cc` and the selftest's hog deadline;
+    - the six per-chip clock anchors, a `_high`/`_low` word pair made coherent by `IrqLock`
+      alone. Two relaxed atomics still tear against each other, and on SMP an `IrqLock` on
+      one core excludes nothing on another, so this pair needs a seqlock or a per-core
+      anchor whatever type the words have;
+    - `KOS_RING_BARRIER` in `user/include/kickos/sys/byte_ring.h`, still a consumer `-D`
+      escape hatch rather than a release store on the now-atomic index.
   - **Console reclaim, `docs/design-m3-console-handover-stageii.md` ruling 7.** No
     hook is reserved for it. Under AMP or SMP the other core's console driver must be
     stopped or fenced before reclaim, or it races the polled panic writer. Reclaim is

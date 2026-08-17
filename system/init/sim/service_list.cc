@@ -22,6 +22,8 @@
 #include <kickos/sys/errno.h>
 #include <kickos/sys/uart.h>
 
+#include <kickos/sys/atomic.h>
+
 #include <stdint.h>
 
 // The host write(2), declared rather than included: this TU is built freestanding
@@ -36,6 +38,7 @@ namespace drv = kickos::driver;
 
 namespace
 {
+
     void wire_puts(char const* s)
     {
         unsigned long n = 0;
@@ -113,7 +116,7 @@ namespace
     constexpr uint32_t WIN_READY_MAX = 500u;
     constexpr uint64_t WIN_READY_NS = 1000000u;
 
-    volatile uint32_t g_win_ready = 0;
+    kickos::Atomic<uint32_t, kickos::Order::RELAXED> g_win_ready{0};
 
     // Claims the line and spawns `entry` on the first candidate window the host leaves
     // free. The caller's own line cap goes before returning: the spawned thread is the
@@ -219,7 +222,8 @@ namespace
     // The framed arm of the console endpoint, answered out of this thread's own state:
     // there is no ring and no device here. Every op must ANSWER, refusal included: a
     // kos_call left unanswered parks the caller forever.
-    int simcon_serve_one(struct kos_uart_stats* stats, volatile uint32_t* mode,
+    int simcon_serve_one(struct kos_uart_stats* stats,
+                         kickos::Atomic<uint32_t, kickos::Order::RELAXED>* mode,
                          uint8_t const* msg, size_t n, kos_cap_t reply_cap)
     {
         if (n < sizeof(struct kos_uart_req))
@@ -246,7 +250,7 @@ namespace
                 {
                     return simcon_reply_status(reply_cap, -KOS_EPIPE, 0);
                 }
-                stats->tx_bytes += static_cast<uint32_t>(put);
+                kos_counter_increment(&stats->tx_bytes, static_cast<uint32_t>(put));
                 return simcon_reply_status(reply_cap, 0, static_cast<uint16_t>(put));
             }
             case KOS_UART_READ:
@@ -262,7 +266,7 @@ namespace
                 rsp.len = static_cast<uint16_t>(sizeof(struct kos_uart_stats));
                 rsp.rsv = 0;
                 mem_copy(out, &rsp, sizeof(rsp));
-                mem_copy(out + sizeof(rsp), stats, sizeof(*stats));
+                kickos::console::stats_pack(out + sizeof(rsp), stats, 0u);
                 return kos_reply(reply_cap, out, sizeof(out));
             }
             case KOS_UART_SET_MODE:
@@ -312,7 +316,8 @@ extern "C"
         // THREAD, so the survives-a-restart property <kickos/sys/uart.h> states does not hold.
         struct kos_uart_stats stats;
         mem_zero(&stats, sizeof(stats));
-        volatile uint32_t mode = 0;
+        // Frame-local and single-threaded; atomic to match simcon_serve_one's signature.
+        kickos::Atomic<uint32_t, kickos::Order::RELAXED> mode{0};
 #if defined(KICKOS_SIMCON_EXIT_AFTER) && KICKOS_SIMCON_EXIT_AFTER > 0
         unsigned served = 0;
 #endif
@@ -344,8 +349,8 @@ extern "C"
                 {
                     took = 0;
                 }
-                stats.tx_bytes += static_cast<uint32_t>(took);
-                stats.tx_dropped += static_cast<uint32_t>(n - took);
+                kos_counter_increment(&stats.tx_bytes, static_cast<uint32_t>(took));
+                kos_counter_increment(&stats.tx_dropped, static_cast<uint32_t>(n - took));
             }
 #if defined(KICKOS_SIMCON_EXIT_AFTER) && KICKOS_SIMCON_EXIT_AFTER > 0
             served++;

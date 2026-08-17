@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design brief: unprivileged userspace SPI driver
 
 > **Status: LANDED** -- `xmcspi` shipped as `user/apps/xmc4800-relax/xmcspi/` and is

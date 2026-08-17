@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: CECILL-C
+# Copyright (c) 2026 Philippe Leduc
+
 CONFIG_BOARD_QEMU_M33=y
 
 # The non-enforcing posture of a board that can enforce, which is what the

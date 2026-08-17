@@ -14,6 +14,7 @@
 
 #include <kickos/arch/arch.h>
 #include <kickos/arch/rv_trap_ids.h>
+#include <kickos/config/limits.h> // KICKOS_POLL_SPIN_MAX
 #include <kickos/console_tx.h>
 #include <kickos/sys/abi.h> // KOS_E* taxonomy (arch_pinmux_set)
 
@@ -390,12 +391,38 @@ void arch_console_write_sync(char const* buf, size_t n)
         while (((r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S) & reg::uart::TXFIFO_CNT_MASK) >=
                reg::uart::TXFIFO_LIMIT)
         {
+            // A local bound, not KICKOS_POLL_SPIN_MAX: this is a per-byte loop on the
+            // panic path.
             if (++spin > 200000u)
             {
                 return; // FIFO not draining -> drop (never block the kernel)
             }
         }
         r32(reg::uart::FIFO) = static_cast<uint8_t>(buf[i]);
+    }
+}
+
+// Block until UART0 is transmission-complete. STATUS.TXFIFO_CNT reaching 0 is only
+// buffer-empty and leaves up to one frame still clocking out of the shifter;
+// FSM_STATUS.ST_UTX_OUT is the transmitter state machine itself (C6 TRM section 27.7.1,
+// Register 27.24).
+void arch_console_flush_sync(void)
+{
+    uint32_t spin = 0;
+    while (true)
+    {
+        uint32_t const queued = (r32(reg::uart::STATUS) >> reg::uart::TXFIFO_CNT_S)
+                                & reg::uart::TXFIFO_CNT_MASK;
+        uint32_t const tx_fsm = (r32(reg::uart::FSM_STATUS) >> reg::uart::ST_UTX_OUT_S)
+                                & reg::uart::ST_UTX_OUT_MASK;
+        if (queued == 0 and tx_fsm == reg::uart::ST_UTX_OUT_IDLE)
+        {
+            return;
+        }
+        if (++spin > KICKOS_POLL_SPIN_MAX)
+        {
+            return; // bounded, as arch.h requires: a wedged UART drops the tail, never hangs
+        }
     }
 }
 
@@ -533,9 +560,11 @@ void arch_console_reclaim(void)
     // TX_SCLK_EN clear stops the transmitter dead and TX_RST_CORE set holds it in reset.
     r32(reg::uart::CLK_CONF) = reg::uart::CLK_CONF_RUN;
 
-    // The _SYNC stores below reach the UART core only on the REG_UPDATE write that ends the
-    // body; waiting for the previous synchronisation first is the TRM's own step
-    // (section 27.5.2.2).
+    // The one reclaim body here that is not straight-line. The _SYNC stores below reach the
+    // UART core only on the REG_UPDATE write that ends the body, and waiting for the PREVIOUS
+    // synchronisation first is the TRM's own step (section 27.5.2.2): skip it and these
+    // stores are dropped rather than applied. The wait is bounded and read-only, so a
+    // nested-fault re-entry repeats it harmlessly.
     uart_reg_update_wait();
     if (g_console_clkdiv != 0)
     {

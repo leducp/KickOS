@@ -35,13 +35,18 @@ namespace kickos::imxrt1062::reg::iomuxc
     // Daisy-chain input select: which pad feeds LPUART6_RX (RM ch.11).
     constexpr uintptr_t LPUART6_RX_SELECT_INPUT = mmap::IOMUXC_BASE + 0x4E4u;
 
+    // GPR27 (RM 11.3.28), in the SEPARATE IOMUXC_GPR block. Bit n picks which instance owns
+    // pad n of the shared GPIO2/GPIO7 pair: 0 = GPIO2, 1 = GPIO7. Resets to 0.
+    constexpr uintptr_t GPR27 = mmap::IOMUXC_GPR_BASE + 0x6Cu;
+
     // SW_MUX_CTL_PAD field encoding.
     constexpr uint32_t MUX_MODE_MASK = 0x7u;  // MUX_MODE[3:0] (only 0..7 defined per pad)
     constexpr uint32_t SION_BIT = 1u << 4;    // software-input-on
     constexpr uint32_t MUX_FIELD_MASK = 0x1Fu; // MUX_MODE | SION, the bits arch_pinmux_set writes
 
     constexpr uint32_t MUX_ALT2 = 2u;          // ALT2 = LPUART6_TX / _RX
+    constexpr uint32_t MUX_ALT5 = 5u;          // ALT5 = GPIO (GPIO_B0_03 -> GPIO2_IO03)
     constexpr uint32_t RX_DAISY_AD_B0_03 = 1u; // daisy value selecting AD_B0_03
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_IMXRT1062_REGS_IOMUXC_H
+#endif

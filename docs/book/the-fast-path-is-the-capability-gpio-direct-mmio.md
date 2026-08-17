@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The fast path is the capability: why a chip-select toggle is direct MMIO, not a syscall
 
 > A microkernel's instinct is to route every privileged act through a syscall, so the kernel

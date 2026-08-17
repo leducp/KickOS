@@ -29,7 +29,8 @@ extern "C"
 namespace
 {
     // Bump-allocated; freed only wholesale (matches the sim arena's M0 model).
-    volatile uint32_t g_ram_used = 0;
+    // Read-modify-written under arch_irq_save/restore in arch_ram_alloc.
+    uint32_t g_ram_used = 0;
 
 #if !KICKOS_HAVE_MPU
     bool range_within(uintptr_t ptr, uintptr_t end, uintptr_t start, uintptr_t stop)
@@ -107,6 +108,7 @@ void arch_trace_stamp_id(struct arch_context* ctx, uint16_t id)
 uintptr_t arch_mpu_probe_addr(void)
 {
 #if KICKOS_HAVE_MPU
+    // Only its ADDRESS escapes: the word an unprivileged thread is meant to fault on.
     static volatile uint32_t guard_word = 0;
     return reinterpret_cast<uintptr_t>(&guard_word);
 #else

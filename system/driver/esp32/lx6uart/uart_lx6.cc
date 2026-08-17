@@ -144,17 +144,17 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
     uint32_t err_clr = 0;
     if ((st & ru::RXFIFO_OVF_INT) != 0u)
     {
-        u->stats->rx_overrun++;
+        kos_counter_increment(&u->stats->rx_overrun, 1u);
         err_clr |= ru::RXFIFO_OVF_INT;
     }
     if ((st & ru::FRM_ERR_INT) != 0u)
     {
-        u->stats->rx_framing++;
+        kos_counter_increment(&u->stats->rx_framing, 1u);
         err_clr |= ru::FRM_ERR_INT;
     }
     if ((st & ru::PARITY_ERR_INT) != 0u)
     {
-        u->stats->rx_parity++;
+        kos_counter_increment(&u->stats->rx_parity, 1u);
         err_clr |= ru::PARITY_ERR_INT;
     }
     if (err_clr != 0u)
@@ -173,7 +173,7 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
     {
         dst[i] = static_cast<unsigned char>(r32(u->base + ru::OFF_FIFO) & 0xFFu);
     }
-    u->stats->rx_bytes += cnt;
+    kos_counter_increment(&u->stats->rx_bytes, cnt);
     // AFTER the drain, and only then does the hardware accept it (Register 19.5).
     r32(u->base + ru::OFF_INT_CLR) = ru::RXFIFO_FULL_INT;
     return cnt;

@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Synchronous call/reply: the reply capability
 
 > A device driver in a microkernel is an unprivileged server: a client asks it to do a

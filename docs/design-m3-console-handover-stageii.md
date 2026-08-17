@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design note: M3 #4 stage (ii) -- console device handover + panic-path reclaim
 
 > **Status: LANDED** -- console device handover shipped and is silicon-proven on XMC: an app

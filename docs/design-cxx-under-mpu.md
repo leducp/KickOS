@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Design: full C++ userspace under M2 MPU enforcement
 
 > **Status: LANDED** -- an unprivileged throw/catch/unwind + STL + RTTI runs under enforcement:

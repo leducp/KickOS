@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # KickOS telemetry / kernel-observability
 
 > Reference (code-synced): the telemetry subsystem's record/wire format,

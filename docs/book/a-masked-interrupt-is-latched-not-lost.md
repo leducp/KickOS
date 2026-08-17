@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # A masked interrupt is latched, not lost
 
 > Where an interrupt that arrives while its line is masked has to go, and why the

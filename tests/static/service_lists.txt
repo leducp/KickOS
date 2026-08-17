@@ -44,6 +44,7 @@ kickos_services_rx72m_uartirq       rx72m               select
 kickos_services_esp32_uartirq       esp32-wroom         select
 kickos_services_pizero2350_usbcdc   pizero2350          select
 kickos_services_picopi_usbcdc       picopi              select
+kickos_services_teensy41_usbcdc     teensy41            select
 
 # --- sim -----------------------------------------------------------------------
 kickos_services_sim                 sim                 select

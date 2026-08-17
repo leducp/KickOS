@@ -227,15 +227,15 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
         {
             if ((s1 & ru::S1_OR) != 0u)
             {
-                u->stats->rx_overrun++;
+                kos_counter_increment(&u->stats->rx_overrun, 1u);
             }
             if ((s1 & ru::S1_FE) != 0u)
             {
-                u->stats->rx_framing++;
+                kos_counter_increment(&u->stats->rx_framing, 1u);
             }
             if ((s1 & ru::S1_PF) != 0u)
             {
-                u->stats->rx_parity++;
+                kos_counter_increment(&u->stats->rx_parity, 1u);
             }
             // NF flags noise on a byte that framed correctly, so it is not folded into
             // rx_framing; it is still cleared with the others.
@@ -261,7 +261,7 @@ uint32_t kos_uart_read(struct kos_uart* u, unsigned char* dst, uint32_t n)
         }
         dst[got] = r8(u->base + ru::D_OFFSET);
         got++;
-        u->stats->rx_bytes++;
+        kos_counter_increment(&u->stats->rx_bytes, 1u);
     }
     return got;
 }

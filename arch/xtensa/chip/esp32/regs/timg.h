@@ -51,4 +51,4 @@ namespace kickos::esp32::reg::timg
     constexpr uint32_t WDT_FLASHBOOT_MOD_EN = 1u << 14;
 }
 
-#endif // KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_TIMG_H
+#endif

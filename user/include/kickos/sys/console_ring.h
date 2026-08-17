@@ -14,6 +14,7 @@
 #include <kickos/kos.h>
 #include <kickos/sys.h>
 
+#include <kickos/sys/atomic.h>
 #include <kickos/sys/byte_ring.h>
 #include <kickos/sys/uart.h>
 
@@ -57,7 +58,17 @@ enum
 //
 // An unknown bit is refused rather than masked away, so a flag this build does not know
 // cannot read back as accepted. Nothing is stored on any refusal.
-int32_t mode_apply(volatile uint32_t* mode, uint32_t flags, uint32_t required);
+int32_t mode_apply(Atomic<uint32_t, Order::RELAXED>* mode, uint32_t flags, uint32_t required);
+
+// Build the 36-byte KOS_UART_STATS payload out of the LIVE counters, field by field: the
+// other thread keeps writing them, so no two fields need belong to the same instant.
+//
+// `tx_lost` is added into tx_dropped, for a service that counts part of its TX loss in a
+// field of its own. A service that does not passes 0.
+void stats_pack(uint8_t* wire, struct kos_uart_stats const* live, uint32_t tx_lost);
+
+// The client side of the same reply.
+void stats_unpack(struct kos_uart_stats* dst, uint8_t const* wire);
 
 // ---------------------------------------------------------------------------------
 // Queue bytes for transmit and ring the doorbell. Returns the bytes ACCEPTED, short of n on
@@ -88,7 +99,7 @@ constexpr uint32_t KOS_CONSOLE_FLUSH_MAX = 2000u;        // ~200 ms total
 // the device without seeing them complete. On such a device an empty ring is not an empty
 // channel, and what it hides is the tail of the stream. Pass nullptr where no such state
 // exists.
-uint32_t flush(struct kos_byte_ring* tx, volatile uint32_t const* inflight);
+uint32_t flush(struct kos_byte_ring* tx, Atomic<uint32_t, Order::RELAXED> const* inflight);
 
 // ---------------------------------------------------------------------------------
 // Queue ALL of a raw console write. Always returns n: it does not give up.

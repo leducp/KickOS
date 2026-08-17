@@ -12,6 +12,7 @@
 #include <kickos/irqlock.h>
 #include <kickos/libc/string.h>
 #include <kickos/libc/fmt.h>
+#include <kickos/sys/atomic.h>
 
 #include <stdarg.h>
 
@@ -35,10 +36,13 @@
 
 namespace
 {
+    using kickos::Atomic;
+    using kickos::Order;
+
     // Forces the polled path once a panic has started: the ring's drain ISR is masked
     // from that point on. Only carries a panic that does NOT reclaim, since RECLAIMED
     // already routes polled.
-    constinit volatile bool g_console_panicking = false;
+    constinit Atomic<bool, Order::RELAXED> g_console_panicking = false;
 
     // Who owns the UART TX register. Must be consulted BEFORE the buffered/sync
     // sub-decision: in USER_OWNED the kernel may touch the device on NO path at all.
@@ -50,24 +54,24 @@ namespace
         RECLAIMED     // the kernel forcibly took the UART back (panic, or driver death);
                       // polled-only
     };
-    constinit volatile ConsoleState g_console_state = ConsoleState::KERNEL_OWNED;
+    constinit Atomic<ConsoleState, Order::RELAXED> g_console_state = ConsoleState::KERNEL_OWNED;
 
     // Set by the cap layer when the published console endpoint loses its last WAIT-bearing
     // cap. Sticky across a refused reclaim, which is the only reason it is a flag and not the
     // reclaim itself; see console_tx.h.
-    constinit volatile bool g_console_driver_died = false;
+    constinit Atomic<bool, Order::RELAXED> g_console_driver_died = false;
 
     // In-flight kernel chip writers: incremented under the same state read that decided
     // to poke the device while KERNEL_OWNED, decremented after. kos_console_publish flips
     // the state first and then spins on this, so a writer that raced past a stale
     // KERNEL_OWNED read is off the device before the userspace driver touches it. Nothing
     // increments it after the flip, so it strictly drains to 0.
-    constinit volatile int g_chip_writers = 0;
+    constinit Atomic<int, Order::RELAXED> g_chip_writers = 0;
 }
 
 // Every access to the chip-writer count, mutators and reader alike, MUST run under
-// IrqLock: console_emit can run in ISR/fault context, so an unlocked volatile RMW tears
-// against a thread producer's and an unlocked reader can observe the intermediate.
+// IrqLock: console_emit can run in ISR/fault context, so an unlocked read-modify-write
+// tears against a thread producer's and an unlocked reader can observe the intermediate.
 extern "C" int console_owner_is_kernel(void)
 {
     return static_cast<int>(g_console_state == ConsoleState::KERNEL_OWNED);
@@ -81,7 +85,7 @@ extern "C" void console_owner_set_user(void)
 extern "C" void console_chip_writer_enter(void)
 {
     kickos::IrqLock lock;
-    g_chip_writers = g_chip_writers + 1; // explicit RMW: '++' on volatile is deprecated (C++20)
+    g_chip_writers = g_chip_writers + 1;
 }
 
 extern "C" void console_chip_writer_leave(void)
@@ -144,7 +148,7 @@ namespace kickos
     // ordinary thread context with the ring armed; panic, ISR/fault context and pre-arm
     // boot fall back to the bounded polled writer. This is the single choke point that
     // keeps the ring a true single-producer, so no other site may enqueue.
-    static void console_emit(char const* buf, size_t n)
+    static void console_emit(char const* buf, size_t n, bool force_sync)
     {
         switch (g_console_state)
         {
@@ -167,6 +171,12 @@ namespace kickos
         }
         case ConsoleState::USER_OWNED:
         {
+            // force_sync accepts interleaving with the driver's in-flight bytes, and is set
+            // only after the published route has already refused these ones.
+            if (force_sync)
+            {
+                arch_console_write_sync(buf, n);
+            }
             return; // DROP: the driver owns the UART (RTT still carries it, see kconsole_write)
         }
         case ConsoleState::RECLAIMED:
@@ -182,8 +192,9 @@ namespace kickos
     // context, so it takes the crit section for the few microseconds it needs. The chip
     // transport locks internally and must NEVER be held under IrqLock across a whole
     // transmission: a 256 B write at 115200 would mask interrupts for ~22 ms.
-    void kconsole_write(char const* buf, size_t n)
+    static void kconsole_write_impl(char const* buf, size_t n, bool force_sync)
     {
+        (void)force_sync;
 #if !KICKOS_CONSOLE_CHIP && !KICKOS_CONSOLE_RTT
         // KICKOS_CONSOLE=none: every backend is compiled out and this is deliberately a
         // sink. Panic, fault and boot behaviour is unchanged; they just say nothing.
@@ -207,7 +218,7 @@ namespace kickos
         {
             if (j > sizeof(cooked) - 2)
             {
-                console_emit(cooked, j);
+                console_emit(cooked, j, force_sync);
                 j = 0;
             }
             if (buf[i] == '\n')
@@ -218,12 +229,17 @@ namespace kickos
         }
         if (j > 0)
         {
-            console_emit(cooked, j);
+            console_emit(cooked, j, force_sync);
         }
 #else
-        console_emit(buf, n);
+        console_emit(buf, n, force_sync);
 #endif
 #endif
+    }
+
+    void kconsole_write(char const* buf, size_t n)
+    {
+        kconsole_write_impl(buf, n, false);
     }
 
     void kputs(char const* s)
@@ -243,7 +259,12 @@ namespace kickos
             // is gone, so routing there would send into an endpoint nobody serves.
             if (route and g_console_state == ConsoleState::USER_OWNED)
             {
-                (void)cap_console_deliver(buf, n);
+                // 0 means nothing was delivered, and the chip write above already dropped,
+                // so without this the record reaches nobody.
+                if (cap_console_deliver(buf, n) == 0)
+                {
+                    kconsole_write_impl(buf, n, true);
+                }
             }
         }
     }
@@ -360,12 +381,10 @@ extern "C" void kickos_bootloader_handover(void)
 extern "C" void kickos_terminate(int status)
 {
     console_tx_flush_sync();
-    // The RING being empty is not the DEVICE being idle, and arch_shutdown can stop the core
-    // with a byte still in the UART FIFO or shift register. That truncated the last line of
-    // every capture on a board without KICKOS_SHUTDOWN_TO_BOOTLOADER, because the drain lived
-    // inside kickos_bootloader_handover, which compiles to an empty body without the knob --
-    // measured on f302nucleo as a survivor line cut mid-word. Idempotent, and a no-op on a
-    // chip with no body, so it costs nothing where nothing is queued.
+    // The RING being empty is not the DEVICE being idle: arch_shutdown can stop the core with
+    // a byte still in the UART FIFO or shift register, truncating the last line. It must NOT
+    // move back inside kickos_bootloader_handover, which compiles to an empty body on a board
+    // without KICKOS_SHUTDOWN_TO_BOOTLOADER.
     arch_console_flush_sync();
     kickos_bootloader_handover();
     arch_shutdown(status);

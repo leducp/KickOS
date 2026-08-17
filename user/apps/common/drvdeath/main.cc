@@ -27,6 +27,7 @@
 
 #include <kickos/kos.h>
 #include <kickos/sys.h>
+#include <kickos/sys/atomic.h>
 #include <kickos/sys/cap_index.h>
 #include <kickos/sys/emit.h>
 #include <kickos/sys/errno.h>
@@ -38,6 +39,9 @@ extern "C" kos_thread_t kickos_simcon_window_thread(void);
 
 namespace
 {
+    using kickos::Atomic;
+    using kickos::Order;
+
     // The kill gate is PARENTHOOD, so witnessing a refusal needs a live thread this app
     // did NOT spawn. Root spawns everything else in the image, hence a grandchild.
     constexpr uint8_t CAP_FULL =
@@ -46,9 +50,9 @@ namespace
     constexpr int NEST_PARK = KOS_SPAWN_DELEGATED_CAP0 + 1; // what the grandchild waits on
     constexpr int NEST_PROBE = KOS_SPAWN_DELEGATED_CAP0 + 2; // root's gate back to the child
 
-    volatile kos_thread_t g_grandchild = KOS_THREAD_NONE;
-    volatile int g_child_kill_rc = 1; // 1 == the child never got that far
-    volatile int g_root_kill_rc = 1;  // 1 == the child never got that far
+    Atomic<kos_thread_t, Order::RELAXED> g_grandchild{KOS_THREAD_NONE};
+    Atomic<int, Order::RELAXED> g_child_kill_rc{1}; // 1 == the child never got that far
+    Atomic<int, Order::RELAXED> g_root_kill_rc{1};  // 1 == the child never got that far
 
     // Root's slot is the FIRST allocation the thread pool ever makes, so it is index 0 at
     // generation 0 on every board and posture, and handle_for(0) is the bare 0. Change that
@@ -79,9 +83,10 @@ namespace
         kos_sem_wait(NEST_PROBE);
         // The accept half of the gate: a spawner may cancel its own child. Root's
         // -KOS_EPERM below is the refuse half.
-        if (g_grandchild != KOS_THREAD_NONE)
+        kos_thread_t const gc = g_grandchild;
+        if (gc != KOS_THREAD_NONE)
         {
-            g_child_kill_rc = kos_thread_kill(g_grandchild);
+            g_child_kill_rc = kos_thread_kill(gc);
         }
         kos_sem_post(NEST_DONE);
         kos_exit(0);
@@ -115,9 +120,10 @@ namespace
             return;
         }
         kos_sem_wait(done); // the grandchild exists
-        if (g_grandchild != KOS_THREAD_NONE)
+        kos_thread_t const gc = g_grandchild;
+        if (gc != KOS_THREAD_NONE)
         {
-            *stranger_rc = kos_thread_kill(g_grandchild);
+            *stranger_rc = kos_thread_kill(gc);
         }
         kos_sem_post(probe); // probed: the child may now cancel it for real
         kos_sem_wait(done);  // the child has tried its own cancel

@@ -77,6 +77,9 @@ mkdir -p "$SESSION/logs"
 EXTRA=()
 case $BOARD in
   picopi|pizero2350) EXTRA+=(-DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON) ;;
+  # teensy41: HalfKay is otherwise reachable only by a physical button press. arch_reboot's
+  # bkpt #251 is caught by the MKL02 companion, which presents HalfKay itself.
+  teensy41) EXTRA+=(-DKICKOS_SHUTDOWN_TO_BOOTLOADER=ON) ;;
   *) ;;
 esac
 # SERVICE_LIST is how a DRIVER gets witnessed at all. Most -st presets default to
@@ -87,6 +90,26 @@ esac
 if [ -n "${SERVICE_LIST:-}" ]; then
   EXTRA+=(-DKICKOS_SERVICE_LIST="$SERVICE_LIST")
 fi
+# EXTRA_CMAKE reaches the configure verbatim.
+if [ -n "${EXTRA_CMAKE:-}" ]; then
+  # Deliberately unquoted: the caller passes one or more -D words.
+  # shellcheck disable=SC2206
+  EXTRA+=($EXTRA_CMAKE)
+fi
+# Every -D above lands in the build dir's CACHE and survives there, so reusing the dir at the
+# same TAG-BOARD-VARIANT would measure an EXTRA_CMAKE or SERVICE_LIST this invocation never
+# passed. The stamp records the set that configured the dir, and a dir whose set differs, or
+# that carries no stamp, is discarded instead of reused: a capture is a witness for the flags
+# of ITS run. Written only after the configure succeeds, so a half-configured dir is discarded
+# on the next run too.
+EXTRA_STAMP="$BUILD/.kickos-extra-d"
+EXTRA_WANT=$(printf '%s\n' "${EXTRA[@]+"${EXTRA[@]}"}")
+if [ -d "$BUILD" ]; then
+  if [ ! -f "$EXTRA_STAMP" ] || [ "$(cat "$EXTRA_STAMP")" != "$EXTRA_WANT" ]; then
+    echo "=== discarding $BUILD: its cache was not configured with this run's extra -D set"
+    rm -rf "$BUILD"
+  fi
+fi
 
 # A _usbcdc list publishes the console onto the board's own USB and blinds the pin UART, so
 # the route is the device's own ACM. Derived from the list, not asked for: the provider is
@@ -95,6 +118,12 @@ CONSOLE_USB_CDC=0
 case "${SERVICE_LIST:-}" in
   *_usbcdc) CONSOLE_USB_CDC=1 ;;
 esac
+# CONSOLE_PIN=1 forces the PIN console back. A device-controller backend that dies before it
+# publishes leaves the kernel console on the pin UART, so that cable is the only channel
+# carrying the failure; an ACM that never enumerates would report silence for a live board.
+if [ "${CONSOLE_PIN:-0}" = "1" ]; then
+  CONSOLE_USB_CDC=0
+fi
 
 # A TAG can COLLIDE with a build dir an earlier session left behind, and then the generator loads
 # that dir's stale generated/.config and refuses a symbol this tree does not declare. It reads as a
@@ -109,6 +138,7 @@ if ! CFGOUT=$(cmake --preset "$BOARD-$VARIANT" -B "$BUILD" "${EXTRA[@]+"${EXTRA[
   fi
   exit 1
 fi
+printf '%s\n' "$EXTRA_WANT" > "$EXTRA_STAMP"
 cmake --build "$BUILD" -j8 --target "$APP" > /dev/null || exit 1
 
 # The emitted image base, without extension. Board-specific apps are searched FIRST, the

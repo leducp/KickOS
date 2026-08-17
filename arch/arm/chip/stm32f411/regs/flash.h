@@ -22,4 +22,4 @@ namespace kickos::stm32f411::reg::flash
     constexpr uint32_t ACR_DCEN = 1u << 10;   // data cache
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_STM32F411_REGS_FLASH_H
+#endif

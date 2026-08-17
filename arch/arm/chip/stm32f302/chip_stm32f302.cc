@@ -23,6 +23,7 @@
 
 #include "regs.h" // arch/arm/common: kickos_armv7m_enable_fpu + core SCB regs
 
+
 #include <stdint.h>
 
 namespace kickos
@@ -43,6 +44,7 @@ extern "C"
 
 namespace
 {
+
     inline volatile uint32_t& r32(uintptr_t a) { return *reinterpret_cast<volatile uint32_t*>(a); }
 
     // APB1 clock feeding USART2. Reset HSI => PCLK1 = 8 MHz; clock_init sets 32 MHz.
@@ -218,8 +220,10 @@ namespace
     // the TIM2 overflow ISR below, exactly once: whoever reads first advances
     // g_clk_last, so the other sees no backward step. Without that ISR a wrap
     // across a fully-quiescent >67 s idle would be lost (a slow DWT-style leap).
-    volatile uint32_t g_clk_high = 0;
-    volatile uint32_t g_clk_last = 0;
+    // The two words are ONE value: the IrqLock in tim2_ticks is what keeps them
+    // coherent against the TIM2 overflow ISR, not the atomicity of either word.
+    uint32_t g_clk_high = 0;
+    uint32_t g_clk_last = 0;
 
     // arch_clock_now epoch anchor (B2, shared: kickos/arch/clk_anchor.h). Sole writer
     // is init() in arch_init; this chip never retunes at runtime. A retune added later
@@ -253,7 +257,7 @@ namespace
         uint32_t cur = r32(TIM2_CNT);
         if (cur < g_clk_last)
         {
-            g_clk_high = g_clk_high + 1;
+            ++g_clk_high;
         }
         g_clk_last = cur;
         uint64_t hi = g_clk_high;

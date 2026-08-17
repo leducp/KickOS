@@ -12,6 +12,7 @@
 
 #include <kickos/irq.h>
 #include <kickos/arch/arch.h>
+#include <kickos/sys/atomic.h>
 
 #include <stdint.h>
 
@@ -24,6 +25,9 @@ extern "C" volatile uint32_t* g_bench_cycle_src;
 
 namespace
 {
+    using kickos::Atomic;
+    using kickos::Order;
+
     // Per-arch free-running cycle counter for the bench. Returns 0 where the arch has
     // none (Cortex-M0 / sim): there switch.S brackets nothing (scnt stays 0) and the
     // app reports throughput only, so cyccnt() is never actually read on those targets.
@@ -56,14 +60,14 @@ namespace
 
     // IRQ-entry latency: a bench handler timestamps its own entry; kickos_bench_irq_once
     // triggers the line and returns (entry - trigger) cycles.
-    constinit volatile uint32_t g_irq_entry = 0;
-    constinit volatile uint64_t g_irq_entry_ns = 0; // clock_now stamp for the frozen-counter arches
-    constinit volatile uint32_t g_irq_seen = 0;
+    constinit Atomic<uint32_t, Order::RELAXED> g_irq_entry = 0;
+    constinit Atomic<uint32_t, Order::RELAXED> g_irq_seen = 0;
 
+    // Nothing but the cycle stamp belongs in here: the handler IS the thing being measured,
+    // so any work added between entry and the seen flag inflates every sample.
     void bench_irq_handler(void*)
     {
-        g_irq_entry = cyccnt();           // cheapest stamp first
-        g_irq_entry_ns = arch_clock_now();
+        g_irq_entry = cyccnt();
         g_irq_seen = 1;
     }
 

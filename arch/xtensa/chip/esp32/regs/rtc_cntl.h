@@ -45,4 +45,4 @@ namespace kickos::esp32::reg::rtc_cntl
     constexpr uint32_t WDT_FLASHBOOT_MOD_EN = 1u << 10;
 }
 
-#endif // KICKOS_ARCH_XTENSA_CHIP_ESP32_REGS_RTC_CNTL_H
+#endif

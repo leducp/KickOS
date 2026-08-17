@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The blocking substrate: one wait/wake primitive
 
 > The concept behind every blocking syscall in KickOS. A semaphore wait, a mutex

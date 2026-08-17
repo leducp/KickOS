@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CECILL-C
 // Copyright (c) 2026 Philippe Leduc
 //
-// The ring side of a published console. The contract for every function here is stated at
-// its declaration in <kickos/sys/console_ring.h>; this file holds only the bodies.
+// The ring side of a published console. The contract for each function is stated at its
+// declaration in <kickos/sys/console_ring.h>.
 
 #include <kickos/sys/console_ring.h>
+
+#include <kickos/sys/bytes.h> // mem_copy
 
 namespace kickos::console
 {
 
-int32_t mode_apply(volatile uint32_t* mode, uint32_t flags, uint32_t required)
+int32_t mode_apply(Atomic<uint32_t, Order::RELAXED>* mode, uint32_t flags, uint32_t required)
 {
     if (mode == nullptr)
     {
@@ -27,16 +29,51 @@ int32_t mode_apply(volatile uint32_t* mode, uint32_t flags, uint32_t required)
     return 0;
 }
 
+// The word array is the wire image: same order, same width.
+constexpr uint32_t KOS_UART_STATS_WORDS = 9;
+static_assert(KOS_UART_STATS_WORDS * sizeof(uint32_t) == sizeof(struct kos_uart_stats),
+              "kos_uart_stats gained or lost a field; pack and unpack must follow");
+
+void stats_pack(uint8_t* wire, struct kos_uart_stats const* live, uint32_t tx_lost)
+{
+    uint32_t f[KOS_UART_STATS_WORDS];
+    f[0] = live->tx_bytes.load(std::memory_order_relaxed);
+    f[1] = live->rx_bytes.load(std::memory_order_relaxed);
+    f[2] = live->tx_dropped.load(std::memory_order_relaxed) + tx_lost;
+    f[3] = live->rx_dropped.load(std::memory_order_relaxed);
+    f[4] = live->rx_overrun.load(std::memory_order_relaxed);
+    f[5] = live->rx_framing.load(std::memory_order_relaxed);
+    f[6] = live->rx_parity.load(std::memory_order_relaxed);
+    f[7] = live->irq_wakes.load(std::memory_order_relaxed);
+    f[8] = live->irq_spurious.load(std::memory_order_relaxed);
+    mem_copy(wire, f, sizeof(f));
+}
+
+void stats_unpack(struct kos_uart_stats* dst, uint8_t const* wire)
+{
+    uint32_t f[KOS_UART_STATS_WORDS];
+    mem_copy(f, wire, sizeof(f));
+    dst->tx_bytes.store(f[0], std::memory_order_relaxed);
+    dst->rx_bytes.store(f[1], std::memory_order_relaxed);
+    dst->tx_dropped.store(f[2], std::memory_order_relaxed);
+    dst->rx_dropped.store(f[3], std::memory_order_relaxed);
+    dst->rx_overrun.store(f[4], std::memory_order_relaxed);
+    dst->rx_framing.store(f[5], std::memory_order_relaxed);
+    dst->rx_parity.store(f[6], std::memory_order_relaxed);
+    dst->irq_wakes.store(f[7], std::memory_order_relaxed);
+    dst->irq_spurious.store(f[8], std::memory_order_relaxed);
+}
+
 uint32_t tx_write(struct kos_byte_ring* tx, struct kos_uart_stats* stats,
                          uint8_t const* p, uint32_t n)
 {
     uint32_t const took = kos_byte_ring_push(tx, p, n);
-    stats->tx_bytes += took;
+    kos_counter_increment(&stats->tx_bytes, took);
     (void)kos_irq_notify(KOS_CONSOLE_CAP_DOORBELL);
     return took;
 }
 
-uint32_t flush(struct kos_byte_ring* tx, volatile uint32_t const* inflight)
+uint32_t flush(struct kos_byte_ring* tx, Atomic<uint32_t, Order::RELAXED> const* inflight)
 {
     for (uint32_t i = 0; i < KOS_CONSOLE_FLUSH_MAX; i++)
     {

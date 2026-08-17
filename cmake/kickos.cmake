@@ -348,6 +348,12 @@ function(kickos_add_application name)
   # out of tree the application target belongs to the consumer.
   if(KICKOS_IN_TREE)
     target_compile_options(${name} PRIVATE ${KICKOS_WARN_FLAGS})
+    # gcc 15 defaults to gnu23, which accepts bool, static_assert, alignas and nullptr, so
+    # an unpinned C app stops witnessing the C contract it exists for.
+    set_target_properties(${name} PROPERTIES
+      C_STANDARD 11
+      C_STANDARD_REQUIRED ON
+      C_EXTENSIONS OFF)
   endif()
   # NB: the app is NOT built -msmall-data-limit=0 under RISC-V PMP. With the gp
   # window anchored inside the .appdata grant (chip .ld), the app's small globals

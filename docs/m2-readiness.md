@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # KickOS enforcement ledger (opened as the pre-M2 readiness list)
 
 > **What this file is now.** It opened as the pre-M2 readiness list -- the work needed to put a

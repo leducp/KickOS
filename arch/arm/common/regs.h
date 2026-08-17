@@ -65,6 +65,7 @@ namespace kickos
         // MPU violation raises MemManage (not an escalated HardFault).
         constexpr uintptr_t SCB_SHCSR = 0xE000ED24;
         constexpr uint32_t SHCSR_MEMFAULTENA = 1u << 16;
+        constexpr uint32_t SHCSR_BUSFAULTENA = 1u << 17;
     }
 }
 

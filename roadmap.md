@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # KickOS roadmap
 
 The milestone-level plan: the general idea to tackle per milestone. **No granular items** --
@@ -152,9 +153,11 @@ what is next; this carries the numbering.
 | M4.8.1 | the class layer the driver-model ruling requires, plus the one generic service over (class x chip) that replaced twelve bring-ups | merged, PR 19 |
 | M4.8.2 | the host unit-test layer, and the `sched::wake()` dying-guard repair it is the tool to prove | merged, PR 20 |
 | M4.8.3 | the task layer: a set of threads that is one unit, plus the fault record a published console swallowed | merged, PR 21 |
-| M4.8.4 | close the 4.8.x tail: the wake-guard premise, the release ordering the narrowing left, rxv3's measured below-stack cost, and the three instruments that let them through | planned |
-| M4.9.1 | the USB CDC console, continuing M4.6.2 | planned |
-| M4.9.2..N | the fleet-wide witness pass, and the per-chip `arch_console_reclaim` bodies | planned |
+| M4.8.4 | close the 4.8.x tail: the wake-guard premise, the release ordering the narrowing left, rxv3's measured below-stack cost, and the three instruments that let them through | merged, PR 22 |
+| M4.9.1 | the USB CDC console, continuing M4.6.2 | merged, PR 23 |
+| M4.9.2 | the user substrate says what it means, and it grew past that line: a relaxed atomic wherever `volatile` stood in for one plus the house wrapper that carries the ordering as a type parameter, one definition per non-template body, the four gates `style.md` already claimed, the per-chip `arch_console_reclaim` and `arch_console_flush_sync` bodies on every chip that publishes (which closes G2), the i.MX RT1062 USB CDC backend (stage S6, root-caused to the AIPSTZ bridge rather than the MPU), `reclaimwit` as the board-agnostic reclaim and drain witness, a fault report that no longer dies silently during driver bring-up, and two armv7m fault-path repairs | in progress |
+| M4.9.3..N | THE REST OF THE DRIVER ERA, plus whatever the witness pass opens. The wave's content is the gap list in `docs/design-driver-era-scope.md` and most of it is still unnumbered: G4 clock-select fleet-wide, G6 the driver-API build-layering question, G7 the power manager, G8 the testing HID, and the G1, G3 and G5 tails. Also stage S7, a non-cacheable attribute on a dynamic grant, which is no longer optional: the USB console posture costs about 6x on teensy41 IPC, measured | planned |
+| M4.9.3 | the instruments the M4.9.2 witness pass exposed: the `ctest -LE host` image-gate sweep that no tool ever ran, the pool-arena assert binding every board, a gate refusing an atomic read-modify-write, and `reclaimwit` registered so the reclaim seams are automated rather than hand-run | in progress |
 
 **M4.7.x is kernel-core work carrying an M4 number on purpose.** The banner and package versions are
 `0.<milestone>.<submilestone>` and must stay monotonic, so a capability rework cannot be numbered
@@ -229,6 +232,10 @@ move should be read as evidence about the sequencing, not as bookkeeping.
 The roadmap is a DIRECTION, not a contract: renumbering to match what the work turned out to be
 beats forcing work into a number it does not fit. Only the banner and package versions may never
 go backward.
+
+**A `..N` row is a count nobody knows yet, and it is always the LAST row of a wave.** A witness pass
+OPENS items as well as closing them, so the tail keeps the suffix until the pass has run; the numbers
+it earns are then assigned here, and the tail row moves up to the next free number.
 
 ### M4.7.5 -- configuration mechanism: Kconfig owns configuration, CMake keeps the build graph
 **NUMBER ASSIGNED 2026-08-05, and the design questions below are now answered rather than open.** The

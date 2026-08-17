@@ -17,6 +17,8 @@
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
 
+#include <kickos/sys/atomic.h>
+
 namespace kickos
 {
     void kpanic(char const* msg) __attribute__((noreturn)); // fail-loud on a bad attach
@@ -24,17 +26,20 @@ namespace kickos
 
 namespace
 {
+    using kickos::Atomic;
+    using kickos::Order;
+
     // All console-TX ring state in one object. Only head/tail are shared between the
-    // thread producer and the drain ISR -> volatile; the rest are set once at init and
-    // read-only after (marking the whole struct volatile would pessimize those + mislead).
+    // thread producer and the drain ISR, so only those two are atomic; the rest are set
+    // once at init and read-only after.
     struct ConsoleTxRing
     {
         console_tx_backend const* backend = nullptr;
         char* buf = nullptr;
         uint32_t size = 0; // power of two; usable capacity = size - 1
         uint32_t mask = 0;
-        volatile uint32_t head = 0; // producer advances (bytes queued)
-        volatile uint32_t tail = 0; // ISR advances (bytes drained)
+        Atomic<uint32_t, Order::RELAXED> head = 0; // producer advances (bytes queued)
+        Atomic<uint32_t, Order::RELAXED> tail = 0; // ISR advances (bytes drained)
         int irq_line = -1;          // TX IRQ line (from the backend); console_tx_deinit detaches it
         bool armed = false;
 
@@ -71,19 +76,21 @@ namespace
     void drain_sync()
     {
         uint32_t const head = g_tx.head;
-        while (g_tx.tail != head)
+        uint32_t tail = g_tx.tail;
+        while (tail != head)
         {
             if (not wait_slot())
             {
                 g_tx.tail = head; // stuck TX: drop the undrained bytes, don't hang
                 return;
             }
-            g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[g_tx.tail]));
+            g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[tail]));
             // Publish AFTER each byte, never once at the end. A synchronous CPU fault
             // (illegal instruction, MPU, bus) is not gated by the interrupt mask, so it can
             // land mid-loop, and its handler flushes again; a stale tail would make that
             // flush re-push bytes already sent, doubling output before the panic banner.
-            g_tx.tail = (g_tx.tail + 1u) & g_tx.mask;
+            tail = (tail + 1u) & g_tx.mask;
+            g_tx.tail = tail;
         }
     }
 
@@ -156,10 +163,11 @@ void console_tx_write(char const* buf, size_t n)
         //   K64F TDRE:  harmless immediate send, level-asserted while the buffer is empty
         //               (RM Rev.4 52.3.5; S1 resets to 0xC0 untransmitted).
         //   PL011 FEN=0: unconfirmed; do not read the three above as settling it.
-        if (was_empty and g_tx.head != g_tx.tail and g_tx.backend->slot_free() != 0)
+        uint32_t const tail = g_tx.tail;
+        if (was_empty and idx != tail and g_tx.backend->slot_free() != 0)
         {
-            g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[g_tx.tail]));
-            g_tx.tail = (g_tx.tail + 1u) & g_tx.mask;
+            g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[tail]));
+            g_tx.tail = (tail + 1u) & g_tx.mask;
         }
         return;
     }
@@ -187,14 +195,16 @@ void console_tx_write(char const* buf, size_t n)
 void console_tx_isr(void)
 {
     uint32_t const head = g_tx.head; // producer cannot run during this ISR (priority)
-    while (g_tx.tail != head and g_tx.backend->slot_free() != 0)
+    uint32_t tail = g_tx.tail;
+    while (tail != head and g_tx.backend->slot_free() != 0)
     {
-        g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[g_tx.tail]));
+        g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[tail]));
         // Publish per byte (not once at the end): a synchronous fault mid-drain
         // flushes again, and a stale tail would re-push already-sent bytes.
-        g_tx.tail = (g_tx.tail + 1u) & g_tx.mask;
+        tail = (tail + 1u) & g_tx.mask;
+        g_tx.tail = tail;
     }
-    if (g_tx.tail == head)
+    if (tail == head)
     {
         g_tx.backend->irq_disable();
     }

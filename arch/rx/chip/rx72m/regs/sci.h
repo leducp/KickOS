@@ -24,6 +24,13 @@ namespace kickos::rx::reg::sci
     constexpr uintptr_t RDR_OFFSET = 0x05;  // receive data (sec.42.2.2 p.2157)
     constexpr uintptr_t SCMR_OFFSET = 0x06; // smart card mode (sec.42.2.12 p.2179)
     constexpr uintptr_t SEMR_OFFSET = 0x07; // serial extended mode (sec.42.2.15 p.2195)
+    constexpr uintptr_t SNFR_OFFSET = 0x08;  // noise filter setting (sec.42.2.16 p.2198)
+    constexpr uintptr_t SIMR1_OFFSET = 0x09; // I2C mode 1 (sec.42.2.17 p.2199)
+    constexpr uintptr_t SIMR2_OFFSET = 0x0A; // I2C mode 2 (sec.42.2.18 p.2200)
+    constexpr uintptr_t SIMR3_OFFSET = 0x0B; // I2C mode 3 (sec.42.2.19 p.2201)
+    // +0x0C is SISR (sec.42.2.20 p.2203), simple-I2C status, unused here.
+    constexpr uintptr_t SPMR_OFFSET = 0x0D; // SPI mode (sec.42.2.21 p.2204)
+    // +0x0E/+0x0F are TDRH/TDRL (sec.42.2.6 p.2161): a store there queues a byte.
 
     // SCI6, the board console channel. Absolute, for the kernel console path only.
     constexpr uintptr_t SMR = mmap::SCI6 + SMR_OFFSET;
@@ -34,6 +41,11 @@ namespace kickos::rx::reg::sci
     constexpr uintptr_t RDR = mmap::SCI6 + RDR_OFFSET;
     constexpr uintptr_t SCMR = mmap::SCI6 + SCMR_OFFSET;
     constexpr uintptr_t SEMR = mmap::SCI6 + SEMR_OFFSET;
+    constexpr uintptr_t SNFR = mmap::SCI6 + SNFR_OFFSET;
+    constexpr uintptr_t SIMR1 = mmap::SCI6 + SIMR1_OFFSET;
+    constexpr uintptr_t SIMR2 = mmap::SCI6 + SIMR2_OFFSET;
+    constexpr uintptr_t SIMR3 = mmap::SCI6 + SIMR3_OFFSET;
+    constexpr uintptr_t SPMR = mmap::SCI6 + SPMR_OFFSET;
 
     // SCR fields, asynchronous mode (UM sec.42.2.10 p.2167).
     constexpr uint8_t SCR_TIE = 1u << 7;  // TXI interrupt enable
@@ -93,6 +105,10 @@ namespace kickos::rx::reg::sci
     constexpr uint8_t SEMR_NFEN = 1u << 5;
     constexpr uint8_t SEMR_BGDM = 1u << 6;    // baud generator double-speed
     constexpr uint8_t SEMR_RXDESEL = 1u << 7; // 1 = falling edge starts a frame
+
+    // BRR reset value (UM sec.42.2.13 p.2181); with SMR and SEMR at their 00h reset it is
+    // the divisor triple of an untouched channel.
+    constexpr uint8_t BRR_RESET = 0xFF;
 
     // --- Asynchronous baud arithmetic (UM Table 42.11 p.2181) --------------------------
     // The printed relation is N = PCLK / (K * 2^(2n-1) * B) - 1, with K = 64, 32 or 16 as

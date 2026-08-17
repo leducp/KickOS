@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # Endpoints: synchronous IPC by rendezvous
 
 > In a microkernel the interesting work -- drivers, filesystems, networking -- lives in

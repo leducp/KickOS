@@ -1,4 +1,5 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
+<!-- Copyright (c) 2026 Philippe Leduc -->
 # The CPU reads ahead: memory types and speculative access
 
 > Why the memory map is a contract with the *core* about what it may touch on its

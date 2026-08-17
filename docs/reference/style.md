@@ -32,7 +32,12 @@ because they are written here and read in review.
 
 - **No ternary `?:`.** Use `if`/`else`, an early return, or a variable set in a branch. This holds
   for plural selection too: set a `char const*` in an `if`.
-- **Spelled logical operators**: `and`, `or`, `not`. `!=` stays.
+- **Spelled logical operators**: `and`, `or`, `not`. `!=` stays, and a `#if` directive keeps `&&`.
+  The rule holds in a header that must also compile as C, which puts `#include <iso646.h>` in its
+  include block, **unconditionally**: the three are C++ keywords but only macros from that header
+  in C, and it is `#ifndef __cplusplus` inside, so an `#ifdef __cplusplus` around the include
+  would guard nothing. A freestanding C implementation must provide it, so no backend lacks it.
+  There is therefore no reason to split a condition into nested ifs to keep a header C-valid.
 - **`while (true)`**, never `for (;;)`. **gated**
 - **Traditional include guards**, never `#pragma once`. The macro derives from the project prefix
   plus the file path. **gated**
@@ -41,10 +46,40 @@ because they are written here and read in review.
 - **A header holds what must be a header**: templates, `constexpr`, and declarations. A
   non-template function body goes in a `.cc` -- `user/src/` for the user substrate -- so the
   tree carries one definition rather than a copy per including TU for the linker to fold.
-- **`volatile` is not a concurrency tool.** The tree uses it for cross-thread fields and
-  that holds only on a uniprocessor; it is recorded as an M5 correctness fix in
-  `../design-m5-smp.md`. Match the surrounding code rather than mixing idioms in one
-  struct, and do not read it as making an access atomic or ordered.
+- **`volatile` is not a concurrency tool, and the tree no longer uses it as one.** A field
+  one thread or an ISR writes and another reads is a `kickos::Atomic<T, Order>` from
+  `kickos/sys/atomic.h`, which carries the ordering in the TYPE: declare
+  `Atomic<uint32_t, Order::RELAXED> head;`, then read it as plain `head` and write it as
+  `head = v`. The ordering parameter has no default, so every declaration names it.
+  Relaxed load and store compile to the same single instruction as `volatile` on all five
+  backends, so this costs nothing where it applies.
+  - **Why a wrapper and not a bare `std::atomic`.** There, a bare `load()`, a bare
+    `store()`, `x = v` and an implicit conversion all mean seq_cst, which emits a fence, so
+    correctness depends on spelling `std::memory_order_relaxed` at **every** access and one
+    omission is silent. The wrapper has no spelling for seq_cst, and no way to override the
+    declared order at a call site.
+  - **No `fetch_add` or any other read-modify-write.** An atomic RMW is a libcall on
+    armv6m and rxv3, and a freestanding link has no libatomic. The wrapper exposes no RMW
+    surface at all, so `x++`, `x += 1`, `fetch_add` and `compare_exchange` do not compile.
+    Every such field here has a single writer, so `x = x + 1` under the lock that was
+    already there is what replaces a `++`. A site with two real writers needs the lock
+    fixed, not an RMW.
+  - **No `static_assert(is_always_lock_free)`.** It is 0 on armv6m and rxv3 even where the
+    load and store are inline plain instructions, because RMW is not. The wrapper bounds
+    the width with `sizeof(T) <= 4` instead, there being no standard trait for "a plain
+    load and store are single instructions".
+  - **The accessors are `always_inline`, and that is load-bearing.** At `-Os` GCC otherwise
+    emits an out-of-line copy and turns every access into a call.
+  - **`std::atomic` stays where a pure C main linking libkickos must name the struct**:
+    `kos_byte_ring` and `kos_uart_stats` spell `KOS_ATOMIC_U32`. The wrapper is a C++ class
+    template and cannot serve C; one spelling for both languages needs C++23. A call site
+    there never spells a load, a store or an order either: an increment goes through
+    `kos_counter_increment` (`byte_ring.h`), valid in both languages, and correct only
+    because each of those counters has a single writer.
+  - `volatile` stays for the three things it *is* the tool for: MMIO, an object the
+    compiler must not elide or hoist, and a **64-bit** cross-thread field, because a
+    relaxed 64-bit atomic load is a `__atomic_load_8` libcall on every backend including
+    armv7m. Say which of the three at the declaration.
 - **Check a return** that can fail. A discarded status is how a correct refusal becomes a silent
   hang; `(void)` it only where the value carries nothing, and say why.
 

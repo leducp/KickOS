@@ -26,4 +26,4 @@ namespace kickos::stm32f411::reg::gpio
     constexpr uint32_t AF7 = 7u;
 }
 
-#endif // KICKOS_ARCH_ARM_CHIP_STM32F411_REGS_GPIO_H
+#endif
