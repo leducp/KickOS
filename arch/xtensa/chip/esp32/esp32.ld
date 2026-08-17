@@ -138,6 +138,7 @@ ASSERT(__kickos_ram_start <= __kickos_ram_end,
 #include <boot_arena.ld.h>
 KICKOS_BOOT_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 
+KICKOS_POOL_ARENA_ASSERT(__kickos_ram_start, __kickos_ram_end)
 /* The bootable image is built from section VMAs (esptool elf2image) and the ROM
    first-stage loader places every segment at its VMA, so a load address that differs
    from the VMA is never written by anything. Reset_Handler's LMA->VMA copy would then

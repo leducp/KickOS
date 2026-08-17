@@ -153,7 +153,9 @@ config KICKOS_USER_HEAP_SIZE
 	range 0 1048576
 	default 0 if CHIP_NRF51
 	default 2048 if CHIP_STM32F302
-	default 8192 if CHIP_STM32F103
+	# 20 KiB of SRAM, so this cannot carry the 8192 its 128 KiB F411 sibling does:
+	# at 8192 the heaviest stm32f103 image had zero arena past the two boot stacks.
+	default 2048 if CHIP_STM32F103
 	default 8192 if CHIP_STM32F411
 	default 16384
 	help

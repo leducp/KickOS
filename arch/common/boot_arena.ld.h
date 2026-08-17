@@ -51,10 +51,15 @@
 #define KICKOS_POOL_TOP(ram_start) \
     (KICKOS_POOL_BASE(ram_start) + KICKOS_POOL_STACK_COUNT * KICKOS_POOL_STACK_SIZE)
 
-/* Opt-in, unlike KICKOS_BOOT_ARENA_ASSERT: some boards still advertise more slots than
- * their arena backs, so a fleet-wide assert would break those links. A board invokes this
- * once its provisioning is honest. The arena base is a link-time value, so only the linker
- * can do this arithmetic.
+/* Invoked by every linker script the fleet links, board-local overrides included, and
+ * omitting it is a configure FATAL_ERROR exactly as for KICKOS_BOOT_ARENA_ASSERT. The arena
+ * base is a link-time value, so only the linker can do this arithmetic.
+ *
+ * This binds the FATTEST image on the board, not an average one: where __kickos_ram_start
+ * floats with .bss, the heaviest image is what caps KICKOS_MAX_THREADS. Before trimming the
+ * demand, price every section carved between .bss and the arena base, because each has a
+ * different owner: .userheap (KICKOS_USER_HEAP_SIZE) and, on an enforcing chip, the
+ * .appdata window.
  */
 #define KICKOS_POOL_ARENA_ASSERT(ram_start, ram_end)                    \
     ASSERT(KICKOS_POOL_TOP(ram_start) <= (ram_end),                     \

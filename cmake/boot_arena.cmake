@@ -130,7 +130,7 @@ function(_kickos_seam_int arch_srcs chip_srcs symbol out)
 endfunction()
 
 # The -D set arch/common/boot_arena.ld.h expects. Also refuses a chip linker script
-# that carries no KICKOS_BOOT_ARENA_ASSERT, so no board can opt out by omission.
+# that carries neither arena assert, so no board can opt out by omission.
 # out_mn and out_pow2 hand back the raw scraped seam integers; every other output is
 # derived from them.
 function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
@@ -183,6 +183,13 @@ function(kickos_boot_arena_defs arch_dir arch_tgt chip_tgt ld
       "an arena too small for the boot stacks as a runtime kpanic instead of a link "
       "error. Include <boot_arena.ld.h> and invoke it beside the existing "
       "__kickos_ram_start <= __kickos_ram_end assert.")
+  endif()
+  if(NOT "${_ldtxt}" MATCHES "KICKOS_POOL_ARENA_ASSERT")
+    message(FATAL_ERROR
+      "KickOS: ${ld} does not invoke KICKOS_POOL_ARENA_ASSERT, so this board would ship "
+      "thread slots its arena cannot seat as a per-spawn -KOS_ENOMEM indistinguishable "
+      "from a full slot table. Invoke it beside KICKOS_BOOT_ARENA_ASSERT with the same "
+      "two arena symbols.")
   endif()
   # pow2 is posture-dependent on a v8-M chip: arch_arm_pmsav8.cc (the pow2=0 backend)
   # enters the link only at KICKOS_HAVE_MPU=1, so qemu-m33 and pizero2350 scrape pow2=1

@@ -5,6 +5,9 @@ CONFIG_BOARD_FRDMK64F=y
 
 # Adds the test-only self-test syscalls the TAP suite calls.
 CONFIG_MEMORY_MODEL_MPU=y
+# Not the fleet default 16: enforcement pins __kickos_ram_start above the .appdata
+# window, and what is left backs 12 stacks of the 8192 below.
+CONFIG_KICKOS_MAX_THREADS=12
 CONFIG_KICKOS_USER_STACK_SIZE=8192
 CONFIG_KICKOS_IDLE_STACK_SIZE=512
 CONFIG_KICKOS_ROOT_STACK_SIZE=8192

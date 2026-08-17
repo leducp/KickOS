@@ -1876,17 +1876,29 @@ duplicated.
       semaphore exhaustion, not stack arena and not thread count, so no amount of arena work will
       EVER un-skip it -- yet it reads as a pool-size
       skip, identical in wording to the eight that were real. Give it its own reason string.
-- [ ] **Two boards block the fleet-wide boot-arena assert.** `KICKOS_POOL_ARENA_ASSERT`
-      (`arch/common/boot_arena.ld.h:57`) is opt-in and only `arch/arm/chip/stm32f302/stm32f302.ld:127`
-      invokes it, because `frdmk64f` and `bluepill-c8` still advertise slots their arena cannot back.
-      Worst image per config, measured at `124b68c`: `frdmk64f-st +MPU` **-28,992 B**,
-      `frdmk64f +MPU` **-28,960 B**, `bluepill-c8-st` **-4,096 B**, `bluepill-c8` **-4,000 B**.
-      Headroom is per-IMAGE, not per-preset, so right-sizing has to be checked against each.
-      **Mechanism for the K64F, which is why it is not a small trim:** without the MPU it has
-      **+81,856 B**; `KICKOS_HAVE_MPU=1` moves `__kickos_ram_start` from `0x1fff78a0` to `0x20012940`
-      and the `.appdata` enforcement window eats 110,748 B.
-      `bluepill-c8-st` has EXACTLY zero boot-arena slack besides (2,560 needed, 2,560 available) --
-      the only image in the 921-image fleet at or below zero.
+- [x] **Two boards block the fleet-wide boot-arena assert. CLOSED 2026-08-17: the assert is now
+      mandatory on every linker script, and only ONE of the two boards was a thread-provisioning
+      problem.** `KICKOS_POOL_ARENA_ASSERT` is invoked by all 16 scripts and omitting it is a
+      configure `FATAL_ERROR` like its boot-stack twin. What the two deficits actually were:
+      - **`bluepill-c8` was never over-advertising threads.** Its whole deficit was the
+        `CHIP_STM32F103` `KICKOS_USER_HEAP_SIZE` default of 8192, inherited from the 128 KiB
+        `stm32f411` sibling on a 20 KiB part, and `.userheap` is carved immediately below
+        `__kickos_ram_start`. Chip default is now 2048 and the `st` variant carries 0, which is
+        what `f302nucleo-st` already did. `MAX_THREADS 2` x 2048 was correct all along, and
+        `docs/reference/porting.md` had already written down that the heap carve was what bound
+        this board while this item blamed the thread pool.
+      - **`frdmk64f` genuinely needed the demand cut**, because enforcement pins its arena base
+        above the `.appdata` window. Enforcing variants now provision `KICKOS_MAX_THREADS 12`
+        (was the fleet default 16); `flat` keeps 16, which its arena really does back.
+      Also **corrected: headroom is per-image only where `__kickos_ram_start` follows `.bss`.** On
+      `frdmk64f +MPU` the base is pinned and EVERY image reports the identical figure, so the
+      "check it against each" advice was right for `bluepill-c8` and wrong for the K64F.
+      Post-change worst-image headroom: `frdmk64f{,-st} +MPU` **+7,072 B**, `frdmk64f-flat`
+      **+83,328 B**, `bluepill-c8-st` **+4,096 B**, `bluepill-c8` **+2,560 B**. Sign flip proven
+      both ways on both shapes (`-DKICKOS_MAX_THREADS=13` and `-DKICKOS_USER_HEAP_SIZE=8192` each
+      fail the link). **`boards/qemu-m33/mps2.ld` is a BOARD-LOCAL linker script**, which the new
+      mandatory check caught on its first run; a chip-directory sweep alone would have missed it.
+      **NOT witnessed on silicon:** `bluepill-c8` is build-only and `frdmk64f` needs an operator.
 - [x] **`f302nucleo`'s fault reporter produces NO dump. CLOSED 2026-08-13: THE FLASH COMMAND, not
       the firmware.** `st-flash --connect-under-reset --reset write` leaves the core under halting
       debug with `DEMCR.VC_HARDERR` armed, so the fault reaches HardFault and the core HALTS at the
@@ -2684,7 +2696,10 @@ bench sessions closed most of what this list used to hold**; what remains is:
   sizes, stack-depth observations and timing figures that a `Debug` capture cannot carry forward.
 - ~~`f302nucleo`'s fault-reporter root cause~~ CLOSED 2026-08-13: it was the flash command's
   `--reset`, and it never needed a replug.
-- Right-sizing `frdmk64f` and `bluepill-c8` so `KICKOS_POOL_ARENA_ASSERT` can go fleet-wide.
+- ~~Right-sizing `frdmk64f` and `bluepill-c8` so `KICKOS_POOL_ARENA_ASSERT` can go fleet-wide.~~
+  CLOSED 2026-08-17: the assert is mandatory fleet-wide. Only `frdmk64f` was a right-sizing
+  question; `bluepill-c8`'s deficit was entirely its 8K heap carve. Neither board is
+  silicon-witnessed, so both remain a MODEL result until an operator takes the K64F.
 
 **CLOSED by M4.5.6, listed so the ledger is not re-opened by habit:** `rx72m`'s one visit (all three
 items, `commit 270b6fa`), `esp32c6-wroom`'s `c6blink`, `pizero2350`'s `rootfault` and `rootauth`,
