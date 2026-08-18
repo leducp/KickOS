@@ -3050,28 +3050,38 @@ namespace
     //
     // Staged by one semaphore, not by sleeps: the server posts once its recv has seated it,
     // the caller re-posts for the spoiler just before calling.
+    //
+    // BOTH plain sends come from the filler and both are staged: the first is the only sender
+    // recv#1 can see, the second is released only once the caller's call has bounced. recv#2
+    // therefore finds the caller ALONE, rejects it and PARKS, which is the wake-inside-the-scan
+    // path. Root must send nothing, or which recv ate which depends on whether a tick lands
+    // inside root's spawn run.
     Atomic<int32_t, Order::RELAXED> g_ci_rc{-99};
+    kos_cap_t g_ci_bounced = KOS_CAP_NONE; // caller -> filler: the call has bounced
     void ci_server(void*) // caps: done@1, lock@2, E(WAIT)@3, stage@4
     {
         char buf[16];
-        kos_recv(3, buf, sizeof(buf), nullptr); // recv#1 (info-less): eats one plain sender; ep->server = us
+        kos_recv(3, buf, sizeof(buf), nullptr); // recv#1 (info-less): eats the filler's 1st send; ep->server = us
         log_put('a');
         // Only now is the caller released: the D2 boost is conditional on ep->server, which
         // recv#1 above is what seats, so a caller that ran first would boost nothing.
         kos_sem_post(4);
         mtx_spin(g_call_unit * 4);              // the caller D2-boosted us inside this
         log_put('u');
-        kos_recv(3, buf, sizeof(buf), nullptr); // recv#2: reject the parked call (deflate us), eat the 2nd sender
+        kos_recv(3, buf, sizeof(buf), nullptr); // recv#2: reject the parked call (deflate us), then park
         log_put('z');                          // reached at base prio: spoiler ran first IFF we reverted
         kos_sem_post(CH_DONE);
     }
-    void ci_caller(void*) // caps: done@1, lock@2, E(SIGNAL)@3, stage@4
+    void ci_caller(void*) // caps: done@1, lock@2, E(SIGNAL)@3, stage@4, bounced@5
     {
         char buf[8] = {0};
         kos_sem_wait(4);                       // the server is seated
         kos_sem_post(4);                       // the spoiler is ready from here, and we outrank it
         g_ci_rc = kos_call(3, buf, 4, sizeof(buf));
         log_put('c');
+        // The reject and the park are one masked window, so the bounce returning here is
+        // the proof recv#2 is already on recv_waiters.
+        kos_sem_post(5);
         kos_sem_post(CH_DONE);
     }
     void ci_spoiler(void*) // caps: done@1, lock@2, stage@3 (medium prio)
@@ -3083,10 +3093,12 @@ namespace
         log_put('m');
         kos_sem_post(CH_DONE);
     }
-    void ci_filler(void*) // caps: done@1, lock@2, E(SIGNAL)@3 (a plain sender)
+    void ci_filler(void*) // caps: done@1, lock@2, E(SIGNAL)@3, bounced@4
     {
         char b[4] = {0};
-        kos_send(3, b, 4);                     // plain send: parks, consumed by one of the server's recvs
+        kos_send(3, b, 4);                     // the only sender recv#1 can see
+        kos_sem_wait(4);
+        kos_send(3, b, 4);                     // wakes the parked recv#2
         kos_sem_post(CH_DONE);
     }
     void t_call_infoless_revert()
@@ -3103,25 +3115,29 @@ namespace
         g_ci_rc = -99;
         TAP_CHECK(kos_endpoint_create(&g_ep) == 0);
         TAP_CHECK(kos_sem_create(0, &g_gate) == 0);
+        // Its own semaphore, not a third post on g_gate: the filler outranks the spoiler,
+        // so a shared gate would hand the caller's pre-call post to the filler and its
+        // second send would be parked before recv#2 ever ran.
+        TAP_CHECK(kos_sem_create(0, &g_ci_bounced) == 0);
         kos_cap_grant scaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_WAIT_ONLY},
                                  {g_gate, CH_FULL}};
         kos_cap_grant ccaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY},
-                                 {g_gate, CH_FULL}};
-        kos_cap_grant fcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY}};
+                                 {g_gate, CH_FULL}, {g_ci_bounced, CH_FULL}};
+        kos_cap_grant fcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_ep, EP_SIGNAL_ONLY},
+                                 {g_ci_bounced, CH_FULL}};
         kos_cap_grant mcaps[] = {{g_done, CH_FULL}, {g_lock, CH_FULL}, {g_gate, CH_FULL}};
         auto sv = kos::thread::spawn_caps(ci_server, nullptr, "ciS", 8, scaps, 4);
-        auto cl = kos::thread::spawn_caps(ci_caller, nullptr, "ciC", 20, ccaps, 4);
+        auto cl = kos::thread::spawn_caps(ci_caller, nullptr, "ciC", 20, ccaps, 5);
         auto sp = kos::thread::spawn_caps(ci_spoiler, nullptr, "ciM", 12, mcaps, 3);
-        // Above the server, so its send is already parked when recv#2 runs. Below it, recv#2
-        // BLOCKS for a sender and 'm' precedes 'z' whether or not the reject reverted the
-        // boost, leaving the arm reporting ok with half of it disarmed.
-        auto fl = kos::thread::spawn_caps(ci_filler, nullptr, "ciF", 10, fcaps, 3);
+        // ABOVE the spoiler: its second send is what wakes the parked server, and that wake
+        // must land while the spoiler is still only ready. Below the spoiler, 'm' is logged
+        // before the server is woken at all and the REVERT check below passes either way.
+        auto fl = kos::thread::spawn_caps(ci_filler, nullptr, "ciF", 14, fcaps, 4);
         // The probe above just held four slots and four stacks, so a failure now is a pool
         // bug, not a small board.
         TAP_CHECK(sv.valid() and cl.valid() and sp.valid() and fl.valid());
-        char warm[4] = {0};
-        kos_send(g_ep, warm, 4); // recv#1 eats the filler's send, recv#2 eats this one
         wait_n(4);
+        TAP_CHECK(kos_handle_close(g_ci_bounced) == 0);
         TAP_CHECK(kos_handle_close(g_gate) == 0);
         TAP_CHECK(kos_handle_close(g_ep) == 0);
         int32_t const ci_rc = g_ci_rc;

@@ -148,7 +148,7 @@ namespace kickos
             reschedule();
         }
 
-        void wake(Thread* t)
+        bool wake_no_resched(Thread* t)
         {
             IrqLock lock;
             // Spans the readying path only: the refusals below do no ready-queue work.
@@ -164,11 +164,17 @@ namespace kickos
             // free slot, so readying an exited thread takes that slot out of the pool for good.
             if (t->state != ThreadState::BLOCKED)
             {
-                return;
+                return false;
             }
             t->state = ThreadState::READY;
             kernel().policy->on_ready(t);
             KICKOS_BENCH_SPAN(PH_WAKE_UNPARK, bm_unpark);
+            return true;
+        }
+
+        void resched_after_wake(Thread const* t)
+        {
+            IrqLock lock;
             Thread const* const c = kernel().current;
             // Null between sched::init and sched::start.
             if (c == nullptr)
@@ -188,6 +194,15 @@ namespace kickos
                 return;
             }
             reschedule();
+        }
+
+        void wake(Thread* t)
+        {
+            IrqLock lock;
+            if (wake_no_resched(t))
+            {
+                resched_after_wake(t);
+            }
         }
 
         void set_prio(Thread* t, uint8_t p)
@@ -281,8 +296,8 @@ namespace kickos
                 // Join, wait-until-last and wait-for-the-group-to-empty park on NO list, so
                 // this pool scan IS the waiter lookup. The wait edge and wait_result are the
                 // waker's to write BEFORE the wake, as on every wait queue. `state` is EXITED
-                // by now, which is the clause in wake that suppresses a switch from inside
-                // this loop; such a switch would abandon the rest of it.
+                // by now, which is the clause in resched_after_wake that suppresses a switch
+                // from inside this loop; such a switch would abandon the rest of it.
                 bool const last_out = (k.live == 1);
                 for (int s = 0; s < k.threads.next; s++)
                 {

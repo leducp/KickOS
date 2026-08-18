@@ -10,10 +10,11 @@ straight to the record you need. No history and no task lists -- granular items 
 ## Where we are
 
 **THIS TREE IS `M5.1.2`, THE SECOND REVIEWABLE M5 PR, CARVED OFF `master` (`f56b591b`).** It
-carries ONE topic: the arch and ABI groundwork the rest of M5 sits on. Nothing else from M5 is
-here. Everything below about the IPC measurement chain and the atomics is `M5.1.1`, already
-merged as PR 26 and still true of this tree; a record naming multi-instance, I2C, the stm32f411
-console, the IPC fastpath implementation or S7 is describing a later PR and not this tree.
+carries the arch and ABI groundwork the rest of M5 sits on, plus the `sched::wake` fix that was
+branch `hotfix/wake-parks-wrong-thread`. Nothing else from M5 is here. Everything below about the
+IPC measurement chain and the atomics is `M5.1.1`, already merged as PR 26 and still true of this
+tree; a record naming multi-instance, I2C, the stm32f411 console, the IPC fastpath implementation
+or S7 is describing a later PR and not this tree.
 
 **THE MILESTONE NUMBERS MOVED AND THE ABI FREEZE IS KEYED TO A NAME.** SMP is M6
 (`docs/design-m6-smp.md`), the seam rework is M7, and the freeze is M8, the last milestone.
@@ -38,6 +39,19 @@ LABEL ON THE SAME TRAP, the psABI's long-long return pair. `KOS_SYS_CLOCK_NOW` l
 out-pointer along with the null, alignment and ownership checks that guarded it, and with them a
 rejected store that returned a zero no caller could tell from a timestamp. Net smaller on every
 32-bit family. `rxv3` and `lx6` are BUILD-VERIFIED ONLY.
+
+**A WAKE INSIDE `endpoint_recv`'S SCAN PARKED THE WRONG THREAD, AND THE FIX IS HERE.** `kos_call`
+over an info-less recv could return a byte count where the ABI promises `-KOS_ENOSYS`, letting the
+caller read another sender's payload as its reply. `switch_to` advances `kernel().current` BEFORE
+`arch_switch` and every pending backend returns from `arch_switch` at once, so a `sched::wake`
+inside the scan moved `current` onto the woken caller and the `wq_block` below parked THAT caller
+on `recv_waiters` instead of the server. `wake` splits into `wake_no_resched` and
+`resched_after_wake`, the scan readies without rescheduling, and one reschedule is deferred to the
+highest-priority thread woken on each exit that does not park. The regression arm is selftest 40
+`call_infoless_revert`, restaged so `recv#2` always finds the caller alone and parks; `qemu`
+`mps2-an386` PENDS its switch and catches it, `sim` swaps inline and cannot witness the class at
+all. **The bug is on `master`, not introduced by M5**, and branch
+`hotfix/wake-parks-wrong-thread` is redundant once this PR lands.
 
 **`KOS_SYS_CALL_REG = 56` EXISTS AND EMITS NO CODE ON THIS BRANCH.** The register-carrying call
 number, `KOS_CALL_REG_FALLBACK` and the five-word / 20-byte payload budget are ABI here; the

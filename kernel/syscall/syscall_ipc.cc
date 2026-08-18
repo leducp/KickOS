@@ -260,6 +260,10 @@ namespace kickos
                 return -err; // EBADF (bad cap) or EPERM (no WAIT right)
             }
             endpoint_server_set(e, c); // the conventional receiver (D2 boost target)
+            // A reschedule inside the scan moves current() onto the woken caller, and the
+            // wq_block below re-reads it: it would park that caller instead of us. Every wake
+            // here defers its reschedule to the highest-priority thread woken.
+            Thread* woke_top = nullptr;
             KICKOS_BENCH_SPAN(PH_RECV_RESOLVE, bm_rresolve);
             KICKOS_BENCH_MARK(bm_rscan);
             while (true)
@@ -285,7 +289,11 @@ namespace kickos
                         {
                             sched::set_prio(c, np);
                         }
-                        sched::wake(s);
+                        if (sched::wake_no_resched(s)
+                            and (woke_top == nullptr or s->prio > woke_top->prio))
+                        {
+                            woke_top = s;
+                        }
                         continue;
                     }
                     // B3: probe the mint before committing; a plain sender behind this one
@@ -299,7 +307,11 @@ namespace kickos
                         {
                             sched::set_prio(c, np);
                         }
-                        sched::wake(s);
+                        if (sched::wake_no_resched(s)
+                            and (woke_top == nullptr or s->prio > woke_top->prio))
+                        {
+                            woke_top = s;
+                        }
                         continue;
                     }
                     size_t n = s->ipc.len;
@@ -322,6 +334,11 @@ namespace kickos
                     {
                         sched::set_prio(c, s->prio);
                     }
+                    // Exits without parking: the deferred reschedule is owed here.
+                    if (woke_top != nullptr)
+                    {
+                        sched::resched_after_wake(woke_top);
+                    }
                     return static_cast<int>(n); // process, then kos_reply the cap
                 }
                 size_t n = s->ipc.len;
@@ -332,7 +349,14 @@ namespace kickos
                 ep_copy(buf, s->ipc.buf, n);
                 write_recv_info(badge_out, KOS_BADGE_NONE, KCAP_INVALID);
                 s->wait_result = static_cast<intptr_t>(n);
-                sched::wake(s);
+                if (sched::wake_no_resched(s) and (woke_top == nullptr or s->prio > woke_top->prio))
+                {
+                    woke_top = s;
+                }
+                if (woke_top != nullptr)
+                {
+                    sched::resched_after_wake(woke_top);
+                }
                 return static_cast<int>(n);
             }
             KICKOS_BENCH_SPAN(PH_RECV_SCAN, bm_rscan);
