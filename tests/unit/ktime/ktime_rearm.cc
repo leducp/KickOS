@@ -67,7 +67,12 @@ namespace kickos
 {
     namespace detail
     {
-        Kernel g_instance;
+        InstanceLocal<Kernel> g_instance;
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+        // This gate stands in for instance.cc, which it does not link, so it owes the
+        // selector's storage too. One instance, so the index stays 0.
+        __thread unsigned g_instance_index __attribute__((tls_model("initial-exec"))) = 0;
+#endif
     }
 
     // time.cc calls kpanic when ktime_on_timer finds a deadline under a park that cannot

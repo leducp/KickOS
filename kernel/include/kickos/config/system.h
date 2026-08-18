@@ -75,6 +75,13 @@
 #ifndef KICKOS_MAX_TASKS
 #define KICKOS_MAX_TASKS (KICKOS_THREAD_SLOTS + 1)
 #endif
+// Independent kernels co-resident in ONE address space (instance.h). One on a chip, and
+// one per emulated MCU under the multi-instance sim. It is a provisioning bound, not a
+// preference: every instance-scoped object is this many copies, so raising it costs .bss
+// linearly. At 1 the index folds to a literal and the image carries none of it.
+#ifndef KICKOS_MAX_INSTANCES
+#define KICKOS_MAX_INSTANCES 1
+#endif
 // Stack a spawned thread gets when kos_thread_params carries no caller-owned
 // stack_base/stack_size. A caller-supplied stack is validated against the floor and
 // alignment below.

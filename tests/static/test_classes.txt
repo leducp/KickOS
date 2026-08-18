@@ -84,6 +84,7 @@ image  src    tests/integration/check_sched_exit.sh
 image  src    tests/integration/check_sim_conabi.sh
 image  src    tests/integration/check_sim_drvdeath.sh
 image  src    tests/integration/check_sim_faultsurvive_pub.sh
+image  src    tests/integration/check_sim_multi_instance.sh
 image  src    tests/integration/check_sim_published.sh
 image  src    tests/integration/check_sim_pubpanic.sh
 image  src    tests/integration/check_sim_selftest.sh

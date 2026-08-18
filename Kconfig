@@ -101,6 +101,30 @@ config KICKOS_BOARD_PINMAP
 
 menu "Kernel provisioning"
 
+config KICKOS_MULTI_INSTANCE
+	bool "Several independent kernels in one address space"
+	depends on ARCH_SIM
+	default n
+	help
+	  Host one kernel per emulated MCU in a single process, which is how a fleet of
+	  KickCAT slaves gets driven against an emulator and how the driver APIs get
+	  exercised at scale. Gated to the sim: the selector is keyed on the host thread,
+	  and a chip has neither host threads nor a second kernel to select.
+
+	  Off, kickos_instance_index() expands to the literal 0 and the image carries
+	  none of this: no load, no multiply, no branch and no symbol, on the arch_cpu_id
+	  model.
+
+config KICKOS_MAX_INSTANCES
+	int "Independent kernels the image provisions" if KICKOS_MULTI_INSTANCE
+	range 1 256
+	default 64 if KICKOS_MULTI_INSTANCE
+	default 1
+	help
+	  Every instance-scoped object is this many copies, so raising it costs .bss
+	  linearly across the whole tree, not just struct Kernel. It is a provisioning
+	  bound like the pool sizes, not a preference.
+
 config KICKOS_MAX_THREADS
 	int "Static thread pool"
 	range 2 64

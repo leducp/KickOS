@@ -4,12 +4,14 @@
 #include <kickos/arch/arch.h>
 #include <kickos/arch/clk_q32.h> // KICKOS_NS_PER_SEC (canonical 1e9 ns/sec)
 #include <kickos/console_tx.h>
+#include <kickos/instance_local.h>
 #include <kickos/sys/atomic.h>
 
 #include <new> // placement new (arch_context_init)
 
 #include <ucontext.h>
 #include <signal.h>
+#include <sys/syscall.h>
 #include <errno.h>
 #include <time.h>
 #include <sys/mman.h>
@@ -38,6 +40,9 @@ static_assert(KICKOS_TRACE_ARCH == kickos::trace::ARCH_SIM,
 namespace kickos
 {
     void kprintf(char const* fmt, ...) __attribute__((format(printf, 1, 2)));
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+    int kmain(int argc, char** argv);
+#endif
 }
 extern "C" void kpanic_enter(void);
 extern "C" void kfault_terminate(void);
@@ -74,6 +79,12 @@ namespace
     {
         getcontext(uc);
     }
+
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+    // Longest line held before it is emitted unterminated. A cap, not a limit on output:
+    // a longer line is simply split across two writes.
+    enum { SIM_OUT_LINE_MAX = 240 };
+#endif
 
     // Instance-scoped sim backend state (invariant #7, the arch half): several sim
     // backends (one per emulated MCU / KickCAT slave) co-reside in one host
@@ -142,19 +153,29 @@ namespace
         Atomic<sig_atomic_t, Order::RELAXED> switch_pending = 0;
         uint16_t switch_from = 0xFFFF;
 #endif
+
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+        // Where arch_shutdown goes instead of ending the process: the host frame that
+        // started this instance. _exit would take every co-resident instance with it.
+        ucontext_t exit_uc;
+        int entry_argc = 0;
+        char** entry_argv = nullptr;
+        int exit_status = 0;
+        bool exit_armed = false;
+
+        // One host stdout serves every instance and this backend emits a byte at a time,
+        // so a line is held here and emitted in one write or it comes out shredded.
+        char out_line[SIM_OUT_LINE_MAX];
+        unsigned out_len = 0;
+#endif
     };
 
-    // All-constant init keeps this in BSS; signal handlers read it, so the accessor
-    // stays a bare global reference (async-signal-safe, zero-cost). The multi-slave
-    // sim swaps in a per-host-thread instance where noted (Later).
-    SimInstance g_sim;
+    // All-constant init keeps this in BSS. Signal handlers read it, so the selector must
+    // stay async-signal-safe: never a lazy TLS call (instance_local.h).
+    kickos::InstanceLocal<SimInstance> g_sim;
     SimInstance& sim()
     {
-#if defined(KICKOS_MULTI_INSTANCE)
-        return *g_sim_tls;
-#else
-        return g_sim;
-#endif
+        return g_sim.get();
     }
 
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
@@ -445,7 +466,7 @@ namespace
         TX_RING_SIZE = 128,  // power of two (index masking); usable capacity 127
         TX_BUDGET = 8       // bytes drained per ISR delivery (synthetic slot budget)
     };
-    char g_tx_ring[TX_RING_SIZE];
+    kickos::InstanceLocal<char[TX_RING_SIZE]> g_tx_ring;
 
     int sim_tx_slot_free()
     {
@@ -462,6 +483,75 @@ namespace
         return 0;
     }
 
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+    // Process wide, not instance local: it states whether this stdout is shared. A lone
+    // instance emits what a build without the knob emits, byte for byte, so every gate
+    // that matches a banner or a TAP line exactly holds with the knob compiled in.
+    bool g_out_tagged = false;
+
+    // ONE write is the whole of what keeps a line intact against the co-residents sharing
+    // this fd. Async-signal-safe throughout (the tag is formed by hand, not printf), so
+    // the drain ISR may call it.
+    void sim_line_flush()
+    {
+        SimInstance& s = sim();
+        if (s.out_len == 0)
+        {
+            return;
+        }
+        char buf[8 + SIM_OUT_LINE_MAX];
+        unsigned n = 0;
+        if (g_out_tagged)
+        {
+            unsigned const idx = kickos_instance_index();
+            buf[n++] = '[';
+            if (idx >= 100u)
+            {
+                buf[n++] = static_cast<char>('0' + (idx / 100u) % 10u);
+            }
+            if (idx >= 10u)
+            {
+                buf[n++] = static_cast<char>('0' + (idx / 10u) % 10u);
+            }
+            buf[n++] = static_cast<char>('0' + idx % 10u);
+            buf[n++] = ']';
+            buf[n++] = ' ';
+        }
+        for (unsigned i = 0; i < s.out_len; i++)
+        {
+            buf[n++] = s.out_line[i];
+        }
+        // Cleared BEFORE the write: a fault inside it must not leave the line to be
+        // emitted a second time by the shutdown flush.
+        s.out_len = 0;
+        unsigned off = 0;
+        while (off < n)
+        {
+            ssize_t w = write(1, buf + off, n - off);
+            if (w < 0)
+            {
+                if (errno == EINTR)
+                {
+                    continue;
+                }
+                break;
+            }
+            off += static_cast<unsigned>(w);
+        }
+    }
+
+    void sim_line_put(char c)
+    {
+        SimInstance& s = sim();
+        s.out_line[s.out_len] = c;
+        s.out_len++;
+        if (c == '\n' or s.out_len == SIM_OUT_LINE_MAX)
+        {
+            sim_line_flush();
+        }
+    }
+#endif
+
     void sim_tx_push(uint8_t b)
     {
         if (sim().in_tx_isr != 0 and sim().tx_budget > 0)
@@ -469,6 +559,9 @@ namespace
             sim().tx_budget--;
         }
         char c = static_cast<char>(b);
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+        sim_line_put(c);
+#else
         while (true)
         {
             ssize_t w = write(1, &c, 1);
@@ -484,6 +577,7 @@ namespace
             }
             break;
         }
+#endif
     }
 
     void sim_tx_irq_enable()
@@ -563,7 +657,12 @@ namespace
         int code;
         bool addr_valid;
     };
-    SimFaultInfo g_sim_fault = {};
+    kickos::InstanceLocal<SimFaultInfo> g_sim_fault = {};
+
+    SimFaultInfo& sim_fault()
+    {
+        return g_sim_fault.get();
+    }
 
     void on_sigsegv(int, siginfo_t* si, void* ucontext)
     {
@@ -571,7 +670,7 @@ namespace
         // BEFORE isr_frame_enter: arch_fault_is_user_thread reads isr_depth to tell a
         // fault in an ISR body (a kernel bug) from one in the thread it interrupted, and
         // isr_frame_enter below would make every fault look like the former.
-        g_sim_fault = {addr, si->si_code, true};
+        sim_fault() = {addr, si->si_code, true};
         if (kickos_fault_kill_thread(ucontext))
         {
             return; // sigreturn resumes at kickos_thread_fault_exit
@@ -614,7 +713,7 @@ namespace
     {
         // si_addr is the faulting PC here, not a data address; the PC comes out of the
         // ucontext instead.
-        g_sim_fault = {0, si->si_code, false};
+        sim_fault() = {0, si->si_code, false};
         if (kickos_fault_kill_thread(ucontext))
         {
             return;
@@ -700,7 +799,14 @@ void arch_init(void)
     // Fault handler runs on its own stack (the faulting thread's stack may be
     // exactly what tripped the guard). Fixed size: SIGSTKSZ is not a compile
     // constant under glibc >= 2.34 with _GNU_SOURCE.
+    //
+    // Per HOST THREAD and not InstanceLocal: sigaltstack is a per-thread POSIX property,
+    // so one shared block is corrupted the moment two host threads fault at once.
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+    static __thread unsigned char altstack[64 * 1024];
+#else
     static unsigned char altstack[64 * 1024];
+#endif
     stack_t ss{};
     ss.ss_sp = altstack;
     ss.ss_size = sizeof(altstack);
@@ -733,8 +839,19 @@ void arch_init(void)
     sigaction(SIGTERM, &ta, nullptr);
 
     struct sigevent sev{};
-    sev.sigev_notify = SIGEV_SIGNAL;
     sev.sigev_signo = SIGALRM;
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+    // SIGEV_SIGNAL generates a PROCESS-directed signal, which the kernel hands to any
+    // thread not blocking it: one instance's tick would then be serviced on another's
+    // host thread, and the instance that armed it would never wake. SIGEV_THREAD_ID is
+    // what binds a timer to the thread that owns the instance.
+    sev.sigev_notify = SIGEV_THREAD_ID;
+    // Spelled through the union member: glibc publishes POSIX names for the SIGEV_THREAD
+    // arm of sigevent but none for the tid, so sigev_notify_thread_id does not exist here.
+    sev._sigev_un._tid = static_cast<pid_t>(syscall(SYS_gettid));
+#else
+    sev.sigev_notify = SIGEV_SIGNAL;
+#endif
     if (timer_create(CLOCK_MONOTONIC, &sev, &sim().timer) == 0)
     {
         sim().timer_created = true;
@@ -776,6 +893,9 @@ void arch_shutdown(int status)
     // stdout with no signal needed. Without this, anything still enqueued at
     // shutdown is stranded by _exit. No-op while the ring is unarmed.
     console_tx_flush_sync();
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+    sim_line_flush(); // whatever the app left without a trailing newline
+#endif
 #if defined(KICKOS_TELEMETRY) && KICKOS_TELEMETRY
     // Drain the ch1 telemetry ring to a file for the offline decoder. Path is
     // $KICKOS_TRACE_FILE or a default in the CWD.
@@ -809,8 +929,56 @@ void arch_shutdown(int status)
         close(fd);
     }
 #endif
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+    // Ending THIS instance, not the process: the host frame that started it resumes with
+    // the status, and its co-residents keep running. setcontext returns only on failure,
+    // so the _exit below stays reachable as the loud fallback rather than as dead code.
+    if (sim().exit_armed)
+    {
+        sim().exit_status = status;
+        setcontext(&sim().exit_uc);
+    }
+#endif
     _exit(status);
 }
+
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+// How many kernels this process hosts. Must be settled before the first instance thread:
+// it is read by every console flush, including one from a signal handler.
+void arch_sim_instance_hosting(unsigned count)
+{
+    g_out_tagged = count > 1u;
+}
+
+// Bring up the instance already selected on this host thread and run its kernel.
+//
+// getcontext is called HERE and not through the file's noinline wrapper: a resumed
+// context returns through the return address ON THE STACK, so the capturing frame must
+// still be intact, and a helper's is not. The arguments are parked in the instance so
+// nothing lives across the returns-twice call.
+int arch_sim_instance_run(int argc, char** argv)
+{
+    sim().entry_argc = argc;
+    sim().entry_argv = argv;
+    getcontext(&sim().exit_uc);
+    if (sim().exit_armed)
+    {
+        // Resumed from arch_shutdown, which restored the capture-time signal mask along
+        // with everything else. Nothing on this host thread may take this instance's
+        // interrupts from here on, and its timer would otherwise still be armed.
+        sigprocmask(SIG_BLOCK, &sim().irq_signals, nullptr);
+        if (sim().timer_created)
+        {
+            timer_delete(sim().timer);
+            sim().timer_created = false;
+        }
+        return sim().exit_status;
+    }
+    sim().exit_armed = true;
+    arch_init();
+    return kickos::kmain(sim().entry_argc, sim().entry_argv);
+}
+#endif
 
 // Normal path: enqueue into the console ring; the SIGUSR1-driven drain ISR
 // (console_tx_isr) writes it out. Before the ring is armed (early boot) and in
@@ -826,6 +994,15 @@ void arch_console_write(char const* buf, size_t n)
 // sim_tx_push.
 void arch_console_write_sync(char const* buf, size_t n)
 {
+#if defined(KICKOS_MULTI_INSTANCE) && KICKOS_MULTI_INSTANCE
+    for (size_t i = 0; i < n; i++)
+    {
+        sim_line_put(buf[i]);
+    }
+    // Panic and fault reach here, and neither returns to a newline, so an unterminated
+    // tail would be lost. Emitting it early only costs a tag on the continuation.
+    sim_line_flush();
+#else
     size_t off = 0;
     while (off < n)
     {
@@ -847,13 +1024,14 @@ void arch_console_write_sync(char const* buf, size_t n)
         }
         off += static_cast<size_t>(w);
     }
+#endif
 }
 
 // Arch seam (console_tx.h): hand the kernel the ring storage + the emulated TX
 // line so console_buffer_init binds console_tx_isr and arms the buffered path.
 console_tx_backend const* arch_console_tx_backend(char** storage, uint32_t* size, int* irq_line)
 {
-    *storage = g_tx_ring;
+    *storage = g_tx_ring.get();
     *size = TX_RING_SIZE;
     *irq_line = TX_LINE;
     return &g_sim_tx_backend;
@@ -1145,8 +1323,9 @@ void arch_fault_redirect_to_exit(void* frame)
 #if defined(__x86_64__)
     ucontext_t* const uc = static_cast<ucontext_t*>(frame);
     uintptr_t const pc = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
-    kickos_fault_record("si_code", static_cast<uint32_t>(g_sim_fault.code), pc,
-                        g_sim_fault.addr, static_cast<int>(g_sim_fault.addr_valid));
+    SimFaultInfo const& f = sim_fault();
+    kickos_fault_record("si_code", static_cast<uint32_t>(f.code), pc, f.addr,
+                        static_cast<int>(f.addr_valid));
     // The stub is kernel code and cap_teardown reaches memory outside this thread's
     // resting grant, so raise the arena as arch_syscall does. Never unwound: the stub
     // never returns, and the raised count is what makes guard_apply_current hold the

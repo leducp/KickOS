@@ -41,6 +41,13 @@ namespace kickos
             // Under every sweeper, so the wakes the sweeps issue are deferred by the dying
             // guard and the trace stays about the sweeps rather than about scheduling.
             constexpr uint8_t PRIO_PEER = 4;
+            // The voluntary closer, and the sender its EPIPE releases. The closer must
+            // outrank the publisher and be outranked by the sender, or the switch the
+            // console arm dates never happens.
+            constexpr uint8_t PRIO_CLOSER = 5;
+            constexpr uint8_t PRIO_ABOVE_CLOSER = 6;
+            static_assert(PRIO_PEER < PRIO_CLOSER and PRIO_CLOSER < PRIO_ABOVE_CLOSER,
+                          "closer between the publisher and the sender");
 
             // Two chunks exactly: one live cap on each side of the boundary is what makes
             // resumption observable, and a sweep that fits in one chunk proves nothing.
@@ -378,6 +385,35 @@ namespace kickos
 
             EXPECT_STREQ(trace(), "close note reclaim")
                 << "the closer notes and reclaims the console itself";
+            EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";
+        }
+
+        // The switch the close ADMITS, which no arm above can show: their closer is either
+        // dying or under every peer, so wake declines and the EPIPE loop is silent. Here
+        // the closer is alive and the released sender outranks it, so the wake reaches
+        // arch_switch, which swaps INLINE on the sim. The trace is the only oracle that
+        // fails when the console decision moves after the wake.
+        TEST_F(CapSweep, a_voluntary_close_reclaims_before_the_wake_it_admits)
+        {
+            g_closer = spawn(0, PRIO_CLOSER);
+            attach_caps(g_closer, KICKOS_CAP_FIRST_DYNAMIC + 1);
+            int const handle = publish_console_served_by(g_closer, KICKOS_CAP_FIRST_DYNAMIC, 1);
+            g_closer_cap = cap_handle_at(g_closer, KICKOS_CAP_FIRST_DYNAMIC);
+            Thread* const sender = spawn(2, PRIO_ABOVE_CLOSER);
+            park_plain_sender(sender, kernel().endpoints.resolve(handle));
+
+            sched::reschedule();
+            EXPECT_EQ(kernel().current, g_closer) << "fixture: the closer holds the CPU";
+            EXPECT_FALSE(g_closer->dying) << "fixture: a voluntary close, not a teardown";
+
+            trace_reset();
+            close_the_closers_cap();
+
+            EXPECT_STREQ(trace(), "close note reclaim switch1>3")
+                << "the console is decided before the sender the same call releases can run";
+            EXPECT_EQ(sender->wait_result, -KOS_EPIPE)
+                << "and it is a sender THIS close released, not an unrelated thread";
+            EXPECT_EQ(g_console_noted, 1u) << "the published endpoint lost its last receiver";
             EXPECT_EQ(g_console_reclaimed, 1u) << "exactly once";
         }
 

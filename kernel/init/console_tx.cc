@@ -13,6 +13,7 @@
 
 #include <kickos/config/limits.h>
 #include <kickos/diag.h>
+#include <kickos/instance.h>
 #include <kickos/irq.h>
 #include <kickos/irqlock.h>
 #include <kickos/arch/arch.h>
@@ -50,7 +51,12 @@ namespace
         uint32_t space() const { return size - 1u - used(); }
     };
 
-    constinit ConsoleTxRing g_tx;
+    constinit kickos::InstanceLocal<ConsoleTxRing> g_tx_all;
+
+    ConsoleTxRing& tx()
+    {
+        return g_tx_all.get();
+    }
 
     // A dead/misconfigured TX channel must NEVER hang panic/fault/boot, so every
     // synchronous poll is bounded (matches the chips' own TX_POLL_TIMEOUT) and bails
@@ -59,9 +65,10 @@ namespace
 
     bool wait_slot()
     {
+        ConsoleTxRing& r = tx();
         for (uint32_t i = 0; i < DRAIN_POLL_CAP; i++)
         {
-            if (g_tx.backend->slot_free() != 0)
+            if (r.backend->slot_free() != 0)
             {
                 return true;
             }
@@ -75,22 +82,23 @@ namespace
     // rather than hang.
     void drain_sync()
     {
-        uint32_t const head = g_tx.head;
-        uint32_t tail = g_tx.tail;
+        ConsoleTxRing& r = tx();
+        uint32_t const head = r.head;
+        uint32_t tail = r.tail;
         while (tail != head)
         {
             if (not wait_slot())
             {
-                g_tx.tail = head; // stuck TX: drop the undrained bytes, don't hang
+                r.tail = head; // stuck TX: drop the undrained bytes, don't hang
                 return;
             }
-            g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[tail]));
+            r.backend->push(static_cast<uint8_t>(r.buf[tail]));
             // Publish AFTER each byte, never once at the end. A synchronous CPU fault
             // (illegal instruction, MPU, bus) is not gated by the interrupt mask, so it can
             // land mid-loop, and its handler flushes again; a stale tail would make that
             // flush re-push bytes already sent, doubling output before the panic banner.
-            tail = (tail + 1u) & g_tx.mask;
-            g_tx.tail = tail;
+            tail = (tail + 1u) & r.mask;
+            r.tail = tail;
         }
     }
 
@@ -102,21 +110,23 @@ extern "C"
 
 void console_tx_init(console_tx_backend const* be, char* storage, uint32_t size, int irq_line)
 {
-    g_tx.backend = be;
-    g_tx.buf = storage;
-    g_tx.size = size;
-    g_tx.mask = size - 1u;
-    g_tx.head = 0;
-    g_tx.tail = 0;
-    g_tx.irq_line = irq_line; // set BEFORE armed: deinit must never see armed with a stale line
-    g_tx.armed = true;
+    ConsoleTxRing& r = tx();
+    r.backend = be;
+    r.buf = storage;
+    r.size = size;
+    r.mask = size - 1u;
+    r.head = 0;
+    r.tail = 0;
+    r.irq_line = irq_line; // set BEFORE armed: deinit must never see armed with a stale line
+    r.armed = true;
 }
 
-int console_tx_armed(void) { return static_cast<int>(g_tx.armed); }
+int console_tx_armed(void) { return static_cast<int>(tx().armed); }
 
 void console_tx_write(char const* buf, size_t n)
 {
-    if (not g_tx.armed)
+    ConsoleTxRing& r = tx();
+    if (not r.armed)
     {
         // Disarm fallback. Re-read ownership (B1): a producer that raced past the arm
         // check must DROP the chip write unless the kernel still owns the UART, else it
@@ -138,18 +148,18 @@ void console_tx_write(char const* buf, size_t n)
     kickos::IrqLock lock;
 
     // Fast path: the burst fits.
-    if (n <= g_tx.space())
+    if (n <= r.space())
     {
-        bool const was_empty = (g_tx.used() == 0);
-        uint32_t idx = g_tx.head;
+        bool const was_empty = (r.used() == 0);
+        uint32_t idx = r.head;
         for (size_t i = 0; i < n; i++)
         {
-            g_tx.buf[idx] = buf[i];
-            idx = (idx + 1u) & g_tx.mask;
+            r.buf[idx] = buf[i];
+            idx = (idx + 1u) & r.mask;
         }
         KICKOS_CONSOLE_TX_BARRIER();
-        g_tx.head = idx;
-        g_tx.backend->irq_enable();
+        r.head = idx;
+        r.backend->irq_enable();
         // Priming the first byte on the idle->busy transition is NOT redundant: with a
         // transition-triggered TX interrupt, enabling the IRQ on an idle channel raises
         // nothing, and only this byte's completion event starts the drain ISR.
@@ -163,11 +173,11 @@ void console_tx_write(char const* buf, size_t n)
         //   K64F TDRE:  harmless immediate send, level-asserted while the buffer is empty
         //               (RM Rev.4 52.3.5; S1 resets to 0xC0 untransmitted).
         //   PL011 FEN=0: unconfirmed; do not read the three above as settling it.
-        uint32_t const tail = g_tx.tail;
-        if (was_empty and idx != tail and g_tx.backend->slot_free() != 0)
+        uint32_t const tail = r.tail;
+        if (was_empty and idx != tail and r.backend->slot_free() != 0)
         {
-            g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[tail]));
-            g_tx.tail = (tail + 1u) & g_tx.mask;
+            r.backend->push(static_cast<uint8_t>(r.buf[tail]));
+            r.tail = (tail + 1u) & r.mask;
         }
         return;
     }
@@ -176,7 +186,7 @@ void console_tx_write(char const* buf, size_t n)
     // burst synchronously with the TX IRQ off, bounded so a stuck channel cannot hang.
     // Deliberately still under the lock, so a full drain can mask IRQs for as long as the
     // drain takes; that stall is preferred over a producer/ISR race or dropped output.
-    g_tx.backend->irq_disable();
+    r.backend->irq_disable();
     drain_sync();
     for (size_t i = 0; i < n; i++)
     {
@@ -184,7 +194,7 @@ void console_tx_write(char const* buf, size_t n)
         {
             return; // stuck TX: give up rather than hang
         }
-        g_tx.backend->push(static_cast<uint8_t>(buf[i]));
+        r.backend->push(static_cast<uint8_t>(buf[i]));
     }
 }
 
@@ -194,25 +204,27 @@ void console_tx_write(char const* buf, size_t n)
 // USER_OWNED and there is no stale-writer window for the count to guard.
 void console_tx_isr(void)
 {
-    uint32_t const head = g_tx.head; // producer cannot run during this ISR (priority)
-    uint32_t tail = g_tx.tail;
-    while (tail != head and g_tx.backend->slot_free() != 0)
+    ConsoleTxRing& r = tx();
+    uint32_t const head = r.head; // producer cannot run during this ISR (priority)
+    uint32_t tail = r.tail;
+    while (tail != head and r.backend->slot_free() != 0)
     {
-        g_tx.backend->push(static_cast<uint8_t>(g_tx.buf[tail]));
+        r.backend->push(static_cast<uint8_t>(r.buf[tail]));
         // Publish per byte (not once at the end): a synchronous fault mid-drain
         // flushes again, and a stale tail would re-push already-sent bytes.
-        tail = (tail + 1u) & g_tx.mask;
-        g_tx.tail = tail;
+        tail = (tail + 1u) & r.mask;
+        r.tail = tail;
     }
     if (tail == head)
     {
-        g_tx.backend->irq_disable();
+        r.backend->irq_disable();
     }
 }
 
 void console_tx_flush_sync(void)
 {
-    if (not g_tx.armed)
+    ConsoleTxRing& r = tx();
+    if (not r.armed)
     {
         return;
     }
@@ -221,7 +233,7 @@ void console_tx_flush_sync(void)
     // drain_sync's head read could re-enable the IRQ or extend head mid-drain. Idempotent,
     // since a second flush finds head == tail. Nests harmlessly under kpanic_enter's mask.
     kickos::IrqLock lock;
-    g_tx.backend->irq_disable();
+    r.backend->irq_disable();
     drain_sync();
 }
 
@@ -245,9 +257,9 @@ void console_buffer_init(void)
     {
         kickos::kpanic(kickos::diag::kConsoleAttach);
     }
-    // Arm g_tx (backend + ring) BEFORE the line can fire: the latch-and-coalesce
+    // Arm the ring (backend + storage) BEFORE the line can fire: the latch-and-coalesce
     // contract redelivers any pend latched on this line before boot the instant
-    // ISER is set, and console_tx_isr on a zero-init g_tx would deref a NULL backend.
+    // ISER is set, and console_tx_isr on a zero-init ring would deref a NULL backend.
     // So init first, then discard pre-boot garbage, then enable last.
     console_tx_init(be, buf, size, line); // line folded in: set atomically with armed
     arch_irq_clear_pending(line);
@@ -263,15 +275,16 @@ void console_buffer_init(void)
 // on a kernel-owned, kernel-inited UART.
 void console_tx_deinit(void)
 {
-    if (not g_tx.armed)
+    ConsoleTxRing& r = tx();
+    if (not r.armed)
     {
         return;
     }
     kickos::IrqLock lock;
-    console_tx_flush_sync();     // a. drain queued bytes on a still-kernel-owned UART
-    g_tx.backend->irq_disable();       // b. stop the TX-empty IRQ at the peripheral
-    kickos::irq_detach(g_tx.irq_line); // c. null the handler + NVIC-mask the line
-    g_tx.armed = false;          // d. disarm the ring (producer stops buffering)
+    console_tx_flush_sync();        // a. drain queued bytes on a still-kernel-owned UART
+    r.backend->irq_disable();       // b. stop the TX-empty IRQ at the peripheral
+    kickos::irq_detach(r.irq_line); // c. null the handler + NVIC-mask the line
+    r.armed = false;                // d. disarm the ring (producer stops buffering)
 }
 
 } // extern "C"
