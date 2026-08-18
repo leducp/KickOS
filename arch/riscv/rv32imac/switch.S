@@ -290,8 +290,11 @@ trap_entry:
 /* survives the call, so it still points at the frame afterwards.                */
     .global svc_trampoline
 svc_trampoline:
-    call    syscall_dispatch        /* (a0..a4) -> result in a0 */
-    sw      a0, F_A0(sp)            /* frame.a0 = result */
+    call    syscall_dispatch        /* (a0..a4) -> result in a0:a1 */
+    /* BOTH halves: the restore epilogue reloads a0-a4 from the frame, so a
+       result half left only in a register is discarded by mret. */
+    sw      a0, F_A0(sp)            /* frame.a0 = result low */
+    sw      a1, F_A1(sp)            /* frame.a1 = result high */
     lw      t0, F_MEPC(sp)          /* ecall pc */
     addi    t0, t0, 4               /* -> instruction after ecall */
     sw      t0, F_MEPC(sp)
@@ -408,9 +411,12 @@ arch_start:
 /* ------------------------------------------------------------------------- */
 /* arch_syscall(nr, a0, a1, a2, a3): args already in a0-a4 per the psABI; ecall  */
 /* traps to .Lecall, svc_trampoline runs dispatch and returns here (post-ecall)  */
-/* with a0 = result. ra is preserved across the trap (saved/restored in frame).  */
+/* with a0:a1 = result. ra is preserved across the trap (saved/restored in       */
+/* frame). arch_syscall64 is the SAME trap: a0:a1 is the psABI's 64-bit pair.    */
 /* ------------------------------------------------------------------------- */
     .global arch_syscall
+    .global arch_syscall64
 arch_syscall:
+arch_syscall64:
     ecall
     ret

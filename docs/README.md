@@ -43,8 +43,9 @@ for; nothing below is a prerequisite for reading the Reference.
    what evidence".
 4. **`../roadmap.md`** -- the milestone-level plan: goals per milestone, no granular items.
    Milestones are keyed to **theme, not sequence**: M2 = MPU/memory-protection enforcement;
-   M3 = capabilities + user clock; M4 = the driver era; M5 = SMP; M6 = the MMU / new-platform
-   horizon. Work with no MPU/caps/driver/SMP dependency is "anytime coherence".
+   M3 = capabilities + user clock; M4 and M5 = the driver era; M6 = SMP; M7 = the MMU /
+   new-platform horizon; M8 = what comes after it, and the milestone the ABI freezes at. Work with
+   no MPU/caps/driver/SMP dependency is "anytime coherence".
 
 Per-board wiring and validation status is `reference/boards.md`, not any of the above.
 

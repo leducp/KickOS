@@ -38,6 +38,17 @@ source "boards/Kconfig"
 source "boards/*/Kconfig"
 source "arch/Kconfig"
 
+# --- Cores ------------------------------------------------------------------
+
+config KICKOS_NUM_CORES
+	int
+	default 1
+	help
+	  How many cores the kernel schedules on. Never prompted: a property of the
+	  silicon and the port. At 1, arch_cpu_id() is a macro expanding to a literal and
+	  no fallback TU exists, so a multi-core port that raises this and ships no
+	  arch_cpu_id gets a link error rather than a kernel that believes it is on core 0.
+
 # --- Memory protection ------------------------------------------------------
 
 choice

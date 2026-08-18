@@ -245,7 +245,8 @@ distinction is load-bearing rather than fussy.
 
 ### 2.4 ABI
 
-The ABI is unstable until M6, so syscall 14 is **renamed in place** (it was the tier-1
+The ABI is unstable until the ABI-freeze milestone (M8, the last one), so syscall 14 is **renamed
+in place** (it was the tier-1
 register call), not deprecated alongside a replacement:
 
 ```c
@@ -1309,7 +1310,7 @@ parked in `kos_recv`, and only a rendezvous `kos_send` from the IRQ thread could
 which would **block the IRQ thread** while the service thread serves a request, risking RX
 FIFO overrun. The missing primitive is **receive-from-either-of-two-sources** (equivalently,
 a notification bound to a thread, the `seL4_TCB_BindNotification` shape). Naming it precisely
-is the point: it is an M5 kernel object, it is what `docs/design-driver-era-scope.md`'s
+is the point: it is an M6 kernel object, it is what `docs/design-driver-era-scope.md`'s
 "timed / abortable IPC -> EARLY-M4" item is really asking for, and it must not be smuggled in
 under M4.6's scope. Option 2 above covers the real M4.6 use cases without it.
 
@@ -1364,7 +1365,7 @@ an edge source needs no peripheral clear before rearm, so a thread holding no wi
 legitimately consume it. The two grouped LEVEL sources (`TEI6`/`ERI6`) are deliberately NOT
 claimed at all; their flags are cleared and counted inside every `service_irq()` pass by the one
 thread that owns the registers. The primitive that would make the clean shape expressible is
-wait-on-either-of-two-sources, the same M5 object sec.7.5 defers the blocking read behind.
+wait-on-either-of-two-sources, the same M6 object sec.7.5 defers the blocking read behind.
 
 **Binding-pool budget, and a real ceiling.** `KICKOS_MAX_IRQ_HANDLES` is 8 by default but
 **4** on bluepill-c8, f302nucleo and microbit (the `KICKOS_MAX_IRQ_HANDLES` override in each of
@@ -1774,7 +1775,8 @@ found it, and it is already filed on its own in `TODO.md`.
    actually receives, and two grants naming one slot is `-KOS_EINVAL` rather than a silent
    overwrite. Gated by selftest `cap_dest`.
 4. **Rename in place, or append?** Sec.2.4 renames the mint at its existing syscall number
-   because the ABI is unstable until M6. A reviewer who prefers append-only numbering even under
+   because the ABI is unstable until the ABI-freeze milestone (M8, the last one). A reviewer who
+   prefers append-only numbering even under
    an unstable ABI should say so now: it is one enumerator either way, but it changes every
    citation of the tier-1 block.
 5. **Retire the tier-2 syscall?** Sec.3.6 makes per-line granularity conditional on there being
@@ -1809,7 +1811,7 @@ wants one should read the section named, because most of them are waiting on a s
 thing rather than on priority.
 
 - **Blocking RX read, and the primitive it needs.** Sec.7.5: receive-from-either-of-two-sources,
-  equivalently a notification bound to a thread. An M5 kernel object. The two non-blocking
+  equivalently a notification bound to a thread. An M6 kernel object. The two non-blocking
   options in that section cover M4.6's real cases, and this must not be smuggled in.
 - **Runtime mint-and-delegate to an already-running thread.** Sec.3.4. Spawn-time delegation
   covers every M4.6 and M4.7 case because drivers are spawned with their resources in hand.

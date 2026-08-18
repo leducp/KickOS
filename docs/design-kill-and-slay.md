@@ -66,8 +66,8 @@ concept. Section 6 works it out, and it can land before anything else here.
 ## 2. The ABI
 
 Syscall numbers are append-only; the current high-water mark is `KOS_SYS_TASK_KILL = 52`
-(`user/include/kickos/sys/abi.h:169`). The ABI is unstable until M6, so no versioning and no
-migration.
+(`user/include/kickos/sys/abi.h:169`). The ABI is unstable until the ABI-freeze milestone (M8, the
+last one), so no versioning and no migration.
 
 ### 2.1 What is appended
 
@@ -180,7 +180,7 @@ arrange. This is why premise 1.2 costs nothing.
 
 Two preconditions this rests on, both stated rather than assumed:
 
-- **Single core.** On SMP a peer can be genuinely RUNNING and the argument fails outright. M5 owns
+- **Single core.** On SMP a peer can be genuinely RUNNING and the argument fails outright. M6 owns
   SMP; open question 1 records the shape a slay would then need.
 - **No in-kernel slay caller.** There is none today and the design forbids one: from ISR context
   `arch_in_isr()` is true, `kernel().current` names the interruptee, and the `RUNNING` arm becomes
@@ -727,10 +727,10 @@ Only the ones I cannot settle from the tree.
 as a single-core design with a recorded SMP successor?** Section 3.1's proof uses "exactly one thread
 is RUNNING". On SMP a peer is genuinely RUNNING and there is no resume to claim, which is the one
 place section 4.3's reaper is not replaceable -- or an IPI plus a per-CPU fault-shaped redirect on a
-live frame is. **Recommendation: rule it single-core, and record the SMP shape as belonging to M5
+live frame is. **Recommendation: rule it single-core, and record the SMP shape as belonging to M6
 rather than designing for it now.** The redirect is not wasted work under SMP: it remains the correct
 mechanism for a victim that is not currently on a CPU, which is most of them. Designing for a core
-count the tree does not have would buy a reaper's cost today for M5's benefit.
+count the tree does not have would buy a reaper's cost today for M6's benefit.
 
 **2. The starvation hazard: timeout, or a death boost?** A blocked caller depends on the victim being
 scheduled. Section 3.7 chooses an explicit `timeout_us` and refuses to raise the victim's priority,
@@ -993,7 +993,7 @@ a defect in them -- a defect in what can reach them. `idle` is `g_idle_tcb`, a s
 OUTSIDE the `ThreadPool`, so `thread_resolve` can never answer it; and root is deliberately
 unprivileged (`kernel/init/kmain.cc`), so no privileged thread is resolvable by handle at
 all. The guard is kept because it is fail-closed against exactly the future the driver era
-and M5 open, and because `kickos_fault_kill_thread` states the identical rule and carries
+and M6 open, and because `kickos_fault_kill_thread` states the identical rule and carries
 the identical reachability status. **It becomes reachable, and the mutant becomes killable,
 the moment a privileged thread can occupy a pool slot.**
 

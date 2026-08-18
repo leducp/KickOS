@@ -436,10 +436,11 @@ namespace kos::thread
                              uint8_t policy = KOS_POLICY_FIFO, uint32_t quantum_ns = 0,
                              bool privileged = false, void* mem = nullptr, uint32_t mem_size = 0,
                              uint8_t authority = 0, uint16_t const* cap_dest = nullptr,
-                             kos_task_t task = KOS_TASK_NONE)
+                             kos_task_t task = KOS_TASK_NONE, void* stack = nullptr,
+                             uint32_t stack_size = 0)
     {
         return spawn(entry, arg, name, prio, policy, quantum_ns, privileged, mem, mem_size,
-                     nullptr, 0, nullptr, 0, caps, cap_count, authority, cap_dest, task);
+                     stack, stack_size, nullptr, 0, caps, cap_count, authority, cap_dest, task);
     }
 }
 

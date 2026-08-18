@@ -101,9 +101,9 @@ clean. No-MPU Teensy (unchanged) and the four other enforcing backends stand.
   default (`KICKOS_IMXRT_DCACHE ON`). Safe on this single-core, DMA-less port; the coherency
   obligation arrives with DMA (a non-cacheable pool or per-buffer clean/invalidate) and is carried
   in TODO.md.
-- **Option B (post-M6 fleet-wide hardening).** The shipped fix keeps `PRIVDEFENA`, so privileged
+- **Option B (M8 fleet-wide hardening).** The shipped fix keeps `PRIVDEFENA`, so privileged
   code still runs on a permissive background. The stronger posture (drop `PRIVDEFENA`, program an
-  explicit whole-map, confine the kernel to its own regions) is recorded post-M6. TODO.md.
+  explicit whole-map, confine the kernel to its own regions) is recorded for M8. TODO.md.
 - **The MPU-disabled per-switch window (ACCEPTED).** `kickos_arm_mpu_program` writes
   `MPU_CTRL = 0` to reprogram, reverting to the Normal-typed default map for those instructions. It
   is bracketed by `cpsid i` in the commit and runs from already-cached fetches, so no new

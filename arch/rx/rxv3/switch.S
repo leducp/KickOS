@@ -262,16 +262,20 @@ _svc_trampoline:
     mov.l   12[r0], r5         /* r5 = a3 (5th arg) */
     sub     #4, r0
     mov.l   r5, [r0]           /* [SP] = a3 */
-    bsr.a   _syscall_dispatch  /* (R1-R4, [SP]=a3) -> result in R1 */
+    bsr.a   _syscall_dispatch  /* (R1-R4, [SP]=a3) -> result in R1:R2 */
     add     #4, r0             /* drop 5th-arg slot -> [R0]=userPC,[R0+4]=userPSW */
-    rte                        /* PC=userPC, PSW=userPSW -> back in arch_syscall (R1=result) */
+    /* rte pops PC+PSW only, so the R1:R2 pair reaches the caller untouched. */
+    rte                        /* PC=userPC, PSW=userPSW -> back in arch_syscall (R1:R2=result) */
 
 /* ------------------------------------------------------------------------- */
 /* arch_syscall(nr, a0, a1, a2, a3): R1=nr R2=a0 R3=a1 R4=a2, [R0+4]=a3. INT      */
 /* preserves all GPRs, so no marshaling is needed; the trampoline returns here    */
-/* (post-INT) in the caller's mode with R1=result.                                */
+/* (post-INT) in the caller's mode with R1:R2=result. arch_syscall64 is the SAME  */
+/* trap: R1:R2 is the RX ABI's 8-byte return pair.                                */
 /* ------------------------------------------------------------------------- */
     .global _arch_syscall
+    .global _arch_syscall64
 _arch_syscall:
+_arch_syscall64:
     int     #1                 /* SYSCALL_VECTOR (regs.h) */
-    rts                        /* return to caller, R1 = result */
+    rts                        /* return to caller, R1:R2 = result */

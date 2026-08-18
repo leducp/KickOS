@@ -623,6 +623,15 @@ if(KICKOS_BUILD_TESTS)
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(include_guards PROPERTIES TIMEOUT 120 LABELS host)
 
+  # Takes the GENERATED board config, not ${KICKOS_NUM_CORES}: the gate must read the knob
+  # spelling C reads. The knob is absent from CMAKE_INT_KNOBS on purpose, CMake doing no
+  # arithmetic on it.
+  _add_test(NAME cpu_id_fold
+            COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_cpu_id_fold.sh"
+                    "${PROJECT_BINARY_DIR}/generated/include/kickos/board_config.h"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cpu_id_fold PROPERTIES TIMEOUT 120 LABELS host)
+
   _add_test(NAME forever_loop
             COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/static/check_forever_loop.sh"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")

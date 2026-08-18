@@ -127,23 +127,25 @@ svc_trampoline:
     mov     r4, r12                 /* a3 */
     sub     sp, #8                  /* 5th-arg slot (keep 8B alignment) */
     str     r4, [sp]                /* [sp] = a3 */
-    bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0 */
-    add     sp, #8                  /* r0 = result from here on */
-    /* Drop to the caller's resting privilege while r1-r3 are free (r0 kept). */
-    ldr     r1, =g_arch_current
-    ldr     r1, [r1]
-    ldr     r1, [r1, #8]            /* ctx.resting_npriv */
-    mrs     r2, control
-    movs    r3, #1
-    bics    r2, r3
-    orrs    r2, r1                  /* CONTROL.nPRIV = resting privilege */
-    msr     control, r2
+    bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0:r1 */
+    add     sp, #8                  /* r0:r1 = result pair from here on */
+    /* Drop to the caller's resting privilege using r2/r3 ONLY: r0:r1 carry the
+       AAPCS long long result out of this trampoline. That leaves no register to
+       hold the #1 mask, so bit 0 is cleared by a shift pair instead of bics. */
+    ldr     r2, =g_arch_current
+    ldr     r2, [r2]
+    ldr     r2, [r2, #8]            /* ctx.resting_npriv */
+    mrs     r3, control
+    lsrs    r3, r3, #1
+    lsls    r3, r3, #1              /* CONTROL.nPRIV = 0 */
+    orrs    r3, r2                  /* CONTROL.nPRIV = resting privilege */
+    msr     control, r3
     isb
     /* Restore user r4 and the caller-return (v6-M pop can't target LR, so pop
        the return address into a low reg and branch to it). */
     pop     {r4}                    /* user r4 */
-    pop     {r1}                    /* caller-return */
-    bx      r1                      /* -> arch_syscall's caller, r0=result */
+    pop     {r2}                    /* caller-return */
+    bx      r2                      /* -> arch_syscall's caller, r0:r1=result */
 
 /* ------------------------------------------------------------------------- */
     .thumb_func
@@ -164,7 +166,11 @@ arch_start:                         /* r0=boot (ignored), r1=first */
 /* ------------------------------------------------------------------------- */
 /* arch_syscall(nr, a0, a1, a2, a3): r0=nr r1=a0 r2=a1 r3=a2 [sp]=a3.          */
 /* Move a3 into r12 so the exception frame carries it (r12 can't be ldr'd on   */
-/* v6-M -> via a low reg). Result delivered in r0 by svc_trampoline.           */
+/* v6-M -> via a low reg). Result delivered in r0:r1 by svc_trampoline.        */
+/* arch_syscall64 is the SAME trap; r0:r1 is the AAPCS long long pair.         */
+    .thumb_func
+    .global arch_syscall64
+arch_syscall64:
     .thumb_func
     .global arch_syscall
 arch_syscall:

@@ -165,20 +165,22 @@ SVC_Handler:
     .global svc_trampoline
 svc_trampoline:
     push    {r12, lr}               /* [sp]=a3 (5th arg), [sp,#4]=caller-return */
-    bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0 */
+    bl      syscall_dispatch        /* (r0..r3, [sp]=a3) -> result in r0:r1 */
     ldr     lr, [sp, #4]            /* restore caller-return */
     add     sp, sp, #8
     /* Restore the caller's RESTING privilege (not a hard-coded nPRIV=1): a
        privileged thread issuing a syscall must not be demoted. g_arch_current
-       is this thread again here (PendSV restores it across any block). */
+       is this thread again here (PendSV restores it across any block).
+       r2/r3 only: r0:r1 carry the result pair (AAPCS long long) all the way
+       out of this trampoline, so neither may be used as scratch here. */
     ldr     r2, =g_arch_current
     ldr     r2, [r2]                /* current ctx* */
     ldr     r2, [r2, #8]            /* ctx.resting_npriv (offset 8) */
-    mrs     r1, control
-    bfi     r1, r2, #0, #1          /* CONTROL.nPRIV = resting privilege */
-    msr     control, r1
+    mrs     r3, control
+    bfi     r3, r2, #0, #1          /* CONTROL.nPRIV = resting privilege */
+    msr     control, r3
     isb
-    bx      lr                      /* -> arch_syscall's caller, r0=result */
+    bx      lr                      /* -> arch_syscall's caller, r0:r1=result */
 
 /* ------------------------------------------------------------------------- */
 /* arch_start(boot, first): enter the first thread from boot (thread/MSP).    */
@@ -204,9 +206,13 @@ arch_start:                         /* r0=boot (ignored on MCU), r1=first */
 /* ------------------------------------------------------------------------- */
 /* arch_syscall(nr, a0, a1, a2, a3): userspace trap (runs unprivileged).      */
 /* AAPCS: r0=nr r1=a0 r2=a1 r3=a2, [sp]=a3. Move a3 into r12 so the exception  */
-/* frame carries it; the result is delivered in r0 by svc_trampoline, which    */
+/* frame carries it; the result is delivered in r0:r1 by svc_trampoline, which */
 /* returns straight to this function's caller (the trailing bx is a fallback). */
+/* arch_syscall64 is the SAME trap: r0:r1 is the AAPCS long long pair.        */
 /* ------------------------------------------------------------------------- */
+    .thumb_func
+    .global arch_syscall64
+arch_syscall64:
     .thumb_func
     .global arch_syscall
 arch_syscall:

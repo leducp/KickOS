@@ -204,7 +204,7 @@ false for that board; section 10 carries the sweep.
   `int32_t; uint8_t; uint8_t; uint16_t`, so `sizeof` is 8 and `alignof` is **4**. Eight bytes is
   worth keeping because a dead entry is wide enough to hold the free-list link on a 64-bit target
   (section 7) and because two entries pack into one 64-bit word. Whether `cap_resolve` can ever be
-  lock-free is an M5 question and it does not turn on the entry width: it turns on object
+  lock-free is an M6 question and it does not turn on the entry width: it turns on object
   reclamation (section 8). What lands here is `alignas(8)` on the struct plus
   `static_assert(alignof(CapEntry) == 8)`, so the property is stated where it can be broken.
 
@@ -222,7 +222,8 @@ a live table aliased across tasks, which is an isolation bug rather than a leak.
 negative values are error codes, which is what caps the word at 31 bits. Return a status and write
 the handle to an out-parameter -- `kos_sem_create(&h)` rather than `h = kos_sem_create()` -- and the
 budget is a full 32 bits. That is an ABI change across every capability-minting call, and the ABI is
-unstable exactly until M6, so it is as cheap now as it will ever be. It is also what makes the rest
+unstable exactly until the ABI-freeze milestone (M8, the last one), so it is as cheap now as it will
+ever be. It is also what makes the rest
 of this section a free choice rather than a trade.
 
 **The split is chosen once, fleet-wide, and never tuned to a board.** It costs nothing either way:
@@ -325,7 +326,8 @@ plus `KCAP_REPLY_SEQ_LO_BITS` is asserted to fill exactly one byte, so the arran
 a silent truncation when an unrelated knob moves.
 
 Two reasons not to defer the choice. A re-cut **renumbers every handle value**, which is an ABI
-change, and the ABI freezes at M6 -- so "later" means under freeze or never. And the split was
+change, and the ABI freezes at the freeze milestone (M8, the last one) -- so "later" means under
+freeze or never. And the split was
 *derived per board* from `KICKOS_MAX_HANDLES`, which made the same logical handle print differently
 on `microbit` and on `mk64f`; one fixed split removed that.
 
@@ -334,7 +336,7 @@ on `microbit` and on `mk64f`; one fixed split removed that.
 `pizero2350` both declare `armv7m`), `rv32imac`, `rxv3`, `lx6` -- so a 64-bit handle costs a
 register pair on every syscall return on every one of them to benefit a chip that is not yet in the
 fleet. `arch/sim/` is a first-class 64-bit target already and loads a 32-bit handle in one register.
-If the M6 horizon makes it worth doing, the codec is one constant by then.
+If the M7 MMU horizon makes it worth doing, the codec is one constant by then.
 
 ## 5a. The object codec is the binding limit, and it is in scope
 
@@ -587,7 +589,7 @@ as well, and `cmake/cap_table.cmake` refuses at configure any combination that w
 default-width child no dynamic slot of its own once the bound is spent. The guarantee is a
 configure-time property, not a runtime one.
 
-## 8. SMP (M5) consequences
+## 8. SMP (M6) consequences
 
 Three assumptions in the current subsystem are uniprocessor and bear on this design now:
 
@@ -600,7 +602,7 @@ Three assumptions in the current subsystem are uniprocessor and bear on this des
   all (`docs/reference/architecture.md`, "How KickOS differs from its inspirations"). A spinlock is
   the right cost because attach and detach happen at spawn and reclaim -- they are not a hot path.
 
-**That list is incomplete, and the rest is an M5 catalogue this rework does not answer.** Recorded
+**That list is incomplete, and the rest is an M6 catalogue this rework does not answer.** Recorded
 here because they are all in the capability path and all invisible from a uniprocessor reading:
 
 - **The cross-task reply mint has a probe/install TOCTOU.** `cap_install` on another thread's table
@@ -657,7 +659,7 @@ here because they are all in the capability path and all invisible from a unipro
   liveness argument, that a chain member is always a live slot because `server` is cleared before
   `recv_holders` can reach 0, is an ordering claim with no barrier behind it.
 
-**M5 must answer these. This rework does not**, and the entry width is not what decides them: an
+**M6 must answer these. This rework does not**, and the entry width is not what decides them: an
 atomic 64-bit load buys nothing while three writers still write the fields separately, without
 acquire/release ordering, and the real blocker underneath is object reclamation -- a pointer
 `cap_resolve` has just resolved can be freed by another core, which is an RCU or hazard-pointer

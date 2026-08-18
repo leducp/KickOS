@@ -928,7 +928,7 @@ Each is deferred by an argument above, not by omission.
   it is the only thing that actually fixes the bench cost `TODO.md` cites, but it needs a route
   from a USB request to `arch_reboot`, which is compiled only under `KICKOS_ENABLE_SELFTEST`.
 - **A blocking read on the USB console.** Sec.4.5 and the same missing primitive
-  `docs/design-m4.6-irq-driver.md` section 7.5 names -- receive-from-either-of-two-sources, an M5
+  `docs/design-m4.6-irq-driver.md` section 7.5 names -- receive-from-either-of-two-sources, an M6
   kernel object. Unchanged by USB and must not be smuggled in here either.
 - **Any USB class other than CDC-ACM.** The seam of sec.3.1 is drawn so a later class reuses the
   controller backends, and that is the whole of the provision made for it.

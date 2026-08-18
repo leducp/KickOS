@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: CECILL-C -->
 <!-- Copyright (c) 2026 Philippe Leduc -->
-# EXPLORATORY: the MMU / new-platform horizon (M6)
+# EXPLORATORY: the MMU / new-platform horizon (M7)
 
 > **Status: EXPLORATORY**
 > Status: EXPLORATION ONLY. This is a research + design-thinking spike, NOT a
@@ -217,7 +217,7 @@ crit-section (CLI/STI or just IF via `arch_irq_save`), timer, syscall, console,
 IRQ triad, idle (HLT). GENUINELY new: GDT/IDT/TSS setup, long-mode boot, the
 `arch_aspace_*` translation family (shared with any MMU arch), `syscall`/`sysret`
 MSR plumbing, and per-CPU state via GS-base (the x86 analog of the per-core
-globals design-m5-smp.md calls out).
+globals design-m6-smp.md calls out).
 
 **Rough effort shape.** Medium-large but well-trodden. Order of magnitude: boot
 + long mode + GDT/IDT (small, copy-the-wiki), thin IRQ/timer/console/switch
@@ -236,10 +236,10 @@ The i.MX8MP is 4x Cortex-A53 (ARMv8-A, VMSA/MMU) + 1x Cortex-M7 (ARMv7-M, MPU) i
 one SoC. The vision: an MMU KickOS instance on the A53 cluster alongside an MPU
 KickOS instance on the M7, one kernel per core-cluster, talking over cross-core
 IPC. This is the culmination of BOTH axes -- the MMU work (section 2/3) AND the
-AMP work (design-m5-smp) -- meeting on one board.
+AMP work (design-m6-smp) -- meeting on one board.
 
-**It extends the M4 SPSC-ring + doorbell model from homogeneous to
-heterogeneous.** The M4 design (design-m5-smp) is: two SPSC rings per
+**It extends the M6 SPSC-ring + doorbell model from homogeneous to
+heterogeneous.** The M6 design (design-m6-smp) is: two SPSC rings per
 channel (one per direction) in a shared-SRAM window, DMB-ordered index publish,
 a doorbell interrupt to wake the peer's local `recv`. That entire contract
 survives the A53/M7 asymmetry with three added concerns:
@@ -329,16 +329,16 @@ LANDED as `kaccess_from_user` / `kaccess_to_user`
 rule stated at the definition. Every remaining QW here is still a PROPOSAL.
 
 **QW-3. Keep the shared-IPC ring contract PHYSICALLY addressed from day one.**
-What: when the M5 IPC ring lands (design-m5-smp), specify that ring
+What: when the M6 IPC ring lands (design-m6-smp), specify that ring
 control words and slot references are offsets / physical addresses, NEVER a
 pointer valid in one core's space -- even though on RP2040 (homogeneous, one
 physical space) a raw pointer would work fine.
 Why cheap now / expensive later: it costs nothing on RP2040 (physical == virtual)
 but is the exact property section 4 needs for A53/M7. Baking a VA into the ring on
 the homogeneous prototype would silently work until the first MMU peer, then break
-the wire format. Getting the invariant into the M5 design text is free; retrofitting
+the wire format. Getting the invariant into the M6 design text is free; retrofitting
 it after apps depend on the layout is not.
-PROPOSAL -- schedule (fold into the M4 IPC design), do not implement here.
+PROPOSAL -- schedule (fold into the M6 IPC design), do not implement here.
 
 **QW-4. Isolate the pow2/natural-alignment MPU shaping so a page allocator can
 sit beside the bump allocator.**
@@ -395,7 +395,7 @@ PROPOSAL -- fold into arch.h prose / the Book when convenient, do not implement 
   API freezes.
 
 - **TLB shootdown on SMP-MMU.** Section 2 notes `arch_aspace_activate` carries a
-  shootdown obligation the MPU never had. This collides with the design-m5-smp
+  shootdown obligation the MPU never had. This collides with the design-m6-smp
   BKL/SMP work. Research the interaction: is AMP-only (per-core-cluster kernels,
   no shared aspace) enough to dodge shootdown entirely for the first MMU product?
   (i.MX8MP AMP suggests yes.)
@@ -433,6 +433,6 @@ PROPOSAL -- fold into arch.h prose / the Book when convenient, do not implement 
 - i.MX8MP heterogeneous AMP, RPMsg/OpenAMP, MU doorbell, shared SRAM: rt-rk RPMsg
   inter-core communication; NXP community i.MX8MP RPMsg / shared-memory threads;
   Embedded Artists heterogeneous multi-core; Kynetics AMP notes.
-- Internal: `docs/design-m5-smp.md`,
+- Internal: `docs/design-m6-smp.md`,
   `arch/include/kickos/arch/arch.h`, `kernel/domain/*`, `kernel/syscall/*`,
   `docs/book/handles-and-the-resolve-chokepoint.md`.
